@@ -1,5 +1,4 @@
-import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
+import { ArrowDownUp, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import {
@@ -11,18 +10,19 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
+import { PeriodMenu, triggerLabel } from '@/components/period-menu'
+import { ResponsivePanel } from '@/components/responsive-panel'
 import { Chip } from '@/components/ui/chip'
-import { Field, Input } from '@/components/ui/field'
+import { Input } from '@/components/ui/field'
 import { useAllSitesServices } from '@/lib/all-sites-services'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { genreCodeLabel, genreCodes } from '@/lib/program-search'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { serviceDisambiguator } from '@/lib/service-label'
 import {
   clearRecordingsFilters,
   describeRecordingsFilters,
-  isoToLocalDateTimeInput,
   isSourceMootWithRule,
-  localDateTimeInputToIso,
   parseRuleId,
   recordingSourceValues,
   recordingStatusValues,
@@ -87,6 +87,7 @@ export function RecordingFilters({
           value={search.q ?? ''}
           onChange={(q) => onChange((s) => ({ ...s, q: q.trim() === '' ? undefined : q }))}
         />
+        <PeriodMenu search={search} onChange={onChange} />
         <FilterPanel
           search={search}
           services={serviceList}
@@ -113,9 +114,9 @@ export function RecordingFilters({
               key={chip.key}
               type="button"
               onClick={() => onChange((s) => chip.clear(s))}
-              className="flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted/70"
+              className={`${chip.key === 'period' ? 'md:hidden ' : ''}flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted/70`}
             >
-              {chip.label}
+              {chip.key === 'period' ? `期間: ${triggerLabel({ from: search.from, to: search.to }, new Date())}` : chip.label}
               <X className="size-3" aria-hidden />
             </button>
           ))}
@@ -142,6 +143,7 @@ export function RecordingFilters({
  */
 function KeywordField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [draft, setDraft] = useState(value)
+  const wide = useMediaQuery('(min-width: 48rem)')
 
   useEffect(() => {
     setDraft(value)
@@ -157,7 +159,7 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
   }, [draft])
 
   return (
-    <div className="relative min-w-0 flex-1 basis-56">
+    <div className="relative min-w-0 flex-1 basis-0 md:basis-56">
       <SearchIcon
         className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         aria-hidden
@@ -165,7 +167,7 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
       <Input
         type="search"
         aria-label="番組名・説明で検索"
-        placeholder="番組名・説明で検索"
+        placeholder={wide ? '番組名・説明で検索' : '番組を検索'}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         className="h-11 pl-8"
@@ -182,13 +184,15 @@ function OrderSelect({
   onChange: (order: ListRecordingsOrder) => void
 }) {
   return (
-    <label className="flex h-11 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground">
+    <label className="relative flex size-11 shrink-0 items-center justify-center rounded-lg text-sm text-foreground hover:bg-muted md:w-auto md:border md:border-border md:bg-background md:px-3">
       <span className="sr-only">並び順</span>
+      {/* ponytail: ラフ。スマホ幅はアイコンだけ見せ、透明な select を重ねて押させる */}
+      <ArrowDownUp className="size-5 text-foreground md:hidden" aria-hidden />
       <select
         aria-label="並び順"
         value={value}
         onChange={(e) => onChange(e.target.value as ListRecordingsOrder)}
-        className="h-6 bg-transparent text-sm text-foreground outline-none"
+        className="absolute inset-0 h-full w-full bg-transparent text-sm text-foreground opacity-0 outline-none md:static md:h-6 md:w-auto md:opacity-100"
       >
         <option value={ListRecordingsOrder.desc}>新しい順</option>
         <option value={ListRecordingsOrder.asc}>古い順</option>
@@ -309,6 +313,7 @@ function FilterPanel({
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
+  const filtered = [search.service, search.genre, search.site, search.status, search.source, search.ruleId].some((v) => v !== undefined)
   const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
   const siteOptions = useMemo(
@@ -326,27 +331,21 @@ function FilterPanel({
   }
 
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger
-        className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground"
-      >
-        絞り込み
-        <ChevronDown className="size-4 text-muted-foreground" aria-hidden="true" />
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        {/* positionMethod は 'fixed'。理由は components/channel-picker.tsx と同じ
-            （sticky なトリガーと 'absolute' ポップアップのスクロール追従のずれ）。 */}
-        <PopoverPrimitive.Positioner
-          className="z-50 outline-none"
-          positionMethod="fixed"
-          side="bottom"
-          align="start"
-          sideOffset={6}
-        >
-          <PopoverPrimitive.Popup
-            aria-label="絞り込み"
-            className="flex max-h-[min(34rem,80vh)] w-[min(22rem,90vw)] flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md outline-none"
-          >
+    <ResponsivePanel
+      open={open}
+      onOpenChange={setOpen}
+      title="絞り込み"
+      triggerClassName="relative flex h-11 w-11 shrink-0 items-center justify-center gap-1.5 rounded-lg text-sm transition-colors md:w-auto md:border md:px-3 text-foreground hover:bg-muted aria-expanded:bg-muted md:border-border md:bg-background"
+      trigger={
+        <>
+          <ListFilter className="size-5 text-foreground md:hidden" aria-hidden />
+          <span className="sr-only md:not-sr-only">絞り込み</span>
+          <ChevronDown className="hidden size-4 text-muted-foreground md:block" aria-hidden="true" />
+          {filtered && <span className="absolute top-2 right-2 size-2 rounded-full bg-primary md:hidden" aria-hidden />}
+        </>
+      }
+      popupClassName="flex max-h-[min(34rem,80vh)] w-[min(22rem,90vw)] flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md outline-none"
+    >
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">チャンネル</h3>
               {servicesError ? (
@@ -419,30 +418,6 @@ function FilterPanel({
             </section>
 
             <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">期間（番組開始時刻）</h3>
-              <div className="flex flex-wrap gap-2">
-                <Field label="開始日時" className="min-w-0 flex-1">
-                  <Input
-                    type="datetime-local"
-                    value={isoToLocalDateTimeInput(search.from)}
-                    onChange={(e) =>
-                      onChange((s) => ({ ...s, from: localDateTimeInputToIso(e.target.value) }))
-                    }
-                  />
-                </Field>
-                <Field label="終了日時" className="min-w-0 flex-1">
-                  <Input
-                    type="datetime-local"
-                    value={isoToLocalDateTimeInput(search.to)}
-                    onChange={(e) =>
-                      onChange((s) => ({ ...s, to: localDateTimeInputToIso(e.target.value) }))
-                    }
-                  />
-                </Field>
-              </div>
-            </section>
-
-            <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">状態</h3>
               <div role="group" aria-label="状態" className="flex flex-wrap gap-1.5">
                 <Chip active={search.status === undefined} onClick={() => onChange((s) => ({ ...s, status: undefined }))}>
@@ -504,9 +479,6 @@ function FilterPanel({
                 ))}
               </div>
             </section>
-          </PopoverPrimitive.Popup>
-        </PopoverPrimitive.Positioner>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    </ResponsivePanel>
   )
 }
