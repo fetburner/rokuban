@@ -177,7 +177,7 @@ function ensureCaptionFixture() {
  * `.../live/playlist.m3u8` なので、裸名だと `.../live/segment_000.ts` に解決され、
  * 配信側のルート（`.../live/segments/{name}`）と食い違って 404 になる
  * （streamer が `-hls_base_url segments/` を書いている理由そのもの。
- * `internal/streamer/live.go`）。裸名で組んだ版は**1 本もロードされず**
+ * `internal/streamer/hls_args.go`）。裸名で組んだ版は**1 本もロードされず**
  * `readyState=0` のまま何も再生されなかった。
  *
  * 入力は `[duration, uri]` の配列（フィクスチャの VOD プレイリストから読む）。
@@ -491,7 +491,7 @@ async function mockLiveRoutes(page, mode) {
     // **実際に配った本数を数える**（⑪ が「配信が戻った」ことを配信側でも
     // 確かめるため。応答を止める `hang` では数えない）
     mode.servedSegments = (mode.servedSegments ?? 0) + 1
-    // この `video/mp2t` は streamer の実装値の写し（`internal/streamer/live.go`）。
+    // この `video/mp2t` は streamer の実装値の写し（`internal/streamer/live.go` の `Segment`）。
     // フロントの再生経路判定（`lib/live.ts` の `supportsNativeHls`）がこの値に
     // 依存しているが、**ここでモックしている以上、この e2e は Go 側が別の
     // Content-Type に変わったことを検出できない**（Go 側にも同じ注意書きがある）
@@ -712,7 +712,7 @@ async function runConsentCheck() {
     // 行うと、`selectedServiceId` が A→B に変わった直後の 1 コミットだけ古い
     // 再生中フラグが残っていて `LivePlayer` が B の serviceId で透過的に
     // マウントされ、その 1 回の probe が実際に飛ぶ（`AbortController.abort()`
-    // では取り消せない --- `internal/streamer/live.go` のセッションは
+    // では取り消せない --- `internal/streamer/session.go` のセッションは
     // `context.WithCancel(context.Background())` で回る）。「A を再生 → B の
     // チャンネルリンクをクリック（再生は押さない）→ B 向け要求が 0 件」を
     // 確認することで、この透過マウント自体が起きないことを実ブラウザで固定する

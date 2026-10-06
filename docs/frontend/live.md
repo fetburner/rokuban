@@ -295,7 +295,7 @@ passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。�
 `selectedKey` が B に変わった直後の 1 コミットだけ古い再生中フラグが残り、
 `<LivePlayer serviceId={B}>` が透過的にマウントされ probe を投げてしまう。
 その直後に親の reset effect が走って unmount してももう遅い。
-`internal/streamer/live.go` のセッションは
+`internal/streamer/session.go` のセッションは
 `context.WithCancel(context.Background())` で回る。そのためクライアント側の
 `AbortController.abort()` はセッション自体を止めない --- 押していないチャンネルの
 チューナー + ffmpeg が残る。**離脱ヒントを送っても縮むだけで 0 にはならない** ---
@@ -772,7 +772,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 
 **実配値は次のとおり**。`live.idle_timeout` は既定 30 秒、`live.max_sessions` は
 既定 4、猶予は 8 秒（`3 × segment_seconds + 2s`）である。GC 周期は猶予の半分 = 4 秒
-（`internal/config/config.go` / `internal/streamer/live.go`）。**実測は実バイナリ
+（`internal/config/config.go` / `internal/streamer/live.go` の `gcInterval`）。**実測は実バイナリ
 `rokuban server --roles streamer` + 偽 mirakc + 偽 ffmpeg で行った**。
 `rokuban_live_active_sessions{kind="live"}`
 が 0 に戻るまでを 1 秒間隔でポーリングした結果は、**ヒントあり 13 秒 / ヒント無し 33 秒**である。
@@ -930,7 +930,7 @@ skip・別チャンネル種別・別サイトでは返さない、の両方向�
   モデルは「同一物理チャンネルなら 1 本のチューナーに相乗りできる」ため、録画同士
   は同一チャンネルで競合しない。しかし mirakc がライブのストリーム要求と録画を
   同一チャンネルで相乗りさせるかどうかは、本リポジトリ内に記述が無く**未検証**である。
-  `internal/streamer/live.go` は「同じサービスを複数クライアントが見ても共有
+  `internal/streamer/live.go` の `LiveStreamer` は「同じサービスを複数クライアントが見ても共有
   する」までしか言っていない。相乗りするなら、この機能が最も頻繁に発火する
   ケース（見ているチャンネルの次の番組がルールで予約されている）が偽陽性になる。
   文言自体は「不足すると中断されます」という条件付きなので嘘にはならないが、

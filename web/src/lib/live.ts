@@ -54,7 +54,7 @@ export function validLiveAudio(requested: unknown): LiveAudioChoice | undefined 
  * liveAudioTrackIndex は選択に対応する音声トラックの位置を返す。
  *
  * **音声グループ内の並び順（0 = 標準 / 1 = 主 / 2 = 副）が streamer との契約である**
- * （`internal/streamer/live.go` の `audioRenditionEntries`）。トラック名（master の
+ * （`internal/streamer/hls_args.go` の `audioRenditionEntries`）。トラック名（master の
  * `NAME`）は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれるので使えない。
  * hls.js の `audioTracks` も WebKit の `video.audioTracks` も master の順に並ぶ
  * （Playwright の Chromium / WebKit で実測）。
@@ -126,7 +126,7 @@ export function readSubtitleVisibility(
  *
  * 12 秒にしたのは、WebKit が `stalled` を出すのがデータ途絶から 3 秒後
  * （HTML 仕様の「3 秒以上データが来ない」規定。実測でも 3.6 秒）で、
- * streamer 側のセグメント長が 2 秒（`internal/streamer/live.go` の
+ * streamer 側のセグメント長が 2 秒（`internal/streamer/hls_args.go` の
  * `-hls_time 2`）だから --- 正常なら 3 セグメント以上落ちないと到達しない。
  */
 export const liveStallTimeoutMs = 12_000
@@ -286,7 +286,7 @@ export function nextLowerProfile(
  *
  * **`live.captions: true` のデプロイでは自動降格を動かしてはならない。** そのとき
  * `Playlist` ハンドラは `?profile=` に関わらず全プロファイルの variant を並べた
- * master（`playlist.m3u8`）を返すので（`internal/streamer/live.go`）、降格は
+ * master（`playlist.m3u8`）を返すので（`internal/streamer/live.go` の `Playlist`）、降格は
  * **何も下げないのに「下げました」と表示する**ことになる。その master の中では
  * hls.js / ネイティブが自前で variant を選ぶ。
  *
@@ -431,13 +431,13 @@ export function sendOriginalVODLeaveHint(site: string, recordingId: number, offs
 
 /**
  * livePlaylistMimeType は streamer がプレイリストに付ける Content-Type
- * （`internal/streamer/live.go`）。
+ * （`internal/streamer/live.go` の `writeHLSPlaylist`）。
  */
 const livePlaylistMimeType = 'application/vnd.apple.mpegurl'
 
 /**
  * liveSegmentMimeType は streamer がセグメントに付ける Content-Type
- * （`internal/streamer/live.go`。ffmpeg の HLS マルチプレクサが吐く MPEG-2 TS）。
+ * （`internal/streamer/live.go` の `Segment`。ffmpeg の HLS マルチプレクサが吐く MPEG-2 TS）。
  */
 const liveSegmentMimeType = 'video/mp2t'
 
