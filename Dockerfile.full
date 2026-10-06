@@ -24,10 +24,15 @@
 
 ARG BASE=ghcr.io/fetburner/rokuban:latest
 
+# The base Rokuban image stays on bookworm. Mixing trixie's FFmpeg with its
+# newer libc into that image is unsafe, so build the full image on trixie and
+# copy the CGO_ENABLED=0 Rokuban binary from BASE.
+FROM ${BASE} AS rokuban-base
+
 # JLSE command-line tools are built without the AviSynth wrapper so workers can
 # analyze original MPEG-TS files directly. Versions are pinned to source commits.
 # Upstream: tobitti0/dtvindex, chapter_exe, logoframe; yobibi/join_logo_scp v5.1.1.
-FROM debian:bookworm-slim AS jls
+FROM debian:trixie-slim AS jls
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
@@ -55,13 +60,16 @@ RUN set -eux; \
     install -m 0644 join_logo_scp/JL/JL_標準.txt /opt/jls/share/rokuban/cm_detect/JL_標準.txt; \
     test -s /opt/jls/share/rokuban/cm_detect/JL_標準.txt
 
-FROM ${BASE}
+FROM debian:trixie-slim
 USER root
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-      ffmpeg libavformat59 libavcodec59 libavutil57 libswscale6 libswresample4
+      ca-certificates curl ffmpeg
+COPY --from=rokuban-base /usr/local/bin/rokuban /usr/local/bin/rokuban
+COPY --from=rokuban-base /usr/share/doc/rokuban/ /usr/share/doc/rokuban/
 COPY --from=jls /opt/jls/bin/ /usr/local/bin/
 COPY --from=jls /opt/jls/share/rokuban/cm_detect/ /usr/local/share/rokuban/cm_detect/
+RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody
 ENTRYPOINT ["rokuban"]

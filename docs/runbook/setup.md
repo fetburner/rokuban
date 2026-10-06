@@ -22,8 +22,9 @@ docker compose logs -f rokuban
 ```
 
 初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む。公式イメージ
-`ghcr.io/fetburner/rokuban` を pull し、その上に apt で ffmpeg を足し、CM 検出の
-JLSE ツールを C/C++ のソースからビルドして載せる。Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布では
+`ghcr.io/fetburner/rokuban` から Rokuban バイナリを取り出し、Debian trixie の
+FFmpeg と、C/C++ のソースからビルドした CM 検出用 JLSE ツールを載せる。
+Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布では
 ないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。
 HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IMAGE` で差し替える。
 
