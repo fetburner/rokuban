@@ -3,6 +3,7 @@ package streamer
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -11,7 +12,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -102,6 +105,225 @@ func TestBuildLiveFFmpegArgs_RealFFmpegAudioRenditions(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams は、実放送と同じ「別々の
+// 音声 ES に主 / 副が入る」形で、主 / 副 rendition が別の音を出すことを測る。
+// 既存の L/R ステレオ fixture だけでは、入力 a:0 を複製する誤実装も通ってしまう。
+func TestBuildLiveFFmpegArgs_RealFFmpegSeparateAudioStreams(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe, err := exec.LookPath("ffprobe")
+	if err != nil {
+		if os.Getenv("ROKUBAN_REQUIRE_FFMPEG") != "" {
+			t.Fatalf("ffprobe not in PATH but ROKUBAN_REQUIRE_FFMPEG is set: %v", err)
+		}
+		t.Skip("ffprobe not in PATH")
+	}
+	in := filepath.Join(t.TempDir(), "two-audio-es.ts")
+	runFFmpeg(t, ffmpeg, nil,
+		"-hide_banner", "-loglevel", "error",
+		"-f", "lavfi", "-i", "testsrc2=size=320x240:rate=30",
+		"-f", "lavfi", "-i", "sine=f=440:r=48000",
+		"-f", "lavfi", "-i", "sine=f=880:r=48000",
+		"-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0", "-t", "6",
+		"-c:v", "mpeg2video", "-c:a", "aac", "-f", "mpegts", in)
+	input, err := os.ReadFile(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(input) > liveStreamProbeBytes {
+		t.Fatalf("fixture is %d bytes, want at most the %d-byte probe prefix so the runSession test detects lost prefix replay",
+			len(input), liveStreamProbeBytes)
+	}
+	streamInfo, err := probeLiveStreamInfo(context.Background(), ffprobe, input[:min(len(input), liveStreamProbeBytes)])
+	if err != nil {
+		t.Fatalf("probing two-audio-ES fixture: %v", err)
+	}
+	if streamInfo.audioStreams != 2 {
+		t.Fatalf("fixture has %d audio streams, want 2", streamInfo.audioStreams)
+	}
+
+	profiles := []LiveProfile{{Name: "hd", VideoCodec: "mpeg2video", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}}
+	for _, route := range []struct {
+		name         string
+		playlistType hlsPlaylistType
+		inputPath    string
+	}{
+		{name: "live", playlistType: hlsLivePlaylist, inputPath: "pipe:0"},
+		{name: "chase", playlistType: hlsEventPlaylist, inputPath: "pipe:0"},
+		{name: "original", playlistType: hlsOriginalEventPlaylist, inputPath: originalVODFFmpegInputPath},
+	} {
+		for _, captions := range []bool{false, true} {
+			name := route.name + "/captions-" + strconv.FormatBool(captions)
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, "segments"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				cfg := LiveConfig{Captions: captions, Profiles: profiles}
+				args := buildHLSFFmpegArgsForPlaylistType(
+					cfg, dir, false, route.playlistType, route.inputPath, 0, streamInfo.audioStreams,
+				)
+				inputFile, err := os.Open(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				cmd := exec.Command(ffmpeg, args...)
+				if route.playlistType == hlsOriginalEventPlaylist {
+					cmd.ExtraFiles = []*os.File{inputFile}
+				} else {
+					cmd.Stdin = inputFile
+				}
+				if output, err := cmd.CombinedOutput(); err != nil {
+					_ = inputFile.Close()
+					t.Fatalf("ffmpeg %s captions=%t: %v\n%s", route.name, captions, err, output)
+				}
+				if err := inputFile.Close(); err != nil {
+					t.Fatal(err)
+				}
+
+				masterName := "hd.m3u8"
+				if captions {
+					masterName = "playlist.m3u8"
+				}
+				master, err := os.ReadFile(filepath.Join(dir, masterName))
+				if err != nil {
+					t.Fatal(err)
+				}
+				variants := parseMaster(t, string(master))
+				if len(variants) != 1 || len(variants[0].audio) != 3 {
+					t.Fatalf("master has %d video variants and %d audio renditions, want 1 and 3:\n%s",
+						len(variants), func() int {
+							if len(variants) == 0 {
+								return 0
+							}
+							return len(variants[0].audio)
+						}(), master)
+				}
+				for i, wantHz := range []float64{440, 440, 880} {
+					left, right := decodeChannelFrequencies(t, ffmpeg, filepath.Join(dir, variants[0].audio[i]))
+					if math.Abs(left-wantHz) > 15 || math.Abs(right-wantHz) > 15 {
+						t.Errorf("audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f Hz",
+							i, left, right, wantHz, wantHz)
+					}
+				}
+			})
+		}
+	}
+
+	t.Run("runSession probes and replays the input prefix", func(t *testing.T) {
+		segmentDir := t.TempDir()
+		cfg := LiveConfig{
+			FFmpeg:     ffmpeg,
+			FFprobe:    ffprobe,
+			SegmentDir: segmentDir,
+			Profiles:   profiles[:1],
+		}
+		ls := newLiveStreamer(nil, cfg)
+		ls.site = "test"
+		s := &liveSession{
+			key: sessionKey{kind: chaseSessionKind, id: 42},
+			source: func(context.Context) (io.ReadCloser, error) {
+				return io.NopCloser(bytes.NewReader(input)), nil
+			},
+			ready: make(chan struct{}),
+			done:  make(chan struct{}),
+		}
+
+		ls.runSession(context.Background(), s)
+		if s.startErr != nil {
+			t.Fatalf("runSession start error: %v", s.startErr)
+		}
+		if _, err := os.Stat(s.dir); err != nil {
+			t.Fatalf("completed chase output directory: %v", err)
+		}
+		master, err := os.ReadFile(filepath.Join(s.dir, "hd.m3u8"))
+		if err != nil {
+			t.Fatalf("reading runSession master playlist: %v", err)
+		}
+		variants := parseMaster(t, string(master))
+		if len(variants) != 1 || len(variants[0].audio) != 3 {
+			t.Fatalf("runSession master has %d variants and %d audio renditions, want 1 and 3:\n%s",
+				len(variants), func() int {
+					if len(variants) == 0 {
+						return 0
+					}
+					return len(variants[0].audio)
+				}(), master)
+		}
+		for i, wantHz := range []float64{440, 440, 880} {
+			left, right := decodeChannelFrequencies(t, ffmpeg, filepath.Join(s.dir, variants[0].audio[i]))
+			if math.Abs(left-wantHz) > 15 || math.Abs(right-wantHz) > 15 {
+				t.Errorf("runSession audio rendition %d L/R = %.0f/%.0f Hz, want %.0f/%.0f Hz",
+					i, left, right, wantHz, wantHz)
+			}
+		}
+	})
+}
+
+func TestLiveFFmpegAudioMapsWithCaptionsAndExtraAudioES(t *testing.T) {
+	cfg := LiveConfig{
+		Captions: true,
+		Profiles: []LiveProfile{{Name: "hd", VideoCodec: "mpeg2video", AudioCodec: "aac", SegmentSeconds: 2, PlaylistSize: 6}},
+	}
+	args := buildHLSFFmpegArgsForPlaylistType(cfg, t.TempDir(), true, hlsLivePlaylist, "pipe:0", 0, 2)
+	var maps []string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-map" {
+			maps = append(maps, args[i+1])
+		}
+	}
+	wantMaps := []string{"0:v:0", "0:a:0", "0:a:0", "0:a:1", "0:s:0?"}
+	if !reflect.DeepEqual(maps, wantMaps) {
+		t.Fatalf("captions + separate audio ES map = %v, want %v", maps, wantMaps)
+	}
+	if !containsArgContaining(args, "s:0,sgroup:subs") {
+		t.Fatalf("caption playlist does not include subtitle rendition: %v", args)
+	}
+	var streamMap string
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-var_stream_map" {
+			streamMap = args[i+1]
+			break
+		}
+	}
+	wantStreamMap := "v:0,agroup:a0,s:0,sgroup:subs a:0,agroup:a0,default:yes a:1,agroup:a0 a:2,agroup:a0"
+	if streamMap != wantStreamMap {
+		t.Fatalf("two-audio-ES caption var_stream_map = %q, want %q", streamMap, wantStreamMap)
+	}
+	if containsArg(args, "-filter:a:1") || containsArg(args, "-filter:a:2") {
+		t.Fatalf("separate audio ES should not receive dual-mono pan filters: %v", args)
+	}
+
+	args = buildHLSFFmpegArgsForPlaylistType(cfg, t.TempDir(), false, hlsLivePlaylist, "pipe:0", 0, 3)
+	maps = maps[:0]
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == "-map" {
+			maps = append(maps, args[i+1])
+		}
+	}
+	wantMaps = []string{"0:v:0", "0:a:0", "0:a:0", "0:a:1"}
+	if !reflect.DeepEqual(maps, wantMaps) {
+		t.Fatalf("three audio ES map = %v, want %v (third ES ignored)", maps, wantMaps)
+	}
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsArgContaining(args []string, want string) bool {
+	for _, arg := range args {
+		if strings.Contains(arg, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // lookPathFFmpeg は ffmpeg のパスを返す。無ければ skip するが、ROKUBAN_REQUIRE_FFMPEG

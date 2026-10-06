@@ -60,7 +60,8 @@ func (s *fakeMirakcLiveState) requestURIList() []string {
 // newFakeMirakcLiveServer は GET /api/services/{id}/stream を実装する偽 mirakc。
 // クライアント（streamer）が接続を切ると r.Context().Done() で検出し、
 // disconnected チャネルに serviceId を送る --- 「止めたら mirakc 側の接続が
-// 残らない」ことを検証するための観測点。
+// 残らない」ことを検証するための観測点。probe 用 prefix を先に書いてから
+// 188 byte / 10ms のストリームを続ける。
 func newFakeMirakcLiveServer(t *testing.T) (*httptest.Server, *fakeMirakcLiveState) {
 	t.Helper()
 	state := &fakeMirakcLiveState{disconnected: make(chan int64, 16)}
@@ -82,6 +83,14 @@ func newFakeMirakcLiveServer(t *testing.T) (*httptest.Server, *fakeMirakcLiveSta
 		flusher, _ := w.(http.Flusher)
 
 		buf := bytes188Packet()
+		prefixBytes := (liveStreamProbeBytes + len(buf) - 1) / len(buf) * len(buf)
+		if _, err := w.Write(bytes.Repeat(buf, prefixBytes/len(buf))); err != nil {
+			state.disconnected <- sid
+			return
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -145,7 +154,9 @@ func (c *scriptedMirakcLiveClient) StreamService(ctx context.Context, serviceID 
 		return nil, errors.New("scripted upstream rejection")
 	}
 
-	return &scriptedMirakcLiveBody{ctx: ctx, client: c, serviceID: serviceID}, nil
+	return &scriptedMirakcLiveBody{
+		ctx: ctx, client: c, serviceID: serviceID, probeBytesRemaining: liveStreamProbeBytes,
+	}, nil
 }
 
 func (c *scriptedMirakcLiveClient) recordClose(serviceID int64) {
@@ -161,13 +172,26 @@ func (c *scriptedMirakcLiveClient) eventList() []string {
 }
 
 type scriptedMirakcLiveBody struct {
-	ctx       context.Context
-	client    *scriptedMirakcLiveClient
-	serviceID int64
-	once      sync.Once
+	ctx                 context.Context
+	client              *scriptedMirakcLiveClient
+	serviceID           int64
+	probeBytesRemaining int
+	once                sync.Once
 }
 
 func (b *scriptedMirakcLiveBody) Read(p []byte) (int, error) {
+	if b.probeBytesRemaining > 0 {
+		n := min(len(p), b.probeBytesRemaining)
+		for i := range p[:n] {
+			if i%188 == 0 {
+				p[i] = 0x47
+			} else {
+				p[i] = 0
+			}
+		}
+		b.probeBytesRemaining -= n
+		return n, nil
+	}
 	select {
 	case <-b.ctx.Done():
 		return 0, b.ctx.Err()
@@ -183,11 +207,9 @@ func (b *scriptedMirakcLiveBody) Close() error {
 
 // newFastFakeMirakcLiveServer は newFakeMirakcLiveServer と同じ GET
 // /api/services/{id}/stream を実装するが、10ms ごとに 188 byte という
-// スロットリングを入れない（tight loop で書く）。captions 経路は起動時に
-// upstream の先頭 liveCaptionProbeBytes（512 KiB）を同期に読み切る
-// （readLiveCaptionPrefix）ため、newFakeMirakcLiveServer のレート
-// （188 byte / 10ms ≈ 18.8 KB/s）だと 512 KiB に達するまで 25 秒以上かかり、
-// playlistStartupTimeout（15s）を超えてテストが確実にタイムアウトする。
+// スロットリングを入れない（tight loop で書く）。先頭 liveStreamProbeBytes
+// （512 KiB）を先読みするテスト経路が liveStreamProbeWait（1s）の上限に
+// 当たらないようにする。
 func newFastFakeMirakcLiveServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1211,7 +1233,7 @@ done
 	return path
 }
 
-// installFakeFFprobeAlwaysReportsSubtitle は probeLiveCaptionStream が呼ぶ
+// installFakeFFprobeAlwaysReportsSubtitle は probeLiveStreamInfo が呼ぶ
 // ffprobe の argv を検査し、常に字幕ストリーム有りと報告する。実 ffprobe を fake の生パケット列
 // （PAT/PMT を持たない）に向けると失敗する（実測: exit 1）ため、captions の
 // 一連の書き出しを試験するにはこれで置き換える必要がある。
@@ -1222,7 +1244,7 @@ func installFakeFFprobeAlwaysReportsSubtitle(t *testing.T) string {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-ffprobe-subtitle")
-	script := "#!/bin/sh\nexpected='-v error -probesize 5M -analyzeduration 3M -select_streams s -show_entries stream=index -of csv=p=0 -i pipe:0'\n[ \"$*\" = \"$expected\" ] || exit 19\necho 0\n"
+	script := "#!/bin/sh\nexpected='-v error -probesize 5M -analyzeduration 3M -show_entries stream=codec_type -of json -i pipe:0'\n[ \"$*\" = \"$expected\" ] || exit 19\necho '{\"streams\":[{\"codec_type\":\"video\"},{\"codec_type\":\"audio\"},{\"codec_type\":\"subtitle\"}]}'\n"
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -1312,12 +1334,15 @@ func TestLiveCaptionProbeAndFFmpegWithRealBinaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prefix := input[:min(len(input), liveCaptionProbeBytes)]
-	withSubtitles, err := probeLiveCaptionStream(context.Background(), ffprobe, prefix)
+	prefix := input[:min(len(input), liveStreamProbeBytes)]
+	streamInfo, err := probeLiveStreamInfo(context.Background(), ffprobe, prefix)
 	if err != nil {
 		t.Fatalf("probing live MPEG-TS fixture: %v", err)
 	}
-	if withSubtitles {
+	if streamInfo.audioStreams != 1 {
+		t.Fatalf("audio stream count = %d, want 1", streamInfo.audioStreams)
+	}
+	if streamInfo.hasSubtitles {
 		t.Fatal("real ffprobe found a subtitle stream in the captionless fixture")
 	}
 
@@ -1329,7 +1354,7 @@ func TestLiveCaptionProbeAndFFmpegWithRealBinaries(t *testing.T) {
 		Captions: true,
 		Profiles: []LiveProfile{{Name: "fixture", VideoCodec: "mpeg2video", AudioCodec: "mp2", SegmentSeconds: 1, PlaylistSize: 3}},
 	}
-	cmd := exec.Command(ffmpeg, BuildLiveFFmpegArgs(cfg, liveDir, withSubtitles)...)
+	cmd := exec.Command(ffmpeg, BuildLiveFFmpegArgs(cfg, liveDir, streamInfo.hasSubtitles)...)
 	cmd.Stdin = bytes.NewReader(input)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("transcoding captionless live fixture: %v: %s", err, out)
@@ -3062,27 +3087,24 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 	}
 }
 
-// TestReadLiveCaptionPrefix_PreservesAllBytesInOrder は B の置き換え
-// （liveReplayReader + goroutine 2 本 → readLiveCaptionPrefix の同期読み取り +
-// io.MultiReader）が入力を 1 バイトも落とさず順序どおり ffmpeg 側へ渡すことを
-// 固定する。liveCaptionProbeBytes より短い入力・長い入力の両方を見る。
+// TestReadLiveStreamPrefix_PreservesAllBytesInOrder は liveStreamPrefixPump が
+// 入力を 1 バイトも落とさず順序どおり ffmpeg 側へ渡すことを
+// 固定する。upstream が prefix より短い場合と、長く続く場合の両方を見る。
 //
 // 単純な繰り返しパターン（例: 0x47 だけ）だとオフバイ N のずれや部分的な
 // 重複を見逃すので、位置に依存する非周期パターン（`byte(i % 251)`。251 は
-// liveCaptionProbeBytes と互いに素な素数）を使う --- ずれが 1 バイトでもあれば
+// liveStreamProbeBytes と互いに素な素数）を使う --- ずれが 1 バイトでもあれば
 // bytes.Equal が確実に検出する。
 //
-// 壊し方: readLiveCaptionPrefix 内で `prefix = prefix[:n]` を消す（読めなかった
-// 分のゼロ埋めが混入する）、または `io.MultiReader(bytes.NewReader(prefix), body)`
-// の引数順を `body, bytes.NewReader(prefix)` に入れ替える（prefix が後ろに
-// 回り、読み取り順が入れ替わる）。
-func TestReadLiveCaptionPrefix_PreservesAllBytesInOrder(t *testing.T) {
+// 壊し方: pump が先読みしたチャンクを prefix と pipe の両方へ書くと重複し、
+// どちらかへ書かないと欠落する。位置ごとに異なる bytes.Equal が両方を検出する。
+func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
 		total int
 	}{
-		{"shorter than probe prefix (upstream ends early)", liveCaptionProbeBytes / 2},
-		{"longer than probe prefix (body continues after prefix)", liveCaptionProbeBytes*2 + 12345},
+		{"shorter than probe prefix (upstream ends early)", liveStreamProbeBytes / 2},
+		{"longer than probe prefix (body continues after prefix)", liveStreamProbeBytes*2 + 12345},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			want := make([]byte, tt.total)
@@ -3091,11 +3113,14 @@ func TestReadLiveCaptionPrefix_PreservesAllBytesInOrder(t *testing.T) {
 			}
 			body := io.NopCloser(bytes.NewReader(want))
 
-			input, prefix, err := readLiveCaptionPrefix(body)
+			input, prefix, err := readLiveStreamPrefix(
+				context.Background(), body, liveStreamProbeBytes, liveStreamProbeWait,
+			)
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-				t.Fatalf("readLiveCaptionPrefix: %v", err)
+				t.Fatalf("readLiveStreamPrefix: %v", err)
 			}
-			wantPrefixLen := min(tt.total, liveCaptionProbeBytes)
+			defer func() { _ = input.Close() }()
+			wantPrefixLen := min(tt.total, liveStreamProbeBytes)
 			if len(prefix) != wantPrefixLen {
 				t.Errorf("prefix length = %d, want %d", len(prefix), wantPrefixLen)
 			}
@@ -3109,6 +3134,36 @@ func TestReadLiveCaptionPrefix_PreservesAllBytesInOrder(t *testing.T) {
 					len(got), len(want))
 			}
 		})
+	}
+}
+
+func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {
+	gate := make(chan struct{})
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+	want := []byte("bytes after the gate opens")
+	body := io.NopCloser(&gatedReader{gate: gate, r: bytes.NewReader(want)})
+	input, prefix, err := readLiveStreamPrefix(context.Background(), body, liveStreamProbeBytes, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("readLiveStreamPrefix: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	if len(prefix) != 0 {
+		t.Fatalf("prefix length = %d, want 0 while the source is gated", len(prefix))
+	}
+
+	close(gate)
+	got, err := io.ReadAll(input)
+	if err != nil {
+		t.Fatalf("reading replay input after releasing the gate: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("replayed input = %q, want %q", got, want)
 	}
 }
 

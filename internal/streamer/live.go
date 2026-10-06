@@ -199,17 +199,17 @@ func (e *liveUpstreamStartError) Unwrap() error {
 }
 
 const (
-	// liveCaptionProbeBytes は live MPEG-TS の先頭を ffprobe に渡すサイズ。
-	// PAT/PMT は入力の先頭付近に現れるため、ライブ本体を先に消費しすぎずに
-	// 字幕 PID の有無を判定できる。読み取ったバイトは必ず ffmpeg に戻す
-	// （runSession が io.MultiReader で prefix を先頭に戻す）。地上波 HD で
+	// liveStreamProbeBytes は live MPEG-TS の先頭を ffprobe に渡すサイズ。
+	// PAT/PMT は入力の先頭付近に現れる。読み取ったバイトは必ず ffmpeg に戻す
+	// （runSession が prefix replay reader で先頭へ戻す）。地上波 HD で
 	// 概ね 0.3 秒ぶんの読み取り（未検証。ビットレートに依存する見積もり）。
-	liveCaptionProbeBytes = 512 * 1024
-	// liveCaptionProbeTimeout は probeLiveCaptionStream（ffprobe 起動）の暴走を
-	// 止める上限。prefix の読み取り自体は runSession が同期に待つため、ここでは
-	// timeout しない --- クライアントは playlistStartupTimeout（15s）でセッション
-	// 起動全体を待つので、prefix 読み取り専用の timeout は不要（B の決定）。
-	liveCaptionProbeTimeout = 5 * time.Second
+	liveStreamProbeBytes = 512 * 1024
+	// liveStreamProbeWait は prefix の先読みを待つ上限。録画追従 source がまだ
+	// データを出せないときに playlist の起動まで塞がない。
+	liveStreamProbeWait = time.Second
+	// liveStreamProbeTimeout は probeLiveStreamInfo（ffprobe 起動）の上限。
+	// prefix の先読みは liveStreamProbeWait が別に制限する。
+	liveStreamProbeTimeout = 5 * time.Second
 )
 
 // liveMirakcReleaseWait は、退避したセッションの mirakc 接続を Close して
@@ -2944,59 +2944,30 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		}
 	}
 
-	input := io.Reader(body)
-	captionInput := false
-	if ls.cfg.Captions {
-		// upstream の先頭を同期に読んで ffprobe に渡す。読んだバイトは
-		// io.MultiReader で ffmpeg に戻すため 1 バイトも失わない。
-		//
-		// **専用の goroutine/バッファは持たない（B の決定）。** runSession は
-		// 既に go で非同期に起動されており（getOrCreateSession）、待っている
-		// クライアントは playlistStartupTimeout（15s）で打ち切られるので、
-		// ここだけ独自の replay バッファ・timeout を持つ理由が無い。512 KiB は
-		// 地上波 HD で概ね 0.3 秒（未検証。ビットレート依存の見積もり）。
-		//
-		// **ctx キャンセル時に body.Read が抜けるか**: StreamService は
-		// http.NewRequestWithContext(ctx, ...) でリクエストを組み立てており、
-		// net/http の契約上 ctx はレスポンスボディの読み取りまで含めて有効
-		// （ctx が Done になると進行中の Read はエラーで返る）。sessionCtx が
-		// stop() で cancel されたときも body.Read はブロックし続けない ---
-		// 追加の goroutine は不要（internal/mirakc/client.go の StreamService
-		// を読んで確認）。
-		var prefix []byte
-		var readErr error
-		if originalFile != nil {
-			prefix = make([]byte, liveCaptionProbeBytes)
-			n, err := originalFile.ReadAt(prefix, 0)
-			prefix = prefix[:n]
-			readErr = err
-		} else {
-			input, prefix, readErr = readLiveCaptionPrefix(body)
-		}
-		if ctx.Err() != nil {
-			s.startErr = ctx.Err()
-			close(s.ready)
-			return
-		}
-		if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
-			slog.Warn("streamer: reading probe prefix failed; continuing without captions",
-				"kind", string(kind), "session_id", sessionIDOf(s), "err", readErr)
-		}
-		var probeErr error
-		captionInput, probeErr = probeLiveCaptionStream(ctx, ls.cfg.FFprobe, prefix)
-		if probeErr != nil {
-			slog.Warn("streamer: probing subtitle streams failed; continuing without captions",
-				"kind", string(kind), "session_id", sessionIDOf(s), "err", probeErr)
-			captionInput = false
-		}
+	input, streamInfo, err := probeLiveSessionInput(ctx, ls.cfg.FFprobe, kind, sessionIDOf(s), body, originalFile)
+	if err != nil {
+		s.startErr = err
+		close(s.ready)
+		return
 	}
-	args := BuildLiveFFmpegArgs(ls.cfg, dir, captionInput)
+	defer func() { _ = input.Close() }()
+	captionInput := ls.cfg.Captions && streamInfo.hasSubtitles
+	audioStreamCount := streamInfo.audioStreams
+
+	playlistType := hlsLivePlaylist
+	inputPath := "pipe:0"
+	var offsetSeconds int64
 	switch kind {
 	case chaseSessionKind:
-		args = BuildChaseFFmpegArgs(ls.cfg, dir, captionInput)
+		playlistType = hlsEventPlaylist
 	case originalVODSessionKind:
-		args = BuildOriginalVODFFmpegArgs(ls.cfg, dir, captionInput, s.key.offsetSeconds)
+		playlistType = hlsOriginalEventPlaylist
+		inputPath = originalVODFFmpegInputPath
+		offsetSeconds = s.key.offsetSeconds
 	}
+	args := buildHLSFFmpegArgsForPlaylistType(
+		ls.cfg, dir, captionInput, playlistType, inputPath, offsetSeconds, audioStreamCount,
+	)
 	cmd := exec.CommandContext(ctx, ls.cfg.FFmpeg, args...)
 	if originalFile != nil {
 		// Go maps ExtraFiles[0] to child fd 3. Passing the already-open original
@@ -3049,6 +3020,49 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		// GC reclaims the session, so clients can fetch ENDLIST and seek the full VOD.
 		keepCompletedRecordingSession = true
 	}
+}
+
+// probeLiveSessionInput reads a finite input prefix, probes its audio/subtitle streams, and
+// returns a reader that replays the prefix before the remaining live input. For an opened
+// original VOD file it uses ReadAt so ffmpeg retains the seekable input at offset zero.
+func probeLiveSessionInput(
+	ctx context.Context,
+	ffprobe string,
+	kind sessionKind,
+	sessionID int64,
+	body io.ReadCloser,
+	originalFile *os.File,
+) (io.ReadCloser, liveStreamInfo, error) {
+	input := body
+	var prefix []byte
+	var readErr error
+	if originalFile != nil {
+		prefix = make([]byte, liveStreamProbeBytes)
+		n, err := originalFile.ReadAt(prefix, 0)
+		prefix = prefix[:n]
+		readErr = err
+	} else {
+		input, prefix, readErr = readLiveStreamPrefix(ctx, body, liveStreamProbeBytes, liveStreamProbeWait)
+	}
+	if ctx.Err() != nil {
+		_ = input.Close()
+		return nil, liveStreamInfo{}, ctx.Err()
+	}
+	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
+		slog.Warn("streamer: reading probe prefix failed; using single audio ES fallback",
+			"kind", string(kind), "session_id", sessionID, "err", readErr)
+	}
+	streamInfo, err := probeLiveStreamInfo(ctx, ffprobe, prefix)
+	if err != nil {
+		if ctx.Err() != nil {
+			_ = input.Close()
+			return nil, liveStreamInfo{}, ctx.Err()
+		}
+		slog.Warn("streamer: probing live stream failed; using single audio ES fallback",
+			"kind", string(kind), "session_id", sessionID, "err", err)
+		streamInfo.audioStreams = 1
+	}
+	return input, streamInfo, nil
 }
 
 // recordFailedChaseInputLocked は ls.mu を保持した状態で追っかけ入力の cooldown を記録する。
@@ -3374,15 +3388,15 @@ func (w *cappedWriter) String() string {
 // 出す引数を組み立てる（issue #91 の決定 1: 1 チューナーから複数プロファイル）。
 //
 // 自由形式の cmd 文字列は受け取らない（encode.BuildFFmpegArgs と同じ方針）。
-// ストリームは先頭の映像・先頭の音声だけを map する（データ放送は特別扱いしない。
-// 2 本目の音声 ES は選べない）。字幕は通常は map しない。Captions=true の専用経路
-// だけ optional に ARIB caption を map し、libaribcaption で WebVTT にする。既定経路は
-// Debian 系の ffmpeg が arib_caption デコーダを持たない構成でも従来どおり動く。
+// ランタイムでは ffprobe が数えた音声 ES 数を使い、複数なら 2 本目も map する。
+// この公開 builder は dual mono 用の 1 ES として引数を組み立てる。字幕は通常 map
+// しない。Captions=true の専用経路だけ optional に ARIB caption を map し、
+// libaribcaption で WebVTT にする。既定経路は Debian 系 ffmpeg でも従来どおり動く。
 //
 // **音声はプロファイルごとに 3 本の代替音声レンディション（標準 / 主 / 副）で出す。**
-// 標準はフィルタ無し（現行と同じエンコード、`DEFAULT=YES`）。主 / 副は二重音声の
-// L / R を両耳へ写す出力側の `pan`（dualMonoPans）。選ぶのはプレイヤーで、
-// サーバーは選択を知らない（docs/api/media.md §音声）。
+// 標準はフィルタ無し（`DEFAULT=YES`）。単一 ES は主 / 副を pan し、複数 ES は
+// 2 本目を副へ割り当てる。選ぶのはプレイヤーで、サーバーは選択を知らない
+// （docs/api/media.md §音声）。
 //
 // argv の順序（issue #321 決定コメント §3）:
 //
@@ -3392,7 +3406,7 @@ func (w *cappedWriter) String() string {
 //	[cfg.InputExtraArgs…]
 //	-f mpegts -i pipe:0
 //	  ── プロファイルごとに繰り返し ──
-//	  -map 0:v:0 -map 0:a:0 ×3  -c:v  -c:a  -filter:a:1 <主> -filter:a:2 <副>
+//	  -map 0:v:0 -map 0:a:0 ×2 -map 0:a:0|0:a:1  -c:v  -c:a [single ES の pan]
 //	  [-vf <deinterlace[, scaler が決めた scale]>]  [-crf|-qp]  [-preset]
 //	  （captions 経路では `-c:a:N` / `-filter:v:N` / `-filter:a:N` を使う）
 //	  -force_key_frames expr:…
@@ -3410,7 +3424,7 @@ func (w *cappedWriter) String() string {
 // （false なら字幕 map / rendition を完全に省き、字幕の無い番組でも映像・音声の
 // HLS を継続できる）。Captions=false のときは無視される。
 func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist, "pipe:0", 0)
+	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsLivePlaylist, "pipe:0", 0, 1)
 }
 
 // BuildChaseFFmpegArgs は live と同じ画質・音声 rendition を出し、EVENT playlist にする。
@@ -3420,7 +3434,7 @@ func BuildLiveFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []strin
 // segment を保持するためライブ窓のずれは起きない。実ブラウザの切替・シーク・再開の
 // 判定は web/e2e/chase-audio.mjs が担う。
 func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []string {
-	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0)
+	return buildHLSFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, hlsEventPlaylist, "pipe:0", 0, 1)
 }
 
 // BuildOriginalVODFFmpegArgs converts the original MPEG-2 TS into an EVENT HLS
@@ -3441,7 +3455,7 @@ func BuildChaseFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool) []stri
 // break the session.
 func BuildOriginalVODFFmpegArgs(cfg LiveConfig, dir string, withSubtitles bool, offsetSeconds int64) []string {
 	return buildHLSFFmpegArgsForPlaylistType(
-		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds,
+		cfg, dir, withSubtitles, hlsOriginalEventPlaylist, originalVODFFmpegInputPath, offsetSeconds, 1,
 	)
 }
 
@@ -3486,10 +3500,13 @@ func buildHLSFFmpegArgsForPlaylistType(
 	playlistType hlsPlaylistType,
 	inputPath string,
 	offsetSeconds int64,
+	audioStreamCount int,
 ) []string {
 	originalVOD := playlistType == hlsOriginalEventPlaylist
 	if cfg.Captions {
-		return buildLiveCaptionFFmpegArgsForPlaylistType(cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds)
+		return buildLiveCaptionFFmpegArgsForPlaylistType(
+			cfg, dir, withSubtitles, playlistType, inputPath, offsetSeconds, audioStreamCount,
+		)
 	}
 	args := []string{
 		"-hide_banner", "-nostats", "-loglevel", "error",
@@ -3512,10 +3529,10 @@ func buildHLSFFmpegArgsForPlaylistType(
 		// 映像・音声だけ。字幕 / データ放送は捨てる（上記 arib_caption）。
 		// -map は output 単位のオプションなので、ループの前に 1 組だけ置くと
 		// 最初の .m3u8 にしか適用されず、2 本目以降は自動ストリーム選択に戻る。
-		// 音声は同じ入力を 3 回 map し、2 本目 / 3 本目に主 / 副の pan を掛ける。
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
-		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec,
-			"-filter:a:1", dualMonoPans[0], "-filter:a:2", dualMonoPans[1])
+		args = append(args, "-map", "0:v:0")
+		args = appendAudioRenditionMaps(args, audioStreamCount)
+		args = append(args, "-c:v", p.VideoCodec, "-c:a", p.AudioCodec)
+		args = appendAudioRenditionFilters(args, 0, audioStreamCount)
 		if originalVOD {
 			// With B frames, Chrome/hls.js showed frames 2 frames (66.73 ms) behind the
 			// original MP4 timeline on the synthetic fixture (e2e
@@ -3575,6 +3592,33 @@ func buildHLSFFmpegArgsForPlaylistType(
 		)
 	}
 	return args
+}
+
+// appendAudioRenditionMaps appends input maps for the standard, main, and sub
+// renditions. A single audio ES carries both channels of dual-mono audio; with
+// separate ESs, the first is standard/main and the second is sub.
+func appendAudioRenditionMaps(args []string, audioStreamCount int) []string {
+	inputs := [3]string{"0:a:0", "0:a:0", "0:a:0"}
+	if audioStreamCount >= 2 {
+		inputs[2] = "0:a:1"
+	}
+	for _, input := range inputs {
+		args = append(args, "-map", input)
+	}
+	return args
+}
+
+// appendAudioRenditionFilters adds the pan filters used when main/sub are the
+// left and right channels of one dual-mono audio ES. Separate audio ESs already
+// contain the selected language, so those renditions keep the source channels.
+func appendAudioRenditionFilters(args []string, firstAudioOutput, audioStreamCount int) []string {
+	if audioStreamCount >= 2 {
+		return args
+	}
+	return append(args,
+		"-filter:a:"+strconv.Itoa(firstAudioOutput+1), dualMonoPans[0],
+		"-filter:a:"+strconv.Itoa(firstAudioOutput+2), dualMonoPans[1],
+	)
 }
 
 // dualMonoPans は二重音声の主（L）/ 副（R）を両耳へ写す出力側のフィルタ。
@@ -3652,6 +3696,7 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	playlistType hlsPlaylistType,
 	inputPath string,
 	offsetSeconds int64,
+	audioStreamCount int,
 ) []string {
 	originalVOD := playlistType == hlsOriginalEventPlaylist
 	args := []string{"-hide_banner", "-nostats", "-loglevel", "error"}
@@ -3673,7 +3718,8 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 
 	var variants, audioVariants []string
 	for i, p := range cfg.Profiles {
-		args = append(args, "-map", "0:v:0", "-map", "0:a:0", "-map", "0:a:0", "-map", "0:a:0")
+		args = append(args, "-map", "0:v:0")
+		args = appendAudioRenditionMaps(args, audioStreamCount)
 		if i == 0 && withSubtitles {
 			args = append(args, "-map", "0:s:0?")
 		}
@@ -3682,10 +3728,13 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		if originalVOD {
 			args = append(args, "-bf:v:"+strconv.Itoa(i), "0")
 		}
-		args = append(args,
-			"-c:a:"+strconv.Itoa(a), p.AudioCodec,
-			"-c:a:"+strconv.Itoa(a+1), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+1), dualMonoPans[0],
-			"-c:a:"+strconv.Itoa(a+2), p.AudioCodec, "-filter:a:"+strconv.Itoa(a+2), dualMonoPans[1])
+		for output := 0; output < 3; output++ {
+			stream := a + output
+			args = append(args, "-c:a:"+strconv.Itoa(stream), p.AudioCodec)
+			if audioStreamCount < 2 && output > 0 {
+				args = append(args, "-filter:a:"+strconv.Itoa(stream), dualMonoPans[output-1])
+			}
+		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
@@ -3760,33 +3809,160 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	return args
 }
 
-// readLiveCaptionPrefix は body の先頭を liveCaptionProbeBytes だけ同期に読み、
-// 読んだバイトを 1 つも失わずに ffmpeg へ戻す io.Reader（読んだ prefix +
-// 残りの body）を組み立てる。upstream が liveCaptionProbeBytes に満たない
-// （io.ReadFull が io.ErrUnexpectedEOF/io.EOF を返す）場合は読めた分だけを
-// prefix にする --- 呼び出し側（runSession）が err を見て継続可否を判定する。
-func readLiveCaptionPrefix(body io.Reader) (input io.Reader, prefix []byte, err error) {
-	prefix = make([]byte, liveCaptionProbeBytes)
-	n, err := io.ReadFull(body, prefix)
-	prefix = prefix[:n]
-	return io.MultiReader(bytes.NewReader(prefix), body), prefix, err
+type liveStreamPrefixPump struct {
+	mu          sync.Mutex
+	limit       int
+	prefix      []byte
+	probing     bool
+	prefixReady chan struct{}
+	readErr     error
 }
 
-// probeLiveCaptionStream は ffprobe に MPEG-TS の有限な先頭部分だけを渡し、字幕
-// ストリームの有無を調べる。アプリケーション自身は TS/PES を解釈しない。
-func probeLiveCaptionStream(ctx context.Context, ffprobe string, prefix []byte) (bool, error) {
+func (p *liveStreamPrefixPump) finishProbeLocked(err error) {
+	if !p.probing {
+		return
+	}
+	p.probing = false
+	p.readErr = err
+	close(p.prefixReady)
+}
+
+func (p *liveStreamPrefixPump) snapshotAndStop() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.finishProbeLocked(nil)
+	return append([]byte(nil), p.prefix...), p.readErr
+}
+
+func (p *liveStreamPrefixPump) copy(body io.Reader, writer *io.PipeWriter) {
+	buf := make([]byte, 64*1024)
+	for {
+		n, readErr := body.Read(buf)
+		remainder := buf[:n]
+		p.mu.Lock()
+		if p.probing && n > 0 {
+			take := min(n, p.limit-len(p.prefix))
+			p.prefix = append(p.prefix, buf[:take]...)
+			remainder = buf[take:n]
+			if len(p.prefix) == p.limit {
+				p.finishProbeLocked(nil)
+			}
+		}
+		if readErr != nil {
+			p.finishProbeLocked(readErr)
+		}
+		p.mu.Unlock()
+
+		if len(remainder) > 0 {
+			if _, err := writer.Write(remainder); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				_ = writer.Close()
+			} else {
+				_ = writer.CloseWithError(readErr)
+			}
+			return
+		}
+	}
+}
+
+type liveStreamPrefixReplay struct {
+	reader io.Reader
+	pipe   *io.PipeReader
+}
+
+func (r *liveStreamPrefixReplay) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *liveStreamPrefixReplay) Close() error {
+	return r.pipe.Close()
+}
+
+// readLiveStreamPrefix asynchronously buffers up to limit bytes for ffprobe, then
+// returns a reader that replays that prefix before the rest of body. It stops
+// waiting after wait even when an upstream Read is blocked, so a chase playlist
+// can start before a growing recording produces more data. The pump owns body
+// reads until it reaches EOF or body is closed.
+func readLiveStreamPrefix(
+	ctx context.Context,
+	body io.ReadCloser,
+	limit int,
+	wait time.Duration,
+) (input io.ReadCloser, prefix []byte, err error) {
+	pipeReader, pipeWriter := io.Pipe()
+	pump := &liveStreamPrefixPump{
+		limit:       limit,
+		prefix:      make([]byte, 0, limit),
+		probing:     true,
+		prefixReady: make(chan struct{}),
+	}
+	go pump.copy(body, pipeWriter)
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-pump.prefixReady:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	prefix, err = pump.snapshotAndStop()
+	input = &liveStreamPrefixReplay{
+		reader: io.MultiReader(bytes.NewReader(prefix), pipeReader),
+		pipe:   pipeReader,
+	}
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return input, prefix, err
+}
+
+type liveStreamInfo struct {
+	audioStreams int
+	hasSubtitles bool
+}
+
+// probeLiveStreamInfo は ffprobe に MPEG-TS の有限な先頭部分だけを渡し、音声 ES 数と
+// 字幕の有無を調べる。アプリケーション自身は TS/PES や放送記述子を解釈しない。
+func probeLiveStreamInfo(ctx context.Context, ffprobe string, prefix []byte) (liveStreamInfo, error) {
 	ffprobe = ffargs.FFprobePath(ffprobe)
-	probeCtx, cancel := context.WithTimeout(ctx, liveCaptionProbeTimeout)
+	probeCtx, cancel := context.WithTimeout(ctx, liveStreamProbeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(probeCtx, ffprobe,
-		ffargs.SubtitleProbeArgs([]string{"-i", "pipe:0"}, "5M", "3M")...)
+		"-v", "error", "-probesize", "5M", "-analyzeduration", "3M",
+		"-show_entries", "stream=codec_type", "-of", "json", "-i", "pipe:0",
+	)
 	cmd.Stdin = bytes.NewReader(prefix)
 	out, err := cmd.Output()
 	if err != nil {
 		if probeCtx.Err() != nil {
-			return false, probeCtx.Err()
+			return liveStreamInfo{}, probeCtx.Err()
 		}
-		return false, err
+		return liveStreamInfo{}, fmt.Errorf("running ffprobe: %w", err)
 	}
-	return strings.TrimSpace(string(out)) != "", nil
+	var result struct {
+		Streams []struct {
+			CodecType string `json:"codec_type"`
+		} `json:"streams"`
+	}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return liveStreamInfo{}, fmt.Errorf("decoding ffprobe stream list: %w", err)
+	}
+	info := liveStreamInfo{}
+	for _, stream := range result.Streams {
+		switch stream.CodecType {
+		case "audio":
+			info.audioStreams++
+		case "subtitle":
+			info.hasSubtitles = true
+		}
+	}
+	if info.audioStreams == 0 {
+		return liveStreamInfo{}, errors.New("ffprobe found no audio stream")
+	}
+	return info, nil
 }
