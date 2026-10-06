@@ -8,7 +8,7 @@ import (
 	"time"
 
 	// time/tzdata: Asia/Tokyo を OS のタイムゾーンデータベースに頼らず解決するための
-	// blank import。配布イメージ（debian:bookworm-slim）に tzdata パッケージが
+	// blank import。配布イメージ（debian:trixie-slim）に tzdata パッケージが
 	// 入っているとは限らないため、バイナリに埋め込んでおく。
 	_ "time/tzdata"
 

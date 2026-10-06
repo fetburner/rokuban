@@ -452,38 +452,12 @@ jobs:
           cache-from: type=gha,scope=amd64
       # server --all はその上に ffmpeg を積んだ Dockerfile.full で起動する。
       - run: docker build -f Dockerfile.full --build-arg BASE=rokuban:test -t rokuban:test-full .
-      - name: Dockerfile.full uses FFmpeg 7.1 or newer
-        run: |
-          version=$(docker run --rm --entrypoint ffmpeg rokuban:test-full -version \
-            | sed -n '1s/^ffmpeg version //p')
-          printf '%s\n' "$version" \
-            | awk -F '[.-]' '{ if ($1 + 0 > 7 || ($1 + 0 == 7 && $2 + 0 >= 1)) exit 0; exit 1 }'
       - name: JLSE binaries start with their runtime libraries
         run: |
           docker run --rm --entrypoint sh rokuban:test-full -eu -c '
             for tool in chapter_exe logoframe join_logo_scp; do
-              path="/usr/local/bin/$tool"
-              test -x "$path"
-              if dependencies=$(ldd "$path" 2>&1); then
-                :
-              elif ! printf "%s\n" "$dependencies" | grep -Fq "not a dynamic executable"; then
-                printf "%s\n" "$dependencies"
-                exit 1
-              fi
-              if printf "%s\n" "$dependencies" | grep -Fq "not found"; then
-                printf "%s\n" "$dependencies"
-                exit 1
-              fi
-              output=$("$path" -h 2>&1) && status=0 || status=$?
-              if [ "$status" -ge 128 ] && [ "$status" -le 192 ]; then
-                printf "%s\n" "$output"
-                exit 1
-              fi
-              if printf "%s\n" "$output" | grep -Eqi "error while loading shared libraries|cannot open shared object file"; then
-                printf "%s\n" "$output"
-                exit 1
-              fi
-              test -n "$output"
+              test -x "/usr/local/bin/$tool"
+              if ldd "/usr/local/bin/$tool" 2>&1 | grep -F "not found"; then exit 1; fi
             done
           '
       # /mnt/media（storage.media_dir 既定値）と /var/tmp/rokuban

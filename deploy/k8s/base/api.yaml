@@ -122,7 +122,7 @@ spec:
           # Endpoints からの削除が始まるが、kube-proxy / Ingress への伝播は
           # プロセスの終了と競争する。伝播前にリスナが閉じると、その間の要求が
           # connection refused になる（k8s では既知の race。ここでの緩和は
-          # 未測定）。sleep はイメージに入っている（`debian:bookworm-slim`）。
+          # 未測定）。sleep はイメージに入っている（`debian:trixie-slim`）。
           lifecycle:
             preStop:
               exec:
