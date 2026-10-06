@@ -543,10 +543,13 @@ POST /api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave
 
 これらは録画ファイル配信と同じく `openapi.yaml` には載せない。`{id}` は
 `recordings.id` の十進正準形で、DB の `record_sync` から `(site, record_id, status)`
-を逆引きする。録画行と同期行がどちらも `recording` のときは新しいセッションを開始
-できる。正常終了した録画は、既に開始済みのセッションが保持する EVENT playlist と
-セグメントを idle GC まで取得できる。ごみ箱・終了済みで保持セッションの無いもの・
-失敗・未束縛・存在しない id は 404 である。URL の `site` は `cmd/rokuban` の site
+と `kind='original'` の `media_assets` 行の有無を逆引きする。同期行と録画行がどちらも
+`recording` または `finished` で、原本行がまだ無い間は新しいセッションを開始できる。
+原本行は `state` を問わず見る。`deleted` も ingest が一度 commit した事実なので、
+mirakc に record が残っているように見えても新しいセッションを作らない。
+正常終了した録画は、既に開始済みのセッションが保持する EVENT playlist とセグメントを
+idle GC まで取得できる。ごみ箱・commit 済みで保持セッションの無いもの・失敗・未束縛・
+存在しない id は 404 である。URL の `site` は `cmd/rokuban` の site
 束縛へルーティングするための値で、DB の録画 site と一致しない要求は 404 にする。
 
 mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度
@@ -633,8 +636,9 @@ hls.js 1.7.3 の `playlistLoadPolicy.default.errorRetry` は、
 待ちは 1 秒と 2 秒の計 3 秒前後である。
 cooldown がこれより短いと、hls.js の再取得自体が先頭から作り直しを起こす。
 10 秒はその 3 倍強の余裕で、実測した値ではない（未検証）。
-録画が終了済みなら、保持セッションが無い要求は引き続き 404 になる
-（`TestChaseInputErrorDoesNotWriteEndlist`）。
+finished の録画でも、原本行がなく取り込み前なら新しいセッションを開始できる。
+取り込み済みで保持セッションも無い要求は 404 になる
+（`TestFinishedUncommittedChaseUsesOriginalRowExistence`）。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は

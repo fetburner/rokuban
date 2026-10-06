@@ -236,6 +236,9 @@ let growingSince
 let growthCapSegments = Infinity
 const grownSegmentCount = () => Math.min(entries.length, growthCapSegments, 4 + Math.floor((Date.now() - growingSince) / 2000))
 let recordingDetailRequests = 0
+let committedRecordingGetsAfterPurge = 0
+let rejectChasePlaylistsAfterPurge = false
+let simulateIngestCommitted = false
 const originalVODPlaylistRequests = []
 const originalOffsetPlaylistRequests = []
 
@@ -274,6 +277,9 @@ await installApiStubs(page, async ({ path: requestPath, url, json, route }) => {
   if (requestPath === '/api/recordings' && method === 'GET') return json([recording])
   if (requestPath === '/api/recordings/1' && method === 'GET') {
     recordingDetailRequests += 1
+    if (simulateIngestCommitted && recording.ingest?.state === 'committed') {
+      committedRecordingGetsAfterPurge += 1
+    }
     return json(recording)
   }
   if (requestPath === '/api/recordings/1/playback-position' && method === 'PUT') {
@@ -335,6 +341,10 @@ await page.route(`**${chaseBase}/playlist.m3u8*`, async (route) => {
   if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
   playlistRequests += 1
   lastChasePlaylistOffset = 0
+  if (rejectChasePlaylistsAfterPurge) {
+    await route.fulfill({ status: 404, body: 'mirakc record was deleted after ingest commit' })
+    return
+  }
   // 終端でも growing の本数のまま ENDLIST を付ける（EVENT playlist は縮められない）。
   const count = growingSince !== undefined
     ? grownSegmentCount()
@@ -354,6 +364,10 @@ await page.route(`**${chaseBase}/offset/*/playlist.m3u8*`, async (route) => {
   offsetPlaylistRequests += 1
   const requestedURL = new URL(route.request().url())
   if (requestedURL.searchParams.has('profile')) profilePlaylistURLs.push(requestedURL.href)
+  if (rejectChasePlaylistsAfterPurge) {
+    await route.fulfill({ status: 404, body: 'mirakc record was deleted after ingest commit' })
+    return
+  }
   const match = requestedURL.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
   const offsetSeconds = match === null ? Number.NaN : Number(match[1])
   lastChasePlaylistOffset = offsetSeconds
@@ -2099,6 +2113,83 @@ if (Math.abs(originTarget - 12) > 0.1) {
 }
 if (chaseLeaveHints.length !== originLeavesBefore) {
   ng.push(`⑭ offset セッションの起点への seek で張り直し leave を送った (${chaseLeaveHints.slice(originLeavesBefore).join(', ')})`)
+}
+
+log('\n=== ⑮ finished・ingest 未 commit から追っかけ、commit purge 後は最新 REST 状態で原本 HLS へ移る ===')
+await page.goto(`${URL_BASE}/live`, { waitUntil: 'domcontentloaded' })
+recording.status = 'finished'
+recording.startedAt = new Date(Date.now() - 60_000).toISOString()
+recording.startAt = recording.startedAt
+recording.durationMs = 60_000
+recording.endedAt = new Date().toISOString()
+delete recording.sizeBytes
+recording.encodedAssets = []
+recording.ingest = {
+  state: 'transferring',
+  writtenBytes: 8_000_000,
+  observedAt: '2026-01-01T00:00:00Z',
+}
+delete recording.resumePositionMs
+holdResumePositionSeed = true
+rejectChasePlaylistsAfterPurge = false
+simulateIngestCommitted = false
+growingSince = Date.now()
+growthCapSegments = Infinity
+const pendingChaseRequestsBefore = playlistRequests
+await page.goto(`${URL_BASE}/recordings/1#chase`, { waitUntil: 'domcontentloaded' })
+await page.locator('[data-testid="recording-playback-group"] video').waitFor({ timeout: 15000 })
+await page.waitForFunction(() => {
+  const video = document.querySelector('[data-testid="recording-playback-group"] video')
+  return video !== null && video.readyState >= HTMLMediaElement.HAVE_METADATA &&
+    video.currentTime > 0 && !video.paused
+}, undefined, { timeout: 15000 }).catch(() => ng.push('⑮ finished・未 commit の追っかけが再生を始めない'))
+if (playlistRequests === pendingChaseRequestsBefore) {
+  ng.push('⑮ finished・未 commit で追っかけ playlist を要求しない')
+}
+const originalPlaylistsBeforePurge = originalVODPlaylistRequests.length
+const originalOffsetPlaylistsBeforePurge = originalOffsetPlaylistRequests.length
+const committedGetsBeforePurge = committedRecordingGetsAfterPurge
+const sourceGapName = 'finished-uncommitted-chase-to-committed-original'
+await beginCurrentTimeGapMeasurement(page, sourceGapName)
+// commit と mirakc の DeleteRecord を同時に観測させる。イベント通知は送らないので、
+// source-error の選び直しは REST の再取得を通らなければ完了済み状態を知れない。
+recording.ingest = { state: 'committed' }
+recording.sizeBytes = 1_000_000
+simulateIngestCommitted = true
+rejectChasePlaylistsAfterPurge = true
+const commitSourceSwitchDeadline = Date.now() + 30_000
+while (
+  originalVODPlaylistRequests.length === originalPlaylistsBeforePurge &&
+  originalOffsetPlaylistRequests.length === originalOffsetPlaylistsBeforePurge &&
+  Date.now() < commitSourceSwitchDeadline
+) {
+  await page.waitForTimeout(50)
+}
+if (
+  originalVODPlaylistRequests.length === originalPlaylistsBeforePurge &&
+  originalOffsetPlaylistRequests.length === originalOffsetPlaylistsBeforePurge
+) {
+  ng.push('⑮ purge 後の追っかけ source-error から原本 HLS へ移らない')
+}
+if (committedRecordingGetsAfterPurge === committedGetsBeforePurge) {
+  ng.push('⑮ 再生元のエラー時に録画詳細を REST で取り直さない')
+}
+await page.waitForFunction(() => {
+  const video = document.querySelector('[data-testid="recording-playback-group"] video')
+  return video !== null && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+    !video.paused && video.currentTime > 0.1
+}, undefined, { timeout: 15000 }).catch(() => ng.push('⑮ 原本 HLS へ移った後に再生が再開しない'))
+const sourceGap = await finishCurrentTimeGapMeasurement(page, sourceGapName)
+const sourceTransition = await page.evaluate(() => ({
+  videoCount: document.querySelectorAll('[data-testid="recording-playback-group"] video').length,
+  retryButton: [...document.querySelectorAll('button')].some((button) => button.textContent?.includes('再読み込み')),
+  chaseError: document.body.innerText.includes('追っかけ再生中にエラーが発生しました'),
+}))
+const originalPlaylistRequests = originalVODPlaylistRequests.length - originalPlaylistsBeforePurge +
+  originalOffsetPlaylistRequests.length - originalOffsetPlaylistsBeforePurge
+log(`  commit 後の REST GET=${committedRecordingGetsAfterPurge - committedGetsBeforePurge}, original playlists=${originalPlaylistRequests}, video count=${sourceTransition.videoCount}, gap=${JSON.stringify(sourceGap)}`)
+if (sourceTransition.videoCount !== 1 || sourceTransition.retryButton || sourceTransition.chaseError) {
+  ng.push(`⑮ エラー表示を経ずに原本 HLS へ切り替わらない（${JSON.stringify(sourceTransition)}）`)
 }
 
 await finish(ng, browser)

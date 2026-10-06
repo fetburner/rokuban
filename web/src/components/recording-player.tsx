@@ -64,7 +64,11 @@ type RecordingPlayerProps = {
   /** 現在の位置を原本時間軸の秒で親へ伝える。 */
   onRecordingPositionChange?: (seconds: number) => void
   /** 動画がエラーを返した。一度も再生していなければ位置は undefined。親が選び直したら true。 */
-  onRecordingPlaybackError?: (recordingPositionSeconds: number | undefined, wasPlaying: boolean) => boolean
+  onRecordingPlaybackError?: (
+    recordingPositionSeconds: number | undefined,
+    wasPlaying: boolean,
+    allowSameSourceRetry?: boolean,
+  ) => boolean | Promise<boolean>
   /** 最初の読み込みが終わったら再生を始める（再生元を替えた直後に、再生中だった続きを見る）。 */
   autoPlay?: boolean
   /** 詳細ページで再生元の種類が変わっても残る、共有の全画面コンテナ。 */
