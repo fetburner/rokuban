@@ -1632,7 +1632,9 @@ export function LivePlayer({
       liveTimelineBar.liveEdgeSeconds,
     )
   const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
-    setLiveHoverSeconds(event.pointerType === 'mouse' && isSelectableLiveProgramPoint(seconds) ? seconds : null)
+    // 掴んでいる間はタッチでも出す（追っかけと同じ）。離したときの確定が消す。
+    const visible = isLiveProgramScrubbingRef.current || event.pointerType === 'mouse'
+    setLiveHoverSeconds(visible && isSelectableLiveProgramPoint(seconds) ? seconds : null)
   }
   const commitLiveProgramSeek = (seconds: number) => {
     if (!isSelectableLiveProgramPoint(seconds)) return
@@ -1698,8 +1700,8 @@ export function LivePlayer({
   }
   const handleOriginalSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const seconds = originalSeekTargetAtPointer(event)
+    // 掴んでいないときは触らない。キー操作の遅延プレビューをホバーで消さない（追っかけと同じ）。
     if (isOriginalScrubbingRef.current) setOriginalPreviewSeconds(seconds)
-    else setOriginalPreviewSeconds(null)
     setOriginalTileAt(event, seconds)
   }
   const commitOriginalSeek = (seconds: number) => {
@@ -2051,7 +2053,6 @@ export function LivePlayer({
           } else if (isChase) {
             handleChaseSeekPointerLeave()
           } else if (!isOriginalScrubbingRef.current) {
-            setOriginalPreviewSeconds(null)
             setOriginalTilePreview(null)
           }
         }}

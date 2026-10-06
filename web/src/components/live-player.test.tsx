@@ -3419,6 +3419,68 @@ describe('LivePlayer / 原本 VOD 操作バー（issue #1014）', () => {
     expect(playlistRequests(fetchMock)).toHaveLength(2)
   })
 
+  const originalWithKeyboardPreview = async (recordingId: number) => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    render(
+      <LivePlayer mode="original-vod" site="default" recordingId={recordingId} recordingDurationMs={30_000} />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    vi.spyOn(slider, 'getBoundingClientRect').mockReturnValue({
+      x: 0, y: 0, left: 0, top: 0, right: 100, bottom: 16, width: 100, height: 16, toJSON: () => ({}),
+    } as DOMRect)
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+    return slider
+  }
+
+  it('原本 VOD: キー操作の遅延プレビューは、掴んでいないマウスの移動では消えない（追っかけと同じ）', async () => {
+    const slider = await originalWithKeyboardPreview(416)
+    fireEvent.pointerMove(slider, { pointerId: 1, pointerType: 'mouse', clientX: 80 })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+  })
+
+  it('原本 VOD: キー操作の遅延プレビューは、掴んでいないマウスが帯を離れても消えない（追っかけと同じ）', async () => {
+    const slider = await originalWithKeyboardPreview(417)
+    fireEvent.pointerLeave(slider, { pointerId: 1, pointerType: 'mouse' })
+    expect(slider).toHaveAttribute('aria-valuenow', '15')
+  })
+
+  it('ライブ番組軸: タッチで掴んでいる間も時間軸のホバーを出し、離すと消す（追っかけと同じ）', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const nowMs = Date.parse('2026-01-01T01:00:00+09:00')
+    render(
+      <LivePlayer
+        mode="live"
+        site="default"
+        networkId={1}
+        serviceId={2}
+        liveProgram={{
+          startAt: '2026-01-01T00:50:00+09:00',
+          endAt: '2026-01-01T01:50:00+09:00',
+          nowMs,
+          recordingId: 9,
+          recordingStartedAt: '2026-01-01T00:50:00+09:00',
+        }}
+        onLiveProgramSeek={() => {}}
+      />,
+    )
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+    const slider = screen.getByRole('slider', { name: '番組の時間軸' })
+    Object.defineProperty(slider, 'getBoundingClientRect', {
+      value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+    })
+    // 軸は 0〜3600 秒、録画済みは 0〜600 秒。60/600 = 360 秒は録画済みの中。
+    fireEvent.pointerDown(slider, { pointerId: 1, pointerType: 'touch', clientX: 60, clientY: 12 })
+    expect(screen.getByText('ここから見る（録画中）', { exact: false })).toBeInTheDocument()
+    fireEvent.pointerUp(slider, { pointerId: 1, pointerType: 'touch', clientX: 60, clientY: 12 })
+    expect(screen.queryByText('ここから見る（録画中）', { exact: false })).not.toBeInTheDocument()
+  })
+
   it('画質メニュー切替では原本時間の再生位置を持ち越す', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
