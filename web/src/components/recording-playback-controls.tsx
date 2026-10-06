@@ -48,6 +48,7 @@ import {
 import { cn } from '@/lib/utils'
 import {
   seekTileBackgroundSize,
+  seekTilePlacement,
   seekTilesURL,
 } from '@/lib/seek-tiles'
 
@@ -111,16 +112,28 @@ type RecordingPlaybackControlsProps = {
   onPlayAround?: () => void
   onPlayToBoundary?: () => void
   onPlayFromBoundary?: () => void
-  tilePreview: TilePreview
-  tilesRequested: boolean
-  tilesAvailable: boolean
+  /** 原本のシークタイルを時間軸ホバー時に表示する。 */
+  seekTilesEnabled?: boolean
+  /** チャプター編集のように、ホバー前からタイル画像を読み込む。 */
+  requestSeekTilesOnMount?: boolean
+  /** カット版の再生位置をタイルの原本時間軸へ写す。 */
+  tileTimeAtSeconds?: (seconds: number) => number | null
   onTileImageLoad: () => void
   onTileImageError: () => void
-  onSeekPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onSeekPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onSeekPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onSeekPointerCancel?: (event: ReactPointerEvent<HTMLDivElement>) => void
-  onSeekPointerLeave: () => void
+  /** 録画ファイルのように、ドラッグ中も実際の再生位置を動かす。 */
+  seekDuringDrag?: boolean
+  /** 追っかけのように、pointerup で最後に表示した秒を確定する。 */
+  commitLastDisplayedPreview?: boolean
+  /** HLS のように、ドラッグ中だけ操作つまみを仮表示する。 */
+  onScrubPreview?: (seconds: number | null) => void
+  /** 追っかけ・ライブ軸のホバー位置を更新する。 */
+  onTimelineHoverChange?: (seconds: number | null) => void
+  /** ポインタによるスクラブ開始・終了を通知する。 */
+  onScrubbingChange?: (scrubbing: boolean) => void
+  /** スクラブ開始時の実際の位置を返す。キャンセル時の復元に使う。 */
+  onScrubStart?: () => number | null
+  /** シーク確定後もタイル吹き出しを残す。 */
+  clearTilePreviewOnCommit?: boolean
   onSeek: (seconds: number) => void
   onLiveEdgeSeek?: () => void
   deferKeyboardSeek?: boolean
@@ -200,16 +213,18 @@ export function RecordingPlaybackControls({
   onPlayAround,
   onPlayToBoundary,
   onPlayFromBoundary,
-  tilePreview,
-  tilesRequested,
-  tilesAvailable,
+  seekTilesEnabled = false,
+  requestSeekTilesOnMount = false,
+  tileTimeAtSeconds,
   onTileImageLoad,
   onTileImageError,
-  onSeekPointerDown,
-  onSeekPointerMove,
-  onSeekPointerUp,
-  onSeekPointerCancel,
-  onSeekPointerLeave,
+  seekDuringDrag = false,
+  commitLastDisplayedPreview = false,
+  onScrubPreview,
+  onTimelineHoverChange,
+  onScrubbingChange,
+  onScrubStart,
+  clearTilePreviewOnCommit = false,
   onSeek,
   onLiveEdgeSeek,
   deferKeyboardSeek = false,
@@ -261,6 +276,23 @@ export function RecordingPlaybackControls({
   const isLiveTimeline = liveTimeline !== undefined
   const hasTimeline = timeline !== undefined && timeline.kind !== 'fixed'
   const playerId = recordingId ?? 'live'
+  const [tileResources, setTileResources] = useState<{
+    requestedFor: Set<number>
+    availableFor: Set<number>
+  }>(() => ({ requestedFor: new Set(), availableFor: new Set() }))
+  const [tilePreviewState, setTilePreviewState] = useState<{
+    playerId: number | 'live'
+    preview: NonNullable<TilePreview>
+  } | null>(null)
+  const tilesRequested = recordingId !== undefined && (
+    tileResources.requestedFor.has(recordingId) ||
+    (requestSeekTilesOnMount && seekTilesEnabled)
+  )
+  const tilesAvailable = recordingId !== undefined && tileResources.availableFor.has(recordingId)
+  const tilePreview = tilePreviewState?.playerId === playerId ? tilePreviewState.preview : null
+  const isScrubbingRef = useRef(false)
+  const scrubStartSecondsRef = useRef<number | null>(null)
+  const lastDisplayedScrubSecondsRef = useRef<number | null>(null)
   const rangeMin = timeline?.minSeconds ?? 0
   const rangeMax = timeline?.maxSeconds ?? durationSeconds
   const range = Math.max(0, rangeMax - rangeMin)
@@ -382,6 +414,148 @@ export function RecordingPlaybackControls({
     pendingKeyboardSeek.current = null
   }
 
+  const setTilePreview = (preview: NonNullable<TilePreview> | null) => {
+    setTilePreviewState(preview === null ? null : { playerId, preview })
+  }
+  const requestTiles = () => {
+    if (recordingId === undefined) return
+    setTileResources((current) => {
+      if (current.requestedFor.has(recordingId)) return current
+      const requestedFor = new Set(current.requestedFor)
+      requestedFor.add(recordingId)
+      return { ...current, requestedFor }
+    })
+  }
+  const seekSecondsAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
+    if (!timeline?.canSeek) return null
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) return null
+    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
+    const target = rangeMin + fraction * (rangeMax - rangeMin)
+    return timeline.kind === 'fixed' ? target : Math.round(target)
+  }
+  const isSelectableTarget = (target: number | null): target is number => {
+    if (target === null) return false
+    if (liveTimeline === undefined) return true
+    const range = liveTimeline.selectableRange
+    return range !== null && target >= range.startSeconds && target <= range.endSeconds
+  }
+  const updateTimelineHover = (
+    event: ReactPointerEvent<HTMLDivElement>,
+    target: number | null,
+    scrubbing: boolean,
+  ) => {
+    if (chaseTimeline !== undefined) {
+      if (target !== null && (scrubbing || event.pointerType === 'mouse')) {
+        onTimelineHoverChange?.(target)
+      } else if (event.pointerType === 'mouse') {
+        onTimelineHoverChange?.(null)
+      }
+      return
+    }
+    if (liveTimeline !== undefined) {
+      onTimelineHoverChange?.(
+        event.pointerType === 'mouse' && isSelectableTarget(target) ? target : null,
+      )
+    }
+  }
+  const updateTilePreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
+    if (!seekTilesEnabled || recordingId === undefined || event.pointerType !== 'mouse') {
+      setTilePreview(null)
+      return
+    }
+    if (seconds === null) {
+      if (seekDuringDrag) requestTiles()
+      setTilePreview(null)
+      return
+    }
+    requestTiles()
+    const tileSeconds = tileTimeAtSeconds === undefined ? seconds : tileTimeAtSeconds(seconds)
+    if (tileSeconds === null) {
+      setTilePreview(null)
+      return
+    }
+    const rect = event.currentTarget.getBoundingClientRect()
+    if (rect.width <= 0) {
+      setTilePreview(null)
+      return
+    }
+    const tile = seekTilePlacement(tileSeconds, rect.width, event.clientX - rect.left)
+    if (tile === null) {
+      setTilePreview(null)
+      return
+    }
+    setTilePreview({ ...tile, seconds })
+  }
+  const handleSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const target = seekSecondsAtPointer(event)
+    if (!isSelectableTarget(target)) return
+    isScrubbingRef.current = true
+    scrubStartSecondsRef.current = onScrubStart?.() ?? seconds
+    lastDisplayedScrubSecondsRef.current = target
+    onScrubbingChange?.(true)
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+    if (seekDuringDrag) onSeek(target)
+    else onScrubPreview?.(target)
+    updateTimelineHover(event, target, true)
+    updateTilePreview(event, target)
+  }
+  const handleSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!timeline?.canSeek) return
+    const target = seekSecondsAtPointer(event)
+    const scrubbing = isScrubbingRef.current
+    if (scrubbing && isSelectableTarget(target)) {
+      lastDisplayedScrubSecondsRef.current = target
+      if (seekDuringDrag) onSeek(target)
+      else onScrubPreview?.(target)
+    } else if (!scrubbing && timeline.kind === 'fixed') {
+      onScrubPreview?.(null)
+    }
+    updateTimelineHover(event, target, scrubbing)
+    updateTilePreview(event, target)
+  }
+  const releasePointerCapture = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    }
+  }
+  const handleSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return
+    const target = commitLastDisplayedPreview
+      ? lastDisplayedScrubSecondsRef.current
+      : seekSecondsAtPointer(event)
+    isScrubbingRef.current = false
+    releasePointerCapture(event)
+    onScrubbingChange?.(false)
+    onScrubPreview?.(null)
+    if (isSelectableTarget(target)) onSeek(target)
+    else if (liveTimeline !== undefined) onTimelineHoverChange?.(null)
+    if (event.pointerType !== 'mouse' && chaseTimeline !== undefined) onTimelineHoverChange?.(null)
+    if (clearTilePreviewOnCommit) setTilePreview(null)
+    scrubStartSecondsRef.current = null
+    lastDisplayedScrubSecondsRef.current = null
+  }
+  const handleSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return
+    isScrubbingRef.current = false
+    releasePointerCapture(event)
+    onScrubbingChange?.(false)
+    if (seekDuringDrag && scrubStartSecondsRef.current !== null) {
+      onSeek(scrubStartSecondsRef.current)
+    }
+    onScrubPreview?.(null)
+    onTimelineHoverChange?.(null)
+    setTilePreview(null)
+    scrubStartSecondsRef.current = null
+    lastDisplayedScrubSecondsRef.current = null
+  }
+  const handleSeekPointerLeave = () => {
+    if (isScrubbingRef.current) return
+    onScrubPreview?.(null)
+    onTimelineHoverChange?.(null)
+    setTilePreview(null)
+  }
+
   const hoverSpan =
     tilePreview && !playingCut
       ? chapters.find((span) => tilePreview.seconds * 1000 >= span.startMs && tilePreview.seconds * 1000 < span.endMs)
@@ -401,6 +575,33 @@ export function RecordingPlaybackControls({
       onPointerMove={chapterEditing ? undefined : onControlsActivity}
       onKeyDown={chapterEditing ? undefined : onShellKeyDown}
     >
+      {tilesRequested && recordingId !== undefined && (
+        <img
+          data-testid="seek-tiles-image"
+          src={seekTilesURL(recordingId)}
+          alt=""
+          className="pointer-events-none absolute left-0 top-0 size-px opacity-0"
+          onLoad={() => {
+            setTileResources((current) => {
+              const requestedFor = new Set(current.requestedFor)
+              requestedFor.add(recordingId)
+              const availableFor = new Set(current.availableFor)
+              availableFor.add(recordingId)
+              return { requestedFor, availableFor }
+            })
+            onTileImageLoad()
+          }}
+          onError={() => {
+            setTileResources((current) => {
+              const availableFor = new Set(current.availableFor)
+              availableFor.delete(recordingId)
+              return { ...current, availableFor }
+            })
+            setTilePreview(null)
+            onTileImageError()
+          }}
+        />
+      )}
       <div
         ref={frameRef}
         data-testid="recording-player-frame"
@@ -553,23 +754,11 @@ export function RecordingPlaybackControls({
                   finishKeyboardSeek(event)
                 }}
                 onBlur={commitPendingKeyboardSeek}
-                onPointerDown={(event) => {
-                  if (!timeline.canSeek) return
-                  onSeekPointerDown(event)
-                }}
-                onPointerMove={(event) => {
-                  if (!timeline.canSeek) return
-                  onSeekPointerMove(event)
-                }}
-                onPointerUp={(event) => {
-                  if (!timeline.canSeek) return
-                  onSeekPointerUp(event)
-                }}
-                onPointerCancel={(event) => {
-                  if (!timeline.canSeek) return
-                  ;(onSeekPointerCancel ?? onSeekPointerUp)(event)
-                }}
-                onPointerLeave={onSeekPointerLeave}
+                onPointerDown={handleSeekPointerDown}
+                onPointerMove={handleSeekPointerMove}
+                onPointerUp={handleSeekPointerUp}
+                onPointerCancel={handleSeekPointerCancel}
+                onPointerLeave={handleSeekPointerLeave}
               >
                 {chaseTimeline ? (
                   // 追っかけ: 録っていない部分（録画開始より前・先端より後ろ）は点線、録画済みは灰、
@@ -718,15 +907,6 @@ export function RecordingPlaybackControls({
                   className="pointer-events-none absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow"
                   style={{ left: `${(hasTimeline ? seekFraction : playedFraction) * 100}%` }}
                 />
-                {tilesRequested && (
-                  <img
-                    src={seekTilesURL(recordingId ?? 0)}
-                    alt=""
-                    className="pointer-events-none absolute size-px opacity-0"
-                    onLoad={onTileImageLoad}
-                    onError={onTileImageError}
-                  />
-                )}
                 {tilePreview && tilesAvailable && (
                   <div
                     className="pointer-events-none absolute bottom-full z-20 mb-12 md:mb-2 flex flex-col items-center gap-1"

@@ -33,6 +33,7 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   plannedEndSeconds: number
   recordingStartSeconds: number
   liveEdgeSeconds: number
+  selectableRange: { startSeconds: number; endSeconds: number } | null
   hoverSeconds: number | null
   hoverLabel: string | null
   canStartOver: boolean
@@ -117,6 +118,9 @@ export function liveProgramPlaybackTimeline(
     plannedEndSeconds: axis.plannedSeconds,
     recordingStartSeconds,
     liveEdgeSeconds: axis.liveEdgeSeconds,
+    selectableRange: access.canSeek && recordingStartSeconds <= axis.liveEdgeSeconds
+      ? { startSeconds: recordingStartSeconds, endSeconds: axis.liveEdgeSeconds }
+      : null,
     canStartOver: access.canStartOver,
     ariaValueText: `${formatPlaybackTime(axis.liveEdgeSeconds, false)} / ${formatPlaybackTime(axis.plannedSeconds, false)}（番組表上の予定）`,
     startClock: formatTime(program.startAt),

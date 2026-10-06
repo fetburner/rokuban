@@ -931,6 +931,8 @@ describe('RecordingPlayer のシークプレビュー', () => {
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { currentTime: 10, duration: 100 })
+    fireEvent.loadedMetadata(video)
+    setMediaProps(video, { currentTime: 10 })
     const seekbar = getByTestId('seek-scrub')
     vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({
       left: 0,

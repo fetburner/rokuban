@@ -41,8 +41,6 @@ type RecordingChapterEditorProps = {
   isPlaying: boolean
   durationSeconds: number
   tilesAvailable: boolean
-  onTileImageLoad: () => void
-  onTileImageError: () => void
   jumpTo: (seconds: number) => void
   /** 選択・調整した境界のコマへ映像を連れて行き、停止する。 */
   onBoundaryAction: (seconds: number) => void
@@ -85,8 +83,6 @@ function ChapterDraftEditor({
   isPlaying,
   durationSeconds,
   tilesAvailable,
-  onTileImageLoad,
-  onTileImageError,
   jumpTo,
   onBoundaryAction,
   onSelectedBoundaryChange,
@@ -335,8 +331,6 @@ function ChapterDraftEditor({
           spans={draft}
           selectedBoundary={selectedBoundary}
           tilesAvailable={tilesAvailable}
-          onTileImageLoad={onTileImageLoad}
-          onTileImageError={onTileImageError}
           onSeek={jumpTo}
           onSelectBoundary={selectBoundary}
           onMoveBoundary={moveBoundary}

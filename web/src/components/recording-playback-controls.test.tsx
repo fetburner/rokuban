@@ -1,4 +1,5 @@
 import { createRef } from 'react'
+import type { ComponentProps } from 'react'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
@@ -7,38 +8,27 @@ import { RecordingPlaybackControls } from '@/components/recording-playback-contr
 import type { PlaybackAudioOption } from '@/components/recording-playback-controls'
 import { fixedPlaybackTimeline } from '@/lib/playback-timeline'
 
-function renderControls(
-  playbackRateLocked: boolean,
-  chapterEditing = false,
-  onRateChange = vi.fn(),
-  playbackRate = 1,
-  chapters: ChapterSpan[] = [],
-  options: { canChangePlaybackRate?: boolean; audioOptions?: readonly PlaybackAudioOption[] } = {},
-) {
+type ControlsProps = ComponentProps<typeof RecordingPlaybackControls>
+
+function controlProps(overrides: Partial<ControlsProps> = {}): ControlsProps {
   const noop = vi.fn()
-  const props = {
+  return {
     profile: 'hd',
     encodedAssets: [],
     timeline: fixedPlaybackTimeline(100),
-    canChangePlaybackRate: options.canChangePlaybackRate ?? true,
-    ...(options.audioOptions === undefined ? {} : { audioOptions: options.audioOptions }),
+    canChangePlaybackRate: true,
     profileOptions: [{ name: 'hd' }, { name: 'sd' }],
     frameRef: createRef<HTMLDivElement>(),
     video: <video />,
     currentSeconds: 0,
     durationSeconds: 100,
     playedFraction: 0,
-    chapters,
+    chapters: [],
     playingCut: false,
-    chapterEditing,
-    tilePreview: null,
-    tilesRequested: false,
-    tilesAvailable: false,
     isPlaying: false,
     muted: false,
     volume: 1,
-    playbackRate,
-    playbackRateLocked,
+    playbackRate: 1,
     subtitlesEnabled: false,
     skipEnabled: false,
     pictureInPicture: false,
@@ -49,10 +39,6 @@ function renderControls(
     controlsVisible: true,
     onTileImageLoad: noop,
     onTileImageError: noop,
-    onSeekPointerDown: noop,
-    onSeekPointerMove: noop,
-    onSeekPointerUp: noop,
-    onSeekPointerLeave: noop,
     onSeek: noop,
     onSelectProfile: noop,
     onPreviousChapter: noop,
@@ -60,7 +46,7 @@ function renderControls(
     onTogglePlay: noop,
     onToggleMute: noop,
     onVolumeChange: noop,
-    onRateChange,
+    onRateChange: noop,
     onToggleSubtitles: noop,
     onToggleSkip: noop,
     onTogglePictureInPicture: noop,
@@ -70,7 +56,27 @@ function renderControls(
     onToolbarFocus: noop,
     onToolbarBlur: noop,
     onShellKeyDown: noop,
+    ...overrides,
   }
+}
+
+function renderControls(
+  playbackRateLocked: boolean,
+  chapterEditing = false,
+  onRateChange = vi.fn(),
+  playbackRate = 1,
+  chapters: ChapterSpan[] = [],
+  options: { canChangePlaybackRate?: boolean; audioOptions?: readonly PlaybackAudioOption[] } = {},
+) {
+  const props = controlProps({
+    canChangePlaybackRate: options.canChangePlaybackRate ?? true,
+    ...(options.audioOptions === undefined ? {} : { audioOptions: options.audioOptions }),
+    chapters,
+    chapterEditing,
+    playbackRate,
+    playbackRateLocked,
+    onRateChange,
+  })
   render(<RecordingPlaybackControls {...props} />)
   if (chapterEditing) return undefined
   fireEvent.click(screen.getByRole('button', { name: '再生設定' }))
@@ -158,5 +164,126 @@ describe('再生元固有の行は渡された事実から出す', () => {
     expect(screen.getByRole('menuitemradio', { name: '標準' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('menuitemradio', { name: '主音声' })).toBeInTheDocument()
     expect(screen.getByRole('menuitemradio', { name: '副音声' })).toBeInTheDocument()
+  })
+})
+
+describe('共有シークバーのポインタ操作', () => {
+  const setSeekbarRect = (seekbar: HTMLElement) => {
+    vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({
+      left: 0,
+      right: 100,
+      top: 0,
+      bottom: 20,
+      width: 100,
+      height: 20,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+  }
+
+  it('ドラッグ中の直接シークは pointercancel で開始位置に戻し、その後の move を無視する', () => {
+    const onSeek = vi.fn()
+    const onScrubbingChange = vi.fn()
+    render(<RecordingPlaybackControls {...controlProps({
+      currentSeconds: 8,
+      seekDuringDrag: true,
+      onScrubStart: () => 10,
+      onScrubbingChange,
+      onSeek,
+    })} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    fireEvent.pointerCancel(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 95 })
+
+    expect(onSeek.mock.calls).toEqual([[20], [70], [10]])
+    expect(onScrubbingChange.mock.calls).toEqual([[true], [false]])
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 60 })
+    expect(onSeek).toHaveBeenCalledTimes(3)
+
+    fireEvent.pointerDown(seekbar, { pointerId: 2, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerUp(seekbar, { pointerId: 2, pointerType: 'mouse', clientX: 85 })
+    expect(onSeek).toHaveBeenLastCalledWith(85)
+  })
+
+  it('プレビューだけのスクラブは pointercancel で確定しない', () => {
+    const onSeek = vi.fn()
+    const onScrubPreview = vi.fn()
+    render(<RecordingPlaybackControls {...controlProps({ onSeek, onScrubPreview })} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 20 })
+    fireEvent.pointerMove(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    fireEvent.pointerCancel(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 95 })
+
+    expect(onScrubPreview.mock.calls).toEqual([[20], [70], [null]])
+    expect(onSeek).not.toHaveBeenCalled()
+  })
+
+  it('時間軸のホバーは帯を離れたら消える', () => {
+    const onTimelineHoverChange = vi.fn()
+    const timeline = {
+      kind: 'chase',
+      minSeconds: 0,
+      maxSeconds: 100,
+      canSeek: true,
+      extended: false,
+      headSeconds: 0,
+      recordedEndSeconds: 80,
+      plannedEndSeconds: 80,
+      liveEdgeSeconds: 79,
+      hoverSeconds: null,
+      hoverLabel: null,
+    } as const
+    render(<RecordingPlaybackControls {...controlProps({ timeline, onTimelineHoverChange })} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerMove(seekbar, { pointerType: 'mouse', clientX: 60 })
+    expect(onTimelineHoverChange).toHaveBeenLastCalledWith(60)
+    fireEvent.pointerLeave(seekbar)
+    expect(onTimelineHoverChange).toHaveBeenLastCalledWith(null)
+  })
+
+  it('タイルはマウスホバー時だけ要求し、ラベルと座標変換を共有部品で保つ', () => {
+    render(<RecordingPlaybackControls {...controlProps({
+      recordingId: 92,
+      seekTilesEnabled: true,
+      tileTimeAtSeconds: (seconds) => seconds + 70,
+    })} />)
+    const seekbar = screen.getByTestId('seek-scrub')
+    setSeekbarRect(seekbar)
+
+    fireEvent.pointerMove(seekbar, { pointerType: 'touch', clientX: 20 })
+    expect(screen.queryByTestId('seek-tiles-image')).toBeNull()
+
+    fireEvent.pointerMove(seekbar, { pointerType: 'mouse', clientX: 20 })
+    const image = screen.getByTestId('seek-tiles-image')
+    expect(image).toHaveAttribute('src', '/api/media/recordings/92/seek-tiles')
+    fireEvent.load(image!)
+
+    expect(screen.getByTestId('seek-tile-label')).toHaveTextContent('0:20')
+    expect(screen.getByTestId('seek-tile-preview').querySelector('.bg-no-repeat')).toHaveStyle({
+      backgroundPosition: '-288px 0px',
+    })
+  })
+
+  it('編集画面の先読みは時間軸の尺が未確定でも行う', () => {
+    render(<RecordingPlaybackControls {...controlProps({
+      recordingId: 92,
+      timeline: fixedPlaybackTimeline(0),
+      durationSeconds: 0,
+      seekTilesEnabled: true,
+      requestSeekTilesOnMount: true,
+    })} />)
+
+    expect(screen.getByTestId('seek-tiles-image')).toHaveAttribute(
+      'src',
+      '/api/media/recordings/92/seek-tiles',
+    )
   })
 })

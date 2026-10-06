@@ -30,8 +30,6 @@ function renderEditor(
     isPlaying: false,
     durationSeconds: 120,
     tilesAvailable: true,
-    onTileImageLoad: vi.fn(),
-    onTileImageError: vi.fn(),
     jumpTo,
     onBoundaryAction,
     onSelectedBoundaryChange: vi.fn(),
@@ -507,13 +505,10 @@ describe('RecordingChapterEditor の編集専用画面', () => {
   })
 
   it('タイルが利用できなくても境界編集は残る', () => {
-    const onTileImageError = vi.fn()
     const { getByTestId, getByRole } = renderEditor([cm], {
       tilesAvailable: false,
-      onTileImageError,
     })
-    fireEvent.error(getByTestId('chapter-filmstrip').querySelector('img')!)
-    expect(onTileImageError).toHaveBeenCalledOnce()
+    expect(getByTestId('chapter-filmstrip').querySelector('img')).toBeNull()
     expect(getByTestId('chapter-filmstrip').querySelector('[data-testid="chapter-filmstrip-boundary"]')).not.toBeNull()
     expect(getByRole('button', { name: '選択中の境界を 1 フレーム進める' })).toHaveProperty('disabled', false)
   })
