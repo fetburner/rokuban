@@ -910,17 +910,25 @@ describe('RecordingPlayer のシークプレビュー', () => {
   // タイルが 404 の録画でプレビューが出ないこと・ホバー位置の正しさは jsdom では
   // 測れない（getBoundingClientRect が 0 を返し、位置の計算まで進まない）。
   // web/e2e/seek-tiles.mjs の ①〜⑦ が実ブラウザで判定する。
+  // 幅 0 のままだと操作バーは位置を求められず、タイルの問い合わせまで進まない。
+  const withSeekbarWidth = (seekbar: HTMLElement) => {
+    vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({
+      left: 0, right: 200, top: 0, bottom: 20, width: 200, height: 20, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect)
+    return seekbar
+  }
   it('帯の上のマウス移動でタイル画像の問い合わせを始める（映像の上では始めない）', () => {
     const { container, getByTestId } = render(
       <RecordingPlayer recordingId={92} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { duration: 1800 })
+    fireEvent.loadedMetadata(video)
 
     fireEvent.pointerMove(video, { pointerType: 'mouse', clientX: 100 })
     expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
 
-    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+    fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
     const probe = container.querySelector('img[src*="/seek-tiles"]')
     expect(probe?.getAttribute('src')).toBe('/api/media/recordings/92/seek-tiles')
   })
@@ -931,6 +939,8 @@ describe('RecordingPlayer のシークプレビュー', () => {
     )
     const video = container.querySelector('video')!
     setMediaProps(video, { currentTime: 10, duration: 100 })
+    fireEvent.loadedMetadata(video)
+    setMediaProps(video, { currentTime: 10 })
     const seekbar = getByTestId('seek-scrub')
     vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({
       left: 0,
@@ -981,8 +991,9 @@ describe('RecordingPlayer のシークプレビュー', () => {
       />,
     )
     setMediaProps(container.querySelector('video')!, { duration: 110 })
+    fireEvent.loadedMetadata(container.querySelector('video')!)
 
-    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+    fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
 
     expect(container.querySelector('img[src*="/seek-tiles"]')?.getAttribute('src')).toBe(
       '/api/media/recordings/93/seek-tiles',
@@ -998,8 +1009,9 @@ describe('RecordingPlayer のシークプレビュー', () => {
       />,
     )
     setMediaProps(container.querySelector('video')!, { duration: 110 })
+    fireEvent.loadedMetadata(container.querySelector('video')!)
 
-    fireEvent.pointerMove(getByTestId('seek-scrub'), { pointerType: 'mouse', clientX: 100 })
+    fireEvent.pointerMove(withSeekbarWidth(getByTestId('seek-scrub')), { pointerType: 'mouse', clientX: 100 })
 
     expect(container.querySelector('img[src*="/seek-tiles"]')).toBeNull()
   })
@@ -1331,5 +1343,21 @@ describe('RecordingPlayer のカット版', () => {
       />,
     )
     expect(queryByText(/編集前の内容です/)).toBeNull()
+  })
+})
+
+describe('RecordingPlayer の長さ未確定のシークバー', () => {
+  it('duration 未確定でシークバーを押してもシークしない', () => {
+    const { container, getByTestId } = render(
+      <RecordingPlayer recordingId={92} encodedAssets={[{ profile: 'h264', sizeBytes: 123 }]} />,
+    )
+    const video = container.querySelector('video')!
+    const set = vi.fn()
+    Object.defineProperty(video, 'currentTime', { configurable: true, get: () => 42, set })
+    const seekbar = getByTestId('seek-scrub')
+    vi.spyOn(seekbar, 'getBoundingClientRect').mockReturnValue({ left: 0, right: 100, top: 0, bottom: 20, width: 100, height: 20, x: 0, y: 0, toJSON: () => ({}) } as DOMRect)
+    fireEvent.pointerDown(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    fireEvent.pointerUp(seekbar, { pointerId: 1, pointerType: 'mouse', clientX: 70 })
+    expect(set).not.toHaveBeenCalled()
   })
 })

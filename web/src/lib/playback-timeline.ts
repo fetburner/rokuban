@@ -7,6 +7,8 @@ type PlaybackTimelineBase = {
   maxSeconds: number
   canSeek: boolean
   extended: boolean
+  /** 掴める・確定できる範囲。省略は軸の全域。null は選べる点が無い。 */
+  selectableRange?: { startSeconds: number; endSeconds: number } | null
 }
 
 /** FixedPlaybackTimeline は一定尺の録画再生用の時間軸記述。 */
@@ -33,6 +35,7 @@ type LiveProgramPlaybackTimeline = PlaybackTimelineBase & {
   plannedEndSeconds: number
   recordingStartSeconds: number
   liveEdgeSeconds: number
+  selectableRange: { startSeconds: number; endSeconds: number } | null
   hoverSeconds: number | null
   hoverLabel: string | null
   canStartOver: boolean
@@ -117,6 +120,9 @@ export function liveProgramPlaybackTimeline(
     plannedEndSeconds: axis.plannedSeconds,
     recordingStartSeconds,
     liveEdgeSeconds: axis.liveEdgeSeconds,
+    selectableRange: access.canSeek && recordingStartSeconds <= axis.liveEdgeSeconds
+      ? { startSeconds: recordingStartSeconds, endSeconds: axis.liveEdgeSeconds }
+      : null,
     canStartOver: access.canStartOver,
     ariaValueText: `${formatPlaybackTime(axis.liveEdgeSeconds, false)} / ${formatPlaybackTime(axis.plannedSeconds, false)}（番組表上の予定）`,
     startClock: formatTime(program.startAt),

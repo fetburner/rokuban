@@ -3,7 +3,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
   type MutableRefObject,
   type RefObject,
 } from 'react'
@@ -18,7 +17,6 @@ import {
 import {
   RecordingPlaybackControls,
   type PlaybackAudioOption,
-  type TilePreview,
 } from '@/components/recording-playback-controls'
 import { Pause, Play, SkipBack } from 'lucide-react'
 import {
@@ -41,7 +39,6 @@ import {
   claimsHlsPlaylistSupport,
   chasePlaylistURL,
   createStallTracker,
-  isRecordedProgramOffset,
   liveAudioTrackIndex,
   livePlaylistURL,
   liveStallTimeoutMs,
@@ -72,7 +69,6 @@ import { useOffsetSession } from '@/lib/use-offset-session'
 import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
-import { seekTilePlacement } from '@/lib/seek-tiles'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 import {
   chasePlaybackTimeline,
@@ -537,14 +533,7 @@ export function LivePlayer({
     seconds: chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0),
   })
   const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
-  const isChaseScrubbingRef = useRef(false)
-  const isLiveProgramScrubbingRef = useRef(false)
   const [liveHoverSeconds, setLiveHoverSeconds] = useState<number | null>(null)
-  // ドラッグ中に最後に見せた位置。離したときはこれを確定する（延長中は軸が毎秒伸びるので、
-  // 同じ座標を離した時点で計算し直すと見せた時刻と 1 秒ずれる。chase.mjs ⑤ で実測）。
-  const chaseScrubTargetRef = useRef<number | null>(null)
-  const [originalTilePreview, setOriginalTilePreview] = useState<TilePreview>(null)
-  const [originalTilesRequested, setOriginalTilesRequested] = useState(false)
   const [originalTilesAvailable, setOriginalTilesAvailable] = useState(false)
   const playAroundStopRef = useRef<number | null>(null)
   const playAroundStopBoundaryMsRef = useRef<number | null>(null)
@@ -1553,21 +1542,6 @@ export function LivePlayer({
       seconds: chaseHeadOffsetSeconds + offsetSessionSeconds + video.currentTime,
     })
   }
-  const chaseSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0 || !chaseAxis) return null
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(fraction * chaseAxis.maxSeconds)
-  }
-  const handleChaseSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const target = chaseSeekTargetAtPointer(event)
-    if (target === null) return
-    if (isChaseScrubbingRef.current) {
-      chaseScrubTargetRef.current = target
-      setChasePreviewSeconds(target)
-    }
-    if (isChaseScrubbingRef.current || event.pointerType === 'mouse') setChaseHoverSeconds(target)
-  }
   /**
    * commitChaseSeek はシークバーの位置（番組開始からの秒）へ移る。録画の先端より後ろは先端で止め、
    * 今のセッションの seekable の中ならセッション内をシークし、外（開始 offset より前・変換済みの
@@ -1589,120 +1563,15 @@ export function LivePlayer({
       seconds: chaseHeadOffsetSeconds + target,
     })
   }
-  const handleChaseSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    isChaseScrubbingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    handleChaseSeekPointerMove(event)
-  }
-  const handleChaseSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isChaseScrubbingRef.current) return
-    const target = chaseScrubTargetRef.current ?? chaseSeekTargetAtPointer(event)
-    chaseScrubTargetRef.current = null
-    isChaseScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    if (event.pointerType !== 'mouse') setChaseHoverSeconds(null)
-    if (target !== null) commitChaseSeek(target)
-    else setChasePreviewSeconds(null)
-  }
-  const handleChaseSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
-    isChaseScrubbingRef.current = false
-    chaseScrubTargetRef.current = null
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    setChasePreviewSeconds(null)
-    setChaseHoverSeconds(null)
-  }
-  const handleChaseSeekPointerLeave = () => {
-    if (!isChaseScrubbingRef.current) setChaseHoverSeconds(null)
-  }
-  const liveProgramSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    if (!liveTimelineBar || !liveTimelineBar.canSeek || liveTimelineBar.maxSeconds <= liveTimelineBar.minSeconds) return null
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return null
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return Math.round(liveTimelineBar.minSeconds + fraction * (liveTimelineBar.maxSeconds - liveTimelineBar.minSeconds))
-  }
-  const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number =>
-    seconds !== null && liveTimelineBar !== undefined && isRecordedProgramOffset(
-      seconds,
-      liveTimelineBar.recordingStartSeconds,
-      liveTimelineBar.liveEdgeSeconds,
-    )
-  const showLiveProgramPreview = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
-    // 掴んでいる間はタッチでも出す（追っかけと同じ）。離したときの確定が消す。
-    const visible = isLiveProgramScrubbingRef.current || event.pointerType === 'mouse'
-    setLiveHoverSeconds(visible && isSelectableLiveProgramPoint(seconds) ? seconds : null)
+  const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number => {
+    const range = liveTimelineBar?.selectableRange
+    return seconds !== null && range !== undefined && range !== null &&
+      seconds >= range.startSeconds && seconds <= range.endSeconds
   }
   const commitLiveProgramSeek = (seconds: number) => {
     if (!isSelectableLiveProgramPoint(seconds)) return
     setLiveHoverSeconds(null)
     onLiveProgramSeek?.(seconds)
-  }
-  const handleLiveProgramSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const seconds = liveProgramSeekTargetAtPointer(event)
-    if (!isSelectableLiveProgramPoint(seconds)) return
-    isLiveProgramScrubbingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    showLiveProgramPreview(event, seconds)
-  }
-  const handleLiveProgramSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const seconds = liveProgramSeekTargetAtPointer(event)
-    if (isLiveProgramScrubbingRef.current) showLiveProgramPreview(event, seconds)
-    else if (event.pointerType === 'mouse') showLiveProgramPreview(event, seconds)
-  }
-  const handleLiveProgramSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isLiveProgramScrubbingRef.current) return
-    const seconds = liveProgramSeekTargetAtPointer(event)
-    isLiveProgramScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    if (isSelectableLiveProgramPoint(seconds)) commitLiveProgramSeek(seconds)
-    else {
-      setLiveHoverSeconds(null)
-    }
-  }
-  const handleLiveProgramSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
-    isLiveProgramScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    setLiveHoverSeconds(null)
-  }
-  const handleLiveProgramSeekPointerLeave = () => {
-    if (!isLiveProgramScrubbingRef.current) {
-      setLiveHoverSeconds(null)
-    }
-  }
-  const originalSeekTargetAtPointer = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    if (originalDurationSeconds <= 0) return null
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return null
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return fraction * originalDurationSeconds
-  }
-  const setOriginalTileAt = (event: ReactPointerEvent<HTMLDivElement>, seconds: number | null) => {
-    if (event.pointerType !== 'mouse' || seconds === null) {
-      setOriginalTilePreview(null)
-      return
-    }
-    setOriginalTilesRequested(true)
-    const rect = event.currentTarget.getBoundingClientRect()
-    const tile = seekTilePlacement(seconds, rect.width, event.clientX - rect.left)
-    if (tile === null) {
-      setOriginalTilePreview(null)
-      return
-    }
-    setOriginalTilePreview({ ...tile, seconds })
-  }
-  const handleOriginalSeekPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const seconds = originalSeekTargetAtPointer(event)
-    // 掴んでいないときは触らない。キー操作の遅延プレビューをホバーで消さない（追っかけと同じ）。
-    if (isOriginalScrubbingRef.current) setOriginalPreviewSeconds(seconds)
-    setOriginalTileAt(event, seconds)
   }
   const commitOriginalSeek = (seconds: number) => {
     if (!videoRef.current || originalDurationSeconds <= 0) return
@@ -1784,29 +1653,6 @@ export function LivePlayer({
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
     const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
     if (target !== undefined) commitOriginalSeek(chapterBoundaryMsToSeekSeconds(Math.round(target * 1000)))
-  }
-  const handleOriginalSeekPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    isOriginalScrubbingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    handleOriginalSeekPointerMove(event)
-  }
-  const handleOriginalSeekPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isOriginalScrubbingRef.current) return
-    const target = originalSeekTargetAtPointer(event)
-    isOriginalScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    setOriginalPreviewSeconds(null)
-    if (target !== null) commitOriginalSeek(target)
-  }
-  const handleOriginalSeekPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
-    isOriginalScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    setOriginalPreviewSeconds(null)
-    setOriginalTilePreview(null)
   }
   // 再開位置は原本時間軸で API に保存する。`profile` は映像品質の選択だけに使う。
   const video = (
@@ -2035,26 +1881,23 @@ export function LivePlayer({
         onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
         onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
         onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
-        tilePreview={originalTilePreview}
-        tilesRequested={originalTilesRequested || (chapterEditing && isOriginalVOD)}
-        tilesAvailable={originalTilesAvailable}
+        seekTilesEnabled={isOriginalVOD}
+        requestSeekTilesOnMount={chapterEditing && isOriginalVOD}
         onTileImageLoad={() => setOriginalTilesAvailable(true)}
         onTileImageError={() => {
           setOriginalTilesAvailable(false)
-          setOriginalTilePreview(null)
         }}
-        onSeekPointerDown={isLive ? handleLiveProgramSeekPointerDown : isChase ? handleChaseSeekPointerDown : handleOriginalSeekPointerDown}
-        onSeekPointerMove={isLive ? handleLiveProgramSeekPointerMove : isChase ? handleChaseSeekPointerMove : handleOriginalSeekPointerMove}
-        onSeekPointerUp={isLive ? handleLiveProgramSeekPointerUp : isChase ? handleChaseSeekPointerUp : handleOriginalSeekPointerUp}
-        onSeekPointerCancel={isLive ? handleLiveProgramSeekPointerCancel : isChase ? handleChaseSeekPointerCancel : handleOriginalSeekPointerCancel}
-        onSeekPointerLeave={() => {
-          if (isLive) {
-            handleLiveProgramSeekPointerLeave()
-          } else if (isChase) {
-            handleChaseSeekPointerLeave()
-          } else if (!isOriginalScrubbingRef.current) {
-            setOriginalTilePreview(null)
-          }
+        commitLastDisplayedPreview={isChase}
+        onScrubPreview={(seconds) => {
+          if (isChase) setChasePreviewSeconds(seconds)
+          else if (isOriginalVOD) setOriginalPreviewSeconds(seconds)
+        }}
+        onTimelineHoverChange={(seconds) => {
+          if (isChase) setChaseHoverSeconds(seconds)
+          else if (isLive) setLiveHoverSeconds(seconds)
+        }}
+        onScrubbingChange={(scrubbing) => {
+          if (isOriginalVOD) isOriginalScrubbingRef.current = scrubbing
         }}
         onSeek={(seconds) => {
           if (isLive) {
@@ -2063,7 +1906,6 @@ export function LivePlayer({
             commitChaseSeek(seconds)
           } else {
             setOriginalPreviewSeconds(null)
-            setOriginalTilePreview(null)
             commitOriginalSeek(seconds)
           }
         }}
@@ -2075,7 +1917,6 @@ export function LivePlayer({
           } else if (isChase) setChasePreviewSeconds(seconds)
           else {
             setOriginalPreviewSeconds(seconds)
-            setOriginalTilePreview(null)
           }
         }}
         onSelectProfile={(nextProfile) => {
@@ -2151,11 +1992,6 @@ export function LivePlayer({
               isPlaying={frame.mediaPlaying}
               durationSeconds={originalDurationSeconds}
               tilesAvailable={originalTilesAvailable}
-              onTileImageLoad={() => setOriginalTilesAvailable(true)}
-              onTileImageError={() => {
-                setOriginalTilesAvailable(false)
-                setOriginalTilePreview(null)
-              }}
               jumpTo={commitOriginalSeek}
               onBoundaryAction={selectChapterBoundary}
               onSelectedBoundaryChange={setEditorSelected}

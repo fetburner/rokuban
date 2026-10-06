@@ -6,7 +6,6 @@ import {
   useRef,
   useState,
   type MutableRefObject,
-  type PointerEvent as ReactPointerEvent,
   type RefObject,
 } from 'react'
 
@@ -48,9 +47,6 @@ import { programTitle } from '@/lib/program-labels'
 import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { usePlayerFrame } from '@/lib/use-player-frame'
 import { cn } from '@/lib/utils'
-import {
-  seekTilePlacement,
-} from '@/lib/seek-tiles'
 
 /** 終端カードが次のエピソードへ自動で移るまでの秒数。「取り消す」で止められる。 */
 const AUTO_ADVANCE_SECONDS = 3
@@ -225,8 +221,6 @@ export function RecordingPlayer({
   const [editorSelected, setEditorSelected] = useState<number | null>(null)
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
-  const isScrubbingRef = useRef(false)
-  const scrubStartSecondsRef = useRef<number | null>(null)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
@@ -240,25 +234,12 @@ export function RecordingPlayer({
   const autoplayRecordingRef = useRef<number | null>(autoPlay ? recordingId : null)
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(false)
   // タイルは録画ごとに 1 枚で profile に依存しないので、キーは recordingId だけ。
-  const [tilesRequestedFor, setTilesRequestedFor] = useState<number | null>(null)
   const [tilesAvailableFor, setTilesAvailableFor] = useState<number | null>(null)
-  // 親は録画を切り替えてもこのコンポーネントを作り直さない（key が無い）。そのため
-  // 帯の状態は recordingId と組で持ち、描くときに今の録画のものだけを使う。
-  const [tilePreview, setTilePreview] = useState<{
-    recordingId: number
-    x: number
-    y: number
-    left: number
-    width: number
-    height: number
-    seconds: number
-  } | null>(null)
   // スクラブ帯の再生済み割合（0..1）・現在位置（秒）・タイムラインの終端
   // （`<video>.duration`）。timeupdate / seeked / loadedmetadata で更新する。
   // **編集 UI が現在位置を要る**ので同じ state に載せる（4Hz の再描画はこの
   // 1 か所に集約する）。録画を切り替えた直後に前の録画の値を描かないよう、
-  // 録画 ID と組で持ち、描くときに今の録画のものだけを使う（`tilePreview` と
-  // 同じ規律。effect で 0 に戻すとその 1 レンダーぶん古い値が見える）。
+  // 録画 ID と組で持ち、描くときに今の録画のものだけを使う。
   const [played, setPlayed] = useState<{
     recordingId: number
     fraction: number
@@ -292,8 +273,6 @@ export function RecordingPlayer({
     () => (playingCut || chapterEditing ? [] : (chapters ?? [])),
     [chapters, chapterEditing, playingCut],
   )
-  const shownPreview =
-    tilePreview?.recordingId === recordingId && tilesAvailableFor === recordingId ? tilePreview : null
   const navigateToRecordingRef = useRef(onNavigateToRecording)
   navigateToRecordingRef.current = onNavigateToRecording
   const nextEpisodeRef = useRef(nextEpisode)
@@ -513,10 +492,6 @@ export function RecordingPlayer({
     clearLegacyPlaybackPositions()
   }, [])
 
-  useEffect(() => {
-    if (chapterEditing && !playingCut) setTilesRequestedFor(recordingId)
-  }, [chapterEditing, playingCut, recordingId])
-
   // 再生中に別の録画へ移っても境界の前後再生を残さない。
   useEffect(() => () => window.clearTimeout(playAroundTimerRef.current), [])
 
@@ -634,84 +609,6 @@ export function RecordingPlayer({
     if (!video.paused) video.pause()
     seekToChapterBoundary(Math.round(seconds * 1000))
   }
-  // プレイヤー内の唯一の seekbar 上のポインタ位置 → 再生位置（秒）。
-  const scrubSeconds = (event: ReactPointerEvent<HTMLDivElement>): number | null => {
-    const video = videoRef.current
-    if (!video || !Number.isFinite(video.duration) || video.duration <= 0) return null
-    const rect = event.currentTarget.getBoundingClientRect()
-    if (rect.width <= 0) return null
-    const fraction = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width))
-    return fraction * video.duration
-  }
-  const seekAtPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isScrubbingRef.current) return
-    const seconds = scrubSeconds(event)
-    if (seconds !== null) jumpTo(seconds)
-  }
-  const handleScrubMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    seekAtPointer(event)
-    // プレビューはマウスだけに出す。タッチは pointerleave が来ないので、タップの
-    // 後にプレビューが映像を覆ったまま残る。タップは帯のクリック（シーク）だけに効く。
-    if (event.pointerType !== 'mouse') {
-      setTilePreview(null)
-      return
-    }
-    // タイルは原本の時間軸にある。カット版では再生中のファイルを作ったときに
-    // 固定した keepRanges でタイル位置だけ原本へ戻す。空の変換表では問い合わせない。
-    const keepRanges = playingCut ? frozenKeepRangesRef.current : undefined
-    if (playingCut && (!keepRanges || keepRanges.length === 0)) {
-      setTilePreview(null)
-      return
-    }
-    // タイルは**最初に触れたときだけ**取りに行く。マウント時に先読みすると、
-    // 3 時間の録画で 2 MB 程度を、一度もホバーしない利用者にも払わせることになる。
-    // 同じキーを再設定しても React は再描画しないので、毎回呼んでよい。
-    setTilesRequestedFor(recordingId)
-
-    const seconds = scrubSeconds(event)
-    const rect = event.currentTarget.getBoundingClientRect()
-    const tileSeconds =
-      seconds === null
-        ? null
-        : playingCut && keepRanges
-          ? cutMsToOriginalMs(seconds * 1000, keepRanges) / 1000
-          : seconds
-    const tile =
-      tileSeconds === null ? null : seekTilePlacement(tileSeconds, rect.width, event.clientX - rect.left)
-    if (tile === null || tilesAvailableFor !== recordingId) {
-      setTilePreview(null)
-      return
-    }
-    // 表示ラベルはタイルの原本時刻ではなく、見ているカット版の再生位置を示す。
-    setTilePreview({ recordingId, ...tile, seconds: seconds ?? 0 })
-  }
-  const handleScrubPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    scrubStartSecondsRef.current = videoRef.current?.currentTime ?? null
-    isScrubbingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    handleScrubMove(event)
-  }
-  const handleScrubPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    seekAtPointer(event)
-    if (!isScrubbingRef.current) return
-    isScrubbingRef.current = false
-    scrubStartSecondsRef.current = null
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-  }
-  const handleScrubPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isScrubbingRef.current) return
-    isScrubbingRef.current = false
-    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
-      event.currentTarget.releasePointerCapture?.(event.pointerId)
-    }
-    const startSeconds = scrubStartSecondsRef.current
-    scrubStartSecondsRef.current = null
-    if (startSeconds !== null) jumpTo(startSeconds)
-    setTilePreview(null)
-  }
-
   const playbackControls = (
       <RecordingPlaybackControls
         recordingId={recordingId}
@@ -737,19 +634,21 @@ export function RecordingPlayer({
         onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
         onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
         onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
-        tilePreview={shownPreview}
-        tilesRequested={tilesRequestedFor === recordingId}
-        tilesAvailable={tilesAvailableFor === recordingId}
+        seekTilesEnabled
+        requestSeekTilesOnMount={chapterEditing && !playingCut}
+        tileTimeAtSeconds={(seconds) => {
+          const keepRanges = playingCut ? frozenKeepRangesRef.current : undefined
+          if (playingCut && (!keepRanges || keepRanges.length === 0)) return null
+          return playingCut && keepRanges
+            ? cutMsToOriginalMs(seconds * 1000, keepRanges) / 1000
+            : seconds
+        }}
         onTileImageLoad={() => setTilesAvailableFor(recordingId)}
         onTileImageError={() => {
           setTilesAvailableFor((current) => (current === recordingId ? null : current))
-          setTilePreview(null)
         }}
-        onSeekPointerDown={handleScrubPointerDown}
-        onSeekPointerMove={handleScrubMove}
-        onSeekPointerUp={handleScrubPointerUp}
-        onSeekPointerCancel={handleScrubPointerCancel}
-        onSeekPointerLeave={() => setTilePreview(null)}
+        seekDuringDrag
+        onScrubStart={() => videoRef.current?.currentTime ?? null}
         onSeek={jumpTo}
         onSelectProfile={(nextProfile) => {
           setChosenProfile(nextProfile)
@@ -922,11 +821,6 @@ export function RecordingPlayer({
             isPlaying={frame.mediaPlaying}
             durationSeconds={durationSeconds}
             tilesAvailable={tilesAvailableFor === recordingId}
-            onTileImageLoad={() => setTilesAvailableFor(recordingId)}
-            onTileImageError={() => {
-              setTilesAvailableFor((current) => (current === recordingId ? null : current))
-              setTilePreview(null)
-            }}
             jumpTo={jumpTo}
             onBoundaryAction={selectChapterBoundary}
             onSelectedBoundaryChange={setEditorSelected}

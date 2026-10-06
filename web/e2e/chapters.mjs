@@ -1642,7 +1642,7 @@ await page.waitForFunction(
 const missingTileResponse = page.waitForResponse((response) => response.url().includes('/seek-tiles') && response.status() === 404)
 await page.getByRole('button', { name: '再生設定' }).click()
 await page.getByRole('menuitem', { name: 'チャプターを直す', exact: true }).click()
-await page.waitForSelector('[data-testid="chapter-filmstrip"] img', { timeout: 5000 })
+await page.waitForSelector('[data-testid="seek-tiles-image"]', { timeout: 5000 })
 await missingTileResponse
 if ((await page.locator('[data-testid="chapter-filmstrip-boundary"]').count()) === 0) {
   ng.push('#1019: seek-tileが404だと境界が表示されない')

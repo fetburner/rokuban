@@ -58,6 +58,7 @@ describe('playback timeline descriptions', () => {
       plannedEndSeconds: 3600,
       recordingStartSeconds: 180,
       liveEdgeSeconds: 5400,
+      selectableRange: { startSeconds: 180, endSeconds: 5400 },
       hoverSeconds: 600,
       hoverLabel: 'ここから見る（録画中）',
       extended: true,
@@ -65,6 +66,18 @@ describe('playback timeline descriptions', () => {
       startClock: expect.any(String),
       endClock: expect.any(String),
     })
+  })
+
+  it('only describes a selectable range when a recording can be sought', () => {
+    const timeline = liveProgramPlaybackTimeline({
+      startAt: '2026-10-02T10:00:00.000Z',
+      endAt: '2026-10-02T11:00:00.000Z',
+      nowMs: Date.parse('2026-10-02T11:30:00.000Z'),
+      hoverSeconds: 600,
+    })
+
+    expect(timeline?.canSeek).toBe(false)
+    expect(timeline?.selectableRange).toBeNull()
   })
 
   it('leaves a malformed programme without a timeline', () => {

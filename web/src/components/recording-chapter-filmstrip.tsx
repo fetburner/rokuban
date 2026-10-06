@@ -46,8 +46,6 @@ type RecordingChapterFilmstripProps = {
   spans: ChapterSpan[]
   selectedBoundary: number | null
   tilesAvailable: boolean
-  onTileImageLoad: () => void
-  onTileImageError: () => void
   onSeek: (seconds: number) => void
   onSelectBoundary: (seconds: number) => void
   /** 境界を delta 秒動かす。`continued` は長押しの 2 回目以降（undo を 1 件にまとめる）。 */
@@ -77,8 +75,6 @@ export function RecordingChapterFilmstrip({
   spans,
   selectedBoundary,
   tilesAvailable,
-  onTileImageLoad,
-  onTileImageError,
   onSeek,
   onSelectBoundary,
   onMoveBoundary,
@@ -446,15 +442,6 @@ export function RecordingChapterFilmstrip({
         <span className="ml-auto hidden text-xs text-muted-foreground md:inline">← → で前後の境界へ移る</span>
       </div>
 
-      {tilesAvailable ? null : (
-        <img
-          src={seekTilesURL(recordingId)}
-          alt=""
-          className="pointer-events-none absolute size-px opacity-0"
-          onLoad={onTileImageLoad}
-          onError={onTileImageError}
-        />
-      )}
     </section>
   )
 }
