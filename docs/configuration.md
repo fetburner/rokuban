@@ -212,7 +212,11 @@ trim の後に PTS から区間の開始時刻を引くのは、`concat` が各�
 FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。
 avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。
 ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
-VAAPI を載せた Linux GPU では未実施。
+Intel GPU の VAAPI では FFmpeg 7.1.5-0+deb13u1 / libva 2.22.0-3（VA-API 1.22）/ `iHD_drv_video.so` 25.2.3 の組み合わせを実機確認した。
+30 分番組の 1440x1080i MPEG-2 原本全体を、確認済みのカット 5 区間で処理した。
+`get_buffer() failed` は出ず、3 つの接合点前後から採った 6 フレームにブロックノイズは見えなかった。
+156 秒の処理中、FFmpeg RSS は 5 秒ごとの 31 サンプルで最大 91,140 KiB、最後は 57,532 KiB だった。
+GPU カット版には FFmpeg 7.1 以降を推奨する。実機検証時は FFmpeg / libva / ドライバの版を記録する。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は最大解像度、音声は最大チャンネル数、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
