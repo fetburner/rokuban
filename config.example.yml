@@ -195,7 +195,7 @@ encode:
   #     #   device: /dev/dri/renderD128
   #     #
   #     # GPU decode/filter/encode を使う場合は、上の codec/quality を切り替えてから
-  #     # 次の設定を使う。trim / setpts / concat は HW フレームを通す。VAAPI 実機では未検証。
+  #     # 次の設定を使う。trim / setpts / concat は HW フレームを通す。VAAPI は FFmpeg 7.1 以降を推奨する。
   #     # video_codec: h264_vaapi
   #     # qp: 24
   #     # scaler: vaapi
@@ -203,8 +203,8 @@ encode:
   #     #   kind: vaapi
   #     #   device: /dev/dri/renderD128
   #     #   output_format: vaapi
-  #     # ffmpeg 5.1 は MPEG-2 の VAAPI デコード surface が固定数。deinterlace_vaapi で
-  #     # 足りなければ input_extra_args に -extra_hw_frames を足す（未検証）。
+  #     # ffmpeg 5.1〜7.0 は MPEG-2 の VAAPI デコード surface が固定 6 枚で枯れる。
+  #     # 5.1 では input_extra_args: ["-extra_hw_frames", "16"] を足す。
   #     # extra_args の -map は cut では起動エラー（ストリームの並びはアプリが握る）
 
 # JLSE による CM 検出（Dockerfile.full の worker でのみ利用可能）
