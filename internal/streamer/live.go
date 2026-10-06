@@ -201,12 +201,14 @@ func (e *liveUpstreamStartError) Unwrap() error {
 const (
 	// liveStreamProbeBytes は live MPEG-TS の先頭を ffprobe に渡すサイズ。
 	// PAT/PMT は入力の先頭付近に現れる。読み取ったバイトは必ず ffmpeg に戻す
-	// （runSession が io.MultiReader で prefix を先頭へ戻す）。地上波 HD で
+	// （runSession が prefix replay reader で先頭へ戻す）。地上波 HD で
 	// 概ね 0.3 秒ぶんの読み取り（未検証。ビットレートに依存する見積もり）。
 	liveStreamProbeBytes = 512 * 1024
+	// liveStreamProbeWait は prefix の先読みを待つ上限。録画追従 source がまだ
+	// データを出せないときに playlist の起動まで塞がない。
+	liveStreamProbeWait = time.Second
 	// liveStreamProbeTimeout は probeLiveStreamInfo（ffprobe 起動）の上限。
-	// prefix の読み取りは runSession が同期に待ち、playlistStartupTimeout
-	// （15s）がセッション起動全体を制限する。
+	// prefix の先読みは liveStreamProbeWait が別に制限する。
 	liveStreamProbeTimeout = 5 * time.Second
 )
 
@@ -2944,6 +2946,7 @@ func (ls *LiveStreamer) runSession(ctx context.Context, s *liveSession) {
 		close(s.ready)
 		return
 	}
+	defer func() { _ = input.Close() }()
 	captionInput := ls.cfg.Captions && streamInfo.hasSubtitles
 	audioStreamCount := streamInfo.audioStreams
 
@@ -3023,9 +3026,9 @@ func probeLiveSessionInput(
 	ffprobe string,
 	kind sessionKind,
 	sessionID int64,
-	body io.Reader,
+	body io.ReadCloser,
 	originalFile *os.File,
-) (io.Reader, liveStreamInfo, error) {
+) (io.ReadCloser, liveStreamInfo, error) {
 	input := body
 	var prefix []byte
 	var readErr error
@@ -3035,9 +3038,10 @@ func probeLiveSessionInput(
 		prefix = prefix[:n]
 		readErr = err
 	} else {
-		input, prefix, readErr = readLiveStreamPrefix(body, liveStreamProbeBytes)
+		input, prefix, readErr = readLiveStreamPrefix(ctx, body, liveStreamProbeBytes, liveStreamProbeWait)
 	}
 	if ctx.Err() != nil {
+		_ = input.Close()
 		return nil, liveStreamInfo{}, ctx.Err()
 	}
 	if readErr != nil && !errors.Is(readErr, io.ErrUnexpectedEOF) && !errors.Is(readErr, io.EOF) {
@@ -3047,6 +3051,7 @@ func probeLiveSessionInput(
 	streamInfo, err := probeLiveStreamInfo(ctx, ffprobe, prefix)
 	if err != nil {
 		if ctx.Err() != nil {
+			_ = input.Close()
 			return nil, liveStreamInfo{}, ctx.Err()
 		}
 		slog.Warn("streamer: probing live stream failed; using single audio ES fallback",
@@ -3719,11 +3724,13 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 		if originalVOD {
 			args = append(args, "-bf:v:"+strconv.Itoa(i), "0")
 		}
-		args = append(args,
-			"-c:a:"+strconv.Itoa(a), p.AudioCodec,
-			"-c:a:"+strconv.Itoa(a+1), p.AudioCodec,
-			"-c:a:"+strconv.Itoa(a+2), p.AudioCodec)
-		args = appendAudioRenditionFilters(args, a, audioStreamCount)
+		for output := 0; output < 3; output++ {
+			stream := a + output
+			args = append(args, "-c:a:"+strconv.Itoa(stream), p.AudioCodec)
+			if audioStreamCount < 2 && output > 0 {
+				args = append(args, "-filter:a:"+strconv.Itoa(stream), dualMonoPans[output-1])
+			}
+		}
 		if filter, ok := ffargs.VideoFilterArgs(p.Scaler, p.Height, p.Deinterlace); ok {
 			args = append(args, "-filter:v:"+strconv.Itoa(i), filter)
 		}
@@ -3798,16 +3805,116 @@ func buildLiveCaptionFFmpegArgsForPlaylistType(
 	return args
 }
 
-// readLiveStreamPrefix は body の先頭を limit バイトだけ同期に読み、
-// 読んだバイトを 1 つも失わずに ffmpeg へ戻す io.Reader（読んだ prefix +
-// 残りの body）を組み立てる。upstream が limit に満たない
-// （io.ReadFull が io.ErrUnexpectedEOF/io.EOF を返す）場合は読めた分だけを
-// prefix にする --- 呼び出し側（runSession）が err を見て継続可否を判定する。
-func readLiveStreamPrefix(body io.Reader, limit int) (input io.Reader, prefix []byte, err error) {
-	prefix = make([]byte, limit)
-	n, err := io.ReadFull(body, prefix)
-	prefix = prefix[:n]
-	return io.MultiReader(bytes.NewReader(prefix), body), prefix, err
+type liveStreamPrefixPump struct {
+	mu          sync.Mutex
+	limit       int
+	prefix      []byte
+	probing     bool
+	prefixReady chan struct{}
+	readErr     error
+}
+
+func (p *liveStreamPrefixPump) finishProbeLocked(err error) {
+	if !p.probing {
+		return
+	}
+	p.probing = false
+	p.readErr = err
+	close(p.prefixReady)
+}
+
+func (p *liveStreamPrefixPump) snapshotAndStop() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.finishProbeLocked(nil)
+	return append([]byte(nil), p.prefix...), p.readErr
+}
+
+func (p *liveStreamPrefixPump) copy(body io.Reader, writer *io.PipeWriter) {
+	buf := make([]byte, 64*1024)
+	for {
+		n, readErr := body.Read(buf)
+		remainder := buf[:n]
+		p.mu.Lock()
+		if p.probing && n > 0 {
+			take := min(n, p.limit-len(p.prefix))
+			p.prefix = append(p.prefix, buf[:take]...)
+			remainder = buf[take:n]
+			if len(p.prefix) == p.limit {
+				p.finishProbeLocked(nil)
+			}
+		}
+		if readErr != nil {
+			p.finishProbeLocked(readErr)
+		}
+		p.mu.Unlock()
+
+		if len(remainder) > 0 {
+			if _, err := writer.Write(remainder); err != nil {
+				_ = writer.CloseWithError(err)
+				return
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				_ = writer.Close()
+			} else {
+				_ = writer.CloseWithError(readErr)
+			}
+			return
+		}
+	}
+}
+
+type liveStreamPrefixReplay struct {
+	reader io.Reader
+	pipe   *io.PipeReader
+}
+
+func (r *liveStreamPrefixReplay) Read(p []byte) (int, error) {
+	return r.reader.Read(p)
+}
+
+func (r *liveStreamPrefixReplay) Close() error {
+	return r.pipe.Close()
+}
+
+// readLiveStreamPrefix asynchronously buffers up to limit bytes for ffprobe, then
+// returns a reader that replays that prefix before the rest of body. It stops
+// waiting after wait even when an upstream Read is blocked, so a chase playlist
+// can start before a growing recording produces more data. The pump owns body
+// reads until it reaches EOF or body is closed.
+func readLiveStreamPrefix(
+	ctx context.Context,
+	body io.ReadCloser,
+	limit int,
+	wait time.Duration,
+) (input io.ReadCloser, prefix []byte, err error) {
+	pipeReader, pipeWriter := io.Pipe()
+	pump := &liveStreamPrefixPump{
+		limit:       limit,
+		prefix:      make([]byte, 0, limit),
+		probing:     true,
+		prefixReady: make(chan struct{}),
+	}
+	go pump.copy(body, pipeWriter)
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-pump.prefixReady:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	prefix, err = pump.snapshotAndStop()
+	input = &liveStreamPrefixReplay{
+		reader: io.MultiReader(bytes.NewReader(prefix), pipeReader),
+		pipe:   pipeReader,
+	}
+	if ctx.Err() != nil {
+		err = ctx.Err()
+	}
+	return input, prefix, err
 }
 
 type liveStreamInfo struct {

@@ -207,11 +207,9 @@ func (b *scriptedMirakcLiveBody) Close() error {
 
 // newFastFakeMirakcLiveServer は newFakeMirakcLiveServer と同じ GET
 // /api/services/{id}/stream を実装するが、10ms ごとに 188 byte という
-// スロットリングを入れない（tight loop で書く）。起動時に upstream の先頭
-// liveStreamProbeBytes（512 KiB）を同期に読み切る（readLiveStreamPrefix）ため、
-// newFakeMirakcLiveServer のレート
-// （188 byte / 10ms ≈ 18.8 KB/s）だと 512 KiB に達するまで 25 秒以上かかり、
-// playlistStartupTimeout（15s）を超えてテストが確実にタイムアウトする。
+// スロットリングを入れない（tight loop で書く）。先頭 liveStreamProbeBytes
+// （512 KiB）を先読みするテスト経路が liveStreamProbeWait（1s）の上限に
+// 当たらないようにする。
 func newFastFakeMirakcLiveServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -3089,9 +3087,8 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 	}
 }
 
-// TestReadLiveStreamPrefix_PreservesAllBytesInOrder は B の置き換え
-// （liveReplayReader + goroutine 2 本 → readLiveStreamPrefix の同期読み取り +
-// io.MultiReader）が入力を 1 バイトも落とさず順序どおり ffmpeg 側へ渡すことを
+// TestReadLiveStreamPrefix_PreservesAllBytesInOrder は liveStreamPrefixPump が
+// 入力を 1 バイトも落とさず順序どおり ffmpeg 側へ渡すことを
 // 固定する。upstream が prefix より短い場合と、長く続く場合の両方を見る。
 //
 // 単純な繰り返しパターン（例: 0x47 だけ）だとオフバイ N のずれや部分的な
@@ -3099,10 +3096,8 @@ func TestBuildLiveFFmpegArgs_CaptionsWithoutSubtitleStream(t *testing.T) {
 // liveStreamProbeBytes と互いに素な素数）を使う --- ずれが 1 バイトでもあれば
 // bytes.Equal が確実に検出する。
 //
-// 壊し方: readLiveStreamPrefix 内で `prefix = prefix[:n]` を消す（読めなかった
-// 分のゼロ埋めが混入する）、または `io.MultiReader(bytes.NewReader(prefix), body)`
-// の引数順を `body, bytes.NewReader(prefix)` に入れ替える（prefix が後ろに
-// 回り、読み取り順が入れ替わる）。
+// 壊し方: pump が先読みしたチャンクを prefix と pipe の両方へ書くと重複し、
+// どちらかへ書かないと欠落する。位置ごとに異なる bytes.Equal が両方を検出する。
 func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -3118,10 +3113,13 @@ func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 			}
 			body := io.NopCloser(bytes.NewReader(want))
 
-			input, prefix, err := readLiveStreamPrefix(body, liveStreamProbeBytes)
+			input, prefix, err := readLiveStreamPrefix(
+				context.Background(), body, liveStreamProbeBytes, liveStreamProbeWait,
+			)
 			if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
 				t.Fatalf("readLiveStreamPrefix: %v", err)
 			}
+			defer func() { _ = input.Close() }()
 			wantPrefixLen := min(tt.total, liveStreamProbeBytes)
 			if len(prefix) != wantPrefixLen {
 				t.Errorf("prefix length = %d, want %d", len(prefix), wantPrefixLen)
@@ -3136,6 +3134,36 @@ func TestReadLiveStreamPrefix_PreservesAllBytesInOrder(t *testing.T) {
 					len(got), len(want))
 			}
 		})
+	}
+}
+
+func TestReadLiveStreamPrefix_ReturnsWhenInputIsBlocked(t *testing.T) {
+	gate := make(chan struct{})
+	defer func() {
+		select {
+		case <-gate:
+		default:
+			close(gate)
+		}
+	}()
+	want := []byte("bytes after the gate opens")
+	body := io.NopCloser(&gatedReader{gate: gate, r: bytes.NewReader(want)})
+	input, prefix, err := readLiveStreamPrefix(context.Background(), body, liveStreamProbeBytes, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("readLiveStreamPrefix: %v", err)
+	}
+	defer func() { _ = input.Close() }()
+	if len(prefix) != 0 {
+		t.Fatalf("prefix length = %d, want 0 while the source is gated", len(prefix))
+	}
+
+	close(gate)
+	got, err := io.ReadAll(input)
+	if err != nil {
+		t.Fatalf("reading replay input after releasing the gate: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("replayed input = %q, want %q", got, want)
 	}
 }
 
