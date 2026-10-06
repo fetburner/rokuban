@@ -594,7 +594,7 @@ func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 
 // lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
 // コネクションを 1 本保持し続けるジョブを持つ論理キュー
-// （internal/worker/ingest_job_lock.go。ingest / encode / cm_detect の
+// （internal/worker/job_lock.go。ingest / encode / cm_detect の
 // ワーカーがそれぞれ acquireIngestJobLock / acquireEncodeJobLock を呼ぶ）。
 //
 // thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
