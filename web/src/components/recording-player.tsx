@@ -226,6 +226,7 @@ export function RecordingPlayer({
   const localChapterEditorCommandsRef = useRef<ChapterEditorCommands | null>(null)
   const resolvedChapterEditorCommandsRef = chapterEditorCommandsRef ?? localChapterEditorCommandsRef
   const isScrubbingRef = useRef(false)
+  const scrubStartSecondsRef = useRef<number | null>(null)
   const jumpToRef = useRef<(seconds: number) => void>(() => {})
   // 終端カードを出している録画の id。録画を切り替えても作り直さないので、id と組で持って
   // 切り替えた瞬間に前の録画のカードを描かない（`played` と同じ規律）。
@@ -685,6 +686,7 @@ export function RecordingPlayer({
     setTilePreview({ recordingId, ...tile, seconds: seconds ?? 0 })
   }
   const handleScrubPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    scrubStartSecondsRef.current = videoRef.current?.currentTime ?? null
     isScrubbingRef.current = true
     event.currentTarget.setPointerCapture?.(event.pointerId)
     handleScrubMove(event)
@@ -693,9 +695,21 @@ export function RecordingPlayer({
     seekAtPointer(event)
     if (!isScrubbingRef.current) return
     isScrubbingRef.current = false
+    scrubStartSecondsRef.current = null
     if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
       event.currentTarget.releasePointerCapture?.(event.pointerId)
     }
+  }
+  const handleScrubPointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isScrubbingRef.current) return
+    isScrubbingRef.current = false
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+    }
+    const startSeconds = scrubStartSecondsRef.current
+    scrubStartSecondsRef.current = null
+    if (startSeconds !== null) jumpTo(startSeconds)
+    setTilePreview(null)
   }
 
   const playbackControls = (
@@ -734,6 +748,7 @@ export function RecordingPlayer({
         onSeekPointerDown={handleScrubPointerDown}
         onSeekPointerMove={handleScrubMove}
         onSeekPointerUp={handleScrubPointerUp}
+        onSeekPointerCancel={handleScrubPointerCancel}
         onSeekPointerLeave={() => setTilePreview(null)}
         onSeek={jumpTo}
         onSelectProfile={(nextProfile) => {
