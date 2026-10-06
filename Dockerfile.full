@@ -72,4 +72,5 @@ COPY --from=jls /opt/jls/bin/ /usr/local/bin/
 COPY --from=jls /opt/jls/share/rokuban/cm_detect/ /usr/local/share/rokuban/cm_detect/
 RUN mkdir -p /mnt/media && chown nobody:nogroup /mnt/media
 USER nobody
+EXPOSE 40773
 ENTRYPOINT ["rokuban"]
