@@ -1162,7 +1162,8 @@ export function LivePlayer({
         }
         // 入力失敗の cooldown 応答でも詳細を取り直し、並行した ingest commit があれば
         // 別の再生元へ移る。同じ追っかけの再試行は cooldown 中なので許可しない。
-        if (await handOffError(video, probe.error.kind !== 'chase-input')) return
+        const handedOff = await handOffError(video, probe.error.kind !== 'chase-input')
+        if (cancelled || handedOff) return
         resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)

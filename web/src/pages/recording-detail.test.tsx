@@ -3682,6 +3682,92 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     )).toBe(false)
   })
 
+  it('追っかけ probe の REST 待機中に別の追っかけ録画へ移ったら旧エラーを表示しない', async () => {
+    const first = sampleRecording({
+      ...RUNNING,
+      title: '作品X 第1話',
+      series: '作品X',
+      status: 'finished',
+      endedAt: '2026-01-01T12:02:00Z',
+      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-01T12:00:00Z' },
+      encodedAssets: [],
+    })
+    const second = sampleRecording({
+      ...RUNNING,
+      id: 4,
+      title: '作品X 第2話',
+      series: '作品X',
+      status: 'finished',
+      endedAt: '2026-01-08T12:02:00Z',
+      ingest: { state: 'transferring', writtenBytes: 500, observedAt: '2026-01-08T12:00:00Z' },
+      encodedAssets: [],
+      startAt: '2026-01-08T12:00:00Z',
+    })
+    const fake = createFakeServer({ recording: first, seriesRecordings: [first, second], liveProfiles: LIVE_PROFILES })
+    const baseFetch = fake.fetchMock.getMockImplementation()
+    if (!baseFetch) throw new Error('fake fetch implementation is unavailable')
+    let releaseChaseProbe!: (response: Response) => void
+    let chaseProbeStarted = false
+    const chaseProbe = new Promise<Response>((resolve) => {
+      releaseChaseProbe = resolve
+    })
+    let deferDetailRefresh = false
+    let detailRefreshStarted = false
+    let releaseDetailRefresh!: (response: Response) => void
+    const detailRefresh = new Promise<Response>((resolve) => {
+      releaseDetailRefresh = resolve
+    })
+    fake.fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), 'http://localhost')
+      if (!chaseProbeStarted && url.pathname === '/api/sites/default/recordings/3/chase/playlist.m3u8') {
+        chaseProbeStarted = true
+        return chaseProbe
+      }
+      if (deferDetailRefresh && url.pathname === '/api/recordings/3') {
+        deferDetailRefresh = false
+        detailRefreshStarted = true
+        return detailRefresh
+      }
+      return baseFetch(input, init)
+    })
+
+    const { queryClient, router } = renderAt('/recordings/3#chase')
+    await waitFor(() => expect(chaseProbeStarted).toBe(true))
+    const playbackGroup = screen.getByTestId('recording-playback-group')
+    deferDetailRefresh = true
+    await act(async () => {
+      releaseChaseProbe(new Response('input cooldown', { status: 502, headers: { 'Retry-After': '5' } }))
+    })
+    await waitFor(() => expect(detailRefreshStarted).toBe(true))
+
+    await act(async () => {
+      seedRecordingDetail(queryClient, second)
+      await router.navigate({ to: '/recordings/$id', params: { id: '4' }, hash: 'chase' })
+    })
+    expect(await screen.findByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
+    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
+    await waitFor(() => {
+      expect(fake.fetchMock.mock.calls.some(([input]) =>
+        new URL(String(input), 'http://localhost').pathname === '/api/sites/default/recordings/4/chase/playlist.m3u8',
+      )).toBe(true)
+    })
+
+    await act(async () => {
+      releaseDetailRefresh(jsonResponse(sampleRecording({
+        ...FINISHED,
+        title: '作品X 第1話',
+        series: '作品X',
+        ingest: { state: 'committed' },
+        encodedAssets: [],
+      })))
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    })
+
+    expect(screen.getByRole('heading', { name: '作品X 第2話' })).toBeInTheDocument()
+    expect(screen.getByTestId('recording-playback-group')).toBe(playbackGroup)
+    expect(screen.queryByText('追っかけ再生の入力に失敗したため、一時停止しています。')).not.toBeInTheDocument()
+  })
+
   it('原本 HLS のまま範囲外へシークしても video を作り直さない（再生元が同じなら中で張り直す）', async () => {
     const user = userEvent.setup()
     const fake = createFakeServer({
