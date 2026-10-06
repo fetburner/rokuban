@@ -18,6 +18,7 @@
 package streamer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -926,3 +927,37 @@ const (
 	// the original MP4 timeline. Its hls_flags are the same as chase's.
 	hlsOriginalEventPlaylist
 )
+
+// waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、
+// 読めたらその内容を返す。タイムアウトまたは ctx のキャンセルで ok=false を返す。
+//
+// **ポーリングのたびに s を touch する**（待っている客も客。waitReadyTouching の
+// doc コメントに理由と実測）。
+//
+// **存在だけでなく内容も見る。** `os.Stat` の成否だけを見ると、ffmpeg が
+// `-hls_flags temp_file` を使わずに（あるいは偽 ffmpeg がアトミックでない書き方を
+// していて）ファイルへ直接書き込み中の途中の内容を配ってしまう窓がある
+// （レビューで発見。CI が確率的に flaky になった原因）。少なくとも 1 本の
+// セグメントを指す `#EXTINF` 行が現れるまで待つことで、書き込み途中の空/不完全な
+// 内容を配らない。
+func waitForPlaylist(ctx context.Context, s *liveSession, path string, timeout time.Duration, readyMarker string) ([]byte, bool) {
+	deadline := time.Now().Add(timeout)
+	for {
+		if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte(readyMarker)) {
+			return data, true
+		}
+		if time.Now().After(deadline) {
+			return nil, false
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(playlistPollInterval):
+			// **待っている客も客**（waitReadyTouching の doc コメント参照）。
+			// ここが無音のままだと、この区間に届いた離脱ヒントが idle 期限を
+			// 詰め、プレイリストを待っている視聴者ごとセッションが回収される
+			// （実測: 504。issue #191 のレビュー指摘）。
+			s.touch()
+		}
+	}
+}
