@@ -156,9 +156,9 @@ const isCollapsed = (w) => typeof w === 'number' && w < 1
  * （`scrollWidth <= clientWidth`）を返す。幅の一致だけでは列がボタンを
  * 正しく収めているかを測れない --- `getBoundingClientRect()` は border-box の
  * 外寸を返すので、中身が溢れて `overflow-hidden` に切られていても列自体の幅は
- * 「期待どおり」に見えることがある。ただし `justify-center` で開始側（左）へ溢れた
- * 分は `scrollWidth` に現れない。box-content を外す変異ではこの判定は通り、
- * 幅の判定だけが落ちる（実測）。
+ * 「期待どおり」に見えることがある。逆に、ボタンが flex で縮んで収まる壊れ方は
+ * この判定では検出できない。box-content を外す変異では予約ボタンが 63px に縮んで
+ * 溢れないのでこの判定は通り、幅の判定だけが落ちる（実測）。
  */
 async function hasNoOverflow(locator) {
   if ((await locator.count()) === 0) return null
