@@ -670,21 +670,21 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 配線だけで、可視性そのものはここが唯一の判定手段。
 
 見るのは 4 状態である（すべて操作列の実描画幅 `getBoundingClientRect().width` を
-直接読む）。畳は約 0px、通常行の開は 81px、放送中行はライブボタン分を足した
-125px である。どちらも `box-content` でボタン合計幅を content box として確保した
-上に `border-l` の 1px が外側に乗った外寸:
+直接読む）。畳は約 0px、通常行の開は 97px、放送中行はライブボタン分を足した
+141px である。どちらも `box-content` でボタン合計幅を content box として確保した
+上に、右 padding 16px と `border-l` の 1px が外側に乗った外寸:
 
 - ① 細ポインタ（既定の Chromium = hover:hover + pointer:fine）: ホバーも
   フォーカスもしていない通常行と放送中行は畳む。ホバー・`:focus-visible` で
-  それぞれ 81px / 125px まで開く（両方向）。あわせてホバー前後で行の
+  それぞれ 97px / 141px まで開く（両方向）。あわせてホバー前後で行の
   高さが変わらない（CLS 無し）こと、開いている列の中でボタンが
   `overflow-hidden` に切られていない（`scrollWidth <= clientWidth`）こと、
   開いている通常行でのワンタップ予約が実際に `PUT .../intent` を飛ばすことを測る
 - ② 細ポインタで展開すると、行ヘッダから hover / focus が外れても見えたまま
   （展開パネルは `.group` の外の兄弟なので `peer-aria-expanded` を pointer 種別で
-  縛らないことで担保）。通常行の展開幅が 81px のまま、折りたたみ直すと消える
+  縛らないことで担保）。通常行の展開幅が 97px のまま、折りたたみ直すと消える
 - ③ タッチ / 粗いポインタ（hasTouch + isMobile = hover:none + pointer:coarse）:
-  通常行と放送中行の折りたたみ行は畳み、展開行はそれぞれ 81px / 125px
+  通常行と放送中行の折りたたみ行は畳み、展開行はそれぞれ 97px / 141px
   まで開く。加えて外付けキーボード想定で `:focus-visible` だけでも開く
   （WCAG 2.4.7 / 2.4.11）
 - ④ 折りたたみ行の操作列を実座標へ `page.touchscreen.tap()` で生タップ

@@ -21,13 +21,13 @@
 // 見逃していた欠陥そのもの。
 //
 // 見るのは 4 状態（すべて操作列の実レイアウト幅 `getBoundingClientRect().width`
-// で判定する。畳＝約 0px、通常行の開＝81px（border-l の 1px 込み）、
-// 放送中行の開＝125px（同）:
+// で判定する。畳＝約 0px、通常行の開＝97px（右余白 16px と border-l の 1px 込み）、
+// 放送中行の開＝141px（同）:
 //   ① 細ポインタ（既定の Chromium コンテキスト = hover:hover + pointer:fine）で
 //      ホバーもフォーカスもしていない行 --- 畳んでいる。ホバー / :focus-visible で
 //      開く（両方向）。あわせて**縦方向の CLS が無いこと**（行の高さ不変）も測る
 //      --- 横方向（列幅・タイトルの truncate 位置）は開閉で動くのが本設計の
-//      仕様なので、通常行は 81px、放送中行は 125px へ開くことを確かめる。
+//      仕様なので、通常行は 97px、放送中行は 141px へ開くことを確かめる。
 //      横方向の溢れが無い（子要素が overflow-hidden に切られていない）ことも
 //      あわせて測る
 //   ② 細ポインタで行を展開すると、その後マウス / フォーカスが行ヘッダから
@@ -136,16 +136,18 @@ async function readReserveWidth(locator) {
   return locator.first().evaluate((el) => el.getBoundingClientRect().width)
 }
 
-// 通常行の開＝81px（w-20 の 80px content box + border-l の 1px、box-content で
-// ボタン側から侵食させない）、放送中行の開＝125px（w-[7.75rem] の 124px +
-// border-l の 1px）、畳＝約 0px。transition（150ms）の途中を拾わないよう、
-// 各測定の前に十分待つ（下の waitForTimeout(250)）。
+// 通常行の開＝97px（w-20 の 80px content box + 右余白 pr-4 の 16px + border-l の
+// 1px、box-content でボタン側から侵食させない）、放送中行の開＝141px
+// （w-[7.75rem] の 124px + 16px + border-l の 1px）。右余白は折りたたみ行の
+// 右 padding とボタンの右端を揃えるためのもの。畳＝約 0px。transition（150ms）の
+// 途中を拾わないよう、各測定の前に十分待つ（下の waitForTimeout(250)）。
 //
-// 許容を 2px にすると border-l の 1px 分の食い違い（box-content の有無）を
-// 区別できない（80px vs 期待 81px でも差 1 < 2 で通ってしまう）ため、1px 未満
-// に締めている。
-const OPEN_WIDTH = 81
-const AIRING_OPEN_WIDTH = 125
+// 許容を 1px 未満に締めているのは border-l の有無を区別するため。border-l が抜けると
+// 96px / 140px になり、許容 2px では差 1 < 2 で通ってしまう。box-content が抜けた
+// 場合は padding と border が content box を侵食して外寸 80px / 124px になり、
+// 許容に関係なく落ちる。
+const OPEN_WIDTH = 97
+const AIRING_OPEN_WIDTH = 141
 const isOpen = (w, expected) => typeof w === 'number' && Math.abs(w - expected) < 1
 const isCollapsed = (w) => typeof w === 'number' && w < 1
 
@@ -153,9 +155,10 @@ const isCollapsed = (w) => typeof w === 'number' && w < 1
  * hasNoOverflow は、開いた操作列の中身が横方向にはみ出していないか
  * （`scrollWidth <= clientWidth`）を返す。幅の一致だけでは列がボタンを
  * 正しく収めているかを測れない --- `getBoundingClientRect()` は border-box の
- * 外寸を返すので、中身が 1px 溢れて `overflow-hidden` に切られていても
- * 列自体の幅は「期待どおり」に見えてしまう（実際に box-content 抜きでは
- * 幅は一致するのに子要素が溢れて切られていた）。
+ * 外寸を返すので、中身が溢れて `overflow-hidden` に切られていても列自体の幅は
+ * 「期待どおり」に見えることがある。逆に、ボタンが flex で縮んで収まる壊れ方は
+ * この判定では検出できない。box-content を外す変異では予約ボタンが 63px に縮んで
+ * 溢れないのでこの判定は通り、幅の判定だけが落ちる（実測）。
  */
 async function hasNoOverflow(locator) {
   if ((await locator.count()) === 0) return null
@@ -213,7 +216,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const focusedFirst = await readReserveWidth(reserve)
   log(`  （ポインタ操作前）行トグルへフォーカス中の列幅: ${focusedFirst}px`)
   if (!isOpen(focusedFirst, OPEN_WIDTH)) {
-    ng.push(`①-f: 行トグルへフォーカスしても通常行の操作列が 81px にならない（幅=${focusedFirst}px）`)
+    ng.push(`①-f: 行トグルへフォーカスしても通常行の操作列が 97px にならない（幅=${focusedFirst}px）`)
   }
   await toggle.evaluate((el) => el.blur())
   await page.waitForTimeout(250)
@@ -228,7 +231,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const airingFocused = await readReserveWidth(airingReserve)
   log(`  （ポインタ操作前）放送中行トグルへフォーカス中の列幅: ${airingFocused}px`)
   if (!isOpen(airingFocused, AIRING_OPEN_WIDTH)) {
-    ng.push(`①-f': 放送中行の操作列が 125px にならない（幅=${airingFocused}px）`)
+    ng.push(`①-f': 放送中行の操作列が 141px にならない（幅=${airingFocused}px）`)
   }
   await airingToggle.evaluate((el) => el.blur())
   await page.waitForTimeout(250)
@@ -246,7 +249,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const hovered = await readReserveWidth(reserve)
   log(`  通常行のホバー中の列幅: ${hovered}px`)
   if (!isOpen(hovered, OPEN_WIDTH)) {
-    ng.push(`①-b: 通常行をホバーしても操作列が 81px にならない（幅=${hovered}px）`)
+    ng.push(`①-b: 通常行をホバーしても操作列が 97px にならない（幅=${hovered}px）`)
   }
   const noOverflow = await hasNoOverflow(reserve)
   log(`  通常行の開いた操作列に横方向の溢れが無いか: ${noOverflow}`)
@@ -272,7 +275,7 @@ log('\n=== ① 細ポインタ（hover:hover かつ pointer:fine） ===')
   const airingHovered = await readReserveWidth(airingReserve)
   log(`  放送中行のホバー中の列幅: ${airingHovered}px`)
   if (!isOpen(airingHovered, AIRING_OPEN_WIDTH)) {
-    ng.push(`①-b': 放送中行をホバーしても操作列が 125px にならない（幅=${airingHovered}px）`)
+    ng.push(`①-b': 放送中行をホバーしても操作列が 141px にならない（幅=${airingHovered}px）`)
   }
   const airingNoOverflow = await hasNoOverflow(airingReserve)
   log(`  放送中行の開いた操作列に横方向の溢れが無いか: ${airingNoOverflow}`)
@@ -386,7 +389,7 @@ log('\n=== ② 細ポインタ: 展開パネル操作中も操作列が開いた
   if (!isOpen(whileExpanded, OPEN_WIDTH)) {
     ng.push(
       `②-b: 展開パネル操作中（行ヘッダの hover/focus-within が外れている）に通常行の操作列が` +
-        `81px で開いていない（幅=${whileExpanded}px）`,
+        `97px で開いていない（幅=${whileExpanded}px）`,
     )
   }
 
@@ -451,7 +454,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   log(`  折りたたみ行のまま行トグルへフォーカス中の列幅: ${focusedCoarse}px`)
   if (!isOpen(focusedCoarse, OPEN_WIDTH)) {
     ng.push(
-      `③-b: 粗いポインタでも通常行の操作列が 81px まで開かない` +
+      `③-b: 粗いポインタでも通常行の操作列が 97px まで開かない` +
         `（幅=${focusedCoarse}px。タブレット + 外付けキーボードで操作不能になる）`,
     )
   }
@@ -468,7 +471,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   log(`  折りたたみ放送中行のまま行トグルへフォーカス中の列幅: ${airingFocusedCoarse}px`)
   if (!isOpen(airingFocusedCoarse, AIRING_OPEN_WIDTH)) {
     ng.push(
-      `③-b(airing): 粗いポインタで放送中行の操作列が 125px まで開かない` +
+      `③-b(airing): 粗いポインタで放送中行の操作列が 141px まで開かない` +
         `（幅=${airingFocusedCoarse}px。タブレット + 外付けキーボードで操作不能になる）`,
     )
   }
@@ -488,7 +491,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   const expanded = await readReserveWidth(reserve)
   log(`  展開後（aria-expanded=true）の列幅: ${expanded}px`)
   if (!isOpen(expanded, OPEN_WIDTH)) {
-    ng.push(`③-d: タッチで展開した通常行の操作列が 81px にならない（幅=${expanded}px）`)
+    ng.push(`③-d: タッチで展開した通常行の操作列が 97px にならない（幅=${expanded}px）`)
   }
 
   await toggle.tap()
@@ -508,7 +511,7 @@ log('\n=== ③ タッチ / 粗いポインタ ===')
   const airingExpanded = await readReserveWidth(airingReserve)
   log(`  放送中行の展開後（aria-expanded=true）の列幅: ${airingExpanded}px`)
   if (!isOpen(airingExpanded, AIRING_OPEN_WIDTH)) {
-    ng.push(`③-g: タッチで展開した放送中行の操作列が 125px にならない（幅=${airingExpanded}px）`)
+    ng.push(`③-g: タッチで展開した放送中行の操作列が 141px にならない（幅=${airingExpanded}px）`)
   }
 
   await airingToggle.tap()
