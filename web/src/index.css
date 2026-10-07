@@ -330,6 +330,16 @@
     }
 }
 
+@layer utilities {
+  /* 横向き端末の左右の safe area は共通シェルと fixed ナビで別々に受ける。
+     下端はボトムタブと再生設定シートが個別に扱うため、ここには含めない。
+     0px inset 時の寸法は web/e2e/safe-area-inline.mjs で確認する。 */
+  .safe-area-inline {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+
 /*
  * OS で「動きを減らす」を設定したユーザーには、個々のアニメーション/
  * トランジションのクラスへ毎回縮退を書き足すのではなく、ここ 1 箇所で

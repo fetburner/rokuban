@@ -823,6 +823,20 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
 ```
 
+### 横向き端末の左右セーフエリア（`safe-area-inline.mjs`）
+
+1280px と 390px で、左右の inset が 0 のときのシェル・ヘッダー・ボトムタブの寸法を確認する。
+CSSOM では本文を包むシェルとボトムタブの両方に、左右の `env()` 宣言があり上下宣言が無いことも見る。
+左右どちらかの宣言を外すと、この契約判定が落ちる。
+
+Chromium では非ゼロの safe area を与えられない。この判定は実機でのノッチ回避を保証しないため、
+横向き iPhone で本文とボトムタブがノッチに隠れないことは実機で確認する。
+
+```sh
+pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
+E2E_URL=http://127.0.0.1:4173 pnpm e2e:safe-area-inline
+```
+
 ### 番組リストの空時間窓（`programs-empty-window.mjs`）
 
 番組 API が最初または途中の 6 時間窓を空で返しても、後続窓へ進む導線が消えない
