@@ -201,6 +201,7 @@ function stubApi(
       }
       const status = url.searchParams.get('status')
       const ruleId = url.searchParams.get('ruleId')
+      const recordingSource = url.searchParams.get('source')
       const before = url.searchParams.get('before')
       const beforeId = url.searchParams.get('beforeId')
       const limit = Number(url.searchParams.get('limit') ?? '50')
@@ -209,6 +210,7 @@ function stubApi(
           (recording) =>
             (status === null || recording.status === status) &&
             (ruleId === null || recording.ruleId === Number(ruleId)) &&
+            (recordingSource === null || recording.source === recordingSource) &&
             (before === null ||
               recording.startAt < before ||
               (recording.startAt === before && recording.id < Number(beforeId))),
@@ -600,6 +602,7 @@ describe('RulesPage ルールの有効スイッチ', () => {
         sampleRecording(11, 1),
         sampleRecording(12, 2),
         sampleRecording(13, 1, 'finished'),
+        { ...sampleRecording(14, 1), source: 'manual' },
       ],
     )
     const user = userEvent.setup()
@@ -614,7 +617,11 @@ describe('RulesPage ルールの有効スイッチ', () => {
         '「ニュース」を無効にすると、このルールによる予約 2 件が取り消されます。手動で予約したものは残ります。録画中の 2 件は録画が止まります。',
       ),
     ).toBeInTheDocument()
-    expect(recordingRequests[0]).toMatchObject({ status: 'recording', ruleId: '1' })
+    expect(recordingRequests[0]).toMatchObject({
+      status: 'recording',
+      ruleId: '1',
+      source: 'rule',
+    })
     expect(putBodies).toHaveLength(0)
 
     const reservationCallsBeforeDisable = (
@@ -756,6 +763,29 @@ describe('RulesPage ルールの有効スイッチ', () => {
     expect(
       queryClient.getQueryData<{ data: Rule[] }>(getListRulesQueryKey())?.data[0]?.enabled,
     ).toBe(false)
+  })
+
+  it('録画中が手動予約由来だけなら確認なしで無効にする', async () => {
+    const { putBodies } = stubApi(
+      [sampleRule],
+      undefined,
+      {},
+      [],
+      ['default'],
+      [],
+      [{ ...sampleRecording(10, 1), source: 'manual' }],
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(
+      await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' }),
+    )
+
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(screen.queryByText(/を無効にしますか/)).not.toBeInTheDocument()
+    expect(
+      await screen.findByText('ルール「ニュース」を無効にしました。予約 0 件が取り消されます'),
+    ).toBeInTheDocument()
   })
 
   it('録画中が 200 件を超えてもすべて数えて確認する', async () => {

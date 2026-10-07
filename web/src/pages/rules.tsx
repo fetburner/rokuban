@@ -396,6 +396,7 @@ function RuleRow({
             getListRecordingsQueryOptions({
               status: 'recording',
               ruleId: rule.id,
+              source: 'rule',
               limit: pageLimit,
               before,
               beforeId,
