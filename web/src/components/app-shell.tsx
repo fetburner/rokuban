@@ -171,23 +171,17 @@ function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
       <DialogPrimitive.Portal>
         <DialogOverlay />
         <DialogPrimitive.Popup
-          aria-label="その他のナビゲーション"
           className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none"
         >
           <div aria-hidden className="mx-auto h-1 w-9 shrink-0 rounded-full bg-border" />
           <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2 pb-1">
             <span />
-            <DialogPrimitive.Title
-              aria-label="その他のナビゲーション"
-              className="text-base font-semibold"
-            >
-              その他
-            </DialogPrimitive.Title>
+            <DialogPrimitive.Title className="text-base font-semibold">その他</DialogPrimitive.Title>
             <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
               完了
             </DialogPrimitive.Close>
           </div>
-          <nav aria-label="その他のナビゲーション" className="min-h-0 overflow-y-auto px-4 pb-1">
+          <nav className="min-h-0 overflow-y-auto px-4 pb-1">
             <ul className="flex flex-col gap-0.5">
               {items.map(({ to, label, icon: Icon }) => {
                 const itemActive = isActive(pathname, to)

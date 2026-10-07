@@ -57,7 +57,7 @@ E2E_URL=http://localhost:40775 pnpm e2e
 チャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
 
 ```sh
-cd web && E2E_URL=http://localhost:4173 node e2e/issue-1224-sheet.mjs
+cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 ```
 
 ### フィクスチャ契約の CI 検証

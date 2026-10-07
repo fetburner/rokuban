@@ -524,8 +524,8 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await within(sheet).findByRole('button', { name: `チャンネル: ${nhk.name}` })
     expect(getCurrent().service).toEqual([nhk.id])
 
-    // 状態チップにも「完了」があるので、先頭（シート見出しの閉じるボタン）を押す。
-    await user.click(screen.getAllByRole('button', { name: '完了' })[0])
+    // 状態チップにも「完了」があるので、シート見出しの閉じるボタンは名前で引く。
+    await user.click(screen.getByRole('button', { name: '絞り込みを閉じる' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(getCurrent().service).toEqual([nhk.id])
   })

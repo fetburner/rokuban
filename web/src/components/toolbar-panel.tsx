@@ -42,6 +42,7 @@ export function ToolbarPanel({
   popupWidthClassName,
   bodyClassName,
   sheetLeading,
+  closeLabel,
   children,
 }: {
   title: string
@@ -53,6 +54,8 @@ export function ToolbarPanel({
   bodyClassName: string
   /** シート見出し左端の戻る操作など。ポップオーバーでは使わない。 */
   sheetLeading?: ReactNode
+  /** シートの閉じるボタンのアクセシブル名。省略時は見える文字「完了」。 */
+  closeLabel?: string
   children: ReactNode
 }) {
   const wide = useMediaQuery(mdMediaQuery)
@@ -99,7 +102,9 @@ export function ToolbarPanel({
           <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2">
             {sheetLeading ?? <span />}
             <DialogPrimitive.Title className="text-base font-semibold">{title}</DialogPrimitive.Title>
-            <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
+            <DialogPrimitive.Close
+              aria-label={closeLabel}
+              className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
               完了
             </DialogPrimitive.Close>
           </div>

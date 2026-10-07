@@ -90,7 +90,7 @@ await page.getByRole('dialog', { name: 'チャンネル' }).waitFor({ state: 'de
 
 log('\n=== 390px: More メニュー ===')
 await page.getByRole('button', { name: 'その他' }).click()
-const more = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+const more = page.getByRole('dialog', { name: 'その他' })
 await more.waitFor({ state: 'visible' })
 await report('「その他」のシートが画面下端に接する', async () => {
   await assertSheetTouchesBottom(more, page, 'その他シート')
@@ -134,7 +134,7 @@ await report('録画一覧の絞り込みで選んだチャンネルは、戻っ
   await channels.getByRole('checkbox', { name: /NHK総合/ }).click()
   await page.getByRole('button', { name: '絞り込みに戻る' }).click()
   await filters.getByRole('button', { name: 'チャンネル: NHK総合' }).waitFor({ state: 'visible', timeout: 5000 })
-  await filters.getByRole('button', { name: '完了' }).first().click()
+  await filters.getByRole('button', { name: '絞り込みを閉じる' }).click()
   await filters.waitFor({ state: 'detached' })
   const reopened = await openFilterSheet(page)
   await reopened.getByRole('button', { name: 'チャンネル: NHK総合' }).waitFor({ state: 'visible', timeout: 5000 })

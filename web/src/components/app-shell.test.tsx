@@ -368,18 +368,18 @@ describe('モバイルの「その他」', () => {
     await findToggle()
     await findLiveLinks()
 
-    expect(screen.queryByRole('dialog', { name: 'その他のナビゲーション' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: 'その他' })).not.toBeInTheDocument()
 
     await user.click(getMoreTrigger())
 
-    const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = await screen.findByRole('dialog', { name: 'その他' })
     expect(within(menu).getByRole('button', { name: '完了' })).toBeInTheDocument()
     for (const label of MOBILE_MORE_LABELS) {
       expect(within(menu).getByRole('link', { name: label })).toHaveAttribute('href')
     }
     await user.click(within(menu).getByRole('button', { name: '完了' }))
     await vi.waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'その他のナビゲーション' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'その他' })).not.toBeInTheDocument(),
     )
   })
 
@@ -390,7 +390,7 @@ describe('モバイルの「その他」', () => {
     await findLiveLinks()
 
     await user.click(getMoreTrigger())
-    const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = await screen.findByRole('dialog', { name: 'その他' })
     const labels = within(menu)
       .getAllByRole('link')
       .map((el) => el.textContent)
@@ -404,12 +404,12 @@ describe('モバイルの「その他」', () => {
     await findLiveLinks()
 
     await user.click(getMoreTrigger())
-    const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = await screen.findByRole('dialog', { name: 'その他' })
     await user.click(within(menu).getByRole('link', { name: 'ライブ' }))
 
     // シートが DOM 上から消える（閉じ忘れは jsdom で観測できる壊れ方）
     await vi.waitFor(() =>
-      expect(screen.queryByRole('dialog', { name: 'その他のナビゲーション' })).not.toBeInTheDocument(),
+      expect(screen.queryByRole('dialog', { name: 'その他' })).not.toBeInTheDocument(),
     )
     // 実際に /live へ遷移したこと（見た目だけ閉じてルートは変わっていない、を弾く）
     const liveLink = screen.getByRole('link', { name: 'ライブ' })
@@ -478,7 +478,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     await waitForNavSettled()
 
     await user.click(getMoreTrigger())
-    const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = await screen.findByRole('dialog', { name: 'その他' })
     const labels = within(menu)
       .getAllByRole('link')
       .map((el) => el.textContent)

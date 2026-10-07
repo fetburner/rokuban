@@ -2173,7 +2173,7 @@ async function runCoarseTapTargetChecks() {
       ng.push('[mobile-360/more-menu] 「その他」のトリガーが見つからない')
     } else {
       await trigger.click()
-      const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+      const menu = page.getByRole('dialog', { name: 'その他' })
       await menu.waitFor({ timeout: 5000 }).catch(() => {
         ng.push('[mobile-360/more-menu] シートが開かない')
       })
@@ -5265,7 +5265,7 @@ for (const theme of themes) {
     ng.push(`[${theme}] 「その他」トリガーが見つからない`)
   } else {
     await trigger.click()
-    const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = page.getByRole('dialog', { name: 'その他' })
     await menu.waitFor({ timeout: 5000 }).catch(() => {
       ng.push(`[${theme}] 「その他」を開いてもシートが現れない`)
     })
@@ -5332,7 +5332,7 @@ for (const theme of themes) {
           .waitForFunction(
             () =>
               document.activeElement?.tagName === 'BUTTON' &&
-              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+              document.activeElement.closest('[role="dialog"]') !== null,
             undefined,
             { timeout: 1000 },
           )
@@ -5345,7 +5345,7 @@ for (const theme of themes) {
           .waitForFunction(
             () =>
               document.activeElement?.tagName === 'A' &&
-              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+              document.activeElement.closest('[role="dialog"]') !== null,
             undefined,
             { timeout: 1000 },
           )
