@@ -236,6 +236,27 @@ await desktopFilter.getByRole('button', { name: 'ジャンル: 0 件' }).click()
 const desktopGenre = page.getByRole('dialog', { name: 'ジャンル' })
 await desktopGenre.waitFor({ timeout: 15000 })
 const genreOptions = desktopGenre.getByRole('group', { name: 'ジャンルの候補' })
+// 通常候補だけ（12・13・拡張なし）のメニューは、中でスクロールせず全体が見える（HIG: popover を大きくしすぎない）。
+const genreBox = await desktopGenre.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }))
+if (genreBox.scrollHeight > genreBox.clientHeight + 1) {
+  ng.push(`②´ ジャンルメニューの中にスクロールが必要（scrollHeight=${genreBox.scrollHeight} / clientHeight=${genreBox.clientHeight}）`)
+}
+// トリガーはチャンネル選択と同じ構造: 節見出し + 値だけ、シェブロンは値の直後。
+const genreTrigger = desktopFilter.getByRole('button', { name: 'ジャンル: 0 件' })
+if ((await desktopFilter.getByRole('heading', { name: 'ジャンル' }).count()) !== 1) {
+  ng.push('②´ ジャンルに節見出し「ジャンル」が無い（チャンネル選択と構造が違う）')
+}
+const triggerGap = await genreTrigger.evaluate((el) => {
+  const value = el.querySelector('[aria-hidden="true"]:not(svg)')
+  const chevron = el.querySelector('svg')
+  if (!value || !chevron) return null
+  const range = document.createRange()
+  range.selectNodeContents(value)
+  return chevron.getBoundingClientRect().left - range.getBoundingClientRect().right
+})
+if (triggerGap === null || triggerGap > 16) {
+  ng.push(`②´ ジャンルのシェブロンが値の直後にない（間隔 ${triggerGap}px）`)
+}
 for (const reserved of ['ジャンル 12', 'ジャンル 13', '拡張']) {
   if ((await genreOptions.getByRole('checkbox', { name: reserved }).count()) !== 0) {
     ng.push(`②´ 未選択の「${reserved}」がジャンル候補に出る`)

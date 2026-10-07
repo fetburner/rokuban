@@ -1,5 +1,5 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { ArrowUpDown, Check, ChevronDown, ChevronRight, ListFilter, Search as SearchIcon, X } from 'lucide-react'
+import { ArrowUpDown, Check, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
@@ -11,6 +11,8 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
+import { PickerFilterRow, PickerTriggerContent } from '@/components/picker-trigger'
+import { pickerTriggerClassName } from '@/components/picker-trigger-class'
 import { RecordingPeriodMenu } from '@/components/recording-period-menu'
 import { ToolbarDot, ToolbarPanel, toolbarButtonClass } from '@/components/toolbar-panel'
 import { Chip } from '@/components/ui/chip'
@@ -355,7 +357,7 @@ function GenrePicker({
   const countLabel = `${selected.size} 件`
   const codes = genreCodesForSelection([...selected])
   const options = (
-    <div role="group" aria-label="ジャンルの候補" className="flex flex-col gap-0.5 p-1">
+    <div role="group" aria-label="ジャンルの候補" className="flex flex-col gap-0.5 p-1 md:gap-0">
       {codes.map((code) => {
         const checked = selected.has(code)
         return (
@@ -370,7 +372,7 @@ function GenrePicker({
               else next.add(code)
               onChange(next)
             }}
-            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-9"
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8"
           >
             <span
               aria-hidden="true"
@@ -391,30 +393,13 @@ function GenrePicker({
   if (presentation === 'inline') return options
 
   if (presentation === 'filter-row') {
-    return (
-      <button
-        type="button"
-        aria-label={`ジャンル: ${countLabel}`}
-        onClick={onEmbeddedOpen}
-        className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 text-sm text-foreground transition-colors hover:bg-muted"
-      >
-        <span>ジャンル</span>
-        <span className="flex items-center gap-1.5 text-muted-foreground">
-          <span>{countLabel}</span>
-          <ChevronRight className="size-4" aria-hidden="true" />
-        </span>
-      </button>
-    )
+    return <PickerFilterRow label="ジャンル" value={countLabel} onOpen={onEmbeddedOpen} />
   }
 
   return (
     <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger
-        aria-label={`ジャンル: ${countLabel}`}
-        className="flex h-11 w-full items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted aria-expanded:bg-muted"
-      >
-        <span>ジャンル: {countLabel}</span>
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <PopoverPrimitive.Trigger className={pickerTriggerClassName}>
+        <PickerTriggerContent label="ジャンル" value={countLabel} />
       </PopoverPrimitive.Trigger>
       <PopoverPrimitive.Portal>
         <PopoverPrimitive.Positioner
@@ -631,12 +616,19 @@ function FilterPanel({
               </section>
             )}
 
-            <GenrePicker
-              presentation={wide ? 'standalone' : 'filter-row'}
-              selected={selectedGenres}
-              onChange={updateGenres}
-              onEmbeddedOpen={() => setGenreOpen(true)}
-            />
+            {wide ? (
+              <section className="flex flex-col gap-1.5">
+                <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>
+                <GenrePicker presentation="standalone" selected={selectedGenres} onChange={updateGenres} />
+              </section>
+            ) : (
+              <GenrePicker
+                presentation="filter-row"
+                selected={selectedGenres}
+                onChange={updateGenres}
+                onEmbeddedOpen={() => setGenreOpen(true)}
+              />
+            )}
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">状態</h3>
