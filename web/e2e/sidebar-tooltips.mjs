@@ -40,7 +40,7 @@ function tooltip(label) {
 }
 
 async function anyTooltipVisible() {
-  return page.locator('[role="tooltip"]:visible').count() > 0
+  return (await page.locator('[role="tooltip"]:visible').count()) > 0
 }
 
 async function tooltipVisible(label, timeout) {
@@ -141,7 +141,12 @@ if (await anyTooltipVisible()) {
   ng.push('③ 展開中のホームをホバーすると tooltip が出る')
 }
 await page.mouse.move(0, 0)
-await openHome.focus()
+await page.waitForTimeout(600) // hover 後の tooltip 状態が落ち着くのを待つ
+await toggle.focus()
+await page.keyboard.press('Tab') // 展開中の先頭項目（ホーム）
+if (!await openHome.evaluate((element) => document.activeElement === element)) {
+  ng.push('③ 展開中、Tab 移動でホームにフォーカスが当たらない')
+}
 await page.waitForTimeout(400)
 if (await anyTooltipVisible()) {
   ng.push('③ 展開中のホームにフォーカスすると tooltip が出る')
