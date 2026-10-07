@@ -319,9 +319,9 @@ MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生�
 Chrome の hls.js と WebKit のネイティブ HLS の両方で、原本 HLS offset 0、シークで
 張り直した offset 10 秒、非カット MP4 を再生する。各目印の表示を画素で検出し、
 その時点の `requestVideoFrameCallback` の `mediaTime` を読む。offset 付き HLS は
-セッションの offset を足して原本時間軸へ戻し、フレーム番号の順序と半フレーム以内の
-差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を付けると期待値を 1 フレーム
-ずらす変異確認になる。
+入力 seek と同じ 30000/1001 のフレーム格子上の起点を足して原本時間軸へ戻し、
+フレーム番号の順序と 1ms 以内の差を記録する。`E2E_TIMELINE_EXPECTED_SHIFT_FRAMES=1` を
+付けると期待値を 1 フレームずらす変異確認になる。
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:recording-playback-timeline
@@ -330,13 +330,13 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRA
 ```
 
 この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。
-非カット MP4 基準の測定（HLS offset 0 / 10、括弧内は参考の原本 PTS 基準）では、
-Chrome の HLS が +66.73ms / +90.10ms（+56.71 / +80.08）だった。
-WebKit の HLS は 0.00ms / +23.37ms（-10.02 / +13.34）だった。
-半フレーム許容差 16.68ms を超えるため exit 1 になる。
-非カット MP4 は両ブラウザで 0.00ms（-10.02）だった。1 フレーム変異は WebKit で 13 件の NG
-になり、ずれを検出することを確認した。測定値と未測定の範囲は
-[`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
+現在の合成 fixture では、非カット MP4 基準の差は Chromium + hls.js と WebKit native HLS の
+両方で、HLS offset 0 / 10 と MP4 の全目印が 0.00ms だった。比較の許容差は半フレームではなく
+1ms である。原本 HLS は B フレームを無効にし、`-ss` と再生軸を同じフレーム格子へ揃える。
+offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 23.37ms ずれる。
+表の再生時刻比較と編集モードの境界操作は別の判定であり、スクリプト全体の終了状態には両方が含まれる。
+この合成 fixture はソフトウェア libx264 に限る。実録画（GR/BS）とハードウェアエンコーダーは未測定である。
+測定条件と差の内訳は [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
 
 編集モード（チャプターを直す）の境界操作も、同じ目印フレームで判定する。非カット MP4 と原本 HLS
 （offset 0 / 10）で次を見る。原本 HLS は押す前に境界の 0.1 秒手前へ置く（MP4 は 0.5 秒手前）。
