@@ -404,7 +404,9 @@ describe('SeriesPage の絞り込み', () => {
 
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
-    expect(within(within(panel).getByRole('group', { name: 'ジャンル' })).getByRole('button', { name: 'アニメ・特撮' })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(within(panel).getByRole('button', { name: 'ジャンル: 1 件' }))
+    const genreMenu = await screen.findByRole('dialog', { name: 'ジャンル' })
+    expect(within(genreMenu).getByRole('checkbox', { name: 'アニメ・特撮' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('ごみ箱・並び順・エンコード状況は URL のパース時点で落とし、API にも渡さない', async () => {

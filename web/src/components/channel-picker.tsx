@@ -1,9 +1,11 @@
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { Check, ChevronDown, ChevronRight, Minus } from 'lucide-react'
+import { Check, Minus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import type { Service } from '@/api/generated'
+import { PickerFilterRow, PickerTriggerContent } from '@/components/picker-trigger'
+import { pickerTriggerClassName } from '@/components/picker-trigger-class'
 import { DialogOverlay } from '@/components/ui/dialog'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
@@ -133,11 +135,6 @@ export function ChannelPicker({
     onNoneSelectedChange?.(false)
   }
 
-  const triggerClassName = cn(
-    'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors',
-    'hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground',
-  )
-
   const options = (
     <>
       {ordered.length > searchThreshold && (
@@ -209,20 +206,7 @@ export function ChannelPicker({
   )
 
   if (presentation === 'filter-row') {
-    return (
-      <button
-        type="button"
-        aria-label={`チャンネル: ${countLabel}`}
-        onClick={onEmbeddedOpen}
-        className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 text-sm text-foreground transition-colors hover:bg-muted"
-      >
-        <span>チャンネル</span>
-        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-          <span className="truncate">{countLabel}</span>
-          <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
-        </span>
-      </button>
-    )
+    return <PickerFilterRow label="チャンネル" value={countLabel} onOpen={onEmbeddedOpen} />
   }
 
   if (presentation === 'inline') {
@@ -230,14 +214,11 @@ export function ChannelPicker({
   }
 
   const trigger = (
-    <>
-      {/* 見える側の値だけだと何のコントロールかが伝わらないため、読み上げ側に役割を置く。 */}
-      <span className="sr-only">チャンネル: {countLabel}</span>
-      <span aria-hidden="true" className="min-w-0 truncate">
-        {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
-      </span>
-      <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-    </>
+    <PickerTriggerContent
+      label="チャンネル"
+      value={countLabel}
+      visibleValue={selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
+    />
   )
 
   if (wide) {
@@ -249,7 +230,7 @@ export function ChannelPicker({
           if (!next) closeStandalonePicker()
         }}
       >
-        <PopoverPrimitive.Trigger className={triggerClassName}>{trigger}</PopoverPrimitive.Trigger>
+        <PopoverPrimitive.Trigger className={pickerTriggerClassName}>{trigger}</PopoverPrimitive.Trigger>
         <PopoverPrimitive.Portal>
           {/* sticky なトリガーに追従させるため、位置はビューポート基準の fixed にする。 */}
           <PopoverPrimitive.Positioner
@@ -279,7 +260,7 @@ export function ChannelPicker({
         if (!next) closeStandalonePicker()
       }}
     >
-      <DialogPrimitive.Trigger className={triggerClassName}>{trigger}</DialogPrimitive.Trigger>
+      <DialogPrimitive.Trigger className={pickerTriggerClassName}>{trigger}</DialogPrimitive.Trigger>
       <DialogPrimitive.Portal>
         <DialogOverlay />
         <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">

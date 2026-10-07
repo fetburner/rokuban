@@ -187,6 +187,32 @@ describe('RecordingFilters チップ', () => {
 })
 
 describe('RecordingFilters 絞り込みパネル', () => {
+  it('URL に残った予備・拡張ジャンルはチップとシート内の選択状態を揃え、解除できる', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters({ genre: [12, 14] })
+
+    expect(screen.getByRole('button', { name: 'ジャンル: ジャンル 12' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ジャンル: 拡張' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const filterSheet = await screen.findByRole('dialog', { name: '絞り込み' })
+    await user.click(within(filterSheet).getByRole('button', { name: 'ジャンル: 2 件' }))
+
+    const genreSheet = screen.getByRole('dialog', { name: 'ジャンル' })
+    expect(genreSheet).toBe(filterSheet)
+    const options = within(genreSheet).getByRole('group', { name: 'ジャンルの候補' })
+    expect(within(options).getByRole('checkbox', { name: 'ジャンル 12' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(options).getByRole('checkbox', { name: '拡張' })).toHaveAttribute('aria-checked', 'true')
+    expect(within(options).queryByRole('checkbox', { name: 'ジャンル 13' })).not.toBeInTheDocument()
+
+    await user.click(within(options).getByRole('checkbox', { name: 'ジャンル 12' }))
+    expect(getCurrent().genre).toEqual([14])
+    await user.click(within(genreSheet).getByRole('button', { name: '絞り込みに戻る' }))
+    await user.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '絞り込み' })).not.toBeInTheDocument())
+    expect(screen.queryByRole('button', { name: 'ジャンル: ジャンル 12' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ジャンル: 拡張' })).toBeInTheDocument()
+  })
+
   it('レジストリに無い site もチップで見えて、押すと絞り込みを外せる', async () => {
     const user = userEvent.setup()
     const { onChangeCalls } = renderFilters({ site: ['retired'] })
@@ -438,17 +464,21 @@ describe('RecordingFilters 絞り込みパネル', () => {
     expect(within(ruleSection as HTMLElement).queryByRole('combobox', { name: 'ルール' })).not.toBeInTheDocument()
   })
 
-  it('ジャンルチップは複数選択で、選択中は同じチップを押すと外れる', async () => {
+  it('ジャンルメニューは複数選択で、選択中は同じ項目を押すと外れる', async () => {
     const user = userEvent.setup()
     const { getCurrent } = renderFilters()
 
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
 
-    await user.click(within(panel).getByRole('button', { name: 'ドラマ' }))
+    await user.click(within(panel).getByRole('button', { name: 'ジャンル: 0 件' }))
+    const genreMenu = await screen.findByRole('dialog', { name: 'ジャンル' })
+    const options = within(genreMenu).getByRole('group', { name: 'ジャンルの候補' })
+
+    await user.click(within(options).getByRole('checkbox', { name: 'ドラマ' }))
     expect(getCurrent().genre).toEqual([3])
 
-    await user.click(within(panel).getByRole('button', { name: 'ドラマ' }))
+    await user.click(within(options).getByRole('checkbox', { name: 'ドラマ' }))
     expect(getCurrent().genre).toBeUndefined()
   })
 

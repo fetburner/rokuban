@@ -193,6 +193,26 @@ describe('ConditionFields の詳細条件の折り畳み', () => {
   })
 })
 
+describe('ConditionFields ジャンル候補', () => {
+  it('選択済みの予備・拡張だけを表示し、条件欄から解除できる', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = { ...emptyDraft(), genres: [12, 14] }
+    const onChange = vi.fn()
+
+    renderInRouter(<ConditionFields draft={draft} onChange={onChange} />)
+
+    const group = await screen.findByRole('group', { name: 'ジャンル' })
+    expect(findChipByText(group, 'ジャンル 12')).toHaveAttribute('aria-pressed', 'true')
+    expect(findChipByText(group, '拡張')).toHaveAttribute('aria-pressed', 'true')
+    expect(within(group).queryByRole('button', { name: 'ジャンル 13' })).not.toBeInTheDocument()
+    expect(within(group).getByRole('button', { name: 'ドラマ' })).toBeInTheDocument()
+
+    fireEvent.click(findChipByText(group, 'ジャンル 12'))
+    const update = onChange.mock.calls[0][0] as (draft: SearchDraft) => SearchDraft
+    expect(update(draft).genres).toEqual([14])
+  })
+})
+
 describe('ConditionFields のサービスチップ', () => {
   it('名前が重複しないサービスには補助ラベルを付けない', async () => {
     stubServicesFetch()
