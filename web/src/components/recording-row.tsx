@@ -1,11 +1,11 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronRight, Copy, ExternalLink, Trash2 } from 'lucide-react'
+import { ChevronRight, Copy, ExternalLink, FolderOpen, Trash2 } from 'lucide-react'
 import { useRef, useState } from 'react'
 
 import type { Recording } from '@/api/generated'
-import { useToast } from '@/components/toaster'
 import type { LiveCapability } from '@/lib/capabilities'
 import { DropBadges, EncodeStatusBadges, IngestBadge, RecordingVerdictBadge } from '@/components/recording-badges'
+import { useCopyLink } from '@/lib/use-copy-link'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { recordingThumbnailURL } from '@/lib/recording-media'
@@ -68,18 +68,10 @@ export function RecordingRow({
   const rowRef = useRef<HTMLDivElement>(null)
   const finePointer = useMediaQuery('(pointer: fine)')
   const contextMenuEnabled = finePointer && !selecting
-  const toast = useToast()
   const moveToTrash = useMoveRecordingToTrash(recording.id)
   const detailPath = `/recordings/${recording.id}`
 
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(new URL(detailPath, window.location.origin).href)
-      toast({ message: 'リンクをコピーしました' })
-    } catch {
-      toast({ message: 'リンクをコピーできませんでした', kind: 'error' })
-    }
-  }
+  const copyLink = useCopyLink(detailPath)
 
   const row = (
     <div
@@ -198,7 +190,7 @@ export function RecordingRow({
           closeOnClick
           render={<Link to="/recordings/$id" params={{ id: String(recording.id) }} />}
         >
-          <ExternalLink />
+          <FolderOpen />
           開く
         </ContextMenuLinkItem>
         <ContextMenuLinkItem

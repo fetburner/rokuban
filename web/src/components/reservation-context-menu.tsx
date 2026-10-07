@@ -1,9 +1,8 @@
 import type { ReactElement, RefObject } from 'react'
 import { Link } from '@tanstack/react-router'
-import { Copy, ExternalLink, Trash2 } from 'lucide-react'
+import { Copy, ExternalLink, FolderOpen, Trash2 } from 'lucide-react'
 
 import type { Reservation } from '@/api/generated'
-import { useToast } from '@/components/toaster'
 import {
   ContextMenu,
   ContextMenuContent,
@@ -12,6 +11,7 @@ import {
   ContextMenuSeparator,
   ContextMenuTrigger,
 } from '@/components/ui/context-menu'
+import { useCopyLink } from '@/lib/use-copy-link'
 import { useMediaQuery } from '@/lib/use-media-query'
 
 /** ReservationContextMenu は細いポインタの予約行に、既存操作を右クリックからも提供する。 */
@@ -19,24 +19,19 @@ export function ReservationContextMenu({
   reservation,
   rowRef,
   onCancel,
+  cancelPending = false,
   children,
 }: {
   reservation: Reservation
   rowRef: RefObject<HTMLElement | null>
   onCancel: () => void
+  /** 取消の処理中。二重に skip を送らないよう項目を無効にする。 */
+  cancelPending?: boolean
   children: ReactElement
 }) {
   const finePointer = useMediaQuery('(pointer: fine)')
-  const toast = useToast()
   const detailPath = `/reservations/${encodeURIComponent(reservation.site)}/${reservation.programId}`
-  const copyLink = async () => {
-    try {
-      await navigator.clipboard.writeText(new URL(detailPath, window.location.origin).href)
-      toast({ message: 'リンクをコピーしました' })
-    } catch {
-      toast({ message: 'リンクをコピーできませんでした', kind: 'error' })
-    }
-  }
+  const copyLink = useCopyLink(detailPath)
 
   if (!finePointer) return children
 
@@ -53,7 +48,7 @@ export function ReservationContextMenu({
             />
           }
         >
-          <ExternalLink />
+          <FolderOpen />
           開く
         </ContextMenuLinkItem>
         <ContextMenuLinkItem
@@ -75,7 +70,7 @@ export function ReservationContextMenu({
           リンクをコピー
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem variant="destructive" onClick={onCancel}>
+        <ContextMenuItem variant="destructive" disabled={cancelPending} onClick={onCancel}>
           <Trash2 />
           予約を取消
         </ContextMenuItem>

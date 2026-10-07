@@ -11,6 +11,7 @@ import { programTitle } from '@/lib/program-labels'
 import { reservationGroupCapacityAt, type ReservationGroup } from '@/lib/reservation-groups'
 import { shortageMessage } from '@/lib/capacity'
 import { reservationRowLabel, unwatchedLabel } from '@/lib/reservation-labels'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
 
 /** 予約の詳細リンクを展開する行。棚は予約一覧とは独立したクエリの成功時だけ渡す。 */
@@ -22,6 +23,7 @@ export function ReservationSeriesRow({
   ruleLabel,
   showSite,
   onCancelReservation,
+  isCancelPending,
 }: {
   group: ReservationGroup
   overages: readonly CapacityOverage[]
@@ -29,9 +31,11 @@ export function ReservationSeriesRow({
   shelf?: RecordingShelf
   ruleLabel: (ruleId: number) => string
   onCancelReservation: (reservation: Reservation) => void
+  isCancelPending: (reservation: Reservation) => boolean
   /** 複数サイトを構成しているか。構成ベースで決め、行の予約の site 数では決めない。 */
   showSite: boolean
 }) {
+  const finePointer = useMediaQuery('(pointer: fine)')
   const [expanded, setExpanded] = useState(false)
   const headingRef = useRef<HTMLSpanElement>(null)
   const headerRef = useRef<HTMLDivElement>(null)
@@ -61,11 +65,12 @@ export function ReservationSeriesRow({
         reservation={next}
         rowRef={headerRef}
         onCancel={() => onCancelReservation(next)}
+        cancelPending={isCancelPending(next)}
       >
         <div
           ref={headerRef}
           data-testid="reservation-series-header"
-          tabIndex={-1}
+          tabIndex={finePointer ? -1 : undefined}
           className="relative isolate"
         >
           {canExpand ? (
@@ -140,6 +145,7 @@ export function ReservationSeriesRow({
               showSite={showSite}
               ruleLabel={ruleLabel}
               onCancelReservation={onCancelReservation}
+              isCancelPending={isCancelPending}
             />
           ))}
         </ul>
@@ -225,6 +231,7 @@ function ReservationEpisodeRow({
   showSite,
   ruleLabel,
   onCancelReservation,
+  isCancelPending,
 }: {
   reservation: Reservation
   series: string | null
@@ -232,7 +239,9 @@ function ReservationEpisodeRow({
   showSite: boolean
   ruleLabel: (ruleId: number) => string
   onCancelReservation: (reservation: Reservation) => void
+  isCancelPending: (reservation: Reservation) => boolean
 }) {
+  const finePointer = useMediaQuery('(pointer: fine)')
   const title = episodeTitle(reservation.title, series)
   const rowRef = useRef<HTMLLIElement>(null)
 
@@ -241,7 +250,7 @@ function ReservationEpisodeRow({
       ref={rowRef}
       data-testid="reservation-episode-row"
       className="relative isolate border-b border-border/70 last:border-b-0"
-      tabIndex={-1}
+      tabIndex={finePointer ? -1 : undefined}
     >
       <Link
         to="/reservations/$site/$programId"
@@ -267,6 +276,7 @@ function ReservationEpisodeRow({
       reservation={reservation}
       rowRef={rowRef}
       onCancel={() => onCancelReservation(reservation)}
+      cancelPending={isCancelPending(reservation)}
     >
       {row}
     </ReservationContextMenu>

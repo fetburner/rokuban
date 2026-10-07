@@ -38,6 +38,7 @@ import { shouldShowRecordingSite } from '@/lib/recording-search'
 import { makeRuleLabel } from '@/lib/rule-label'
 import { useReservationActions } from '@/lib/reservation-actions'
 import { programIdentity } from '@/lib/all-sites-services'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { groupReservations } from '@/lib/reservation-groups'
 import {
   loadReservationGrouping,
@@ -246,6 +247,7 @@ export function ReservationsPage() {
                 shelf={group.series === null ? undefined : shelvesByValue?.get(group.series)}
                 ruleLabel={ruleLabel}
                 showSite={showSite}
+                isCancelPending={(reservation) => reservationActions.isBusy({ site: reservation.site, programId: reservation.programId, name: reservation.title })}
                 onCancelReservation={(reservation) =>
                   reservationActions.cancel({
                     site: reservation.site,
@@ -279,6 +281,7 @@ export function ReservationsPage() {
                       reservation={reservation}
                       overages={overages}
                       ruleLabel={ruleLabel}
+                      cancelPending={reservationActions.isBusy({ site: reservation.site, programId: reservation.programId, name: reservation.title })}
                       onCancel={() =>
                         reservationActions.cancel({
                           site: reservation.site,
@@ -311,19 +314,22 @@ function ReservationRow({
   overages,
   ruleLabel,
   onCancel,
+  cancelPending,
 }: {
   reservation: Reservation
   overages: CapacityOverage[]
   ruleLabel: (ruleId: number) => string
   onCancel: () => void
+  cancelPending: boolean
 }) {
+  const finePointer = useMediaQuery('(pointer: fine)')
   const rowRef = useRef<HTMLLIElement>(null)
 
   const row = (
     <li
       ref={rowRef}
       className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40"
-      tabIndex={-1}
+      tabIndex={finePointer ? -1 : undefined}
     >
       {/* 行全面リンクを背面へ置き、対話要素は個別に手前へ積む。 */}
       <Link
@@ -359,7 +365,10 @@ function ReservationRow({
   )
 
   return (
-    <ReservationContextMenu reservation={reservation} rowRef={rowRef} onCancel={onCancel}>
+    <ReservationContextMenu reservation={reservation} rowRef={rowRef}
+      onCancel={onCancel}
+      cancelPending={cancelPending}
+    >
       {row}
     </ReservationContextMenu>
   )
