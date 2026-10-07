@@ -53,7 +53,7 @@ export function RecordingVerdictBadge({
   return (
     <button
       type="button"
-      className="inline-flex min-h-6 items-center"
+      className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center"
       aria-label="録画状態を記録タブで見る"
       onClick={onClick}
     >

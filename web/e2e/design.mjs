@@ -393,6 +393,13 @@ const recordingDetailScenarios = {
     endedAt: iso(nowMs - 24.5 * HOUR),
     cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
   },
+  'short-series': {
+    ...recordings[1],
+    series: '天気',
+    startedAt: iso(nowMs - 26 * HOUR),
+    endedAt: iso(nowMs - 24.5 * HOUR),
+    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+  },
   recording: {
     ...recordings[1],
     status: 'recording',
@@ -1695,6 +1702,88 @@ async function runCoarseTapTargetChecks() {
       }
       await context.close()
     }
+  }
+
+  // 展開行でだけ見える番組名検索リンクと encode profile checkbox label も測る。
+  for (const viewport of tapTargetWidths) {
+    const { context, page } = await open(viewport, 'light', screenOf('programs'), { pointer: 'coarse' })
+    const row = page.locator('li[data-program-id]').first()
+    const rowVisible = await row.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!rowVisible) {
+      ng.push(`[${viewport.name}/programs-expanded-first-row] 番組行が表示されない`)
+      await context.close()
+      continue
+    }
+    const expander = row.locator('button[aria-expanded]').first()
+    if ((await expander.count()) === 0) {
+      ng.push(`[${viewport.name}/programs-expanded-first-row] 展開ボタンが見つからない`)
+      await context.close()
+      continue
+    }
+    await expander.click()
+    if ((await expander.getAttribute('aria-expanded')) !== 'true') {
+      ng.push(`[${viewport.name}/programs-expanded-first-row] 行が展開されない`)
+      await context.close()
+      continue
+    }
+    const body = row.locator('[id^="program-row-detail-"]')
+    const nameSearch = body.getByRole('link', { name: 'この番組名で検索', exact: true })
+    const profileGroup = body.getByRole('group', { name: 'エンコードプロファイル' })
+    const profileCheckbox = profileGroup.getByRole('checkbox').first()
+    const searchVisible = await nameSearch.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    const profileVisible = await profileCheckbox.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!searchVisible) {
+      ng.push(`[${viewport.name}/programs-expanded-first-row] 番組名検索リンクが表示されない`)
+    }
+    if (!profileVisible) {
+      ng.push(`[${viewport.name}/programs-expanded-first-row] encode profile checkbox が表示されない`)
+    }
+    if (searchVisible && profileVisible) {
+      await measureCoarseTapTargets(page, `${viewport.name}/programs-expanded-first-row`, body)
+    }
+    await context.close()
+  }
+
+  // 短いシリーズ名はシリーズリンクの横幅が本文より狭い状態を作る。
+  for (const viewport of tapTargetWidths) {
+    const { context, page } = await open(viewport, 'light', recordingDetailScreen, {
+      pointer: 'coarse',
+      multiSite: true,
+      recordingDetailScenario: 'short-series',
+    })
+    const seriesLink = page.getByRole('link', { name: 'このシリーズへ: 天気' })
+    const visible = await seriesLink.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!visible) {
+      ng.push(`[${viewport.name}/recording-detail-short-series] 短いシリーズリンクが表示されない`)
+    } else {
+      await measureCoarseTapTargets(
+        page,
+        `${viewport.name}/recording-detail-short-series`,
+        page.locator('[data-testid="recording-series-links"]'),
+      )
+    }
+    await context.close()
+  }
+
+  // 録画中は結論バッジが記録タブへの button として現れる。
+  for (const viewport of tapTargetWidths) {
+    const { context, page } = await open(viewport, 'light', recordingDetailScreen, {
+      pointer: 'coarse',
+      multiSite: true,
+      recordingDetailScenario: 'recording',
+    })
+    const verdictButton = page.getByRole('button', { name: '録画状態を記録タブで見る' })
+    const visible = await verdictButton.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!visible) {
+      ng.push(`[${viewport.name}/recording-detail-recording] 録画状態ボタンが表示されない`)
+    } else {
+      await measureCoarseTapTargets(
+        page,
+        `${viewport.name}/recording-detail-recording`,
+        page.locator('[data-testid="recording-title-row"]'),
+      )
+    }
+    await context.close()
   }
 
   // ruleId filter は通常の予約一覧に出ない「解除」ボタンと条件編集リンクも持つ。

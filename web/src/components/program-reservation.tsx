@@ -287,7 +287,7 @@ export function ProgramReservationBody({
 }) {
   const canSearchByName = program.name.trim().length > 0
   const linkClassName =
-    'inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline'
+    'inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline'
 
   return (
     <>

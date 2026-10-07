@@ -229,7 +229,7 @@ function ProfileMultiSelect({
           <li key={p.name}>
             <label
               className={cn(
-                'flex min-h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-foreground',
+                'flex min-h-9 pointer-coarse:min-h-11 cursor-pointer items-center gap-2 rounded-md px-2 text-sm text-foreground',
                 'hover:bg-muted/60',
                 disabled && 'pointer-events-none opacity-50',
               )}

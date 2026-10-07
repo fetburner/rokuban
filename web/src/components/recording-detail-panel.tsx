@@ -887,7 +887,7 @@ export function RecordingDetail({
                   to="/recordings/$id/series"
                   params={{ id: String(recording.id) }}
                   aria-label={`このシリーズへ: ${recording.series}`}
-                  className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline underline-offset-4"
+                  className="inline-flex min-h-6 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center text-primary underline underline-offset-4"
                 >
                   {recording.series} <span aria-hidden className="ml-1">›</span>
                 </Link>
