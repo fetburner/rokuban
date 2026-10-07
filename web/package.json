@@ -19,7 +19,7 @@
     "e2e:recording-original-vod": "node e2e/recording-original-vod.mjs",
     "e2e:recording-playback-timeline": "node e2e/recording-playback-timeline.mjs",
     "e2e:design": "node e2e/design.mjs",
-    "e2e:issue-1225-font-scale": "node e2e/issue-1225-font-scale.mjs",
+    "e2e:font-scale": "node e2e/font-scale.mjs",
     "e2e:home-timeline-keyboard": "node e2e/home-timeline-keyboard.mjs",
     "e2e:sidebar-tooltips": "node e2e/sidebar-tooltips.mjs",
     "e2e:badge-links": "node e2e/badge-links.mjs",

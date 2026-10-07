@@ -614,10 +614,10 @@ pnpm check:colors
 検査が見ていない書き方（動的なクラス名の合成・CSS の名前付き色・3 桁の 16 進・
 `public/` の資産）は `scripts/check-colors.mjs` に書き出してあり、実行のたびに出力する。
 
-### フォントスケール（`issue-1225-font-scale.mjs`）
+### フォントスケール（`font-scale.mjs`）
 
-`pnpm e2e:issue-1225-font-scale` は、移行した `text-xs` が実ブラウザで 12px かを測る。
-390px の fine-pointer と 1280px のフォーム入力欄を測り、前者は 16px 以上、後者は
+`pnpm e2e:font-scale` は、移行した `text-xs` が実ブラウザで 12px かを測る。
+390px は fine と coarse（isMobile + hasTouch）の両方で /search・/recordings・/series の入力欄が 16px 以上、1280px は
 既定の 14px を保つことを確かめる。番組表グリッドとホームの運用時間軸では、
 横幅が時刻を示すラベルが 11px 以上かを測る。
 直値 11px を下げる変異と、モバイル入力を 16px 未満にする変異で失敗する。
@@ -625,7 +625,7 @@ pnpm check:colors
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:issue-1225-font-scale
+E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 ```
 
 ### SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`）

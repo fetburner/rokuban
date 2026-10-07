@@ -1,11 +1,11 @@
-// Typography scale regression gate for issue #1225.
+// Typography scale regression gate.
 //
 // jsdom does not resolve Tailwind utilities or model browser input rendering. This gate reads
 // computed sizes from the live browser for the compact labels in both time-by-width displays
 // and for mobile form controls at a 390px viewport.
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
-//   E2E_URL=http://localhost:4173 pnpm e2e:issue-1225-font-scale
+//   E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 //
 // The iPhone Safari focus-zoom check remains a physical-device follow-up.
 import {
@@ -166,118 +166,53 @@ const apiHandler = async ({ path, url, json, route }) => {
 
 const browser = await launchBrowser()
 
-log('\n=== 390px fine-pointer: input font size ===')
-const narrowContext = await browser.newContext({
-  viewport: { width: 390, height: 844 },
-  deviceScaleFactor: 3,
-  locale: 'ja-JP',
-  timezoneId: 'Asia/Tokyo',
-})
-const narrowPage = await narrowContext.newPage()
-await narrowPage.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(narrowPage, apiHandler)
-await narrowPage.goto(`${BASE}/search`, { waitUntil: 'domcontentloaded' })
-const narrowInput = narrowPage.getByRole('textbox', { name: 'テキスト条件 1 の値' })
-await narrowInput.waitFor({ timeout: 10_000 })
-const pointerTypes = await narrowPage.evaluate(() => ({
-  fine: matchMedia('(pointer: fine)').matches,
-  coarse: matchMedia('(pointer: coarse)').matches,
-}))
-log(`  pointer: fine=${pointerTypes.fine}, coarse=${pointerTypes.coarse}`)
-if (!pointerTypes.fine || pointerTypes.coarse) ng.push('390px: fine-pointer 条件ではない')
-const inputSizes = await narrowPage.locator('input, textarea, select').evaluateAll((elements) =>
-  elements
-    .filter((element) => {
-      const rect = element.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0
-    })
-    .map((element) => ({
-      label: element.getAttribute('aria-label') ?? element.getAttribute('type') ?? element.tagName,
-      fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
-    })),
-)
-const minInputSize = Math.min(...inputSizes.map(({ fontSize }) => fontSize))
-log(`  390×844 / 入力欄 ${inputSizes.length} 件 / 最小 ${minInputSize}px`)
-if (inputSizes.length === 0) ng.push('390px: 表示された入力欄がない')
-for (const input of inputSizes) {
-  if (input.fontSize < 16) ng.push(`390px: ${input.label} が ${input.fontSize}px（16px 未満）`)
-}
-await narrowContext.close()
-
-log('\n=== 1280px desktop: form controls keep their base size ===')
-const desktopContext = await browser.newContext({
-  viewport: { width: 1280, height: 900 },
-  locale: 'ja-JP',
-  timezoneId: 'Asia/Tokyo',
-})
-const desktopPage = await desktopContext.newPage()
-await desktopPage.clock.setFixedTime(FIXED_NOW)
-await installApiStubs(desktopPage, apiHandler)
-await desktopPage.goto(`${BASE}/search`, { waitUntil: 'domcontentloaded' })
-await desktopPage.getByRole('textbox', { name: 'テキスト条件 1 の値' }).waitFor({ timeout: 10_000 })
-const desktopInputSizes = await desktopPage.locator('input, textarea, select').evaluateAll((elements) =>
-  elements
-    .filter((element) => {
-      const rect = element.getBoundingClientRect()
-      return rect.width > 0 && rect.height > 0
-    })
-    .map((element) => ({
-      label: element.getAttribute('aria-label') ?? element.getAttribute('type') ?? element.tagName,
-      fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
-    })),
-)
-const minDesktopInputSize = Math.min(...desktopInputSizes.map(({ fontSize }) => fontSize))
-log(`  1280×900 / 入力欄 ${desktopInputSizes.length} 件 / 最小 ${minDesktopInputSize}px`)
-if (desktopInputSizes.length === 0) ng.push('1280px: 表示された入力欄がない')
-for (const input of desktopInputSizes) {
-  if (input.fontSize !== 14) {
-    ng.push(`1280px: ${input.label} が ${input.fontSize}px（既定の 14px でない）`)
-  }
-}
-await desktopContext.close()
-
-async function checkFormControlBreakpoint(width, expectation) {
+async function checkFormControlBreakpoint(width, expectation, { coarse = false, paths = ['/search'] } = {}) {
   const context = await browser.newContext({
     viewport: { width, height: 844 },
+    ...(coarse ? { deviceScaleFactor: 3, isMobile: true, hasTouch: true } : {}),
     locale: 'ja-JP',
     timezoneId: 'Asia/Tokyo',
   })
-  const page = await context.newPage()
-  await page.clock.setFixedTime(FIXED_NOW)
-  await installApiStubs(page, apiHandler)
-  await page.goto(`${BASE}/search`, { waitUntil: 'domcontentloaded' })
-  await page.getByRole('textbox', { name: 'テキスト条件 1 の値' }).waitFor({ timeout: 10_000 })
-  const pointerTypes = await page.evaluate(() => ({
-    fine: matchMedia('(pointer: fine)').matches,
-    coarse: matchMedia('(pointer: coarse)').matches,
-  }))
-  if (!pointerTypes.fine || pointerTypes.coarse) {
-    ng.push(`${width}px: fine-pointer 条件ではない`)
-  }
-  const sizes = await page.locator('input, textarea, select').evaluateAll((elements) =>
-    elements
-      .filter((element) => {
-        const rect = element.getBoundingClientRect()
-        return rect.width > 0 && rect.height > 0
-      })
-      .map((element) => ({
-        label: element.getAttribute('aria-label') ?? element.getAttribute('type') ?? element.tagName,
-        fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
-      })),
-  )
-  const minSize = Math.min(...sizes.map(({ fontSize }) => fontSize))
-  log(`  ${width}×844 fine-pointer / 入力欄 ${sizes.length} 件 / 最小 ${minSize}px`)
-  if (sizes.length === 0) ng.push(`${width}px: 表示された入力欄がない`)
-  for (const input of sizes) {
-    if ('minimum' in expectation && input.fontSize < expectation.minimum) {
-      ng.push(`${width}px: ${input.label} が ${input.fontSize}px（${expectation.minimum}px 未満）`)
+  const pointer = coarse ? 'coarse-pointer' : 'fine-pointer'
+  for (const path of paths) {
+    const page = await context.newPage()
+    await page.clock.setFixedTime(FIXED_NOW)
+    await installApiStubs(page, apiHandler)
+    await page.goto(`${BASE}${path}`, { waitUntil: 'domcontentloaded' })
+    await page.locator('input, textarea, select').first().waitFor({ state: 'visible', timeout: 10_000 })
+    const matches = await page.evaluate(() => matchMedia('(pointer: coarse)').matches)
+    if (matches !== coarse) ng.push(`${width}px ${path}: ${pointer} 条件ではない`)
+    const sizes = await page.locator('input, textarea, select').evaluateAll((elements) =>
+      elements
+        .filter((element) => {
+          const rect = element.getBoundingClientRect()
+          return rect.width > 0 && rect.height > 0
+        })
+        .map((element) => ({
+          label: element.getAttribute('aria-label') ?? element.getAttribute('type') ?? element.tagName,
+          fontSize: Number.parseFloat(getComputedStyle(element).fontSize),
+        })),
+    )
+    const minSize = Math.min(...sizes.map(({ fontSize }) => fontSize))
+    log(`  ${width}×844 ${pointer} ${path} / 入力欄 ${sizes.length} 件 / 最小 ${minSize}px`)
+    if (sizes.length === 0) ng.push(`${width}px ${path}: 表示された入力欄がない`)
+    for (const input of sizes) {
+      if ('minimum' in expectation && input.fontSize < expectation.minimum) {
+        ng.push(`${width}px ${pointer} ${path}: ${input.label} が ${input.fontSize}px（${expectation.minimum}px 未満）`)
+      }
+      if ('exact' in expectation && input.fontSize !== expectation.exact) {
+        ng.push(`${width}px ${pointer} ${path}: ${input.label} が ${input.fontSize}px（${expectation.exact}px でない）`)
+      }
     }
-    if ('exact' in expectation && input.fontSize !== expectation.exact) {
-      ng.push(`${width}px: ${input.label} が ${input.fontSize}px（${expectation.exact}px でない）`)
-    }
+    await page.close()
   }
   await context.close()
 }
+
+log('\n=== form controls: 390px mobile, 1280px desktop ===')
+await checkFormControlBreakpoint(390, { minimum: 16 })
+await checkFormControlBreakpoint(390, { minimum: 16 }, { coarse: true, paths: ['/search', '/recordings', '/series'] })
+await checkFormControlBreakpoint(1280, { exact: 14 })
 
 log('\n=== md breakpoint: 767px is mobile, 768px is desktop ===')
 await checkFormControlBreakpoint(767, { minimum: 16 })

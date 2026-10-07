@@ -52,7 +52,7 @@ jobs:
   #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
   # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
   # home-timeline-keyboard は 1280×800 の時間軸にフォーカスしたときの左右矢印スクロールを測る。
-  # issue-1225-font-scale は 390 / 767 / 768 / 1280px のフォーム文字サイズと、画面内の例外文字サイズを測る。
+  # font-scale は 390 / 767 / 768 / 1280px のフォーム文字サイズと、画面内の例外文字サイズを測る。
   # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
@@ -158,7 +158,7 @@ jobs:
         run: pnpm e2e:home-timeline-keyboard
         working-directory: web
       - if: ${{ !cancelled() }}
-        run: pnpm e2e:issue-1225-font-scale
+        run: pnpm e2e:font-scale
         working-directory: web
       - if: ${{ !cancelled() }}
         run: E2E_RULE_CARD_ONLY=1 pnpm e2e:design
