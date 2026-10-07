@@ -1,5 +1,4 @@
-import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
+import { ArrowUpDown, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
@@ -11,18 +10,20 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { ChannelPicker } from '@/components/channel-picker'
+import { RecordingPeriodMenu } from '@/components/recording-period-menu'
+import { ToolbarDot, ToolbarPanel, toolbarButtonClass } from '@/components/toolbar-panel'
 import { Chip } from '@/components/ui/chip'
-import { Field, Input } from '@/components/ui/field'
+import { Input } from '@/components/ui/field'
 import { useAllSitesServices } from '@/lib/all-sites-services'
 import { genreCodeLabel, genreCodes } from '@/lib/program-search'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { serviceDisambiguator } from '@/lib/service-label'
+import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
+import { cn } from '@/lib/utils'
 import {
   clearRecordingsFilters,
   describeRecordingsFilters,
-  isoToLocalDateTimeInput,
   isSourceMootWithRule,
-  localDateTimeInputToIso,
   parseRuleId,
   recordingSourceValues,
   recordingStatusValues,
@@ -46,7 +47,11 @@ type Update = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) =>
  * 戻るボタンとの整合は URL 側の責務であり、ここに複製しない。
  *
  * 並び順は画面ごとに軸が違う（録画は放送日時の昇降、シリーズは新着・件数・名前）
- * ので、絞り込みの右に置く操作を `children` で受ける。
+ * ので、絞り込みの右に置く操作を `children` で受ける（`ToolbarSelect`）。
+ *
+ * ツールバーは `[検索][期間][絞り込み][並び順]` の 1 行。md 未満は 3 つをアイコンに
+ * して 360px でも折り返さない。期間はボタンが中身を表示するので、期間のチップは
+ * ボタンが文字を出さない md 未満でだけ出す。
  */
 export function RecordingFilters({
   search,
@@ -84,15 +89,19 @@ export function RecordingFilters({
     )
   }
 
-  const chips = describeRecordingsFilters(search, serviceLabelById, rules)
+  // 期間ボタンとチップは同じ now で `periodLabel` を呼ぶ（「今週」の判定を食い違わせない）。
+  const now = new Date()
+  const chips = describeRecordingsFilters(search, serviceLabelById, rules, now)
+  const onlyPeriodChip = chips.every((chip) => chip.key === 'period')
 
   return (
     <div className="flex flex-col gap-2 border-t border-border px-4 py-2">
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="flex items-center gap-1 md:flex-wrap md:gap-2">
         <KeywordField
           value={search.q ?? ''}
           onChange={(q) => onChange((s) => ({ ...s, q: q.trim() === '' ? undefined : q }))}
         />
+        <RecordingPeriodMenu search={search} onChange={onChange} now={now} />
         <FilterPanel
           search={search}
           services={serviceList}
@@ -108,13 +117,20 @@ export function RecordingFilters({
       </div>
 
       {chips.length > 0 && (
-        <div role="group" aria-label="適用中の条件" className="flex flex-wrap items-center gap-1.5">
+        <div
+          role="group"
+          aria-label="適用中の条件"
+          className={cn('flex flex-wrap items-center gap-1.5', onlyPeriodChip && 'md:hidden')}
+        >
           {chips.map((chip) => (
             <button
               key={chip.key}
               type="button"
               onClick={() => onChange((s) => chip.clear(s))}
-              className="flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted/70"
+              className={cn(
+                'flex items-center gap-1 rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-foreground transition-colors hover:bg-muted/70',
+                chip.key === 'period' && 'md:hidden',
+              )}
             >
               {chip.label}
               <X className="size-3" aria-hidden />
@@ -143,6 +159,7 @@ export function RecordingFilters({
  */
 function KeywordField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
   const [draft, setDraft] = useState(value)
+  const wide = useMediaQuery(mdMediaQuery)
 
   useEffect(() => {
     setDraft(value)
@@ -158,7 +175,7 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
   }, [draft])
 
   return (
-    <div className="relative min-w-0 flex-1 basis-56">
+    <div className="relative min-w-0 flex-1 basis-0 md:basis-56">
       <SearchIcon
         className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         aria-hidden
@@ -166,7 +183,8 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
       <Input
         type="search"
         aria-label="番組名・説明で検索"
-        placeholder="番組名・説明で検索"
+        // md 未満は 3 つのアイコンと 1 行に並べるので短くする。名前（aria-label）は変えない。
+        placeholder={wide ? '番組名・説明で検索' : '番組を検索'}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         className="h-11 pl-8"
@@ -187,41 +205,61 @@ export function RecordingOrderSelect({
     <ToolbarSelect
       label="並び順"
       value={search.order ?? ListRecordingsOrder.desc}
+      options={[
+        { value: ListRecordingsOrder.desc, label: '新しい順' },
+        { value: ListRecordingsOrder.asc, label: '古い順' },
+      ]}
       onChange={(order) =>
-        onChange((s) => ({
-          ...s,
-          order: order === ListRecordingsOrder.desc ? undefined : (order as ListRecordingsOrder),
-        }))
+        onChange((s) => ({ ...s, order: order === ListRecordingsOrder.desc ? undefined : order }))
       }
-    >
-      <option value={ListRecordingsOrder.desc}>新しい順</option>
-      <option value={ListRecordingsOrder.asc}>古い順</option>
-    </ToolbarSelect>
+    />
   )
 }
 
-/** ToolbarSelect は絞り込みの並びに置く select の外枠（高さとボーダーを揃える）。 */
-export function ToolbarSelect({
+/**
+ * ToolbarSelect はツールバーの並び順。互いに排他な選択肢なので、md 以上は今の選択を出した
+ * pop-up button（期間・絞り込みと同じ枠とシェブロン）、md 未満は枠なしのアイコンにする。
+ * 操作は透明に重ねたネイティブの `<select>` が受ける（iOS はホイールのピッカーで選べる）。
+ *
+ * **`options[0]` を既定値とし、それ以外のときアイコンに点を付ける。** md 未満はアイコンから
+ * 今の並びが読めないので、既定から外れていることだけを他のボタンと同じ点で示す
+ * （どの並びかは押せば分かる。読み上げは select の値で分かる）。
+ */
+export function ToolbarSelect<T extends string>({
   label,
   value,
+  options,
   onChange,
-  children,
 }: {
   label: string
-  value: string
-  onChange: (value: string) => void
-  children: ReactNode
+  value: T
+  options: readonly { value: T; label: string }[]
+  onChange: (value: T) => void
 }) {
   return (
-    <label className="flex h-11 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground">
-      <span className="sr-only">{label}</span>
+    <label
+      className={cn(
+        toolbarButtonClass,
+        'has-[select:focus-visible]:ring-3 has-[select:focus-visible]:ring-ring/50',
+      )}
+    >
+      <ArrowUpDown className="size-5 md:hidden" aria-hidden />
+      <span aria-hidden className="hidden md:inline">
+        {options.find((option) => option.value === value)?.label}
+      </span>
+      <ChevronDown className="hidden size-4 text-muted-foreground md:block" aria-hidden />
+      {value !== options[0]?.value && <ToolbarDot />}
       <select
         aria-label={label}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="h-6 bg-transparent text-sm text-foreground outline-none"
+        onChange={(e) => onChange(e.target.value as T)}
+        className="absolute inset-0 size-full cursor-pointer appearance-none opacity-0"
       >
-        {children}
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
       </select>
     </label>
   )
@@ -307,7 +345,8 @@ function updateRuleFilter(search: RecordingsPageSearch, ruleId: number | undefin
  * `<ChannelPicker>` の方が細かく絞れ、issue #137 の UI 案（チャンネル / ジャンル /
  * 期間 / 状態 / 種別）にも種別独立の選択肢は無い。`qTarget`（番組名のみ /
  * 概要含む）も UI 案に無いので出さない --- 出しても検証できないコントロールを
- * 増やさない（「機能しないコントロールは置かない」の逆）。
+ * 増やさない（「機能しないコントロールは置かない」の逆）。期間はここに置かず、
+ * ツールバーの独立した操作にする（`RecordingPeriodMenu`）。
  */
 function FilterPanel({
   search,
@@ -355,28 +394,28 @@ function FilterPanel({
     return label === '' ? undefined : label
   }
 
+  // 点はこのパネルで選べる次元だけで判定する（期間は期間ボタン、encodeState はチップが示す）。
+  const filtered = [search.service, search.site, search.genre, search.status, search.ruleId, search.source].some(
+    (value) => value !== undefined,
+  )
+
   return (
-    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
-      <PopoverPrimitive.Trigger
-        className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground"
-      >
-        絞り込み
-        <ChevronDown className="size-4 text-muted-foreground" aria-hidden="true" />
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        {/* positionMethod は 'fixed'。理由は components/channel-picker.tsx と同じ
-            （sticky なトリガーと 'absolute' ポップアップのスクロール追従のずれ）。 */}
-        <PopoverPrimitive.Positioner
-          className="z-50 outline-none"
-          positionMethod="fixed"
-          side="bottom"
-          align="start"
-          sideOffset={6}
-        >
-          <PopoverPrimitive.Popup
-            aria-label="絞り込み"
-            className="flex max-h-[min(34rem,80vh)] w-[min(22rem,90vw)] flex-col gap-4 overflow-y-auto rounded-lg border border-border bg-popover p-3 text-popover-foreground shadow-md outline-none"
-          >
+    <ToolbarPanel
+      title="絞り込み"
+      open={open}
+      onOpenChange={setOpen}
+      triggerClassName={toolbarButtonClass}
+      trigger={
+        <>
+          <ListFilter className="size-5 md:hidden" aria-hidden />
+          <span className="sr-only md:not-sr-only">絞り込み</span>
+          <ChevronDown className="hidden size-4 text-muted-foreground md:block" aria-hidden />
+          {filtered && <ToolbarDot />}
+        </>
+      }
+      popupWidthClassName="w-[min(22rem,90vw)]"
+      bodyClassName="flex flex-col gap-4"
+    >
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">チャンネル</h3>
               {servicesError ? (
@@ -449,30 +488,6 @@ function FilterPanel({
             </section>
 
             <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">期間（番組開始時刻）</h3>
-              <div className="flex flex-wrap gap-2">
-                <Field label="開始日時" className="min-w-0 flex-1">
-                  <Input
-                    type="datetime-local"
-                    value={isoToLocalDateTimeInput(search.from)}
-                    onChange={(e) =>
-                      onChange((s) => ({ ...s, from: localDateTimeInputToIso(e.target.value) }))
-                    }
-                  />
-                </Field>
-                <Field label="終了日時" className="min-w-0 flex-1">
-                  <Input
-                    type="datetime-local"
-                    value={isoToLocalDateTimeInput(search.to)}
-                    onChange={(e) =>
-                      onChange((s) => ({ ...s, to: localDateTimeInputToIso(e.target.value) }))
-                    }
-                  />
-                </Field>
-              </div>
-            </section>
-
-            <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">状態</h3>
               <div role="group" aria-label="状態" className="flex flex-wrap gap-1.5">
                 <Chip active={search.status === undefined} onClick={() => onChange((s) => ({ ...s, status: undefined }))}>
@@ -534,9 +549,6 @@ function FilterPanel({
                 ))}
               </div>
             </section>
-          </PopoverPrimitive.Popup>
-        </PopoverPrimitive.Positioner>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+    </ToolbarPanel>
   )
 }

@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react'
 
+/** mdMediaQuery は Tailwind の `md`（48rem）に対応するメディアクエリ。 */
+export const mdMediaQuery = '(min-width: 48rem)'
+
 /** lgMediaQuery は Tailwind の `lg`（64rem）に対応するメディアクエリ。 */
 export const lgMediaQuery = '(min-width: 64rem)'
 

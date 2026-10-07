@@ -25,10 +25,10 @@ import {
   type ListRecordingsParams,
   type Rule,
 } from '@/api/generated'
-import { formatDateTime, formatTimeRange } from '@/lib/format'
 import { parsePositiveIntId } from '@/lib/positive-id'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { genreCodeLabel } from '@/lib/program-search'
+import { periodLabel } from '@/lib/recording-period'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { ascending, asInteger, parseEnum, validArray, validValue } from '@/lib/url-search'
 
@@ -311,30 +311,6 @@ export function buildListRecordingShelvesParams(search: RecordingsPageSearch): L
   return { key: ListRecordingShelvesKey.series, ...params }
 }
 
-/**
- * isoToLocalDateTimeInput は ISO 8601（UTC）を `<input type="datetime-local">` の
- * 値（ローカル壁時計）にする。未指定は空文字列。
- *
- * `lib/program-search.ts` の `isoToLocalDateTime` と同じ変換だが、あちらは
- * `RuleInput` の期間専用でエクスポートされていない。録画検索の期間は別の
- * 条件モデル（このファイル冒頭のコメント）に属するので、ここに同じ変換を
- * 複製する（2 つの短い純関数を共有するために条件モデルを結合したくない）。
- */
-export function isoToLocalDateTimeInput(iso: string | undefined): string {
-  if (iso === undefined) return ''
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return ''
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-/** localDateTimeInputToIso は `isoToLocalDateTimeInput` の逆。空文字列は undefined。 */
-export function localDateTimeInputToIso(value: string): string | undefined {
-  if (value === '') return undefined
-  const t = new Date(value)
-  return Number.isNaN(t.getTime()) ? undefined : t.toISOString()
-}
-
 /** RecordingsFilterChip は適用中の条件チップ 1 件。 */
 export type RecordingsFilterChip = {
   key: string
@@ -344,32 +320,21 @@ export type RecordingsFilterChip = {
 }
 
 /**
- * periodLabel は期間チップの表示文字列。`期間指定` のような値の読めないラベルに
- * しない --- チップを見るだけで何を絞っているか分かる必要がある（レビューで
- * 指摘。issue #137）。片方だけの指定は「〜」を開いたままにする。
- */
-function periodLabel(from: string | undefined, to: string | undefined): string {
-  if (from !== undefined || to !== undefined) {
-    return formatTimeRange(
-      from === undefined ? undefined : formatDateTime(from),
-      to === undefined ? undefined : formatDateTime(to),
-    )
-  }
-  return ''
-}
-
-/**
  * describeRecordingsFilters は適用中の条件をチップの一覧にする。
  *
  * 配列条件（ジャンル・チャンネル）は値ごとに 1 チップ（個別に外せる）、
  * スカラー条件（状態・種別・期間・ルール）は次元ごとに 1 チップにする。
  * キーワードはチップにしない --- 検索欄自体が値を表示しているので、
  * 消すのは入力欄の編集で足りる。
+ *
+ * 期間の表示は期間ボタンと同じ `periodLabel`（`lib/recording-period.ts`）で作る。
+ * 「今週」等の名前は now に依存するので、ボタンと同じ now を渡す。
  */
 export function describeRecordingsFilters(
   search: RecordingsPageSearch,
   serviceLabelById: ReadonlyMap<number, string>,
   rules: Rule[] | undefined,
+  now: Date = new Date(),
 ): RecordingsFilterChip[] {
   const chips: RecordingsFilterChip[] = []
   const disambiguateRule = ruleDisambiguator(rules ?? [])
@@ -452,7 +417,7 @@ export function describeRecordingsFilters(
   if (search.from !== undefined || search.to !== undefined) {
     chips.push({
       key: 'period',
-      label: `期間: ${periodLabel(search.from, search.to)}`,
+      label: `期間: ${periodLabel({ from: search.from, to: search.to }, now)}`,
       clear: (s) => ({ ...s, from: undefined, to: undefined }),
     })
   }

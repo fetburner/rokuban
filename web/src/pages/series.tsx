@@ -103,15 +103,16 @@ export function SeriesPage() {
         }
       >
         <RecordingFilters search={search} onChange={updateSearch}>
-          <ToolbarSelect
+          <ToolbarSelect<ShelfSort>
             label="シリーズの並び順"
             value={sort}
-            onChange={(value) => setSort(value as ShelfSort)}
-          >
-            <option value="latest">新着順</option>
-            <option value="count">件数順</option>
-            <option value="name">名前順</option>
-          </ToolbarSelect>
+            options={[
+              { value: 'latest', label: '新着順' },
+              { value: 'count', label: '件数順' },
+              { value: 'name', label: '名前順' },
+            ]}
+            onChange={setSort}
+          />
         </RecordingFilters>
       </PageHeader>
 

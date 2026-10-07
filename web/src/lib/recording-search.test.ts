@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 
 import type { Rule } from '@/api/generated'
 import { ListRecordingsQueryParams } from '@/api/zod'
-import { formatDateTime } from '@/lib/format'
 import {
   buildListRecordingShelvesParams,
   buildListRecordingsParams,
@@ -10,8 +9,6 @@ import {
   describeRecordingsFilters,
   emptyRecordingsSearch,
   hasAnyRecordingsCondition,
-  isoToLocalDateTimeInput,
-  localDateTimeInputToIso,
   parseRecordingsSearch,
   parseSeriesSearch,
   shouldShowRecordingSite,
@@ -306,19 +303,6 @@ describe('clearRecordingsFilters', () => {
   })
 })
 
-describe('datetime-local と ISO の相互変換', () => {
-  it('往復で値が保たれる', () => {
-    const iso = new Date(2026, 0, 15, 9, 30, 0, 0).toISOString()
-    const local = isoToLocalDateTimeInput(iso)
-    expect(localDateTimeInputToIso(local)).toBe(iso)
-  })
-
-  it('未指定は空文字列、空文字列は未指定に戻る', () => {
-    expect(isoToLocalDateTimeInput(undefined)).toBe('')
-    expect(localDateTimeInputToIso('')).toBeUndefined()
-  })
-})
-
 describe('describeRecordingsFilters', () => {
   const services = new Map<number, string>([[3273601024, 'ＮＨＫ総合 (default)']])
   const rules: Rule[] = [
@@ -380,15 +364,13 @@ describe('describeRecordingsFilters', () => {
       ruleId: 7,
       from: '2026-01-01T00:00:00Z',
     }
-    const chips = describeRecordingsFilters(search, services, undefined)
+    const chips = describeRecordingsFilters(search, services, undefined, new Date('2027-03-01T00:00:00Z'))
     expect(chips.map((c) => c.key)).toEqual(['status', 'source', 'ruleId', 'period'])
     expect(chips.find((c) => c.key === 'status')?.label).toBe('状態: 失敗')
     expect(chips.find((c) => c.key === 'ruleId')?.label).toBe('ルール #7')
     // 「期間指定」のような値の読めないラベルにしない --- チップだけで何を
     // 絞っているか分かる必要がある（レビューで指摘）。
-    expect(chips.find((c) => c.key === 'period')?.label).toBe(
-      `期間: ${formatDateTime('2026-01-01T00:00:00Z')}〜`,
-    )
+    expect(chips.find((c) => c.key === 'period')?.label).toBe('期間: 2026/1/1 9:00〜')
   })
 
   it('ルール一覧にあれば「ルール: 名前」、無ければ「ルール #N」で表示する', () => {
@@ -417,18 +399,20 @@ describe('describeRecordingsFilters', () => {
     expect(unique.find((chip) => chip.key === 'ruleId')?.label).toBe('ルール: ニュース録画ルール')
   })
 
-  it('期間チップは from/to を共通の範囲書式で示す', () => {
-    const both = describeRecordingsFilters(
-      { from: '2026-01-01T00:00:00Z', to: '2026-01-02T00:00:00Z' },
+  // 表示の規則そのものは lib/recording-period.test.ts の periodLabel が固定する。ここは
+  // チップが同じ関数・同じ now を使っていることだけを見る（now 依存の「今週」で確かめる）。
+  it('期間チップは periodLabel と同じ文字列に「期間: 」を前置する', () => {
+    const now = new Date('2026-10-07T03:00:00Z')
+    const thisWeek = describeRecordingsFilters({ from: '2026-10-04T15:00:00.000Z' }, services, undefined, now)
+    expect(thisWeek[0].label).toBe('期間: 今週')
+
+    const days = describeRecordingsFilters(
+      { from: '2026-08-09T15:00:00.000Z', to: '2026-08-16T15:00:00.000Z' },
       services,
       undefined,
+      now,
     )
-    expect(both[0].label).toBe(
-      `期間: ${formatDateTime('2026-01-01T00:00:00Z')}〜${formatDateTime('2026-01-02T00:00:00Z')}`,
-    )
-
-    const toOnly = describeRecordingsFilters({ to: '2026-01-02T00:00:00Z' }, services, undefined)
-    expect(toOnly[0].label).toBe(`期間: 〜${formatDateTime('2026-01-02T00:00:00Z')}`)
+    expect(days[0].label).toBe('期間: 8/10〜8/16')
   })
 
   it('期間チップを外すと from と to が両方消える', () => {
