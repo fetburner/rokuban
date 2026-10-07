@@ -1,5 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
+import { MockCtx } from '@/components/mock-context-menu'
 import { MoreVertical, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
@@ -381,7 +382,10 @@ function RuleRow({
   }
 
   return (
-    <div className="rounded-lg border border-border px-3 py-3">
+    <MockCtx
+      enabled
+      items={[{ label: 'このルールの録画' }, { label: '編集' }, { label: '無効にする', sep: true }, { label: '削除', destructive: true, sep: true }]}
+      className="rounded-lg border border-border px-3 py-3">
       <div className="flex items-start justify-between gap-3 pointer-coarse:flex-wrap">
         <div className="min-w-0 flex-1 pointer-coarse:min-w-11">
           {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
@@ -575,7 +579,7 @@ function RuleRow({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-    </div>
+    </MockCtx>
   )
 }
 

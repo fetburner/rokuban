@@ -1,3 +1,4 @@
+import { MockCtx } from '@/components/mock-context-menu'
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -279,7 +280,11 @@ function ReservationRow({
   ruleLabel: (ruleId: number) => string
 }) {
   return (
-    <li className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40">
+    <MockCtx
+      enabled
+      render={<li />}
+      items={[{ label: '開く' }, { label: '新しいタブで開く' }, { label: 'リンクをコピー' }, { label: '予約を取り消す', destructive: true, sep: true }]}
+      className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40">
       {/* 行全面リンクを背面へ置き、対話要素は個別に手前へ積む。 */}
       <Link
         to="/reservations/$site/$programId"
@@ -310,7 +315,7 @@ function ReservationRow({
         data-testid="reservation-chevron"
         className="size-4 shrink-0 text-muted-foreground"
       />
-    </li>
+    </MockCtx>
   )
 }
 

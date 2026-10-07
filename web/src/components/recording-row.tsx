@@ -11,6 +11,8 @@ import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
 import type { RecordingView } from '@/lib/recording-view'
 import { cn } from '@/lib/utils'
+import { MockCtx, mockFlags } from '@/components/mock-context-menu'
+import { useToast } from '@/components/toaster'
 
 /** RecordingRowView は録画一覧とシリーズページで共有する表示形式。`card` はサムネイルを大きく並べる。 */
 export type RecordingRowView = RecordingView
@@ -55,9 +57,25 @@ export function RecordingRow({
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
+  const toast = useToast()
+  const variant = mockFlags().variant ?? 'A'
+  const trashItem = {
+    label: selecting ? '3 件をごみ箱へ' : 'ごみ箱へ',
+    destructive: true,
+    sep: true,
+    onSelect: () =>
+      toast({ message: '1 件をごみ箱へ移動', actions: [{ label: '元に戻す', onClick: () => undefined }] }),
+  }
+  const rowItems = selecting
+    ? [trashItem, { label: '選択を解除' }]
+    : variant === 'C'
+      ? [{ label: '開く' }, trashItem]
+      : [{ label: '開く' }, { label: '新しいタブで開く' }, { label: 'リンクをコピー' }, trashItem]
 
   return (
-    <div
+    <MockCtx
+      enabled={variant !== 'C'}
+      items={rowItems}
       role={selecting ? 'option' : undefined}
       aria-selected={selecting ? selected : undefined}
       onClick={selecting ? onToggle : undefined}
@@ -74,7 +92,7 @@ export function RecordingRow({
       )}
     >
       {/* 編集モード中は全面リンクを外す。残すと checkbox と行クリックを奪う。 */}
-      {!selecting && (
+      {!selecting && variant !== 'C' && (
         <Link
           to="/recordings/$id"
           params={{ id: String(recording.id) }}
@@ -99,7 +117,9 @@ export function RecordingRow({
         §メディア配信）なので、そもそもリクエストを出さずプレースホルダ固定にする
         （M3-18: 未生成と 404 で区別が付かない曖昧さもこれで消える）。
       */}
-      <div
+      <MockCtx
+        enabled={variant === 'C'}
+        items={rowItems}
         className={cn(
           'aspect-video shrink-0 overflow-hidden rounded bg-muted',
           card ? 'w-full' : 'h-12',
@@ -116,10 +136,21 @@ export function RecordingRow({
         ) : (
           <div className="size-full bg-muted" aria-hidden />
         )}
-      </div>
+      </MockCtx>
       <div className="min-w-0 flex-1">
         <div className={cn('text-base', card ? 'line-clamp-2' : 'truncate')}>
-          {programTitle(recording.title)}
+          {variant === 'C' && !selecting ? (
+            <Link
+              to="/recordings/$id"
+              params={{ id: String(recording.id) }}
+              data-mock="title-link"
+              className="hover:underline"
+            >
+              {programTitle(recording.title)}
+            </Link>
+          ) : (
+            programTitle(recording.title)
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
           <RecordingVerdictBadge
@@ -158,6 +189,6 @@ export function RecordingRow({
       </div>
       {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
       {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
-    </div>
+    </MockCtx>
   )
 }
