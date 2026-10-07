@@ -20,6 +20,8 @@ import { readHomeModePreference, resolveHomeMode } from '@/lib/home-mode'
 import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
+import { MockSheet } from '@/components/mock-sheet'
+import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 /**
  * サイドバーの畳み状態を持続させる localStorage キー。
@@ -159,6 +161,41 @@ function isActive(pathname: string, to: string): boolean {
 function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
   const [open, setOpen] = useState(false)
   const active = items.some((item) => isActive(pathname, item.to))
+  const wide = useMediaQuery(mdMediaQuery)
+
+  if (!wide)
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          aria-current={active ? 'true' : undefined}
+          className={cn(
+            'flex min-h-14 w-full flex-col items-center justify-center gap-0.5 text-xs transition-colors',
+            active ? 'text-primary' : 'text-muted-foreground',
+          )}
+        >
+          <MoreHorizontal className="size-5" />
+          その他
+        </button>
+        <MockSheet title="その他" open={open} onOpenChange={setOpen} fit>
+          <ul className="flex flex-col pb-2">
+            {items.map(({ to, label, icon: Icon }) => (
+              <li key={to}>
+                <Link
+                  to={to}
+                  onClick={() => setOpen(false)}
+                  className="flex min-h-12 items-center gap-3 rounded-lg px-2 text-base text-foreground hover:bg-muted"
+                >
+                  <Icon className="size-5 shrink-0 text-muted-foreground" />
+                  {label}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </MockSheet>
+      </>
+    )
 
   return (
     <Popover modal="trap-focus" open={open} onOpenChange={setOpen}>

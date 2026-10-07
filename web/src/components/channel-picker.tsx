@@ -1,6 +1,9 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { Check, ChevronDown, Minus } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Minus } from 'lucide-react'
+import { useContext, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { MockSheet, PanelCtx } from '@/components/mock-sheet'
+import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 
 import type { Service } from '@/api/generated'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
@@ -106,55 +109,8 @@ export function ChannelPicker({
     onChange(setsEqual(next, allIds) ? new Set() : next)
   }
 
-  return (
-    <PopoverPrimitive.Root
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next)
-        // 閉じたら検索語をリセットする（再度開いたときに前回の絞り込みが残っていると、
-        // 「候補が減っている」ことに気付かず選びたいチャンネルが無いと誤解する）。
-        if (!next) {
-          // 0 局のまま閉じる場合は全局へ戻す。元が明示選択だったときだけ URL も更新する。
-          if (noneSelected && selected.size > 0) onChange(new Set())
-          setQuery('')
-          setNoneSelected(false)
-        }
-      }}
-    >
-      <PopoverPrimitive.Trigger
-        className={cn(
-          'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors',
-          'hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground',
-        )}
-      >
-        {/* 見える側の値だけだと「これが何のコントロールか」が伝わらない。
-            読み上げは「チャンネル: 現在値」にし、見える側は aria-hidden にして
-            二重読みを避ける（components/capacity-shortfall-badge.tsx と同じ手法）。 */}
-        <span className="sr-only">チャンネル: {countLabel}</span>
-        <span aria-hidden="true" className="min-w-0 truncate">
-          {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
-        </span>
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        {/* positionMethod は既定の 'absolute' ではなく 'fixed' にする。トリガーは
-            sticky な PageHeader の中にあってスクロールしても動かないのに、
-            'absolute' のポップアップはドキュメントと一緒に動く。この食い違いを
-            ライブラリは毎スクロール JS で transform を打ち直して補正するが、
-            実機のスクロールはコンポジタ側で先に動くため補正が 1 フレーム以上
-            遅れ、メニューが上下に引っ張られて見える。'fixed' ならビューポート
-            基準になり、トリガーと同じ動き（= 動かない）になるので補正自体が要らない。 */}
-        <PopoverPrimitive.Positioner
-          className="z-50 outline-none"
-          positionMethod="fixed"
-          side="bottom"
-          align="start"
-          sideOffset={6}
-        >
-          <PopoverPrimitive.Popup
-            aria-label="チャンネル"
-            className="flex max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md outline-none"
-          >
+  const panel = (
+    <>
             {ordered.length > searchThreshold && (
               <div className="shrink-0 border-b border-border p-2">
                 <input
@@ -217,6 +173,119 @@ export function ChannelPicker({
                 </p>
               )}
             </div>
+    </>
+  )
+
+  const mock = (window as unknown as { __mock?: string }).__mock
+  const wide = useMediaQuery(mdMediaQuery)
+  const ctx = useContext(PanelCtx)
+  const trig = (
+    <button
+      type="button"
+      onClick={() => (mock === 'B' ? ctx?.setPushed(true) : setOpen(!open))}
+      className={
+        mock === 'B'
+          ? 'flex min-h-11 w-full items-center justify-between rounded-lg border border-border bg-background px-3 text-sm'
+          : 'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground hover:bg-muted'
+      }
+    >
+      <span className="sr-only">チャンネル: {countLabel}</span>
+      {mock === 'B' ? (
+        <>
+          <span aria-hidden>チャンネル</span>
+          <span aria-hidden className="flex items-center gap-1 text-muted-foreground">
+            {countLabel}
+            <ChevronRight className="size-4" />
+          </span>
+        </>
+      ) : (
+        <>
+          <span aria-hidden className="min-w-0 truncate">
+            {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
+          </span>
+          <ChevronDown
+            className={cn('size-4 shrink-0 text-muted-foreground transition-transform', mock === 'C' && open && 'rotate-180')}
+            aria-hidden
+          />
+        </>
+      )}
+    </button>
+  )
+  const sheetBody = <div className="flex min-h-0 flex-1 flex-col">{panel}</div>
+  if (!wide && mock === 'B')
+    return (
+      <>
+        {trig}
+        {ctx?.pushed && ctx.slot ? createPortal(sheetBody, ctx.slot) : null}
+      </>
+    )
+  if (!wide && mock === 'C')
+    return (
+      <div className="flex flex-col gap-2">
+        {trig}
+        {open && <div className="flex flex-col overflow-hidden rounded-lg border border-border">{panel}</div>}
+      </div>
+    )
+  if (!wide && (mock === 'A' || mock === 'P'))
+    return (
+      <>
+        {trig}
+        <MockSheet title="チャンネル" open={open} onOpenChange={setOpen}>
+          {sheetBody}
+        </MockSheet>
+      </>
+    )
+
+  return (
+    <PopoverPrimitive.Root
+      open={open}
+      onOpenChange={(next) => {
+        setOpen(next)
+        // 閉じたら検索語をリセットする（再度開いたときに前回の絞り込みが残っていると、
+        // 「候補が減っている」ことに気付かず選びたいチャンネルが無いと誤解する）。
+        if (!next) {
+          // 0 局のまま閉じる場合は全局へ戻す。元が明示選択だったときだけ URL も更新する。
+          if (noneSelected && selected.size > 0) onChange(new Set())
+          setQuery('')
+          setNoneSelected(false)
+        }
+      }}
+    >
+      <PopoverPrimitive.Trigger
+        className={cn(
+          'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors',
+          'hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground',
+        )}
+      >
+        {/* 見える側の値だけだと「これが何のコントロールか」が伝わらない。
+            読み上げは「チャンネル: 現在値」にし、見える側は aria-hidden にして
+            二重読みを避ける（components/capacity-shortfall-badge.tsx と同じ手法）。 */}
+        <span className="sr-only">チャンネル: {countLabel}</span>
+        <span aria-hidden="true" className="min-w-0 truncate">
+          {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
+        </span>
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        {/* positionMethod は既定の 'absolute' ではなく 'fixed' にする。トリガーは
+            sticky な PageHeader の中にあってスクロールしても動かないのに、
+            'absolute' のポップアップはドキュメントと一緒に動く。この食い違いを
+            ライブラリは毎スクロール JS で transform を打ち直して補正するが、
+            実機のスクロールはコンポジタ側で先に動くため補正が 1 フレーム以上
+            遅れ、メニューが上下に引っ張られて見える。'fixed' ならビューポート
+            基準になり、トリガーと同じ動き（= 動かない）になるので補正自体が要らない。 */}
+        <PopoverPrimitive.Positioner
+          className="z-50 outline-none"
+          positionMethod="fixed"
+          side="bottom"
+          align="start"
+          sideOffset={6}
+        >
+          <PopoverPrimitive.Popup
+            aria-label="チャンネル"
+            className="flex max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md outline-none"
+          >
+            {panel}
           </PopoverPrimitive.Popup>
         </PopoverPrimitive.Positioner>
       </PopoverPrimitive.Portal>

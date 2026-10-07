@@ -417,7 +417,7 @@ function FilterPanel({
       bodyClassName="flex flex-col gap-4"
     >
             <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">チャンネル</h3>
+              {(window as unknown as { __mock?: string }).__mock !== 'B' && <h3 className="text-xs font-medium text-muted-foreground">チャンネル</h3>}
               {servicesError ? (
                 <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
               ) : servicesPending ? (

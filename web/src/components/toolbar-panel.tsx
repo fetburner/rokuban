@@ -1,6 +1,8 @@
 import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
+import { ChevronLeft } from 'lucide-react'
+import { PanelCtx } from '@/components/mock-sheet'
 
 import { DialogOverlay } from '@/components/ui/dialog'
 
@@ -53,6 +55,8 @@ export function ToolbarPanel({
   children: ReactNode
 }) {
   const wide = useMediaQuery(mdMediaQuery)
+  const [pushed, setPushed] = useState(false)
+  const [slot, setSlot] = useState<HTMLElement | null>(null)
 
   if (wide) {
     return (
@@ -91,17 +95,27 @@ export function ToolbarPanel({
         <DialogOverlay />
         {/* 角丸・セーフエリア・つまみは録画詳細の再生設定シート（popoverClass）に揃える。
             高さは中身が多い（絞り込みは 6 節）ので 85dvh まで許し、中身だけをスクロールさせる。 */}
-        <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">
+        <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl data-[nested-dialog-open]:scale-[0.96] data-[nested-dialog-open]:brightness-95 origin-bottom transition-transform bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">
           <div aria-hidden className="mx-auto h-1 w-9 shrink-0 rounded-full bg-border" />
           <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2">
-            <span />
-            <DialogPrimitive.Title className="text-base font-semibold">{title}</DialogPrimitive.Title>
+            {pushed ? (
+              <button type="button" onClick={() => setPushed(false)} className="flex h-11 items-center gap-0.5 justify-self-start rounded-lg pr-3 pl-1 text-base text-primary hover:bg-muted">
+                <ChevronLeft className="size-5" />
+                {title}
+              </button>
+            ) : (
+              <span />
+            )}
+            <DialogPrimitive.Title className="text-base font-semibold">{pushed ? 'チャンネル' : title}</DialogPrimitive.Title>
             <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
               完了
             </DialogPrimitive.Close>
           </div>
           <div data-testid="toolbar-sheet-body" className={cn('min-h-0 overflow-y-auto px-4 pb-1', bodyClassName)}>
-            {children}
+            <PanelCtx.Provider value={{ slot, pushed, setPushed }}>
+              <div className={cn('contents', pushed && 'hidden')}>{children}</div>
+            </PanelCtx.Provider>
+            <div ref={setSlot} className={cn('flex min-h-0 flex-col', !pushed && 'hidden')} />
           </div>
         </DialogPrimitive.Popup>
       </DialogPrimitive.Portal>
