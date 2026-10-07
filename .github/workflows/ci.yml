@@ -35,10 +35,10 @@ jobs:
         working-directory: web
 
   # 実バイナリが go:embed した web/dist を配り、DB readiness を通る実 HTTP サーバーに
-  # Chromium からアクセスする。10 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
+  # Chromium からアクセスする。11 本とも Playwright 内で /api/** をスタブするため mirakc は不要。
   # recordings-selection は実ブラウザ判定の前に 20 件の録画 fixture を Zod 契約で検査する。
   #
-  # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 10 本。
+  # 回すのは web/e2e/*.mjs の判定スクリプト（共有部品を除く）のうち 11 本。
   # 選定基準は次の 3 つを全部満たすこと。
   #   - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト・キー操作によるネイティブのスクロール・safe-area inset の解決）
   #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
@@ -52,11 +52,12 @@ jobs:
   #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
   # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
   # home-timeline-keyboard は 1280×800 の時間軸にフォーカスしたときの左右矢印スクロールを測る。
+  # issue-1233-dialog-focus は確認ダイアログを開いた直後の初期フォーカスと Tab / Return / Escape の行き先を測る。
   # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
   # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
-  # 誰も見ない赤い定期ジョブは PR ごとに回す 10 本より信号として弱いため。
+  # 誰も見ない赤い定期ジョブは PR ごとに回す 11 本より信号として弱いため。
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
@@ -155,6 +156,9 @@ jobs:
         working-directory: web
       - if: ${{ !cancelled() }}
         run: pnpm e2e:home-timeline-keyboard
+        working-directory: web
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:issue-1233-dialog-focus
         working-directory: web
       - if: ${{ !cancelled() }}
         run: E2E_RULE_CARD_ONLY=1 pnpm e2e:design
