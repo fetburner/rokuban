@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -83,6 +83,7 @@ const ruleWithConditions: Rule = {
 }
 
 const profiles: EncodeProfileSummary[] = [{ name: 'h264' }, { name: 'hevc' }]
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia')
 
 const services: Service[] = [
   {
@@ -224,8 +225,26 @@ function renderPage() {
   return renderInRouter(<RulesPage />)
 }
 
+function enableFinePointer() {
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === '(pointer: fine)',
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia
+}
+
 afterEach(() => {
   vi.restoreAllMocks()
+  if (originalMatchMedia) {
+    Object.defineProperty(window, 'matchMedia', originalMatchMedia)
+  } else {
+    Reflect.deleteProperty(window, 'matchMedia')
+  }
 })
 
 describe('summarizeRuleConditions', () => {
@@ -900,6 +919,57 @@ describe('RulesPage 削除は overflow メニュー', () => {
     expect(screen.getByText('ニュース')).toBeInTheDocument()
   })
 
+})
+
+describe('ルール行のコンテキストメニュー', () => {
+  it('既存の有効切替確認と削除確認を使う', async () => {
+    enableFinePointer()
+    const { putBodies, deletedIds } = stubApi(
+      [sampleRule],
+      { deletedReservations: 0, detachedReservations: 0 },
+      undefined,
+      [sampleReservation(1, sampleRule.id)],
+    )
+    const user = userEvent.setup()
+    renderPage()
+
+    await screen.findByText('ニュース')
+    const ruleLink = screen.getByRole('link', { name: 'ルール「ニュース」を編集' })
+    const ruleRow = ruleLink.closest('div.rounded-lg.border')
+    expect(ruleRow).not.toBeNull()
+    fireEvent.contextMenu(ruleRow!, { clientX: 80, clientY: 40 })
+    const disableMenu = await screen.findByRole('menu')
+    expect(within(disableMenu).getByRole('menuitem', { name: '無効にする' })).toBeInTheDocument()
+    expect(within(disableMenu).getByRole('menuitem', { name: '削除' })).toBeInTheDocument()
+    await user.click(within(disableMenu).getByRole('menuitem', { name: '無効にする' }))
+
+    expect(await screen.findByText('ルール「ニュース」を無効にしますか？')).toBeInTheDocument()
+    expect(putBodies).toHaveLength(0)
+    await user.click(screen.getByRole('button', { name: '無効にする' }))
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(putBodies[0]).toMatchObject({ id: sampleRule.id, body: { enabled: false } })
+
+    const updatedRow = screen
+      .getByRole('link', { name: 'ルール「ニュース」を編集' })
+      .closest('div.rounded-lg.border')
+    expect(updatedRow).not.toBeNull()
+    fireEvent.contextMenu(updatedRow!, { clientX: 80, clientY: 40 })
+    const enableMenu = await screen.findByRole('menu')
+    await user.click(within(enableMenu).getByRole('menuitem', { name: '有効にする' }))
+    await waitFor(() => expect(putBodies).toHaveLength(2))
+    expect(putBodies[1]).toMatchObject({ id: sampleRule.id, body: { enabled: true } })
+
+    const enabledRow = screen
+      .getByRole('link', { name: 'ルール「ニュース」を編集' })
+      .closest('div.rounded-lg.border')
+    expect(enabledRow).not.toBeNull()
+    fireEvent.contextMenu(enabledRow!, { clientX: 80, clientY: 40 })
+    await user.click(await screen.findByRole('menuitem', { name: '削除' }))
+    expect(await screen.findByText('ルール「ニュース」を削除しますか？')).toBeInTheDocument()
+    expect(deletedIds).toEqual([])
+    await user.click(screen.getByRole('button', { name: 'キャンセル' }))
+    expect(deletedIds).toEqual([])
+  })
 })
 
 describe('RulesPage 削除エラー', () => {

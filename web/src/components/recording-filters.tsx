@@ -339,7 +339,7 @@ function updateRuleFilter(search: RecordingsPageSearch, ruleId: number | undefin
 }
 
 /**
- * FilterPanel は「絞り込み ▾」のポップオーバー本体。
+ * FilterPanel は「絞り込み ▾」のパネル本体。
  *
  * チャンネル種別（`channelType`）はここに置かない --- 個々のチャンネルを選べる
  * `<ChannelPicker>` の方が細かく絞れ、issue #137 の UI 案（チャンネル / ジャンル /
@@ -378,6 +378,9 @@ function FilterPanel({
   onChange: Update
 }) {
   const [open, setOpen] = useState(false)
+  const [channelOpen, setChannelOpen] = useState(false)
+  const [noneSelected, setNoneSelected] = useState(false)
+  const wide = useMediaQuery(mdMediaQuery)
   const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
   const selectedGenres = useMemo(() => new Set(search.genre ?? []), [search.genre])
   const siteOptions = useMemo(
@@ -394,6 +397,26 @@ function FilterPanel({
     return label === '' ? undefined : label
   }
 
+  const updateServices = (next: ReadonlySet<number>) =>
+    onChange((s) => ({
+      ...s,
+      service: next.size > 0 ? [...next].sort((a, b) => a - b) : undefined,
+    }))
+
+  const returnToFilters = () => {
+    // 空選択は URL に表せず全局を意味する。親画面へ戻る時点で明示選択を解除する。
+    if (noneSelected && selectedServices.size > 0) {
+      onChange((s) => ({ ...s, service: undefined }))
+    }
+    setNoneSelected(false)
+    setChannelOpen(false)
+  }
+
+  const handlePanelOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next) returnToFilters()
+  }
+
   // 点はこのパネルで選べる次元だけで判定する（期間は期間ボタン、encodeState はチップが示す）。
   const filtered = [search.service, search.site, search.genre, search.status, search.ruleId, search.source].some(
     (value) => value !== undefined,
@@ -401,9 +424,21 @@ function FilterPanel({
 
   return (
     <ToolbarPanel
-      title="絞り込み"
+      title={!wide && channelOpen ? 'チャンネル' : '絞り込み'}
       open={open}
-      onOpenChange={setOpen}
+      onOpenChange={handlePanelOpenChange}
+      sheetLeading={
+        !wide && channelOpen ? (
+          <button
+            type="button"
+            aria-label="絞り込みに戻る"
+            onClick={returnToFilters}
+            className="h-11 justify-self-start rounded-lg px-2 text-base font-semibold text-primary hover:bg-muted"
+          >
+            ‹ 絞り込み
+          </button>
+        ) : undefined
+      }
       triggerClassName={toolbarButtonClass}
       trigger={
         <>
@@ -416,28 +451,51 @@ function FilterPanel({
       popupWidthClassName="w-[min(22rem,90vw)]"
       bodyClassName="flex flex-col gap-4"
     >
+      {!wide && channelOpen ? (
+        servicesError ? (
+          <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
+        ) : servicesPending ? (
+          <p role="status" className="text-xs text-muted-foreground">
+            読み込み中…
+          </p>
+        ) : (
+          <ChannelPicker
+            presentation="inline"
+            services={services}
+            selected={selectedServices}
+            secondaryLabel={secondaryLabel}
+            onChange={updateServices}
+            onNoneSelectedChange={setNoneSelected}
+          />
+        )
+      ) : (
+        <>
+          {servicesError ? (
+            <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
+          ) : servicesPending ? (
+            <p role="status" className="text-xs text-muted-foreground">
+              読み込み中…
+            </p>
+          ) : wide ? (
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">チャンネル</h3>
-              {servicesError ? (
-                <p className="text-xs text-destructive">チャンネルの取得に失敗しました</p>
-              ) : servicesPending ? (
-                <p role="status" className="text-xs text-muted-foreground">
-                  読み込み中…
-                </p>
-              ) : (
-                <ChannelPicker
-                  services={services}
-                  selected={selectedServices}
-                  secondaryLabel={secondaryLabel}
-                  onChange={(next) =>
-                    onChange((s) => ({
-                      ...s,
-                      service: next.size > 0 ? [...next].sort((a, b) => a - b) : undefined,
-                    }))
-                  }
-                />
-              )}
+              <ChannelPicker
+                services={services}
+                selected={selectedServices}
+                secondaryLabel={secondaryLabel}
+                onChange={updateServices}
+              />
             </section>
+          ) : (
+            <ChannelPicker
+              presentation="filter-row"
+              services={services}
+              selected={selectedServices}
+              secondaryLabel={secondaryLabel}
+              onChange={updateServices}
+              onEmbeddedOpen={() => setChannelOpen(true)}
+            />
+          )}
 
             {/* site はレジストリと現在の絞り込みの和集合が 2 サイト以上のときだけ
                 出す。レジストリから消えた site も見えて外せるようにする。 */}
@@ -549,6 +607,8 @@ function FilterPanel({
                 ))}
               </div>
             </section>
+        </>
+      )}
     </ToolbarPanel>
   )
 }

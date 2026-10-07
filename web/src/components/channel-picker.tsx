@@ -1,9 +1,12 @@
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
-import { Check, ChevronDown, Minus } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Minus } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import type { Service } from '@/api/generated'
+import { DialogOverlay } from '@/components/ui/dialog'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
+import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
 
 /**
@@ -27,15 +30,22 @@ const searchThreshold = 15
  * 画面ごとに違う複合キーが生えて区切り文字すら揃わなくなる。
  *
  * 「すべて」は三状態の親チェックボックス。URL では空集合を「全局」と定義しているため、
- * 全局から 0 局へ変える瞬間だけはポップオーバー内の一時状態として持つ。そこでは
+ * 全局から 0 局へ変える瞬間だけは選択画面内の一時状態として持つ。そこでは
  * `onChange` を呼ばず、1 局以上選ばずに閉じたら全局へ戻す。空集合を URL に書いても
  * 0 局を表せず全局になってしまい、意味の無い共有状態を作るだけだからである。
+ *
+ * 番組表では単独のシート（狭い画面）/ポップオーバー（広い画面）を使う。録画・シリーズの
+ * 絞り込みでは `presentation` を親シートの行と一覧に切り替える。後者では親が戻る時点を
+ * 「閉じる」として扱うため、空選択を全局へ戻す判断も親に委ねる。
  */
 export function ChannelPicker({
   services,
   selected,
   onChange,
   secondaryLabel,
+  presentation = 'standalone',
+  onEmbeddedOpen,
+  onNoneSelectedChange,
 }: {
   /** 候補。呼び出し側が絞り込み済みで渡す（並び順は保証されないので中で orderServices を通す）。 */
   services: Service[]
@@ -44,10 +54,17 @@ export function ChannelPicker({
   onChange: (next: ReadonlySet<number>) => void
   /** secondaryLabel は各候補に添える補足。 */
   secondaryLabel?: (s: Service) => string | undefined
+  /** standalone は独立したシート/ポップオーバー、filter-row と inline は親シート内の表示。 */
+  presentation?: 'standalone' | 'filter-row' | 'inline'
+  /** filter-row が選ばれたときに親シートをチャンネル一覧へ進める。 */
+  onEmbeddedOpen?: () => void
+  /** inline の一時的な 0 局状態を親に知らせ、戻るときの全局復帰に使う。 */
+  onNoneSelectedChange?: (noneSelected: boolean) => void
 }): React.ReactElement {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [noneSelected, setNoneSelected] = useState(false)
+  const wide = useMediaQuery(mdMediaQuery)
 
   const ordered = useMemo(() => orderServices(services), [services])
   const allIds = useMemo(() => new Set(ordered.map((s) => s.id)), [ordered])
@@ -99,128 +116,185 @@ export function ChannelPicker({
     if (next.size === 0) {
       // 0 局は URL に表現できない。次の選択か、閉じて全局に戻るまでローカルに保つ。
       setNoneSelected(true)
+      onNoneSelectedChange?.(true)
       return
     }
 
     setNoneSelected(false)
+    onNoneSelectedChange?.(false)
     onChange(setsEqual(next, allIds) ? new Set() : next)
   }
 
+  const closeStandalonePicker = () => {
+    // 閉じたら検索語をリセットする（前回の絞り込みで候補が隠れていると誤解するため）。
+    if (noneSelected && selected.size > 0) onChange(new Set())
+    setQuery('')
+    setNoneSelected(false)
+    onNoneSelectedChange?.(false)
+  }
+
+  const triggerClassName = cn(
+    'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors',
+    'hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground',
+  )
+
+  const options = (
+    <>
+      {ordered.length > searchThreshold && (
+        <div className="shrink-0 border-b border-border p-2">
+          <input
+            type="text"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="チャンネルを絞り込む"
+            aria-label="チャンネルを絞り込む"
+            className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring"
+          />
+        </div>
+      )}
+      <div
+        className={cn(
+          'min-h-0 flex-1 overflow-y-auto p-1',
+          presentation === 'inline' && 'max-h-[60dvh] flex-none',
+        )}
+      >
+        {noneSelected && (
+          <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
+            1 つ以上選んでください
+          </p>
+        )}
+        <ChannelOption
+          label={query.trim() === '' ? 'すべて' : '一致したものをすべて'}
+          checked={checkboxState(filtered)}
+          disabled={filtered.length === 0}
+          onClick={() => toggleScope(filtered)}
+        />
+        {groups.map((group) => (
+          <div key={group.channelType}>
+            {groups.length > 1 ? (
+              <ChannelOption
+                label={channelTypeLabel(group.channelType)}
+                checked={checkboxState(group.services)}
+                onClick={() => toggleScope(group.services)}
+                heading
+              />
+            ) : (
+              <div className="flex min-h-11 items-center px-2 text-sm font-medium text-muted-foreground">
+                {channelTypeLabel(group.channelType)}
+              </div>
+            )}
+            {group.services.map((service) => (
+              <ChannelOption
+                key={service.id}
+                label={service.name}
+                secondary={secondaryLabel?.(service)}
+                remoteControlKeyId={
+                  service.channelType === 'GR' && service.remoteControlKeyId > 0
+                    ? service.remoteControlKeyId
+                    : undefined
+                }
+                checked={checkboxState([service])}
+                onClick={() => toggleScope([service])}
+              />
+            ))}
+          </div>
+        ))}
+        {groups.length === 0 && (
+          <p className="px-3 py-6 text-center text-sm text-muted-foreground">
+            一致するチャンネルがありません
+          </p>
+        )}
+      </div>
+    </>
+  )
+
+  if (presentation === 'filter-row') {
+    return (
+      <button
+        type="button"
+        aria-label={`チャンネル: ${countLabel}`}
+        onClick={onEmbeddedOpen}
+        className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 text-sm text-foreground transition-colors hover:bg-muted"
+      >
+        <span>チャンネル</span>
+        <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+          <span className="truncate">{countLabel}</span>
+          <ChevronRight className="size-4 shrink-0" aria-hidden="true" />
+        </span>
+      </button>
+    )
+  }
+
+  if (presentation === 'inline') {
+    return <div className="flex min-h-0 flex-col">{options}</div>
+  }
+
+  const trigger = (
+    <>
+      {/* 見える側の値だけだと何のコントロールかが伝わらないため、読み上げ側に役割を置く。 */}
+      <span className="sr-only">チャンネル: {countLabel}</span>
+      <span aria-hidden="true" className="min-w-0 truncate">
+        {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
+      </span>
+      <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+    </>
+  )
+
+  if (wide) {
+    return (
+      <PopoverPrimitive.Root
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next)
+          if (!next) closeStandalonePicker()
+        }}
+      >
+        <PopoverPrimitive.Trigger className={triggerClassName}>{trigger}</PopoverPrimitive.Trigger>
+        <PopoverPrimitive.Portal>
+          {/* sticky なトリガーに追従させるため、位置はビューポート基準の fixed にする。 */}
+          <PopoverPrimitive.Positioner
+            className="z-50 outline-none"
+            positionMethod="fixed"
+            side="bottom"
+            align="start"
+            sideOffset={6}
+          >
+            <PopoverPrimitive.Popup
+              aria-label="チャンネル"
+              className="flex max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md outline-none"
+            >
+              {options}
+            </PopoverPrimitive.Popup>
+          </PopoverPrimitive.Positioner>
+        </PopoverPrimitive.Portal>
+      </PopoverPrimitive.Root>
+    )
+  }
+
   return (
-    <PopoverPrimitive.Root
+    <DialogPrimitive.Root
       open={open}
       onOpenChange={(next) => {
         setOpen(next)
-        // 閉じたら検索語をリセットする（再度開いたときに前回の絞り込みが残っていると、
-        // 「候補が減っている」ことに気付かず選びたいチャンネルが無いと誤解する）。
-        if (!next) {
-          // 0 局のまま閉じる場合は全局へ戻す。元が明示選択だったときだけ URL も更新する。
-          if (noneSelected && selected.size > 0) onChange(new Set())
-          setQuery('')
-          setNoneSelected(false)
-        }
+        if (!next) closeStandalonePicker()
       }}
     >
-      <PopoverPrimitive.Trigger
-        className={cn(
-          'flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors',
-          'hover:bg-muted aria-expanded:bg-muted aria-expanded:text-foreground',
-        )}
-      >
-        {/* 見える側の値だけだと「これが何のコントロールか」が伝わらない。
-            読み上げは「チャンネル: 現在値」にし、見える側は aria-hidden にして
-            二重読みを避ける（components/capacity-shortfall-badge.tsx と同じ手法）。 */}
-        <span className="sr-only">チャンネル: {countLabel}</span>
-        <span aria-hidden="true" className="min-w-0 truncate">
-          {selectedServices.length === 0 ? 'すべてのチャンネル' : countLabel}
-        </span>
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-      </PopoverPrimitive.Trigger>
-      <PopoverPrimitive.Portal>
-        {/* positionMethod は既定の 'absolute' ではなく 'fixed' にする。トリガーは
-            sticky な PageHeader の中にあってスクロールしても動かないのに、
-            'absolute' のポップアップはドキュメントと一緒に動く。この食い違いを
-            ライブラリは毎スクロール JS で transform を打ち直して補正するが、
-            実機のスクロールはコンポジタ側で先に動くため補正が 1 フレーム以上
-            遅れ、メニューが上下に引っ張られて見える。'fixed' ならビューポート
-            基準になり、トリガーと同じ動き（= 動かない）になるので補正自体が要らない。 */}
-        <PopoverPrimitive.Positioner
-          className="z-50 outline-none"
-          positionMethod="fixed"
-          side="bottom"
-          align="start"
-          sideOffset={6}
-        >
-          <PopoverPrimitive.Popup
-            aria-label="チャンネル"
-            className="flex max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] flex-col overflow-hidden rounded-lg border border-border bg-popover text-popover-foreground shadow-md outline-none"
-          >
-            {ordered.length > searchThreshold && (
-              <div className="shrink-0 border-b border-border p-2">
-                <input
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="チャンネルを絞り込む"
-                  aria-label="チャンネルを絞り込む"
-                  className="h-9 w-full rounded-md border border-border bg-background px-2 text-sm outline-none focus-visible:border-ring"
-                />
-              </div>
-            )}
-            <div className="min-h-0 flex-1 overflow-y-auto p-1">
-              {noneSelected && (
-                <p role="status" className="px-3 py-2 text-sm text-muted-foreground">
-                  1 つ以上選んでください
-                </p>
-              )}
-              <ChannelOption
-                label={query.trim() === '' ? 'すべて' : '一致したものをすべて'}
-                checked={checkboxState(filtered)}
-                disabled={filtered.length === 0}
-                onClick={() => toggleScope(filtered)}
-              />
-              {groups.map((group) => (
-                <div key={group.channelType}>
-                  {groups.length > 1 ? (
-                    <ChannelOption
-                      label={channelTypeLabel(group.channelType)}
-                      checked={checkboxState(group.services)}
-                      onClick={() => toggleScope(group.services)}
-                      heading
-                    />
-                  ) : (
-                    <div className="flex min-h-11 items-center px-2 text-sm font-medium text-muted-foreground">
-                      {channelTypeLabel(group.channelType)}
-                    </div>
-                  )}
-                  {group.services.map((s) => {
-                    return (
-                      <ChannelOption
-                        key={s.id}
-                        label={s.name}
-                        secondary={secondaryLabel?.(s)}
-                        remoteControlKeyId={
-                          s.channelType === 'GR' && s.remoteControlKeyId > 0
-                            ? s.remoteControlKeyId
-                            : undefined
-                        }
-                        checked={checkboxState([s])}
-                        onClick={() => toggleScope([s])}
-                      />
-                    )
-                  })}
-                </div>
-              ))}
-              {groups.length === 0 && (
-                <p className="px-3 py-6 text-center text-sm text-muted-foreground">
-                  一致するチャンネルがありません
-                </p>
-              )}
-            </div>
-          </PopoverPrimitive.Popup>
-        </PopoverPrimitive.Positioner>
-      </PopoverPrimitive.Portal>
-    </PopoverPrimitive.Root>
+      <DialogPrimitive.Trigger className={triggerClassName}>{trigger}</DialogPrimitive.Trigger>
+      <DialogPrimitive.Portal>
+        <DialogOverlay />
+        <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">
+          <div aria-hidden className="mx-auto h-1 w-9 shrink-0 rounded-full bg-border" />
+          <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2">
+            <span />
+            <DialogPrimitive.Title className="text-base font-semibold">チャンネル</DialogPrimitive.Title>
+            <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
+              完了
+            </DialogPrimitive.Close>
+          </div>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pb-1">{options}</div>
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }
 
