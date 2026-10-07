@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button"
 // `AlertDialogAction` は本家 shadcn/Radix と異なり `AlertDialogPrimitive.Action`
 // （クリックで自動的に閉じる）を持たないため、`AlertDialogCancel` と同様
 // `AlertDialogPrimitive.Close` でラップしている（issue #131）。再取得する場合は
-// この差分を復元すること。
+// この差分を復元すること。`AlertDialogContent` は初期フォーカスをボタンではなく
+// ダイアログ本体（popup 自身）に置くため `initialFocus` に内部 ref を渡している（issue #1233）。
 
 function AlertDialog({ ...props }: AlertDialogPrimitive.Root.Props) {
   return <AlertDialogPrimitive.Root data-slot="alert-dialog" {...props} />
@@ -46,10 +47,13 @@ function AlertDialogOverlay({
 function AlertDialogContent({
   className,
   size = "default",
+  ref,
   ...props
 }: AlertDialogPrimitive.Popup.Props & {
   size?: "default" | "sm"
 }) {
+  const popupRef = React.useRef<HTMLDivElement | null>(null)
+
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
@@ -61,6 +65,12 @@ function AlertDialogContent({
           className
         )}
         {...props}
+        ref={(node) => {
+          popupRef.current = node
+          if (typeof ref === "function") ref(node)
+          else if (ref) ref.current = node
+        }}
+        initialFocus={popupRef}
       />
     </AlertDialogPortal>
   )

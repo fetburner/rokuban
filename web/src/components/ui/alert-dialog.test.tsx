@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { useState } from 'react'
+import { createRef, useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
@@ -57,5 +57,20 @@ describe('AlertDialogAction', () => {
     // ダイアログが DOM にマウントされたまま残っていないことを確認する
     // （jsdom で観測できる「閉じ忘れ」の壊れ方そのもの）。
     await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+})
+
+describe('AlertDialogContent', () => {
+  it('呼び出し側の ref にもダイアログ本体の DOM 要素が入る', async () => {
+    const ref = createRef<HTMLDivElement>()
+    render(
+      <AlertDialog open>
+        <AlertDialogContent ref={ref}>
+          <AlertDialogTitle>確認</AlertDialogTitle>
+        </AlertDialogContent>
+      </AlertDialog>,
+    )
+    const dialog = await screen.findByRole('alertdialog')
+    expect(ref.current).toBe(dialog)
   })
 })
