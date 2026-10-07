@@ -1,5 +1,6 @@
 import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { useState } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getListReservationsQueryKey, getListRulesQueryKey } from '@/api/generated'
@@ -163,6 +164,9 @@ function stubApi(
   // 一覧に現れる」「更新後の内容が一覧に反映される」ことを確認するテストのため
   // （GET のたびに現在の状態を返す）。
   let state = [...initialRules]
+  const replaceRule = (rule: Rule) => {
+    state = state.map((item) => (item.id === rule.id ? rule : item))
+  }
 
   globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input), 'http://localhost')
@@ -170,6 +174,15 @@ function stubApi(
 
     if (url.pathname === '/api/rules' && method === 'GET') {
       return Promise.resolve(jsonResponse(state.filter((r) => !deletedIds.includes(r.id))))
+    }
+    const getMatch = /^\/api\/rules\/(\d+)$/.exec(url.pathname)
+    if (getMatch && method === 'GET') {
+      const rule = state.find((item) => item.id === Number(getMatch[1]))
+      return Promise.resolve(
+        rule === undefined
+          ? jsonResponse({ error: 'ルールが見つかりません' }, 404)
+          : jsonResponse(rule),
+      )
     }
     if (url.pathname === '/api/reservations' && method === 'GET') {
       if (failures.reservations !== undefined) {
@@ -276,7 +289,7 @@ function stubApi(
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
 
-  return { postBodies, putBodies, deletedIds, recordingRequests }
+  return { postBodies, putBodies, deletedIds, recordingRequests, replaceRule }
 }
 
 function renderPage() {
@@ -673,6 +686,26 @@ describe('RulesPage ルールの有効スイッチ', () => {
     ).toEqual(reservations)
   })
 
+  it('Undo はトースト表示中に編集されたルールの最新内容を保つ', async () => {
+    const { putBodies, replaceRule } = stubApi([sampleRule])
+    const user = userEvent.setup()
+    renderPage()
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+
+    await user.click(toggle)
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(await screen.findByRole('button', { name: '元に戻す' })).toBeInTheDocument()
+
+    replaceRule({ ...sampleRule, enabled: false, name: '更新後のニュース', priority: 42 })
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+    await waitFor(() => expect(putBodies).toHaveLength(2))
+
+    expect(putBodies[1]).toMatchObject({
+      id: 1,
+      body: { enabled: true, name: '更新後のニュース', priority: 42 },
+    })
+  })
+
   it('Undo の更新が失敗したら無効状態へ戻す', async () => {
     const failures: { update?: number } = {}
     const { putBodies } = stubApi([sampleRule], undefined, failures)
@@ -689,6 +722,37 @@ describe('RulesPage ルールの有効スイッチ', () => {
 
     expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
+    expect(
+      queryClient.getQueryData<{ data: Rule[] }>(getListRulesQueryKey())?.data[0]?.enabled,
+    ).toBe(false)
+  })
+
+  it('画面遷移後の Undo 失敗も通知してキャッシュを無効状態へ戻す', async () => {
+    const failures: { update?: number } = {}
+    const { putBodies } = stubApi([sampleRule], undefined, failures)
+    const user = userEvent.setup()
+    function PageHarness() {
+      const [showRules, setShowRules] = useState(true)
+      return (
+        <>
+          <button type="button" onClick={() => setShowRules(false)}>別ページへ</button>
+          {showRules && <RulesPage />}
+        </>
+      )
+    }
+    const { queryClient } = renderInRouter(<PageHarness />)
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+
+    await user.click(toggle)
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(await screen.findByRole('button', { name: '元に戻す' })).toBeInTheDocument()
+
+    failures.update = 500
+    await user.click(screen.getByRole('button', { name: '別ページへ' }))
+    expect(screen.queryByRole('switch', { name: 'ルール「ニュース」を有効にする' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
     expect(
       queryClient.getQueryData<{ data: Rule[] }>(getListRulesQueryKey())?.data[0]?.enabled,
     ).toBe(false)
