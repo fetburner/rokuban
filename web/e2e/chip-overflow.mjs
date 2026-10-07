@@ -183,7 +183,7 @@ await recordingsPage.getByRole('button', { name: '絞り込み' }).click()
 const popup = recordingsPage.getByRole('dialog', { name: '絞り込み' })
 await popup.waitFor()
 
-for (const groupName of ['状態', '種別', 'ジャンル']) {
+for (const groupName of ['状態', '種別']) {
   const pills = popup.locator(`div[role="group"][aria-label="${groupName}"] button`)
   const n = await pills.count()
   const lines = await pills.evaluateAll((els) =>
@@ -200,6 +200,47 @@ for (const groupName of ['状態', '種別', 'ジャンル']) {
     `行数 ${JSON.stringify(lines)}`,
   )
 }
+
+// ③ ジャンルはチップ列ではなくチェック付きメニュー。320px でも行トリガーと
+//    候補が収まり、選択画面は同じ絞り込みシート内で切り替わる。
+const genreTrigger = popup.getByRole('button', { name: 'ジャンル: 0 件' })
+await genreTrigger.waitFor()
+const genreTriggerBox = await genreTrigger.evaluate((el) => {
+  const r = el.getBoundingClientRect()
+  return { left: r.left, right: r.right }
+})
+ok(
+  '③ ジャンルメニューのトリガーがビューポートに収まる',
+  genreTriggerBox.left >= 0 && genreTriggerBox.right <= width,
+  `left ${genreTriggerBox.left.toFixed(1)} / right ${genreTriggerBox.right.toFixed(1)} / viewport ${width}`,
+)
+await genreTrigger.click()
+const genreMenu = recordingsPage.getByRole('dialog', { name: 'ジャンル' })
+await genreMenu.waitFor()
+const genreOptions = genreMenu.getByRole('group', { name: 'ジャンルの候補' })
+const genreOptionCount = await genreOptions.getByRole('checkbox').count()
+ok('③ ジャンルメニューに通常候補 13 件がある', genreOptionCount === 13, `${genreOptionCount} 件`)
+const genreLayout = await genreOptions.evaluate((el) => {
+  const r = el.getBoundingClientRect()
+  const boxes = [...el.querySelectorAll('[role="checkbox"]')].map((option) => {
+    const optionRect = option.getBoundingClientRect()
+    return { left: optionRect.left, right: optionRect.right }
+  })
+  return {
+    left: r.left,
+    right: r.right,
+    scrollWidth: el.scrollWidth,
+    clientWidth: el.clientWidth,
+    optionsFit: boxes.every((box) => box.left >= 0 && box.right <= window.innerWidth),
+  }
+})
+ok(
+  '③ ジャンル候補が横にはみ出さない',
+  genreLayout.left >= 0 && genreLayout.right <= width && genreLayout.scrollWidth <= genreLayout.clientWidth && genreLayout.optionsFit,
+  `left ${genreLayout.left.toFixed(1)} / right ${genreLayout.right.toFixed(1)} / scrollWidth ${genreLayout.scrollWidth} / clientWidth ${genreLayout.clientWidth}`,
+)
+await genreMenu.getByRole('button', { name: '絞り込みに戻る' }).click()
+await recordingsPage.getByRole('dialog', { name: '絞り込み' }).waitFor()
 
 const docRecordings = await documentScroll(recordingsPage)
 ok(
