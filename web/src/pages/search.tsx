@@ -38,6 +38,7 @@ import {
 import { loadLastSearchConditions, saveLastSearchConditions } from '@/lib/search-storage'
 import { useReservationActions } from '@/lib/reservation-actions'
 import { estimateRuleCost } from '@/lib/rule-cost'
+import { useSearchShortcut } from '@/lib/use-search-shortcut'
 /**
  * pageSize は一度に画面へ表示する検索結果の件数。検索 API は各行に表示情報を含む
  * ため、表示件数を増やす操作で番組詳細の追加取得は発生しない。
@@ -105,6 +106,7 @@ export function SearchPage() {
   // 検索はまずキーワードを入力して結果を確かめる画面なので、詳細条件は
   // 初期状態では閉じる。
   const [detailsOpen, setDetailsOpen] = useState(false)
+  useSearchShortcut('input[aria-label="テキスト条件 1 の値"]')
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**
    * serviceById は検索結果の `ProgramRow` に表示するサービス名解決に使う。
