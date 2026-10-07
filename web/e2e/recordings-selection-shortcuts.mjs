@@ -100,6 +100,9 @@ const checkboxTabStops = await page.getByRole('checkbox').evaluateAll((boxes) =>
   boxes.filter((box) => box.tabIndex !== -1).length,
 )
 if (checkboxTabStops !== 0) ng.push(`① 行 checkbox が Tab 順に残っている（${checkboxTabStops}）`)
+if (!(await options.nth(0).evaluate((row) => row === document.activeElement))) {
+  ng.push('① 最上部で「選択」を押しても先頭行にフォーカスが乗らない')
+}
 
 const first = options.nth(0)
 const third = options.nth(2)
@@ -184,17 +187,87 @@ if (outsideSelection.start !== 0 || outsideSelection.end !== outsideSelection.le
   ng.push('⑤ 選択モード外で Cmd/Ctrl+A が入力欄の文字列全体を選択しない')
 }
 
-log('\n=== ⑥ 下へスクロールして「選択」を押しても scrollY は変わらない ===')
-await search.fill('')
-await page.getByText('四つ目の録画').waitFor()
-await page.setViewportSize({ width: 1280, height: 260 })
-await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-await page.waitForTimeout(200)
-const scrollBefore = await page.evaluate(() => window.scrollY)
-if (scrollBefore === 0) ng.push('⑥ 前提: ページがスクロールできない（viewport を狭めても scrollY=0）')
-await page.getByRole('button', { name: '選択', exact: true }).click()
-await page.waitForTimeout(200)
-const scrollAfter = await page.evaluate(() => window.scrollY)
+log('\n=== ⑥ 下へスクロールして「選択」を押すと、見えている行から始まる ===')
+// 40 件の別ページで測る。先頭行が sticky ヘッダーの下に数 px 隠れるだけの配置だと、
+// 先頭行を active にする実装でも判定が偶然通ったり落ちたりする。
+const manyRecordings = Array.from({ length: 40 }, (_, i) => ({
+  ...recordings[0],
+  id: 100 + i,
+  eventId: 100 + i,
+  title: `スクロール録画${i + 1}`,
+  startAt: new Date(Date.parse('2026-01-01T12:00:00Z') - i * 60_000).toISOString(),
+}))
+const scrollPage = await context.newPage()
+await installApiStubs(scrollPage, async (args) => {
+  if (args.path === '/api/recordings' && args.route.request().method() === 'GET') {
+    return args.json(manyRecordings)
+  }
+  return apiHandler(args)
+})
+await scrollPage.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
+await scrollPage.getByText('スクロール録画40', { exact: true }).waitFor({ timeout: 15000 })
+await scrollPage.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+await scrollPage.waitForTimeout(200)
+
+// el が viewport 内にあり、sticky ヘッダーにも固定選択バーにも隠れていないか。
+const isUnobscured = (el) => {
+  const header = Array.from(document.querySelectorAll('header')).find(
+    (h) => h.querySelector('h1') && getComputedStyle(h).position === 'sticky',
+  )
+  const headerBottom = header?.getBoundingClientRect().bottom ?? 0
+  const box = el.getBoundingClientRect()
+  const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+  return box.top >= headerBottom - 1 && box.bottom <= window.innerHeight + 1 && el.contains(hit)
+}
+const firstRow = scrollPage.getByText('スクロール録画1', { exact: true })
+const scrollBefore = await scrollPage.evaluate(() => window.scrollY)
+const firstRowHidden = await firstRow.evaluate((el) => {
+  const header = Array.from(document.querySelectorAll('header')).find(
+    (h) => h.querySelector('h1') && getComputedStyle(h).position === 'sticky',
+  )
+  return el.getBoundingClientRect().bottom <= (header?.getBoundingClientRect().bottom ?? 0)
+})
+if (scrollBefore === 0 || !firstRowHidden) {
+  ng.push(`⑥ 前提: 先頭行がヘッダーの下に隠れていない（scrollY=${scrollBefore}）`)
+}
+await scrollPage.getByRole('button', { name: '選択', exact: true }).click()
+await scrollPage.waitForTimeout(200)
+const scrollAfter = await scrollPage.evaluate(() => window.scrollY)
 if (scrollAfter !== scrollBefore) ng.push(`⑥ 「選択」で scrollY が ${scrollBefore} から ${scrollAfter} に変わる`)
+const activeAfterBegin = await scrollPage.evaluate(
+  `(() => { const el = document.activeElement; return el?.getAttribute('role') === 'option'
+    ? { index: [...document.querySelectorAll('[role=option]')].indexOf(el), visible: (${isUnobscured})(el) }
+    : null })()`,
+)
+log(`  「選択」直後: scrollY=${scrollAfter} active=${JSON.stringify(activeAfterBegin)}`)
+if (!activeAfterBegin?.visible) {
+  ng.push(`⑥ 「選択」直後のフォーカス行が画面外かヘッダーの下にある（${JSON.stringify(activeAfterBegin)}）`)
+}
+
+// ↓ より先に押す。↓ で先頭へ飛んだ後だと、見えない行を選ぶ壊れ方を見逃す。
+await scrollPage.keyboard.press('Space')
+const spaceSelected = await scrollPage.evaluate(
+  `[...document.querySelectorAll('[role=option][aria-selected=true]')].map((el) => (${isUnobscured})(el))`,
+)
+if (spaceSelected.length !== 1 || !spaceSelected[0]) {
+  ng.push(`⑥ Space で選ばれた行が見えている 1 行ではない（visible=${JSON.stringify(spaceSelected)}）`)
+}
+
+await scrollPage.keyboard.press('ArrowDown')
+await scrollPage.waitForTimeout(200)
+const scrollAfterDown = await scrollPage.evaluate(() => window.scrollY)
+const activeAfterDown = await scrollPage.evaluate(
+  `(() => { const el = document.activeElement; return el?.getAttribute('role') === 'option'
+    ? { index: [...document.querySelectorAll('[role=option]')].indexOf(el), height: el.offsetHeight, visible: (${isUnobscured})(el) }
+    : null })()`,
+)
+log(`  ↓ の後: scrollY=${scrollAfterDown} active=${JSON.stringify(activeAfterDown)}`)
+// 次の行へ移るための 1 行分までのスクロールは許す。
+if (!activeAfterDown || Math.abs(scrollAfterDown - scrollAfter) > activeAfterDown.height) {
+  ng.push(`⑥ ↓ 1 回で scrollY が ${scrollAfter} から ${scrollAfterDown} に飛ぶ`)
+}
+if (!activeAfterDown?.visible || activeAfterDown.index !== (activeAfterBegin?.index ?? -2) + 1) {
+  ng.push(`⑥ ↓ で見えている次の行へ移らない（${JSON.stringify(activeAfterBegin)} → ${JSON.stringify(activeAfterDown)}）`)
+}
 
 await finish(ng, browser)
