@@ -51,8 +51,11 @@ export function RecordingRow({
   view: RecordingRowView
   selecting?: boolean
   selected?: boolean
-  onToggle?: () => void
+  onToggle?: (shift?: boolean) => void
 }) {
+  // mock: window.__mock.h6 = 'current' | 'tab' | 'roving'
+  const h6 = (window as unknown as { __mock?: { h6?: string } }).__mock?.h6
+  const rowFocusable = selecting && (h6 === 'tab' || h6 === 'roving')
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
 
@@ -60,7 +63,27 @@ export function RecordingRow({
     <div
       role={selecting ? 'option' : undefined}
       aria-selected={selecting ? selected : undefined}
-      onClick={selecting ? onToggle : undefined}
+      onClick={selecting ? (e) => onToggle(e.shiftKey) : undefined}
+      tabIndex={rowFocusable ? (h6 === 'tab' ? 0 : -1) : undefined}
+      onKeyDown={
+        rowFocusable
+          ? (e) => {
+              if (e.target !== e.currentTarget) return
+              if (e.key === ' ') {
+                e.preventDefault()
+                onToggle()
+              } else if (h6 === 'roving' && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+                e.preventDefault()
+                const li = e.currentTarget.parentElement
+                const sib = e.key === 'ArrowDown' ? li?.nextElementSibling : li?.previousElementSibling
+                const next = sib?.querySelector<HTMLElement>('[role=option]')
+                if (!next) return
+                next.focus()
+                if (e.shiftKey && next.getAttribute('aria-selected') !== 'true') next.click()
+              }
+            }
+          : undefined
+      }
       className={cn(
         // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
         // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
@@ -70,6 +93,7 @@ export function RecordingRow({
           ? 'flex h-full flex-col gap-2 rounded border border-border p-2'
           : 'flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5',
         selecting && 'cursor-pointer',
+        rowFocusable && 'outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
         selected && 'bg-muted/40',
       )}
     >
@@ -87,9 +111,10 @@ export function RecordingRow({
           type="checkbox"
           aria-label={`${programTitle(recording.title)}を選択`}
           className="size-4 shrink-0 accent-primary"
+          tabIndex={rowFocusable ? -1 : undefined}
           checked={selected}
           onClick={(event) => event.stopPropagation()}
-          onChange={onToggle}
+          onChange={() => onToggle()}
         />
       )}
       {/*

@@ -14,6 +14,7 @@ import {
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { RecordingFilters, RecordingOrderSelect } from '@/components/recording-filters'
+import { MockH7 } from '@/components/mock-h7'
 import { RecordingRow, type RecordingRowView } from '@/components/recording-row'
 import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { StorageBalance } from '@/components/storage-balance'
@@ -154,6 +155,7 @@ export function RecordingsPage() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [view, setView] = useState<RecordingRowView>(loadRecordingView)
+  const mockH6 = (window as unknown as { __mock?: { h6?: string } }).__mock?.h6
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -165,10 +167,17 @@ export function RecordingsPage() {
     setView(next)
     saveRecordingView(next)
   }
-  const toggleSelected = (id: number) => {
+  const lastToggled = useRef<number | null>(null)
+  const toggleSelected = (id: number, shift = false) => {
+    const anchor = lastToggled.current
+    lastToggled.current = id
     setSelected((current) => {
       const next = new Set(current)
-      if (next.has(id)) next.delete(id)
+      if (shift && anchor !== null) {
+        const a = recordings.findIndex((r) => r.id === anchor)
+        const b = recordings.findIndex((r) => r.id === id)
+        for (const r of recordings.slice(Math.min(a, b), Math.max(a, b) + 1)) next.add(r.id)
+      } else if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
@@ -467,6 +476,10 @@ export function RecordingsPage() {
         <>
           <ul
             role={selecting ? 'listbox' : undefined}
+            tabIndex={selecting && mockH6 === 'roving' ? 0 : undefined}
+            onFocus={(e) => {
+              if (e.target === e.currentTarget) e.currentTarget.querySelector<HTMLElement>('[role=option]')?.focus()
+            }}
             aria-multiselectable={selecting || undefined}
             aria-label={selecting ? '録画を選択' : undefined}
             className={
@@ -485,7 +498,7 @@ export function RecordingsPage() {
                   view={view}
                   selecting={selecting}
                   selected={selected.has(r.id)}
-                  onToggle={() => toggleSelected(r.id)}
+                  onToggle={(shift) => toggleSelected(r.id, shift)}
                 />
               </li>
             ))}
@@ -518,6 +531,14 @@ export function RecordingsPage() {
         </>
       )}
       </PageContent>
+      {selecting && mockH6 === 'roving' && (
+        <div className="fixed inset-x-0 bottom-20 z-10 flex justify-center md:bottom-16">
+          <div className="rounded bg-muted px-3 py-1.5 text-xs text-muted-foreground">
+            ↑↓ で移動 · Space で選択 · Shift+↑↓ で範囲
+          </div>
+        </div>
+      )}
+      <MockH7 />
       {selecting && (
         <div className="fixed inset-x-0 bottom-[var(--bottom-nav-height)] z-20 flex justify-center px-4 pb-2 md:bottom-0 md:pb-4">
           <div

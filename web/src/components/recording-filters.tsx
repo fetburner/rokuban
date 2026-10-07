@@ -187,8 +187,13 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
         placeholder={wide ? '番組名・説明で検索' : '番組を検索'}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        className="h-11 pl-8"
+        className="peer h-11 pl-8 pr-9"
       />
+      {(window as unknown as { __mock?: { h7?: boolean } }).__mock?.h7 && (
+        <kbd className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 rounded border border-border bg-muted px-1.5 font-mono text-xs text-muted-foreground peer-focus:hidden">
+          /
+        </kbd>
+      )}
     </div>
   )
 }
