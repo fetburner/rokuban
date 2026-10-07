@@ -53,6 +53,13 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
+チャンネル選択と「その他」のモバイルシート、録画・シリーズ絞り込み内の
+チャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
+
+```sh
+cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
+```
+
 ### フィクスチャ契約の CI 検証
 
 各スクリプトが使う API フィクスチャと `web/src/api/zod.ts` の生成スキーマの一致だけは、

@@ -1612,13 +1612,16 @@ describe('ProgramsPage のリスト（回帰）', () => {
     await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
-    // 項目を押しただけではポップオーバーは閉じない（複数選ぶため）。
-    // 開いたことを確かめたうえで、まだ開いていることを見る。
+    // 項目を押しただけではシートは閉じない（複数選ぶため）。
     expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument()
-    // トリガーの表示は開いたままでも即座に更新される
-    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    // 選択状態はシート内で即座に更新される。モーダル表示中は背後のトリガーを
+    // アクセスできないため、閉じてからその表示を確認する。
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
 
-    // 閉じるのは外側クリック / Esc。閉じた状態でも現在値が読める
+    // Esc で閉じた状態でも現在値が読める
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
@@ -1653,7 +1656,10 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     // NHK総合 だけに絞ったので、NHKEテレ の番組（手話ニュース）は消える
-    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
     expect(screen.getByText('ニュース7')).toBeInTheDocument()
 
@@ -1661,6 +1667,12 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     expect(screen.getByRole('dialog', { name: 'チャンネル' })).toBeInTheDocument()
     await userEvent.click(within(dialog).getByText('NHKEテレ'))
 
+    expect(within(dialog).getByRole('checkbox', { name: /NHKEテレ/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByText('ニュース7')).toBeInTheDocument()
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
@@ -1677,7 +1689,10 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
     // NHK総合 に絞ると NHKEテレ の番組は一覧から消える
-    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
 
     // にもかかわらず、絞り込み候補には NHKEテレ が残ったまま出ている。
@@ -1700,11 +1715,16 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
-    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument()
 
     await userEvent.click(within(dialog).getByText('すべて'))
 
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(await screen.findByRole('button', { name: 'チャンネル: すべて' })).toBeInTheDocument()
     expect(screen.getByText('ニュース7')).toBeInTheDocument()
     expect(screen.getByText('手話ニュース')).toBeInTheDocument()
@@ -1724,13 +1744,17 @@ describe('ProgramsPage のチャンネル複数選択', () => {
     await userEvent.click(within(dialog).getByRole('checkbox', { name: 'すべて' }))
     await userEvent.click(within(dialog).getByText('NHK総合'))
 
-    expect(await screen.findByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
+    expect(within(dialog).getByRole('checkbox', { name: /NHK総合/ })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    )
     await waitFor(() => expect(screen.queryByText('手話ニュース')).not.toBeInTheDocument())
 
     // グリッドのクエリは選択済みの状態で初めて有効になる。選択を変えてから
     // グリッドへ切り替え、リスト・グリッドとも厳密な service だけを送ることを見る。
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'チャンネル: NHK総合' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '番組表' }))
     await screen.findByTestId('program-grid')
 
