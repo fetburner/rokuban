@@ -957,7 +957,9 @@ describe('RecordingsPage 検索条件', () => {
     })
     expect(await screen.findByText('ルールで録る録画')).toBeInTheDocument()
     expect(screen.queryByText('手動で録る録画')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'ルール: ニュース録画ルール' })).toBeInTheDocument()
+    // md 未満（jsdom は matchMedia を持たない）はシート = モーダルなので、閉じてからチップを読む。
+    await user.keyboard('{Escape}')
+    expect(await screen.findByRole('button', { name: 'ルール: ニュース録画ルール' })).toBeInTheDocument()
   })
 
   it('ジャンル・チャンネルの選択が GET のクエリに乗る', async () => {
@@ -1004,7 +1006,9 @@ describe('RecordingsPage 検索条件', () => {
     await user.selectOptions(screen.getByRole('combobox', { name: '並び順' }), '古い順')
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
-    await user.click(within(panel).getByRole('button', { name: '完了' }))
+    // シートの見出しの「完了」と区別するため、状態の節の中で引く。
+    await user.click(within(within(panel).getByRole('group', { name: '状態' })).getByRole('button', { name: '完了' }))
+    await user.keyboard('{Escape}')
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)

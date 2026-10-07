@@ -542,28 +542,127 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await user.click(options[1])
     await waitFor(() => expect(getCurrent().service).toEqual([400101]))
   })
+})
 
-  // from/to は純関数（isoToLocalDateTimeInput / localDateTimeInputToIso）は
-  // 別途テスト済みだが、入力欄を実際に操作して search に乗る経路（genre /
-  // serviceId には既にある）が無かったので足す。
-  it('期間の入力欄を操作すると from/to が ISO 8601（UTC）で反映される', async () => {
+describe('RecordingFilters 期間', () => {
+  // 「今」を 2026-10-07（水）12:00 JST に固定する。Date だけを偽にし、userEvent の
+  // タイマーは本物のまま動かす。
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-07T03:00:00Z'))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('クールを選ぶと from/to が日本時間の区切りになり、他の条件は保たれ、パネルが閉じる', async () => {
     const user = userEvent.setup()
-    const { getCurrent } = renderFilters()
+    const { getCurrent } = renderFilters({ genre: [7], q: 'アニメ' })
 
-    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
-    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    await user.click(screen.getByRole('button', { name: '期間' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    await user.click(within(within(panel).getByRole('group', { name: '2026 年のクール' })).getByRole('button', { name: '夏' }))
 
-    const fromInput = within(panel).getByLabelText('開始日時')
-    fireEvent.change(fromInput, { target: { value: '2026-01-15T09:30' } })
-    await waitFor(() => expect(getCurrent().from).toBeDefined())
-    expect(new Date(getCurrent().from as string).getFullYear()).toBe(2026)
+    expect(getCurrent()).toEqual({
+      genre: [7],
+      q: 'アニメ',
+      from: '2026-06-30T15:00:00.000Z',
+      to: '2026-09-30T15:00:00.000Z',
+    })
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '期間' })).not.toBeInTheDocument())
+    // ボタンとチップが同じ表示関数で同じ文字列を出す
+    expect(screen.getByRole('button', { name: '2026 夏' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '期間: 2026 夏' })).toBeInTheDocument()
+  })
 
-    const toInput = within(panel).getByLabelText('終了日時')
-    fireEvent.change(toInput, { target: { value: '2026-01-16T00:00' } })
-    await waitFor(() => expect(getCurrent().to).toBeDefined())
+  it('まだ始まっていない期と来年へは進めない', async () => {
+    const user = userEvent.setup()
+    renderFilters()
 
-    // 空欄に戻すと undefined に戻る（キーを undefined 以外の値のまま残さない）。
-    fireEvent.change(fromInput, { target: { value: '' } })
-    await waitFor(() => expect(getCurrent().from).toBeUndefined())
+    await user.click(screen.getByRole('button', { name: '期間' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    const group = within(panel).getByRole('group', { name: '2026 年のクール' })
+    expect(within(group).getByRole('button', { name: '秋' })).toBeEnabled()
+    expect(within(panel).getByRole('button', { name: '次の年' })).toBeDisabled()
+
+    await user.click(within(panel).getByRole('button', { name: '前の年' }))
+    const lastYear = within(panel).getByRole('group', { name: '2025 年のクール' })
+    expect(within(lastYear).getByRole('button', { name: '秋' })).toBeEnabled()
+    expect(within(panel).getByRole('button', { name: '次の年' })).toBeEnabled()
+  })
+
+  it('年の途中では、今年のまだ始まっていない期だけを押せない', async () => {
+    vi.setSystemTime(new Date('2026-05-10T03:00:00Z')) // 2026 春
+    const user = userEvent.setup()
+    renderFilters()
+
+    await user.click(screen.getByRole('button', { name: '期間' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    const group = within(panel).getByRole('group', { name: '2026 年のクール' })
+    expect(within(group).getByRole('button', { name: '冬' })).toBeEnabled()
+    expect(within(group).getByRole('button', { name: '春' })).toBeEnabled()
+    expect(within(group).getByRole('button', { name: '夏' })).toBeDisabled()
+    expect(within(group).getByRole('button', { name: '秋' })).toBeDisabled()
+  })
+
+  it('月曜が 1 日の日は「今週」と「今月」が同じ範囲でも、チェックは表示名の 1 件だけに付く', async () => {
+    vi.setSystemTime(new Date('2026-06-01T03:00:00Z')) // 2026-06-01（月）
+    const user = userEvent.setup()
+    renderFilters({ from: '2026-05-31T15:00:00.000Z' })
+
+    await user.click(screen.getByRole('button', { name: '今週' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    expect(within(panel).getByRole('button', { name: '今週' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(panel).getByRole('button', { name: '今月' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('上段の「今週」は月曜 0:00 JST から to なしで、他の条件を保つ', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters({ status: 'finished', to: '2026-01-01T00:00:00.000Z' })
+
+    await user.click(screen.getByRole('button', { name: '〜1/1 9:00 前' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    await user.click(within(panel).getByRole('button', { name: '今週' }))
+
+    expect(getCurrent()).toEqual({ status: 'finished', from: '2026-10-04T15:00:00.000Z', to: undefined })
+    expect(screen.getByRole('button', { name: '今週' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '期間: 今週' })).toBeInTheDocument()
+  })
+
+  it('日付で指定すると終了日はその日を含み、入力しても閉じない', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters({ genre: [7] })
+
+    await user.click(screen.getByRole('button', { name: '期間' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    fireEvent.change(within(panel).getByLabelText('開始日'), { target: { value: '2026-06-01' } })
+    fireEvent.change(within(panel).getByLabelText('終了日（この日を含む）'), { target: { value: '2026-06-30' } })
+
+    expect(getCurrent()).toEqual({
+      genre: [7],
+      from: '2026-05-31T15:00:00.000Z',
+      to: '2026-06-30T15:00:00.000Z',
+    })
+    // URL の to（7/1 0:00 JST）から戻した終了日欄は 6/30
+    expect(within(panel).getByLabelText('終了日（この日を含む）')).toHaveValue('2026-06-30')
+    expect(screen.getByRole('dialog', { name: '期間' })).toBeInTheDocument()
+
+    fireEvent.change(within(panel).getByLabelText('開始日'), { target: { value: '' } })
+    expect(getCurrent().from).toBeUndefined()
+
+    await user.click(within(panel).getByRole('button', { name: '完了' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '期間' })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '〜6/30' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '期間: 〜6/30' })).toBeInTheDocument()
+  })
+
+  it('期間のチップを外すと from と to が両方消える', async () => {
+    const user = userEvent.setup()
+    const { getCurrent } = renderFilters({ genre: [7], from: '2026-06-30T15:00:00.000Z', to: '2026-09-30T15:00:00.000Z' })
+
+    await user.click(screen.getByRole('button', { name: '期間: 2026 夏' }))
+
+    expect(getCurrent()).toEqual({ genre: [7], from: undefined, to: undefined })
+    expect(screen.getByRole('button', { name: '期間' })).toBeInTheDocument()
   })
 })

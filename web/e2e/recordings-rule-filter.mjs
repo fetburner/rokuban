@@ -1,8 +1,9 @@
 // 録画一覧の絞り込みパネルの「ルール」節の実ブラウザ判定。
 //
-// jsdom はレイアウトを計算しないので、節が 1 つ増えたときにパネルの高さ予算
-// （`max-h-[min(34rem,80vh)]`）を超えないか・スクロールして末尾まで届くかは
-// `pnpm test` が全部通っても何の保証にもならない。
+// jsdom はレイアウトを計算しないので、節が 1 つ増えたときにパネルの高さ予算を
+// 超えないか・スクロールして末尾まで届くかは `pnpm test` が全部通っても何の保証にも
+// ならない。予算は md 以上のポップオーバーが `max-h-[min(34rem,80vh)]`、md 未満の
+// 下からのシートが `max-h-[85dvh]`（`components/toolbar-panel.tsx`）。
 //
 // 選択肢に無い `ruleId` を渡したときの `<select>` の挙動も、HTML の
 // ask-for-a-reset に従うかどうかは実装依存なのでここで測る（jsdom では
@@ -25,9 +26,10 @@ import {
 const URL_BASE = process.env.E2E_URL ?? 'http://localhost:40773'
 const ng = []
 
-// `max-h-[min(34rem,80vh)]` の 34rem 側（root font-size 16px）。どちらの
-// ビューポートでも 80vh より小さいので、これがパネルの高さ予算になる。
-const PANEL_MAX_HEIGHT = 34 * 16
+// ポップオーバー（1280px）は `max-h-[min(34rem,80vh)]` の 34rem 側（root font-size 16px。
+// 800px の 80vh より小さい）。シート（390px）は `max-h-[85dvh]`。
+const POPOVER_MAX_HEIGHT = 34 * 16
+const SHEET_MAX_RATIO = 0.85
 
 const rules = [
   {
@@ -86,7 +88,7 @@ async function apiHandler({ path, json, route }) {
   return json([])
 }
 
-/** panelBox はポップオーバー本体の実測ボックスを返す。 */
+/** panelBox はパネル本体（ポップオーバー / シート）の実測ボックスを返す。 */
 function panelBox(page) {
   return page.getByRole('dialog', { name: '絞り込み' }).evaluate((el) => {
     const r = el.getBoundingClientRect()
@@ -109,18 +111,28 @@ async function reachable(locator) {
   })
 }
 
-/** checkPanelBudget は 1 つのビューポートでパネルの高さ予算と到達性を判定する。 */
-async function checkPanelBudget(page, label, viewportHeight) {
+/**
+ * checkPanelBudget は 1 つのビューポートでパネルの高さ予算と到達性を判定する。
+ * `sheet` なら画面の下端に付いたシート、そうでなければ高さ 34rem 以内のポップオーバー。
+ */
+async function checkPanelBudget(page, label, viewportHeight, sheet) {
   await page.getByRole('button', { name: /絞り込み/ }).click()
   const panel = page.getByRole('dialog', { name: '絞り込み' })
   await panel.waitFor({ timeout: 15000 })
 
   const box = await panelBox(page)
-  if (box.height > PANEL_MAX_HEIGHT + 1) {
-    ng.push(`${label} パネルが高さ予算を超えた（${box.height}px > ${PANEL_MAX_HEIGHT}px）`)
+  const budget = sheet ? viewportHeight * SHEET_MAX_RATIO : POPOVER_MAX_HEIGHT
+  if (box.height > budget + 1) {
+    ng.push(`${label} パネルが高さ予算を超えた（${box.height}px > ${budget}px）`)
   }
   if (box.top < 0 || box.bottom > viewportHeight + 1) {
     ng.push(`${label} パネルがビューポートから溢れた（top=${box.top} bottom=${box.bottom} / ${viewportHeight}）`)
+  }
+  if (sheet && Math.abs(box.bottom - viewportHeight) > 1) {
+    ng.push(`${label} シートが画面の下端に付いていない（bottom=${box.bottom} / ${viewportHeight}）`)
+  }
+  if (!sheet && box.bottom > viewportHeight - 1 && box.top > viewportHeight / 2) {
+    ng.push(`${label} ポップオーバーでなく下からのシートで開いた（top=${box.top}）`)
   }
 
   const ruleSelect = panel.getByRole('combobox', { name: 'ルール' })
@@ -132,7 +144,7 @@ async function checkPanelBudget(page, label, viewportHeight) {
 
   // 節が 1 つ増えたことで末尾の節が届かなくなっていないかを見る。ルール節は
   // 末尾から 2 番目で、最後は「種別」（`recording-filters.tsx` の section の並びは
-  // チャンネル / サイト / ジャンル / 期間 / 状態 / ルール / 種別）。
+  // チャンネル / サイト / ジャンル / 状態 / ルール / 種別。期間はツールバーの別の操作）。
   const lastSection = panel.getByRole('group', { name: '種別' })
   if (!(await reachable(lastSection))) {
     ng.push(`${label} 末尾の「種別」節にスクロールで到達できない`)
@@ -176,16 +188,16 @@ const context = await browser.newContext({
 const page = await context.newPage()
 await installApiStubs(page, apiHandler)
 
-log('\n=== ① 390px: ルール節を足してもパネルの高さ予算に収まり、末尾まで届く ===')
+log('\n=== ① 390px: シートで開き、ルール節を足しても高さ予算（85%）に収まり、末尾まで届く ===')
 await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
 await page.getByText('ルール由来の録画').waitFor({ timeout: 15000 })
-const mobileBox = await checkPanelBudget(page, '①', 844)
-log(`  パネル: height=${mobileBox.height}px scrollHeight=${mobileBox.scrollHeight}px（予算 ${PANEL_MAX_HEIGHT}px）`)
+const mobileBox = await checkPanelBudget(page, '①', 844, true)
+log(`  シート: height=${mobileBox.height}px scrollHeight=${mobileBox.scrollHeight}px（予算 ${844 * SHEET_MAX_RATIO}px）`)
 
-log('\n=== ② 1280px: 同じ判定 ===')
+log('\n=== ② 1280px: ポップオーバーで同じ判定 ===')
 await page.setViewportSize({ width: 1280, height: 800 })
-const desktopBox = await checkPanelBudget(page, '②', 800)
-log(`  パネル: height=${desktopBox.height}px scrollHeight=${desktopBox.scrollHeight}px（予算 ${PANEL_MAX_HEIGHT}px）`)
+const desktopBox = await checkPanelBudget(page, '②', 800, false)
+log(`  パネル: height=${desktopBox.height}px scrollHeight=${desktopBox.scrollHeight}px（予算 ${POPOVER_MAX_HEIGHT}px）`)
 
 log('\n=== ③ 一覧に無い ruleId でも select が「問わない」に落ちない ===')
 await page.goto(URL_BASE + '/recordings?ruleId=99', { waitUntil: 'domcontentloaded' })
