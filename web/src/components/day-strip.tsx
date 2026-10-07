@@ -98,7 +98,7 @@ function DayCell({
       // 持つ（docs/frontend/design.md「色は信号のみ」）。土と日のどちらかは
       // 文字自身が言うので、色で区別する必要はない
       className={cn(
-        'flex h-11 min-w-0 pointer-coarse:min-w-11 flex-col items-center justify-center rounded-md border text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+        'flex h-11 min-w-0 pointer-coarse:min-w-11 flex-col items-center justify-center rounded-md border text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring',
         isCurrent
           ? 'border-primary bg-primary text-primary-foreground'
           : isWeekend

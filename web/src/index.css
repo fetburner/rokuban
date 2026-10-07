@@ -221,7 +221,7 @@
     --warning: oklch(0.52 0.15 46);
     --border: var(--tone-200);
     --input: var(--tone-200);
-    --ring: var(--tone-400);
+    --ring: var(--scanline);
     --chart-1: var(--tone-200);
     --chart-2: var(--tone-400);
     --chart-3: var(--scanline);
@@ -316,7 +316,7 @@
     );
   }
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-ring;
     }
   body {
     @apply bg-background text-foreground;
