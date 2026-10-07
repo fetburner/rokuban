@@ -89,15 +89,13 @@ export function PageContent({ className, ...props }: React.ComponentProps<'div'>
  * ブロック要素を子に持つ呼び出し側が出てきたため --- `<p>` の中に `<div>` /
  * 別の `<p>` を置くと無効な HTML になり、React が hydration エラーの警告を出す。
  *
- * **走査線は 3 箇所限定の使用箇所の 1 つ**（空状態。docs/frontend/design.md
- * 「走査線は 3 箇所限定」）。「まだ何も映っていないブラウン管」の質感を出す。
- * 文字色は `text-foreground` を使う --- `scanlines` の間隙は `text-muted-foreground`
- * （= `--scanline`）と近く、その組み合わせだと 2 値に近い衝突を起こす
- * （`index.css` の `.scanlines` コメント参照）。
+ * 走査線は読み込み中と ON AIR にだけ使う。空状態にも敷くと読み込み中と同じ
+ * 質感になり、データが無い状態と取得中を見分けにくくなるため、ページの地を保つ
+ * （docs/frontend/design.md「走査線は読み込み中・ON AIR の 2 箇所限定」）。
  */
 export function EmptyState({ children }: { children: React.ReactNode }) {
   return (
-    <div className="scanlines px-4 py-12 text-center text-sm text-foreground">{children}</div>
+    <div className="px-4 py-12 text-center text-sm text-foreground">{children}</div>
   )
 }
 
@@ -142,8 +140,8 @@ export function ErrorState({
 /**
  * Skeleton は読み込み中のプレースホルダ。
  *
- * **走査線は 3 箇所限定の使用箇所の 1 つ**（読み込み中。docs/frontend/design.md
- * 「走査線は 3 箇所限定」）。地の塗り（旧 `bg-muted`）を `scanlines` に差し替えて
+ * **走査線の 2 箇所のうちの 1 つ**（読み込み中。docs/frontend/design.md
+ * 「走査線は読み込み中・ON AIR の 2 箇所限定」）。地の塗り（旧 `bg-muted`）を `scanlines` に差し替えて
  * あるが、形は変えていない（呼び出し側は高さ・角丸を `className` で指定する）。
  *
  * 装飾のみで支援技術には何も伝えない（`aria-hidden`）。読み上げは `ListSkeleton`

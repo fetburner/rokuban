@@ -53,6 +53,13 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
+チャンネル選択と「その他」のモバイルシート、録画・シリーズ絞り込み内の
+チャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
+
+```sh
+cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
+```
+
 ### フィクスチャ契約の CI 検証
 
 各スクリプトが使う API フィクスチャと `web/src/api/zod.ts` の生成スキーマの一致だけは、
@@ -511,7 +518,7 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   ライト / ダーク × デスクトップ / モバイル。加えて番組表グリッド・
   サーキットブレーカー発動中・モバイルの「その他」を開いた状態・読み込み中
   （Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）を撮る。
-  空状態（EmptyState の走査線。既定のショットでは折り返しの下に隠れて
+  空状態（EmptyState の文言。既定のショットでは折り返しの下に隠れて
   文字が写らないので、スクロールしてから撮る）とホームの全セクション空状態
   （`home-empty-*`）を足す。
   さらにシリーズ一覧の格子とリスト（`series-card-*` / `series-list-*`）を 360px と 2560px で撮る。
@@ -899,10 +906,8 @@ Chromium で次を確認する。
   折り目の中にあること。変更前も結果には届いたが、実測（390px）は
   `scrollY=1138` まで必要だった（1280px では 948）。変更後は 390px で
   `scrollY=502`（1280px では 426）、件数行 y=49、1 件目 y=81 になった。
-  主操作を上端へ動かすだけでは総スクロール量は変わらず、
-  「押しても画面が変わらず、
-  結果を見るために下までスクロールする」状態が①②とも OK のまま成立するため、
-  送信後に結果の先頭へスクロール・フォーカスする。
+  検索と条件クリアは条件欄の後ろに置き、固定バーにはしない。値欄の Enter でも
+  検索でき、送信後は結果の先頭へスクロール・フォーカスする。
 - ⑥ 長いサービス名と有料番組の `ProgramRow` で、メタ行が 1 行に収まり、行が不要に
   2 行ぶん高くならないこと。メタ行・行の高さは固定値で判定する（実測は
   360/390/1280px いずれも `ProgramRow` 65px・メタ行 20px、しきい値は行 72px・
@@ -928,6 +933,18 @@ DB も要らない。⓪（配っている bundle と `dist/` の一致）も自
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
+```
+
+### 検索画面の操作位置・Enter・空の状態（`issue-1232-search.mjs`）
+
+390px で検索・クリアのボタンが条件の後ろに続くこと、値欄の Enter が検索だけを
+送りルール作成を送らないこと（ルール名欄は逆）を判定する。未検索の EmptyState に
+走査線が無く、読み込み中の Skeleton にだけあることも判定する。`/api/**` は `page.route` で
+差し替えるので mirakc も DB も要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:issue-1232-search
 ```
 
 ### 予約一覧の副情報がシェブロンに重ならないか（`reservations-mobile.mjs`）
@@ -1109,12 +1126,11 @@ Chrome はクリック等の離散入力から 500ms 以内の layout-shift を�
 `condition-fields.tsx`（`ServiceFields` が `TextMatchFields` の直後）を当てると
 ①が 0.257（②は 0.039）で、①が実際に落ちることを確認済み。
 
-**issue #685 の詳細節を開いた現在の実測は①が 0.024、②が 0.014。**
-`ServiceFields` の位置と非同期／同期の境界（上記）は変えていないため、しきい値
-0.10 に対して十分小さいまま。
+**詳細節を開いた現在の実測は①が 約 0.03、②が 約 0.016。**
+検索・クリア操作を全条件の後ろへ移した状態でも、どちらも 0.10 のしきい値を下回る。
 
 **検索条件にサイトチップ（`SiteFields`）を足した（issue #531）後も測り直したが
-値は変わらない（今回の実測では①が 0.024、②が 0.014）。**この `SiteFields` は
+値は変わらない（今回の実測では①が 約 0.03、②が 約 0.016）。**この `SiteFields` は
 レジストリの解決した `GET /api/sites` のキャッシュを再利用する同期的な節である。
 しかも、レジストリと下書きの和集合が 2 つ以上のときしか描画しない。この
 フィクスチャは単一サイトかつ下書きが空なので DOM に一切増えない。
@@ -1504,6 +1520,18 @@ E2E_URL=http://localhost:4173 pnpm e2e:recordings-rule-filter
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recordings-period-toolbar
+```
+
+### 検索欄の `/` フォーカス（`search-shortcut.mjs`）
+
+`/recordings`・`/series`・`/search` で `/` を押したときのフォーカス移動と、
+入力欄・textarea・contenteditable・IME 変換中で文字入力を妨げないことを実ブラウザで見る。
+番組表と、プレイヤーが見えている録画詳細ではこのキーを横取りしないことも確かめる。`/search` の詳細条件は閉じたままにする。
+判定を足した直後に未実装の base で失敗することを確認してから実装する。
+
+```sh
+pnpm build && pnpm preview --port 40773 --strictPort &
+E2E_URL=http://localhost:40773 pnpm e2e:search-shortcut
 ```
 
 ### 畳んだサイドバーの項目名（`sidebar-tooltips.mjs`）

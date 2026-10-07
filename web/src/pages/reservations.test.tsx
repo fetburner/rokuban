@@ -1,5 +1,5 @@
 import type { QueryClient } from '@tanstack/react-query'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -11,7 +11,28 @@ import { RESERVATION_GROUPING_KEY } from '@/lib/reservation-grouping'
 // このファイルは日付別の時刻順一覧を判定する。新しい既定（シリーズ表示）とは
 // 独立して M8-30 の URL 絞り込み・行レイアウトを固定する。
 beforeEach(() => localStorage.setItem(RESERVATION_GROUPING_KEY, 'time'))
-afterEach(() => localStorage.clear())
+const originalMatchMedia = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+afterEach(() => {
+  localStorage.clear()
+  if (originalMatchMedia) {
+    Object.defineProperty(window, 'matchMedia', originalMatchMedia)
+  } else {
+    Reflect.deleteProperty(window, 'matchMedia')
+  }
+})
+
+function enableFinePointer() {
+  window.matchMedia = vi.fn((query: string) => ({
+    matches: query === '(pointer: fine)',
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })) as unknown as typeof window.matchMedia
+}
 
 /** 時刻はローカルの 0 時基準で組む（表示に時刻が入るのでタイムゾーンに依存させない）。 */
 const dayStart = new Date(2026, 6, 25, 0, 0, 0, 0)
@@ -786,6 +807,212 @@ describe('予約一覧の行本体表示のタイトル欠損', () => {
       'href',
       '/reservations/default/10',
     )
+  })
+})
+
+describe('予約行のコンテキストメニュー', () => {
+  it('詳細リンクとコピーを残し、取消は既存の Undo 付き経路を使う', async () => {
+    enableFinePointer()
+    const item = reservation(1, '右クリック用の予約', 19 * 60, 60)
+    const intentBodies: unknown[] = []
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+      if (url.pathname === '/api/reservations' && method === 'GET') {
+        return Promise.resolve(jsonResponse([item]))
+      }
+      if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites/default/programs/10/intent' && method === 'PUT') {
+        intentBodies.push(JSON.parse(String(init?.body)))
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+
+    renderPage()
+
+    const title = await screen.findByText(item.title)
+    const reservationRow = title.closest('li')
+    expect(reservationRow).not.toBeNull()
+    fireEvent.contextMenu(reservationRow!, { clientX: 80, clientY: 40 })
+    const menu = await screen.findByRole('menu')
+    expect(screen.getByRole('menuitem', { name: '開く' })).toHaveAttribute(
+      'href',
+      '/reservations/default/10',
+    )
+    expect(screen.getByRole('menuitem', { name: '新しいタブで開く' })).toHaveAttribute(
+      'target',
+      '_blank',
+    )
+    await user.click(screen.getByRole('menuitem', { name: 'リンクをコピー' }))
+    expect(writeText).toHaveBeenCalledWith(
+      `${window.location.origin}/reservations/default/10`,
+    )
+    expect(await screen.findByText('リンクをコピーしました')).toBeInTheDocument()
+
+    fireEvent.contextMenu(reservationRow!, { clientX: 80, clientY: 40 })
+    await user.click(await screen.findByRole('menuitem', { name: '予約を取消' }))
+    await waitFor(() => expect(intentBodies).toEqual([{ action: 'skip' }]))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '元に戻す' })).toBeInTheDocument()
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(menu).not.toBeInTheDocument()
+  })
+
+  it('既定のシリーズ表示でも単独予約・シリーズ見出し・展開した各話から操作できる', async () => {
+    enableFinePointer()
+    localStorage.removeItem(RESERVATION_GROUPING_KEY)
+    const individual = reservation(1, '単独の右クリック予約', 19 * 60, 60)
+    const firstEpisode = reservation(2, '右クリックシリーズ 第一話', 20 * 60, 60, 'default', 'テスト局', {
+      series: '右クリックシリーズ',
+    })
+    const secondEpisode = reservation(3, '右クリックシリーズ 第二話', 21 * 60, 60, 'default', 'テスト局', {
+      series: '右クリックシリーズ',
+    })
+    const intentBodies: unknown[] = []
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+      if (url.pathname === '/api/reservations' && method === 'GET') {
+        return Promise.resolve(jsonResponse([individual, firstEpisode, secondEpisode]))
+      }
+      if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/recording-shelves') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites/default/programs/30/intent' && method === 'PUT') {
+        intentBodies.push(JSON.parse(String(init?.body)))
+        return Promise.resolve(new Response(null, { status: 204 }))
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    const user = userEvent.setup()
+
+    renderPage()
+
+    const individualTitle = await screen.findByText(individual.title)
+    const individualRow = individualTitle
+      .closest('[data-testid="reservation-series-row"]')
+      ?.querySelector('[data-testid="reservation-series-header"]')
+    expect(individualRow).not.toBeNull()
+    fireEvent.contextMenu(individualRow!, { clientX: 80, clientY: 40 })
+    const individualMenu = await screen.findByRole('menu')
+    expect(screen.getByRole('menuitem', { name: '開く' })).toHaveAttribute(
+      'href',
+      '/reservations/default/10',
+    )
+    fireEvent.keyDown(individualMenu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+
+    const seriesHeader = screen
+      .getAllByTestId('reservation-series-header')
+      .find((header) => header.textContent?.includes('右クリックシリーズ'))
+    expect(seriesHeader).toBeDefined()
+    fireEvent.contextMenu(seriesHeader!, { clientX: 80, clientY: 40 })
+    const seriesMenu = await screen.findByRole('menu')
+    expect(screen.getByRole('menuitem', { name: '開く' })).toHaveAttribute(
+      'href',
+      '/reservations/default/20',
+    )
+    fireEvent.keyDown(seriesMenu, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('menu')).not.toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: '右クリックシリーズの予約を開く' }))
+    const episodeTitle = await screen.findByText('第二話')
+    const episodeRow = episodeTitle.closest('li')
+    expect(episodeRow).not.toBeNull()
+    fireEvent.contextMenu(episodeRow!, { clientX: 80, clientY: 40 })
+    const episodeMenu = await screen.findByRole('menu')
+    expect(screen.getByRole('menuitem', { name: '開く' })).toHaveAttribute(
+      'href',
+      '/reservations/default/30',
+    )
+    await user.click(screen.getByRole('menuitem', { name: '予約を取消' }))
+    await waitFor(() => expect(intentBodies).toEqual([{ action: 'skip' }]))
+    expect(await screen.findByText('予約を取消しました')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '元に戻す' })).toBeInTheDocument()
+    expect(episodeMenu).not.toBeInTheDocument()
+  })
+
+  // 取消の PUT が未解決の間は、開き直したメニューの「予約を取消」が disabled になる。
+  function pendingCancelFetch(items: Reservation[], programId: number) {
+    let resolvePut: () => void = () => {}
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+      if (url.pathname === '/api/reservations' && method === 'GET') {
+        return Promise.resolve(jsonResponse(items))
+      }
+      if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/recording-shelves') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === `/api/sites/default/programs/${programId}/intent` && method === 'PUT') {
+        return new Promise<Response>((resolve) => {
+          resolvePut = () => resolve(new Response(null, { status: 204 }))
+        })
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    return { fetchMock, resolvePut: () => resolvePut() }
+  }
+
+  async function cancelThenReopen(row: Element, fetchMock: ReturnType<typeof vi.fn>) {
+    const user = userEvent.setup()
+    fireEvent.contextMenu(row, { clientX: 80, clientY: 40 })
+    await user.click(await screen.findByRole('menuitem', { name: '予約を取消' }))
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(true),
+    )
+    fireEvent.contextMenu(row, { clientX: 80, clientY: 40 })
+    expect(await screen.findByRole('menuitem', { name: '予約を取消' })).toHaveAttribute('aria-disabled', 'true')
+  }
+
+  it('時間順の行は取消の PUT が未解決の間、開き直したメニューの取消が disabled', async () => {
+    enableFinePointer()
+    const item = reservation(1, '取消保留の予約', 19 * 60, 60)
+    const { fetchMock, resolvePut } = pendingCancelFetch([item], 10)
+    renderPage()
+    const row = (await screen.findByText(item.title)).closest('li')
+    expect(row).not.toBeNull()
+    await cancelThenReopen(row!, fetchMock)
+    await act(async () => resolvePut())
+  })
+
+  it('シリーズ表示の単独行とエピソード行も取消の PUT が未解決の間は取消が disabled', async () => {
+    enableFinePointer()
+    localStorage.removeItem(RESERVATION_GROUPING_KEY)
+    const individual = reservation(1, '単独の保留予約', 19 * 60, 60)
+    const ep1 = reservation(2, '保留シリーズ 第一話', 20 * 60, 60, 'default', 'テスト局', { series: '保留シリーズ' })
+    const ep2 = reservation(3, '保留シリーズ 第二話', 21 * 60, 60, 'default', 'テスト局', { series: '保留シリーズ' })
+
+    const a = pendingCancelFetch([individual, ep1, ep2], 10)
+    const { unmount } = renderPage()
+    const header = (await screen.findByText(individual.title))
+      .closest('[data-testid="reservation-series-row"]')
+      ?.querySelector('[data-testid="reservation-series-header"]')
+    expect(header).not.toBeNull()
+    await cancelThenReopen(header!, a.fetchMock)
+    await act(async () => a.resolvePut())
+    unmount()
+
+    const b = pendingCancelFetch([individual, ep1, ep2], 30)
+    renderPage()
+    await userEvent.setup().click(await screen.findByRole('button', { name: '保留シリーズの予約を開く' }))
+    const episodeRow = (await screen.findByText('第二話')).closest('li')
+    expect(episodeRow).not.toBeNull()
+    await cancelThenReopen(episodeRow!, b.fetchMock)
+    await act(async () => b.resolvePut())
   })
 })
 

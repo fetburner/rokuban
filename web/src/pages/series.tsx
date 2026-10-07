@@ -38,6 +38,7 @@ import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
 import { seriesLabelRules } from '@/lib/series'
 import { cn } from '@/lib/utils'
+import { useSearchShortcut } from '@/lib/use-search-shortcut'
 
 /**
  * SeriesPage は生きている録画をシリーズ単位で眺めるライブラリ。
@@ -52,6 +53,8 @@ import { cn } from '@/lib/utils'
  * 最新は条件に当たった回だけから出る（docs/frontend/recordings.md §シリーズ一覧）。
  */
 export function SeriesPage() {
+  useSearchShortcut('input[aria-label="番組名・説明で検索"]')
+
   const search = useSearch({ from: '/series' })
   const navigate = useNavigate()
   const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
