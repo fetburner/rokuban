@@ -67,8 +67,9 @@ ruler が次パスで削除する。遷移せず留まると、詳細の GET が
 その他の行は予約の 80px とする。この 80px / 124px は `box-content` でボタン側の
 content box として確保する。開いたときだけ付く `border-l`（1px）はその外側に
 足す。`border-box`（既定）のままだと `border-l` がボタン側から 1px 侵食し、
-`justify-center` で両端 0.5px ずつ `overflow-hidden` に切られる。したがって
-実際に測れる列の外寸（`getBoundingClientRect().width`）は 81px / 125px になる。
+`justify-center` で両端 0.5px ずつ `overflow-hidden` に切られる。開いた列は
+右 padding 16px も持ち、ボタンの右端を折りたたみ行の右 padding と揃える。
+したがって実際に測れる列の外寸（`getBoundingClientRect().width`）は 97px / 141px になる。
 以前は列幅を常時確保していたが、ボタンが出ていない間の
 空きが不恰好なので畳む方式にした。**代償として横方向はタイトルの truncate
 位置が開閉のたびに動く**（実機で確認し、許容と判断）。一方で**縦方向の
