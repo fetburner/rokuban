@@ -1,6 +1,11 @@
-// H-10: 横向き端末の左右セーフエリアと、0px のときの既存レイアウトを確認する。
-// Chromium は non-zero の safe-area-inset を与えられないため、CSS が左右の
-// env() を使う契約と、0px 時の実測寸法を分けて確認する。
+// H-10: 横向き端末の左右セーフエリアを、非ゼロの inset を与えて寸法で確認する。
+// CDP の Emulation.setSafeAreaInsetsOverride で env(safe-area-inset-*) に値を入れ、
+// getBoundingClientRect の寸法だけで判定する（CSS の文字列一致は見ない）。
+//   - 1280×800 / 390×844 inset 0: inset が 0 のときレイアウトが変わらないこと
+//   - 844×390 inset 左右 59・下 21（ノッチ付き iPhone 横向き。md 以上なのでサイドバー配置）
+//   - 700×390 inset 左右 47（md 未満の横向き。ボトムタブ配置）
+// override が効いていない場合は ng を積む（CDP メソッド欠落や将来の Chromium の変更を黙って通さない）。
+// 未検証: 実機の Safari が返す inset の実値、回転時の再計算。実機確認は別 issue で扱う。
 //
 //   pnpm build && pnpm preview --port 4173 --strictPort &
 //   E2E_URL=http://localhost:4173 pnpm e2e:safe-area-inline
@@ -35,72 +40,55 @@ await page.locator('main#main').waitFor()
 await page.locator('header').waitFor()
 await page.locator('[data-testid="bottom-nav"] li').first().waitFor()
 
-async function measure() {
+const cdp = await context.newCDPSession(page)
+
+/** env(safe-area-inset-left) が実際に何 px に解決されるかを、使い捨て要素の padding で測る。 */
+async function resolvedInsetLeft() {
+  return page.evaluate(() => {
+    const probe = document.createElement('div')
+    probe.style.cssText = 'position:fixed;visibility:hidden;padding-left:env(safe-area-inset-left)'
+    document.body.append(probe)
+    const px = parseFloat(getComputedStyle(probe).paddingLeft)
+    probe.remove()
+    return px
+  })
+}
+
+async function setInsets(width, height, left, right, bottom, label) {
+  await page.setViewportSize({ width, height })
+  try {
+    await cdp.send('Emulation.setSafeAreaInsetsOverride', { insets: { left, right, top: 0, bottom } })
+  } catch (error) {
+    ng.push(`${label}: Emulation.setSafeAreaInsetsOverride が失敗した: ${error.message}`)
+    return false
+  }
+  const got = await resolvedInsetLeft()
+  if (got !== left) {
+    ng.push(`${label}: safe-area override が効いていない（env(safe-area-inset-left) expected ${left}, got ${got}）`)
+    return false
+  }
+  return true
+}
+
+function measure() {
   return page.evaluate(() => {
     const rect = (element) => {
+      if (!element) return null
       const { left, right, width } = element.getBoundingClientRect()
       return { left, right, width }
     }
     const main = document.querySelector('main#main')
     const header = document.querySelector('header')
-    const headerContent = header?.firstElementChild
-    const headerTitle = headerContent?.querySelector('h1')
-    const shell = main?.parentElement?.parentElement
     const sidebar = [...document.querySelectorAll('nav[aria-label="主ナビゲーション"]')]
       .find((element) => element.getAttribute('data-testid') !== 'bottom-nav')
     const bottomNav = document.querySelector('[data-testid="bottom-nav"]')
-    const bottomNavList = bottomNav?.querySelector('ul')
-    const style = (element) => element ? getComputedStyle(element) : undefined
     return {
-      viewportWidth: window.innerWidth,
-      bodyPadding: { left: style(document.body)?.paddingLeft, right: style(document.body)?.paddingRight },
-      shell: shell ? rect(shell) : null,
-      shellPadding: shell ? { left: style(shell).paddingLeft, right: style(shell).paddingRight } : null,
-      main: main ? rect(main) : null,
-      header: header ? rect(header) : null,
-      headerContent: headerContent ? rect(headerContent) : null,
-      headerContentPadding: headerContent ? {
-        left: style(headerContent).paddingLeft,
-        right: style(headerContent).paddingRight,
-      } : null,
-      headerTitleLeft: headerTitle ? headerTitle.getBoundingClientRect().left : null,
-      sidebar: sidebar ? { ...rect(sidebar), display: style(sidebar).display } : null,
-      bottomNav: bottomNav ? { ...rect(bottomNav), display: style(bottomNav).display,
-        paddingLeft: style(bottomNav).paddingLeft, paddingRight: style(bottomNav).paddingRight } : null,
-      bottomNavList: bottomNavList ? rect(bottomNavList) : null,
-      safeAreaRules: (() => {
-        const declarations = []
-        const visit = (rules) => {
-          for (const rule of rules) {
-            if (rule.selectorText?.split(',').some((selector) => selector.trim() === '.safe-area-inline')) {
-              declarations.push({
-                left: rule.style.getPropertyValue('padding-left'),
-                right: rule.style.getPropertyValue('padding-right'),
-                top: rule.style.getPropertyValue('padding-top'),
-                bottom: rule.style.getPropertyValue('padding-bottom'),
-              })
-            }
-            if (rule.cssRules) visit(rule.cssRules)
-          }
-        }
-        for (const sheet of document.styleSheets) {
-          try { visit(sheet.cssRules) } catch { /* Cross-origin styles are not our app CSS. */ }
-        }
-        return declarations
-      })(),
-      topSafeAreaRuleCount: (() => {
-        let count = 0
-        const visit = (rules) => {
-          for (const rule of rules) {
-            if (rule.style?.cssText.includes('env(safe-area-inset-top)')) count++
-            if (rule.cssRules) visit(rule.cssRules)
-          }
-        }
-        for (const sheet of document.styleSheets) {
-          try { visit(sheet.cssRules) } catch { /* Cross-origin styles are not our app CSS. */ }
-        }
-        return count
-      })(),
+      main: rect(main),
+      header: rect(header),
+      headerTitleLeft: header?.querySelector('h1')?.getBoundingClientRect().left ?? null,
+      sidebar: sidebar ? { ...rect(sidebar), display: getComputedStyle(sidebar).display } : null,
+      bottomNav: bottomNav ? { ...rect(bottomNav), display: getComputedStyle(bottomNav).display } : null,
+      bottomNavList: rect(bottomNav?.querySelector('ul')),
     }
   })
 }
@@ -111,58 +99,64 @@ function same(actual, expected, label) {
   }
 }
 
-for (const width of [1280, 390]) {
-  const height = width === 390 ? 844 : 800
-  await page.setViewportSize({ width, height })
+const cases = [
+  {
+    name: '1280×800 / inset 0', width: 1280, height: 800, insets: [0, 0, 0],
+    expected: {
+      main: { left: 192, right: 1280, width: 1088 },
+      header: { left: 192, right: 1280, width: 1088 },
+      headerTitleLeft: 208,
+      sidebar: { left: 0, right: 192, width: 192, display: 'flex' },
+      bottomNav: { left: 0, right: 0, width: 0, display: 'none' },
+    },
+  },
+  {
+    name: '390×844 / inset 0', width: 390, height: 844, insets: [0, 0, 0],
+    expected: {
+      main: { left: 0, right: 390, width: 390 },
+      header: { left: 0, right: 390, width: 390 },
+      headerTitleLeft: 16,
+      bottomNav: { left: 0, right: 390, width: 390, display: 'block' },
+      bottomNavList: { left: 0, right: 390, width: 390 },
+    },
+  },
+  {
+    // iPhone 横向き。md 以上なのでサイドバー配置。サイドバー左端が inset 分だけ内側に入る。
+    name: '844×390 / inset 59,59,bottom 21', width: 844, height: 390, insets: [59, 59, 21],
+    expected: {
+      main: { left: 251, right: 785, width: 534 },
+      header: { left: 251, right: 785, width: 534 },
+      headerTitleLeft: 267,
+      sidebar: { left: 59, right: 251, width: 192, display: 'flex' },
+      bottomNav: { left: 0, right: 0, width: 0, display: 'none' },
+    },
+  },
+  {
+    // md 未満の横向き。サイドバーは無く、ボトムタブの中身が inset の内側に入る。
+    name: '700×390 / inset 47,47', width: 700, height: 390, insets: [47, 47, 0],
+    expected: {
+      main: { left: 47, right: 653, width: 606 },
+      header: { left: 47, right: 653, width: 606 },
+      headerTitleLeft: 63,
+      sidebar: null,
+      bottomNavList: { left: 47, right: 653, width: 606 },
+    },
+  },
+]
+
+for (const c of cases) {
+  const [left, bottom] = [c.insets[0], c.insets[2]]
+  if (!await setInsets(c.width, c.height, left, c.insets[1], bottom, c.name)) continue
   const m = await measure()
-  log(`\n=== ${width}px / safe-area 0 の寸法 ===`)
+  log(`\n=== ${c.name} ===`)
   log(JSON.stringify(m))
-
-  const expected = width === 390
-    ? {
-        bodyPadding: { left: '0px', right: '0px' },
-        shell: { left: 0, right: 390, width: 390 },
-        shellPadding: { left: '0px', right: '0px' },
-        main: { left: 0, right: 390, width: 390 },
-        header: { left: 0, right: 390, width: 390 },
-        headerContent: { left: 0, right: 390, width: 390 },
-        headerContentPadding: { left: '16px', right: '16px' },
-        headerTitleLeft: 16,
-        bottomNav: { left: 0, right: 390, width: 390, display: 'block', paddingLeft: '0px', paddingRight: '0px' },
-        bottomNavList: { left: 0, right: 390, width: 390 },
-      }
-    : {
-        bodyPadding: { left: '0px', right: '0px' },
-        shell: { left: 0, right: 1280, width: 1280 },
-        shellPadding: { left: '0px', right: '0px' },
-        main: { left: 192, right: 1280, width: 1088 },
-        header: { left: 192, right: 1280, width: 1088 },
-        headerContent: { left: 192, right: 1280, width: 1088 },
-        headerContentPadding: { left: '16px', right: '16px' },
-        headerTitleLeft: 208,
-        sidebar: { left: 0, right: 192, width: 192, display: 'flex' },
-        bottomNav: { left: 0, right: 0, width: 0, display: 'none', paddingLeft: '0px', paddingRight: '0px' },
-      }
-
-  for (const key of Object.keys(expected)) same(m[key], expected[key], `${width}px ${key}`)
-
-  if (
-    !m.safeAreaRules.some((rule) =>
-      rule.left === 'env(safe-area-inset-left)' &&
-      rule.right === 'env(safe-area-inset-right)',
-    ) ||
-    m.safeAreaRules.some((rule) => rule.top !== '' || rule.bottom !== '') ||
-    m.topSafeAreaRuleCount !== 0
-  ) {
-    ng.push(`${width}px: .safe-area-inline needs left/right env() declarations and no top/bottom inset`)
-  }
-  if (!m.shell || !await page.evaluate(() => {
-    const main = document.querySelector('main#main')
-    const shell = main?.parentElement?.parentElement
-    const nav = document.querySelector('[data-testid="bottom-nav"]')
-    return shell?.classList.contains('safe-area-inline') && nav?.classList.contains('safe-area-inline')
-  })) {
-    ng.push(`${width}px: body/header shell and bottom tabs must use .safe-area-inline`)
+  for (const key of Object.keys(c.expected)) {
+    if (key === 'sidebar' && c.expected.sidebar === null) {
+      // md 未満では sidebar は display:none。非表示（幅 0）であること。
+      if (m.sidebar && m.sidebar.display !== 'none') ng.push(`${c.name} sidebar: expected hidden, got ${JSON.stringify(m.sidebar)}`)
+      continue
+    }
+    same(m[key], c.expected[key], `${c.name} ${key}`)
   }
 }
 

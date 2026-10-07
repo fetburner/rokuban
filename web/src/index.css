@@ -333,7 +333,8 @@
 @layer utilities {
   /* 横向き端末の左右の safe area は共通シェルと fixed ナビで別々に受ける。
      下端はボトムタブと再生設定シートが個別に扱うため、ここには含めない。
-     0px inset 時の寸法は web/e2e/safe-area-inline.mjs で確認する。 */
+     CDP の safe-area override で非ゼロ inset を与えた寸法を web/e2e/safe-area-inline.mjs で確認する。
+     実機 Safari の inset 実値と回転時の再計算は未検証。 */
   .safe-area-inline {
     padding-left: env(safe-area-inset-left);
     padding-right: env(safe-area-inset-right);
