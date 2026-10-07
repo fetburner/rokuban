@@ -198,7 +198,9 @@ for (const theme of ['light', 'dark']) {
     await page.waitForFunction((isDark) => document.documentElement.classList.contains('dark') === isDark, theme === 'dark')
     const libTab = recTabs.getByRole('button', { name: 'ライブラリ' })
     const trashTab = recTabs.getByRole('button', { name: 'ごみ箱' })
-    const tabStyle = (button) => button.evaluate((element) => {
+    const tabStyle = (button) => button.evaluate(async (element) => {
+      // クリック直後は transition-[color,background-color] の始点を測ってしまい、塗りへの退行を見逃す。終点まで待つ。
+      await Promise.all(element.getAnimations().map((animation) => animation.finished))
       const style = getComputedStyle(element)
       // 計算値の文字列は遷移の途中で `oklab(0 0 0 / 0)` にもなるので、1px 塗った画素の alpha で透明を判定する。
       const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
