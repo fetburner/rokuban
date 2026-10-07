@@ -1496,12 +1496,12 @@ E2E_URL=http://localhost:4173 pnpm e2e:recordings-period-toolbar
 
 `/recordings`・`/series`・`/search` で `/` を押したときのフォーカス移動と、
 入力欄・textarea・contenteditable・IME 変換中で文字入力を妨げないことを実ブラウザで見る。
-番組表ではこのキーを横取りしないことも確かめる。`/search` の詳細条件は閉じたままにする。
+番組表と、プレイヤーが見えている録画詳細ではこのキーを横取りしないことも確かめる。`/search` の詳細条件は閉じたままにする。
 判定を足した直後に未実装の base で失敗することを確認してから実装する。
 
 ```sh
-pnpm build && pnpm preview --port 4173 --strictPort &
-E2E_URL=http://localhost:4173 pnpm e2e:search-shortcut
+pnpm build && pnpm preview --port 40773 --strictPort &
+E2E_URL=http://localhost:40773 pnpm e2e:search-shortcut
 ```
 
 ## CI で回す判定とそれ以外

@@ -146,5 +146,68 @@ if (programGuide.prevented || !programGuide.bodyFocused) {
   ng.push(`番組表で / を横取りした（prevented=${programGuide.prevented}, bodyFocused=${programGuide.bodyFocused}）`)
 }
 
+log('\n=== 録画詳細（プレイヤー表示中）では / を横取りしない ===')
+const detailRecording = {
+  id: 1,
+  site: 'default',
+  ruleId: null,
+  source: 'manual',
+  serviceName: 'ＮＨＫ総合１・岡山',
+  channelType: 'GR',
+  channel: '27',
+  networkId: 32678,
+  serviceId: 5168,
+  eventId: 1,
+  title: 'ニュース７',
+  description: '詳細画面の説明',
+  startAt: '2026-09-30T10:00:00.000Z',
+  startedAt: '2026-09-30T09:59:30.000Z',
+  endedAt: '2026-09-30T10:30:30.000Z',
+  durationMs: 1_800_000,
+  status: 'finished',
+  keepOriginal: 'always',
+  cmDetection: { state: 'detected', ranges: [] },
+  sizeBytes: 3_200_000_000,
+  encodedAssets: [{ profile: 'h264-720p', sizeBytes: 572_000_000 }],
+  encodeProfiles: ['h264-720p'],
+  createdAt: '2026-09-30T10:35:00.000Z',
+}
+const detailPage = await context.newPage()
+await installApiStubs(detailPage, async ({ path, json, route }) => {
+  if (path === '/api/sites') return json(['default'])
+  if (path === '/api/capabilities') return json({ live: false, cmDetect: true })
+  if (path === '/api/events') return sseKeepAlive(route)
+  if (path === '/api/recordings/1') return json(detailRecording)
+  if (/^\/api\/media\//.test(path)) return route.fulfill({ status: 404 })
+  return json([])
+})
+await detailPage.goto(`${URL_BASE}/recordings/1`, { waitUntil: 'domcontentloaded' })
+await detailPage.locator('[data-testid="recording-player-frame"]').waitFor({ timeout: 15_000 })
+await detailPage.evaluate(() => {
+  document.body.tabIndex = -1
+  document.body.focus()
+  window.__searchShortcutDefaultPrevented = undefined
+  window.addEventListener('keydown', (event) => {
+    if (event.key === '/') window.__searchShortcutDefaultPrevented = event.defaultPrevented
+  }, { once: true })
+})
+await detailPage.keyboard.press('/')
+const detail = await detailPage.evaluate(() => ({
+  prevented: window.__searchShortcutDefaultPrevented,
+  bodyFocused: document.activeElement === document.body,
+}))
+if (detail.prevented !== false || !detail.bodyFocused) {
+  ng.push(`録画詳細で / を横取りした（prevented=${detail.prevented}, bodyFocused=${detail.bodyFocused}）`)
+}
+await detailPage.evaluate(() => {
+  const textarea = document.createElement('textarea')
+  textarea.setAttribute('aria-label', 'detail test textarea')
+  document.body.append(textarea)
+})
+const detailTextarea = detailPage.getByLabel('detail test textarea')
+await detailTextarea.focus()
+await detailTextarea.press('/')
+if ((await detailTextarea.inputValue()) !== '/') ng.push('録画詳細の入力欄: / が文字として入力されない')
+
 await context.close()
 await finish(ng, browser)
