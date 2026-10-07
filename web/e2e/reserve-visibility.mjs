@@ -142,9 +142,10 @@ async function readReserveWidth(locator) {
 // 右 padding とボタンの右端を揃えるためのもの。畳＝約 0px。transition（150ms）の
 // 途中を拾わないよう、各測定の前に十分待つ（下の waitForTimeout(250)）。
 //
-// 許容を 2px にすると border-l の 1px 分の食い違い（box-content の有無）を
-// 区別できない（96px vs 期待 97px でも差 1 < 2 で通ってしまう）ため、1px 未満
-// に締めている。
+// 許容を 1px 未満に締めているのは border-l の有無を区別するため。border-l が抜けると
+// 96px / 140px になり、許容 2px では差 1 < 2 で通ってしまう。box-content が抜けた
+// 場合は padding と border が content box を侵食して外寸 80px / 124px になり、
+// 許容に関係なく落ちる。
 const OPEN_WIDTH = 97
 const AIRING_OPEN_WIDTH = 141
 const isOpen = (w, expected) => typeof w === 'number' && Math.abs(w - expected) < 1
@@ -154,9 +155,10 @@ const isCollapsed = (w) => typeof w === 'number' && w < 1
  * hasNoOverflow は、開いた操作列の中身が横方向にはみ出していないか
  * （`scrollWidth <= clientWidth`）を返す。幅の一致だけでは列がボタンを
  * 正しく収めているかを測れない --- `getBoundingClientRect()` は border-box の
- * 外寸を返すので、中身が 1px 溢れて `overflow-hidden` に切られていても
- * 列自体の幅は「期待どおり」に見えてしまう（実際に box-content 抜きでは
- * 幅は一致するのに子要素が溢れて切られていた）。
+ * 外寸を返すので、中身が溢れて `overflow-hidden` に切られていても列自体の幅は
+ * 「期待どおり」に見えることがある。ただし `justify-center` で開始側（左）へ溢れた
+ * 分は `scrollWidth` に現れない。box-content を外す変異ではこの判定は通り、
+ * 幅の判定だけが落ちる（実測）。
  */
 async function hasNoOverflow(locator) {
   if ((await locator.count()) === 0) return null

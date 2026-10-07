@@ -65,10 +65,9 @@ ruler が次パスで削除する。遷移せず留まると、詳細の GET が
 列を開くと行トグルが縮み、その右端のシェブロンが左へスライドして操作ボタンの
 スペースを空ける。放送中の行は予約 80px + ライブ 44px の 124px を目安にし、
 その他の行は予約の 80px とする。この 80px / 124px は `box-content` でボタン側の
-content box として確保する。開いたときだけ付く `border-l`（1px）はその外側に
-足す。`border-box`（既定）のままだと `border-l` がボタン側から 1px 侵食し、
-`justify-center` で両端 0.5px ずつ `overflow-hidden` に切られる。開いた列は
-右 padding 16px も持ち、ボタンの右端を折りたたみ行の右 padding と揃える。
+content box として確保する。開いたときだけ付く右 padding 16px と `border-l`（1px）は
+その外側に足す。右 padding は、ボタンの右端を折りたたみ行の右 padding と揃えるためのもの。
+`border-box`（既定）のままだと、padding と border の 17px がボタン側の content box を侵食する。
 したがって実際に測れる列の外寸（`getBoundingClientRect().width`）は 97px / 141px になる。
 以前は列幅を常時確保していたが、ボタンが出ていない間の
 空きが不恰好なので畳む方式にした。**代償として横方向はタイトルの truncate
