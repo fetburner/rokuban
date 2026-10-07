@@ -487,7 +487,7 @@ function RuleRow({
             aria-checked={rule.enabled}
             aria-label={`ルール「${displayName}」を有効にする`}
             disabled={updateRule.isPending || isCountingReservations}
-            className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => void toggleEnabled()}
           >
             <span

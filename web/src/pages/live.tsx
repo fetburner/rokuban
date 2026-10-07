@@ -697,7 +697,7 @@ function LiveSelectionPreview({
       type="button"
       aria-label={`${serviceName}を再生`}
       onClick={onPlay}
-      className="group relative flex aspect-video w-full items-center justify-center rounded border border-transparent bg-black p-0 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      className="group relative flex aspect-video w-full items-center justify-center rounded border border-transparent bg-black p-0 outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring"
     >
       <span className={cn(buttonVariants({ size: 'lg' }), 'group-hover:bg-primary/80')}>
         <Play data-icon="inline-start" />

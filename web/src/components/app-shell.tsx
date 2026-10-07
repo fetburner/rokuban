@@ -349,10 +349,10 @@ function Sidebar() {
                 to={to}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
+                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   collapsed && 'justify-center px-2',
                   active
-                    ? 'bg-muted font-medium text-foreground'
+                    ? 'bg-foreground font-medium text-background focus-visible:ring-offset-2 focus-visible:ring-offset-background'
                     : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
                 )}
               >
@@ -450,7 +450,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen bg-background text-foreground safe-area-inline">
       <a
         href="#main"
-        className="sr-only z-50 rounded-md bg-background text-sm font-medium text-foreground shadow-md focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:px-3 focus:py-2 focus:outline-none focus:ring-3 focus:ring-ring/50"
+        className="sr-only z-50 rounded-md bg-background text-sm font-medium text-foreground shadow-md focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:px-3 focus:py-2 focus:outline-none focus:ring-2 focus:ring-ring"
       >
         本文へ移動
       </a>
