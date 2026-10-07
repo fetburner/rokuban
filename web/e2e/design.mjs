@@ -214,7 +214,7 @@ const storageRoots = [
 ]
 
 const reservations = [
-  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
+  { id: 1, site: SITE, programId: 9001, source: 'rule', ruleId: 1, state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', serviceName: 'NHK総合', channelType: 'GR', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
@@ -1841,6 +1841,44 @@ async function runRuleCardLayoutChecks() {
         }
       }
 
+      // 「録画予定 N 件」の 44px 当たり判定が行の高さを押し広げ、同じ行の文字より
+      // 下がったり補助操作の段との間を空けたりしないこと。44px の箱ではなく文字自体を測る。
+      const scheduled = card.getByRole('link', { name: /^録画予定 \d+ 件$/ })
+      await scheduled.first().waitFor({ timeout: 5000 }).catch(() => {})
+      if ((await scheduled.count()) !== 1) {
+        ng.push(`[${viewport.name}/${theme}/rules-layout] 「録画予定 N 件」が 1 件表示されない`)
+      } else {
+        const rows = await metadata.evaluate((row, link) => {
+          const textRect = (element) => {
+            const range = document.createRange()
+            range.selectNodeContents(element)
+            return range.getBoundingClientRect()
+          }
+          const priority = textRect(row.querySelector('span'))
+          const linkText = textRect(link)
+          return {
+            sameLine: linkText.top < priority.bottom,
+            priorityCenter: priority.top + priority.height / 2,
+            linkCenter: linkText.top + linkText.height / 2,
+            linkTextBottom: linkText.bottom,
+            rowBottom: row.getBoundingClientRect().bottom,
+          }
+        }, await scheduled.elementHandle())
+        const centerDiff = Math.abs(rows.linkCenter - rows.priorityCenter)
+        const bottomGap = rows.rowBottom - rows.linkTextBottom
+        log(
+          `  [${viewport.name}/${theme}/rules-layout] 録画予定と優先度の文字の縦中心差=${centerDiff.toFixed(1)}px / ` +
+            `行下端と録画予定の文字下端の差=${bottomGap.toFixed(1)}px`,
+        )
+        // 折り返して別の行に落ちた場合は縦中心が離れて当然なので、中心差は同じ行のときだけ見る。
+        if ((rows.sameLine && centerDiff > 2) || bottomGap > 8) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] 「録画予定 N 件」が行内でずれている ` +
+              `(優先度との縦中心差=${centerDiff.toFixed(1)}px > 2px / ` +
+              `行下端との差=${bottomGap.toFixed(1)}px > 8px)`,
+          )
+        }
+      }
       await checkActionCue(recordings, {
         label: 'このルールの録画', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-chevron-right', placement: 'trailing',
       })

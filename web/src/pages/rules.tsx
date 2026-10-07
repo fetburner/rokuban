@@ -437,7 +437,7 @@ function RuleRow({
             )}
           </div>
 
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
+          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm text-muted-foreground pointer-coarse:pb-1">
             <span>優先度 {rule.priority}</span>
             <span>{keepOriginalLabel(keep)}</span>
             <span>
@@ -451,7 +451,9 @@ function RuleRow({
                   <Link
                     to="/reservations"
                     search={{ ruleId: rule.id }}
-                    className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-4 hover:underline"
+                    // 当たり判定の 44px は箱ではなく疑似要素で取る。箱ごと 44px にすると
+                    // 同じ行の文字より下がり、補助操作の段との間も空く。
+                    className="relative inline-flex min-h-6 pointer-coarse:min-h-0 items-center text-primary underline-offset-4 hover:underline pointer-coarse:before:absolute pointer-coarse:before:inset-x-0 pointer-coarse:before:top-1/2 pointer-coarse:before:h-11 pointer-coarse:before:-translate-y-1/2"
                   >
                     録画予定 {activity.scheduledCount} 件
                   </Link>
