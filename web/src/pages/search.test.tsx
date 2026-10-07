@@ -959,6 +959,21 @@ describe('SearchPage', () => {
     ])
   })
 
+  it('値の欄は enterKeyHint=search を持ち、Enter で検索が送られる', async () => {
+    const { searchBodies } = stubApi()
+    renderPage()
+    await addKeyword('ニュース')
+
+    const value = screen.getByLabelText('テキスト条件 1 の値')
+    expect(value).toHaveAttribute('enterkeyhint', 'search')
+
+    await userEvent.type(value, '{Enter}')
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
+    expect(searchBodies).toEqual([
+      { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
+    ])
+  })
+
   it('検索結果の件数を status として通知する', async () => {
     stubApi()
     renderPage()

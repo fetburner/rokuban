@@ -914,6 +914,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:search-mobile
 ```
 
+### 検索画面の操作位置・Enter・空の状態（`issue-1232-search.mjs`）
+
+390px で検索・クリアのボタンが条件の後ろに続くこと、値欄の Enter が検索だけを
+送りルール作成を送らないこと（ルール名欄は逆）を判定する。未検索の EmptyState に
+走査線が無く、読み込み中の Skeleton にだけあることも判定する。`/api/**` は `page.route` で
+差し替えるので mirakc も DB も要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:issue-1232-search
+```
+
 ### 予約一覧の副情報がシェブロンに重ならないか（`reservations-mobile.mjs`）
 
 予約一覧の行の副情報（局名・日時・尺・状態バッジ）が折り返さないコンテナに
@@ -1093,11 +1105,11 @@ Chrome はクリック等の離散入力から 500ms 以内の layout-shift を�
 `condition-fields.tsx`（`ServiceFields` が `TextMatchFields` の直後）を当てると
 ①が 0.257（②は 0.039）で、①が実際に落ちることを確認済み。
 
-**詳細節を開いた現在の実測は①が 0.030637227375845108、②が 0.01646535101996528。**
+**詳細節を開いた現在の実測は①が 約 0.03、②が 約 0.016。**
 検索・クリア操作を全条件の後ろへ移した状態でも、どちらも 0.10 のしきい値を下回る。
 
 **検索条件にサイトチップ（`SiteFields`）を足した（issue #531）後も測り直したが
-値は変わらない（今回の実測では①が 0.030637227375845108、②が 0.01646535101996528）。**この `SiteFields` は
+値は変わらない（今回の実測では①が 約 0.03、②が 約 0.016）。**この `SiteFields` は
 レジストリの解決した `GET /api/sites` のキャッシュを再利用する同期的な節である。
 しかも、レジストリと下書きの和集合が 2 つ以上のときしか描画しない。この
 フィクスチャは単一サイトかつ下書きが空なので DOM に一切増えない。
