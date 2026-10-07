@@ -171,6 +171,8 @@ export function RecordingsPage() {
   const selectionToolbarRef = useRef<HTMLDivElement>(null)
   const selectionButtonRef = useRef<HTMLButtonElement>(null)
   const restoreSelectionButtonFocusRef = useRef(false)
+  // 「選択」押下の focus だけ scroll させない（sticky ヘッダーから押すと先頭へ飛ぶ）。
+  const skipFocusScrollRef = useRef(false)
   const selectedIds = [...selected]
   const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
   const toggleView = () => {
@@ -203,6 +205,7 @@ export function RecordingsPage() {
     const firstRecordingId = recordings[0]?.id ?? null
     selectionAnchorIdRef.current = firstRecordingId
     setActiveRecordingId(firstRecordingId)
+    skipFocusScrollRef.current = true
     setSelecting(true)
   }
   const handleOptionClick = (id: number, shiftKey: boolean) => {
@@ -336,7 +339,8 @@ export function RecordingsPage() {
     if (selecting && activeRecordingId !== null) {
       listboxRef.current
         ?.querySelector<HTMLElement>(`[data-recording-option="${activeRecordingId}"]`)
-        ?.focus()
+        ?.focus({ preventScroll: skipFocusScrollRef.current })
+      skipFocusScrollRef.current = false
       return
     }
     if (!selecting && restoreSelectionButtonFocusRef.current) {

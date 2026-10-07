@@ -184,4 +184,17 @@ if (outsideSelection.start !== 0 || outsideSelection.end !== outsideSelection.le
   ng.push('⑤ 選択モード外で Cmd/Ctrl+A が入力欄の文字列全体を選択しない')
 }
 
+log('\n=== ⑥ 下へスクロールして「選択」を押しても scrollY は変わらない ===')
+await search.fill('')
+await page.getByText('四つ目の録画').waitFor()
+await page.setViewportSize({ width: 1280, height: 260 })
+await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
+await page.waitForTimeout(200)
+const scrollBefore = await page.evaluate(() => window.scrollY)
+if (scrollBefore === 0) ng.push('⑥ 前提: ページがスクロールできない（viewport を狭めても scrollY=0）')
+await page.getByRole('button', { name: '選択', exact: true }).click()
+await page.waitForTimeout(200)
+const scrollAfter = await page.evaluate(() => window.scrollY)
+if (scrollAfter !== scrollBefore) ng.push(`⑥ 「選択」で scrollY が ${scrollBefore} から ${scrollAfter} に変わる`)
+
 await finish(ng, browser)
