@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { CapacityBandLabels, CapacityBands } from '@/components/capacity-band'
 import { ChannelPicker } from '@/components/channel-picker'
+import { cn } from '@/lib/utils'
 import { DayStrip } from '@/components/day-strip'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ProgramDialogPanel } from '@/components/program-dialog-panel'
@@ -954,6 +955,36 @@ function ViewChips({
   view: ProgramsView
   onSelect: (view: ProgramsView) => void
 }) {
+  if ((window as unknown as { __mock?: { uni?: boolean } }).__mock?.uni) {
+    // PoC: V は segmented（recording-series-toggle と同じ見た目）
+    return (
+      <div role="group" aria-label="表示形式" className="px-4 pb-3">
+        <div className="inline-flex items-center rounded-md border border-border p-0.5">
+          {(
+            [
+              ['list', 'リスト'],
+              ['grid', '番組表'],
+            ] as const
+          ).map(([v, label]) => (
+            <button
+              key={v}
+              type="button"
+              aria-pressed={view === v}
+              onClick={() => onSelect(v)}
+              className={cn(
+                'inline-flex min-h-6 min-w-6 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded px-2 py-1 text-xs transition-colors',
+                view === v
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
   return (
     <div role="group" aria-label="表示形式" className="flex gap-2 px-4 pb-3">
       <Chip active={view === 'list'} onClick={() => onSelect('list')}>
