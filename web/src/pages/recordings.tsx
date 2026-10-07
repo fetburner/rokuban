@@ -168,6 +168,10 @@ export function RecordingsPage() {
   const [bulkBusy, setBulkBusy] = useState(false)
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
   const selectionAnchorIdRef = useRef<number | null>(null)
+  // Shift の範囲を入れる前の選択（base）と、範囲を入れた結果（produced）。selected が produced の
+  // ままなら同じ範囲の続きなので base から作り直して縮められる。クリック・Space・Cmd+A などで
+  // selected が変わっていれば、その時点の選択を新しい base にする（Finder と同じく範囲外の行は残る）。
+  const shiftRangeRef = useRef<{ base: Set<number>; produced: Set<number> } | null>(null)
   const listboxRef = useRef<HTMLUListElement>(null)
   const selectionToolbarRef = useRef<HTMLDivElement>(null)
   const selectionButtonRef = useRef<HTMLButtonElement>(null)
@@ -194,11 +198,12 @@ export function RecordingsPage() {
     if (anchorIndex < 0 || targetIndex < 0) return
     const start = Math.min(anchorIndex, targetIndex)
     const end = Math.max(anchorIndex, targetIndex)
-    setSelected((current) => {
-      const next = new Set(current)
-      recordings.slice(start, end + 1).forEach(({ id }) => next.add(id))
-      return next
-    })
+    const range = shiftRangeRef.current
+    const base = range?.produced === selected ? range.base : selected
+    const next = new Set(base)
+    recordings.slice(start, end + 1).forEach(({ id }) => next.add(id))
+    shiftRangeRef.current = { base, produced: next }
+    setSelected(next)
   }
   const beginSelection = () => {
     const header = selectionButtonRef.current?.closest('header')
@@ -215,10 +220,16 @@ export function RecordingsPage() {
       const box = row.getBoundingClientRect()
       return box.top >= top - 1 && box.bottom <= bottom + 1
     })
-    // 収まる行が無い（横向きの低い画面ではカードが領域より高い）: 領域に掛かる最初の行、
-    // 掛かる行も無ければ最後の行。スクロールせず、見えている部分にフォーカスを置く。
-    if (index < 0) index = rows.findIndex((row) => row.getBoundingClientRect().bottom > top)
-    if (index < 0) index = rows.length - 1
+    if (index < 0) {
+      // 収まる行が無い（横向きの低い画面ではカードが領域より高い）: 領域との重なりが最も
+      // 大きい行。重なりが無ければ（一覧を越えた位置・領域が潰れた画面）負の値で最も近い行になる。
+      // スクロールせず、見えている部分にフォーカスを置く。
+      const shown = rows.map((row) => {
+        const box = row.getBoundingClientRect()
+        return Math.min(box.bottom, bottom) - Math.max(box.top, top)
+      })
+      index = shown.indexOf(Math.max(...shown))
+    }
     rows[index]?.querySelector<HTMLElement>('[data-recording-option]')?.focus({ preventScroll: true })
     const startId = recordings[index]?.id ?? null
     selectionAnchorIdRef.current = startId
@@ -241,18 +252,9 @@ export function RecordingsPage() {
       toggleSelected(id)
       return
     }
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
-      if (event.key === 'Tab' && !event.shiftKey) {
-        const firstControl = selectionToolbarRef.current?.querySelector<HTMLButtonElement>(
-          'button:not([disabled])',
-        )
-        if (firstControl) {
-          event.preventDefault()
-          firstControl.focus()
-        }
-      }
-      return
-    }
+    // Tab は横取りしない。行の中に Tab で止まる要素は無いので、DOM 順で一覧の次
+    // （自動読み込み失敗時の「さらに読み込む」、無ければ固定バー）へ進む。
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
 
     event.preventDefault()
     const currentIndex = recordings.findIndex((recording) => recording.id === id)
@@ -675,18 +677,6 @@ export function RecordingsPage() {
             ref={selectionToolbarRef}
             role="toolbar"
             aria-label="選択した録画の操作"
-            onKeyDown={(event) => {
-              if (event.key !== 'Tab' || !event.shiftKey) return
-              const firstControl = selectionToolbarRef.current?.querySelector<HTMLButtonElement>(
-                'button:not([disabled])',
-              )
-              if (event.target === firstControl) {
-                event.preventDefault()
-                listboxRef.current
-                  ?.querySelector<HTMLElement>('[data-recording-option][tabindex="0"]')
-                  ?.focus()
-              }
-            }}
             className="flex w-full max-w-3xl flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-lg"
           >
             <span className="mr-auto text-sm font-medium">{selected.size} 件を選択中</span>

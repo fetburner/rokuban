@@ -132,6 +132,25 @@ await page.keyboard.press('ArrowDown')
 await page.keyboard.press('Shift+ArrowDown')
 await expectSelected(options, '1,2,3', '② Shift+↓ が anchor から範囲を広げる')
 
+log('\n=== ②b Shift の範囲は anchor と現在行の間に置き換わり、戻れば縮む ===')
+await page.keyboard.press('Shift+Meta+a')
+await first.focus()
+await page.keyboard.press('Space')
+await page.keyboard.press('Shift+ArrowDown')
+await page.keyboard.press('Shift+ArrowDown')
+await page.keyboard.press('Shift+ArrowDown')
+await expectSelected(options, '1,2,3,4', '②b Shift+↓ 3 回で 4 行になる')
+await page.keyboard.press('Shift+ArrowUp')
+await expectSelected(options, '1,2,3', '②b Shift+↓ 3 回 → Shift+↑ 1 回で 3 行に縮む')
+// Finder と同じく、範囲の外でクリックして足した行は範囲を縮めても残る。
+await page.keyboard.press('Shift+Meta+a')
+await options.nth(3).click()
+await first.click()
+await third.click({ modifiers: ['Shift'] })
+await expectSelected(options, '1,2,3,4', '②b Shift+クリックで範囲を広げる')
+await options.nth(1).click({ modifiers: ['Shift'] })
+await expectSelected(options, '1,2,4', '②b Shift+クリックで範囲を縮めても、範囲外でクリックした行は残る')
+
 log('\n=== ③ Cmd/Ctrl+A と Shift+Cmd/Ctrl+A は読み込み済みだけ ===')
 await page.keyboard.press('Meta+a')
 await expectSelected(options, '1,2,3,4', '③ Cmd+A で全選択する')
@@ -141,8 +160,13 @@ await page.keyboard.press('Control+a')
 await expectSelected(options, '1,2,3,4', '③ Ctrl+A で全選択する')
 await page.keyboard.press('Shift+Control+a')
 await expectSelected(options, '', '③ Shift+Ctrl+A で全解除する')
+// Shift+Cmd+A が効かない環境（Mac の Chrome のタブ検索と衝突しうる）でも、固定バーで外せる。
+await page.getByRole('button', { name: '読み込み済みの 4 件を選択' }).click()
+await expectSelected(options, '1,2,3,4', '③ 固定バーのボタンで全選択する')
+await page.getByRole('button', { name: '読み込み済みの 4 件の選択を解除' }).click()
+await expectSelected(options, '', '③ 固定バーのボタンで全解除する')
 
-log('\n=== ④ Tab は一覧から固定バーへ移り、Esc は選択モードを抜ける ===')
+log('\n=== ④ Tab は DOM 順に一覧の次へ移り、Esc は選択モードを抜ける ===')
 await first.focus()
 await page.keyboard.press('Tab')
 const firstToolbarButton = page
@@ -152,6 +176,33 @@ const firstToolbarButton = page
 if (!(await firstToolbarButton.evaluate((button) => button === document.activeElement))) {
   ng.push('④ Tab 1 回で固定選択バーへ移らない')
 }
+// 一覧と固定バーの間のフォーカス可能な要素（自動読み込みに失敗したときの「さらに読み込む」）
+// を Tab で飛ばさない。実ブラウザでは次ページの失敗で一覧ごと ErrorState に替わり、この並びを
+// API の stub では作れないので、同じ位置にボタンを差し込んで代わりにする。
+await listbox.evaluate((ul) => {
+  const button = document.createElement('button')
+  button.id = 'e2e-between'
+  button.textContent = '一覧と固定バーの間'
+  ul.after(button)
+})
+await first.focus()
+await page.keyboard.press('Tab')
+if ((await page.evaluate(() => document.activeElement?.id)) !== 'e2e-between') {
+  ng.push('④ Tab が一覧と固定バーの間の要素を飛ばす')
+}
+await page.keyboard.press('Tab')
+if (!(await firstToolbarButton.evaluate((button) => button === document.activeElement))) {
+  ng.push('④ 間の要素から Tab で固定選択バーへ移らない')
+}
+await page.keyboard.press('Shift+Tab')
+if ((await page.evaluate(() => document.activeElement?.id)) !== 'e2e-between') {
+  ng.push('④ 固定選択バーから Shift+Tab で間の要素へ戻らない')
+}
+await page.keyboard.press('Shift+Tab')
+if (!(await first.evaluate((row) => row === document.activeElement))) {
+  ng.push('④ 間の要素から Shift+Tab で一覧の現在行へ戻らない')
+}
+await page.evaluate(() => document.getElementById('e2e-between')?.remove())
 await page.keyboard.press('Escape')
 if ((await page.getByRole('listbox').count()) !== 0) ng.push('④ Esc で選択モードを抜けない')
 if ((await page.getByRole('checkbox').count()) !== 0) ng.push('④ 選択モード終了後も checkbox が残る')
