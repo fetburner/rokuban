@@ -146,6 +146,10 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
+	// IPTV / XMLTV はプレーンテキスト・XML のエクスポートであり、生成クライアント
+	// が JSON として読む OpenAPI ハンドラには載せない（docs/api/media.md）。
+	r.Get(iptvPlaylistPath, handler.ExportIPTV)
+	r.Get(xmltvGuidePath, handler.ExportXMLTV)
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: writeRequestError,
 	})
