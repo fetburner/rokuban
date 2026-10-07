@@ -4288,6 +4288,53 @@ for (const theme of themes) {
   await context.close()
 }
 
+// 非現在地リンクと畳んだサイドバーのリングも、現在地と同じく実画素で測る。
+// 非現在地はオフセット無しなので、行の左端のリングとその 2px 外側の地を採る（上端は先頭項目で ul の overflow に切られる）。
+// `ring-ring/50` へ戻ると合成後の画素が --scanline から外れ、3:1 も割る。
+for (const theme of themes) {
+  for (const collapsed of [false, true]) {
+    const mode = collapsed ? '畳んだサイドバー' : 'サイドバーの非現在地'
+    const { context, page } = await open(homeDesktop, theme, screenOf('programs'))
+    const sideNav = page.locator('nav[aria-label="主ナビゲーション"]').first()
+    if (collapsed) {
+      // クリックだと以降の focus() が :focus-visible にならないので、キーボードで畳む
+      await page.getByRole('button', { name: 'ナビゲーションを畳む' }).focus()
+      await page.keyboard.press('Enter')
+    }
+    const link = sideNav.locator('a:not([aria-current])').first()
+    if ((await link.count()) === 0) {
+      ng.push(`[${theme}] ${mode}のリンクが見つからずリングを画素で測れない`)
+      await context.close()
+      continue
+    }
+    await link.focus()
+    const focused = await link.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      return {
+        focusVisible: el.matches(':focus-visible'),
+        boxShadow: getComputedStyle(el).boxShadow,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      }
+    })
+    if (!focused.focusVisible || focused.boxShadow === 'none') {
+      ng.push(`[${theme}] ${mode}のリンクに明示フォーカスリングが出ない`)
+    }
+    const ringY = Math.floor(focused.rect.y + focused.rect.height / 2)
+    const png = await page.screenshot({ scale: 'css' })
+    const [ringPixel, backdropPixel] = await readScreenshotPixels(page, png, [
+      [Math.floor(focused.rect.x - 1), ringY],
+      [Math.floor(focused.rect.x - 4), ringY],
+    ])
+    const scanline = await computedVar(page.locator('html'), '--scanline')
+    log(`  [${theme}] ${mode}のリング=${ringPixel} / 外側の地=${backdropPixel}`)
+    checkPixelContrast(theme, `${mode}のフォーカスリング / 地`, ringPixel, backdropPixel, minUiContrast)
+    if (scanline === null || !sameRgb(ringPixel, scanline.rgba)) {
+      ng.push(`[${theme}] ${mode}のフォーカスリングの実画素が --scanline と一致しない（画素=${ringPixel} / --scanline=${scanline?.rgba}）`)
+    }
+    await context.close()
+  }
+}
+
 // 共有 Button のリングも、計算済みの border-color ではなく PNG の実画素で測る。
 // `ring-ring/50` へ戻ると border は不透明なままなので `checkExplicitFocusRing` の
 // border 比較だけでは見逃す。ボタン上端のリングとその外側の面を採り、半透明化で

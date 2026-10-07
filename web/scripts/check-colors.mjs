@@ -67,6 +67,10 @@ const monoRe = new RegExp(`\\b(?:${PREFIX})-(?:white|black)(?:/\\d{1,3})?\\b`, '
 // 16 進は 6 桁 / 8 桁だけを見る。3 桁も CSS としては色だが、doc コメント中の
 // issue 番号（`#137`）と区別できないので拾わない --- 誤検出で無効化される
 // チェックより、6 桁だけを確実に止めるチェックの方が生き延びる。
+// フォーカスリングの不透明度修飾（`ring-ring/50`）は禁止。半透明リングは地と合成されて
+// 3:1 を割る（docs/frontend/design.md）。実線の `ring-ring` を使う。
+const ringAlphaRe = /\b(?:[a-z-]+:)*(?:ring|outline)-ring\/\d{1,3}\b/g
+
 const literalRe = /#[0-9a-fA-F]{6}(?:[0-9a-fA-F]{2})?\b|\b(?:rgba?|hsla?|oklch|oklab|lab|lch)\(/g
 
 function walk(dir) {
@@ -105,7 +109,7 @@ for (const file of targets) {
   if (/\.test\.tsx?$/.test(rel)) continue
   const lines = readFileSync(file, 'utf8').split('\n')
   lines.forEach((line, i) => {
-    for (const re of [paletteRe, monoRe, literalRe]) {
+    for (const re of [paletteRe, monoRe, literalRe, ringAlphaRe]) {
       re.lastIndex = 0
       let m
       while ((m = re.exec(line)) !== null) {
