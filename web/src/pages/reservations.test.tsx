@@ -941,6 +941,79 @@ describe('予約行のコンテキストメニュー', () => {
     expect(screen.getByRole('button', { name: '元に戻す' })).toBeInTheDocument()
     expect(episodeMenu).not.toBeInTheDocument()
   })
+
+  // 取消の PUT が未解決の間は、開き直したメニューの「予約を取消」が disabled になる。
+  function pendingCancelFetch(items: Reservation[], programId: number) {
+    let resolvePut: () => void = () => {}
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), 'http://localhost')
+      const method = init?.method ?? 'GET'
+      if (url.pathname === '/api/breakers') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/sites') return Promise.resolve(jsonResponse(['default']))
+      if (url.pathname === '/api/reservations' && method === 'GET') {
+        return Promise.resolve(jsonResponse(items))
+      }
+      if (url.pathname === '/api/rules') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/recording-shelves') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === '/api/capacity/overages') return Promise.resolve(jsonResponse([]))
+      if (url.pathname === `/api/sites/default/programs/${programId}/intent` && method === 'PUT') {
+        return new Promise<Response>((resolve) => {
+          resolvePut = () => resolve(new Response(null, { status: 204 }))
+        })
+      }
+      throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+    return { fetchMock, resolvePut: () => resolvePut() }
+  }
+
+  async function cancelThenReopen(row: Element, fetchMock: ReturnType<typeof vi.fn>) {
+    const user = userEvent.setup()
+    fireEvent.contextMenu(row, { clientX: 80, clientY: 40 })
+    await user.click(await screen.findByRole('menuitem', { name: '予約を取消' }))
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(true),
+    )
+    fireEvent.contextMenu(row, { clientX: 80, clientY: 40 })
+    expect(await screen.findByRole('menuitem', { name: '予約を取消' })).toHaveAttribute('aria-disabled', 'true')
+  }
+
+  it('時間順の行は取消の PUT が未解決の間、開き直したメニューの取消が disabled', async () => {
+    enableFinePointer()
+    const item = reservation(1, '取消保留の予約', 19 * 60, 60)
+    const { fetchMock, resolvePut } = pendingCancelFetch([item], 10)
+    renderPage()
+    const row = (await screen.findByText(item.title)).closest('li')
+    expect(row).not.toBeNull()
+    await cancelThenReopen(row!, fetchMock)
+    await act(async () => resolvePut())
+  })
+
+  it('シリーズ表示の単独行とエピソード行も取消の PUT が未解決の間は取消が disabled', async () => {
+    enableFinePointer()
+    localStorage.removeItem(RESERVATION_GROUPING_KEY)
+    const individual = reservation(1, '単独の保留予約', 19 * 60, 60)
+    const ep1 = reservation(2, '保留シリーズ 第一話', 20 * 60, 60, 'default', 'テスト局', { series: '保留シリーズ' })
+    const ep2 = reservation(3, '保留シリーズ 第二話', 21 * 60, 60, 'default', 'テスト局', { series: '保留シリーズ' })
+
+    const a = pendingCancelFetch([individual, ep1, ep2], 10)
+    const { unmount } = renderPage()
+    const header = (await screen.findByText(individual.title))
+      .closest('[data-testid="reservation-series-row"]')
+      ?.querySelector('[data-testid="reservation-series-header"]')
+    expect(header).not.toBeNull()
+    await cancelThenReopen(header!, a.fetchMock)
+    await act(async () => a.resolvePut())
+    unmount()
+
+    const b = pendingCancelFetch([individual, ep1, ep2], 30)
+    renderPage()
+    await userEvent.setup().click(await screen.findByRole('button', { name: '保留シリーズの予約を開く' }))
+    const episodeRow = (await screen.findByText('第二話')).closest('li')
+    expect(episodeRow).not.toBeNull()
+    await cancelThenReopen(episodeRow!, b.fetchMock)
+    await act(async () => b.resolvePut())
+  })
 })
 
 /**

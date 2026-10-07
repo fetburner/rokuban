@@ -247,7 +247,13 @@ export function ReservationsPage() {
                 shelf={group.series === null ? undefined : shelvesByValue?.get(group.series)}
                 ruleLabel={ruleLabel}
                 showSite={showSite}
-                isCancelPending={(reservation) => reservationActions.isBusy({ site: reservation.site, programId: reservation.programId, name: reservation.title })}
+                isCancelPending={(reservation) =>
+                  reservationActions.isBusy({
+                    site: reservation.site,
+                    programId: reservation.programId,
+                    name: reservation.title,
+                  })
+                }
                 onCancelReservation={(reservation) =>
                   reservationActions.cancel({
                     site: reservation.site,
@@ -281,7 +287,11 @@ export function ReservationsPage() {
                       reservation={reservation}
                       overages={overages}
                       ruleLabel={ruleLabel}
-                      cancelPending={reservationActions.isBusy({ site: reservation.site, programId: reservation.programId, name: reservation.title })}
+                      cancelPending={reservationActions.isBusy({
+                        site: reservation.site,
+                        programId: reservation.programId,
+                        name: reservation.title,
+                      })}
                       onCancel={() =>
                         reservationActions.cancel({
                           site: reservation.site,
@@ -365,7 +375,9 @@ function ReservationRow({
   )
 
   return (
-    <ReservationContextMenu reservation={reservation} rowRef={rowRef}
+    <ReservationContextMenu
+      reservation={reservation}
+      rowRef={rowRef}
       onCancel={onCancel}
       cancelPending={cancelPending}
     >
