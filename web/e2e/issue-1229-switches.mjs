@@ -200,13 +200,17 @@ for (const theme of ['light', 'dark']) {
     const trashTab = recTabs.getByRole('button', { name: 'ごみ箱' })
     const tabStyle = (button) => button.evaluate((element) => {
       const style = getComputedStyle(element)
-      return { w: style.borderBottomWidth, st: style.borderBottomStyle, bg: style.backgroundColor, cls: element.className }
+      // 計算値の文字列は遷移の途中で `oklab(0 0 0 / 0)` にもなるので、1px 塗った画素の alpha で透明を判定する。
+      const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })
+      ctx.fillStyle = style.backgroundColor
+      ctx.fillRect(0, 0, 1, 1)
+      return { w: style.borderBottomWidth, st: style.borderBottomStyle, bg: style.backgroundColor, bgAlpha: ctx.getImageData(0, 0, 1, 1).data[3], cls: element.className }
     })
     const checkRecTab = async (button, label) => {
       const r = await tabStyle(button)
       check(r.w === '2px' && r.st === 'solid', `Recordings ${theme}/${width}: ${label} selected tab needs a 2px underline (${JSON.stringify(r)})`)
       check(r.cls.split(/\s+/).includes('border-foreground'), `Recordings ${theme}/${width}: ${label} underline should use the foreground token`)
-      check(r.bg === 'rgba(0, 0, 0, 0)', `Recordings ${theme}/${width}: ${label} selected tab must not be filled (${r.bg})`)
+      check(r.bgAlpha === 0, `Recordings ${theme}/${width}: ${label} selected tab must not be filled (${r.bg})`)
     }
     await checkRecTab(libTab, 'Library')
     const idle = await tabStyle(trashTab)
