@@ -1,4 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router'
+import { Tooltip } from '@base-ui/react/tooltip'
 import {
   CalendarClock,
   Home,
@@ -294,7 +295,7 @@ function BottomTabs() {
  *
  * 畳んだ状態でもラベルは DOM から消さず `sr-only` にする。アイコンだけの
  * 見た目でも `getByRole('link', { name: label })` が引ける（スクリーン
- * リーダーの読み上げ名も失わない）。マウス向けには `title` を補う。
+ * リーダーの読み上げ名も失わない）。視覚的な名前は Base UI の Tooltip で補う。
  */
 function Sidebar() {
   const pathname = useActivePath()
@@ -335,15 +336,16 @@ function Sidebar() {
           <span className="truncate text-lg font-semibold tracking-tight">録番</span>
         )}
       </div>
-      <ul className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
-        {items.map(({ to, label, icon: Icon }) => {
-          const active = isActive(pathname, to)
-          return (
-            <li key={to}>
+      {/* 最初の tooltip は意図して止まったときに出し、以降はレールをなぞって名前を
+          確認しやすいよう、隣接項目への移動時は共有 Provider が遅延を省く。 */}
+      <Tooltip.Provider delay={300}>
+        <ul className="flex flex-1 flex-col gap-1 overflow-y-auto px-2 pb-2">
+          {items.map(({ to, label, icon: Icon }) => {
+            const active = isActive(pathname, to)
+            const link = (
               <Link
                 to={to}
                 aria-current={active ? 'page' : undefined}
-                title={collapsed ? label : undefined}
                 className={cn(
                   'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
                   collapsed && 'justify-center px-2',
@@ -355,10 +357,37 @@ function Sidebar() {
                 <Icon className="size-4 shrink-0" />
                 <span className={cn(collapsed && 'sr-only')}>{label}</span>
               </Link>
-            </li>
-          )
-        })}
-      </ul>
+            )
+
+            return (
+              <li key={to}>
+                {collapsed ? (
+                  <Tooltip.Root>
+                    <Tooltip.Trigger render={link} />
+                    <Tooltip.Portal>
+                      <Tooltip.Positioner
+                        side="right"
+                        align="center"
+                        sideOffset={8}
+                        className="isolate z-50"
+                      >
+                        <Tooltip.Popup
+                          role="tooltip"
+                          className="rounded-md bg-popover px-2 py-1 text-sm text-popover-foreground shadow-md ring-1 ring-foreground/10"
+                        >
+                          {label}
+                        </Tooltip.Popup>
+                      </Tooltip.Positioner>
+                    </Tooltip.Portal>
+                  </Tooltip.Root>
+                ) : (
+                  link
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      </Tooltip.Provider>
     </nav>
   )
 }
