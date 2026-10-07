@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { MoreVertical, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import {
   getListReservationsQueryKey,
@@ -280,6 +280,10 @@ function RuleRow({
   const [activeReservationCount, setActiveReservationCount] = useState(0)
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // PoC: runtime switch for mocks (window.__mock)
+  const mock = (window as unknown as { __mock?: { h12?: string; h13?: string } }).__mock ?? {}
+  const deletePopupRef = useRef<HTMLDivElement>(null)
+  const [recordingCount, setRecordingCount] = useState(0)
 
   const setEnabled = (enabled: boolean) => {
     const key = getListRulesQueryKey()
@@ -348,7 +352,23 @@ function RuleRow({
           reservation.source === 'rule' &&
           reservation.state === 'active',
       ).length
+      const now = Date.now()
+      const recording = (unwrap(response) ?? []).filter(
+        (r) =>
+          r.ruleId === rule.id &&
+          Date.parse(r.startAt) <= now &&
+          now < Date.parse(r.startAt) + r.durationMs,
+      ).length
+      setRecordingCount(recording)
       setActiveReservationCount(count)
+      if (mock.h13 === 'toast' || (mock.h13 === 'hybrid' && recording === 0)) {
+        setEnabled(false)
+        toast({
+          message: `ルール『${displayName}』を無効にしました。予約 ${count} 件が取り消されます`,
+          actions: [{ label: '元に戻す', onClick: () => setEnabled(true) }],
+        })
+        return
+      }
       setDisableConfirmOpen(true)
     } catch (err) {
       toast({
@@ -547,6 +567,12 @@ function RuleRow({
             <AlertDialogTitle>ルール「{displayName}」を無効にしますか？</AlertDialogTitle>
             <AlertDialogDescription>
               {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
+              {recordingCount > 0 && mock.h13 === 'hybrid' && (
+                <>
+                  <br />
+                  録画中の {recordingCount} 件は録画が止まります
+                </>
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -562,7 +588,10 @@ function RuleRow({
           独立に持つ（issue #295: ルール削除の確認を他の破壊的操作と同じ
           AlertDialog に揃える）。 */}
       <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <AlertDialogContent>
+        <AlertDialogContent
+          ref={deletePopupRef}
+          initialFocus={mock.h12 === 'body' ? deletePopupRef : undefined}
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>ルール「{displayName}」を削除しますか？</AlertDialogTitle>
             <AlertDialogDescription>{deleteRuleWarning(rule)}</AlertDialogDescription>
