@@ -155,6 +155,9 @@ jobs:
       - if: ${{ !cancelled() }}
         run: pnpm e2e:home-timeline-keyboard
         working-directory: web
+      - if: ${{ !cancelled() }}
+        run: pnpm e2e:issue-1233-dialog-focus
+        working-directory: web
       - name: Show API server log
         if: failure()
         run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"

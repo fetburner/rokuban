@@ -20,6 +20,7 @@
     "e2e:recording-playback-timeline": "node e2e/recording-playback-timeline.mjs",
     "e2e:design": "node e2e/design.mjs",
     "e2e:home-timeline-keyboard": "node e2e/home-timeline-keyboard.mjs",
+    "e2e:issue-1233-dialog-focus": "node e2e/issue-1233-dialog-focus.mjs",
     "e2e:badge-links": "node e2e/badge-links.mjs",
     "e2e:sse-refresh": "node e2e/sse-refresh.mjs",
     "e2e:reserve-visibility": "node e2e/reserve-visibility.mjs",
