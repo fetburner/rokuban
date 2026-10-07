@@ -53,6 +53,7 @@
     "e2e:recording-detail-layout": "node e2e/recording-detail-layout.mjs",
     "e2e:recording-next-episode": "node e2e/recording-next-episode.mjs",
     "e2e:programs-view": "node e2e/programs-view.mjs",
+    "e2e:issue-1229-switches": "node e2e/issue-1229-switches.mjs",
     "e2e:subtitles": "node e2e/subtitles.mjs",
     "e2e:shelves-split": "node e2e/shelves-split.mjs",
     "e2e:fixtures": "node e2e/validate-fixtures.mjs"
