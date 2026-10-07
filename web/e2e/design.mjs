@@ -1804,20 +1804,20 @@ async function runRuleCardLayoutChecks() {
           )
         }
         // 名前は省略せず全文が出る（390px で「朝ド…」になった退行の再発防止）。
-      // 省略するのは Button 内の span.truncate なので、wrapper でなくそれを測る。
-      const nameText = name.locator('.truncate')
-      const truncation = await nameText.evaluate((element) => ({
-        text: element.textContent,
-        scrollWidth: element.scrollWidth,
-        clientWidth: element.clientWidth,
-      }))
-      if (truncation.scrollWidth > truncation.clientWidth) {
-        ng.push(
-          `[${viewport.name}/${theme}/rules-layout] ルール名「${truncation.text}」が省略されている ` +
-            `(scrollWidth=${truncation.scrollWidth} > clientWidth=${truncation.clientWidth})`,
-        )
-      }
-      const headerCenters = headerBoxes.map((box) => box.y + box.height / 2)
+        // 省略するのは Button 内の span.truncate なので、wrapper でなくそれを測る。
+        const nameText = name.locator('.truncate')
+        const truncation = await nameText.evaluate((element) => ({
+          text: element.textContent,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }))
+        if (truncation.scrollWidth > truncation.clientWidth) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] ルール名「${truncation.text}」が省略されている ` +
+              `(scrollWidth=${truncation.scrollWidth} > clientWidth=${truncation.clientWidth})`,
+          )
+        }
+        const headerCenters = headerBoxes.map((box) => box.y + box.height / 2)
         if (Math.max(...headerCenters) - Math.min(...headerCenters) > 4) {
           ng.push(`[${viewport.name}/${theme}/rules-layout] 名前・スイッチ・「…」が同じ見出し行に揃っていない`)
         }
