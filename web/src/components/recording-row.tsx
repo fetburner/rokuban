@@ -1,15 +1,25 @@
 import { Link } from '@tanstack/react-router'
-import { ChevronRight } from 'lucide-react'
-import { useState } from 'react'
+import { ChevronRight, Copy, ExternalLink, Trash2 } from 'lucide-react'
+import { useRef, useState } from 'react'
 
 import type { Recording } from '@/api/generated'
+import { useToast } from '@/components/toaster'
 import type { LiveCapability } from '@/lib/capabilities'
 import { DropBadges, EncodeStatusBadges, IngestBadge, RecordingVerdictBadge } from '@/components/recording-badges'
+import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
 import { formatBytes, formatDateTime, formatDuration } from '@/lib/format'
 import { recordingThumbnailURL } from '@/lib/recording-media'
 import { programTitle } from '@/lib/program-labels'
 import { sourceLabels } from '@/lib/recording-search'
 import type { RecordingView } from '@/lib/recording-view'
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuLinkItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
 
 /** RecordingRowView は録画一覧とシリーズページで共有する表示形式。`card` はサムネイルを大きく並べる。 */
@@ -55,11 +65,28 @@ export function RecordingRow({
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
+  const rowRef = useRef<HTMLDivElement>(null)
+  const finePointer = useMediaQuery('(pointer: fine)')
+  const contextMenuEnabled = finePointer && !selecting
+  const toast = useToast()
+  const moveToTrash = useMoveRecordingToTrash(recording.id)
+  const detailPath = `/recordings/${recording.id}`
 
-  return (
+  const copyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(new URL(detailPath, window.location.origin).href)
+      toast({ message: 'リンクをコピーしました' })
+    } catch {
+      toast({ message: 'リンクをコピーできませんでした', kind: 'error' })
+    }
+  }
+
+  const row = (
     <div
+      ref={rowRef}
       role={selecting ? 'option' : undefined}
       aria-selected={selecting ? selected : undefined}
+      tabIndex={contextMenuEnabled ? -1 : undefined}
       onClick={selecting ? onToggle : undefined}
       className={cn(
         // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
@@ -159,5 +186,50 @@ export function RecordingRow({
       {/* カードは行ではないので、行末の「開く」記号は出さない（面全体がリンク）。 */}
       {!selecting && !card && <ChevronRight className="size-4 shrink-0 text-muted-foreground" />}
     </div>
+  )
+
+  if (!contextMenuEnabled) return row
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={row} />
+      <ContextMenuContent returnFocusRef={rowRef}>
+        <ContextMenuLinkItem
+          closeOnClick
+          render={<Link to="/recordings/$id" params={{ id: String(recording.id) }} />}
+        >
+          <ExternalLink />
+          開く
+        </ContextMenuLinkItem>
+        <ContextMenuLinkItem
+          closeOnClick
+          render={
+            <Link
+              to="/recordings/$id"
+              params={{ id: String(recording.id) }}
+              target="_blank"
+              rel="noopener noreferrer"
+            />
+          }
+        >
+          <ExternalLink />
+          新しいタブで開く
+        </ContextMenuLinkItem>
+        <ContextMenuItem onClick={() => void copyLink()}>
+          <Copy />
+          リンクをコピー
+        </ContextMenuItem>
+        {!trash && (
+          <ContextMenuItem
+            variant="destructive"
+            disabled={moveToTrash.pending}
+            onClick={moveToTrash.moveToTrash}
+          >
+            <Trash2 />
+            ごみ箱へ移す
+          </ContextMenuItem>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }

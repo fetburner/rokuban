@@ -3,6 +3,7 @@ import { ChevronDown, ChevronRight, TriangleAlert } from 'lucide-react'
 import { useId, useLayoutEffect, useRef, useState } from 'react'
 
 import type { CapacityOverage, RecordingShelf, Reservation } from '@/api/generated'
+import { ReservationContextMenu } from '@/components/reservation-context-menu'
 import { RecordingThumbnail } from '@/components/recording-thumbnail'
 import { ReservationOrigin, ReservationVerdictBadge } from '@/components/reservation-row-parts'
 import { formatDateTime, formatDuration } from '@/lib/format'
@@ -20,17 +21,20 @@ export function ReservationSeriesRow({
   shelf,
   ruleLabel,
   showSite,
+  onCancelReservation,
 }: {
   group: ReservationGroup
   overages: readonly CapacityOverage[]
   shelvesKnown: boolean
   shelf?: RecordingShelf
   ruleLabel: (ruleId: number) => string
+  onCancelReservation: (reservation: Reservation) => void
   /** 複数サイトを構成しているか。構成ベースで決め、行の予約の site 数では決めない。 */
   showSite: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const headingRef = useRef<HTMLSpanElement>(null)
+  const headerRef = useRef<HTMLDivElement>(null)
   const detailsId = `reservation-series-details-${useId().replaceAll(':', '')}`
   const canExpand = group.reservations.length > 1
 
@@ -53,67 +57,77 @@ export function ReservationSeriesRow({
       data-series-value={group.series ?? undefined}
       className="border-b border-border"
     >
-      <div className="relative isolate">
-        {canExpand ? (
-          <button
-            type="button"
-            aria-label={`${title}の予約を${expanded ? '閉じる' : '開く'}`}
-            aria-expanded={expanded}
-            aria-controls={detailsId}
-            onClick={() => setExpanded((value) => !value)}
-            className="absolute inset-0"
-          />
-        ) : (
-          <Link
-            to="/reservations/$site/$programId"
-            params={{ site: next.site, programId: String(next.programId) }}
-            aria-label={reservationRowLabel(next)}
-            className="absolute inset-0"
-          />
-        )}
-
-        <div data-testid="reservation-series-header" className="flex min-w-0 items-center gap-3 px-4 py-2.5">
-          <div className="min-w-0 flex-1">
-            <span
-              ref={headingRef}
-              data-testid="reservation-series-title"
-              className="block truncate text-base font-medium"
-              style={{
-                scrollMarginTop: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
-              }}
-            >
-              {title}
-            </span>
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-              <span className="shrink-0">{formatDateTime(next.startAt)}</span>
-              <span className="shrink-0">{next.serviceName}</span>
-              <span className="shrink-0">{formatDuration(next.durationMs)}</span>
-              <ReservationOrigin reservation={next} ruleLabel={ruleLabel} />
-              <span data-testid="reservation-series-count" className="shrink-0">
-                {summary}
-              </span>
-              <ReservationGroupBadges group={group} />
-              {shelfKnownForSeries && shelf !== undefined && (
-                <MobileShelfSummary series={group.series!} shelf={shelf} />
-              )}
-              {shelfKnownForSeries && shelf === undefined && (
-                <span className="shrink-0 lg:hidden">まだ録画なし</span>
-              )}
-            </div>
-          </div>
-
-          {shelfKnownForSeries && <DesktopShelfBox series={group.series!} shelf={shelf} />}
-          {/* 開閉できる行は ∨（開くと ∧）、遷移する行は ›。形で両者を見分けさせる。 */}
+      <ReservationContextMenu
+        reservation={next}
+        rowRef={headerRef}
+        onCancel={() => onCancelReservation(next)}
+      >
+        <div
+          ref={headerRef}
+          data-testid="reservation-series-header"
+          tabIndex={-1}
+          className="relative isolate"
+        >
           {canExpand ? (
-            <ChevronDown
-              aria-hidden
-              className={cn('size-4 shrink-0 text-muted-foreground', expanded && 'rotate-180')}
+            <button
+              type="button"
+              aria-label={`${title}の予約を${expanded ? '閉じる' : '開く'}`}
+              aria-expanded={expanded}
+              aria-controls={detailsId}
+              onClick={() => setExpanded((value) => !value)}
+              className="absolute inset-0"
             />
           ) : (
-            <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+            <Link
+              to="/reservations/$site/$programId"
+              params={{ site: next.site, programId: String(next.programId) }}
+              aria-label={reservationRowLabel(next)}
+              className="absolute inset-0"
+            />
           )}
+          <div className="flex min-w-0 items-center gap-3 px-4 py-2.5">
+            <div className="min-w-0 flex-1">
+              <span
+                ref={headingRef}
+                data-testid="reservation-series-title"
+                className="block truncate text-base font-medium"
+                style={{
+                  scrollMarginTop: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
+                }}
+              >
+                {title}
+              </span>
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
+                <span className="shrink-0">{formatDateTime(next.startAt)}</span>
+                <span className="shrink-0">{next.serviceName}</span>
+                <span className="shrink-0">{formatDuration(next.durationMs)}</span>
+                <ReservationOrigin reservation={next} ruleLabel={ruleLabel} />
+                <span data-testid="reservation-series-count" className="shrink-0">
+                  {summary}
+                </span>
+                <ReservationGroupBadges group={group} />
+                {shelfKnownForSeries && shelf !== undefined && (
+                  <MobileShelfSummary series={group.series!} shelf={shelf} />
+                )}
+                {shelfKnownForSeries && shelf === undefined && (
+                  <span className="shrink-0 lg:hidden">まだ録画なし</span>
+                )}
+              </div>
+            </div>
+
+            {shelfKnownForSeries && <DesktopShelfBox series={group.series!} shelf={shelf} />}
+            {/* 開閉できる行は ∨（開くと ∧）、遷移する行は ›。形で両者を見分けさせる。 */}
+            {canExpand ? (
+              <ChevronDown
+                aria-hidden
+                className={cn('size-4 shrink-0 text-muted-foreground', expanded && 'rotate-180')}
+              />
+            ) : (
+              <ChevronRight aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+            )}
+          </div>
         </div>
-      </div>
+      </ReservationContextMenu>
 
       {canExpand && expanded && (
         <ul id={detailsId} aria-label={`${title}の予約`} className="border-t border-border bg-muted/20">
@@ -125,6 +139,7 @@ export function ReservationSeriesRow({
               overages={overages}
               showSite={showSite}
               ruleLabel={ruleLabel}
+              onCancelReservation={onCancelReservation}
             />
           ))}
         </ul>
@@ -209,17 +224,25 @@ function ReservationEpisodeRow({
   overages,
   showSite,
   ruleLabel,
+  onCancelReservation,
 }: {
   reservation: Reservation
   series: string | null
   overages: readonly CapacityOverage[]
   showSite: boolean
   ruleLabel: (ruleId: number) => string
+  onCancelReservation: (reservation: Reservation) => void
 }) {
   const title = episodeTitle(reservation.title, series)
+  const rowRef = useRef<HTMLLIElement>(null)
 
-  return (
-    <li className="relative isolate border-b border-border/70 last:border-b-0">
+  const row = (
+    <li
+      ref={rowRef}
+      data-testid="reservation-episode-row"
+      className="relative isolate border-b border-border/70 last:border-b-0"
+      tabIndex={-1}
+    >
       <Link
         to="/reservations/$site/$programId"
         params={{ site: reservation.site, programId: String(reservation.programId) }}
@@ -237,6 +260,16 @@ function ReservationEpisodeRow({
         </div>
       </div>
     </li>
+  )
+
+  return (
+    <ReservationContextMenu
+      reservation={reservation}
+      rowRef={rowRef}
+      onCancel={() => onCancelReservation(reservation)}
+    >
+      {row}
+    </ReservationContextMenu>
   )
 }
 

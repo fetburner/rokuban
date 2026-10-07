@@ -1,6 +1,6 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
 import { ChevronDown, ChevronRight } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import {
   ListRecordingShelvesKey,
@@ -16,6 +16,7 @@ import {
 import { unwrap } from '@/api/unwrap'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { ReservationGroupToggle } from '@/components/reservation-group-toggle'
+import { ReservationContextMenu } from '@/components/reservation-context-menu'
 import { ReservationSeriesRow } from '@/components/reservation-series-row'
 import { ReservationOrigin, ReservationVerdictBadge } from '@/components/reservation-row-parts'
 import { Chip } from '@/components/ui/chip'
@@ -35,6 +36,8 @@ import {
 } from '@/lib/reservation-labels'
 import { shouldShowRecordingSite } from '@/lib/recording-search'
 import { makeRuleLabel } from '@/lib/rule-label'
+import { useReservationActions } from '@/lib/reservation-actions'
+import { programIdentity } from '@/lib/all-sites-services'
 import { groupReservations } from '@/lib/reservation-groups'
 import {
   loadReservationGrouping,
@@ -55,6 +58,26 @@ export function ReservationsPage() {
   )
   const reservations = useMemo(() => unwrap(query.data) ?? [], [query.data])
   const rules = useMemo(() => unwrap(rulesQuery.data) ?? [], [rulesQuery.data])
+  const reservedProgramIds = useMemo(
+    () => new Set(reservations.map(({ site, programId }) => programIdentity(site, programId))),
+    [reservations],
+  )
+  const sourceByProgramId = useMemo(
+    () =>
+      new Map(
+        reservations.map((reservation) => [
+          programIdentity(reservation.site, reservation.programId),
+          reservation.source,
+        ]),
+      ),
+    [reservations],
+  )
+  const reservationActions = useReservationActions(
+    reservedProgramIds,
+    sourceByProgramId,
+    query.isPending || query.isError,
+    reservations,
+  )
 
   // 一覧に出ている予約すべてを覆う窓で超過区間を訊く。窓を固定幅にすると、
   // その外に出た予約のバッジが黙って消える。予約が無ければ問い合わせない
@@ -223,6 +246,13 @@ export function ReservationsPage() {
                 shelf={group.series === null ? undefined : shelvesByValue?.get(group.series)}
                 ruleLabel={ruleLabel}
                 showSite={showSite}
+                onCancelReservation={(reservation) =>
+                  reservationActions.cancel({
+                    site: reservation.site,
+                    programId: reservation.programId,
+                    name: reservation.title,
+                  })
+                }
               />
             ))}
           </ul>
@@ -249,6 +279,13 @@ export function ReservationsPage() {
                       reservation={reservation}
                       overages={overages}
                       ruleLabel={ruleLabel}
+                      onCancel={() =>
+                        reservationActions.cancel({
+                          site: reservation.site,
+                          programId: reservation.programId,
+                          name: reservation.title,
+                        })
+                      }
                     />
                   ))}
                 </ul>
@@ -273,13 +310,21 @@ function ReservationRow({
   reservation,
   overages,
   ruleLabel,
+  onCancel,
 }: {
   reservation: Reservation
   overages: CapacityOverage[]
   ruleLabel: (ruleId: number) => string
+  onCancel: () => void
 }) {
-  return (
-    <li className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40">
+  const rowRef = useRef<HTMLLIElement>(null)
+
+  const row = (
+    <li
+      ref={rowRef}
+      className="relative isolate flex min-h-14 items-center gap-3 border-b border-border px-4 py-2.5 hover:bg-muted/40"
+      tabIndex={-1}
+    >
       {/* 行全面リンクを背面へ置き、対話要素は個別に手前へ積む。 */}
       <Link
         to="/reservations/$site/$programId"
@@ -311,6 +356,12 @@ function ReservationRow({
         className="size-4 shrink-0 text-muted-foreground"
       />
     </li>
+  )
+
+  return (
+    <ReservationContextMenu reservation={reservation} rowRef={rowRef} onCancel={onCancel}>
+      {row}
+    </ReservationContextMenu>
   )
 }
 

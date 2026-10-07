@@ -1,7 +1,7 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { MoreVertical, Trash2 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { MoreVertical, Power, Trash2 } from 'lucide-react'
+import { useMemo, useRef, useState } from 'react'
 
 import {
   getListReservationsQueryKey,
@@ -34,6 +34,12 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuTrigger,
+} from '@/components/ui/context-menu'
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -48,6 +54,7 @@ import {
 } from '@/lib/program-search'
 import { summarizeRuleActivity, type RuleActivitySummary } from '@/lib/rule-activity'
 import { ruleDisambiguator } from '@/lib/rule-label'
+import { useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
 
 /**
@@ -268,6 +275,8 @@ function RuleRow({
   onCountingReservationsChange: (counting: boolean) => void
   onCreateLabelRule: (keyword: string) => void
 }) {
+  const finePointer = useMediaQuery('(pointer: fine)')
+  const rowRef = useRef<HTMLDivElement>(null)
   const profiles = rule.encodeProfiles ?? []
   const keep = (rule.keepOriginal ?? 'always') as KeepOriginal
   const conditions = summarizeRuleConditions(rule)
@@ -380,8 +389,12 @@ function RuleRow({
     )
   }
 
-  return (
-    <div className="rounded-lg border border-border px-3 py-3">
+  const row = (
+    <div
+      ref={rowRef}
+      className="rounded-lg border border-border px-3 py-3"
+      tabIndex={finePointer ? -1 : undefined}
+    >
       <div className="flex items-start justify-between gap-3 pointer-coarse:flex-wrap">
         <div className="min-w-0 flex-1 pointer-coarse:min-w-11">
           {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
@@ -576,6 +589,31 @@ function RuleRow({
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  )
+
+  if (!finePointer) return row
+
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={row} />
+      <ContextMenuContent returnFocusRef={rowRef}>
+        <ContextMenuItem
+          disabled={updateRule.isPending || isCountingReservations}
+          onClick={() => void toggleEnabled()}
+        >
+          <Power />
+          {rule.enabled ? '無効にする' : '有効にする'}
+        </ContextMenuItem>
+        <ContextMenuItem
+          variant="destructive"
+          disabled={deleteRule.isPending}
+          onClick={() => setConfirmOpen(true)}
+        >
+          <Trash2 />
+          削除
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   )
 }
 
