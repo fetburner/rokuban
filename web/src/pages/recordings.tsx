@@ -623,9 +623,11 @@ function ViewTab({
       type="button"
       onClick={onClick}
       className={cn(
-        'border-b-2 border-transparent px-1 py-1.5 text-xs transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
+        'border border-b-2 border-transparent px-1 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
+        // 下線だけを foreground にする。上と左右はフォーカス時だけ --ring の縁になり、
+        // フォーカス中も選択の下線は foreground のまま残す。
         active
-          ? 'border-foreground font-medium text-foreground'
+          ? 'border-foreground border-x-transparent border-t-transparent font-medium text-foreground focus-visible:border-b-foreground'
           : 'text-muted-foreground hover:text-foreground',
       )}
     >
