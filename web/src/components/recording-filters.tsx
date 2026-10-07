@@ -1,4 +1,5 @@
-import { ArrowUpDown, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
+import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
+import { ArrowUpDown, Check, ChevronDown, ChevronRight, ListFilter, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
@@ -15,7 +16,7 @@ import { ToolbarDot, ToolbarPanel, toolbarButtonClass } from '@/components/toolb
 import { Chip } from '@/components/ui/chip'
 import { Input } from '@/components/ui/field'
 import { useAllSitesServices } from '@/lib/all-sites-services'
-import { genreCodeLabel, genreCodes } from '@/lib/program-search'
+import { genreCodeLabel, genreCodesForSelection } from '@/lib/program-search'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { serviceDisambiguator } from '@/lib/service-label'
 import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
@@ -338,6 +339,103 @@ function updateRuleFilter(search: RecordingsPageSearch, ruleId: number | undefin
   }
 }
 
+/** GenrePicker は絞り込みパネルのジャンル選択。候補をチェック付きメニューにまとめる。 */
+function GenrePicker({
+  presentation,
+  selected,
+  onChange,
+  onEmbeddedOpen,
+}: {
+  presentation: 'standalone' | 'filter-row' | 'inline'
+  selected: ReadonlySet<number>
+  onChange: (next: ReadonlySet<number>) => void
+  onEmbeddedOpen?: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const countLabel = `${selected.size} 件`
+  const codes = genreCodesForSelection([...selected])
+  const options = (
+    <div role="group" aria-label="ジャンルの候補" className="flex flex-col gap-0.5 p-1">
+      {codes.map((code) => {
+        const checked = selected.has(code)
+        return (
+          <button
+            key={code}
+            type="button"
+            role="checkbox"
+            aria-checked={checked}
+            onClick={() => {
+              const next = new Set(selected)
+              if (checked) next.delete(code)
+              else next.add(code)
+              onChange(next)
+            }}
+            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-9"
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                'flex size-4 shrink-0 items-center justify-center rounded-sm border',
+                checked ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/50',
+              )}
+            >
+              {checked && <Check className="size-3" />}
+            </span>
+            <span>{genreCodeLabel(code)}</span>
+          </button>
+        )
+      })}
+    </div>
+  )
+
+  if (presentation === 'inline') return options
+
+  if (presentation === 'filter-row') {
+    return (
+      <button
+        type="button"
+        aria-label={`ジャンル: ${countLabel}`}
+        onClick={onEmbeddedOpen}
+        className="flex min-h-11 w-full items-center justify-between gap-3 rounded-lg px-2 text-sm text-foreground transition-colors hover:bg-muted"
+      >
+        <span>ジャンル</span>
+        <span className="flex items-center gap-1.5 text-muted-foreground">
+          <span>{countLabel}</span>
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </span>
+      </button>
+    )
+  }
+
+  return (
+    <PopoverPrimitive.Root open={open} onOpenChange={setOpen}>
+      <PopoverPrimitive.Trigger
+        aria-label={`ジャンル: ${countLabel}`}
+        className="flex h-11 w-full items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted aria-expanded:bg-muted"
+      >
+        <span>ジャンル: {countLabel}</span>
+        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </PopoverPrimitive.Trigger>
+      <PopoverPrimitive.Portal>
+        <PopoverPrimitive.Positioner
+          className="z-50 outline-none"
+          positionMethod="fixed"
+          side="bottom"
+          align="start"
+          sideOffset={6}
+        >
+          <PopoverPrimitive.Popup
+            aria-label="ジャンル"
+            className="max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] overflow-y-auto rounded-lg border border-border bg-popover text-popover-foreground shadow-md outline-none"
+          >
+            {options}
+          </PopoverPrimitive.Popup>
+        </PopoverPrimitive.Positioner>
+      </PopoverPrimitive.Portal>
+    </PopoverPrimitive.Root>
+  )
+}
+
 /**
  * FilterPanel は「絞り込み ▾」のパネル本体。
  *
@@ -379,6 +477,7 @@ function FilterPanel({
 }) {
   const [open, setOpen] = useState(false)
   const [channelOpen, setChannelOpen] = useState(false)
+  const [genreOpen, setGenreOpen] = useState(false)
   const [noneSelected, setNoneSelected] = useState(false)
   const wide = useMediaQuery(mdMediaQuery)
   const selectedServices = useMemo(() => new Set(search.service ?? []), [search.service])
@@ -403,6 +502,12 @@ function FilterPanel({
       service: next.size > 0 ? [...next].sort((a, b) => a - b) : undefined,
     }))
 
+  const updateGenres = (next: ReadonlySet<number>) =>
+    onChange((s) => ({
+      ...s,
+      genre: next.size > 0 ? [...next].sort((a, b) => a - b) : undefined,
+    }))
+
   const returnToFilters = () => {
     // 空選択は URL に表せず全局を意味する。親画面へ戻る時点で明示選択を解除する。
     if (noneSelected && selectedServices.size > 0) {
@@ -410,6 +515,7 @@ function FilterPanel({
     }
     setNoneSelected(false)
     setChannelOpen(false)
+    setGenreOpen(false)
   }
 
   const handlePanelOpenChange = (next: boolean) => {
@@ -424,11 +530,11 @@ function FilterPanel({
 
   return (
     <ToolbarPanel
-      title={!wide && channelOpen ? 'チャンネル' : '絞り込み'}
+      title={!wide && channelOpen ? 'チャンネル' : !wide && genreOpen ? 'ジャンル' : '絞り込み'}
       open={open}
       onOpenChange={handlePanelOpenChange}
       sheetLeading={
-        !wide && channelOpen ? (
+        !wide && (channelOpen || genreOpen) ? (
           <button
             type="button"
             aria-label="絞り込みに戻る"
@@ -468,6 +574,8 @@ function FilterPanel({
             onNoneSelectedChange={setNoneSelected}
           />
         )
+      ) : !wide && genreOpen ? (
+        <GenrePicker presentation="inline" selected={selectedGenres} onChange={updateGenres} />
       ) : (
         <>
           {servicesError ? (
@@ -523,27 +631,12 @@ function FilterPanel({
               </section>
             )}
 
-            <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>
-              <div role="group" aria-label="ジャンル" className="flex flex-wrap gap-1.5">
-                {genreCodes.map((code) => (
-                  <Chip
-                    key={code}
-                    active={selectedGenres.has(code)}
-                    onClick={() =>
-                      onChange((s) => {
-                        const next = selectedGenres.has(code)
-                          ? (s.genre ?? []).filter((g) => g !== code)
-                          : [...(s.genre ?? []), code]
-                        return { ...s, genre: next.length > 0 ? next : undefined }
-                      })
-                    }
-                  >
-                    {genreCodeLabel(code)}
-                  </Chip>
-                ))}
-              </div>
-            </section>
+            <GenrePicker
+              presentation={wide ? 'standalone' : 'filter-row'}
+              selected={selectedGenres}
+              onChange={updateGenres}
+              onEmbeddedOpen={() => setGenreOpen(true)}
+            />
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">状態</h3>

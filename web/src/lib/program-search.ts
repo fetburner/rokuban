@@ -83,6 +83,17 @@ export const allWeekdays = 127
 export const genreCodes: readonly number[] = Array.from({ length: 16 }, (_, code) => code)
 
 /**
+ * genreCodesForSelection は通常の選択肢に、現在選ばれている予備・拡張コードを加える。
+ *
+ * 12・13 は予備、14 は番組付属情報の枠なので、通常の候補には並べない。URL や保存済み
+ * ルールに残っている値は表示して解除できるようにする。
+ */
+export function genreCodesForSelection(selected: readonly number[]): number[] {
+  const selectedSet = new Set(selected)
+  return genreCodes.filter((code) => code < 12 || code === 15 || selectedSet.has(code))
+}
+
+/**
  * genreCodeLabel はジャンルの選択肢ラベル。
  *
  * 知らないコード（12 / 13 の「予備」）は数値のまま出す。「その他」に丸めると

@@ -12,6 +12,7 @@ import {
   emptyDraft,
   emptyRuleMeta,
   genreCodeLabel,
+  genreCodesForSelection,
   hasNoConditions,
   hasWeekday,
   newTimeWindow,
@@ -276,6 +277,18 @@ describe('genreCodeLabel', () => {
   it('知らないコード（予備）は数値のまま出す', () => {
     // 「その他」に丸めると ARIB の本物の「その他」（15）と区別できなくなる
     expect(genreCodeLabel(12)).toBe('ジャンル 12')
+  })
+})
+
+describe('genreCodesForSelection', () => {
+  it('通常候補には 12・13・拡張を出さず、選択済みなら解除できるように残す', () => {
+    expect(genreCodesForSelection([])).toEqual([...Array.from({ length: 12 }, (_, code) => code), 15])
+    expect(genreCodesForSelection([12, 14])).toEqual([
+      ...Array.from({ length: 12 }, (_, code) => code),
+      12,
+      14,
+      15,
+    ])
   })
 })
 

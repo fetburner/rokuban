@@ -16,7 +16,7 @@ import { serviceDisambiguator } from '@/lib/service-label'
 import {
   allWeekdays,
   genreCodeLabel,
-  genreCodes,
+  genreCodesForSelection,
   hasWeekday,
   newTextMatch,
   newTimeWindow,
@@ -753,7 +753,7 @@ function GenreFields({ draft, onChange, disabled }: FieldsProps) {
   return (
     <Section title="ジャンル">
       <div role="group" aria-label="ジャンル" className="flex flex-wrap gap-2">
-        {genreCodes.map((code) => (
+        {genreCodesForSelection(draft.genres).map((code) => (
           <Chip
             key={code}
             active={draft.genres.includes(code)}

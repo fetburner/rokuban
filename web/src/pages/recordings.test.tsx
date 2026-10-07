@@ -974,14 +974,18 @@ describe('RecordingsPage 検索条件', () => {
 
     await user.click(screen.getByRole('button', { name: /絞り込み/ }))
     const panel = await screen.findByRole('dialog', { name: '絞り込み' })
-    await user.click(within(panel).getByRole('button', { name: 'ドラマ' }))
+    await user.click(within(panel).getByRole('button', { name: 'ジャンル: 0 件' }))
+    const genreMenu = await screen.findByRole('dialog', { name: 'ジャンル' })
+    await user.click(within(genreMenu).getByRole('checkbox', { name: 'ドラマ' }))
 
     await waitFor(() => {
       const last = recordingsRequests(server.fetchMock).at(-1)
       expect(last?.searchParams.getAll('genre')).toEqual(['3'])
     })
 
-    await user.click(within(panel).getByRole('button', { name: /チャンネル/ }))
+    await user.click(within(genreMenu).getByRole('button', { name: '絞り込みに戻る' }))
+    const restoredPanel = await screen.findByRole('dialog', { name: '絞り込み' })
+    await user.click(within(restoredPanel).getByRole('button', { name: /チャンネル/ }))
     const channelDialog = await screen.findByRole('dialog', { name: 'チャンネル' })
     // 空の service は全局を表すため、先に「すべて」を外してから局を選ぶ。
     await user.click(within(channelDialog).getByRole('checkbox', { name: 'すべて' }))
