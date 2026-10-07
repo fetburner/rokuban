@@ -40,7 +40,7 @@ const recordings = Array.from({ length: 4 }, (_, i) => {
   }
 })
 
-async function apiHandler({ path, url, json, route }) {
+async function apiHandler({ path, json, route }) {
   if (path === '/api/sites') return json(['default'])
   if (path === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (path === '/api/breakers') return json([])
