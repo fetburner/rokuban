@@ -25,7 +25,7 @@ export function ReservationGroupToggle({
             aria-pressed={active}
             onClick={() => onChange(value)}
             className={cn(
-              'flex min-h-7 items-center rounded px-2 py-1 text-xs whitespace-nowrap transition-colors',
+              'flex min-h-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded px-2 py-1 text-xs whitespace-nowrap transition-colors',
               active
                 ? 'bg-muted font-medium text-foreground'
                 : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',

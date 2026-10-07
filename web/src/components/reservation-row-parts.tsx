@@ -29,7 +29,7 @@ export function ReservationOrigin({
       <Link
         to="/search"
         search={{ ruleId: reservation.ruleId }}
-        className="relative z-10 inline-flex min-h-6 items-center px-1 text-foreground underline underline-offset-2"
+        className="relative z-10 inline-flex min-h-6 pointer-coarse:min-h-11 items-center px-1 text-foreground underline underline-offset-2"
         aria-label={`ルール「${ruleLabel(reservation.ruleId)}」`}
       >
         ルール「{ruleLabel(reservation.ruleId)}」

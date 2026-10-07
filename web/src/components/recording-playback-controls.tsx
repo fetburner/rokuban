@@ -948,7 +948,7 @@ export function RecordingPlaybackControls({
                       event.stopPropagation()
                       onLiveEdgeSeek?.()
                     }}
-                    className="absolute top-1/2 z-[3] size-6 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
+                    className="absolute top-1/2 z-[3] size-6 pointer-coarse:size-11 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
                     style={{ left: `${axisFraction(chaseTimeline.liveEdgeSeconds) * 100}%` }}
                   >
                     <span aria-hidden="true" className="mx-auto block h-4 w-0.5 bg-red-500" />
@@ -1130,7 +1130,7 @@ export function RecordingPlaybackControls({
                   ref={chapterButtonRef}
                   type="button"
                   data-testid="playback-chapter"
-                  className="flex min-h-8 min-w-0 items-center gap-0.5 rounded px-1 text-xs text-white/85 outline-none hover:text-white focus-visible:ring-2 focus-visible:ring-white md:text-sm"
+                  className="flex min-h-8 pointer-coarse:min-h-11 min-w-0 pointer-coarse:min-w-11 items-center gap-0.5 rounded px-1 text-xs text-white/85 outline-none hover:text-white focus-visible:ring-2 focus-visible:ring-white md:text-sm"
                   aria-label={`チャプター: ${currentChapterName}`}
                   aria-haspopup="menu"
                   aria-expanded={chaptersOpen}
@@ -1152,7 +1152,7 @@ export function RecordingPlaybackControls({
                   params={{ id: String(nextEpisode.id) }}
                   data-testid="next-episode-link"
                   aria-label={`次のエピソード: ${nextEpisode.title}`}
-                  className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-white outline-none hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white md:bg-white/10 md:px-3"
+                  className="inline-flex min-h-9 pointer-coarse:min-h-11 pointer-coarse:min-w-11 shrink-0 items-center gap-1.5 rounded-full px-2 text-xs text-white outline-none hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-white md:bg-white/10 md:px-3"
                   onClick={onNextEpisodeNavigate}
                 >
                   <FastForward className="size-4" aria-hidden />
@@ -1167,7 +1167,7 @@ export function RecordingPlaybackControls({
                   ghost,
                   mobileActionsPlacement === 'row'
                     ? 'shrink-0'
-                    : 'absolute top-1.5 right-11 md:relative md:top-auto md:right-auto',
+                    : 'absolute top-1.5 right-11 pointer-coarse:right-14 md:relative md:top-auto md:right-auto',
                   subtitlesEnabled &&
                     'after:absolute after:inset-x-2 after:bottom-1 after:h-0.5 after:rounded-full after:bg-orange-400',
                 )}

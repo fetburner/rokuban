@@ -190,7 +190,7 @@ function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
                   aria-current={itemActive ? 'page' : undefined}
                   onClick={() => setOpen(false)}
                   className={cn(
-                    'flex items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors',
+                    'flex pointer-coarse:min-h-11 items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors',
                     itemActive
                       ? 'bg-muted font-medium text-foreground'
                       : 'text-foreground hover:bg-muted/60',

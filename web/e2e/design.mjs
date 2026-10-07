@@ -1030,6 +1030,31 @@ const targetPointerProfiles = [
   { name: 'fine', pointer: 'fine', viewport: desktop },
   { name: 'coarse', pointer: 'coarse', viewport: mobile },
 ]
+const TAP_TARGET_SELECTOR =
+  'a[href], button, [role="button"], [role="tab"], [role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"], [role="option"], [role="switch"], [role="checkbox"], input:not([type="hidden"]), select, summary'
+const TAP_TARGET_MIN_PX = 44
+const tapTargetWidths = [
+  { name: 'mobile-360', width: 360, height: 844 },
+  { name: 'mobile-390', width: 390, height: 844 },
+]
+const homeWatchScreen = {
+  name: 'home-watch',
+  path: '/?mode=watch',
+  wait: '[data-testid="home-primary-action"]',
+}
+const tapTargetScreens = [
+  homeWatchScreen,
+  screenOf('home'),
+  screenOf('programs'),
+  screenOf('reservations'),
+  screenOf('recordings'),
+  recordingDetailScreen,
+  screenOf('rules'),
+  screenOf('series'),
+  screenOf('series-hub'),
+  screenOf('search'),
+  screenOf('live'),
+]
 
 rmSync(OUT_DIR, { recursive: true, force: true })
 mkdirSync(OUT_DIR, { recursive: true })
@@ -1294,6 +1319,318 @@ async function measureInteractiveTargets(page, label) {
 }
 
 /**
+ * measureCoarseTapTargets はモバイルの操作標的を実際の hit-test で確認する。
+ *
+ * 各標的の中心と四辺の近傍を `elementFromPoint` で調べるため、見た目の
+ * bounding box が小さくても `::before` / `::after` で広げた当たり判定を測れる。
+ * さらに中心に置いた 44×44px の最低限の hit 領域どうしが交差しないかを確認する。
+ * DOM の class や擬似要素の宣言だけで通さず、ブラウザが実際にどの要素へ配送するかを使う。
+ */
+async function measureCoarseTapTargets(page, label, scope = page.locator('body'), options = {}) {
+  const result = await scope.evaluate(
+    async (root, { selector, skipSelectionCheckbox, minTargetPx }) => {
+      const hidden = (element) => {
+        const summary = element.closest('summary')
+        for (let current = element; current; current = current.parentElement) {
+          const style = getComputedStyle(current)
+          if (
+            style.display === 'none' ||
+            style.visibility === 'hidden' ||
+            style.visibility === 'collapse'
+          ) {
+            return true
+          }
+          if (
+            current instanceof HTMLDetailsElement &&
+            !current.open &&
+            summary?.parentElement !== current
+          ) {
+            return true
+          }
+        }
+        return false
+      }
+
+      const visuallyHidden = (element) => {
+        const style = getComputedStyle(element)
+        return (
+          (element.classList.contains('sr-only') && !element.matches(':focus')) ||
+          (style.width === '1px' &&
+            style.height === '1px' &&
+            style.overflow === 'hidden' &&
+            style.clip !== 'auto' &&
+            style.clip !== 'none')
+        )
+      }
+
+      const nameOf = (element) => {
+        const candidates = [
+          element.getAttribute('aria-label'),
+          element.getAttribute('placeholder'),
+          element.getAttribute('title'),
+          element.getAttribute('data-testid'),
+          element.textContent?.replace(/\s+/g, ' ').trim(),
+        ]
+        return (candidates.find((value) => value !== null && value !== '') ?? '(無名)').slice(0, 80)
+      }
+
+      const pseudoExtent = (element, pseudo) => {
+        const style = getComputedStyle(element, pseudo)
+        if (
+          style.content === 'none' ||
+          style.display === 'none' ||
+          style.visibility === 'hidden' ||
+          !['absolute', 'fixed'].includes(style.position)
+        ) {
+          return { width: 0, height: 0 }
+        }
+        const width = Number.parseFloat(style.width)
+        const height = Number.parseFloat(style.height)
+        return {
+          width: Number.isFinite(width) ? width : 0,
+          height: Number.isFinite(height) ? height : 0,
+        }
+      }
+
+      const targets = []
+      let ignoredSortSelects = 0
+      let ignoredSelectionCheckboxes = 0
+      for (const element of root.querySelectorAll(selector)) {
+        if (element instanceof HTMLInputElement && element.type === 'hidden') continue
+        if (element.matches(':disabled, [aria-disabled="true"], [data-disabled]')) continue
+        if (hidden(element) || visuallyHidden(element)) continue
+        // Field / Select の <label> は入力を包み、ラベル文字列を押しても入力へ
+        // 操作が届く。ブラウザが label 自体を hit-test するので、入力の外形では
+        // なく、その label を実効的な hit surface として測る。
+        const surface =
+          (element instanceof HTMLInputElement || element instanceof HTMLSelectElement) &&
+          element.closest('label')
+            ? element.closest('label')
+            : element
+        // 一覧の下端や長い設定ページの項目も、実際に見える位置へ送って測る。
+        // fixed bottom nav の後ろに隠れたまま計ると、スクロールすれば届く操作まで
+        // 「押せない」と誤判定する。overflow で閉じた操作列は後段の clipping で除く。
+        surface.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+        await new Promise(requestAnimationFrame)
+        if (!surface.isConnected) continue
+
+        const rect = surface.getBoundingClientRect()
+        let left = rect.left
+        let right = rect.right
+        let top = rect.top
+        let bottom = rect.bottom
+        for (let parent = surface.parentElement; parent; parent = parent.parentElement) {
+          const style = getComputedStyle(parent)
+          if (
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowX) ||
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflow)
+          ) {
+            const parentRect = parent.getBoundingClientRect()
+            left = Math.max(left, parentRect.left)
+            right = Math.min(right, parentRect.right)
+          }
+          if (
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflowY) ||
+            ['hidden', 'clip', 'auto', 'scroll'].includes(style.overflow)
+          ) {
+            const parentRect = parent.getBoundingClientRect()
+            top = Math.max(top, parentRect.top)
+            bottom = Math.min(bottom, parentRect.bottom)
+          }
+        }
+        const clippedWidth = right - left
+        const clippedHeight = bottom - top
+        if (clippedWidth <= 0 || clippedHeight <= 0) {
+          continue
+        }
+        const before = pseudoExtent(surface, '::before')
+        const after = pseudoExtent(surface, '::after')
+
+        // 録画の並び順 select は #1220 がアイコン化する。ここでは寸法を変えず、
+        // その作業へ責務を移す明示例外にする。
+        if (element.matches('select[aria-label="並び順"]')) {
+          ignoredSortSelects++
+          continue
+        }
+
+        // 編集モードでは role=option の行全体が click で選択を反転することを
+        // 下の browser check で確認する。その場合 checkbox は同じ action の
+        // 入力部品なので、行の大きな hit 領域を代表として数える。
+        if (
+          skipSelectionCheckbox &&
+          element instanceof HTMLInputElement &&
+          element.type === 'checkbox' &&
+          element.closest('[role="option"]')
+        ) {
+          ignoredSelectionCheckboxes++
+          continue
+        }
+
+        const rectCenterX = (left + right) / 2
+        const rectCenterY = (top + bottom) / 2
+        // 端から半 device pixel 内側を測る。いまの実ブラウザ context は DPR=2 なので
+        // 21.75px は 44px target の最後の device-pixel center、43.5px target の
+        // half-open な境界上になる。±22 の端そのものは外側なので使わない。
+        const outerOffset = minTargetPx / 2 - 1 / (2 * devicePixelRatio)
+        const rasterEdgeOffset = minTargetPx / 2 - 0.5
+        const interiorOffsets = [-14, -7, 0, 7, 14]
+        const pointsAt = (x, y) => [
+          ...interiorOffsets.flatMap((offsetY) =>
+            interiorOffsets.map((offsetX) => [x + offsetX, y + offsetY]),
+          ),
+          [x - outerOffset, y],
+          [x + outerOffset, y],
+          [x, y - outerOffset],
+          [x, y + outerOffset],
+        ]
+        const missesAt = (x, y) => {
+          return pointsAt(x, y).filter(([px, py]) => {
+            if (px < 0 || py < 0 || px >= innerWidth || py >= innerHeight) return true
+            const hit = document.elementFromPoint(px, py)
+            if (hit !== null && (hit === surface || surface.contains(hit))) return false
+
+            // elementFromPoint は CSSOM の整数座標へ丸める。±21.75 は最後の
+            // half-device-pixel center でも丸め後に矩形端へ落ちるブラウザがある。
+            // その場合だけ、最後に安定して表現できる pixel center (±21.5) でも
+            // 同じ標的に届くことと、実寸が44px以上であることを併せて確認する。
+            const dx = px - x
+            const dy = py - y
+            const isNearEdge =
+              (Math.abs(Math.abs(dx) - outerOffset) < 0.001 && Math.abs(dy) < 0.001) ||
+              (Math.abs(Math.abs(dy) - outerOffset) < 0.001 && Math.abs(dx) < 0.001)
+            if (
+              isNearEdge &&
+              Math.max(clippedWidth, before.width, after.width) >= minTargetPx &&
+              Math.max(clippedHeight, before.height, after.height) >= minTargetPx
+            ) {
+              const fallbackX = x + (dx === 0 ? 0 : Math.sign(dx) * rasterEdgeOffset)
+              const fallbackY = y + (dy === 0 ? 0 : Math.sign(dy) * rasterEdgeOffset)
+              const fallbackHit = document.elementFromPoint(fallbackX, fallbackY)
+              return fallbackHit === null || (fallbackHit !== surface && !surface.contains(fallbackHit))
+            }
+            return true
+          })
+        }
+        let centerX = rectCenterX
+        let centerY = rectCenterY
+        let misses = missesAt(centerX, centerY)
+
+        // 行全面リンクは別リンクやボタンを意図的に前面へ重ねる。そのため矩形中央の
+        // 一部だけ別宛先になることがある。44×44 全点がその行リンクへ届く位置が
+        // 同じ矩形内にあるかを探し、行の利用可能な領域で合否を決める。
+        // 小さな標的には位置ずらしを許さない。擬似要素で中心を広げた実効 hit area
+        // を elementFromPoint で測る目的があるため。
+        if (clippedWidth >= 44 && clippedHeight >= 44 && misses.length > 0) {
+          const maxOffsetX = Math.max(0, Math.floor((clippedWidth - minTargetPx) / 2))
+          const maxOffsetY = Math.max(0, Math.floor((clippedHeight - minTargetPx) / 2))
+          const offsets = [0]
+          for (let offset = 8; offset <= Math.max(maxOffsetX, maxOffsetY); offset += 8) {
+            offsets.push(-offset, offset)
+          }
+          let best = { x: centerX, y: centerY, misses }
+          search: for (const dy of offsets) {
+            for (const dx of offsets) {
+              if (dx === 0 && dy === 0) continue
+              if (Math.abs(dx) > maxOffsetX || Math.abs(dy) > maxOffsetY) continue
+              const candidate = { x: rectCenterX + dx, y: rectCenterY + dy }
+              const candidateMisses = missesAt(candidate.x, candidate.y)
+              if (candidateMisses.length < best.misses.length) {
+                best = { ...candidate, misses: candidateMisses }
+              }
+              if (candidateMisses.length === 0) {
+                best = { ...candidate, misses: candidateMisses }
+                break search
+              }
+            }
+          }
+          centerX = best.x
+          centerY = best.y
+          misses = best.misses
+        }
+        targets.push({
+          tag: element.tagName.toLowerCase(),
+          role: element.getAttribute('role'),
+          label: nameOf(element),
+          centerX,
+          centerY,
+          documentCenterX: centerX + scrollX,
+          documentCenterY: centerY + scrollY,
+          href: surface.getAttribute('href'),
+          pointerEvents: getComputedStyle(surface).pointerEvents,
+          visualWidth: clippedWidth,
+          visualHeight: clippedHeight,
+          hitWidth: Math.max(clippedWidth, before.width, after.width),
+          hitHeight: Math.max(clippedHeight, before.height, after.height),
+          missCount: misses.length,
+          testedCount: pointsAt(centerX, centerY).length,
+          misses: misses.slice(0, 3).map(([x, y]) => {
+            const hit = document.elementFromPoint(x, y)
+            const describe = (node) => node === null ? '(viewport 外)' : `${node.tagName.toLowerCase()}${node.getAttribute('role') ? `[role=${node.getAttribute('role')}]` : ''}${node.id ? `#${node.id}` : ''}${node.getAttribute('data-testid') ? `[data-testid=${node.getAttribute('data-testid')}]` : ''}${node.className && typeof node.className === 'string' ? `.${node.className.trim().replace(/\s+/g, '.')}` : ''}`
+            return {
+              x: Number(x.toFixed(1)),
+              y: Number(y.toFixed(1)),
+              hit: describe(hit),
+              hitHref: hit?.closest('a[href]')?.getAttribute('href') ?? null,
+            }
+          }),
+        })
+      }
+
+      const overlaps = []
+      for (let i = 0; i < targets.length; i++) {
+        for (let j = i + 1; j < targets.length; j++) {
+          const a = targets[i]
+          const b = targets[j]
+          if (
+            Math.abs(a.documentCenterX - b.documentCenterX) < minTargetPx &&
+            Math.abs(a.documentCenterY - b.documentCenterY) < minTargetPx
+          ) {
+            overlaps.push({ first: a.label, second: b.label })
+          }
+        }
+      }
+
+      return { targets, overlaps, ignoredSortSelects, ignoredSelectionCheckboxes }
+    },
+    {
+      selector: TAP_TARGET_SELECTOR,
+      skipSelectionCheckbox: options.skipSelectionCheckbox === true,
+      minTargetPx: TAP_TARGET_MIN_PX,
+    },
+  )
+
+  const misses = result.targets.filter(
+    (target) =>
+      target.missCount > 0 ||
+      target.hitWidth < TAP_TARGET_MIN_PX ||
+      target.hitHeight < TAP_TARGET_MIN_PX,
+  )
+  log(
+    `  [${label}] 操作標的=${result.targets.length} 件 ` +
+      `44×44 の hit 判定 NG=${misses.length} 件 重なり=${result.overlaps.length} 件`,
+  )
+  if (result.ignoredSortSelects > 0) {
+    log(`    例外: 録画一覧の「並び順」select ${result.ignoredSortSelects} 件（#1220 がアイコン化）`)
+  }
+  if (result.ignoredSelectionCheckboxes > 0) {
+    log(`    例外: 選択行の checkbox ${result.ignoredSelectionCheckboxes} 件（行クリックが同じ切替を担う）`)
+  }
+  for (const target of misses) {
+    ng.push(
+      `[${label}] ${target.tag}${target.role === null ? '' : `[role=${target.role}]`} 「${target.label}」の中心 44×44px の hit 領域が要素に届かない ` +
+        `(center=${target.centerX.toFixed(1)},${target.centerY.toFixed(1)}; visual=${target.visualWidth.toFixed(1)}×${target.visualHeight.toFixed(1)}px; hit=${target.hitWidth.toFixed(1)}×${target.hitHeight.toFixed(1)}px; miss=${target.missCount}/${target.testedCount}; pointer=${target.pointerEvents}; href=${target.href ?? 'なし'}; ${JSON.stringify(target.misses)})`,
+    )
+  }
+  for (const overlap of result.overlaps) {
+    ng.push(`[${label}] 44×44px の hit 領域が重なる: 「${overlap.first}」 / 「${overlap.second}」`)
+  }
+  if (result.targets.length === 0) {
+    ng.push(`[${label}] 操作標的を 1 件も列挙できない`)
+  }
+  return result
+}
+
+/**
  * MISSING_STRING_PATTERN は「唯一の視覚オラクル」が欠損データのまま撮れて
  * いないかを見る（issue #468）。`undefined` / `NaN` はレンダーの欠損値が
  * そのまま文字列化されたときに出る典型で、`[object` はオブジェクトを
@@ -1327,9 +1664,188 @@ async function checkMissingStrings(page, label) {
   }
 }
 
+/** 360 / 390px の全主要画面を coarse pointer で開き、44px の hit 領域を測る。 */
+async function runCoarseTapTargetChecks() {
+  log('\n=== ④-A H-1: coarse pointer の 44×44px hit 領域 ===')
+  for (const viewport of tapTargetWidths) {
+    for (const screen of tapTargetScreens) {
+      const screenOptions =
+        screen.name === 'recording-detail'
+          ? { pointer: 'coarse', multiSite: true, recordingDetailScenario: 'completed' }
+          : { pointer: 'coarse', ...(screen.name === 'home' || screen.name === 'home-watch' ? { homeModeFixture: true } : {}) }
+      const { context, page } = await open(viewport, 'light', screen, screenOptions)
+      const pointerIsCoarse = await page.evaluate(() => matchMedia('(pointer: coarse)').matches)
+      if (!pointerIsCoarse) {
+        ng.push(`[${viewport.name}/${screen.name}] ブラウザが pointer: coarse と判定されない`)
+      }
+      await measureCoarseTapTargets(page, `${viewport.name}/${screen.name}`)
+      if (screen.name === 'home') {
+        const details = page.locator('details[data-testid="home-timeline-details"]')
+        if ((await details.count()) === 0) {
+          ng.push(`[${viewport.name}/home-timeline-details] 詳細行が表示されない`)
+        } else {
+          await details.locator('summary').click()
+          const isOpen = await details.evaluate((element) => element.open)
+          if (!isOpen) {
+            ng.push(`[${viewport.name}/home-timeline-details] summary の操作で詳細が開かない`)
+          } else {
+            await measureCoarseTapTargets(page, `${viewport.name}/home-timeline-details`)
+          }
+        }
+      }
+      await context.close()
+    }
+  }
+
+  // ruleId filter は通常の予約一覧に出ない「解除」ボタンと条件編集リンクも持つ。
+  for (const viewport of tapTargetWidths) {
+      const screen = {
+        ...screenOf('reservations'),
+        name: 'reservations-active-filter',
+        path: '/reservations?ruleId=1',
+        wait: 'button[aria-label*="絞り込みを解除"]',
+      }
+    const { context, page } = await open(viewport, 'light', screen, { pointer: 'coarse' })
+    const removeFilter = page.getByRole('button', { name: 'ルール「朝ドラ」の絞り込みを解除' })
+    const editRule = page.getByRole('link', { name: 'ルールの条件を直す', exact: true })
+    if ((await removeFilter.count()) === 0) {
+      ng.push(`[${viewport.name}/reservations-active-filter] ルール絞り込み解除ボタンが表示されない`)
+    }
+    if ((await editRule.count()) === 0) {
+      ng.push(`[${viewport.name}/reservations-active-filter] ルール条件リンクが表示されない`)
+    }
+    if ((await removeFilter.count()) > 0 && (await editRule.count()) > 0) {
+      await measureCoarseTapTargets(page, `${viewport.name}/reservations-active-filter`)
+    }
+    await context.close()
+  }
+
+  // まず行の外側をタップして選択が反転するか実測する。checkbox 自体を 44px に
+  // 広げると別の標的と重なりうるため、行が操作面なら role=option を標的とする。
+  {
+    const viewport = tapTargetWidths[0]
+    const { context, page } = await open(viewport, 'light', screenOf('recordings'), { pointer: 'coarse' })
+    const selectionButton = page.getByRole('button', { name: '選択', exact: true })
+    if ((await selectionButton.count()) === 0) {
+      ng.push('[mobile-360/recordings-selection] 選択モードへ入るボタンが見つからない')
+    } else {
+      await selectionButton.click()
+      const checkbox = page.locator('input[type="checkbox"][aria-label$="を選択"]').first()
+      await checkbox.waitFor({ timeout: 5000 }).catch(() => {})
+      const row = page.locator('[role="option"]').first()
+      const box = await row.boundingBox()
+      if (box === null || (await checkbox.count()) === 0) {
+        ng.push('[mobile-360/recordings-selection] 行または checkbox が見つからない')
+      } else {
+        const position = { x: Math.min(100, box.width - 20), y: box.height / 2 }
+        let rowToggles = true
+        const rowHit = await row.evaluate((element, point) => {
+          const rect = element.getBoundingClientRect()
+          const hit = document.elementFromPoint(rect.left + point.x, rect.top + point.y)
+          return hit === element.querySelector('input[type="checkbox"]')
+        }, position)
+        if (rowHit) {
+          ng.push('[mobile-360/recordings-selection] 行の確認タップが checkbox 自体に当たった')
+        }
+        for (const expected of [true, false]) {
+          await row.click({ position })
+          const changed = await page.waitForFunction(
+            ({ accessibleName, checked }) =>
+              [...document.querySelectorAll('input[type="checkbox"]')].some(
+                (input) => input.getAttribute('aria-label') === accessibleName && input.checked === checked,
+              ),
+            { accessibleName: await checkbox.getAttribute('aria-label'), checked: expected },
+            { timeout: 3000 },
+          ).then(() => true).catch(() => false)
+          if (!changed) {
+            ng.push(`[mobile-360/recordings-selection] checkbox 外の行タップで checked=${expected} にならない`)
+            rowToggles = false
+            break
+          }
+        }
+        if (await checkbox.isChecked()) {
+          ng.push('[mobile-360/recordings-selection] 2 回目の行タップ後も選択が解除されない')
+          rowToggles = false
+        }
+        await measureCoarseTapTargets(
+          page,
+          'mobile-360/recordings-selection',
+          page.locator('body'),
+          { skipSelectionCheckbox: rowToggles },
+        )
+      }
+    }
+    await context.close()
+  }
+
+  // MoreMenu は他画面の上に開くため、背後のページ標的と重ねずポップオーバー内だけを測る。
+  {
+    const { context, page } = await open(tapTargetWidths[0], 'light', screenOf('programs'), { pointer: 'coarse' })
+    const trigger = page.getByRole('button', { name: 'その他' })
+    if ((await trigger.count()) === 0) {
+      ng.push('[mobile-360/more-menu] 「その他」のトリガーが見つからない')
+    } else {
+      await trigger.click()
+      const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+      await menu.waitFor({ timeout: 5000 }).catch(() => {
+        ng.push('[mobile-360/more-menu] ポップオーバーが開かない')
+      })
+      if (await menu.count()) {
+        await page.waitForTimeout(300)
+        await measureCoarseTapTargets(page, 'mobile-360/more-menu', menu)
+      }
+    }
+    await context.close()
+  }
+
+  // 共通 DropdownMenuItem の標準寸法を、破壊的操作を持つルール行で実ブラウザ測定する。
+  {
+    const { context, page } = await open(tapTargetWidths[0], 'light', screenOf('rules'), { pointer: 'coarse' })
+    const trigger = page.locator('[aria-haspopup="menu"]').first()
+    if ((await trigger.count()) === 0) {
+      ng.push('[mobile-360/rule-menu] ルールの操作メニューが見つからない')
+    } else {
+      await trigger.click()
+      const menu = page.locator('[data-slot="dropdown-menu-content"]').last()
+      await menu.waitFor({ timeout: 5000 }).catch(() => {
+        ng.push('[mobile-360/rule-menu] DropdownMenuContent が開かない')
+      })
+      if (await menu.count()) {
+        await page.waitForTimeout(300)
+        await measureCoarseTapTargets(page, 'mobile-360/rule-menu', menu)
+      }
+    }
+    await context.close()
+  }
+
+  // pointer: fine / 1280px は既定 Button の高さを 32px のままにする。
+  {
+    const viewport = { name: 'desktop-1280', width: 1280, height: 800 }
+    const { context, page } = await open(viewport, 'light', screenOf('series-hub'), { pointer: 'fine' })
+    const button = page.locator('[data-slot="button"].h-8').first()
+    if ((await button.count()) === 0) {
+      ng.push('[desktop-1280/fine] 既定サイズ Button の実例が見つからない')
+    } else {
+      const height = await button.evaluate((element) => Number.parseFloat(getComputedStyle(element).height))
+      log(`  [desktop-1280/fine] 既定 Button の高さ=${height}px`)
+      if (height !== 32) ng.push(`[desktop-1280/fine] 既定 Button が 32px ではない（${height}px）`)
+    }
+    const pointerIsFine = await page.evaluate(() => matchMedia('(pointer: fine)').matches)
+    if (!pointerIsFine) ng.push('[desktop-1280/fine] ブラウザが pointer: fine と判定されない')
+    await context.close()
+  }
+}
+
 log(`URL      : ${URL_BASE}`)
 log(`出力先   : ${OUT_DIR}`)
 log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
+
+// CI / red-green でこの追加判定だけを実行する入口。通常の e2e:design でも
+// 同じ関数を ④-A'' として実行し、色・到達距離の既存判定と一緒に守る。
+if (process.env.E2E_TAP_TARGETS_ONLY === '1') {
+  await runCoarseTapTargetChecks()
+  await finish(ng, browser)
+}
 
 // --- ① スクリーンショット ---
 log('\n=== ① スクリーンショット ===')
@@ -5324,6 +5840,8 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
 
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
+await runCoarseTapTargetChecks()
+
 log('\n=== 測ったコントラスト ===')
 for (const { theme, label, ratio, floor } of contrasts) {
   const mark = ratio >= floor ? ' ' : '×'

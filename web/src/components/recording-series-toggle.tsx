@@ -22,14 +22,14 @@ export function RecordingSeriesToggle({
     <div
       role="group"
       aria-label="録画とシリーズの表示切替"
-      className="flex items-center rounded-md border border-border p-0.5"
+      className="flex items-center pointer-coarse:gap-0.5 rounded-md border border-border p-0.5"
     >
       <Link
         to="/recordings"
         search={search}
         aria-current={active === 'recordings' ? 'page' : undefined}
         className={cn(
-          'rounded px-2 py-1 text-xs transition-colors',
+          'inline-flex min-h-6 min-w-6 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded px-2 py-1 text-xs transition-colors',
           active === 'recordings'
             ? 'bg-muted font-medium text-foreground'
             : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
@@ -42,7 +42,7 @@ export function RecordingSeriesToggle({
         search={toSeriesSearch(search)}
         aria-current={active === 'series' ? 'page' : undefined}
         className={cn(
-          'rounded px-2 py-1 text-xs transition-colors',
+          'inline-flex min-h-6 min-w-6 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded px-2 py-1 text-xs transition-colors',
           active === 'series'
             ? 'bg-muted font-medium text-foreground'
             : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',

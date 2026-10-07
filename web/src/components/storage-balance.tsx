@@ -162,6 +162,7 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
         className={cn(
           'flex cursor-pointer list-none flex-wrap items-center gap-x-3 gap-y-1',
           compact ? 'py-1' : 'px-4 py-2',
+          'pointer-coarse:min-h-11',
         )}
       >
         <span>

@@ -158,7 +158,7 @@ export function ReservationsPage() {
                       <button
                         type="button"
                         aria-label="ルールで絞り込む"
-                        className="flex min-h-7 max-w-full shrink-0 items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                        className="flex min-h-7 pointer-coarse:min-h-11 max-w-full shrink-0 items-center gap-1 rounded-full border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors outline-none hover:bg-muted hover:text-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
                       />
                     }
                   >
@@ -184,14 +184,14 @@ export function ReservationsPage() {
                     type="button"
                     aria-label={`ルール「${ruleLabel(search.ruleId)}」の絞り込みを解除`}
                     onClick={() => selectSearch({ ruleId: undefined })}
-                    className="flex min-h-7 max-w-full shrink-0 items-center rounded-full border border-primary px-3 py-1.5 text-xs text-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
+                    className="flex min-h-7 pointer-coarse:min-h-11 max-w-full shrink-0 items-center rounded-full border border-primary px-3 py-1.5 text-xs text-foreground transition-colors outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50"
                   >
                     <span className="min-w-0 truncate">ルール「{ruleLabel(search.ruleId)}」 ×</span>
                   </button>
                   <Link
                     to="/search"
                     search={{ ruleId: search.ruleId }}
-                    className="flex min-h-6 items-center rounded px-1 text-xs text-primary underline underline-offset-2"
+                    className="flex min-h-6 pointer-coarse:min-h-11 items-center rounded px-1 text-xs text-primary underline underline-offset-2"
                   >
                     ルールの条件を直す
                   </Link>

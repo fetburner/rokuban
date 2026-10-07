@@ -36,7 +36,7 @@ export function Chip({
         // scrollWidth 320 / clientWidth 320、外すと 462 / 320）。
         // break-words は入れていない --- 同じ実測で有無の差が出なかった（和文は
         // 文字間で折り返せるため）。長い ASCII 1 語での挙動は未検証。
-        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50',
+        'max-w-full shrink-0 rounded-full border px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:opacity-50 pointer-coarse:min-h-11 pointer-coarse:min-w-11',
         active
           ? 'border-primary bg-primary text-primary-foreground'
           // hover:text-foreground は hover:bg-muted と対（合成後コントラスト対策。

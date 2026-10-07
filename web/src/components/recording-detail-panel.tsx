@@ -703,7 +703,7 @@ export function RecordingDetail({
               HLS 再生プロファイルを利用できません。原本は{' '}
               <a
                 href={recordingFileURL(recording.id)}
-                className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
+                className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline"
               >
                 VLC 等で開く
               </a>
@@ -795,7 +795,7 @@ export function RecordingDetail({
                   ブラウザ再生用のエンコードがまだありません。原本は{' '}
                   <a
                     href={recordingFileURL(recording.id)}
-                    className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline"
+                    className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline"
                   >
                     VLC 等で開く
                   </a>
@@ -839,17 +839,17 @@ export function RecordingDetail({
               onClick={() => setSelectedTab('record')}
             />
             {recording.ingest && (
-              <button type="button" className="inline-flex min-h-6 items-center" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center" aria-label="取り込み状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <IngestBadge recording={recording} />
               </button>
             )}
             {(recording.encodeStatus?.length ?? 0) > 0 && (
-              <button type="button" className="inline-flex min-h-6 items-center" aria-label="エンコード状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center" aria-label="エンコード状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <EncodeStatusBadges recording={recording} />
               </button>
             )}
             {hasDrops && recording.dropSummary && (
-              <button type="button" className="inline-flex min-h-6 items-center" aria-label="ドロップ状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
+              <button type="button" className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center" aria-label="ドロップ状態を記録タブで見る" onClick={() => setSelectedTab('record')}>
                 <DropBadges summary={recording.dropSummary} />
               </button>
             )}
@@ -887,7 +887,7 @@ export function RecordingDetail({
                   to="/recordings/$id/series"
                   params={{ id: String(recording.id) }}
                   aria-label={`このシリーズへ: ${recording.series}`}
-                  className="inline-flex min-h-6 items-center text-primary underline underline-offset-4"
+                  className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline underline-offset-4"
                 >
                   {recording.series} <span aria-hidden className="ml-1">›</span>
                 </Link>
@@ -898,7 +898,7 @@ export function RecordingDetail({
                 <Link
                   to="/recordings/$id"
                   params={{ id: String(next.id) }}
-                  className="inline-flex min-h-6 items-center text-muted-foreground underline-offset-2 hover:underline"
+                  className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-muted-foreground underline-offset-2 hover:underline"
                   onClick={() => seedRecordingDetail(queryClient, next)}
                 >
                   次のエピソード: {programTitle(next.title)}
@@ -935,7 +935,7 @@ export function RecordingDetail({
                 aria-selected={activeTab === tab.id}
                 aria-controls="recording-detail-tab-panel"
                 tabIndex={activeTab === tab.id ? 0 : -1}
-                className={`min-h-10 min-w-6 border-b-2 px-1.5 text-sm ${activeTab === tab.id ? 'border-foreground font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+                className={`min-h-10 min-w-6 pointer-coarse:min-h-11 pointer-coarse:min-w-11 border-b-2 px-1.5 text-sm ${activeTab === tab.id ? 'border-foreground font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
                 onClick={() => setSelectedTab(tab.id)}
                 onKeyDown={(event) => {
                   if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
@@ -1015,7 +1015,7 @@ export function RecordingDetail({
                             再生
                           </Button>
                         )}
-                        <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
+                        <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
                       </div>
                     ))}
                     {hasOriginal ? (
@@ -1035,7 +1035,7 @@ export function RecordingDetail({
                             HLS で再生
                           </Button>
                         )}
-                        <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
+                        <a href={recordingFileURL(recording.id)} className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード / VLC</a>
                       </div>
                     ) : recording.status === 'recording' ? (
                       <div role="listitem" data-testid="recording-original-row" className="flex min-h-14 flex-wrap items-center gap-3 py-2 text-sm">
@@ -1092,7 +1092,7 @@ export function RecordingDetail({
                 </div>
                 {showCMDetectorResults && (
                   <details data-testid="cm-detector-results-details" className="text-muted-foreground">
-                    <summary className="cursor-pointer">検出器の結果</summary>
+                    <summary className="pointer-coarse:min-h-11 cursor-pointer">検出器の結果</summary>
                     <ul className="flex flex-col gap-1 py-1">
                       {rawCMRanges.map((range) => (
                         <li key={`${range.startMs}-${range.endMs}`}>
@@ -1107,7 +1107,7 @@ export function RecordingDetail({
                 )}
                 {recording.cmDetection.state === 'failed' && recording.cmDetection.error && (
                   <details data-testid="cm-detection-technical-details" className="text-muted-foreground">
-                    <summary className="cursor-pointer">技術的な詳細</summary>
+                    <summary className="pointer-coarse:min-h-11 cursor-pointer">技術的な詳細</summary>
                     <pre className="max-h-40 overflow-auto whitespace-pre-wrap font-mono text-xs">{recording.cmDetection.error}</pre>
                   </details>
                 )}
@@ -1123,7 +1123,7 @@ export function RecordingDetail({
                 {hasDrops && <DropStatsTable recordingId={recording.id} />}
                 {(recording.qualityEvents?.length ?? 0) > 0 && (
                   <details data-testid="recording-quality-events-details" className="text-muted-foreground">
-                    <summary className="cursor-pointer">品質イベント {recording.qualityEvents?.length} 件</summary>
+                    <summary className="pointer-coarse:min-h-11 cursor-pointer">品質イベント {recording.qualityEvents?.length} 件</summary>
                     <ul className="flex flex-col gap-1 py-1">
                       {recording.qualityEvents?.map((event, index) => (
                         <li key={index} className="break-all">{String(event.event ?? 'unknown')}{event.reason ? `: ${JSON.stringify(event.reason)}` : ''}</li>
@@ -1146,7 +1146,7 @@ export function RecordingDetail({
                 to="/recordings/$id/series"
                 params={{ id: String(recording.id) }}
                 aria-label={`このシリーズへ: ${recording.series}`}
-                className="inline-flex min-h-6 max-w-full items-center gap-1 underline underline-offset-4"
+                className="inline-flex min-h-6 pointer-coarse:min-h-11 max-w-full items-center gap-1 underline underline-offset-4"
               >
                 <span className="truncate">{recording.series}</span>
                 <span aria-hidden>›</span>

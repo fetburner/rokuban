@@ -568,7 +568,7 @@ export function LivePage() {
                 search={{
                   service: [selectedService.id],
                 }}
-                className="mt-1 inline-flex min-h-6 items-center text-sm text-primary underline-offset-2 hover:underline"
+                className="mt-1 inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-sm text-primary underline-offset-2 hover:underline"
               >
                 この局の番組表
               </Link>

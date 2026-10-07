@@ -382,8 +382,8 @@ function RuleRow({
 
   return (
     <div className="rounded-lg border border-border px-3 py-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 flex-1">
+      <div className="flex items-start justify-between gap-3 pointer-coarse:flex-wrap">
+        <div className="min-w-0 flex-1 pointer-coarse:min-w-11">
           {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
               truncate span の挙動を維持）。flex-wrap のままだと、長い名前の
               hypothetical な主軸サイズ（flex-wrap の折返し判定は shrink 適用前の
@@ -449,7 +449,7 @@ function RuleRow({
                   <Link
                     to="/reservations"
                     search={{ ruleId: rule.id }}
-                    className="text-primary underline-offset-4 hover:underline"
+                    className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-4 hover:underline"
                   >
                     録画予定 {activity.scheduledCount} 件
                   </Link>
@@ -471,7 +471,7 @@ function RuleRow({
               aria-checked={rule.enabled}
               aria-label={`ルール「${displayName}」を有効にする`}
               disabled={updateRule.isPending || isCountingReservations}
-              className="inline-flex min-h-8 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
+              className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
               onClick={() => void toggleEnabled()}
             >
               <span
