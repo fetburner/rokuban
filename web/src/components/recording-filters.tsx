@@ -1,4 +1,5 @@
-import { ArrowUpDown, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
+import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
+import { ArrowUpDown, Check, ChevronDown, ListFilter, Search as SearchIcon, X } from 'lucide-react'
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
@@ -465,27 +466,17 @@ function FilterPanel({
               </section>
             )}
 
-            <section className="flex flex-col gap-1.5">
-              <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>
-              <div role="group" aria-label="ジャンル" className="flex flex-wrap gap-1.5">
-                {genreCodes.map((code) => (
-                  <Chip
-                    key={code}
-                    active={selectedGenres.has(code)}
-                    onClick={() =>
-                      onChange((s) => {
-                        const next = selectedGenres.has(code)
-                          ? (s.genre ?? []).filter((g) => g !== code)
-                          : [...(s.genre ?? []), code]
-                        return { ...s, genre: next.length > 0 ? next : undefined }
-                      })
-                    }
-                  >
-                    {genreCodeLabel(code)}
-                  </Chip>
-                ))}
-              </div>
-            </section>
+            <GenreSection
+              selected={selectedGenres}
+              toggle={(code) =>
+                onChange((s) => {
+                  const next = selectedGenres.has(code)
+                    ? (s.genre ?? []).filter((g) => g !== code)
+                    : [...(s.genre ?? []), code]
+                  return { ...s, genre: next.length > 0 ? next : undefined }
+                })
+              }
+            />
 
             <section className="flex flex-col gap-1.5">
               <h3 className="text-xs font-medium text-muted-foreground">状態</h3>
@@ -550,5 +541,64 @@ function FilterPanel({
               </div>
             </section>
     </ToolbarPanel>
+  )
+}
+
+// PoC(H-16): window.__mock.genre で比較用の見た目を切り替える（本番には入れない）。
+type GenreMock = 'current' | 'hide' | 'menu' | 'hide-shown'
+const unnamedGenres = new Set([12, 13, 14])
+
+function GenreSection({ selected, toggle }: { selected: ReadonlySet<number>; toggle: (code: number) => void }) {
+  const mode = ((window as unknown as { __mock?: { genre?: GenreMock } }).__mock?.genre ?? 'current') as GenreMock
+  if (mode === 'menu') {
+    const names = genreCodes.filter((c) => selected.has(c)).map(genreCodeLabel)
+    const label = selected.size === 0 ? 'すべて' : selected.size === 1 ? names[0] : `${selected.size} 件`
+    return (
+      <section className="flex flex-col gap-1.5">
+        <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>
+        <PopoverPrimitive.Root>
+          <PopoverPrimitive.Trigger className="flex h-11 max-w-full items-center gap-1.5 rounded-lg border border-border bg-background px-3 text-sm text-foreground transition-colors hover:bg-muted aria-expanded:bg-muted">
+            <span className="min-w-0 truncate">ジャンル: {label}</span>
+            <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+          </PopoverPrimitive.Trigger>
+          <PopoverPrimitive.Portal>
+            <PopoverPrimitive.Positioner className="z-50 outline-none" positionMethod="fixed" side="bottom" align="start" sideOffset={6}>
+              <PopoverPrimitive.Popup aria-label="ジャンル" className="flex max-h-[min(28rem,70vh)] w-[min(20rem,90vw)] flex-col overflow-hidden rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none">
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {genreCodes.filter((c) => !unnamedGenres.has(c) || selected.has(c)).map((code) => (
+                    <button
+                      key={code}
+                      type="button"
+                      role="checkbox"
+                      aria-checked={selected.has(code)}
+                      onClick={() => toggle(code)}
+                      className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+                    >
+                      <span className={cn('flex size-4 shrink-0 items-center justify-center rounded-sm border', selected.has(code) ? 'border-primary bg-primary' : 'border-border')}>
+                        <Check className={cn('size-3 text-primary-foreground', !selected.has(code) && 'opacity-0')} aria-hidden />
+                      </span>
+                      <span className="truncate">{genreCodeLabel(code)}</span>
+                    </button>
+                  ))}
+                </div>
+              </PopoverPrimitive.Popup>
+            </PopoverPrimitive.Positioner>
+          </PopoverPrimitive.Portal>
+        </PopoverPrimitive.Root>
+      </section>
+    )
+  }
+  const codes = genreCodes.filter((c) => mode === 'current' || !unnamedGenres.has(c) || (mode === 'hide-shown' && selected.has(c)))
+  return (
+    <section className="flex flex-col gap-1.5">
+      <h3 className="text-xs font-medium text-muted-foreground">ジャンル</h3>
+      <div role="group" aria-label="ジャンル" className="flex flex-wrap gap-1.5">
+        {codes.map((code) => (
+          <Chip key={code} active={selected.has(code)} onClick={() => toggle(code)}>
+            {genreCodeLabel(code)}
+          </Chip>
+        ))}
+      </div>
+    </section>
   )
 }
