@@ -342,6 +342,10 @@ const recordings = [
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
+// `homeModeFixture` の警告一覧は、失敗録画・orphaned 予約・容量超過・ドロップの順。
+// それぞれ recordings[2] / reservations[3] / overages[0] / recordings[1] の fixture に対応する。
+const expectedHomeWarningKinds = ['failed', 'not-recorded', 'overage', 'drop']
+
 /** ホーム「見る」側の帯と「次に見る 1 本」専用の再開位置フィクスチャ。 */
 const homeContinueWatching = [
   {
@@ -686,7 +690,7 @@ function apiHandler({
       return json(layoutScenario === 'capacity' ? layoutCapacityReservations : reservations)
     }
     if (p === '/api/capacity/overages') {
-      // #1020 のモード比較ショットは mock の警告 3 件（容量超過・ドロップ・失敗）
+      // #1020 のモード比較ショットは mock の警告 4 種（orphaned 予約・容量超過・ドロップ・失敗）
       // を再現する。ほかの既存シナリオでは従来の全超過 fixture を使う。
       if (emptyHome) return json([])
       if (homeOpsFixture) {
@@ -1165,6 +1169,60 @@ async function open(viewport, theme, screen, opts = {}) {
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(400)
   return { context, page }
+}
+
+/** checkHomeWarnings はホームの警告種別とモード切替バッジの件数を照合する。 */
+async function checkHomeWarnings(page, mode, theme, viewport) {
+  const label = `${mode}/${theme}/${viewport.width}px`
+  const toggle = page.getByTestId('home-mode-toggle')
+  if ((await toggle.count()) === 0) {
+    ng.push(`[${label}] ホームのモード切替が見つからない`)
+  }
+
+  const badge = page.getByTestId('home-warning-count')
+  const badgeReady = await badge.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!badgeReady) {
+    ng.push(`[${label}] 警告件数バッジが見つからない`)
+  }
+
+  let warningKinds = expectedHomeWarningKinds
+  if (mode === 'ops') {
+    const warningSection = page.locator('section[aria-labelledby="home-action-required"]')
+    const warningSectionReady = await warningSection.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!warningSectionReady) {
+      ng.push(`[${label}] 要対応の警告一覧が出ない`)
+    }
+    const warningRows = warningSection.locator('li[data-warning-kind]')
+    warningKinds = await warningRows.evaluateAll((elements) => elements.map((element) => element.dataset.warningKind))
+    if (warningKinds.join(',') !== expectedHomeWarningKinds.join(',')) {
+      ng.push(
+        `[${label}] 警告種別の順序が ${expectedHomeWarningKinds.join('→')} ` +
+          `でない（${warningKinds.join(',')}）`,
+      )
+    }
+  }
+  if (badgeReady) {
+    const badgeText = (await badge.innerText()).trim()
+    if (badgeText !== String(warningKinds.length)) {
+      ng.push(`[${label}] 警告件数 ${badgeText} が警告行 ${warningKinds.length} 件と一致しない`)
+    }
+  }
+}
+
+// 警告の red / green と変異確認では、レイアウト判定を含む全シナリオを起動せず
+// この契約だけを実ブラウザで実行する。
+if (process.env.E2E_HOME_WARNINGS_ONLY === '1') {
+  for (const mode of ['watch', 'ops']) {
+    for (const theme of themes) {
+      for (const viewport of [homeDesktop, mobile, mobileWide]) {
+        const screen = { name: `home-${mode}`, path: `/?mode=${mode}` }
+        const { context, page } = await open(viewport, theme, screen, { homeModeFixture: true })
+        await checkHomeWarnings(page, mode, theme, viewport)
+        await context.close()
+      }
+    }
+  }
+  await finish(ng, browser)
 }
 
 /**
@@ -2296,16 +2354,7 @@ for (const mode of ['watch', 'ops']) {
       const { context, page } = await open(viewport, theme, screen, { homeModeFixture: true })
       await page.locator('main > header').waitFor({ timeout: 5000 }).catch(() => {})
 
-      const toggle = page.getByTestId('home-mode-toggle')
-      if ((await toggle.count()) === 0) {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] ホームのモード切替が見つからない`)
-      }
-      const badge = page.getByTestId('home-warning-count')
-      if ((await badge.count()) === 0) {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数バッジが見つからない`)
-      } else if ((await badge.innerText()).trim() !== '3') {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数が3でない（${(await badge.innerText()).trim()}）`)
-      }
+      await checkHomeWarnings(page, mode, theme, viewport)
 
       const geometry = await page.evaluate(() => {
         const rect = (selector) => {
@@ -2614,8 +2663,8 @@ for (const theme of themes) {
   await page.locator('section[aria-labelledby="home-action-required"]').waitFor({ timeout: 5000 }).catch(() => {})
   const warningRows = page.locator('section[aria-labelledby="home-action-required"] li[data-warning-kind]')
   const warningKinds = await warningRows.evaluateAll((elements) => elements.map((element) => element.dataset.warningKind))
-  if (warningKinds.join(',') !== 'breaker,failed,overage,drop') {
-    ng.push(`ホーム: 要対応の順序が breaker→failed→overage→drop でない（${warningKinds.join(',')}）`)
+  if (warningKinds.join(',') !== 'breaker,failed,not-recorded,overage,drop') {
+    ng.push(`ホーム: 要対応の順序が breaker→failed→not-recorded→overage→drop でない（${warningKinds.join(',')}）`)
   }
   const overageRow = page.locator('li[data-warning-kind="overage"]')
   // 要対応の行が無い実装（M8-25）でも TimeoutError で結果が消えないよう、取れなければ NG に積む。
