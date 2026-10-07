@@ -140,7 +140,7 @@ function MobileShelfSummary({ series, shelf }: { series: string; shelf: Recordin
       to="/recordings/$id/series"
       params={{ id: String(shelf.representativeId) }}
       aria-label={`${series}の番組ハブ。録画 ${shelf.count} 本、${unwatched}`}
-      className="relative z-10 inline-flex min-h-6 items-center rounded px-1 text-foreground underline underline-offset-2 lg:hidden"
+      className="relative z-10 inline-flex min-h-6 pointer-coarse:min-h-11 items-center rounded px-1 text-foreground underline underline-offset-2 lg:hidden"
     >
       録画 {shelf.count.toLocaleString('ja-JP')} 本 · {unwatched} ›
     </Link>
@@ -278,7 +278,7 @@ function ReservationGroupBadges({ group }: { group: ReservationGroup }) {
           to="/programs"
           search={{ view: 'grid', at: capacityAt }}
           aria-label={`${shortageMessage(capacityOverage)}。該当する予約 ${badges.capacityShortfall} 件`}
-          className="relative z-10 inline-flex min-h-6 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning before:absolute before:inset-x-0 before:top-1/2 before:h-8 before:-translate-y-1/2"
+          className="relative z-10 inline-flex min-h-6 pointer-coarse:min-h-11 items-center gap-1 rounded bg-warning/10 px-1.5 py-0.5 text-xs text-warning hover:bg-warning/20 focus-visible:outline-2 focus-visible:outline-warning before:absolute before:inset-x-0 before:top-1/2 before:h-8 pointer-coarse:before:h-11 before:-translate-y-1/2"
         >
           <TriangleAlert className="size-3 shrink-0" aria-hidden />
           容量不足 {badges.capacityShortfall}

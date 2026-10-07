@@ -394,6 +394,9 @@ Vitest の `afterEach` は、テストが到達した状態の終了時点の DO
 | 中間 | 予約・ライブ | 一等地の次 |
 | 端 | 検索・ルール・破壊的操作 | 意図して探しに行く位置 |
 
+操作標的の大きさは頻度とは独立して決める。coarse pointer で表示中の操作要素は
+44×44 CSS px 以上の hit 領域を確保し、fine pointer では既定 Button の高さを 32px に保つ。
+
 単一世帯の運用なので、頻度の仮説は自分の行動で検証してよい。
 
 **「端」に寄せる実装手段は overflow メニュー（`components/ui/dropdown-menu.tsx`）

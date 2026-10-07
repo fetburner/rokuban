@@ -43,7 +43,7 @@ export function DayStrip({
     <div
       role="group"
       aria-label="日付"
-      className="grid gap-1 px-4 pb-2"
+      className="grid gap-1 px-4 pb-2 pointer-coarse:gap-0 pointer-coarse:px-0"
       style={{ gridTemplateColumns: `repeat(${days}, minmax(0, 1fr))` }}
     >
       {offsets.map((offset) => (
@@ -98,7 +98,7 @@ function DayCell({
       // 持つ（docs/frontend/design.md「色は信号のみ」）。土と日のどちらかは
       // 文字自身が言うので、色で区別する必要はない
       className={cn(
-        'flex h-11 min-w-0 flex-col items-center justify-center rounded-md border text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
+        'flex h-11 min-w-0 pointer-coarse:min-w-11 flex-col items-center justify-center rounded-md border text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50',
         isCurrent
           ? 'border-primary bg-primary text-primary-foreground'
           : isWeekend

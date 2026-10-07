@@ -821,7 +821,8 @@ function HomeOpsTimeline({
       </section>
       {!isPending && !isError && events.length > 0 && (
         <details className="min-w-0 rounded-md border border-border bg-card text-sm" data-testid="home-timeline-details">
-          <summary className="min-h-6 cursor-pointer px-3 py-1 text-primary underline-offset-2 hover:underline">
+          {/* min-h-11 だと実ブラウザ判定が NG（44.0px 高の下端 1/29 点が直下の ul に当たる: mobile-360/390 home-timeline-details）。min-h-12 で通る。 */}
+          <summary className="min-h-6 pointer-coarse:min-h-12 cursor-pointer px-3 py-1 text-primary underline-offset-2 hover:underline">
             録画・予約の詳細
           </summary>
           <ul className="flex min-w-0 flex-col border-t border-border">
@@ -846,7 +847,7 @@ function HomeOpsTimeline({
                   </span>
                 </>
               )
-              const className = 'flex min-h-6 items-center gap-2 px-3 py-1 hover:bg-muted/40'
+              const className = 'flex min-h-6 pointer-coarse:min-h-11 items-center gap-2 px-3 py-1 hover:bg-muted/40'
               return (
                 <li key={event.key} className="border-b border-border last:border-b-0" data-testid="home-timeline-detail-row">
                   {event.href.to === '/recordings/$id' ? (
@@ -970,7 +971,7 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
           <Link
             {...detail}
             data-testid="home-primary-action"
-            className="inline-flex min-h-10 items-center justify-center rounded border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
+            className="inline-flex min-h-10 pointer-coarse:min-h-11 items-center justify-center rounded border border-primary bg-primary px-3 text-sm font-medium text-primary-foreground"
           >
             <span aria-hidden="true" className="mr-1">
               ▶
@@ -981,7 +982,7 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
             <Link
               {...detail}
               search={{ fromBeginning: true }}
-              className="inline-flex min-h-9 items-center justify-center rounded border border-border bg-card px-3 text-sm hover:bg-muted"
+              className="inline-flex min-h-9 pointer-coarse:min-h-11 items-center justify-center rounded border border-border bg-card px-3 text-sm hover:bg-muted"
             >
               最初から
             </Link>
@@ -1028,7 +1029,7 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
         </h2>
         <Link
           to="/series"
-          className="shrink-0 text-xs text-muted-foreground underline-offset-2 hover:underline"
+          className="inline-flex min-h-6 pointer-coarse:min-h-11 shrink-0 items-center text-xs text-muted-foreground underline-offset-2 hover:underline"
         >
           すべてのシリーズ →
         </Link>
@@ -1148,7 +1149,7 @@ function RecordingStrip({ recordings }: { recordings: readonly Recording[] }) {
         to="/recordings/$id"
         params={{ id: String(first.id) }}
         hash="chase"
-        className="shrink-0 text-primary underline-offset-2 hover:underline"
+        className="inline-flex min-h-6 pointer-coarse:min-h-11 shrink-0 items-center text-primary underline-offset-2 hover:underline"
       >
         追っかけ再生 →
       </Link>
