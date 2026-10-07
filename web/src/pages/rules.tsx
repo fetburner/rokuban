@@ -465,7 +465,7 @@ function RuleRow({
             )}
           </div>
         </div>
-        <div className="col-start-2 row-start-1 flex shrink-0 items-center gap-1">
+        <div className="col-start-2 row-start-1 flex shrink-0 items-center gap-1 md:justify-self-end">
           <button
             type="button"
             role="switch"

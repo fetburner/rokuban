@@ -1852,9 +1852,18 @@ async function runRuleCardLayoutChecks() {
       if (conditionBox.width >= cardBox.width - 100) {
         ng.push('[desktop-1280/rules-layout] 条件欄がカード全幅へ広がり、横並びを保っていない')
       }
-      const rightHalf = cardBox.x + cardBox.width / 2
-      if (toggleBox.x < rightHalf || menuBox.x < rightHalf || actionBox.x < rightHalf) {
-        ng.push('[desktop-1280/rules-layout] スイッチ・メニュー・補助操作がカード右側に揃っていない')
+      const menuRightGap = cardBox.x + cardBox.width - menuBox.x - menuBox.width
+      log(`  [desktop-1280/rules-layout] メニュー右端とカード右端の間隔=${menuRightGap.toFixed(1)}px`)
+      if (Math.abs(menuRightGap - 13) > 2) {
+        ng.push(`[desktop-1280/rules-layout] メニューのカード右端余白が13pxでない（${menuRightGap.toFixed(1)}px）`)
+      }
+      const toggleCenter = toggleBox.y + toggleBox.height / 2
+      const menuCenter = menuBox.y + menuBox.height / 2
+      if (Math.abs(toggleCenter - menuCenter) > 4 || toggleBox.x + toggleBox.width > menuBox.x) {
+        ng.push('[desktop-1280/rules-layout] スイッチとメニューが同じ右端の操作行に揃っていない')
+      }
+      if (actionBox.x < cardBox.x + cardBox.width / 2) {
+        ng.push('[desktop-1280/rules-layout] 補助操作がカード右側に配置されていない')
       }
     }
     await context.close()
