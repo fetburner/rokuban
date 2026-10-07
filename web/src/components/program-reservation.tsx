@@ -9,7 +9,7 @@ import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
 import { useLiveEnabled } from '@/lib/capabilities'
-import { cn } from '@/lib/utils'
+import { auxActionClassName, cn } from '@/lib/utils'
 import {
   defaultEncodeSettingsValue,
   encodeSettingsError,
@@ -286,8 +286,7 @@ export function ProgramReservationBody({
   draft: ProgramReservationDraft
 }) {
   const canSearchByName = program.name.trim().length > 0
-  const searchLinkClassName =
-    'inline-flex min-h-6 pointer-coarse:min-h-11 items-center gap-1 rounded px-1 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50'
+  const searchLinkClassName = cn(auxActionClassName, 'min-h-6')
 
   return (
     <>

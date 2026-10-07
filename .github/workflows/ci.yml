@@ -52,7 +52,7 @@ jobs:
   #     全体の所要時間を測っておらず、PR ごとに払う価値をまだ判断していない
   # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
   # home-timeline-keyboard は 1280×800 の時間軸にフォーカスしたときの左右矢印スクロールを測る。
-  # design の H-2 focused gate は 360 / 390px でルールカードの積み上げと補助操作の muted 色・アイコン位置を測る。
+  # design のルールカード判定（`E2E_RULE_CARD_ONLY`）は 360 / 390px でルールカードの縦積みと補助導線の muted 色・アイコン位置を測る。
   # reservations-series は 360px での行全体リンクと内側リンクの当たり判定・折り返しを、
   # reservation-detail-layout は詳細の欄の折り返しと viewport への収まりを測る。どちらも jsdom には測れない。
   # 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、
@@ -335,7 +335,7 @@ jobs:
         working-directory: web
       # トークン外の生の色値の検出（docs/frontend/design.md）。実ブラウザは
       # 要らないのでここで回す。全体のコントラスト判定は `pnpm e2e:design`（ローカル）、
-      # モバイルの H-2 ルールカード判定は browser-e2e job で実行する。
+      # モバイルのルールカードの縦積みと補助導線の判定（`E2E_RULE_CARD_ONLY`）は browser-e2e job で実行する。
       - run: pnpm check:colors
         working-directory: web
       # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は

@@ -1683,9 +1683,9 @@ async function checkMissingStrings(page, label) {
 }
 
 /**
- * Issue #1223 のルールカードは 360 / 390px で本文幅を保ち、補助操作がリンクや
- * ボタンだと視覚的に読めることを実ブラウザで判定する。幅・色・アイコンは jsdom
- * では測れないため、この判定を変更前に追加して baseline の失敗を確認する。
+ * ルールカードが 360 / 390px で名前を省略せず本文を全幅で縦積みし、補助操作が
+ * muted 色 + 方向アイコンのリンク・ボタンとして読めることを測る。幅・実色・
+ * アイコン位置は jsdom がレイアウトも CSS 変数の解決も持たないため測れない。
  */
 async function runRuleCardLayoutChecks() {
   log('\n=== H-2: ルールカードのモバイル配置と補助導線 ===')
@@ -1695,10 +1695,6 @@ async function runRuleCardLayoutChecks() {
     if ((await locator.count()) !== 1) {
       ng.push(`[${viewport}/actions] 「${label}」が 1 件表示されない`)
       return
-    }
-    const classes = (await locator.getAttribute('class')) ?? ''
-    if (!classes.split(/\s+/).includes('text-muted-foreground') || classes.includes('text-primary')) {
-      ng.push(`[${viewport}/actions] 「${label}」の muted foreground クラスが無い`)
     }
     const cue = await locator.evaluate((element, { iconClass: requiredIconClass, placement: iconPlacement }) => {
       const rootStyle = getComputedStyle(element)
@@ -1769,67 +1765,89 @@ async function runRuleCardLayoutChecks() {
 
   for (const viewport of tapTargetWidths) {
     for (const theme of themes) {
-    const { context, page } = await open(viewport, theme, screenOf('rules'), { pointer: 'coarse' })
-    const name = page.getByRole('link', { name: 'ルール「朝ドラ」を編集' })
-    const condition = page.getByText(conditionText, { exact: true })
-    const card = condition.locator('xpath=../../../..')
-    const conditionArea = condition.locator('xpath=../..')
-    const toggle = page.getByRole('switch', { name: 'ルール「朝ドラ」を有効にする' })
-    const menu = page.getByRole('button', { name: 'ルール「朝ドラ」のその他の操作' })
-    const recordings = card.getByRole('link', { name: 'このルールの録画', exact: true })
-    const createLabel = card.getByRole('button', { name: 'このキーワードで分類ルールを作る', exact: true })
-    const actionRow = recordings.locator('..')
-    const metadata = card.getByText('優先度 10', { exact: true }).locator('xpath=..')
-    await condition.waitFor({ timeout: 5000 }).catch(() => {})
+      const { context, page } = await open(viewport, theme, screenOf('rules'), { pointer: 'coarse' })
+      const name = page.getByRole('link', { name: 'ルール「朝ドラ」を編集' })
+      const condition = page.getByText(conditionText, { exact: true })
+      const card = condition.locator('xpath=../../../..')
+      const conditionArea = condition.locator('xpath=../..')
+      const toggle = page.getByRole('switch', { name: 'ルール「朝ドラ」を有効にする' })
+      const menu = page.getByRole('button', { name: 'ルール「朝ドラ」のその他の操作' })
+      const recordings = card.getByRole('link', { name: 'このルールの録画', exact: true })
+      const createLabel = card.getByRole('button', { name: 'このキーワードで分類ルールを作る', exact: true })
+      const actionRow = recordings.locator('..')
+      const metadata = card.getByText('優先度 10', { exact: true }).locator('xpath=..')
+      await condition.waitFor({ timeout: 5000 }).catch(() => {})
 
-    const cardBox = await card.boundingBox()
-    const conditionBox = await conditionArea.boundingBox()
-    const headerBoxes = await Promise.all([name.boundingBox(), toggle.boundingBox(), menu.boundingBox()])
-    if (cardBox === null || conditionBox === null || headerBoxes.some((box) => box === null)) {
-      ng.push(`[${viewport.name}/${theme}/rules-layout] ルールカードの見出しまたは条件欄を測れない`)
-    } else {
-      const contentWidth = cardBox.width - 32
-      log(
-        `  [${viewport.name}/${theme}/rules-layout] 条件欄=${conditionBox.width.toFixed(1)}px / ` +
-          `カード内幅=${contentWidth.toFixed(1)}px`,
-      )
-      if (conditionBox.width < contentWidth - 4) {
+      const cardBox = await card.boundingBox()
+      const conditionBox = await conditionArea.boundingBox()
+      const headerBoxes = await Promise.all([name.boundingBox(), toggle.boundingBox(), menu.boundingBox()])
+      if (cardBox === null || conditionBox === null || headerBoxes.some((box) => box === null)) {
+        ng.push(`[${viewport.name}/${theme}/rules-layout] ルールカードの見出しまたは条件欄を測れない`)
+      } else {
+        // カード内幅 = 枠 + 左右 padding を実測値で引く（px-3 + border 1px で 26px）。
+        const insets = await card.evaluate((element) => {
+          const style = getComputedStyle(element)
+          return ['borderLeftWidth', 'borderRightWidth', 'paddingLeft', 'paddingRight'].reduce(
+            (sum, key) => sum + Number.parseFloat(style[key]),
+            0,
+          )
+        })
+        const contentWidth = cardBox.width - insets
+        log(
+          `  [${viewport.name}/${theme}/rules-layout] 条件欄=${conditionBox.width.toFixed(1)}px / ` +
+            `カード内幅=${contentWidth.toFixed(1)}px`,
+        )
+        if (conditionBox.width < contentWidth - 4) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] 条件欄がカードの全幅でない ` +
+              `(${conditionBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
+          )
+        }
+        // 名前は省略せず全文が出る（390px で「朝ド…」になった退行の再発防止）。
+      // 省略するのは Button 内の span.truncate なので、wrapper でなくそれを測る。
+      const nameText = name.locator('.truncate')
+      const truncation = await nameText.evaluate((element) => ({
+        text: element.textContent,
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      }))
+      if (truncation.scrollWidth > truncation.clientWidth) {
         ng.push(
-          `[${viewport.name}/${theme}/rules-layout] 条件欄がカードの全幅でない ` +
-            `(${conditionBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
+          `[${viewport.name}/${theme}/rules-layout] ルール名「${truncation.text}」が省略されている ` +
+            `(scrollWidth=${truncation.scrollWidth} > clientWidth=${truncation.clientWidth})`,
         )
       }
       const headerCenters = headerBoxes.map((box) => box.y + box.height / 2)
-      if (Math.max(...headerCenters) - Math.min(...headerCenters) > 4) {
-        ng.push(`[${viewport.name}/${theme}/rules-layout] 名前・スイッチ・「…」が同じ見出し行に揃っていない`)
-      }
-      const headerBottom = Math.max(...headerBoxes.map((box) => box.y + box.height))
-      if (conditionBox.y < headerBottom - 1) {
-        ng.push(`[${viewport.name}/${theme}/rules-layout] 条件欄が見出しより下に配置されていない`)
-      }
-      const [actionRowBox, metadataBox] = await Promise.all([actionRow.boundingBox(), metadata.boundingBox()])
-      if (actionRowBox === null || metadataBox === null) {
-        ng.push(`[${viewport.name}/${theme}/rules-layout] 条件の詳細と補助操作の段を測れない`)
-      } else {
-        if (actionRowBox.width < contentWidth - 4) {
-          ng.push(
-            `[${viewport.name}/${theme}/rules-layout] 補助操作の段が全幅でない ` +
-              `(${actionRowBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
-          )
+        if (Math.max(...headerCenters) - Math.min(...headerCenters) > 4) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 名前・スイッチ・「…」が同じ見出し行に揃っていない`)
         }
-        if (actionRowBox.y < metadataBox.y + metadataBox.height + 3) {
-          ng.push(`[${viewport.name}/${theme}/rules-layout] 補助操作が条件の詳細より下の段にない`)
+        const headerBottom = Math.max(...headerBoxes.map((box) => box.y + box.height))
+        if (conditionBox.y < headerBottom - 1) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 条件欄が見出しより下に配置されていない`)
+        }
+        const [actionRowBox, metadataBox] = await Promise.all([actionRow.boundingBox(), metadata.boundingBox()])
+        if (actionRowBox === null || metadataBox === null) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 条件の詳細と補助操作の段を測れない`)
+        } else {
+          if (actionRowBox.width < contentWidth - 4) {
+            ng.push(
+              `[${viewport.name}/${theme}/rules-layout] 補助操作の段が全幅でない ` +
+                `(${actionRowBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
+            )
+          }
+          if (actionRowBox.y < metadataBox.y + metadataBox.height + 3) {
+            ng.push(`[${viewport.name}/${theme}/rules-layout] 補助操作が条件の詳細より下の段にない`)
+          }
         }
       }
-    }
 
-    await checkActionCue(recordings, {
-      label: 'このルールの録画', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-chevron-right', placement: 'trailing',
-    })
-    await checkActionCue(createLabel, {
-      label: 'このキーワードで分類ルールを作る', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-plus', placement: 'leading',
-    })
-    await context.close()
+      await checkActionCue(recordings, {
+        label: 'このルールの録画', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-chevron-right', placement: 'trailing',
+      })
+      await checkActionCue(createLabel, {
+        label: 'このキーワードで分類ルールを作る', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-plus', placement: 'leading',
+      })
+      await context.close()
     }
   }
 
@@ -1872,29 +1890,29 @@ async function runRuleCardLayoutChecks() {
   // 番組表の展開領域も、移動先を示す ChevronRight と muted の文字色を持つ。
   for (const viewport of tapTargetWidths) {
     for (const theme of themes) {
-    const { context, page } = await open(viewport, theme, screenOf('programs'), { pointer: 'coarse' })
-    const row = page.locator('li[data-program-id]').first()
-    await row.waitFor({ timeout: 5000 }).catch(() => {})
-    const expander = row.locator('button[aria-expanded]').first()
-    if ((await expander.count()) === 0) {
-      ng.push(`[${viewport.name}/${theme}/program-search-action] 番組行の展開ボタンが見つからない`)
+      const { context, page } = await open(viewport, theme, screenOf('programs'), { pointer: 'coarse' })
+      const row = page.locator('li[data-program-id]').first()
+      await row.waitFor({ timeout: 5000 }).catch(() => {})
+      const expander = row.locator('button[aria-expanded]').first()
+      if ((await expander.count()) === 0) {
+        ng.push(`[${viewport.name}/${theme}/program-search-action] 番組行の展開ボタンが見つからない`)
+        await context.close()
+        continue
+      }
+      await expander.click()
+      const link = row.getByRole('link', { name: 'この番組名で検索', exact: true })
+      await link.waitFor({ timeout: 5000 }).catch(() => {})
+      if ((await link.count()) !== 1) {
+        ng.push(`[${viewport.name}/${theme}/program-search-action] 「この番組名で検索」が表示されない`)
+      } else {
+        await checkActionCue(link, {
+          label: 'この番組名で検索',
+          viewport: `${viewport.name}/${theme}`,
+          iconClass: 'lucide-chevron-right',
+          placement: 'trailing',
+        })
+      }
       await context.close()
-      continue
-    }
-    await expander.click()
-    const link = row.getByRole('link', { name: 'この番組名で検索', exact: true })
-    await link.waitFor({ timeout: 5000 }).catch(() => {})
-    if ((await link.count()) !== 1) {
-      ng.push(`[${viewport.name}/${theme}/program-search-action] 「この番組名で検索」が表示されない`)
-    } else {
-      await checkActionCue(link, {
-        label: 'この番組名で検索',
-        viewport: `${viewport.name}/${theme}`,
-        iconClass: 'lucide-chevron-right',
-        placement: 'trailing',
-      })
-    }
-    await context.close()
     }
   }
 

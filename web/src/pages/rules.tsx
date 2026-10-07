@@ -48,7 +48,7 @@ import {
 } from '@/lib/program-search'
 import { summarizeRuleActivity, type RuleActivitySummary } from '@/lib/rule-activity'
 import { ruleDisambiguator } from '@/lib/rule-label'
-import { cn } from '@/lib/utils'
+import { auxActionClassName, cn } from '@/lib/utils'
 
 /**
  * RulesPage は録画ルールの一覧・有効切替・削除を扱う。
@@ -516,14 +516,14 @@ function RuleRow({
           </DropdownMenu>
         </div>
 
-        <div className="col-span-2 row-start-3 flex w-full flex-wrap gap-x-2 gap-y-1 md:col-start-2 md:col-span-1 md:row-start-2 md:row-span-2 md:w-full md:flex-col md:items-end md:pr-12">
+        <div className="col-span-2 row-start-3 flex w-full flex-wrap gap-x-2 gap-y-1 md:col-start-2 md:col-span-1 md:row-start-2 md:row-span-2 md:w-full md:flex-col md:items-end md:pr-9">
           {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
               条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
               /search ではなく /recordings?ruleId=N になる。 */}
           <Link
             to="/recordings"
             search={{ ruleId: rule.id }}
-            className="inline-flex min-h-8 pointer-coarse:min-h-11 items-center gap-1 rounded px-1 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+            className={cn(auxActionClassName, 'min-h-8 text-sm')}
           >
             <span>このルールの録画</span>
             <ChevronRight aria-hidden="true" className="size-4 shrink-0" />
@@ -536,7 +536,7 @@ function RuleRow({
           {firstKeyword(rule) !== undefined && (
             <button
               type="button"
-              className="inline-flex min-h-8 pointer-coarse:min-h-11 items-center gap-1 rounded px-1 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+              className={cn(auxActionClassName, 'min-h-8 text-sm')}
               onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}
             >
               <Plus aria-hidden="true" className="size-4 shrink-0" />
