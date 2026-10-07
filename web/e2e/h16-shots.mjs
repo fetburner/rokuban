@@ -22,7 +22,16 @@ const services = names.map(([channelType, name, serviceId], i) => ({
   channel: String(i), remoteControlKeyId: channelType === 'GR' ? i + 1 : 0, hasLogoData: false, hasPrograms: true,
 }))
 const rule = (id, name) => ({ id, name, enabled: true, priority: 10, keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: '2026-01-01T00:00:00Z', updatedAt: '2026-01-01T00:00:00Z' })
-const rules = [rule(8, '平日夜のニュースを録る'), rule(3, '朝の連続ドラマを録る')]
+const rules = [rule(8, '平日夜のニュースを録る'), rule(3, '朝の連続ドラマを録る'), rule(5, '週末アニメ'), rule(9, '映画 BS 録画')]
+// 2 拠点: takamatsu は GR のみ。先頭 2 局は tokyo と networkId/serviceId が同じ（= 同じ Service.id）。
+const takamatsu = [
+  ...services.slice(0, 2),
+  ...['ＮＨＫ高松', 'ＮＨＫ　Ｅ高松', 'ＲＮＣ西日本', 'ＫＳＢ瀬戸内海', 'ＥＢＣ愛媛', 'ＴＳＣ'].map((name, i) => ({
+    id: 31921 * 100000 + 53248 + i, networkId: 31921, serviceId: 53248 + i, name, channelType: 'GR',
+    channel: String(13 + i), remoteControlKeyId: i + 1, hasLogoData: false, hasPrograms: true,
+  })),
+]
+let twoSites = false
 const recording = {
   id: 1, site: 'default', source: 'rule', ruleId: 8, serviceName: 'ＯＨＫ', channelType: 'GR', channel: '27',
   networkId: 32678, serviceId: 5168, eventId: 1, title: 'ルール由来の録画', startAt: '2026-01-01T12:00:00Z',
@@ -30,13 +39,13 @@ const recording = {
 }
 
 async function apiHandler({ path, json, route }) {
-  if (path === '/api/sites') return json(['default'])
+  if (path === '/api/sites') return json(twoSites ? ['tokyo', 'takamatsu'] : ['default'])
   if (path === '/api/capabilities') return json({ live: true })
   if (path === '/api/rules') return json(rules)
   if (path === '/api/events') return sseKeepAlive(route)
-  if (/^\/api\/sites\/[^/]+\/services$/.test(path)) return json(services)
+  if (/^\/api\/sites\/[^/]+\/services$/.test(path)) return json(twoSites && path.includes('takamatsu') ? takamatsu : services)
   if (/thumbnail$/.test(path)) return route.fulfill({ status: 404 })
-  if (path === '/api/recordings') return json([recording])
+  if (path === '/api/recordings') return json(twoSites ? [{ ...recording, site: 'tokyo' }, { ...recording, id: 2, site: 'takamatsu', title: '高松の録画' }] : [recording])
   if (['/api/breakers', '/api/encode-profiles'].includes(path)) return json([])
   if (path === '/api/encode-queue') return json({ queued: 0, running: 0 })
   return json([])
@@ -44,8 +53,8 @@ async function apiHandler({ path, json, route }) {
 
 const browser = await launchBrowser()
 
-async function shot(file, genre, query = '', { openMenu = false } = {}) {
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 2, locale: 'ja-JP', timezoneId: 'Asia/Tokyo', colorScheme: 'light' })
+async function shot(file, genre, query = '', { openMenu = false, height = 800 } = {}) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height }, deviceScaleFactor: 2, locale: 'ja-JP', timezoneId: 'Asia/Tokyo', colorScheme: 'light' })
   const page = await ctx.newPage()
   await page.addInitScript((g) => { window.__mock = { genre: g } }, genre)
   await installApiStubs(page, apiHandler)
@@ -62,10 +71,11 @@ async function shot(file, genre, query = '', { openMenu = false } = {}) {
       if (d.clientHeight > 100 && d.scrollHeight > d.clientHeight + 1 && getComputedStyle(d).overflowY !== 'visible') { sc = d; break }
     }
     return {
-      height: r.height, scrollHeight: sc.scrollHeight, clientHeight: sc.clientHeight, scrolls: sc.scrollHeight > sc.clientHeight + 1,
+      top: r.top, bottom: r.bottom, height: r.height, scrollHeight: sc.scrollHeight, clientHeight: sc.clientHeight, scrolls: sc.scrollHeight > sc.clientHeight + 1,
       sections: [...el.querySelectorAll('section')].map((s) => `${s.querySelector('h3')?.textContent}=${Math.round(s.getBoundingClientRect().height)}`),
     }
   })
+  m.fitsViewport = m.bottom <= height && m.top >= 0
   log(file, JSON.stringify(m))
   if (openMenu) {
     await panel.getByRole('button', { name: /^ジャンル: / }).click()
@@ -76,6 +86,16 @@ async function shot(file, genre, query = '', { openMenu = false } = {}) {
   await ctx.close()
 }
 
+if (process.env.TWO_SITES === '1') {
+  twoSites = true
+  await shot('two-sites-current-1280.png', 'current')
+  await shot('two-sites-hide-shown-1280.png', 'hide-shown')
+  await shot('two-sites-menu-1280.png', 'menu')
+  await shot('two-sites-hide-shown-1280x720.png', 'hide-shown', '', { height: 720 })
+  await shot('two-sites-menu-1280x720.png', 'menu', '', { height: 720 })
+  await browser.close()
+  process.exit(0)
+}
 await shot('current-1280.png', 'current')
 await shot('hide-unnamed-1280.png', 'hide')
 await shot('genre-menu-1280.png', 'menu', '?genre=3&genre=5')
