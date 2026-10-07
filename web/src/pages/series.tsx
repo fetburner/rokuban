@@ -1,10 +1,9 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { LayoutGrid, Pencil, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
-import { Link } from '@tanstack/react-router'
+import { Link, useNavigate, useSearch } from '@tanstack/react-router'
 
 import {
-  ListRecordingShelvesKey,
   getListLabelRulesQueryKey,
   getListRecordingShelvesQueryKey,
   useDeleteLabelRule,
@@ -15,6 +14,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { LabelRuleForm } from '@/components/label-rule-form'
 import { ManualSeriesBadge } from '@/components/manual-series'
+import { RecordingFilters, ToolbarSelect } from '@/components/recording-filters'
 import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { EmptyState, ErrorState, ListSkeleton, PageContent, PageHeader } from '@/components/page'
 import { useToast } from '@/components/toaster'
@@ -27,9 +27,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/field'
 import { formatDate } from '@/lib/format'
 import { recordingThumbnailURL } from '@/lib/recording-media'
+import {
+  buildListRecordingShelvesParams,
+  hasAnyRecordingsCondition,
+  type RecordingsPageSearch,
+} from '@/lib/recording-search'
 import { loadRecordingView, saveRecordingView, type RecordingView } from '@/lib/recording-view'
 import { buildShelfRows, sortShelfRows, type ShelfRow, type ShelfSort } from '@/lib/shelves'
 import { seriesLabelRules } from '@/lib/series'
@@ -42,14 +46,27 @@ import { cn } from '@/lib/utils'
  * 導出値なので、正規化規則を変えてもリンク先が壊れないようにする
  * （docs/data/series.md §8「資源同定: 起点は録画 id」）。値が NULL の棚はハブを
  * 開けないため API には残るが、この画面では表示しない。
+ *
+ * 絞り込みは録画一覧と同じ条件・同じ UI（`RecordingFilters`）を使い、URL に持つ。
+ * 条件はサーバーがグループ化の前に録画 1 件ずつへ当てるので、棚の件数・代表・
+ * 最新は条件に当たった回だけから出る（docs/frontend/recordings.md §シリーズ一覧）。
  */
 export function SeriesPage() {
-  const shelvesQuery = useListRecordingShelves({ key: ListRecordingShelvesKey.series })
+  const search = useSearch({ from: '/series' })
+  const navigate = useNavigate()
+  const updateSearch = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => {
+    // 録画一覧の updateSearch と同じく、debounce・チップの解除で履歴を汚さない。
+    void navigate({
+      to: '/series',
+      search: (prev) => updater(prev as RecordingsPageSearch),
+      replace: true,
+    })
+  }
+  const shelvesQuery = useListRecordingShelves(buildListRecordingShelvesParams(search))
   const rulesQuery = useListLabelRules()
   const labelRules = useMemo(() => unwrap(rulesQuery.data) ?? [], [rulesQuery.data])
   const [view, setView] = useState(loadRecordingView)
   const [sort, setSort] = useState<ShelfSort>('latest')
-  const [filter, setFilter] = useState('')
   const [labelRuleEditor, setLabelRuleEditor] = useState<{ rule?: LabelRule }>()
 
   const rows = useMemo(() => buildShelfRows(unwrap(shelvesQuery.data) ?? []), [shelvesQuery.data])
@@ -57,18 +74,7 @@ export function SeriesPage() {
     () => new Set(seriesLabelRules(labelRules).map((rule) => rule.valueKey)),
     [labelRules],
   )
-  const visibleRows = useMemo(() => {
-    const needle = filter.trim().toLocaleLowerCase('ja-JP')
-    const filtered =
-      needle === ''
-        ? rows
-        : rows.filter(
-            (row) =>
-              row.value.toLocaleLowerCase('ja-JP').includes(needle) ||
-              row.title.toLocaleLowerCase('ja-JP').includes(needle),
-          )
-    return sortShelfRows(filtered, sort)
-  }, [filter, rows, sort])
+  const visibleRows = useMemo(() => sortShelfRows(rows, sort), [rows, sort])
 
   const toggleView = () => {
     const next = view === 'card' ? 'list' : 'card'
@@ -82,7 +88,7 @@ export function SeriesPage() {
         title="シリーズ"
         actions={
           <div className="flex items-center gap-2">
-            <RecordingSeriesToggle active="series" />
+            <RecordingSeriesToggle active="series" search={search} />
             <Button
               type="button"
               variant={view === 'card' ? 'secondary' : 'ghost'}
@@ -96,31 +102,17 @@ export function SeriesPage() {
           </div>
         }
       >
-        <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-2">
-          <label className="flex min-w-44 flex-1 items-center gap-2 text-xs text-muted-foreground">
-            <span className="shrink-0">絞り込み</span>
-            <Input
-              aria-label="シリーズを絞り込む"
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              placeholder="シリーズ名・代表タイトル"
-              className="h-8"
-            />
-          </label>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>並び順</span>
-            <select
-              aria-label="シリーズの並び順"
-              value={sort}
-              onChange={(event) => setSort(event.target.value as ShelfSort)}
-              className="h-8 rounded-md border border-border bg-background px-2 text-sm text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-            >
-              <option value="latest">新着順</option>
-              <option value="count">件数順</option>
-              <option value="name">名前順</option>
-            </select>
-          </label>
-        </div>
+        <RecordingFilters search={search} onChange={updateSearch}>
+          <ToolbarSelect
+            label="シリーズの並び順"
+            value={sort}
+            onChange={(value) => setSort(value as ShelfSort)}
+          >
+            <option value="latest">新着順</option>
+            <option value="count">件数順</option>
+            <option value="name">名前順</option>
+          </ToolbarSelect>
+        </RecordingFilters>
       </PageHeader>
 
       <PageContent>
@@ -132,7 +124,7 @@ export function SeriesPage() {
           <ListSkeleton />
         ) : visibleRows.length === 0 ? (
           <EmptyState>
-            {filter.trim() === '' ? 'シリーズがありません' : '条件に一致するシリーズがありません'}
+            {hasAnyRecordingsCondition(search) ? '条件に一致するシリーズがありません' : 'シリーズがありません'}
           </EmptyState>
         ) : (
           <ul

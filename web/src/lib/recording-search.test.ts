@@ -4,6 +4,7 @@ import type { Rule } from '@/api/generated'
 import { ListRecordingsQueryParams } from '@/api/zod'
 import { formatDateTime } from '@/lib/format'
 import {
+  buildListRecordingShelvesParams,
   buildListRecordingsParams,
   clearRecordingsFilters,
   describeRecordingsFilters,
@@ -12,6 +13,7 @@ import {
   isoToLocalDateTimeInput,
   localDateTimeInputToIso,
   parseRecordingsSearch,
+  parseSeriesSearch,
   shouldShowRecordingSite,
   type RecordingsPageSearch,
 } from '@/lib/recording-search'
@@ -481,5 +483,43 @@ describe('shouldShowRecordingSite', () => {
 
   it('レジストリにもレジストリ外の録画にも 1 site しかなければ出さない', () => {
     expect(shouldShowRecordingSite(['tokyo'], ['tokyo'])).toBe(false)
+  })
+})
+
+describe('シリーズ一覧の条件', () => {
+  it('parseSeriesSearch はごみ箱・並び順・エンコード状況を落とし、他は録画一覧と同じに受ける', () => {
+    expect(
+      parseSeriesSearch({ tab: 'trash', order: 'asc', encodeState: 'queued', genre: [7], q: '作品X' }),
+    ).toEqual({ genre: [7], q: '作品X' })
+  })
+
+  it('buildListRecordingShelvesParams は絞り込みを全部渡し、棚が受けない次元と trash を渡さない', () => {
+    expect(
+      buildListRecordingShelvesParams({
+        tab: 'trash',
+        order: 'asc',
+        encodeState: 'queued',
+        q: '作品X',
+        genre: [7],
+        site: ['tokyo'],
+        service: [400101],
+        status: 'finished',
+        source: 'rule',
+        ruleId: 5,
+        from: '2026-04-01T00:00:00.000Z',
+        to: '2026-07-01T00:00:00.000Z',
+      }),
+    ).toEqual({
+      key: 'series',
+      q: '作品X',
+      genre: [7],
+      site: ['tokyo'],
+      service: [400101],
+      status: 'finished',
+      source: 'rule',
+      ruleId: 5,
+      from: '2026-04-01T00:00:00.000Z',
+      to: '2026-07-01T00:00:00.000Z',
+    })
   })
 })

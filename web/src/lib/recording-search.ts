@@ -15,11 +15,13 @@
  */
 
 import {
+  ListRecordingShelvesKey,
   ListRecordingsEncodeState,
   ListRecordingsOrder,
   ListRecordingsSource,
   ListRecordingsStatus,
   type ListRecordingsEncodeState as ListRecordingsEncodeStateValue,
+  type ListRecordingShelvesParams,
   type ListRecordingsParams,
   type Rule,
 } from '@/api/generated'
@@ -207,6 +209,25 @@ export function parseRecordingsSearch(search: Record<string, unknown>): Recordin
 }
 
 /**
+ * toSeriesSearch は録画一覧の条件から、シリーズ一覧（`/series`）で意味を持たない
+ * 次元を落とす。ごみ箱（`tab`）・並び順（`order`）・エンコード状況（`encodeState`）は
+ * `GET /api/recording-shelves` が受けない（棚はごみ箱を含まず、並びは画面内で
+ * 切り替え、エンコード状況は録画 × ジョブの行で絞るので棚の件数が膨らむ）。
+ *
+ * `/series` の `validateSearch`（`parseSeriesSearch`）と、「録画 / シリーズ」の
+ * 切り替え（`components/recording-series-toggle.tsx`）の両方がこれを通る。
+ * 落とした次元は `parseRecordingsSearch` と同じ理由で `undefined` を明示的に代入する。
+ */
+export function toSeriesSearch(search: RecordingsPageSearch): RecordingsPageSearch {
+  return { ...search, tab: undefined, order: undefined, encodeState: undefined }
+}
+
+/** parseSeriesSearch は `/series` の URL の生の値を検証済みの検索条件にする。 */
+export function parseSeriesSearch(search: Record<string, unknown>): RecordingsPageSearch {
+  return toSeriesSearch(parseRecordingsSearch(search))
+}
+
+/**
  * hasAnyRecordingsCondition は絞り込みを 1 つ以上指定しているかを返す。
  *
  * `order`（並び順）は絞り込みではないので数えない --- 0 件のときの文言
@@ -278,6 +299,16 @@ export function buildListRecordingsParams(
   if (search.order !== undefined) params.order = search.order
 
   return params
+}
+
+/**
+ * buildListRecordingShelvesParams は検索条件を `GET /api/recording-shelves` のクエリに
+ * 落とす。条件の意味は録画一覧と同じなので `buildListRecordingsParams` から作り、
+ * 棚が受けない次元（`toSeriesSearch` が落とすもの）と `trash` を除く。
+ */
+export function buildListRecordingShelvesParams(search: RecordingsPageSearch): ListRecordingShelvesParams {
+  const { trash: _trash, ...params } = buildListRecordingsParams(toSeriesSearch(search), false)
+  return { key: ListRecordingShelvesKey.series, ...params }
 }
 
 /**

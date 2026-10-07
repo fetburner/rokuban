@@ -2,7 +2,6 @@ package db
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -33,21 +32,6 @@ func createSeriesRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 		t.Fatalf("creating recording %q: %v", title, err)
 	}
 	return id
-}
-
-// activeMediaAsset は録画に active な media_asset を 1 件足す（棚の母集団の条件）。
-func activeMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind, profile string) {
-	t.Helper()
-	var profileArg any
-	if profile != "" {
-		profileArg = profile
-	}
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-VALUES ($1, $2, $3, $4, 1, 'active')`,
-		recordingID, kind, profileArg, fmt.Sprintf("test/%s-%d", kind, recordingID)); err != nil {
-		t.Fatalf("inserting %s media asset for recording %d: %v", kind, recordingID, err)
-	}
 }
 
 // seriesKey は実際の SQL 関数を呼ぶ。テストが期待値を Go 側に写すと、関数の
@@ -465,81 +449,6 @@ func TestApplyLabelRuleReevaluation_AppliesOnlyDifferences(t *testing.T) {
 	}
 	if got := recordingSeriesValue(t, pool, matched); got != "NHK高校講座" {
 		t.Errorf("series = %q, want the automatic key after every rule was deleted", got)
-	}
-}
-
-// 棚は生きている録画を数える。ごみ箱・superseded は外れるが、録画中・取り込み待ち・
-// 失敗の録画も棚の母集団に残し、再生可能件数を別に返す。
-func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
-	pool := setupTestDB(t)
-	ctx := context.Background()
-	base := time.Now().Truncate(time.Second)
-
-	// 同じ棚の 3 件。代表は新しい方。
-	older := createSeriesRecording(t, pool, "アニメ　作品X　第1話", 1, base.Add(-2*time.Hour))
-	newest := createSeriesRecording(t, pool, "アニメ　作品X　第2話", 2, base)
-	also := createSeriesRecording(t, pool, "アニメ　作品X　第3話", 3, base.Add(-time.Hour))
-	activeMediaAsset(t, pool, older, "original", "")
-	activeMediaAsset(t, pool, newest, "encoded", "h264")
-	activeMediaAsset(t, pool, also, "original", "")
-
-	// 母集団から外れるもの: ごみ箱 / superseded。再生できる資産が無い行は残る。
-	trashed := createSeriesRecording(t, pool, "アニメ　作品X　第4話", 4, base.Add(time.Hour))
-	activeMediaAsset(t, pool, trashed, "original", "")
-	if _, err := pool.Exec(ctx, "UPDATE recordings SET deleted_at = now() WHERE id = $1", trashed); err != nil {
-		t.Fatalf("trashing: %v", err)
-	}
-	superseded := createSeriesRecording(t, pool, "アニメ　作品X　第5話", 5, base.Add(2*time.Hour))
-	activeMediaAsset(t, pool, superseded, "original", "")
-	if _, err := pool.Exec(ctx, "UPDATE recordings SET superseded_at = now() WHERE id = $1", superseded); err != nil {
-		t.Fatalf("superseding: %v", err)
-	}
-	noAsset := createSeriesRecording(t, pool, "アニメ　作品X　第6話", 6, base.Add(3*time.Hour))
-
-	// 値の無い録画は NULL の棚として返す（UI が「その他」にまとめる材料）。
-	nullKey := createSeriesRecording(t, pool, "【特集】", 7, base.Add(4*time.Hour))
-	activeMediaAsset(t, pool, nullKey, "original", "")
-
-	shelves, err := sqlcgen.New(pool).ListRecordingShelves(ctx)
-	if err != nil {
-		t.Fatalf("listing shelves: %v", err)
-	}
-
-	byValue := map[string]sqlcgen.ListRecordingShelvesRow{}
-	for _, s := range shelves {
-		key := "<NULL>"
-		if s.Value != nil {
-			key = *s.Value
-		}
-		byValue[key] = s
-	}
-	if len(shelves) != 2 {
-		t.Fatalf("shelves = %d (%v), want 2 (作品X and the NULL shelf)", len(shelves), byValue)
-	}
-
-	got, ok := byValue["作品X"]
-	if !ok {
-		t.Fatalf("no 作品X shelf in %v", byValue)
-	}
-	if got.RecordingCount != 4 {
-		t.Errorf("作品X count = %d, want 4 (deleted / superseded rows are excluded, assetless rows remain)", got.RecordingCount)
-	}
-	if got.PlayableCount != 3 {
-		t.Errorf("作品X playable count = %d, want 3", got.PlayableCount)
-	}
-	if got.RepresentativeID != noAsset {
-		t.Errorf("作品X representative = %d, want %d (newest program_start_at)", got.RepresentativeID, noAsset)
-	}
-	if got.Title != "アニメ　作品X　第6話" {
-		t.Errorf("作品X title = %q, want the representative's raw title", got.Title)
-	}
-
-	nullShelf, ok := byValue["<NULL>"]
-	if !ok {
-		t.Fatalf("no NULL shelf in %v (the UI needs it to size その他)", byValue)
-	}
-	if nullShelf.RecordingCount != 1 || nullShelf.RepresentativeID != nullKey {
-		t.Errorf("NULL shelf = %+v, want count 1 and the 特集 recording", nullShelf)
 	}
 }
 

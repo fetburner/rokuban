@@ -13,7 +13,7 @@ import {
   useListSites,
 } from '@/api/generated'
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
-import { RecordingFilters } from '@/components/recording-filters'
+import { RecordingFilters, RecordingOrderSelect } from '@/components/recording-filters'
 import { RecordingRow, type RecordingRowView } from '@/components/recording-row'
 import { RecordingSeriesToggle } from '@/components/recording-series-toggle'
 import { StorageBalance } from '@/components/storage-balance'
@@ -324,7 +324,7 @@ export function RecordingsPage() {
           // 絞り込みで 0 件になったタブではリスト表示に戻す手段が無くなる
           // （カード表示のまま次にヒットする画面までトグルへ到達できない）。
           <div className="flex items-center gap-2">
-            <RecordingSeriesToggle active="recordings" />
+            <RecordingSeriesToggle active="recordings" search={search} />
             {!selecting && (recordings.length > 0 || view === 'card') ? (
             <div className="flex items-center gap-1">
               {/* 状態を持つトグル。読み上げは aria-pressed が担う（ラベルを
@@ -367,7 +367,9 @@ export function RecordingsPage() {
             label="ごみ箱"
           />
         </div>
-        <RecordingFilters search={search} onChange={updateSearch} />
+        <RecordingFilters search={search} onChange={updateSearch}>
+          <RecordingOrderSelect search={search} onChange={updateSearch} />
+        </RecordingFilters>
         {trash ? (
           <StorageBalance />
         ) : (

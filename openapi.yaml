@@ -1090,6 +1090,29 @@ paths:
 
         **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
         と id=`shelves` で曖昧になる。
+
+        ## 絞り込み
+
+        `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+        `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+        と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+        同じく 400 にする。
+
+        **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+        `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+        （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+        該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+        どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+        放送時期（`program_start_at`）で、再放送は放送した期に入る。
+
+        **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+        イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+        （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+        絞っても、別 site の録画で見た回は既読のまま数える。
+
+        `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+        棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+        エンコードジョブを結合した行で絞るので、棚の件数が膨らむ。
       parameters:
         - name: key
           in: query
@@ -1099,6 +1122,100 @@ paths:
             type: string
             enum: [series]
             default: series
+        - name: q
+          in: query
+          required: false
+          description: キーワード（部分一致）。`GET /api/recordings` の `q` と同じ
+          schema:
+            type: string
+        - name: qTarget
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [title, titleDescription]
+            default: titleDescription
+        - name: genre
+          in: query
+          style: form
+          explode: true
+          required: false
+          description: genre_lv1（ジャンル大分類）との重なり。複数指定可
+          schema:
+            type: array
+            items:
+              type: integer
+              minimum: 0
+              maximum: 15
+        - name: channelType
+          in: query
+          style: form
+          explode: true
+          required: false
+          schema:
+            type: array
+            items:
+              type: string
+              enum: [GR, BS, CS, SKY]
+        - name: site
+          in: query
+          style: form
+          explode: true
+          required: false
+          description: mirakc サイト名。複数指定は OR。`GET /api/recordings` の `site` と同じ
+          schema:
+            type: array
+            items:
+              type: string
+              pattern: '^[a-z0-9](?:[_-]?[a-z0-9])*$'
+        - name: service
+          in: query
+          style: form
+          explode: true
+          required: false
+          description: |
+            `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+            site は含めない（`GET /api/recordings` の `service` と同じ）
+          schema:
+            type: array
+            items:
+              type: integer
+              format: int64
+              minimum: 1
+              maximum: 6553565535
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [recording, finished, canceled, failed]
+        - name: source
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [rule, manual, unattributed]
+        - name: ruleId
+          in: query
+          required: false
+          description: 特定ルール由来の録画に絞る
+          schema:
+            type: integer
+            format: int64
+        - name: from
+          in: query
+          required: false
+          description: program_start_at がこの時刻以上
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          required: false
+          description: program_start_at がこの時刻未満
+          schema:
+            type: string
+            format: date-time
       responses:
         "200":
           description: OK（件数の降順、同じなら値の昇順）
@@ -1109,7 +1226,7 @@ paths:
                 items:
                   $ref: "#/components/schemas/RecordingShelf"
         "400":
-          description: Invalid key
+          description: key または絞り込みの値が不正
           content:
             application/json:
               schema:

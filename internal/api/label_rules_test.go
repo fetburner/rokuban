@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,72 @@ func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 	}
 	if !shelves[0].LatestStartAt.Equal(base.Add(5 * time.Minute)) {
 		t.Errorf("latest start = %s, want %s", shelves[0].LatestStartAt, base.Add(5*time.Minute))
+	}
+}
+
+// 棚は生きている録画を数える。ごみ箱・superseded は外れるが、録画中・取り込み待ち・
+// 失敗の録画も棚の母集団に残し、再生可能件数を別に返す。encoded だけの録画も再生できる。
+func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	// 同じ棚の 3 件。1 件は encoded の派生物だけを持つ。
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base.Add(-2*time.Hour))
+	encodedOnly := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第2話", start: base, status: "finished", eventID: 2,
+	})
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+VALUES ($1, 'encoded', 'h264', 'test/encoded', 1, 'active')`, encodedOnly); err != nil {
+		t.Fatalf("seeding encoded asset: %v", err)
+	}
+	seedPlayableRecording(t, pool, "アニメ　作品X　第3話", 3, base.Add(-time.Hour))
+
+	// 母集団から外れるもの: ごみ箱 / superseded。再生できる資産が無い行は残る。
+	trashed := seedPlayableRecording(t, pool, "アニメ　作品X　第4話", 4, base.Add(time.Hour))
+	if _, err := pool.Exec(ctx, "UPDATE recordings SET deleted_at = now() WHERE id = $1", trashed); err != nil {
+		t.Fatalf("trashing: %v", err)
+	}
+	superseded := seedPlayableRecording(t, pool, "アニメ　作品X　第5話", 5, base.Add(2*time.Hour))
+	if _, err := pool.Exec(ctx, "UPDATE recordings SET superseded_at = now() WHERE id = $1", superseded); err != nil {
+		t.Fatalf("superseding: %v", err)
+	}
+	noAsset := seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第6話", start: base.Add(3 * time.Hour), status: "finished", eventID: 6,
+	})
+
+	// 値の無い録画は NULL の棚として返す（UI は表示しないが、API では欠落と区別する）。
+	nullKey := seedPlayableRecording(t, pool, "【特集】", 7, base.Add(4*time.Hour))
+
+	shelves := getShelves(t, srv.URL, url.Values{})
+	byValue := map[string]RecordingShelf{}
+	for _, s := range shelves {
+		byValue[ptrStr(s.Value)] = s
+	}
+	if len(shelves) != 2 {
+		t.Fatalf("shelves = %d (%v), want 2 (作品X and the NULL shelf)", len(shelves), byValue)
+	}
+	got, ok := byValue["作品X"]
+	if !ok {
+		t.Fatalf("no 作品X shelf in %v", byValue)
+	}
+	if got.Count != 4 {
+		t.Errorf("作品X count = %d, want 4 (deleted / superseded rows are excluded, assetless rows remain)", got.Count)
+	}
+	if got.PlayableCount != 3 {
+		t.Errorf("作品X playable count = %d, want 3 (the encoded-only recording is playable)", got.PlayableCount)
+	}
+	if got.RepresentativeId != noAsset || got.Title != "アニメ　作品X　第6話" {
+		t.Errorf("作品X representative = %d %q, want %d (newest program_start_at) and its raw title", got.RepresentativeId, got.Title, noAsset)
+	}
+	nullShelf, ok := byValue["<nil>"]
+	if !ok {
+		t.Fatalf("no NULL shelf in %v", byValue)
+	}
+	if nullShelf.Count != 1 || nullShelf.RepresentativeId != nullKey {
+		t.Errorf("NULL shelf = %+v, want count 1 and the 特集 recording", nullShelf)
 	}
 }
 
@@ -710,5 +777,156 @@ func TestListRecordingShelves_LatestStartAtIsUTC(t *testing.T) {
 	}
 	if !strings.Contains(string(body), `"latestStartAt":"2026-01-02T03:04:05Z"`) {
 		t.Errorf("body = %s, want latestStartAt in UTC (…Z)", body)
+	}
+}
+
+// shelfByValue は棚の一覧から値で 1 件引く。無ければ ok=false。
+func shelfByValue(shelves []RecordingShelf, value string) (RecordingShelf, bool) {
+	for _, s := range shelves {
+		if s.Value != nil && *s.Value == value {
+			return s, true
+		}
+	}
+	return RecordingShelf{}, false
+}
+
+// ジャンルで絞ると、そのジャンルでない回は棚の件数から除かれ、該当する回が 0 件の棚は返らない。
+func TestListRecordingShelves_FilterByGenreCountsOnlyMatchingEpisodes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Now().Truncate(time.Second)
+	anime := `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`
+	drama := `[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`
+
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, genres: anime})
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, genres: anime})
+	// 同じシリーズでもジャンルの違う回（特番など）は絞り込みで外れる。
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, genres: drama})
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "ドラマ　作品Y　第1話", start: base, status: "finished", eventID: 4, genres: drama})
+
+	shelves := getShelves(t, srv.URL, url.Values{"genre": {"7"}})
+	if len(shelves) != 1 {
+		t.Fatalf("shelves = %+v, want only 作品X (作品Y has no anime episode)", shelves)
+	}
+	x, ok := shelfByValue(shelves, "作品X")
+	if !ok || x.Count != 2 || x.PlayableCount != 2 || x.UnwatchedCount != 2 {
+		t.Errorf("作品X = %+v, want count / playable / unwatched 2 (the drama episode is excluded)", x)
+	}
+}
+
+// 2 つのクールにまたがるシリーズは、どちらの期間で絞っても返り、件数・代表・最新はその期間内の回から出す。
+func TestListRecordingShelves_FilterByPeriodSplitsSeriesAcrossCours(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	jst := time.FixedZone("JST", 9*60*60)
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, time.Date(2026, 1, 8, 1, 0, 0, 0, jst))
+	winter2 := seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, time.Date(2026, 3, 26, 1, 0, 0, 0, jst))
+	spring := seedPlayableRecording(t, pool, "アニメ　作品X　第3話", 3, time.Date(2026, 4, 2, 1, 0, 0, 0, jst))
+
+	cases := []struct {
+		name           string
+		from, to       time.Time
+		count          int
+		representative int64
+		title          string
+		latest         time.Time
+	}{
+		{"winter", time.Date(2026, 1, 1, 0, 0, 0, 0, jst), time.Date(2026, 4, 1, 0, 0, 0, 0, jst), 2, winter2, "アニメ　作品X　第2話", time.Date(2026, 3, 26, 1, 0, 0, 0, jst)},
+		{"spring", time.Date(2026, 4, 1, 0, 0, 0, 0, jst), time.Date(2026, 7, 1, 0, 0, 0, 0, jst), 1, spring, "アニメ　作品X　第3話", time.Date(2026, 4, 2, 1, 0, 0, 0, jst)},
+	}
+	for _, tc := range cases {
+		shelves := getShelves(t, srv.URL, url.Values{
+			"from": {tc.from.Format(time.RFC3339)}, "to": {tc.to.Format(time.RFC3339)},
+		})
+		x, ok := shelfByValue(shelves, "作品X")
+		if len(shelves) != 1 || !ok {
+			t.Fatalf("%s: shelves = %+v, want one 作品X shelf", tc.name, shelves)
+		}
+		if x.Count != tc.count || x.RepresentativeId != tc.representative || x.Title != tc.title || !x.LatestStartAt.Equal(tc.latest) {
+			t.Errorf("%s: 作品X = %+v, want count %d, representative %d %q, latest %s",
+				tc.name, x, tc.count, tc.representative, tc.title, tc.latest)
+		}
+	}
+}
+
+// site で絞っても、別 site の録画に付いた視聴済み印でその回を既読として数える。
+// 絞り込みは束ねる側の母集団にだけ当て、視聴済み印の参照には当てない。
+func TestListRecordingShelves_FilterKeepsWatchedMarksFromOutsideTheFilter(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Now().Truncate(time.Second)
+
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "tokyo"})
+	watchedElsewhere := seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "osaka"})
+	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo"})
+	if _, err := pool.Exec(context.Background(), `INSERT INTO recording_watched (recording_id) VALUES ($1)`, watchedElsewhere); err != nil {
+		t.Fatalf("marking watched: %v", err)
+	}
+
+	shelves := getShelves(t, srv.URL, url.Values{"site": {"tokyo"}})
+	x, ok := shelfByValue(shelves, "作品X")
+	if !ok || x.Count != 2 || x.UnwatchedCount != 1 {
+		t.Errorf("作品X at tokyo = %+v, want count 2 and unwatched 1 (episode 1 was watched at osaka)", x)
+	}
+}
+
+// 棚の絞り込みは録画一覧と同じ意味を持つ。条件ごとに、棚の件数の合計が録画一覧の件数と一致する。
+// パラメータを詰め替える経路（recordingsFilterFromShelvesParams）で 1 つ落とすとここで落ちる。
+func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	ruleID := seedRule(t, pool, "作品Xを録る")
+
+	seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第1話", description: "宇宙", start: base, status: "finished", eventID: 1,
+		genres: `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`, source: "rule", ruleID: &ruleID, site: "tokyo",
+	})
+	seedPlayableOpts(t, pool, seedRecordingOpts{
+		title: "アニメ　作品X　第2話", start: base.Add(24 * time.Hour), status: "finished", eventID: 2,
+		genres: `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`, channelType: "BS", networkID: 4, serviceID: 101, site: "osaka",
+	})
+	seedRecordingFull(t, pool, seedRecordingOpts{
+		title: "ドラマ　作品Y　第1話", description: "作品Xの裏番組", start: base.Add(48 * time.Hour), status: "recording", eventID: 3,
+		genres: `[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`, source: "unattributed",
+	})
+
+	for _, q := range []url.Values{
+		{"q": {"裏番組"}},
+		// 既定の titleDescription なら作品Y も当たる（3 件）ので、qTarget を落とすと食い違う。
+		{"q": {"作品X"}, "qTarget": {"title"}},
+		{"genre": {"7"}},
+		{"channelType": {"BS"}},
+		{"site": {"tokyo"}},
+		{"service": {"400101"}},
+		{"status": {"recording"}},
+		{"source": {"unattributed"}},
+		{"ruleId": {strconv.FormatInt(ruleID, 10)}},
+		{"from": {base.Add(time.Hour).Format(time.RFC3339)}},
+		{"to": {base.Add(time.Hour).Format(time.RFC3339)}},
+	} {
+		var recordings []Recording
+		if resp := getJSON(t, srv.URL+"/api/recordings?"+q.Encode(), &recordings); resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/recordings?%s status = %d", q.Encode(), resp.StatusCode)
+		}
+		total := 0
+		for _, s := range getShelves(t, srv.URL, q) {
+			total += s.Count
+		}
+		if total == 0 || total == 3 || total != len(recordings) {
+			t.Errorf("%s: shelves count %d, recordings %d (want equal, and the filter must narrow 3 recordings)", q.Encode(), total, len(recordings))
+		}
+	}
+}
+
+// 不正な絞り込みは録画一覧と同じく 400 にする。
+func TestListRecordingShelves_RejectsInvalidFilters(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	for _, q := range []string{"genre=16", "status=bogus", "qTarget=bogus", "channelType=XX", "source=bogus"} {
+		resp := getJSON(t, srv.URL+"/api/recording-shelves?"+q, nil)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET /api/recording-shelves?%s status = %d, want 400", q, resp.StatusCode)
+		}
 	}
 }
