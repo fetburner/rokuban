@@ -591,6 +591,31 @@ describe('RecordingFilters 期間', () => {
     expect(within(panel).getByRole('button', { name: '次の年' })).toBeEnabled()
   })
 
+  it('年の途中では、今年のまだ始まっていない期だけを押せない', async () => {
+    vi.setSystemTime(new Date('2026-05-10T03:00:00Z')) // 2026 春
+    const user = userEvent.setup()
+    renderFilters()
+
+    await user.click(screen.getByRole('button', { name: '期間' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    const group = within(panel).getByRole('group', { name: '2026 年のクール' })
+    expect(within(group).getByRole('button', { name: '冬' })).toBeEnabled()
+    expect(within(group).getByRole('button', { name: '春' })).toBeEnabled()
+    expect(within(group).getByRole('button', { name: '夏' })).toBeDisabled()
+    expect(within(group).getByRole('button', { name: '秋' })).toBeDisabled()
+  })
+
+  it('月曜が 1 日の日は「今週」と「今月」が同じ範囲でも、チェックは表示名の 1 件だけに付く', async () => {
+    vi.setSystemTime(new Date('2026-06-01T03:00:00Z')) // 2026-06-01（月）
+    const user = userEvent.setup()
+    renderFilters({ from: '2026-05-31T15:00:00.000Z' })
+
+    await user.click(screen.getByRole('button', { name: '今週' }))
+    const panel = await screen.findByRole('dialog', { name: '期間' })
+    expect(within(panel).getByRole('button', { name: '今週' })).toHaveAttribute('aria-pressed', 'true')
+    expect(within(panel).getByRole('button', { name: '今月' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
   it('上段の「今週」は月曜 0:00 JST から to なしで、他の条件を保つ', async () => {
     const user = userEvent.setup()
     const { getCurrent } = renderFilters({ status: 'finished', to: '2026-01-01T00:00:00.000Z' })

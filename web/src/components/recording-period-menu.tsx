@@ -83,6 +83,10 @@ function PeriodOptions({
   const nowCour = currentCour(now)
   // 開くたびに中身がマウントし直されるので、初期値は開いた時点の選択から取れば足りる。
   const [year, setYear] = useState(selectedCour?.year ?? nowCour.year)
+  // 月曜が 1 日の日は今週と今月が同じ範囲になる。チェックはボタンの表示名（periodLabel が先に
+  // 見つける方）と同じ 1 件だけに付ける。
+  const presets = periodPresets(now)
+  const selectedPreset = presets.findIndex((preset) => isSelectedPreset(preset, range))
   const pick = (next: PeriodRange) => {
     onChange((s) => ({ ...s, from: next.from, to: next.to }))
     onPicked()
@@ -91,8 +95,8 @@ function PeriodOptions({
   return (
     <>
       <ul className="flex flex-col">
-        {periodPresets(now).map((preset) => {
-          const selected = isSelectedPreset(preset, range)
+        {presets.map((preset, index) => {
+          const selected = index === selectedPreset
           return (
             <li key={preset.label}>
               <button
