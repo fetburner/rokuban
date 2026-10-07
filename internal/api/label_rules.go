@@ -180,6 +180,8 @@ func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShel
 // recordingsFilterFromShelvesParams は棚の絞り込みを、録画一覧と同じ検証
 // （recordingsFilterFromParams）に通す。棚が受けるのは録画一覧のパラメータの
 // 部分集合なので、生成型を詰め替えるだけにして検証を 2 箇所に書かない。
+// 棚に絞り込みを足したら、ここにも写す（写し忘れは黙って無視される。今ある
+// 条件は TestListRecordingShelves_FiltersMatchListRecordings が検査する）。
 func recordingsFilterFromShelvesParams(p ListRecordingShelvesParams) (recordingsFilter, string) {
 	lp := ListRecordingsParams{
 		Q:       p.Q,

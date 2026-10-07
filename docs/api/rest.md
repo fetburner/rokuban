@@ -176,7 +176,7 @@ sqlc の `ListTrashRecordings` は worker の DB テストが直接使い、HTTP
 
 棚（`GET /api/recording-shelves`）の絞り込みも、条件から WHERE を作る部分（`recordingsFilterWhere`）を一覧と共有する。
 ページング・並び順・番組ハブは一覧だけの軸なので、共有の外に置く。
-棚は全録画を集計するので、計測では静的な形との速さの差が無かった（数値は `buildRecordingShelvesQuery` の doc コメント）。
+計測では静的な形との速さの差が無かった（数値は `buildRecordingShelvesQuery` の doc コメント）。
 それでも動的に組むのは、静的な形では一覧と組み立てを共有できず、条件を直すと片方だけ直るからである。
 
 **これだけでは片方の劣化しか塞げない**。pgx の既定 `QueryExecModeCacheStatement`
