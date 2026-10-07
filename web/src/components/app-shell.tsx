@@ -1,3 +1,4 @@
+import { Tooltip } from '@base-ui/react/tooltip'
 import { Link, useRouterState } from '@tanstack/react-router'
 import {
   CalendarClock,
@@ -296,6 +297,24 @@ function BottomTabs() {
  * 見た目でも `getByRole('link', { name: label })` が引ける（スクリーン
  * リーダーの読み上げ名も失わない）。マウス向けには `title` を補う。
  */
+// PoC: H-15 mock switch
+const MOCK_TIP = typeof window !== 'undefined' && (window as unknown as { __mock?: { tooltip?: boolean } }).__mock?.tooltip === true
+function RailTip({ label, enabled, children }: { label: string; enabled: boolean; children: React.ReactElement }) {
+  if (!MOCK_TIP || !enabled) return children
+  return (
+    <Tooltip.Root>
+      <Tooltip.Trigger render={children} />
+      <Tooltip.Portal>
+        <Tooltip.Positioner side="right" sideOffset={8} className="isolate z-50">
+          <Tooltip.Popup className="rounded-md bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md ring-1 ring-foreground/10">
+            {label}
+          </Tooltip.Popup>
+        </Tooltip.Positioner>
+      </Tooltip.Portal>
+    </Tooltip.Root>
+  )
+}
+
 function Sidebar() {
   const pathname = useActivePath()
   const { items } = useNavItems()
@@ -308,7 +327,7 @@ function Sidebar() {
   const toggleLabel = collapsed ? 'ナビゲーションを開く' : 'ナビゲーションを畳む'
 
   return (
-    <nav
+    <Tooltip.Provider delay={300} closeDelay={0}><nav
       aria-label="主ナビゲーション"
       className={cn(
         'sticky top-0 hidden h-dvh shrink-0 flex-col border-r border-border md:flex',
@@ -340,10 +359,10 @@ function Sidebar() {
           const active = isActive(pathname, to)
           return (
             <li key={to}>
-              <Link
+              <RailTip label={label} enabled={collapsed}><Link
                 to={to}
                 aria-current={active ? 'page' : undefined}
-                title={collapsed ? label : undefined}
+                title={collapsed && !MOCK_TIP ? label : undefined}
                 className={cn(
                   'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
                   collapsed && 'justify-center px-2',
@@ -354,12 +373,12 @@ function Sidebar() {
               >
                 <Icon className="size-4 shrink-0" />
                 <span className={cn(collapsed && 'sr-only')}>{label}</span>
-              </Link>
+              </Link></RailTip>
             </li>
           )
         })}
       </ul>
-    </nav>
+    </nav></Tooltip.Provider>
   )
 }
 
