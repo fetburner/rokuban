@@ -53,7 +53,12 @@ function walk(dir: string): string[] {
   return out
 }
 
-/** collectArbitraryTextSizes は JSX の className と testid の組み合わせを集める。 */
+/**
+ * collectArbitraryTextSizes はファイル中のすべての文字列リテラルとテンプレートの
+ * 文字部分から `text-[...]` を集める。cva・cn()・テンプレート・素の className を
+ * 区別しない。testId は、囲んでいる JSX 要素の className 配下にあるときだけ
+ * その要素の data-testid になり、それ以外は null（= 例外になれない）。
+ */
 function collectArbitraryTextSizes(file: string): Array<{
   file: string
   testId: string | null
@@ -65,26 +70,26 @@ function collectArbitraryTextSizes(file: string): Array<{
   const markers: Array<{ file: string; testId: string | null; value: string; fontPx: number | null }> = []
   const relativeFile = path.relative(path.join(webDir, 'src'), file)
 
+  /** enclosingTestId は node が className 属性の中にあるとき、その要素の data-testid を返す。 */
+  function enclosingTestId(node: ts.Node): string | null {
+    for (let cur: ts.Node | undefined = node; cur; cur = cur.parent) {
+      if (!ts.isJsxAttribute(cur)) continue
+      if (!ts.isIdentifier(cur.name) || cur.name.text !== 'className') return null
+      const element = cur.parent.parent
+      const testIdAttribute = element.attributes.properties
+        .filter(ts.isJsxAttribute)
+        .find((item) => ts.isIdentifier(item.name) && item.name.text === 'data-testid')
+      return testIdAttribute?.initializer && ts.isStringLiteralLike(testIdAttribute.initializer)
+        ? testIdAttribute.initializer.text
+        : null
+    }
+    return null
+  }
+
   function visit(node: ts.Node): void {
-    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
-      const attributes = node.attributes.properties.filter(ts.isJsxAttribute)
-      const attribute = (name: string) =>
-        attributes.find((item) => ts.isIdentifier(item.name) && item.name.text === name)
-      const testIdAttribute = attribute('data-testid')
-      const testId =
-        testIdAttribute?.initializer && ts.isStringLiteralLike(testIdAttribute.initializer)
-          ? testIdAttribute.initializer.text
-          : null
-      const classNameAttribute = attribute('className')
-      const classText: string[] = []
-
-      const collectStrings = (child: ts.Node): void => {
-        if (ts.isStringLiteralLike(child)) classText.push(child.text)
-        else ts.forEachChild(child, collectStrings)
-      }
-      if (classNameAttribute?.initializer) collectStrings(classNameAttribute.initializer)
-
-      for (const match of classText.join(' ').matchAll(/text-\[([^\]]+)\]/g)) {
+    if (ts.isStringLiteralLike(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) {
+      const testId = enclosingTestId(node)
+      for (const match of node.text.matchAll(/text-\[([^\]]+)\]/g)) {
         const value = match[1]
         if (value.startsWith('color:')) continue
         const pxMatch = /^(\d+(?:\.\d+)?)(px|rem)$/.exec(value)
@@ -151,7 +156,7 @@ describe('tabular-nums の全域適用', () => {
 })
 
 describe('小さい文字の例外', () => {
-  it('任意の直値は横幅例外なら 11px 以上、それ以外は 12px 以上にする', () => {
+  it('任意の直値は例外の要素だけに許し、例外でも 11px 未満にしない', () => {
     const allowedExceptionMarkers = new Set([
       ['components/program-grid.tsx', 'program-grid-header-remote-control-key'],
       ['components/program-grid.tsx', 'program-grid-header-site'],
@@ -169,14 +174,11 @@ describe('小さい文字の例外', () => {
     ].map(([file, testId]) => `${file}:${testId}`))
     const directSizes = walk(path.join(webDir, 'src')).flatMap(collectArbitraryTextSizes)
     const violations = directSizes.filter(({ file, testId, fontPx }) => {
-      const isTimeByWidthException = allowedExceptionMarkers.has(`${file}:${testId}`)
-      const minimumPx = isTimeByWidthException ? 11 : 12
-      // Unknown arbitrary font-size syntax is rejected because its rendered floor
-      // cannot be proved here. Named arbitrary text colors are unrelated.
-      return fontPx === null || fontPx < minimumPx
+      // 例外の外では text-[...] を一切使わない（4 段のトークンを使う）。
+      if (!allowedExceptionMarkers.has(`${file}:${testId}`)) return true
+      // 例外の中でも 11px 未満は不可。単位が読めない記法は下限を証明できないので落とす。
+      return fontPx === null || fontPx < 11
     })
-    // This catches every numeric pixel/rem utility below xs, including 8px, while
-    // binding the 11px floor to the actual grid/timeline elements.
     expect(violations).toEqual([])
   })
 })

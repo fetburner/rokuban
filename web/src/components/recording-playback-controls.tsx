@@ -1320,7 +1320,7 @@ function chapterEntries(spans: ChapterSpan[], durationSeconds: number): ChapterE
 /** popoverClass は設定メニューとチャプター一覧が共有する置き場（md 以上は小窓、md 未満は画面下のシート）。 */
 function popoverClass(align: 'left' | 'right') {
   return cn(
-    'fixed inset-x-0 bottom-0 z-50 max-h-[50dvh] overflow-y-auto rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-[15px] text-foreground shadow-lg',
+    'fixed inset-x-0 bottom-0 z-50 max-h-[50dvh] overflow-y-auto rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-sm text-foreground shadow-lg',
     'md:absolute md:bottom-18 md:z-30 md:max-h-[calc(100%-5.5rem)] md:w-75 md:rounded-xl md:bg-black/85 md:py-2 md:text-sm md:text-white md:backdrop-blur-sm',
     align === 'right' ? 'md:right-3.5 md:left-auto' : 'md:right-auto md:left-3.5',
   )
