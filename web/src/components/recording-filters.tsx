@@ -427,7 +427,6 @@ function FilterPanel({
       title={!wide && channelOpen ? 'チャンネル' : '絞り込み'}
       open={open}
       onOpenChange={handlePanelOpenChange}
-      closeLabel="絞り込みを閉じる"
       sheetLeading={
         !wide && channelOpen ? (
           <button

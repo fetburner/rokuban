@@ -379,6 +379,7 @@ describe('モバイルの「その他」', () => {
 
     const menu = await screen.findByRole('dialog', { name: 'その他' })
     expect(within(menu).getByRole('button', { name: '完了' })).toBeInTheDocument()
+    expect(within(menu).getByRole('navigation', { name: 'その他' })).toBeInTheDocument()
     for (const label of MOBILE_MORE_LABELS) {
       expect(within(menu).getByRole('link', { name: label })).toHaveAttribute('href')
     }

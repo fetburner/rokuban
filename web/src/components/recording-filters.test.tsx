@@ -524,8 +524,9 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await within(sheet).findByRole('button', { name: `チャンネル: ${nhk.name}` })
     expect(getCurrent().service).toEqual([nhk.id])
 
-    // 状態チップにも「完了」があるので、シート見出しの閉じるボタンは名前で引く。
-    await user.click(screen.getByRole('button', { name: '絞り込みを閉じる' }))
+    // 状態チップにも「完了」があるので、シート見出し（Title と同じ行）の内側から引く。
+    const header = screen.getByRole('heading', { name: '絞り込み' }).parentElement!
+    await user.click(within(header).getByRole('button', { name: '完了' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     expect(getCurrent().service).toEqual([nhk.id])
   })
