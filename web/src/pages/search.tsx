@@ -43,6 +43,10 @@ import { estimateRuleCost } from '@/lib/rule-cost'
  * ため、表示件数を増やす操作で番組詳細の追加取得は発生しない。
  */
 const pageSize = 30
+// PoC: 実行時スイッチ
+const __m: { buttons?: string; empty?: string } = (window as unknown as { __mock?: { buttons?: string; empty?: string } }).__mock ?? {}
+const __b: string = __m.buttons ?? ''
+const __st = () => __b === 'sticky'
 
 function capacityPreviewRequest(
   request: ProgramSearchRequest,
@@ -483,7 +487,7 @@ export function SearchPage() {
 
       <form
         aria-label="検索条件"
-        className="flex flex-col gap-5 border-b border-border px-4 py-4"
+        className={`flex flex-col gap-5 border-b border-border px-4 py-4 ${__st() ? 'pb-28 md:pb-4' : ''}`}
         onSubmit={(e) => {
           e.preventDefault()
           submit()
@@ -507,7 +511,8 @@ export function SearchPage() {
          * 送信のたびに結果の先頭へスクロールとフォーカスを移すことで対にする
          * （上の `resultsRef`）。
          */}
-        <div className="flex flex-col gap-2">
+        {__b !== 'after' && __b !== 'sticky' && (
+        <div className={__st() ? 'fixed inset-x-0 z-10 flex flex-col gap-2 border-t border-border bg-background px-4 pt-2 pb-2 bottom-[var(--bottom-nav-height)] md:static md:border-0 md:p-0' : 'flex flex-col gap-2'} data-testid="actions">
           {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
               「なぜ押せないのか」が分からない */}
           {error !== undefined && (
@@ -520,7 +525,7 @@ export function SearchPage() {
               サイト一覧を取得中…
             </p>
           )}
-          <div className="flex gap-2">
+          <div className={__st() ? 'flex flex-col gap-2' : 'flex gap-2'}>
             <Button
               type="submit"
               size="lg"
@@ -544,6 +549,7 @@ export function SearchPage() {
             </Button>
           </div>
         </div>
+        )}
 
         <ConditionFields
           draft={draft}
@@ -552,6 +558,84 @@ export function SearchPage() {
           detailsOpen={detailsOpen}
           onDetailsOpenChange={setDetailsOpen}
         />
+        {__b === 'after' && (
+        <div className={__st() ? 'fixed inset-x-0 z-10 flex flex-col gap-2 border-t border-border bg-background px-4 pt-2 pb-2 bottom-[var(--bottom-nav-height)] md:static md:border-0 md:p-0' : 'flex flex-col gap-2'} data-testid="actions">
+          {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
+              「なぜ押せないのか」が分からない */}
+          {error !== undefined && (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          {registryPending && (
+            <p role="status" className="text-xs text-muted-foreground">
+              サイト一覧を取得中…
+            </p>
+          )}
+          <div className={__st() ? 'flex flex-col gap-2' : 'flex gap-2'}>
+            <Button
+              type="submit"
+              size="lg"
+              disabled={
+                error !== undefined || search.isPending || registryPending || registryError
+              }
+            >
+              {search.isPending ? '検索中…' : '検索'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setDraft(emptyDraft())
+                search.reset()
+                capacityPreview.reset()
+              }}
+            >
+              条件をクリア
+            </Button>
+          </div>
+        </div>
+        )}
+        {__b === 'sticky' && (
+        <div className={__st() ? 'fixed inset-x-0 z-10 flex flex-col gap-2 border-t border-border bg-background px-4 pt-2 pb-2 bottom-[var(--bottom-nav-height)] md:static md:border-0 md:p-0' : 'flex flex-col gap-2'} data-testid="actions">
+          {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
+              「なぜ押せないのか」が分からない */}
+          {error !== undefined && (
+            <p role="alert" className="text-xs text-destructive">
+              {error}
+            </p>
+          )}
+          {registryPending && (
+            <p role="status" className="text-xs text-muted-foreground">
+              サイト一覧を取得中…
+            </p>
+          )}
+          <div className={__st() ? 'flex flex-col gap-2' : 'flex gap-2'}>
+            <Button
+              type="submit"
+              size="lg"
+              disabled={
+                error !== undefined || search.isPending || registryPending || registryError
+              }
+            >
+              {search.isPending ? '検索中…' : '検索'}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="lg"
+              onClick={() => {
+                setDraft(emptyDraft())
+                search.reset()
+                capacityPreview.reset()
+              }}
+            >
+              条件をクリア
+            </Button>
+          </div>
+        </div>
+        )}
       </form>
 
       <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />
@@ -603,7 +687,14 @@ export function SearchPage() {
         {search.isIdle ? (
           // 「まだ検索していない」と「0 件」は別の事実。同じ文言にすると
           // 条件の書き方が悪いのか該当がないのかが分からない
-          <EmptyState>条件を指定して検索してください</EmptyState>
+          __m.empty === 'neutral' ? (
+            <div className="flex flex-col items-center gap-2 bg-card px-4 py-12 text-center text-sm text-muted-foreground">
+              <svg aria-hidden width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="7" /><path d="m20 20-4-4" /></svg>
+              条件を指定して検索してください
+            </div>
+          ) : (
+            <EmptyState>条件を指定して検索してください</EmptyState>
+          )
         ) : search.isPending ? (
           <ListSkeleton />
         ) : search.isError ? (
