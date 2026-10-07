@@ -6,6 +6,7 @@ import { useMemo, useRef, useState } from 'react'
 import {
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
+  getListRecordingsQueryOptions,
   getListRulesQueryKey,
   useDeleteRule,
   useListCapacityOverages,
@@ -287,12 +288,16 @@ function RuleRow({
   const updateRule = useUpdateRule()
   const deleteRule = useDeleteRule()
   const [activeReservationCount, setActiveReservationCount] = useState(0)
+  const [activeRecordingCount, setActiveRecordingCount] = useState(0)
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const setEnabled = (enabled: boolean) => {
+  const setEnabled = (enabled: boolean, afterSuccess?: () => void) => {
     const key = getListRulesQueryKey()
-    const previousEnabled = rule.enabled
+    const previousEnabled =
+      queryClient
+        .getQueryData<ListRulesQueryResult>(key)
+        ?.data.find((item) => item.id === rule.id)?.enabled ?? rule.enabled
     queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
       current === undefined
         ? current
@@ -320,6 +325,7 @@ function RuleRow({
           void queryClient.invalidateQueries({ queryKey: key })
           // ruler はレベルトリガーなので、再取得しても次回評価までは予約が残る。
           void queryClient.invalidateQueries({ queryKey: getListReservationsQueryKey() })
+          afterSuccess?.()
         },
         onError: (err) => {
           queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
@@ -350,18 +356,55 @@ function RuleRow({
     if (isCountingReservations) return
     onCountingReservationsChange(true)
     try {
-      const response = await queryClient.fetchQuery(getListReservationsQueryOptions())
-      const count = (unwrap(response) ?? []).filter(
+      const countActiveRecordings = async () => {
+        const pageLimit = 200
+        let count = 0
+        let before: string | undefined
+        let beforeId: number | undefined
+        while (true) {
+          const response = await queryClient.fetchQuery(
+            getListRecordingsQueryOptions({
+              status: 'recording',
+              ruleId: rule.id,
+              limit: pageLimit,
+              before,
+              beforeId,
+            }, { query: { staleTime: 0 } }),
+          )
+          const page = unwrap(response) ?? []
+          count += page.length
+          if (page.length < pageLimit) return count
+          const last = page[page.length - 1]
+          before = last.startAt
+          beforeId = last.id
+        }
+      }
+
+      const [reservationResponse, recordingCount] = await Promise.all([
+        queryClient.fetchQuery(getListReservationsQueryOptions()),
+        countActiveRecordings(),
+      ])
+      const reservationCount = (unwrap(reservationResponse) ?? []).filter(
         (reservation) =>
           reservation.ruleId === rule.id &&
           reservation.source === 'rule' &&
           reservation.state === 'active',
       ).length
-      setActiveReservationCount(count)
-      setDisableConfirmOpen(true)
+      setActiveReservationCount(reservationCount)
+      setActiveRecordingCount(recordingCount)
+      if (recordingCount > 0) {
+        setDisableConfirmOpen(true)
+      } else {
+        setEnabled(false, () => {
+          toast({
+            message: `ルール「${displayName}」を無効にしました。予約 ${reservationCount} 件が取り消されます`,
+            actions: [{ label: '元に戻す', onClick: () => setEnabled(true) }],
+          })
+        })
+      }
     } catch (err) {
       toast({
-        message: apiErrorMessage(err) ?? '予約数の取得に失敗しました',
+        message: apiErrorMessage(err) ?? '予約・録画状況の取得に失敗しました',
         kind: 'error',
       })
     } finally {
@@ -566,7 +609,7 @@ function RuleRow({
           <AlertDialogHeader>
             <AlertDialogTitle>ルール「{displayName}」を無効にしますか？</AlertDialogTitle>
             <AlertDialogDescription>
-              {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
+              {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。録画中の ${activeRecordingCount} 件は録画が止まります。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -2,10 +2,11 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { getListReservationsQueryKey } from '@/api/generated'
+import { getListReservationsQueryKey, getListRulesQueryKey } from '@/api/generated'
 import type {
   CapacityOverage,
   EncodeProfileSummary,
+  Recording,
   Reservation,
   Rule,
   RuleInput,
@@ -53,6 +54,33 @@ function sampleReservation(
     updatedAt: '2026-08-01T00:00:00Z',
     skip: false,
     series: null,
+  }
+}
+
+function sampleRecording(
+  id: number,
+  ruleId: number,
+  status: Recording['status'] = 'recording',
+  startAt = '2026-09-01T00:00:00Z',
+): Recording {
+  return {
+    id,
+    site: 'default',
+    ruleId,
+    source: 'rule',
+    serviceName: 'NHK総合',
+    channelType: 'GR',
+    channel: '27',
+    networkId: 32736,
+    serviceId: 1024,
+    eventId: id,
+    title: `録画 ${id}`,
+    startAt,
+    durationMs: 1_800_000,
+    status,
+    keepOriginal: 'always',
+    cmDetection: { state: 'disabled' },
+    createdAt: '2026-09-01T00:00:00Z',
   }
 }
 
@@ -115,6 +143,7 @@ function stubApi(
     delete?: number
     reservations?: number
     capacityOverages?: number
+    recordings?: number
   } = {},
   // 行のスイッチ（無効化）が確認に出す件数の母集団。RulesPage は予約一覧と
   // 同じクエリキーで GET /api/reservations を読む。既定は空。
@@ -124,10 +153,12 @@ function stubApi(
   // それを確かめるテストだけが 2 つ目以降を足す（issue #531）。
   siteNames: string[] = ['default'],
   capacityOverages: CapacityOverage[] = [],
+  recordings: Recording[] = [],
 ) {
   const putBodies: { id: number; body: RuleInput }[] = []
   const postBodies: RuleInput[] = []
   const deletedIds: number[] = []
+  const recordingRequests: Record<string, string>[] = []
   // 作成・更新を状態に反映する --- invalidate 後の再取得で「新しい行が
   // 一覧に現れる」「更新後の内容が一覧に反映される」ことを確認するテストのため
   // （GET のたびに現在の状態を返す）。
@@ -147,6 +178,33 @@ function stubApi(
         )
       }
       return Promise.resolve(jsonResponse(reservations))
+    }
+    if (url.pathname === '/api/recordings' && method === 'GET') {
+      recordingRequests.push(Object.fromEntries(url.searchParams))
+      if (failures.recordings !== undefined) {
+        return Promise.resolve(
+          jsonResponse({ error: '録画状況を取得できませんでした' }, failures.recordings),
+        )
+      }
+      const status = url.searchParams.get('status')
+      const ruleId = url.searchParams.get('ruleId')
+      const before = url.searchParams.get('before')
+      const beforeId = url.searchParams.get('beforeId')
+      const limit = Number(url.searchParams.get('limit') ?? '50')
+      const page = recordings
+        .filter(
+          (recording) =>
+            (status === null || recording.status === status) &&
+            (ruleId === null || recording.ruleId === Number(ruleId)) &&
+            (before === null ||
+              recording.startAt < before ||
+              (recording.startAt === before && recording.id < Number(beforeId))),
+        )
+        .sort((left, right) =>
+          right.startAt.localeCompare(left.startAt) || right.id - left.id,
+        )
+        .slice(0, limit)
+      return Promise.resolve(jsonResponse(page))
     }
     if (url.pathname === '/api/capacity/overages' && method === 'GET') {
       if (failures.capacityOverages !== undefined) {
@@ -218,7 +276,7 @@ function stubApi(
     throw new Error(`unexpected fetch: ${method} ${url.pathname}`)
   }) as unknown as typeof fetch
 
-  return { postBodies, putBodies, deletedIds }
+  return { postBodies, putBodies, deletedIds, recordingRequests }
 }
 
 function renderPage() {
@@ -509,7 +567,7 @@ describe('RulesPage 予約の稼働状況', () => {
 })
 
 describe('RulesPage ルールの有効スイッチ', () => {
-  it('状態を aria-checked に出し、無効化だけ active 予約数付きの確認を挟む', async () => {
+  it('状態を aria-checked に出し、録画中は予約数と録画中数付きの確認を挟む', async () => {
     const reservations: Reservation[] = [
       sampleReservation(1, 1),
       sampleReservation(2, 1),
@@ -517,7 +575,20 @@ describe('RulesPage ルールの有効スイッチ', () => {
       sampleReservation(4, 2),
       { ...sampleReservation(5, 1), source: 'manual' },
     ]
-    const { putBodies } = stubApi([sampleRule], undefined, {}, reservations)
+    const { putBodies, recordingRequests } = stubApi(
+      [sampleRule],
+      undefined,
+      {},
+      reservations,
+      ['default'],
+      [],
+      [
+        sampleRecording(10, 1),
+        sampleRecording(11, 1),
+        sampleRecording(12, 2),
+        sampleRecording(13, 1, 'finished'),
+      ],
+    )
     const user = userEvent.setup()
     const { queryClient } = renderPage()
 
@@ -527,9 +598,10 @@ describe('RulesPage ルールの有効スイッチ', () => {
 
     expect(
       await screen.findByText(
-        '「ニュース」を無効にすると、このルールによる予約 2 件が取り消されます。手動で予約したものは残ります。',
+        '「ニュース」を無効にすると、このルールによる予約 2 件が取り消されます。手動で予約したものは残ります。録画中の 2 件は録画が止まります。',
       ),
     ).toBeInTheDocument()
+    expect(recordingRequests[0]).toMatchObject({ status: 'recording', ruleId: '1' })
     expect(putBodies).toHaveLength(0)
 
     const reservationCallsBeforeDisable = (
@@ -561,8 +633,110 @@ describe('RulesPage ルールの有効スイッチ', () => {
     ).toEqual(reservations)
   })
 
+  it('録画中が無ければ確認なしで無効にし、予約件数付きのトーストから戻せる', async () => {
+    const reservations: Reservation[] = [
+      sampleReservation(1, 1),
+      sampleReservation(2, 1, 'detached'),
+      { ...sampleReservation(3, 1), source: 'manual' },
+    ]
+    const { putBodies, recordingRequests } = stubApi(
+      [sampleRule],
+      undefined,
+      {},
+      reservations,
+      ['default'],
+      [],
+      [sampleRecording(10, 2), sampleRecording(11, 1, 'finished')],
+    )
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+
+    await user.click(toggle)
+
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(screen.queryByText(/を無効にしますか/)).not.toBeInTheDocument()
+    expect(recordingRequests[0]).toMatchObject({ status: 'recording', ruleId: '1' })
+    expect(
+      await screen.findByText('ルール「ニュース」を無効にしました。予約 1 件が取り消されます'),
+    ).toBeInTheDocument()
+    expect(putBodies[0]).toMatchObject({ id: 1, body: { enabled: false } })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+    await waitFor(() => expect(putBodies).toHaveLength(2))
+
+    expect(putBodies[1]).toMatchObject({ id: 1, body: { enabled: true } })
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'))
+    expect(
+      queryClient.getQueryData<{ data: Reservation[] }>(getListReservationsQueryKey())?.data,
+    ).toEqual(reservations)
+  })
+
+  it('Undo の更新が失敗したら無効状態へ戻す', async () => {
+    const failures: { update?: number } = {}
+    const { putBodies } = stubApi([sampleRule], undefined, failures)
+    const user = userEvent.setup()
+    const { queryClient } = renderPage()
+    const toggle = await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' })
+
+    await user.click(toggle)
+    await waitFor(() => expect(putBodies).toHaveLength(1))
+    expect(await screen.findByRole('button', { name: '元に戻す' })).toBeInTheDocument()
+
+    failures.update = 500
+    await user.click(screen.getByRole('button', { name: '元に戻す' }))
+
+    expect(await screen.findByText('サーバーが更新を拒否しました')).toBeInTheDocument()
+    await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'false'))
+    expect(
+      queryClient.getQueryData<{ data: Rule[] }>(getListRulesQueryKey())?.data[0]?.enabled,
+    ).toBe(false)
+  })
+
+  it('録画中が 200 件を超えてもすべて数えて確認する', async () => {
+    const recordings = Array.from({ length: 201 }, (_, index) =>
+      sampleRecording(
+        index + 1,
+        1,
+        'recording',
+        new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      ),
+    )
+    const { recordingRequests } = stubApi(
+      [sampleRule],
+      undefined,
+      {},
+      [],
+      ['default'],
+      [],
+      recordings,
+    )
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(
+      await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' }),
+    )
+
+    expect(await screen.findByText(/録画中の 201 件は録画が止まります/)).toBeInTheDocument()
+    expect(recordingRequests).toHaveLength(2)
+  })
+
+  it('録画中の録画一覧を取得できない場合は無効化を進めない', async () => {
+    const { putBodies } = stubApi([sampleRule], undefined, { recordings: 500 })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(
+      await screen.findByRole('switch', { name: 'ルール「ニュース」を有効にする' }),
+    )
+
+    expect(await screen.findByText('録画状況を取得できませんでした')).toBeInTheDocument()
+    expect(screen.queryByText(/を無効にしますか/)).not.toBeInTheDocument()
+    expect(putBodies).toHaveLength(0)
+  })
+
   it('予約一覧の取得完了前は件数と無効化確認を出さない', async () => {
-    stubApi([sampleRule])
+    stubApi([sampleRule], undefined, {}, [], ['default'], [], [sampleRecording(1, 1)])
     const baseFetch = globalThis.fetch
     let resolveReservations: (() => void) | undefined
     globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -695,7 +869,15 @@ describe('RulesPage ルールの有効スイッチ', () => {
 
   it('予約数の取得中は全ルールのスイッチを無効にして、確認を重ねて開かせない', async () => {
     const otherRule: Rule = { ...sampleRule, id: 2, name: 'スポーツ' }
-    stubApi([sampleRule, otherRule])
+    stubApi(
+      [sampleRule, otherRule],
+      undefined,
+      {},
+      [],
+      ['default'],
+      [],
+      [sampleRecording(1, sampleRule.id)],
+    )
     const baseFetch = globalThis.fetch
     let resolveReservations: ((response: Response) => void) | undefined
     globalThis.fetch = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -929,6 +1111,9 @@ describe('ルール行のコンテキストメニュー', () => {
       { deletedReservations: 0, detachedReservations: 0 },
       undefined,
       [sampleReservation(1, sampleRule.id)],
+      ['default'],
+      [],
+      [sampleRecording(1, sampleRule.id)],
     )
     const user = userEvent.setup()
     renderPage()
