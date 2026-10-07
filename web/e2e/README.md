@@ -525,6 +525,8 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   番組ハブは 400px とデスクトップ幅で配置とメニューを撮る（`series-hub-400-*` / `series-hub-desktop-*`）。
   **人が見て判断するための成果物**で、機械が比較するものではない
 - 合否（exit code）。以下をすべて実画素・実描画で判定する:
+  - サイドバーの現在地の塗りと、そのリンクに出る 2px フォーカスリングが、ライト / ダークともページの地と 3:1 以上か。PNG の実画素を測り、現在地のリングは 2px のオフセットでページ地に出ることも見る
+  - 共通 Button の focus-visible リングがライト / ダークともページ地と 3:1 以上か。PNG のリング画素そのものを測るため、`ring-ring/50` への退行も検出する
   - 状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・**WCAG コントラスト**
     （文字は 4.5、面と線は 3 が下限）。`bg-muted` 系の淡い面に乗る文字は、
     塗り・`/80` の sticky 日付見出し・`/30` の録画詳細パネルに加えて
@@ -1450,6 +1452,18 @@ E2E_URL=http://localhost:4173 pnpm e2e:recording-next-episode
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-view
+```
+
+### 表示切替の形（`issue-1229-switches.mjs`）
+
+Programs のリスト / 番組表が 1 つの segmented control に見えることと、Home の
+見る / 管理が無彩の下線付き tabs になることを、Chromium の実画面で確認する。
+URL と localStorage による両方の選択状態も確認し、ライト / ダークと 1280px / 390px
+の画面を PNG に保存する。API はブラウザ内スタブで差し替える。
+
+```sh
+pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
+E2E_URL=http://127.0.0.1:4173 E2E_SHOT_DIR=/tmp/rokuban-switch-shots pnpm e2e:issue-1229-switches
 ```
 
 ### 番組表の短い番組選択（`programs-grid-zoom.mjs`）

@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { ChevronRight, Copy, ExternalLink, FolderOpen, Trash2 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useRef, useState, type KeyboardEvent } from 'react'
 
 import type { Recording } from '@/api/generated'
 import type { LiveCapability } from '@/lib/capabilities'
@@ -46,7 +46,11 @@ export function RecordingRow({
   view,
   selecting = false,
   selected = false,
+  active = false,
   onToggle = () => undefined,
+  onOptionClick,
+  onOptionKeyDown,
+  onOptionFocus,
 }: {
   recording: Recording
   liveCapability: LiveCapability
@@ -61,7 +65,15 @@ export function RecordingRow({
   view: RecordingRowView
   selecting?: boolean
   selected?: boolean
+  /** 編集モードで Tab 位置を担う option かどうか。 */
+  active?: boolean
   onToggle?: () => void
+  /** 行クリックの Shift 修飾を親の範囲選択へ渡す。 */
+  onOptionClick?: (shiftKey: boolean) => void
+  /** option 自身へフォーカスがある間のキーボード操作。 */
+  onOptionKeyDown?: (event: KeyboardEvent<HTMLDivElement>) => void
+  /** roving tabindex の現在位置を親へ伝える。 */
+  onOptionFocus?: () => void
 }) {
   const [thumbFailed, setThumbFailed] = useState(false)
   const card = view === 'card'
@@ -78,8 +90,35 @@ export function RecordingRow({
       ref={rowRef}
       role={selecting ? 'option' : undefined}
       aria-selected={selecting ? selected : undefined}
-      tabIndex={contextMenuEnabled ? -1 : undefined}
-      onClick={selecting ? onToggle : undefined}
+      // 選択モードは roving tabindex（active 行だけ 0）。通常時は fine pointer の右クリック
+      // メニューが閉じた後にフォーカスを返す先として -1（contextMenuEnabled は選択モードで偽）。
+      tabIndex={selecting ? (active ? 0 : -1) : contextMenuEnabled ? -1 : undefined}
+      data-recording-option={selecting ? recording.id : undefined}
+      onClick={
+        selecting
+          ? (event) => {
+              event.currentTarget.focus()
+              if (onOptionClick) onOptionClick(event.shiftKey)
+              else onToggle()
+            }
+          : undefined
+      }
+      onMouseDown={(event) => {
+        if (!selecting || !event.shiftKey || event.button !== 0) return
+        // Shift+click selects a row range. Prevent the browser from extending a text
+        // selection as well; explicitly focus because preventDefault suppresses mousedown focus.
+        if (event.target instanceof HTMLInputElement) return
+        event.preventDefault()
+        event.currentTarget.focus()
+      }}
+      onKeyDown={selecting ? onOptionKeyDown : undefined}
+      onFocus={
+        selecting
+          ? (event) => {
+              if (event.target === event.currentTarget) onOptionFocus?.()
+            }
+          : undefined
+      }
       className={cn(
         // base の gap は list 分岐に持たせる。card 分岐の gap-2 と両方 base に
         // 置くと twMerge が常に後勝ち（gap-2）で解決し、base の gap-3 は
@@ -106,6 +145,7 @@ export function RecordingRow({
           type="checkbox"
           aria-label={`${programTitle(recording.title)}を選択`}
           className="size-4 shrink-0 accent-primary"
+          tabIndex={-1}
           checked={selected}
           onClick={(event) => event.stopPropagation()}
           onChange={onToggle}

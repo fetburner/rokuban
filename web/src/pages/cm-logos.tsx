@@ -1119,7 +1119,7 @@ function LogoRow({ logo }: { logo: CMLogoState }) {
   return (
     <li className="rounded-lg border border-border bg-card p-3">
       <Link
-        className="flex min-w-0 items-center gap-3 rounded outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="flex min-w-0 items-center gap-3 rounded outline-none focus-visible:ring-2 focus-visible:ring-ring"
         to="/cm-logos/$networkId/$serviceId"
         params={{ networkId: String(logo.networkId), serviceId: String(logo.serviceId) }}
       >

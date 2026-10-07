@@ -13,11 +13,10 @@ export function HomeModeToggle({
   warningCount: number | undefined
 }) {
   return (
-    <div
-      role="group"
+    <nav
       aria-label="ホームの表示切替"
       data-testid="home-mode-toggle"
-      className="flex shrink-0 items-center pointer-coarse:gap-0.5 rounded-md border border-border bg-card p-0.5"
+      className="flex shrink-0 items-center gap-3 border-b border-border"
     >
       <Link
         to="/"
@@ -25,10 +24,10 @@ export function HomeModeToggle({
         aria-current={mode === 'watch' ? 'page' : undefined}
         onClick={() => saveHomeModePreference('watch')}
         className={cn(
-          'flex min-h-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center gap-1 rounded px-2 py-1 text-xs whitespace-nowrap transition-colors',
+          'flex min-h-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11 -mb-px items-center gap-1 border-b-2 border-transparent px-1 py-1 text-xs whitespace-nowrap transition-colors',
           mode === 'watch'
-            ? 'bg-muted font-medium text-foreground'
-            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+            ? 'border-foreground font-medium text-foreground'
+            : 'text-muted-foreground hover:text-foreground',
         )}
       >
         見る
@@ -39,10 +38,10 @@ export function HomeModeToggle({
         aria-current={mode === 'ops' ? 'page' : undefined}
         onClick={() => saveHomeModePreference('ops')}
         className={cn(
-          'flex min-h-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center gap-1 rounded px-2 py-1 text-xs whitespace-nowrap transition-colors',
+          'flex min-h-7 pointer-coarse:min-h-11 pointer-coarse:min-w-11 -mb-px items-center gap-1 border-b-2 border-transparent px-1 py-1 text-xs whitespace-nowrap transition-colors',
           mode === 'ops'
-            ? 'bg-muted font-medium text-foreground'
-            : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+            ? 'border-foreground font-medium text-foreground'
+            : 'text-muted-foreground hover:text-foreground',
         )}
       >
         管理
@@ -56,6 +55,6 @@ export function HomeModeToggle({
           </span>
         )}
       </Link>
-    </div>
+    </nav>
   )
 }

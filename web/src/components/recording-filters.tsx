@@ -243,7 +243,7 @@ export function ToolbarSelect<T extends string>({
     <label
       className={cn(
         toolbarButtonClass,
-        'has-[select:focus-visible]:ring-3 has-[select:focus-visible]:ring-ring/50',
+        'has-[select:focus-visible]:ring-2 has-[select:focus-visible]:ring-ring',
       )}
     >
       <ArrowUpDown className="size-5 md:hidden" aria-hidden />

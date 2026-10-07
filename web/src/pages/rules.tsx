@@ -4,8 +4,11 @@ import { ChevronRight, MoreVertical, Plus, Power, Trash2 } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 
 import {
+  getGetRuleQueryKey,
+  getGetRuleQueryOptions,
   getListReservationsQueryKey,
   getListReservationsQueryOptions,
+  getListRecordingsQueryOptions,
   getListRulesQueryKey,
   useDeleteRule,
   useListCapacityOverages,
@@ -287,58 +290,91 @@ function RuleRow({
   const updateRule = useUpdateRule()
   const deleteRule = useDeleteRule()
   const [activeReservationCount, setActiveReservationCount] = useState(0)
+  const [activeRecordingCount, setActiveRecordingCount] = useState(0)
   const [disableConfirmOpen, setDisableConfirmOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
 
-  const setEnabled = (enabled: boolean) => {
+  const setEnabled = (
+    enabled: boolean,
+    afterSuccess?: () => void,
+    refreshRule = false,
+  ) => {
     const key = getListRulesQueryKey()
-    const previousEnabled = rule.enabled
-    queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
-      current === undefined
-        ? current
-        : {
-            ...current,
-            data: current.data.map((item) =>
-              item.id === rule.id ? { ...item, enabled } : item,
-            ),
-          },
-    )
+    void (async () => {
+      let currentRule =
+        queryClient
+          .getQueryData<ListRulesQueryResult>(key)
+          ?.data.find((item) => item.id === rule.id) ?? rule
+      let previousEnabled: boolean | undefined
+      let optimisticUpdate = false
 
-    updateRule.mutate(
-      {
-        id: rule.id,
-        data: buildRuleInput(
-          conditionsToDraft(rule),
-          { ...ruleToMeta(rule), enabled },
-          // preserve を落とすと UI を持たない項目（description / dedupe* /
-          // filenameTemplate / metadata）が UpdateRule の全置換で黙って消える。
-          rule,
-        ),
-      },
-      {
-        onSuccess: () => {
-          void queryClient.invalidateQueries({ queryKey: key })
-          // ruler はレベルトリガーなので、再取得しても次回評価までは予約が残る。
-          void queryClient.invalidateQueries({ queryKey: getListReservationsQueryKey() })
-        },
-        onError: (err) => {
+      try {
+        if (refreshRule) {
+          // Undo は画面遷移後に使える。別画面で編集されていた場合も全置換 PATCH
+          // で古い条件を戻さないよう、クリック時にサーバーの最新ルールを読む。
+          const response = await queryClient.fetchQuery(
+            getGetRuleQueryOptions(rule.id, { query: { staleTime: 0 } }),
+          )
+          const latestRule = unwrap(response)
+          if (latestRule === undefined) throw new Error('ルールの最新状態を取得できませんでした')
+          currentRule = latestRule
+        }
+
+        previousEnabled = currentRule.enabled
+        queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
+          current === undefined
+            ? current
+            : {
+                ...current,
+                data: current.data.map((item) =>
+                  item.id === currentRule.id ? { ...currentRule, enabled } : item,
+                ),
+              },
+        )
+        optimisticUpdate = true
+
+        // toast の Undo は行コンポーネントが外れた後にも押せる。アンマウント時に
+        // per-call callback が失われないことは「画面遷移後の Undo 失敗も通知して
+        // キャッシュを無効状態へ戻す」で確認する。
+        await updateRule.mutateAsync({
+          id: currentRule.id,
+          data: buildRuleInput(
+            conditionsToDraft(currentRule),
+            { ...ruleToMeta(currentRule), enabled },
+            // preserve を落とすと UI を持たない項目（description / dedupe* /
+            // filenameTemplate / metadata）が UpdateRule の全置換で黙って消える。
+            currentRule,
+          ),
+        })
+        void queryClient.invalidateQueries({ queryKey: key })
+        void queryClient.invalidateQueries({
+          queryKey: getGetRuleQueryKey(currentRule.id),
+        })
+        // ruler はレベルトリガーなので、再取得しても次回評価までは予約が残る。
+        void queryClient.invalidateQueries({ queryKey: getListReservationsQueryKey() })
+        afterSuccess?.()
+      } catch (err) {
+        if (optimisticUpdate && previousEnabled !== undefined) {
+          const rollbackEnabled = previousEnabled
           queryClient.setQueryData<ListRulesQueryResult>(key, (current) =>
             current === undefined
               ? current
               : {
                   ...current,
                   data: current.data.map((item) =>
-                    item.id === rule.id ? { ...item, enabled: previousEnabled } : item,
+                    item.id === currentRule.id
+                      ? { ...item, enabled: rollbackEnabled }
+                      : item,
                   ),
                 },
           )
-          toast({
-            message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
-            kind: 'error',
-          })
-        },
-      },
-    )
+        }
+        toast({
+          message: apiErrorMessage(err) ?? 'ルールの更新に失敗しました',
+          kind: 'error',
+        })
+      }
+    })()
   }
 
   const toggleEnabled = async () => {
@@ -350,18 +386,56 @@ function RuleRow({
     if (isCountingReservations) return
     onCountingReservationsChange(true)
     try {
-      const response = await queryClient.fetchQuery(getListReservationsQueryOptions())
-      const count = (unwrap(response) ?? []).filter(
+      const countActiveRecordings = async () => {
+        const pageLimit = 200
+        let count = 0
+        let before: string | undefined
+        let beforeId: number | undefined
+        while (true) {
+          const response = await queryClient.fetchQuery(
+            getListRecordingsQueryOptions({
+              status: 'recording',
+              ruleId: rule.id,
+              source: 'rule',
+              limit: pageLimit,
+              before,
+              beforeId,
+            }, { query: { staleTime: 0 } }),
+          )
+          const page = unwrap(response) ?? []
+          count += page.length
+          if (page.length < pageLimit) return count
+          const last = page[page.length - 1]
+          before = last.startAt
+          beforeId = last.id
+        }
+      }
+
+      const [reservationResponse, recordingCount] = await Promise.all([
+        queryClient.fetchQuery(getListReservationsQueryOptions()),
+        countActiveRecordings(),
+      ])
+      const reservationCount = (unwrap(reservationResponse) ?? []).filter(
         (reservation) =>
           reservation.ruleId === rule.id &&
           reservation.source === 'rule' &&
           reservation.state === 'active',
       ).length
-      setActiveReservationCount(count)
-      setDisableConfirmOpen(true)
+      setActiveReservationCount(reservationCount)
+      setActiveRecordingCount(recordingCount)
+      if (recordingCount > 0) {
+        setDisableConfirmOpen(true)
+      } else {
+        setEnabled(false, () => {
+          toast({
+            message: `ルール「${displayName}」を無効にしました。予約 ${reservationCount} 件が取り消されます`,
+            actions: [{ label: '元に戻す', onClick: () => setEnabled(true, undefined, true) }],
+          })
+        })
+      }
     } catch (err) {
       toast({
-        message: apiErrorMessage(err) ?? '予約数の取得に失敗しました',
+        message: apiErrorMessage(err) ?? '予約・録画状況の取得に失敗しました',
         kind: 'error',
       })
     } finally {
@@ -487,7 +561,7 @@ function RuleRow({
             aria-checked={rule.enabled}
             aria-label={`ルール「${displayName}」を有効にする`}
             disabled={updateRule.isPending || isCountingReservations}
-            className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
+            className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => void toggleEnabled()}
           >
             <span
@@ -566,7 +640,7 @@ function RuleRow({
           <AlertDialogHeader>
             <AlertDialogTitle>ルール「{displayName}」を無効にしますか？</AlertDialogTitle>
             <AlertDialogDescription>
-              {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。`}
+              {`「${displayName}」を無効にすると、このルールによる予約 ${activeReservationCount} 件が取り消されます。手動で予約したものは残ります。録画中の ${activeRecordingCount} 件は録画が止まります。`}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -61,6 +61,7 @@ import {
   type GridPxPerHour,
 } from '@/lib/programs-grid-scale-storage'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
+import { cn } from '@/lib/utils'
 import { loadProgramsView, saveProgramsView, type ProgramsView } from '@/lib/programs-view-storage'
 
 /**
@@ -955,13 +956,33 @@ function ViewChips({
   onSelect: (view: ProgramsView) => void
 }) {
   return (
-    <div role="group" aria-label="表示形式" className="flex gap-2 px-4 pb-3">
-      <Chip active={view === 'list'} onClick={() => onSelect('list')}>
-        リスト
-      </Chip>
-      <Chip active={view === 'grid'} onClick={() => onSelect('grid')}>
-        番組表
-      </Chip>
+    <div className="px-4 pb-3">
+      <div
+        role="group"
+        aria-label="表示形式"
+        data-testid="programs-view-toggle"
+        className="inline-flex items-center rounded-md border border-border p-0.5"
+      >
+        {(['list', 'grid'] as const).map((value) => {
+          const active = view === value
+          return (
+            <button
+              key={value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onSelect(value)}
+              className={cn(
+                'inline-flex min-h-6 min-w-6 items-center rounded border border-transparent px-2 py-1 text-xs whitespace-nowrap transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 pointer-coarse:min-w-11',
+                active
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+              )}
+            >
+              {value === 'list' ? 'リスト' : '番組表'}
+            </button>
+          )
+        })}
+      </div>
     </div>
   )
 }

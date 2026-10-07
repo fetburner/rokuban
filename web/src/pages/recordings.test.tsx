@@ -426,10 +426,15 @@ describe('RecordingsPage タブ', () => {
     expect(await screen.findByText('ライブラリの録画')).toBeInTheDocument()
     expect(screen.queryByText('捨てた録画')).not.toBeInTheDocument()
 
+    expect(screen.getByRole('button', { name: 'ライブラリ' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: 'ごみ箱' })).toHaveAttribute('aria-pressed', 'false')
+
     await user.click(screen.getByRole('button', { name: 'ごみ箱' }))
 
     expect(await screen.findByText('捨てた録画')).toBeInTheDocument()
     expect(screen.queryByText('ライブラリの録画')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'ライブラリ' })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByRole('button', { name: 'ごみ箱' })).toHaveAttribute('aria-pressed', 'true')
 
     const trashCalls = recordingsRequests(server.fetchMock).filter(
       (url) => url.searchParams.get('trash') === 'true',

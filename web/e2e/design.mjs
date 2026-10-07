@@ -8,6 +8,8 @@
 //      状態色ぜんぶ**を覆う --- 1 箇所でも判定の外に置くと、そこだけ既定値へ
 //      静かに戻っても全部緑のまま通る:
 //      - 面（body / ヘッダ / ナビ / 一覧の行）の地が無彩か
+//      - サイドバーの現在地の塗りと、2px オフセットしたフォーカスリングがページ地と 3:1 以上か
+//      - 共通 Button の focus-visible リングが実画素で --scanline と一致し、ページ地と 3:1 以上か
 //      - 録画中バッジがタリーレッドの「塗り」か / 失敗バッジが destructive の淡い地か
 //      - チューナー不足・ルールの「条件なし」が琥珀か
 //      - 番組リストの時刻に信号色が付いて**いない**か
@@ -339,6 +341,10 @@ const recordings = [
   // 原本・エンコード資産のない録画。結論の「準備中」バッジのコントラスト測定に使う。
   { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
 ]
+
+// `homeModeFixture` の警告一覧は、失敗録画・orphaned 予約・容量超過・ドロップの順。
+// それぞれ recordings[2] / reservations[3] / overages[0] / recordings[1] の fixture に対応する。
+const expectedHomeWarningKinds = ['failed', 'not-recorded', 'overage', 'drop']
 
 /** ホーム「見る」側の帯と「次に見る 1 本」専用の再開位置フィクスチャ。 */
 const homeContinueWatching = [
@@ -684,7 +690,7 @@ function apiHandler({
       return json(layoutScenario === 'capacity' ? layoutCapacityReservations : reservations)
     }
     if (p === '/api/capacity/overages') {
-      // #1020 のモード比較ショットは mock の警告 3 件（容量超過・ドロップ・失敗）
+      // #1020 のモード比較ショットは mock の警告 4 種（orphaned 予約・容量超過・ドロップ・失敗）
       // を再現する。ほかの既存シナリオでは従来の全超過 fixture を使う。
       if (emptyHome) return json([])
       if (homeOpsFixture) {
@@ -966,6 +972,34 @@ async function computedVar(locator, varName) {
   return locator.first().evaluate(readCustomColor, varName)
 }
 
+/** readScreenshotPixels は Chromium が描いた PNG から指定座標の実画素を読む。 */
+async function readScreenshotPixels(page, png, points) {
+  return page.evaluate(
+    async ({ base64, points }) => {
+      const image = new Image()
+      image.src = `data:image/png;base64,${base64}`
+      await image.decode()
+      const canvas = document.createElement('canvas')
+      canvas.width = image.width
+      canvas.height = image.height
+      const context = canvas.getContext('2d', { willReadFrequently: true })
+      if (context === null) throw new Error('2d canvas context is unavailable')
+      context.drawImage(image, 0, 0)
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+      return points.map(([x, y]) => {
+        const px = Math.floor(x)
+        const py = Math.floor(y)
+        if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) {
+          throw new Error(`screenshot point is outside the image: (${px}, ${py})`)
+        }
+        const start = (py * canvas.width + px) * 4
+        return Array.from(pixels.slice(start, start + 3))
+      })
+    },
+    { base64: png.toString('base64'), points },
+  )
+}
+
 // --- 実行 -------------------------------------------------------------------
 
 /** 撮る画面。`wait` はその画面で描画完了と見なせる目印。 */
@@ -1135,6 +1169,60 @@ async function open(viewport, theme, screen, opts = {}) {
   await page.evaluate(() => document.fonts.ready)
   await page.waitForTimeout(400)
   return { context, page }
+}
+
+/** checkHomeWarnings はホームの警告種別とモード切替バッジの件数を照合する。 */
+async function checkHomeWarnings(page, mode, theme, viewport) {
+  const label = `${mode}/${theme}/${viewport.width}px`
+  const toggle = page.getByTestId('home-mode-toggle')
+  if ((await toggle.count()) === 0) {
+    ng.push(`[${label}] ホームのモード切替が見つからない`)
+  }
+
+  const badge = page.getByTestId('home-warning-count')
+  const badgeReady = await badge.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!badgeReady) {
+    ng.push(`[${label}] 警告件数バッジが見つからない`)
+  }
+
+  let warningKinds = expectedHomeWarningKinds
+  if (mode === 'ops') {
+    const warningSection = page.locator('section[aria-labelledby="home-action-required"]')
+    const warningSectionReady = await warningSection.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+    if (!warningSectionReady) {
+      ng.push(`[${label}] 要対応の警告一覧が出ない`)
+    }
+    const warningRows = warningSection.locator('li[data-warning-kind]')
+    warningKinds = await warningRows.evaluateAll((elements) => elements.map((element) => element.dataset.warningKind))
+    if (warningKinds.join(',') !== expectedHomeWarningKinds.join(',')) {
+      ng.push(
+        `[${label}] 警告種別の順序が ${expectedHomeWarningKinds.join('→')} ` +
+          `でない（${warningKinds.join(',')}）`,
+      )
+    }
+  }
+  if (badgeReady) {
+    const badgeText = (await badge.innerText()).trim()
+    if (badgeText !== String(warningKinds.length)) {
+      ng.push(`[${label}] 警告件数 ${badgeText} が警告行 ${warningKinds.length} 件と一致しない`)
+    }
+  }
+}
+
+// 警告の red / green と変異確認では、レイアウト判定を含む全シナリオを起動せず
+// この契約だけを実ブラウザで実行する。
+if (process.env.E2E_HOME_WARNINGS_ONLY === '1') {
+  for (const mode of ['watch', 'ops']) {
+    for (const theme of themes) {
+      for (const viewport of [homeDesktop, mobile, mobileWide]) {
+        const screen = { name: `home-${mode}`, path: `/?mode=${mode}` }
+        const { context, page } = await open(viewport, theme, screen, { homeModeFixture: true })
+        await checkHomeWarnings(page, mode, theme, viewport)
+        await context.close()
+      }
+    }
+  }
+  await finish(ng, browser)
 }
 
 /**
@@ -2266,16 +2354,7 @@ for (const mode of ['watch', 'ops']) {
       const { context, page } = await open(viewport, theme, screen, { homeModeFixture: true })
       await page.locator('main > header').waitFor({ timeout: 5000 }).catch(() => {})
 
-      const toggle = page.getByTestId('home-mode-toggle')
-      if ((await toggle.count()) === 0) {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] ホームのモード切替が見つからない`)
-      }
-      const badge = page.getByTestId('home-warning-count')
-      if ((await badge.count()) === 0) {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数バッジが見つからない`)
-      } else if ((await badge.innerText()).trim() !== '3') {
-        ng.push(`[${mode}/${theme}/${viewport.width}px] 警告件数が3でない（${(await badge.innerText()).trim()}）`)
-      }
+      await checkHomeWarnings(page, mode, theme, viewport)
 
       const geometry = await page.evaluate(() => {
         const rect = (selector) => {
@@ -2584,8 +2663,8 @@ for (const theme of themes) {
   await page.locator('section[aria-labelledby="home-action-required"]').waitFor({ timeout: 5000 }).catch(() => {})
   const warningRows = page.locator('section[aria-labelledby="home-action-required"] li[data-warning-kind]')
   const warningKinds = await warningRows.evaluateAll((elements) => elements.map((element) => element.dataset.warningKind))
-  if (warningKinds.join(',') !== 'breaker,failed,overage,drop') {
-    ng.push(`ホーム: 要対応の順序が breaker→failed→overage→drop でない（${warningKinds.join(',')}）`)
+  if (warningKinds.join(',') !== 'breaker,failed,not-recorded,overage,drop') {
+    ng.push(`ホーム: 要対応の順序が breaker→failed→not-recorded→overage→drop でない（${warningKinds.join(',')}）`)
   }
   const overageRow = page.locator('li[data-warning-kind="overage"]')
   // 要対応の行が無い実装（M8-25）でも TimeoutError で結果が消えないよう、取れなければ NG に積む。
@@ -4183,6 +4262,180 @@ function checkContrast(theme, label, fg, measured, floor) {
     ng.push(`[${theme}] ${label} のコントラストが ${ratio.toFixed(2)}（下限 ${floor}）`)
   }
   return ratio
+}
+
+function checkPixelContrast(theme, label, foreground, background, floor) {
+  const ratio = contrast([...foreground, 255], [...background, 255])
+  contrasts.push({ theme, label, ratio, floor })
+  log(`  [${theme}] ${label}: ${ratio.toFixed(2)}:1 (下限 ${floor}:1)`)
+  if (ratio < floor) {
+    ng.push(`[${theme}] ${label} の実画素コントラストが ${ratio.toFixed(2)}（下限 ${floor}）`)
+  }
+  return ratio
+}
+
+// サイドバーの現在地とフォーカスリングは、DOM の色指定ではなく描画済み PNG の
+// 画素で測る。選択行の左端、行の右側にあるページ地、2px オフセットリング上端、
+// その外側の地を採る。リングの座標を行の外に固定することで、オフセット無しや
+// ブラウザ既定の outline へ戻る退行を拾う。
+for (const theme of themes) {
+  const { context, page } = await open(homeDesktop, theme, screenOf('programs'))
+  const sideNav = page.locator('nav[aria-label="主ナビゲーション"]').first()
+  const current = sideNav.locator('a[aria-current="page"]')
+  const currentCount = await current.count()
+  if (currentCount !== 1) {
+    ng.push(`[${theme}] サイドバーの現在地リンクが 1 件でない（${currentCount} 件）`)
+    await context.close()
+    continue
+  }
+
+  const item = current.first()
+  await item.focus()
+  const focusStyle = await item.evaluate((el) => {
+    const style = getComputedStyle(el)
+    return {
+      focusVisible: el.matches(':focus-visible'),
+      boxShadow: style.boxShadow,
+      outlineStyle: style.outlineStyle,
+      rect: (() => {
+        const rect = el.getBoundingClientRect()
+        return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+      })(),
+    }
+  })
+  if (!focusStyle.focusVisible) {
+    ng.push(`[${theme}] サイドバーの現在地リンクに :focus-visible が付かない`)
+  }
+  if (focusStyle.boxShadow === 'none') {
+    ng.push(`[${theme}] サイドバーの現在地リンクに明示フォーカスリングが出ない`)
+  }
+  if (focusStyle.outlineStyle !== 'none') {
+    ng.push(`[${theme}] サイドバーの現在地リンクにブラウザ outline が残っている（${focusStyle.outlineStyle}）`)
+  }
+
+  const { x, y, width, height } = focusStyle.rect
+  const centerY = Math.floor(y + height / 2)
+  const centerX = Math.floor(x + width / 2)
+  const png = await page.screenshot({ scale: 'css' })
+  const [itemPixel, pagePixel, ringPixel, ringBackdropPixel] = await readScreenshotPixels(page, png, [
+    [Math.floor(x + 6), centerY],
+    [Math.floor(x + width + 4), centerY],
+    [centerX, Math.floor(y - 3)],
+    [centerX, Math.floor(y - 6)],
+  ])
+  const scanline = await computedVar(page.locator('html'), '--scanline')
+  log(
+    `  [${theme}] サイドバー現在地: 行=${itemPixel} / ページ地=${pagePixel} / ` +
+      `リング=${ringPixel} / リング外=${ringBackdropPixel}`,
+  )
+  checkPixelContrast(theme, 'サイドバー現在地 / ページ地', itemPixel, pagePixel, minUiContrast)
+  checkPixelContrast(theme, 'サイドバーのフォーカスリング / ページ地', ringPixel, ringBackdropPixel, minUiContrast)
+  if (scanline === null || !sameRgb(ringPixel, scanline.rgba)) {
+    ng.push(
+      `[${theme}] サイドバーのフォーカスリングの実画素が --scanline と一致しない` +
+        `（画素=${ringPixel} / --scanline=${scanline?.rgba}）`,
+    )
+  }
+  await context.close()
+}
+
+// 非現在地リンクと畳んだサイドバーのリングも、現在地と同じく実画素で測る。
+// 非現在地はオフセット無しなので、行の左端のリングとその 2px 外側の地を採る（上端は先頭項目で ul の overflow に切られる）。
+// `ring-ring/50` へ戻ると合成後の画素が --scanline から外れ、3:1 も割る。
+for (const theme of themes) {
+  for (const collapsed of [false, true]) {
+    const mode = collapsed ? '畳んだサイドバー' : 'サイドバーの非現在地'
+    const { context, page } = await open(homeDesktop, theme, screenOf('programs'))
+    const sideNav = page.locator('nav[aria-label="主ナビゲーション"]').first()
+    if (collapsed) {
+      // クリックだと以降の focus() が :focus-visible にならないので、キーボードで畳む
+      await page.getByRole('button', { name: 'ナビゲーションを畳む' }).focus()
+      await page.keyboard.press('Enter')
+    }
+    const link = sideNav.locator('a:not([aria-current])').first()
+    if ((await link.count()) === 0) {
+      ng.push(`[${theme}] ${mode}のリンクが見つからずリングを画素で測れない`)
+      await context.close()
+      continue
+    }
+    await link.focus()
+    const focused = await link.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      return {
+        focusVisible: el.matches(':focus-visible'),
+        boxShadow: getComputedStyle(el).boxShadow,
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      }
+    })
+    if (!focused.focusVisible || focused.boxShadow === 'none') {
+      ng.push(`[${theme}] ${mode}のリンクに明示フォーカスリングが出ない`)
+    }
+    const ringY = Math.floor(focused.rect.y + focused.rect.height / 2)
+    const png = await page.screenshot({ scale: 'css' })
+    const [ringPixel, backdropPixel] = await readScreenshotPixels(page, png, [
+      [Math.floor(focused.rect.x - 1), ringY],
+      [Math.floor(focused.rect.x - 4), ringY],
+    ])
+    const scanline = await computedVar(page.locator('html'), '--scanline')
+    log(`  [${theme}] ${mode}のリング=${ringPixel} / 外側の地=${backdropPixel}`)
+    checkPixelContrast(theme, `${mode}のフォーカスリング / 地`, ringPixel, backdropPixel, minUiContrast)
+    if (scanline === null || !sameRgb(ringPixel, scanline.rgba)) {
+      ng.push(`[${theme}] ${mode}のフォーカスリングの実画素が --scanline と一致しない（画素=${ringPixel} / --scanline=${scanline?.rgba}）`)
+    }
+    await context.close()
+  }
+}
+
+// 共有 Button のリングも、計算済みの border-color ではなく PNG の実画素で測る。
+// `ring-ring/50` へ戻ると border は不透明なままなので `checkExplicitFocusRing` の
+// border 比較だけでは見逃す。ボタン上端のリングとその外側の面を採り、半透明化で
+// 合成された実際のコントラストが 3:1 を割ることを確認する。
+for (const theme of themes) {
+  const { context, page } = await open(homeDesktop, theme, screenOf('search'))
+  const button = page.getByRole('button', { name: '検索', exact: true }).first()
+  if ((await button.count()) === 0) {
+    ng.push(`[${theme}] 共通 Button が見つからずフォーカスリングを画素で測れない`)
+    await context.close()
+    continue
+  }
+
+  await button.focus()
+  const focused = await button.evaluate((el) => {
+    const style = getComputedStyle(el)
+    const rect = el.getBoundingClientRect()
+    return {
+      focusVisible: el.matches(':focus-visible'),
+      boxShadow: style.boxShadow,
+      outlineStyle: style.outlineStyle,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+    }
+  })
+  if (!focused.focusVisible) {
+    ng.push(`[${theme}] 共通 Button に :focus-visible が付かない`)
+  }
+  if (focused.boxShadow === 'none') {
+    ng.push(`[${theme}] 共通 Button の明示フォーカスリングがない`)
+  }
+  if (focused.outlineStyle !== 'none') {
+    ng.push(`[${theme}] 共通 Button にブラウザ outline が残っている（${focused.outlineStyle}）`)
+  }
+
+  const ringX = Math.floor(focused.rect.x + focused.rect.width / 2)
+  const png = await page.screenshot({ scale: 'css' })
+  const [ringPixel, backdropPixel] = await readScreenshotPixels(page, png, [
+    [ringX, Math.floor(focused.rect.y - 1)],
+    [ringX, Math.floor(focused.rect.y - 4)],
+  ])
+  const scanline = await computedVar(page.locator('html'), '--scanline')
+  log(`  [${theme}] 共通 Button のリング=${ringPixel} / 外側の面=${backdropPixel}`)
+  checkPixelContrast(theme, '共通 Button のフォーカスリング / 背景', ringPixel, backdropPixel, minUiContrast)
+  if (scanline === null || !sameRgb(ringPixel, scanline.rgba)) {
+    ng.push(
+      `[${theme}] 共通 Button のフォーカスリングの実画素が --scanline と一致しない` +
+        `（画素=${ringPixel} / --scanline=${scanline?.rgba}）`,
+    )
+  }
+  await context.close()
 }
 
 for (const theme of themes) {
