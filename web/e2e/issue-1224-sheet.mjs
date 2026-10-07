@@ -124,6 +124,23 @@ await report('録画一覧の絞り込みでチャンネル選択をシート内
   if (dialogs !== 1) throw new Error(`絞り込みへ戻った後に dialog が ${dialogs} 個ある`)
 })
 
+await report('録画一覧の絞り込みで選んだチャンネルは、戻っても「完了」で閉じても残る', async () => {
+  await page.goto(`${URL_BASE}/recordings`)
+  const filters = await openFilterSheet(page)
+  await filters.getByRole('button', { name: 'チャンネル: すべて' }).click()
+  const channels = page.getByRole('dialog', { name: 'チャンネル' })
+  await channels.waitFor({ state: 'visible' })
+  await channels.getByRole('checkbox', { name: 'すべて' }).click()
+  await channels.getByRole('checkbox', { name: /NHK総合/ }).click()
+  await page.getByRole('button', { name: '絞り込みに戻る' }).click()
+  await filters.getByRole('button', { name: 'チャンネル: NHK総合' }).waitFor({ state: 'visible', timeout: 5000 })
+  await filters.getByRole('button', { name: '完了' }).first().click()
+  await filters.waitFor({ state: 'detached' })
+  const reopened = await openFilterSheet(page)
+  await reopened.getByRole('button', { name: 'チャンネル: NHK総合' }).waitFor({ state: 'visible', timeout: 5000 })
+  await page.keyboard.press('Escape')
+})
+
 log('\n=== 390px: シリーズ一覧でも同じ絞り込みを使う ===')
 await page.goto(`${URL_BASE}/series`)
 await report('シリーズ一覧の絞り込みに同じチャンネル行がある', async () => {

@@ -506,6 +506,30 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await waitFor(() => expect(getCurrent().service).toBeUndefined())
   })
 
+  it('絞り込みシート内で選んだチャンネルは、戻っても「完了」で閉じても残る', async () => {
+    const user = userEvent.setup()
+    const nhk = service()
+    const etv = service({ serviceId: 1032, name: 'ＮＨＫＥテレ' })
+    const { getCurrent } = renderFilters(emptyRecordingsSearch(), [nhk, etv])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const sheet = await screen.findByRole('dialog', { name: '絞り込み' })
+    await user.click(within(sheet).getByRole('button', { name: 'チャンネル: すべて' }))
+    const channels = screen.getByRole('dialog', { name: 'チャンネル' })
+    await user.click(within(channels).getByRole('checkbox', { name: 'すべて' }))
+    await user.click(within(channels).getByRole('checkbox', { name: new RegExp(nhk.name) }))
+    await waitFor(() => expect(getCurrent().service).toEqual([nhk.id]))
+
+    await user.click(screen.getByRole('button', { name: '絞り込みに戻る' }))
+    await within(sheet).findByRole('button', { name: `チャンネル: ${nhk.name}` })
+    expect(getCurrent().service).toEqual([nhk.id])
+
+    // 状態チップにも「完了」があるので、先頭（シート見出しの閉じるボタン）を押す。
+    await user.click(screen.getAllByRole('button', { name: '完了' })[0])
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(getCurrent().service).toEqual([nhk.id])
+  })
+
   // **両方向を見る。** 押して付くところだけ見ると、解除の分岐を no-op に
   // しても緑のまま通る。並びも固定する --- 選択履歴で順序が揺れると
   // 同じ選択でも URL / queryKey が変わる（`parseRecordingsSearch` が
