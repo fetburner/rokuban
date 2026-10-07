@@ -23,6 +23,7 @@
     "e2e:badge-links": "node e2e/badge-links.mjs",
     "e2e:sse-refresh": "node e2e/sse-refresh.mjs",
     "e2e:reserve-visibility": "node e2e/reserve-visibility.mjs",
+    "e2e:program-row-right-padding": "node e2e/program-row-right-padding.mjs",
     "e2e:programs-bottom-nav": "node e2e/programs-bottom-nav.mjs",
     "e2e:programs-empty-window": "node e2e/programs-empty-window.mjs",
     "e2e:programs-dialog": "node e2e/programs-dialog.mjs",

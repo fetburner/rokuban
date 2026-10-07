@@ -56,9 +56,12 @@ export function ProgramRow({
   const skipIntent = program.intent === 'skip' && !reserved
   // リストの操作列は、既存の再生ボタン（ライブまたは追っかけ）44px と
   // 予約ボタン 80px をまとめて開く。これはリストだけの幅アニメーションで、
-  // 共有操作側へ渡さない。
+  // 共有操作側へ渡さない。開いた列は右 padding 16px を持ち、ボタンの右余白を
+  // 折りたたみ行の右 padding と揃える。列が 16px 広がる分、題名の「…」は 16px
+  // 早く付くが、題名は 1 行 truncate なので行の高さは変わらない（仕様として受け入れる）。
   const reserveColumnOpenClasses = cn(
     'pointer-fine:group-hover:border-l group-has-[:focus-visible]:border-l peer-aria-expanded:border-l',
+    'pointer-fine:group-hover:pr-4 group-has-[:focus-visible]:pr-4 peer-aria-expanded:pr-4',
     draft.showLiveLink
       ? 'pointer-fine:group-hover:w-[7.75rem] group-has-[:focus-visible]:w-[7.75rem] peer-aria-expanded:w-[7.75rem]'
       : 'pointer-fine:group-hover:w-20 group-has-[:focus-visible]:w-20 peer-aria-expanded:w-20',
@@ -102,7 +105,7 @@ export function ProgramRow({
           data-testid="program-row-reserve"
           className={cn(
             'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border box-content',
-            'transition-[width] duration-150 motion-reduce:transition-none',
+            'transition-[width,padding] duration-150 motion-reduce:transition-none',
             reserveColumnOpenClasses,
           )}
         >
