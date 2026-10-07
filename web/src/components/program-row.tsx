@@ -97,12 +97,15 @@ export function ProgramRow({
          * 見えない予約ボタンがヒットテストと Tab 順序に残り、スクロール中の誤操作を
          * 防ぐというリストの理由を失う。共有側はボタンそのものだけを描画し、ここで
          * 80px / 124px、hover / focus / 展開の規則を決める。
-         */}
+        */}
         <div
           data-testid="program-row-reserve"
           className={cn(
             'flex w-0 shrink-0 items-center justify-center overflow-hidden border-border box-content',
             'transition-[width] duration-150 motion-reduce:transition-none',
+            // 展開時だけ行トグルの右 padding 16px を右余白に使う。相対移動で列幅を
+            // 変えずに済むため、題名の折り返しと仮想化の高さ計測は変わらない。
+            'peer-aria-expanded:relative peer-aria-expanded:right-4 peer-aria-expanded:overflow-visible',
             reserveColumnOpenClasses,
           )}
         >
