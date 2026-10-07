@@ -31,7 +31,7 @@ const SIDEBAR_LABELS = [
 ]
 /** モバイルのボトムタブに常時出る項目（「その他」を除く）。 */
 const MOBILE_PRIMARY_LABELS = ['ホーム', '番組', '録画']
-/** モバイルで「その他」ポップオーバーに畳まれる項目。 */
+/** モバイルで「その他」シートに畳まれる項目。 */
 const MOBILE_MORE_LABELS = ['予約', 'ライブ', '検索', 'ルール', 'CM 検出のロゴ']
 const STORAGE_KEY = 'rokuban:sidebar:collapsed'
 
@@ -95,7 +95,7 @@ function findToggle() {
   return screen.findByRole('button', { name: /ナビゲーションを(畳む|開く)/ })
 }
 
-/** モバイルの「その他」ポップオーバーのトリガー。 */
+/** モバイルの「その他」シートのトリガー。 */
 function getMoreTrigger() {
   return screen.getByRole('button', { name: 'その他' })
 }
@@ -373,9 +373,14 @@ describe('モバイルの「その他」', () => {
     await user.click(getMoreTrigger())
 
     const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
+    expect(within(menu).getByRole('button', { name: '完了' })).toBeInTheDocument()
     for (const label of MOBILE_MORE_LABELS) {
       expect(within(menu).getByRole('link', { name: label })).toHaveAttribute('href')
     }
+    await user.click(within(menu).getByRole('button', { name: '完了' }))
+    await vi.waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'その他のナビゲーション' })).not.toBeInTheDocument(),
+    )
   })
 
   it('中の並びは頻度順（ライブ/検索/ルール）で固定されている', async () => {
@@ -392,7 +397,7 @@ describe('モバイルの「その他」', () => {
     expect(labels).toEqual(MOBILE_MORE_LABELS)
   })
 
-  it('中の項目をクリックすると実際に遷移し、ポップオーバーが閉じる', async () => {
+  it('中の項目をクリックすると実際に遷移し、シートが閉じる', async () => {
     const user = userEvent.setup()
     renderShell()
     await findToggle()
@@ -402,7 +407,7 @@ describe('モバイルの「その他」', () => {
     const menu = await screen.findByRole('dialog', { name: 'その他のナビゲーション' })
     await user.click(within(menu).getByRole('link', { name: 'ライブ' }))
 
-    // ポップオーバーが DOM 上から消える（閉じ忘れは jsdom で観測できる壊れ方）
+    // シートが DOM 上から消える（閉じ忘れは jsdom で観測できる壊れ方）
     await vi.waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'その他のナビゲーション' })).not.toBeInTheDocument(),
     )
@@ -498,7 +503,7 @@ describe('ナビの出し分け（live.enabled）', () => {
     renderShell('/', { live: true })
     await findToggle()
 
-    // サイドバーとボトムタブの「その他」で 2 箇所（サイドバー 1 + ポップオーバーは
+    // サイドバーとボトムタブの「その他」で 2 箇所（サイドバー 1 + シートは
     // 閉じているので 0）。少なくとも 1 つ出ることを待って確認する
     const links = await findLiveLinks()
     expect(links.length).toBeGreaterThanOrEqual(1)

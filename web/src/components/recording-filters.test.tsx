@@ -482,6 +482,30 @@ describe('RecordingFilters 絞り込みパネル', () => {
     await waitFor(() => expect(getCurrent().service).toEqual([101024]))
   })
 
+  it('絞り込みシート内でチャンネルを選び、戻ると 0 局の一時状態を全局へ戻す', async () => {
+    const user = userEvent.setup()
+    const selected = service()
+    const { getCurrent } = renderFilters({ service: [selected.id] }, [selected])
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const filterSheet = await screen.findByRole('dialog', { name: '絞り込み' })
+    await user.click(within(filterSheet).getByRole('button', { name: `チャンネル: ${selected.name}` }))
+
+    const channelSheet = screen.getByRole('dialog', { name: 'チャンネル' })
+    expect(channelSheet).toBe(filterSheet)
+    expect(screen.getAllByRole('dialog')).toHaveLength(1)
+
+    const channel = within(channelSheet).getByRole('checkbox', { name: new RegExp(selected.name) })
+    expect(channel).toHaveAttribute('aria-checked', 'true')
+    await user.click(channel)
+    await within(channelSheet).findByRole('status')
+
+    await user.click(screen.getByRole('button', { name: '絞り込みに戻る' }))
+    expect(screen.getByRole('dialog', { name: '絞り込み' })).toBe(filterSheet)
+    await within(filterSheet).findByRole('button', { name: 'チャンネル: すべて' })
+    await waitFor(() => expect(getCurrent().service).toBeUndefined())
+  })
+
   // **両方向を見る。** 押して付くところだけ見ると、解除の分岐を no-op に
   // しても緑のまま通る。並びも固定する --- 選択履歴で順序が揺れると
   // 同じ選択でも URL / queryKey が変わる（`parseRecordingsSearch` が
