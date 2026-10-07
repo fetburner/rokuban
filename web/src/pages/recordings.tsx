@@ -1,7 +1,15 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
 import { LayoutGrid, Trash2 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react'
+import { flushSync } from 'react-dom'
 import {
   deleteRecording as deleteRecordingRequest,
   getListRecordingsQueryKey,
@@ -159,8 +167,18 @@ export function RecordingsPage() {
   const [view, setView] = useState<RecordingRowView>(loadRecordingView)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(() => new Set())
+  const [activeRecordingId, setActiveRecordingId] = useState<number | null>(null)
   const [bulkBusy, setBulkBusy] = useState(false)
   const [purgeConfirmOpen, setPurgeConfirmOpen] = useState(false)
+  const selectionAnchorIdRef = useRef<number | null>(null)
+  // Shift の範囲を入れる前の選択（base）と、範囲を入れた結果（produced）。selected が produced の
+  // ままなら同じ範囲の続きなので base から作り直して縮められる。クリック・Space・Cmd+A などで
+  // selected が変わっていれば、その時点の選択を新しい base にする（Finder と同じく範囲外の行は残る）。
+  const shiftRangeRef = useRef<{ base: Set<number>; produced: Set<number> } | null>(null)
+  const listboxRef = useRef<HTMLUListElement>(null)
+  const selectionToolbarRef = useRef<HTMLDivElement>(null)
+  const selectionButtonRef = useRef<HTMLButtonElement>(null)
+  const restoreSelectionButtonFocusRef = useRef(false)
   const selectedIds = [...selected]
   const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
   const toggleView = () => {
@@ -169,12 +187,92 @@ export function RecordingsPage() {
     saveRecordingView(next)
   }
   const toggleSelected = (id: number) => {
+    selectionAnchorIdRef.current = id
     setSelected((current) => {
       const next = new Set(current)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+  }
+  const extendSelectionTo = (anchorId: number, targetId: number) => {
+    const anchorIndex = recordings.findIndex(({ id }) => id === anchorId)
+    const targetIndex = recordings.findIndex(({ id }) => id === targetId)
+    if (anchorIndex < 0 || targetIndex < 0) return
+    const start = Math.min(anchorIndex, targetIndex)
+    const end = Math.max(anchorIndex, targetIndex)
+    const range = shiftRangeRef.current
+    const base = range?.produced === selected ? range.base : selected
+    const next = new Set(base)
+    recordings.slice(start, end + 1).forEach(({ id }) => next.add(id))
+    shiftRangeRef.current = { base, produced: next }
+    setSelected(next)
+  }
+  const beginSelection = () => {
+    const header = selectionButtonRef.current?.closest('header')
+    // 行は選択モードに入った後のレイアウトで選ぶ。checkbox でカードが伸びて下へ押し出され、
+    // 下側に固定選択バー（下部ナビの上に載る）が出るので、入る前の位置では隠れる行を選ぶ。
+    flushSync(() => setSelecting(true))
+    // sticky ヘッダーの下端から選択バーの上端までに収まる最初の行から始める。先頭行にすると、
+    // 下の方で入ったとき画面外の行にフォーカスが乗り、最初の ↓ で先頭へ飛び、Space で
+    // 見えない行を選ぶ。
+    const top = header?.getBoundingClientRect().bottom ?? 0
+    const bottom = selectionToolbarRef.current?.getBoundingClientRect().top ?? window.innerHeight
+    const rows = [...(listboxRef.current?.children ?? [])]
+    let index = rows.findIndex((row) => {
+      const box = row.getBoundingClientRect()
+      return box.top >= top - 1 && box.bottom <= bottom + 1
+    })
+    if (index < 0) {
+      // 収まる行が無い（横向きの低い画面ではカードが領域より高い）: 領域との重なりが最も
+      // 大きい行。重なりが無ければ（一覧を越えた位置・領域が潰れた画面）負の値で最も近い行になる。
+      // スクロールせず、見えている部分にフォーカスを置く。
+      const shown = rows.map((row) => {
+        const box = row.getBoundingClientRect()
+        return Math.min(box.bottom, bottom) - Math.max(box.top, top)
+      })
+      index = shown.indexOf(Math.max(...shown))
+    }
+    rows[index]?.querySelector<HTMLElement>('[data-recording-option]')?.focus({ preventScroll: true })
+    const startId = recordings[index]?.id ?? null
+    selectionAnchorIdRef.current = startId
+    setActiveRecordingId(startId)
+  }
+  const handleOptionClick = (id: number, shiftKey: boolean) => {
+    setActiveRecordingId(id)
+    if (shiftKey) {
+      const anchorId = selectionAnchorIdRef.current ?? id
+      selectionAnchorIdRef.current = anchorId
+      extendSelectionTo(anchorId, id)
+      return
+    }
+    toggleSelected(id)
+  }
+  const handleOptionKeyDown = (id: number, event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return
+    if (event.key === ' ' || event.key === 'Spacebar') {
+      event.preventDefault()
+      toggleSelected(id)
+      return
+    }
+    // Tab は横取りしない。行の中に Tab で止まる要素は無いので、DOM 順で一覧の次
+    // （自動読み込み失敗時の「さらに読み込む」、無ければ固定バー）へ進む。
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+
+    event.preventDefault()
+    const currentIndex = recordings.findIndex((recording) => recording.id === id)
+    if (currentIndex < 0 || recordings.length === 0) return
+    const nextIndex = Math.min(
+      Math.max(currentIndex + (event.key === 'ArrowDown' ? 1 : -1), 0),
+      recordings.length - 1,
+    )
+    const nextId = recordings[nextIndex].id
+    setActiveRecordingId(nextId)
+    if (event.shiftKey) {
+      const anchorId = selectionAnchorIdRef.current ?? id
+      selectionAnchorIdRef.current = anchorId
+      extendSelectionTo(anchorId, nextId)
+    }
   }
   const invalidateRecordings = () =>
     queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
@@ -250,10 +348,52 @@ export function RecordingsPage() {
     }
   }
   const cancelSelection = () => {
+    restoreSelectionButtonFocusRef.current = true
     setSelecting(false)
     setSelected(new Set())
+    setActiveRecordingId(null)
+    selectionAnchorIdRef.current = null
     setPurgeConfirmOpen(false)
   }
+
+  useLayoutEffect(() => {
+    if (selecting && activeRecordingId !== null) {
+      listboxRef.current
+        ?.querySelector<HTMLElement>(`[data-recording-option="${activeRecordingId}"]`)
+        ?.focus()
+      return
+    }
+    if (!selecting && restoreSelectionButtonFocusRef.current) {
+      restoreSelectionButtonFocusRef.current = false
+      selectionButtonRef.current?.focus()
+    }
+  }, [activeRecordingId, selecting])
+
+  useEffect(() => {
+    if (!selecting) return
+    const onSelectionKeyDown = (event: KeyboardEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('[role="alertdialog"]')) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        cancelSelection()
+        return
+      }
+      if (
+        (!event.metaKey && !event.ctrlKey) ||
+        event.key.toLowerCase() !== 'a' ||
+        target?.closest('input, textarea, select, [contenteditable="true"]')
+      ) {
+        return
+      }
+      event.preventDefault()
+      setSelected(
+        event.shiftKey ? new Set() : new Set(recordings.map(({ id }) => id)),
+      )
+    }
+    document.addEventListener('keydown', onSelectionKeyDown)
+    return () => document.removeEventListener('keydown', onSelectionKeyDown)
+  }, [recordings, selecting])
 
   // autoLoadFailed: 直近の自動読み込みが失敗したか。番兵が可視のままでも自動
   // では再試行しない（さもないと失敗したまま無限にリクエストを投げ続ける）。
@@ -268,6 +408,8 @@ export function RecordingsPage() {
     // oxlint-disable-next-line react/set-state-in-effect -- URL 条件変更で一覧選択をリセットする
     setSelecting(false)
     setSelected(new Set())
+    setActiveRecordingId(null)
+    selectionAnchorIdRef.current = null
     setPurgeConfirmOpen(false)
   }, [paramsKey])
   const autoLoadStateRef = useRef({
@@ -349,7 +491,13 @@ export function RecordingsPage() {
               {/* 「選択」は 0 件のときは出さない --- 選ぶものが無い編集モードに
                   入れてしまう。0 件でも出すのはトグルだけ（上のコメント）。 */}
               {recordings.length > 0 && (
-                <Button type="button" variant="ghost" size="sm" onClick={() => setSelecting(true)}>
+                <Button
+                  ref={selectionButtonRef}
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={beginSelection}
+                >
                   選択
                 </Button>
               )}
@@ -469,6 +617,7 @@ export function RecordingsPage() {
       ) : (
         <>
           <ul
+            ref={listboxRef}
             role={selecting ? 'listbox' : undefined}
             aria-multiselectable={selecting || undefined}
             aria-label={selecting ? '録画を選択' : undefined}
@@ -488,6 +637,10 @@ export function RecordingsPage() {
                   view={view}
                   selecting={selecting}
                   selected={selected.has(r.id)}
+                  active={activeRecordingId === r.id}
+                  onOptionClick={(shiftKey) => handleOptionClick(r.id, shiftKey)}
+                  onOptionKeyDown={(event) => handleOptionKeyDown(r.id, event)}
+                  onOptionFocus={() => setActiveRecordingId(r.id)}
                   onToggle={() => toggleSelected(r.id)}
                 />
               </li>
@@ -524,6 +677,7 @@ export function RecordingsPage() {
       {selecting && (
         <div className="fixed inset-x-0 bottom-[var(--bottom-nav-height)] z-20 flex justify-center px-4 pb-2 md:bottom-0 md:pb-4">
           <div
+            ref={selectionToolbarRef}
             role="toolbar"
             aria-label="選択した録画の操作"
             className="flex w-full max-w-3xl flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-lg"
