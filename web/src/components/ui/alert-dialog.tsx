@@ -50,6 +50,8 @@ function AlertDialogContent({
 }: AlertDialogPrimitive.Popup.Props & {
   size?: "default" | "sm"
 }) {
+  const popupRef = React.useRef<HTMLDivElement | null>(null)
+
   return (
     <AlertDialogPortal>
       <AlertDialogOverlay />
@@ -61,6 +63,8 @@ function AlertDialogContent({
           className
         )}
         {...props}
+        ref={popupRef}
+        initialFocus={popupRef}
       />
     </AlertDialogPortal>
   )
