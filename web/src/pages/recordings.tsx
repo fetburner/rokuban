@@ -9,6 +9,7 @@ import {
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react'
+import { flushSync } from 'react-dom'
 import {
   deleteRecording as deleteRecordingRequest,
   getListRecordingsQueryKey,
@@ -200,17 +201,28 @@ export function RecordingsPage() {
     })
   }
   const beginSelection = () => {
-    // sticky ヘッダーの下で最初に見えている行から始める。先頭行にすると、下の方で
-    // 「選択」を押したとき画面外の行にフォーカスが乗り、最初の ↓ で先頭へ飛び、
-    // Space で見えない行を選ぶ。一覧を抜けた位置（さらに読み込む等）なら最後の行。
-    const headerBottom =
-      selectionButtonRef.current?.closest('header')?.getBoundingClientRect().bottom ?? 0
+    const header = selectionButtonRef.current?.closest('header')
+    // 行は選択モードに入った後のレイアウトで選ぶ。checkbox でカードが伸びて下へ押し出され、
+    // 下側に固定選択バー（下部ナビの上に載る）が出るので、入る前の位置では隠れる行を選ぶ。
+    flushSync(() => setSelecting(true))
+    // sticky ヘッダーの下端から選択バーの上端までに収まる最初の行から始める。先頭行にすると、
+    // 下の方で入ったとき画面外の行にフォーカスが乗り、最初の ↓ で先頭へ飛び、Space で
+    // 見えない行を選ぶ。
+    const top = header?.getBoundingClientRect().bottom ?? 0
+    const bottom = selectionToolbarRef.current?.getBoundingClientRect().top ?? window.innerHeight
     const rows = [...(listboxRef.current?.children ?? [])]
-    const index = rows.findIndex((row) => row.getBoundingClientRect().top >= headerBottom - 1)
-    const startId = recordings[index < 0 ? recordings.length - 1 : index]?.id ?? null
+    let index = rows.findIndex((row) => {
+      const box = row.getBoundingClientRect()
+      return box.top >= top - 1 && box.bottom <= bottom + 1
+    })
+    // 収まる行が無い（横向きの低い画面ではカードが領域より高い）: 領域に掛かる最初の行、
+    // 掛かる行も無ければ最後の行。スクロールせず、見えている部分にフォーカスを置く。
+    if (index < 0) index = rows.findIndex((row) => row.getBoundingClientRect().bottom > top)
+    if (index < 0) index = rows.length - 1
+    rows[index]?.querySelector<HTMLElement>('[data-recording-option]')?.focus({ preventScroll: true })
+    const startId = recordings[index]?.id ?? null
     selectionAnchorIdRef.current = startId
     setActiveRecordingId(startId)
-    setSelecting(true)
   }
   const handleOptionClick = (id: number, shiftKey: boolean) => {
     setActiveRecordingId(id)
