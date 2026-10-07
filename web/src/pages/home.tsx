@@ -821,6 +821,7 @@ function HomeOpsTimeline({
       </section>
       {!isPending && !isError && events.length > 0 && (
         <details className="min-w-0 rounded-md border border-border bg-card text-sm" data-testid="home-timeline-details">
+          {/* min-h-11 だと実ブラウザ判定が NG（44.0px 高の下端 1/29 点が直下の ul に当たる: mobile-360/390 home-timeline-details）。min-h-12 で通る。 */}
           <summary className="min-h-6 pointer-coarse:min-h-12 cursor-pointer px-3 py-1 text-primary underline-offset-2 hover:underline">
             録画・予約の詳細
           </summary>

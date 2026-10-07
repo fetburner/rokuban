@@ -1401,6 +1401,7 @@ async function measureCoarseTapTargets(page, label, scope = page.locator('body')
 
       const targets = []
       let ignoredSortSelects = 0
+      let ignoredChaseLiveEdges = 0
       let ignoredSelectionCheckboxes = 0
       for (const element of root.querySelectorAll(selector)) {
         if (element instanceof HTMLInputElement && element.type === 'hidden') continue
@@ -1457,6 +1458,13 @@ async function measureCoarseTapTargets(page, label, scope = page.locator('body')
         // その作業へ責務を移す明示例外にする。
         if (element.matches('select[aria-label="並び順"]')) {
           ignoredSortSelects++
+          continue
+        }
+
+        // 追っかけ再生の先端ボタンはシークバー上の重ね要素（z-[3]）で、広げると
+        // 先端の左右でシークのドラッグを奪う。24px のまま置く明示例外。
+        if (element.matches('[data-testid="chase-live-edge"]')) {
+          ignoredChaseLiveEdges++
           continue
         }
 
@@ -1597,7 +1605,7 @@ async function measureCoarseTapTargets(page, label, scope = page.locator('body')
         }
       }
 
-      return { targets, overlaps, ignoredSortSelects, ignoredSelectionCheckboxes }
+      return { targets, overlaps, ignoredSortSelects, ignoredChaseLiveEdges, ignoredSelectionCheckboxes }
     },
     {
       selector: TAP_TARGET_SELECTOR,
@@ -1618,6 +1626,9 @@ async function measureCoarseTapTargets(page, label, scope = page.locator('body')
   )
   if (result.ignoredSortSelects > 0) {
     log(`    例外: 録画一覧の「並び順」select ${result.ignoredSortSelects} 件（#1220 がアイコン化）`)
+  }
+  if (result.ignoredChaseLiveEdges > 0) {
+    log(`    例外: 追っかけの先端ボタン ${result.ignoredChaseLiveEdges} 件（シークバー上の重ね要素。広げるとシークのドラッグを奪う）`)
   }
   if (result.ignoredSelectionCheckboxes > 0) {
     log(`    例外: 選択行の checkbox ${result.ignoredSelectionCheckboxes} 件（行クリックが同じ切替を担う）`)

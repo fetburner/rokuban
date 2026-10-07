@@ -948,7 +948,7 @@ export function RecordingPlaybackControls({
                       event.stopPropagation()
                       onLiveEdgeSeek?.()
                     }}
-                    className="absolute top-1/2 z-[3] size-6 pointer-coarse:size-11 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
+                    className="absolute top-1/2 z-[3] size-6 -translate-x-1/2 -translate-y-1/2 rounded-full focus-visible:outline-2 focus-visible:outline-white"
                     style={{ left: `${axisFraction(chaseTimeline.liveEdgeSeconds) * 100}%` }}
                   >
                     <span aria-hidden="true" className="mx-auto block h-4 w-0.5 bg-red-500" />
