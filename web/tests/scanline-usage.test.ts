@@ -7,10 +7,9 @@ import { describe, expect, it } from 'vitest'
 /**
  * 走査線ユーティリティ（`scanlines` / `tally-scanlines`）の使用箇所を固定する。
  *
- * `docs/frontend/design.md`「走査線は 3 箇所限定」---空状態・読み込み中・
- * ON AIR 以外で使わないという決定を、grep 相当の機械判定にする。issue の
- * 受け入れ基準にある「3 箇所以外に走査線クラスが使われていないことを grep で
- * 確認する手順」をコードに落としたもの。4 箇所目を足すとここが落ちる。
+ * `docs/frontend/design.md`「走査線は読み込み中・ON AIR の 2 箇所限定」---
+ * EmptyState には使わないという決定を含め、他の用途へ広がっていないことを
+ * grep 相当の機械判定にする。新しい実装ファイルへクラスを足すとここが落ちる。
  *
  * `src/` ではなくここに置くのは design-tokens.test.ts と同じ理由 ---
  * `?raw` は vitest の既定設定（`css: false`）で CSS ファイルを空文字列に
@@ -56,12 +55,9 @@ function findUsers(className: string): string[] {
 }
 
 describe('走査線クラスの使用箇所', () => {
-  it('scanlines は index.css（定義）と components/page.tsx（空状態・読み込み中）だけ', () => {
-    // 意図的に実装を壊して確認した変異（報告参照）:
-    //   1. components/page.tsx の EmptyState から `scanlines` を外す →
-    //      期待値の一覧から漏れて落ちる
-    //   2. どこか（例: pages/programs.tsx）に `scanlines` を新しく足す →
-    //      一覧に無いファイルが増えて落ちる
+  it('scanlines は index.css（定義）と components/page.tsx（Skeleton）だけ', () => {
+    // 使用元の追加はここで、Skeleton の実際のクラスは page.test.tsx で固定する。
+    // EmptyState に scanlines を戻す変異は page.test.tsx と実ブラウザ gate で落とす。
     expect(findUsers('scanlines')).toEqual(['src/components/page.tsx', 'src/index.css'])
   })
 
