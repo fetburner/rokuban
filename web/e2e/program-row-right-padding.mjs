@@ -3,8 +3,10 @@
 //
 // jsdom はレイアウトを計算しないため、左右端の距離とボタンの実寸は測れない。
 // 1280px / 390px の両方で、展開ボタンの右端と行の右端の距離を、隣の行の
-// トグルボタンが持つ右 padding と比較する。行上部の高さと 44px のタップ領域も
-// 併せて確認し、見た目の変更で行の折り返しや操作対象の寸法が変わらないようにする。
+// トグルボタンが持つ右 padding と比較する。行トグルの幅（境界線 1 + 列 80 +
+// padding 16 だけ縮む）、行上部 64px、予約ボタン 80×44px 以上、展開中の
+// scrollWidth が viewport 幅を超えないことも確認する。1280px（fine pointer）では
+// 折りたたみ行をホバーして開いた列の右余白も同じ 16px であることを測る。
 //
 // mirakc・実チューナー・DB は不要。API は `page.route` で差し替える。
 //
@@ -137,6 +139,34 @@ for (const width of [1280, 390]) {
     (el) => Number.parseFloat(getComputedStyle(el).paddingRight),
   )
 
+  if (!coarsePointerExpected) {
+    // fine pointer: 折りたたみ行をホバーして開いた列の右余白も参照 padding と揃う。
+    await referenceToggle.hover()
+    await page.waitForTimeout(300)
+    const hoverGap = await referenceRow.evaluate((row) => {
+      const button = row.querySelector('[data-program-action="reserve"] button')
+      return button ? row.getBoundingClientRect().right - button.getBoundingClientRect().right : null
+    })
+    log(`  ホバーした折りたたみ行の予約ボタン右余白: ${hoverGap}px`)
+    if (hoverGap === null || Math.abs(hoverGap - referencePadding) > 0.5) {
+      ng.push(
+        `${width}px: ホバーした折りたたみ行の予約ボタン右余白 ${hoverGap}px が、参照 padding ${referencePadding}px と一致しない`,
+      )
+    }
+    await page.mouse.move(0, 0)
+    await page.waitForTimeout(300)
+  }
+
+  // 展開のクリック直前から約 400ms、幅が伸びる間の scrollWidth の最大値を記録する。
+  await page.evaluate(() => {
+    window.__maxScrollWidth = 0
+    const start = performance.now()
+    const tick = () => {
+      window.__maxScrollWidth = Math.max(window.__maxScrollWidth, document.documentElement.scrollWidth)
+      if (performance.now() - start < 400) requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
   await expandedRow.locator('button[aria-expanded]').click()
   await page.waitForFunction(
     (id) => document.querySelector(`li[data-program-id="${id}"] button[aria-expanded]`)?.getAttribute('aria-expanded') === 'true',
@@ -146,6 +176,8 @@ for (const width of [1280, 390]) {
   // 列幅の 150ms transition が終わった実レイアウトを測る。
   await page.waitForTimeout(200)
 
+  const maxScrollWidth = await page.evaluate(() => window.__maxScrollWidth)
+  const innerWidth = await page.evaluate(() => window.innerWidth)
   const reserve = expandedRow
     .getByTestId('program-row-reserve')
     .locator('[data-program-action="reserve"] button')
@@ -160,7 +192,6 @@ for (const width of [1280, 390]) {
       const buttonRect = button.getBoundingClientRect()
       const toggle = header.querySelector('button[aria-expanded]')
       const toggleRect = toggle?.getBoundingClientRect()
-      const title = header.querySelector('.text-base')
       return {
         rowRight: rowRect.right,
         buttonRight: buttonRect.right,
@@ -170,7 +201,6 @@ for (const width of [1280, 390]) {
         buttonHeight: buttonRect.height,
         headerHeight: header.getBoundingClientRect().height,
         toggleWidth: toggleRect?.width,
-        titleFits: title !== null && title.scrollWidth <= title.clientWidth + 0.5,
       }
     },
     {
@@ -186,7 +216,7 @@ for (const width of [1280, 390]) {
       `予約ボタン=${metrics?.buttonWidth}×${metrics?.buttonHeight}px, ` +
       `行上部の高さ=${metrics?.headerHeight}px（展開前=${headerHeightBefore}px）, ` +
       `行トグル幅=${metrics?.toggleWidth}px（参照行=${referenceToggleWidth}px）, ` +
-      `題名が折り返し・切れなし=${metrics?.titleFits}`,
+      `展開中 scrollWidth 最大=${maxScrollWidth}px（innerWidth=${innerWidth}px）`,
   )
 
   if (!metrics) {
@@ -212,13 +242,15 @@ for (const width of [1280, 390]) {
         `${width}px: 展開後の行上部が期待値 64px でない（${metrics.headerHeight}px）`,
       )
     }
-    if (Math.abs(metrics.toggleWidth - (referenceToggleWidth - 81)) > 0.5) {
+    if (Math.abs(metrics.toggleWidth - (referenceToggleWidth - 97)) > 0.5) {
       ng.push(
-        `${width}px: 展開で行トグル幅が参照行から予約列の 81px だけ縮んでいない（${referenceToggleWidth}px → ${metrics.toggleWidth}px）`,
+        `${width}px: 展開で行トグル幅が参照行から境界線 1 + 列 80 + padding 16 の 97px だけ縮んでいない（${referenceToggleWidth}px → ${metrics.toggleWidth}px）`,
       )
     }
-    if (!metrics.titleFits) {
-      ng.push(`${width}px: 展開後に幅ぎりぎりの題名が折り返すか省略されている`)
+    if (maxScrollWidth > innerWidth) {
+      ng.push(
+        `${width}px: 展開中に横スクロールが出ている（scrollWidth 最大 ${maxScrollWidth}px > innerWidth ${innerWidth}px）`,
+      )
     }
   }
 
