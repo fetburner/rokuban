@@ -112,7 +112,7 @@ function DayCell({
         <span>{date.getDate()}</span>
         <span>{weekdayChars[weekday]}</span>
         {matchCount !== undefined && (
-          <span data-testid="day-match-count" className="text-[9px] leading-none">
+          <span data-testid="day-match-count" className="text-xs leading-none">
             {matchCount}件
           </span>
         )}

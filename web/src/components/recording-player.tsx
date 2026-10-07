@@ -343,7 +343,7 @@ export function RecordingPlayer({
                 strokeDasharray={2 * Math.PI * 15}
                 strokeDashoffset={2 * Math.PI * 15 * (1 - countdownSeconds / AUTO_ADVANCE_SECONDS)}
               />
-              <text x="18" y="22.5" textAnchor="middle" className="fill-white text-[13px]">
+              <text x="18" y="22.5" textAnchor="middle" className="fill-white text-xs">
                 {countdownSeconds}
               </text>
             </svg>

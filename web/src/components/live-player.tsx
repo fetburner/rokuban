@@ -1824,17 +1824,17 @@ export function LivePlayer({
             <span className="hidden md:inline">最初から</span>
           </Button>
         )}
-        <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
+        <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-medium text-white">
           ● ライブ
         </span>
         {liveDiagnostics && (
-          <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-[10px] text-white/80 md:inline">
+          <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-xs text-white/80 md:inline">
             {liveDiagnostics}
           </span>
         )}
       </>
     ) : isChase && onReturnLive ? (
-      <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-[10px] font-medium text-white md:text-xs">
+      <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
         ● 録画から再生中
       </span>
     ) : undefined
