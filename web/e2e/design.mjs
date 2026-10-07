@@ -214,7 +214,7 @@ const storageRoots = [
 ]
 
 const reservations = [
-  { id: 1, site: SITE, programId: 9001, source: 'rule', state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
+  { id: 1, site: SITE, programId: 9001, source: 'rule', ruleId: 1, state: 'active', title: '連続テレビ小説', serviceName: 'NHKEテレ', channelType: 'GR', startAt: iso(nowMs + HOUR), durationMs: 900_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 2, site: SITE, programId: 9002, source: 'manual', state: 'active', title: '大相撲中継', serviceName: 'NHK総合', channelType: 'GR', startAt: iso(nowMs + 2 * HOUR), durationMs: 5_400_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 3, site: SITE, programId: 9003, source: 'rule', state: 'detached', title: 'クラシック音楽館', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', startAt: iso(nowMs + 5 * HOUR), durationMs: 3_600_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
   { id: 4, site: SITE, programId: 9004, source: 'rule', state: 'orphaned', title: '日曜洋画劇場', serviceName: 'テレビ大阪', channelType: 'GR', startAt: iso(nowMs + 26 * HOUR), durationMs: 7_200_000, createdAt: iso(nowMs - HOUR), updatedAt: iso(nowMs - HOUR), series: null, skip: false },
@@ -1682,6 +1682,296 @@ async function checkMissingStrings(page, label) {
   }
 }
 
+/**
+ * ルールカードが 360 / 390px で名前を省略せず本文を全幅で縦積みし、補助操作が
+ * muted 色 + 方向アイコンのリンク・ボタンとして読めることを測る。幅・実色・
+ * アイコン位置は jsdom がレイアウトも CSS 変数の解決も持たないため測れない。
+ */
+async function runRuleCardLayoutChecks() {
+  log('\n=== H-2: ルールカードのモバイル配置と補助導線 ===')
+
+  const conditionText = '番組名に「連続テレビ小説」を含む'
+  const checkActionCue = async (locator, { label, viewport, iconClass, placement }) => {
+    if ((await locator.count()) !== 1) {
+      ng.push(`[${viewport}/actions] 「${label}」が 1 件表示されない`)
+      return
+    }
+    const cue = await locator.evaluate((element, { iconClass: requiredIconClass, placement: iconPlacement }) => {
+      const rootStyle = getComputedStyle(element)
+      const probe = document.createElement('span')
+      probe.style.cssText = 'position:fixed;left:-10000px;color:var(--muted-foreground)'
+      document.body.appendChild(probe)
+      const mutedTokenColor = getComputedStyle(probe).color
+      probe.remove()
+
+      const icons = [...element.querySelectorAll(`svg.${requiredIconClass}`)]
+      const icon = icons[0]
+      const iconStyle = icon === undefined ? null : getComputedStyle(icon)
+      const rootBox = element.getBoundingClientRect()
+      const iconBox = icon?.getBoundingClientRect()
+      const children = [...element.children]
+      const iconIndex = children.findIndex((child) => child.classList.contains(requiredIconClass))
+      const textIndex = children.findIndex((child) => !child.matches('svg') && child.textContent.trim() !== '')
+      const leftGap = iconBox === undefined ? Number.POSITIVE_INFINITY : iconBox.left - rootBox.left
+      const rightGap = iconBox === undefined ? Number.POSITIVE_INFINITY : rootBox.right - iconBox.right
+      const visible =
+        iconBox !== undefined &&
+        iconBox.width >= 12 &&
+        iconBox.height >= 12 &&
+        iconStyle?.display !== 'none' &&
+        iconStyle?.visibility === 'visible' &&
+        Number(iconStyle?.opacity) > 0
+      const orderCorrect =
+        iconIndex >= 0 &&
+        textIndex >= 0 &&
+        (iconPlacement === 'leading' ? iconIndex < textIndex : iconIndex > textIndex)
+      const geometryCorrect =
+        iconBox !== undefined &&
+        (iconPlacement === 'leading'
+          ? leftGap >= 0 && leftGap <= 8 && iconBox.right < rootBox.left + rootBox.width / 2
+          : rightGap >= 0 && rightGap <= 8 && iconBox.left > rootBox.left + rootBox.width / 2)
+      return {
+        actualColor: rootStyle.color,
+        mutedTokenColor,
+        backgroundColor: rootStyle.backgroundColor,
+        borderWidths: [rootStyle.borderTopWidth, rootStyle.borderRightWidth, rootStyle.borderBottomWidth, rootStyle.borderLeftWidth],
+        iconCount: icons.length,
+        iconVisible: visible,
+        iconSize: iconBox === undefined ? 'missing' : `${iconBox.width.toFixed(1)}×${iconBox.height.toFixed(1)}px`,
+        orderCorrect,
+        geometryCorrect,
+      }
+    }, { iconClass, placement })
+
+    if (cue.actualColor !== cue.mutedTokenColor) {
+      ng.push(
+        `[${viewport}/actions] 「${label}」の実色が muted token と一致しない ` +
+          `(${cue.actualColor} / ${cue.mutedTokenColor})`,
+      )
+    }
+    if (cue.backgroundColor !== 'rgba(0, 0, 0, 0)' || cue.borderWidths.some((width) => width !== '0px')) {
+      ng.push(`[${viewport}/actions] 「${label}」に常時の背景または枠がある`)
+    }
+    if (cue.iconCount !== 1 || !cue.iconVisible) {
+      ng.push(`[${viewport}/actions] 「${label}」の ${iconClass} が見えないか 12px 未満 (${cue.iconSize})`)
+    }
+    if (!cue.orderCorrect) {
+      ng.push(`[${viewport}/actions] 「${label}」で ${placement} アイコンが文字の外側にない`)
+    }
+    if (!cue.geometryCorrect) {
+      ng.push(`[${viewport}/actions] 「${label}」のアイコンが ${placement} 側に収まっていない`)
+    }
+  }
+
+  for (const viewport of tapTargetWidths) {
+    for (const theme of themes) {
+      const { context, page } = await open(viewport, theme, screenOf('rules'), { pointer: 'coarse' })
+      const name = page.getByRole('link', { name: 'ルール「朝ドラ」を編集' })
+      const condition = page.getByText(conditionText, { exact: true })
+      const card = condition.locator('xpath=../../../..')
+      const conditionArea = condition.locator('xpath=../..')
+      const toggle = page.getByRole('switch', { name: 'ルール「朝ドラ」を有効にする' })
+      const menu = page.getByRole('button', { name: 'ルール「朝ドラ」のその他の操作' })
+      const recordings = card.getByRole('link', { name: 'このルールの録画', exact: true })
+      const createLabel = card.getByRole('button', { name: 'このキーワードで分類ルールを作る', exact: true })
+      const actionRow = recordings.locator('..')
+      const metadata = card.getByText('優先度 10', { exact: true }).locator('xpath=..')
+      await condition.waitFor({ timeout: 5000 }).catch(() => {})
+
+      const cardBox = await card.boundingBox()
+      const conditionBox = await conditionArea.boundingBox()
+      const headerBoxes = await Promise.all([name.boundingBox(), toggle.boundingBox(), menu.boundingBox()])
+      if (cardBox === null || conditionBox === null || headerBoxes.some((box) => box === null)) {
+        ng.push(`[${viewport.name}/${theme}/rules-layout] ルールカードの見出しまたは条件欄を測れない`)
+      } else {
+        // カード内幅 = 枠 + 左右 padding を実測値で引く（px-3 + border 1px で 26px）。
+        const insets = await card.evaluate((element) => {
+          const style = getComputedStyle(element)
+          return ['borderLeftWidth', 'borderRightWidth', 'paddingLeft', 'paddingRight'].reduce(
+            (sum, key) => sum + Number.parseFloat(style[key]),
+            0,
+          )
+        })
+        const contentWidth = cardBox.width - insets
+        log(
+          `  [${viewport.name}/${theme}/rules-layout] 条件欄=${conditionBox.width.toFixed(1)}px / ` +
+            `カード内幅=${contentWidth.toFixed(1)}px`,
+        )
+        if (conditionBox.width < contentWidth - 4) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] 条件欄がカードの全幅でない ` +
+              `(${conditionBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
+          )
+        }
+        // 名前は省略せず全文が出る（390px で「朝ド…」になった退行の再発防止）。
+        // 省略するのは Button 内の span.truncate なので、wrapper でなくそれを測る。
+        const nameText = name.locator('.truncate')
+        const truncation = await nameText.evaluate((element) => ({
+          text: element.textContent,
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+        }))
+        if (truncation.scrollWidth > truncation.clientWidth) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] ルール名「${truncation.text}」が省略されている ` +
+              `(scrollWidth=${truncation.scrollWidth} > clientWidth=${truncation.clientWidth})`,
+          )
+        }
+        const headerCenters = headerBoxes.map((box) => box.y + box.height / 2)
+        if (Math.max(...headerCenters) - Math.min(...headerCenters) > 4) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 名前・スイッチ・「…」が同じ見出し行に揃っていない`)
+        }
+        const headerBottom = Math.max(...headerBoxes.map((box) => box.y + box.height))
+        if (conditionBox.y < headerBottom - 1) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 条件欄が見出しより下に配置されていない`)
+        }
+        const [actionRowBox, metadataBox] = await Promise.all([actionRow.boundingBox(), metadata.boundingBox()])
+        if (actionRowBox === null || metadataBox === null) {
+          ng.push(`[${viewport.name}/${theme}/rules-layout] 条件の詳細と補助操作の段を測れない`)
+        } else {
+          if (actionRowBox.width < contentWidth - 4) {
+            ng.push(
+              `[${viewport.name}/${theme}/rules-layout] 補助操作の段が全幅でない ` +
+                `(${actionRowBox.width.toFixed(1)}px < ${(contentWidth - 4).toFixed(1)}px)`,
+            )
+          }
+          if (actionRowBox.y < metadataBox.y + metadataBox.height + 3) {
+            ng.push(`[${viewport.name}/${theme}/rules-layout] 補助操作が条件の詳細より下の段にない`)
+          }
+        }
+      }
+
+      // 「録画予定 N 件」の 44px 当たり判定が行の高さを押し広げ、同じ行の文字より
+      // 下がったり補助操作の段との間を空けたりしないこと。44px の箱ではなく文字自体を測る。
+      const scheduled = card.getByRole('link', { name: /^録画予定 \d+ 件$/ })
+      await scheduled.first().waitFor({ timeout: 5000 }).catch(() => {})
+      if ((await scheduled.count()) !== 1) {
+        ng.push(`[${viewport.name}/${theme}/rules-layout] 「録画予定 N 件」が 1 件表示されない`)
+      } else {
+        const rows = await metadata.evaluate((row, link) => {
+          const textRect = (element) => {
+            const range = document.createRange()
+            range.selectNodeContents(element)
+            return range.getBoundingClientRect()
+          }
+          const priority = textRect(row.querySelector('span'))
+          const linkText = textRect(link)
+          return {
+            sameLine: linkText.top < priority.bottom,
+            priorityCenter: priority.top + priority.height / 2,
+            linkCenter: linkText.top + linkText.height / 2,
+            linkTextBottom: linkText.bottom,
+            rowBottom: row.getBoundingClientRect().bottom,
+          }
+        }, await scheduled.elementHandle())
+        const centerDiff = Math.abs(rows.linkCenter - rows.priorityCenter)
+        const bottomGap = rows.rowBottom - rows.linkTextBottom
+        log(
+          `  [${viewport.name}/${theme}/rules-layout] 録画予定と優先度の文字の縦中心差=${centerDiff.toFixed(1)}px / ` +
+            `行下端と録画予定の文字下端の差=${bottomGap.toFixed(1)}px`,
+        )
+        // 折り返して別の行に落ちた場合は縦中心が離れて当然なので、中心差は同じ行のときだけ見る。
+        if ((rows.sameLine && centerDiff > 2) || bottomGap > 8) {
+          ng.push(
+            `[${viewport.name}/${theme}/rules-layout] 「録画予定 N 件」が行内でずれている ` +
+              `(優先度との縦中心差=${centerDiff.toFixed(1)}px > 2px / ` +
+              `行下端との差=${bottomGap.toFixed(1)}px > 8px)`,
+          )
+        }
+      }
+      await checkActionCue(recordings, {
+        label: 'このルールの録画', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-chevron-right', placement: 'trailing',
+      })
+      await checkActionCue(createLabel, {
+        label: 'このキーワードで分類ルールを作る', viewport: `${viewport.name}/${theme}`, iconClass: 'lucide-plus', placement: 'leading',
+      })
+      await context.close()
+    }
+  }
+
+  // desktop はカードの主情報と補助操作を横に分け、スイッチとメニューを右端に残す。
+  {
+    const viewport = { name: 'desktop-1280', width: 1280, height: 800 }
+    const { context, page } = await open(viewport, 'light', screenOf('rules'), { pointer: 'fine' })
+    const condition = page.getByText(conditionText, { exact: true })
+    const card = condition.locator('xpath=../../../..')
+    const conditionArea = condition.locator('xpath=../..')
+    const toggle = page.getByRole('switch', { name: 'ルール「朝ドラ」を有効にする' })
+    const menu = page.getByRole('button', { name: 'ルール「朝ドラ」のその他の操作' })
+    const action = card.getByRole('link', { name: 'このルールの録画', exact: true })
+    const [cardBox, conditionBox, toggleBox, menuBox, actionBox] = await Promise.all([
+      card.boundingBox(), conditionArea.boundingBox(), toggle.boundingBox(), menu.boundingBox(), action.boundingBox(),
+    ])
+    if ([cardBox, conditionBox, toggleBox, menuBox, actionBox].some((box) => box === null)) {
+      ng.push('[desktop-1280/rules-layout] 横並びのカード要素を測れない')
+    } else {
+      if (conditionBox.width >= cardBox.width - 100) {
+        ng.push('[desktop-1280/rules-layout] 条件欄がカード全幅へ広がり、横並びを保っていない')
+      }
+      const menuRightGap = cardBox.x + cardBox.width - menuBox.x - menuBox.width
+      log(`  [desktop-1280/rules-layout] メニュー右端とカード右端の間隔=${menuRightGap.toFixed(1)}px`)
+      if (Math.abs(menuRightGap - 13) > 2) {
+        ng.push(`[desktop-1280/rules-layout] メニューのカード右端余白が13pxでない（${menuRightGap.toFixed(1)}px）`)
+      }
+      const toggleCenter = toggleBox.y + toggleBox.height / 2
+      const menuCenter = menuBox.y + menuBox.height / 2
+      if (Math.abs(toggleCenter - menuCenter) > 4 || toggleBox.x + toggleBox.width > menuBox.x) {
+        ng.push('[desktop-1280/rules-layout] スイッチとメニューが同じ右端の操作行に揃っていない')
+      }
+      if (actionBox.x < cardBox.x + cardBox.width / 2) {
+        ng.push('[desktop-1280/rules-layout] 補助操作がカード右側に配置されていない')
+      }
+    }
+    await context.close()
+  }
+
+  // 番組表の展開領域も、移動先を示す ChevronRight と muted の文字色を持つ。
+  for (const viewport of tapTargetWidths) {
+    for (const theme of themes) {
+      const { context, page } = await open(viewport, theme, screenOf('programs'), { pointer: 'coarse' })
+      const row = page.locator('li[data-program-id]').first()
+      await row.waitFor({ timeout: 5000 }).catch(() => {})
+      const expander = row.locator('button[aria-expanded]').first()
+      if ((await expander.count()) === 0) {
+        ng.push(`[${viewport.name}/${theme}/program-search-action] 番組行の展開ボタンが見つからない`)
+        await context.close()
+        continue
+      }
+      await expander.click()
+      const link = row.getByRole('link', { name: 'この番組名で検索', exact: true })
+      await link.waitFor({ timeout: 5000 }).catch(() => {})
+      if ((await link.count()) !== 1) {
+        ng.push(`[${viewport.name}/${theme}/program-search-action] 「この番組名で検索」が表示されない`)
+      } else {
+        await checkActionCue(link, {
+          label: 'この番組名で検索',
+          viewport: `${viewport.name}/${theme}`,
+          iconClass: 'lucide-chevron-right',
+          placement: 'trailing',
+        })
+      }
+      await context.close()
+    }
+  }
+
+  if (process.env.E2E_RULE_LAYOUT_SCREENSHOTS === '1') {
+    const viewport = { name: 'mobile-390', width: 390, height: 844 }
+    for (const theme of themes) {
+      const { context, page } = await open(viewport, theme, screenOf('rules'), { pointer: 'coarse' })
+      await page.screenshot({ path: path.join(OUT_DIR, `issue-1223-rules-${theme}-390.png`) })
+      await context.close()
+
+      const programs = await open(viewport, theme, screenOf('programs'), { pointer: 'coarse' })
+      const row = programs.page.locator('li[data-program-id]').first()
+      await row.waitFor({ timeout: 5000 }).catch(() => {})
+      const expander = row.locator('button[aria-expanded]').first()
+      if (await expander.count()) await expander.click()
+      await programs.page.screenshot({ path: path.join(OUT_DIR, `issue-1223-programs-${theme}-390.png`) })
+      await programs.context.close()
+    }
+  }
+}
+
 /** 360 / 390px の全主要画面を coarse pointer で開き、44px の hit 領域を測る。 */
 async function runCoarseTapTargetChecks() {
   log('\n=== ④-A H-1: coarse pointer の 44×44px hit 領域 ===')
@@ -1944,6 +2234,11 @@ log(`固定時刻 : ${FIXED_NOW.toISOString()} (Asia/Tokyo)`)
 // 同じ関数を ④-A'' として実行し、色・到達距離の既存判定と一緒に守る。
 if (process.env.E2E_TAP_TARGETS_ONLY === '1') {
   await runCoarseTapTargetChecks()
+  await finish(ng, browser)
+}
+
+if (process.env.E2E_RULE_CARD_ONLY === '1') {
+  await runRuleCardLayoutChecks()
   await finish(ng, browser)
 }
 
@@ -5940,6 +6235,8 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
 
 // 数値は docs に転記しない（転記した瞬間に二重管理になる）。docs は
 // 「ここで測る」とだけ言い、実際の数値はこの出力が権威。
+// 通常の design.mjs と browser-e2e の E2E_RULE_CARD_ONLY 入口で同じ H-2 判定を実行する。
+await runRuleCardLayoutChecks()
 await runCoarseTapTargetChecks()
 
 log('\n=== 測ったコントラスト ===')
