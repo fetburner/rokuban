@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { Play } from 'lucide-react'
+import { ChevronRight, Play } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 
 import { ApiError } from '@/api/client'
@@ -9,7 +9,7 @@ import { EncodeSettingsFields } from '@/components/encode-settings-fields'
 import { ProgramOverlapWarning } from '@/components/program-overlap-warning'
 import { Button } from '@/components/ui/button'
 import { useLiveEnabled } from '@/lib/capabilities'
-import { cn } from '@/lib/utils'
+import { auxActionClassName, cn } from '@/lib/utils'
 import {
   defaultEncodeSettingsValue,
   encodeSettingsError,
@@ -286,8 +286,7 @@ export function ProgramReservationBody({
   draft: ProgramReservationDraft
 }) {
   const canSearchByName = program.name.trim().length > 0
-  const linkClassName =
-    'inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline'
+  const searchLinkClassName = cn(auxActionClassName, 'min-h-6')
 
   return (
     <>
@@ -309,16 +308,17 @@ export function ProgramReservationBody({
                   ],
                 },
               }}
-              className={linkClassName}
+              className={searchLinkClassName}
             >
-              この番組名で検索
+              <span>この番組名で検索</span>
+              <ChevronRight aria-hidden="true" className="size-4 shrink-0" />
             </Link>
           )}
           {reserved && (
             <Link
               to="/reservations/$site/$programId"
               params={{ site: program.site, programId: String(program.programId) }}
-              className={linkClassName}
+              className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline"
             >
               予約の設定
             </Link>
