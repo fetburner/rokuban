@@ -46,6 +46,7 @@ import {
   conditionsToDraft,
   ruleToMeta,
 } from '@/lib/program-search'
+import { AuxButton } from '@/components/h2-aux'
 import { summarizeRuleActivity, type RuleActivitySummary } from '@/lib/rule-activity'
 import { ruleDisambiguator } from '@/lib/rule-label'
 import { cn } from '@/lib/utils'
@@ -380,17 +381,30 @@ function RuleRow({
     )
   }
 
+  const Aux = () => (
+    <>
+      <AuxButton kind="nav" linkProps={{ to: '/recordings', search: { ruleId: rule.id } }}>
+        このルールの録画
+      </AuxButton>
+      {firstKeyword(rule) !== undefined && (
+        <AuxButton kind="action" onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}>
+          このキーワードで分類ルールを作る
+        </AuxButton>
+      )}
+    </>
+  )
+
   return (
     <div className="rounded-lg border border-border px-3 py-3">
-      <div className="flex items-start justify-between gap-3 pointer-coarse:flex-wrap">
-        <div className="min-w-0 flex-1 pointer-coarse:min-w-11">
+      <div className="grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 md:flex md:items-start md:justify-between md:gap-3">
+        <div className="contents md:block md:min-w-0 md:flex-1">
           {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
               truncate span の挙動を維持）。flex-wrap のままだと、長い名前の
               hypothetical な主軸サイズ（flex-wrap の折返し判定は shrink 適用前の
               値を見る）だけで行いっぱいになり、shrink を足してもバッジは次行へ
               折り返る --- 実ブラウザで確認済み（同じ min-w-0 shrink のまま
               flex-wrap → flex-nowrap にした変更だけで折返りが消えた）。 */}
-          <div className="flex flex-nowrap items-center gap-2">
+          <div className="col-start-1 row-start-1 flex min-w-0 flex-nowrap items-center gap-2">
             <Button
               variant="link"
               size="sm"
@@ -421,7 +435,7 @@ function RuleRow({
 
           {/* 条件が空 = 全番組にマッチする、という危険な状態を一覧でも
               見えるようにする（設定を開かないと気付けない事故を防ぐ）。 */}
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm">
+          <div className="col-span-2 mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm">
             {conditions.length === 0 ? (
               <span className="font-medium text-warning">
                 条件なし（すべての番組にマッチ）
@@ -435,7 +449,7 @@ function RuleRow({
             )}
           </div>
 
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
+          <div className="col-span-2 mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm text-muted-foreground">
             <span>優先度 {rule.priority}</span>
             <span>{keepOriginalLabel(keep)}</span>
             <span>
@@ -463,7 +477,7 @@ function RuleRow({
             )}
           </div>
         </div>
-        <div className="flex shrink-0 items-start gap-1">
+        <div className="col-start-2 row-start-1 flex shrink-0 items-start gap-1">
           <div className="flex flex-col items-end gap-2">
             <button
               type="button"
@@ -491,27 +505,7 @@ function RuleRow({
             {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
                 条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
                 /search ではなく /recordings?ruleId=N になる。 */}
-            <Button
-              variant="ghost"
-              size="sm"
-              render={<Link to="/recordings" search={{ ruleId: rule.id }} />}
-            >
-              このルールの録画
-            </Button>
-            {/* 録画ルールのキーワードを分類ルール（シリーズ）へ写す導線。
-                録画ルールから分類ルールを**継承はさせない**（勝者ルールだけを
-                継承すると広いルールに黙って負ける。docs/data/series.md §8
-                「評価結果を宛先にしない」）。このボタンは同じ /rules の
-                ダイアログを開くだけで、保存は利用者が明示する。 */}
-            {firstKeyword(rule) !== undefined && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}
-              >
-                このキーワードで分類ルールを作る
-              </Button>
-            )}
+            <div className="hidden flex-col items-end gap-2 md:flex"><Aux /></div>
           </div>
           {/* 破壊的・稀な操作（削除）は overflow に寄せる（issue #227）。 */}
           <DropdownMenu>
@@ -539,6 +533,7 @@ function RuleRow({
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
+        <div className="col-span-2 mt-1 flex flex-wrap gap-2 md:hidden"><Aux /></div>
       </div>
 
       <AlertDialog open={disableConfirmOpen} onOpenChange={setDisableConfirmOpen}>

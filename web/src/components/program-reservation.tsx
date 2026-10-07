@@ -1,3 +1,4 @@
+import { AuxButton } from '@/components/h2-aux'
 import { Link } from '@tanstack/react-router'
 import { Play } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
@@ -300,19 +301,15 @@ export function ProgramReservationBody({
       {(canSearchByName || reserved) && (
         <div className="mt-3 flex flex-wrap gap-4 text-xs">
           {canSearchByName && (
-            <Link
-              to="/search"
-              search={{
-                cond: {
-                  textMatches: [
-                    { target: 'name', mode: 'keyword', value: program.name },
-                  ],
-                },
+            <AuxButton
+              kind="nav"
+              linkProps={{
+                to: '/search',
+                search: { cond: { textMatches: [{ target: 'name', mode: 'keyword', value: program.name }] } },
               }}
-              className={linkClassName}
             >
               この番組名で検索
-            </Link>
+            </AuxButton>
           )}
           {reserved && (
             <Link
