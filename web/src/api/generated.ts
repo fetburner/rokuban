@@ -1900,6 +1900,44 @@ export type ListRecordingShelvesParams = {
  * 棚の軸。M8 は series だけ。
  */
 key?: ListRecordingShelvesKey;
+/**
+ * キーワード（部分一致）。`GET /api/recordings` の `q` と同じ
+ */
+q?: string;
+qTarget?: ListRecordingShelvesQTarget;
+/**
+ * genre_lv1（ジャンル大分類）との重なり。複数指定可
+ * @items.minimum 0
+ * @items.maximum 15
+ */
+genre?: number[];
+channelType?: ListRecordingShelvesChannelTypeItem[];
+/**
+ * mirakc サイト名。複数指定は OR。`GET /api/recordings` の `site` と同じ
+ * @items.pattern ^[a-z0-9](?:[_-]?[a-z0-9])*$
+ */
+site?: string[];
+/**
+ * `Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。
+ * site は含めない（`GET /api/recordings` の `service` と同じ）
+ * @items.minimum 1
+ * @items.maximum 6553565535
+ */
+service?: number[];
+status?: ListRecordingShelvesStatus;
+source?: ListRecordingShelvesSource;
+/**
+ * 特定ルール由来の録画に絞る
+ */
+ruleId?: number;
+/**
+ * program_start_at がこの時刻以上
+ */
+from?: string;
+/**
+ * program_start_at がこの時刻未満
+ */
+to?: string;
 };
 
 export type ListRecordingShelvesKey = typeof ListRecordingShelvesKey[keyof typeof ListRecordingShelvesKey];
@@ -1907,6 +1945,43 @@ export type ListRecordingShelvesKey = typeof ListRecordingShelvesKey[keyof typeo
 
 export const ListRecordingShelvesKey = {
   series: 'series',
+} as const;
+
+export type ListRecordingShelvesQTarget = typeof ListRecordingShelvesQTarget[keyof typeof ListRecordingShelvesQTarget];
+
+
+export const ListRecordingShelvesQTarget = {
+  title: 'title',
+  titleDescription: 'titleDescription',
+} as const;
+
+export type ListRecordingShelvesChannelTypeItem = typeof ListRecordingShelvesChannelTypeItem[keyof typeof ListRecordingShelvesChannelTypeItem];
+
+
+export const ListRecordingShelvesChannelTypeItem = {
+  GR: 'GR',
+  BS: 'BS',
+  CS: 'CS',
+  SKY: 'SKY',
+} as const;
+
+export type ListRecordingShelvesStatus = typeof ListRecordingShelvesStatus[keyof typeof ListRecordingShelvesStatus];
+
+
+export const ListRecordingShelvesStatus = {
+  recording: 'recording',
+  finished: 'finished',
+  canceled: 'canceled',
+  failed: 'failed',
+} as const;
+
+export type ListRecordingShelvesSource = typeof ListRecordingShelvesSource[keyof typeof ListRecordingShelvesSource];
+
+
+export const ListRecordingShelvesSource = {
+  rule: 'rule',
+  manual: 'manual',
+  unattributed: 'unattributed',
 } as const;
 
 export type PutRecordingPlaybackPositionBody = {
@@ -5750,6 +5825,14 @@ export const getListRecordingShelvesUrl = (params?: ListRecordingShelvesParams,)
   const normalizedParams = new URLSearchParams();
 
   Object.entries(params || {}).forEach(([key, value]) => {
+    const explodeParameters = ["genre","channelType","site","service"];
+
+    if (Array.isArray(value) && explodeParameters.includes(key)) {
+      value.forEach((v) => {
+        normalizedParams.append(key, v === null ? 'null' : String(v));
+      });
+      return;
+    }
 
     if (value !== undefined) {
       normalizedParams.append(key, value === null ? 'null' : String(value))
@@ -5778,6 +5861,29 @@ export const getListRecordingShelvesUrl = (params?: ListRecordingShelvesParams,)
  *
  * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
  * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * エンコードジョブを結合した行で絞るので、棚の件数が膨らむ。
  * @summary List series shelves
  */
 export const listRecordingShelves = async (params?: ListRecordingShelvesParams, options?: Parameters<typeof customInstance>[1]): Promise<listRecordingShelvesResponse> => {

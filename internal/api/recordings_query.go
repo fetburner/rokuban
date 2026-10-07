@@ -458,56 +458,9 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 		and("r.deleted_at IS NULL")
 	}
 
-	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
-	// 判断・pgx の既定 QueryExecModeCacheStatement が SQL テキストを named
-	// prepared statement にするため Postgres が 6 回目以降 generic plan に
-	// 切り替えうること（実測 0.7ms → 290ms）・queryRecordings が
-	// QueryExecModeExec を強制する理由は docs/api/rest.md §動的 WHERE ビルダ
-	// （sqlc の静的クエリにしない）にある。
-	if f.Q != "" {
-		switch f.QTarget {
-		case Title:
-			and(rulequery.KeywordClause("r.title", f.Q, false, arg))
-		default: // "" または TitleDescription
-			and("(" + rulequery.KeywordClause("r.title", f.Q, false, arg) +
-				" OR " + rulequery.KeywordClause("r.description", f.Q, false, arg) + ")")
-		}
-	}
-	if len(f.Genres) > 0 {
-		and("r.genre_lv1 && " + arg(f.Genres) + "::smallint[]")
-	}
-	if len(f.ChannelTypes) > 0 {
-		and("r.channel_type = ANY(" + arg(f.ChannelTypes) + ")")
-	}
-	if len(f.Sites) > 0 {
-		and("r.site = ANY(" + arg(f.Sites) + ")")
-	}
-	if len(f.Services) > 0 {
-		// 行値の IN。(network_id, service_id) の組で OR する形なので、
-		// network_id と service_id を別々に ANY で絞る（＝直積になる）形とは違う。
-		pairs := make([]string, len(f.Services))
-		for i, service := range f.Services {
-			pairs[i] = "(" + arg(service.NetworkID) + ", " + arg(service.ServiceID) + ")"
-		}
-		and("(r.network_id, r.service_id) IN (" + strings.Join(pairs, ", ") + ")")
-	}
-	if f.Status != "" {
-		and("r.status = " + arg(string(f.Status)))
-		// 通常一覧の status=failed だけは、本物の record に置き換わった擬似
-		// failed 行によるホーム警告の偽陽性を防ぐ。無条件一覧・trash 一覧は
-		// 履歴を維持するため絞らない（docs/frontend/home.md）。
-		if !f.Trash && f.Status == ListRecordingsParamsStatusFailed {
-			and("r.superseded_at IS NULL")
-		}
-	}
+	recordingsFilterWhere(f, and, arg)
 	if f.EncodeRecordingIDs != nil {
 		and("r.id = ANY(" + arg(*f.EncodeRecordingIDs) + "::bigint[])")
-	}
-	if f.Source != "" {
-		and("r.source = " + arg(string(f.Source)))
-	}
-	if f.RuleID != nil {
-		and("r.rule_id = " + arg(*f.RuleID))
 	}
 	// 番組ハブ（`?seriesOf=`）。述語は 1 文で
 	// `E(r) = (SELECT E(o) FROM recordings o WHERE o.id = $n)`。起点の E を先に
@@ -526,9 +479,6 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
 			"(SELECT s.value FROM recording_series s WHERE s.recording_id = " + arg(*f.SeriesOf) + ")")
 		and("r.superseded_at IS NULL")
 	}
-	if f.From != nil {
-		and("r.program_start_at >= " + arg(*f.From))
-	}
 	if f.ContinueWatching {
 		and("pp.recording_id IS NOT NULL")
 		and("r.deleted_at IS NULL")
@@ -543,9 +493,6 @@ func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
               AND event_recording.service_id = r.service_id
               AND event_recording.program_start_at = r.program_start_at
         )`)
-	}
-	if f.To != nil {
-		and("r.program_start_at < " + arg(*f.To))
 	}
 
 	// キーセットは (program_start_at, id) の複合で割る（同一 program_start_at
@@ -579,6 +526,68 @@ ORDER BY ` + orderBy + `
 LIMIT ` + limitPlaceholder
 
 	return sql, args, nil
+}
+
+// recordingsFilterWhere は録画一覧（buildRecordingsQuery）と棚
+// （buildRecordingShelvesQuery）が共有する絞り込みの述語を、録画 1 件
+// （別名 r）に対して組む。片方だけ直る形にしないため、条件 → WHERE と引数の
+// 変換はここ 1 箇所に置く。ページング・並び順・番組ハブ・エンコード状況・
+// 続きから見る、は録画一覧だけの軸なので buildRecordingsQuery に残す。
+func recordingsFilterWhere(f recordingsFilter, and func(string), arg func(any) string) {
+	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
+	// 判断・pgx の既定 QueryExecModeCacheStatement が SQL テキストを named
+	// prepared statement にするため Postgres が 6 回目以降 generic plan に
+	// 切り替えうること（実測 0.7ms → 290ms）・queryRecordings が
+	// QueryExecModeExec を強制する理由は docs/api/rest.md §動的 WHERE ビルダ
+	// （sqlc の静的クエリにしない）にある。
+	if f.Q != "" {
+		switch f.QTarget {
+		case ListRecordingsParamsQTargetTitle:
+			and(rulequery.KeywordClause("r.title", f.Q, false, arg))
+		default: // "" または ListRecordingsParamsQTargetTitleDescription
+			and("(" + rulequery.KeywordClause("r.title", f.Q, false, arg) +
+				" OR " + rulequery.KeywordClause("r.description", f.Q, false, arg) + ")")
+		}
+	}
+	if len(f.Genres) > 0 {
+		and("r.genre_lv1 && " + arg(f.Genres) + "::smallint[]")
+	}
+	if len(f.ChannelTypes) > 0 {
+		and("r.channel_type = ANY(" + arg(f.ChannelTypes) + ")")
+	}
+	if len(f.Sites) > 0 {
+		and("r.site = ANY(" + arg(f.Sites) + ")")
+	}
+	if len(f.Services) > 0 {
+		// 行値の IN。(network_id, service_id) の組で OR する形なので、
+		// network_id と service_id を別々に ANY で絞る（＝直積になる）形とは違う。
+		pairs := make([]string, len(f.Services))
+		for i, service := range f.Services {
+			pairs[i] = "(" + arg(service.NetworkID) + ", " + arg(service.ServiceID) + ")"
+		}
+		and("(r.network_id, r.service_id) IN (" + strings.Join(pairs, ", ") + ")")
+	}
+	if f.Status != "" {
+		and("r.status = " + arg(string(f.Status)))
+		// 通常一覧の status=failed だけは、本物の record に置き換わった擬似
+		// failed 行によるホーム警告の偽陽性を防ぐ。無条件一覧・trash 一覧は
+		// 履歴を維持するため絞らない（docs/frontend/home.md）。
+		if !f.Trash && f.Status == ListRecordingsParamsStatusFailed {
+			and("r.superseded_at IS NULL")
+		}
+	}
+	if f.Source != "" {
+		and("r.source = " + arg(string(f.Source)))
+	}
+	if f.RuleID != nil {
+		and("r.rule_id = " + arg(*f.RuleID))
+	}
+	if f.From != nil {
+		and("r.program_start_at >= " + arg(*f.From))
+	}
+	if f.To != nil {
+		and("r.program_start_at < " + arg(*f.To))
+	}
 }
 
 // queryRecordings は buildRecordingsQuery が組んだ SQL を実行し、

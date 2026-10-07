@@ -143,28 +143,188 @@ func (h *Server) GetLabelRuleValueKey(ctx context.Context, req GetLabelRuleValue
 }
 
 // ListRecordingShelves は生きている録画を実効シリーズごとに集計し、再生可能な
-// 件数と未視聴の放送イベント数を同じ集計から返す。
+// 件数と未視聴の放送イベント数を同じ集計から返す。絞り込みは録画一覧と同じ
+// 条件をグループ化の前に当てる（buildRecordingShelvesQuery）。
 func (h *Server) ListRecordingShelves(ctx context.Context, req ListRecordingShelvesRequestObject) (ListRecordingShelvesResponseObject, error) {
 	if req.Params.Key != nil && !req.Params.Key.Valid() {
 		return ListRecordingShelves400JSONResponse{Error: fmt.Sprintf("invalid key %q (want series)", *req.Params.Key)}, nil
 	}
-	rows, err := sqlcgen.New(h.pool).ListRecordingShelves(ctx)
+	f, errMsg := recordingsFilterFromShelvesParams(req.Params)
+	if errMsg != "" {
+		return ListRecordingShelves400JSONResponse{Error: errMsg}, nil
+	}
+	sql, args := buildRecordingShelvesQuery(f)
+	rows, err := h.pool.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording shelves: %w", err)
 	}
-	out := make([]RecordingShelf, 0, len(rows))
-	for _, row := range rows {
-		out = append(out, RecordingShelf{
-			Value:            row.Value,
-			Title:            row.Title,
-			Count:            int(row.RecordingCount),
-			PlayableCount:    int(row.PlayableCount),
-			UnwatchedCount:   int(row.UnwatchedCount),
-			LatestStartAt:    row.LatestStartAt.UTC(),
-			RepresentativeId: row.RepresentativeID,
-		})
+	defer rows.Close()
+	out := []RecordingShelf{}
+	for rows.Next() {
+		var shelf RecordingShelf
+		var count, playable, unwatched int64
+		if err := rows.Scan(&shelf.Value, &shelf.Title, &count, &playable, &unwatched,
+			&shelf.LatestStartAt, &shelf.RepresentativeId); err != nil {
+			return nil, fmt.Errorf("scanning recording shelf: %w", err)
+		}
+		shelf.Count, shelf.PlayableCount, shelf.UnwatchedCount = int(count), int(playable), int(unwatched)
+		shelf.LatestStartAt = shelf.LatestStartAt.UTC()
+		out = append(out, shelf)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating recording shelves: %w", err)
 	}
 	return ListRecordingShelves200JSONResponse(out), nil
+}
+
+// recordingsFilterFromShelvesParams は棚の絞り込みを、録画一覧と同じ検証
+// （recordingsFilterFromParams）に通す。棚が受けるのは録画一覧のパラメータの
+// 部分集合なので、生成型を詰め替えるだけにして検証を 2 箇所に書かない。
+func recordingsFilterFromShelvesParams(p ListRecordingShelvesParams) (recordingsFilter, string) {
+	lp := ListRecordingsParams{
+		Q:       p.Q,
+		QTarget: (*ListRecordingsParamsQTarget)(p.QTarget),
+		Genre:   p.Genre,
+		Site:    p.Site,
+		Service: p.Service,
+		Status:  (*ListRecordingsParamsStatus)(p.Status),
+		Source:  (*ListRecordingsParamsSource)(p.Source),
+		RuleId:  p.RuleId,
+		From:    p.From,
+		To:      p.To,
+	}
+	if p.ChannelType != nil {
+		cts := make([]ListRecordingsParamsChannelType, len(*p.ChannelType))
+		for i, ct := range *p.ChannelType {
+			cts[i] = ListRecordingsParamsChannelType(ct)
+		}
+		lp.ChannelType = &cts
+	}
+	return recordingsFilterFromParams(lp)
+}
+
+// buildRecordingShelvesQuery は棚の集計を組む。棚 1 件 = 実効シリーズの値 1 つ。
+// 母集団は生きている録画（`deleted_at IS NULL AND superseded_at IS NULL`）で、
+// 録画中・取り込み待ち・失敗も含む。絞り込み（recordingsFilterWhere。録画一覧と
+// 共有）はこの母集団の録画 1 件ずつに、グループ化の前に当てる。
+//
+// 代表は program_start_at の新しい順で先頭の 1 件。value は画面のシリーズ名に使い、
+// title は代表録画の生タイトルを補助表示する。キーが過剰併合を隠さないよう、両方返す。
+//
+// 値が NULL の棚も返す。棚一覧の UI は NULL を表示対象から外すが、API では
+// 欠落と「分類されていない」を区別できるように残す。
+//
+// 値が NULL の棚の行は `GROUP BY value` が 1 つのグループにまとめる（SQL の
+// GROUP BY は NULL を等しいものとして扱う）。
+//
+// 未視聴件数もこの集計で返す。放送イベントは生きている再生可能な（かつ絞り込んだ）
+// 録画から束ね、視聴済み印はごみ箱・supersede 済み・別 site を含む全録画から読む。
+// **絞り込みを watched_events に当ててはならない。** 当てると、別 site の録画で
+// 見た回が `site` で絞ったときに未視聴へ戻る
+// （TestListRecordingShelves_FilterKeepsWatchedMarksFromOutsideTheFilter）。
+//
+// **sqlc の静的クエリ（`sqlc.narg` で全条件を受ける形）にしない。** 計測では速さに
+// 差が無かった（下記の (f_static) / (q_static)。prepared statement が汎用プランに
+// 切り替わりうる 7 回目以降の中央値で比べた）。決め手は共有である。静的な形では
+// 録画一覧（buildRecordingsQuery）と WHERE の組み立てを共有できず、条件を直すと
+// 片方だけ直る。`service` の行値 IN も静的な形に載らない。録画一覧と同じく、条件が
+// あるときだけ節を足し、QueryExecModeExec で毎回計画させる（queryRecordings のコメント）。
+//
+// **この形はプランの形に依存する。** 旧母集団（再生できる録画だけ。73,000 行がすべて
+// 再生可能）での過去の実測（別の環境、sqlc / pgx の prepared statement 経由）:
+//
+//   - その形: 141 ms
+//   - 代表と件数を別々の CTE に割る: 231 ms（playable をもう 1 度走査する）
+//   - playable（recordings × playable_assets × recording_series の CTE）を
+//     MATERIALIZED にしない: 617 ms
+//
+// 617 ms の仕組みは、MATERIALIZED を外すと部分一意索引 recordings_unique_active_event
+// が選ばれ、その行数見積もりが 1 になって下流が全部 1 行の計画になり、代表を求める
+// ソートが外側の行数ぶん繰り返されること、だった。
+//
+// 下の live は旧 playable に当たる（recordings を走査する CTE）が、MATERIALIZED にしない。
+// 現スキーマ・合成 seed（下記）では 617 ms は再現せず、live を MATERIALIZED にした形は
+// 本番形の 1.04〜1.13 倍遅い（3 回）。617 ms の再現条件は未検証なので、再発したら
+// EXPLAIN で計画を調べる。絞り込みの WHERE は live の中に置く（集計の前に母集団を削る）。
+//
+// playable_assets は参照が 1 回なので MATERIALIZED にしない。MATERIALIZED にした形は
+// 本番形の 1.02〜1.07 倍遅く（3 回）、結果は一致した。
+//
+// 実効シリーズは recording_series ビューが唯一の定義で、ここでも JOIN で読む
+// （COALESCE(lr.value_key, r.series_key) を書き下すと定義が 2 箇所になる）。
+// ビュー経由は書き下しより約 8% 遅かった（旧母集団の形、合成データ 73,000 行・141 棚・
+// 分類ルール 50 本で約 223 ms 対 約 206 ms）。
+//
+// `internal/api/shelves_bench_test.go` は `ROKUBAN_BENCH_DATABASE_URL` がなければ
+// スキップし、専用 DB で各形を交互に回して計測する。
+// seed は生きている録画 71,000 行を含む全 73,000 行、141 棚、分類ルール 50 本で、
+// 放送イベントを複数拠点の録画で作り、視聴済み印と再生状態を混ぜる。
+// 各形を 12 ラウンド交互に回し、7 回目以降の中央値を 3 回測った（Apple M3 Max・
+// PostgreSQL 16.2）。同じ回の旧母集団・実効シリーズ書き下し形（(o_inline)、229.2〜236.6 ms）
+// との比で読む。予算は 141 ms の環境で決めた比 200/141 ≈ 1.42 倍である。
+//
+//   - 絞り込みなし: 309.5〜318.6 ms（1.31〜1.39 倍）
+//   - アニメ × 17 日間（47 棚）: 58.1〜59.0 ms（0.25 倍）。静的な形は 56.3〜59.4 ms
+//   - キーワード（1 棚）: 17.8〜19.7 ms（0.08 倍）。静的な形は 16.7〜18.6 ms
+//
+// 実データでの絶対値は未測定である。本番の playable_count は旧形の recording_count と
+// 全棚で一致し、絞り込みありの形は Go で別に集計した期待値と一致する（ハーネスが検査する）。
+func buildRecordingShelvesQuery(f recordingsFilter) (string, []any) {
+	var args []any
+	arg := func(v any) string {
+		args = append(args, v)
+		return fmt.Sprintf("$%d", len(args))
+	}
+	var where strings.Builder
+	and := func(clause string) {
+		where.WriteString("\n      AND ")
+		where.WriteString(clause)
+	}
+	recordingsFilterWhere(f, and, arg)
+
+	return `
+WITH playable_assets AS (
+    SELECT DISTINCT ma.recording_id
+    FROM media_assets ma
+    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND ma.state = 'active')
+),
+watched_events AS MATERIALIZED (
+    -- 印を束ねる側は live / playable / 絞り込みを当てない。ごみ箱・supersede 済みの印も読む。
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_watched w ON w.recording_id = r.id
+),
+live AS (
+    SELECT r.id,
+           r.title,
+           r.program_start_at,
+           r.network_id,
+           r.service_id,
+           rs.value,
+           pa.recording_id AS playable_recording_id,
+           we.network_id AS watched_network_id
+    FROM recordings r
+    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
+    JOIN recording_series rs ON rs.recording_id = r.id
+    LEFT JOIN watched_events we
+      ON we.network_id = r.network_id
+     AND we.service_id = r.service_id
+     AND we.program_start_at = r.program_start_at
+    WHERE r.deleted_at IS NULL
+      AND r.superseded_at IS NULL` + where.String() + `
+)
+SELECT l.value,
+       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
+       count(*) AS recording_count,
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       (count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL))::bigint AS unwatched_count,
+       max(l.program_start_at)::timestamptz AS latest_start_at,
+       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
+FROM live l
+GROUP BY l.value
+ORDER BY recording_count DESC, l.value ASC NULLS LAST`, args
 }
 
 type labelRuleInputValues struct {

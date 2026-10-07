@@ -2,8 +2,14 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
+import { render } from '@testing-library/react'
+
 import type { LabelRule, LabelRuleInput, RecordingShelf } from '@/api/generated'
+import { ToastProvider } from '@/components/toaster'
 import { SeriesPage } from '@/pages/series'
+import { routeTree } from '@/routes'
 import { renderInRouter } from '@/test/router'
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -25,6 +31,9 @@ function stubApi(shelves: RecordingShelf[], rules: LabelRule[] = []) {
     if (url.pathname === '/api/recording-shelves' && method === 'GET') {
       return Promise.resolve(jsonResponse(shelves))
     }
+    // 絞り込みパネル（RecordingFilters）の選択肢。
+    if (url.pathname === '/api/sites' && method === 'GET') return Promise.resolve(jsonResponse([]))
+    if (url.pathname === '/api/rules' && method === 'GET') return Promise.resolve(jsonResponse([]))
     if (url.pathname === '/api/label-rules' && method === 'GET') {
       labelRulesReadCount += 1
       return Promise.resolve(jsonResponse(labelRuleState))
@@ -348,16 +357,109 @@ describe('SeriesPage', () => {
     await user.click(screen.getByRole('button', { name: 'カード表示' }))
     expect(localStorage.getItem('rokuban:recordings:view')).toBe('card')
   })
+})
 
-  it('シリーズ名と代表タイトルで絞り込む', async () => {
+/**
+ * renderSeriesRoute は本物の routeTree で `/series` を描く。URL の条件が
+ * `validateSearch`（`parseSeriesSearch`）を通る経路を確かめるため、アドホックな
+ * ルートではなく実際のルート定義を使う。棚への GET の URL を記録する。
+ */
+function renderSeriesRoute(path: string, shelvesBody: RecordingShelf[] = shelves) {
+  const shelvesRequests: URL[] = []
+  globalThis.fetch = vi.fn((input: string | URL | Request) => {
+    const url = new URL(String(input), 'http://localhost')
+    if (url.pathname === '/api/recording-shelves') {
+      shelvesRequests.push(url)
+      return Promise.resolve(jsonResponse(shelvesBody))
+    }
+    return Promise.resolve(jsonResponse([]))
+  }) as unknown as typeof fetch
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const router = createRouter({ routeTree, history: createMemoryHistory({ initialEntries: [path] }) })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <RouterProvider router={router as never} />
+      </ToastProvider>
+    </QueryClientProvider>,
+  )
+  return { router, shelvesRequests }
+}
+
+describe('SeriesPage の絞り込み', () => {
+  const winter = '/series?genre=7&from=2026-01-01T00%3A00%3A00.000Z&to=2026-04-01T00%3A00%3A00.000Z'
+
+  it('URL の条件を棚の API に渡し、パネルとチップに反映する', async () => {
     const user = userEvent.setup()
-    stubApi(shelves)
-    renderInRouter(<SeriesPage />, { path: '/series' })
+    const { shelvesRequests } = renderSeriesRoute(winter)
 
-    const content = await screen.findByTestId('page-content')
-    await within(content).findByRole('link', { name: '単発のシリーズ' })
-    await user.type(screen.getByLabelText('シリーズを絞り込む'), '作品X')
-    expect(within(content).getByText('作品X')).toBeInTheDocument()
-    expect(within(content).queryByText('単発')).not.toBeInTheDocument()
+    const chips = await screen.findByRole('group', { name: '適用中の条件' })
+    expect(within(chips).getByText(/ジャンル: アニメ・特撮/)).toBeInTheDocument()
+    expect(within(chips).getByText(/^期間: /)).toBeInTheDocument()
+    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
+    const params = shelvesRequests.at(-1)!.searchParams
+    expect(params.getAll('genre')).toEqual(['7'])
+    expect(params.get('from')).toBe('2026-01-01T00:00:00.000Z')
+    expect(params.get('to')).toBe('2026-04-01T00:00:00.000Z')
+
+    await user.click(screen.getByRole('button', { name: /絞り込み/ }))
+    const panel = await screen.findByRole('dialog', { name: '絞り込み' })
+    expect(within(within(panel).getByRole('group', { name: 'ジャンル' })).getByRole('button', { name: 'アニメ・特撮' })).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('ごみ箱・並び順・エンコード状況は URL のパース時点で落とし、API にも渡さない', async () => {
+    const { router, shelvesRequests } = renderSeriesRoute('/series?genre=7&tab=trash&order=asc&encodeState=queued')
+
+    await screen.findByRole('group', { name: '適用中の条件' })
+    expect(screen.queryByText(/エンコード: /)).not.toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: '並び順' })).not.toBeInTheDocument()
+    expect(router.state.location.search).toEqual({ genre: [7] })
+    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
+    const params = shelvesRequests.at(-1)!.searchParams
+    expect([...params.keys()].sort()).toEqual(['genre', 'key'])
+  })
+
+  it('チップを外すと URL と API から条件が消える', async () => {
+    const user = userEvent.setup()
+    const { router, shelvesRequests } = renderSeriesRoute('/series?genre=7&genre=3')
+
+    const chips = await screen.findByRole('group', { name: '適用中の条件' })
+    await user.click(within(chips).getByRole('button', { name: /ジャンル: アニメ・特撮/ }))
+    await waitFor(() => expect(router.state.location.search).toEqual({ genre: [3] }))
+    await waitFor(() => expect(shelvesRequests.at(-1)!.searchParams.getAll('genre')).toEqual(['3']))
+  })
+
+  it('「録画」への切り替えは同じ条件を引き継ぐ', async () => {
+    const user = userEvent.setup()
+    const { router } = renderSeriesRoute(winter)
+
+    const toggle = await screen.findByRole('group', { name: '録画とシリーズの表示切替' })
+    await user.click(within(toggle).getByRole('link', { name: '録画' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/recordings'))
+    expect(router.state.location.search).toEqual({
+      genre: [7],
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-04-01T00:00:00.000Z',
+    })
+  })
+
+  it('録画一覧からの「シリーズ」への切り替えは、棚が受けない次元を落として条件を引き継ぐ', async () => {
+    const user = userEvent.setup()
+    const { router, shelvesRequests } = renderSeriesRoute(
+      '/recordings?genre=7&site=tokyo&tab=trash&order=asc&encodeState=queued',
+    )
+
+    const toggle = await screen.findByRole('group', { name: '録画とシリーズの表示切替' })
+    await user.click(within(toggle).getByRole('link', { name: 'シリーズ' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/series'))
+    expect(router.state.location.search).toEqual({ genre: [7], site: ['tokyo'] })
+    await waitFor(() => expect(shelvesRequests.length).toBeGreaterThan(0))
+    expect(shelvesRequests.at(-1)!.searchParams.getAll('site')).toEqual(['tokyo'])
+  })
+
+  it('条件があって棚が 0 件なら、条件に一致しない旨を出す', async () => {
+    renderSeriesRoute(winter, [])
+
+    expect(await screen.findByText('条件に一致するシリーズがありません')).toBeInTheDocument()
   })
 })

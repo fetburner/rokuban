@@ -14,6 +14,7 @@ import {
 import { parseReservationsSearch, type ReservationsPageSearch } from './lib/reservation-labels'
 import {
   parseRecordingsSearch,
+  parseSeriesSearch,
   parseRuleId,
   type RecordingsPageSearch,
 } from './lib/recording-search'
@@ -218,10 +219,14 @@ function parseCMLogoStationSearch(search: Record<string, unknown>): CMLogoStatio
 /**
  * シリーズ一覧は録画一覧と同じライブラリの入口に置く。棚の値は表示に使うが、
  * タイルの宛先は代表録画 id の番組ハブである（docs/data/series.md §8）。
+ * 絞り込みは録画一覧と同じ条件を URL に持ち、棚が受けない次元はパース時点で落とす
+ * （`lib/recording-search.ts` の `parseSeriesSearch`）。
  */
 const seriesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/series',
+  validateSearch: (search: Record<string, unknown>): RecordingsPageSearch =>
+    parseSeriesSearch(search),
   head: () => ({ meta: [{ title: pageTitle('シリーズ') }] }),
   component: SeriesPage,
 })

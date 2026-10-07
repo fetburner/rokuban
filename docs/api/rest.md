@@ -174,6 +174,11 @@ API 契約として破綻する。1 エンドポイントの前提が `trash` �
 通常一覧と `trash=true` はどちらも `buildRecordingsQuery` / `queryRecordings` を通る。
 sqlc の `ListTrashRecordings` は worker の DB テストが直接使い、HTTP API の一覧には使わない。
 
+棚（`GET /api/recording-shelves`）の絞り込みも、条件から WHERE を作る部分（`recordingsFilterWhere`）を一覧と共有する。
+ページング・並び順・番組ハブは一覧だけの軸なので、共有の外に置く。
+棚は全録画を集計するので、計測では静的な形との速さの差が無かった（数値は `buildRecordingShelvesQuery` の doc コメント）。
+それでも動的に組むのは、静的な形では一覧と組み立てを共有できず、条件を直すと片方だけ直るからである。
+
 **これだけでは片方の劣化しか塞げない**。pgx の既定 `QueryExecModeCacheStatement`
 は、SQL テキストごとに named prepared statement を作ってキャッシュする。
 Postgres 自身がその statement を 6 回目以降 custom plan から generic plan に

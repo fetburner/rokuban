@@ -1307,12 +1307,54 @@ export const ListRecordingsResponse = zod.array(ListRecordingsResponseItem)
  *
  * **パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}`
  * と id=`shelves` で曖昧になる。
+ *
+ * ## 絞り込み
+ *
+ * `q` / `qTarget` / `genre` / `channelType` / `site` / `service` /
+ * `status` / `source` / `ruleId` / `from` / `to` は `GET /api/recordings`
+ * と同じ意味で、同じ組み立て（サーバーの WHERE ビルダ）を通る。不正な値も
+ * 同じく 400 にする。
+ *
+ * **絞り込みはグループ化の前に、上の母集団の録画 1 件ずつに当てる。**
+ * `count` / `playableCount` / `unwatchedCount` / `latestStartAt` / 代表録画
+ * （`title` / `representativeId`）は、絞り込んだ後の録画から出す。
+ * 該当する録画が 0 件の棚は返らない。2 つの期間にまたがるシリーズは、
+ * どちらの期間で絞っても返り、件数はその期間内の回数になる。期間は
+ * 放送時期（`program_start_at`）で、再放送は放送した期に入る。
+ *
+ * **視聴済み印は絞り込みの外から読む。** `unwatchedCount` が束ねる放送
+ * イベントは絞り込んだ録画から作るが、そのイベントが視聴済みかは全録画
+ * （ごみ箱・supersede 済み・別 site を含む）の印で決める。`site` で
+ * 絞っても、別 site の録画で見た回は既読のまま数える。
+ *
+ * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
+ * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
+ * エンコードジョブを結合した行で絞るので、棚の件数が膨らむ。
  * @summary List series shelves
  */
 export const listRecordingShelvesQueryKeyDefault = `series`;
+export const listRecordingShelvesQueryQTargetDefault = `titleDescription`;
+export const listRecordingShelvesQueryGenreItemMin = 0;
+export const listRecordingShelvesQueryGenreItemMax = 15;
+
+export const listRecordingShelvesQuerySiteItemRegExp = new RegExp('^[a-z0-9](?:[_-]?[a-z0-9])*$');
+export const listRecordingShelvesQueryServiceItemMax = 6553565535;
+
+
 
 export const ListRecordingShelvesQueryParams = zod.object({
-  "key": zod.enum(['series']).default(listRecordingShelvesQueryKeyDefault).describe('棚の軸。M8 は series だけ。')
+  "key": zod.enum(['series']).default(listRecordingShelvesQueryKeyDefault).describe('棚の軸。M8 は series だけ。'),
+  "q": zod.string().optional().describe('キーワード（部分一致）。`GET /api/recordings` の `q` と同じ'),
+  "qTarget": zod.enum(['title', 'titleDescription']).default(listRecordingShelvesQueryQTargetDefault),
+  "genre": zod.array(zod.int().min(listRecordingShelvesQueryGenreItemMin).max(listRecordingShelvesQueryGenreItemMax)).optional().describe('genre_lv1（ジャンル大分類）との重なり。複数指定可'),
+  "channelType": zod.array(zod.enum(['GR', 'BS', 'CS', 'SKY'])).optional(),
+  "site": zod.array(zod.string().regex(listRecordingShelvesQuerySiteItemRegExp)).optional().describe('mirakc サイト名。複数指定は OR。`GET /api/recordings` の `site` と同じ'),
+  "service": zod.array(zod.int().min(1).max(listRecordingShelvesQueryServiceItemMax)).optional().describe('`Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。\nsite は含めない（`GET /api/recordings` の `service` と同じ）\n'),
+  "status": zod.enum(['recording', 'finished', 'canceled', 'failed']).optional(),
+  "source": zod.enum(['rule', 'manual', 'unattributed']).optional(),
+  "ruleId": zod.int().optional().describe('特定ルール由来の録画に絞る'),
+  "from": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻以上'),
+  "to": zod.iso.datetime({"offset":true}).optional().describe('program_start_at がこの時刻未満')
 })
 
 export const ListRecordingShelvesResponseItem = zod.object({

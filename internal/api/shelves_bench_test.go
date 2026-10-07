@@ -38,21 +38,28 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // 別 site の重複、event_id だけが違う重複、開始時刻だけが同じ別サービス、ごみ箱にしか行が無いイベント、
 // 削除済み / supersede 済み / purged の行に付いた watched 印である。
 //
-// 測る形は棚クエリ 6 つと予約一覧 2 つである。
+// seed の録画は 141 棚のうち 47 棚をアニメ（genre lv1=7）、残りをドラマにする。
 //
-//   - (a) 本番: sqlc の ListRecordingShelves。生きている録画を母集団にして playable_assets を
-//     LEFT JOIN し、再生可能数・未視聴イベント数・latestStartAt を同じ集計から返す形
+// 測る形は棚クエリ 10 個と予約一覧 2 つである。
+//
+//   - (a) 本番: buildRecordingShelvesQuery の絞り込みなし。生きている録画を母集団にして
+//     playable_assets を LEFT JOIN し、再生可能数・未視聴イベント数・latestStartAt を同じ集計から
+//     返す形。ハンドラと同じく QueryExecModeExec で実行する
 //   - (o) 旧形: 再生できる録画だけを INNER JOIN した母集団（playable を MATERIALIZED）。
 //     母集団が (a) と違うので比較用のリテラルとして持つ
 //   - (o') (o) から playable の MATERIALIZED を外した形。同じ母集団どうしの比較
 //   - (b') (a) の live を MATERIALIZED にした形
 //   - (c) (a) の playable_assets を MATERIALIZED にした形
 //   - (o_inline) (o) の recording_series を書き下した形。予算の 141 ms を測った形で、比の分母
+//   - (f) 本番の組み立てでアニメ × 期間に絞った形。(f_static) は同じ条件を sqlc の静的クエリの
+//     まま `sqlc.narg` で受けた形（staticFilteredShelfQuery）で、prepared statement 経由で回す
+//   - (q) / (q_static) 同じ 2 形をキーワード 1 つで絞った形
 //   - (d) / (d') 予約一覧に実効シリーズを LEFT JOIN / 相関サブクエリで足す形。予約数と、予約に
 //     載らない EPG の行数を別々に動かす
 //
-// 各形を同じ接続で、形を交互に回すラウンド 10 回ずつ実行し（実行順の偏りを消す）、
-// 中央値を t.Logf に出す。比も出すが、判定には使わない。
+// 各形を同じ接続で、形を交互に回すラウンド 12 回ずつ実行し（実行順の偏りを消す）、
+// 7 回目以降の中央値を t.Logf に出す。prepared statement は同じ文の 6 回目から汎用プランに
+// 切り替わりうるので、序盤の値では判断しない。比も出すが、判定には使わない。
 //
 // 判定しているのは結果の一致だけである。棚ごとに (a) の playable_count と (o) の recording_count
 // （母集団が違うのでこの対応で見る）、(o') / (o_inline) と (o) の全列、(b') と (a) の全列が一致し、
@@ -61,6 +68,7 @@ const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
 // (c) も (a) の全列と一致する。(a) の未視聴件数は、独立に集計した「再生可能な live 放送イベントのうち、
 // 全録画行を通じて watched 印が無いイベント数」と棚ごとに一致し、合計は 64,600 である。
 // (d') は (d) と予約ごとの実効シリーズが一致する。
+// (f) / (q) は、Go で別に集計した期待値（checkFilteredShelves）と全列が一致し、静的な形とも一致する。
 //
 // 既知の 617 ms（playable の MATERIALIZED を外すと数倍遅い）は、現スキーマ・この合成
 // seed では再現しない。617 ms の再現条件は未検証なので (o') が遅いことはアサートしない。
@@ -98,22 +106,9 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	defer conn.Release()
 	seedShelfBenchmark(t, conn.Conn())
 
-	queries := sqlcgen.New(conn.Conn())
 	shapes := []shelfShape{
-		{name: "(a) production ListRecordingShelves", run: func() (map[string]shelfResult, error) {
-			rows, err := queries.ListRecordingShelves(ctx)
-			if err != nil {
-				return nil, err
-			}
-			out := make(map[string]shelfResult, len(rows))
-			for _, r := range rows {
-				out[shelfKey(r.Value)] = shelfResult{
-					title: r.Title, recording: r.RecordingCount, playable: r.PlayableCount,
-					unwatched: r.UnwatchedCount,
-					latest:    r.LatestStartAt, representative: r.RepresentativeID,
-				}
-			}
-			return out, nil
+		{name: "(a) production buildRecordingShelvesQuery", run: func() (map[string]shelfResult, error) {
+			return queryProductionShelves(ctx, conn.Conn(), recordingsFilter{})
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, conn.Conn(), previousShelfQuery)
@@ -130,9 +125,23 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery)
 		}},
+		{name: "(f) production filtered by genre and period", run: func() (map[string]shelfResult, error) {
+			return queryProductionShelves(ctx, conn.Conn(), benchGenrePeriodFilter)
+		}},
+		{name: "(f_static) static sqlc.narg shape filtered by genre and period", run: func() (map[string]shelfResult, error) {
+			return queryFullShelves(ctx, conn.Conn(), staticFilteredShelfQuery, staticShelfArgs(benchGenrePeriodFilter)...)
+		}},
+		{name: "(q) production filtered by keyword", run: func() (map[string]shelfResult, error) {
+			return queryProductionShelves(ctx, conn.Conn(), benchKeywordFilter)
+		}},
+		{name: "(q_static) static sqlc.narg shape filtered by keyword", run: func() (map[string]shelfResult, error) {
+			return queryFullShelves(ctx, conn.Conn(), staticFilteredShelfQuery, staticShelfArgs(benchKeywordFilter)...)
+		}},
 	}
 
-	const rounds = 10
+	// prepared statement は同じ文の 6 回目から汎用プランに切り替わりうるので、
+	// 判定には 7 回目以降の中央値を使う（序盤の 5 回の中央値も並べて出す）。
+	const rounds, warmup = 12, 6
 	samples := make([][]time.Duration, len(shapes))
 	results := make([]map[string]shelfResult, len(shapes))
 	for round := 0; round < rounds; round++ {
@@ -148,14 +157,18 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 	medians := make([]time.Duration, len(shapes))
 	for i, shape := range shapes {
+		medians[i] = median(samples[i][warmup:])
+		t.Logf("%s: median %s (rounds 1-5: %s)", shape.name, medians[i], median(samples[i][:warmup-1]))
+	}
+	for i := range 6 {
 		if len(results[i]) != 141 {
-			t.Fatalf("%s shelf count = %d, want 141", shape.name, len(results[i]))
+			t.Fatalf("%s shelf count = %d, want 141", shapes[i].name, len(results[i]))
 		}
-		medians[i] = median(samples[i])
-		t.Logf("%s: median %s", shape.name, medians[i])
 	}
 
 	production, previous, previousUnmaterialized, liveMaterialized, withMaterializedAssets, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
+	checkFilteredShelves(t, ctx, conn.Conn(), "(f)", results[6], results[7], benchGenrePeriodPredicate)
+	checkFilteredShelves(t, ctx, conn.Conn(), "(q)", results[8], results[9], benchKeywordPredicate)
 	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
 	if err != nil {
 		t.Fatalf("computing expected latest_start_at: %v", err)
@@ -207,6 +220,9 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		float64(medians[3])/float64(medians[0]), float64(medians[2])/float64(medians[1]),
 		float64(medians[0])/float64(medians[5]), float64(medians[1])/float64(medians[5]),
 		float64(medians[4])/float64(medians[5]), 200.0/141.0)
+	t.Logf("filtered ratios to (o_inline): (f)=%.2f, (f_static)=%.2f, (q)=%.2f, (q_static)=%.2f (budget 200/141=%.2f)",
+		float64(medians[6])/float64(medians[5]), float64(medians[7])/float64(medians[5]),
+		float64(medians[8])/float64(medians[5]), float64(medians[9])/float64(medians[5]), 200.0/141.0)
 
 	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
@@ -375,8 +391,8 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string
 }
 
 // queryFullShelves は本番と同じ列順の 7 列を返す棚クエリを実行する。
-func queryFullShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
-	rows, err := conn.Query(ctx, query)
+func queryFullShelves(ctx context.Context, conn *pgx.Conn, query string, args ...any) (map[string]shelfResult, error) {
+	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -483,7 +499,9 @@ type reservationSeriesShape struct {
 // measureReservationsWithSeries は reservationSeriesShapes を交互に 10 ラウンド回し、形ごとの中央値と
 // 最終ラウンドの結果を返す。ラウンド間で結果が変わったらエラーにする。
 func measureReservationsWithSeries(ctx context.Context, conn *pgx.Conn) ([]reservationSeriesShape, error) {
-	const rounds = 10
+	// prepared statement は同じ文の 6 回目から汎用プランに切り替わりうるので、
+	// 判定には 7 回目以降の中央値を使う（序盤の 5 回の中央値も並べて出す）。
+	const rounds, warmup = 12, 6
 	out := make([]reservationSeriesShape, len(reservationSeriesShapes))
 	samples := make([][]time.Duration, len(reservationSeriesShapes))
 	for round := 0; round < rounds; round++ {
@@ -560,7 +578,7 @@ WITH seed AS (
 )
 INSERT INTO recordings (
   source, site, network_id, service_id, event_id, service_name, channel_type, channel,
-  title, program_start_at, program_duration_ms, status, deleted_at, superseded_at, purged_at
+  title, program_start_at, program_duration_ms, status, deleted_at, superseded_at, purged_at, genres
 )
 SELECT
   'manual', site, 32678, service_id, event_index + event_id_offset, 'benchmark', 'GR', '27',
@@ -575,7 +593,10 @@ SELECT
   END,
   CASE WHEN i BETWEEN 71001 AND 72000 THEN now() ELSE NULL END,
   CASE WHEN i BETWEEN 72001 AND 73000 THEN now() ELSE NULL END,
-  CASE WHEN i BETWEEN 71001 AND 71025 THEN now() ELSE NULL END
+  CASE WHEN i BETWEEN 71001 AND 71025 THEN now() ELSE NULL END,
+  -- 141 棚のうち 47 棚をアニメ（lv1=7）、残りをドラマ（lv1=3）にする。
+  jsonb_build_array(jsonb_build_object(
+    'lv1', CASE WHEN (event_index - 1) % 141 < 47 THEN 7 ELSE 3 END, 'lv2', 0, 'un1', 0, 'un2', 0))
 FROM seed;
 
 INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
@@ -836,4 +857,207 @@ var reservationSeriesShapes = []struct {
 		"eps.value", "LEFT JOIN epg_program_series eps ON eps.site = r.site AND eps.program_id = r.program_id\n")},
 	{"(d') ListReservationsFull with correlated epg_program_series", fmt.Sprintf(reservationsWithSeriesTemplate,
 		"(SELECT eps.value FROM epg_program_series eps WHERE eps.site = r.site AND eps.program_id = r.program_id)", "")},
+}
+
+// 絞り込みありの形の条件。期間はアニメ（lv1=7）の 47 棚のうち、2020-01-15〜2020-02-01 に
+// 放送した回だけを数える（seed の program_start_at は 2020-01-01 から 1 分刻み）。
+var (
+	benchPeriodFrom        = time.Date(2020, 1, 15, 0, 0, 0, 0, time.UTC)
+	benchPeriodTo          = time.Date(2020, 2, 1, 0, 0, 0, 0, time.UTC)
+	benchGenrePeriodFilter = recordingsFilter{Genres: []int16{7}, From: &benchPeriodFrom, To: &benchPeriodTo}
+	benchKeywordFilter     = recordingsFilter{Q: "シリーズ001"}
+)
+
+// benchGenrePeriodPredicate / benchKeywordPredicate は上の条件を、測る SQL とは別に書いた述語である。
+const (
+	benchGenrePeriodPredicate = `r.genre_lv1 && '{7}'::smallint[]
+  AND r.program_start_at >= '2020-01-15T00:00:00Z' AND r.program_start_at < '2020-02-01T00:00:00Z'`
+	benchKeywordPredicate = `r.title LIKE '%シリーズ001%'`
+)
+
+// queryProductionShelves は本番の棚クエリを、ハンドラと同じ組み立てと実行モードで実行する。
+func queryProductionShelves(ctx context.Context, conn *pgx.Conn, f recordingsFilter) (map[string]shelfResult, error) {
+	sql, args := buildRecordingShelvesQuery(f)
+	return queryFullShelves(ctx, conn, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
+}
+
+// staticFilteredShelfQuery は棚を sqlc の静的クエリのまま `sqlc.narg` で全条件を受けた形である。
+// service（行値の IN）は静的な形に載らないので省く。本番は採らない（buildRecordingShelvesQuery）。
+const staticFilteredShelfQuery = `
+WITH playable_assets AS (
+    SELECT DISTINCT ma.recording_id
+    FROM media_assets ma
+    WHERE (ma.kind = 'original' AND ma.state <> 'deleted')
+       OR (ma.kind = 'encoded' AND ma.state = 'active')
+),
+watched_events AS MATERIALIZED (
+    SELECT DISTINCT r.network_id, r.service_id, r.program_start_at
+    FROM recordings r
+    JOIN recording_watched w ON w.recording_id = r.id
+),
+live AS (
+    SELECT r.id,
+           r.title,
+           r.program_start_at,
+           r.network_id,
+           r.service_id,
+           rs.value,
+           pa.recording_id AS playable_recording_id,
+           we.network_id AS watched_network_id
+    FROM recordings r
+    LEFT JOIN playable_assets pa ON pa.recording_id = r.id
+    JOIN recording_series rs ON rs.recording_id = r.id
+    LEFT JOIN watched_events we
+      ON we.network_id = r.network_id
+     AND we.service_id = r.service_id
+     AND we.program_start_at = r.program_start_at
+    WHERE r.deleted_at IS NULL
+      AND r.superseded_at IS NULL
+      AND ($1::text IS NULL
+           OR normalize_search_text(r.title) LIKE ('%' || normalize_search_text(like_escape($1::text)) || '%') ESCAPE '\'
+           OR normalize_search_text(r.description) LIKE ('%' || normalize_search_text(like_escape($1::text)) || '%') ESCAPE '\')
+      AND ($2::smallint[] IS NULL OR r.genre_lv1 && $2::smallint[])
+      AND ($3::text[] IS NULL OR r.channel_type = ANY($3::text[]))
+      AND ($4::text[] IS NULL OR r.site = ANY($4::text[]))
+      AND ($5::text IS NULL OR r.status = $5::text)
+      AND ($6::text IS NULL OR r.source = $6::text)
+      AND ($7::bigint IS NULL OR r.rule_id = $7::bigint)
+      AND ($8::timestamptz IS NULL OR r.program_start_at >= $8::timestamptz)
+      AND ($9::timestamptz IS NULL OR r.program_start_at < $9::timestamptz)
+)
+SELECT l.value,
+       (array_agg(l.title ORDER BY l.program_start_at DESC, l.id DESC))[1]::text AS title,
+       count(*) AS recording_count,
+       count(*) FILTER (WHERE l.playable_recording_id IS NOT NULL) AS playable_count,
+       (count(DISTINCT (l.network_id, l.service_id, l.program_start_at))
+           FILTER (WHERE l.playable_recording_id IS NOT NULL AND l.watched_network_id IS NULL))::bigint AS unwatched_count,
+       max(l.program_start_at)::timestamptz AS latest_start_at,
+       (array_agg(l.id ORDER BY l.program_start_at DESC, l.id DESC))[1]::bigint AS representative_id
+FROM live l
+GROUP BY l.value
+ORDER BY recording_count DESC, l.value ASC NULLS LAST
+`
+
+// staticShelfArgs は staticFilteredShelfQuery の引数を作る。未指定の条件は NULL を渡す。
+func staticShelfArgs(f recordingsFilter) []any {
+	args := make([]any, 9)
+	if f.Q != "" {
+		args[0] = f.Q
+	}
+	if len(f.Genres) > 0 {
+		args[1] = f.Genres
+	}
+	if len(f.ChannelTypes) > 0 {
+		args[2] = f.ChannelTypes
+	}
+	if len(f.Sites) > 0 {
+		args[3] = f.Sites
+	}
+	if f.Status != "" {
+		args[4] = string(f.Status)
+	}
+	if f.Source != "" {
+		args[5] = string(f.Source)
+	}
+	if f.RuleID != nil {
+		args[6] = *f.RuleID
+	}
+	if f.From != nil {
+		args[7] = *f.From
+	}
+	if f.To != nil {
+		args[8] = *f.To
+	}
+	return args
+}
+
+// checkFilteredShelves は絞り込みありの形の結果を、測る SQL とは別に Go で集計した期待値と比べる。
+// 母集団の録画に predicate を当て、棚ごとの件数・再生可能数・最新・代表・未視聴を数える。
+// 視聴済み印は predicate を当てない全録画から読む。静的な形も同じ結果になることを確かめる。
+func checkFilteredShelves(t *testing.T, ctx context.Context, conn *pgx.Conn, label string, got, static map[string]shelfResult, predicate string) {
+	t.Helper()
+	rows, err := conn.Query(ctx, `
+SELECT rs.value, r.id, r.title, r.program_start_at, r.network_id, r.service_id,
+       EXISTS (
+           SELECT 1 FROM media_assets ma
+           WHERE ma.recording_id = r.id
+             AND ((ma.kind = 'original' AND ma.state <> 'deleted')
+               OR (ma.kind = 'encoded' AND ma.state = 'active'))
+       ),
+       EXISTS (
+           SELECT 1
+           FROM recordings any_recording
+           JOIN recording_watched w ON w.recording_id = any_recording.id
+           WHERE any_recording.network_id = r.network_id
+             AND any_recording.service_id = r.service_id
+             AND any_recording.program_start_at = r.program_start_at
+       )
+FROM recordings r
+JOIN recording_series rs ON rs.recording_id = r.id
+WHERE r.deleted_at IS NULL AND r.superseded_at IS NULL
+  AND `+predicate)
+	if err != nil {
+		t.Fatalf("%s: computing expected shelves: %v", label, err)
+	}
+	type event struct {
+		networkID, serviceID int32
+		start                time.Time
+	}
+	want := map[string]shelfResult{}
+	unwatched := map[string]map[event]bool{}
+	for rows.Next() {
+		var value pgtype.Text
+		var id int64
+		var title string
+		var start time.Time
+		var networkID, serviceID int32
+		var playable, watched bool
+		if err := rows.Scan(&value, &id, &title, &start, &networkID, &serviceID, &playable, &watched); err != nil {
+			t.Fatalf("%s: scanning expected shelves: %v", label, err)
+		}
+		var v *string
+		if value.Valid {
+			v = &value.String
+		}
+		key := shelfKey(v)
+		w := want[key]
+		w.recording++
+		if playable {
+			w.playable++
+		}
+		if start.After(w.latest) || (start.Equal(w.latest) && id > w.representative) {
+			w.latest, w.representative, w.title = start, id, title
+		}
+		want[key] = w
+		if playable && !watched {
+			if unwatched[key] == nil {
+				unwatched[key] = map[event]bool{}
+			}
+			unwatched[key][event{networkID, serviceID, start}] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: iterating expected shelves: %v", label, err)
+	}
+	rows.Close()
+	if len(want) == 0 || len(want) >= 141 {
+		t.Fatalf("%s: expected %d shelves; the predicate must drop some shelves and keep some", label, len(want))
+	}
+	for key, w := range want {
+		w.unwatched = int64(len(unwatched[key]))
+		want[key] = w
+	}
+	if len(got) != len(want) {
+		t.Errorf("%s: %d shelves, want %d", label, len(got), len(want))
+	}
+	for key, w := range want {
+		if g, ok := got[key]; !ok || !g.latest.Equal(w.latest) || g.title != w.title || g.recording != w.recording ||
+			g.playable != w.playable || g.unwatched != w.unwatched || g.representative != w.representative {
+			t.Errorf("%s: shelf %q = %+v, want %+v", label, key, got[key], w)
+		}
+		if s, ok := static[key]; !ok || s != got[key] {
+			t.Errorf("%s: static shape shelf %q = %+v, want %+v", label, key, static[key], got[key])
+		}
+	}
+	t.Logf("%s: %d shelves", label, len(want))
 }

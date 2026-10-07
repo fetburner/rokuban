@@ -1,6 +1,6 @@
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
 import { ChevronDown, Search as SearchIcon, X } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import {
   ListRecordingsOrder,
@@ -37,19 +37,25 @@ const KEYWORD_DEBOUNCE_MS = 300
 type Update = (updater: (prev: RecordingsPageSearch) => RecordingsPageSearch) => void
 
 /**
- * RecordingFilters は録画検索の条件 UI（issue #137）。
+ * RecordingFilters は録画検索の条件 UI（issue #137）。録画一覧とシリーズ一覧が
+ * 同じものを使う（条件の意味が同じなので、UI も 1 つにする）。
  *
  * 状態は一切持たない（キーワード入力欄の debounce 用の下書きを除く）。条件は
- * すべて呼び出し側（`pages/recordings.tsx`）が URL の search として持ち、
- * ここは表示と `onChange` 呼び出しに徹する --- 条件の永続化・共有・戻るボタン
- * との整合は URL 側の責務であり、ここに複製しない。
+ * すべて呼び出し側（`pages/recordings.tsx` / `pages/series.tsx`）が URL の search
+ * として持ち、ここは表示と `onChange` 呼び出しに徹する --- 条件の永続化・共有・
+ * 戻るボタンとの整合は URL 側の責務であり、ここに複製しない。
+ *
+ * 並び順は画面ごとに軸が違う（録画は放送日時の昇降、シリーズは新着・件数・名前）
+ * ので、絞り込みの右に置く操作を `children` で受ける。
  */
 export function RecordingFilters({
   search,
   onChange,
+  children,
 }: {
   search: RecordingsPageSearch
   onChange: Update
+  children?: ReactNode
 }) {
   const sitesQuery = useListSites()
   const sites = unwrap(sitesQuery.data) ?? []
@@ -98,12 +104,7 @@ export function RecordingFilters({
           rulesError={rulesQuery.isError}
           onChange={onChange}
         />
-        <OrderSelect
-          value={search.order ?? ListRecordingsOrder.desc}
-          onChange={(order) =>
-            onChange((s) => ({ ...s, order: order === ListRecordingsOrder.desc ? undefined : order }))
-          }
-        />
+        {children}
       </div>
 
       {chips.length > 0 && (
@@ -174,24 +175,53 @@ function KeywordField({ value, onChange }: { value: string; onChange: (value: st
   )
 }
 
-function OrderSelect({
-  value,
+/** RecordingOrderSelect は録画一覧の並び順（放送日時の新しい順 / 古い順）。 */
+export function RecordingOrderSelect({
+  search,
   onChange,
 }: {
-  value: ListRecordingsOrder
-  onChange: (order: ListRecordingsOrder) => void
+  search: RecordingsPageSearch
+  onChange: Update
+}) {
+  return (
+    <ToolbarSelect
+      label="並び順"
+      value={search.order ?? ListRecordingsOrder.desc}
+      onChange={(order) =>
+        onChange((s) => ({
+          ...s,
+          order: order === ListRecordingsOrder.desc ? undefined : (order as ListRecordingsOrder),
+        }))
+      }
+    >
+      <option value={ListRecordingsOrder.desc}>新しい順</option>
+      <option value={ListRecordingsOrder.asc}>古い順</option>
+    </ToolbarSelect>
+  )
+}
+
+/** ToolbarSelect は絞り込みの並びに置く select の外枠（高さとボーダーを揃える）。 */
+export function ToolbarSelect({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  children: ReactNode
 }) {
   return (
     <label className="flex h-11 shrink-0 items-center rounded-lg border border-border bg-background px-3 text-sm text-foreground">
-      <span className="sr-only">並び順</span>
+      <span className="sr-only">{label}</span>
       <select
-        aria-label="並び順"
+        aria-label={label}
         value={value}
-        onChange={(e) => onChange(e.target.value as ListRecordingsOrder)}
+        onChange={(e) => onChange(e.target.value)}
         className="h-6 bg-transparent text-sm text-foreground outline-none"
       >
-        <option value={ListRecordingsOrder.desc}>新しい順</option>
-        <option value={ListRecordingsOrder.asc}>古い順</option>
+        {children}
       </select>
     </label>
   )

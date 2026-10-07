@@ -39,11 +39,11 @@ func TestSpecServiceBoundsMatchGo(t *testing.T) {
 	}
 
 	bounds := serviceParamBounds(t, spec)
-	// `?service=` を持つのは ListPrograms と ListRecordings の 2 つ。片方だけを
-	// 見つけて満足しないよう件数も固定する（spec 側で名前が変わったら気付く）。
-	if len(bounds) != 2 {
-		t.Fatalf("found %d `service` query parameters in the spec, want 2 "+
-			"(ListPrograms / ListRecordings)", len(bounds))
+	// `?service=` を持つのは ListPrograms / ListRecordings / ListRecordingShelves の 3 つ。
+	// 一部だけを見つけて満足しないよう件数も固定する（spec 側で名前が変わったら気付く）。
+	if len(bounds) != 3 {
+		t.Fatalf("found %d `service` query parameters in the spec, want 3 "+
+			"(ListPrograms / ListRecordings / ListRecordingShelves)", len(bounds))
 	}
 	for _, b := range bounds {
 		if b.min != 1 {
