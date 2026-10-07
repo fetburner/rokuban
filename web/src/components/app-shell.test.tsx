@@ -204,6 +204,11 @@ describe('AppShell / Sidebar の畳み込み', () => {
       expect(links).toHaveLength(1)
       for (const link of links) {
         expect(link).toHaveAttribute('href')
+        expect(link).toHaveAccessibleName(label)
+        expect(link).not.toHaveAttribute('title')
+        // Base UI Tooltip は視覚向けの補助。sr-only のリンク名を残し、説明としても
+        // 同じ文字列を結び付けると読み上げが重なるため、aria-describedby は付けない。
+        expect(link).not.toHaveAttribute('aria-describedby')
       }
     }
   })

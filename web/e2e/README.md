@@ -1492,6 +1492,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:recordings-period-toolbar
 ```
 
+### 畳んだサイドバーの項目名（`sidebar-tooltips.mjs`）
+
+1280px の Chromium で畳んだレールをホバーし、初回の表示が 250〜500ms に入ることを確認する。
+隣接項目は 180ms 以内に出る。Tab フォーカスでも表示し、展開後は両操作で表示しない。
+リンクの読み上げ名が 1 件で、tooltip が `aria-describedby` に結ばれていないことも調べる。
+API は Playwright で差し替えるため、サーバーと DB は要らない。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:sidebar-tooltips
+```
+
 ## CI で回す判定とそれ以外
 
 CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/` を配るサーバーへ Chromium を向ける。
