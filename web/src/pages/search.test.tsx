@@ -668,13 +668,11 @@ describe('SearchPage', () => {
   })
 
   /**
-   * レビュー指摘: 主操作を `ConditionFields` の前に移した変更は `pnpm test` に
-   * 一切掛かっていなかった（並びだけ元に戻しても 29/29 green だった）。上の
-   * テストの `compareDocumentPosition` はテキスト欄とサービスチップの比較で、
-   * 主操作の位置は見ていない。座標ではなく DOM 順なので jsdom で測れる ---
-   * 将来の refactor で黙って末尾に戻るのを CI で止める。
+   * issue #1232 の判断: 主操作は条件を見た後に使えるよう、条件の後ろへ流れの中で置く。
+   * 座標ではなく DOM 順なので jsdom で位置を固定し、将来の refactor で条件より前に
+   * 戻ることを CI で検出する。
    */
-  it('主操作（検索）は条件の先頭セクション（テキスト条件）より DOM 順で前にある', async () => {
+  it('主操作（検索）は条件の先頭セクション（テキスト条件）より DOM 順で後にある', async () => {
     stubApi()
     renderPage()
 
@@ -682,7 +680,7 @@ describe('SearchPage', () => {
     const firstSectionHeading = screen.getByRole('heading', { name: 'テキスト条件' })
 
     expect(
-      searchButton.compareDocumentPosition(firstSectionHeading) &
+      firstSectionHeading.compareDocumentPosition(searchButton) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).not.toBe(0)
   })
@@ -956,6 +954,21 @@ describe('SearchPage', () => {
     expect(results.getByText('NHK総合')).toBeInTheDocument()
     expect(results.getByText('30分')).toBeInTheDocument()
 
+    expect(searchBodies).toEqual([
+      { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
+    ])
+  })
+
+  it('値の欄は enterKeyHint=search を持ち、Enter で検索が送られる', async () => {
+    const { searchBodies } = stubApi()
+    renderPage()
+    await addKeyword('ニュース')
+
+    const value = screen.getByLabelText('テキスト条件 1 の値')
+    expect(value).toHaveAttribute('enterkeyhint', 'search')
+
+    await userEvent.type(value, '{Enter}')
+    expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     expect(searchBodies).toEqual([
       { textMatches: [{ target: 'name', mode: 'keyword', value: 'ニュース' }] },
     ])

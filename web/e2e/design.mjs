@@ -3194,12 +3194,17 @@ for (const theme of themes) {
   {
     // 空状態（EmptyState）の文言が実際に読める位置のショット。検索フォームの下に
     // あるため、既定ショットだけではビューポートの下端で文言が切れることがある。
-    // 走査線の上の文字が読めるかを判断できるよう、対象までスクロールした 1 組を足す
+    // 読み込み中と同じ縞が付いていないこともここで確かめる。
     const { context, page } = await open(desktop, theme, screenOf('search'))
-    const empty = page
-      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
-      .first()
-    await empty.scrollIntoViewIfNeeded()
+    const empty = page.getByText('条件を指定して検索してください', { exact: true })
+    await empty.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] 検索の未検索 EmptyState が出ない`)
+    })
+    if ((await empty.count()) > 0) {
+      const hasScanlines = await empty.evaluate((element) => element.closest('.scanlines') !== null)
+      if (hasScanlines) ng.push(`[${theme}] 検索の未検索 EmptyState に走査線がある`)
+      await empty.scrollIntoViewIfNeeded()
+    }
     await page.waitForTimeout(100)
     const file = path.join(OUT_DIR, `empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
@@ -3208,9 +3213,8 @@ for (const theme of themes) {
     await context.close()
   }
   {
-    // ホーム（M8-3）の「全セクションが空」= 単一の空状態（EmptyState の走査線）。
-    // `home-*-desktop.png`（既定の 4 セクション表示）と対にして人が見比べられる
-    // ようにする。
+    // ホームの「全セクションが空」は EmptyState だけを表示する。
+    // `home-*-desktop.png`（既定の 4 セクション表示）と対にして見比べられるようにする。
     const context = await browser.newContext({
       viewport: { width: desktop.width, height: desktop.height },
       locale: 'ja-JP',
@@ -3222,13 +3226,14 @@ for (const theme of themes) {
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ emptyHome: true }))
     await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
-    await page
-      .locator('div.scanlines', { hasText: '表示できる項目がありません' })
-      .first()
-      .waitFor({ timeout: 5000 })
-      .catch(() => {
-        ng.push(`[${theme}] ホームの空状態（全セクション空）が出ない`)
-      })
+    const empty = page.getByText('表示できる項目がありません', { exact: true })
+    await empty.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] ホームの空状態（全セクション空）が出ない`)
+    })
+    if ((await empty.count()) > 0) {
+      const hasScanlines = await empty.evaluate((element) => element.closest('.scanlines') !== null)
+      if (hasScanlines) ng.push(`[${theme}] ホームの EmptyState に走査線がある`)
+    }
     const file = path.join(OUT_DIR, `home-empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
@@ -4957,50 +4962,26 @@ for (const theme of themes) {
     await context.close()
   }
 
-  // --- 空状態: 走査線の上の文字（EmptyState。components/page.tsx） ---
-  //
-  // 検索は初期状態（未検索）が EmptyState なので、既存の 'search' 画面が
-  // そのまま撮れる。**縞の 2 色（`--scan-gap` = background-color /
-  // `--scan-lit` = background-image。index.css の `.scanlines` 参照）を
-  // 両方測り、両方が文字色との AA を満たすことを見る。**
-  //
-  // 「間隙側だけが最悪ケード」という前提を置かない --- ライトはたまたま
-  // 間隙（明るい）側が字（墨）に対して不利だが、ダークは逆に輝線側が字
-  // （紙白）に対して不利になる。片方しか測らないと「輝線を文字と同じ色に
-  // する」変異（グリフの半分が地に溶ける）が判定をすり抜ける
-  // （design.md の失敗事例と同じ形の穴。かつてここは間隙側だけを見ていた）
+  // --- 空状態: 読み込み中と異なる中立の地（EmptyState。components/page.tsx） ---
   {
     const { context, page } = await open(desktop, theme, screenOf('search'))
-    const empty = page
-      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
-      .first()
-    const gap = await computedOf(empty, 'background-color')
-    const lit = await computedVar(empty, '--scan-lit')
+    const empty = page.getByText('条件を指定して検索してください', { exact: true })
     const fg = await computedOf(empty, 'color')
-    log(
-      `  [${theme}] 空状態の走査線 間隙=${gap?.value} ${gap?.rgba} / ` +
-        `輝線=${lit?.value} ${lit?.rgba} / 文字=${fg?.value} ${fg?.rgba}`,
-    )
-    if (gap === null || lit === null || fg === null) {
-      ng.push(`[${theme}] 空状態（EmptyState）の走査線が見つからない`)
+    const emptyStyle = fg === null ? null : await empty.evaluate((element) => {
+      const container = element.closest('div')
+      return {
+        hasScanlines: element.closest('.scanlines') !== null,
+        backgroundImage: container === null ? 'missing' : getComputedStyle(container).backgroundImage,
+      }
+    })
+    log(`  [${theme}] EmptyState の地=${fg?.backdrop} / 文字=${fg?.value} / 縞=${emptyStyle?.hasScanlines}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 検索の未検索 EmptyState が見つからない`)
     } else {
-      if (gap.rgba[3] < 200) {
-        ng.push(`[${theme}] 空状態の走査線の間隙が不透明でない（${gap.value}）`)
+      if (emptyStyle?.hasScanlines || emptyStyle?.backgroundImage !== 'none') {
+        ng.push(`[${theme}] EmptyState に読み込み中と同じ背景模様がある`)
       }
-      if (lit.rgba[3] < 200) {
-        ng.push(`[${theme}] 空状態の走査線の輝線が不透明でない（${lit.value}）`)
-      }
-      for (const [side, measured] of [
-        ['間隙', gap],
-        ['輝線', lit],
-      ]) {
-        const c = oklchChroma(measured.value)
-        if (c === null || c > 0.02) {
-          ng.push(`[${theme}] 空状態の走査線の${side}が無彩でない（oklch chroma ${c}。${measured.value}）`)
-        }
-      }
-      checkContrast(theme, '空状態の文字 / 走査線の間隙', fg.rgba, fg, minTextContrast)
-      checkContrast(theme, '空状態の文字 / 走査線の輝線', fg.rgba, { backdrop: lit.rgba }, minTextContrast)
+      checkContrast(theme, '空状態の文字 / ページ地', fg.rgba, fg, minTextContrast)
     }
     await context.close()
   }

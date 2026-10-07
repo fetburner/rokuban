@@ -7,24 +7,22 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader, Skeleton } from '@/co
 /**
  * 走査線の適用箇所を固定するテスト（不変条件 8）。
  *
- * `docs/frontend/design.md`「走査線は 3 箇所限定」の 3 箇所のうち、ここでは
- * EmptyState（空状態）と Skeleton / ListSkeleton（読み込み中）の 2 つを見る
- * （ON AIR は pages/live.test.tsx）。**通るだけでは何も保証しない**ので、
- * `scanlines` を外す・`text-foreground` を `text-muted-foreground` に戻す
- * という 2 通りの変異でこのテストが実際に落ちることを確認した
- * （報告参照。ここではアサーションの形だけを残す）。
+ * EmptyState は読み込み中に見えない中立な地を保ち、Skeleton / ListSkeleton
+ * だけが走査線を持つ（ON AIR は pages/live.test.tsx）。**通るだけでは何も
+ * 保証しない**ので、EmptyState に `scanlines` を戻す・Skeleton から外す・
+ * EmptyState の文字色を `text-muted-foreground` に戻す変異が落ちる形にする。
  */
 describe('EmptyState', () => {
-  it('走査線ユーティリティ（scanlines）を持つ', () => {
+  it('中立な地を保ち、走査線と pulse を使わない', () => {
     render(<EmptyState>空です</EmptyState>)
     const el = screen.getByText('空です')
-    expect(el.className.split(' ')).toContain('scanlines')
+    const classes = el.className.split(' ')
+    expect(classes).not.toContain('scanlines')
+    expect(classes).not.toContain('animate-pulse')
   })
 
   it('文字色は text-foreground（text-muted-foreground ではない）', () => {
-    // `.scanlines` の間隙は `--scanline` トークンに近く、`text-muted-foreground`
-    // （= `--scanline` 相当）のままだと文字が間隙と衝突して読めなくなる
-    // （index.css の `.scanlines` コメント参照）。`text-foreground` が正しい
+    // 空状態はページの地に載るため、本文の既定色を保つ。
     render(<EmptyState>空です</EmptyState>)
     const el = screen.getByText('空です')
     const classes = el.className.split(' ')
@@ -56,7 +54,7 @@ describe('PageHeader', () => {
 })
 
 describe('ErrorState', () => {
-  it('走査線を持たない（3 箇所限定の対象外）', () => {
+  it('走査線を持たない（使用箇所は読み込み中と ON AIR に限定）', () => {
     render(<ErrorState>失敗しました</ErrorState>)
     const el = screen.getByText('失敗しました')
     expect(el.className.split(' ')).not.toContain('scanlines')
