@@ -3,6 +3,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
+import ts from 'typescript'
 
 /**
  * 和文フォント基盤（Noto Sans JP）が index.css / src に正しく配線されているかを見るテスト。
@@ -52,6 +53,54 @@ function walk(dir: string): string[] {
   return out
 }
 
+/** collectArbitraryTextSizes は JSX の className と testid の組み合わせを集める。 */
+function collectArbitraryTextSizes(file: string): Array<{
+  file: string
+  testId: string | null
+  value: string
+  fontPx: number | null
+}> {
+  const sourceText = readFileSync(file, 'utf8')
+  const sourceFile = ts.createSourceFile(file, sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX)
+  const markers: Array<{ file: string; testId: string | null; value: string; fontPx: number | null }> = []
+  const relativeFile = path.relative(path.join(webDir, 'src'), file)
+
+  function visit(node: ts.Node): void {
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const attributes = node.attributes.properties.filter(ts.isJsxAttribute)
+      const attribute = (name: string) =>
+        attributes.find((item) => ts.isIdentifier(item.name) && item.name.text === name)
+      const testIdAttribute = attribute('data-testid')
+      const testId =
+        testIdAttribute?.initializer && ts.isStringLiteralLike(testIdAttribute.initializer)
+          ? testIdAttribute.initializer.text
+          : null
+      const classNameAttribute = attribute('className')
+      const classText: string[] = []
+
+      const collectStrings = (child: ts.Node): void => {
+        if (ts.isStringLiteralLike(child)) classText.push(child.text)
+        else ts.forEachChild(child, collectStrings)
+      }
+      if (classNameAttribute?.initializer) collectStrings(classNameAttribute.initializer)
+
+      for (const match of classText.join(' ').matchAll(/text-\[([^\]]+)\]/g)) {
+        const value = match[1]
+        if (value.startsWith('color:')) continue
+        const pxMatch = /^(\d+(?:\.\d+)?)(px|rem)$/.exec(value)
+        const fontPx = pxMatch === null
+          ? null
+          : Number(pxMatch[1]) * (pxMatch[2] === 'rem' ? 16 : 1)
+        markers.push({ file: relativeFile, testId, value, fontPx })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(sourceFile)
+  return markers
+}
+
 describe('Noto Sans JP の導入', () => {
   it('自前配布（fontsource）を import している', () => {
     // unicode-range 分割のある @fontsource-variable パッケージを使う。CDN 参照
@@ -98,5 +147,36 @@ describe('tabular-nums の全域適用', () => {
     // 全域適用に統合した後は、個別指定が生き残っていると「html 1 箇所で足りる」
     // という決定と矛盾する。復活したらここで拾う
     expect(offenders).toEqual([])
+  })
+})
+
+describe('小さい文字の例外', () => {
+  it('任意の直値は横幅例外なら 11px 以上、それ以外は 12px 以上にする', () => {
+    const allowedExceptionMarkers = new Set([
+      ['components/program-grid.tsx', 'program-grid-header-remote-control-key'],
+      ['components/program-grid.tsx', 'program-grid-header-site'],
+      ['components/program-grid.tsx', 'program-grid-tick'],
+      ['components/program-grid.tsx', 'program-grid-now-time'],
+      ['components/program-grid.tsx', 'program-grid-cell-reserved-label'],
+      ['components/program-grid.tsx', 'program-grid-cell-skip-intent-badge'],
+      ['components/program-grid.tsx', 'program-grid-cell-time'],
+      ['components/program-grid.tsx', 'program-grid-cell-description'],
+      ['components/program-grid.tsx', 'program-grid-cell-genre'],
+      ['pages/home.tsx', 'home-timeline-tick'],
+      ['pages/home.tsx', 'home-timeline-now-label'],
+      ['pages/home.tsx', 'home-timeline-block'],
+      ['pages/home.tsx', 'home-overage-label'],
+    ].map(([file, testId]) => `${file}:${testId}`))
+    const directSizes = walk(path.join(webDir, 'src')).flatMap(collectArbitraryTextSizes)
+    const violations = directSizes.filter(({ file, testId, fontPx }) => {
+      const isTimeByWidthException = allowedExceptionMarkers.has(`${file}:${testId}`)
+      const minimumPx = isTimeByWidthException ? 11 : 12
+      // Unknown arbitrary font-size syntax is rejected because its rendered floor
+      // cannot be proved here. Named arbitrary text colors are unrelated.
+      return fontPx === null || fontPx < minimumPx
+    })
+    // This catches every numeric pixel/rem utility below xs, including 8px, while
+    // binding the 11px floor to the actual grid/timeline elements.
+    expect(violations).toEqual([])
   })
 })
