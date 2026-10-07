@@ -372,7 +372,7 @@ function GenrePicker({
               else next.add(code)
               onChange(next)
             }}
-            className="flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-8"
+            className="flex min-h-11 w-full items-center gap-2 rounded-md border border-transparent px-2 text-left text-sm transition-colors outline-none hover:bg-muted focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring md:min-h-8"
           >
             <span
               aria-hidden="true"
