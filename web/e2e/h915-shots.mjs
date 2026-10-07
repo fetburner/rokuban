@@ -36,6 +36,7 @@ const CSS = {
 const RING = {
   'ring-cur': '',
   'ring-solid': `:focus-visible{outline:2px solid var(--ring)!important;outline-offset:2px!important;box-shadow:none!important}`,
+  'ring-dark': `:focus-visible{outline:2px solid var(--scanline)!important;outline-offset:2px!important;box-shadow:none!important}`,
 }
 
 const browser = await launchBrowser()
