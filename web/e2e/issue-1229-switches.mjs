@@ -80,6 +80,22 @@ function check(condition, message) {
   if (!condition) ng.push(message)
 }
 
+// Segmented controls must look identical: same frame, same selected fill.
+async function measureSegment(group) {
+  return group.evaluate((element) => {
+    const frame = getComputedStyle(element)
+    const on = getComputedStyle(element.querySelector('[aria-pressed="true"],[aria-current="page"]'))
+    const off = getComputedStyle(element.querySelector('[aria-pressed="false"],a:not([aria-current])'))
+    return {
+      border: `${frame.borderTopWidth} ${frame.borderTopStyle} ${frame.borderTopColor}`,
+      groupBg: frame.backgroundColor,
+      selectedBg: on.backgroundColor,
+      selectedShadow: on.boxShadow,
+      unselectedBg: off.backgroundColor,
+    }
+  })
+}
+
 function shotName(page, mode, theme, width) {
   return path.join(OUT_DIR, `${page}-${mode}-${theme}-${width}.png`)
 }
@@ -103,6 +119,7 @@ for (const theme of ['light', 'dark']) {
       hasTouch: width < 768,
     })
     const page = await context.newPage()
+    const segments = []
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler)
 
@@ -116,15 +133,7 @@ for (const theme of ['light', 'dark']) {
       await page.screenshot({ path: shotName('programs', 'list', theme, width), animations: 'disabled' })
     } else {
       await programsToggle.waitFor({ timeout: 10_000 })
-      const frame = await programsToggle.evaluate((element) => {
-        const style = getComputedStyle(element)
-        return {
-          borderTopWidth: style.borderTopWidth,
-          borderTopStyle: style.borderTopStyle,
-          radius: style.borderRadius,
-        }
-      })
-      check(frame.borderTopWidth === '1px' && frame.borderTopStyle === 'solid', `Programs ${theme}/${width}: view choices need one shared segmented-control frame (${JSON.stringify(frame)})`)
+      segments.push(['programs', await measureSegment(programsToggle)])
       const listButton = programsToggle.getByRole('button', { name: 'リスト' })
       const gridButton = programsToggle.getByRole('button', { name: '番組表' })
       check(await listButton.getAttribute('aria-pressed') === 'true', `Programs ${theme}/${width}: list should be selected initially`)
@@ -181,6 +190,47 @@ for (const theme of ['light', 'dark']) {
     check(await page.getByTestId('home-mode-toggle').getByRole('link', { name: /管理/ }).getAttribute('aria-current') === 'page', `Home ${theme}/${width}: saved Manage preference should restore without a mode URL`)
     await page.goto(`${URL_BASE}/?mode=watch`, { waitUntil: 'domcontentloaded' })
     check(await page.getByTestId('home-mode-toggle').getByRole('link', { name: '見る' }).getAttribute('aria-current') === 'page', `Home ${theme}/${width}: URL should take precedence over saved Manage preference`)
+
+    log(`\n=== Recordings / Reservations: ${theme}, ${width}px ===`)
+    await page.goto(`${URL_BASE}/recordings`, { waitUntil: 'domcontentloaded' })
+    const recTabs = page.getByTestId('recordings-view-tabs')
+    await recTabs.waitFor({ timeout: 15_000 })
+    await page.waitForFunction((isDark) => document.documentElement.classList.contains('dark') === isDark, theme === 'dark')
+    const libTab = recTabs.getByRole('button', { name: 'ライブラリ' })
+    const trashTab = recTabs.getByRole('button', { name: 'ごみ箱' })
+    const tabStyle = (button) => button.evaluate((element) => {
+      const style = getComputedStyle(element)
+      return { w: style.borderBottomWidth, st: style.borderBottomStyle, bg: style.backgroundColor, cls: element.className }
+    })
+    const checkRecTab = async (button, label) => {
+      const r = await tabStyle(button)
+      check(r.w === '2px' && r.st === 'solid', `Recordings ${theme}/${width}: ${label} selected tab needs a 2px underline (${JSON.stringify(r)})`)
+      check(r.cls.split(/\s+/).includes('border-foreground'), `Recordings ${theme}/${width}: ${label} underline should use the foreground token`)
+      check(r.bg === 'rgba(0, 0, 0, 0)', `Recordings ${theme}/${width}: ${label} selected tab must not be filled (${r.bg})`)
+    }
+    await checkRecTab(libTab, 'Library')
+    const idle = await tabStyle(trashTab)
+    check(!idle.cls.split(/\s+/).includes('border-foreground'), `Recordings ${theme}/${width}: unselected tab must have no foreground underline`)
+    await page.screenshot({ path: shotName('recordings', 'library', theme, width), animations: 'disabled' })
+    await trashTab.click()
+    await page.waitForURL((current) => current.searchParams.get('tab') === 'trash')
+    await checkRecTab(trashTab, 'Trash')
+    await page.goto(`${URL_BASE}/recordings`, { waitUntil: 'domcontentloaded' })
+    const recSeries = page.getByRole('group', { name: '録画とシリーズの表示切替' })
+    await recSeries.waitFor({ timeout: 15_000 })
+    segments.push(['recording-series', await measureSegment(recSeries)])
+
+    await page.goto(`${URL_BASE}/reservations`, { waitUntil: 'domcontentloaded' })
+    const resGroup = page.getByRole('group', { name: '予約のまとめ方' })
+    await resGroup.waitFor({ timeout: 15_000 })
+    segments.push(['reservation-group', await measureSegment(resGroup)])
+    await page.screenshot({ path: shotName('reservations', 'list', theme, width), animations: 'disabled' })
+
+    const [ref, ...rest] = segments
+    for (const [name, m] of rest) {
+      check(JSON.stringify(m) === JSON.stringify(ref[1]), `Segmented ${theme}/${width}: ${name} differs from ${ref[0]} (${JSON.stringify(m)} vs ${JSON.stringify(ref[1])})`)
+    }
+    check(ref[1].border.startsWith('1px solid') && ref[1].selectedBg !== ref[1].unselectedBg, `Segmented ${theme}/${width}: frame and selected fill must exist (${JSON.stringify(ref[1])})`)
 
     await context.close()
   }

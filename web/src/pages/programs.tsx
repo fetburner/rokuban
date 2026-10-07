@@ -961,7 +961,7 @@ function ViewChips({
         role="group"
         aria-label="表示形式"
         data-testid="programs-view-toggle"
-        className="inline-flex items-center rounded-md border border-border bg-muted p-0.5"
+        className="inline-flex items-center rounded-md border border-border p-0.5"
       >
         {(['list', 'grid'] as const).map((value) => {
           const active = view === value
@@ -972,10 +972,10 @@ function ViewChips({
               aria-pressed={active}
               onClick={() => onSelect(value)}
               className={cn(
-                'inline-flex min-h-7 items-center rounded-sm border border-transparent px-3 py-1 text-xs whitespace-nowrap transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11 pointer-coarse:min-w-11',
+                'inline-flex min-h-6 min-w-6 items-center rounded px-2 py-1 text-xs whitespace-nowrap transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11 pointer-coarse:min-w-11',
                 active
-                  ? 'bg-card font-medium text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground',
+                  ? 'bg-muted font-medium text-foreground'
+                  : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
               )}
             >
               {value === 'list' ? 'リスト' : '番組表'}

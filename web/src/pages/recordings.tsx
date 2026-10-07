@@ -355,7 +355,7 @@ export function RecordingsPage() {
           </div>
         }
       >
-        <div className="flex gap-1 border-t border-border px-4 py-2">
+        <div role="group" aria-label="録画の表示切替" data-testid="recordings-view-tabs" className="flex gap-3 border-t border-border px-4 pt-1">
           <ViewTab
             active={!trash}
             onClick={() => updateSearch((s) => ({ ...s, tab: undefined }))}
@@ -623,10 +623,10 @@ function ViewTab({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-md border border-transparent px-3 py-1.5 text-xs transition-[color,background-color] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
+        'border-b-2 border-transparent px-1 py-1.5 text-xs transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 pointer-coarse:min-h-11',
         active
-          ? 'bg-muted font-medium text-foreground'
-          : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground',
+          ? 'border-foreground font-medium text-foreground'
+          : 'text-muted-foreground hover:text-foreground',
       )}
     >
       {label}
