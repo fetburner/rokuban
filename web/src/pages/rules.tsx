@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { MoreVertical, Trash2 } from 'lucide-react'
+import { ChevronRight, MoreVertical, Plus, Trash2 } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import {
@@ -382,8 +382,8 @@ function RuleRow({
 
   return (
     <div className="rounded-lg border border-border px-3 py-3">
-      <div className="flex items-start justify-between gap-3 pointer-coarse:flex-wrap">
-        <div className="min-w-0 flex-1 pointer-coarse:min-w-11">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-2 md:gap-y-1">
+        <div className="col-start-1 row-start-1 min-w-0">
           {/* flex-nowrap: 「無効」バッジは常に名前と同じ行に残す（旧・素の
               truncate span の挙動を維持）。flex-wrap のままだと、長い名前の
               hypothetical な主軸サイズ（flex-wrap の折返し判定は shrink 適用前の
@@ -418,7 +418,9 @@ function RuleRow({
               </span>
             )}
           </div>
+        </div>
 
+        <div className="col-span-2 row-start-2 min-w-0 md:col-start-1 md:col-span-1 md:row-start-2">
           {/* 条件が空 = 全番組にマッチする、という危険な状態を一覧でも
               見えるようにする（設定を開かないと気付けない事故を防ぐ）。 */}
           <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-sm">
@@ -463,56 +465,30 @@ function RuleRow({
             )}
           </div>
         </div>
-        <div className="flex shrink-0 items-start gap-1">
-          <div className="flex flex-col items-end gap-2">
-            <button
-              type="button"
-              role="switch"
-              aria-checked={rule.enabled}
-              aria-label={`ルール「${displayName}」を有効にする`}
-              disabled={updateRule.isPending || isCountingReservations}
-              className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
-              onClick={() => void toggleEnabled()}
+        <div className="col-start-2 row-start-1 flex shrink-0 items-center gap-1">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={rule.enabled}
+            aria-label={`ルール「${displayName}」を有効にする`}
+            disabled={updateRule.isPending || isCountingReservations}
+            className="inline-flex min-h-8 min-w-8 pointer-coarse:min-h-11 pointer-coarse:min-w-11 items-center rounded-full px-1 outline-none disabled:opacity-50 focus-visible:ring-3 focus-visible:ring-ring/50"
+            onClick={() => void toggleEnabled()}
+          >
+            <span
+              className={cn(
+                'relative h-5 w-9 rounded-full transition-colors',
+                rule.enabled ? 'bg-primary' : 'bg-muted-foreground',
+              )}
             >
               <span
                 className={cn(
-                  'relative h-5 w-9 rounded-full transition-colors',
-                  rule.enabled ? 'bg-primary' : 'bg-muted-foreground',
+                  'absolute top-0.5 left-0.5 size-4 rounded-full bg-background transition-transform',
+                  rule.enabled && 'translate-x-4',
                 )}
-              >
-                <span
-                  className={cn(
-                    'absolute top-0.5 left-0.5 size-4 rounded-full bg-background transition-transform',
-                    rule.enabled && 'translate-x-4',
-                  )}
-                />
-              </span>
-            </button>
-            {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
-                条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
-                /search ではなく /recordings?ruleId=N になる。 */}
-            <Button
-              variant="ghost"
-              size="sm"
-              render={<Link to="/recordings" search={{ ruleId: rule.id }} />}
-            >
-              このルールの録画
-            </Button>
-            {/* 録画ルールのキーワードを分類ルール（シリーズ）へ写す導線。
-                録画ルールから分類ルールを**継承はさせない**（勝者ルールだけを
-                継承すると広いルールに黙って負ける。docs/data/series.md §8
-                「評価結果を宛先にしない」）。このボタンは同じ /rules の
-                ダイアログを開くだけで、保存は利用者が明示する。 */}
-            {firstKeyword(rule) !== undefined && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}
-              >
-                このキーワードで分類ルールを作る
-              </Button>
-            )}
-          </div>
+              />
+            </span>
+          </button>
           {/* 破壊的・稀な操作（削除）は overflow に寄せる（issue #227）。 */}
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -538,6 +514,35 @@ function RuleRow({
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+        </div>
+
+        <div className="col-span-2 row-start-3 flex w-full flex-wrap gap-x-2 gap-y-1 md:col-start-2 md:col-span-1 md:row-start-2 md:row-span-2 md:w-full md:flex-col md:items-end md:pr-12">
+          {/* このルール由来の録画だけに絞った /recordings への導線（issue #137）。
+              条件モデルは検索（ProgramSearchRequest）と共有しないので、遷移先は
+              /search ではなく /recordings?ruleId=N になる。 */}
+          <Link
+            to="/recordings"
+            search={{ ruleId: rule.id }}
+            className="inline-flex min-h-8 pointer-coarse:min-h-11 items-center gap-1 rounded px-1 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+          >
+            <span>このルールの録画</span>
+            <ChevronRight aria-hidden="true" className="size-4 shrink-0" />
+          </Link>
+          {/* 録画ルールのキーワードを分類ルール（シリーズ）へ写す導線。
+              録画ルールから分類ルールを**継承はさせない**（勝者ルールだけを
+              継承すると広いルールに黙って負ける。docs/data/series.md §8
+              「評価結果を宛先にしない」）。このボタンは同じ /rules の
+              ダイアログを開くだけで、保存は利用者が明示する。 */}
+          {firstKeyword(rule) !== undefined && (
+            <button
+              type="button"
+              className="inline-flex min-h-8 pointer-coarse:min-h-11 items-center gap-1 rounded px-1 text-sm text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50"
+              onClick={() => onCreateLabelRule(firstKeyword(rule) as string)}
+            >
+              <Plus aria-hidden="true" className="size-4 shrink-0" />
+              <span>このキーワードで分類ルールを作る</span>
+            </button>
+          )}
         </div>
       </div>
 
