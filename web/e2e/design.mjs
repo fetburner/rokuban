@@ -20,13 +20,11 @@
 //   ③ 和文が実際に Noto Sans JP で、英数字が実際に Geist で描画されているか
 //      （CDP `CSS.getPlatformFontsForNode`）と、和文まじりの文字列でも
 //      tabular-nums が実際に等幅を作っているか（DOM の実測幅）
-//   ④ モバイルの「その他」ポップオーバー（固定されたボトムバーの上に浮く
-//      オーバーレイなので、はみ出し・重なりは jsdom では原理的に測れない。
-//      docs/frontend/shell.md）:
+//   ④ モバイルの「その他」シート（固定されたボトムバーとは別の Dialog なので、
+//      画面下端への接地と高さは jsdom では原理的に測れない。docs/frontend/shell.md）:
 //      - ボトムタブが常に 4 個か
-//      - 開いたポップオーバーがビューポート内に収まるか
-//      - ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）
-//      - Tab / Shift+Tab がポップオーバー内を循環するか
+//      - 開いたシートの下端が画面に接し、画面の 60% より低い高さか
+//      - Tab / Shift+Tab がシート内の操作要素を循環するか
 //   ④-A キーボード操作と標的サイズ:
 //      - Tab 1 回でスキップリンクが見え、Enter で main にフォーカスが移るか
 //      - Chip / 録画タブ / チャンネル候補 / 日付セルの focus-visible リングが
@@ -41,8 +39,7 @@
 //      色と active の押下フィードバックは遷移する（issue #294）
 //   ⑦ アニメーション/トランジションが `prefers-reduced-motion: reduce` で
 //      縮退し、既定（no-preference）では従来どおり動くこと（両方向。
-//      issue #296）。Skeleton の `animate-pulse` / ポップオーバーの
-//      `slide-in`・`zoom-in` / Button の `translate` 遷移を見る
+//      issue #296）。Skeleton の `animate-pulse` / Button の `translate` 遷移を見る
 //
 // **mirakc も実チューナーも DB も要らない。** API は `page.route` でブラウザ側から
 // 丸ごと差し替える（e2e/live.mjs が HLS でやっているのと同じ手）。サーバーには
@@ -2198,7 +2195,7 @@ async function runCoarseTapTargetChecks() {
     await context.close()
   }
 
-  // MoreMenu は他画面の上に開くため、背後のページ標的と重ねずポップオーバー内だけを測る。
+  // MoreMenu はシートに開くため、背後のページ標的と重ねずシート内だけを測る。
   {
     const { context, page } = await open(tapTargetWidths[0], 'light', screenOf('programs'), { pointer: 'coarse' })
     const trigger = page.getByRole('button', { name: 'その他' })
@@ -2206,9 +2203,9 @@ async function runCoarseTapTargetChecks() {
       ng.push('[mobile-360/more-menu] 「その他」のトリガーが見つからない')
     } else {
       await trigger.click()
-      const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+      const menu = page.getByRole('dialog', { name: 'その他' })
       await menu.waitFor({ timeout: 5000 }).catch(() => {
-        ng.push('[mobile-360/more-menu] ポップオーバーが開かない')
+        ng.push('[mobile-360/more-menu] シートが開かない')
       })
       if (await menu.count()) {
         await page.waitForTimeout(300)
@@ -3224,12 +3221,17 @@ for (const theme of themes) {
   {
     // 空状態（EmptyState）の文言が実際に読める位置のショット。検索フォームの下に
     // あるため、既定ショットだけではビューポートの下端で文言が切れることがある。
-    // 走査線の上の文字が読めるかを判断できるよう、対象までスクロールした 1 組を足す
+    // 読み込み中と同じ縞が付いていないこともここで確かめる。
     const { context, page } = await open(desktop, theme, screenOf('search'))
-    const empty = page
-      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
-      .first()
-    await empty.scrollIntoViewIfNeeded()
+    const empty = page.getByText('条件を指定して検索してください', { exact: true })
+    await empty.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] 検索の未検索 EmptyState が出ない`)
+    })
+    if ((await empty.count()) > 0) {
+      const hasScanlines = await empty.evaluate((element) => element.closest('.scanlines') !== null)
+      if (hasScanlines) ng.push(`[${theme}] 検索の未検索 EmptyState に走査線がある`)
+      await empty.scrollIntoViewIfNeeded()
+    }
     await page.waitForTimeout(100)
     const file = path.join(OUT_DIR, `empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
@@ -3238,9 +3240,8 @@ for (const theme of themes) {
     await context.close()
   }
   {
-    // ホーム（M8-3）の「全セクションが空」= 単一の空状態（EmptyState の走査線）。
-    // `home-*-desktop.png`（既定の 4 セクション表示）と対にして人が見比べられる
-    // ようにする。
+    // ホームの「全セクションが空」は EmptyState だけを表示する。
+    // `home-*-desktop.png`（既定の 4 セクション表示）と対にして見比べられるようにする。
     const context = await browser.newContext({
       viewport: { width: desktop.width, height: desktop.height },
       locale: 'ja-JP',
@@ -3252,13 +3253,14 @@ for (const theme of themes) {
     await page.clock.setFixedTime(FIXED_NOW)
     await installApiStubs(page, apiHandler({ emptyHome: true }))
     await page.goto(URL_BASE + '/?mode=ops', { waitUntil: 'domcontentloaded' })
-    await page
-      .locator('div.scanlines', { hasText: '表示できる項目がありません' })
-      .first()
-      .waitFor({ timeout: 5000 })
-      .catch(() => {
-        ng.push(`[${theme}] ホームの空状態（全セクション空）が出ない`)
-      })
+    const empty = page.getByText('表示できる項目がありません', { exact: true })
+    await empty.waitFor({ timeout: 5000 }).catch(() => {
+      ng.push(`[${theme}] ホームの空状態（全セクション空）が出ない`)
+    })
+    if ((await empty.count()) > 0) {
+      const hasScanlines = await empty.evaluate((element) => element.closest('.scanlines') !== null)
+      if (hasScanlines) ng.push(`[${theme}] ホームの EmptyState に走査線がある`)
+    }
     const file = path.join(OUT_DIR, `home-empty-${theme}-desktop.png`)
     await page.screenshot({ path: file })
     log(`  ${path.basename(file)}`)
@@ -5161,50 +5163,26 @@ for (const theme of themes) {
     await context.close()
   }
 
-  // --- 空状態: 走査線の上の文字（EmptyState。components/page.tsx） ---
-  //
-  // 検索は初期状態（未検索）が EmptyState なので、既存の 'search' 画面が
-  // そのまま撮れる。**縞の 2 色（`--scan-gap` = background-color /
-  // `--scan-lit` = background-image。index.css の `.scanlines` 参照）を
-  // 両方測り、両方が文字色との AA を満たすことを見る。**
-  //
-  // 「間隙側だけが最悪ケード」という前提を置かない --- ライトはたまたま
-  // 間隙（明るい）側が字（墨）に対して不利だが、ダークは逆に輝線側が字
-  // （紙白）に対して不利になる。片方しか測らないと「輝線を文字と同じ色に
-  // する」変異（グリフの半分が地に溶ける）が判定をすり抜ける
-  // （design.md の失敗事例と同じ形の穴。かつてここは間隙側だけを見ていた）
+  // --- 空状態: 読み込み中と異なる中立の地（EmptyState。components/page.tsx） ---
   {
     const { context, page } = await open(desktop, theme, screenOf('search'))
-    const empty = page
-      .locator('div.scanlines', { hasText: '条件を指定して検索してください' })
-      .first()
-    const gap = await computedOf(empty, 'background-color')
-    const lit = await computedVar(empty, '--scan-lit')
+    const empty = page.getByText('条件を指定して検索してください', { exact: true })
     const fg = await computedOf(empty, 'color')
-    log(
-      `  [${theme}] 空状態の走査線 間隙=${gap?.value} ${gap?.rgba} / ` +
-        `輝線=${lit?.value} ${lit?.rgba} / 文字=${fg?.value} ${fg?.rgba}`,
-    )
-    if (gap === null || lit === null || fg === null) {
-      ng.push(`[${theme}] 空状態（EmptyState）の走査線が見つからない`)
+    const emptyStyle = fg === null ? null : await empty.evaluate((element) => {
+      const container = element.closest('div')
+      return {
+        hasScanlines: element.closest('.scanlines') !== null,
+        backgroundImage: container === null ? 'missing' : getComputedStyle(container).backgroundImage,
+      }
+    })
+    log(`  [${theme}] EmptyState の地=${fg?.backdrop} / 文字=${fg?.value} / 縞=${emptyStyle?.hasScanlines}`)
+    if (fg === null) {
+      ng.push(`[${theme}] 検索の未検索 EmptyState が見つからない`)
     } else {
-      if (gap.rgba[3] < 200) {
-        ng.push(`[${theme}] 空状態の走査線の間隙が不透明でない（${gap.value}）`)
+      if (emptyStyle?.hasScanlines || emptyStyle?.backgroundImage !== 'none') {
+        ng.push(`[${theme}] EmptyState に読み込み中と同じ背景模様がある`)
       }
-      if (lit.rgba[3] < 200) {
-        ng.push(`[${theme}] 空状態の走査線の輝線が不透明でない（${lit.value}）`)
-      }
-      for (const [side, measured] of [
-        ['間隙', gap],
-        ['輝線', lit],
-      ]) {
-        const c = oklchChroma(measured.value)
-        if (c === null || c > 0.02) {
-          ng.push(`[${theme}] 空状態の走査線の${side}が無彩でない（oklch chroma ${c}。${measured.value}）`)
-        }
-      }
-      checkContrast(theme, '空状態の文字 / 走査線の間隙', fg.rgba, fg, minTextContrast)
-      checkContrast(theme, '空状態の文字 / 走査線の輝線', fg.rgba, { backdrop: lit.rgba }, minTextContrast)
+      checkContrast(theme, '空状態の文字 / ページ地', fg.rgba, fg, minTextContrast)
     }
     await context.close()
   }
@@ -5444,11 +5422,10 @@ async function platformFontsOf(cdp, selector) {
   await context.close()
 }
 
-// --- ④ モバイル: 「その他」ポップオーバーの判定 ---
+// --- ④ モバイル: 「その他」シートの判定 ---
 //
-// 固定されたボトムバーの上に浮くオーバーレイなので、画面端でのはみ出し・
-// バーの上に出るか・safe-area との重なりは jsdom では原理的に測れない
-// （`app-shell.test.tsx` が固定しているのは DOM の有無と順序だけ）。
+// ボトムナビと独立した Dialog なので、画面下端への接地と高さは jsdom では
+// 原理的に測れない（`app-shell.test.tsx` が固定しているのは DOM の有無と順序だけ）。
 //
 // タブの本数は ARIA の `listitem` ロールではなく `<li>` を直接数える。
 // 実測（このスクリプトが駆動する Chromium）: `nav.getByRole('listitem').count()`
@@ -5457,7 +5434,7 @@ async function platformFontsOf(cdp, selector) {
 // 観測されていない。それでも `<li>` を直接数えるのは、ロールの計算をブラウザの
 // アクセシビリティ実装に依存させたくないという保険であり、「抑制が起きるから」
 // ではない（起きるかどうかは未検証。理由にしない）。
-log('\n=== ④ 「その他」ポップオーバーの判定 ===')
+log('\n=== ④ 「その他」シートの判定 ===')
 for (const theme of themes) {
   const { context, page } = await open(mobile, theme, screenOf('programs'))
 
@@ -5473,9 +5450,9 @@ for (const theme of themes) {
     ng.push(`[${theme}] 「その他」トリガーが見つからない`)
   } else {
     await trigger.click()
-    const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
+    const menu = page.getByRole('dialog', { name: 'その他' })
     await menu.waitFor({ timeout: 5000 }).catch(() => {
-      ng.push(`[${theme}] 「その他」を開いてもポップオーバーが現れない`)
+      ng.push(`[${theme}] 「その他」を開いてもシートが現れない`)
     })
     if ((await menu.count()) > 0) {
       await page.waitForTimeout(300) // 開くアニメーションの終了を待つ
@@ -5485,77 +5462,75 @@ for (const theme of themes) {
       log(`  ${path.basename(file)}`)
       await checkMissingStrings(page, `more-menu-open/${theme}`)
 
-      const triggerBox = await trigger.boundingBox()
       const menuBox = await menu.boundingBox()
-      if (triggerBox === null || menuBox === null) {
-        ng.push(`[${theme}] 「その他」のバウンディングボックスが取れない`)
+      if (menuBox === null) {
+        ng.push(`[${theme}] 「その他」シートのバウンディングボックスが取れない`)
       } else {
         if (menuBox.x < 0 || menuBox.x + menuBox.width > mobile.width) {
           ng.push(
-            `[${theme}] 「その他」ポップオーバーが横方向にビューポートをはみ出す` +
+            `[${theme}] 「その他」シートが横方向にビューポートをはみ出す` +
               `（x=${menuBox.x.toFixed(1)}, w=${menuBox.width.toFixed(1)}, vw=${mobile.width}）`,
           )
         }
         if (menuBox.y < 0 || menuBox.y + menuBox.height > mobile.height) {
           ng.push(
-            `[${theme}] 「その他」ポップオーバーが縦方向にビューポートをはみ出す` +
+            `[${theme}] 「その他」シートが縦方向にビューポートをはみ出す` +
               `（y=${menuBox.y.toFixed(1)}, h=${menuBox.height.toFixed(1)}, vh=${mobile.height}）`,
           )
         }
-        // ボトムバーの上に出ること（下端が沈んでバーの後ろに隠れていないか）。
-        // トリガーの上端より上にポップオーバーの下端が来ていることを見る
-        if (menuBox.y + menuBox.height > triggerBox.y + 1) {
+        const bottom = menuBox.y + menuBox.height
+        if (Math.abs(bottom - mobile.height) > 1) {
           ng.push(
-            `[${theme}] 「その他」ポップオーバーがトリガーの上端より上に出ていない` +
-              `（menu bottom=${(menuBox.y + menuBox.height).toFixed(1)}, trigger top=${triggerBox.y.toFixed(1)}）`,
+            `[${theme}] 「その他」シートの下端が画面に接していない` +
+              `（bottom=${bottom.toFixed(1)}, viewport=${mobile.height}）`,
+          )
+        }
+        if (menuBox.height >= mobile.height * 0.6) {
+          ng.push(
+            `[${theme}] 「その他」シートが画面の 60% 以上を占める` +
+              `（h=${menuBox.height.toFixed(1)}, vh=${mobile.height}）`,
           )
         }
         log(
-          `  [${theme}] ポップオーバー x=${menuBox.x.toFixed(1)} y=${menuBox.y.toFixed(1)} ` +
-            `w=${menuBox.width.toFixed(1)} h=${menuBox.height.toFixed(1)} / トリガー top=${triggerBox.y.toFixed(1)}`,
+          `  [${theme}] シート x=${menuBox.x.toFixed(1)} y=${menuBox.y.toFixed(1)} ` +
+            `w=${menuBox.width.toFixed(1)} h=${menuBox.height.toFixed(1)} / bottom=${bottom.toFixed(1)}`,
         )
       }
 
-      // role="dialog" の間は Tab が背後のページへ抜けないこと。最後→最初と
-      // 最初→最後の両方向を実ブラウザで確認する。
+      // role="dialog" の間は Tab が背後のページへ抜けないこと。完了ボタンと
+      // 最後のリンクの間で両方向を実ブラウザ確認する。
       const menuLinks = menu.getByRole('link')
-      const closeButton = menu.getByRole('button', { name: 'メニューを閉じる' })
+      const closeButton = menu.getByRole('button', { name: '完了', exact: true })
       const menuLinkCount = await menuLinks.count()
       if (menuLinkCount < 2 || (await closeButton.count()) === 0) {
         ng.push(`[${theme}] 「その他」のフォーカストラップを判定できる操作要素が足りない`)
       } else {
-        const closeTabIndex = await closeButton.evaluate((el) => el.tabIndex)
-        if (closeTabIndex >= 0) {
-          ng.push(`[${theme}] 「その他」の見えない閉じるボタンが Tab 順に入っている`)
-        }
-
         // 待ちが失敗しても、直後に `document.activeElement === el` で実際の状態を
         // 直接読み直す（forwardTrapped/backwardTrapped）ので、待ちの成否を経由せず
         // 本当の結果を測っている。待ちはタイムアウトを早める（1000ms）ためだけの
         // ものなので `.catch(() => {})` で飲んでよい --- 待ちが失敗＝実際に
         // フォーカスが移っていない、という結果自体が下の NG 文言（「Tab が
-        // ポップオーバー外へ抜ける」）と一致し、スタイル回帰の NG とは混ざらない。
+        // シート外へ抜ける」）と一致し、スタイル回帰の NG とは混ざらない。
         await menuLinks.last().focus()
         await page.keyboard.press('Tab')
         await page
           .waitForFunction(
             () =>
-              document.activeElement?.tagName === 'A' &&
-              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+              document.activeElement?.tagName === 'BUTTON' &&
+              document.activeElement.closest('[role="dialog"]') !== null,
             undefined,
             { timeout: 1000 },
           )
           .catch(() => {})
-        const forwardTrapped = await menuLinks
-          .first()
+        const forwardTrapped = await closeButton
           .evaluate((el) => document.activeElement === el)
-        await menuLinks.first().focus()
+        await closeButton.focus()
         await page.keyboard.press('Shift+Tab')
         await page
           .waitForFunction(
             () =>
               document.activeElement?.tagName === 'A' &&
-              document.activeElement.closest('[aria-label="その他のナビゲーション"]') !== null,
+              document.activeElement.closest('[role="dialog"]') !== null,
             undefined,
             { timeout: 1000 },
           )
@@ -5566,7 +5541,7 @@ for (const theme of themes) {
         log(`  [${theme}] フォーカストラップ: 前=${forwardTrapped} / 後=${backwardTrapped}`)
         if (!forwardTrapped || !backwardTrapped) {
           ng.push(
-            `[${theme}] 「その他」で Tab がポップオーバー外へ抜ける` +
+            `[${theme}] 「その他」で Tab がシート外へ抜ける` +
               `（前=${forwardTrapped} / 後=${backwardTrapped}）`,
           )
         }
@@ -6259,16 +6234,14 @@ log('\n=== ⑥ Button: フォーカスリング / border-color / hover / active 
 // （`no-preference` でも動かない）を通してしまう --- CLAUDE.md テスト規律
 // 「分岐を直したら両方向を確認する」と同型の穴。
 //
-// 対象は Skeleton の `animate-pulse`、モバイル「その他」ポップオーバー
-// （`ui/popover.tsx`）の `slide-in-from-*` / `zoom-in-95`、共通 `Button` の
-// 押下フィードバック（`active:...:translate-y-px` の `transition`）。
+// 対象は Skeleton の `animate-pulse`、共通 Button の押下フィードバック
+// （`active:...:translate-y-px` の `transition`）。
 // 予約実行中ボタンの `animate-spin` は #298 で削除した（楽観更新が確定表示を
 // 出しているのにスピナーがそれを覆い高速応答時に点滅していた）ので対象外。
 log('\n=== ⑦ アニメーション: prefers-reduced-motion の縮退（issue #296） ===')
 
 // 縮退後の継続時間はほぼ 0（`index.css` は 0.01ms）、既定の継続時間は
-// どれも 100ms 以上（ポップオーバー 100ms / Button 150ms / pulse 2s）
-// なので、50ms を境に両方向をまとめて判定できる。
+// 100ms 以上（Button 150ms / pulse 2s）なので、50ms を境に両方向をまとめて判定できる。
 const REDUCE_THRESHOLD_MS = 50
 
 /** parseCssTime は `"150ms"` / `"0.15s"` / カンマ区切り（複数プロパティ）を ms にする。 */
@@ -6350,54 +6323,6 @@ for (const reducedMotion of ['reduce', 'no-preference']) {
           `[no-preference] Skeleton の animate-pulse が既定（2s 周期）のまま動いていない` +
             `（animation-duration=${m.animationDuration}）`,
         )
-      }
-    }
-    await context.close()
-  }
-
-  // --- モバイル「その他」ポップオーバーの slide-in-from-* / zoom-in-95 ---
-  {
-    const { context, page } = await newMotionContext(mobile, reducedMotion)
-    await installApiStubs(page, apiHandler())
-    await page.goto(URL_BASE + '/programs', { waitUntil: 'domcontentloaded' })
-    const nav = page.locator('nav[aria-label="主ナビゲーション"]').last()
-    const trigger = nav.getByRole('button', { name: 'その他' })
-    // `trigger.count()` は DOM に存在するかしか見ず、可視かは見ない。待ちが
-    // 失敗したのに count() だけで先へ進むと、非表示のまま `.click()` して
-    // Playwright 自身のアクショナビリティ待ちで長時間ハングした末に無関係な
-    // 例外で落ちる（NG として報告されない）おそれがある。待ちの成否そのもので
-    // 分岐する。
-    const triggerVisible = await trigger
-      .waitFor({ timeout: 10000 })
-      .then(() => true)
-      .catch(() => false)
-    if (!triggerVisible) {
-      ng.push(`[${reducedMotion}] 「その他」トリガーが見つからない（ポップオーバー判定）`)
-    } else {
-      await trigger.click()
-      const menu = page.getByRole('dialog', { name: 'その他のナビゲーション' })
-      await menu.waitFor({ timeout: 5000 }).catch(() => {
-        ng.push(`[${reducedMotion}] 「その他」ポップオーバーが開かない`)
-      })
-      const m = await motionOf(menu)
-      if (m === null) {
-        ng.push(`[${reducedMotion}] ポップオーバー要素が見つからない`)
-      } else {
-        const ms = parseCssTime(m.animationDuration)
-        log(`  [${reducedMotion}] ポップオーバー animation-duration=${m.animationDuration}`)
-        if (isReduced) {
-          if (ms === null || ms > REDUCE_THRESHOLD_MS) {
-            ng.push(
-              `[reduce] ポップオーバーの slide-in/zoom-in が縮退していない` +
-                `（animation-duration=${m.animationDuration}）`,
-            )
-          }
-        } else if (ms === null || ms < REDUCE_THRESHOLD_MS) {
-          ng.push(
-            `[no-preference] ポップオーバーの slide-in/zoom-in が既定のまま動いていない` +
-              `（animation-duration=${m.animationDuration}）`,
-          )
-        }
       }
     }
     await context.close()

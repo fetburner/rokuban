@@ -14,7 +14,7 @@ export function ThumbnailOverlay({
     <>
       <span
         data-testid="home-hero-station"
-        className="absolute bottom-2 left-2 rounded bg-black/55 px-1 text-[11px] text-white"
+        className="absolute bottom-2 left-2 rounded bg-black/55 px-1 text-xs text-white"
       >
         {serviceName}
       </span>

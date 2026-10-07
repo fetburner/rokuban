@@ -41,6 +41,7 @@ export function ToolbarPanel({
   triggerClassName,
   popupWidthClassName,
   bodyClassName,
+  sheetLeading,
   children,
 }: {
   title: string
@@ -50,6 +51,8 @@ export function ToolbarPanel({
   triggerClassName: string
   popupWidthClassName: string
   bodyClassName: string
+  /** シート見出し左端の戻る操作など。ポップオーバーでは使わない。 */
+  sheetLeading?: ReactNode
   children: ReactNode
 }) {
   const wide = useMediaQuery(mdMediaQuery)
@@ -94,7 +97,7 @@ export function ToolbarPanel({
         <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">
           <div aria-hidden className="mx-auto h-1 w-9 shrink-0 rounded-full bg-border" />
           <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2">
-            <span />
+            {sheetLeading ?? <span />}
             <DialogPrimitive.Title className="text-base font-semibold">{title}</DialogPrimitive.Title>
             <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
               完了

@@ -646,7 +646,7 @@ export function LivePage() {
                             {scheduled && (
                               <span className="mt-0.5 block truncate text-xs font-normal text-muted-foreground">
                                 {scheduled.recordingId !== undefined && (
-                                  <span data-testid={`live-recording-mark-${scheduled.serviceId}`} className="mr-1 text-[11px] font-medium text-tally">
+                                  <span data-testid={`live-recording-mark-${scheduled.serviceId}`} className="mr-1 text-xs font-medium text-tally">
                                     ● 録画中
                                   </span>
                                 )}
@@ -710,8 +710,8 @@ function LiveSelectionPreview({
 /**
  * OnAirBadge は「いま電波に乗っている」ことを示すバッジ（M4-4 のライブ視聴専用）。
  *
- * **走査線は 3 箇所限定の使用箇所の 1 つ**（ON AIR。docs/frontend/design.md
- * 「走査線は 3 箇所限定」）。タリーレッドの塗り（`tally-scanlines` /
+ * **走査線の 2 箇所のうちの 1 つ**（ON AIR。docs/frontend/design.md
+ * 「走査線は読み込み中・ON AIR の 2 箇所限定」）。タリーレッドの塗り（`tally-scanlines` /
  * `text-tally-foreground`）は録画中バッジと同じ組み合わせをベースにしており、
  * AA を満たすことを確認済み（`e2e/design.mjs`）。選択中チャンネルに `nowPlaying`
  * （いま放送中の番組）があるときだけ呼び出し側が描画する。

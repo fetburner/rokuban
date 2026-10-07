@@ -642,7 +642,7 @@ function HomeOpsTimeline({
                 tickLabelRefs.current[index] = element
               }}
               className={cn(
-                'absolute top-0 whitespace-nowrap text-[10px] leading-[14px] text-muted-foreground',
+                'absolute top-0 whitespace-nowrap text-[11px] leading-[14px] text-muted-foreground',
                 elapsedHour !== 0 && '-translate-x-1/2',
               )}
               style={{
@@ -661,7 +661,7 @@ function HomeOpsTimeline({
         <span
           ref={nowPillRef}
           data-testid="home-timeline-now-label"
-          className="absolute top-0 z-20 -translate-x-px rounded-sm bg-tally px-1 text-[10px] font-semibold leading-[14px] text-tally-foreground"
+          className="absolute top-0 z-20 -translate-x-px rounded-sm bg-tally px-1 text-[11px] font-semibold leading-[14px] text-tally-foreground"
           style={{ left: `${nowX}px` }}
         >
           いま {formatTime(new Date(nowMs).toISOString())}
@@ -705,7 +705,7 @@ function HomeOpsTimeline({
                 <div
                   key={event.key}
                   className={cn(
-                    'absolute z-[1] box-border h-4 overflow-hidden rounded-sm px-[3px] text-[10px] leading-4 whitespace-nowrap',
+                    'absolute z-[1] box-border h-4 overflow-hidden rounded-sm px-[3px] text-[11px] leading-4 whitespace-nowrap',
                     kindClass,
                   )}
                   style={{
@@ -736,7 +736,7 @@ function HomeOpsTimeline({
                   aria-hidden="true"
                 >
                   <span
-                    className="absolute top-0 whitespace-nowrap bg-card px-[3px] text-[10px] font-semibold leading-4 text-warning"
+                    className="absolute top-0 whitespace-nowrap bg-card px-[3px] text-[11px] font-semibold leading-4 text-warning"
                     style={{ left: `${labelLeft - left}px` }}
                     data-testid="home-overage-label"
                   >
@@ -807,7 +807,7 @@ function HomeOpsTimeline({
                 {timelineContent}
               </div>
             </div>
-            <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 text-[11px] text-muted-foreground">
+            <div className="flex flex-wrap gap-x-3 gap-y-1 border-t border-border pt-2 text-xs text-muted-foreground">
               <TimelineLegend color="bg-foreground/20">録れた</TimelineLegend>
               <TimelineLegend color="bg-tally">録画中</TimelineLegend>
               <TimelineLegend color="border border-foreground/40 bg-card">予約</TimelineLegend>

@@ -38,6 +38,7 @@ import {
 import { loadLastSearchConditions, saveLastSearchConditions } from '@/lib/search-storage'
 import { useReservationActions } from '@/lib/reservation-actions'
 import { estimateRuleCost } from '@/lib/rule-cost'
+import { useSearchShortcut } from '@/lib/use-search-shortcut'
 /**
  * pageSize は一度に画面へ表示する検索結果の件数。検索 API は各行に表示情報を含む
  * ため、表示件数を増やす操作で番組詳細の追加取得は発生しない。
@@ -105,6 +106,7 @@ export function SearchPage() {
   // 検索はまずキーワードを入力して結果を確かめる画面なので、詳細条件は
   // 初期状態では閉じる。
   const [detailsOpen, setDetailsOpen] = useState(false)
+  useSearchShortcut('input[aria-label="テキスト条件 1 の値"]')
   const [visibleCount, setVisibleCount] = useState(pageSize)
   /**
    * serviceById は検索結果の `ProgramRow` に表示するサービス名解決に使う。
@@ -287,21 +289,12 @@ export function SearchPage() {
   }, [collapsedError])
 
   /**
-   * resultsRef は「押した結果」の先頭（`検索結果` セクション）。主操作を条件
-   * フォームの先頭に上げた代償として、押しても折り目の中では何も変わらない
-   * （件数・値札・結果はチップ列全部の下）状態になったため、送信のたびに
-   * ここへスクロールとフォーカスを移す。
+   * resultsRef は検索結果の先頭。結果は値札・ルール保存 UI の後ろにあるため、
+   * 送信後に件数と結果をすぐ確認できるよう、検索のたびにここへスクロールと
+   * フォーカスを移す。実ブラウザでの合否判定は `web/e2e/search-mobile.mjs` の④。
    *
-   * **実測値**（390x844・テキスト条件「ニュース」・結果 20 件）: 詳細条件を
-   * 初期表示していた変更前は `scrollY = 1138`、詳細条件を初期非表示にした後は
-   * `scrollY = 502`。後者では件数行 y=49・結果 1 件目 y=81 になった。
-   * 実ブラウザでの合否判定は `web/e2e/search-mobile.mjs` の④。
-   *
-   * **移動先は結果の先頭（件数行）で、値札と保存はその直前に残す。** 値札を
-   * 保存の隣に常置する判断（`RuleCostSummary` のコメント）を動かさずに、
-   * 押した結果を折り目に入れるため。同じ実測で値札は y=-68、
-   * 「この条件でルールを作成」は y=-4 --- 折り目の外だが数十 px 上にあり、
-   * 保存へ戻る動線では従来どおり両者が並んで目に入る。
+   * 値札とルール保存 UI は検索結果の前に残す。値札を保存 UI の近くに置く
+   * 判断（`RuleCostSummary` のコメント）を保ったまま、送信結果を折り目に入れる。
    *
    * `pendingResultScrollRef` で「ユーザーが押した送信」だけに限る ---
    * `?ruleId=N` で開いたときの自動検索（上のハイドレーション effect）で
@@ -489,23 +482,20 @@ export function SearchPage() {
           submit()
         }}
       >
+        <ConditionFields
+          draft={draft}
+          onChange={setDraft}
+          collapsible
+          enterKeyHint="search"
+          detailsOpen={detailsOpen}
+          onDetailsOpenChange={setDetailsOpen}
+        />
+
         {/*
-         * 主操作（検索・条件をクリア）は条件の入力欄より前に置く（issue #305）。
-         * `ConditionFields` はサービス・ジャンル・時間帯などのチップが画面の
-         * 大半を占めるため、以前はこのブロックが `ConditionFields` の後ろに
-         * あり、390px 幅ではスクロールしないとボトムタブの上に出てこなかった。
-         * 条件を試す画面なので「まず送信できる状態を見せ、絞り込みは下に続く」
-         * という並びに変える --- 条件を追加する操作自体は `ConditionFields`
-         * 先頭のテキスト条件が担うので、ここで先に出しても
-         * 「サービスチップ列より先に届く」という受け入れ基準は変わらない。
-         *
-         * **上に出しただけでは足りない。** 「押した結果」（値札・件数・結果）は
-         * 詳細条件を開いたときはこの 1 本の縦カラムの末尾に結果が残るので、主操作を
-         * 上端へ動かしても総スクロール量は変わらず、負担が送信前から送信後に移る
-         * だけになる（押しても折り目の中では `検索中…` の一瞬のラベル変化しか
-         * 起きない）。
-         * 送信のたびに結果の先頭へスクロールとフォーカスを移すことで対にする
-         * （上の `resultsRef`）。
+         * 主操作は条件の後ろに流れの中で置く。値入力の `enterKeyHint="search"`
+         * とフォームの Enter 送信で、入力を終えた場所からも検索できる。
+         * 画面下に固定するとソフトウェアキーボードと重なるため、固定バーにはしない
+         * （docs/frontend/search.md と issue #1232）。
          */}
         <div className="flex flex-col gap-2">
           {/* 送れない理由は押せないボタンの隣に出す。ボタンだけ無効にすると
@@ -544,14 +534,6 @@ export function SearchPage() {
             </Button>
           </div>
         </div>
-
-        <ConditionFields
-          draft={draft}
-          onChange={setDraft}
-          collapsible
-          detailsOpen={detailsOpen}
-          onDetailsOpenChange={setDetailsOpen}
-        />
       </form>
 
       <RuleCostSummary status={costStatus} estimate={costEstimate} hasPeriod={searchedHasPeriod} />

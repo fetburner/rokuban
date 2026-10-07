@@ -56,6 +56,8 @@ type FieldsProps = {
 type ConditionFieldsProps = FieldsProps & {
   /** 検索画面のように、詳細条件を初期状態で折りたたむか。 */
   collapsible?: boolean
+  /** ソフトウェアキーボードの確定キーに検索を示す画面でだけ指定する。 */
+  enterKeyHint?: 'search'
   /** `collapsible` を使うときの開閉状態（指定時は controlled）。 */
   detailsOpen?: boolean
   onDetailsOpenChange?: (open: boolean) => void
@@ -94,13 +96,11 @@ type ConditionFieldsProps = FieldsProps & {
  * 他の節より後ろに動かすと、チップ列が伸びたときに**押される側が折り目の外に
  * 出る**（フォームの最下部なので、モバイルでは折り目の 183px 下 --- 実測で
  * 390x844 のチップ列 top=1027）。**押される既描画の兄弟が無くなるわけではない**
- * --- `pages/search.tsx` は `<form>` の後ろに値札・ルール保存・検索結果を同じ
- * 縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（issue #685 の
- * 詳細節を明示的に開いた実測: 390x844 で 0.024、1280x900 で 0.014。
- * しきい値 0.10 以下。フォームの形
- * ---「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の
- * 位置と、それより前が同期的に描かれること---は変えていないため、これ以前の
- * 実測値と同じ桁に収まっている）。issue #531 で `SiteFields`（サイトチップ）を
+ * --- `pages/search.tsx` は `<ConditionFields>` の後ろに値札・ルール保存・検索結果を
+ * 同じ縦カラムで積んでいるので、シフトは 0 にならず小さくなるだけ（詳細節を
+ * 明示的に開いた実測: 390x844 で 0.0306、1280x900 で 0.0165。しきい値 0.10 以下。
+ * 「読み込み中…」の 1 行からチップの複数行へ入れ替わる `ServiceFields` の位置と、
+ * それより前が同期的に描かれることは変えていない）。サイトチップを
  * `ServiceFields` の手前に足した後も `web/e2e/cls.mjs`（390x844 / 1280x900）を
  * 測り直したが値は変わらない --- `SiteFields` の表示可否は `useAllSitesServices()`
  * が返す `sites`（サイトレジストリのクエリキャッシュ）
@@ -118,6 +118,7 @@ export function ConditionFields({
   onChange,
   disabled,
   collapsible = false,
+  enterKeyHint,
   detailsOpen: controlledDetailsOpen,
   onDetailsOpenChange,
 }: ConditionFieldsProps): React.ReactElement {
@@ -133,7 +134,12 @@ export function ConditionFields({
 
   return (
     <>
-      <TextMatchFields draft={draft} onChange={onChange} disabled={disabled} />
+      <TextMatchFields
+        draft={draft}
+        onChange={onChange}
+        disabled={disabled}
+        enterKeyHint={enterKeyHint}
+      />
       {collapsible ? (
         <DetailedConditionSection
           id={detailsId}
@@ -422,7 +428,12 @@ function Section({
  * の 1 行目は既に `rows` が出しているので、実体の無い行に対してこれらの
  * ボタンを出すと「押しても何も起きない」死んだコントロールになる。
  */
-function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
+function TextMatchFields({
+  draft,
+  onChange,
+  disabled,
+  enterKeyHint,
+}: FieldsProps & { enterKeyHint?: 'search' }) {
   const [unmaterialized, setUnmaterialized] = useState<TextMatchDraft>(newTextMatch)
 
   const update = (index: number, patch: Partial<TextMatchDraft>) => {
@@ -525,6 +536,7 @@ function TextMatchFields({ draft, onChange, disabled }: FieldsProps) {
                 <Field label="値" className="min-w-0 flex-1">
                   <Input
                     aria-label={`テキスト条件 ${index + 1} の値`}
+                    enterKeyHint={enterKeyHint}
                     value={match.value}
                     placeholder={match.mode === 'regex' ? '^ニュース' : 'ニュース'}
                     disabled={disabled}

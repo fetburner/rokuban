@@ -182,7 +182,7 @@ export function GenreLegend({
             data-testid={`genre-filter-${code}`}
             onClick={() => onToggle(code)}
             className={cn(
-              'rounded-full border px-2 py-1 text-[11px] leading-none',
+              'rounded-full border px-2 py-1 text-xs leading-none',
               genreTint(code),
               selectedGenres.has(code) && 'ring-1 ring-primary',
             )}
@@ -492,7 +492,10 @@ export function ProgramGrid({
                 {service.channelType === 'GR' && service.remoteControlKeyId > 0 && (
                   /* 文字色は text-foreground（bg-muted 小バッジの合成後コントラスト
                      対策。docs/frontend/design.md「コントラストは毎回測る」）。 */
-                  <span className="shrink-0 rounded bg-muted px-1 text-[10px] text-foreground">
+                  <span
+                    data-testid="program-grid-header-remote-control-key"
+                    className="shrink-0 rounded bg-muted px-1 text-[11px] text-foreground"
+                  >
                     {service.remoteControlKeyId}
                   </span>
                 )}
@@ -501,7 +504,7 @@ export function ProgramGrid({
                     <span className="truncate text-xs font-medium">{service.name}</span>
                     <span
                       data-testid="program-grid-header-site"
-                      className="truncate text-[10px] text-muted-foreground"
+                      className="truncate text-[11px] text-muted-foreground"
                     >
                       {service.site}
                     </span>
@@ -542,7 +545,10 @@ export function ProgramGrid({
                       11px の赤い文字はダークの地に対して 4.5 に届かない ---
                       タリーを塗りに限る規律の実体
                       （docs/frontend/design.md「タリーは塗り、destructive は文字」） */}
-                  <span className="rounded-sm bg-tally px-1 py-px text-[11px] font-medium text-tally-foreground">
+                  <span
+                    data-testid="program-grid-now-time"
+                    className="rounded-sm bg-tally px-1 py-px text-[11px] font-medium text-tally-foreground"
+                  >
                     {formatTime(new Date(currentMs).toISOString())}
                   </span>
                 </div>
@@ -759,7 +765,7 @@ function ProgramCell({
           />
           <span
             aria-hidden
-            className="absolute top-0 right-1 z-[1] rounded-sm bg-foreground px-0.5 text-[10px] leading-none text-background"
+            className="absolute top-0 right-1 z-[1] rounded-sm bg-foreground px-0.5 text-[11px] leading-none text-background"
             data-testid="program-grid-cell-reserved-label"
           >
             予約
@@ -770,7 +776,7 @@ function ProgramCell({
         (showSkipIntentBadge ? (
           <span
             data-testid="program-grid-cell-skip-intent-badge"
-            className="pointer-events-none absolute top-0 right-1 z-[1] rounded-sm bg-muted px-1 py-0.5 text-[10px] font-medium leading-none text-foreground"
+            className="pointer-events-none absolute top-0 right-1 z-[1] rounded-sm bg-muted px-1 py-0.5 text-[11px] font-medium leading-none text-foreground"
           >
             スキップ中
           </span>
@@ -786,7 +792,7 @@ function ProgramCell({
       <span
         data-testid="program-grid-cell-time"
         className={cn(
-          'relative z-[1] block text-[10px] leading-tight',
+          'relative z-[1] block text-[11px] leading-tight',
           visiblyEnded ? 'text-foreground/75' : 'text-muted-foreground',
         )}
       >
@@ -799,12 +805,20 @@ function ProgramCell({
         {program.name}
       </span>
       {rect.heightPx >= descriptionMinHeightPx && program.description && (
-        <span className="relative z-[1] mt-1 block line-clamp-2 text-[11px] leading-4">
+        <span
+          data-testid="program-grid-cell-description"
+          className="relative z-[1] mt-1 block line-clamp-2 text-[11px] leading-4"
+        >
           {program.description}
         </span>
       )}
       {rect.heightPx >= genreMinHeightPx && genre && (
-        <span className="relative z-[1] mt-1 block text-[11px] leading-4">{genre}</span>
+        <span
+          data-testid="program-grid-cell-genre"
+          className="relative z-[1] mt-1 block text-[11px] leading-4"
+        >
+          {genre}
+        </span>
       )}
     </button>
   )

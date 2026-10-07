@@ -1,3 +1,4 @@
+import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { Tooltip } from '@base-ui/react/tooltip'
 import {
@@ -13,12 +14,12 @@ import {
   Tv,
 } from 'lucide-react'
 import type { ComponentType } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useId, useState } from 'react'
 
 import { CircuitBreakerBanner } from '@/components/circuit-breaker-banner'
 import { ConnectionBanner } from '@/components/connection-banner'
+import { DialogOverlay } from '@/components/ui/dialog'
 import { readHomeModePreference, resolveHomeMode } from '@/lib/home-mode'
-import { Popover, PopoverClose, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { useLiveEnabled } from '@/lib/capabilities'
 import { cn } from '@/lib/utils'
 
@@ -132,17 +133,14 @@ function isActive(pathname: string, to: string): boolean {
 
 /**
  * MoreMenu はボトムタブの「その他」。頻度が低い項目（`useNavItems` の `more`）を
- * ポップオーバーに畳んで、ボトムタブの本数を親指の届く 4 個に抑える。
+ * シートに畳んで、ボトムタブの本数を親指の届く 4 個に抑える。
  *
- * シートではなくポップオーバーを選んだ理由: 中身がリンク 5 個だけの単純な
- * リストで、フォーム操作や長いコンテンツを持たない。全画面/半画面を覆う
- * シートはここでは過剰で、トリガーの直上に浮かせるポップオーバーの方が
- * 「タブの延長」に見える。
+ * シートは中身の高さで止まるので、リンク 5 個だけの一覧なら低いシートで収まる。
+ * 見た目（つまみ・角丸・セーフエリア・中央見出し・右の「完了」）は録画一覧の
+ * 絞り込みシートに揃える。`ToolbarPanel` とは変更理由が異なるため共有しない。
  *
- * 固定されたボトムバーの上に浮くオーバーレイなので、画面端でのはみ出し・
- * バーの上に出るか・safe-area との重なりは jsdom では測れない
- * （docs/frontend/shell.md）。実ブラウザでの合否は `e2e/design.mjs` の
- * 「その他」判定が担う。
+ * 固定されたボトムバーの上に重なるため、シートが画面下端に接するかは jsdom では
+ * 測れない。実ブラウザでの合否は `e2e/issue-1224-sheet.mjs` が担う。
  *
  * トリガー自身のアクティブ表示は、配下の項目（予約・ライブ・検索・ルール・CM ロゴ）の
  * いずれかが現在地のときに立てる。個々のリンクは自身のページに居るときだけ
@@ -153,17 +151,15 @@ function isActive(pathname: string, to: string): boolean {
  * 中身は `useNavItems` が決める（`live.enabled: false` なら「ライブ」は
  * 落ちて予約・検索・ルール・CM ロゴの 4 個になる。issue #209）。
  *
- * `modal="trap-focus"` は背後を inert にせず、開いている間だけ Tab を中で循環させる。
- * Base UI がトラップを有効にするため `PopoverClose` も置くが、見えない Tab stop に
- * しないよう `tabIndex={-1}` にし、タッチスクリーンリーダーからの終了手段だけ残す。
  */
 function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
   const [open, setOpen] = useState(false)
   const active = items.some((item) => isActive(pathname, item.to))
+  const titleId = useId()
 
   return (
-    <Popover modal="trap-focus" open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
+    <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
+      <DialogPrimitive.Trigger
         aria-current={active ? 'true' : undefined}
         // min-h-14 で最小タップ領域（44px 以上）を確保する。他タブと高さを揃える
         className={cn(
@@ -173,42 +169,48 @@ function MoreMenu({ pathname, items }: { pathname: string; items: NavItem[] }) {
       >
         <MoreHorizontal className="size-5" />
         その他
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="end"
-        sideOffset={8}
-        aria-label="その他のナビゲーション"
-        className="w-44 p-1"
-      >
-        <ul className="flex flex-col gap-0.5">
-          {items.map(({ to, label, icon: Icon }) => {
-            const itemActive = isActive(pathname, to)
-            return (
-              <li key={to}>
-                <Link
-                  to={to}
-                  aria-current={itemActive ? 'page' : undefined}
-                  onClick={() => setOpen(false)}
-                  className={cn(
-                    'flex pointer-coarse:min-h-11 items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors',
-                    itemActive
-                      ? 'bg-muted font-medium text-foreground'
-                      : 'text-foreground hover:bg-muted/60',
-                  )}
-                >
-                  <Icon className="size-4 shrink-0" />
-                  {label}
-                </Link>
-              </li>
-            )
-          })}
-        </ul>
-        <PopoverClose tabIndex={-1} className="sr-only">
-          メニューを閉じる
-        </PopoverClose>
-      </PopoverContent>
-    </Popover>
+      </DialogPrimitive.Trigger>
+      <DialogPrimitive.Portal>
+        <DialogOverlay />
+        <DialogPrimitive.Popup
+          className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none"
+        >
+          <div aria-hidden className="mx-auto h-1 w-9 shrink-0 rounded-full bg-border" />
+          <div className="grid shrink-0 grid-cols-[1fr_auto_1fr] items-center px-2 pb-1">
+            <span />
+            <DialogPrimitive.Title id={titleId} className="text-base font-semibold">その他</DialogPrimitive.Title>
+            <DialogPrimitive.Close className="h-11 justify-self-end rounded-lg px-3 text-base font-semibold text-primary hover:bg-muted">
+              完了
+            </DialogPrimitive.Close>
+          </div>
+          <nav aria-labelledby={titleId} className="min-h-0 overflow-y-auto px-4 pb-1">
+            <ul className="flex flex-col gap-0.5">
+              {items.map(({ to, label, icon: Icon }) => {
+                const itemActive = isActive(pathname, to)
+                return (
+                  <li key={to}>
+                    <Link
+                      to={to}
+                      aria-current={itemActive ? 'page' : undefined}
+                      onClick={() => setOpen(false)}
+                      className={cn(
+                        'flex min-h-11 items-center gap-2 rounded-md px-3 py-2.5 text-sm transition-colors',
+                        itemActive
+                          ? 'bg-muted font-medium text-foreground'
+                          : 'text-foreground hover:bg-muted/60',
+                      )}
+                    >
+                      <Icon className="size-4 shrink-0" />
+                      {label}
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </nav>
+        </DialogPrimitive.Popup>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
   )
 }
 
