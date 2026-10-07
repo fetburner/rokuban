@@ -2,6 +2,8 @@ import { Dialog as DialogPrimitive } from '@base-ui/react/dialog'
 import { Popover as PopoverPrimitive } from '@base-ui/react/popover'
 import type { ReactNode } from 'react'
 
+import { DialogOverlay } from '@/components/ui/dialog'
+
 import { mdMediaQuery, useMediaQuery } from '@/lib/use-media-query'
 import { cn } from '@/lib/utils'
 
@@ -26,7 +28,8 @@ export function ToolbarDot() {
  * 変わる。片方だけシートの寸法を変える理由が無いので 1 つにする。録画詳細の再生設定・チャプター
  * 一覧のシート（`recording-playback-controls.tsx` の `popoverClass`）とは共有しない ---
  * あちらは動画の上に重なるメニュー（role="menu"・md 以上は動画内の小窓）で、プレイヤーの都合で
- * 変わる。見た目（角丸・セーフエリア・つまみ・幕）だけ揃える。
+ * 変わる。見た目（角丸・セーフエリア・つまみ）だけ揃える。幕はアプリのダイアログと同じ
+ * `DialogOverlay` を使う（色をトークン外で持たない）。
  *
  * `bodyClassName` は中身の並べ方（両方の形で同じ）。`popupWidthClassName` はポップオーバーの幅。
  */
@@ -85,7 +88,7 @@ export function ToolbarPanel({
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Trigger className={triggerClassName}>{trigger}</DialogPrimitive.Trigger>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Backdrop className="fixed inset-0 z-50 bg-black/45" />
+        <DialogOverlay />
         {/* 角丸・セーフエリア・つまみは録画詳細の再生設定シート（popoverClass）に揃える。
             高さは中身が多い（絞り込みは 6 節）ので 85dvh まで許し、中身だけをスクロールさせる。 */}
         <DialogPrimitive.Popup className="fixed inset-x-0 bottom-0 z-50 flex max-h-[85dvh] flex-col rounded-t-2xl bg-card pt-2 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-foreground shadow-lg outline-none">
