@@ -106,7 +106,7 @@ await installApiStubs(page, apiHandler)
 await page.goto(URL_BASE + '/recordings', { waitUntil: 'domcontentloaded' })
 await page.getByText('一つ目の録画').waitFor({ timeout: 15000 })
 
-log('\n=== ① 編集モードで全面リンクを外し、checkbox に到達できる ===')
+log('\n=== ① 編集モードで全面リンクを外し、行の checkbox で選べる（checkbox は Tab 順の外。focus はスクリプトから） ===')
 await page.getByRole('button', { name: '選択' }).click()
 const firstCheckbox = page.getByRole('checkbox', { name: '一つ目の録画を選択' })
 await firstCheckbox.focus()

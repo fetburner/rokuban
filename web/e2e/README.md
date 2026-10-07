@@ -1453,6 +1453,18 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-view
 ```
 
+### 表示切替の形（`issue-1229-switches.mjs`）
+
+Programs のリスト / 番組表が 1 つの segmented control に見えることと、Home の
+見る / 管理が無彩の下線付き tabs になることを、Chromium の実画面で確認する。
+URL と localStorage による両方の選択状態も確認し、ライト / ダークと 1280px / 390px
+の画面を PNG に保存する。API はブラウザ内スタブで差し替える。
+
+```sh
+pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
+E2E_URL=http://127.0.0.1:4173 E2E_SHOT_DIR=/tmp/rokuban-switch-shots pnpm e2e:issue-1229-switches
+```
+
 ### 番組表の短い番組選択（`programs-grid-zoom.mjs`）
 
 短い番組の選択は、セルの視覚的な高さに下限を入れず、時間軸全体を 120 / 240 /
