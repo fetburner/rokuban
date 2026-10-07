@@ -243,7 +243,7 @@ function BottomTabs() {
       // 上辺の境界線の太さは `--bottom-nav-border`（index.css）から取る。
       // `--bottom-nav-height` が同じ変数を足しているので、太さを変えても
       // `main` の下パディングが自動で追従する（同じ 1px を 2 箇所に書かない）。
-      className="fixed inset-x-0 bottom-0 z-20 border-t-[length:var(--bottom-nav-border)] border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur md:hidden"
+      className="fixed inset-x-0 bottom-0 z-20 border-t-[length:var(--bottom-nav-border)] border-border bg-background/95 pb-[var(--bottom-nav-inset)] backdrop-blur safe-area-inline md:hidden"
     >
       <ul className="flex">
         {primary.map(({ to, label, icon: Icon }) => {
@@ -416,7 +416,7 @@ function StickyBanners() {
  */
 export function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-screen bg-background text-foreground">
+    <div className="flex min-h-screen bg-background text-foreground safe-area-inline">
       <a
         href="#main"
         className="sr-only z-50 rounded-md bg-background text-sm font-medium text-foreground shadow-md focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:px-3 focus:py-2 focus:outline-none focus:ring-3 focus:ring-ring/50"

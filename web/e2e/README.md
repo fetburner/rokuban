@@ -823,6 +823,24 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-bottom-nav
 ```
 
+### 横向き端末の左右セーフエリア（`safe-area-inline.mjs`）
+
+CDP の `Emulation.setSafeAreaInsetsOverride` で `env(safe-area-inset-*)` に非ゼロの値を入れ、
+`getBoundingClientRect` の寸法だけで判定する。CSS の文字列一致は見ない。
+
+- 1280×800 と 390×844（inset 0）: inset が 0 のときレイアウトが変わらないこと
+- 844×390（左右 59・下 21）: 横向き iPhone。`md` 以上なのでサイドバー配置になり、サイドバー左端が 59、
+  本文・ヘッダー右端が 785（844-59）、ボトムタブは非表示
+- 700×390（左右 47）: `md` 未満の横向き。本文・ヘッダーが 47..653、ボトムタブの `ul` も 47..653
+
+override が効かなかった場合（CDP メソッドの欠落など）は、黙って通さず ng を積む。
+未検証: 実機の Safari が返す inset の実値と、回転時の再計算。横向き iPhone での確認は実機で行う。
+
+```sh
+pnpm build && pnpm preview --host 127.0.0.1 --port 4173 --strictPort &
+E2E_URL=http://127.0.0.1:4173 pnpm e2e:safe-area-inline
+```
+
 ### 番組リストの空時間窓（`programs-empty-window.mjs`）
 
 番組 API が最初または途中の 6 時間窓を空で返しても、後続窓へ進む導線が消えない
