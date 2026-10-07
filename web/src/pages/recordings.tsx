@@ -46,6 +46,7 @@ import {
 } from '@/lib/recording-search'
 import { loadRecordingView, saveRecordingView } from '@/lib/recording-view'
 import { cn } from '@/lib/utils'
+import { useSearchShortcut } from '@/lib/use-search-shortcut'
 
 /** pageSize は 1 回のフェッチで取る件数（API の既定と同じ）。 */
 const pageSize = 50
@@ -78,6 +79,8 @@ function bulkFailureMessage(label: string, failed: BulkFailure[]): string {
 
 /** 録画一覧ページ。表示形式以外の状態は URL とサーバーを正とする。 */
 export function RecordingsPage() {
+  useSearchShortcut('input[aria-label="番組名・説明で検索"]')
+
   // 検索条件・表示タブはどちらも URL に載せる（リロード・共有・戻るで同じ結果に
   // なる。docs/frontend.md「録画検索は /recordings に同居する」/「ごみ箱タブと
   // 検索条件は直交させる」）。タブは条件と直交する別の軸なので `tab` として

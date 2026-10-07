@@ -753,7 +753,7 @@ describe('LivePage', () => {
     renderLive()
 
     expect(await screen.findByText('いま放送中の番組の情報はありません')).toBeInTheDocument()
-    // ON AIR は「いま電波に乗っている」を示すバッジ（走査線は 3 箇所限定の 1 つ。
+    // ON AIR は「いま電波に乗っている」を示すバッジ（走査線の 2 箇所のうち 1 つ。
     // docs/frontend/design.md）。放送中の番組が無いときは出ない
     expect(screen.queryByText('ON AIR')).not.toBeInTheDocument()
   })
