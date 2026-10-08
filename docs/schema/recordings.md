@@ -80,6 +80,8 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 
 `quality_events` は `recording.failed` / `recording.record-broken` の履歴を持つ。
 スクランブル件数は `drop_stats.scrambled` から導けるため、ここには重ねて記録しない。
+旧 catalog も読み込めるため、rescue は `bcas_anomaly` だけ除き、他のイベント順は保つ
+（`TestRescueLegacyQualityEvents`）。
 
 ### 行の作られ方
 

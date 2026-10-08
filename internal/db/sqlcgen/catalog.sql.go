@@ -1126,8 +1126,12 @@ VALUES (
     $13, $14, $15,
     $16, $17,
     $18, $19, $20,
-    $21,
-    $22, $23, $24, $25, $26
+    COALESCE((
+        SELECT jsonb_agg(event.value ORDER BY event.ordinality)
+        FROM jsonb_array_elements($26::jsonb) WITH ORDINALITY AS event(value, ordinality)
+        WHERE event.value->>'event' IS DISTINCT FROM 'bcas_anomaly'
+    ), '[]'::jsonb),
+    $21, $22, $23, $24, $25
 )
 ON CONFLICT (id) DO UPDATE SET
     rule_id             = EXCLUDED.rule_id,
@@ -1183,17 +1187,19 @@ type CatalogUpsertRecordingParams struct {
 	Status            string
 	StartedAt         *time.Time
 	EndedAt           *time.Time
-	QualityEvents     json.RawMessage
 	DeletedAt         *time.Time
 	SupersededAt      *time.Time
 	PurgedAt          *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	QualityEvents     json.RawMessage
 }
 
 // keep_original / encode_profiles は issue #159 で recording_encode_policy
 // 衛星表に切り出されたので、この INSERT には含まれない
 // （CatalogUpsertRecordingEncodePolicy 参照）。
+// 古い catalog は引き続き読めるため、復元時に旧 quality_events の bcas_anomaly
+// だけを取り除く。他の履歴要素と配列順序は保持する（TestRescueLegacyQualityEvents）。
 func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertRecordingParams) error {
 	_, err := q.db.Exec(ctx, catalogUpsertRecording,
 		arg.ID,
@@ -1216,12 +1222,12 @@ func (q *Queries) CatalogUpsertRecording(ctx context.Context, arg CatalogUpsertR
 		arg.Status,
 		arg.StartedAt,
 		arg.EndedAt,
-		arg.QualityEvents,
 		arg.DeletedAt,
 		arg.SupersededAt,
 		arg.PurgedAt,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.QualityEvents,
 	)
 	return err
 }
