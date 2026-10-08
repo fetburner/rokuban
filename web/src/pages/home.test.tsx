@@ -466,6 +466,66 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(seekTarget).toBe(230)
   })
 
+  it('保存位置のフレームを表示した後は timeout fallback に戻らない', async () => {
+    const recordingWithResume = recording(47, '表示後も維持する', 'finished', {
+      resumePositionMs: 330_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 100 }],
+    })
+    stubApi({ continueWatching: [recordingWithResume] })
+
+    let fallback: { callback: () => void; cleared: boolean } | undefined
+    const fallbackId = 8_047
+    const originalSetTimeout = window.setTimeout.bind(window)
+    const originalClearTimeout = window.clearTimeout.bind(window)
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout').mockImplementation((handler, timeout, ...args) => {
+      if (timeout === 8_000) {
+        if (typeof handler !== 'function') throw new Error('resume timeout must use a callback')
+        fallback = { callback: handler as () => void, cleared: false }
+        return fallbackId
+      }
+      return originalSetTimeout(handler, timeout, ...args)
+    })
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout').mockImplementation((handle) => {
+      if (handle === fallbackId && fallback !== undefined) {
+        fallback.cleared = true
+        return
+      }
+      originalClearTimeout(handle)
+    })
+
+    try {
+      renderHome('/?mode=watch')
+      const video = await screen.findByTestId('home-hero-resume-video')
+      let frameCallback: ((now: number, metadata: VideoFrameCallbackMetadata) => void) | undefined
+      Object.defineProperty(video, 'duration', { configurable: true, value: 3600 })
+      Object.defineProperty(video, 'readyState', {
+        configurable: true,
+        value: HTMLMediaElement.HAVE_CURRENT_DATA,
+      })
+      Object.defineProperty(video, 'requestVideoFrameCallback', {
+        configurable: true,
+        value: (callback: (now: number, metadata: VideoFrameCallbackMetadata) => void) => {
+          frameCallback = callback
+          return 1
+        },
+      })
+      act(() => fireEvent.loadedMetadata(video))
+      expect(frameCallback).toBeDefined()
+
+      act(() => frameCallback?.(0, { mediaTime: 330 } as VideoFrameCallbackMetadata))
+      expect(video).toHaveAttribute('data-resume-state', 'ready')
+      expect(video).toHaveStyle({ opacity: '1' })
+      expect(fallback?.cleared).toBe(true)
+
+      if (!fallback?.cleared) act(() => fallback?.callback())
+      expect(video).toHaveAttribute('data-resume-state', 'ready')
+      expect(clearTimeoutSpy).toHaveBeenCalledWith(fallbackId)
+    } finally {
+      setTimeoutSpy.mockRestore()
+      clearTimeoutSpy.mockRestore()
+    }
+  })
+
   it.each([
     {
       label: '新着の主役',

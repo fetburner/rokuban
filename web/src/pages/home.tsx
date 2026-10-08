@@ -1126,6 +1126,7 @@ function HomeThumbnail({
         video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
         Math.abs(metadata.mediaTime - resumeTargetSeconds) <= frameToleranceSeconds
       ) {
+        window.clearTimeout(timeout)
         setResumeState({ key: stateKey, state: 'ready' })
         return
       }
