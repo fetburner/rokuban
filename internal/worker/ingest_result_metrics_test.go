@@ -172,8 +172,9 @@ func TestIngestWorker_GracefulStopIsNotCounted(t *testing.T) {
 	})
 }
 
-func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
+func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
 	tsData := makeTSData(20)
+	setIngestSHA256Rate(t, 47)
 	var deleteAttempts atomic.Int32
 	srv, _ := newLateHashIngestServer(t, tsData, "test/sha-wait.m2ts", nil, func() {
 		deleteAttempts.Add(1)
@@ -183,7 +184,7 @@ func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
 		return
 	}
 	recordingID := insertTestRecording(t, pool)
-	recordID := "rec-sha256-river-snooze"
+	recordID := "rec-sha256-river-complete"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	w := &IngestWorker{
@@ -203,7 +204,7 @@ func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("river.NewClient: %v", err)
 	}
-	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed)
+	events, cancelSubscribe := client.Subscribe(river.EventKindJobCompleted)
 	defer cancelSubscribe()
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel()
@@ -225,55 +226,46 @@ func TestIngestWorker_SHA256WaitSnoozePreservesAttempt(t *testing.T) {
 	select {
 	case event = <-events:
 	case <-time.After(30 * time.Second):
-		t.Fatal("ingest job did not snooze while content.sha256 remained null")
-	}
-	if event.Kind != river.EventKindJobSnoozed {
-		t.Fatalf("River event kind = %q, want %q", event.Kind, river.EventKindJobSnoozed)
+		t.Fatal("ingest job did not complete while content.sha256 remained null")
 	}
 	if event.Job.ID != inserted.Job.ID {
-		t.Errorf("snoozed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
+		t.Errorf("completed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
 	}
-	if event.Job.State != rivertype.JobStateScheduled {
-		t.Errorf("snoozed job state = %q, want scheduled", event.Job.State)
+	if event.Job.State != rivertype.JobStateCompleted {
+		t.Fatalf("job state = %q, want completed while awaiting SHA-256", event.Job.State)
 	}
-	if event.Job.Attempt != 0 {
-		t.Errorf("snoozed job attempt = %d, want 0 (snooze must not consume an attempt)", event.Job.Attempt)
-	}
-	if got, err := ingestJobSnoozeCount(event.Job.Metadata); err != nil || got != 1 {
-		t.Errorf("River snooze metadata count = %d, %v; want 1", got, err)
-	}
-	if remaining := time.Until(event.Job.ScheduledAt); remaining < 8*time.Second || remaining > 12*time.Second {
-		t.Errorf("scheduled snooze delay = %s, want about 10s (floor for a tiny file)", remaining)
-	}
-	var state string
-	var attempt int
-	var metadata []byte
-	if err := pool.QueryRow(context.Background(), "SELECT state, attempt, metadata FROM river_job WHERE id = $1", inserted.Job.ID).Scan(&state, &attempt, &metadata); err != nil {
-		t.Fatalf("reading snoozed river_job: %v", err)
-	}
-	if state != string(rivertype.JobStateScheduled) || attempt != 0 {
-		t.Errorf("persisted river_job state=%q attempt=%d, want scheduled / 0", state, attempt)
-	}
-	if got, err := ingestJobSnoozeCount(metadata); err != nil || got != 1 {
-		t.Errorf("persisted River snooze metadata count = %d, %v; want 1", got, err)
-	}
-	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 snooze")
+	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending completion")
 	if got := ingestDurationSamples(t); got != durationBefore {
-		t.Errorf("IngestDuration samples after snooze = %d, want %d", got, durationBefore)
+		t.Errorf("IngestDuration samples after pending completion = %d, want %d", got, durationBefore)
+	}
+
+	var state string
+	if err := pool.QueryRow(context.Background(), "SELECT state FROM river_job WHERE id = $1", inserted.Job.ID).Scan(&state); err != nil {
+		t.Fatalf("reading river_job: %v", err)
+	}
+	if state != string(rivertype.JobStateCompleted) {
+		t.Errorf("persisted river_job state = %q, want completed", state)
 	}
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
-		t.Fatalf("counting media_assets while snoozed: %v", err)
+		t.Fatalf("counting media_assets while waiting: %v", err)
 	}
 	if assetCount != 0 {
-		t.Errorf("media_assets rows while snoozed = %d, want 0", assetCount)
+		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
 	if got := deleteAttempts.Load(); got != 0 {
-		t.Errorf("DeleteRecord attempts while snoozed = %d, want 0", got)
+		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
+	}
+	var progressRows int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID).Scan(&progressRows); err != nil {
+		t.Fatalf("counting progress rows while waiting: %v", err)
+	}
+	if progressRows != 0 {
+		t.Errorf("recording_ingest_progress rows while waiting = %d, want 0", progressRows)
 	}
 	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {
-		t.Errorf("ingest temp while snoozed: stat=(%v, %v), want size %d", info, err, len(tsData))
+		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, len(tsData))
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
