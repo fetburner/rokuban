@@ -1936,8 +1936,12 @@ type Recording struct {
 	// DeletedAt 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`
 	// （ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている
 	// 行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。
-	DeletedAt   *time.Time   `json:"deletedAt,omitempty"`
-	Description *string      `json:"description,omitempty"`
+	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
+	Description *string    `json:"description,omitempty"`
+
+	// DropSummary 原本 TS の計測記録があり、計測時のサイズと原本の保存サイズが一致するときだけ含む。
+	// 未計測中、または in-place 更新後に計測記録が古くなった場合は省略する。
+	// 原本がごみ箱にある場合も、サイズが一致する計測記録が残っていれば含む。
 	DropSummary *DropSummary `json:"dropSummary,omitempty"`
 	DurationMs  int64        `json:"durationMs"`
 

@@ -3063,6 +3063,10 @@ components:
           items:
             $ref: "#/components/schemas/EncodeJobStatus"
         dropSummary:
+          description: |
+            原本 TS の計測記録があり、計測時のサイズと原本の保存サイズが一致するときだけ含む。
+            未計測中、または in-place 更新後に計測記録が古くなった場合は省略する。
+            原本がごみ箱にある場合も、サイズが一致する計測記録が残っていれば含む。
           $ref: "#/components/schemas/DropSummary"
         ingest:
           $ref: "#/components/schemas/IngestProgress"

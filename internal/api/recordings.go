@@ -45,6 +45,8 @@ type recordingListFields struct {
 	DropDrops         int64
 	DropErrors        int64
 	DropScrambled     int64
+	// HasMeasuredDropSummary は、TS 計測記録が保存済み原本サイズと一致するか。
+	HasMeasuredDropSummary bool
 	// KeepOriginal は recording_encode_policy に凍結された原本保持ポリシー。
 	// policy 行が無い復旧録画は SQL 側で安全側の既定値 always に落とす。
 	KeepOriginal string
@@ -385,11 +387,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
-	// ドロップ統計は ingest 済み（original の media_assets 行がある）録画にしか
-	// 存在しない。原本を削除した後も tombstone 行と観測結果は残るため、現在の
-	// サイズ（OriginalSizeBytes）ではなく HasOriginalAsset で判定する。未 ingest
-	// と「統計が全部 0」を区別できるよう、original 行自体が無ければ省略する。
-	if r.HasOriginalAsset {
+	// COALESCE で統計の無い行は 0 に見えるため、HasMeasuredDropSummary を別の
+	// 事実として判定する。これは原本 TS の計測記録が保存済みサイズと一致する
+	// 場合だけ真になる。状態を問わず原本行から判定するので、計測後の tombstone
+	// では従来どおり要約を保ち、サイズ変更後の古い計測結果は表示しない。
+	if r.HasMeasuredDropSummary {
 		rec.DropSummary = &DropSummary{
 			Packets:   r.DropPackets,
 			Drops:     r.DropDrops,

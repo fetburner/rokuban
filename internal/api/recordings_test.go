@@ -82,6 +82,10 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	if err := batch.Close(); err != nil {
 		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1, $2)`, assetID, size); err != nil {
+		t.Fatalf("seeding media_asset_ts_scan: %v", err)
+	}
 	return assetID
 }
 
@@ -152,6 +156,71 @@ func TestListRecordings(t *testing.T) {
 	// 正常な録画も dropSummary は付く（全 0）
 	if got[0].DropSummary == nil || *got[0].DropSummary != (DropSummary{Packets: 800}) {
 		t.Errorf("clean recording dropSummary = %+v", got[0].DropSummary)
+	}
+}
+
+// dropSummary は原本の存在ではなく、保存サイズに一致した TS 計測記録がある場合だけ返す。
+func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	unmeasured := seedRecording(t, pool, "計測記録なし", base, "finished", 90)
+	unmeasuredAssetID := seedIngested(t, pool, unmeasured, 1000, map[int32][4]int64{
+		0x100: {500, 2, 1, 0},
+	})
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id = $1`, unmeasuredAssetID); err != nil {
+		t.Fatalf("deleting TS scan marker: %v", err)
+	}
+
+	stale := seedRecording(t, pool, "原本サイズ変更後", base.Add(time.Minute), "finished", 91)
+	staleAssetID := seedIngested(t, pool, stale, 2000, map[int32][4]int64{
+		0x100: {500, 3, 0, 0},
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET size_bytes = size_bytes + 1 WHERE id = $1`, staleAssetID); err != nil {
+		t.Fatalf("changing original size: %v", err)
+	}
+
+	measuredZero := seedRecording(t, pool, "計測済みドロップ 0", base.Add(2*time.Minute), "finished", 92)
+	seedIngested(t, pool, measuredZero, 3000, nil)
+
+	zeroSummary := &DropSummary{}
+	want := map[int64]*DropSummary{
+		unmeasured:   nil,
+		stale:        nil,
+		measuredZero: zeroSummary,
+	}
+	assertSummary := func(recording Recording, source string) {
+		t.Helper()
+		wantSummary, ok := want[recording.Id]
+		if !ok {
+			t.Fatalf("%s returned unexpected recording %d", source, recording.Id)
+		}
+		if !reflect.DeepEqual(recording.DropSummary, wantSummary) {
+			t.Errorf("%s dropSummary for recording %d = %+v, want %+v", source, recording.Id, recording.DropSummary, wantSummary)
+		}
+	}
+
+	var list []Recording
+	resp := getJSON(t, srv.URL+"/api/recordings", &list)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	if len(list) != len(want) {
+		t.Fatalf("recordings = %d, want %d", len(list), len(want))
+	}
+	for _, recording := range list {
+		assertSummary(recording, "list")
+	}
+
+	for id := range want {
+		var detail Recording
+		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail %d status = %d, want 200", id, resp.StatusCode)
+		}
+		assertSummary(detail, "detail")
 	}
 }
 
@@ -377,12 +446,26 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 		}
 		return recordings[0]
 	}
+	assertTrashQueryMeasurement := func(stage string) {
+		t.Helper()
+		rows, err := sqlcgen.New(pool).ListTrashRecordings(ctx, db.DefaultSite)
+		if err != nil {
+			t.Fatalf("ListTrashRecordings %s: %v", stage, err)
+		}
+		if len(rows) != 1 || rows[0].ID != id {
+			t.Fatalf("ListTrashRecordings %s rows = %+v, want recording %d", stage, rows, id)
+		}
+		if !rows[0].HasMeasuredDropSummary {
+			t.Errorf("ListTrashRecordings %s hasMeasuredDropSummary = false, want true", stage)
+		}
+	}
 
 	before := fetchTrash()
 	want := DropSummary{Packets: 500, Drops: 2, Errors: 1}
 	if before.DropSummary == nil || *before.DropSummary != want {
 		t.Fatalf("dropSummary before original deletion = %+v, want %+v", before.DropSummary, want)
 	}
+	assertTrashQueryMeasurement("before original deletion")
 
 	if _, err := pool.Exec(ctx,
 		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", assetID); err != nil {
@@ -393,6 +476,7 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 	if after.DropSummary == nil || *after.DropSummary != want {
 		t.Errorf("dropSummary after original deletion = %+v, want unchanged %+v", after.DropSummary, want)
 	}
+	assertTrashQueryMeasurement("after original deletion")
 	if after.SizeBytes != nil {
 		t.Errorf("sizeBytes after original deletion = %v, want omitted", after.SizeBytes)
 	}

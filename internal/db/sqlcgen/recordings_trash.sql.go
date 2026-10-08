@@ -15,10 +15,21 @@ const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
     r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1, r.series_key,
     a.size_bytes                        AS original_size_bytes,
+    -- COALESCE は計測済みで drop_stats が空の 0 件を返すために使う。
+    -- 未計測かどうかは下の has_measured_drop_summary で区別する。
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    EXISTS (
+        SELECT 1
+        FROM media_assets scanned_original
+        JOIN media_asset_ts_scans ts_scan
+          ON ts_scan.media_asset_id = scanned_original.id
+         AND ts_scan.scanned_size_bytes = scanned_original.size_bytes
+        WHERE scanned_original.recording_id = r.id
+          AND scanned_original.kind = 'original'
+    ) AS has_measured_drop_summary,
     COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
@@ -37,41 +48,42 @@ ORDER BY r.deleted_at DESC, r.id DESC
 `
 
 type ListTrashRecordingsRow struct {
-	ID                int64
-	RuleID            *int64
-	Source            string
-	Site              string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	Title             string
-	Description       *string
-	Extended          json.RawMessage
-	Genres            json.RawMessage
-	IsFree            bool
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Status            string
-	StartedAt         *time.Time
-	EndedAt           *time.Time
-	QualityEvents     json.RawMessage
-	DeletedAt         *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	SupersededAt      *time.Time
-	PurgedAt          *time.Time
-	GenreLv1          []int16
-	SeriesKey         *string
-	OriginalSizeBytes *int64
-	DropPackets       int64
-	DropDrops         int64
-	DropErrors        int64
-	DropScrambled     int64
-	KeepOriginal      string
-	EncodeProfiles    []string
+	ID                     int64
+	RuleID                 *int64
+	Source                 string
+	Site                   string
+	NetworkID              int32
+	ServiceID              int32
+	EventID                int32
+	ServiceName            string
+	ChannelType            string
+	Channel                string
+	Title                  string
+	Description            *string
+	Extended               json.RawMessage
+	Genres                 json.RawMessage
+	IsFree                 bool
+	ProgramStartAt         time.Time
+	ProgramDurationMs      int64
+	Status                 string
+	StartedAt              *time.Time
+	EndedAt                *time.Time
+	QualityEvents          json.RawMessage
+	DeletedAt              *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	SupersededAt           *time.Time
+	PurgedAt               *time.Time
+	GenreLv1               []int16
+	SeriesKey              *string
+	OriginalSizeBytes      *int64
+	DropPackets            int64
+	DropDrops              int64
+	DropErrors             int64
+	DropScrambled          int64
+	HasMeasuredDropSummary bool
+	KeepOriginal           string
+	EncodeProfiles         []string
 }
 
 // ごみ箱一覧。原本サイズ + drop 合計は載せるが、
@@ -145,6 +157,7 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.DropDrops,
 			&i.DropErrors,
 			&i.DropScrambled,
+			&i.HasMeasuredDropSummary,
 			&i.KeepOriginal,
 			&i.EncodeProfiles,
 		); err != nil {

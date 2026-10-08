@@ -127,10 +127,21 @@ SELECT id, deleted_at FROM trashed;
 SELECT
     r.*,
     a.size_bytes                        AS original_size_bytes,
+    -- COALESCE は計測済みで drop_stats が空の 0 件を返すために使う。
+    -- 未計測かどうかは下の has_measured_drop_summary で区別する。
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
     COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
+    EXISTS (
+        SELECT 1
+        FROM media_assets scanned_original
+        JOIN media_asset_ts_scans ts_scan
+          ON ts_scan.media_asset_id = scanned_original.id
+         AND ts_scan.scanned_size_bytes = scanned_original.size_bytes
+        WHERE scanned_original.recording_id = r.id
+          AND scanned_original.kind = 'original'
+    ) AS has_measured_drop_summary,
     COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r

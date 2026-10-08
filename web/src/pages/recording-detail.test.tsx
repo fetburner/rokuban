@@ -598,6 +598,26 @@ describe('RecordingDetailPage', () => {
     expect(fetchMock).not.toHaveBeenCalledWith('/api/recordings/3/drop-stats', expect.anything())
   })
 
+  it('dropSummary が省略された原本ではドロップ 0 の行やバッジを出さない', async () => {
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 1_000_000,
+        ingest: { state: 'committed' },
+        cmDetection: { state: 'disabled' },
+      }),
+    })
+
+    const { queryClient } = renderAt('/recordings/3')
+
+    expect(await screen.findByText('単体ページの録画')).toBeInTheDocument()
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
+    expect(screen.queryByRole('button', { name: 'ドロップ状態を記録タブで見る' })).not.toBeInTheDocument()
+    await selectDetailTab('記録')
+    expect(screen.queryByText(/パケット 0|ドロップ 0|エラー 0|スクランブル 0/)).not.toBeInTheDocument()
+    expect(screen.queryByTestId('drop-stats-details')).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalledWith('/api/recordings/3/drop-stats', expect.anything())
+  })
+
   it('90% 到達後の視聴済み PUT 成功で録画一覧クエリを invalidate する', async () => {
     const { fetchMock } = createFakeServer({
       recording: sampleRecording({
