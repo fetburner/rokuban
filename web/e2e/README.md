@@ -338,6 +338,23 @@ offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 2
 この合成 fixture はソフトウェア libx264 に限る。実録画（GR/BS）とハードウェアエンコーダーは未測定である。
 測定条件と差の内訳は [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
 
+### ホームの保存位置フレーム（`home-resume-frame.mjs`）
+
+Go の製品ビルダーが作る目印付き MP4 から映像 track を正規化し、非カット版と
+`keepRanges` で連結したカット版を配る。Chromium と WebKit で、ホームの主役が frame 492 の
+目印を表示すること、動画を再生せず、表示中のコマが出るまで固定サムネイルを残すことを測る。
+動画取得が失敗したときに固定画像へ戻ることと、絵を押すと録画詳細へ移ることも見る。
+表示中の frame を canvas の画素で読み、
+`currentTime` だけを根拠にしない。`keepRanges` の写像を外す変異では、カット版の目印判定が落ちる。
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:home-resume-frame
+E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:home-resume-frame
+```
+
+ffmpeg / ffprobe / Go と Chromium / WebKit を使うローカル判定である。Playwright WebKit は
+iPhone 実機ではないため、iPhone Safari の描画可否は別に確認する。
+
 編集モード（チャプターを直す）の境界操作も、同じ目印フレームで判定する。非カット MP4 と原本 HLS
 （offset 0 / 10）で次を見る。原本 HLS は押す前に境界の 0.1 秒手前へ置く（MP4 は 0.5 秒手前）。
 原本 HLS offset 0 は、0.5 秒手前から境界を選んだ後に最初に表示されるフレームと「境界まで」も見る。
@@ -1577,8 +1594,9 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 [docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。
 回さない理由は 3 類型ある。
 
-- 実メディアが要る: `chapters` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio` は
-  ffmpeg でフィクスチャを作る。`live` と `live-audio` は webkit も要る
+- 実メディアが要る: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` /
+  `recording-next-episode` / `chase` / `live` / `live-audio` は ffmpeg でフィクスチャを作る。
+  `home-resume-frame` / `live` / `live-audio` は webkit も要る
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。
   `live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
 - 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし

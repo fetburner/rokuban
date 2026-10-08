@@ -48,6 +48,7 @@ import {
 } from '@/lib/home-timeline'
 import { buildWarnings, type WarningItem } from '@/lib/home-warnings'
 import { programTitle } from '@/lib/program-labels'
+import { playbackResumeSeconds, recordingFileURL } from '@/lib/playback-position'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
@@ -954,10 +955,25 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
     resumePosition !== undefined && recording.durationMs > 0
       ? Math.max(0, Math.min(100, (resumePosition / recording.durationMs) * 100))
       : undefined
+  // カットなしを優先する。原本 ms の再開位置をそのまま渡せ、区間写像を要しないため。
+  // カット版だけがある場合は、その asset に凍結された keepRanges で原本時間から写す。
+  const resumeAsset = kind === 'continue'
+    ? (recording.encodedAssets ?? []).find((asset) => asset.cut !== true) ?? recording.encodedAssets?.[0]
+    : undefined
+  const resumeSeconds = resumeAsset === undefined || resumePosition === undefined ||
+      (resumeAsset.cut === true && (resumeAsset.keepRanges === undefined || resumeAsset.keepRanges.length === 0))
+    ? null
+    : playbackResumeSeconds(
+        resumePosition,
+        resumeAsset.cut === true ? resumeAsset.keepRanges : undefined,
+      )
+  const resumeVideo = resumeAsset !== undefined && resumeSeconds !== null
+    ? { src: recordingFileURL(recording.id, resumeAsset.profile), targetSeconds: resumeSeconds }
+    : undefined
 
   return (
     <section aria-label="次に見る 1 本" className="flex min-w-0 flex-col items-start gap-3 md:flex-row md:gap-5">
-      <HomeThumbnail recording={recording} hero progress={progress} detail={detail} />
+      <HomeThumbnail recording={recording} hero progress={progress} detail={detail} resumeVideo={resumeVideo} />
       <div className="flex w-full min-w-0 flex-col gap-1 md:flex-1">
         <p className="text-xs text-muted-foreground">次に見る · {kind === 'continue' ? '続きから' : '新着'}</p>
         <h2 className="text-lg leading-snug font-semibold text-balance md:text-xl">
@@ -1072,17 +1088,85 @@ function HomeThumbnail({
   hero = false,
   progress,
   detail,
+  resumeVideo,
 }: {
   recording: Recording
   hero?: boolean
   progress?: number
   detail?: RecordingDetailLink
+  resumeVideo?: { src: string; targetSeconds: number }
 }) {
   const [failed, setFailed] = useState(false)
+  const [resumeState, setResumeState] = useState<{
+    key: string
+    state: 'ready' | 'failed'
+  }>()
+  const resumeKey = resumeVideo === undefined
+    ? undefined
+    : `${recording.id}:${resumeVideo.src}:${resumeVideo.targetSeconds}`
+  const currentResumeState = resumeKey === undefined || resumeState?.key !== resumeKey
+    ? 'waiting'
+    : resumeState.state
+  const resumeVideoSrc = resumeVideo?.src
+  const resumeTargetSeconds = resumeVideo?.targetSeconds
+  const videoRef = useRef<HTMLVideoElement>(null)
+
+  useEffect(() => {
+    const video = videoRef.current
+    if (resumeVideoSrc === undefined || resumeTargetSeconds === undefined || !video) return
+
+    let cancelled = false
+    let callbackId: number | undefined
+    const stateKey = `${recording.id}:${resumeVideoSrc}:${resumeTargetSeconds}`
+    const frameToleranceSeconds = 1 / (30_000 / 1_001) + 0.001
+    const timeout = window.setTimeout(() => setResumeState({ key: stateKey, state: 'failed' }), 8_000)
+    const onFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
+      if (cancelled) return
+      if (
+        video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+        Math.abs(metadata.mediaTime - resumeTargetSeconds) <= frameToleranceSeconds
+      ) {
+        setResumeState({ key: stateKey, state: 'ready' })
+        return
+      }
+      callbackId = video.requestVideoFrameCallback(onFrame)
+    }
+    const seekToResumePosition = () => {
+      if (
+        video.error ||
+        !Number.isFinite(video.duration) ||
+        video.duration <= resumeTargetSeconds ||
+        typeof video.requestVideoFrameCallback !== 'function'
+      ) {
+        setResumeState({ key: stateKey, state: 'failed' })
+        return
+      }
+      callbackId = video.requestVideoFrameCallback(onFrame)
+      try {
+        video.currentTime = resumeTargetSeconds
+      } catch {
+        setResumeState({ key: stateKey, state: 'failed' })
+      }
+    }
+    const onError = () => setResumeState({ key: stateKey, state: 'failed' })
+
+    video.addEventListener('loadedmetadata', seekToResumePosition)
+    video.addEventListener('error', onError)
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) seekToResumePosition()
+    return () => {
+      cancelled = true
+      window.clearTimeout(timeout)
+      video.removeEventListener('loadedmetadata', seekToResumePosition)
+      video.removeEventListener('error', onError)
+      if (callbackId !== undefined) video.cancelVideoFrameCallback?.(callbackId)
+    }
+  }, [recording.id, resumeTargetSeconds, resumeVideoSrc])
+
   const image = (
     <>
       {!failed ? (
         <img
+          data-testid={hero ? 'home-hero-thumbnail-image' : undefined}
           src={recordingThumbnailURL(recording.id)}
           alt=""
           loading={hero ? 'eager' : 'lazy'}
@@ -1091,6 +1175,23 @@ function HomeThumbnail({
         />
       ) : (
         <div className="size-full bg-muted" aria-hidden />
+      )}
+      {hero && resumeVideo !== undefined && (
+        <video
+          ref={videoRef}
+          data-testid="home-hero-resume-video"
+          aria-hidden="true"
+          tabIndex={-1}
+          src={currentResumeState === 'failed' ? undefined : resumeVideo.src}
+          data-resume-state={currentResumeState}
+          muted
+          playsInline
+          preload="metadata"
+          controls={false}
+          onError={() => setResumeState({ key: resumeKey!, state: 'failed' })}
+          className="pointer-events-none absolute inset-0 size-full object-cover"
+          style={{ opacity: currentResumeState === 'ready' ? 1 : 0 }}
+        />
       )}
       {hero && <ThumbnailOverlay serviceName={recording.serviceName} progress={progress} />}
     </>

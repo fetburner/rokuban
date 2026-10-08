@@ -388,6 +388,112 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     expect(thumbnail).toHaveAttribute('aria-hidden', 'true')
   })
 
+  it('続きからの主役は非カット版を優先して保存位置へシークし、棚は固定画像のままにする', async () => {
+    const nonCut = recording(41, '続きの主役', 'finished', {
+      resumePositionMs: 330_000,
+      encodedAssets: [
+        {
+          profile: 'cut',
+          cut: true,
+          keepRanges: [
+            { startMs: 0, endMs: 100_000 },
+            { startMs: 200_000, endMs: 600_000 },
+          ],
+          sizeBytes: 200,
+        },
+        { profile: 'h264', sizeBytes: 100 },
+      ],
+    })
+    const nextArrival = recording(42, '次の新着', 'finished', {
+      resumePositionMs: 420_000,
+      encodedAssets: [{ profile: 'h264', sizeBytes: 100 }],
+    })
+    stubApi({ continueWatching: [nonCut, nextArrival] })
+    renderHome('/?mode=watch')
+
+    const video = await screen.findByTestId('home-hero-resume-video')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/41/file?profile=h264')
+    expect(video).toHaveProperty('muted', true)
+    expect(video).toHaveProperty('playsInline', true)
+    expect(video).toHaveAttribute('preload', 'metadata')
+    expect(video).toHaveProperty('controls', false)
+    expect(screen.getByTestId('home-hero-thumbnail-image')).toBeInTheDocument()
+
+    let seekTarget = 0
+    Object.defineProperty(video, 'duration', { configurable: true, value: 3600 })
+    Object.defineProperty(video, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA })
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => seekTarget,
+      set: (value: number) => { seekTarget = value },
+    })
+    Object.defineProperty(video, 'requestVideoFrameCallback', { configurable: true, value: () => 1 })
+    act(() => fireEvent.loadedMetadata(video))
+    expect(seekTarget).toBe(330)
+
+    const arrivals = screen.getByTestId('home-new-arrivals-grid')
+    expect(arrivals.querySelector('video')).toBeNull()
+  })
+
+  it('カット版だけならその asset の keepRanges で原本の保存位置を写す', async () => {
+    const continuation = recording(43, 'カット版のみの主役', 'finished', {
+      resumePositionMs: 330_000,
+      encodedAssets: [{
+        profile: 'cut',
+        cut: true,
+        keepRanges: [
+          { startMs: 0, endMs: 100_000 },
+          { startMs: 200_000, endMs: 600_000 },
+        ],
+        sizeBytes: 100,
+      }],
+    })
+    stubApi({ continueWatching: [continuation] })
+    renderHome('/?mode=watch')
+
+    const video = await screen.findByTestId('home-hero-resume-video')
+    expect(video).toHaveAttribute('src', '/api/media/recordings/43/file?profile=cut')
+    let seekTarget = 0
+    Object.defineProperty(video, 'duration', { configurable: true, value: 3600 })
+    Object.defineProperty(video, 'readyState', { configurable: true, value: HTMLMediaElement.HAVE_METADATA })
+    Object.defineProperty(video, 'currentTime', {
+      configurable: true,
+      get: () => seekTarget,
+      set: (value: number) => { seekTarget = value },
+    })
+    Object.defineProperty(video, 'requestVideoFrameCallback', { configurable: true, value: () => 1 })
+    act(() => fireEvent.loadedMetadata(video))
+    expect(seekTarget).toBe(230)
+  })
+
+  it.each([
+    {
+      label: '新着の主役',
+      continueWatching: [] as Recording[],
+      finished: [recording(44, '新着', 'finished', {
+        resumePositionMs: 60_000,
+        sizeBytes: 100,
+        encodedAssets: [{ profile: 'h264', sizeBytes: 100 }],
+      })],
+    },
+    {
+      label: '録画中で原本だけの主役',
+      continueWatching: [recording(45, '録画中の原本のみ', 'recording', { resumePositionMs: 60_000, encodedAssets: [] })],
+      finished: [] as Recording[],
+    },
+    {
+      label: '保存位置が無い主役',
+      continueWatching: [recording(46, '保存位置無し', 'finished', { encodedAssets: [{ profile: 'h264', sizeBytes: 100 }] })],
+      finished: [] as Recording[],
+    },
+  ])('$label は video を置かず固定画像を使う', async ({ continueWatching, finished }) => {
+    stubApi({ continueWatching, finished })
+    renderHome('/?mode=watch')
+
+    expect(await screen.findByTestId('home-hero-thumbnail-image')).toBeInTheDocument()
+    expect(screen.queryByTestId('home-hero-resume-video')).not.toBeInTheDocument()
+  })
+
   it('管理側は時間軸と要対応を表示し、見る側では出さない', async () => {
     stubApi({
       recording: [recording(1, '録画中', 'recording')],
