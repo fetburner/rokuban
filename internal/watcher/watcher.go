@@ -11,6 +11,7 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/db"
@@ -26,19 +27,24 @@ import (
 // DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
 const DefaultSite = db.DefaultSite
 
+type riverClient interface {
+	InsertTx(context.Context, pgx5.Tx, river.JobArgs, *river.InsertOpts) (*rivertype.JobInsertResult, error)
+	JobRetryTx(context.Context, pgx5.Tx, int64) (*rivertype.JobRow, error)
+}
+
 // Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
 type Watcher struct {
 	site     string
 	mirakc   *mirakc.Client
 	pool     *pgxpool.Pool
-	river    *river.Client[pgx5.Tx]
+	river    riverClient
 	webhook  *webhook.Client
 	services []mirakc.Service
 }
 
 // New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
 // 使う（M3-11）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], wh *webhook.Client) *Watcher {
+func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc riverClient, wh *webhook.Client) *Watcher {
 	return &Watcher{
 		site:    site,
 		mirakc:  mc,
@@ -290,6 +296,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 		return fmt.Errorf("upserting record_sync: %w", err)
 	}
 
+	var wokenIngestJobID *int64
 	if recordingID != nil && (record.Recording.Status == db.RecordingStatusRecording || record.Recording.Status == db.RecordingStatusFinished) {
 		var insertOpts *river.InsertOpts
 		if record.Recording.Status == db.RecordingStatusFinished {
@@ -301,13 +308,31 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 			priority := 2
 			insertOpts = &river.InsertOpts{Priority: priority}
 		}
-		if _, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, insertOpts); err != nil {
+		res, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, insertOpts)
+		if err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)
+		}
+		if record.Recording.Status == db.RecordingStatusFinished &&
+			res.UniqueSkippedAsDuplicate &&
+			res.Job.State == rivertype.JobStateScheduled &&
+			record.Content.Sha256 != nil {
+			// finished 後のハッシュ到着は既存の snooze を再開させる。
+			// JobRetryTx は running 以外を available にするため、scheduled だけを対象にする。
+			// null のまま起こすと worker は snooze 1 回済みとして照合を skip する。
+			if _, err := w.river.JobRetryTx(ctx, tx, res.Job.ID); err != nil {
+				return fmt.Errorf("waking snoozed ingest job: %w", err)
+			}
+			jobID := res.Job.ID
+			wokenIngestJobID = &jobID
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing transaction: %w", err)
+	}
+	if wokenIngestJobID != nil {
+		slog.Info("woke snoozed ingest job after content SHA-256 arrived",
+			"record_id", record.ID, "job_id", *wokenIngestJobID)
 	}
 	if failedEventAdded {
 		metrics.RecordingsFailed.WithLabelValues(failedReasonLabel).Inc()
