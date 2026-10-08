@@ -95,7 +95,7 @@ WITH trashed AS (
 )
 SELECT id, deleted_at FROM trashed;
 
--- ごみ箱一覧。原本サイズ + drop 合計は載せるが、
+-- ごみ箱一覧。原本サイズは載せるが、
 -- available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に
 -- 射影しない。ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing /
 -- GetThumbnailMediaAssetForServing / GetEncodedMediaAssetForServing）が
@@ -127,33 +127,11 @@ SELECT id, deleted_at FROM trashed;
 SELECT
     r.*,
     a.size_bytes                        AS original_size_bytes,
-    -- COALESCE は計測済みで drop_stats が空の 0 件を返すために使う。
-    -- 未計測かどうかは下の has_measured_drop_summary で区別する。
-    COALESCE(d.packets, 0)::bigint      AS drop_packets,
-    COALESCE(d.drops, 0)::bigint        AS drop_drops,
-    COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
-    EXISTS (
-        SELECT 1
-        FROM media_assets scanned_original
-        JOIN media_asset_ts_scans ts_scan
-          ON ts_scan.media_asset_id = scanned_original.id
-         AND ts_scan.scanned_size_bytes = scanned_original.size_bytes
-        WHERE scanned_original.recording_id = r.id
-          AND scanned_original.kind = 'original'
-    ) AS has_measured_drop_summary,
     COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
-LEFT JOIN LATERAL (
-    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
-           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
-    FROM drop_stats ds
-    JOIN media_assets da ON da.id = ds.media_asset_id
-    WHERE da.recording_id = r.id AND da.kind = 'original'
-) d ON true
 WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
 ORDER BY r.deleted_at DESC, r.id DESC;
