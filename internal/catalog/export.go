@@ -17,7 +17,7 @@ import (
 // 呼び手も持たなかったため issue #441 で落とした）。
 //
 // これは単一スナップショットからの読み取りである。recordings を読んだ後に
-// media_assets / drop_stats / drop_positions を読むため、トランザクション無しで発行すると
+// media_assets / drop_stats / drop_positions / media_asset_ts_scans を読むため、トランザクション無しで発行すると
 // その間に作られた録画のアセットだけが media_assets 側に写り、
 // RescueFile（internal/catalog/rescue.go）が recordings → media_assets の順で
 // 1 トランザクション書き込むときに FK 違反でその世代がまるごと復元不能になる
@@ -76,6 +76,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 		return nil, err
 	}
 	if doc.DropPositions, err = exportDropPositions(ctx, q); err != nil {
+		return nil, err
+	}
+	if doc.MediaAssetTSScans, err = exportMediaAssetTSScans(ctx, q); err != nil {
 		return nil, err
 	}
 	if doc.RecordingChapterOwnerships, err = exportRecordingChapterOwnerships(ctx, q); err != nil {
@@ -312,6 +315,22 @@ func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPositio
 			ByteOffset:   p.ByteOffset,
 			Pid:          p.Pid,
 			ElapsedMs:    p.ElapsedMs,
+		})
+	}
+	return out, nil
+}
+
+// exportMediaAssetTSScans は media_asset_ts_scans を文書の型付き行に変換する。
+func exportMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries) ([]MediaAssetTSScan, error) {
+	rows, err := q.CatalogListMediaAssetTSScans(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing media_asset_ts_scans: %w", err)
+	}
+	out := make([]MediaAssetTSScan, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, MediaAssetTSScan{
+			MediaAssetID:     s.MediaAssetID,
+			ScannedSizeBytes: s.ScannedSizeBytes,
 		})
 	}
 	return out, nil

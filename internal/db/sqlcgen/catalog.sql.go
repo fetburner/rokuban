@@ -301,6 +301,30 @@ func (q *Queries) CatalogListLabelRules(ctx context.Context) ([]CatalogListLabel
 	return items, nil
 }
 
+const catalogListMediaAssetTSScans = `-- name: CatalogListMediaAssetTSScans :many
+SELECT media_asset_id, scanned_size_bytes FROM media_asset_ts_scans ORDER BY media_asset_id
+`
+
+func (q *Queries) CatalogListMediaAssetTSScans(ctx context.Context) ([]MediaAssetTsScan, error) {
+	rows, err := q.db.Query(ctx, catalogListMediaAssetTSScans)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MediaAssetTsScan
+	for rows.Next() {
+		var i MediaAssetTsScan
+		if err := rows.Scan(&i.MediaAssetID, &i.ScannedSizeBytes); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const catalogListMediaAssets = `-- name: CatalogListMediaAssets :many
 SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at FROM media_assets ORDER BY id
 `
@@ -749,7 +773,7 @@ SELECT id, name, description, enabled, priority, is_free, duration_min_ms, durat
 `
 
 // catalog エクスポート / rescue 用（M3-9 / issue #71）。
-// 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
+// 保護対象はルール・分類ルール・録画・media_assets・media_asset_ts_scans・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 // program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 // 含めない（docs/storage.md §8）。
 // ---------------------------------------------------------------------------

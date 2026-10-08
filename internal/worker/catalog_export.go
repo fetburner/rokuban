@@ -65,6 +65,7 @@ func (w *CatalogExportWorker) Work(ctx context.Context, job *river.Job[jobs.Cata
 		"media_assets", len(doc.MediaAssets),
 		"drop_stats", len(doc.DropStats),
 		"drop_positions", len(doc.DropPositions),
+		"media_asset_ts_scans", len(doc.MediaAssetTSScans),
 		"program_intents", len(doc.ProgramIntents),
 		"program_overrides", len(doc.ProgramOverrides),
 	)

@@ -1,5 +1,5 @@
 -- catalog エクスポート / rescue 用（M3-9 / issue #71）。
--- 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
+-- 保護対象はルール・分類ルール・録画・media_assets・media_asset_ts_scans・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 -- program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 -- 含めない（docs/storage.md §8）。
 
@@ -63,6 +63,9 @@ SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
 -- 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
 -- name: CatalogListDropPositions :many
 SELECT * FROM drop_positions ORDER BY media_asset_id, byte_offset;
+
+-- name: CatalogListMediaAssetTSScans :many
+SELECT * FROM media_asset_ts_scans ORDER BY media_asset_id;
 
 -- 意図・上書きの FK 先。
 -- name: CatalogListProgramSnapshots :many
