@@ -198,7 +198,7 @@ const catalogListDropPositions = `-- name: CatalogListDropPositions :many
 SELECT media_asset_id, byte_offset, pid, elapsed_ms FROM drop_positions ORDER BY media_asset_id, byte_offset
 `
 
-// drop_positions は原本を削除した後も残る不可逆な観測なので、drop_stats と
+// drop_positions は原本を削除した後も解析結果として残るので drop_stats と
 // 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
 func (q *Queries) CatalogListDropPositions(ctx context.Context) ([]DropPosition, error) {
 	rows, err := q.db.Query(ctx, catalogListDropPositions)

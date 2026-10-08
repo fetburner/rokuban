@@ -31,9 +31,6 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	IngestDuration.Observe(1)
 	IngestJobs.WithLabelValues("success").Inc()
 	IngestHashMismatches.Inc()
-	IngestDroppedPackets.Add(1)
-	IngestErrorPackets.Add(1)
-	IngestScrambledPackets.Add(1)
 	TSScanDroppedPackets.Add(1)
 	TSScanErrorPackets.Add(1)
 	TSScanScrambledPackets.Add(1)
@@ -85,16 +82,13 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	}
 
 	// M1-9 の「最低限」: reconcile 差分数 / ingest バイト・所要 /
-	// ドロップ・scrambled カウンタ / recording.failed 理由別
+	// TS scan 統計 / recording.failed 理由別
 	// （未 ingest record 総量は BacklogCollector 側でテストする）
 	required := []string{
 		"rokuban_ingest_bytes_total",
 		"rokuban_ingest_duration_seconds",
 		"rokuban_ingest_jobs_total",
 		"rokuban_ingest_hash_mismatches_total",
-		"rokuban_ingest_dropped_packets_total",
-		"rokuban_ingest_error_packets_total",
-		"rokuban_ingest_scrambled_packets_total",
 		"rokuban_ts_scan_dropped_packets_total",
 		"rokuban_ts_scan_error_packets_total",
 		"rokuban_ts_scan_scrambled_packets_total",
@@ -147,6 +141,15 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	for _, name := range required {
 		if !got[name] {
 			t.Errorf("metric %q is not registered", name)
+		}
+	}
+	for _, name := range []string{
+		"rokuban_ingest_dropped_packets_total",
+		"rokuban_ingest_error_packets_total",
+		"rokuban_ingest_scrambled_packets_total",
+	} {
+		if got[name] {
+			t.Errorf("removed ingest TS metric %q is still registered", name)
 		}
 	}
 

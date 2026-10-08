@@ -59,7 +59,7 @@ SELECT * FROM media_assets ORDER BY id;
 -- name: CatalogListDropStats :many
 SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
 
--- drop_positions は原本を削除した後も残る不可逆な観測なので、drop_stats と
+-- drop_positions は原本を削除した後も解析結果として残るので drop_stats と
 -- 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
 -- name: CatalogListDropPositions :many
 SELECT * FROM drop_positions ORDER BY media_asset_id, byte_offset;

@@ -85,6 +85,9 @@ type recordingListFields struct {
 	// 見る）とはわざと述語が違う --- この差が「まだ取り込めていない」と
 	// 「取り込んだ後に削除した」を分ける（issue #211）。
 	HasOriginalAsset bool
+	// HasCurrentTSScan は原本の現在サイズと一致する解析記録があるか。
+	// drop_stats が未計測の 0 件なのか、正常な 0 件なのかを区別する。
+	HasCurrentTSScan bool
 	// HasIngestableRecord は **ingest ジョブが投入される（された）はずの**
 	// mirakc record の観測がこの録画に紐付いているか。原本も進捗も無いときに
 	// 「取り込み待ち」と「そもそも取り込みが来ない」を分ける。
@@ -385,11 +388,9 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
-	// ドロップ統計は ingest 済み（original の media_assets 行がある）録画にしか
-	// 存在しない。原本を削除した後も tombstone 行と観測結果は残るため、現在の
-	// サイズ（OriginalSizeBytes）ではなく HasOriginalAsset で判定する。未 ingest
-	// と「統計が全部 0」を区別できるよう、original 行自体が無ければ省略する。
-	if r.HasOriginalAsset {
+	// drop_stats は原本解析後に書かれ、計測完了後は原本 tombstone と共に残る。
+	// 現在サイズと一致する解析記録が無ければ、0 件の統計と未計測を区別できない。
+	if r.HasCurrentTSScan {
 		rec.DropSummary = &DropSummary{
 			Packets:   r.DropPackets,
 			Drops:     r.DropDrops,

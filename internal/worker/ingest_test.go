@@ -56,7 +56,7 @@ func makeTSData(packets int) []byte {
 }
 
 // makeTSDataFill は makeTSData と同じ TS パケットヘッダ（sync byte 0x47 等、
-// tsstat が読む先頭 4 バイト）を持ちつつ、ペイロード（各パケットの残り 184
+// 先頭 4 バイト）を持ちつつ、ペイロード（各パケットの残り 184
 // バイト）を fill で塗りつぶした TS データを生成する。fill には 0x10〜0x1F
 // （ヘッダ 4 バイト目が取りうる範囲）と衝突しない値を渡すこと。
 //

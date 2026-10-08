@@ -253,6 +253,15 @@ const (
         SELECT 1 FROM media_assets o
         WHERE o.recording_id = r.id AND o.kind = 'original'
     ) AS has_original_asset,
+    -- drop_stats が未計測か正常な 0 件かを区別するため、原本の現在サイズと
+    -- 一致する解析記録の有無を別の素の事実として返す。
+    EXISTS (
+        SELECT 1
+        FROM media_assets o
+        JOIN media_asset_ts_scans s ON s.media_asset_id = o.id
+            AND s.scanned_size_bytes = o.size_bytes
+        WHERE o.recording_id = r.id AND o.kind = 'original'
+    ) AS has_current_ts_scan,
     -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
     -- 同じもの**を見る（internal/watcher/watcher.go の
     -- record.Recording.Status == "recording" または "finished"）。record_sync.status は mirakc の
@@ -653,7 +662,7 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.KeepOriginal,
 		&fields.EncodeProfiles,
 		&fields.EncodeAttempts,
-		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
+		&fields.HasOriginalAsset, &fields.HasCurrentTSScan, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 		&fields.CMAttemptStage, &fields.CMAttemptError,
@@ -704,7 +713,7 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.KeepOriginal,
 			&fields.EncodeProfiles,
 			&fields.EncodeAttempts,
-			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
+			&fields.HasOriginalAsset, &fields.HasCurrentTSScan, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 			&fields.CMAttemptStage, &fields.CMAttemptError,

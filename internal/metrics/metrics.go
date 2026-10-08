@@ -51,30 +51,6 @@ var (
 		Name: "rokuban_ingest_hash_mismatches_total",
 		Help: "Total ingest transfers whose content SHA-256 did not match mirakc metadata.",
 	})
-
-	// 以下は TS のインラインドロップスキャン（M1-5-1）の観測値。
-	// 個々の録画の内訳は drop_stats テーブルにあるので、ここでは全体の趨勢だけを見る。
-
-	// IngestDroppedPackets は continuity counter 不連続の累計。
-	IngestDroppedPackets = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "rokuban_ingest_dropped_packets_total",
-		Help: "Total TS packets detected as dropped during ingest.",
-	})
-
-	// IngestErrorPackets は transport_error_indicator が立ったパケットの累計。
-	IngestErrorPackets = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "rokuban_ingest_error_packets_total",
-		Help: "Total TS packets with the transport error indicator set.",
-	})
-
-	// IngestScrambledPackets はスクランブルされたままのパケットの累計。
-	// 復号が正常なら常に 0 で、0 以外は放送品質ではなくエッジ環境の異常
-	// （B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味する。
-	// ドロップとは別枠のアラート対象（docs/recording.md）。
-	IngestScrambledPackets = prometheus.NewCounter(prometheus.CounterOpts{
-		Name: "rokuban_ingest_scrambled_packets_total",
-		Help: "Total TS packets still scrambled after decoding. Non-zero indicates a B-CAS or decode-filter problem, not broadcast quality.",
-	})
 )
 
 // TS scan（原本の全量再読み出し）のメトリクス。
@@ -754,9 +730,6 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		IngestDuration,
 		IngestJobs,
 		IngestHashMismatches,
-		IngestDroppedPackets,
-		IngestErrorPackets,
-		IngestScrambledPackets,
 		TSScanDroppedPackets,
 		TSScanErrorPackets,
 		TSScanScrambledPackets,

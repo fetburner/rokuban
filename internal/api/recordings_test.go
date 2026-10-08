@@ -82,6 +82,11 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	if err := batch.Close(); err != nil {
 		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+		VALUES ($1, $2)`, assetID, size); err != nil {
+		t.Fatalf("seeding current TS scan marker: %v", err)
+	}
 	return assetID
 }
 
@@ -152,6 +157,49 @@ func TestListRecordings(t *testing.T) {
 	// 正常な録画も dropSummary は付く（全 0）
 	if got[0].DropSummary == nil || *got[0].DropSummary != (DropSummary{Packets: 800}) {
 		t.Errorf("clean recording dropSummary = %+v", got[0].DropSummary)
+	}
+}
+
+func TestListRecordings_OmitsDropSummaryUntilCurrentSizeIsScanned(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newAPIServer(t, pool)
+	id := seedRecording(t, pool, "解析待ち", time.Now().Truncate(time.Second), "finished", 31)
+	assetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: id,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     fmt.Sprintf("test/%d.m2ts", id),
+		SizeBytes:   1234,
+	})
+	if err != nil {
+		t.Fatalf("seeding original asset: %v", err)
+	}
+
+	getRecording := func() Recording {
+		t.Helper()
+		var got Recording
+		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want 200", resp.StatusCode)
+		}
+		return got
+	}
+	if got := getRecording(); got.DropSummary != nil {
+		t.Fatalf("dropSummary before scan = %+v, want omitted", got.DropSummary)
+	}
+
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1, 1234)`, assetID); err != nil {
+		t.Fatalf("marking current size scanned: %v", err)
+	}
+	if got := getRecording(); got.DropSummary == nil || *got.DropSummary != (DropSummary{}) {
+		t.Fatalf("dropSummary after clean scan = %+v, want zero summary", got.DropSummary)
+	}
+
+	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET size_bytes = 1235 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("changing original size: %v", err)
+	}
+	if got := getRecording(); got.DropSummary != nil {
+		t.Fatalf("dropSummary after size changes = %+v, want omitted until rescan", got.DropSummary)
 	}
 }
 

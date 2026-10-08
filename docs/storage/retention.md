@@ -19,7 +19,10 @@
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（ルールで指定した全エンコードプロファイル + サムネイル + シークプレビュー用タイル）がすべて `media_assets` にコミット済み
+2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。
+   原本の `media_asset_ts_scans.scanned_size_bytes` は `media_assets.size_bytes` と一致する。
+
+TS 解析の記録が無い場合や、記録したサイズと現在の原本サイズが違う場合は削除しない。解析が恒久的に失敗する原本は保持され続ける（`TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`）。
 
 「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記 2 が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る（`TestEncodeWorker_SuccessAndIdempotent` / `TestThumbnailWorker_IdempotentRerun`）。ただし両テストは原本を残したまま再実行するだけで、チェックが原本を開く前に走ることそのものは未検証。この同値性は `encode_profiles` が追加専用であることに依っている --- desired を縮める経路ができれば、既に積まれたジョブが条件 2 の外に出てこの整理は崩れる。
 
