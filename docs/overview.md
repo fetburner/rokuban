@@ -23,9 +23,9 @@ mirakc に録画を委譲すると（詳細は [recording.md](recording.md) 参�
 2. **メディアパイプライン** --- 録画完了イベント → 取り込み → エンコード → サムネイル → 公開。イベント駆動のジョブ処理
 3. **ライブラリ/UI** --- 番組表検索、録画一覧、再生。読み取り中心の Web アプリ
 
-重要な帰結として、**Rokuban は TS パケットを1バイトも触らない**。ストリーム処理は mirakc が、変換は ffmpeg がやる。バックエンドは純粋なオーケストレーションと I/O。
+重要な帰結として、**Rokuban は TS のストリーム処理を行わない**。ストリーム処理は mirakc が、変換は ffmpeg が担う。バックエンドはオーケストレーションと I/O を行う。
 
-> **補足**: 「TS パケットを1バイトも触らない」の本意は「ストリーム処理（録画・demux・変換）をしない」ということであり、ingest 中の読み取り専用の統計採取（PID 別 continuity counter 不連続 / TEI / scrambling_control）は例外とする。詳細は [recording.md](recording.md) の ingest パイプラインを参照。
+> **補足**: 原本のコミット後、非同期の解析ジョブが読み取り専用の統計（PID 別 continuity counter 不連続 / TEI / scrambling_control）を採る。詳細は [recording.md](recording.md) の ingest パイプラインを参照。
 
 ### 保証の境界
 

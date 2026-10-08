@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -19,7 +18,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsscan"
-	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 type tsScanStatRow struct {
@@ -37,6 +35,22 @@ type tsScanPositionRow struct {
 	elapsed *int64
 }
 
+func pcrPacket(pid, cc int, base uint64) []byte {
+	pkt := make([]byte, 188)
+	pkt[0] = 0x47
+	pkt[1] = byte((pid >> 8) & 0x1F)
+	pkt[2] = byte(pid & 0xFF)
+	pkt[3] = 0x30 | byte(cc&0x0F)
+	pkt[4] = 7
+	pkt[5] = 0x10
+	pkt[6] = byte(base >> 25)
+	pkt[7] = byte(base >> 17)
+	pkt[8] = byte(base >> 9)
+	pkt[9] = byte(base >> 1)
+	pkt[10] = byte(base<<7) | 0x7E
+	return pkt
+}
+
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
 	worker := &tsscan.ScanWorker{Pool: pool, MediaDir: mediaDir}
@@ -49,9 +63,9 @@ func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID in
 	}
 }
 
-// TestTSScan_StatisticsMatchIngestCommit fixes the temporary period when ingest
-// and ts_scan both collect statistics from the same original.
-func TestTSScan_StatisticsMatchIngestCommit(t *testing.T) {
+// TestTSScan_StatisticsAreWrittenAfterIngestCommit verifies ingest leaves TS
+// statistics absent until the asynchronous scan records them.
+func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -79,12 +93,8 @@ func TestTSScan_StatisticsMatchIngestCommit(t *testing.T) {
 	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		t.Fatalf("writing ingest temporary file: %v", err)
 	}
-	counter := tsstat.NewCounter(&bytes.Buffer{})
-	if n, err := counter.Write(data); err != nil || n != len(data) {
-		t.Fatalf("counter.Write() = %d, %v; want %d, nil", n, err, len(data))
-	}
 	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
-		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), counter,
+		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)),
 	); err != nil {
 		t.Fatalf("IngestWorker.commit: %v", err)
 	}
@@ -95,18 +105,37 @@ func TestTSScan_StatisticsMatchIngestCommit(t *testing.T) {
 	).Scan(&assetID); err != nil {
 		t.Fatalf("querying original media asset: %v", err)
 	}
-	wantStats, wantPositions := readTSScanRows(t, pool, assetID)
-	if len(wantPositions) != 1 || wantPositions[0].offset != 188 || wantPositions[0].elapsed == nil || *wantPositions[0].elapsed != 1000 {
-		t.Fatalf("ingest positions = %#v, want one 1-second drop at byte 188", wantPositions)
+	gotStats, gotPositions := readTSScanRows(t, pool, assetID)
+	if len(gotStats) != 0 || len(gotPositions) != 0 {
+		t.Fatalf("drop rows after ingest commit = stats:%#v positions:%#v, want none before scan", gotStats, gotPositions)
+	}
+	var scanRows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
+	).Scan(&scanRows); err != nil {
+		t.Fatalf("querying scan marker after ingest commit: %v", err)
+	}
+	if scanRows != 0 {
+		t.Fatalf("scan markers after ingest commit = %d, want 0", scanRows)
 	}
 
 	runTSScan(t, pool, mediaDir, recordingID)
-	gotStats, gotPositions := readTSScanRows(t, pool, assetID)
+	gotStats, gotPositions = readTSScanRows(t, pool, assetID)
+	// 期待値はフィクスチャから決まるリテラル（実装と同じ tsstat.Counter では作らない）。
+	// PID 0x100 は cc 0 → 2 で 1 件欠落し、欠落は 2 パケット目（byte 188）、
+	// 直前の PCR との差 90000 tick = 1000ms。
+	wantStats := []tsScanStatRow{
+		{pid: 0x100, packets: 2, drops: 1},
+		{pid: 0x110, packets: 1, errors: 1},
+		{pid: 0x120, packets: 1, scrambled: 1},
+	}
+	wantElapsed := int64(1000)
+	wantPositions := []tsScanPositionRow{{offset: 188, pid: 0x100, elapsed: &wantElapsed}}
 	if !reflect.DeepEqual(gotStats, wantStats) {
-		t.Errorf("scan drop_stats = %#v, want ingest values %#v", gotStats, wantStats)
+		t.Errorf("scan drop_stats = %#v, want values %#v", gotStats, wantStats)
 	}
 	if !reflect.DeepEqual(gotPositions, wantPositions) {
-		t.Errorf("scan drop_positions = %#v, want ingest values %#v", gotPositions, wantPositions)
+		t.Errorf("scan drop_positions = %#v, want values %#v", gotPositions, wantPositions)
 	}
 	if got := scannedSize(t, pool, assetID); got != int64(len(data)) {
 		t.Errorf("scanned_size_bytes = %d, want %d", got, len(data))

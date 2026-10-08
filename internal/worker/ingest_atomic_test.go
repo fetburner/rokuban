@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,7 +24,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 // TestIngestWorker_ConcurrentSameRelPathUsesTempFiles は同じ rel_path に対する 2 本の
@@ -236,9 +234,8 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
 	commitDone := make(chan error, 1)
 	go func() {
-		counter := tsstat.NewCounter(io.Discard)
 		commitDone <- w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len("committed bytes")), counter)
+			int64(len("committed bytes")))
 	}()
 
 	waitCommit := func() error {
@@ -303,7 +300,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 			t.Fatalf("writing commit temp: %v", err)
 		}
 		if err := w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
-			int64(len(content)), tsstat.NewCounter(io.Discard)); err != nil {
+			int64(len(content))); err != nil {
 			t.Fatalf("commit %d: %v", i, err)
 		}
 		if _, err := os.Stat(fullPath); err != nil {
@@ -380,9 +377,8 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
 	commitDone := make(chan error, 1)
 	go func() {
-		counter := tsstat.NewCounter(io.Discard)
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
-			int64(len(content)), counter)
+			int64(len(content)))
 	}()
 
 	waitCommit := func() error {

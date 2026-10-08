@@ -32,7 +32,7 @@ CREATE INDEX ON record_sync (status);
 
 ### drop_stats — PID 別ドロップ統計（永続資産）
 
-ingest のインライン TS スキャン（188 バイト境界、読み取り専用）の結果。原本アセットに紐づき、**tombstone 化後も残る**。
+原本を解析する `ts_scan` ジョブ（188 バイト境界、読み取り専用）の結果。原本アセットに紐づき、**tombstone 化後も残る**。
 
 ```sql
 CREATE TABLE drop_stats (
@@ -47,7 +47,7 @@ CREATE TABLE drop_stats (
 );
 ```
 
-- ingest ジョブが media_assets のコミットと同一トランザクションで一括 INSERT
+- 原本のコミット後に `ts_scan` ジョブが書く。`media_asset_ts_scans` は計測時のサイズを記録し、保持エンジンは原本の現在サイズと一致する解析記録を要求する
 - `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、
   `circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。
   値集合は `video` / `audio` / `other`（PMT に載っているが映像でも音声でもない ES。
@@ -57,13 +57,12 @@ CREATE TABLE drop_stats (
   区別できない（ARIB では両方 `stream_type = 0x06`）。境界の理由は
   [録画エンジン](../recording.md) §1「例外の境界」
 - PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は
-  **最後に見たものを採用**する。変化の回数は ingest の転送完了ログ（`pid_type_changes`）にだけ残し、
-  列にはしない（導出値であり、統計の正しさに影響しない）
+  **最後に見たものを採用**する。分類の変化回数は保存しない
 
-### drop_positions — ドロップ位置（不可逆な観測）
+### drop_positions — ドロップ位置（原本解析の観測結果）
 
 `drop_stats` が畳んだ合計だけでは「全域が壊れているのか、1 か所で数秒詰まっただけか」が分からない。
-ingest のインライン TS スキャンが drop を検知した瞬間の位置を、drop_stats と同一トランザクションで残す。
+`ts_scan` が drop を検知した位置を、`drop_stats` と同じ transaction で置き換える。
 
 ```sql
 CREATE TABLE drop_positions (
@@ -75,10 +74,9 @@ CREATE TABLE drop_positions (
 );
 ```
 
-- 原本のバイトが Rokuban のプロセスを通るのは ingest の 1 パスだけで、`keep_original='until_encoded'`
-  により原本は既に削除される運用が前提にある。エンコード後の出力からは欠落位置を復元できない
-  （デコーダの error concealment が隠蔽の跡を残さない）ため、位置は**再現できない導出値ではなく
-  ingest の 1 回でしか採れない不可逆な観測**である
+- 統計は原本が残っている間は `ts_scan` を再実行して作り直せる。`until_encoded` の削除は現在の
+  `media_assets.size_bytes` と一致する計測記録を待つため、原本の削除後も位置は解析時の観測として残る。
+  エンコード後の出力からは欠落位置を復元できない（デコーダの error concealment が隠蔽の跡を残さない）
 - 主キーが `(media_asset_id, byte_offset)` なのは、1 パケットは常に 1 PID にしか属さないため。
   同じ原本内の同じバイト位置で 2 つの PID がドロップを起こすことはなく、連番の代理キーは要らない
 - `elapsed_ms` は最初に観測した PCR を録画開始とみなした相対経過で、PCR を 1 つも観測していなければ

@@ -139,6 +139,13 @@ func markRecordingUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int
 	if profiles == nil {
 		profiles = []string{}
 	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+		SELECT id, size_bytes FROM media_assets
+		WHERE recording_id = $1 AND kind = 'original'
+		ON CONFLICT (media_asset_id) DO NOTHING`, recordingID); err != nil {
+		t.Fatalf("marking original as scanned: %v", err)
+	}
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
 		 VALUES ($1, 'until_encoded', $2)
@@ -148,6 +155,16 @@ func markRecordingUntilEncoded(t *testing.T, pool *pgxpool.Pool, recordingID int
 		   updated_at      = now()`,
 		recordingID, profiles); err != nil {
 		t.Fatalf("setting recording_encode_policy: %v", err)
+	}
+}
+
+func markOriginalTSScanComplete(t *testing.T, pool *pgxpool.Pool, assetID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+		SELECT id, size_bytes FROM media_assets WHERE id = $1 AND kind = 'original'
+		ON CONFLICT (media_asset_id) DO NOTHING`, assetID); err != nil {
+		t.Fatalf("marking original as scanned: %v", err)
 	}
 }
 
@@ -877,6 +894,59 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	profile := "h264"
+
+	seedComplete := func(eventID int32, name string) int64 {
+		t.Helper()
+		recordingID := insertTestRecordingWithEventID(t, pool, eventID)
+		assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/"+name+".m2ts", []byte("original"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/"+name+".mp4", []byte("mp4"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/"+name+".jpg", []byte("jpg"))
+		seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/"+name+"-tiles.jpg")
+		markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+		return assetID
+	}
+
+	missingScanID := seedComplete(23101, "missing-scan")
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id = $1`, missingScanID); err != nil {
+		t.Fatalf("removing scan marker: %v", err)
+	}
+	staleScanID := seedComplete(23102, "stale-scan")
+	if _, err := pool.Exec(ctx, `
+		UPDATE media_asset_ts_scans SET scanned_size_bytes = scanned_size_bytes - 1
+		WHERE media_asset_id = $1`, staleScanID); err != nil {
+		t.Fatalf("making scan marker stale: %v", err)
+	}
+	currentScanID := seedComplete(23103, "current-scan")
+
+	var eligible int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM until_encoded_deletable_originals
+		WHERE asset_id = ANY($1::bigint[])`, []int64{missingScanID, staleScanID, currentScanID}).Scan(&eligible); err != nil {
+		t.Fatalf("querying current-scan eligibility: %v", err)
+	}
+	if eligible != 1 {
+		t.Fatalf("eligible originals = %d, want only the matching scanned size", eligible)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	for _, tc := range []struct {
+		assetID int64
+		want    string
+	}{{missingScanID, "active"}, {staleScanID, "active"}, {currentScanID, "deleted"}} {
+		if got := assetState(t, pool, tc.assetID); got != tc.want {
+			t.Errorf("asset %d state = %q, want %q", tc.assetID, got, tc.want)
+		}
+	}
+}
+
 // dropUntilEncodedRequiresProfilesCheck は recording_encode_policy の CHECK 制約
 // recording_encode_policy_check（issue #159 で recordings 側の CHECK から
 // 移設）を一時的に外す。encode_profiles が
@@ -1182,6 +1252,21 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	}
 }
 
+// assertUntilEncodedQualifies は until_encoded_deletable_originals が assetID を
+// 返すかを確かめる。「満たさなくなった」テストが最初から満たしていない（前提の
+// 欠落で空虚に通る）ことを防ぐ陽性対照。
+func assertUntilEncodedQualifies(t *testing.T, pool *pgxpool.Pool, assetID int64, want bool) {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM until_encoded_deletable_originals WHERE asset_id = $1`, assetID).Scan(&n); err != nil {
+		t.Fatalf("querying until_encoded_deletable_originals: %v", err)
+	}
+	if (n == 1) != want {
+		t.Fatalf("until_encoded_deletable_originals qualifies asset %d = %v, want %v", assetID, n == 1, want)
+	}
+}
+
 // until_encoded 腕の否定形（deleting のまま止まっている行が、その後の変化で
 // 派生物完備の条件を満たさなくなった）を active に戻す経路（issue #105 の
 // 否定形。RestoredWhileDeleting_RevertsInsteadOfDeleting は trash 腕しか
@@ -1200,7 +1285,10 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
 	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
 
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
+
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+	assertUntilEncodedQualifies(t, pool, assetID, true)
 
 	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
 	// この時点では派生物が揃っており、遷移は正しい判断だった。
@@ -1215,6 +1303,8 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 		t.Fatalf("removing thumbnail asset row: %v", err)
 	}
 
+	assertUntilEncodedQualifies(t, pool, assetID, false)
+
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(ctx, nil); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -1223,6 +1313,55 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	if got := assetState(t, pool, assetID); got != "active" {
 		t.Fatalf("original state = %q, want active "+
 			"(thumbnail no longer active; until_encoded predicate no longer qualifies this asset for deletion, issue #160)", got)
+	}
+	if !fileExists(assetPath) {
+		t.Error("original file was removed even though the until_encoded predicate no longer qualifies it for deletion")
+	}
+}
+
+// 計測記録が原本の現在サイズと合わなくなった場合も、deleting のまま止まった行を
+// active に戻す。
+func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsToActive(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
+
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+	assertUntilEncodedQualifies(t, pool, assetID, true)
+
+	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
+	// この時点では派生物が揃っており、遷移は正しい判断だった。
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	// その後、計測記録が原本の現在サイズと合わなくなる（原本が差し替わった）。
+	// until_encoded_deletable_originals の述語を満たさない。
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_asset_ts_scans SET scanned_size_bytes = scanned_size_bytes - 1 WHERE media_asset_id = $1", assetID); err != nil {
+		t.Fatalf("making scan marker stale: %v", err)
+	}
+
+	assertUntilEncodedQualifies(t, pool, assetID, false)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("original state = %q, want active "+
+			"(scan marker no longer matches the original size)", got)
 	}
 	if !fileExists(assetPath) {
 		t.Error("original file was removed even though the until_encoded predicate no longer qualifies it for deletion")

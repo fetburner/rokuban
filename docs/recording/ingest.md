@@ -30,9 +30,11 @@ offset > 0 では本文が先頭から始まる。そのまま追記すると先
 
 **「同居時の basedir 直読み」は loopback が実測でボトルネックになった時の最適化オプション（YAGNI）。**契約は **mirakc とは常に API、自身のストレージとは常にファイルシステム**の 2 面で固定（[storage.md](../storage.md) 参照）。
 
-### 5.2 インライン TS ドロップスキャン
+### 5.2 TS 統計の解析ジョブ
 
-ingest はどのみち record の全バイトをストリームコピーするので、その途中で 188 バイト境界の TS パケット統計を取得する。**追加 I/O パスゼロ**で EPGStation 相当のドロップログが作れる。
+ingest は mirakc の status・長さ・SHA-256 を確認して原本をコミットし、TS のバイト列は解釈しない。コミット後に `ts_scan` ジョブが active な原本をファイルから読み、188 バイト境界の統計を採る。ジョブのヒント投入が失敗しても、定期 reconcile が未計測の原本を拾う。
+
+`media_asset_ts_scans` は計測したサイズを記録する。現在の原本サイズと一致する計測記録ができるまで、`until_encoded` の原本は削除対象にならない。解析後の全量読み出しにかかる追加コストは未検証である。
 
 採取する統計:
 
@@ -40,7 +42,7 @@ ingest はどのみち record の全バイトをストリームコピーする�
 - transport_error_indicator
 - scrambling_control
 
-PID 別サマリを media_assets に紐づくテーブルへ格納し、UI で表示する。実装は `internal/tsstat`。
+PID 別サマリを media_assets に紐づくテーブルへ格納し、UI で表示する。解析ロジックは `internal/tsstat`、呼び出し元は `internal/tsscan` の解析ジョブに限る。
 
 #### 判定の規約（誤検知を出さないために必要なもの）
 
@@ -84,16 +86,6 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 計上される）。Rokuban は TEI 時に継続性の追跡を打ち切り、次のパケットで基準を
 取り直す。破損の実数を二重に数えないことを優先した。
 
-**他の候補との比較**:
-
-| 候補 | 判定 |
-|---|---|
-| mirakc の `logFilter` ログ | Web API に record のログファイルを取り出すエンドポイントが存在しない。収集には共有 FS かエッジ転送エージェントが必要 → 不採用 |
-| インラインスキャン | 追加 I/O ゼロ。採用 |
-| `recording.record-broken` / `recording.failed` | 構造化品質シグナルとして補完的に使用 |
-
-外部ツール（tsselect 等）の exec も検討したが、数十 GB への二度目の I/O パスと依存の追加に見合わないため、インライン 1 パスとする。
-
 ### 5.3 リトライ設計（3 層）
 
 - `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` が mirakc 4.0.0-dev.0 相当に対して判定している。対象は `TestConformance/CompletedRecordStreamAndDelete`（完了後）と `TestConformance/RecordingInProgress`（録画中）である。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
@@ -105,7 +97,7 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 `RecordFollowReader` は読み取り中の本文が止まったときだけ stall timer を動かす。`ingest.stall_timeout`（既定 30 秒）を超えた本文を閉じ、temp に書けた offset から Range を再開する。消費側の `Write` が遅い間は `Read` が呼ばれないため、その時間を mirakc の stall と誤認しない。総時間タイムアウトは遅い回線の正常な転送を殺す。
 
-reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay してこの状態を復元する。
+reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file と offset が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay して SHA-256 の状態を復元する。
 
 **接続断のたびに進捗を書き出す。** Range 本文がバイトを返した後にエラー（読み取りエラー・stall）で終わったら、reader は再試行の前に最新の書き込み位置を `progress.flush` へ渡す。正常に終わった Range では呼ばない（追従中は 500ms ごとに Range が終わるので、間引きを無視すると秒 2 行になる）。temp への書き込みエラーは mirakc の一時障害として再試行せず、Work に返す。
 
@@ -156,9 +148,9 @@ transaction-level advisory lock で直列化する。filesystem lock は canonic
 再投入すると、UniqueOpts の `pendingJobStates` に `running` が含まれるため新しい試行が古い行へ
 合流し、回収できない状態が続く。進捗行が作られる前に死んだケースも、`attempted_at` fallback
 で同じ経路に乗る。新しい試行は `.rokuban-ingest-{site}-{record_id}` を `O_CREATE` で開き、
-既存サイズまで replay してからその末尾へ Range 転送を続ける。replay は hasher と
-`tsstat.Counter` にも同じバイト列を通すので、SHA-256、drop 統計、drop 位置、PCR 基準を
-別途 DB に持たない。temp には `flock(LOCK_EX|LOCK_NB)` を保持し、同じ record の別試行が
+既存サイズまで replay してからその末尾へ Range 転送を続ける。replay は SHA-256 の hasher に
+だけ既存バイトを通す。drop 統計と drop 位置はコミット後の解析ジョブが採る。temp には
+`flock(LOCK_EX|LOCK_NB)` を保持し、同じ record の別試行が
 同時に書かないようにする。flock はプロセス死で自動的に解放される。
 
 temp を消すのは、サイズまたは SHA-256 の不一致が分かった場合と、record が `canceled` /
@@ -168,10 +160,11 @@ temp を消すのは、サイズまたは SHA-256 の不一致が分かった場
 いれば削除を次のパスへ延期する。ロック取得後に inode と mtime を再確認してから unlink
 するため、replay 中の temp や再作成された同名 temp を誤って消さない。
 
-この方式には 2 つの未測定点がある。電源断では delayed allocation によりサイズだけが進んだ
+電源断では delayed allocation によりサイズだけが進んだ
 領域を replay する可能性がある。`content.sha256` が返る record なら commit 前に検出できるが、
 旧 mirakc の hash 無し経路では未検証である。replay のローカルディスク I/O は、低速な
-アップリンクより十分短い見込みだが、長時間録画での実測値はまだない。
+アップリンクより十分短い見込みだが、長時間録画での実測値はまだない。解析ジョブが原本を
+もう一度読むコストも未検証である。
 
 回収は既定 5 分周期（起動時に 1 回実行）で走る `record_sweep` に組み込んでいるため、通常は
 候補になってから最大で約 6 分以内に再投入される。総時間 timeout を有限値にする案は、録画
@@ -284,13 +277,13 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 
 定期パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、抽出に失敗し続ける録画があっても候補窓を recording ID 順に回す。これにより同じ失敗を 1 パスごとに無制限に新規投入せず、後続の録画を恒久的に隠さない。明示的な `EnqueueMissingThumbnails` は復旧・テスト用の全件投入なので、ファイルを戻した直後の即時回収に使える。
 
-**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、ingest と同じ `tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
+**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、`tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
 `media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。
 KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。この動作は `TestTSScanReconcile_ContinuationSurvivesFreshWorker` で固定する。
 scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、encode のような advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
-ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。現時点では ingest も統計を書き続けるため、追加の全量読み出しが発生する。そのコストは未検証である。
+ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。scan は ingest の後に原本を全量読む。追加読み出しのコストは未検証である。
 
 読み出しに失敗した scan に終端記録は作らず、後続の reconcile が再投入する。削除条件が scan 完了を要求するようになった後は、恒久的な読み出し失敗がある原本は保持され続ける。
 
@@ -402,6 +395,6 @@ MULTI2 スクランブルの復号（B-CAS カードによる鍵処理 + デス�
 
 ### 6.2 scrambled カウントは復号障害の検出器
 
-ingest のインラインドロップスキャンで数える scrambling_control ビットは、復号が正常なら常にゼロのはず。**scrambled > 0 は放送品質でなくエッジ環境の異常**（B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味する。そのためドロップ数とは別枠のアラート対象とする（EPGStation ドロップログの scramble 列と同じ役割）。
+原本解析で数える scrambling_control ビットは、復号が正常なら常にゼロのはず。**scrambled > 0 は放送品質でなくエッジ環境の異常**（B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味する。そのためドロップ数とは別枠のアラート対象とする（EPGStation ドロップログの scramble 列と同じ役割）。
 
 ---

@@ -31,7 +31,7 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、以下を�
 
 - `recording.failed` の理由別集計
 - `recording.record-broken` の記録
-- ingest 時のドロップ統計（PID 別 continuity counter 不連続 / TEI）
+- 原本解析時のドロップ統計（PID 別 continuity counter 不連続 / TEI）
 - scrambled カウンタ（B-CAS 障害検出）
 - 開始遅延検出器（開始時刻超過 + recording.started 未観測）
 

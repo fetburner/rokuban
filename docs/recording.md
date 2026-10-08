@@ -34,7 +34,7 @@ flowchart LR
 | §3.2 | **番組終了後の GC**（実装は ruler の 1 パス内 `runGC`） | [recording/ruler.md](recording/ruler.md) |
 | §3.3 | **watcher**（SSE 購読・状態反映）: 3 段構えの信頼性設計 / record 処理の冪等性 / 品質メタデータ / 開始遅延検出器 | [recording/watcher.md](recording/watcher.md) |
 | §4 | **予約モデル: base / overrides 分離** —— `program_intents` と `program_overrides` / 予約オプション一覧 / jsonb を許す条件 / detached のライフサイクル / manual 予約との統一 / 録画開始後の編集 | [recording/reservation-model.md](recording/reservation-model.md) |
-| §5 §6 | **ingest パイプライン**（転送方式 / インライン TS ドロップスキャン / リトライ設計 3 層 / worker）と **B-CAS 復号の責務境界** | [recording/ingest.md](recording/ingest.md) |
+| §5 §6 | **ingest パイプライン**（転送方式 / 非同期 TS 統計解析 / リトライ設計 3 層 / worker）と **B-CAS 復号の責務境界** | [recording/ingest.md](recording/ingest.md) |
 | §7 §8 §9 | mirakc schedule options / 録画品質の実測 / 落とした機能・スコープ外 | [recording/reference.md](recording/reference.md) |
 
 読む順の目安:
@@ -55,7 +55,7 @@ flowchart LR
 | ruler | 「ルール x EPG」を全量評価して `reservations` の base を生成・更新するループ | §3.1 [ruler.md](recording/ruler.md) |
 | reconciler | `reservations`（desired）と `schedule_sync`（observed）の差分を mirakc への POST/DELETE で消す宣言的同期ループ | §3.2 [reconciler.md](recording/reconciler.md) |
 | watcher | mirakc の `/events` SSE を購読し、record の状態を `recordings` に反映して ingest を投入する | §3.3 [watcher.md](recording/watcher.md) |
-| ingest | 録画完了後に record を HTTP pull してアーカイブへコミットする処理（インライン TS ドロップスキャン込み） | §5 [ingest.md](recording/ingest.md) |
+| ingest | 録画完了後に record を HTTP pull してアーカイブへコミットする処理。TS 統計は後続の解析ジョブが採る | §5 [ingest.md](recording/ingest.md) |
 | streamer | ライブ視聴（mirakc → ffmpeg → HLS）を担うロール。録画エンジンの外 | [overview.md](overview.md) / [api.md](api.md) |
 | site | mirakc インスタンスの識別子。DB 全テーブルの `site` 列と API パス `/api/sites/{site}/...` に現れる | [configuration.md](configuration.md) |
 | base | ruler が「ルール x EPG」から計算するフィールド群。`reservations.base` に載り、ruler だけが書く | §4.2 [reservation-model.md](recording/reservation-model.md) |

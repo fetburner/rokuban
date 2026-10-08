@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -31,7 +30,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/tsscan"
-	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 // errIngestRecordEndedAbnormally は、追従中の record が finished ではなく
@@ -229,11 +227,9 @@ func (r *ingestReplayReader) Read(p []byte) (int, error) {
 	return r.r.Read(p)
 }
 
-// replayIngestTempFile は既存 temp の全バイトを新しい hasher / tsstat.Counter に
-// 通し、再開後にもファイル全体のハッシュ・ドロップ統計・PCR 基準が残るようにする。
-// sink は replay 中だけ io.Discard を向き、呼び出し元が replay 後に実ファイルへ
-// 切り替える。読み出しは context のキャンセルを chunk 境界で検知し、temp は残す。
-func replayIngestTempFile(ctx context.Context, path string, counter *tsstat.Counter) (int64, error) {
+// replayIngestTempFile は既存 temp の全バイトを hasher に通して SHA-256 の状態を復元する。
+// 読み出しは context のキャンセルを chunk 境界で検知し、temp は残す。
+func replayIngestTempFile(ctx context.Context, path string, hasher hash.Hash) (int64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("replaying ingest temporary file: %w", err)
 	}
@@ -247,7 +243,7 @@ func replayIngestTempFile(ctx context.Context, path string, counter *tsstat.Coun
 	if err != nil {
 		return 0, fmt.Errorf("opening ingest temporary file for replay: %w", err)
 	}
-	n, copyErr := io.Copy(counter, &ingestReplayReader{ctx: ctx, r: f})
+	n, copyErr := io.Copy(hasher, &ingestReplayReader{ctx: ctx, r: f})
 	closeErr := f.Close()
 	if copyErr != nil {
 		return n, fmt.Errorf("replaying ingest temporary file: %w", copyErr)
@@ -359,7 +355,7 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 	return w.ProgressInterval
 }
 
-// Work は ingest ジョブを実行する。ストリーム取得・TS 統計収集・DB コミット・エッジ削除を行う。
+// Work は ingest ジョブを実行する。ストリーム取得・DB コミット・エッジ削除を行う。
 //
 // 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
 // metrics.IngestJobs / IngestDuration へ記録するためである（記録の値域と
@@ -554,15 +550,12 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	ingestCtx := ctx
 
 	hasher := sha256.New()
-	// Counter は replay と新規転送で同じインスタンスを使う。replay 中はファイルへ
-	// 書き戻さず、既存バイトを hash / 統計へだけ通してから sink を f に切り替える。
-	sink := &hashingWriter{w: io.Discard, h: hasher}
-	counter := tsstat.NewCounter(sink)
-	offset, err := replayIngestTempFile(ingestCtx, tempPath, counter)
+	offset, err := replayIngestTempFile(ingestCtx, tempPath, hasher)
 	if err != nil {
 		return err
 	}
-	sink.w = f
+	// 既存 temp の SHA-256 を復元してから、新規転送の受理バイトを追記先と hasher に流す。
+	sink := &hashingWriter{w: f, h: hasher}
 
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
@@ -576,11 +569,9 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
 	progress.start(ingestCtx, offset)
-	// progressWriter は counter の外側に置く（io.Copy → progressWriter →
-	// counter → hashingWriter → f）。TS 統計は counter が数え、SHA-256 は
-	// hashingWriter がファイルに受理された同じ転送バイト列を 1 パスで受け取る。
+	// progressWriter は hashingWriter の外側に置き、temp に受理されたバイト数を報告する。
 	dst := &progressWriter{
-		w:       counter,
+		w:       sink,
 		written: offset,
 		onWrite: func(written int64) { progress.report(ingestCtx, written) },
 	}
@@ -659,19 +650,13 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("closing file: %w", err)
 	}
 
-	// pid_type_changes > 0 は録画中に PMT が PID を付け替えたということ。
-	// 種別は最後に見たものを採用するので、変化そのものはここにしか残らない
-	// （docs/recording.md §1「例外の境界」）。
 	log.Info("ingest: transfer complete", "bytes", offset,
-		"drops", counter.TotalDrops(), "errors", counter.TotalErrors(),
-		"scrambled", counter.TotalScrambled(),
-		"pid_type_changes", counter.TypeChanges(),
 		"sha256_verification", sha256Verification,
 		"fsync_duration", time.Since(syncStarted))
 
-	recordIngestMetrics(offset, counter)
+	recordIngestMetrics(offset)
 
-	if err := w.commit(ingestCtx, recordingID, relPath, tempPath, fullPath, offset, counter); err != nil {
+	if err := w.commit(ingestCtx, recordingID, relPath, tempPath, fullPath, offset); err != nil {
 		return fmt.Errorf("committing ingest: %w", err)
 	}
 
@@ -853,12 +838,9 @@ func normalizeContentSHA256(value *string) (string, bool) {
 	return normalized, true
 }
 
-// recordIngestMetrics は転送結果のバイト数・TS 統計をメトリクスへ記録する。
-func recordIngestMetrics(offset int64, counter *tsstat.Counter) {
+// recordIngestMetrics は転送結果のバイト数をメトリクスへ記録する。
+func recordIngestMetrics(offset int64) {
 	metrics.IngestBytes.Add(float64(offset))
-	metrics.IngestDroppedPackets.Add(float64(counter.TotalDrops()))
-	metrics.IngestErrorPackets.Add(float64(counter.TotalErrors()))
-	metrics.IngestScrambledPackets.Add(float64(counter.TotalScrambled()))
 }
 
 // enqueueIngestFollowups はコミット済み ingest の encode / thumbnail 投入ヒントと
@@ -1021,7 +1003,7 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
 // aging 回収される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
 // cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
-func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, counter *tsstat.Counter) error {
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
 	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
 	if err != nil {
 		return fmt.Errorf("locking canonical file protocol: %w", err)
@@ -1039,7 +1021,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 
 	q := newIngestCommitQueries(tx)
 
-	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+	_, err = q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        db.AssetKindOriginal,
 		RelPath:     relPath,
@@ -1060,58 +1042,6 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	// （issue #103。resolveAndSnapshotEncodePolicy の doc コメント参照）。
 	if err := w.resolveAndSnapshotEncodePolicy(ctx, q, recordingID); err != nil {
 		return fmt.Errorf("snapshotting encode policy: %w", err)
-	}
-
-	stats := counter.Stats()
-	pids := make([]int, 0, len(stats))
-	for pid := range stats {
-		pids = append(pids, pid)
-	}
-	sort.Ints(pids)
-
-	statParams := make([]sqlcgen.InsertDropStatParams, 0, len(pids))
-	positionParams := make([]sqlcgen.InsertDropPositionParams, 0)
-	for _, pid := range pids {
-		s := stats[pid]
-		// 分類できなかった PID は種別なし（NULL）。空文字を「未分類」という値として
-		// 永続化しない（M2-13, issue #24）。
-		var pidType *string
-		if s.Type != "" {
-			t := s.Type
-			pidType = &t
-		}
-		statParams = append(statParams, sqlcgen.InsertDropStatParams{
-			MediaAssetID: assetID,
-			Pid:          int32(pid),
-			Packets:      s.Packets,
-			Drops:        s.Drops,
-			Errors:       s.Errors,
-			Scrambled:    s.Scrambled,
-			PidType:      pidType,
-		})
-		for _, position := range s.Positions {
-			positionParams = append(positionParams, sqlcgen.InsertDropPositionParams{
-				MediaAssetID: assetID,
-				ByteOffset:   position.ByteOffset,
-				Pid:          int32(pid),
-				ElapsedMs:    position.ElapsedMs,
-			})
-		}
-	}
-	// drop_stats と drop_positions はどちらも同じ tx に属する不可逆な観測で、
-	// 片方だけ別 transaction にしない。epgBatchSize ごとに chunk するのは
-	// epg.go の syncServices / syncPrograms と同じ理由（メモリと 1 バッチあたりの
-	// 所要を抑える）。chunks は空スライスに対して 0 回しか yield しないので、
-	// 空の batch は pgx に送られない。
-	for chunk := range chunks(statParams, epgBatchSize) {
-		if err := execBatch(q.InsertDropStat(ctx, chunk)); err != nil {
-			return fmt.Errorf("inserting drop_stats batch: %w", err)
-		}
-	}
-	for chunk := range chunks(positionParams, epgBatchSize) {
-		if err := execBatch(q.InsertDropPosition(ctx, chunk)); err != nil {
-			return fmt.Errorf("inserting drop_positions batch: %w", err)
-		}
 	}
 
 	// INSERT は一意性の予約であり、公開点ではない。canonical path を作るのは

@@ -224,7 +224,8 @@ func seedCMRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID 
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET program_duration_ms = 10010 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	markOriginalTSScanComplete(t, pool, assetID)
 	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
@@ -653,7 +654,8 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	id := insertTestRecordingWithEventID(t, pool, 913)
-	seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
+	markOriginalTSScanComplete(t, pool, assetID)
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindEncoded, &profile, fmt.Sprintf("cm/%d-h264.mp4", id), []byte("encoded"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, fmt.Sprintf("cm/%d.jpg", id), []byte("thumbnail"))

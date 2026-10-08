@@ -51,8 +51,17 @@ linters:
           deny:
             - pkg: os/exec
               desc: os/exec is limited to worker, streamer, and config
+        worker-tsstat:
+          # 不変条件 6: ingest は TS を読まず、TS の読者は解析ジョブへ閉じ込める。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/worker/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/tsstat
+              desc: ingest and other workers must not inspect transport streams (invariant 6)
         ts-inspection:
-          # 不変条件 6: 放送 TS を読むのは ingest の読み取り専用統計（tsstat）だけ。
+          # 不変条件 6: 放送 TS を読むのは internal/tsstat を使う解析ジョブだけ。
           # テストは TS のフィクスチャを組み立てるのに gots を使うので対象外。
           list-mode: lax
           files:

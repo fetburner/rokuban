@@ -22,7 +22,6 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 // cancelAfterBytesTransport は response body の読み出し側で cutoff バイトを
@@ -101,10 +100,9 @@ func TestCancelAfterBytesBodyCancelsAfterCutoff(t *testing.T) {
 	}
 }
 
-// TestIngestTempFile_ResumeReplaysHashAndTSState は、プロセス死を挟んだ再試行が
-// temp の先頭からではなく末尾から続き、かつ replay 前の drop 観測と hash を失わ
-// ないことを固定する。
-func TestIngestTempFile_ResumeReplaysHashAndTSState(t *testing.T) {
+// TestIngestTempFile_ResumeReplaysHash は、プロセス死を挟んだ再試行が temp の
+// 先頭から SHA-256 を復元して末尾から続くことを固定する。
+func TestIngestTempFile_ResumeReplaysHash(t *testing.T) {
 	mediaDir := t.TempDir()
 	tempPath := ingestTempFilePath(mediaDir, "site-a", "record-1")
 
@@ -156,9 +154,7 @@ func TestIngestTempFile_ResumeReplaysHashAndTSState(t *testing.T) {
 	}()
 
 	hasher := sha256.New()
-	sink := &hashingWriter{w: io.Discard, h: hasher}
-	counter := tsstat.NewCounter(sink)
-	offset, err := replayIngestTempFile(context.Background(), tempPath, counter)
+	offset, err := replayIngestTempFile(context.Background(), tempPath, hasher)
 	if err != nil {
 		t.Fatalf("replaying ingest temp: %v", err)
 	}
@@ -166,8 +162,8 @@ func TestIngestTempFile_ResumeReplaysHashAndTSState(t *testing.T) {
 		t.Fatalf("replayed offset = %d, want %d", offset, len(prefix))
 	}
 
-	sink.w = secondFile
-	if _, err := counter.Write(suffix); err != nil {
+	sink := &hashingWriter{w: secondFile, h: hasher}
+	if _, err := sink.Write(suffix); err != nil {
 		t.Fatalf("writing resumed suffix: %v", err)
 	}
 
@@ -180,20 +176,6 @@ func TestIngestTempFile_ResumeReplaysHashAndTSState(t *testing.T) {
 	}
 	if gotHash := hex.EncodeToString(hasher.Sum(nil)); gotHash != sha256Hex(want) {
 		t.Errorf("replayed hash = %s, want %s", gotHash, sha256Hex(want))
-	}
-	stats := counter.Stats()
-	stat, ok := stats[0x100]
-	if !ok {
-		t.Fatal("replayed TS PID 0x100 is missing from stats")
-	}
-	if stat.Packets != 6 {
-		t.Errorf("replayed packets = %d, want 6", stat.Packets)
-	}
-	if stat.Drops != 1 {
-		t.Errorf("replayed drops = %d, want 1", stat.Drops)
-	}
-	if len(stat.Positions) != 1 || stat.Positions[0].ByteOffset != int64(3*188) {
-		t.Errorf("replayed drop positions = %+v, want one position at %d", stat.Positions, 3*188)
 	}
 }
 
