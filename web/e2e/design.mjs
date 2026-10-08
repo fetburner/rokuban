@@ -2432,6 +2432,61 @@ for (const mode of ['watch', 'ops']) {
   }
 }
 
+// --- issue #1276: 主役の絵は主ボタンと同じ遷移、キーボード順には入れない ---
+{
+  const { context, page } = await open(homeDesktop, 'light', homeWatchScreen, { homeModeFixture: true })
+  const thumbnail = page.getByTestId('home-next-watch-thumbnail')
+  const primaryAction = page.getByTestId('home-primary-action')
+  const ready = await thumbnail.waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!ready) {
+    ng.push('home/watch: 主役のサムネイルが表示されない')
+    await context.close()
+  } else {
+    const expectedHref = await primaryAction.getAttribute('href')
+    const thumbnailState = await thumbnail.evaluate((element) => ({
+      tagName: element.tagName,
+      href: element.getAttribute('href'),
+      tabIndex: element.tabIndex,
+      ariaHidden: element.getAttribute('aria-hidden'),
+    }))
+    if (thumbnailState.tagName !== 'A' || thumbnailState.href !== expectedHref) {
+      ng.push('home/watch: 主役の絵が主ボタンと同じ録画詳細リンクではない')
+    }
+    if (thumbnailState.tabIndex !== -1 || thumbnailState.ariaHidden !== 'true') {
+      ng.push('home/watch: 主役の絵のリンクが Tab 順または読み上げから外れていない')
+    }
+
+    await page.evaluate(() => {
+      if (document.activeElement instanceof HTMLElement) document.activeElement.blur()
+    })
+    let reachedPrimaryAction = false
+    let thumbnailReceivedFocus = false
+    for (let i = 0; i < 50; i++) {
+      await page.keyboard.press('Tab')
+      const focusedTestId = await page.evaluate(() => document.activeElement?.getAttribute('data-testid'))
+      if (focusedTestId === 'home-next-watch-thumbnail') thumbnailReceivedFocus = true
+      if (focusedTestId === 'home-primary-action') {
+        reachedPrimaryAction = true
+        break
+      }
+    }
+    if (!reachedPrimaryAction) ng.push('home/watch: Tab 走査で主ボタンに到達しない')
+    if (thumbnailReceivedFocus) ng.push('home/watch: Tab 走査が主役の絵のリンクで止まる')
+
+    if (expectedHref !== null) {
+      await thumbnail.click()
+      const navigated = await page
+        .waitForURL((url) => `${url.pathname}${url.hash}` === expectedHref, { timeout: 5000 })
+        .then(() => true)
+        .catch(() => false)
+      if (!navigated) ng.push('home/watch: 主役の絵を押した遷移先が主ボタンと一致しない')
+    } else {
+      ng.push('home/watch: 主ボタンの遷移先を取得できない')
+    }
+    await context.close()
+  }
+}
+
 // ホーム「見る」: 2560x1440 でも主役と新着 1 行目が初期 viewport に入り、
 // 新着件数は 176px カードで入る列数に追従する。低い desktop viewport でも主役を保つ。
 {

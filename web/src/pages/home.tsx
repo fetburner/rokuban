@@ -957,7 +957,7 @@ function WatchHero({ choice }: { choice: HomeHeroChoice }) {
 
   return (
     <section aria-label="次に見る 1 本" className="flex min-w-0 flex-col items-start gap-3 md:flex-row md:gap-5">
-      <HomeThumbnail recording={recording} hero progress={progress} />
+      <HomeThumbnail recording={recording} hero progress={progress} detail={detail} />
       <div className="flex w-full min-w-0 flex-col gap-1 md:flex-1">
         <p className="text-xs text-muted-foreground">次に見る · {kind === 'continue' ? '続きから' : '新着'}</p>
         <h2 className="text-lg leading-snug font-semibold text-balance md:text-xl">
@@ -1065,23 +1065,20 @@ function HomeThumbnail({
   recording,
   hero = false,
   progress,
+  detail,
 }: {
   recording: Recording
   hero?: boolean
   progress?: number
+  detail?: {
+    to: '/recordings/$id'
+    params: { id: string }
+    hash?: 'chase'
+  }
 }) {
   const [failed, setFailed] = useState(false)
-  return (
-    <div
-      data-testid={hero ? 'home-next-watch-thumbnail' : undefined}
-      className={cn(
-        'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
-        // calc の 25rem は映像の外に積む縦の予算: ページ見出し・本文の上下余白・局名/番組名/時刻の 3 行。
-        // 映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る
-        hero &&
-          'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
-      )}
-    >
+  const image = (
+    <>
       {!failed ? (
         <img
           src={recordingThumbnailURL(recording.id)}
@@ -1094,6 +1091,33 @@ function HomeThumbnail({
         <div className="size-full bg-muted" aria-hidden />
       )}
       {hero && <ThumbnailOverlay serviceName={recording.serviceName} progress={progress} />}
+    </>
+  )
+  const className = cn(
+    'relative aspect-video w-full min-w-0 overflow-hidden rounded border border-border bg-muted',
+    // calc の 25rem は映像の外に積む縦の予算: ページ見出し・本文の上下余白・局名/番組名/時刻の 3 行。
+    // 映像と 3 行が初期 viewport に収まることは e2e/design.mjs が測る
+    hero &&
+      'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
+  )
+
+  if (hero && detail !== undefined) {
+    return (
+      <Link
+        {...detail}
+        data-testid="home-next-watch-thumbnail"
+        tabIndex={-1}
+        aria-hidden="true"
+        className={className}
+      >
+        {image}
+      </Link>
+    )
+  }
+
+  return (
+    <div data-testid={hero ? 'home-next-watch-thumbnail' : undefined} className={className}>
+      {image}
     </div>
   )
 }
