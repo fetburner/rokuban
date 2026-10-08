@@ -217,6 +217,8 @@ const (
     r.program_start_at, r.program_duration_ms, r.status,
     r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
     a.size_bytes                        AS original_size_bytes,
+    -- 計測済みでも drop_stats 行が無ければ 0 を返す。未計測を 0 と混同しない判定は
+    -- has_measured_drop_summary で行い、集計値の COALESCE を存在判定に使わない。
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
     COALESCE(d.drops, 0)::bigint        AS drop_drops,
     COALESCE(d.errors, 0)::bigint       AS drop_errors,
@@ -253,6 +255,18 @@ const (
         SELECT 1 FROM media_assets o
         WHERE o.recording_id = r.id AND o.kind = 'original'
     ) AS has_original_asset,
+    -- dropSummary は原本の現在の保存サイズを実際に計測した結果だけを返す。
+    -- state を問わず照合するので、計測後に tombstone になった原本の要約は残る。
+    -- in-place 更新後に古いサイズの計測記録が残っても、それは一致せず未計測扱い。
+    EXISTS (
+        SELECT 1
+        FROM media_assets scanned_original
+        JOIN media_asset_ts_scans ts_scan
+          ON ts_scan.media_asset_id = scanned_original.id
+         AND ts_scan.scanned_size_bytes = scanned_original.size_bytes
+        WHERE scanned_original.recording_id = r.id
+          AND scanned_original.kind = 'original'
+    ) AS has_measured_drop_summary,
     -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
     -- 同じもの**を見る（internal/watcher/watcher.go の
     -- record.Recording.Status == "recording" または "finished"）。record_sync.status は mirakc の
@@ -653,7 +667,8 @@ WHERE r.id = $1 AND r.purged_at IS NULL`
 		&fields.KeepOriginal,
 		&fields.EncodeProfiles,
 		&fields.EncodeAttempts,
-		&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
+		&fields.HasOriginalAsset, &fields.HasMeasuredDropSummary,
+		&fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 		&fields.CMAttemptStage, &fields.CMAttemptError,
@@ -704,7 +719,8 @@ func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter
 			&fields.KeepOriginal,
 			&fields.EncodeProfiles,
 			&fields.EncodeAttempts,
-			&fields.HasOriginalAsset, &fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
+			&fields.HasOriginalAsset, &fields.HasMeasuredDropSummary,
+			&fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
 			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
 			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
 			&fields.CMAttemptStage, &fields.CMAttemptError,

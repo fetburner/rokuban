@@ -960,6 +960,11 @@ export interface Recording {
      * 揮発テレメトリで、テーブルにも OpenAPI にも保存しない。
      */
   encodeStatus?: EncodeJobStatus[];
+  /**
+     * 原本 TS の計測記録があり、計測時のサイズと原本の保存サイズが一致するときだけ含む。
+     * 未計測中、または in-place 更新後に計測記録が古くなった場合は省略する。
+     * 原本がごみ箱にある場合も、サイズが一致する計測記録が残っていれば含む。
+     */
   dropSummary?: DropSummary;
   ingest?: IngestProgress;
   /** recording.failed / record-broken の履歴 */

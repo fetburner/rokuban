@@ -890,6 +890,27 @@ describe('ホーム管理モード: 失敗/ドロップの timeline rendering', 
     expect(block.className).toContain('shadow-[inset_0_-3px_0_var(--destructive)]')
     expect(link.textContent).not.toMatch(/ドロップ 12/)
   })
+
+  it('未計測の録画はドロップ 0 の警告にも timeline の信号色にもならない', async () => {
+    stubApi({
+      breakers: [breaker()],
+      finished: [recording(10, '未計測の録画', 'finished', { sizeBytes: 1234 })],
+    })
+    renderHome()
+
+    // この見出しは警告材料の読み込みがすべて終わってから出る。
+    expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
+    const breakerRow = await findWarningRow('ルール評価による予約の削除')
+    const warningSection = breakerRow.closest('section')!
+    expect(within(warningSection).queryByText('未計測の録画')).not.toBeInTheDocument()
+    expect(within(warningSection).queryByText(/ドロップ 0/)).not.toBeInTheDocument()
+
+    const details = await openTimelineDetails()
+    expect(within(details).getByRole('link', { name: /未計測の録画/ })).toBeInTheDocument()
+    expect(screen.getByTestId('home-timeline-block').className).not.toContain(
+      'shadow-[inset_0_-3px_0_var(--destructive)]',
+    )
+  })
 })
 
 describe('ホーム: 警告セクション', () => {
