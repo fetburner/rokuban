@@ -343,6 +343,94 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_WriteErrorDoesNotRetryMirakc(t *testing.T) {
+	injectedErr := errors.New("injected local write failure")
+	var rangeRequests atomic.Int32
+	var statusRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeRequests.Add(1)
+			w.Header().Set("Content-Length", "8")
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = io.WriteString(w, "recorded")
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			statusRequests.Add(1)
+			http.Error(w, "unexpected status request", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	worker := &IngestWorker{StallTimeout: time.Second}
+	_, _, err := worker.transferIngestRecord(
+		context.Background(),
+		mirakc.NewClient(srv.URL, nil),
+		"record",
+		partialErrorWriter{n: 0, err: injectedErr},
+		nil,
+	)
+	if !errors.Is(err, injectedErr) {
+		t.Fatalf("transferIngestRecord() error = %v, want local write error", err)
+	}
+	if got := rangeRequests.Load(); got != 1 {
+		t.Errorf("Range requests = %d, want 1 after the destination failed", got)
+	}
+	if got := statusRequests.Load(); got != 0 {
+		t.Errorf("GetRecord requests = %d, want 0 after the destination failed", got)
+	}
+}
+
+func TestIngestWorker_CapturesSHA256OnlyAfterFinished(t *testing.T) {
+	provisionalSHA256 := strings.Repeat("a", sha256.Size*2)
+	var rangeRequests atomic.Int32
+	var statusRequests atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeRequests.Add(1)
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			status := "recording"
+			var contentSHA256 *string
+			if statusRequests.Add(1) == 1 {
+				contentSHA256 = &provisionalSHA256
+			} else {
+				status = "finished"
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: status},
+				Content:   mirakc.ContentInfo{Sha256: contentSHA256},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	// Keep progress observation in memory; this test only checks the status-to-hash rule.
+	progress := &ingestProgressReporter{interval: time.Hour, lastAt: time.Now(), log: slog.Default()}
+	worker := &IngestWorker{StallTimeout: time.Second}
+	offset, gotSHA256, err := worker.transferIngestRecord(
+		context.Background(), mirakc.NewClient(srv.URL, nil), "record", io.Discard, progress,
+	)
+	if err != nil {
+		t.Fatalf("transferIngestRecord() error = %v", err)
+	}
+	if offset != 0 {
+		t.Errorf("transferred offset = %d, want 0", offset)
+	}
+	if gotSHA256 != nil {
+		t.Errorf("SHA-256 captured while recording = %q, want nil because finished had no hash", *gotSHA256)
+	}
+	if got, want := rangeRequests.Load(), int32(3); got != want {
+		t.Errorf("Range requests = %d, want %d (recording catch-up, finished catch-up, final Range)", got, want)
+	}
+}
+
 func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	tsData := makeTSData(100)
 	cutoff := 50 * 188
@@ -464,7 +552,6 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 // TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries が持つ。
 // 「recording 中に待たない」は TestIngestWorker_FollowPollingIsRateLimited が持つ。
 func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
-	setFollowPollInterval(t, time.Millisecond)
 	full := makeTSData(10)
 	first := full[:5*188]
 	second := full[5*188:]
@@ -507,7 +594,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(record)
-			// 2 つ目の差分を返した直後の status 観測から finished にする。
+			// Work の初回 lookup の後、最初の catch-up 観測で finished に切り替える。
 			if statusRequests.Load() >= 2 {
 				status.Store("finished")
 			}
@@ -544,11 +631,11 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 	if !bytes.Equal(got, full) {
 		t.Fatalf("committed bytes differ from the two Range segments")
 	}
-	if rangeRequests.Load() != 3 {
-		t.Errorf("Range requests = %d, want 3 (two segments + catch-up 416)", rangeRequests.Load())
+	if rangeRequests.Load() != 5 {
+		t.Errorf("Range requests = %d, want 5 (two data ranges + two status observations + final empty range)", rangeRequests.Load())
 	}
 	if statusRequests.Load() != 3 {
-		t.Errorf("status requests = %d, want 3 (recording, recording, finished)", statusRequests.Load())
+		t.Errorf("status requests = %d, want 3 (initial lookup + two catch-up observations)", statusRequests.Load())
 	}
 }
 
@@ -559,16 +646,18 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 // 差分が返る定常状態でリクエストが往復時間で律速され、1 秒に数十〜百回
 // mirakc を叩く。recording のあいだは差分の有無に関わらず待つ。
 func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
-	setFollowPollInterval(t, 50*time.Millisecond)
 	data := makeTSData(200)
 	const packetsPerPoll = 5
 
 	var size atomic.Int64
-	var rangeRequests atomic.Int32
+	var rangeTimesMu sync.Mutex
+	var rangeTimes []time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			rangeRequests.Add(1)
+			rangeTimesMu.Lock()
+			rangeTimes = append(rangeTimes, time.Now())
+			rangeTimesMu.Unlock()
 			// 放送は進み続ける（毎ポーリングで差分が出る）。
 			cur := size.Add(packetsPerPoll * 188)
 			offset := parseStreamRangeOffset(r)
@@ -610,18 +699,30 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-rate")
 
-	const window = 600 * time.Millisecond
+	const window = 1200 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), window)
 	defer cancel()
-	if err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425002}, Args: IngestJobArgs{Site: "default", RecordID: "rec-rate"}}); err == nil {
-		t.Fatal("Work() succeeded, want the context deadline error")
+	err := w.Work(ctx, &river.Job[IngestJobArgs]{JobRow: &rivertype.JobRow{ID: 425002}, Args: IngestJobArgs{Site: "default", RecordID: "rec-rate"}})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Work() error = %v, want context deadline error", err)
 	}
 
-	// 律速が効いていれば 1 間隔に 1 回以下。待ちを外すと往復時間で回り、
-	// この窓で数百回になる。
-	allowed := int(window/followPollInterval) + 3
-	if got := rangeRequests.Load(); int(got) > allowed {
-		t.Errorf("Range requests = %d in %s, want <= %d (polling is not rate limited)", got, window, allowed)
+	// At least two starts prove the reader stayed in its polling loop. Each start
+	// must be separated by the shared 500ms minimum; without the wait this loop
+	// can issue dozens of requests during the same window.
+	rangeTimesMu.Lock()
+	starts := append([]time.Time(nil), rangeTimes...)
+	rangeTimesMu.Unlock()
+	if len(starts) < 2 {
+		t.Fatalf("Range requests = %d in %s, want at least 2 to exercise polling", len(starts), window)
+	}
+	if len(starts) > 4 {
+		t.Errorf("Range requests = %d in %s, want at most 4 with the shared poll interval", len(starts), window)
+	}
+	for i := 1; i < len(starts); i++ {
+		if gap := starts[i].Sub(starts[i-1]); gap < 450*time.Millisecond {
+			t.Errorf("Range request gap = %v, want at least 450ms", gap)
+		}
 	}
 
 	// 録画中なので commit していない。
@@ -642,7 +743,6 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 // これが無いと「416 を record の状態を見ずに完了とみなす」変異が通る（最初の 416 の
 // 時点ではまだ 5 パケットしか無いので、HEAD 照合で size mismatch になり落ちる）。
 func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
-	setFollowPollInterval(t, time.Millisecond)
 	full := makeTSData(20)
 
 	// /records/{id} の観測回数で「いまの content サイズ」と status を決める。
@@ -751,7 +851,6 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 		{name: "failed", status: "failed", recordID: "rec-failed", contentPath: "test/failed.m2ts", jobID: 425011},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			setFollowPollInterval(t, time.Millisecond)
 
 			var recordGets, deletes atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -848,7 +947,6 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 //
 // 数えるように変異させると、正常な録画が 6 回目のポーリングで失敗する。
 func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
-	setFollowPollInterval(t, time.Millisecond)
 	full := makeTSData(10)
 	const notReadyPolls = 8
 	const emptyBodyPolls = 8
@@ -942,7 +1040,6 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 // 録画が伸びて written が古い分母を追い越した時点で UI が「取り込み中 100%」を
 // 出し続ける（Web 側は min(100, ...) で頭打ちにするので嘘が % として出る）。
 func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
-	setFollowPollInterval(t, 10*time.Millisecond)
 	const staleDenominator = 100
 
 	var statusGets atomic.Int32
@@ -1009,7 +1106,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	}
 
 	// 追い付いたまま更にポーリングさせる。
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(1200 * time.Millisecond)
 
 	var observedAt time.Time
 	var expected *int64
@@ -1035,17 +1132,15 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 }
 
 // TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart は、未知の status を
-// 観測したときに **River へ戻さずジョブ内で再試行し、offset を捨てない**ことを
+// 観測したときに **River へ戻さず reader 内で再試行し、offset を捨てない**ことを
 // 固定する。
 //
-// transferIngestRecord の offset は同じ Work のメモリに持つので、ジョブ内で
-// 再試行すれば Range の位置を維持できる。未知の status は一過性かもしれない --- 実機では
-// mirakc が一時的に応答を欠いたとき status が空になりうる。
+// 共有 reader は未知の status を終端と誤認せず、同じ offset から Range を再試行する。
+// 未知の status は一過性かもしれない --- mirakc が一時的に応答を欠いたとき status が空になりうる。
 //
 // 変異「未知の status で即 error を返す」は Work() が非 nil になって落ちる。
 // 変異「未知の status を終端 sentinel に混ぜる」も同じく落ちる。
 func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
-	setFollowPollInterval(t, time.Millisecond)
 	full := makeTSData(10)
 
 	var recordGets atomic.Int32
@@ -1122,10 +1217,9 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 // ジョブ内の再試行が上限で止まり、無限にポーリングしないことを固定する。
 //
 // **連続失敗カウンタのリセット位置**を固定するテストである。リセットを
-// followAfterStatusPoll の前（観測の成否を問わない位置）に戻すと、未知の status に
-// 対してカウンタが毎周 1 に戻り、上限に達しないまま回り続ける。
+// RecordFollowReader が未知の status で失敗回数を戻すと、恒久的な異常応答でも
+// 上限に達しないまま回り続ける。
 func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
-	setFollowPollInterval(t, time.Millisecond)
 
 	var recordGets atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1436,7 +1530,7 @@ func TestIngestWorker_SnoozesThenVerifiesLateContentSHA256(t *testing.T) {
 			rangeMu.Lock()
 			gotOffsets := slices.Clone(rangeOffsets)
 			rangeMu.Unlock()
-			if want := []int64{0, int64(len(tsData)), int64(len(tsData)), int64(len(tsData))}; !slices.Equal(gotOffsets, want) {
+			if want := []int64{0, int64(len(tsData)), int64(len(tsData)), int64(len(tsData)), int64(len(tsData))}; !slices.Equal(gotOffsets, want) {
 				t.Errorf("Range offsets across snooze and replay = %v, want %v", gotOffsets, want)
 			}
 			if tt.wantVerification != "" && !strings.Contains(logOutput.String(), tt.wantVerification) {
@@ -1596,58 +1690,9 @@ func TestHashingWriterHashesAcceptedBytes(t *testing.T) {
 	}
 }
 
-func TestFollowAfterStatusPoll_CapturesHashOnlyAfterFinished(t *testing.T) {
-	wrongHash := strings.Repeat("0", sha256.Size*2)
-	progress := &ingestProgressReporter{log: slog.Default()}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	finished := false
-	var expectedSHA256 *string
-	failures := 0
-	if err := (&IngestWorker{}).followAfterStatusPoll(
-		ctx,
-		recordPoll{Status: "recording", ContentSHA256: &wrongHash},
-		&finished,
-		&expectedSHA256,
-		&failures,
-		0,
-		progress,
-		slog.Default(),
-	); !errors.Is(err, context.Canceled) {
-		t.Fatalf("recording poll error = %v, want context.Canceled", err)
-	}
-	if expectedSHA256 != nil {
-		t.Fatalf("recording poll captured content.sha256 = %q, want nil", *expectedSHA256)
-	}
-
-	ctx, cancel = context.WithCancel(context.Background())
-	cancel()
-	finished = false
-	expectedSHA256 = nil
-	failures = 0
-	if err := (&IngestWorker{}).followAfterStatusPoll(
-		ctx,
-		recordPoll{Status: "finished", ContentSHA256: &wrongHash},
-		&finished,
-		&expectedSHA256,
-		&failures,
-		0,
-		progress,
-		slog.Default(),
-	); err != nil {
-		t.Fatalf("finished poll error = %v", err)
-	}
-	if expectedSHA256 == nil || *expectedSHA256 != wrongHash {
-		t.Fatalf("finished poll captured content.sha256 = %v, want %q", expectedSHA256, wrongHash)
-	}
-}
-
-// TestIngestWorker_PersistsBeforeCommitAndDelete は、原本ファイルの
-// Sync/Close が終わるより前に media_assets 行が存在せず、mirakc の
-// DeleteRecord 時点では存在することをイベント列の完全一致で検証する。
-// これは転送途中に定期 fsync を差し込む変異（S3 系 FUSE 上で実体化を増やす
-// 退行）も落とす --- 途中の fsync がイベント列を狂わせるため。
+// TestIngestWorker_PersistsBeforeCommitAndDelete は原本ファイルの Sync/Close 前は
+// media_assets 行がなく、mirakc の DeleteRecord 時点では行があることをイベント列で検証する。
+// 転送途中の定期 fsync を入れる変異も、イベント列が変わるため検出する。
 func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	tsData := makeTSData(20)
 	pool := setupTestPool(t)
@@ -1964,13 +2009,6 @@ func parseStreamRangeOffset(r *http.Request) int64 {
 		_, _ = fmt.Sscanf(h, "bytes=%d-", &offset)
 	}
 	return offset
-}
-
-func setFollowPollInterval(t *testing.T, d time.Duration) {
-	t.Helper()
-	orig := followPollInterval
-	followPollInterval = d
-	t.Cleanup(func() { followPollInterval = orig })
 }
 
 // setupTestPool はマイグレーション済みのテスト用プールを返す。
@@ -2369,11 +2407,11 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Error("file content changed after second Work() (transfer should have been skipped)")
 	}
 
-	// 1 回目の Work は Range 1 回 + finished 観測後の drain 1 回で 2。2 回目は
-	// 原本コミット済みなので転送に入らない（この数が 2 のままであることが、
+	// 1 回目の Work は最初の Range、追い付き確認、finished 観測後の最終 Range で 3。2 回目は
+	// 原本コミット済みなので転送に入らない（この数が 3 のままであることが、
 	// 「転送をやり直していない」の判定になる）。
-	if got := streamRequests.Load(); got != 2 {
-		t.Errorf("stream requests = %d, want 2 (first Work drains twice; second Work must skip the transfer)", got)
+	if got := streamRequests.Load(); got != 3 {
+		t.Errorf("stream requests = %d, want 3 (first Work reads initial, catch-up, and terminal ranges; second Work must skip the transfer)", got)
 	}
 
 	var mediaAssetCount int
@@ -2393,56 +2431,12 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 }
 
-// TestStallReader はストールリーダーのタイマーリセット動作をテストする。
-func TestStallReader(t *testing.T) {
-	data := []byte("hello world")
-	r := strings.NewReader(string(data))
-	timer := time.NewTimer(time.Hour)
-	defer timer.Stop()
-
-	sr := &stallReader{r: r, timer: timer, d: 100 * time.Millisecond}
-
-	buf := make([]byte, 5)
-	n, err := sr.Read(buf)
-	if err != nil {
-		t.Fatalf("Read() error: %v", err)
-	}
-	if n != 5 {
-		t.Errorf("Read() = %d, want 5", n)
-	}
-
-	n, err = sr.Read(buf)
-	if err != nil {
-		t.Fatalf("Read() error: %v", err)
-	}
-	if n != 5 {
-		t.Errorf("Read() = %d, want 5", n)
-	}
-
-	n, err = sr.Read(buf)
-	if err != nil {
-		t.Fatalf("Read() error: %v", err)
-	}
-	if n != 1 {
-		t.Errorf("Read() = %d, want 1", n)
-	}
-
-	n, err = sr.Read(buf)
-	if !errors.Is(err, io.EOF) {
-		t.Fatalf("Read() error = %v, want EOF", err)
-	}
-	if n != 0 {
-		t.Errorf("Read() = %d, want 0", n)
-	}
-}
-
 // --- M3-14 (issue #103): encode policy (keep_original / encode_profiles) の
 // スナップショット。resolveAndSnapshotEncodePolicy（internal/worker/ingest.go）が
 // ingest コミット tx 内で recordings に焼くことをエンドツーエンドで確認する。
 
-// newFullTransferServer は「1 回で完走する」ingest 用のテストサーバーを返す。
-// newInstrumentedIngestServer の onDelete フック無し版（多数のテストで共通の
-// mirakc 差し替え）。
+// newFullTransferServer は一度で完了する ingest 用のテストサーバーを返す。
+// 多くのテストが使う onDelete フック無しの newInstrumentedIngestServer である。
 func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *httptest.Server {
 	t.Helper()
 	return newInstrumentedIngestServer(t, tsData, contentPath, nil)

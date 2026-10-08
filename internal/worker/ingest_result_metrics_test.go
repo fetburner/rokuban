@@ -119,8 +119,6 @@ func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID 
 // 包まないので、`errors.Is(err, cause)` の項を消すと b2 だけが落ちる。
 func TestIngestWorker_GracefulStopIsNotCounted(t *testing.T) {
 	t.Run("following", func(t *testing.T) {
-		setFollowPollInterval(t, 10*time.Millisecond)
-
 		started := make(chan struct{})
 		var once sync.Once
 		var recordGets atomic.Int32

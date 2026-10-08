@@ -13,17 +13,16 @@ mirakc のエッジから Rokuban のアーカイブストレージへ録画デ�
 - **コードパスが 1 本**。HTTP pull は monolith / 分散 / ハイブリッドの全構成で動く唯一の方法
 - **所有権が明確**。basedir は mirakc の所有物で、Rokuban は API 越しの客に徹する
 
-**録画中も Range ポーリングで追従する。** `records/{id}/stream` の非 Range GET は、録画中の record に対して mirakc が `tail -f` 相当で追従配信する。だがこれは常に先頭からで、切断後に途中オフセットから戻る手段が mirakc 側に無い。使うと「初回は追従・再開は Range」の 2 経路になり、追い付いた後に追従へ戻れない。
+**ingest は初回から Range で追従する。** `RecordFollowReader` は `Range: bytes=N-` を N=0 から送り、各応答をリクエスト時点のサイズまでの有限な差分として読む。先頭からの追っかけ再生だけは最初に mirakc の非 Range 追従配信を使い、その本文が閉じた後を同じ reader が Range で続ける。
+初回から Range を使うことで、通常の追従と切断後の再開を同じ HTTP 契約で扱う。
 
-`Range: bytes=N-` を**初回（N=0）から常に送る**ことで経路が 1 本に閉じ、応答は常に「リクエスト時点のサイズまでの差分」になる。これは mirakc の配信実装（子プロセスか `tokio::fs` か、無入力タイムアウトの定数）に依存せず、HTTP の契約だけに閉じる。
+**record の status が録画終了の真実である**（不変条件 5）。本文が空の Range に追い付いたときだけ `GetRecord` で status を読む。空ではない差分を読んだ直後には status を取り直さない。未知の status は終了とみなさず、連続失敗として再試行する。
 
-**追い付いたかどうかは Range の応答では分からない。** 差分を読み切った時点は「その時点のサイズまで読んだ」に過ぎない。したがって `GET /recording/records/{id}` の `recording.status` を真実として読む（不変条件 5）。
+`recording` なら待って Range を再要求する。通常の要求は 500ms 以上あけ、追い付いた状態が続けば 1 秒まで間隔を広げる。`finished` / `canceled` / `failed` の後は同じ offset へ最後の Range を送り、空であることを確かめる。`canceled` / `failed` は ingest の status hook がジョブをキャンセルし、temp を commit しない。
 
-`recording` なら待って再度 Range、`finished` を観測してから最後の差分を drain して commit する。`canceled` / `failed` でもストリームは正常終了と同じ形で終わるので、終了の理由は必ず record の状態で読む。
+追い付いた Range は `204` / `416` / `206` の 0 バイトで返りうる。録画中は `ContentRange::without_size` が first/last を検査しないため 206 になる。これらの応答は接続障害として数えず、status を再取得する。未知の status、本文の切断、stall は共通の連続失敗回数とバックオフを使う。
 
-**追い付いたときの応答は 416 か 206 の 0 バイトのどちらでも来る。** 録画中は `ContentRange::without_size` が first/last を検査しないので 206 になる。完了後は `with_size` が弾いて 416 になる。呼び側はどちらも「追い付いた」と扱い、接続失敗のリトライには数えない。
-
-`204` は content file がまだ 0 バイトの状態で、録画開始直後の 1〜2 秒に必ず出る。これも同じく待つ。
+`204` は content file がまだ 0 バイトの状態で、録画開始直後に出る。これも同じく待つ。
 
 **Range を無視した `200` は offset 0 だけ受理する。** RFC 9110 はサーバが Range を無視して完全な表現を返すことを許す。offset 0 では本文が求めた差分と同一なので、そのまま受理してよい。
 
@@ -104,11 +103,13 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 
-切断時は書き込み済みオフセットから `Range: bytes=N-` で再接続して追記。ドロップスキャンのカウンタはメモリ上に生きているので継続できる。タイムアウトは総時間ではなく**ストール検知**（`ingest.stall_timeout`、既定 30 秒間無進捗で切断扱い）--- 総時間タイムアウトは遅い回線の正常な転送を殺す。
+`RecordFollowReader` は読み取り中の本文が止まったときだけ stall timer を動かす。`ingest.stall_timeout`（既定 30 秒）を超えた本文を閉じ、temp に書けた offset から Range を再開する。消費側の `Write` が遅い間は `Read` が呼ばれないため、その時間を mirakc の stall と誤認しない。総時間タイムアウトは遅い回線の正常な転送を殺す。
 
-**この層は追従の通常経路でもある。** 録画中はループが `Range → status → 待つ` を回し続けるので、層 1 の再開は切断時だけでなく毎ポーリングで使われる。待ちはジョブ内（River にジョブを戻さない）なので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay してこの状態を復元する。
+reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file・offset・スキャナ状態が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay してこの状態を復元する。
 
-**層 1 のリトライ上限は「連続した一時障害」の数である。** 累積にすると、数時間の録画中に散散した偶発的な失敗が上限に達して正常な録画を失敗させる。`204` / `416` / `206` の 0 バイト / status の取得成功はいずれも連続カウンタをリセットし、mirakc が落ち続けたときだけジョブを River へ戻す。
+**接続断のたびに進捗を書き出す。** Range 本文がバイトを返した後にエラー（読み取りエラー・stall）で終わったら、reader は再試行の前に最新の書き込み位置を `progress.flush` へ渡す。正常に終わった Range では呼ばない（追従中は 500ms ごとに Range が終わるので、間引きを無視すると秒 2 行になる）。temp への書き込みエラーは mirakc の一時障害として再試行せず、Work に返す。
+
+リトライ上限は「連続した一時障害」の数である。数時間の録画中に散在する失敗で上限に達しないよう累積しない。`204` / `416` / `206` の 0 バイトは接続失敗ではない。連続 5 回まで再試行し、6 回目で Work を失敗させる。
 
 **録画中の worker 再起動は temp の末尾から再開する。** 追従では録画中も ingest ジョブが走る。
 `SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。
@@ -331,15 +332,15 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 （`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないためである
 （`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
 
-**追従の待ちを「停滞」と呼ばない。** `stall_timeout` は 1 回の Range 応答の本文が止まったときにだけ効く。追従の差分は数 MB なので通常は発火しない。信号断で録画ファイルが伸びない間は「追い付いた → 待つ → 状態確認」のポーリングが回るだけで、切断もリトライ消費も起きない。
+**追従の待ちを「停滞」と呼ばない。** stall timer は Range 本文の `Read` 中だけ動く。信号断で録画ファイルが伸びない間は空 Range の後に status を読み、待って再試行する。消費側の逆圧は stall 判定に入らない。
 
-**健全に 1 周したポーリングは `observed_at` を進める（0 バイトでも）。** 追い付いている状態は止まっているのではなく、追従が正常な状態そのものである。observed_at を「バイトを書けたときだけ」進めると、**正常に追従できている録画ほど** UI の停滞判定（60 秒）に引っかかり「取り込み中（停滞）」と表示される。
+**健全な status 観測は `observed_at` を進める（0 バイトでも）。** 追い付いている状態は止まっているのではなく、追従が正常な状態そのものである。observed_at を「バイトを書けたときだけ」進めると、**正常に追従できている録画ほど** UI の停滞判定（60 秒）に引っかかり「取り込み中（停滞）」と表示される。未知の status と失敗経路は進捗として記録しない。
 
-間引きは既存の進捗書き込みと同じ最短 2 秒なので、追従中の DB 書き込みは録画 1 本あたり秒 0.5 行に留まる。接続断の再試行はここを通らないため、**「0 バイトの試行は進捗ではない」という規律は失敗経路側に残る**（`TestIngestWorker_ProgressFlushesInterruptedBurst` が固定している）。
+間引きは既存の進捗書き込みと同じ最短 2 秒なので、追従中の DB 書き込みは録画 1 本あたり秒 0.5 行に留まる。これに接続断ごとの 1 行が加わる。正常 Range での flush は `TestIngestWorker_CleanRangeEndsDoNotFlushProgress` が禁じている。接続断の再試行はここを通らないため、**「0 バイトの試行は進捗ではない」という規律は失敗経路側に残る**（`TestIngestWorker_ProgressFlushesInterruptedBurst` が固定している）。
 
-**進捗の分母は追従ループが更新する。** `record_sync.content_length` は watcher が観測した時点の値である。Work 開始時に固定すると、録画が伸びて `written_bytes` が分母を追い越し、UI が「取り込み中 100%」を録画中ずっと出し続ける。Web 側は `min(100, ...)` で頭打ちにするので、嘘が % として出る。
+**進捗の分母は追い付き時の status 観測で更新する。** `record_sync.content_length` は watcher が観測した時点の値である。Work 開始時に固定すると、録画が伸びて `written_bytes` が分母を追い越し、UI が「取り込み中 100%」を録画中ずっと出し続ける。Web 側は `min(100, ...)` で頭打ちにするので、嘘が % として出る。
 
-追従ループは毎ポーリング `GetRecord` を呼んでおり、その `content.length` が同じ観測なので追加リクエスト無しで分母を更新できる（`ingestProgressReporter.observeProgress`）。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
+`GetRecord` は空 Range の後だけ呼ぶため、録画中の分母更新も追い付き時に限る。録画中は UI が % を表示しない。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
 
 **録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合に使わず、finished 確認後に HEAD と `content.sha256` を照合する。SHA-256 が無ければサイズに比例した時間だけ snooze で待ち、その後も無ければ `timeout_skipped` で commit する。
 
@@ -351,14 +352,14 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
-**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である。** 進捗行
-より先に見る。worker は cancel / fail を観測したとき進捗行を消してからジョブを終端するが、
-その DELETE は失敗してもログだけで続行する（成功したジョブの後始末を失敗で巻き戻さない
-既存の判断に揃えている）。行が残ると、二度と取り込まれない録画が恒久的に「取り込み中
-（停滞）」を名乗る。**この述語は `has_ingestable_record` の否定にしてはならない** ---
-未知の status では worker は追従を続けるので、その間の進捗行は生きた観測である
-（`followAfterStatusPoll`）。終端する status の集合は worker の
-`errIngestRecordEndedAbnormally` と一致させる。
+**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である。**
+この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。
+DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。
+残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。
+**この述語は `has_ingestable_record` の否定にしてはならない。**
+未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
+`TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart` がこの動作を固定する。
+終端する status の集合は worker の `errIngestRecordEndedAbnormally` と一致させる。
 
 **`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
 揃える**（`record_sync.status` が `recording` または `finished`）。`record_sync` 行の**存在**を根拠にしては

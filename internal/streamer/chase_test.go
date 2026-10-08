@@ -296,7 +296,6 @@ func (c *fakeSeekChaseRecordClient) GetRecord(context.Context, string) (*mirakc.
 }
 
 func TestWaitForChaseRecordAtOffsetDoesNotReadAndDiscardHead(t *testing.T) {
-	withFastChaseTimings(t)
 	client := &fakeSeekChaseRecordClient{chunks: []string{"abc", "def"}}
 	body, err := waitForChaseRecordAtOffset(context.Background(), client, "opaque-record-id", 188, nil)
 	if err != nil {
@@ -318,76 +317,8 @@ func TestWaitForChaseRecordAtOffsetDoesNotReadAndDiscardHead(t *testing.T) {
 	}
 }
 
-type finalizingSeekChaseRecordClient struct {
-	mu      sync.Mutex
-	offsets []int64
-	chunks  []string
-}
-
-func (c *finalizingSeekChaseRecordClient) StreamRecord(_ context.Context, recordID string, offset int64) (io.ReadCloser, int64, error) {
-	if recordID != "opaque-record-id" {
-		return nil, 0, errors.New("unexpected record id")
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.offsets = append(c.offsets, offset)
-	if len(c.offsets) == 1 {
-		return nil, 0, mirakc.ErrRangeNotSatisfiable
-	}
-	if len(c.chunks) == 0 {
-		return nil, 0, mirakc.ErrRangeNotSatisfiable
-	}
-	chunk := c.chunks[0]
-	c.chunks = c.chunks[1:]
-	return io.NopCloser(strings.NewReader(chunk)), int64(len(chunk)), nil
-}
-
-func (c *finalizingSeekChaseRecordClient) StreamRecordFollow(context.Context, string) (io.ReadCloser, error) {
-	return nil, errors.New("follow endpoint must not be used for a seek")
-}
-
-func (c *finalizingSeekChaseRecordClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
-	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
-}
-
-func TestChaseRangeFollowReaderDrainsDataAppendedBeforeRecordingFinished(t *testing.T) {
-	withFastChaseTimings(t)
-	client := &finalizingSeekChaseRecordClient{chunks: []string{"tail"}}
-	reader := newChaseRangeFollowReader(context.Background(), client, "opaque-record-id", 188, nil, nil)
-
-	data, err := io.ReadAll(reader)
-	_ = reader.Close()
-	if err != nil {
-		t.Fatalf("reading final chase data: %v", err)
-	}
-	if string(data) != "tail" {
-		t.Fatalf("final chase data = %q, want %q", data, "tail")
-	}
-
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	if len(client.offsets) < 2 || client.offsets[0] != 188 || client.offsets[1] != 188 {
-		t.Fatalf("final Range offsets = %v, want two attempts at 188", client.offsets)
-	}
-}
-
-// withFastChaseTimings は追っかけの Range 追従の間隔と再試行の待ちを短くする。
-func withFastChaseTimings(t *testing.T) {
-	t.Helper()
-	pollMin, pollMax, retryDelay := chaseRangePollMin, chaseRangePollMax, chaseRetryDelay
-	chaseRangePollMin, chaseRangePollMax = 5*time.Millisecond, 20*time.Millisecond
-	chaseRetryDelay = func(int) time.Duration { return time.Millisecond }
-	t.Cleanup(func() {
-		chaseRangePollMin, chaseRangePollMax, chaseRetryDelay = pollMin, pollMax, retryDelay
-	})
-}
-
 // scriptedChaseRecord は録画中の mirakc record を模す。content のうち visible バイトまでが
-// 書かれていて、StreamRecord は要求された offset から visible までを返す（offset が visible
-// を超えたら違反として記録する）。追従配信は先頭から followBytes バイトを返し、followErr で
-// 終わる（nil なら正常な EOF）。followGate があれば、それが閉じるまで追従配信を流さない。
-// rangeErrs / statusErrs は応じる前に順に返す失敗（404 なら record が消えた）。
-// onStatus は失敗を返さなかった GetRecord のたびに呼ばれ、録画を進める（n は何回目か）。
+// 書かれていて、StreamRecord は要求された offset から visible までを返す。
 type scriptedChaseRecord struct {
 	mu          sync.Mutex
 	content     string
@@ -407,7 +338,7 @@ type scriptedChaseRecord struct {
 	statusCalls int
 }
 
-// errAfterReader は data を返した後に err で終わる本文（途中で切れた接続）。
+// errAfterReader は data を返した後に err で終わる本文を模す。
 type errAfterReader struct {
 	data []byte
 	err  error
@@ -494,12 +425,6 @@ func (c *scriptedChaseRecord) GetRecord(context.Context, string) (*mirakc.Record
 
 func (c *scriptedChaseRecord) StreamService(context.Context, int64, int) (io.ReadCloser, error) {
 	return nil, errors.New("not used")
-}
-
-func (c *scriptedChaseRecord) rangeCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.offsets)
 }
 
 // appendThenFinish は 1 回目の GetRecord（まだ録画中）で残りを追記し、2 回目で録画を終える。
@@ -638,7 +563,6 @@ func startGatedHeadChase(t *testing.T, ls *LiveStreamer, client *scriptedChaseRe
 // 追従配信が録画中に閉じても、ffmpeg の入力を EOF にしない（= playlist に ENDLIST を付けない）
 // ことを固定する。ChasePlaylistForTarget を通り、偽 ffmpeg は stdin を全部ファイルへ書く。
 func TestFollowChaseRecordContinuesWithRangeAfterFollowCloses(t *testing.T) {
-	withFastChaseTimings(t)
 	ffmpeg, marker := installEndlistMarkerFFmpeg(t)
 	client := &scriptedChaseRecord{
 		content: "headtail", visible: 4, followBytes: 4, recording: true, onStatus: appendThenFinish,
@@ -682,11 +606,10 @@ func (followOnlyChaseRecordClient) StreamService(context.Context, int64, int) (i
 	return nil, errors.New("not used")
 }
 
-// TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete は、record が 404 になったとき、
+// TestChaseRecordNotFoundUsesCommittedOriginal は、record が 404 になったとき、
 // 読んだ位置がコミット済み原本の終端と一致するときだけ EOF にし、それ以外はエラーにすることを
 // 固定する（ffmpeg が先端より遅れていて purge が先に来ると、残りを読めない）。
-func TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete(t *testing.T) {
-	withFastChaseTimings(t)
+func TestChaseRecordNotFoundUsesCommittedOriginal(t *testing.T) {
 	committed := func(size int64, ok bool) chaseCommittedSize {
 		return func(context.Context) (int64, bool, error) { return size, ok, nil }
 	}
@@ -747,243 +670,48 @@ func TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete(t *testing.T) {
 	}
 }
 
-// TestChaseRangeFollowReaderRetriesTransientFailures は、Range と GetRecord の一過性の失敗
-// （5xx・通信断）を再試行して、録画の最後まで読むことを固定する。
-func TestChaseRangeFollowReaderRetriesTransientFailures(t *testing.T) {
-	withFastChaseTimings(t)
-	client := &scriptedChaseRecord{
-		content: "headtail", visible: 4, followBytes: 4, recording: true, onStatus: appendThenFinish,
-		rangeErrs: []error{
-			&mirakc.APIError{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway"},
-			fmt.Errorf("sending request: %w", syscall.ECONNRESET),
-		},
-		statusErrs: []error{&mirakc.APIError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable"}},
-	}
-	data, err := readChaseInput(t, client, nil)
-	if err != nil {
-		t.Fatalf("chase input ended with %v, want transient failures to be retried", err)
-	}
-	if data != "headtail" {
-		t.Fatalf("chase input = %q, want %q", data, "headtail")
-	}
-	assertOffsetsAdvance(t, client)
-}
+func TestChaseRecordNotFoundLookupIsCanceledByReaderClose(t *testing.T) {
+	outerCtx, cancelOuter := context.WithCancel(context.Background())
+	defer cancelOuter()
 
-// TestChaseRangeFollowReaderRetryLimit は、一過性の失敗を連続 5 回までは再試行して読み切り、
-// 6 回目でエラーにすることを固定する。再試行しても変わらない失敗（4xx）は 1 回目でエラーにする。
-func TestChaseRangeFollowReaderRetryLimit(t *testing.T) {
-	withFastChaseTimings(t)
-	unavailable := &mirakc.APIError{StatusCode: http.StatusServiceUnavailable, Status: "503 Service Unavailable"}
-	failures := func(n int) []error {
-		errs := make([]error, n)
-		for i := range errs {
-			errs[i] = unavailable
-		}
-		return errs
-	}
-	tests := []struct {
-		name      string
-		rangeErrs []error
-		wantErr   bool
-	}{
-		{name: "5 consecutive transient failures", rangeErrs: failures(5)},
-		{name: "6 consecutive transient failures", rangeErrs: failures(6), wantErr: true},
-		{name: "permanent", rangeErrs: []error{&mirakc.APIError{StatusCode: http.StatusBadRequest, Status: "400 Bad Request"}}, wantErr: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			client := &scriptedChaseRecord{
-				content: "headtail", visible: 4, followBytes: 4, recording: true, onStatus: appendThenFinish,
-				rangeErrs: tt.rangeErrs,
-			}
-			data, err := readChaseInput(t, client, nil)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatalf("chase input ended cleanly with %q, want an error", data)
-				}
-				if data != "head" {
-					t.Fatalf("chase input before the error = %q, want %q", data, "head")
-				}
-				return
-			}
-			if err != nil || data != "headtail" {
-				t.Fatalf("chase input = %q, %v; want %q after retrying", data, err, "headtail")
-			}
-		})
-	}
-}
-
-// TestChaseRangeFollowReaderResumesAfterUncleanBodyClose は、追従配信や Range の本文が途中で
-// 切れても（ErrUnexpectedEOF・接続リセット）、読んだ位置から Range で続けることを固定する。
-func TestChaseRangeFollowReaderResumesAfterUncleanBodyClose(t *testing.T) {
-	withFastChaseTimings(t)
-	for _, followErr := range []error{io.ErrUnexpectedEOF, syscall.ECONNRESET} {
-		t.Run(followErr.Error(), func(t *testing.T) {
-			client := &scriptedChaseRecord{
-				content: "headtail", visible: 4, followBytes: 4, followErr: followErr,
-				recording: true, onStatus: appendThenFinish,
-			}
-			data, err := readChaseInput(t, client, nil)
-			if err != nil {
-				t.Fatalf("chase input ended with %v, want the Range continuation", err)
-			}
-			if data != "headtail" {
-				t.Fatalf("chase input = %q, want %q", data, "headtail")
-			}
-			assertOffsetsAdvance(t, client)
-		})
-	}
-}
-
-// TestChaseRangeFollowReaderReadsChunkedRangeBodies は、Content-Length の無い Range 本文
-// （ContentLength -1）を空と見なさず読み、何も返さずに終わった本文だけを追い付いたと扱う
-// ことを固定する。
-func TestChaseRangeFollowReaderReadsChunkedRangeBodies(t *testing.T) {
-	withFastChaseTimings(t)
-	client := &scriptedChaseRecord{
-		content: "headtail", visible: 4, followBytes: 4, recording: true, chunked: true, onStatus: appendThenFinish,
-	}
-	data, err := readChaseInput(t, client, nil)
-	if err != nil {
-		t.Fatalf("chase input ended with %v", err)
-	}
-	if data != "headtail" {
-		t.Fatalf("chase input = %q, want %q", data, "headtail")
-	}
-	assertOffsetsAdvance(t, client)
-}
-
-// TestChaseRangeFollowReaderBacksOffWhileCaughtUp は、録画中に追い付いたままのとき要求の
-// 間隔を広げることを固定する。固定間隔だと、空の Range と GetRecord を毎回続ける。
-func TestChaseRangeFollowReaderBacksOffWhileCaughtUp(t *testing.T) {
-	withFastChaseTimings(t)
-	chaseRangePollMin, chaseRangePollMax = 10*time.Millisecond, 80*time.Millisecond
-	const window = 600 * time.Millisecond
-	started := time.Now()
-	client := &scriptedChaseRecord{
-		content: "head", visible: 4, followBytes: 4, recording: true,
-		onStatus: func(c *scriptedChaseRecord, _ int) {
-			if time.Since(started) > window {
-				c.recording = false
-			}
-		},
-	}
-	data, err := readChaseInput(t, client, nil)
-	if err != nil || data != "head" {
-		t.Fatalf("chase input = %q, %v", data, err)
-	}
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	// 固定 10ms なら 600ms で約 60 回。10, 20, 40, 80, 80, ... なら 10 回前後。
-	if len(client.offsets) > 20 || client.statusCalls > 20 {
-		t.Fatalf("while caught up for %v: %d Range requests and %d GetRecord calls, want at most 20 each",
-			window, len(client.offsets), client.statusCalls)
-	}
-}
-
-// TestChaseRangeFollowReaderBoundsEdgeLag は、変換の入力が録画の先端から遅れる幅を固定する。
-// 録画が止まっていた後の再開は chaseRangePollMax 以内に取りに行き、データが続く間は
-// chaseRangePollMin 間隔で取る（docs/frontend/live.md の「サーバーが追いつく」前提）。
-func TestChaseRangeFollowReaderBoundsEdgeLag(t *testing.T) {
-	withFastChaseTimings(t)
-	chaseRangePollMin, chaseRangePollMax = 10*time.Millisecond, 40*time.Millisecond
-	client := &scriptedChaseRecord{content: strings.Repeat("x", 4+200), visible: 4, followBytes: 4, recording: true}
-	resumedAt := make(chan time.Time, 1)
+	lookupStarted := make(chan struct{})
+	lookupCanceled := make(chan error, 1)
+	client := &scriptedChaseRecord{rangeErrs: []error{errNotFoundForTest}}
+	reader := newChaseFollowReader(outerCtx, client, "opaque-record-id", 0, nil, func(ctx context.Context) (int64, bool, error) {
+		close(lookupStarted)
+		<-ctx.Done()
+		lookupCanceled <- ctx.Err()
+		return 0, false, ctx.Err()
+	})
+	readDone := make(chan error, 1)
 	go func() {
-		// 400ms 止まる（上限の無いバックオフなら 10, 20, ..., 320ms まで間隔が伸びる）。
-		time.Sleep(400 * time.Millisecond)
-		client.mu.Lock()
-		client.visible = 5
-		resumedAt <- time.Now()
-		client.mu.Unlock()
-		// その後は 5ms ごとに 1 バイトずつ書かれ続け、最後に録画が終わる。
-		for {
-			time.Sleep(5 * time.Millisecond)
-			client.mu.Lock()
-			client.visible++
-			if client.visible == len(client.content) {
-				client.recording = false
-				client.mu.Unlock()
-				return
-			}
-			client.mu.Unlock()
-		}
+		_, err := io.ReadAll(reader)
+		readDone <- err
 	}()
-	data, err := readChaseInput(t, client, nil)
-	if err != nil || data != client.content {
-		t.Fatalf("chase input = %d bytes, %v; want %d bytes", len(data), err, len(client.content))
+
+	select {
+	case <-lookupStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("committed-size lookup did not start")
 	}
-	resumed := <-resumedAt
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	var firstAfterResume time.Time
-	var maxGap time.Duration
-	for i, at := range client.rangeAt {
-		if at.Before(resumed) {
-			continue
+	_ = reader.Close()
+
+	select {
+	case err := <-lookupCanceled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("committed-size lookup context error = %v, want context.Canceled", err)
 		}
-		if firstAfterResume.IsZero() {
-			firstAfterResume = at
-		} else if gap := at.Sub(client.rangeAt[i-1]); gap > maxGap {
-			maxGap = gap
-		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader Close did not cancel the committed-size lookup")
 	}
-	if lag := firstAfterResume.Sub(resumed); lag > 100*time.Millisecond {
-		t.Fatalf("first Range after the recording resumed came %v later, want within the 40ms backoff cap (+slack)", lag)
-	}
-	if maxGap > 50*time.Millisecond {
-		t.Fatalf("largest gap between Range requests while data kept coming = %v, want about the 10ms minimum", maxGap)
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not finish after Close canceled the committed-size lookup")
 	}
 }
 
-// TestChaseRangeFollowReaderCloseStopsConcurrentRead は、Read が進行中でも別の goroutine の
-// Close がそれを打ち切り、以後 mirakc へ要求しないことを固定する（-race で回す）。
-func TestChaseRangeFollowReaderCloseStopsConcurrentRead(t *testing.T) {
-	withFastChaseTimings(t)
-	tests := []struct {
-		name string
-		body func() io.ReadCloser
-	}{
-		// 録画中で追い付いたまま、次の Range まで待っている（待ちは 2 秒にする）。
-		{name: "waiting", body: func() io.ReadCloser { return nil }},
-		// 本文の Read で止まっている（追従配信が何も送ってこない）。
-		{name: "blocked body", body: func() io.ReadCloser { pr, _ := io.Pipe(); return pr }},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			chaseRangePollMin, chaseRangePollMax = 2*time.Second, 2*time.Second
-			client := &scriptedChaseRecord{content: "head", visible: 4, recording: true}
-			reader := newChaseRangeFollowReader(context.Background(), client, "opaque-record-id", 4, tt.body(), nil)
-			done := make(chan error, 1)
-			go func() {
-				_, err := io.ReadAll(reader)
-				done <- err
-			}()
-			time.Sleep(50 * time.Millisecond)
-			if err := reader.Close(); err != nil {
-				t.Fatalf("Close() = %v", err)
-			}
-			select {
-			case err := <-done:
-				if err == nil {
-					t.Fatal("Read after Close ended with a clean EOF, want an error")
-				}
-			case <-time.After(500 * time.Millisecond):
-				t.Fatal("Close did not stop the concurrent Read within 500ms")
-			}
-			before := client.rangeCount()
-			time.Sleep(100 * time.Millisecond)
-			if after := client.rangeCount(); after != before {
-				t.Fatalf("Range requests after Close: %d → %d, want none", before, after)
-			}
-		})
-	}
-}
-
-// TestChaseInputErrorDoesNotWriteEndlist は、追っかけ入力のエラー後にセッションを破棄し、
-// 同じ録画の全 offset で cooldown が切れるまで再作成しないこと、切れた後は再生できることを固定する。
 func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
-	withFastChaseTimings(t)
 	previousCooldown := chaseInputFailureCooldown
 	cooldown := 5 * time.Second
 	chaseInputFailureCooldown = cooldown
@@ -1356,7 +1084,6 @@ func TestChasePurgeEndUsesCommittedOriginal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withFastChaseTimings(t)
 			recordingID := seedRecordingWithEvent(t, pool, tt.eventID)
 			seedAsset(t, pool, recordingID, fmt.Sprintf("recordings/chase-purge-%d.ts", recordingID), tt.committed)
 			ffmpeg, marker := installEndlistMarkerFFmpeg(t)
@@ -2264,9 +1991,7 @@ done
 // 異常終了したら、入力の失敗ではなく ffmpeg の異常終了として stderr ごと記録することを固定する。
 // 終了後に入力を閉じて起きるエラーを入力の失敗と取り違えると、stderr が残らない。
 func TestChaseFFmpegCrashIsNotReportedAsInputFailure(t *testing.T) {
-	withFastChaseTimings(t)
 	// 入力は追い付いたまま次の Range を 2 秒待っている。
-	chaseRangePollMin, chaseRangePollMax = 2*time.Second, 2*time.Second
 	logs := captureSlog(t)
 	ffmpeg := installChaseFFmpegScript(t, `sleep 0.5
 echo "fake ffmpeg crashed" >&2
@@ -2331,7 +2056,6 @@ func TestChaseInputCopyFinishUnblocksStuckWrite(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withFastChaseTimings(t)
 			pidFile := filepath.Join(t.TempDir(), "holder.pid")
 			ffmpeg := installChaseFFmpegScript(t, stdinHolderScript(pidFile)+tt.rest)
 			// 1 MiB はパイプの容量より大きいので、読まれなければ Write が止まる。
@@ -2524,5 +2248,93 @@ func TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF(t *testing.T) {
 				t.Fatalf("ENDLIST written = %v, want %v:\n%s", got, tc.eof, read())
 			}
 		})
+	}
+}
+
+// stallingChaseRecordClient は offset 4 以降の Range に "tail" を 1 度だけ返し、それ以降は 416 を返す。
+type stallingChaseRecordClient struct {
+	mu      sync.Mutex
+	offsets []int64
+}
+
+func (c *stallingChaseRecordClient) StreamRecord(_ context.Context, _ string, offset int64) (io.ReadCloser, int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offsets = append(c.offsets, offset)
+	if offset == 4 && len(c.offsets) == 1 {
+		return io.NopCloser(strings.NewReader("tail")), 4, nil
+	}
+	return nil, 0, mirakc.ErrRangeNotSatisfiable
+}
+
+func (*stallingChaseRecordClient) StreamRecordFollow(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
+func (*stallingChaseRecordClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
+	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
+}
+
+func (*stallingChaseRecordClient) StreamService(context.Context, int64, int) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
+// stalledAfterReader は data を返した後、Close されるまで Read が止まる本文を模す。
+type stalledAfterReader struct {
+	data   []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *stalledAfterReader) Read(p []byte) (int, error) {
+	if len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *stalledAfterReader) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
+// TestChaseFollowReaderDisconnectsStalledBodyAndResumesAtOffset は、追っかけ入力の本文が止まったら
+// chaseRecordStallTimeout で切断し、読めた offset から Range で再開することを固定する。
+//
+// 変異「newChaseFollowReader の StallTimeout を消す」は、止まった本文を誰も切らず 5 秒の期限で落ちる。
+func TestChaseFollowReaderDisconnectsStalledBodyAndResumesAtOffset(t *testing.T) {
+	previous := chaseRecordStallTimeout
+	chaseRecordStallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { chaseRecordStallTimeout = previous })
+
+	client := &stallingChaseRecordClient{}
+	body := &stalledAfterReader{data: []byte("head"), closed: make(chan struct{})}
+	reader := newChaseFollowReader(context.Background(), client, "opaque-record-id", 0, body, nil)
+	t.Cleanup(func() { _ = reader.Close() })
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(reader)
+		done <- result{data, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || string(r.data) != "headtail" {
+			t.Fatalf("chase input = %q, %v; want headtail after resuming the stalled body", r.data, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled chase body was not disconnected within 5s (StallTimeout is not wired)")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.offsets) == 0 || client.offsets[0] != 4 {
+		t.Errorf("Range offsets = %v, want the first resume at offset 4", client.offsets)
 	}
 }

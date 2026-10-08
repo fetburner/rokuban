@@ -17,7 +17,7 @@ import (
 // 秒オーダーにしているのは、この観測の用途が「止まっているのか進んでいるのか」
 // の判別だけだから。ingest の同時実行数は mirakc サイト単位で 1〜2 にキャップ
 // されている（docs/recording/ingest.md §5.4）ので、この頻度でも DB への書き込みは
-// 高々 1 秒あたり 1 行程度にしかならない。
+// 録画 1 本あたり間引きの秒 0.5 行に、接続断ごとの flush 1 行を足した量にしかならない。
 //
 // 上限は既定のストール検知（config.ingest.stall_timeout の既定値 30 秒）より
 // 十分短くする ---
@@ -76,6 +76,15 @@ func (r *ingestProgressReporter) report(ctx context.Context, written int64) {
 	}
 	r.lastAt = now
 	r.write(ctx, written)
+}
+
+// observeProgress は空 Range を含む正常な追従観測を記録する。
+// 観測した content length を進捗率の分母に使う。再試行と未知の status では呼ばない。
+func (r *ingestProgressReporter) observeProgress(ctx context.Context, written int64, expected *int64) {
+	if expected != nil {
+		r.expectedBytes = expected
+	}
+	r.report(ctx, written)
 }
 
 // flush は間隔を無視して最新の written バイトを記録し、その時刻から次の
