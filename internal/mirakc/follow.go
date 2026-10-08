@@ -157,14 +157,21 @@ func (r *RecordFollowReader) Read(p []byte) (int, error) {
 		if r.isClosed() {
 			return 0, io.ErrClosedPipe
 		}
-		if ctxErr := r.ctx.Err(); ctxErr != nil {
-			return 0, ctxErr
-		}
 		r.nextOffset += int64(n)
 		body.bytesRead += int64(n)
 		if n > 0 {
 			r.failures = 0
 			r.idleWait = 0
+		}
+		if ctxErr := r.ctx.Err(); ctxErr != nil {
+			if n > 0 {
+				// Deliver bytes already read before reporting cancellation. io.Copy
+				// writes them before its next Read processes the pending body end.
+				r.pendingBody = body
+				r.pendingBodyErr = ctxErr
+				return n, nil
+			}
+			return 0, ctxErr
 		}
 
 		endErr := readErr

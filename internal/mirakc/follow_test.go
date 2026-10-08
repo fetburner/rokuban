@@ -1,10 +1,12 @@
 package mirakc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +23,24 @@ type followTestRecord struct {
 	status string
 	err    error
 }
+
+type cancelingFollowBody struct {
+	data   []byte
+	cancel context.CancelFunc
+	read   bool
+}
+
+func (b *cancelingFollowBody) Read(p []byte) (int, error) {
+	if b.read {
+		return 0, io.EOF
+	}
+	b.read = true
+	n := copy(p, b.data)
+	b.cancel()
+	return n, context.Canceled
+}
+
+func (*cancelingFollowBody) Close() error { return nil }
 
 type followTestClient struct {
 	mu sync.Mutex
@@ -75,7 +95,11 @@ func (c *followTestClient) eventSnapshot() []string {
 	return append([]string(nil), c.events...)
 }
 
-func newFastRecordFollowReader(ctx context.Context, client RecordFollowClient, body io.ReadCloser, options RecordFollowOptions) *RecordFollowReader {
+func newFastRecordFollowReader(t *testing.T, ctx context.Context, client RecordFollowClient, body io.ReadCloser, options RecordFollowOptions) *RecordFollowReader {
+	t.Helper()
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	reader := NewRecordFollowReader(ctx, client, "record", 0, body, options)
 	reader.retryDelay = func(int) time.Duration { return 0 }
 	return reader
@@ -115,7 +139,7 @@ func TestRecordFollowReaderDrainsFinalRangeAfterFinished(t *testing.T) {
 	}
 	var observed []string
 	var rangeEnds []string
-	reader := newFastRecordFollowReader(context.Background(), client,
+	reader := newFastRecordFollowReader(t, context.Background(), client,
 		io.NopCloser(stringReader("head")), RecordFollowOptions{
 			StallTimeout: time.Second,
 			OnRecord: func(record *Record, offset int64) error {
@@ -162,7 +186,7 @@ func TestRecordFollowReaderUnknownStatusRetriesInsteadOfEnding(t *testing.T) {
 		},
 		records: []followTestRecord{{status: "unknown"}, {status: "finished"}},
 	}
-	reader := NewRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{
+	reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{
 		StallTimeout: time.Second,
 	})
 	data, err := io.ReadAll(reader)
@@ -197,7 +221,7 @@ func TestRecordFollowReaderRetriesTransientRangeFailuresAtLimit(t *testing.T) {
 		},
 		records: []followTestRecord{{status: "finished"}},
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{})
 	data, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || string(data) != "tail" {
@@ -218,7 +242,7 @@ func TestRecordFollowReaderStopsAfterSixthTransientFailure(t *testing.T) {
 	for i := range client.responses {
 		client.responses[i] = followTestResponse{err: serverError}
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{})
 	_, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err == nil || !strings.Contains(err.Error(), "failed 6 consecutive times") {
@@ -232,7 +256,7 @@ func TestRecordFollowReaderStopsAfterSixthTransientFailure(t *testing.T) {
 
 func TestRecordFollowReaderDoesNotRetryPermanentRangeFailure(t *testing.T) {
 	client := &followTestClient{responses: []followTestResponse{{err: &APIError{StatusCode: 400, Status: "400 Bad Request"}}}}
-	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{})
 	_, err := io.ReadAll(reader)
 	_ = reader.Close()
 	var apiErr *APIError
@@ -257,7 +281,7 @@ func TestRecordFollowReaderRetriesTransientStatusFailure(t *testing.T) {
 			{status: "finished"},
 		},
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{})
 	data, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || len(data) != 0 {
@@ -276,7 +300,7 @@ func TestRecordFollowReaderTreatsCanceledAndFailedAsTerminal(t *testing.T) {
 				responses: []followTestResponse{{err: ErrRangeNotSatisfiable}, {err: ErrRangeNotSatisfiable}},
 				records:   []followTestRecord{{status: status}},
 			}
-			reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
+			reader := newFastRecordFollowReader(t, context.Background(), client, nil, RecordFollowOptions{})
 			data, err := io.ReadAll(reader)
 			_ = reader.Close()
 			if err != nil || len(data) != 0 {
@@ -497,6 +521,34 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 			t.Fatal("reader did not finish after the consumer Write returned")
 		}
 	})
+}
+
+func TestRecordFollowReaderPreservesBytesReadDuringCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	body := &cancelingFollowBody{data: []byte("partial"), cancel: cancel}
+	var output bytes.Buffer
+	var rangeEndCalls int
+	var writtenAtRangeEnd int
+	reader := NewRecordFollowReader(ctx, &followTestClient{}, "record", 0, body, RecordFollowOptions{
+		OnRangeEnd: func(offset, bodyBytes int64) {
+			rangeEndCalls++
+			writtenAtRangeEnd = output.Len()
+			if offset != int64(len(body.data)) || bodyBytes != int64(len(body.data)) {
+				t.Errorf("range end = (%d, %d), want (%d, %d)", offset, bodyBytes, len(body.data), len(body.data))
+			}
+		},
+	})
+	written, err := io.Copy(&output, reader)
+	_ = reader.Close()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("io.Copy error = %v, want context.Canceled", err)
+	}
+	if written != int64(len(body.data)) || output.String() != string(body.data) {
+		t.Fatalf("io.Copy wrote %d bytes %q, want %q", written, output.String(), body.data)
+	}
+	if rangeEndCalls != 1 || writtenAtRangeEnd != len(body.data) {
+		t.Errorf("range end calls = %d at written offset %d, want one call after %d bytes were written", rangeEndCalls, writtenAtRangeEnd, len(body.data))
+	}
 }
 
 func TestRecordFollowReaderCloseStopsConcurrentRead(t *testing.T) {
