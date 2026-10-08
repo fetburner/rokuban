@@ -299,11 +299,12 @@ async function checkHero(label, recording, profile) {
   }
 
   try {
-    await page.waitForFunction((slot) => window.__homeResumeMarker()?.slot === slot, MARKER_SLOT, { timeout: 10_000 })
-    await page.waitForFunction(() => {
+    await page.waitForFunction((slot) => {
       const video = document.querySelector('[data-testid="home-hero-resume-video"]')
-      return video !== null && Number(getComputedStyle(video).opacity) > 0.9
-    }, undefined, { timeout: 3000 })
+      return window.__homeResumeMarker()?.slot === slot &&
+        video?.getAttribute('data-resume-state') === 'ready' &&
+        Number(getComputedStyle(video).opacity) > 0.9
+    }, MARKER_SLOT, { timeout: 10_000 })
     const marker = await page.evaluate(() => window.__homeResumeMarker())
     if (marker.slot !== MARKER_SLOT) ng.push(`${label}: 表示中の目印が違う (${JSON.stringify(marker)})`)
     if (!marker.paused) ng.push(`${label}: 目印フレーム表示後に video が再生中 (${JSON.stringify(marker)})`)
