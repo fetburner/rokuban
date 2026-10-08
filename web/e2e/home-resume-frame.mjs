@@ -131,22 +131,25 @@ function makeFixtures() {
   }
 }
 
-const fixture = makeFixtures()
-baseRecording.resumePositionMs = fixture.targetPositionMs
 const cutRecording = {
   ...baseRecording,
   encodedAssets: [{
     profile: CUT_PROFILE,
-    sizeBytes: statSync(path.join(fixture.fixtureDir, 'encoded-cut.mp4')).size,
+    sizeBytes: 1_000_000,
     cut: true,
     keepRanges: CUT_KEEP_RANGES,
   }],
 }
-baseRecording.encodedAssets[0].sizeBytes = statSync(fixture.encodedPath).size
 await validateFixturesOrExit([
   ['non-cut continue-watching recording', ListRecordingsResponseItem, baseRecording],
   ['cut continue-watching recording', ListRecordingsResponseItem, cutRecording],
 ], ng)
+
+const fixture = makeFixtures()
+baseRecording.resumePositionMs = fixture.targetPositionMs
+cutRecording.resumePositionMs = fixture.targetPositionMs
+baseRecording.encodedAssets[0].sizeBytes = statSync(fixture.encodedPath).size
+cutRecording.encodedAssets[0].sizeBytes = statSync(path.join(fixture.fixtureDir, 'encoded-cut.mp4')).size
 
 log(`URL: ${URL_BASE}`)
 await verifyBundleMatchesOrExit(URL_BASE, ng)
