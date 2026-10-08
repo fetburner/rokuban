@@ -82,8 +82,10 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateMediaAsset: %v", err)
 	}
+	// 計測サイズを原本サイズとずらす。同じ値だと drop_stats からの旧形式補完でも
+	// 一致してしまい、catalog の計測記録を使う経路を区別できない。
 	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
-		MediaAssetID: assetID, ScannedSizeBytes: 1_000_000,
+		MediaAssetID: assetID, ScannedSizeBytes: 999_000,
 	}); err != nil {
 		t.Fatalf("UpsertMediaAssetTSScan: %v", err)
 	}
@@ -213,7 +215,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Fatalf("exported drop_positions = %+v", doc.DropPositions)
 	}
 	if len(doc.MediaAssetTSScans) != 1 || doc.MediaAssetTSScans[0].MediaAssetID != assetID ||
-		doc.MediaAssetTSScans[0].ScannedSizeBytes != 1_000_000 {
+		doc.MediaAssetTSScans[0].ScannedSizeBytes != 999_000 {
 		t.Fatalf("exported media_asset_ts_scans = %+v", doc.MediaAssetTSScans)
 	}
 	if len(doc.ProgramIntents) != 1 {
@@ -382,8 +384,8 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	).Scan(&restoredScannedSize); err != nil {
 		t.Fatalf("query media_asset_ts_scans: %v", err)
 	}
-	if restoredScannedSize != 1_000_000 {
-		t.Errorf("restored scanned_size_bytes = %d, want 1000000", restoredScannedSize)
+	if restoredScannedSize != 999_000 {
+		t.Errorf("restored scanned_size_bytes = %d, want 999000", restoredScannedSize)
 	}
 
 	var matchValue string

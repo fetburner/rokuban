@@ -76,19 +76,19 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 	for _, r := range result.RejectedSnapshots {
 		_, _ = fmt.Fprintf(out, "  skipped incomplete generation %s: %s\n", r.Name, r.Reason)
 	}
-	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
-	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
-	_, _ = fmt.Fprintf(out, "  recording_watched:  %d\n", result.RecordingWatched)
-	_, _ = fmt.Fprintf(out, "  media_assets:       %d\n", result.MediaAssets)
-	_, _ = fmt.Fprintf(out, "  drop_stats:         %d\n", result.DropStats)
-	_, _ = fmt.Fprintf(out, "  drop_positions:     %d\n", result.DropPositions)
+	_, _ = fmt.Fprintf(out, "  rules:                %d\n", result.Rules)
+	_, _ = fmt.Fprintf(out, "  recordings:           %d\n", result.Recordings)
+	_, _ = fmt.Fprintf(out, "  recording_watched:    %d\n", result.RecordingWatched)
+	_, _ = fmt.Fprintf(out, "  media_assets:         %d\n", result.MediaAssets)
+	_, _ = fmt.Fprintf(out, "  drop_stats:           %d\n", result.DropStats)
+	_, _ = fmt.Fprintf(out, "  drop_positions:       %d\n", result.DropPositions)
 	_, _ = fmt.Fprintf(out, "  media_asset_ts_scans: %d\n", result.MediaAssetTSScans)
-	_, _ = fmt.Fprintf(out, "  program_snapshots:  %d\n", result.ProgramSnapshots)
-	_, _ = fmt.Fprintf(out, "  program_intents:    %d\n", result.ProgramIntents)
-	_, _ = fmt.Fprintf(out, "  program_overrides:  %d\n", result.ProgramOverrides)
+	_, _ = fmt.Fprintf(out, "  program_snapshots:    %d\n", result.ProgramSnapshots)
+	_, _ = fmt.Fprintf(out, "  program_intents:      %d\n", result.ProgramIntents)
+	_, _ = fmt.Fprintf(out, "  program_overrides:    %d\n", result.ProgramOverrides)
 	// ユーザーが手で置いたチャプターは自動検出で作り直せない。目に触れる位置に出す。
-	_, _ = fmt.Fprintf(out, "  chapter_ownerships: %d\n", result.RecordingChapterOwnerships)
-	_, _ = fmt.Fprintf(out, "  chapter_spans:      %d\n", result.RecordingChapterSpans)
+	_, _ = fmt.Fprintf(out, "  chapter_ownerships:   %d\n", result.RecordingChapterOwnerships)
+	_, _ = fmt.Fprintf(out, "  chapter_spans:        %d\n", result.RecordingChapterSpans)
 	// 落とした行は黙って切り捨てない。永続資産は復元できているので rescue 自体は
 	// 成功だが、ダンプが壊れている事実は運用者に伝える。
 	if result.SkippedProgramSnapshots > 0 {

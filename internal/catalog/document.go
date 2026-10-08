@@ -8,7 +8,6 @@ package catalog
 
 import (
 	"encoding/json"
-	"fmt"
 	"time"
 )
 
@@ -71,6 +70,7 @@ type Document struct {
 	// MediaAssetTSScans は原本 TS の計測時サイズを記録する。
 	// 配列の追加なので Version は上げない。旧 catalog では drop_stats がある原本だけを、
 	// 同じ文書の media_assets.size_bytes を使って計測済みとして補う。
+	// nil（キーが無い / null）は旧形式とみなして補完する。export は空でも `[]` を書く。
 	MediaAssetTSScans []MediaAssetTSScan `json:"mediaAssetTsScans"`
 	ProgramSnapshots  []ProgramSnapshot  `json:"programSnapshots"`
 	ProgramIntents    []ProgramIntent    `json:"programIntents"`
@@ -79,25 +79,6 @@ type Document struct {
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
 	RecordingChapterSpans      []RecordingChapterSpan      `json:"recordingChapterSpans"`
-
-	mediaAssetTSScansPresent bool
-}
-
-// UnmarshalJSON は catalog 文書を読み、mediaAssetTsScans キーの有無も保持する。
-// キーの無い世代だけで旧形式向けの補完を行い、明示された空配列は空のまま扱う。
-func (d *Document) UnmarshalJSON(data []byte) error {
-	type documentAlias Document
-	var decoded documentAlias
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return fmt.Errorf("decoding catalog document: %w", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return fmt.Errorf("checking catalog document fields: %w", err)
-	}
-	*d = Document(decoded)
-	_, d.mediaAssetTSScansPresent = fields["mediaAssetTsScans"]
-	return nil
 }
 
 // LabelRule は label_rules の 1 行。生成列（value_key / keyword_key）は

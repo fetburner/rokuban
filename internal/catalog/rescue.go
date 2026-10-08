@@ -262,11 +262,11 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document, mediaDir strin
 		return nil, err
 	}
 
-	// media_asset_ts_scans references media_assets and follows drop_positions in the
-	// documented restore order. Old documents lack the key; only their drop_stats rows
-	// can establish that an original was previously scanned.
+	// media_asset_ts_scans は media_assets を参照し、文書化された復元順で
+	// drop_positions の後に来る。旧文書にはキーが無く、原本が計測済みだったと
+	// 言えるのは drop_stats の行だけなので、そこから補う。
 	tsScans := doc.MediaAssetTSScans
-	if !doc.mediaAssetTSScansPresent {
+	if doc.MediaAssetTSScans == nil {
 		tsScans = legacyMediaAssetTSScans(doc)
 	}
 	if err := applyMediaAssetTSScans(ctx, q, tsScans, res); err != nil {
