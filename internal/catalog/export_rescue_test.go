@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -79,6 +81,11 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
+		MediaAssetID: assetID, ScannedSizeBytes: 1_000_000,
+	}); err != nil {
+		t.Fatalf("UpsertMediaAssetTSScan: %v", err)
 	}
 
 	// recording_encode_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
@@ -205,6 +212,10 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		doc.DropPositions[0].ElapsedMs == nil || *doc.DropPositions[0].ElapsedMs != 1000 {
 		t.Fatalf("exported drop_positions = %+v", doc.DropPositions)
 	}
+	if len(doc.MediaAssetTSScans) != 1 || doc.MediaAssetTSScans[0].MediaAssetID != assetID ||
+		doc.MediaAssetTSScans[0].ScannedSizeBytes != 1_000_000 {
+		t.Fatalf("exported media_asset_ts_scans = %+v", doc.MediaAssetTSScans)
+	}
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
 	}
@@ -246,9 +257,9 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if result.Generation == "" {
 		t.Fatalf("rescued from %+v, want a verified generation", result)
 	}
-	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 || result.DropPositions != 1 {
-		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d positions=%d",
-			result.Rules, result.Recordings, result.MediaAssets, result.DropStats, result.DropPositions)
+	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 || result.DropPositions != 1 || result.MediaAssetTSScans != 1 {
+		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d positions=%d ts_scans=%d",
+			result.Rules, result.Recordings, result.MediaAssets, result.DropStats, result.DropPositions, result.MediaAssetTSScans)
 	}
 	if result.RecordingEncodePolicies != 1 {
 		t.Fatalf("rescue recording_encode_policies = %d, want 1 (unfrozen recording must not gain a row)",
@@ -365,6 +376,15 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if restoredElapsed == nil || *restoredElapsed != 1000 {
 		t.Errorf("restored elapsed_ms = %v, want 1000", restoredElapsed)
 	}
+	var restoredScannedSize int64
+	if err := pool.QueryRow(ctx,
+		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
+	).Scan(&restoredScannedSize); err != nil {
+		t.Fatalf("query media_asset_ts_scans: %v", err)
+	}
+	if restoredScannedSize != 1_000_000 {
+		t.Errorf("restored scanned_size_bytes = %d, want 1000000", restoredScannedSize)
+	}
 
 	var matchValue string
 	if err := pool.QueryRow(ctx,
@@ -407,6 +427,102 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if assetCount != 1 {
 		t.Errorf("media_assets after second rescue = %d, want 1", assetCount)
+	}
+}
+
+func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source: "manual", Site: "default",
+		NetworkID: 1, ServiceID: 1, EventID: 1,
+		ServiceName: "s", ChannelType: "GR", Channel: "1",
+		Title: "legacy", IsFree: true,
+		ProgramStartAt:    time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 60_000, Status: "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	const relPath = "sites/default/legacy.m2ts"
+	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recID, Kind: "original", RelPath: relPath, SizeBytes: 1234,
+	})
+	if err != nil {
+		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+		VALUES ($1, 256, 20, 2, 0, 0, 'video')
+	`, assetID); err != nil {
+		t.Fatalf("insert drop_stats: %v", err)
+	}
+
+	recordingRows, err := q.CatalogListRecordings(ctx)
+	if err != nil {
+		t.Fatalf("CatalogListRecordings: %v", err)
+	}
+	if len(recordingRows) != 1 {
+		t.Fatalf("recording rows = %d, want 1", len(recordingRows))
+	}
+	assetRows, err := q.CatalogListMediaAssets(ctx)
+	if err != nil {
+		t.Fatalf("CatalogListMediaAssets: %v", err)
+	}
+	if len(assetRows) != 1 {
+		t.Fatalf("media asset rows = %d, want 1", len(assetRows))
+	}
+	doc := &Document{
+		Version:     Version,
+		ExportedAt:  time.Now().UTC(),
+		Recordings:  []Recording{recordingFromRow(recordingRows[0])},
+		MediaAssets: []MediaAsset{mediaAssetFromRow(assetRows[0])},
+		DropStats:   []DropStat{{MediaAssetID: assetID, Pid: 256, Packets: 20, Drops: 2}},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal document: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode document fields: %v", err)
+	}
+	delete(fields, "mediaAssetTsScans")
+	legacyJSON, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal legacy document: %v", err)
+	}
+
+	mediaDir := t.TempDir()
+	assetPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatalf("create media directory: %v", err)
+	}
+	if err := os.WriteFile(assetPath, []byte("legacy asset"), 0o600); err != nil {
+		t.Fatalf("write media asset: %v", err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), DocumentFilename)
+	if err := os.WriteFile(legacyPath, legacyJSON, 0o600); err != nil {
+		t.Fatalf("write legacy catalog: %v", err)
+	}
+
+	result, err := RescueFile(ctx, pool, mediaDir, legacyPath)
+	if err != nil {
+		t.Fatalf("RescueFile: %v", err)
+	}
+	if result.MediaAssetTSScans != 1 {
+		t.Fatalf("rescued media_asset_ts_scans = %d, want 1", result.MediaAssetTSScans)
+	}
+	var scannedSize int64
+	if err := pool.QueryRow(ctx,
+		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
+	).Scan(&scannedSize); err != nil {
+		t.Fatalf("query media_asset_ts_scans: %v", err)
+	}
+	if scannedSize != 1234 {
+		t.Fatalf("legacy scanned_size_bytes = %d, want snapshot size 1234", scannedSize)
 	}
 }
 

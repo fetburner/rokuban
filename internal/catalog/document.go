@@ -1,13 +1,14 @@
 // Package catalog は災害復旧用のコアメタデータ JSON の export / rescue を担う
 // （docs/storage.md §8、issue #71 M3-9）。
 //
-// 保護対象はルール・録画履歴・media_assets・ドロップ統計と位置・tombstone・
+// 保護対象はルール・録画履歴・media_assets・原本 TS 計測記録・ドロップ統計と位置・tombstone・
 // 手動オーバーライド（と意図の FK 先 program_snapshots）のみ。EPG 射影と
 // ジョブキューは再構築可能なので含めない。pg_dump に依存しない。
 package catalog
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -67,13 +68,36 @@ type Document struct {
 	MediaAssets      []MediaAsset       `json:"mediaAssets"`
 	DropStats        []DropStat         `json:"dropStats"`
 	DropPositions    []DropPosition     `json:"dropPositions"`
-	ProgramSnapshots []ProgramSnapshot  `json:"programSnapshots"`
-	ProgramIntents   []ProgramIntent    `json:"programIntents"`
-	ProgramOverrides []ProgramOverride  `json:"programOverrides"`
+	// MediaAssetTSScans は原本 TS の計測時サイズを記録する。
+	// 配列の追加なので Version は上げない。旧 catalog では drop_stats がある原本だけを、
+	// 同じ文書の media_assets.size_bytes を使って計測済みとして補う。
+	MediaAssetTSScans []MediaAssetTSScan `json:"mediaAssetTsScans"`
+	ProgramSnapshots  []ProgramSnapshot  `json:"programSnapshots"`
+	ProgramIntents    []ProgramIntent    `json:"programIntents"`
+	ProgramOverrides  []ProgramOverride  `json:"programOverrides"`
 	// チャプターの所有 2 表は mediaAssets の後に載る（区間は所有の行を FK で
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
 	RecordingChapterSpans      []RecordingChapterSpan      `json:"recordingChapterSpans"`
+
+	mediaAssetTSScansPresent bool
+}
+
+// UnmarshalJSON は catalog 文書を読み、mediaAssetTsScans キーの有無も保持する。
+// キーの無い世代だけで旧形式向けの補完を行い、明示された空配列は空のまま扱う。
+func (d *Document) UnmarshalJSON(data []byte) error {
+	type documentAlias Document
+	var decoded documentAlias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return fmt.Errorf("decoding catalog document: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("checking catalog document fields: %w", err)
+	}
+	*d = Document(decoded)
+	_, d.mediaAssetTSScansPresent = fields["mediaAssetTsScans"]
+	return nil
 }
 
 // LabelRule は label_rules の 1 行。生成列（value_key / keyword_key）は
@@ -281,6 +305,12 @@ type DropPosition struct {
 	ByteOffset   int64  `json:"byteOffset"`
 	Pid          int32  `json:"pid"`
 	ElapsedMs    *int64 `json:"elapsedMs,omitempty"`
+}
+
+// MediaAssetTSScan は media_asset_ts_scans の 1 行。
+type MediaAssetTSScan struct {
+	MediaAssetID     int64 `json:"mediaAssetId"`
+	ScannedSizeBytes int64 `json:"scannedSizeBytes"`
 }
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。
