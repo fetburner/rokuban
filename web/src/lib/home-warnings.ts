@@ -282,11 +282,11 @@ function failedDurationText(recording: Recording): string {
  * 型で区別する**（issue #301 / #454）。呼び出し側はこれを見て「理由:」という
  * ラベルを付けるかどうかを決める --- 文字列の中身（`'理由不明'`）で判定すると、
  * 将来この語を言い換えたときに呼び出し側の分岐が黙って外れる。
- * `qualityEvents` は追記専用の履歴（`recordings.quality_events`。
- * `docs/schema/recordings.md` §5）で `recording.failed` /
- * `recording.record-broken` / `bcas_anomaly` が混ざるので、**最後の要素では
- * なく失敗系イベントの最後の要素**を見る（末尾が `bcas_anomaly` だと最後の
- * 失敗理由を読み飛ばす）。
+ * いま `qualityEvents` を書くのは `recording.failed` / `recording.record-broken`
+ * だけで、スクランブル数は `drop_stats.scrambled` にある。それでも末尾の要素では
+ * なく、失敗系イベントの最後の要素を `findLast` で読む。ほかの種類のイベントが
+ * 増えても、また版を混在させて動かしている間に古い版が別種のイベントを書き足し
+ * ても、失敗理由を読み飛ばさないようにするためである。
  *
  * `reason` の形は書き手（`event` の値）で決まり、いずれもオブジェクトで
  * 素の文字列を書く経路は無い（以前のコメントは「`recording.failed` は文字列」
@@ -300,8 +300,8 @@ function failedDurationText(recording: Recording): string {
  *   `map[string]string{"reason": data.Reason}` で書くので `reason.reason`
  *   を読む。
  *
- * 上記どちらでもない `event`、または期待した形（`type` / `reason` フィールド
- * が無い）は `components/recording-detail-panel.tsx` の「品質イベント」欄と
+ * 期待した形でなければ（`type` / `reason` フィールドが無いなど）、
+ * `components/recording-detail-panel.tsx` の「品質イベント」欄と
  * 同じ流儀（`JSON.stringify`）で読める形にフォールバックする。
  *
  * **読んだフィールドが空文字なら `undefined` に寄せる**（レビュー指摘）。
@@ -321,10 +321,7 @@ function failureReasonText(recording: Recording): string | undefined {
 
   if (typeof reason === 'object' && !Array.isArray(reason)) {
     const record = reason as Record<string, unknown>
-    // 上の findLast が `event` を 2 種類に絞っているので、`recording.failed`
-    // でなければ `recording.record-broken`。
-    const field = failureEvent['event'] === 'recording.failed' ? 'type' : 'reason'
-    const value = record[field]
+    const value = record[failureEvent['event'] === 'recording.failed' ? 'type' : 'reason']
     if (typeof value === 'string') return value === '' ? undefined : value
   }
   return JSON.stringify(reason)

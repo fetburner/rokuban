@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -408,7 +409,7 @@ func applyProgramOverrides(ctx context.Context, q *sqlcgen.Queries, overrides []
 func applyRecordings(ctx context.Context, q *sqlcgen.Queries, recordings []Recording, res *RescueResult) error {
 	for _, r := range recordings {
 		qe := r.QualityEvents
-		if len(qe) == 0 {
+		if len(qe) == 0 || bytes.Equal(bytes.TrimSpace(qe), []byte("null")) {
 			qe = []byte("[]")
 		}
 		if err := q.CatalogUpsertRecording(ctx, sqlcgen.CatalogUpsertRecordingParams{

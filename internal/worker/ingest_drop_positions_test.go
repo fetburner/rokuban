@@ -129,6 +129,59 @@ func TestIngestWorker_CommitDropPositions(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_CommitDoesNotAppendScrambleQualityEvent(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	recordingID := insertTestRecording(t, pool)
+	data := pcrPacket(0x0100, 0, 900000)
+	data[3] |= 0x80 // transport_scrambling_control = 2
+	counter := tsstat.NewCounter(&bytes.Buffer{})
+	if n, err := counter.Write(data); err != nil || n != len(data) {
+		t.Fatalf("counter.Write() = %d, %v; want %d, nil", n, err, len(data))
+	}
+	if got := counter.TotalScrambled(); got != 1 {
+		t.Fatalf("TotalScrambled() = %d, want 1", got)
+	}
+
+	mediaDir := t.TempDir()
+	relPath := "test/scrambled.m2ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatalf("creating media directory: %v", err)
+	}
+	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-test")
+	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
+		t.Fatalf("creating ingest temporary file: %v", err)
+	}
+
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
+		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)), counter,
+	); err != nil {
+		t.Fatalf("commit() error: %v", err)
+	}
+
+	var scrambled int64
+	var qualityEvents []byte
+	if err := pool.QueryRow(context.Background(), `
+		SELECT d.scrambled, r.quality_events
+		FROM media_assets a
+		JOIN drop_stats d ON d.media_asset_id = a.id
+		JOIN recordings r ON r.id = a.recording_id
+		WHERE a.recording_id = $1 AND a.kind = 'original' AND d.pid = $2`, recordingID, 0x0100,
+	).Scan(&scrambled, &qualityEvents); err != nil {
+		t.Fatalf("querying committed scrambled statistics and quality events: %v", err)
+	}
+	if scrambled != 1 {
+		t.Errorf("drop_stats.scrambled = %d, want 1", scrambled)
+	}
+	if got, want := string(qualityEvents), `[]`; got != want {
+		t.Errorf("recordings.quality_events = %s, want %s", got, want)
+	}
+}
+
 func TestIngestWorker_CommitDropStatsAndPositionsUsesTwoBatches(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

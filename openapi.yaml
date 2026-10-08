@@ -3067,7 +3067,7 @@ components:
         ingest:
           $ref: "#/components/schemas/IngestProgress"
         qualityEvents:
-          description: recording.failed / record-broken / bcas_anomaly の履歴
+          description: recording.failed / record-broken の履歴
           type: array
           items:
             type: object

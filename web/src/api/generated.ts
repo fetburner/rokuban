@@ -962,7 +962,7 @@ export interface Recording {
   encodeStatus?: EncodeJobStatus[];
   dropSummary?: DropSummary;
   ingest?: IngestProgress;
-  /** recording.failed / record-broken / bcas_anomaly の履歴 */
+  /** recording.failed / record-broken の履歴 */
   qualityEvents?: RecordingQualityEventsItem[];
   /**
      * 論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`

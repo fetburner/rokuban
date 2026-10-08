@@ -1184,16 +1184,30 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     expect(await screen.findByText(/理由: "unexpected"/)).toBeInTheDocument()
   })
 
-  it('quality_events の最後の要素が bcas_anomaly でも、その前の失敗理由を読む', async () => {
-    // quality_events は recording.failed / record-broken / bcas_anomaly が
-    // 混ざる追記専用の履歴なので、「最後の要素」だけを見ると失敗理由が
-    // bcas_anomaly（reason 無し）に上書きされる。
+  it('quality_events の最後に記録された失敗理由を読む', async () => {
     stubApi({
       failed: [
         recording(9, '複数イベントの失敗', 'failed', {
           qualityEvents: [
             { at: iso(-2 * HOUR), event: 'recording.failed', reason: { type: 'io-error' } },
-            { at: iso(-HOUR), event: 'bcas_anomaly' },
+            { at: iso(-HOUR), event: 'recording.record-broken', reason: { reason: 'disk-error' } },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: disk-error/)).toBeInTheDocument()
+    expect(screen.queryByText(/理由: io-error/)).not.toBeInTheDocument()
+  })
+
+  it('失敗イベントの後ろに別種のイベントがあっても直前の失敗理由を読む', async () => {
+    stubApi({
+      failed: [
+        recording(9, '後続イベントありの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-2 * HOUR), event: 'recording.failed', reason: { type: 'io-error' } },
+            { at: iso(-HOUR), event: 'recording.future-event' },
           ],
         }),
       ],

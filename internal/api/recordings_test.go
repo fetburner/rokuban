@@ -482,7 +482,11 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 
 	id := seedRecording(t, pool, "問題あり", time.Now().Truncate(time.Second), "failed", 1)
 
-	events, err := json.Marshal([]db.QualityEvent{{At: time.Now(), Event: "bcas_anomaly"}})
+	events, err := json.Marshal([]db.QualityEvent{{
+		At:     time.Now(),
+		Event:  "recording.failed",
+		Reason: json.RawMessage(`{"type":"tuner-unavailable"}`),
+	}})
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}
@@ -501,7 +505,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 	if got[0].QualityEvents == nil || len(*got[0].QualityEvents) != 1 {
 		t.Fatalf("qualityEvents = %v, want 1 event", got[0].QualityEvents)
 	}
-	if (*got[0].QualityEvents)[0]["event"] != "bcas_anomaly" {
+	if (*got[0].QualityEvents)[0]["event"] != "recording.failed" {
 		t.Errorf("event = %v", (*got[0].QualityEvents)[0])
 	}
 
@@ -1443,7 +1447,11 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed encoded: %v", err)
 	}
-	events, err := json.Marshal([]db.QualityEvent{{At: base, Event: "bcas_anomaly"}})
+	events, err := json.Marshal([]db.QualityEvent{{
+		At:     base,
+		Event:  "recording.record-broken",
+		Reason: json.RawMessage(`{"reason":"io-error"}`),
+	}})
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}
