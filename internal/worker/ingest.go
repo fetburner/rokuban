@@ -65,7 +65,6 @@ var ingestSHA256BytesPerSecond int64 = 7_800_000
 const ingestSHA256MinWait = 10 * time.Second
 
 // ingestSHA256WaitFor は転送済みバイト数 size に対する SHA-256 待ちの上限を返す。
-// 上限は mirakc の recording.endTime から数え、nil / 未来値なら temp の mtime を起点にする。
 func ingestSHA256WaitFor(size int64) time.Duration {
 	if size < 0 {
 		size = 0
@@ -374,6 +373,10 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	result := "failure"
 	skipMetrics := false
 	defer func() {
+		if skipMetrics {
+			// SHA-256 待ちは job を完了して次のレベルトリガーに渡す中間状態。
+			return
+		}
 		// result は success / failure / canceled の 3 値。**この 3 値の外に増やさない**
 		// （低カーディナリティが前提。record id や理由は入れない）。
 		//
@@ -408,10 +411,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		// 1 回余分に乗りうる（実例: stall 検知の cancel が再試行予算の超過で返るとき）。
 		// Work 側では塞げず、River も同じ後読みをしている。
 		cause := context.Cause(ctx)
-		if skipMetrics {
-			// SHA-256 待ちは job を完了して次のレベルトリガーに渡す中間状態。
-			return
-		}
 		remote := errors.Is(cause, river.ErrJobCancelledRemotely)
 		if cause != nil && !remote &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, cause)) {
@@ -709,16 +708,6 @@ func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc
 // maybeWaitForSHA256 は完成済み temp のハッシュ待ち期限を判定する。
 // 待つ場合は temp を同期し、進捗行を消して次の record-saved / record_sweep に処理を渡す。
 func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, tempPath string, file ingestFile, expectedLen, size int64, observedEndTime *mirakc.Milliseconds, log *slog.Logger) (*string, bool, error) {
-	record, err := client.GetRecord(ctx, recordID)
-	if err != nil {
-		return nil, false, fmt.Errorf("refreshing mirakc record before SHA-256 decision: %w", err)
-	}
-	if record.Recording.Status != db.RecordingStatusFinished {
-		return nil, false, nil
-	}
-	if record.Content.Sha256 != nil {
-		return record.Content.Sha256, false, nil
-	}
 	// HEAD の長さが不明なら転送済みを判定できない。content.length は照合の根拠に
 	// 使わず、待たずに timeout_skipped で commit する。
 	if expectedLen < 0 || size != expectedLen {
@@ -728,19 +717,14 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if err != nil {
 		return nil, false, fmt.Errorf("stat ingest temporary file before SHA-256 wait: %w", err)
 	}
-	now := time.Now()
-	endTime := record.Recording.EndTime
-	if endTime == nil {
-		endTime = observedEndTime
-	}
-	deadline := ingestSHA256WaitDeadline(size, endTime, info.ModTime(), now)
-	if !now.Before(deadline) {
+	if !time.Now().Before(ingestSHA256WaitDeadline(size, observedEndTime, info.ModTime(), time.Now())) {
 		return nil, false, nil
 	}
+	// 同期の後に取り直した record だけを判断に使う（temp が持続化された後の観測）。
 	if err := file.Sync(); err != nil {
 		return nil, false, fmt.Errorf("syncing ingest temp before SHA-256 wait: %w", err)
 	}
-	record, err = client.GetRecord(ctx, recordID)
+	record, err := client.GetRecord(ctx, recordID)
 	if err != nil {
 		return nil, false, fmt.Errorf("refreshing mirakc record after syncing temp: %w", err)
 	}
@@ -750,12 +734,12 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if record.Content.Sha256 != nil {
 		return record.Content.Sha256, false, nil
 	}
-	now = time.Now()
-	endTime = record.Recording.EndTime
+	now := time.Now()
+	endTime := record.Recording.EndTime
 	if endTime == nil {
 		endTime = observedEndTime
 	}
-	deadline = ingestSHA256WaitDeadline(size, endTime, info.ModTime(), now)
+	deadline := ingestSHA256WaitDeadline(size, endTime, info.ModTime(), now)
 	if !now.Before(deadline) {
 		return nil, false, nil
 	}
