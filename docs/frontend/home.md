@@ -249,13 +249,14 @@ CM 検出に失敗しても録画自体は見られるため、失敗録画や�
 （`recording.failed` / `recording.record-broken`）の最後の要素の `reason` から取る**。
 あればそれを出し、無ければ「理由不明」と沈黙を区別する。`quality_events` に
 いま書くのは `recording.failed` / `recording.record-broken` の 2 種類だけだが、
-読むときは失敗系に絞る。スクランブル件数は
-`drop_stats.scrambled` から導けるため、重ねて記録しない。`reason` は mirakc の生の理由を
+読むときは失敗系に絞る。
+スクランブル件数は `drop_stats.scrambled` から導けるため、重ねて記録しない。`reason` は mirakc の生の理由を
 そのまま保持したものである（不変条件 7）。書き手はどちらもオブジェクトである。
 `recording.failed` は `{ type, message?, osError?, exitCode? }`（`mirakc.FailedReason`、
 discriminated union）を `json.Marshal` したもの。`recording.record-broken` は
-`{ reason: string }` である。それぞれ `type` / `reason` を読み、期待した形でない場合だけ録画単体ページの「品質イベント」欄と同じ流儀
-（`JSON.stringify`）で読める形にフォールバックする。**読めたが空文字だった
+`{ reason: string }` である。それぞれ `type` / `reason` を読み、期待した形でない
+場合だけ録画単体ページの「品質イベント」欄と同じ流儀（`JSON.stringify`）で
+読める形にフォールバックする。**読めたが空文字だった
 場合は JSON へ落とさず「理由不明」に寄せる** --- `FailedReason.Type` に
 `omitempty` は無いので `{"type":""}` はあり得る形である。それをそのまま出すと
 「理由: {"type":""}」になり、材料が無い（沈黙）ことと区別できる文言にならない。
