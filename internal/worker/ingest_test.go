@@ -1407,6 +1407,8 @@ type lateSHA256IngestCase struct {
 	wantDeleteAttempts int32
 	wantResult         string
 	wantVerification   string
+	// wantFinalSyncs は 3 本目の job が temp を Sync する回数（pending の 2 本は別に固定）。
+	wantFinalSyncs int32
 }
 
 type lateSHA256IngestRun struct {
@@ -1435,6 +1437,7 @@ func TestIngestWorker_CompletesUntilLateContentSHA256(t *testing.T) {
 			wantDeleteAttempts: 1,
 			wantResult:         "success",
 			wantVerification:   "sha256_verification=verified",
+			wantFinalSyncs:     1, // commit 直前の Sync のみ
 		},
 		{
 			name: "late hash mismatch",
@@ -1452,6 +1455,7 @@ func TestIngestWorker_CompletesUntilLateContentSHA256(t *testing.T) {
 			wantDeleteAttempts: 1,
 			wantResult:         "success",
 			wantVerification:   "sha256_verification=timeout_skipped",
+			wantFinalSyncs:     1, // 期限切れなら待つ前の Sync はせず、commit 直前の 1 回だけ
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) { runLateSHA256IngestCase(t, tc) })
@@ -1469,7 +1473,11 @@ func runLateSHA256IngestCase(t *testing.T, tc lateSHA256IngestCase) {
 	mismatchesBefore := promtestutil.ToFloat64(metrics.IngestHashMismatches)
 	run.runPending(t, 91565, true, beforeResults, durationBefore)
 	run.runPending(t, 91566, false, beforeResults, durationBefore)
+	syncsBefore := run.tempSyncs.Load()
 	thirdErr := run.complete(t, tc)
+	if got := run.tempSyncs.Load() - syncsBefore; got != tc.wantFinalSyncs {
+		t.Errorf("temp Sync calls in the final job = %d, want %d", got, tc.wantFinalSyncs)
+	}
 	run.assertCompletion(t, tc, beforeResults, durationBefore, mismatchesBefore, thirdErr)
 }
 

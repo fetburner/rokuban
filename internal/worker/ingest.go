@@ -717,10 +717,11 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if err != nil {
 		return nil, false, fmt.Errorf("stat ingest temporary file before SHA-256 wait: %w", err)
 	}
-	if !time.Now().Before(ingestSHA256WaitDeadline(size, observedEndTime, info.ModTime(), time.Now())) {
+	now := time.Now()
+	if !now.Before(ingestSHA256WaitDeadline(size, observedEndTime, info.ModTime(), now)) {
 		return nil, false, nil
 	}
-	// 同期の後に取り直した record だけを判断に使う（temp が持続化された後の観測）。
+	// Sync の間に届いたハッシュを拾うため、同期の後で record を取り直し、期限も再判定する。
 	if err := file.Sync(); err != nil {
 		return nil, false, fmt.Errorf("syncing ingest temp before SHA-256 wait: %w", err)
 	}
@@ -734,7 +735,7 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if record.Content.Sha256 != nil {
 		return record.Content.Sha256, false, nil
 	}
-	now := time.Now()
+	now = time.Now()
 	endTime := record.Recording.EndTime
 	if endTime == nil {
 		endTime = observedEndTime
