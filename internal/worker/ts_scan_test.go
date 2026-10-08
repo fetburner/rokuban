@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ type tsScanPositionRow struct {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &tsscan.ScanWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &TSScanWorker{Pool: pool, MediaDir: mediaDir}
 	job := &river.Job[tsscan.ScanArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   tsscan.ScanArgs{RecordingID: recordingID},
@@ -261,7 +262,7 @@ func TestTSScan_ReplacementRollsBackStatisticsAndMarkerTogether(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS fail_ts_scan_position_insert()`)
 	})
 
-	worker := &tsscan.ScanWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &TSScanWorker{Pool: pool, MediaDir: mediaDir}
 	job := &river.Job[tsscan.ScanArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   tsscan.ScanArgs{RecordingID: recordingID},
@@ -352,16 +353,13 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	w := &tsscan.ReconcileWorker{Pool: pool}
+	w := &TSScanReconcileWorker{Pool: pool}
 	job := &river.Job[tsscan.ReconcileArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   tsscan.ReconcileArgs{},
 	}
 	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
-	}
-	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
-		t.Fatalf("second ReconcileWorker.Work: %v", err)
 	}
 	var got []int64
 	rows, err := pool.Query(ctx, `
@@ -390,7 +388,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	}
 }
 
-func TestTSScanReconcile_WindowRotatesPastUnchangedCandidates(t *testing.T) {
+func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -401,13 +399,13 @@ func TestTSScanReconcile_WindowRotatesPastUnchangedCandidates(t *testing.T) {
 	secondID := insertTestRecordingWithEventID(t, pool, 12912)
 	seedOriginalAsset(t, pool, mediaDir, firstID, "ts-scan/window-first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "ts-scan/window-second.m2ts", []byte("second"))
-	w := &tsscan.ReconcileWorker{Pool: pool, RowLimit: 1}
-	job := &river.Job[tsscan.ReconcileArgs]{
+	firstWorker := &TSScanReconcileWorker{Pool: pool, RowLimit: 1}
+	firstJob := &river.Job[tsscan.ReconcileArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   tsscan.ReconcileArgs{},
 	}
 	ctx := riverWorkContext(t, pool)
-	if err := w.Work(ctx, job); err != nil {
+	if err := firstWorker.Work(ctx, firstJob); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
 	}
 	if got := countTSScanJobs(t, pool, firstID); got != 1 {
@@ -416,11 +414,133 @@ func TestTSScanReconcile_WindowRotatesPastUnchangedCandidates(t *testing.T) {
 	if got := countTSScanJobs(t, pool, secondID); got != 0 {
 		t.Fatalf("second recording jobs after first pass = %d, want 0", got)
 	}
-	if err := w.Work(ctx, job); err != nil {
-		t.Fatalf("second reconcile pass: %v", err)
+	var continuationAfter int64
+	if err := pool.QueryRow(ctx, `
+		SELECT (args->>'after_recording_id')::bigint
+		FROM river_job
+		WHERE kind = 'ts_scan_reconcile'
+		  AND state IN ('available', 'retryable', 'running')
+		ORDER BY id DESC
+		LIMIT 1`).Scan(&continuationAfter); err != nil {
+		t.Fatalf("reading reconcile continuation: %v", err)
+	}
+	if continuationAfter != firstID {
+		t.Fatalf("continuation cursor = %d, want first recording ID %d", continuationAfter, firstID)
+	}
+
+	// KEDA starts a fresh --once process for each queue item. The next page must
+	// come from the continuation args, not state held by the previous worker.
+	secondWorker := &TSScanReconcileWorker{Pool: pool, RowLimit: 1}
+	secondJob := &river.Job[tsscan.ReconcileArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
+		Args:   tsscan.ReconcileArgs{AfterRecordingID: continuationAfter},
+	}
+	if err := secondWorker.Work(ctx, secondJob); err != nil {
+		t.Fatalf("second reconcile page: %v", err)
 	}
 	if got := countTSScanJobs(t, pool, secondID); got != 1 {
-		t.Fatalf("second recording jobs after rotated pass = %d, want 1", got)
+		t.Fatalf("second recording jobs after continuation page = %d, want 1", got)
+	}
+}
+
+func TestTSScanRecovery_ReplacesDeadRunningJobAndKeepsLiveJob(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	deadRecordingID := insertTestRecordingWithEventID(t, pool, 12921)
+	deadAssetID := seedOriginalAsset(t, pool, mediaDir, deadRecordingID, "ts-scan/recovery-dead.m2ts", []byte("dead"))
+	deadJobID := insertStaleRunningTSScanJob(t, pool, deadRecordingID)
+
+	liveRecordingID := insertTestRecordingWithEventID(t, pool, 12922)
+	liveAssetID := seedOriginalAsset(t, pool, mediaDir, liveRecordingID, "ts-scan/recovery-live.m2ts", []byte("live"))
+	liveJobID := insertStaleRunningTSScanJob(t, pool, liveRecordingID)
+	liveLock, acquired, err := acquireTSScanJobLock(ctx, pool, liveJobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring live TS scan lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("live TS scan lock was not acquired")
+	}
+	defer liveLock.release()
+
+	reconcile := &TSScanReconcileWorker{Pool: pool}
+	job := &river.Job[tsscan.ReconcileArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
+		Args:   tsscan.ReconcileArgs{},
+	}
+	if err := reconcile.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("TSScanReconcileWorker.Work: %v", err)
+	}
+
+	var deadState, liveState, deadErrors, deadMetadata string
+	if err := pool.QueryRow(ctx, `SELECT state, COALESCE(errors::text, ''), COALESCE(metadata::text, '') FROM river_job WHERE id = $1`, deadJobID).
+		Scan(&deadState, &deadErrors, &deadMetadata); err != nil {
+		t.Fatalf("reading recovered dead scan: %v", err)
+	}
+	if deadState != string(rivertype.JobStateDiscarded) {
+		t.Fatalf("dead scan state = %q, want discarded", deadState)
+	}
+	if !strings.Contains(deadErrors, tsScanRecoveryReason) || !strings.Contains(deadMetadata, tsScanRecoveryReason) {
+		t.Fatalf("dead scan recovery details missing reason %q: errors=%s metadata=%s", tsScanRecoveryReason, deadErrors, deadMetadata)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state FROM river_job WHERE id = $1`, liveJobID).Scan(&liveState); err != nil {
+		t.Fatalf("reading live scan state: %v", err)
+	}
+	if liveState != string(rivertype.JobStateRunning) {
+		t.Fatalf("live scan state = %q, want running", liveState)
+	}
+	if got := countNonDiscardedTSScanJobs(t, pool, deadRecordingID); got != 1 {
+		t.Fatalf("non-discarded dead recording jobs = %d, want one replacement", got)
+	}
+	if got := countNonDiscardedTSScanJobs(t, pool, liveRecordingID); got != 1 {
+		t.Fatalf("non-discarded live recording jobs = %d, want original only", got)
+	}
+	for _, assetID := range []int64{deadAssetID, liveAssetID} {
+		var markerCount int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID).Scan(&markerCount); err != nil {
+			t.Fatalf("checking TS scan marker for asset %d: %v", assetID, err)
+		}
+		if markerCount != 0 {
+			t.Errorf("asset %d has %d TS scan markers before replacement job runs, want 0", assetID, markerCount)
+		}
+	}
+}
+
+func TestTSScanWorker_DefersWhenAnotherProcessHoldsJobLock(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecordingWithEventID(t, pool, 12923)
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "ts-scan/lock.m2ts", []byte("locked"))
+	jobID := insertStaleRunningTSScanJob(t, pool, recordingID)
+	lock, acquired, err := acquireTSScanJobLock(ctx, pool, jobID, time.Second)
+	if err != nil {
+		t.Fatalf("acquiring TS scan job lock: %v", err)
+	}
+	if !acquired {
+		t.Fatal("TS scan job lock was not acquired")
+	}
+	defer lock.release()
+	worker := &TSScanWorker{Pool: pool, MediaDir: mediaDir}
+	job := &river.Job[tsscan.ScanArgs]{
+		JobRow: &rivertype.JobRow{ID: jobID, Attempt: 1, MaxAttempts: 25},
+		Args:   tsscan.ScanArgs{RecordingID: recordingID},
+	}
+	if err := worker.Work(ctx, job); err == nil {
+		t.Fatal("TSScanWorker.Work succeeded while another process held the job lock")
+	}
+	lock.release()
+	if err := worker.Work(ctx, job); err != nil {
+		t.Fatalf("TSScanWorker.Work after lock release: %v", err)
+	}
+	if got := scannedSize(t, pool, assetID); got != int64(len("locked")) {
+		t.Fatalf("scanned size after retry = %d, want %d", got, len("locked"))
 	}
 }
 
@@ -432,7 +552,7 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 	if got := scanArgs.InsertOpts().Queue; got != "ts_scan" {
 		t.Errorf("ScanArgs queue = %q, want %q", got, "ts_scan")
 	}
-	reconcileArgs := tsscan.ReconcileArgs{}
+	reconcileArgs := tsscan.ReconcileArgs{AfterRecordingID: 456}
 	if got, want := reconcileArgs.Kind(), "ts_scan_reconcile"; got != want {
 		t.Errorf("ReconcileArgs.Kind() = %q, want %q", got, want)
 	}
@@ -463,6 +583,43 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 	if jobs.RequiresSiteBinding([]string{jobs.TSScanQueue}) {
 		t.Error("ts_scan must be site independent")
 	}
+}
+
+func insertStaleRunningTSScanJob(t *testing.T, pool *pgxpool.Pool, recordingID int64) int64 {
+	t.Helper()
+	client, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("NewInsertOnlyClient: %v", err)
+	}
+	result, err := client.Insert(context.Background(), tsscan.ScanArgs{RecordingID: recordingID}, nil)
+	if err != nil {
+		t.Fatalf("inserting TS scan fixture: %v", err)
+	}
+	if result.UniqueSkippedAsDuplicate || result.Job == nil {
+		t.Fatalf("inserting TS scan fixture was unexpectedly skipped: %+v", result)
+	}
+	attemptedAt := time.Now().UTC().Add(-2 * tsScanRecoveryStaleAfter).Truncate(time.Microsecond)
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE river_job
+		SET state = 'running', attempt = 1, attempted_at = $2, attempted_by = ARRAY['dead-process']::text[]
+		WHERE id = $1`, result.Job.ID, attemptedAt); err != nil {
+		t.Fatalf("making TS scan fixture running: %v", err)
+	}
+	return result.Job.ID
+}
+
+func countNonDiscardedTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
+	t.Helper()
+	var got int
+	if err := pool.QueryRow(context.Background(), `
+		SELECT count(*)
+		FROM river_job
+		WHERE kind = 'ts_scan'
+		  AND (args->>'recording_id')::bigint = $1
+		  AND state <> 'discarded'`, recordingID).Scan(&got); err != nil {
+		t.Fatalf("counting non-discarded TS scan jobs: %v", err)
+	}
+	return got
 }
 
 func readTSScanRows(t *testing.T, pool *pgxpool.Pool, assetID int64) ([]tsScanStatRow, []tsScanPositionRow) {

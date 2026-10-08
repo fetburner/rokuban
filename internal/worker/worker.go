@@ -328,8 +328,8 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 	})
-	river.AddWorker(workers, &tsscan.ScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
-	river.AddWorker(workers, &tsscan.ReconcileWorker{Pool: deps.Pool})
+	river.AddWorker(workers, &TSScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
+	river.AddWorker(workers, &TSScanReconcileWorker{Pool: deps.Pool})
 	return workers
 }
 

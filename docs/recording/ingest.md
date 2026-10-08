@@ -284,7 +284,11 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 
 定期パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、抽出に失敗し続ける録画があっても候補窓を recording ID 順に回す。これにより同じ失敗を 1 パスごとに無制限に新規投入せず、後続の録画を恒久的に隠さない。明示的な `EnqueueMissingThumbnails` は復旧・テスト用の全件投入なので、ファイルを戻した直後の即時回収に使える。
 
-**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original の先頭から全体を読み、ingest と同じ `tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。`media_asset_ts_scans` には計測時のサイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
+**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、ingest と同じ `tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
+`media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
+候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。
+KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。この動作は `TestTSScanReconcile_ContinuationSurvivesFreshWorker` で固定する。
+scan はジョブ ID の advisory lock を保持する。reconcile は lock が解放された古い `running` ジョブを置き換える。この動作は `TestTSScanRecovery_ReplacesDeadRunningJobAndKeepsLiveJob` で固定する。
 
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。現時点では ingest も統計を書き続けるため、追加の全量読み出しが発生する。そのコストは未検証である。
 

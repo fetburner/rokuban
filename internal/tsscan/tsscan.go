@@ -30,13 +30,15 @@ func (ScanArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// ReconcileArgs requests one pass over original assets that need a scan.
-type ReconcileArgs struct{}
+// ReconcileArgs requests one page of original assets that need a scan.
+type ReconcileArgs struct {
+	AfterRecordingID int64 `json:"after_recording_id,omitempty"`
+}
 
 // Kind returns the River job kind for the scan reconciliation pass.
 func (ReconcileArgs) Kind() string { return "ts_scan_reconcile" }
 
-// InsertOpts routes reconciliation to the scan queue and prevents overlapping passes.
+// InsertOpts routes reconciliation to the scan queue and merges pending work for the same page.
 func (ReconcileArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: jobs.TSScanQueue,

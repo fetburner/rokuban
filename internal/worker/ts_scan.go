@@ -1,4 +1,4 @@
-package tsscan
+package worker
 
 import (
 	"context"
@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"slices"
-	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -18,29 +17,41 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 const (
-	reconcileTimeout  = 5 * time.Minute
-	reconcileRowLimit = 1000
-	scanBatchSize     = 500
+	tsScanReconcileTimeout  = 5 * time.Minute
+	tsScanReconcileRowLimit = 1000
+	scanBatchSize           = 500
 )
 
-// ScanWorker reads an active original and replaces its TS statistics atomically.
-type ScanWorker struct {
-	river.WorkerDefaults[ScanArgs]
+// TSScanWorker reads an active original and replaces its TS statistics atomically.
+type TSScanWorker struct {
+	river.WorkerDefaults[tsscan.ScanArgs]
 	Pool     *pgxpool.Pool
 	MediaDir string
 }
 
 // Timeout leaves the scan uncapped because its I/O duration scales with file size.
-func (*ScanWorker) Timeout(*river.Job[ScanArgs]) time.Duration { return -1 }
+// Reconciliation replaces stale running jobs after their job-id lock is released
+// (TestTSScanRecovery_ReplacesDeadRunningJobAndKeepsLiveJob).
+func (*TSScanWorker) Timeout(*river.Job[tsscan.ScanArgs]) time.Duration { return -1 }
 
 // Work reads an original from byte zero, then replaces its statistics and scan marker
 // in one database transaction. A size change during the read leaves it eligible for
 // the next reconcile pass.
-func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) (err error) {
+func (w *TSScanWorker) Work(ctx context.Context, job *river.Job[tsscan.ScanArgs]) (err error) {
+	jobLock, acquired, err := acquireTSScanJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	if err != nil {
+		return fmt.Errorf("acquiring TS scan job lock: %w", err)
+	}
+	if !acquired {
+		return fmt.Errorf("TS scan job %d is already running; deferring", job.ID)
+	}
+	defer jobLock.release()
+
 	started := time.Now()
 	result := "failure"
 	defer func() {
@@ -114,49 +125,54 @@ func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) (err er
 	return nil
 }
 
-// ReconcileWorker enqueues missing or stale scans from the current database state.
-type ReconcileWorker struct {
-	river.WorkerDefaults[ReconcileArgs]
-	Pool        *pgxpool.Pool
-	RowLimit    int32
-	resumeAfter atomic.Int64
+// TSScanReconcileWorker enqueues missing or stale scans from the current database state.
+type TSScanReconcileWorker struct {
+	river.WorkerDefaults[tsscan.ReconcileArgs]
+	Pool     *pgxpool.Pool
+	RowLimit int32
 }
 
 // Timeout bounds candidate selection and River inserts for one reconciliation pass.
-func (*ReconcileWorker) Timeout(*river.Job[ReconcileArgs]) time.Duration { return reconcileTimeout }
+func (*TSScanReconcileWorker) Timeout(*river.Job[tsscan.ReconcileArgs]) time.Duration {
+	return tsScanReconcileTimeout
+}
 
-// Work enqueues one bounded window of active originals that lack a current-size scan.
-func (w *ReconcileWorker) Work(ctx context.Context, _ *river.Job[ReconcileArgs]) error {
+// Work enqueues one bounded window and persists the next page in a continuation job.
+func (w *TSScanReconcileWorker) Work(ctx context.Context, job *river.Job[tsscan.ReconcileArgs]) error {
 	client, err := river.ClientFromContextSafely[pgx.Tx](ctx)
 	if err != nil {
 		return fmt.Errorf("TS scan reconcile: getting river client: %w", err)
 	}
+	if err := recoverStaleTSScanJobsFunc(ctx, w.Pool, client); err != nil {
+		slog.Warn("ts_scan_reconcile: stale-job recovery had errors", "err", err)
+	}
 	rowLimit := w.RowLimit
 	if rowLimit <= 0 {
-		rowLimit = reconcileRowLimit
+		rowLimit = tsScanReconcileRowLimit
 	}
-	after := w.resumeAfter.Load()
 	rows, err := sqlcgen.New(w.Pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
-		AfterRecordingID: after,
+		AfterRecordingID: job.Args.AfterRecordingID,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
 		return fmt.Errorf("listing originals that need TS scans: %w", err)
 	}
 	for _, recordingID := range rows {
-		if err := EnqueueScan(ctx, client, recordingID); err != nil {
+		if err := tsscan.EnqueueScan(ctx, client, recordingID); err != nil {
 			slog.Error("ts_scan_reconcile: failed to enqueue scan", "recording_id", recordingID, "err", err)
 		}
 	}
 
-	var resumeAfter int64
+	var continuationAfter int64
 	if int32(len(rows)) >= rowLimit {
-		resumeAfter = rows[len(rows)-1]
+		continuationAfter = rows[len(rows)-1]
+		if _, err := client.Insert(ctx, tsscan.ReconcileArgs{AfterRecordingID: continuationAfter}, nil); err != nil {
+			return fmt.Errorf("enqueuing TS scan reconcile continuation after recording %d: %w", continuationAfter, err)
+		}
 	}
-	w.resumeAfter.Store(resumeAfter)
 	if len(rows) > 0 {
 		slog.Info("ts_scan_reconcile: pass complete", "candidates", len(rows),
-			"row_limit", rowLimit, "resume_after", resumeAfter)
+			"row_limit", rowLimit, "continuation_after", continuationAfter)
 	}
 	return nil
 }
@@ -238,24 +254,24 @@ func replaceStats(ctx context.Context, q *sqlcgen.Queries, assetID int64, counte
 		}
 	}
 	for start := 0; start < len(statRows); start += scanBatchSize {
-		if err := execBatch(q.InsertDropStat(ctx, statRows[start:min(start+scanBatchSize, len(statRows))])); err != nil {
+		if err := execTSScanBatch(q.InsertDropStat(ctx, statRows[start:min(start+scanBatchSize, len(statRows))])); err != nil {
 			return fmt.Errorf("inserting drop_stats batch: %w", err)
 		}
 	}
 	for start := 0; start < len(positionRows); start += scanBatchSize {
-		if err := execBatch(q.InsertDropPosition(ctx, positionRows[start:min(start+scanBatchSize, len(positionRows))])); err != nil {
+		if err := execTSScanBatch(q.InsertDropPosition(ctx, positionRows[start:min(start+scanBatchSize, len(positionRows))])); err != nil {
 			return fmt.Errorf("inserting drop_positions batch: %w", err)
 		}
 	}
 	return nil
 }
 
-type batchResults interface {
+type tsScanBatchResults interface {
 	Exec(func(int, error))
 	Close() error
 }
 
-func execBatch(batch batchResults) error {
+func execTSScanBatch(batch tsScanBatchResults) error {
 	var firstErr error
 	batch.Exec(func(i int, err error) {
 		if err != nil && firstErr == nil {
