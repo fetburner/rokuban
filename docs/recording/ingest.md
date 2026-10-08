@@ -279,6 +279,7 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 
 **TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、`tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
 `media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
+計測済みのサイズ一致条件は共通の述語にまとめる。候補選択・表示・削除で条件を複製すると、サイズ変更後に再計測と削除可否が食い違うためである。アセットの `state` はこの述語に含めず、ごみ箱の録画でも計測済みの統計を表示できるようにする。
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。
 KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。この動作は `TestTSScanReconcile_ContinuationSurvivesFreshWorker` で固定する。
 scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、encode のような advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。

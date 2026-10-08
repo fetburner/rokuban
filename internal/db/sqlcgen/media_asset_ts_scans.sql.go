@@ -38,9 +38,8 @@ WHERE a.recording_id = $1::bigint
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
-    FROM media_asset_ts_scans s
+    FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-      AND s.scanned_size_bytes = a.size_bytes
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
@@ -65,12 +64,15 @@ const listMissingTSScanRecordings = `-- name: ListMissingTSScanRecordings :many
 SELECT a.recording_id
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
-LEFT JOIN media_asset_ts_scans s ON s.media_asset_id = a.id
 WHERE a.recording_id > $1::bigint
   AND a.kind = 'original'
   AND a.state = 'active'
   AND r.deleted_at IS NULL
-  AND s.scanned_size_bytes IS DISTINCT FROM a.size_bytes
+  AND NOT EXISTS (
+    SELECT 1
+    FROM current_ts_scanned_originals s
+    WHERE s.media_asset_id = a.id
+  )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
   )
@@ -115,9 +117,8 @@ WHERE a.id = $1::bigint
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
-    FROM media_asset_ts_scans s
+    FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-      AND s.scanned_size_bytes = a.size_bytes
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id

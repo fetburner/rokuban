@@ -260,12 +260,10 @@ const (
     -- in-place 更新後に古いサイズの計測記録が残っても、それは一致せず未計測扱い。
     EXISTS (
         SELECT 1
-        FROM media_assets scanned_original
-        JOIN media_asset_ts_scans ts_scan
-          ON ts_scan.media_asset_id = scanned_original.id
-         AND ts_scan.scanned_size_bytes = scanned_original.size_bytes
+        FROM current_ts_scanned_originals ts_scan
+        JOIN media_assets scanned_original
+          ON scanned_original.id = ts_scan.media_asset_id
         WHERE scanned_original.recording_id = r.id
-          AND scanned_original.kind = 'original'
     ) AS has_measured_drop_summary,
     -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
     -- 同じもの**を見る（internal/watcher/watcher.go の

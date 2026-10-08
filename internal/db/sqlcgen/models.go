@@ -73,6 +73,11 @@ type CmLogoCandidateDesired struct {
 	RecordingID   int64
 }
 
+// CurrentTsScannedOriginal は、計測サイズが現在のコミット済みサイズと一致する原本を表す。state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。
+type CurrentTsScannedOriginal struct {
+	MediaAssetID int64
+}
+
 type DropPosition struct {
 	MediaAssetID int64
 	ByteOffset   int64
