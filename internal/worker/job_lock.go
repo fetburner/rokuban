@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	// ingestJobLockKeyPrefix と encodeJobLockKeyPrefix は、それぞれのジョブの
+	// ingestJobLockKeyPrefix / encodeJobLockKeyPrefix は、それぞれのジョブの
 	// プロセス生存確認用 advisory lock の名前空間。ジョブ ID ごとにキーを分け、
 	// 他のロールの advisory lock と衝突しないようにする。
 	ingestJobLockKeyPrefix = "rokuban:ingest:job:"

@@ -132,8 +132,8 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 |---|---|---|
 | `recording.failed` 理由別カウンタ | watcher が mirakc SSE または `record_sweep` の schedules / records API から観測。理由は構造化されている: `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` | 録画失敗の傾向分析、mirakc 品質の実測 |
 | `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
-| ドロップ統計（PID 別 continuity counter 不連続 / TEI） | ingest のインラインスキャン。188 バイト境界の TS パケット統計を転送中に読み取り専用で採取（追加 I/O パスゼロ） | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
-| scrambled カウンタ | ingest のインラインスキャン。`scrambling_control` ビットのカウント | B-CAS/復号障害の検出（[アラート設計](alerts.md) の対象） |
+| ドロップ統計（PID 別 continuity counter 不連続 / TEI） | ingest のインラインスキャンと `ts_scan`。後者は原本を全量読み直す | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
+| scrambled カウンタ | ingest のインラインスキャンと `ts_scan`。`scrambling_control` ビットを数える | B-CAS/復号障害の検出（[アラート設計](alerts.md) の対象） |
 
 ### ジョブ化されたループの監視
 
@@ -184,6 +184,7 @@ site 非依存にする理由は、単一の資源（アーカイブ・プロフ
 `catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
 `encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
 `thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
+`ts-scan-reconcile` は共有アーカイブ上の原本を走査する。
 `delete-reconcile` は単一の物理ストレージ全体を走査する。
 以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
 **`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。
@@ -191,6 +192,8 @@ site 非依存にする理由は、単一の資源（アーカイブ・プロフ
 ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
 検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
 thumbnail とシークプレビュー用タイルは同じパスが埋めるので `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
+
+`ts-scan-reconcile` を忘れた場合は scan 記録のない原本が残る。検出は `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` の鮮度で行う。投入を忘れれば値が進まない。`rokuban_ts_scan_jobs_total` は ingest のヒントでも増えるので、投入停止の検出には使わない。
 
 thumbnail reconcile の候補から除外される既知の原本欠落は `rokuban_media_assets_missing{kind="original"}` で確認する。これはファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
 
@@ -218,6 +221,19 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | 未 ingest record 総量 | **`finished` として観測済みで、まだコミットされていない** record の量。エッジディスク残量と突き合わせてアラートの基礎とする。エッジのリングバッファの中身そのものではない（回線断のあいだに始まった／録画中だったぶんは含まれない。[アラート設計](alerts.md)「エッジディスク残量」） |
 
 ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが**エッジに到達できている間の**主な運用リスクであり、このメトリクスで可視化する。到達できていない間（回線断）はこのメトリクスでは見えないので、上記の「エッジのリングバッファの中身そのものではない」を読む。
+
+### TS scan
+
+| メトリクス | 説明 |
+|---|---|
+| `rokuban_ts_scan_jobs_total{result}` | scan ジョブの成功・失敗件数 |
+| `rokuban_ts_scan_duration_seconds` | 原本の全量読み出しと DB 更新にかかった秒数 |
+| `rokuban_ts_scan_dropped_packets_total` | scan 中に観測したドロップパケットの累計 |
+| `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
+| `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
+| `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` | ts_scan reconcile の最終完走時刻。投入停止は `time() -` で検出 |
+
+ヒントを落とした scan は定期 reconcile が再投入する。各 scan の成否は `rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
 
 ### reconcile
 

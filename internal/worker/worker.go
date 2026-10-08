@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -56,7 +57,8 @@ const (
 	// EPG 全量同期と同じ 10 分で足りる（issue #21「EPG 全量同期（既定 10 分）と
 	// 同じジョブで投影すれば十分」）。専用の設定キーは設けていない --- 運用者が
 	// 触る理由がないので、設定面を広げない。
-	defaultTunerSyncInterval = 10 * time.Minute
+	defaultTunerSyncInterval       = 10 * time.Minute
+	defaultTSScanReconcileInterval = 15 * time.Minute
 )
 
 // DefaultSoftStopTimeout は ClientConfig.SoftStopTimeout の既定値。
@@ -326,6 +328,8 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 	})
+	river.AddWorker(workers, &tsscan.ScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
+	river.AddWorker(workers, &tsscan.ReconcileWorker{Pool: deps.Pool})
 	return workers
 }
 
@@ -371,6 +375,8 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		// storage_sync 用（issue #238 M7-5）。UniqueOpts{ByArgs} が重複実行を防ぐので
 		// tuner_sync/ruler/reconciler/record_sweep と同じく 1 本で足りる。
 		jobs.StorageQueue: {MaxWorkers: 1},
+		// ts_scan は原本全体を読み直すため、同時 I/O を 1 件に抑える。
+		jobs.TSScanQueue: {MaxWorkers: 1},
 	}
 }
 
@@ -476,6 +482,9 @@ type ClientConfig struct {
 	// ThumbnailReconcileInterval は thumbnail reconcile の間隔。0 なら既定値（15 分）。
 	ThumbnailReconcileInterval time.Duration
 
+	// TSScanReconcile は active original の TS scan を定期的に再投入する。
+	TSScanReconcile bool
+
 	// CMDetectReconcile registers the CM detection desired-state periodic pass.
 	CMDetectReconcile bool
 
@@ -488,7 +497,7 @@ type ClientConfig struct {
 	StorageSyncInterval time.Duration
 
 	// PeriodicJobs が false なら、BoundSites / CatalogExport / DeleteReconcile /
-	// EncodeReconcile / ThumbnailReconcile / CMDetectReconcile / StorageSync が設定されていても River の PeriodicJobs を
+	// EncodeReconcile / ThumbnailReconcile / TSScanReconcile / CMDetectReconcile / StorageSync が設定されていても River の PeriodicJobs を
 	// 一切登録しない。
 	// k8s では false にして、CronJob が
 	// `rokuban enqueue` を叩く形に委ねる（docs/data.md §2「定期実行の契機は
@@ -870,6 +879,7 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg ClientConfig) {
 	appendPeriodic(cfg.LabelRuleReconcile, cfg.LabelRuleReconcileInterval, defaultLabelRuleReconcileInterval, jobs.LabelRuleReconcileArgs{})
 	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
 	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
+	appendPeriodic(cfg.TSScanReconcile, 0, defaultTSScanReconcileInterval, tsscan.ReconcileArgs{})
 	appendPeriodic(cfg.CMDetectReconcile, 0, defaultCMDetectReconcileInterval, jobs.CMDetectReconcileArgs{})
 	appendPeriodic(cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{})
 }

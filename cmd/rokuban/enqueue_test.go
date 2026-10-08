@@ -243,6 +243,32 @@ func TestRunEnqueue_ThumbnailReconcile(t *testing.T) {
 	}
 }
 
+func TestRunEnqueue_TSScanReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	var out bytes.Buffer
+	if err := runEnqueue(ctx, pool, "ts-scan-reconcile", "", &out); err != nil {
+		t.Fatalf("runEnqueue: %v", err)
+	}
+	if !strings.Contains(out.String(), "inserted job") {
+		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
+	}
+	if strings.Contains(out.String(), "for site") {
+		t.Errorf("output = %q, site-independent job must not mention site", out.String())
+	}
+
+	var count int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'ts_scan_reconcile'`,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting ts_scan_reconcile jobs: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("ts_scan_reconcile job count = %d, want 1", count)
+	}
+}
+
 func TestRunEnqueue_CMDetectReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -470,7 +496,7 @@ func TestResolveEnqueueJobSite(t *testing.T) {
 // delete-reconcile、label-rule-reconcile が site 非依存。
 func TestEnqueueJobs_SiteClassification(t *testing.T) {
 	independent := sortedJobNamesBySite(false)
-	wantIndependent := []string{"catalog-export", "cm-detect-reconcile", "delete-reconcile", "encode-reconcile", "label-rule-reconcile", "storage-sync", "thumbnail-reconcile"}
+	wantIndependent := []string{"catalog-export", "cm-detect-reconcile", "delete-reconcile", "encode-reconcile", "label-rule-reconcile", "storage-sync", "thumbnail-reconcile", "ts-scan-reconcile"}
 	if strings.Join(independent, ",") != strings.Join(wantIndependent, ",") {
 		t.Errorf("site-independent jobs = %v, want %v", independent, wantIndependent)
 	}

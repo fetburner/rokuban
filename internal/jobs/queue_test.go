@@ -22,6 +22,7 @@ func TestAllQueueNames(t *testing.T) {
 		"ruler",
 		"storage",
 		"thumbnail",
+		"ts_scan",
 		"watcher",
 	}; !reflect.DeepEqual(got, want) {
 		t.Errorf("AllQueueNames() = %#v, want %#v", got, want)
@@ -92,7 +93,7 @@ func TestRequiresSiteBinding(t *testing.T) {
 		{"explicit ruler does not require binding (site-independent, issue #185)", []string{RulerQueue}, false},
 		{"explicit reconciler", []string{ReconcilerQueue}, true},
 		{"explicit watcher (record_sweep)", []string{RecordSweepQueue}, true},
-		{"encode/thumbnail/cleanup/ruler only excludes site-bound queues", []string{EncodeQueue, ThumbnailQueue, CleanupQueue, RulerQueue}, false},
+		{"site-independent media queues do not require binding", []string{EncodeQueue, ThumbnailQueue, TSScanQueue, CleanupQueue, RulerQueue}, false},
 		{"explicit storage does not require binding (site-independent, issue #238)", []string{StorageQueue}, false},
 		{"encode/thumbnail plus one site-bound queue still requires binding", []string{EncodeQueue, IngestQueue}, true},
 	}

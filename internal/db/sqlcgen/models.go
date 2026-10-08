@@ -171,6 +171,11 @@ type MediaAssetThumbnailSeek struct {
 	SeekMs       int64
 }
 
+type MediaAssetTsScan struct {
+	MediaAssetID     int64
+	ScannedSizeBytes int64
+}
+
 type MissingMediaAsset struct {
 	MediaAssetID int64
 	FirstSeen    time.Time
