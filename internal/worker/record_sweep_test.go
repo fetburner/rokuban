@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -188,6 +189,120 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	}
 	if markerCount != 1 {
 		t.Errorf("record sweep marker rows = %d, want 1", markerCount)
+	}
+}
+
+// record_sweep が再取得した finished record のハッシュで、snooze 中の ingest を起こす。
+// Sweep は SSE と同じ processRecord を使うため、イベントを取りこぼした後の定期パスを固定する。
+func TestRecordSweepWorker_WakesSnoozedIngestAfterHashArrival(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
+		t.Fatalf("cleaning river_job: %v", err)
+	}
+
+	const programID int64 = 700000600071345
+	const networkID, serviceID = int32(32736), int32(1024)
+	const channelType, channel = "GR", "27"
+	q := sqlcgen.New(pool)
+	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
+		Site:        testSite,
+		ProgramID:   programID,
+		Title:       "record_sweep SHA-256 wake test",
+		StartAt:     time.Now().Add(-time.Hour),
+		DurationMs:  1800000,
+		NetworkID:   networkID,
+		ServiceID:   serviceID,
+		ChannelType: channelType,
+		Channel:     channel,
+	}); err != nil {
+		t.Fatalf("upserting program snapshot fixture: %v", err)
+	}
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	recStart := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	endTime := mirakc.Milliseconds(time.Now())
+	duration := int64(1800000)
+	name := "record_sweep SHA-256 wake test"
+	hash := strings.Repeat("c", 64)
+	record := mirakc.Record{
+		ID: "record-sweep-sha256-wake-001",
+		Program: mirakc.Program{
+			ID: programID, EventID: 1, ServiceID: int(serviceID), NetworkID: int(networkID),
+			StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name,
+		},
+		Service:   mirakc.Service{Name: "テスト局", Channel: mirakc.ServiceChannel{Type: channelType, Channel: channel}},
+		Tags:      []string{mirakc.ProgramTag(programID)},
+		Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart, EndTime: &endTime},
+		Content:   mirakc.ContentInfo{Path: "test.m2ts", Sha256: &hash},
+	}
+
+	insertClient, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only client: %v", err)
+	}
+	inserted, err := insertClient.Insert(ctx, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
+	if err != nil {
+		t.Fatalf("inserting snoozed ingest fixture: %v", err)
+	}
+	if inserted.Job == nil {
+		t.Fatal("inserted ingest job is nil")
+	}
+	if _, err := pool.Exec(ctx,
+		"UPDATE river_job SET state = 'scheduled', scheduled_at = now() + interval '1 hour' WHERE id = $1",
+		inserted.Job.ID,
+	); err != nil {
+		t.Fatalf("marking ingest fixture scheduled: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
+	})
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]any{})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	w := &RecordSweepWorker{
+		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+	}
+	job := &river.Job[jobs.RecordSweepArgs]{
+		JobRow: &rivertype.JobRow{ID: 904},
+		Args:   jobs.RecordSweepArgs{Site: testSite},
+	}
+	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v", err)
+	}
+
+	var state string
+	var scheduledAt time.Time
+	if err := pool.QueryRow(ctx,
+		"SELECT state, scheduled_at FROM river_job WHERE id = $1", inserted.Job.ID,
+	).Scan(&state, &scheduledAt); err != nil {
+		t.Fatalf("querying ingest job after record_sweep: %v", err)
+	}
+	if state != string(rivertype.JobStateAvailable) {
+		t.Fatalf("ingest state after record_sweep = %q, want available", state)
+	}
+	if scheduledAt.After(time.Now()) {
+		t.Errorf("ingest scheduled_at after record_sweep = %s, want now or earlier", scheduledAt)
+	}
+
+	var recordingCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
+		t.Fatalf("counting swept recordings: %v", err)
+	}
+	if recordingCount != 1 {
+		t.Fatalf("recordings count after record_sweep = %d, want 1", recordingCount)
 	}
 }
 

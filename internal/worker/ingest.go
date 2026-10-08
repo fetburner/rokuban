@@ -363,7 +363,9 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 
 // ingestJobSnoozeCount は River metadata に記録された、このジョブの snooze 回数を返す。
 // 現在 ingest で snooze するのは SHA-256 待ちの 1 回だけ（ingestSHA256WaitFor が
-// サイズから決めた長さ）なので、その再開後は上限を超えたものとして commit 時の照合を skip できる。
+// サイズから決めた長さ）なので、snooze 済みの再開でハッシュが null なら commit 時の照合を skip する。
+// 上限前の再開は watcher（watcher.processRecord）がハッシュ非 nil のときしか起こさないので、
+// null での再開は上限を過ぎた再開に限られる。この前提は watcher の起こす条件に依存する。
 func ingestJobSnoozeCount(metadata []byte) (int, error) {
 	if len(metadata) == 0 {
 		return 0, nil
