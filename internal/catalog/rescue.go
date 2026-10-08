@@ -37,7 +37,7 @@ type RescueResult struct {
 	MediaAssets             int
 	DropStats               int
 	DropPositions           int
-	TSScans                 int
+	MediaAssetTSScans       int
 	ProgramSnapshots        int
 	ProgramIntents          int
 	ProgramOverrides        int
@@ -261,7 +261,15 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document, mediaDir strin
 	if err := applyDropPositions(ctx, q, doc.DropPositions, res); err != nil {
 		return nil, err
 	}
-	if err := applyTSScans(ctx, q, doc.TSScans, res); err != nil {
+
+	// media_asset_ts_scans は media_assets を参照し、文書化された復元順で
+	// drop_positions の後に来る。旧文書にはキーが無く、原本が計測済みだったと
+	// 言えるのは drop_stats の行だけなので、そこから補う。
+	tsScans := doc.MediaAssetTSScans
+	if doc.MediaAssetTSScans == nil {
+		tsScans = legacyMediaAssetTSScans(doc)
+	}
+	if err := applyMediaAssetTSScans(ctx, q, tsScans, res); err != nil {
 		return nil, err
 	}
 
@@ -617,30 +625,41 @@ func applyDropPositions(ctx context.Context, q *sqlcgen.Queries, positions []Dro
 	return nil
 }
 
-// applyTSScans は media_asset_ts_scans を復元する。drop_stats の後に書く
-// （旧形式の補完が復元済みの drop_stats を読むため）。
-//
-// scans が nil（キーの無い旧ダンプ）のときだけ、00025 のマイグレーションと同じ
-// 補完を行う: drop_stats を持つ原本は旧 ingest が現在のサイズで走査した証拠なので
-// scanned_size_bytes = size_bytes を入れる。キーがある新ダンプ（空配列を含む）は
-// 記録をそのまま戻し、補完しない --- 記録の無い原本は未走査で、再走査の対象になる。
-func applyTSScans(ctx context.Context, q *sqlcgen.Queries, scans []TSScan, res *RescueResult) error {
-	if scans == nil {
-		if err := q.CatalogBackfillTSScans(ctx); err != nil {
-			return fmt.Errorf("backfilling media_asset_ts_scans: %w", err)
-		}
-		return nil
-	}
+// applyMediaAssetTSScans は media_asset_ts_scans を復元し、件数を res.MediaAssetTSScans に書く。
+func applyMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries, scans []MediaAssetTSScan, res *RescueResult) error {
 	for _, s := range scans {
-		if err := q.CatalogUpsertTSScan(ctx, sqlcgen.CatalogUpsertTSScanParams{
+		if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
 			MediaAssetID:     s.MediaAssetID,
 			ScannedSizeBytes: s.ScannedSizeBytes,
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset_ts_scan asset=%d: %w", s.MediaAssetID, err)
 		}
 	}
-	res.TSScans = len(scans)
+	res.MediaAssetTSScans = len(scans)
 	return nil
+}
+
+// legacyMediaAssetTSScans は計測記録配列が無い旧 catalog の互換補完を作る。
+func legacyMediaAssetTSScans(doc *Document) []MediaAssetTSScan {
+	assetsWithStats := make(map[int64]struct{}, len(doc.DropStats))
+	for _, stat := range doc.DropStats {
+		assetsWithStats[stat.MediaAssetID] = struct{}{}
+	}
+
+	rows := make([]MediaAssetTSScan, 0, len(assetsWithStats))
+	for _, asset := range doc.MediaAssets {
+		if asset.Kind != "original" {
+			continue
+		}
+		if _, ok := assetsWithStats[asset.ID]; !ok {
+			continue
+		}
+		rows = append(rows, MediaAssetTSScan{
+			MediaAssetID:     asset.ID,
+			ScannedSizeBytes: asset.SizeBytes,
+		})
+	}
+	return rows
 }
 
 func upsertRule(ctx context.Context, q *sqlcgen.Queries, rule Rule) error {

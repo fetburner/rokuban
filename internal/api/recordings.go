@@ -45,6 +45,8 @@ type recordingListFields struct {
 	DropDrops         int64
 	DropErrors        int64
 	DropScrambled     int64
+	// HasMeasuredDropSummary は、TS 計測記録が保存済み原本サイズと一致するか。
+	HasMeasuredDropSummary bool
 	// KeepOriginal は recording_encode_policy に凍結された原本保持ポリシー。
 	// policy 行が無い復旧録画は SQL 側で安全側の既定値 always に落とす。
 	KeepOriginal string
@@ -85,9 +87,6 @@ type recordingListFields struct {
 	// 見る）とはわざと述語が違う --- この差が「まだ取り込めていない」と
 	// 「取り込んだ後に削除した」を分ける（issue #211）。
 	HasOriginalAsset bool
-	// HasCurrentTSScan は原本の現在サイズと一致する解析記録があるか。
-	// drop_stats が未計測の 0 件なのか、正常な 0 件なのかを区別する。
-	HasCurrentTSScan bool
 	// HasIngestableRecord は **ingest ジョブが投入される（された）はずの**
 	// mirakc record の観測がこの録画に紐付いているか。原本も進捗も無いときに
 	// 「取り込み待ち」と「そもそも取り込みが来ない」を分ける。
@@ -388,9 +387,11 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	if includeDeletedAt {
 		rec.DeletedAt = utcTimePtr(r.DeletedAt)
 	}
-	// drop_stats は原本解析後に書かれ、計測完了後は原本 tombstone と共に残る。
-	// 現在サイズと一致する解析記録が無ければ、0 件の統計と未計測を区別できない。
-	if r.HasCurrentTSScan {
+	// COALESCE で統計の無い行は 0 に見えるため、HasMeasuredDropSummary を別の
+	// 事実として判定する。これは原本 TS の計測記録が保存済みサイズと一致する
+	// 場合だけ真になる。状態を問わず原本行から判定するので、計測後の tombstone
+	// では従来どおり要約を保ち、サイズ変更後の古い計測結果は表示しない。
+	if r.HasMeasuredDropSummary {
 		rec.DropSummary = &DropSummary{
 			Packets:   r.DropPackets,
 			Drops:     r.DropDrops,

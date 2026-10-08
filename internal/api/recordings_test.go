@@ -82,10 +82,9 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	if err := batch.Close(); err != nil {
 		t.Fatalf("seeding drop_stat batch: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-		VALUES ($1, $2)`, assetID, size); err != nil {
-		t.Fatalf("seeding current TS scan marker: %v", err)
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1, $2)`, assetID, size); err != nil {
+		t.Fatalf("seeding media_asset_ts_scan: %v", err)
 	}
 	return assetID
 }
@@ -160,46 +159,68 @@ func TestListRecordings(t *testing.T) {
 	}
 }
 
-func TestListRecordings_OmitsDropSummaryUntilCurrentSizeIsScanned(t *testing.T) {
+// dropSummary は原本の存在ではなく、保存サイズに一致した TS 計測記録がある場合だけ返す。
+func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
-	id := seedRecording(t, pool, "解析待ち", time.Now().Truncate(time.Second), "finished", 31)
-	assetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id,
-		Kind:        db.AssetKindOriginal,
-		RelPath:     fmt.Sprintf("test/%d.m2ts", id),
-		SizeBytes:   1234,
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+
+	unmeasured := seedRecording(t, pool, "計測記録なし", base, "finished", 90)
+	unmeasuredAssetID := seedIngested(t, pool, unmeasured, 1000, map[int32][4]int64{
+		0x100: {500, 2, 1, 0},
 	})
-	if err != nil {
-		t.Fatalf("seeding original asset: %v", err)
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_ts_scans WHERE media_asset_id = $1`, unmeasuredAssetID); err != nil {
+		t.Fatalf("deleting TS scan marker: %v", err)
 	}
 
-	getRecording := func() Recording {
-		t.Helper()
-		var got Recording
-		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &got)
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("status = %d, want 200", resp.StatusCode)
-		}
-		return got
-	}
-	if got := getRecording(); got.DropSummary != nil {
-		t.Fatalf("dropSummary before scan = %+v, want omitted", got.DropSummary)
-	}
-
-	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1, 1234)`, assetID); err != nil {
-		t.Fatalf("marking current size scanned: %v", err)
-	}
-	if got := getRecording(); got.DropSummary == nil || *got.DropSummary != (DropSummary{}) {
-		t.Fatalf("dropSummary after clean scan = %+v, want zero summary", got.DropSummary)
-	}
-
-	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET size_bytes = 1235 WHERE id = $1`, assetID); err != nil {
+	stale := seedRecording(t, pool, "原本サイズ変更後", base.Add(time.Minute), "finished", 91)
+	staleAssetID := seedIngested(t, pool, stale, 2000, map[int32][4]int64{
+		0x100: {500, 3, 0, 0},
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET size_bytes = size_bytes + 1 WHERE id = $1`, staleAssetID); err != nil {
 		t.Fatalf("changing original size: %v", err)
 	}
-	if got := getRecording(); got.DropSummary != nil {
-		t.Fatalf("dropSummary after size changes = %+v, want omitted until rescan", got.DropSummary)
+
+	measuredZero := seedRecording(t, pool, "計測済みドロップ 0", base.Add(2*time.Minute), "finished", 92)
+	seedIngested(t, pool, measuredZero, 3000, nil)
+
+	zeroSummary := &DropSummary{}
+	want := map[int64]*DropSummary{
+		unmeasured:   nil,
+		stale:        nil,
+		measuredZero: zeroSummary,
+	}
+	assertSummary := func(recording Recording, source string) {
+		t.Helper()
+		wantSummary, ok := want[recording.Id]
+		if !ok {
+			t.Fatalf("%s returned unexpected recording %d", source, recording.Id)
+		}
+		if !reflect.DeepEqual(recording.DropSummary, wantSummary) {
+			t.Errorf("%s dropSummary for recording %d = %+v, want %+v", source, recording.Id, recording.DropSummary, wantSummary)
+		}
+	}
+
+	var list []Recording
+	resp := getJSON(t, srv.URL+"/api/recordings", &list)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list status = %d, want 200", resp.StatusCode)
+	}
+	if len(list) != len(want) {
+		t.Fatalf("recordings = %d, want %d", len(list), len(want))
+	}
+	for _, recording := range list {
+		assertSummary(recording, "list")
+	}
+
+	for id := range want {
+		var detail Recording
+		resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("detail %d status = %d, want 200", id, resp.StatusCode)
+		}
+		assertSummary(detail, "detail")
 	}
 }
 

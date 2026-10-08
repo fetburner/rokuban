@@ -1,5 +1,5 @@
 -- catalog エクスポート / rescue 用（M3-9 / issue #71）。
--- 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・media_asset_ts_scans・意図・上書き（と意図の FK 先
+-- 保護対象はルール・分類ルール・録画・media_assets・media_asset_ts_scans・drop_stats・drop_positions・意図・上書き（と意図の FK 先
 -- program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 -- 含めない（docs/storage.md §8）。
 
@@ -59,13 +59,12 @@ SELECT * FROM media_assets ORDER BY id;
 -- name: CatalogListDropStats :many
 SELECT * FROM drop_stats ORDER BY media_asset_id, pid;
 
--- drop_positions は原本を削除した後も解析結果として残るので drop_stats と
+-- drop_positions は原本を削除した後も残る不可逆な観測なので、drop_stats と
 -- 同じ catalog に含める。elapsed_ms の NULL は sqlc のポインタ型で保つ。
 -- name: CatalogListDropPositions :many
 SELECT * FROM drop_positions ORDER BY media_asset_id, byte_offset;
 
--- 計測記録は削除済み原本の統計表示と until_encoded の削除判定が依存するので含める。
--- name: CatalogListTSScans :many
+-- name: CatalogListMediaAssetTSScans :many
 SELECT * FROM media_asset_ts_scans ORDER BY media_asset_id;
 
 -- 意図・上書きの FK 先。
@@ -364,21 +363,6 @@ ON CONFLICT (media_asset_id, pid) DO UPDATE SET
     errors    = EXCLUDED.errors,
     scrambled = EXCLUDED.scrambled,
     pid_type  = EXCLUDED.pid_type;
-
--- name: CatalogUpsertTSScan :exec
-INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-VALUES ($1, $2)
-ON CONFLICT (media_asset_id) DO UPDATE SET
-    scanned_size_bytes = EXCLUDED.scanned_size_bytes;
-
--- 計測記録を持たない旧ダンプ用。00025 のマイグレーションと同じ補完。
--- name: CatalogBackfillTSScans :exec
-INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
-SELECT a.id, a.size_bytes
-FROM media_assets a
-WHERE a.kind = 'original'
-  AND EXISTS (SELECT 1 FROM drop_stats d WHERE d.media_asset_id = a.id)
-ON CONFLICT (media_asset_id) DO NOTHING;
 
 -- name: CatalogUpsertDropPosition :exec
 INSERT INTO drop_positions (

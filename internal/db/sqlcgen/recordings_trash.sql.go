@@ -15,23 +15,12 @@ const listTrashRecordings = `-- name: ListTrashRecordings :many
 SELECT
     r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1, r.series_key,
     a.size_bytes                        AS original_size_bytes,
-    COALESCE(d.packets, 0)::bigint      AS drop_packets,
-    COALESCE(d.drops, 0)::bigint        AS drop_drops,
-    COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
     COALESCE(p.keep_original, 'always')::text AS keep_original,
     COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
 FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
-LEFT JOIN LATERAL (
-    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
-           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
-    FROM drop_stats ds
-    JOIN media_assets da ON da.id = ds.media_asset_id
-    WHERE da.recording_id = r.id AND da.kind = 'original'
-) d ON true
 WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
 ORDER BY r.deleted_at DESC, r.id DESC
 `
@@ -66,15 +55,11 @@ type ListTrashRecordingsRow struct {
 	GenreLv1          []int16
 	SeriesKey         *string
 	OriginalSizeBytes *int64
-	DropPackets       int64
-	DropDrops         int64
-	DropErrors        int64
-	DropScrambled     int64
 	KeepOriginal      string
 	EncodeProfiles    []string
 }
 
-// ごみ箱一覧。原本サイズ + drop 合計は載せるが、
+// ごみ箱一覧。原本サイズは載せるが、
 // available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に
 // 射影しない。ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing /
 // GetThumbnailMediaAssetForServing / GetEncodedMediaAssetForServing）が
@@ -141,10 +126,6 @@ func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListT
 			&i.GenreLv1,
 			&i.SeriesKey,
 			&i.OriginalSizeBytes,
-			&i.DropPackets,
-			&i.DropDrops,
-			&i.DropErrors,
-			&i.DropScrambled,
 			&i.KeepOriginal,
 			&i.EncodeProfiles,
 		); err != nil {

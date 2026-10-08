@@ -15,7 +15,7 @@ import (
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
 //
 // media_dir/catalog/ の最新 catalog JSON を読み、コアメタデータ
-// （rules / recordings / media_assets / drop_stats / drop_positions / program_intents /
+// （rules / recordings / media_assets / drop_stats / drop_positions / media_asset_ts_scans / program_intents /
 // program_overrides）を DB に冪等 upsert する。catalog が無ければ storage を走査し、
 // `sites/{site}/` 前置を持つ認識可能な動画ファイルを素の asset として in-place 登録する。
 func newRescueCmd() *cobra.Command {
@@ -23,7 +23,7 @@ func newRescueCmd() *cobra.Command {
 		Use:   "rescue",
 		Short: "catalog からコアメタデータを DB に復元する",
 		Long: `media_dir/catalog/ 配下の最新 catalog JSON を読み、ルール・録画・
-media_assets・ドロップ統計・手動意図/上書きを Postgres に冪等 upsert する
+media_assets・原本 TS 計測記録・ドロップ統計・手動意図/上書きを Postgres に冪等 upsert する
 （docs/storage.md §8、災害復旧）。
 
 catalog が無ければ media_dir を走査し、sites/{site}/ 前置を持つ TS / M2TS /
@@ -76,18 +76,19 @@ func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registr
 	for _, r := range result.RejectedSnapshots {
 		_, _ = fmt.Fprintf(out, "  skipped incomplete generation %s: %s\n", r.Name, r.Reason)
 	}
-	_, _ = fmt.Fprintf(out, "  rules:              %d\n", result.Rules)
-	_, _ = fmt.Fprintf(out, "  recordings:         %d\n", result.Recordings)
-	_, _ = fmt.Fprintf(out, "  recording_watched:  %d\n", result.RecordingWatched)
-	_, _ = fmt.Fprintf(out, "  media_assets:       %d\n", result.MediaAssets)
-	_, _ = fmt.Fprintf(out, "  drop_stats:         %d\n", result.DropStats)
-	_, _ = fmt.Fprintf(out, "  drop_positions:     %d\n", result.DropPositions)
-	_, _ = fmt.Fprintf(out, "  program_snapshots:  %d\n", result.ProgramSnapshots)
-	_, _ = fmt.Fprintf(out, "  program_intents:    %d\n", result.ProgramIntents)
-	_, _ = fmt.Fprintf(out, "  program_overrides:  %d\n", result.ProgramOverrides)
+	_, _ = fmt.Fprintf(out, "  rules:                %d\n", result.Rules)
+	_, _ = fmt.Fprintf(out, "  recordings:           %d\n", result.Recordings)
+	_, _ = fmt.Fprintf(out, "  recording_watched:    %d\n", result.RecordingWatched)
+	_, _ = fmt.Fprintf(out, "  media_assets:         %d\n", result.MediaAssets)
+	_, _ = fmt.Fprintf(out, "  drop_stats:           %d\n", result.DropStats)
+	_, _ = fmt.Fprintf(out, "  drop_positions:       %d\n", result.DropPositions)
+	_, _ = fmt.Fprintf(out, "  media_asset_ts_scans: %d\n", result.MediaAssetTSScans)
+	_, _ = fmt.Fprintf(out, "  program_snapshots:    %d\n", result.ProgramSnapshots)
+	_, _ = fmt.Fprintf(out, "  program_intents:      %d\n", result.ProgramIntents)
+	_, _ = fmt.Fprintf(out, "  program_overrides:    %d\n", result.ProgramOverrides)
 	// ユーザーが手で置いたチャプターは自動検出で作り直せない。目に触れる位置に出す。
-	_, _ = fmt.Fprintf(out, "  chapter_ownerships: %d\n", result.RecordingChapterOwnerships)
-	_, _ = fmt.Fprintf(out, "  chapter_spans:      %d\n", result.RecordingChapterSpans)
+	_, _ = fmt.Fprintf(out, "  chapter_ownerships:   %d\n", result.RecordingChapterOwnerships)
+	_, _ = fmt.Fprintf(out, "  chapter_spans:        %d\n", result.RecordingChapterSpans)
 	// 落とした行は黙って切り捨てない。永続資産は復元できているので rescue 自体は
 	// 成功だが、ダンプが壊れている事実は運用者に伝える。
 	if result.SkippedProgramSnapshots > 0 {

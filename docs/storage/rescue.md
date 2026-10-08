@@ -4,7 +4,7 @@
 
 ### 保護対象の仕分け
 
-失うと痛いデータを仕分けすると、EPG プロジェクションは mirakc から再構築可能で、ジョブキューは一時的である。**保護対象は「ルール・シリーズ分類ルール・録画履歴・media_assets・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド・ユーザーが置いたチャプター・視聴済みの印」のみ（数 MB）**。
+失うと痛いデータを仕分けすると、EPG プロジェクションは mirakc から再構築可能で、ジョブキューは一時的である。**保護対象は「ルール・シリーズ分類ルール・録画履歴・media_assets・原本 TS 計測記録・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド・ユーザーが置いたチャプター・視聴済みの印」のみ（数 MB）**。
 
 シリーズ分類ルール（`label_rules`）もユーザーが書いた再取得できない設定なので保護対象である。id を保って復元し、`value_key` / `keyword_key` は生成列なので書かない。
 当たりの表（`label_rule_hits`）は作り直せるので入れない。rescue は同じトランザクションの末尾で全件を再評価して閉じる（worker の定期再評価を待たない）。トリガーは新規行と title 変更しか見ないので、DB に残っていた録画はこの再評価でしか追従しない。
@@ -14,16 +14,16 @@
 自動検出の結果（`recording_cm_detections`）は導出値なので含めない。
 所有の行が無い録画は自動層のままなので何も復元しない（行の不在そのものが意味を持つ。不変条件 10）。
 
-原本の TS 走査の計測記録（`media_asset_ts_scans`）も保護対象である。
-削除済み原本の統計表示と until_encoded の削除判定が、原本の現在サイズと一致するこの記録に依存するためである。
-記録のキーを持たない旧ダンプからの rescue だけ、ドロップ統計を持つ原本に `scanned_size_bytes = size_bytes` を補う。
-
 視聴済みの印（`recording_watched`）はユーザーが付けた世帯共有の事実なので export / rescue に含める。
 再生位置（`recording_playback_positions`）は一時的な利便状態なので catalog には含めず、復旧後は続きからを再作成する。
 
-書き込み順は `recordings → media_assets → チャプターの所有 2 表` である（区間が所有の行を FK で指すため）。
+書き込み順は `recordings → media_assets → チャプターの所有 2 表 → drop_stats → drop_positions → media_asset_ts_scans` である。
 区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。
 そのため rescue の 2 回目は `ON CONFLICT DO NOTHING` で受ける —— 素の INSERT だと同じ区間が自分自身と衝突し、1 世代まるごと復元できなくなる。
+
+`media_asset_ts_scans` は原本ごとに TS 計測時のサイズを記録する。
+古い catalog にこの配列が無い場合、`drop_stats` がある原本を計測済みとして復元し、サイズには当時の `media_assets.size_bytes` を使う。
+`drop_stats` のない原本は未計測のままにし、復旧後の TS 計測ジョブが読み直す。
 
 ### catalog エクスポート
 

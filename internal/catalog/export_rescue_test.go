@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -79,6 +81,13 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+	// 計測サイズを原本サイズとずらす。同じ値だと drop_stats からの旧形式補完でも
+	// 一致してしまい、catalog の計測記録を使う経路を区別できない。
+	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
+		MediaAssetID: assetID, ScannedSizeBytes: 999_000,
+	}); err != nil {
+		t.Fatalf("UpsertMediaAssetTSScan: %v", err)
 	}
 
 	// recording_encode_policy 衛星表（issue #159）。凍結済み（ingest が INSERT
@@ -205,6 +214,10 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		doc.DropPositions[0].ElapsedMs == nil || *doc.DropPositions[0].ElapsedMs != 1000 {
 		t.Fatalf("exported drop_positions = %+v", doc.DropPositions)
 	}
+	if len(doc.MediaAssetTSScans) != 1 || doc.MediaAssetTSScans[0].MediaAssetID != assetID ||
+		doc.MediaAssetTSScans[0].ScannedSizeBytes != 999_000 {
+		t.Fatalf("exported media_asset_ts_scans = %+v", doc.MediaAssetTSScans)
+	}
 	if len(doc.ProgramIntents) != 1 {
 		t.Fatalf("exported program_intents = %d, want 1", len(doc.ProgramIntents))
 	}
@@ -246,9 +259,9 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if result.Generation == "" {
 		t.Fatalf("rescued from %+v, want a verified generation", result)
 	}
-	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 || result.DropPositions != 1 {
-		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d positions=%d",
-			result.Rules, result.Recordings, result.MediaAssets, result.DropStats, result.DropPositions)
+	if result.Rules != 1 || result.Recordings != 2 || result.MediaAssets != 1 || result.DropStats != 1 || result.DropPositions != 1 || result.MediaAssetTSScans != 1 {
+		t.Fatalf("rescue counts: rules=%d rec=%d assets=%d drops=%d positions=%d ts_scans=%d",
+			result.Rules, result.Recordings, result.MediaAssets, result.DropStats, result.DropPositions, result.MediaAssetTSScans)
 	}
 	if result.RecordingEncodePolicies != 1 {
 		t.Fatalf("rescue recording_encode_policies = %d, want 1 (unfrozen recording must not gain a row)",
@@ -365,6 +378,15 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	if restoredElapsed == nil || *restoredElapsed != 1000 {
 		t.Errorf("restored elapsed_ms = %v, want 1000", restoredElapsed)
 	}
+	var restoredScannedSize int64
+	if err := pool.QueryRow(ctx,
+		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
+	).Scan(&restoredScannedSize); err != nil {
+		t.Fatalf("query media_asset_ts_scans: %v", err)
+	}
+	if restoredScannedSize != 999_000 {
+		t.Errorf("restored scanned_size_bytes = %d, want 999000", restoredScannedSize)
+	}
 
 	var matchValue string
 	if err := pool.QueryRow(ctx,
@@ -407,6 +429,102 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 	if assetCount != 1 {
 		t.Errorf("media_assets after second rescue = %d, want 1", assetCount)
+	}
+}
+
+func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source: "manual", Site: "default",
+		NetworkID: 1, ServiceID: 1, EventID: 1,
+		ServiceName: "s", ChannelType: "GR", Channel: "1",
+		Title: "legacy", IsFree: true,
+		ProgramStartAt:    time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 60_000, Status: "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	const relPath = "sites/default/legacy.m2ts"
+	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recID, Kind: "original", RelPath: relPath, SizeBytes: 1234,
+	})
+	if err != nil {
+		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+		VALUES ($1, 256, 20, 2, 0, 0, 'video')
+	`, assetID); err != nil {
+		t.Fatalf("insert drop_stats: %v", err)
+	}
+
+	recordingRows, err := q.CatalogListRecordings(ctx)
+	if err != nil {
+		t.Fatalf("CatalogListRecordings: %v", err)
+	}
+	if len(recordingRows) != 1 {
+		t.Fatalf("recording rows = %d, want 1", len(recordingRows))
+	}
+	assetRows, err := q.CatalogListMediaAssets(ctx)
+	if err != nil {
+		t.Fatalf("CatalogListMediaAssets: %v", err)
+	}
+	if len(assetRows) != 1 {
+		t.Fatalf("media asset rows = %d, want 1", len(assetRows))
+	}
+	doc := &Document{
+		Version:     Version,
+		ExportedAt:  time.Now().UTC(),
+		Recordings:  []Recording{recordingFromRow(recordingRows[0])},
+		MediaAssets: []MediaAsset{mediaAssetFromRow(assetRows[0])},
+		DropStats:   []DropStat{{MediaAssetID: assetID, Pid: 256, Packets: 20, Drops: 2}},
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal document: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode document fields: %v", err)
+	}
+	delete(fields, "mediaAssetTsScans")
+	legacyJSON, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal legacy document: %v", err)
+	}
+
+	mediaDir := t.TempDir()
+	assetPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		t.Fatalf("create media directory: %v", err)
+	}
+	if err := os.WriteFile(assetPath, []byte("legacy asset"), 0o600); err != nil {
+		t.Fatalf("write media asset: %v", err)
+	}
+	legacyPath := filepath.Join(t.TempDir(), DocumentFilename)
+	if err := os.WriteFile(legacyPath, legacyJSON, 0o600); err != nil {
+		t.Fatalf("write legacy catalog: %v", err)
+	}
+
+	result, err := RescueFile(ctx, pool, mediaDir, legacyPath)
+	if err != nil {
+		t.Fatalf("RescueFile: %v", err)
+	}
+	if result.MediaAssetTSScans != 1 {
+		t.Fatalf("rescued media_asset_ts_scans = %d, want 1", result.MediaAssetTSScans)
+	}
+	var scannedSize int64
+	if err := pool.QueryRow(ctx,
+		`SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID,
+	).Scan(&scannedSize); err != nil {
+		t.Fatalf("query media_asset_ts_scans: %v", err)
+	}
+	if scannedSize != 1234 {
+		t.Fatalf("legacy scanned_size_bytes = %d, want snapshot size 1234", scannedSize)
 	}
 }
 
@@ -537,118 +655,5 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	}
 	if _, err := RescueLatest(ctx, pool, mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
-	}
-}
-
-// tsScanRescueRoundTrip は「削除済み原本 + drop_stats（+ withScan のとき計測記録）」を
-// 持つ DB を export し、mutate した文書を書いて空 DB へ rescue した後の
-// media_asset_ts_scans を asset_id → scanned_size_bytes で返す。
-func tsScanRescueRoundTrip(t *testing.T, withScan bool, mutate func(*Document)) map[int64]int64 {
-	t.Helper()
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 100,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "計測記録", IsFree: true,
-		ProgramStartAt:    time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 1800000, Status: "finished",
-	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
-	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recID, Kind: "original", RelPath: "sites/default/x.m2ts", SizeBytes: 1_000_000,
-	})
-	if err != nil {
-		t.Fatalf("CreateMediaAsset: %v", err)
-	}
-	// 削除済み原本: ファイルは無いが統計は残る（rescue は deleted の行のファイルを見ない）。
-	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
-		t.Fatalf("delete asset: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled)
-		VALUES ($1, 256, 10000, 3, 0, 0)`, assetID); err != nil {
-		t.Fatalf("seeding drop_stats: %v", err)
-	}
-	if withScan {
-		// size_bytes（1_000_000）と違う値にして、補完ではなく復元であることを見分ける。
-		if _, err := pool.Exec(ctx, `INSERT INTO media_asset_ts_scans VALUES ($1, 999000)`, assetID); err != nil {
-			t.Fatalf("seeding ts scan: %v", err)
-		}
-	}
-
-	doc, err := Export(ctx, pool)
-	if err != nil {
-		t.Fatalf("Export: %v", err)
-	}
-	mutate(doc)
-	mediaDir := t.TempDir()
-	if _, err := Write(mediaDir, doc, 7); err != nil {
-		t.Fatalf("Write: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `TRUNCATE media_assets, recordings, program_snapshots, rules RESTART IDENTITY CASCADE`); err != nil {
-		t.Fatalf("truncate: %v", err)
-	}
-	if _, err := RescueLatest(ctx, pool, mediaDir, []string{"default"}); err != nil {
-		t.Fatalf("RescueLatest: %v", err)
-	}
-	rows, err := pool.Query(ctx, `SELECT media_asset_id, scanned_size_bytes FROM media_asset_ts_scans`)
-	if err != nil {
-		t.Fatalf("query ts scans: %v", err)
-	}
-	defer rows.Close()
-	got := map[int64]int64{}
-	for rows.Next() {
-		var id, size int64
-		if err := rows.Scan(&id, &size); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		got[id] = size
-	}
-	return got
-}
-
-// 新形式: 記録がそのまま戻る（補完の size_bytes ではなく記録の値）。
-func TestExportRescue_TSScansRestored(t *testing.T) {
-	got := tsScanRescueRoundTrip(t, true, func(d *Document) {
-		if len(d.TSScans) != 1 {
-			t.Fatalf("exported tsScans = %+v, want 1 row", d.TSScans)
-		}
-	})
-	if len(got) != 1 {
-		t.Fatalf("restored ts scans = %v, want exactly 1", got)
-	}
-	for _, size := range got {
-		if size != 999000 {
-			t.Fatalf("scanned_size_bytes = %d, want 999000 (restored, not backfilled from size_bytes)", size)
-		}
-	}
-}
-
-// 旧形式（tsScans キー無し）: drop_stats を持つ原本に scanned_size_bytes = size_bytes を補う。
-func TestExportRescue_TSScansLegacyBackfill(t *testing.T) {
-	got := tsScanRescueRoundTrip(t, false, func(d *Document) { d.TSScans = nil })
-	if len(got) != 1 {
-		t.Fatalf("legacy rescue ts scans = %v, want exactly 1 backfilled row", got)
-	}
-	for _, size := range got {
-		if size != 1_000_000 {
-			t.Fatalf("backfilled scanned_size_bytes = %d, want 1000000", size)
-		}
-	}
-}
-
-// 新形式で記録が無い原本には補完しない（空配列は「記録なし」という主張）。
-func TestExportRescue_TSScansEmptyNewFormatNotBackfilled(t *testing.T) {
-	got := tsScanRescueRoundTrip(t, false, func(d *Document) {
-		if d.TSScans == nil || len(d.TSScans) != 0 {
-			t.Fatalf("exported tsScans = %#v, want non-nil empty slice", d.TSScans)
-		}
-	})
-	if len(got) != 0 {
-		t.Fatalf("new-format rescue ts scans = %v, want none (no backfill)", got)
 	}
 }
