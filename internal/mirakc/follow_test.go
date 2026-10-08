@@ -352,12 +352,12 @@ func TestRecordFollowReader404HookMustConfirmCommittedEnd(t *testing.T) {
 	notFound := &APIError{StatusCode: 404, Status: "404 Not Found"}
 	tests := []struct {
 		name    string
-		hook    func(int64, error) error
+		hook    func(context.Context, int64, error) error
 		wantErr error
 	}{
 		{
 			name: "committed end",
-			hook: func(offset int64, cause error) error {
+			hook: func(_ context.Context, offset int64, cause error) error {
 				if offset != 12 || !errors.Is(cause, notFound) {
 					t.Errorf("404 hook args = (%d, %v), want offset 12 and original 404", offset, cause)
 				}
@@ -366,7 +366,7 @@ func TestRecordFollowReader404HookMustConfirmCommittedEnd(t *testing.T) {
 		},
 		{
 			name:    "incomplete original",
-			hook:    func(int64, error) error { return errFollowTestIncomplete },
+			hook:    func(context.Context, int64, error) error { return errFollowTestIncomplete },
 			wantErr: errFollowTestIncomplete,
 		},
 	}

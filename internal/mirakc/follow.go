@@ -30,10 +30,10 @@ type RecordFollowOptions struct {
 	// error を返すと reader を終了する。
 	OnRecord func(record *Record, offset int64) error
 
-	// OnRecordNotFound は 404 時に現在の byte offset と元の error とともに呼ばれる。
-	// caller がこの offset を録画の commit 済み終端と証明できる場合だけ io.EOF を返す。
-	// それ以外の戻り値では、その error で reader を終了する。
-	OnRecordNotFound func(offset int64, cause error) error
+	// OnRecordNotFound は reader の cancelable context、現在の byte offset、元の error とともに
+	// 404 時に呼ばれる。caller がこの offset を録画の commit 済み終端と証明できる場合だけ
+	// io.EOF を返す。それ以外の戻り値では、その error で reader を終了する。
+	OnRecordNotFound func(ctx context.Context, offset int64, cause error) error
 
 	// OnRangeEnd は本文が byte を返した場合に、応答本文を閉じた後で呼ばれる。
 	// Read を呼んだ goroutine 上で、byte を消費側へ返した後に実行する。
@@ -328,7 +328,7 @@ func (r *RecordFollowReader) recordNotFound(cause error) error {
 	if r.options.OnRecordNotFound == nil {
 		return fmt.Errorf("record %s not found at offset %d: %w", r.recordID, r.nextOffset, cause)
 	}
-	if err := r.options.OnRecordNotFound(r.nextOffset, cause); errors.Is(err, io.EOF) {
+	if err := r.options.OnRecordNotFound(r.ctx, r.nextOffset, cause); errors.Is(err, io.EOF) {
 		r.done = true
 		return nil
 	} else if err != nil {

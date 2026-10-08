@@ -526,9 +526,9 @@ const chaseRecordStallTimeout = 30 * time.Second
 func newChaseFollowReader(ctx context.Context, client mirakcSeekRecordClient, recordID string, offset int64, body io.ReadCloser, committedSize chaseCommittedSize) *mirakc.RecordFollowReader {
 	return mirakc.NewRecordFollowReader(ctx, client, recordID, offset, body, mirakc.RecordFollowOptions{
 		StallTimeout: chaseRecordStallTimeout,
-		OnRecordNotFound: func(readOffset int64, cause error) error {
+		OnRecordNotFound: func(readCtx context.Context, readOffset int64, cause error) error {
 			if committedSize != nil {
-				size, ok, err := committedSize(ctx)
+				size, ok, err := committedSize(readCtx)
 				if err != nil {
 					return fmt.Errorf("%w at offset %d (reading the committed original: %w): %w", errChaseRecordPurged, readOffset, err, cause)
 				}

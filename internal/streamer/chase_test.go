@@ -670,6 +670,47 @@ func TestChaseRecordNotFoundUsesCommittedOriginal(t *testing.T) {
 	}
 }
 
+func TestChaseRecordNotFoundLookupIsCanceledByReaderClose(t *testing.T) {
+	outerCtx, cancelOuter := context.WithCancel(context.Background())
+	defer cancelOuter()
+
+	lookupStarted := make(chan struct{})
+	lookupCanceled := make(chan error, 1)
+	client := &scriptedChaseRecord{rangeErrs: []error{errNotFoundForTest}}
+	reader := newChaseFollowReader(outerCtx, client, "opaque-record-id", 0, nil, func(ctx context.Context) (int64, bool, error) {
+		close(lookupStarted)
+		<-ctx.Done()
+		lookupCanceled <- ctx.Err()
+		return 0, false, ctx.Err()
+	})
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(reader)
+		readDone <- err
+	}()
+
+	select {
+	case <-lookupStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("committed-size lookup did not start")
+	}
+	_ = reader.Close()
+
+	select {
+	case err := <-lookupCanceled:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("committed-size lookup context error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader Close did not cancel the committed-size lookup")
+	}
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader did not finish after Close canceled the committed-size lookup")
+	}
+}
+
 func TestChaseInputErrorDoesNotWriteEndlist(t *testing.T) {
 	previousCooldown := chaseInputFailureCooldown
 	cooldown := 5 * time.Second
