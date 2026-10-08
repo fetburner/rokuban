@@ -836,22 +836,6 @@ func chaseOffsetFromRequest(r *http.Request) (int64, bool) {
 	return parseCanonicalChaseOffset(chi.URLParam(r, "offset"))
 }
 
-// 追っかけの Range 追従の間隔と再試行の待ち。テストが実時間を待たずに済むよう var にする。
-var (
-	// chaseRangePollMin は Range 要求の最短間隔（要求の開始から数える）。待たずに次を取ると、
-	// 追い付いた直後の空の応答と GetRecord で 1 セッションあたり毎秒 20 要求になっていた
-	// （古い mirakc は Range ごとに dd を起こす）。データが続く間の変換の遅れはこの間隔まで。
-	chaseRangePollMin = 500 * time.Millisecond
-	// chaseRangePollMax は追い付いたまま録画中が続くときのバックオフの上限。録画が止まって
-	// いる間だけ効き、再開後の最初の取得はこれだけ遅れうる。フロントは変換済みの端
-	// （seekable の終端）より後ろへのシークを新しい offset で張り直すので、この遅れは
-	// 張り直しの頻度を変えるだけで、見られない区間を作らない（docs/frontend/live.md）。
-	chaseRangePollMax = time.Second
-	// chaseRetryDelay は一過性の失敗の再試行の待ち。回数と分類は ingest と共有する
-	// （mirakc.RetryDelay / mirakc.MaxConsecutiveRetries / mirakc.IsRetryable）。
-	chaseRetryDelay = mirakc.RetryDelay
-)
-
 // resolveRequest はパスから (site, networkId, serviceId) を取り出し、site が
 // このプロセスの担当（`--sites` で束縛された site）と一致することを確かめたうえで、
 // mirakc に渡す合成 service id を返す。DB は引かない（issue #91 の決定 3）---

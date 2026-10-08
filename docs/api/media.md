@@ -563,10 +563,13 @@ mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし�
 `GET /api/recording/records/{record_id}` の `recording.startTime` と `content.length` から
 概算バイト位置を求める。TS パケット境界に合わせて `Range: bytes=<position>-` で要求する。
 mirakc の Range 応答は要求時点までの有限のスナップショットである。
-streamer は本文を読み切るたびに消費済みバイト位置から次の Range を要求して録画末尾へ追従する。
+streamer は先頭からの追従配信が閉じた後、または offset 用の初回 Range を読み切った後に、
+消費済みバイト位置から次の Range を要求して録画末尾へ追従する。
 録画先頭からの読み捨ては行わない。録画終了との競合で 416/空の 206 と終了状態を
-同時に観測した場合は、同じ位置を一度だけ再確認してから EOF とするため、終了直前に
-追記された最終差分を読み残さない。
+同時に観測した場合は、同じ位置へすぐ Range を送り直す。最終 Range が空になるまで
+続けるため、終了直前に追記された差分を読み残さない。status は空 Range の後だけ取得する。
+未知の status は終了とみなさず、同じ offset で再試行する
+（`TestRecordFollowReaderUnknownStatusRetriesInsteadOfEnding`）。
 
 Range を無視してオフセット付き要求に 200（先頭からの本文）を返す mirakc は安全のため
 受け付けず、オフセット再生を 503 にする。Range 対応は mirakc の録画配信 API における
@@ -588,25 +591,25 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 `TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF` が測り、CI は ffmpeg を入れて skip を禁じている。
 したがって追っかけの `ENDLIST` が録画ファイルの終端を表すかは、入力をいつ EOF にするかで決まる。
 
-- **EOF にするのは録画ファイルの終端まで渡した後だけ。** mirakc が録画の終了（状態が `recording` でない）を
-  返し、同じ offset への最後の Range も空だったときである。record が 404 になったとき（ingest の purge 等）は、
+- **EOF にするのは録画ファイルの終端まで渡した後だけ。** mirakc が既知の終了状態
+  （`finished` / `canceled` / `failed`）を返し、同じ offset への最後の Range も空だったときである。
+  追っかけ再生では canceled / failed のときも録れた所まで配信して ENDLIST を付ける。record が 404 になったとき（ingest の purge 等）は、
   読んだ位置がコミット済み原本のバイト数と一致するときだけ終端とみなす。ingest は mirakc が録画の終了を返し、最後の Range が
   空になるまで読んでからコミットするので、コミットされたバイト数は終了時点のファイル長である。一致しなければエラーにする。
   ffmpeg が先端より遅れていて purge が先に来た場合や、別経路の原本、mirakc が record を失った場合である。
-  判定は `TestChaseRangeFollowReaderTreatsPurgeAsEndOnlyWhenComplete` と
+  判定は `TestChaseRecordNotFoundUsesCommittedOriginal` と
   `TestChasePurgeEndUsesCommittedOriginal` が固定する
 - **先頭からの追従配信が閉じても EOF にしない。** 追従配信は mirakc 側の無入力タイムアウトで録画中にも
   閉じうる（実際に閉じる頻度は未検証）。正常に閉じても途中で切れても、読んだバイトの続きから Range で追う
-  （`TestFollowChaseRecordContinuesWithRangeAfterFollowCloses`、
-  `TestChaseRangeFollowReaderResumesAfterUncleanBodyClose`）。Content-Length の無い Range 本文も読む
-  （`TestChaseRangeFollowReaderReadsChunkedRangeBodies`）
-- **一過性の失敗は再試行する。** 5xx と通信断は ingest と同じ規則（`mirakc.IsRetryable`）で扱う。
-  連続 5 回まで再試行し、6 回目でエラーにする（`TestChaseRangeFollowReaderRetryLimit`）。待ちは 200ms から倍々で、5 回目の
-  前が最長の 3.2 秒である（`mirakc.RetryDelay`、`TestRetryDelay`）
-- **Range の間隔。** 要求は 0.5 秒以上あける。追い付いたまま録画中なら、間隔を 1 秒まで広げる
-  （`TestChaseRangeFollowReaderBacksOffWhileCaughtUp`）。広げるのは録画が止まっている間だけで、データが続く間は
-  0.5 秒間隔に戻る（`TestChaseRangeFollowReaderBoundsEdgeLag`）。フロントは変換済みの端より後ろへのシークを
-  新しい offset で張り直すので（[frontend/live.md](../frontend/live.md)）、この遅れは見られない区間を作らない
+  （`TestFollowChaseRecordContinuesWithRangeAfterFollowCloses`）。Content-Length の無い Range 本文も読む。
+  Range の本文が 30 秒 stall したら `Read` 中だけ timer を動かして切り直す。ffmpeg の stdin が詰まり
+  reader の `Read` が呼ばれない間は timer を動かさない
+  （`TestRecordFollowReaderStallAndConsumerBackpressure`）。
+- **一過性の失敗は再試行する。** 5xx・通信断・本文の stall・未知の status を共通の規則で扱う。
+  連続 5 回まで再試行し、6 回目でエラーにする（`MaxConsecutiveRetries`）。再試行待ちは 200ms から倍々で、
+  5 回目の前が最長 3.2 秒である（`RetryDelay`、`TestRetryDelay`）。
+- **Range の間隔。** 通常の要求は 0.5 秒以上あける。追い付いたまま録画中なら、間隔を 1 秒まで広げる。
+  データを読み取った後は最短間隔へ戻す。終了 status の後の最終 Range はすぐに送る。
 - **入力のエラーでは `ENDLIST` を書かせない。** 対象は再試行の上限を超えた失敗、再試行しても変わらない失敗、
   終端と確かめられない 404 である。このときは ffmpeg を kill してから stdin を閉じる
   （`TestChaseInputErrorDoesNotWriteEndlist`）。

@@ -35,7 +35,7 @@ import (
 )
 
 // errIngestRecordEndedAbnormally は、追従中の record が finished ではなく
-// canceled / failed で終わったことを表す sentinel（afterPollStatus が wrap し、
+// canceled / failed で終わったことを表す sentinel（RecordFollowReader の status hook が wrap し、
 // Work が errors.Is で拾う）。
 //
 // **これを River の再試行に戻してはならない。** cancel / fail は中身が不採用と
@@ -47,17 +47,6 @@ import (
 // content path を共有する後継録画のファイルまで消える）。理由は
 // docs/recording/ingest.md §5.3 層 3。
 var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally")
-
-// followPollInterval は録画中の Range ポーリング間隔。
-//
-// recording のあいだは差分の有無に関わらず必ず待つ。待たないと ingest が
-// 放送より速いとき 1 秒に数十〜百リクエストを mirakc に送り、DoS になる。
-// 待ちはジョブ内（River には出さない）—— Work を終わらせると offset / tsstat は
-// 消えるが、temp は残るため、次の試行が replay して再開できる。
-//
-// 1 秒は commit 遅延の下限（平均 0.5s）を小さく取る側。設定キーにはしない。
-// # ponytail: 固定 1s。実機の追い付き遅れがこれを否定したら ingest.follow_poll_interval にする。
-var followPollInterval = time.Second
 
 // ingestSHA256BytesPerSecond は finished 後に mirakc が content.sha256 を非同期計算する
 // 速度（バイト/秒）の見積もり。待ちの上限は時間ではなくこの速度で固定する ---
@@ -341,7 +330,7 @@ type IngestWorker struct {
 // ingest は数百 MB〜数十 GB のバイト転送で、所要時間は録画長と回線速度で決まる。
 // River の既定（JobTimeoutDefault = 1 分）では実際の録画がまず完走しない。
 //
-// 総時間で切らない代わりに、進捗が止まったことを stallReader が検知して打ち切る
+// 総時間で切らない代わりに、進捗が止まったことを RecordFollowReader が検知して切り直す
 // （StallTimeout）。「タイムアウトは総時間でなくストール検知」という M1-5-2 の
 // 設計はこれが揃って初めて成立する。
 //
@@ -598,7 +587,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 
 	var expectedSHA256 *string
-	offset, expectedSHA256, err = w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, log, offset)
+	offset, expectedSHA256, err = w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, offset)
 	if err != nil {
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
 			removeTemp = true
@@ -715,144 +704,58 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 }
 
-// transferIngestRecord は mirakc のストリームを Range ポーリングしながら
-// record 固有の一時ファイルへ転送する。
+// transferIngestRecord は mirakc の追従 reader から record 固有の一時ファイルへ転送する。
 // initialOffset は既存 temp を replay したバイト数で、プロセス再試行時の最初の
 // Range 開始点になる。省略時は新規 temp の 0 バイトから始める。
 //
-// Range の本文はリクエスト時点で有限なので、本文を読み切っただけでは record の
-// 終了を意味しない。GetRecord の recording.status を真実として読む。recording 中
-// は差分の有無に関わらず followPollInterval 待って次を取り、finished を観測して
-// から最後の差分を drain して戻る。
-func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, log *slog.Logger, initialOffset ...int64) (int64, *string, error) {
+// 書き込み先のエラーは mirakc の障害ではないので reader の再試行に入れず、そのまま返す。
+func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.Client, recordID string, dst io.Writer, progress *ingestProgressReporter, initialOffset ...int64) (int64, *string, error) {
 	offset := int64(0)
 	if len(initialOffset) > 0 {
 		offset = initialOffset[0]
 	}
-	var consecutiveFailures int
-	finishedObserved := false
 	var expectedSHA256 *string
 
-	for {
-		stallCtx, stallCancel := context.WithCancel(ctx)
-		body, _, streamErr := client.StreamRecord(stallCtx, recordID, offset)
-		if streamErr != nil {
-			stallCancel()
-			if errors.Is(streamErr, mirakc.ErrRecordNotReady) || errors.Is(streamErr, mirakc.ErrRangeNotSatisfiable) {
-				// 204 は content file がまだ空、416 は現在のサイズに追い付いた状態。
-				// どちらも録画中の正常な応答で、接続失敗の予算を消費しない。
-				if finishedObserved {
-					return offset, expectedSHA256, nil
-				}
-				poll, err := w.pollRecord(ctx, client, recordID)
-				if err != nil {
-					if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
-						return 0, nil, retryErr
-					}
-					continue
-				}
-				if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
-					return 0, nil, err
-				}
-				continue
-			}
-
-			if retryErr := retryPoll(ctx, &consecutiveFailures, streamErr, log, "stream connect", offset); retryErr != nil {
-				return 0, nil, retryErr
-			}
-			continue
+	onRecord := func(record *mirakc.Record, currentOffset int64) error {
+		status := record.Recording.Status
+		if status == db.RecordingStatusCanceled || status == db.RecordingStatusFailed {
+			return fmt.Errorf("mirakc record ended with status %q: %w", status, errIngestRecordEndedAbnormally)
 		}
-
-		timer := time.AfterFunc(w.StallTimeout, func() { stallCancel() })
-		n, copyErr := io.Copy(dst, &stallReader{r: body, timer: timer, d: w.StallTimeout})
-		timer.Stop()
-		stallCancel()
-		_ = body.Close()
-		offset += n
-
-		// バイトを書けた転送試行が終わるたび、最後の値を間引き無しで焼く。
-		if n > 0 {
-			progress.flush(ctx, offset)
+		if status != db.RecordingStatusRecording && status != db.RecordingStatusFinished {
+			// The shared reader retries unknown statuses. Do not refresh progress
+			// from a status it has not accepted.
+			return nil
 		}
-		if copyErr != nil {
-			if ctx.Err() != nil {
-				return 0, nil, ctx.Err()
-			}
-			if retryErr := retryPoll(ctx, &consecutiveFailures, copyErr, log, "transfer", offset); retryErr != nil {
-				// retryPoll 自身が "transfer failed N consecutive times" を
-				// 付けている。ここで包み直すと固定回数（mirakc.MaxConsecutiveRetries）と
-				// retryPoll が数えた回数がずれた文になり、ctx キャンセル時は
-				// ctx.Err() が「N 回連続失敗」を名乗ってしまう。他の 2 箇所
-				// （"record status" / "stream connect"）と同じくそのまま返す。
-				return 0, nil, retryErr
-			}
-			continue
+		var expected *int64
+		if record.Content.Length != nil {
+			length := int64(*record.Content.Length)
+			expected = &length
 		}
-
-		if finishedObserved {
-			// finished を観測した後も、最後の Range 応答に含まれなかった追記が
-			// あればもう一度 drain する。空で戻ったときだけ完全に追い付いた。
-			if n == 0 {
-				return offset, expectedSHA256, nil
-			}
-			consecutiveFailures = 0
-			continue
-		}
-
-		poll, err := w.pollRecord(ctx, client, recordID)
-		if err != nil {
-			if retryErr := retryPoll(ctx, &consecutiveFailures, err, log, "record status", offset); retryErr != nil {
-				return 0, nil, retryErr
-			}
-			continue
-		}
-		if err := w.followAfterStatusPoll(ctx, poll, &finishedObserved, &expectedSHA256, &consecutiveFailures, offset, progress, log); err != nil {
-			return 0, nil, err
-		}
-	}
-}
-
-// recordPoll は追従ループの 1 周で観測した record の状態。
-type recordPoll struct {
-	// Status は mirakc の recordingStatus（recording / finished / canceled / failed）。
-	Status string
-	// ContentLength は GetRecord の content.length（mirakc が返さなければ nil）。
-	// 追従ではこれが録画とともに伸びるので、進捗の分母を更新する材料になる。
-	ContentLength *int64
-	// ContentSHA256 は GetRecord の content.sha256。finished を観測したときだけ
-	// followAfterStatusPoll が照合用に採用する。旧 mirakc やハッシュ計算不能の
-	// record では nil なので照合をスキップする。
-	ContentSHA256 *string
-}
-
-// followAfterStatusPoll は status を 1 回観測した後のループ制御をまとめる。
-// 戻り値が非 nil なら呼び出し側はそれを返し、nil ならループを続ける。
-//
-// **終わったと確定した record を River の再試行に戻さない**
-// （errIngestRecordEndedAbnormally の doc コメント参照）。一方、**未知の status は
-// ジョブ内で再試行する** --- 一過性（status が欠落した応答など）かもしれず、
-// ここで Work を終えると次の試行が temp の replay から再開する余計な境界になる。
-// 連続回数は retryPoll が数えるので、恒久的に未知ならジョブは River へ戻る。
-func (w *IngestWorker) followAfterStatusPoll(ctx context.Context, poll recordPoll, finishedObserved *bool, expectedSHA256 **string, consecutiveFailures *int, offset int64, progress *ingestProgressReporter, log *slog.Logger) error {
-	if statusErr := w.afterPollStatus(poll.Status, finishedObserved); statusErr != nil {
-		if errors.Is(statusErr, errIngestRecordEndedAbnormally) {
-			return statusErr
-		}
-		return retryPoll(ctx, consecutiveFailures, statusErr, log, "record status", offset)
-	}
-	// 観測が 1 周ぶん成功したので連続失敗を戻す。**未知の status でここを通しては
-	// ならない** --- リセットしてから retryPoll を呼ぶと、恒久的に未知の status に
-	// 対してカウンタが毎周 1 に戻り、上限に達しないまま回り続ける。
-	*consecutiveFailures = 0
-	progress.observeProgress(ctx, offset, poll.ContentLength)
-	if *finishedObserved {
-		if poll.ContentSHA256 != nil {
-			sha256 := *poll.ContentSHA256
-			*expectedSHA256 = &sha256
+		progress.observeProgress(ctx, currentOffset, expected)
+		if status == db.RecordingStatusFinished && record.Content.Sha256 != nil {
+			sha256 := *record.Content.Sha256
+			expectedSHA256 = &sha256
 		}
 		return nil
 	}
-	return waitForFollowPoll(ctx)
+	reader := mirakc.NewRecordFollowReader(ctx, client, recordID, offset, nil, mirakc.RecordFollowOptions{
+		StallTimeout: w.StallTimeout,
+		OnRecord:     onRecord,
+		OnRangeEnd: func(currentOffset, bodyBytes int64) {
+			if bodyBytes > 0 {
+				progress.flush(ctx, currentOffset)
+			}
+		},
+	})
+	defer func() { _ = reader.Close() }()
+
+	written, err := io.Copy(dst, reader)
+	if err != nil {
+		// io.Copy can fail because dst failed. That is a local storage error,
+		// not a reason to retry the mirakc request.
+		return 0, nil, err
+	}
+	return offset + written, expectedSHA256, nil
 }
 
 // normalizeContentSHA256 は mirakc の optional な SHA-256 表記を比較用の
@@ -870,96 +773,6 @@ func normalizeContentSHA256(value *string) (string, bool) {
 		return "", false
 	}
 	return normalized, true
-}
-
-// pollRecord は録画中の Range 応答後に record の状態を再取得する。
-//
-// GetRecord は既に毎ポーリング呼んでいるので、content.length を分母の更新に
-// 使うのは追加リクエスト無しで済む。Work 開始時の record_sync.content_length を
-// 分母に固定すると、追従では written が古い分母を追い越して UI が「100%」を
-// 出し続ける（Web 側は min(100, ...) で頭打ちにするため、嘘が % として出る）。
-func (w *IngestWorker) pollRecord(ctx context.Context, client *mirakc.Client, recordID string) (recordPoll, error) {
-	record, err := client.GetRecord(ctx, recordID)
-	if err != nil {
-		return recordPoll{}, err
-	}
-	var length *int64
-	if record.Content.Length != nil {
-		l := int64(*record.Content.Length)
-		length = &l
-	}
-	return recordPoll{
-		Status:        record.Recording.Status,
-		ContentLength: length,
-		ContentSHA256: record.Content.Sha256,
-	}, nil
-}
-
-// observeProgress は健全に 1 周したポーリングを進捗として記録する。
-//
-// **0 バイトでも observed_at を進める。** 追い付いている状態は「止まっている」
-// のではなく追従が正常な状態そのもので、observed_at を据え置くと UI の停滞判定
-// （60 秒）がこれを「停滞」と読む。分母も同時に更新する。
-//
-// 間引きは report が持つ（最短 2 秒）。接続断の再試行はここを通らないので、
-// 「0 バイトの試行は進捗ではない」という既存の規律は失敗経路側に残る。
-func (r *ingestProgressReporter) observeProgress(ctx context.Context, written int64, expected *int64) {
-	if expected != nil {
-		r.expectedBytes = expected
-	}
-	r.report(ctx, written)
-}
-
-// afterPollStatus は status の観測を転送ループの状態へ適用する。
-func (w *IngestWorker) afterPollStatus(status string, finished *bool) error {
-	switch status {
-	case db.RecordingStatusRecording:
-		return nil
-	case db.RecordingStatusFinished:
-		*finished = true
-		return nil
-	case db.RecordingStatusCanceled, db.RecordingStatusFailed:
-		return fmt.Errorf("mirakc record ended with status %q: %w", status, errIngestRecordEndedAbnormally)
-	default:
-		return fmt.Errorf("mirakc record has unknown status %q", status)
-	}
-}
-
-// waitForFollowPoll は recording 中の次の Range まで待つ。River にジョブを
-// 戻さないので temp file・offset・tsstat の状態を同じ Work の中で保持できる。
-func waitForFollowPoll(ctx context.Context) error {
-	timer := time.NewTimer(followPollInterval)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// retryPoll は一時障害の連続回数だけを数える。録画が数時間続く間に偶発的な
-// 失敗が散発しても River の attempt を消費しない一方、mirakc が落ち続ける
-// とジョブを River の再試行へ戻す。
-func retryPoll(ctx context.Context, consecutiveFailures *int, err error, log *slog.Logger, phase string, offset int64) error {
-	if !mirakc.IsRetryable(err) {
-		return fmt.Errorf("%s: %w", phase, err)
-	}
-	*consecutiveFailures++
-	attempt := *consecutiveFailures - 1
-	if *consecutiveFailures > mirakc.MaxConsecutiveRetries {
-		return fmt.Errorf("%s failed %d consecutive times at offset %d: %w", phase, *consecutiveFailures, offset, err)
-	}
-	delay := mirakc.RetryDelay(attempt)
-	log.Warn("ingest: transient poll failure, retrying", "phase", phase, "consecutive_failures", *consecutiveFailures, "offset", offset, "err", err, "delay", delay)
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // recordIngestMetrics は転送結果のバイト数・TS 統計をメトリクスへ記録する。
@@ -1362,18 +1175,4 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		EncodeProfiles: encodeProfiles,
 		CmDetect:       w.CMDetect.Enabled,
 	})
-}
-
-type stallReader struct {
-	r     io.Reader
-	timer *time.Timer
-	d     time.Duration
-}
-
-func (s *stallReader) Read(p []byte) (int, error) {
-	n, err := s.r.Read(p)
-	if n > 0 {
-		s.timer.Reset(s.d)
-	}
-	return n, err
 }

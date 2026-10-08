@@ -78,6 +78,15 @@ func (r *ingestProgressReporter) report(ctx context.Context, written int64) {
 	r.write(ctx, written)
 }
 
+// observeProgress は空 Range を含む正常な追従観測を記録する。
+// 観測した content length を進捗率の分母に使う。再試行と未知の status では呼ばない。
+func (r *ingestProgressReporter) observeProgress(ctx context.Context, written int64, expected *int64) {
+	if expected != nil {
+		r.expectedBytes = expected
+	}
+	r.report(ctx, written)
+}
+
 // flush は間隔を無視して最新の written バイトを記録し、その時刻から次の
 // report の間引き間隔を数え直す。
 func (r *ingestProgressReporter) flush(ctx context.Context, written int64) {
