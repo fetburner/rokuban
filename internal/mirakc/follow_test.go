@@ -75,14 +75,14 @@ func (c *followTestClient) eventSnapshot() []string {
 	return append([]string(nil), c.events...)
 }
 
-func newFastRecordFollowReader(ctx context.Context, client RecordFollowClient, recordID string, offset int64, body io.ReadCloser, options RecordFollowOptions) *RecordFollowReader {
-	reader := NewRecordFollowReader(ctx, client, recordID, offset, body, options)
+func newFastRecordFollowReader(ctx context.Context, client RecordFollowClient, body io.ReadCloser, options RecordFollowOptions) *RecordFollowReader {
+	reader := NewRecordFollowReader(ctx, client, "record", 0, body, options)
 	reader.retryDelay = func(int) time.Duration { return 0 }
 	return reader
 }
 
-func followBody(data string, length int64) followTestResponse {
-	return followTestResponse{body: io.NopCloser(stringReader(data)), length: length}
+func followBody(length int64) followTestResponse {
+	return followTestResponse{body: io.NopCloser(stringReader("tail")), length: length}
 }
 
 func emptyFollowRange() followTestResponse {
@@ -108,14 +108,14 @@ func TestRecordFollowReaderDrainsFinalRangeAfterFinished(t *testing.T) {
 	client := &followTestClient{
 		responses: []followTestResponse{
 			{err: ErrRangeNotSatisfiable},
-			followBody("tail", 4),
+			followBody(4),
 			{err: ErrRangeNotSatisfiable},
 		},
 		records: []followTestRecord{{status: "finished"}},
 	}
 	var observed []string
 	var rangeEnds []string
-	reader := newFastRecordFollowReader(context.Background(), client, "record", 0,
+	reader := newFastRecordFollowReader(context.Background(), client,
 		io.NopCloser(stringReader("head")), RecordFollowOptions{
 			StallTimeout: time.Second,
 			OnRecord: func(record *Record, offset int64) error {
@@ -157,7 +157,7 @@ func TestRecordFollowReaderUnknownStatusRetriesInsteadOfEnding(t *testing.T) {
 		responses: []followTestResponse{
 			{err: ErrRangeNotSatisfiable},
 			{err: ErrRangeNotSatisfiable},
-			followBody("tail", -1),
+			followBody(-1),
 			{err: ErrRangeNotSatisfiable},
 		},
 		records: []followTestRecord{{status: "unknown"}, {status: "finished"}},
@@ -191,13 +191,13 @@ func TestRecordFollowReaderRetriesTransientRangeFailuresAtLimit(t *testing.T) {
 			{err: serverError},
 			{err: serverError},
 			{err: serverError},
-			followBody("tail", -1),
+			followBody(-1),
 			{err: ErrRangeNotSatisfiable},
 			{err: ErrRangeNotSatisfiable},
 		},
 		records: []followTestRecord{{status: "finished"}},
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
 	data, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || string(data) != "tail" {
@@ -218,7 +218,7 @@ func TestRecordFollowReaderStopsAfterSixthTransientFailure(t *testing.T) {
 	for i := range client.responses {
 		client.responses[i] = followTestResponse{err: serverError}
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
 	_, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err == nil || !strings.Contains(err.Error(), "failed 6 consecutive times") {
@@ -232,7 +232,7 @@ func TestRecordFollowReaderStopsAfterSixthTransientFailure(t *testing.T) {
 
 func TestRecordFollowReaderDoesNotRetryPermanentRangeFailure(t *testing.T) {
 	client := &followTestClient{responses: []followTestResponse{{err: &APIError{StatusCode: 400, Status: "400 Bad Request"}}}}
-	reader := newFastRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
 	_, err := io.ReadAll(reader)
 	_ = reader.Close()
 	var apiErr *APIError
@@ -257,7 +257,7 @@ func TestRecordFollowReaderRetriesTransientStatusFailure(t *testing.T) {
 			{status: "finished"},
 		},
 	}
-	reader := newFastRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+	reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
 	data, err := io.ReadAll(reader)
 	_ = reader.Close()
 	if err != nil || len(data) != 0 {
@@ -276,7 +276,7 @@ func TestRecordFollowReaderTreatsCanceledAndFailedAsTerminal(t *testing.T) {
 				responses: []followTestResponse{{err: ErrRangeNotSatisfiable}, {err: ErrRangeNotSatisfiable}},
 				records:   []followTestRecord{{status: status}},
 			}
-			reader := newFastRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+			reader := newFastRecordFollowReader(context.Background(), client, nil, RecordFollowOptions{})
 			data, err := io.ReadAll(reader)
 			_ = reader.Close()
 			if err != nil || len(data) != 0 {
@@ -373,7 +373,7 @@ func TestRecordFollowReaderStallAndConsumerBackpressure(t *testing.T) {
 		client := &followTestClient{
 			responses: []followTestResponse{
 				{body: body, length: -1},
-				followBody("tail", -1),
+				followBody(-1),
 				{err: ErrRangeNotSatisfiable},
 			},
 			records: []followTestRecord{{status: "finished"}},

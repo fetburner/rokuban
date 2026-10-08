@@ -427,12 +427,6 @@ func (c *scriptedChaseRecord) StreamService(context.Context, int64, int) (io.Rea
 	return nil, errors.New("not used")
 }
 
-func (c *scriptedChaseRecord) rangeCount() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return len(c.offsets)
-}
-
 // appendThenFinish は 1 回目の GetRecord（まだ録画中）で残りを追記し、2 回目で録画を終える。
 func appendThenFinish(c *scriptedChaseRecord, n int) {
 	switch n {
