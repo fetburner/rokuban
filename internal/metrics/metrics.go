@@ -77,6 +77,31 @@ var (
 	})
 )
 
+// TS scan（原本の全量再読み出し）のメトリクス。
+var (
+	TSScanDroppedPackets = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ts_scan_dropped_packets_total",
+		Help: "Total TS packets detected as dropped during original scans.",
+	})
+	TSScanErrorPackets = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ts_scan_error_packets_total",
+		Help: "Total TS packets with the transport error indicator set during original scans.",
+	})
+	TSScanScrambledPackets = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "rokuban_ts_scan_scrambled_packets_total",
+		Help: "Total TS packets still scrambled during original scans.",
+	})
+	TSScanDuration = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name:    "rokuban_ts_scan_duration_seconds",
+		Help:    "Duration of original TS scan jobs.",
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200},
+	})
+	TSScanJobs = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_ts_scan_jobs_total",
+		Help: "TS scan jobs by result.",
+	}, []string{"result"})
+)
+
 // encode（M3-3）のメトリクス。
 var (
 	// CMDetectDuration records the elapsed time of a CM analysis attempt.
@@ -726,6 +751,11 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		IngestDroppedPackets,
 		IngestErrorPackets,
 		IngestScrambledPackets,
+		TSScanDroppedPackets,
+		TSScanErrorPackets,
+		TSScanScrambledPackets,
+		TSScanDuration,
+		TSScanJobs,
 
 		CMDetectDuration,
 		EncodeDuration,

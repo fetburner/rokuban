@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
@@ -97,6 +98,10 @@ var enqueueJobs = map[string]enqueueJob{
 		// ギャップもこのパスが埋める**ので、投入口を分けていない。
 		RequiresSite: false,
 		NewArgs:      func(string) river.JobArgs { return jobs.ThumbnailReconcileArgs{} },
+	},
+	"ts-scan-reconcile": {
+		RequiresSite: false,
+		NewArgs:      func(string) river.JobArgs { return tsscan.ReconcileArgs{} },
 	},
 	"cm-detect-reconcile": {
 		// CM detection shares storage and recording state across sites. Kubernetes

@@ -698,6 +698,7 @@ var productionSchedules = map[string]string{
 	"rokuban-enqueue-label-rule-reconcile": "*/15 * * * *",
 	"rokuban-enqueue-encode-reconcile":     "*/15 * * * *",
 	"rokuban-enqueue-thumbnail-reconcile":  "*/15 * * * *",
+	"rokuban-enqueue-ts-scan-reconcile":    "*/15 * * * *",
 	"rokuban-enqueue-cm-detect-reconcile":  "*/15 * * * *",
 	"rokuban-enqueue-storage-sync":         "*/5 * * * *",
 }

@@ -44,6 +44,8 @@ const (
 	CleanupQueue = "cleanup"
 	// StorageQueue はストレージ観測ジョブのキュー名。
 	StorageQueue = "storage"
+	// TSScanQueue は原本 TS の解析ジョブを site 非依存で処理するキュー名。
+	TSScanQueue = "ts_scan"
 
 	// UniqueByQueue はキュー名を River の一意性キーへ含める設定。
 	// site 修飾やキューのリネーム後も、旧キューのジョブが新キューへの投入を
@@ -143,6 +145,7 @@ func AllQueueNames() []string {
 		CMDetectQueue,
 		CleanupQueue,
 		StorageQueue,
+		TSScanQueue,
 	}
 	slices.Sort(names)
 	return names

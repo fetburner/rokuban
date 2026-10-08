@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -31,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
@@ -869,6 +869,7 @@ func recordIngestMetrics(offset int64, counter *tsstat.Counter) {
 //
 // thumbnail 投入はヒント。desired − observed を EnqueueThumbnailIfNeeded が
 // 判定する（レベルトリガー。命令的チェーンではない。issue #66）。
+// TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
 // River クライアントが無いテスト経路では黙ってスキップする。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
 	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.CutProfiles)
@@ -878,6 +879,9 @@ func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirak
 		}
 		if enqueueErr := EnqueueThumbnailIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue thumbnail job", "recording_id", recordingID, "err", enqueueErr)
+		}
+		if enqueueErr := tsscan.EnqueueScan(ctx, riverClient, recordingID); enqueueErr != nil {
+			log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)
 		}
 	}
 	if _, err := client.DeleteRecord(ctx, recordID, true); err != nil {

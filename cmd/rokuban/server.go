@@ -611,6 +611,7 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 		LabelRuleReconcile:   true,
 		EncodeReconcile:      true,
 		ThumbnailReconcile:   true,
+		TSScanReconcile:      true,
 		CMDetectReconcile:    cfg.CMDetect.Enabled,
 		StorageSync:          true,
 	}
