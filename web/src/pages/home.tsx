@@ -939,10 +939,10 @@ function OpsStorageLine({
 /** 「次に見る 1 本」。幅が広い画面ではサムネイルの高さを抑え、下の棚も初期画面に入れる。 */
 function WatchHero({ choice }: { choice: HomeHeroChoice }) {
   const { recording, kind } = choice
-  const detail = {
-    to: '/recordings/$id' as const,
+  const detail: RecordingDetailLink = {
+    to: '/recordings/$id',
     params: { id: String(recording.id) },
-    hash: recording.status === 'recording' ? ('chase' as const) : undefined,
+    hash: recording.status === 'recording' ? 'chase' : undefined,
   }
   const resumePosition = recording.resumePositionMs
   const playbackPositionLabel = resumePosition === undefined
@@ -1061,6 +1061,12 @@ function HomeNewArrivals({ recordings }: { recordings: Recording[] }) {
   )
 }
 
+type RecordingDetailLink = {
+  to: '/recordings/$id'
+  params: { id: string }
+  hash?: 'chase'
+}
+
 function HomeThumbnail({
   recording,
   hero = false,
@@ -1070,11 +1076,7 @@ function HomeThumbnail({
   recording: Recording
   hero?: boolean
   progress?: number
-  detail?: {
-    to: '/recordings/$id'
-    params: { id: string }
-    hash?: 'chase'
-  }
+  detail?: RecordingDetailLink
 }) {
   const [failed, setFailed] = useState(false)
   const image = (
@@ -1101,7 +1103,7 @@ function HomeThumbnail({
       'md:flex-[1.7_1_0%] md:max-w-[clamp(24rem,calc((100dvh-25rem)*16/9),64rem)]',
   )
 
-  if (hero && detail !== undefined) {
+  if (detail !== undefined) {
     return (
       <Link
         {...detail}
@@ -1116,7 +1118,7 @@ function HomeThumbnail({
   }
 
   return (
-    <div data-testid={hero ? 'home-next-watch-thumbnail' : undefined} className={className}>
+    <div className={className}>
       {image}
     </div>
   )
