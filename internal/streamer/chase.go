@@ -519,7 +519,9 @@ var errChaseRecordPurged = errors.New("mirakc record is gone before the chase re
 // chaseCommittedSize は録画のコミット済み原本のバイト数を返す（無ければ ok=false）。
 type chaseCommittedSize func(ctx context.Context) (size int64, ok bool, err error)
 
-const chaseRecordStallTimeout = 30 * time.Second
+// chaseRecordStallTimeout は追っかけ入力の Range 本文が止まってよい最長時間。テストが実時間を
+// 待たずに済むよう var にする。
+var chaseRecordStallTimeout = 30 * time.Second
 
 // newChaseFollowReader adapts the shared mirakc follow reader to the chase
 // session's committed-original check for purged records.

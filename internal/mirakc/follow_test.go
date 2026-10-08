@@ -138,7 +138,7 @@ func TestRecordFollowReaderDrainsFinalRangeAfterFinished(t *testing.T) {
 		records: []followTestRecord{{status: "finished"}},
 	}
 	var observed []string
-	var rangeEnds []string
+	var interrupted []string
 	reader := newFastRecordFollowReader(t, context.Background(), client,
 		io.NopCloser(stringReader("head")), RecordFollowOptions{
 			StallTimeout: time.Second,
@@ -146,8 +146,8 @@ func TestRecordFollowReaderDrainsFinalRangeAfterFinished(t *testing.T) {
 				observed = append(observed, fmt.Sprintf("%s:%d", record.Recording.Status, offset))
 				return nil
 			},
-			OnRangeEnd: func(offset, bodyBytes int64) {
-				rangeEnds = append(rangeEnds, fmt.Sprintf("%d:%d", offset, bodyBytes))
+			OnRangeInterrupted: func(offset, bodyBytes int64) {
+				interrupted = append(interrupted, fmt.Sprintf("%d:%d", offset, bodyBytes))
 			},
 		})
 	data, err := io.ReadAll(reader)
@@ -161,8 +161,8 @@ func TestRecordFollowReaderDrainsFinalRangeAfterFinished(t *testing.T) {
 	if got, want := observed, []string{"finished:4"}; !equalStrings(got, want) {
 		t.Errorf("status observations = %v, want %v", got, want)
 	}
-	if got, want := rangeEnds, []string{"4:4", "8:4"}; !equalStrings(got, want) {
-		t.Errorf("completed bodies = %v, want %v", got, want)
+	if len(interrupted) != 0 {
+		t.Errorf("OnRangeInterrupted calls = %v, want none for ranges that ended with EOF", interrupted)
 	}
 	offsets, gets := client.snapshot()
 	if got, want := offsets, []int64{4, 4, 8}; !equalInt64s(got, want) {
@@ -527,16 +527,9 @@ func TestRecordFollowReaderPreservesBytesReadDuringCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	body := &cancelingFollowBody{data: []byte("partial"), cancel: cancel}
 	var output bytes.Buffer
-	var rangeEndCalls int
-	var writtenAtRangeEnd int
+	var interruptedCalls int
 	reader := NewRecordFollowReader(ctx, &followTestClient{}, "record", 0, body, RecordFollowOptions{
-		OnRangeEnd: func(offset, bodyBytes int64) {
-			rangeEndCalls++
-			writtenAtRangeEnd = output.Len()
-			if offset != int64(len(body.data)) || bodyBytes != int64(len(body.data)) {
-				t.Errorf("range end = (%d, %d), want (%d, %d)", offset, bodyBytes, len(body.data), len(body.data))
-			}
-		},
+		OnRangeInterrupted: func(int64, int64) { interruptedCalls++ },
 	})
 	written, err := io.Copy(&output, reader)
 	_ = reader.Close()
@@ -546,9 +539,95 @@ func TestRecordFollowReaderPreservesBytesReadDuringCancellation(t *testing.T) {
 	if written != int64(len(body.data)) || output.String() != string(body.data) {
 		t.Fatalf("io.Copy wrote %d bytes %q, want %q", written, output.String(), body.data)
 	}
-	if rangeEndCalls != 1 || writtenAtRangeEnd != len(body.data) {
-		t.Errorf("range end calls = %d at written offset %d, want one call after %d bytes were written", rangeEndCalls, writtenAtRangeEnd, len(body.data))
+	if interruptedCalls != 0 {
+		t.Errorf("OnRangeInterrupted calls = %d, want 0 for a context cancellation", interruptedCalls)
 	}
+}
+
+// errAfterFollowBody は data を返した直後に err で終わる本文を模す。
+type errAfterFollowBody struct {
+	data []byte
+	err  error
+}
+
+func (b *errAfterFollowBody) Read(p []byte) (int, error) {
+	if len(b.data) == 0 {
+		return 0, b.err
+	}
+	n := copy(p, b.data)
+	b.data = b.data[n:]
+	return n, nil
+}
+
+func (*errAfterFollowBody) Close() error { return nil }
+
+func TestRecordFollowReaderInterruptedHookOnlyForErrorEnds(t *testing.T) {
+	t.Run("read error after bytes calls the hook with the written offset", func(t *testing.T) {
+		var calls []string
+		client := &followTestClient{
+			responses: []followTestResponse{followBody(-1), {err: ErrRangeNotSatisfiable}},
+			records:   []followTestRecord{{status: "finished"}},
+		}
+		body := &errAfterFollowBody{data: []byte("head"), err: io.ErrUnexpectedEOF}
+		reader := newFastRecordFollowReader(t, context.Background(), client, body, RecordFollowOptions{
+			OnRangeInterrupted: func(offset, bodyBytes int64) {
+				calls = append(calls, fmt.Sprintf("%d:%d", offset, bodyBytes))
+			},
+		})
+		data, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil || string(data) != "headtail" {
+			t.Fatalf("io.ReadAll() = %q, %v; want headtail", data, err)
+		}
+		if want := []string{"4:4"}; !equalStrings(calls, want) {
+			t.Errorf("OnRangeInterrupted calls = %v, want %v (only the interrupted body, not the later clean EOF)", calls, want)
+		}
+	})
+
+	t.Run("stall after bytes calls the hook", func(t *testing.T) {
+		var calls []string
+		client := &followTestClient{
+			responses: []followTestResponse{{err: ErrRangeNotSatisfiable}},
+			records:   []followTestRecord{{status: "finished"}},
+		}
+		body := &stallAfterFollowBody{data: []byte("head"), release: make(chan struct{})}
+		reader := newFastRecordFollowReader(t, context.Background(), client, body, RecordFollowOptions{
+			StallTimeout: 20 * time.Millisecond,
+			OnRangeInterrupted: func(offset, bodyBytes int64) {
+				calls = append(calls, fmt.Sprintf("%d:%d", offset, bodyBytes))
+			},
+		})
+		data, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil || string(data) != "head" {
+			t.Fatalf("io.ReadAll() = %q, %v; want head", data, err)
+		}
+		if want := []string{"4:4"}; !equalStrings(calls, want) {
+			t.Errorf("OnRangeInterrupted calls = %v, want %v", calls, want)
+		}
+	})
+}
+
+// stallAfterFollowBody は data を返した後、Close されるまで Read がブロックする本文を模す。
+type stallAfterFollowBody struct {
+	data    []byte
+	release chan struct{}
+	once    sync.Once
+}
+
+func (b *stallAfterFollowBody) Read(p []byte) (int, error) {
+	if len(b.data) > 0 {
+		n := copy(p, b.data)
+		b.data = b.data[n:]
+		return n, nil
+	}
+	<-b.release
+	return 0, io.ErrClosedPipe
+}
+
+func (b *stallAfterFollowBody) Close() error {
+	b.once.Do(func() { close(b.release) })
+	return nil
 }
 
 func TestRecordFollowReaderCloseStopsConcurrentRead(t *testing.T) {

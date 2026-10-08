@@ -35,9 +35,11 @@ type RecordFollowOptions struct {
 	// io.EOF を返す。それ以外の戻り値では、その error で reader を終了する。
 	OnRecordNotFound func(ctx context.Context, offset int64, cause error) error
 
-	// OnRangeEnd は本文が byte を返した場合に、応答本文を閉じた後で呼ばれる。
-	// Read を呼んだ goroutine 上で、byte を消費側へ返した後に実行する。
-	OnRangeEnd func(offset, bodyBytes int64)
+	// OnRangeInterrupted は本文が byte を返した後にエラー（読み取りエラー・stall）で終わった
+	// とき、応答本文を閉じた後で呼ばれる。正常 EOF の Range と ctx キャンセルでは呼ばない。
+	// 正常経路の進捗は消費側の書き込みで足りるので、再試行の前に最新位置を確定させたい
+	// 呼び出し側だけが使う。Read を呼んだ goroutine 上で、byte を消費側へ返した後に実行する。
+	OnRangeInterrupted func(offset, bodyBytes int64)
 }
 
 // RecordFollowReader は有限の Range 応答をつなぎ、1 本の長命な reader として公開する。
@@ -238,11 +240,11 @@ func (r *RecordFollowReader) finishBody(body *recordFollowBody, bodyErr error) e
 	r.mu.Unlock()
 	_ = body.close()
 
-	if body.bytesRead > 0 && r.options.OnRangeEnd != nil {
-		r.options.OnRangeEnd(r.nextOffset, body.bytesRead)
-	}
 	if ctxErr := r.ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if bodyErr != nil && body.bytesRead > 0 && r.options.OnRangeInterrupted != nil {
+		r.options.OnRangeInterrupted(r.nextOffset, body.bytesRead)
 	}
 	if bodyErr != nil {
 		return r.failure(fmt.Errorf("reading record %s at offset %d: %w", r.recordID, r.nextOffset, bodyErr))

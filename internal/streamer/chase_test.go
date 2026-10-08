@@ -2250,3 +2250,91 @@ func TestBuildChaseFFmpegArgs_RealFFmpegEndlistOnlyAtStdinEOF(t *testing.T) {
 		})
 	}
 }
+
+// stallingChaseRecordClient は offset 4 以降の Range に "tail" を 1 度だけ返し、それ以降は 416 を返す。
+type stallingChaseRecordClient struct {
+	mu      sync.Mutex
+	offsets []int64
+}
+
+func (c *stallingChaseRecordClient) StreamRecord(_ context.Context, _ string, offset int64) (io.ReadCloser, int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.offsets = append(c.offsets, offset)
+	if offset == 4 && len(c.offsets) == 1 {
+		return io.NopCloser(strings.NewReader("tail")), 4, nil
+	}
+	return nil, 0, mirakc.ErrRangeNotSatisfiable
+}
+
+func (*stallingChaseRecordClient) StreamRecordFollow(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
+func (*stallingChaseRecordClient) GetRecord(context.Context, string) (*mirakc.Record, error) {
+	return &mirakc.Record{Recording: mirakc.RecordInfo{Status: "finished"}}, nil
+}
+
+func (*stallingChaseRecordClient) StreamService(context.Context, int64, int) (io.ReadCloser, error) {
+	return nil, errors.New("not used")
+}
+
+// stalledAfterReader は data を返した後、Close されるまで Read が止まる本文を模す。
+type stalledAfterReader struct {
+	data   []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (r *stalledAfterReader) Read(p []byte) (int, error) {
+	if len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (r *stalledAfterReader) Close() error {
+	r.once.Do(func() { close(r.closed) })
+	return nil
+}
+
+// TestChaseFollowReaderDisconnectsStalledBodyAndResumesAtOffset は、追っかけ入力の本文が止まったら
+// chaseRecordStallTimeout で切断し、読めた offset から Range で再開することを固定する。
+//
+// 変異「newChaseFollowReader の StallTimeout を消す」は、止まった本文を誰も切らず 5 秒の期限で落ちる。
+func TestChaseFollowReaderDisconnectsStalledBodyAndResumesAtOffset(t *testing.T) {
+	previous := chaseRecordStallTimeout
+	chaseRecordStallTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { chaseRecordStallTimeout = previous })
+
+	client := &stallingChaseRecordClient{}
+	body := &stalledAfterReader{data: []byte("head"), closed: make(chan struct{})}
+	reader := newChaseFollowReader(context.Background(), client, "opaque-record-id", 0, body, nil)
+	t.Cleanup(func() { _ = reader.Close() })
+
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := io.ReadAll(reader)
+		done <- result{data, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || string(r.data) != "headtail" {
+			t.Fatalf("chase input = %q, %v; want headtail after resuming the stalled body", r.data, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled chase body was not disconnected within 5s (StallTimeout is not wired)")
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if len(client.offsets) == 0 || client.offsets[0] != 4 {
+		t.Errorf("Range offsets = %v, want the first resume at offset 4", client.offsets)
+	}
+}

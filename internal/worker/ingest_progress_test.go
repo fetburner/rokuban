@@ -430,3 +430,82 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		t.Errorf("expected_bytes = %v, want nil (record_sync.content_length was never observed)", row.expected)
 	}
 }
+
+// TestIngestWorker_CleanRangeEndsDoNotFlushProgress は、正常に終わる差分付き Range が間引き間隔内に
+// 続いても、間引きを無視した書き込み（flush）が起きないことを固定する。追従中は 500ms ごとに
+// Range が終わるので、flush すると DB 書き込みが毎秒 2 行になる。
+//
+// 変異「正常 EOF の Range でも reader の hook を呼んで flush する」は written_bytes が 4 Range 分に
+// 進んで落ちる。
+func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
+	const chunk = 188 * 10
+	const chunks = 4
+	tsData := makeTSData(chunks * 10)
+
+	reachedTail := make(chan struct{})
+	var tailOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			offset := int(parseStreamRangeOffset(r))
+			if offset >= chunks*chunk {
+				// 追い付いた。ここで止めて、その時点の進捗行を読ませる。
+				tailOnce.Do(func() { close(reachedTail) })
+				<-r.Context().Done()
+				return
+			}
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", chunk))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(tsData[offset : offset+chunk])
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "recording", Options: mirakc.Options{ContentPath: strPtr("test/clean-ranges.m2ts")}},
+				Content:   mirakc.ContentInfo{Path: "/recording/test/clean-ranges.m2ts"},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(record)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     30 * time.Second,
+		ProgressInterval: time.Hour,
+		Pool:             pool,
+	}
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- w.Work(ctx, &river.Job[IngestJobArgs]{
+			JobRow: &rivertype.JobRow{},
+			Args:   IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
+		})
+	}()
+	defer func() { cancel(); <-done }()
+
+	select {
+	case <-reachedTail:
+	case <-time.After(15 * time.Second):
+		t.Fatal("ingest did not read all Ranges within 15s")
+	}
+	row, ok := readIngestProgress(t, pool, recordingID)
+	if !ok {
+		t.Fatal("progress row was not created")
+	}
+	// 間引き時計は最初の書き込みで進む。以降の Range は 1 時間以内なので書かれない。
+	if row.written != chunk {
+		t.Errorf("written_bytes after %d clean Ranges = %d, want %d (only the first throttled report; clean Range ends must not flush)",
+			chunks, row.written, chunk)
+	}
+}

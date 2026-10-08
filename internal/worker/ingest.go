@@ -741,10 +741,9 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 	reader := mirakc.NewRecordFollowReader(ctx, client, recordID, offset, nil, mirakc.RecordFollowOptions{
 		StallTimeout: w.StallTimeout,
 		OnRecord:     onRecord,
-		OnRangeEnd: func(currentOffset, bodyBytes int64) {
-			if bodyBytes > 0 {
-				progress.flush(ctx, currentOffset)
-			}
+		// 正常に終わる Range では flush しない（間引きを無視すると追従中に秒 2 行になる）。
+		OnRangeInterrupted: func(currentOffset, _ int64) {
+			progress.flush(ctx, currentOffset)
 		},
 	})
 	defer func() { _ = reader.Close() }()
