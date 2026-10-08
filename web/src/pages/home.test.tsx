@@ -512,12 +512,18 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
       act(() => fireEvent.loadedMetadata(video))
       expect(frameCallback).toBeDefined()
 
+      // シーク前に描かれた古いコマ（mediaTime 0）では ready にしない
+      act(() => frameCallback?.(0, { mediaTime: 0 } as VideoFrameCallbackMetadata))
+      expect(video).toHaveAttribute('data-resume-state', 'waiting')
+      expect(video).toHaveStyle({ opacity: '0' })
+      expect(fallback?.cleared).toBe(false)
+
       act(() => frameCallback?.(0, { mediaTime: 330 } as VideoFrameCallbackMetadata))
       expect(video).toHaveAttribute('data-resume-state', 'ready')
       expect(video).toHaveStyle({ opacity: '1' })
       expect(fallback?.cleared).toBe(true)
 
-      if (!fallback?.cleared) act(() => fallback?.callback())
+      act(() => fallback?.callback())
       expect(video).toHaveAttribute('data-resume-state', 'ready')
       expect(clearTimeoutSpy).toHaveBeenCalledWith(fallbackId)
     } finally {

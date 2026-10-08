@@ -1118,8 +1118,17 @@ function HomeThumbnail({
     let cancelled = false
     let callbackId: number | undefined
     const stateKey = `${recording.id}:${resumeVideoSrc}:${resumeTargetSeconds}`
+    // 29.97fps 固定でよい理由: ISDB の放送映像は 29.97 で、encode の deinterlace は yadif 既定モード
+    // （フレームレートを変えない。internal/ffargs/ffargs.go）、extra_args の許可リスト
+    // （extraArgTakesValue）に -r が無い。前提が崩れると毎回 8 秒後に固定画像へ戻り、黙って機能が消える。
     const frameToleranceSeconds = 1 / (30_000 / 1_001) + 0.001
-    const timeout = window.setTimeout(() => setResumeState({ key: stateKey, state: 'failed' }), 8_000)
+    const timeout = window.setTimeout(
+      () =>
+        setResumeState((prev) =>
+          prev?.key === stateKey && prev.state === 'ready' ? prev : { key: stateKey, state: 'failed' },
+        ),
+      8_000,
+    )
     const onFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
       if (cancelled) return
       if (
@@ -1189,7 +1198,6 @@ function HomeThumbnail({
           playsInline
           preload="metadata"
           controls={false}
-          onError={() => setResumeState({ key: resumeKey!, state: 'failed' })}
           className="pointer-events-none absolute inset-0 size-full object-cover"
           style={{ opacity: currentResumeState === 'ready' ? 1 : 0 }}
         />
