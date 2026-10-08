@@ -67,9 +67,16 @@ type Document struct {
 	MediaAssets      []MediaAsset       `json:"mediaAssets"`
 	DropStats        []DropStat         `json:"dropStats"`
 	DropPositions    []DropPosition     `json:"dropPositions"`
-	ProgramSnapshots []ProgramSnapshot  `json:"programSnapshots"`
-	ProgramIntents   []ProgramIntent    `json:"programIntents"`
-	ProgramOverrides []ProgramOverride  `json:"programOverrides"`
+	// TSScans は原本の TS 走査の計測記録（media_asset_ts_scans）。統計表示と
+	// until_encoded の削除判定が「原本の現在サイズと一致する記録」に依存する。
+	// **この配列を増やしても Version は上げない** --- 古いバイナリは未知のキーを
+	// 無視し、記録が戻らないだけで、原本は再走査で記録を作り直せる。
+	// キーの有無は意味を持つ: キーが無い旧ダンプは nil、新ダンプは空でも `[]` で
+	// 非 nil になり、rescue は nil のときだけ旧形式の補完を行う。
+	TSScans          []TSScan          `json:"tsScans"`
+	ProgramSnapshots []ProgramSnapshot `json:"programSnapshots"`
+	ProgramIntents   []ProgramIntent   `json:"programIntents"`
+	ProgramOverrides []ProgramOverride `json:"programOverrides"`
 	// チャプターの所有 2 表は mediaAssets の後に載る（区間は所有の行を FK で
 	// 指すので、rescue はこの順に書く）。
 	RecordingChapterOwnerships []RecordingChapterOwnership `json:"recordingChapterOwnerships"`
@@ -281,6 +288,12 @@ type DropPosition struct {
 	ByteOffset   int64  `json:"byteOffset"`
 	Pid          int32  `json:"pid"`
 	ElapsedMs    *int64 `json:"elapsedMs,omitempty"`
+}
+
+// TSScan は media_asset_ts_scans の 1 行。
+type TSScan struct {
+	MediaAssetID     int64 `json:"mediaAssetId"`
+	ScannedSizeBytes int64 `json:"scannedSizeBytes"`
 }
 
 // ProgramSnapshot は program_snapshots の 1 行（意図・上書きの FK 先）。

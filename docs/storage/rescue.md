@@ -14,6 +14,10 @@
 自動検出の結果（`recording_cm_detections`）は導出値なので含めない。
 所有の行が無い録画は自動層のままなので何も復元しない（行の不在そのものが意味を持つ。不変条件 10）。
 
+原本の TS 走査の計測記録（`media_asset_ts_scans`）も保護対象である。
+削除済み原本の統計表示と until_encoded の削除判定が、原本の現在サイズと一致するこの記録に依存するためである。
+記録のキーを持たない旧ダンプからの rescue だけ、ドロップ統計を持つ原本に `scanned_size_bytes = size_bytes` を補う。
+
 視聴済みの印（`recording_watched`）はユーザーが付けた世帯共有の事実なので export / rescue に含める。
 再生位置（`recording_playback_positions`）は一時的な利便状態なので catalog には含めず、復旧後は続きからを再作成する。
 

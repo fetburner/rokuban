@@ -13,6 +13,21 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const catalogBackfillTSScans = `-- name: CatalogBackfillTSScans :exec
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+SELECT a.id, a.size_bytes
+FROM media_assets a
+WHERE a.kind = 'original'
+  AND EXISTS (SELECT 1 FROM drop_stats d WHERE d.media_asset_id = a.id)
+ON CONFLICT (media_asset_id) DO NOTHING
+`
+
+// 計測記録を持たない旧ダンプ用。00025 のマイグレーションと同じ補完。
+func (q *Queries) CatalogBackfillTSScans(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, catalogBackfillTSScans)
+	return err
+}
+
 const catalogDeleteRuleChannelTypes = `-- name: CatalogDeleteRuleChannelTypes :exec
 DELETE FROM rule_channel_types WHERE rule_id = $1
 `
@@ -749,7 +764,7 @@ SELECT id, name, description, enabled, priority, is_free, duration_min_ms, durat
 `
 
 // catalog エクスポート / rescue 用（M3-9 / issue #71）。
-// 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・意図・上書き（と意図の FK 先
+// 保護対象はルール・分類ルール・録画・media_assets・drop_stats・drop_positions・media_asset_ts_scans・意図・上書き（と意図の FK 先
 // program_snapshots）。EPG 射影と schedule/record/tuner_sync は再構築可能なので
 // 含めない（docs/storage.md §8）。
 // ---------------------------------------------------------------------------
@@ -785,6 +800,31 @@ func (q *Queries) CatalogListRules(ctx context.Context) ([]Rule, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const catalogListTSScans = `-- name: CatalogListTSScans :many
+SELECT media_asset_id, scanned_size_bytes FROM media_asset_ts_scans ORDER BY media_asset_id
+`
+
+// 計測記録は削除済み原本の統計表示と until_encoded の削除判定が依存するので含める。
+func (q *Queries) CatalogListTSScans(ctx context.Context) ([]MediaAssetTsScan, error) {
+	rows, err := q.db.Query(ctx, catalogListTSScans)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []MediaAssetTsScan
+	for rows.Next() {
+		var i MediaAssetTsScan
+		if err := rows.Scan(&i.MediaAssetID, &i.ScannedSizeBytes); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -1394,5 +1434,22 @@ func (q *Queries) CatalogUpsertRule(ctx context.Context, arg CatalogUpsertRulePa
 		arg.CreatedAt,
 		arg.UpdatedAt,
 	)
+	return err
+}
+
+const catalogUpsertTSScan = `-- name: CatalogUpsertTSScan :exec
+INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
+VALUES ($1, $2)
+ON CONFLICT (media_asset_id) DO UPDATE SET
+    scanned_size_bytes = EXCLUDED.scanned_size_bytes
+`
+
+type CatalogUpsertTSScanParams struct {
+	MediaAssetID     int64
+	ScannedSizeBytes int64
+}
+
+func (q *Queries) CatalogUpsertTSScan(ctx context.Context, arg CatalogUpsertTSScanParams) error {
+	_, err := q.db.Exec(ctx, catalogUpsertTSScan, arg.MediaAssetID, arg.ScannedSizeBytes)
 	return err
 }

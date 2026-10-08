@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sort"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,7 +18,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsscan"
-	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
 type tsScanStatRow struct {
@@ -95,7 +93,6 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		t.Fatalf("writing ingest temporary file: %v", err)
 	}
-	wantStats, wantPositions := tsScanRowsFromCounter(t, data)
 	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)),
 	); err != nil {
@@ -124,6 +121,16 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 
 	runTSScan(t, pool, mediaDir, recordingID)
 	gotStats, gotPositions = readTSScanRows(t, pool, assetID)
+	// 期待値はフィクスチャから決まるリテラル（実装と同じ tsstat.Counter では作らない）。
+	// PID 0x100 は cc 0 → 2 で 1 件欠落し、欠落は 2 パケット目（byte 188）、
+	// 直前の PCR との差 90000 tick = 1000ms。
+	wantStats := []tsScanStatRow{
+		{pid: 0x100, packets: 2, drops: 1},
+		{pid: 0x110, packets: 1, errors: 1},
+		{pid: 0x120, packets: 1, scrambled: 1},
+	}
+	wantElapsed := int64(1000)
+	wantPositions := []tsScanPositionRow{{offset: 188, pid: 0x100, elapsed: &wantElapsed}}
 	if !reflect.DeepEqual(gotStats, wantStats) {
 		t.Errorf("scan drop_stats = %#v, want values %#v", gotStats, wantStats)
 	}
@@ -140,41 +147,6 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 		t.Fatalf("removing original after scan: %v", err)
 	}
 	runTSScan(t, pool, mediaDir, recordingID)
-}
-
-func tsScanRowsFromCounter(t *testing.T, data []byte) ([]tsScanStatRow, []tsScanPositionRow) {
-	t.Helper()
-	counter := tsstat.NewCounter(io.Discard)
-	if n, err := counter.Write(data); err != nil || n != len(data) {
-		t.Fatalf("counter.Write() = %d, %v; want %d, nil", n, err, len(data))
-	}
-	stats := counter.Stats()
-	pids := make([]int, 0, len(stats))
-	for pid := range stats {
-		pids = append(pids, pid)
-	}
-	sort.Ints(pids)
-	wantStats := make([]tsScanStatRow, 0, len(pids))
-	var wantPositions []tsScanPositionRow
-	for _, pid := range pids {
-		stat := stats[pid]
-		var pidType *string
-		if stat.Type != "" {
-			t := stat.Type
-			pidType = &t
-		}
-		wantStats = append(wantStats, tsScanStatRow{
-			pid: int32(pid), packets: stat.Packets, drops: stat.Drops,
-			errors: stat.Errors, scrambled: stat.Scrambled, pidType: pidType,
-		})
-		for _, position := range stat.Positions {
-			wantPositions = append(wantPositions, tsScanPositionRow{
-				offset: position.ByteOffset, pid: int32(pid), elapsed: position.ElapsedMs,
-			})
-		}
-	}
-	sort.Slice(wantPositions, func(i, j int) bool { return wantPositions[i].offset < wantPositions[j].offset })
-	return wantStats, wantPositions
 }
 
 func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {

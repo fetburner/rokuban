@@ -539,3 +539,116 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }
+
+// tsScanRescueRoundTrip は「削除済み原本 + drop_stats（+ withScan のとき計測記録）」を
+// 持つ DB を export し、mutate した文書を書いて空 DB へ rescue した後の
+// media_asset_ts_scans を asset_id → scanned_size_bytes で返す。
+func tsScanRescueRoundTrip(t *testing.T, withScan bool, mutate func(*Document)) map[int64]int64 {
+	t.Helper()
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 100,
+		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "計測記録", IsFree: true,
+		ProgramStartAt:    time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 1800000, Status: "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recID, Kind: "original", RelPath: "sites/default/x.m2ts", SizeBytes: 1_000_000,
+	})
+	if err != nil {
+		t.Fatalf("CreateMediaAsset: %v", err)
+	}
+	// 削除済み原本: ファイルは無いが統計は残る（rescue は deleted の行のファイルを見ない）。
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("delete asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled)
+		VALUES ($1, 256, 10000, 3, 0, 0)`, assetID); err != nil {
+		t.Fatalf("seeding drop_stats: %v", err)
+	}
+	if withScan {
+		// size_bytes（1_000_000）と違う値にして、補完ではなく復元であることを見分ける。
+		if _, err := pool.Exec(ctx, `INSERT INTO media_asset_ts_scans VALUES ($1, 999000)`, assetID); err != nil {
+			t.Fatalf("seeding ts scan: %v", err)
+		}
+	}
+
+	doc, err := Export(ctx, pool)
+	if err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+	mutate(doc)
+	mediaDir := t.TempDir()
+	if _, err := Write(mediaDir, doc, 7); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `TRUNCATE media_assets, recordings, program_snapshots, rules RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, err := RescueLatest(ctx, pool, mediaDir, []string{"default"}); err != nil {
+		t.Fatalf("RescueLatest: %v", err)
+	}
+	rows, err := pool.Query(ctx, `SELECT media_asset_id, scanned_size_bytes FROM media_asset_ts_scans`)
+	if err != nil {
+		t.Fatalf("query ts scans: %v", err)
+	}
+	defer rows.Close()
+	got := map[int64]int64{}
+	for rows.Next() {
+		var id, size int64
+		if err := rows.Scan(&id, &size); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got[id] = size
+	}
+	return got
+}
+
+// 新形式: 記録がそのまま戻る（補完の size_bytes ではなく記録の値）。
+func TestExportRescue_TSScansRestored(t *testing.T) {
+	got := tsScanRescueRoundTrip(t, true, func(d *Document) {
+		if len(d.TSScans) != 1 {
+			t.Fatalf("exported tsScans = %+v, want 1 row", d.TSScans)
+		}
+	})
+	if len(got) != 1 {
+		t.Fatalf("restored ts scans = %v, want exactly 1", got)
+	}
+	for _, size := range got {
+		if size != 999000 {
+			t.Fatalf("scanned_size_bytes = %d, want 999000 (restored, not backfilled from size_bytes)", size)
+		}
+	}
+}
+
+// 旧形式（tsScans キー無し）: drop_stats を持つ原本に scanned_size_bytes = size_bytes を補う。
+func TestExportRescue_TSScansLegacyBackfill(t *testing.T) {
+	got := tsScanRescueRoundTrip(t, false, func(d *Document) { d.TSScans = nil })
+	if len(got) != 1 {
+		t.Fatalf("legacy rescue ts scans = %v, want exactly 1 backfilled row", got)
+	}
+	for _, size := range got {
+		if size != 1_000_000 {
+			t.Fatalf("backfilled scanned_size_bytes = %d, want 1000000", size)
+		}
+	}
+}
+
+// 新形式で記録が無い原本には補完しない（空配列は「記録なし」という主張）。
+func TestExportRescue_TSScansEmptyNewFormatNotBackfilled(t *testing.T) {
+	got := tsScanRescueRoundTrip(t, false, func(d *Document) {
+		if d.TSScans == nil || len(d.TSScans) != 0 {
+			t.Fatalf("exported tsScans = %#v, want non-nil empty slice", d.TSScans)
+		}
+	})
+	if len(got) != 0 {
+		t.Fatalf("new-format rescue ts scans = %v, want none (no backfill)", got)
+	}
+}

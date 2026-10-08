@@ -37,6 +37,7 @@ type RescueResult struct {
 	MediaAssets             int
 	DropStats               int
 	DropPositions           int
+	TSScans                 int
 	ProgramSnapshots        int
 	ProgramIntents          int
 	ProgramOverrides        int
@@ -111,7 +112,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string, regi
 // DB に冪等 upsert する。存在しないファイルの行は deleted として復元する。
 //
 // 書き込み順: rules（+ 子）→ program_snapshots → program_intents /
-// program_overrides → recordings → media_assets → drop_stats → drop_positions。
+// program_overrides → recordings → media_assets → drop_stats → drop_positions → media_asset_ts_scans。
 // 全部 1 トランザクションで、途中失敗なら何も残さない。
 func RescueFile(ctx context.Context, pool *pgxpool.Pool, mediaDir, path string) (*RescueResult, error) {
 	doc, err := Load(path)
@@ -258,6 +259,9 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *Document, mediaDir strin
 		return nil, err
 	}
 	if err := applyDropPositions(ctx, q, doc.DropPositions, res); err != nil {
+		return nil, err
+	}
+	if err := applyTSScans(ctx, q, doc.TSScans, res); err != nil {
 		return nil, err
 	}
 
@@ -610,6 +614,32 @@ func applyDropPositions(ctx context.Context, q *sqlcgen.Queries, positions []Dro
 		}
 	}
 	res.DropPositions = len(positions)
+	return nil
+}
+
+// applyTSScans は media_asset_ts_scans を復元する。drop_stats の後に書く
+// （旧形式の補完が復元済みの drop_stats を読むため）。
+//
+// scans が nil（キーの無い旧ダンプ）のときだけ、00025 のマイグレーションと同じ
+// 補完を行う: drop_stats を持つ原本は旧 ingest が現在のサイズで走査した証拠なので
+// scanned_size_bytes = size_bytes を入れる。キーがある新ダンプ（空配列を含む）は
+// 記録をそのまま戻し、補完しない --- 記録の無い原本は未走査で、再走査の対象になる。
+func applyTSScans(ctx context.Context, q *sqlcgen.Queries, scans []TSScan, res *RescueResult) error {
+	if scans == nil {
+		if err := q.CatalogBackfillTSScans(ctx); err != nil {
+			return fmt.Errorf("backfilling media_asset_ts_scans: %w", err)
+		}
+		return nil
+	}
+	for _, s := range scans {
+		if err := q.CatalogUpsertTSScan(ctx, sqlcgen.CatalogUpsertTSScanParams{
+			MediaAssetID:     s.MediaAssetID,
+			ScannedSizeBytes: s.ScannedSizeBytes,
+		}); err != nil {
+			return fmt.Errorf("upserting media_asset_ts_scan asset=%d: %w", s.MediaAssetID, err)
+		}
+	}
+	res.TSScans = len(scans)
 	return nil
 }
 

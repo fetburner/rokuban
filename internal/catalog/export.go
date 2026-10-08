@@ -78,6 +78,9 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 	if doc.DropPositions, err = exportDropPositions(ctx, q); err != nil {
 		return nil, err
 	}
+	if doc.TSScans, err = exportTSScans(ctx, q); err != nil {
+		return nil, err
+	}
 	if doc.RecordingChapterOwnerships, err = exportRecordingChapterOwnerships(ctx, q); err != nil {
 		return nil, err
 	}
@@ -313,6 +316,20 @@ func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPositio
 			Pid:          p.Pid,
 			ElapsedMs:    p.ElapsedMs,
 		})
+	}
+	return out, nil
+}
+
+// exportTSScans は media_asset_ts_scans を文書の型付き行に変換する。
+// 0 件でも非 nil の空スライスを返す（JSON で `[]` になり、旧ダンプと区別できる）。
+func exportTSScans(ctx context.Context, q *sqlcgen.Queries) ([]TSScan, error) {
+	rows, err := q.CatalogListTSScans(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing media_asset_ts_scans: %w", err)
+	}
+	out := make([]TSScan, 0, len(rows))
+	for _, s := range rows {
+		out = append(out, TSScan{MediaAssetID: s.MediaAssetID, ScannedSizeBytes: s.ScannedSizeBytes})
 	}
 	return out, nil
 }

@@ -1252,6 +1252,21 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	}
 }
 
+// assertUntilEncodedQualifies は until_encoded_deletable_originals が assetID を
+// 返すかを確かめる。「満たさなくなった」テストが最初から満たしていない（前提の
+// 欠落で空虚に通る）ことを防ぐ陽性対照。
+func assertUntilEncodedQualifies(t *testing.T, pool *pgxpool.Pool, assetID int64, want bool) {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM until_encoded_deletable_originals WHERE asset_id = $1`, assetID).Scan(&n); err != nil {
+		t.Fatalf("querying until_encoded_deletable_originals: %v", err)
+	}
+	if (n == 1) != want {
+		t.Fatalf("until_encoded_deletable_originals qualifies asset %d = %v, want %v", assetID, n == 1, want)
+	}
+}
+
 // until_encoded 腕の否定形（deleting のまま止まっている行が、その後の変化で
 // 派生物完備の条件を満たさなくなった）を active に戻す経路（issue #105 の
 // 否定形。RestoredWhileDeleting_RevertsInsteadOfDeleting は trash 腕しか
@@ -1268,9 +1283,12 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+	assertUntilEncodedQualifies(t, pool, assetID, true)
 
 	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
 	// この時点では派生物が揃っており、遷移は正しい判断だった。
@@ -1279,12 +1297,62 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 		t.Fatalf("marking original deleting: %v", err)
 	}
 
-	// その後、原本のサイズが変わり計測時のサイズと合わなくなる。
+	// その後サムネイルが失われる（記録・ファイルとも）。もう
+	// until_encoded_deletable_originals の述語を満たさない。
+	if _, err := pool.Exec(ctx, "DELETE FROM media_assets WHERE id = $1", thumbID); err != nil {
+		t.Fatalf("removing thumbnail asset row: %v", err)
+	}
+
+	assertUntilEncodedQualifies(t, pool, assetID, false)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("original state = %q, want active "+
+			"(thumbnail no longer active; until_encoded predicate no longer qualifies this asset for deletion, issue #160)", got)
+	}
+	if !fileExists(assetPath) {
+		t.Error("original file was removed even though the until_encoded predicate no longer qualifies it for deletion")
+	}
+}
+
+// 計測記録が原本の現在サイズと合わなくなった場合も、deleting のまま止まった行を
+// active に戻す。
+func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsToActive(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
+	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
+
+	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
+	assertUntilEncodedQualifies(t, pool, assetID, true)
+
+	// 前パスで active → deleting へ遷移させた（unlink はまだ）状態を直接作る。
+	// この時点では派生物が揃っており、遷移は正しい判断だった。
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleting' WHERE id = $1", assetID); err != nil {
+		t.Fatalf("marking original deleting: %v", err)
+	}
+
+	// その後、計測記録が原本の現在サイズと合わなくなる（原本が差し替わった）。
 	// until_encoded_deletable_originals の述語を満たさない。
 	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET size_bytes = size_bytes + 1 WHERE id = $1", assetID); err != nil {
-		t.Fatalf("changing original size: %v", err)
+		"UPDATE media_asset_ts_scans SET scanned_size_bytes = scanned_size_bytes - 1 WHERE media_asset_id = $1", assetID); err != nil {
+		t.Fatalf("making scan marker stale: %v", err)
 	}
+
+	assertUntilEncodedQualifies(t, pool, assetID, false)
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	if err := w.Work(ctx, nil); err != nil {
