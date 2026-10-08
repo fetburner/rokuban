@@ -284,7 +284,9 @@ function failedDurationText(recording: Recording): string {
  * 将来この語を言い換えたときに呼び出し側の分岐が黙って外れる。
  * `qualityEvents` は `recording.failed` / `recording.record-broken` の追記履歴。
  * スクランブル数は `drop_stats.scrambled` から導けるため、ここには重ねて保存しない。
- * そのため失敗理由は履歴の最後の要素から読む。
+ * そのため失敗理由は失敗系イベントの最後の要素から読む。履歴にはほかの種類の
+ * イベントが入りうるので、末尾ではなく `recording.failed` /
+ * `recording.record-broken` を選んで読む。
  *
  * `reason` の形は書き手（`event` の値）で決まり、いずれもオブジェクトで
  * 素の文字列を書く経路は無い（以前のコメントは「`recording.failed` は文字列」
@@ -310,20 +312,16 @@ function failedDurationText(recording: Recording): string {
 function failureReasonText(recording: Recording): string | undefined {
   const events = recording.qualityEvents
   if (events === undefined || events.length === 0) return undefined
-  const failureEvent = events.at(-1)
+  const failureEvent = events.findLast(
+    (e) => e['event'] === 'recording.failed' || e['event'] === 'recording.record-broken',
+  )
   if (failureEvent === undefined) return undefined
   const reason = failureEvent['reason']
   if (reason === undefined || reason === null) return undefined
 
   if (typeof reason === 'object' && !Array.isArray(reason)) {
     const record = reason as Record<string, unknown>
-    const field =
-      failureEvent['event'] === 'recording.failed'
-        ? 'type'
-        : failureEvent['event'] === 'recording.record-broken'
-          ? 'reason'
-          : undefined
-    const value = field === undefined ? undefined : record[field]
+    const value = record[failureEvent['event'] === 'recording.failed' ? 'type' : 'reason']
     if (typeof value === 'string') return value === '' ? undefined : value
   }
   return JSON.stringify(reason)

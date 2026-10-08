@@ -1201,6 +1201,22 @@ describe('ホーム: 失敗録画が警告に出る（issue #301）', () => {
     expect(screen.queryByText(/理由: io-error/)).not.toBeInTheDocument()
   })
 
+  it('失敗イベントの後ろに別種のイベントがあっても直前の失敗理由を読む', async () => {
+    stubApi({
+      failed: [
+        recording(9, '後続イベントありの失敗', 'failed', {
+          qualityEvents: [
+            { at: iso(-2 * HOUR), event: 'recording.failed', reason: { type: 'io-error' } },
+            { at: iso(-HOUR), event: 'recording.future-event' },
+          ],
+        }),
+      ],
+    })
+    renderHome()
+
+    expect(await screen.findByText(/理由: io-error/)).toBeInTheDocument()
+  })
+
   it('failed 理由が無ければ「理由不明」と沈黙を区別する', async () => {
     stubApi({
       failed: [recording(9, '理由なしの失敗', 'failed', { qualityEvents: [] })],
