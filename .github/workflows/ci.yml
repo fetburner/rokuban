@@ -44,8 +44,8 @@ jobs:
   #   - /api/** を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
   #   - ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
   # 回さない判定スクリプトの理由は 3 類型。
-  #   - 実メディアが要る: chapters / seek-tiles / subtitles / recording-next-episode / chase / live / live-audio は
-  #     ffmpeg でフィクスチャを作る。live / live-audio は webkit も要る
+  #   - 実メディアが要る: chapters / home-resume-frame / seek-tiles / subtitles / recording-next-episode / chase / live / live-audio は
+  #     ffmpeg でフィクスチャを作る。home-resume-frame / live / live-audio は webkit も要る
   #   - 実 DB の状態が要る: checks（既定の pnpm e2e）は API をスタブせず実 EPG の番組行を待ち、
   #     live は epg_services に実サービスの行が要り、shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
   #   - 残り（番組表・予約・検索などの画面別判定）は API スタブで技術的には載せられるが、

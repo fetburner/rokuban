@@ -18,6 +18,7 @@
     "e2e:chase-audio": "node e2e/chase-audio.mjs",
     "e2e:recording-original-vod": "node e2e/recording-original-vod.mjs",
     "e2e:recording-playback-timeline": "node e2e/recording-playback-timeline.mjs",
+    "e2e:home-resume-frame": "node e2e/home-resume-frame.mjs",
     "e2e:design": "node e2e/design.mjs",
     "e2e:font-scale": "node e2e/font-scale.mjs",
     "e2e:home-timeline-keyboard": "node e2e/home-timeline-keyboard.mjs",
