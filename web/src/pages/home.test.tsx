@@ -329,7 +329,14 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
 
     await act(async () => api.resolvePending())
     expect(await screen.findByText('後から届く完了録画')).toBeInTheDocument()
-    expect(screen.getByTestId('home-primary-action')).toHaveTextContent('再生')
+    const primaryAction = screen.getByTestId('home-primary-action')
+    const thumbnail = screen.getByTestId('home-next-watch-thumbnail')
+    expect(primaryAction).toHaveTextContent('再生')
+    expect(primaryAction).toHaveAttribute('href', '/recordings/90')
+    expect(thumbnail.tagName).toBe('A')
+    expect(thumbnail).toHaveAttribute('href', '/recordings/90')
+    expect(thumbnail).toHaveAttribute('tabindex', '-1')
+    expect(thumbnail).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('続きからを主役にし、最初からのリンクは再開位置を復元しない詳細へ向ける', async () => {
@@ -346,6 +353,12 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     const primaryAction = await screen.findByTestId('home-primary-action')
     expect(primaryAction).toHaveTextContent('続きから再生')
     expect(primaryAction).toHaveAttribute('href', '/recordings/31')
+    const thumbnail = screen.getByTestId('home-next-watch-thumbnail')
+    expect(thumbnail.tagName).toBe('A')
+    expect(thumbnail).toHaveAttribute('href', '/recordings/31')
+    expect(thumbnail).toHaveAttribute('tabindex', '-1')
+    expect(thumbnail).toHaveAttribute('aria-hidden', 'true')
+    expect(primaryAction).not.toHaveAttribute('tabindex', '-1')
     const beginning = screen.getByRole('link', { name: '最初から' })
     expect(beginning.getAttribute('href')).toContain('fromBeginning=true')
     expect(screen.queryByText(/再生元/)).not.toBeInTheDocument()
@@ -359,6 +372,20 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
     ).not.toBeInTheDocument()
     // 「ほかの新着」のサムネイルには重ねない
     expect(screen.getAllByTestId('home-hero-station')).toHaveLength(1)
+  })
+
+  it('録画中の主役サムネイルは主ボタンと同じ #chase 付きの詳細へ向ける', async () => {
+    stubApi({
+      continueWatching: [recording(41, '録画中の続き', 'recording', { resumePositionMs: 330_000 })],
+    })
+    renderHome('/?mode=watch')
+
+    const primaryAction = await screen.findByTestId('home-primary-action')
+    const thumbnail = screen.getByTestId('home-next-watch-thumbnail')
+    expect(primaryAction).toHaveAttribute('href', '/recordings/41#chase')
+    expect(thumbnail).toHaveAttribute('href', '/recordings/41#chase')
+    expect(thumbnail).toHaveAttribute('tabindex', '-1')
+    expect(thumbnail).toHaveAttribute('aria-hidden', 'true')
   })
 
   it('管理側は時間軸と要対応を表示し、見る側では出さない', async () => {
