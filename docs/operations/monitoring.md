@@ -193,7 +193,7 @@ site 非依存にする理由は、単一の資源（アーカイブ・プロフ
 検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
 thumbnail とシークプレビュー用タイルは同じパスが埋めるので `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
 
-TS scan reconcile は `rokuban_ts_scan_jobs_total` と `ts_scan` キューの River 状態で確認する。投入を忘れると計測ジョブが進まず、scan 記録のない原本が残る。
+`ts-scan-reconcile` を忘れた場合は scan 記録のない原本が残る。検出は `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` の鮮度で行う。投入を忘れれば値が進まない。`rokuban_ts_scan_jobs_total` は ingest のヒントでも増えるので、投入停止の検出には使わない。
 
 thumbnail reconcile の候補から除外される既知の原本欠落は `rokuban_media_assets_missing{kind="original"}` で確認する。これはファイルが復旧して delete reconcile がマーカーを消すまで、定期パスが同じ失敗を作り続けないためのガードである。
 
@@ -231,8 +231,9 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | `rokuban_ts_scan_dropped_packets_total` | scan 中に観測したドロップパケットの累計 |
 | `rokuban_ts_scan_error_packets_total` | scan 中に観測した transport error の累計 |
 | `rokuban_ts_scan_scrambled_packets_total` | scan 中に観測したスクランブルパケットの累計 |
+| `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` | ts_scan reconcile の最終完走時刻。投入停止は `time() -` で検出 |
 
-ヒントを落とした scan は定期 reconcile が再投入する。各パスの実行と失敗は `rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
+ヒントを落とした scan は定期 reconcile が再投入する。各 scan の成否は `rokuban_ts_scan_jobs_total` と River のジョブ状態で確認する。
 
 ### reconcile
 

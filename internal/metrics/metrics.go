@@ -100,6 +100,12 @@ var (
 		Name: "rokuban_ts_scan_jobs_total",
 		Help: "TS scan jobs by result.",
 	}, []string{"result"})
+	// TSScanReconcileLastPass は最後に完走した ts_scan reconcile パスの時刻（UNIX 秒）。
+	// CronJob / PeriodicJobs の投入停止を検知するために使う。
+	TSScanReconcileLastPass = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_ts_scan_reconcile_last_pass_timestamp_seconds",
+		Help: "Unix time of the last completed ts-scan-reconcile pass. Use with time() to detect a stalled pass.",
+	})
 )
 
 // encode（M3-3）のメトリクス。
@@ -756,6 +762,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		TSScanScrambledPackets,
 		TSScanDuration,
 		TSScanJobs,
+		TSScanReconcileLastPass,
 
 		CMDetectDuration,
 		EncodeDuration,

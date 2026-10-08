@@ -39,6 +39,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	TSScanScrambledPackets.Add(1)
 	TSScanDuration.Observe(1)
 	TSScanJobs.WithLabelValues("success").Inc()
+	TSScanReconcileLastPass.SetToCurrentTime()
 	EncodeDuration.Observe(1)
 	EncodeJobs.WithLabelValues("success").Inc()
 	ReconcilePendingDiff.WithLabelValues("create").Set(0)

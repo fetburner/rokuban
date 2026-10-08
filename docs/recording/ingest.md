@@ -288,7 +288,7 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 `media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。
 KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。この動作は `TestTSScanReconcile_ContinuationSurvivesFreshWorker` で固定する。
-scan はジョブ ID の advisory lock を保持する。reconcile は lock が解放された古い `running` ジョブを置き換える。この動作は `TestTSScanRecovery_ReplacesDeadRunningJobAndKeepsLiveJob` で固定する。
+scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、encode のような advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。現時点では ingest も統計を書き続けるため、追加の全量読み出しが発生する。そのコストは未検証である。
 

@@ -13,12 +13,11 @@ import (
 )
 
 const (
-	// ingestJobLockKeyPrefix / encodeJobLockKeyPrefix / tsScanJobLockKeyPrefix は、それぞれのジョブの
+	// ingestJobLockKeyPrefix / encodeJobLockKeyPrefix は、それぞれのジョブの
 	// プロセス生存確認用 advisory lock の名前空間。ジョブ ID ごとにキーを分け、
 	// 他のロールの advisory lock と衝突しないようにする。
 	ingestJobLockKeyPrefix = "rokuban:ingest:job:"
 	encodeJobLockKeyPrefix = "rokuban:encode:job:"
-	tsScanJobLockKeyPrefix = "rokuban:ts_scan:job:"
 
 	// defaultJobLockTimeout は lock 用コネクションの取得と
 	// pg_try_advisory_lock の両方に与える既定の上限。
@@ -305,9 +304,4 @@ func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, 
 // acquireEncodeJobLock は encode 用の job-id advisory lock を取得する。
 func acquireEncodeJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
 	return acquireJobLock(ctx, pool, jobID, timeout, encodeJobLockKeyPrefix, fmt.Sprintf("encode job %d", jobID))
-}
-
-// acquireTSScanJobLock は TS scan 用の job-id advisory lock を取得する。
-func acquireTSScanJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
-	return acquireJobLock(ctx, pool, jobID, timeout, tsScanJobLockKeyPrefix, fmt.Sprintf("TS scan job %d", jobID))
 }
