@@ -1283,7 +1283,7 @@ export const ListRecordingsResponseItem = zod.object({
 }).optional(),
   "qualityEvents": zod.array(zod.looseObject({
 
-})).optional().describe('recording.failed / record-broken / bcas_anomaly の履歴'),
+})).optional().describe('recording.failed / record-broken の履歴'),
   "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。\n'),
   "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（"Z" 終端の RFC3339）で返す。')
 })
@@ -1439,7 +1439,7 @@ export const ListContinueWatchingResponseItem = zod.object({
 }).optional(),
   "qualityEvents": zod.array(zod.looseObject({
 
-})).optional().describe('recording.failed / record-broken / bcas_anomaly の履歴'),
+})).optional().describe('recording.failed / record-broken の履歴'),
   "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。\n'),
   "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（"Z" 終端の RFC3339）で返す。')
 })
@@ -1533,7 +1533,7 @@ export const GetRecordingResponse = zod.object({
 }).optional(),
   "qualityEvents": zod.array(zod.looseObject({
 
-})).optional().describe('recording.failed / record-broken / bcas_anomaly の履歴'),
+})).optional().describe('recording.failed / record-broken の履歴'),
   "deletedAt": zod.iso.datetime({"offset":true}).optional().describe('論理削除時刻。ごみ箱一覧（`trash=true`）と `GET /api/recordings/{id}`\n（ごみ箱の録画も 200 で返す）でのみ出現する。通常一覧・生きている\n行では省略（NULL）。常に UTC（"Z" 終端の RFC3339）で返す。\n'),
   "createdAt": zod.iso.datetime({"offset":true}).describe('常に UTC（"Z" 終端の RFC3339）で返す。')
 })

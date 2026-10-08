@@ -78,6 +78,9 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
 ```
 
+`quality_events` は `recording.failed` / `recording.record-broken` の履歴を持つ。
+スクランブル件数は `drop_stats.scrambled` から導けるため、ここには重ねて記録しない。
+
 ### 行の作られ方
 
 **`recordings` は mirakc が報告した録画試行だけを持つ。書き手は watcher だけ。**

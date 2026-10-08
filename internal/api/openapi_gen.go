@@ -1985,7 +1985,7 @@ type Recording struct {
 	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
 	NetworkId    int                   `json:"networkId"`
 
-	// QualityEvents recording.failed / record-broken / bcas_anomaly の履歴
+	// QualityEvents recording.failed / record-broken の履歴
 	QualityEvents *[]map[string]interface{} `json:"qualityEvents,omitempty"`
 
 	// ResumePositionMs 原本の時間軸上にある再開位置。位置の行がある録画のみ。

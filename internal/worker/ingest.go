@@ -1033,23 +1033,6 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		}
 	}
 
-	if counter.TotalScrambled() > 0 {
-		event := db.QualityEvent{
-			At:    time.Now(),
-			Event: "bcas_anomaly",
-		}
-		evJSON, err := json.Marshal([]db.QualityEvent{event})
-		if err != nil {
-			return fmt.Errorf("marshalling quality event: %w", err)
-		}
-		if err := q.AppendQualityEvents(ctx, sqlcgen.AppendQualityEventsParams{
-			Events: evJSON,
-			ID:     recordingID,
-		}); err != nil {
-			return fmt.Errorf("appending quality event: %w", err)
-		}
-	}
-
 	// INSERT は一意性の予約であり、公開点ではない。canonical path を作るのは
 	// ここからで、失敗時に DB transaction を rollback できる順序を保つ。
 	if err := beforeIngestFilePublication(ctx, tx); err != nil {
