@@ -1530,7 +1530,7 @@ func TestIngestWorker_SnoozesThenVerifiesLateContentSHA256(t *testing.T) {
 			rangeMu.Lock()
 			gotOffsets := slices.Clone(rangeOffsets)
 			rangeMu.Unlock()
-			if want := []int64{0, int64(len(tsData)), int64(len(tsData)), int64(len(tsData))}; !slices.Equal(gotOffsets, want) {
+			if want := []int64{0, int64(len(tsData)), int64(len(tsData)), int64(len(tsData)), int64(len(tsData))}; !slices.Equal(gotOffsets, want) {
 				t.Errorf("Range offsets across snooze and replay = %v, want %v", gotOffsets, want)
 			}
 			if tt.wantVerification != "" && !strings.Contains(logOutput.String(), tt.wantVerification) {
@@ -2407,11 +2407,11 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Error("file content changed after second Work() (transfer should have been skipped)")
 	}
 
-	// 1 回目の Work は Range 1 回 + finished 観測後の drain 1 回で 2。2 回目は
-	// 原本コミット済みなので転送に入らない（この数が 2 のままであることが、
+	// 1 回目の Work は最初の Range、追い付き確認、finished 観測後の最終 Range で 3。2 回目は
+	// 原本コミット済みなので転送に入らない（この数が 3 のままであることが、
 	// 「転送をやり直していない」の判定になる）。
-	if got := streamRequests.Load(); got != 2 {
-		t.Errorf("stream requests = %d, want 2 (first Work drains twice; second Work must skip the transfer)", got)
+	if got := streamRequests.Load(); got != 3 {
+		t.Errorf("stream requests = %d, want 3 (first Work reads initial, catch-up, and terminal ranges; second Work must skip the transfer)", got)
 	}
 
 	var mediaAssetCount int
