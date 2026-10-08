@@ -1122,13 +1122,7 @@ function HomeThumbnail({
     // （フレームレートを変えない。internal/ffargs/ffargs.go）、extra_args の許可リスト
     // （extraArgTakesValue）に -r が無い。前提が崩れると毎回 8 秒後に固定画像へ戻り、黙って機能が消える。
     const frameToleranceSeconds = 1 / (30_000 / 1_001) + 0.001
-    const timeout = window.setTimeout(
-      () =>
-        setResumeState((prev) =>
-          prev?.key === stateKey && prev.state === 'ready' ? prev : { key: stateKey, state: 'failed' },
-        ),
-      8_000,
-    )
+    const timeout = window.setTimeout(() => setResumeState({ key: stateKey, state: 'failed' }), 8_000)
     const onFrame = (_now: number, metadata: VideoFrameCallbackMetadata) => {
       if (cancelled) return
       if (

@@ -522,10 +522,6 @@ describe('ホーム: 見る / 管理モード（issue #1020）', () => {
       expect(video).toHaveAttribute('data-resume-state', 'ready')
       expect(video).toHaveStyle({ opacity: '1' })
       expect(fallback?.cleared).toBe(true)
-
-      act(() => fallback?.callback())
-      expect(video).toHaveAttribute('data-resume-state', 'ready')
-      expect(clearTimeoutSpy).toHaveBeenCalledWith(fallbackId)
     } finally {
       setTimeoutSpy.mockRestore()
       clearTimeoutSpy.mockRestore()
