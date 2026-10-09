@@ -201,7 +201,28 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+      # ffmpeg の .deb（約 60 MB）をキャッシュする。Ubuntu ミラーからのダウンロードは通常 30 秒未満
+      # だが、2026-09〜10 の 251 回中 5 回は 10 分を超えた（最長 27 分）。版はランナーイメージで
+      # 変わるのでイメージ版をキーにする（ImageOS / ImageVersion はランナーの環境変数で、`env`
+      # コンテキストには無い）。イメージ版が変わったら restore-keys で前のイメージの .deb を
+      # 復元し、差分だけをダウンロードする。ミラーから消えた版の .deb は autoclean で落とす。
+      # actions/cache は一般ユーザーで保存するので、root 所有の既定 /var/cache/apt/archives ではなく
+      # $HOME 下に置き、apt（root）が書いた後に所有者を戻す。
+      - id: apt-cache-key
+        run: |
+          echo "prefix=apt-ffmpeg-${ImageOS}-" >> "$GITHUB_OUTPUT"
+          echo "key=apt-ffmpeg-${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.apt/cache
+          key: ${{ steps.apt-cache-key.outputs.key }}
+          restore-keys: ${{ steps.apt-cache-key.outputs.prefix }}
+      - run: |
+          mkdir -p ~/.apt/cache/partial
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/.apt/cache" ffmpeg
+          sudo apt-get autoclean -o Dir::Cache::Archives="$HOME/.apt/cache"
+          sudo chown -R "$USER" ~/.apt/cache
       - uses: pnpm/action-setup@v6
         with:
           package_json_file: web/package.json
