@@ -24,6 +24,9 @@ sampler_pid=""
 cleanup() {
   [ -n "$sampler_pid" ] && kill "$sampler_pid" 2>/dev/null
   tb_curl -f -X DELETE "http://mirakc-${site}:40772/mock/hang/tuners" >/dev/null 2>&1 || true
+  # F3.3 が FAIL すると殺した running 行が残り、同じクラスタでの再実行が F3.1 で詰まる。
+  # 判定は記録済みなので、まだ running のこの 1 件だけ消す。
+  psql_q "DELETE FROM river_job WHERE id = ${river_job_id:-0} AND state = 'running'" >/dev/null 2>&1 || true
   rm -f "$leader_log"
 }
 trap cleanup EXIT

@@ -266,7 +266,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
 
-**死んだ実行の rescue（River の JobRescuer）は、ScaledJob と CronJob だけの構成では保証されない。** rescuer も leader の保守ループでしか動かない。River の elector は起動直後に leader を取りにいくが、最初の保守パスまで 0〜1 秒のランダムな待ちがある。一方 `--once` の Pod は 1 件消化すると畳まれる（reconcile_pass の Pod で、ログ上の起動から `shutting down` まで約 13ms）。rescue が起きるのは、leader を取った Pod がたまたまその待ちより長く生きたときだけである。
+**死んだ実行の rescue（River の JobRescuer）は、ScaledJob と CronJob だけの構成では保証されない。** rescuer も leader の保守ループでしか動かない。River の elector は起動直後に leader を取りにいくが、最初の保守パスまでに待ちがある。River v0.47.0 のソースを読むと、保守サービスは直列に起動し、各サービスが 0〜1 秒のランダムな sleep を同期的に挟む。サービスは 6 個ほどあり順序も一定でないので、rescuer の最初のパスは 0 秒から数秒後になる（実測ではなくソースの読解）。一方 `--once` の Pod は 1 件消化すると畳まれる（reconcile_pass の Pod で、ログ上の起動から `shutting down` まで約 13ms）。rescue が起きるのは、leader を取った Pod がたまたまその待ちより長く生きたときだけである。
 
 kind の故障注入 3（[deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の F3）で実測した。`tuner_sync` を掴んだ epg の Pod を殺し、CronJob はそのまま動かした（reconcile-pass は出荷と同じく毎分）。
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -374,8 +375,8 @@ func TestHangTunersHoldsTheRequestUntilReleased(t *testing.T) {
 	}
 
 	do(http.MethodPut, "/mock/hang/tuners")
-	if err := listWithin(300 * time.Millisecond); err == nil {
-		t.Fatal("ListTuners returned while hung, want it to block until the deadline")
+	if err := listWithin(300 * time.Millisecond); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ListTuners while hung: err=%v, want context.DeadlineExceeded（締切まで塞がっていない）", err)
 	}
 	do(http.MethodDelete, "/mock/hang/tuners")
 	if err := listWithin(5 * time.Second); err != nil {

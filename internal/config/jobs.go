@@ -154,6 +154,8 @@ type WorkerConfig struct {
 	// 死んだ実行とみなすまでの時間（river.Config.RescueStuckJobsAfter）。0 なら
 	// River の既定（1h）。個別の Timeout() がこれより長い kind は、その Timeout を
 	// 待ってから rescue される（Timeout() が -1 の kind は rescue されない）。
+	// 正で 1 分未満だと worker が起動しない（River は RescueStuckJobsAfter >= JobTimeout を
+	// 要求し、rokuban は JobTimeout を設定しないので River の既定 1 分が効く）。
 	// k8s で rescuer を誰が動かすかは docs/data/jobs.md §2。
 	RescueStuckJobsAfter time.Duration `yaml:"rescue_stuck_jobs_after"`
 }

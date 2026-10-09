@@ -82,9 +82,9 @@ worker:
   # だけでも緑になりうる。
   periodic_jobs: false
   # **故障注入 3 が rescue を数分で観測するためだけに縮めてある**（出荷の既定は
-  # River の 1h のまま）。rescue は kind ごとの Timeout() との長い方を待つので、
-  # Timeout が 1 分を超える kind の回収時刻は変わらない。Timeout が -1 の
-  # encode（故障注入 1）は rescue されないので、F1 の回収経路にも効かない。
+  # River の 1h のまま）。job は自身の Timeout() が過ぎるまで rescue されない
+  # ので、健全に走っている job は奪われない。Timeout が -1 の kind（encode、
+  # 故障注入 1）は rescue されないので、F1 の回収経路にも効かない。
   rescue_stuck_jobs_after: 1m
 
 log:

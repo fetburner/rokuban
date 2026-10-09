@@ -204,7 +204,9 @@ PASS したときは、ログの `leader at rescue` が誰だったかを見る�
 判定自体が効くことは陽性対照で確かめた。toolbox の中で常駐の River client
 （`rokuban server --roles worker --queues ruler --sites=`）を動かしたまま F3 を走らせると PASS する。
 同じ常駐 client の `rescue_stuck_jobs_after` を 24h にすると F3.3 が FAIL する。
-`E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で F3 だけを走らせられる。
+**F3 は既定の `--faults` では走らせない。** 常駐 River client が無い間は FAIL が既定の結果になり、F1 / F2 の合否を隠すからである。
+既定の実行は F3 を走らせなかったと出力する。`E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で F3 だけを走らせられる。
+`E2E_FAULTS_ONLY` を付けた実行は一部実行として exit 2 を返し、合う script が無ければ FAIL にする。
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
 worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
@@ -221,7 +223,7 @@ F2.2 は期待した `program_id` の mirakc schedule を照合するため、�
 kind での実測は次のとおり（arm64 の Docker で 1 回）。
 F1.1 から F2.2 の 6 判定がすべて PASS し、`run.sh --faults` は exit 0 を返した。
 F3 を足した後の通し実行（Colima aarch64 2 CPU、1 回）でも F1.1 から F2.2 は PASS した。
-F3.3 / F3.4 は上記の理由で FAIL し、`run.sh --faults` は exit 1 を返した。
+F3.3 / F3.4 は上記の理由で FAIL した。そのため F3 は既定の `--faults` から外してあり、既定は F1 / F2 が PASS なら exit 0 を返す。
 fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。
 その場合は F2 の予約 seed が mirakc に届かない。
 F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
