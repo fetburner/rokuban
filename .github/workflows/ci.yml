@@ -205,7 +205,7 @@ jobs:
       # だが、2026-09〜10 の 251 回中 5 回は 10 分を超えた（最長 27 分）。版はランナーイメージで
       # 変わるのでイメージ版をキーにする（ImageOS / ImageVersion はランナーの環境変数で、`env`
       # コンテキストには無い）。イメージ版が変わったら restore-keys で前のイメージの .deb を
-      # 復元し、差分だけをダウンロードする。溜まった古い .deb は autoclean で落とす。
+      # 復元し、差分だけをダウンロードする。ミラーから消えた版の .deb は autoclean で落とす。
       # actions/cache は一般ユーザーで保存するので、root 所有の既定 /var/cache/apt/archives ではなく
       # $HOME 下に置き、apt（root）が書いた後に所有者を戻す。
       - id: apt-cache-key
