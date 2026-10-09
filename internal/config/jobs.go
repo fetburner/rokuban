@@ -149,4 +149,11 @@ type WorkerConfig struct {
 	// 実現するための knob（docs/overview.md「ロールは『プロセスの形』を表し、
 	// 『どの仕事をするか』は表さない」）。未知のキュー名は起動時エラーになる。
 	Queues []string `yaml:"queues"`
+
+	// RescueStuckJobsAfter は River の JobRescuer が running のまま残ったジョブを
+	// 死んだ実行とみなすまでの時間（river.Config.RescueStuckJobsAfter）。0 なら
+	// River の既定（1h）。個別の Timeout() がこれより長い kind は、その Timeout を
+	// 待ってから rescue される（Timeout() が -1 の kind は rescue されない）。
+	// k8s で rescuer を誰が動かすかは docs/data/jobs.md §2。
+	RescueStuckJobsAfter time.Duration `yaml:"rescue_stuck_jobs_after"`
 }

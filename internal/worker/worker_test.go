@@ -853,6 +853,19 @@ func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 	}
 }
 
+// RescueStuckJobsAfter は river.Config にそのまま載り、0 は River の既定に任せる
+// （0 のまま渡せば river.NewClient が 1h に解決する）。k8s e2e の故障注入 3 は
+// この値を縮めて rescuer の回収を数分で観測する。
+func TestBuildRiverConfig_RescueStuckJobsAfterPassesThrough(t *testing.T) {
+	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{RescueStuckJobsAfter: 90 * time.Second})
+	if err != nil {
+		t.Fatalf("buildRiverConfig: %v", err)
+	}
+	if riverCfg.RescueStuckJobsAfter != 90*time.Second {
+		t.Errorf("RescueStuckJobsAfter = %s, want 1m30s", riverCfg.RescueStuckJobsAfter)
+	}
+}
+
 // encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
 // （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
 func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {

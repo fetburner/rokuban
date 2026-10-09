@@ -351,3 +351,40 @@ func TestUnimplementedEndpointIsNotFoundAs501(t *testing.T) {
 		t.Fatalf("got status %d, want 501", resp.StatusCode)
 	}
 }
+
+// TestHangTunersHoldsTheRequestUntilReleased は、故障注入 3 が tuner_sync を
+// running のまま掴ませる仕掛けを見る。止めている間は製品クライアントの
+// ListTuners が ctx の締切まで戻らず、DELETE の後と reset の後は即座に戻る。
+func TestHangTunersHoldsTheRequestUntilReleased(t *testing.T) {
+	_, client, srv := newTestServer(t)
+	do := func(method, path string) {
+		t.Helper()
+		req, _ := http.NewRequest(method, srv.URL+path, nil)
+		resp, err := srv.Client().Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	listWithin := func(d time.Duration) error {
+		ctx, cancel := context.WithTimeout(context.Background(), d)
+		defer cancel()
+		_, err := client.ListTuners(ctx)
+		return err
+	}
+
+	do(http.MethodPut, "/mock/hang/tuners")
+	if err := listWithin(300 * time.Millisecond); err == nil {
+		t.Fatal("ListTuners returned while hung, want it to block until the deadline")
+	}
+	do(http.MethodDelete, "/mock/hang/tuners")
+	if err := listWithin(5 * time.Second); err != nil {
+		t.Fatalf("ListTuners after DELETE: %v", err)
+	}
+
+	do(http.MethodPut, "/mock/hang/tuners")
+	do(http.MethodPost, "/mock/reset")
+	if err := listWithin(5 * time.Second); err != nil {
+		t.Fatalf("ListTuners after reset: %v（reset が hang を戻していない）", err)
+	}
+}

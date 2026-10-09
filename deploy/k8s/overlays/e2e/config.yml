@@ -81,6 +81,11 @@ worker:
   # ここを true に戻すと、判定 2 は「worker が自分で投入して自分で消化した」
   # だけでも緑になりうる。
   periodic_jobs: false
+  # **故障注入 3 が rescue を数分で観測するためだけに縮めてある**（出荷の既定は
+  # River の 1h のまま）。rescue は kind ごとの Timeout() との長い方を待つので、
+  # Timeout が 1 分を超える kind の回収時刻は変わらない。Timeout が -1 の
+  # encode（故障注入 1）は rescue されないので、F1 の回収経路にも効かない。
+  rescue_stuck_jobs_after: 1m
 
 log:
   level: info

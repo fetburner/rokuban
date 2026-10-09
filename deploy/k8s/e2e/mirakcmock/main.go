@@ -22,7 +22,7 @@
 // TestScheduleWireNames が持つ。ここが守っているのは「製品のクライアントで
 // 読めて、製品が見るフィールドが埋まっている」ことまで。
 //
-// ハーネスがこのモックに要求する固有の機能は 2 つ:
+// ハーネスがこのモックに要求する固有の機能は 3 つ:
 //   - **`/events` の同時接続数を数えて `/mock/stats` で公開する**。判定 4
 //     （watcher を 2 レプリカにしても二重に動かない）はこの数値だけで機械判定
 //     できる --- watcher の singleton 性が主張しているのは「mirakc に N 本の
@@ -31,6 +31,11 @@
 //   - **`POST /mock/reset` で録画予約を空に戻す**。判定は同じクラスタを何度も
 //     使い回すので、前回の周回で届いた予約が残っていると「今回 1 件も送って
 //     いないのに緑」になる。
+//   - **`PUT /mock/hang/tuners` の間、`GET /api/tuners` はヘッダだけ返して
+//     止まる**（`DELETE` か reset で戻る）。故障注入 3 は tuner_sync を
+//     running のまま掴ませて worker を殺すので、ジョブが数秒で終わると殺す
+//     窓が無い。ヘッダを先に返すのは製品クライアントの ResponseHeaderTimeout
+//     （30 秒）ではなく全体の上限（60 秒）まで掴ませるため。
 //
 // 生成する EPG は**要求のたびに現在時刻から作る**ので、同じ programId の
 // startAt は時間とともに未来へずれ続け、**どの番組も実際には開始しない**。
@@ -104,6 +109,8 @@ type mock struct {
 
 	eventsOpen  atomic.Int64
 	eventsTotal atomic.Int64
+
+	hangTuners atomic.Bool
 }
 
 func newMock(networkID, serviceCount, programsPerService int, programDuration time.Duration, namePrefix string) *mock {
@@ -145,6 +152,14 @@ func (m *mock) routes() http.Handler {
 	mux.HandleFunc("GET /events", m.events)
 	mux.HandleFunc("GET /mock/stats", m.getStats)
 	mux.HandleFunc("POST /mock/reset", m.postReset)
+	mux.HandleFunc("PUT /mock/hang/tuners", func(w http.ResponseWriter, _ *http.Request) {
+		m.hangTuners.Store(true)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("DELETE /mock/hang/tuners", func(w http.ResponseWriter, _ *http.Request) {
+		m.hangTuners.Store(false)
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// 上の登録に当たらない要求は 501。404 にすると rokuban 側から見て
 	// 「mirakc に無い」と区別できない。
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +181,16 @@ func (m *mock) listPrograms(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, m.programs(m.now()))
 }
 
-func (m *mock) listTuners(w http.ResponseWriter, _ *http.Request) {
+func (m *mock) listTuners(w http.ResponseWriter, r *http.Request) {
+	if m.hangTuners.Load() {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-r.Context().Done()
+		return
+	}
 	writeJSON(w, http.StatusOK, []mirakc.Tuner{
 		{Index: 0, Name: "mock-gr0", Types: []string{"GR"}, IsAvailable: true},
 		{Index: 1, Name: "mock-gr1", Types: []string{"GR"}, IsAvailable: true},
@@ -262,6 +286,7 @@ func (m *mock) postReset(w http.ResponseWriter, _ *http.Request) {
 	n := len(m.schedules)
 	m.schedules = map[int64]mirakc.Schedule{}
 	m.mu.Unlock()
+	m.hangTuners.Store(false)
 	slog.Info("reset", "clearedSchedules", n)
 	writeJSON(w, http.StatusOK, m.statsSnapshot())
 }

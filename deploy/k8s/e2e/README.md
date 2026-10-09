@@ -193,6 +193,18 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 |---|---|---|
 | F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。`encode_reconcile` が stuck job を終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
+| F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を掴ませ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
+
+F3 だけは CronJob を止めず、常駐する worker Deployment が無いことを前提として確かめる。
+測りたいのが「ScaledJob と CronJob だけで rescuer が動くか」だからである。
+`overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
+**今の製品では F3.3 は FAIL するのが普通で、たまに PASS する。** rescue が River 内部のタイミング任せだからである（結果と根拠は docs/operations/k8s.md §5）。
+PASS したときは、ログの `leader at rescue` が誰だったかを見る。
+2 秒間隔のサンプルなので、寿命 1 秒未満の `--once` Pod の leader は写らないことがある。
+判定自体が効くことは陽性対照で確かめた。toolbox の中で常駐の River client
+（`rokuban server --roles worker --queues ruler --sites=`）を動かしたまま F3 を走らせると PASS する。
+同じ常駐 client の `rescue_stuck_jobs_after` を 24h にすると F3.3 が FAIL する。
+`E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で F3 だけを走らせられる。
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
 worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
@@ -208,6 +220,8 @@ F2.2 は期待した `program_id` の mirakc schedule を照合するため、�
 
 kind での実測は次のとおり（arm64 の Docker で 1 回）。
 F1.1 から F2.2 の 6 判定がすべて PASS し、`run.sh --faults` は exit 0 を返した。
+F3 を足した後の通し実行（Colima aarch64 2 CPU、1 回）でも F1.1 から F2.2 は PASS した。
+F3.3 / F3.4 は上記の理由で FAIL し、`run.sh --faults` は exit 1 を返した。
 fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。
 その場合は F2 の予約 seed が mirakc に届かない。
 F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
