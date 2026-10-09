@@ -4132,6 +4132,28 @@ describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
     expect(screen.queryByText(/last viewable copy/)).not.toBeInTheDocument()
   })
 
+  it('400 はカット版だけが残る旨の日本語に訳し、英語の本文は出さない', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264', 'cut'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'cut', sizeBytes: 1_000_000 },
+        ],
+      }),
+      encodedRemoveResponse: () => jsonResponse({ error: 'cut-only selection is not allowed' }, 400),
+    })
+    renderAt('/recordings/3')
+
+    const dialog = await openRemoveDialog(user, 'h264')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    expect(
+      await screen.findByText('カット版だけが残るため削除できませんでした。チャプターを確認できる版が無くなります。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/cut-only selection/)).not.toBeInTheDocument()
+  })
+
   it('再生中の版を消すと、再取得後に残る版へ張り直す', async () => {
     const user = userEvent.setup()
     createFakeServer({

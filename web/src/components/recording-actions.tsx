@@ -692,7 +692,9 @@ export function EncodedVersionMenu({ recording, asset }: { recording: Recording;
                           // 409 は外した後に見られる版が残らないこと。英語の本文は出さずに訳す。
                           err instanceof ApiError && err.status === 409
                             ? '最後の版なので削除できませんでした。録画ごと消すときはごみ箱へ移してください。'
-                            : mutationErrorMessage('版の削除に失敗しました', err),
+                            : err instanceof ApiError && err.status === 400
+                              ? 'カット版だけが残るため削除できませんでした。チャプターを確認できる版が無くなります。'
+                              : mutationErrorMessage('版の削除に失敗しました', err),
                         kind: 'error',
                       }),
                   },

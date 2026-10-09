@@ -6687,6 +6687,20 @@ func (response RemoveRecordingEncodedAsset204Response) VisitRemoveRecordingEncod
 	return nil
 }
 
+type RemoveRecordingEncodedAsset400JSONResponse ErrorResponse
+
+func (response RemoveRecordingEncodedAsset400JSONResponse) VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(400)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type RemoveRecordingEncodedAsset404JSONResponse ErrorResponse
 
 func (response RemoveRecordingEncodedAsset404JSONResponse) VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error {

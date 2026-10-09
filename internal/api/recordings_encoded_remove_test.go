@@ -395,3 +395,100 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testi
 		t.Errorf("policy rows after 409 = %d, want 0 (rolled back)", n)
 	}
 }
+
+func cutRouterForRemoval(pool *pgxpool.Pool, live bool) http.Handler {
+	return NewRouter(RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"h264", "cut", "cut2"},
+		CutProfileNames:    []string{"cut", "cut2"},
+		LiveEnabled:        live,
+	})
+}
+
+// live 無効で、外した後の desired がカット版だけになる削除は 400 で何も書かない。
+// cut を外す削除（h264 が残る）は 204。live 有効なら cut だけが残っても 204。
+func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srvOff := httptest.NewServer(cutRouterForRemoval(pool, false))
+	defer srvOff.Close()
+	srvOn := httptest.NewServer(cutRouterForRemoval(pool, true))
+	defer srvOn.Close()
+
+	id := seedRecording(t, pool, "cut 規則", time.Now().Truncate(time.Second), "finished", 709)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "cut")
+
+	if resp := deleteEncoded(t, srvOff.URL, id, "h264"); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("live off, remove h264 status = %d, want 400", resp.StatusCode)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "cut"}) {
+		t.Errorf("encode_profiles after 400 = %v, want [h264 cut]", got)
+	}
+	if got := removalRequests(t, pool, id); len(got) != 0 {
+		t.Errorf("removal requests after 400 = %v, want none", got)
+	}
+	if resp := deleteEncoded(t, srvOn.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("live on, remove h264 status = %d, want 204", resp.StatusCode)
+	}
+
+	id2 := seedRecording(t, pool, "cut 規則 2", time.Now().Truncate(time.Second), "finished", 710)
+	seedIngested(t, pool, id2, 1000, nil)
+	seedEncodedVersions(t, pool, id2, "h264", "cut")
+	if resp := deleteEncoded(t, srvOff.URL, id2, "cut"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("live off, remove cut status = %d, want 204", resp.StatusCode)
+	}
+}
+
+// 足し直しの cut 判定は、外す tx の commit 後の desired で行う。古い [h264 cut] で
+// 判定すると [cut2] の追加が通り、live 無効で禁止の「カット版だけ」になる。
+func TestAddRecordingEncodeProfiles_CutRuleUsesDesiredAfterConcurrentRemoval(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(cutRouterForRemoval(pool, false))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "足し直し cut 競合", time.Now().Truncate(time.Second), "finished", 711)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "cut")
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: "h264"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{RecordingID: id, Profile: "h264"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status := make(chan int, 1)
+	go func() {
+		resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"cut2"})
+		status <- resp.StatusCode
+	}()
+	select {
+	case got := <-status:
+		t.Fatalf("re-add returned %d while a removal held the policy row, want it to wait", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-status:
+		if got != http.StatusBadRequest {
+			t.Errorf("re-add status = %d, want 400", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("re-add did not finish after the removal committed")
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"cut"}) {
+		t.Errorf("encode_profiles = %v, want [cut]", got)
+	}
+}

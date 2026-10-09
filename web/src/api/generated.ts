@@ -7201,6 +7201,11 @@ export type removeRecordingEncodedAssetResponse204 = {
   status: 204
 }
 
+export type removeRecordingEncodedAssetResponse400 = {
+  data: ErrorResponse
+  status: 400
+}
+
 export type removeRecordingEncodedAssetResponse404 = {
   data: ErrorResponse
   status: 404
@@ -7214,7 +7219,7 @@ export type removeRecordingEncodedAssetResponse409 = {
 export type removeRecordingEncodedAssetResponseSuccess = (removeRecordingEncodedAssetResponse204) & {
   headers: Headers;
 };
-export type removeRecordingEncodedAssetResponseError = (removeRecordingEncodedAssetResponse404 | removeRecordingEncodedAssetResponse409) & {
+export type removeRecordingEncodedAssetResponseError = (removeRecordingEncodedAssetResponse400 | removeRecordingEncodedAssetResponse404 | removeRecordingEncodedAssetResponse409) & {
   headers: Headers;
 };
 
@@ -7239,6 +7244,8 @@ export const getRemoveRecordingEncodedAssetUrl = (id: number,
  * `always` に切り替える。外した後に active な原本も、外していない active な
  * エンコード版も残らないなら 409（録画ごと消すならごみ箱を使う）。
  * 対象の active なエンコード版が無ければ 404。既に外した版を再指定しても 204。
+ * 外した後の desired が live 無効でカット版だけになるなら 400（事後追加と同じ
+ * cut の選択規則）。
  * この録画だけが対象で、ルールは変えない。足し直しは
  * `POST /api/recordings/{id}/encode-profiles`（原本が active な間だけ）。
  * @summary Remove one encoded version of a recording

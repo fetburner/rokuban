@@ -757,6 +757,15 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
 
+	// 外す tx（RemoveRecordingEncodedAsset）が要求行を書いて commit する前に
+	// Append の文が走ると、CTE の DELETE は未 commit の要求行を見られず、足し直した
+	// profile の要求行が残る。先にロックを取れば、次の文は外す側の commit 後の
+	// スナップショットで走る。行が無ければ外す側も外せないので競合しない。
+	// cut の判定もロック後の desired で行うため、判定より前に取る。
+	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
+	}
+
 	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
 	// 結果が [h264, cut] なので正当）。原本 HLS が使える live.enabled 構成では
 	// cut のみも正当。policy 行が無ければ追加分のみ。
@@ -772,13 +781,6 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		}
 	}
 
-	// 外す tx（RemoveRecordingEncodedAsset）が要求行を書いて commit する前に
-	// Append の文が走ると、CTE の DELETE は未 commit の要求行を見られず、足し直した
-	// profile の要求行が残る。先にロックを取れば、次の文は外す側の commit 後の
-	// スナップショットで走る。行が無ければ外す側も外せないので競合しない。
-	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
-	}
 	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
 	// 追加は、AppendRecordingEncodeProfiles 自体が「原本が active = 凍結済みと
 	// みなす」既定値 'always' で行を作る（internal/inplace.Register 経由の原本は
@@ -839,8 +841,17 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 	if err := q.FreezeRecordingEncodePolicyIfMissing(ctx, req.Id); err != nil {
 		return nil, fmt.Errorf("freezing encode policy for recording %d: %w", req.Id, err)
 	}
-	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil {
+	policy, err := q.LockRecordingEncodePolicy(ctx, req.Id)
+	if err != nil {
 		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
+	}
+	// 外した後の desired にも事後追加と同じ cut の選択規則を当てる。書く前に判定する
+	// ので、違反ならロールバックするだけで何も残らない。
+	if h.cutProfiles != nil {
+		remaining := slices.DeleteFunc(slices.Clone(policy.EncodeProfiles), func(p string) bool { return p == req.Profile })
+		if err := h.validateCutSelection(remaining); err != nil {
+			return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
+		}
 	}
 	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
 		RecordingID: req.Id,
