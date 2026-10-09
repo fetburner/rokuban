@@ -206,7 +206,7 @@ PASS したときは、ログの `leader at rescue` が誰だったかを見る�
 同じ常駐 client の `rescue_stuck_jobs_after` を 24h にすると F3.3 が FAIL する。
 **F3 は既定の `--faults` では走らせない。** 常駐 River client が無い間は FAIL が既定の結果になり、F1 / F2 の合否を隠すからである。
 既定の実行は F3 を走らせなかったと出力する。`E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で F3 だけを走らせられる。
-`E2E_FAULTS_ONLY` を付けた実行は一部実行として exit 2 を返し、合う script が無ければ FAIL にする。
+`E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
 worker・KEDA operator からの新規接続を失わせ、既存の pool connection も

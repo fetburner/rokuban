@@ -11,7 +11,7 @@ E2E_SUMMARY_SUBJECT="故障注入 suite が"
 export E2E_SUMMARY_SUBJECT
 
 # E2E_FAULTS_ONLY=03 のように番号を渡すと、その故障だけを走らせる（変異の確認用）。
-# 一部だけ走らせた結果は summary が exit 2 にする（lib/log.sh の E2E_PARTIAL_RUN）。
+# 一部だけ走らせた結果は、すべて緑でも summary が 0 ではなく 2 を返す（lib/log.sh の E2E_PARTIAL_RUN）。
 ran=0
 if [ -n "${E2E_FAULTS_ONLY:-}" ]; then
   export E2E_PARTIAL_RUN="E2E_FAULTS_ONLY=${E2E_FAULTS_ONLY}"
