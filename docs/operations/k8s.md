@@ -266,6 +266,19 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
 
+**死んだ実行の rescue（River の JobRescuer）は、ScaledJob と CronJob だけの構成では保証されない。** rescuer も leader の保守ループでしか動かない。River の elector は起動直後に leader を取りにいくが、最初の保守パスまでに待ちがある。River v0.47.0 のソースを読むと、保守サービスは直列に起動し、各サービスが 0〜1 秒のランダムな sleep を同期的に挟む。サービスは 6 個ほどあり順序も一定でないので、rescuer の最初のパスは 0 秒から数秒後になる（実測ではなくソースの読解）。一方 `--once` の Pod は 1 件消化すると畳まれる（reconcile_pass の Pod で、ログ上の起動から `shutting down` まで約 13ms）。rescue が起きるのは、leader を取った Pod がたまたまその待ちより長く生きたときだけである。
+
+kind の故障注入 3（[deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の F3）で実測した。`tuner_sync` を掴んだ epg の Pod を殺し、CronJob はそのまま動かした（reconcile-pass は出荷と同じく毎分）。
+
+- 1 回目は約 40 分 `running` のまま残った。`*/10` の CronJob が一斉に Pod を起こす時刻を 4 回含む
+- 別の回では、寿命 1 秒前後の Pod が 7 個同時に起きた瞬間に rescue された。締切から約 5.5 分後で、その Pod 群のどれかが leader だった
+
+**`retryable` の昇格は、空振りの Pod が `--once-idle-timeout` まで生きるので起きうる。`running` の死骸には Job を起こす滞留が無いので、そのための空振りも来ない。**
+
+**死骸は一意キーを占有し、同じ kind × site の後続の投入を合流させて消す。** 1 回目の実測では、殺した後に `tuner-sync-sitea` の CronJob が発火して成功した。それでも sitea の新しい行は作られなかった（siteb は作られて完了した）。ruler / reconciler / epg_sync も同じ形で、rescue されるまでそのサイトのパスが走らない。
+
+**rescuer の担い手は、全 kind の worker を登録した常駐の River client に決めた。** notifier のような常時起動のロールと同じ Pod に載せてよい。複数 Pod にしても、保守サービスを動かす leader は River が 1 つに絞る。rescue だけをする one-shot を長めに生かして定期起動する案は採らない。生かす長さを River 内部の定数（leader 選出の間隔と stagger）から決めることになり、上の「タイミング任せ」に余裕を足すだけだからである。未解決: 常駐 client をまだ置いていない。
+
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 
 **この排他は共有 ConfigMap と結合している。** `--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた瞬間に、`--queues` を渡している worker Pod が**すべて**起動エラーになる。ConfigMap を 1 個に保つ決定（上記「マニフェストの配布形式」）と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。

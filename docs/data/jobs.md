@@ -25,7 +25,7 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 実行側の handler は `internal/worker` に置く。
 
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- 実行中はリース（ハートビート）を延長。ワーカー死亡（OOM、プリエンプト）はリース切れで検出し、queued に戻す
+- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が `retryable` に戻す。待つ時間は `worker.rescue_stuck_jobs_after`（既定 1h）と kind ごとの `Timeout()` の長い方である。**`Timeout()` が -1 の kind は rescue の対象外**で、それぞれの reconcile が回収する（どの kind が -1 かは各 worker の `Timeout()` を引く）
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
@@ -43,6 +43,8 @@ River の `PeriodicJobs` は**リーダーに選出されたクライアント�
 | k8s | **CronJob が `rokuban enqueue <job>` を叩く**（insert-only クライアントで 1 件投入して即終了） |
 
 `PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする（両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが意図が曖昧になる）。副次的な利点として、k8s では**何がいつ走るかが CronJob の spec に一元化される**（Go のコードと YAML に散らない）。
+
+**River の保守サービス（JobRescuer / JobScheduler）も leader でしか動かず、CronJob では外に出せない。** k8s で leader になりうるのは `--once` の Pod だけである。leader になってから最初の保守パスまで、0 秒から数秒待つ（River v0.47.0 のソース読解。保守サービスが直列に起動し、各サービスが 0〜1 秒の sleep を挟む）。1 件消化した Pod はたいていその前に終わる。そのため ScaledJob と CronJob だけの構成では、死んだ実行の rescue が River 内部のタイミング任せになる。kind での実測と根拠は [operations/k8s.md](../operations/k8s.md) §5「worker: KEDA ScaledJob」にある。担い手は、全 kind の worker を登録した常駐の River client に決めた（判断は同節）。未解決: まだ置いていない。
 
 ### River のジョブ一意性の注意
 

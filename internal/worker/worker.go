@@ -530,6 +530,10 @@ type ClientConfig struct {
 	// この猶予までである。
 	SoftStopTimeout time.Duration
 
+	// RescueStuckJobsAfter は river.Config.RescueStuckJobsAfter にそのまま渡す。
+	// 0 なら River の既定（1h）。設定キーは worker.rescue_stuck_jobs_after。
+	RescueStuckJobsAfter time.Duration
+
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
 	// KEDA ScaledJob が起こした k8s Job が自分で終了できるようにするための
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
@@ -578,6 +582,8 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 		Queues:          physicalQueues,
 		Workers:         workers,
 		SoftStopTimeout: softStopTimeout,
+
+		RescueStuckJobsAfter: cfg.RescueStuckJobsAfter,
 	}
 	configureOnceRiver(riverCfg, cfg.Once, physicalQueues)
 	configurePeriodicJobs(riverCfg, cfg)

@@ -817,6 +817,7 @@ reconciler:
 worker:
   periodic_jobs: false
   queues: [ruler, epg]
+  rescue_stuck_jobs_after: 2m
 encode:
   ffmpeg: /usr/local/bin/ffmpeg
   ffprobe: /usr/local/bin/ffprobe
@@ -965,7 +966,7 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 		{
 			"worker",
 			cfg.Worker,
-			WorkerConfig{PeriodicJobs: false, Queues: []string{"ruler", "epg"}},
+			WorkerConfig{PeriodicJobs: false, Queues: []string{"ruler", "epg"}, RescueStuckJobsAfter: 2 * time.Minute},
 		},
 		{
 			"encode",

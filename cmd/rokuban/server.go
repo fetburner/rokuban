@@ -606,6 +606,7 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 		Queues:               queues,
 		Once:                 onceGate,
 		SoftStopTimeout:      softStopTimeout,
+		RescueStuckJobsAfter: cfg.Worker.RescueStuckJobsAfter,
 		CatalogExport:        true,
 		DeleteReconcile:      true,
 		LabelRuleReconcile:   true,

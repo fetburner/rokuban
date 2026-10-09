@@ -49,7 +49,7 @@ kubectl / kustomize 等を要求する。故障注入先はこの名前空間に
 この動的 suite は encode source 作成・worker kill・stale recovery の待ちがあるため CI では回さない。
 CI は fault scripts の shellcheck と Kubernetes manifest schema を検査する。
 `internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。
-`deploy/k8s/e2e/faults/` を変える PR の作者も同じである。
+`deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1 / F2 だけで、F3 は `E2E_FAULTS_ONLY=03` で明示して走らせる。
 判定内容と注入の仕組みは
 [kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
 
