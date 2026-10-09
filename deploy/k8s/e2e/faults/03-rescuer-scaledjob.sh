@@ -59,6 +59,7 @@ for d in doc.get("items", []):
             matches.append(name)
 print(" ".join(matches))
 ')"
+# shellcheck disable=SC2016 # このスクリプト内の変数は toolbox 側で展開する。
 if ! toolbox_worker_clients="$(k exec deploy/e2e-toolbox -- sh -c '
 for cmdline in /proc/[0-9]*/cmdline; do
   [ -r "$cmdline" ] || continue
