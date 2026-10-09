@@ -233,7 +233,8 @@ jobs:
   # 壊れる）。そのためプロセス内ではなくランナーを分ける（matrix）。シャードの `-run` は
   # 所要時間を均すための選び方で、最後のシャードだけ「他が選んだもの以外すべて」を `-skip`
   # で取る。将来足されたテストは自動でそこに入る。`-run` の綴り違いは "no tests to run" で
-  # 緑になるので、各シャードが想定テストの `--- PASS:` を出したことを検査する。
+  # 緑になるので、各シャードが選んだ全サブテスト（`expect` の空白区切りの各名前）の
+  # `--- PASS:` が出たことを検査する。
   # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
   mirakc-conformance-shard:
     name: mirakc-conformance (${{ matrix.name }})
@@ -247,7 +248,7 @@ jobs:
             expect: 'TestBroadcastPathologies/EventIDReset'
           - name: following-preceding
             run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtension)$'
-            expect: 'TestBroadcastPathologies/FollowingProgram'
+            expect: 'TestBroadcastPathologies/FollowingProgram TestBroadcastPathologies/PrecedingProgramExtension'
           - name: running-status
             run: '^TestBroadcastPathologies$/^RunningStatusStartsSoon$'
             expect: 'TestBroadcastPathologies/RunningStatusStartsSoon'
@@ -312,9 +313,11 @@ jobs:
           [ -n "$RUN" ] && args+=(-run "$RUN")
           [ -n "$SKIP" ] && args+=(-skip "$SKIP")
           go test -tags conformance ./internal/mirakc/conformance/... -timeout 35m -v "${args[@]}" | tee shard.log
-          # 空振り検査: -run の綴り違いは "no tests to run" で緑になる
-          grep -qE "^\s*--- PASS: ${EXPECT}( |$)" shard.log \
-            || { echo "::error::shard ran no expected test: ${EXPECT}"; exit 1; }
+          # 空振り検査: -run の綴り違いは "no tests to run" で緑になる。EXPECT は空白区切りで、全名の PASS を要求する
+          for t in $EXPECT; do
+            grep -qE "^\s*--- PASS: ${t}( |$)" shard.log \
+              || { echo "::error::shard ran no expected test: ${t}"; exit 1; }
+          done
 
   # 必須チェック名 mirakc-conformance を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
   mirakc-conformance:
