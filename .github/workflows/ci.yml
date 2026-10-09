@@ -243,7 +243,7 @@ jobs:
       matrix:
         include:
           - name: event-id-reset
-            run: '^TestBroadcastPathologies$/^EventIDResett$'
+            run: '^TestBroadcastPathologies$/^EventIDReset$'
             expect: 'TestBroadcastPathologies/EventIDReset'
           - name: following-preceding
             run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtension)$'
