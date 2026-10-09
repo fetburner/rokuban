@@ -343,7 +343,10 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatal("timed out waiting for epg_sync job completion")
 	}
 
-	testutil.RequireRiverInserted(ctx, t, pool, RulerPassArgs{Site: testSite}, nil)
+	hint := testutil.RequireRiverInserted(ctx, t, pool, RulerPassArgs{Site: testSite}, nil)
+	if hint.Args.Site != testSite {
+		t.Errorf("ruler_pass hint site = %q, want %q", hint.Args.Site, testSite)
+	}
 }
 
 // ingest は数百 MB〜数十 GB の転送なので、River の総時間タイムアウト（既定 1 分）が

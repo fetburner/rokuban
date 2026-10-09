@@ -166,7 +166,10 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	testutil.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
+	ingest := testutil.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
+	if ingest.Args.Site != testSite || ingest.Args.RecordID != record.ID {
+		t.Errorf("ingest args = %+v, want site=%q record_id=%q", ingest.Args, testSite, record.ID)
+	}
 
 	var markerCount int
 	if err := pool.QueryRow(ctx,

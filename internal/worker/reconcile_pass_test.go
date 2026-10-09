@@ -266,16 +266,19 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 
 	_ = waitPeriodicJobEvent(t, waiter, "ruler_pass")
 
-	testutil.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
+	hint := testutil.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
+	if hint.Args.Site != testSite {
+		t.Errorf("reconcile_pass hint site = %q, want %q", hint.Args.Site, testSite)
+	}
 
-	// 上の count は「行が挿入された」ことしか見ていない。ここではヒント自体が
-	// 実際に正常完了する（issue #553）ところまで確認する。この ClientConfig{}
+	// 上ではヒントの投入と site 引数を確認した。ここではヒント自体が実際に
+	// 正常完了する（issue #553）ところまで確認する。この ClientConfig{}
 	// は PeriodicJobs/BoundSites を登録しないため、存在しうる reconcile_pass は
 	// このヒント 1 つだけ --- worker_test.go の TestRulerPassPeriodicJob と違い、
 	// 定期ジョブの reconcile_pass と合流して区別できなくなる余地が無い。
 	//
 	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
-	// Work 末尾）、count のチェックで 0 != 1 として落ちる。ヒントは投入される
+	// Work 末尾）、RequireRiverInserted がジョブ不在で失敗する。ヒントは投入される
 	// が実行が失敗する場合（例えば MirakcClients を外す）は、reconcile_pass の
 	// JobCompleted が来ず、下の待ち受けが 20 秒でタイムアウトして落ちる。
 	hintEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
