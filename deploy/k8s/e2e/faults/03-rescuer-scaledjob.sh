@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Fault 3: kill a worker that owns a finite-timeout job, keep only ScaledJob +
-# CronJob running, and require River's JobRescuer to rescue the dead attempt.
+# Fault 3: kill a worker that owns a finite-timeout job while CronJobs and the
+# resident notifier River client are running; require JobRescuer to recover it.
 set -uo pipefail
 
 E2E_FAULT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 source "$E2E_FAULT_DIR/lib.sh"
 
-log_section "故障注入 3: ScaledJob と CronJob だけの構成での River rescuer"
+log_section "故障注入 3: 常駐 River client による rescue"
 plan "F3.1" "F3.2" "F3.3" "F3.4"
 
 site="$E2E_SITE_A"
@@ -31,21 +31,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# **この判定の前提は「常駐する River client が無い」こと。** CronJob を止めると
-# Pod が起きず、常駐 worker があるとそれが leader になる。どちらも測りたい構成ではない。
+# CronJob は動かしたままにする。製品の常駐 client が無い状態や、toolbox 内の
+# 手動 client で rescue される状態を誤って PASS にしないよう、notifier Deployment
+# の role・queue・site scope・常駐モードを argv から確認する。
 suspended="$(k get cronjobs -o jsonpath='{.items[?(@.spec.suspend==true)].metadata.name}' 2>/dev/null)"
-worker_deployments="$(k get deployments -o json 2>/dev/null | python3 -c '
+rescuer_deployments="$(k get deployments -o json 2>/dev/null | python3 -c '
 import json, sys
 doc = json.load(sys.stdin)
-print(" ".join(d["metadata"]["name"] for d in doc.get("items", [])
-                for c in d["spec"]["template"]["spec"]["containers"]
-                if "worker" in " ".join(c.get("args", []))))
+def flag(args, name):
+    for i, arg in enumerate(args):
+        if arg == "--" + name:
+            return args[i + 1] if i + 1 < len(args) else ""
+        if arg.startswith("--" + name + "="):
+            return arg.split("=", 1)[1]
+    return None
+matches = []
+for d in doc.get("items", []):
+    name = d["metadata"]["name"]
+    for c in d["spec"]["template"]["spec"]["containers"]:
+        args = c.get("args", [])
+        roles = set((flag(args, "roles") or "").split(","))
+        if ("server" in args and {"notifier", "worker"} <= roles
+                and flag(args, "queues") == "ruler"
+                and flag(args, "sites") == ""
+                and "--once" not in args
+                and not any(arg.startswith("--once=") for arg in args)):
+            matches.append(name)
+print(" ".join(matches))
 ')"
-if [ -n "$suspended" ] || [ -n "$worker_deployments" ]; then
-  fail_from "F3.1" "ScaledJob と CronJob だけの構成ではない（suspend 中: ${suspended:-なし} / worker Deployment: ${worker_deployments:-なし}）"
+if [ -n "$suspended" ] || [ "$rescuer_deployments" != "rokuban-notifier" ]; then
+  fail_from "F3.1" "常駐 notifier River client が見つからないか argv が違う（suspend 中: ${suspended:-なし} / client: ${rescuer_deployments:-なし}）"
   exit 0
 fi
-rescue_after="$(k exec "$E2E_TOOLBOX" -- cat /etc/rokuban/config.yml 2>/dev/null |
+rescue_after="$(k exec deploy/rokuban-notifier -- cat /etc/rokuban/config.yml 2>/dev/null |
   sed -n 's/^ *rescue_stuck_jobs_after: *\([^ #]*\).*/\1/p' | head -1)"
 log_step "worker.rescue_stuck_jobs_after=${rescue_after:-未設定（River 既定 1h）} / tuner_sync Timeout=${job_timeout_seconds}s"
 log_step "cronjobs: $(k get cronjobs -o jsonpath='{range .items[*]}{.metadata.name}={.spec.schedule} {end}' 2>/dev/null)"

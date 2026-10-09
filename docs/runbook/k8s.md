@@ -184,7 +184,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 **通常の `run.sh` の 0 は「受け入れ 5 項目を判定できた」であって「ワークロードが
 網羅されている」ではない**（0 が保証しないものは
 [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) に列挙してある）。
-`--faults` の 0 は F1 / F2 の両シナリオが PASS したことを意味し、F3（rescuer）は含まない。F3 は `E2E_FAULTS_ONLY=03` で別に走らせる。suite ごとの対象は
+`--faults` の 0 は F1〜F3 の全シナリオが PASS したことを意味する。F3 だけを回す場合は `E2E_FAULTS_ONLY=03` を使う。suite ごとの対象は
 [deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md) の表が持つ
 （ここには書かない --- 判定を足す人が触るのはあちらなので、ここに写すと
 黙って古くなる）。
@@ -235,7 +235,7 @@ TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`
 |---|---|---|
 | `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` が **0** を返すこと（5 項目が緑のまま） |
 | 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が効いていること） |
-| River recovery / `delete_reconcile` / `encode_reconcile` / DB 接続復旧 / media asset 公開、または `deploy/k8s/e2e/faults/` を変える PR を出す前 | その PR の作者 | `run.sh --faults` が **0** を返し（F1 / F2 の PASS。F3 は含まない）、worker kill と PostgreSQL 接続断の両シナリオが PASS |
+| River recovery / `delete_reconcile` / `encode_reconcile` / DB 接続復旧 / media asset 公開、または `deploy/k8s/e2e/faults/` を変える PR を出す前 | その PR の作者 | `run.sh --faults` が **0** を返し、worker kill・PostgreSQL 接続断・rescuer の各シナリオが PASS |
 
 CI が見るのはクラスタが要らない範囲の 3 つ。`--faults` を含む kind 上の動的 suite は
 CI では回さない。240 秒 fixture の encode と KEDA recovery の待ちがあり、kind / KEDA /

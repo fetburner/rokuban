@@ -53,11 +53,9 @@ live:
 # base の config.yml には `encode:` が無い（プロファイルはデプロイごとの選択で、
 # 参照実装が既定を決める話ではない）ので、ここで 1 つだけ定義する。
 #
-# **狙って遅くしてある。** 判定 3 は 3.2 と 3.3 でそれぞれ
-# `2 × pollingInterval` の窓を取るので、エンコードはその合計より長く走り続けて
-# いる必要がある（短いと「殺されなかった」ではなく「窓の中で完走した」になり、
-# 判定は TODO で抜ける）。`veryslow` + 1080p への拡大 + crf 18 の組み合わせは、
-# 数十秒の入力に対して kind の 1 ノードで分単位になる。
+# **判定 3 の観測窓より長く動かすための fixture。** 240 秒の入力を `veryslow` / 720p /
+# crf 18 で処理する。1080p は worker の 1 GiB limit で OOM したが、720p は F1.4 で
+# encoded asset を公開して完了した（arm64 kind で約 590 秒）。
 encode:
   ffmpeg: ffmpeg
   ffprobe: ffprobe
@@ -68,7 +66,7 @@ encode:
       container: mp4
       video_codec: libx264
       audio_codec: aac
-      height: 1080
+      height: 720
       crf: 18
       preset: veryslow
 

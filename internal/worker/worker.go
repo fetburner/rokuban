@@ -220,7 +220,9 @@ type Deps struct {
 	Cleanup config.CleanupConfig
 }
 
-// NewWorkers は全ワーカーを登録した river.Workers を返す。
+// NewWorkers は全 kind のワーカーを登録した river.Workers を返す。
+// 購読キューは client 設定で絞るため、ここでは登録を減らさない。
+// k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{

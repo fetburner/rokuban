@@ -264,26 +264,13 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`worker.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
 
-**スケーラのクエリは `available` だけでなく `retryable` も数える。** 失敗したジョブを `retryable` から `available` に戻すのは River の `JobScheduler` である。これはリーダーに選出されたクライアントだけが動かす保守サービスである。ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher / `enqueue` はいずれも insert 専用で `Start` しない）。そのため `available` だけを数えると **失敗したジョブが永久に止まる** --- Job が起きないので誰も昇格させず、昇格しないので Job も起きない。
+**スケーラのクエリは `available` と `retryable` を数える。** 常駐 client の JobScheduler が retryable を昇格させるため、この集合は rescue の正しさを担わない。backoff 中から KEDA の backlog に含めるので、まだ claim できない job のために Pod が起きることがある。空振り Pod は `--once-idle-timeout` で終了する。
 
-**死んだ実行の rescue（River の JobRescuer）は、ScaledJob と CronJob だけの構成では保証されない。** rescuer も leader の保守ループでしか動かない。River の elector は起動直後に leader を取りにいくが、最初の保守パスまでに待ちがある。River v0.47.0 のソースを読むと、保守サービスは直列に起動し、各サービスが 0〜1 秒のランダムな sleep を同期的に挟む。サービスは 6 個ほどあり順序も一定でないので、rescuer の最初のパスは 0 秒から数秒後になる（実測ではなくソースの読解）。一方 `--once` の Pod は 1 件消化すると畳まれる（reconcile_pass の Pod で、ログ上の起動から `shutting down` まで約 13ms）。rescue が起きるのは、leader を取った Pod がたまたまその待ちより長く生きたときだけである。
-
-kind の故障注入 3（[deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の F3）で実測した。`tuner_sync` を掴んだ epg の Pod を殺し、CronJob はそのまま動かした（reconcile-pass は出荷と同じく毎分）。
-
-- 1 回目は約 40 分 `running` のまま残った。`*/10` の CronJob が一斉に Pod を起こす時刻を 4 回含む
-- 別の回では、寿命 1 秒前後の Pod が 7 個同時に起きた瞬間に rescue された。締切から約 5.5 分後で、その Pod 群のどれかが leader だった
-
-**`retryable` の昇格は、空振りの Pod が `--once-idle-timeout` まで生きるので起きうる。`running` の死骸には Job を起こす滞留が無いので、そのための空振りも来ない。**
-
-**死骸は一意キーを占有し、同じ kind × site の後続の投入を合流させて消す。** 1 回目の実測では、殺した後に `tuner-sync-sitea` の CronJob が発火して成功した。それでも sitea の新しい行は作られなかった（siteb は作られて完了した）。ruler / reconciler / epg_sync も同じ形で、rescue されるまでそのサイトのパスが走らない。
-
-**rescuer の担い手は、全 kind の worker を登録した常駐の River client に決めた。** notifier のような常時起動のロールと同じ Pod に載せてよい。複数 Pod にしても、保守サービスを動かす leader は River が 1 つに絞る。rescue だけをする one-shot を長めに生かして定期起動する案は採らない。生かす長さを River 内部の定数（leader 選出の間隔と stagger）から決めることになり、上の「タイミング任せ」に余裕を足すだけだからである。未解決: 常駐 client をまだ置いていない。
+**JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。** notifier は常時起動し、api ではなく site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 
 **この排他は共有 ConfigMap と結合している。** `--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた瞬間に、`--queues` を渡している worker Pod が**すべて**起動エラーになる。ConfigMap を 1 個に保つ決定（上記「マニフェストの配布形式」）と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。
-
-**スケーラが `retryable` を数えるので、バックオフ中のジョブに対して空振りの Job が起きる。** `retryable` の行は `scheduled_at` が来るまで claim できない。起きた Job は仕事を掴めず `--once-idle-timeout` で終了する。River の `JobScheduler` が昇格させれば次の Job が引くが、**昇格までの所要時間は測っていない**。実害は空振り Job の増加だけである。
 
 **「実行中の Job は殺されない」は無条件ではない。** `rollout.strategy` の書き方に依存する。KEDA (v2.20.2) が受け付ける値は `gradual` と `immediate` の 2 つ。kind での実測は次のとおり。
 
@@ -337,7 +324,7 @@ River 自身の既定ロガー（WARN 止まり）だけが出る。
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来る。実行中のジョブの行は一時的に `running` のまま残る。`ingest` は `record_sweep`、`encode` は `encode_reconcile`、`cm_detect`（ロゴ候補解析を含む）は `cm_detect_reconcile` が回収する。次の定期パスで job-id advisory lock の解放を確認したうえで、旧行を終端化し、代替ジョブを投入する（候補の stale 判定は 1 分）。ライブ中のジョブは lock を保持するので回収しない。その他のジョブは従来どおり `JobRescuer`（リーダーだけが動かす保守サービス）に依存するため、猶予は依然として十分に取る必要がある。内側に置けば、プロセス自身がジョブを `available` に戻してから終わる。
+**真の上限は `terminationGracePeriodSeconds` 経過後の SIGKILL であり、それは River の外である。** したがって猶予は k8s 側の猶予の内側に置く。外に出すと、猶予が切れる前に SIGKILL が来る。実行中のジョブの行は一時的に `running` のまま残る。`ingest` は `record_sweep`、`encode` は `encode_reconcile`、`cm_detect`（ロゴ候補解析を含む）は `cm_detect_reconcile` が回収する。次の定期パスで job-id advisory lock の解放を確認したうえで、旧行を終端化し、代替ジョブを投入する（候補の stale 判定は 1 分）。ライブ中のジョブは lock を保持するので回収しない。その他のジョブは notifier Deployment の常駐 River client が担う `JobRescuer`（leader だけが動かす保守サービス）に委ねるため、猶予は依然として十分に取る必要がある。内側に置けば、プロセス自身がジョブを `available` に戻してから終わる。
 
 **worker ロールを走らせる Pod**（Deployment でも KEDA ScaledJob が起こす Job Pod でも同じ）のプロセス側の最悪値は次の足し算になる:
 
