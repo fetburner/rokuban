@@ -223,7 +223,10 @@ jobs:
       # -timeout は各テストバイナリごとの制限。最長パッケージ（internal/worker。race 付きで数分）の
       # 実測に対して 2 倍以上の余裕を取る。実測が 10 分の半分に近づいたら、-timeout を上げる前に
       # 実時間の待ち（WaitDelay・ポーリング・バックオフ）を疑う。
-      - run: go test -race ./... -count=1 -timeout 10m
+      # -p はパッケージの同時実行数。既定は GOMAXPROCS（ランナーでは 4）で、import path 順に
+      # 詰めるので最長の internal/worker が最後に回り、ステップ長が「全パッケージの合計 ÷ 4」で
+      # 決まる。テストの大半は DB と実時間の待ちで CPU を使い切らないので、同時実行数を上げる。
+      - run: go test -race -p 8 ./... -count=1 -timeout 10m
 
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
