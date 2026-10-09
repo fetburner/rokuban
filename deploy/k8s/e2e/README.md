@@ -195,7 +195,7 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
 | F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を掴ませ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
 
-F3 は CronJob を動かしたまま、notifier Deployment に常駐 River client があることを確認する。
+F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。
 client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
 Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。

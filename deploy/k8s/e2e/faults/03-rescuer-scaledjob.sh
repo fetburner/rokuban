@@ -59,8 +59,40 @@ for d in doc.get("items", []):
             matches.append(name)
 print(" ".join(matches))
 ')"
-if [ -n "$suspended" ] || [ "$rescuer_deployments" != "rokuban-notifier" ]; then
-  fail_from "F3.1" "常駐 notifier River client が見つからないか argv が違う（suspend 中: ${suspended:-なし} / client: ${rescuer_deployments:-なし}）"
+if ! toolbox_worker_clients="$(k exec deploy/e2e-toolbox -- sh -c '
+for cmdline in /proc/[0-9]*/cmdline; do
+  [ -r "$cmdline" ] || continue
+  printf "%s " "$cmdline"
+  tr "\000" " " < "$cmdline" 2>/dev/null || true
+  printf "\n"
+done
+' 2>/dev/null | python3 -c '
+import os, sys
+
+clients = []
+for line in sys.stdin:
+    argv = line.split()
+    for i, arg in enumerate(argv[:-1]):
+        if os.path.basename(arg) != "rokuban" or argv[i + 1] != "server":
+            continue
+        roles = None
+        for j, option in enumerate(argv[i + 2 :], i + 2):
+            if option == "--roles" and j + 1 < len(argv):
+                roles = argv[j + 1]
+                break
+            if option.startswith("--roles="):
+                roles = option.split("=", 1)[1]
+                break
+        if roles and "worker" in roles.split(","):
+            clients.append(" ".join(argv[i:]))
+if clients:
+    print("; ".join(clients))
+')"; then
+  fail_from "F3.1" "toolbox の実行プロセスを確認できず、手動 River client の有無を判定できない"
+  exit 0
+fi
+if [ -n "$suspended" ] || [ "$rescuer_deployments" != "rokuban-notifier" ] || [ -n "$toolbox_worker_clients" ]; then
+  fail_from "F3.1" "常駐 notifier River client の設定が違うか toolbox に手動 worker client がある（suspend 中: ${suspended:-なし} / client: ${rescuer_deployments:-なし} / toolbox: ${toolbox_worker_clients:-なし}）"
   exit 0
 fi
 rescue_after="$(k exec deploy/rokuban-notifier -- cat /etc/rokuban/config.yml 2>/dev/null |
