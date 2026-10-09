@@ -7196,6 +7196,117 @@ export const useAddRecordingEncodeProfiles = <TError = ErrorResponse,
       return useMutation(getAddRecordingEncodeProfilesMutationOptions(options), queryClient);
     }
 
+export type removeRecordingEncodedAssetResponse204 = {
+  data: void
+  status: 204
+}
+
+export type removeRecordingEncodedAssetResponse404 = {
+  data: ErrorResponse
+  status: 404
+}
+
+export type removeRecordingEncodedAssetResponse409 = {
+  data: ErrorResponse
+  status: 409
+}
+
+export type removeRecordingEncodedAssetResponseSuccess = (removeRecordingEncodedAssetResponse204) & {
+  headers: Headers;
+};
+export type removeRecordingEncodedAssetResponseError = (removeRecordingEncodedAssetResponse404 | removeRecordingEncodedAssetResponse409) & {
+  headers: Headers;
+};
+
+export type removeRecordingEncodedAssetResponse = (removeRecordingEncodedAssetResponseSuccess | removeRecordingEncodedAssetResponseError)
+
+export const getRemoveRecordingEncodedAssetUrl = (id: number,
+    profile: string,) => {
+
+
+
+
+  return `/api/recordings/${id}/encoded/${profile}`
+}
+
+/**
+ * エンコード版を 1 本だけ外す（容量を空けるための操作。ごみ箱は経由しない）。
+ * `encode_profiles` から profile を外し、「この版を外した」という要求を記録する。
+ * **ファイルは消さない**。削除 reconcile の次のパス（既定 15 分）が unlink する。
+ * 外した版は応答の直後から `encodedAssets` に出ない。
+ *
+ * `keep_original = until_encoded` で desired が空になるなら、同じトランザクションで
+ * `always` に切り替える。外した後に active な原本も、外していない active な
+ * エンコード版も残らないなら 409（録画ごと消すならごみ箱を使う）。
+ * 対象の active なエンコード版が無ければ 404。既に外した版を再指定しても 204。
+ * この録画だけが対象で、ルールは変えない。足し直しは
+ * `POST /api/recordings/{id}/encode-profiles`（原本が active な間だけ）。
+ * @summary Remove one encoded version of a recording
+ */
+export const removeRecordingEncodedAsset = async (id: number,
+    profile: string, options?: Parameters<typeof customInstance>[1]): Promise<removeRecordingEncodedAssetResponse> => {
+
+  return customInstance<removeRecordingEncodedAssetResponse>(getRemoveRecordingEncodedAssetUrl(id,profile),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getRemoveRecordingEncodedAssetMutationKey = () => ['removeRecordingEncodedAsset'] as const;
+
+export const getRemoveRecordingEncodedAssetMutationOptions = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof removeRecordingEncodedAsset>>, TError,RemoveRecordingEncodedAssetMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+): UseMutationOptions<Awaited<ReturnType<typeof removeRecordingEncodedAsset>>, TError,RemoveRecordingEncodedAssetMutationVariables, TContext> => {
+
+const mutationKey = getRemoveRecordingEncodedAssetMutationKey();
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof removeRecordingEncodedAsset>>, RemoveRecordingEncodedAssetMutationVariables> = (props) => {
+          const {id,profile} = props ?? {};
+
+          return  removeRecordingEncodedAsset(id,profile,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RemoveRecordingEncodedAssetMutationResult = NonNullable<Awaited<ReturnType<typeof removeRecordingEncodedAsset>>>
+
+    export type RemoveRecordingEncodedAssetMutationError = ErrorResponse
+    export type RemoveRecordingEncodedAssetMutationVariables = {id: number;profile: string}
+
+    /**
+ * @summary Remove one encoded version of a recording
+ */
+export const useRemoveRecordingEncodedAsset = <TError = ErrorResponse,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof removeRecordingEncodedAsset>>, TError,RemoveRecordingEncodedAssetMutationVariables, TContext>, request?: SecondParameter<typeof customInstance>}
+ , queryClient?: QueryClient): UseMutationResult<
+        Awaited<ReturnType<typeof removeRecordingEncodedAsset>>,
+        TError,
+        RemoveRecordingEncodedAssetMutationVariables,
+        TContext
+      > => {
+      return useMutation(getRemoveRecordingEncodedAssetMutationOptions(options), queryClient);
+    }
+
 export type reencodeRecordingProfileResponse204 = {
   data: void
   status: 204

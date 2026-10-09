@@ -370,6 +370,11 @@ const (
 	// Go 側は api.cutStale の判定にも同じ値を使う（現在のタイムラインから
 	// chapters.Derive で導出した keep と突き合わせる）。
 	//
+	// ユーザーが外した版（removed_encoded_assets）は、削除 reconcile が unlink する
+	// までの最大 15 分も active のまま残るが、ここでは出さない。出すと外した直後の
+	// 再取得でも版が残って見え、再生中の版から再生元が選び直されない。削除を
+	// 確定する述語と同じ view を引くので、最後の版として消されずに残った版は再び出る。
+	//
 	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
 	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい
 	// 配列にしなかった理由 --- 片方だけ ORDER BY を書き忘れると添字が
@@ -402,6 +407,7 @@ const (
           AND e.kind = 'encoded'
           AND e.state = 'active'
           AND e.profile IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = e.id)
     ) AS available_encoded_assets`
 
 	// recordingsFromJoins は両クエリ共通の FROM + JOIN 節。

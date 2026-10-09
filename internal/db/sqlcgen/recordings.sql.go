@@ -60,6 +60,11 @@ func (q *Queries) AppendQualityEventsIfMissing(ctx context.Context, arg AppendQu
 }
 
 const appendRecordingEncodeProfiles = `-- name: AppendRecordingEncodeProfiles :exec
+WITH cleared_removal_requests AS (
+    DELETE FROM encoded_asset_removal_requests
+    WHERE recording_id = $1
+      AND profile = ANY ($2::text[])
+)
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (
     $1,
@@ -99,6 +104,9 @@ type AppendRecordingEncodeProfilesParams struct {
 // 適用し、keep_original は既定値 'always'（recordings 旧列の既定値と同じ、
 // 安全側）で新規に凍結する。既存行がある場合は encode_profiles だけ
 // union + dedup で追記し、keep_original は変更しない。
+// 足し直した profile の外した要求（encoded_asset_removal_requests）は同じ文で消す。
+// 残すと、版がまだ消えていないうちに足し直したとき、view は desired に戻ったので
+// 消さないが、もう一度外したとき古い requested_at が残る。
 func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendRecordingEncodeProfilesParams) error {
 	_, err := q.db.Exec(ctx, appendRecordingEncodeProfiles, arg.ID, arg.Profiles)
 	return err
@@ -442,6 +450,52 @@ func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int6
 	return i, err
 }
 
+const getRecordingEncodeProfilesForShare = `-- name: GetRecordingEncodeProfilesForShare :one
+SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1 FOR SHARE
+`
+
+// encode の公開判定 (c) が tx 内で desired を読み直す。FOR SHARE で版を外す
+// tx（LockRecordingEncodePolicy の FOR UPDATE）と直列化する。外す tx が先なら
+// 外した後の desired を見て公開せず、公開が先なら外す側がその版を消す。
+func (q *Queries) GetRecordingEncodeProfilesForShare(ctx context.Context, recordingID int64) ([]string, error) {
+	row := q.db.QueryRow(ctx, getRecordingEncodeProfilesForShare, recordingID)
+	var encode_profiles []string
+	err := row.Scan(&encode_profiles)
+	return encode_profiles, err
+}
+
+const insertEncodedAssetRemovalRequest = `-- name: InsertEncodedAssetRemovalRequest :exec
+INSERT INTO encoded_asset_removal_requests (recording_id, profile)
+VALUES ($1, $2)
+ON CONFLICT (recording_id, profile) DO NOTHING
+`
+
+type InsertEncodedAssetRemovalRequestParams struct {
+	RecordingID int64
+	Profile     string
+}
+
+// 既に外した版をもう一度外しても冪等にする。
+func (q *Queries) InsertEncodedAssetRemovalRequest(ctx context.Context, arg InsertEncodedAssetRemovalRequestParams) error {
+	_, err := q.db.Exec(ctx, insertEncodedAssetRemovalRequest, arg.RecordingID, arg.Profile)
+	return err
+}
+
+const isRemovedEncodedAsset = `-- name: IsRemovedEncodedAsset :one
+SELECT EXISTS (
+    SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = $1
+)
+`
+
+// 外した後の状態で 0 コピー検査をする。判定は削除 reconcile と同じ名前付き述語
+// removed_encoded_assets（他の版が残ること）に任せ、ここで条件を複製しない。
+func (q *Queries) IsRemovedEncodedAsset(ctx context.Context, assetID int64) (bool, error) {
+	row := q.db.QueryRow(ctx, isRemovedEncodedAsset, assetID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listRecordingDropPositions = `-- name: ListRecordingDropPositions :many
 SELECT p.pid, p.byte_offset, p.elapsed_ms
 FROM drop_positions p
@@ -522,6 +576,28 @@ func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64)
 	return items, nil
 }
 
+const lockRecordingEncodePolicy = `-- name: LockRecordingEncodePolicy :one
+SELECT keep_original, encode_profiles
+FROM recording_encode_policy
+WHERE recording_id = $1
+FOR UPDATE
+`
+
+type LockRecordingEncodePolicyRow struct {
+	KeepOriginal   string
+	EncodeProfiles []string
+}
+
+// 凍結の 3 つ目の例外（ユーザー起点で 1 本ずつ減らす）の直列化点。同じ録画の
+// 版を同時に外す 2 本の tx が、互いに外す前の状態を見て両方 0 コピー検査を
+// 通らないよう、policy 行を先に取る。
+func (q *Queries) LockRecordingEncodePolicy(ctx context.Context, recordingID int64) (LockRecordingEncodePolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockRecordingEncodePolicy, recordingID)
+	var i LockRecordingEncodePolicyRow
+	err := row.Scan(&i.KeepOriginal, &i.EncodeProfiles)
+	return i, err
+}
+
 const recordingExistsForPlaybackState = `-- name: RecordingExistsForPlaybackState :one
 SELECT EXISTS (
     SELECT 1 FROM recordings
@@ -536,6 +612,33 @@ func (q *Queries) RecordingExistsForPlaybackState(ctx context.Context, recording
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
+}
+
+const removeRecordingEncodeProfile = `-- name: RemoveRecordingEncodeProfile :exec
+UPDATE recording_encode_policy
+SET encode_profiles = array_remove(encode_profiles, $1::text),
+    keep_original = CASE
+        WHEN keep_original = 'until_encoded'
+         AND cardinality(array_remove(encode_profiles, $1::text)) = 0
+        THEN 'always'
+        ELSE keep_original
+    END,
+    updated_at = now()
+WHERE recording_id = $2
+`
+
+type RemoveRecordingEncodeProfileParams struct {
+	Profile     string
+	RecordingID int64
+}
+
+// desired から 1 つ外す（全置換ではない）。until_encoded で desired が空に
+// なるなら always に倒す（recording_encode_policy の CHECK。ingest のクランプと
+// 同じ向き）。版を外しても原本の削除は早まらない: until_encoded は全プロファイル
+// 揃いが条件なので、揃っている 1 本を外しても成否は変わらない。
+func (q *Queries) RemoveRecordingEncodeProfile(ctx context.Context, arg RemoveRecordingEncodeProfileParams) error {
+	_, err := q.db.Exec(ctx, removeRecordingEncodeProfile, arg.Profile, arg.RecordingID)
+	return err
 }
 
 const setRecordingCMDetection = `-- name: SetRecordingCMDetection :execrows

@@ -2763,6 +2763,9 @@ type ServerInterface interface {
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64)
+	// RemoveRecordingEncodedAsset Remove one encoded version of a recording
+	// (DELETE /api/recordings/{id}/encoded/{profile})
+	RemoveRecordingEncodedAsset(w http.ResponseWriter, r *http.Request, id int64, profile string)
 	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
 	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
 	ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request, id int64, profile string)
@@ -3054,6 +3057,12 @@ func (_ Unimplemented) SetRecordingEncodePolicy(w http.ResponseWriter, r *http.R
 // AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 // (POST /api/recordings/{id}/encode-profiles)
 func (_ Unimplemented) AddRecordingEncodeProfiles(w http.ResponseWriter, r *http.Request, id int64) {
+	w.WriteHeader(http.StatusNotImplemented)
+}
+
+// RemoveRecordingEncodedAsset Remove one encoded version of a recording
+// (DELETE /api/recordings/{id}/encoded/{profile})
+func (_ Unimplemented) RemoveRecordingEncodedAsset(w http.ResponseWriter, r *http.Request, id int64, profile string) {
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
@@ -4422,6 +4431,41 @@ func (siw *ServerInterfaceWrapper) AddRecordingEncodeProfiles(w http.ResponseWri
 	handler.ServeHTTP(w, r)
 }
 
+// RemoveRecordingEncodedAsset operation middleware
+func (siw *ServerInterfaceWrapper) RemoveRecordingEncodedAsset(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "id" -------------
+	var id int64
+
+	err = runtime.BindStyledParameterWithOptions("simple", "id", chi.URLParam(r, "id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "integer", Format: "int64", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
+		return
+	}
+
+	// ------------- Path parameter "profile" -------------
+	var profile string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "profile", chi.URLParam(r, "profile"), &profile, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "", ValueIsUnescaped: r.URL.RawPath == ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "profile", Err: err})
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RemoveRecordingEncodedAsset(w, r, id, profile)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ReencodeRecordingProfile operation middleware
 func (siw *ServerInterfaceWrapper) ReencodeRecordingProfile(w http.ResponseWriter, r *http.Request) {
 
@@ -5470,6 +5514,9 @@ func HandlerWithOptions(si ServerInterface, options ChiServerOptions) http.Handl
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/recordings/{id}/encode-profiles", wrapper.AddRecordingEncodeProfiles)
+	})
+	r.Group(func(r chi.Router) {
+		r.Delete(options.BaseURL+"/api/recordings/{id}/encoded/{profile}", wrapper.RemoveRecordingEncodedAsset)
 	})
 	r.Group(func(r chi.Router) {
 		r.Post(options.BaseURL+"/api/recordings/{id}/encoded/{profile}/reencode", wrapper.ReencodeRecordingProfile)
@@ -6623,6 +6670,51 @@ func (response AddRecordingEncodeProfiles409JSONResponse) VisitAddRecordingEncod
 	return err
 }
 
+type RemoveRecordingEncodedAssetRequestObject struct {
+	Id      int64  `json:"id"`
+	Profile string `json:"profile"`
+}
+
+type RemoveRecordingEncodedAssetResponseObject interface {
+	VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error
+}
+
+type RemoveRecordingEncodedAsset204Response struct {
+}
+
+func (response RemoveRecordingEncodedAsset204Response) VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RemoveRecordingEncodedAsset404JSONResponse ErrorResponse
+
+func (response RemoveRecordingEncodedAsset404JSONResponse) VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(404)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RemoveRecordingEncodedAsset409JSONResponse ErrorResponse
+
+func (response RemoveRecordingEncodedAsset409JSONResponse) VisitRemoveRecordingEncodedAssetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(409)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ReencodeRecordingProfileRequestObject struct {
 	Id      int64  `json:"id"`
 	Profile string `json:"profile"`
@@ -7739,6 +7831,9 @@ type StrictServerInterface interface {
 	// AddRecordingEncodeProfiles Request additional encode profiles for an already-ingested recording
 	// (POST /api/recordings/{id}/encode-profiles)
 	AddRecordingEncodeProfiles(ctx context.Context, request AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error)
+	// RemoveRecordingEncodedAsset Remove one encoded version of a recording
+	// (DELETE /api/recordings/{id}/encoded/{profile})
+	RemoveRecordingEncodedAsset(ctx context.Context, request RemoveRecordingEncodedAssetRequestObject) (RemoveRecordingEncodedAssetResponseObject, error)
 	// ReencodeRecordingProfile Rebuild the cut version of a recording with the current chapters
 	// (POST /api/recordings/{id}/encoded/{profile}/reencode)
 	ReencodeRecordingProfile(ctx context.Context, request ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error)
@@ -8770,6 +8865,33 @@ func (sh *strictHandler) AddRecordingEncodeProfiles(w http.ResponseWriter, r *ht
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(AddRecordingEncodeProfilesResponseObject); ok {
 		if err := validResponse.VisitAddRecordingEncodeProfilesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RemoveRecordingEncodedAsset operation middleware
+func (sh *strictHandler) RemoveRecordingEncodedAsset(w http.ResponseWriter, r *http.Request, id int64, profile string) {
+	var request RemoveRecordingEncodedAssetRequestObject
+
+	request.Id = id
+	request.Profile = profile
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RemoveRecordingEncodedAsset(ctx, request.(RemoveRecordingEncodedAssetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RemoveRecordingEncodedAsset")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RemoveRecordingEncodedAssetResponseObject); ok {
+		if err := validResponse.VisitRemoveRecordingEncodedAssetResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

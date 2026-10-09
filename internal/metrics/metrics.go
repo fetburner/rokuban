@@ -420,7 +420,7 @@ var (
 // 削除 reconcile（M3-8、docs/storage.md §7）のメトリクス。
 var (
 	// DeleteReconcileDeleted は物理削除したアセット件数。source は
-	// trash / until_encoded / orphan / pending（前パスの deleting 再開）。
+	// trash / until_encoded / removed_encoded / orphan / pending（前パスの deleting 再開）。
 	DeleteReconcileDeleted = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "rokuban_delete_reconcile_deleted_total",
 		Help: "Physically deleted assets by source.",

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,8 @@ import (
 //     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
 //     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
 //     これが止める。
+//     (c) profile が desired（recording_encode_policy.encode_profiles）に無い。
+//     ユーザーが外した版を、外す前に積まれたジョブが公開して復活させるのを止める。
 //
 // **flock の前提は ingest と同じ**: RWX のメディア越しに効くかは未検証
 // （docs/storage/contract.md §3 ルール 4）。advisory xact lock は DB セッションが
@@ -338,9 +341,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return err
 	}
 	if !published {
-		// 別の実行が先に公開した（または行が先へ進んだ）。自分の temp は消してあり、
-		// 旧ファイルの unlink も完了通知も、公開した側の仕事である。
-		log.Info("encode: skipped publishing, another attempt already advanced the row")
+		// 別の実行が先に公開した（または行が先へ進んだ）か、profile が desired から
+		// 外れた。自分の temp は消してあり、旧ファイルの unlink も完了通知も出さない。
+		log.Info("encode: skipped publishing, another attempt already advanced the row or the profile is no longer desired")
 		result = "success"
 		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
 		return nil
@@ -727,7 +730,7 @@ type encodePublishInput struct {
 // lock を commit まで保持するのは、孤児回収が同じ lock を非 blocking で取って
 // から canonical を unlink するためである。
 //
-// 戻り値の published が false のときは判定 (a)/(b) で公開を飛ばした（temp は消して
+// 戻り値の published が false のときは判定 (a)/(b)/(c) で公開を飛ばした（temp は消して
 // あり、DB にも canonical にも触っていない）。size は置いたファイルのバイト数。
 // temp を作った後の失敗経路はすべて temp を消す。rename 済みで commit に失敗した
 // canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
@@ -783,6 +786,16 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	q := sqlcgen.New(tx)
+	// 判定 (c): desired に無い profile は公開しない。外した版を、実行中・再試行待ちの
+	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない。
+	// job lock は ffmpeg の排他ではない）。FOR SHARE で版を外す tx と直列化する。
+	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
+	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
+		return 0, false, fmt.Errorf("loading desired encode profiles: %w", err)
+	}
+	if !slices.Contains(desired, in.profile) {
+		return 0, false, nil
+	}
 	plan, err := planEncodePublish(ctx, q, in.recordingID, in.profile, in.cut, &in.observed)
 	if err != nil {
 		return 0, false, err

@@ -142,8 +142,9 @@ cancel しない）。そのため:
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
   孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
   lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
-- 判定は tx 内で行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
-  （カット版は凍結区間も）この試行と一致する、のどちらかなら公開しない**。
+- 判定は tx 内で行を読み直して行う。**(a) `rel_path` が計画時と違う、(b) 既に active で
+  （カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら
+  公開しない**。
   (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
   失敗すると、ファイルは後発の中身で行は先発のサイズになる。
   (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
@@ -152,6 +153,10 @@ cancel しない）。そのため:
   チャプター編集が黙って消える。公開せずに River の snooze で戻し、現在の keep で
   計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。
   行が active でない（ごみ箱など）ときは成功で飛ばす
+- (c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、
+  外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では
+  塞げない（job lock は ffmpeg の排他ではない）。desired は `FOR SHARE` で読み、版を外す tx の
+  policy 行ロックと直列化する
 - advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
   通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
   `flock` が効くかは未検証（ルール 4 と同じ前提）
