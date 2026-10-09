@@ -437,6 +437,16 @@ func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.
 	if resp := deleteEncoded(t, srvOff.URL, id2, "cut"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("live off, remove cut status = %d, want 204", resp.StatusCode)
 	}
+
+	// desired が前から [cut] だけ（live が有効だった頃の録画など）でも、desired に無い版を
+	// 外すのは desired を変えないので拒否しない。
+	id3 := seedRecording(t, pool, "cut 規則 3", time.Now().Truncate(time.Second), "finished", 712)
+	seedIngested(t, pool, id3, 1000, nil)
+	seedEncodedVersions(t, pool, id3, "h264", "cut")
+	setRecordingEncodeProfiles(t, pool, id3, []string{"cut"})
+	if resp := deleteEncoded(t, srvOff.URL, id3, "h264"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("live off, remove h264 outside a cut-only desired status = %d, want 204", resp.StatusCode)
+	}
 }
 
 // 足し直しの cut 判定は、外す tx の commit 後の desired で行う。古い [h264 cut] で

@@ -846,8 +846,9 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
 	}
 	// 外した後の desired にも事後追加と同じ cut の選択規則を当てる。書く前に判定する
-	// ので、違反ならロールバックするだけで何も残らない。
-	if h.cutProfiles != nil {
+	// ので、違反ならロールバックするだけで何も残らない。desired に無い版を外しても
+	// desired は変わらないので判定しない（前からカット版だけの desired で拒否しない）。
+	if h.cutProfiles != nil && slices.Contains(policy.EncodeProfiles, req.Profile) {
 		remaining := slices.DeleteFunc(slices.Clone(policy.EncodeProfiles), func(p string) bool { return p == req.Profile })
 		if err := h.validateCutSelection(remaining); err != nil {
 			return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
