@@ -20,7 +20,8 @@ type RecordFollowClient interface {
 	GetRecord(ctx context.Context, id string) (*Record, error)
 }
 
-// RecordFollowOptions は RecordFollowReader の callback を設定する。
+// RecordFollowOptions は RecordFollowReader の callback と、待ち時間（PollMin / PollMax /
+// RetryDelay）の上書きを設定する。
 type RecordFollowOptions struct {
 	// StallTimeout は Read 1 回が止まる時間を制限する。消費側が Read を呼んで
 	// いない間は timer が動かないため、遅い writer を mirakc の stall と誤認しない。

@@ -832,25 +832,78 @@ func equalInt64s(got, want []int64) bool {
 	return true
 }
 
-// TestRecordFollowOptionsOverridePacing は PollMin / PollMax / RetryDelay が reader の
-// 待ち時間に反映され、零値なら本番の既定を使うことを固定する。worker の ingest テストは
+// TestRecordFollowOptionsOverridePacing は PollMin / PollMax / RetryDelay が実際に待ちを
+// 決める経路（caughtUp の idleWait と nextRequestAt、requestNext の nextRequestAt、failure の
+// nextRequestAt）で使われ、零値なら本番の既定になることを固定する。worker の ingest テストは
 // これで実時間のポーリングとバックオフを払わずに済ませている。
 //
-// 壊し方: NewRecordFollowReader の options.PollMin 等の代入を外すと、差し替え側の
-// 比較が既定値のままで落ちる。
+// 壊し方（それぞれ該当サブテストがアサーションで落ちる）: caughtUp の r.pollMin / r.pollMax を
+// 定数に戻す、requestNext の r.pollMin を定数に戻す、failure の r.retryDelay を RetryDelay に戻す。
 func TestRecordFollowOptionsOverridePacing(t *testing.T) {
-	def := NewRecordFollowReader(context.Background(), &followTestClient{}, "record", 0, nil, RecordFollowOptions{})
-	defer func() { _ = def.Close() }()
-	if def.pollMin != 500*time.Millisecond || def.pollMax != time.Second || def.retryDelay(0) != 200*time.Millisecond {
-		t.Errorf("defaults = (%v, %v, %v), want (500ms, 1s, 200ms)", def.pollMin, def.pollMax, def.retryDelay(0))
-	}
-
-	fast := NewRecordFollowReader(context.Background(), &followTestClient{}, "record", 0, nil, RecordFollowOptions{
+	opts := RecordFollowOptions{
 		PollMin: 3 * time.Millisecond, PollMax: 7 * time.Millisecond,
 		RetryDelay: func(int) time.Duration { return 11 * time.Millisecond },
-	})
-	defer func() { _ = fast.Close() }()
-	if fast.pollMin != 3*time.Millisecond || fast.pollMax != 7*time.Millisecond || fast.retryDelay(0) != 11*time.Millisecond {
-		t.Errorf("overrides = (%v, %v, %v), want (3ms, 7ms, 11ms)", fast.pollMin, fast.pollMax, fast.retryDelay(0))
 	}
+	const slack = 100 * time.Millisecond // 既定値（200ms 以上）と区別できる余裕
+
+	t.Run("caughtUp idleWait", func(t *testing.T) {
+		client := &followTestClient{records: []followTestRecord{{status: "recording"}}}
+		r := NewRecordFollowReader(context.Background(), client, "record", 0, nil, opts)
+		defer func() { _ = r.Close() }()
+		for i, want := range []time.Duration{3 * time.Millisecond, 6 * time.Millisecond, 7 * time.Millisecond} {
+			start := time.Now()
+			if err := r.caughtUp(); err != nil {
+				t.Fatal(err)
+			}
+			if r.idleWait != want {
+				t.Errorf("call %d: idleWait = %v, want %v", i, r.idleWait, want)
+			}
+			if d := r.nextRequestAt.Sub(start); d < want || d > want+slack {
+				t.Errorf("call %d: nextRequestAt in %v, want [%v, %v]", i, d, want, want+slack)
+			}
+		}
+	})
+
+	t.Run("requestNext", func(t *testing.T) {
+		client := &followTestClient{responses: []followTestResponse{{err: &APIError{StatusCode: 400}}}}
+		r := NewRecordFollowReader(context.Background(), client, "record", 0, nil, opts)
+		defer func() { _ = r.Close() }()
+		start := time.Now()
+		if err := r.requestNext(); err == nil {
+			t.Fatal("requestNext error = nil, want the non-retryable 400")
+		}
+		if d := r.nextRequestAt.Sub(start); d < 3*time.Millisecond || d > 3*time.Millisecond+slack {
+			t.Errorf("nextRequestAt in %v, want [3ms, %v]", d, 3*time.Millisecond+slack)
+		}
+	})
+
+	t.Run("retryDelay", func(t *testing.T) {
+		client := &followTestClient{records: []followTestRecord{{err: errors.New("boom")}}}
+		r := NewRecordFollowReader(context.Background(), client, "record", 0, nil, opts)
+		defer func() { _ = r.Close() }()
+		start := time.Now()
+		if err := r.caughtUp(); err != nil {
+			t.Fatal(err)
+		}
+		if d := r.nextRequestAt.Sub(start); d < 11*time.Millisecond || d > 11*time.Millisecond+slack {
+			t.Errorf("nextRequestAt in %v, want [11ms, %v]", d, 11*time.Millisecond+slack)
+		}
+	})
+
+	t.Run("defaults", func(t *testing.T) {
+		client := &followTestClient{records: []followTestRecord{{status: "recording"}}}
+		r := NewRecordFollowReader(context.Background(), client, "record", 0, nil, RecordFollowOptions{})
+		defer func() { _ = r.Close() }()
+		for i, want := range []time.Duration{500 * time.Millisecond, time.Second, time.Second} {
+			if err := r.caughtUp(); err != nil {
+				t.Fatal(err)
+			}
+			if r.idleWait != want {
+				t.Errorf("call %d: idleWait = %v, want %v", i, r.idleWait, want)
+			}
+		}
+		if got := r.retryDelay(0); got != 200*time.Millisecond {
+			t.Errorf("retryDelay(0) = %v, want 200ms", got)
+		}
+	})
 }
