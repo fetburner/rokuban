@@ -275,7 +275,9 @@ kind の故障注入 3（[deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の F3
 
 **`retryable` の昇格は、空振りの Pod が `--once-idle-timeout` まで生きるので起きうる。`running` の死骸には Job を起こす滞留が無いので、そのための空振りも来ない。**
 
-**死骸は一意キーを占有し、同じ kind × site の後続の投入を合流させて消す。** 1 回目の実測では、殺した後に `tuner-sync-sitea` の CronJob が発火して成功した。それでも sitea の新しい行は作られなかった（siteb は作られて完了した）。ruler / reconciler / epg_sync も同じ形で、rescue されるまでそのサイトのパスが走らない。未解決: k8s で rescuer を誰が動かすか。
+**死骸は一意キーを占有し、同じ kind × site の後続の投入を合流させて消す。** 1 回目の実測では、殺した後に `tuner-sync-sitea` の CronJob が発火して成功した。それでも sitea の新しい行は作られなかった（siteb は作られて完了した）。ruler / reconciler / epg_sync も同じ形で、rescue されるまでそのサイトのパスが走らない。
+
+**rescuer の担い手は、全 kind の worker を登録した常駐の River client に決めた。** notifier のような常時起動のロールと同じ Pod に載せてよい。複数 Pod にしても、保守サービスを動かす leader は River が 1 つに絞る。rescue だけをする one-shot を長めに生かして定期起動する案は採らない。生かす長さを River 内部の定数（leader 選出の間隔と stagger）から決めることになり、上の「タイミング任せ」に余裕を足すだけだからである。未解決: 常駐 client をまだ置いていない。
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 

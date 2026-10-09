@@ -44,7 +44,7 @@ River の `PeriodicJobs` は**リーダーに選出されたクライアント�
 
 `PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする（両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが意図が曖昧になる）。副次的な利点として、k8s では**何がいつ走るかが CronJob の spec に一元化される**（Go のコードと YAML に散らない）。
 
-**River の保守サービス（JobRescuer / JobScheduler）も leader でしか動かず、CronJob では外に出せない。** k8s で leader になりうるのは `--once` の Pod だけである。leader になってから最初の保守パスまで 0〜1 秒待つ。1 件消化した Pod はたいていその前に終わる。そのため ScaledJob と CronJob だけの構成では、死んだ実行の rescue が River 内部のタイミング任せになる。kind での実測と根拠は [operations/k8s.md](../operations/k8s.md) §5「worker: KEDA ScaledJob」にある。未解決: k8s で rescuer を誰が動かすか。
+**River の保守サービス（JobRescuer / JobScheduler）も leader でしか動かず、CronJob では外に出せない。** k8s で leader になりうるのは `--once` の Pod だけである。leader になってから最初の保守パスまで 0〜1 秒待つ。1 件消化した Pod はたいていその前に終わる。そのため ScaledJob と CronJob だけの構成では、死んだ実行の rescue が River 内部のタイミング任せになる。kind での実測と根拠は [operations/k8s.md](../operations/k8s.md) §5「worker: KEDA ScaledJob」にある。担い手は、全 kind の worker を登録した常駐の River client に決めた（判断は同節）。未解決: まだ置いていない。
 
 ### River のジョブ一意性の注意
 
