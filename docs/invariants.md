@@ -108,8 +108,18 @@ CLAUDE.md の不変条件 9〜14 は「チェック」の一文だけを持つ�
 
 壊すもの: 内部表の列や状態の意味は契約ではないので、ライブラリの版上げで黙って変わりうる。ライブラリを別の実装へ差し替える道も塞がる。
 
-外部プロセス（mirakc / ffmpeg）は対象外である。ドキュメントに無い挙動を実測で決めざるを得ないので、不変条件 2 と CLAUDE.md の「測っていない挙動を断言しない」で扱う。
+外部プロセス（mirakc / ffmpeg）とブラウザは対象外である。ドキュメントに無い挙動を実測で決めざるを得ないので、不変条件 2 と CLAUDE.md の「測っていない挙動を断言しない」で扱う。ブラウザには hls.js のようにブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。
 
-未解決: River で実行中に死んだ `Timeout() = -1` ジョブの回収と、既存テストの投入確認に違反が残っている。回収は `JobRetry` が running に触れず、`JobCancel` が実行中クライアントへの通知に留まるので、公開 API に代替が無い。
+未解決（回収）: River で実行中に死んだ `Timeout() = -1` ジョブの回収は、`river_job` の生 SQL に頼っている。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
+
+未解決（存在確認）: `cm_detect_reconcile.go` の `failOrphanCMLogoCandidatesQuery` は回収ではなく、`river_job` を args で引く孤児検出である。`client.JobList` の `Kinds` / `States` と Go 側の args 比較で契約内に書き直せる。代替が無いのではなく、単に残っている違反である。
+
+未解決（テスト）: 既存テストに 3 つの形の違反が残っている。`river_job` を含むテストは `git grep -l river_job -- '*_test.go'` で引く。
+
+- (a) 投入確認の SELECT。代わりは `rivertest.RequireInsertedTx` / `RequireManyInsertedTx`
+- (b) `DELETE FROM river_job` による途中の掃除
+- (c) 回収テストの状態作り。`UPDATE river_job SET state = 'running', attempted_by = ARRAY['dead-process']` など、公開 API では作れない状態である
+
+(c) は回収の未解決に従う。回収が River の生 SQL に頼る間は、テストも同じ形でよい。回収コードのテストを書けなくすると不変条件 8 と衝突する。
 
 チェック: 「**その前提はライブラリのドキュメントのどこに書いてあるか**」を問う。答えられなければ迂回せず提起する。
