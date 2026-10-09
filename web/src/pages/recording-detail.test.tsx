@@ -97,6 +97,8 @@ function createFakeServer(options: {
   restoreResponse?: () => Response
   purgeResponse?: () => Response
   encodePostResponse?: () => Response
+  /** encodedRemoveResponse は `DELETE …/encoded/{profile}` の応答を差し替える（409 翻訳の確認用）。 */
+  encodedRemoveResponse?: () => Response
   chapterDeleteResponse?: () => Response
   // encodePolicyResponse は Promise 版も許す --- PATCH が解決する前の中間状態
   // （保存中…の表示）を確認するテストが、呼び出し側で自分の Promise を渡して
@@ -222,6 +224,23 @@ function createFakeServer(options: {
       recording = {
         ...recording,
         encodeProfiles: [...(recording.encodeProfiles ?? []), ...(body.profiles ?? [])],
+      }
+      return Promise.resolve(jsonResponse(null, 204))
+    }
+
+    const encodedRemoveMatch = /^\/api\/recordings\/(\d+)\/encoded\/([^/]+)$/.exec(url.pathname)
+    if (encodedRemoveMatch && method === 'DELETE') {
+      if (options.encodedRemoveResponse) return Promise.resolve(options.encodedRemoveResponse())
+      const id = Number(encodedRemoveMatch[1])
+      const profile = decodeURIComponent(encodedRemoveMatch[2])
+      if (!recording || recording.id !== id) {
+        return Promise.resolve(jsonResponse({ error: 'not found' }, 404))
+      }
+      // 外した版は応答直後の取得から出ない API 契約を模す。
+      recording = {
+        ...recording,
+        encodeProfiles: (recording.encodeProfiles ?? []).filter((p) => p !== profile),
+        encodedAssets: (recording.encodedAssets ?? []).filter((a) => a.profile !== profile),
       }
       return Promise.resolve(jsonResponse(null, 204))
     }
@@ -3951,5 +3970,228 @@ describe('RecordingDetailPage 再生元の選び直し', () => {
     fireEvent.keyDown(slider, { key: 'End' })
     fireEvent.keyUp(slider, { key: 'End' })
     await waitFor(() => expect(document.querySelector('video')?.getAttribute('src') ?? '').toContain('/api/media/recordings/3/file'))
+  })
+})
+
+describe('RecordingDetailPage 版を 1 本ずつ削除する', () => {
+  async function openRemoveDialog(user: ReturnType<typeof userEvent.setup>, label: string) {
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: `${label}のその他の操作` }))
+    await user.click(await screen.findByRole('menuitem', { name: /この版を削除/ }))
+    return screen.findByRole('alertdialog')
+  }
+
+  it('原本ありなら空く量・残る版・作り直せることを出し、確定すると DELETE して行が消える', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 3_000_000,
+        encodeProfiles: ['h264', 'h265'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'h265', sizeBytes: 1_000_000 },
+        ],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: 'h264のその他の操作' }))
+    expect(await screen.findByRole('menuitem', { name: /この版を削除/ })).toHaveTextContent('1.9 MB 空きます')
+    await user.click(screen.getByRole('menuitem', { name: /この版を削除/ }))
+    const dialog = await screen.findByRole('alertdialog')
+
+    expect(within(dialog).getByText('1.9 MB が空きます')).toBeInTheDocument()
+    const remaining = within(dialog).getByRole('list', { name: '残る版' })
+    expect(within(remaining).getByText('h265')).toBeInTheDocument()
+    expect(within(remaining).getByText('原本 TS')).toBeInTheDocument()
+    expect(within(remaining).queryByText('h264')).not.toBeInTheDocument()
+    expect(within(dialog).getByText('あとから「＋ エンコードを追加」で作り直せます。')).toBeInTheDocument()
+    expect(within(dialog).getByText('この録画だけが対象です。今後の録画はルールの設定に従います。')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/元に戻せません/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText(/チャプターを直せなくなります/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText(/常に保持/)).not.toBeInTheDocument()
+
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith('/api/recordings/3/encoded/h264', expect.objectContaining({ method: 'DELETE' })),
+    )
+    expect(await screen.findByText('「h264」を削除しました')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'h264のその他の操作' })).not.toBeInTheDocument())
+    expect(screen.getByRole('button', { name: 'h265のその他の操作' })).toBeInTheDocument()
+  })
+
+  it('原本なしなら「元に戻せません」を赤枠で出し、作り直せるとは言わない', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264', 'h265'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'h265', sizeBytes: 1_000_000 },
+        ],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    const dialog = await openRemoveDialog(user, 'h264')
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('元に戻せません')
+    expect(within(dialog).queryByText(/作り直せます/)).not.toBeInTheDocument()
+    expect(within(dialog).queryByText('原本 TS')).not.toBeInTheDocument()
+    expect(within(dialog).queryByText(/チャプターを直せなくなります/)).not.toBeInTheDocument()
+  })
+
+  it('原本なしで残るのがカット版だけなら「チャプターを直せなくなります」も出す', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264', 'cut-only'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'cut-only', cut: true, sizeBytes: 1_000_000, keepRanges: [{ startMs: 0, endMs: 1000 }] },
+        ],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    const dialog = await openRemoveDialog(user, 'h264')
+    const alerts = within(dialog).getAllByRole('alert')
+    expect(alerts.map((a) => a.textContent)).toEqual([
+      expect.stringContaining('元に戻せません'),
+      expect.stringContaining('チャプターを直せなくなります'),
+    ])
+  })
+
+  it('until_encoded で最後の desired を外すときだけ「常に保持」に切り替わると出す', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 3_000_000,
+        keepOriginal: 'until_encoded',
+        encodeProfiles: ['h264'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'h265', sizeBytes: 1_000_000 },
+        ],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    let dialog = await openRemoveDialog(user, 'h264')
+    expect(within(dialog).getByText('原本の保持は「常に保持」に切り替わります。')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'キャンセル' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+
+    // h265 は desired に無いので、外しても desired は [h264] のまま。
+    await user.click(screen.getByRole('button', { name: 'h265のその他の操作' }))
+    await user.click(await screen.findByRole('menuitem', { name: /この版を削除/ }))
+    dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText('この録画だけが対象です。今後の録画はルールの設定に従います。')).toBeInTheDocument()
+    expect(within(dialog).queryByText(/常に保持/)).not.toBeInTheDocument()
+  })
+
+  it('原本なしで最後の版なら項目を無効にし、ごみ箱へ誘導する', async () => {
+    const user = userEvent.setup()
+    const { fetchMock } = createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264'],
+        encodedAssets: [{ profile: 'h264', sizeBytes: 2_000_000 }],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    await selectDetailTab('版')
+    await user.click(await screen.findByRole('button', { name: 'h264のその他の操作' }))
+    const item = await screen.findByRole('menuitem', { name: /この版を削除/ })
+    expect(item).toHaveAttribute('aria-disabled', 'true')
+    expect(item).toHaveTextContent('最後の版です。録画ごと消すときはごみ箱へ')
+    await user.click(item)
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/encoded/'))).toHaveLength(0)
+  })
+
+  it('409 は日本語の文言に訳してトーストに出す', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264', 'h265'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'h265', sizeBytes: 1_000_000 },
+        ],
+      }),
+      encodedRemoveResponse: () => jsonResponse({ error: 'this is the last viewable copy' }, 409),
+    })
+    renderAt('/recordings/3')
+
+    const dialog = await openRemoveDialog(user, 'h264')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    expect(
+      await screen.findByText('最後の版なので削除できませんでした。録画ごと消すときはごみ箱へ移してください。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/last viewable copy/)).not.toBeInTheDocument()
+  })
+
+  it('400 はカット版だけが残る旨の日本語に訳し、英語の本文は出さない', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        encodeProfiles: ['h264', 'cut'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'cut', sizeBytes: 1_000_000 },
+        ],
+      }),
+      encodedRemoveResponse: () => jsonResponse({ error: 'cut-only selection is not allowed' }, 400),
+    })
+    renderAt('/recordings/3')
+
+    const dialog = await openRemoveDialog(user, 'h264')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    expect(
+      await screen.findByText('カット版だけが残るため削除できませんでした。チャプターを確認できる版が無くなります。'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/cut-only selection/)).not.toBeInTheDocument()
+  })
+
+  it('再生中の版を消すと、再取得後に残る版へ張り直す', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 3_000_000,
+        encodeProfiles: ['h264', 'h265'],
+        encodedAssets: [
+          { profile: 'h264', sizeBytes: 2_000_000 },
+          { profile: 'h265', sizeBytes: 1_000_000 },
+        ],
+      }),
+    })
+    renderAt('/recordings/3')
+
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264'))
+    const dialog = await openRemoveDialog(user, 'h264')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h265'))
+  })
+
+  it('最後のエンコード版を消すと（原本あり）、encoded のプレイヤーを残さず原本 HLS へ選び直す', async () => {
+    const user = userEvent.setup()
+    createFakeServer({
+      recording: sampleRecording({
+        sizeBytes: 3_000_000,
+        encodeProfiles: ['h264'],
+        encodedAssets: [{ profile: 'h264', sizeBytes: 2_000_000 }],
+      }),
+      liveProfiles: [{ name: 'hd', height: 720 }],
+    })
+    renderAt('/recordings/3')
+
+    await waitFor(() => expect(screen.getByLabelText('録画映像')).toHaveAttribute('src', '/api/media/recordings/3/file?profile=h264'))
+    const dialog = await openRemoveDialog(user, 'h264')
+    await user.click(within(dialog).getByRole('button', { name: '削除する' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'h264のその他の操作' })).not.toBeInTheDocument())
+    await waitFor(() => expect(document.querySelector('video[src*="/file"]')).not.toBeInTheDocument())
+    // 原本 HLS のポスターに替わる（選び直さないと、版の無い encoded のプレイヤーが残る）。
+    expect(await screen.findByTestId('recording-playback-poster')).toBeInTheDocument()
   })
 })

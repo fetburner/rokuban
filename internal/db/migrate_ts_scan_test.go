@@ -7,7 +7,20 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/pressly/goose/v3"
 )
+
+// migrateDownTo は version まで戻す。最新から数えて Down を繰り返す形にしないのは、
+// migration を足すたびに戻り先がずれ、別の版を検査するテストになるからである。
+func migrateDownTo(t *testing.T, dbURL string, version int64) {
+	t.Helper()
+	if err := runGooseMigration(context.Background(), dbURL, func(ctx context.Context, p *goose.Provider) error {
+		_, err := p.DownTo(ctx, version)
+		return err
+	}); err != nil {
+		t.Fatalf("migrating down to version %d: %v", version, err)
+	}
+}
 
 func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 	ctx := context.Background()
@@ -15,15 +28,7 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrating to latest before setup: %v", err)
 	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("rolling back current TS scan view migration: %v", err)
-	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("rolling back original-retention migration: %v", err)
-	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("rolling back TS scan migration: %v", err)
-	}
+	migrateDownTo(t, dbURL, 23) // TS 計測記録の表（00024）より前
 	t.Cleanup(func() {
 		if err := MigrateUp(context.Background(), dbURL); err != nil {
 			t.Errorf("restoring latest schema: %v", err)
@@ -120,12 +125,7 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrating to latest before setup: %v", err)
 	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("rolling back current TS scan view migration: %v", err)
-	}
-	if err := MigrateDown(ctx, dbURL); err != nil {
-		t.Fatalf("rolling back original-retention migration: %v", err)
-	}
+	migrateDownTo(t, dbURL, 24) // until_encoded が計測を要求する移行（00025）より前
 	t.Cleanup(func() {
 		if err := MigrateUp(context.Background(), dbURL); err != nil {
 			t.Errorf("restoring latest schema: %v", err)

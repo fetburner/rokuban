@@ -1,6 +1,6 @@
 import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { MoreVertical, Trash2 } from 'lucide-react'
+import { MoreHorizontal, MoreVertical, Trash2 } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import { ApiError } from '@/api/client'
@@ -10,6 +10,7 @@ import {
   useListEncodeProfiles,
   useListRules,
   usePurgeRecording,
+  useRemoveRecordingEncodedAsset,
   useRetryRecordingCMDetection,
   useSetRecordingEncodePolicy,
   type Recording,
@@ -37,6 +38,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { recordingsQueryKeyPrefix } from '@/lib/events'
 import { encodeSettingsError, keepOriginalLabel, type KeepOriginal } from '@/lib/encode-settings'
+import { encodedAssetLabel, encodedRemovalPlan } from '@/lib/encoded-removal'
+import { formatBytes } from '@/lib/format'
 import { mutationErrorMessage } from '@/lib/mutation-error-message'
 import { useCMDetectEnabled } from '@/lib/capabilities'
 import { useMoveRecordingToTrash } from '@/lib/use-recording-trash'
@@ -581,5 +584,128 @@ function AddEncodeProfilesAction({ recording }: { recording: Recording }) {
         </div>
       )}
     </div>
+  )
+}
+
+type EncodedAsset = NonNullable<Recording['encodedAssets']>[number]
+
+/**
+ * EncodedVersionMenu は版タブのエンコード版の行末に置く ⋯ メニュー。容量を空けるために
+ * 版を 1 本だけ外す（`DELETE /api/recordings/{id}/encoded/{profile}`）。ごみ箱は経由しない。
+ * 最後の版は項目を無効にし、録画ごと消すときはごみ箱へ誘導する。
+ */
+export function EncodedVersionMenu({ recording, asset }: { recording: Recording; asset: EncodedAsset }) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const queryClient = useQueryClient()
+  const toast = useToast()
+  const removeEncoded = useRemoveRecordingEncodedAsset()
+  const label = encodedAssetLabel(asset)
+  const plan = encodedRemovalPlan(recording, asset.profile)
+  const freed = plan.freedBytes === undefined ? undefined : formatBytes(plan.freedBytes)
+  const freedText = freed === undefined ? '空き容量は不明です' : `${freed} 空きます`
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={<Button type="button" variant="ghost" size="icon" aria-label={`${label}のその他の操作`} />}
+        >
+          <MoreHorizontal />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-80 p-1.5">
+          <DropdownMenuItem
+            className={menuRow}
+            variant="destructive"
+            disabled={plan.lastCopy || removeEncoded.isPending}
+            onClick={() => setConfirmOpen(true)}
+          >
+            <Trash2 />
+            <span className="flex flex-col">
+              <span>この版を削除</span>
+              <span className="text-xs text-muted-foreground">
+                {plan.lastCopy ? '最後の版です。録画ごと消すときはごみ箱へ' : freedText}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>「{label}」を削除しますか？</AlertDialogTitle>
+            <AlertDialogDescription render={<div />}>
+              <div className="flex flex-col gap-3 text-sm text-foreground">
+                <p className="text-base font-semibold">{freed === undefined ? '空き容量は不明です' : `${freed} が空きます`}</p>
+                <div>
+                  <p className="text-xs text-muted-foreground">残る版</p>
+                  <ul aria-label="残る版" className="mt-1 flex flex-col gap-0.5">
+                    {plan.remaining.map((remaining) => (
+                      <li key={remaining.profile} className="flex justify-between gap-4">
+                        <span>{encodedAssetLabel(remaining)}</span>
+                        <span className="text-muted-foreground">
+                          {remaining.sizeBytes === undefined ? 'サイズ不明' : formatBytes(remaining.sizeBytes)}
+                        </span>
+                      </li>
+                    ))}
+                    {plan.hasOriginal && (
+                      <li className="flex justify-between gap-4">
+                        <span>原本 TS</span>
+                        <span className="text-muted-foreground">{formatBytes(recording.sizeBytes!)}</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+                {plan.hasOriginal ? (
+                  <p className="text-muted-foreground">あとから「＋ エンコードを追加」で作り直せます。</p>
+                ) : (
+                  <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                    元に戻せません。原本 TS が削除済みのため、この版は二度と作れません。
+                  </p>
+                )}
+                {plan.onlyCutRemains && (
+                  <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+                    残るのはカット版だけになります。CM 入りの版が無くなり、チャプターを直せなくなります。
+                  </p>
+                )}
+                {plan.switchesToKeepAlways && (
+                  <p className="text-muted-foreground">原本の保持は「常に保持」に切り替わります。</p>
+                )}
+                <p className="text-xs text-muted-foreground">この録画だけが対象です。今後の録画はルールの設定に従います。</p>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                removeEncoded.mutate(
+                  { id: recording.id, profile: asset.profile },
+                  {
+                    onSuccess: () => {
+                      void queryClient.invalidateQueries({ queryKey: [recordingsQueryKeyPrefix] })
+                      toast({ message: `「${label}」を削除しました` })
+                    },
+                    onError: (err) =>
+                      toast({
+                        message:
+                          // 409 は外した後に見られる版が残らないこと。英語の本文は出さずに訳す。
+                          err instanceof ApiError && err.status === 409
+                            ? '最後の版なので削除できませんでした。録画ごと消すときはごみ箱へ移してください。'
+                            : err instanceof ApiError && err.status === 400
+                              ? 'カット版だけが残るため削除できませんでした。チャプターを確認できる版が無くなります。'
+                              : mutationErrorMessage('版の削除に失敗しました', err),
+                        kind: 'error',
+                      }),
+                  },
+                )
+              }}
+            >
+              削除する
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   )
 }

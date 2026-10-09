@@ -24,7 +24,7 @@ import {
 import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
-import { RecordingAssetControls } from '@/components/recording-actions'
+import { EncodedVersionMenu, RecordingAssetControls } from '@/components/recording-actions'
 import {
   DropBadges,
   EncodeStatusBadges,
@@ -250,6 +250,21 @@ export function RecordingDetail({
     setDescriptionExpanded(false)
     setSelectedPlaybackProfile(undefined)
     setPlaybackState(initialPlaybackState(shouldAutoPlay))
+  } else if (playbackState.source === 'encoded' && encodedAssets.length === 0) {
+    // 再生中の encoded が版タブ（他の端末も含む）の削除で全部無くなったら、残る再生元を選び直す。
+    // 残る版があるならプレイヤーが既定の版へ張り直すので、ここでは替えない。録画を切り替えた
+    // レンダーでは上の初期化が選び直すので、前の録画の state で上書きしない（else にする理由）。
+    const source = selectRecordingPlaybackSource(playbackSelection)
+    if (source !== 'encoded') {
+      setPlaybackState({
+        ...playbackState,
+        source,
+        pinned: false,
+        started: false,
+        autoPlay: false,
+        generation: playbackState.generation + 1,
+      })
+    }
   }
   const showChase = playbackState.source === 'chase'
   const showOriginalVOD = playbackState.source === 'original-vod'
@@ -1002,7 +1017,9 @@ export function RecordingDetail({
                       >
                         <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
                         {showEncoded && asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
-                        <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
+                        {/* 値札から ⋯ までを 1 つにまとめる。狭い幅では一緒に次の行の右端へ折り返す（⋯ だけが行頭に落ちない）。 */}
+                        <div className="ml-auto flex items-center gap-3">
+                        <span className="text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
                         {recording.status === 'finished' && (
                           <Button
                             type="button"
@@ -1016,6 +1033,8 @@ export function RecordingDetail({
                           </Button>
                         )}
                         <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
+                        <EncodedVersionMenu recording={recording} asset={asset} />
+                        </div>
                       </div>
                     ))}
                     {hasOriginal ? (

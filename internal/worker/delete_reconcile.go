@@ -83,8 +83,8 @@ const (
 	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 
-// deleteTarget は物理削除 1 件分の対象。pending / trash / until_encoded の
-// 3 つの sqlc 行型は同じ列を返すので、ここで 1 つに寄せる（引数を平たく
+// deleteTarget は物理削除 1 件分の対象。pending / trash / until_encoded /
+// removed_encoded の sqlc 行型は同じ列を返すので、ここで 1 つに寄せる（引数を平たく
 // 並べると同型のスカラが増えて取り違えがコンパイルで検出できない）。
 type deleteTarget struct {
 	ID          int64
@@ -94,8 +94,8 @@ type deleteTarget struct {
 	Kind        string
 }
 
-// DeleteReconcileWorker は物理 unlink に至る 3 ソース（ごみ箱 / until_encoded /
-// 孤児）を 1 本の reconcile ループに統一する River ワーカー（docs/storage.md §7）。
+// DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
+// ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する River ワーカー（docs/storage.md §7）。
 //
 // 削除プロトコルは冪等: media_assets.state を active → deleting → deleted と
 // 遷移させる。deleting のまま落ちても次パスの ListMediaAssetsPendingDelete が
@@ -226,12 +226,11 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Dele
 	if err := w.reconcileDeleteObservations(ctx, q, orphanMTimeGrace, missingAssetAge); err != nil {
 		return err
 	}
-	trashRows, untilEncodedRows, agedOrphans, err := w.collectDeleteCandidates(ctx, q, trashCutoff, orphanAge, orphanMTimeGrace)
+	candidates, err := w.collectDeleteCandidates(ctx, q, trashCutoff, orphanAge, orphanMTimeGrace)
 	if err != nil {
 		return err
 	}
-	total := len(trashRows) + len(untilEncodedRows) + len(agedOrphans)
-	stop, err := w.applyDeleteCircuitBreaker(ctx, q, site, tripped, total, maxPerPass)
+	stop, err := w.applyDeleteCircuitBreaker(ctx, q, site, tripped, candidates.total(), maxPerPass)
 	if err != nil {
 		return err
 	}
@@ -239,7 +238,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Dele
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return nil
 	}
-	w.deleteCandidates(ctx, q, trashRows, untilEncodedRows, agedOrphans, orphanMTimeGrace)
+	w.deleteCandidates(ctx, q, candidates, orphanMTimeGrace)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
 	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
@@ -340,7 +339,19 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 	return nil
 }
 
-// collectDeleteCandidates は新規削除対象を 3 つのソースから取得する。
+// deleteCandidateSet は 1 パスの新規削除対象。ブレーカーはソースを問わず合計で数える。
+type deleteCandidateSet struct {
+	trash          []sqlcgen.ListTrashMediaAssetsToDeleteRow
+	untilEncoded   []sqlcgen.ListUntilEncodedOriginalsToDeleteRow
+	removedEncoded []sqlcgen.ListRemovedEncodedAssetsToDeleteRow
+	agedOrphans    []string
+}
+
+func (c deleteCandidateSet) total() int {
+	return len(c.trash) + len(c.untilEncoded) + len(c.removedEncoded) + len(c.agedOrphans)
+}
+
+// collectDeleteCandidates は新規削除対象を 4 つのソースから取得する。
 //
 // 原本を入力とする active な encode/thumbnail ジョブの有無はここでは見ない
 // （旧条件 3。docs/storage/retention.md「retention reconcile ループ」の
@@ -349,22 +360,28 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 // ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
 // 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
 // docs/storage/retention.md 同箇所参照）。
-func (w *DeleteReconcileWorker) collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time, orphanAge, orphanMTimeGrace time.Duration) ([]sqlcgen.ListTrashMediaAssetsToDeleteRow, []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, []string, error) {
-	trashRows, err := q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
+func (w *DeleteReconcileWorker) collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time, orphanAge, orphanMTimeGrace time.Duration) (deleteCandidateSet, error) {
+	var c deleteCandidateSet
+	var err error
+	c.trash, err = q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
 		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
 	})
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("listing trash assets past retention: %w", err)
+		return c, fmt.Errorf("listing trash assets past retention: %w", err)
 	}
-	untilEncodedRows, err := q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
+	c.untilEncoded, err = q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("listing until_encoded originals: %w", err)
+		return c, fmt.Errorf("listing until_encoded originals: %w", err)
 	}
-	agedOrphans, err := w.verifiedAgedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
+	c.removedEncoded, err = q.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("verifying aged orphans: %w", err)
+		return c, fmt.Errorf("listing removed encoded assets: %w", err)
 	}
-	return trashRows, untilEncodedRows, agedOrphans, nil
+	c.agedOrphans, err = w.verifiedAgedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
+	if err != nil {
+		return c, fmt.Errorf("verifying aged orphans: %w", err)
+	}
+	return c, nil
 }
 
 // applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
@@ -385,15 +402,18 @@ func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, q
 	return false, nil
 }
 
-// deleteCandidates はごみ箱・until_encoded・孤児の候補を物理削除する。
-func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashRows []sqlcgen.ListTrashMediaAssetsToDeleteRow, untilEncodedRows []sqlcgen.ListUntilEncodedOriginalsToDeleteRow, agedOrphans []string, orphanMTimeGrace time.Duration) {
-	for _, a := range trashRows {
+// deleteCandidates はごみ箱・until_encoded・外した版・孤児の候補を物理削除する。
+func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, c deleteCandidateSet, orphanMTimeGrace time.Duration) {
+	for _, a := range c.trash {
 		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "trash")
 	}
-	for _, a := range untilEncodedRows {
+	for _, a := range c.untilEncoded {
 		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "until_encoded")
 	}
-	for _, relPath := range agedOrphans {
+	for _, a := range c.removedEncoded {
+		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "removed_encoded")
+	}
+	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
 		// deleteOrphanCleanupTimeout を待ち切って進むと、DB が詰まった状態では
 		// パス全体が deleteReconcileTimeout を超えうる）。残った孤児は次パスの

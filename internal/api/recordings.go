@@ -757,6 +757,15 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
 	}
 
+	// 外す tx（RemoveRecordingEncodedAsset）が要求行を書いて commit する前に
+	// Append の文が走ると、CTE の DELETE は未 commit の要求行を見られず、足し直した
+	// profile の要求行が残る。先にロックを取れば、次の文は外す側の commit 後の
+	// スナップショットで走る。行が無ければ外す側も外せないので競合しない。
+	// cut の判定もロック後の desired で行うため、判定より前に取る。
+	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
+	}
+
 	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
 	// 結果が [h264, cut] なので正当）。原本 HLS が使える live.enabled 構成では
 	// cut のみも正当。policy 行が無ければ追加分のみ。
@@ -789,6 +798,87 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, err
 	}
 	return AddRecordingEncodeProfiles204Response{}, nil
+}
+
+// RemoveRecordingEncodedAsset はエンコード版を 1 本だけ外す（凍結の 3 つ目の例外。
+// docs/storage/retention.md §6）。encode_profiles から profile を外し、外した要求の
+// 行を入れる。ファイルは消さない。削除 reconcile が名前付き述語
+// removed_encoded_assets で拾って unlink する。
+//
+// 同じ録画の版を同時に外す 2 本の tx が 0 コピーを作らないよう、policy 行を
+// FOR UPDATE で取ってから書き、0 コピー検査は書いた後の状態で行う（不変条件 9
+// 「適用の瞬間」）。検査は削除 reconcile と同じ view に任せる。
+func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveRecordingEncodedAssetRequestObject) (RemoveRecordingEncodedAssetResponseObject, error) {
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("beginning transaction to remove recording %d encoded %q: %w", req.Id, req.Profile, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	q := sqlcgen.New(tx)
+	rec, err := q.GetRecordingByID(ctx, req.Id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && rec.PurgedAt != nil) {
+		return RemoveRecordingEncodedAsset404JSONResponse{Error: "recording not found"}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+	}
+	profile := req.Profile
+	assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
+		RecordingID: req.Id,
+		Profile:     &profile,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
+		}
+		return nil, fmt.Errorf("loading encoded asset %q for recording %d: %w", req.Profile, req.Id, err)
+	}
+	// active な encoded がある = 凍結済みとみなす。catalog 無しの rescue
+	// （internal/inplace.Register）は encoded の media_assets を作るが policy 行を
+	// 作らないので、行が無いことがある。直列化の点として先に作る。409 では tx ごと
+	// ロールバックするので、意味を持たない行は残らない。
+	if err := q.FreezeRecordingEncodePolicyIfMissing(ctx, req.Id); err != nil {
+		return nil, fmt.Errorf("freezing encode policy for recording %d: %w", req.Id, err)
+	}
+	policy, err := q.LockRecordingEncodePolicy(ctx, req.Id)
+	if err != nil {
+		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
+	}
+	// 外した後の desired にも事後追加と同じ cut の選択規則を当てる。書く前に判定する
+	// ので、違反ならロールバックするだけで何も残らない。desired に無い版を外しても
+	// desired は変わらないので判定しない（前からカット版だけの desired で拒否しない）。
+	if h.cutProfiles != nil && slices.Contains(policy.EncodeProfiles, req.Profile) {
+		remaining := slices.DeleteFunc(slices.Clone(policy.EncodeProfiles), func(p string) bool { return p == req.Profile })
+		if err := h.validateCutSelection(remaining); err != nil {
+			return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
+		}
+	}
+	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
+		RecordingID: req.Id,
+		Profile:     req.Profile,
+	}); err != nil {
+		return nil, fmt.Errorf("removing encode profile %q from recording %d: %w", req.Profile, req.Id, err)
+	}
+	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{
+		RecordingID: req.Id,
+		Profile:     req.Profile,
+	}); err != nil {
+		return nil, fmt.Errorf("recording removal request for recording %d encoded %q: %w", req.Id, req.Profile, err)
+	}
+	removable, err := q.IsRemovedEncodedAsset(ctx, assetID)
+	if err != nil {
+		return nil, fmt.Errorf("checking remaining copies of recording %d: %w", req.Id, err)
+	}
+	if !removable {
+		return RemoveRecordingEncodedAsset409JSONResponse{
+			Error: "this is the last viewable copy (no active original and no other encoded version); move the recording to trash instead",
+		}, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing removal of recording %d encoded %q: %w", req.Id, req.Profile, err)
+	}
+	return RemoveRecordingEncodedAsset204Response{}, nil
 }
 
 // ReencodeRecordingProfile は cut 版を作り直す（`encodedAssets[].cutStale` が真の

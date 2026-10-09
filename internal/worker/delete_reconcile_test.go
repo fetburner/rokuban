@@ -1408,6 +1408,13 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 	if got := strings.Count(text, "trash_deletable_recordings"); got < 5 {
 		t.Errorf("delete_reconcile.sql references trash_deletable_recordings %d times, want at least 5 (all 5 consumer queries named in issue #160)", got)
 	}
+	// 外した版の腕は入口・拾い直し・否定形 2 つの 4 クエリから参照する。
+	if got := strings.Count(text, "FROM removed_encoded_assets"); got < 4 {
+		t.Errorf("delete_reconcile.sql references removed_encoded_assets %d times, want at least 4 (entry, pending, and both negations)", got)
+	}
+	if strings.Contains(text, "encode_profiles)") {
+		t.Error("delete_reconcile.sql inlines the desired-profile check; it should live only in removed_encoded_assets")
+	}
 }
 
 // insertTestRecordingWithEventID は insertTestRecording と同じ内容の録画を、
@@ -1965,7 +1972,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	w.deleteCandidates(ctx, q, nil, nil, []string{relPath}, defaultOrphanMTimeGrace)
+	w.deleteCandidates(ctx, q, deleteCandidateSet{agedOrphans: []string{relPath}}, defaultOrphanMTimeGrace)
 
 	if !fileExists(orphanPath) {
 		t.Error("orphan file was removed despite a canceled ctx, want kept (next pass retries)")

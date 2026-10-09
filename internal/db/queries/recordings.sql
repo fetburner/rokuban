@@ -234,6 +234,12 @@ VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), sqlc.arg('encode_pr
 -- name: GetRecordingEncodePolicy :one
 SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1;
 
+-- encode の公開判定 (c) が tx 内で desired を読み直す。FOR SHARE で版を外す
+-- tx（LockRecordingEncodePolicy の FOR UPDATE）と直列化する。外す tx が先なら
+-- 外した後の desired を見て公開せず、公開が先なら外す側がその版を消す。
+-- name: GetRecordingEncodeProfilesForShare :one
+SELECT encode_profiles FROM recording_encode_policy WHERE recording_id = $1 FOR SHARE;
+
 -- 凍結の例外としての事後追加（issue #133、docs/storage.md §6「原本 TS の
 -- 保持ポリシー」・docs/recording/reservation-model.md §4.5「録画開始後の編集」）。
 -- **追加専用**（union + dedup）。全置換にすると、ユーザーが既存のプロファイル
@@ -253,7 +259,15 @@ SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WH
 -- 適用し、keep_original は既定値 'always'（recordings 旧列の既定値と同じ、
 -- 安全側）で新規に凍結する。既存行がある場合は encode_profiles だけ
 -- union + dedup で追記し、keep_original は変更しない。
+-- 足し直した profile の外した要求（encoded_asset_removal_requests）は同じ文で消す。
+-- 残すと、版がまだ消えていないうちに足し直したとき、view は desired に戻ったので
+-- 消さないが、もう一度外したとき古い requested_at が残る。
 -- name: AppendRecordingEncodeProfiles :exec
+WITH cleared_removal_requests AS (
+    DELETE FROM encoded_asset_removal_requests
+    WHERE recording_id = sqlc.arg('id')
+      AND profile = ANY (sqlc.arg('profiles')::text[])
+)
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (
     sqlc.arg('id'),
@@ -267,6 +281,53 @@ ON CONFLICT (recording_id) DO UPDATE SET
         FROM unnest(recording_encode_policy.encode_profiles || excluded.encode_profiles) AS p
     ),
     updated_at = now();
+
+-- 凍結の 3 つ目の例外（ユーザー起点で 1 本ずつ減らす）の直列化点。同じ録画の
+-- 版を同時に外す 2 本の tx が、互いに外す前の状態を見て両方 0 コピー検査を
+-- 通らないよう、policy 行を先に取る。
+-- name: LockRecordingEncodePolicy :one
+SELECT keep_original, encode_profiles
+FROM recording_encode_policy
+WHERE recording_id = $1
+FOR UPDATE;
+
+-- policy 行が無い録画に、凍結済みとみなす既定値 'always' / 空 desired で行を作る。
+-- 呼ぶのは active な encoded があるときだけ（AppendRecordingEncodeProfiles と同じ
+-- 「実体があるなら凍結済み」）。この経路の録画は ingest を通らないので、ingest の
+-- 素の INSERT（FreezeRecordingEncodePolicy）とは衝突しない。
+-- name: FreezeRecordingEncodePolicyIfMissing :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', '{}', false)
+ON CONFLICT (recording_id) DO NOTHING;
+
+-- desired から 1 つ外す（全置換ではない）。until_encoded で desired が空に
+-- なるなら always に倒す（recording_encode_policy の CHECK。ingest のクランプと
+-- 同じ向き）。版を外しても原本の削除は早まらない: until_encoded は全プロファイル
+-- 揃いが条件なので、揃っている 1 本を外しても成否は変わらない。
+-- name: RemoveRecordingEncodeProfile :exec
+UPDATE recording_encode_policy
+SET encode_profiles = array_remove(encode_profiles, sqlc.arg('profile')::text),
+    keep_original = CASE
+        WHEN keep_original = 'until_encoded'
+         AND cardinality(array_remove(encode_profiles, sqlc.arg('profile')::text)) = 0
+        THEN 'always'
+        ELSE keep_original
+    END,
+    updated_at = now()
+WHERE recording_id = sqlc.arg('recording_id');
+
+-- 既に外した版をもう一度外しても冪等にする。
+-- name: InsertEncodedAssetRemovalRequest :exec
+INSERT INTO encoded_asset_removal_requests (recording_id, profile)
+VALUES (sqlc.arg('recording_id'), sqlc.arg('profile'))
+ON CONFLICT (recording_id, profile) DO NOTHING;
+
+-- 外した後の状態で 0 コピー検査をする。判定は削除 reconcile と同じ名前付き述語
+-- removed_encoded_assets（他の版が残ること）に任せ、ここで条件を複製しない。
+-- name: IsRemovedEncodedAsset :one
+SELECT EXISTS (
+    SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = sqlc.arg('asset_id')
+);
 
 -- 録画後に原本の保持ポリシーだけを上書きする（issue #697）。UPDATE のみで
 -- INSERT アームを持たない --- 行が無い（未凍結）録画は既に 'always' と同じ扱い

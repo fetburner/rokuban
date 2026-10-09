@@ -89,25 +89,41 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 この API による `keep_original` の上書きは、事後の `encode_profiles` 追加に続く**凍結の 2 つ目の例外**である。凍結の基本設計（ingest 完了時に desired を焼き込むこと）と、物理削除を reconcile に委ねる境界は変えない。
 
-- **範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles` の実装は `internal/api/recordings.go` の `AddRecordingEncodeProfiles` である。書き込みは `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で行う。union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
+- **この API の範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles` の実装は `internal/api/recordings.go` の `AddRecordingEncodeProfiles` である。書き込みは `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で行う。union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
 - **原本が active でなければ不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画には 409 を返す。該当するのは、原本削除済みか `state = 'deleting'` か、そもそも ingest が完了しておらず `kind='original'` の行自体が無い場合である。`state = 'deleting'` は unlink 待ちの状態を指す。一覧の射影は `state <> 'deleted'` なので、UI 上は「原本あり」に見える。`EnqueueMissingEncodes` はこのケースで黙って no-op になる（原本が無ければ何もしない設計。上記「安全性」参照）ため、サイレントな失敗にしないよう api 層で明示的に検査する
 - **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`resolveAndSnapshotEncodePolicy` を経由しない。この関数は `internal/worker/ingest.go` にある。そのため `recording_encode_policy` 行が無いまま、原本だけが active な録画が存在しうる。`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっている。この INSERT に到達する時点で「原本 active」は保証されている
 - **実行経路**: api がトランザクション内で `encode_profiles` を更新し、同一トランザクションで `EncodeEnqueueHintArgs`（ヒントジョブ）を投入する。実際の `EnqueueMissingEncodes` 呼び出し（desired − observed の差分を埋める encode ジョブの投入）は、worker ロール側の `EncodeEnqueueHintWorker` が行う。既存の hint job パターンであり、`rules.go` の `insertRulerPassHint` と同型である。詳細は `internal/jobs/args.go` の `EncodeEnqueueHintArgs` の doc コメント参照
 - **保持ポリシーの変更**: `PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを録画単位で上書きし、`encode_profiles` には触れない。この API は新しい `recording_encode_policy` 行を凍結しない —— `SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。未凍結の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。「desired プロファイルが 1 つ以上あるか」の判定は事前読み取りではなく、この UPDATE 自身の WHERE（`cardinality(encode_profiles) > 0`）が適用の瞬間に再評価する。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
 - **保持ポリシー変更は物理削除しない**。River のヒントジョブも投入せず、削除 reconcile のレベルトリガーに任せる。定期パスは既定 15 分間隔なので、条件を満たす原本の削除には最大 15 分かかる。これは追加された desired を直ちに encode queue へ反映する事後追加 API とは意図的に非対称である。
 - この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_encode_policy` は分割しない。
-- この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない。凍結後の変更は、`encode_profiles` の事後追加と、この API による `keep_original` の明示的な上書きに限る。
+- この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない。凍結後の変更は、`encode_profiles` の事後追加と、この API による `keep_original` の明示的な上書きと、下記の版の削除に限る。
+
+### 凍結の 3 つ目の例外: 版を 1 本ずつ減らす
+
+容量が厳しいとき、プロファイル A と B でエンコードした録画から A だけを消して B を残したい。
+`DELETE /api/recordings/{id}/encoded/{profile}` はユーザー起点で `encode_profiles` から 1 つを外す。
+同じ tx で衛星表 `encoded_asset_removal_requests` に要求行を入れる。全置換の API は引き続き作らない。
+
+- **「desired に無い encoded は消す」という導出だけで動かさない**。rescue や `inplace.Register` を経て desired と実ファイルがずれた録画があると、その版を黙って一括削除する述語になる。ずれが実在するかは未検証。要求行という明示の主張を条件に入れる（不変条件 10）
+- **ごみ箱は経由しない**。容量を空けるための操作で、何か 1 つは見られる状態を API が保証するので、猶予で守るものが無い
+- **0 コピー検査は外した後の状態で行う**。同じ録画の A と B を同時に外す 2 本の tx は、互いの削除前の状態を見ると両方通る。policy 行をロックして直列化し、検査は名前付き述語 `removed_encoded_assets`（§7）に任せる
+- **版を外しても原本の削除は連鎖しない**。`until_encoded` は全プロファイル揃いが条件なので、揃っている 1 本を外しても成否は変わらない。例外は `encode_profiles` が空になる場合で、CHECK のため同じ tx で `always` に倒す（ingest のクランプと同じ向き）
+- **外した後の desired にも、事後追加と同じ cut の選択規則を当てる**。live が無効でカット版だけが残ると、確認に使う再生物が無くなり、カット版を作れない。違反なら 400 で何も書かない
+- 事後追加は同じ文で要求行を消す。外した版のファイルが消える前に足し直せば、その版は残る
+- 外した版は削除 reconcile が unlink するまで active のままだが、API は `encodedAssets` に出さない。再生中の画面が再取得で再生元を選び直せるようにするためである
+- 要求行は catalog に含めない。通常は削除 reconcile の次のパスで版と一緒に消える。最後の版として残った場合は、足し直すか録画を完全削除するまで残る。rescue で失っても版が残る側に倒れる
 
 ## 7. 削除エンジン
 
 ### 物理削除は 1 本の reconcile ループに統一
 
-物理 unlink に至る経路を 3 ソース → 1 つの削除 reconcile に揃える:
+物理 unlink に至る経路を 4 ソース → 1 つの削除 reconcile に揃える:
 
 | ソース | 猶予 | 意図 |
 |---|---|---|
 | 手動削除（ごみ箱） | `deleted_at` + 30 日（設定可） | 人為ミスへの備え |
 | 原本の保持ポリシー（`until_encoded`） | なし（派生物完備が条件） | 設計されたポリシー削除。**ごみ箱は経由しない**（原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に担保） |
+| ユーザーが外したエンコード版 | なし（他の版が残ることが条件） | 容量を空ける操作。**ごみ箱は経由しない**（§6「凍結の 3 つ目の例外」） |
 | 孤児ファイル | mtime 猶予 + エイジング | DB 喪失・残骸への防御 |
 
 ingest は canonical file と同じディレクトリに record 固有の
@@ -130,14 +146,16 @@ catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原
 
 ### 削除可否の述語に名前を与える
 
-「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）と until_encoded 腕（派生物完備）の 2 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の 5 クエリ（入口 2 つ・前パスの拾い直し・否定形 2 つ）である。以前はこの 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。
+「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕の 3 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口（腕ごとに 1 つ）・前パスの拾い直し・否定形 2 つである。以前は 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。
 
-二つの削除可否の腕はスキーマ側に名前を与え、5 クエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる:
+削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる:
 
 - **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする。条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて塞いである。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
 - **TS の計測済み判定（view `current_ts_scanned_originals`）**: 計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
-- 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、この 2 つの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
+- **外した版の腕**: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。
+  他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
+- 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
 
 **`cut: true` のプロファイルは確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない**。
 この条件は投入側（`EnqueueMissingEncodes` と `ListMissingEncodeProfiles`）が持ち、view は持たない。

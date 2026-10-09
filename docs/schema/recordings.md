@@ -143,6 +143,22 @@ CREATE TABLE recording_purge_requests (
 - **復元（`deleted_at` を消す + 要求行を DELETE）は 1 文のデータ変更 CTE ではなく、トランザクション内の 2 文で書く**。CTE はアーム全体が 1 つのスナップショットを共有する。そのため行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行はその場では何も起こさないが、次の普通の論理削除で猶予をバイパスする。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える
 - **この表に行を入れる経路は、対象の `recordings` 行を先にロックする**（個別 purge は `recordings` の UPDATE アームがそれを兼ねている）。復元を 2 文に割っただけでは窓は閉じない —— DELETE が 0 行だったときロックは何も残らない（READ COMMITTED に述語ロックは無い）。そこへロックせずに INSERT する経路（例: 一括 purge を `INSERT ... SELECT` で書く）を足すと、復元の DELETE 後・COMMIT 前に commit された要求行が残り、猶予バイパスが再発する
 
+### encoded_asset_removal_requests — 外したエンコード版の要求（衛星表）
+
+```sql
+CREATE TABLE encoded_asset_removal_requests (
+    recording_id bigint NOT NULL REFERENCES recordings (id) ON DELETE CASCADE,
+    profile      text NOT NULL,
+    requested_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (recording_id, profile)
+);
+```
+
+**行の存在 = 「ユーザーがこの版を外した」という主張**（不変条件 10。`recording_purge_requests` と同じ形）。
+書き手は api（`DELETE /api/recordings/{id}/encoded/{profile}` と事後追加）と削除 reconcile である。
+削除 reconcile は版の `deleted` 確定と同じ文で行を消し、事後追加は同じ profile を足し直す文で行を消す。
+desired（`encode_profiles`）は別に `recording_encode_policy` が持つ。判定は 2 つを組み合わせた view `removed_encoded_assets` が持つ（[storage/retention.md](../storage/retention.md) §7）。
+
 ### 同一イベントの重複防止
 
 ```sql
@@ -377,7 +393,7 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 
 - INSERT するのは worker（ingest / encode / thumbnail ジョブ）のみ。`ON CONFLICT` で冪等に
 - **deleted への遷移後も行は消さない**（tombstone）。`drop_stats` と元サイズは原本削除後も UI で見られる
-- 物理削除に至る 3 ソース（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / 孤児回収）はすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける
+- 物理削除に至る 4 ソースはすべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。4 ソースは、ごみ箱の猶予超過 / `until_encoded` の派生物完備 / ユーザーが外したエンコード版 / 孤児回収である
 - **`missing_media_assets` は `media_assets` を指す衛星表**（`media_asset_id` を PK かつ FK に取り、`ON DELETE CASCADE`）。行の存在 = 直前の走査で `state = 'active'` なのに実体ファイルを観測できなかったという主張で、「観測できた」を表す行は作らない（不変条件 10）。書き手は削除 reconcile であって台帳を書く worker ではないので本体の列にしない（不変条件 13）。`rel_path` / `kind` は複製せず読み出しで JOIN する（不変条件 9）。**この表を根拠に `media_assets` を自動で消す経路は無い** —— 判定基準と 2 つの安全弁（エイジング / 全損シグネチャ）は [storage/retention.md](../storage/retention.md) §7「孤児回収の逆」が権威
 
 ### media_asset_cuts — カット版が実際に適用した区間

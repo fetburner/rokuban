@@ -236,6 +236,9 @@ WHERE a.state = 'deleting'
     OR EXISTS (
       SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
     )
+    OR EXISTS (
+      SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
+    )
   )
 ORDER BY a.id
 LIMIT $2
@@ -260,15 +263,16 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 削除プロトコルは冪等: active → deleting → deleted。deleting のまま
 // プロセスが落ちても ListMediaAssetsPendingDelete が次パスで拾い直す。
 //
-// 「このアセットは消してよいか」の 2 つの腕（ごみ箱の猶予超過 or 今すぐ
-// purge / until_encoded の派生物完備）は、いずれもスキーマ側の名前付き述語を
-// 参照する。until_encoded 腕は
+// 「このアセットは消してよいか」の 3 つの腕（ごみ箱の猶予超過 or 今すぐ
+// purge / until_encoded の派生物完備 / ユーザーが外したエンコード版）は、
+// いずれもスキーマ側の名前付き述語を参照する。until_encoded 腕は
 // view `until_encoded_deletable_originals`、ごみ箱腕は set-returning 関数
-// `trash_deletable_recordings(grace_cutoff)`。この 2 つが唯一の定義であり、
-// 以下の 5 クエリはすべてこれらへの参照であって複製ではない（issue #160）。
+// `trash_deletable_recordings(grace_cutoff)`、外した版の腕は view
+// `removed_encoded_assets`。この 3 つが唯一の定義であり、
+// 以下の入口・拾い直し・否定形のクエリはすべてこれらへの参照であって複製ではない。
 // 前パスで deleting にマークしたまま unlink できずに終わった行を拾い直す。
 //
-// WHERE の 2 つの EXISTS は名前付き述語（上記）への参照であって複製ではない
+// WHERE の 3 つの EXISTS は名前付き述語（上記）への参照であって複製ではない
 // （issue #160）。deleting は「再計算できる決定」であって不可逆な事実では
 // ないため、pending 経路は「既に決めた削除の再実行だから無条件に信じて
 // よい」とはできない —— ごみ箱からの復元は recordings.deleted_at だけを
@@ -286,7 +290,7 @@ type ListMediaAssetsPendingDeleteRow struct {
 // 罠: until_encoded の原本も pending に乗る。ここを「recordings.deleted_at
 // IS NOT NULL」だけで判定すると、生きている録画の until_encoded 原本が
 // 永久に deleting のまま止まる（ごみ箱条件にも until_encoded 条件にも
-// 該当しない扱いになってしまうため）。両条件を OR で残すこと。
+// 該当しない扱いになってしまうため）。各条件を OR で残すこと。
 func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMediaAssetsPendingDeleteParams) ([]ListMediaAssetsPendingDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listMediaAssetsPendingDelete, arg.GraceCutoff, arg.RowLimit)
 	if err != nil {
@@ -296,6 +300,51 @@ func (q *Queries) ListMediaAssetsPendingDelete(ctx context.Context, arg ListMedi
 	var items []ListMediaAssetsPendingDeleteRow
 	for rows.Next() {
 		var i ListMediaAssetsPendingDeleteRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecordingID,
+			&i.RelPath,
+			&i.SizeBytes,
+			&i.Kind,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRemovedEncodedAssetsToDelete = `-- name: ListRemovedEncodedAssetsToDelete :many
+SELECT x.asset_id AS id, x.recording_id, x.rel_path, x.size_bytes, 'encoded'::text AS kind
+FROM removed_encoded_assets x
+WHERE x.state = 'active'
+ORDER BY x.asset_id
+LIMIT $1
+`
+
+type ListRemovedEncodedAssetsToDeleteRow struct {
+	ID          int64
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+	Kind        string
+}
+
+// ユーザーが外したエンコード版（名前付き述語 removed_encoded_assets への参照）。
+// ごみ箱は経由しない。容量を空けるための操作で、他の版が残ることは view が
+// 要求しているので、猶予で守るものが無い。
+func (q *Queries) ListRemovedEncodedAssetsToDelete(ctx context.Context, rowLimit int32) ([]ListRemovedEncodedAssetsToDeleteRow, error) {
+	rows, err := q.db.Query(ctx, listRemovedEncodedAssetsToDelete, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRemovedEncodedAssetsToDeleteRow
+	for rows.Next() {
+		var i ListRemovedEncodedAssetsToDeleteRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.RecordingID,
@@ -376,6 +425,9 @@ WHERE a.state = 'deleting'
   AND NOT EXISTS (
     SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
   )
+  AND NOT EXISTS (
+    SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
+  )
 ORDER BY a.id
 LIMIT $2
 `
@@ -391,7 +443,7 @@ type ListUnqualifiedDeletingAssetsRow struct {
 	RelPath     string
 }
 
-// deleting のまま止まっていて、上の 2 条件のどちらにも該当しなくなった行の
+// deleting のまま止まっていて、上の 3 条件のどれにも該当しなくなった行の
 // 候補を挙げる（issue #105）。判定条件は ListMediaAssetsPendingDelete の
 // WHERE をそのまま否定したもの（名前付き述語への NOT EXISTS なので、否定形を
 // 手で保守する必要がない。issue #160）。ここではまだ書き込まない ——
@@ -474,10 +526,20 @@ func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, rowLimi
 }
 
 const markMediaAssetDeleted = `-- name: MarkMediaAssetDeleted :execrows
-UPDATE media_assets SET state = 'deleted', deleted_at = now(), updated_at = now()
-WHERE id = $1 AND state = 'deleting'
+WITH cleared_removal_request AS (
+    DELETE FROM encoded_asset_removal_requests q
+    USING media_assets a
+    WHERE a.id = $1
+      AND a.state = 'deleting'
+      AND q.recording_id = a.recording_id
+      AND q.profile = a.profile
+)
+UPDATE media_assets m SET state = 'deleted', deleted_at = now(), updated_at = now()
+WHERE m.id = $1 AND m.state = 'deleting'
 `
 
+// 外した版の要求行（encoded_asset_removal_requests）を deleted の確定と同じ
+// 文で消す。要求行は「この版を外した」という主張なので、版が消えたら残す意味が無い。
 func (q *Queries) MarkMediaAssetDeleted(ctx context.Context, id int64) (int64, error) {
 	result, err := q.db.Exec(ctx, markMediaAssetDeleted, id)
 	if err != nil {
@@ -573,6 +635,9 @@ WHERE a.id = $1
   )
   AND NOT EXISTS (
     SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = a.id
   )
 `
 

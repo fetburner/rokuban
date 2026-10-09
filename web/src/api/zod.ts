@@ -1707,6 +1707,30 @@ export const AddRecordingEncodeProfilesResponse = zod.void()
 
 
 /**
+ * エンコード版を 1 本だけ外す（容量を空けるための操作。ごみ箱は経由しない）。
+ * `encode_profiles` から profile を外し、「この版を外した」という要求を記録する。
+ * **ファイルは消さない**。削除 reconcile の次のパス（既定 15 分）が unlink する。
+ * 外した版は応答の直後から `encodedAssets` に出ない。
+ *
+ * `keep_original = until_encoded` で desired が空になるなら、同じトランザクションで
+ * `always` に切り替える。外した後に active な原本も、外していない active な
+ * エンコード版も残らないなら 409（録画ごと消すならごみ箱を使う）。
+ * 対象の active なエンコード版が無ければ 404。既に外した版を再指定しても 204。
+ * 外した後の desired が live 無効でカット版だけになるなら 400（事後追加と同じ
+ * cut の選択規則）。
+ * この録画だけが対象で、ルールは変えない。足し直しは
+ * `POST /api/recordings/{id}/encode-profiles`（原本が active な間だけ）。
+ * @summary Remove one encoded version of a recording
+ */
+export const RemoveRecordingEncodedAssetParams = zod.object({
+  "id": zod.int(),
+  "profile": zod.string()
+})
+
+export const RemoveRecordingEncodedAssetResponse = zod.void()
+
+
+/**
  * cut 版を作り直す（`encodedAssets[].cutStale` が真のときのユーザーの
  * 明示的な操作）。チャプターを直しても**自動では作り直さない** ---
  * 自動で作り直すと、ユーザーが確認していない区間が黙って本編から消える。

@@ -95,6 +95,12 @@ type DropStat struct {
 	PidType      *string
 }
 
+type EncodedAssetRemovalRequest struct {
+	RecordingID int64
+	Profile     string
+	RequestedAt time.Time
+}
+
 type EpgProgram struct {
 	Site        string
 	ProgramID   int64
@@ -353,6 +359,14 @@ type RecordingSeries struct {
 type RecordingWatched struct {
 	RecordingID int64
 	WatchedAt   time.Time
+}
+
+type RemovedEncodedAsset struct {
+	AssetID     int64
+	RecordingID int64
+	RelPath     string
+	SizeBytes   int64
+	State       string
 }
 
 type Reservation struct {
