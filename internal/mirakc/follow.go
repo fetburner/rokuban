@@ -40,6 +40,14 @@ type RecordFollowOptions struct {
 	// 正常経路の進捗は消費側の書き込みで足りるので、再試行の前に最新位置を確定させたい
 	// 呼び出し側だけが使う。Read を呼んだ goroutine 上で、byte を消費側へ返した後に実行する。
 	OnRangeInterrupted func(offset, bodyBytes int64)
+
+	// PollMin / PollMax は追い付いた状態のポーリング間隔の下限・上限。0 なら既定
+	// （recordFollowPollMin / recordFollowPollMax）。RetryDelay は再試行前の待ち。
+	// nil なら RetryDelay 関数。3 つとも、実時間の待ちを払いたくないテストが
+	// 差し替えるための口で、本番の呼び出し側は設定しない。
+	PollMin    time.Duration
+	PollMax    time.Duration
+	RetryDelay func(attempt int) time.Duration
 }
 
 // RecordFollowReader は有限の Range 応答をつなぎ、1 本の長命な reader として公開する。
@@ -74,6 +82,8 @@ type RecordFollowReader struct {
 	err            error
 	nextRequestAt  time.Time
 	idleWait       time.Duration
+	pollMin        time.Duration
+	pollMax        time.Duration
 	failures       int
 	retryDelay     func(attempt int) time.Duration
 	pendingBody    *recordFollowBody
@@ -120,6 +130,17 @@ func NewRecordFollowReader(ctx context.Context, client RecordFollowClient, recor
 		options:    options,
 		nextOffset: offset,
 		retryDelay: RetryDelay,
+		pollMin:    recordFollowPollMin,
+		pollMax:    recordFollowPollMax,
+	}
+	if options.PollMin > 0 {
+		reader.pollMin = options.PollMin
+	}
+	if options.PollMax > 0 {
+		reader.pollMax = options.PollMax
+	}
+	if options.RetryDelay != nil {
+		reader.retryDelay = options.RetryDelay
 	}
 	if initialBody != nil {
 		reader.body = &recordFollowBody{body: initialBody}
@@ -262,7 +283,7 @@ func (r *RecordFollowReader) requestNext() error {
 	if err := r.ctx.Err(); err != nil {
 		return err
 	}
-	r.nextRequestAt = time.Now().Add(recordFollowPollMin)
+	r.nextRequestAt = time.Now().Add(r.pollMin)
 	attemptCtx, cancel := context.WithCancel(r.ctx)
 	body, length, err := r.client.StreamRecord(attemptCtx, r.recordID, r.nextOffset)
 	if err != nil {
@@ -310,9 +331,9 @@ func (r *RecordFollowReader) caughtUp() error {
 	case "recording":
 		r.failures = 0
 		if r.idleWait == 0 {
-			r.idleWait = recordFollowPollMin
+			r.idleWait = r.pollMin
 		} else {
-			r.idleWait = min(r.idleWait*2, recordFollowPollMax)
+			r.idleWait = min(r.idleWait*2, r.pollMax)
 		}
 		r.nextRequestAt = time.Now().Add(r.idleWait)
 	case "finished", "canceled", "failed":

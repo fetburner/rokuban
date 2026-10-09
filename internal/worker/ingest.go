@@ -59,6 +59,14 @@ var errIngestSHA256Pending = errors.New("ingest content SHA-256 is pending")
 // （この除算の結果であり、実機での待ち時間の測定ではない）。
 var ingestSHA256BytesPerSecond int64 = 7_800_000
 
+// ingestFollowPace は録画追従（mirakc.RecordFollowOptions）の待ち時間の上書き。
+// 本番では零値（mirakc 側の既定を使う）。実時間のポーリング間隔や再試行バックオフを
+// 払いたくないテストだけが setFastIngestFollow で差し替える。
+var ingestFollowPace struct {
+	pollMin, pollMax time.Duration
+	retryDelay       func(attempt int) time.Duration
+}
+
 // ingestSHA256MinWait は小さい録画でも mirakc がハッシュ計算を始める猶予として待つ下限。
 const ingestSHA256MinWait = 10 * time.Second
 
@@ -805,6 +813,9 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 	reader := mirakc.NewRecordFollowReader(ctx, client, recordID, offset, nil, mirakc.RecordFollowOptions{
 		StallTimeout: w.StallTimeout,
 		OnRecord:     onRecord,
+		PollMin:      ingestFollowPace.pollMin,
+		PollMax:      ingestFollowPace.pollMax,
+		RetryDelay:   ingestFollowPace.retryDelay,
 		// 正常に終わる Range では flush しない（間引きを無視すると追従中に秒 2 行になる）。
 		OnRangeInterrupted: func(currentOffset, _ int64) {
 			progress.flush(ctx, currentOffset)

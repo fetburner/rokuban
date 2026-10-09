@@ -15,7 +15,10 @@ import (
 // streamer/session.go と同じ 5 秒に揃える。エンコードやサムネイルの処理時間そのもの
 // には影響せず、プロセスを kill した後の後始末だけを制限する値なので、ジョブの
 // 寿命がライブ配信より長くてもこの上限でよい。
-const workerExecWaitDelay = 5 * time.Second
+//
+// テストが短縮できるよう var にしてある（setShortWorkerExecWaitDelay）。本番で
+// 書き換える箇所は無い。
+var workerExecWaitDelay = 5 * time.Second
 
 // setWorkerExecWaitDelay は worker 内で実行する外部コマンドに共通の WaitDelay を
 // 設定する。exec.Cmd が *os.File 以外の stdout/stderr を使う場合、Wait は内部の

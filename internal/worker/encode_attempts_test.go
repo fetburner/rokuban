@@ -245,8 +245,9 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	// 無言の後退が起こり得る）。sleep は秒単位の整数しか取れないので、切り捨て
 	// ではなく切り上げる --- 切り捨てると d が秒の整数倍でないとき（例: 1500ms
 	// なら sleep 3s / workReturnTimeout 3s）に上の不等式が等号に潰れる。
-	const slowFFmpegSleepSeconds = int((workerExecWaitDelay*3 + time.Second - 1) / time.Second)
-	const workReturnTimeout = 2 * workerExecWaitDelay
+	setShortWorkerExecWaitDelay(t)
+	slowFFmpegSleepSeconds := int((workerExecWaitDelay*3 + time.Second - 1) / time.Second)
+	workReturnTimeout := 2 * workerExecWaitDelay
 	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
 	sleepStartedAt := time.Now()
 	defer func() {
@@ -535,6 +536,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// sleep は WaitDelay より十分長く保つ（この shell 自体は即座に exit するので、
 	// installSlowFakeFFmpeg のような cancel との競合はない。PID 再利用を避ける
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
+	setShortWorkerExecWaitDelay(t)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()
@@ -615,4 +617,15 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	if encodedCount != 1 {
 		t.Errorf("active encoded media_assets = %d, want 1 (WaitDelay-on-success must still commit)", encodedCount)
 	}
+}
+
+// setShortWorkerExecWaitDelay は workerExecWaitDelay を 1 秒に差し替え、t.Cleanup で
+// 戻す。WaitDelay が実際に経過するのを待つテストが、本番既定の 5 秒を毎回払わない
+// ための差し替え。sleep や timeout は呼び出し側が workerExecWaitDelay の倍数で導出
+// しているので、比率（sleep > WaitDelay、Work の復帰上限 = 2 倍）は変わらない。
+func setShortWorkerExecWaitDelay(t *testing.T) {
+	t.Helper()
+	prev := workerExecWaitDelay
+	workerExecWaitDelay = time.Second
+	t.Cleanup(func() { workerExecWaitDelay = prev })
 }

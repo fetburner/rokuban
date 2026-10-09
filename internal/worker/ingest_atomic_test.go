@@ -457,6 +457,7 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 // commit 失敗では canonical が孤児として残る。どの場合も DB 行と mirakc の
 // 削除は公開点（DB commit）まで発生せず、同じジョブを再試行できる。
 func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
+	setFastIngestFollow(t)
 	tests := []struct {
 		name             string
 		canonicalOnError bool

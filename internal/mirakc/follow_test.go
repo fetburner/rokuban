@@ -831,3 +831,26 @@ func equalInt64s(got, want []int64) bool {
 	}
 	return true
 }
+
+// TestRecordFollowOptionsOverridePacing は PollMin / PollMax / RetryDelay が reader の
+// 待ち時間に反映され、零値なら本番の既定を使うことを固定する。worker の ingest テストは
+// これで実時間のポーリングとバックオフを払わずに済ませている。
+//
+// 壊し方: NewRecordFollowReader の options.PollMin 等の代入を外すと、差し替え側の
+// 比較が既定値のままで落ちる。
+func TestRecordFollowOptionsOverridePacing(t *testing.T) {
+	def := NewRecordFollowReader(context.Background(), &followTestClient{}, "record", 0, nil, RecordFollowOptions{})
+	defer func() { _ = def.Close() }()
+	if def.pollMin != 500*time.Millisecond || def.pollMax != time.Second || def.retryDelay(0) != 200*time.Millisecond {
+		t.Errorf("defaults = (%v, %v, %v), want (500ms, 1s, 200ms)", def.pollMin, def.pollMax, def.retryDelay(0))
+	}
+
+	fast := NewRecordFollowReader(context.Background(), &followTestClient{}, "record", 0, nil, RecordFollowOptions{
+		PollMin: 3 * time.Millisecond, PollMax: 7 * time.Millisecond,
+		RetryDelay: func(int) time.Duration { return 11 * time.Millisecond },
+	})
+	defer func() { _ = fast.Close() }()
+	if fast.pollMin != 3*time.Millisecond || fast.pollMax != 7*time.Millisecond || fast.retryDelay(0) != 11*time.Millisecond {
+		t.Errorf("overrides = (%v, %v, %v), want (3ms, 7ms, 11ms)", fast.pollMin, fast.pollMax, fast.retryDelay(0))
+	}
+}

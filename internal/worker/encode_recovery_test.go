@@ -195,7 +195,8 @@ func TestEncodeWorker_HoldsJobLock(t *testing.T) {
 
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "recovery/held.m2ts", []string{"h264"}, []byte("payload"))
-	const slowFFmpegSleepSeconds = int(workerExecWaitDelay/time.Second) + 5
+	setShortWorkerExecWaitDelay(t)
+	slowFFmpegSleepSeconds := int(workerExecWaitDelay/time.Second) + 5
 	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
 	sleepStartedAt := time.Now()
 	t.Cleanup(func() {
