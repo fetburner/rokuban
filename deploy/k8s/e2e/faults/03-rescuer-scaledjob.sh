@@ -75,15 +75,18 @@ for line in sys.stdin:
     for i, arg in enumerate(argv[:-1]):
         if os.path.basename(arg) != "rokuban" or argv[i + 1] != "server":
             continue
-        roles = None
+        roles = []
+        all_roles = False
         for j, option in enumerate(argv[i + 2 :], i + 2):
             if option == "--roles" and j + 1 < len(argv):
-                roles = argv[j + 1]
-                break
-            if option.startswith("--roles="):
-                roles = option.split("=", 1)[1]
-                break
-        if roles and "worker" in roles.split(","):
+                roles.append(argv[j + 1])
+            elif option.startswith("--roles="):
+                roles.append(option.split("=", 1)[1])
+            elif option == "--all":
+                all_roles = True
+            elif option.startswith("--all="):
+                all_roles = option.split("=", 1)[1].lower() == "true"
+        if all_roles or any("worker" in role.split(",") for role in roles):
             clients.append(" ".join(argv[i:]))
 if clients:
     print("; ".join(clients))
