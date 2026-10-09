@@ -147,7 +147,7 @@ type UpsertMediaAssetTSScanParams struct {
 	ScannedSizeBytes int64
 }
 
-// 原本 TS の計測記録。行があり scanned_size_bytes が現在値と一致すれば計測済み。
+// 原本 TS の計測済みの定義は view current_ts_scanned_originals にある。
 func (q *Queries) UpsertMediaAssetTSScan(ctx context.Context, arg UpsertMediaAssetTSScanParams) error {
 	_, err := q.db.Exec(ctx, upsertMediaAssetTSScan, arg.MediaAssetID, arg.ScannedSizeBytes)
 	return err

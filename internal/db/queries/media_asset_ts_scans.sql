@@ -1,4 +1,4 @@
--- 原本 TS の計測記録。行があり scanned_size_bytes が現在値と一致すれば計測済み。
+-- 原本 TS の計測済みの定義は view current_ts_scanned_originals にある。
 -- name: UpsertMediaAssetTSScan :exec
 INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
 VALUES (sqlc.arg('media_asset_id'), sqlc.arg('scanned_size_bytes'))
