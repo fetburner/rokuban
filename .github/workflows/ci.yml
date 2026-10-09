@@ -301,12 +301,13 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Run conformance shard
+        shell: bash
         env:
           RUN: ${{ matrix.run }}
           SKIP: ${{ matrix.skip }}
           EXPECT: ${{ matrix.expect }}
         run: |
-          # bash -eo pipefail: go test が落ちれば tee を通してもここで落ちる
+          # shell: bash は -eo pipefail 付きで実行される。go test が落ちれば tee を通してもここで落ちる
           args=()
           [ -n "$RUN" ] && args+=(-run "$RUN")
           [ -n "$SKIP" ] && args+=(-skip "$SKIP")
