@@ -247,7 +247,7 @@ jobs:
             run: '^TestBroadcastPathologies$/^EventIDReset$'
             expect: 'TestBroadcastPathologies/EventIDReset'
           - name: following-preceding
-            run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtension)$'
+            run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtensionX)$'
             expect: 'TestBroadcastPathologies/FollowingProgram TestBroadcastPathologies/PrecedingProgramExtension'
           - name: running-status
             run: '^TestBroadcastPathologies$/^RunningStatusStartsSoon$'
