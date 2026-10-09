@@ -131,6 +131,7 @@ mirakc の追従品質は EDCB ほどの長期実績がないため、品質メ�
 | `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
 | ドロップ統計（PID 別 continuity counter 不連続 / TEI） | `ts_scan` が原本を全量読む | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
 | scrambled カウンタ | `ts_scan` が `scrambling_control` ビットを数える | B-CAS/復号障害の検出（[アラート設計](alerts.md) の対象） |
+| `GET /api/recordings/{id}/drop-stats` が `[]` | 計測済みの行だけを返す（未計測・再計測待ちは空） | `[]` はドロップ無しの証拠ではない。区別は `Recording.dropSummary` の有無で行う |
 
 ### ジョブ化されたループの監視
 

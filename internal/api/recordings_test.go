@@ -222,7 +222,8 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 		}
 		assertSummary(detail, "detail")
 
-		// PID 別内訳も同じ判定: 未計測・stale は行があっても空配列（null ではない）。
+		// PID 別内訳も同じ判定で、3 件とも空配列（null ではない）。unmeasured と stale は
+		// PID 行があっても未計測として返さず、measuredZero は計測済みだが行が無いから。
 		var stats []DropStat
 		resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &stats)
 		if resp.StatusCode != http.StatusOK {
