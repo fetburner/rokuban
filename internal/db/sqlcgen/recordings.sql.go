@@ -428,6 +428,21 @@ func (q *Queries) FreezeRecordingEncodePolicy(ctx context.Context, arg FreezeRec
 	return err
 }
 
+const freezeRecordingEncodePolicyIfMissing = `-- name: FreezeRecordingEncodePolicyIfMissing :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', '{}', false)
+ON CONFLICT (recording_id) DO NOTHING
+`
+
+// policy 行が無い録画に、凍結済みとみなす既定値 'always' / 空 desired で行を作る。
+// 呼ぶのは active な encoded があるときだけ（AppendRecordingEncodeProfiles と同じ
+// 「実体があるなら凍結済み」）。この経路の録画は ingest を通らないので、ingest の
+// 素の INSERT（FreezeRecordingEncodePolicy）とは衝突しない。
+func (q *Queries) FreezeRecordingEncodePolicyIfMissing(ctx context.Context, recordingID int64) error {
+	_, err := q.db.Exec(ctx, freezeRecordingEncodePolicyIfMissing, recordingID)
+	return err
+}
+
 const getRecordingEncodePolicy = `-- name: GetRecordingEncodePolicy :one
 SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1
 `

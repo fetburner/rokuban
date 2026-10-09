@@ -288,6 +288,15 @@ FROM recording_encode_policy
 WHERE recording_id = $1
 FOR UPDATE;
 
+-- policy 行が無い録画に、凍結済みとみなす既定値 'always' / 空 desired で行を作る。
+-- 呼ぶのは active な encoded があるときだけ（AppendRecordingEncodeProfiles と同じ
+-- 「実体があるなら凍結済み」）。この経路の録画は ingest を通らないので、ingest の
+-- 素の INSERT（FreezeRecordingEncodePolicy）とは衝突しない。
+-- name: FreezeRecordingEncodePolicyIfMissing :exec
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', '{}', false)
+ON CONFLICT (recording_id) DO NOTHING;
+
 -- desired から 1 つ外す（全置換ではない）。until_encoded で desired が空に
 -- なるなら always に倒す（recording_encode_policy の CHECK。ingest のクランプと
 -- 同じ向き）。版を外しても原本の削除は早まらない: until_encoded は全プロファイル

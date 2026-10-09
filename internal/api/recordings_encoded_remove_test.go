@@ -158,7 +158,7 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	}
 }
 
-// 該当する active な版が無い・録画が無い・policy 行が無いのはいずれも 404。
+// 該当する active な版が無い・録画が無いのはいずれも 404。
 func TestRemoveRecordingEncodedAsset_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
@@ -271,5 +271,127 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
+	}
+}
+
+// 外す tx が要求行を書いて commit する前に足し直しが走っても、commit 後に要求行が残らない。
+// 足し直し側は policy 行のロックを待ち、外す側の commit 後のスナップショットで要求行を消す。
+func TestAddRecordingEncodeProfiles_WaitsForConcurrentRemovalAndClearsRequest(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264", "h265"}}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "足し直し競合", time.Now().Truncate(time.Second), "finished", 706)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "h265")
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: "h264"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{RecordingID: id, Profile: "h264"}); err != nil {
+		t.Fatal(err)
+	}
+
+	status := make(chan int, 1)
+	go func() {
+		resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
+		status <- resp.StatusCode
+	}()
+	select {
+	case got := <-status:
+		t.Fatalf("re-add returned %d while a removal held the policy row, want it to wait", got)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-status:
+		if got != http.StatusNoContent {
+			t.Errorf("re-add status = %d, want 204", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("re-add did not finish after the removal committed")
+	}
+	if got := removalRequests(t, pool, id); len(got) != 0 {
+		t.Errorf("removal requests = %v, want none (h264 is desired again)", got)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
+		t.Errorf("encode_profiles = %v, want [h264 h265]", got)
+	}
+}
+
+func policyRowCount(t *testing.T, pool *pgxpool.Pool, id int64) int {
+	t.Helper()
+	var n int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// catalog 無しの rescue は encoded を作っても policy 行を作らない。active な encoded が
+// あれば凍結済みとみなし、always / 空 desired で行を作ってから外す。
+func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264", "h265"}}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "policy 無し", time.Now().Truncate(time.Second), "finished", 707)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "h265")
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM recording_encode_policy WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	if got := getRecordingKeepOriginal(t, pool, id); got != "always" {
+		t.Errorf("keep_original = %q, want always", got)
+	}
+	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
+		t.Errorf("encode_profiles = %v, want empty", got)
+	}
+	if got := removalRequests(t, pool, id); !slices.Equal(got, []string{"h264"}) {
+		t.Errorf("removal requests = %v, want [h264]", got)
+	}
+	if got := listedEncodedProfiles(t, srv.URL, id); !slices.Equal(got, []string{"h265"}) {
+		t.Errorf("encodedAssets = %v, want [h265]", got)
+	}
+}
+
+// policy 行が無く最後の版を外そうとして 409 になると、作りかけの policy 行も残らない。
+func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264", "h265"}}))
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "policy 無し最後", time.Now().Truncate(time.Second), "finished", 708)
+	originalID := seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264")
+	markOriginalDeleted(t, pool, originalID)
+	if _, err := pool.Exec(context.Background(),
+		`DELETE FROM recording_encode_policy WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	if n := policyRowCount(t, pool, id); n != 0 {
+		t.Errorf("policy rows after 409 = %d, want 0 (rolled back)", n)
 	}
 }

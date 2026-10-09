@@ -772,6 +772,13 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		}
 	}
 
+	// 外す tx（RemoveRecordingEncodedAsset）が要求行を書いて commit する前に
+	// Append の文が走ると、CTE の DELETE は未 commit の要求行を見られず、足し直した
+	// profile の要求行が残る。先にロックを取れば、次の文は外す側の commit 後の
+	// スナップショットで走る。行が無ければ外す側も外せないので競合しない。
+	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
+	}
 	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
 	// 追加は、AppendRecordingEncodeProfiles 自体が「原本が active = 凍結済みと
 	// みなす」既定値 'always' で行を作る（internal/inplace.Register 経由の原本は
@@ -814,14 +821,6 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 	if err != nil {
 		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
 	}
-	// encoded がある録画には ingest か事後追加が policy 行を作っている。行が無ければ
-	// 直列化の点が無いので外さない。
-	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
-		}
-		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
-	}
 	profile := req.Profile
 	assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
 		RecordingID: req.Id,
@@ -832,6 +831,16 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 			return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
 		}
 		return nil, fmt.Errorf("loading encoded asset %q for recording %d: %w", req.Profile, req.Id, err)
+	}
+	// active な encoded がある = 凍結済みとみなす。catalog 無しの rescue
+	// （internal/inplace.Register）は encoded の media_assets を作るが policy 行を
+	// 作らないので、行が無いことがある。直列化の点として先に作る。409 では tx ごと
+	// ロールバックするので、意味を持たない行は残らない。
+	if err := q.FreezeRecordingEncodePolicyIfMissing(ctx, req.Id); err != nil {
+		return nil, fmt.Errorf("freezing encode policy for recording %d: %w", req.Id, err)
+	}
+	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil {
+		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
 	}
 	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
 		RecordingID: req.Id,
