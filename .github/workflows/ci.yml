@@ -253,11 +253,37 @@ jobs:
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
   # kind の受け入れハーネス（deploy/k8s/e2e）とは別 --- あちらは KEDA / ロール分割の
-  # 判定が目的で mirakc モックを使う。こちらは 1 コンテナ・数十秒で軽いので CI で回す
-  # （両方持つ理由は deploy/k8s/e2e/README.md）。Postgres は要らないので独立した job にする。
-  mirakc-conformance:
+  # 判定が目的で mirakc モックを使う。こちらは実物の mirakc を 6 コンテナ起動し、直列だと
+  # 約 4 分かかる（両方持つ理由は deploy/k8s/e2e/README.md）。Postgres は要らないので独立した job にする。
+  #
+  # 直列は意図的（helpers_test.go は PID で一意性を取るのでプロセス内の t.Parallel() は
+  # 壊れる）。そのためプロセス内ではなくランナーを分ける（matrix）。シャードの `-run` は
+  # 所要時間を均すための選び方で、最後のシャードだけ「他が選んだもの以外すべて」を `-skip`
+  # で取る。将来足されたテストは自動でそこに入る。`-run` の綴り違いは "no tests to run" で
+  # 緑になるので、各シャードが選んだ全サブテスト（`expect` の空白区切りの各名前）の
+  # `--- PASS:` が出たことを検査する。
+  # 必須チェック名 `mirakc-conformance` は下の集約ジョブが担う。
+  mirakc-conformance-shard:
+    name: mirakc-conformance (${{ matrix.name }})
     runs-on: ubuntu-latest
-    # -timeout の根拠（コード中の named timeout の積算。TestConformance +
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: event-id-reset
+            run: '^TestBroadcastPathologies$/^EventIDReset$'
+            expect: 'TestBroadcastPathologies/EventIDReset'
+          - name: following-preceding
+            run: '^TestBroadcastPathologies$/^(FollowingProgram|PrecedingProgramExtension)$'
+            expect: 'TestBroadcastPathologies/FollowingProgram TestBroadcastPathologies/PrecedingProgramExtension'
+          - name: running-status
+            run: '^TestBroadcastPathologies$/^RunningStatusStartsSoon$'
+            expect: 'TestBroadcastPathologies/RunningStatusStartsSoon'
+          # 残り全部。上の 3 本が選んだサブテストだけを skip する。
+          - name: rest
+            skip: '^TestBroadcastPathologies$/^(EventIDReset|FollowingProgram|PrecedingProgramExtension|RunningStatusStartsSoon)$'
+            expect: 'TestConformance'
+    # -timeout の根拠（直列全体としてのコード中の named timeout の積算。TestConformance +
     # TestBroadcastPathologies の 4 病態ケース + TestLiveStreamReleaseUnderRecording が
     # 同じテストバイナリで直列に走り、合計 6 コンテナを起動する）。
     #
@@ -292,13 +318,41 @@ jobs:
     # （35m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go や
     # GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m。image pull はここに含まない、
     # 上記のとおり go test 内で消費されるため）を足した 40m にする。
+    #
+    # シャードに分けても値は変えない。mirakc-conformance-weekly.yml は直列で回し続け、
+    # 「ここと同じ値を保つ」と決めている。各シャードの実際の積算は直列より小さいので、
+    # 同じ値は上限として安全側に倒れる。
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
-      - run: go test -tags conformance ./internal/mirakc/conformance/... -timeout 35m -v
+      - name: Run conformance shard
+        shell: bash
+        env:
+          RUN: ${{ matrix.run }}
+          SKIP: ${{ matrix.skip }}
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          # shell: bash は -eo pipefail 付きで実行される。go test が落ちれば tee を通してもここで落ちる
+          args=()
+          [ -n "$RUN" ] && args+=(-run "$RUN")
+          [ -n "$SKIP" ] && args+=(-skip "$SKIP")
+          go test -tags conformance ./internal/mirakc/conformance/... -timeout 35m -v "${args[@]}" | tee shard.log
+          # 空振り検査: -run の綴り違いは "no tests to run" で緑になる。EXPECT は空白区切りで、全名の PASS を要求する
+          for t in $EXPECT; do
+            grep -qE "^\s*--- PASS: ${t}( |$)" shard.log \
+              || { echo "::error::shard ran no expected test: ${t}"; exit 1; }
+          done
+
+  # 必須チェック名 mirakc-conformance を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
+  mirakc-conformance:
+    needs: mirakc-conformance-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.mirakc-conformance-shard.result }}" = success
 
   # 生成物（sqlc/oapi-codegen/orval）が openapi.yaml / マイグレーションからの再生成と一致するかを
   # 検証する。生成物はコミット済みなので他 job（build/test）は再生成漏れがあっても普通に緑になる。
