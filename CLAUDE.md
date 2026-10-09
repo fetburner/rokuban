@@ -76,7 +76,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | 単一 |
 | [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | **索引** → `docs/operations/` |
 | [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 | **索引** → `docs/runbook/` |
-| [docs/invariants.md](docs/invariants.md) | 不変条件 9〜13 の失敗の形（いま先に浮かぶ案が壊すもの）。ルールの根拠を辿るときだけ | 単一 |
+| [docs/invariants.md](docs/invariants.md) | 不変条件 9〜14 の失敗の形（いま先に浮かぶ案が壊すもの）。ルールの根拠を辿るときだけ | 単一 |
 | [docs/workflow.md](docs/workflow.md) | タスク分解・docs 保守・並行作業の規律。該当作業のときだけ | 単一 |
 
 ### タスクマップ
@@ -120,8 +120,9 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 11. **形を固定する前に、その形を決める判定基準を書く**（下記）
 12. **表は行の寿命で割る**（下記）
 13. **永続表に列を足すとき、書くループが脊椎の書き手でなければ衛星表にする**（下記）
+14. **ライブラリの契約に無い挙動を前提にしない**（下記）
 
-> 番号は追加のみ（既存の 1〜8 は docs が番号で参照しているので振り直さない）。9〜13 の**失敗の形（そのチェックが何を止めているか）は [docs/invariants.md](docs/invariants.md) にある。** ここには各条件の「チェック」だけ置く。ルールの根拠を辿るときや、間違えそうになったときだけ docs を開く。
+> 番号は追加のみ（既存の 1〜8 は docs が番号で参照しているので振り直さない）。9〜14 の**失敗の形（そのチェックが何を止めているか）は [docs/invariants.md](docs/invariants.md) にある。** ここには各条件の「チェック」だけ置く。ルールの根拠を辿るときや、間違えそうになったときだけ docs を開く。
 
 #### 9. 導出値と不可逆な事実を同じ列に載せない
 
@@ -164,6 +165,12 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 チェック: 永続表に列を足すとき「**この列を書くループは脊椎の書き手か**」を問う（`recordings` なら試行を観測する watcher / reconciler。既にその表に書いている＝根拠にならない）。脊椎の書き手でないなら `recording_id` を持つ衛星表にする。
 
 境界（絶対視すると壊す。詳細は [docs/invariants.md](docs/invariants.md)）: `deleted_at` / `superseded_at` は部分一意索引の述語が参照するので本体に置く。番組スナップショット列群は watcher が一度だけ書くので脊椎に属する。
+
+#### 14. ライブラリの契約に無い挙動を前提にしない
+
+契約は公開 API とドキュメントだけである。内部表（`river_*` など）・非公開の状態・ソースを読んで知った挙動・エラー文言は契約ではない（テストも同じ）。
+
+チェック: 「**その前提はライブラリのドキュメントのどこに書いてあるか**」を問う。答えられなければ迂回せず提起する。
 
 ### コーディング規約
 
