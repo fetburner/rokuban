@@ -1,4 +1,5 @@
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query'
+import { MockBulkRemoveDialog } from '@/components/mock-version-removal'
 import { useSearch as useRouteSearch, useNavigate } from '@tanstack/react-router'
 import { LayoutGrid, Trash2 } from 'lucide-react'
 import {
@@ -180,6 +181,7 @@ export function RecordingsPage() {
   const selectionButtonRef = useRef<HTMLButtonElement>(null)
   const restoreSelectionButtonFocusRef = useRef(false)
   const selectedIds = [...selected]
+  const [mockBulkOpen, setMockBulkOpen] = useState(false)
   const allLoadedSelected = recordings.length > 0 && recordings.every((r) => selected.has(r.id))
   const toggleView = () => {
     const next: RecordingRowView = view === 'card' ? 'list' : 'card'
@@ -741,6 +743,11 @@ export function RecordingsPage() {
                 </AlertDialog>
               </>
             ) : (
+              <>
+              <Button type="button" variant="outline" size="sm" disabled={selected.size === 0} onClick={() => setMockBulkOpen(true)}>
+                版を削除…
+              </Button>
+              <MockBulkRemoveDialog recordings={recordings.filter(({ id }) => selected.has(id))} open={mockBulkOpen} onOpenChange={setMockBulkOpen} />
               <Button
                 type="button"
                 variant="destructive"
@@ -751,6 +758,7 @@ export function RecordingsPage() {
                 <Trash2 data-icon="inline-start" />
                 ごみ箱へ
               </Button>
+              </>
             )}
             <Button type="button" variant="ghost" size="sm" disabled={bulkBusy} onClick={cancelSelection}>
               キャンセル

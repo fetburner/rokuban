@@ -25,6 +25,7 @@ import { apiErrorMessage, unwrap } from '@/api/unwrap'
 import { DropStatsTable } from '@/components/drop-stats-table'
 import type { ChapterEditorCommands, ChapterEditorStatus } from '@/components/recording-chapter-editor'
 import { RecordingAssetControls } from '@/components/recording-actions'
+import { MockInlineDelete, MockLastCopyNote, MockOrganizeBar, MockRowMenu, isLastCopy, mockVariant } from '@/components/mock-version-removal'
 import {
   DropBadges,
   EncodeStatusBadges,
@@ -191,6 +192,9 @@ export function RecordingDetail({
   const [selectedTab, setSelectedTab] = useState<DetailTab>(defaultDetailTab)
   const [descriptionExpanded, setDescriptionExpanded] = useState(false)
   const encodedAssets = recording.encodedAssets ?? []
+  const mock = mockVariant()
+  const [organizing, setOrganizing] = useState(false)
+  const [picked, setPicked] = useState<string[]>([])
   const hasOriginal = recording.sizeBytes !== undefined
   const hasNonCutEncoded = encodedAssets.some((asset) => asset.cut !== true)
   const playbackSelectionFor = (candidate: Recording, isTrashed = candidate.deletedAt != null) => {
@@ -1000,6 +1004,16 @@ export function RecordingDetail({
                         data-testid="recording-version-row"
                         className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm"
                       >
+                        {mock === 'C' && organizing && (
+                          <input
+                            type="checkbox"
+                            className="size-5 accent-primary"
+                            aria-label={`${asset.profile}を選ぶ`}
+                            disabled={isLastCopy(recording, asset)}
+                            checked={picked.includes(asset.profile)}
+                            onChange={() => setPicked(picked.includes(asset.profile) ? picked.filter((p) => p !== asset.profile) : [...picked, asset.profile])}
+                          />
+                        )}
                         <span className="font-medium">{asset.cut ? `カット版 (${asset.profile})` : asset.profile}</span>
                         {showEncoded && asset.profile === activePlaybackProfile && <span className="rounded bg-foreground px-1.5 py-0.5 text-xs text-background">再生中</span>}
                         <span className="ml-auto text-muted-foreground">{asset.sizeBytes === undefined ? 'サイズ不明' : formatBytes(asset.sizeBytes)}</span>
@@ -1016,6 +1030,8 @@ export function RecordingDetail({
                           </Button>
                         )}
                         <a href={recordingFileURL(recording.id, asset.profile)} download className="inline-flex min-h-6 pointer-coarse:min-h-11 items-center text-primary underline-offset-2 hover:underline">ダウンロード</a>
+                        {mock === 'A' && <MockInlineDelete recording={recording} asset={asset} />}
+                        {mock === 'B' && <MockRowMenu recording={recording} asset={asset} />}
                       </div>
                     ))}
                     {hasOriginal ? (
@@ -1049,6 +1065,10 @@ export function RecordingDetail({
                   configuredEncodeProfiles.length === 0 && (
                     <p className="text-muted-foreground">エンコードプロファイルが設定されていません</p>
                   )}
+                {(mock === 'A' || mock === 'C') && <MockLastCopyNote recording={recording} />}
+                {mock === 'C' && encodedAssets.length > 0 && !(encodedAssets.length === 1 && isLastCopy(recording, encodedAssets[0])) && (
+                  <MockOrganizeBar recording={recording} organizing={organizing} setOrganizing={setOrganizing} picked={picked} setPicked={setPicked} />
+                )}
                 <RecordingAssetControls key={recording.id} recording={recording} />
               </section>
             )}
