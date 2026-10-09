@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -26,7 +27,7 @@ import (
 )
 
 // testIngestWorker は jobs.IngestJobArgs 用の no-op ワーカー。このパッケージの
-// テストはジョブを実際に実行しない（river_job テーブルの行を SQL で確認するだけ）が、
+// テストはジョブを実際に実行せず、River の公開 API で投入結果を確認するが、
 // InsertTx は挿入時点で Kind が Workers バンドルに登録済みであることを要求するため、
 // 何もしないワーカーだけ登録しておく。
 type testIngestWorker struct {
@@ -34,6 +35,30 @@ type testIngestWorker struct {
 }
 
 func (testIngestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) error { return nil }
+
+func listIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []*rivertype.JobRow {
+	t.Helper()
+	return testutil.MustListRiverJobsOfKind(t, ctx, pool, jobs.IngestJobArgs{}.Kind())
+}
+
+func countIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordID string) int {
+	t.Helper()
+	jobRows := listIngestJobs(t, ctx, pool)
+	if recordID == "" {
+		return len(jobRows)
+	}
+	count := 0
+	for _, row := range jobRows {
+		var args jobs.IngestJobArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding ingest job %d args: %v", row.ID, err)
+		}
+		if args.RecordID == recordID {
+			count++
+		}
+	}
+	return count
+}
 
 // newTestRiverClient はテスト用の River クライアントを作る。
 //
@@ -56,11 +81,6 @@ func newTestRiverClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx5.Tx]
 func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	t.Helper()
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	rc := newTestRiverClient(t, pool)
 
@@ -357,20 +377,12 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	assertRecordingSnapshotColumns(t, pool, *syncRecordingID, snapshotFromRecord(record))
 
 	// Verify ingest job
-	var jobCount int
-	err = pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount)
-	if err != nil {
-		t.Fatalf("querying river_job: %v", err)
+	jobRows := listIngestJobs(t, ctx, pool)
+	if len(jobRows) != 1 {
+		t.Errorf("ingest job count = %d, want 1", len(jobRows))
 	}
-	if jobCount != 1 {
-		t.Errorf("ingest job count = %d, want 1", jobCount)
-	}
-	var priority int
-	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&priority); err != nil {
-		t.Fatalf("querying ingest priority: %v", err)
-	}
-	if priority != 2 {
-		t.Errorf("finished ingest priority = %d, want 2", priority)
+	if len(jobRows) == 1 && jobRows[0].Priority != 2 {
+		t.Errorf("finished ingest priority = %d, want 2", jobRows[0].Priority)
 	}
 }
 
@@ -395,11 +407,7 @@ func TestProcessRecord_Idempotent(t *testing.T) {
 		t.Errorf("recording count = %d, want 1", recCount)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 1 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
 		t.Errorf("ingest job count = %d, want 1", jobCount)
 	}
 }
@@ -417,19 +425,12 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 
 	// 録画開始時点で ingest を投入する。追従ジョブが録画中ずっと枠を
 	// 保持することで、finished 後の全量 pull と同じ job 形を使える。
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
+	jobRows := listIngestJobs(t, ctx, pool)
+	if len(jobRows) != 1 {
+		t.Errorf("ingest job count during recording = %d, want 1", len(jobRows))
 	}
-	if jobCount != 1 {
-		t.Errorf("ingest job count during recording = %d, want 1", jobCount)
-	}
-	var recordingPriority int
-	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&recordingPriority); err != nil {
-		t.Fatalf("querying recording ingest priority: %v", err)
-	}
-	if recordingPriority != 1 {
-		t.Errorf("recording ingest priority = %d, want 1", recordingPriority)
+	if len(jobRows) == 1 && jobRows[0].Priority != 1 {
+		t.Errorf("recording ingest priority = %d, want 1", jobRows[0].Priority)
 	}
 
 	var recStatus string
@@ -455,18 +456,12 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
 	}
 
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
+	jobRows = listIngestJobs(t, ctx, pool)
+	if len(jobRows) != 1 {
+		t.Errorf("ingest job count after finished = %d, want 1", len(jobRows))
 	}
-	if jobCount != 1 {
-		t.Errorf("ingest job count after finished = %d, want 1", jobCount)
-	}
-	var finishedPriority int
-	if err := pool.QueryRow(ctx, "SELECT priority FROM river_job WHERE kind = 'ingest'").Scan(&finishedPriority); err != nil {
-		t.Fatalf("querying finished ingest priority: %v", err)
-	}
-	if finishedPriority != 1 {
-		t.Errorf("finished notification must reuse the recording job at priority 1, got %d", finishedPriority)
+	if len(jobRows) == 1 && jobRows[0].Priority != 1 {
+		t.Errorf("finished notification must reuse the recording job at priority 1, got %d", jobRows[0].Priority)
 	}
 
 	// Still only one recording
@@ -562,11 +557,7 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 		t.Errorf("new recording superseded_at = %v, want nil", newSupersededAt)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 1 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
 		t.Errorf("ingest job count = %d, want 1 (成功 record を取り込む ingest が起動するはず)", jobCount)
 	}
 
@@ -754,11 +745,7 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 			"(failed 行 1 + 成功行 1 のまま増減しないはず)", totalCount)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 1 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
 		t.Errorf("ingest job count = %d, want 1 (3 回処理しても ingest は 1 回だけ)", jobCount)
 	}
 
@@ -882,11 +869,7 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 	}
 
 	// No ingest job
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 0 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 0 {
 		t.Errorf("ingest job count = %d, want 0 for untagged record", jobCount)
 	}
 }
@@ -956,13 +939,7 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 			t.Fatalf("round %d: recording count = %d, want 1 (concurrent processRecord must be idempotent)", round, recCount)
 		}
 
-		var jobCount int
-		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
-		).Scan(&jobCount); err != nil {
-			t.Fatalf("round %d: querying river_job: %v", round, err)
-		}
-		if jobCount != 1 {
+		if jobCount := countIngestJobs(t, ctx, pool, recordID); jobCount != 1 {
 			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
 		}
 	}
@@ -998,11 +975,7 @@ func TestProcessRecord_ConcurrentUntaggedRecord(t *testing.T) {
 		t.Errorf("expected recording_id nil for untagged record, got %d", *syncRecordingID)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 0 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 0 {
 		t.Errorf("ingest job count = %d, want 0 for untagged record", jobCount)
 	}
 }
@@ -1047,10 +1020,6 @@ func TestHandleRecordBroken(t *testing.T) {
 func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	rc := newTestRiverClient(t, pool)
 
@@ -1158,10 +1127,6 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	rc := newTestRiverClient(t, pool)
 	programID := int64(327361024101)
 	createTestReservation(t, pool, programID)
@@ -1265,10 +1230,6 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning: %v", err)
-	}
-
 	rc := newTestRiverClient(t, pool)
 
 	createTestReservation(t, pool, 200001)
@@ -1330,11 +1291,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("recordings count = %d, want 2", recCount)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 2 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 2 {
 		t.Errorf("ingest job count = %d, want 2", jobCount)
 	}
 
@@ -1350,10 +1307,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("recordings count after 2nd sweep = %d, want 2", recCount)
 	}
 
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM river_job WHERE kind = 'ingest'").Scan(&jobCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if jobCount != 2 {
+	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 2 {
 		t.Errorf("ingest job count after 2nd sweep = %d, want 2", jobCount)
 	}
 }
@@ -1829,9 +1783,6 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 	rc := newTestRiverClient(t, pool)
 
 	b := testRecord("sse-mid-loop", 700001, "finished")
@@ -1892,10 +1843,6 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	rc := newTestRiverClient(t, pool)
 
@@ -1971,13 +1918,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 				"((a) handleEvent と (c) Sweep の並行実行は冪等でなければならない)", round, recCount)
 		}
 
-		var jobCount int
-		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
-		).Scan(&jobCount); err != nil {
-			t.Fatalf("round %d: querying river_job: %v", round, err)
-		}
-		if jobCount != 1 {
+		if jobCount := countIngestJobs(t, ctx, pool, recordID); jobCount != 1 {
 			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
 		}
 	}
@@ -1990,10 +1931,6 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	rc := newTestRiverClient(t, pool)
 
@@ -2167,9 +2104,6 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 	rc := newTestRiverClient(t, pool)
 
 	ruleID := createTestRule(t, pool)
@@ -2435,12 +2369,7 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 				t.Fatalf("processRecord (2nd call): %v", err)
 			}
 
-			var jobCount int
-			if err := pool.QueryRow(ctx,
-				"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", recordID,
-			).Scan(&jobCount); err != nil {
-				t.Fatalf("querying river_job: %v", err)
-			}
+			jobCount := countIngestJobs(t, ctx, pool, recordID)
 			wantJobCount := 0
 			if tt.wantIngestJob {
 				wantJobCount = 1

@@ -1891,13 +1891,54 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	}
 }
 
+type completedIngestJobTestWorker struct {
+	river.WorkerDefaults[jobs.IngestJobArgs]
+}
+
+func (completedIngestJobTestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) error {
+	return nil
+}
+
+func waitForCompletedIngestJob(t *testing.T, events <-chan *river.Event, jobID int64) {
+	t.Helper()
+	timer := time.NewTimer(20 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case event := <-events:
+			if event != nil && event.Job != nil && event.Job.ID == jobID {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for ingest job %d to complete", jobID)
+		}
+	}
+}
+
 func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
-	client, err := NewInsertOnlyClient(pool)
+	workers := river.NewWorkers()
+	river.AddWorker(workers, &completedIngestJobTestWorker{})
+	client, err := NewClient(pool, workers, ClientConfig{
+		BoundSites:   []string{"default"},
+		PeriodicJobs: false,
+	})
 	if err != nil {
-		t.Fatalf("creating insert-only River client: %v", err)
+		t.Fatalf("creating River client: %v", err)
 	}
+	completedEvents, unsubscribe := client.Subscribe(river.EventKindJobCompleted)
+	defer unsubscribe()
+	clientCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if err := client.Start(clientCtx); err != nil {
+		t.Fatalf("starting River client: %v", err)
+	}
+	defer func() {
+		cancel()
+		<-client.Stopped()
+	}()
+
 	args := jobs.IngestJobArgs{Site: "default", RecordID: "rec-completed-job-reinsert"}
 	first, err := client.Insert(ctx, args, nil)
 	if err != nil {
@@ -1906,9 +1947,7 @@ func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
 	if first.Job == nil {
 		t.Fatal("first ingest job is nil")
 	}
-	if _, err := pool.Exec(ctx, `UPDATE river_job SET state = 'completed', finalized_at = now() WHERE id = $1`, first.Job.ID); err != nil {
-		t.Fatalf("marking first ingest job completed: %v", err)
-	}
+	waitForCompletedIngestJob(t, completedEvents, first.Job.ID)
 	second, err := client.Insert(ctx, args, nil)
 	if err != nil {
 		t.Fatalf("inserting ingest job after completion: %v", err)
@@ -2964,15 +3003,27 @@ func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) 
 
 func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job
-		 WHERE kind = 'encode'
-		   AND (args->>'recording_id')::bigint = $1
-		   AND args->>'profile' = $2`,
-		recordingID, profile,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting encode jobs: %v", err)
+	count := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
+		var args EncodeJobArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
+		}
+		if args.RecordingID == recordingID && args.Profile == profile {
+			count++
+		}
+	}
+	return count
+}
+
+func countEncodeJobsForRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
+	t.Helper()
+	count := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[EncodeJobArgs](t, row)
+		if args.RecordingID == recordingID {
+			count++
+		}
 	}
 	return count
 }
@@ -3175,13 +3226,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty", profiles)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	).Scan(&jobCount); err != nil {
-		t.Fatal(err)
-	}
+	jobCount := countEncodeJobsForRecording(t, pool, recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}
@@ -3230,13 +3275,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty (default, unchanged)", profiles)
 	}
 
-	var jobCount int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	).Scan(&jobCount); err != nil {
-		t.Fatal(err)
-	}
+	jobCount := countEncodeJobsForRecording(t, pool, recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}

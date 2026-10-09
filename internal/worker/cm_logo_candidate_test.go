@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -262,10 +261,7 @@ func TestRecoverStaleCMLogoCandidateJobsRecoversDeadWorker(t *testing.T) {
 			if err := recoverStaleCMLogoCandidateJobs(ctx, pool); err != nil {
 				t.Fatal(err)
 			}
-			var jobState string
-			if err := pool.QueryRow(ctx, `SELECT state::text FROM river_job WHERE id = $1`, jobID).Scan(&jobState); err != nil {
-				t.Fatal(err)
-			}
+			jobState := string(testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), jobID).State)
 			if jobState != tc.wantJob {
 				t.Errorf("river job = %q, want %q", jobState, tc.wantJob)
 			}
@@ -316,11 +312,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	id := seedCMRecording(t, pool, t.TempDir(), 949)
 	areaAt := seedTaughtArea(t, pool, 1180)
 	count := func() int {
-		var n int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'cm_logo_candidate'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+		return len(testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.CMLogoCandidateJobArgs{}).Kind()))
 	}
 	w := &CMDetectReconcileWorker{Pool: pool}
 	if err := w.Work(ctx, nil); err != nil {
@@ -329,12 +321,10 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Fatalf("candidate jobs after the first pass = %d, want 1", got)
 	}
-	var args string
-	if err := pool.QueryRow(context.Background(), `SELECT args::text FROM river_job WHERE kind = 'cm_logo_candidate'`).Scan(&args); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(args, `"recording_id"`) || !strings.Contains(args, `"network_id": 32736`) {
-		t.Errorf("candidate job args = %s, want station 32736 and a recording", args)
+	rows := testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.CMLogoCandidateJobArgs{}).Kind())
+	args := testutil.MustDecodeRiverJobArgs[jobs.CMLogoCandidateJobArgs](t, rows[0])
+	if args.NetworkID != 32736 || args.RecordingID == 0 {
+		t.Errorf("candidate job args = %+v, want station 32736 and a recording", args)
 	}
 
 	insertRunningCandidate(t, pool, id, areaAt)

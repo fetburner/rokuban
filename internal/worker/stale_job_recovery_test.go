@@ -10,8 +10,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 type staleRecoveryTestCandidate struct {
@@ -165,21 +167,16 @@ func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
 		t.Fatal("completed job was treated as recovered")
 	}
 
-	var state string
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT state::text FROM river_job WHERE id = $1", oldJobID).Scan(&state); err != nil {
-		t.Fatalf("reading completed job state: %v", err)
+	job := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), oldJobID)
+	if job.State != rivertype.JobStateCompleted {
+		t.Errorf("old job state = %q, want completed", job.State)
 	}
-	if state != "completed" {
-		t.Errorf("old job state = %q, want completed", state)
-	}
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*)
-		FROM river_job
-		WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	).Scan(&jobCount); err != nil {
-		t.Fatalf("counting encode jobs: %v", err)
+	jobCount := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.EncodeJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
+		if args.RecordingID == recordingID {
+			jobCount++
+		}
 	}
 	if jobCount != 1 {
 		t.Errorf("encode job count after completed-job recovery = %d, want 1", jobCount)

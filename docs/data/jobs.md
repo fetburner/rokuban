@@ -29,7 +29,9 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
-- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・DB のみ（reconciler は mirakc への HTTP を伴うが、パスを跨ぐ接続や状態は持たない）・重複実行不可という性質が epg_sync と同じである。そのためどちらも River のジョブとして扱い、排他は advisory lock ではなく**ジョブロック + `UniqueOpts`**（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。機構が 1 つに減る
+- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・DB のみ（reconciler は mirakc への HTTP を伴うが、パスを跨ぐ接続や状態は持たない）・重複実行不可という性質が epg_sync と同じである。そのためどちらも River のジョブとして扱い、排他は advisory lock ではなく**ジョブロック + `UniqueOpts`**（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。両方の `Timeout()` は有限なので、プロセス死後の実行は River の [stuck-job 契約](https://riverqueue.com/docs/stuck-jobs) に沿って JobRescuer が回収する。セッションロックへ移す利益はキュー実装を交換する場面に限られ、この設計の目的には不要である
+- エンコード待機列は River の公開 `JobList` で作る。`running` は待機件数から分けて実行中として数える。
+- desired から外れた投入済みプロファイルのジョブも実行されるため、待機列で隠さない。
 
 ### 定期実行の契機はデプロイ形態に委ねる
 

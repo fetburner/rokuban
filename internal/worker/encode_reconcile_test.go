@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // encodeConfigWith は名前だけが意味を持つ encode 設定を作る（このパスは
@@ -200,7 +201,7 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 		t.Errorf("second Insert returned job id %d, want the first job's id %d", second.Job.ID, first.Job.ID)
 	}
 	if got := countEncodeJobs(t, pool, recordingID, "dedupe"); got != 1 {
-		t.Errorf("river_job rows for the duplicated args = %d, want 1", got)
+		t.Errorf("encode job rows for the duplicated args = %d, want 1", got)
 	}
 
 	// パスのジョブ自身も pending 中は 1 本に合流する。
@@ -487,12 +488,7 @@ func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
 
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")})
 
-	var jobs int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job WHERE kind = 'encode'`).Scan(&jobs); err != nil {
-		t.Fatal(err)
-	}
-	if jobs != 0 {
+	if jobs := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())); jobs != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobs)
 	}
 }
@@ -592,14 +588,29 @@ func TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates(t *testing.T) {
 		t.Fatalf("pass 3: encode jobs for third = %d, want 1", got)
 	}
 
-	// 巻き戻りの観測は river_job の件数では見えない（UniqueOpts が pending 中の
+	// 巻き戻りの観測はジョブ件数では見えない（UniqueOpts が pending 中の
 	// 1 本に合流させるため、1 件目に再投入してもジョブ数は増えない）。
-	// 1 件目の river_job 行を削除してから巻き戻りを起こし、復活することで
+	// 1 件目のジョブ行を削除してから巻き戻りを起こし、復活することで
 	// 「もう一度 examine された」ことを見る。
-	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = 'h265'`,
-		first); err != nil {
-		t.Fatalf("deleting first recording's river_job row: %v", err)
+	jobRows := testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())
+	riverClient := testutil.NewRiverClient(t, pool)
+	deleted := false
+	for _, row := range jobRows {
+		var args EncodeJobArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
+		}
+		if args.RecordingID != first || args.Profile != "h265" {
+			continue
+		}
+		if _, err := riverClient.JobDelete(context.Background(), row.ID); err != nil {
+			t.Fatalf("deleting first recording's encode job: %v", err)
+		}
+		deleted = true
+		break
+	}
+	if !deleted {
+		t.Fatal("first recording's h265 encode job not found for the rewind check")
 	}
 	if got := countEncodeJobs(t, pool, first, "h265"); got != 0 {
 		t.Fatalf("after delete: encode jobs for first = %d, want 0 (setup for the rewind check)", got)

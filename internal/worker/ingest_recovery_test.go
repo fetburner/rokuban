@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -55,10 +56,11 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	if finalizedAt != nil {
 		t.Fatal("stale ingest finalized_at was set before recovery")
 	}
-	var gotAttemptedAt time.Time
-	if err := pool.QueryRow(ctx, "SELECT attempted_at FROM river_job WHERE id = $1", oldJobID).Scan(&gotAttemptedAt); err != nil {
-		t.Fatalf("reading stale ingest attempted_at: %v", err)
+	oldJob := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), oldJobID)
+	if oldJob.AttemptedAt == nil {
+		t.Fatal("stale ingest attempted_at is NULL")
 	}
+	gotAttemptedAt := *oldJob.AttemptedAt
 	if !gotAttemptedAt.Equal(attemptedAt) {
 		t.Fatalf("stale ingest attempted_at = %v, want %v", gotAttemptedAt, attemptedAt)
 	}
@@ -98,13 +100,14 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	}
 
 	var replacementID int64
-	if err := pool.QueryRow(ctx, `
-		SELECT id
-		FROM river_job
-		WHERE kind = 'ingest' AND args->>'site' = $1 AND args->>'record_id' = $2 AND state <> 'discarded'
-		ORDER BY id DESC
-		LIMIT 1`, testSite, recordID).Scan(&replacementID); err != nil {
-		t.Fatalf("finding replacement ingest job: %v", err)
+	for _, candidate := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.IngestJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.IngestJobArgs](t, candidate)
+		if args.Site == testSite && args.RecordID == recordID && candidate.State != rivertype.JobStateDiscarded && candidate.ID > replacementID {
+			replacementID = candidate.ID
+		}
+	}
+	if replacementID == 0 {
+		t.Fatal("replacement ingest job not found")
 	}
 	if replacementID == oldJobID {
 		t.Fatalf("replacement ingest reused old job ID %d", oldJobID)
@@ -117,12 +120,8 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 	if finalizedAt == nil {
 		t.Fatal("old ingest finalized_at is NULL after recovery")
 	}
-	var errorsText, metadataText string
-	if err := pool.QueryRow(ctx,
-		"SELECT errors::text, metadata::text FROM river_job WHERE id = $1", oldJobID,
-	).Scan(&errorsText, &metadataText); err != nil {
-		t.Fatalf("reading old ingest recovery details: %v", err)
-	}
+	oldJob = testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), oldJobID)
+	errorsText, metadataText := fmt.Sprintf("%+v", oldJob.Errors), string(oldJob.Metadata)
 	if !strings.Contains(errorsText, ingestRecoveryReason) {
 		t.Fatalf("old ingest errors = %q, want recovery reason %q", errorsText, ingestRecoveryReason)
 	}
@@ -130,19 +129,12 @@ func TestRecordSweepRecovery_ReplacesStaleRunningIngest(t *testing.T) {
 		t.Fatalf("old ingest metadata = %q, want recovery reason %q", metadataText, ingestRecoveryReason)
 	}
 
-	var replacementState string
-	var replacementAttemptedAt, replacementFinalizedAt *time.Time
-	if err := pool.QueryRow(ctx, `
-		SELECT state, attempted_at, finalized_at
-		FROM river_job WHERE id = $1`, replacementID,
-	).Scan(&replacementState, &replacementAttemptedAt, &replacementFinalizedAt); err != nil {
-		t.Fatalf("reading replacement ingest state: %v", err)
+	replacement := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), replacementID)
+	if replacement.State != rivertype.JobStateAvailable {
+		t.Fatalf("replacement ingest state = %q, want available", replacement.State)
 	}
-	if replacementState != string(rivertype.JobStateAvailable) {
-		t.Fatalf("replacement ingest state = %q, want available", replacementState)
-	}
-	if replacementAttemptedAt != nil || replacementFinalizedAt != nil {
-		t.Fatalf("replacement ingest timestamps = attempted_at=%v finalized_at=%v, want both NULL", replacementAttemptedAt, replacementFinalizedAt)
+	if replacement.AttemptedAt != nil || replacement.FinalizedAt != nil {
+		t.Fatalf("replacement ingest timestamps = attempted_at=%v finalized_at=%v, want both NULL", replacement.AttemptedAt, replacement.FinalizedAt)
 	}
 	if got := unIngestedBacklogCount(t, pool, testSite); got != 1 {
 		t.Fatalf("un-ingested backlog after recovery = %d, want 1 until replacement ingest runs", got)
@@ -385,25 +377,18 @@ func newEmptyRecordSweepWorker(t *testing.T, pool *pgxpool.Pool) *RecordSweepWor
 
 func ingestJobStateAndFinalizedAt(t *testing.T, pool *pgxpool.Pool, jobID int64) (string, *time.Time) {
 	t.Helper()
-	var state string
-	var finalizedAt *time.Time
-	if err := pool.QueryRow(context.Background(),
-		"SELECT state, finalized_at FROM river_job WHERE id = $1", jobID,
-	).Scan(&state, &finalizedAt); err != nil {
-		t.Fatalf("reading ingest job state: %v", err)
-	}
-	return state, finalizedAt
+	job := testutil.MustGetRiverJob(t, context.Background(), testutil.NewRiverClient(t, pool), jobID)
+	return string(job.State), job.FinalizedAt
 }
 
 func assertIngestJobCount(t *testing.T, pool *pgxpool.Pool, site, recordID string, want int) {
 	t.Helper()
-	var got int
-	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*)
-		FROM river_job
-		WHERE kind = 'ingest' AND args->>'site' = $1 AND args->>'record_id' = $2`, site, recordID,
-	).Scan(&got); err != nil {
-		t.Fatalf("counting ingest jobs: %v", err)
+	got := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (jobs.IngestJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.IngestJobArgs](t, row)
+		if args.Site == site && args.RecordID == recordID {
+			got++
+		}
 	}
 	if got != want {
 		t.Fatalf("ingest job count = %d, want %d", got, want)
@@ -416,13 +401,12 @@ func assertIngestJobCount(t *testing.T, pool *pgxpool.Pool, site, recordID strin
 // 行が 2 本になっていないこと）を見るには discarded を除いた母数が要る。
 func assertNonDiscardedIngestJobCount(t *testing.T, pool *pgxpool.Pool, site, recordID string, want int) {
 	t.Helper()
-	var got int
-	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*)
-		FROM river_job
-		WHERE kind = 'ingest' AND args->>'site' = $1 AND args->>'record_id' = $2 AND state <> 'discarded'`, site, recordID,
-	).Scan(&got); err != nil {
-		t.Fatalf("counting non-discarded ingest jobs: %v", err)
+	got := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (jobs.IngestJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.IngestJobArgs](t, row)
+		if args.Site == site && args.RecordID == recordID && row.State != rivertype.JobStateDiscarded {
+			got++
+		}
 	}
 	if got != want {
 		t.Fatalf("non-discarded ingest job count = %d, want %d", got, want)

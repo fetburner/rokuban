@@ -2,6 +2,7 @@ package tsscan
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -360,25 +361,14 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	var got []int64
-	rows, err := pool.Query(ctx, `
-		SELECT (args->>'recording_id')::bigint
-		FROM river_job
-		WHERE kind = 'ts_scan'
-		ORDER BY (args->>'recording_id')::bigint`)
-	if err != nil {
-		t.Fatalf("querying queued scan jobs: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var recordingID int64
-		if err := rows.Scan(&recordingID); err != nil {
-			t.Fatalf("scanning queued recording ID: %v", err)
+	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (ScanArgs{}).Kind()) {
+		var args ScanArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding queued scan job %d args: %v", row.ID, err)
 		}
-		got = append(got, recordingID)
+		got = append(got, args.RecordingID)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating queued scan jobs: %v", err)
-	}
+	slices.Sort(got)
 	want := []int64{missingScanID, staleScanID}
 	slices.Sort(want)
 	if !slices.Equal(got, want) {
@@ -413,14 +403,20 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 		t.Fatalf("second recording jobs after first pass = %d, want 0", got)
 	}
 	var continuationAfter int64
-	if err := pool.QueryRow(ctx, `
-		SELECT (args->>'after_recording_id')::bigint
-		FROM river_job
-		WHERE kind = 'ts_scan_reconcile'
-		  AND state IN ('available', 'retryable', 'running')
-		ORDER BY id DESC
-		LIMIT 1`).Scan(&continuationAfter); err != nil {
-		t.Fatalf("reading reconcile continuation: %v", err)
+	var continuationJobID int64
+	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (ReconcileArgs{}).Kind()) {
+		if row.State != rivertype.JobStateAvailable && row.State != rivertype.JobStateRetryable && row.State != rivertype.JobStateRunning {
+			continue
+		}
+		if row.ID < continuationJobID {
+			continue
+		}
+		var args ReconcileArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding reconcile job %d args: %v", row.ID, err)
+		}
+		continuationAfter = args.AfterRecordingID
+		continuationJobID = row.ID
 	}
 	if continuationAfter != firstID {
 		t.Fatalf("continuation cursor = %d, want first recording ID %d", continuationAfter, firstID)
@@ -502,11 +498,14 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	var count int
-	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM river_job
-		WHERE kind = 'ts_scan' AND (args->>'recording_id')::bigint = $1`, recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ts_scan jobs: %v", err)
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (ScanArgs{}).Kind()) {
+		var args ScanArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding scan job %d args: %v", row.ID, err)
+		}
+		if args.RecordingID == recordingID {
+			count++
+		}
 	}
 	return count
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
@@ -52,10 +51,6 @@ import (
 func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -168,26 +163,22 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	// available のまま残っていても「worker が単に死んでいるだけ」の
 	// 偽陰性と区別できない（各キュー種別ごとに canary を置く理由）。
 	for _, r := range results {
-		waitForNotAvailable(t, ctx, pool, r.name, r.tokyoID)
+		waitForNotAvailable(t, ctx, client, r.name, r.tokyoID)
 	}
 
 	// 他サイト（takamatsu）の 4 件は、tokyo の worker が十分な時間動いた後でも
 	// available のまま残っているはず（1 件も掴んでいない）。
 	for _, r := range results {
-		var state string
-		if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", r.otherID).Scan(&state); err != nil {
+		job, err := client.JobGet(ctx, r.otherID)
+		if err != nil {
 			t.Fatalf("[%s] querying takamatsu job state: %v", r.name, err)
 		}
-		if state != string(rivertype.JobStateAvailable) {
+		if job.State != rivertype.JobStateAvailable {
 			t.Errorf("[%s] takamatsu job state = %q, want %q (tokyo worker must never dequeue it)",
-				r.name, state, rivertype.JobStateAvailable)
+				r.name, job.State, rivertype.JobStateAvailable)
 		}
-		var attempt int
-		if err := pool.QueryRow(ctx, "SELECT attempt FROM river_job WHERE id = $1", r.otherID).Scan(&attempt); err != nil {
-			t.Fatalf("[%s] querying takamatsu job attempt: %v", r.name, err)
-		}
-		if attempt != 0 {
-			t.Errorf("[%s] takamatsu job attempt = %d, want 0 (tokyo worker must never touch it)", r.name, attempt)
+		if job.Attempt != 0 {
+			t.Errorf("[%s] takamatsu job attempt = %d, want 0 (tokyo worker must never touch it)", r.name, job.Attempt)
 		}
 	}
 }
@@ -197,15 +188,19 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 // Fatal でその場で失敗させる --- 「他サイトのジョブが available のまま」だけを
 // 見るテストは、自サイトのジョブも同じ理由で available のままという偽陰性を
 // 拾えない。
-func waitForNotAvailable(t *testing.T, ctx context.Context, pool *pgxpool.Pool, name string, jobID int64) {
+func waitForNotAvailable(t *testing.T, ctx context.Context, client interface {
+	JobGet(context.Context, int64) (*rivertype.JobRow, error)
+}, name string, jobID int64) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	var state string
+	var state rivertype.JobState
 	for time.Now().Before(deadline) {
-		if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", jobID).Scan(&state); err != nil {
+		job, err := client.JobGet(ctx, jobID)
+		if err != nil {
 			t.Fatalf("[%s] querying job state: %v", name, err)
 		}
-		if state != string(rivertype.JobStateAvailable) && state != string(rivertype.JobStateRunning) {
+		state = job.State
+		if state != rivertype.JobStateAvailable && state != rivertype.JobStateRunning {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -239,10 +234,6 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	client, err := worker.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
@@ -266,7 +257,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 		t.Fatalf("inserting old-style job: %v", err)
 	}
 	if oldRes.UniqueSkippedAsDuplicate {
-		t.Fatal("old-style insert should not itself be a duplicate (river_job was just cleared)")
+		t.Fatal("old-style insert should not itself be a duplicate (the test database starts empty)")
 	}
 	if oldRes.Job.Queue != "ingest" {
 		t.Fatalf("old-style job queue = %q, want %q", oldRes.Job.Queue, "ingest")

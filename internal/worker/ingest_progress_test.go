@@ -361,7 +361,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 // 至らなかったジョブが進捗行を残すことを確認する（issue #212）。
 //
 // 行が残ることは意図した挙動で、UI が「どこまで進んで止まっているか」を読む
-// 唯一の材料になる（River の river_job を API 契約に露出させない代わり）。
+// 唯一の材料になる（River の内部状態を API 契約に露出させない代わり）。
 // HEAD が転送量と食い違う長さを返すので、層 3 の照合で失敗する。
 func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	tsData := makeTSData(100)

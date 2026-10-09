@@ -273,12 +273,9 @@ func waitForIngestLifecycleCompletion(t *testing.T, events <-chan *river.Event) 
 func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, jobID int64, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
 	t.Helper()
 	ctx := context.Background()
-	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", jobID).Scan(&state); err != nil {
-		t.Fatalf("reading first River job state: %v", err)
-	}
-	if state != string(rivertype.JobStateCompleted) {
-		t.Errorf("persisted first job state = %q, want completed", state)
+	job := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), jobID)
+	if job.State != rivertype.JobStateCompleted {
+		t.Errorf("persisted first job state = %q, want completed", job.State)
 	}
 	var assetCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {

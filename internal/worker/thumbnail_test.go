@@ -22,6 +22,8 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // tinyJPEG は最小限の有効な JPEG（SOI + EOI）。fake ffmpeg が書き出す。
@@ -871,15 +873,15 @@ func TestEnqueueThumbnailIfNeeded_ExcludesTrash(t *testing.T) {
 		t.Fatalf("enqueue for trashed recording: %v", err)
 	}
 
-	var n int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'thumbnail' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	).Scan(&n); err != nil {
-		t.Fatal(err)
+	n := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "thumbnail") {
+		args := testutil.MustDecodeRiverJobArgs[jobs.ThumbnailJobArgs](t, row)
+		if args.RecordingID == recordingID {
+			n++
+		}
 	}
 	if n != 0 {
-		t.Errorf("river_job rows for trashed recording = %d, want 0", n)
+		t.Errorf("River jobs for trashed recording = %d, want 0", n)
 	}
 }
 
@@ -1058,30 +1060,13 @@ func TestEnqueueMissingThumbnails_UsesInsertMany(t *testing.T) {
 		}
 	}
 
-	rows, err := pool.Query(ctx, `
-		SELECT (args->>'recording_id')::bigint, queue
-		FROM river_job
-		WHERE kind = 'thumbnail'
-		ORDER BY id`)
-	if err != nil {
-		t.Fatalf("query thumbnail jobs: %v", err)
-	}
-	defer rows.Close()
-
 	counts := make(map[int64]int, len(liveIDs))
-	for rows.Next() {
-		var id int64
-		var queue string
-		if err := rows.Scan(&id, &queue); err != nil {
-			t.Fatalf("scan thumbnail job: %v", err)
+	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "thumbnail") {
+		args := testutil.MustDecodeRiverJobArgs[jobs.ThumbnailJobArgs](t, row)
+		if row.Queue != thumbnailQueue {
+			t.Errorf("thumbnail job %d queue = %q, want %q", row.ID, row.Queue, thumbnailQueue)
 		}
-		if queue != thumbnailQueue {
-			t.Errorf("thumbnail job %d queue = %q, want %q", id, queue, thumbnailQueue)
-		}
-		counts[id]++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate thumbnail jobs: %v", err)
+		counts[args.RecordingID]++
 	}
 
 	for _, id := range liveIDs {

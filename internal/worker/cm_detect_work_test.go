@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/png"
@@ -719,11 +720,7 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 	}
 
 	jobState := func(id int64) string {
-		var s string
-		if err := pool.QueryRow(ctx, `SELECT state::text FROM river_job WHERE id = $1`, id).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
+		return string(testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), id).State)
 	}
 	attemptState := func(id int64) (string, string, string) {
 		var s string
@@ -743,10 +740,12 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 		return s, stageValue, errorValue
 	}
 
-	var recovered bool
-	if err := pool.QueryRow(ctx, `SELECT metadata ? 'cm_detect_recovery' FROM river_job WHERE id = $1`, retryingJob).Scan(&recovered); err != nil {
-		t.Fatal(err)
+	metadata := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), retryingJob).Metadata
+	var metadataFields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &metadataFields); err != nil {
+		t.Fatalf("decoding job metadata: %v", err)
 	}
+	_, recovered := metadataFields["cm_detect_recovery"]
 	if got := jobState(retryingJob); got != "retryable" || recovered {
 		t.Errorf("job in River backoff = %q (recovered=%v), want untouched retryable", got, recovered)
 	}
@@ -765,10 +764,7 @@ func TestRecoverStaleCMDetectJobs(t *testing.T) {
 	if s, stage, e := attemptState(exhausted); s != "failed" || stage != "stopped" || !strings.Contains(e, "process stopped") {
 		t.Errorf("attempt of a dead final job = (%q, %q, %q), want failed / stopped / process stopped", s, stage, e)
 	}
-	var total int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'cm_detect'`).Scan(&total); err != nil {
-		t.Fatal(err)
-	}
+	total := len(testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.CMDetectJobArgs{}).Kind()))
 	if total != 3 {
 		t.Errorf("cm_detect job rows = %d, want 3 (recovery must not insert new jobs)", total)
 	}

@@ -116,12 +116,18 @@ CLAUDE.md の不変条件 9〜14 は「チェック」の一文だけを持つ�
 
 未解決（存在確認）: `cm_detect_reconcile.go` の `failOrphanCMLogoCandidatesQuery` は回収ではなく、`river_job` を args で引く孤児検出である。`client.JobList` の `Kinds` / `States` と Go 側の args 比較で契約内に書き直せる。代替が無いのではなく、単に残っている違反である。
 
-未解決（テスト）: 既存テストに 3 つの形の違反が残っている。`river_job` を含むテストは `git grep -l river_job -- '*_test.go'` で引く。
+未解決（テスト）: 回収テストは River の公開 API では設定できない状態や時刻を SQL で fixture にする。`running` の再現、古い `attempted_at`、終端状態の調整が該当する。
 
-- (a) 投入確認の SELECT。代わりは `rivertest.RequireInsertedTx` / `RequireManyInsertedTx`
-- (b) `DELETE FROM river_job` による途中の掃除
-- (c) 回収テストの状態作り。`UPDATE river_job SET state = 'running', attempted_by = ARRAY['dead-process']` など、公開 API では作れない状態である
+この fixture を使うテスト:
 
-(c) は回収の未解決に従う。回収が River の生 SQL に頼る間は、テストも同じ形でよい。回収コードのテストを書けなくすると不変条件 8 と衝突する。
+- `internal/worker/encode_recovery_test.go`
+- `internal/worker/ingest_recovery_test.go`
+- `internal/worker/stale_job_recovery_test.go`
+- `internal/worker/cm_detect_work_test.go`
+- `internal/worker/cm_logo_candidate_test.go`
+
+回収コードのテストを書けなくすると不変条件 8 と衝突する。
+
+マニフェストの KEDA クエリは River の PostgreSQL スキーマを参照する。`deploy/k8s/workloads_test.go::TestScaledJobTriggerQueriesRunAgainstRiverSchema` は、そのクエリを実 DB で検証する。KEDA のトリガは River の公開 API を呼べないため、この SQL を維持する。
 
 チェック: 「**その前提はライブラリのドキュメントのどこに書いてあるか**」を問う。答えられなければ迂回せず提起する。

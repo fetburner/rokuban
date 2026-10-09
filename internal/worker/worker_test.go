@@ -94,10 +94,6 @@ func TestNoOpJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	// River の配線（投入 → 実行 → 完了イベント）だけを確かめるための何もしない
 	// ワーカー。本番の NewWorkers には登録しない（テスト専用のジョブ種別が
 	// 本番のキューに存在してしまうのを避ける）。
@@ -146,10 +142,6 @@ func TestNoOpJob(t *testing.T) {
 func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig, eventKind river.EventKind) *periodicJobEventWaiter {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	deps.Pool = pool
 	workers := NewWorkers(deps)
 	client, err := NewClient(pool, workers, cfg)
@@ -177,7 +169,7 @@ func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg Cl
 // **River は別キューのジョブ間で完了イベントの到着順を保証しない。** 完了は
 // バッチでまとめて DB に書かれ、イベントもそのバッチ単位で配られるので、到着順は
 // 実際に Work が終わった順ではない（v0.47.0 では BatchCompleter が 250ms ごとに
-// flush し、river_job.id 昇順で返す）。到着順に依存する待ち受けは原理的に flaky
+// flush し、ジョブ ID 昇順で返す）。到着順に依存する待ち受けは原理的に flaky
 // なので、waitPeriodicJobEvent は順序に依存しない形にしてある。
 //
 // 予算 20 秒はこの修正でも据え置く。`go test ./internal/worker/ -run
@@ -316,10 +308,6 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	srv := newEpgServer(t, &epgFixture{})
 
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
@@ -355,16 +343,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatal("timed out waiting for epg_sync job completion")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'ruler_pass' AND (args->>'site') = $1`, testSite,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ruler_pass jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("ruler_pass job count after epg_sync completion = %d, want 1 "+
-			"(epg_sync 完了時にヒントとして投入されるはず)", count)
-	}
+	testutil.RequireRiverInserted(ctx, t, pool, RulerPassArgs{Site: testSite}, nil)
 }
 
 // ingest は数百 MB〜数十 GB の転送なので、River の総時間タイムアウト（既定 1 分）が
@@ -390,10 +369,6 @@ func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
 func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{})
@@ -483,10 +458,6 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	stub := newScheduleStub()
 	srv := httptest.NewServer(stub)
 	t.Cleanup(srv.Close)
@@ -555,10 +526,6 @@ func TestRulerPassPeriodicJob_MultiSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
@@ -611,10 +578,6 @@ func TestRulerPassPeriodicJob_MultiSite(t *testing.T) {
 func TestRulerPassWorker_CreatesReservation(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	const site = "default"
 	const networkID, serviceID int32 = 32736, 1024
@@ -727,10 +690,6 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {
@@ -749,13 +708,7 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの ruler_pass を 2 回投入したのに合流しなかった")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`).Scan(&count); err != nil {
-		t.Fatalf("counting river_job rows: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("river_job count for ruler_pass = %d, want 1", count)
-	}
+	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // jobs.AllQueueNames() が allQueues() と同じキュー集合を主張していること。

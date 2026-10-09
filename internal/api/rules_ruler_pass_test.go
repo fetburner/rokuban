@@ -17,7 +17,7 @@ import (
 // ルール作成/更新/削除は同一トランザクションで RulerPassArgs を投入する
 // （ヒント経路。docs/recording.md §3.1「ヒントは api がルール書き込みと同一
 // トランザクションで InsertTx する」）。dual-write を避けるためのものなので、
-// ここでは実際に river_job にジョブが現れることを確認する。
+// ここでは実際に River のジョブが現れることを確認する。
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -154,16 +154,10 @@ func TestCreateRule_WithoutRiverClient_StillSucceeds(t *testing.T) {
 
 func countRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`).Scan(&n); err != nil {
-		t.Fatalf("counting ruler_pass jobs: %v", err)
-	}
-	return n
+	return len(testutil.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass"))
 }
 
 func clearRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'ruler_pass'`); err != nil {
-		t.Fatalf("clearing ruler_pass jobs: %v", err)
-	}
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }

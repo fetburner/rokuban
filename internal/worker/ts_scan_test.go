@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -276,12 +277,12 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 
 func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*) FROM river_job
-		WHERE kind = 'ts_scan' AND (args->>'recording_id')::bigint = $1`, recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ts_scan jobs: %v", err)
+	count := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (tsscan.ScanArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[tsscan.ScanArgs](t, row)
+		if args.RecordingID == recordingID {
+			count++
+		}
 	}
 	return count
 }

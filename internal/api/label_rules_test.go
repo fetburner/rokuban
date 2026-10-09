@@ -403,14 +403,7 @@ func TestCreateLabelRule_EnqueuesReconcileInSameTransaction(t *testing.T) {
 		t.Errorf("priority = %v, want 10", created.Priority)
 	}
 
-	var kinds []string
-	if err := pool.QueryRow(context.Background(),
-		"SELECT array_agg(kind) FROM river_job WHERE kind = 'label_rule_reconcile'").Scan(&kinds); err != nil {
-		t.Fatalf("reading river_job: %v", err)
-	}
-	if len(kinds) != 1 {
-		t.Fatalf("label_rule_reconcile jobs = %v, want exactly 1", kinds)
-	}
+	testutil.RequireRiverKindInserted(t, context.Background(), pool, "label_rule_reconcile")
 }
 
 // 削除も全件再評価を投入する。当たりの表は勝者しか持たないので、CASCADE だけ
@@ -421,10 +414,7 @@ func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 	ctx := context.Background()
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("clearing river_job: %v", err)
-	}
-
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "label_rule_reconcile")
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/label-rules/"+itoa(created.Id), nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -435,14 +425,7 @@ func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM river_job WHERE kind = 'label_rule_reconcile'").Scan(&count); err != nil {
-		t.Fatalf("counting river_job: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("label_rule_reconcile jobs after delete = %d, want 1", count)
-	}
+	testutil.RequireRiverKindInserted(t, ctx, pool, "label_rule_reconcile")
 
 	// 消えた id への DELETE は 404。
 	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/label-rules/"+itoa(created.Id), nil)
@@ -470,14 +453,7 @@ func TestCreateLabelRule_TwoEditsEnqueueTwoJobs(t *testing.T) {
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品Y", "keyword": "作品Y"})
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM river_job WHERE kind = 'label_rule_reconcile'").Scan(&count); err != nil {
-		t.Fatalf("counting river_job: %v", err)
-	}
-	if count != 2 {
-		t.Errorf("label_rule_reconcile jobs = %d, want 2 (the second edit must not be dropped)", count)
-	}
+	testutil.RequireManyRiverKindsInserted(t, ctx, pool, "label_rule_reconcile", "label_rule_reconcile")
 }
 
 // PATCH は上書きで、keyword の変更も再評価を投入する。存在しない id は 404。
@@ -487,10 +463,7 @@ func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 	ctx := context.Background()
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X", "priority": 0})
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("clearing river_job: %v", err)
-	}
-
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "label_rule_reconcile")
 	raw, _ := json.Marshal(map[string]any{"value": "作品Y", "keyword": "作品Y", "priority": 5})
 	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/label-rules/"+itoa(created.Id), bytes.NewReader(raw))
 	resp, err := http.DefaultClient.Do(req)
@@ -509,14 +482,7 @@ func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 		t.Errorf("updated = %+v, want the new value and keyword", updated)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM river_job WHERE kind = 'label_rule_reconcile'").Scan(&count); err != nil {
-		t.Fatalf("counting river_job: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("label_rule_reconcile jobs after patch = %d, want 1", count)
-	}
+	testutil.RequireRiverKindInserted(t, ctx, pool, "label_rule_reconcile")
 
 	raw, _ = json.Marshal(map[string]any{"value": "作品Y", "keyword": "作品Y"})
 	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/api/label-rules/999999", bytes.NewReader(raw))

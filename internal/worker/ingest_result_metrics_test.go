@@ -25,6 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // このファイルは IngestWorker.Work が result をどう決めるか（ジョブの結末の
@@ -239,12 +240,9 @@ func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
 		t.Errorf("IngestDuration samples after pending completion = %d, want %d", got, durationBefore)
 	}
 
-	var state string
-	if err := pool.QueryRow(context.Background(), "SELECT state FROM river_job WHERE id = $1", inserted.Job.ID).Scan(&state); err != nil {
-		t.Fatalf("reading river_job: %v", err)
-	}
-	if state != string(rivertype.JobStateCompleted) {
-		t.Errorf("persisted river_job state = %q, want completed", state)
+	job := testutil.MustGetRiverJob(t, context.Background(), client, inserted.Job.ID)
+	if job.State != rivertype.JobStateCompleted {
+		t.Errorf("persisted job state = %q, want completed", job.State)
 	}
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
@@ -337,15 +335,9 @@ func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Serve
 		t.Errorf("IngestDuration の観測数 = %d, want %d（中断した試行は所要時間ではない）", got, durationBefore)
 	}
 
-	var state string
-	var attempt int
-	if err := pool.QueryRow(context.Background(),
-		"SELECT state, attempt FROM river_job WHERE id = $1", inserted.Job.ID,
-	).Scan(&state, &attempt); err != nil {
-		t.Fatalf("reading river_job: %v", err)
-	}
-	if state != "available" || attempt != 0 {
-		t.Errorf("river_job state=%q attempt=%d, want available / 0（soft stop は attempt を消費せず行を available に戻す）", state, attempt)
+	job := testutil.MustGetRiverJob(t, context.Background(), client, inserted.Job.ID)
+	if job.State != rivertype.JobStateAvailable || job.Attempt != 0 {
+		t.Errorf("job state=%q attempt=%d, want available / 0（soft stop は attempt を消費せず行を available に戻す）", job.State, job.Attempt)
 	}
 }
 

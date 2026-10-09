@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // TestEncodeRecovery_ReplacesStaleRunningJobAndEncodeCompletes はプロセス死を
@@ -52,18 +53,12 @@ func TestEncodeRecovery_ReplacesStaleRunningJobAndEncodeCompletes(t *testing.T) 
 
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")})
 
-	var oldState string
-	var oldFinalizedAt *time.Time
-	var oldErrors, oldMetadata string
-	if err := pool.QueryRow(ctx, `
-		SELECT state, finalized_at, errors::text, metadata::text
-		FROM river_job WHERE id = $1`, oldJobID).Scan(&oldState, &oldFinalizedAt, &oldErrors, &oldMetadata); err != nil {
-		t.Fatalf("reading recovered encode job: %v", err)
+	oldJob := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), oldJobID)
+	oldErrors, oldMetadata := fmt.Sprintf("%+v", oldJob.Errors), string(oldJob.Metadata)
+	if oldJob.State != rivertype.JobStateDiscarded {
+		t.Fatalf("old encode state = %q, want discarded", oldJob.State)
 	}
-	if oldState != string(rivertype.JobStateDiscarded) {
-		t.Fatalf("old encode state = %q, want discarded", oldState)
-	}
-	if oldFinalizedAt == nil {
+	if oldJob.FinalizedAt == nil {
 		t.Fatal("old encode finalized_at is NULL after recovery")
 	}
 	if !strings.Contains(oldErrors, encodeRecoveryReason) {
@@ -74,27 +69,22 @@ func TestEncodeRecovery_ReplacesStaleRunningJobAndEncodeCompletes(t *testing.T) 
 	}
 
 	var replacementID int64
-	if err := pool.QueryRow(ctx, `
-		SELECT id
-		FROM river_job
-		WHERE kind = 'encode'
-		  AND (args->>'recording_id')::bigint = $1
-		  AND args->>'profile' = $2
-		  AND state <> 'discarded'
-		ORDER BY id DESC
-		LIMIT 1`, recordingID, "h264").Scan(&replacementID); err != nil {
-		t.Fatalf("finding replacement encode job: %v", err)
+	for _, candidate := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (jobs.EncodeJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, candidate)
+		if args.RecordingID == recordingID && args.Profile == "h264" && candidate.State != rivertype.JobStateDiscarded && candidate.ID > replacementID {
+			replacementID = candidate.ID
+		}
+	}
+	if replacementID == 0 {
+		t.Fatal("replacement encode job not found")
 	}
 	if replacementID == oldJobID {
 		t.Fatalf("replacement encode reused old job ID %d", oldJobID)
 	}
 
-	var replacementState string
-	if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", replacementID).Scan(&replacementState); err != nil {
-		t.Fatalf("reading replacement encode state: %v", err)
-	}
-	if replacementState != string(rivertype.JobStateAvailable) {
-		t.Fatalf("replacement encode state = %q, want available", replacementState)
+	replacement := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), replacementID)
+	if replacement.State != rivertype.JobStateAvailable {
+		t.Fatalf("replacement encode state = %q, want available", replacement.State)
 	}
 
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "running" {
@@ -153,13 +143,9 @@ func TestEncodeRecovery_DoesNotDiscardLiveStaleJob(t *testing.T) {
 
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")})
 
-	var state string
-	var finalizedAt *time.Time
-	if err := pool.QueryRow(ctx, "SELECT state, finalized_at FROM river_job WHERE id = $1", oldJobID).Scan(&state, &finalizedAt); err != nil {
-		t.Fatalf("reading live encode job state: %v", err)
-	}
-	if state != string(rivertype.JobStateRunning) || finalizedAt != nil {
-		t.Fatalf("live stale encode = state %q finalized_at=%v, want running/NULL", state, finalizedAt)
+	job := testutil.MustGetRiverJob(t, ctx, testutil.NewRiverClient(t, pool), oldJobID)
+	if job.State != rivertype.JobStateRunning || job.FinalizedAt != nil {
+		t.Fatalf("live stale encode = state %q finalized_at=%v, want running/NULL", job.State, job.FinalizedAt)
 	}
 	assertNonDiscardedEncodeJobCount(t, pool, recordingID, "h264", 1)
 }
@@ -305,15 +291,12 @@ func insertStaleRunningEncodeJob(t *testing.T, pool *pgxpool.Pool, recordingID i
 
 func assertNonDiscardedEncodeJobCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, want int) {
 	t.Helper()
-	var got int
-	if err := pool.QueryRow(context.Background(), `
-		SELECT count(*)
-		FROM river_job
-		WHERE kind = 'encode'
-		  AND (args->>'recording_id')::bigint = $1
-		  AND args->>'profile' = $2
-		  AND state <> 'discarded'`, recordingID, profile).Scan(&got); err != nil {
-		t.Fatalf("counting non-discarded encode jobs: %v", err)
+	got := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (jobs.EncodeJobArgs{}).Kind()) {
+		args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
+		if args.RecordingID == recordingID && args.Profile == profile && row.State != rivertype.JobStateDiscarded {
+			got++
+		}
 	}
 	if got != want {
 		t.Fatalf("non-discarded encode jobs = %d, want %d", got, want)

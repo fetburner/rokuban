@@ -283,13 +283,8 @@ func testSecondSigterm(t *testing.T, once bool, marker string) {
 	// 畳んだのなら、River は行を `running` から動かしている（available への
 	// 差し戻し）。`running` のままなのは、completer が走る前にプロセスが
 	// 消えたということ = 2 発目が効いた窓が本物だったということ。
-	var state string
-	if err := pool.QueryRow(context.Background(),
-		`SELECT state FROM river_job WHERE kind = 'epg_sync'`,
-	).Scan(&state); err != nil {
-		t.Fatalf("reading epg_sync job: %v", err)
-	}
-	if state != "running" {
-		t.Errorf("epg_sync state = %q, want %q（drain の途中ではなかった）", state, "running")
+	job := testutil.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
+	if job.State != "running" {
+		t.Errorf("epg_sync state = %q, want %q（drain の途中ではなかった）", job.State, "running")
 	}
 }

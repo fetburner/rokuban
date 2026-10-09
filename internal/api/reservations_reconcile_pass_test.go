@@ -108,16 +108,10 @@ func putIntentRequest(t *testing.T, srv *httptest.Server, programID int64, actio
 
 func countRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
-	var n int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`).Scan(&n); err != nil {
-		t.Fatalf("counting ruler_pass jobs: %v", err)
-	}
-	return n
+	return len(testutil.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass"))
 }
 
 func clearRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'ruler_pass'`); err != nil {
-		t.Fatalf("clearing ruler_pass jobs: %v", err)
-	}
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }
