@@ -250,6 +250,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 // 接続が切れ、その後の再開も全て失敗した場合に、最後にファイルへ書けた値が
 // 進捗行へ残ることを確認する。
 func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
+	setFastIngestFollow(t)
 	tsData := makeTSData(1000) // 188 KB
 	burst := len(tsData) / 2
 
@@ -438,6 +439,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 // 変異「正常 EOF の Range でも reader の hook を呼んで flush する」は written_bytes が 4 Range 分に
 // 進んで落ちる。
 func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
+	setFastIngestFollow(t)
 	const chunk = 188 * 10
 	const chunks = 4
 	tsData := makeTSData(chunks * 10)

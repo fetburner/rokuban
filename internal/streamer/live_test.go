@@ -332,9 +332,10 @@ for a in "$@"; do
   prev="$a"
 done
 
-while true; do
-  sleep 1
-done
+# exec にして kill がそのまま sleep に当たるようにする。ループで sleep 1 を
+# 子に持つと、sh を kill しても孫の sleep が stderr を握ったまま最大 1 秒残り、
+# cmd.Wait（= stop の完了待ち）が毎回そのぶん延びる。
+exec sleep 3600
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -1223,9 +1224,10 @@ master="$outdir/playlist.m3u8"
 } > "$master.tmp"
 mv "$master.tmp" "$master"
 
-while true; do
-  sleep 1
-done
+# exec にして kill がそのまま sleep に当たるようにする。ループで sleep 1 を
+# 子に持つと、sh を kill しても孫の sleep が stderr を握ったまま最大 1 秒残り、
+# cmd.Wait（= stop の完了待ち）が毎回そのぶん延びる。
+exec sleep 3600
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
 		t.Fatal(err)

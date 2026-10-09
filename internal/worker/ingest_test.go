@@ -553,6 +553,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 // TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries が持つ。
 // 「recording 中に待たない」は TestIngestWorker_FollowPollingIsRateLimited が持つ。
 func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
+	setFastIngestFollow(t)
 	full := makeTSData(10)
 	first := full[:5*188]
 	second := full[5*188:]
@@ -744,6 +745,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 // これが無いと「416 を record の状態を見ずに完了とみなす」変異が通る（最初の 416 の
 // 時点ではまだ 5 パケットしか無いので、HEAD 照合で size mismatch になり落ちる）。
 func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
+	setFastIngestFollow(t)
 	full := makeTSData(20)
 
 	// /records/{id} の観測回数で「いまの content サイズ」と status を決める。
@@ -948,6 +950,7 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 //
 // 数えるように変異させると、正常な録画が 6 回目のポーリングで失敗する。
 func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
+	setFastIngestFollow(t)
 	full := makeTSData(10)
 	const notReadyPolls = 8
 	const emptyBodyPolls = 8
@@ -1041,6 +1044,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 // 録画が伸びて written が古い分母を追い越した時点で UI が「取り込み中 100%」を
 // 出し続ける（Web 側は min(100, ...) で頭打ちにするので嘘が % として出る）。
 func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
+	setFastIngestFollow(t)
 	const staleDenominator = 100
 
 	var statusGets atomic.Int32
@@ -1142,6 +1146,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 // 変異「未知の status で即 error を返す」は Work() が非 nil になって落ちる。
 // 変異「未知の status を終端 sentinel に混ぜる」も同じく落ちる。
 func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
+	setFastIngestFollow(t)
 	full := makeTSData(10)
 
 	var recordGets atomic.Int32
@@ -1221,6 +1226,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 // RecordFollowReader が未知の status で失敗回数を戻すと、恒久的な異常応答でも
 // 上限に達しないまま回り続ける。
 func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
+	setFastIngestFollow(t)
 
 	var recordGets atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1429,6 +1435,7 @@ type lateSHA256IngestRun struct {
 }
 
 func TestIngestWorker_CompletesUntilLateContentSHA256(t *testing.T) {
+	setFastIngestFollow(t)
 	for _, tc := range []lateSHA256IngestCase{
 		{
 			name:               "hash arrives and verifies",
@@ -1655,6 +1662,7 @@ func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID i
 }
 
 func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
+	setFastIngestFollow(t)
 	for _, tt := range []struct {
 		name      string
 		null      bool
@@ -2026,6 +2034,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 // DeleteRecord も呼ばれないこと、その後実装本来の opener に戻して再試行すると
 // 正しい原本が公開されることを確認する。
 func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
+	setFastIngestFollow(t)
 	injectedErr := errors.New("injected durability failure")
 	tests := []struct {
 		name      string
@@ -3880,6 +3889,7 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 // 失敗し、このテストは "second Work() error" で落ちる。実際に前置行を削って
 // 確認済み（PR 本文参照）。
 func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
+	setFastIngestFollow(t)
 	tsDataA := makeTSData(10)
 	tsDataB := makeTSData(20)
 	const sharedContentPath = "shared/recording.m2ts"
@@ -4277,4 +4287,17 @@ func setIngestSHA256Rate(t *testing.T, rate int64) {
 	old := ingestSHA256BytesPerSecond
 	ingestSHA256BytesPerSecond = rate
 	t.Cleanup(func() { ingestSHA256BytesPerSecond = old })
+}
+
+// setFastIngestFollow は録画追従の「追い付き時のポーリング間隔」と「再試行バック
+// オフ」を数 ms に差し替え、t.Cleanup で戻す。待ちの長さ自体を検証していない
+// ingest テストが、本番値（0.5〜1 秒のポーリング、最長 3.2 秒のバックオフ）を
+// 実時間で払わないための差し替え。再試行の回数・順序は変わらない。
+func setFastIngestFollow(t *testing.T) {
+	t.Helper()
+	prev := ingestFollowPace
+	ingestFollowPace.pollMin = 5 * time.Millisecond
+	ingestFollowPace.pollMax = 10 * time.Millisecond
+	ingestFollowPace.retryDelay = func(int) time.Duration { return 5 * time.Millisecond }
+	t.Cleanup(func() { ingestFollowPace = prev })
 }
