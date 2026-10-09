@@ -8563,6 +8563,12 @@ export const getListRecordingDropStatsUrl = (id: number,) => {
 }
 
 /**
+ * 原本 TS の計測記録が保存サイズと一致するときだけ PID 行を返す
+ * （`Recording.dropSummary` と同じ判定）。未計測や、in-place 更新後の再計測待ちは
+ * `[]` を返す。ごみ箱の録画や、原本を削除した後でも、計測記録が一致すれば返す。
+ *
+ * 未計測と計測済みの空の区別は `Recording.dropSummary` の有無で行う。
+ * 既存クライアントの型を変えないため、応答は包まない。
  * @summary Get per-PID drop statistics for a recording
  */
 export const listRecordingDropStats = async (id: number, options?: Parameters<typeof customInstance>[1]): Promise<listRecordingDropStatsResponse> => {

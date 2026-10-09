@@ -261,6 +261,7 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 | `/api/capacity/overages` が空 | 収まるとは限らない。並走 EPGStation・ライブ視聴・EPG 収集は見えず、mirakc の `excluded_channels` は `/api/tuners` に載らないので**知る術がない** | `rokuban_tuners_projected` が 0 でないこと |
 | 同上（射影が空） | 射影が 1 行も無いサイトは**何も主張しない**ので、同期が壊れると警告が黙って消える | `tuner_sync` の行と `rokuban_tuner_sync_last_success_timestamp_seconds{site}` の鮮度 |
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
+| `drop-stats` が `[]` | ドロップ無しとは限らない。未計測と再計測待ち（in-place 更新後）も空を返す | `Recording.dropSummary` の有無（有りで `[]` なら計測済みの空） |
 | `pidType` が `other` | 音声の可能性がある（LATM AAC は `other` に落ちる。**自前の `stream_type` 表は作らず、`gots` の `IsAudioContent()` の値域に従う**） | 4K/8K を録ったなら疑う |
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
 | `/api/breakers` が空 | 削除が正しかったとは限らない。**閾値を下回る削除は素通りする**し、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |

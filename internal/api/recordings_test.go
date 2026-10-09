@@ -221,6 +221,17 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 			t.Fatalf("detail %d status = %d, want 200", id, resp.StatusCode)
 		}
 		assertSummary(detail, "detail")
+
+		// PID 別内訳も同じ判定で、3 件とも空配列（null ではない）。unmeasured と stale は
+		// PID 行があっても未計測として返さず、measuredZero は計測済みだが行が無いから。
+		var stats []DropStat
+		resp = getJSON(t, fmt.Sprintf("%s/api/recordings/%d/drop-stats", srv.URL, id), &stats)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("drop-stats %d status = %d, want 200", id, resp.StatusCode)
+		}
+		if stats == nil || len(stats) != 0 {
+			t.Errorf("drop-stats for recording %d = %+v, want empty non-null array", id, stats)
+		}
 	}
 }
 

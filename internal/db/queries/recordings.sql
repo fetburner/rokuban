@@ -180,11 +180,14 @@ WHERE r.id = sqlc.arg('id')
         AND existing_event->'reason' = incoming_event->'reason'
   );
 
+-- 計測済みの判定は dropSummary と同じ view 1 つに寄せる（未計測・再計測待ちは 0 行）。
+-- state では絞らない: tombstone 済みの原本も計測記録が一致すれば返す。
 -- name: ListRecordingDropStats :many
 SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d
+JOIN current_ts_scanned_originals s ON s.media_asset_id = d.media_asset_id
 JOIN media_assets a ON a.id = d.media_asset_id
-WHERE a.recording_id = $1 AND a.kind = 'original'
+WHERE a.recording_id = $1
 ORDER BY d.pid;
 
 -- 位置は PID 別統計とは別の行集合として読み、API 層で PID ごとの配列にまとめる。

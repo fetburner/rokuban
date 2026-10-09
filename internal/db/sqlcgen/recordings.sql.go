@@ -481,8 +481,9 @@ func (q *Queries) ListRecordingDropPositions(ctx context.Context, recordingID in
 const listRecordingDropStats = `-- name: ListRecordingDropStats :many
 SELECT d.pid, d.packets, d.drops, d.errors, d.scrambled, d.pid_type
 FROM drop_stats d
+JOIN current_ts_scanned_originals s ON s.media_asset_id = d.media_asset_id
 JOIN media_assets a ON a.id = d.media_asset_id
-WHERE a.recording_id = $1 AND a.kind = 'original'
+WHERE a.recording_id = $1
 ORDER BY d.pid
 `
 
@@ -495,6 +496,8 @@ type ListRecordingDropStatsRow struct {
 	PidType   *string
 }
 
+// 計測済みの判定は dropSummary と同じ view 1 つに寄せる（未計測・再計測待ちは 0 行）。
+// state では絞らない: tombstone 済みの原本も計測記録が一致すれば返す。
 func (q *Queries) ListRecordingDropStats(ctx context.Context, recordingID int64) ([]ListRecordingDropStatsRow, error) {
 	rows, err := q.db.Query(ctx, listRecordingDropStats, recordingID)
 	if err != nil {
