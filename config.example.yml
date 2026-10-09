@@ -139,9 +139,8 @@ worker:
                                  # （k8s は ConfigMap 1 個を共有し Pod 差分を argv に寄せる。docs/operations.md §5）
   rescue_stuck_jobs_after: 0     # running のまま残ったジョブを River の rescuer が死んだ実行と
                                  # みなすまでの時間。0 = River の既定（1h）。kind 個別の Timeout が
-                                 # これより長ければそちらを待つ。Timeout が -1 の kind（encode /
-                                 # cm_detect）は rescue されない。k8s で誰が rescuer を動かすかは
-                                 # docs/data/jobs.md §2
+                                 # これより長ければそちらを待つ。Timeout が -1 の kind は rescue
+                                 # されない。k8s で誰が rescuer を動かすかは docs/data/jobs.md §2
 
 # エンコード（プロファイルはデプロイ属性。DB のルールからは名前参照）
 encode:

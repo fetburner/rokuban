@@ -25,7 +25,7 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 実行側の handler は `internal/worker` に置く。
 
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が `retryable` に戻す。待つ時間は `worker.rescue_stuck_jobs_after`（既定 1h）と kind ごとの `Timeout()` の長い方である。**`Timeout()` が -1 の kind（encode / cm_detect）は rescue の対象外**で、それぞれの reconcile が回収する
+- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が `retryable` に戻す。待つ時間は `worker.rescue_stuck_jobs_after`（既定 1h）と kind ごとの `Timeout()` の長い方である。**`Timeout()` が -1 の kind は rescue の対象外**で、それぞれの reconcile が回収する（どの kind が -1 かは各 worker の `Timeout()` を引く）
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
