@@ -1,4 +1,4 @@
--- 原本 TS の計測記録。行があり scanned_size_bytes が現在値と一致すれば計測済み。
+-- 原本 TS の計測記録（計測したサイズ）を書く。計測済みの定義は view current_ts_scanned_originals にある。
 -- name: UpsertMediaAssetTSScan :exec
 INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
 VALUES (sqlc.arg('media_asset_id'), sqlc.arg('scanned_size_bytes'))
@@ -16,9 +16,8 @@ WHERE a.recording_id = sqlc.arg('recording_id')::bigint
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
-    FROM media_asset_ts_scans s
+    FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-      AND s.scanned_size_bytes = a.size_bytes
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
@@ -36,9 +35,8 @@ WHERE a.id = sqlc.arg('media_asset_id')::bigint
   AND r.deleted_at IS NULL
   AND NOT EXISTS (
     SELECT 1
-    FROM media_asset_ts_scans s
+    FROM current_ts_scanned_originals s
     WHERE s.media_asset_id = a.id
-      AND s.scanned_size_bytes = a.size_bytes
   )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
@@ -51,12 +49,15 @@ FOR UPDATE OF a;
 SELECT a.recording_id
 FROM media_assets a
 JOIN recordings r ON r.id = a.recording_id
-LEFT JOIN media_asset_ts_scans s ON s.media_asset_id = a.id
 WHERE a.recording_id > sqlc.arg('after_recording_id')::bigint
   AND a.kind = 'original'
   AND a.state = 'active'
   AND r.deleted_at IS NULL
-  AND s.scanned_size_bytes IS DISTINCT FROM a.size_bytes
+  AND NOT EXISTS (
+    SELECT 1
+    FROM current_ts_scanned_originals s
+    WHERE s.media_asset_id = a.id
+  )
   AND NOT EXISTS (
     SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = a.id
   )

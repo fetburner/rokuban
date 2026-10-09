@@ -16,6 +16,9 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 		t.Fatalf("migrating to latest before setup: %v", err)
 	}
 	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("rolling back current TS scan view migration: %v", err)
+	}
+	if err := MigrateDown(ctx, dbURL); err != nil {
 		t.Fatalf("rolling back original-retention migration: %v", err)
 	}
 	if err := MigrateDown(ctx, dbURL); err != nil {
@@ -116,6 +119,9 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	dbURL := testDatabaseURL(t)
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("migrating to latest before setup: %v", err)
+	}
+	if err := MigrateDown(ctx, dbURL); err != nil {
+		t.Fatalf("rolling back current TS scan view migration: %v", err)
 	}
 	if err := MigrateDown(ctx, dbURL); err != nil {
 		t.Fatalf("rolling back original-retention migration: %v", err)
