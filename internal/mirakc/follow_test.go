@@ -844,7 +844,6 @@ func TestRecordFollowOptionsOverridePacing(t *testing.T) {
 		PollMin: 3 * time.Millisecond, PollMax: 7 * time.Millisecond,
 		RetryDelay: func(int) time.Duration { return 11 * time.Millisecond },
 	}
-	const slack = 100 * time.Millisecond // 既定値（200ms 以上）と区別できる余裕
 
 	t.Run("caughtUp idleWait", func(t *testing.T) {
 		client := &followTestClient{records: []followTestRecord{{status: "recording"}}}
@@ -858,8 +857,9 @@ func TestRecordFollowOptionsOverridePacing(t *testing.T) {
 			if r.idleWait != want {
 				t.Errorf("call %d: idleWait = %v, want %v", i, r.idleWait, want)
 			}
-			if d := r.nextRequestAt.Sub(start); d < want || d > want+slack {
-				t.Errorf("call %d: nextRequestAt in %v, want [%v, %v]", i, d, want, want+slack)
+			if end := time.Now(); r.nextRequestAt.Before(start.Add(want)) || r.nextRequestAt.After(end.Add(want)) {
+				t.Errorf("call %d: nextRequestAt = start+%v, want within [start+%v, end+%v] (end = start+%v)",
+					i, r.nextRequestAt.Sub(start), want, want, end.Sub(start))
 			}
 		}
 	})
@@ -872,8 +872,8 @@ func TestRecordFollowOptionsOverridePacing(t *testing.T) {
 		if err := r.requestNext(); err == nil {
 			t.Fatal("requestNext error = nil, want the non-retryable 400")
 		}
-		if d := r.nextRequestAt.Sub(start); d < 3*time.Millisecond || d > 3*time.Millisecond+slack {
-			t.Errorf("nextRequestAt in %v, want [3ms, %v]", d, 3*time.Millisecond+slack)
+		if end := time.Now(); r.nextRequestAt.Before(start.Add(3*time.Millisecond)) || r.nextRequestAt.After(end.Add(3*time.Millisecond)) {
+			t.Errorf("nextRequestAt = start+%v, want within [start+3ms, end+3ms] (end = start+%v)", r.nextRequestAt.Sub(start), end.Sub(start))
 		}
 	})
 
@@ -885,8 +885,8 @@ func TestRecordFollowOptionsOverridePacing(t *testing.T) {
 		if err := r.caughtUp(); err != nil {
 			t.Fatal(err)
 		}
-		if d := r.nextRequestAt.Sub(start); d < 11*time.Millisecond || d > 11*time.Millisecond+slack {
-			t.Errorf("nextRequestAt in %v, want [11ms, %v]", d, 11*time.Millisecond+slack)
+		if end := time.Now(); r.nextRequestAt.Before(start.Add(11*time.Millisecond)) || r.nextRequestAt.After(end.Add(11*time.Millisecond)) {
+			t.Errorf("nextRequestAt = start+%v, want within [start+11ms, end+11ms] (end = start+%v)", r.nextRequestAt.Sub(start), end.Sub(start))
 		}
 	})
 
