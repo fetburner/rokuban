@@ -14,6 +14,7 @@
 | [runbook/k8s.md](runbook/k8s.md) | k8s —— kind で中央 1 式を上げて api に到達 / `/readyz` が DB 断で 503 になることの確認 / ロール分割デプロイの受け入れ判定ハーネス（kind + KEDA） |
 | [runbook/managed-postgres.md](runbook/managed-postgres.md) | managed PostgreSQL で `btree_gist` の作成が通るかの確認手順 |
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
+| [runbook/cutover.md](runbook/cutover.md) | 主運用の切替 —— 出口基準チェックリスト / エンコード・ごみ箱・ブレーカー・rescue 練習の手順 / 二重録画を避ける切替順 / ロールバック |
 | [runbook/import-epgstation.md](runbook/import-epgstation.md) | EPGStation からの移行（`rokuban import epgstation`）—— ルール取り込みの手順とライブラリ JSON の書き出し方 |
 
 UI の画面構成とルートは [frontend.md](frontend.md) を参照。

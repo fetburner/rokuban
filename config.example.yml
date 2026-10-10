@@ -304,7 +304,8 @@ cleanup:
   max_deletes_per_pass: 100      # 一括削除サーキットブレーカーの閾値。ソースを問わず
                                  # 1 パス全体の合計に対して働く（ruler と同じラッチ式。
                                  # 手動で
-                                 #  POST /api/sites/{site}/breakers/delete_reconcile/resume
+                                 #  POST /api/breakers/delete_reconcile/resume
+                                 # （site を持たないブレーカー。site 付きのパスは 400）
                                  # するまで止まり続ける）。0 なら既定値（100）
   missing_asset_age: 24h         # 「active なのに実体ファイルが無い」候補が確認済みとして
                                  # メトリクス/ログに出るまでのエイジング期間（自動削除はしない）。
