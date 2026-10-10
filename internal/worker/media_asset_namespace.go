@@ -27,8 +27,7 @@ LIMIT 1
 // 当たるため `sites//a/b` を通してしまう。どちらも
 // classifySiteForRescuedFile（internal/catalog/rescue_scan.go）は site を決められず
 // 空文字を返すので、この検査を通った行が DB 喪失後の rescue では復元を拒否され、
-// orphan 回収でエイジング後に消える --- 「移行済み」の主張と実際の rescue 可否が
-// 食い違う。
+// orphan として報告される --- 「移行済み」の主張と実際の rescue 可否が食い違う。
 //
 // 前置導入前の行や、移行前のバックアップから復元した DB を worker がそのまま
 // 読むと、ingest・encode・rescue・delete_reconcile の各処理が同じ storage 契約を

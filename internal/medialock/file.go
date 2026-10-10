@@ -312,50 +312,6 @@ func lockNoGC(ctx context.Context, mediaDir, relPath string) (*FileLock, error) 
 	}
 }
 
-// TryLock は canonical orphan 回収用の non-blocking 版。GC gate または
-// rel_path lock が競合中なら false を返し、次の reconcile pass に委ねる。
-func TryLock(mediaDir, relPath string) (*FileLock, bool, error) {
-	for {
-		if _, err := gcMediaRelPathLockFiles(context.Background(), mediaDir, false); err != nil {
-			return nil, false, err
-		}
-		gate, err := acquireMediaRelPathLockGate(context.Background(), mediaDir, false, false)
-		if err != nil {
-			if errors.Is(err, errMediaRelPathLockGateBusy) {
-				return nil, false, nil
-			}
-			return nil, false, err
-		}
-		lock, err := openMediaRelPathLock(mediaDir, relPath)
-		if err != nil {
-			return nil, false, errors.Join(err, releaseMediaRelPathLockGate(gate))
-		}
-		if lockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); lockErr != nil {
-			closeErr := lock.Close()
-			gateErr := releaseMediaRelPathLockGate(gate)
-			if errors.Is(lockErr, syscall.EINTR) {
-				if err := errors.Join(closeErr, gateErr); err != nil {
-					return nil, false, err
-				}
-				continue
-			}
-			if mediaRelPathLockBusy(lockErr) {
-				if combined := errors.Join(closeErr, gateErr); combined != nil {
-					return nil, false, fmt.Errorf("closing busy media rel_path lock attempt: %w", combined)
-				}
-				return nil, false, nil
-			}
-			return nil, false, errors.Join(fmt.Errorf("trying media rel_path file lock: %w", lockErr), closeErr, gateErr)
-		}
-		if err := releaseMediaRelPathLockGate(gate); err != nil {
-			unlockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-			closeErr := lock.Close()
-			return nil, false, errors.Join(fmt.Errorf("releasing media rel_path lock gate: %w", err), unlockErr, closeErr)
-		}
-		return &FileLock{file: lock, mediaDir: mediaDir, path: Path(mediaDir, relPath)}, true, nil
-	}
-}
-
 // Close releases the lock and collects its coordination file.
 func (l *FileLock) Close() error {
 	if l == nil {

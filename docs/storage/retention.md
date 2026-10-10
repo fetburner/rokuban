@@ -72,7 +72,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - **放送データが 0 コピーになる瞬間は構造的に存在しない**。エッジの record 削除は ingest コミット後（[録画エンジン](../recording.md) 参照）、原本削除はエンコード検証後。常に 1 コピー以上ある
 - **「唯一のコピーを消す」パスがない**。エンコードが恒久的に失敗すれば条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）
 - **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く
-- **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直し、残骸は孤児クリーンアップが回収
+- **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直す。公開前を示す予約名の残骸は孤児回収が拾う
 - **メタデータは tombstone として残す**。ドロップスキャン結果・録画品質は原本削除後も UI で見られる（「ドロップがあったから再放送を待つ」判断は削除後にこそ必要）。原本のサイズだけは API が省略する側に回り、その省略自体が「原本削除済み」を表す
 
 ### UI / 運用
@@ -124,25 +124,28 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 | 手動削除（ごみ箱） | `deleted_at` + 30 日（設定可） | 人為ミスへの備え |
 | 原本の保持ポリシー（`until_encoded`） | なし（派生物完備が条件） | 設計されたポリシー削除。**ごみ箱は経由しない**（原本はサイズが支配的で、経由させるとストレージ節約が猶予期間ぶん遅延する。安全条件は派生物完備で既に担保） |
 | ユーザーが外したエンコード版 | なし（他の版が残ることが条件） | 容量を空ける操作。**ごみ箱は経由しない**（§6「凍結の 3 つ目の例外」） |
-| 孤児ファイル | mtime 猶予 + エイジング | DB 喪失・残骸への防御 |
+| 公開前と分かる孤児 | mtime 猶予 + エイジング | 予約名の temp / staging の回収 |
+| canonical 名の孤児 | エイジング後に報告 | DB 喪失後も公開済みファイルを保持して調査する |
 
 ingest は canonical file と同じディレクトリに record 固有の
 `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を
 replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
 プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。
-通常の mtime 猶予 + aging に入る。catalog 無しの
+予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
+名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの
 rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。
 temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は
 次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink
 するので、同名パスの差し替えで別の temp を削除しない。
-NFS で open 中 unlink による `.nfsXXXX` が見えても、同じ孤児回収の猶予があるため即時削除や
-rescue の昇格には進まない。
+NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に
+報告する。自動削除や rescue の昇格には進まない。
 
 thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` 接頭辞を持つ。
-active row が無い間は通常の孤児候補であり、mtime 猶予とエイジングの後に回収する。
+active row が無い間は孤児候補であり、mtime 猶予とエイジングの後に回収する。
+回収時は lock を取らず、unlink 直前に mtime を再確認する。
 catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原本へ昇格させない。
 
-**一括削除サーキットブレーカーはループ全体に 1 つ**: ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート。
+**一括削除サーキットブレーカーはループ全体に 1 つ**: 孤児回収を含む物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート。報告だけの canonical orphan は削除数に含めない。
 
 ### 削除可否の述語に名前を与える
 
@@ -185,13 +188,13 @@ API は現在のタイムラインから導出した keep 区間と凍結した�
 - **復元と物理削除の競合**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態である。**復元は `media_assets` に一切触れない**（`recordings.deleted_at` を消して即時削除の要求行を消すだけ）。そのため unlink が失敗して `deleting` のまま次パスに持ち越されると、「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は、無条件に unlink へ進むのではない。trash 猶予超過 / until_encoded 派生物完備の判定（上記「削除可否の述語に名前を与える」の 2 つの名前付き述語）を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets`（この 2 述語への `NOT EXISTS`）で候補として挙げる。`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻す。既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）、`active` には戻さず `deleted` を確定する。ここで無条件に `active` へ戻すと、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまう。これは復元 API 側で `deleting → active` を即時に書き換える方式（却下案）を採らなかった理由そのものである
 - **復元と即時削除要求の競合**: 復元は「`deleted_at` を消す」と「即時削除の要求行を DELETE する」の 2 表更新で、**1 文のデータ変更 CTE ではなくトランザクション内の 2 文**で流す。CTE はアーム全体が 1 つのスナップショットを共有するため、行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行は上の「ごみ箱腕」が `deleted_at IS NOT NULL` を要求するのでその場では何も起こさないが、**次の普通の論理削除で猶予をバイパスして即時 purge の対象になる**（ユーザーは即時削除を要求していない）。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える。**ただし窓を閉じているのは 2 文に割ったことではなく、要求行を入れる経路が先に対象の `recordings` 行をロックすること**である。DELETE が 0 行だったとき、ロックは何も残らない（READ COMMITTED に述語ロックは無い）。そのため「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。個別 purge は `recordings` の UPDATE がそのロックを兼ねている。**上の「一括」を素直に書くと、`recordings` をロックしないので窓が開き直る** —— この表に行を入れる経路は、必ず対象の `recordings` 行を先にロックする。素直な書き方とは `INSERT INTO recording_purge_requests SELECT id FROM recordings WHERE deleted_at IS NOT NULL` である
 
-### 孤児回収の 3 重の安全弁
+### 孤児の報告と回収
 
-1. **mtime 猶予**: mtime が 7 日以内のファイルは孤児候補にすらしない（正常系の録画 → ingest → エンコードは数時間で完結）。バックアップが 1 日古い程度のリストアはこれだけで守られる
-2. **孤児エイジング**: 孤児候補は `orphan_files` テーブルに first_seen を記録し、14 日連続で孤児であり続けたものだけ削除。**観測記録が DB 側にあるため、DB リストアで時計もリセットされ、削除までの窓が自動的に開き直す**
-3. **サーキットブレーカー**（上記）: DB 全損直後は全ファイルが孤児に見えるため確実に発動する
+1. **mtime 猶予**: mtime が 7 日以内のファイルは孤児候補にしない。正常系の録画、ingest、エンコードは数時間で完結する。バックアップが 1 日古い程度のリストアはこの猶予で候補から外れる
+2. **孤児エイジング**: 候補は `orphan_files` に `first_seen` を記録する。14 日連続で孤児であり続けた予約名の temp / staging だけを回収する。canonical 名は `rokuban_orphan_files_unresolved` と Warn ログで報告し、手動調査まで残す
+3. **サーキットブレーカー**: 1 パスに削除するファイル数が閾値を超えたら物理削除を止める。canonical orphan は物理削除しないため、この判定に含めない
 
-「リストア後は cleanup を止めておく」という人間の記憶に頼る運用が不要になる。
+DB リストア後も canonical file は自動削除しない。自動回収するのは名前が公開前を示すファイルに限る。
 
 ### 孤児回収の逆: 実体無し検出
 

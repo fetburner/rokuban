@@ -76,7 +76,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `webhook.events` | `[]`（全イベント有効） | 配送イベントの allowlist |
 | `cleanup.trash_retention` | `0`（= 30 日） | ごみ箱（`recordings.deleted_at`）の猶予（[storage.md](storage.md) §7） |
 | `cleanup.orphan_mtime_grace` | `0`（= 7 日） | 孤児候補にするまでの mtime 猶予 |
-| `cleanup.orphan_age` | `0`（= 14 日） | 孤児候補が実削除されるまでのエイジング期間 |
+| `cleanup.orphan_age` | `0`（= 14 日） | 孤児候補を自動回収または報告するまでのエイジング期間 |
 | `cleanup.max_deletes_per_pass` | `0`（= 100） | 一括削除サーキットブレーカーの閾値。ソースを問わず 1 パス全体の合計に対して働く（ruler と同じラッチ式） |
 | `cleanup.missing_asset_age` | `0`（= 24 時間） | 「active なのに実体ファイルが無い」候補が確認済みとして報告されるまでのエイジング期間。自動削除はしない（[storage.md](storage.md) §7「孤児回収の逆」） |
 | `log.level` | `info` | debug / info / warn / error |

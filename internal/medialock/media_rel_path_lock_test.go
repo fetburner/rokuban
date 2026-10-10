@@ -12,6 +12,19 @@ import (
 	"time"
 )
 
+func tryLockForTest(mediaDir, relPath string) (*FileLock, bool, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
+	defer cancel()
+	lock, err := Lock(ctx, mediaDir, relPath)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return lock, true, nil
+}
+
 func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 	mediaDir := t.TempDir()
 	const relPath = "sites/default/recording.m2ts"
@@ -25,7 +38,7 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 		t.Fatalf("stat active rel_path lock: %v", err)
 	}
 
-	second, acquired, err := TryLock(mediaDir, relPath)
+	second, acquired, err := tryLockForTest(mediaDir, relPath)
 	if err != nil {
 		_ = first.Close()
 		t.Fatalf("trying second rel_path file lock: %v", err)
@@ -57,7 +70,7 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("lock path after release: stat error = %v, want not exist", err)
 	}
-	second, acquired, err = TryLock(mediaDir, relPath)
+	second, acquired, err = tryLockForTest(mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("trying rel_path file lock after release: %v", err)
 	}
@@ -177,7 +190,7 @@ func TestMediaRelPathFileLock_WaiterReopensAfterOwnerUnlinks(t *testing.T) {
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Fatalf("stat second owner's current lock path: %v", err)
 	}
-	third, acquired, err := TryLock(mediaDir, relPath)
+	third, acquired, err := tryLockForTest(mediaDir, relPath)
 	if err != nil {
 		_ = second.Close()
 		t.Fatalf("trying third owner while second holds lock: %v", err)
