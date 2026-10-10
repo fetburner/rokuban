@@ -3157,13 +3157,7 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	if got := countEncodeJobs(t, pool, recordingID, "cut"); got != 0 {
 		t.Fatalf("cut encode jobs after already-committed ingest = %d, want 0", got)
 	}
-	var targetedPasses int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'encode_reconcile'
-		 AND (args->>'recording_id')::bigint = $1`, recordingID,
-	).Scan(&targetedPasses); err != nil {
-		t.Fatalf("counting targeted reconcile jobs: %v", err)
-	}
+	targetedPasses := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID)
 	if targetedPasses != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", targetedPasses)
 	}

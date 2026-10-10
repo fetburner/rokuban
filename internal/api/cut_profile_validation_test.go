@@ -12,6 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -317,23 +318,15 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
 	}
-	var rebuilds int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'encode_rebuild'
-		 AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = 'cut'`, id,
-	).Scan(&rebuilds); err != nil {
-		t.Fatalf("counting encode_rebuild jobs: %v", err)
-	}
+	rebuilds := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
+		return args.RecordingID == id && args.Profile == "cut"
+	})
 	if rebuilds != 1 {
 		t.Errorf("encode_rebuild jobs = %d, want 1", rebuilds)
 	}
-	var encodes int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'encode'
-		 AND (args->>'recording_id')::bigint = $1`, id,
-	).Scan(&encodes); err != nil {
-		t.Fatalf("counting encode jobs: %v", err)
-	}
+	encodes := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode", func(args jobs.EncodeJobArgs) bool {
+		return args.RecordingID == id
+	})
 	if encodes != 0 {
 		t.Errorf("encode jobs before worker handles rebuild = %d, want 0", encodes)
 	}
@@ -431,11 +424,9 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 		if resp.StatusCode != http.StatusConflict {
 			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
 		}
-		var n int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'encode_rebuild'
-			AND (args->>'recording_id')::bigint = $1`, id).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
+		n := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
+			return args.RecordingID == id
+		})
 		if n != 0 {
 			t.Errorf("%s: encode_rebuild jobs = %d, want 0", name, n)
 		}

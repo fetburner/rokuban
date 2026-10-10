@@ -1109,11 +1109,9 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
-	var targetedPasses int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job
-		WHERE kind = 'encode_reconcile' AND (args->>'recording_id')::bigint = $1`, id).Scan(&targetedPasses); err != nil {
-		t.Fatalf("counting targeted encode_reconcile jobs: %v", err)
-	}
+	targetedPasses := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_reconcile", func(args jobs.EncodeReconcileArgs) bool {
+		return args.RecordingID == id
+	})
 	if targetedPasses != 1 {
 		t.Fatalf("targeted encode_reconcile job count = %d, want 1", targetedPasses)
 	}
@@ -1127,11 +1125,15 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	for profile, want := range map[string]int{"cut": 0, "h264": 1} {
-		var got int
-		if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job
-			WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = $2
-			  AND state IN ('available', 'pending', 'running', 'scheduled')`, id, profile).Scan(&got); err != nil {
-			t.Fatalf("counting %s encode jobs: %v", profile, err)
+		got := 0
+		for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "encode") {
+			args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
+			switch row.State {
+			case rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled:
+				if args.RecordingID == id && args.Profile == profile {
+					got++
+				}
+			}
 		}
 		if got != want {
 			t.Errorf("pending %s encode jobs = %d, want %d", profile, got, want)

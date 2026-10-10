@@ -71,10 +71,7 @@ func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
 	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{RecordingID: 42}, nil); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
-	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'encode_reconcile'`).Scan(&count); err != nil {
-		t.Fatalf("counting reconcile jobs: %v", err)
-	}
+	count := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
 	if count != 2 {
 		t.Fatalf("pending encode_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
 	}

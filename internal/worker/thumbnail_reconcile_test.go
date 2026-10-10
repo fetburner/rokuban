@@ -51,10 +51,7 @@ func TestThumbnailReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T)
 	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{RecordingID: 42}, nil); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
-	var count int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'thumbnail_reconcile'`).Scan(&count); err != nil {
-		t.Fatalf("counting reconcile jobs: %v", err)
-	}
+	count := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail_reconcile"))
 	if count != 2 {
 		t.Fatalf("pending thumbnail_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
 	}
@@ -162,14 +159,11 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 
 func countRiverJobsForRecording(t *testing.T, pool *pgxpool.Pool, kind string, recordingID int64) int {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job WHERE kind = $1 AND (args->>'recording_id')::bigint = $2`,
-		kind, recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting %s jobs: %v", kind, err)
-	}
-	return count
+	return testutil.CountRiverJobsOfKind(t, context.Background(), pool, kind, func(args struct {
+		RecordingID int64 `json:"recording_id"`
+	}) bool {
+		return args.RecordingID == recordingID
+	})
 }
 
 func countThumbnailJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {

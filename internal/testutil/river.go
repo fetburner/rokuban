@@ -160,3 +160,16 @@ func MustDeleteRiverJobsOfKind(tb testing.TB, ctx context.Context, pool *pgxpool
 	client := NewRiverClient(tb, pool)
 	return MustDeleteRiverJobs(tb, ctx, client, river.NewJobDeleteManyParams().Kinds(kind))
 }
+
+// CountRiverJobsOfKind は指定 kind のジョブを公開 JobList API で取得し、引数を T に復号して
+// match が真のものを数える。recording_id などの絞り込みは Go 側で行う。
+func CountRiverJobsOfKind[T any](tb testing.TB, ctx context.Context, pool *pgxpool.Pool, kind string, match func(T) bool) int {
+	tb.Helper()
+	count := 0
+	for _, row := range MustListRiverJobsOfKind(tb, ctx, pool, kind) {
+		if match(MustDecodeRiverJobArgs[T](tb, row)) {
+			count++
+		}
+	}
+	return count
+}
