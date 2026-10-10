@@ -6,22 +6,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-// TestEvaluateSyncCandidates_FiltersBaseSkip は issue #54 の回帰テスト。
-//
-// ListReservationsForSyncEvaluation（旧 ListSyncableReservationsBySite）は
-// state <> 'orphaned' の候補を返すだけで、base.skip = true の行（M2-6 の
-// 重複排除が立てる）を絞り落とさない。以前の shadow-diff はこのクエリの結果を
-// そのまま「同期される予約」として扱ってしまい（Skipped: false を決め打ち）、
-// Rokuban が実際には録らない予約を EPGStation と「一致」と誤報告した。
-//
-// このテストは「新しい呼び出し元が EvaluateSyncCandidates を使わず素の
-// ListReservationsForSyncEvaluation の結果だけで済ませると、skip 済みの予約が
-// 混ざる」という同じ形のミスを EvaluateSyncCandidates 自体が捕まえることを
-// 確認する:
-//   - 絞り込み済みリスト（reconciler.listDesired が使う: Skipped == false だけ）に
-//     base.skip = true の行が含まれないこと（両方向のうち「除外される」側）
-//   - skip フラグ付きの全件（shadow-diff が使う）には含まれ、Skipped == true で
-//     判定されていること（両方向のうち「取得できる」側）
+// TestEvaluateSyncCandidates_FiltersBaseSkip は skip 済み候補にも正しい判定が付くことを確認する。
 func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 	rows := []sqlcgen.ListReservationsForSyncEvaluationRow{
 		{

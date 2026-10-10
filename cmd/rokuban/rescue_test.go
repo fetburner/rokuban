@@ -83,8 +83,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 	})
 }
 
-// 到達不能な DB（127.0.0.1:1）+ 2 サイトのレジストリ。shadowdiff_test.go の
-// shadowDiffCmdTestConfigTwoSites と同じ手法。
+// 到達不能な DB（127.0.0.1:1）+ 2 サイトのレジストリを使う。
 const rescueCmdTestConfigTwoSites = `
 db:
   host: 127.0.0.1

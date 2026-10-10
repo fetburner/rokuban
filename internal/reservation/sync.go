@@ -9,11 +9,9 @@ import (
 // SyncCandidate は ListReservationsForSyncEvaluation の 1 行を、そこから解決した
 // 実効オプションと skip 判定に組み合わせたもの。
 //
-// クエリ名が約束するのは「同期対象の候補」までで、effective.skip による
-// 絞り込みは含まない。呼び出し元が自前でこの 2 段目（EffectiveOptions）を
-// 呼ぶ形だと移植漏れが起きうる（shadow-diff がその移植を忘れ、Rokuban が
-// 録らない予約を EPGStation と「一致」と誤報告した実例が issue #54）。
-// この型と EvaluateSyncCandidates が 2 段目を 1 か所にまとめる。
+// クエリは同期判定前の候補を返す。effective.skip を含む実効オプションの判定を
+// 呼び出し側が個別に書くと適用漏れが起きるため、この型と EvaluateSyncCandidates に
+// 判定を集約する。
 //
 // Reservation と Snapshot を分けて持つのは #27 で番組の事実のスナップショット
 // （title / 開始時刻 / 尺 / チャンネル識別）が reservations から program_snapshots
@@ -35,9 +33,8 @@ type SyncCandidate struct {
 	// Skipped は Options.IsSkipped() の結果。Err != nil のときは意味を持たない。
 	Skipped bool
 	// Err は base / overrides の jsonb が壊れていて EffectiveOptions が失敗した
-	// 場合のエラー。呼び出し元の責務が分かれる箇所なのでここでは握り潰さない:
-	// reconciler はこの予約だけをログして同期対象から除外し、shadow-diff は
-	// 比較全体を失敗させる。挙動が違うため、ここで一方に決め打ちできない。
+	// 場合のエラー。握り潰さず、対象行を除外して続けるか処理全体を失敗させるかを
+	// 呼び出し元が決める。
 	Err error
 }
 

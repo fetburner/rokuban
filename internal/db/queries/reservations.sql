@@ -123,21 +123,14 @@ ORDER BY r.site, s.start_at;
 -- 「番組が既に終了しているか」で直接絞らない（now() との比較にしない）
 -- 理由: reconciler.programEnded が実際の POST/文言判定を毎パス評価し直す
 -- ので、ここでの事前絞り込みは効率のためだけに存在してよい。だが
--- now() 比較を SQL に持ち込むと、固定時刻を使うテスト（過去に書かれた
--- fixture が「将来」のつもりで書いた日時が実行時点で過去になっている等。
--- cmd/rokuban/shadowdiff_test.go で実例あり）が経過時間に依存して壊れる。
--- never_scheduled_events 表の行の存在という「reconciler 自身が過去に書いた
--- 事実」を条件にすればテストの実行時刻に依存しない（reconciler が実際に欠測
--- 行を作らない限り除外されない）。
+-- now() 比較を SQL に持ち込むと、固定時刻を使うテストが経過時間に依存する。
+-- never_scheduled_events 表の行という「reconciler 自身が過去に書いた事実」を
+-- 条件にすれば、テスト時刻に依存しない（reconciler が実際に欠測行を作らない
+-- 限り除外されない）。
 --
--- 旧名 ListSyncableReservationsBySite は「もう絞ってある」と約束してしまって
--- いた。その約束を信じて shadow-diff（cmd/rokuban/shadowdiff.go）の書き手は
--- effective.skip の絞り込みを移植し忘れ、M2-6 の重複排除が base.skip=true を
--- 立てた予約を「EPGStation と一致（Both）」と誤報告する見逃しが M2 の出口
--- 基準の測定器に入り込んだ（issue #54）。「同期対象か」を最終的に決めるのは
--- effective.skip（base + overrides + program_intents.action の合成）であり、
--- この行だけでは絞り切れていない。絞り込みは呼び出し元が
--- reservation.EvaluateSyncCandidates（internal/reservation/sync.go）に通して行う。
+-- このクエリは同期判定前の候補を返す。名前が「同期可能な予約を返す」と約束すると、
+-- 呼び出し側が effective.skip（base + overrides + program_intents.action の合成）を
+-- 適用し忘れるため、最終判定は reservation.EvaluateSyncCandidates に集約する。
 --
 -- 番組の開始時刻・尺（reconciler の開始遅延検出に使う）は program_snapshots に
 -- 移設された（#27）ので JOIN する。FK があるので必ず存在する。

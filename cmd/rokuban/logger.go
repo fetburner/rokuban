@@ -12,7 +12,7 @@ import (
 
 // loadConfig は --config で指定された設定ファイルを読み、成功したらそこから
 // ロガーを構成する（configureLogging）。全サブコマンド（server / migrate /
-// rescue / enqueue / catalog / shadow-diff / config validate）がここを通る
+// rescue / enqueue / catalog / config validate）がここを通る
 // ので、ロガーの設定場所もここに 1 箇所だけ置く。
 //
 // **Load 自体が失敗したときのログは既定のまま出る。** 設定を読めていないので
@@ -33,7 +33,7 @@ func loadConfig(cmd *cobra.Command) (*config.Config, error) {
 // configureLogging は log.level / log.format から slog.Handler を構成し、
 // パッケージ既定ロガー（slog.Default）に据える。loadConfig（全サブコマンド
 // 共通の config 読み込み入口）から呼ぶことで、server はもちろん migrate /
-// rescue / enqueue / catalog / shadow-diff にも同じ設定が効く。
+// rescue / enqueue / catalog にも同じ設定が効く。
 func configureLogging(cfg config.LogConfig) {
 	slog.SetDefault(slog.New(newLogHandler(cfg, os.Stderr)))
 }

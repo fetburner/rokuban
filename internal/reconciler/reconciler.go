@@ -498,9 +498,7 @@ type desiredReservation struct {
 // ユーザーの手動予約が黙って録画されなくなっていた（M2-4 で修正）。
 //
 // effective.skip の絞り込みは reservation.EvaluateSyncCandidates に通す
-// （internal/reservation/sync.go）。この関数はここ（reconciler.listDesired）と
-// cmd/rokuban/shadowdiff.go の 2 箇所から呼ばれる共通処理 --- 2 箇所が別々に
-// reservation.EffectiveOptions を呼ぶ形だと移植漏れが起きうる（issue #54 の見逃しの原因）。
+// （internal/reservation/sync.go）。呼び出し側で判定を重複させず、この関数を使う。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
 	rows, err := sqlcgen.New(r.pool).ListReservationsForSyncEvaluation(ctx, r.site)
 	if err != nil {

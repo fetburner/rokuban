@@ -97,19 +97,17 @@ type ReserveSaveOption struct {
 	RecordedFormat string `json:"recordedFormat,omitempty"`
 }
 
-// rulesResponse は GET /api/rules のレスポンス全体。ListReserves の
-// reservesResponse と同じ形（rules/total）。
+// rulesResponse は GET /api/rules のレスポンス全体（rules/total）。
 type rulesResponse struct {
 	Rules []Rule `json:"rules"`
 	Total int    `json:"total"`
 }
 
-// rulesPageLimit は 1 ページあたりの取得件数。ListReserves の
-// reservesPageLimit と同じ値を踏襲する。
+// rulesPageLimit は 1 ページあたりの取得件数。
 const rulesPageLimit = 100
 
 // ListRules は GET /api/rules を limit/offset でページングしながら全件回収する。
-// ListReserves と同じページング規約（空ページ or total 到達で打ち切り）。
+// 空ページまたは total 到達で打ち切る。
 func (c *Client) ListRules(ctx context.Context) ([]Rule, error) {
 	var all []Rule
 	offset := 0

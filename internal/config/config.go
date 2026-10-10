@@ -59,7 +59,7 @@ type DBConfig struct {
 	// docs/operations.md §3「輻輳時の隔離」）ため、「ロール別プール上限」は
 	// 複数プールを作ることではなく、この 1 個の上限を決めることを指す。
 	// 0（未指定）なら db.NewPool がプロセスの roles 集合から自動算出する。
-	// roles を渡さない単発 CLI コマンド（rescue/enqueue/shadow-diff）では
+	// roles を渡さない単発 CLI コマンド（rescue/enqueue）では
 	// pgxpool の既定値（max(4, NumCPU)）がそのまま使われる。
 	MaxConns int `yaml:"max_conns"`
 
