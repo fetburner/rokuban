@@ -18,6 +18,8 @@ func riverInternalTables(m dsl.Matcher) {
 		`$b.Queue($q, $*_)`,
 		`const $_ = $q`,
 		`var $_ = $q`,
+		`const $_ $_ = $q`,
+		`var $_ $_ = $q`,
 		`$_ := $q`,
 		`$_ = $q`,
 	).
