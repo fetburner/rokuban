@@ -151,22 +151,34 @@ func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) ti
 	return encodeReconcileTimeout
 }
 
-// Work は 1 パス分の encode reconcile を実行する。
+// enqueueEncodeReconcileFromContext は指定録画の reconcile を River に投入する。
+// ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
+func enqueueEncodeReconcileFromContext(ctx context.Context, recordingID int64) {
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		return
+	}
+	if _, err := client.Insert(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID}, nil); err != nil {
+		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
+	}
+}
+
+// Work は encode reconcile を全件または指定録画について実行する。
 //
 // 候補の抽出と不足プロファイルの判定を ListMissingEncodeProfiles でまとめて行う。
 // これにより、候補ごとの原本・ポリシー・encoded の再取得を避ける。known_profiles
 // も SQL に渡して、設定から消えたプロファイルや空のプロファイル名を投入対象から
-// 外す。単発のヒント経路は用途が異なるため、引き続き EnqueueMissingEncodes 系の
-// 実装を使う。
+// 外す。対象録画を指定したパスも同じクエリで判定し、全件パスの窓やメトリクスに
+// 触れない。
 //
 // 1 件の失敗でパス全体を止めない（record_sweep の processRecord・
 // delete_reconcile の deleteMediaAsset と同じ判断）。次パスが同じ候補を
 // 拾い直す。
-func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.EncodeReconcileArgs]) error {
+func (w *EncodeReconcileWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeReconcileArgs]) error {
+	recordingID := job.Args.RecordingID
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
-		// EncodeEnqueueHintWorker と同じ判断: このジョブの主目的が
-		// 「encode ジョブを実際に投入すること」なので、client が取れないことを
+		// このジョブの主目的が「encode ジョブを実際に投入すること」なので、client が取れないことを
 		// 黙った no-op にすると取りこぼしの回復そのものが消える。
 		return fmt.Errorf("encode reconcile: getting river client: %w", err)
 	}
@@ -180,15 +192,22 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 	// 投入しない（SQL 側の同じ述語。encode_reconcile.sql のコメント参照）。
 	cut := w.Profiles.CutProfileNames()
 
-	// after は今パスが窓を開く位置（この recording_id より大きい候補から見る）。
+	// 対象録画のパスは全件パスの窓とは独立させる。
+	after := int64(0)
+	var targetID *int64
+	if recordingID == 0 {
+		after = w.resumeAfter.Load()
+	} else {
+		targetID = &recordingID
+	}
+	// after は全件パスが窓を開く位置（この recording_id より大きい候補から見る）。
 	// resumeAfter はプロセスローカルなので、このワーカーインスタンスが前パスも
 	// 実行していない（例: パスごとに新しいインスタンスを作った）場合は常に 0 に
 	// 戻り、窓は回らない（EncodeReconcileWorker の doc コメント「窓を回す」参照）。
-	after := w.resumeAfter.Load()
-
 	q := sqlcgen.New(w.Pool)
 	missing, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: after,
+		RecordingID:      targetID,
 		KnownProfiles:    known,
 		CutProfiles:      cut,
 		RowLimit:         rowLimit,
@@ -236,37 +255,42 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 		}
 	}
 
-	metrics.EncodeReconcileCandidates.Set(float64(len(candidates)))
-	metrics.EncodeReconcileLastPass.SetToCurrentTime()
+	if recordingID == 0 {
+		metrics.EncodeReconcileCandidates.Set(float64(len(candidates)))
+		metrics.EncodeReconcileLastPass.SetToCurrentTime()
 
-	// 窓を回す: ちょうど上限まで埋まったパスは続きが残っているかもしれないので
-	// 最後に見た id から再開する。上限に届かなかった（0 件を含む）パスは候補集合の
-	// 末尾まで見たので先頭へ戻す。1 件の投入失敗（上の failed）は再開位置に
-	// 影響させない --- 巻き戻った後のパスでまた examine されるので、投入失敗の
-	// ためだけの特別扱いは要らない。
-	windowFull := int32(len(candidates)) >= rowLimit
-	var resumeAfter int64
-	if windowFull {
-		resumeAfter = candidates[len(candidates)-1]
-	}
-	w.resumeAfter.Store(resumeAfter)
+		// 窓を回す: ちょうど上限まで埋まったパスは続きが残っているかもしれないので
+		// 最後に見た id から再開する。上限に届かなかった（0 件を含む）パスは候補集合の
+		// 末尾まで見たので先頭へ戻す。1 件の投入失敗（上の failed）は再開位置に
+		// 影響させない --- 巻き戻った後のパスでまた examine されるので、投入失敗の
+		// ためだけの特別扱いは要らない。
+		windowFull := int32(len(candidates)) >= rowLimit
+		var resumeAfter int64
+		if windowFull {
+			resumeAfter = candidates[len(candidates)-1]
+		}
+		w.resumeAfter.Store(resumeAfter)
 
-	// 窓が埋まったパスは、それより後ろの recording_id をこのパスでは見ていない。
-	// 次パスが resume_after から続きを見る（黙って終わらせない。上の doc コメント
-	// 参照）。resume_after は回転が実際に進んでいることを運用側から確かめる
-	// 唯一の手段（プロセスが再起動を繰り返す構成では常に 0 に留まり、それも
-	// ここに現れる）。
-	if windowFull {
-		slog.Warn("encode_reconcile: candidate window is full; the next pass resumes from resume_after",
-			"row_limit", rowLimit, "last_recording_id", candidates[len(candidates)-1], "resume_after", resumeAfter)
-	}
+		// 窓が埋まったパスは、それより後ろの recording_id をこのパスでは見ていない。
+		// 次パスが resume_after から続きを見る（黙って終わらせない。上の doc コメント
+		// 参照）。resume_after は回転が実際に進んでいることを運用側から確かめる
+		// 唯一の手段（プロセスが再起動を繰り返す構成では常に 0 に留まり、それも
+		// ここに現れる）。
+		if windowFull {
+			slog.Warn("encode_reconcile: candidate window is full; the next pass resumes from resume_after",
+				"row_limit", rowLimit, "last_recording_id", candidates[len(candidates)-1], "resume_after", resumeAfter)
+		}
 
-	w.reportUnsatisfiable(ctx, q, known)
-	w.reportAwaitingReview(ctx, q)
+		w.reportUnsatisfiable(ctx, q, known)
+		w.reportAwaitingReview(ctx, q)
 
-	if len(candidates) > 0 || failed > 0 {
-		slog.Info("encode_reconcile: pass complete",
-			"candidates", len(candidates), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+		if len(candidates) > 0 || failed > 0 {
+			slog.Info("encode_reconcile: pass complete",
+				"candidates", len(candidates), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+		}
+	} else if len(candidates) > 0 || failed > 0 {
+		slog.Info("encode_reconcile: targeted pass complete",
+			"recording_id", recordingID, "candidates", len(candidates), "failed", failed)
 	}
 	return nil
 }

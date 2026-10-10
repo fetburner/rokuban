@@ -74,6 +74,7 @@ WITH candidate_recordings AS (
   FROM recording_encode_policy p
   JOIN recordings r ON r.id = p.recording_id
   WHERE p.recording_id > $3::bigint
+    AND ($4::bigint IS NULL OR p.recording_id = $4::bigint)
     AND cardinality(p.encode_profiles) > 0
     AND r.deleted_at IS NULL
     AND EXISTS (
@@ -102,7 +103,7 @@ WITH candidate_recordings AS (
         )
     )
   ORDER BY recording_id
-  LIMIT $4
+  LIMIT $5
 )
 SELECT c.recording_id, want.profile::text AS profile
 FROM candidate_recordings c
@@ -131,6 +132,7 @@ type ListMissingEncodeProfilesParams struct {
 	KnownProfiles    []string
 	CutProfiles      []string
 	AfterRecordingID int64
+	RecordingID      *int64
 	RowLimit         int32
 }
 
@@ -190,21 +192,16 @@ type ListMissingEncodeProfilesRow struct {
 //     （行が無い = 未凍結。不変条件 10。JOIN で自然に落ちる）
 //   - cardinality(encode_profiles) > 0 = desired が空でない
 //   - 原本 media_assets（kind='original', state='active'）の EXISTS = ingest
-//     コミット済み。ingest 未完了の録画を対象にしない。state='active' まで見るのは
-//     EnqueueMissingEncodes 側の判定（GetActiveOriginalMediaAsset）と一致させる
-//     ため --- 原本が until_encoded で物理削除済みの録画をここで候補に挙げても、
-//     EnqueueMissingEncodes が no-op を返すだけで前進しない。reconcile パスでは
-//     このクエリが同じ判定を行うので、候補ごとの再取得はしない
-//   - r.deleted_at IS NULL = ごみ箱の録画は対象外。ヒント経路（ingest 完了 /
-//     POST /api/recordings/{id}/encode-profiles）は「今その録画に何かが起きた」
-//     という個別のイベントで発火するが、この定期パスは全録画を毎回なめるので、
-//     ユーザーが捨てた録画のエンコードを延々と再投入し続けることになる。
+//     コミット済み。ingest 未完了の録画を対象にしない。原本が until_encoded で
+//     物理削除済みの録画も候補にしない
+//   - r.deleted_at IS NULL = ごみ箱の録画は対象外。対象録画を絞った即時パスも
+//     このクエリを使うため、全件パスとごみ箱の扱いがずれない
 //     until_encoded_deletable_originals が同じ述語を持つのと同じ理由
 //   - want.profile が空文字列でなく、known_profiles に含まれる = 現在の設定に存在する
 //     非空のプロファイルだけを欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
 //     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
 //     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名も
-//     ここで明示的に落とす（単発 hint 経路の `name == ""` スキップと揃える）
+//     ここで明示的に落とす
 //   - want.profile が cut_profiles に含まれるなら recording_chapter_ownership の
 //     行が要る（不変条件 10: 行の存在 = ユーザーが確認済み）。cut: true の
 //     プロファイルは確認済みのタイムラインを切るので、確認前に投入すると誤検出の
@@ -218,6 +215,9 @@ type ListMissingEncodeProfilesRow struct {
 //     （録画単位の恒久失敗が LIMIT 件を超える）でも有限パス数で全候補に到達する
 //     （EncodeReconcileWorker の doc コメント「窓を回す」）。recording_id は PK
 //     なのでこの keyset 述語はそのまま索引に乗る。
+//   - recording_id が NULL でなければ、その録画だけに候補を絞る（ingest 完了後や
+//     encode_profiles の事後追加で投入する即時パス）。このとき呼び出し側は
+//     after_recording_id を 0 にし、全件パスの再開窓とは独立させる
 //
 // **known_profiles は non-NULL でなければならない。** `x = ANY(NULL::text[])` は
 // false ではなく NULL なので、NULL（Go 側の nil スライス）を渡すと EXISTS が
@@ -237,6 +237,7 @@ func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissing
 		arg.KnownProfiles,
 		arg.CutProfiles,
 		arg.AfterRecordingID,
+		arg.RecordingID,
 		arg.RowLimit,
 	)
 	if err != nil {

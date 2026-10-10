@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // TestCutProfileSelection_RejectedOnEveryAPIPath は live.enabled=false の構成で
@@ -269,6 +270,59 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}
 	if got := post("h264"); got != http.StatusBadRequest {
 		t.Errorf("reencode non-cut status = %d, want 400", got)
+	}
+}
+
+func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
+	}
+	var rebuilds int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'encode_rebuild'
+		 AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = 'cut'`, id,
+	).Scan(&rebuilds); err != nil {
+		t.Fatalf("counting encode_rebuild jobs: %v", err)
+	}
+	if rebuilds != 1 {
+		t.Errorf("encode_rebuild jobs = %d, want 1", rebuilds)
+	}
+	var encodes int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM river_job WHERE kind = 'encode'
+		 AND (args->>'recording_id')::bigint = $1`, id,
+	).Scan(&encodes); err != nil {
+		t.Fatalf("counting encode jobs: %v", err)
+	}
+	if encodes != 0 {
+		t.Errorf("encode jobs before worker handles rebuild = %d, want 0", encodes)
 	}
 }
 

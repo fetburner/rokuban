@@ -80,7 +80,7 @@ preflight は Service selector を見ない。
   起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。
   出荷値は base 側にある
 - **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` /
-  `encode_enqueue_hint` が同じキューに載るので、長いエンコードの裏で詰まらせ
+  `encode_rebuild` が同じキューに載るので、長いエンコードの裏で詰まらせ
   ないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の
   1 つ目を追いかけるので、2 本目が起きると**短い方を観測して**「窓の中で
   完走した」= TODO に化ける

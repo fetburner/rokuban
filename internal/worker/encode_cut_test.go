@@ -370,53 +370,6 @@ func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 	}
 }
 
-// TestCutIsCurrent_ComparesQuantizedRanges は「編集前の内容です」の判定が
-// **量子化後の値どうし**で行われることを固定する。凍結した区間が 1ms でも違えば
-// 「編集前」になり、逆に一致すれば作り直さない。
-func TestCutIsCurrent_ComparesQuantizedRanges(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "cut/stale.m2ts", []string{"cut"}, []byte("data"))
-	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "cut/stale_cut.g1.mp4")
-
-	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}, {StartMs: 5000, EndMs: 6000}}
-	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
-		t.Fatalf("setFrozenCuts: %v", err)
-	}
-
-	q := sqlcgen.New(pool)
-	current, err := cutIsCurrent(ctx, q, assetID, keep)
-	if err != nil {
-		t.Fatalf("cutIsCurrent: %v", err)
-	}
-	if !current {
-		t.Error("the frozen ranges equal the current ones but were judged stale")
-	}
-
-	// 1ms だけ違う区間は「編集前」になる（量子化前の値で比べていないことの確認）。
-	shifted := []chapters.Range{{StartMs: 0, EndMs: 1001}, {StartMs: 5000, EndMs: 6000}}
-	stale, err := cutIsCurrent(ctx, q, assetID, shifted)
-	if err != nil {
-		t.Fatalf("cutIsCurrent: %v", err)
-	}
-	if stale {
-		t.Error("a one-millisecond difference was not detected as stale")
-	}
-
-	// 全部カット（keep が空）は「作り直しても作れない」ので false。
-	empty, err := cutIsCurrent(ctx, q, assetID, nil)
-	if err != nil {
-		t.Fatalf("cutIsCurrent: %v", err)
-	}
-	if empty {
-		t.Error("an empty keep set must never count as current")
-	}
-}
-
 // TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath は置き換えの受け入れを
 // 固定する: 新しい世代のパスに置き換わり、旧パスが消え、凍結区間が差し替わる。
 func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
@@ -519,12 +472,12 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		t.Errorf("the replaced file %s still exists (err=%v)", oldAbs, err)
 	}
 	// 凍結した区間も差し替わる。
-	current, err := cutIsCurrent(ctx, sqlcgen.New(pool), assetID, keep)
+	current, err := assetKeepRanges(ctx, sqlcgen.New(pool), assetID)
 	if err != nil {
-		t.Fatalf("cutIsCurrent: %v", err)
+		t.Fatalf("assetKeepRanges: %v", err)
 	}
-	if !current {
-		t.Error("media_asset_cuts was not replaced with the current keep ranges")
+	if !slices.Equal(current, keep) {
+		t.Errorf("media_asset_cuts ranges = %v, want %v", current, keep)
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
@@ -578,13 +531,13 @@ func newEncodeJob(recordingID int64, profile string) *river.Job[jobs.EncodeJobAr
 	}
 }
 
-// TestEnqueueMissingEncodes_CutProfilesWaitForReview は受け入れの「所有していない
+// TestEncodeReconcile_CutProfilesWaitForReview は受け入れの「所有していない
 // 録画では cut プロファイルの encode が投入されず、確認後に投入される」を固定する。
 //
 // **確認前に投入すると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて
 // 取り返せなくなる。** cut でないプロファイルは同じ録画でも通常どおり投入される
 // （この 2 つが同じループで分岐していることが要点）。
-func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
+func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -594,17 +547,13 @@ func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "cut/review.m2ts",
 		[]string{"cut", "h264"}, []byte("payload"))
 
-	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	cutProfiles := map[string]struct{}{"cut": {}}
+	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
+		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+	}}
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: cfg}
 
 	// 未確認: cut は投入されず、h264 だけが投入される。
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, config.EncodeConfig{}, cutProfiles); err != nil {
-		t.Fatalf("EnqueueMissingEncodes: %v", err)
-	}
+	runEncodeReconcilePass(t, pool, w)
 	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles before review = %v, want [h264] (cut must wait)", got)
 	}
@@ -614,11 +563,56 @@ func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, config.EncodeConfig{}, cutProfiles); err != nil {
-		t.Fatalf("second EnqueueMissingEncodes: %v", err)
-	}
+	runEncodeReconcilePass(t, pool, w)
 	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"cut", "h264"}) {
 		t.Fatalf("pending profiles after review = %v, want [cut h264]", got)
+	}
+}
+
+// TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile keeps a stale cut
+// asset complete while a different profile is added to desired.
+func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "cut/add-profile-stale.m2ts",
+		[]string{"cut", "h264"}, []byte("payload"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatalf("adopting chapters: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatalf("inserting initial chapter span: %v", err)
+	}
+	cutAssetID := seedEncodedAsset(t, pool, recordingID, "cut", "cut/add-profile_stale_cut.g1.mp4")
+	frozen, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil {
+		t.Fatalf("deriving initial keep ranges: %v", err)
+	}
+	if err := setFrozenCuts(t, pool, cutAssetID, frozen); err != nil {
+		t.Fatalf("seeding frozen ranges: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(1200000, 1300000), 'CM2', true)`, recordingID); err != nil {
+		t.Fatalf("editing chapter spans: %v", err)
+	}
+	current, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil {
+		t.Fatalf("deriving edited keep ranges: %v", err)
+	}
+	if slices.Equal(frozen, current) {
+		t.Fatal("test setup did not make the active cut asset stale")
+	}
+	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
+		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+	}}
+	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg},
+		EncodeReconcileArgs{RecordingID: recordingID})
+	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"h264"}) {
+		t.Fatalf("pending profiles after adding h264 = %v, want [h264] (stale cut requires an explicit rebuild command)", got)
 	}
 }
 
@@ -776,11 +770,10 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	}
 }
 
-// TestEnqueueCut_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、確認済みでも
-// cut のジョブを投入しない」を、ヒント経路（EnqueueMissingEncodes）と定期 reconcile の
-// 両方で固定する。投入しても loadCutContext が "has no keep ranges" で必ず失敗し、
-// reconcile のたびに失敗ジョブが積まれる。一部だけ切る録画（partial）は両経路で投入される。
-func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
+// TestEncodeReconcile_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、
+// 確認済みでも cut のジョブを投入しない」を固定する。投入しても loadCutContext が
+// "has no keep ranges" で失敗し続けるため、一部だけ切る録画だけを投入する。
+func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -807,27 +800,6 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	allCut := seed("cut/allcut.m2ts", chapters.Span{StartMs: 0, EndMs: 1800000})
 	partial := seed("cut/partial.m2ts", chapters.Span{StartMs: 500, EndMs: 1000})
 
-	client, err := NewClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	cut := map[string]struct{}{"cut": {}}
-
-	// ヒント経路。
-	for _, id := range []int64{allCut, partial} {
-		if err := EnqueueMissingEncodes(ctx, client, pool, id, config.EncodeConfig{}, cut); err != nil {
-			t.Fatalf("EnqueueMissingEncodes(%d): %v", id, err)
-		}
-	}
-	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {
-		t.Errorf("hint path: all-cut recording pending = %v, want none", got)
-	}
-	if got := pendingEncodeProfiles(t, pool, partial); !slices.Equal(got, []string{"cut"}) {
-		t.Errorf("hint path: partial recording pending = %v, want [cut]", got)
-	}
-
-	// 定期 reconcile 経路（ジョブを消してから回す）。
-	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, (jobs.EncodeJobArgs{}).Kind())
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
 	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {

@@ -22,14 +22,154 @@ import (
 )
 
 func runThumbnailReconcilePass(t *testing.T, pool *pgxpool.Pool, w *ThumbnailReconcileWorker) {
+	runThumbnailReconcilePassArgs(t, pool, w, ThumbnailReconcileArgs{})
+}
+
+func runThumbnailReconcilePassArgs(t *testing.T, pool *pgxpool.Pool, w *ThumbnailReconcileWorker, args ThumbnailReconcileArgs) {
 	t.Helper()
 	job := &river.Job[ThumbnailReconcileArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ThumbnailReconcileArgs{},
+		Args:   args,
 	}
 	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
 		t.Fatalf("ThumbnailReconcileWorker.Work: %v", err)
 	}
+}
+
+func TestThumbnailReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	client, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("NewInsertOnlyClient: %v", err)
+	}
+	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{}, nil); err != nil {
+		t.Fatalf("inserting full pass: %v", err)
+	}
+	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{RecordingID: 42}, nil); err != nil {
+		t.Fatalf("inserting targeted pass: %v", err)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'thumbnail_reconcile'`).Scan(&count); err != nil {
+		t.Fatalf("counting reconcile jobs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("pending thumbnail_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
+	}
+}
+
+func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	first := insertTestRecordingForSite(t, pool, "default", 981)
+	target := insertTestRecordingForSite(t, pool, "default", 982)
+	third := insertTestRecordingForSite(t, pool, "default", 983)
+	unrelatedMissing := insertTestRecordingForSite(t, pool, "default", 984)
+	for i, id := range []int64{first, target, third, unrelatedMissing} {
+		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("targeted/%d.ts", i), []byte("fake-ts"))
+	}
+	// The selected recording also exercises the reselection query. Its current seek
+	// points inside a detected CM range, while its poster and seek-tile jobs already
+	// exist or are missing as separate observations.
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, target,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(target), []byte("old-thumbnail"))
+	thirdThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, third,
+		db.AssetKindThumbnail, nil, thumbnailRelPath(third), []byte("old-thumbnail"))
+	if err := sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: target,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding CM ranges: %v", err)
+	}
+	if err := sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+		RecordingID: third,
+		CmRanges:    "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("seeding unrelated CM ranges: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding thumbnail seek: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+		MediaAssetID: thirdThumbnailID,
+		SeekMs:       30000,
+	}); err != nil {
+		t.Fatalf("seeding unrelated thumbnail seek: %v", err)
+	}
+
+	metrics.ThumbnailReconcileCandidates.Set(19)
+	metrics.ThumbnailReconcileLastPass.Set(29)
+	t.Cleanup(func() {
+		metrics.ThumbnailReconcileCandidates.Set(0)
+		metrics.ThumbnailReconcileLastPass.Set(0)
+	})
+	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 100}
+	w.resumeAfter.Store(9_000_000_000_000_000_000)
+	w.reselectResumeAfter.Store(9_000_000_000_000_000_000)
+	w.seekTilesResumeAfter.Store(9_000_000_000_000_000_000)
+
+	runThumbnailReconcilePassArgs(t, pool, w, ThumbnailReconcileArgs{RecordingID: first})
+	for _, tc := range []struct {
+		id        int64
+		thumbnail int
+		seekTiles int
+	}{{first, 1, 1}, {target, 0, 0}, {third, 0, 0}} {
+		if got := countThumbnailJobs(t, pool, tc.id); got != tc.thumbnail {
+			t.Errorf("thumbnail jobs for recording %d = %d, want %d", tc.id, got, tc.thumbnail)
+		}
+		if got := countRiverJobsForRecording(t, pool, "seek_tiles", tc.id); got != tc.seekTiles {
+			t.Errorf("seek_tiles jobs for recording %d = %d, want %d", tc.id, got, tc.seekTiles)
+		}
+	}
+	if got := countThumbnailJobs(t, pool, unrelatedMissing); got != 0 {
+		t.Errorf("thumbnail jobs for unrelated missing-poster recording = %d, want 0", got)
+	}
+	if got := countRiverJobsForRecording(t, pool, "seek_tiles", unrelatedMissing); got != 0 {
+		t.Errorf("seek_tiles jobs for unrelated missing-poster recording = %d, want 0", got)
+	}
+	runThumbnailReconcilePassArgs(t, pool, w, ThumbnailReconcileArgs{RecordingID: target})
+	if got := countThumbnailJobs(t, pool, target); got != 1 {
+		t.Errorf("thumbnail jobs for reselection target = %d, want 1", got)
+	}
+	if got := countRiverJobsForRecording(t, pool, "seek_tiles", target); got != 1 {
+		t.Errorf("seek_tiles jobs for reselection target = %d, want 1", got)
+	}
+	if got := countThumbnailJobs(t, pool, third); got != 0 {
+		t.Errorf("thumbnail jobs for unrelated recording = %d, want 0", got)
+	}
+	if w.resumeAfter.Load() != 9_000_000_000_000_000_000 ||
+		w.reselectResumeAfter.Load() != 9_000_000_000_000_000_000 ||
+		w.seekTilesResumeAfter.Load() != 9_000_000_000_000_000_000 {
+		t.Errorf("targeted pass changed full-pass cursors: missing=%d reselect=%d seek_tiles=%d",
+			w.resumeAfter.Load(), w.reselectResumeAfter.Load(), w.seekTilesResumeAfter.Load())
+	}
+	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileCandidates); got != 19 {
+		t.Errorf("candidate gauge = %v, want unchanged 19", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileLastPass); got != 29 {
+		t.Errorf("last-pass gauge = %v, want unchanged 29", got)
+	}
+}
+
+func countRiverJobsForRecording(t *testing.T, pool *pgxpool.Pool, kind string, recordingID int64) int {
+	t.Helper()
+	var count int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM river_job WHERE kind = $1 AND (args->>'recording_id')::bigint = $2`,
+		kind, recordingID,
+	).Scan(&count); err != nil {
+		t.Fatalf("counting %s jobs: %v", kind, err)
+	}
+	return count
 }
 
 func countThumbnailJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
@@ -299,8 +439,8 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 	}
 }
 
-// 定期パスの恒久失敗ガードは、明示的な復旧投入まで狭めてはいけない。
-func TestEnqueueMissingThumbnails_IncludesKnownMissingOriginal(t *testing.T) {
+// 対象を絞った reconcile も known-missing original を飛び越えず、マーカーが消えた後は拾う。
+func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -309,24 +449,29 @@ func TestEnqueueMissingThumbnails_IncludesKnownMissingOriginal(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	recordingID := insertTestRecording(t, pool)
-	originalID := seedOriginalAsset(t, pool, t.TempDir(), recordingID, "manual-recovery/original.m2ts", []byte("fake-ts"))
+	originalID := seedOriginalAsset(t, pool, t.TempDir(), recordingID, "targeted-recovery/original.m2ts", []byte("fake-ts"))
 	if err := q.UpsertMissingMediaAsset(ctx, originalID); err != nil {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	client, err := NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("NewInsertOnlyClient: %v", err)
+	w := &ThumbnailReconcileWorker{Pool: pool}
+	runThumbnailReconcilePassArgs(t, pool, w, ThumbnailReconcileArgs{RecordingID: recordingID})
+	if got := countThumbnailJobs(t, pool, recordingID); got != 0 {
+		t.Fatalf("thumbnail jobs for targeted known-missing original = %d, want 0", got)
 	}
-	n, err := EnqueueMissingThumbnails(ctx, pool, client)
-	if err != nil {
-		t.Fatalf("EnqueueMissingThumbnails: %v", err)
+	if got := countRiverJobsForRecording(t, pool, "seek_tiles", recordingID); got != 0 {
+		t.Fatalf("seek_tiles jobs for targeted known-missing original = %d, want 0", got)
 	}
-	if n != 1 {
-		t.Fatalf("EnqueueMissingThumbnails returned %d, want 1", n)
+
+	if err := q.DeleteMissingMediaAsset(ctx, originalID); err != nil {
+		t.Fatalf("clearing restored original marker: %v", err)
 	}
+	runThumbnailReconcilePassArgs(t, pool, w, ThumbnailReconcileArgs{RecordingID: recordingID})
 	if got := countThumbnailJobs(t, pool, recordingID); got != 1 {
-		t.Fatalf("thumbnail jobs after explicit recovery = %d, want 1", got)
+		t.Fatalf("thumbnail jobs after clearing restored marker = %d, want 1", got)
+	}
+	if got := countRiverJobsForRecording(t, pool, "seek_tiles", recordingID); got != 1 {
+		t.Fatalf("seek_tiles jobs after clearing restored marker = %d, want 1", got)
 	}
 }
 

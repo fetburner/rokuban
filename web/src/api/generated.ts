@@ -648,8 +648,8 @@ export interface EncodedAsset {
  *   確認していない（`recording_chapter_ownership` の行が無い）。
  *   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
  *   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
- *   表す。投入側（`EnqueueMissingEncodes` /
- *   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+ *   表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)
+ *   がこの条件で候補から外しているので、
  *   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
  * - `running`: いま ffmpeg が走っている
  * - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
@@ -693,8 +693,8 @@ export interface EncodeJobStatus {
      *   確認していない（`recording_chapter_ownership` の行が無い）。
      *   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
      *   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
-     *   表す。投入側（`EnqueueMissingEncodes` /
-     *   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+     *   表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)
+     *   がこの条件で候補から外しているので、
      *   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
      * - `running`: いま ffmpeg が走っている
      * - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
@@ -7110,12 +7110,14 @@ export const getAddRecordingEncodeProfilesUrl = (id: number,) => {
  * これは次のいずれかに当たる --- 本当に削除済み（`keep_original=until_encoded`
  * でエンコード完了後に原本削除 reconcile が消した等）、`state = 'deleting'`
  * （unlink 待ち。一覧では「原本あり」に見えるが事後追加は決定的に 409 になる）、
- * またはそもそも ingest が完了しておらず original 行自体が無い。この場合
- * `EnqueueMissingEncodes` は黙って no-op になるため、api 層で明示的に
- * 検査してサイレントな失敗にしない。
+ * またはそもそも ingest が完了しておらず original 行自体が無い。
+ * api 層で明示的に検査してサイレントな失敗にしない。
  *
- * 既に完了済み/pending のプロファイル名を再指定してもエラーにはならず
- * （River の UniqueOpts が二重投入を防ぐ）、冪等に 204 を返す。
+ * プロファイル追加と同じトランザクションで対象録画の `encode_reconcile` を
+ * 投入し、worker が定期パスと同じ候補 query で不足分を判定する。ごみ箱の
+ * 録画も desired は更新できるが候補から除外され、復元後の定期パスが拾う。
+ * 既に完了済み/pending のプロファイル名を再指定してもエラーにはならず、
+ * 冪等に 204 を返す。
  * @summary Request additional encode profiles for an already-ingested recording
  */
 export const addRecordingEncodeProfiles = async (id: number,

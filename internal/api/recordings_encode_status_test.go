@@ -213,8 +213,8 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 // TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured は、
 // api が config.encode.profiles を注入している（RouterConfig.EncodeProfileNames
 // が non-nil）とき、設定から消えたプロファイルは試行行が無い限り queued を
-// 名乗らないことを固定する。EncodeReconcileWorker の
-// EnqueueMissingEncodesForKnownProfiles / ListUnsatisfiableEncodeProfiles が
+// 名乗らないことを固定する。encode_reconcile の既知プロファイル絞り込みと
+// ListUnsatisfiableEncodeProfiles が
 // 「恒久的に満たせない」と数えている集合と同じものを、世帯向けの画面が
 // 「待ち」と言ってしまう食い違いを塞ぐ（issue #316 のレビューで判明）。
 // 試行行が既にある（削除前に始まっていた失敗）なら、設定に残っていなくても

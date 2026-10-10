@@ -1,6 +1,5 @@
 -- thumbnail の desired（active original）− observed（active thumbnail）を
--- 定期的に埋めるための候補。手動の EnqueueMissingThumbnails とは別のクエリに
--- して、明示的な復旧投入が missing_media_assets のマーカーを迂回できるようにする。
+-- 埋める候補。全件パスと recording_id を絞った即時パスが同じ述語を使う。
 --
 -- missing_media_assets に載っている原本は delete_reconcile が実体無しを確認した
 -- ものなので、ファイルが戻るまで定期パスからは除外する。マーカーが stale に
@@ -10,6 +9,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
+  AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
   AND o.kind = 'original'
   AND o.state = 'active'
   AND r.deleted_at IS NULL
@@ -100,6 +100,7 @@ WITH planning AS (
     LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
       ON thumbnail_seek.media_asset_id = thumbnail.id
     WHERE r.purged_at IS NULL
+      AND (sqlc.narg('recording_id')::bigint IS NULL OR r.id = sqlc.narg('recording_id')::bigint)
 )
 SELECT *
 FROM planning
@@ -119,6 +120,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > sqlc.arg('after_recording_id')::bigint
+  AND (sqlc.narg('recording_id')::bigint IS NULL OR o.recording_id = sqlc.narg('recording_id')::bigint)
   AND o.kind = 'original'
   AND o.state = 'active'
   AND r.deleted_at IS NULL

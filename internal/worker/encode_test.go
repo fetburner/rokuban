@@ -3,7 +3,6 @@ package worker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -24,25 +23,8 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
-
-func encodeProfilesForRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) []string {
-	t.Helper()
-	var profiles []string
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
-		var args EncodeJobArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
-		}
-		if args.RecordingID == recordingID {
-			profiles = append(profiles, args.Profile)
-		}
-	}
-	slices.Sort(profiles)
-	return profiles
-}
 
 func TestBuildFFmpegArgs(t *testing.T) {
 	crf := 23
@@ -462,7 +444,7 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 	}
 	if len(profiles) > 0 {
 		// recording_encode_policy 衛星表（issue #159）。keep_original は
-		// EnqueueMissingEncodes（このファイルがテストする対象）が見ないので
+		// 定期 reconcile 候補 query が active encoded を完了扱いにするので
 		// 'always' で十分 --- desired プロファイルの有無だけがテストの関心。
 		if _, err := pool.Exec(context.Background(),
 			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
@@ -836,51 +818,6 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	}
 }
 
-func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	content := []byte("payload")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/a.m2ts",
-		[]string{"h264", "h265"}, content)
-
-	// h264 は既に encoded 済み → 投入しない。
-	h264 := "h264"
-	q := sqlcgen.New(pool)
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        db.AssetKindEncoded,
-		Profile:     &h264,
-		RelPath:     "x/a_h264.mp4",
-		SizeBytes:   1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, config.EncodeConfig{}, nil); err != nil {
-		t.Fatalf("EnqueueMissingEncodes: %v", err)
-	}
-
-	// h265 だけ 1 件。
-	kinds := encodeProfilesForRecording(t, pool, recordingID)
-	if !slices.Equal(kinds, []string{"h265"}) {
-		t.Errorf("enqueued profiles = %v, want [h265]", kinds)
-	}
-
-	// 再呼び出しは UniqueOpts で重複スキップ（エラーにならない）。
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, config.EncodeConfig{}, nil); err != nil {
-		t.Fatalf("second EnqueueMissingEncodes: %v", err)
-	}
-}
-
 func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 	opts := EncodeJobArgs{}.InsertOpts()
 	if opts.Queue != encodeQueue {
@@ -921,106 +858,60 @@ func TestEncodeJobArgs_UniqueKeyIgnoresTimeout(t *testing.T) {
 	}
 }
 
-// EncodeEnqueueHintArgs（issue #133 の事後追加ヒントジョブ）は encode キューと
-// pending 状態での ByArgs 一意化を使うこと。
-func TestEncodeEnqueueHintArgs_InsertOptsQueue(t *testing.T) {
-	opts := EncodeEnqueueHintArgs{}.InsertOpts()
-	if opts.Queue != encodeQueue {
-		t.Errorf("Queue = %q, want %q", opts.Queue, encodeQueue)
+// EncodeRebuildArgs は encode キューと pending 状態での ByArgs 一意化を使う。
+func TestEncodeRebuildArgs_InsertOptsQueue(t *testing.T) {
+	opts := EncodeRebuildArgs{}.InsertOpts()
+	if opts.Queue != "encode" {
+		t.Errorf("Queue = %q, want encode", opts.Queue)
 	}
 	if !opts.UniqueOpts.ByArgs {
 		t.Error("UniqueOpts.ByArgs should be true")
 	}
+	if slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateCompleted) {
+		t.Error("UniqueOpts.ByState must not include completed")
+	}
 }
 
-// river.ClientFromContextSafely が失敗する ctx（River の外から Work を直接呼んだ
-// 場合）では、ruler_pass 完了時の reconcile_pass ヒントのように黙って何もしない
-// のではなくエラーを返すこと。このジョブ自体の主目的が「encode ジョブを実際に
-// 投入すること」であるため、client が無いことをサイレントな no-op にすると
-// ユーザーの事後追加依頼が消えてしまう（EncodeEnqueueHintWorker.Work の doc
-// コメント参照）。
-func TestEncodeEnqueueHintWorker_Work_WithoutClient_Errors(t *testing.T) {
+func TestEncodeRebuildWorker_WithoutClientErrors(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	w := &EncodeEnqueueHintWorker{Pool: pool}
-	job := &river.Job[EncodeEnqueueHintArgs]{
+	w := &EncodeRebuildWorker{}
+	job := &river.Job[EncodeRebuildArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   EncodeEnqueueHintArgs{RecordingID: 999999},
+		Args:   EncodeRebuildArgs{RecordingID: 999999, Profile: "cut"},
 	}
 	if err := w.Work(context.Background(), job); err == nil {
 		t.Fatal("expected error when no river client is attached to ctx, got nil")
 	}
 }
 
-// EncodeEnqueueHintWorker は EncodeEnqueueHintArgs ジョブを実際の River クライアント
-// 経由で処理すると、EnqueueMissingEncodes を呼んで desired（recording_encode_policy.encode_profiles）
-// − observed（active encoded media_assets）の差分を encode ジョブとして投入すること。
-// 既に active encoded な h264 は再投入せず h265 だけが投入されることまで見る（issue
-// #133 の受け入れ「予約が無い録画で事後追加が成功し、encode_profiles に反映されて
-// encode ジョブが投入されること」の worker 側の裏付け --- api 側は
-// internal/api/recordings_encode_profiles_test.go が見る）。
-func TestEncodeEnqueueHintWorker_EnqueuesMissingEncodes(t *testing.T) {
+// EncodeRebuildWorker は明示要求で指定されたプロファイルだけを encode に渡す。
+func TestEncodeRebuildWorker_EnqueuesOnlyRequestedProfile(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "hint/a.m2ts",
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/a.m2ts",
 		[]string{"h264", "h265"}, []byte("payload"))
-
-	h264 := "h264"
-	q := sqlcgen.New(pool)
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        db.AssetKindEncoded,
-		Profile:     &h264,
-		RelPath:     "hint/a_h264.mp4",
-		SizeBytes:   1,
-	}); err != nil {
-		t.Fatal(err)
+	job := &river.Job[EncodeRebuildArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
+		Args:   EncodeRebuildArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-
-	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
+		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+	}}}
+	worker := &EncodeRebuildWorker{Pool: pool, Profiles: profiles}
+	if err := worker.Work(riverWorkContext(t, pool), job); err != nil {
+		t.Fatalf("EncodeRebuildWorker.Work: %v", err)
 	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := client.Start(ctx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	if got := countEncodeJobs(t, pool, recordingID, "h264"); got != 1 {
+		t.Errorf("h264 encode jobs = %d, want 1", got)
 	}
-	defer func() {
-		cancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := client.Insert(context.Background(), EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
-		t.Fatalf("inserting encode_enqueue_hint job: %v", err)
-	}
-
-	deadline := time.After(20 * time.Second)
-	for {
-		select {
-		case event := <-subscribeCh:
-			if event.Job.Kind == "encode_enqueue_hint" {
-				goto hintCompleted
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for encode_enqueue_hint completion")
-		}
-	}
-hintCompleted:
-
-	profiles := encodeProfilesForRecording(t, pool, recordingID)
-	if !slices.Equal(profiles, []string{"h265"}) {
-		t.Errorf("enqueued profiles = %v, want [h265] (h264 は既に active encoded なので投入されない)", profiles)
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+		t.Errorf("h265 encode jobs = %d, want 0", got)
 	}
 }
 

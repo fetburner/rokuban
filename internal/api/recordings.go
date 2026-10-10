@@ -244,8 +244,8 @@ type encodeAttemptRow struct {
 // 「来る根拠」が無いので queued を出さない 2 パターン:
 //
 //  1. ごみ箱の録画（r.DeletedAt が非 nil）。EncodeReconcileWorker の
-//     EnqueueMissingEncodesForKnownProfiles / ListMissingEncodeProfiles は
-//     deleted_at IS NULL で絞っており、ごみ箱の録画にジョブは二度と投入されない
+//     ListMissingEncodeProfiles は deleted_at IS NULL で絞っており、ごみ箱の
+//     録画に reconcile から encode ジョブは投入されない
 //     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
 //     trash で出さないのと揃え、**running/failed の行が既にあっても
 //     （削除前に始まっていた試行）試行状態を丸ごと省略する** --- 削除後に
@@ -256,8 +256,8 @@ type encodeAttemptRow struct {
 //     あっても丸ごと省略」が固定している。
 //  2. knownProfiles が non-nil（api ロールが config.encode.profiles を注入
 //     している）で、そのプロファイルが現在の config に存在しない。設定から
-//     消えたプロファイルは EnqueueMissingEncodesForKnownProfiles が投入対象から
-//     外している恒久的に満たせない集合（`ListUnsatisfiableEncodeProfiles` が
+//     消えたプロファイルは encode reconcile が投入対象から外している
+//     恒久的に満たせない集合（`ListUnsatisfiableEncodeProfiles` が
 //     数えているのと同じ集合）なので、試行行が無いものは省略する。ただし
 //     running/failed の行が既にあれば設定に残っていなくてもそのまま出す ---
 //     過去の観測は「来る」という断定ではないので規律の対象外
@@ -268,8 +268,7 @@ type encodeAttemptRow struct {
 // cutProfiles は `cut: true` のプロファイル名の集合（nil なら判定しない）。
 // **cut プロファイルで所有の行が無いものは `awaiting_review`** にする ---
 // `queued`（ジョブが来る）とは別の主張で、投入側が実際に候補から外している
-// （internal/worker/encode.go の enqueueMissingEncodes と
-// encode_reconcile.sql の同じ述語）。試行行が既にあればそちらを優先する ---
+// （encode_reconcile.sql の同じ述語）。試行行が既にあればそちらを優先する ---
 // 過去の観測（running/failed）は確認の有無に関わらず事実である。
 //
 // 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
@@ -707,15 +706,11 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 //
 // 原本が active でない（GetActiveOriginalMediaAsset が ErrNoRows --- 削除済み・
 // state='deleting'（unlink 待ち）・そもそも ingest が未完了で original 行が
-// 無い、のいずれか）なら 409 を返す。EnqueueMissingEncodes は単体だとこの
-// ケースで黙って return するため（サイレント no-op）、ここで明示的に検査する。
+// 無い、のいずれか）なら 409 を返す。対象 reconcile が候補なしで終わっても
+// HTTP は成功扱いになるため、ここで明示的に検査する。
 //
-// encode_profiles の更新と encode_enqueue_hint ジョブの投入は同一トランザクション
-// で行う（insertEncodeEnqueueHint。rules.go の insertRulerPassHint と同じ
-// パターン）。実際の encode ジョブ投入（EnqueueMissingEncodes）は
-// EncodeEnqueueHintWorker が worker ロール側で行う（internal/worker/encode.go の
-// EncodeEnqueueHintArgs の doc コメント参照 --- api → worker の結合パターンを
-// ヒントジョブ経由に揃える判断の理由）。
+// encode_profiles の更新と対象 encode_reconcile の投入は同じトランザクションで行う。
+// そのため、更新に失敗したとき reconcile だけが残らない。
 func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error) {
 	if req.Body == nil || len(req.Body.Profiles) == 0 {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: "profiles must not be empty"}, nil
@@ -739,8 +734,8 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
 	}
 
-	// 原本が active でないなら 409（罠: EnqueueMissingEncodes 単体はここで黙って
-	// no-op になるため、サイレントな失敗にしないよう api 層で先に検査する）。
+	// 原本が active でないなら 409（対象 reconcile が候補なしで終了しても
+	// HTTP は成功扱いになるため、api 層で先に検査する）。
 	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// ここに落ちる原因は「削除済み」に限らない --- state = 'deleting'
@@ -800,7 +795,7 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	}); err != nil {
 		return nil, fmt.Errorf("resetting failed encode attempts for recording %d: %w", req.Id, err)
 	}
-	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
+	if err := h.insertEncodeReconcile(ctx, tx, req.Id); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -897,11 +892,9 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 // ユーザーが確認していない区間が黙って本編から消える。api は「今のタイムラインは
 // 凍結した区間と違う」ことを導出して見せるだけで、作り直しはユーザーの操作で行う。
 //
-// 投入は `encode_enqueue_hint` ジョブ経由（AddRecordingEncodeProfiles と同じ
-// パターン。api → worker の結合をヒントジョブに揃える）。通常の投入経路は
-// 「active な encoded がある」ことを理由に候補から外すので、ここは
-// EncodeWorker 自身の冪等判定（凍結した区間が現在の keep と一致するか）が
-// 効いて作り直しになる。
+// 投入は encode_rebuild ジョブ経由で指定 profile の encode を直接依頼する。
+// 通常の reconcile は active な encoded を完了として扱うため、既存の cut 版を
+// 作り直す命令は別種のジョブとして記録する。
 //
 // 原本が active でないなら 409（カット版は原本から作り直すしかない）。
 func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error) {
@@ -958,11 +951,9 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if len(keep) == 0 {
 		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
 	}
-	// 冪等判定を「古い」と読ませるための 1 手: 何もしないヒントジョブを積む。
-	// EncodeWorker は active な encoded の凍結区間が現在の keep と一致すれば
-	// スキップし、違えば作り直す。api は判定を持たない（不変条件 5: 真実は
-	// 定期 reconcile が再取得する）。
-	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
+	// 再エンコード要求は不足分から導出できない利用者の命令なので、通常の
+	// reconcile とは別のジョブ種別で記録する。
+	if err := h.insertEncodeRebuild(ctx, tx, req.Id, req.Profile); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -1066,19 +1057,29 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 	return SetRecordingEncodePolicy204Response{}, nil
 }
 
-// insertEncodeEnqueueHint は AddRecordingEncodeProfiles と同一トランザクションで
-// EncodeEnqueueHintArgs を InsertTx する（ヒント経路。rules.go の
-// insertRulerPassHint と同じパターン）。dual-write を避けるため、
-// encode_profiles の更新が失敗すればこのジョブも一緒にロールバックされる。
+// insertEncodeReconcile は encode_profiles の更新と同じトランザクションで、
+// 対象録画を指定した EncodeReconcileArgs を InsertTx する。
 //
-// h.river が nil の場合は何もしない（insertRulerPassHint と同じ理由。テストや、
-// 将来 River を持たない api 構成を許容するため）。
-func (h *Server) insertEncodeEnqueueHint(ctx context.Context, tx pgx.Tx, recordingID int64) error {
+// h.river が nil の場合は何もしない（テストや、将来 River を持たない api 構成を
+// 許容するため）。
+func (h *Server) insertEncodeReconcile(ctx context.Context, tx pgx.Tx, recordingID int64) error {
 	if h.river == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeEnqueueHintArgs{RecordingID: recordingID}, nil); err != nil {
-		return fmt.Errorf("inserting encode_enqueue_hint: %w", err)
+	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeReconcileArgs{RecordingID: recordingID}, nil); err != nil {
+		return fmt.Errorf("inserting encode_reconcile for recording %d: %w", recordingID, err)
+	}
+	return nil
+}
+
+// insertEncodeRebuild は利用者が明示した再エンコード命令を同じトランザクションで
+// River に記録する。判定を持たないため encode_reconcile へは載せない。
+func (h *Server) insertEncodeRebuild(ctx context.Context, tx pgx.Tx, recordingID int64, profile string) error {
+	if h.river == nil {
+		return nil
+	}
+	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeRebuildArgs{RecordingID: recordingID, Profile: profile}, nil); err != nil {
+		return fmt.Errorf("inserting encode_rebuild for recording %d profile %q: %w", recordingID, profile, err)
 	}
 	return nil
 }

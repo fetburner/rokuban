@@ -52,12 +52,10 @@ const (
 // 比例しない（合成 TS 10 分・60 枚の実測で 2.7 秒。全デコード方式の 23.6 秒に対して）。
 // そのため「先頭 N 分に限る」ような打ち切りは要らず、上限は枚数だけで決まる。
 //
-// **投入は `ThumbnailReconcileWorker` の定期パスだけである**（ingest 直後の
-// ヒントは積まない）。poster は一覧に出るので即時性が要るが、タイルは利用者が
-// 詳細を開いてホバーして初めて要る。そのため ingest の followup に
-// `EnqueueThumbnailIfNeeded` と同型の関数をもう 1 本足す代わりに、定期パス
-// （既定 15 分）に任せる。**録画直後の 15 分はプレビューが出ない**という代償を
-// 受け入れる。待たせないことは要求の経路（配信）で担保している（404 → poster だけの見た目）。
+// **投入は `ThumbnailReconcileWorker` が全件パスと対象録画パスの両方で行う**。
+// ingest 後の対象録画パスも poster・再選択の後にタイルを積むため、同じ録画の
+// poster をタイルより先にキューへ送れる。両パスで同じ候補 query を使うことで、
+// ごみ箱と `missing_media_assets` の除外条件を揃える。
 //
 // ストレージ契約: ジョブ固有 scratch に ffmpeg 出力 → 同じディレクトリの staged file
 // へ fsync → rel_path lock と DB transaction の下で DB 行予約 → rename + 親 dir fsync

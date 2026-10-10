@@ -1400,198 +1400,27 @@ func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Durati
 	return max(encodeMinTimeout, time.Duration(math.Ceil(calculated)))
 }
 
-// EnqueueMissingEncodes は desired（recording_encode_policy.encode_profiles。issue #159）− observed
-// （active encoded media_assets）の差分を埋める encode ジョブを投入する。
-//
-// レベルトリガー: 呼び出し側は「いつでも」呼んでよい。既に asset があるプロファイル
-// や pending なジョブはスキップされる（UniqueOpts）。ingest 成功後のヒント投入と
-// `POST /api/recordings/{id}/encode-profiles` のヒントジョブから使う。
-//
-// **プロファイル名が現在の設定に存在するかは見ない。** 一度きりのヒント経路では
-// それでよい --- 設定から消えたプロファイルの投入は EncodeWorker が
-// `unknown encode profile` で失敗させ、その失敗が運用者への通知になる。
-// 15 分ごとに繰り返す定期パスが同じことをすると失敗を無限に作り続けるので、
-// そちらは EnqueueMissingEncodesForKnownProfiles を使う。
-func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil, profiles, cutProfiles)
+// EncodeRebuildWorker は利用者が明示した再エンコード命令を通常の encode ジョブへ渡す。
+type EncodeRebuildWorker struct {
+	river.WorkerDefaults[jobs.EncodeRebuildArgs]
+	Pool     *pgxpool.Pool
+	Profiles config.EncodeConfig
 }
 
-// EnqueueMissingEncodesForKnownProfiles は EnqueueMissingEncodes と同じ判定を
-// 行うが、投入対象を known（現在の encode.profiles の名前）に含まれる
-// プロファイルだけに絞る。encode の定期 reconcile パス
-// （EncodeReconcileWorker）が使う。
-//
-// known が空なら 1 件も投入しない（設定にプロファイルが 1 つも無い構成では、
-// 投入しても EncodeWorker が全部弾く）。判定を 2 か所に分けないため、絞り込み
-// 以外のロジック（原本の有無・ポリシー行の有無・observed の確認）は
-// EnqueueMissingEncodes と同じ 1 つの実装を通る。
-func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
-	set := make(map[string]struct{}, len(known))
-	for _, name := range known {
-		set[name] = struct{}{}
-	}
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set, profiles, cutProfiles)
-}
-
-// enqueueMissingEncodes は上 2 つの実装本体。known が nil なら desired を絞らない
-// （nil と空マップは意味が違う: 空マップは「投入してよいプロファイルが 1 つも
-// 無い」）。
-//
-// cutProfiles は cut: true のプロファイル名（config.EncodeConfig.CutProfileSet）。
-// **cut プロファイルは所有（= ユーザーが確認済み）の行がある録画にしか投入しない。**
-// 確認前にカット版がコミットされると、誤検出のまま本編が削られ、原本がごみ箱を
-// 経由せずに消えて取り返せなくなる。所有していない録画の cut プロファイルは
-// 「投入しない」ではなく「まだ投入しない」で、ユーザーが確認した次のパスが拾う
-// （api 側はそれを awaiting_review として見せる）。
-func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known map[string]struct{}, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
-	if inserter == nil {
-		return fmt.Errorf("encode enqueue: inserter is nil")
-	}
-	q := sqlcgen.New(pool)
-
-	// 原本が無ければエンコード対象外（ingest 前・原本削除後）。
-	if _, err := q.GetActiveOriginalMediaAsset(ctx, recordingID); err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("loading original for encode enqueue: %w", err)
-	}
-
-	// desired（issue #159。recording_encode_policy 衛星表）。行が無い
-	// （未凍結）は「エンコード対象のプロファイルが無い」と同じに扱う ---
-	// ここに来る時点で原本は active（上のチェック）なので、通常は
-	// resolveAndSnapshotEncodePolicy が同一 tx で行を作っているはずだが、
-	// ingest 完了直後の競合（EncodeEnqueueHintArgs のヒントが原本コミットの
-	// 直後に走る等）を黙って落とさないよう ErrNoRows も no-op で許容する。
-	policy, err := q.GetRecordingEncodePolicy(ctx, recordingID)
+// Work は指定された録画・プロファイルの encode ジョブだけを投入する。
+func (w *EncodeRebuildWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeRebuildArgs]) error {
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("loading recording encode policy %d: %w", recordingID, err)
+		return fmt.Errorf("encode rebuild: getting river client: %w", err)
 	}
-	if len(policy.EncodeProfiles) == 0 {
-		return nil
+	args, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), job.Args.RecordingID, job.Args.Profile, w.Profiles)
+	if err != nil {
+		return fmt.Errorf("building encode job args for rebuild of recording %d profile %q: %w",
+			job.Args.RecordingID, job.Args.Profile, err)
 	}
-
-	// 所有の行の有無は 1 回だけ引く（cut プロファイルが 1 つも無ければ引かない）。
-	var currentKeep []chapters.Range
-	if len(cutProfiles) > 0 {
-		keep, owned, err := currentCutKeep(ctx, q, recordingID)
-		if err != nil {
-			if errors.Is(err, pgx5.ErrNoRows) {
-				return nil
-			}
-			return fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
-		}
-		// 未確認（owned=false）も全区間カット（keep 空）も投入しない。後者は
-		// loadCutContext が "has no keep ranges" で必ず失敗するので、投入すると
-		// reconcile のたびに失敗ジョブが積まれる。
-		if owned {
-			currentKeep = keep
-		}
-	}
-
-	for _, name := range policy.EncodeProfiles {
-		if name == "" {
-			continue
-		}
-		if known != nil {
-			if _, ok := known[name]; !ok {
-				continue
-			}
-		}
-		_, isCut := cutProfiles[name]
-		if isCut && len(currentKeep) == 0 {
-			continue // 未確認 or 全区間カット。確認するまで / keep が出来るまで投入しない
-		}
-		assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
-			RecordingID: recordingID,
-			Profile:     &name,
-		})
-		if err == nil {
-			if !isCut {
-				continue // 既に active encoded あり
-			}
-			// cut は「active で、かつ凍結した区間が現在の keep と一致する」が
-			// 完了。**一致しなければ作り直す** --- チャプターを直した後の
-			// 再エンコード（POST …/reencode）がこの経路でジョブになる。
-			fresh, err := cutIsCurrent(ctx, q, assetID, currentKeep)
-			if err != nil {
-				return err
-			}
-			if fresh {
-				continue
-			}
-		} else if !errors.Is(err, pgx5.ErrNoRows) {
-			return fmt.Errorf("checking encoded asset %q: %w", name, err)
-		}
-
-		args, err := newEncodeJobArgs(ctx, q, recordingID, name, profiles)
-		if err != nil {
-			return fmt.Errorf("building encode job args profile=%s: %w", name, err)
-		}
-		if _, err := inserter.Insert(ctx, args, nil); err != nil {
-			return fmt.Errorf("inserting encode job profile=%s: %w", name, err)
-		}
+	if _, err := client.Insert(ctx, args, nil); err != nil {
+		return fmt.Errorf("inserting encode job for rebuild of recording %d profile %q: %w",
+			job.Args.RecordingID, job.Args.Profile, err)
 	}
 	return nil
-}
-
-// cutIsCurrent は active な cut 版の凍結区間が現在の量子化 keep と一致するかを
-// 返す。keep が空（全部カット）なら false（作り直しても作れないので、呼び出し側は
-// 投入しない判断に使える）。
-func cutIsCurrent(ctx context.Context, q *sqlcgen.Queries, assetID int64, keep []chapters.Range) (bool, error) {
-	if len(keep) == 0 {
-		return false, nil
-	}
-	frozen, err := assetKeepRanges(ctx, q, assetID)
-	if err != nil {
-		return false, err
-	}
-	return chapters.SameRanges(frozen, keep), nil
-}
-
-// enqueueMissingEncodesFromContext は River ワーカーの ctx から client を取り、
-// 欠けている encode ジョブを投入する。client が無い（単体で Work を呼んだ）場合は
-// 何もしない。失敗はログのみ（ingest 本体の成功を巻き戻さない）。
-func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profiles config.EncodeConfig, cutProfiles map[string]struct{}) {
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return
-	}
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, profiles, cutProfiles); err != nil {
-		slog.Error("encode: failed to enqueue missing encodes",
-			"recording_id", recordingID, "err", err)
-	}
-}
-
-// EncodeEnqueueHintWorker は EncodeEnqueueHintArgs を受けて EnqueueMissingEncodes
-// を呼ぶだけの薄いワーカー。ロジックは持たない（EnqueueMissingEncodes にそのまま
-// 委譲する。レベルトリガーなので呼び出しが遅れても・重複しても収束する）。
-type EncodeEnqueueHintWorker struct {
-	river.WorkerDefaults[jobs.EncodeEnqueueHintArgs]
-	Pool *pgxpool.Pool
-	// Profiles resolves the timeout multiplier stored in each encode job argument.
-	Profiles config.EncodeConfig
-
-	// CutProfiles は cut: true のプロファイル名（config から注入）。所有して
-	// いない録画への投入を止めるのに使う（enqueueMissingEncodes 参照）。
-	CutProfiles map[string]struct{}
-}
-
-// Work は EnqueueMissingEncodes を呼び、recording_encode_policy.encode_profiles（desired）と
-// active encoded media_assets（observed）の差分を埋める encode ジョブを投入する。
-//
-// river.ClientFromContextSafely でジョブ実行中の Client を取り出す。取れない
-// （単体テストで Work を直接呼んだ等）場合はエラーを返して失敗させる ---
-// ruler_pass 完了時の reconcile_pass ヒント（ruler_pass.go）とは異なり、この
-// ジョブ自体の主目的が「encode ジョブを実際に投入すること」であるため、client が
-// 無いからと黙って何もしないとユーザーの事後追加依頼がサイレントに消える。
-func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeEnqueueHintArgs]) error {
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("encode enqueue hint: getting river client: %w", err)
-	}
-	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID, w.Profiles, w.CutProfiles)
 }

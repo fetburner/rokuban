@@ -298,12 +298,11 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」
   ことである。ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）
   が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん
-  ffmpeg を無駄打ちするだけになる。ingest コミット後のヒント投入と `thumbnail_reconcile` の定期ギャップ
-  埋めは同じ条件を使う。定期パスは、delete reconcile が原本の実体無しを確認した
-  `missing_media_assets` の原本を既知の恒久失敗として除外する。ファイル復旧後に
-  マーカーが消えれば、次の定期パスで再び候補になる。`EnqueueMissingThumbnails`
-  による明示的な復旧投入はこの除外をせず、ファイルを戻した直後などに使える。
-  命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない
+  ffmpeg を無駄打ちするだけになる。ingest 後の対象限定パスと `thumbnail_reconcile`
+  の全件パスは同じ候補 query を使う。delete reconcile が原本の実体無しを確認した
+  `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが
+  消えれば、次のパスで再び候補になる。命令的チェーン（「ingest 成功 → 必ず thumbnail」）
+  は採らない
 - **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は
   原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は
   CM 検出を待たず、従来どおり原本から作る。設定キーは設けない
@@ -354,11 +353,12 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 プレビューを出さない。尺に応じて間隔を変える方式は採らない —— ffprobe の長さと
 `<video>` の長さのずれが境界でタイル位置を狂わせる。
 
-- **投入**: `thumbnail_reconcile` の定期パスが、poster と同じ窓（`RowLimit` と
-  `missing_media_assets` の除外）で desired − observed の差分を埋める。**ingest 直後の
-  ヒントは積まない** —— タイルは一覧の表示に関わらないので、poster のような即時性が要らない。
-  **priority は poster より下げる**。thumbnail キューは既定で同時実行数 1 なので、同じ
-  priority だと既存録画ぶんのタイルが片付くまで新しい録画の poster が一覧に出ない
+- **投入**: `thumbnail_reconcile` の全件パスと ingest 後の対象限定パスが seek_tiles を投入する。
+  両者は poster と同じ候補 query を使い、`missing_media_assets` の原本を除外する。
+  対象限定パスも seek_tiles を拾うため、タイルは ingest 直後に投入される。パス内では
+  poster と再選択を先に投入してからタイルを積む。**priority は poster より下げる**。
+  thumbnail キューは既定で同時実行数 1 なので、タイルの処理中に来た poster はその 1 件を
+  待つ
 - **原本が無い録画には作らない。** タイルは原本からしか作らないので、タイル導入前に
   `until_encoded` で原本を消した録画にはタイルが付かない
 - **生成方式**: タイルごとに入力シーク（`-ss` を `-i` の前）で 1 枚ずつ取り、最後に

@@ -90,9 +90,9 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 この API による `keep_original` の上書きは、事後の `encode_profiles` 追加に続く**凍結の 2 つ目の例外**である。凍結の基本設計（ingest 完了時に desired を焼き込むこと）と、物理削除を reconcile に委ねる境界は変えない。
 
 - **この API の範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles` の実装は `internal/api/recordings.go` の `AddRecordingEncodeProfiles` である。書き込みは `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で行う。union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
-- **原本が active でなければ不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画には 409 を返す。該当するのは、原本削除済みか `state = 'deleting'` か、そもそも ingest が完了しておらず `kind='original'` の行自体が無い場合である。`state = 'deleting'` は unlink 待ちの状態を指す。一覧の射影は `state <> 'deleted'` なので、UI 上は「原本あり」に見える。`EnqueueMissingEncodes` はこのケースで黙って no-op になる（原本が無ければ何もしない設計。上記「安全性」参照）ため、サイレントな失敗にしないよう api 層で明示的に検査する
+- **原本が active でなければ不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画には 409 を返す。該当するのは、原本削除済みか `state = 'deleting'` か、そもそも ingest が完了しておらず `kind='original'` の行自体が無い場合である。`state = 'deleting'` は unlink 待ちの状態を指す。一覧の射影は `state <> 'deleted'` なので、UI 上は「原本あり」に見える。ここで明示的に検査し、後段の reconcile が何もしない場合に 204 を返さない
 - **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`resolveAndSnapshotEncodePolicy` を経由しない。この関数は `internal/worker/ingest.go` にある。そのため `recording_encode_policy` 行が無いまま、原本だけが active な録画が存在しうる。`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっている。この INSERT に到達する時点で「原本 active」は保証されている
-- **実行経路**: api がトランザクション内で `encode_profiles` を更新し、同一トランザクションで `EncodeEnqueueHintArgs`（ヒントジョブ）を投入する。実際の `EnqueueMissingEncodes` 呼び出し（desired − observed の差分を埋める encode ジョブの投入）は、worker ロール側の `EncodeEnqueueHintWorker` が行う。既存の hint job パターンであり、`rules.go` の `insertRulerPassHint` と同型である。詳細は `internal/jobs/args.go` の `EncodeEnqueueHintArgs` の doc コメント参照
+- **実行経路**: api は `encode_profiles` の更新と同じトランザクションで、対象録画を指定した `encode_reconcile` を積む。対象限定パスと定期パスは同じ候補 query を使い、不足分の判定を二重に持たない。ごみ箱の録画も desired は更新できるが、候補 query が除外する。復元すれば定期パスが反映する
 - **保持ポリシーの変更**: `PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを録画単位で上書きし、`encode_profiles` には触れない。この API は新しい `recording_encode_policy` 行を凍結しない —— `SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。未凍結の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。「desired プロファイルが 1 つ以上あるか」の判定は事前読み取りではなく、この UPDATE 自身の WHERE（`cardinality(encode_profiles) > 0`）が適用の瞬間に再評価する。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
 - **保持ポリシー変更は物理削除しない**。River のヒントジョブも投入せず、削除 reconcile のレベルトリガーに任せる。定期パスは既定 15 分間隔なので、条件を満たす原本の削除には最大 15 分かかる。これは追加された desired を直ちに encode queue へ反映する事後追加 API とは意図的に非対称である。
 - この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_encode_policy` は分割しない。
@@ -158,7 +158,7 @@ catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原
 - 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
 
 **`cut: true` のプロファイルは確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない**。
-この条件は投入側（`EnqueueMissingEncodes` と `ListMissingEncodeProfiles`）が持ち、view は持たない。
+この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。
 確認前にカット版を作ると誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
 確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に効く。
 確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
@@ -166,6 +166,7 @@ catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原
 **チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が黙って本編から消える。
 API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。
 ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
+再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。
 この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
 
 この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。ただし `stage = 'adopt'` は諦めではなく候補の採用待ちなので、採用待ちの局があるとその局の `until_encoded` の原本は消えない。削除エンジンに容量トリガーは無く、ディスク残量の警告で気付く。
