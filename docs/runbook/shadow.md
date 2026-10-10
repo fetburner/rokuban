@@ -5,6 +5,8 @@
 同じ mirakc を共有してよい。**チューナーの調停は mirakc が行う**ので、Rokuban が
 EPGStation の録画を奪うことはない。ただし物理的な制約は残る。
 
+視聴・寿命・移行の出口基準と切替手順は [cutover.md](cutover.md) にある。
+
 ### 同一チャンネルなら競合しない
 
 mirakc は同じ物理チャンネルのストリームを複数の購読者で共有する。EPGStation が
