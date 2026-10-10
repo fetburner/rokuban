@@ -116,14 +116,6 @@ CHANGELOG は API doc より説明が弱いことがあるため、実物のラ�
 
 ブラウザも対象外である。hls.js のようにブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。扱いは「測っていない挙動を断言しない」だけで、不変条件 2 は掛からない。
 
-未解決（回収）: River で実行中に死んだ `Timeout() < 0` ジョブの回収は、`river_job` の生 SQL に頼っている。現在は cm_detect 系（ロゴ候補解析を含む）だけが対象で、ingest と encode は有限 Timeout と JobRescuer に移した。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
-
-未解決（テスト）: 既存テストに 3 つの形の違反が残っている。`river_job` を含むテストは `git grep -l river_job -- '*_test.go'` で引く。
-
-- (a) 投入確認の SELECT。代わりは `rivertest.RequireInsertedTx` / `RequireManyInsertedTx`
-- (b) `DELETE FROM river_job` による途中の掃除
-- (c) 回収テストの状態作り。`UPDATE river_job SET state = 'running', attempted_by = ARRAY['dead-process']` など、公開 API では作れない状態である
-
-(c) は回収の未解決に従う。回収が River の生 SQL に頼る間は、テストも同じ形でよい。回収コードのテストを書けなくすると不変条件 8 と衝突する。
+マニフェストの KEDA クエリは River の PostgreSQL スキーマを参照する。`deploy/k8s/workloads_test.go::TestScaledJobTriggerQueriesRunAgainstRiverSchema` は、そのクエリを実 DB で検証する。KEDA のトリガは River の公開 API を呼べないため、この SQL を維持する。
 
 チェック: 「**その前提はライブラリのドキュメントのどこに書いてあるか**」を問う。答えられなければ迂回せず提起する。

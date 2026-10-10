@@ -1,9 +1,9 @@
 // Package ruler はルール評価から reservations.base を導出する 1 パス評価ロジック。
 //
 // ruler はシングルトンではなく River のジョブ（internal/worker の RulerPassWorker）
-// として実行される。定期・冪等・DB のみ・重複実行不可という性質が epg_sync と同じで、
-// 排他は advisory lock ではなくジョブロック + UniqueOpts（サイト単位）で担保する
-// （docs/data.md §2）。このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
+// として実行される。排他は advisory lock ではなく UniqueOpts（サイト単位）で担保する。
+// 並走すると壊れるものと、UniqueOpts が担うものの判定基準は docs/data.md §2 が権威。
+// このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
 // どの契機で呼ぶか（定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 //
 // 1 パスで全ルール x 全射影番組を Postgres の集合演算で評価し（評価は全量）、

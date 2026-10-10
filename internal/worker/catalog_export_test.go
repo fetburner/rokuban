@@ -19,10 +19,6 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	workers := NewWorkers(&Deps{Pool: pool, MediaDir: mediaDir})
 	client, err := NewClient(pool, workers, ClientConfig{})
 	if err != nil {

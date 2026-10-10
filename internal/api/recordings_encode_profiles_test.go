@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -145,21 +146,12 @@ func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []st
 
 func countEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
-	var n int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job WHERE kind = 'encode_enqueue_hint'`,
-	).Scan(&n); err != nil {
-		t.Fatalf("counting encode_enqueue_hint jobs: %v", err)
-	}
-	return n
+	return len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_enqueue_hint"))
 }
 
 func clearEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(),
-		`DELETE FROM river_job WHERE kind = 'encode_enqueue_hint'`); err != nil {
-		t.Fatalf("clearing encode_enqueue_hint jobs: %v", err)
-	}
+	testutil.MustDeleteRiverJobsOfKind(t, context.Background(), pool, "encode_enqueue_hint")
 }
 
 func writePolicyTestFile(t *testing.T, mediaDir, relPath string) string {
@@ -1008,16 +1000,19 @@ waitHint:
 		}
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'encode'
-		 AND (args->>'recording_id')::bigint = $1 AND args->>'profile' = 'h264'`,
-		id,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting encode jobs: %v", err)
+	encodeJobs := testutil.MustListRiverJobs(t, ctx, riverClient, river.NewJobListParams().Kinds("encode"))
+	var matchingEncodeJobs int
+	for _, job := range encodeJobs {
+		var args jobs.EncodeJobArgs
+		if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding encode job %d args: %v", job.ID, err)
+		}
+		if args.RecordingID == id && args.Profile == "h264" {
+			matchingEncodeJobs++
+		}
 	}
-	if count != 1 {
-		t.Fatalf("encode job count = %d, want 1", count)
+	if matchingEncodeJobs != 1 {
+		t.Fatalf("matching encode job count = %d, want 1", matchingEncodeJobs)
 	}
 
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {

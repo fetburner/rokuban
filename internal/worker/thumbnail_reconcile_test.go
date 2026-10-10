@@ -16,7 +16,9 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func runThumbnailReconcilePass(t *testing.T, pool *pgxpool.Pool, w *ThumbnailReconcileWorker) {
@@ -32,13 +34,12 @@ func runThumbnailReconcilePass(t *testing.T, pool *pgxpool.Pool, w *ThumbnailRec
 
 func countThumbnailJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job
-		 WHERE kind = 'thumbnail'
-		   AND (args->>'recording_id')::bigint = $1`, recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting thumbnail jobs: %v", err)
+	count := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail") {
+		args := testutil.MustDecodeRiverJobArgs[jobs.ThumbnailJobArgs](t, row)
+		if args.RecordingID == recordingID {
+			count++
+		}
 	}
 	return count
 }
@@ -445,13 +446,12 @@ func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
 
 func countSeekTilesJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM river_job
-		 WHERE kind = 'seek_tiles'
-		   AND (args->>'recording_id')::bigint = $1`, recordingID,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting seek_tiles jobs: %v", err)
+	count := 0
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "seek_tiles") {
+		args := testutil.MustDecodeRiverJobArgs[jobs.SeekTilesJobArgs](t, row)
+		if args.RecordingID == recordingID {
+			count++
+		}
 	}
 	return count
 }

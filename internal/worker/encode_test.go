@@ -3,6 +3,7 @@ package worker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -23,8 +24,25 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
+
+func encodeProfilesForRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) []string {
+	t.Helper()
+	var profiles []string
+	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
+		var args EncodeJobArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
+		}
+		if args.RecordingID == recordingID {
+			profiles = append(profiles, args.Profile)
+		}
+	}
+	slices.Sort(profiles)
+	return profiles
+}
 
 func TestBuildFFmpegArgs(t *testing.T) {
 	crf := 23
@@ -823,10 +841,6 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	if _, err := pool.Exec(context.Background(), "DELETE FROM river_job"); err != nil {
-		t.Fatal(err)
-	}
-
 	mediaDir := t.TempDir()
 	content := []byte("payload")
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/a.m2ts",
@@ -856,32 +870,7 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 	}
 
 	// h265 だけ 1 件。
-	var kinds []string
-	rows, err := pool.Query(context.Background(),
-		`SELECT args->>'profile' FROM river_job WHERE kind = 'encode' AND args->>'recording_id' = $1::text`,
-		recordingID,
-	)
-	if err != nil {
-		// recording_id は JSON number。文字列比較を避ける。
-		rows, err = pool.Query(context.Background(),
-			`SELECT args->>'profile' FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-			recordingID,
-		)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			t.Fatal(err)
-		}
-		kinds = append(kinds, p)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	kinds := encodeProfilesForRecording(t, pool, recordingID)
 	if !slices.Equal(kinds, []string{"h265"}) {
 		t.Errorf("enqueued profiles = %v, want [h265]", kinds)
 	}
@@ -977,10 +966,6 @@ func TestEncodeEnqueueHintWorker_EnqueuesMissingEncodes(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	if _, err := pool.Exec(context.Background(), "DELETE FROM river_job"); err != nil {
-		t.Fatal(err)
-	}
-
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "hint/a.m2ts",
 		[]string{"h264", "h265"}, []byte("payload"))
@@ -1033,25 +1018,7 @@ func TestEncodeEnqueueHintWorker_EnqueuesMissingEncodes(t *testing.T) {
 	}
 hintCompleted:
 
-	var profiles []string
-	rows, err := pool.Query(context.Background(),
-		`SELECT args->>'profile' FROM river_job WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			t.Fatal(err)
-		}
-		profiles = append(profiles, p)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	profiles := encodeProfilesForRecording(t, pool, recordingID)
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("enqueued profiles = %v, want [h265] (h264 は既に active encoded なので投入されない)", profiles)
 	}

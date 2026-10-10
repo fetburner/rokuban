@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
@@ -625,25 +626,20 @@ func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
 // プロファイル名をソートして返す。
 func pendingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64) []string {
 	t.Helper()
-	rows, err := pool.Query(context.Background(),
-		`SELECT DISTINCT args->>'profile' AS profile FROM river_job
-		 WHERE kind = 'encode' AND args->>'recording_id' = $1::text
-		   AND state IN ('available', 'pending', 'running', 'scheduled')
-		 ORDER BY profile`, strconv.FormatInt(recordingID, 10))
-	if err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	defer rows.Close()
+	ctx := context.Background()
+	client := testutil.NewRiverClient(t, pool)
+	rows := testutil.MustListRiverJobs(t, ctx, client, river.NewJobListParams().
+		Kinds((jobs.EncodeJobArgs{}).Kind()).
+		States(rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled))
 	var out []string
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			t.Fatalf("scanning river_job: %v", err)
+	for _, row := range rows {
+		var args jobs.EncodeJobArgs
+		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
 		}
-		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating river_job: %v", err)
+		if args.RecordingID == recordingID {
+			out = append(out, args.Profile)
+		}
 	}
 	sort.Strings(out)
 	return out
@@ -831,9 +827,7 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	}
 
 	// 定期 reconcile 経路（ジョブを消してから回す）。
-	if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'encode'`); err != nil {
-		t.Fatal(err)
-	}
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, (jobs.EncodeJobArgs{}).Kind())
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
 	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {

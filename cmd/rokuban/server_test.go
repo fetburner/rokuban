@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,9 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -597,14 +596,9 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 		}
 		assertOnceOutcome(t, logs, "job_done")
 
-		var state string
-		if err := pool.QueryRow(ctx,
-			`SELECT state FROM river_job WHERE kind = 'delete_reconcile'`,
-		).Scan(&state); err != nil {
-			t.Fatalf("reading delete_reconcile state: %v", err)
-		}
-		if state != "completed" {
-			t.Errorf("delete_reconcile state = %q, want %q（消化せずに終わっている）", state, "completed")
+		job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "delete_reconcile")
+		if job.State != "completed" {
+			t.Errorf("delete_reconcile state = %q, want %q（消化せずに終わっている）", job.State, "completed")
 		}
 	})
 }
@@ -657,15 +651,9 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	}
 	assertOnceOutcome(t, logs, "job_unhandled")
 
-	var attempt int
-	var state string
-	if err := pool.QueryRow(ctx,
-		`SELECT attempt, state FROM river_job WHERE kind = 'e2e_probe'`,
-	).Scan(&attempt, &state); err != nil {
-		t.Fatalf("reading e2e_probe job: %v", err)
-	}
-	if attempt != 1 {
-		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", attempt, state)
+	job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "e2e_probe")
+	if job.Attempt != 1 {
+		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", job.Attempt, job.State)
 	}
 }
 
@@ -720,18 +708,12 @@ func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 	}
 
 	// ジョブは完了扱いにならず、River 側に再試行として残る。
-	var state string
-	var attempt int
-	if err := pool.QueryRow(ctx,
-		`SELECT state, attempt FROM river_job WHERE kind = 'epg_sync'`,
-	).Scan(&state, &attempt); err != nil {
-		t.Fatalf("reading epg_sync job: %v", err)
-	}
-	if state == "completed" {
+	job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "epg_sync")
+	if job.State == "completed" {
 		t.Error("epg_sync が completed になっている（失敗が握り潰されている）")
 	}
-	if attempt != 1 {
-		t.Errorf("attempt = %d, want 1", attempt)
+	if job.Attempt != 1 {
+		t.Errorf("attempt = %d, want 1", job.Attempt)
 	}
 }
 
@@ -977,16 +959,11 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 			t.Fatalf("server: %v", err)
 		}
 
-		var state string
-		var errs string
-		if err := pool.QueryRow(context.Background(),
-			`SELECT state, coalesce(errors::text, '') FROM river_job WHERE kind = 'epg_sync'`,
-		).Scan(&state, &errs); err != nil {
-			t.Fatalf("reading epg_sync job: %v", err)
-		}
-		if state != "completed" {
+		job := testutil.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
+		errs := fmt.Sprintf("%+v", job.Errors)
+		if job.State != "completed" {
 			t.Errorf("state = %q, want %q（SIGTERM が実行中のジョブを打ち切っている）。errors=%s",
-				state, "completed", errs)
+				job.State, "completed", errs)
 		}
 	})
 
@@ -1031,27 +1008,24 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 		// startWorkerWithRunningJob が mock への到達で待っているが、それは
 		// 「この行を読んだ」ことの保証にはならない（`epg_sync` の行が 2 本に
 		// なった瞬間に別の行を読んで緑になる）。`attempted_at` は claim の
-		// ときだけ書かれ、`JobSetStateInterrupted` は触らないので
-		// （riverdriver@v0.47.0 river_driver_interface.go の JobSetStateInterrupted が
-		// AttemptedAt を設定せず、completer が撃つクエリ
-		// riverpgxv5@v0.47.0 internal/dbsqlc/river_job.sql の
-		// `JobSetStateIfRunningMany` は job_input にも SET 句にも
-		// `attempted_at` 列を持たない --- 同区間の `cancel_attempted_at` は
-		// metadata のキー名で別物）、**実際に worked された行である**ことの
+		// ときだけ書かれ、`JobSetStateInterrupted` は触らないので、**実際に
+		// worked された行である**ことの
 		// 肯定形の主張になる。
-		var state string
-		var attempt int
-		var errs string
-		if err := pool.QueryRow(context.Background(),
-			`SELECT state, attempt, coalesce(errors::text, '') FROM river_job
-			 WHERE kind = 'epg_sync' AND attempted_at IS NOT NULL`,
-		).Scan(&state, &attempt, &errs); errors.Is(err, pgx.ErrNoRows) {
-			// 失敗メッセージ単体で読めるようにする（`no rows in result set`
-			// だけだと、上のフィルタの意図を読まないと分からない）。
-			t.Fatal("worked された epg_sync の行が無い（ジョブが起きなかった）")
-		} else if err != nil {
-			t.Fatalf("reading the worked epg_sync job: %v", err)
+		var job *rivertype.JobRow
+		for _, candidate := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "epg_sync") {
+			if candidate.AttemptedAt == nil {
+				continue
+			}
+			if job != nil {
+				t.Fatal("worked された epg_sync の行が複数ある")
+			}
+			job = candidate
 		}
+		if job == nil {
+			t.Fatal("worked された epg_sync の行が無い（ジョブが起きなかった）")
+		}
+		state, attempt := job.State, job.Attempt
+		errs := fmt.Sprintf("%+v", job.Errors)
 		// **River が帳簿を書き終えてから畳んでいることも見る。** プロセスが
 		// completer の flush を待たずに抜けると行は `running` のまま残り、
 		// 回収は JobRescuer（既定 1 時間。ロール分割構成では動かす常駐

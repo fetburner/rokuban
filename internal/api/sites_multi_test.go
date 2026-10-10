@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -648,28 +649,19 @@ func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *te
 
 func rulerPassJobSites(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 	t.Helper()
-	rows, err := pool.Query(ctx, `SELECT args->>'site' FROM river_job WHERE kind = 'ruler_pass' ORDER BY args->>'site'`)
-	if err != nil {
-		t.Fatalf("querying ruler_pass job sites: %v", err)
-	}
-	defer rows.Close()
 	var sites []string
-	for rows.Next() {
-		var s string
-		if err := rows.Scan(&s); err != nil {
-			t.Fatalf("scanning ruler_pass job site: %v", err)
+	for _, job := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass") {
+		var args jobs.RulerPassArgs
+		if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
+			t.Fatalf("decoding ruler_pass job %d args: %v", job.ID, err)
 		}
-		sites = append(sites, s)
+		sites = append(sites, args.Site)
 	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating ruler_pass job sites: %v", err)
-	}
+	slices.Sort(sites)
 	return sites
 }
 
 func clearRulerPassJobsForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	if _, err := pool.Exec(ctx, `DELETE FROM river_job WHERE kind = 'ruler_pass'`); err != nil {
-		t.Fatalf("clearing ruler_pass jobs: %v", err)
-	}
+	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }

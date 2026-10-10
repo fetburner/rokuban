@@ -29,7 +29,14 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
-- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・DB のみ（reconciler は mirakc への HTTP を伴うが、パスを跨ぐ接続や状態は持たない）・重複実行不可という性質が epg_sync と同じである。そのためどちらも River のジョブとして扱い、排他は advisory lock ではなく**ジョブロック + `UniqueOpts`**（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。機構が 1 つに減る
+- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。そのためどちらも River のジョブとして扱い、排他は advisory lock ではなく `UniqueOpts`（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。両方の `Timeout()` は有限なので、プロセス死後の実行は River の [stuck-job 契約](https://riverqueue.com/docs/stuck-jobs) に沿って JobRescuer が回収する。セッションロックへ移す利益はキュー実装を交換する場面に限られ、この設計の目的には不要である
+  - **`UniqueOpts` は障害時だけでなく通常運用の排他でもある**。worker の `MaxWorkers: 1` はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりをプロセス間で止めているのは `UniqueOpts` である
+  - 並走すると壊れるもの（コード読解による。並走を起こしての確認はしていない）
+    - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
+    - reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う
+- **`UniqueOpts` が担うものは種別で違う**。ruler / reconciler ではプロセス間の排他で、それ以外の一意ジョブでは合流の最適化である。分ける基準は「同じ一意キーの実行が 2 本重なったら何が壊れるか」で、正しさが壊れるなら排他、無駄が増えるだけなら合流とする。どの種別がどちらかは `internal/jobs/args.go` の各 `InsertOpts` から引く（種別は増えるので表は写さない）。合流側の並走の安全はジョブ自身のドメイン側の保護が担い、`UniqueOpts` が約束するのは行が 1 本であることまでである。rescue の後に旧実行が返らなければ実行は 2 本になる
+- エンコード待機列（`internal/api/encode_queue.go`）は River の公開 `JobList` で作る。`running` は待機件数から分けて実行中として数える。`running` のまま残る行は生まれないので、件数は水増しされない
+- desired から外れた投入済みプロファイルのジョブも実際に ffmpeg を走らせるので、待機列に出すのが正確である
 
 ### 定期実行の契機はデプロイ形態に委ねる
 

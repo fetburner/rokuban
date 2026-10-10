@@ -126,10 +126,6 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	stub := newScheduleStub()
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
@@ -199,14 +195,10 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 }
 
 // UniqueOpts による合流: 同じサイトの reconcile_pass を 2 回投入すると 1 件しか
-// 作られないこと（docs/data.md §2「排他はジョブロック + UniqueOpts」）。
+// 作られないこと（docs/data.md §2「UniqueOpts が担うもの」）。
 func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{})
@@ -226,13 +218,7 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの reconcile_pass を 2 回投入したのに合流しなかった")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'reconcile_pass'`).Scan(&count); err != nil {
-		t.Fatalf("counting river_job rows: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("river_job count for reconcile_pass = %d, want 1", count)
-	}
+	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
@@ -241,10 +227,6 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	// ヒントとして投入された reconcile_pass ジョブは同じクライアントが reconciler
 	// キューも引くため実行される。ReconcilePassWorker は MirakcClients に依存するので、
@@ -284,25 +266,19 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 
 	_ = waitPeriodicJobEvent(t, waiter, "ruler_pass")
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'reconcile_pass' AND (args->>'site') = $1`, testSite,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting reconcile_pass jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("reconcile_pass job count after ruler_pass completion = %d, want 1 "+
-			"(ruler_pass 完了時にヒントとして投入されるはず)", count)
+	hint := testutil.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
+	if hint.Args.Site != testSite {
+		t.Errorf("reconcile_pass hint site = %q, want %q", hint.Args.Site, testSite)
 	}
 
-	// 上の count は「行が挿入された」ことしか見ていない。ここではヒント自体が
-	// 実際に正常完了する（issue #553）ところまで確認する。この ClientConfig{}
+	// 上ではヒントの投入と site 引数を確認した。ここではヒント自体が実際に
+	// 正常完了する（issue #553）ところまで確認する。この ClientConfig{}
 	// は PeriodicJobs/BoundSites を登録しないため、存在しうる reconcile_pass は
 	// このヒント 1 つだけ --- worker_test.go の TestRulerPassPeriodicJob と違い、
 	// 定期ジョブの reconcile_pass と合流して区別できなくなる余地が無い。
 	//
 	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
-	// Work 末尾）、count のチェックで 0 != 1 として落ちる。ヒントは投入される
+	// Work 末尾）、RequireRiverInserted がジョブ不在で失敗する。ヒントは投入される
 	// が実行が失敗する場合（例えば MirakcClients を外す）は、reconcile_pass の
 	// JobCompleted が来ず、下の待ち受けが 20 秒でタイムアウトして落ちる。
 	hintEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")

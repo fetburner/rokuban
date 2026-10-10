@@ -404,7 +404,7 @@ func (scaledJobTriggerProbeArgs) Kind() string { return "scaledjob_trigger_probe
 //
 // TestScaledJobTriggersMatchTheirQueue はクエリの文字列と期待値を比較するだけ
 // なので、River の**テーブル名・列名**が変わっても CI が緑のままになる。この
-// テストは実際の river_job に `available` 状態のジョブを 1 件投入し、クエリが
+// テストはRiver が投入した `available` 状態のジョブを使い、クエリが
 // 単一の数値として Scan でき、かつ 1 を返すところまで検査する
 // （`retryable` は対象外 --- カバーは TestScaledJobTriggersMatchTheirQueue が
 // rivertype の定数照合で担う）。

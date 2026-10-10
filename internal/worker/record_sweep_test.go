@@ -70,10 +70,6 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
-
 	const programID int64 = 700000600071234
 	networkID, serviceID := int32(32736), int32(1024)
 	channelType, channel := "GR", "27"
@@ -167,14 +163,9 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	var ingestCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM river_job WHERE kind = 'ingest' AND args->>'record_id' = $1", record.ID,
-	).Scan(&ingestCount); err != nil {
-		t.Fatalf("querying river_job: %v", err)
-	}
-	if ingestCount != 1 {
-		t.Errorf("ingest job count = %d, want 1", ingestCount)
+	ingest := testutil.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
+	if ingest.Args.Site != testSite || ingest.Args.RecordID != record.ID {
+		t.Errorf("ingest args = %+v, want site=%q record_id=%q", ingest.Args, testSite, record.ID)
 	}
 
 	var markerCount int
@@ -228,14 +219,10 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 }
 
 // UniqueOpts による合流: 同じサイトの record_sweep を 2 回投入すると 1 件しか
-// 作られないこと（docs/data.md §2「排他はジョブロック + UniqueOpts」）。
+// 作られないこと（docs/data.md §2「UniqueOpts が担うもの」）。
 func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	workers := NewWorkers(&Deps{Pool: pool})
 	client, err := NewClient(pool, workers, ClientConfig{})
@@ -255,13 +242,7 @@ func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの record_sweep を 2 回投入したのに合流しなかった")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'record_sweep'`).Scan(&count); err != nil {
-		t.Fatalf("counting river_job rows: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("river_job count for record_sweep = %d, want 1", count)
-	}
+	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/records と
@@ -300,10 +281,6 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	var requests atomic.Int32
 	mux := http.NewServeMux()
@@ -353,13 +330,13 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 	// 要求が来ないことも合わせて確認する。
 	time.Sleep(2 * time.Second)
 
-	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", res.Job.ID).Scan(&state); err != nil {
-		t.Fatalf("querying job state: %v", err)
+	job, err := client.JobGet(ctx, res.Job.ID)
+	if err != nil {
+		t.Fatalf("getting job: %v", err)
 	}
-	if state != string(rivertype.JobStateAvailable) {
+	if job.State != rivertype.JobStateAvailable {
 		t.Errorf("job state = %q, want %q (site-b の worker がいないので dequeue されないはず)",
-			state, rivertype.JobStateAvailable)
+			job.State, rivertype.JobStateAvailable)
 	}
 	if got := requests.Load(); got != 0 {
 		t.Errorf("mirakc received %d requests, want 0 (job must never be dequeued by the site-a worker)", got)
@@ -404,10 +381,6 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	if _, err := pool.Exec(ctx, "DELETE FROM river_job"); err != nil {
-		t.Fatalf("cleaning river_job: %v", err)
-	}
 
 	srv := newRecordSweepStub(t, nil)
 	defer srv.Close()

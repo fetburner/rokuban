@@ -6,12 +6,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river/rivertype"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) *rivertype.JobRow {
+	t.Helper()
+	row := testutil.RequireRiverKindInserted(t, ctx, pool, strings.ReplaceAll(job, "-", "_"))
+	if site != "" {
+		args := testutil.MustDecodeRiverJobArgs[struct {
+			Site string `json:"site"`
+		}](t, row)
+		if args.Site != site {
+			t.Errorf("%s site = %q, want %q", job, args.Site, site)
+		}
+	}
+	return row
+}
 
 // rokuban enqueue ruler-pass がジョブを投入すること。
 func TestRunEnqueue_InsertsJob(t *testing.T) {
@@ -27,15 +43,7 @@ func TestRunEnqueue_InsertsJob(t *testing.T) {
 		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ruler_pass jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("ruler_pass job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "ruler-pass", db.DefaultSite)
 }
 
 // 既に同じサイトのジョブが待機中なら投入せず、終了コード 0 相当（error が nil）
@@ -58,15 +66,7 @@ func TestRunEnqueue_AlreadyPending_SkipsWithoutError(t *testing.T) {
 		t.Errorf("output = %q, want to contain %q", second.String(), "already pending")
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'ruler_pass'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ruler_pass jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("ruler_pass job count = %d, want 1 (2 回目は合流して増えないはず)", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "ruler-pass", db.DefaultSite)
 }
 
 // epg-sync も同様に投入できること（epg_sync と ruler_pass の両方が対応していることの
@@ -80,15 +80,7 @@ func TestRunEnqueue_EpgSync(t *testing.T) {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'epg_sync'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting epg_sync jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("epg_sync job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "epg-sync", db.DefaultSite)
 }
 
 // reconcile-pass も投入できること（epg_sync / ruler_pass / reconcile_pass の
@@ -102,15 +94,7 @@ func TestRunEnqueue_ReconcilePass(t *testing.T) {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'reconcile_pass'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting reconcile_pass jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("reconcile_pass job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "reconcile-pass", db.DefaultSite)
 }
 
 // record-sweep も投入できること（watcher の 3 段構えのうち (c) 定期全量突き合わせを
@@ -124,15 +108,7 @@ func TestRunEnqueue_RecordSweep(t *testing.T) {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'record_sweep'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting record_sweep jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("record_sweep job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "record-sweep", db.DefaultSite)
 }
 
 // tuner-sync も投入できること（チューナー射影を CronJob から回せることの確認。
@@ -146,15 +122,7 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'tuner_sync'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting tuner_sync jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("tuner_sync job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "tuner-sync", db.DefaultSite)
 }
 
 // catalog-export も投入できること（M3-9 / issue #71）。
@@ -175,15 +143,7 @@ func TestRunEnqueue_CatalogExport(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'catalog_export'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting catalog_export jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("catalog_export job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "catalog-export", "")
 }
 
 // encode-reconcile も投入できること（issue #163）。`worker.periodic_jobs: false`
@@ -204,15 +164,7 @@ func TestRunEnqueue_EncodeReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'encode_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting encode_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("encode_reconcile job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "encode-reconcile", "")
 }
 
 // thumbnail-reconcile も投入できること。site 非依存で、k8s の CronJob から
@@ -232,15 +184,7 @@ func TestRunEnqueue_ThumbnailReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'thumbnail_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting thumbnail_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("thumbnail_reconcile job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "thumbnail-reconcile", "")
 }
 
 func TestRunEnqueue_TSScanReconcile(t *testing.T) {
@@ -258,15 +202,7 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'ts_scan_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting ts_scan_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("ts_scan_reconcile job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "ts-scan-reconcile", "")
 }
 
 func TestRunEnqueue_CMDetectReconcile(t *testing.T) {
@@ -284,15 +220,7 @@ func TestRunEnqueue_CMDetectReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'cm_detect_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting cm_detect_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("cm_detect_reconcile job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "cm-detect-reconcile", "")
 }
 
 // storage-sync も投入できること（issue #238 M7-5）。catalog-export と同じく
@@ -312,15 +240,7 @@ func TestRunEnqueue_StorageSync(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'storage_sync'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting storage_sync jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("storage_sync job count = %d, want 1", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "storage-sync", "")
 }
 
 // delete-reconcile も投入できること。**`worker.periodic_jobs: false`
@@ -342,26 +262,12 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'delete_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting delete_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("delete_reconcile job count = %d, want 1", count)
-	}
+	job := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
 	// cleanup キューに乗ること（DeleteReconcileArgs.InsertOpts）。KEDA の
 	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても
 	// 誰も起きない。
-	var queue string
-	if err := pool.QueryRow(ctx,
-		`SELECT queue FROM river_job WHERE kind = 'delete_reconcile'`,
-	).Scan(&queue); err != nil {
-		t.Fatalf("reading delete_reconcile queue: %v", err)
-	}
-	if queue != "cleanup" {
-		t.Errorf("delete_reconcile queue = %q, want %q", queue, "cleanup")
+	if job.Queue != "cleanup" {
+		t.Errorf("delete_reconcile queue = %q, want %q", job.Queue, "cleanup")
 	}
 }
 
@@ -383,15 +289,7 @@ func TestRunEnqueue_DeleteReconcile_AlreadyPending_SkipsWithoutError(t *testing.
 		t.Fatalf("runEnqueue (2 回目) は合流して nil を返すこと: %v", err)
 	}
 
-	var count int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM river_job WHERE kind = 'delete_reconcile'`,
-	).Scan(&count); err != nil {
-		t.Fatalf("counting delete_reconcile jobs: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("delete_reconcile job count = %d, want 1（2 回目が合流していない）", count)
-	}
+	requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
 }
 
 // 未知のジョブ名はエラーになること。
