@@ -309,6 +309,9 @@ export function LivePage() {
   // remaining time vanish and the rows shrink), so the previous window's rows are
   // the placeholder. useQueries never passes previous data to placeholderData
   // (TanStack Query v5 useQueries reference), so read that window's cache entry.
+  // The previous window rarely holds the programme starting at this boundary, so
+  // while a site shows it, "on air" is judged at that window's anchor: every
+  // programme on air then stayed on air until this boundary.
   const queryClient = useQueryClient()
   const cachedPrograms = (site: string, params: ListProgramsParams) =>
     queryClient.getQueryData<Awaited<ReturnType<typeof listPrograms>>>(getListProgramsQueryKey(site, params))
@@ -324,9 +327,13 @@ export function LivePage() {
   const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
     (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
   ), [siteProgramQueries, sites])
-  const scheduledPrograms = useMemo(() => sitePrograms.filter((program) =>
-    isAiring(program.startAt, program.endAt, nowMs),
-  ), [nowMs, sitePrograms])
+  const scheduledPrograms = useMemo(() => sites.flatMap((site, index) => {
+    const query = siteProgramQueries[index]
+    const at = query?.isPlaceholderData ? previousAnchor ?? nowMs : nowMs
+    return (unwrap(query?.data) ?? [])
+      .filter((program) => isAiring(program.startAt, program.endAt, at))
+      .map((program) => ({ ...program, site }))
+  }), [nowMs, previousAnchor, siteProgramQueries, sites])
   const programByService = useMemo(() => new Map(scheduledPrograms.map((program) => [
     siteServiceKey(program.site, program.networkId, program.serviceId),
     program,

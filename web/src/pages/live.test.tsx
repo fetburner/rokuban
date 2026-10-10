@@ -1984,10 +1984,14 @@ describe('LivePage / 番組境界の再取得', () => {
 
   const boundary = Date.parse('2026-10-11T06:10:00.000Z')
 
-  /** 境界の 1.5 秒前に時計を置き、番組の応答を 50ms 遅らせて画面を出す。 */
+  /**
+   * 境界の 90.5 秒前に画面を出し、境界の 1.5 秒前まで進める。番組の応答は 50ms 遅らせる。
+   * 一覧の窓は 60 秒なので、最初の窓には境界で始まる次の番組が入らない（実運用と同じ配置）。
+   * 端数の 0.5 秒で、1 秒刻みの表示時計が境界の手前と後に来る（境界ちょうどに刻まない）。
+   */
   async function renderBeforeBoundary() {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    vi.setSystemTime(boundary - 1_500)
+    vi.setSystemTime(boundary - 90_500)
     stubFetch({
       services: [service({ serviceId: 1, name: 'チャンネル A' })],
       allSitePrograms: true,
@@ -2016,6 +2020,10 @@ describe('LivePage / 番組境界の再取得', () => {
     const { queryClient } = renderLive()
     expect(await screen.findByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
     expect(screen.getByText('予定:')).toBeInTheDocument()
+    await act(async () => {
+      vi.advanceTimersByTime(boundary - 1_500 - Date.now())
+    })
+    expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
     return { queryClient }
   }
 
