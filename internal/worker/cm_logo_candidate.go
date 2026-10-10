@@ -31,25 +31,14 @@ type CMLogoCandidateWorker struct {
 	FFprobe    string
 }
 
-// Timeout disables River's fixed timeout; Work applies the recording-duration cap.
-func (w *CMLogoCandidateWorker) Timeout(*river.Job[jobs.CMLogoCandidateJobArgs]) time.Duration {
-	return -1
+// Timeout returns the two-times recording-duration cap with a thirty-minute floor.
+func (w *CMLogoCandidateWorker) Timeout(job *river.Job[jobs.CMLogoCandidateJobArgs]) time.Duration {
+	return cmDetectionTimeout(job.Args.RecordingDurationMs)
 }
 
 // Work persists running before touching the original. Every analysis failure after
 // that point becomes a failed candidate row, so the desired view cannot hot-loop.
 func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CMLogoCandidateJobArgs]) error {
-	// 検出ジョブと同じく job lock を保持し続ける。回収側は「lock が取れた = worker は
-	// 死んでいる」とみなすので、取らないと動いている解析を failed にしてしまう。
-	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
-	if err != nil {
-		return fmt.Errorf("CM logo candidate: acquiring job lock: %w", err)
-	}
-	if !acquired {
-		return fmt.Errorf("CM logo candidate: job %d advisory lock is held by another session", job.ID)
-	}
-	defer jobLock.release()
-
 	args := job.Args
 	q := sqlcgen.New(w.Pool)
 	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
@@ -91,7 +80,7 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CM
 		_ = tx.Rollback(ctx)
 		return nil
 	}
-	n, err := qtx.InsertCMLogoCandidateRunning(ctx, sqlcgen.InsertCMLogoCandidateRunningParams{
+	attemptedAt, err := qtx.InsertCMLogoCandidateRunning(ctx, sqlcgen.InsertCMLogoCandidateRunningParams{
 		NetworkID:     args.NetworkID,
 		ServiceID:     args.ServiceID,
 		RecordingID:   args.RecordingID,
@@ -99,43 +88,50 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CM
 	})
 	if err != nil {
 		_ = tx.Rollback(ctx)
+		if errors.Is(err, pgx5.ErrNoRows) {
+			return nil
+		}
 		return fmt.Errorf("CM logo candidate: creating running row: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("CM logo candidate: committing running row: %w", err)
 	}
-	if n == 0 {
-		return nil
-	}
-
 	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
 	if err != nil {
-		return w.fail(args, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
+		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
 	}
 	if item.NetworkID != args.NetworkID || item.ServiceID != args.ServiceID {
-		return w.fail(args, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
+		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
 	}
 	if item.IsTrashed || item.OriginalMissing || item.RelPath == nil {
-		return w.fail(args, cmFailure("setup", fmt.Errorf("active original is missing")))
+		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("active original is missing")))
 	}
 
-	workCtx, cancel := context.WithTimeout(ctx, cmDetectionTimeout(item.ProgramDurationMs))
-	defer cancel()
-	if err := w.analyze(workCtx, job.ID, item, area, args); err != nil {
-		return w.fail(args, err)
+	if err := w.analyze(ctx, job.ID, item, area, args, attemptedAt); err != nil {
+		return w.fail(args, attemptedAt, err)
 	}
 	return nil
 }
 
-func (w *CMLogoCandidateWorker) fail(args jobs.CMLogoCandidateJobArgs, err error) error {
-	message := err.Error()
-	stage := cmFailureStage(err)
+func (w *CMLogoCandidateWorker) fail(args jobs.CMLogoCandidateJobArgs, attemptedAt time.Time, err error) error {
 	failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if markErr := sqlcgen.New(w.Pool).MarkCMLogoCandidateFailure(failureCtx, sqlcgen.MarkCMLogoCandidateFailureParams{
+	if errors.Is(err, context.Canceled) {
+		if _, markErr := sqlcgen.New(w.Pool).DeleteCMLogoCandidateRunningAttempt(failureCtx, sqlcgen.DeleteCMLogoCandidateRunningAttemptParams{
+			NetworkID: args.NetworkID, ServiceID: args.ServiceID,
+			AreaUpdatedAt: args.AreaUpdatedAt, AttemptedAt: attemptedAt,
+		}); markErr != nil {
+			return errors.Join(err, fmt.Errorf("clearing canceled CM logo candidate: %w", markErr))
+		}
+		return err
+	}
+	message := err.Error()
+	stage := cmFailureStage(err)
+	if _, markErr := sqlcgen.New(w.Pool).MarkCMLogoCandidateFailure(failureCtx, sqlcgen.MarkCMLogoCandidateFailureParams{
 		NetworkID:     args.NetworkID,
 		ServiceID:     args.ServiceID,
 		AreaUpdatedAt: args.AreaUpdatedAt,
+		AttemptedAt:   attemptedAt,
 		Stage:         stage,
 		Error:         &message,
 	}); markErr != nil {
@@ -150,6 +146,7 @@ func (w *CMLogoCandidateWorker) analyze(
 	item sqlcgen.GetCMDetectionWorkItemRow,
 	area sqlcgen.GetCMLogoAreaRow,
 	args jobs.CMLogoCandidateJobArgs,
+	attemptedAt time.Time,
 ) error {
 	original, err := mediapath.Resolve(w.MediaDir, *item.RelPath)
 	if err != nil {
@@ -218,6 +215,7 @@ func (w *CMLogoCandidateWorker) analyze(
 		NetworkID:     args.NetworkID,
 		ServiceID:     args.ServiceID,
 		AreaUpdatedAt: args.AreaUpdatedAt,
+		AttemptedAt:   attemptedAt,
 		Lgd:           logo,
 		PreviewPng:    preview,
 	})
@@ -229,7 +227,8 @@ func (w *CMLogoCandidateWorker) analyze(
 		// caller changed the area outside that transaction, remove only this old
 		// version so a new candidate cannot be touched by a late worker.
 		if _, err := sqlcgen.New(w.Pool).DeleteCMLogoCandidateForAreaVersion(ctx, sqlcgen.DeleteCMLogoCandidateForAreaVersionParams{
-			NetworkID: args.NetworkID, ServiceID: args.ServiceID, AreaUpdatedAt: args.AreaUpdatedAt,
+			NetworkID: args.NetworkID, ServiceID: args.ServiceID,
+			AreaUpdatedAt: args.AreaUpdatedAt, AttemptedAt: attemptedAt,
 		}); err != nil {
 			return cmFailure("save", fmt.Errorf("discarding stale CM logo candidate: %w", err))
 		}

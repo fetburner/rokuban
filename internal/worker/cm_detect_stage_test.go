@@ -104,20 +104,16 @@ esac
 }
 
 // 再試行の開始（running）は、前の失敗が付けた stage を持ち越さない。
-func TestMarkCMDetectionRunningClearsStage(t *testing.T) {
+func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	id := seedCMRecording(t, pool, t.TempDir(), 1100)
 	q := sqlcgen.New(pool)
-	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	firstAttempt := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "logo"
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: "retrying", Stage: &stage}); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-		t.Fatal(err)
+	markCMDetectionTestFailure(t, ctx, q, id, firstAttempt, "retrying", &stage, nil)
+	if got := startCMDetectionTestAttempt(t, ctx, q, id); got != 2 {
+		t.Fatalf("second attempt count = %d, want 2", got)
 	}
 	var got *string
 	if err := pool.QueryRow(ctx, `SELECT stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&got); err != nil {

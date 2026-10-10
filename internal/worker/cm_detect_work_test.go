@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -236,8 +237,8 @@ func seedCMRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID 
 
 func cmJob(recordingID int64, attempt int) *river.Job[jobs.CMDetectJobArgs] {
 	return &river.Job[jobs.CMDetectJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 4242, Attempt: attempt, MaxAttempts: 3},
-		Args:   jobs.CMDetectJobArgs{RecordingID: recordingID},
+		JobRow: &rivertype.JobRow{ID: 4242, Attempt: attempt, MaxAttempts: 10},
+		Args:   jobs.CMDetectJobArgs{RecordingID: recordingID, RecordingDurationMs: 0},
 	}
 }
 
@@ -270,7 +271,7 @@ func cmLogoCandidateJob(recordingID, jobID int64, areaUpdatedAt time.Time) *rive
 		JobRow: &rivertype.JobRow{ID: jobID, Attempt: 1, MaxAttempts: 1},
 		Args: jobs.CMLogoCandidateJobArgs{
 			NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID,
-			AreaUpdatedAt: areaUpdatedAt,
+			AreaUpdatedAt: areaUpdatedAt, RecordingDurationMs: 0,
 		},
 	}
 }
@@ -531,8 +532,8 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage); err != nil {
 		t.Fatal(err)
 	}
-	if state != "failed" || stage != "resolution" {
-		t.Errorf("attempt = state %q stage %q, want failed/resolution", state, stage)
+	if state != "retrying" || stage != "resolution" {
+		t.Errorf("attempt = state %q stage %q, want retrying/resolution", state, stage)
 	}
 }
 
@@ -623,7 +624,7 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 	for _, tt := range []struct {
 		attempt   int
 		wantState string
-	}{{1, "retrying"}, {3, "failed"}} {
+	}{{1, "retrying"}, {2, "retrying"}, {3, "failed"}} {
 		if err := w.Work(ctx, cmJob(id, tt.attempt)); err == nil {
 			t.Fatalf("attempt %d: Work succeeded although chapter_exe exits 3", tt.attempt)
 		}
@@ -637,15 +638,100 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 		var state string
 		var stage *string
 		var message *string
-		if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &message); err != nil {
+		var attemptCount int32
+		if err := pool.QueryRow(ctx, `SELECT state, stage, error, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &message, &attemptCount); err != nil {
 			t.Fatalf("attempt %d: attempt row: %v", tt.attempt, err)
 		}
-		if state != tt.wantState || message == nil || !strings.Contains(*message, "chapter_exe") {
-			t.Errorf("attempt %d: state = %q error = %v, want %q naming chapter_exe", tt.attempt, state, message, tt.wantState)
+		if state != tt.wantState || attemptCount != int32(tt.attempt) || message == nil || !strings.Contains(*message, "chapter_exe") {
+			t.Errorf("attempt %d: state = %q count = %d error = %v, want state %q and chapter_exe error", tt.attempt, state, attemptCount, message, tt.wantState)
 		}
 		if stage == nil || *stage != "chapter" {
 			t.Errorf("attempt %d: stage = %v, want chapter", tt.attempt, stage)
 		}
+	}
+}
+
+func waitForCMLogoframeStart(t *testing.T, tools cmToolset) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(tools.started); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("logoframe did not start")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		cancelWork       bool
+		newerAttemptLive bool
+	}{
+		{name: "deadline"},
+		{name: "shutdown cancellation", cancelWork: true},
+		{name: "shutdown cancellation after rescue", cancelWork: true, newerAttemptLive: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := testutil.SetupDB(t)
+			ctx := context.Background()
+			mediaDir := t.TempDir()
+			id := seedCMRecording(t, pool, mediaDir, 926)
+			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
+			if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var workCtx context.Context
+			var cancel context.CancelFunc
+			if tc.cancelWork {
+				workCtx, cancel = context.WithCancel(ctx)
+			} else {
+				workCtx, cancel = context.WithTimeout(ctx, 3*time.Second)
+			}
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- newCMDetectTestWorker(pool, mediaDir, tools).Work(workCtx, cmJob(id, 1))
+			}()
+			waitForCMLogoframeStart(t, tools)
+			if tc.cancelWork {
+				if tc.newerAttemptLive {
+					if count := startCMDetectionTestAttempt(t, ctx, sqlcgen.New(pool), id); count != 2 {
+						t.Fatalf("rescued attempt count = %d, want 2", count)
+					}
+				}
+				cancel()
+			}
+			err := <-done
+			if err == nil {
+				t.Fatal("Work succeeded while logoframe was held")
+			}
+			if !tc.cancelWork && !errors.Is(workCtx.Err(), context.DeadlineExceeded) {
+				t.Fatalf("context error = %v, want deadline exceeded", workCtx.Err())
+			}
+			var state string
+			var count int32
+			queryErr := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count)
+			if tc.cancelWork {
+				if tc.newerAttemptLive {
+					if queryErr != nil || state != "running" || count != 2 {
+						t.Errorf("attempt after old shutdown cancellation = %q/%d, %v; want running/2", state, count, queryErr)
+					}
+				} else if !errors.Is(queryErr, pgx5.ErrNoRows) {
+					t.Errorf("attempt after shutdown cancellation = %q/%d, %v; want no attempt row", state, count, queryErr)
+				}
+			} else {
+				if queryErr != nil {
+					t.Fatal(queryErr)
+				}
+				if state != "retrying" || count != 1 {
+					t.Errorf("attempt after deadline = %q/%d, want retrying/1", state, count)
+				}
+			}
+		})
 	}
 }
 
@@ -674,103 +760,106 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	}
 }
 
-func insertCMJobRow(t *testing.T, pool *pgxpool.Pool, recordingID int64, state string, attempt int) int64 {
-	t.Helper()
-	client, err := NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := client.Insert(context.Background(), jobs.CMDetectJobArgs{RecordingID: recordingID}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(context.Background(), `
-		UPDATE river_job SET state = $2::river_job_state, attempt = $3, max_attempts = 3,
-		       attempted_at = now() - interval '1 hour'
-		WHERE id = $1`, res.Job.ID, state, attempt); err != nil {
-		t.Fatal(err)
-	}
-	return res.Job.ID
-}
-
-func TestRecoverStaleCMDetectJobs(t *testing.T) {
+func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
 
-	retrying := seedCMRecording(t, pool, mediaDir, 920)  // River のバックオフ中
-	midway := seedCMRecording(t, pool, mediaDir, 921)    // 途中の試行で死んだ
-	exhausted := seedCMRecording(t, pool, mediaDir, 922) // 最終試行で死んだ
-	for _, id := range []int64{retrying, midway, exhausted} {
-		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-			t.Fatal(err)
+	dead := seedCMRecording(t, pool, mediaDir, 920)
+	for want := int32(1); want <= cmDetectMaxTries; want++ {
+		attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+			RecordingID: dead, MaxAttempts: cmDetectMaxTries,
+		})
+		if err != nil || !attempt.ShouldRun || attempt.AttemptCount != want {
+			t.Fatalf("begin dead run %d = %#v, %v", want, attempt, err)
 		}
+		// Leave the state running to model a process that died before returning.
 	}
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: retrying, State: "retrying"}); err != nil {
+	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
+	if err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(dead, 1)); err != nil {
+		t.Fatalf("Work after the third dead execution: %v", err)
+	}
+	var state string
+	var stage, message *string
+	var attemptCount int32
+	if err := pool.QueryRow(ctx, `SELECT state, stage, error, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, dead).
+		Scan(&state, &stage, &message, &attemptCount); err != nil {
 		t.Fatal(err)
 	}
-	retryingJob := insertCMJobRow(t, pool, retrying, "retryable", 1)
-	midwayJob := insertCMJobRow(t, pool, midway, "running", 1)
-	exhaustedJob := insertCMJobRow(t, pool, exhausted, "running", 3)
-
-	if err := recoverStaleCMDetectJobs(ctx, pool); err != nil {
-		t.Fatal(err)
+	if state != "failed" || stage == nil || *stage != "stopped" || message == nil || !strings.Contains(*message, "process stopped") || attemptCount != 3 {
+		t.Errorf("dead attempt row = (%q, %v, %v, %d), want failed/stopped/process stopped/3", state, stage, message, attemptCount)
 	}
-
-	jobState := func(id int64) string {
-		var s string
-		if err := pool.QueryRow(ctx, `SELECT state::text FROM river_job WHERE id = $1`, id).Scan(&s); err != nil {
-			t.Fatal(err)
-		}
-		return s
-	}
-	attemptState := func(id int64) (string, string, string) {
-		var s string
-		var stage *string
-		var e *string
-		if err := pool.QueryRow(ctx, `SELECT state, stage, error FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&s, &stage, &e); err != nil {
-			t.Fatal(err)
-		}
-		stageValue := ""
-		if stage != nil {
-			stageValue = *stage
-		}
-		errorValue := ""
-		if e != nil {
-			errorValue = *e
-		}
-		return s, stageValue, errorValue
+	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("logoframe ran after the domain limit was reached (stat %v)", err)
 	}
 
-	var recovered bool
-	if err := pool.QueryRow(ctx, `SELECT metadata ? 'cm_detect_recovery' FROM river_job WHERE id = $1`, retryingJob).Scan(&recovered); err != nil {
+	late := seedCMRecording(t, pool, mediaDir, 921)
+	first, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: late, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !first.ShouldRun || first.AttemptCount != 1 {
+		t.Fatalf("first attempt = %#v, %v", first, err)
+	}
+	second, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: late, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !second.ShouldRun || second.AttemptCount != 2 {
+		t.Fatalf("rescued attempt = %#v, %v", second, err)
+	}
+	item, err := q.GetCMDetectionWorkItem(ctx, late)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := jobState(retryingJob); got != "retryable" || recovered {
-		t.Errorf("job in River backoff = %q (recovered=%v), want untouched retryable", got, recovered)
+	w := newCMDetectTestWorker(pool, mediaDir, tools)
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount); err != nil {
+		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
-	if s, stage, _ := attemptState(retrying); s != "retrying" || stage != "" {
-		t.Errorf("attempt of a backing-off job = %q, want retrying", s)
-	}
-	if got := jobState(midwayJob); got != "retryable" {
-		t.Errorf("dead job with attempts left = %q, want retryable", got)
-	}
-	if s, stage, _ := attemptState(midway); s != "retrying" || stage != "stopped" {
-		t.Errorf("attempt of a dead job with attempts left = (%q, %q), want retrying / stopped", s, stage)
-	}
-	if got := jobState(exhaustedJob); got != "discarded" {
-		t.Errorf("dead job on its last attempt = %q, want discarded", got)
-	}
-	if s, stage, e := attemptState(exhausted); s != "failed" || stage != "stopped" || !strings.Contains(e, "process stopped") {
-		t.Errorf("attempt of a dead final job = (%q, %q, %q), want failed / stopped / process stopped", s, stage, e)
-	}
-	var total int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'cm_detect'`).Scan(&total); err != nil {
+	var detections int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, late).Scan(&detections); err != nil {
 		t.Fatal(err)
 	}
-	if total != 3 {
-		t.Errorf("cm_detect job rows = %d, want 3 (recovery must not insert new jobs)", total)
+	if detections != 0 {
+		t.Errorf("late attempt wrote %d result rows, want 0", detections)
+	}
+	if err := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, late).Scan(&state, &attemptCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != "running" || attemptCount != 2 {
+		t.Errorf("current attempt after stale result = %q/%d, want running/2", state, attemptCount)
+	}
+}
+
+func TestCMRecordingDurationDoesNotChangeRiverUniqueIdentity(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	client, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	first, err := client.Insert(ctx, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 1000}, nil)
+	if err != nil || first.UniqueSkippedAsDuplicate {
+		t.Fatalf("first CM detect insert = %#v, %v", first, err)
+	}
+	second, err := client.Insert(ctx, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 900000}, nil)
+	if err != nil || !second.UniqueSkippedAsDuplicate || second.Job.ID != first.Job.ID {
+		t.Fatalf("same recording with another duration = %#v, %v; want duplicate of job %d", second, err, first.Job.ID)
+	}
+
+	areaAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	logoFirst, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
+		RecordingDurationMs: 1000,
+	}, nil)
+	if err != nil || logoFirst.UniqueSkippedAsDuplicate {
+		t.Fatalf("first CM logo candidate insert = %#v, %v", logoFirst, err)
+	}
+	logoSecond, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
+		RecordingDurationMs: 900000,
+	}, nil)
+	if err != nil || !logoSecond.UniqueSkippedAsDuplicate || logoSecond.Job.ID != logoFirst.Job.ID {
+		t.Fatalf("same logo candidate with another duration = %#v, %v; want duplicate of job %d", logoSecond, err, logoFirst.Job.ID)
 	}
 }
 
@@ -914,7 +1003,7 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 || rows[0] != id {
+	if len(rows) != 1 || rows[0].RecordingID != id {
 		t.Errorf("ListMissingCMDetections = %v, want [%d]: the logo adopted during the failed run must make it eligible again", rows, id)
 	}
 }

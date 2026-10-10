@@ -114,8 +114,6 @@ CLAUDE.md の不変条件 9〜14 は「チェック」の一文だけを持つ�
 
 未解決（回収）: River で実行中に死んだ `Timeout() = -1` ジョブの回収は、`river_job` の生 SQL に頼っている。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
 
-未解決（存在確認）: `cm_detect_reconcile.go` の `failOrphanCMLogoCandidatesQuery` は回収ではなく、`river_job` を args で引く孤児検出である。`client.JobList` の `Kinds` / `States` と Go 側の args 比較で契約内に書き直せる。代替が無いのではなく、単に残っている違反である。
-
 未解決（テスト）: 既存テストに 3 つの形の違反が残っている。`river_job` を含むテストは `git grep -l river_job -- '*_test.go'` で引く。
 
 - (a) 投入確認の SELECT。代わりは `rivertest.RequireInsertedTx` / `RequireManyInsertedTx`

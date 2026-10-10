@@ -28,10 +28,9 @@ import (
 )
 
 const (
-	cmDetectMaxTries         = 3
-	cmDetectStaleAfter       = time.Minute
-	cmDetectRowLimit   int32 = 1000
-	cmDetectRulePath         = config.CMDetectRulePath
+	cmDetectMaxTries       = 3
+	cmDetectRowLimit int32 = 1000
+	cmDetectRulePath       = config.CMDetectRulePath
 )
 
 var trimCall = regexp.MustCompile(`Trim\s*\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)`)
@@ -86,22 +85,15 @@ type CMDetectWorker struct {
 	FFprobe string
 }
 
-// Timeout disables River's fixed timeout; Work applies a timeout from program duration.
-func (w *CMDetectWorker) Timeout(*river.Job[jobs.CMDetectJobArgs]) time.Duration { return -1 }
+// Timeout returns the two-times recording-duration cap with a thirty-minute floor.
+func (w *CMDetectWorker) Timeout(job *river.Job[jobs.CMDetectJobArgs]) time.Duration {
+	return cmDetectionTimeout(job.Args.RecordingDurationMs)
+}
 
 // Work learns a missing station logo, runs JL analysis, and commits only a complete result.
 func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJobArgs]) error {
 	started := time.Now()
 	defer func() { metrics.CMDetectDuration.Observe(time.Since(started).Seconds()) }()
-
-	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
-	if err != nil {
-		return fmt.Errorf("CM detection: acquiring job lock: %w", err)
-	}
-	if !acquired {
-		return fmt.Errorf("CM detection: job %d advisory lock is held by another session", job.ID)
-	}
-	defer jobLock.release()
 
 	q := sqlcgen.New(w.Pool)
 	item, err := q.GetCMDetectionWorkItem(ctx, job.Args.RecordingID)
@@ -118,20 +110,30 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 	if !desired {
 		return nil
 	}
-	if err := q.MarkCMDetectionRunning(ctx, job.Args.RecordingID); err != nil {
-		return fmt.Errorf("CM detection: marking recording %d running: %w", job.Args.RecordingID, err)
+	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: job.Args.RecordingID,
+		MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil {
+		return fmt.Errorf("CM detection: beginning attempt for recording %d: %w", job.Args.RecordingID, err)
 	}
-
-	timeout := cmDetectionTimeout(item.ProgramDurationMs)
-	workCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	if err := w.detect(workCtx, job.ID, item); err != nil {
-		state := "retrying"
-		maxAttempts := job.MaxAttempts
-		if maxAttempts <= 0 {
-			maxAttempts = cmDetectMaxTries
+	if !attempt.ShouldRun {
+		return nil
+	}
+	attemptCount := attempt.AttemptCount
+	if err := w.detect(ctx, job.ID, item, attemptCount); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer failureCancel()
+			if _, deleteErr := q.DeleteCMDetectionRunningAttempt(failureCtx, sqlcgen.DeleteCMDetectionRunningAttemptParams{
+				RecordingID: job.Args.RecordingID, AttemptCount: attemptCount,
+			}); deleteErr != nil {
+				return errors.Join(err, fmt.Errorf("clearing CM detection running state: %w", deleteErr))
+			}
+			return err
 		}
-		if job.Attempt >= maxAttempts {
+		state := "retrying"
+		if attemptCount >= cmDetectMaxTries {
 			state = "failed"
 		}
 		message := err.Error()
@@ -145,14 +147,19 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		}
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer failureCancel()
-		if markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
-			State:       state,
-			Stage:       stage,
-			Error:       &message,
-			RecordingID: job.Args.RecordingID,
-		}); markErr != nil {
+		marked, markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
+			State:        state,
+			Stage:        stage,
+			Error:        &message,
+			RecordingID:  job.Args.RecordingID,
+			AttemptCount: attemptCount,
+		})
+		if markErr != nil {
 			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", job.Args.RecordingID, err),
 				fmt.Errorf("marking CM detection %s: %w", state, markErr))
+		}
+		if marked == 0 {
+			return nil
 		}
 		if terminalAdoptionWait {
 			return nil
@@ -162,7 +169,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 	return nil
 }
 
-func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.GetCMDetectionWorkItemRow) error {
+func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.GetCMDetectionWorkItemRow, attemptCount int32) error {
 	if item.RelPath == nil {
 		return cmFailure("setup", fmt.Errorf("active original is missing"))
 	}
@@ -262,7 +269,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		return cmFailure("match", fmt.Errorf("station logo match %.2f%% is below %.2f%%", matchPercent, cmDetectMinLogoMatchPercent))
 	}
 	if !hadLogo {
-		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry); err != nil {
+		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry, attemptCount); err != nil {
 			return cmFailure("logo", err)
 		}
 	}
@@ -289,7 +296,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	multirange := encodeInt8Multirange(ranges, totalMs)
-	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange)
+	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange, attemptCount)
 }
 
 func (w *CMDetectWorker) saveCMDetectionResult(
@@ -298,6 +305,7 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 	hadLogo bool,
 	startedLogoLearnedAt *time.Time,
 	multirange string,
+	attemptCount int32,
 ) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
@@ -319,6 +327,13 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 			return nil
 		}
 		return cmFailure("save", fmt.Errorf("locking recording for CM result: %w", err))
+	}
+	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, item.ID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
+		return nil
+	}
+	if err != nil {
+		return cmFailure("save", fmt.Errorf("checking CM detection attempt fence: %w", err))
 	}
 	desired, err := q.IsCMDetectionDesired(ctx, item.ID)
 	if err != nil {
@@ -382,6 +397,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	channel, dir string,
 	observedAreaUpdatedAt *time.Time,
 	geometry videoGeometry,
+	attemptCount int32,
 ) error {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
@@ -401,6 +417,13 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	q := sqlcgen.New(tx)
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
 		return fmt.Errorf("locking station logo state: %w", err)
+	}
+	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, item.ID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("checking CM detection attempt fence: %w", err)
 	}
 	n, err := q.InsertLearnedCMLogo(ctx, sqlcgen.InsertLearnedCMLogoParams{
 		NetworkID: item.NetworkID, ServiceID: item.ServiceID, Lgd: logo,

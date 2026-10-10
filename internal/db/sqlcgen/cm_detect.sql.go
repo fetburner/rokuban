@@ -10,6 +10,62 @@ import (
 	"time"
 )
 
+const beginCMDetectionAttempt = `-- name: BeginCMDetectionAttempt :one
+INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count)
+VALUES ($1, 'running', NULL, now(), 1)
+ON CONFLICT (recording_id) DO UPDATE
+SET state = CASE
+        -- Work calls this only after cm_detection_desired says a failed attempt
+        -- has a newer logo or area to analyze.
+        WHEN recording_cm_attempts.state = 'failed' THEN 'running'
+        WHEN recording_cm_attempts.attempt_count >= $2::integer THEN 'failed'
+        ELSE 'running'
+    END,
+    attempt_count = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN recording_cm_attempts.attempt_count + 1
+        WHEN recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.attempt_count
+        ELSE recording_cm_attempts.attempt_count + 1
+    END,
+    stage = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN NULL
+        WHEN recording_cm_attempts.attempt_count >= $2::integer
+             AND recording_cm_attempts.state = 'running' THEN 'stopped'
+        WHEN recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.stage
+        ELSE NULL
+    END,
+    error = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN NULL
+        WHEN recording_cm_attempts.attempt_count >= $2::integer
+             AND recording_cm_attempts.state = 'running' THEN 'CM detection process stopped while job was running'
+        WHEN recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.error
+        ELSE NULL
+    END,
+    attempted_at = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN now()
+        WHEN recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.attempted_at
+        ELSE now()
+    END
+RETURNING attempt_count, state, (state = 'running')::boolean AS should_run
+`
+
+type BeginCMDetectionAttemptParams struct {
+	RecordingID int64
+	MaxAttempts int32
+}
+
+type BeginCMDetectionAttemptRow struct {
+	AttemptCount int32
+	State        string
+	ShouldRun    bool
+}
+
+func (q *Queries) BeginCMDetectionAttempt(ctx context.Context, arg BeginCMDetectionAttemptParams) (BeginCMDetectionAttemptRow, error) {
+	row := q.db.QueryRow(ctx, beginCMDetectionAttempt, arg.RecordingID, arg.MaxAttempts)
+	var i BeginCMDetectionAttemptRow
+	err := row.Scan(&i.AttemptCount, &i.State, &i.ShouldRun)
+	return i, err
+}
+
 const deleteCMAdoptAttemptsForStation = `-- name: DeleteCMAdoptAttemptsForStation :exec
 DELETE FROM recording_cm_attempts ca
 USING recordings r
@@ -45,6 +101,26 @@ DELETE FROM recording_cm_attempts WHERE recording_id = $1
 func (q *Queries) DeleteCMDetectionAttempt(ctx context.Context, recordingID int64) error {
 	_, err := q.db.Exec(ctx, deleteCMDetectionAttempt, recordingID)
 	return err
+}
+
+const deleteCMDetectionRunningAttempt = `-- name: DeleteCMDetectionRunningAttempt :execrows
+DELETE FROM recording_cm_attempts
+WHERE recording_id = $1
+  AND attempt_count = $2
+  AND state = 'running'
+`
+
+type DeleteCMDetectionRunningAttemptParams struct {
+	RecordingID  int64
+	AttemptCount int32
+}
+
+func (q *Queries) DeleteCMDetectionRunningAttempt(ctx context.Context, arg DeleteCMDetectionRunningAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCMDetectionRunningAttempt, arg.RecordingID, arg.AttemptCount)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const deleteCMDetectionsForStationWithActiveOriginal = `-- name: DeleteCMDetectionsForStationWithActiveOriginal :exec
@@ -132,16 +208,86 @@ WHERE network_id = $1
   AND service_id = $2
   AND state = 'running'
   AND observed_area_updated_at = $3::timestamptz
+  AND attempted_at = $4::timestamptz
 `
 
 type DeleteCMLogoCandidateForAreaVersionParams struct {
 	NetworkID     int32
 	ServiceID     int32
 	AreaUpdatedAt time.Time
+	AttemptedAt   time.Time
 }
 
 func (q *Queries) DeleteCMLogoCandidateForAreaVersion(ctx context.Context, arg DeleteCMLogoCandidateForAreaVersionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteCMLogoCandidateForAreaVersion, arg.NetworkID, arg.ServiceID, arg.AreaUpdatedAt)
+	result, err := q.db.Exec(ctx, deleteCMLogoCandidateForAreaVersion,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.AreaUpdatedAt,
+		arg.AttemptedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteCMLogoCandidateRunningAttempt = `-- name: DeleteCMLogoCandidateRunningAttempt :execrows
+DELETE FROM cm_logo_candidates
+WHERE network_id = $1
+  AND service_id = $2
+  AND state = 'running'
+  AND observed_area_updated_at = $3::timestamptz
+  AND attempted_at = $4::timestamptz
+`
+
+type DeleteCMLogoCandidateRunningAttemptParams struct {
+	NetworkID     int32
+	ServiceID     int32
+	AreaUpdatedAt time.Time
+	AttemptedAt   time.Time
+}
+
+func (q *Queries) DeleteCMLogoCandidateRunningAttempt(ctx context.Context, arg DeleteCMLogoCandidateRunningAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteCMLogoCandidateRunningAttempt,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.AreaUpdatedAt,
+		arg.AttemptedAt,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const failOrphanCMLogoCandidate = `-- name: FailOrphanCMLogoCandidate :execrows
+UPDATE cm_logo_candidates
+SET state = 'failed', stage = 'stopped',
+    error = 'CM logo candidate job ended without recording a result'
+WHERE network_id = $1
+  AND service_id = $2
+  AND recording_id = $3
+  AND state = 'running'
+  AND observed_area_updated_at = $4::timestamptz
+  AND attempted_at = $5::timestamptz
+`
+
+type FailOrphanCMLogoCandidateParams struct {
+	NetworkID     int32
+	ServiceID     int32
+	RecordingID   *int64
+	AreaUpdatedAt time.Time
+	AttemptedAt   time.Time
+}
+
+func (q *Queries) FailOrphanCMLogoCandidate(ctx context.Context, arg FailOrphanCMLogoCandidateParams) (int64, error) {
+	result, err := q.db.Exec(ctx, failOrphanCMLogoCandidate,
+		arg.NetworkID,
+		arg.ServiceID,
+		arg.RecordingID,
+		arg.AreaUpdatedAt,
+		arg.AttemptedAt,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -167,7 +313,7 @@ func (q *Queries) GetCMDetectionResult(ctx context.Context, recordingID int64) (
 }
 
 const getCMDetectionWorkItem = `-- name: GetCMDetectionWorkItem :one
-SELECT r.id, r.network_id, r.service_id, r.program_duration_ms, o.rel_path,
+SELECT r.id, r.network_id, r.service_id, o.rel_path,
        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        (r.deleted_at IS NOT NULL)::boolean AS is_trashed,
        EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id) AS original_missing,
@@ -181,16 +327,15 @@ WHERE r.id = $1
 `
 
 type GetCMDetectionWorkItemRow struct {
-	ID                int64
-	NetworkID         int32
-	ServiceID         int32
-	ProgramDurationMs int64
-	RelPath           *string
-	CmDetect          bool
-	IsTrashed         bool
-	OriginalMissing   bool
-	Detected          bool
-	AttemptState      *string
+	ID              int64
+	NetworkID       int32
+	ServiceID       int32
+	RelPath         *string
+	CmDetect        bool
+	IsTrashed       bool
+	OriginalMissing bool
+	Detected        bool
+	AttemptState    *string
 }
 
 func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, recordingID int64) (GetCMDetectionWorkItemRow, error) {
@@ -200,7 +345,6 @@ func (q *Queries) GetCMDetectionWorkItem(ctx context.Context, recordingID int64)
 		&i.ID,
 		&i.NetworkID,
 		&i.ServiceID,
-		&i.ProgramDurationMs,
 		&i.RelPath,
 		&i.CmDetect,
 		&i.IsTrashed,
@@ -363,6 +507,19 @@ func (q *Queries) GetCMLogoCandidate(ctx context.Context, arg GetCMLogoCandidate
 	return i, err
 }
 
+const getCMRecordingDuration = `-- name: GetCMRecordingDuration :one
+SELECT COALESCE(GREATEST((EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+FROM recordings
+WHERE id = $1
+`
+
+func (q *Queries) GetCMRecordingDuration(ctx context.Context, recordingID int64) (int64, error) {
+	row := q.db.QueryRow(ctx, getCMRecordingDuration, recordingID)
+	var recording_duration_ms int64
+	err := row.Scan(&recording_duration_ms)
+	return recording_duration_ms, err
+}
+
 const getCMRetryOriginal = `-- name: GetCMRetryOriginal :one
 SELECT EXISTS (
     SELECT 1 FROM recordings r
@@ -410,7 +567,7 @@ func (q *Queries) HasCMRecordingOriginal(ctx context.Context, arg HasCMRecording
 	return exists, err
 }
 
-const insertCMLogoCandidateRunning = `-- name: InsertCMLogoCandidateRunning :execrows
+const insertCMLogoCandidateRunning = `-- name: InsertCMLogoCandidateRunning :one
 INSERT INTO cm_logo_candidates (
     network_id, service_id, state, stage, error,
     x, y, w, h, coded_width, coded_height,
@@ -418,7 +575,7 @@ INSERT INTO cm_logo_candidates (
 )
 SELECT a.network_id, a.service_id, 'running', NULL, NULL,
        a.x, a.y, a.w, a.h, a.coded_width, a.coded_height,
-       $1::bigint, a.updated_at, now()
+       $1::bigint, a.updated_at, clock_timestamp()
 FROM cm_logo_areas a
 LEFT JOIN cm_logos l
   ON l.network_id = a.network_id AND l.service_id = a.service_id
@@ -431,6 +588,7 @@ WHERE a.network_id = $2
   )
   AND (l.network_id IS NULL OR l.learned_at < a.updated_at)
 ON CONFLICT (network_id, service_id) DO NOTHING
+RETURNING attempted_at
 `
 
 type InsertCMLogoCandidateRunningParams struct {
@@ -440,17 +598,16 @@ type InsertCMLogoCandidateRunningParams struct {
 	AreaUpdatedAt time.Time
 }
 
-func (q *Queries) InsertCMLogoCandidateRunning(ctx context.Context, arg InsertCMLogoCandidateRunningParams) (int64, error) {
-	result, err := q.db.Exec(ctx, insertCMLogoCandidateRunning,
+func (q *Queries) InsertCMLogoCandidateRunning(ctx context.Context, arg InsertCMLogoCandidateRunningParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, insertCMLogoCandidateRunning,
 		arg.RecordingID,
 		arg.NetworkID,
 		arg.ServiceID,
 		arg.AreaUpdatedAt,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	var attempted_at time.Time
+	err := row.Scan(&attempted_at)
+	return attempted_at, err
 }
 
 const insertLearnedCMLogo = `-- name: InsertLearnedCMLogo :execrows
@@ -705,10 +862,12 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 }
 
 const listMissingCMDetections = `-- name: ListMissingCMDetections :many
-SELECT r.recording_id
-FROM cm_detection_desired r
-WHERE r.recording_id > $1::bigint
-ORDER BY r.recording_id
+SELECT desired.recording_id,
+       COALESCE(GREATEST((EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+FROM cm_detection_desired desired
+JOIN recordings r ON r.id = desired.recording_id
+WHERE desired.recording_id > $1::bigint
+ORDER BY desired.recording_id
 LIMIT $2
 `
 
@@ -717,22 +876,27 @@ type ListMissingCMDetectionsParams struct {
 	RowLimit         int32
 }
 
+type ListMissingCMDetectionsRow struct {
+	RecordingID         int64
+	RecordingDurationMs int64
+}
+
 // CM detection jobs use the same desired predicate for the ingest hint and periodic pass.
 // The predicate lives in the cm_detection_desired view so a new caller cannot drift from
 // the reconcile definition.
-func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCMDetectionsParams) ([]int64, error) {
+func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCMDetectionsParams) ([]ListMissingCMDetectionsRow, error) {
 	rows, err := q.db.Query(ctx, listMissingCMDetections, arg.AfterRecordingID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []int64
+	var items []ListMissingCMDetectionsRow
 	for rows.Next() {
-		var recording_id int64
-		if err := rows.Scan(&recording_id); err != nil {
+		var i ListMissingCMDetectionsRow
+		if err := rows.Scan(&i.RecordingID, &i.RecordingDurationMs); err != nil {
 			return nil, err
 		}
-		items = append(items, recording_id)
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -741,13 +905,15 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 }
 
 const listMissingCMLogoCandidates = `-- name: ListMissingCMLogoCandidates :many
-SELECT network_id, service_id, recording_id, area_updated_at
-FROM cm_logo_candidate_desired
-WHERE (network_id, service_id) > (
+SELECT desired.network_id, desired.service_id, COALESCE(desired.recording_id, 0)::bigint AS recording_id, desired.area_updated_at,
+       COALESCE(GREATEST((EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+FROM cm_logo_candidate_desired desired
+JOIN recordings r ON r.id = desired.recording_id
+WHERE (desired.network_id, desired.service_id) > (
     $1::int,
     $2::int
 )
-ORDER BY network_id, service_id
+ORDER BY desired.network_id, desired.service_id
 LIMIT $3
 `
 
@@ -758,10 +924,11 @@ type ListMissingCMLogoCandidatesParams struct {
 }
 
 type ListMissingCMLogoCandidatesRow struct {
-	NetworkID     int32
-	ServiceID     int32
-	RecordingID   int64
-	AreaUpdatedAt time.Time
+	NetworkID           int32
+	ServiceID           int32
+	RecordingID         int64
+	AreaUpdatedAt       time.Time
+	RecordingDurationMs int64
 }
 
 func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissingCMLogoCandidatesParams) ([]ListMissingCMLogoCandidatesRow, error) {
@@ -778,6 +945,7 @@ func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissi
 			&i.ServiceID,
 			&i.RecordingID,
 			&i.AreaUpdatedAt,
+			&i.RecordingDurationMs,
 		); err != nil {
 			return nil, err
 		}
@@ -787,6 +955,63 @@ func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissi
 		return nil, err
 	}
 	return items, nil
+}
+
+const listRunningCMLogoCandidates = `-- name: ListRunningCMLogoCandidates :many
+SELECT network_id, service_id, COALESCE(recording_id, 0)::bigint AS recording_id,
+       observed_area_updated_at, attempted_at
+FROM cm_logo_candidates
+WHERE state = 'running'
+ORDER BY network_id, service_id
+`
+
+type ListRunningCMLogoCandidatesRow struct {
+	NetworkID             int32
+	ServiceID             int32
+	RecordingID           int64
+	ObservedAreaUpdatedAt time.Time
+	AttemptedAt           time.Time
+}
+
+func (q *Queries) ListRunningCMLogoCandidates(ctx context.Context) ([]ListRunningCMLogoCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listRunningCMLogoCandidates)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListRunningCMLogoCandidatesRow
+	for rows.Next() {
+		var i ListRunningCMLogoCandidatesRow
+		if err := rows.Scan(
+			&i.NetworkID,
+			&i.ServiceID,
+			&i.RecordingID,
+			&i.ObservedAreaUpdatedAt,
+			&i.AttemptedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCMDetectionAttempt = `-- name: LockCMDetectionAttempt :one
+SELECT attempt_count
+FROM recording_cm_attempts
+WHERE recording_id = $1
+  AND state = 'running'
+FOR UPDATE
+`
+
+func (q *Queries) LockCMDetectionAttempt(ctx context.Context, recordingID int64) (int32, error) {
+	row := q.db.QueryRow(ctx, lockCMDetectionAttempt, recordingID)
+	var attempt_count int32
+	err := row.Scan(&attempt_count)
+	return attempt_count, err
 }
 
 const lockCMStation = `-- name: LockCMStation :exec
@@ -805,50 +1030,46 @@ func (q *Queries) LockCMStation(ctx context.Context, arg LockCMStationParams) er
 	return err
 }
 
-const markCMDetectionFailure = `-- name: MarkCMDetectionFailure :exec
+const markCMDetectionFailure = `-- name: MarkCMDetectionFailure :execrows
 UPDATE recording_cm_attempts
 SET state = $1, stage = $2, error = $3
 WHERE recording_id = $4
+  AND attempt_count = $5
+  AND state = 'running'
 `
 
 type MarkCMDetectionFailureParams struct {
-	State       string
-	Stage       *string
-	Error       *string
-	RecordingID int64
+	State        string
+	Stage        *string
+	Error        *string
+	RecordingID  int64
+	AttemptCount int32
 }
 
 // **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
 // 学習済みロゴの `learned_at` と比べるので、失敗終了時刻で上書きしない。
-func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) error {
-	_, err := q.db.Exec(ctx, markCMDetectionFailure,
+func (q *Queries) MarkCMDetectionFailure(ctx context.Context, arg MarkCMDetectionFailureParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markCMDetectionFailure,
 		arg.State,
 		arg.Stage,
 		arg.Error,
 		arg.RecordingID,
+		arg.AttemptCount,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
-const markCMDetectionRunning = `-- name: MarkCMDetectionRunning :exec
-INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at)
-VALUES ($1, 'running', NULL, now())
-ON CONFLICT (recording_id) DO UPDATE
-SET state = 'running', stage = NULL, error = NULL, attempted_at = now()
-`
-
-func (q *Queries) MarkCMDetectionRunning(ctx context.Context, recordingID int64) error {
-	_, err := q.db.Exec(ctx, markCMDetectionRunning, recordingID)
-	return err
-}
-
-const markCMLogoCandidateFailure = `-- name: MarkCMLogoCandidateFailure :exec
+const markCMLogoCandidateFailure = `-- name: MarkCMLogoCandidateFailure :execrows
 UPDATE cm_logo_candidates
 SET state = 'failed', stage = $1, error = $2
 WHERE network_id = $3
   AND service_id = $4
   AND state = 'running'
   AND observed_area_updated_at = $5::timestamptz
+  AND attempted_at = $6::timestamptz
 `
 
 type MarkCMLogoCandidateFailureParams struct {
@@ -857,17 +1078,22 @@ type MarkCMLogoCandidateFailureParams struct {
 	NetworkID     int32
 	ServiceID     int32
 	AreaUpdatedAt time.Time
+	AttemptedAt   time.Time
 }
 
-func (q *Queries) MarkCMLogoCandidateFailure(ctx context.Context, arg MarkCMLogoCandidateFailureParams) error {
-	_, err := q.db.Exec(ctx, markCMLogoCandidateFailure,
+func (q *Queries) MarkCMLogoCandidateFailure(ctx context.Context, arg MarkCMLogoCandidateFailureParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markCMLogoCandidateFailure,
 		arg.Stage,
 		arg.Error,
 		arg.NetworkID,
 		arg.ServiceID,
 		arg.AreaUpdatedAt,
+		arg.AttemptedAt,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const markCMLogoCandidateReady = `-- name: MarkCMLogoCandidateReady :execrows
@@ -879,6 +1105,7 @@ WHERE c.network_id = $3
   AND c.service_id = $4
   AND c.state = 'running'
   AND c.observed_area_updated_at = $5::timestamptz
+  AND c.attempted_at = $6::timestamptz
   AND EXISTS (
       SELECT 1 FROM cm_logo_areas a
       WHERE a.network_id = c.network_id
@@ -893,6 +1120,7 @@ type MarkCMLogoCandidateReadyParams struct {
 	NetworkID     int32
 	ServiceID     int32
 	AreaUpdatedAt time.Time
+	AttemptedAt   time.Time
 }
 
 func (q *Queries) MarkCMLogoCandidateReady(ctx context.Context, arg MarkCMLogoCandidateReadyParams) (int64, error) {
@@ -902,6 +1130,7 @@ func (q *Queries) MarkCMLogoCandidateReady(ctx context.Context, arg MarkCMLogoCa
 		arg.NetworkID,
 		arg.ServiceID,
 		arg.AreaUpdatedAt,
+		arg.AttemptedAt,
 	)
 	if err != nil {
 		return 0, err

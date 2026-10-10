@@ -2,15 +2,17 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -147,10 +149,11 @@ func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
 	ctx := context.Background()
 	id := seedCMRecording(t, pool, t.TempDir(), 944)
 	areaAt := seedTaughtArea(t, pool, 1180)
-	insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
 	stage, message := "save", "saving failed"
-	if err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(ctx, sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt, Stage: &stage, Error: &message,
+	if _, err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(ctx, sqlcgen.MarkCMLogoCandidateFailureParams{
+		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
+		AttemptedAt: attemptedAt, Stage: &stage, Error: &message,
 	}); err != nil {
 		t.Fatalf("MarkCMLogoCandidateFailure(save): %v", err)
 	}
@@ -177,131 +180,89 @@ func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	}
 }
 
-// 動いている解析は回収されない（Work が job lock を保持する）。回収すると running が
-// failed にされ、成功時の ready が 0 行になって候補が失われる。
-func TestRecoverStaleCMLogoCandidateJobsSparesLiveWorker(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 946)
-	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-	areaAt := seedTaughtArea(t, pool, 1180)
-	jobID := insertCandidateJobRow(t, pool, id, areaAt, "running", 1, 1)
-	w := newCandidateTestWorker(pool, mediaDir, tools)
-
-	err := candidateWorkHeld(t, w, tools, id, jobID, areaAt, func() {
-		if err := recoverStaleCMLogoCandidateJobs(ctx, pool); err != nil {
-			t.Error(err)
-		}
-		// 生きた River ジョブ（running）を持つ行は orphan 回収も触らない。
-		if err := failOrphanCMLogoCandidates(ctx, pool); err != nil {
-			t.Error(err)
-		}
-		if state, _, _ := candidateRow(t, pool); state != "running" {
-			t.Errorf("candidate during a live analysis = %q, want running", state)
-		}
+func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time) time.Time {
+	t.Helper()
+	attemptedAt, err := sqlcgen.New(pool).InsertCMLogoCandidateRunning(context.Background(), sqlcgen.InsertCMLogoCandidateRunningParams{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID, AreaUpdatedAt: areaAt,
 	})
 	if err != nil {
-		t.Fatalf("Work: %v", err)
+		t.Fatalf("InsertCMLogoCandidateRunning: %v", err)
 	}
-	if state, _, _ := candidateRow(t, pool); state != "ready" {
-		t.Errorf("candidate after the analysis = %q, want ready", state)
-	}
+	return attemptedAt
 }
 
-func insertCandidateJobRow(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time, state string, attempt, maxAttempts int) int64 {
-	t.Helper()
-	client, err := NewInsertOnlyClient(pool)
+func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 947)
+	areaAt := seedTaughtArea(t, pool, 1180)
+	q := sqlcgen.New(pool)
+	oldAttempt := insertRunningCandidate(t, pool, id, areaAt)
+	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(time.Millisecond)
+	newAttempt := insertRunningCandidate(t, pool, id, areaAt)
+
+	updated, err := q.MarkCMLogoCandidateReady(ctx, sqlcgen.MarkCMLogoCandidateReadyParams{
+		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
+		AttemptedAt: oldAttempt, Lgd: []byte("late logo"),
+	})
+	if err != nil || updated != 0 {
+		t.Fatalf("old ready update = %d, %v; want no row", updated, err)
+	}
+	stage, message := "logo", "late failure"
+	failed, err := q.MarkCMLogoCandidateFailure(ctx, sqlcgen.MarkCMLogoCandidateFailureParams{
+		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
+		AttemptedAt: oldAttempt, Stage: &stage, Error: &message,
+	})
+	if err != nil || failed != 0 {
+		t.Fatalf("old failure update = %d, %v; want no row", failed, err)
+	}
+	deleted, err := q.DeleteCMLogoCandidateForAreaVersion(ctx, sqlcgen.DeleteCMLogoCandidateForAreaVersionParams{
+		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt, AttemptedAt: oldAttempt,
+	})
+	if err != nil || deleted != 0 {
+		t.Fatalf("old cleanup = %d, %v; want no row", deleted, err)
+	}
+	candidate, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := client.Insert(context.Background(), jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID, AreaUpdatedAt: areaAt,
+	if candidate.State != "running" || !candidate.AttemptedAt.Equal(newAttempt) {
+		t.Errorf("recreated candidate = %q at %s, want running at %s", candidate.State, candidate.AttemptedAt, newAttempt)
+	}
+}
+
+// 対応する active River job がある candidate は保ち、job が終端になれば failed にする。
+func TestFailOrphanCMLogoCandidates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx, cancel := context.WithTimeout(riverWorkContext(t, pool), 10*time.Second)
+	defer cancel()
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := seedCMRecording(t, pool, t.TempDir(), 948)
+	areaAt := seedTaughtArea(t, pool, 1180)
+	job, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: id, AreaUpdatedAt: areaAt,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(context.Background(), `
-		UPDATE river_job SET state = $2::river_job_state, attempt = $3, max_attempts = $4,
-		       attempted_at = now() - interval '1 hour'
-		WHERE id = $1`, res.Job.ID, state, attempt, maxAttempts); err != nil {
-		t.Fatal(err)
-	}
-	return res.Job.ID
-}
-
-func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time) {
-	t.Helper()
-	if n, err := sqlcgen.New(pool).InsertCMLogoCandidateRunning(context.Background(), sqlcgen.InsertCMLogoCandidateRunningParams{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID, AreaUpdatedAt: areaAt,
-	}); err != nil || n != 1 {
-		t.Fatalf("InsertCMLogoCandidateRunning = %d, %v", n, err)
-	}
-}
-
-// 死んだ解析（lock が取れる古い running）は回収する。試行が残っていれば行を消して
-// 再投入に任せ、使い切っていれば failed / stopped にする。
-func TestRecoverStaleCMLogoCandidateJobsRecoversDeadWorker(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		attempt, max int
-		wantJob      string
-		wantRow      string
-	}{
-		{"last attempt", 1, 1, "discarded", "failed/stopped"},
-		{"attempts left", 1, 3, "retryable", "none"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pool := testutil.SetupDB(t)
-			ctx := context.Background()
-			id := seedCMRecording(t, pool, t.TempDir(), 947)
-			areaAt := seedTaughtArea(t, pool, 1180)
-			jobID := insertCandidateJobRow(t, pool, id, areaAt, "running", tc.attempt, tc.max)
-			insertRunningCandidate(t, pool, id, areaAt)
-
-			if err := recoverStaleCMLogoCandidateJobs(ctx, pool); err != nil {
-				t.Fatal(err)
-			}
-			var jobState string
-			if err := pool.QueryRow(ctx, `SELECT state::text FROM river_job WHERE id = $1`, jobID).Scan(&jobState); err != nil {
-				t.Fatal(err)
-			}
-			if jobState != tc.wantJob {
-				t.Errorf("river job = %q, want %q", jobState, tc.wantJob)
-			}
-			state, stage, ok := candidateRow(t, pool)
-			got := "none"
-			if ok {
-				got = state + "/" + stage
-			}
-			if got != tc.wantRow {
-				t.Errorf("candidate = %s, want %s", got, tc.wantRow)
-			}
-		})
-	}
-}
-
-// 対応する未完了ジョブが無い running 行（River が discarded にした・fail() が書けなかった）は
-// River の状態に頼らず failed / stopped にする。未完了ジョブがあるものは触らない。
-func TestFailOrphanCMLogoCandidates(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 948)
-	areaAt := seedTaughtArea(t, pool, 1180)
 	insertRunningCandidate(t, pool, id, areaAt)
 
-	insertCandidateJobRow(t, pool, id, areaAt, "available", 0, 1)
-	if err := failOrphanCMLogoCandidates(ctx, pool); err != nil {
+	if err := failOrphanCMLogoCandidates(ctx, client, pool); err != nil {
 		t.Fatal(err)
 	}
 	if state, _, _ := candidateRow(t, pool); state != "running" {
-		t.Fatalf("candidate with a live job = %q, want running", state)
+		t.Fatalf("candidate with a matching active job = %q, want running", state)
 	}
-
-	if _, err := pool.Exec(ctx, `UPDATE river_job SET state = 'discarded', finalized_at = now() WHERE kind = 'cm_logo_candidate'`); err != nil {
+	if _, err := client.JobCancel(ctx, job.Job.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := failOrphanCMLogoCandidates(ctx, pool); err != nil {
+	if err := failOrphanCMLogoCandidates(ctx, client, pool); err != nil {
 		t.Fatal(err)
 	}
 	if state, stage, _ := candidateRow(t, pool); state != "failed" || stage != "stopped" {
@@ -309,19 +270,76 @@ func TestFailOrphanCMLogoCandidates(t *testing.T) {
 	}
 }
 
+// The ingest hint and periodic reconciliation both pass actual recording duration to River jobs.
+func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := riverWorkContext(t, pool)
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRecordingDuration := func(recordingID int64) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `
+			UPDATE recordings
+			SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+			WHERE id = $1`, recordingID); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hintRecording := seedCMRecording(t, pool, t.TempDir(), 951)
+	setRecordingDuration(hintRecording)
+	if err := EnqueueCMDetectionIfNeeded(ctx, pool, client, hintRecording); err != nil {
+		t.Fatal(err)
+	}
+	assertDuration := func(recordingID int64) {
+		t.Helper()
+		page, err := client.JobList(ctx, river.NewJobListParams().Kinds(jobs.CMDetectJobArgs{}.Kind()).First(10))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, row := range page.Jobs {
+			var args jobs.CMDetectJobArgs
+			if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
+				t.Fatal(err)
+			}
+			if args.RecordingID == recordingID {
+				if args.RecordingDurationMs != 45*60*1000 {
+					t.Errorf("recording %d job duration = %dms, want 2700000ms", recordingID, args.RecordingDurationMs)
+				}
+				return
+			}
+		}
+		t.Errorf("no CM detection job for recording %d", recordingID)
+	}
+	assertDuration(hintRecording)
+
+	reconcileRecording := seedCMRecording(t, pool, t.TempDir(), 952)
+	setRecordingDuration(reconcileRecording)
+	if err := (&CMDetectReconcileWorker{Pool: pool}).Work(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertDuration(reconcileRecording)
+}
+
 // 定期パスは、枠があって候補の無い局に解析ジョブを積む。失敗した候補がある局には積まない。
 func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := riverWorkContext(t, pool)
-	id := seedCMRecording(t, pool, t.TempDir(), 949)
-	areaAt := seedTaughtArea(t, pool, 1180)
-	count := func() int {
-		var n int
-		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM river_job WHERE kind = 'cm_logo_candidate'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
+	id := seedCMRecording(t, pool, t.TempDir(), 949)
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE recordings
+		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+		WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	areaAt := seedTaughtArea(t, pool, 1180)
+	count := func() int { return len(listCandidateJobs(t, ctx, client)) }
 	w := &CMDetectReconcileWorker{Pool: pool}
 	if err := w.Work(ctx, nil); err != nil {
 		t.Fatal(err)
@@ -329,18 +347,20 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Fatalf("candidate jobs after the first pass = %d, want 1", got)
 	}
-	var args string
-	if err := pool.QueryRow(context.Background(), `SELECT args::text FROM river_job WHERE kind = 'cm_logo_candidate'`).Scan(&args); err != nil {
+	args := listCandidateJobs(t, ctx, client)[0]
+	var candidateArgs jobs.CMLogoCandidateJobArgs
+	if err := json.Unmarshal(args.EncodedArgs, &candidateArgs); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(args, `"recording_id"`) || !strings.Contains(args, `"network_id": 32736`) {
-		t.Errorf("candidate job args = %s, want station 32736 and a recording", args)
+	if candidateArgs.RecordingID != id || candidateArgs.NetworkID != 32736 || candidateArgs.RecordingDurationMs != 45*60*1000 {
+		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
 	}
 
-	insertRunningCandidate(t, pool, id, areaAt)
+	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
 	stage, message := "logo", "failed"
-	if err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(context.Background(), sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt, Stage: &stage, Error: &message,
+	if _, err := sqlcgen.New(pool).MarkCMLogoCandidateFailure(context.Background(), sqlcgen.MarkCMLogoCandidateFailureParams{
+		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt,
+		AttemptedAt: attemptedAt, Stage: &stage, Error: &message,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -350,6 +370,15 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Errorf("candidate jobs after a failed candidate = %d, want still 1", got)
 	}
+}
+
+func listCandidateJobs(t *testing.T, ctx context.Context, client *river.Client[pgx5.Tx]) []*rivertype.JobRow {
+	t.Helper()
+	page, err := client.JobList(ctx, activeCMLogoCandidateJobListParams(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return page.Jobs
 }
 
 // 採用の直前に始まった旧ロゴのジョブの結果は保存しない。実行中に採用（learned_at の更新）が
