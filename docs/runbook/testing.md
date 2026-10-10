@@ -167,7 +167,7 @@ SIGKILL されない」ことを根拠に選んである。Docker の既定猶�
 待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。
 この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
 `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。
-ingest はその後の定期 recovery が lock 解放を確認し、encode は保存した timeout の期限後に River の JobRescuer が再実行する。
+ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
 **2 発目の SIGTERM で強制終了できること**も同じ形で確かめられる。上の
 `kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる

@@ -25,7 +25,7 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 実行側の handler は `internal/worker` に置く。
 
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が `retryable` に戻す。待つ時間は `worker.rescue_stuck_jobs_after`（既定 1h）と kind ごとの `Timeout()` の長い方である。**`Timeout()` が -1 の kind は rescue の対象外**で、それぞれの reconcile が回収する（どの kind が -1 かは各 worker の `Timeout()` を引く）
+- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が retry を予約する。`worker.rescue_stuck_jobs_after` の既定は 6 分で、client `JobTimeout`（既定 1 分）より長くする。worker 固有の `Timeout()` が設定値より長い場合は、その長い時間が rescue 判定に使われる。`Timeout() < 0` の kind（encode / cm_detect 系）は rescue の対象外で、それぞれの reconcile が回収する。ingest の `Timeout()` は 5 分なので、既定では約 6 分で retry が予約される。0 を明示すると River の既定 1 時間を使う
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
@@ -120,7 +120,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への整理。DB 輻輳から分離できる処理はあるが、**故障モードを常に「収束の遅れ」とは一般化しない**。保証は次の条件付きである:
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
-- **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、転送中を通して保持する job-id advisory lock（生存確認用で転送先の排他ではない）、進捗の書き込み、公開点である `media_assets` コミットが必要である。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する。job lock 用接続が転送中に死んでも転送は止まらないが、`record_sweep` が生きた転送をプロセス死と誤認して二重 pull しうる。決着は DB の一意 INSERT が付け、canonical file は壊れない（詳細は [ingest](../recording/ingest.md) §5.3）
+- **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
 - **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。`Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う（River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ）。プロセス死は締切後に River の JobRescuer が同じジョブ ID を再試行する。`recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。各試行の scratch も分ける。停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。ドメイン上限（25）に達したら `river.JobCancel` を返し、River 上も cancelled にする。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。停止による `Canceled` は River の attempt を消費するがドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない

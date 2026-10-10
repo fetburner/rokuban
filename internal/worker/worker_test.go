@@ -367,13 +367,20 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	}
 }
 
-// ingest は数百 MB〜数十 GB の転送なので、River の総時間タイムアウト（既定 1 分）が
-// 効いていると実際の録画が完走しない。総時間で切らずストール検知に委ねる設計が
-// 崩れていないことを固定する（実機 687MB の録画がこれで落ちていた）。
-func TestIngestWorker_HasNoTotalTimeout(t *testing.T) {
+// 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。
+func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
 	w := &IngestWorker{}
-	if got := w.Timeout(nil); got >= 0 {
-		t.Errorf("Timeout() = %v, want negative (River のタイムアウト無効化)", got)
+	if got := w.Timeout(nil); got != 5*time.Minute {
+		t.Errorf("Timeout() = %v, want 5m", got)
+	}
+	if got := ingestTransferSlice; got != 4*time.Minute {
+		t.Errorf("ingest transfer slice = %v, want 4m", got)
+	}
+	if w.Timeout(nil) <= river.JobTimeoutDefault {
+		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", w.Timeout(nil), river.JobTimeoutDefault)
+	}
+	if w.Timeout(nil) >= 6*time.Minute {
+		t.Errorf("Timeout() = %v, want < 6m rescue threshold", w.Timeout(nil))
 	}
 }
 
@@ -1015,29 +1022,28 @@ func TestLockSlots(t *testing.T) {
 		want int
 	}{
 		{
-			// 既定の並列度（ingest 3 / cm_detect 1）。
-			// cm_detect を数え落とすと 3 になり、この case が落ちる。
+			// job lock を持つのは cm_detect だけ（並列度 1）。
+			// cm_detect を数え落とすと 0 になり、この case が落ちる。
 			name: "defaults on one bound site",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo"}},
-			want: 4,
+			want: 1,
 		},
 		{
 			// 0 サイト束縛（中央プロセス）でも site-bound キューは 1 つに畳まれる。
 			name: "defaults with no bound sites",
 			cfg:  ClientConfig{},
-			want: 4,
+			want: 1,
 		},
 		{
-			// ingest だけが site ごとに増える。cm_detect は site 非依存なので 1
-			// のまま（6 + 1）。encode は長時間保持 lock を取らない。
-			name: "two bound sites multiply only the site-bound ingest queue",
+			// cm_detect は site 非依存なので 2 サイトでも合計は変わらない。
+			name: "two bound sites do not change site-independent lock queues",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu"}},
-			want: 7, // ingest 3 x 2 sites + cm_detect 1
+			want: 1,
 		},
 		{
 			name: "three bound sites",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu", "osaka"}},
-			want: 10, // ingest 3 x 3 sites + cm_detect 1
+			want: 1,
 		},
 		{
 			name: "a queue set without any lock-holding queue",
@@ -1050,13 +1056,8 @@ func TestLockSlots(t *testing.T) {
 			want: 0,
 		},
 		{
-			name: "lock slots follow ingest concurrency, not encode concurrency",
+			name: "ingest and encode hold no job lock regardless of concurrency",
 			cfg:  ClientConfig{Queues: []string{jobs.IngestQueue, jobs.EncodeQueue}, IngestConcurrency: 6, EncodeConcurrency: 2},
-			want: 6,
-		},
-		{
-			name: "encode queue does not hold a job lock connection",
-			cfg:  ClientConfig{Queues: []string{jobs.EncodeQueue}, EncodeConcurrency: 2},
 			want: 0,
 		},
 		{
@@ -1065,26 +1066,25 @@ func TestLockSlots(t *testing.T) {
 			// 設定の書き方でプールの予算が変わる。
 			name: "an empty queue slice means all queues, same as nil",
 			cfg:  ClientConfig{Queues: []string{}},
-			want: 4,
+			want: 1,
 		},
 		{
 			// --queues の重複は resolveWorkerQueues が畳むが、ClientConfig を
 			// 直接組む経路（このパッケージのテスト・将来の呼び出し元）でも
 			// 二重に数えない。
 			name: "duplicate queue names are not counted twice",
-			cfg:  ClientConfig{Queues: []string{jobs.IngestQueue, jobs.IngestQueue}},
-			want: 3,
+			cfg:  ClientConfig{Queues: []string{jobs.CMDetectQueue, jobs.CMDetectQueue}},
+			want: 1,
 		},
 		{
-			// once モードは 1 キュー・MaxWorkers 1。concurrency の設定は効かない。
-			name: "once mode is one slot regardless of the configured concurrency",
+			// ingest は job-id advisory lock を持たない。
+			name: "ingest queue does not reserve a job lock connection",
 			cfg: ClientConfig{
 				Queues:            []string{jobs.IngestQueue},
 				IngestConcurrency: 5,
 				BoundSites:        []string{"tokyo"},
-				Once:              NewOnceGate(),
 			},
-			want: 1,
+			want: 0,
 		},
 		{
 			name: "once mode on a queue without a job lock is zero",

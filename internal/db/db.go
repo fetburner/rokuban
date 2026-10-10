@@ -50,18 +50,18 @@ const (
 	// workerConnFloor は worker ロールの予算の床（roleConnBudget の worker の値）。
 	//
 	// 床が効くのは lockSlots が 4 以下のとき（1 + lockSlots + workerConnSlack <= 8）。
-	// 既定構成の lockSlots は 4（ingest 3 + cm_detect 1、1 site）なので、
-	// 既定の予算は床と式がともに 8 になる。**ingest を引かないデプロイ
-	// （`--queues=ruler` 等）の上限を、lock 枠から導出した小さい値まで
-	// 下げないために置いてある。**
+	// 既定構成の lockSlots は 1（cm_detect 1、1 site）なので、既定の予算は
+	// 床の 8 で決まる。**lock を持つジョブを引かないデプロイ（`--queues=ruler` 等）の
+	// 上限を、lock 枠から導出した小さい値まで下げないために置いてある。**
 	workerConnFloor = 8
 
 	// workerConnSlack は worker の予算のうち、LISTEN でも job lock でもない仕事
 	// （ジョブ claim、進捗書き込み、`/metrics` のバックログクエリ等）に残す本数。
 	//
-	// **未測定である。** 値は「ingest 2 / cm_detect 1 の構成で固定予算 8 から
-	// 長期保持分 4（1(LISTEN) + 3(job lock)）を引いた残り」を
-	// 据え置いたもので、実測に基づかない。
+	// **未測定である。** 値は、job lock を持つジョブが複数あった構成（長期保持分 5 =
+	// 1(LISTEN) + 4(job lock)）で固定予算 8 から引いた残りを据え置いたもので、
+	// 実測に基づかない。lock を持つジョブが cm_detect だけになった今の構成に
+	// 合わせて測り直してはいない。
 	workerConnSlack = 3
 
 	// workerListenConns は River の内部機構が LISTEN 用に長時間保持する本数。
@@ -85,7 +85,7 @@ const (
 // 小さい値まで下げないための床 workerConnFloor で下支えする。
 //
 // **lockSlots は呼び出し元が数える**（internal/worker.LockSlots）。同時実行数は
-// 設定（ingest.concurrency / cm_detect.concurrency）と束縛サイト数から決まるので、
+// 同時実行数の設定と束縛サイト数から決まるので、
 // db 側に既定値を焼き込むと運用者が設定を変えたときに予算が追随しない。
 func workerConnBudget(lockSlots int) int32 {
 	return max(workerConnFloor, int32(workerListenConns+lockSlots+workerConnSlack))
@@ -194,7 +194,7 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, lockSlots in
 					"connection whose release depends on acquiring another one don't starve the "+
 					"rest of the process's work out of the single shared pool -- watcher's "+
 					"advisory lock (one per bound site), worker's/notifier's LISTEN, and one "+
-					"connection per running ingest/cm_detect job (those jobs write "+
+					"connection per running cm_detect job (those jobs write "+
 					"progress on a second connection before releasing the first) "+
 					"(docs/operations.md §3)",
 				cfg.MaxConns, roles, numSites, lockSlots, min)
@@ -282,13 +282,11 @@ var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 //
 //   - watcher / worker / notifier の恒久専有（dedicatedConnRoles）。watcher は
 //     束縛サイトごとに 1 本（2 site 目以降 watcherPerSiteConns ずつ追加）
-//   - 実行中の ingest / cm_detect 1 本ごとの job advisory lock
-//     （lockSlots）。**これを「転送中だけの一時専有」として除外しては
-//     ならない。** lock を持つジョブは、解放する前に同じプールからもう 1 本取る
-//     （進捗書き込み・commit。internal/worker/ingest_progress.go）。
-//     LISTEN と lock でプールが埋まると、ジョブ同士が互いの接続を待つ循環になる
-//     --- heartbeat は lock セッション自身の上で動くので lock は生き続け、
-//     record_sweep も回収しない。**構造から確定した結論で、実測はしていない。**
+//   - 実行中の cm_detect 1 本ごとの job advisory lock
+//     （lockSlots）。**これを一時専有として除外してはならない。** lock を持つ
+//     ジョブは、解放する前に同じプールからもう 1 本取る（進捗書き込み・commit）。
+//     LISTEN と lock でプールが埋まると、ジョブ同士が互いの接続を待つ循環になる。
+//     **構造から確定した結論で、実測はしていない。**
 //
 // 専有分だけでプールが埋まると、同じプロセスが行う他の仕事（watcher の record 処理
 // クエリ、worker のジョブ claim、/metrics のバックログクエリ等）が「二度と解放

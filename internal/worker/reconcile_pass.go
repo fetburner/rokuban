@@ -27,8 +27,8 @@ const (
 	// サーキットブレーカーが発動中はゼロになる）が観測対象の件数に比例して発生する。
 	// ネットワーク往復が支配的になりうる点は
 	// epg_sync（mirakc への GET 2 回 + 応答の Postgres 投影）と同じ性質なので、
-	// epg_sync と同じ既定より長い上限を与える。ingest（Timeout() が -1）とは異なり、
-	// 1 回の HTTP 呼び出しが数百 MB を転送するわけではなく、mirakc 側の応答が
+	// epg_sync と同じ既定より長い上限を与える。ingest は転送を bounded slice ごとに
+	// snooze して継続するが、ここでは 1 回の HTTP 呼び出しが数百 MB を転送するわけではなく、mirakc 側の応答が
 	// 返らない限りいつまでも待ち続ける理由がないため、無制限にはしない。
 	reconcilePassTimeout = 10 * time.Minute
 )

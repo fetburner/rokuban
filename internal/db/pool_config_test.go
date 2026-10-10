@@ -24,10 +24,10 @@ func testDBConfig() config.DBConfig {
 	}
 }
 
-// defaultLockSlots は本番の既定構成（ingest 3 + cm_detect 1、1 site。
-// internal/worker.LockSlots）を模した値。worker を含むケースの予算はこの値から
-// 導出されるので、テストは表のリテラルではなくこれを渡す。
-const defaultLockSlots = 4
+// defaultLockSlots は本番の既定構成（cm_detect 1。ingest と encode は job lock を
+// 取らない）を模した値（internal/worker.LockSlots）。worker を含むケースの予算は
+// この値から導出されるので、テストは表のリテラルではなくこれを渡す。
+const defaultLockSlots = 1
 
 func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 	cases := []struct {
@@ -40,8 +40,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 	}{
 		{name: "api alone", cfg: testDBConfig(), roles: []string{"api"}, want: 10},
 		{
-			// worker の予算は表の 8 ではなく lockSlots から導出される
-			// （1 + lock 4 + slack 3 = 8）。
+			// lockSlots の式は 1 + 1 + 3 = 5 なので、床 8 が効く。
 			name: "worker alone", cfg: testDBConfig(), roles: []string{"worker"},
 			lockSlots: defaultLockSlots, want: 8,
 		},
@@ -57,7 +56,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "all roles (monolith --all)",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
-			// 10 + 8(worker: 1 + 4 + 3) + 3 + 4 + 3
+			// 10 + 8(worker: max(8, 1 + 1 + 3)) + 3 + 4 + 3
 			lockSlots: defaultLockSlots,
 			want:      28,
 		},
@@ -118,7 +117,7 @@ func TestBuildPoolConfig_WorkerBudgetFollowsLockSlots(t *testing.T) {
 	}{
 		{lockSlots: 0, want: 8},   // 式 4 → 床
 		{lockSlots: 4, want: 8},   // 式 8 → 床と一致
-		{lockSlots: 5, want: 9},   // 式 9 → 床を超える（既定構成）
+		{lockSlots: 5, want: 9},   // 式 9 → 床を超える
 		{lockSlots: 8, want: 12},  // 式 12
 		{lockSlots: 20, want: 24}, // 式 24
 	}
@@ -139,9 +138,8 @@ func TestBuildPoolConfig_WorkerBudgetFollowsLockSlots(t *testing.T) {
 // 効かないロールを分けて固定する（issue #532 のレビュー指摘）。
 //
 // watcher は束縛サイトごとに advisory lock 用コネクションを 1 本専有するので
-// perSiteConnBudget が上乗せされる。**worker は上乗せされない** --- 2 site 目の
-// ingest job lock は lockSlots として呼び出し元から渡ってくるので、ここで site
-// 数から二重に足すと過大になる。
+// perSiteConnBudget が上乗せされる。**worker は上乗せされない** --- job lock は
+// site 非依存の cm_detect だけなので、ここで site 数から足すと過大になる。
 func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -160,11 +158,11 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 			want:      8,
 		},
 		{
-			name:      "worker, 2 sites: the extra per-site ingest locks arrive as lockSlots",
+			name:      "worker, 2 sites: only site-independent locks count",
 			roles:     []string{"worker"},
 			numSites:  2,
-			lockSlots: 7, // ingest 3 x 2 sites + cm_detect 1
-			want:      11,
+			lockSlots: 1,
+			want:      8,
 		},
 		{
 			name:      "watcher+worker, 2 sites: only watcher gets the per-site addition",
@@ -242,15 +240,15 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:      "--all: 3 dedicated conns + 4 job locks need at least 8",
-			maxConns:  7,
+			name:      "--all: 3 dedicated conns + 1 job lock need at least 5",
+			maxConns:  4,
 			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
 			lockSlots: defaultLockSlots,
 			wantErr:   true,
 		},
 		{
-			name:      "--all: 8 is enough",
-			maxConns:  8,
+			name:      "--all: 5 is enough",
+			maxConns:  5,
 			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
 			lockSlots: defaultLockSlots,
 			wantErr:   false,
@@ -265,10 +263,10 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:      "worker alone: 4 job locks need 1(LISTEN) + 4 + 1 = 6",
-			maxConns:  5,
+			name:      "worker alone: 5 job locks need 1(LISTEN) + 5 + 1 = 7",
+			maxConns:  6,
 			roles:     []string{"worker"},
-			lockSlots: defaultLockSlots,
+			lockSlots: 5,
 			wantErr:   true,
 		},
 		{

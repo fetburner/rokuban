@@ -231,7 +231,8 @@ func defaults() Config {
 			RetentionGrace: 24 * time.Hour,
 		},
 		Worker: WorkerConfig{
-			PeriodicJobs: true,
+			PeriodicJobs:         true,
+			RescueStuckJobsAfter: defaultRescueStuckJobsAfter,
 		},
 		Encode: EncodeConfig{
 			FFmpeg:               "ffmpeg",

@@ -539,6 +539,9 @@ func TestLoad_DBPoolingDefaults(t *testing.T) {
 	if cfg.DB.APIStatementTimeout != 0 {
 		t.Errorf("db.api_statement_timeout = %v, want 0 (built-in default)", cfg.DB.APIStatementTimeout)
 	}
+	if cfg.Worker.RescueStuckJobsAfter != 6*time.Minute {
+		t.Errorf("worker.rescue_stuck_jobs_after = %v, want 6m", cfg.Worker.RescueStuckJobsAfter)
+	}
 }
 
 func TestLoad_DBPoolingOverridden(t *testing.T) {

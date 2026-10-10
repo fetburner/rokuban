@@ -76,15 +76,16 @@ const (
 // 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
 // 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
 // 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
-// `running` のまま残る。ingest は `record_sweep` が、encode / その他のジョブは
-// `JobRescuer`
-// （既定 1 時間）に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
+// `running` のまま残る。ingest は有限の Timeout と `JobRescuer`（既定 6 分）、
+// encode は保存した締切後の `JobRescuer`、cm_detect は `cm_detect_reconcile` が回収する。
+// その他のジョブも `JobRescuer` に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
 // 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
 // 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
 //
-// 数時間かかる encode / ingest は当然この既定では完走できない。それらを載せる
-// デプロイは `--soft-stop-timeout` と k8s の `terminationGracePeriodSeconds` を
-// **対で**引き上げる（docs/operations.md §5「Deployment 併用時」）。
+// 数時間かかる encode は当然この既定では完走できない。ingest は短い区切りで
+// checkpoint と snooze を行う。長い drain を要するデプロイは `--soft-stop-timeout` と
+// k8s の `terminationGracePeriodSeconds` を **対で**引き上げる
+// （docs/operations.md §5「Deployment 併用時」）。
 //
 // **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
 // work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
@@ -206,8 +207,8 @@ type Deps struct {
 
 	// IngestStallTimeout は ingest の無進捗検知タイムアウト
 	// （ingest.stall_timeout。config.defaults() が既定値 30 秒を埋める）。
-	// River の総時間タイムアウトは無効化しているため、これが ingest の唯一の
-	// タイムアウトである（docs/recording.md §5.3「層 1」）。
+	// bounded slice / snooze の区切りとは別に、接続断を判定する
+	// （docs/recording/ingest.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
@@ -613,11 +614,10 @@ func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 
 // lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
 // コネクションを 1 本保持し続けるジョブを持つ論理キュー
-// （internal/worker/job_lock.go。ingest / cm_detect が lock を取る）。
+// （internal/worker/job_lock.go。cm_detect だけが使う）。
 //
 // thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
 var lockHoldingQueues = []string{
-	jobs.IngestQueue,
 	jobs.CMDetectQueue,
 }
 

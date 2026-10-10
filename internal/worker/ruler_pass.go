@@ -20,9 +20,8 @@ const (
 
 	// rulerPassTimeout は 1 パス（全ルール評価 + GC）全体の上限。
 	//
-	// ingest（Timeout() が -1）とは事情が異なる。ingest は mirakc からの数百 MB〜
-	// 数十 GB のバイト転送で、所要時間が録画長・回線速度という外部要因に支配される
-	// ため無制限にせざるを得なかった。ruler は mirakc に一切触れない（不変条件 1）
+	// ingest の転送は bounded slice ごとに snooze して継続し、1 回の Work を有限にする。
+	// ruler は mirakc に一切触れない（不変条件 1）
 	// 純粋な Postgres 処理で、外部ネットワーク転送のように所要時間が無制限に伸びる
 	// 要因がないため、無制限にする理由がない。
 	//

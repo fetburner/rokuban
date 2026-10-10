@@ -168,7 +168,7 @@ func recoverStaleCMDetectJobs(ctx context.Context, pool *pgxpool.Pool) error {
 		},
 		func(candidate staleCMDetectJob) int64 { return candidate.id },
 		func(ctx context.Context, id int64) (*jobLock, bool, error) {
-			return acquireCMDetectJobLock(ctx, pool, id)
+			return acquireCMDetectJobLock(ctx, pool, id, defaultJobLockTimeout)
 		},
 		func(ctx context.Context, conn *pgxpool.Conn, candidate staleCMDetectJob) error {
 			retry, err := recoverStaleCMDetectJob(ctx, conn, candidate)
@@ -304,7 +304,7 @@ func recoverStaleCMLogoCandidateJobs(ctx context.Context, pool *pgxpool.Pool) er
 		},
 		func(candidate staleCMLogoCandidateJob) int64 { return candidate.id },
 		func(ctx context.Context, id int64) (*jobLock, bool, error) {
-			return acquireCMDetectJobLock(ctx, pool, id)
+			return acquireCMDetectJobLock(ctx, pool, id, defaultJobLockTimeout)
 		},
 		func(ctx context.Context, conn *pgxpool.Conn, candidate staleCMLogoCandidateJob) error {
 			retry, err := recoverStaleCMLogoCandidateJob(ctx, conn, candidate)

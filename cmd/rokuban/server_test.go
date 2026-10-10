@@ -1213,9 +1213,20 @@ func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
 		}
 	})
 
-	t.Run("ingest worker with 3 lock slots needs more than max_conns=4", func(t *testing.T) {
+	t.Run("ingest worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
 		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ingest")
+		if err == nil {
+			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+		}
+		if !strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v, want to fail at the DB (= ingest lock 枠は 0)", err)
+		}
+	})
+
+	t.Run("cm_detect worker with 1 lock slot needs more than max_conns=2", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("expected the pool sizing check to fail, got nil")
 		}
@@ -1223,7 +1234,7 @@ func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
 			t.Errorf("err = %v, want the db.max_conns fail-fast (DB に触る前に落ちること)", err)
 		}
 		if strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v: DB まで進んでいる（ingest lock 枠が数えられていない）", err)
+			t.Errorf("err = %v: DB まで進んでいる（cm_detect lock 枠が数えられていない）", err)
 		}
 	})
 
