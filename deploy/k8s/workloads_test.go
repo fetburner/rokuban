@@ -382,7 +382,7 @@ func TestScaledJobTriggersMatchTheirQueue(t *testing.T) {
 			continue // TestScaledJobsCoverEveryQueue が報告済み
 		}
 		want := fmt.Sprintf(
-			"SELECT count(*) FROM river_job WHERE queue = '%s' AND state IN ('%s','%s')",
+			"SELECT count(*) FROM river_job WHERE queue = '%s' AND state IN ('%s','%s')", //nolint:gocritic // KEDA の scaler が river_job を読む。ここはその文字列を照合するだけ
 			physical, rivertype.JobStateAvailable, rivertype.JobStateRetryable)
 		if got := triggerQuery(t, w); got != want {
 			t.Errorf("%s trigger query\n got: %s\nwant: %s", w.id(), got, want)
