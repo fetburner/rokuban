@@ -1,6 +1,9 @@
 //go:build ruleguard
 
 // Package lintrules は gocritic の ruleguard で読む rokuban 固有の lint ルール。
+//
+// golangci-lint のキャッシュはこのファイルの変更で無効化されないので、ルールを変えたら
+// golangci-lint cache clean してから確認する。
 package lintrules
 
 import "github.com/quasilyte/go-ruleguard/dsl"
@@ -12,6 +15,11 @@ func riverInternalTables(m dsl.Matcher) {
 		`$db.Query($ctx, $q, $*_)`,
 		`$db.QueryRow($ctx, $q, $*_)`,
 		`fmt.Sprintf($q, $*_)`,
+		`$b.Queue($q, $*_)`,
+		`const $_ = $q`,
+		`var $_ = $q`,
+		`$_ := $q`,
+		`$_ = $q`,
 	).
 		Where(m["q"].Const && m["q"].Text.Matches(`\briver_(job|leader|queue|client|migration)\b`)).
 		At(m["q"]).
