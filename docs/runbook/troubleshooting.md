@@ -106,7 +106,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   切り詰める。全文は worker のログ）
 - `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた可能性が
   ある行。encode の JobRescuer は enqueue 時に args へ保存した締切後に同じ job を
-  再試行する。締切は最低 1 時間で、実尺 × profile rate が長ければその分待つ。
+  再試行する。締切は実尺 × profile rate で、実尺が不明な場合と締切のない旧 args は 1 時間となる。
   `recording_encode_attempts.attempt_count` は次の worker 起動時に死亡した試行を数える。
   締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker の
   ログを確認する

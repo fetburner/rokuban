@@ -67,7 +67,7 @@ type stagedMediaFile struct {
 // ストリームコピー + fsync する。名前は予約接頭辞 prefix を付け、拡張子は付けない
 // （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
 // プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
-func stageMediaFile(src, finalPath, prefix string) (stagedMediaFile, error) {
+func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedMediaFile, error) {
 	dir := filepath.Dir(finalPath)
 	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
 	// streamCopyFile と同じ 0644 に揃える（別 UID の streamer が読む構成がある）。
@@ -81,7 +81,7 @@ func stageMediaFile(src, finalPath, prefix string) (stagedMediaFile, error) {
 		_ = os.Remove(tempPath)
 		return stagedMediaFile{}, fmt.Errorf("chmod staged output: %w", err)
 	}
-	size, err := streamCopyFile(src, tempPath)
+	size, err := streamCopyFile(ctx, src, tempPath)
 	if err != nil {
 		_ = os.Remove(tempPath)
 		return stagedMediaFile{}, fmt.Errorf("staging output in media dir: %w", err)
@@ -125,7 +125,7 @@ func publishGeneratedMediaAsset(
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
 		return 0, false, fmt.Errorf("creating media asset directory: %w", err)
 	}
-	staged, err := stageMediaFile(scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
+	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}

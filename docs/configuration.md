@@ -338,7 +338,7 @@ VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG
 `encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0。
 encode ジョブ投入時に `recordings.ended_at - started_at` と rate から締切を解決して
 args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、
-実行ジョブに対して同じ締切を使える。実尺が欠けた旧録画や旧 args は最低 1 時間となる。
+実行ジョブに対して同じ締切を使える。実尺が不明な場合と締切のない旧 args は 1 時間となる。
 
 ## 運用補助
 

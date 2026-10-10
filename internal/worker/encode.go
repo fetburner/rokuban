@@ -120,9 +120,12 @@ func probeEncodeDuration(
 }
 
 // Timeout は EncodeJobArgs に保存した rescue 締切を返す。
-// 旧 args に締切が無い場合は最低値の 1 時間を返し、JobRescuer の対象に残す。
+// 旧 args に締切が無い場合は 1 時間を返し、JobRescuer の対象に残す。
 func (w *EncodeWorker) Timeout(job *river.Job[jobs.EncodeJobArgs]) time.Duration {
-	return max(job.Args.Timeout, time.Hour)
+	if job.Args.Timeout > 0 {
+		return job.Args.Timeout
+	}
+	return time.Hour
 }
 
 // Work は encode ジョブを実行する。
@@ -705,7 +708,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
 
-	staged, err := stageMediaFile(in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
+	staged, err := stageMediaFile(ctx, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
@@ -720,7 +723,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		if err != nil {
 			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		stagedSubtitle, err = stageMediaFile(in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
+		stagedSubtitle, err = stageMediaFile(ctx, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
 		if err != nil {
 			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
@@ -1273,9 +1276,9 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 	}
 }
 
-// streamCopyFile は src を dst へシーケンシャルにコピーし、ファイルと親ディレクトリを
-// fsync する（ストレージ契約: 作業は scratch、置くのは一回）。
-func streamCopyFile(src, dst string) (int64, error) {
+// streamCopyFile は ctx に従って src を dst へシーケンシャルにコピーし、ファイルと
+// 親ディレクトリを fsync する（ストレージ契約: 作業は scratch、置くのは一回）。
+func streamCopyFile(ctx context.Context, src, dst string) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return 0, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 	}
@@ -1291,15 +1294,25 @@ func streamCopyFile(src, dst string) (int64, error) {
 		return 0, fmt.Errorf("create dst: %w", err)
 	}
 
-	n, copyErr := io.Copy(out, in)
+	n, copyErr := copyWithContext(ctx, out, in)
 	if copyErr != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
 		return n, fmt.Errorf("copy: %w", copyErr)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return n, fmt.Errorf("copy canceled: %w", err)
+	}
 	if err := out.Sync(); err != nil {
 		_ = out.Close()
 		return n, fmt.Errorf("fsync file: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return n, fmt.Errorf("sync canceled: %w", err)
 	}
 	if err := out.Close(); err != nil {
 		return n, fmt.Errorf("close dst: %w", err)
@@ -1311,6 +1324,22 @@ func streamCopyFile(src, dst string) (int64, error) {
 		_ = dir.Close()
 	}
 	return n, nil
+}
+
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, contextReader{ctx: ctx, r: src})
 }
 
 // JobInserter は encode ジョブ投入に使う最小面（*river.Client が満たす）。
@@ -1350,7 +1379,10 @@ func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Durati
 	if calculated >= float64(maxDuration) {
 		return maxDuration
 	}
-	return max(time.Duration(math.Ceil(calculated)), time.Hour)
+	if calculated <= 0 {
+		return time.Hour
+	}
+	return time.Duration(math.Ceil(calculated))
 }
 
 // EnqueueMissingEncodes は desired（recording_encode_policy.encode_profiles。issue #159）− observed

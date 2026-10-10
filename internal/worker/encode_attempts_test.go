@@ -457,6 +457,21 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: args}); got != 135*time.Minute {
 		t.Errorf("Timeout() = %s, want queued 2h15m", got)
 	}
+	shortEndedAt := startedAt.Add(5 * time.Minute)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET ended_at = $2 WHERE id = $1`, recordingID, shortEndedAt); err != nil {
+		t.Fatal(err)
+	}
+	shortProfiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 4}}}
+	shortArgs, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", shortProfiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shortArgs.Timeout != 20*time.Minute {
+		t.Fatalf("queued timeout for short recording = %s, want 20m (5m recording × rate 4)", shortArgs.Timeout)
+	}
+	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: shortArgs}); got != 20*time.Minute {
+		t.Errorf("Timeout() for short recording = %s, want queued 20m", got)
+	}
 	legacy := &river.Job[EncodeJobArgs]{Args: EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}}
 	if got := worker.Timeout(legacy); got != time.Hour {
 		t.Errorf("Timeout() for old args = %s, want 1h", got)
