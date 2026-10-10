@@ -865,14 +865,14 @@ func TestCMRecordingDurationDoesNotChangeRiverUniqueIdentity(t *testing.T) {
 
 // workHeld は logoframe のダミーが走っている間に during を実行してから Work を終わらせる。
 // 実 logoframe が長く走る間に API が割り込む窓の再現。
-func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset, id int64, attempt int, during func()) error {
+func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset, id int64, during func()) error {
 	t.Helper()
 	if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- newCMDetectTestWorker(pool, mediaDir, tools).Work(context.Background(), cmJob(id, attempt))
+		done <- newCMDetectTestWorker(pool, mediaDir, tools).Work(context.Background(), cmJob(id, 1))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -935,7 +935,7 @@ func TestCMDetectWorkDiscardsLogoLearnedWhileAreaWasSaved(t *testing.T) {
 	id := seedCMRecording(t, pool, mediaDir, 930)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 
-	if err := workHeld(t, pool, mediaDir, tools, id, 1, func() { putAreaLikeAPI(t, pool) }); err != nil {
+	if err := workHeld(t, pool, mediaDir, tools, id, func() { putAreaLikeAPI(t, pool) }); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	if n := countLogos(t, pool); n != 0 {
@@ -958,7 +958,7 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	err := workHeld(t, pool, mediaDir, tools, id, 1, func() {
+	err := workHeld(t, pool, mediaDir, tools, id, func() {
 		if _, err := pool.Exec(ctx, `DELETE FROM cm_logos`); err != nil {
 			t.Error(err)
 		}
@@ -986,7 +986,7 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
 	}
 
-	err := workHeld(t, pool, mediaDir, tools, id, 1, func() {
+	err := workHeld(t, pool, mediaDir, tools, id, func() {
 		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 			NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
 			CodedWidth: 1440, CodedHeight: 1080,

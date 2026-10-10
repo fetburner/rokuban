@@ -399,7 +399,7 @@ func TestCMDetectWorkDiscardsResultWhenLogoAdoptedDuringJob(t *testing.T) {
 	}
 	upsert()
 
-	if err := workHeld(t, pool, mediaDir, tools, id, 1, upsert); err != nil {
+	if err := workHeld(t, pool, mediaDir, tools, id, upsert); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	var detections, attempts int

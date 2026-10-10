@@ -191,7 +191,7 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 	// 終端の失敗行があれば引き取れる（自動層は空 = CM 無しという主張）。
 	q := sqlcgen.New(pool)
 	attemptCount := startCMDetectionAttemptForTest(t, context.Background(), q, id)
-	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, "failed", nil, strPtr("detector unavailable"))
+	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, nil, strPtr("detector unavailable"))
 	resp = putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT after terminal failure status = %d, want 204", resp.StatusCode)

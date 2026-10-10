@@ -32,11 +32,11 @@ func startCMDetectionAttemptForTest(t *testing.T, ctx context.Context, q *sqlcge
 	return attempt.AttemptCount
 }
 
-func markCMDetectionFailureForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64, attemptCount int32, state string, stage, message *string) {
+func markCMDetectionFailureForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64, attemptCount int32, stage, message *string) {
 	t.Helper()
 	n, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
 		RecordingID: recordingID, AttemptCount: attemptCount,
-		State: state, Stage: stage, Error: message,
+		State: "failed", Stage: stage, Error: message,
 	})
 	if err != nil || n != 1 {
 		t.Fatalf("MarkCMDetectionFailure(%d, %d) = %d, %v", recordingID, attemptCount, n, err)
@@ -161,7 +161,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	}
 	q := sqlcgen.New(pool)
 	attemptCount := startCMDetectionAttemptForTest(t, context.Background(), q, id)
-	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, "failed", nil, nil)
+	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, nil, nil)
 	if err := sqlcgen.New(pool).SaveCMDetection(context.Background(), sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: "{}"}); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	}
 	attemptCount := startCMDetectionAttemptForTest(t, context.Background(), q, id)
 	stage := "logo"
-	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, "failed", &stage, nil)
+	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, &stage, nil)
 
 	resp, err := http.Get(srv.URL + "/api/cm-logos")
 	if err != nil {
@@ -284,7 +284,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	}
 	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
 	message := "CM detection for recording 1: logoframe: no logo found"
-	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, "failed", nil, &message)
+	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, nil, &message)
 	// 失敗した試行は、枠を教える前は候補ではない（前回の枠で既に試している）。
 	desired, err := q.IsCMDetectionDesired(ctx, id)
 	if err != nil {
@@ -464,7 +464,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	}
 	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, failedRecording)
 	logoStage := "logo"
-	markCMDetectionFailureForTest(t, ctx, q, failedRecording, attemptCount, "failed", &logoStage, nil)
+	markCMDetectionFailureForTest(t, ctx, q, failedRecording, attemptCount, &logoStage, nil)
 	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
@@ -839,7 +839,7 @@ func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
 	hereLogo := seedRecording(t, pool, "この局の別失敗", time.Now().Truncate(time.Second), "finished", 995)
 	for id, stage := range map[int64]*string{here: &adopt, other: &adopt, hereLogo: &logo} {
 		attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
-		markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, "failed", stage, nil)
+		markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, stage, nil)
 	}
 	if err := q.UpsertCMLogoArea(ctx, sqlcgen.UpsertCMLogoAreaParams{
 		NetworkID: 32678, ServiceID: 5168, X: 1180, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
