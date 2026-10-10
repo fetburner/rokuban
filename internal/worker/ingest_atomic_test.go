@@ -200,8 +200,8 @@ func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, 
 }
 
 // TestIngestWorker_CommitHoldsRelPathFileLockThroughRename は実際の commit 経路が
-// rename 中も filesystem lock を保持することを確認する。DB advisory lock だけを
-// 残した変異でも、ここで同じ lock file を取得できてしまうため検出できる。
+// rename 中も filesystem lock を保持することを確認する。lock の取得を外した変異は、
+// rename 停止中に同じ lock file を取得できてしまうため検出できる。
 func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -321,12 +321,10 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 	}
 }
 
-// TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect は、
-// DB transaction の予約後、canonical file の公開前に DB セッションが失われても、
-// filesystem lock が cleanup を待たせることを確認する。DB advisory lock だけの
-// 実装では orphan_files 行を先に消してから commit の rename が走るため、公開に
-// 失敗した canonical を次回の orphan cleanup が追跡できなくなる。
-func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect(t *testing.T) {
+// TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect は、DB セッションが
+// canonical の rename 前に失われても、失敗後の canonical を孤児回収が消さず、
+// orphan_files の追跡記録も保持することを確認する。
+func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -362,10 +360,8 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 		beforeIngestFilePublication = originalPublication
 	})
 	beforeIngestFilePublication = func(_ context.Context, tx pgx5.Tx) error {
-		// Close the actual transaction connection before rename. This releases the
-		// DB advisory lock while the commit goroutine still owns the filesystem lock.
-		// The commit will fail after the hook is released, leaving the canonical as
-		// an orphan for the final cleanup below.
+		// Close the actual transaction connection before rename. The commit will
+		// fail after the hook is released and leave a canonical orphan.
 		if err := tx.Conn().Close(context.Background()); err != nil {
 			return fmt.Errorf("closing transaction connection in test: %w", err)
 		}
@@ -402,8 +398,8 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 		t.Fatalf("commit did not reach the publication hook (result: %v)", err)
 	}
 
-	// The DB session is already gone, but rename has not started. Cleanup must
-	// still defer because commit holds the rel_path filesystem lock.
+	// The DB session is already gone, but rename has not started. Canonical names
+	// are report-only, so cleanup leaves the orphan record untouched.
 	q := sqlcgen.New(pool)
 	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(q, relPath, 0)
@@ -437,18 +433,18 @@ func TestIngestWorker_CommitAndCanonicalOrphanCleanupStayLockedAfterDBDisconnect
 		t.Errorf("canonical file after commit failure = %q, want %q", got, content)
 	}
 
-	// Once commit has released the filesystem lock, the same cleanup path may
-	// remove the now-unpublished canonical and its orphan_files row together.
+	// A later cleanup pass still cannot infer publication state from this canonical
+	// name, so it must preserve both the file and its orphan record.
 	cleanup.deleteOrphanFile(q, relPath, 0)
-	if _, err := os.Stat(fullPath); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("canonical file after deferred cleanup: stat error = %v, want not exist", err)
+	if _, err := os.Stat(fullPath); err != nil {
+		t.Errorf("canonical file after report-only cleanup: %v", err)
 	}
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount); err != nil {
 		t.Fatalf("querying orphan record after deferred cleanup: %v", err)
 	}
-	if orphanCount != 0 {
-		t.Errorf("orphan record count after deferred cleanup = %d, want 0", orphanCount)
+	if orphanCount != 1 {
+		t.Errorf("orphan record count after report-only cleanup = %d, want 1", orphanCount)
 	}
 }
 

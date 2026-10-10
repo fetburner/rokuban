@@ -24,6 +24,8 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/inplace"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -1871,10 +1873,9 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	}
 }
 
-// canonical orphan の回収は ingest commit と同じ rel_path filesystem lock を使う。
-// DB advisory lock を保持していなくても、filesystem lock 保持中は回収を延期し、
-// 解放後にだけ unlink できることを固定する。
-func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testing.T) {
+// canonical orphan は公開済みか未公開かを行の欠如だけで判断できないため、
+// rel_path lock が空いていても孤児回収から unlink しない。
+func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
@@ -1897,12 +1898,9 @@ func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testin
 	}
 	t.Cleanup(func() { _ = q.DeleteOrphanFile(context.Background(), relPath) })
 
-	fileLock, acquired, err := tryLockMediaRelPathFile(mediaDir, relPath)
+	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
 	if err != nil {
 		t.Fatalf("locking rel_path file: %v", err)
-	}
-	if !acquired {
-		t.Fatal("could not acquire rel_path file lock for test")
 	}
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
@@ -1915,23 +1913,238 @@ func TestDeleteReconcileWorker_CanonicalOrphanDefersWhileRelPathLocked(t *testin
 	}
 
 	w.deleteOrphanFile(q, relPath, time.Hour)
-	if fileExists(orphanPath) {
-		t.Fatal("canonical orphan still exists after rel_path lock was released")
+	if !fileExists(orphanPath) {
+		t.Fatal("canonical orphan was removed after rel_path lock was released")
 	}
 	var count int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
-		t.Fatalf("querying orphan_files after deletion: %v", err)
+		t.Fatalf("querying orphan_files after report-only cleanup: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("orphan_files count after canonical deletion = %d, want 0", count)
+	if count != 1 {
+		t.Errorf("orphan_files count after canonical cleanup = %d, want 1", count)
 	}
 }
 
-// mtime が古いファイルは孤児候補として記録され、エイジング済みなら削除される。
-func TestDeleteReconcileWorker_Orphan_AgedOut_Deletes(t *testing.T) {
+func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
+	ctx := context.Background()
+	paths := []string{
+		"recordings/original.m2ts",
+		"encoded/program_h264.mp4",
+		"thumbnails/42.jpg",
+		"thumbnails/42_tiles.jpg",
+		"encoded/program_h264.vtt",
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	q := sqlcgen.New(pool)
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	for _, relPath := range paths {
+		if classifyOrphanCleanup(relPath) != orphanCleanupCanonical {
+			t.Errorf("classifyOrphanCleanup(%q) = %v, want canonical", relPath, classifyOrphanCleanup(relPath))
+		}
+		path := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("canonical"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
+			t.Fatalf("seeding %s orphan: %v", relPath, err)
+		}
+		w.deleteOrphanFile(q, relPath, time.Hour)
+		if !fileExists(path) {
+			t.Errorf("canonical %s was removed", relPath)
+		}
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		if count != 1 {
+			t.Errorf("orphan_files count for %s = %d, want 1", relPath, count)
+		}
+	}
+}
+
+func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	const relPath = "sites/default/recovered/recording.m2ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("old orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(fullPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		t.Fatal(err)
+	}
+	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if _, err := cleanup.reconcileOrphanCandidates(ctx, sqlcgen.New(pool), time.Hour); err != nil {
+		t.Fatalf("orphan scan: %v", err)
+	}
+	recordingID := insertTestRecording(t, pool)
+	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-recovery")
+	content := []byte("published after orphan scan")
+	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tempPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupPaused := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
+	originalHook := beforeCanonicalOrphanReport
+	cleanupDone := make(chan struct{})
+	t.Cleanup(func() {
+		release()
+		beforeCanonicalOrphanReport = originalHook
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			t.Error("orphan cleanup did not finish after release")
+		}
+	})
+	beforeCanonicalOrphanReport = func(got string) {
+		if got != relPath {
+			return
+		}
+		close(cleanupPaused)
+		<-releaseCleanup
+	}
+	go func() {
+		cleanup.deleteOrphanFile(sqlcgen.New(pool), relPath, time.Hour)
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupPaused:
+	case <-time.After(5 * time.Second):
+		release()
+		t.Fatal("orphan cleanup did not reach canonical report")
+	}
+
+	commitDone := make(chan error, 1)
+	go func() {
+		commitDone <- (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
+			relPath, tempPath, fullPath, int64(len(content)))
+	}()
+	select {
+	case err := <-commitDone:
+		if err != nil {
+			release()
+			t.Fatalf("publishing after orphan scan: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		release()
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			t.Error("orphan cleanup did not finish after release")
+		}
+		select {
+		case <-commitDone:
+		case <-time.After(5 * time.Second):
+			t.Error("publication did not finish after cleanup was released")
+		}
+		t.Fatal("publication waited for report-only canonical cleanup")
+	}
+	release()
+	<-cleanupDone
+
+	if got, err := os.ReadFile(fullPath); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("canonical after orphan cleanup = %q, %v; want published bytes", got, err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Errorf("media_asset state after publication = %q, want active", state)
+	}
+}
+
+func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	const relPath = "sites/default/recovered/db-disconnect.m2ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("old orphan"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(fullPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		t.Fatal(err)
+	}
+	cleanupTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cleanupTx.Rollback(context.Background()) })
+	if _, err := sqlcgen.New(cleanupTx).ListAgedOrphanFiles(ctx, time.Now()); err != nil {
+		t.Fatalf("reading aged orphan on cleanup session: %v", err)
+	}
+	if err := cleanupTx.Conn().Close(ctx); err != nil {
+		t.Fatalf("disconnecting cleanup database session: %v", err)
+	}
+
+	// A fresh publication can commit after the cleanup session is gone. The canonical
+	// cleanup path must not need that session to decide whether it may unlink the file.
+	recordingID := insertTestRecording(t, pool)
+	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-after-cleanup-disconnect")
+	content := []byte("published after cleanup database disconnect")
+	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(tempPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
+		relPath, tempPath, fullPath, int64(len(content))); err != nil {
+		t.Fatalf("publishing after cleanup database disconnect: %v", err)
+	}
+	(&DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}).deleteOrphanFile(
+		sqlcgen.New(cleanupTx), relPath, time.Hour)
+
+	if got, err := os.ReadFile(fullPath); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("canonical after disconnected cleanup = %q, %v; want published bytes", got, err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Errorf("media_asset state after publication = %q, want active", state)
+	}
+}
+
+// canonical orphan は aging 後も残り、Warn とメトリクスに出る。削除数ブレーカーには入らない。
+func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	t.Cleanup(func() { metrics.OrphanFilesUnresolved.Set(0) })
 
 	relPath := "unregistered-old.dat"
 	orphanPath := filepath.Join(mediaDir, relPath)
@@ -1959,16 +2172,279 @@ func TestDeleteReconcileWorker_Orphan_AgedOut_Deletes(t *testing.T) {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	if fileExists(orphanPath) {
-		t.Error("aged orphan file still exists, want removed")
+	if !fileExists(orphanPath) {
+		t.Error("aged canonical orphan was removed, want report-only retention")
 	}
 	var count int
 	if err := pool.QueryRow(context.Background(),
 		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
 		t.Fatalf("querying orphan_files: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("orphan_files count = %d, want 0 (record cleared after delete)", count)
+	if count != 1 {
+		t.Errorf("orphan_files count = %d, want 1 (canonical orphan remains unresolved)", count)
+	}
+	if got := promtestutil.ToFloat64(metrics.OrphanFilesUnresolved); got != 1 {
+		t.Errorf("OrphanFilesUnresolved = %v, want 1", got)
+	}
+	var breakerCount int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM circuit_breakers WHERE name = $1`, breaker.DeleteReconcile).Scan(&breakerCount); err != nil {
+		t.Fatalf("querying delete-reconcile breaker: %v", err)
+	}
+	if breakerCount != 0 {
+		t.Errorf("delete-reconcile breaker count = %d, want 0 (reported canonical orphans are not delete candidates)", breakerCount)
+	}
+}
+
+// TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines は canonical 孤児の Warn を
+// 1 パスあたりの上限に抑え、超過件数を要約する。
+//
+// 壊し方: reportAgedOrphanFiles の個別 Warn を消す、または予算で打ち切る条件を消す。
+func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	t.Cleanup(func() { metrics.OrphanFilesUnresolved.Set(0) })
+
+	const overBudget = orphanFileLogBudget + 5
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for i := 0; i < overBudget; i++ {
+		relPath := fmt.Sprintf("unregistered/orphan-%d.m2ts", i)
+		path := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("orphan"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+			t.Fatalf("seeding aged canonical orphan %q: %v", relPath, err)
+		}
+	}
+
+	var logBuf bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+	w := &DeleteReconcileWorker{
+		Pool: pool, MediaDir: mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        24 * time.Hour,
+	}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+
+	logged := logBuf.String()
+	if got := strings.Count(logged, "aged canonical orphan needs review"); got != orphanFileLogBudget {
+		t.Errorf("individual canonical-orphan Warn lines = %d, want %d", got, orphanFileLogBudget)
+	}
+	wantSummary := fmt.Sprintf("and_more=%d", overBudget-orphanFileLogBudget)
+	if !strings.Contains(logged, "suppressing further canonical-orphan log lines") || !strings.Contains(logged, wantSummary) {
+		t.Errorf("log output lacks canonical-orphan summary (%s); log:\n%s", wantSummary, logged)
+	}
+	if got := promtestutil.ToFloat64(metrics.OrphanFilesUnresolved); got != overBudget {
+		t.Errorf("OrphanFilesUnresolved = %v, want %d", got, overBudget)
+	}
+}
+
+func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	paths := []string{
+		mediapath.EncodeTempFilePrefix + "leftover-a",
+		mediapath.GeneratedAssetTempFilePrefix + "leftover-b",
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	for _, relPath := range paths {
+		fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+		if err := os.WriteFile(fullPath, []byte("staged"), 0o644); err != nil {
+			t.Fatalf("writing staging file %q: %v", relPath, err)
+		}
+		if err := os.Chtimes(fullPath, old, old); err != nil {
+			t.Fatalf("aging staging file %q: %v", relPath, err)
+		}
+		if _, err := pool.Exec(ctx,
+			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+			t.Fatalf("seeding staging orphan %q: %v", relPath, err)
+		}
+	}
+
+	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, paths[0])
+	if err != nil {
+		t.Fatalf("locking staging rel_path for test: %v", err)
+	}
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	done := make(chan error, 1)
+	go func() { done <- w.Work(ctx, nil) }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Work(): %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = fileLock.Close()
+		<-done
+		t.Fatal("staging cleanup waited for a canonical rel_path lock")
+	}
+	if err := fileLock.Close(); err != nil {
+		t.Fatalf("releasing staging rel_path lock: %v", err)
+	}
+	for _, relPath := range paths {
+		if fileExists(filepath.Join(mediaDir, filepath.FromSlash(relPath))) {
+			t.Errorf("aged staging file %q still exists", relPath)
+		}
+		var count int
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+			t.Fatalf("querying staging orphan %q: %v", relPath, err)
+		}
+		if count != 0 {
+			t.Errorf("orphan_files row for staging path %q remains", relPath)
+		}
+	}
+}
+
+func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	const relPath = mediapath.EncodeTempFilePrefix + "mtime-race"
+	path := filepath.Join(mediaDir, relPath)
+	if err := os.WriteFile(path, []byte("stage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		t.Fatal(err)
+	}
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	aged, err := w.agedUnpublishedOrphans(ctx, sqlcgen.New(pool), time.Hour, time.Hour)
+	if err != nil {
+		t.Fatalf("agedUnpublishedOrphans(): %v", err)
+	}
+	if len(aged) != 1 || aged[0] != relPath {
+		t.Fatalf("aged unpublished paths = %v, want [%q]", aged, relPath)
+	}
+	if err := os.Chtimes(path, time.Now(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	w.deleteCandidates(ctx, sqlcgen.New(pool), deleteCandidateSet{agedOrphans: aged}, time.Hour)
+	if !fileExists(path) {
+		t.Fatal("staging file with a refreshed mtime was removed")
+	}
+	var count int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Errorf("orphan row after fresh-mtime check = %d, want 1", count)
+	}
+}
+
+func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	const relPath = "library/recoverable.ts"
+	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, []byte("rescue bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(fullPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		t.Fatal(err)
+	}
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() before rescue: %v", err)
+	}
+	if _, err := inplace.Register(ctx, pool, mediaDir, inplace.Input{
+		Recording: inplace.Recording{
+			Source: "manual", Site: "default", NetworkID: 1, ServiceID: 2,
+			EventID: int32(time.Now().UnixNano() % 1_000_000_000), ServiceName: "Recovered",
+			ChannelType: "GR", Channel: "27", Title: "Recovered", ProgramStartAt: time.Now(),
+			ProgramDurationMs: 60_000, Status: "finished",
+		},
+		Assets: []inplace.Asset{{Kind: db.AssetKindOriginal, RelPath: relPath}},
+	}); err != nil {
+		t.Fatalf("rescuing aged canonical orphan: %v", err)
+	}
+	if got, err := os.ReadFile(fullPath); err != nil || string(got) != "rescue bytes" {
+		t.Fatalf("rescued file = %q, %v; want original bytes preserved", got, err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Errorf("rescued media_asset state = %q, want active", state)
+	}
+}
+
+func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	const relPath = "recordings/pending-commit.ts"
+	path := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("pending canonical bytes")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		t.Fatal(err)
+	}
+	recordingID := insertTestRecording(t, pool)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	if _, err := sqlcgen.New(tx).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: recordingID, Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
+	}); err != nil {
+		t.Fatalf("inserting uncommitted media_asset: %v", err)
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	if err := w.Work(ctx, nil); err != nil {
+		t.Fatalf("Work() while asset insert is uncommitted: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("committing media_asset: %v", err)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != string(content) {
+		t.Fatalf("canonical after insert commit = %q, %v; want file preserved", got, err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" {
+		t.Errorf("media_asset state = %q, want active", state)
 	}
 }
 
@@ -1986,7 +2462,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	relPath := "canceled-ctx-orphan.dat"
+	relPath := mediapath.GeneratedAssetTempFilePrefix + "canceled-ctx"
 	orphanPath := filepath.Join(mediaDir, relPath)
 	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
 		t.Fatalf("writing orphan file: %v", err)

@@ -210,9 +210,9 @@ WHERE rel_path = $1 AND state <> 'deleted'
 // 試行が一時ファイルへ並行転送でき、commit 内の media_assets INSERT と
 // 部分一意索引が採用を一つに決める。ここで拾うのは転送を始める価値が無い
 // 「別の recording が既にコミットした」という恒久的な衝突である。
-// delete_reconcile は canonical orphan の unlink 前に ingest commit と同じ
-// rel_path transaction-level advisory lock を取得するため、公開・回収の確定区間は
-// この SELECT と独立に直列化される。ただしこの関数自体は転送前の安価なヒントで、
+// 通常削除は ingest commit と同じ rel_path filesystem lock を取得するため、
+// 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical orphan は
+// 自動で unlink しない。ただしこの関数自体は転送前の安価なヒントで、
 // ingest 同士の決着は commit 内の lock と media_assets の一意索引に任せる。
 // ここを一意性の最終判定に使わない。WHERE state <> 'deleted' はその一意索引の
 // 述語と同じにする --- 削除済みの行が使っていた rel_path は正当に再利用できるので、

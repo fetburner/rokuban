@@ -54,8 +54,9 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    他セッションから見える公開ではない。rename と親ディレクトリ `fsync` が成功して
    から transaction を commit し、commit が成功した時点で `media_assets` 行と
    canonical file の組を公開する。rename 後に fsync または DB commit が失敗した
-   場合は transaction を rollback し、canonical file は orphan として aging 回収
-   に委ねる。mirakc record は削除しない。中身の不一致または record の cancel / fail
+   場合は transaction を rollback し、canonical file は orphan として記録・報告する。
+   名前だけでは公開済みか判定できないため、自動 unlink はしない。mirakc record は削除しない。
+   中身の不一致または record の cancel / fail
    が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
    **この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
    欠落を作る。
@@ -63,12 +64,11 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
    でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
    の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
-   orphan 回収が record 固有 temp を削除するときも同じ `flock` に参加し、ロック取得後に
-   inode と mtime を再確認する。canonical orphan の回収は ingest commit と共有する
-   `rel_path` lock を rename / unlink から DB commit または orphan 行の整理まで保持する。
-   DB の transaction-level advisory lock は一意性と live 行の再確認に使う。filesystem lock は
-   DB セッションの切断後も fd が保持するため、古い cleanup が公開済み canonical を消さない。
-   実行中の ingest や公開済み canonical は削除せず、次の回収 pass に延期する。
+   ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime
+   を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ
+   rename すると元のパスは消えるため、回収時に lock は取らず unlink 直前に mtime を再確認する。
+   canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は
+   `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
    の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
 
@@ -84,9 +84,10 @@ delete の後も per-rel_path file は残らない。`.gate.lock` は lock direc
 取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて
 gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と
 同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が
-新 inode を取得」という二重 lock を防ぐ規則である。canonical orphan の GC も同じ gate を
-排他し、per-rel_path flock を取得できた file だけを unlink する。active lock は残して次回に
-回す。lock 取得や cleanup に失敗したときはファイル操作を進めず、安全側に倒す。
+新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。
+lock 取得や cleanup に失敗したときはファイル操作を進めず、安全側に倒す。
+
+この GC は lock file の directory entry だけを扱い、メディアファイルは扱わない。
 
 プロセスが異常終了すると kernel が gate と per-rel_path flock を解放する。unlink 前なら
 lock file の directory entry は残るが、次の lock 取得時の GC が gate 排他下で stale file を
@@ -137,12 +138,12 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
-  公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
+  公開は lock（filesystem lock → tx）の中で、次の順に行う。
   **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
   Upsert → commit**。
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
-  孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
-  lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
+  通常削除は同じ filesystem lock を取るので、公開と commit の間で lock を離すと、commit 前の行と
+  消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う
 - tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
   一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
   （カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら
@@ -159,13 +160,13 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では
   塞げない。desired は `FOR SHARE` で読み、版を外す tx の
   policy 行ロックと直列化する
-- advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
-  通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに
+- 通常削除（`deleteMediaAsset`）は同じ filesystem lock を取る。RWX 越しに
   `flock` が効くかは未検証（ルール 4 と同じ前提）
 - 置き忘れた staging file は孤児候補になる。`walkMediaFiles` は `.rokuban-locks/`
   と catalog directory を飛ばし、旧形式 lock filename も候補にしない。
-  7 日の mtime 猶予（`defaultOrphanMTimeGrace`）の後に、`deleteOrphanFile` が
-  canonical と同じ手順で消す。rel_path lock file は Close または次回 GC で消える。
+  mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後に、`deleteOrphanFile` が
+  mtime を再確認して lock を取らずに消す。canonical 名の orphan は削除せず、確認を促す Warn と
+  `rokuban_orphan_files_unresolved` に出す。rel_path lock file は Close または次回 GC で消える。
   拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
 
 ### thumbnail / seek tiles の公開
@@ -174,12 +175,13 @@ thumbnail と seek tiles の ffmpeg 出力先は試行ごとに `MkdirTemp` で�
 directory とする（Timeout が正なので、§3 ルール 2 の選択規則で試行ごとになる）。
 同じ recording の River job や、同じ job の試行が重なっても scratch file を共有しない。
 完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
-file `fsync` する。次に rel_path filesystem lock → transaction → advisory xact lock の順に取る。
+file `fsync` する。次に rel_path filesystem lock → transaction の順に取る。
 transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged
 file を canonical へ rename して親 directory を `fsync` し、最後に commit する。先行 job が
 すでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
-staged file は通常の orphan 候補として aging 回収に委ねる。拡張子によらず catalog 無し
+staged file は予約名付きの orphan 候補として mtime 猶予と aging の後に回収する。回収時に
+lock は取らず mtime を再確認する。拡張子によらず catalog 無し
 rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が
 途中の画像を観測する窓を作らない。
 
@@ -200,7 +202,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 - パスに世代番号を入れる（`…_{profile}.g{n}.{container}`。1 世代目から付ける）。n は旧 `rel_path` から +1 で導出する
 - 新しいファイルを置く → 1 つの tx で `media_assets` の `rel_path` / `size_bytes` を UPDATE し、`media_asset_cuts` を差し替える → commit 後に旧パスを unlink する
-- **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。unlink に失敗した場合だけ孤児回収に委ねる（旧行はもう存在しないので、`media_assets` に載っていないファイルとして拾われる）
+- **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。旧ファイルの unlink に失敗した場合は canonical orphan として報告し、手動調査まで残す
 - **行は消さずに UPDATE する**。消して作り直すと `rel_path` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
@@ -211,7 +213,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える → commit 後に
   旧パスを unlink する
 - **行は消さずに UPDATE する**。行 id と配信対象を保ったまま世代を進める。unlink は
-  commit 前にしない。失敗した旧ファイルは孤児回収に委ねる
+  commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の
@@ -223,7 +225,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 |---|---|
 | ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 |
 | **JuiceFS**（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。**メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨** |
-| **NFS**（対象内） | export は `sync`、client mount は `hard` を推奨。`.nfsXXXX` の silly rename が一時的な orphan 候補に見えても、通常の aging 回収で無害に扱う |
+| **NFS**（対象内） | export は `sync`、client mount は `hard` を推奨。`.nfsXXXX` の silly rename が canonical orphan として報告される場合は、file を閉じた後に状態を確認する。自動削除はしない |
 | k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本 ingest 先には使わない。実機検証の範囲は派生物専用の領域に限る |
 
 **注意**: JuiceFS のメタデータストアに Rokuban と同じ Postgres インスタンスを使うと、DB 障害がストレージ障害に連鎖し「DB が詰まっても仕事は失われない」の前提を崩す。使うなら別インスタンスを明記すること。
@@ -278,8 +280,8 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む**。当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する。例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになる。すると一意索引が効く前に、実ファイルが上書きされる。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まる。それ以前の既存行が `sites/` から始まっていない限り、構造的に衝突しない
 - **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。そのためここで前置すれば、入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
 - **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` が `Join`/`Clean` で `.` が消えて `sites/{site}` という一見正当なパスになり `mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作ってしまい、以後その site 配下の ingest が全て `MkdirAll` で「not a directory」になる。`determineRelPath` は前置前に相対パスが `.` であることを明示的に検査して弾く
-- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせる。そのため置いた symlink は、未知の rel_path として孤児候補になる。[retention.md](retention.md) §7 のエイジング（mtime 猶予 7 日 + 14 日）後に `os.Remove` でリンクだけ黙って消える（`mediapath.Resolve` は字句判定のみで symlink を評価せず止めない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
-- **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査はどちらも symlink を辿らないため、配下のファイルは孤児候補にすらならず rescue からも見えない（災害復旧で救えない）。symlink エントリ自身は未知の rel_path として渡り、上と同じ理由でエイジング後にリンクだけ消える。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける
+- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせる。そのため未知の canonical 名になったリンクは孤児として報告されるが、自動削除はしない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
+- **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査はどちらも symlink を辿らないため、配下のファイルは孤児候補にすらならず rescue からも見えない（災害復旧で救えない）。symlink エントリ自身は孤児として報告されるが、自動削除はしない。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける
 - **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。**成り立つのは、走査 2 本が root を `filepath.EvalSymlinks` で解決してから walk しているからである**。走査 2 本とは、rescue の `rescueStorage` と削除 reconcile の `walkMediaFiles` である。**この解決を外すと両方とも黙って壊れる**。`filepath.Walk` / `WalkDir` は root を `Lstat` して `IsDir()` が false ならコールバックを 1 回呼んで終わる。そのため rescue は 0 件のまま「成功」する（災害復旧が最も要る場面だけが壊れる）。削除 reconcile は `seenOnDisk` が `.` の 1 件になるため、全損セーフガード（走査が 0 件なら記録を見送る）も働かない。その結果 `active` な行が全件「実体無し」と誤報される。解決した値は root だけでなく、`catalog/` の除外判定と `rel_path` の基準にも同じものを使う（片方だけ解決すると `filepath.Rel` が `../` を積んだ rel_path を返し、台帳と一致しなくなる）。root を解決することと、配下にリンクを作らないこと（上の 2 つ）は別の話である。片方をもう片方の根拠にしない
 - **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
 - **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/20240101/....m2ts` なら、派生物は `sites/tokyo/20240101/...._h264.mp4` になる

@@ -105,7 +105,9 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 1. `curl -s http://localhost:40773/api/breakers | jq` で発動中のブレーカーと `pending` / `threshold` を見る
 2. `ruler_deletes` は `detail` に消されようとしていた番組が載る。EPG の欠損で番組が消えていないかを確かめる
 3. `delete_reconcile` は `detail` に対象が載らない。内訳は DB で見る。
-   孤児回収の候補は `SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;`
+   孤児回収の候補は公開前を示す予約名の temp / staging だけである。
+   canonical orphan は削除候補にもブレーカーにも含まれない。
+   `SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で確認する
 4. 正当なら再開する。site を持つブレーカーと持たないブレーカーで URL が違う:
 
    ```sh
@@ -213,15 +215,15 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
 
 ### ライブラリの取り込み
 
-**EPGStation の録画ディレクトリを `media_dir` の配下に置いた瞬間から、孤児回収の時計が動く**。
-走査は `catalog/` 以外の全ファイルを見る。取り込まなかったファイルは、mtime の猶予（既定 7 日）を過ぎていれば
-次のパスで孤児候補になり、エイジング（既定 14 日）の後に unlink される。
-止めるのは 1 パスの削除数のブレーカーだけである。
-そのため、マウントは取り込みの直前に行い、14 日以内に取り込みと確認を終える。
+**EPGStation の録画ディレクトリを `media_dir` の配下に置くと、孤児検出の対象になる**。
+走査は `catalog/` 以外の全ファイルを見る。登録されなかった canonical file は mtime 猶予
+（既定 7 日）とエイジング（既定 14 日）の後に Warn と
+`rokuban_orphan_files_unresolved` で報告される。名前だけでは公開済みか分からないため、
+canonical file は自動削除しない。自動回収されるのは ingest temp と予約名付き staging file だけである。
 
-1. **取り込めないファイルをマウントの外へ出す**。取り込むのは `type=ts` の原本とサムネイル 1 件だけである。
-   EPGStation のエンコード済みファイル（`type=encoded`）は警告付きで飛ばされ、マウント配下に残れば孤児として消える。
-   エンコード済みファイルの出力先が録画ディレクトリの中にあるなら、先に別の場所へ移す
+1. **取り込めないファイルを確認する**。取り込むのは `type=ts` の原本とサムネイル 1 件だけである。
+   EPGStation のエンコード済みファイル（`type=encoded`）は警告付きで飛ばされる。不要と確認できた
+   ファイルはマウント前に別の場所へ移すか、取り込み後に手動で整理する
 2. 録画ディレクトリを `sites/<site>/` の配下にマウントする。compose なら `rokuban` サービスの `volumes` に足す（例）:
 
    ```yaml
@@ -249,7 +251,8 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
 
    差は、取り込みの警告（encoded しか無い録画など）で説明できるはずである
 2. マウント配下のファイルと登録済みの `rel_path` を突き合わせ、未登録のファイルを出す。
-   `orphan_files` は使わない。mtime が 7 日以内のファイルはそこに載らず、後から孤児候補になって消えるためである:
+   `orphan_files` には mtime 猶予を過ぎた候補が記録される。canonical の未登録ファイルは
+   自動削除されないため、一覧だけに頼らずディスク全体と照合する:
 
    ```sh
    docker compose exec -T rokuban sh -c 'cd /mnt/media && find sites/<site>/epgstation -type f' | sort > files.txt
@@ -260,9 +263,10 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
    comm -23 files.txt assets.txt
    ```
 
-3. `comm` の出力は、取り込まない限りいずれ消えるファイルの一覧である。
+3. `comm` の出力は未登録ファイルの一覧である。
    残す原本は JSON に足して取り込み直す（取り込みは冪等）。取り込めない種類はマウントの外へ移す。
-   出力が空になるか、消えてよいものだけになれば合格とする
+   不要な canonical file は用途を確認した後に手動で整理する。出力が空になるか、未登録の理由を
+   すべて説明できれば合格とする
 
 `<site>` と `epgstation/` は [import-epgstation.md](import-epgstation.md) の例に合わせた値で、
 自分のマウント先に読み替える。
@@ -301,7 +305,7 @@ mirakc の schedule を直接消す。
    - 「ライブラリの取り込み」の手順 1 でマウントの外へ移したエンコード済みファイルを元の場所へ戻す。
      EPGStation の DB は元のパスを指している
    - `rokuban` サービスの `volumes` から録画ディレクトリのマウントを外す。
-     **外さずに Rokuban を起動すると、EPGStation の新しい録画が取り込まれないまま孤児回収で消える**
+     **外さずに Rokuban を起動すると、EPGStation の新しい録画は未登録 orphan として報告され、残り続ける**
 
 Rokuban の DB とメディアはそのまま残る。マウントを外した後は、取り込んだ録画の行が実体無しとして報告される（削除はされない）。
 Rokuban を戻すときは、`volumes` の変更を反映するために `docker compose up -d rokuban` で作り直す。

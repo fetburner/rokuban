@@ -29,7 +29,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 |---|---|---|
 | `ruler_deletes` | ルール x EPG の評価から導出された予約削除 | `GET /api/breakers` の `detail` で消されようとしていた番組を確認 → 正当なら `POST /api/sites/{site}/breakers/ruler_deletes/resume`（`site` は一覧のレスポンスにある値） |
 | `reconcile_total_loss` | 「desired が空なのに自分の schedule が観測されている」という全損シグネチャ | DB 接続・`reservations` の中身を確認。**件数の閾値ではない**ので、発動したら本当に異常である |
-| `delete_reconcile` | 削除 reconcile（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / ユーザーが外したエンコード版 / 孤児回収の 4 ソースをまとめた 1 パス分の物理 unlink） | **`ruler_deletes` と異なり `detail` に対象の抜粋は載らない**（`internal/worker/delete_reconcile.go` は `breaker.Sample{Total: total}` しか渡さず、`breaker.Sample`/`SampleProgram` にファイルを表す欄も無い。未検証で「ファイルを確認」とは書けない）。`GET /api/breakers` の `pending`/`threshold` で規模を確認し、対象の内訳が要るなら DB を直接クエリする — **ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets`（外した版は view `removed_encoded_assets`）、孤児回収の候補は `orphan_files`（`rel_path` と `first_seen`。`first_seen` はエイジング判定の根拠なので内訳確認にも使える。孤児は定義上 `media_assets` に無いファイルなので `media_assets` では引けない）**（4 ソースの判定条件は [storage/retention.md](../storage/retention.md)）→ 正当なら `POST /api/breakers/delete_reconcile/resume`（site を持たないブレーカーなので site をパスに含めない） |
+| `delete_reconcile` | 削除 reconcile（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / ユーザーが外したエンコード版 / 予約名付き temp・staging 回収を含む 4 ソースをまとめた 1 パス分の物理 unlink） | **`ruler_deletes` と異なり `detail` に対象の抜粋は載らない**（`internal/worker/delete_reconcile.go` は `breaker.Sample{Total: total}` しか渡さず、`breaker.Sample`/`SampleProgram` にファイルを表す欄も無い。未検証で「ファイルを確認」とは書けない）。`GET /api/breakers` の `pending`/`threshold` で規模を確認し、対象の内訳が要るなら DB を直接クエリする — **ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets`（外した版は view `removed_encoded_assets`）、公開前孤児の候補は `orphan_files`（`rel_path` と `first_seen`。`first_seen` はエイジング判定の根拠なので内訳確認にも使える。孤児は定義上 `media_assets` に無いファイルなので `media_assets` では引けない）**（4 ソースの判定条件は [storage/retention.md](../storage/retention.md)）→ 正当なら `POST /api/breakers/delete_reconcile/resume`（site を持たないブレーカーなので site をパスに含めない） |
 
 **1 が続く間、導出削除は一切実行されない**。これは「reconcile が収束できていない」ではなく
 「人間の確認を待っている」を意味する。放置すると mirakc 側に不要な schedule が残り続けるため、
@@ -38,6 +38,16 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 発動中でも**削除以外は動く**（予約の作成・base の更新・schedule の作成・番組終了後の GC）。
 「録画されない」ではなく「消えないものが残る」障害なので、慌てて resume せず `detail` を
 確認してからにする。
+
+### 未解決の canonical orphan
+
+`rokuban_orphan_files_unresolved > 0` は、aging を超えた未登録の canonical file がある状態である。
+このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。
+
+`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。
+対象 file と `media_assets` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。
+canonical file は自動削除されない。必要なら正式な登録経路で回復し、不要と確認できた file は
+手動で整理する。ファイルが無くなるか `media_assets` に登録されると、次の reconcile で候補が消える。
 
 ### 開始時刻超過で recording.started 未観測
 

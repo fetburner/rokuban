@@ -72,6 +72,7 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_delete_reconcile_bytes_total{source}` | Counter | 物理削除で解放したバイト数 |
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_media_assets_missing{kind}` | Gauge | `state='active'` なのに実体ファイルが無いと確認できた media_asset 数（kind 別。孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定）。**ゼロは「大丈夫」の証明ではない** --- 下記「沈黙は保証ではない」参照 |
+| `rokuban_orphan_files_unresolved` | Gauge | `media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数。削除 reconcile は個別 Warn を上限 20 行まで出し、超過分を件数でまとめる。**非ゼロは調査が必要**。canonical file は自動削除しない |
 | `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 上記の検出パスが「1 件もファイルを観測しなかったのに active な行が存在する」形でスキップされた回数。**進んでいる間は `rokuban_media_assets_missing` が更新されず前回値のまま凍結する**（マウント失敗・空マウントを疑う）。**この形は「資産が本当に全部消えた」小規模系（active が数件しか無くその全件が消えた等）でも発動し、真の異常をゲージから隠す** --- 安全側の判断としては正しいが、進んだら「マウントか、全損そのものか」の両方を見る |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻。**このパスはヒントを落とした録画を拾うバックストップなので、止まっても症状が静か**（[ingest](../recording/ingest.md) §5.5） |
 | `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数。エンコード実行中の録画も数えるので非ゼロは異常ではない。窓はパスをまたいで回るので、**候補上限（1000）に張り付いてもそれより後ろの録画への到達性は失われない**（次パスが続きから見る）。バックログが窓を埋めている系では末尾を越えたパスでこのゲージが上限を下回る（バックログ件数 mod 1000。ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない）。窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（同 §5.5） |

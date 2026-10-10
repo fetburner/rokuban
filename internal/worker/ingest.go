@@ -499,7 +499,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	// temp はプロセス死・ctx キャンセル・一時的な I/O / DB 失敗では残す。次の
 	// River 試行が同じファイルを replay して続けるためである。中身が悪いと確定
 	// した場合だけ下の removeTemp を立てる。rename 後は tempPath が存在しないので
-	// cleanup の Remove は no-op になり、canonical file は孤児回収に委ねられる。
+	// cleanup の Remove は no-op になり、canonical file は orphan として報告される。
 	removeTemp := false
 	defer func() {
 		if removeTemp {
@@ -899,11 +899,11 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 転送前の安価なヒントであり、同時 ingest の決着ではない。採用の根拠は commit
 // 内の media_assets INSERT と部分一意索引である。
 //
-// delete_reconcile も canonical orphan の unlink 前に同じ rel_path の filesystem
-// lock と transaction-level advisory lock を取得するため、公開・回収の確定区間は
-// この SELECT と独立に直列化される。ただしこの関数自体は転送前の安価な
-// ヒントであり、ingest 同士の決着は commit 内の lock と media_assets の一意索引に
-// 任せる。ここを一意性の最終判定に使わない。
+// 通常削除も同じ rel_path の filesystem lock の下で状態更新と unlink を行うため、
+// 公開・削除の確定区間はこの SELECT と独立に直列化される。canonical 孤児は自動で
+// unlink しない。ただしこの関数自体は転送前の安価なヒントであり、ingest 同士の
+// 決着は commit 内の lock と media_assets の一意索引に任せる。ここを一意性の
+// 最終判定に使わない。
 //
 // WHERE state <> 'deleted' はその一意索引の述語と同じにする。削除済み
 // （state='deleted'）の行が使っていた rel_path は正当に再利用できるので、
@@ -1001,15 +1001,15 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // DB transaction 内で media_assets の INSERT を先に行うことで、rel_path の unique
 // index が同じ宛先への競合を予約する。さらに media root の専用 lock directory にある
 // rel_path 固有 filesystem lock を DB transaction より先に取得する。これを先に
-// 持つことで、DB セッションが失われても、そのセッション lock の解放後に古い
-// goroutine が rename / fsync を続けて orphan cleanup と競合することがない。
-// INSERT はまだ他セッションから見えないため、その transaction と filesystem lock
+// 持って rename / fsync / commit の区間を囲み、別の公開や通常削除との競合を防ぐ。
+// DB 接続が失われても goroutine のファイル操作は続きうるため、transaction が終わるまで
+// filesystem lock を保持する。INSERT はまだ他セッションから見えないため、その transaction と filesystem lock
 // を保持したまま temp -> canonical の atomic rename と親ディレクトリ fsync を行い、
 // 最後にだけ transaction を commit する。
 //
 // rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
 // は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
-// aging 回収される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
+// aging 後に報告される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
 // cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
 func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
 	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
@@ -1023,10 +1023,6 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		return fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := lockMediaRelPathInTransaction(ctx, tx, relPath); err != nil {
-		return err
-	}
-
 	q := newIngestCommitQueries(tx)
 
 	_, err = q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{

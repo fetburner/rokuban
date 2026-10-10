@@ -57,7 +57,7 @@ import (
 //     ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
-//     → tx → advisory xact lock）の中で判定 → rename（サイドカー → 本体）→ 親 dir
+//     → tx）の中で判定 → rename（サイドカー → 本体）→ 親 dir
 //     fsync → Upsert → commit する。判定（planEncodePublish）は rename の前に、tx 内で
 //     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
@@ -79,9 +79,8 @@ import (
 //     ユーザーが外した版を、外す前に積まれたジョブが公開して復活させるのを止める。
 //
 // **flock の前提は ingest と同じ**: RWX のメディア越しに効くかは未検証
-// （docs/storage/contract.md §3 ルール 4）。advisory xact lock は DB セッションが
-// 生きていれば、ingest commit と孤児回収に対してだけ公開を排他する。通常削除
-// （deleteMediaAsset）とは flock でしか排他されない。
+// （docs/storage/contract.md §3 ルール 4）。rel_path flock は通常削除
+// （deleteMediaAsset）との公開競合を防ぐ。canonical orphan は削除せず aging 後に報告する。
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
@@ -327,9 +326,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return nil
 	}
 
-	// 旧パスの unlink は commit の後。**失敗しても孤児回収に任せる**（旧行はもう
+	// 旧パスの unlink は commit の後。**失敗しても孤児報告に任せる**（旧行はもう
 	// 存在しないので、cleanup が「メディア上にあるが DB に載っていないファイル」
-	// として拾う）。commit の前に消すと、commit が失敗したときに生きている行が
+	// として記録する）。commit の前に消すと、commit が失敗したときに生きている行が
 	// 指すファイルを失う。
 	if prevRelPath != "" && prevRelPath != relPath {
 		w.removeReplacedEncoded(prevRelPath, log)
@@ -671,12 +670,15 @@ func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stder
 // （temp は消してあり、DB にも canonical にも触っていない）に返す snooze の待ち。
 const encodeReplanDelay = 10 * time.Second
 
-// beforeEncodeLock / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
+// beforeEncodeLock / beforeEncodeFilePublication / beforeEncodeCommit はテストが公開手順の途中で実行を止め、
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
 var (
 	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
 	beforeEncodeLock = func(scratchOut string) {}
+	// beforeEncodeFilePublication は DB の fencing と計画判定の後、rename の前に呼ぶ。
+	// テストはここでセッションを切断し、古い goroutine が新しい公開を上書きしないことを確かめる。
+	beforeEncodeFilePublication = func(string, context.Context, pgx5.Tx) error { return nil }
 	// beforeEncodeCommit は rename 済み・Upsert 済みの tx.Commit の直前に呼ぶ。
 	// エラーを返すと commit せずに失敗させる。
 	beforeEncodeCommit = func(scratchOut string) error { return nil }
@@ -700,20 +702,19 @@ type encodePublishInput struct {
 }
 
 // publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
-// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → lock（filesystem
-// lock → tx → advisory xact lock）→ 判定 → rename（サイドカー → 本体）→ 親 dir
+// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock → tx → 判定 → rename（サイドカー → 本体）→ 親 dir
 // fsync → Upsert → commit** と進む。順序を逆にしない --- DB commit を先にすると、
 // 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
 // rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
 //
-// lock を commit まで保持するのは、孤児回収が同じ lock を非 blocking で取って
-// から canonical を unlink するためである。
+// lock を commit まで保持するのは、通常削除が同じ lock の下で DB 状態と canonical
+// file を更新し、他の公開がその間へ割り込まないようにするためである。
 //
 // 戻り値の published が false のときは判定 (a)/(b)/(c) で公開を飛ばした（temp は消して
 // あり、DB にも canonical にも触っていない）。size は置いたファイルのバイト数。
 // temp を作った後の失敗経路はすべて temp を消す。rename 済みで commit に失敗した
 // canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
-// 失う）。孤児回収か次の試行の rename に任せる。
+// 失う）。孤児として報告するか、次の試行の rename に任せる。
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
 	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
 	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
@@ -761,9 +762,6 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("beginning encoded asset commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := lockMediaRelPathInTransaction(ctx, tx, in.relPath); err != nil {
-		return 0, false, err
-	}
 	q := sqlcgen.New(tx)
 	activeAttempt, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
 		RecordingID: in.recordingID,
@@ -793,6 +791,9 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	if plan.skip {
 		return 0, false, nil
+	}
+	if err := beforeEncodeFilePublication(in.scratchOut, ctx, tx); err != nil {
+		return 0, false, fmt.Errorf("preparing encoded file publication: %w", err)
 	}
 
 	if in.withSubtitles {
@@ -986,8 +987,8 @@ func nextCutGeneration(prevRelPath, profileName string) int {
 // removeReplacedEncoded は置き換えで不要になった旧ファイルを消す。
 //
 // **失敗はログのみ。** 旧パスはもう media_assets のどの行からも指されていないので、
-// 既存の孤児回収（cleanup）が「メディア上にあるが DB に載っていないファイル」と
-// して拾う。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
+// 既存の孤児検出（cleanup）が「メディア上にあるが DB に載っていないファイル」と
+// して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
 // 再試行が新しい世代をさらに作る。
 func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
@@ -996,7 +997,7 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("encode: removing replaced encoded file failed; orphan collection will pick it up",
+		log.Warn("encode: removing replaced encoded file failed; orphan reporting will expose it",
 			"rel_path", relPath, "err", err)
 	}
 	// サイドカーも同じ世代で置き換わる。
