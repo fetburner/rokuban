@@ -18,7 +18,7 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// 短命な呼び出しの全体タイムアウト。/api/reserves はページングで何度も呼ぶが、
+// 短命な呼び出しの全体タイムアウト。/api/rules はページングで何度も呼ぶが、
 // 1 回あたりは軽量な JSON なので mirakc クライアントと同じ値を使う。
 const shortRequestTimeout = 60 * time.Second
 
