@@ -322,6 +322,8 @@ type IngestWorker struct {
 	// クランプ（resolveAndSnapshotEncodePolicy）と、完了後のヒント投入
 	// （enqueueMissingEncodesFromContext）が使う。
 	CutProfiles map[string]struct{}
+	// EncodeProfiles は完了後に投入する encode args の rescue 締切を解決する。
+	EncodeProfiles config.EncodeConfig
 	// LiveEnabled は config.live.enabled。原本 HLS が使えない場合だけ、凍結時に
 	// cut-only の選択を安全側へクランプする。
 	LiveEnabled bool
@@ -765,7 +767,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	}
 	// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
 	// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.CutProfiles)
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.EncodeProfiles, w.CutProfiles)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -865,7 +867,7 @@ func recordIngestMetrics(offset int64) {
 // TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
 // River クライアントが無いテスト経路では黙ってスキップする。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.CutProfiles)
+	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.EncodeProfiles, w.CutProfiles)
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
 		if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)

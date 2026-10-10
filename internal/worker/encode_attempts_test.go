@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -19,6 +20,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // waitFor は cond が true を返すまで最大 timeout 待つ（10ms 間隔でポーリング）。
@@ -51,6 +53,18 @@ func encodeAttemptState(t *testing.T, pool *pgxpool.Pool, recordingID int64, pro
 		return "", false
 	}
 	return state, true
+}
+
+func encodeAttemptCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) (int32, bool) {
+	t.Helper()
+	var count int32
+	err := pool.QueryRow(context.Background(),
+		`SELECT attempt_count FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`,
+		recordingID, profile).Scan(&count)
+	if err != nil {
+		return 0, false
+	}
+	return count, true
 }
 
 // TestEncodeWorker_AttemptRow_ClearedOnSuccess は成功時に
@@ -146,10 +160,10 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 }
 
 // installSlowFakeFFmpeg は起動後に指定秒数寝続ける（実行し続ける）だけの
-// フェイク ffmpeg。TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning が
+// フェイク ffmpeg。TestEncodeWorker_AttemptRow_CtxCanceledRollsBack が
 // 「running 行を書いた後、ffmpeg 実行中に ctx がキャンセルされる」を再現する
 // ために使う --- installFakeFFmpeg（即座に完了する）では、ctx を事前に
-// キャンセルすると markEncodeAttemptRunning 自身が ctx に紐付いた DB 書き込みで
+// キャンセルすると beginEncodeAttempt 自身が ctx に紐付いた DB 書き込みで
 // 失敗し、行が一度も書かれない（このテストが検証したい状態に到達できない）。
 //
 // startedMarker は sleep の起動後（PID echo の後）に作られる空ファイルのパス。
@@ -176,20 +190,11 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 	return path, startedMarker, childPIDMarker
 }
 
-// TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning は ctx キャンセル
-// （River の停止・タイムアウト）ではジョブの失敗として扱わないので、行が
-// failed に上書きされず running のまま残ることを固定する
-// （shouldNotifyEncodeFailure と同じ判定を試行状態の観測にも揃える。issue #316）。
-//
-// この判定を実際に load-bearing にしているのは attemptWriteContext ---
-// markEncodeAttemptFailed の書き込みは job の ctx から切り離してあるので、
-// encode.go の `if !shouldNotifyEncodeFailure(...) { return }` を削除すると
-// キャンセル後でも書き込みが成功して failed に上書きされ、このテストが落ちる
-// （切り離していなければ、書き込み自体がキャンセル済み ctx で失敗して偶然
-// running のまま残り、ガードを消しても検出できない）。
+// TestEncodeWorker_AttemptRow_CtxCanceledRollsBack は停止による ctx キャンセルで
+// domain count が進まず、running 行も残らないことを固定する。
 //
 // ctx は ffmpeg 実行中（running 行を書いた後）にキャンセルする ---
-// 事前キャンセルだと markEncodeAttemptRunning 自身の DB 書き込みが ctx に
+// 事前キャンセルだと beginEncodeAttempt 自身の DB 書き込みが ctx に
 // 紐付いて失敗し、行が一度も書かれないため検証にならない（上記
 // installSlowFakeFFmpeg のコメント参照）。
 //
@@ -220,7 +225,7 @@ func installSlowFakeFFmpeg(t *testing.T, sleepSeconds int) (ffmpegPath, startedM
 // 出来事で、順序は未計測）。FFprobe を存在しないパスにする変更は残す ---
 // これが無いと実 ffprobe の呼び出し（timeout 上限 3 秒）がこの待ちを
 // 不必要に長引かせる。
-func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
+func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -289,6 +294,14 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 			}},
 		},
 	}
+	prior, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", prior.count, errors.New("previous failure"))
+	if err != nil || !updated {
+		t.Fatalf("setting previous attempt: updated=%v err=%v", updated, err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	job := &river.Job[EncodeJobArgs]{
@@ -304,15 +317,9 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	waitFor(t, 5*time.Second,
 		func() bool {
 			state, ok := encodeAttemptState(t, pool, recordingID, "h264")
-			if !ok {
-				return false
-			}
-			if state != "running" {
-				t.Fatalf("state before cancel = %q, want running", state)
-			}
-			return true
+			return ok && state == "running"
 		},
-		func() string { return "timed out waiting for running attempt row to appear" },
+		func() string { return "timed out waiting for the previous failed attempt to become running" },
 	)
 	// cmd.Start() が実際に成功した（フェイク ffmpeg が起動した）のを待って
 	// から cancel する（上の doc コメント参照）。
@@ -350,11 +357,188 @@ func TestEncodeWorker_AttemptRow_CtxCanceledLeavesRunning(t *testing.T) {
 	}
 
 	state, ok := encodeAttemptState(t, pool, recordingID, "h264")
-	if !ok {
-		t.Fatalf("recording_encode_attempts row missing after ctx cancel; want state=running (left as-is)")
+	if !ok || state != "failed" {
+		t.Fatalf("state after canceled retry = %q, ok=%v, want prior failed state", state, ok)
 	}
-	if state != "running" {
-		t.Errorf("state = %q, want running (ctx cancel must not mark failed)", state)
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != 1 {
+		t.Errorf("attempt_count after canceled retry = %d, ok=%v, want 1", count, ok)
+	}
+}
+
+func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
+	w := &EncodeWorker{Pool: pool, MediaDir: mediaDir}
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 1},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
+	}
+	for attempt := int32(1); attempt <= 25; attempt++ {
+		err := w.Work(context.Background(), job)
+		if attempt < 25 && err == nil {
+			t.Fatalf("Work at domain attempt %d succeeded; want retryable failure", attempt)
+		}
+		if attempt == 25 && err != nil {
+			t.Fatalf("Work at domain attempt 25 = %v, want terminal success after recording failure", err)
+		}
+	}
+	if state, ok := encodeAttemptState(t, pool, recordingID, "missing"); !ok || state != "failed" {
+		t.Fatalf("state at domain limit = %q, ok=%v, want failed", state, ok)
+	}
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "missing"); !ok || count != 25 {
+		t.Errorf("attempt_count at domain limit = %d, ok=%v, want 25", count, ok)
+	}
+}
+
+func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/dead-domain-attempts.m2ts", nil, []byte("data"))
+	w := &EncodeWorker{Pool: pool}
+	for attempt := int32(1); attempt <= 25; attempt++ {
+		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if start.count != attempt {
+			t.Fatalf("started attempt count = %d, want %d", start.count, attempt)
+		}
+		if attempt == 1 && start.deadAttempt != 0 {
+			t.Fatalf("first attempt marked dead attempt %d, want 0", start.deadAttempt)
+		}
+		if attempt > 1 && start.deadAttempt != attempt-1 {
+			t.Fatalf("started attempt %d reported dead attempt %d, want %d", attempt, start.deadAttempt, attempt-1)
+		}
+	}
+	terminal, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !terminal.terminal || terminal.count != 25 || terminal.deadAttempt != 25 {
+		t.Fatalf("terminal start = %+v, want terminal count/dead attempt 25", terminal)
+	}
+	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "failed" {
+		t.Fatalf("state after 25 dead attempts = %q, ok=%v, want failed", state, ok)
+	}
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != 25 {
+		t.Errorf("attempt_count after 25 dead attempts = %d, ok=%v, want 25", count, ok)
+	}
+}
+
+func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/timeout-snapshot.m2ts", []string{"h264"}, []byte("data"))
+	startedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	endedAt := startedAt.Add(90 * time.Minute)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt); err != nil {
+		t.Fatal(err)
+	}
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "h264", Rate: 1.5}}}
+	args, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if args.Timeout != 135*time.Minute {
+		t.Fatalf("queued timeout = %s, want 2h15m (90m recording × 1.5)", args.Timeout)
+	}
+	worker := &EncodeWorker{}
+	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: args}); got != 135*time.Minute {
+		t.Errorf("Timeout() = %s, want queued 2h15m", got)
+	}
+	legacy := &river.Job[EncodeJobArgs]{Args: EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}}
+	if got := worker.Timeout(legacy); got != time.Hour {
+		t.Errorf("Timeout() for old args = %s, want 1h", got)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET ended_at = NULL WHERE id = $1`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	missingEnd, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if missingEnd.Timeout != time.Hour {
+		t.Errorf("queued timeout without ended_at = %s, want minimum 1h", missingEnd.Timeout)
+	}
+}
+
+func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/deadline.m2ts", []string{"h264"}, []byte("data"))
+	installFakeFFprobe(t, "60.0", true)
+	ffmpegDir := t.TempDir()
+	ffmpegPath := filepath.Join(ffmpegDir, "ffmpeg")
+	startedPath := filepath.Join(ffmpegDir, "started")
+	pidPath := filepath.Join(ffmpegDir, "pid")
+	script := "#!/bin/sh\necho $$ > " + pidPath + "\n: > " + startedPath + "\nexec sleep 60\n"
+	if err := os.WriteFile(ffmpegPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	w := &EncodeWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: t.TempDir(),
+		FFmpeg:     ffmpegPath,
+		FFprobe:    "ffprobe",
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
+			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+		}}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 26},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+	workDone := make(chan error, 1)
+	go func() { workDone <- w.Work(ctx, job) }()
+	waitFor(t, 6*time.Second, func() bool {
+		_, err := os.Stat(startedPath)
+		return err == nil
+	}, func() string { return "fake ffmpeg did not start before the deadline" })
+	select {
+	case err := <-workDone:
+		if err == nil {
+			t.Fatal("Work succeeded after its deadline")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Work did not return after the deadline canceled ffmpeg")
+	}
+	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "failed" {
+		t.Fatalf("state after deadline = %q, ok=%v, want failed", state, ok)
+	}
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != 1 {
+		t.Errorf("attempt_count after deadline = %d, ok=%v, want 1", count, ok)
+	}
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Signal(syscall.Signal(0)); err == nil {
+		t.Fatalf("fake ffmpeg PID %d still exists after Work returned", pid)
 	}
 }
 
@@ -412,7 +596,14 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 
 	w := &EncodeWorker{Pool: pool}
 	longMsg := strings.Repeat("日", 1000)
-	w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", errors.New(longMsg))
+	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", start.count, errors.New(longMsg))
+	if err != nil || !updated {
+		t.Fatalf("markEncodeAttemptFailed() = (%v, %v), want updated", updated, err)
+	}
 
 	state, ok := encodeAttemptState(t, pool, recordingID, "h264")
 	if !ok {
@@ -460,14 +651,19 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{Pool: pool}
-	w.markEncodeAttemptRunning(context.Background(), recordingID, "h264")
+	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "running" {
 		t.Fatalf("fixture: state = %q, ok = %v, want running", state, ok)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	w.clearEncodeAttempt(ctx, recordingID, "h264")
+	if err := w.clearEncodeAttempt(ctx, recordingID, "h264", start.count); err != nil {
+		t.Fatal(err)
+	}
 
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); ok {
 		t.Errorf("attempt row remains (state = %q) after clearEncodeAttempt with canceled ctx; want deleted", state)

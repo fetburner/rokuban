@@ -78,6 +78,11 @@ kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `
 [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの
 残骸が `river_job` に残っている」を参照。
 
+`ByArgs` は既定で全 args を一意キーに含めるが、ジョブ args に `river:"unique"` を
+付けたフィールドがある場合は、そのフィールドだけが使われる。encode は
+`recording_id` / `profile` にだけタグを付け、締切スナップショットが異なる投入も
+同じジョブへ合流させる。
+
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 
 1. **dual-write 問題**: 「録画完了を DB に登録」と「エンコードジョブを積む」は常にセットである。だが書き込み先が DB と Redis に分かれると、コミット前 enqueue（ワーカーが未コミットデータを読む race）か、コミット後 enqueue（隙間のクラッシュでジョブ消失）かの二択になる。真面目に解決すると outbox パターン = 結局 DB 上のキューを作ることになる
@@ -116,7 +121,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、転送中を通して保持する job-id advisory lock（生存確認用で転送先の排他ではない）、進捗の書き込み、公開点である `media_assets` コミットが必要である。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する。job lock 用接続が転送中に死んでも転送は止まらないが、`record_sweep` が生きた転送をプロセス死と誤認して二重 pull しうる。決着は DB の一意 INSERT が付け、canonical file は壊れない（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` コミットで決まる**。encode は `Timeout() = -1` なので JobRescuer の対象外だが、`EncodeWorker` は Work 中に job-id advisory lock を保持する。`encode_reconcile` は 1 分以上古い `running` 行を候補にし、lock の解放を確認する。取得できた場合だけ旧行を `discarded` にして別 ID の代替ジョブを投入するため、ライブ中の長時間 encode は時刻だけでは回収しない。`recording_encode_attempts` は回収時には触らない。代替ジョブの開始時に上書きする（詳細は [k8s 運用](../operations/k8s.md)）。
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。`Timeout()` は最低 1 時間で、実尺 × rate がそれを超える場合はその長さになる。プロセス死は締切後に River の JobRescuer が同じジョブ ID を再試行する。`recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。各試行の scratch も分ける。停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
 

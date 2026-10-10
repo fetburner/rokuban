@@ -50,8 +50,8 @@ const (
 	// workerConnFloor は worker ロールの予算の床（roleConnBudget の worker の値）。
 	//
 	// 床が効くのは lockSlots が 4 以下のとき（1 + lockSlots + workerConnSlack <= 8）。
-	// 既定構成の lockSlots は 5（ingest 3 + encode 1 + cm_detect 1、1 site）なので、
-	// 既定の予算は床ではなく式の側（9）で決まる。**ingest を引かないデプロイ
+	// 既定構成の lockSlots は 4（ingest 3 + cm_detect 1、1 site）なので、
+	// 既定の予算は床と式がともに 8 になる。**ingest を引かないデプロイ
 	// （`--queues=ruler` 等）の上限を、lock 枠から導出した小さい値まで
 	// 下げないために置いてある。**
 	workerConnFloor = 8
@@ -59,8 +59,8 @@ const (
 	// workerConnSlack は worker の予算のうち、LISTEN でも job lock でもない仕事
 	// （ジョブ claim、進捗書き込み、`/metrics` のバックログクエリ等）に残す本数。
 	//
-	// **未測定である。** 値は「ingest 2 / encode 1 / cm_detect 1 の構成で
-	// 固定予算 8 から長期保持分 5（1(LISTEN) + 4(job lock)）を引いた残り」を
+	// **未測定である。** 値は「ingest 2 / cm_detect 1 の構成で固定予算 8 から
+	// 長期保持分 4（1(LISTEN) + 3(job lock)）を引いた残り」を
 	// 据え置いたもので、実測に基づかない。
 	workerConnSlack = 3
 
@@ -85,7 +85,7 @@ const (
 // 小さい値まで下げないための床 workerConnFloor で下支えする。
 //
 // **lockSlots は呼び出し元が数える**（internal/worker.LockSlots）。同時実行数は
-// 設定（ingest.concurrency / encode.concurrency）と束縛サイト数から決まるので、
+// 設定（ingest.concurrency / cm_detect.concurrency）と束縛サイト数から決まるので、
 // db 側に既定値を焼き込むと運用者が設定を変えたときに予算が追随しない。
 func workerConnBudget(lockSlots int) int32 {
 	return max(workerConnFloor, int32(workerListenConns+lockSlots+workerConnSlack))
@@ -194,7 +194,7 @@ func buildPoolConfig(cfg config.DBConfig, roles []string, numSites, lockSlots in
 					"connection whose release depends on acquiring another one don't starve the "+
 					"rest of the process's work out of the single shared pool -- watcher's "+
 					"advisory lock (one per bound site), worker's/notifier's LISTEN, and one "+
-					"connection per running ingest/encode/cm_detect job (those jobs write "+
+					"connection per running ingest/cm_detect job (those jobs write "+
 					"progress on a second connection before releasing the first) "+
 					"(docs/operations.md §3)",
 				cfg.MaxConns, roles, numSites, lockSlots, min)
@@ -282,7 +282,7 @@ var dedicatedConnRoles = []string{"watcher", "worker", "notifier"}
 //
 //   - watcher / worker / notifier の恒久専有（dedicatedConnRoles）。watcher は
 //     束縛サイトごとに 1 本（2 site 目以降 watcherPerSiteConns ずつ追加）
-//   - 実行中の ingest / encode / cm_detect 1 本ごとの job advisory lock
+//   - 実行中の ingest / cm_detect 1 本ごとの job advisory lock
 //     （lockSlots）。**これを「転送中だけの一時専有」として除外しては
 //     ならない。** lock を持つジョブは、解放する前に同じプールからもう 1 本取る
 //     （進捗書き込み・commit。internal/worker/ingest_progress.go）。

@@ -132,10 +132,11 @@ func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// EncodeJobArgs は encode ジョブの引数。recording とプロファイルを指定する。
+// EncodeJobArgs は encode ジョブの引数。recording、プロファイル、rescue 用の締切を指定する。
 type EncodeJobArgs struct {
-	RecordingID int64  `json:"recording_id"`
-	Profile     string `json:"profile"`
+	RecordingID int64         `json:"recording_id" river:"unique"`
+	Profile     string        `json:"profile" river:"unique"`
+	Timeout     time.Duration `json:"timeout,omitempty"`
 }
 
 // Kind は River ジョブの種別名を返す。
@@ -144,7 +145,8 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue: EncodeQueue,
+		Queue:       EncodeQueue,
+		MaxAttempts: 26,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,

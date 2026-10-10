@@ -36,7 +36,7 @@ const (
 	// 不足している (recording_id, profile) ごとの River Insert は残るため、候補数
 	// （最大 encodeReconcileRowLimit）とプロファイル数に比例して DB の処理が積み上がる。
 	// ffmpeg は一切起動しない（不変条件 4 に触れない。投入するだけ）ので、
-	// encode ジョブ本体（Timeout() が -1）のような無制限は要らない。
+	// encode ジョブ本体のような長時間 timeout は要らない。
 	encodeReconcileTimeout = 5 * time.Minute
 
 	// encodeReconcileRowLimit は 1 パスで拾う候補録画の既定上限
@@ -55,9 +55,7 @@ const (
 
 // EncodeReconcileWorker は desired（recording_encode_policy.encode_profiles）−
 // observed（active な encoded media_assets）の差分を定期的に埋める River ワーカー
-// （issue #163）。加えて、encode の Timeout()=-1 では River の JobRescuer が
-// 回収しないプロセス死した running ジョブを、同じ encode キューのこのパスで
-// job-id advisory lock により回収する（issue #797）。
+// （issue #163）。
 //
 // エンコード投入は本来レベルトリガー（不変条件 5）だが、実際に差分を埋める
 // きっかけは長らくヒント 2 経路（ingest 完了時のベストエフォート投入と
@@ -155,8 +153,7 @@ func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) ti
 
 // Work は 1 パス分の encode reconcile を実行する。
 //
-// まず stale running encode の回収を行い、その後に候補の抽出と不足プロファイルの
-// 判定を ListMissingEncodeProfiles でまとめて行う。
+// 候補の抽出と不足プロファイルの判定を ListMissingEncodeProfiles でまとめて行う。
 // これにより、候補ごとの原本・ポリシー・encoded の再取得を避ける。known_profiles
 // も SQL に渡して、設定から消えたプロファイルや空のプロファイル名を投入対象から
 // 外す。単発のヒント経路は用途が異なるため、引き続き EnqueueMissingEncodes 系の
@@ -172,15 +169,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 		// 「encode ジョブを実際に投入すること」なので、client が取れないことを
 		// 黙った no-op にすると取りこぼしの回復そのものが消える。
 		return fmt.Errorf("encode reconcile: getting river client: %w", err)
-	}
-
-	// EncodeWorker.Timeout() は録画長に依存するため -1 のままにする。その代わり、
-	// プロセス死で running のまま残った encode は job-id advisory lock の解放を
-	// 確認して旧行を discarded にし、別 ID の代替ジョブへ置き換える。回収の失敗は
-	// gap-fill（desired−observed の真実の再取得。不変条件 5）を止めない ---
-	// 回収は補助経路で、次のパスが同じ候補を再び調べられるためである。
-	if err := recoverStaleEncodeJobsFunc(ctx, w.Pool, client); err != nil {
-		slog.Warn("encode_reconcile: recovering stale encode jobs failed, continuing with gap-fill", "err", err)
 	}
 
 	rowLimit := w.RowLimit
@@ -234,10 +222,14 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Enco
 				continue
 			}
 		}
-		if _, err := client.Insert(ctx, jobs.EncodeJobArgs{
-			RecordingID: row.RecordingID,
-			Profile:     row.Profile,
-		}, nil); err != nil {
+		args, err := newEncodeJobArgs(ctx, q, row.RecordingID, row.Profile, w.Profiles)
+		if err != nil {
+			failed++
+			slog.Error("encode_reconcile: building encode job args",
+				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
+			continue
+		}
+		if _, err := client.Insert(ctx, args, nil); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue missing encodes",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)

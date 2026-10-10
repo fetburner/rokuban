@@ -13,11 +13,11 @@ import (
 )
 
 const (
-	// ingestJobLockKeyPrefix / encodeJobLockKeyPrefix は、それぞれのジョブの
+	// ingestJobLockKeyPrefix / cmDetectJobLockKeyPrefix は、それぞれのジョブの
 	// プロセス生存確認用 advisory lock の名前空間。ジョブ ID ごとにキーを分け、
 	// 他のロールの advisory lock と衝突しないようにする。
-	ingestJobLockKeyPrefix = "rokuban:ingest:job:"
-	encodeJobLockKeyPrefix = "rokuban:encode:job:"
+	ingestJobLockKeyPrefix   = "rokuban:ingest:job:"
+	cmDetectJobLockKeyPrefix = "rokuban:encode:job:"
 
 	// defaultJobLockTimeout は lock 用コネクションの取得と
 	// pg_try_advisory_lock の両方に与える既定の上限。
@@ -42,8 +42,8 @@ var (
 	// jobLockIdleSessionTimeout は lock 用セッションにだけ設定する
 	// idle_session_timeout。heartbeat が止まってから Postgres がこのセッションを
 	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、回収側
-	// （ingest の recoverStaleIngestJobs、encode / cm_detect の reconcile）が旧
-	// running 行を回収できるようになる。
+	// （ingest の recoverStaleIngestJobs、cm_detect_reconcile）が旧 running 行を
+	// 回収できるようになる。
 	//
 	// 30 秒の根拠:
 	//   - 生きているクライアントでは、サーバーから見たクエリ間隔の上限はおおよそ
@@ -59,19 +59,12 @@ var (
 	//     その分だけ短い停止で lease が切れる。並走の帰結は利用者ごとに違う:
 	//       - ingest: 壊れない。temp の flock と DB の一意 reservation が採用を決め、
 	//         lock 喪失でも転送を cancel しないので、二重 pull の無駄が出るだけである。
-	//       - encode: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。canonical へは
-	//         temp を lock の外で stage し、rel_path の lock と advisory xact lock の中で
-	//         行を読み直してから rename する（publishEncoded / planEncodePublish）。
-	//         計画時から rel_path が進んだか、既に同じ内容で active なら公開を飛ばす。
-	//         並走した 2 本はどちらも ffmpeg を完走する（EncodeWorker の doc コメント）。
-	//         xact lock が排他するのは ingest commit と孤児回収だけで、通常削除とは
-	//         flock でしか排他されない（RWX 越しの flock は未検証）。
 	//       - cm_detect: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。
 	//         結果は DB の Upsert である。局ロゴの上書きもその job 固有 scratch の
 	//         中だけ（writeStationLogo 参照）。
-	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
-	//     record_sweep（既定 5 分）/ encode・cm_detect の reconcile（既定 15 分）の
-	//     周期で決まるので、それより十分短ければ差は出ない。
+	//   - 長すぎる側の壊れ方: ingest / cm_detect のプロセス死回収が遅れる。
+	//     ただし回収の tail は record_sweep（既定 5 分）/ cm_detect_reconcile
+	//     （既定 15 分）の周期で決まるので、それより十分短ければ差は出ない。
 	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で
 	//     バックエンドが pg_stat_activity から消え、別セッションが同じジョブの
 	//     advisory lock を取得できた。SET を外すと同じ状態で 40 秒放置しても
@@ -301,7 +294,7 @@ func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, 
 	return acquireJobLock(ctx, pool, jobID, timeout, ingestJobLockKeyPrefix, fmt.Sprintf("ingest job %d", jobID))
 }
 
-// acquireEncodeJobLock は encode 用の job-id advisory lock を取得する。
-func acquireEncodeJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
-	return acquireJobLock(ctx, pool, jobID, timeout, encodeJobLockKeyPrefix, fmt.Sprintf("encode job %d", jobID))
+// acquireCMDetectJobLock は CM 分析ジョブ用の job-id advisory lock を取得する。
+func acquireCMDetectJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64) (*jobLock, bool, error) {
+	return acquireJobLock(ctx, pool, jobID, defaultJobLockTimeout, cmDetectJobLockKeyPrefix, fmt.Sprintf("cm_detect job %d", jobID))
 }

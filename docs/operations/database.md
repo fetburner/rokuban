@@ -8,7 +8,11 @@
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、転送中を通して保持する job-id advisory lock（生存確認用で転送先の排他ではない）、進捗の書き込み、公開点である `media_assets` コミットが必要である。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する。job lock 用接続が転送中に死んでも転送は止まらないが、`record_sweep` が生きた転送をプロセス死と誤認して二重 pull しうる。決着は DB の一意 INSERT が付け、canonical file は壊れない（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` コミットで決まる**。encode は `Timeout() = -1` なので JobRescuer の対象外だが、`EncodeWorker` は Work 中に job-id advisory lock を保持する。`encode_reconcile` は 1 分以上古い `running` 行を候補にし、lock の解放を確認する。取得できた場合だけ旧行を `discarded` にして別 ID の代替ジョブを投入するため、ライブ中の長時間 encode は時刻だけでは回収しない。lock 用セッションには `idle_session_timeout`（30 秒）の lease が付く。プロセスが 30 秒以上止まるか DB から分断されると、生きている encode でも lock が外れて代替ジョブが投入される。scratch はジョブ ID ごとなので、並走した 2 本は互いの出力を消さない（代償として両方が ffmpeg を完走する）。canonical へは同じディレクトリの一時ファイルへ lock の外でコピーする。公開は rel_path の filesystem lock と advisory xact lock の中で、行を読み直してから rename で行う（`O_TRUNC` で直接コピーしない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。`rel_path` が計画時と違うのは「自分の計画が古い」という意味なので、行が active のままなら公開せずに River の snooze で戻して計画をやり直す（成功で飛ばすと新しいチャプター編集が消える）。行が active でなければ成功で飛ばす。これで後発の実行が先発の commit を巻き戻したり、ファイルだけ上書きして行と食い違わせたりしない。advisory xact lock が排他するのは ingest commit と孤児回収に対してだけで、通常削除とは filesystem lock でしか排他されない。RWX のメディア越しに `flock` が効くかは未検証。`recording_encode_attempts` は回収時には触らない。代替ジョブの開始時に上書きする。詳細は [k8s 運用](k8s.md)。
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` のコミットで決まる**。投入時に `max(1h, 録画実尺 × profile rate)` の締切を args に保存する。River の JobRescuer はその締切後に同じ job ID を再試行する。
+  ドメイン試行数は `recording_encode_attempts` に保存し、公開 tx で fencing token として照合する。試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても出力は衝突しない。
+  公開前に一時ファイルを canonical と同じディレクトリへコピーする。rel_path の filesystem lock と advisory xact lock を取り、行を読み直してから rename する（`O_TRUNC` で canonical を直接書かない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
+  `rel_path` が計画時と違い、行が active なら River の snooze で再計画する。行が active でなければ成功で飛ばす。RWX のメディア越しに `flock` が効くかは未検証。
+  cancel を無視する処理やネットワーク filesystem の停止は job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](storage.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答
 
@@ -27,16 +31,17 @@
   `role.RunSingleton` の goroutine を持つ。`cmd/rokuban/server.go` の watcher ループ）。
   2 サイト目以降は budget にも自動で上乗せされる（`internal/db.perSiteConnBudget`）。
 - **worker の budget だけは表ではなく、実行中のジョブの本数から導出する**（`internal/db.workerConnBudget`）。
-  `worker: 8` は「この構成ではこれだけ要る」ではなく**床**である。実行中の ingest / encode /
-  cm_detect はそれぞれ job advisory lock 用のコネクションを Work の冒頭から commit まで
-  1 本保持し、その本数は設定（`ingest.concurrency` / `encode.concurrency`）と束縛サイト数から
-  決まる。**本数を数えるのは `internal/worker.LockSlots` で、`db` はそれを int 1 個として受け取る**
+  `worker: 8` は「この構成ではこれだけ要る」ではなく**床**である。実行中の ingest /
+  cm_detect は job advisory lock 用のコネクションを Work の冒頭から commit まで
+  1 本保持し、その本数は ingest concurrency、CM 分析設定、束縛サイト数から決まる。
+  encode は保存した timeout と River の JobRescuer で再実行され、長時間保持する advisory lock を持たない。
+  **本数を数えるのは `internal/worker.LockSlots` で、`db` はそれを int 1 個として受け取る**
   （`db` は `worker` を import しない）。予算は `1(LISTEN) + lock 本数 + 3` を床 8 で下支えした値。
   運用者が `ingest.concurrency` を上げれば予算は自動で追随する。`--once` の Job は 1 枠、
-  ingest / encode / cm_detect を引かないプロセスは 0 枠になる。
+  ingest / cm_detect を引かないプロセスは 0 枠になる。
 - `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）も同じ枠を数える。
   数える対象は **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
-  （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。加えて実行中の ingest / encode /
+  （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。加えて実行中の ingest /
   cm_detect が job advisory lock を 1 つずつ持つ。合計に余地 1 本を足した値が下限になる。
   **job advisory lock を「転送中だけの一時専有」として下限から外してはならない。** lock を
   持つジョブは解放する前に同じプールからもう 1 本取る（進捗書き込み・commit）ので、LISTEN と

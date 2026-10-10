@@ -110,9 +110,11 @@ CLAUDE.md の不変条件 9〜14 は「チェック」の一文だけを持つ�
 
 外部プロセス（mirakc / ffmpeg）は対象外である。ドキュメントに無い挙動を実測で決めざるを得ないので、不変条件 2 と CLAUDE.md の「測っていない挙動を断言しない」で扱う。
 
-ブラウザも対象外である。hls.js のようにブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。扱いは「測っていない挙動を断言しない」だけで、不変条件 2 は掛からない。
+**ライブラリの公開契約には、そのライブラリの CHANGELOG に明記された挙動も含める。**
+CHANGELOG は API doc より説明が弱いことがあるため、実物のライブラリを使うテストで
+その挙動を固定する。
 
-未解決（回収）: River で実行中に死んだ `Timeout() = -1` ジョブの回収は、`river_job` の生 SQL に頼っている。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
+ブラウザも対象外である。hls.js のようにブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。扱いは「測っていない挙動を断言しない」だけで、不変条件 2 は掛からない。
 
 未解決（存在確認）: `cm_detect_reconcile.go` の `failOrphanCMLogoCandidatesQuery` は回収ではなく、`river_job` を args で引く孤児検出である。`client.JobList` の `Kinds` / `States` と Go 側の args 比較で契約内に書き直せる。代替が無いのではなく、単に残っている違反である。
 

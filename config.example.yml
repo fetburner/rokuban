@@ -151,6 +151,7 @@ encode:
   thumbnail_concurrency: 1       # thumbnail キューの MaxWorkers
   # profiles:
   #   - name: h264
+  #     rate: 4.0                # 録画実尺 × rate が encode job の rescue 締切（最低 1 時間）
   #     container: mp4           # mp4 | mkv
   #     video_codec: libx264
   #     audio_codec: aac

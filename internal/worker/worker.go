@@ -76,8 +76,8 @@ const (
 // 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
 // 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
 // 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
-// `running` のまま残る。ingest / encode はそれぞれ `record_sweep` /
-// `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`
+// `running` のまま残る。ingest は `record_sweep` が、encode / その他のジョブは
+// `JobRescuer`
 // （既定 1 時間）に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
 // 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
 // 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
@@ -226,13 +226,14 @@ type Deps struct {
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{
-		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
-		MediaDir:      deps.MediaDir,
-		StallTimeout:  deps.IngestStallTimeout,
-		CMDetect:      deps.CMDetect,
-		CutProfiles:   deps.Encode.CutProfileSet(),
-		LiveEnabled:   deps.LiveEnabled,
+		MirakcClients:  deps.MirakcClients,
+		Pool:           deps.Pool,
+		MediaDir:       deps.MediaDir,
+		StallTimeout:   deps.IngestStallTimeout,
+		CMDetect:       deps.CMDetect,
+		CutProfiles:    deps.Encode.CutProfileSet(),
+		EncodeProfiles: deps.Encode,
+		LiveEnabled:    deps.LiveEnabled,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -245,6 +246,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 	})
 	river.AddWorker(workers, &EncodeEnqueueHintWorker{
 		Pool:        deps.Pool,
+		Profiles:    deps.Encode,
 		CutProfiles: deps.Encode.CutProfileSet(),
 	})
 	river.AddWorker(workers, &EncodeReconcileWorker{
@@ -611,13 +613,11 @@ func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 
 // lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
 // コネクションを 1 本保持し続けるジョブを持つ論理キュー
-// （internal/worker/job_lock.go。ingest / encode / cm_detect の
-// ワーカーがそれぞれ acquireIngestJobLock / acquireEncodeJobLock を呼ぶ）。
+// （internal/worker/job_lock.go。ingest / cm_detect が lock を取る）。
 //
 // thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
 var lockHoldingQueues = []string{
 	jobs.IngestQueue,
-	jobs.EncodeQueue,
 	jobs.CMDetectQueue,
 }
 

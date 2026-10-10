@@ -24,10 +24,10 @@ func testDBConfig() config.DBConfig {
 	}
 }
 
-// defaultLockSlots は本番の既定構成（ingest 3 + encode 1 + cm_detect 1、1 site。
+// defaultLockSlots は本番の既定構成（ingest 3 + cm_detect 1、1 site。
 // internal/worker.LockSlots）を模した値。worker を含むケースの予算はこの値から
 // 導出されるので、テストは表のリテラルではなくこれを渡す。
-const defaultLockSlots = 5
+const defaultLockSlots = 4
 
 func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 	cases := []struct {
@@ -41,9 +41,9 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 		{name: "api alone", cfg: testDBConfig(), roles: []string{"api"}, want: 10},
 		{
 			// worker の予算は表の 8 ではなく lockSlots から導出される
-			// （1 + lock 5 + slack 3 = 9）。
+			// （1 + lock 4 + slack 3 = 8）。
 			name: "worker alone", cfg: testDBConfig(), roles: []string{"worker"},
-			lockSlots: defaultLockSlots, want: 9,
+			lockSlots: defaultLockSlots, want: 8,
 		},
 		{
 			// 式が床を下回るときは床が効く（1 + 0 + 3 = 4 < 8）。
@@ -57,9 +57,9 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "all roles (monolith --all)",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
-			// 10 + 9(worker: 1 + 5 + 3) + 3 + 4 + 3
+			// 10 + 8(worker: 1 + 4 + 3) + 3 + 4 + 3
 			lockSlots: defaultLockSlots,
-			want:      29,
+			want:      28,
 		},
 		{
 			name:  "unknown role only falls back to the minimum (never 0)",
@@ -80,7 +80,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			cfg:       testDBConfig(),
 			roles:     []string{"api", "worker", "worker", "api", "watcher"},
 			lockSlots: defaultLockSlots,
-			want:      22, // 10(api) + 9(worker) + 3(watcher), each counted once
+			want:      21, // 10(api) + 8(worker) + 3(watcher), each counted once
 		},
 		{
 			name: "explicit db.max_conns overrides role-derived sizing",
@@ -119,7 +119,7 @@ func TestBuildPoolConfig_WorkerBudgetFollowsLockSlots(t *testing.T) {
 		{lockSlots: 0, want: 8},   // 式 4 → 床
 		{lockSlots: 4, want: 8},   // 式 8 → 床と一致
 		{lockSlots: 5, want: 9},   // 式 9 → 床を超える（既定構成）
-		{lockSlots: 8, want: 12},  // 式 12（2 サイトの ingest 3 + encode 1 + cm_detect 1）
+		{lockSlots: 8, want: 12},  // 式 12
 		{lockSlots: 20, want: 24}, // 式 24
 	}
 	for _, tc := range cases {
@@ -157,21 +157,21 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 			roles:     []string{"worker"},
 			numSites:  2,
 			lockSlots: defaultLockSlots,
-			want:      9,
+			want:      8,
 		},
 		{
 			name:      "worker, 2 sites: the extra per-site ingest locks arrive as lockSlots",
 			roles:     []string{"worker"},
 			numSites:  2,
-			lockSlots: 8, // ingest 3 x 2 sites + encode 1 + cm_detect 1
-			want:      12,
+			lockSlots: 7, // ingest 3 x 2 sites + cm_detect 1
+			want:      11,
 		},
 		{
 			name:      "watcher+worker, 2 sites: only watcher gets the per-site addition",
 			roles:     []string{"watcher", "worker"},
 			numSites:  2,
 			lockSlots: defaultLockSlots,
-			want:      13, // 3+1(watcher) + 9(worker)
+			want:      12, // 3+1(watcher) + 8(worker)
 		},
 		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
 		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},
@@ -242,15 +242,15 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:      "--all: 3 dedicated conns + 5 job locks need at least 9",
-			maxConns:  8,
+			name:      "--all: 3 dedicated conns + 4 job locks need at least 8",
+			maxConns:  7,
 			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
 			lockSlots: defaultLockSlots,
 			wantErr:   true,
 		},
 		{
-			name:      "--all: 9 is enough",
-			maxConns:  9,
+			name:      "--all: 8 is enough",
+			maxConns:  8,
 			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
 			lockSlots: defaultLockSlots,
 			wantErr:   false,
@@ -265,8 +265,8 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 			wantErr:   false,
 		},
 		{
-			name:      "worker alone: 5 job locks alone need 1(LISTEN) + 5 + 1 = 7",
-			maxConns:  6,
+			name:      "worker alone: 4 job locks need 1(LISTEN) + 4 + 1 = 6",
+			maxConns:  5,
 			roles:     []string{"worker"},
 			lockSlots: defaultLockSlots,
 			wantErr:   true,
@@ -312,8 +312,8 @@ func TestMinRequiredConns_IncludesLockSlots(t *testing.T) {
 	}{
 		{name: "api alone: only the room for other work", roles: []string{"api"}, want: 1},
 		{name: "worker alone: LISTEN + the room", roles: []string{"worker"}, want: 2},
-		{name: "worker alone: job locks add one each", roles: []string{"worker"}, lockSlots: 5, want: 7},
-		{name: "worker+watcher+notifier: three dedicated conns each add the room", roles: []string{"worker", "watcher", "notifier"}, lockSlots: 5, want: 9},
+		{name: "worker alone: job locks add one each", roles: []string{"worker"}, lockSlots: 4, want: 6},
+		{name: "worker+watcher+notifier: three dedicated conns each add the room", roles: []string{"worker", "watcher", "notifier"}, lockSlots: 4, want: 8},
 		{name: "watcher, 2 sites: one advisory lock per site", roles: []string{"watcher"}, numSites: 2, want: 3},
 		{name: "watcher, 1 site", roles: []string{"watcher"}, numSites: 1, want: 2},
 	}

@@ -41,7 +41,7 @@ func (w *CMLogoCandidateWorker) Timeout(*river.Job[jobs.CMLogoCandidateJobArgs])
 func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CMLogoCandidateJobArgs]) error {
 	// 検出ジョブと同じく job lock を保持し続ける。回収側は「lock が取れた = worker は
 	// 死んでいる」とみなすので、取らないと動いている解析を failed にしてしまう。
-	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	jobLock, acquired, err := acquireCMDetectJobLock(ctx, w.Pool, job.ID)
 	if err != nil {
 		return fmt.Errorf("CM logo candidate: acquiring job lock: %w", err)
 	}

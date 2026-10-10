@@ -376,6 +376,22 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 	return i, err
 }
 
+const getRecordingEncodeTimes = `-- name: GetRecordingEncodeTimes :one
+SELECT started_at, ended_at FROM recordings WHERE id = $1
+`
+
+type GetRecordingEncodeTimesRow struct {
+	StartedAt *time.Time
+	EndedAt   *time.Time
+}
+
+func (q *Queries) GetRecordingEncodeTimes(ctx context.Context, id int64) (GetRecordingEncodeTimesRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingEncodeTimes, id)
+	var i GetRecordingEncodeTimesRow
+	err := row.Scan(&i.StartedAt, &i.EndedAt)
+	return i, err
+}
+
 const getSeekTilesMediaAssetForServing = `-- name: GetSeekTilesMediaAssetForServing :one
 SELECT a.id, a.rel_path, a.size_bytes, a.updated_at, r.title
 FROM media_assets a

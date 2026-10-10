@@ -4,14 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 type staleRecoveryTestCandidate struct {
@@ -113,75 +110,5 @@ func TestRecoverStaleJobCandidatesStopsHeartbeatAndJoinsErrors(t *testing.T) {
 	}
 	if len(recoveredIDs) != 2 || recoveredIDs[0] != 17 || recoveredIDs[1] != 23 {
 		t.Fatalf("recovered job IDs = %v, want [17 23]", recoveredIDs)
-	}
-}
-
-// TestReplaceStaleRiverJobDoesNotReplaceCompletedJob は transaction 経路上の
-// RowsAffected ガードを守る。候補取得後に完了したジョブから 2 本目のジョブを作らない。
-func TestReplaceStaleRiverJobDoesNotReplaceCompletedJob(t *testing.T) {
-	pool := setupTestPool(t)
-	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "recovery/completed-before-recovery.m2ts", []string{"h264"}, []byte("payload"))
-	oldJobID := insertStaleRunningEncodeJob(t, pool, recordingID, "h264")
-	if _, err := pool.Exec(ctx, `
-		UPDATE river_job
-		SET state = 'completed', finalized_at = now()
-		WHERE id = $1`, oldJobID); err != nil {
-		t.Fatalf("completing stale encode job before recovery: %v", err)
-	}
-
-	client, err := NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("NewInsertOnlyClient: %v", err)
-	}
-	lock, acquired, err := acquireEncodeJobLock(ctx, pool, oldJobID, time.Second)
-	if err != nil {
-		t.Fatalf("acquiring completed job lock: %v", err)
-	}
-	if !acquired {
-		t.Fatal("completed job advisory lock was not acquired")
-	}
-	t.Cleanup(lock.release)
-	lock.stopHeartbeatLoop()
-
-	inserted, err := replaceStaleRiverJob(
-		ctx,
-		lock.conn,
-		client,
-		"encode",
-		oldJobID,
-		1,
-		time.Now().UTC().Add(-time.Minute),
-		encodeRecoveryReason,
-		"encode_recovery",
-		discardRecoveredEncodeJobQuery,
-		jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("replaceStaleRiverJob: %v", err)
-	}
-	if inserted != nil {
-		t.Fatal("completed job was treated as recovered")
-	}
-
-	var state string
-	var jobCount int
-	if err := pool.QueryRow(ctx, "SELECT state::text FROM river_job WHERE id = $1", oldJobID).Scan(&state); err != nil {
-		t.Fatalf("reading completed job state: %v", err)
-	}
-	if state != "completed" {
-		t.Errorf("old job state = %q, want completed", state)
-	}
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*)
-		FROM river_job
-		WHERE kind = 'encode' AND (args->>'recording_id')::bigint = $1`,
-		recordingID,
-	).Scan(&jobCount); err != nil {
-		t.Fatalf("counting encode jobs: %v", err)
-	}
-	if jobCount != 1 {
-		t.Errorf("encode job count after completed-job recovery = %d, want 1", jobCount)
 	}
 }

@@ -126,14 +126,15 @@ lock を取りうるリスクを受け入れる。旧形式の残置 file は、
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
 encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに
-1 つ。カット版は世代番号で新しいパスになる）。同じ `(recording, profile)` の encode が
-2 本並走しうる（job lock は ffmpeg の排他ではなく、失っても実行中の encode を
-cancel しない）。そのため:
+1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を
+再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
+の試行が一時的に並走しうる。そのため:
 
-- scratch は**ジョブ ID ごと**にする。代替ジョブは別 ID なので衝突しない。scratch は
-  pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
-  再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
-  どちらも ffmpeg を完走すること
+- scratch は**job ID と domain attempt ごと**に分ける。同じ job ID の再試行も
+  `<jobID>-<attempt>-<random>` の別ディレクトリを使う。各試行は JobRescuer の締切後に
+  起動し、開始時に増えた attempt count を fencing token として公開時に照合する。
+  古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
+  ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
   公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
@@ -142,7 +143,8 @@ cancel しない）。そのため:
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
   孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
   lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
-- 判定は tx 内で行を読み直して行う。**(a) `rel_path` が計画時と違う、(b) 既に active で
+- tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
+  一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
   （カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら
   公開しない**。
   (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が

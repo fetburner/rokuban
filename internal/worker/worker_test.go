@@ -1015,29 +1015,29 @@ func TestLockSlots(t *testing.T) {
 		want int
 	}{
 		{
-			// 既定の並列度（ingest 3 / encode 1 / cm_detect 1）。
-			// cm_detect を数え落とすと 4 になり、この case が落ちる。
+			// 既定の並列度（ingest 3 / cm_detect 1）。
+			// cm_detect を数え落とすと 3 になり、この case が落ちる。
 			name: "defaults on one bound site",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo"}},
-			want: 5,
+			want: 4,
 		},
 		{
 			// 0 サイト束縛（中央プロセス）でも site-bound キューは 1 つに畳まれる。
 			name: "defaults with no bound sites",
 			cfg:  ClientConfig{},
-			want: 5,
+			want: 4,
 		},
 		{
-			// ingest だけが site ごとに増える。encode / cm_detect は site 非依存
-			// なので 1 のまま（6 + 1 + 1）。
+			// ingest だけが site ごとに増える。cm_detect は site 非依存なので 1
+			// のまま（6 + 1）。encode は長時間保持 lock を取らない。
 			name: "two bound sites multiply only the site-bound ingest queue",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu"}},
-			want: 8, // ingest 3 x 2 sites + encode 1 + cm_detect 1
+			want: 7, // ingest 3 x 2 sites + cm_detect 1
 		},
 		{
 			name: "three bound sites",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu", "osaka"}},
-			want: 11, // ingest 3 x 3 sites + encode 1 + cm_detect 1
+			want: 10, // ingest 3 x 3 sites + cm_detect 1
 		},
 		{
 			name: "a queue set without any lock-holding queue",
@@ -1050,9 +1050,14 @@ func TestLockSlots(t *testing.T) {
 			want: 0,
 		},
 		{
-			name: "queue selection follows the configured concurrency",
+			name: "lock slots follow ingest concurrency, not encode concurrency",
 			cfg:  ClientConfig{Queues: []string{jobs.IngestQueue, jobs.EncodeQueue}, IngestConcurrency: 6, EncodeConcurrency: 2},
-			want: 8,
+			want: 6,
+		},
+		{
+			name: "encode queue does not hold a job lock connection",
+			cfg:  ClientConfig{Queues: []string{jobs.EncodeQueue}, EncodeConcurrency: 2},
+			want: 0,
 		},
 		{
 			// nil と明示的な空スライスはどちらも「全キュー」である
@@ -1060,7 +1065,7 @@ func TestLockSlots(t *testing.T) {
 			// 設定の書き方でプールの予算が変わる。
 			name: "an empty queue slice means all queues, same as nil",
 			cfg:  ClientConfig{Queues: []string{}},
-			want: 5,
+			want: 4,
 		},
 		{
 			// --queues の重複は resolveWorkerQueues が畳むが、ClientConfig を

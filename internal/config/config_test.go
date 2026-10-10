@@ -977,12 +977,14 @@ func TestLoad_AllFieldsOverridden(t *testing.T) {
 				Profiles: []EncodeProfile{
 					{
 						Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+						Rate:   DefaultEncodeProfileRate,
 						Height: 1080, Scaler: ffargs.ScalerSoftware, Deinterlace: true, CRF: intPtr(23), Preset: "medium",
 						InputExtraArgs: []string{"-analyzeduration", "10M"},
 						ExtraArgs:      []string{"-movflags", "+faststart"},
 					},
 					{
 						Name: "h265_vaapi", Container: "mkv", VideoCodec: "hevc_vaapi", AudioCodec: "aac",
+						Rate:   DefaultEncodeProfileRate,
 						Height: 720, Scaler: ffargs.ScalerVAAPI, QP: intPtr(28),
 						HWAccel: &ffargs.HWAccel{Kind: "vaapi", Device: "/dev/dri/renderD128", OutputFormat: "vaapi"},
 					},
@@ -1362,7 +1364,40 @@ func TestLoad_EncodeProfileHWAccel(t *testing.T) {
 				t.Errorf("error = %v, want mention of %q", err, c.wantMsg)
 			}
 		})
+
 	}
+}
+
+func TestLoad_EncodeProfileRate(t *testing.T) {
+	t.Run("default rate", func(t *testing.T) {
+		path := writeConfig(t, buildEncodeHWConfig(""))
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Encode.Profiles[0].Rate; got != 4.0 {
+			t.Errorf("default profile rate = %v, want 4.0", got)
+		}
+	})
+
+	t.Run("configured rate", func(t *testing.T) {
+		path := writeConfig(t, buildEncodeHWConfig("      rate: 1.5\n"))
+		cfg, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := cfg.Encode.Profiles[0].Rate; got != 1.5 {
+			t.Errorf("configured profile rate = %v, want 1.5", got)
+		}
+	})
+
+	t.Run("negative rate rejected", func(t *testing.T) {
+		path := writeConfig(t, buildEncodeHWConfig("      rate: -1\n"))
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "rate") {
+			t.Fatalf("Load error = %v, want invalid profile rate", err)
+		}
+	})
 }
 
 // TestLoad_LiveHWAccel は live.hwaccel（live セクション直下、プロファイル毎では
