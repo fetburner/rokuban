@@ -47,7 +47,7 @@ var (
 	//     heartbeat 間隔（1 秒）+ 応答待ち上限（2 秒）の約 3 秒である（応答待ちが
 	//     上限を超えれば pgx が接続を閉じる）。30 秒はその約 10 倍なので、正常に
 	//     動いているセッションがこのタイマーで終了することはない
-	//     （TestIngestJobLock_HeartbeatKeepsSessionAlive が timeout の 3 倍の間、
+	//     （TestJobLock_HeartbeatKeepsSessionAlive が timeout の 3 倍の間、
 	//     切断を観測しないことを固定している）。
 	//   - 短すぎる側の壊れ方: 生きたセッションを誤って終了させると、代替実行が旧実行と
 	//     並走する。heartbeat がクエリを送っている時間は周期のごく一部なので、

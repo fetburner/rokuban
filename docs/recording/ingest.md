@@ -141,8 +141,8 @@ finished record と HEAD の長さが temp のサイズに一致し、期限前�
 空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
 長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに
-作った record 固有 temp の `fsync` → `Close` を行う。再開時も途中の fsync はせず、replay
-した既存部分を含めて完了時に 1 回だけ行う。
+作った record 固有 temp の `fsync` → `Close` を行う。区切りでの fsync（checkpoint 保存の直前）とは別に、replay
+した既存部分を含めて完了時にも行う。バッファごとには行わない。
 
 その後の短い確定区間で、canonical と同じディレクトリの `rel_path` 固有 filesystem lock を取得する。
 次に DB transaction と同じ `rel_path` の transaction-level advisory lock を取得する。original の
