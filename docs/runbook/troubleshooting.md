@@ -65,8 +65,8 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 - `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（[setup.md](setup.md) の前提を参照）。
   HEAD だけ試すと成功するので騙されやすい
-- `errors` に **`context deadline exceeded`** — River の総時間タイムアウト。
-  ingest は無効化してあるので、出るなら設定が壊れている
+- `errors` に **`context deadline exceeded`** — 5 分の Work Timeout を超えた。
+  通常は 4 分の slice で snooze するため、長い replay / 後処理や設定を調べる
 - `state=retryable` のまま進まない — mirakc への到達性か、`media_dir` の
   書き込み権限（上記「`media_dir` に書けない」）を確認する
 
@@ -105,15 +105,23 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 - `error` は ffmpeg の失敗メッセージを含む先頭 2000 バイト（`EncodeWorker` が
   切り詰める。全文は worker のログ）
 - `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた可能性が
-  ある行。`encode_reconcile` が 1 分以上古い行について job-id advisory lock の
-  解放を確認し、取得できた場合だけ旧ジョブを終端化して代替ジョブを投入する。
-  lock を保持するライブ encode は回収しない。`recording_encode_attempts` の行は
-  代替ジョブが開始するまで `running` のままなので、長く残る場合は
-  `encode_reconcile` の定期投入と worker のログを確認する
+  ある行。encode の JobRescuer は enqueue 時に args へ保存した締切後に同じ job を
+  再試行する。締切は `max(1 時間, 実尺 × profile rate)` で、実尺が不明な場合と締切のない旧 args は 12 時間となる。
+  `recording_encode_attempts.attempt_count` は次の worker 起動時に死亡した試行を数える。
+  締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker の
+  ログを確認する
 - `error` に `unknown encode profile` —— 設定から消えたプロファイル。
   `config.encode.profiles` に戻すか、その録画の `recording_encode_policy` から
   外す（[schema/recordings.md](../schema/recordings.md) の
   `recording_encode_attempts` 節）
+
+### encode が上限に達して止まった
+
+`recording_encode_attempts` の `attempt_count` が 25 の `failed` 行は、ドメイン上限に達した印である。この行がある間、ジョブは `river.JobCancel` で cancelled になり、reconcile や再投入では動かない。
+
+1. `error` 列と worker のログで原因を特定して直す（profile 設定、ffmpeg、入力ファイルなど）。**原因を直す前に再要求しない。** 25 回分の失敗を繰り返すだけになる
+2. 直したら `POST /api/recordings/{id}/encode-profiles` に同じ profile を指定して再要求する。API は指定 profile の `failed` 行を消して試行回数を 1 から数え直し、ヒントジョブを投入する。既に desired にある profile でも同じ
+3. `running` の行は消えない。生きた試行の印なので、死んだ実行は締切後の JobRescuer が回収するのを待つ
 
 ### EPG 同期が一度しか走らない
 

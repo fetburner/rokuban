@@ -59,7 +59,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
    **この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
    欠落を作る。
-   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送途中に fsync して進捗を確定してはならない。追従 ingest は番組長のあいだ fd を開くが、途中 fsync は部分オブジェクトの実体化やサイズ比例の再コピーを起こし、S3 系 FUSE では以後その fd に書けない実装もある。fsync はストリームコピー完了後の 1 回だけにする。Linux では
+   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書く順序は、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないために必要である。区切りごとの fsync のコストは NFS / JuiceFS で未測定である。S3 系 FUSE は原本 ingest 先から外れているので、途中 fsync で fd に書けなくなる実装は対象外である。Linux では
    遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
    でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
    の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
@@ -126,14 +126,15 @@ lock を取りうるリスクを受け入れる。旧形式の残置 file は、
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
 encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに
-1 つ。カット版は世代番号で新しいパスになる）。同じ `(recording, profile)` の encode が
-2 本並走しうる（job lock は ffmpeg の排他ではなく、失っても実行中の encode を
-cancel しない）。そのため:
+1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を
+再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
+の試行が一時的に並走しうる。そのため:
 
-- scratch は**ジョブ ID ごと**にする。代替ジョブは別 ID なので衝突しない。scratch は
-  pod ローカルなので `flock` では同じ pod 内しか直列化できず、取れなかった実行を River の
-  再試行へ戻すと、停止中の旧実行が握る間ずっと失敗通知が積む。代償は、並走した 2 本が
-  どちらも ffmpeg を完走すること
+- scratch は**job ID と domain attempt ごと**に分ける。同じ job ID の再試行も
+  `<jobID>-<attempt>-<random>` の別ディレクトリを使い、encode は新しい scratch を作る前に同じ job の `<jobID>-*` を消す（古い試行は fencing で公開できない）。各試行は JobRescuer の締切後に
+  起動し、開始時に増えた attempt count を fencing token として公開時に照合する。
+  古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
+  ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
   公開は lock（filesystem lock → tx → advisory xact lock）の中で、次の順に行う。
@@ -142,7 +143,8 @@ cancel しない）。そのため:
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
   孤児回収は同じ lock を非 blocking で取ってから unlink するので、公開と commit の間で
   lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）
-- 判定は tx 内で行を読み直して行う。**(a) `rel_path` が計画時と違う、(b) 既に active で
+- tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
+  一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
   （カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら
   公開しない**。
   (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
@@ -155,7 +157,7 @@ cancel しない）。そのため:
   行が active でない（ごみ箱など）ときは成功で飛ばす
 - (c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、
   外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では
-  塞げない（job lock は ffmpeg の排他ではない）。desired は `FOR SHARE` で読み、版を外す tx の
+  塞げない。desired は `FOR SHARE` で読み、版を外す tx の
   policy 行ロックと直列化する
 - advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
   通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに

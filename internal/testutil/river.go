@@ -38,34 +38,16 @@ func RequireRiverInserted[TArgs river.JobArgs](ctx context.Context, tb testing.T
 	return rivertest.RequireInserted[*riverpgxv5.Driver](ctx, tb, riverpgxv5.New(pool), args, opts)
 }
 
-// RequireRiverInsertedTx は rivertest の公開 assertion でトランザクション内の投入を確認する。
-func RequireRiverInsertedTx[TArgs river.JobArgs](ctx context.Context, tb testing.TB, tx pgx.Tx, args TArgs, opts *rivertest.RequireInsertedOpts) *river.Job[TArgs] {
-	tb.Helper()
-	return rivertest.RequireInsertedTx[*riverpgxv5.Driver](ctx, tb, tx, args, opts)
-}
-
 // RequireManyRiverInserted は rivertest の公開 assertion で複数ジョブの投入数と順序を確認する。
 func RequireManyRiverInserted(tb testing.TB, ctx context.Context, pool *pgxpool.Pool, expected []rivertest.ExpectedJob) []*rivertype.JobRow {
 	tb.Helper()
 	return rivertest.RequireManyInserted[*riverpgxv5.Driver](ctx, tb, riverpgxv5.New(pool), expected)
 }
 
-// RequireManyRiverInsertedTx は rivertest の公開 assertion でトランザクション内の複数投入を確認する。
-func RequireManyRiverInsertedTx(tb testing.TB, ctx context.Context, tx pgx.Tx, expected []rivertest.ExpectedJob) []*rivertype.JobRow {
-	tb.Helper()
-	return rivertest.RequireManyInsertedTx[*riverpgxv5.Driver](ctx, tb, tx, expected)
-}
-
 // RequireRiverKindInserted は rivertest の assertion で kind ごとにちょうど 1 件の投入を確認する。
 func RequireRiverKindInserted(tb testing.TB, ctx context.Context, pool *pgxpool.Pool, kind string) *rivertype.JobRow {
 	tb.Helper()
 	return RequireRiverInserted(ctx, tb, pool, riverKindArgs{kind: kind}, nil).JobRow
-}
-
-// RequireRiverKindInsertedTx は rivertest の assertion でトランザクション内の kind ごとの投入を確認する。
-func RequireRiverKindInsertedTx(tb testing.TB, ctx context.Context, tx pgx.Tx, kind string) *rivertype.JobRow {
-	tb.Helper()
-	return RequireRiverInsertedTx(ctx, tb, tx, riverKindArgs{kind: kind}, nil).JobRow
 }
 
 // RequireManyRiverKindsInserted は rivertest の assertion で kind の件数と投入順を確認する。
@@ -76,16 +58,6 @@ func RequireManyRiverKindsInserted(tb testing.TB, ctx context.Context, pool *pgx
 		expected[i] = rivertest.ExpectedJob{Args: riverKindArgs{kind: kind}}
 	}
 	return RequireManyRiverInserted(tb, ctx, pool, expected)
-}
-
-// RequireManyRiverKindsInsertedTx は rivertest の assertion でトランザクション内の複数 kind を確認する。
-func RequireManyRiverKindsInsertedTx(tb testing.TB, ctx context.Context, tx pgx.Tx, kinds ...string) []*rivertype.JobRow {
-	tb.Helper()
-	expected := make([]rivertest.ExpectedJob, len(kinds))
-	for i, kind := range kinds {
-		expected[i] = rivertest.ExpectedJob{Args: riverKindArgs{kind: kind}}
-	}
-	return RequireManyRiverInsertedTx(tb, ctx, tx, expected)
 }
 
 // ListRiverJobs は River の公開 JobList API で条件に合うジョブを全件取得する。

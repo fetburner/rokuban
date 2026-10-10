@@ -195,7 +195,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 }
 
 // UniqueOpts による合流: 同じサイトの reconcile_pass を 2 回投入すると 1 件しか
-// 作られないこと（docs/data.md §2「排他はジョブロック + UniqueOpts」）。
+// 作られないこと（docs/data.md §2「UniqueOpts が担うもの」）。
 func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

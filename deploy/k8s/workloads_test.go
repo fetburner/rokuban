@@ -148,8 +148,8 @@ func scaledJobs(t *testing.T) []workload {
 // イメージが、そのキューの要求と一致すること。
 //
 // **`internal/jobs` の側を権威にする。** キュー名の一覧をこのテストに書き写すと、
-// キューを 1 つ足した日にマニフェストとテストの**両方**が黙ったままになる
-// （そのキューのジョブは永久に誰にも消化されない）。
+// キューを 1 つ足した日にマニフェストとテストの**両方**が黙ったままになる。
+// ScaledJob が無ければ、そのキューには KEDA のスケール容量が付かない。
 func TestScaledJobsCoverEveryQueue(t *testing.T) {
 	byQueue := map[string][]workload{}
 	for _, w := range scaledJobs(t) {
@@ -176,8 +176,8 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 		got := byQueue[q]
 		switch len(got) {
 		case 0:
-			t.Errorf("queue %q has no ScaledJob; nothing would ever work its jobs "+
-				"(worker.periodic_jobs is false, so no long-lived worker picks them up either)", q)
+			t.Errorf("queue %q has no ScaledJob; nothing will ever work its jobs "+
+				"(the resident notifier client subscribes only to ruler)", q)
 			continue
 		case 1:
 		default:
@@ -238,14 +238,55 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 	}
 }
 
+// TestNotifierRunsResidentRescuerClient fixes the long-lived client's host and
+// subscription. River requires a queue to start; ruler is site-independent and
+// DB-only, so notifier can host the full worker registry without site access.
+func TestNotifierRunsResidentRescuerClient(t *testing.T) {
+	var notifier *workload
+	for _, w := range loadWorkloads(t) {
+		if w.id() == "Deployment/rokuban-notifier" {
+			wCopy := w
+			notifier = &wCopy
+			break
+		}
+	}
+	if notifier == nil {
+		t.Fatal("Deployment/rokuban-notifier not found")
+	}
+	args := argsOf(soleContainer(t, *notifier))
+
+	roles, ok := flagValue(args, "roles")
+	if !ok || !slices.Equal(strings.Split(roles, ","), []string{"notifier", "worker"}) {
+		t.Errorf("notifier --roles = %q, want notifier,worker so the full worker registry starts", roles)
+	}
+	var queues []string
+	for i, arg := range args {
+		if arg == "--queues" && i+1 < len(args) {
+			queues = append(queues, args[i+1])
+		} else if value, ok := strings.CutPrefix(arg, "--queues="); ok {
+			queues = append(queues, value)
+		}
+	}
+	if !slices.Equal(queues, []string{"ruler"}) {
+		t.Errorf("notifier --queues = %v, want exactly [ruler]", queues)
+	}
+	if sites, ok := flagValue(args, "sites"); !ok || sites != "" {
+		t.Errorf("notifier --sites = %q (present=%v), want explicit empty site scope", sites, ok)
+	}
+	for _, arg := range args {
+		if arg == "--once" || strings.HasPrefix(arg, "--once=") {
+			t.Error("notifier resident client must not use --once")
+		}
+	}
+}
+
 // someJobUsesTheDefaultQueue は `internal/jobs` のどれかの `InsertOpts` が
 // `river.QueueDefault` を使っているかを見る。
 //
 // **「誰も入れないから ScaledJob を置かない」という判断を、判断のまま腐らせない
 // ため。** 置かない理由が消えた日（誰かが `Queue: river.QueueDefault` と書いた
-// 日）に、上の分岐が黙って「無くてよい」と言い続けるのを止める。**それが無いと、
-// そのキューのジョブは永久に誰にも消化されない**（`worker.periodic_jobs: false`
-// なので常駐 worker も居ない）。
+// 日）に、上の分岐が黙って「無くてよい」と言い続けるのを止める。default は
+// 常駐 client の購読にも含まれないので、ジョブを入れたら実行経路が要る。
 //
 // 走査の形が変わって何も見つからなくなる（＝この検査が黙って死ぬ）ことを防ぐ
 // ため、**`Queue:` の指定そのものが 1 つも見つからなければ落とす。**
@@ -487,12 +528,21 @@ func softStopSeconds(t *testing.T, s string) int {
 // manifests_test.go の TestTerminationBudgetCoversPreStop。
 func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 	checked := 0
-	for _, w := range scaledJobs(t) {
+	for _, w := range loadWorkloads(t) {
+		if w.kind() != "ScaledJob" && w.kind() != "Deployment" {
+			continue
+		}
 		c := soleContainer(t, w)
 		args := argsOf(c)
-		soft, ok := flagValue(args, "soft-stop-timeout")
-		if !ok {
-			continue // TestScaledJobsRunOnceWorkers が報告済み
+		roles, _ := flagValue(args, "roles")
+		if !slices.Contains(strings.Split(roles, ","), "worker") {
+			continue
+		}
+		// --soft-stop-timeout が無ければコードの既定（worker.DefaultSoftStopTimeout）。
+		// 既定値の変更を見逃さないよう、リテラルでなく定数を参照する。
+		soft := worker.DefaultSoftStopTimeout.String()
+		if v, ok := flagValue(args, "soft-stop-timeout"); ok {
+			soft = v
 		}
 		checked++
 
@@ -511,7 +561,8 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		}
 
 		// 10 は cmd/rokuban/server.go の `httpShutdownTimeout`（停止待ち）と、
-		// 猶予が切れたあと畳み終えるぶん。**実装の定数を参照せずリテラルで書く**。
+		// 猶予が切れたあと畳み終えるぶん（`hardStopGrace`）。**実装の定数を
+		// 参照せずリテラルで書く**。
 		const stopWait, teardown = 10, 10
 		want := preStop + stopWait + softStopSeconds(t, soft) + teardown
 		if grace <= want {
@@ -521,7 +572,7 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Error("no worker pod was checked (the --soft-stop-timeout flag disappeared from every ScaledJob)")
+		t.Error("no worker pod was checked (no workload passes --roles containing worker)")
 	}
 }
 

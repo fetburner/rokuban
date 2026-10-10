@@ -106,11 +106,11 @@ const (
 // 短いと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**
 // 打ち切る。しかもその打ち切りは ctx の cancel ですらない（プロセスが終わる
 // だけ）ので、行は `running` のまま残り、回収は `JobRescuer`（リーダーだけが
-// 動かす保守サービス）に委ねることになる --- ロール分割構成では常駐する River
-// クライアントが 1 つも無いので、誰も回収しない（docs/operations.md §5 の
-// スケーラのクエリの節と同じ族の問題）。一方、プロセスが自分でエスカレートして
-// 畳めば行は `available` に戻り、次に起きた worker が引き直せる。**「試行を
-// 1 つ潰す」と「誰も引き直せない」の差**である。
+// 動かす保守サービス）に委ねることになる --- ロール分割構成では常駐 client
+// （notifier Deployment）が rescue するが、締切は `rescue_stuck_jobs_after`
+// （River 既定 1h）で、その間その行は running のまま残る。一方、プロセスが
+// 自分でエスカレートして畳めば行は `available` に戻り、次に起きた worker が
+// すぐ引き直せる。**「試行を 1 つ潰す」と「回収まで待たされる」の差**である。
 //
 // **時計が 2 つあるので余裕が要る。** River の escalate は SIGTERM の瞬間から
 // 測る（`fetchCtx` が start ctx から派生し、その Done で soft stop タイマーが
@@ -312,24 +312,12 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// River クライアントの設定は DB プールより先に確定させる。**プールのサイジングが
-	// この設定から導出される** --- worker の予算は「同時に走りうる job advisory lock
-	// 保持ジョブの本数」ぶん必要で、その本数はキュー設定と束縛サイト数から決まる
-	// （internal/worker.LockSlots）。同じ値を NewPool の前後で 2 回組み立てると、
-	// 引くつもりの本数とプールの予算が黙ってずれる。
 	workerCfg := newWorkerClientConfig(cfg, bound, queues, onceGate, softStopTimeout)
-	var lockSlots int
-	if resolveRiverClientKind(roles) == riverClientFull {
-		lockSlots, err = worker.LockSlots(workerCfg)
-		if err != nil {
-			return err
-		}
-	}
 
 	ctx, stop := installSignalHandler(cmd.Context())
 	defer stop()
 
-	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound), lockSlots)
+	pool, err := db.NewPool(ctx, cfg.DB, roles, len(bound))
 	if err != nil {
 		return err
 	}
@@ -586,10 +574,8 @@ func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcS
 
 // newWorkerClientConfig は worker ロールの River 設定を組み立てる。
 //
-// **pool に依存しない。** 同じ値が 2 か所で使われる --- NewPool へ渡す
-// job lock 枠の計算（worker.LockSlots）と worker.NewClient である。ここで 1 回
-// 組み立てて両方に渡すことで、プールの予算が「実際に引くキュー」からずれる経路を
-// 作らない。worker ロールが無いプロセスでは使われないが、組み立て自体は無害。
+// **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
+// 組み立て自体は無害。
 func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration) worker.ClientConfig {
 	return worker.ClientConfig{
 		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
@@ -606,6 +592,7 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 		Queues:               queues,
 		Once:                 onceGate,
 		SoftStopTimeout:      softStopTimeout,
+		RescueStuckJobsAfter: cfg.Worker.RescueStuckJobsAfter,
 		CatalogExport:        true,
 		DeleteReconcile:      true,
 		LabelRuleReconcile:   true,

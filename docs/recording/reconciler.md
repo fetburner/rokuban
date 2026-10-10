@@ -21,7 +21,7 @@ DB-backed `/metrics` から観測鮮度を見られる。
 - **冪等**: 何度落ちても再実行で収束する。時刻精度もプロセス生存性も要求されない
 - **終了済み番組は作らない**: 番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別物である。`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う —— ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける
 
-**reconciler はシングルトンではなく ruler と同じ形の River ジョブ**（`internal/worker` の `ReconcilePassWorker`）。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。そのため排他は advisory lock ではなく、ジョブロック + `UniqueOpts`（サイト単位）で担保する（[データ層](../data.md) §2）。
+**reconciler はシングルトンではなく ruler と同じ形の River ジョブ**（`internal/worker` の `ReconcilePassWorker`）。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。そのため排他は advisory lock ではなく `UniqueOpts`（サイト単位）で担保する（[データ層](../data.md) §2）。
 
 起動契機は 2 つあるが、**定期パスが真実**で残りは投入を早めるヒントに過ぎない。ヒントを落としても定期パスが拾う。
 

@@ -10,7 +10,7 @@
 ./deploy/k8s/e2e/run.sh                      # 5 項目を判定する
 ./deploy/k8s/e2e/run.sh --only 2,4           # 一部だけ（0 は返さない）
 ./deploy/k8s/e2e/run.sh --oracles            # 判定そのものを検査する（変異注入）
-./deploy/k8s/e2e/run.sh --faults             # worker kill / PostgreSQL 接続断後の収束を判定する
+./deploy/k8s/e2e/run.sh --faults             # worker kill / rescuer / PostgreSQL 接続断後の収束を判定する
 E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部だけ
 ./deploy/k8s/e2e/run.sh --down               # クラスタを消す
 ```
@@ -191,8 +191,20 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 
 | 判定 | 注入 | 機械判定する収束 |
 |---|---|---|
-| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。`encode_reconcile` が stuck job を終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
+| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。fixture の `attempted_at` を締切後へ進め、JobRescuer が同じ River job を再試行して encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
+| F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を掴ませ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
+
+F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。
+client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
+Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
+`overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
+F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。
+`--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
+F3.4 は再実行の completed を見る。
+resident client の値を 24h にする変異では F3.3 が FAIL することを確認する。
+**F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できる。
+`E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
 worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
@@ -200,14 +212,12 @@ worker・KEDA operator からの新規接続を失わせ、既存の pool connec
 にする。中断時は EXIT trap が Service selector と CronJob を復元する。
 
 worker kill の判定は次の 2 つを直接固定する。
-`encode_reconcile` の回収を外すと、F1.4 の River 置換または encoded asset 公開が成立しない。
+JobRescuer による F1.4 の再試行または encoded asset 公開が成立しないと FAIL する。
 `until_encoded_deletable_originals` の「全プロファイルがエンコード済み」の条件を外すと、
 F1.3 で original が削除されて FAIL になる。
 fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。
 F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
 
-kind での実測は次のとおり（arm64 の Docker で 1 回）。
-F1.1 から F2.2 の 6 判定がすべて PASS し、`run.sh --faults` は exit 0 を返した。
 fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。
 その場合は F2 の予約 seed が mirakc に届かない。
 F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
@@ -375,8 +385,10 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が
   180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも
   入るので、
-  `enqueue` が投入をスキップして 2.3 も落ちる。`--once` の Job がリーダーになれば River の
-  `JobScheduler` が昇格させるので自己回復するが、**その所要時間は測っていない**。
+  `enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が
+  `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。backoff 中も
+  KEDA の backlog に数えるので one-shot Pod が先に起きることはあるが、claim できない
+  job しか無ければ `--once-idle-timeout` で終了する。
 - **トリガが数える River の状態は `available` / `retryable`。** ハーネスの
   「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。
   ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が
@@ -385,10 +397,10 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   再 reconcile されない**（接続文字列を直した後も 3 分間
   `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
 - **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、掴まれていた
-  `river_job` の行は一時的に **`running` のまま残る**。encode は
-  `encode_reconcile` が job-id lock の解放後に旧行を終端化して代替ジョブを投入するが、
-  ハーネスは次の判定を待たず、`produce_real_encode_job` が周回の頭で消してから測り直す。
-  それと media ボリュームの原本。どちらも周回の頭で消してから測り直す。
+  `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切
+  （最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、
+  `produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media
+  ボリュームの原本も周回の頭で消してから測り直す。
   **`$producer` は関数名でもコマンド文字列でも受ける**
   （引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
 - **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。**
@@ -402,9 +414,9 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 ```
 run.sh                 入口。クラスタの用意 → 判定 → 集計
 oracles.sh             --oracles の中身（fixture と変異）
-faults/run.sh          --faults の入口。故障シナリオ 1 / 2 を実行
+faults/run.sh          --faults の入口。故障シナリオ 1 / 2 / 3 を実行
 faults/lib.sh          Fault suite 共通の状態・asset 判定
-faults/0*.sh           worker kill / PostgreSQL outage 注入と収束判定
+faults/0*.sh           worker kill / rescuer / PostgreSQL outage 注入と収束判定
 lib/env.sh             名前・版・パスワードの唯一の出どころ
 lib/log.sh             PASS / FAIL / TODO と終了コード
 lib/kube.sh            クラスタを触る共通関数（**時間で待たない**）

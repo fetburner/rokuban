@@ -7,76 +7,184 @@ package sqlcgen
 
 import (
 	"context"
+	"time"
 )
 
-const deleteRecordingEncodeAttempt = `-- name: DeleteRecordingEncodeAttempt :exec
-DELETE FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2
-`
-
-type DeleteRecordingEncodeAttemptParams struct {
-	RecordingID int64
-	Profile     string
-}
-
-// 試行行を消す。呼ぶのは runEncode の defer（成功時）で、commitEncoded の
-// 直後ではない --- 間に webhook 通知（HTTP、タイムアウトまで待つ）が入り、
-// 同一トランザクションでもない。「完了しているのに失敗中」という中間状態を
-// 読者に見せないのは、この DELETE の速さではなく API 側が encoded 資産のある
-// プロファイルを encodeJobStatusesFromFields の対象から先に除外しているため。
-// 行が無くても成功する（冪等）。EncodeWorker の冪等スキップ経路（既に active
-// な encoded がある）でも、リークした古い試行行を掃除するために呼ぶ。
-func (q *Queries) DeleteRecordingEncodeAttempt(ctx context.Context, arg DeleteRecordingEncodeAttemptParams) error {
-	_, err := q.db.Exec(ctx, deleteRecordingEncodeAttempt, arg.RecordingID, arg.Profile)
-	return err
-}
-
-const upsertRecordingEncodeAttemptFailed = `-- name: UpsertRecordingEncodeAttemptFailed :exec
-INSERT INTO recording_encode_attempts (
-    recording_id, profile, state, error, attempted_at
-) VALUES ($1, $2, 'failed', $3, now())
-ON CONFLICT (recording_id, profile) DO UPDATE SET
-    state        = 'failed',
-    error        = EXCLUDED.error,
-    attempted_at = now()
-`
-
-type UpsertRecordingEncodeAttemptFailedParams struct {
-	RecordingID int64
-	Profile     string
-	Error       *string
-}
-
-// 試行の失敗を記録する。ctx キャンセル（River の停止・シャットダウン）由来の
-// 中断はここを呼ばない（呼び出し側 shouldNotifyEncodeFailure と同じ判定。
-// ジョブの失敗ではないので running のまま残す --- 次の実行が上書きする）。
-func (q *Queries) UpsertRecordingEncodeAttemptFailed(ctx context.Context, arg UpsertRecordingEncodeAttemptFailedParams) error {
-	_, err := q.db.Exec(ctx, upsertRecordingEncodeAttemptFailed, arg.RecordingID, arg.Profile, arg.Error)
-	return err
-}
-
-const upsertRecordingEncodeAttemptRunning = `-- name: UpsertRecordingEncodeAttemptRunning :exec
+const createRecordingEncodeAttemptRunning = `-- name: CreateRecordingEncodeAttemptRunning :execrows
 
 INSERT INTO recording_encode_attempts (
-    recording_id, profile, state, error, attempted_at
-) VALUES ($1, $2, 'running', NULL, now())
-ON CONFLICT (recording_id, profile) DO UPDATE SET
-    state        = 'running',
-    error        = NULL,
-    attempted_at = now()
+    recording_id, profile, state, error, attempted_at, attempt_count
+) VALUES ($1, $2, 'running', NULL, now(), 1)
+ON CONFLICT (recording_id, profile) DO NOTHING
 `
 
-type UpsertRecordingEncodeAttemptRunningParams struct {
+type CreateRecordingEncodeAttemptRunningParams struct {
 	RecordingID int64
 	Profile     string
 }
 
-// encode ジョブの直近の試行状態（issue #316）。書き手は EncodeWorker だけ。
-// 表そのものの設計判断は docs/schema/recordings.md
-// 「recording_encode_attempts --- encode ジョブの直近の試行状態（衛星表）」を参照。
-// 試行の開始を記録する。行の存在そのものが「running か failed のどちらかを
-// 主張している」ことになる（不変条件 10）ので、直前が failed だった行も
-// ここで running に上書きする（再試行が始まったので古い失敗の主張を残さない）。
-func (q *Queries) UpsertRecordingEncodeAttemptRunning(ctx context.Context, arg UpsertRecordingEncodeAttemptRunningParams) error {
-	_, err := q.db.Exec(ctx, upsertRecordingEncodeAttemptRunning, arg.RecordingID, arg.Profile)
-	return err
+// recording_encode_attempts は encode のドメイン試行状態を持つ。attempt_count は
+// River の attempt ではなく、開始ごとに進む fencing token である。
+// 新しい試行を開始する。競合した場合は、既存行をロックして状態を判定する呼び出し側が続ける。
+func (q *Queries) CreateRecordingEncodeAttemptRunning(ctx context.Context, arg CreateRecordingEncodeAttemptRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, createRecordingEncodeAttemptRunning, arg.RecordingID, arg.Profile)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteFailedRecordingEncodeAttempts = `-- name: DeleteFailedRecordingEncodeAttempts :execrows
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = ANY($2::text[])
+  AND state = 'failed'
+`
+
+type DeleteFailedRecordingEncodeAttemptsParams struct {
+	RecordingID int64
+	Profiles    []string
+}
+
+// 利用者の再要求で、指定プロファイルの failed 行を消して試行予算を戻す。
+// running の行は生きた試行の fencing token なので消さない。
+func (q *Queries) DeleteFailedRecordingEncodeAttempts(ctx context.Context, arg DeleteFailedRecordingEncodeAttemptsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteFailedRecordingEncodeAttempts, arg.RecordingID, arg.Profiles)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteRecordingEncodeAttemptForAttempt = `-- name: DeleteRecordingEncodeAttemptForAttempt :execrows
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = $3
+`
+
+type DeleteRecordingEncodeAttemptForAttemptParams struct {
+	RecordingID  int64
+	Profile      string
+	AttemptCount int32
+}
+
+func (q *Queries) DeleteRecordingEncodeAttemptForAttempt(ctx context.Context, arg DeleteRecordingEncodeAttemptForAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRecordingEncodeAttemptForAttempt, arg.RecordingID, arg.Profile, arg.AttemptCount)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getRecordingEncodeAttemptForUpdate = `-- name: GetRecordingEncodeAttemptForUpdate :one
+SELECT state, error, attempted_at, attempt_count
+FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = $2
+FOR UPDATE
+`
+
+type GetRecordingEncodeAttemptForUpdateParams struct {
+	RecordingID int64
+	Profile     string
+}
+
+type GetRecordingEncodeAttemptForUpdateRow struct {
+	State        string
+	Error        *string
+	AttemptedAt  time.Time
+	AttemptCount int32
+}
+
+func (q *Queries) GetRecordingEncodeAttemptForUpdate(ctx context.Context, arg GetRecordingEncodeAttemptForUpdateParams) (GetRecordingEncodeAttemptForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingEncodeAttemptForUpdate, arg.RecordingID, arg.Profile)
+	var i GetRecordingEncodeAttemptForUpdateRow
+	err := row.Scan(
+		&i.State,
+		&i.Error,
+		&i.AttemptedAt,
+		&i.AttemptCount,
+	)
+	return i, err
+}
+
+const restoreRecordingEncodeAttempt = `-- name: RestoreRecordingEncodeAttempt :execrows
+UPDATE recording_encode_attempts
+SET state = $3, error = $4::text,
+    attempted_at = $5,
+    attempt_count = $6
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = $7
+`
+
+type RestoreRecordingEncodeAttemptParams struct {
+	RecordingID  int64
+	Profile      string
+	State        string
+	Error        *string
+	AttemptedAt  time.Time
+	RestoreCount int32
+	CurrentCount int32
+}
+
+func (q *Queries) RestoreRecordingEncodeAttempt(ctx context.Context, arg RestoreRecordingEncodeAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreRecordingEncodeAttempt,
+		arg.RecordingID,
+		arg.Profile,
+		arg.State,
+		arg.Error,
+		arg.AttemptedAt,
+		arg.RestoreCount,
+		arg.CurrentCount,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateRecordingEncodeAttemptFailed = `-- name: UpdateRecordingEncodeAttemptFailed :execrows
+UPDATE recording_encode_attempts
+SET state = 'failed', error = $3, attempted_at = now()
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = $4
+`
+
+type UpdateRecordingEncodeAttemptFailedParams struct {
+	RecordingID  int64
+	Profile      string
+	Error        *string
+	AttemptCount int32
+}
+
+func (q *Queries) UpdateRecordingEncodeAttemptFailed(ctx context.Context, arg UpdateRecordingEncodeAttemptFailedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateRecordingEncodeAttemptFailed,
+		arg.RecordingID,
+		arg.Profile,
+		arg.Error,
+		arg.AttemptCount,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateRecordingEncodeAttemptRunning = `-- name: UpdateRecordingEncodeAttemptRunning :execrows
+UPDATE recording_encode_attempts
+SET state = 'running', error = NULL, attempted_at = now(),
+    attempt_count = $3
+WHERE recording_id = $1 AND profile = $2
+`
+
+type UpdateRecordingEncodeAttemptRunningParams struct {
+	RecordingID int64
+	Profile     string
+	NextCount   int32
+}
+
+func (q *Queries) UpdateRecordingEncodeAttemptRunning(ctx context.Context, arg UpdateRecordingEncodeAttemptRunningParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateRecordingEncodeAttemptRunning, arg.RecordingID, arg.Profile, arg.NextCount)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

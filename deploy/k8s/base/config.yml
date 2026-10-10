@@ -61,11 +61,9 @@ mirakcs:
   - site: default
     url: http://mirakc:40772
 
-# **定期ジョブは in-process では投入しない。** River の PeriodicJobs は
-# リーダーに選出されたクライアントだけが投入するので、worker を KEDA で 0 に
-# スケールする構成では誰も投入しなくなる（docs/data.md §2）。投入は CronJob の
-# `rokuban enqueue` が担う。1 件消化モード（`--once`）はこの値が false である
-# ことを要求する（`worker.OnceGate`）。
+# **定期ジョブは in-process では投入しない。** ScaledJob の 1 件消化モード
+# （`--once`）は true だと起動を拒む（internal/worker/worker.go の once 検証）。
+# 投入元は CronJob の `rokuban enqueue` に一本化する（docs/data.md §2）。
 worker:
   periodic_jobs: false
 

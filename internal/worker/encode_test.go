@@ -498,6 +498,51 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 	return id
 }
 
+// 同じ job の前の試行（プロセス死）が残した scratch は次の試行の開始時に消える。
+// 別 job（ID が前方一致するだけのもの）と encode 以外の scratch は消さない。
+func TestEncodeWorker_RemovesStaleScratchOfSameJob(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ffmpegPath := installFakeFFmpeg(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/stale.m2ts", []string{"h264"}, []byte("payload-0123456789"))
+	mk := func(rel string) string {
+		dir := filepath.Join(scratchDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale := mk("encode/7-3-abc")
+	otherJob := mk("encode/70-1-abc")
+	thumbnail := mk("thumbnail/7-1-abc")
+
+	w := &EncodeWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
+		Profiles: config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{{
+			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+		}}},
+	}
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 7},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() = %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale scratch of the same job still exists (stat err = %v)", err)
+	}
+	for _, keep := range []string{otherJob, thumbnail} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s must be kept: %v", keep, err)
+		}
+	}
+}
+
 func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -695,6 +740,16 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 		JobRow: &rivertype.JobRow{Attempt: 3, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
 	}
+	for i := int32(0); i < 2; i++ {
+		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "missing", start.count, errors.New("previous failure"))
+		if err != nil || !updated {
+			t.Fatalf("recording prior failure %d: updated=%v err=%v", i+1, updated, err)
+		}
+	}
 	if err := w.Work(context.Background(), job); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
@@ -723,7 +778,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 
 // encode.failed を発火するかの判定（両方向）。Work 越しの ctx キャンセル
 // テストは notify 内の DB 読みも同時に失敗するため、この分岐だけを分離して見る。
-func TestShouldNotifyEncodeFailure(t *testing.T) {
+func TestShouldCountEncodeFailure(t *testing.T) {
 	boom := errors.New("ffmpeg failed")
 	cases := []struct {
 		name   string
@@ -733,21 +788,21 @@ func TestShouldNotifyEncodeFailure(t *testing.T) {
 	}{
 		{"failure with live ctx", boom, nil, true},
 		{"failure while ctx canceled", boom, context.Canceled, false},
-		{"failure while ctx deadline exceeded", boom, context.DeadlineExceeded, false},
+		{"failure while ctx deadline exceeded", boom, context.DeadlineExceeded, true},
 		{"success", nil, nil, false},
 		{"success while ctx canceled", nil, context.Canceled, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := shouldNotifyEncodeFailure(c.err, c.ctxErr); got != c.want {
-				t.Errorf("shouldNotifyEncodeFailure(%v, %v) = %v, want %v", c.err, c.ctxErr, got, c.want)
+			if got := shouldCountEncodeFailure(c.err, c.ctxErr); got != c.want {
+				t.Errorf("shouldCountEncodeFailure(%v, %v) = %v, want %v", c.err, c.ctxErr, got, c.want)
 			}
 		})
 	}
 }
 
-// ctx キャンセル（River の停止・タイムアウト）では発火しないこと。判定そのものは
-// TestShouldNotifyEncodeFailure が見る（ここは Work 越しに POST が飛ばないことの確認）。
+// 停止による ctx キャンセルでは発火しないこと。判定そのものは
+// TestShouldCountEncodeFailure が見る（ここは Work 越しに POST が飛ばないことの確認）。
 func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -810,7 +865,7 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 		t.Fatalf("NewClient: %v", err)
 	}
 
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, nil); err != nil {
+	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, config.EncodeConfig{}, nil); err != nil {
 		t.Fatalf("EnqueueMissingEncodes: %v", err)
 	}
 
@@ -821,7 +876,7 @@ func TestEnqueueMissingEncodes_LevelTrigger(t *testing.T) {
 	}
 
 	// 再呼び出しは UniqueOpts で重複スキップ（エラーにならない）。
-	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, nil); err != nil {
+	if err := EnqueueMissingEncodes(context.Background(), client, pool, recordingID, config.EncodeConfig{}, nil); err != nil {
 		t.Fatalf("second EnqueueMissingEncodes: %v", err)
 	}
 }
@@ -833,6 +888,36 @@ func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 	}
 	if !opts.UniqueOpts.ByArgs {
 		t.Error("UniqueOpts.ByArgs should be true")
+	}
+	if opts.MaxAttempts != 26 {
+		t.Errorf("MaxAttempts = %d, want 26 (greater than the domain limit 25)", opts.MaxAttempts)
+	}
+}
+
+func TestEncodeJobArgs_UniqueKeyIgnoresTimeout(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "x/unique-timeout.m2ts", nil, []byte("data"))
+	client, err := NewClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := client.Insert(ctx, EncodeJobArgs{
+		RecordingID: recordingID, Profile: "h264", Timeout: time.Hour,
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.Insert(ctx, EncodeJobArgs{
+		RecordingID: recordingID, Profile: "h264", Timeout: 3 * time.Hour,
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.UniqueSkippedAsDuplicate {
+		t.Fatal("insert with a different timeout was not merged into the recording/profile job")
 	}
 }
 

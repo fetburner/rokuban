@@ -3,7 +3,7 @@
 // 「ソケットを connect し続ける」形のロール、すなわち watcher（mirakc の SSE を購読し続ける）
 // のためにある。listen する側のロール（api / notifier / streamer）は水平にスケールするので
 // 選出は不要で、ソケットを持たない仕事（ruler / reconciler / record_sweep / ingest / epg_sync）は
-// River のジョブなので排他はジョブロック + UniqueOpts が担保する（docs/data.md §2）。
+// River のジョブなので排他は UniqueOpts が担保する（docs/data.md §2）。
 //
 // したがって RunSingleton の呼び出し元は cmd/rokuban/server.go の 1 箇所（watcher）だけだが、
 // これは削除の根拠ではない（issue #24 M2-20、docs/operations.md §5）。呼び出し元が 1 つに

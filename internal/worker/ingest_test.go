@@ -1429,6 +1429,7 @@ type lateSHA256IngestRun struct {
 	setHash        func(*string)
 	tempSyncs      *atomic.Int32
 	logOutput      *bytes.Buffer
+	tempModTime    time.Time
 	rangeMu        sync.Mutex
 	rangeOffsets   []int64
 	firstOffsets   []int64
@@ -1479,13 +1480,154 @@ func runLateSHA256IngestCase(t *testing.T, tc lateSHA256IngestCase) {
 	durationBefore := ingestDurationSamples(t)
 	mismatchesBefore := promtestutil.ToFloat64(metrics.IngestHashMismatches)
 	run.runPending(t, 91565, true, beforeResults, durationBefore)
-	run.runPending(t, 91566, false, beforeResults, durationBefore)
+	run.runPending(t, 91565, false, beforeResults, durationBefore)
 	syncsBefore := run.tempSyncs.Load()
-	thirdErr := run.complete(t, tc)
+	thirdErr := run.complete(t, 91565, tc)
 	if got := run.tempSyncs.Load() - syncsBefore; got != tc.wantFinalSyncs {
 		t.Errorf("temp Sync calls in the final job = %d, want %d", got, tc.wantFinalSyncs)
 	}
 	run.assertCompletion(t, tc, beforeResults, durationBefore, mismatchesBefore, thirdErr)
+}
+
+type pacedIngestResponseWriter struct {
+	http.ResponseWriter
+	chunkSize int
+	delay     time.Duration
+}
+
+func (w *pacedIngestResponseWriter) Write(p []byte) (int, error) {
+	total := 0
+	for len(p) > 0 {
+		n := min(len(p), w.chunkSize)
+		written, err := w.ResponseWriter.Write(p[:n])
+		total += written
+		p = p[written:]
+		if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if err != nil {
+			return total, err
+		}
+		if len(p) > 0 {
+			time.Sleep(w.delay)
+		}
+	}
+	return total, nil
+}
+
+func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
+	setFastIngestFollow(t)
+	oldSlice := ingestTransferSlice
+	ingestTransferSlice = 100 * time.Millisecond
+	t.Cleanup(func() { ingestTransferSlice = oldSlice })
+
+	data := makeTSData(700)
+	contentPath := "test/sliced-transfer.m2ts"
+	expectedHash := sha256Hex(data)
+	var rangeMu sync.Mutex
+	var offsets []int64
+	var deleteAttempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
+			rangeMu.Lock()
+			offsets = append(offsets, parseStreamRangeOffset(r))
+			rangeMu.Unlock()
+			writeRecordStream(&pacedIngestResponseWriter{ResponseWriter: w, chunkSize: 8 * 1024, delay: 10 * time.Millisecond}, r, data)
+		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
+			record := mirakc.Record{
+				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
+				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: &expectedHash},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(record)
+		case r.Method == http.MethodDelete:
+			deleteAttempts.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := insertTestRecording(t, pool)
+	const recordID = "rec-sliced-transfer"
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	mediaDir := t.TempDir()
+	worker := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      mediaDir,
+		StallTimeout:  time.Second,
+	}
+	job := &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 9917},
+		Args:   IngestJobArgs{Site: "default", RecordID: recordID},
+	}
+
+	firstErr := worker.Work(context.Background(), job)
+	var firstSnooze *rivertype.JobSnoozeError
+	if !errors.As(firstErr, &firstSnooze) {
+		t.Fatalf("first Work() error = %v, want slice snooze", firstErr)
+	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
+	firstTemp, err := os.ReadFile(tempPath)
+	if err != nil {
+		t.Fatalf("reading temp after first slice: %v", err)
+	}
+	if len(firstTemp) == 0 || len(firstTemp) >= len(data) {
+		t.Fatalf("first slice temp size = %d, want a nonempty partial transfer of %d bytes", len(firstTemp), len(data))
+	}
+	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
+		t.Fatalf("checkpoint after first slice: %v", err)
+	}
+
+	completed := false
+	for slice := 1; slice <= 5; slice++ {
+		err := worker.Work(context.Background(), job)
+		if err == nil {
+			completed = true
+			break
+		}
+		var snooze *rivertype.JobSnoozeError
+		if !errors.As(err, &snooze) {
+			t.Fatalf("resumed Work() error = %v, want another slice snooze or completion", err)
+		}
+	}
+	if !completed {
+		t.Fatal("same River job did not complete within five resumed slices")
+	}
+	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
+	got, err := os.ReadFile(canonicalPath)
+	if err != nil {
+		t.Fatalf("reading committed canonical file: %v", err)
+	}
+	if !bytes.Equal(got, data) {
+		t.Fatal("committed file differs from the single source byte stream")
+	}
+	if gotHash := sha256Hex(got); gotHash != expectedHash {
+		t.Fatalf("committed SHA-256 = %s, want %s", gotHash, expectedHash)
+	}
+	rangeMu.Lock()
+	gotOffsets := slices.Clone(offsets)
+	rangeMu.Unlock()
+	if len(gotOffsets) < 2 || gotOffsets[0] != 0 || gotOffsets[1] != int64(len(firstTemp)) {
+		t.Errorf("Range offsets across slice resume = %v, want first resume at %d", gotOffsets, len(firstTemp))
+	}
+	if got := deleteAttempts.Load(); got != 1 {
+		t.Errorf("DeleteRecord attempts = %d, want 1 after final commit", got)
+	}
+	if _, err := os.Stat(ingestCheckpointPath(tempPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("checkpoint after commit: stat error = %v, want not exist", err)
+	}
 }
 
 func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256IngestRun {
@@ -1547,13 +1689,15 @@ func (run *lateSHA256IngestRun) offsets() []int64 {
 
 func (run *lateSHA256IngestRun) runPending(t *testing.T, jobID int64, first bool, beforeResults map[string]float64, durationBefore uint64) {
 	t.Helper()
-	if err := run.worker.Work(context.Background(), run.job(jobID)); err != nil {
-		t.Fatalf("pending Work: %v", err)
+	err := run.worker.Work(context.Background(), run.job(jobID))
+	var snooze *rivertype.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("pending Work error = %v, want River snooze", err)
 	}
 	if !strings.Contains(run.logOutput.String(), "sha256_verification=pending") || strings.Contains(run.logOutput.String(), "sha256_verification=skipped") {
 		t.Errorf("wait log = %q, want sha256_verification=pending only", run.logOutput.String())
 	}
-	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending completion")
+	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending snooze")
 	if got := ingestDurationSamples(t); got != durationBefore {
 		t.Errorf("IngestDuration samples while pending = %d, want %d", got, durationBefore)
 	}
@@ -1565,15 +1709,26 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, jobID int64, first bool
 		t.Errorf("temp Sync calls while pending = %d, want %d", got, wantSyncs)
 	}
 	assertIngestSHA256WaitState(t, run.pool, run.recordingID, run.deleteAttempts, run.mediaDir, run.recordID, int64(len(run.tsData)))
+	tempPath := ingestTempFilePath(filepath.Join(run.mediaDir, "sites", "default", "test"), "default", run.recordID)
+	info, err := os.Stat(tempPath)
+	if err != nil {
+		t.Fatalf("stating temp during SHA-256 wait: %v", err)
+	}
 	gotOffsets := run.offsets()
 	if first {
 		run.firstOffsets = gotOffsets
-	} else if !slices.Equal(gotOffsets, run.firstOffsets) {
-		t.Errorf("Range offsets after a repeated pending job = %v, want unchanged %v (no temp replay)", gotOffsets, run.firstOffsets)
+		run.tempModTime = info.ModTime()
+	} else {
+		if !slices.Equal(gotOffsets, run.firstOffsets) {
+			t.Errorf("Range offsets after a repeated pending job = %v, want unchanged %v (no temp replay)", gotOffsets, run.firstOffsets)
+		}
+		if !info.ModTime().Equal(run.tempModTime) {
+			t.Errorf("temp mtime after a repeated SHA-256 snooze = %s, want unchanged %s", info.ModTime(), run.tempModTime)
+		}
 	}
 }
 
-func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) error {
+func (run *lateSHA256IngestRun) complete(t *testing.T, jobID int64, tc lateSHA256IngestCase) error {
 	t.Helper()
 	if tc.lateHash != nil {
 		lateHash := tc.lateHash(run.tsData)
@@ -1585,7 +1740,7 @@ func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) 
 			t.Fatalf("aging temp mtime past SHA-256 deadline: %v", err)
 		}
 	}
-	return run.worker.Work(context.Background(), run.job(91567))
+	return run.worker.Work(context.Background(), run.job(jobID))
 }
 
 func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256IngestCase, beforeResults map[string]float64, durationBefore uint64, mismatchesBefore float64, workErr error) {
@@ -2798,7 +2953,7 @@ func newIngestServerWithContentSHA256(t *testing.T, tsData []byte, contentPath s
 
 // newLateHashIngestServer は finished を返しながら最初は content.sha256=null を返し、
 // setHash で後から値を公開できる mirakc stub を作る。rangeOffset と onDelete は、
-// 完了した job の再投入で temp が replay され、commit まで edge record が保持されることを観測する。
+// snoozed job の再開で temp を replay せず、commit まで edge record が保持されることを観測する。
 func newLateHashIngestServer(t *testing.T, tsData []byte, contentPath string, rangeOffset func(int64), onDelete func()) (*httptest.Server, func(*string)) {
 	t.Helper()
 	var hashMu sync.RWMutex

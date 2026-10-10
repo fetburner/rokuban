@@ -77,9 +77,7 @@ const (
 	deleteReconcileNotifyBudget = 2 * time.Minute
 
 	// deleteOrphanCleanupTimeout は ctx 取消後も削除の事実を DB に記録するための
-	// 書き込み（DeleteOrphanFile）に与える上限。ingest job lock の timeout と値は
-	// 同じでも用途が無関係なので共用しない --- あちらを調整したときにこちらの
-	// 締切が一緒に動くのを避ける。
+	// 書き込み（DeleteOrphanFile）に与える上限。
 	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 
@@ -890,6 +888,10 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		log.Error("delete_reconcile: rejecting orphan rel_path outside the media directory", "err", err)
 		return
 	}
+	if isIngestCheckpointFile(filepath.Base(relPath)) {
+		w.deleteOrphanIngestCheckpoint(q, path, relPath, mtimeGrace, log)
+		return
+	}
 
 	isTemp := mediapath.IsIngestTempFile(filepath.Base(relPath))
 	var tempLock *os.File
@@ -900,6 +902,16 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 			return
 		}
 		defer closeOrphanTempLock(tempLock, log)
+		// A recent checkpoint means a snoozed ingest still owns this temp. Keep the
+		// temp mtime unchanged because it anchors the fallback SHA-256 wait deadline.
+		checkpointInfo, err := os.Stat(ingestCheckpointPath(path))
+		if err == nil && checkpointInfo.ModTime().After(time.Now().Add(-mtimeGrace)) {
+			return
+		}
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("delete_reconcile: stating ingest checkpoint before temp cleanup", "err", err)
+			return
+		}
 	}
 
 	var cleanupCtx context.Context
@@ -940,10 +952,53 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	}
 
 	if isTemp {
+		// checkpoint は base temp と同じ寿命である。base の flock を保持したまま
+		// 消し、古い hash 状態を次の同名 temp が誤って読む経路を閉じる。
+		checkpointRelPath := relPath + ingestCheckpointSuffix
+		if err := os.Remove(ingestCheckpointPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn("delete_reconcile: removing ingest checkpoint with aged temp failed", "err", err)
+		} else if err := q.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
+			log.Warn("delete_reconcile: clearing ingest checkpoint orphan row", "err", err)
+		}
 		w.clearOrphanFileRecord(q, relPath, size, physicallyDeleted, log)
 		return
 	}
 	finishCanonicalOrphanCleanup(cleanupCtx, tx, txQ, relPath, log, size, physicallyDeleted)
+}
+
+// deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。
+// checkpoint の削除だけでも次回 replay の量が増えるだけだが、temp と同じ寿命で扱う。
+func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(q *sqlcgen.Queries, path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
+	tempPath := ingestTempPathForCheckpoint(path)
+	tempLock, err := lockExistingIngestTempFile(tempPath)
+	if err == nil {
+		defer closeOrphanTempLock(tempLock, log)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		if ingestTempLockBusy(err) {
+			log.Debug("delete_reconcile: ingest temp is locked; deferring checkpoint removal")
+			return
+		}
+		log.Warn("delete_reconcile: locking ingest temp before checkpoint removal", "err", err)
+		return
+	}
+
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		w.clearOrphanFileRecord(q, relPath, 0, false, log)
+		return
+	}
+	if err != nil {
+		log.Warn("delete_reconcile: stating ingest checkpoint", "err", err)
+		return
+	}
+	if info.ModTime().After(time.Now().Add(-mtimeGrace)) {
+		return
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		log.Warn("delete_reconcile: removing ingest checkpoint", "err", err)
+		return
+	}
+	w.clearOrphanFileRecord(q, relPath, info.Size(), true, log)
 }
 
 // lockOrphanIngestTemp は ingest と同じ flock を temp ファイルに取得する。

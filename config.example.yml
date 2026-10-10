@@ -63,14 +63,14 @@ ingest:
   concurrency: 3                 # mirakc サイトあたり: チューナー数 + 全チューナー稼働中に許す
                                   # 全速 pull の本数（1〜2）。既定 3 は 2 チューナー機の
                                   # 「2 本同時録画 + 全速 pull 1 本」で、この式の下端にあたる。
-                                  # 録画中の追従が番組長のあいだ枠を占有するが、読み出しは
-                                  # 放送レートで物理負荷が小さい。障害復旧時の全速 pull と
-                                  # 録画書き込みの競合をこの余り枠に閉じ込める。
+                                  # 録画中の追従は 4 分ごとに snooze して枠を返すが、同時録画数
+                                  # ぶんの枠を用意する。障害復旧時の全速 pull と録画書き込みの
+                                  # 競合をこの余り枠に閉じ込める。
                                   # 足りないと追従が枠待ちになり、UI に取り込み待ちが続く。
                                   # 4 チューナー機では 5〜6 に上げる（接続プールの予算は追随する）
-  stall_timeout: 30s             # 転送中の無進捗検知。この時間バイトが進まないと切断して
-                                 # Range 再開する。River の総時間タイムアウトは無効化している
-                                 # ため、これが ingest の唯一のタイムアウト。
+  stall_timeout: 30s             # Work slice 内の転送中の無進捗検知。この時間バイトが
+                                 # 進まないと切断して Range 再開する。4 分ごとに snooze して
+                                 # 同じジョブを再開するため、これは録画全体の時間制限ではない。
                                  # 遅い回線や大きな録画で誤爆する場合は延ばす
 
 # EPG プロジェクション
@@ -131,12 +131,19 @@ worker:
                                  # delete_reconcile / label_rule_reconcile /
                                  # storage_sync）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
-                                 # （River の PeriodicJobs はリーダーだけが投入するため、
-                                 #  KEDA で 0 にスケールすると誰も投入しなくなる。docs/data.md §2）
+                                 # （ScaledJob の 1 件消化モード（--once）は true だと起動を拒む。
+                                 #  投入元は CronJob に一本化する。docs/data.md §2）
   queues: []                     # 引くキューを絞る。空なら全部。
                                  # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
                                  # 同じものを `--queues` で argv からも指定でき、両方指定は起動エラー
                                  # （k8s は ConfigMap 1 個を共有し Pod 差分を argv に寄せる。docs/operations.md §5）
+  rescue_stuck_jobs_after: 6m    # running のまま残ったジョブを River の rescuer が死んだ実行と
+                                 # みなすまでの時間。既定 6m。0 を明示すると River の既定（1h）。
+                                 # client JobTimeout より長くする。worker 固有の Timeout が
+                                 # これより長ければ、rescuer はその時間まで待つ。
+                                 # Timeout が -1 の kind は各 reconcile が回収する。正で 1m 未満だと
+                                 # worker が起動しない（River の既定 JobTimeout は 1m）。
+                                 # k8s で誰が rescuer を動かすかは docs/data/jobs.md §2
 
 # エンコード（プロファイルはデプロイ属性。DB のルールからは名前参照）
 encode:
@@ -146,6 +153,7 @@ encode:
   thumbnail_concurrency: 1       # thumbnail キューの MaxWorkers
   # profiles:
   #   - name: h264
+  #     rate: 4.0                # 録画実尺 × rate が encode job の rescue 締切（最低 1 時間。実尺が不明なら 12 時間）
   #     container: mp4           # mp4 | mkv
   #     video_codec: libx264
   #     audio_codec: aac

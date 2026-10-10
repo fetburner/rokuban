@@ -28,14 +28,12 @@
 # TestScaledJobsCoverEveryQueue は `internal/jobs` を走査していて、
 # `Queue: river.QueueDefault` が現れた日に落ちる。
 #
-# **トリガが数えるのは `available` と `retryable` の 2 つ。**
-# `retryable` を `available` に戻すのは River の `JobScheduler` で、これは
-# **リーダーに選出された常駐クライアントだけ**が動かす保守サービスである。
-# ロール分割構成では常駐する River クライアントが 1 つも無い（api / watcher /
-# `enqueue` はいずれも insert 専用で `Start` しない）ので、`available` だけを
-# 数えると失敗したジョブが永久に止まる --- Job が起きないので誰も昇格させず、
-# 昇格しないので Job も起きない。**受け入れ判定ハーネスの「滞留」の定義
-# （`deploy/k8s/e2e/lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。**
+# **トリガが数えるのは `available` と `retryable` の 2 つ。** notifier 上の常駐
+# client が JobScheduler を動かすため、`retryable` の昇格は one-shot Pod に依存しない。
+# retryable も数えるのはバックオフ中から KEDA の backlog に含めるためで、まだ
+# claim できない job のために起きた Pod は `--once-idle-timeout` で終了する。
+# **受け入れ判定ハーネスの「滞留」の定義（`deploy/k8s/e2e/lib/kube.sh` の
+# `riverBacklogStates`）と同じ集合にすること。**
 #
 # **`rollout.strategy: gradual` は書き忘れてはならない 1 行である。**
 # 省略も `immediate` も、Pod テンプレートの更新で実行中の Job が消える（kind で

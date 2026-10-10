@@ -15,6 +15,41 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+func startCMDetectionTestAttempt(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64) int32 {
+	t.Helper()
+	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: recordingID, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !attempt.ShouldRun {
+		t.Fatalf("BeginCMDetectionAttempt(%d) = %#v, %v", recordingID, attempt, err)
+	}
+	return attempt.AttemptCount
+}
+
+func markCMDetectionTestFailure(
+	t *testing.T,
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	recordingID int64,
+	attemptCount int32,
+	state string,
+	stage *string,
+	message *string,
+) {
+	t.Helper()
+	if message == nil {
+		defaultMessage := "test failure"
+		message = &defaultMessage
+	}
+	n, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: recordingID, AttemptCount: attemptCount,
+		State: state, Stage: stage, Error: message,
+	})
+	if err != nil || n != 1 {
+		t.Fatalf("MarkCMDetectionFailure(%d, %d) = %d, %v", recordingID, attemptCount, n, err)
+	}
+}
+
 func TestCMFrameTimeConversionsUse30000Over1001(t *testing.T) {
 	for _, tt := range []struct {
 		name       string
@@ -81,6 +116,74 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 		if got := cmDetectionTimeout(tt.durationMs); got != tt.want {
 			t.Errorf("cmDetectionTimeout(%d) = %s, want %s", tt.durationMs, got, tt.want)
 		}
+	}
+}
+
+func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
+	cmJob := cmJob(1, 1)
+	cmJob.Args.RecordingDurationMs = 45 * 60 * 1000
+	if got := (&CMDetectWorker{}).Timeout(cmJob); got != 90*time.Minute {
+		t.Errorf("CMDetectWorker.Timeout = %s, want 90m", got)
+	}
+	logoJob := cmLogoCandidateJob(1, 2, time.Now())
+	logoJob.Args.RecordingDurationMs = 45 * 60 * 1000
+	if got := (&CMLogoCandidateWorker{}).Timeout(logoJob); got != 90*time.Minute {
+		t.Errorf("CMLogoCandidateWorker.Timeout = %s, want 90m", got)
+	}
+	logoJob.Args.RecordingDurationMs = 0 // Old queued args omit this field.
+	if got := (&CMLogoCandidateWorker{}).Timeout(logoJob); got != 30*time.Minute {
+		t.Errorf("old CMLogoCandidateJobArgs timeout = %s, want 30m", got)
+	}
+}
+
+func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 1101)
+	startedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	endedAt := startedAt.Add(45 * time.Minute)
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3, program_duration_ms = 1 WHERE id = $1`, id, startedAt, endedAt); err != nil {
+		t.Fatal(err)
+	}
+	q := sqlcgen.New(pool)
+	duration, err := q.GetCMRecordingDuration(ctx, id)
+	if err != nil || duration != 45*60*1000 {
+		t.Fatalf("GetCMRecordingDuration = %d, %v; want 2700000", duration, err)
+	}
+	detections, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != duration {
+		t.Errorf("ListMissingCMDetections = %#v, want recording %d at %dms", detections, id, duration)
+	}
+	seedTaughtArea(t, pool, 1180)
+	candidates, err := q.ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != duration {
+		t.Errorf("ListMissingCMLogoCandidates = %#v, want recording %d at %dms", candidates, id, duration)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 2400000 WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 2400000 {
+		t.Errorf("duration with unconfirmed recording times = %d, %v; want program_duration_ms 2400000", duration, err)
+	}
+	detections, err = q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 2400000 {
+		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", detections, id)
+	}
+	candidates, err = q.ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != 2400000 {
+		t.Errorf("ListMissingCMLogoCandidates with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", candidates, id)
 	}
 }
 
@@ -180,16 +283,12 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []int64{ids[5], ids[6]} {
-		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-			t.Fatal(err)
-		}
+		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 		state := "failed"
 		if id == ids[6] {
 			state = "retrying"
 		}
-		if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: state}); err != nil {
-			t.Fatal(err)
-		}
+		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, state, nil, nil)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, ids[5]); err != nil {
 		t.Fatal(err)
@@ -218,13 +317,29 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	if err != nil || !desired {
 		t.Errorf("failed recording with a newly learned station logo: desired = %v, err = %v; want true", desired, err)
 	}
+	updatedAttempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: ids[5], MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !updatedAttempt.ShouldRun || updatedAttempt.AttemptCount != 1 {
+		t.Errorf("BeginCMDetectionAttempt after a new logo = %#v, want running attempt 1 (a new desire starts a new budget)", updatedAttempt)
+	}
+	if err := q.DeleteCMDetectionAttempt(ctx, ids[5]); err != nil {
+		t.Fatal(err)
+	}
 	rows, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []int64{ids[0], ids[5], ids[6]}
-	if !reflect.DeepEqual(rows, want) {
-		t.Fatalf("missing CM detection IDs = %v, want %v", rows, want)
+	got := make([]int64, len(rows))
+	for i := range rows {
+		got[i] = rows[i].RecordingID
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("missing CM detection IDs = %v, want %v", got, want)
 	}
 }
 
@@ -250,14 +365,8 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	fail := func(t *testing.T, id int64, stage *string) {
 		t.Helper()
 		message := "failed"
-		if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-			t.Fatal(err)
-		}
-		if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
-			RecordingID: id, State: "failed", Stage: stage, Error: &message,
-		}); err != nil {
-			t.Fatal(err)
-		}
+		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "failed", stage, &message)
 	}
 	wantDesired := func(t *testing.T, id int64, want bool) {
 		t.Helper()
@@ -274,7 +383,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 		}
 		listed := false
 		for _, got := range ids {
-			listed = listed || got == id
+			listed = listed || got.RecordingID == id
 		}
 		if listed != want {
 			t.Fatalf("ListMissingCMDetections = %v, want recording %d listed = %v", ids, id, want)
@@ -355,16 +464,12 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals before CM completion = %d, want 0", got)
 	}
-	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-		t.Fatal(err)
-	}
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: "retrying"}); err != nil {
-		t.Fatal(err)
-	}
+	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+	markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals while retrying = %d, want 0", got)
 	}
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{RecordingID: id, State: "failed"}); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET state = 'failed' WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if got := count(); got != 1 {
@@ -426,15 +531,9 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 		VALUES ($1, 'until_encoded', ARRAY['h264'], true)`, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := q.MarkCMDetectionRunning(ctx, id); err != nil {
-		t.Fatal(err)
-	}
+	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "adopt"
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
-		RecordingID: id, State: "failed", Stage: &stage,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "failed", &stage, nil)
 	var eligible int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
 		t.Fatal(err)
@@ -443,9 +542,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 		t.Fatalf("adoption-waiting original is eligible = %d, want 0", eligible)
 	}
 	stage = "logo"
-	if err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
-		RecordingID: id, State: "failed", Stage: &stage,
-	}); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET stage = 'logo' WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {

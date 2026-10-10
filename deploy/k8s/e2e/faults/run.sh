@@ -10,10 +10,22 @@ source "$E2E_DIR_SELF/lib/log.sh"
 E2E_SUMMARY_SUBJECT="故障注入 suite が"
 export E2E_SUMMARY_SUBJECT
 
+# E2E_FAULTS_ONLY=03 のように番号を渡すと、その故障だけを走らせる（変異の確認用）。
+# 一部だけ走らせた結果は、すべて緑でも summary が 0 ではなく 2 を返す（lib/log.sh の E2E_PARTIAL_RUN）。
+ran=0
+if [ -n "${E2E_FAULTS_ONLY:-}" ]; then
+  export E2E_PARTIAL_RUN="E2E_FAULTS_ONLY=${E2E_FAULTS_ONLY}"
+fi
 for script in "$E2E_DIR_SELF"/faults/[0-9][0-9]-*.sh; do
+  name="$(basename "$script")"
+  case "$name" in "${E2E_FAULTS_ONLY:-}"*) ;; *) continue ;; esac
+  ran=$((ran + 1))
   if ! bash "$script"; then
-    fail "$(basename "$script" .sh).exit" "故障注入スクリプトが異常終了した"
+    fail "${name%.sh}.exit" "故障注入スクリプトが異常終了した"
   fi
 done
+if [ "$ran" -eq 0 ]; then
+  fail "faults.none" "E2E_FAULTS_ONLY=${E2E_FAULTS_ONLY:-} に合う故障注入スクリプトが無い"
+fi
 
 summary

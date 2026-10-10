@@ -132,10 +132,11 @@ func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// EncodeJobArgs は encode ジョブの引数。recording とプロファイルを指定する。
+// EncodeJobArgs は encode ジョブの引数。recording、プロファイル、rescue 用の締切を指定する。
 type EncodeJobArgs struct {
-	RecordingID int64  `json:"recording_id"`
-	Profile     string `json:"profile"`
+	RecordingID int64         `json:"recording_id" river:"unique"`
+	Profile     string        `json:"profile" river:"unique"`
+	Timeout     time.Duration `json:"timeout,omitempty"`
 }
 
 // Kind は River ジョブの種別名を返す。
@@ -145,6 +146,9 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: EncodeQueue,
+		// 停止による Canceled は River の attempt を消費するがドメインでは数えない。
+		// 26 > 25 は River が先に discard しない保証ではない（reconcile が新ジョブで回復する）。
+		MaxAttempts: 26,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,
 			ByState: pendingJobStates,
@@ -246,7 +250,8 @@ func (ThumbnailReconcileArgs) InsertOpts() river.InsertOpts {
 
 // CMDetectJobArgs identifies a recording whose CM ranges should be detected.
 type CMDetectJobArgs struct {
-	RecordingID int64 `json:"recording_id"`
+	RecordingID         int64 `json:"recording_id" river:"unique"`
+	RecordingDurationMs int64 `json:"recording_duration_ms"`
 }
 
 // Kind returns the River job kind.
@@ -256,7 +261,7 @@ func (CMDetectJobArgs) Kind() string { return "cm_detect" }
 func (CMDetectJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue:       CMDetectQueue,
-		MaxAttempts: 3,
+		MaxAttempts: 10,
 		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
 	}
 }
@@ -279,10 +284,11 @@ func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
 // prevents an older hint from analyzing a recording after the user has saved a
 // newer area.
 type CMLogoCandidateJobArgs struct {
-	NetworkID     int32     `json:"network_id"`
-	ServiceID     int32     `json:"service_id"`
-	RecordingID   int64     `json:"recording_id"`
-	AreaUpdatedAt time.Time `json:"area_updated_at"`
+	NetworkID           int32     `json:"network_id" river:"unique"`
+	ServiceID           int32     `json:"service_id" river:"unique"`
+	RecordingID         int64     `json:"recording_id" river:"unique"`
+	AreaUpdatedAt       time.Time `json:"area_updated_at" river:"unique"`
+	RecordingDurationMs int64     `json:"recording_duration_ms"`
 }
 
 // Kind returns the River job kind.

@@ -2,11 +2,22 @@
 -- The predicate lives in the cm_detection_desired view so a new caller cannot drift from
 -- the reconcile definition.
 -- name: ListMissingCMDetections :many
-SELECT r.recording_id
-FROM cm_detection_desired r
-WHERE r.recording_id > sqlc.arg('after_recording_id')::bigint
-ORDER BY r.recording_id
+SELECT desired.recording_id,
+       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
+                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
+FROM cm_detection_desired desired
+JOIN recordings r ON r.id = desired.recording_id
+WHERE desired.recording_id > sqlc.arg('after_recording_id')::bigint
+ORDER BY desired.recording_id
 LIMIT sqlc.arg('row_limit');
+
+-- name: GetCMRecordingDuration :one
+SELECT COALESCE(GREATEST(CASE WHEN ended_at IS NOT NULL AND started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint
+                           ELSE program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
+FROM recordings
+WHERE id = sqlc.arg('recording_id');
 
 -- name: IsCMDetectionDesired :one
 SELECT EXISTS (
@@ -15,7 +26,7 @@ SELECT EXISTS (
 );
 
 -- name: GetCMDetectionWorkItem :one
-SELECT r.id, r.network_id, r.service_id, r.program_duration_ms, o.rel_path,
+SELECT r.id, r.network_id, r.service_id, o.rel_path,
        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        (r.deleted_at IS NOT NULL)::boolean AS is_trashed,
        EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id) AS original_missing,
@@ -42,18 +53,80 @@ DELETE FROM recording_cm_detections WHERE recording_id = sqlc.arg('recording_id'
 -- name: DeleteCMDetectionAttempt :exec
 DELETE FROM recording_cm_attempts WHERE recording_id = sqlc.arg('recording_id');
 
--- name: MarkCMDetectionRunning :exec
-INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at)
-VALUES (sqlc.arg('recording_id'), 'running', NULL, now())
+-- name: BeginCMDetectionAttempt :one
+INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count)
+VALUES (sqlc.arg('recording_id'), 'running', NULL, now(), 1)
 ON CONFLICT (recording_id) DO UPDATE
-SET state = 'running', stage = NULL, error = NULL, attempted_at = now();
+SET state = CASE
+        -- Work calls this only after cm_detection_desired says a failed attempt
+        -- has a newer logo or area to analyze.
+        WHEN recording_cm_attempts.state = 'failed' THEN 'running'
+        -- Only a still-running attempt at the limit is a dead process. A canceled
+        -- attempt is rolled back to retrying and must remain eligible for another try.
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'failed'
+        ELSE 'running'
+    END,
+    attempt_count = CASE
+        -- A new desire after failed starts a new budget, like the API retry
+        -- (which deletes the row and restarts at 1).
+        WHEN recording_cm_attempts.state = 'failed' THEN 1
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempt_count
+        ELSE recording_cm_attempts.attempt_count + 1
+    END,
+    stage = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN NULL
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'stopped'
+        ELSE NULL
+    END,
+    error = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN NULL
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'CM detection process stopped while job was running'
+        ELSE NULL
+    END,
+    attempted_at = CASE
+        WHEN recording_cm_attempts.state = 'failed' THEN now()
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempted_at
+        ELSE now()
+    END
+RETURNING attempt_count, state, (state = 'running')::boolean AS should_run;
 
--- name: MarkCMDetectionFailure :exec
+-- name: MarkCMDetectionFailure :execrows
 -- **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
 -- 学習済みロゴの `learned_at` と比べるので、失敗終了時刻で上書きしない。
 UPDATE recording_cm_attempts
 SET state = sqlc.arg('state'), stage = sqlc.narg('stage'), error = sqlc.arg('error')
-WHERE recording_id = sqlc.arg('recording_id');
+WHERE recording_id = sqlc.arg('recording_id')
+  AND attempt_count = sqlc.arg('attempt_count')
+  AND state = 'running';
+
+-- name: DeleteCMDetectionRunningAttempt :execrows
+DELETE FROM recording_cm_attempts
+WHERE recording_id = sqlc.arg('recording_id')
+  AND attempt_count = sqlc.arg('attempt_count')
+  AND state = 'running';
+
+-- name: CancelCMDetectionRunningAttempt :execrows
+-- A canceled retry does not consume an attempt. Keep the prior failure budget,
+-- while restoring the attempt number so the next actual try uses the same count.
+UPDATE recording_cm_attempts
+SET state = 'retrying', attempt_count = sqlc.arg('attempt_count')::integer - 1,
+    stage = NULL, error = NULL
+WHERE recording_id = sqlc.arg('recording_id')
+  AND attempt_count = sqlc.arg('attempt_count')
+  AND attempt_count > 1
+  AND state = 'running';
+
+-- name: LockCMDetectionAttempt :one
+SELECT attempt_count
+FROM recording_cm_attempts
+WHERE recording_id = sqlc.arg('recording_id')
+  AND state = 'running'
+FOR UPDATE;
 
 -- name: SaveCMDetection :exec
 INSERT INTO recording_cm_detections (recording_id, cm_ranges)
@@ -214,13 +287,17 @@ FROM cm_logos
 WHERE network_id = sqlc.arg('network_id') AND service_id = sqlc.arg('service_id');
 
 -- name: ListMissingCMLogoCandidates :many
-SELECT network_id, service_id, recording_id, area_updated_at
-FROM cm_logo_candidate_desired
-WHERE (network_id, service_id) > (
+SELECT desired.network_id, desired.service_id, COALESCE(desired.recording_id, 0)::bigint AS recording_id, desired.area_updated_at,
+       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
+                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
+FROM cm_logo_candidate_desired desired
+JOIN recordings r ON r.id = desired.recording_id
+WHERE (desired.network_id, desired.service_id) > (
     sqlc.arg('after_network_id')::int,
     sqlc.arg('after_service_id')::int
 )
-ORDER BY network_id, service_id
+ORDER BY desired.network_id, desired.service_id
 LIMIT sqlc.arg('row_limit');
 
 -- name: IsCMLogoCandidateDesired :one
@@ -232,7 +309,7 @@ SELECT EXISTS (
       AND area_updated_at = sqlc.arg('area_updated_at')::timestamptz
 );
 
--- name: InsertCMLogoCandidateRunning :execrows
+-- name: InsertCMLogoCandidateRunning :one
 INSERT INTO cm_logo_candidates (
     network_id, service_id, state, stage, error,
     x, y, w, h, coded_width, coded_height,
@@ -240,7 +317,7 @@ INSERT INTO cm_logo_candidates (
 )
 SELECT a.network_id, a.service_id, 'running', NULL, NULL,
        a.x, a.y, a.w, a.h, a.coded_width, a.coded_height,
-       sqlc.arg('recording_id')::bigint, a.updated_at, now()
+       sqlc.arg('recording_id')::bigint, a.updated_at, clock_timestamp()
 FROM cm_logo_areas a
 LEFT JOIN cm_logos l
   ON l.network_id = a.network_id AND l.service_id = a.service_id
@@ -252,15 +329,43 @@ WHERE a.network_id = sqlc.arg('network_id')
       WHERE c.network_id = a.network_id AND c.service_id = a.service_id
   )
   AND (l.network_id IS NULL OR l.learned_at < a.updated_at)
-ON CONFLICT (network_id, service_id) DO NOTHING;
+ON CONFLICT (network_id, service_id) DO NOTHING
+RETURNING attempted_at;
 
--- name: MarkCMLogoCandidateFailure :exec
+-- name: ListRunningCMLogoCandidates :many
+SELECT network_id, service_id, COALESCE(recording_id, 0)::bigint AS recording_id,
+       observed_area_updated_at, attempted_at
+FROM cm_logo_candidates
+WHERE state = 'running'
+ORDER BY network_id, service_id;
+
+-- name: FailOrphanCMLogoCandidate :execrows
+UPDATE cm_logo_candidates
+SET state = 'failed', stage = 'stopped',
+    error = 'CM logo candidate job ended without recording a result'
+WHERE network_id = sqlc.arg('network_id')
+  AND service_id = sqlc.arg('service_id')
+  AND recording_id = sqlc.arg('recording_id')
+  AND state = 'running'
+  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
+  AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
+
+-- name: DeleteCMLogoCandidateRunningAttempt :execrows
+DELETE FROM cm_logo_candidates
+WHERE network_id = sqlc.arg('network_id')
+  AND service_id = sqlc.arg('service_id')
+  AND state = 'running'
+  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
+  AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
+
+-- name: MarkCMLogoCandidateFailure :execrows
 UPDATE cm_logo_candidates
 SET state = 'failed', stage = sqlc.narg('stage'), error = sqlc.arg('error')
 WHERE network_id = sqlc.arg('network_id')
   AND service_id = sqlc.arg('service_id')
   AND state = 'running'
-  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz;
+  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
+  AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
 
 -- name: MarkCMLogoCandidateReady :execrows
 UPDATE cm_logo_candidates c
@@ -271,6 +376,7 @@ WHERE c.network_id = sqlc.arg('network_id')
   AND c.service_id = sqlc.arg('service_id')
   AND c.state = 'running'
   AND c.observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
+  AND c.attempted_at = sqlc.arg('attempted_at')::timestamptz
   AND EXISTS (
       SELECT 1 FROM cm_logo_areas a
       WHERE a.network_id = c.network_id
@@ -287,7 +393,8 @@ DELETE FROM cm_logo_candidates
 WHERE network_id = sqlc.arg('network_id')
   AND service_id = sqlc.arg('service_id')
   AND state = 'running'
-  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz;
+  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
+  AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
 
 -- name: GetCMLogoCandidate :one
 SELECT state, stage, error, x, y, w, h, coded_width, coded_height,
