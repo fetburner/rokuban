@@ -199,9 +199,11 @@ F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River cli
 client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
 Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
-F3.3 は rescue の時刻・leader・kill からの秒数を記録し、F3.4 は再実行の completed を見る。
+F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。
+`--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
+F3.4 は再実行の completed を見る。
 resident client の値を 24h にする変異では F3.3 が FAIL することを確認する。
-**F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できるが、一部実行の終了コードは成功時も 2 である。
+**F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できる。
 `E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
 
 F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・

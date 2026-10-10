@@ -131,8 +131,8 @@ worker:
                                  # delete_reconcile / label_rule_reconcile /
                                  # storage_sync）を投入するか。
                                  # k8s では false にし、CronJob から rokuban enqueue で投入する
-                                 # （River の PeriodicJobs はリーダーだけが投入するため、
-                                 #  KEDA で 0 にスケールすると誰も投入しなくなる。docs/data.md §2）
+                                 # （true のままだと notifier の常駐 River client がリーダーに
+                                 #  なったとき CronJob と二重に投入する。docs/data.md §2）
   queues: []                     # 引くキューを絞る。空なら全部。
                                  # ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。
                                  # 同じものを `--queues` で argv からも指定でき、両方指定は起動エラー

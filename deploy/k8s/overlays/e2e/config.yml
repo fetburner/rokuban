@@ -71,9 +71,9 @@ encode:
       preset: veryslow
 
 worker:
-  # **k8s では false にする**（config.example.yml が名指ししている）。River の
-  # PeriodicJobs はリーダーに選出されたクライアントだけが投入するので、KEDA で
-  # worker を 0 に落とすと誰も投入しなくなる。投入は CronJob の
+  # **k8s では false にする**（config.example.yml が名指ししている）。true だと
+  # notifier の常駐 River client（リーダーだけが PeriodicJobs を投入する）と
+  # CronJob が二重に投入する。投入は CronJob の
   # `rokuban enqueue` が担う --- **判定 2 が測っているのはまさにこの経路**
   # （worker 0 でも CronJob が投入し続け、KEDA が起こして消化する）。
   # ここを true に戻すと、判定 2 は「worker が自分で投入して自分で消化した」

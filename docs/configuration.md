@@ -109,7 +109,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### worker.periodic_jobs と worker.queues
 
-- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は `rokuban enqueue` で投入できるジョブと同じ集合（`rokuban enqueue --help`）。`cm_detect_reconcile` だけは `cm_detect.enabled` が条件。k8s では false にし、CronJob から `rokuban enqueue` で投入する。River の PeriodicJobs はリーダーだけが投入するため、KEDA で 0 にスケールすると誰も投入しなくなる（[data.md](data.md) §2）。
+- `worker.periodic_jobs`: プロセス内で定期ジョブを投入するか。対象は `rokuban enqueue` で投入できるジョブと同じ集合（`rokuban enqueue --help`）。`cm_detect_reconcile` だけは `cm_detect.enabled` が条件。k8s では false にし、CronJob から `rokuban enqueue` で投入する。true のままだと notifier の常駐 River client（リーダーだけが PeriodicJobs を投入する）と CronJob が同じジョブを二重に投入するため（[data.md](data.md) §2）。
 - `worker.queues`: worker ロールが引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を実現するための knob。**同じものを `--queues` で argv からも指定でき、両方指定は起動エラー**（k8s では ConfigMap 1 個を全 Pod で共有し Pod ごとの差分を argv に寄せるため。[operations.md](operations.md) §5）。書くのは物理名ではなく**論理名**。使えるのは `ingest` / `epg` / `ruler` / `reconciler` / `watcher` / `encode`。`thumbnail` / `cleanup` / `storage` / `cm_detect` / `default` も使える。site 単位のキューの物理名への展開・ロールとの関係（worker ロールが無いプロセスはこの設定に関わらずキューを引かない）は [operations.md](operations.md) §5 を参照
 
 ### ffmpeg の存在検査

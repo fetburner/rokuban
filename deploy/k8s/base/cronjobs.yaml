@@ -1,8 +1,8 @@
 # site 非依存の定期投入（`rokuban enqueue <ジョブ名>`）。
 #
 # **`worker.periodic_jobs: false` で出荷しているので、投入するのはここだけである。**
-# River の `PeriodicJobs` はリーダーに選出されたクライアントだけが投入するので、
-# worker が 0 にスケールする構成では誰も投入しない（docs/operations.md §1 / §5）。
+# true のままだと notifier の常駐 River client がリーダーになったとき CronJob と
+# 二重に投入する（docs/data.md §2）。
 #
 # 規律が 3 つある。
 #

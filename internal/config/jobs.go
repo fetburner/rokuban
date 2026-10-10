@@ -140,9 +140,8 @@ type WorkerConfig struct {
 	// PeriodicJobs はプロセス内で定期ジョブ（epg_sync / ruler_pass / reconcile_pass /
 	// record_sweep）を投入するか。
 	// k8s では false にし、CronJob から `rokuban enqueue` で投入する。
-	// River の PeriodicJobs はリーダーに選出されたクライアントだけが投入するため、
-	// worker を KEDA で 0 にスケールすると誰も投入しなくなる（docs/data.md §2
-	// 「定期実行の契機はデプロイ形態に委ねる」）。
+	// true のままだと notifier の常駐 River client がリーダーになったとき CronJob と
+	// 二重に投入する（docs/data.md §2「定期実行の契機はデプロイ形態に委ねる」）。
 	PeriodicJobs bool `yaml:"periodic_jobs"`
 
 	// Queues は引くキューを絞る。空なら全部。ロールを増やさずに「ruler / reconciler だけ別 Pod」を

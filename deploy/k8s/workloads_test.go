@@ -176,7 +176,8 @@ func TestScaledJobsCoverEveryQueue(t *testing.T) {
 		got := byQueue[q]
 		switch len(got) {
 		case 0:
-			t.Errorf("queue %q has no ScaledJob; its backlog has no KEDA-scaled capacity", q)
+			t.Errorf("queue %q has no ScaledJob; nothing will ever work its jobs "+
+				"(the resident notifier client subscribes only to ruler)", q)
 			continue
 		case 1:
 		default:
@@ -271,10 +272,6 @@ func TestNotifierRunsResidentRescuerClient(t *testing.T) {
 	}
 	if sites, ok := flagValue(args, "sites"); !ok || sites != "" {
 		t.Errorf("notifier --sites = %q (present=%v), want explicit empty site scope", sites, ok)
-	}
-	grace, err := strconv.Atoi(fmt.Sprint(mapAt(podTemplate(notifier.object), "spec")["terminationGracePeriodSeconds"]))
-	if err != nil || grace <= 30 {
-		t.Errorf("notifier terminationGracePeriodSeconds = %d (parse error: %v), want > 30s for HTTP shutdown and River drain", grace, err)
 	}
 	for _, arg := range args {
 		if arg == "--once" || strings.HasPrefix(arg, "--once=") {
@@ -531,12 +528,21 @@ func softStopSeconds(t *testing.T, s string) int {
 // manifests_test.go の TestTerminationBudgetCoversPreStop。
 func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 	checked := 0
-	for _, w := range scaledJobs(t) {
+	for _, w := range loadWorkloads(t) {
+		if w.kind() != "ScaledJob" && w.kind() != "Deployment" {
+			continue
+		}
 		c := soleContainer(t, w)
 		args := argsOf(c)
-		soft, ok := flagValue(args, "soft-stop-timeout")
-		if !ok {
-			continue // TestScaledJobsRunOnceWorkers が報告済み
+		roles, _ := flagValue(args, "roles")
+		if !slices.Contains(strings.Split(roles, ","), "worker") {
+			continue
+		}
+		// --soft-stop-timeout が無ければコードの既定（worker.DefaultSoftStopTimeout）。
+		// 既定値の変更を見逃さないよう、リテラルでなく定数を参照する。
+		soft := worker.DefaultSoftStopTimeout.String()
+		if v, ok := flagValue(args, "soft-stop-timeout"); ok {
+			soft = v
 		}
 		checked++
 
@@ -555,7 +561,8 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		}
 
 		// 10 は cmd/rokuban/server.go の `httpShutdownTimeout`（停止待ち）と、
-		// 猶予が切れたあと畳み終えるぶん。**実装の定数を参照せずリテラルで書く**。
+		// 猶予が切れたあと畳み終えるぶん（`hardStopGrace`）。**実装の定数を
+		// 参照せずリテラルで書く**。
 		const stopWait, teardown = 10, 10
 		want := preStop + stopWait + softStopSeconds(t, soft) + teardown
 		if grace <= want {
@@ -565,7 +572,7 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Error("no worker pod was checked (the --soft-stop-timeout flag disappeared from every ScaledJob)")
+		t.Error("no worker pod was checked (no workload passes --roles containing worker)")
 	}
 }
 

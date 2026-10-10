@@ -268,6 +268,8 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。** notifier は常時起動し、api ではなく site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
+**死んだ `running` の job は、回収されるまで同じ kind × site の投入を飲み込む。** その行が一意キーを占有し、同じ kind × site の後続の投入は合流して消える。その site のそのパスは `rescue_stuck_jobs_after`（River 既定 1h。base の config.yml は設定しない）まで止まる。常駐 client が変えるのは回収する主体であって、回収までの時間ではない。パスが 1h 止まって困る運用では `worker.rescue_stuck_jobs_after` を下げる（1 分以上。未満は起動しない）。ただし kind ごとの `Timeout()` より短くしても、その kind は Timeout が過ぎるまで rescue されない（健全に走る job は奪われない）。`Timeout()` が無制限の kind（encode）は rescue の対象外である。
+
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 
 **この排他は共有 ConfigMap と結合している。** `--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた瞬間に、`--queues` を渡している worker Pod が**すべて**起動エラーになる。ConfigMap を 1 個に保つ決定（上記「マニフェストの配布形式」）と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。
@@ -296,7 +298,7 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 
 ### 定期投入: `rokuban enqueue` の CronJob
 
-`worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。River の `PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールする構成では誰も投入しなくなる（[§1](monitoring.md) 参照）。
+`worker.periodic_jobs: false` で出荷し、定期ジョブは CronJob から `rokuban enqueue <ジョブ名>` で投入する。投入元を CronJob に一本化するためである。true のままだと notifier の常駐 River client がリーダーになったとき CronJob と二重に投入する（[data.md](../data.md) §2）。
 
 - **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
 - 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る

@@ -15,8 +15,8 @@ rescued_error="Stuck job rescued by JobRescuer"
 # tuner_sync の Timeout()（internal/worker/tuner.go の tunerSyncTimeout）。
 # rescue はこれと worker.rescue_stuck_jobs_after の長い方を待つ。
 job_timeout_seconds=60
-# 締切を越えてから rescue までの観測窓。本番も e2e も reconcile-pass が毎分
-# Pod を起こすので、数分あれば leader の保守ループが 1 回は回る。
+# 締切を越えてから rescue までの観測窓。常駐 notifier client の保守ループ
+# （JobRescuer の既定間隔は River 側）が数分のうちに 1 回は回る。
 rescue_window_seconds=300
 leader_log="$(mktemp)"
 sampler_pid=""
@@ -60,7 +60,7 @@ for d in doc.get("items", []):
 print(" ".join(matches))
 ')"
 # shellcheck disable=SC2016 # このスクリプト内の変数は toolbox 側で展開する。
-if ! toolbox_worker_clients="$(k exec deploy/e2e-toolbox -- sh -c '
+if ! toolbox_worker_clients="$(k exec "$E2E_TOOLBOX" -- sh -c '
 for cmdline in /proc/[0-9]*/cmdline; do
   [ -r "$cmdline" ] || continue
   printf "%s " "$cmdline"
@@ -204,6 +204,12 @@ rescued_hms="$(psql_q "SELECT to_char('${rescued_at}'::timestamptz, 'HH24:MI:SS'
 leader_at_rescue="$(awk -v t="$rescued_hms" '$1 <= t {l = $2} END {print l}' "$leader_log")"
 log_step "rescue timing: ${timing} (attempted_at=${attempted_at}, killed_at=${killed_at}, rescued_at=${rescued_at})"
 log_step "leader at rescue: ${leader_at_rescue:-unknown}; leader samples (distinct): $(awk '{print $2}' "$leader_log" | uniq | tr '\n' ' ')"
+case "$leader_at_rescue" in
+  rokuban-notifier-*) ;;
+  *)
+    fail_from "F3.3" "rescue 時点の leader が notifier の常駐 client ではない（leader=${leader_at_rescue:-unknown}）。--once の Pod などが leader になって rescue した可能性があり、常駐 client による回収とは言えない"
+    exit 0 ;;
+esac
 pass "F3.3" "JobRescuer が job ${river_job_id} を rescue した（${timing}、leader=${leader_at_rescue:-unknown}）"
 
 # rescue は retryable にするだけで、available に戻すのも leader の保守ループ
