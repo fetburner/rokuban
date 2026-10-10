@@ -19,14 +19,6 @@ fi
 for script in "$E2E_DIR_SELF"/faults/[0-9][0-9]-*.sh; do
   name="$(basename "$script")"
   case "$name" in "${E2E_FAULTS_ONLY:-}"*) ;; *) continue ;; esac
-  # ponytail: 03 は常駐 River client が無いと FAIL するのが既定なので、明示指定まで走らせない。
-  # 常駐 River client が入ったら既定に戻す（この case ごと消す）。
-  case "$name" in 03-*)
-    if [ -z "${E2E_FAULTS_ONLY:-}" ]; then
-      log_step "故障注入 3（${name}）は既定では走らせていない。走らせるには E2E_FAULTS_ONLY=03 を付ける"
-      continue
-    fi ;;
-  esac
   ran=$((ran + 1))
   if ! bash "$script"; then
     fail "${name%.sh}.exit" "故障注入スクリプトが異常終了した"

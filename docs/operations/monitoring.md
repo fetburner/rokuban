@@ -144,7 +144,7 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 | `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | **ingest の枠不足**（`ingest.concurrency` が録画数に対して小さい）。UI では取り込み待ちが続く |
 | `river_job` が増えない | **投入自体が止まっている**。`worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
-3 番目が k8s 特有の落とし穴。`PeriodicJobs` はリーダーだけが投入するので、worker が 0 にスケールすると誰も投入しない（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
+3 番目が k8s 特有の落とし穴。k8s は `worker.periodic_jobs: false` で出荷しており、投入元は CronJob だけである（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
 `rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は**プロセス内の
 ゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を
