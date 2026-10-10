@@ -3105,10 +3105,6 @@ func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, program
 	return id
 }
 
-// riverWorkContext は resolveAndSnapshotEncodePolicy の後段（targeted reconcile insertion）が実際にジョブを投入するよう、Work() 実行中と同じ
-// river.Client をコンテキストに載せる。river.ClientFromContextSafely はジョブ実行中の
-// コンテキストからしか取れないため、素の context.Background() だと対象 reconcile が
-// 静かにスキップされ、「encode ジョブが投入される」を確認できない。
 func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -3179,6 +3175,11 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	}
 }
 
+// riverWorkContext は resolveAndSnapshotEncodePolicy の後段（対象録画の reconcile 投入）が
+// 実際にジョブを投入するよう、Work() 実行中と同じ river.Client をコンテキストに載せる。
+// river.ClientFromContextSafely はジョブ実行中のコンテキストからしか取れないため、
+// 素の context.Background() だと対象 reconcile が静かにスキップされ、「encode ジョブが
+// 投入される」を確認できない。
 func riverWorkContext(t *testing.T, pool *pgxpool.Pool) context.Context {
 	t.Helper()
 	client, err := NewInsertOnlyClient(pool)

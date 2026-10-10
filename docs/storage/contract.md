@@ -356,7 +356,8 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **投入**: `thumbnail_reconcile` の全件パスと ingest 後の対象限定パスが seek_tiles を投入する。
   両者は poster と同じ候補 query を使い、`missing_media_assets` の原本を除外する。
   対象限定パスも seek_tiles を拾うため、タイルは ingest 直後に投入される。パス内では
-  poster と再選択を先に投入してからタイルを積む。**priority は poster より下げる**。
+  poster と再選択を先に投入してからタイルを積む。**priority は poster より下げる**。同じ priority だと既存録画ぶんのタイルが片付くまで
+  新しい録画の poster が一覧に出ない。
   thumbnail キューは既定で同時実行数 1 なので、タイルの処理中に来た poster はその 1 件を
   待つ
 - **原本が無い録画には作らない。** タイルは原本からしか作らないので、タイル導入前に
