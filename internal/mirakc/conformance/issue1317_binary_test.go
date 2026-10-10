@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/url"
 	"os"
@@ -137,12 +138,37 @@ worker:
 	if err != nil {
 		t.Fatalf("getting finished mirakc record before ingest resumes: %v", err)
 	}
-	if finished.Content.Sha256 == nil {
-		t.Fatal("finished mirakc record has no content SHA-256")
-	}
-	want, err := hex.DecodeString(*finished.Content.Sha256)
+	// content.sha256 may be published asynchronously after status becomes finished.
+	// Hash the completed stream now so the expected bytes remain available after
+	// ingest deletes the mirakc record.
+	stream, streamLength, err := client.StreamRecord(ctx, recordID, 0)
 	if err != nil {
-		t.Fatalf("decoding mirakc SHA-256: %v", err)
+		t.Fatalf("opening finished mirakc record stream: %v", err)
+	}
+	wantHasher := sha256.New()
+	streamBytes, copyErr := io.Copy(wantHasher, stream)
+	closeErr := stream.Close()
+	if copyErr != nil {
+		t.Fatalf("reading finished mirakc record stream: %v", copyErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("closing finished mirakc record stream: %v", closeErr)
+	}
+	if streamLength >= 0 && streamBytes != streamLength {
+		t.Fatalf("finished mirakc stream length = %d, want %d", streamBytes, streamLength)
+	}
+	if finished.Content.Length != nil && streamBytes != int64(*finished.Content.Length) {
+		t.Fatalf("finished mirakc stream length = %d, content.length = %d", streamBytes, *finished.Content.Length)
+	}
+	want := wantHasher.Sum(nil)
+	if finished.Content.Sha256 != nil {
+		metadataSHA256, err := hex.DecodeString(*finished.Content.Sha256)
+		if err != nil {
+			t.Fatalf("decoding mirakc SHA-256: %v", err)
+		}
+		if !bytes.Equal(metadataSHA256, want) {
+			t.Fatalf("mirakc content.sha256 = %x, finished stream SHA-256 = %x", metadataSHA256, want)
+		}
 	}
 
 	var relPath string
