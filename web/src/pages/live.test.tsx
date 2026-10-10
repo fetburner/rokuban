@@ -1976,3 +1976,129 @@ describe('LivePage / 音声（issue #870）', () => {
     expect(link.getAttribute('href')).toContain('audio=main')
   })
 })
+
+describe('LivePage / 番組境界の再取得', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  const boundary = Date.parse('2026-10-11T06:10:00.000Z')
+
+  /** 境界の 1.5 秒前に時計を置き、番組の応答を 50ms 遅らせて画面を出す。 */
+  async function renderBeforeBoundary() {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(boundary - 1_500)
+    stubFetch({
+      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      allSitePrograms: true,
+      programsByServiceId: {
+        1: [
+          program({ programId: 1, eventId: 1, name: '前の番組', startAt: new Date(boundary - 30 * 60_000).toISOString(), endAt: new Date(boundary).toISOString() }),
+          program({ programId: 2, eventId: 2, name: '次の番組', startAt: new Date(boundary).toISOString(), endAt: new Date(boundary + 30 * 60_000).toISOString() }),
+        ],
+      },
+    })
+    // 実ネットワークの往復ぶん番組の応答を遅らせ、取り直し中の表示を観測できるようにする。
+    // サーバーと同じく窓に重なる番組だけを返す --- 境界の後の窓には終わった番組が入らない。
+    const stubbed = globalThis.fetch
+    globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
+      const response = await stubbed(input)
+      const url = new URL(String(input), 'http://localhost')
+      if (!url.pathname.endsWith('/programs')) return response
+      const start = Date.parse(url.searchParams.get('start') ?? '')
+      const end = Date.parse(url.searchParams.get('end') ?? '')
+      const programs = (await response.json() as ProgramListItem[])
+        .filter((p) => Date.parse(p.startAt) < end && Date.parse(p.endAt) > start)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      return new Response(JSON.stringify(programs), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const { queryClient } = renderLive()
+    expect(await screen.findByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
+    expect(screen.getByText('予定:')).toBeInTheDocument()
+    return { queryClient }
+  }
+
+  /** windowMovesAfterBoundary は境界より後に始まるチャンネル一覧の窓を取りに行った回数。 */
+  function windowMovesAfterBoundary(): number {
+    return (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([url]) => new URL(String(url), 'http://localhost'))
+      .filter((url) => url.pathname.endsWith('/programs') && !url.searchParams.has('service'))
+      .filter((url) => Date.parse(url.searchParams.get('start') ?? '') >= boundary)
+      .length
+  }
+
+  /** 境界をまたいで 3 秒、20ms 刻みで進める。刻みごとに `check` を呼ぶ。 */
+  async function crossBoundary(check: () => void = () => {}) {
+    for (let i = 0; i < 150; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(20)
+      })
+      check()
+    }
+  }
+
+  // 境界は 1 秒刻みの表示時計の間に来る。窓が動くたびに番組の行が空になると、行が縮んで
+  // 一覧全体がずれる（実ブラウザで境界後 0.9 秒に約 60 回の再取得と行の伸縮が出た）。
+  it('境界を 1 回だけ取り直し、取り直しの間も番組名を消さない', async () => {
+    await renderBeforeBoundary()
+
+    await crossBoundary(() => {
+      expect(screen.queryByLabelText(/^番組表の予定: /)).toBeInTheDocument()
+      expect(screen.queryByText('予定:')).toBeInTheDocument()
+    })
+
+    expect(screen.getByLabelText('番組表の予定: 次の番組')).toBeInTheDocument()
+    expect(windowMovesAfterBoundary()).toBe(1)
+  })
+
+  // 前の窓のキャッシュが無いと placeholder が出せず、窓を進めた直後の一覧は空になる。
+  // その後に届いた番組の境界を表示時計（まだ境界の手前）から数えると、通り過ぎた境界を
+  // 「次の境界」と見なして窓を進め直し続ける。
+  it('前の窓のキャッシュが無くても、通り過ぎた境界で窓を進め直し続けない', async () => {
+    const { queryClient } = await renderBeforeBoundary()
+    // placeholder は前の窓のキャッシュを `getQueryData` で引く。それが無い状況を作る。
+    vi.spyOn(queryClient, 'getQueryData').mockReturnValue(undefined)
+
+    await crossBoundary()
+
+    expect(screen.getByLabelText('番組表の予定: 次の番組')).toBeInTheDocument()
+    expect(windowMovesAfterBoundary()).toBe(1)
+  })
+
+  // 前の窓を残すのは窓が動いたときだけ。切り替え先の番組が届くまで、前のチャンネルの番組を
+  // 「いま放送中」として出さない。
+  it('チャンネルを切り替えた直後は、前のチャンネルの番組を出さない', async () => {
+    const user = userEvent.setup()
+    stubFetch({
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        service({ serviceId: 2, name: 'チャンネル B' }),
+      ],
+      programsByServiceId: {
+        1: [program({ serviceId: 1, name: 'A の番組' })],
+        2: [program({ serviceId: 2, name: 'B の番組' })],
+      },
+    })
+    const stubbed = globalThis.fetch
+    let releaseB: (() => void) | null = null
+    globalThis.fetch = vi.fn((input: string | URL | Request) => {
+      const response = stubbed(input)
+      if (!String(input).includes('service=100002')) return response
+      return new Promise<Response>((resolve) => {
+        releaseB = () => resolve(response)
+      })
+    }) as unknown as typeof fetch
+
+    renderLive('/live?service=100001&site=default')
+    expect(await screen.findByText('A の番組')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('link', { name: /チャンネル B/ }))
+    await waitFor(() => expect(releaseB).not.toBeNull())
+
+    expect(screen.queryByText('A の番組')).not.toBeInTheDocument()
+    expect(screen.queryByText('予定:')).not.toBeInTheDocument()
+    act(() => releaseB?.())
+    expect(await screen.findByText('B の番組')).toBeInTheDocument()
+  })
+})

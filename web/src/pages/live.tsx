@@ -1,14 +1,17 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { useQueries } from '@tanstack/react-query'
+import { useQueries, useQueryClient } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import {
+  getListProgramsQueryKey,
   getListProgramsQueryOptions,
+  listPrograms,
   useGetRecording,
   useListLiveProfiles,
   useListPrograms,
   useListReservations,
+  type ListProgramsParams,
   type ProgramListItem,
   type Recording,
 } from '@/api/generated'
@@ -285,7 +288,14 @@ export function LivePage() {
   // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
   // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
   const [nowMs, setNowMs] = useState(() => Date.now())
-  const [programWindowAnchor, setProgramWindowAnchor] = useState(() => Date.now())
+  // `previous` is the anchor the window had before the last boundary. Its query
+  // key is rebuilt to show the cached rows while the new window loads.
+  const [programWindowAnchors, setProgramWindowAnchors] = useState(() => ({
+    current: Date.now(),
+    previous: null as number | null,
+  }))
+  const programWindowAnchor = programWindowAnchors.current
+  const previousAnchor = programWindowAnchors.previous
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), scheduleClockTickMs)
     return () => clearInterval(id)
@@ -294,9 +304,22 @@ export function LivePage() {
   // Query keys move only when a known EPG start/end boundary passes. The 1s
   // display clock updates remaining time and the live edge without polling the
   // API, so each site has one short-window query per scheduled boundary.
+  //
+  // Each move would empty every row for one round trip (the programme line and
+  // remaining time vanish and the rows shrink), so the previous window's rows are
+  // the placeholder. useQueries never passes previous data to placeholderData
+  // (TanStack Query v5 useQueries reference), so read that window's cache entry.
+  const queryClient = useQueryClient()
+  const cachedPrograms = (site: string, params: ListProgramsParams) =>
+    queryClient.getQueryData<Awaited<ReturnType<typeof listPrograms>>>(getListProgramsQueryKey(site, params))
   const window_ = useMemo(() => currentProgramWindow(programWindowAnchor), [programWindowAnchor])
   const siteProgramQueries = useQueries({
-    queries: sites.map((site) => getListProgramsQueryOptions(site, window_)),
+    queries: sites.map((site) => getListProgramsQueryOptions(site, window_, {
+      query: {
+        placeholderData: () =>
+          previousAnchor === null ? undefined : cachedPrograms(site, currentProgramWindow(previousAnchor)),
+      },
+    })),
   })
   const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
     (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
@@ -313,19 +336,38 @@ export function LivePage() {
     [nowMs, sitePrograms, window_.end],
   )
   useEffect(() => {
-    const timeout = window.setTimeout(() => setProgramWindowAnchor(Date.now()), Math.max(0, nextRefresh - Date.now()) + 10)
+    // Move the display clock with the window. A clock still before the boundary
+    // finds no programme on air in the new window (the ended one is not in it)
+    // and takes the boundary just passed as the next one, re-anchoring every
+    // few ms until its next tick.
+    const timeout = window.setTimeout(() => {
+      const now = Date.now()
+      setNowMs(now)
+      setProgramWindowAnchors((anchors) => ({ current: now, previous: anchors.current }))
+    }, Math.max(0, nextRefresh - Date.now()) + 10)
     return () => window.clearTimeout(timeout)
   }, [nextRefresh])
 
+  const selectedProgramParams = (anchor: number): ListProgramsParams => ({
+    start: new Date(anchor - selectedProgramWindowMs).toISOString(),
+    end: new Date(anchor + selectedProgramWindowMs).toISOString(),
+    // 組で渡す --- `serviceId` は network をまたぐと一意でない（issue #291）。
+    service: selectedService ? [selectedService.id] : undefined,
+  })
   const nowPlayingQuery = useListPrograms(
     selectedService?.site ?? '',
+    selectedProgramParams(programWindowAnchor),
     {
-      start: new Date(programWindowAnchor - selectedProgramWindowMs).toISOString(),
-      end: new Date(programWindowAnchor + selectedProgramWindowMs).toISOString(),
-      // 組で渡す --- `serviceId` は network をまたぐと一意でない（issue #291）。
-      service: selectedService ? [selectedService.id] : undefined,
+      query: {
+        enabled: selectedService !== undefined,
+        // Same service, previous window only: a channel switch must not show
+        // the previous channel's programme as on air.
+        placeholderData: () =>
+          selectedService === undefined || previousAnchor === null
+            ? undefined
+            : cachedPrograms(selectedService.site, selectedProgramParams(previousAnchor)),
+      },
     },
-    { query: { enabled: selectedService !== undefined } },
   )
   const selectedPrograms = useMemo(
     () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined ?? [],
