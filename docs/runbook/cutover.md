@@ -237,7 +237,8 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
    docker compose exec rokuban rokuban import epgstation --config /config.yml --library-json /tmp/library.json
    ```
 
-未解決: エンコード済みファイルしか持たない EPGStation の録画（原本をエンコード後に消したもの）は、録画ごと取り込まれない。
+未解決: エンコード済みファイルしか持たない EPGStation の録画（原本をエンコード後に消したもの）は再生できる形で取り込めない。
+サムネイルがあればサムネイルだけの録画（再生不可）として登録され、無ければ飛ばされる。
 
 ### ライブラリの欠け（項目 8）
 
@@ -298,7 +299,14 @@ mirakc の schedule を直接消す。
    録画中（`state` が `recording`）のものは終わるのを待ってから消すのが安全
 3. 同じ `GET` の結果に `program:` の tag が 0 件であることを見る
 4. EPGStation を起動し、ルールを有効に戻す。切替手順 3 で消した手動予約は戻らないので、入れ直す
+5. ライブラリを取り込んだ後なら、取り込みで加えた変更を戻す:
+   - 「ライブラリの取り込み」の手順 1 でマウントの外へ移したエンコード済みファイルを元の場所へ戻す。
+     EPGStation の DB は元のパスを指している
+   - `rokuban` サービスの `volumes` から録画ディレクトリのマウントを外す。
+     **外さずに Rokuban を起動すると、EPGStation の新しい録画が取り込まれないまま孤児回収で消える**
 
-Rokuban の DB とメディアはそのまま残る。`docker compose start rokuban` で戻すと、
-ルールが有効なままなら次の reconcile パスで schedule が作り直される。
+Rokuban の DB とメディアはそのまま残る。マウントを外した後は、取り込んだ録画の行が実体無しとして報告される（削除はされない）。
+Rokuban を戻すときは、`volumes` の変更を反映するために `docker compose up -d rokuban` で作り直す。
+ルールが有効なままなら、次の reconcile パスで schedule が作り直される。
 切替を再試行するときは、並走の状態（両方が録る）に戻ってから切替手順 1 からやり直す。
+ライブラリは「ライブラリの取り込み」の手順どおり、マウントから取り込み直す。
