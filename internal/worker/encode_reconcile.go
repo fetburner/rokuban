@@ -140,8 +140,8 @@ type EncodeReconcileWorker struct {
 	// （上の doc コメント「窓を回す」参照）。ワーカーはプロセス生存期間中
 	// 1 インスタンスが river.AddWorker に登録されて使い回されるので、この値は
 	// パスをまたいで残る。atomic にしてあるのは、River がどの goroutine で
-	// パスを実行するかに依存しないため（UniqueOpts が pending 中 1 本に
-	// 合流させるので同時実行は起きないが、可視性の議論を残さない方が安い）。
+	// パスを実行するかに依存しないため。対象 args は全件 args と異なるので、
+	// concurrency の設定によっては対象パスと全件パスが同時に実行される。
 	resumeAfter atomic.Int64
 }
 

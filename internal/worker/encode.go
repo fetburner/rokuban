@@ -357,8 +357,8 @@ type cutContext struct {
 //
 // **所有の行があることを前提にする。** 確認前にカット版をコミットすると、誤検出の
 // まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。ジョブの投入側
-// （enqueueMissingEncodes / ListMissingEncodeProfiles）が所有していない録画を除外
-// しているので、ここに来る cut ジョブは所有済みのはずである。来なければジョブの
+// （ListMissingEncodeProfiles と API の ReencodeRecordingProfile）が所有していない
+// 録画を除外しているので、ここに来る cut ジョブは所有済みのはずである。来なければジョブの
 // 失敗として現れる（黙って切らない）。
 //
 // keep が空（全部カット）も同じく失敗させる。keep_ranges の CHECK が空を拒否する
