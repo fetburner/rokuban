@@ -157,7 +157,7 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   行が active でない（ごみ箱など）ときは成功で飛ばす
 - (c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、
   外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では
-  塞げない（job lock は ffmpeg の排他ではない）。desired は `FOR SHARE` で読み、版を外す tx の
+  塞げない。desired は `FOR SHARE` で読み、版を外す tx の
   policy 行ロックと直列化する
 - advisory xact lock が排他するのは ingest commit と孤児回収に対してだけである。
   通常削除（`deleteMediaAsset`）とは filesystem lock でしか排他されない。RWX 越しに

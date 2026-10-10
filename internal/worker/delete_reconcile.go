@@ -77,8 +77,7 @@ const (
 	deleteReconcileNotifyBudget = 2 * time.Minute
 
 	// deleteOrphanCleanupTimeout は ctx 取消後も削除の事実を DB に記録するための
-	// 書き込み（DeleteOrphanFile）に与える上限。job advisory lock の取得待ちと用途が
-	// 無関係なので共用しない。
+	// 書き込み（DeleteOrphanFile）に与える上限。
 	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 

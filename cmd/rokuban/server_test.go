@@ -1194,71 +1194,28 @@ worker:
 `, maxConns, mediaDir)
 }
 
-// **db.max_conns の下限が「実際に引くキューの lock 枠」を見ていること。**
-//
-// 引くキューは argv（`--queues`）で決まるので、ClientConfig の組み立てを pool の
-// 前に置いて同じ値を両方へ渡していないと、ここが「全部引く worker」として
-// サイジングされる（= 小さすぎる max_conns が素通りする）。
-//
-// encode は lock を持たないため DB まで進み、ingest は lock 枠を見て fail-fast する。
-func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
-	t.Run("encode worker holds no job lock despite encode.concurrency", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
-		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=encode")
-		if err == nil {
-			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
-		}
-		if !strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v, want to fail at the DB (= encode lock 枠は 0)", err)
-		}
-	})
-
-	t.Run("ingest worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
-		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ingest")
-		if err == nil {
-			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
-		}
-		if !strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v, want to fail at the DB (= ingest lock 枠は 0)", err)
-		}
-	})
-
-	t.Run("cm_detect worker with 1 lock slot needs more than max_conns=2", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+// db.max_conns の下限は引くキューに依らず、worker ロールなら LISTEN 1 本 + 余地 1 本の 2 である。
+// 下限の検査が DB に触る前に走ることを確かめる。
+func TestServerCmd_PoolSizingFloorForWorker(t *testing.T) {
+	t.Run("max_conns=1 is too small and fails before touching the DB", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(1, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("expected the pool sizing check to fail, got nil")
 		}
 		if !strings.Contains(err.Error(), "too small") {
-			t.Errorf("err = %v, want the db.max_conns fail-fast (DB に触る前に落ちること)", err)
-		}
-		if strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v: DB まで進んでいる（cm_detect lock 枠が数えられていない）", err)
+			t.Errorf("err = %v, want the db.max_conns fail-fast", err)
 		}
 	})
 
-	t.Run("ruler worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
-		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ruler")
+	t.Run("max_conns=2 passes the check and fails at the unreachable DB", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
 		}
 		if !strings.Contains(err.Error(), "connecting to database") {
 			t.Errorf("err = %v, want to fail at the DB (= 下限の検査を通ったこと)", err)
-		}
-	})
-
-	// encode は lock を持たないので、once モードでも枠は増えない。
-	t.Run("once encode worker needs no job lock regardless of encode.concurrency", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(3, t.TempDir()))
-		err := runServerCmdForTest(t, path,
-			"--roles", "worker", "--once", "--queues=encode", "--sites", "tokyo")
-		if err == nil {
-			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
-		}
-		if !strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v, want to fail at the DB (下限は 1(LISTEN)+1 = 2)", err)
 		}
 	})
 }

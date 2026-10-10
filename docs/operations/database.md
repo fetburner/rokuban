@@ -21,8 +21,7 @@
 - **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ。
   ただしプロセスは常に 1 個のコネクションプールしか持たない（`cmd/rokuban/server.go` が起動時に 1 回だけ作り、
   そのプロセスが担う全ロールが共有する）。したがって「ロール別」とは複数プールを作ることではなく、
-  **そのプロセスが担う roles 集合と束縛サイト数（worker は引くキューと concurrency から
-  数えた lock 枠も）から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
+  **そのプロセスが担う roles 集合と束縛サイト数から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
   ことを指す（`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
   budget（1 サイト束縛時: api: 10 / worker: 床 8（下記）/ watcher: 3 / notifier: 3 / streamer: 4。根拠は
   `internal/db.roleConnBudget` の doc コメント）を roles の分だけ合計する。monolith（`--all`）は
@@ -30,23 +29,12 @@
   束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける**（site ごとに
   `role.RunSingleton` の goroutine を持つ。`cmd/rokuban/server.go` の watcher ループ）。
   2 サイト目以降は budget にも自動で上乗せされる（`internal/db.perSiteConnBudget`）。
-- **worker の budget だけは表ではなく、実行中のジョブの本数から導出する**（`internal/db.workerConnBudget`）。
-  `worker: 8` は「この構成ではこれだけ要る」ではなく**床**である。実行中の ingest /
-  cm_detect は job advisory lock 用のコネクションを Work の冒頭から commit まで
-  1 本保持し、その本数は ingest concurrency、CM 分析設定、束縛サイト数から決まる。
-  encode は保存した timeout と River の JobRescuer で再実行され、長時間保持する advisory lock を持たない。
-  **本数を数えるのは `internal/worker.LockSlots` で、`db` はそれを int 1 個として受け取る**
-  （`db` は `worker` を import しない）。予算は `1(LISTEN) + lock 本数 + 3` を床 8 で下支えした値。
-  運用者が `ingest.concurrency` を上げれば予算は自動で追随する。`--once` の Job は 1 枠、
-  ingest / cm_detect を引かないプロセスは 0 枠になる。
-- `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）も同じ枠を数える。
-  数える対象は **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
-  （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。加えて実行中の ingest /
-  cm_detect が job advisory lock を 1 つずつ持つ。合計に余地 1 本を足した値が下限になる。
-  **job advisory lock を「転送中だけの一時専有」として下限から外してはならない。** lock を
-  持つジョブは解放する前に同じプールからもう 1 本取る（進捗書き込み・commit）ので、LISTEN と
-  lock でプールが埋まるとジョブ同士が循環待ちになり、heartbeat は lock セッション自身の上で
-  動くため lock は生き続ける（構造から確定した結論で、実測はしていない）。
+- **worker の budget は床 8 の固定値**（`internal/db.roleConnBudget`）。内訳は River の LISTEN 1 本と、
+  ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリで、実測に基づく値ではない。
+  どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。
+- `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）が数える対象は
+  **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
+  （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が下限になる。
   **lock をプール外の接続で張る案は採らない** --- `db.max_conns` がプロセスの接続上限だという
   契約を破ることになる。
 - **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が

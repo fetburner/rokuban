@@ -1,12 +1,40 @@
 package jobs
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 )
+
+func TestCMDetectJobInsertOptsAndUniqueFields(t *testing.T) {
+	if got := (CMDetectJobArgs{}).InsertOpts().MaxAttempts; got != 10 {
+		t.Fatalf("CMDetect MaxAttempts = %d, want the literal safety cap 10 above the domain limit 3", got)
+	}
+	for _, tt := range []struct {
+		args       any
+		field      string
+		wantUnique bool
+	}{
+		{CMDetectJobArgs{}, "RecordingID", true},
+		{CMDetectJobArgs{}, "RecordingDurationMs", false},
+		{CMLogoCandidateJobArgs{}, "NetworkID", true},
+		{CMLogoCandidateJobArgs{}, "ServiceID", true},
+		{CMLogoCandidateJobArgs{}, "RecordingID", true},
+		{CMLogoCandidateJobArgs{}, "AreaUpdatedAt", true},
+		{CMLogoCandidateJobArgs{}, "RecordingDurationMs", false},
+	} {
+		field, ok := reflect.TypeOf(tt.args).FieldByName(tt.field)
+		if !ok {
+			t.Fatalf("%T has no field %s", tt.args, tt.field)
+		}
+		if got := field.Tag.Get("river") == "unique"; got != tt.wantUnique {
+			t.Errorf("%T.%s unique tag = %v, want %v", tt.args, tt.field, got, tt.wantUnique)
+		}
+	}
+}
 
 // 完了済みのジョブが一意性の判定に入っていないこと。
 //

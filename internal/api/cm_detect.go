@@ -55,7 +55,13 @@ func (h *Server) RetryRecordingCMDetection(ctx context.Context, req RetryRecordi
 		return nil, fmt.Errorf("checking CM detection policy for recording %d: %w", req.Id, err)
 	}
 	if desired && h.river != nil {
-		if _, err := h.river.InsertTx(ctx, tx, jobs.CMDetectJobArgs{RecordingID: req.Id}, nil); err != nil {
+		durationMs, err := q.GetCMRecordingDuration(ctx, req.Id)
+		if err != nil {
+			return nil, fmt.Errorf("getting recording %d duration for CM detection: %w", req.Id, err)
+		}
+		if _, err := h.river.InsertTx(ctx, tx, jobs.CMDetectJobArgs{
+			RecordingID: req.Id, RecordingDurationMs: durationMs,
+		}, nil); err != nil {
 			return nil, fmt.Errorf("inserting CM detection retry for recording %d: %w", req.Id, err)
 		}
 	}
@@ -416,6 +422,11 @@ func insertCMLogoCandidate(ctx context.Context, tx pgx.Tx, riverClient *river.Cl
 	if riverClient == nil {
 		return nil
 	}
+	durationMs, err := sqlcgen.New(tx).GetCMRecordingDuration(ctx, args.RecordingID)
+	if err != nil {
+		return fmt.Errorf("getting recording %d duration for CM logo candidate: %w", args.RecordingID, err)
+	}
+	args.RecordingDurationMs = durationMs
 	if _, err := riverClient.InsertTx(ctx, tx, args, nil); err != nil {
 		return fmt.Errorf("inserting CM logo candidate analysis: %w", err)
 	}

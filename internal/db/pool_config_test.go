@@ -24,30 +24,18 @@ func testDBConfig() config.DBConfig {
 	}
 }
 
-// defaultLockSlots は本番の既定構成（cm_detect 1。ingest と encode は job lock を
-// 取らない）を模した値（internal/worker.LockSlots）。worker を含むケースの予算は
-// この値から導出されるので、テストは表のリテラルではなくこれを渡す。
-const defaultLockSlots = 1
-
 func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 	cases := []struct {
 		name string
 		cfg  config.DBConfig
 		// nil roles ではなく明示的な roles を渡すケースだけ厳密な値を検証する。
-		roles     []string
-		lockSlots int
-		want      int32
+		roles []string
+		want  int32
 	}{
 		{name: "api alone", cfg: testDBConfig(), roles: []string{"api"}, want: 10},
 		{
-			// lockSlots の式は 1 + 1 + 3 = 5 なので、床 8 が効く。
 			name: "worker alone", cfg: testDBConfig(), roles: []string{"worker"},
-			lockSlots: defaultLockSlots, want: 8,
-		},
-		{
-			// 式が床を下回るときは床が効く（1 + 0 + 3 = 4 < 8）。
-			name: "worker alone with no lock slots still gets the floor",
-			cfg:  testDBConfig(), roles: []string{"worker"}, lockSlots: 0, want: 8,
+			want: 8,
 		},
 		{name: "watcher alone", cfg: testDBConfig(), roles: []string{"watcher"}, want: 3},
 		{name: "notifier alone", cfg: testDBConfig(), roles: []string{"notifier"}, want: 3},
@@ -56,9 +44,8 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			name:  "all roles (monolith --all)",
 			cfg:   testDBConfig(),
 			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
-			// 10 + 8(worker: max(8, 1 + 1 + 3)) + 3 + 4 + 3
-			lockSlots: defaultLockSlots,
-			want:      28,
+			// 10 + 8(worker) + 3 + 4 + 3
+			want: 28,
 		},
 		{
 			name:  "unknown role only falls back to the minimum (never 0)",
@@ -75,11 +62,10 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 			want:  10,
 		},
 		{
-			name:      "duplicate role names across a larger set are not double-counted",
-			cfg:       testDBConfig(),
-			roles:     []string{"api", "worker", "worker", "api", "watcher"},
-			lockSlots: defaultLockSlots,
-			want:      21, // 10(api) + 8(worker) + 3(watcher), each counted once
+			name:  "duplicate role names across a larger set are not double-counted",
+			cfg:   testDBConfig(),
+			roles: []string{"api", "worker", "worker", "api", "watcher"},
+			want:  21, // 10(api) + 8(worker) + 3(watcher), each counted once
 		},
 		{
 			name: "explicit db.max_conns overrides role-derived sizing",
@@ -88,15 +74,14 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 				c.MaxConns = 99
 				return c
 			}(),
-			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
-			lockSlots: defaultLockSlots,
-			want:      99,
+			roles: []string{"api", "worker", "watcher", "streamer", "notifier"},
+			want:  99,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles, 1, tc.lockSlots)
+			poolCfg, err := buildPoolConfig(tc.cfg, tc.roles, 1)
 			if err != nil {
 				t.Fatalf("buildPoolConfig: %v", err)
 			}
@@ -107,69 +92,32 @@ func TestBuildPoolConfig_MaxConnsFromRoles(t *testing.T) {
 	}
 }
 
-// TestBuildPoolConfig_WorkerBudgetFollowsLockSlots は worker の予算が
-// 「同時に走りうる job advisory lock 保持ジョブの本数」に追随することと、床 8 を
-// 下回らないことを固定する。**床が効くのは式が 8 以下のときだけ**である。
-func TestBuildPoolConfig_WorkerBudgetFollowsLockSlots(t *testing.T) {
-	cases := []struct {
-		lockSlots int
-		want      int32
-	}{
-		{lockSlots: 0, want: 8},   // 式 4 → 床
-		{lockSlots: 4, want: 8},   // 式 8 → 床と一致
-		{lockSlots: 5, want: 9},   // 式 9 → 床を超える
-		{lockSlots: 8, want: 12},  // 式 12
-		{lockSlots: 20, want: 24}, // 式 24
-	}
-	for _, tc := range cases {
-		t.Run(strconv.Itoa(tc.lockSlots), func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1, tc.lockSlots)
-			if err != nil {
-				t.Fatalf("buildPoolConfig: %v", err)
-			}
-			if poolCfg.MaxConns != tc.want {
-				t.Errorf("lockSlots=%d: MaxConns = %d, want %d", tc.lockSlots, poolCfg.MaxConns, tc.want)
-			}
-		})
-	}
-}
-
 // TestBuildPoolConfig_MaxConnsFromRoles_MultiSite は site 数が予算に効くロールと
 // 効かないロールを分けて固定する（issue #532 のレビュー指摘）。
 //
 // watcher は束縛サイトごとに advisory lock 用コネクションを 1 本専有するので
-// perSiteConnBudget が上乗せされる。**worker は上乗せされない** --- job lock は
-// site 非依存の cm_detect だけなので、ここで site 数から足すと過大になる。
+// perSiteConnBudget が上乗せされる。**worker は上乗せされない** --- worker の
+// 予算は site 数に依存しない。
 func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 	cases := []struct {
-		name      string
-		roles     []string
-		numSites  int
-		lockSlots int
-		want      int32
+		name     string
+		roles    []string
+		numSites int
+		want     int32
 	}{
 		{name: "watcher, 2 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 2, want: 4},
 		{name: "watcher, 3 sites: +1 per extra site", roles: []string{"watcher"}, numSites: 3, want: 5},
 		{
-			name:      "worker, 2 sites: the budget term does not grow with site count",
-			roles:     []string{"worker"},
-			numSites:  2,
-			lockSlots: defaultLockSlots,
-			want:      8,
+			name:     "worker, 2 sites: the budget term does not grow with site count",
+			roles:    []string{"worker"},
+			numSites: 2,
+			want:     8,
 		},
 		{
-			name:      "worker, 2 sites: only site-independent locks count",
-			roles:     []string{"worker"},
-			numSites:  2,
-			lockSlots: 1,
-			want:      8,
-		},
-		{
-			name:      "watcher+worker, 2 sites: only watcher gets the per-site addition",
-			roles:     []string{"watcher", "worker"},
-			numSites:  2,
-			lockSlots: defaultLockSlots,
-			want:      12, // 3+1(watcher) + 8(worker)
+			name:     "watcher+worker, 2 sites: only watcher gets the per-site addition",
+			roles:    []string{"watcher", "worker"},
+			numSites: 2,
+			want:     12, // 3+1(watcher) + 8(worker)
 		},
 		{name: "api alone, 2 sites: unaffected (not a site-scoped role)", roles: []string{"api"}, numSites: 2, want: 10},
 		{name: "watcher, 1 site: no addition (baseline)", roles: []string{"watcher"}, numSites: 1, want: 3},
@@ -177,7 +125,7 @@ func TestBuildPoolConfig_MaxConnsFromRoles_MultiSite(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, tc.numSites, tc.lockSlots)
+			poolCfg, err := buildPoolConfig(testDBConfig(), tc.roles, tc.numSites)
 			if err != nil {
 				t.Fatalf("buildPoolConfig: %v", err)
 			}
@@ -197,7 +145,7 @@ func TestBuildPoolConfig_NoRoles_UsesPgxDefault(t *testing.T) {
 		t.Fatalf("baseline ParseConfig: %v", err)
 	}
 
-	poolCfg, err := buildPoolConfig(testDBConfig(), nil, 0, 0)
+	poolCfg, err := buildPoolConfig(testDBConfig(), nil, 0)
 	if err != nil {
 		t.Fatalf("buildPoolConfig: %v", err)
 	}
@@ -214,11 +162,10 @@ func TestBuildPoolConfig_NoRoles_UsesPgxDefault(t *testing.T) {
 // 「二度と解放されないコネクション」を待ち続けて無症状にデッドロックする。
 func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 	cases := []struct {
-		name      string
-		maxConns  int
-		roles     []string
-		lockSlots int
-		wantErr   bool
+		name     string
+		maxConns int
+		roles    []string
+		wantErr  bool
 	}{
 		{name: "api alone: 1 is enough (no dedicated connection)", maxConns: 1, roles: []string{"api"}, wantErr: false},
 		{name: "watcher alone: 1 is too small (advisory lock would starve other work)", maxConns: 1, roles: []string{"watcher"}, wantErr: true},
@@ -240,41 +187,24 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:      "--all: 3 dedicated conns + 1 job lock need at least 5",
-			maxConns:  4,
-			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
-			lockSlots: defaultLockSlots,
-			wantErr:   true,
+			name:     "--all: 3 dedicated conns need at least 4",
+			maxConns: 3,
+			roles:    []string{"api", "worker", "watcher", "streamer", "notifier"},
+			wantErr:  true,
 		},
 		{
-			name:      "--all: 5 is enough",
-			maxConns:  5,
-			roles:     []string{"api", "worker", "watcher", "streamer", "notifier"},
-			lockSlots: defaultLockSlots,
-			wantErr:   false,
+			name:     "--all: 4 is enough",
+			maxConns: 4,
+			roles:    []string{"api", "worker", "watcher", "streamer", "notifier"},
+			wantErr:  false,
 		},
 		{
 			// 予算の床（8）は下限には効かない --- 下限は「専有分 + 余地 1」で、
 			// 床を混ぜると「今デッドロックしうる構成」以外まで弾いてしまう。
-			name:      "worker alone: the budget floor does not raise the fail-fast floor",
-			maxConns:  7,
-			roles:     []string{"worker"},
-			lockSlots: defaultLockSlots,
-			wantErr:   false,
-		},
-		{
-			name:      "worker alone: 5 job locks need 1(LISTEN) + 5 + 1 = 7",
-			maxConns:  6,
-			roles:     []string{"worker"},
-			lockSlots: 5,
-			wantErr:   true,
-		},
-		{
-			name:      "worker alone: lockSlots growth raises the fail-fast floor too",
-			maxConns:  11,
-			roles:     []string{"worker"},
-			lockSlots: 10,
-			wantErr:   true,
+			name:     "worker alone: the budget floor does not raise the fail-fast floor",
+			maxConns: 7,
+			roles:    []string{"worker"},
+			wantErr:  false,
 		},
 	}
 
@@ -282,44 +212,42 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.MaxConns = tc.maxConns
-			_, err := buildPoolConfig(cfg, tc.roles, 1, tc.lockSlots)
+			_, err := buildPoolConfig(cfg, tc.roles, 1)
 			if tc.wantErr && err == nil {
-				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, lockSlots=%d): expected error, got nil",
-					tc.maxConns, tc.roles, tc.lockSlots)
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): expected error, got nil",
+					tc.maxConns, tc.roles)
 			}
 			if !tc.wantErr && err != nil {
-				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, lockSlots=%d): unexpected error: %v",
-					tc.maxConns, tc.roles, tc.lockSlots, err)
+				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v): unexpected error: %v",
+					tc.maxConns, tc.roles, err)
 			}
 		})
 	}
 }
 
-// TestMinRequiredConns_IncludesLockSlots は下限の数え上げを固定する。
+// TestMinRequiredConns は下限の数え上げを固定する。
 //
 // **予算の床（8）は下限には混ぜない。** 下限が数えるのは「解放が別の接続取得に
 // 依存する専有」だけで、床を混ぜると「まだデッドロックしない構成」まで
 // 起動時に弾くことになる。
-func TestMinRequiredConns_IncludesLockSlots(t *testing.T) {
+func TestMinRequiredConns(t *testing.T) {
 	cases := []struct {
-		name      string
-		roles     []string
-		numSites  int
-		lockSlots int
-		want      int32
+		name     string
+		roles    []string
+		numSites int
+		want     int32
 	}{
 		{name: "api alone: only the room for other work", roles: []string{"api"}, want: 1},
 		{name: "worker alone: LISTEN + the room", roles: []string{"worker"}, want: 2},
-		{name: "worker alone: job locks add one each", roles: []string{"worker"}, lockSlots: 4, want: 6},
-		{name: "worker+watcher+notifier: three dedicated conns each add the room", roles: []string{"worker", "watcher", "notifier"}, lockSlots: 4, want: 8},
+		{name: "worker+watcher+notifier: three dedicated conns each add the room", roles: []string{"worker", "watcher", "notifier"}, want: 4},
 		{name: "watcher, 2 sites: one advisory lock per site", roles: []string{"watcher"}, numSites: 2, want: 3},
 		{name: "watcher, 1 site", roles: []string{"watcher"}, numSites: 1, want: 2},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := minRequiredConns(tc.roles, tc.numSites, tc.lockSlots); got != tc.want {
-				t.Errorf("minRequiredConns(%v, %d, %d) = %d, want %d",
-					tc.roles, tc.numSites, tc.lockSlots, got, tc.want)
+			if got := minRequiredConns(tc.roles, tc.numSites); got != tc.want {
+				t.Errorf("minRequiredConns(%v, %d) = %d, want %d",
+					tc.roles, tc.numSites, got, tc.want)
 			}
 		})
 	}
@@ -371,7 +299,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testDBConfig()
 			cfg.MaxConns = tc.maxConns
-			_, err := buildPoolConfig(cfg, tc.roles, tc.numSites, 0)
+			_, err := buildPoolConfig(cfg, tc.roles, tc.numSites)
 			if tc.wantErr && err == nil {
 				t.Errorf("buildPoolConfig(max_conns=%d, roles=%v, numSites=%d): expected error, got nil",
 					tc.maxConns, tc.roles, tc.numSites)
@@ -386,7 +314,7 @@ func TestBuildPoolConfig_ExplicitMaxConnsTooSmall_MultiSite(t *testing.T) {
 
 func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: unset uses the built-in default", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1, 0)
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -400,7 +328,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	t.Run("api role: explicit value is honored", func(t *testing.T) {
 		cfg := testDBConfig()
 		cfg.APIStatementTimeout = 5 * time.Second
-		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1, 0)
+		poolCfg, err := buildPoolConfig(cfg, []string{"api"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}
@@ -411,7 +339,7 @@ func TestBuildPoolConfig_APIStatementTimeout(t *testing.T) {
 	})
 
 	t.Run("no api role: statement_timeout is not set", func(t *testing.T) {
-		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1, 0)
+		poolCfg, err := buildPoolConfig(testDBConfig(), []string{"worker"}, 1)
 		if err != nil {
 			t.Fatalf("buildPoolConfig: %v", err)
 		}

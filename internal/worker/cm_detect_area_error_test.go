@@ -18,7 +18,7 @@ func TestCMDetectLoadingAreaDBErrorIsSetupStage(t *testing.T) {
 	rel := "cm/area-db-error.ts"
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := w.detect(ctx, 1, sqlcgen.GetCMDetectionWorkItemRow{RelPath: &rel, NetworkID: 32736, ServiceID: 1024})
+	err := w.detect(ctx, 1, sqlcgen.GetCMDetectionWorkItemRow{RelPath: &rel, NetworkID: 32736, ServiceID: 1024}, 1)
 	stage := cmFailureStage(err)
 	// 先行する手順も setup を返すので、枠の読み込みで落ちたことを文言で固定する。
 	if err == nil || !strings.Contains(err.Error(), "loading taught logo area") {

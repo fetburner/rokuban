@@ -776,8 +776,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("loading current encode attempt: %w", err)
 	}
 	// 判定 (c): desired に無い profile は公開しない。外した版を、実行中・再試行待ちの
-	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない。
-	// job lock は ffmpeg の排他ではない）。FOR SHARE で版を外す tx と直列化する。
+	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない）。FOR SHARE で版を外す tx と直列化する。
 	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
 	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
 		return 0, false, fmt.Errorf("loading desired encode profiles: %w", err)

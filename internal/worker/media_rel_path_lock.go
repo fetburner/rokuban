@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 
 	pgx5 "github.com/jackc/pgx/v5"
 
@@ -43,4 +44,14 @@ func tryLockMediaRelPathInTransaction(ctx context.Context, tx pgx5.Tx, relPath s
 		return false, fmt.Errorf("trying media rel_path advisory lock: %w", err)
 	}
 	return acquired, nil
+}
+
+// advisoryLockKey は名前空間と値から pg_advisory_xact_lock(bigint) 用のキーを作る。
+// Postgres の hashtext() は安定性を保証された API ではないため、Go 側の FNV-1a
+// を使う。衝突しても不要な待ちになるだけで、DB の一意制約による採用結果は
+// 変わらない。
+func advisoryLockKey(prefix, value string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(prefix + value))
+	return int64(h.Sum64())
 }

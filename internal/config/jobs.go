@@ -24,10 +24,7 @@ type IngestConfig struct {
 	// **足りないと追従が枠待ちになる。** 枠が録画数を下回ると、録画中の追従が
 	// MaxWorkers の待ち行列に入り、UI には `pending`（取り込み待ち）が続く。
 	// 4 チューナー機では 5〜6 に上げる（docs/recording/ingest.md §5.4 の式のまま）。
-	// **接続プールの予算はこれに自動で追随する** --- encode / cm_detect が保持する
-	// job lock の本数は internal/worker.LockSlots が設定から数え、internal/db が
-	// そこから worker の予算を導出する。ingest は bounded slice と snooze で再開するため
-	// job lock 用コネクションを保持しない。
+	// ingest は bounded slice と snooze で再開するため、長時間保持する接続を持たない。
 	//
 	// 枠待ちの間に録画が終わったジョブは、録画終了後に始まる pull（finished を観測したら
 	// 最後まで全速で読む）として走る（ingest は追従と完了後 pull を同じ

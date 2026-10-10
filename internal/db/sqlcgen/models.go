@@ -303,11 +303,12 @@ type RecordingChapterSpan struct {
 }
 
 type RecordingCmAttempt struct {
-	RecordingID int64
-	State       string
-	Error       *string
-	AttemptedAt time.Time
-	Stage       *string
+	RecordingID  int64
+	State        string
+	Error        *string
+	AttemptedAt  time.Time
+	Stage        *string
+	AttemptCount int32
 }
 
 type RecordingCmDetection struct {
