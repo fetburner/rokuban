@@ -170,9 +170,7 @@ func TestValidateSiteBinding(t *testing.T) {
 	}
 }
 
-// TestRequireSingleSite の cmdName は "import epgstation" を使う --- issue #533 で
-// shadow-diff は resolveSiteFlag に置き換わったので、requireSingleSite の
-// 唯一の呼び出し元は import epgstation だけになった。
+// TestRequireSingleSite は `import epgstation` が多サイト設定を拒否する規則を確認する。
 func TestRequireSingleSite(t *testing.T) {
 	t.Run("one entry resolves", func(t *testing.T) {
 		s, err := requireSingleSite([]config.MirakcSite{tokyo}, "import epgstation")
@@ -408,8 +406,7 @@ func TestNewConfiguredLoopPassCollectors_ExposeAllConfiguredSites(t *testing.T) 
 }
 
 // newSiteFlagTestCmd は resolveSiteFlag のテストが使う、`--site` フラグだけを
-// 持つ最小の cobra.Command を作る（enqueue / shadow-diff の 2 コマンドが
-// 共有する解決規則なので、コマンド名には依存しない）。
+// 持つ最小の cobra.Command を作る（enqueue の site 解決規則をテストする）。
 func newSiteFlagTestCmd(t *testing.T) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{Use: "test"}
@@ -417,9 +414,7 @@ func newSiteFlagTestCmd(t *testing.T) *cobra.Command {
 	return cmd
 }
 
-// TestResolveSiteFlag は enqueue（site 束縛ジョブ）・shadow-diff が共有する
-// `--site` 解決規則の単体テスト（issue #183 の「含むもの」6 で導入、issue #533
-// で shadow-diff にも一般化した）。
+// TestResolveSiteFlag は enqueue（site 束縛ジョブ）の `--site` 解決規則を確認する。
 func TestResolveSiteFlag(t *testing.T) {
 	t.Run("unspecified with single-entry registry", func(t *testing.T) {
 		cmd := newSiteFlagTestCmd(t)

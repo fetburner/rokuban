@@ -177,7 +177,7 @@ scheduled）の場合は新規に投入されず合流する。その場合も�
 //
 // site 束縛ジョブ:
 //   - resolveSiteFlag と同じ規則（未指定かつレジストリ 1 要素ならその 1 つ、
-//     2 要素以上なら必須。shadow-diff とも共有する）
+//     2 要素以上なら必須）
 func resolveEnqueueJobSite(cmd *cobra.Command, job string, registry []config.MirakcSite) (string, error) {
 	spec, ok := enqueueJobs[job]
 	if !ok {
@@ -196,7 +196,7 @@ func resolveEnqueueJobSite(cmd *cobra.Command, job string, registry []config.Mir
 
 // runEnqueue はジョブ名から JobArgs を組み立てて insert-only クライアントで 1 件
 // 投入する。DB / River とのやりとりをここに閉じ込め、cobra の RunE は薄い配線に
-// とどめる（runShadowDiff と同じ切り出し方）。
+// とどめる（runRescue と同じ切り出し方）。
 //
 // site は resolveEnqueueJobSite の結果。site 束縛ジョブでは非空、site 非依存では空。
 //

@@ -82,10 +82,8 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 			if err != nil {
 				return err
 			}
-			// shadow-diff は issue #533 で --site による多サイト対応に
-			// 置き換わったが、import epgstation の移行先の決め方（EPGStation
-			// 側も site ごとに分かれるのか）はまだ書き手がいないので単一サイトに
-			// 限定したまま（不変条件 11）。
+			// import epgstation の移行先を決める多サイト対応は、EPGStation 側の
+			// site 対応を扱う書き手がまだいないため保留する（不変条件 11）。
 			site, err := requireSingleSite(cfg.Registry(), "import epgstation")
 			if err != nil {
 				return err
@@ -133,7 +131,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 }
 
 // runImportRules は EPGStation から /api/rules を取得して ImportRules に渡す。
-// cobra の RunE は配線に留める既存の流儀（runRescue/runShadowDiff）に倣う。
+// cobra の RunE は配線に留める既存の流儀（runRescue）に倣う。
 func runImportRules(ctx context.Context, pool *pgxpool.Pool, client *epgstation.Client, site string) (epgimport.RuleImportResult, error) {
 	rules, err := client.ListRules(ctx)
 	if err != nil {

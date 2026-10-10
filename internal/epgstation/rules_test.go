@@ -2,6 +2,7 @@ package epgstation_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,27 @@ import (
 
 	"github.com/fetburner/rokuban/internal/epgstation"
 )
+
+// TestListRules_ErrorStatus は API のエラーステータスを型付きエラーで返すことを確認する。
+func TestListRules_ErrorStatus(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := epgstation.NewClient(srv.URL, srv.Client())
+	_, err := c.ListRules(context.Background())
+	if err == nil {
+		t.Fatal("ListRules() error = nil, want APIError")
+	}
+	var apiErr *epgstation.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("ListRules() error = %T (%v), want *APIError", err, err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("APIError.StatusCode = %d, want %d", apiErr.StatusCode, http.StatusInternalServerError)
+	}
+}
 
 // TestListRules_SinglePage は 1 ページで完結するケースを確認する。
 func TestListRules_SinglePage(t *testing.T) {

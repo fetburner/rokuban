@@ -83,7 +83,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `log.format` | `json` | json / text |
 
 `log.*` は config を読む全サブコマンドに共通の入口で `slog` の既定ロガーへ適用される。
-対象は server / migrate / rescue / enqueue / catalog / shadow-diff / config validate。
+対象は server / migrate / rescue / enqueue / catalog / config validate。
 config の読み込みより前に出るログだけは既定（text 形式・Info 以上）のままになる
 （`--config` のパース失敗など）。
 
@@ -268,7 +268,6 @@ VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG
 - `worker` ロールも 1 プロセスが N サイトを束縛できる。mirakc クライアントは site → 値の map になり、site 単位のキュー・定期ジョブが対象にする束縛サイトも 1 つの site ではなく集合になった。site 単位のキュー（ingest/epg/reconciler/watcher）は束縛サイトの数だけ物理キュー（`<queue>_<site>`）を購読する。site 単位の定期ジョブ（epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）も束縛サイトごとに 1 本ずつ登録する。**0 サイト（中央プロセス）の束縛は `worker.queues` / `--queues` を site 非依存キューに絞ったときだけ許す**。`worker.queues` が空（既定=全キュー）のまま、または site 単位のキューを含んだまま 0 サイトで起動すると、届く site 単位のジョブは束縛サイトの集合のどれとも一致せず全滅して再試行し続けるだけになる。そのため起動エラーにする。どのキューが site 単位か・物理キュー名への展開は [operations.md](operations.md) §5 を参照
 - `enqueue` サブコマンドは **site 束縛ジョブだけ** `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）
 - site 非依存ジョブには `--site` を付けない。どれが site 非依存かは `rokuban enqueue --help` が列挙する（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
-- `shadow-diff` も同じ解決規則の `--site` を持つ。EPGStation は東京の 1 台なので、比較対象の site を名指しする
 - `rescue` は site 非依存で、`--site` を持たない。catalog の各行は自分の site を持ち、catalog が無い場合のストレージ走査も `sites/{site}/` 前置から site を決める。前置の無いファイルは登録せず Warn にする
 
 ### server.allowed_hosts と server.trust_forwarded_host（X-Forwarded-Host は opt-in）

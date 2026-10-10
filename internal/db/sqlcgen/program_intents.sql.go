@@ -7,7 +7,6 @@ package sqlcgen
 
 import (
 	"context"
-	"time"
 )
 
 const deleteProgramIntent = `-- name: DeleteProgramIntent :execrows
@@ -47,57 +46,6 @@ func (q *Queries) GetProgramIntent(ctx context.Context, arg GetProgramIntentPara
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const listSkippedProgramIntentsBySite = `-- name: ListSkippedProgramIntentsBySite :many
-
-SELECT i.program_id, s.start_at AS program_start_at, s.duration_ms AS program_duration_ms, s.title AS name
-FROM program_intents i
-JOIN program_snapshots s ON s.site = i.site AND s.program_id = i.program_id
-WHERE i.site = $1 AND i.action = 'skip'
-ORDER BY s.start_at
-`
-
-type ListSkippedProgramIntentsBySiteRow struct {
-	ProgramID         int64
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Name              string
-}
-
-// 番組終了後の GC は DeleteEndedProgramSnapshots（internal/db/queries/program_snapshots.sql）
-// 1 本に集約された（#27）。program_intents は program_snapshots への FK が
-// ON DELETE CASCADE なので、program_snapshots 側の行が消えれば一緒に落ちる。
-// 個別の DeleteEndedProgramIntents は撤去した。
-// shadow-diff（M2-14）用。skip 意図は reservations 行を持たないため
-// （案 A の核心。上の UpsertProgramIntent のコメント参照）、EPGStation との
-// 差分照合では program_intents を直接引く必要がある。番組の開始時刻・尺・
-// 表示用の題名は program_snapshots から引く（#27 で抽出済み）。FK があるので
-// program_intents の行が存在すれば program_snapshots の行も必ず存在する
-// （INNER JOIN で取りこぼしはない）。
-func (q *Queries) ListSkippedProgramIntentsBySite(ctx context.Context, site string) ([]ListSkippedProgramIntentsBySiteRow, error) {
-	rows, err := q.db.Query(ctx, listSkippedProgramIntentsBySite, site)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListSkippedProgramIntentsBySiteRow
-	for rows.Next() {
-		var i ListSkippedProgramIntentsBySiteRow
-		if err := rows.Scan(
-			&i.ProgramID,
-			&i.ProgramStartAt,
-			&i.ProgramDurationMs,
-			&i.Name,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const skipProgram = `-- name: SkipProgram :one

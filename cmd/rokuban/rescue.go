@@ -51,7 +51,7 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 }
 
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
-// 操作はここに閉じ込める（runShadowDiff / runEnqueue と同じ切り出し）。
+// 操作はここに閉じ込める（runEnqueue と同じ切り出し）。
 //
 // registrySites は `mirakcs:` レジストリの site 名一覧
 // （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の

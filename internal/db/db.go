@@ -109,14 +109,14 @@ func KnownRoles() []string {
 // resolveRoles の戻り値）。プロセスは常に 1 個のプールしか持たない（全ロールが
 // それを共有する）ため、「ロール別プール上限」はこの 1 個のプールの MaxConns を
 // roles から決めることを指す（issue #90）。cfg.MaxConns が明示されていればそれを
-// 優先する。roles が空（rescue/enqueue/shadow-diff 等の単発 CLI コマンド）なら
+// 優先する。roles が空（rescue/enqueue 等の単発 CLI コマンド）なら
 // pgxpool の既定値（max(4, NumCPU)）をそのまま使う。
 //
 // numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
 // から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
 // 用のコネクションを 1 本専有し続けるため、2 サイト以上の束縛ではこの数を
 // pool サイジングに反映する（roleConnBudget / minRequiredConns の
-// doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue/shadow-diff
+// doc コメント参照）。site 束縛の概念が無い呼び出し元（rescue/enqueue
 // 等の単発 CLI コマンド、testutil）は 0 を渡す --- roles が空ならどのみち
 // site 数は判定に使われない。
 func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites int) (*pgxpool.Pool, error) {

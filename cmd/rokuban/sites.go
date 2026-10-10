@@ -131,11 +131,9 @@ func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []str
 
 // requireSingleSite は registry がちょうど 1 要素であることを要求する。
 //
-// `import epgstation` が単一サイト用のまま使う（issue #533 で shadow-diff は
-// resolveSiteFlag に置き換わったので、この関数の利用者は
-// import だけになった）: 多サイトでの意味論（EPGStation からの移行先を
-// どう決めるか）を決める書き手がまだいない（不変条件 11）ので、形を決めずに
-// 明示的なエラーで落とす。
+// `import epgstation` は単一サイトだけを受け付ける。EPGStation 側の site 対応と
+// 移行先の対応付けを決める書き手がまだいないため（不変条件 11）、多サイトの形を
+// 先に固定せず、複数サイトなら明示的なエラーで落とす。
 func requireSingleSite(registry []config.MirakcSite, cmdName string) (config.MirakcSite, error) {
 	switch len(registry) {
 	case 0:
@@ -199,8 +197,7 @@ func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.Mirak
 }
 
 // resolveSiteFlag は `--site` フラグとレジストリから対象サイト名を決める。
-// `enqueue`（site 束縛ジョブ）と `shadow-diff` が共有する解決規則（issue #183 の
-// 「含むもの」6 で enqueue に導入、issue #533 で shadow-diff にも一般化した）。
+// site 束縛ジョブを投入する `enqueue` の解決規則。
 //
 // 未指定かつレジストリが 1 要素ならその 1 つ、2 要素以上なら `--site` が必須
 // （M4-6 の CronJob がサイトごとに投入するため）。指定された名前がレジストリに

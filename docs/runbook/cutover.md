@@ -3,8 +3,8 @@
 ## EPGStation から Rokuban へ主運用を切り替える
 
 EPGStation を止めて Rokuban を主運用にする手順と、その判断に使う出口基準。
-並走（[shadow.md](shadow.md)）が確かめるのは**予約の正しさ**である。
-この文書が確かめるのは**視聴・寿命・移行**で、並走の出口基準を満たした後に使う。
+この文書が確かめるのは**視聴・寿命・移行**である。
+並走中の注意（二重録画など）は [shadow.md](shadow.md) にある。
 
 コマンドはリポジトリの `docker-compose.yml` で動かしている前提で書く。
 `docker compose exec rokuban rokuban ...` はコンテナ内の CLI を呼ぶ。
@@ -16,24 +16,23 @@ SQL は `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTG
 
 | # | 項目 | 合格の判定 |
 |---|---|---|
-| 1 | 予約差分 | `rokuban shadow-diff` が終了コード 0。または `EPGStationOnly` が手動予約と、無効で取り込まれたルールの予約だけ（[shadow.md](shadow.md)） |
-| 2 | 派生物の再生 | Rokuban で録った番組の encoded 版をブラウザで最後まで再生できる |
-| 3 | `until_encoded` | 派生物が揃うまでは原本が `active` のまま。揃った後に原本だけが `deleted` になり、encoded は再生できる |
-| 4 | ごみ箱の復元 | 削除 → 復元の前後でファイルの inode と mtime が変わらない |
-| 5 | ブレーカー | `GET /api/breakers` が空。`rokuban_circuit_breaker_tripped` が全系列 0 |
-| 6 | catalog | `rokuban catalog verify` が終了コード 0。練習 DB への rescue が通る |
-| 7 | webhook（使う場合） | 実際の受け口が `recording.finished` を 1 件受け取る |
+| 1 | 派生物の再生 | Rokuban で録った番組の encoded 版をブラウザで最後まで再生できる |
+| 2 | `until_encoded` | 派生物が揃うまでは原本が `active` のまま。揃った後に原本だけが `deleted` になり、encoded は再生できる |
+| 3 | ごみ箱の復元 | 削除 → 復元の前後でファイルの inode と mtime が変わらない |
+| 4 | ブレーカー | `GET /api/breakers` が空。`rokuban_circuit_breaker_tripped` が全系列 0 |
+| 5 | catalog | `rokuban catalog verify` が終了コード 0。練習 DB への rescue が通る |
+| 6 | webhook（使う場合） | 実際の受け口が `recording.finished` を 1 件受け取る |
 
 切替後に次の 2 項目を確かめる。どちらかが落ちたらロールバックを検討する。
 
 | # | 項目 | 合格の判定 |
 |---|---|---|
-| 8 | ライブラリの欠け | EPGStation の録画件数と取り込んだ件数の差を全件説明できる。マウント配下の未登録ファイルが、消えてよいものだけ |
-| 9 | 実体無し | 取り込みから 24 時間以上後に `rokuban_media_assets_missing` の系列が 1 つも無い。`rokuban_missing_asset_scan_suspected_storage_failure_total` も増えていない |
+| 7 | ライブラリの欠け | EPGStation の録画件数と取り込んだ件数の差を全件説明できる。マウント配下の未登録ファイルが、消えてよいものだけ |
+| 8 | 実体無し | 取り込みから 24 時間以上後に `rokuban_media_assets_missing` の系列が 1 つも無い。`rokuban_missing_asset_scan_suspected_storage_failure_total` も増えていない |
 
-**項目 1 は、並走中に Rokuban 側でも同じルールが有効になっていることを前提にする**。
+**切替手順は、並走中に Rokuban 側でも同じルールが有効になっていることを前提にする**。
 その間は両方が録る（[shadow.md](shadow.md) の「二重録画に注意」）。
-二重録画を避けるために Rokuban のルールを無効にしていたなら、項目 1 の前に有効にする。
+二重録画を避けるために Rokuban のルールを無効にしていたなら、切替の前に有効にする。
 二重録画は資源を余分に使うだけで、録り逃しより安い。
 
 ### エンコードプロファイル
@@ -58,7 +57,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 プロファイルが空のままでは `until_encoded` を選べない。
 `--rules` を再実行しても、Rokuban 側で設定したプロファイルと保持ポリシーは上書きされない。
 
-### 派生物の再生と `until_encoded`（項目 2・3）
+### 派生物の再生と `until_encoded`（項目 1・2）
 
 1. 試験用のルールを 1 本作り、プロファイルを 1 つと `keepOriginal: until_encoded` を設定する。
    短い番組に当たる条件にする
@@ -69,17 +68,17 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
     WHERE recording_id = <ID> ORDER BY id;
    ```
 
-   エンコードが終わるまでは `original` が `active` で残る。これが項目 3 の前半である
+   エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
 3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。
    原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。
    条件の権威は view `until_encoded_deletable_originals` で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。
    待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
 4. 同じ SQL で `original` が `deleted`、`encoded` が `active` になっていることを見る
-5. 録画詳細の画面で encoded 版を末尾までシークして再生する（項目 2）
+5. 録画詳細の画面で encoded 版を末尾までシークして再生する（項目 1）
 
 原本が消えた後は再エンコードできない。
 
-### ごみ箱の復元（項目 4）
+### ごみ箱の復元（項目 3）
 
 復元は `recordings.deleted_at` を消すだけで、ファイルに触れない。それを実物で確かめる。
 
@@ -96,7 +95,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 ごみ箱の猶予は `cleanup.trash_retention`（既定 30 日）。猶予を過ぎた録画と
 「今すぐ完全削除」した録画だけを削除 reconcile が unlink する。
 
-### ブレーカーが発動したとき（項目 5）
+### ブレーカーが発動したとき（項目 4）
 
 ブレーカーは**削除だけ**を止めるラッチで、手で再開するまで止まり続ける。
 発動中も予約の作成と録画は続くので、慌てて再開しない。
@@ -119,7 +118,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 `reconcile_total_loss` は件数ではなく「desired が空なのに自分の schedule がある」という形で発動する。
 発動したら DB 接続と `reservations` の中身を先に疑う。
 
-### catalog と rescue の練習（項目 6）
+### catalog と rescue の練習（項目 5）
 
 rescue は DB を失った後にだけ使う。**live DB に向けて練習しない**（catalog の内容で上書きする）。
 練習は別名の DB に向けて行う。
@@ -157,7 +156,7 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 ただしファイル操作の lock を live の worker と共有するので、走っている間は公開と削除が待たされる。
 世代の選び方と復元の契約は [storage/rescue.md](../storage/rescue.md) にある。
 
-### webhook の疎通（項目 7）
+### webhook の疎通（項目 6）
 
 `webhook.url` に実際の受け口を書き、短い番組を 1 本録って `recording.finished` が届くことを見る。
 受け口がまだ無ければ、別ホストで `nc -l 8080` を開いて URL に向けると、
@@ -180,14 +179,13 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
      --epgstation-url http://<epgstation>:8888
    ```
 
-2. 予約を導出させて突き合わせる。`enqueue` は投入だけして終わるので、差分が残ったら少し待って `shadow-diff` を再実行する:
+2. 取り込んだルールから予約を導出させる:
 
    ```sh
    docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
-   docker compose exec rokuban rokuban shadow-diff --config /config.yml --epgstation-url http://<epgstation>:8888
    ```
 
-   `EPGStationOnly` に残るのは 2 種類である。
+   EPGStation にしか無い予約は 2 種類ある。
    1 つはルール由来でない EPGStation の手動予約で、`--rules` の対象外なので Rokuban の番組表から予約し直す。
    もう 1 つは条件が 1 つも残らず無効で取り込まれたルールの予約で、条件を直して有効にする。
    手動予約の一覧は次で出る（`total` が 1000 を超えるなら `offset` を進める）:
@@ -240,7 +238,7 @@ Rokuban の schedule は並走中から mirakc にあるので、切替で録り
 未解決: エンコード済みファイルしか持たない EPGStation の録画（原本をエンコード後に消したもの）は再生できる形で取り込めない。
 サムネイルがあればサムネイルだけの録画（再生不可）として登録され、無ければ飛ばされる。
 
-### ライブラリの欠け（項目 8）
+### ライブラリの欠け（項目 7）
 
 1. 件数を比べる。EPGStation 側は切替手順 5 で控えた値を使う。Rokuban 側はマウント先の前置で数える:
 
