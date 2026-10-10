@@ -59,14 +59,14 @@ func candidateRow(t *testing.T, pool *pgxpool.Pool) (state, stage string, ok boo
 }
 
 // candidateWorkHeld は logoframe のダミーが止まっている間に during を実行してから Work を終わらせる。
-func candidateWorkHeld(t *testing.T, w *CMLogoCandidateWorker, tools cmToolset, recordingID, jobID int64, areaUpdatedAt time.Time, during func()) error {
+func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWorker, tools cmToolset, recordingID, jobID int64, areaUpdatedAt time.Time, during func()) error {
 	t.Helper()
 	if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Work(context.Background(), cmLogoCandidateJob(recordingID, jobID, areaUpdatedAt))
+		done <- w.Work(ctx, cmLogoCandidateJob(recordingID, jobID, areaUpdatedAt))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -171,12 +171,33 @@ func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	areaAt := seedTaughtArea(t, pool, 1180)
 	w := newCandidateTestWorker(pool, mediaDir, tools)
 
-	err := candidateWorkHeld(t, w, tools, id, 4401, areaAt, func() { seedTaughtArea(t, pool, 1100) })
+	err := candidateWorkHeld(context.Background(), t, w, tools, id, 4401, areaAt, func() { seedTaughtArea(t, pool, 1100) })
 	if err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	if state, stage, ok := candidateRow(t, pool); ok {
 		t.Errorf("candidate = %q/%q, want none: a result for the old area must not be stored", state, stage)
+	}
+}
+
+func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 946)
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
+	areaAt := seedTaughtArea(t, pool, 1180)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := candidateWorkHeld(ctx, t, newCandidateTestWorker(pool, mediaDir, tools), tools, id, 4402, areaAt, cancel)
+	if err == nil {
+		t.Fatal("Work succeeded after its context was canceled")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("context error = %v, want cancellation", ctx.Err())
+	}
+	if state, stage, ok := candidateRow(t, pool); ok {
+		t.Errorf("candidate = %q/%q, want no running row after cancellation", state, stage)
 	}
 }
 
@@ -267,6 +288,43 @@ func TestFailOrphanCMLogoCandidates(t *testing.T) {
 	}
 	if state, stage, _ := candidateRow(t, pool); state != "failed" || stage != "stopped" {
 		t.Errorf("orphan candidate = %q/%q, want failed/stopped", state, stage)
+	}
+}
+
+func TestActiveCMLogoCandidateJobListParamsAppliesCursor(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := riverWorkContext(t, pool)
+	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: 948,
+		AreaUpdatedAt: time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1025, RecordingID: 949,
+		AreaUpdatedAt: time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC),
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstPage, err := client.JobList(ctx, river.NewJobListParams().Kinds("cm_logo_candidate").First(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(firstPage.Jobs) != 1 || firstPage.Jobs[0].ID != first.Job.ID || firstPage.LastCursor == nil {
+		t.Fatalf("first page = %#v, want job %d and a cursor", firstPage.Jobs, first.Job.ID)
+	}
+	secondPage, err := client.JobList(ctx, activeCMLogoCandidateJobListParams(firstPage.LastCursor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secondPage.Jobs) != 1 || secondPage.Jobs[0].ID != second.Job.ID {
+		t.Fatalf("second page = %#v, want only job %d", secondPage.Jobs, second.Job.ID)
 	}
 }
 

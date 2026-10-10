@@ -98,25 +98,25 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CM
 	}
 	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
 	if err != nil {
-		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
+		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
 	}
 	if item.NetworkID != args.NetworkID || item.ServiceID != args.ServiceID {
-		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
+		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
 	}
 	if item.IsTrashed || item.OriginalMissing || item.RelPath == nil {
-		return w.fail(args, attemptedAt, cmFailure("setup", fmt.Errorf("active original is missing")))
+		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("active original is missing")))
 	}
 
 	if err := w.analyze(ctx, job.ID, item, area, args, attemptedAt); err != nil {
-		return w.fail(args, attemptedAt, err)
+		return w.fail(ctx, args, attemptedAt, err)
 	}
 	return nil
 }
 
-func (w *CMLogoCandidateWorker) fail(args jobs.CMLogoCandidateJobArgs, attemptedAt time.Time, err error) error {
+func (w *CMLogoCandidateWorker) fail(ctx context.Context, args jobs.CMLogoCandidateJobArgs, attemptedAt time.Time, err error) error {
 	failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(ctx.Err(), context.Canceled) {
 		if _, markErr := sqlcgen.New(w.Pool).DeleteCMLogoCandidateRunningAttempt(failureCtx, sqlcgen.DeleteCMLogoCandidateRunningAttemptParams{
 			NetworkID: args.NetworkID, ServiceID: args.ServiceID,
 			AreaUpdatedAt: args.AreaUpdatedAt, AttemptedAt: attemptedAt,

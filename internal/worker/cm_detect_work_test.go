@@ -670,16 +670,23 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 		name             string
 		cancelWork       bool
 		newerAttemptLive bool
+		priorFailures    int
 	}{
 		{name: "deadline"},
 		{name: "shutdown cancellation", cancelWork: true},
 		{name: "shutdown cancellation after rescue", cancelWork: true, newerAttemptLive: true},
+		{name: "shutdown cancellation preserves prior failures", cancelWork: true, priorFailures: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 			mediaDir := t.TempDir()
 			id := seedCMRecording(t, pool, mediaDir, 926)
+			q := sqlcgen.New(pool)
+			for range tc.priorFailures {
+				attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+				markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
+			}
 			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 			if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
 				t.Fatal(err)
@@ -719,6 +726,13 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 				if tc.newerAttemptLive {
 					if queryErr != nil || state != "running" || count != 2 {
 						t.Errorf("attempt after old shutdown cancellation = %q/%d, %v; want running/2", state, count, queryErr)
+					}
+				} else if tc.priorFailures > 0 {
+					if queryErr != nil || state != "retrying" || count != int32(tc.priorFailures) {
+						t.Errorf("attempt after shutdown cancellation = %q/%d, %v; want retrying/%d", state, count, queryErr, tc.priorFailures)
+					}
+					if got := startCMDetectionTestAttempt(t, ctx, q, id); got != int32(tc.priorFailures+1) {
+						t.Errorf("next attempt after cancellation = %d, want %d", got, tc.priorFailures+1)
 					}
 				} else if !errors.Is(queryErr, pgx5.ErrNoRows) {
 					t.Errorf("attempt after shutdown cancellation = %q/%d, %v; want no attempt row", state, count, queryErr)

@@ -216,11 +216,11 @@ CREATE TABLE recording_encode_policy (
 
 `recording_cm_detections` の1行は検出処理全体の完了を表す。`cm_ranges` は原本の先頭を0としたミリ秒の `int8multirange` で、空 multirange は広告区間が無かった結果である。処理に失敗した間は結果行を作らない。
 
-`recording_cm_attempts` は直近の試行だけを持つ。`running` は処理中、`retrying` は失敗後に River の自動再試行を待っている状態である。`failed` は最大3回の試行後も失敗した状態である。
+`recording_cm_attempts` は録画ごとの直近の試行状態を持つ。`running` は処理中、`retrying` は失敗後または停止時の中断後に再投入を待つ状態である。`failed` は最大3回の試行後も失敗した状態である。停止時の中断は回数に入れず、以前の失敗回数を保つ。
 
 `stage` は worker が観測した失敗工程である。値は `setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save` である。ほかに `stopped` / `resolution` / `match` / `adopt` がある。`adopt` は枠があり、候補の採用を待つため検出しなかったことを表す。
 
-既存行は error の自由文から推定せず NULL のままにする。定期 reconcile は `running` のみを advisory lock で確認してプロセス停止を回収し、`retrying` を重複投入しない。回収は試行回数を消費させる。River ジョブの試行回数が残っていれば `retryable` に戻して River 自身の再試行に乗せ、試行行を `retrying` にする。使い切っていれば `discarded` にして試行行を `failed`（error は「process stopped」）にする。新しいジョブを積み直すと試行回数が 1 に戻り、OOM で落ち続ける録画が `failed` に届かない。結果の保存と試行行の削除は同一トランザクションで確定する。
+CM worker は実尺に基づく `Timeout()` を返し、停止・異常終了後の running job は River の JobRescuer が回収する。次の worker 開始時に running 行が残っていれば前のプロセス死を数え、上限に達した行を `failed` にする。`attempt_count` は結果保存時のフェンシング値でもある。結果と試行行の削除は同一トランザクションで確定する。
 
 ### recording_chapter_ownership / recording_chapter_spans — ユーザーのチャプター（衛星表）
 

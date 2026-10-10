@@ -125,10 +125,19 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failureCancel()
-			if _, deleteErr := q.DeleteCMDetectionRunningAttempt(failureCtx, sqlcgen.DeleteCMDetectionRunningAttemptParams{
+			params := sqlcgen.DeleteCMDetectionRunningAttemptParams{
 				RecordingID: job.Args.RecordingID, AttemptCount: attemptCount,
-			}); deleteErr != nil {
-				return errors.Join(err, fmt.Errorf("clearing CM detection running state: %w", deleteErr))
+			}
+			var cleanupErr error
+			if attemptCount == 1 {
+				_, cleanupErr = q.DeleteCMDetectionRunningAttempt(failureCtx, params)
+			} else {
+				_, cleanupErr = q.CancelCMDetectionRunningAttempt(failureCtx, sqlcgen.CancelCMDetectionRunningAttemptParams{
+					RecordingID: job.Args.RecordingID, AttemptCount: attemptCount,
+				})
+			}
+			if cleanupErr != nil {
+				return errors.Join(err, fmt.Errorf("clearing CM detection running state: %w", cleanupErr))
 			}
 			return err
 		}

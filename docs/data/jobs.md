@@ -121,10 +121,10 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
   2 倍の実尺と 30 分の下限は `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum` で固定する。
   rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
 - **CM 検出の試行回数は `recording_cm_attempts.attempt_count` で数える**。失敗と締切超過は試行になり、プロセス死は次の開始時に running 行を進めて数える。
-  停止時のキャンセルは attempt 行を消すので回数に入らない（`TestCMDetectDeadlineCountsAndCancellationDoesNotCount`）。
+  停止時のキャンセルは回数に入れない。過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする（`TestCMDetectDeadlineCountsAndCancellationDoesNotCount`）。
   結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
 - **死んだロゴ候補は River の公開 JobList で孤児を調べる**。実行中候補と一致する未完了ジョブがなければ、その行を failed にする。
-  候補ワーカーは `MaxAttempts: 1` なので、再解析は利用者がロゴ領域を保存し直す。
+  候補ワーカーは `MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる（`TestCMLogoCandidateWorkerCancellationClearsRunningRow`）。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
 

@@ -193,7 +193,7 @@ func activeCMLogoCandidateJobListParams(cursor *river.JobListCursor) *river.JobL
 		).
 		First(cmLogoCandidateJobListPageSize)
 	if cursor != nil {
-		params.After(cursor)
+		params = params.After(cursor)
 	}
 	return params
 }

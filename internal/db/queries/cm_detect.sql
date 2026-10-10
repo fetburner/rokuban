@@ -57,31 +57,34 @@ SET state = CASE
         -- Work calls this only after cm_detection_desired says a failed attempt
         -- has a newer logo or area to analyze.
         WHEN recording_cm_attempts.state = 'failed' THEN 'running'
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'failed'
+        -- Only a still-running attempt at the limit is a dead process. A canceled
+        -- attempt is rolled back to retrying and must remain eligible for another try.
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'failed'
         ELSE 'running'
     END,
     attempt_count = CASE
         WHEN recording_cm_attempts.state = 'failed' THEN recording_cm_attempts.attempt_count + 1
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempt_count
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempt_count
         ELSE recording_cm_attempts.attempt_count + 1
     END,
     stage = CASE
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer
-             AND recording_cm_attempts.state = 'running' THEN 'stopped'
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.stage
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'stopped'
         ELSE NULL
     END,
     error = CASE
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer
-             AND recording_cm_attempts.state = 'running' THEN 'CM detection process stopped while job was running'
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.error
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'CM detection process stopped while job was running'
         ELSE NULL
     END,
     attempted_at = CASE
         WHEN recording_cm_attempts.state = 'failed' THEN now()
-        WHEN recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempted_at
+        WHEN recording_cm_attempts.state = 'running'
+             AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempted_at
         ELSE now()
     END
 RETURNING attempt_count, state, (state = 'running')::boolean AS should_run;
@@ -99,6 +102,17 @@ WHERE recording_id = sqlc.arg('recording_id')
 DELETE FROM recording_cm_attempts
 WHERE recording_id = sqlc.arg('recording_id')
   AND attempt_count = sqlc.arg('attempt_count')
+  AND state = 'running';
+
+-- name: CancelCMDetectionRunningAttempt :execrows
+-- A canceled retry does not consume an attempt. Keep the prior failure budget,
+-- while restoring the attempt number so the next actual try uses the same count.
+UPDATE recording_cm_attempts
+SET state = 'retrying', attempt_count = sqlc.arg('attempt_count')::integer - 1,
+    stage = NULL, error = NULL
+WHERE recording_id = sqlc.arg('recording_id')
+  AND attempt_count = sqlc.arg('attempt_count')
+  AND attempt_count > 1
   AND state = 'running';
 
 -- name: LockCMDetectionAttempt :one
