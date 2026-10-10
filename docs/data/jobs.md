@@ -33,7 +33,7 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 
 ### 定期実行の契機はデプロイ形態に委ねる
 
-River の `PeriodicJobs` は**リーダーに選出されたクライアントだけが投入する**。k8s の worker は KEDA で 0〜N に伸縮する短命な client なので、定期投入の担い手に向かず、スケールアップのたびに `RunOnStart` が走るのも望ましくない。常駐する notifier の client に担わせると、CronJob と二重に投入する。
+River の `PeriodicJobs` は**リーダーに選出されたクライアントだけが投入する**。k8s の worker は KEDA で 0〜N に伸縮する短命な client なので、定期投入の担い手に向かず、スケールアップのたびに `RunOnStart` が走るのも望ましくない。1 件消化モード（`--once`）は `periodic_jobs: true` だと起動を拒む。
 
 そこで定期実行の契機をアプリの外に出せるようにする。
 

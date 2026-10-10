@@ -72,12 +72,9 @@ encode:
 
 worker:
   # **k8s では false にする**（config.example.yml が名指ししている）。true だと
-  # notifier の常駐 River client（リーダーだけが PeriodicJobs を投入する）と
-  # CronJob が二重に投入する。投入は CronJob の
+  # ScaledJob の 1 件消化モード（`--once`）が起動を拒む。投入は CronJob の
   # `rokuban enqueue` が担う --- **判定 2 が測っているのはまさにこの経路**
   # （worker 0 でも CronJob が投入し続け、KEDA が起こして消化する）。
-  # ここを true に戻すと、判定 2 は「worker が自分で投入して自分で消化した」
-  # だけでも緑になりうる。
   periodic_jobs: false
   # **故障注入 3 が rescue を数分で観測するためだけに縮めてある**（出荷の既定は
   # River の 1h のまま）。job は自身の Timeout() が過ぎるまで rescue されない

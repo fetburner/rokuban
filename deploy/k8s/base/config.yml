@@ -61,10 +61,9 @@ mirakcs:
   - site: default
     url: http://mirakc:40772
 
-# **定期ジョブは in-process では投入しない。** notifier の常駐 River client が
-# リーダーになると PeriodicJobs を投入するので、true のままだと CronJob と二重に
-# 投入する（docs/data.md §2）。投入は CronJob の `rokuban enqueue` が担う。
-# 1 件消化モード（`--once`）はこの値が false であることを要求する（`worker.OnceGate`）。
+# **定期ジョブは in-process では投入しない。** ScaledJob の 1 件消化モード
+# （`--once`）は true だと起動を拒む（internal/worker/worker.go の once 検証）。
+# 投入元は CronJob の `rokuban enqueue` に一本化する（docs/data.md §2）。
 worker:
   periodic_jobs: false
 
