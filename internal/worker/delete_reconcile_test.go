@@ -2103,15 +2103,52 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cleanupTx.Rollback(context.Background()) })
-	if _, err := sqlcgen.New(cleanupTx).ListAgedOrphanFiles(ctx, time.Now()); err != nil {
-		t.Fatalf("reading aged orphan on cleanup session: %v", err)
+	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if _, err := cleanup.reconcileOrphanCandidates(ctx, sqlcgen.New(cleanupTx), time.Hour); err != nil {
+		t.Fatalf("checking canonical orphan on cleanup session: %v", err)
+	}
+
+	cleanupPaused := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
+	originalHook := beforeCanonicalOrphanReport
+	cleanupDone := make(chan struct{})
+	t.Cleanup(func() {
+		release()
+		beforeCanonicalOrphanReport = originalHook
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			t.Error("orphan cleanup did not finish after release")
+		}
+	})
+	beforeCanonicalOrphanReport = func(got string) {
+		if got != relPath {
+			return
+		}
+		close(cleanupPaused)
+		<-releaseCleanup
+	}
+	go func() {
+		cleanup.deleteOrphanFile(sqlcgen.New(cleanupTx), relPath, time.Hour)
+		close(cleanupDone)
+	}()
+	select {
+	case <-cleanupPaused:
+	case <-time.After(5 * time.Second):
+		release()
+		t.Fatal("orphan cleanup did not pause after checking the canonical orphan")
 	}
 	if err := cleanupTx.Conn().Close(ctx); err != nil {
+		release()
 		t.Fatalf("disconnecting cleanup database session: %v", err)
 	}
 
-	// A fresh publication can commit after the cleanup session is gone. The canonical
-	// cleanup path must not need that session to decide whether it may unlink the file.
+	// The cleanup session has observed no live asset for this path and is gone. A
+	// publication on a fresh session must finish before the paused report resumes; if
+	// orphan cleanup still owns the canonical path or resumes an unlink, it can erase
+	// the replacement despite the row having been absent when cleanup scanned it.
 	recordingID := insertTestRecording(t, pool)
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-after-cleanup-disconnect")
 	content := []byte("published after cleanup database disconnect")
@@ -2121,12 +2158,33 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 	if err := os.Chtimes(tempPath, old, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
-		relPath, tempPath, fullPath, int64(len(content))); err != nil {
-		t.Fatalf("publishing after cleanup database disconnect: %v", err)
+	commitDone := make(chan error, 1)
+	go func() {
+		commitDone <- (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
+			relPath, tempPath, fullPath, int64(len(content)))
+	}()
+	select {
+	case err := <-commitDone:
+		if err != nil {
+			release()
+			t.Fatalf("publishing after cleanup database disconnect: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		release()
+		select {
+		case <-cleanupDone:
+		case <-time.After(5 * time.Second):
+			t.Error("orphan cleanup did not finish after release")
+		}
+		select {
+		case <-commitDone:
+		case <-time.After(5 * time.Second):
+			t.Error("publication did not finish after cleanup was released")
+		}
+		t.Fatal("publication waited for canonical orphan cleanup after its database session disconnected")
 	}
-	(&DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}).deleteOrphanFile(
-		sqlcgen.New(cleanupTx), relPath, time.Hour)
+	release()
+	<-cleanupDone
 
 	if got, err := os.ReadFile(fullPath); err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("canonical after disconnected cleanup = %q, %v; want published bytes", got, err)
