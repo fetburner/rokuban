@@ -51,6 +51,7 @@ curl -s "$EPGSTATION_URL/api/reserves?type=all&isHalfWidth=false&limit=1&offset=
 ```
 
 並走の出口基準は「予約差分ゼロ or 全件説明可能」。
+視聴・寿命・移行の出口基準と切替手順は [cutover.md](cutover.md) にある。
 `rokuban shadow-diff` は Rokuban（DB）と EPGStation（API）の予約集合を programId で
 突き合わせ、差分を標準出力にレポートするサブコマンド。
 
