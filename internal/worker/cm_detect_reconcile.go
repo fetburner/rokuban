@@ -146,10 +146,8 @@ func failOrphanCMLogoCandidates(ctx context.Context, client *river.Client[pgx5.T
 
 	q := sqlcgen.New(pool)
 	for _, candidate := range candidates {
-		key := cmLogoCandidateKey{
-			networkID: candidate.NetworkID, serviceID: candidate.ServiceID,
-			recordingID: candidate.RecordingID, areaUpdatedAt: candidate.ObservedAreaUpdatedAt,
-		}
+		key := cmLogoCandidateKeyFor(candidate.NetworkID, candidate.ServiceID,
+			candidate.RecordingID, candidate.ObservedAreaUpdatedAt)
 		if _, ok := active[key]; ok {
 			continue
 		}
@@ -166,16 +164,20 @@ func failOrphanCMLogoCandidates(ctx context.Context, client *river.Client[pgx5.T
 }
 
 type cmLogoCandidateKey struct {
-	networkID     int32
-	serviceID     int32
-	recordingID   int64
-	areaUpdatedAt time.Time
+	networkID            int32
+	serviceID            int32
+	recordingID          int64
+	areaUpdatedAtUnixMic int64
 }
 
 func cmLogoCandidateKeyFromArgs(args jobs.CMLogoCandidateJobArgs) cmLogoCandidateKey {
+	return cmLogoCandidateKeyFor(args.NetworkID, args.ServiceID, args.RecordingID, args.AreaUpdatedAt)
+}
+
+func cmLogoCandidateKeyFor(networkID, serviceID int32, recordingID int64, areaUpdatedAt time.Time) cmLogoCandidateKey {
 	return cmLogoCandidateKey{
-		networkID: args.NetworkID, serviceID: args.ServiceID,
-		recordingID: args.RecordingID, areaUpdatedAt: args.AreaUpdatedAt,
+		networkID: networkID, serviceID: serviceID, recordingID: recordingID,
+		areaUpdatedAtUnixMic: areaUpdatedAt.UTC().UnixMicro(),
 	}
 }
 

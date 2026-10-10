@@ -270,6 +270,15 @@ func TestFailOrphanCMLogoCandidates(t *testing.T) {
 	}
 }
 
+func TestCMLogoCandidateKeyUsesTimestampInstant(t *testing.T) {
+	instant := time.Date(2025, time.January, 2, 3, 4, 5, 123456000, time.UTC)
+	jobKey := cmLogoCandidateKeyFor(32736, 1024, 948, instant)
+	candidateKey := cmLogoCandidateKeyFor(32736, 1024, 948, instant.In(time.FixedZone("offset", 9*60*60)))
+	if jobKey != candidateKey {
+		t.Fatalf("keys for the same area update instant differ: %#v != %#v", jobKey, candidateKey)
+	}
+}
+
 // The ingest hint and periodic reconciliation both pass actual recording duration to River jobs.
 func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	pool := testutil.SetupDB(t)
