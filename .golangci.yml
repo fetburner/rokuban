@@ -15,8 +15,19 @@ linters:
     - funlen
     - gocognit
     - depguard
+    - gocritic
 
   settings:
+    # gocritic は rokuban 固有のルール（tools/lintrules）を ruleguard で読むためだけに使う。
+    # failOn が無いと DSL の読み込み失敗が「ルール 0 件」で黙って通る。
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ruleguard
+      settings:
+        ruleguard:
+          rules: "${config-path}/tools/lintrules/rules.go"
+          failOn: all
     depguard:
       rules:
         api-role:
