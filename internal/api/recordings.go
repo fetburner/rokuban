@@ -791,6 +791,15 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 	}); err != nil {
 		return nil, fmt.Errorf("appending encode profiles for recording %d: %w", req.Id, err)
 	}
+	// 利用者の明示的な再要求なので、failed の試行行を消して試行予算を戻す
+	// （上限到達で止まった encode の解除手段）。running は生きた試行の
+	// fencing token なので消さない。既に desired にある profile の再 POST も同じ。
+	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+		RecordingID: req.Id,
+		Profiles:    req.Body.Profiles,
+	}); err != nil {
+		return nil, fmt.Errorf("resetting failed encode attempts for recording %d: %w", req.Id, err)
+	}
 	if err := h.insertEncodeEnqueueHint(ctx, tx, req.Id); err != nil {
 		return nil, err
 	}

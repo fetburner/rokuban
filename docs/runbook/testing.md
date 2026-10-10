@@ -32,7 +32,7 @@ psql -h localhost -d postgres -tAc \
 
 ### k8s の故障注入
 
-worker process を強制終了した後の encode job recovery を検査する。
+worker process を強制終了した後に River の JobRescuer が encode job を再実行することを検査する。
 PostgreSQL 接続断の間に失った mirakc schedule の再照合も検査する。
 どちらも単体テストや Compose smoke test では、実デプロイのキュー・Pod・media volume を通らない。
 そのため専用の使い捨て kind + KEDA suite を実行する。
@@ -46,7 +46,7 @@ kubectl / kustomize 等を要求する。故障注入先はこの名前空間に
 や任意の既存クラスタは対象にしない。PostgreSQL test outage は DB Pod / data dir を
 削除せず Service endpoint を外して起こす。中断時は trap が selector と CronJob を戻す。
 
-この動的 suite は encode source 作成・worker kill・stale recovery の待ちがあるため CI では回さない。
+この動的 suite は encode source 作成・worker kill・saved timeout の経過待ちがあるため CI では回さない。
 CI は fault scripts の shellcheck と Kubernetes manifest schema を検査する。
 `internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。
 `deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1〜F3 を走らせる。`E2E_FAULTS_ONLY=03` は F3 だけの判定に使えるが、一部実行なので成功時も終了コードは 2 になる。
@@ -167,7 +167,7 @@ SIGKILL されない」ことを根拠に選んである。Docker の既定猶�
 待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。
 この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
 `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。
-ingest は JobRescuer が回収する。encode / cm_detect は定期 reconcile が拾う。
+ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
 **2 発目の SIGTERM で強制終了できること**も同じ形で確かめられる。上の
 `kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる

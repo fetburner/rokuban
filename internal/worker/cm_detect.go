@@ -94,7 +94,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 	started := time.Now()
 	defer func() { metrics.CMDetectDuration.Observe(time.Since(started).Seconds()) }()
 
-	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	jobLock, acquired, err := acquireCMDetectJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
 	if err != nil {
 		return fmt.Errorf("CM detection: acquiring job lock: %w", err)
 	}

@@ -13,9 +13,9 @@ import (
 )
 
 const (
-	// encodeJobLockKeyPrefix は encode ジョブのプロセス生存確認用 advisory lock の
+	// cmDetectJobLockKeyPrefix は cm_detect ジョブのプロセス生存確認用 advisory lock の
 	// 名前空間。ジョブ ID ごとにキーを分け、他のロールの advisory lock と衝突しないようにする。
-	encodeJobLockKeyPrefix = "rokuban:encode:job:"
+	cmDetectJobLockKeyPrefix = "rokuban:encode:job:"
 
 	// defaultJobLockTimeout は lock 用コネクションの取得と
 	// pg_try_advisory_lock の両方に与える既定の上限。
@@ -40,7 +40,7 @@ var (
 	// jobLockIdleSessionTimeout は lock 用セッションにだけ設定する
 	// idle_session_timeout。heartbeat が止まってから Postgres がこのセッションを
 	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、
-	// reconcile が旧 running 行を回収できるようになる。
+	// cm_detect_reconcile が旧 running 行を回収できるようになる。
 	//
 	// 30 秒の根拠:
 	//   - 生きているクライアントでは、サーバーから見たクエリ間隔の上限はおおよそ
@@ -54,17 +54,13 @@ var (
 	//     クライアント側の停止（k8s の CPU limit による throttling・GC・VM の一時停止）は
 	//     ほぼ必ずクエリを送っていない間に起き、その耐性はこの値だけで決まる。縮めると
 	//     その分だけ短い停止で lease が切れる。並走の帰結は利用者ごとに違う:
-	//       - encode: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。canonical へは
-	//         temp を lock の外で stage し、rel_path の lock と advisory xact lock の中で
-	//         行を読み直してから rename する（publishEncoded / planEncodePublish）。
-	//         計画時から rel_path が進んだか、既に同じ内容で active なら公開を飛ばす。
-	//         並走した 2 本はどちらも ffmpeg を完走する（EncodeWorker の doc コメント）。
-	//         xact lock が排他するのは ingest commit と孤児回収だけで、通常削除とは
-	//         flock でしか排他されない（RWX 越しの flock は未検証）。
 	//       - cm_detect: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。
 	//         結果は DB の Upsert である。局ロゴの上書きもその job 固有 scratch の
 	//         中だけ（writeStationLogo 参照）。
-	//   - 長すぎる側の壊れ方: reconcile が旧 running 行を回収するまで滞留する。
+	//   - 長すぎる側の壊れ方: cm_detect_reconcile が旧 running 行を回収するまで滞留する。
+	//     回収の tail は cm_detect_reconcile（既定 15 分）の周期で決まるので、
+	//     それより十分短ければ差は出ない。ingest と encode は lock を取らない
+	//     （チェックポイント再開と River の JobRescuer が回収する）。
 	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で
 	//     バックエンドが pg_stat_activity から消え、別セッションが同じジョブの
 	//     advisory lock を取得できた。SET を外すと同じ状態で 40 秒放置しても
@@ -289,7 +285,7 @@ func acquireJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeou
 	return lock, true, nil
 }
 
-// acquireEncodeJobLock は encode 用の job-id advisory lock を取得する。
-func acquireEncodeJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
-	return acquireJobLock(ctx, pool, jobID, timeout, encodeJobLockKeyPrefix, fmt.Sprintf("encode job %d", jobID))
+// acquireCMDetectJobLock は cm_detect 用の job-id advisory lock を取得する。
+func acquireCMDetectJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
+	return acquireJobLock(ctx, pool, jobID, timeout, cmDetectJobLockKeyPrefix, fmt.Sprintf("cm_detect job %d", jobID))
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,32 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
+
+type cancelDuringCopyReader struct {
+	cancel context.CancelFunc
+	reads  int
+}
+
+func (r *cancelDuringCopyReader) Read(p []byte) (int, error) {
+	r.reads++
+	if r.reads == 1 {
+		r.cancel()
+		return copy(p, []byte("first")), nil
+	}
+	return copy(p, []byte("second")), io.EOF
+}
+
+func TestCopyWithContextStopsAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	dst := &bytes.Buffer{}
+	n, err := copyWithContext(ctx, dst, &cancelDuringCopyReader{cancel: cancel})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("copyWithContext error = %v, want context.Canceled", err)
+	}
+	if n != int64(len("first")) || dst.String() != "first" {
+		t.Fatalf("copied %d bytes %q, want only the first chunk (%d bytes)", n, dst.String(), len("first"))
+	}
+}
 
 const stagedPrefixForTest = ".rokuban-media-asset-"
 

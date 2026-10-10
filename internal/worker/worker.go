@@ -77,7 +77,7 @@ const (
 // 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
 // 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
 // `running` のまま残る。ingest は有限の Timeout と `JobRescuer`（既定 6 分）、
-// encode / cm_detect はそれぞれ `encode_reconcile` / `cm_detect_reconcile` が回収する。
+// encode は保存した締切後の `JobRescuer`、cm_detect は `cm_detect_reconcile` が回収する。
 // その他のジョブも `JobRescuer` に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
 // 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
 // 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
@@ -227,13 +227,14 @@ type Deps struct {
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{
-		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
-		MediaDir:      deps.MediaDir,
-		StallTimeout:  deps.IngestStallTimeout,
-		CMDetect:      deps.CMDetect,
-		CutProfiles:   deps.Encode.CutProfileSet(),
-		LiveEnabled:   deps.LiveEnabled,
+		MirakcClients:  deps.MirakcClients,
+		Pool:           deps.Pool,
+		MediaDir:       deps.MediaDir,
+		StallTimeout:   deps.IngestStallTimeout,
+		CMDetect:       deps.CMDetect,
+		CutProfiles:    deps.Encode.CutProfileSet(),
+		EncodeProfiles: deps.Encode,
+		LiveEnabled:    deps.LiveEnabled,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -246,6 +247,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 	})
 	river.AddWorker(workers, &EncodeEnqueueHintWorker{
 		Pool:        deps.Pool,
+		Profiles:    deps.Encode,
 		CutProfiles: deps.Encode.CutProfileSet(),
 	})
 	river.AddWorker(workers, &EncodeReconcileWorker{
@@ -612,11 +614,10 @@ func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 
 // lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
 // コネクションを 1 本保持し続けるジョブを持つ論理キュー
-// （internal/worker/job_lock.go。encode / cm_detect が使う）。
+// （internal/worker/job_lock.go。cm_detect だけが使う）。
 //
 // thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
 var lockHoldingQueues = []string{
-	jobs.EncodeQueue,
 	jobs.CMDetectQueue,
 }
 

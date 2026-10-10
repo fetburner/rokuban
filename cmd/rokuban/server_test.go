@@ -1172,9 +1172,8 @@ func TestWatcherLockName_MultiSiteIndependence(t *testing.T) {
 }
 
 // poolSizingTestConfig は worker の予算が lock 枠から導出されることを RunE の配線で
-// 確かめるための config。DB は到達不能で、encode.concurrency を 4 に
-// してあるので `--queues=encode` の lock 枠は 4、`--queues=ruler` は 0 になる。
-func poolSizingTestConfig(maxConns int) string {
+// 確かめるための config。DB は到達不能で、encode.concurrency を 4 にしてある。
+func poolSizingTestConfig(maxConns int, mediaDir string) string {
 	return fmt.Sprintf(`
 db:
   host: 127.0.0.1
@@ -1187,12 +1186,12 @@ mirakcs:
   - site: tokyo
     url: http://mirakc-tokyo:40772
 storage:
-  media_dir: /mnt/media
+  media_dir: %q
 encode:
   concurrency: 4
 worker:
   periodic_jobs: false
-`, maxConns)
+`, maxConns, mediaDir)
 }
 
 // **db.max_conns の下限が「実際に引くキューの lock 枠」を見ていること。**
@@ -1201,11 +1200,33 @@ worker:
 // 前に置いて同じ値を両方へ渡していないと、ここが「全部引く worker」として
 // サイジングされる（= 小さすぎる max_conns が素通りする）。
 //
-// 両方向を見る: encode（lock 4）なら落ち、ruler（lock 0）なら DB まで進む。
+// encode は lock を持たないため DB まで進み、ingest は lock 枠を見て fail-fast する。
 func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
-	t.Run("encode worker with 4 lock slots needs more than max_conns=4", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(4))
+	t.Run("encode worker holds no job lock despite encode.concurrency", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=encode")
+		if err == nil {
+			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+		}
+		if !strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v, want to fail at the DB (= encode lock 枠は 0)", err)
+		}
+	})
+
+	t.Run("ingest worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ingest")
+		if err == nil {
+			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
+		}
+		if !strings.Contains(err.Error(), "connecting to database") {
+			t.Errorf("err = %v, want to fail at the DB (= ingest lock 枠は 0)", err)
+		}
+	})
+
+	t.Run("cm_detect worker with 1 lock slot needs more than max_conns=2", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(2, t.TempDir()))
+		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=cm_detect")
 		if err == nil {
 			t.Fatal("expected the pool sizing check to fail, got nil")
 		}
@@ -1213,12 +1234,12 @@ func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
 			t.Errorf("err = %v, want the db.max_conns fail-fast (DB に触る前に落ちること)", err)
 		}
 		if strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v: DB まで進んでいる（lock 枠が 0 と数えられている）", err)
+			t.Errorf("err = %v: DB まで進んでいる（cm_detect lock 枠が数えられていない）", err)
 		}
 	})
 
 	t.Run("ruler worker holds no job lock, so max_conns=4 is enough", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(4))
+		path := writeServerTestConfig(t, poolSizingTestConfig(4, t.TempDir()))
 		err := runServerCmdForTest(t, path, "--roles", "worker", "--queues=ruler")
 		if err == nil {
 			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
@@ -1228,18 +1249,16 @@ func TestServerCmd_PoolSizingFollowsQueueSelection(t *testing.T) {
 		}
 	})
 
-	// once モードは `--queues` が 1 つでも MaxWorkers 1 なので、lock 枠も 1 になる。
-	// ここで concurrency をそのまま数えると（encode.concurrency の 4）、
-	// ScaledJob が「4 枠ぶんの接続が要る」と誤って主張して起動できなくなる。
-	t.Run("once mode counts a single lock slot regardless of encode.concurrency", func(t *testing.T) {
-		path := writeServerTestConfig(t, poolSizingTestConfig(3))
+	// encode は lock を持たないので、once モードでも枠は増えない。
+	t.Run("once encode worker needs no job lock regardless of encode.concurrency", func(t *testing.T) {
+		path := writeServerTestConfig(t, poolSizingTestConfig(3, t.TempDir()))
 		err := runServerCmdForTest(t, path,
 			"--roles", "worker", "--once", "--queues=encode", "--sites", "tokyo")
 		if err == nil {
 			t.Fatal("到達不能な DB を指しているので error を期待したが nil だった")
 		}
 		if !strings.Contains(err.Error(), "connecting to database") {
-			t.Errorf("err = %v, want to fail at the DB (下限は 1(LISTEN)+1(lock)+1 = 3)", err)
+			t.Errorf("err = %v, want to fail at the DB (下限は 1(LISTEN)+1 = 2)", err)
 		}
 	})
 }

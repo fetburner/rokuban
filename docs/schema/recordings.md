@@ -327,6 +327,7 @@ CREATE TABLE recording_encode_attempts (
     profile      text        NOT NULL,
     state        text        NOT NULL CHECK (state IN ('running', 'failed')),
     error        text,
+    attempt_count integer     NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     attempted_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (recording_id, profile)
 );
@@ -334,11 +335,11 @@ CREATE TABLE recording_encode_attempts (
 
 - **行の存在そのものが「running か failed のどちらかを主張している」ことを意味する**（不変条件 10）。「待っている（queued）」を表す行は作らない ―― queued は API 側で「desired にあって行が無い」として導出する
 - **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_ingest_progress` と同じ判断）
-- **API は `river_job` を読まない**。内部の `EncodeReconcileWorker` は例外として、プロセス死回収のため `kind='encode'` かつ `state='running'` の古い行を読む。job-id advisory lock を取得できたときだけ、旧行を `discarded` にして代替ジョブを投入する。これは River の状態を API に露出するためではない。`recording_encode_attempts` は引き続き `EncodeWorker` が試行の開始・成功・失敗のタイミングで明示的に書き、River のリトライ回数やバックオフを API 契約に載せない。設定から消えたプロファイルは `known_profiles` で投入対象から外す。入力ファイルの破損など録画単位の恒久失敗は、desired が残る限り 15 分ごとに再投入される（`internal/worker/encode_reconcile.go`）
-- 消えるのは 2 経路だけである。1 つは `EncodeWorker.runEncode` の defer が成功時に試行行を消す経路である。DELETE は派生物 INSERT の直後ではなく、間に webhook 通知が入り同一トランザクションでもない。「完了しているのに失敗中」が読者から見えないのは、API 側が encoded 資産のあるプロファイルを試行状態の対象から先に除外しているためである。もう 1 つは `recordings` 行の削除（`ON DELETE CASCADE`）である。
+- **API は `river_job` を読まない**。encode のプロセス死回収は River の JobRescuer が担い、アプリ側は River の試行回数を参照しない。`attempt_count` は失敗とプロセス死を含むドメイン試行数であり、公開時には fencing token として現在の試行を照合する。プロファイル設定から消えた名前は `known_profiles` で定期投入の対象から外す。入力ファイルの破損など録画単位の恒久失敗は、desired が残る限り 15 分ごとに再投入される（`internal/worker/encode_reconcile.go`）
+- 行が消えるのは成功時、停止による未計上の試行を戻す時、または `recordings` 行の削除（`ON DELETE CASCADE`）である。失敗は回数・理由を残す。成功公開後に古い試行が遅れて戻っても、自分の attempt token が一致しなければこの行を消せない。
 - PK が `(recording_id, profile)` の複合なのは、1 録画に複数プロファイルを事後追加できるため
 - **`awaiting_review` はこの表ではなく所有の行から導出する**（`cut: true` のプロファイルで `recording_chapter_ownership` が無い）。`queued`（ジョブが来る）とは別の主張で、投入側も実際に候補から外している（[storage/retention.md](../storage/retention.md) §7）。行が無いことと「来ない」ことは別なので、`queued` と混ぜない
-- `error` / `attempted_at` の読み手は **API ではなく運用者の SELECT** である（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」）。これは `recording_ingest_progress` を運用者が読むのと同じ立場である。`EncodeJobStatus` は `profile` / `state` だけを配る ―― 失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。`recording_ingest_progress` の `observed_at` のような停滞判定をこの表に持たせるなら、それを使う API/フロントと同じ PR で決める（不変条件 11）。プロセス死で `state='running'` のまま残った encode は、`attempted_at` が 1 分以上古く、かつ job-id advisory lock を取得できた場合だけ `encode_reconcile` が回収する。ライブの長時間 encode は回収せず、`recording_encode_attempts` は代替ジョブの開始まで `running` を保つ
+- `error` / `attempted_at` / `attempt_count` の読み手は **API ではなく運用者の SELECT** である（[runbook/troubleshooting.md](../runbook/troubleshooting.md)「エンコードが失敗している」）。`EncodeJobStatus` は `profile` / `state` だけを配る。失敗理由は ffmpeg の内部情報で、クライアントに配る契約に載せると切り詰め方や書式が API 互換の対象になる。停止で ctx が cancel された試行は数えず、締切超過は失敗として数える。
 
 ### recording_playback_positions / recording_watched — 世帯共有の視聴状態
 

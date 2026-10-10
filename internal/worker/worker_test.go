@@ -1022,28 +1022,28 @@ func TestLockSlots(t *testing.T) {
 		want int
 	}{
 		{
-			// job lock を持つ既定の並列度（encode 1 / cm_detect 1）。
-			// cm_detect を数え落とすと 1 になり、この case が落ちる。
+			// job lock を持つのは cm_detect だけ（並列度 1）。
+			// cm_detect を数え落とすと 0 になり、この case が落ちる。
 			name: "defaults on one bound site",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo"}},
-			want: 2,
+			want: 1,
 		},
 		{
 			// 0 サイト束縛（中央プロセス）でも site-bound キューは 1 つに畳まれる。
 			name: "defaults with no bound sites",
 			cfg:  ClientConfig{},
-			want: 2,
+			want: 1,
 		},
 		{
-			// encode / cm_detect は site 非依存なので 2 サイトでも合計は変わらない。
+			// cm_detect は site 非依存なので 2 サイトでも合計は変わらない。
 			name: "two bound sites do not change site-independent lock queues",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu"}},
-			want: 2,
+			want: 1,
 		},
 		{
 			name: "three bound sites",
 			cfg:  ClientConfig{BoundSites: []string{"tokyo", "takamatsu", "osaka"}},
-			want: 2,
+			want: 1,
 		},
 		{
 			name: "a queue set without any lock-holding queue",
@@ -1056,9 +1056,9 @@ func TestLockSlots(t *testing.T) {
 			want: 0,
 		},
 		{
-			name: "queue selection follows the configured concurrency",
+			name: "ingest and encode hold no job lock regardless of concurrency",
 			cfg:  ClientConfig{Queues: []string{jobs.IngestQueue, jobs.EncodeQueue}, IngestConcurrency: 6, EncodeConcurrency: 2},
-			want: 2,
+			want: 0,
 		},
 		{
 			// nil と明示的な空スライスはどちらも「全キュー」である
@@ -1066,15 +1066,15 @@ func TestLockSlots(t *testing.T) {
 			// 設定の書き方でプールの予算が変わる。
 			name: "an empty queue slice means all queues, same as nil",
 			cfg:  ClientConfig{Queues: []string{}},
-			want: 2,
+			want: 1,
 		},
 		{
 			// --queues の重複は resolveWorkerQueues が畳むが、ClientConfig を
 			// 直接組む経路（このパッケージのテスト・将来の呼び出し元）でも
 			// 二重に数えない。
 			name: "duplicate queue names are not counted twice",
-			cfg:  ClientConfig{Queues: []string{jobs.EncodeQueue, jobs.EncodeQueue}, EncodeConcurrency: 2},
-			want: 2,
+			cfg:  ClientConfig{Queues: []string{jobs.CMDetectQueue, jobs.CMDetectQueue}},
+			want: 1,
 		},
 		{
 			// ingest は job-id advisory lock を持たない。

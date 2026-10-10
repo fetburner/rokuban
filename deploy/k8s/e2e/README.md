@@ -191,7 +191,7 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 
 | 判定 | 注入 | 機械判定する収束 |
 |---|---|---|
-| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。`encode_reconcile` が stuck job を終端化して代替 job を投入し、replacement が encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
+| F1 | 240 秒の実 encode が claim された worker Pod を force-delete | worker のプロセス死亡を DB 接続の消滅で確認する。fixture の `attempted_at` を締切後へ進め、JobRescuer が同じ River job を再試行して encoded file と active `media_assets` を公開する。途中で `delete_reconcile` を走らせても `until_encoded` の原本は残る |
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
 | F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を掴ませ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
 
@@ -212,7 +212,7 @@ worker・KEDA operator からの新規接続を失わせ、既存の pool connec
 にする。中断時は EXIT trap が Service selector と CronJob を復元する。
 
 worker kill の判定は次の 2 つを直接固定する。
-`encode_reconcile` の回収を外すと、F1.4 の River 置換または encoded asset 公開が成立しない。
+JobRescuer による F1.4 の再試行または encoded asset 公開が成立しないと FAIL する。
 `until_encoded_deletable_originals` の「全プロファイルがエンコード済み」の条件を外すと、
 F1.3 で original が削除されて FAIL になる。
 fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。
@@ -397,10 +397,10 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   再 reconcile されない**（接続文字列を直した後も 3 分間
   `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
 - **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、掴まれていた
-  `river_job` の行は一時的に **`running` のまま残る**。encode は
-  `encode_reconcile` が job-id lock の解放後に旧行を終端化して代替ジョブを投入するが、
-  ハーネスは次の判定を待たず、`produce_real_encode_job` が周回の頭で消してから測り直す。
-  それと media ボリュームの原本。どちらも周回の頭で消してから測り直す。
+  `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切
+  （最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、
+  `produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media
+  ボリュームの原本も周回の頭で消してから測り直す。
   **`$producer` は関数名でもコマンド文字列でも受ける**
   （引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
 - **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。**

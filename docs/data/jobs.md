@@ -78,6 +78,11 @@ kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `
 [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの
 残骸が `river_job` に残っている」を参照。
 
+`ByArgs` は既定で全 args を一意キーに含めるが、ジョブ args に `river:"unique"` を
+付けたフィールドがある場合は、そのフィールドだけが使われる。encode は
+`recording_id` / `profile` にだけタグを付け、締切スナップショットが異なる投入も
+同じジョブへ合流させる。
+
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 
 1. **dual-write 問題**: 「録画完了を DB に登録」と「エンコードジョブを積む」は常にセットである。だが書き込み先が DB と Redis に分かれると、コミット前 enqueue（ワーカーが未コミットデータを読む race）か、コミット後 enqueue（隙間のクラッシュでジョブ消失）かの二択になる。真面目に解決すると outbox パターン = 結局 DB 上のキューを作ることになる
@@ -116,7 +121,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` コミットで決まる**。encode は `Timeout() = -1` なので JobRescuer の対象外だが、`EncodeWorker` は Work 中に job-id advisory lock を保持する。`encode_reconcile` は 1 分以上古い `running` 行を候補にし、lock の解放を確認する。取得できた場合だけ旧行を `discarded` にして別 ID の代替ジョブを投入するため、ライブ中の長時間 encode は時刻だけでは回収しない。`recording_encode_attempts` は回収時には触らない。代替ジョブの開始時に上書きする（詳細は [k8s 運用](../operations/k8s.md)）。
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。`Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う（River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ）。プロセス死は締切後に River の JobRescuer が同じジョブ ID を再試行する。`recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。各試行の scratch も分ける。停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。ドメイン上限（25）に達したら `river.JobCancel` を返し、River 上も cancelled にする。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。停止による `Canceled` は River の attempt を消費するがドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
 

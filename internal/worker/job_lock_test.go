@@ -51,7 +51,7 @@ func TestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *testing.T)
 	pool2 := newTestPool(t, dbURL)
 
 	const jobID int64 = 731003
-	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireCMDetectJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *testing.T)
 	deadline := stoppedAt.Add(5 * time.Second)
 	var elapsed time.Duration
 	for {
-		lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
+		lock2, acquired, err := acquireCMDetectJobLock(ctx, pool2, jobID, time.Second)
 		if err != nil {
 			t.Fatalf("acquiring job lock after the session was terminated: %v", err)
 		}
@@ -124,7 +124,7 @@ func TestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
 	pool2 := newTestPool(t, dbURL)
 
 	const jobID int64 = 731004
-	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireCMDetectJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
+		lock2, acquired, err := acquireCMDetectJobLock(ctx, pool2, jobID, time.Second)
 		if err != nil {
 			t.Fatalf("acquiring job lock from pool2 during a live heartbeat: %v", err)
 		}
@@ -187,14 +187,14 @@ func TestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T) {
 	t.Cleanup(single.Close)
 
 	const jobID int64 = 731005
-	lock, acquired, err := acquireEncodeJobLock(ctx, holder, jobID, time.Second)
+	lock, acquired, err := acquireCMDetectJobLock(ctx, holder, jobID, time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring the job lock from the holder pool: acquired=%v err=%v", acquired, err)
 	}
 	t.Cleanup(lock.release)
 
 	// (1) 取得に失敗した経路。このコネクションはプールへ戻る。
-	if _, acquired, err := acquireEncodeJobLock(ctx, single, jobID, time.Second); err != nil || acquired {
+	if _, acquired, err := acquireCMDetectJobLock(ctx, single, jobID, time.Second); err != nil || acquired {
 		t.Fatalf("acquiring a held job lock: acquired=%v err=%v, want false/nil", acquired, err)
 	}
 	if got := idleSessionTimeoutOnPooledConn(t, single); got != "0" {
@@ -203,7 +203,7 @@ func TestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T) {
 
 	// (2) 取得して release した経路。release はこのコネクションをプールへ返さない。
 	lock.release()
-	released, acquired, err := acquireEncodeJobLock(ctx, single, jobID, time.Second)
+	released, acquired, err := acquireCMDetectJobLock(ctx, single, jobID, time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring the job lock after release: acquired=%v err=%v", acquired, err)
 	}
@@ -234,7 +234,7 @@ func TestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 
 	const jobID int64 = 731001
 
-	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireCMDetectJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 	t.Cleanup(lock1.release)
 
-	lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
+	lock2, acquired, err := acquireCMDetectJobLock(ctx, pool2, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool2: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 
 	lock1.release()
-	lock3, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
+	lock3, acquired, err := acquireCMDetectJobLock(ctx, pool2, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("reacquiring job lock after release: %v", err)
 	}
@@ -290,17 +290,17 @@ func TestJobLock_TimeoutDoesNotHang(t *testing.T) {
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, _, err := acquireEncodeJobLock(context.Background(), pool, 731002, 100*time.Millisecond)
+		_, _, err := acquireCMDetectJobLock(context.Background(), pool, 731002, 100*time.Millisecond)
 		resultCh <- err
 	}()
 
 	select {
 	case err := <-resultCh:
 		if err == nil {
-			t.Fatal("acquireEncodeJobLock returned nil with an exhausted pool")
+			t.Fatal("acquireCMDetectJobLock returned nil with an exhausted pool")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("acquireEncodeJobLock did not return within 2s")
+		t.Fatal("acquireCMDetectJobLock did not return within 2s")
 	}
 }
 
