@@ -88,16 +88,17 @@ esac
 			if scratch := tt.tamper(t, tools, mediaDir, id); scratch != "" {
 				w.ScratchDir = scratch
 			}
-			if err := w.Work(ctx, cmJob(id, 3)); err == nil {
+			if err := w.Work(ctx, cmJob(id, 1)); err == nil {
 				t.Fatal("Work succeeded on a broken path")
 			}
 			var state string
 			var stage *string
-			if err := pool.QueryRow(ctx, `SELECT state, stage FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage); err != nil {
+			var attemptCount int32
+			if err := pool.QueryRow(ctx, `SELECT state, stage, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &stage, &attemptCount); err != nil {
 				t.Fatalf("attempt row: %v", err)
 			}
-			if state != "failed" || stage == nil || *stage != tt.stage {
-				t.Errorf("attempt = %q / %v, want failed / %q", state, stage, tt.stage)
+			if state != "retrying" || stage == nil || *stage != tt.stage || attemptCount != 1 {
+				t.Errorf("attempt = %q / %v / %d, want retrying / %q / 1", state, stage, attemptCount, tt.stage)
 			}
 		})
 	}

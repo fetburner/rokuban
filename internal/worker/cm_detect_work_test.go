@@ -980,8 +980,13 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	mediaDir := t.TempDir()
 	id := seedCMRecording(t, pool, mediaDir, 932)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 1, "Trim(0,149)", "10.010000") // chapter_exe が失敗
+	q := sqlcgen.New(pool)
+	for range 2 {
+		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
+	}
 
-	err := workHeld(t, pool, mediaDir, tools, id, 3, func() {
+	err := workHeld(t, pool, mediaDir, tools, id, 1, func() {
 		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 			NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
 			CodedWidth: 1440, CodedHeight: 1080,
