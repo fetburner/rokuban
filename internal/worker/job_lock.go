@@ -13,10 +13,8 @@ import (
 )
 
 const (
-	// ingestJobLockKeyPrefix / encodeJobLockKeyPrefix は、それぞれのジョブの
-	// プロセス生存確認用 advisory lock の名前空間。ジョブ ID ごとにキーを分け、
-	// 他のロールの advisory lock と衝突しないようにする。
-	ingestJobLockKeyPrefix = "rokuban:ingest:job:"
+	// encodeJobLockKeyPrefix は encode ジョブのプロセス生存確認用 advisory lock の
+	// 名前空間。ジョブ ID ごとにキーを分け、他のロールの advisory lock と衝突しないようにする。
 	encodeJobLockKeyPrefix = "rokuban:encode:job:"
 
 	// defaultJobLockTimeout は lock 用コネクションの取得と
@@ -41,9 +39,8 @@ var (
 
 	// jobLockIdleSessionTimeout は lock 用セッションにだけ設定する
 	// idle_session_timeout。heartbeat が止まってから Postgres がこのセッションを
-	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、回収側
-	// （ingest の recoverStaleIngestJobs、encode / cm_detect の reconcile）が旧
-	// running 行を回収できるようになる。
+	// 終了するまでの猶予である。猶予が切れると advisory lock も解放され、
+	// reconcile が旧 running 行を回収できるようになる。
 	//
 	// 30 秒の根拠:
 	//   - 生きているクライアントでは、サーバーから見たクエリ間隔の上限はおおよそ
@@ -57,8 +54,6 @@ var (
 	//     クライアント側の停止（k8s の CPU limit による throttling・GC・VM の一時停止）は
 	//     ほぼ必ずクエリを送っていない間に起き、その耐性はこの値だけで決まる。縮めると
 	//     その分だけ短い停止で lease が切れる。並走の帰結は利用者ごとに違う:
-	//       - ingest: 壊れない。temp の flock と DB の一意 reservation が採用を決め、
-	//         lock 喪失でも転送を cancel しないので、二重 pull の無駄が出るだけである。
 	//       - encode: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。canonical へは
 	//         temp を lock の外で stage し、rel_path の lock と advisory xact lock の中で
 	//         行を読み直してから rename する（publishEncoded / planEncodePublish）。
@@ -69,9 +64,7 @@ var (
 	//       - cm_detect: scratch はジョブ ID ごとで、代替（別 ID）とは衝突しない。
 	//         結果は DB の Upsert である。局ロゴの上書きもその job 固有 scratch の
 	//         中だけ（writeStationLogo 参照）。
-	//   - 長すぎる側の壊れ方: プロセス死の回収が遅れる。ただし回収の tail は
-	//     record_sweep（既定 5 分）/ encode・cm_detect の reconcile（既定 15 分）の
-	//     周期で決まるので、それより十分短ければ差は出ない。
+	//   - 長すぎる側の壊れ方: reconcile が旧 running 行を回収するまで滞留する。
 	//   - 実測（PostgreSQL 17.10）: この値のまま heartbeat を止めると 30.08 秒で
 	//     バックエンドが pg_stat_activity から消え、別セッションが同じジョブの
 	//     advisory lock を取得できた。SET を外すと同じ状態で 40 秒放置しても
@@ -161,11 +154,11 @@ func (l *jobLock) heartbeatLoop() {
 }
 
 // heartbeatTick は heartbeat 1 回分の判定を行う。true を返した場合は、以後の
-// heartbeat を止める。ただし長時間処理や recovery の transaction をキャンセルする
+// heartbeat を止める。ただし長時間処理や reconcile transaction をキャンセルする
 // 責務は持たない。
 //
 // このループの唯一の仕事は job lock の lease を更新することである（型の doc
-// コメント、docs/recording/ingest.md 参照）。一過性の DB エラーではループを
+// コメント参照）。一過性の DB エラーではループを
 // 止めない --- 止めると lease が切れ、セッションが Postgres に終了されて advisory
 // lock が解放される。生存中のジョブをプロセス死と誤認すると、回収側が古い running
 // 行を discard して代替ジョブを投入し、処理を二重実行することになる。止めるのは
@@ -218,7 +211,7 @@ func (l *jobLock) checkHeld() (bool, error) {
 	return held, nil
 }
 
-// stopHeartbeatLoop は recovery のように lock 用セッション自身で短い DB transaction
+// stopHeartbeatLoop は reconcile のように lock 用セッション自身で短い DB transaction
 // を実行する呼び出し側が、同じ pgx connection への並行利用を避けるために使う。
 func (l *jobLock) stopHeartbeatLoop() {
 	if l.stopHeartbeat == nil {
@@ -294,11 +287,6 @@ func acquireJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeou
 	lock := newJobLock(conn, key, label)
 	lock.startHeartbeat()
 	return lock, true, nil
-}
-
-// acquireIngestJobLock は ingest 用の job-id advisory lock を取得する。
-func acquireIngestJobLock(ctx context.Context, pool *pgxpool.Pool, jobID int64, timeout time.Duration) (*jobLock, bool, error) {
-	return acquireJobLock(ctx, pool, jobID, timeout, ingestJobLockKeyPrefix, fmt.Sprintf("ingest job %d", jobID))
 }
 
 // acquireEncodeJobLock は encode 用の job-id advisory lock を取得する。

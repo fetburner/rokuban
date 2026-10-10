@@ -95,9 +95,9 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 
-`RecordFollowReader` は読み取り中の本文が止まったときだけ stall timer を動かす。`ingest.stall_timeout`（既定 30 秒）を超えた本文を閉じ、temp に書けた offset から Range を再開する。消費側の `Write` が遅い間は `Read` が呼ばれないため、その時間を mirakc の stall と誤認しない。総時間タイムアウトは遅い回線の正常な転送を殺す。
+`RecordFollowReader` は読み取り中の本文が止まったときだけ stall timer を動かす。`ingest.stall_timeout`（既定 30 秒）を超えた本文を閉じ、temp に書けた offset から Range を再開する。消費側の `Write` が遅い間は `Read` が呼ばれないため、その時間を mirakc の stall と誤認しない。録画全体を 1 Work の総時間制限に収めず、4 分の slice ごとに snooze して再開する。
 
-reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file と offset が同じ Work の中で生き続ける。Work がプロセス死で途切れた場合は、層 2 が temp の全バイトを replay して SHA-256 の状態を復元する。
+reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file と offset が同じ Work の中で生き続ける。slice が終わると層 2 が temp と SHA-256 state を保存して同じ job を snooze する。プロセス死で checkpoint が使えない場合も、temp を replay して状態を復元する。
 
 **接続断のたびに進捗を書き出す。** Range 本文がバイトを返した後にエラー（読み取りエラー・stall）で終わったら、reader は再試行の前に最新の書き込み位置を `progress.flush` へ渡す。正常に終わった Range では呼ばない（追従中は 500ms ごとに Range が終わるので、間引きを無視すると秒 2 行になる）。temp への書き込みエラーは mirakc の一時障害として再試行せず、Work に返す。
 
@@ -107,86 +107,34 @@ reader は `Range → 追い付き時の status → 待つ` を繰り返す。�
 `SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。
 同じ temp のサイズを Range の開始点にする。
 
-#### 層 2: ジョブ再試行（プロセス死）
+#### 層 2: River によるプロセス死の回収
 
-ingest の転送中にプロセスが死ぬと River の行は `running` のまま残り、`Timeout() = -1` の
-ingest は River の通常の stuck-job rescue 対象にならない。そこで `record_sweep` は watcher の
-全量突き合わせより前に、最後の活動が 1 分以上古い `running` ingest を候補として調べる。
-最後の活動とは `recording_ingest_progress.observed_at` であり、行がまだ無ければ
-`river_job.attempted_at` である。`recording_ingest_progress` は UI 用の停滞観測であり、
-再開点の根拠にはしない。
+`IngestWorker.Timeout()` は 5 分、1 回の replay と転送の区切りは 4 分である。残り 1 分は HEAD、SHA-256 確認、fsync、DB commit に使う。区切りを有限にすることで、録画全体の長さや低速回線に依存せず、River が停止した Work を回収できる。
 
-候補を時刻だけで死亡と判定してはいけない。ingest は Work の開始時に
-`rokuban:ingest:job:<river_job.id>` の PostgreSQL セッションレベル advisory lock を取得し、
-commit まで保持する。`record_sweep` がそのジョブ ID の lock を
-`pg_try_advisory_lock` で取得できた場合だけ元プロセスのセッションが無い（= プロセス死）と
-確定する。lock を取れなかった live transfer は回収しないので、遅い転送や HEAD / fsync /
-commit 中の古い進捗を時間だけで打ち切らない。rel_path の排他にはこの lock を使わない。
+`worker.rescue_stuck_jobs_after` の既定は 6 分で、ingest の `Timeout()` 5 分と client の既定 `JobTimeout` 1 分より長い。River の JobRescuer は設定した閾値と worker 固有の `Timeout()` の長い方を待つため、プロセス死で `running` のまま残った ingest job は約 6 分で retry が予約される。長い worker timeout を持つ他の kind は、その timeout が経過するまで待つ。
 
-job lock の heartbeat は**このセッションの lease を更新する**ために撃つ。lock 用セッション
-には `idle_session_timeout`（`jobLockIdleSessionTimeout`、30 秒）が付いており、heartbeat が
-1 秒周期でクエリを撃ち続ける限り切れない。逆に heartbeat が止まれば、Postgres 側のタイマーが
-バックエンドを終了させて advisory lock も外れる。これが 2 段目の回収が成立する根拠である。
-実測したのは、接続を開いたままプロセス内で heartbeat を止めた場合だけである（PostgreSQL 17.10
-で 30.08 秒）。未検証: ノード死・ネットワーク分断・SIGSTOP を実際に起こした測定。サーバーから
-見ればどれも「接続は開いたまま受信が止まる」ので等価だ、という推論に留まる。
+生きている Work は 4 分の区切りで temp を fsync し、SHA-256 の binary state と offset を `.checkpoint` sidecar に保存して `river.JobSnooze(0)` を返す。snooze は同じ River job row を available に戻し、`attempt` を消費しない。次の Work は同じ job ID と record 固有 temp を使う。
 
-**TCP の keepalive ではこの役を担えない**。プロセスの停止・hang では対向のカーネルが ACK を
-返し続けるので、keepalive は永久に失敗しない。ノード消失なら失敗はするが、OS 既定の間は lock が
-残り、その録画は回収されないまま滞留する。この待ちは Linux の既定値（7200 秒 + プローブ 9 回 ×
-75 秒）からの見積もりで、実測ではない。`tcp_keepalives_idle` を縮めれば後者は直るが、前者は直らない。
+checkpoint の offset が temp サイズ以下なら、保存した hash state を復元して残りのバイトだけを replay する。checkpoint が無い、破損している、または offset が temp サイズを超える場合は先頭から全量 replay する。replay 自体が区切りに達した場合も途中状態を保存して snooze するため、大きな temp の再試行が毎回先頭から始まらない。
 
-lock 喪失を検知しても転送をキャンセルしない。一時ファイル方式では古い実行が残っても
-canonical file を壊せず、DB の一意 reservation が採用を決めるためである。canonical の
-公開と孤児回収の短い確定区間だけは、同じ `rel_path` の filesystem lock と
-transaction-level advisory lock で直列化する。filesystem lock は canonical と同じ
-ディレクトリの予約 lock file に対する POSIX `flock` で、DB セッションが切れても
-ファイル操作を続ける goroutine が保持する。転送全体はこの lock を保持しない。
+SHA-256 state の書き込みと読み出しは temp の flock を保持したまま行う。checkpoint は temp と同じ削除条件に従い、mtime 猶予と aging による orphan 回収の対象になる。checkpoint が無効な場合に全量 replay へ戻すのは、状態ファイルだけが temp の正しさを決めないためである。
 
-死亡と確定した場合は、古い `running` 行に回収理由と `finalized_at` を記録して `discarded` に
-終端化し、同じトランザクションで別 ID の ingest ジョブを投入する。古い行を `running` のまま
-再投入すると、UniqueOpts の `pendingJobStates` に `running` が含まれるため新しい試行が古い行へ
-合流し、回収できない状態が続く。進捗行が作られる前に死んだケースも、`attempted_at` fallback
-で同じ経路に乗る。新しい試行は `.rokuban-ingest-{site}-{record_id}` を `O_CREATE` で開き、
-既存サイズまで replay してからその末尾へ Range 転送を続ける。replay は SHA-256 の hasher に
-だけ既存バイトを通す。drop 統計と drop 位置はコミット後の解析ジョブが採る。temp には
-`flock(LOCK_EX|LOCK_NB)` を保持し、同じ record の別試行が
-同時に書かないようにする。flock はプロセス死で自動的に解放される。
+`--once` の KEDA Job は Work が snooze を返すと 1 件を消化した扱いで終了する。次の Pod が同じ job row を再開するため、各区切りで KEDA の検出・スケジューリング・Pod 起動の時間が加わる。4 分は replay と転送に割り当てる上限で、1 分の後処理を足した Work Timeout 5 分が rescue の既定 6 分より短くなるように選んだ。Pod 起動時間はクラスタとイメージ状態に依存するため、運用クラスタの起動時間を測り、通常の起動時間に対して十分長い区切りであることを確認する。
 
-temp を消すのは、サイズまたは SHA-256 の不一致が分かった場合と、record が `canceled` /
-`failed` で終わった場合だけである。ctx キャンセル、プロセス死、転送・fsync・DB の一時的な
-失敗では残し、次の試行へ渡す。未登録の temp は既存の orphan 回収（mtime 猶予 + aging）が
-拾う。orphan 回収も同じ temp の flock を非 blocking で取得し、実行中の ingest が保持して
-いれば削除を次のパスへ延期する。ロック取得後に inode と mtime を再確認してから unlink
-するため、replay 中の temp や再作成された同名 temp を誤って消さない。
+この経路では ingest の job-id advisory lock や `record_sweep` による River 行の生 SQL 回収を使わない。`record_sweep` は mirakc の record を定期取得し、欠けた ingest job の投入を補う。temp の flock は同じ record の書き込みを直列化し、公開時は DB の一意 reservation と rel_path lock が採用を決める。
 
-電源断では delayed allocation によりサイズだけが進んだ
-領域を replay する可能性がある。`content.sha256` が返る record なら commit 前に検出できるが、
-旧 mirakc の hash 無し経路では未検証である。replay のローカルディスク I/O は、低速な
-アップリンクより十分短い見込みだが、長時間録画での実測値はまだない。解析ジョブが原本を
-もう一度読むコストも未検証である。
-
-回収は既定 5 分周期（起動時に 1 回実行）で走る `record_sweep` に組み込んでいるため、通常は
-候補になってから最大で約 6 分以内に再投入される。総時間 timeout を有限値にする案は、録画
-サイズや期待転送速度から安全な上限を決められず、正常な低速転送を殺すので採らない。
-
-**残る誤検知の窓**: `IngestWorker.Work` の `defer jobLock.release()` は、River がジョブの
-終端状態（`completed`）を DB に書くより前に走る。River の `BatchCompleter` は 50ms 周期の
-tick に加え、backlog が閾値未満でも 5 tick ごと（250ms 相当）にバッチを確定する。実装は
-`river/internal/jobcompleter/job_completer.go` にある。そのため `completed` の永続化まで
-数百 ms かかりうる。転送が長時間続くと `commit` が進捗行を消し、`attempted_at` は何時間も
-前のままになる。そのためこの数百 ms の間だけ、「候補（進捗が古い）かつ job lock が空き
-（release 済み）かつ `state='running'`（まだ completed 反映前）」が同時に成立する。すると
-成功したジョブが discarded にされ、冗長な ingest が 1 本入りうる。壊れはしない --- 代替側は `hasOriginalMediaAsset` の
-冪等性チェックで短絡し、転送をやり直さない。ただし失敗して再試行中のジョブがこの窓に入ると、
-River のバックオフと `attempt` カウンタは失われる。この窓を塞ぐ二段確認の類は作らない（回収
-遅延と状態を増やすだけで、上記のとおり破損はしないため）。
+SIGTERM による停止は River の Work context が `Canceled` になる。5 分の deadline 超過は `DeadlineExceeded` として失敗に数え、停止中断は最終結果のメトリクスへ数えない。checkpoint 保存が区切りに達する前の停止では、次の Work が最後の保存位置から残りを replay する。
 
 #### 層 3: 完全性検証とコミット
 
 pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record では、同じ転送バイト列の SHA-256 と `content.sha256` も照合する。Range 再開を含む全バイトを 1 パスで計算する。これは stream レスポンスの Digest / ETag ヘッダーではない。
 
-`content.sha256` が `null` または欠落している場合、finished 後の mirakc がハッシュを計算中の可能性がある。finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消し、ジョブを完了する。次の record-saved または定期 record_sweep が新しいジョブを投入するため、待ちの間も worker 枠を占有せず、毎回 temp を replay しない。`TestIngestJobCanBeInsertedAfterPreviousJobCompletes` は再投入を確認する。`TestIngestWorker_CompletesUntilLateContentSHA256` は temp の保持、進捗削除、ハッシュ到着後の `verified` commit を確認する。
+`content.sha256` が `null` または欠落している場合、finished 後の mirakc がハッシュを計算中の可能性がある。
+finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消す。
+同じ River job を snooze して待つため、worker 枠を占有しない。
+次の Work は同じ job ID と temp を使い、毎回 temp を replay しない。
+`TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` は snooze 後の `attempt=0` を確認する。
+`TestIngestWorker_CompletesUntilLateContentSHA256` は hash 到着後の `verified` commit を確認する。
 
 待ちの期限は転送済みバイト数を速度見積もりで割って決め、mirakc の `recording.endTime` を起点にする。値が nil または未来なら temp の mtime を使う。報告された実測は 2.35 GB の読み直しに約 4 分（約 9.8 MB/s）で、25% の余裕を含めて 7.8 MB/s とする（計測点が 1 件のため設定キーにはしない）。下限は 10 秒で、地デジ 30 分（約 3.8 GB）では約 8 分、BS 2 時間（約 20 GB）では約 43 分になる。期限後もハッシュが無ければ `timeout_skipped` で commit する。HEAD の長さが不明（`-1`）なら転送完了を先に判定できないため待たずに commit する。実機での新しい待ち時間は未検証。期限の起点は `TestIngestSHA256WaitDeadline` で確認する。
 
@@ -243,9 +191,14 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 
 各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
 
-- **rel_path の filesystem lock は公開・回収の区間だけに残した。** canonical path に直接転送しないので、転送全体の lock heartbeat や lock 喪失による転送 cancel は不要である。ingest commit と canonical orphan 回収は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。対象区間は rename / unlink から DB commit または orphan 行の整理までである。DB セッションが切れても古いファイル操作が続いて公開済み canonical を回収側が消すことはない。transaction-level advisory lock は DB の一意性と live 行確認を補助する。残る job-id advisory lock は record_sweep が live job と死亡 job を区別するためだけに使い、heartbeat はそのセッションの lease を更新するだけを担う
+- **rel_path の filesystem lock は公開・回収の区間だけに使う。**
+canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
+ingest commit と canonical orphan 回収は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。
+対象区間は rename / unlink から DB commit または orphan 行の整理までである。
+DB セッションが切れても古いファイル操作が続き、公開済み canonical を回収側が消すことはない。
+transaction-level advisory lock は DB の一意性と live 行確認を補助する。
 - **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる。SIGKILL されたプロセス自身はもう書かないが、RWX ではカーネルが未書き込みのページを後から書き戻しうる（未検証）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では 30 秒以上止まったプロセスと、DB から分断されたが生きている worker でも代替実行が走る。そのぶん当たる確率が上がる
-- **同一録画の再試行**: 現行の `IngestWorker.Timeout() = -1` と、River の running を含む一意投入がある。これによりプロセス内の通常の River 経路では、古い ingest と新しい ingest が同時に走らない。プロセス死で running 行だけが残った場合も、上記のジョブ lock 確認と旧行の終端化を経て新しい試行へ進む。temp は record ごとに決まった名前で、flock が世代の競合を防ぐ
+- **同一録画の再試行**: Work は 4 分の transfer slice ごとに同じ River job を snooze する。プロセス死で running 行だけが残った場合は JobRescuer が retry を予約する。snooze では同じ job ID と record 固有 temp で再開し、temp の flock が同時書き込みを防ぐ。checkpoint が使えない場合は full replay に戻る
 - **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。プロセス死や回収不能な temp は既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
 
 **弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した**。本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
@@ -259,7 +212,7 @@ record 固有 temp へ並行して pull できる。同じ record は temp の f
 
 → **ingest の同時実行数は mirakc サイト単位で `チューナー数 + 全速 pull の許容本数（1〜2）`** にする（`ingest.concurrency`。サイト別キュー or River の同時実行数設定）。worker の水平スケールが効くのは encode（CPU バウンド、入力はクラウド側ストレージ）の方。
 
-**追従は番組長のあいだ worker 枠を占有するが、占有そのものは無害である。** 枠は River のカウンタであって物理資源ではなく、追従が持つ枠は放送レートでしか動かない。問題は枠が足りないことの側で、N 本の同時録画には N 個の追従枠が要る。
+**追従は番組長のあいだ ingest worker の枠を占有し続けない。** 4 分の Work ごとに snooze して枠を返し、次の Work が同じジョブを続ける。枠を返している間は全速 pull が使えるが、追従ジョブは優先度 1、追い付きは 2 なので、次に空いた枠は追従が先に取る。N 本の同時録画には N 個の追従枠が必要で、4 分ごとに一時的に追い付きへ渡る分の競合は残る。
 
 **この余り枠は 2 つの仕事を兼ねる。** 追従後も全速 pull は残る（障害復旧後のバックログ・`record_sweep` の再投入・遅れて枠を得た追従の追い付き）。枠を録画数ちょうどにすると全速 pull が枠待ちで詰まり、逆に録画数に合わせて広げると復旧中の全速 pull が並列に走ってエッジの録画書き込みと競合する。N 本録画中は N 枠を追従が持ち、残りだけが全速 pull に回る。録画が無いときは全枠が全速 pull に回るが、そのときは邪魔する録画書き込みも無い。
 

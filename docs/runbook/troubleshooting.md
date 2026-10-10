@@ -65,8 +65,8 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 - `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（[setup.md](setup.md) の前提を参照）。
   HEAD だけ試すと成功するので騙されやすい
-- `errors` に **`context deadline exceeded`** — River の総時間タイムアウト。
-  ingest は無効化してあるので、出るなら設定が壊れている
+- `errors` に **`context deadline exceeded`** — 5 分の Work Timeout を超えた。
+  通常は 4 分の slice で snooze するため、長い replay / 後処理や設定を調べる
 - `state=retryable` のまま進まない — mirakc への到達性か、`media_dir` の
   書き込み権限（上記「`media_dir` に書けない」）を確認する
 

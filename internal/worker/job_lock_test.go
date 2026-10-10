@@ -35,14 +35,14 @@ func newTestPool(t *testing.T, dbURL string) *pgxpool.Pool {
 	return pool
 }
 
-// TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops は、heartbeat が
+// TestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops は、heartbeat が
 // 止まった lock 用セッションを Postgres が idle_session_timeout で終了させ、advisory
 // lock が解放されることを固定する。コネクションは開いたままで、クライアントが黙った
 // だけという状態（SIGSTOP / ノード消失 / ネットワーク分断の等価物）を作る。
 //
-// これが無いと、回収の 2 段目（recoverStaleIngestJobs の pg_try_advisory_lock）が
-// !acquired に落ち続け、running 行が誰にも回収されないまま滞留する。
-func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *testing.T) {
+// これが無いと、stale job の reconcile が pg_try_advisory_lock を取得できず、
+// running 行が回収されないまま滞留する。
+func TestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *testing.T) {
 	useShortJobLockTimings(t)
 
 	dbURL := testutil.DatabaseURL(t)
@@ -51,7 +51,7 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 	pool2 := newTestPool(t, dbURL)
 
 	const jobID int64 = 731003
-	lock1, acquired, err := acquireIngestJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 	deadline := stoppedAt.Add(5 * time.Second)
 	var elapsed time.Duration
 	for {
-		lock2, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+		lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
 		if err != nil {
 			t.Fatalf("acquiring job lock after the session was terminated: %v", err)
 		}
@@ -111,11 +111,11 @@ func TestIngestJobLock_IdleSessionTimeoutReleasesLockAfterHeartbeatStops(t *test
 	}
 }
 
-// TestIngestJobLock_HeartbeatKeepsSessionAlive は、heartbeat が動いている間は
+// TestJobLock_HeartbeatKeepsSessionAlive は、heartbeat が動いている間は
 // idle_session_timeout が経過してもセッションが終了しないことを固定する。
 // timeout の 3 倍の間、別セッションは一度も lock を取得できない。heartbeat を
 // 止めると同じテストが落ちる（lease の両方向）。
-func TestIngestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
+func TestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
 	useShortJobLockTimings(t)
 
 	dbURL := testutil.DatabaseURL(t)
@@ -124,7 +124,7 @@ func TestIngestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
 	pool2 := newTestPool(t, dbURL)
 
 	const jobID int64 = 731004
-	lock1, acquired, err := acquireIngestJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestIngestJobLock_HeartbeatKeepsSessionAlive(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		lock2, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+		lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
 		if err != nil {
 			t.Fatalf("acquiring job lock from pool2 during a live heartbeat: %v", err)
 		}
@@ -164,12 +164,12 @@ func idleSessionTimeoutOnPooledConn(t *testing.T, pool *pgxpool.Pool) string {
 	return value
 }
 
-// TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection は、lease の設定が
+// TestJobLock_SessionTimeoutNeverLeaksToAPooledConnection は、lease の設定が
 // プールへ返ったコネクションに残らないことを固定する。残すと、そのコネクションを
 // 後で掴んだ無関係のクエリが、idle のまま Postgres に切られたソケットへ書き込む。
 // 2 経路を見る: (1) lock を取れなかった経路（pg_try_advisory_lock と SET を同じ
 // 往復にすると、ここで設定が付いたままプールに戻る）、(2) release した経路。
-func TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T) {
+func TestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T) {
 	useShortJobLockTimings(t)
 
 	ctx := context.Background()
@@ -187,14 +187,14 @@ func TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T)
 	t.Cleanup(single.Close)
 
 	const jobID int64 = 731005
-	lock, acquired, err := acquireIngestJobLock(ctx, holder, jobID, time.Second)
+	lock, acquired, err := acquireEncodeJobLock(ctx, holder, jobID, time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring the job lock from the holder pool: acquired=%v err=%v", acquired, err)
 	}
 	t.Cleanup(lock.release)
 
 	// (1) 取得に失敗した経路。このコネクションはプールへ戻る。
-	if _, acquired, err := acquireIngestJobLock(ctx, single, jobID, time.Second); err != nil || acquired {
+	if _, acquired, err := acquireEncodeJobLock(ctx, single, jobID, time.Second); err != nil || acquired {
 		t.Fatalf("acquiring a held job lock: acquired=%v err=%v, want false/nil", acquired, err)
 	}
 	if got := idleSessionTimeoutOnPooledConn(t, single); got != "0" {
@@ -203,7 +203,7 @@ func TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T)
 
 	// (2) 取得して release した経路。release はこのコネクションをプールへ返さない。
 	lock.release()
-	released, acquired, err := acquireIngestJobLock(ctx, single, jobID, time.Second)
+	released, acquired, err := acquireEncodeJobLock(ctx, single, jobID, time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquiring the job lock after release: acquired=%v err=%v", acquired, err)
 	}
@@ -213,11 +213,11 @@ func TestIngestJobLock_SessionTimeoutNeverLeaksToAPooledConnection(t *testing.T)
 	}
 }
 
-// TestIngestJobLock_SecondAcquireFailsAndReleaseFrees は、rel_path ではなく
+// TestJobLock_SecondAcquireFailsAndReleaseFrees は、rel_path ではなく
 // ジョブ ID だけがセッションレベル advisory lock の対象であることを固定する。
-// 同じジョブの二重実行は防ぐが、異なる rel_path の ingest を直列化する lock は
+// 同じジョブの二重実行は防ぐが、異なる rel_path のメディア公開を直列化する lock は
 // 存在しない。release 後は別セッションが同じジョブ lock を取得できる。
-func TestIngestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
+func TestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
 
@@ -234,7 +234,7 @@ func TestIngestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 
 	const jobID int64 = 731001
 
-	lock1, acquired, err := acquireIngestJobLock(ctx, pool1, jobID, time.Second)
+	lock1, acquired, err := acquireEncodeJobLock(ctx, pool1, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool1: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestIngestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 	t.Cleanup(lock1.release)
 
-	lock2, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+	lock2, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("acquiring job lock from pool2: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestIngestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	}
 
 	lock1.release()
-	lock3, acquired, err := acquireIngestJobLock(ctx, pool2, jobID, time.Second)
+	lock3, acquired, err := acquireEncodeJobLock(ctx, pool2, jobID, time.Second)
 	if err != nil {
 		t.Fatalf("reacquiring job lock after release: %v", err)
 	}
@@ -265,9 +265,9 @@ func TestIngestJobLock_SecondAcquireFailsAndReleaseFrees(t *testing.T) {
 	t.Cleanup(lock3.release)
 }
 
-// TestIngestJobLock_TimeoutDoesNotHang は、ロック用コネクションの取得がプール枯渇で
+// TestJobLock_TimeoutDoesNotHang は、ロック用コネクションの取得がプール枯渇で
 // ハングせず、指定した timeout で戻ることを固定する。
-func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
+func TestJobLock_TimeoutDoesNotHang(t *testing.T) {
 	dbURL := testutil.DatabaseURL(t)
 	ctx := context.Background()
 
@@ -290,21 +290,21 @@ func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
 
 	resultCh := make(chan error, 1)
 	go func() {
-		_, _, err := acquireIngestJobLock(context.Background(), pool, 731002, 100*time.Millisecond)
+		_, _, err := acquireEncodeJobLock(context.Background(), pool, 731002, 100*time.Millisecond)
 		resultCh <- err
 	}()
 
 	select {
 	case err := <-resultCh:
 		if err == nil {
-			t.Fatal("acquireIngestJobLock returned nil with an exhausted pool")
+			t.Fatal("acquireEncodeJobLock returned nil with an exhausted pool")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("acquireIngestJobLock did not return within 2s")
+		t.Fatal("acquireEncodeJobLock did not return within 2s")
 	}
 }
 
-// TestIngestJobLock_TransientHeartbeatFailuresNeverStop は、一過性の DB エラーでは
+// TestJobLock_TransientHeartbeatFailuresNeverStop は、一過性の DB エラーでは
 // heartbeat が止まらないことを固定する。旧設計（rel_path の DB advisory lock）では
 // 「heartbeat 停止 = markLost = 転送キャンセル」という終端判断だったので閾値で
 // 止める理由があったが、新設計の heartbeat の唯一の仕事は job lock の lease を
@@ -312,7 +312,7 @@ func TestIngestJobLock_TimeoutDoesNotHang(t *testing.T) {
 // 止めると、jobLockIdleSessionTimeout の経過後に Postgres がセッションを終了させて
 // advisory lock が外れる（record_sweep が生存中の running 行を discard → 重複
 // ジョブ投入 → temp replay を迂回した不要な再転送）。
-func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
+func TestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
@@ -326,9 +326,9 @@ func TestIngestJobLock_TransientHeartbeatFailuresNeverStop(t *testing.T) {
 	}
 }
 
-// TestIngestJobLock_PermanentHeartbeatFailureStops は、コネクション切断
+// TestJobLock_PermanentHeartbeatFailureStops は、コネクション切断
 // （permanent）を検知したら即座に heartbeat を止めることを固定する。
-func TestIngestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
+func TestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
 	permanentErr := errors.New("simulated closed connection")
 	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
@@ -340,9 +340,9 @@ func TestIngestJobLock_PermanentHeartbeatFailureStops(t *testing.T) {
 	}
 }
 
-// TestIngestJobLock_LockLostStopsHeartbeat は、lock 喪失が確定した
+// TestJobLock_LockLostStopsHeartbeat は、lock 喪失が確定した
 // （held=false, err=nil）場合に heartbeat を止めることを固定する。
-func TestIngestJobLock_LockLostStopsHeartbeat(t *testing.T) {
+func TestJobLock_LockLostStopsHeartbeat(t *testing.T) {
 	l := newJobLock(nil, 1, "test")
 	l.checkHeldFunc = func() (held, permanent bool, err error) {
 		return false, false, nil
@@ -353,9 +353,9 @@ func TestIngestJobLock_LockLostStopsHeartbeat(t *testing.T) {
 	}
 }
 
-// TestIngestJobLock_HeartbeatRecoversAfterTransientFailures は、一過性失敗が
+// TestJobLock_HeartbeatRecoversAfterTransientFailures は、一過性失敗が
 // 何度続いても、その後 held=true が返れば heartbeat が動き続けることを固定する。
-func TestIngestJobLock_HeartbeatRecoversAfterTransientFailures(t *testing.T) {
+func TestJobLock_HeartbeatRecoversAfterTransientFailures(t *testing.T) {
 	transientErr := errors.New("simulated transient db latency")
 	var succeedNext bool
 	l := newJobLock(nil, 1, "test")

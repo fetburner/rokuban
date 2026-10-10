@@ -32,7 +32,7 @@ import (
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
-func TestRecordSavedRequeuesIngestAndCommitsLateSHA256(t *testing.T) {
+func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	const programID int64 = 5000000001281
 	seedIngestLifecycleReservation(t, pool, programID)
@@ -53,7 +53,7 @@ func TestRecordSavedRequeuesIngestAndCommitsLateSHA256(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 	client := newIngestLifecycleRiverClient(t, pool, ingestWorker)
-	events, cancelSubscribe := client.Subscribe(river.EventKindJobCompleted)
+	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed, river.EventKindJobCompleted)
 	defer cancelSubscribe()
 
 	runCtx, cancel := context.WithCancel(context.Background())
@@ -86,20 +86,20 @@ func TestRecordSavedRequeuesIngestAndCommitsLateSHA256(t *testing.T) {
 	}
 	mcServer.setEndTime(time.Now())
 	mcServer.recordSaved <- struct{}{}
-	first := waitForIngestLifecycleCompletion(t, events)
-	if first.Job.State != rivertype.JobStateCompleted {
-		t.Fatalf("first ingest state = %q, want completed while SHA-256 is null", first.Job.State)
+	first := waitForIngestLifecycleEvent(t, events, river.EventKindJobSnoozed)
+	if first.Job.State != rivertype.JobStateScheduled || first.Job.Attempt != 0 {
+		t.Fatalf("first ingest state/attempt = %q/%d, want scheduled/0 while SHA-256 is null", first.Job.State, first.Job.Attempt)
 	}
-	assertIngestLifecycleWaited(t, pool, first.Job.ID, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
+	assertIngestLifecycleWaited(t, client, pool, first.Job.ID, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
 
 	mcServer.setHash(lifecycleSHA256(tsData))
 	mcServer.recordSaved <- struct{}{}
-	second := waitForIngestLifecycleCompletion(t, events)
-	if second.Job.ID == first.Job.ID {
-		t.Fatalf("job after record-saved reused completed job ID %d", first.Job.ID)
+	second := waitForIngestLifecycleEvent(t, events, river.EventKindJobCompleted)
+	if second.Job.ID != first.Job.ID {
+		t.Fatalf("resumed ingest job ID = %d, want same snoozed job ID %d", second.Job.ID, first.Job.ID)
 	}
 	if second.Job.State != rivertype.JobStateCompleted {
-		t.Fatalf("second ingest state = %q, want completed after SHA-256 arrives", second.Job.State)
+		t.Fatalf("resumed ingest state = %q, want completed after SHA-256 arrives", second.Job.State)
 	}
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
@@ -256,29 +256,36 @@ func newIngestLifecycleRiverClient(t *testing.T, pool *pgxpool.Pool, ingestWorke
 	return client
 }
 
-func waitForIngestLifecycleCompletion(t *testing.T, events <-chan *river.Event) *river.Event {
+func waitForIngestLifecycleEvent(t *testing.T, events <-chan *river.Event, wantKind river.EventKind) *river.Event {
 	t.Helper()
-	select {
-	case event := <-events:
-		if event.Job == nil {
-			t.Fatal("completed River event has no job")
+	deadline := time.NewTimer(time.Minute)
+	defer deadline.Stop()
+	for {
+		select {
+		case event := <-events:
+			if event.Kind != wantKind {
+				continue
+			}
+			if event.Job == nil {
+				t.Fatalf("River event %q has no job", wantKind)
+			}
+			return event
+		case <-deadline.C:
+			t.Fatalf("ingest job did not emit River event %q after record-saved", wantKind)
+			return nil
 		}
-		return event
-	case <-time.After(30 * time.Second):
-		t.Fatal("ingest job did not complete after record-saved")
-		return nil
 	}
 }
 
-func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, jobID int64, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
+func assertIngestLifecycleWaited(t *testing.T, client *river.Client[pgx5.Tx], pool *pgxpool.Pool, jobID int64, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
 	t.Helper()
 	ctx := context.Background()
-	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM river_job WHERE id = $1", jobID).Scan(&state); err != nil {
-		t.Fatalf("reading first River job state: %v", err)
+	job, err := client.JobGet(ctx, jobID)
+	if err != nil {
+		t.Fatalf("getting snoozed River job through public API: %v", err)
 	}
-	if state != string(rivertype.JobStateCompleted) {
-		t.Errorf("persisted first job state = %q, want completed", state)
+	if job.State != rivertype.JobStateScheduled || job.Attempt != 0 {
+		t.Errorf("snoozed River job state/attempt = %q/%d, want scheduled/0", job.State, job.Attempt)
 	}
 	var assetCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {

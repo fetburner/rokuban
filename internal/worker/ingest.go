@@ -46,9 +46,22 @@ import (
 // docs/recording/ingest.md §5.3 層 3。
 var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally")
 
-// errIngestSHA256Pending は、転送済みの temp を残して次の record-saved / record_sweep
-// まで ingest job を完了するための内部制御エラー。
+// errIngestSHA256Pending は、転送済みの temp を残して SHA-256 の再確認を snooze する内部制御エラー。
 var errIngestSHA256Pending = errors.New("ingest content SHA-256 is pending")
+
+// errIngestSliceElapsed は temp と SHA-256 の checkpoint を保存した試行の区切りを表す。
+var errIngestSliceElapsed = errors.New("ingest transfer slice elapsed")
+
+const (
+	ingestWorkTimeout          = 5 * time.Minute
+	ingestSHA256SnoozeInterval = 30 * time.Second
+)
+
+// ingestTransferSlice は 1 回の Work で replay と転送に使う時間の上限。
+// 4 分の slice と 1 分の後処理予算で Work Timeout を 5 分にし、6 分の rescue 既定より
+// 短くする。--once では snooze ごとに Pod が入れ替わるため、運用クラスタで起動時間が
+// slice より十分短いことを確認する。
+var ingestTransferSlice = 4 * time.Minute
 
 // ingestSHA256BytesPerSecond は finished 後に mirakc が content.sha256 を非同期計算する
 // 速度（バイト/秒）の見積もり。待ちの上限は時間ではなくこの速度で固定する ---
@@ -338,19 +351,14 @@ type IngestWorker struct {
 	ProgressInterval time.Duration
 }
 
-// Timeout は River の総時間タイムアウトを無効化する。
+// Timeout は ingest 1 試行の上限を返す。
 //
-// ingest は数百 MB〜数十 GB のバイト転送で、所要時間は録画長と回線速度で決まる。
-// River の既定（JobTimeoutDefault = 1 分）では実際の録画がまず完走しない。
-//
-// 総時間で切らない代わりに、進捗が止まったことを RecordFollowReader が検知して切り直す
-// （StallTimeout）。「タイムアウトは総時間でなくストール検知」という M1-5-2 の
-// 設計はこれが揃って初めて成立する。
-//
-// -1 は Work の defer が中断を判定する前提でもある（正にするとタイムアウトが
-// 中断と見分けられず、結果メトリクスから落ちる）。
+// 4 分の replay / 転送区切りに、HEAD・ハッシュ確認・fsync・commit のため 1 分を足す。
+// 区切りでは temp と SHA-256 状態を保存して River に snooze を返すため、録画全体の
+// 転送速度や長さでジョブの締切は決まらない。5 分は River の既定 JobTimeout（1 分）を
+// 超え、rescue の既定 6 分より短い。追従の無進捗検知は従来どおり StallTimeout が担う。
 func (w *IngestWorker) Timeout(*river.Job[jobs.IngestJobArgs]) time.Duration {
-	return -1
+	return ingestWorkTimeout
 }
 
 // resolveProgressInterval は設定された ProgressInterval があればそれを、
@@ -378,47 +386,23 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	skipMetrics := false
 	defer func() {
 		if skipMetrics {
-			// SHA-256 待ちは job を完了して次のレベルトリガーに渡す中間状態。
+			// 区切りと SHA-256 待ちは同じ job を続ける中間状態。
 			return
 		}
 		// result は success / failure / canceled の 3 値。**この 3 値の外に増やさない**
 		// （低カーディナリティが前提。record id や理由は入れない）。
 		//
-		// **River の soft stop（graceful stop）は数えない。** 中断はジョブの結末では
-		// ない --- River は attempt を消費せず行を available に戻し、次のプロセスが
-		// 再開して、そこで結末を 1 回だけ数える。ここで数えると 1 ジョブが「中断 +
-		// 再開後の結末」の 2 回で数えられる。中断が繰り返されているかは
-		// rokuban_uningested_records / _bytes に積まれる。
-		//
-		// 判定は River の isSoftStopCancelError（internal/jobexecutor。internal
-		// パッケージなので import できない）と同じ材料で行う。条件は work ctx の cause が
-		// セットされていて、かつ戻り値が context.Canceled か cause そのものを包むこと。
-		// cause は 2 つある:
-		//
-		//   - Stop / StopAndCancel / soft stop timer が撃つ ErrStop
-		//   - Client.JobCancel の rivertype.ErrJobCancelledRemotely（rokuban に
-		//     呼び出し元は無いが、区別しないと下の err == nil の判断が崩れる）
-		//
-		// **2 つに限られるのは 2 つの前提による。** SoftStopTimeout > 0
-		// （resolveSoftStopTimeout が強制）なので work ctx は start ctx の Canceled を
-		// 継がず、Timeout が -1 なので DeadlineExceeded も来ない。Timeout を正にすると
-		// タイムアウトが errors.Is(err, cause) に掛かって数えられなくなる（River は
-		// attempt を消費するのに failure に乗らない）。
-		//
-		// **errors.Is(err, cause) の項が要る。** Go の net/http は ctx が取り消されると
-		// ctx.Err() ではなく context.Cause(ctx) を返す（transport.go）。Stop の瞬間に
-		// mirakc への HTTP 要求が飛んでいると、返る err は ErrStop を包むが
-		// context.Canceled を包まない。
-		//
-		// 未解決（未測定の窓）: ctx 由来でない context.Canceled を err が包む場合、
-		// defer の評価と River の評価の間（μs 単位）に soft stop が重なると failure が
-		// 1 回余分に乗りうる（実例: stall 検知の cancel が再試行予算の超過で返るとき）。
-		// Work 側では塞げず、River も同じ後読みをしている。
 		cause := context.Cause(ctx)
 		remote := errors.Is(cause, river.ErrJobCancelledRemotely)
-		if cause != nil && !remote &&
+		ctxErr := ctx.Err()
+		// stop は中断として数えず、締切超過は試行失敗として数える。River が作る
+		// work ctx は stop なら Canceled、Timeout 超過なら DeadlineExceeded になる。
+		if ctxErr == context.Canceled && !remote &&
 			(errors.Is(err, context.Canceled) || errors.Is(err, cause)) {
 			return
+		}
+		if ctxErr == context.DeadlineExceeded {
+			result = "failure"
 		}
 		// リモート取消は canceled に倒す。ただし **err == nil のときは倒さない** ---
 		// River は res.Err != nil のときだけ cause で置き換えて cancelled にするので
@@ -438,23 +422,6 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err != nil {
 		return err
 	}
-
-	// Work の開始から commit まで、ジョブ ID 固有の advisory lock を保持する。
-	// record_sweep の回収側が同じキーを pg_try できた場合だけ、元プロセスが死んで
-	// セッションが解放されたと確定できる。セッションには idle_session_timeout が
-	// 付いており、heartbeat が lease を更新し続ける限り切れない。heartbeat は
-	// canonical file の排他には使わない。
-	jobLock, acquired, err := acquireIngestJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
-	if err != nil {
-		return fmt.Errorf("acquiring ingest job lock: %w", err)
-	}
-	if !acquired {
-		// 断定はしない: この分岐には、別プロセスが本当に実行中の場合だけでなく、
-		// record_sweep の回収側が同じキーを一瞬 try して保持している場合も落ちる。
-		log.Warn("ingest: job advisory lock is held by another session, deferring", "job_id", job.ID)
-		return fmt.Errorf("ingest: job %d advisory lock is held by another session; deferring", job.ID)
-	}
-	defer jobLock.release()
 
 	recordingID, expectedBytes, err := w.lookupIngestTarget(ctx, args)
 	if err != nil {
@@ -484,13 +451,18 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, log, &result); err != nil {
 		if errors.Is(err, errIngestSHA256Pending) {
 			skipMetrics = true
-			return nil
+			return river.JobSnooze(ingestSHA256SnoozeInterval)
+		}
+		if errors.Is(err, errIngestSliceElapsed) {
+			skipMetrics = true
+			return river.JobSnooze(0)
 		}
 		return err
 	}
 	return nil
 }
 
+//nolint:funlen // temp lock, transfer, hash verification, and publication share one cleanup boundary.
 func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.Client, args jobs.IngestJobArgs, recordingID int64, expectedBytes *int64, log *slog.Logger, result *string) error {
 	relPath, fullPath, initialRecord, err := w.determineRelPath(ctx, args, client)
 	if err != nil {
@@ -533,6 +505,12 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// 別の試行が同名パスを作ってから古い cleanup がそれを消すことが
 			// ないよう、ロックを保持したまま unlink してから lock fd を閉じる。
 			_ = os.Remove(tempPath)
+			_ = os.Remove(ingestCheckpointPath(tempPath))
+		} else if _, statErr := os.Stat(tempPath); errors.Is(statErr, os.ErrNotExist) {
+			// commit の rename 後に失敗した場合も checkpoint は temp と同じ寿命で終える。
+			if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				log.Warn("ingest: removing checkpoint after temp publication failed", "err", err)
+			}
 		}
 		_ = f.Close()
 		// openIngestFile のテスト差し替えが underlying fd を閉じずに失敗
@@ -541,8 +519,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}()
 
 	// finished record の temp が HEAD の長さまで転送済みなら、replay する前に
-	// ハッシュ待ちを終える。completed job を record-saved / record_sweep が再投入しても、
-	// ハッシュが無い間は大きな temp を毎回読み直さない。
+	// ハッシュを再確認する。snooze 中も大きな temp を毎回読み直さない。
 	preflightSHA256, waiting, err := w.preflightIngestSHA256(ctx, client, args.RecordID, recordingID, initialRecord, tempPath, f, log)
 	if err != nil {
 		return err
@@ -551,20 +528,10 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return errIngestSHA256Pending
 	}
 
-	// 一時ファイル方式では canonical path を転送中に一度も触らない。したがって
-	// job lock の heartbeat がセッション喪失を検知しても、古い転送を context
-	// cancel する必要はない。同じ record の別試行は temp の flock で直列化され、
-	// 異なる record の競合は DB の unique reservation が採用を一つに決める。
-	ingestCtx := ctx
-
-	hasher := sha256.New()
-	offset, err := replayIngestTempFile(ingestCtx, tempPath, hasher)
-	if err != nil {
-		return err
-	}
-	// 既存 temp の SHA-256 を復元してから、新規転送の受理バイトを追記先と hasher に流す。
-	sink := &hashingWriter{w: f, h: hasher}
-
+	// replay と pull を合わせて 1 区切りにし、既存 temp が大きい場合も途中で再開できる。
+	// River の Timeout はこの区切りより 1 分長く、checkpoint の fsync と commit に使う。
+	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
+	defer cancelSlice()
 	progress := &ingestProgressReporter{
 		pool:          w.Pool,
 		recordingID:   recordingID,
@@ -572,22 +539,44 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		interval:      w.resolveProgressInterval(),
 		log:           log,
 	}
+	hasher := sha256.New()
+	offset, replayComplete, err := replayIngestTempFileWithCheckpoint(sliceCtx, tempPath, f, hasher)
+	if err != nil {
+		if isIngestSliceDeadline(err, sliceCtx, ctx) {
+			progress.start(ctx, offset)
+			return errIngestSliceElapsed
+		}
+		return err
+	}
+	if !replayComplete {
+		return fmt.Errorf("replaying ingest temp ended without completion")
+	}
+	// 既存 temp の SHA-256 を復元してから、新規転送の受理バイトを追記先と hasher に流す。
+	sink := &hashingWriter{w: f, h: hasher}
+
 	// 転送の途中経過を recording_ingest_progress に写す（issue #212）。行の存在
 	// そのものが「転送中」の主張なので（不変条件 10）、1 バイトも流れる前に
 	// 1 行書いてから始める --- 遅い回線で最初の 1 バイトが来るまで数十秒かかる
 	// ことがあり、そこが「何も起きていないように見える」時間帯そのものだから。
-	progress.start(ingestCtx, offset)
+	progress.start(ctx, offset)
 	// progressWriter は hashingWriter の外側に置き、temp に受理されたバイト数を報告する。
 	dst := &progressWriter{
 		w:       sink,
 		written: offset,
-		onWrite: func(written int64) { progress.report(ingestCtx, written) },
+		onWrite: func(written int64) { progress.report(ctx, written) },
 	}
 
 	var expectedSHA256 *string
 	var observedEndTime *mirakc.Milliseconds
-	offset, expectedSHA256, observedEndTime, err = w.transferIngestRecord(ingestCtx, client, args.RecordID, dst, progress, offset)
+	offset, expectedSHA256, observedEndTime, err = w.transferIngestRecord(sliceCtx, client, args.RecordID, dst, progress, offset)
 	if err != nil {
+		if isIngestSliceDeadline(err, sliceCtx, ctx) {
+			if err := persistIngestCheckpoint(tempPath, f, offset, hasher); err != nil {
+				return err
+			}
+			progress.flush(ctx, offset)
+			return errIngestSliceElapsed
+		}
 		if errors.Is(err, errIngestRecordEndedAbnormally) {
 			removeTemp = true
 			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
@@ -604,7 +593,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		}
 		return err
 	}
-	expectedLen, err := client.HeadRecordStream(ingestCtx, args.RecordID)
+	expectedLen, err := client.HeadRecordStream(ctx, args.RecordID)
 	if err != nil {
 		return fmt.Errorf("HEAD record stream: %w", err)
 	}
@@ -617,11 +606,15 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 	if expectedSHA256 == nil {
 		var waiting bool
-		expectedSHA256, waiting, err = w.maybeWaitForSHA256(ingestCtx, client, args.RecordID, recordingID, tempPath, f, expectedLen, offset, observedEndTime, log)
+		expectedSHA256, waiting, err = w.maybeWaitForSHA256(ctx, client, args.RecordID, recordingID, tempPath, f, expectedLen, offset, observedEndTime, log)
 		if err != nil {
 			return err
 		}
 		if waiting {
+			// maybeWaitForSHA256 が temp を Sync した後なので、hash 状態をその末尾へ合わせて保存する。
+			if err := writeIngestCheckpoint(tempPath, offset, hasher); err != nil {
+				return err
+			}
 			return errIngestSHA256Pending
 		}
 	}
@@ -648,8 +641,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	// 上がらず、fsync() でしか報告されない。offset はここまで転送できたバイト数を
 	// メモリ上で数えた値であって実際にディスクへ落ちたことの確認ではないので、
 	// 上の Content-Length 照合もこの種の失敗を素通りしてしまう。ここで fsync が
-	// 失敗したら DB へ登録せず、mirakc の record を保持して再試行させる。途中の
-	// 定期 fsync は行わない（S3 系 FUSE 上で転送途中の実体化を増やさないため）。
+	// 失敗したら DB へ登録せず、mirakc の record を保持して再試行させる。途中の fsync は
+	// 区切りでだけ行い、各バッファごとの実体化は増やさない。
 	syncStarted := time.Now()
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing file: %w", err)
@@ -664,7 +657,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
-	if err := w.commit(ingestCtx, recordingID, relPath, tempPath, fullPath, offset); err != nil {
+	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, offset); err != nil {
 		return fmt.Errorf("committing ingest: %w", err)
 	}
 
@@ -699,7 +692,7 @@ func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc
 }
 
 // maybeWaitForSHA256 は完成済み temp のハッシュ待ち期限を判定する。
-// 待つ場合は temp を同期し、進捗行を消して次の record-saved / record_sweep に処理を渡す。
+// 待つ場合は temp を同期し、進捗行を消して呼び出し元に同じ job の snooze を返させる。
 func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, tempPath string, file ingestFile, expectedLen, size int64, observedEndTime *mirakc.Milliseconds, log *slog.Logger) (*string, bool, error) {
 	// HEAD の長さが不明なら転送済みを判定できない。content.length は照合の根拠に
 	// 使わず、待たずに timeout_skipped で commit する。
@@ -740,7 +733,7 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if err := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
 		return nil, false, fmt.Errorf("clearing ingest progress before SHA-256 wait: %w", err)
 	}
-	log.Info("ingest: content sha256 is pending; completing job until deadline",
+	log.Info("ingest: content sha256 is pending; snoozing until recheck",
 		"sha256_verification", "pending",
 		"wait", time.Until(deadline),
 		"deadline", deadline)
@@ -824,12 +817,14 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 	defer func() { _ = reader.Close() }()
 
 	written, err := io.Copy(dst, reader)
+	currentOffset := offset + written
 	if err != nil {
 		// io.Copy can fail because dst failed. That is a local storage error,
-		// not a reason to retry the mirakc request.
-		return 0, nil, nil, err
+		// not a reason to retry the mirakc request. Keep the accepted byte count so a
+		// slice deadline can persist the matching temp offset and hash state.
+		return currentOffset, expectedSHA256, observedEndTime, err
 	}
-	return offset + written, expectedSHA256, observedEndTime, nil
+	return currentOffset, expectedSHA256, observedEndTime, nil
 }
 
 // normalizeContentSHA256 は mirakc の optional な SHA-256 表記を比較用の
