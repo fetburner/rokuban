@@ -332,11 +332,8 @@ type IngestWorker struct {
 	CMDetect      config.CMDetectConfig
 
 	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
-	// クランプ（resolveAndSnapshotEncodePolicy）と、完了後のヒント投入
-	// （enqueueMissingEncodesFromContext）が使う。
+	// クランプ（resolveAndSnapshotEncodePolicy）に使う。
 	CutProfiles map[string]struct{}
-	// EncodeProfiles は完了後に投入する encode args の rescue 締切を解決する。
-	EncodeProfiles config.EncodeConfig
 	// LiveEnabled は config.live.enabled。原本 HLS が使えない場合だけ、凍結時に
 	// cut-only の選択を安全側へクランプする。
 	LiveEnabled bool
@@ -758,9 +755,8 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	if err := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
 		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
 	}
-	// 原本があるなら encode の desired−observed も埋める（ヒント。真実は
-	// EnqueueMissingEncodes のレベルトリガー判定。issue #65）。
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.EncodeProfiles, w.CutProfiles)
+	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
+	enqueueEncodeReconcileFromContext(ctx, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -851,24 +847,23 @@ func recordIngestMetrics(offset int64) {
 	metrics.IngestBytes.Add(float64(offset))
 }
 
-// enqueueIngestFollowups はコミット済み ingest の encode / thumbnail 投入ヒントと
+// enqueueIngestFollowups はコミット済み ingest の encode / thumbnail 対象 reconcile と
 // mirakc record の削除を行う。補助処理の失敗はログに記録して本処理を成功扱いにする。
 //
-// encode 投入はヒント。desired（encode_profiles）− observed（encoded assets）
-// を埋めるレベルトリガー（命令的チェーンではない。issue #65）。
+// encode 投入は対象録画を絞った reconcile。判定は定期パスと同じ query を使う。
 //
-// thumbnail 投入はヒント。desired − observed を EnqueueThumbnailIfNeeded が
-// 判定する（レベルトリガー。命令的チェーンではない。issue #66）。
+// thumbnail 投入も対象録画を絞った reconcile で、poster・再選択・seek_tiles を
+// 定期パスと同じ query で判定する。
 // TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
 // River クライアントが無いテスト経路では黙ってスキップする。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	enqueueMissingEncodesFromContext(ctx, w.Pool, recordingID, w.EncodeProfiles, w.CutProfiles)
+	enqueueEncodeReconcileFromContext(ctx, recordingID)
 	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
 		if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 		}
-		if enqueueErr := EnqueueThumbnailIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
-			log.Error("ingest: failed to enqueue thumbnail job", "recording_id", recordingID, "err", enqueueErr)
+		if _, enqueueErr := riverClient.Insert(ctx, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}, nil); enqueueErr != nil {
+			log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
 		}
 		if enqueueErr := tsscan.EnqueueScan(ctx, riverClient, recordingID); enqueueErr != nil {
 			log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)
@@ -1075,7 +1070,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 // recording_encode_policy へ凍結する（行の存在そのものが「凍結済み」を
 // 意味する。不変条件 3「コミット = DB 行」・不変条件 10「意味を持たない行を
 // 作らない」）。呼び出し元の commit が原本 media_asset の INSERT と同じ tx で、
-// かつ encode ジョブの投入（EnqueueMissingEncodes）より必ず先に呼ぶ（順序が
+// かつ targeted encode reconcile の投入より必ず先に呼ぶ（順序が
 // 逆だと初回パスで desired が空のまま enqueue される）。
 //
 // 凍結か毎パス再導出か・凍結する瞬間・予約を放送イベントキーで引く理由・

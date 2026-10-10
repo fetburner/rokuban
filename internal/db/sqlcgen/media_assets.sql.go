@@ -496,46 +496,6 @@ func (q *Queries) IsActiveThumbnailInput(ctx context.Context, mediaAssetID int64
 	return exists, err
 }
 
-const listRecordingIDsMissingThumbnail = `-- name: ListRecordingIDsMissingThumbnail :many
-SELECT o.recording_id
-FROM media_assets o
-JOIN recordings r ON r.id = o.recording_id
-WHERE o.kind = 'original'
-  AND o.state = 'active'
-  AND r.deleted_at IS NULL
-  AND NOT EXISTS (
-    SELECT 1 FROM media_assets t
-    WHERE t.recording_id = o.recording_id
-      AND t.kind = 'thumbnail'
-      AND t.state = 'active'
-  )
-`
-
-// レベルトリガー投入: original があり active thumbnail が無い recording_id。
-// thumbnail ジョブの desired − observed ギャップを埋める（issue #66）。
-// ごみ箱（recordings.deleted_at IS NOT NULL）は除外する（issue #109）:
-// 生成しても配信側（GetThumbnailMediaAssetForServing）が r.deleted_at IS NULL を
-// 要求するので誰にも配られず、猶予明けの削除 reconcile が消すだけの ffmpeg 無駄打ちになる。
-func (q *Queries) ListRecordingIDsMissingThumbnail(ctx context.Context) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listRecordingIDsMissingThumbnail)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []int64
-	for rows.Next() {
-		var recording_id int64
-		if err := rows.Scan(&recording_id); err != nil {
-			return nil, err
-		}
-		items = append(items, recording_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
 SELECT a.id, a.rel_path, s.seek_ms
 FROM media_assets a

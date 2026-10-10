@@ -41,13 +41,117 @@ func encodeConfigWith(names ...string) config.EncodeConfig {
 // runEncodeReconcilePass は EncodeReconcileWorker を River のジョブ実行と同じ
 // コンテキスト（river.Client が載った ctx）で 1 パス回す。
 func runEncodeReconcilePass(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker) {
+	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{})
+}
+
+func runEncodeReconcilePassArgs(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker, args EncodeReconcileArgs) {
 	t.Helper()
 	job := &river.Job[EncodeReconcileArgs]{
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   EncodeReconcileArgs{},
+		Args:   args,
 	}
 	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
+	}
+}
+
+// Targeted and full passes have different args and must remain separate River jobs.
+func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	client, err := NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("NewInsertOnlyClient: %v", err)
+	}
+	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{}, nil); err != nil {
+		t.Fatalf("inserting full pass: %v", err)
+	}
+	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{RecordingID: 42}, nil); err != nil {
+		t.Fatalf("inserting targeted pass: %v", err)
+	}
+	count := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
+	if count != 2 {
+		t.Fatalf("pending encode_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
+	}
+}
+
+func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullStateAlone(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	first := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/first.m2ts", []string{"h265"}, []byte("x"))
+	target := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/target.m2ts", []string{"h265"}, []byte("x"))
+	third := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/third.m2ts", []string{"h265"}, []byte("x"))
+
+	metrics.EncodeReconcileCandidates.Set(17)
+	metrics.EncodeReconcileLastPass.Set(23)
+	metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile").Set(31)
+	metrics.CutAwaitingReview.WithLabelValues("cut").Set(37)
+	t.Cleanup(func() {
+		metrics.EncodeReconcileCandidates.Set(0)
+		metrics.EncodeReconcileLastPass.Set(0)
+		metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile").Set(0)
+		metrics.CutAwaitingReview.WithLabelValues("cut").Set(0)
+	})
+
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
+	w.resumeAfter.Store(9_000_000_000_000_000_000)
+	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{RecordingID: target})
+
+	for _, tc := range []struct {
+		id   int64
+		want int
+	}{{first, 0}, {target, 1}, {third, 0}} {
+		if got := countEncodeJobs(t, pool, tc.id, "h265"); got != tc.want {
+			t.Errorf("encode jobs for recording %d = %d, want %d", tc.id, got, tc.want)
+		}
+	}
+	if got := w.resumeAfter.Load(); got != 9_000_000_000_000_000_000 {
+		t.Errorf("resumeAfter = %d, want unchanged sentinel", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 17 {
+		t.Errorf("candidate gauge = %v, want unchanged 17", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got != 23 {
+		t.Errorf("last-pass gauge = %v, want unchanged 23", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.EncodeReconcileUnsatisfiable.WithLabelValues("removed-profile")); got != 31 {
+		t.Errorf("unsatisfiable gauge = %v, want unchanged 31", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.CutAwaitingReview.WithLabelValues("cut")); got != 37 {
+		t.Errorf("awaiting-review gauge = %v, want unchanged 37", got)
+	}
+}
+
+// TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass は、対象パスが
+// ごみ箱の録画を除外し、復元後の全件パスが不足分を投入することを固定する。
+func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "targeted-trash/original.m2ts", []string{"h265"}, []byte("x"))
+	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID); err != nil {
+		t.Fatalf("soft deleting recording: %v", err)
+	}
+
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")}
+	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{RecordingID: recordingID})
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+		t.Fatalf("targeted encode jobs for trashed recording = %d, want 0", got)
+	}
+
+	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, recordingID); err != nil {
+		t.Fatalf("restoring recording: %v", err)
+	}
+	runEncodeReconcilePass(t, pool, w)
+	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+		t.Fatalf("full-pass encode jobs after restore = %d, want 1", got)
 	}
 }
 
@@ -55,7 +159,7 @@ func runEncodeReconcilePass(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcile
 // 回帰テスト。塞いだ穴そのものを端から端まで再現する:
 //
 //  1. ingest は成功してコミットする（原本 media_asset + recording_encode_policy）
-//  2. しかし encode 投入のヒントは飛ばない（enqueueMissingEncodesFromContext は
+//  2. しかし encode 投入のヒントは飛ばない（enqueueEncodeReconcileFromContext は
 //     river.Client が取れないと黙って return する。ここでは Work を素の
 //     context.Background() で呼んでその状態を作る。「ヒント投入に失敗して
 //     ログだけ出た」場合と DB から見た結果は同じ ---どちらも encode ジョブが
@@ -222,7 +326,7 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 // TestListMissingEncodeProfiles は不足プロファイルクエリを両方向で見る。
 //
 // 「投入されないこと」をジョブ数で見ても意味が無いケースがある --- 例えば
-// 「原本が無い（ingest 未完了）」は EnqueueMissingEncodes 側でも弾かれるので、
+// 「原本が無い（ingest 未完了）」は ListMissingEncodeProfiles 側でも弾かれるので、
 // クエリから条件を落としてもジョブ数のアサーションは通ってしまう。候補集合
 // そのものを見る。
 func TestListMissingEncodeProfiles(t *testing.T) {
@@ -271,7 +375,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	}
 
 	// (g) encoded の行はあるが state='deleted'（復元後など）→ 候補。
-	// EnqueueMissingEncodes が見るのは active な encoded だけ
+	// ListMissingEncodeProfiles が見るのは active な encoded だけ
 	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
 	encodedGone := seedRecordingWithOriginal(t, pool, mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
@@ -291,7 +395,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// 永久に満たされないため、定期パスの投入対象から外す。
 	renamed := seedRecordingWithOriginal(t, pool, mediaDir, "q/renamed.m2ts", []string{"gone"}, []byte("x"))
 
-	// (i) 空文字列のプロファイル名 → 候補にしない。EnqueueMissingEncodes が
+	// (i) 空文字列のプロファイル名 → 候補にしない。ListMissingEncodeProfiles が
 	// 空文字列をスキップするので、候補に挙げると (h) と同じ「永久に満たされない
 	// 候補」になる。クエリでも空文字列を明示的に落とす。
 	emptyProfile := seedRecordingWithOriginal(t, pool, mediaDir, "q/empty.m2ts", []string{""}, []byte("x"))
@@ -745,7 +849,7 @@ func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T
 	}
 }
 
-// river.Client が取れない ctx ではエラーを返すこと（EncodeEnqueueHintWorker と
+// river.Client が取れない ctx ではエラーを返すこと（対象パスと
 // 同じ判断 --- 黙って no-op にすると取りこぼしの回復そのものが消える）。
 func TestEncodeReconcileWorker_Work_WithoutClient_Errors(t *testing.T) {
 	pool := setupTestPool(t)

@@ -174,6 +174,10 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	if got := countTSScanJobs(t, pool, recordingID); got != 1 {
 		t.Fatalf("TS scan jobs after ingest followup = %d, want 1", got)
 	}
+	thumbs := countRiverJobsForRecording(t, pool, "thumbnail_reconcile", recordingID)
+	if thumbs != 1 {
+		t.Errorf("thumbnail_reconcile jobs after ingest followup = %d, want 1", thumbs)
+	}
 }
 
 func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {

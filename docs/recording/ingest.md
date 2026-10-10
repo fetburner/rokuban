@@ -220,15 +220,15 @@ transaction-level advisory lock は DB の一意性と live 行確認を補助�
 
 ### 5.5 ingest 完了後のフロー
 
-**同一トランザクションでの投入はしない**。`media_assets` のコミット**後**に、ベストエフォートのヒントとしてエンコードジョブを投入する（`IngestWorker.Work` → `EnqueueMissingEncodes`）。呼び出しは `ingest.go` の `enqueueMissingEncodesFromContext` である。投入に失敗してもログのみで、コミット済みの ingest は巻き戻さない。
+**同一トランザクションでの投入はしない**。`media_assets` のコミット後に、対象録画を指定した `encode_reconcile` を best-effort で積む。判定は定期パスと同じ query を使うため、ヒント側に不足分の判定を持たない。投入に失敗してもログのみで、コミット済み ingest は巻き戻さない。
 
 **落としたヒントは定期パスが埋める**。ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブである（`internal/worker/encode_reconcile.go`、既定 15 分周期）。専用クエリが desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の不足分を一括取得する。取得するのは不足している `(recording_id, profile)` であり、それを River に投入する。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
 
 対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧にある。
 
-**thumbnail も同じ穴を定期パスで埋める**。ingest 完了後の thumbnail ヒント投入が失敗し、その後に `DeleteRecord` が成功すると、edge record が無いため record_sweep から再投入できない。この状態を `thumbnail_reconcile`（既定 15 分周期）が active な原本と active な thumbnail の差分として拾い、`thumbnail` ジョブを再投入する。対象は encode と同じく site 非依存で、ごみ箱の録画は除外する。原本が `missing_media_assets` に記録されている間は、ファイルが無いことが分かっているため定期パスから除外し、復旧後のマーカー解除を待つ。`worker.periodic_jobs: false` の構成では `rokuban enqueue thumbnail-reconcile` を CronJob から叩く。
+**thumbnail も同じ穴を定期パスで埋める**。ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると、edge record からは再投入できない。`thumbnail_reconcile` は active な原本と派生物の差分を拾い、thumbnail ジョブを積む。ingest 後の即時パスも全件パスも同じ候補 query を使い、ごみ箱と `missing_media_assets` の原本を除外する。`worker.periodic_jobs: false` の構成では `rokuban enqueue thumbnail-reconcile` を CronJob から叩く。
 
-定期パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、抽出に失敗し続ける録画があっても候補窓を recording ID 順に回す。これにより同じ失敗を 1 パスごとに無制限に新規投入せず、後続の録画を恒久的に隠さない。明示的な `EnqueueMissingThumbnails` は復旧・テスト用の全件投入なので、ファイルを戻した直後の即時回収に使える。
+対象録画の即時パスは poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
 **TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、`tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
 `media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。

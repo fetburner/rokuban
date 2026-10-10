@@ -227,14 +227,13 @@ type Deps struct {
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{
-		MirakcClients:  deps.MirakcClients,
-		Pool:           deps.Pool,
-		MediaDir:       deps.MediaDir,
-		StallTimeout:   deps.IngestStallTimeout,
-		CMDetect:       deps.CMDetect,
-		CutProfiles:    deps.Encode.CutProfileSet(),
-		EncodeProfiles: deps.Encode,
-		LiveEnabled:    deps.LiveEnabled,
+		MirakcClients: deps.MirakcClients,
+		Pool:          deps.Pool,
+		MediaDir:      deps.MediaDir,
+		StallTimeout:  deps.IngestStallTimeout,
+		CMDetect:      deps.CMDetect,
+		CutProfiles:   deps.Encode.CutProfileSet(),
+		LiveEnabled:   deps.LiveEnabled,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -245,11 +244,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Profiles:   deps.Encode,
 		Webhook:    deps.Webhook,
 	})
-	river.AddWorker(workers, &EncodeEnqueueHintWorker{
-		Pool:        deps.Pool,
-		Profiles:    deps.Encode,
-		CutProfiles: deps.Encode.CutProfileSet(),
-	})
+	river.AddWorker(workers, &EncodeRebuildWorker{Pool: deps.Pool, Profiles: deps.Encode})
 	river.AddWorker(workers, &EncodeReconcileWorker{
 		Pool: deps.Pool,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ

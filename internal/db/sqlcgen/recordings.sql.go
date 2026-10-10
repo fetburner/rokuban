@@ -453,11 +453,10 @@ type GetRecordingEncodePolicyRow struct {
 	CmDetect       bool
 }
 
-// EnqueueMissingEncodes（internal/worker/encode.go）が desired
+// POST /api/recordings/{id}/encode-profiles が現在の desired
 // （recording_encode_policy.encode_profiles）を読むためのクエリ。行が無い
-// （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「エンコード対象の
-// プロファイルが無い」と同じに扱う（keep_original='always' と同じ扱い。
-// docs/storage.md §6）。
+// （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「既存プロファイルなし」
+// として扱う。AppendRecordingEncodeProfiles が既定値 'always' で行を作る。
 func (q *Queries) GetRecordingEncodePolicy(ctx context.Context, recordingID int64) (GetRecordingEncodePolicyRow, error) {
 	row := q.db.QueryRow(ctx, getRecordingEncodePolicy, recordingID)
 	var i GetRecordingEncodePolicyRow

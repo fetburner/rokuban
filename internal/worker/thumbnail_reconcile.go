@@ -33,10 +33,8 @@ const (
 // ThumbnailReconcileWorker は missing thumbnail / seek_tiles と、チャプターにより
 // 再選択が必要な thumbnail を定期パスで見つける River ワーカー。
 //
-// ingest 完了後の thumbnail ヒント投入と、明示的な EnqueueMissingThumbnails は
-// どちらもベストエフォートの経路である。ヒント投入が失敗した後に mirakc 側の
-// record が削除されると record_sweep からも再投入できないため、このワーカーは
-// DB の状態を真実として差分を拾い直す。
+// ingest 後の対象限定パスと定期全件パスは同じ候補クエリを使う。対象限定パスが
+// 投入されなかった場合も、定期パスは DB の状態を真実として差分を拾い直す。
 //
 // missing_media_assets に記録された原本は、delete_reconcile が実体無しを確認した
 // 既知の恒久失敗なので定期パスの候補から除く。ファイルが復旧してマーカーが
@@ -72,13 +70,14 @@ func (w *ThumbnailReconcileWorker) Timeout(*river.Job[jobs.ThumbnailReconcileArg
 	return thumbnailReconcileTimeout
 }
 
-// Work は 1 パス分の thumbnail reconcile を実行する。
+// Work は thumbnail reconcile を全件または指定録画について実行する。
 //
 // missing thumbnail、thumbnail の再選択、seek_tiles は recording_id 単位で独立に
 // keyset pagination する。各窓が RowLimit ちょうどまで返ったときは最後に見た
 // recording_id を保存して次のパスで進み、少ないときは先頭へ戻る。恒久的に失敗する
 // 録画が先頭に残っても後続候補を無期限に隠さない。
-func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.ThumbnailReconcileArgs]) error {
+func (w *ThumbnailReconcileWorker) Work(ctx context.Context, job *river.Job[jobs.ThumbnailReconcileArgs]) error {
+	recordingID := job.Args.RecordingID
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return fmt.Errorf("thumbnail reconcile: getting river client: %w", err)
@@ -89,10 +88,19 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		rowLimit = thumbnailReconcileRowLimit
 	}
 
-	after := w.resumeAfter.Load()
+	after := int64(0)
+	reselectAfter := int64(0)
+	var targetID *int64
+	if recordingID == 0 {
+		after = w.resumeAfter.Load()
+		reselectAfter = w.reselectResumeAfter.Load()
+	} else {
+		targetID = &recordingID
+	}
 	q := sqlcgen.New(w.Pool)
 	rows, err := q.ListMissingThumbnailRecordings(ctx, sqlcgen.ListMissingThumbnailRecordingsParams{
 		AfterRecordingID: after,
+		RecordingID:      targetID,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
@@ -100,9 +108,9 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		return fmt.Errorf("listing missing thumbnail recordings: %w", err)
 	}
 
-	reselectAfter := w.reselectResumeAfter.Load()
 	reselectRows, err := q.ListThumbnailReselectCandidates(ctx, sqlcgen.ListThumbnailReselectCandidatesParams{
 		AfterRecordingID: reselectAfter,
+		RecordingID:      targetID,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
@@ -145,44 +153,54 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.T
 		}
 	}
 
-	seekTilesFailed := w.enqueueMissingSeekTiles(ctx, client, rowLimit)
+	seekTilesFailed := w.enqueueMissingSeekTiles(ctx, client, rowLimit, targetID)
 	failed += seekTilesFailed
 
-	metrics.ThumbnailReconcileCandidates.Set(float64(len(rows) + len(reselectRows)))
-	metrics.ThumbnailReconcileLastPass.SetToCurrentTime()
+	if recordingID == 0 {
+		metrics.ThumbnailReconcileCandidates.Set(float64(len(rows) + len(reselectRows)))
+		metrics.ThumbnailReconcileLastPass.SetToCurrentTime()
 
-	var resumeAfter int64
-	if int32(len(rows)) >= rowLimit {
-		resumeAfter = rows[len(rows)-1]
-		slog.Warn("thumbnail_reconcile: candidate window is full; the next pass resumes from resume_after",
-			"row_limit", rowLimit, "last_recording_id", resumeAfter, "resume_after", resumeAfter)
-	}
-	w.resumeAfter.Store(resumeAfter)
+		var resumeAfter int64
+		if int32(len(rows)) >= rowLimit {
+			resumeAfter = rows[len(rows)-1]
+			slog.Warn("thumbnail_reconcile: candidate window is full; the next pass resumes from resume_after",
+				"row_limit", rowLimit, "last_recording_id", resumeAfter, "resume_after", resumeAfter)
+		}
+		w.resumeAfter.Store(resumeAfter)
 
-	var reselectResumeAfter int64
-	if int32(len(reselectRows)) >= rowLimit {
-		reselectResumeAfter = reselectRows[len(reselectRows)-1].RecordingID
-		slog.Warn("thumbnail_reconcile: reselection candidate window is full; the next pass resumes",
-			"row_limit", rowLimit, "last_recording_id", reselectResumeAfter)
-	}
-	w.reselectResumeAfter.Store(reselectResumeAfter)
+		var reselectResumeAfter int64
+		if int32(len(reselectRows)) >= rowLimit {
+			reselectResumeAfter = reselectRows[len(reselectRows)-1].RecordingID
+			slog.Warn("thumbnail_reconcile: reselection candidate window is full; the next pass resumes",
+				"row_limit", rowLimit, "last_recording_id", reselectResumeAfter)
+		}
+		w.reselectResumeAfter.Store(reselectResumeAfter)
 
-	if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
-		slog.Info("thumbnail_reconcile: pass complete",
-			"missing_candidates", len(rows), "reselection_candidates", len(reselectRows),
-			"failed", failed, "row_limit", rowLimit,
-			"resume_after", resumeAfter, "reselection_resume_after", reselectResumeAfter)
+		if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
+			slog.Info("thumbnail_reconcile: pass complete",
+				"missing_candidates", len(rows), "reselection_candidates", len(reselectRows),
+				"failed", failed, "row_limit", rowLimit,
+				"resume_after", resumeAfter, "reselection_resume_after", reselectResumeAfter)
+		}
+	} else if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {
+		slog.Info("thumbnail_reconcile: targeted pass complete",
+			"recording_id", recordingID, "missing_candidates", len(rows),
+			"reselection_candidates", len(reselectRows), "failed", failed)
 	}
 	return nil
 }
 
-// enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを 1 パス分
-// 埋める。thumbnail と同じ窓の形（keyset pagination）だが、再開位置は独立に持つ。
-// 戻り値は投入に失敗した件数。
-func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, client *river.Client[pgx5.Tx], rowLimit int32) int {
-	after := w.seekTilesResumeAfter.Load()
+// enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを埋める。
+// thumbnail と同じ窓の形（keyset pagination）だが、全件パスでは再開位置を独立に
+// 持つ。戻り値は投入に失敗した件数。
+func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, client *river.Client[pgx5.Tx], rowLimit int32, targetID *int64) int {
+	after := int64(0)
+	if targetID == nil {
+		after = w.seekTilesResumeAfter.Load()
+	}
 	rows, err := sqlcgen.New(w.Pool).ListMissingSeekTilesRecordings(ctx, sqlcgen.ListMissingSeekTilesRecordingsParams{
 		AfterRecordingID: after,
+		RecordingID:      targetID,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
@@ -200,17 +218,21 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, 
 		}
 	}
 
-	var resumeAfter int64
-	if int32(len(rows)) >= rowLimit {
-		resumeAfter = rows[len(rows)-1]
-		slog.Warn("thumbnail_reconcile: seek tiles candidate window is full; the next pass resumes from resume_after",
-			"row_limit", rowLimit, "last_recording_id", resumeAfter)
-	}
-	w.seekTilesResumeAfter.Store(resumeAfter)
-
-	if len(rows) > 0 || failed > 0 {
-		slog.Info("thumbnail_reconcile: seek tiles pass complete",
-			"candidates", len(rows), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+	if targetID == nil {
+		var resumeAfter int64
+		if int32(len(rows)) >= rowLimit {
+			resumeAfter = rows[len(rows)-1]
+			slog.Warn("thumbnail_reconcile: seek tiles candidate window is full; the next pass resumes from resume_after",
+				"row_limit", rowLimit, "last_recording_id", resumeAfter)
+		}
+		w.seekTilesResumeAfter.Store(resumeAfter)
+		if len(rows) > 0 || failed > 0 {
+			slog.Info("thumbnail_reconcile: seek tiles pass complete",
+				"candidates", len(rows), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+		}
+	} else if len(rows) > 0 || failed > 0 {
+		slog.Info("thumbnail_reconcile: targeted seek tiles pass complete",
+			"recording_id", *targetID, "candidates", len(rows), "failed", failed)
 	}
 	return failed
 }

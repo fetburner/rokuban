@@ -31,7 +31,7 @@ func TestJobArgsContract(t *testing.T) {
 		{name: "reconcile_pass", args: ReconcilePassArgs{Site: "tokyo"}, kind: "reconcile_pass", queue: "reconciler_tokyo", byQueue: true},
 		{name: "record_sweep", args: RecordSweepArgs{Site: "tokyo"}, kind: "record_sweep", queue: "watcher_tokyo", byQueue: true},
 		{name: "encode", args: EncodeJobArgs{RecordingID: 1, Profile: "mobile"}, kind: "encode", queue: "encode"},
-		{name: "encode_enqueue_hint", args: EncodeEnqueueHintArgs{RecordingID: 1}, kind: "encode_enqueue_hint", queue: "encode"},
+		{name: "encode_rebuild", args: EncodeRebuildArgs{RecordingID: 1, Profile: "cut"}, kind: "encode_rebuild", queue: "encode"},
 		{name: "thumbnail", args: ThumbnailJobArgs{RecordingID: 1}, kind: "thumbnail", queue: "thumbnail"},
 		{name: "thumbnail_reconcile", args: ThumbnailReconcileArgs{}, kind: "thumbnail_reconcile", queue: "thumbnail"},
 		{name: "encode_reconcile", args: EncodeReconcileArgs{}, kind: "encode_reconcile", queue: "encode"},

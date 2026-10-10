@@ -156,28 +156,6 @@ func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// EncodeEnqueueHintArgs は事後追加されたエンコードプロファイルを反映する
-// ヒントジョブの引数。api がヒント経由にしているのは、実行（不足分の encode
-// ジョブ投入）を常に worker ロールの中で完結させ、api が worker の実行ロジックを
-// 直接呼ぶ経路を増やさないため（RulerPassArgs と同じ結合パターン）。
-type EncodeEnqueueHintArgs struct {
-	RecordingID int64 `json:"recording_id"`
-}
-
-// Kind は River ジョブの種別名を返す。
-func (EncodeEnqueueHintArgs) Kind() string { return "encode_enqueue_hint" }
-
-// InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
-func (EncodeEnqueueHintArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: EncodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
-}
-
 // ThumbnailJobArgs は thumbnail ジョブの引数。
 type ThumbnailJobArgs struct {
 	RecordingID int64 `json:"recording_id"`
@@ -228,11 +206,11 @@ func (SeekTilesJobArgs) InsertOpts() river.InsertOpts {
 	}
 }
 
-// ThumbnailReconcileArgs は thumbnail の desired−observed 定期 reconcile ジョブの
-// 引数。thumbnail キューは実ジョブと共有するが、River の pending 一意性で定期
-// パス同士が重ならないようにする。seek_tiles のギャップもこのパスが埋める
-// （poster と違って一覧の表示を待たせる仕事ではないので、投入口を分けない）。
-type ThumbnailReconcileArgs struct{}
+// ThumbnailReconcileArgs は thumbnail の desired−observed reconcile ジョブの引数。
+// RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
+type ThumbnailReconcileArgs struct {
+	RecordingID int64 `json:"recording_id,omitempty"`
+}
 
 // Kind は River ジョブの種別名を返す。
 func (ThumbnailReconcileArgs) Kind() string { return "thumbnail_reconcile" }
@@ -333,8 +311,11 @@ func (LabelRuleReconcileArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{Queue: CleanupQueue}
 }
 
-// EncodeReconcileArgs は encode の desired−observed 定期 reconcile ジョブの引数。
-type EncodeReconcileArgs struct{}
+// EncodeReconcileArgs は encode の desired−observed reconcile ジョブの引数。
+// RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
+type EncodeReconcileArgs struct {
+	RecordingID int64 `json:"recording_id,omitempty"`
+}
 
 // Kind は River ジョブの種別名を返す。
 func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
@@ -346,6 +327,28 @@ func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 // このパスは走らない。許容する: エンコードが詰まっている系では今すぐ投入しても
 // 実行されないので、検出が遅れても失うものが無い。
 func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
+	return river.InsertOpts{
+		Queue: EncodeQueue,
+		UniqueOpts: river.UniqueOpts{
+			ByArgs:  true,
+			ByState: pendingJobStates,
+		},
+	}
+}
+
+// EncodeRebuildArgs は利用者が明示した再エンコード命令の引数。
+// reconcile は不足分だけを導出するため、既存の cut 版を置き換える命令は別種にする。
+type EncodeRebuildArgs struct {
+	RecordingID int64  `json:"recording_id"`
+	Profile     string `json:"profile"`
+}
+
+// Kind は River ジョブの種別名を返す。
+func (EncodeRebuildArgs) Kind() string { return "encode_rebuild" }
+
+// InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
+// 同じ録画・プロファイルへの待機中または実行中の要求を合流させる。
+func (EncodeRebuildArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
 		Queue: EncodeQueue,
 		UniqueOpts: river.UniqueOpts{
@@ -430,7 +433,6 @@ var (
 	_ river.JobArgsWithInsertOpts = ReconcilePassArgs{}
 	_ river.JobArgsWithInsertOpts = RecordSweepArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeJobArgs{}
-	_ river.JobArgsWithInsertOpts = EncodeEnqueueHintArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailJobArgs{}
 	_ river.JobArgsWithInsertOpts = SeekTilesJobArgs{}
 	_ river.JobArgsWithInsertOpts = ThumbnailReconcileArgs{}
@@ -438,6 +440,7 @@ var (
 	_ river.JobArgsWithInsertOpts = CMDetectReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CMLogoCandidateJobArgs{}
 	_ river.JobArgsWithInsertOpts = EncodeReconcileArgs{}
+	_ river.JobArgsWithInsertOpts = EncodeRebuildArgs{}
 	_ river.JobArgsWithInsertOpts = LabelRuleReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = DeleteReconcileArgs{}
 	_ river.JobArgsWithInsertOpts = CatalogExportArgs{}

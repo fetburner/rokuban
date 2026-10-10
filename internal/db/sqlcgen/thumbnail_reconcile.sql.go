@@ -15,6 +15,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > $1::bigint
+  AND ($2::bigint IS NULL OR o.recording_id = $2::bigint)
   AND o.kind = 'original'
   AND o.state = 'active'
   AND r.deleted_at IS NULL
@@ -29,11 +30,12 @@ WHERE o.recording_id > $1::bigint
     WHERE m.media_asset_id = o.id
   )
 ORDER BY o.recording_id
-LIMIT $2
+LIMIT $3
 `
 
 type ListMissingSeekTilesRecordingsParams struct {
 	AfterRecordingID int64
+	RecordingID      *int64
 	RowLimit         int32
 }
 
@@ -41,7 +43,7 @@ type ListMissingSeekTilesRecordingsParams struct {
 // 定期的に埋めるための候補。poster と同じ形（同じ窓・同じ missing_media_assets の
 // 除外）だが、再開位置は呼び出し側が種類ごとに別に持つ。
 func (q *Queries) ListMissingSeekTilesRecordings(ctx context.Context, arg ListMissingSeekTilesRecordingsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings, arg.AfterRecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingSeekTilesRecordings, arg.AfterRecordingID, arg.RecordingID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +67,7 @@ SELECT o.recording_id
 FROM media_assets o
 JOIN recordings r ON r.id = o.recording_id
 WHERE o.recording_id > $1::bigint
+  AND ($2::bigint IS NULL OR o.recording_id = $2::bigint)
   AND o.kind = 'original'
   AND o.state = 'active'
   AND r.deleted_at IS NULL
@@ -79,23 +82,23 @@ WHERE o.recording_id > $1::bigint
     WHERE m.media_asset_id = o.id
   )
 ORDER BY o.recording_id
-LIMIT $2
+LIMIT $3
 `
 
 type ListMissingThumbnailRecordingsParams struct {
 	AfterRecordingID int64
+	RecordingID      *int64
 	RowLimit         int32
 }
 
 // thumbnail の desired（active original）− observed（active thumbnail）を
-// 定期的に埋めるための候補。手動の EnqueueMissingThumbnails とは別のクエリに
-// して、明示的な復旧投入が missing_media_assets のマーカーを迂回できるようにする。
+// 埋める候補。全件パスと recording_id を絞った即時パスが同じ述語を使う。
 //
 // missing_media_assets に載っている原本は delete_reconcile が実体無しを確認した
 // ものなので、ファイルが戻るまで定期パスからは除外する。マーカーが stale に
 // なった場合は delete_reconcile が消し、次のパスで再び候補になる。
 func (q *Queries) ListMissingThumbnailRecordings(ctx context.Context, arg ListMissingThumbnailRecordingsParams) ([]int64, error) {
-	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings, arg.AfterRecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listMissingThumbnailRecordings, arg.AfterRecordingID, arg.RecordingID, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -181,6 +184,7 @@ WITH planning AS (
     LEFT JOIN media_asset_thumbnail_seeks thumbnail_seek
       ON thumbnail_seek.media_asset_id = thumbnail.id
     WHERE r.purged_at IS NULL
+      AND ($3::bigint IS NULL OR r.id = $3::bigint)
 )
 SELECT recording_id, trashed, program_duration_ms, detected, owned, cm_ranges, user_spans, original_media_asset_id, original_rel_path, encoded_assets, thumbnail_media_asset_id, thumbnail_rel_path, seek_ms
 FROM planning
@@ -195,6 +199,7 @@ LIMIT $2
 type ListThumbnailReselectCandidatesParams struct {
 	AfterRecordingID int64
 	RowLimit         int32
+	RecordingID      *int64
 }
 
 type ListThumbnailReselectCandidatesRow struct {
@@ -221,7 +226,7 @@ type ListThumbnailReselectCandidatesRow struct {
 // 入力は active かつ missing_media_assets に無いものだけを返す。cut 版の尺と
 // UnmapMs 用区間は media_asset_cuts.keep_ranges の凍結値から作り、ffprobe は呼ばない。
 func (q *Queries) ListThumbnailReselectCandidates(ctx context.Context, arg ListThumbnailReselectCandidatesParams) ([]ListThumbnailReselectCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates, arg.AfterRecordingID, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listThumbnailReselectCandidates, arg.AfterRecordingID, arg.RowLimit, arg.RecordingID)
 	if err != nil {
 		return nil, err
 	}

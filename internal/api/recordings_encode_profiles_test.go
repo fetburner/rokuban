@@ -17,7 +17,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertest"
+	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -144,14 +148,54 @@ func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []st
 	return nil
 }
 
-func countEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) int {
+func countEncodeReconcileJobs(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
-	return len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_enqueue_hint"))
+	return len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
 }
 
-func clearEncodeEnqueueHintJobs(t *testing.T, pool *pgxpool.Pool) {
+func clearEncodeReconcileJobs(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	testutil.MustDeleteRiverJobsOfKind(t, context.Background(), pool, "encode_enqueue_hint")
+	testutil.MustDeleteRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile")
+}
+
+func TestEncodeJobsInsertInCallerTransaction(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	h := &Server{river: riverClient}
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		kind   string
+		insert func(pgx.Tx) error
+	}{
+		{name: "reconcile", kind: "encode_reconcile", insert: func(tx pgx.Tx) error {
+			return h.insertEncodeReconcile(ctx, tx, 42)
+		}},
+		{name: "rebuild", kind: "encode_rebuild", insert: func(tx pgx.Tx) error {
+			return h.insertEncodeRebuild(ctx, tx, 42, "cut")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("beginning transaction: %v", err)
+			}
+			if err := tc.insert(tx); err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("inserting job: %v", err)
+			}
+			if err := tx.Rollback(ctx); err != nil {
+				t.Fatalf("rolling back transaction: %v", err)
+			}
+			if got := len(testutil.MustListRiverJobsOfKind(t, ctx, pool, tc.kind)); got != 0 {
+				t.Errorf("%s jobs after rollback = %d, want 0", tc.kind, got)
+			}
+		})
+	}
 }
 
 func writePolicyTestFile(t *testing.T, mediaDir, relPath string) string {
@@ -170,7 +214,7 @@ const wantKeepOriginal409Message = "cannot set keepOriginal=until_encoded withou
 
 // always と until_encoded の両方向で keep_original だけが変わり、desired の
 // encode_profiles は変わらないことを確認する。同じ値への PATCH は 204 で、
-// 保持ポリシー変更が encode_enqueue_hint を投入しないことも確認する（issue #697）。
+// 保持ポリシー変更が encode_reconcile を投入しないことも確認する（issue #697）。
 func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	riverClient, err := worker.NewInsertOnlyClient(pool)
@@ -189,8 +233,8 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	seedIngested(t, pool, id, 1000, nil)
 	setRecordingEncodeProfiles(t, pool, id, []string{"h264", "h265"})
 
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
-		t.Fatalf("initial encode_enqueue_hint job count = %d, want 0", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 0 {
+		t.Fatalf("initial encode_reconcile job count = %d, want 0", n)
 	}
 
 	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "until_encoded")
@@ -203,8 +247,8 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
 		t.Errorf("encode_profiles after until_encoded = %v, want [h264 h265]", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
-		t.Errorf("encode_enqueue_hint job count after until_encoded = %d, want 0", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 0 {
+		t.Errorf("encode_reconcile job count after until_encoded = %d, want 0", n)
 	}
 
 	// 同じ値への変更は冪等に成功する。
@@ -224,8 +268,8 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
 		t.Errorf("encode_profiles after always = %v, want [h264 h265]", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
-		t.Errorf("encode_enqueue_hint job count after policy changes = %d, want 0", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 0 {
+		t.Errorf("encode_reconcile job count after policy changes = %d, want 0", n)
 	}
 
 	resp = patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, id), "always")
@@ -494,7 +538,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 
 // 予約が無い録画（mirakc に直接起こされた手動録画などを模す）でも事後追加が
 // 成功し、recording_encode_policy.encode_profiles に追加専用（union + dedup）で反映され、
-// encode_enqueue_hint ヒントジョブが同一トランザクションで投入されること
+// encode_reconcile ヒントジョブが同一トランザクションで投入されること
 // （issue #133 の受け入れ 1 個目）。
 func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -516,8 +560,8 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
 		t.Fatalf("initial encode_profiles = %v, want empty", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
-		t.Fatalf("initial encode_enqueue_hint job count = %d, want 0", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 0 {
+		t.Fatalf("initial encode_reconcile job count = %d, want 0", n)
 	}
 
 	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
@@ -528,10 +572,10 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
-		t.Fatalf("encode_enqueue_hint job count = %d, want 1", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 1 {
+		t.Fatalf("encode_reconcile job count = %d, want 1", n)
 	}
-	clearEncodeEnqueueHintJobs(t, pool)
+	clearEncodeReconcileJobs(t, pool)
 
 	// 追加専用であること: 2 回目は h265 だけを指定する（h264 は含めない）。
 	// 全置換だったら結果が [h265] になってしまうところを、union なら
@@ -543,8 +587,8 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264", "h265"}) {
 		t.Errorf("encode_profiles after second add = %v, want [h264 h265]", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
-		t.Fatalf("encode_enqueue_hint job count after second add = %d, want 1", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 1 {
+		t.Fatalf("encode_reconcile job count after second add = %d, want 1", n)
 	}
 }
 
@@ -622,8 +666,8 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
-		t.Fatalf("encode_enqueue_hint job count = %d, want 1", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 1 {
+		t.Fatalf("encode_reconcile job count = %d, want 1", n)
 	}
 }
 
@@ -686,8 +730,8 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	if keepOriginal != "always" {
 		t.Errorf("keep_original = %q, want always (safe default for freshly-created policy row)", keepOriginal)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
-		t.Fatalf("encode_enqueue_hint job count = %d, want 1", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 1 {
+		t.Fatalf("encode_reconcile job count = %d, want 1", n)
 	}
 }
 
@@ -713,7 +757,7 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	if resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("initial status = %d, want 204", resp.StatusCode)
 	}
-	clearEncodeEnqueueHintJobs(t, pool)
+	clearEncodeReconcileJobs(t, pool)
 	for _, row := range []struct {
 		profile, state string
 	}{{"h264", "failed"}, {"h265", "running"}, {"av1", "failed"}} {
@@ -746,8 +790,8 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	if want := []string{"av1", "h265"}; !slices.Equal(left, want) {
 		t.Errorf("remaining attempt rows = %v, want %v (failed h264 deleted; running h265 and unrequested av1 kept)", left, want)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
-		t.Errorf("encode_enqueue_hint job count = %d, want 1 even when profile was already desired", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 1 {
+		t.Errorf("encode_reconcile job count = %d, want 1 even when profile was already desired", n)
 	}
 }
 
@@ -771,8 +815,8 @@ func decodeErrorResponse(t *testing.T, resp *http.Response) ErrorResponse {
 
 // 原本が未 ingest（GetActiveOriginalMediaAsset が ErrNoRows）の録画への事後追加は
 // 409 を返し、encode_profiles を変更せず、ジョブも投入しないこと（issue #133
-// の受け入れ 3 個目 --- EnqueueMissingEncodes 単体はこのケースで黙って no-op に
-// なるため、api 層で明示的に検査していることの固定）。
+// の受け入れ 3 個目 --- 対象 reconcile が候補なしで終わっても成功扱いに
+// ならないよう api 層が明示的に検査していることの固定）。
 //
 // メッセージ本文も固定する（issue #271）。「未 ingest」は削除済みでも
 // deleting でもないので、旧文言 "deleted or being deleted" はこのケースに
@@ -803,8 +847,8 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	if got := getRecordingEncodeProfiles(t, pool, id); len(got) != 0 {
 		t.Errorf("encode_profiles after 409 = %v, want unchanged (empty)", got)
 	}
-	if n := countEncodeEnqueueHintJobs(t, pool); n != 0 {
-		t.Fatalf("encode_enqueue_hint job count after 409 = %d, want 0", n)
+	if n := countEncodeReconcileJobs(t, pool); n != 0 {
+		t.Fatalf("encode_reconcile job count after 409 = %d, want 0", n)
 	}
 }
 
@@ -952,7 +996,9 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	workers := worker.NewWorkers(&worker.Deps{Pool: pool})
+	workers := worker.NewWorkers(&worker.Deps{Pool: pool, Encode: config.EncodeConfig{Profiles: []config.EncodeProfile{{
+		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+	}}}})
 	riverClient, err := worker.NewClient(pool, workers, worker.ClientConfig{})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -992,11 +1038,11 @@ waitHint:
 	for {
 		select {
 		case event := <-subscribeCh:
-			if event.Job.Kind == "encode_enqueue_hint" {
+			if event.Job.Kind == "encode_reconcile" {
 				break waitHint
 			}
 		case <-deadline:
-			t.Fatal("timed out waiting for encode_enqueue_hint completion")
+			t.Fatal("timed out waiting for encode_reconcile completion")
 		}
 	}
 
@@ -1017,5 +1063,88 @@ waitHint:
 
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
+	}
+}
+
+// Adding another profile leaves an active stale cut complete. Only an explicit
+// encode_rebuild request replaces that asset.
+func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{
+		{Name: "cut", Cut: true},
+		{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+	}}
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: profiles.ProfileNames(),
+		CutProfileNames:    profiles.CutProfileNames(),
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "古い cut に別プロファイルを追加", time.Now().Truncate(time.Second), "finished", 307)
+	originalID := seedIngested(t, pool, id, 1000, nil)
+	setRecordingEncodeProfiles(t, pool, id, []string{"cut"})
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatalf("adopting chapters: %v", err)
+	}
+	insertChapterSpan(t, pool, id, chapters.Span{StartMs: 600000, EndMs: 900000, Label: "CM", Cut: true})
+	cutProfile := "cut"
+	cutAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+		RecordingID: id, Kind: db.AssetKindEncoded, Profile: &cutProfile, RelPath: "test/stale-cut.mp4", SizeBytes: 50,
+	})
+	if err != nil {
+		t.Fatalf("seeding cut asset: %v", err)
+	}
+	setFrozenCutsText(t, pool, cutAssetID, []chapters.Range{{StartMs: 0, EndMs: 600000}, {StartMs: 900000, EndMs: 1800000}})
+	insertChapterSpan(t, pool, id, chapters.Span{StartMs: 1200000, EndMs: 1300000, Label: "CM2", Cut: true})
+
+	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	targetedPasses := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_reconcile", func(args jobs.EncodeReconcileArgs) bool {
+		return args.RecordingID == id
+	})
+	if targetedPasses != 1 {
+		t.Fatalf("targeted encode_reconcile job count = %d, want 1", targetedPasses)
+	}
+
+	job := &river.Job[jobs.EncodeReconcileArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 26},
+		Args:   jobs.EncodeReconcileArgs{RecordingID: id},
+	}
+	workerCtx := rivertest.WorkContext(ctx, riverClient)
+	if err := (&worker.EncodeReconcileWorker{Pool: pool, Profiles: profiles}).Work(workerCtx, job); err != nil {
+		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
+	}
+	for profile, want := range map[string]int{"cut": 0, "h264": 1} {
+		got := 0
+		for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "encode") {
+			args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
+			switch row.State {
+			case rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled:
+				if args.RecordingID == id && args.Profile == profile {
+					got++
+				}
+			}
+		}
+		if got != want {
+			t.Errorf("pending %s encode jobs = %d, want %d", profile, got, want)
+		}
+	}
+	var activeOriginals int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets
+		WHERE id = $1 AND recording_id = $2 AND kind = 'original' AND state = 'active'`, originalID, id).Scan(&activeOriginals); err != nil {
+		t.Fatalf("checking active original: %v", err)
+	}
+	if activeOriginals != 1 {
+		t.Errorf("active original rows = %d, want 1", activeOriginals)
 	}
 }

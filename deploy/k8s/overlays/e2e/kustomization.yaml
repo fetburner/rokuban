@@ -78,7 +78,7 @@ patches:
         value: 10
   # **判定 3 は「実行中の Job」を 1 つに絞れることを前提にしている**
   # （`checks/03` は active な Job の 1 つ目を追いかける）。base の encode は
-  # `encode_reconcile` / `encode_enqueue_hint` が同じキューに載るぶんの余裕として
+  # `encode_reconcile` / `encode_rebuild` が同じキューに載るぶんの余裕として
   # 2 本まで許しているので、その 2 本目が窓の中で起きると、判定が**短い方の
   # Job を追いかけて**「窓の中で完走した」= TODO に化ける。ここでは 1 本に絞る。
   - target:

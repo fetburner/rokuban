@@ -226,11 +226,10 @@ WHERE id = sqlc.arg('id');
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES (sqlc.arg('recording_id'), sqlc.arg('keep_original'), sqlc.arg('encode_profiles')::text[], sqlc.arg('cm_detect'));
 
--- EnqueueMissingEncodes（internal/worker/encode.go）が desired
+-- POST /api/recordings/{id}/encode-profiles が現在の desired
 -- （recording_encode_policy.encode_profiles）を読むためのクエリ。行が無い
--- （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「エンコード対象の
--- プロファイルが無い」と同じに扱う（keep_original='always' と同じ扱い。
--- docs/storage.md §6）。
+-- （未凍結）録画は pgx.ErrNoRows になるので、呼び出し側は「既存プロファイルなし」
+-- として扱う。AppendRecordingEncodeProfiles が既定値 'always' で行を作る。
 -- name: GetRecordingEncodePolicy :one
 SELECT keep_original, encode_profiles, cm_detect FROM recording_encode_policy WHERE recording_id = $1;
 

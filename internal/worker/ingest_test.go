@@ -28,6 +28,7 @@ import (
 	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -3104,11 +3105,75 @@ func insertTestRecordingForReservation(t *testing.T, pool *pgxpool.Pool, program
 	return id
 }
 
-// riverWorkContext は resolveAndSnapshotEncodePolicy の後段（enqueueMissingEncodesFromContext /
-// EnqueueThumbnailIfNeeded）が実際にジョブを投入するよう、Work() 実行中と同じ
-// river.Client をコンテキストに載せる。river.ClientFromContextSafely はジョブ実行中の
-// コンテキストからしか取れないため、素の context.Background() だとヒント投入が
-// 静かにスキップされ、「encode ジョブが投入される」を確認できない。
+func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "already-committed/stale-cut.m2ts",
+		[]string{"cut"}, []byte("payload"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatalf("adopting chapters: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatalf("inserting initial chapter span: %v", err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "already-committed/stale-cut.g1.mp4")
+	frozen, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil {
+		t.Fatalf("deriving initial keep ranges: %v", err)
+	}
+	if err := setFrozenCuts(t, pool, assetID, frozen); err != nil {
+		t.Fatalf("seeding frozen ranges: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(1200000, 1300000), 'CM2', true)`, recordingID); err != nil {
+		t.Fatalf("editing chapter spans: %v", err)
+	}
+	current, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil {
+		t.Fatalf("deriving edited keep ranges: %v", err)
+	}
+	if slices.Equal(frozen, current) {
+		t.Fatal("test setup did not make the active cut asset stale")
+	}
+
+	deleteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
+	}))
+	defer deleteServer.Close()
+
+	w := &IngestWorker{Pool: pool}
+	w.handleAlreadyCommittedIngest(riverWorkContext(t, pool), mirakc.NewClient(deleteServer.URL, nil),
+		jobs.IngestJobArgs{Site: "default", RecordID: "already-committed"}, recordingID, slog.Default())
+	if got := countEncodeJobs(t, pool, recordingID, "cut"); got != 0 {
+		t.Fatalf("cut encode jobs after already-committed ingest = %d, want 0", got)
+	}
+	targetedPasses := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID)
+	if targetedPasses != 1 {
+		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", targetedPasses)
+	}
+	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{
+		Profiles: []config.EncodeProfile{cutFFmpegProfile()},
+	}}, EncodeReconcileArgs{RecordingID: recordingID})
+	if got := countEncodeJobs(t, pool, recordingID, "cut"); got != 0 {
+		t.Errorf("cut encode jobs after targeted pass = %d, want 0", got)
+	}
+}
+
+// riverWorkContext は resolveAndSnapshotEncodePolicy の後段（対象録画の reconcile 投入）が
+// 実際にジョブを投入するよう、Work() 実行中と同じ river.Client をコンテキストに載せる。
+// river.ClientFromContextSafely はジョブ実行中のコンテキストからしか取れないため、
+// 素の context.Background() だと対象 reconcile が静かにスキップされ、「encode ジョブが
+// 投入される」を確認できない。
 func riverWorkContext(t *testing.T, pool *pgxpool.Pool) context.Context {
 	t.Helper()
 	client, err := NewInsertOnlyClient(pool)
@@ -3185,7 +3250,8 @@ func countEncodeJobsForRecording(t *testing.T, pool *pgxpool.Pool, recordingID i
 
 // TestIngestWorker_SnapshotsEncodePolicyFromRuleBase は issue #103 の受け入れ基準
 // 「ルールに encodeProfiles を設定して録画 → ingest 完了後に
-// recording_encode_policy.encode_profiles が一致し、encode ジョブが投入される」を確認する。
+// recording_encode_policy.encode_profiles が一致し、対象 reconcile が投入されて
+// reconcile 実行後に encode ジョブが投入される」を確認する。
 func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -3227,6 +3293,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265]", profiles)
 	}
+	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
+	}
+	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
+		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
@@ -3300,6 +3371,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (override should win over base's [h264])", profiles)
 	}
+	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
+	}
+	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264", "h265")},
+		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
@@ -3623,6 +3699,11 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (予約の再実体化を跨いで解決できているはず)", profiles)
 	}
+	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
+	}
+	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
+		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
 	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)

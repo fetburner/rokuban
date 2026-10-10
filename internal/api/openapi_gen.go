@@ -1394,8 +1394,8 @@ type EncodeJobStatus struct {
 	//   確認していない（`recording_chapter_ownership` の行が無い）。
 	//   **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
 	//   `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
-	//   表す。投入側（`EnqueueMissingEncodes` /
-	//   `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+	//   表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)
+	//   がこの条件で候補から外しているので、
 	//   確認するまでこの状態のままになる。確認後に次の投入パスが拾う
 	// - `running`: いま ffmpeg が走っている
 	// - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
@@ -1428,8 +1428,8 @@ type EncodeJobStatus struct {
 //     確認していない（`recording_chapter_ownership` の行が無い）。
 //     **`queued` とは別の状態**である --- `queued` は「ジョブが来る」、
 //     `awaiting_review` は「ユーザーが確認するまでジョブは来ない」を
-//     表す。投入側（`EnqueueMissingEncodes` /
-//     `ListMissingEncodeProfiles`）がこの条件で候補から外しているので、
+//     表す。encode_reconcile の候補 query (`ListMissingEncodeProfiles`)
+//     がこの条件で候補から外しているので、
 //     確認するまでこの状態のままになる。確認後に次の投入パスが拾う
 //   - `running`: いま ffmpeg が走っている
 //   - `failed`: 直前の試行が失敗した。**`failed` は「二度と来ない」の
