@@ -34,6 +34,27 @@ func (q *Queries) CreateRecordingEncodeAttemptRunning(ctx context.Context, arg C
 	return result.RowsAffected(), nil
 }
 
+const deleteFailedRecordingEncodeAttempts = `-- name: DeleteFailedRecordingEncodeAttempts :execrows
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = ANY($2::text[])
+  AND state = 'failed'
+`
+
+type DeleteFailedRecordingEncodeAttemptsParams struct {
+	RecordingID int64
+	Profiles    []string
+}
+
+// 利用者の再要求で、指定プロファイルの failed 行を消して試行予算を戻す。
+// running の行は生きた試行の fencing token なので消さない。
+func (q *Queries) DeleteFailedRecordingEncodeAttempts(ctx context.Context, arg DeleteFailedRecordingEncodeAttemptsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteFailedRecordingEncodeAttempts, arg.RecordingID, arg.Profiles)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteRecordingEncodeAttemptForAttempt = `-- name: DeleteRecordingEncodeAttemptForAttempt :execrows
 DELETE FROM recording_encode_attempts
 WHERE recording_id = $1 AND profile = $2

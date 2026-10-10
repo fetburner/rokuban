@@ -480,6 +480,51 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 	return id
 }
 
+// 同じ job の前の試行（プロセス死）が残した scratch は次の試行の開始時に消える。
+// 別 job（ID が前方一致するだけのもの）と encode 以外の scratch は消さない。
+func TestEncodeWorker_RemovesStaleScratchOfSameJob(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ffmpegPath := installFakeFFmpeg(t)
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/stale.m2ts", []string{"h264"}, []byte("payload-0123456789"))
+	mk := func(rel string) string {
+		dir := filepath.Join(scratchDir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	stale := mk("encode/7-3-abc")
+	otherJob := mk("encode/70-1-abc")
+	thumbnail := mk("thumbnail/7-1-abc")
+
+	w := &EncodeWorker{
+		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
+		Profiles: config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{{
+			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+		}}},
+	}
+	job := &river.Job[EncodeJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 7},
+		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
+	}
+	if err := w.Work(context.Background(), job); err != nil {
+		t.Fatalf("Work() = %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale scratch of the same job still exists (stat err = %v)", err)
+	}
+	for _, keep := range []string{otherJob, thumbnail} {
+		if _, err := os.Stat(keep); err != nil {
+			t.Errorf("%s must be kept: %v", keep, err)
+		}
+	}
+}
+
 func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

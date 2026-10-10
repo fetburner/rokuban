@@ -382,9 +382,13 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 		if attempt < 25 && err == nil {
 			t.Fatalf("Work at domain attempt %d succeeded; want retryable failure", attempt)
 		}
-		if attempt == 25 && err != nil {
-			t.Fatalf("Work at domain attempt 25 = %v, want terminal success after recording failure", err)
+		if attempt == 25 && !isJobCancel(err) {
+			t.Fatalf("Work at domain attempt 25 = %v, want river.JobCancel after recording failure", err)
 		}
+	}
+	// 上限到達後の Work は runEncode の前に JobCancel を返す。
+	if err := w.Work(context.Background(), job); !isJobCancel(err) {
+		t.Fatalf("Work after the domain limit = %v, want river.JobCancel", err)
 	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "missing"); !ok || state != "failed" {
 		t.Fatalf("state at domain limit = %q, ok=%v, want failed", state, ok)
@@ -392,6 +396,11 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	if count, ok := encodeAttemptCount(t, pool, recordingID, "missing"); !ok || count != 25 {
 		t.Errorf("attempt_count at domain limit = %d, ok=%v, want 25", count, ok)
 	}
+}
+
+func isJobCancel(err error) bool {
+	var cancel *rivertype.JobCancelError
+	return errors.As(err, &cancel)
 }
 
 func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
@@ -466,25 +475,76 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shortArgs.Timeout != 20*time.Minute {
-		t.Fatalf("queued timeout for short recording = %s, want 20m (5m recording × rate 4)", shortArgs.Timeout)
+	if shortArgs.Timeout != time.Hour {
+		t.Fatalf("queued timeout for short recording = %s, want 1h floor (5m recording × rate 4 = 20m)", shortArgs.Timeout)
 	}
-	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: shortArgs}); got != 20*time.Minute {
-		t.Errorf("Timeout() for short recording = %s, want queued 20m", got)
+	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: shortArgs}); got != time.Hour {
+		t.Errorf("Timeout() for short recording = %s, want queued 1h", got)
 	}
 	legacy := &river.Job[EncodeJobArgs]{Args: EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}}
-	if got := worker.Timeout(legacy); got != time.Hour {
-		t.Errorf("Timeout() for old args = %s, want 1h", got)
+	if got := worker.Timeout(legacy); got != 12*time.Hour {
+		t.Errorf("Timeout() for old args = %s, want 12h", got)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET ended_at = NULL WHERE id = $1`, recordingID); err != nil {
+	// started_at / ended_at が NULL（ライブラリ取り込み）なら番組長（既定 30 分）で計算する。
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	missingEnd, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
+	fromProgram, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missingEnd.Timeout != time.Hour {
-		t.Errorf("queued timeout without ended_at = %s, want minimum 1h", missingEnd.Timeout)
+	if fromProgram.Timeout != 270*time.Minute {
+		t.Errorf("queued timeout from program_duration_ms = %s, want 4h30m (3h × 1.5)", fromProgram.Timeout)
+	}
+	// started_at == ended_at（rescue 再スキャン）でも番組長を使う。
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $2 WHERE id = $1`, recordingID, startedAt); err != nil {
+		t.Fatal(err)
+	}
+	zeroLen, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zeroLen.Timeout != 270*time.Minute {
+		t.Errorf("queued timeout with started_at == ended_at = %s, want 4h30m", zeroLen.Timeout)
+	}
+	// 実尺も番組長も無ければ 12 時間。
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 0 WHERE id = $1`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	unknown, err := newEncodeJobArgs(ctx, sqlcgen.New(pool), recordingID, "h264", profiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.Timeout != 12*time.Hour {
+		t.Errorf("queued timeout with unknown duration = %s, want 12h", unknown.Timeout)
+	}
+}
+
+// 上限到達後の POST encode-profiles 相当（failed 行の削除）で、次の Work が count 1 から走る。
+func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/reset-after-limit.m2ts", nil, []byte("data"))
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO recording_encode_attempts (recording_id, profile, state, error, attempted_at, attempt_count)
+		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	w := &EncodeWorker{Pool: pool, MediaDir: mediaDir}
+	if _, err := sqlcgen.New(pool).DeleteFailedRecordingEncodeAttempts(context.Background(), sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+		RecordingID: recordingID, Profiles: []string{"missing"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if start.terminal || start.count != 1 {
+		t.Fatalf("start after reset = %+v, want count 1 and not terminal", start)
 	}
 }
 

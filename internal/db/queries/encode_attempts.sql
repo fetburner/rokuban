@@ -38,3 +38,10 @@ WHERE recording_id = $1 AND profile = $2
 DELETE FROM recording_encode_attempts
 WHERE recording_id = $1 AND profile = $2
   AND state = 'running' AND attempt_count = $3;
+
+-- name: DeleteFailedRecordingEncodeAttempts :execrows
+-- 利用者の再要求で、指定プロファイルの failed 行を消して試行予算を戻す。
+-- running の行は生きた試行の fencing token なので消さない。
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = ANY(sqlc.arg('profiles')::text[])
+  AND state = 'failed';

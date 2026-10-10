@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -30,6 +31,20 @@ func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (st
 		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
 	}
 	return os.MkdirTemp(root, fmt.Sprintf("%d-%d-", jobID, attempt))
+}
+
+// removeStaleEncodeScratch は同じ job の前の試行が残した encode scratch を消す
+// （<scratch>/encode/<jobID>-*）。best-effort。
+func removeStaleEncodeScratch(scratchRoot string, jobID int64, log *slog.Logger) {
+	matches, err := filepath.Glob(filepath.Join(scratchRoot, "encode", strconv.FormatInt(jobID, 10)+"-*"))
+	if err != nil {
+		return
+	}
+	for _, m := range matches {
+		if err := os.RemoveAll(m); err != nil {
+			log.Warn("encode: stale scratch cleanup failed", "dir", m, "err", err)
+		}
+	}
 }
 
 // newJobScratchDir は job ID で固定した scratch directory を、前回の残骸を消してから作る。

@@ -237,7 +237,7 @@ VALUES ($1, $2, $3, $4);
 SELECT * FROM recordings WHERE id = $1;
 
 -- name: GetRecordingEncodeTimes :one
-SELECT started_at, ended_at FROM recordings WHERE id = $1;
+SELECT started_at, ended_at, program_duration_ms FROM recordings WHERE id = $1;
 
 -- 配信対象の原本を引く。ごみ箱に入った録画・削除済みアセットは配らない。
 -- name: GetOriginalMediaAssetForServing :one

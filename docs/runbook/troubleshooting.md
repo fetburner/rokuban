@@ -106,7 +106,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   切り詰める。全文は worker のログ）
 - `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた可能性が
   ある行。encode の JobRescuer は enqueue 時に args へ保存した締切後に同じ job を
-  再試行する。締切は実尺 × profile rate で、実尺が不明な場合と締切のない旧 args は 1 時間となる。
+  再試行する。締切は `max(1 時間, 実尺 × profile rate)` で、実尺が不明な場合と締切のない旧 args は 12 時間となる。
   `recording_encode_attempts.attempt_count` は次の worker 起動時に死亡した試行を数える。
   締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker の
   ログを確認する
@@ -114,6 +114,14 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   `config.encode.profiles` に戻すか、その録画の `recording_encode_policy` から
   外す（[schema/recordings.md](../schema/recordings.md) の
   `recording_encode_attempts` 節）
+
+### encode が上限に達して止まった
+
+`recording_encode_attempts` の `attempt_count` が 25 の `failed` 行は、ドメイン上限に達した印である。この行がある間、ジョブは `river.JobCancel` で cancelled になり、reconcile や再投入では動かない。
+
+1. `error` 列と worker のログで原因を特定して直す（profile 設定、ffmpeg、入力ファイルなど）。**原因を直す前に再要求しない。** 25 回分の失敗を繰り返すだけになる
+2. 直したら `POST /api/recordings/{id}/encode-profiles` に同じ profile を指定して再要求する。API は指定 profile の `failed` 行を消して試行回数を 1 から数え直し、ヒントジョブを投入する。既に desired にある profile でも同じ
+3. `running` の行は消えない。生きた試行の印なので、死んだ実行は締切後の JobRescuer が回収するのを待つ
 
 ### EPG 同期が一度しか走らない
 

@@ -699,6 +699,66 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	}
 }
 
+// 上限到達などで止まった encode は、利用者の再 POST で failed 行が消えて試行予算が戻る。
+// running は生きた試行の fencing token なので消さない。desired に既にある profile の
+// 再 POST でも同じで、ヒントも投入される。
+func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	router := NewRouter(RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264", "h265", "av1"},
+	})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	id := seedRecording(t, pool, "再要求", time.Now().Truncate(time.Second), "finished", 302)
+	seedIngested(t, pool, id, 1000, nil)
+	if resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264"}); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("initial status = %d, want 204", resp.StatusCode)
+	}
+	clearEncodeEnqueueHintJobs(t, pool)
+	for _, row := range []struct {
+		profile, state string
+	}{{"h264", "failed"}, {"h265", "running"}, {"av1", "failed"}} {
+		if _, err := pool.Exec(context.Background(),
+			`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_at, attempt_count)
+			 VALUES ($1, $2, $3, now(), 25)`, id, row.profile, row.state); err != nil {
+			t.Fatalf("seeding attempt row: %v", err)
+		}
+	}
+
+	// h264 は既に desired。h265 は running。av1 は要求に含めない。
+	resp := postEncodeProfiles(t, encodeProfilesURL(srv.URL, id), []string{"h264", "h265"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+	rows, err := pool.Query(context.Background(),
+		`SELECT profile FROM recording_encode_attempts WHERE recording_id = $1 ORDER BY profile`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var left []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, p)
+	}
+	if want := []string{"av1", "h265"}; !slices.Equal(left, want) {
+		t.Errorf("remaining attempt rows = %v, want %v (failed h264 deleted; running h265 and unrequested av1 kept)", left, want)
+	}
+	if n := countEncodeEnqueueHintJobs(t, pool); n != 1 {
+		t.Errorf("encode_enqueue_hint job count = %d, want 1 even when profile was already desired", n)
+	}
+}
+
 // wantEncodeProfiles409Message は #271 で確定させた 409 メッセージのリテラル。
 // 旧文言 "no encodable original media asset (deleted or being deleted); cannot
 // add encode profiles" は「未 ingest」（original 行自体が無いケース）を

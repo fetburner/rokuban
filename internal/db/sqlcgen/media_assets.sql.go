@@ -377,18 +377,19 @@ func (q *Queries) GetRecordingByID(ctx context.Context, id int64) (Recording, er
 }
 
 const getRecordingEncodeTimes = `-- name: GetRecordingEncodeTimes :one
-SELECT started_at, ended_at FROM recordings WHERE id = $1
+SELECT started_at, ended_at, program_duration_ms FROM recordings WHERE id = $1
 `
 
 type GetRecordingEncodeTimesRow struct {
-	StartedAt *time.Time
-	EndedAt   *time.Time
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	ProgramDurationMs int64
 }
 
 func (q *Queries) GetRecordingEncodeTimes(ctx context.Context, id int64) (GetRecordingEncodeTimesRow, error) {
 	row := q.db.QueryRow(ctx, getRecordingEncodeTimes, id)
 	var i GetRecordingEncodeTimesRow
-	err := row.Scan(&i.StartedAt, &i.EndedAt)
+	err := row.Scan(&i.StartedAt, &i.EndedAt, &i.ProgramDurationMs)
 	return i, err
 }
 

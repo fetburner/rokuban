@@ -145,7 +145,9 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 func (EncodeJobArgs) InsertOpts() river.InsertOpts {
 	return river.InsertOpts{
-		Queue:       EncodeQueue,
+		Queue: EncodeQueue,
+		// 停止による Canceled は River の attempt を消費するがドメインでは数えない。
+		// 26 > 25 は River が先に discard しない保証ではない（reconcile が新ジョブで回復する）。
 		MaxAttempts: 26,
 		UniqueOpts: river.UniqueOpts{
 			ByArgs:  true,

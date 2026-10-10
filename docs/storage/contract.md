@@ -131,7 +131,7 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 の試行が一時的に並走しうる。そのため:
 
 - scratch は**job ID と domain attempt ごと**に分ける。同じ job ID の再試行も
-  `<jobID>-<attempt>-<random>` の別ディレクトリを使う。各試行は JobRescuer の締切後に
+  `<jobID>-<attempt>-<random>` の別ディレクトリを使い、encode は新しい scratch を作る前に同じ job の `<jobID>-*` を消す（古い試行は fencing で公開できない）。各試行は JobRescuer の締切後に
   起動し、開始時に増えた attempt count を fencing token として公開時に照合する。
   古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
   ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる

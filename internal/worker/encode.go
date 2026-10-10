@@ -119,19 +119,30 @@ func probeEncodeDuration(
 	return probeDuration(probeCtx, ffprobe, inputPath, run)
 }
 
+// encodeUnknownDurationTimeout は実尺が取れないときと、締切を持たない旧 args の締切。
+// River の executor はこの値を ffmpeg の ctx 締切にそのまま使うので、短く見積もると
+// 長尺の encode が毎回締切超過で失敗する。誤った締切超過で失敗を積むより、
+// プロセス死の検知が遅れる方を選ぶ。
+const encodeUnknownDurationTimeout = 12 * time.Hour
+
+// encodeMinTimeout は実尺から計算する締切の下限。
+const encodeMinTimeout = time.Hour
+
 // Timeout は EncodeJobArgs に保存した rescue 締切を返す。
-// 旧 args に締切が無い場合は 1 時間を返し、JobRescuer の対象に残す。
+// 旧 args に締切が無い場合は encodeUnknownDurationTimeout を返す。
 func (w *EncodeWorker) Timeout(job *river.Job[jobs.EncodeJobArgs]) time.Duration {
 	if job.Args.Timeout > 0 {
 		return job.Args.Timeout
 	}
-	return time.Hour
+	return encodeUnknownDurationTimeout
 }
 
 // Work は encode ジョブを実行する。
 //
 // 停止による ctx キャンセルと snooze は試行に数えず、締切超過と通常の失敗は
-// recording_encode_attempts の回数に反映する。
+// recording_encode_attempts の回数に反映する。ドメイン上限に達したら
+// river.JobCancel を返し、River 上でも completed ではなく cancelled に見せる。
+// 解除は POST /api/recordings/{id}/encode-profiles（failed 行を消して予算を戻す）。
 func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
 	start, err := w.beginEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile)
 	if err != nil {
@@ -141,7 +152,7 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobAr
 		w.notifyEncodeFailure(ctx, job.Args, start.deadAttempt)
 	}
 	if start.terminal {
-		return nil
+		return river.JobCancel(errEncodeAttemptLimit)
 	}
 
 	err = w.runEncode(ctx, job, start.count)
@@ -159,7 +170,7 @@ func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobAr
 		if updated {
 			w.notifyEncodeFailure(ctx, job.Args, start.count)
 			if start.count >= encodeAttemptLimit {
-				return nil
+				return river.JobCancel(errors.Join(errEncodeAttemptLimit, err))
 			}
 		}
 		return err
@@ -240,6 +251,8 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
+	// プロセス死の残骸を回収する。古い試行は fencing で公開できないので消してよい。
+	removeStaleEncodeScratch(w.ScratchDir, job.ID, log)
 	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "encode", job.ID, int(attempt))
 	if err != nil {
 		return fmt.Errorf("creating encode scratch directory: %w", err)
@@ -1352,9 +1365,14 @@ func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64
 	if err != nil {
 		return jobs.EncodeJobArgs{}, fmt.Errorf("loading recording times: %w", err)
 	}
+	// 実尺は started_at / ended_at を優先し、取れなければ番組長で代用する
+	// （ライブラリ取り込みは時刻が NULL、rescue 再スキャンは started_at == ended_at）。
 	var duration time.Duration
-	if times.StartedAt != nil && times.EndedAt != nil && !times.EndedAt.Before(*times.StartedAt) {
+	if times.StartedAt != nil && times.EndedAt != nil {
 		duration = times.EndedAt.Sub(*times.StartedAt)
+	}
+	if duration <= 0 {
+		duration = time.Duration(times.ProgramDurationMs) * time.Millisecond
 	}
 	rate := config.DefaultEncodeProfileRate
 	if p, ok := profiles.Profile(profile); ok && p.Rate > 0 {
@@ -1367,22 +1385,20 @@ func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64
 	}, nil
 }
 
+// encodeJobTimeout は max(1h, 実尺 × rate)。実尺が不明（0 以下）なら
+// encodeUnknownDurationTimeout を返す。
 func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Duration {
-	if recordingDuration < 0 {
-		recordingDuration = 0
+	if recordingDuration <= 0 {
+		return encodeUnknownDurationTimeout
 	}
 	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
 		rate = config.DefaultEncodeProfileRate
 	}
 	calculated := float64(recordingDuration) * rate
-	maxDuration := time.Duration(1<<63 - 1)
-	if calculated >= float64(maxDuration) {
-		return maxDuration
+	if calculated >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
 	}
-	if calculated <= 0 {
-		return time.Hour
-	}
-	return time.Duration(math.Ceil(calculated))
+	return max(encodeMinTimeout, time.Duration(math.Ceil(calculated)))
 }
 
 // EnqueueMissingEncodes は desired（recording_encode_policy.encode_profiles。issue #159）− observed

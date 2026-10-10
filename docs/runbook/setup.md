@@ -37,7 +37,7 @@ rokuban は SIGTERM を受けると実行中のジョブを `--soft-stop-timeout
 足りないと `docker compose down` / `stop` のたびに実行中のジョブが SIGKILL される。
 ingest の行は、次の `record_sweep` が lock の解放を確認してから代替ジョブへ
 置き換える。encode は args に保存された締切後に JobRescuer が同じ job を再試行する。実尺が不明な場合と
-締切のない旧 args は 1 時間を使う。その他のジョブも JobRescuer の既定 1 時間を待つことがある。
+実尺が不明な場合と締切のない旧 args は 12 時間を使う。その他のジョブも JobRescuer の既定 1 時間を待つことがある。
 リポジトリの `docker-compose.yml` には 30 秒を書いてある
 （[docs/operations.md](../operations.md) §5「Deployment 併用時」の足し算）。
 

@@ -20,6 +20,9 @@ const (
 	encodeProcessDeathReason       = "encode process died before completing"
 )
 
+// errEncodeAttemptLimit は river.JobCancel に包んで返す、ドメイン上限到達の理由。
+var errEncodeAttemptLimit = fmt.Errorf("encode attempt limit (%d) reached; fix the cause and re-request with POST /api/recordings/{id}/encode-profiles", encodeAttemptLimit)
+
 type encodeAttemptStart struct {
 	count int32
 
