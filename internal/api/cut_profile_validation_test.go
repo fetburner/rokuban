@@ -232,6 +232,17 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	}
 }
 
+// seedDesiredEncodeProfiles は録画の凍結済み desired を作る（reencode は desired に
+// 無い profile を 409 にする）。
+func seedDesiredEncodeProfiles(t *testing.T, pool *pgxpool.Pool, ctx context.Context, id int64, profiles string) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
+		id, profiles); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // TestReencodeRecordingProfile_StatusCodes は cut の作り直し endpoint が本番構成
 // （CutProfileNames あり）で 204 になり、未知名・cut でない名前は 400 になることを固定する。
 // cut 1 つのリストを「cut だけの選択」として弾く実装だと常に 400 になる。
@@ -245,6 +256,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 	// 確認済みで一部だけ切る録画（作り直せる状態）。
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
@@ -288,6 +300,7 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -341,6 +354,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 
 	seed := func(owned bool, cutFrom, cutTo int64) int64 {
 		id := insertIngestedRecordingFixture(t, pool, ctx)
+		seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 		if owned {
 			if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 				t.Fatal(err)
@@ -376,5 +390,54 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	}
 	if got := post(seed(true, 600000, 900000)); got != http.StatusNoContent {
 		t.Errorf("partially cut status = %d, want 204", got)
+	}
+}
+
+// TestReencodeRecordingProfile_NotDesiredIs409 は desired に無い cut profile の作り直しが
+// 409 で、encode_rebuild を積まないことを固定する（worker は公開直前に捨てるだけなので、
+// 積むと ffmpeg を回した後に黙って無駄になる）。policy 行が無い録画も同じ。
+func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		RiverClient:        riverClient,
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+
+	for name, desired := range map[string]string{"cut not desired": `{h264}`, "no policy row": ""} {
+		id := insertIngestedRecordingFixture(t, pool, ctx)
+		if desired != "" {
+			seedDesiredEncodeProfiles(t, pool, ctx, id, desired)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusConflict {
+			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
+		}
+		var n int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM river_job WHERE kind = 'encode_rebuild'
+			AND (args->>'recording_id')::bigint = $1`, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s: encode_rebuild jobs = %d, want 0", name, n)
+		}
 	}
 }

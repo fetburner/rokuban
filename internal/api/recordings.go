@@ -951,6 +951,16 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if len(keep) == 0 {
 		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
 	}
+	// desired に無い profile は worker が公開直前の判定 (c) で捨てる（encode_rebuild の
+	// worker は判定を持たない）。ffmpeg を回した後に黙って捨てるより、同じ tx で desired を
+	// 読んでここで 409 にする。行が無い（未凍結）録画は desired が空として扱う。
+	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, req.Id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("loading desired encode profiles for recording %d: %w", req.Id, err)
+	}
+	if !slices.Contains(desired, req.Profile) {
+		return ReencodeRecordingProfile409JSONResponse{Error: fmt.Sprintf("profile %q is not in the desired encode profiles of this recording; nothing to encode", req.Profile)}, nil
+	}
 	// 再エンコード要求は不足分から導出できない利用者の命令なので、通常の
 	// reconcile とは別のジョブ種別で記録する。
 	if err := h.insertEncodeRebuild(ctx, tx, req.Id, req.Profile); err != nil {
