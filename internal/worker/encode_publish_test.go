@@ -115,7 +115,7 @@ func jobWithID(id, recordingID int64) *river.Job[EncodeJobArgs] {
 
 func inScratch(jobID string) func(string) bool {
 	return func(scratchOut string) bool {
-		return strings.Contains(filepath.ToSlash(scratchOut), "/encode/"+jobID+"/")
+		return strings.Contains(filepath.ToSlash(scratchOut), "/encode/"+jobID+"-")
 	}
 }
 
@@ -132,6 +132,15 @@ func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) 
 			}},
 		},
 	}
+}
+
+func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
+	t.Helper()
+	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return start.count
 }
 
 func assertNoEncodeTemp(t *testing.T, dir string) {
@@ -279,6 +288,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"h264"}, []byte("original payload t3"))
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
 
 	g1, g2, g3 := "20240101/t3_h264.g1.mp4", "20240101/t3_h264.g2.mp4", "20240101/t3_h264.g3.mp4"
 	abs := func(rel string) string { return filepath.Join(mediaDir, filepath.FromSlash(rel)) }
@@ -310,7 +320,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	never := make(chan error)
 	go func() {
 		_, published, err := w.publishEncoded(ctx, encodePublishInput{
-			recordingID: recordingID, profile: "h264", relPath: g2, finalPath: abs(g2),
+			recordingID: recordingID, profile: "h264", attempt: attempt, relPath: g2, finalPath: abs(g2),
 			scratchOut: scratchOut, observed: observed, cut: cut,
 		})
 		res <- result{published, err}
@@ -362,18 +372,68 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	assertNoEncodeTemp(t, filepath.Dir(abs(g2)))
 }
 
-// snooze（計画のやり直し）は失敗ではないので、encode.failed も failed 行も出さない。
-func TestShouldNotifyEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
-	if shouldNotifyEncodeFailure(fmt.Errorf("wrapped: %w", river.JobSnooze(time.Second)), nil) {
-		t.Error("a snooze must not notify encode.failed")
+func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
 	}
-	if !shouldNotifyEncodeFailure(errors.New("boom"), nil) {
-		t.Error("a real failure must notify encode.failed")
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/late-attempt.m2ts", []string{"h264"}, []byte("original"))
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	oldAttempt, err := w.beginEncodeAttempt(ctx, recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newAttempt, err := w.beginEncodeAttempt(ctx, recordingID, "h264")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldAttempt.count != 1 || newAttempt.count != 2 {
+		t.Fatalf("attempt counts = %d then %d, want 1 then 2", oldAttempt.count, newAttempt.count)
+	}
+
+	relPath := "20240101/late-attempt_h264.mp4"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	scratchOut := filepath.Join(scratchDir, "old-attempt.mp4")
+	if err := os.WriteFile(scratchOut, []byte("old attempt output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "h264", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, published, err := w.publishEncoded(ctx, encodePublishInput{
+		recordingID: recordingID,
+		profile:     "h264",
+		attempt:     oldAttempt.count,
+		relPath:     relPath,
+		finalPath:   finalPath,
+		scratchOut:  scratchOut,
+		observed:    observed,
+	}); err != nil || published {
+		t.Fatalf("old attempt publish = published %v, err %v; want fenced skip", published, err)
+	}
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Errorf("old attempt published a canonical file (stat err = %v)", err)
+	}
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != newAttempt.count {
+		t.Errorf("attempt_count after stale publish = %d, ok=%v, want %d", count, ok, newAttempt.count)
 	}
 }
 
-// T4: scratch はジョブ ID ごと。別ジョブ A が終わった後も、B の scratch が残る。
-// 固定パスだと A の開始時・終了時の RemoveAll が B の出力を消す。
+// snooze（計画のやり直し）は失敗ではないので試行に数えない。
+func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
+	if shouldCountEncodeFailure(fmt.Errorf("wrapped: %w", river.JobSnooze(time.Second)), nil) {
+		t.Error("a snooze must not count as an encode failure")
+	}
+	if !shouldCountEncodeFailure(errors.New("boom"), nil) {
+		t.Error("a real failure must count")
+	}
+}
+
+// T4: scratch は job ID と domain attempt ごと。別 job A が終わった後も、B の scratch が残る。
+// job ID 固定パスだと A の開始時・終了時の RemoveAll が B の出力を消す。
 func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -394,15 +454,23 @@ func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
 	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(scratchDir, "encode", "2", "out.mp4")); err != nil {
+	bScratch, err := filepath.Glob(filepath.Join(scratchDir, "encode", "2-1-*", "out.mp4"))
+	if err != nil {
+		t.Fatalf("finding B's scratch output: %v", err)
+	}
+	if len(bScratch) != 1 {
+		t.Fatalf("B's scratch outputs = %v, want exactly one attempt-specific output", bScratch)
+	}
+	if _, err := os.Stat(bScratch[0]); err != nil {
 		t.Errorf("B's scratch output is gone after A finished: %v", err)
 	}
 	release()
 	if err := waitDone(t, doneB); err != nil {
 		t.Fatalf("Work B: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(scratchDir, "encode", "2")); !os.IsNotExist(err) {
-		t.Errorf("B's scratch was not cleaned up (err=%v)", err)
+	bScratch, err = filepath.Glob(filepath.Join(scratchDir, "encode", "2-1-*"))
+	if err != nil || len(bScratch) != 0 {
+		t.Errorf("B's scratch was not cleaned up: paths=%v err=%v", bScratch, err)
 	}
 }
 
@@ -437,8 +505,9 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 		return nil
 	}
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
 	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
-		recordingID: recordingID, profile: "h264", relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
 	}); err != nil || !published {
 		t.Fatalf("publishEncoded = published %v, err %v", published, err)
 	}
@@ -473,8 +542,9 @@ func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
 	if _, _, err := w.publishEncoded(ctx, encodePublishInput{
-		recordingID: recordingID, profile: "h264", relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
+		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
 	}); err == nil {
 		t.Fatal("publishEncoded succeeded while the lock was held")
 	}

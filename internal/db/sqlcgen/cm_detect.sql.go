@@ -25,7 +25,9 @@ SET state = CASE
         ELSE 'running'
     END,
     attempt_count = CASE
-        WHEN recording_cm_attempts.state = 'failed' THEN recording_cm_attempts.attempt_count + 1
+        -- A new desire after failed starts a new budget, like the API retry
+        -- (which deletes the row and restarts at 1).
+        WHEN recording_cm_attempts.state = 'failed' THEN 1
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.attempt_count
         ELSE recording_cm_attempts.attempt_count + 1
@@ -536,7 +538,9 @@ func (q *Queries) GetCMLogoCandidate(ctx context.Context, arg GetCMLogoCandidate
 }
 
 const getCMRecordingDuration = `-- name: GetCMRecordingDuration :one
-SELECT COALESCE(GREATEST((EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+SELECT COALESCE(GREATEST(CASE WHEN ended_at IS NOT NULL AND started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (ended_at - started_at)) * 1000)::bigint
+                           ELSE program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM recordings
 WHERE id = $1
 `
@@ -891,7 +895,9 @@ func (q *Queries) ListCMLogoStates(ctx context.Context) ([]ListCMLogoStatesRow, 
 
 const listMissingCMDetections = `-- name: ListMissingCMDetections :many
 SELECT desired.recording_id,
-       COALESCE(GREATEST((EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
+                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_detection_desired desired
 JOIN recordings r ON r.id = desired.recording_id
 WHERE desired.recording_id > $1::bigint
@@ -934,7 +940,9 @@ func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCM
 
 const listMissingCMLogoCandidates = `-- name: ListMissingCMLogoCandidates :many
 SELECT desired.network_id, desired.service_id, COALESCE(desired.recording_id, 0)::bigint AS recording_id, desired.area_updated_at,
-       COALESCE(GREATEST((EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint, 0), 0)::bigint AS recording_duration_ms
+       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
+                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_logo_candidate_desired desired
 JOIN recordings r ON r.id = desired.recording_id
 WHERE (desired.network_id, desired.service_id) > (

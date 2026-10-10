@@ -34,8 +34,7 @@ spec:
   #
   # **実効の同時数はこの maxReplicaCount であって `ingest.concurrency` ではない。**
   # Job は `--once` なので引くキューはちょうど 1 つ・MaxWorkers は 1 で、
-  # `ingest.concurrency` はここでは効かない（`configureOnceQueues`）。**接続プールの
-  # 予算も 1 Job = 1 job lock 枠として数えられる**（`worker.LockSlots`）。詰まっている
+  # `ingest.concurrency` はここでは効かない（`configureOnceQueues`）。詰まっている
   # ように見えたら、`ingest.concurrency` ではなくここと KEDA のトリガを見る。
   maxReplicaCount: 4
   successfulJobsHistoryLimit: 3

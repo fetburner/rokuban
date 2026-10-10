@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,21 +45,16 @@ import (
 //
 // # 並走する 2 本の encode から canonical を守る
 //
-// job lock（advisory lock + heartbeat）は ffmpeg の排他ではなく、lock を失っても
-// 実行中の encode を cancel しない（[job_lock.go] の jobLockIdleSessionTimeout
-// 参照）。そのため同じ (recording, profile) の encode が 2 本並走しうる。
+// Timeout 後に JobRescuer が同じ River job を再実行すると、同じ
+// (recording, profile) の encode が 2 本並走しうる。
 //
-//   - **scratch はジョブ ID ごと**（encode/<jobID>。開始時に RemoveAll → Mkdir）。
-//     代替ジョブは別 ID なので衝突しない。同じ ID が並走する経路は無い（River の
-//     rescuer は Timeout() < 0 を無視し、encode_recovery は旧行を discarded にした
-//     tx で別 ID を投入し、River の再試行は前の Work が返った後）。
-//     **flock で (recording, profile) を直列化しない**: scratch は pod ローカルなので
-//     同じ pod 内しか直列化できず、LOCK_NB で River の再試行へ戻すと SIGSTOP 中の
-//     旧実行が lock を握る間ずっと失敗が積み、encode.failed 通知が試行ごとに飛ぶ
-//     （scratch の獲得は runEncode の中なので shouldNotifyEncodeFailure が true になり、
-//     markEncodeAttemptFailed が保持側の running 行まで failed で上書きする）。
-//     代償: 並走した 2 本がどちらも ffmpeg を完走する（lock を失っても cancel しない
-//     方針の範囲内）。
+//   - **scratch はジョブ ID と domain attempt ごと**（encode/<jobID>-<attempt>-<random>）。
+//     Timeout 後に再実行してもディレクトリが衝突しない。**flock で
+//     (recording, profile) を直列化しない**: scratch は pod ローカルなので同じ pod 内
+//     しか直列化できず、SIGSTOP 中の旧実行が lock を握る間ずっと失敗が積み上がる。
+//     canonical の公開直前には `recording_encode_attempts.attempt_count` を読み直し、
+//     古い試行を拒否する。代償として、cancel を無視する古い試行が新しい試行とともに
+//     ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
 //     → tx → advisory xact lock）の中で判定 → rename（サイドカー → 本体）→ 親 dir
@@ -74,7 +70,7 @@ import (
 //     やり直す（現在の keep を読み直して、一致すれば冒頭の (b) で skip、違えば次の
 //     世代で作り直す。skip すると新しいチャプター編集が黙って消える）。行が active
 //     でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
-//     encode.failed も試行の failed 行も出さない（shouldNotifyEncodeFailure）。
+//     encode.failed も試行の failed 行も出さない。
 //     (b) 行が active で（cut なら）凍結区間がこの試行の keep と一致する（誰かが
 //     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
 //     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
@@ -123,65 +119,70 @@ func probeEncodeDuration(
 	return probeDuration(probeCtx, ffprobe, inputPath, run)
 }
 
-// Timeout は River の総時間タイムアウトを無効化する。
-//
-// エンコード所要は録画長とコーデックで決まり、既定 1 分では足りない。
-// 進捗は -progress pipe:1 で観測する（ストール検知は将来拡張。M3-3 では
-// プロセス終了を待つ）。プロセス死で running のまま残ったジョブは、
-// encode_reconcile が job-id advisory lock の解放を確認して回収する。
-func (w *EncodeWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
-	return -1
+// encodeUnknownDurationTimeout は実尺が取れないときと、締切を持たない旧 args の締切。
+// River の executor はこの値を ffmpeg の ctx 締切にそのまま使うので、短く見積もると
+// 長尺の encode が毎回締切超過で失敗する。誤った締切超過で失敗を積むより、
+// プロセス死の検知が遅れる方を選ぶ。
+const encodeUnknownDurationTimeout = 12 * time.Hour
+
+// encodeMinTimeout は実尺から計算する締切の下限。
+const encodeMinTimeout = time.Hour
+
+// Timeout は EncodeJobArgs に保存した rescue 締切を返す。
+// 旧 args に締切が無い場合は encodeUnknownDurationTimeout を返す。
+func (w *EncodeWorker) Timeout(job *river.Job[jobs.EncodeJobArgs]) time.Duration {
+	if job.Args.Timeout > 0 {
+		return job.Args.Timeout
+	}
+	return encodeUnknownDurationTimeout
 }
 
 // Work は encode ジョブを実行する。
 //
-// 失敗パスが複数箇所に散っているため（runEncode 参照）、encode.failed の発火は
-// ここ 1 箇所に集約する（encode.finished は成功地点が 1 つなので runEncode 内で
-// 発火する。冪等スキップでは発火しない）。ctx キャンセル（River の停止・
-// タイムアウト）はジョブの失敗ではないので通知しない。
-//
-// このジョブは River が再試行するので、恒久的に失敗するエンコードでは
-// encode.failed が試行ごとに配送される。受け側が最終試行を見分けられるよう
-// attempt / maxAttempts をペイロードに載せる（M3-11）。
+// 停止による ctx キャンセルと snooze は試行に数えず、締切超過と通常の失敗は
+// recording_encode_attempts の回数に反映する。ドメイン上限に達したら
+// river.JobCancel を返し、River 上でも completed ではなく cancelled に見せる。
+// 解除は POST /api/recordings/{id}/encode-profiles（failed 行を消して予算を戻す）。
 func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
-	log := slog.With("recording_id", job.Args.RecordingID, "profile", job.Args.Profile)
-
-	// Work の開始から終了まで、ジョブ ID 固有の advisory lock を保持する。
-	// encode_reconcile の回収側が同じキーを pg_try できた場合だけ、元プロセスが
-	// 死んでセッションが解放されたと確定できる。lock は ffmpeg の出力を排他する
-	// ものではなく、recovery が live job を時刻だけで殺さないための生存確認である。
-	jobLock, acquired, err := acquireEncodeJobLock(ctx, w.Pool, job.ID, defaultJobLockTimeout)
+	start, err := w.beginEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile)
 	if err != nil {
-		return fmt.Errorf("acquiring encode job lock: %w", err)
+		return err
 	}
-	if !acquired {
-		// 断定はしない: この分岐には、別プロセスが本当に実行中の場合だけでなく、
-		// encode_reconcile の回収側が同じキーを一瞬 try して保持している場合も落ちる。
-		log.Warn("encode: job advisory lock is held by another session, deferring", "job_id", job.ID)
-		return fmt.Errorf("encode: job %d advisory lock is held by another session; deferring", job.ID)
+	if start.deadAttempt > 0 {
+		w.notifyEncodeFailure(ctx, job.Args, start.deadAttempt)
 	}
-	defer jobLock.release()
+	if start.terminal {
+		return river.JobCancel(errEncodeAttemptLimit)
+	}
 
-	err = w.runEncode(ctx, job)
-	if shouldNotifyEncodeFailure(err, ctx.Err()) {
-		ev := webhook.Event{
-			Type:        webhook.EventEncodeFailed,
-			RecordingID: job.Args.RecordingID,
-			Status:      "failed",
-			Profile:     job.Args.Profile,
-			Attempt:     job.Attempt,
-			MaxAttempts: job.MaxAttempts,
+	err = w.runEncode(ctx, job, start.count)
+	if err == nil {
+		if clearErr := w.clearEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile, start.count); clearErr != nil {
+			logEncodeAttemptWriteFailure("clear success", job.Args.RecordingID, job.Args.Profile, clearErr)
 		}
-		w.notify(ctx, ev)
+		return nil
+	}
+	if shouldCountEncodeFailure(err, ctx.Err()) {
+		updated, updateErr := w.markEncodeAttemptFailed(ctx, job.Args.RecordingID, job.Args.Profile, start.count, err)
+		if updateErr != nil {
+			return errors.Join(err, updateErr)
+		}
+		if updated {
+			w.notifyEncodeFailure(ctx, job.Args, start.count)
+			if start.count >= encodeAttemptLimit {
+				return river.JobCancel(errors.Join(errEncodeAttemptLimit, err))
+			}
+		}
+		return err
+	}
+	if restoreErr := w.restoreEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile, start); restoreErr != nil {
+		return errors.Join(err, restoreErr)
 	}
 	return err
 }
 
 // runEncode は encode ジョブの本体。
-//
-// err は名前付き戻り値 --- 直後の defer（試行状態の観測、issue #316）が
-// 全ての return 文の結果を横取りして recording_encode_attempts に反映するため。
-func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) (err error) {
+func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.EncodeJobArgs], attempt int32) (err error) {
 	args := job.Args
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
 
@@ -193,27 +194,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	}()
 
 	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
-	// この試行の観測（issue #316）。running を書き、この呼び出しが返るときに
-	// 成功（media_asset 行を作った）か失敗かで消す/failed に上書きする。
-	// shouldNotifyEncodeFailure と**同じ判定関数**を使う（bespoke な条件を
-	// もう 1 つ増やさない）--- ctx キャンセル（River の停止・タイムアウト）は
-	// ジョブの失敗扱いにしないので running のまま残し、次の実行が上書きする。
-	// markEncodeAttemptFailed の書き込みは job の ctx から切り離してある
-	// （attemptWriteContext）ので、running が残るのはこのガードのおかげで、
-	// 「DB 書き込み自体が ctx キャンセルで失敗する」という偶然ではない。
-	w.markEncodeAttemptRunning(ctx, args.RecordingID, args.Profile)
-	defer func() {
-		if err == nil {
-			w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
-			return
-		}
-		if !shouldNotifyEncodeFailure(err, ctx.Err()) {
-			return
-		}
-		w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, err)
-	}()
-
-	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
 	// （不変条件 10: 完了しているのに failed/running を名乗る行を残さない）が
 	// あれば掃除する。
 	//
@@ -222,9 +202,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	// ユーザーがチャプターを直した後に再エンコードのジョブが来たときに、
 	// 古いカット版を「完了済み」と読むと編集が反映されない。
 	//
-	// 試行の観測（上の markEncodeAttemptRunning）より後に置く: ここの失敗も
-	// ジョブの失敗として recording_encode_attempts に残す（未定義プロファイルを
-	// ここで先に弾くと、観測が始まる前に return して failed 行が残らない）。
 	cut, err := w.loadCutContext(ctx, args.RecordingID, args.Profile)
 	if err != nil {
 		return err
@@ -236,7 +213,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	if observed.skip {
 		log.Info("encode: encoded asset already committed, skipping")
 		result = "success"
-		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
 		return nil
 	}
 
@@ -275,7 +251,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
-	scratchDir, err := newJobScratchDir(w.ScratchDir, "encode", job.ID)
+	// プロセス死の残骸を回収する。古い試行は fencing で公開できないので消してよい。
+	removeStaleEncodeScratch(w.ScratchDir, job.ID, log)
+	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "encode", job.ID, int(attempt))
 	if err != nil {
 		return fmt.Errorf("creating encode scratch directory: %w", err)
 	}
@@ -320,6 +298,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		}
 	}
 	size, published, err := w.publishEncoded(ctx, encodePublishInput{
+		attempt:       attempt,
 		observed:      observed,
 		recordingID:   args.RecordingID,
 		profile:       profile.Name,
@@ -345,7 +324,6 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		// 外れた。自分の temp は消してあり、旧ファイルの unlink も完了通知も出さない。
 		log.Info("encode: skipped publishing, another attempt already advanced the row or the profile is no longer desired")
 		result = "success"
-		w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile)
 		return nil
 	}
 
@@ -708,6 +686,7 @@ var (
 type encodePublishInput struct {
 	recordingID   int64
 	profile       string
+	attempt       int32
 	relPath       string
 	finalPath     string
 	scratchOut    string
@@ -742,7 +721,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
 
-	staged, err := stageMediaFile(in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
+	staged, err := stageMediaFile(ctx, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
@@ -757,7 +736,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		if err != nil {
 			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		stagedSubtitle, err = stageMediaFile(in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
+		stagedSubtitle, err = stageMediaFile(ctx, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
 		if err != nil {
 			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
@@ -786,9 +765,18 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	q := sqlcgen.New(tx)
+	activeAttempt, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
+		RecordingID: in.recordingID,
+		Profile:     in.profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (activeAttempt.State != "running" || activeAttempt.AttemptCount != in.attempt)) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("loading current encode attempt: %w", err)
+	}
 	// 判定 (c): desired に無い profile は公開しない。外した版を、実行中・再試行待ちの
-	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない。
-	// job lock は ffmpeg の排他ではない）。FOR SHARE で版を外す tx と直列化する。
+	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない）。FOR SHARE で版を外す tx と直列化する。
 	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
 	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
 		return 0, false, fmt.Errorf("loading desired encode profiles: %w", err)
@@ -840,19 +828,6 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	return staged.size, true, nil
 }
 
-// shouldNotifyEncodeFailure は encode.failed を発火すべきかを返す。ctxErr は
-// runEncode が返った時点の ctx.Err()。
-//
-// ctx キャンセル（River の停止・ジョブタイムアウト）はジョブの失敗ではないので
-// 発火しない。この経路で落とした通知は失われない — ジョブは available に戻り、
-// 次に実行されたときに成功か失敗のどちらかを発火する。
-//
-// River の snooze（計画のやり直し）は失敗ではないので発火しない。
-func shouldNotifyEncodeFailure(err, ctxErr error) bool {
-	var snooze *rivertype.JobSnoozeError
-	return err != nil && ctxErr == nil && !errors.As(err, &snooze)
-}
-
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
 // 失敗はログのみ（本処理を止めない。M3-11）。
 func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
@@ -896,18 +871,9 @@ const streamProbeTimeout = 30 * time.Second
 // エンコード全体が無期限に止まることは許さない。
 const subtitleProbeTimeout = 30 * time.Second
 
-// attemptWriteContext は recording_encode_attempts への書き込み用に、job の
-// ctx から切り離した（ただし無期限には待たない）ctx を返す。
-// 使うのは markEncodeAttemptFailed と clearEncodeAttempt の 2 箇所
-// （それぞれの doc コメントに切り離す理由がある）。
-//
-// markEncodeAttemptFailed の呼び出しは shouldNotifyEncodeFailure と同じ
-// ガード（ctx キャンセル時は呼ばない）の後段にあるが、書き込み自体が job の
-// ctx に紐付いていると「ガードが無くても、キャンセル済み ctx での DB 書き込みが
-// 失敗するので running が残る」という偶然の結果とガードが区別できなくなる
-// （レビュー issue #316 で判明）。切り離すことでガードを実際に load-bearing に
-// する --- ガードを外すと、キャンセル後でも書き込みが成功して failed に
-// 上書きされ、テストが検出できる。
+// attemptWriteContext は試行状態の確定に使う、job の ctx から切り離した
+// （ただし無期限には待たない）ctx を返す。DeadlineExceeded 後にも失敗を記録し、
+// Canceled / snooze では直前の状態へ戻すために使う。
 func attemptWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), encodeAttemptWriteTimeout)
 }
@@ -922,62 +888,6 @@ func truncateEncodeAttemptError(msg string) string {
 		return msg
 	}
 	return strings.ToValidUTF8(msg[:encodeAttemptErrorMaxLen], "")
-}
-
-// markEncodeAttemptRunning は recording_encode_attempts に running を書く
-// （issue #316）。失敗はログのみ --- この表は表示専用の観測で、書き込みに
-// 失敗してもエンコード本体（ffmpeg 実行・media_assets への commit）は続けられる。
-func (w *EncodeWorker) markEncodeAttemptRunning(ctx context.Context, recordingID int64, profile string) {
-	q := sqlcgen.New(w.Pool)
-	if err := q.UpsertRecordingEncodeAttemptRunning(ctx, sqlcgen.UpsertRecordingEncodeAttemptRunningParams{
-		RecordingID: recordingID,
-		Profile:     profile,
-	}); err != nil {
-		slog.Warn("encode: marking attempt running failed",
-			"recording_id", recordingID, "profile", profile, "err", err)
-	}
-}
-
-// markEncodeAttemptFailed は recording_encode_attempts に failed を書く
-// （issue #316）。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
-// 書き込みは job の ctx から切り離す（attemptWriteContext 参照）。
-func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID int64, profile string, encodeErr error) {
-	msg := truncateEncodeAttemptError(encodeErr.Error())
-	writeCtx, cancel := attemptWriteContext(ctx)
-	defer cancel()
-	q := sqlcgen.New(w.Pool)
-	if err := q.UpsertRecordingEncodeAttemptFailed(writeCtx, sqlcgen.UpsertRecordingEncodeAttemptFailedParams{
-		RecordingID: recordingID,
-		Profile:     profile,
-		Error:       &msg,
-	}); err != nil {
-		slog.Warn("encode: marking attempt failed failed",
-			"recording_id", recordingID, "profile", profile, "err", err)
-	}
-}
-
-// clearEncodeAttempt は recording_encode_attempts の行を消す（issue #316）。
-// 呼ぶのは runEncode の defer（成功時。commitEncoded と webhook 通知の後で、
-// 派生物 INSERT の直後ではない）と、既に active な encoded がある冪等スキップ
-// 経路。失敗はログのみ（markEncodeAttemptRunning と同じ理由）。
-//
-// 書き込みは job の ctx から切り離す（attemptWriteContext）。commitEncoded の
-// 成功後〜defer の間（webhook 通知を挟む）に ctx がキャンセルされると、job の
-// ctx では DELETE が失敗して running を主張する行が恒久的に残る --- この
-// プロファイルは active な encoded を持つので ListMissingEncodeProfiles の
-// 候補から外れ、冪等スキップ経路の掃除も二度と走らない（不変条件 10:
-// 何も主張していない/嘘の行を残さない）。
-func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64, profile string) {
-	writeCtx, cancel := attemptWriteContext(ctx)
-	defer cancel()
-	q := sqlcgen.New(w.Pool)
-	if err := q.DeleteRecordingEncodeAttempt(writeCtx, sqlcgen.DeleteRecordingEncodeAttemptParams{
-		RecordingID: recordingID,
-		Profile:     profile,
-	}); err != nil {
-		slog.Warn("encode: clearing attempt failed",
-			"recording_id", recordingID, "profile", profile, "err", err)
-	}
 }
 
 // encodePlan は encoded 行の 1 回の観測から導いた、公開の判断材料。
@@ -1378,9 +1288,9 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 	}
 }
 
-// streamCopyFile は src を dst へシーケンシャルにコピーし、ファイルと親ディレクトリを
-// fsync する（ストレージ契約: 作業は scratch、置くのは一回）。
-func streamCopyFile(src, dst string) (int64, error) {
+// streamCopyFile は ctx に従って src を dst へシーケンシャルにコピーし、ファイルと
+// 親ディレクトリを fsync する（ストレージ契約: 作業は scratch、置くのは一回）。
+func streamCopyFile(ctx context.Context, src, dst string) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return 0, fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
 	}
@@ -1396,15 +1306,25 @@ func streamCopyFile(src, dst string) (int64, error) {
 		return 0, fmt.Errorf("create dst: %w", err)
 	}
 
-	n, copyErr := io.Copy(out, in)
+	n, copyErr := copyWithContext(ctx, out, in)
 	if copyErr != nil {
 		_ = out.Close()
 		_ = os.Remove(dst)
 		return n, fmt.Errorf("copy: %w", copyErr)
 	}
+	if err := ctx.Err(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return n, fmt.Errorf("copy canceled: %w", err)
+	}
 	if err := out.Sync(); err != nil {
 		_ = out.Close()
 		return n, fmt.Errorf("fsync file: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst)
+		return n, fmt.Errorf("sync canceled: %w", err)
 	}
 	if err := out.Close(); err != nil {
 		return n, fmt.Errorf("close dst: %w", err)
@@ -1418,9 +1338,66 @@ func streamCopyFile(src, dst string) (int64, error) {
 	return n, nil
 }
 
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
+}
+
+func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+	return io.Copy(dst, contextReader{ctx: ctx, r: src})
+}
+
 // JobInserter は encode ジョブ投入に使う最小面（*river.Client が満たす）。
 type JobInserter interface {
 	Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
+}
+
+func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
+	times, err := q.GetRecordingEncodeTimes(ctx, recordingID)
+	if err != nil {
+		return jobs.EncodeJobArgs{}, fmt.Errorf("loading recording times: %w", err)
+	}
+	// 実尺は started_at / ended_at を優先し、取れなければ番組長で代用する
+	// （ライブラリ取り込みは時刻が NULL、rescue 再スキャンは started_at == ended_at）。
+	var duration time.Duration
+	if times.StartedAt != nil && times.EndedAt != nil {
+		duration = times.EndedAt.Sub(*times.StartedAt)
+	}
+	if duration <= 0 {
+		duration = time.Duration(times.ProgramDurationMs) * time.Millisecond
+	}
+	rate := config.DefaultEncodeProfileRate
+	if p, ok := profiles.Profile(profile); ok && p.Rate > 0 {
+		rate = p.Rate
+	}
+	return jobs.EncodeJobArgs{
+		RecordingID: recordingID,
+		Profile:     profile,
+		Timeout:     encodeJobTimeout(duration, rate),
+	}, nil
+}
+
+// encodeJobTimeout は max(1h, 実尺 × rate)。実尺が不明（0 以下）なら
+// encodeUnknownDurationTimeout を返す。
+func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Duration {
+	if recordingDuration <= 0 {
+		return encodeUnknownDurationTimeout
+	}
+	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
+		rate = config.DefaultEncodeProfileRate
+	}
+	calculated := float64(recordingDuration) * rate
+	if calculated >= float64(math.MaxInt64) {
+		return time.Duration(math.MaxInt64)
+	}
+	return max(encodeMinTimeout, time.Duration(math.Ceil(calculated)))
 }
 
 // EnqueueMissingEncodes は desired（recording_encode_policy.encode_profiles。issue #159）− observed
@@ -1435,8 +1412,8 @@ type JobInserter interface {
 // `unknown encode profile` で失敗させ、その失敗が運用者への通知になる。
 // 15 分ごとに繰り返す定期パスが同じことをすると失敗を無限に作り続けるので、
 // そちらは EnqueueMissingEncodesForKnownProfiles を使う。
-func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, cutProfiles map[string]struct{}) error {
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil, cutProfiles)
+func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, nil, profiles, cutProfiles)
 }
 
 // EnqueueMissingEncodesForKnownProfiles は EnqueueMissingEncodes と同じ判定を
@@ -1448,12 +1425,12 @@ func EnqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 // 投入しても EncodeWorker が全部弾く）。判定を 2 か所に分けないため、絞り込み
 // 以外のロジック（原本の有無・ポリシー行の有無・observed の確認）は
 // EnqueueMissingEncodes と同じ 1 つの実装を通る。
-func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string, cutProfiles map[string]struct{}) error {
+func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known []string, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
 	set := make(map[string]struct{}, len(known))
 	for _, name := range known {
 		set[name] = struct{}{}
 	}
-	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set, cutProfiles)
+	return enqueueMissingEncodes(ctx, inserter, pool, recordingID, set, profiles, cutProfiles)
 }
 
 // enqueueMissingEncodes は上 2 つの実装本体。known が nil なら desired を絞らない
@@ -1466,7 +1443,7 @@ func EnqueueMissingEncodesForKnownProfiles(ctx context.Context, inserter JobInse
 // 経由せずに消えて取り返せなくなる。所有していない録画の cut プロファイルは
 // 「投入しない」ではなく「まだ投入しない」で、ユーザーが確認した次のパスが拾う
 // （api 側はそれを awaiting_review として見せる）。
-func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known, cutProfiles map[string]struct{}) error {
+func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxpool.Pool, recordingID int64, known map[string]struct{}, profiles config.EncodeConfig, cutProfiles map[string]struct{}) error {
 	if inserter == nil {
 		return fmt.Errorf("encode enqueue: inserter is nil")
 	}
@@ -1550,10 +1527,11 @@ func enqueueMissingEncodes(ctx context.Context, inserter JobInserter, pool *pgxp
 			return fmt.Errorf("checking encoded asset %q: %w", name, err)
 		}
 
-		if _, err := inserter.Insert(ctx, jobs.EncodeJobArgs{
-			RecordingID: recordingID,
-			Profile:     name,
-		}, nil); err != nil {
+		args, err := newEncodeJobArgs(ctx, q, recordingID, name, profiles)
+		if err != nil {
+			return fmt.Errorf("building encode job args profile=%s: %w", name, err)
+		}
+		if _, err := inserter.Insert(ctx, args, nil); err != nil {
 			return fmt.Errorf("inserting encode job profile=%s: %w", name, err)
 		}
 	}
@@ -1577,12 +1555,12 @@ func cutIsCurrent(ctx context.Context, q *sqlcgen.Queries, assetID int64, keep [
 // enqueueMissingEncodesFromContext は River ワーカーの ctx から client を取り、
 // 欠けている encode ジョブを投入する。client が無い（単体で Work を呼んだ）場合は
 // 何もしない。失敗はログのみ（ingest 本体の成功を巻き戻さない）。
-func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, recordingID int64, cutProfiles map[string]struct{}) {
+func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profiles config.EncodeConfig, cutProfiles map[string]struct{}) {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
 	if err != nil {
 		return
 	}
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, cutProfiles); err != nil {
+	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, profiles, cutProfiles); err != nil {
 		slog.Error("encode: failed to enqueue missing encodes",
 			"recording_id", recordingID, "err", err)
 	}
@@ -1594,6 +1572,8 @@ func enqueueMissingEncodesFromContext(ctx context.Context, pool *pgxpool.Pool, r
 type EncodeEnqueueHintWorker struct {
 	river.WorkerDefaults[jobs.EncodeEnqueueHintArgs]
 	Pool *pgxpool.Pool
+	// Profiles resolves the timeout multiplier stored in each encode job argument.
+	Profiles config.EncodeConfig
 
 	// CutProfiles は cut: true のプロファイル名（config から注入）。所有して
 	// いない録画への投入を止めるのに使う（enqueueMissingEncodes 参照）。
@@ -1613,5 +1593,5 @@ func (w *EncodeEnqueueHintWorker) Work(ctx context.Context, job *river.Job[jobs.
 	if err != nil {
 		return fmt.Errorf("encode enqueue hint: getting river client: %w", err)
 	}
-	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID, w.CutProfiles)
+	return EnqueueMissingEncodes(ctx, client, w.Pool, job.Args.RecordingID, w.Profiles, w.CutProfiles)
 }

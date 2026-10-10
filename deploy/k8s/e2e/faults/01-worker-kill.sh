@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fault 1: kill a worker while it owns a long encode, then require durable recovery.
+# Fault 1: kill a worker while it owns an encode, then require JobRescuer recovery.
 set -uo pipefail
 
 E2E_FAULT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,8 +63,10 @@ if ! psql_q "INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes,
               VALUES (${recording_id}, 'until_encoded', ARRAY['${profile}'])" >/dev/null ||
    ! psql_q "INSERT INTO river_job (state, queue, kind, args, max_attempts, priority, scheduled_at)
               VALUES ('available', 'encode', 'encode',
-                jsonb_build_object('recording_id', ${recording_id}::bigint, 'profile', '${profile}'),
-                25, 1, now())" >/dev/null ||
+                jsonb_build_object('recording_id', ${recording_id}::bigint,
+                                   'profile', '${profile}',
+                                   'timeout', 3600000000000::bigint),
+                26, 1, now())" >/dev/null ||
    ! fault_check_media_file "$E2E_ENCODE_REL_PATH"; then
   fail_from "F1.1" "original / policy / encode job の fixture が揃わない"
   exit 0
@@ -152,32 +154,24 @@ else
   exit 0
 fi
 
-encode_attempt_is_stale() {
-  [ "$(psql_q "SELECT count(*) FROM river_job
-                WHERE id = ${river_job_id} AND state = 'running'
-                  AND attempted_at < now() - interval '61 seconds'" | tr -d '[:space:]')" = 1 ]
-}
-if ! retry_until 180 "killed encode attempt to become eligible for recovery" encode_attempt_is_stale; then
-  fail_from "F1.4" "attempted_at が recovery 閾値を越えず、encode_reconcile を試せない"
-  exit 0
-fi
-
-reconcile_id="$(fault_enqueue encode-reconcile encode_reconcile)"
-if [ -z "$reconcile_id" ] || ! fault_wait_job_complete "$reconcile_id" "encode_reconcile after worker kill"; then
-  fail_from "F1.4" "encode_reconcile が完了せず、stale worker の回収を確認できない"
+# The real River integration test verifies the worker timeout boundary. Backdate
+# this killed test row by that minimum hour so the k8s fault suite can exercise
+# the deployed JobRescuer without sleeping for an hour.
+if ! psql_q "UPDATE river_job SET attempted_at = now() - interval '1 hour'
+              WHERE id = ${river_job_id} AND state = 'running'" >/dev/null; then
+  fail_from "F1.4" "killed encode job の rescue 締切を fixture 上で進められない"
   exit 0
 fi
 
 recovered() {
+  [ "$(psql_q "SELECT count(*) FROM river_job j, unnest(j.errors) e
+                WHERE j.id = ${river_job_id}
+                  AND e->>'error' = 'Stuck job rescued by JobRescuer'")" -ge 1 ] &&
   [ "$(psql_q "SELECT count(*) FROM river_job
-                WHERE id = ${river_job_id} AND state = 'discarded'
-                  AND metadata->'encode_recovery'->>'reason' = 'encode process death detected: job advisory lock was not held'")" = 1 ] &&
-  [ "$(psql_q "SELECT count(*) FROM river_job
-                WHERE kind = 'encode' AND args->>'recording_id' = '${recording_id}'
-                  AND id > ${river_job_id} AND state IN ('available','pending','retryable','running','completed')")" -ge 1 ]
+                WHERE kind = 'encode' AND args->>'recording_id' = '${recording_id}'")" = 1 ]
 }
-if ! retry_until 30 "stale River job discarded and replacement inserted" recovered; then
-  fail_from "F1.4" "encode_reconcile は killed worker の River job を discarded + replacement にしない"
+if ! retry_until 300 "JobRescuer to retry the killed encode job" recovered; then
+  fail_from "F1.4" "JobRescuer は killed worker の encode job を同じ ID で再試行しない"
   exit 0
 fi
 

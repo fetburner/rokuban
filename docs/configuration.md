@@ -57,7 +57,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `encode.ffmpeg` / `encode.ffprobe` | `ffmpeg` / `ffprobe` | PATH 検索。フルパス指定可（下記「ffmpeg の存在検査」） |
 | `encode.concurrency` | `1` | encode キューの MaxWorkers（ingest とは独立） |
 | `encode.thumbnail_concurrency` | `1` | thumbnail キューの MaxWorkers |
-| `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。下記「config と DB の境界」「encode/live の HW エンコード」） |
+| `encode.profiles` | `[]` | 構造化エンコードプロファイル（形は `config.example.yml`。`rate` は rescue 締切の倍率、既定 4.0） |
 | `cm_detect.enabled` | `false` | ingest 時に CM 検出を録画へ凍結し、worker の定期投入を有効にする |
 | `cm_detect.binary_dir` | `/usr/local/bin` | JLSE の `logoframe` / `chapter_exe` / `join_logo_scp` 配置先 |
 | `live.enabled` | `false` | ライブ視聴のルートを登録するか（下記「live」） |
@@ -100,7 +100,7 @@ config の読み込みより前に出るログだけは既定（text 形式・In
 
 ### ingest.stall_timeout
 
-転送中の無進捗検知。この時間バイトが進まないと切断して Range 再開する。River の総時間タイムアウトは無効化しているため、**これが ingest の唯一のタイムアウト**（[recording.md](recording.md) §5.3）。総時間ではなく無進捗で切るのは、総時間タイムアウトが遅い回線の正常な転送を殺すため。遅い回線や大きな録画で誤爆する場合は延ばす。
+Work slice 内の転送で無進捗を検知する時間。この時間バイトが進まないと接続を切り、temp の offset から Range 再開する。4 分の slice は有限な Work Timeout で snooze し、同じジョブを再開するため、この値は録画全体の時間を制限しない（[recording.md](recording.md) §5.3）。遅い回線や大きな録画で接続断と判定される場合は延ばす。
 
 ### サーキットブレーカーと検出器の閾値
 
@@ -334,6 +334,11 @@ VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG
 **config = デプロイ環境の性質**（そのホスト/クラスタを再構築すると変わるもの）。**DB = 運用中に UI から変えたい意思**（ルール・予約・視聴履歴）。
 
 この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ **400**）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（下記「encode/live の HW エンコード」）。**`-vf`（filtergraph）を直接書けるキーも作らない**。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになる。
+
+`encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0。
+encode ジョブ投入時に `recordings.ended_at - started_at` と rate から締切を解決して
+args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、
+実行ジョブに対して同じ締切を使える。締切は `max(1 時間, 実尺 × rate)` である。実尺は `ended_at - started_at` を使い、取れなければ番組長（`program_duration_ms`）で代用する。それも取れない場合と締切のない旧 args は 12 時間となる。River はこの値をそのまま ffmpeg の締切に使うので、短く見積もると長尺が毎回締切超過で失敗する。誤った締切超過より、死亡検知が遅れる方を選ぶ。
 
 ## 運用補助
 

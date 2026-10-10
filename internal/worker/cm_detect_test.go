@@ -165,25 +165,25 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != duration {
 		t.Errorf("ListMissingCMLogoCandidates = %#v, want recording %d at %dms", candidates, id, duration)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL WHERE id = $1`, id); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 2400000 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 0 {
-		t.Errorf("duration with unconfirmed recording times = %d, %v; want 0", duration, err)
+	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 2400000 {
+		t.Errorf("duration with unconfirmed recording times = %d, %v; want program_duration_ms 2400000", duration, err)
 	}
 	detections, err = q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 0 {
-		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 0ms", detections, id)
+	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 2400000 {
+		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", detections, id)
 	}
 	candidates, err = q.ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != 0 {
-		t.Errorf("ListMissingCMLogoCandidates with unconfirmed times = %#v, want recording %d at 0ms", candidates, id)
+	if len(candidates) != 1 || candidates[0].RecordingID != id || candidates[0].RecordingDurationMs != 2400000 {
+		t.Errorf("ListMissingCMLogoCandidates with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", candidates, id)
 	}
 }
 
@@ -323,8 +323,8 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !updatedAttempt.ShouldRun || updatedAttempt.AttemptCount != 2 {
-		t.Errorf("BeginCMDetectionAttempt after a new logo = %#v, want running attempt 2", updatedAttempt)
+	if !updatedAttempt.ShouldRun || updatedAttempt.AttemptCount != 1 {
+		t.Errorf("BeginCMDetectionAttempt after a new logo = %#v, want running attempt 1 (a new desire starts a new budget)", updatedAttempt)
 	}
 	if err := q.DeleteCMDetectionAttempt(ctx, ids[5]); err != nil {
 		t.Fatal(err)

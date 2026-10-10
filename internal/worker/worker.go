@@ -76,15 +76,16 @@ const (
 // 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
 // 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
 // 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
-// `running` のまま残る。ingest / encode はそれぞれ `record_sweep` /
-// `encode_reconcile` が lock 解放後に回収するが、その他のジョブは `JobRescuer`
-// （既定 1 時間）に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
+// `running` のまま残る。ingest は有限の Timeout と `JobRescuer`（既定 6 分）、
+// encode は保存した締切後の `JobRescuer`、cm_detect は `cm_detect_reconcile` が回収する。
+// その他のジョブも `JobRescuer` に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
 // 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
 // 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
 //
-// 数時間かかる encode / ingest は当然この既定では完走できない。それらを載せる
-// デプロイは `--soft-stop-timeout` と k8s の `terminationGracePeriodSeconds` を
-// **対で**引き上げる（docs/operations.md §5「Deployment 併用時」）。
+// 数時間かかる encode は当然この既定では完走できない。ingest は短い区切りで
+// checkpoint と snooze を行う。長い drain を要するデプロイは `--soft-stop-timeout` と
+// k8s の `terminationGracePeriodSeconds` を **対で**引き上げる
+// （docs/operations.md §5「Deployment 併用時」）。
 //
 // **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
 // work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
@@ -206,8 +207,8 @@ type Deps struct {
 
 	// IngestStallTimeout は ingest の無進捗検知タイムアウト
 	// （ingest.stall_timeout。config.defaults() が既定値 30 秒を埋める）。
-	// River の総時間タイムアウトは無効化しているため、これが ingest の唯一の
-	// タイムアウトである（docs/recording.md §5.3「層 1」）。
+	// bounded slice / snooze の区切りとは別に、接続断を判定する
+	// （docs/recording/ingest.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
@@ -226,13 +227,14 @@ type Deps struct {
 func NewWorkers(deps *Deps) *river.Workers {
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &IngestWorker{
-		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
-		MediaDir:      deps.MediaDir,
-		StallTimeout:  deps.IngestStallTimeout,
-		CMDetect:      deps.CMDetect,
-		CutProfiles:   deps.Encode.CutProfileSet(),
-		LiveEnabled:   deps.LiveEnabled,
+		MirakcClients:  deps.MirakcClients,
+		Pool:           deps.Pool,
+		MediaDir:       deps.MediaDir,
+		StallTimeout:   deps.IngestStallTimeout,
+		CMDetect:       deps.CMDetect,
+		CutProfiles:    deps.Encode.CutProfileSet(),
+		EncodeProfiles: deps.Encode,
+		LiveEnabled:    deps.LiveEnabled,
 	})
 	river.AddWorker(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -245,6 +247,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 	})
 	river.AddWorker(workers, &EncodeEnqueueHintWorker{
 		Pool:        deps.Pool,
+		Profiles:    deps.Encode,
 		CutProfiles: deps.Encode.CutProfileSet(),
 	})
 	river.AddWorker(workers, &EncodeReconcileWorker{
@@ -595,9 +598,6 @@ func buildRiverConfig(workers *river.Workers, cfg ClientConfig) (*river.Config, 
 // resolveQueues はこの設定が実際に引く**物理**キュー（`<base>_<site>`）を、
 // 並列度の解決と once モードの上書きまで済ませた形で返す
 // （選択 → once の上書き → site 別物理キューへの展開）。
-//
-// buildRiverConfig の前半と LockSlots の本数計算が同じ規則を見るように切り出して
-// ある。別々に組み立てると「引くつもりの本数」と「プールの予算」が黙ってずれる。
 func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 	queues, err := selectRiverQueues(cfg)
 	if err != nil {
@@ -607,59 +607,6 @@ func resolveQueues(cfg ClientConfig) (map[string]river.QueueConfig, error) {
 		return nil, err
 	}
 	return qualifyRiverQueues(queues, cfg.BoundSites), nil
-}
-
-// lockHoldingQueues は、Work の冒頭から commit まで job advisory lock 用の
-// コネクションを 1 本保持し続けるジョブを持つ論理キュー
-// （internal/worker/job_lock.go。ingest / encode / cm_detect の
-// ワーカーがそれぞれ acquireIngestJobLock / acquireEncodeJobLock を呼ぶ）。
-//
-// thumbnail 等のキューは job lock を取らないので pool の予算に入れない。
-var lockHoldingQueues = []string{
-	jobs.IngestQueue,
-	jobs.EncodeQueue,
-	jobs.CMDetectQueue,
-}
-
-// LockSlots は、この設定で同時に走りうる job advisory lock 保持ジョブの本数を
-// 返す（= その本数ぶんのコネクションが、保持したジョブが commit するまで
-// 解放されない）。
-//
-// プールの予算と fail-fast の下限を決めるのは internal/db だが、本数はキュー設定と
-// 束縛サイト数から決まるので worker 側で数える（db は worker を import しない）。
-//
-// **物理名から論理名を逆引きしない。** site 名には `_` が入りうるので、物理名
-// `ingest_tokyo_2` から論理名と site 名を復元できない。論理キューから
-// jobs.PhysicalQueueName を束縛サイトごとに**引き当てて**、相異なる物理名ごとに
-// MaxWorkers を合計する（site 非依存キューは物理名が 1 つに畳まれる）。
-//
-// once モードでは 1 キュー・MaxWorkers 1 になる（configureOnceQueues）ので、
-// 引くキューが lock を持てば 1、持たなければ 0 になる。
-func LockSlots(cfg ClientConfig) (int, error) {
-	physical, err := resolveQueues(cfg)
-	if err != nil {
-		return 0, err
-	}
-	sites := cfg.BoundSites
-	if len(sites) == 0 {
-		// BoundSites 未設定（テストの部分構成）は qualifyRiverQueues と同じ
-		// フォールバックで 1 要素として数える。
-		sites = []string{""}
-	}
-	var slots int
-	for _, name := range lockHoldingQueues {
-		workers := make(map[string]int, len(sites))
-		for _, site := range sites {
-			physicalName := jobs.PhysicalQueueName(name, site)
-			if qc, ok := physical[physicalName]; ok {
-				workers[physicalName] = qc.MaxWorkers
-			}
-		}
-		for _, maxWorkers := range workers {
-			slots += maxWorkers
-		}
-	}
-	return slots, nil
 }
 
 // selectRiverQueues は設定された並列度を解決し、論理キューの集合を返す。

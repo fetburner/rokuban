@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/fetburner/rokuban/internal/ffargs"
 )
+
+// DefaultEncodeProfileRate is the default multiplier used to bound encode job runtime.
+const DefaultEncodeProfileRate = 4.0
 
 // EncodeConfig はエンコード設定。
 //
@@ -120,6 +124,10 @@ func (c CMDetectConfig) ValidateTools(ffprobe string) error {
 type EncodeProfile struct {
 	// Name はルール / overrides から参照する一意な名前。
 	Name string `yaml:"name"`
+
+	// Rate は録画実尺に対する encode job の rescue 締切の倍率。
+	// 0 / 未設定は DefaultEncodeProfileRate に置き換える。
+	Rate float64 `yaml:"rate"`
 
 	// Container は出力コンテナ。mp4 または mkv（拡張子と -f に対応）。
 	Container string `yaml:"container"`
@@ -281,6 +289,11 @@ func (c *EncodeConfig) applyDefaults() {
 	if c.ThumbnailConcurrency == 0 {
 		c.ThumbnailConcurrency = 1
 	}
+	for i := range c.Profiles {
+		if c.Profiles[i].Rate == 0 {
+			c.Profiles[i].Rate = DefaultEncodeProfileRate
+		}
+	}
 }
 
 // validate はプロファイル定義の妥当性を検査する（Load 時）。
@@ -300,6 +313,10 @@ func (c EncodeConfig) validate() error {
 			return fmt.Errorf("encode.profiles: duplicate name %q", p.Name)
 		}
 		seen[p.Name] = struct{}{}
+		if p.Rate < 0 || math.IsNaN(p.Rate) || math.IsInf(p.Rate, 0) {
+			return fmt.Errorf("encode.profiles[%d] (%s): rate must be a finite number >= 0, got %v",
+				i, p.Name, p.Rate)
+		}
 
 		switch p.Container {
 		case "mp4", "mkv":

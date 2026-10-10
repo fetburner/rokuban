@@ -601,7 +601,7 @@ func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
 	cutProfiles := map[string]struct{}{"cut": {}}
 
 	// 未確認: cut は投入されず、h264 だけが投入される。
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, cutProfiles); err != nil {
+	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, config.EncodeConfig{}, cutProfiles); err != nil {
 		t.Fatalf("EnqueueMissingEncodes: %v", err)
 	}
 	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"h264"}) {
@@ -613,7 +613,7 @@ func TestEnqueueMissingEncodes_CutProfilesWaitForReview(t *testing.T) {
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
-	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, cutProfiles); err != nil {
+	if err := EnqueueMissingEncodes(ctx, client, pool, recordingID, config.EncodeConfig{}, cutProfiles); err != nil {
 		t.Fatalf("second EnqueueMissingEncodes: %v", err)
 	}
 	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"cut", "h264"}) {
@@ -819,7 +819,7 @@ func TestEnqueueCut_AllCutRecordingEnqueuesNothing(t *testing.T) {
 
 	// ヒント経路。
 	for _, id := range []int64{allCut, partial} {
-		if err := EnqueueMissingEncodes(ctx, client, pool, id, cut); err != nil {
+		if err := EnqueueMissingEncodes(ctx, client, pool, id, config.EncodeConfig{}, cut); err != nil {
 			t.Fatalf("EnqueueMissingEncodes(%d): %v", id, err)
 		}
 	}

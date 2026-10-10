@@ -41,12 +41,9 @@ type encodeProgressReporter struct {
 // encode.go の w.notify。defer stopProgress() より前に呼ばれる）より後に届く
 // 順序は排除していない（未検証: 実際に遅延する頻度は測っていない）。また
 // flush の notify には start に渡された ctx をそのまま使うため、親 ctx が
-// cancel と同時にキャンセルされる経路（worker 停止。encode ジョブに
-// ジョブタイムアウトの経路は無い --- EncodeWorker.Timeout は -1 を返し、river
-// は jobTimeout > 0 のときしか派生 ctx を作らない。
-// river@v0.47.0 internal/jobexecutor/job_executor.go の
-// `cmp.Or(e.WorkUnit.Timeout(), e.ClientJobTimeout)` 参照）では notify 自体が
-// 失敗し、flush は実質何もしない（notifyCtx.Err() != nil のときは警告ログも
+// cancel と同時にキャンセルされる経路（worker 停止または encode job timeout。
+// EncodeWorker.Timeout は保存済み timeout を返し、River が派生 ctx を作る）
+// では notify 自体が失敗し、flush は実質何もしない（notifyCtx.Err() != nil のときは警告ログも
 // 出さない --- 「notify を打ち切らない」が成り立つのは、呼び出し元が親 ctx を
 // 生かしたまま stop() だけを呼ぶ場合に限る）。
 func (r *encodeProgressReporter) start(ctx context.Context) (func(time.Duration), context.CancelFunc) {

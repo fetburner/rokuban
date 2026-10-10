@@ -1,37 +1,47 @@
--- encode ジョブの直近の試行状態（issue #316）。書き手は EncodeWorker だけ。
--- 表そのものの設計判断は docs/schema/recordings.md
--- 「recording_encode_attempts --- encode ジョブの直近の試行状態（衛星表）」を参照。
+-- recording_encode_attempts は encode のドメイン試行状態を持つ。attempt_count は
+-- River の attempt ではなく、開始ごとに進む fencing token である。
 
--- name: UpsertRecordingEncodeAttemptRunning :exec
--- 試行の開始を記録する。行の存在そのものが「running か failed のどちらかを
--- 主張している」ことになる（不変条件 10）ので、直前が failed だった行も
--- ここで running に上書きする（再試行が始まったので古い失敗の主張を残さない）。
+-- name: CreateRecordingEncodeAttemptRunning :execrows
+-- 新しい試行を開始する。競合した場合は、既存行をロックして状態を判定する呼び出し側が続ける。
 INSERT INTO recording_encode_attempts (
-    recording_id, profile, state, error, attempted_at
-) VALUES ($1, $2, 'running', NULL, now())
-ON CONFLICT (recording_id, profile) DO UPDATE SET
-    state        = 'running',
-    error        = NULL,
-    attempted_at = now();
+    recording_id, profile, state, error, attempted_at, attempt_count
+) VALUES ($1, $2, 'running', NULL, now(), 1)
+ON CONFLICT (recording_id, profile) DO NOTHING;
 
--- name: UpsertRecordingEncodeAttemptFailed :exec
--- 試行の失敗を記録する。ctx キャンセル（River の停止・シャットダウン）由来の
--- 中断はここを呼ばない（呼び出し側 shouldNotifyEncodeFailure と同じ判定。
--- ジョブの失敗ではないので running のまま残す --- 次の実行が上書きする）。
-INSERT INTO recording_encode_attempts (
-    recording_id, profile, state, error, attempted_at
-) VALUES ($1, $2, 'failed', $3, now())
-ON CONFLICT (recording_id, profile) DO UPDATE SET
-    state        = 'failed',
-    error        = EXCLUDED.error,
-    attempted_at = now();
+-- name: GetRecordingEncodeAttemptForUpdate :one
+SELECT state, error, attempted_at, attempt_count
+FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = $2
+FOR UPDATE;
 
--- name: DeleteRecordingEncodeAttempt :exec
--- 試行行を消す。呼ぶのは runEncode の defer（成功時）で、commitEncoded の
--- 直後ではない --- 間に webhook 通知（HTTP、タイムアウトまで待つ）が入り、
--- 同一トランザクションでもない。「完了しているのに失敗中」という中間状態を
--- 読者に見せないのは、この DELETE の速さではなく API 側が encoded 資産のある
--- プロファイルを encodeJobStatusesFromFields の対象から先に除外しているため。
--- 行が無くても成功する（冪等）。EncodeWorker の冪等スキップ経路（既に active
--- な encoded がある）でも、リークした古い試行行を掃除するために呼ぶ。
-DELETE FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2;
+-- name: UpdateRecordingEncodeAttemptRunning :execrows
+UPDATE recording_encode_attempts
+SET state = 'running', error = NULL, attempted_at = now(),
+    attempt_count = sqlc.arg('next_count')
+WHERE recording_id = $1 AND profile = $2;
+
+-- name: UpdateRecordingEncodeAttemptFailed :execrows
+UPDATE recording_encode_attempts
+SET state = 'failed', error = $3, attempted_at = now()
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = sqlc.arg('attempt_count');
+
+-- name: RestoreRecordingEncodeAttempt :execrows
+UPDATE recording_encode_attempts
+SET state = $3, error = sqlc.narg('error')::text,
+    attempted_at = sqlc.arg('attempted_at'),
+    attempt_count = sqlc.arg('restore_count')
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = sqlc.arg('current_count');
+
+-- name: DeleteRecordingEncodeAttemptForAttempt :execrows
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = $2
+  AND state = 'running' AND attempt_count = $3;
+
+-- name: DeleteFailedRecordingEncodeAttempts :execrows
+-- 利用者の再要求で、指定プロファイルの failed 行を消して試行予算を戻す。
+-- running の行は生きた試行の fencing token なので消さない。
+DELETE FROM recording_encode_attempts
+WHERE recording_id = $1 AND profile = ANY(sqlc.arg('profiles')::text[])
+  AND state = 'failed';

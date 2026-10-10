@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const defaultRescueStuckJobsAfter = 6 * time.Minute
+
 // IngestConfig は ingest ジョブの設定。
 type IngestConfig struct {
 	// Concurrency は mirakc サイトあたりの ingest 同時実行数（ingest キューの
@@ -22,9 +24,7 @@ type IngestConfig struct {
 	// **足りないと追従が枠待ちになる。** 枠が録画数を下回ると、録画中の追従が
 	// MaxWorkers の待ち行列に入り、UI には `pending`（取り込み待ち）が続く。
 	// 4 チューナー機では 5〜6 に上げる（docs/recording/ingest.md §5.4 の式のまま）。
-	// **接続プールの予算はこれに自動で追随する** --- job lock の本数は
-	// internal/worker.LockSlots が設定から数え、internal/db がそこから worker の
-	// 予算を導出する。
+	// ingest は bounded slice と snooze で再開するため、長時間保持する接続を持たない。
 	//
 	// 枠待ちの間に録画が終わったジョブは、録画終了後に始まる pull（finished を観測したら
 	// 最後まで全速で読む）として走る（ingest は追従と完了後 pull を同じ
@@ -33,8 +33,8 @@ type IngestConfig struct {
 	Concurrency int `yaml:"concurrency"`
 
 	// StallTimeout は転送中の無進捗検知タイムアウト。進捗がこの時間止まると
-	// 切断扱いにして Range 再開する（River の総時間タイムアウトは無効化している
-	// ため、これが ingest の唯一のタイムアウト）。既定値 30 秒は defaults() が
+	// 切断扱いにして Range 再開する。ingest は River の有限な試行 timeout と
+	// snooze で区切るが、この値は区切り内の一時的な接続断を扱う。既定値 30 秒は defaults() が
 	// 埋める（worker 側に二重の既定は無い。0 以下は validate が起動時に弾く ---
 	// 0 と負値のどちらも StallReader を即発火させる。validate のコメント参照）。
 	StallTimeout time.Duration `yaml:"stall_timeout"`
@@ -150,9 +150,11 @@ type WorkerConfig struct {
 	Queues []string `yaml:"queues"`
 
 	// RescueStuckJobsAfter は River の JobRescuer が running のまま残ったジョブを
-	// 死んだ実行とみなすまでの時間（river.Config.RescueStuckJobsAfter）。0 なら
-	// River の既定（1h）。個別の Timeout() がこれより長い kind は、その Timeout を
-	// 待ってから rescue される（Timeout() が -1 の kind は rescue されない）。
+	// 死んだ実行とみなすまでの時間（river.Config.RescueStuckJobsAfter）。既定値は 6 分。
+	// 明示的に 0 を指定すると River の既定（1h）を使う。River の契約に従い、client の
+	// JobTimeout より長く設定する。worker ごとの Timeout がこれより長い場合、rescuer は
+	// その Timeout が経過するまで待つ（ingest の既定 Timeout は 5 分）。
+	// Timeout() < 0 の encode / cm_detect 系は各 reconcile が回収する。
 	// 正で 1 分未満だと worker が起動しない（River は RescueStuckJobsAfter >= JobTimeout を
 	// 要求し、rokuban は JobTimeout を設定しないので River の既定 1 分が効く）。
 	// k8s で rescuer を誰が動かすかは docs/data/jobs.md §2。

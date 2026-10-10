@@ -491,8 +491,19 @@ func runCMTool(ctx context.Context, dir, binary string, args ...string) ([]byte,
 		}
 	}
 	cmd.Env = append(cmd.Env, "HOME="+dir)
+	// 孫プロセスが stdout を握ったままでも、ctx キャンセル後に Work が戻れるようにする。
+	setWorkerExecWaitDelay(cmd)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		// ctx キャンセルを WaitDelay-success 分岐より先に見る（commandOutput と同型）。
+		if ctx.Err() != nil {
+			return output, ctx.Err()
+		}
+		if errors.Is(err, exec.ErrWaitDelay) && cmd.ProcessState != nil && cmd.ProcessState.Success() {
+			slog.Warn("runCMTool: process exited successfully but WaitDelay expired before I/O completed",
+				"binary", filepath.Base(binary), "wait_delay", workerExecWaitDelay)
+			return output, nil
+		}
 		message := strings.TrimSpace(string(output))
 		if len(message) > 4096 {
 			message = message[len(message)-4096:]
@@ -521,10 +532,9 @@ func cmLogoMatchPercent(output []byte) (float64, error) {
 //
 // **上書きが原子的でないことは問題にならない。** dir は呼び出し元が作る job ID
 // ごとの scratch（`{scratch}/cm-detect/{job_id}/logos`）で、同じ (recording) の
-// 並走実行も別ジョブ ID なので別ディレクトリになる（job lock を失った実行と
-// reconcile の代替実行が並走しうるのは encode と同じだが、衝突するのは scratch の
-// 中身だけである）。読み手も同じ実行の readStationLogo だけで、書いた内容は
-// そのまま DB の Upsert へ渡す。encode の公開のように共有の canonical へ書く経路が
+// 並走実行も別ジョブ ID なので別ディレクトリになる（締切後に River が再試行した実行と
+// 前の実行が並走しうるが、衝突するのは scratch の中身だけである）。読み手も同じ実行の
+// readStationLogo だけで、書いた内容はそのまま DB の Upsert へ渡す。encode の公開のように共有の canonical へ書く経路が
 // 無いので、ここへ temp + rename は持ち込まない。
 func writeStationLogo(dir, channel string, data []byte) error {
 	if len(data) == 0 {

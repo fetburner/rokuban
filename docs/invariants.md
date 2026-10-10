@@ -110,9 +110,13 @@ CLAUDE.md の不変条件 9〜14 は「チェック」の一文だけを持つ�
 
 外部プロセス（mirakc / ffmpeg）は対象外である。ドキュメントに無い挙動を実測で決めざるを得ないので、不変条件 2 と CLAUDE.md の「測っていない挙動を断言しない」で扱う。
 
+**ライブラリの公開契約には、そのライブラリの CHANGELOG に明記された挙動も含める。**
+CHANGELOG は API doc より説明が弱いことがあるため、実物のライブラリを使うテストで
+その挙動を固定する。
+
 ブラウザも対象外である。hls.js のようにブラウザの実挙動の上で動くものの実測を含む（例: Chrome が HLS の MIME に `canPlayType` で `'maybe'` を返す）。扱いは「測っていない挙動を断言しない」だけで、不変条件 2 は掛からない。
 
-未解決（回収）: River で実行中に死んだ `Timeout() = -1` ジョブの回収は、`river_job` の生 SQL に頼っている。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
+未解決（回収）: River で実行中に死んだ `Timeout() < 0` ジョブの回収は、`river_job` の生 SQL に頼っている。現在は cm_detect 系（ロゴ候補解析を含む）だけが対象で、ingest と encode は有限 Timeout と JobRescuer に移した。`JobRetry` は running に触れない。`JobCancel` が付けた `metadata.cancel_attempted_at` の印を JobRescuer が `cancelled` で終端する実装はある（v0.47.0 のソースで確認）。ただし doc にも CHANGELOG にも無いので契約ではない。契約の範囲に代替が無い。
 
 未解決（テスト）: 既存テストに 3 つの形の違反が残っている。`river_job` を含むテストは `git grep -l river_job -- '*_test.go'` で引く。
 

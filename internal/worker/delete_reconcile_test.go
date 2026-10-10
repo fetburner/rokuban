@@ -1800,9 +1800,16 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	if err := os.WriteFile(tempPath, []byte("partial"), 0o644); err != nil {
 		t.Fatalf("writing ingest temp: %v", err)
 	}
+	checkpointPath := ingestCheckpointPath(tempPath)
+	if err := os.WriteFile(checkpointPath, []byte("checkpoint"), 0o644); err != nil {
+		t.Fatalf("writing ingest checkpoint: %v", err)
+	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	if err := os.Chtimes(tempPath, old, old); err != nil {
 		t.Fatalf("making ingest temp old: %v", err)
+	}
+	if err := os.Chtimes(checkpointPath, old, old); err != nil {
+		t.Fatalf("making ingest checkpoint old: %v", err)
 	}
 
 	w := &DeleteReconcileWorker{
@@ -1816,28 +1823,47 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	if !fileExists(tempPath) {
 		t.Fatal("ingest temp was deleted before orphan aging completed")
 	}
+	if !fileExists(checkpointPath) {
+		t.Fatal("ingest checkpoint was deleted before orphan aging completed")
+	}
 	var count int
+	checkpointRelPath := relPath + ingestCheckpointSuffix
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		"SELECT count(*) FROM orphan_files WHERE rel_path IN ($1, $2)", relPath, checkpointRelPath).Scan(&count); err != nil {
 		t.Fatalf("querying orphan_files after discovery: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("orphan_files count for ingest temp = %d, want 1", count)
+	if count != 2 {
+		t.Fatalf("orphan_files count for ingest temp and checkpoint = %d, want 2", count)
 	}
 
 	if _, err := pool.Exec(context.Background(),
-		"UPDATE orphan_files SET first_seen = $2 WHERE rel_path = $1",
-		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
+		"UPDATE orphan_files SET first_seen = $3 WHERE rel_path IN ($1, $2)",
+		relPath, checkpointRelPath, time.Now().Add(-20*24*time.Hour)); err != nil {
 		t.Fatalf("aging ingest temp orphan row: %v", err)
 	}
+	if err := os.Chtimes(checkpointPath, time.Now(), time.Now()); err != nil {
+		t.Fatalf("refreshing ingest checkpoint activity time: %v", err)
+	}
 	if err := w.Work(context.Background(), nil); err != nil {
-		t.Fatalf("second Work() error: %v", err)
+		t.Fatalf("Work() with recent checkpoint error: %v", err)
+	}
+	if !fileExists(tempPath) || !fileExists(checkpointPath) {
+		t.Fatal("temp or checkpoint was deleted while a recent checkpoint marked a snoozed ingest")
+	}
+	if err := os.Chtimes(checkpointPath, old, old); err != nil {
+		t.Fatalf("aging ingest checkpoint after retained snooze: %v", err)
+	}
+	if err := w.Work(context.Background(), nil); err != nil {
+		t.Fatalf("final Work() error: %v", err)
 	}
 	if fileExists(tempPath) {
 		t.Fatal("aged ingest temp still exists")
 	}
+	if fileExists(checkpointPath) {
+		t.Fatal("aged ingest checkpoint still exists")
+	}
 	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+		"SELECT count(*) FROM orphan_files WHERE rel_path IN ($1, $2)", relPath, checkpointRelPath).Scan(&count); err != nil {
 		t.Fatalf("querying orphan_files after deletion: %v", err)
 	}
 	if count != 0 {

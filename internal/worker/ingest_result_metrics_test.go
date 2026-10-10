@@ -172,7 +172,34 @@ func TestIngestWorker_GracefulStopIsNotCounted(t *testing.T) {
 	})
 }
 
-func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
+func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	w := &IngestWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient("http://127.0.0.1:1", nil)),
+		Pool:          pool,
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	beforeResults := ingestJobResults()
+	durationBefore := ingestDurationSamples(t)
+	err := w.Work(ctx, &river.Job[IngestJobArgs]{
+		JobRow: &rivertype.JobRow{ID: 999},
+		Args:   IngestJobArgs{Site: "default", RecordID: "rec-timeout-metrics"},
+	})
+	if err == nil {
+		t.Fatal("Work() with an expired deadline returned nil")
+	}
+	assertIngestResultDeltas(t, beforeResults, map[string]float64{"failure": 1}, "deadline timeout")
+	if got, want := ingestDurationSamples(t), durationBefore+1; got != want {
+		t.Errorf("IngestDuration samples after deadline = %d, want %d", got, want)
+	}
+}
+
+func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	tsData := makeTSData(20)
 	setIngestSHA256Rate(t, 47)
 	var deleteAttempts atomic.Int32
@@ -204,7 +231,7 @@ func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("river.NewClient: %v", err)
 	}
-	events, cancelSubscribe := client.Subscribe(river.EventKindJobCompleted)
+	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed)
 	defer cancelSubscribe()
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel()
@@ -226,25 +253,28 @@ func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
 	select {
 	case event = <-events:
 	case <-time.After(30 * time.Second):
-		t.Fatal("ingest job did not complete while content.sha256 remained null")
+		t.Fatal("ingest job did not snooze while content.sha256 remained null")
 	}
 	if event.Job.ID != inserted.Job.ID {
-		t.Errorf("completed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
+		t.Errorf("snoozed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
 	}
-	if event.Job.State != rivertype.JobStateCompleted {
-		t.Fatalf("job state = %q, want completed while awaiting SHA-256", event.Job.State)
+	if event.Kind != river.EventKindJobSnoozed {
+		t.Fatalf("event kind = %q, want job snoozed", event.Kind)
 	}
-	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending completion")
+	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending snooze")
 	if got := ingestDurationSamples(t); got != durationBefore {
-		t.Errorf("IngestDuration samples after pending completion = %d, want %d", got, durationBefore)
+		t.Errorf("IngestDuration samples after pending snooze = %d, want %d", got, durationBefore)
 	}
 
-	var state string
-	if err := pool.QueryRow(context.Background(), "SELECT state FROM river_job WHERE id = $1", inserted.Job.ID).Scan(&state); err != nil {
-		t.Fatalf("reading river_job: %v", err)
+	jobAfterSnooze, err := client.JobGet(context.Background(), inserted.Job.ID)
+	if err != nil {
+		t.Fatalf("getting snoozed River job through public API: %v", err)
 	}
-	if state != string(rivertype.JobStateCompleted) {
-		t.Errorf("persisted river_job state = %q, want completed", state)
+	if jobAfterSnooze.State != rivertype.JobStateScheduled {
+		t.Errorf("snoozed job state = %q, want scheduled", jobAfterSnooze.State)
+	}
+	if jobAfterSnooze.Attempt != 0 {
+		t.Errorf("snoozed job attempt = %d, want 0", jobAfterSnooze.Attempt)
 	}
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
@@ -266,6 +296,9 @@ func TestIngestWorker_SHA256WaitCompletesJobWithoutMetrics(t *testing.T) {
 	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, len(tsData))
+	}
+	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
+		t.Errorf("SHA-256 checkpoint while waiting: %v, want present", err)
 	}
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
