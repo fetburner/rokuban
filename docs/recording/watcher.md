@@ -54,10 +54,9 @@ sweep が同じ失敗を次回以降も観測しても、同じ event と reason
 
 ruler / reconciler と違い、**起動契機は定期のみ**（ヒントで前倒しする経路を持たない）。
 
-`record_sweep` は全量取得を始める前に、プロセス死で `running` のまま残った ingest の回収も
-行う。最後の進捗時刻が古い行を候補にするが、ジョブ ID の advisory lock を取得できた場合だけ
-死亡と確定し、旧行を終端化して新しい ingest を投入する。生きている転送は lock を保持して
-いるため、進捗時刻が古くても回収しない。
+`record_sweep` は mirakc の全 record を取得し、DB に同期されていない finished record を
+`processRecord` で補う。プロセス死後に `running` のまま残った ingest は River の
+`JobRescuer` が回収する。record_sweep は River の job 行を直接変更しない。
 
 | 契機 | 種別 |
 |---|---|

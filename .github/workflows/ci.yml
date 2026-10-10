@@ -282,14 +282,15 @@ jobs:
           # 残り全部。上の 3 本が選んだサブテストだけを skip する。
           - name: rest
             skip: '^TestBroadcastPathologies$/^(EventIDReset|FollowingProgram|PrecedingProgramExtension|RunningStatusStartsSoon)$'
-            expect: 'TestConformance'
+            expect: 'TestConformance TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording'
     # -timeout の根拠（直列全体としてのコード中の named timeout の積算。TestConformance +
-    # TestBroadcastPathologies の 4 病態ケース + TestLiveStreamReleaseUnderRecording が
-    # 同じテストバイナリで直列に走り、合計 6 コンテナを起動する）。
+    # TestBroadcastPathologies の 4 病態ケース + TestLiveStreamReleaseUnderRecording +
+    # TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording が同じテストバイナリで直列に走り、
+    # 合計 7 コンテナを起動する）。
     #
     # コード上の named timeout で積める分（helpers_test.go / conformance_test.go /
     # pathology_test.go / live_release_test.go の定数から）:
-    #   コンテナ起動 ×6（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 240s
+    #   コンテナ起動 ×7（waitForHTTP 30s + waitForPublishedPort 10s） ≈ 280s
     #   TestConformance ≈ 288s（epgBootstrapTimeout 60s×2 + recordingStartTimeout 20s×2 +
     #     RecordingInProgress の各種ポーリング ≈28s + recordingFinishTimeout 90s +
     #     SSE 系サブテスト ≈10s）
@@ -304,25 +305,44 @@ jobs:
     #     waitForProgram 60s + recording の開始待ち 40s [waitForRecord 20s +
     #     waitForRecordingStatus 20s] + 容量拒否確認の failedCtx 10s +
     #     mirakc 解放待ちループ 5s）
-    #   小計 ≈ 1778s
+    #   TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording ≈ 280s（service / program
+    #     待ち 120s + recording 開始 / 終了待ち 110s + watcher / ingest once worker の
+    #     idle timeout 50s。実バイナリのビルドと起動は named timeout が無く、別途余裕を含める）
+    #   小計 ≈ 2098s
     #
     # コード上に named timeout が無く積めない分（実測/見積もりであることを明示する。
     # startMirakc の `docker run` は image pull を待ってから返るので、pull が遅ければ
     # ここで go test の -timeout そのものを消費する --- timeout-minutes 側の余裕ではない）:
-    #   docker image pull（同一ジョブ内では 6 コンテナが同じ digest を使うので実質 1 回。
+    #   docker image pull（同一ジョブ内では 7 コンテナが同じ digest を使うので実質 1 回。
     #     イメージサイズ ≈49MB、ローカル実測はキャッシュ済みで数秒未満。CI の初回 pull
-    #     を見積もりで 30s とする） + buildFixtureTuner ×3（ローカル実測 arm64 cross
-    #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 40s
+    #     を見積もりで 30s とする） + buildFixtureTuner ×4（ローカル実測 arm64 cross
+    #     build ≈0.6s/回、CI 変動を見て 5s/回） ≈ 50s
     #
-    # 合計 ≈ 1818s（30 分強）。**-timeout はこれに 282s（約 15%）の余裕を足した 2100s
-    # （35m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go や
-    # GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m。image pull はここに含まない、
-    # 上記のとおり go test 内で消費されるため）を足した 40m にする。
+    # 合計 ≈ 2148s（36 分弱）。**-timeout はこれに 132s（約 6%）の余裕を足した 2280s
+    # （38m）にする。** timeout-minutes は go test の -timeout に加えて checkout/setup-go、
+    # PostgreSQL service の起動、GH Actions 側のジョブ終了処理のぶんの余裕（300s = 5m。image pull はここに含まない、
+    # 上記のとおり go test 内で消費されるため）を足した 43m にする。
     #
     # シャードに分けても値は変えない。mirakc-conformance-weekly.yml は直列で回し続け、
     # 「ここと同じ値を保つ」と決めている。各シャードの実際の積算は直列より小さいので、
     # 同じ値は上限として安全側に倒れる。
-    timeout-minutes: 40
+    timeout-minutes: 43
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: conformance
+          POSTGRES_PASSWORD: conformance
+          POSTGRES_DB: conformance_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U conformance"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ROKUBAN_CONFORMANCE_TEST_DATABASE_URL: postgres://conformance:conformance@localhost:5432/conformance_test?sslmode=disable
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -339,7 +359,7 @@ jobs:
           args=()
           [ -n "$RUN" ] && args+=(-run "$RUN")
           [ -n "$SKIP" ] && args+=(-skip "$SKIP")
-          go test -tags conformance ./internal/mirakc/conformance/... -timeout 35m -v "${args[@]}" | tee shard.log
+          go test -tags conformance ./internal/mirakc/conformance/... -timeout 38m -v "${args[@]}" | tee shard.log
           # 空振り検査: -run の綴り違いは "no tests to run" で緑になる。EXPECT は空白区切りで、全名の PASS を要求する
           for t in $EXPECT; do
             grep -qE "^\s*--- PASS: ${t}( |$)" shard.log \
