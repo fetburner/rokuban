@@ -250,14 +250,11 @@ func testCrash(t *testing.T, factory Factory) {
 	var calls atomic.Int32
 	started := make(chan struct{}, 1)
 	contexts := make(chan error, 2)
-	releaseFirst := make(chan struct{})
-	defer close(releaseFirst)
 	fixture := newFixture(t, factory, contractWorker{work: func(ctx context.Context, _ contractArgs) error {
 		if calls.Add(1) == 1 {
 			started <- struct{}{}
 			<-ctx.Done()
 			contexts <- ctx.Err()
-			<-releaseFirst
 			return ctx.Err()
 		}
 		return nil
