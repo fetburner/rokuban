@@ -144,18 +144,18 @@ finished record と HEAD の長さが temp のサイズに一致し、期限前�
 作った record 固有 temp の `fsync` → `Close` を行う。区切りでの fsync（checkpoint 保存の直前）とは別に、replay
 した既存部分を含めて完了時にも行う。バッファごとには行わない。
 
-その後の短い確定区間で、canonical と同じディレクトリの `rel_path` 固有 filesystem lock を取得する。
-次に DB transaction と同じ `rel_path` の transaction-level advisory lock を取得する。original の
+その後の短い確定区間で、media root の `rel_path` 固有 filesystem lock を取得する。
+original の
 `media_assets` 行を INSERT して rel_path の一意性を予約する。INSERT は
-transaction が commit するまで他セッションから見えない。この transaction と両方の lock を
-保持したまま temp
-→ canonical の atomic rename と親ディレクトリ `fsync` を行い、最後に DB transaction を
+commit まで他セッションに見えない。transaction と filesystem lock を保持して temp を
+canonical に atomic rename し、親ディレクトリを `fsync` する。その後 DB transaction を
 commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
 
 rename 前の失敗では temp を残して次の試行へ渡す。ただし長さ / SHA-256 の不一致と
 `canceled` / `failed` は中身が不採用と確定しているので temp を消す。rename 後の親ディレクトリ
 `fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan
-として aging 回収に委ねる。mirakc record は削除しない。rename と DB commit の順序を反転させて、
+として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。
+mirakc record は削除しない。rename と DB commit の順序を反転させて、
 DB が指す実体を先に公開してはならない。
 
 **`canceled` / `failed` で終わった record の途中までのバイトは資産にしない。** 理由は 3 つある。
@@ -166,7 +166,7 @@ DB が指す実体を先に公開してはならない。
 
 fsync を入れる理由は電源断だけではなく、Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync` でしか上がらないためである。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。ファイル `fsync` / `Close` / rename / 親ディレクトリ `fsync` のいずれかが失敗した場合は DB 登録も record 削除も行わず、ジョブを失敗させる。
 
-rename 前の失敗なら、残った temp を replay して pull を続けられる。rename 後の親ディレクトリ `fsync` または DB commit の失敗では、temp はすでに canonical へ移動済みである。DB commit が成立しなかった場合、次の ingest は orphan 回収を待たずに全量 pull を開始し、同じ rel_path へ再度 rename する。残った canonical orphan はその rename で置き換わるか、後続の aging 回収で削除される。DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。いずれも mirakc record は削除せず、データ喪失は構造的に起きない。
+rename 前の失敗なら、残った temp を replay して pull を続けられる。rename 後の親ディレクトリ `fsync` または DB commit の失敗では、temp はすでに canonical へ移動済みである。DB commit が成立しなかった場合、次の ingest は orphan 回収を待たずに全量 pull を開始し、同じ rel_path へ再度 rename する。残った canonical orphan は再試行の rename で置き換わるか、人が調査して回復・削除するまで残る。DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。いずれも mirakc record は削除せず、データ喪失は構造的に起きない。
 
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つける。そして `processRecord` が同一トランザクションで ingest ジョブを再投入し続ける。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
@@ -184,22 +184,21 @@ rename 前の失敗なら、残った temp を replay して pull を続けら�
 
 canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの
 record 固有 temp へ並行して pull できる。同じ record は temp の flock で直列化する。
-公開時は rel_path filesystem lock と transaction-level advisory lock を使う。DB の一意 reservation
-も使い、ingest と orphan 回収を含む同じ canonical path の競合を直列化する。
+公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の
+ingest と通常削除の競合を直列化する。canonical orphan は削除せず、aging 後に報告する。
 `checkRelPathConflict` / `GetLiveMediaAssetByRelPath`
 は転送前の安価なヒントであり、転送中は lock を保持しない。
 
-各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。delete_reconcile の `deleting` 行との TOCTOU は閉じない: 先読みはヒントであり、正しさは一意索引と適用時の状態遷移に残る。
+各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。通常削除は同じ rel_path filesystem lock を使うため、公開と unlink の競合は直列化される。転送前の `GetLiveMediaAssetByRelPath` はヒントであり、最終判断は一意索引と適用時の状態遷移に残る。
 
-- **rel_path の filesystem lock は公開・回収の区間だけに使う。**
+- **rel_path の filesystem lock は公開・通常削除の区間だけに使う。**
 canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
-ingest commit と canonical orphan 回収は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。
-対象区間は rename / unlink から DB commit または orphan 行の整理までである。
-DB セッションが切れても古いファイル操作が続き、公開済み canonical を回収側が消すことはない。
-transaction-level advisory lock は DB の一意性と live 行確認を補助する。
+ingest commit と通常削除は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。
+対象区間は rename / unlink から DB commit までである。canonical orphan は公開状態を判定できないため、
+自動削除せず aging 後に報告する。
 - **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる。SIGKILL されたプロセス自身はもう書かないが、RWX ではカーネルが未書き込みのページを後から書き戻しうる（未検証）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では 30 秒以上止まったプロセスと、DB から分断されたが生きている worker でも代替実行が走る。そのぶん当たる確率が上がる
 - **同一録画の再試行**: Work は 4 分の transfer slice ごとに同じ River job を snooze する。プロセス死で running 行だけが残った場合は JobRescuer が retry を予約する。snooze では同じ job ID と record 固有 temp で再開し、temp の flock が同時書き込みを防ぐ。checkpoint が使えない場合は full replay に戻る
-- **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。プロセス死や回収不能な temp は既存の `orphan_files` の mtime 猶予（既定 7 日）とエイジング（既定 14 日）が回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
+- **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。rename 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
 
 **弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した**。本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
 

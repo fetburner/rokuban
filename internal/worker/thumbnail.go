@@ -405,7 +405,7 @@ func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logg
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		log.Warn("thumbnail: removing replaced file failed; orphan collection will pick it up",
+		log.Warn("thumbnail: removing replaced file failed; orphan reporting will expose it",
 			"rel_path", relPath, "err", err)
 	}
 }

@@ -10,7 +10,7 @@
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。4 分の slice ごとに temp と SHA-256 checkpoint を保存し、同じ River job を snooze して再開する。プロセス死では JobRescuer が同じ job を回収する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
 - **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` のコミットで決まる**。投入時に `max(1h, 録画実尺 × profile rate)` の締切を args に保存する。River の JobRescuer はその締切後に同じ job ID を再試行する。
   ドメイン試行数は `recording_encode_attempts` に保存し、公開 tx で fencing token として照合する。試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても出力は衝突しない。
-  公開前に一時ファイルを canonical と同じディレクトリへコピーする。rel_path の filesystem lock と advisory xact lock を取り、行を読み直してから rename する（`O_TRUNC` で canonical を直接書かない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
+  公開前に一時ファイルを canonical と同じディレクトリへコピーする。rel_path の filesystem lock と DB transaction を取り、行を読み直してから rename する（`O_TRUNC` で canonical を直接書かない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
   `rel_path` が計画時と違い、行が active なら River の snooze で再計画する。行が active でなければ成功で飛ばす。RWX のメディア越しに `flock` が効くかは未検証。
   cancel を無視する処理やネットワーク filesystem の停止は job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](storage.md) §4 と [ストレージ](../storage.md) §6 を参照する

@@ -151,8 +151,9 @@ type CleanupConfig struct {
 	// 完結するため）。0 なら既定値（7 日）。
 	OrphanMTimeGrace time.Duration `yaml:"orphan_mtime_grace"`
 
-	// OrphanAge は孤児候補が `orphan_files` に記録されてから実削除されるまでの
-	// エイジング期間。DB リストアで first_seen ごと失われるため窓は開き直る。
+	// OrphanAge は孤児候補が `orphan_files` に記録されてから、予約名付きファイルの
+	// 削除または canonical file の報告までのエイジング期間。DB リストアで first_seen
+	// ごと失われるため窓は開き直る。
 	// 0 なら既定値（14 日）。
 	OrphanAge time.Duration `yaml:"orphan_age"`
 

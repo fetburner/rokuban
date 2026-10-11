@@ -157,9 +157,6 @@ func publishGeneratedMediaAsset(
 		return 0, false, fmt.Errorf("beginning generated media asset commit: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := lockMediaRelPathInTransaction(ctx, tx, relPath); err != nil {
-		return 0, false, err
-	}
 	q := sqlcgen.New(tx)
 	skip, err := shouldSkip(ctx, q)
 	if err != nil {

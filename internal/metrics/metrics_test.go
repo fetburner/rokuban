@@ -70,6 +70,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ThumbnailReconcileLastPass.SetToCurrentTime()
 	ThumbnailReconcileCandidates.Set(0)
 	MediaAssetsMissing.WithLabelValues("original").Set(0)
+	OrphanFilesUnresolved.Set(0)
 	MissingAssetScanSuspectedStorageFailure.Add(1)
 
 	families, err := reg.Gather()
