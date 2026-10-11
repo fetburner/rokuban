@@ -29,7 +29,6 @@ import {
   formatLiveDiagnostics,
   isRecordedProgramOffset,
   liveProfileLabel,
-  nextProgramBoundaryMs,
   nextProgramRefreshMs,
   nextLowerProfile,
   pickInitialService,
@@ -44,7 +43,7 @@ import { recordingTimeline } from '@/lib/recording-timeline'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
-import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
+import { siteServiceKey, useAllSitesServices, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
 /**
@@ -60,16 +59,16 @@ const selectedProgramWindowMs = 6 * 60 * 60_000
 
 /**
  * cachedProgramWindowAnchor は利用中の予定窓を query cache から導出する。
- * 境界で先行取得した窓をその時刻から使い、窓より遅れて復帰したときは、
- * キャッシュに現在の番組も次の境界も無い場合だけ現在時刻を含む窓へ追いつく
- * （`LivePage / 番組境界の再取得` の遅延タイマーテスト）。
+ * 境界で先行取得した窓はその時刻から使い、期限切れ後に現行番組が欠けた局があれば
+ * 現在時刻を含む窓へ追いつく（`LivePage / 番組境界の再取得`「他局に長時間番組が残っていても、遅延後の各局の放送中番組を一覧に出す」）。
  */
 function cachedProgramWindowAnchor(
   queryClient: QueryClient,
   sites: readonly string[],
+  services: readonly SiteService[],
   nowMs: number,
 ): number {
-  const programsByAnchor = new Map<number, ProgramListItem[]>()
+  const programsByAnchor = new Map<number, SiteProgram[]>()
   for (const site of sites) {
     for (const [queryKey, data] of queryClient.getQueriesData<Awaited<ReturnType<typeof listPrograms>>>({
       queryKey: getListProgramsQueryKey(site),
@@ -80,7 +79,7 @@ function cachedProgramWindowAnchor(
       const endMs = Date.parse(params.end)
       if (!Number.isFinite(startMs) || endMs - startMs !== programWindowMs || startMs > nowMs) continue
       const programs = programsByAnchor.get(startMs) ?? []
-      programs.push(...(unwrap(data) ?? []))
+      programs.push(...(unwrap(data) ?? []).map((program) => ({ ...program, site })))
       programsByAnchor.set(startMs, programs)
     }
   }
@@ -91,10 +90,15 @@ function cachedProgramWindowAnchor(
   const anchor = Math.max(...anchors)
   if (nowMs < anchor + programWindowMs) return anchor
 
-  const programs = programsByAnchor.get(anchor) ?? []
-  const hasAiringProgram = programs.some((program) => isAiring(program.startAt, program.endAt, nowMs))
-  const hasFutureBoundary = nextProgramBoundaryMs(programs, nowMs) !== null
-  if (hasAiringProgram || hasFutureBoundary) return anchor
+  const airingServiceKeys = new Set(
+    (programsByAnchor.get(anchor) ?? [])
+      .filter((program) => isAiring(program.startAt, program.endAt, nowMs))
+      .map((program) => siteServiceKey(program.site, program.networkId, program.serviceId)),
+  )
+  const allServicesHaveAiringProgram = services
+    .filter((service) => service.hasPrograms)
+    .every((service) => airingServiceKeys.has(siteServiceKey(service.site, service.networkId, service.serviceId)))
+  if (allServicesHaveAiringProgram) return anchor
 
   return Math.floor(nowMs / programWindowMs) * programWindowMs
 }
@@ -359,7 +363,7 @@ export function LivePage() {
   // 選び、後の購読に次の境界を渡すことで、別の interval / timeout を持たない。
   const clockNowMs = useNow(scheduleClockTickMs)
   const queryClient = useQueryClient()
-  const programWindowAnchor = cachedProgramWindowAnchor(queryClient, sites, clockNowMs)
+  const programWindowAnchor = cachedProgramWindowAnchor(queryClient, sites, siteServices, clockNowMs)
   const window_ = useMemo(() => currentProgramWindow(programWindowAnchor), [programWindowAnchor])
   const siteProgramQueries = useQueries({
     queries: sites.map((site) => getListProgramsQueryOptions(site, window_, {

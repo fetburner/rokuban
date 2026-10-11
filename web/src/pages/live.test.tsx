@@ -2001,26 +2001,51 @@ describe('LivePage / 番組境界の再取得', () => {
     nextProgramStartAt = boundary,
     nextProgramName = '次の番組',
     holdBoundaryWindow = false,
+    longProgramOnFirstChannel = false,
+    otherChannelNextProgramStartAt,
+    otherChannelNextProgramName = '他局の次の番組',
     initialNowMs = boundary - 90_500,
     queryGcTimeMs,
   }: {
     nextProgramStartAt?: number
     nextProgramName?: string
     holdBoundaryWindow?: boolean
+    longProgramOnFirstChannel?: boolean
+    otherChannelNextProgramStartAt?: number
+    otherChannelNextProgramName?: string
     initialNowMs?: number
     queryGcTimeMs?: number
   } = {}) {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(initialNowMs)
+    const hasOtherChannel = otherChannelNextProgramStartAt !== undefined
+    const programsByServiceId: Record<number, ProgramListItem[]> = hasOtherChannel
+      ? {
+          1: [program({
+            programId: 1,
+            eventId: 1,
+            name: '前の番組',
+            startAt: new Date(boundary - 30 * 60_000).toISOString(),
+            endAt: new Date(boundary + (longProgramOnFirstChannel ? 30 * 60_000 : 0)).toISOString(),
+          })],
+          2: [
+            program({ programId: 3, serviceId: 2, eventId: 3, name: '他局の前の番組', startAt: new Date(boundary - 30 * 60_000).toISOString(), endAt: new Date(boundary).toISOString() }),
+            program({ programId: 4, serviceId: 2, eventId: 4, name: otherChannelNextProgramName, startAt: new Date(otherChannelNextProgramStartAt).toISOString(), endAt: new Date(boundary + 30 * 60_000).toISOString() }),
+          ],
+        }
+      : {
+          1: [
+            program({ programId: 1, eventId: 1, name: '前の番組', startAt: new Date(boundary - 30 * 60_000).toISOString(), endAt: new Date(boundary).toISOString() }),
+            program({ programId: 2, eventId: 2, name: nextProgramName, startAt: new Date(nextProgramStartAt).toISOString(), endAt: new Date(boundary + 30 * 60_000).toISOString() }),
+          ],
+        }
     stubFetch({
-      services: [service({ serviceId: 1, name: 'チャンネル A' })],
+      services: [
+        service({ serviceId: 1, name: 'チャンネル A' }),
+        ...(hasOtherChannel ? [service({ serviceId: 2, name: 'チャンネル B' })] : []),
+      ],
       allSitePrograms: true,
-      programsByServiceId: {
-        1: [
-          program({ programId: 1, eventId: 1, name: '前の番組', startAt: new Date(boundary - 30 * 60_000).toISOString(), endAt: new Date(boundary).toISOString() }),
-          program({ programId: 2, eventId: 2, name: nextProgramName, startAt: new Date(nextProgramStartAt).toISOString(), endAt: new Date(boundary + 30 * 60_000).toISOString() }),
-        ],
-      },
+      programsByServiceId,
     })
     // 実ネットワークの往復ぶん番組の応答を遅らせ、取り直し中の表示を観測できるようにする。
     // サーバーと同じく窓に重なる番組だけを返す --- 境界の後の窓には終わった番組が入らない。
@@ -2142,6 +2167,24 @@ describe('LivePage / 番組境界の再取得', () => {
     })
 
     expect(await screen.findByLabelText('番組表の予定: 遅延後の番組')).toBeInTheDocument()
+    expect(siteProgramWindowStartsAfterBoundary()).toContain(boundary + 180_000)
+  })
+
+  it('他局に長時間番組が残っていても、遅延後の各局の放送中番組を一覧に出す', async () => {
+    await renderBeforeBoundary({
+      longProgramOnFirstChannel: true,
+      otherChannelNextProgramStartAt: boundary + 120_000,
+      otherChannelNextProgramName: '遅延後のチャンネル B 番組',
+    })
+    await waitFor(() => expect(boundaryWindowRequests()).toBe(1))
+    expect(siteProgramWindowStartsAfterBoundary()).toEqual([boundary])
+
+    vi.setSystemTime(boundary + 180_000)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000)
+    })
+
+    expect(await screen.findByLabelText('番組表の予定: 遅延後のチャンネル B 番組')).toBeInTheDocument()
     expect(siteProgramWindowStartsAfterBoundary()).toContain(boundary + 180_000)
   })
 
