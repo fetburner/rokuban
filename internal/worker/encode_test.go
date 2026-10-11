@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -480,9 +481,8 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 	return id
 }
 
-// 同じ job の前の試行（プロセス死）が残した scratch は次の試行の開始時に消える。
-// 別 job（ID が前方一致するだけのもの）と encode 以外の scratch は消さない。
-func TestEncodeWorker_RemovesStaleScratchOfSameJob(t *testing.T) {
+// 同じ recording/profile の stale scratch は消し、別 profile、別 recording、別 kind は残す。
+func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -498,9 +498,10 @@ func TestEncodeWorker_RemovesStaleScratchOfSameJob(t *testing.T) {
 		}
 		return dir
 	}
-	stale := mk("encode/7-3-abc")
-	otherJob := mk("encode/70-1-abc")
-	thumbnail := mk("thumbnail/7-1-abc")
+	stale := mk(filepath.Join("encode", encodeScratchScope(recordingID, "h264")+"-3-abc"))
+	otherProfile := mk(filepath.Join("encode", encodeScratchScope(recordingID, "cut")+"-1-abc"))
+	otherRecording := mk(filepath.Join("encode", encodeScratchScope(recordingID+1, "h264")+"-1-abc"))
+	thumbnail := mk(fmt.Sprintf("thumbnail/%d-abc", recordingID))
 
 	w := &EncodeWorker{
 		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
@@ -516,9 +517,9 @@ func TestEncodeWorker_RemovesStaleScratchOfSameJob(t *testing.T) {
 		t.Fatalf("Work() = %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
-		t.Errorf("stale scratch of the same job still exists (stat err = %v)", err)
+		t.Errorf("stale scratch of the same recording/profile still exists (stat err = %v)", err)
 	}
-	for _, keep := range []string{otherJob, thumbnail} {
+	for _, keep := range []string{otherProfile, otherRecording, thumbnail} {
 		if _, err := os.Stat(keep); err != nil {
 			t.Errorf("%s must be kept: %v", keep, err)
 		}

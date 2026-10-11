@@ -114,9 +114,10 @@ func jobWithID(id, recordingID int64) *river.Job[EncodeJobArgs] {
 	}
 }
 
-func inScratch(jobID string) func(string) bool {
+func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int32) func(string) bool {
+	prefix := fmt.Sprintf("/encode/%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
 	return func(scratchOut string) bool {
-		return strings.Contains(filepath.ToSlash(scratchOut), "/encode/"+jobID+"-")
+		return strings.Contains(filepath.ToSlash(scratchOut), prefix)
 	}
 }
 
@@ -221,7 +222,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	}
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 
-	reached, release := pauseBeforeEncodeLock(t, inScratch("2"))
+	reached, release := pauseBeforeEncodeLock(t, inEncodeScratchAttempt(recordingID, "h264", 1))
 	origCommit := beforeEncodeCommit
 	t.Cleanup(func() { beforeEncodeCommit = origCommit })
 
@@ -242,7 +243,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	}
 
 	beforeEncodeCommit = func(scratchOut string) error {
-		if inScratch("2")(scratchOut) {
+		if inEncodeScratchAttempt(recordingID, "h264", 1)(scratchOut) {
 			return context.DeadlineExceeded
 		}
 		return nil
@@ -433,9 +434,9 @@ func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
 	}
 }
 
-// T4: scratch は job ID と domain attempt ごと。別 job A が終わった後も、B の scratch が残る。
-// job ID 固定パスだと A の開始時・終了時の RemoveAll が B の出力を消す。
-func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
+// T4: scratch は recording/profile/domain attempt ごと。別の実行中 attempt の scratch は
+// 各試行が自分の scratch dir に持つ flock により、cleanup は実行中の試行の dir を消さず、先行 attempt が終わるまで残る。
+func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -455,7 +456,8 @@ func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
 	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
-	bScratch, err := filepath.Glob(filepath.Join(scratchDir, "encode", "2-1-*", "out.mp4"))
+	bScratchPattern := filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*", "out.mp4")
+	bScratch, err := filepath.Glob(bScratchPattern)
 	if err != nil {
 		t.Fatalf("finding B's scratch output: %v", err)
 	}
@@ -469,7 +471,7 @@ func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
 	if err := waitDone(t, doneB); err != nil {
 		t.Fatalf("Work B: %v", err)
 	}
-	bScratch, err = filepath.Glob(filepath.Join(scratchDir, "encode", "2-1-*"))
+	bScratch, err = filepath.Glob(filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*"))
 	if err != nil || len(bScratch) != 0 {
 		t.Errorf("B's scratch was not cleaned up: paths=%v err=%v", bScratch, err)
 	}

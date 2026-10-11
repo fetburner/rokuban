@@ -1159,7 +1159,7 @@ export const DeleteProgramOverridesResponse = zod.void()
  *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
  *   **すべての軸は「軸内は OR、軸間は AND」**
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
- * - `encodeState` は River の active な encode ジョブを待機中 / 実行中で絞る。
+ * - `encodeState` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *
  * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
@@ -1208,7 +1208,7 @@ export const ListRecordingsQueryParams = zod.object({
   "site": zod.array(zod.string().regex(listRecordingsQuerySiteItemRegExp)).optional().describe('mirakc サイト名。複数指定は OR。site 名の構文は\n`config.mirakcs` レジストリと同じ（`internal/config` の\n`mirakcSiteNamePattern`）。レジストリに無い名前を渡してもエラーには\nせず 0 件になる --- 絞り込みは「あるものから選ぶ」操作なので、\n存在しない値の指定は空の結果として素直に読める。\n'),
   "service": zod.array(zod.int().min(1).max(listRecordingsQueryServiceItemMax)).optional().describe('`Service.id`（`networkId * 100000 + serviceId`）。複数指定は OR。\n\n**site は含めない**（`site` パラメータが別軸）。他の絞り込み軸と\n同じく「軸内は OR、軸間は AND」で、`?site=tokyo&service=400101` は\n「tokyo の BS 101」を意味する。\n'),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']).optional().describe('recordings.status の CHECK と一致させた 4 値（\'canceled\' は issue #130 で\nCHECK に追加済み）。\n\n`status=failed` は通常一覧（`trash=false`）に限り supersede 済みの\nfailed 行を返さない。本物の record が観測されて置き換わった擬似\nfailed 行を「録画失敗」として返さないため（ホームの警告が偽陽性を\n出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。\n'),
-  "encodeState": zod.enum(['queued', 'running']).optional().describe('active な River encode ジョブの状態。`queued` は `available` /\n`pending` / `scheduled` / `retryable`、`running` は実行中を表す。\n件数は録画数ではなく録画 × プロファイルのジョブ数になる。\n'),
+  "encodeState": zod.enum(['queued', 'running']).optional().describe('エンコード待機列の状態。`queued` は現在の desired で未観測のプロファイルが\nあり実行中の試行が無い録画、`running` は実行中の試行がある録画。\n`GET /api/encode-queue` の件数と同じ行から導出する。1 本に\n両方の行があれば両方の絞り込みに現れる。\n'),
   "source": zod.enum(['rule', 'manual', 'unattributed']).optional(),
   "ruleId": zod.int().optional().describe('特定ルール由来の録画に絞る'),
   "seriesOf": zod.int().optional().describe('番組ハブ（`/recordings/$id/series`）の一覧。指定した録画 id の**実効\nシリーズ**と同じ実効シリーズの録画だけを返す（実効シリーズは分類\nルールが当たればその値、当たらなければ自動キー）。\n\n**行の同一性（1 行 = 1 録画）は変えない。** N 予約で同じ放送が 2 拠点\nから録れていれば 2 行並ぶ。同じ放送を 1 行にまとめるのは視聴画面の\n「次のエピソード」の表示だけである。\n\n起点の実効シリーズが NULL（自動キーを導出できず、どのルールも\n当たらない録画）なら 0 件を 200 で返す。そのため UI は\n`Recording.series` が null の録画にハブの導線を出さない。存在しない\nid も 0 件になる（起点は録画の行そのもので、行が無ければ値も無い）。\n完全削除（purge）済みの tombstone は行が残るので、そのシリーズを\n返す（`recording_series` は `purged_at` で絞らない）。\n\n`superseded_at` が立った行は外れる（本物の record に枠を譲った\n擬似 failed 行）。他の絞り込み軸とは AND で、`trash` とは直交する。\n\nキーセットページングは他の場合と同じ `(program_start_at, id)` の\n複合キーで動く（カーソル軸は `seriesOf` の有無で変わらない）。\nシリーズ内の並びは放送日時順で、話数は持たない。\n'),
@@ -1329,7 +1329,7 @@ export const ListRecordingsResponse = zod.array(ListRecordingsResponseItem)
  *
  * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
  * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
- * エンコードジョブを結合した行で絞るので、棚の件数が膨らむ。
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
  * @summary List series shelves
  */
 export const listRecordingShelvesQueryKeyDefault = `series`;
@@ -2207,14 +2207,15 @@ export const PreviewCapacityOveragesResponse = zod.array(PreviewCapacityOverages
 
 
 /**
- * River の active な encode ジョブを待機中と実行中に分けて数える。
- * `queued` は `available` / `pending` / `scheduled` / `retryable`、
- * `running` は実行中。録画 1 本に複数プロファイルがあれば複数件になる。
+ * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
+ * プロファイル（録画 × プロファイル）を、待機中と実行中に分けて数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない失敗行は数えない。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
  *
  * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
- * 待機件数には使わない。River の内部状態名はこの API の外へ出さず、
- * UI が必要とする 2 分類だけを返す。
- * @summary Get active encode job counts
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
+ * @summary Get encode queue counts
  */
 export const getEncodeQueueResponseQueuedMin = 0;
 
@@ -2223,9 +2224,9 @@ export const getEncodeQueueResponseRunningMin = 0;
 
 
 export const GetEncodeQueueResponse = zod.object({
-  "queued": zod.int().min(getEncodeQueueResponseQueuedMin).describe('待機中（available / pending / scheduled / retryable）のジョブ数。'),
-  "running": zod.int().min(getEncodeQueueResponseRunningMin).describe('実行中のジョブ数。')
-}).describe('active なエンコードジョブの件数（録画 × プロファイル単位）。')
+  "queued": zod.int().min(getEncodeQueueResponseQueuedMin).describe('待機中（desired で未観測かつ実行中の試行が無い）の件数。'),
+  "running": zod.int().min(getEncodeQueueResponseRunningMin).describe('実行中の試行がある件数。')
+}).describe('エンコード待機列の件数（録画 × プロファイル単位）。')
 
 
 /**

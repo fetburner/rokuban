@@ -113,6 +113,20 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:multi-site
 ```
 
+### 正時をまたぐグリッド再取得（`programs-grid-hour-boundary.mjs`）
+
+「今日」のグリッドを開いたまま正時を越え、番組・容量超過の再取得を保留した間に、
+グリッドがスケルトンへ戻らず、スクロール中の番組位置と表示範囲内の不足帯を保つことを確認する。
+新しい時間軸の起点・現在時刻線・放送終了判定が進むことと、翌日 0 時の保留中に日付見出しが変わることも見る。
+時計だけを進めても画面は再レンダーされないため、判定では正時後にジャンルを選び、
+変わった queryKey の応答を保留する。修正前は番組クエリが pending の間にグリッドが
+スケルトンへ置き換わり、判定が落ちることを確認した。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-hour-boundary
+```
+
 ### 参照バッジの導線（`badge-links.mjs`）
 
 容量不足バッジ（予約一覧）から番組表への導線（issue #233 M6-5、`view` の URL 化は

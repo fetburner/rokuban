@@ -58,7 +58,7 @@ type Server struct {
 }
 
 // NewServer は Server を生成する。riverClient はワーカーを持たない River クライアントで、
-// ヒント投入とエンコード待機列の JobList に使う。nil なら River を使う操作だけ
+// ルール変更のヒント投入に使う。nil なら River を使う操作だけ
 // 失敗する（RouterConfig.RiverClient 参照）。
 // sites が空なら db.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
 // 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。

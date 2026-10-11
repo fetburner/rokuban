@@ -107,7 +107,7 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CM
 		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("active original is missing")))
 	}
 
-	if err := w.analyze(ctx, job.ID, item, area, args, attemptedAt); err != nil {
+	if err := w.analyze(ctx, item, area, args, attemptedAt); err != nil {
 		return w.fail(ctx, args, attemptedAt, err)
 	}
 	return nil
@@ -142,7 +142,6 @@ func (w *CMLogoCandidateWorker) fail(ctx context.Context, args jobs.CMLogoCandid
 
 func (w *CMLogoCandidateWorker) analyze(
 	ctx context.Context,
-	jobID int64,
 	item sqlcgen.GetCMDetectionWorkItemRow,
 	area sqlcgen.GetCMLogoAreaRow,
 	args jobs.CMLogoCandidateJobArgs,
@@ -152,7 +151,8 @@ func (w *CMLogoCandidateWorker) analyze(
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	jobDir, err := newJobScratchDir(w.ScratchDir, "cm-logo-candidate", jobID)
+	jobDir, err := newWorkerScratchDir(w.ScratchDir, "cm-logo-candidate",
+		fmt.Sprintf("%d-%d-", args.RecordingID, attemptedAt.UnixMicro()))
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
 	}

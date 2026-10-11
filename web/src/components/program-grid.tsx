@@ -236,6 +236,8 @@ export function ProgramGrid({
   selectedProgramId,
   onSelect,
   now,
+  nowSnapshot,
+  preserveTimeOnAxisAdvance = false,
   scrollToMs,
   overlay,
   siteOverlay,
@@ -252,6 +254,10 @@ export function ProgramGrid({
   onSelect: (program: SiteProgram) => void
   /** 現在時刻。省略すると内部の時計を使う（テストから固定するための口）。 */
   now?: number
+  /** 親の再レンダー時刻。内部時計より新しい場合、境界直後の表示に使う。 */
+  nowSnapshot?: number
+  /** 今日の時間窓が進むとき、同じ絶対時刻が画面に残るようスクロール位置を移す。 */
+  preserveTimeOnAxisAdvance?: boolean
   /**
    * 軸が変わったときの初期スクロール先（epoch ms）。省略すると「今」に
    * スクロールする既定の挙動（下記 useLayoutEffect）のまま。容量不足バッジ
@@ -287,7 +293,7 @@ export function ProgramGrid({
   const pendingFocusRef = useRef<PlacedProgram<SiteProgram> | null>(null)
   const [viewport, setViewport] = useState<Viewport>(unmeasuredViewport)
   const clock = useNow(clockIntervalMs, now === undefined)
-  const currentMs = now ?? clock
+  const currentMs = now ?? Math.max(clock, nowSnapshot ?? clock)
 
   const measure = useCallback(() => {
     const el = scrollerRef.current
@@ -318,8 +324,8 @@ export function ProgramGrid({
   }, [measure])
 
   // 開いた直後は「今」（または `scrollToMs` が指す時刻）が見えている方が
-  // 有用なので、そこまでスクロールしておく。軸が変わったとき（日付を変えた
-  // とき）だけやり直す — 時計の更新で毎分スクロール位置が戻ると操作できない。
+  // 有用なので、そこまでスクロールしておく。日付を変えたときはやり直すが、
+  // 「今日」のローリング窓が進んだときは、絶対時刻を保つため同量だけ位置を移す。
   //
   // 縮尺だけが変わったときは初期スクロールをやり直さない。現在の
   // `scrollTop` を新旧倍率で変換し、画面上端に来ていた時刻を保つ。これが無いと
@@ -331,6 +337,30 @@ export function ProgramGrid({
     if (!el) return
 
     const previousAxis = previousAxisRef.current
+    const startShiftMs = previousAxis ? axis.startMs - previousAxis.startMs : 0
+    if (
+      preserveTimeOnAxisAdvance &&
+      previousAxis &&
+      startShiftMs > 0 &&
+      axis.endMs - previousAxis.endMs === startShiftMs
+    ) {
+      // Today の窓は正時ごとに 1 時間ずつ先へ滑る。軸の起点を変えた分だけ
+      // 内容の座標も動くため、scrollTop を同量引いて表示中の絶対時刻を保つ。
+      // 日付ジャンプは ProgramsPage がこの動作を無効にし、既定どおり現在時刻へ送る。
+      scrolledForAxisRef.current = axis.startMs
+      previousAxisRef.current = axis
+      const scaleAdjustedScrollTop =
+        previousAxis.pxPerHour === axis.pxPerHour
+          ? el.scrollTop
+          : scaledScrollTopPx(el.scrollTop, previousAxis.pxPerHour, axis.pxPerHour)
+      el.scrollTop = Math.max(
+        0,
+        scaleAdjustedScrollTop - (startShiftMs / 3_600_000) * axis.pxPerHour,
+      )
+      measure()
+      return
+    }
+
     if (
       previousAxis &&
       previousAxis.startMs === axis.startMs &&
@@ -351,7 +381,7 @@ export function ProgramGrid({
     // 少し上に余白を残す（対象が画面の最上端に張り付くと直前の番組が見えない）
     el.scrollTop = inAxis ? Math.max(0, timeToPx(axis, targetMs) - axis.pxPerHour / 2) : 0
     measure()
-  }, [axis, currentMs, scrollToMs, measure])
+  }, [axis, currentMs, scrollToMs, measure, preserveTimeOnAxisAdvance])
 
   const placedByService = useMemo(() => groupProgramsByService(programs), [programs])
   const navigablePlacedByService = useMemo(() => {

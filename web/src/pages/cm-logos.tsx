@@ -121,19 +121,14 @@ function useFrame(
     if (recordingId <= 0 || atMs === undefined) {
       // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setFrame(null)
-      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setFailed(false)
-      // oxlint-disable-next-line react/set-state-in-effect -- コマ選択が無効になったとき前の取得状態を捨てる
       setLoading(false)
       return
     }
     let cancelled = false
     let objectURL: string | undefined
-    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得開始時に前の画像を消す
     setFrame(null)
-    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得開始時にエラーを消す
     setFailed(false)
-    // oxlint-disable-next-line react/set-state-in-effect -- 確定したコマの取得中表示を同期する
     setLoading(true)
     fetch(frameURL(recordingId, atMs))
       .then(async (response) => {
@@ -366,7 +361,6 @@ function CMLogoFrameEditor({
     const middle = Math.round(durationMs / 2)
     // oxlint-disable-next-line react/set-state-in-effect -- 録画選択時にスライダーを中央へ戻す
     setSliderValue(middle)
-    // oxlint-disable-next-line react/set-state-in-effect -- 録画選択時に中央のコマを確定する
     setCommittedAtMs(middle)
   }, [durationMs, recordingId])
 

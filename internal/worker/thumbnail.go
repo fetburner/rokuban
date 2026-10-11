@@ -103,7 +103,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.Thumbnai
 		return nil
 	}
 
-	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "thumbnail", job.ID, job.Attempt)
+	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "thumbnail", fmt.Sprintf("%d-", recordingID))
 	if err != nil {
 		return fmt.Errorf("creating scratch dir: %w", err)
 	}

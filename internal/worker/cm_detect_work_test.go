@@ -292,9 +292,9 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 		t.Fatalf("reading logoframe args: %v", err)
 	}
 	logoDir, ok := cmArgumentValue(string(args), "-logo-dir")
-	wantLogoDir := filepath.Join(mediaDir, "scratch", "cm-detect", "4242", "logos")
+	wantLogoDir := filepath.Join(mediaDir, "scratch", "cm-detect", fmt.Sprintf("%d-1", id), "logos")
 	if !ok || logoDir != wantLogoDir {
-		t.Errorf("logoframe -logo-dir = %q (found %v), want job-ID scratch path %q", logoDir, ok, wantLogoDir)
+		t.Errorf("logoframe -logo-dir = %q (found %v), want recording/attempt scratch path %q", logoDir, ok, wantLogoDir)
 	}
 	var ranges string
 	if err := pool.QueryRow(ctx, `SELECT cm_ranges::text FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&ranges); err != nil {
@@ -460,9 +460,10 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 		t.Errorf("candidate logoframe args = %q, want area and no seek/frames", argText)
 	}
 	logoDir, ok := cmArgumentValue(argText, "-logo-dir")
-	wantLogoDir := filepath.Join(mediaDir, "scratch", "cm-logo-candidate", "4343", "logos")
-	if !ok || logoDir != wantLogoDir {
-		t.Errorf("candidate logoframe -logo-dir = %q (found %v), want job-ID scratch path %q", logoDir, ok, wantLogoDir)
+	wantScratchPrefix := filepath.Join(mediaDir, "scratch", "cm-logo-candidate",
+		fmt.Sprintf("%d-%d-", id, candidate.AttemptedAt.UnixMicro()))
+	if !ok || !strings.HasPrefix(filepath.Dir(logoDir), wantScratchPrefix) || filepath.Base(logoDir) != "logos" {
+		t.Errorf("candidate logoframe -logo-dir = %q (found %v), want recording/attempted_at scratch prefix %q", logoDir, ok, wantScratchPrefix)
 	}
 	if n := countLogos(t, pool); n != 0 {
 		t.Errorf("cm_logos rows = %d, want 0 until adoption", n)

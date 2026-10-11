@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	encodeAttemptLimit       int32 = 25
+	encodeAttemptLimit       int32 = jobs.EncodeAttemptLimit
 	encodeProcessDeathReason       = "encode process died before completing"
 )
 
