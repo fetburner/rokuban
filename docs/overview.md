@@ -87,29 +87,30 @@ flowchart RL
     media[("メディアストレージ（分散時は共有）")]
     user -->|"REST / UI 配信（go:embed）"| api
     user -->|"SSE（変更通知）"| notifier
-    user -->|"HLS（ライブ・追っかけ・VOD）"| streamer
+    user -->|"HLS・ファイル配信（ライブ・追っかけ・VOD）"| streamer
     api -->|"読み書き・ジョブ投入"| pg
     notifier -->|"LISTEN"| pg
     watcher -->|"録画の観測・ingest 投入"| pg
-    watcher -->|"SSE（録画イベント）"| mirakc
+    watcher -->|"SSE 購読・録画の照会"| mirakc
     worker --> pg
     worker -->|"取り込み・予約同期・EPG"| mirakc
-    worker -->|"原本の保存・削除"| media
+    worker -->|"保存・解析・削除"| media
     streamer -->|"放送・録画中の TS"| mirakc
-    streamer -->|"原本を読む"| media
+    streamer -->|"原本・派生物を読む"| media
     streamer --> pg
     fworker -->|"派生物の生成"| media
     fworker --> pg
 ```
 
 矢印は接続を張る向き（リクエストの向き）で、ラベルはその用途を表す。**線の無い組み合わせは触らない。**
-このうち 2 つは `.golangci.yml` の depguard が判定する。api は mirakc・ファイルシステム・ffmpeg に触らない（不変条件 1）。
+api の境界と exec の境界は `.golangci.yml` の depguard が判定する。api は mirakc・ファイルシステム（`internal/mediapath`）・ffmpeg に依存しない（不変条件 1）。
 `os/exec` を使えるのは worker・streamer と、起動時にツールを検査する `internal/config` だけ（不変条件 4）。それ以外の線は lint では判定していない。
 
 外部ツールは、それを exec するロールの箱の中に描いてある。
 rokuban-full は公式イメージに ffmpeg / ffprobe と CM 検出のツールを足したもので、ユーザーが `Dockerfile.full` でセルフビルドする（後述の「イメージ戦略と配布物」）。
 どちらのイメージにも同じ単一バイナリが入っていて、ロールは起動時の `--roles` で選ぶ。
 k8s でどのキューがどちらのイメージを使うかは `deploy/k8s/` のマニフェストの `image:` が決める。
+外部ツールを要るキューだけが rokuban-full を指すことは `deploy/k8s/workloads_test.go` が判定する。
 Docker Compose の monolithic mode（`--all`）は、全ロールを rokuban-full の 1 プロセスで動かす。
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。

@@ -36,16 +36,16 @@ flowchart RL
     media[("メディアストレージ（分散時は共有）")]
     user -->|"REST / UI 配信（go:embed）"| api
     user -->|"SSE（変更通知）"| notifier
-    user -->|"HLS（ライブ・追っかけ・VOD）"| streamer
+    user -->|"HLS・ファイル配信（ライブ・追っかけ・VOD）"| streamer
     api -->|"読み書き・ジョブ投入"| pg
     notifier -->|"LISTEN"| pg
     watcher -->|"録画の観測・ingest 投入"| pg
-    watcher -->|"SSE（録画イベント）"| mirakc
+    watcher -->|"SSE 購読・録画の照会"| mirakc
     worker --> pg
     worker -->|"取り込み・予約同期・EPG"| mirakc
-    worker -->|"原本の保存・削除"| media
+    worker -->|"保存・解析・削除"| media
     streamer -->|"放送・録画中の TS"| mirakc
-    streamer -->|"原本を読む"| media
+    streamer -->|"原本・派生物を読む"| media
     streamer --> pg
     fworker -->|"派生物の生成"| media
     fworker --> pg
