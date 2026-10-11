@@ -20,7 +20,7 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 - **番組表とルールによる自動予約**: キーワードなどのルールで番組を予約する
 - **ライブ視聴**: ブラウザでいま放送中の番組を見られる。設定で有効にして使う（[live](docs/configuration.md#live)）
 - **スマホ幅の画面**: ホーム・番組表・録画の再生はスマホ幅でも使える（iPhone 実機での再生は未確認）
-- **EPGStation からの移行**: 録画とルールを取り込める（[docs/runbook/import-epgstation.md](docs/runbook/import-epgstation.md)）
+- **EPGStation からの移行**: 録画とルールを取り込める（[移行の手順](docs/runbook/import-epgstation.md)）
 
 ## 画面
 
