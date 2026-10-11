@@ -79,13 +79,17 @@ flowchart LR
         end
         pg[("PostgreSQL（Rokuban の DB / ジョブキュー）")]
         media[("メディアストレージ（原本・派生物。分散時は共有）")]
+        ffmpeg[["ffmpeg / ffprobe（exec）"]]
     end
     mirakc <-->|record pull / 予約 / EPG| worker
     mirakc -->|SSE| watcher
     mirakc -->|ライブ| streamer
     api & notifier & watcher & streamer & worker --- pg
     worker & streamer --- media
+    worker & streamer -.-> ffmpeg
 ```
+
+**線の無い組み合わせは触らない。** このうち 2 つは `.golangci.yml` の depguard が判定する。api は mirakc・ファイルシステム・ffmpeg に触らない（不変条件 1）。ffmpeg を exec するのは worker と streamer だけ（不変条件 4）。それ以外の線は lint では判定していない。
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
 

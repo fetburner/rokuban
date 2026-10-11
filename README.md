@@ -28,12 +28,14 @@ flowchart LR
         end
         pg[("PostgreSQL（Rokuban の DB / ジョブキュー）")]
         media[("メディアストレージ（原本・派生物。分散時は共有）")]
+        ffmpeg[["ffmpeg / ffprobe（exec）"]]
     end
     mirakc <-->|record pull / 予約 / EPG| worker
     mirakc -->|SSE| watcher
     mirakc -->|ライブ| streamer
     api & notifier & watcher & streamer & worker --- pg
     worker & streamer --- media
+    worker & streamer -.-> ffmpeg
 ```
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc が予約と録画バッファを保持し、Rokuban は原本・派生物を置くメディアストレージにも依存する。
