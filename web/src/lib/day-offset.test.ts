@@ -4,7 +4,6 @@ import {
   dayOffsetForMs,
   dayOrigin,
   nextHourBoundary,
-  nextMidnightBoundary,
 } from '@/lib/day-offset'
 
 describe('dayOrigin', () => {
@@ -54,12 +53,6 @@ describe('local clock boundaries', () => {
     expect(nextHourBoundary(new Date(2026, 6, 26, 0, 0, 0, 0).getTime())).toBe(
       new Date(2026, 6, 26, 1, 0, 0, 0).getTime(),
     )
-  })
-
-  it('nextMidnightBoundary は次のローカル 0 時を返す', () => {
-    const beforeMidnight = new Date(2026, 6, 25, 23, 59, 59, 999).getTime()
-
-    expect(nextMidnightBoundary(beforeMidnight)).toBe(new Date(2026, 6, 26, 0, 0, 0, 0).getTime())
   })
 })
 

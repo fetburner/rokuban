@@ -1669,6 +1669,7 @@ describe('ホーム: 実時計でのクエリキー安定性（無限再取得�
 describe('ホーム: 時境界を越えてキーが変わっても警告は消えない', () => {
   it('容量超過クエリのキーが進み、新キーが未解決のままでも警告セクションは残る', async () => {
     // 時境界（20:00）の 2 秒前に「今」を置く。量子化された `start` は 19:00。
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(nowMs - 2_000)
     const pendingOverages = new Set<string>()
     const { fetchMock, resolvePending, unresolvedCount } = stubApi({
@@ -1691,9 +1692,8 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
 
     // 操作や query の完了を待たず、共有時計が正時で容量窓を進める。
     pendingOverages.add('/api/capacity/overages')
-    vi.setSystemTime(nowMs + 500)
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2_100))
+      await vi.advanceTimersByTimeAsync(2_100)
     })
     await waitFor(() => expect(screen.getByRole('heading', { name: '要対応' })).toBeInTheDocument())
     const startsAfterWake = fetchMock.mock.calls
@@ -1859,7 +1859,7 @@ describe('ホーム管理モード: 時間軸の見出しと凡例', () => {
 describe('ホーム管理モード: 共有時計の暦日境界', () => {
   it('0 時に時間軸の始点と容量・録画の窓を進める', async () => {
     const beforeMidnight = new Date(2026, 6, 25, 23, 59, 58, 0)
-    const midnight = new Date(2026, 6, 26, 0, 0, 0, 0)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.setSystemTime(beforeMidnight)
     const { fetchMock } = stubApi({
       reservations: [reservation(1, '深夜の予約', 5 * HOUR)],
@@ -1881,9 +1881,8 @@ describe('ホーム管理モード: 共有時計の暦日境界', () => {
     expect(timelineRanges().length).toBeGreaterThan(0)
 
     // ユーザー操作や別 query の完了を待たず、共有時計の正時 wake だけで進める。
-    vi.setSystemTime(midnight.getTime() + 500)
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 2_100))
+      await vi.advanceTimersByTimeAsync(2_100)
     })
     await waitFor(() => expect(new Set(timelineRanges()).size).toBe(2))
 

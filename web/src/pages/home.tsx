@@ -21,7 +21,7 @@ import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/
 import { ThumbnailOverlay } from '@/components/thumbnail-overlay'
 import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
-import { dayOrigin, nextHourBoundary, nextMidnightBoundary } from '@/lib/day-offset'
+import { dayOrigin, nextHourBoundary } from '@/lib/day-offset'
 import {
   formatBytes,
   formatDate,
@@ -134,12 +134,10 @@ export function HomePage() {
   >
   const mode = resolveHomeMode(locationSearch.mode, readHomeModePreference())
 
-  // 時間軸の「いま」と期限判定は 30 秒ごとに更新し、暦日境界でも必ず起きる。
-  // 容量超過の取得キーだけは正時で変わるため、同じ共有時計に境界購読を置く。
-  const nowMs = useNow({ intervalMs: 30_000, wakeAtMs: nextMidnightBoundary })
-  const capacityNowMs = useNow({ wakeAtMs: nextHourBoundary })
+  // 時計は 1 本。30 秒ごとに進み、正時（0 時を含む）にも必ず起きる。
+  const nowMs = useNow({ intervalMs: 30_000, wakeAtMs: nextHourBoundary })
 
-  // **容量超過クエリの `start` は生の `capacityNowMs` を渡さない。** レンダーごとの
+  // **容量超過クエリの `start` は生の `nowMs` を渡さない。** レンダーごとの
   // 生ミリ秒をクエリのパラメータ（延いては TanStack Query のキャッシュキー）に
   // 直接載せると、レンダーのたびに新しいキーになり「未解決 → 即解決 → 再描画 →
   // また未解決」が閉じない無限再取得になる（レビューで実測: 4 秒で 37 回、
@@ -149,7 +147,7 @@ export function HomePage() {
   // で「now を固定する」ような対症療法は採らない --- それは症状を消すだけで
   // 「キーに入る値は答えが変わる粒度まで量子化する」という規律の欠落が残る）。
   // `pages/programs.tsx` と同じく、時境界に揃えた値をキーに渡す。
-  const overagesStartMs = dayOrigin(0, capacityNowMs).getTime()
+  const overagesStartMs = dayOrigin(0, nowMs).getTime()
   // 今夜〜明日の予約セクションの窓の終端。「明日の暦日の終わり」= 明後日の 0 時
   // （`dayOrigin` が返す「dayOffset 日先の 0 時」を dayOffset=2 で呼ぶと明後日の
   // 0 時になり、これが明日の終わりと一致する。番組表の日境界（0 時基準）に
@@ -251,19 +249,20 @@ export function HomePage() {
   const recordingsInProgress = unwrap(recordingQuery.data) ?? []
   const continueWatching = unwrap(continueWatchingQuery.data) ?? []
   // 予約一覧は件数上限のない全件取得なので、同じ `nowMs` のスナップショットで
-  // 警告材料を一度ずつ導出する。容量超過の取得キーだけ正時時計を使う。
+  // 警告材料を一度ずつ導出する。
   const finishedRecordings = unwrap(finishedQuery.data) ?? []
   const failedRecordings = unwrap(failedQuery.data) ?? []
 
-  // `overagesStartMs` を時境界へ丸めた分だけ、capacityNowMs より前に始まって
+  // `overagesStartMs` を時境界へ丸めた分だけ、`nowMs` より前に始まって
   // **既に終わった**区間まで返ってきうる（`openapi.yaml` の `start` は「この時刻
   // より後に終わる区間が対象」なので、`start` を時頭まで後退させて増えるのは
   // ちょうど「[時頭, now] に終わった区間」だけ）。ここで「実際の今より後に
   // 終わる」区間だけへ絞り、量子化前と同じ主張の強さに戻す（量子化はキャッシュ
   // キーの安定のためだけの手段で、表示する内容の正しさを緩めてよい理由には
-  // しない）。判定には 30 秒ごとに更新する `nowMs` を使い、時境界後に別の再描画が
-  // 起きても期限切れの警告を正時まで残さない。判定はテスト「既に終わった超過区間は
-  // 警告に出さない」/「時境界より前に始まって進行中の超過区間は警告に出す」の両方向。
+  // しない）。判定には 30 秒ごとに進む `nowMs` を使うので、期限切れの警告を
+  // 正時まで残さない（取得キーは時境界で量子化済みなので、30 秒ごとの再描画
+  // では変わらない）。判定はテスト「既に終わった超過区間は警告に出さない」/
+  // 「時境界より前に始まって進行中の超過区間は警告に出す」の両方向。
   const activeOverages = (unwrap(overagesQuery.data) ?? []).filter(
     (o) => new Date(o.endAt).getTime() > nowMs,
   )
