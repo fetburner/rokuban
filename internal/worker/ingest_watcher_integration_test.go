@@ -63,7 +63,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	}
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(client), nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(client), nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -254,7 +254,7 @@ func newIngestLifecycleRiverClient(t *testing.T, pool *pgxpool.Pool, ingestWorke
 	if err != nil {
 		t.Fatalf("creating River client: %v", err)
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(client))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 	return client
 }
 

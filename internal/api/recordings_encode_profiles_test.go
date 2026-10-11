@@ -1007,7 +1007,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(riverClient))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(riverClient))
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
@@ -1121,7 +1121,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 		t.Fatalf("targeted encode_reconcile job count = %d, want 1", targetedPasses)
 	}
 
-	encodeEnqueuer := riveradapter.NewRiverEnqueuer(riverClient)
+	encodeEnqueuer := riveradapter.NewLegacyEnqueuer(riverClient)
 	encodeReconcileWorker := &worker.EncodeReconcileWorker{
 		Enqueuer: encodeEnqueuer,
 		Pool:     pool,

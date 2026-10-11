@@ -659,7 +659,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 	if err != nil {
 		return nil, err
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(client))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 	return client, nil
 }
 
@@ -700,7 +700,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pool, riveradapter.NewRiverEnqueuer(riverClient), webhookClient)
+				w := watcher.New(site.Site, mc, pool, riveradapter.NewLegacyEnqueuer(riverClient), webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

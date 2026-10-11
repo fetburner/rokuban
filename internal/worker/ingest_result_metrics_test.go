@@ -361,7 +361,7 @@ func newRiverIngestClient(t *testing.T, pool *pgxpool.Pool, worker *IngestWorker
 	if err != nil {
 		t.Fatalf("creating River client: %v", err)
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(client))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 	return client
 }
 

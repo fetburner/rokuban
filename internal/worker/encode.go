@@ -1389,15 +1389,14 @@ type EncodeRebuildWorker struct {
 
 // Work は指定された録画・プロファイルの encode ジョブだけを投入する。
 func (w *EncodeRebuildWorker) Work(ctx context.Context, args jobs.EncodeRebuildArgs) error {
-	input := args
-	encodeArgs, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), input.RecordingID, input.Profile, w.Profiles)
+	encodeArgs, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, w.Profiles)
 	if err != nil {
 		return fmt.Errorf("building encode job args for rebuild of recording %d profile %q: %w",
-			input.RecordingID, input.Profile, err)
+			args.RecordingID, args.Profile, err)
 	}
 	if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
 		return fmt.Errorf("inserting encode job for rebuild of recording %d profile %q: %w",
-			input.RecordingID, input.Profile, err)
+			args.RecordingID, args.Profile, err)
 	}
 	return nil
 }

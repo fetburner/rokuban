@@ -358,7 +358,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enqueuer := riveradapter.NewRiverEnqueuer(client)
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 	setRecordingDuration := func(recordingID int64) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `
@@ -412,7 +412,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enqueuer := riveradapter.NewRiverEnqueuer(client)
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 	id := seedCMRecording(t, pool, t.TempDir(), 949)
 	if _, err := pool.Exec(context.Background(), `
 		UPDATE recordings

@@ -113,27 +113,11 @@ func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*Adapt
 	if registry == nil {
 		return nil, errors.New("riveradapter: registry is required")
 	}
-	client, err := newRiverClient(pool, registry, cfg)
+	client, err := NewLegacyRegistryClient(pool, registry, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &Adapter{pool: pool, registry: registry, config: cfg, client: client}, nil
-}
-
-func newRiverClient(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*river.Client[pgx.Tx], error) {
-	workers := river.NewWorkers()
-	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, workers); err != nil {
-		return nil, fmt.Errorf("riveradapter: building workers: %w", err)
-	}
-	riverCfg, err := BuildConfig(workers, cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
-	if err != nil {
-		return nil, fmt.Errorf("riveradapter: creating River client: %w", err)
-	}
-	return client, nil
 }
 
 // Register adds a jobq worker to registry and records how River should register it.
@@ -178,48 +162,6 @@ func NewLegacyRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, cfg Co
 		return nil, fmt.Errorf("riveradapter: creating River client: %w", err)
 	}
 	return client, nil
-}
-
-// NewRiverEnqueuer adapts an existing River client to the jobq Enqueuer contract.
-func NewRiverEnqueuer(client *river.Client[pgx.Tx]) jobq.Enqueuer {
-	return &riverClientEnqueuer{client: client}
-}
-
-type riverClientEnqueuer struct {
-	client *river.Client[pgx.Tx]
-}
-
-func (enqueuer *riverClientEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if enqueuer == nil || enqueuer.client == nil {
-		return jobq.Result{}, errors.New("riveradapter: client is nil")
-	}
-	insertOpts, err := makeInsertOpts(args, opts...)
-	if err != nil {
-		return jobq.Result{}, err
-	}
-	result, err := enqueuer.client.Insert(ctx, riverEnvelope{args: args}, &insertOpts)
-	if err != nil {
-		return jobq.Result{}, fmt.Errorf("riveradapter: inserting %q: %w", args.Kind(), err)
-	}
-	return jobq.Result{Coalesced: result.UniqueSkippedAsDuplicate}, nil
-}
-
-func (enqueuer *riverClientEnqueuer) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if enqueuer == nil || enqueuer.client == nil {
-		return jobq.Result{}, errors.New("riveradapter: client is nil")
-	}
-	if tx == nil {
-		return jobq.Result{}, errors.New("riveradapter: transaction is nil")
-	}
-	insertOpts, err := makeInsertOpts(args, opts...)
-	if err != nil {
-		return jobq.Result{}, err
-	}
-	result, err := enqueuer.client.InsertTx(ctx, tx, riverEnvelope{args: args}, &insertOpts)
-	if err != nil {
-		return jobq.Result{}, fmt.Errorf("riveradapter: inserting %q in transaction: %w", args.Kind(), err)
-	}
-	return jobq.Result{Coalesced: result.UniqueSkippedAsDuplicate}, nil
 }
 
 // Enqueue inserts args using the options derived from its jobq Spec.
@@ -280,7 +222,7 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		newClient, err := newRiverClient(adapter.pool, adapter.registry, adapter.config)
+		newClient, err := NewLegacyRegistryClient(adapter.pool, adapter.registry, adapter.config)
 		if err != nil {
 			return err
 		}

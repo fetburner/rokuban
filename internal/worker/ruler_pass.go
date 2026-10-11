@@ -65,7 +65,8 @@ func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) err
 	// トランザクション整合の要求はなく、あくまで定期パスを前倒しするヒントなので、
 	// Enqueuer が無い場合は投入せず次の定期パスに委ねる。
 	if w.Enqueuer != nil {
-		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.ReconcilePassArgs(args)); insertErr != nil {
+		//nolint:staticcheck // S1016: 異なる Args 型同士の構造体変換は、片方にフィールドが増えたとき黙って通るので明示する。
+		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.ReconcilePassArgs{Site: args.Site}); insertErr != nil {
 			slog.Warn("ruler pass: inserting reconcile_pass hint failed", "err", insertErr)
 		}
 	}

@@ -349,8 +349,9 @@ type IngestWorker struct {
 	ProgressInterval time.Duration
 }
 
-// resolveProgressInterval returns the configured progress flush interval, or its default
-// when the field is zero.
+// resolveProgressInterval は設定された ProgressInterval があればそれを、
+// なければ既定の ingestProgressInterval を返す（config キーが無いフィールドの
+// 「0 は未設定」規約。ProgressInterval の doc コメント参照）。
 func (w *IngestWorker) resolveProgressInterval() time.Duration {
 	if w.ProgressInterval == 0 {
 		return ingestProgressInterval

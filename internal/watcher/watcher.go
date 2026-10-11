@@ -293,15 +293,10 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	if recordingID != nil && (record.Recording.Status == db.RecordingStatusRecording || record.Recording.Status == db.RecordingStatusFinished) {
 		var enqueueOpts []jobq.EnqueueOpt
 		if record.Recording.Status == db.RecordingStatusFinished {
-			// 録画中の追従は番組長のあいだ worker 枠を保持する。finished 後に
-			// 初めて投入されるバックログ（または安全網の再投入）より先に
-			// 枠を得る必要があるので、priority 1 の追従より priority 2
-			// の追い付きへ下げる。recording の nil は IngestJobArgs の既定値
-			// priority 1 と UniqueOpts をそのまま使うために残す。
+			// 録画中に始める ingest は番組長のあいだ worker 枠を保持する。
+			// finished 後に初めて取り込む記録は priority を下げて投入する。
+			// recording は IngestJobArgs の既定 priority をそのまま使う。
 			enqueueOpts = append(enqueueOpts, jobq.Priority(2))
-		}
-		if w.enqueuer == nil {
-			return fmt.Errorf("watcher: job enqueuer is nil")
 		}
 		if _, err := w.enqueuer.EnqueueTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, enqueueOpts...); err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)

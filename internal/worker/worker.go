@@ -79,8 +79,8 @@ func sortedSiteNames(clients map[string]*mirakc.Client) []string {
 
 // Deps は各ワーカーに注入する依存。
 type Deps struct {
-	// Enqueuer schedules follow-up work. Callers may pass jobq.Deferred to resolve the
-	// construction cycle between workers and the queue adapter.
+	// Enqueuer は後続ジョブの投入に使う。worker と queue adapter の構築順の循環は
+	// jobq.Deferred を渡して切る。
 	Enqueuer jobq.Enqueuer
 
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの

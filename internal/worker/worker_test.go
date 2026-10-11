@@ -51,7 +51,7 @@ func newRiverTestEnqueuer(t *testing.T, pool *pgxpool.Pool) jobq.Enqueuer {
 	if err != nil {
 		t.Fatalf("creating River insert-only client: %v", err)
 	}
-	return riveradapter.NewRiverEnqueuer(client)
+	return riveradapter.NewLegacyEnqueuer(client)
 }
 
 func newLegacyRegistryTestClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig) *river.Client[pgx.Tx] {
@@ -67,7 +67,7 @@ func newLegacyRegistryTestClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, c
 	if err != nil {
 		t.Fatalf("creating River client: %v", err)
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(client))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 	return client
 }
 
@@ -187,7 +187,7 @@ func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg Cl
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
-	deferred.Set(riveradapter.NewRiverEnqueuer(client))
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 
 	subscribeCh, subscribeCancel := client.Subscribe(eventKind)
 	t.Cleanup(subscribeCancel)
