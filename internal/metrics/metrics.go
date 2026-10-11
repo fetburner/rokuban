@@ -456,6 +456,13 @@ var (
 		Help: "Active media_assets rows confirmed to have no file on disk, by kind. Not a deletion candidate list — file-missing is necessary but not sufficient for deletion.",
 	}, []string{"kind"})
 
+	// OrphanFilesUnresolved は aging 後も残っている canonical 名の孤児数。
+	// 公開前と示せる予約名は自動回収し、canonical 名は報告だけにする。
+	OrphanFilesUnresolved = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "rokuban_orphan_files_unresolved",
+		Help: "Aged canonical orphan files that require review. Files without a media_assets row are not automatically deleted unless their reserved name proves they never reached publication.",
+	})
+
 	// MissingAssetScanSuspectedStorageFailure は上記の検出パス自体が
 	// 「ファイルシステム走査が 1 件も観測しなかったのに active な
 	// media_assets が存在する」という形（全損シグネチャと同種、件数の閾値
@@ -778,6 +785,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		DeleteReconcileBytes,
 		DeleteReconcileLastPass,
 		MediaAssetsMissing,
+		OrphanFilesUnresolved,
 		MissingAssetScanSuspectedStorageFailure,
 
 		EncodeReconcileLastPass,

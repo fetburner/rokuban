@@ -12,17 +12,17 @@ worker は ingest キューを購読する起動時に、temp 作成 → file `f
 推測する検査ではない。
 
 - ローカル FS / JuiceFS / NFS は対象内。ただし NFS export は `sync`、client mount は
-  `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）が一時的な
-  orphan 候補に見えても、孤児回収の aging で扱える無害な残骸である
+  `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）は canonical
+  orphan として報告されることがある。自動削除はせず、ファイルを閉じた後に状態を確認する
 - geesefs / s3fs / AWS Mountpoint など FUSE S3 は原本 ingest 先に使わない。atomic
   rename、file/parent `fsync`、`Close` のエラー意味論を原本の公開根拠として信頼できない
 - FUSE S3 の実機検証の範囲は派生物専用の領域に限る。`storage.media_dir` を
   FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない
 
-ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死や
-rename 後の DB 失敗で残った temp / canonical orphan は、既存の mtime 猶予 + aging
-（既定 7 日 + 14 日）で回収される。rescue の catalog 無し走査は temp を original として
-復元しない。
+ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死で残った
+ingest temp は mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。rename 後の DB 失敗で
+残った canonical orphan は aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、
+手動調査まで保持する。rescue の catalog 無し走査は temp を original として復元しない。
 
 ### 録画バッファのサイジング
 
@@ -79,5 +79,5 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 既存不変条件の再確認:
 
-- **「放送データのコピーが常に 1 つ以上」は DB 喪失時も維持される**。エッジ record の削除は ingest の DB コミット後に起きる。コミット直後に DB を失ってもファイルはアーカイブに存在し、孤児回収の安全弁が守り、rescue が再登録する
+- **「放送データのコピーが常に 1 つ以上」は DB 喪失時も維持される**。エッジ record の削除は ingest の DB コミット後に起きる。コミット直後に DB を失ってもファイルはアーカイブに残る。canonical orphan は報告だけなので、rescue が再登録できる
 - cleanup は mirakc の basedir に絶対に触らない（エッジ側削除は ingest の検証済み削除のみ）

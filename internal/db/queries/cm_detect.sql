@@ -333,11 +333,12 @@ ON CONFLICT (network_id, service_id) DO NOTHING
 RETURNING attempted_at;
 
 -- name: ListRunningCMLogoCandidates :many
-SELECT network_id, service_id, COALESCE(recording_id, 0)::bigint AS recording_id,
-       observed_area_updated_at, attempted_at
-FROM cm_logo_candidates
-WHERE state = 'running'
-ORDER BY network_id, service_id;
+SELECT c.network_id, c.service_id, COALESCE(c.recording_id, 0)::bigint AS recording_id,
+       c.observed_area_updated_at, c.attempted_at,
+       now()::timestamptz AS current_time
+FROM cm_logo_candidates c
+WHERE c.state = 'running'
+ORDER BY c.network_id, c.service_id;
 
 -- name: FailOrphanCMLogoCandidate :execrows
 UPDATE cm_logo_candidates
@@ -345,7 +346,7 @@ SET state = 'failed', stage = 'stopped',
     error = 'CM logo candidate job ended without recording a result'
 WHERE network_id = sqlc.arg('network_id')
   AND service_id = sqlc.arg('service_id')
-  AND recording_id = sqlc.arg('recording_id')
+  AND COALESCE(recording_id, 0) = sqlc.arg('recording_id')::bigint
   AND state = 'running'
   AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
   AND attempted_at = sqlc.arg('attempted_at')::timestamptz;

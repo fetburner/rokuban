@@ -296,7 +296,7 @@ SET state = 'failed', stage = 'stopped',
     error = 'CM logo candidate job ended without recording a result'
 WHERE network_id = $1
   AND service_id = $2
-  AND recording_id = $3
+  AND COALESCE(recording_id, 0) = $3::bigint
   AND state = 'running'
   AND observed_area_updated_at = $4::timestamptz
   AND attempted_at = $5::timestamptz
@@ -305,7 +305,7 @@ WHERE network_id = $1
 type FailOrphanCMLogoCandidateParams struct {
 	NetworkID     int32
 	ServiceID     int32
-	RecordingID   *int64
+	RecordingID   int64
 	AreaUpdatedAt time.Time
 	AttemptedAt   time.Time
 }
@@ -994,11 +994,12 @@ func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissi
 }
 
 const listRunningCMLogoCandidates = `-- name: ListRunningCMLogoCandidates :many
-SELECT network_id, service_id, COALESCE(recording_id, 0)::bigint AS recording_id,
-       observed_area_updated_at, attempted_at
-FROM cm_logo_candidates
-WHERE state = 'running'
-ORDER BY network_id, service_id
+SELECT c.network_id, c.service_id, COALESCE(c.recording_id, 0)::bigint AS recording_id,
+       c.observed_area_updated_at, c.attempted_at,
+       now()::timestamptz AS current_time
+FROM cm_logo_candidates c
+WHERE c.state = 'running'
+ORDER BY c.network_id, c.service_id
 `
 
 type ListRunningCMLogoCandidatesRow struct {
@@ -1007,6 +1008,7 @@ type ListRunningCMLogoCandidatesRow struct {
 	RecordingID           int64
 	ObservedAreaUpdatedAt time.Time
 	AttemptedAt           time.Time
+	CurrentTime           time.Time
 }
 
 func (q *Queries) ListRunningCMLogoCandidates(ctx context.Context) ([]ListRunningCMLogoCandidatesRow, error) {
@@ -1024,6 +1026,7 @@ func (q *Queries) ListRunningCMLogoCandidates(ctx context.Context) ([]ListRunnin
 			&i.RecordingID,
 			&i.ObservedAreaUpdatedAt,
 			&i.AttemptedAt,
+			&i.CurrentTime,
 		); err != nil {
 			return nil, err
 		}

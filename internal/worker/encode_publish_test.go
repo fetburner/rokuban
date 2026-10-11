@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
@@ -134,9 +135,9 @@ func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) 
 	}
 }
 
-func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
+func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, "h264")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +289,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"h264"}, []byte("original payload t3"))
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
 
 	g1, g2, g3 := "20240101/t3_h264.g1.mp4", "20240101/t3_h264.g2.mp4", "20240101/t3_h264.g3.mp4"
 	abs := func(rel string) string { return filepath.Join(mediaDir, filepath.FromSlash(rel)) }
@@ -474,8 +475,7 @@ func TestEncodeWorker_ScratchIsPerJob(t *testing.T) {
 	}
 }
 
-// commit の直前まで rel_path filesystem lock を保持する（孤児回収は同じ lock を
-// 非 blocking で取ってから unlink する）。
+// commit の直前まで rel_path filesystem lock を保持し、通常削除と公開を直列化する。
 func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -505,7 +505,7 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 		return nil
 	}
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
 	if _, published, err := w.publishEncoded(context.Background(), encodePublishInput{
 		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
 	}); err != nil || !published {
@@ -542,11 +542,269 @@ func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID, "h264")
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
 	if _, _, err := w.publishEncoded(ctx, encodePublishInput{
 		recordingID: recordingID, profile: "h264", attempt: attempt, relPath: encRel, finalPath: finalPath, scratchOut: scratchOut,
 	}); err == nil {
 		t.Fatal("publishEncoded succeeded while the lock was held")
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
+}
+
+// R4: 通常削除が deleting を記録して unlink する間、同じ rel_path の encode 公開は
+// filesystem lock を待つ。lock を外すと encode が先に active を戻し、削除がその
+// ファイルを unlink する順序になる。
+func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r4.m2ts", []string{"h264"}, []byte("original"))
+	const relPath = "20240101/r4_h264.mp4"
+	const previous = "previous encoded bytes"
+	const next = "new encoded bytes"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.WriteFile(finalPath, []byte(previous), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "h264", relPath)
+	scratchOut := filepath.Join(scratchDir, "r4.mp4")
+	if err := os.WriteFile(scratchOut, []byte(next), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
+
+	deletePaused := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseDelete) }) }
+	originalDeleteHook := beforeMediaAssetUnlink
+	originalEncodeLockHook := beforeEncodeLock
+	originalPublicationHook := beforeEncodeFilePublication
+	t.Cleanup(func() {
+		release()
+		beforeMediaAssetUnlink = originalDeleteHook
+		beforeEncodeLock = originalEncodeLockHook
+		beforeEncodeFilePublication = originalPublicationHook
+	})
+	beforeMediaAssetUnlink = func(path string) {
+		if path == relPath {
+			close(deletePaused)
+			<-releaseDelete
+		}
+	}
+	staged := make(chan struct{}, 1)
+	beforeEncodeLock = func(path string) {
+		if path == scratchOut {
+			staged <- struct{}{}
+		}
+	}
+	publicationReached := make(chan struct{}, 1)
+	beforeEncodeFilePublication = func(path string, _ context.Context, _ pgx5.Tx) error {
+		if path == scratchOut {
+			publicationReached <- struct{}{}
+		}
+		return nil
+	}
+
+	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	deleteDone := make(chan struct{})
+	go func() {
+		cleanup.deleteMediaAsset(ctx, sqlcgen.New(pool), deleteTarget{
+			ID: assetID, RecordingID: recordingID, RelPath: relPath,
+			SizeBytes: int64(len(previous)), Kind: "encoded",
+		}, "test")
+		close(deleteDone)
+	}()
+	select {
+	case <-deletePaused:
+	case <-time.After(5 * time.Second):
+		release()
+		<-deleteDone
+		t.Fatal("delete did not reach the unlink boundary")
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM media_assets WHERE id = $1`, assetID).Scan(&state); err != nil {
+		release()
+		<-deleteDone
+		t.Fatal(err)
+	}
+	if state != "deleting" {
+		release()
+		<-deleteDone
+		t.Fatalf("asset state while deletion is paused = %q, want deleting", state)
+	}
+
+	worker := newH264Worker(pool, mediaDir, scratchDir, "")
+	encodeDone := make(chan error, 1)
+	go func() {
+		_, _, err := worker.publishEncoded(ctx, encodePublishInput{
+			recordingID: recordingID, profile: "h264", attempt: attempt,
+			relPath: relPath, finalPath: finalPath, scratchOut: scratchOut,
+			observed: encodePlan{observedRelPath: relPath},
+		})
+		encodeDone <- err
+	}()
+	select {
+	case <-staged:
+	case err := <-encodeDone:
+		release()
+		<-deleteDone
+		t.Fatalf("encode returned before staging completed: %v", err)
+	case <-time.After(5 * time.Second):
+		release()
+		<-deleteDone
+		t.Fatal("encode did not finish staging")
+	}
+	select {
+	case <-publicationReached:
+		t.Error("encode reached publication while normal deletion held the rel_path lock")
+	case <-time.After(2 * time.Second):
+	}
+
+	release()
+	select {
+	case <-deleteDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("delete did not finish after release")
+	}
+	if err := <-encodeDone; err != nil {
+		t.Fatalf("publishEncoded: %v", err)
+	}
+	got, err := os.ReadFile(finalPath)
+	if err != nil || string(got) != next {
+		t.Errorf("canonical after delete and encode = %q, err %v; want %q", got, err, next)
+	}
+	var finalState string
+	var size int64
+	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets WHERE id = $1`, assetID).Scan(&finalState, &size); err != nil {
+		t.Fatal(err)
+	}
+	if finalState != "active" || size != int64(len(next)) {
+		t.Errorf("asset after delete and encode = state %q, size %d; want active, %d", finalState, size, len(next))
+	}
+}
+
+// R5: A は fencing 後に DB セッションを失い、rename 前で停止する。B が同じ canonical
+// を公開できるのは A の filesystem lock 解放後であり、A の遅い rename は B を上書きしない。
+func TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r5.m2ts", []string{"h264"}, []byte("original"))
+	const relPath = "20240101/r5_h264.mp4"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	scratchA := filepath.Join(scratchDir, "r5-a.mp4")
+	scratchB := filepath.Join(scratchDir, "r5-b.mp4")
+	contentA := []byte("older attempt output with distinct size")
+	contentB := []byte("newer B output")
+	for path, content := range map[string][]byte{scratchA: contentA, scratchB: contentB} {
+		if err := os.WriteFile(path, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
+	worker := newH264Worker(pool, mediaDir, scratchDir, "")
+
+	aAtPublication := make(chan struct{})
+	bAtPublication := make(chan struct{}, 1)
+	releaseA := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseA) }) }
+	originalEncodeLockHook := beforeEncodeLock
+	originalPublicationHook := beforeEncodeFilePublication
+	t.Cleanup(func() {
+		release()
+		beforeEncodeLock = originalEncodeLockHook
+		beforeEncodeFilePublication = originalPublicationHook
+	})
+	stagedB := make(chan string, 1)
+	beforeEncodeLock = func(path string) {
+		if path == scratchB {
+			stagedB <- path
+		}
+	}
+	beforeEncodeFilePublication = func(path string, _ context.Context, tx pgx5.Tx) error {
+		switch path {
+		case scratchA:
+			if err := tx.Conn().Close(context.Background()); err != nil {
+				return fmt.Errorf("closing attempt A transaction connection: %w", err)
+			}
+			close(aAtPublication)
+			<-releaseA
+		case scratchB:
+			bAtPublication <- struct{}{}
+		}
+		return nil
+	}
+	type publishResult struct {
+		published bool
+		err       error
+	}
+	start := func(scratch string) <-chan publishResult {
+		done := make(chan publishResult, 1)
+		go func() {
+			_, published, err := worker.publishEncoded(ctx, encodePublishInput{
+				recordingID: recordingID, profile: "h264", attempt: attempt,
+				relPath: relPath, finalPath: finalPath, scratchOut: scratch,
+				observed: encodePlan{},
+			})
+			done <- publishResult{published: published, err: err}
+		}()
+		return done
+	}
+	doneA := start(scratchA)
+	select {
+	case <-aAtPublication:
+	case resultA := <-doneA:
+		release()
+		t.Fatalf("attempt A returned before the publication gate: published %v, err %v", resultA.published, resultA.err)
+	case <-time.After(5 * time.Second):
+		release()
+		t.Fatal("attempt A did not reach the publication gate")
+	}
+	doneB := start(scratchB)
+	select {
+	case path := <-stagedB:
+		if path != scratchB {
+			release()
+			t.Fatalf("staged hook path = %q, want B scratch %q", path, scratchB)
+		}
+	case <-time.After(5 * time.Second):
+		release()
+		t.Fatal("attempt B did not finish staging")
+	}
+	select {
+	case <-bAtPublication:
+		t.Error("attempt B reached rename while attempt A still held the rel_path lock")
+	case <-time.After(2 * time.Second):
+	}
+
+	release()
+	resultA := <-doneA
+	if resultA.err == nil || resultA.published {
+		t.Errorf("attempt A = published %v, err %v; want disconnected transaction failure", resultA.published, resultA.err)
+	}
+	resultB := <-doneB
+	if resultB.err != nil || !resultB.published {
+		t.Fatalf("attempt B = published %v, err %v; want successful publication", resultB.published, resultB.err)
+	}
+	got, err := os.ReadFile(finalPath)
+	if err != nil || !bytes.Equal(got, contentB) {
+		t.Errorf("canonical after retries = %q, err %v; want B output %q", got, err, contentB)
+	}
+	var state string
+	var size int64
+	if err := pool.QueryRow(ctx, `SELECT state, size_bytes FROM media_assets
+		WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'h264'`, recordingID).Scan(&state, &size); err != nil {
+		t.Fatal(err)
+	}
+	if state != "active" || size != int64(len(contentB)) {
+		t.Errorf("encoded row after retries = state %q, size %d; want active, %d", state, size, len(contentB))
+	}
 }

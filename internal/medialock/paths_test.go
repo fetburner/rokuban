@@ -17,7 +17,7 @@ func TestLockPathsDeduplicatesAndReleasesOnCancellation(t *testing.T) {
 	}
 	defer func() { _ = release() }()
 	for _, path := range []string{"a.m2ts", "b.m2ts"} {
-		lock, acquired, err := TryLock(mediaDir, path)
+		lock, acquired, err := tryLockForTest(mediaDir, path)
 		if lock != nil {
 			_ = lock.Close()
 		}
@@ -39,7 +39,7 @@ func TestLockPathsDeduplicatesAndReleasesOnCancellation(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("canceled acquisition = %v", err)
 	}
-	lock, acquired, err := TryLock(mediaDir, "a.m2ts")
+	lock, acquired, err := tryLockForTest(mediaDir, "a.m2ts")
 	if lock != nil {
 		defer func() { _ = lock.Close() }()
 	}

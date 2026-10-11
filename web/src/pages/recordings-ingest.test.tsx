@@ -1,11 +1,16 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Recording } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
 import { routeTree } from '@/routes'
+
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 /**
  * 取り込み（ingest）進捗の表示（issue #212）。
@@ -179,6 +184,36 @@ describe('取り込み進捗の表示', () => {
     // 分母が無いので % ではなくバイト数を出す。
     expect(screen.getByText('取り込み中 1000 B（停滞）')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
+    expect(screen.getByText('転送中・停滞 1000 B')).toBeInTheDocument()
+  })
+
+  it('同じ進捗データのまま 60 秒を越えたら停滞へ切り替わる', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const observedAtMs = Date.now()
+    renderRecording(
+      sampleRecording({
+        ingest: {
+          state: 'transferring',
+          writtenBytes: 1_000,
+          observedAt: new Date(observedAtMs).toISOString(),
+        },
+      }),
+    )
+
+    expect(await screen.findByText('取り込みを見る録画')).toBeInTheDocument()
+    expect(screen.getByText('取り込み中 1000 B')).toBeInTheDocument()
+    expect(screen.queryByText('取り込み中 1000 B（停滞）')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '取り込み状態を記録タブで見る' }))
+    expect(screen.getByText('転送中 1000 B')).toBeInTheDocument()
+    expect(screen.queryByText('転送中・停滞 1000 B')).not.toBeInTheDocument()
+
+    // GET /api/recordings/3 は同じ fixture を返し続ける。内容が変わらなくても共有時計の
+    // tick でヘッダーと記録タブの両方が停滞へ変わることを見る（しきい値 60 秒 + 1 ms）。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001)
+    })
+
+    expect(screen.getByText('取り込み中 1000 B（停滞）')).toBeInTheDocument()
     expect(screen.getByText('転送中・停滞 1000 B')).toBeInTheDocument()
   })
 

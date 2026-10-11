@@ -1,6 +1,6 @@
-import { screen, waitFor } from '@testing-library/react'
+import { act, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   useGetStorage,
@@ -21,11 +21,8 @@ import { renderInRouter } from '@/test/router'
  * （CLAUDE.md テスト規律「CI が緑でも実バイナリ・実ブラウザを起動して確かめる」の
  * 手前 --- まずユニットテストで DOM に出るところまで固定する）。
  *
- * **タイマーは fake にしない。** コンポーネントは `Date.now()` を直接呼ぶため、
- * `vi.useFakeTimers()` と組み合わせると `findByText` 等の非同期待機
- * （testing-library 内部のポーリング）が固まって全テストがタイムアウトする
- * （実際に踏んだ --- `setSystemTime` を使った最初の実装は 7 件全滅した）。
- * 代わりに実行時の `Date.now()` からの相対オフセットで日時を組む。
+ * 通常の表示分岐は実行時からの相対時刻で見る。共有時計の時間遷移を確かめる
+ * テストでは advancing fake timer を使い、クエリ完了後に DOM の変化も確認する。
  *
  * **「無い」ことを見るテストは、3 つのクエリが実際に解決したことを確認してから
  * アサートする。** レビューで指摘された通り、`fetch` が「呼ばれた」ことだけを
@@ -182,6 +179,10 @@ async function renderSettled(expectedStatus: string, compact = false) {
   await waitFor(() => expect(screen.getByTestId('query-status')).toHaveTextContent(expectedStatus))
   return view
 }
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 describe('StorageBalance', () => {
   it('観測なし（media root が無い）ときは何も描かない', async () => {
@@ -385,6 +386,24 @@ describe('StorageBalance', () => {
 
     expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
     expect(screen.queryByText(/古い可能性/)).not.toBeInTheDocument()
+  })
+
+  it('同じ観測データのまま 1 時間を越えたら古い可能性へ切り替わる', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    mockApis({ storage: [mediaRoot({ observedAt: new Date(Date.now()).toISOString() })] })
+
+    await renderSettled('success success success')
+
+    expect(screen.getAllByText(/空き/).length).toBeGreaterThan(0)
+    expect(screen.queryByText(/古い可能性/)).not.toBeInTheDocument()
+
+    // GET /api/storage は同じ observedAt を返し続ける。データ再取得なしに
+    // 1 時間を越えたとき、30 秒周期の共有時計で stale 表示へ切り替わる。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60 * 60_000 + 1)
+    })
+
+    expect(screen.getAllByText(/古い可能性/).length).toBeGreaterThan(0)
   })
 
   // skip=true の予約は消費に数えない（reconciler が mirakc に同期しないため）。

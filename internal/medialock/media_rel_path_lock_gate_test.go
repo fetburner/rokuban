@@ -86,7 +86,7 @@ func TestMediaRelPathFileLock_GateBlocksUnlinkBetweenOpenAndFlock(t *testing.T) 
 	case <-time.After(3 * time.Second):
 		t.Fatal("B did not acquire after A closed")
 	}
-	c, acquired, err := TryLock(mediaDir, relPath)
+	c, acquired, err := tryLockForTest(mediaDir, relPath)
 	if err != nil {
 		_ = b.Close()
 		t.Fatalf("C trying lock: %v", err)

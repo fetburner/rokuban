@@ -11,8 +11,6 @@ export type RecordingVerdictInput = {
   liveCapability: LiveCapability
   /** ごみ箱では削除日時が結論になるため、結論を出さない。 */
   isTrashed?: boolean
-  /** ingestDisplay の停滞判定用。結論では転送中かどうかだけを見る。 */
-  nowMs: number
 }
 
 /**
@@ -29,7 +27,6 @@ export function recordingVerdict({
   recording,
   liveCapability,
   isTrashed = false,
-  nowMs,
 }: RecordingVerdictInput): RecordingVerdict | undefined {
   if (isTrashed) return undefined
   const hasEncoded = (recording.encodedAssets?.length ?? 0) > 0
@@ -58,7 +55,8 @@ export function recordingVerdict({
     return undefined
   }
 
-  const ingest = ingestDisplay(recording, nowMs)
+  // 結論は kind（転送中かどうか）だけを見る。停滞（stale）は kind に影響しないので時刻は固定値でよい。
+  const ingest = ingestDisplay(recording, 0)
   const ingestInProgress = ingest?.kind === 'pending' || ingest?.kind === 'transferring'
   const encodeInProgress = recording.encodeStatus?.some(
     (status) => status.state === 'queued' || status.state === 'running',
