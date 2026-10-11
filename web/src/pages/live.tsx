@@ -1,5 +1,5 @@
 import { Link, useNavigate, useSearch as useRouteSearch } from '@tanstack/react-router'
-import { useQueries, useQueryClient } from '@tanstack/react-query'
+import { useQueries, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
@@ -23,6 +23,7 @@ import { TunerStatus } from '@/components/tuner-status'
 import { buttonVariants } from '@/components/ui/button'
 import { useLiveCapability } from '@/lib/capabilities'
 import type { OffsetSessionStart } from '@/lib/use-offset-session'
+import { useNow } from '@/lib/use-now'
 import {
   currentProgramWindow,
   formatLiveDiagnostics,
@@ -42,7 +43,7 @@ import { recordingTimeline } from '@/lib/recording-timeline'
 import { upcomingInterruptingReservation } from '@/lib/live-interruption'
 import { channelTypeLabel, groupByChannelType, orderServices } from '@/lib/epg-grid'
 import { formatTime, formatTimeRange, isAiring } from '@/lib/format'
-import { siteServiceKey, useAllSitesServices } from '@/lib/all-sites-services'
+import { siteServiceKey, useAllSitesServices, type SiteProgram, type SiteService } from '@/lib/all-sites-services'
 import { cn } from '@/lib/utils'
 
 /**
@@ -51,7 +52,111 @@ import { cn } from '@/lib/utils'
  * programmes so the detail panel can show what is next.
  */
 const scheduleClockTickMs = 1_000
+const programWindowMs = 60_000
+const tanstackDefaultQueryGcTimeMs = 5 * 60_000
+const maxQueryGcTimeMs = 2_147_483_647
 const selectedProgramWindowMs = 6 * 60 * 60_000
+
+/**
+ * cachedProgramWindowAnchor は利用中の予定窓を query cache から導出する。
+ * 境界で先行取得した窓はその時刻から使い、期限切れ後に現行番組が欠けた局があれば
+ * 現在時刻を含む窓へ追いつく（`LivePage / 番組境界の再取得`「他局に長時間番組が残っていても、遅延後の各局の放送中番組を一覧に出す」）。
+ */
+function cachedProgramWindowAnchor(
+  queryClient: QueryClient,
+  sites: readonly string[],
+  services: readonly SiteService[],
+  nowMs: number,
+): number {
+  const programsByAnchor = new Map<number, SiteProgram[]>()
+  for (const site of sites) {
+    for (const [queryKey, data] of queryClient.getQueriesData<Awaited<ReturnType<typeof listPrograms>>>({
+      queryKey: getListProgramsQueryKey(site),
+    })) {
+      const params = queryKey[1] as ListProgramsParams | undefined
+      if (params === undefined || params.service !== undefined) continue
+      const startMs = Date.parse(params.start)
+      const endMs = Date.parse(params.end)
+      if (!Number.isFinite(startMs) || endMs - startMs !== programWindowMs || startMs > nowMs) continue
+      const programs = programsByAnchor.get(startMs) ?? []
+      programs.push(...(unwrap(data) ?? []).map((program) => ({ ...program, site })))
+      programsByAnchor.set(startMs, programs)
+    }
+  }
+
+  const anchors = [...programsByAnchor.keys()]
+  if (anchors.length === 0) return Math.floor(nowMs / programWindowMs) * programWindowMs
+
+  const anchor = Math.max(...anchors)
+  if (nowMs < anchor + programWindowMs) return anchor
+
+  const airingServiceKeys = new Set(
+    (programsByAnchor.get(anchor) ?? [])
+      .filter((program) => isAiring(program.startAt, program.endAt, nowMs))
+      .map((program) => siteServiceKey(program.site, program.networkId, program.serviceId)),
+  )
+  const allServicesHaveAiringProgram = services
+    .filter((service) => service.hasPrograms)
+    .every((service) => airingServiceKeys.has(siteServiceKey(service.site, service.networkId, service.serviceId)))
+  if (allServicesHaveAiringProgram) return anchor
+
+  return Math.floor(nowMs / programWindowMs) * programWindowMs
+}
+
+/**
+ * latestCachedWindowData は、現在の窓の応答待ちの間に出す表示用の旧窓データを返す。
+ * `beforeStartMs` より前に始まる窓のうち、データを持つ最新のものを選ぶ。窓の選択（anchor）
+ * には使わない。呼び出し側は必ず現在の時計で `isAiring` を判定する。旧窓の時刻で
+ * 判定すると、終了済みの番組を放送中として出す
+ * （`LivePage / 番組境界の再取得`「境界窓の prefetch が間に合わない間も、続いている番組の行は残し、終了済みの番組は出さない」）。
+ */
+function latestCachedWindowData(
+  queryClient: QueryClient,
+  site: string,
+  beforeStartMs: number,
+  matches: (params: ListProgramsParams, startMs: number, endMs: number) => boolean,
+): ProgramListItem[] | undefined {
+  let latestStartMs = Number.NEGATIVE_INFINITY
+  let latest: ProgramListItem[] | undefined
+  for (const [queryKey, data] of queryClient.getQueriesData<Awaited<ReturnType<typeof listPrograms>>>({
+    queryKey: getListProgramsQueryKey(site),
+  })) {
+    const params = queryKey[1] as ListProgramsParams | undefined
+    const programs = unwrap(data)
+    if (params === undefined || programs === undefined) continue
+    const startMs = Date.parse(params.start)
+    const endMs = Date.parse(params.end)
+    if (!Number.isFinite(startMs) || startMs >= beforeStartMs || startMs <= latestStartMs) continue
+    if (!matches(params, startMs, endMs)) continue
+    latestStartMs = startMs
+    latest = programs as ProgramListItem[]
+  }
+  return latest
+}
+
+/** programWindowStaleTime は窓の終端までキャッシュを fresh に保つ（境界の prefetch テスト）。 */
+function programWindowStaleTime(
+  queryClient: QueryClient,
+  site: string,
+  params: ListProgramsParams,
+  nowMs: number,
+): number {
+  const dataUpdatedAt = queryClient.getQueryState(getListProgramsQueryKey(site, params))?.dataUpdatedAt
+  return Math.max(0, Date.parse(params.end) - (dataUpdatedAt || nowMs))
+}
+
+/**
+ * programWindowGcTime は予定窓の query を起動時刻まで cache に保持する
+ * （`LivePage / 番組境界の再取得` の長い境界テスト）。
+ */
+function programWindowGcTime(queryClient: QueryClient, activationAtMs: number, nowMs: number): number {
+  const configuredGcTimeMs = queryClient.getDefaultOptions().queries?.gcTime ?? tanstackDefaultQueryGcTimeMs
+  if (configuredGcTimeMs === Number.POSITIVE_INFINITY) return configuredGcTimeMs
+  return Math.min(
+    maxQueryGcTimeMs,
+    Math.max(configuredGcTimeMs, activationAtMs + programWindowMs - nowMs),
+  )
+}
 
 /**
  * LivePage はライブ視聴画面（M4-4。選択と視聴開始の分離は M7-1。録画予約による
@@ -285,75 +390,72 @@ export function LivePage() {
     setDiagnostics(null)
   }
 
-  // nowMs は「いま」を一定間隔で更新するティック。Date.now() を毎レンダー呼ぶだけでは
-  // 再レンダーの理由にならず、番組が終わっても表示が切り替わらない。
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  // `previous` is the anchor the window had before the last boundary. Its query
-  // key is rebuilt to show the cached rows while the new window loads.
-  const [programWindowAnchors, setProgramWindowAnchors] = useState(() => ({
-    current: Date.now(),
-    previous: null as number | null,
-  }))
-  const programWindowAnchor = programWindowAnchors.current
-  const previousAnchor = programWindowAnchors.previous
-  useEffect(() => {
-    const id = setInterval(() => setNowMs(Date.now()), scheduleClockTickMs)
-    return () => clearInterval(id)
-  }, [])
-
-  // Query keys move only when a known EPG start/end boundary passes. The 1s
-  // display clock updates remaining time and the live edge without polling the
-  // API, so each site has one short-window query per scheduled boundary.
-  //
-  // Each move would empty every row for one round trip (the programme line and
-  // remaining time vanish and the rows shrink), so the previous window's rows are
-  // the placeholder. useQueries never passes previous data to placeholderData
-  // (TanStack Query v5 useQueries reference), so read that window's cache entry.
-  // The previous window rarely holds the programme starting at this boundary, so
-  // while a site shows it, "on air" is judged at that window's anchor: every
-  // programme on air then stayed on air until this boundary.
+  // 表示 tick と境界 wake は同じ use-now ストアを使う。先に読むスナップショットで窓を
+  // 選び、後の購読に次の境界を渡すことで、別の interval / timeout を持たない。
+  const clockNowMs = useNow(scheduleClockTickMs)
   const queryClient = useQueryClient()
-  const cachedPrograms = (site: string, params: ListProgramsParams) =>
-    queryClient.getQueryData<Awaited<ReturnType<typeof listPrograms>>>(getListProgramsQueryKey(site, params))
+  const programWindowAnchor = cachedProgramWindowAnchor(queryClient, sites, siteServices, clockNowMs)
   const window_ = useMemo(() => currentProgramWindow(programWindowAnchor), [programWindowAnchor])
   const siteProgramQueries = useQueries({
     queries: sites.map((site) => getListProgramsQueryOptions(site, window_, {
       query: {
-        placeholderData: () =>
-          previousAnchor === null ? undefined : cachedPrograms(site, currentProgramWindow(previousAnchor)),
+        gcTime: programWindowGcTime(queryClient, programWindowAnchor, clockNowMs),
+        staleTime: programWindowStaleTime(queryClient, site, window_, clockNowMs),
       },
     })),
   })
   const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
     (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
   ), [siteProgramQueries, sites])
+  // 現在の窓の応答待ちの間は、その site の旧窓の番組を現在の時計で絞って出す。続いている番組の
+  // 行は残り、境界で始まる番組の行だけが応答まで空になる。全行を空にすると遅い回線で一覧が縮む。
   const scheduledPrograms = useMemo(() => sites.flatMap((site, index) => {
-    const query = siteProgramQueries[index]
-    const at = query?.isPlaceholderData ? previousAnchor ?? nowMs : nowMs
-    return (unwrap(query?.data) ?? [])
-      .filter((program) => isAiring(program.startAt, program.endAt, at))
+    const data = unwrap(siteProgramQueries[index]?.data)
+      ?? latestCachedWindowData(queryClient, site, programWindowAnchor, (params, startMs, endMs) =>
+        params.service === undefined && endMs - startMs === programWindowMs)
+      ?? []
+    return data
+      .filter((program) => isAiring(program.startAt, program.endAt, clockNowMs))
       .map((program) => ({ ...program, site }))
-  }), [nowMs, previousAnchor, siteProgramQueries, sites])
+  }), [clockNowMs, programWindowAnchor, queryClient, siteProgramQueries, sites])
   const programByService = useMemo(() => new Map(scheduledPrograms.map((program) => [
     siteServiceKey(program.site, program.networkId, program.serviceId),
     program,
   ])), [scheduledPrograms])
   const nextRefresh = useMemo(
-    () => nextProgramRefreshMs(sitePrograms, nowMs, Date.parse(window_.end)),
-    [nowMs, sitePrograms, window_.end],
+    () => nextProgramRefreshMs(sitePrograms, clockNowMs, Date.parse(window_.end)),
+    [clockNowMs, sitePrograms, window_.end],
   )
+  const nowMs = useNow(scheduleClockTickMs, true, nextRefresh)
+  const selectedServiceSite = selectedService?.site
+  const selectedServiceId = selectedService?.id
+
+  // 予定境界の窓は先に取得し、境界時刻そのものを query key にする。先行取得が間に合わない
+  // 間は、旧窓の番組のうち現在の時計で放送中のものだけを出す（上の `scheduledPrograms`）。
   useEffect(() => {
-    // Move the display clock with the window. A clock still before the boundary
-    // finds no programme on air in the new window (the ended one is not in it)
-    // and takes the boundary just passed as the next one, re-anchoring every
-    // few ms until its next tick.
-    const timeout = window.setTimeout(() => {
+    const nextWindow = currentProgramWindow(nextRefresh)
+    for (const site of sites) {
       const now = Date.now()
-      setNowMs(now)
-      setProgramWindowAnchors((anchors) => ({ current: now, previous: anchors.current }))
-    }, Math.max(0, nextRefresh - Date.now()) + 10)
-    return () => window.clearTimeout(timeout)
-  }, [nextRefresh])
+      const gcTime = programWindowGcTime(queryClient, nextRefresh, now)
+      const staleTime = programWindowStaleTime(queryClient, site, nextWindow, now)
+      void queryClient.prefetchQuery(getListProgramsQueryOptions(site, nextWindow, {
+        query: { gcTime, staleTime },
+      }))
+    }
+    if (selectedServiceSite !== undefined && selectedServiceId !== undefined) {
+      const params = {
+        start: new Date(nextRefresh - selectedProgramWindowMs).toISOString(),
+        end: new Date(nextRefresh + selectedProgramWindowMs).toISOString(),
+        service: [selectedServiceId],
+      }
+      const now = Date.now()
+      const gcTime = programWindowGcTime(queryClient, nextRefresh, now)
+      const staleTime = programWindowStaleTime(queryClient, selectedServiceSite, params, now)
+      void queryClient.prefetchQuery(getListProgramsQueryOptions(selectedServiceSite, params, {
+        query: { gcTime, staleTime },
+      }))
+    }
+  }, [nextRefresh, queryClient, selectedServiceId, selectedServiceSite, sites])
 
   const selectedProgramParams = (anchor: number): ListProgramsParams => ({
     start: new Date(anchor - selectedProgramWindowMs).toISOString(),
@@ -361,24 +463,32 @@ export function LivePage() {
     // 組で渡す --- `serviceId` は network をまたぐと一意でない（issue #291）。
     service: selectedService ? [selectedService.id] : undefined,
   })
+  const selectedParams = selectedProgramParams(programWindowAnchor)
   const nowPlayingQuery = useListPrograms(
     selectedService?.site ?? '',
-    selectedProgramParams(programWindowAnchor),
+    selectedParams,
     {
       query: {
         enabled: selectedService !== undefined,
-        // Same service, previous window only: a channel switch must not show
-        // the previous channel's programme as on air.
-        placeholderData: () =>
-          selectedService === undefined || previousAnchor === null
-            ? undefined
-            : cachedPrograms(selectedService.site, selectedProgramParams(previousAnchor)),
+        gcTime: programWindowGcTime(queryClient, programWindowAnchor, clockNowMs),
+        staleTime: selectedService === undefined
+          ? 0
+          : programWindowStaleTime(queryClient, selectedService.site, selectedParams, clockNowMs),
       },
     },
   )
+  // 応答待ちの間は同じ site・同じ service の旧窓だけをフォールバックにする。チャンネルを
+  // 切り替えた直後に前のチャンネルの番組を出さないためである。
   const selectedPrograms = useMemo(
-    () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined ?? [],
-    [nowPlayingQuery.data],
+    () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined
+      ?? (selectedService === undefined
+        ? undefined
+        : latestCachedWindowData(queryClient, selectedService.site, programWindowAnchor, (params, startMs, endMs) =>
+          params.service?.length === 1
+          && params.service[0] === selectedService.id
+          && endMs - startMs === 2 * selectedProgramWindowMs))
+      ?? [],
+    [nowPlayingQuery.data, programWindowAnchor, queryClient, selectedService],
   )
   const selectedScheduled = useMemo(
     () => scheduledProgramAt(selectedPrograms, nowMs),
