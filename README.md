@@ -12,8 +12,13 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 |---|---|
 | ![番組表。ジャンルで色分けし、予約済みの番組に印が付く](docs/images/readme-programs.jpg) | ![録画の再生。同じシリーズのほかの回が横に並ぶ](docs/images/readme-recording.jpg) |
 
-画面の局と番組は架空のものである。
-映像は Blender Foundation の [Sintel](https://durian.blender.org/) と [Big Buck Bunny](https://peach.blender.org/) の予告編（[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/)）から切り出した。
+画面の局と番組は架空のもので、映像の作品とは関係がない。
+映像は次の 2 作品の予告編から静止画を切り出し、16:9 に切り抜いて縮小したものである。
+どちらも [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) で公開されている。
+
+- [Sintel](https://durian.blender.org/): © copyright Blender Foundation | durian.blender.org
+- [Big Buck Bunny](https://peach.blender.org/): (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
+
 撮り直す手順は [web/e2e/README.md](web/e2e/README.md) の「README のスクリーンショット」にある。
 
 ## 基本方針
