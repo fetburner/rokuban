@@ -12,7 +12,7 @@
 -- 「削除してよい原本アセット 1 行」であり、`keep_original = 'until_encoded'` と
 -- 「サムネイルが active」という**削除エンジン固有の条件**が畳み込まれているため
 -- （このパスの対象は keep_original を問わない録画で、サムネイルの有無とも無関係）。
--- **同じ形の述語がこれで 3 箇所目**であることは意識して書いている ---
+-- **同じ形の述語がこれで 4 箇所目**であることは意識して書いている ---
 -- ドリフトの実績がある（view を切り出した理由そのもの。docs/storage/retention.md）。
 -- 現時点の差分は 1 つだけで、意図的:
 --
@@ -33,10 +33,12 @@
 --      渡し方へ移るだけで、しかもそちらの方が読んで気付きにくい（呼び出し側 2 箇所を
 --      突き合わせないと分からない）。寄せることはドリフトを減らさない。
 --
--- したがって 3 箇所（この述語、until_encoded_deletable_originals、下の
--- ListUnsatisfiableEncodeProfiles）は共通化せず、この非対称を仕様として
--- コメントに固定する。ドリフトの検出は internal/worker のテストが担う
--- （同じフィクスチャで両側の答えが食い違うことを固定する）。
+-- したがって 4 箇所（この述語、until_encoded_deletable_originals、下の
+-- ListUnsatisfiableEncodeProfiles と ListEncodeQueue）は共通化せず、この非対称を
+-- 仕様としてコメントに固定する。ドリフトの検出は internal/worker のテストが担う
+-- （同じフィクスチャで両側の答えが食い違うことを固定する）。ListEncodeQueue の
+-- コピーは internal/api の TestGetEncodeQueueSummaryFromDomainState が
+-- ListMissingEncodeProfiles との突き合わせで検出する。
 
 -- ListMissingEncodeProfiles は「原本が active でコミット済み、かつ
 -- known_profiles に含まれる desired のうち少なくとも 1 つについて active な
@@ -150,13 +152,19 @@ WHERE want.profile <> ''
 GROUP BY c.recording_id, want.profile
 ORDER BY c.recording_id, min(want.ordinality);
 
--- CountEncodeQueue は encode 待機列の全件数を返す。queued の候補述語は
--- ListMissingEncodeProfiles と同じ: そのクエリと同じファイルに置き、設定から渡す
--- known/cut profile を含む条件の変更を隣で確認できるようにする。row_limit や
--- after_recording_id は適用しない。running は試行表の running 行数で、該当する
--- (recording_id, profile) は queued から差し引く。
+-- ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語
+-- （CTE missing_profiles）は ListMissingEncodeProfiles と同じ: そのクエリと同じ
+-- ファイルに置き、設定から渡す known/cut profile を含む条件の変更を隣で確認できる
+-- ようにする。row_limit や after_recording_id は適用しない。
 --
--- name: CountEncodeQueue :one
+-- 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
+-- ある印（行は queued と running の分割になる）。active な encoded が既にある、
+-- ごみ箱、設定から消えた profile の running 行は missing_profiles に入らないので
+-- 数えない。state = 'failed' で GREATEST(attempt_count, 1) >= attempt_limit の行は
+-- worker が開始時に cancel して作られないため除く（beginEncodeAttempt と同じ判定。
+-- 旧 worker の attempt_count = 0 は 1 回と数える）。
+--
+-- name: ListEncodeQueue :many
 WITH missing_profiles AS (
   SELECT DISTINCT p.recording_id, want.profile::text AS profile
   FROM recording_encode_policy p
@@ -187,21 +195,23 @@ WITH missing_profiles AS (
     )
 )
 SELECT
-  (
-    SELECT count(*)::bigint
-    FROM missing_profiles m
-    WHERE NOT EXISTS (
-      SELECT 1 FROM recording_encode_attempts a
-      WHERE a.recording_id = m.recording_id
-        AND a.profile = m.profile
-        AND a.state = 'running'
-    )
-  )::bigint AS queued,
-  (
-    SELECT count(*)::bigint
-    FROM recording_encode_attempts
-    WHERE state = 'running'
-  )::bigint AS running;
+  m.recording_id,
+  m.profile,
+  EXISTS (
+    SELECT 1 FROM recording_encode_attempts a
+    WHERE a.recording_id = m.recording_id
+      AND a.profile = m.profile
+      AND a.state = 'running'
+  )::boolean AS running
+FROM missing_profiles m
+WHERE NOT EXISTS (
+  SELECT 1 FROM recording_encode_attempts a
+  WHERE a.recording_id = m.recording_id
+    AND a.profile = m.profile
+    AND a.state = 'failed'
+    AND GREATEST(a.attempt_count, 1) >= sqlc.arg('attempt_limit')::int
+)
+ORDER BY m.recording_id, m.profile;
 
 -- ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
 -- 確認していない」録画数をプロファイル名別に返す（メトリクス

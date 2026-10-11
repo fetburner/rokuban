@@ -1456,12 +1456,12 @@ type EncodeProfileSummary struct {
 // EncodeProfileSummaryContainer 出力コンテナ（表示用。未注入なら省略）。
 type EncodeProfileSummaryContainer string
 
-// EncodeQueueSummary active なエンコードジョブの件数（録画 × プロファイル単位）。
+// EncodeQueueSummary エンコード待機列の件数（録画 × プロファイル単位）。
 type EncodeQueueSummary struct {
-	// Queued 待機中（available / pending / scheduled / retryable）のジョブ数。
+	// Queued 待機中（desired で未観測かつ実行中の試行が無い）の件数。
 	Queued int64 `json:"queued"`
 
-	// Running 実行中のジョブ数。
+	// Running 実行中の試行がある件数。
 	Running int64 `json:"running"`
 }
 
@@ -2534,9 +2534,10 @@ type ListRecordingsParams struct {
 	// 出し続けるのを防ぐ）。無条件一覧・`trash=true` は履歴として両行を残す。
 	Status *ListRecordingsParamsStatus `form:"status,omitempty" json:"status,omitempty"`
 
-	// EncodeState active な River encode ジョブの状態。`queued` は `available` /
-	// `pending` / `scheduled` / `retryable`、`running` は実行中を表す。
-	// 件数は録画数ではなく録画 × プロファイルのジョブ数になる。
+	// EncodeState エンコード待機列の状態。`queued` は現在の desired で未観測のプロファイルが
+	// あり実行中の試行が無い録画、`running` は実行中の試行がある録画。
+	// `GET /api/encode-queue` の件数と同じ行から導出する。1 本に
+	// 両方の行があれば両方の絞り込みに現れる。
 	EncodeState *ListRecordingsParamsEncodeState `form:"encodeState,omitempty" json:"encodeState,omitempty"`
 	Source      *ListRecordingsParamsSource      `form:"source,omitempty" json:"source,omitempty"`
 
@@ -2700,7 +2701,7 @@ type ServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(w http.ResponseWriter, r *http.Request)
-	// GetEncodeQueue Get active encode job counts
+	// GetEncodeQueue Get encode queue counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(w http.ResponseWriter, r *http.Request)
 	// GetLabelRuleValueKey Normalize a label rule value into its shelf key
@@ -2934,7 +2935,7 @@ func (_ Unimplemented) ListEncodeProfiles(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(http.StatusNotImplemented)
 }
 
-// GetEncodeQueue Get active encode job counts
+// GetEncodeQueue Get encode queue counts
 // (GET /api/encode-queue)
 func (_ Unimplemented) GetEncodeQueue(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNotImplemented)
@@ -7782,7 +7783,7 @@ type StrictServerInterface interface {
 	// ListEncodeProfiles List configured encode profile names
 	// (GET /api/encode-profiles)
 	ListEncodeProfiles(ctx context.Context, request ListEncodeProfilesRequestObject) (ListEncodeProfilesResponseObject, error)
-	// GetEncodeQueue Get active encode job counts
+	// GetEncodeQueue Get encode queue counts
 	// (GET /api/encode-queue)
 	GetEncodeQueue(ctx context.Context, request GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error)
 	// GetLabelRuleValueKey Normalize a label rule value into its shelf key

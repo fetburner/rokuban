@@ -9,76 +9,6 @@ import (
 	"context"
 )
 
-const countEncodeQueue = `-- name: CountEncodeQueue :one
-WITH missing_profiles AS (
-  SELECT DISTINCT p.recording_id, want.profile::text AS profile
-  FROM recording_encode_policy p
-  JOIN recordings r ON r.id = p.recording_id
-  CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-  WHERE r.deleted_at IS NULL
-    AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = p.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
-    )
-    AND want.profile <> ''
-    AND want.profile = ANY($1::text[])
-    AND (
-      NOT (want.profile = ANY($2::text[]))
-      OR EXISTS (
-        SELECT 1 FROM recording_chapter_ownership o
-        WHERE o.recording_id = p.recording_id
-      )
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM media_assets e
-      WHERE e.recording_id = p.recording_id
-        AND e.kind = 'encoded'
-        AND e.state = 'active'
-        AND e.profile = want.profile
-    )
-)
-SELECT
-  (
-    SELECT count(*)::bigint
-    FROM missing_profiles m
-    WHERE NOT EXISTS (
-      SELECT 1 FROM recording_encode_attempts a
-      WHERE a.recording_id = m.recording_id
-        AND a.profile = m.profile
-        AND a.state = 'running'
-    )
-  )::bigint AS queued,
-  (
-    SELECT count(*)::bigint
-    FROM recording_encode_attempts
-    WHERE state = 'running'
-  )::bigint AS running
-`
-
-type CountEncodeQueueParams struct {
-	KnownProfiles []string
-	CutProfiles   []string
-}
-
-type CountEncodeQueueRow struct {
-	Queued  int64
-	Running int64
-}
-
-// CountEncodeQueue は encode 待機列の全件数を返す。queued の候補述語は
-// ListMissingEncodeProfiles と同じ: そのクエリと同じファイルに置き、設定から渡す
-// known/cut profile を含む条件の変更を隣で確認できるようにする。row_limit や
-// after_recording_id は適用しない。running は試行表の running 行数で、該当する
-// (recording_id, profile) は queued から差し引く。
-func (q *Queries) CountEncodeQueue(ctx context.Context, arg CountEncodeQueueParams) (CountEncodeQueueRow, error) {
-	row := q.db.QueryRow(ctx, countEncodeQueue, arg.KnownProfiles, arg.CutProfiles)
-	var i CountEncodeQueueRow
-	err := row.Scan(&i.Queued, &i.Running)
-	return i, err
-}
-
 const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
 SELECT want.profile::text AS profile, count(*)::bigint AS recordings
 FROM recording_encode_policy p
@@ -127,6 +57,99 @@ func (q *Queries) ListCutAwaitingReview(ctx context.Context, cutProfiles []strin
 	for rows.Next() {
 		var i ListCutAwaitingReviewRow
 		if err := rows.Scan(&i.Profile, &i.Recordings); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEncodeQueue = `-- name: ListEncodeQueue :many
+WITH missing_profiles AS (
+  SELECT DISTINCT p.recording_id, want.profile::text AS profile
+  FROM recording_encode_policy p
+  JOIN recordings r ON r.id = p.recording_id
+  CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
+  WHERE r.deleted_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = p.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+    )
+    AND want.profile <> ''
+    AND want.profile = ANY($2::text[])
+    AND (
+      NOT (want.profile = ANY($3::text[]))
+      OR EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o
+        WHERE o.recording_id = p.recording_id
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM media_assets e
+      WHERE e.recording_id = p.recording_id
+        AND e.kind = 'encoded'
+        AND e.state = 'active'
+        AND e.profile = want.profile
+    )
+)
+SELECT
+  m.recording_id,
+  m.profile,
+  EXISTS (
+    SELECT 1 FROM recording_encode_attempts a
+    WHERE a.recording_id = m.recording_id
+      AND a.profile = m.profile
+      AND a.state = 'running'
+  )::boolean AS running
+FROM missing_profiles m
+WHERE NOT EXISTS (
+  SELECT 1 FROM recording_encode_attempts a
+  WHERE a.recording_id = m.recording_id
+    AND a.profile = m.profile
+    AND a.state = 'failed'
+    AND GREATEST(a.attempt_count, 1) >= $1::int
+)
+ORDER BY m.recording_id, m.profile
+`
+
+type ListEncodeQueueParams struct {
+	AttemptLimit  int32
+	KnownProfiles []string
+	CutProfiles   []string
+}
+
+type ListEncodeQueueRow struct {
+	RecordingID int64
+	Profile     string
+	Running     bool
+}
+
+// ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語
+// （CTE missing_profiles）は ListMissingEncodeProfiles と同じ: そのクエリと同じ
+// ファイルに置き、設定から渡す known/cut profile を含む条件の変更を隣で確認できる
+// ようにする。row_limit や after_recording_id は適用しない。
+//
+// 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
+// ある印（行は queued と running の分割になる）。active な encoded が既にある、
+// ごみ箱、設定から消えた profile の running 行は missing_profiles に入らないので
+// 数えない。state = 'failed' で GREATEST(attempt_count, 1) >= attempt_limit の行は
+// worker が開始時に cancel して作られないため除く（beginEncodeAttempt と同じ判定。
+// 旧 worker の attempt_count = 0 は 1 回と数える）。
+func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams) ([]ListEncodeQueueRow, error) {
+	rows, err := q.db.Query(ctx, listEncodeQueue, arg.AttemptLimit, arg.KnownProfiles, arg.CutProfiles)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEncodeQueueRow
+	for rows.Next() {
+		var i ListEncodeQueueRow
+		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.Running); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -225,7 +248,7 @@ type ListMissingEncodeProfilesRow struct {
 // 「削除してよい原本アセット 1 行」であり、`keep_original = 'until_encoded'` と
 // 「サムネイルが active」という**削除エンジン固有の条件**が畳み込まれているため
 // （このパスの対象は keep_original を問わない録画で、サムネイルの有無とも無関係）。
-// **同じ形の述語がこれで 3 箇所目**であることは意識して書いている ---
+// **同じ形の述語がこれで 4 箇所目**であることは意識して書いている ---
 // ドリフトの実績がある（view を切り出した理由そのもの。docs/storage/retention.md）。
 // 現時点の差分は 1 つだけで、意図的:
 //
@@ -246,10 +269,12 @@ type ListMissingEncodeProfilesRow struct {
 //     渡し方へ移るだけで、しかもそちらの方が読んで気付きにくい（呼び出し側 2 箇所を
 //     突き合わせないと分からない）。寄せることはドリフトを減らさない。
 //
-// したがって 3 箇所（この述語、until_encoded_deletable_originals、下の
-// ListUnsatisfiableEncodeProfiles）は共通化せず、この非対称を仕様として
-// コメントに固定する。ドリフトの検出は internal/worker のテストが担う
-// （同じフィクスチャで両側の答えが食い違うことを固定する）。
+// したがって 4 箇所（この述語、until_encoded_deletable_originals、下の
+// ListUnsatisfiableEncodeProfiles と ListEncodeQueue）は共通化せず、この非対称を
+// 仕様としてコメントに固定する。ドリフトの検出は internal/worker のテストが担う
+// （同じフィクスチャで両側の答えが食い違うことを固定する）。ListEncodeQueue の
+// コピーは internal/api の TestGetEncodeQueueSummaryFromDomainState が
+// ListMissingEncodeProfiles との突き合わせで検出する。
 // ListMissingEncodeProfiles は「原本が active でコミット済み、かつ
 // known_profiles に含まれる desired のうち少なくとも 1 つについて active な
 // encoded が無い」録画について、不足している (recording_id, profile) を返す。

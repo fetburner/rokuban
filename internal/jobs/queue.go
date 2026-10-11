@@ -16,6 +16,11 @@ import (
 )
 
 const (
+	// EncodeAttemptLimit は 1 つの (録画, プロファイル) に許すドメイン上の encode
+	// 試行回数。worker が上限判定に使い、api が待機列から「もう作られない」行を
+	// 除くのに同じ値を使う。
+	EncodeAttemptLimit int32 = 25
+
 	// DefaultQueue は River の既定キュー名。
 	DefaultQueue = river.QueueDefault
 

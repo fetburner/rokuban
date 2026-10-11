@@ -35,10 +35,12 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
     - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
     - reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う
 - **`UniqueOpts` が担うものは種別で違う**。ruler / reconciler ではプロセス間の排他で、それ以外の一意ジョブでは合流の最適化である。分ける基準は「同じ一意キーの実行が 2 本重なったら何が壊れるか」で、正しさが壊れるなら排他、無駄が増えるだけなら合流とする。どの種別がどちらかは `internal/jobs/args.go` の各 `InsertOpts` から引く（種別は増えるので表は写さない）。合流側の並走の安全はジョブ自身のドメイン側の保護が担い、`UniqueOpts` が約束するのは行が 1 本であることまでである。rescue の後に旧実行が返らなければ実行は 2 本になる
-- エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`running` は `recording_encode_attempts.state = 'running'` の行数である。
-  `queued` は `ListMissingEncodeProfiles` と同じ述語で求めた不足プロファイル数から running を引いた数である。
-  `TestGetEncodeQueueSummaryFromDomainState` が running の差引き、observed の除外、cut の所有条件を固定する。
-- desired から外れた後も River に残るジョブは、まだ実行中でなければ `queued` に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
+- エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。
+  試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
+  `GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
+  `TestGetEncodeQueueSummaryFromDomainState` が分割・上限・observed の除外・cut の所有条件・絞り込みとの一致を固定する。
+- worker が encode 中に死ぬと、次の試行が始まるまで試行行は `running` のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は `running` に数える。
+- desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
 
 ### 定期実行の契機はデプロイ形態に委ねる
 

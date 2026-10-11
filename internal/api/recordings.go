@@ -543,14 +543,11 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 	}
 
 	if f.EncodeState != "" {
-		ids, err := h.loadEncodeJobRecordingIDs(ctx)
+		rows, err := h.loadEncodeQueueRows(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("loading encode jobs: %w", err)
+			return nil, fmt.Errorf("loading encode queue: %w", err)
 		}
-		recordingIDs := ids.running
-		if f.EncodeState == ListRecordingsParamsEncodeStateQueued {
-			recordingIDs = ids.queued
-		}
+		recordingIDs := encodeQueueRecordingIDs(rows, f.EncodeState == ListRecordingsParamsEncodeStateRunning)
 		f.EncodeRecordingIDs = &recordingIDs
 	}
 

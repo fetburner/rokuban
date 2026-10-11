@@ -5,148 +5,106 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"sync"
+	"slices"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
-type blockingEncodeQueueTestWorker struct {
-	river.WorkerDefaults[jobs.EncodeJobArgs]
-	started     chan struct{}
-	startedOnce sync.Once
-	release     chan struct{}
-}
-
-func (w *blockingEncodeQueueTestWorker) Work(ctx context.Context, _ *river.Job[jobs.EncodeJobArgs]) error {
-	w.startedOnce.Do(func() { close(w.started) })
-	select {
-	case <-w.release:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
-// Timeout はジョブ既定の JobTimeoutDefault（1 分）を無効化する。テストは
-// MaxWorkers: 1 の枠をこの worker がブロックしたまま別ジョブを available に
-// 残す構成なので、既定タイムアウトが効くと job ctx がキャンセルされて Work が
-// ctx.Err() を返し、ジョブが retryable に落ちて枠が空く。その状態で producer が
-// 残りの available ジョブを即座に fetch すると、started の 2 回目の close で
-// panic する。
-func (w *blockingEncodeQueueTestWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
-	return -1
-}
-
-func startBlockingEncodeClient(t *testing.T, pool *pgxpool.Pool) (*river.Client[pgx.Tx], context.CancelFunc, *blockingEncodeQueueTestWorker) {
+// setEncodeAttemptCount は seedEncodeAttempt が作った行の attempt_count を上書きする。
+func setEncodeAttemptCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, count int) {
 	t.Helper()
-	workers := river.NewWorkers()
-	testWorker := &blockingEncodeQueueTestWorker{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recording_encode_attempts SET attempt_count = $3 WHERE recording_id = $1 AND profile = $2`,
+		recordingID, profile, count); err != nil {
+		t.Fatalf("setting attempt_count: %v", err)
 	}
-	river.AddWorker(workers, testWorker)
-
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:  map[string]river.QueueConfig{"encode": {MaxWorkers: 1}},
-		Workers: workers,
-	})
-	if err != nil {
-		t.Fatalf("creating blocking encode river client: %v", err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := client.Start(ctx); err != nil {
-		cancel()
-		t.Fatalf("starting blocking encode river client: %v", err)
-	}
-	return client, cancel, testWorker
 }
 
-func waitForBlockingEncodeWorker(t *testing.T, testWorker *blockingEncodeQueueTestWorker) {
+// encodeQueueFixture はドメイン状態だけで待機列の境界を作る。返す値は queued / running に
+// 寄与する録画のタイトル。
+func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, runningTitles []string) {
 	t.Helper()
-	select {
-	case <-testWorker.started:
-	case <-time.After(20 * time.Second):
-		t.Fatal("blocking encode worker did not start")
-	}
-}
-
-func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
-	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
-	queuedAndRunningID := seedRecording(t, pool, "待機と実行", base, "finished", 901)
-	seedIngested(t, pool, queuedAndRunningID, 1000, nil)
-	setEncodeProfiles(t, pool, queuedAndRunningID, []string{"h264", "h265"})
-	seedEncodeAttempt(t, pool, queuedAndRunningID, "h264", "running", nil)
-
-	observedID := seedRecording(t, pool, "完了済み", base.Add(time.Minute), "finished", 902)
-	seedIngested(t, pool, observedID, 1000, nil)
-	setEncodeProfiles(t, pool, observedID, []string{"h265"})
-	seedEncodedAsset(t, pool, observedID, "h265", 1000)
-
-	inactiveObservedID := seedRecording(t, pool, "削除中の encoded", base.Add(90*time.Second), "finished", 905)
-	seedIngested(t, pool, inactiveObservedID, 1000, nil)
-	setEncodeProfiles(t, pool, inactiveObservedID, []string{"h264"})
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', 'h264', $2, 1000, 'deleting')`,
-		inactiveObservedID, "test/inactive_observed.mp4"); err != nil {
-		t.Fatalf("seeding deleting encoded media_asset: %v", err)
+	n := int64(900)
+	mk := func(title string, profiles ...string) int64 {
+		n++
+		id := seedRecording(t, pool, title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n))
+		seedIngested(t, pool, id, 1000, nil)
+		setEncodeProfiles(t, pool, id, profiles)
+		return id
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
 	}
 
-	failedAttemptID := seedRecording(t, pool, "失敗済み試行", base.Add(2*time.Minute), "finished", 906)
-	seedIngested(t, pool, failedAttemptID, 1000, nil)
-	setEncodeProfiles(t, pool, failedAttemptID, []string{"h264"})
-	seedEncodeAttempt(t, pool, failedAttemptID, "h264", "failed", nil)
+	a := mk("待機と実行", "h264", "h265")
+	seedEncodeAttempt(t, pool, a, "h264", "running", nil)
 
-	unknownProfileID := seedRecording(t, pool, "設定から消えた profile", base.Add(150*time.Second), "finished", 907)
-	seedIngested(t, pool, unknownProfileID, 1000, nil)
-	setEncodeProfiles(t, pool, unknownProfileID, []string{"removed"})
+	b := mk("完了済み", "h265")
+	seedEncodedAsset(t, pool, b, "h265", 1000)
 
-	inactiveOriginalID := seedRecording(t, pool, "active 原本なし", base.Add(3*time.Minute), "finished", 908)
-	inactiveOriginalAssetID := seedIngested(t, pool, inactiveOriginalID, 1000, nil)
-	setEncodeProfiles(t, pool, inactiveOriginalID, []string{"h264"})
-	if _, err := pool.Exec(ctx,
-		`UPDATE media_assets SET state = 'deleted' WHERE id = $1`, inactiveOriginalAssetID); err != nil {
-		t.Fatalf("marking original inactive: %v", err)
-	}
+	c := mk("削除中の encoded", "h264")
+	exec(`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		 VALUES ($1, 'encoded', 'h264', 'test/inactive_observed.mp4', 1000, 'deleting')`, c)
 
-	deletedRecordingID := seedRecording(t, pool, "ごみ箱", base.Add(4*time.Minute), "finished", 909)
-	seedIngested(t, pool, deletedRecordingID, 1000, nil)
-	setEncodeProfiles(t, pool, deletedRecordingID, []string{"h264"})
-	if _, err := pool.Exec(ctx,
-		`UPDATE recordings SET deleted_at = now() WHERE id = $1`, deletedRecordingID); err != nil {
-		t.Fatalf("soft-deleting recording: %v", err)
-	}
+	d := mk("失敗 count 0", "h264")
+	seedEncodeAttempt(t, pool, d, "h264", "failed", nil)
+	e := mk("失敗 count 24", "h264")
+	seedEncodeAttempt(t, pool, e, "h264", "failed", nil)
+	setEncodeAttemptCount(t, pool, e, "h264", int(jobs.EncodeAttemptLimit)-1)
+	f := mk("失敗 count 25", "h264")
+	seedEncodeAttempt(t, pool, f, "h264", "failed", nil)
+	setEncodeAttemptCount(t, pool, f, "h264", int(jobs.EncodeAttemptLimit))
 
-	cutWithoutOwnershipID := seedRecording(t, pool, "未確認 cut", base.Add(2*time.Minute), "finished", 903)
-	seedIngested(t, pool, cutWithoutOwnershipID, 1000, nil)
-	setEncodeProfiles(t, pool, cutWithoutOwnershipID, []string{"cut"})
+	g := mk("観測済みなのに running 行", "h264")
+	seedEncodedAsset(t, pool, g, "h264", 1000)
+	seedEncodeAttempt(t, pool, g, "h264", "running", nil)
 
-	cutOwnedID := seedRecording(t, pool, "確認済み cut", base.Add(3*time.Minute), "finished", 904)
-	seedIngested(t, pool, cutOwnedID, 1000, nil)
-	setEncodeProfiles(t, pool, cutOwnedID, []string{"cut"})
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, cutOwnedID); err != nil {
-		t.Fatalf("seeding chapter ownership: %v", err)
-	}
+	h := mk("ごみ箱の running", "h264")
+	seedEncodeAttempt(t, pool, h, "h264", "running", nil)
+	exec(`UPDATE recordings SET deleted_at = now() WHERE id = $1`, h)
 
+	u := mk("設定に無い profile の running", "removed")
+	seedEncodeAttempt(t, pool, u, "removed", "running", nil)
+
+	io := mk("active 原本なしの running", "h264")
+	seedEncodeAttempt(t, pool, io, "h264", "running", nil)
+	exec(`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'original'`, io)
+
+	mk("未確認 cut", "cut")
+	co := mk("確認済み cut", "cut")
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, co)
+
+	return []string{"待機と実行", "削除中の encoded", "失敗 count 0", "失敗 count 24", "確認済み cut"},
+		[]string{"待機と実行"}
+}
+
+func newEncodeQueueServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:               pool,
 		EncodeProfileNames: []string{"h264", "h265", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
 	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	queuedTitles, runningTitles := encodeQueueFixture(t, pool)
+	srv := newEncodeQueueServer(t, pool)
+
 	var got struct {
 		Queued  int64 `json:"queued"`
 		Running int64 `json:"running"`
@@ -155,59 +113,41 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
 	}
-	if got.Queued != 4 || got.Running != 1 {
-		t.Errorf("encode queue summary = queued %d, running %d; want queued 4, running 1", got.Queued, got.Running)
+	if got.Queued != 5 || got.Running != 1 {
+		t.Errorf("encode queue summary = queued %d, running %d; want queued 5, running 1", got.Queued, got.Running)
+	}
+	if got.Queued != int64(len(queuedTitles)) || got.Running != int64(len(runningTitles)) {
+		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
 	}
 
-	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
-		KnownProfiles:    []string{"h264", "h265", "cut"},
-		CutProfiles:      []string{"cut"},
-		AfterRecordingID: 0,
-		RowLimit:         100,
+	// ListMissingEncodeProfiles は上限到達の失敗行も返す。待機列は queued + running = それ以外。
+	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
+		KnownProfiles: []string{"h264", "h265", "cut"},
+		CutProfiles:   []string{"cut"},
+		RowLimit:      100,
 	})
 	if err != nil {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
-	if got.Queued != int64(len(missing)-1) {
-		t.Errorf("queued = %d, ListMissingEncodeProfiles has %d rows and one running profile; want %d",
-			got.Queued, len(missing), len(missing)-1)
+	const exhausted = 1
+	if got.Queued+got.Running != int64(len(missing)-exhausted) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows and %d exhausted; want %d",
+			got.Queued+got.Running, len(missing), exhausted, len(missing)-exhausted)
 	}
 }
 
-func TestListRecordingsEncodeStateFilterUsesRiverJobs(t *testing.T) {
+func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	client, err := worker.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	ctx := context.Background()
-	base := time.Now().Truncate(time.Second)
-	queuedID := seedRecording(t, pool, "待機中", base, "finished", 911)
-	runningID := seedRecording(t, pool, "実行中", base.Add(time.Minute), "finished", 912)
-	seedRecording(t, pool, "ジョブなし", base.Add(2*time.Minute), "finished", 913)
+	wantQueued, wantRunning := encodeQueueFixture(t, pool)
+	srv := newEncodeQueueServer(t, pool)
 
-	runningClient, runningCancel, runningWorker := startBlockingEncodeClient(t, pool)
-	defer func() {
-		runningCancel()
-		close(runningWorker.release)
-		<-runningClient.Stopped()
-	}()
-	if _, err := runningClient.Insert(ctx, jobs.EncodeJobArgs{RecordingID: runningID, Profile: "h264"}, nil); err != nil {
-		t.Fatalf("inserting running encode job: %v", err)
-	}
-	waitForBlockingEncodeWorker(t, runningWorker)
-	if _, err := client.Insert(ctx, jobs.EncodeJobArgs{RecordingID: queuedID, Profile: "h264"}, nil); err != nil {
-		t.Fatalf("inserting queued encode job: %v", err)
-	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: client}))
-	t.Cleanup(srv.Close)
-	queuedTitles := getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {"queued"}})
-	if len(queuedTitles) != 1 || queuedTitles[0] != "待機中" {
-		t.Errorf("encodeState=queued got %v, want [待機中]", queuedTitles)
-	}
-	runningTitles := getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {"running"}})
-	if len(runningTitles) != 1 || runningTitles[0] != "実行中" {
-		t.Errorf("encodeState=running got %v, want [実行中]", runningTitles)
+	for state, want := range map[string][]string{"queued": wantQueued, "running": wantRunning} {
+		got := getRecordingsTitles(t, srv.URL, url.Values{"encodeState": {state}})
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("encodeState=%s got %v, want %v", state, got, want)
+		}
 	}
 }
 
