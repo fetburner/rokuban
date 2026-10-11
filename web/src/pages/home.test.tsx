@@ -1500,7 +1500,7 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
       expect(unresolvedCount(`/api/recordings?status=${status}`)).toBe(1)
     }
 
-    // 前日のクエリはまだ未解決。窓外の完了行は消え、窓をまたぐ finished / failed
+    // 日付変更後のクエリはまだ未解決。窓外の完了行は消え、窓をまたぐ finished / failed
     // 行と翌日の予約は残り、時間軸は読み込み中へ戻らない。
     expect(screen.queryByRole('status', { name: '時間軸を読み込み中' })).not.toBeInTheDocument()
     expect(screen.getByTestId('home-ops-timeline-frame')).toBeInTheDocument()
