@@ -28,7 +28,11 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { shouldAutoLoadNextPage, shouldShowLoadMoreButton } from '@/lib/auto-load'
-import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
+import {
+  dayOffsetForMs,
+  dayOrigin,
+  nextHourBoundary,
+} from '@/lib/day-offset'
 import { orderServices, type TimeAxis } from '@/lib/epg-grid'
 import {
   programsQueryKeyPrefix,
@@ -61,6 +65,7 @@ import {
   type GridPxPerHour,
 } from '@/lib/programs-grid-scale-storage'
 import { lgMediaQuery, useMediaQuery } from '@/lib/use-media-query'
+import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
 import { loadProgramsView, saveProgramsView, type ProgramsView } from '@/lib/programs-view-storage'
 
@@ -102,9 +107,9 @@ const gridWindowHours = 24
  * うえ、個々の番組から飛べる導線と役割が重複する。issue #231 の決定。
  */
 export function ProgramsPage() {
-  // `at` の日判定・取得窓・子リストの判定を同じレンダーの時刻で揃える。
-  // oxlint-disable-next-line react/purity -- EPG の現在時刻スナップショットが必要
-  const nowMs = Date.now()
+  // 番組表の窓は正時で変わる。次の正時に共有時計を一度進め、グリッドの現在線とは
+  // 同じストアを使う（ページを秒単位で再レンダーさせない）。
+  const nowMs = useNow({ wakeAtMs: nextHourBoundary })
   const {
     sites,
     services: serviceList,
@@ -137,11 +142,10 @@ export function ProgramsPage() {
       replace: true,
     })
   }
-  // dayOffset は「ジャンプ先」（DayStrip をタップして跳ぶ先）。0 以上
-  // selectableDays 未満。0 は今日で、リストは常にここから連続フィードとして
-  // 始まる（`今` という別枠の選択肢は無い）。URL の `day` から初期化し、
-  // `at` があれば下の effect がその日で上書きする。
-  const [dayOffset, setDayOffset] = useState(() => programsDayOffset(search.day, nowMs))
+  // 選んだ暦日を保持し、DayStrip 用 offset は現在日に対して導出する。offset だけ
+  // を持つと 0 時を越えたとき「明日」が新しい明後日へずれる。
+  const [selectedDay, setSelectedDay] = useState(search.day)
+  const dayOffset = programsDayOffset(selectedDay, nowMs)
   // visibleDay は「いま見ている日」（ProgramList がスクロール位置から導出して
   // 通知する）。DayStrip のハイライトはこちらを見る。ジャンプ直後は dayOffset と
   // 一致するが、その後リストをスクロールすればこちらだけが動く。
@@ -181,13 +185,14 @@ export function ProgramsPage() {
   // `scrollToDayOffset`（ref 経由）に委ねる ---
   // 見つからなければ ProgramList 側が何もしない。
   const selectDay = (offset: number) => {
-    updateSearch((s) => ({ ...s, day: programsDayForOffset(offset, Date.now()) }))
+    const nextSelectedDay = programsDayForOffset(offset, nowMs)
+    updateSearch((s) => ({ ...s, day: nextSelectedDay }))
+    setSelectedDay(nextSelectedDay)
     if (offset === dayOffset) {
       setVisibleDay(offset)
       programListRef.current?.scrollToDayOffset(offset)
       return
     }
-    setDayOffset(offset)
     setVisibleDay(offset)
   }
 
@@ -201,6 +206,8 @@ export function ProgramsPage() {
   // `dayOffset`（いま実際に見ている日）と比較することで「at はまだ有効か」を
   // 判定する（下記 `scrollToMs` 参照）。
   const atDayOffset = at === undefined ? undefined : dayOffsetForMs(at, nowMs, selectableDays)
+  const atSelectedDay =
+    atDayOffset === undefined ? undefined : programsDayForOffset(atDayOffset, nowMs)
 
   // at が指す日へ「いま見ている日」を合わせる。グリッドの有無・表示形式に
   // 関わらず効かせる --- リスト表示中・`lg` 未満（グリッドが出ない）画面では
@@ -210,13 +217,13 @@ export function ProgramsPage() {
   // （容量不足バッジは「この時間帯を見たい」という要求そのものなので、共有 URL の
   // `day` と矛盾しても at の日を勝たせる。`day` は URL からは消さない）。
   useEffect(() => {
-    if (atDayOffset === undefined) return
+    if (atDayOffset === undefined || atSelectedDay === undefined) return
     // URL の at を画面状態へ反映する同期。URL を正本としており、render 中に
     // state を書くと hooks の render 更新になるため effect が必要。
     // oxlint-disable-next-line react/set-state-in-effect -- URL のジャンプ先を画面状態へ同期する
-    setDayOffset(atDayOffset)
+    setSelectedDay(atSelectedDay)
     setVisibleDay(atDayOffset)
-  }, [atDayOffset])
+  }, [atDayOffset, atSelectedDay])
 
   // グリッドは `lg` 以上でのみ出す。モバイルは常にリストのまま
   // （docs/frontend.md「リストを第一級に置く。グリッドはその上に足す」）。

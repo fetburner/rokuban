@@ -98,7 +98,7 @@ function TunerStatusLine({
   )
   // 古さの判定は時刻だけで変わる。再取得の有無や周期に頼らず、時計を 30 秒ごとに
   // 購読して、1 時間のしきい値を越えた時点で表示を更新する。
-  const nowMs = useNow(30_000)
+  const nowMs = useNow({ intervalMs: 30_000 })
   const stale = isObservationStale(oldestObservedAt, nowMs)
 
   return (

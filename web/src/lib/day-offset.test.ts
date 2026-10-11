@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { dayOffsetForMs, dayOrigin } from '@/lib/day-offset'
+import {
+  dayOffsetForMs,
+  dayOrigin,
+  nextHourBoundary,
+  nextMidnightBoundary,
+} from '@/lib/day-offset'
 
 describe('dayOrigin', () => {
   it('0 は now を時・分・秒で切り捨てた時刻になる（0 時ではない）', () => {
@@ -38,6 +43,23 @@ describe('dayOrigin', () => {
     expect(origin).toEqual(new Date(2026, 6, 25, 10, 0, 0, 0))
 
     vi.restoreAllMocks()
+  })
+})
+
+describe('local clock boundaries', () => {
+  it('nextHourBoundary は次のローカル正時を返し、日付もまたぐ', () => {
+    const beforeMidnight = new Date(2026, 6, 25, 23, 59, 59, 999).getTime()
+
+    expect(nextHourBoundary(beforeMidnight)).toBe(new Date(2026, 6, 26, 0, 0, 0, 0).getTime())
+    expect(nextHourBoundary(new Date(2026, 6, 26, 0, 0, 0, 0).getTime())).toBe(
+      new Date(2026, 6, 26, 1, 0, 0, 0).getTime(),
+    )
+  })
+
+  it('nextMidnightBoundary は次のローカル 0 時を返す', () => {
+    const beforeMidnight = new Date(2026, 6, 25, 23, 59, 59, 999).getTime()
+
+    expect(nextMidnightBoundary(beforeMidnight)).toBe(new Date(2026, 6, 26, 0, 0, 0, 0).getTime())
   })
 })
 

@@ -91,7 +91,7 @@ const verdictLabels: Record<Exclude<RecordingVerdict, 'viewable'>, string> = {
  */
 export function IngestBadge({ recording }: { recording: Recording }) {
   // 停滞の境界は 60 秒なので、10 秒の購読で短時間に行数ぶんの描画を起こさず反映する。
-  const nowMs = useNow(10_000, recording.ingest?.state === 'transferring')
+  const nowMs = useNow({ intervalMs: 10_000, active: recording.ingest?.state === 'transferring' })
   const display = ingestDisplay(recording, nowMs)
   if (display === undefined || display.kind === 'originalDeleted') return null
 

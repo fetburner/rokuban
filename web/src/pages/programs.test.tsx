@@ -1588,22 +1588,34 @@ describe('ProgramsPage の容量超過の帯', () => {
     })
 
     stubMatchMedia(true)
-    vi.setSystemTime(origin + 3_600_000 - 25_000)
+    vi.setSystemTime(origin)
     const { queryClient } = renderPage('/programs?view=grid')
     try {
       await screen.findByTestId('program-grid')
-      await overagesSettled(queryClient)
+      await waitFor(() => {
+        const initialOverageQuery = queryClient
+          .getQueryCache()
+          .findAll({ queryKey: ['/api/capacity/overages'] })
+          .find(
+            (query) =>
+              (query.queryKey[1] as { start?: string } | undefined)?.start ===
+              new Date(origin).toISOString(),
+          )
+        expect(initialOverageQuery?.state.status).toBe('success')
+      })
       expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
 
-      // 時計だけでは ProgramsPage は再レンダーされない。EPG 再取得の契機を
-      // 作った時点で正時を越えておき、変わった queryKey の応答を保留する。
+      // 操作や再取得を待たず、次の正時にページの取得窓とグリッド時計が進む。
       await act(async () => {
-        vi.setSystemTime(nextOrigin + 20 * 60_000)
+        await vi.advanceTimersByTimeAsync(3_600_000)
       })
-      await userEvent.click(screen.getByTestId('genre-filter-7'))
       await waitFor(() => {
         expect(programsPending).toBe(true)
         expect(overagesPending).toBe(true)
+      })
+      // グリッドの現在線は 30 秒 clock で動き、ページの取得窓は次の正時まで固定される。
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20 * 60_000)
       })
 
       // placeholder 中は旧キーの絶対時刻データを新しい軸へ投影する。
@@ -1613,9 +1625,11 @@ describe('ProgramsPage の容量超過の帯', () => {
       expect(screen.getAllByTestId('program-grid-tick')[0]).toHaveTextContent('13:00')
       expect(screen.getByTestId('program-grid-now-line')).toBeInTheDocument()
       expect(screen.getByTestId('program-grid-now-time')).toHaveTextContent('13:20')
-      expect(
-        Number.parseFloat(screen.getByTestId('program-grid-now-line').style.top),
-      ).toBeCloseTo(40, 1)
+      const nowLineTop = Number.parseFloat(
+        screen.getByTestId('program-grid-now-line').style.top,
+      )
+      expect(nowLineTop).toBeGreaterThanOrEqual(40)
+      expect(nowLineTop).toBeLessThan(42)
       expect(
         document.querySelector(
           `[data-testid="program-grid-cell"][data-program-id="${boundaryProgram.programId}"]`,
@@ -1645,11 +1659,12 @@ describe('ProgramsPage の容量超過の帯', () => {
       const currentDay = dayGroup.querySelector('button[aria-current="date"]')
       expect(currentDay?.getAttribute('aria-label')).toMatch(/^8月14日\(金\)(?:,|$)/)
 
-      // 翌日の 0 時でも placeholder 表示のまま日付見出しと時間軸を進める。
+      // 次の暦日へ時計を進めても、ページは操作を待たず新しい窓を取得する。
+      // setSystemTime は timer を発火しないので、共有グリッド時計の次 tick を進める。
+      vi.setSystemTime(midnightOrigin.getTime() + 20 * 60_000)
       await act(async () => {
-        vi.setSystemTime(midnightOrigin.getTime() + 20 * 60_000)
+        await vi.advanceTimersByTimeAsync(30_000)
       })
-      await userEvent.click(screen.getByTestId('genre-filter-7'))
       await waitFor(() => {
         expect(midnightProgramsPending).toBe(true)
         expect(midnightOveragesPending).toBe(true)
@@ -1657,9 +1672,11 @@ describe('ProgramsPage の容量超過の帯', () => {
       expect(screen.getByTestId('program-grid')).toBeInTheDocument()
       expect(screen.getAllByTestId('program-grid-tick')[0]).toHaveTextContent('00:00')
       expect(screen.getByTestId('program-grid-now-time')).toHaveTextContent('00:20')
-      expect(
-        Number.parseFloat(screen.getByTestId('program-grid-now-line').style.top),
-      ).toBeCloseTo(40, 1)
+      const midnightNowLineTop = Number.parseFloat(
+        screen.getByTestId('program-grid-now-line').style.top,
+      )
+      expect(midnightNowLineTop).toBeGreaterThanOrEqual(40)
+      expect(midnightNowLineTop).toBeLessThan(42)
       expect(
         dayGroup
           .querySelector('button[aria-current="date"]')
@@ -1697,7 +1714,17 @@ describe('ProgramsPage の容量超過の帯', () => {
     stubMatchMedia(true)
     const { queryClient } = renderPage()
     await openGrid()
-    await overagesSettled(queryClient)
+    await waitFor(() => {
+      const currentOverageQuery = queryClient
+        .getQueryCache()
+        .findAll({ queryKey: ['/api/capacity/overages'] })
+        .find(
+          (query) =>
+            (query.queryKey[1] as { start?: string } | undefined)?.start ===
+            new Date(origin).toISOString(),
+        )
+      expect(currentOverageQuery?.state.status).toBe('success')
+    })
 
     const before = fetchMock.mock.calls.filter(
       (call) => new URL(String(call[0]), 'http://localhost').pathname === '/api/capacity/overages',
@@ -2316,6 +2343,48 @@ describe('ProgramsPage の選択日の URL 化', () => {
     })
     expect(await screen.findByText('ニュース7')).toBeInTheDocument()
     expect(router.history.length).toBe(initialHistoryLength)
+  })
+
+  it('選んだ明日は 0 時を越えても同じ暦日を指す', async () => {
+    const beforeMidnight = new Date(2026, 7, 14, 23, 59, 55, 0)
+    const midnight = new Date(2026, 7, 15, 0, 0, 0, 0)
+    vi.setSystemTime(beforeMidnight)
+    stubMatchMedia(true)
+    const tomorrowProgram = programAtAbsolute(
+      9_999,
+      1024,
+      midnight.getTime() + 3_600_000,
+      '明日の番組',
+    )
+    const fetchMock = stubApi([], [], [...allPrograms, tomorrowProgram])
+    const { router } = renderPage('/programs?view=grid')
+    try {
+      await screen.findByTestId('program-grid')
+      const dayGroup = screen.getByRole('group', { name: '日付' })
+      await userEvent.click(within(dayGroup).getByRole('button', { name: /^8月15日/ }))
+      await waitFor(() => expect(router.state.location.search.day).toBe('2026-08-15'))
+      expect(dayGroup.querySelector('button[aria-current="date"]')?.getAttribute('aria-label'))
+        .toMatch(/^8月15日/)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(midnight.getTime() - beforeMidnight.getTime())
+      })
+
+      // 選択日は offset=0 に読み替わる。相対 offset を 1 のまま持つ実装だと
+      // 8 月 16 日へ進み、DayStrip の現在日がずれる。
+      expect(dayGroup.querySelector('button[aria-current="date"]')?.getAttribute('aria-label'))
+        .toMatch(/^8月15日/)
+      expect(router.state.location.search.day).toBe('2026-08-15')
+
+      const starts = fetchMock.mock.calls
+        .map(([input]) => new URL(String(input), 'http://localhost'))
+        .filter((url) => url.pathname === '/api/sites/default/programs')
+        .map((url) => url.searchParams.get('start'))
+      expect(starts).toContain(new Date(2026, 7, 15, 0, 0, 0, 0).toISOString())
+      expect(starts).not.toContain(new Date(2026, 7, 16, 0, 0, 0, 0).toISOString())
+    } finally {
+      vi.setSystemTime(pinnedNow)
+    }
   })
 
   it('day と at が矛盾するときは at の日を表示し、どちらも URL から消さない', async () => {

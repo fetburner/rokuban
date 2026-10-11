@@ -11,10 +11,6 @@
     "src/components/ui/button.tsx": 1,
     "src/pages/cm-logos.tsx": 3
   },
-  "react/purity": {
-    "src/pages/home.tsx": 1,
-    "src/pages/programs.tsx": 1
-  },
   "react/refs": {
     "src/components/program-list.tsx": 2
   },

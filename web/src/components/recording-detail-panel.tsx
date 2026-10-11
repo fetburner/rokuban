@@ -303,8 +303,8 @@ export function RecordingDetail({
     })
   }
   // 追っかけ中の録画端を 1 秒ごとに進める。非表示時は購読せず、従来の表示中だけ進む挙動を保つ。
-  const now = useNow(1000, showChase && recording.status === 'recording')
-  const ingestNow = useNow(10_000, recording.ingest?.state === 'transferring')
+  const now = useNow({ intervalMs: 1000, active: showChase && recording.status === 'recording' })
+  const ingestNow = useNow({ intervalMs: 10_000, active: recording.ingest?.state === 'transferring' })
   const timeline = recordingTimeline(recording, recording.status === 'recording' ? { nowMs: now } : {})
   const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
   /**
