@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory, createRouter } from '@tanstack/react-router'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LiveProfileSummary, ProgramListItem, Recording, Reservation, Service, Tuner } from '@/api/generated'
 import { ToastProvider } from '@/components/toaster'
@@ -1990,7 +1990,11 @@ describe('LivePage / 番組境界の再取得', () => {
     vi.useRealTimers()
   })
 
-  const boundary = Date.parse('2026-10-11T06:10:00.000Z')
+  // 既定は分ちょうどの境界。分の途中の境界を試すテストは、描画の前に代入し直す。
+  let boundary = Date.parse('2026-10-11T06:10:00.000Z')
+  beforeEach(() => {
+    boundary = Date.parse('2026-10-11T06:10:00.000Z')
+  })
 
   /**
    * 境界の 90.5 秒前に画面を出し、境界の 1.5 秒前まで進める。番組の応答は 50ms 遅らせる。
@@ -2050,7 +2054,7 @@ describe('LivePage / 番組境界の再取得', () => {
     // 実ネットワークの往復ぶん番組の応答を遅らせ、取り直し中の表示を観測できるようにする。
     // サーバーと同じく窓に重なる番組だけを返す --- 境界の後の窓には終わった番組が入らない。
     const stubbed = globalThis.fetch
-    let releaseBoundaryWindow: (() => void) | null = null
+    const releaseBoundaryWindows: (() => void)[] = []
     globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
       const response = await stubbed(input)
       const url = new URL(String(input), 'http://localhost')
@@ -2060,9 +2064,10 @@ describe('LivePage / 番組境界の再取得', () => {
       const programs = (await response.json() as ProgramListItem[])
         .filter((p) => Date.parse(p.startAt) < end && Date.parse(p.endAt) > start)
       await new Promise((resolve) => setTimeout(resolve, 50))
-      if (holdBoundaryWindow && !url.searchParams.has('service') && start === boundary) {
+      // 一覧の窓と、選択中チャンネルの詳細の窓（境界の 6 時間前から）の両方を保留する。
+      if (holdBoundaryWindow && (start === boundary || start === boundary - 6 * 60 * 60_000)) {
         await new Promise<void>((resolve) => {
-          releaseBoundaryWindow = resolve
+          releaseBoundaryWindows.push(resolve)
         })
       }
       return new Response(JSON.stringify(programs), { status: 200 })
@@ -2075,7 +2080,7 @@ describe('LivePage / 番組境界の再取得', () => {
       vi.advanceTimersByTime(boundary - 1_500 - Date.now())
     })
     expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
-    return { queryClient, releaseBoundaryWindow: () => releaseBoundaryWindow?.() }
+    return { queryClient, releaseBoundaryWindow: () => releaseBoundaryWindows.forEach((release) => release()) }
   }
 
   /** boundaryWindowRequests は予定境界ちょうどのチャンネル一覧窓への要求数。 */
@@ -2093,6 +2098,14 @@ describe('LivePage / 番組境界の再取得', () => {
       .filter((url) => url.pathname.endsWith('/programs') && !url.searchParams.has('service'))
       .map((url) => Date.parse(url.searchParams.get('start') ?? ''))
       .filter((start) => start >= boundary)
+  }
+
+  /** siteWindowStarts は全局一覧窓の要求の開始時刻を、要求順に返す。 */
+  function siteWindowStarts(): number[] {
+    return (globalThis.fetch as unknown as { mock: { calls: [string][] } }).mock.calls
+      .map(([url]) => new URL(String(url), 'http://localhost'))
+      .filter((url) => url.pathname.endsWith('/programs') && !url.searchParams.has('service'))
+      .map((url) => Date.parse(url.searchParams.get('start') ?? ''))
   }
 
   /** 境界をまたいで 3 秒、20ms 刻みで進める。刻みごとに `check` を呼ぶ。 */
@@ -2121,17 +2134,37 @@ describe('LivePage / 番組境界の再取得', () => {
     expect(boundaryWindowRequests()).toBe(1)
   })
 
-  // 旧窓の query cache が無くても、境界時刻のキーで先行取得した窓へ移る。
+  // 境界は分の途中に置く（分ちょうどだと、毎分に切り捨てた窓が境界の窓と同じ時刻になり、
+  // 窓の選択が境界時刻のキーへ移っているか区別できない）。境界前の現在窓の cache を消し、
+  // 境界の prefetch 窓だけを残す。境界の後に購読されている窓が境界時刻の窓であることで、
+  // cache から窓を導出する経路を確かめる。
   it('前の窓のキャッシュが無くても、境界で窓を進め直し続けない', async () => {
+    boundary = Date.parse('2026-10-11T06:10:30.000Z')
     const { queryClient } = await renderBeforeBoundary()
     await waitFor(() => expect(boundaryWindowRequests()).toBe(1))
-    // 現在の窓のキャッシュが無い状態を作る。境界の prefetch cache は残しておく。
-    vi.spyOn(queryClient, 'getQueriesData').mockReturnValue([])
+    // 境界前の現在窓の cache だけを消す。境界の prefetch cache は残る。
+    const boundaryKeyStart = new Date(boundary).toISOString()
+    queryClient.removeQueries({
+      predicate: (query) => {
+        const params = query.queryKey[1] as { start?: string; service?: unknown } | undefined
+        return query.queryKey[0] === '/api/sites/default/programs'
+          && params?.service === undefined
+          && params?.start !== boundaryKeyStart
+      },
+    })
 
     await crossBoundary()
 
     expect(screen.getByLabelText('番組表の予定: 次の番組')).toBeInTheDocument()
     expect(boundaryWindowRequests()).toBe(1)
+    // 毎分に切り捨てた窓（06:10:00）へ落ちる実装では、境界の窓は購読されない。
+    const boundaryQuery = queryClient.getQueryCache().find({
+      queryKey: ['/api/sites/default/programs', {
+        start: boundaryKeyStart,
+        end: new Date(boundary + 60_000).toISOString(),
+      }],
+    })
+    expect(boundaryQuery?.getObserversCount()).toBe(1)
   })
 
   it('query gcTime より先の境界でも、prefetch 窓を境界まで cache に保持する', async () => {
@@ -2188,20 +2221,85 @@ describe('LivePage / 番組境界の再取得', () => {
     expect(siteProgramWindowStartsAfterBoundary()).toContain(boundary + 180_000)
   })
 
-  it('境界窓の prefetch が間に合わない間は旧番組を表示しない', async () => {
-    const { releaseBoundaryWindow } = await renderBeforeBoundary({ holdBoundaryWindow: true })
+  // A は長時間番組が境界をまたいで続き、B は境界で番組が替わる。境界窓の応答待ちの間、
+  // A の行は残り、B の終了済み番組は出ない。旧窓の時刻で判定すると B の終了済み番組が残り、
+  // 全行を空にすると A の行が消える。
+  it('境界窓の prefetch が間に合わない間も、続いている番組の行は残し、終了済みの番組は出さない', async () => {
+    const { releaseBoundaryWindow } = await renderBeforeBoundary({
+      holdBoundaryWindow: true,
+      longProgramOnFirstChannel: true,
+      otherChannelNextProgramStartAt: boundary,
+    })
     await waitFor(() => expect(boundaryWindowRequests()).toBe(1))
     expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
+    expect(screen.getByLabelText('番組表の予定: 他局の前の番組')).toBeInTheDocument()
 
-    await crossBoundary()
-    expect(screen.queryByLabelText(/^番組表の予定: /)).not.toBeInTheDocument()
+    await crossBoundary(() => {
+      expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
+      // 選択中のチャンネル A の詳細も、自分の窓の応答待ちの間は旧窓の続いている番組を出す。
+      expect(screen.getByText('予定:')).toBeInTheDocument()
+    })
+    expect(screen.queryByLabelText('番組表の予定: 他局の前の番組')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('番組表の予定: 他局の次の番組')).not.toBeInTheDocument()
+    // フォールバックの番組から次の境界を数え直しても、通り過ぎた境界を取り直し続けない。
+    expect(boundaryWindowRequests()).toBe(1)
 
     act(() => releaseBoundaryWindow())
-    expect(await screen.findByLabelText('番組表の予定: 次の番組')).toBeInTheDocument()
+    expect(await screen.findByLabelText('番組表の予定: 他局の次の番組')).toBeInTheDocument()
+    expect(screen.getByLabelText('番組表の予定: 前の番組')).toBeInTheDocument()
   })
 
-  // 前の窓を残すのは窓が動いたときだけ。切り替え先の番組が届くまで、前のチャンネルの番組を
-  // 「いま放送中」として出さない。
+  // 窓の期限（アンカー + 60 秒）を過ぎても全局が放送中なら窓を保つ。毎回追いつくと、全 site の
+  // 全局窓を毎分取り直す。
+  it('窓の期限を過ぎても全局が放送中なら、次の境界まで全局窓を取り直さない', async () => {
+    await renderBeforeBoundary({
+      longProgramOnFirstChannel: true,
+      otherChannelNextProgramStartAt: boundary,
+    })
+    await waitFor(() => expect(boundaryWindowRequests()).toBe(1))
+    await crossBoundary()
+    const requestsAtBoundary = siteWindowStarts().length
+
+    // 窓 [境界, 境界 + 60 秒] の期限を 2 回過ぎる。次の番組境界は 30 分先にある。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(150_000)
+    })
+
+    expect(screen.getByLabelText('番組表の予定: 他局の次の番組')).toBeInTheDocument()
+    expect(siteWindowStarts().slice(requestsAtBoundary)).toEqual([])
+  })
+
+  // 表示 tick は境界の 0.5 秒後に来る配置（開始 90.5 秒前）。境界の予約 wake が無いと、
+  // 次の番組は tick まで出ない。
+  it('境界の 100ms 後には、表示 tick を待たず次の番組を出す', async () => {
+    // 分の途中に置く。分ちょうどだと窓の期限（query の stale 化）も同時に境界へ来て再描画を起こし、
+    // wake が無くても通ってしまう。
+    boundary = Date.parse('2026-10-11T06:10:30.000Z')
+    await renderBeforeBoundary()
+    await waitFor(() => expect(boundaryWindowRequests()).toBe(1))
+
+    // act の中は描画も query の通知もまとまる。境界の手前で何度か流して保留を空にしてから
+    // 境界をまたぐ。まとまったままだと、wake が無くても act の終わりの描画で通ってしまう。
+    await act(async () => {
+      vi.advanceTimersByTime(boundary - 300 - Date.now())
+    })
+    for (let i = 0; i < 2; i++) {
+      await act(async () => {
+        vi.advanceTimersByTime(100)
+      })
+    }
+    await act(async () => {
+      vi.advanceTimersByTime(boundary - 5 - Date.now())
+    })
+    await act(async () => {
+      vi.advanceTimersByTime(105)
+    })
+
+    expect(screen.getByLabelText('番組表の予定: 次の番組')).toBeInTheDocument()
+  })
+
+  // 応答待ちの間のフォールバックは同じ site・同じ service の旧窓だけ。切り替え先の番組が
+  // 届くまで、前のチャンネルの番組を「いま放送中」として出さない。
   it('チャンネルを切り替えた直後は、前のチャンネルの番組を出さない', async () => {
     const user = userEvent.setup()
     stubFetch({

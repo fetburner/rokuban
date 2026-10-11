@@ -103,6 +103,37 @@ function cachedProgramWindowAnchor(
   return Math.floor(nowMs / programWindowMs) * programWindowMs
 }
 
+/**
+ * latestCachedWindowData は、現在の窓の応答待ちの間に出す表示用の旧窓データを返す。
+ * `beforeStartMs` より前に始まる窓のうち、データを持つ最新のものを選ぶ。窓の選択（anchor）
+ * には使わない。呼び出し側は必ず現在の時計で `isAiring` を判定する。旧窓の時刻で
+ * 判定すると、終了済みの番組を放送中として出す
+ * （`LivePage / 番組境界の再取得`「境界窓の prefetch が間に合わない間も、続いている番組の行は残し、終了済みの番組は出さない」）。
+ */
+function latestCachedWindowData(
+  queryClient: QueryClient,
+  site: string,
+  beforeStartMs: number,
+  matches: (params: ListProgramsParams, startMs: number, endMs: number) => boolean,
+): ProgramListItem[] | undefined {
+  let latestStartMs = Number.NEGATIVE_INFINITY
+  let latest: ProgramListItem[] | undefined
+  for (const [queryKey, data] of queryClient.getQueriesData<Awaited<ReturnType<typeof listPrograms>>>({
+    queryKey: getListProgramsQueryKey(site),
+  })) {
+    const params = queryKey[1] as ListProgramsParams | undefined
+    const programs = unwrap(data)
+    if (params === undefined || programs === undefined) continue
+    const startMs = Date.parse(params.start)
+    const endMs = Date.parse(params.end)
+    if (!Number.isFinite(startMs) || startMs >= beforeStartMs || startMs <= latestStartMs) continue
+    if (!matches(params, startMs, endMs)) continue
+    latestStartMs = startMs
+    latest = programs as ProgramListItem[]
+  }
+  return latest
+}
+
 /** programWindowStaleTime は窓の終端までキャッシュを fresh に保つ（境界の prefetch テスト）。 */
 function programWindowStaleTime(
   queryClient: QueryClient,
@@ -376,12 +407,17 @@ export function LivePage() {
   const sitePrograms = useMemo(() => sites.flatMap((site, index) =>
     (unwrap(siteProgramQueries[index]?.data) ?? []).map((program) => ({ ...program, site })),
   ), [siteProgramQueries, sites])
+  // 現在の窓の応答待ちの間は、その site の旧窓の番組を現在の時計で絞って出す。続いている番組の
+  // 行は残り、境界で始まる番組の行だけが応答まで空になる。全行を空にすると遅い回線で一覧が縮む。
   const scheduledPrograms = useMemo(() => sites.flatMap((site, index) => {
-    const query = siteProgramQueries[index]
-    return (unwrap(query?.data) ?? [])
+    const data = unwrap(siteProgramQueries[index]?.data)
+      ?? latestCachedWindowData(queryClient, site, programWindowAnchor, (params, startMs, endMs) =>
+        params.service === undefined && endMs - startMs === programWindowMs)
+      ?? []
+    return data
       .filter((program) => isAiring(program.startAt, program.endAt, clockNowMs))
       .map((program) => ({ ...program, site }))
-  }), [clockNowMs, siteProgramQueries, sites])
+  }), [clockNowMs, programWindowAnchor, queryClient, siteProgramQueries, sites])
   const programByService = useMemo(() => new Map(scheduledPrograms.map((program) => [
     siteServiceKey(program.site, program.networkId, program.serviceId),
     program,
@@ -395,8 +431,7 @@ export function LivePage() {
   const selectedServiceId = selectedService?.id
 
   // 予定境界の窓は先に取得し、境界時刻そのものを query key にする。先行取得が間に合わない
-  // 間は新しい窓の応答を待ち、前の窓の番組を現在の番組として見せない
-  // （`境界窓の prefetch が間に合わない間は旧番組を表示しない`）。
+  // 間は、旧窓の番組のうち現在の時計で放送中のものだけを出す（上の `scheduledPrograms`）。
   useEffect(() => {
     const nextWindow = currentProgramWindow(nextRefresh)
     for (const site of sites) {
@@ -442,9 +477,18 @@ export function LivePage() {
       },
     },
   )
+  // 応答待ちの間は同じ site・同じ service の旧窓だけをフォールバックにする。チャンネルを
+  // 切り替えた直後に前のチャンネルの番組を出さないためである。
   const selectedPrograms = useMemo(
-    () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined ?? [],
-    [nowPlayingQuery.data],
+    () => unwrap(nowPlayingQuery.data) as ProgramListItem[] | undefined
+      ?? (selectedService === undefined
+        ? undefined
+        : latestCachedWindowData(queryClient, selectedService.site, programWindowAnchor, (params, startMs, endMs) =>
+          params.service?.length === 1
+          && params.service[0] === selectedService.id
+          && endMs - startMs === 2 * selectedProgramWindowMs))
+      ?? [],
+    [nowPlayingQuery.data, programWindowAnchor, queryClient, selectedService],
   )
   const selectedScheduled = useMemo(
     () => scheduledProgramAt(selectedPrograms, nowMs),
