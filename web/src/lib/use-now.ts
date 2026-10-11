@@ -42,6 +42,7 @@ function createClockStore(readNow: () => number) {
   const subscribers = new Set<ClockSubscriber>()
   let timer: number | undefined
   let timerDeadlineMs: number | undefined
+  let idleSnapshotHeld = false
 
   function clearTimer(): void {
     if (timer === undefined) return
@@ -110,6 +111,17 @@ function createClockStore(readNow: () => number) {
 
   return {
     getSnapshot: () => snapshot,
+    /** getCurrentSnapshot は購読者が 0 なら時刻を読み直し、同じ同期処理の間は保持する。 */
+    getCurrentSnapshot(): number {
+      if (subscribers.size === 0 && !idleSnapshotHeld) {
+        snapshot = readNow()
+        idleSnapshotHeld = true
+        queueMicrotask(() => {
+          idleSnapshotHeld = false
+        })
+      }
+      return snapshot
+    },
     subscribe(
       intervalMs: number | undefined,
       wakeAt: WakeAt | undefined,
@@ -121,10 +133,6 @@ function createClockStore(readNow: () => number) {
       if (intervalMs === undefined && wakeAt === undefined) {
         throw new RangeError('useNow requires intervalMs or wakeAtMs')
       }
-
-      // 最初の購読時に現在時刻を読み直す。前回の画面が閉じてから長時間経っていても、
-      // 初回表示に古いスナップショットを使わない。
-      if (subscribers.size === 0) snapshot = readNow()
 
       const subscriber: ClockSubscriber = {
         intervalMs,
@@ -138,6 +146,8 @@ function createClockStore(readNow: () => number) {
 
       return () => {
         subscribers.delete(subscriber)
+        // 保持していた値は購読者がいた頃に読んだもの。0 になったら次の読み取りで読み直す。
+        if (subscribers.size === 0) idleSnapshotHeld = false
         scheduleNextTick()
       }
     },
@@ -153,12 +163,16 @@ const clockStore = createClockStore(() => Date.now())
  * 購読期限でそのタイマーを動かすが、別の購読者が先に起きても、自分の期限が来るまで
  * 通知しない。`intervalMs` は定期更新、`wakeAtMs` の数値は一度だけ起きる絶対時刻、
  * 関数は起床時に次の絶対時刻を返す継続的な境界を表す。後者は、現在のスナップショット
- * から次の正時や 0 時を計算して再設定できるため、render 中に `Date.now()` を呼ばず、
+ * から次の正時や 0 時を計算して再設定できるため、呼び出し側は render 中に `Date.now()` を呼ばず、
  * 同じタイマーで定期更新と時刻境界を扱える。
  *
- * `intervalMs` と `wakeAtMs` のどちらかは必須。購読者が 0 の間はスナップショットを
- * 更新しないため、購読前の初回描画には最後の tick（またはモジュール読み込み時）の値が
- * 出る。購読直後に時刻を読み直すので、初回描画の 1 回だけが古い。
+ * `intervalMs` と `wakeAtMs` のどちらかは必須。購読者が 0 の間は、active な呼び出しの
+ * getSnapshot が同期処理（次のマイクロタスクまで）の最初に時刻を読み直し、その処理中は
+ * 同じ値を返す。購読前の初回描画（ここで作るクエリキーを含む）に、最後の tick の古い
+ * 時刻を出さないためである。React の契約「store が変わらない間 getSnapshot は同じ値を
+ * 返し、変わったら購読者へ通知する」に対し、この変化は通知先の購読者がいない間にだけ
+ * 起き、同じ処理の中では値を変えない。inactive の呼び出しは読み直さない。購読しない読み手が
+ * 値を変えると、購読で止まる先が無く、読むたびに変わり続けうるため。
  *
  * `active` を false にすると購読しない。表示されていない追っかけの録画端のように、
  * 時計の進行が不要な間はタイマーを共有ストアへ追加しない。
@@ -174,5 +188,6 @@ export function useNow({
     [active, intervalMs, wakeAtMs],
   )
 
-  return useSyncExternalStore(subscribe, clockStore.getSnapshot, clockStore.getSnapshot)
+  const getSnapshot = active ? clockStore.getCurrentSnapshot : clockStore.getSnapshot
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }

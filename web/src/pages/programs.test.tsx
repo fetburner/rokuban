@@ -1531,6 +1531,31 @@ describe('ProgramsPage の容量超過の帯', () => {
     )
   })
 
+  it('購読者 0 の間に時間が経ってから開いても、古い時刻の窓を要求しない', async () => {
+    const fetchMock = stubApi()
+    stubMatchMedia(true)
+    vi.setSystemTime(origin - 2 * 3_600_000)
+    const first = renderPage('/programs?view=grid')
+    await screen.findByTestId('program-grid')
+    first.unmount()
+
+    // 時計の購読者がいない画面に 2 時間いてから、番組表を開き直す。
+    vi.setSystemTime(origin)
+    fetchMock.mockClear()
+    renderPage('/programs?view=grid')
+    await screen.findByTestId('program-grid')
+
+    const windowsOf = (pathname: string) =>
+      fetchMock.mock.calls
+        .map((call) => new URL(String(call[0]), 'http://localhost'))
+        .filter((url) => url.pathname === pathname)
+        .map((url) => `${url.searchParams.get('start')}|${url.searchParams.get('end')}`)
+    const freshWindow = `${new Date(origin).toISOString()}|${new Date(origin + 24 * 3_600_000).toISOString()}`
+    await waitFor(() => expect(windowsOf('/api/capacity/overages')).not.toHaveLength(0))
+    expect(windowsOf('/api/sites/default/programs')).toEqual([freshWindow])
+    expect(windowsOf('/api/capacity/overages')).toEqual([freshWindow])
+  })
+
   it('正時後の再取得中も番組・超過帯を保ち、現在時刻で表示を更新する', async () => {
     const nextOrigin = origin + 3_600_000
     const nextOriginISO = new Date(nextOrigin).toISOString()

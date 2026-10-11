@@ -1857,6 +1857,44 @@ describe('ホーム管理モード: 時間軸の見出しと凡例', () => {
 })
 
 describe('ホーム管理モード: 共有時計の暦日境界', () => {
+  it('購読者 0 の間に日をまたいでから開いても、古い時刻の窓を要求しない', async () => {
+    const staleMs = new Date(2026, 6, 24, 23, 0, 0, 0).getTime()
+    const freshMs = staleMs + 2 * HOUR // 7/25 01:00
+    vi.setSystemTime(staleMs)
+    // 7/25 10:00。古い窓（7/24 0 時から 48 時間）と新しい窓（7/25 0 時から）の両方に入る。
+    const { fetchMock } = stubApi({ reservations: [reservation(1, '朝の予約', -10 * HOUR)] })
+    const first = renderHome()
+    expect(await screen.findByTestId('home-timeline-now-label')).toHaveTextContent('23:00')
+    first.unmount()
+
+    // 時計の購読者がいない画面に 2 時間いてから、ホームを開き直す。
+    vi.setSystemTime(freshMs)
+    fetchMock.mockClear()
+    renderHome()
+    expect(await screen.findByTestId('home-timeline-now-label')).toHaveTextContent('01:00')
+
+    const urls = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+    // 録画中（`status=recording`）は時間の窓を持たないので除く。
+    const timelineRanges = urls
+      .filter(
+        (url) =>
+          url.pathname === '/api/recordings' &&
+          url.searchParams.get('limit') === '200' &&
+          url.searchParams.get('status') !== 'recording',
+      )
+      .map((url) => `${url.searchParams.get('status')} ${url.searchParams.get('from')}|${url.searchParams.get('to')}`)
+    const overageWindows = urls
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => `${url.searchParams.get('start')}|${url.searchParams.get('end')}`)
+    // 今日 0 時の 24 時間前から、明後日 0 時まで。
+    const freshRange = `${new Date(2026, 6, 24).toISOString()}|${new Date(2026, 6, 27).toISOString()}`
+    expect(timelineRanges).toEqual([`finished ${freshRange}`, `failed ${freshRange}`])
+    // 容量超過の start は正時に揃えた今（7/25 01:00）、end は明後日 0 時。
+    expect(overageWindows).toEqual([
+      `${new Date(freshMs).toISOString()}|${new Date(2026, 6, 27).toISOString()}`,
+    ])
+  })
+
   it('0 時に時間軸の始点と容量・録画の窓を進める', async () => {
     const beforeMidnight = new Date(2026, 6, 25, 23, 59, 58, 0)
     vi.useFakeTimers({ shouldAdvanceTime: true })
