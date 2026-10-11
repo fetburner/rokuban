@@ -1975,7 +1975,7 @@ func TestDeleteReconcileWorker_Orphan_AgedOut_Deletes(t *testing.T) {
 // 取消済みの ctx を渡すと、期限切れの孤児ファイルが物理削除されずに残る
 // （issue #644。DB が詰まった状態で ctx が死んでいると、孤児ループが ctx を
 // 見ずに 1 件ごとに deleteOrphanCleanupTimeout を待ち切って次へ進み、
-// 最悪 deleteReconcileTimeout を超えてしまう）。残った孤児は次パスの
+// 最悪ジョブの締切を超えてしまう）。残った孤児は次パスの
 // verifiedAgedOrphans が拾い直すので、ここで打ち切っても取りこぼしにはならない
 // （レベルトリガー、不変条件 5）。
 //
@@ -2721,8 +2721,7 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	}
 	// ByQueue が立っていること（issue #185 レビュー: キュー名の変更が一意キーに
 	// 影響しないと、旧キュー（river.QueueDefault）の残骸が新キュー（cleanup）への
-	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。internal/jobs/queue.go の
-	// UniqueByQueue の doc コメント参照）。
+	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。
 	if !opts.UniqueOpts.ByQueue {
 		t.Error("ByQueue should be true (キュー名変更が一意キーに影響しないと旧キューの残骸が新キューへの insert を塞ぐ)")
 	}

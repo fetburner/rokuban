@@ -844,7 +844,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 }
 
-func TestCMRecordingDurationDoesNotChangeRiverUniqueIdentity(t *testing.T) {
+func TestCMRecordingDurationChangesRiverIdentity(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	client, err := NewInsertOnlyClient(pool)
 	if err != nil {
@@ -856,8 +856,8 @@ func TestCMRecordingDurationDoesNotChangeRiverUniqueIdentity(t *testing.T) {
 		t.Fatalf("first CM detect insert = %#v, %v", first, err)
 	}
 	second, err := client.Insert(ctx, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 900000}, nil)
-	if err != nil || !second.UniqueSkippedAsDuplicate || second.Job.ID != first.Job.ID {
-		t.Fatalf("same recording with another duration = %#v, %v; want duplicate of job %d", second, err, first.Job.ID)
+	if err != nil || second.UniqueSkippedAsDuplicate || second.Job.ID == first.Job.ID {
+		t.Fatalf("same recording with another duration = %#v, %v; want a distinct job from %d", second, err, first.Job.ID)
 	}
 
 	areaAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -872,8 +872,8 @@ func TestCMRecordingDurationDoesNotChangeRiverUniqueIdentity(t *testing.T) {
 		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
 		RecordingDurationMs: 900000,
 	}, nil)
-	if err != nil || !logoSecond.UniqueSkippedAsDuplicate || logoSecond.Job.ID != logoFirst.Job.ID {
-		t.Fatalf("same logo candidate with another duration = %#v, %v; want duplicate of job %d", logoSecond, err, logoFirst.Job.ID)
+	if err != nil || logoSecond.UniqueSkippedAsDuplicate || logoSecond.Job.ID == logoFirst.Job.ID {
+		t.Fatalf("same logo candidate with another duration = %#v, %v; want a distinct job from %d", logoSecond, err, logoFirst.Job.ID)
 	}
 }
 

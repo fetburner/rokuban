@@ -17,10 +17,6 @@ const (
 	// defaultCatalogExportInterval は catalog エクスポートの既定間隔（日次相当）。
 	// docs/storage.md §8「日次 + 世代保持」。
 	defaultCatalogExportInterval = 24 * time.Hour
-
-	// catalogExportTimeout は 1 回の export（DB 読み + JSON 書き + 刈り取り）の上限。
-	// 保護対象は数 MB 規模なので短くて足りるが、River 既定（1 分）より余裕を持たせる。
-	catalogExportTimeout = 5 * time.Minute
 )
 
 // CatalogExportWorker はコアメタデータを media_dir/catalog/ に JSON で書き出す
@@ -38,8 +34,8 @@ type CatalogExportWorker struct {
 }
 
 // Timeout は 1 回の export の上限を返す。
-func (w *CatalogExportWorker) Timeout(*river.Job[jobs.CatalogExportArgs]) time.Duration {
-	return catalogExportTimeout
+func (w *CatalogExportWorker) Timeout(job *river.Job[jobs.CatalogExportArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は DB から保護対象を集めて catalog JSON を書き、古い世代を刈る。

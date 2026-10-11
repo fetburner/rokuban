@@ -19,22 +19,21 @@
 
 エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
 
-ジョブ引数の型・`Kind`・`InsertOpts` と論理キューの規約は `internal/jobs` に置く。
-投入側のうち api と watcher は worker の実装へ依存せずこの契約だけを使う。
-CLI は insert-only の River クライアントを組み立てる都合で `internal/worker` を import する。
-実行側の handler は `internal/worker` に置く。
+ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。River の `InsertOpts` は移行中の互換投影で、`Spec` から作る。投入側のうち api と watcher は worker の実装へ依存せず、この契約だけを使う。CLI は insert-only の River client を組み立てる都合で `internal/worker` を import する。実行側の handler は `internal/worker` に置く。
+
+契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- River はハートビートを持たない。ワーカー死亡（OOM、プリエンプト）で `running` のまま残ったジョブは、leader の保守ループにいる JobRescuer が retry を予約する。`worker.rescue_stuck_jobs_after` の既定は 6 分で、client `JobTimeout`（既定 1 分）より長くする。worker 固有の `Timeout()` が設定値より長い場合は、その長い時間が rescue 判定に使われる。`Timeout() < 0` の kind（encode / cm_detect 系）は rescue の対象外で、それぞれの reconcile が回収する。ingest の `Timeout()` は 5 分なので、既定では約 6 分で retry が予約される。0 を明示すると River の既定 1 時間を使う
+- `Spec.Timeout` は必須の有限値で、Work の context に締切を与える。期限超過とプロセス死の後にいつ再配送できるかは adapter の猶予に従う。`Spec.MaxAttempts` は失敗回数の保険で、0 は adapter の既定、Snooze は回数を消費しない
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
-- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。そのためどちらも River のジョブとして扱い、排他は advisory lock ではなく `UniqueOpts`（args にサイトを含めるためサイト単位。別サイトの並行実行は正常）で担保する。両方の `Timeout()` は有限なので、プロセス死後の実行は River の [stuck-job 契約](https://riverqueue.com/docs/stuck-jobs) に沿って JobRescuer が回収する。セッションロックへ移す利益はキュー実装を交換する場面に限られ、この設計の目的には不要である
-  - **`UniqueOpts` は障害時だけでなく通常運用の排他でもある**。worker の `MaxWorkers: 1` はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりをプロセス間で止めているのは `UniqueOpts` である
+- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。現行 River runtime は `UniqueOpts` で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は現在の River runtime にはない
+- **現行 River runtime では `UniqueOpts` が通常運用の重複抑止にも使われる**。worker の `MaxWorkers: 1` はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。River の `UniqueOpts` も行の重複を抑える機能であり、rescue 後に旧 Work が止まらなければ 2 実行が並走する
   - 並走すると壊れるもの（コード読解による。並走を起こしての確認はしていない）
     - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
     - reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う
-- **`UniqueOpts` が担うものは種別で違う**。ruler / reconciler ではプロセス間の排他で、それ以外の一意ジョブでは合流の最適化である。分ける基準は「同じ一意キーの実行が 2 本重なったら何が壊れるか」で、正しさが壊れるなら排他、無駄が増えるだけなら合流とする。どの種別がどちらかは `internal/jobs/args.go` の各 `InsertOpts` から引く（種別は増えるので表は写さない）。合流側の並走の安全はジョブ自身のドメイン側の保護が担い、`UniqueOpts` が約束するのは行が 1 本であることまでである。rescue の後に旧実行が返らなければ実行は 2 本になる
+- **共通契約の `Coalesce` と `Priority` はヒントである**。`Coalesce` は「合流してよい」という意思表示に限り、1 行にすることも並走を止めることも保証しない。`Priority` も順序を保証しない。正しさはこれらに依存させない。現行 River 投影では `Coalesce` を River の `UniqueOpts` に写し、重複 enqueue を減らす
 - エンコード待機列（`internal/api/encode_queue.go`）は River の公開 `JobList` で作る。`running` は待機件数から分けて実行中として数える。`running` のまま残る行は生まれないので、件数は水増しされない
 - desired から外れた投入済みプロファイルのジョブも実際に ffmpeg を走らせるので、待機列に出すのが正確である
 
@@ -59,7 +58,8 @@ Ruler は DB 完結なので中央で実行できる。
 
 ### River のジョブ一意性の注意
 
-`UniqueOpts.ByState` は**必ず明示する**。River の既定（`UniqueOptsByStateDefault`）は
+現行の River 投影では `UniqueOpts.ByState` を**必ず明示する**。River の既定
+（`UniqueOptsByStateDefault`）は
 `completed` と `discarded` を含むため、既定のままだと「一度終わった引数のジョブは
 二度と投入できない」になる。定期ジョブ（`epg_sync`）は実質ワンショットになり、
 破棄された ingest も再投入できない。Rokuban は
@@ -75,20 +75,20 @@ Ruler は DB 完結なので中央で実行できる。
 DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 ```
 
-**`UniqueOpts.ByQueue` も明示する（既定 `false`）。** 既定では一意キーが
-kind + args だけで組み立てられ、Queue を含まない（`ByArgs` と `ByQueue` は独立の
-軸）。どのジョブが `ByQueue` を立てているかは `internal/jobs/args.go` の各 `InsertOpts`
-（`UniqueByQueue`）が権威である。site 単位のキューのジョブは必ず立てる。
-**キュー名を変える（リネーム・site 修飾の追加）だけで、Queue を一意キーに含めていないと
-旧キューの残骸が新キューへの Insert を黙って塞ぐ**。このときの結果は
+River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブで
+キューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した
+identity にならない。**キュー名を変える（リネーム・site 修飾の追加）とき、Queue を
+一意キーに含めていないと旧キューの残骸が新キューへの Insert を黙って塞ぐ**。この結果は
 `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は
 [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの
 残骸が `river_job` に残っている」を参照。
 
-`ByArgs` は既定で全 args を一意キーに含めるが、ジョブ args に `river:"unique"` を
-付けたフィールドがある場合は、そのフィールドだけが使われる。encode は
-`recording_id` / `profile` にだけタグを付け、締切スナップショットが異なる投入も
-同じジョブへ合流させる。
+合流の intended identity は **kind + 論理キュー + Args 全体の JSON** とする。River の
+部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、
+タグは使わない。Args は実行条件なので、部分選択では異なる仕事を同じ identity にまとめる
+おそれがある。たとえば encode の保存済み締切が異なる Args は別の identity になる。
+投入重複を減らすための合流なので、既存の待ち行の key が切り替わる deploy 直後に余分な
+実行が 1 回生じても、正しさには影響しない。
 
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 

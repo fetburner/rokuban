@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -113,8 +114,9 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 		{durationMs: 10 * 60 * 1000, want: 30 * time.Minute},
 		{durationMs: 20 * 60 * 1000, want: 40 * time.Minute},
 	} {
-		if got := cmDetectionTimeout(tt.durationMs); got != tt.want {
-			t.Errorf("cmDetectionTimeout(%d) = %s, want %s", tt.durationMs, got, tt.want)
+		args := jobs.CMDetectJobArgs{RecordingDurationMs: tt.durationMs}
+		if got := args.Spec().Timeout(args); got != tt.want {
+			t.Errorf("CMDetectJobArgs.Spec().Timeout(%d) = %s, want %s", tt.durationMs, got, tt.want)
 		}
 	}
 }

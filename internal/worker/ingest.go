@@ -53,7 +53,6 @@ var errIngestSHA256Pending = errors.New("ingest content SHA-256 is pending")
 var errIngestSliceElapsed = errors.New("ingest transfer slice elapsed")
 
 const (
-	ingestWorkTimeout          = 5 * time.Minute
 	ingestSHA256SnoozeInterval = 30 * time.Second
 )
 
@@ -353,11 +352,10 @@ type IngestWorker struct {
 // Timeout は ingest 1 試行の上限を返す。
 //
 // 4 分の replay / 転送区切りに、HEAD・ハッシュ確認・fsync・commit のため 1 分を足す。
-// 区切りでは temp と SHA-256 状態を保存して River に snooze を返すため、録画全体の
-// 転送速度や長さでジョブの締切は決まらない。5 分は River の既定 JobTimeout（1 分）を
-// 超え、rescue の既定 6 分より短い。追従の無進捗検知は従来どおり StallTimeout が担う。
-func (w *IngestWorker) Timeout(*river.Job[jobs.IngestJobArgs]) time.Duration {
-	return ingestWorkTimeout
+// 区切りでは temp と SHA-256 状態を保存して snooze するため、録画全体の転送速度や長さで
+// ジョブの締切は決まらない。追従の無進捗検知は従来どおり StallTimeout が担う。
+func (w *IngestWorker) Timeout(job *river.Job[jobs.IngestJobArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // resolveProgressInterval は設定された ProgressInterval があればそれを、

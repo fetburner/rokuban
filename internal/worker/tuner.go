@@ -16,13 +16,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
-// tunerSyncTimeout は全量同期 1 パスの上限。
-//
-// /api/tuners は数本〜十数本を返すだけなので所要は EPG と比べ物にならないが、
-// mirakc が無応答のままジョブを掴み続けるのを避けるため上限は置く
-// （EpgSyncWorker.Timeout と同じ姿勢）。
-const tunerSyncTimeout = time.Minute
-
 // TunerSyncWorker は mirakc の /api/tuners を tuner_sync に全量投影する River ワーカー。
 //
 // EpgSyncWorker と同じ使い捨てプロジェクション（真実は常に mirakc 側）なので、
@@ -42,9 +35,9 @@ type TunerSyncWorker struct {
 	Pool          *pgxpool.Pool
 }
 
-// Timeout は River の既定（1 分）と同じ上限を明示する。
-func (w *TunerSyncWorker) Timeout(*river.Job[jobs.TunerSyncArgs]) time.Duration {
-	return tunerSyncTimeout
+// Timeout は Args の Spec が返す全量同期の締切を返す。
+func (w *TunerSyncWorker) Timeout(job *river.Job[jobs.TunerSyncArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work はチューナーの全量同期を 1 パス実行する。

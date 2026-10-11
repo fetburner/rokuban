@@ -144,8 +144,8 @@ site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` �
 `delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設もある。
 どちらも、デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
 
-**現在のコード（`UniqueOpts.ByQueue: true`、`internal/jobs/queue.go` の
-`UniqueByQueue`）では、旧キューの残骸があっても新しいジョブの投入自体は
+**現在の River 投影（`UniqueOpts.ByQueue: true`）では、旧キューの残骸があっても
+新しいジョブの投入自体は
 ブロックされない**。一意キーがキュー名を含むため、旧キュー（キューを含まない
 鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に
 確認した挙動:

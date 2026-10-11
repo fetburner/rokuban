@@ -431,7 +431,7 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	}
 }
 
-// ruler は無制限にはせず、既定より長い上限を置く（rulerPassTimeout のコメント参照）。
+// ruler は Args.Spec で既定より長い有限の締切を持つ。
 func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 	w := &RulerPassWorker{}
 	got := w.Timeout(nil)

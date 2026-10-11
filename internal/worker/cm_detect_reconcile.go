@@ -19,7 +19,6 @@ import (
 
 const (
 	defaultCMDetectReconcileInterval = 15 * time.Minute
-	cmDetectReconcileTimeout         = 5 * time.Minute
 	cmLogoCandidateJobListPageSize   = 10_000
 )
 
@@ -34,8 +33,8 @@ type CMDetectReconcileWorker struct {
 }
 
 // Timeout returns the cap for candidate scans and River inserts.
-func (w *CMDetectReconcileWorker) Timeout(*river.Job[jobs.CMDetectReconcileArgs]) time.Duration {
-	return cmDetectReconcileTimeout
+func (w *CMDetectReconcileWorker) Timeout(job *river.Job[jobs.CMDetectReconcileArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work schedules the current desired set and fails candidates without active jobs.
