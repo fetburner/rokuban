@@ -256,8 +256,8 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 
 // TestEncodeReconcile_DoesNotDoubleEnqueue は「定期パスを繰り返し回しても
 // encode ジョブが二重に入らない」ことと、その根拠である River の一意制約の
-// 実際の挙動（EncodeReconcileArgs.InsertOpts の doc コメントが引用している
-// 測定値）を固定する。
+// 実際の挙動（EncodeReconcileArgs.Spec の合流ヒントが前提にしている
+// 一意制約）を固定する。
 func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

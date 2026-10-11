@@ -682,8 +682,9 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg Config) error {
 }
 
 // newPeriodicJob maps the jobq specification to River options when the configuration
-// is built. River does not call the legacy JobArgs.InsertOpts method when options are
-// supplied explicitly, so the periodic callback must carry the adapter projection.
+// is built. Args no longer carry River options, so a periodic callback that returned
+// nil options would insert into River's default queue without unique/coalescing options
+// (TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces).
 func newPeriodicJob(interval time.Duration, args jobq.Args, opts *river.PeriodicJobOpts) (*river.PeriodicJob, error) {
 	riverArgs, ok := args.(river.JobArgs)
 	if !ok {

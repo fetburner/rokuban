@@ -956,7 +956,7 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite は issue #532 の
 // 「含むもの」2 を固定する: BoundSites に 2 site を渡すと、site 単位のキュー
 // （ingest/epg/reconciler/watcher）は物理名（`<base>_<site>`）で site ごとに
-// **両方**購読される --- insert 側（各 JobArgs.InsertOpts）は 1 ジョブの
+// **両方**購読される --- insert 側（各 Args.Spec と riveradapter.makeInsertOpts）は 1 ジョブの
 // args.Site から物理名が 1 つに決まるので変わらないが、subscribe 側
 // （BuildConfig の river.Config.Queues）だけが N 回展開される
 // （qualifyRiverQueues のコメント「subscribe 側だけ N 回呼ぶ」）。

@@ -258,7 +258,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 
 	// 1. 「デプロイ前」の旧キュー・旧一意性設定（ByQueue なし）を明示的に再現する
 	//    ---  client.Insert の第 3 引数（明示 InsertOpts）は
-	//    JobArgsWithInsertOpts（IngestJobArgs.InsertOpts()）を上書きするので、
+	//    adapter の makeInsertOpts（IngestJobArgs.Spec() 由来）を上書きするので、
 	//    ここだけ意図的に旧形（`Queue: "ingest"`、ByQueue 無し）を強制する。
 	oldStyleOpts := &river.InsertOpts{
 		Queue: "ingest",
