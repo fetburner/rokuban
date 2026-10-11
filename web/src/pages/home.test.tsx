@@ -158,6 +158,8 @@ type Fixtures = {
    * 終わってしまい、壊れていても緑になる（CLAUDE.md「非同期の空虚な成功」）。
    */
   pendingAfterFirstCall?: Set<string>
+  /** 時間軸の finished / failed クエリについて、2 つ目のキーの応答を遅らせる。 */
+  pendingTimelineStatusesAfterFirstCall?: Set<string>
   /** 特定パスを 500 で応答させる。 */
   errorPaths?: Set<string>
 }
@@ -170,11 +172,21 @@ type Fixtures = {
 function stubApi(fixtures: Fixtures) {
   const pendingResolvers: Array<{ key: string; done: boolean; run: () => void }> = []
   const callCounts = new Map<string, number>()
+  const timelineStatusCallCounts = new Map<string, number>()
   const fetchMock = vi.fn((input: string | URL | Request) => {
     const url = new URL(String(input), 'http://localhost')
     const p = url.pathname
     const callCount = (callCounts.get(p) ?? 0) + 1
     callCounts.set(p, callCount)
+    const timelineStatus =
+      p === '/api/recordings' && url.searchParams.get('limit') === '200'
+        ? url.searchParams.get('status')
+        : null
+    const timelineStatusCallCount =
+      timelineStatus === null
+        ? 0
+        : (timelineStatusCallCounts.get(timelineStatus) ?? 0) + 1
+    if (timelineStatus !== null) timelineStatusCallCounts.set(timelineStatus, timelineStatusCallCount)
 
     const respond = (): Response => {
       if (fixtures.errorPaths?.has(p)) return jsonResponse({ error: 'boom' }, 500)
@@ -230,7 +242,10 @@ function stubApi(fixtures: Fixtures) {
       fixtures.pendingPaths?.has(p) ||
       (recordingStatus !== null &&
         fixtures.pendingRecordingStatuses?.has(recordingStatus) === true) ||
-      (fixtures.pendingAfterFirstCall?.has(p) === true && callCount > 1)
+      (fixtures.pendingAfterFirstCall?.has(p) === true && callCount > 1) ||
+      (timelineStatus !== null &&
+        fixtures.pendingTimelineStatusesAfterFirstCall?.has(timelineStatus) === true &&
+        timelineStatusCallCount > 1)
     if (isPending) {
       return new Promise<Response>((resolve) => {
         pendingResolvers.push({ key: pendingKey, done: false, run: () => resolve(respond()) })
@@ -1422,6 +1437,79 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     resolvePending()
 
     expect(await screen.findByTestId('home-ops-timeline-frame')).toBeInTheDocument()
+  })
+
+  it('0 時をまたぐ操作では前日の項目を窓外へ除き、時間軸を読み込み中に戻さない', async () => {
+    const nextDayStart = new Date(dayStart)
+    nextDayStart.setDate(nextDayStart.getDate() + 1)
+    vi.setSystemTime(nextDayStart.getTime() - 1_000)
+
+    const { fetchMock, unresolvedCount } = stubApi({
+      finished: [
+        recording(501, '前日の完了', 'finished', {
+          startAt: new Date(nextDayStart.getTime() - 2 * HOUR).toISOString(),
+          durationMs: HOUR / 2,
+        }),
+        recording(504, '日またぎの完了', 'finished', {
+          startAt: new Date(nextDayStart.getTime() - 30 * 60_000).toISOString(),
+          durationMs: HOUR,
+        }),
+      ],
+      failed: [
+        recording(502, '日またぎの失敗', 'failed', {
+          startAt: new Date(nextDayStart.getTime() - 30 * 60_000).toISOString(),
+          durationMs: HOUR,
+        }),
+      ],
+      reservations: [
+        reservation(503, '翌日の予約', nextDayStart.getTime() + 30 * 60_000 - nowMs),
+      ],
+      pendingTimelineStatusesAfterFirstCall: new Set(['finished', 'failed']),
+    })
+    renderHome()
+
+    const initialBlocks = await screen.findAllByTestId('home-timeline-block')
+    expect(initialBlocks.map((block) => block.getAttribute('title')).sort()).toEqual([
+      '前日の完了',
+      '日またぎの完了',
+      '日またぎの失敗',
+      '翌日の予約',
+    ].sort())
+
+    // 時計を進めるだけではレンダーされない。モード切替を操作して HomePage を
+    // 再レンダーし、日付由来の finished / failed キーを切り替える。
+    vi.setSystemTime(nextDayStart.getTime() + 1_000)
+    fireEvent.click(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: '見る' }))
+    await waitFor(() =>
+      expect(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: '見る' }))
+        .toHaveAttribute('aria-current', 'page'),
+    )
+    fireEvent.click(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: /管理/ }))
+    await waitFor(() =>
+      expect(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: /管理/ }))
+        .toHaveAttribute('aria-current', 'page'),
+    )
+
+    const timelineCalls = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/recordings' && url.searchParams.get('limit') === '200')
+    for (const status of ['finished', 'failed']) {
+      const calls = timelineCalls.filter((url) => url.searchParams.get('status') === status)
+      expect(calls).toHaveLength(2)
+      expect(new Set(calls.map((url) => url.searchParams.get('from'))).size).toBe(2)
+      expect(unresolvedCount(`/api/recordings?status=${status}`)).toBe(1)
+    }
+
+    // 前日のクエリはまだ未解決。窓外の完了行は消え、窓をまたぐ finished / failed
+    // 行と翌日の予約は残り、時間軸は読み込み中へ戻らない。
+    expect(screen.queryByRole('status', { name: '時間軸を読み込み中' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('home-ops-timeline-frame')).toBeInTheDocument()
+    expect(
+      screen
+        .getAllByTestId('home-timeline-block')
+        .map((block) => block.getAttribute('title'))
+        .sort(),
+    ).toEqual(['日またぎの完了', '日またぎの失敗', '翌日の予約'].sort())
   })
 
   it('警告は 4 本（ブレーカー・容量超過・ドロップ検出・失敗録画）すべての解決を待つ: 容量超過が遅い場合', async () => {

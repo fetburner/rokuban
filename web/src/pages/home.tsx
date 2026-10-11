@@ -203,6 +203,9 @@ export function HomePage() {
     },
     { query: { enabled: mode === 'ops' } },
   )
+  // 0 時を越えてキーが変わっても時間軸を読み込み中に戻さない
+  // （home.test.tsx「0 時をまたぐ操作では前日の項目を窓外へ除き、時間軸を読み込み中に戻さない」）。
+  // 前日のデータも下の現在の窓との重なり判定を通すため、窓外の行は描かれない。
   const timelineFinishedQuery = useListRecordings(
     {
       status: 'finished',
@@ -210,7 +213,7 @@ export function HomePage() {
       to: timelineTo,
       limit: HOME_TIMELINE_RECORDING_LIMIT,
     },
-    { query: { enabled: mode === 'ops' } },
+    { query: { enabled: mode === 'ops', placeholderData: keepPreviousData } },
   )
   // `status=failed` を必須にする: API が supersede 済みの擬似 failed 行を除外する。
   // 時間軸用の範囲は警告用の 7 日窓とは独立させる。
@@ -221,7 +224,7 @@ export function HomePage() {
       to: timelineTo,
       limit: HOME_TIMELINE_RECORDING_LIMIT,
     },
-    { query: { enabled: mode === 'ops' } },
+    { query: { enabled: mode === 'ops', placeholderData: keepPreviousData } },
   )
   const reservationsQuery = useListReservations()
   const breakersQuery = useListCircuitBreakers()
