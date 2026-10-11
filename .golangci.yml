@@ -50,6 +50,18 @@ linters:
               desc: api role must not depend on transport-stream inspection
             - pkg: os/exec
               desc: api role must not execute external processes
+            - pkg: github.com/riverqueue/river
+              desc: api role enqueues through jobq.Enqueuer, not River
+        enqueue-via-jobq:
+          # 投入側は jobq.Enqueuer 経由にする。River への直結は adapter だけが持つ。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/watcher/**"
+            - "${config-path}/cmd/rokuban/enqueue.go"
+            - "!$test"
+          deny:
+            - pkg: github.com/riverqueue/river
+              desc: enqueue through jobq.Enqueuer, not River directly
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
           # ツールの存在だけを検証する。テストの子プロセス起動は対象外。

@@ -29,7 +29,7 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -75,7 +75,7 @@ func TestPutProgramIntent_ProgramNotInProjection_DoesNotEnqueueRulerPassHint(t *
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

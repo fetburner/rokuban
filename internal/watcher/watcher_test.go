@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -64,7 +66,7 @@ func countIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reco
 
 // newTestRiverClient はテスト用の River クライアントを作る。
 //
-// internal/jobq/riveradapter.NewLegacyRegistryClient は使わない（同じ理由で internal/worker を import
+// internal/worker.NewClient は使わない（同じ理由で internal/worker を import
 // できないため）。
 func newTestRiverClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx5.Tx] {
 	t.Helper()
@@ -87,7 +89,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	rc := newTestRiverClient(t, pool)
 
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 	return w, pool
 }
 
@@ -1072,7 +1074,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1171,7 +1173,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1271,7 +1273,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1806,7 +1808,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -1880,7 +1882,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewRiverEnqueuer(rc), nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1957,7 +1959,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -2146,7 +2148,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewRiverEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -2380,5 +2382,53 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 				t.Errorf("ingest job count = %d, want %d", jobCount, wantJobCount)
 			}
 		})
+	}
+}
+
+// failAfterEnqueueTx は内側の投入を呼んだ直後にエラーを返す。processRecord では
+// EnqueueTx が commit 直前の最後の書き込みなので、ここでの失敗は ingest 投入まで
+// 済んだ tx の rollback を起こす。Enqueue も同じく失敗させるので、tx の外へ投入する
+// 実装では rollback 後もジョブが残り、件数のアサーションで落ちる。
+type failAfterEnqueueTx struct{ jobq.Enqueuer }
+
+var errAfterEnqueueTx = errors.New("injected failure after enqueue")
+
+func (f failAfterEnqueueTx) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if _, err := f.Enqueuer.Enqueue(ctx, args, opts...); err != nil {
+		return jobq.Result{}, err
+	}
+	return jobq.Result{}, errAfterEnqueueTx
+}
+
+func (f failAfterEnqueueTx) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if _, err := f.Enqueuer.EnqueueTx(ctx, tx, args, opts...); err != nil {
+		return jobq.Result{}, err
+	}
+	return jobq.Result{}, errAfterEnqueueTx
+}
+
+// TestProcessRecord_IngestEnqueueFollowsTransaction は ingest 投入が recordings 行と
+// 同じ tx に乗っていることを確かめる。投入後に失敗させると、recordings 行も
+// ingest ジョブも残らない。
+func TestProcessRecord_IngestEnqueueFollowsTransaction(t *testing.T) {
+	w, pool := setupTest(t)
+	ctx := context.Background()
+	w.enqueuer = failAfterEnqueueTx{w.enqueuer}
+
+	createTestReservation(t, pool, 327360102415397)
+	record := testRecord("rollback123", 327360102415397, "finished")
+
+	if err := w.processRecord(ctx, record); !errors.Is(err, errAfterEnqueueTx) {
+		t.Fatalf("processRecord error = %v, want errAfterEnqueueTx", err)
+	}
+	if n := countIngestJobs(t, ctx, pool, ""); n != 0 {
+		t.Errorf("ingest jobs after rollback = %d, want 0", n)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&rows); err != nil {
+		t.Fatalf("counting recordings: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("recordings after rollback = %d, want 0", rows)
 	}
 }

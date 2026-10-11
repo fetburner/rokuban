@@ -7,9 +7,9 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
@@ -96,7 +96,7 @@ func (h *Server) UpdateLabelRule(ctx context.Context, req UpdateLabelRuleRequest
 		}
 		return nil, fmt.Errorf("updating label rule %d: %w", req.Id, err)
 	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.river); err != nil {
+	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -120,7 +120,7 @@ func (h *Server) DeleteLabelRule(ctx context.Context, req DeleteLabelRuleRequest
 	if deleted == 0 {
 		return DeleteLabelRule404JSONResponse{Error: "label rule not found"}, nil
 	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.river); err != nil {
+	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -386,7 +386,7 @@ func (h *Server) insertLabelRule(ctx context.Context, in labelRuleInputValues) (
 	if err != nil {
 		return sqlcgen.LabelRule{}, fmt.Errorf("creating label rule: %w", err)
 	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.river); err != nil {
+	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
 		return sqlcgen.LabelRule{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -395,12 +395,12 @@ func (h *Server) insertLabelRule(ctx context.Context, in labelRuleInputValues) (
 	return row, nil
 }
 
-func insertLabelRuleReconcile(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx]) error {
-	if riverClient == nil {
+func insertLabelRuleReconcile(ctx context.Context, tx pgx.Tx, enqueuer jobq.Enqueuer) error {
+	if enqueuer == nil {
 		return nil
 	}
-	if _, err := riverClient.InsertTx(ctx, tx, jobs.LabelRuleReconcileArgs{}, nil); err != nil {
-		return fmt.Errorf("inserting label rule re-evaluation: %w", err)
+	if _, err := enqueuer.EnqueueTx(ctx, tx, jobs.LabelRuleReconcileArgs{}); err != nil {
+		return fmt.Errorf("enqueuing label rule re-evaluation: %w", err)
 	}
 	return nil
 }

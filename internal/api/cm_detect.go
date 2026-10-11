@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
@@ -54,15 +54,15 @@ func (h *Server) RetryRecordingCMDetection(ctx context.Context, req RetryRecordi
 	if err != nil {
 		return nil, fmt.Errorf("checking CM detection policy for recording %d: %w", req.Id, err)
 	}
-	if desired && h.river != nil {
+	if desired && h.enqueuer != nil {
 		durationMs, err := q.GetCMRecordingDuration(ctx, req.Id)
 		if err != nil {
 			return nil, fmt.Errorf("getting recording %d duration for CM detection: %w", req.Id, err)
 		}
-		if _, err := h.river.InsertTx(ctx, tx, jobs.CMDetectJobArgs{
+		if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.CMDetectJobArgs{
 			RecordingID: req.Id, RecordingDurationMs: durationMs,
-		}, nil); err != nil {
-			return nil, fmt.Errorf("inserting CM detection retry for recording %d: %w", req.Id, err)
+		}); err != nil {
+			return nil, fmt.Errorf("enqueuing CM detection retry for recording %d: %w", req.Id, err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -231,7 +231,7 @@ func (h *Server) PutCMLogoArea(ctx context.Context, req PutCMLogoAreaRequestObje
 	if err != nil {
 		return nil, fmt.Errorf("loading saved logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if err := insertCMLogoCandidate(ctx, tx, h.river, jobs.CMLogoCandidateJobArgs{
+	if err := insertCMLogoCandidate(ctx, tx, h.enqueuer, jobs.CMLogoCandidateJobArgs{
 		NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
 		RecordingID: body.RecordingId, AreaUpdatedAt: area.UpdatedAt,
 	}); err != nil {
@@ -267,7 +267,7 @@ func (h *Server) DeleteCMLogoArea(ctx context.Context, req DeleteCMLogoAreaReque
 	}); err != nil {
 		return nil, fmt.Errorf("deleting logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	if err := insertCMDetectReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -307,7 +307,7 @@ func (h *Server) DeleteCMLogo(ctx context.Context, req DeleteCMLogoRequestObject
 			NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
 		})
 		if recordingErr == nil {
-			if err := insertCMLogoCandidate(ctx, tx, h.river, jobs.CMLogoCandidateJobArgs{
+			if err := insertCMLogoCandidate(ctx, tx, h.enqueuer, jobs.CMLogoCandidateJobArgs{
 				NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId),
 				RecordingID: recording.ID, AreaUpdatedAt: area.UpdatedAt,
 			}); err != nil {
@@ -315,12 +315,12 @@ func (h *Server) DeleteCMLogo(ctx context.Context, req DeleteCMLogoRequestObject
 			}
 		} else if !errors.Is(recordingErr, pgx.ErrNoRows) {
 			return nil, fmt.Errorf("finding analysis recording for network %d service %d: %w", req.NetworkId, req.ServiceId, recordingErr)
-		} else if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+		} else if err := insertCMDetectReconcile(ctx, tx, h.enqueuer); err != nil {
 			return nil, err
 		}
 	} else if !errors.Is(areaErr, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("loading logo area for network %d service %d: %w", req.NetworkId, req.ServiceId, areaErr)
-	} else if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	} else if err := insertCMDetectReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -344,7 +344,7 @@ func (h *Server) DeleteCMLogoCandidate(ctx context.Context, req DeleteCMLogoCand
 	if _, err := q.DeleteCMLogoCandidate(ctx, sqlcgen.DeleteCMLogoCandidateParams{NetworkID: int32(req.NetworkId), ServiceID: int32(req.ServiceId)}); err != nil {
 		return nil, fmt.Errorf("deleting CM logo candidate for network %d service %d: %w", req.NetworkId, req.ServiceId, err)
 	}
-	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	if err := insertCMDetectReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -409,7 +409,7 @@ func (h *Server) AdoptCMLogoCandidate(ctx context.Context, req AdoptCMLogoCandid
 			return nil, fmt.Errorf("clearing active CM detections after adoption: %w", err)
 		}
 	}
-	if err := insertCMDetectReconcile(ctx, tx, h.river); err != nil {
+	if err := insertCMDetectReconcile(ctx, tx, h.enqueuer); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -418,8 +418,8 @@ func (h *Server) AdoptCMLogoCandidate(ctx context.Context, req AdoptCMLogoCandid
 	return AdoptCMLogoCandidate204Response{}, nil
 }
 
-func insertCMLogoCandidate(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx], args jobs.CMLogoCandidateJobArgs) error {
-	if riverClient == nil {
+func insertCMLogoCandidate(ctx context.Context, tx pgx.Tx, enqueuer jobq.Enqueuer, args jobs.CMLogoCandidateJobArgs) error {
+	if enqueuer == nil {
 		return nil
 	}
 	durationMs, err := sqlcgen.New(tx).GetCMRecordingDuration(ctx, args.RecordingID)
@@ -427,18 +427,18 @@ func insertCMLogoCandidate(ctx context.Context, tx pgx.Tx, riverClient *river.Cl
 		return fmt.Errorf("getting recording %d duration for CM logo candidate: %w", args.RecordingID, err)
 	}
 	args.RecordingDurationMs = durationMs
-	if _, err := riverClient.InsertTx(ctx, tx, args, nil); err != nil {
-		return fmt.Errorf("inserting CM logo candidate analysis: %w", err)
+	if _, err := enqueuer.EnqueueTx(ctx, tx, args); err != nil {
+		return fmt.Errorf("enqueuing CM logo candidate analysis: %w", err)
 	}
 	return nil
 }
 
-func insertCMDetectReconcile(ctx context.Context, tx pgx.Tx, riverClient *river.Client[pgx.Tx]) error {
-	if riverClient == nil {
+func insertCMDetectReconcile(ctx context.Context, tx pgx.Tx, enqueuer jobq.Enqueuer) error {
+	if enqueuer == nil {
 		return nil
 	}
-	if _, err := riverClient.InsertTx(ctx, tx, jobs.CMDetectReconcileArgs{}, nil); err != nil {
-		return fmt.Errorf("inserting CM detection reconcile: %w", err)
+	if _, err := enqueuer.EnqueueTx(ctx, tx, jobs.CMDetectReconcileArgs{}); err != nil {
+		return fmt.Errorf("enqueuing CM detection reconcile: %w", err)
 	}
 	return nil
 }

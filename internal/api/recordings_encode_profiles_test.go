@@ -167,7 +167,7 @@ func TestEncodeJobsInsertInCallerTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
-	h := &Server{river: riverClient}
+	h := &Server{enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -226,7 +226,7 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
 	srv := httptest.NewServer(router)
@@ -551,7 +551,7 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
 	srv := httptest.NewServer(router)
@@ -606,7 +606,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -694,7 +694,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -749,7 +749,7 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264", "h265", "av1"},
 	})
 	srv := httptest.NewServer(router)
@@ -832,7 +832,7 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -865,7 +865,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -909,7 +909,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -1011,7 +1011,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264"},
 	})
 	srv := httptest.NewServer(router)
@@ -1086,7 +1086,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: profiles.ProfileNames(),
 		CutProfileNames:    profiles.CutProfileNames(),
 	})

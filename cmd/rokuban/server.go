@@ -509,11 +509,11 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			return nil, fmt.Errorf("embedded dist/ not found: %w", err)
 		}
 		routerCfg.DistFS = distFS
-		apiRiverClient, err := riveradapter.NewInsertOnlyClient(pool)
+		apiEnqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
 		if err != nil {
 			return nil, err
 		}
-		routerCfg.RiverClient = apiRiverClient
+		routerCfg.Enqueuer = apiEnqueuer
 		routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
 		routerCfg.CutProfileNames = cfg.Encode.CutProfileNames()
 	}

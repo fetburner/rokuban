@@ -552,7 +552,7 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient, Sites: []string{"tokyo", "osaka"}})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -580,7 +580,7 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient, Sites: []string{"tokyo", "osaka"}})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -610,7 +610,7 @@ func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *te
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient, Sites: []string{"tokyo", "osaka"}})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

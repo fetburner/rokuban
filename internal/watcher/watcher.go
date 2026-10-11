@@ -36,8 +36,8 @@ type Watcher struct {
 	services []mirakc.Service
 }
 
-// New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
-// 使う（M3-11）。
+// New は Watcher を生成する。enqueuer は ingest 投入に使う。webhook は任意（nil 可）で、
+// 録画 finished / failed の通知に使う（M3-11）。
 func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
 	return &Watcher{
 		site:     site,
