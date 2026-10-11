@@ -42,11 +42,10 @@ func openEncodeScratchLock(scratchRoot string) (*os.File, error) {
 	if scratchRoot == "" {
 		return nil, fmt.Errorf("scratch dir is empty")
 	}
-	root := filepath.Join(scratchRoot, "encode")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("creating encode scratch root: %w", err)
+	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
+		return nil, fmt.Errorf("creating scratch root: %w", err)
 	}
-	lock, err := os.OpenFile(filepath.Join(root, ".cleanup.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	lock, err := os.OpenFile(filepath.Join(scratchRoot, ".encode-scratch.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("opening encode scratch cleanup lock: %w", err)
 	}
@@ -80,6 +79,10 @@ func newEncodeScratchDir(scratchRoot string, recordingID int64, profile string, 
 		return "", nil, fmt.Errorf("locking encode scratch: %w", err)
 	}
 	root := filepath.Join(scratchRoot, "encode")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		_ = closeEncodeScratchLock(lock)
+		return "", nil, fmt.Errorf("creating encode scratch root: %w", err)
+	}
 	prefix := fmt.Sprintf("%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
 	dir, err := os.MkdirTemp(root, prefix)
 	if err != nil {
