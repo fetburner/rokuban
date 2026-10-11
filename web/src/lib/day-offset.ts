@@ -24,6 +24,13 @@ export function dayOrigin(dayOffset: number, now?: number): Date {
   return origin
 }
 
+/** nextHourBoundary は epoch ms の時刻の次のローカル正時を返す。 */
+export function nextHourBoundary(nowMs: number): number {
+  const next = dayOrigin(0, nowMs)
+  next.setHours(next.getHours() + 1)
+  return next.getTime()
+}
+
 /**
  * dayOffsetForMs は epoch ms の時刻が属する暦日を `dayOffset`（`DayStrip` が
  * 選べる範囲）に直す。`dayOrigin` の逆写像（`dayOrigin` は offset → 時刻、

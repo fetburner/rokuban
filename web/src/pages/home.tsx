@@ -21,7 +21,7 @@ import { EmptyState, ListSkeleton, PageContent, PageHeader } from '@/components/
 import { ThumbnailOverlay } from '@/components/thumbnail-overlay'
 import { HomeModeToggle } from '@/components/home-mode-toggle'
 import { describeBreakerName, describeBreakerReason } from '@/lib/breaker'
-import { dayOrigin } from '@/lib/day-offset'
+import { dayOrigin, nextHourBoundary } from '@/lib/day-offset'
 import {
   formatBytes,
   formatDate,
@@ -30,6 +30,7 @@ import {
   formatTime,
 } from '@/lib/format'
 import { recordingThumbnailURL } from '@/lib/recording-media'
+import { useNow } from '@/lib/use-now'
 import {
   readHomeModePreference,
   resolveHomeMode,
@@ -133,13 +134,8 @@ export function HomePage() {
   >
   const mode = resolveHomeMode(locationSearch.mode, readHomeModePreference())
 
-  // nowMs はこのレンダーの間で一貫させる（`pages/programs.tsx` と同じ規律。
-  // 起点・上限を別々に Date.now() を呼んで求めると、ミリ秒単位でずれた「今」が
-  // 混ざりうる）。
-  // 予約・容量の窓を同じ瞬間の観測で組み立てる。時刻を state 初期値にすると、
-  // クエリ再取得後の「いま」と予測窓が古いままになる。
-  // oxlint-disable-next-line react/purity -- 各レンダーで一貫した現在時刻スナップショットが必要
-  const nowMs = Date.now()
+  // 時計は 1 本。30 秒ごとに進み、正時（0 時を含む）にも必ず起きる。
+  const nowMs = useNow({ intervalMs: 30_000, wakeAtMs: nextHourBoundary })
 
   // **容量超過クエリの `start` は生の `nowMs` を渡さない。** レンダーごとの
   // 生ミリ秒をクエリのパラメータ（延いては TanStack Query のキャッシュキー）に
@@ -150,10 +146,7 @@ export function HomePage() {
   // **既存 2 ファイルの前例に倣い、量子化してからキーに渡す**（`useRef`/`useState`
   // で「now を固定する」ような対症療法は採らない --- それは症状を消すだけで
   // 「キーに入る値は答えが変わる粒度まで量子化する」という規律の欠落が残る）。
-  // `pages/programs.tsx` は `Date.now()` を `dayOrigin(0, ...)` で時境界へ量子化
-  // してからキーに渡している（同ファイルの `dayOrigin` の doc コメント参照。
-  // 「今日」の起点を「now を時で切り捨てた時刻」にしているのはこの目的も兼ねる）。
-  // ここでも同じ関数で「今」を時境界へ丸めてから `start` に渡す。
+  // `pages/programs.tsx` と同じく、時境界に揃えた値をキーに渡す。
   const overagesStartMs = dayOrigin(0, nowMs).getTime()
   // 今夜〜明日の予約セクションの窓の終端。「明日の暦日の終わり」= 明後日の 0 時
   // （`dayOrigin` が返す「dayOffset 日先の 0 時」を dayOffset=2 で呼ぶと明後日の
@@ -255,27 +248,21 @@ export function HomePage() {
 
   const recordingsInProgress = unwrap(recordingQuery.data) ?? []
   const continueWatching = unwrap(continueWatchingQuery.data) ?? []
-  // 以下の導出は `useMemo` を使わない。**この関数の中で最も頻繁に変わる依存は
-  // `nowMs`（= 生の `Date.now()`）で、レンダーごとに必ず変わる。** それを deps に
-  // 持つ `useMemo` は毎レンダー再計算されるので何も買っていない（レビュー指摘。
-  // 以前は `activeOverages` / `upcomingReservations` / `warnings` を `useMemo` で
-  // 包んでおり、後者 2 つは前者が毎レンダー新しい配列になることで連鎖して
-  // 再計算されていた）。録画は API の `limit`、超過区間は窓幅で上界があるが、
-  // **予約だけは上界が無い**（`GET /api/reservations` は絞り込みパラメータを
-  // 持たない全件取得で `limit` も無い）。それでも `useMemo` は上記のとおり
-  // `nowMs` 依存で効かないので、素朴に毎レンダー計算する。
+  // 予約一覧は件数上限のない全件取得なので、同じ `nowMs` のスナップショットで
+  // 警告材料を一度ずつ導出する。
   const finishedRecordings = unwrap(finishedQuery.data) ?? []
   const failedRecordings = unwrap(failedQuery.data) ?? []
 
-  // `overagesStartMs` を時境界へ丸めた分だけ、実際の「今」より前に始まって
+  // `overagesStartMs` を時境界へ丸めた分だけ、`nowMs` より前に始まって
   // **既に終わった**区間まで返ってきうる（`openapi.yaml` の `start` は「この時刻
   // より後に終わる区間が対象」なので、`start` を時頭まで後退させて増えるのは
   // ちょうど「[時頭, now] に終わった区間」だけ）。ここで「実際の今より後に
   // 終わる」区間だけへ絞り、量子化前と同じ主張の強さに戻す（量子化はキャッシュ
   // キーの安定のためだけの手段で、表示する内容の正しさを緩めてよい理由には
-  // しない）。これが無いと「もう終わったチューナー不足」が最大 59 分ぶん警告に
-  // 出続ける。判定はテスト「既に終わった超過区間は警告に出さない」/「時境界より
-  // 前に始まって進行中の超過区間は警告に出す」の両方向。
+  // しない）。判定には 30 秒ごとに進む `nowMs` を使うので、期限切れの警告を
+  // 正時まで残さない（取得キーは時境界で量子化済みなので、30 秒ごとの再描画
+  // では変わらない）。判定はテスト「既に終わった超過区間は警告に出さない」/
+  // 「時境界より前に始まって進行中の超過区間は警告に出す」の両方向。
   const activeOverages = (unwrap(overagesQuery.data) ?? []).filter(
     (o) => new Date(o.endAt).getTime() > nowMs,
   )

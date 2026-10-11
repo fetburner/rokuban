@@ -292,7 +292,7 @@ export function ProgramGrid({
   const scrollerRef = useRef<HTMLDivElement>(null)
   const pendingFocusRef = useRef<PlacedProgram<SiteProgram> | null>(null)
   const [viewport, setViewport] = useState<Viewport>(unmeasuredViewport)
-  const clock = useNow(clockIntervalMs, now === undefined)
+  const clock = useNow({ intervalMs: clockIntervalMs, active: now === undefined })
   const currentMs = now ?? Math.max(clock, nowSnapshot ?? clock)
 
   const measure = useCallback(() => {

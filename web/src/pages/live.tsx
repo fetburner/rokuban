@@ -392,7 +392,7 @@ export function LivePage() {
 
   // 表示 tick と境界 wake は同じ use-now ストアを使う。先に読むスナップショットで窓を
   // 選び、後の購読に次の境界を渡すことで、別の interval / timeout を持たない。
-  const clockNowMs = useNow(scheduleClockTickMs)
+  const clockNowMs = useNow({ intervalMs: scheduleClockTickMs })
   const queryClient = useQueryClient()
   const programWindowAnchor = cachedProgramWindowAnchor(queryClient, sites, siteServices, clockNowMs)
   const window_ = useMemo(() => currentProgramWindow(programWindowAnchor), [programWindowAnchor])
@@ -426,7 +426,7 @@ export function LivePage() {
     () => nextProgramRefreshMs(sitePrograms, clockNowMs, Date.parse(window_.end)),
     [clockNowMs, sitePrograms, window_.end],
   )
-  const nowMs = useNow(scheduleClockTickMs, true, nextRefresh)
+  const nowMs = useNow({ intervalMs: scheduleClockTickMs, wakeAtMs: nextRefresh })
   const selectedServiceSite = selectedService?.site
   const selectedServiceId = selectedService?.id
 

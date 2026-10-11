@@ -93,7 +93,7 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
 
   // 1 時間の観測しきい値を遅くとも 30 秒後に表示へ反映する。再取得結果が同じでも
   // 時計が進むため、ストレージ予測窓と古さの判定が止まらない。
-  const nowMs = useNow(30_000, media !== undefined)
+  const nowMs = useNow({ intervalMs: 30_000, active: media !== undefined })
 
   // 観測なしで黙る（罠「観測時刻が古いときの表示を決める」の前段 --- 行そのものが
   // 無いときは古さの判定すら成立しない）。

@@ -1,7 +1,7 @@
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { useNow } from '@/lib/use-now'
+import { useNow, type WakeAt } from '@/lib/use-now'
 
 function ClockReader({
   label,
@@ -10,11 +10,11 @@ function ClockReader({
   wakeAtMs,
 }: {
   label: string
-  intervalMs: number
+  intervalMs?: number
   active?: boolean
-  wakeAtMs?: number
+  wakeAtMs?: WakeAt
 }) {
-  const nowMs = useNow(intervalMs, active, wakeAtMs)
+  const nowMs = useNow({ intervalMs, active, wakeAtMs })
   return <output data-testid={label}>{nowMs}</output>
 }
 
@@ -112,5 +112,48 @@ describe('useNow', () => {
     })
     expect(screen.getByTestId('scheduled')).toHaveTextContent(String(wakeAtMs))
     expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('境界関数は一度だけ起きて次の境界を共有タイマーへ登録する', async () => {
+    vi.useFakeTimers()
+    const initialNowMs = Date.parse('2026-10-01T00:00:00Z')
+    vi.setSystemTime(initialNowMs)
+    const nextWakeAt = (nowMs: number) => nowMs + 2_500
+
+    render(<ClockReader label="boundary" wakeAtMs={nextWakeAt} />)
+    expect(screen.getByTestId('boundary')).toHaveTextContent(String(initialNowMs))
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_499)
+    })
+    expect(screen.getByTestId('boundary')).toHaveTextContent(String(initialNowMs))
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(screen.getByTestId('boundary')).toHaveTextContent(String(initialNowMs + 2_500))
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+    expect(screen.getByTestId('boundary')).toHaveTextContent(String(initialNowMs + 5_000))
+    expect(vi.getTimerCount()).toBe(1)
+  })
+
+  it('間隔なしの一度きりの予約は起床後に共有タイマーを止める', async () => {
+    vi.useFakeTimers()
+    const initialNowMs = Date.parse('2026-10-01T00:00:00Z')
+    vi.setSystemTime(initialNowMs)
+
+    render(<ClockReader label="one-shot" wakeAtMs={initialNowMs + 2_500} />)
+    expect(vi.getTimerCount()).toBe(1)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+
+    expect(screen.getByTestId('one-shot')).toHaveTextContent(String(initialNowMs + 2_500))
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

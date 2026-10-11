@@ -28,13 +28,10 @@ const DROP_WARNING_SCAN_LIMIT = 20
 const FAILED_RECORDING_SCAN_LIMIT = 20
 
 /**
- * HomePage は `Date.now()` を直接呼ぶ（`pages/programs.tsx` と同じ規律。注入口を
- * 持たない）。フィクスチャの `nowMs` と実際の `Date.now()` を一致させないと、
- * 窓判定（今夜〜明日の予約）がフィクスチャの時刻を「はるか過去」として全除外して
- * しまう。`vi.useFakeTimers()` を呼ばずに `setSystemTime` だけ使うと `Date.*` /
- * `new Date()` だけがモックされ、`waitFor`/`findBy*` が使う実タイマーはそのまま
- * 動く（vitest の挙動。fake timers 全体を有効にすると async の待ち合わせを
- * 自前で進める必要が出て、ここでは要らない複雑さになる）。
+ * HomePage は共有時計のスナップショットを使う。フィクスチャの `nowMs` と
+ * `setSystemTime` の時刻を一致させないと、窓判定（今夜〜明日の予約）がずれる。
+ * 通常テストでは `setSystemTime` だけを使い、`waitFor`/`findBy*` の実タイマーを
+ * 動かす。時計境界を進めるテストだけ fake timer を明示する。
  *
  * **例外は「実時計でのクエリキー安定性」の describe ブロック** --- そこでは
  * `vi.useRealTimers()` でこの固定を明示的に解除する。時計を止めた構成は
@@ -1015,6 +1012,32 @@ describe('ホーム: 警告セクション', () => {
     expect(screen.queryByText(/BSが 1 本不足しています/)).not.toBeInTheDocument()
   })
 
+  it('正時前に期限切れになる超過区間を共有時計で警告から除く', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(nowMs)
+    const { fetchMock } = stubApi({ overages: [overage(0, 10 * 60_000)] })
+    renderHome()
+
+    expect(await screen.findByText(/BSが 1 本不足しています/)).toBeInTheDocument()
+
+    // 取得キーは 20:00 のまま、共有時計だけ 20:20 まで進める。SSE 再描画などを
+    // 待たず、正時をまたがない間に終わった区間が警告から消えることを測る。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20 * 60_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText(/BSが 1 本不足しています/)).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('表示できる項目がありません')).toBeInTheDocument()
+    const starts = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => url.searchParams.get('start'))
+    expect(starts).toContain(new Date(2026, 6, 25, 20, 0, 0, 0).toISOString())
+    expect(starts).not.toContain(new Date(2026, 6, 25, 21, 0, 0, 0).toISOString())
+  })
+
   it('時境界より前に始まり進行中の超過区間は警告に出す（回収が広すぎない）', async () => {
     vi.setSystemTime(halfPastNowMs)
     // 18:00〜21:00 = 量子化した `start`（20:00）より前に始まっているが進行中。
@@ -1645,29 +1668,42 @@ describe('ホーム: 実時計でのクエリキー安定性（無限再取得�
  */
 describe('ホーム: 時境界を越えてキーが変わっても警告は消えない', () => {
   it('容量超過クエリのキーが進み、新キーが未解決のままでも警告セクションは残る', async () => {
-    // 時境界（20:00）の直前に「今」を置く。量子化された `start` は 19:00。
-    vi.setSystemTime(nowMs - 500)
+    // 時境界（20:00）の 2 秒前に「今」を置く。量子化された `start` は 19:00。
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(nowMs - 2_000)
+    const pendingOverages = new Set<string>()
     const { fetchMock, resolvePending, unresolvedCount } = stubApi({
       breakers: [breaker('ruler_deletes')],
       reservations: [reservation(1, '今夜の予約', 2 * HOUR)],
-      // 再レンダーの引き金。警告材料の予約一覧は即答させておき、時間軸の録画 query
-      // を解決した瞬間に新しい `Date.now()` でレンダーして容量キーを進める。
+      // 初回の時間軸録画 query を保留しても、時計境界で容量キーが進むことを測る。
       pendingRecordingStatuses: new Set(['recording']),
       // 2 回目（= 新しいキー）の容量超過だけ未解決にする。即答させると
       // 「消えた一瞬」が assert より先に終わってしまい、壊れていても緑になる。
-      pendingAfterFirstCall: new Set(['/api/capacity/overages']),
+      pendingAfterFirstCall: pendingOverages,
     })
     renderHome()
 
     expect(await screen.findByRole('heading', { name: '要対応' })).toBeInTheDocument()
 
-    // 時境界を越える
-    vi.setSystemTime(nowMs + 500)
-    resolvePending()
-
-    // 予約 query は警告を出す前に解決済み。時間軸の詳細リンクも取得できることを確認する。
+    // 初回の録画 query だけ先に解決する。時計境界より前のまま。
+    act(() => resolvePending())
     const details = await openTimelineDetails()
     expect(await within(details).findByRole('link', { name: /今夜の予約/ })).toBeInTheDocument()
+
+    // 操作や query の完了を待たず、共有時計が正時で容量窓を進める。
+    pendingOverages.add('/api/capacity/overages')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100)
+    })
+    await waitFor(() => expect(screen.getByRole('heading', { name: '要対応' })).toBeInTheDocument())
+    const startsAfterWake = fetchMock.mock.calls
+      .map((call) => new URL(String(call[0]), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => url.searchParams.get('start'))
+    expect(startsAfterWake).toEqual(expect.arrayContaining([
+      new Date(dayStart.getTime() + 19 * HOUR).toISOString(),
+      new Date(dayStart.getTime() + 20 * HOUR).toISOString(),
+    ]))
 
     // キーが実際に進んだこと（`start` の違う 2 回目の要求が出たこと）を確かめる。
     // これが無いと「キーが変わらなかったので消えなかった」でも通ってしまう。
@@ -1675,7 +1711,10 @@ describe('ホーム: 時境界を越えてキーが変わっても警告は消�
       .map((call) => new URL(String(call[0]), 'http://localhost'))
       .filter((url) => url.pathname === '/api/capacity/overages')
       .map((url) => url.searchParams.get('start'))
-    expect(new Set(starts).size).toBe(2)
+    expect(starts).toEqual(expect.arrayContaining([
+      new Date(dayStart.getTime() + 19 * HOUR).toISOString(),
+      new Date(dayStart.getTime() + 20 * HOUR).toISOString(),
+    ]))
 
     // **2 回目がこの時点でまだ未解決であること自体を assert する。**
     // `pendingAfterFirstCall` の仕掛けが静かに効かなくなって 2 回目も即答する
@@ -1814,6 +1853,79 @@ describe('ホーム管理モード: 時間軸の見出しと凡例', () => {
     expect(labels).toContain('翌0時')
     expect(labels).toContain('翌3時')
     expect(labels.filter((label) => label === '0時')).toHaveLength(1)
+  })
+})
+
+describe('ホーム管理モード: 共有時計の暦日境界', () => {
+  it('購読者 0 の間に日をまたいでから開いても、古い時刻の窓を要求しない', async () => {
+    const staleMs = new Date(2026, 6, 24, 23, 0, 0, 0).getTime()
+    const freshMs = staleMs + 2 * HOUR // 7/25 01:00
+    vi.setSystemTime(staleMs)
+    // 7/25 10:00。古い窓（7/24 0 時から 48 時間）と新しい窓（7/25 0 時から）の両方に入る。
+    const { fetchMock } = stubApi({ reservations: [reservation(1, '朝の予約', -10 * HOUR)] })
+    const first = renderHome()
+    expect(await screen.findByTestId('home-timeline-now-label')).toHaveTextContent('23:00')
+    first.unmount()
+
+    // 時計の購読者がいない画面に 2 時間いてから、ホームを開き直す。
+    vi.setSystemTime(freshMs)
+    fetchMock.mockClear()
+    renderHome()
+    expect(await screen.findByTestId('home-timeline-now-label')).toHaveTextContent('01:00')
+
+    const urls = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost'))
+    // 録画中（`status=recording`）は時間の窓を持たないので除く。
+    const timelineRanges = urls
+      .filter(
+        (url) =>
+          url.pathname === '/api/recordings' &&
+          url.searchParams.get('limit') === '200' &&
+          url.searchParams.get('status') !== 'recording',
+      )
+      .map((url) => `${url.searchParams.get('status')} ${url.searchParams.get('from')}|${url.searchParams.get('to')}`)
+    const overageWindows = urls
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => `${url.searchParams.get('start')}|${url.searchParams.get('end')}`)
+    // 今日 0 時の 24 時間前から、明後日 0 時まで。
+    const freshRange = `${new Date(2026, 6, 24).toISOString()}|${new Date(2026, 6, 27).toISOString()}`
+    expect(timelineRanges).toEqual([`finished ${freshRange}`, `failed ${freshRange}`])
+    // 容量超過の start は正時に揃えた今（7/25 01:00）、end は明後日 0 時。
+    expect(overageWindows).toEqual([
+      `${new Date(freshMs).toISOString()}|${new Date(2026, 6, 27).toISOString()}`,
+    ])
+  })
+
+  it('0 時に時間軸の始点と容量・録画の窓を進める', async () => {
+    const beforeMidnight = new Date(2026, 6, 25, 23, 59, 58, 0)
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(beforeMidnight)
+    const { fetchMock } = stubApi({
+      reservations: [reservation(1, '深夜の予約', 5 * HOUR)],
+    })
+    renderHome()
+
+    expect(await screen.findByTestId('home-timeline-now-label')).toHaveTextContent('23:59')
+    expect(Number.parseFloat(screen.getByTestId('home-timeline-now').style.left)).toBeGreaterThan(1)
+
+    const timelineRanges = () => fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter(
+        (url) =>
+          url.pathname === '/api/recordings' &&
+          url.searchParams.get('limit') === '200' &&
+          url.searchParams.get('status') === 'finished',
+      )
+      .map((url) => `${url.searchParams.get('from')}|${url.searchParams.get('to')}`)
+    expect(timelineRanges().length).toBeGreaterThan(0)
+
+    // ユーザー操作や別 query の完了を待たず、共有時計の正時 wake だけで進める。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_100)
+    })
+    await waitFor(() => expect(new Set(timelineRanges()).size).toBe(2))
+
+    expect(screen.getByTestId('home-timeline-now-label')).toHaveTextContent('00:00')
+    expect(Number.parseFloat(screen.getByTestId('home-timeline-now').style.left)).toBeLessThan(1)
   })
 })
 
