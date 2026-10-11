@@ -1,5 +1,5 @@
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ProgramListItem } from '@/api/generated'
 import { ProgramGrid } from '@/components/program-grid'
@@ -133,6 +133,10 @@ function stubViewport(
 }
 
 describe('ProgramGrid', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('複数 site の同名サービス列には可視の site 名を出し、単一 site では出さない', () => {
     const shared = service(1024, '共有BS')
     const multi = renderGrid({
@@ -395,6 +399,28 @@ describe('ProgramGrid', () => {
     // 軸の外という判定を落とすと 24 時間の外に線が描かれる（見えないので気付かない）
     expect(screen.queryByTestId('program-grid-now-line')).not.toBeInTheDocument()
     expect(screen.queryByTestId('program-grid-now-label')).not.toBeInTheDocument()
+  })
+
+  it('内部時計を使うと 30 秒ごとに現在時刻インジケータが進む', async () => {
+    vi.useFakeTimers()
+    const initialNowMs = at(19 * 60 + 30)
+    vi.setSystemTime(initialNowMs)
+    render(
+      <ProgramGrid
+        services={[service(1024, 'NHK総合')]}
+        programs={[program(1, 1024, 19 * 60, 60)]}
+        axis={axis}
+        reservationByProgramId={new Set()}
+        selectedProgramId={null}
+        onSelect={() => {}}
+      />,
+    )
+
+    expect(screen.getByTestId('program-grid-now-line').style.top).toBe('2340px')
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000)
+    })
+    expect(screen.getByTestId('program-grid-now-line').style.top).toBe('2341px')
   })
 
   it('全チャンネル縦断の帯を重ねられる（M2-10 の容量超過はここに乗る）', () => {

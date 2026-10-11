@@ -23,7 +23,6 @@ const base: Recording = {
   createdAt: '2026-01-01T12:30:00Z',
 }
 
-const nowMs = Date.parse('2026-01-01T14:00:00Z')
 const verdictCases: {
   name: string
   recording: Partial<Recording>
@@ -58,7 +57,6 @@ describe('recordingVerdict', () => {
         recordingVerdict({
           recording: { ...base, ...recording },
           liveCapability,
-          nowMs,
         }),
       ).toBe(expected)
   })
@@ -75,7 +73,6 @@ describe('recordingVerdict', () => {
           },
         },
         liveCapability: 'enabled',
-        nowMs,
       }),
     ).toBe('preparing')
   })
@@ -85,7 +82,6 @@ describe('recordingVerdict', () => {
       recordingVerdict({
         recording: { ...base, encodeStatus: [{ profile: 'web', state }] },
         liveCapability: 'enabled',
-        nowMs,
       }),
     ).toBe('preparing')
   })
@@ -97,7 +93,6 @@ describe('recordingVerdict', () => {
         recordingVerdict({
           recording: { ...base, sizeBytes: 1_000 },
           liveCapability,
-          nowMs,
         }),
       ).toBeUndefined()
     },
@@ -108,9 +103,9 @@ describe('recordingVerdict', () => {
     (state) => {
       const recording = { ...base, sizeBytes: 1_000, encodeStatus: [{ profile: 'web', state }] }
       for (const liveCapability of ['pending', 'unknown'] as const) {
-        expect(recordingVerdict({ recording, liveCapability, nowMs })).toBeUndefined()
+        expect(recordingVerdict({ recording, liveCapability })).toBeUndefined()
       }
-      expect(recordingVerdict({ recording, liveCapability: 'disabled', nowMs })).toBe('preparing')
+      expect(recordingVerdict({ recording, liveCapability: 'disabled' })).toBe('preparing')
     },
   )
 
@@ -119,7 +114,6 @@ describe('recordingVerdict', () => {
       recordingVerdict({
         recording: { ...base, sizeBytes: 1_000 },
         liveCapability: 'disabled',
-        nowMs,
       }),
     ).toBe('unavailable')
   })
@@ -129,7 +123,6 @@ describe('recordingVerdict', () => {
       recordingVerdict({
         recording: { ...base, sizeBytes: 1_000 },
         liveCapability: 'enabled',
-        nowMs,
       }),
     ).toBe('viewable')
   })
@@ -140,7 +133,6 @@ describe('recordingVerdict', () => {
         recording: { ...base, status: 'failed' },
         liveCapability: 'enabled',
         isTrashed: true,
-        nowMs,
       }),
     ).toBeUndefined()
   })
