@@ -13,9 +13,9 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // enqueueJob は `rokuban enqueue <name>` 1 件の定義。
@@ -208,7 +208,7 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out i
 		return fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
 	}
 
-	client, err := worker.NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		return err
 	}

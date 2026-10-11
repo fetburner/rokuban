@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -217,7 +218,7 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの reconcile_pass を 2 回投入したのに合流しなかった")
 	}
 
-	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
+	riveradaptertest.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
@@ -265,7 +266,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 
 	_ = waitPeriodicJobEvent(t, waiter, "ruler_pass")
 
-	hint := testutil.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
+	hint := riveradaptertest.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
 	if hint.Args.Site != testSite {
 		t.Errorf("reconcile_pass hint site = %q, want %q", hint.Args.Site, testSite)
 	}

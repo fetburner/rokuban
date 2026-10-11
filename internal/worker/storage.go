@@ -15,17 +15,6 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
-// defaultStorageSyncInterval はストレージ観測の既定間隔。
-//
-// tuner_sync（10 分）より短くしているが、この値そのものに測定的根拠はない
-// （未検証。record_sweep の 5 分に合わせただけの初期値）。実際のアラート整備
-// （time() 差分での閾値検討）は本 PR のスコープ外 --- rokuban_storage_root_*
-// メトリクスを export するようになった今は組めるようになったが、アラート自体は
-// 未着手。専用の設定キーは設けていない --- tuner_sync / catalog_export /
-// delete_reconcile / record_sweep の既定間隔と同じく、運用者が調整する理由が
-// 今のところ無い（docs/runbook/setup.md の record_sweep の前例。issue #238）。
-const defaultStorageSyncInterval = 5 * time.Minute
-
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
 type storageRoot struct {
 	// name は storage_sync.root の値（'media' | 'scratch'）。config キー名

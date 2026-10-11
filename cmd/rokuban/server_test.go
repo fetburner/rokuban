@@ -21,6 +21,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -596,7 +597,7 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 		}
 		assertOnceOutcome(t, logs, "job_done")
 
-		job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "delete_reconcile")
+		job := riveradaptertest.MustSingleRiverJobOfKind(t, ctx, pool, "delete_reconcile")
 		if job.State != "completed" {
 			t.Errorf("delete_reconcile state = %q, want %q（消化せずに終わっている）", job.State, "completed")
 		}
@@ -610,7 +611,7 @@ func (e2eProbeArgs) Kind() string { return "e2e_probe" }
 // TestServerCmd_OnceModeExitsOnUnhandledJobKind は**未登録 kind のジョブを
 // 掴んでも Job が終わること**を確認する。River の executor は登録されていない
 // kind を WorkUnit == nil で早期 return し、その時点では WorkerMiddleware の
-// チェーンをまだ組み立てていない（worker.SubscribeOnceEvents）。
+// チェーンをまだ組み立てていない（riveradapter.SubscribeOnceEvents）。
 // middleware だけを見ていると、Job は「1 件も claim していない」と誤認したまま
 // idleTimeout の間そのキューを掴み続け、試行回数を潰す。
 //
@@ -651,7 +652,7 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	}
 	assertOnceOutcome(t, logs, "job_unhandled")
 
-	job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "e2e_probe")
+	job := riveradaptertest.MustSingleRiverJobOfKind(t, ctx, pool, "e2e_probe")
 	if job.Attempt != 1 {
 		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", job.Attempt, job.State)
 	}
@@ -708,7 +709,7 @@ func TestServerCmd_OnceModeExitsZeroOnJobFailure(t *testing.T) {
 	}
 
 	// ジョブは完了扱いにならず、River 側に再試行として残る。
-	job := testutil.MustSingleRiverJobOfKind(t, ctx, pool, "epg_sync")
+	job := riveradaptertest.MustSingleRiverJobOfKind(t, ctx, pool, "epg_sync")
 	if job.State == "completed" {
 		t.Error("epg_sync が completed になっている（失敗が握り潰されている）")
 	}
@@ -911,8 +912,8 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 // **SIGTERM がそのまま StopAndCancel 相当になる**（river@v0.47.0 client.go の
 // workParentCtx）。
 //
-// RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `worker.ClientConfig`
-// → `river.Config` の配線は、`buildRiverConfig` を直接見るテストでは検証できない
+// RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `riveradapter.Config`
+// → `river.Config` の配線は、`BuildConfig` を直接見るテストでは検証できない
 // （フラグを ClientConfig に渡し忘れても、既定値で組まれた client がそこにある）。
 //
 // **`riverClient.Stop` に与える待ちの上限（shutdownBudget）はここでは測れない。**
@@ -959,7 +960,7 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 			t.Fatalf("server: %v", err)
 		}
 
-		job := testutil.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
+		job := riveradaptertest.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
 		errs := fmt.Sprintf("%+v", job.Errors)
 		if job.State != "completed" {
 			t.Errorf("state = %q, want %q（SIGTERM が実行中のジョブを打ち切っている）。errors=%s",
@@ -1012,7 +1013,7 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 		// worked された行である**ことの
 		// 肯定形の主張になる。
 		var job *rivertype.JobRow
-		for _, candidate := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "epg_sync") {
+		for _, candidate := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "epg_sync") {
 			if candidate.AttemptedAt == nil {
 				continue
 			}

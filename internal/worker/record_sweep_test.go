@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -163,7 +164,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	ingest := testutil.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
+	ingest := riveradaptertest.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
 	if ingest.Args.Site != testSite || ingest.Args.RecordID != record.ID {
 		t.Errorf("ingest args = %+v, want site=%q record_id=%q", ingest.Args, testSite, record.ID)
 	}
@@ -242,7 +243,7 @@ func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの record_sweep を 2 回投入したのに合流しなかった")
 	}
 
-	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
+	riveradaptertest.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/records と

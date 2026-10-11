@@ -17,11 +17,6 @@ import (
 )
 
 const (
-	// defaultThumbnailReconcileInterval は thumbnail の desired−observed 定期パスの
-	// 既定間隔。ingest 完了時のヒント投入を補うバックストップとして encode
-	// reconcile と揃える。
-	defaultThumbnailReconcileInterval = 15 * time.Minute
-
 	// thumbnailReconcileRowLimit は 1 パスで拾う録画候補の既定上限。
 	thumbnailReconcileRowLimit = 1000
 )

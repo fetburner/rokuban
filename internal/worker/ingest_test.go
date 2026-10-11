@@ -30,6 +30,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -3224,7 +3225,7 @@ func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) 
 func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int {
 	t.Helper()
 	count := 0
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
 		var args EncodeJobArgs
 		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
 			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
@@ -3239,8 +3240,8 @@ func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profil
 func countEncodeJobsForRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	count := 0
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
-		args := testutil.MustDecodeRiverJobArgs[EncodeJobArgs](t, row)
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
+		args := riveradaptertest.MustDecodeRiverJobArgs[EncodeJobArgs](t, row)
 		if args.RecordingID == recordingID {
 			count++
 		}

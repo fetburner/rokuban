@@ -21,9 +21,9 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
@@ -621,8 +621,8 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 func pendingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64) []string {
 	t.Helper()
 	ctx := context.Background()
-	client := testutil.NewRiverClient(t, pool)
-	rows := testutil.MustListRiverJobs(t, ctx, client, river.NewJobListParams().
+	client := riveradaptertest.NewRiverClient(t, pool)
+	rows := riveradaptertest.MustListRiverJobs(t, ctx, client, river.NewJobListParams().
 		Kinds((jobs.EncodeJobArgs{}).Kind()).
 		States(rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled))
 	var out []string

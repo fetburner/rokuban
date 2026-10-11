@@ -25,6 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -2953,7 +2954,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 
 // reportAgedMissingAssets の個別 Warn ログは missingAssetLogBudget 件で
 // 打ち切り、超過分は 1 行の要約にまとめる --- 対象が解消するまで
-// defaultDeleteReconcileInterval ごとに全件再送され続けるログが無制限に
+// delete_reconcile の定期パスごとに全件再送され続けるログが無制限に
 // 膨らむのを防ぐため。
 //
 // このテストが検出すべき変異: ログ出力を打ち切らずに全件出す（元の実装）。
@@ -3162,12 +3163,12 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 
 // DeleteReconcile が PeriodicJobs に載ること。
 func TestBuildRiverConfig_DeleteReconcilePeriodic(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    true,
 		DeleteReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want 1 (delete_reconcile only)", len(riverCfg.PeriodicJobs))
@@ -3176,11 +3177,11 @@ func TestBuildRiverConfig_DeleteReconcilePeriodic(t *testing.T) {
 
 // DeleteReconcile を立てないと定期ジョブに載らないこと（フラグの逆方向）。
 func TestBuildRiverConfig_DeleteReconcileDisabled(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 0 {
 		t.Fatalf("PeriodicJobs = %d, want 0 (DeleteReconcile not set)", len(riverCfg.PeriodicJobs))

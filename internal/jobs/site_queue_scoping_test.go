@@ -43,7 +43,7 @@ import (
 //     振る舞う、または常に qualifyQueueName を呼ぶ） --- 自分の site の
 //     ジョブが期待したキュー名にならず、Insert 直後のリテラル比較か、
 //     「自分の site のジョブは処理される」チェックが落ちる。
-//  4. buildRiverConfig が cfg.BoundSites を渡さない/無視する --- 自分の
+//  4. BuildConfig が cfg.BoundSites を渡さない/無視する --- 自分の
 //     site のジョブが二度と処理されなくなり、「自分の site のジョブは
 //     処理される」チェックが（誤検出防止の canary として）落ちる。
 //

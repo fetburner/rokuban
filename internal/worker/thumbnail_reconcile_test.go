@@ -16,9 +16,10 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func runThumbnailReconcilePass(t *testing.T, pool *pgxpool.Pool, w *ThumbnailReconcileWorker) {
@@ -51,7 +52,7 @@ func TestThumbnailReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T)
 	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{RecordingID: 42}, nil); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
-	count := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail_reconcile"))
+	count := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail_reconcile"))
 	if count != 2 {
 		t.Fatalf("pending thumbnail_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
 	}
@@ -159,7 +160,7 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 
 func countRiverJobsForRecording(t *testing.T, pool *pgxpool.Pool, kind string, recordingID int64) int {
 	t.Helper()
-	return testutil.CountRiverJobsOfKind(t, context.Background(), pool, kind, func(args struct {
+	return riveradaptertest.CountRiverJobsOfKind(t, context.Background(), pool, kind, func(args struct {
 		RecordingID int64 `json:"recording_id"`
 	}) bool {
 		return args.RecordingID == recordingID
@@ -169,8 +170,8 @@ func countRiverJobsForRecording(t *testing.T, pool *pgxpool.Pool, kind string, r
 func countThumbnailJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	count := 0
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail") {
-		args := testutil.MustDecodeRiverJobArgs[jobs.ThumbnailJobArgs](t, row)
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail") {
+		args := riveradaptertest.MustDecodeRiverJobArgs[jobs.ThumbnailJobArgs](t, row)
 		if args.RecordingID == recordingID {
 			count++
 		}
@@ -559,24 +560,24 @@ func TestThumbnailReconcileArgs_KindAndInsertOpts(t *testing.T) {
 }
 
 func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:               true,
 		ThumbnailReconcile:         true,
 		ThumbnailReconcileInterval: time.Hour,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:       false,
 		ThumbnailReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig (periodic disabled): %v", err)
+		t.Fatalf("BuildConfig (periodic disabled): %v", err)
 	}
 	if len(disabled.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))
@@ -586,8 +587,8 @@ func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
 func countSeekTilesJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	count := 0
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "seek_tiles") {
-		args := testutil.MustDecodeRiverJobArgs[jobs.SeekTilesJobArgs](t, row)
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "seek_tiles") {
+		args := riveradaptertest.MustDecodeRiverJobArgs[jobs.SeekTilesJobArgs](t, row)
 		if args.RecordingID == recordingID {
 			count++
 		}

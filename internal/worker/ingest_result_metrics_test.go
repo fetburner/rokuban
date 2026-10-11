@@ -22,10 +22,10 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // このファイルは IngestWorker.Work が result をどう決めるか（ジョブの結末の
@@ -371,7 +371,7 @@ func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Serve
 		t.Errorf("IngestDuration の観測数 = %d, want %d（中断した試行は所要時間ではない）", got, durationBefore)
 	}
 
-	job := testutil.MustGetRiverJob(t, context.Background(), client, inserted.Job.ID)
+	job := riveradaptertest.MustGetRiverJob(t, context.Background(), client, inserted.Job.ID)
 	if job.State != rivertype.JobStateAvailable || job.Attempt != 0 {
 		t.Errorf("job state=%q attempt=%d, want available / 0（soft stop は attempt を消費せず行を available に戻す）", job.State, job.Attempt)
 	}

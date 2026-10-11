@@ -25,9 +25,6 @@ import (
 )
 
 const (
-	// defaultDeleteReconcileInterval は削除 reconcile 定期パスの既定間隔。
-	defaultDeleteReconcileInterval = 15 * time.Minute
-
 	// defaultTrashRetention はごみ箱（recordings.deleted_at）の既定猶予（30 日）。
 	defaultTrashRetention = 30 * 24 * time.Hour
 
@@ -50,7 +47,7 @@ const (
 	// missingAssetLogBudget は 1 パスで reportAgedMissingAssets が Warn ログを
 	// 個別に出す件数の上限。件数（rokuban_media_assets_missing）は既にメトリクス
 	// が持っているので、ログの役目は同定（media_asset_id / rel_path）だけ ---
-	// エイジング済み候補は解消するまで defaultDeleteReconcileInterval（既定
+	// エイジング済み候補は解消するまで定期パス間隔（既定
 	// 15 分 = 1 日 96 パス）ごとに全件が再送されるので、上限が無ければ
 	// 「候補数 × 96」行/日になる（劣化したマウントを放置すると候補数は
 	// active な media_assets 全件まで伸びうる。実測はしていない算術）。
@@ -791,7 +788,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 //
 // 個別 Warn ログは missingAssetLogBudget 件で打ち切り、超過分は件数だけを
 // 載せた 1 行（属性 logged / and_more）にまとめる --- 対象が解消するまで
-// defaultDeleteReconcileInterval ごとに同じ全件が再送され続けるため
+// delete_reconcile の定期パスごとに同じ全件が再送され続けるため
 // （件数自体は Reset 後の MediaAssetsMissing ゲージが持つので、ログは同定
 // だけを担えばよい）。
 func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {

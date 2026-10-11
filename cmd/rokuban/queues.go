@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 const (
@@ -40,7 +40,7 @@ const (
 	// **名前に idle を入れているのは、実行中のジョブには効かないことを名前で
 	// 示すため。** `--once-timeout` だと「Job 全体の制限時間」と読めてしまい、
 	// 数時間のエンコードを打ち切る設定だと誤解されうる（打ち切らないことが
-	// ScaledJob を選んだ理由そのもの。worker.OnceGate のコメント参照）。
+	// ScaledJob を選んだ理由そのもの。riveradapter.OnceGate のコメント参照）。
 	onceIdleTimeoutFlagName = "once-idle-timeout"
 
 	// softStopTimeoutFlagName は SIGTERM を受けてから実行中のジョブを打ち切る
@@ -124,7 +124,7 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 			queuesFlagName, strings.Join(names, ", "), strings.Join(configured, ", "))
 	}
 
-	// 未知の名前はここで弾く（buildRiverConfig にも同じ検査があるが、そちらの
+	// 未知の名前はここで弾く（BuildConfig にも同じ検査があるが、そちらの
 	// エラーは `worker.queues:` と名乗るので、argv から来た値の出自が分からなく
 	// なる）。同じ名前の重複は 1 つに畳む --- `--queues ingest,ingest` が
 	// 1 件消化モードの「ちょうど 1 キュー」検査に 2 キューとして映らないように
@@ -168,7 +168,7 @@ func validateOnceMode(roles []string) error {
 
 // resolveOnce は `--once` / `--once-idle-timeout` を解決する。1 件消化モードで
 // なければ (nil, 0, nil) を返す。
-func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Duration, error) {
+func resolveOnce(cmd *cobra.Command, roles []string) (*riveradapter.OnceGate, time.Duration, error) {
 	once, err := cmd.Flags().GetBool(onceFlagName)
 	if err != nil {
 		return nil, 0, err
@@ -191,7 +191,7 @@ func resolveOnce(cmd *cobra.Command, roles []string) (*worker.OnceGate, time.Dur
 	if err != nil {
 		return nil, 0, err
 	}
-	return worker.NewOnceGate(), idleTimeout, nil
+	return riveradapter.NewOnceGate(), idleTimeout, nil
 }
 
 // stopOnceProcess は 1 件消化モードの停止手順。
@@ -240,7 +240,7 @@ func stopOnceProcess(ctx context.Context, stopRiver func(context.Context) error,
 }
 
 // resolveSoftStopTimeout は SIGTERM を受けてから実行中のジョブを打ち切るまでの
-// 猶予（worker.ClientConfig.SoftStopTimeout）を決める。
+// 猶予（riveradapter.Config.SoftStopTimeout）を決める。
 //
 // 検査は 2 つで、どちらも「効かない / 意味が反転する値」を黙って受け取らない
 // ためにある（`--queues` / `--once-idle-timeout` と同じ方針）:

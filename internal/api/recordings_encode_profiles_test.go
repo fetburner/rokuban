@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -150,12 +151,12 @@ func getRecordingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, id int64) []st
 
 func countEncodeReconcileJobs(t *testing.T, pool *pgxpool.Pool) int {
 	t.Helper()
-	return len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
+	return len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
 }
 
 func clearEncodeReconcileJobs(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	testutil.MustDeleteRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile")
+	riveradaptertest.MustDeleteRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile")
 }
 
 func TestEncodeJobsInsertInCallerTransaction(t *testing.T) {
@@ -191,7 +192,7 @@ func TestEncodeJobsInsertInCallerTransaction(t *testing.T) {
 			if err := tx.Rollback(ctx); err != nil {
 				t.Fatalf("rolling back transaction: %v", err)
 			}
-			if got := len(testutil.MustListRiverJobsOfKind(t, ctx, pool, tc.kind)); got != 0 {
+			if got := len(riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, tc.kind)); got != 0 {
 				t.Errorf("%s jobs after rollback = %d, want 0", tc.kind, got)
 			}
 		})
@@ -1046,7 +1047,7 @@ waitHint:
 		}
 	}
 
-	encodeJobs := testutil.MustListRiverJobs(t, ctx, riverClient, river.NewJobListParams().Kinds("encode"))
+	encodeJobs := riveradaptertest.MustListRiverJobs(t, ctx, riverClient, river.NewJobListParams().Kinds("encode"))
 	var matchingEncodeJobs int
 	for _, job := range encodeJobs {
 		var args jobs.EncodeJobArgs
@@ -1109,7 +1110,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
-	targetedPasses := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_reconcile", func(args jobs.EncodeReconcileArgs) bool {
+	targetedPasses := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode_reconcile", func(args jobs.EncodeReconcileArgs) bool {
 		return args.RecordingID == id
 	})
 	if targetedPasses != 1 {
@@ -1126,8 +1127,8 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}
 	for profile, want := range map[string]int{"cut": 0, "h264": 1} {
 		got := 0
-		for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "encode") {
-			args := testutil.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
+		for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, "encode") {
+			args := riveradaptertest.MustDecodeRiverJobArgs[jobs.EncodeJobArgs](t, row)
 			switch row.State {
 			case rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled:
 				if args.RecordingID == id && args.Profile == profile {

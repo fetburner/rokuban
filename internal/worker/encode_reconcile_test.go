@@ -21,9 +21,10 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // encodeConfigWith は名前だけが意味を持つ encode 設定を作る（このパスは
@@ -71,7 +72,7 @@ func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
 	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{RecordingID: 42}, nil); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
-	count := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
+	count := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
 	if count != 2 {
 		t.Fatalf("pending encode_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
 	}
@@ -592,7 +593,7 @@ func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
 
 	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")})
 
-	if jobs := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())); jobs != 0 {
+	if jobs := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())); jobs != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobs)
 	}
 }
@@ -696,8 +697,8 @@ func TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates(t *testing.T) {
 	// 1 本に合流させるため、1 件目に再投入してもジョブ数は増えない）。
 	// 1 件目のジョブ行を削除してから巻き戻りを起こし、復活することで
 	// 「もう一度 examine された」ことを見る。
-	jobRows := testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())
-	riverClient := testutil.NewRiverClient(t, pool)
+	jobRows := riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())
+	riverClient := riveradaptertest.NewRiverClient(t, pool)
 	deleted := false
 	for _, row := range jobRows {
 		var args EncodeJobArgs
@@ -887,24 +888,24 @@ func TestEncodeReconcileArgs_KindAndInsertOpts(t *testing.T) {
 // worker.periodic_jobs が有効なら encode_reconcile が定期ジョブとして登録される
 // こと（登録漏れは「実装したのに永久に走らない」で終わる）。
 func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:            true,
 		EncodeReconcile:         true,
 		EncodeReconcileInterval: time.Hour,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    false,
 		EncodeReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig (periodic disabled): %v", err)
+		t.Fatalf("BuildConfig (periodic disabled): %v", err)
 	}
 	if len(disabled.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))

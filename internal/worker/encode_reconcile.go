@@ -18,18 +18,6 @@ import (
 )
 
 const (
-	// defaultEncodeReconcileInterval は encode の desired−observed 定期パスの
-	// 既定間隔。
-	//
-	// このパスが**新しく投入する**のは、ヒント経路（ingest 完了時のベストエフォート
-	// 投入と POST /api/recordings/{id}/encode-profiles のヒントジョブ）が落ちた
-	// ぶんだけである（候補には実行中・待機中のエンコードも含まれるが、それらへの
-	// 投入は、args（締切を含む）が同じ間だけ River の UniqueOpts が合流させる）。
-	// 落としたヒントの回復が数十分遅れても失うものは無い一方、何時間も放置は
-	// したくないので、同じく「普段は新しい仕事を作らないバックストップ」である
-	// delete_reconcile と同じ 15 分に揃える。
-	defaultEncodeReconcileInterval = 15 * time.Minute
-
 	// encodeReconcileRowLimit は 1 パスで拾う候補録画の既定上限
 	// （EncodeReconcileWorker.RowLimit で上書きできる）。
 	//

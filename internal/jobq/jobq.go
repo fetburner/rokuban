@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -137,8 +138,9 @@ type workerHandler struct {
 
 // Registry maps each job kind to its Args decoder and worker.
 type Registry struct {
-	mu       sync.RWMutex
-	handlers map[string]workerHandler
+	mu             sync.RWMutex
+	handlers       map[string]workerHandler
+	adapterWorkers map[string]map[string]func(any) error
 }
 
 // NewRegistry creates an empty registry for job workers.
@@ -221,6 +223,67 @@ func (registry *Registry) Work(ctx context.Context, args Args) error {
 		return err
 	}
 	return handler.work(ctx, args)
+}
+
+// AddAdapterWorker associates a registered kind with a runtime-specific worker builder.
+// Adapters call it from their typed registration helper so Registry can remain independent
+// of the queue library's worker types.
+func (registry *Registry) AddAdapterWorker(adapter, kind string, build func(any) error) error {
+	if registry == nil {
+		return errors.New("jobq: nil registry")
+	}
+	if adapter == "" || kind == "" {
+		return errors.New("jobq: adapter and kind are required")
+	}
+	if build == nil {
+		return errors.New("jobq: adapter worker builder is required")
+	}
+	registry.mu.Lock()
+	defer registry.mu.Unlock()
+	if _, ok := registry.handlers[kind]; !ok {
+		return fmt.Errorf("jobq: no worker registered for adapter kind %q", kind)
+	}
+	if registry.adapterWorkers == nil {
+		registry.adapterWorkers = make(map[string]map[string]func(any) error)
+	}
+	workers := registry.adapterWorkers[adapter]
+	if workers == nil {
+		workers = make(map[string]func(any) error)
+		registry.adapterWorkers[adapter] = workers
+	}
+	if _, exists := workers[kind]; exists {
+		return fmt.Errorf("jobq: adapter %q worker for kind %q is already registered", adapter, kind)
+	}
+	workers[kind] = build
+	return nil
+}
+
+// RegisterAdapterWorkers builds the adapter-specific workers registered for adapter into dst.
+func (registry *Registry) RegisterAdapterWorkers(adapter string, dst any) error {
+	if registry == nil {
+		return errors.New("jobq: nil registry")
+	}
+	registry.mu.RLock()
+	workers := registry.adapterWorkers[adapter]
+	kinds := make([]string, 0, len(workers))
+	for kind := range workers {
+		kinds = append(kinds, kind)
+	}
+	slices.Sort(kinds)
+	builders := make([]func(any) error, len(kinds))
+	for i, kind := range kinds {
+		builders[i] = workers[kind]
+	}
+	registry.mu.RUnlock()
+	if len(builders) == 0 {
+		return fmt.Errorf("jobq: no workers registered for adapter %q", adapter)
+	}
+	for i, build := range builders {
+		if err := build(dst); err != nil {
+			return fmt.Errorf("jobq: registering %s worker for adapter %q: %w", kinds[i], adapter, err)
+		}
+	}
+	return nil
 }
 
 func (registry *Registry) handler(kind string) (workerHandler, error) {

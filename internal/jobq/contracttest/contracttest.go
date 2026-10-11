@@ -25,8 +25,8 @@ type Fixture interface {
 	RecoveryGrace() time.Duration
 }
 
-// Factory creates an isolated adapter fixture that uses registry.
-type Factory func(t *testing.T, registry *jobq.Registry) Fixture
+// Factory registers worker in registry and creates an isolated adapter fixture.
+type Factory func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[Args]) Fixture
 
 // Run executes the common adapter contract tests against factory.
 func Run(t *testing.T, factory Factory) {
@@ -250,17 +250,20 @@ func testCrash(t *testing.T, factory Factory) {
 	var calls atomic.Int32
 	started := make(chan struct{}, 1)
 	contexts := make(chan error, 2)
+	releaseFirst := make(chan struct{})
+	defer close(releaseFirst)
 	fixture := newFixture(t, factory, contractWorker{work: func(ctx context.Context, _ contractArgs) error {
 		if calls.Add(1) == 1 {
 			started <- struct{}{}
 			<-ctx.Done()
 			contexts <- ctx.Err()
+			<-releaseFirst
 			return ctx.Err()
 		}
 		return nil
 	}})
 	start(t, fixture)
-	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 5000, MaxAttempts: 2}); err != nil {
+	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 100, MaxAttempts: 2}); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
 	receive(t, started)
@@ -273,7 +276,7 @@ func testCrash(t *testing.T, factory Factory) {
 		t.Errorf("crashed Work context error = %v, want Canceled", got)
 	}
 	start(t, fixture)
-	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 5*time.Second))
+	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 100*time.Millisecond))
 	if got := calls.Load(); got != 2 {
 		t.Errorf("Work calls after crash = %d, want literal 2", got)
 	}
@@ -328,11 +331,14 @@ type contractArgs struct {
 	InvalidTimeout bool
 }
 
+// Args is the job argument type supplied to adapter factories by the shared tests.
+type Args = contractArgs
+
 func (contractArgs) Kind() string { return "contracttest" }
 
 func (args contractArgs) Spec() jobq.Spec {
 	return jobq.Spec{
-		Queue: "contracttest",
+		Queue: "default",
 		Timeout: func(raw jobq.Args) time.Duration {
 			args, ok := raw.(contractArgs)
 			if !ok {
@@ -374,8 +380,7 @@ func (worker contractWorker) Work(ctx context.Context, args contractArgs) error 
 func newFixture(t *testing.T, factory Factory, worker contractWorker) Fixture {
 	t.Helper()
 	registry := jobq.NewRegistry()
-	jobq.Register[contractArgs](registry, worker)
-	fixture := factory(t, registry)
+	fixture := factory(t, registry, worker)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
