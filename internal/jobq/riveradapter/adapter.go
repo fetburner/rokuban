@@ -97,9 +97,6 @@ func (enqueuer *LegacyEnqueuer) EnqueueTx(ctx context.Context, tx db.Tx, args jo
 }
 
 func (enqueuer *LegacyEnqueuer) prepare(args jobq.Args, opts ...jobq.EnqueueOpt) (river.JobArgs, river.InsertOpts, error) {
-	if args == nil {
-		return nil, river.InsertOpts{}, errors.New("riveradapter: args must implement River JobArgs")
-	}
 	insertOpts, err := makeInsertOpts(args, opts...)
 	if err != nil {
 		return nil, river.InsertOpts{}, err

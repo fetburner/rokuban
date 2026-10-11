@@ -11,13 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // ルール作成/更新/削除は同一トランザクションで RulerPassArgs を投入する
-// （ヒント経路。docs/recording.md §3.1「ヒントは api がルール書き込みと同一
+// （ヒント経路。docs/recording/ruler.md §3.1「api がルール書き込みと同一
 // トランザクションで EnqueueTx する」）。dual-write を避けるためのものなので、
 // ここでは実際に River のジョブが現れることを確認する。
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
@@ -29,7 +30,7 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient)})
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -110,7 +111,7 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient)})
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -140,7 +141,7 @@ func TestInsertRulerPassHint_FollowsTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
-	h := &Server{enqueuer: legacyEnqueuerForTest(riverClient)}
+	h := &Server{enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}
 
 	rolledBack, err := pool.Begin(ctx)
 	if err != nil {

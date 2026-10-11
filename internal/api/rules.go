@@ -238,8 +238,8 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 // dual-write を避けるため、書き込みが失敗すればこのジョブも一緒にロールバックされる。
 //
 // h.enqueuer が nil の場合は何もしない（テストや、将来ジョブキューを持たない api 構成を許容する
-// ため。RouterConfig.Enqueuer のコメント参照）。RulerPassArgs の
-// UniqueOpts{ByArgs, ByState} により、同一サイトのヒントは定期実行に合流する。
+// ため。RouterConfig.Enqueuer のコメント参照）。RulerPassArgs.Spec() の
+// Coalesce（合流ヒント）により、同一サイトのヒントは定期実行に合流する。
 func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string) error {
 	if h.enqueuer == nil {
 		return nil

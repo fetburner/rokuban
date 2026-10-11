@@ -30,7 +30,7 @@ DB-backed `/metrics` から観測鮮度を見られる。
 | 定期（既定 30 秒） | **真実**。デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が投入する（[データ層](../data.md) §2） |
 | ruler パスの完了 | ヒント。ruler_pass ワーカーがパス完了時に投入する（base が変われば mirakc に反映すべき差分が増えるため） |
 
-ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。api は reconcile を直接投入しない。意図・上書き・ルールの書き込みと同一トランザクションで `ruler_pass` を `InsertTx` し（dual-write にならない）、その完了がこのヒントになる。そのため予約の変更が mirakc へ反映されるまでの待ち時間は、定期の最大 30 秒ではなく ruler パス 1 回ぶんの秒オーダーになる。
+ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。api は reconcile を直接投入しない。意図・上書き・ルールの書き込みと同一トランザクションで `ruler_pass` を `EnqueueTx` し（dual-write にならない）、その完了がこのヒントになる。そのため予約の変更が mirakc へ反映されるまでの待ち時間は、定期の最大 30 秒ではなく ruler パス 1 回ぶんの秒オーダーになる。
 
 #### 予約オプションの差分反映
 

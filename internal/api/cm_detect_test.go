@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -158,7 +159,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: legacyEnqueuerForTest(riverClient)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)
@@ -593,7 +594,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	completedEvents, unsubscribe := riverClient.Subscribe(river.EventKindJobCompleted)
 	defer unsubscribe()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient), CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	queued := func(want int) {
@@ -695,7 +696,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)

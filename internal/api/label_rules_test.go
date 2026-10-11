@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -628,7 +629,7 @@ func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	if err != nil {
 		t.Fatalf("creating river client: %v", err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(client)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(client)}))
 	t.Cleanup(srv.Close)
 	return srv
 }
