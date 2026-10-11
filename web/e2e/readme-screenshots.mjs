@@ -1,4 +1,4 @@
-// README に載せるスクリーンショット（ホーム・番組表・録画の再生・ライブ・スマホのホーム）を撮る。
+// README に載せるスクリーンショット（ホーム・番組表・録画の再生・ライブ、スマホの 3 画面）を撮る。
 // 判定はしない。
 //
 // 公開リポジトリに載せるので、実放送の映像・番組情報は使わない。番組・局は架空で、
@@ -192,7 +192,7 @@ function programAt(serviceId, name) {
 const reservedPrograms = [
   [808, '竜の旅路 第8話「炎の街」', 'rule'],
   [202, 'クラシック音楽の時間', 'rule'],
-  [505, '水曜ドラマ「逃げる街」', 'manual'],
+  [101, '深夜の音楽室', 'manual'],
 ].map(([serviceId, name, source]) => [services.find((s) => s.serviceId === serviceId), programAt(serviceId, name), source])
 const reservations = reservedPrograms.map(([service, program, source], i) => ({
   id: i + 1,
@@ -485,8 +485,11 @@ async function shoot(name, pathname, viewport, ready) {
     await page.close()
     return
   }
-  // 画像の読み込み完了を待つ（loading="lazy" の取りこぼしを避ける）。
-  await page.waitForFunction(() => [...document.images].every((img) => img.complete), undefined, { timeout: 10_000 })
+  // 写る範囲の画像の読み込み完了を待つ。画面外の loading="lazy" は読み込まれないので除く。
+  await page.waitForFunction(() => [...document.images].every((img) => {
+    const r = img.getBoundingClientRect()
+    return img.complete || r.bottom <= 0 || r.top >= innerHeight
+  }), undefined, { timeout: 10_000 })
   await page.mouse.move(0, 0)
   const out = path.join(OUT_DIR, `readme-${name}.jpg`)
   await page.screenshot({ path: out, type: 'jpeg', quality: 82 })
@@ -528,6 +531,17 @@ await shoot('home-mobile', '/?mode=watch', { width: 390, height: 844 }, async (p
   await page.waitForFunction(() => {
     const video = document.querySelector('[data-testid="home-hero-resume-video"]')
     return ['ready', 'failed'].includes(video?.getAttribute('data-resume-state'))
+  }, undefined, { timeout: 15_000 })
+})
+
+await shoot('programs-mobile', '/programs', { width: 390, height: 844 }, async (page) => {
+  await page.locator('[data-program-id]').first().waitFor({ timeout: 15_000 })
+})
+
+await shoot('recording-mobile', `/recordings/${hero.id}`, { width: 390, height: 844 }, async (page) => {
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking
   }, undefined, { timeout: 15_000 })
 })
 
