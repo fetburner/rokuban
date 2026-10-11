@@ -75,6 +75,14 @@ blocklist（「`tracking` / `recording` の予約は触らない」）にしな�
 
 state の文字列は `internal/mirakc` に定数として置く。持ち越した件数はログに出す — 黙って落とすと「収束しない」の原因が見えなくなる。
 
+#### 削除のガード
+
+desired にない自分の schedule も、state の allowlist に入る場合だけ DELETE する。許可するのは `scheduled` と終端の `finished` / `failed` である。`tracking` / `recording` / `rescheduling` と未知 state は次のパスへ持ち越す。
+
+削除用 allowlist は再作成用と別にする。終端 schedule は片付けとして DELETE できるが、オプション差分を反映する再作成には使えない。`IsDeleteAllowed` と `IsRecreateAllowed` は別々の集合を定義する。
+
+持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。allowlist は `TestIsDeleteAllowed` と `TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates` が固定する。
+
 #### 1 パスの再作成数に上限を設ける
 
 **ルールの priority を編集すると、マッチしている全予約が再作成対象になる。** N=200 なら 1 パスで 400 回の mirakc 呼び出しになる（予約単位の編集だけを想定した見積もりはこれを数え落とす）。

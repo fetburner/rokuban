@@ -143,7 +143,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	now := time.Now()
 	created, missing, endGuarded := r.createMissingSchedules(ctx, reservations, observedByProgram, now)
-	toDelete := collectDeleteCandidates(reservations, schedules)
+	toDelete, deleteDeferred := collectDeleteCandidates(reservations, schedules)
 	totalLoss, tripped := r.observeTotalLoss(ctx, q, reservations, toDelete, tripped)
 	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
@@ -153,8 +153,8 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		slog.Error("reconciler: recording never-scheduled outcome", "err", err)
 	}
 	startDelayed := r.observeStartDelays(ctx, reservations)
-	r.observePendingDiff(missing, len(toDelete), updateDiff, stateGuarded)
-	r.logCarriedOver(stateGuarded, limitCarriedOver, endGuarded)
+	r.observePendingDiff(missing, len(toDelete), deleteDeferred, updateDiff, stateGuarded)
+	r.logCarriedOver(deleteDeferred, stateGuarded, limitCarriedOver, endGuarded)
 
 	slog.Info("reconciler: pass complete",
 		"desired", len(reservations),
@@ -162,6 +162,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		"missing", missing,
 		"created", created,
 		"stale", len(toDelete),
+		"delete_deferred", deleteDeferred,
 		"deleted", deleted,
 		"update_diff", updateDiff,
 		"recreated", recreated,
@@ -211,13 +212,15 @@ func (r *Reconciler) createMissingSchedules(ctx context.Context, reservations []
 }
 
 // collectDeleteCandidates は自分が作った schedule のうち desired にないものを削除候補に
-// 集める。mirakc が所有しない schedule は対象にしない。
-func collectDeleteCandidates(reservations []desiredReservation, schedules []mirakc.Schedule) []mirakc.Schedule {
+// 集める。mirakc が所有しない schedule は対象にせず、削除 allowlist 外の schedule は
+// 削除を見送った件数として返す。
+func collectDeleteCandidates(reservations []desiredReservation, schedules []mirakc.Schedule) ([]mirakc.Schedule, int) {
 	desiredPrograms := make(map[int64]struct{}, len(reservations))
 	for _, d := range reservations {
 		desiredPrograms[d.res.ProgramID] = struct{}{}
 	}
 	var toDelete []mirakc.Schedule
+	var deferred int
 	for _, s := range schedules {
 		if !mirakc.IsOurs(s.Tags) {
 			continue
@@ -225,9 +228,13 @@ func collectDeleteCandidates(reservations []desiredReservation, schedules []mira
 		if _, desired := desiredPrograms[s.Program.ID]; desired {
 			continue
 		}
+		if !schedulesync.IsDeleteAllowed(s.State) {
+			deferred++
+			continue
+		}
 		toDelete = append(toDelete, s)
 	}
-	return toDelete
+	return toDelete, deferred
 }
 
 // observeTotalLoss は全損シグネチャを検知する。desired（reservations）が 1 件もないのに、
@@ -300,26 +307,31 @@ func (r *Reconciler) observeStartDelays(ctx context.Context, reservations []desi
 // observePendingDiff は差分そのものをゲージで出す。健全なら次のパスでゼロになる。
 // 作成/削除/再作成できずに残った量が知りたいので、実行した件数ではなく検出した件数
 // （MaxRecreatesPerPass で持ち越した分も含む）。state の allowlist で意図的に触らなかった
-// 分は update ではなく update_deferred に入れる。混ぜると「ゼロに戻らない = 異常」という
-// このゲージの読み方が壊れる（metrics.ReconcilePendingDiff のコメント参照）。
-func (r *Reconciler) observePendingDiff(missing, stale, updateDiff, stateGuarded int) {
+// 削除と再作成は、それぞれ delete_deferred / update_deferred に入れる。混ぜると
+// 「ゼロに戻らない = 異常」というこのゲージの読み方が壊れる
+// （metrics.ReconcilePendingDiff のコメント参照）。
+func (r *Reconciler) observePendingDiff(missing, stale, deleteDeferred, updateDiff, stateGuarded int) {
 	metrics.ReconcileLastPass.SetToCurrentTime()
 	metrics.ReconcilePendingDiff.WithLabelValues("create").Set(float64(missing))
 	metrics.ReconcilePendingDiff.WithLabelValues("delete").Set(float64(stale))
+	metrics.ReconcilePendingDiff.WithLabelValues("delete_deferred").Set(float64(deleteDeferred))
 	metrics.ReconcilePendingDiff.WithLabelValues("update").Set(float64(updateDiff))
 	metrics.ReconcilePendingDiff.WithLabelValues("update_deferred").Set(float64(stateGuarded))
 }
 
 // logCarriedOver は持ち越した件数を黙って落とさず、「収束しない」原因が見えるように
-// state ガード・MaxRecreatesPerPass のどちらで持ち越したかを分けて出す。
-// stateGuarded / limitCarriedOver と同じ扱いで endGuarded もログに出す。
+// 削除・再作成の state ガードと MaxRecreatesPerPass のどちらで持ち越したかを分けて出す。
+// deleteDeferred / stateGuarded / limitCarriedOver と同じ扱いで endGuarded もログに出す。
 // メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し（録画中は
 // priority 変更が反映されないまま残る、MaxRecreatesPerPass で溢れた分が次パスに送られる）
 // だからゲージで監視する価値があるのに対し、endGuarded は本パスの recordNeverScheduled
 // （旧 markOrphaned）が同じ判定式で recordings に never-scheduled 行を作るので、次パスには
 // 同じ予約が二度と現れない（1 パスで自己解消する）。ReconcilePendingDiff の「create」
 // ゲージに混ぜると、埋まらない別の理由（mirakc 障害等）と区別できなくなる。
-func (r *Reconciler) logCarriedOver(stateGuarded, limitCarriedOver, endGuarded int) {
+func (r *Reconciler) logCarriedOver(deleteDeferred, stateGuarded, limitCarriedOver, endGuarded int) {
+	if deleteDeferred > 0 {
+		slog.Info("reconciler: delete candidates deferred to next pass (schedule state guard)", "count", deleteDeferred)
+	}
 	if stateGuarded > 0 {
 		slog.Info("reconciler: recreate candidates deferred to next pass (schedule state guard)", "count", stateGuarded)
 	}
