@@ -31,9 +31,7 @@ export function RecordingVerdictBadge({
   /** 詳細ヘッダーでは結論から記録タブへ移動する。 */
   onClick?: () => void
 }) {
-  // 結論は転送中かどうかだけで決まり、停滞の有無では変わらないため時計を購読しない。
-  const nowMs = useNow(10_000, false)
-  const verdict = recordingVerdict({ recording, liveCapability, isTrashed, nowMs })
+  const verdict = recordingVerdict({ recording, liveCapability, isTrashed })
   if (verdict === undefined || verdict === 'viewable') return null
 
   const badge = (

@@ -96,8 +96,8 @@ function TunerStatusLine({
     (oldest, t) => (Date.parse(t.observedAt) < Date.parse(oldest) ? t.observedAt : oldest),
     tuners[0]!.observedAt,
   )
-  // 取得結果が同じときの再取得では描画されないことをコンポーネントテストで確認した。
-  // 時計を 30 秒ごとに購読し、1 時間のしきい値を過ぎた表示を更新する。
+  // 古さの判定は時刻だけで変わる。再取得の有無や周期に頼らず、時計を 30 秒ごとに
+  // 購読して、1 時間のしきい値を越えた時点で表示を更新する。
   const nowMs = useNow(30_000)
   const stale = isObservationStale(oldestObservedAt, nowMs)
 

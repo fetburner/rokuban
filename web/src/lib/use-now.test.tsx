@@ -65,4 +65,33 @@ describe('useNow', () => {
     view.unmount()
     expect(vi.getTimerCount()).toBe(0)
   })
+
+  it('購読者が 0 の間に時間が経っても、再購読で新しい時刻へ直る', async () => {
+    vi.useFakeTimers()
+    const startMs = Date.parse('2026-10-01T00:00:00Z')
+    vi.setSystemTime(startMs)
+    render(<ClockReader label="a" intervalMs={1000} />).unmount()
+
+    vi.setSystemTime(startMs + 60 * 60_000)
+    render(<ClockReader label="b" intervalMs={1000} />)
+    await act(async () => {})
+    expect(screen.getByTestId('b')).toHaveTextContent(String(startMs + 60 * 60_000))
+  })
+
+  it('壁時計が戻っても、戻った時刻へ追従して更新し続ける', async () => {
+    vi.useFakeTimers()
+    const startMs = Date.parse('2026-10-01T12:00:00Z')
+    vi.setSystemTime(startMs)
+    render(<ClockReader label="a" intervalMs={1000} />)
+
+    vi.setSystemTime(startMs - 60 * 60_000)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(screen.getByTestId('a')).toHaveTextContent(String(startMs - 60 * 60_000 + 1000))
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+    expect(screen.getByTestId('a')).toHaveTextContent(String(startMs - 60 * 60_000 + 2000))
+  })
 })
