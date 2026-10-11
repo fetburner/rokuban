@@ -55,11 +55,11 @@ const SITE = 'default'
 // --- 局と番組表 ---------------------------------------------------------------
 
 const services = [
-  { id: 3200101, networkId: 32001, serviceId: 101, name: 'みなと総合', channelType: 'GR', channel: '27', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
-  { id: 3200202, networkId: 32002, serviceId: 202, name: 'みなと教育', channelType: 'GR', channel: '26', remoteControlKeyId: 2, hasLogoData: false, hasPrograms: true },
-  { id: 3200404, networkId: 32004, serviceId: 404, name: 'ひかり放送', channelType: 'GR', channel: '25', remoteControlKeyId: 4, hasLogoData: false, hasPrograms: true },
-  { id: 3200505, networkId: 32005, serviceId: 505, name: 'あさひテレビ', channelType: 'GR', channel: '24', remoteControlKeyId: 5, hasLogoData: false, hasPrograms: true },
-  { id: 3200808, networkId: 32008, serviceId: 808, name: 'さくらテレビ', channelType: 'GR', channel: '21', remoteControlKeyId: 8, hasLogoData: false, hasPrograms: true },
+  { id: 3200101, networkId: 32001, serviceId: 101, name: 'みなと総合', channelType: 'GR', channel: '13', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
+  { id: 3200202, networkId: 32002, serviceId: 202, name: 'みなと教育', channelType: 'GR', channel: '14', remoteControlKeyId: 2, hasLogoData: false, hasPrograms: true },
+  { id: 3200404, networkId: 32004, serviceId: 404, name: 'ひかり放送', channelType: 'GR', channel: '16', remoteControlKeyId: 4, hasLogoData: false, hasPrograms: true },
+  { id: 3200505, networkId: 32005, serviceId: 505, name: 'あさひテレビ', channelType: 'GR', channel: '18', remoteControlKeyId: 5, hasLogoData: false, hasPrograms: true },
+  { id: 3200808, networkId: 32008, serviceId: 808, name: 'さくらテレビ', channelType: 'GR', channel: '20', remoteControlKeyId: 8, hasLogoData: false, hasPrograms: true },
   { id: 400151, networkId: 4, serviceId: 151, name: 'BSそら', channelType: 'BS', channel: 'BS01_0', remoteControlKeyId: 0, hasLogoData: false, hasPrograms: true },
 ]
 
@@ -72,7 +72,7 @@ const schedules = {
     ['ニュース・天気', 0, 30, ''],
     ['クイズ ことばの森', 5, 45, '難読漢字から方言まで、ことばの達人が競う。'],
     ['ふるさと自然紀行', 8, 45, '朝霧の森に暮らす生きものたちの一日。'],
-    ['ニュースナイン', 0, 60, ''],
+    ['夜9時のニュース', 0, 60, ''],
     ['ドラマ「港町の灯」第6話', 3, 45, '灯台守の娘が、閉ざされた航路の秘密に近づく。'],
     ['スポーツまとめ', 1, 30, ''],
     ['深夜の音楽室', 4, 45, '弦楽四重奏でたどる夏の夜。'],
@@ -81,24 +81,24 @@ const schedules = {
   202: [
     ['こども工作ランド', 10, 30, ''],
     ['もりのうさぎ', 7, 30, 'うさぎのバックと森の仲間たちの物語。'],
-    ['えいごであそぼ', 10, 30, ''],
+    ['えいごのじかん', 10, 30, ''],
     ['サイエンス探検', 8, 30, '雲はなぜ浮かぶのか。'],
-    ['きょうの料理', 10, 30, ''],
-    ['趣味の園芸', 10, 30, '夏の水やりと鉢の置き場所。'],
-    ['高校講座 数学', 10, 20, ''],
-    ['高校講座 物理', 10, 20, ''],
-    ['手話ニュース', 11, 20, ''],
+    ['ばんごはんの台所', 10, 30, ''],
+    ['ベランダ菜園', 10, 30, '夏の水やりと鉢の置き場所。'],
+    ['まなびの数学', 10, 20, ''],
+    ['まなびの物理', 10, 20, ''],
+    ['ニュース 手話つき', 11, 20, ''],
     ['世界のドキュメント', 8, 60, '砂漠の隊商がたどる千年の道。'],
     ['語学講座 中国語', 10, 30, ''],
     ['クラシック音楽の時間', 4, 90, '交響曲第 2 番ほか。'],
-    ['放送大学セレクション', 10, 60, ''],
+    ['おとなの教養講座', 10, 60, ''],
   ],
   404: [
-    ['ニュースエブリ', 0, 120, ''],
+    ['ゆうがたニュース', 0, 120, ''],
     ['ぐるっと世界旅', 8, 60, '北の島の白夜をめぐる。'],
     ['夏の歌謡祭 2026', 4, 114, '世代をこえた名曲を生演奏で。'],
     ['ニュース', 0, 30, ''],
-    ['トークの部屋', 5, 50, ''],
+    ['トークの縁側', 5, 50, ''],
     ['スポーツナイト', 1, 46, ''],
     ['映画「星降る峠」', 6, 60, ''],
   ],
@@ -108,7 +108,7 @@ const schedules = {
     ['どうぶつ大集合SP', 5, 114, '全国の動物園から人気者が集合。'],
     ['ニュース', 0, 6, ''],
     ['水曜ドラマ「逃げる街」', 3, 54, '消えた設計図をめぐり、刑事と建築家が手を組む。'],
-    ['報道ステージ', 0, 76, ''],
+    ['夜のニュースデスク', 0, 76, ''],
     ['ナイトクラブ', 5, 50, ''],
     ['星屑メモリー', 7, 30, ''],
     ['ねむれぬ夜のラジオ', 5, 30, ''],
@@ -119,7 +119,7 @@ const schedules = {
     ['プロ野球 みなと×さくら', 1, 114, ''],
     ['ニュース', 0, 6, ''],
     ['水曜シネマ「荒野の約束」', 6, 114, ''],
-    ['ニュースJAPAN', 0, 36, ''],
+    ['ナイトニュース', 0, 36, ''],
     ['竜の旅路 第8話「炎の街」', 7, 30, '竜を追って辿り着いた街で、少女はかつての師と再会する。'],
     ['港のマリン', 7, 30, ''],
     ['深夜のしゃべり場', 5, 30, ''],
@@ -127,10 +127,10 @@ const schedules = {
   151: [
     ['鉄道でめぐる夏', 8, 60, ''],
     ['BSニュース', 0, 60, ''],
-    ['世界ふれあい街歩き', 8, 60, '城壁に囲まれた旧市街を歩く。'],
+    ['まち歩き 石畳の港町', 8, 60, '坂の上の灯台まで歩く。'],
     ['砂漠紀行 〜風がつくる道〜', 8, 60, '砂丘の稜線は一晩で姿を変える。'],
-    ['BS時代劇「月影の剣」', 3, 60, ''],
-    ['BSワールドニュース', 0, 60, ''],
+    ['時代劇「月影の剣」', 3, 60, ''],
+    ['世界のいま', 0, 60, ''],
     ['ジャズの夜', 4, 60, ''],
     ['美術館めぐり', 10, 60, ''],
   ],
@@ -273,7 +273,7 @@ const onAir = {
   ...fromService(services[0]),
   id: 31,
   eventId: 31,
-  title: 'ニュースナイン',
+  title: '夜9時のニュース',
   status: 'recording',
   startAt: iso(jst(21)),
   durationMs: HOUR,
@@ -436,8 +436,9 @@ const context = await browser.newContext({
 })
 mkdirSync(OUT_DIR, { recursive: true })
 
-async function shoot(name, pathname, ready) {
+async function shoot(name, pathname, height, ready, { fullPage = false } = {}) {
   const page = await context.newPage()
+  await page.setViewportSize({ width: 1440, height })
   await page.clock.setFixedTime(FIXED_NOW)
   await installApiStubs(page, handler)
   await page.goto(URL_BASE + pathname, { waitUntil: 'networkidle' })
@@ -449,32 +450,36 @@ async function shoot(name, pathname, ready) {
       error: v.error?.message,
     })))
     ng.push(`${name}: 撮影の準備が整わない (${error.message}; ${JSON.stringify(state)})`)
+    // 追跡している画像を崩れた絵で上書きしない。
+    await page.close()
+    return
   }
   // 画像の読み込み完了を待つ（loading="lazy" の取りこぼしを避ける）。
   await page.waitForFunction(() => [...document.images].every((img) => img.complete), undefined, { timeout: 10_000 })
   await page.mouse.move(0, 0)
   const out = path.join(OUT_DIR, `readme-${name}.jpg`)
-  await page.screenshot({ path: out, type: 'jpeg', quality: 82 })
+  await page.screenshot({ path: out, type: 'jpeg', quality: 82, fullPage })
   log(`  ${out}`)
   await page.close()
 }
 
-await shoot('home', '/?mode=watch', async (page) => {
+await shoot('home', '/?mode=watch', 800, async (page) => {
   await page.waitForFunction(() => {
     const video = document.querySelector('[data-testid="home-hero-resume-video"]')
     return ['ready', 'failed'].includes(video?.getAttribute('data-resume-state'))
   }, undefined, { timeout: 15_000 })
 })
 
-await shoot('programs', '/programs?view=grid', async (page) => {
+await shoot('programs', '/programs?view=grid', 900, async (page) => {
   await page.locator('[data-testid="program-grid-cell"]').first().waitFor({ timeout: 15_000 })
 })
 
-await shoot('recording', `/recordings/${hero.id}`, async (page) => {
+await shoot('recording', `/recordings/${hero.id}`, 1000, async (page) => {
   await page.waitForFunction(() => {
     const video = document.querySelector('video')
     return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking
   }, undefined, { timeout: 15_000 })
-})
+// 動画は画面の高さに合わせて伸びるので、下端で版やシリーズの行が切れないようページ全体を撮る。
+}, { fullPage: true })
 
 await finish(ng, browser)
