@@ -107,6 +107,18 @@ func TestStartAfterSuccessfulStopUsesNewClient(t *testing.T) {
 	}
 }
 
+func TestStartAfterStopBeforeStartDoesNotBlock(t *testing.T) {
+	adapter := newLifecycleTestAdapter(t, riverContractWorkerFunc(func(context.Context, contracttest.Args) error { return nil }), time.Second)
+	if err := adapter.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() before Start error = %v", err)
+	}
+	startCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := adapter.Start(startCtx); err != nil {
+		t.Fatalf("Start() after Stop before any Start error = %v", err)
+	}
+}
+
 func TestRestartAfterTimedOutStopAllowsActiveWorkToEnqueue(t *testing.T) {
 	var adapter *Adapter
 	started := make(chan struct{}, 1)

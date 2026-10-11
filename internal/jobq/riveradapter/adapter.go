@@ -34,6 +34,9 @@ type Adapter struct {
 	config   Config
 	client   *river.Client[pgx.Tx]
 	stopped  bool
+	// started records that client has been Started. River's Stopped() channel is nil
+	// until Start, so only a client that was started needs rebuilding after Stop.
+	started bool
 }
 
 // NewAdapter builds River workers from registry and creates a PostgreSQL-backed adapter.
@@ -146,12 +149,16 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		adapter.mu.Lock()
 		adapter.client = newClient
 		adapter.stopped = false
+		adapter.started = false
 		adapter.mu.Unlock()
 		client = newClient
 	}
 	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("riveradapter: starting River client: %w", err)
 	}
+	adapter.mu.Lock()
+	adapter.started = true
+	adapter.mu.Unlock()
 	return nil
 }
 
@@ -172,7 +179,7 @@ func (adapter *Adapter) Stop(ctx context.Context) error {
 	// River does not guarantee that a client can Start again after Stop, so the next Start
 	// always builds a new client, whether or not this Stop succeeds.
 	adapter.mu.Lock()
-	adapter.stopped = true
+	adapter.stopped = adapter.started
 	adapter.mu.Unlock()
 	if err := client.Stop(ctx); err != nil {
 		cancelErr := client.StopAndCancel(ctx)
