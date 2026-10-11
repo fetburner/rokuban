@@ -61,6 +61,25 @@ func TestNoCoalesceAllowsDuplicateJobs(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigDoesNotCoalesce(t *testing.T) {
+	var calls atomic.Int32
+	queue := newQueue(t, Config{}, fakeWorkerFunc(func(context.Context, fakeArgs) error {
+		calls.Add(1)
+		return nil
+	}))
+	args := fakeArgs{Value: "same", TimeoutMS: 2000, Coalesce: true}
+	for range 2 {
+		if _, err := queue.Enqueue(context.Background(), args); err != nil {
+			t.Fatalf("Enqueue() error = %v", err)
+		}
+	}
+	startQueue(t, queue)
+	waitQueue(t, queue)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("Work calls with default Config = %d, want literal 2", got)
+	}
+}
+
 func TestReorderIgnoresPriorityAndUsesReverseInsertion(t *testing.T) {
 	calls := make(chan string, 2)
 	queue := newQueue(t, Config{Reorder: true}, fakeWorkerFunc(func(_ context.Context, args fakeArgs) error {
@@ -82,6 +101,30 @@ func TestReorderIgnoresPriorityAndUsesReverseInsertion(t *testing.T) {
 	}
 	if got := receive(t, calls); got != "higher priority, first" {
 		t.Errorf("second Work = %q, want first enqueue", got)
+	}
+}
+
+func TestDefaultConfigIgnoresOrderingHints(t *testing.T) {
+	calls := make(chan string, 2)
+	queue := newQueue(t, Config{}, fakeWorkerFunc(func(_ context.Context, args fakeArgs) error {
+		calls <- args.Value
+		return nil
+	}))
+	for _, args := range []fakeArgs{
+		{Value: "higher priority, first", TimeoutMS: 2000, Priority: 1},
+		{Value: "lower priority, second", TimeoutMS: 2000, Priority: 5},
+	} {
+		if _, err := queue.Enqueue(context.Background(), args); err != nil {
+			t.Fatalf("Enqueue() error = %v", err)
+		}
+	}
+	startQueue(t, queue)
+	waitQueue(t, queue)
+	if got := receive(t, calls); got != "lower priority, second" {
+		t.Errorf("first Work with default Config = %q, want newest enqueue", got)
+	}
+	if got := receive(t, calls); got != "higher priority, first" {
+		t.Errorf("second Work with default Config = %q, want oldest enqueue", got)
 	}
 }
 

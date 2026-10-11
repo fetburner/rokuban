@@ -28,10 +28,16 @@ type Args interface {
 type Spec struct {
 	// Queue is the adapter-independent logical queue name.
 	Queue string
-	// Timeout returns the maximum execution time for Args.
+	// Timeout returns the maximum execution time for Args. Work's context must end with
+	// context.DeadlineExceeded when it expires. If the process dies while Work runs, the
+	// adapter must make the job eligible for redelivery within this duration plus its
+	// recovery grace. The prior invocation stopping and retaining the same job ID are not
+	// guaranteed.
 	Timeout func(Args) time.Duration
 	// MaxAttempts is the maximum number of failures before the adapter stops delivery.
-	// Zero selects the adapter default. Snooze does not consume an attempt.
+	// Failures include non-nil errors, timeout, and process death. Zero selects the
+	// adapter default. Snooze does not consume an attempt; adapters may count attempts
+	// differently.
 	MaxAttempts int
 	// Coalesce asks the adapter to merge pending work with identical intended identity.
 	Coalesce bool
@@ -114,8 +120,12 @@ func SnoozeDelay(err error) (time.Duration, bool) {
 }
 
 // Worker executes one decoded Args value. Its context deadline is Spec.Timeout(args).
+// If the process dies while Work is running, the adapter must make the job eligible for
+// redelivery within that timeout plus its recovery grace; it does not guarantee that the
+// prior invocation has stopped before redelivery.
 type Worker[T Args] interface {
 	// Work processes args and returns nil, ErrDiscard, Snooze, or a retryable error.
+	// The context ends with DeadlineExceeded at the Args Spec timeout.
 	Work(ctx context.Context, args T) error
 }
 

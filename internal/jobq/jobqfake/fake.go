@@ -19,7 +19,9 @@ import (
 const defaultMaxAttempts = 25
 
 // Config exposes deliberate violations of jobq's non-guarantees for adversarial tests.
-// SnoozeDelay overrides the requested delay when non-nil; setting it to zero ignores delay.
+// The zero Config disables coalescing and reverses insertion order regardless of priority.
+// A non-zero Config uses only the options explicitly set. SnoozeDelay overrides the
+// requested delay when non-nil; setting it to zero ignores delay.
 type Config struct {
 	// DuplicateDelivery queues one extra copy before the first Work call finishes.
 	DuplicateDelivery bool
@@ -85,8 +87,14 @@ type Queue struct {
 	stopping   bool
 }
 
-// New creates a fake queue using registry and config.
+// New creates a fake queue using registry and config. The zero Config disables coalescing
+// and ignores insertion order and priority, as tested by TestDefaultConfigDoesNotCoalesce
+// and TestDefaultConfigIgnoresOrderingHints.
 func New(registry *jobq.Registry, config Config) *Queue {
+	if config == (Config{}) {
+		config.NoCoalesce = true
+		config.Reorder = true
+	}
 	if config.SnoozeDelay != nil {
 		delay := *config.SnoozeDelay
 		config.SnoozeDelay = &delay
