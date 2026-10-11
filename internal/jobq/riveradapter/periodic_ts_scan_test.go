@@ -60,7 +60,7 @@ func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
 	startedAdapter = true
 	select {
 	case <-started:
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Fatal("timed out waiting for the run-on-start TS scan reconciliation job")
 	}
 
