@@ -135,7 +135,6 @@ export function usePlayerFrame(
     const onFullscreenChange = () => setIsFullscreen(document.fullscreenElement === (fullscreenContainerRef ?? frameRef).current)
     document.addEventListener('fullscreenchange', onFullscreenChange)
     // 共有コンテナがすでに全画面のときに別のプレイヤーがマウントされることがある。
-    // oxlint-disable-next-line react/set-state-in-effect -- 新しいプレイヤーをブラウザの全画面状態に合わせる。
     onFullscreenChange()
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange)
   }, [frameRef, fullscreenContainerRef])

@@ -213,7 +213,6 @@ export function SearchPage() {
 
     const nextDraft = conditionsToDraft(sourceRule)
     // URL の共有条件をフォームと検索へ反映する外部入力同期。
-    // oxlint-disable-next-line react/set-state-in-effect -- URL 条件をローカルフォームへ同期する
     setDraft(nextDraft)
     setVisibleCount(pageSize)
     const request = buildSearchRequest(nextDraft)
