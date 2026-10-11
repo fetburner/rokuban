@@ -172,20 +172,13 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 	if stopErr != nil {
 		return fmt.Errorf("stopping crashed client: %w", stopErr)
 	}
-	stoppedJob, err := fixture.current.client.JobGet(ctx, jobID)
-	if err != nil {
-		return fmt.Errorf("checking stopped contract job: %w", err)
-	}
-	if stoppedJob.State != rivertype.JobStateRetryable {
-		return fmt.Errorf("stopped contract job state = %q, want %q", stoppedJob.State, rivertype.JobStateRetryable)
-	}
-
-	// Recreate the persisted state left by a process that died during Work. The stopped
-	// claimant has released leadership, so only the resident client's rescuer can redeliver it.
+	// Recreate the persisted state left by a process that died during Work. River may
+	// settle the cancelled job into a different state during shutdown, so replace that
+	// state directly after the claimant has released leadership.
 	staleAt := time.Now().Add(-riverContractRescueAfter - time.Second)
 	command, err := fixture.pool.Exec(ctx,
 		//nolint:gocritic // Invariant 14 permits River SQL only to create stale rescue state in this test.
-		"UPDATE river_job SET state = 'running', attempted_at = $1 WHERE id = $2 AND state = 'retryable'",
+		"UPDATE river_job SET state = 'running', attempted_at = $1 WHERE id = $2",
 		staleAt, jobID)
 	if err != nil {
 		return fmt.Errorf("creating stale running state for rescue contract: %w", err)
