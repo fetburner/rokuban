@@ -128,12 +128,11 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 // 「実行中を除いた状態集合」で代用はできない（river@v0.47.0 の
 // requiredV3states）。docs/data/series.md §8。
 func TestLabelRuleReconcileArgs_NotUnique(t *testing.T) {
-	opts := jobs.LabelRuleReconcileArgs{}.InsertOpts()
-	if opts.Queue != "cleanup" {
-		t.Errorf("queue = %q, want %q", opts.Queue, "cleanup")
+	spec := jobs.LabelRuleReconcileArgs{}.Spec()
+	if spec.Queue != "cleanup" {
+		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "cleanup")
 	}
-	if opts.UniqueOpts.ByArgs || len(opts.UniqueOpts.ByState) != 0 {
-		t.Errorf("UniqueOpts = %+v, want the zero value (a second edit must not be dropped)",
-			opts.UniqueOpts)
+	if spec.Coalesce {
+		t.Error("Spec().Coalesce = true, want false (a second edit must not be dropped)")
 	}
 }

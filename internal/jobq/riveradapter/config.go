@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
@@ -171,7 +172,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 		jobs.DefaultQueue: {MaxWorkers: 100},
 		jobs.IngestQueue:  {MaxWorkers: ingestConcurrency},
 		// 全量同期が重ならないよう 1 本に絞る。tuner_sync も同じキューを使う
-		// （どちらも使い捨てプロジェクションの全量同期。TunerSyncArgs.InsertOpts 参照）。
+		// （どちらも使い捨てプロジェクションの全量同期。TunerSyncArgs.Spec 参照）。
 		jobs.EpgQueue: {MaxWorkers: 1},
 		// サイト単位の排他は UniqueOpts が担うので、こちらも複数ワーカーは要らない。
 		jobs.RulerQueue: {MaxWorkers: 1},
@@ -414,7 +415,9 @@ func BuildConfig(workers *river.Workers, cfg Config) (*river.Config, error) {
 		RescueStuckJobsAfter: cfg.RescueStuckJobsAfter,
 	}
 	configureOnceRiver(riverCfg, cfg.Once, physicalQueues)
-	configurePeriodicJobs(riverCfg, cfg)
+	if err := configurePeriodicJobs(riverCfg, cfg); err != nil {
+		return nil, fmt.Errorf("configuring periodic jobs: %w", err)
+	}
 	return riverCfg, nil
 }
 
@@ -506,7 +509,7 @@ func configureOnceQueues(cfg Config, queues map[string]river.QueueConfig) error 
 // ここで初めて論理名から物理名（`<base>_<site>`）に展開する（jobs.PhysicalQueueName）。
 // site 単位のキューは BoundSites の要素ごとに 1 つずつ展開する ---
 // **subscribe 側だけを N 回呼ぶ**（issue #532 の「罠」。insert 側
-// （各 JobArgs.InsertOpts）は 1 ジョブの args.Site から物理名が 1 つに決まるので
+// （各 Args の Spec）は 1 ジョブの args.Site から物理名が 1 つに決まるので
 // N 化しない）。
 func qualifyRiverQueues(queues map[string]river.QueueConfig, boundSites []string) map[string]river.QueueConfig {
 	if len(boundSites) == 0 {
@@ -570,12 +573,14 @@ func configureOnceRiver(riverCfg *river.Config, once *OnceGate, physicalQueues m
 }
 
 // configurePeriodicJobs は設定された定期ジョブを River 設定へ登録する。
-func configurePeriodicJobs(riverCfg *river.Config, cfg Config) {
+func configurePeriodicJobs(riverCfg *river.Config, cfg Config) error {
 	if !cfg.PeriodicJobs {
-		return
+		return nil
 	}
-	configureSitePeriodicJobs(riverCfg, cfg)
-	configureGlobalPeriodicJobs(riverCfg, cfg)
+	if err := configureSitePeriodicJobs(riverCfg, cfg); err != nil {
+		return err
+	}
+	return configureGlobalPeriodicJobs(riverCfg, cfg)
 }
 
 // configureSitePeriodicJobs は BoundSites ごとのサイト単位の定期ジョブを登録する。
@@ -587,9 +592,9 @@ func configurePeriodicJobs(riverCfg *river.Config, cfg Config) {
 // 渡していたので、独立フィールドは冗長でしかなかった）。0 サイト束縛
 // （BoundSites が空）なら何も登録しない --- 中央プロセスが site 単位の
 // 定期パスを持つ理由がない。
-func configureSitePeriodicJobs(riverCfg *river.Config, cfg Config) {
+func configureSitePeriodicJobs(riverCfg *river.Config, cfg Config) error {
 	if len(cfg.BoundSites) == 0 {
-		return
+		return nil
 	}
 	epgSyncInterval := cfg.EpgSyncInterval
 	if epgSyncInterval <= 0 {
@@ -612,32 +617,32 @@ func configureSitePeriodicJobs(riverCfg *river.Config, cfg Config) {
 		recordSweepInterval = defaultRecordSweepInterval
 	}
 	for _, site := range cfg.BoundSites {
-		site := site
-		riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs,
-			river.NewPeriodicJob(river.PeriodicInterval(epgSyncInterval), func() (river.JobArgs, *river.InsertOpts) {
-				return jobs.EpgSyncArgs{Site: site}, nil
-			}, &river.PeriodicJobOpts{RunOnStart: true}),
-			river.NewPeriodicJob(river.PeriodicInterval(tunerSyncInterval), func() (river.JobArgs, *river.InsertOpts) {
-				return jobs.TunerSyncArgs{Site: site}, nil
-			}, &river.PeriodicJobOpts{RunOnStart: true}),
-			river.NewPeriodicJob(river.PeriodicInterval(rulerPassInterval), func() (river.JobArgs, *river.InsertOpts) {
-				return jobs.RulerPassArgs{Site: site}, nil
-			}, &river.PeriodicJobOpts{RunOnStart: true}),
-			river.NewPeriodicJob(river.PeriodicInterval(reconcilePassInterval), func() (river.JobArgs, *river.InsertOpts) {
-				return jobs.ReconcilePassArgs{Site: site}, nil
-			}, &river.PeriodicJobOpts{RunOnStart: true}),
-			river.NewPeriodicJob(river.PeriodicInterval(recordSweepInterval), func() (river.JobArgs, *river.InsertOpts) {
-				return jobs.RecordSweepArgs{Site: site}, nil
-			}, &river.PeriodicJobOpts{RunOnStart: true}),
-		)
+		periodicJobs := []struct {
+			interval time.Duration
+			args     jobq.Args
+		}{
+			{epgSyncInterval, jobs.EpgSyncArgs{Site: site}},
+			{tunerSyncInterval, jobs.TunerSyncArgs{Site: site}},
+			{rulerPassInterval, jobs.RulerPassArgs{Site: site}},
+			{reconcilePassInterval, jobs.ReconcilePassArgs{Site: site}},
+			{recordSweepInterval, jobs.RecordSweepArgs{Site: site}},
+		}
+		for _, periodic := range periodicJobs {
+			job, err := newPeriodicJob(periodic.interval, periodic.args, &river.PeriodicJobOpts{RunOnStart: true})
+			if err != nil {
+				return fmt.Errorf("building %s periodic job for site %q: %w", periodic.args.Kind(), site, err)
+			}
+			riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, job)
+		}
 	}
+	return nil
 }
 
 // configureGlobalPeriodicJobs はサイトに依存しない定期ジョブを登録する。
-func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg Config) {
-	appendPeriodic := func(enabled bool, interval, defaultInterval time.Duration, args river.JobArgs) {
+func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg Config) error {
+	appendPeriodic := func(enabled bool, interval, defaultInterval time.Duration, args jobq.Args) error {
 		if !enabled {
-			return
+			return nil
 		}
 		if interval <= 0 {
 			interval = defaultInterval
@@ -646,20 +651,53 @@ func configureGlobalPeriodicJobs(riverCfg *river.Config, cfg Config) {
 		// （元は CatalogExport 単独の判断。EncodeReconcile / DeleteReconcile /
 		// StorageSync も同じ RunOnStart: true を共有しているが、それぞれの間隔での
 		// 「起動直後の 1 回」が同程度に有用かは個別に検証していない）。
-		riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, river.NewPeriodicJob(
-			river.PeriodicInterval(interval),
-			func() (river.JobArgs, *river.InsertOpts) { return args, nil },
-			&river.PeriodicJobOpts{RunOnStart: true},
-		))
+		job, err := newPeriodicJob(interval, args, &river.PeriodicJobOpts{RunOnStart: true})
+		if err != nil {
+			return fmt.Errorf("building %s periodic job: %w", args.Kind(), err)
+		}
+		riverCfg.PeriodicJobs = append(riverCfg.PeriodicJobs, job)
+		return nil
 	}
-	appendPeriodic(cfg.CatalogExport, cfg.CatalogExportInterval, defaultCatalogExportInterval, jobs.CatalogExportArgs{})
-	appendPeriodic(cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{})
-	appendPeriodic(cfg.LabelRuleReconcile, cfg.LabelRuleReconcileInterval, defaultLabelRuleReconcileInterval, jobs.LabelRuleReconcileArgs{})
-	appendPeriodic(cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{})
-	appendPeriodic(cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{})
-	appendPeriodic(cfg.TSScanReconcile, 0, defaultTSScanReconcileInterval, tsscan.ReconcileArgs{})
-	appendPeriodic(cfg.CMDetectReconcile, 0, defaultCMDetectReconcileInterval, jobs.CMDetectReconcileArgs{})
-	appendPeriodic(cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{})
+	periodicJobs := []struct {
+		enabled         bool
+		interval        time.Duration
+		defaultInterval time.Duration
+		args            jobq.Args
+	}{
+		{cfg.CatalogExport, cfg.CatalogExportInterval, defaultCatalogExportInterval, jobs.CatalogExportArgs{}},
+		{cfg.DeleteReconcile, cfg.DeleteReconcileInterval, defaultDeleteReconcileInterval, jobs.DeleteReconcileArgs{}},
+		{cfg.LabelRuleReconcile, cfg.LabelRuleReconcileInterval, defaultLabelRuleReconcileInterval, jobs.LabelRuleReconcileArgs{}},
+		{cfg.EncodeReconcile, cfg.EncodeReconcileInterval, defaultEncodeReconcileInterval, jobs.EncodeReconcileArgs{}},
+		{cfg.ThumbnailReconcile, cfg.ThumbnailReconcileInterval, defaultThumbnailReconcileInterval, jobs.ThumbnailReconcileArgs{}},
+		{cfg.TSScanReconcile, 0, defaultTSScanReconcileInterval, tsscan.ReconcileArgs{}},
+		{cfg.CMDetectReconcile, 0, defaultCMDetectReconcileInterval, jobs.CMDetectReconcileArgs{}},
+		{cfg.StorageSync, cfg.StorageSyncInterval, defaultStorageSyncInterval, jobs.StorageSyncArgs{}},
+	}
+	for _, periodic := range periodicJobs {
+		if err := appendPeriodic(periodic.enabled, periodic.interval, periodic.defaultInterval, periodic.args); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// newPeriodicJob maps the jobq specification to River options when the configuration
+// is built. Args no longer carry River options, so a periodic callback that returned
+// nil options would insert into River's default queue without unique/coalescing options
+// (TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces).
+func newPeriodicJob(interval time.Duration, args jobq.Args, opts *river.PeriodicJobOpts) (*river.PeriodicJob, error) {
+	riverArgs, ok := args.(river.JobArgs)
+	if !ok {
+		return nil, fmt.Errorf("%q args %T do not implement River JobArgs", args.Kind(), args)
+	}
+	insertOpts, err := makeInsertOpts(args)
+	if err != nil {
+		return nil, err
+	}
+	return river.NewPeriodicJob(river.PeriodicInterval(interval), func() (river.JobArgs, *river.InsertOpts) {
+		options := insertOpts
+		return riverArgs, &options
+	}, opts), nil
 }
 
 func sortedQueueNames(m map[string]river.QueueConfig) []string {

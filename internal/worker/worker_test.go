@@ -367,7 +367,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, EpgSyncArgs{Site: testSite}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, EpgSyncArgs{Site: testSite}); err != nil {
 		t.Fatalf("inserting epg_sync job: %v", err)
 	}
 
@@ -425,13 +425,13 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	}
 
 	args := EpgSyncArgs{Site: "default"}
-	first, err := client.Insert(ctx, args, nil)
+	first, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
 
 	// 未完了のうちは重複として弾かれる（同時実行を防ぐ）
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 		t.Fatalf("completed epg_sync state = %q, want %q", result.Job.State, rivertype.JobStateCompleted)
 	}
 
-	again, err := client.Insert(ctx, args, nil)
+	again, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting after completion: %v", err)
 	}
@@ -691,7 +691,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RulerPassArgs{Site: site}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("inserting ruler_pass job: %v", err)
 	}
 
@@ -761,10 +761,10 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 	}
 
 	args := RulerPassArgs{Site: "default"}
-	if _, err := client.Insert(ctx, args, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}
@@ -956,7 +956,7 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite は issue #532 の
 // 「含むもの」2 を固定する: BoundSites に 2 site を渡すと、site 単位のキュー
 // （ingest/epg/reconciler/watcher）は物理名（`<base>_<site>`）で site ごとに
-// **両方**購読される --- insert 側（各 JobArgs.InsertOpts）は 1 ジョブの
+// **両方**購読される --- insert 側（各 Args.Spec と riveradapter.makeInsertOpts）は 1 ジョブの
 // args.Site から物理名が 1 つに決まるので変わらないが、subscribe 側
 // （BuildConfig の river.Config.Queues）だけが N 回展開される
 // （qualifyRiverQueues のコメント「subscribe 側だけ N 回呼ぶ」）。

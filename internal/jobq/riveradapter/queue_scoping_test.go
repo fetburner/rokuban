@@ -1,4 +1,4 @@
-package jobs_test
+package riveradapter_test
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -85,6 +86,18 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 		clientCancel()
 		<-client.Stopped()
 	}()
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
+	findQueueJob := func(kind, queue string) *rivertype.JobRow {
+		t.Helper()
+		result, err := client.JobList(ctx, river.NewJobListParams().Kinds(kind).Queues(queue))
+		if err != nil {
+			t.Fatalf("listing %s jobs in %s: %v", kind, queue, err)
+		}
+		if len(result.Jobs) != 1 {
+			t.Fatalf("jobs for %s in %s = %d, want 1", kind, queue, len(result.Jobs))
+		}
+		return result.Jobs[0]
+	}
 
 	// 4 つの site 単位キューそれぞれについて、tokyo 向け（自分の site。処理
 	// されるはず）と takamatsu 向け（他 site。available のまま残るはず）の
@@ -92,8 +105,8 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	// 何も主張しない。issue #185 のレビュー指摘）。
 	type siteBoundCase struct {
 		name           string
-		tokyoArgs      river.JobArgs
-		takamatsuArgs  river.JobArgs
+		tokyoArgs      jobq.Args
+		takamatsuArgs  jobq.Args
 		wantTokyoQueue string
 		wantOtherQueue string
 	}
@@ -136,26 +149,26 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	var results []inserted
 
 	for _, c := range cases {
-		tokyoRes, err := client.Insert(ctx, c.tokyoArgs, nil)
-		if err != nil {
-			t.Fatalf("[%s] inserting tokyo job: %v", c.name, err)
+		if _, err := enqueuer.Enqueue(ctx, c.tokyoArgs); err != nil {
+			t.Fatalf("[%s] enqueueing tokyo job: %v", c.name, err)
 		}
-		if tokyoRes.Job.Queue != c.wantTokyoQueue {
-			t.Fatalf("[%s] tokyo job queue = %q, want %q", c.name, tokyoRes.Job.Queue, c.wantTokyoQueue)
+		tokyoJob := findQueueJob(c.tokyoArgs.Kind(), c.wantTokyoQueue)
+		if tokyoJob.Queue != c.wantTokyoQueue {
+			t.Fatalf("[%s] tokyo job queue = %q, want %q", c.name, tokyoJob.Queue, c.wantTokyoQueue)
 		}
 
-		otherRes, err := client.Insert(ctx, c.takamatsuArgs, nil)
-		if err != nil {
-			t.Fatalf("[%s] inserting takamatsu job: %v", c.name, err)
+		if _, err := enqueuer.Enqueue(ctx, c.takamatsuArgs); err != nil {
+			t.Fatalf("[%s] enqueueing takamatsu job: %v", c.name, err)
 		}
-		if otherRes.Job.Queue != c.wantOtherQueue {
-			t.Fatalf("[%s] takamatsu job queue = %q, want %q", c.name, otherRes.Job.Queue, c.wantOtherQueue)
+		otherJob := findQueueJob(c.takamatsuArgs.Kind(), c.wantOtherQueue)
+		if otherJob.Queue != c.wantOtherQueue {
+			t.Fatalf("[%s] takamatsu job queue = %q, want %q", c.name, otherJob.Queue, c.wantOtherQueue)
 		}
 
 		results = append(results, inserted{
 			name:    c.name,
-			tokyoID: tokyoRes.Job.ID,
-			otherID: otherRes.Job.ID,
+			tokyoID: tokyoJob.ID,
+			otherID: otherJob.ID,
 		})
 	}
 
@@ -227,7 +240,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, client interface {
 //
 // # このテストが検出すべき変異
 //
-// `RiverInsertOpts` の ByQueue を `false` に戻す変異。
+// adapter の Spec projection の ByQueue を `false` に戻す変異。
 // この変異を注入すると、このテストの最後のアサーション
 // （`UniqueSkippedAsDuplicate == false` を期待する）が
 // `true` に反転して落ちる。実際に注入して確認済み（PR 本文の失敗出力を参照）。
@@ -239,18 +252,21 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 
 	args := jobs.IngestJobArgs{Site: "tokyo", RecordID: "rec-1"}
 
 	// 1. 「デプロイ前」の旧キュー・旧一意性設定（ByQueue なし）を明示的に再現する
 	//    ---  client.Insert の第 3 引数（明示 InsertOpts）は
-	//    JobArgsWithInsertOpts（IngestJobArgs.InsertOpts()）を上書きするので、
+	//    adapter の makeInsertOpts（IngestJobArgs.Spec() 由来）を上書きするので、
 	//    ここだけ意図的に旧形（`Queue: "ingest"`、ByQueue 無し）を強制する。
 	oldStyleOpts := &river.InsertOpts{
 		Queue: "ingest",
 		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: jobs.PendingJobStates(),
+			ByArgs: true,
+			ByState: []rivertype.JobState{
+				"available", "pending", "retryable", "running", "scheduled",
+			},
 		},
 	}
 	oldRes, err := client.Insert(ctx, args, oldStyleOpts)
@@ -265,11 +281,10 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	}
 
 	// 2. 「デプロイ後」に同じ record を record_sweep が再投入する状況を再現する
-	//    --- 今の IngestJobArgs.InsertOpts()（Queue: PhysicalQueueName で
-	//    "ingest_tokyo"、Spec.Coalesce の投影）で同じ args を Insert する。
-	newRes, err := client.Insert(ctx, args, nil)
+	//    --- adapter が Spec から `ingest_tokyo` と Coalesce を投影して投入する。
+	newRes, err := enqueuer.Enqueue(ctx, args)
 	if err != nil {
-		t.Fatalf("inserting new-style job: %v", err)
+		t.Fatalf("enqueueing new-style job: %v", err)
 	}
 
 	// River projection の ByQueue が効いていれば、旧キューの行があっても
@@ -280,15 +295,23 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	// （Queue="ingest" のまま）を返す。Queue の比較を先に書くと「新しい行が
 	// 作られたのに Queue が違う」という誤った理解を招く失敗メッセージになる
 	// （実際に踏んだ。旧行に合流したので Queue も旧行のものが返っていた）。
-	if newRes.UniqueSkippedAsDuplicate {
+	if newRes.Coalesced {
 		t.Fatal("new-style insert was skipped as a duplicate of the stale old-queue row --- " +
 			"River projection omitted ByQueue; the record would never be re-ingested " +
-			"（internal/jobs.RiverInsertOpts の Spec.Coalesce projection を確認する）")
+			"（riveradapter の Spec.Coalesce projection を確認する）")
 	}
-	if newRes.Job.ID == oldRes.Job.ID {
+	newRows, err := client.JobList(ctx, river.NewJobListParams().Kinds("ingest").Queues("ingest_tokyo"))
+	if err != nil {
+		t.Fatalf("listing new-style job: %v", err)
+	}
+	if len(newRows.Jobs) != 1 {
+		t.Fatalf("new-style jobs in ingest_tokyo = %d, want 1", len(newRows.Jobs))
+	}
+	newJob := newRows.Jobs[0]
+	if newJob.ID == oldRes.Job.ID {
 		t.Fatal("new-style insert reused the old job's row instead of creating a new one")
 	}
-	if newRes.Job.Queue != "ingest_tokyo" {
-		t.Fatalf("new-style job queue = %q, want %q", newRes.Job.Queue, "ingest_tokyo")
+	if newJob.Queue != "ingest_tokyo" {
+		t.Fatalf("new-style job queue = %q, want %q", newJob.Queue, "ingest_tokyo")
 	}
 }

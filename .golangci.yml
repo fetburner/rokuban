@@ -52,16 +52,18 @@ linters:
               desc: api role must not execute external processes
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
-        enqueue-via-jobq:
-          # 投入側は jobq.Enqueuer 経由にする。River への直結は adapter だけが持つ。
+        river-adapter-only:
+          # River の型は runtime adapter の境界に閉じ込める。本番コードだけを判定する。
+          # テストは River の公開 API を使って実挙動を確認する。特に deploy/k8s の
+          # ScaledJob SQL テストは rivertype の状態名と実スキーマを照合する。
           list-mode: lax
           files:
-            - "${config-path}/internal/watcher/**"
-            - "${config-path}/cmd/rokuban/enqueue.go"
+            - "${config-path}/**"
+            - "!${config-path}/internal/jobq/riveradapter/**"
             - "!$test"
           deny:
             - pkg: github.com/riverqueue/river
-              desc: enqueue through jobq.Enqueuer, not River directly
+              desc: River imports are limited to internal/jobq/riveradapter
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
           # ツールの存在だけを検証する。テストの子プロセス起動は対象外。

@@ -821,15 +821,15 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 }
 
 func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
-	opts := EncodeJobArgs{}.InsertOpts()
-	if opts.Queue != encodeQueue {
-		t.Errorf("Queue = %q, want %q", opts.Queue, encodeQueue)
+	spec := EncodeJobArgs{}.Spec()
+	if spec.Queue != "encode" {
+		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
 	}
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("UniqueOpts.ByArgs should be true")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
-	if opts.MaxAttempts != 26 {
-		t.Errorf("MaxAttempts = %d, want 26 (greater than the domain limit 25)", opts.MaxAttempts)
+	if spec.MaxAttempts != 26 {
+		t.Errorf("Spec().MaxAttempts = %d, want 26 (greater than the domain limit 25)", spec.MaxAttempts)
 	}
 }
 
@@ -844,15 +844,15 @@ func TestEncodeJobArgs_RiverIdentityIncludesTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	first, err := client.Insert(ctx, EncodeJobArgs{
+	first, err := insertJobWithSpec(ctx, client, EncodeJobArgs{
 		RecordingID: recordingID, Profile: "h264", Timeout: time.Hour,
-	}, nil)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := client.Insert(ctx, EncodeJobArgs{
+	second, err := insertJobWithSpec(ctx, client, EncodeJobArgs{
 		RecordingID: recordingID, Profile: "h264", Timeout: 3 * time.Hour,
-	}, nil)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -866,15 +866,12 @@ func TestEncodeJobArgs_RiverIdentityIncludesTimeout(t *testing.T) {
 
 // EncodeRebuildArgs は encode キューと pending 状態での ByArgs 一意化を使う。
 func TestEncodeRebuildArgs_InsertOptsQueue(t *testing.T) {
-	opts := EncodeRebuildArgs{}.InsertOpts()
-	if opts.Queue != "encode" {
-		t.Errorf("Queue = %q, want encode", opts.Queue)
+	spec := EncodeRebuildArgs{}.Spec()
+	if spec.Queue != "encode" {
+		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
 	}
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("UniqueOpts.ByArgs should be true")
-	}
-	if slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateCompleted) {
-		t.Error("UniqueOpts.ByState must not include completed")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
 }
 

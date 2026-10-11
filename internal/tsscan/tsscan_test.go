@@ -4,8 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
@@ -35,25 +33,6 @@ func TestArgsSpec(t *testing.T) {
 			if spec.MaxAttempts != 0 || !spec.Coalesce || spec.Priority != 1 {
 				t.Errorf("Spec() attempts/coalesce/priority = %d/%v/%d, want 0/true/1",
 					spec.MaxAttempts, spec.Coalesce, spec.Priority)
-			}
-		})
-	}
-}
-
-func TestArgsLegacyRiverInsertOptsPreserveTSScanQueueAndCoalescing(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		opts river.InsertOpts
-	}{
-		{"scan", ScanArgs{}.InsertOpts()},
-		{"reconcile", ReconcileArgs{}.InsertOpts()},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.opts.Queue != "ts_scan" {
-				t.Errorf("InsertOpts().Queue = %q, want literal %q", tt.opts.Queue, "ts_scan")
-			}
-			if !tt.opts.UniqueOpts.ByArgs || !tt.opts.UniqueOpts.ByQueue || len(tt.opts.UniqueOpts.ByState) == 0 {
-				t.Errorf("InsertOpts().UniqueOpts = %+v, want argument and queue coalescing over unfinished states", tt.opts.UniqueOpts)
 			}
 		})
 	}

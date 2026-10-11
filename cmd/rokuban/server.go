@@ -13,9 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
 
@@ -102,7 +100,7 @@ const (
 	hardStopGrace = 10 * time.Second
 )
 
-// shutdownBudget は `riverClient.Stop` を待つ上限を返す。**soft stop の猶予より
+// shutdownBudget は jobq runner の Stop を待つ上限を返す。**soft stop の猶予より
 // 必ず長い。**
 //
 // 短いと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**
@@ -128,7 +126,7 @@ func shutdownBudget(softStopTimeout time.Duration) time.Duration {
 	return softStopTimeout + hardStopGrace
 }
 
-// stopRiverForShutdown は常駐 worker の停止で `riverClient.Stop` に与える締切を
+// stopRiverForShutdown は常駐 worker の停止で runner の Stop に与える締切を
 // 決めて呼ぶ。
 //
 // **締切を固定値にしない**ことがこの関数の全部である。固定だと、
@@ -364,37 +362,42 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// watcher の両方から同じ Client を使う。
 	webhookClient := webhook.New(cfg.Webhook)
 
-	riverClient, err := buildRiverClient(cfg, roles, bound, workerCfg, pool, webhookClient)
-	if err != nil {
-		return err
-	}
-
+	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		// worker ロールのガードの内側に置く。River の Subscribe は「ジョブを
-		// 実行しないクライアント」に対して panic するので、insert-only の
-		// クライアント（watcher 単独）や nil のクライアントに対して呼ぶと
-		// 起動エラーではなく panic になる。いまは validateOnceMode がロールを
-		// worker 単独に限っているので到達しないが、その検査の理由（常駐する役を
-		// 巻き込まない）はクライアントの種類とは無関係なので、緩めたときに
-		// ここが踏まれる形にしない。
-		var onceEvents <-chan *river.Event
+		workerAdapter, err = buildWorkerAdapter(cfg, bound, workerCfg, pool, webhookClient)
+		if err != nil {
+			return err
+		}
+
+		var onceEvents <-chan struct{}
 		if onceGate != nil {
 			var unsubscribe func()
-			onceEvents, unsubscribe = riveradapter.SubscribeOnceEvents(riverClient)
+			onceEvents, unsubscribe = riveradapter.SubscribeOnceEvents(workerAdapter)
 			defer unsubscribe()
 		}
 
-		if startErr := riverClient.Start(ctx); startErr != nil {
-			return fmt.Errorf("starting river client: %w", startErr)
+		if startErr := workerAdapter.Start(ctx); startErr != nil {
+			return fmt.Errorf("starting job queue adapter: %w", startErr)
 		}
-		defer func() { stopRiverForShutdown(riverClient.Stop, softStopTimeout) }()
+		defer func() { stopRiverForShutdown(workerAdapter.Stop, softStopTimeout) }()
 
 		if onceGate != nil {
-			superviseOnceMode(egCtx, ctx, eg, onceGate, onceIdleTimeout, onceEvents, riverClient.Stop, stop)
+			superviseOnceMode(egCtx, ctx, eg, onceGate, onceIdleTimeout, onceEvents, workerAdapter.Stop, stop)
 		}
 	}
 
-	superviseSingletons(egCtx, roles, bound, eg, pool, riverClient, webhookClient)
+	var watcherEnqueuer jobq.Enqueuer
+	if slices.Contains(roles, "watcher") {
+		if workerAdapter != nil {
+			watcherEnqueuer = workerAdapter
+		} else {
+			watcherEnqueuer, err = riveradapter.NewInsertOnlyEnqueuer(pool)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	superviseSingletons(egCtx, roles, bound, eg, pool, watcherEnqueuer, webhookClient)
 
 	eg.Go(func() error {
 		<-egCtx.Done()
@@ -560,20 +563,6 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	return newProductionHTTPServer(cfg.Server.Listen, api.NewRouter(routerCfg)), nil
 }
 
-// buildRiverClient は roles に応じた River クライアントを構築する。
-// worker が無いプロセスにはフルのワーカー群を登録しない。worker がある場合だけ
-// encode / thumbnail のツール検査とフルのワーカー群の登録を行う。
-func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
-	switch resolveRiverClientKind(roles) {
-	case riverClientFull:
-		return buildFullRiverClient(cfg, bound, clientCfg, pool, webhookClient)
-	case riverClientInsertOnly:
-		return riveradapter.NewInsertOnlyClient(pool)
-	default:
-		return nil, nil
-	}
-}
-
 // newWorkerClientConfig は worker ロールの River 設定を組み立てる。
 //
 // **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
@@ -606,10 +595,10 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 	}
 }
 
-// buildFullRiverClient は worker ロール用のワーカー群と River クライアントを構築する。
+// buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
+func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*riveradapter.Adapter, error) {
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -655,12 +644,12 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, clientCfg)
+	adapter, err := riveradapter.NewAdapter(pool, workers, clientCfg)
 	if err != nil {
 		return nil, err
 	}
-	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
-	return client, nil
+	deferred.Set(adapter)
+	return adapter, nil
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
@@ -680,7 +669,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 // `stopRiver(context.WithoutCancel(ctx))` で ctx のキャンセルを外しており、
 // 値も見ていないため。stopOnceProcess がキャンセルを外すのをやめたら、
 // signalCtx でなければならない（egCtx は stop() が連鎖して即座に切れる）。
-func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *riveradapter.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
+func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *riveradapter.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan struct{}, stopRiver func(context.Context) error, stop context.CancelFunc) {
 	eg.Go(func() error {
 		outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
 		slog.Info("worker: once mode finished", "outcome", outcome.String())
@@ -691,7 +680,7 @@ func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onc
 
 // superviseSingletons はシングルトンロールをサイトごとの監督 goroutine に登録する。
 // 各サイトに独立した mirakc クライアントと advisory lock を割り当てる。
-func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, riverClient *river.Client[pgx5.Tx], webhookClient *webhook.Client) {
+func superviseSingletons(egCtx context.Context, roles []string, bound []config.MirakcSite, eg *errgroup.Group, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, webhookClient *webhook.Client) {
 	for _, roleName := range roles {
 		if !slices.Contains(singletonRoles, roleName) {
 			continue
@@ -700,7 +689,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pool, riveradapter.NewLegacyEnqueuer(riverClient), webhookClient)
+				w := watcher.New(site.Site, mc, pool, enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}
@@ -741,42 +730,6 @@ func resolveRoles(cmd *cobra.Command) ([]string, error) {
 		deduped = append(deduped, r)
 	}
 	return deduped, nil
-}
-
-// riverClientKind は roles から River クライアントの組み立て方を分類する。
-type riverClientKind int
-
-const (
-	// riverClientNone は worker も watcher も無いプロセス。River クライアントは
-	// 作らない（例: api 単独。api は専用の insert-only クライアントを別途持つ）。
-	riverClientNone riverClientKind = iota
-	// riverClientFull は worker ロールがあるプロセス。worker.NewWorkers の
-	// フルのワーカー群（EncodeWorker/ThumbnailWorker を含む）を登録し、
-	// Start して実際にジョブを実行する。
-	riverClientFull
-	// riverClientInsertOnly は watcher ロールだけがあり worker ロールが無い
-	// プロセス。ingest ジョブの投入（InsertTx）にしか使わないので、
-	// riveradapter.NewInsertOnlyClient と同じ最小構成にする --- ffmpeg/ffprobe に
-	// 依存するワーカーを登録・実行しない（不変条件 4、issue #113）。
-	riverClientInsertOnly
-)
-
-// resolveRiverClientKind はロール集合から riverClientKind を一意に決める。
-//
-// worker ロールが最優先される: worker と watcher を同一プロセスで動かす
-// 構成（monolith / --all）では、watcher の ingest ジョブ投入と worker の
-// ジョブ実行を同じ River クライアントで共有する（既存の挙動を変えない）。
-// worker ロールが無く watcher だけの場合にのみ riverClientInsertOnly を返し、
-// フルのワーカー群が登録されるのを防ぐ。
-func resolveRiverClientKind(roles []string) riverClientKind {
-	switch {
-	case slices.Contains(roles, "worker"):
-		return riverClientFull
-	case slices.Contains(roles, "watcher"):
-		return riverClientInsertOnly
-	default:
-		return riverClientNone
-	}
 }
 
 // watcherLockName は watcher ロールの pg_advisory_lock キー（role.RunSingleton

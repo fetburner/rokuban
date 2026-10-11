@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/riverqueue/river"
-
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -37,17 +35,12 @@ func (ScanArgs) Spec() jobq.Spec {
 	}
 }
 
-// InsertOpts routes legacy direct River inserts to the scan queue and merges pending work by recording.
-func (ScanArgs) InsertOpts() river.InsertOpts {
-	return jobs.RiverInsertOpts((ScanArgs{}).Spec(), jobs.TSScanQueue)
-}
-
 // ReconcileArgs requests one page of original assets that need a scan.
 type ReconcileArgs struct {
 	AfterRecordingID int64 `json:"after_recording_id,omitempty"`
 }
 
-// Kind returns the River job kind for the scan reconciliation pass.
+// Kind returns the job kind for the scan reconciliation pass.
 func (ReconcileArgs) Kind() string { return "ts_scan_reconcile" }
 
 // Spec returns the scan queue, five-minute timeout, default retry limit, and coalescing hint.
@@ -62,16 +55,9 @@ func (ReconcileArgs) Spec() jobq.Spec {
 	}
 }
 
-// InsertOpts routes legacy direct River inserts to the scan queue and merges pending work for the same page.
-func (ReconcileArgs) InsertOpts() river.InsertOpts {
-	return jobs.RiverInsertOpts((ReconcileArgs{}).Spec(), jobs.TSScanQueue)
-}
-
 var (
-	_ jobq.Args                   = ScanArgs{}
-	_ jobq.Args                   = ReconcileArgs{}
-	_ river.JobArgsWithInsertOpts = ScanArgs{}
-	_ river.JobArgsWithInsertOpts = ReconcileArgs{}
+	_ jobq.Args = ScanArgs{}
+	_ jobq.Args = ReconcileArgs{}
 )
 
 // EnqueueScan inserts a best-effort hint for the committed original of recordingID.

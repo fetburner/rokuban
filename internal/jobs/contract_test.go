@@ -1,24 +1,13 @@
 package jobs
 
 import (
-	"reflect"
 	"testing"
 	"time"
-
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
-func TestJobArgsSpecAndRiverProjection(t *testing.T) {
-	pending := []rivertype.JobState{
-		rivertype.JobStateAvailable,
-		rivertype.JobStatePending,
-		rivertype.JobStateRetryable,
-		rivertype.JobStateRunning,
-		rivertype.JobStateScheduled,
-	}
+func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 	tests := []struct {
 		name          string
 		args          jobq.Args
@@ -76,26 +65,12 @@ func TestJobArgsSpecAndRiverProjection(t *testing.T) {
 				t.Errorf("Spec().Priority = %d, want literal %d", spec.Priority, tt.priority)
 			}
 
-			argsWithOpts, ok := tt.args.(river.JobArgsWithInsertOpts)
-			if !ok {
-				t.Fatal("job args do not implement river.JobArgsWithInsertOpts")
+			gotPhysicalQueue, err := PhysicalQueueFor(tt.args)
+			if err != nil {
+				t.Fatalf("PhysicalQueueFor(args): %v", err)
 			}
-			got := argsWithOpts.InsertOpts()
-			if got.Queue != tt.physicalQueue {
-				t.Errorf("InsertOpts().Queue = %q, want literal %q", got.Queue, tt.physicalQueue)
-			}
-			if got.MaxAttempts != tt.maxAttempts {
-				t.Errorf("InsertOpts().MaxAttempts = %d, want %d", got.MaxAttempts, tt.maxAttempts)
-			}
-			if got.Priority != tt.priority {
-				t.Errorf("InsertOpts().Priority = %d, want %d", got.Priority, tt.priority)
-			}
-			wantUnique := river.UniqueOpts{}
-			if tt.coalesce {
-				wantUnique = river.UniqueOpts{ByArgs: true, ByQueue: true, ByState: pending}
-			}
-			if !reflect.DeepEqual(got.UniqueOpts, wantUnique) {
-				t.Errorf("InsertOpts().UniqueOpts = %#v, want %#v", got.UniqueOpts, wantUnique)
+			if gotPhysicalQueue != tt.physicalQueue {
+				t.Errorf("PhysicalQueueFor(args) = %q, want literal %q", gotPhysicalQueue, tt.physicalQueue)
 			}
 		})
 	}

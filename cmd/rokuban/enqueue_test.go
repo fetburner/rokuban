@@ -275,7 +275,7 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 	}
 
 	job := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
-	// cleanup キューに乗ること（DeleteReconcileArgs.InsertOpts）。KEDA の
+	// cleanup キューに乗ること（DeleteReconcileArgs.Spec）。KEDA の
 	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても
 	// 誰も起きない。
 	if job.Queue != "cleanup" {

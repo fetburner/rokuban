@@ -117,7 +117,7 @@ func (g *OnceGate) Middleware() rivertype.Middleware {
 // middleware から観測できるジョブだけが終了の契機になる）。
 //
 // **claim 済みならタイムアウトを適用しない**（型の説明参照）。
-func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <-chan *river.Event) OnceOutcome {
+func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <-chan struct{}) OnceOutcome {
 	timer := time.NewTimer(idleTimeout)
 	defer timer.Stop()
 	return g.wait(ctx, timer.C, events)
@@ -131,7 +131,7 @@ func (g *OnceGate) Wait(ctx context.Context, idleTimeout time.Duration, events <
 // まだ発火していないので、この分岐に入らない）。発火済みのチャネルを渡せる
 // ようにして、下の再確認が実際に効いていることを
 // TestOnceGate_IdleTimeoutDoesNotCutRunningJob が固定する。
-func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-chan *river.Event) OnceOutcome {
+func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-chan struct{}) OnceOutcome {
 	for {
 		select {
 		case <-ctx.Done():
@@ -181,7 +181,7 @@ func (g *OnceGate) wait(ctx context.Context, timeout <-chan time.Time, events <-
 }
 
 // waitDone は claim 済みのジョブが Work を抜けるまで待つ（タイムアウトなし）。
-func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) OnceOutcome {
+func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOutcome {
 	for {
 		select {
 		case <-ctx.Done():
@@ -199,7 +199,8 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) Onc
 }
 
 // SubscribeOnceEvents は 1 件消化モードが「ジョブが executor を出た」ことを
-// 観測するための購読を張る。返す関数で購読を解除する。
+// 観測するシグナル購読を張る。返す関数で購読を解除する。River の event 型は
+// この adapter の外へ出さない。
 //
 // **middleware だけでは足りない。** River の executor は、登録されていない
 // kind のジョブに対して WorkUnit == nil で早期 return し、その時点では
@@ -252,7 +253,31 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan *river.Event) Onc
 // だけで Wait を終わらせられることを確認する（上記の保険側の裏付け。
 // go.mod の river の版が上がってここが崩れても go build/go vet では
 // 検出できない）。
-func SubscribeOnceEvents(client *river.Client[pgx5.Tx]) (<-chan *river.Event, func()) {
+func SubscribeOnceEvents(adapter *Adapter) (<-chan struct{}, func()) {
+	if adapter == nil {
+		return nil, func() {}
+	}
+	riverEvents, unsubscribe := subscribeRiverOnceEvents(adapter.clientSnapshot())
+	if riverEvents == nil {
+		return nil, unsubscribe
+	}
+	events := make(chan struct{}, 1)
+	go func() {
+		defer close(events)
+		for range riverEvents {
+			select {
+			case events <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	return events, unsubscribe
+}
+
+func subscribeRiverOnceEvents(client *river.Client[pgx5.Tx]) (<-chan *river.Event, func()) {
+	if client == nil {
+		return nil, func() {}
+	}
 	// 4 種すべてを取る。本番で唯一効くのは job_failed（未登録 kind の
 	// 唯一の終わり方）で、残り 3 つは将来 River が middleware の組み立て
 	// タイミングを変えた場合への保険（このコメントの上の説明参照）。

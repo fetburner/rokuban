@@ -72,11 +72,11 @@ func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
 		t.Errorf("periodic ts_scan_reconcile queue = %q, want literal %q", rows[0].Queue, "ts_scan")
 	}
 
-	inserted, err := adapter.clientSnapshot().Insert(context.Background(), tsscan.ReconcileArgs{}, nil)
+	inserted, err := adapter.Enqueue(context.Background(), tsscan.ReconcileArgs{})
 	if err != nil {
-		t.Fatalf("inserting duplicate reconciliation args: %v", err)
+		t.Fatalf("enqueueing duplicate reconciliation args: %v", err)
 	}
-	if !inserted.UniqueSkippedAsDuplicate {
-		t.Error("direct River insert was not coalesced with the periodic reconciliation job")
+	if !inserted.Coalesced {
+		t.Error("adapter enqueue was not coalesced with the periodic reconciliation job")
 	}
 }

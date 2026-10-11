@@ -136,7 +136,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RecordSweepArgs{Site: testSite}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: testSite}); err != nil {
 		t.Fatalf("inserting record_sweep job: %v", err)
 	}
 
@@ -230,10 +230,10 @@ func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 	}
 
 	args := RecordSweepArgs{Site: "default"}
-	if _, err := client.Insert(ctx, args, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	res, err := client.Insert(ctx, RecordSweepArgs{Site: "site-b"}, nil)
+	res, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: "site-b"})
 	if err != nil {
 		t.Fatalf("inserting record_sweep job: %v", err)
 	}
@@ -401,7 +401,7 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RecordSweepArgs{Site: "site-a"}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: "site-a"}); err != nil {
 		t.Fatalf("inserting record_sweep job: %v", err)
 	}
 
