@@ -116,7 +116,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // 拒み、全滅して再試行し続けるだけの構成になる。0 サイトの worker を許すのは
 // `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site 非依存
 // キューに絞ったときだけ（BoundSites が空のままでも、これらのキューの
-// ジョブは site 単位の照合を必要としない。worker.ClientConfig の
+// ジョブは site 単位の照合を必要としない。riveradapter.Config の
 // フィールドコメント参照）。
 func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
 	if slices.Contains(roles, "worker") && len(bound) == 0 && jobs.RequiresSiteBinding(queues) {

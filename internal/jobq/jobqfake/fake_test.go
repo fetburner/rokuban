@@ -14,7 +14,8 @@ import (
 )
 
 func TestContract(t *testing.T) {
-	contracttest.Run(t, func(_ *testing.T, registry *jobq.Registry) contracttest.Fixture {
+	contracttest.Run(t, func(_ *testing.T, registry *jobq.Registry, worker jobq.Worker[contracttest.Args]) contracttest.Fixture {
+		jobq.Register(registry, worker)
 		return New(registry, Config{})
 	})
 }

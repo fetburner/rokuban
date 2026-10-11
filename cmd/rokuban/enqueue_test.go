@@ -12,14 +12,15 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) *rivertype.JobRow {
 	t.Helper()
-	row := testutil.RequireRiverKindInserted(t, ctx, pool, strings.ReplaceAll(job, "-", "_"))
+	row := riveradaptertest.RequireRiverKindInserted(t, ctx, pool, strings.ReplaceAll(job, "-", "_"))
 	if site != "" {
-		args := testutil.MustDecodeRiverJobArgs[struct {
+		args := riveradaptertest.MustDecodeRiverJobArgs[struct {
 			Site string `json:"site"`
 		}](t, row)
 		if args.Site != site {

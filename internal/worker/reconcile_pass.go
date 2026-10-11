@@ -12,13 +12,6 @@ import (
 	"github.com/fetburner/rokuban/internal/reconciler"
 )
 
-const (
-	// defaultReconcilePassInterval は定期パスの既定間隔。従来の reconciler の
-	// 自前タイマー（reconciler.defaultConfig の ReconcileInterval）が使っていた
-	// 30 秒をそのまま引き継ぐ（docs/recording.md §3.2「定期（既定 30 秒）」）。
-	defaultReconcilePassInterval = 30 * time.Second
-)
-
 // ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する River ワーカー。
 //
 // ロジックは internal/reconciler にそのまま置いてあり、ここでは呼び出すだけ

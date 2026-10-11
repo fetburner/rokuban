@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -38,7 +39,7 @@ func (testIngestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) er
 
 func listIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []*rivertype.JobRow {
 	t.Helper()
-	return testutil.MustListRiverJobsOfKind(t, ctx, pool, jobs.IngestJobArgs{}.Kind())
+	return riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, jobs.IngestJobArgs{}.Kind())
 }
 
 func countIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordID string) int {

@@ -1,4 +1,4 @@
-package worker
+package riveradapter
 
 import (
 	"context"
@@ -112,7 +112,7 @@ func (w *onceEventControlWorker) Work(_ context.Context, job *river.Job[onceEven
 // **completed/failed/cancelled/snoozed の 4 EventKind すべてが
 // SubscribeOnceEvents 経由で届くことを、middleware に頼らず固定する。**
 //
-// **この配線は本番ではない。** 本番（buildRiverConfig）は cfg.Once != nil
+// **この配線は本番ではない。** 本番（BuildConfig）は cfg.Once != nil
 // のとき常に OnceGate.Middleware() も一緒に登録し、登録済み kind は
 // WorkUnit != nil なので JobExecutor は必ず execution.MiddlewareChain を
 // 組み立てて doInner（= Work）を呼ぶ --- つまり本番では、ここで動かす

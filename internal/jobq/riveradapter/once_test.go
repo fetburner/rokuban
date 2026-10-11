@@ -1,4 +1,4 @@
-package worker
+package riveradapter
 
 import (
 	"context"
@@ -9,6 +9,8 @@ import (
 
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
+
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 // onceWorkFunc は OnceGate の middleware を「ジョブ 1 件の Work」として呼べる
@@ -334,14 +336,14 @@ func TestOnceOutcome_String(t *testing.T) {
 // 関わらず 1 になること（KEDA 側が「1 Job = 1 アイテム」で数を合わせている）。
 // middleware が 1 本入ることもここで見る（入らないと終了の契機が無い）。
 func TestBuildRiverConfig_OnceModeForcesSingleWorker(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := BuildConfig(river.NewWorkers(), Config{
 		BoundSites:        []string{"tokyo"},
-		Queues:            []string{ingestQueue},
+		Queues:            []string{jobs.IngestQueue},
 		IngestConcurrency: 4,
 		Once:              NewOnceGate(),
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	qc, ok := riverCfg.Queues["ingest_tokyo"]
 	if !ok {
@@ -358,13 +360,13 @@ func TestBuildRiverConfig_OnceModeForcesSingleWorker(t *testing.T) {
 // 反対方向: 1 件消化モードでなければ concurrency はそのまま効き、middleware も
 // 入らないこと（once モードの強制が常時 1 に潰していないことの確認）。
 func TestBuildRiverConfig_WithoutOnceMode_KeepsConcurrency(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := BuildConfig(river.NewWorkers(), Config{
 		BoundSites:        []string{"tokyo"},
-		Queues:            []string{ingestQueue},
+		Queues:            []string{jobs.IngestQueue},
 		IngestConcurrency: 4,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if got := riverCfg.Queues["ingest_tokyo"].MaxWorkers; got != 4 {
 		t.Errorf("ingest_tokyo MaxWorkers = %d, want 4", got)
@@ -385,10 +387,10 @@ func TestBuildRiverConfig_OnceModeRejectsNonSingleQueue(t *testing.T) {
 		queues []string
 	}{
 		{"空（= 全キュー）", nil},
-		{"2 キュー", []string{ingestQueue, encodeQueue}},
+		{"2 キュー", []string{jobs.IngestQueue, jobs.EncodeQueue}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+			_, err := BuildConfig(river.NewWorkers(), Config{
 				BoundSites: []string{"tokyo"},
 				Queues:     tt.queues,
 				Once:       NewOnceGate(),
@@ -406,14 +408,14 @@ func TestBuildRiverConfig_OnceModeRejectsNonSingleQueue(t *testing.T) {
 // TestBuildRiverConfig_OnceModeRejectsMultiSitePhysicalExpansion は issue #532
 // のレビュー指摘を固定する: 論理キューが 1 つ（TestBuildRiverConfig_OnceModeRejects
 // NonSingleQueue の検査を通る）でも、それが site 単位のキューかつ BoundSites が
-// 2 サイト以上なら、subscribe 側の展開（buildRiverConfig の物理キュー化）で
+// 2 サイト以上なら、subscribe 側の展開（BuildConfig の物理キュー化）で
 // 物理キューが 2 つになる。KEDA ScaledJob は site 単位（かつキュー単位）に
 // 作るので、`--once --queues ingest --sites tokyo,takamatsu` は「同時 claim は
 // 1 件」の前提を壊す --- 起動エラーにしなければならない。
 func TestBuildRiverConfig_OnceModeRejectsMultiSitePhysicalExpansion(t *testing.T) {
-	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	_, err := BuildConfig(river.NewWorkers(), Config{
 		BoundSites: []string{"tokyo", "takamatsu"},
-		Queues:     []string{ingestQueue},
+		Queues:     []string{jobs.IngestQueue},
 		Once:       NewOnceGate(),
 	})
 	if err == nil {
@@ -428,9 +430,9 @@ func TestBuildRiverConfig_OnceModeRejectsMultiSitePhysicalExpansion(t *testing.T
 // 1 件で終わる Job がリーダーになると、定期投入の間隔が KEDA のスケール挙動
 // （Job の起動回数）で決まってしまう。
 func TestBuildRiverConfig_OnceModeRejectsPeriodicJobs(t *testing.T) {
-	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	_, err := BuildConfig(river.NewWorkers(), Config{
 		BoundSites:   []string{"tokyo"},
-		Queues:       []string{ingestQueue},
+		Queues:       []string{jobs.IngestQueue},
 		PeriodicJobs: true,
 		Once:         NewOnceGate(),
 	})

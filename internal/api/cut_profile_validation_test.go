@@ -12,6 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -318,13 +319,13 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
 	}
-	rebuilds := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
+	rebuilds := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
 		return args.RecordingID == id && args.Profile == "cut"
 	})
 	if rebuilds != 1 {
 		t.Errorf("encode_rebuild jobs = %d, want 1", rebuilds)
 	}
-	encodes := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode", func(args jobs.EncodeJobArgs) bool {
+	encodes := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode", func(args jobs.EncodeJobArgs) bool {
 		return args.RecordingID == id
 	})
 	if encodes != 0 {
@@ -424,7 +425,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 		if resp.StatusCode != http.StatusConflict {
 			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
 		}
-		n := testutil.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
+		n := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
 			return args.RecordingID == id
 		})
 		if n != 0 {

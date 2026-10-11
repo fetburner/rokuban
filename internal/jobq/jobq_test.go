@@ -26,6 +26,13 @@ func (emptyKindArgs) Spec() Spec {
 	return Spec{Timeout: func(Args) time.Duration { return time.Minute }}
 }
 
+type secondTestArgs struct{}
+
+func (secondTestArgs) Kind() string { return "another_test_kind" }
+func (secondTestArgs) Spec() Spec {
+	return Spec{Queue: "q", Timeout: func(Args) time.Duration { return time.Minute }}
+}
+
 type testWorker struct{ got chan Args }
 
 func (w testWorker) Work(_ context.Context, args testArgs) error {
@@ -43,6 +50,10 @@ func (w ptrWorker) Work(_ context.Context, args *testArgs) error {
 type emptyKindWorker struct{}
 
 func (emptyKindWorker) Work(context.Context, emptyKindArgs) error { return nil }
+
+type secondTestWorker struct{}
+
+func (secondTestWorker) Work(context.Context, secondTestArgs) error { return nil }
 
 // recorder is an Enqueuer that remembers the last Args it saw.
 type recorder struct {
@@ -145,6 +156,56 @@ func TestRegisterDuplicateKindPanics(t *testing.T) {
 		}
 	}()
 	Register[testArgs](registry, testWorker{})
+}
+
+func TestRegisterAdapterWorkers(t *testing.T) {
+	registry := NewRegistry()
+	Register[testArgs](registry, testWorker{})
+	Register[secondTestArgs](registry, secondTestWorker{})
+
+	var got []string
+	for kind, value := range map[string]string{"test_kind": "z-kind", "another_test_kind": "a-kind"} {
+		kind, value := kind, value
+		if err := registry.AddAdapterWorker("test-adapter", kind, func(dst any) error {
+			values, ok := dst.(*[]string)
+			if !ok {
+				return errors.New("unexpected adapter destination")
+			}
+			*values = append(*values, value)
+			return nil
+		}); err != nil {
+			t.Fatalf("AddAdapterWorker(%q) error = %v", kind, err)
+		}
+	}
+	if err := registry.AddAdapterWorker("test-adapter", "test_kind", func(any) error { return nil }); err == nil {
+		t.Fatal("AddAdapterWorker accepted a duplicate builder")
+	}
+	if err := registry.AddAdapterWorker("test-adapter", "missing", func(any) error { return nil }); err == nil {
+		t.Fatal("AddAdapterWorker accepted an unregistered job kind")
+	}
+
+	if err := registry.RegisterAdapterWorkers("missing-adapter", &got); err == nil {
+		t.Fatal("RegisterAdapterWorkers accepted an adapter with no workers")
+	}
+	if err := registry.RegisterAdapterWorkers("test-adapter", &got); err != nil {
+		t.Fatalf("RegisterAdapterWorkers() error = %v", err)
+	}
+	if len(got) != 2 || got[0] != "a-kind" || got[1] != "z-kind" {
+		t.Errorf("adapter builders = %v, want [a-kind z-kind]", got)
+	}
+}
+
+func TestRegisterAdapterWorkersRejectsKindWithoutAdapterWorker(t *testing.T) {
+	registry := NewRegistry()
+	Register[testArgs](registry, testWorker{})
+	Register[secondTestArgs](registry, secondTestWorker{})
+	if err := registry.AddAdapterWorker("test-adapter", "test_kind", func(any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err := registry.RegisterAdapterWorkers("test-adapter", new([]string))
+	if err == nil || !strings.Contains(err.Error(), "another_test_kind") {
+		t.Fatalf("RegisterAdapterWorkers() error = %v, want it to name another_test_kind", err)
+	}
 }
 
 func TestRegisterEmptyKindPanics(t *testing.T) {

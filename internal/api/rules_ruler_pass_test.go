@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -154,10 +155,10 @@ func TestCreateRule_WithoutRiverClient_StillSucceeds(t *testing.T) {
 
 func countRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
 	t.Helper()
-	return len(testutil.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass"))
+	return len(riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass"))
 }
 
 func clearRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
+	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }

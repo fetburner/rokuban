@@ -25,8 +25,8 @@ type Fixture interface {
 	RecoveryGrace() time.Duration
 }
 
-// Factory creates an isolated adapter fixture that uses registry.
-type Factory func(t *testing.T, registry *jobq.Registry) Fixture
+// Factory registers worker in registry and creates an isolated adapter fixture.
+type Factory func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[Args]) Fixture
 
 // Run executes the common adapter contract tests against factory.
 func Run(t *testing.T, factory Factory) {
@@ -42,6 +42,7 @@ func Run(t *testing.T, factory Factory) {
 		{"Snooze does not consume MaxAttempts", testSnoozeAttempts},
 		{"Snooze delay is a lower bound", testSnoozeDelay},
 		{"timeout cancels Work and retries it", testTimeout},
+		{"timeout takes precedence over Snooze", testTimeoutOverridesSnooze},
 		{"Stop cancels overdue Work and retries it", testStop},
 		{"process death makes active Work eligible again", testCrash},
 		{"coalescing accepts one or more deliveries", testCoalescing},
@@ -212,6 +213,30 @@ func testTimeout(t *testing.T, factory Factory) {
 	}
 }
 
+func testTimeoutOverridesSnooze(t *testing.T, factory Factory) {
+	var calls atomic.Int32
+	contexts := make(chan error, 1)
+	fixture := newFixture(t, factory, contractWorker{work: func(ctx context.Context, _ contractArgs) error {
+		if calls.Add(1) != 1 {
+			return nil
+		}
+		<-ctx.Done()
+		contexts <- ctx.Err()
+		return jobq.Snooze(20 * time.Millisecond)
+	}})
+	start(t, fixture)
+	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 20, MaxAttempts: 1}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	waitIdle(t, fixture)
+	if got := receive(t, contexts); !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("Work context error = %v, want DeadlineExceeded", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("Work calls after timed-out Snooze = %d, want literal 1", got)
+	}
+}
+
 func testStop(t *testing.T, factory Factory) {
 	var calls atomic.Int32
 	started := make(chan struct{}, 1)
@@ -328,11 +353,14 @@ type contractArgs struct {
 	InvalidTimeout bool
 }
 
+// Args is the job argument type supplied to adapter factories by the shared tests.
+type Args = contractArgs
+
 func (contractArgs) Kind() string { return "contracttest" }
 
 func (args contractArgs) Spec() jobq.Spec {
 	return jobq.Spec{
-		Queue: "contracttest",
+		Queue: "default",
 		Timeout: func(raw jobq.Args) time.Duration {
 			args, ok := raw.(contractArgs)
 			if !ok {
@@ -374,8 +402,7 @@ func (worker contractWorker) Work(ctx context.Context, args contractArgs) error 
 func newFixture(t *testing.T, factory Factory, worker contractWorker) Fixture {
 	t.Helper()
 	registry := jobq.NewRegistry()
-	jobq.Register[contractArgs](registry, worker)
-	fixture := factory(t, registry)
+	fixture := factory(t, registry, worker)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

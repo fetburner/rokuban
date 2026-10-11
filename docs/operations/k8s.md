@@ -246,7 +246,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 - ジョブ 1 件の Work を抜けたらプロセスを畳む。**成功・失敗を問わず exit 0**（リトライは River が持つので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない）
 - ingest は Work が `river.JobSnooze(0)` を返した時点でこの 1 件を消化した扱いになり、Pod は終了する。snooze は同じ River job row を `attempt` を増やさず再投入するため、次に起きた Pod がその job ID から続ける。各 slice の間には KEDA の検出・Pod のスケジューリングと起動時間が加わる。4 分の転送 slice と 1 分の後処理予算で Timeout を 5 分にし、6 分の rescue 既定より先に Work が終わるようにする。起動時間はクラスタとイメージ状態に依存するため、配備先で通常の起動時間が slice より十分短いことを確認する。SHA-256 の待ちも 30 秒ごとに同じ job を snooze するので、`--once` では待っている間 30 秒ごとに Pod が入れ替わる。待ちの上限は録画サイズ ÷ `ingestSHA256BytesPerSecond` で、10 GB なら約 21 分、約 40 回である
-- **`--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。** 「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`worker.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
+- **`--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。** 「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`riveradapter.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
 - **打ち切りうるのは SIGTERM のほうである。** ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算。**上限を外すつもりで `0` と書くと起動エラー** --- 0 は「無制限」ではなく「待たない」である）
 - 引くキューはちょうど 1 つで、その `MaxWorkers` は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラー —— 1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまう
 - argv の制約は 3 つで、いずれも起動エラーになる
@@ -263,7 +263,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
 
-**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`worker.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
+**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`riveradapter.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
 
 **スケーラのクエリは `available` と `retryable` を数える。** 常駐 client の JobScheduler が retryable を昇格させるため、この集合は rescue の正しさを担わない。backoff 中から KEDA の backlog に含めるので、まだ claim できない job のために Pod が起きることがある。空振り Pod は `--once-idle-timeout` で終了する。
 

@@ -13,12 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
-const (
-	// defaultCatalogExportInterval は catalog エクスポートの既定間隔（日次相当）。
-	// docs/storage.md §8「日次 + 世代保持」。
-	defaultCatalogExportInterval = 24 * time.Hour
-)
-
 // CatalogExportWorker はコアメタデータを media_dir/catalog/ に JSON で書き出す
 // River ワーカー（docs/storage.md §8、issue #71）。
 //

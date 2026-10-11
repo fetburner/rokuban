@@ -16,13 +16,6 @@ const (
 	// recordingsNotifyTopic は録画の一覧・棚を購読する SSE クライアントへ配る
 	// トピック名（recordings_notify / media_assets_notify トリガーと同じ）。
 	recordingsNotifyTopic = "recordings"
-
-	// defaultLabelRuleReconcileInterval は定期の全件再評価の既定間隔。
-	//
-	// これは必須の窓閉じである。分類ルールの編集の前後でコミットした録画は、
-	// 旧ルールで評価された当たりを持ったままになる（トリガーは自分の行しか
-	// 見ない）。encode 系の定期パスと同じ 15 分に揃える。
-	defaultLabelRuleReconcileInterval = 15 * time.Minute
 )
 
 // LabelRuleReconcileWorker は分類ルールの当たりを録画全件へ適用し直す。

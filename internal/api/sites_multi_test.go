@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -650,7 +651,7 @@ func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *te
 func rulerPassJobSites(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
 	t.Helper()
 	var sites []string
-	for _, job := range testutil.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass") {
+	for _, job := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass") {
 		var args jobs.RulerPassArgs
 		if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
 			t.Fatalf("decoding ruler_pass job %d args: %v", job.ID, err)
@@ -663,5 +664,5 @@ func rulerPassJobSites(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []
 
 func clearRulerPassJobsForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
 	t.Helper()
-	testutil.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
+	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }

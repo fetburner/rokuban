@@ -13,12 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/ruler"
 )
 
-const (
-	// defaultRulerPassInterval は定期パスの既定間隔。docs/recording.md §3.1 の
-	// 起動契機の表で「定期（既定 10 分）」としている値と揃える。
-	defaultRulerPassInterval = 10 * time.Minute
-)
-
 // RulerPassWorker は ruler の 1 パス評価を実行する River ワーカー。
 //
 // ロジックは internal/ruler にそのまま置いてあり、ここでは呼び出すだけ

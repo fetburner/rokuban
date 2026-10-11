@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -206,7 +207,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	detectArgs := testutil.RequireRiverInserted(context.Background(), t, pool, jobs.CMDetectJobArgs{}, nil).Args
+	detectArgs := riveradaptertest.RequireRiverInserted(context.Background(), t, pool, jobs.CMDetectJobArgs{}, nil).Args
 	if detections != 0 || attempts != 0 {
 		t.Fatalf("after retry: detections=%d attempts=%d; want 0/0", detections, attempts)
 	}
@@ -597,14 +598,14 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 
 	queued := func(want int) {
 		t.Helper()
-		got := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectReconcileArgs{}.Kind()))
+		got := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectReconcileArgs{}.Kind()))
 		if got != want {
 			t.Fatalf("CM reconcile jobs = %d, want %d", got, want)
 		}
 	}
 	candidateQueued := func(want int) {
 		t.Helper()
-		got := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind()))
+		got := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind()))
 		if got != want {
 			t.Fatalf("CM logo candidate jobs = %d, want %d", got, want)
 		}
@@ -641,7 +642,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	candidateQueued(1)
 	var candidateArgs jobs.CMLogoCandidateJobArgs
-	if err := json.Unmarshal(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind())[0].EncodedArgs, &candidateArgs); err != nil {
+	if err := json.Unmarshal(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind())[0].EncodedArgs, &candidateArgs); err != nil {
 		t.Fatal(err)
 	}
 	if candidateArgs.RecordingID != id || candidateArgs.RecordingDurationMs != 45*60*1000 {
@@ -726,7 +727,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("retry status = %d, want 409", resp.StatusCode)
 	}
-	jobsCount := len(testutil.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectJobArgs{}.Kind()))
+	jobsCount := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectJobArgs{}.Kind()))
 	if jobsCount != 0 {
 		t.Fatalf("cm_detect jobs after rejected retry = %d, want 0", jobsCount)
 	}

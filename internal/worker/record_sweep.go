@@ -15,13 +15,6 @@ import (
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
-const (
-	// defaultRecordSweepInterval は定期パスの既定間隔。従来の watcher の自前タイマー
-	// （旧 watcher.defaultConfig の ReconcileInterval）が使っていた 5 分をそのまま
-	// 引き継ぐ（docs/recording.md §3.3）。
-	defaultRecordSweepInterval = 5 * time.Minute
-)
-
 // RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する River ワーカー。
 //
 // ロジックは internal/watcher の Watcher.Sweep にそのまま置いてあり、ここでは

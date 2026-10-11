@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -378,7 +379,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		var onceEvents <-chan *river.Event
 		if onceGate != nil {
 			var unsubscribe func()
-			onceEvents, unsubscribe = worker.SubscribeOnceEvents(riverClient)
+			onceEvents, unsubscribe = riveradapter.SubscribeOnceEvents(riverClient)
 			defer unsubscribe()
 		}
 
@@ -507,7 +508,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			return nil, fmt.Errorf("embedded dist/ not found: %w", err)
 		}
 		routerCfg.DistFS = distFS
-		apiRiverClient, err := worker.NewInsertOnlyClient(pool)
+		apiRiverClient, err := riveradapter.NewInsertOnlyClient(pool)
 		if err != nil {
 			return nil, err
 		}
@@ -561,12 +562,12 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 // buildRiverClient は roles に応じた River クライアントを構築する。
 // worker が無いプロセスにはフルのワーカー群を登録しない。worker がある場合だけ
 // encode / thumbnail のツール検査とフルのワーカー群の登録を行う。
-func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcSite, clientCfg worker.ClientConfig, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
+func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
 	switch resolveRiverClientKind(roles) {
 	case riverClientFull:
 		return buildFullRiverClient(cfg, bound, clientCfg, pool, webhookClient)
 	case riverClientInsertOnly:
-		return worker.NewInsertOnlyClient(pool)
+		return riveradapter.NewInsertOnlyClient(pool)
 	default:
 		return nil, nil
 	}
@@ -576,8 +577,8 @@ func buildRiverClient(cfg *config.Config, roles []string, bound []config.MirakcS
 //
 // **pool に依存しない。** worker ロールが無いプロセスでは使われないが、
 // 組み立て自体は無害。
-func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *worker.OnceGate, softStopTimeout time.Duration) worker.ClientConfig {
-	return worker.ClientConfig{
+func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *riveradapter.OnceGate, softStopTimeout time.Duration) riveradapter.Config {
+	return riveradapter.Config{
 		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
 		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
 		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
@@ -607,7 +608,7 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 // buildFullRiverClient は worker ロール用のワーカー群と River クライアントを構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientCfg worker.ClientConfig, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
+func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*river.Client[pgx5.Tx], error) {
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -651,7 +652,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})
-	return worker.NewClient(pool, workers, clientCfg)
+	return riveradapter.NewLegacyClient(pool, workers, clientCfg)
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。
@@ -671,7 +672,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 // `stopRiver(context.WithoutCancel(ctx))` で ctx のキャンセルを外しており、
 // 値も見ていないため。stopOnceProcess がキャンセルを外すのをやめたら、
 // signalCtx でなければならない（egCtx は stop() が連鎖して即座に切れる）。
-func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *worker.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
+func superviseOnceMode(egCtx, signalCtx context.Context, eg *errgroup.Group, onceGate *riveradapter.OnceGate, onceIdleTimeout time.Duration, onceEvents <-chan *river.Event, stopRiver func(context.Context) error, stop context.CancelFunc) {
 	eg.Go(func() error {
 		outcome := onceGate.Wait(egCtx, onceIdleTimeout, onceEvents)
 		slog.Info("worker: once mode finished", "outcome", outcome.String())
@@ -747,7 +748,7 @@ const (
 	riverClientFull
 	// riverClientInsertOnly は watcher ロールだけがあり worker ロールが無い
 	// プロセス。ingest ジョブの投入（InsertTx）にしか使わないので、
-	// worker.NewInsertOnlyClient と同じ最小構成にする --- ffmpeg/ffprobe に
+	// riveradapter.NewInsertOnlyClient と同じ最小構成にする --- ffmpeg/ffprobe に
 	// 依存するワーカーを登録・実行しない（不変条件 4、issue #113）。
 	riverClientInsertOnly
 )

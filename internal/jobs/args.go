@@ -14,12 +14,15 @@ type IngestJobArgs struct {
 	RecordID string `json:"record_id"`
 }
 
+// QueueSite は site 修飾に使う site を返す。
+func (a IngestJobArgs) QueueSite() string { return a.Site }
+
 // Kind は River ジョブの種別名を返す。
 func (IngestJobArgs) Kind() string { return "ingest" }
 
 // InsertOpts は ingest キューへ投入するための River 挿入オプションを返す。
 func (a IngestJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(a, a.Site)
+	return riverInsertOpts(a)
 }
 
 // EpgSyncArgs は EPG 全量同期ジョブの引数。
@@ -27,12 +30,15 @@ type EpgSyncArgs struct {
 	Site string `json:"site"`
 }
 
+// QueueSite は site 修飾に使う site を返す。
+func (a EpgSyncArgs) QueueSite() string { return a.Site }
+
 // Kind は River ジョブの種別名を返す。
 func (EpgSyncArgs) Kind() string { return "epg_sync" }
 
 // InsertOpts は EPG キューへ投入するための River 挿入オプションを返す。
 func (a EpgSyncArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(a, a.Site)
+	return riverInsertOpts(a)
 }
 
 // TunerSyncArgs はチューナー射影ジョブの引数。
@@ -40,12 +46,15 @@ type TunerSyncArgs struct {
 	Site string `json:"site"`
 }
 
+// QueueSite は site 修飾に使う site を返す。
+func (a TunerSyncArgs) QueueSite() string { return a.Site }
+
 // Kind は River ジョブの種別名を返す。
 func (TunerSyncArgs) Kind() string { return "tuner_sync" }
 
 // InsertOpts は EPG キューへ投入するための River 挿入オプションを返す。
 func (a TunerSyncArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(a, a.Site)
+	return riverInsertOpts(a)
 }
 
 // RulerPassArgs は ruler の 1 パスジョブの引数。
@@ -62,7 +71,7 @@ func (RulerPassArgs) Kind() string { return "ruler_pass" }
 // ruler は mirakc に一切触れない DB のみの仕事で、site 単位の到達性ガードが
 // 要らない（issue #185 M4-13、issue #138 の決定表）。
 func (RulerPassArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(RulerPassArgs{}, "")
+	return riverInsertOpts(RulerPassArgs{})
 }
 
 // ReconcilePassArgs は reconciler の 1 パス突き合わせジョブの引数。
@@ -70,13 +79,16 @@ type ReconcilePassArgs struct {
 	Site string `json:"site"`
 }
 
+// QueueSite は site 修飾に使う site を返す。
+func (a ReconcilePassArgs) QueueSite() string { return a.Site }
+
 // Kind は River ジョブの種別名を返す。
 func (ReconcilePassArgs) Kind() string { return "reconcile_pass" }
 
 // InsertOpts は site 修飾済みの reconciler キューへ投入するための River 挿入
 // オプションを返す。
 func (a ReconcilePassArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(a, a.Site)
+	return riverInsertOpts(a)
 }
 
 // RecordSweepArgs は watcher の定期全量突き合わせジョブの引数。
@@ -84,13 +96,16 @@ type RecordSweepArgs struct {
 	Site string `json:"site"`
 }
 
+// QueueSite は site 修飾に使う site を返す。
+func (a RecordSweepArgs) QueueSite() string { return a.Site }
+
 // Kind は River ジョブの種別名を返す。
 func (RecordSweepArgs) Kind() string { return "record_sweep" }
 
 // InsertOpts は site 修飾済みの watcher キューへ投入するための River 挿入
 // オプションを返す。
 func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(a, a.Site)
+	return riverInsertOpts(a)
 }
 
 // EncodeJobArgs は encode ジョブの引数。recording、プロファイル、rescue 用の締切を指定する。
@@ -105,7 +120,7 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 func (EncodeJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(EncodeJobArgs{}, "")
+	return riverInsertOpts(EncodeJobArgs{})
 }
 
 // ThumbnailJobArgs は thumbnail ジョブの引数。
@@ -118,7 +133,7 @@ func (ThumbnailJobArgs) Kind() string { return "thumbnail" }
 
 // InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
 func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(ThumbnailJobArgs{}, "")
+	return riverInsertOpts(ThumbnailJobArgs{})
 }
 
 // SeekTilesJobArgs はシークプレビュー用タイル画像（kind = 'seek_tiles'）ジョブの
@@ -142,7 +157,7 @@ func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
 // 後から ingest された録画の poster が一覧に出ない。下げても、いま走っている
 // 1 件ぶんの待ちは残る。
 func (SeekTilesJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(SeekTilesJobArgs{}, "")
+	return riverInsertOpts(SeekTilesJobArgs{})
 }
 
 // ThumbnailReconcileArgs は thumbnail の desired−observed reconcile ジョブの引数。
@@ -156,7 +171,7 @@ func (ThumbnailReconcileArgs) Kind() string { return "thumbnail_reconcile" }
 
 // InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
 func (ThumbnailReconcileArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(ThumbnailReconcileArgs{}, "")
+	return riverInsertOpts(ThumbnailReconcileArgs{})
 }
 
 // CMDetectJobArgs identifies a recording whose CM ranges should be detected.
@@ -170,7 +185,7 @@ func (CMDetectJobArgs) Kind() string { return "cm_detect" }
 
 // InsertOpts routes CM detection to its dedicated queue with a short retry budget.
 func (CMDetectJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(CMDetectJobArgs{}, "")
+	return riverInsertOpts(CMDetectJobArgs{})
 }
 
 // CMDetectReconcileArgs requests one desired-minus-observed CM detection pass.
@@ -181,7 +196,7 @@ func (CMDetectReconcileArgs) Kind() string { return "cm_detect_reconcile" }
 
 // InsertOpts routes reconciliation to the CM detection queue.
 func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(CMDetectReconcileArgs{}, "")
+	return riverInsertOpts(CMDetectReconcileArgs{})
 }
 
 // CMLogoCandidateJobArgs identifies one station-area analysis. The area version
@@ -201,7 +216,7 @@ func (CMLogoCandidateJobArgs) Kind() string { return "cm_logo_candidate" }
 // InsertOpts routes candidate analysis to the CM detection queue with no retry:
 // the user can save the area again to request a fresh analysis.
 func (CMLogoCandidateJobArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(CMLogoCandidateJobArgs{}, "")
+	return riverInsertOpts(CMLogoCandidateJobArgs{})
 }
 
 // LabelRuleReconcileArgs は分類ルールの変更を録画全件へ再評価するジョブの引数。
@@ -230,7 +245,7 @@ func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 // 73,000 行）。編集はまれな操作なので許容する。advisory lock が直列化するので、
 // 最後に走る 1 本は必ず最新のルール集合で評価する。
 func (LabelRuleReconcileArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(LabelRuleReconcileArgs{}, "")
+	return riverInsertOpts(LabelRuleReconcileArgs{})
 }
 
 // EncodeReconcileArgs は encode の desired−observed reconcile ジョブの引数。
@@ -249,7 +264,7 @@ func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 // このパスは走らない。許容する: エンコードが詰まっている系では今すぐ投入しても
 // 実行されないので、検出が遅れても失うものが無い。
 func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(EncodeReconcileArgs{}, "")
+	return riverInsertOpts(EncodeReconcileArgs{})
 }
 
 // EncodeRebuildArgs は利用者が明示した再エンコード命令の引数。
@@ -265,7 +280,7 @@ func (EncodeRebuildArgs) Kind() string { return "encode_rebuild" }
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 // 同じ録画・プロファイルへの待機中または実行中の要求を合流させる。
 func (EncodeRebuildArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(EncodeRebuildArgs{}, "")
+	return riverInsertOpts(EncodeRebuildArgs{})
 }
 
 // DeleteReconcileArgs は削除 reconcile ジョブの引数。
@@ -276,7 +291,7 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 
 // InsertOpts は cleanup キューへ投入するための River 挿入オプションを返す。
 func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(DeleteReconcileArgs{}, "")
+	return riverInsertOpts(DeleteReconcileArgs{})
 }
 
 // CatalogExportArgs は catalog エクスポートジョブの引数。
@@ -291,7 +306,7 @@ func (CatalogExportArgs) Kind() string { return "catalog_export" }
 
 // InsertOpts は cleanup キューへ投入するための River 挿入オプションを返す。
 func (CatalogExportArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(CatalogExportArgs{}, "")
+	return riverInsertOpts(CatalogExportArgs{})
 }
 
 // StorageSyncArgs はストレージ観測ジョブの引数。
@@ -305,12 +320,25 @@ func (StorageSyncArgs) Kind() string { return "storage_sync" }
 
 // InsertOpts は storage キューへ投入するための River 挿入オプションを返す。
 func (StorageSyncArgs) InsertOpts() river.InsertOpts {
-	return riverInsertOpts(StorageSyncArgs{}, "")
+	return riverInsertOpts(StorageSyncArgs{})
 }
 
-func riverInsertOpts(args jobq.Args, site string) river.InsertOpts {
-	spec := args.Spec()
-	return RiverInsertOpts(spec, PhysicalQueueName(spec.Queue, site))
+func riverInsertOpts(args jobq.Args) river.InsertOpts {
+	return RiverInsertOpts(args.Spec(), PhysicalQueueFor(args))
+}
+
+// siteBound は site 束縛キューに載る Args が実装する。site 修飾に使う site の取り出しは
+// この 1 か所だけにする。RulerPassArgs は意図的に実装しない（InsertOpts の注記参照）。
+type siteBound interface{ QueueSite() string }
+
+// PhysicalQueueFor は args が実際に投入される物理キュー名を返す。旧 River 経路と
+// jobq adapter の両方がこれを通る。
+func PhysicalQueueFor(args jobq.Args) string {
+	site := ""
+	if b, ok := args.(siteBound); ok {
+		site = b.QueueSite()
+	}
+	return PhysicalQueueName(args.Spec().Queue, site)
 }
 
 // 全 Args が jobq 契約と旧 River ジョブ引数インタフェースを満たすことのコンパイル時検査。

@@ -20,6 +20,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -361,7 +362,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	var got []int64
-	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (ScanArgs{}).Kind()) {
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, (ScanArgs{}).Kind()) {
 		var args ScanArgs
 		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
 			t.Fatalf("decoding queued scan job %d args: %v", row.ID, err)
@@ -404,7 +405,7 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 	var continuationAfter int64
 	var continuationJobID int64
-	for _, row := range testutil.MustListRiverJobsOfKind(t, ctx, pool, (ReconcileArgs{}).Kind()) {
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, (ReconcileArgs{}).Kind()) {
 		if row.State != rivertype.JobStateAvailable && row.State != rivertype.JobStateRetryable && row.State != rivertype.JobStateRunning {
 			continue
 		}
@@ -498,7 +499,7 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	var count int
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (ScanArgs{}).Kind()) {
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (ScanArgs{}).Kind()) {
 		var args ScanArgs
 		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
 			t.Fatalf("decoding scan job %d args: %v", row.ID, err)

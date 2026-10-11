@@ -20,6 +20,8 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -343,7 +345,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatal("timed out waiting for epg_sync job completion")
 	}
 
-	hint := testutil.RequireRiverInserted(ctx, t, pool, RulerPassArgs{Site: testSite}, nil)
+	hint := riveradaptertest.RequireRiverInserted(ctx, t, pool, RulerPassArgs{Site: testSite}, nil)
 	if hint.Args.Site != testSite {
 		t.Errorf("ruler_pass hint site = %q, want %q", hint.Args.Site, testSite)
 	}
@@ -471,7 +473,7 @@ func TestEncodeRebuildWorker_TimeoutUsesSpec(t *testing.T) {
 // **下の 2 つ目の待ち受けは「ruler_pass 完了時に連鎖投入される reconcile_pass
 // ヒント」を待っているとは限らない。** BoundSites + PeriodicJobs は
 // RunOnStart 付きの reconcile_pass も別途 site ごとに 1 本登録する
-// （buildRiverConfig、defaultReconcilePassInterval）。ReconcilePassArgs の
+// （BuildConfig、ReconcilePass の既定間隔）。ReconcilePassArgs の
 // UniqueOpts{ByArgs, ByState: pendingJobStates} により、この定期ジョブと
 // ruler_pass 完了時のヒントは同じ (site) の重複としてほぼ必ず合流するため、
 // kind だけで待っても両者を区別できない。ここで実際に検証できているのは
@@ -545,7 +547,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 // 値まで見る）。ruler は mirakc に触れないので、site 単位の配線だけを確認する
 // のに向く（Deps に MirakcClients を渡していない）。
 //
-// このテストが検出すべき変異: buildRiverConfig が BoundSites の 1 要素目だけを
+// このテストが検出すべき変異: BuildConfig が BoundSites の 1 要素目だけを
 // 使う。その場合 2 つ目の site（下のテストでは "site-b"）向けの ruler_pass が
 // 一度も投入されず、このテストが 20 秒でタイムアウトして落ちる。
 func TestRulerPassPeriodicJob_MultiSite(t *testing.T) {
@@ -734,43 +736,23 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 		t.Error("同じサイトの ruler_pass を 2 回投入したのに合流しなかった")
 	}
 
-	testutil.RequireRiverInserted(ctx, t, pool, args, nil)
-}
-
-// jobs.AllQueueNames() が allQueues() と同じキュー集合を主張していること。
-//
-// **キュー集合の権威は本来 1 つであるべきだが、jobs.AllQueueNames() は
-// internal/jobs 側の手書きリテラルで、allQueues() は internal/worker 側の
-// river.QueueConfig map。jobs から worker を import すると循環するため、
-// 権威を 1 つに統合できない。** この二重管理を許す唯一の代償として、
-// 両者が一致することをここで固定する。
-//
-// このテストが検出すべき変異: allQueues() だけにキューを足す（jobs 側は
-// unknown のまま worker.queues が弾く）、または jobs.AllQueueNames() だけに
-// 足す（allQueues() に無いので worker が購読できず、k8s の
-// TestScaledJobsCoverEveryQueue の網にも入らない）。
-func TestAllQueueNames_MatchesAllQueues(t *testing.T) {
-	got := sortedQueueNames(allQueues(0, 0, 0))
-	want := jobs.AllQueueNames()
-	if !slices.Equal(got, want) {
-		t.Errorf("sortedQueueNames(allQueues(0,0,0)) = %v, want jobs.AllQueueNames() = %v", got, want)
-	}
+	riveradaptertest.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // worker.queues に未知のキュー名を渡すと起動時エラーになること（typo で静かに
 // 何も引かなくなる事故を防ぐ knob。docs/configuration.md の worker.queues）。
 func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
-	_, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{Queues: []string{"bogus"}})
+	_, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{Queues: []string{"bogus"}})
 	if err == nil {
 		t.Fatal("unknown queue のとき error を期待したが nil だった")
 	}
 }
 
-// buildRiverConfig が実際に購読する物理キュー名の集合を起動時ログに出すこと
+// BuildConfig が実際に購読する物理キュー名の集合を起動時ログに出すこと
 // （issue #185 の「罠」: 全キュー購読（既定）は「全部購読しているつもりで
 // 実は site 束縛キューを引いていない」を起動時に伝える手段が要る）。
 //
-// このテストが検出すべき変異: buildRiverConfig からログ出力そのものを削除する、
+// このテストが検出すべき変異: BuildConfig からログ出力そのものを削除する、
 // または queues の代わりに空リストや別の値をログに渡す。いずれも
 // ログバッファに期待した物理名（"ingest_tokyo" 等）が現れなくなり、
 // strings.Contains のアサーションが落ちる。実際に注入して確認済み
@@ -781,8 +763,8 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if _, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{BoundSites: []string{"tokyo"}}); err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+	if _, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{BoundSites: []string{"tokyo"}}); err != nil {
+		t.Fatalf("BuildConfig: %v", err)
 	}
 
 	logged := logBuf.String()
@@ -813,9 +795,9 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 // 実測: `SoftStopTimeout: 0` を river.Config に渡す変異で 2 行とも赤くなる
 // ことを確認した。
 func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{})
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if riverCfg.SoftStopTimeout <= 0 {
 		t.Errorf("SoftStopTimeout = %s, want > 0（SIGTERM が実行中のジョブを即座に打ち切る）",
@@ -823,9 +805,9 @@ func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 	}
 
 	// 明示した値はそのまま載る（既定に丸められない）。
-	explicit, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{SoftStopTimeout: 90 * time.Second})
+	explicit, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{SoftStopTimeout: 90 * time.Second})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if explicit.SoftStopTimeout != 90*time.Second {
 		t.Errorf("SoftStopTimeout = %s, want 90s", explicit.SoftStopTimeout)
@@ -836,9 +818,9 @@ func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 // （0 のまま渡せば river.NewClient が 1h に解決する）。k8s e2e の故障注入 3 は
 // この値を縮めて rescuer の回収を数分で観測する。
 func TestBuildRiverConfig_RescueStuckJobsAfterPassesThrough(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{RescueStuckJobsAfter: 90 * time.Second})
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{RescueStuckJobsAfter: 90 * time.Second})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if riverCfg.RescueStuckJobsAfter != 90*time.Second {
 		t.Errorf("RescueStuckJobsAfter = %s, want 1m30s", riverCfg.RescueStuckJobsAfter)
@@ -848,12 +830,12 @@ func TestBuildRiverConfig_RescueStuckJobsAfterPassesThrough(t *testing.T) {
 // encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
 // （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
 func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		EncodeConcurrency:    3,
 		ThumbnailConcurrency: 2,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if qc, ok := riverCfg.Queues[encodeQueue]; !ok {
 		t.Fatalf("queue %q missing from Queues", encodeQueue)
@@ -866,9 +848,9 @@ func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
 		t.Errorf("thumbnail MaxWorkers = %d, want 2", qc.MaxWorkers)
 	}
 	// 既定（0）は 1 になる
-	defaults, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{})
+	defaults, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{})
 	if err != nil {
-		t.Fatalf("buildRiverConfig defaults: %v", err)
+		t.Fatalf("BuildConfig defaults: %v", err)
 	}
 	if defaults.Queues[encodeQueue].MaxWorkers != 1 {
 		t.Errorf("default encode MaxWorkers = %d, want 1", defaults.Queues[encodeQueue].MaxWorkers)
@@ -881,12 +863,12 @@ func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
 // worker.periodic_jobs: false のとき、BoundSites が設定されていても
 // PeriodicJobs が登録されないこと。
 func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: false,
 		BoundSites:   []string{"default"},
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs = %d 件, want 0 (worker.periodic_jobs=false のとき登録されないこと)",
@@ -898,12 +880,12 @@ func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 // ruler_pass/reconcile_pass/record_sweep）全部が BoundSites の 1 site ぶん
 // 登録されること。
 func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: true,
 		BoundSites:   []string{"default"},
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 5 {
 		t.Errorf("PeriodicJobs = %d 件, want 5 (epg_sync + tuner_sync + ruler_pass + reconcile_pass + record_sweep)",
@@ -916,18 +898,18 @@ func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
 // （epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）が **site ごとに
 // 1 本ずつ**登録される（1 度だけではない）。
 //
-// このテストが検出すべき変異: buildRiverConfig が BoundSites の最初の 1 要素
+// このテストが検出すべき変異: BuildConfig が BoundSites の最初の 1 要素
 // だけを使う（旧 BoundSite string の名残りで `cfg.BoundSites[0]` に固定する
 // 等）。その場合 PeriodicJobs は 5 件のまま増えず、このテストが落ちる
 // （TestBuildRiverConfig_PeriodicJobsEnabled の 1-site ケースと数を比較して
 // 初めて検出できるので、2 つのテストは対になっている）。
 func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: true,
 		BoundSites:   []string{"tokyo", "takamatsu"},
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	const perSite = 5 // epg_sync + tuner_sync + ruler_pass + reconcile_pass + record_sweep
 	if want := perSite * 2; len(riverCfg.PeriodicJobs) != want {
@@ -940,7 +922,7 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // （ingest/epg/reconciler/watcher）は物理名（`<base>_<site>`）で site ごとに
 // **両方**購読される --- insert 側（各 JobArgs.InsertOpts）は 1 ジョブの
 // args.Site から物理名が 1 つに決まるので変わらないが、subscribe 側
-// （buildRiverConfig の river.Config.Queues）だけが N 回展開される
+// （BuildConfig の river.Config.Queues）だけが N 回展開される
 // （qualifyRiverQueues のコメント「subscribe 側だけ N 回呼ぶ」）。
 //
 // このテストが検出すべき変異: 物理キュー展開のループが BoundSites の最初の
@@ -948,18 +930,23 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // （`ingest_takamatsu` 等）が river.Config.Queues に一度も現れず、この
 // テストが落ちる。実際に注入して確認済み（golangci-lint 通過後の変異確認）。
 func TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		BoundSites: []string{"tokyo", "takamatsu"},
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	for _, base := range []string{"ingest", "epg", "reconciler", "watcher"} {
 		for _, site := range []string{"tokyo", "takamatsu"} {
 			want := base + "_" + site
 			if _, ok := riverCfg.Queues[want]; !ok {
+				queueNames := make([]string, 0, len(riverCfg.Queues))
+				for name := range riverCfg.Queues {
+					queueNames = append(queueNames, name)
+				}
+				slices.Sort(queueNames)
 				t.Errorf("river.Config.Queues is missing %q (site-bound queues must be subscribed per bound site); got %v",
-					want, sortedQueueNames(riverCfg.Queues))
+					want, queueNames)
 			}
 		}
 	}

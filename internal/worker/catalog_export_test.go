@@ -10,6 +10,7 @@ import (
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -81,12 +82,12 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 
 // CatalogExport が PeriodicJobs に載ること。
 func TestBuildRiverConfig_CatalogExportPeriodic(t *testing.T) {
-	riverCfg, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:  true,
 		CatalogExport: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig: %v", err)
+		t.Fatalf("BuildConfig: %v", err)
 	}
 	if len(riverCfg.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want 1 (catalog_export only)", len(riverCfg.PeriodicJobs))

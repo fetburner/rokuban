@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -283,7 +284,7 @@ func testSecondSigterm(t *testing.T, once bool, marker string) {
 	// 畳んだのなら、River は行を `running` から動かしている（available への
 	// 差し戻し）。`running` のままなのは、completer が走る前にプロセスが
 	// 消えたということ = 2 発目が効いた窓が本物だったということ。
-	job := testutil.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
+	job := riveradaptertest.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
 	if job.State != "running" {
 		t.Errorf("epg_sync state = %q, want %q（drain の途中ではなかった）", job.State, "running")
 	}

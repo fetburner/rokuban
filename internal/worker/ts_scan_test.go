@@ -15,9 +15,10 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -196,22 +197,22 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 		t.Errorf("ReconcileArgs queue = %q, want %q", got, "ts_scan")
 	}
 
-	registered, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	registered, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    true,
 		TSScanReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig with periodic TS scan: %v", err)
+		t.Fatalf("BuildConfig with periodic TS scan: %v", err)
 	}
 	if len(registered.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want one TS scan reconcile job", len(registered.PeriodicJobs))
 	}
-	disabled, err := buildRiverConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    false,
 		TSScanReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("buildRiverConfig with periodic jobs disabled: %v", err)
+		t.Fatalf("BuildConfig with periodic jobs disabled: %v", err)
 	}
 	if len(disabled.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))
@@ -282,8 +283,8 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
 	t.Helper()
 	count := 0
-	for _, row := range testutil.MustListRiverJobsOfKind(t, context.Background(), pool, (tsscan.ScanArgs{}).Kind()) {
-		args := testutil.MustDecodeRiverJobArgs[tsscan.ScanArgs](t, row)
+	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (tsscan.ScanArgs{}).Kind()) {
+		args := riveradaptertest.MustDecodeRiverJobArgs[tsscan.ScanArgs](t, row)
 		if args.RecordingID == recordingID {
 			count++
 		}
