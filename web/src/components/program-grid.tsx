@@ -23,6 +23,7 @@ import {
 } from '@/lib/epg-grid'
 import { formatTime } from '@/lib/format'
 import { genreLabel, genreTint } from '@/lib/genre'
+import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
 
 /** 時間軸（左端の目盛り列）の幅。 */
@@ -285,7 +286,7 @@ export function ProgramGrid({
   const scrollerRef = useRef<HTMLDivElement>(null)
   const pendingFocusRef = useRef<PlacedProgram<SiteProgram> | null>(null)
   const [viewport, setViewport] = useState<Viewport>(unmeasuredViewport)
-  const clock = useNow(clockIntervalMs)
+  const clock = useNow(clockIntervalMs, now === undefined)
   const currentMs = now ?? clock
 
   const measure = useCallback(() => {
@@ -822,14 +823,4 @@ function ProgramCell({
       )}
     </button>
   )
-}
-
-/** useNow は一定間隔で更新される現在時刻を返す。現在時刻インジケータを動かすため。 */
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = window.setInterval(() => setNow(Date.now()), intervalMs)
-    return () => window.clearInterval(id)
-  }, [intervalMs])
-  return now
 }

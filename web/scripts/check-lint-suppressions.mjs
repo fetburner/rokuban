@@ -16,14 +16,10 @@ const srcDir = path.join(webDir, 'src')
 const ledgerPath = path.join(webDir, 'lint-suppressions.json')
 const sourceFileRe = /\.(?:[cm]?js|jsx|[cm]?ts|tsx)$/
 
-// 既存の react/purity は台帳の変更だけでは別ファイルへ移せないよう、初期のファイル別
-// 上限を保持する。各抑制の理由はソースのコメントにある。新しいファイルで許す場合は、
-// 下の REACT_PURITY_ALLOWLIST に理由を足し、台帳も同じ変更で更新する。
+// react/purity のファイル別の上限（cap）。台帳の書き換えだけでは別ファイルへ移せない。
+// 減らすときはここを触らなくてよい。各抑制の理由はソースのコメントにある。新しいファイルで
+// 許す場合は、下の REACT_PURITY_ALLOWLIST に理由を足し、台帳も同じ変更で更新する。
 const REACT_PURITY_BASELINE = new Map([
-  ['src/components/recording-badges.tsx', 2],
-  ['src/components/recording-detail-panel.tsx', 1],
-  ['src/components/storage-balance.tsx', 1],
-  ['src/components/tuner-status.tsx', 1],
   ['src/pages/home.tsx', 1],
   ['src/pages/programs.tsx', 1],
 ])
@@ -93,7 +89,7 @@ function directivesInComment(comment) {
     else ruleText = ruleText.replace(/\s+--\s+[\s\S]*$/, '').trim()
 
     // 規則名なしは全規則の抑制として記録する。特に `*` は react/purity も
-    // 抑制するため、後段の許可判定でも同じように扱う。
+    // 抑制するが、別の検査で必ずエラーにする。
     const names = ruleText
       ? [...new Set(ruleText.split(',').map((name) => name.trim()).filter(Boolean))]
       : ['*']
@@ -127,10 +123,6 @@ export function collectSuppressions(root = srcDir, rootForRelativePaths = path.d
   )
 }
 
-function countForRuleAndFile(table, rule, file) {
-  return (table[rule]?.[file] ?? 0) + (rule === 'react/purity' ? (table['*']?.[file] ?? 0) : 0)
-}
-
 /** validateSuppressions は実測件数と台帳の差、および react/purity の許可範囲を返す。 */
 export function validateSuppressions(actual, ledger, {
   purityBaseline = REACT_PURITY_BASELINE,
@@ -140,18 +132,6 @@ export function validateSuppressions(actual, ledger, {
   for (const [file, reason] of purityAllowlist) {
     if (typeof reason !== 'string' || reason.trim() === '') {
       errors.push(`  react/purity ${file}: REACT_PURITY_ALLOWLIST に理由がありません`)
-    }
-  }
-
-  for (const [file, baseline] of purityBaseline) {
-    if (purityAllowlist.has(file)) continue
-    const ledgerCount = countForRuleAndFile(ledger, 'react/purity', file)
-    const actualCount = countForRuleAndFile(actual, 'react/purity', file)
-    if (ledgerCount !== baseline) {
-      errors.push(
-        `  react/purity ${file}: 台帳 ${ledgerCount} 件 / 実際 ${actualCount} 件 / 既存上限 ${baseline} 件。` +
-          '既存分を増減した場合は REACT_PURITY_BASELINE も同じ変更で更新してください',
-      )
     }
   }
 
@@ -175,15 +155,10 @@ export function validateSuppressions(actual, ledger, {
     }
   }
 
-  const purityFiles = new Set([
-    ...Object.keys(actual['react/purity'] ?? {}),
-    ...Object.keys(actual['*'] ?? {}),
-  ])
-  for (const file of [...purityFiles].sort()) {
-    const count = countForRuleAndFile(actual, 'react/purity', file)
+  for (const [file, count] of Object.entries(actual['react/purity'] ?? {}).sort()) {
     const baseline = purityBaseline.get(file) ?? 0
     if (count > baseline && !purityAllowlist.has(file)) {
-      const ledgerCount = countForRuleAndFile(ledger, 'react/purity', file)
+      const ledgerCount = ledger['react/purity']?.[file] ?? 0
       errors.push(
         `  react/purity ${file}: 台帳 ${ledgerCount} 件 / 実際 ${count} 件 / 既存上限 ${baseline} 件。` +
           '新しいファイルで使う場合は REACT_PURITY_ALLOWLIST に理由を追加してください',

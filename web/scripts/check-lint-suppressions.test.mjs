@@ -124,6 +124,11 @@ describe('lint suppression checker', () => {
     })).toContain(`  react/purity ${newFile}: REACT_PURITY_ALLOWLIST に理由がありません`)
   })
 
+  it('allows lowering an existing react/purity file without editing the baseline', () => {
+    // home.tsx / programs.tsx は上限 1 件だが、実測も台帳も 0 件に下げただけならエラーにしない。
+    expect(validateSuppressions({}, {})).toEqual([])
+  })
+
   it('exits unsuccessfully when the CLI finds a ledger mismatch', () => {
     const fixtureDir = mkdtempSync(path.join(webDir, 'src', '.tmp-lint-suppressions-'))
     const fixturePath = path.join(fixtureDir, 'mismatch.tsx')

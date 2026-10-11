@@ -8,6 +8,7 @@ import {
 } from '@/api/generated'
 import { unwrap } from '@/api/unwrap'
 import { formatBytes, formatDate, formatDateTime } from '@/lib/format'
+import { useNow } from '@/lib/use-now'
 import {
   estimateAverageBitrate,
   estimateStorageForecast,
@@ -90,14 +91,14 @@ export function StorageBalance({ compact = false }: { compact?: boolean }) {
   const media = roots === undefined ? undefined : findMediaRoot(roots)
   const scratch = roots?.find((root) => root.root === 'scratch')
 
+  // 1 時間の観測しきい値を遅くとも 30 秒後に表示へ反映する。再取得結果が同じでも
+  // 時計が進むため、ストレージ予測窓と古さの判定が止まらない。
+  const nowMs = useNow(30_000, media !== undefined)
+
   // 観測なしで黙る（罠「観測時刻が古いときの表示を決める」の前段 --- 行そのものが
   // 無いときは古さの判定すら成立しない）。
   if (media === undefined) return null
 
-  // ストレージ残高の stale 判定と予測窓は、クエリ再取得に伴う各レンダーの時刻を
-  // 基準にする。state 初期値にすると観測の古さと窓が更新されなくなる。
-  // oxlint-disable-next-line react/purity -- クエリ再取得ごとの現在時刻スナップショットが必要
-  const nowMs = Date.now()
   const stale = isObservationStale(media.observedAt, nowMs)
 
   const recordings = unwrap(recordingsQuery.data)
