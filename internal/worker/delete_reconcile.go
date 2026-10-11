@@ -232,6 +232,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.Dele
 	if err != nil {
 		return err
 	}
+	afterDeleteCandidatesCollected()
 	stop, err := w.applyDeleteCircuitBreaker(ctx, q, site, tripped, candidates.total(), maxPerPass)
 	if err != nil {
 		return err
@@ -916,6 +917,7 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 // reportAgedOrphanFiles はエイジング済みの canonical 孤児を Warn とゲージで報告する。
 // orphan_files は reconcile が観測した候補を持つ。公開前を示す予約名は自動回収対象なので
 // 報告から除き、canonical 名は人が調査・削除するまで記録を保持する。
+// 登録済みパスの行は、同じパスの直前の reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
 func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
 	agedPaths, err := q.ListAgedOrphanFiles(ctx, time.Now().Add(-age))
 	if err != nil {
@@ -926,21 +928,9 @@ func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, q *sq
 		return nil
 	}
 
-	known, err := q.ListAllMediaAssetRelPaths(ctx)
-	if err != nil {
-		return fmt.Errorf("listing known rel paths for aged-orphan report: %w", err)
-	}
-	knownSet := make(map[string]struct{}, len(known))
-	for _, relPath := range known {
-		knownSet[relPath] = struct{}{}
-	}
-
 	unresolved := 0
 	for _, relPath := range agedPaths {
 		if classifyOrphanCleanup(relPath) != orphanCleanupCanonical {
-			continue
-		}
-		if _, registered := knownSet[relPath]; registered {
 			continue
 		}
 		unresolved++
@@ -963,7 +953,8 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	log := slog.With("rel_path", relPath, "source", "orphan")
 	kind := classifyOrphanCleanup(relPath)
 	if kind == orphanCleanupCanonical {
-		beforeCanonicalOrphanReport(relPath)
+		// Work はここへ来ない（agedUnpublishedOrphans が canonical 名を先に除く）。
+		// 直接の呼び出し元が canonical 名を unlink しないための防御として残している。
 		return
 	}
 
@@ -1034,8 +1025,9 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	w.clearOrphanFileRecord(q, relPath, size, physicallyDeleted, log)
 }
 
-// beforeCanonicalOrphanReport は canonical 孤児の報告直前に置くテスト用の同期点。
-var beforeCanonicalOrphanReport = func(string) {}
+// afterDeleteCandidatesCollected は候補収集の後・ブレーカー判定と削除の前に置くテスト用の同期点。
+// 本番では何もしない。
+var afterDeleteCandidatesCollected = func() {}
 
 // deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。
 // checkpoint の削除だけでも次回 replay の量が増えるだけだが、temp と同じ寿命で扱う。

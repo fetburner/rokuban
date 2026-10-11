@@ -1971,11 +1971,13 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 }
 
-func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
-	pool := setupTestPool(t)
-	mediaDir := t.TempDir()
+// canonicalPublishWhileWorkPaused は、old な orphan_files 行を持つ canonical 孤児に対して
+// worker.Work を走らせ、候補収集後の同期点で止めている間に ingest commit で公開する。
+// commit は Work の完了を待たずに終わらねばならず、Work 再開後も公開内容が残らねばならない。
+// beforeResume は Work が止まった直後・公開前に呼ばれる。
+func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *DeleteReconcileWorker, mediaDir, relPath string, beforeResume func()) {
+	t.Helper()
 	ctx := context.Background()
-	const relPath = "sites/default/recovered/recording.m2ts"
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
@@ -1991,13 +1993,9 @@ func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *
 		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if _, err := cleanup.reconcileOrphanCandidates(ctx, sqlcgen.New(pool), time.Hour); err != nil {
-		t.Fatalf("orphan scan: %v", err)
-	}
 	recordingID := insertTestRecording(t, pool)
-	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-recovery")
-	content := []byte("published after orphan scan")
+	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-while-work-paused")
+	content := []byte("published while delete reconcile paused")
 	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -2005,38 +2003,28 @@ func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *
 		t.Fatal(err)
 	}
 
-	cleanupPaused := make(chan struct{})
-	releaseCleanup := make(chan struct{})
+	workPaused := make(chan struct{})
+	releaseWork := make(chan struct{})
 	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
-	originalHook := beforeCanonicalOrphanReport
-	cleanupDone := make(chan struct{})
+	release := func() { releaseOnce.Do(func() { close(releaseWork) }) }
+	originalHook := afterDeleteCandidatesCollected
+	workDone := make(chan error, 1)
 	t.Cleanup(func() {
 		release()
-		beforeCanonicalOrphanReport = originalHook
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			t.Error("orphan cleanup did not finish after release")
-		}
+		afterDeleteCandidatesCollected = originalHook
 	})
-	beforeCanonicalOrphanReport = func(got string) {
-		if got != relPath {
-			return
-		}
-		close(cleanupPaused)
-		<-releaseCleanup
+	afterDeleteCandidatesCollected = func() {
+		close(workPaused)
+		<-releaseWork
 	}
-	go func() {
-		cleanup.deleteOrphanFile(sqlcgen.New(pool), relPath, time.Hour)
-		close(cleanupDone)
-	}()
+	go func() { workDone <- worker.Work(ctx, nil) }()
 	select {
-	case <-cleanupPaused:
+	case <-workPaused:
 	case <-time.After(5 * time.Second):
 		release()
-		t.Fatal("orphan cleanup did not reach canonical report")
+		t.Fatal("Work did not reach the candidate-collected hook")
 	}
+	beforeResume()
 
 	commitDone := make(chan error, 1)
 	go func() {
@@ -2047,27 +2035,21 @@ func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *
 	case err := <-commitDone:
 		if err != nil {
 			release()
-			t.Fatalf("publishing after orphan scan: %v", err)
+			t.Fatalf("publishing while Work is paused: %v", err)
 		}
 	case <-time.After(5 * time.Second):
 		release()
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			t.Error("orphan cleanup did not finish after release")
-		}
-		select {
-		case <-commitDone:
-		case <-time.After(5 * time.Second):
-			t.Error("publication did not finish after cleanup was released")
-		}
-		t.Fatal("publication waited for report-only canonical cleanup")
+		t.Fatal("publication waited for the paused delete reconcile")
 	}
 	release()
-	<-cleanupDone
+	select {
+	case <-workDone: // Work may fail after its pool is closed; only the file and row matter.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Work did not finish after release")
+	}
 
 	if got, err := os.ReadFile(fullPath); err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("canonical after orphan cleanup = %q, %v; want published bytes", got, err)
+		t.Fatalf("canonical after Work = %q, %v; want published bytes", got, err)
 	}
 	var state string
 	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
@@ -2078,124 +2060,25 @@ func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *
 	}
 }
 
+// 壊し方: deleteOrphanFile の canonical 早期 return と agedUnpublishedOrphans の canonical 除外を消す。
+func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	worker := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/recording.m2ts", func() {})
+}
+
+// 壊し方: 同上。cleanup 側の DB セッションが消えても公開内容が残ること。
 func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	ctx := context.Background()
-	const relPath = "sites/default/recovered/db-disconnect.m2ts"
-	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(fullPath, []byte("old orphan"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(fullPath, old, old); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
-		t.Fatal(err)
-	}
-	cleanupTx, err := pool.Begin(ctx)
+	cleanupPool, err := pgxpool.New(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = cleanupTx.Rollback(context.Background()) })
-	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if _, err := cleanup.reconcileOrphanCandidates(ctx, sqlcgen.New(cleanupTx), time.Hour); err != nil {
-		t.Fatalf("checking canonical orphan on cleanup session: %v", err)
-	}
-
-	cleanupPaused := make(chan struct{})
-	releaseCleanup := make(chan struct{})
-	var releaseOnce sync.Once
-	release := func() { releaseOnce.Do(func() { close(releaseCleanup) }) }
-	originalHook := beforeCanonicalOrphanReport
-	cleanupDone := make(chan struct{})
-	t.Cleanup(func() {
-		release()
-		beforeCanonicalOrphanReport = originalHook
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			t.Error("orphan cleanup did not finish after release")
-		}
-	})
-	beforeCanonicalOrphanReport = func(got string) {
-		if got != relPath {
-			return
-		}
-		close(cleanupPaused)
-		<-releaseCleanup
-	}
-	go func() {
-		cleanup.deleteOrphanFile(sqlcgen.New(cleanupTx), relPath, time.Hour)
-		close(cleanupDone)
-	}()
-	select {
-	case <-cleanupPaused:
-	case <-time.After(5 * time.Second):
-		release()
-		t.Fatal("orphan cleanup did not pause after checking the canonical orphan")
-	}
-	if err := cleanupTx.Conn().Close(ctx); err != nil {
-		release()
-		t.Fatalf("disconnecting cleanup database session: %v", err)
-	}
-
-	// The cleanup session has observed no live asset for this path and is gone. A
-	// publication on a fresh session must finish before the paused report resumes; if
-	// orphan cleanup still owns the canonical path or resumes an unlink, it can erase
-	// the replacement despite the row having been absent when cleanup scanned it.
-	recordingID := insertTestRecording(t, pool)
-	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-after-cleanup-disconnect")
-	content := []byte("published after cleanup database disconnect")
-	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(tempPath, old, old); err != nil {
-		t.Fatal(err)
-	}
-	commitDone := make(chan error, 1)
-	go func() {
-		commitDone <- (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
-			relPath, tempPath, fullPath, int64(len(content)))
-	}()
-	select {
-	case err := <-commitDone:
-		if err != nil {
-			release()
-			t.Fatalf("publishing after cleanup database disconnect: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		release()
-		select {
-		case <-cleanupDone:
-		case <-time.After(5 * time.Second):
-			t.Error("orphan cleanup did not finish after release")
-		}
-		select {
-		case <-commitDone:
-		case <-time.After(5 * time.Second):
-			t.Error("publication did not finish after cleanup was released")
-		}
-		t.Fatal("publication waited for canonical orphan cleanup after its database session disconnected")
-	}
-	release()
-	<-cleanupDone
-
-	if got, err := os.ReadFile(fullPath); err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("canonical after disconnected cleanup = %q, %v; want published bytes", got, err)
-	}
-	var state string
-	if err := pool.QueryRow(ctx, "SELECT state FROM media_assets WHERE rel_path = $1", relPath).Scan(&state); err != nil {
-		t.Fatal(err)
-	}
-	if state != "active" {
-		t.Errorf("media_asset state after publication = %q, want active", state)
-	}
+	t.Cleanup(cleanupPool.Close)
+	worker := &DeleteReconcileWorker{Pool: cleanupPool, MediaDir: mediaDir}
+	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/db-disconnect.m2ts", cleanupPool.Close)
 }
 
 // canonical orphan は aging 後も残り、Warn とメトリクスに出る。削除数ブレーカーには入らない。
@@ -2204,45 +2087,50 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 	mediaDir := t.TempDir()
 	t.Cleanup(func() { metrics.OrphanFilesUnresolved.Set(0) })
 
-	relPath := "unregistered-old.dat"
-	orphanPath := filepath.Join(mediaDir, relPath)
-	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
-		t.Fatalf("writing orphan file: %v", err)
-	}
+	// 2 件置き MaxDeletesPerPass=1 にする。canonical が候補に数えられるとブレーカーが発動する。
+	relPaths := []string{"unregistered-old-1.dat", "unregistered-old-2.dat"}
 	old := time.Now().Add(-30 * 24 * time.Hour)
-	if err := os.Chtimes(orphanPath, old, old); err != nil {
-		t.Fatalf("chtimes: %v", err)
-	}
-
-	// エイジング窓を過ぎた記録として直接投入する（14 日待たずに検証するため）。
-	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)",
-		relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
-		t.Fatalf("seeding aged orphan record: %v", err)
+	for _, relPath := range relPaths {
+		orphanPath := filepath.Join(mediaDir, relPath)
+		if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
+			t.Fatalf("writing orphan file: %v", err)
+		}
+		if err := os.Chtimes(orphanPath, old, old); err != nil {
+			t.Fatalf("chtimes: %v", err)
+		}
+		// エイジング窓を過ぎた記録として直接投入する（14 日待たずに検証するため）。
+		if _, err := pool.Exec(context.Background(),
+			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)",
+			relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
+			t.Fatalf("seeding aged orphan record: %v", err)
+		}
 	}
 
 	w := &DeleteReconcileWorker{
 		Pool: pool, MediaDir: mediaDir,
-		OrphanMTimeGrace: 7 * 24 * time.Hour,
-		OrphanAge:        14 * 24 * time.Hour,
+		MaxDeletesPerPass: 1,
+		OrphanMTimeGrace:  7 * 24 * time.Hour,
+		OrphanAge:         14 * 24 * time.Hour,
 	}
 	if err := w.Work(context.Background(), nil); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
-	if !fileExists(orphanPath) {
-		t.Error("aged canonical orphan was removed, want report-only retention")
+	for _, relPath := range relPaths {
+		if !fileExists(filepath.Join(mediaDir, relPath)) {
+			t.Errorf("aged canonical orphan %s was removed, want report-only retention", relPath)
+		}
+		var count int
+		if err := pool.QueryRow(context.Background(),
+			"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
+			t.Fatalf("querying orphan_files: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("orphan_files count for %s = %d, want 1 (canonical orphan remains unresolved)", relPath, count)
+		}
 	}
-	var count int
-	if err := pool.QueryRow(context.Background(),
-		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&count); err != nil {
-		t.Fatalf("querying orphan_files: %v", err)
-	}
-	if count != 1 {
-		t.Errorf("orphan_files count = %d, want 1 (canonical orphan remains unresolved)", count)
-	}
-	if got := promtestutil.ToFloat64(metrics.OrphanFilesUnresolved); got != 1 {
-		t.Errorf("OrphanFilesUnresolved = %v, want 1", got)
+	if got := promtestutil.ToFloat64(metrics.OrphanFilesUnresolved); got != 2 {
+		t.Errorf("OrphanFilesUnresolved = %v, want 2", got)
 	}
 	var breakerCount int
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM circuit_breakers WHERE name = $1`, breaker.DeleteReconcile).Scan(&breakerCount); err != nil {
