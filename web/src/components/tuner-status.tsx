@@ -6,6 +6,7 @@ import { getListTunersQueryOptions, useListSites, type Tuner } from '@/api/gener
 import { unwrap } from '@/api/unwrap'
 import { tunersQueryKeyPrefix } from '@/lib/events'
 import { isObservationStale } from '@/lib/storage-forecast'
+import { useNow } from '@/lib/use-now'
 
 /**
  * TunerStatus はライブ画面のチャンネル一覧の脇に「チューナー n 本（故障 m）」の
@@ -95,10 +96,10 @@ function TunerStatusLine({
     (oldest, t) => (Date.parse(t.observedAt) < Date.parse(oldest) ? t.observedAt : oldest),
     tuners[0]!.observedAt,
   )
-  // tuner_sync は定期再取得で再描画される。時刻を mount 時に固定すると、古い観測が
-  // stale になっても表示が変わらないため、描画時の観測時刻を使う。
-  // oxlint-disable-next-line react/purity -- 定期再取得ごとの現在時刻スナップショットが必要
-  const stale = isObservationStale(oldestObservedAt, Date.now())
+  // 取得結果が同じときの再取得では描画されないことをコンポーネントテストで確認した。
+  // 時計を 30 秒ごとに購読し、1 時間のしきい値を過ぎた表示を更新する。
+  const nowMs = useNow(30_000)
+  const stale = isObservationStale(oldestObservedAt, nowMs)
 
   return (
     <p

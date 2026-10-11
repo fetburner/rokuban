@@ -1225,6 +1225,39 @@ describe('RecordingDetailPage', () => {
     expect(screen.getByTestId('playback-time').textContent).toMatch(/\/ 録画済み /)
   })
 
+  it('追っかけ表示中は録画端を 1 秒ごとに進める', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const now = Date.now()
+      const startAt = new Date(now - 60 * 60_000).toISOString()
+      const startedAt = new Date(Date.parse(startAt) - 15_000).toISOString()
+      createFakeServer({
+        recording: sampleRecording({
+          startAt,
+          durationMs: 2 * 60 * 60_000,
+          status: 'recording',
+          startedAt,
+        }),
+      })
+
+      renderAt('/recordings/3#chase')
+
+      const slider = await screen.findByRole('slider', { name: 'シークバー' })
+      const secondsAtMount = Number(/録画済み 60:(\d+)/.exec(slider.getAttribute('aria-valuetext') ?? '')?.[1])
+      expect(Number.isFinite(secondsAtMount)).toBe(true)
+
+      await act(async () => vi.advanceTimersByTimeAsync(1000))
+
+      const secondsAfterTick = Number(
+        /録画済み 60:(\d+)/.exec(slider.getAttribute('aria-valuetext') ?? '')?.[1],
+      )
+      expect(secondsAfterTick).toBeGreaterThan(secondsAtMount)
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   // ごみ箱の録画も 200 で返る（getRecording の openapi.yaml description の決定）
   // が、単体ページでは再生系を一切出さない（M3-18）。encodedAssets /
   // sizeBytes を敢えて持たせても出ないことを見て、判定が deletedAt の有無で

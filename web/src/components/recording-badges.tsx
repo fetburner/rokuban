@@ -7,6 +7,7 @@ import { useEncodeProgress } from '@/lib/events'
 import { formatBytes } from '@/lib/format'
 import { ingestDisplay } from '@/lib/ingest'
 import { recordingVerdict, type RecordingVerdict } from '@/lib/recording-verdict'
+import { useNow } from '@/lib/use-now'
 import { cn } from '@/lib/utils'
 
 /**
@@ -30,10 +31,9 @@ export function RecordingVerdictBadge({
   /** 詳細ヘッダーでは結論から記録タブへ移動する。 */
   onClick?: () => void
 }) {
-  // IngestBadge と同じくレンダー時点の観測時刻を渡す。結論は transferring の
-  // stale 有無で変わらず、再描画時には内訳と同じ観測を使う。
-  // oxlint-disable-next-line react/purity -- status snapshot follows IngestBadge's render-time clock
-  const verdict = recordingVerdict({ recording, liveCapability, isTrashed, nowMs: Date.now() })
+  // 結論は転送中かどうかだけで決まり、停滞の有無では変わらないため時計を購読しない。
+  const nowMs = useNow(10_000, false)
+  const verdict = recordingVerdict({ recording, liveCapability, isTrashed, nowMs })
   if (verdict === undefined || verdict === 'viewable') return null
 
   const badge = (
@@ -88,16 +88,13 @@ const verdictLabels: Record<Exclude<RecordingVerdict, 'viewable'>, string> = {
  * 一覧の 1 行に常時出す種類の情報ではなく、詳細ページの「取り込み」欄
  * （`RecordingDetail`）が引き受ける。
  *
- * 停滞判定に使う「今」はレンダリング時の `Date.now()`。時計そのものを刻んでは
- * いないが、取り込み中の録画がある間は一覧が定期再取得され（`refetchInterval`）
- * そのたびに再レンダリングされるので、進捗が止まっていれば数十秒のうちに
- * 「停滞」へ変わる。
+ * 停滞判定は共有時計を 10 秒間隔で購読する。表示中の転送だけが購読するので、
+ * 転送していない録画の行は時計の tick で再描画されない。
  */
 export function IngestBadge({ recording }: { recording: Recording }) {
-  // 取り込み中の一覧は refetchInterval で再描画される。時刻を state に固定すると
-  // 停滞判定が更新されなくなるため、各レンダーの観測時刻を使う意図的な例外。
-  // oxlint-disable-next-line react/purity -- refetch ごとの現在時刻スナップショットが必要
-  const display = ingestDisplay(recording, Date.now())
+  // 停滞の境界は 60 秒なので、10 秒の購読で短時間に行数ぶんの描画を起こさず反映する。
+  const nowMs = useNow(10_000, recording.ingest?.state === 'transferring')
+  const display = ingestDisplay(recording, nowMs)
   if (display === undefined || display.kind === 'originalDeleted') return null
 
   const label =

@@ -1,6 +1,6 @@
 import { Link } from '@tanstack/react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type MutableRefObject } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -51,6 +51,7 @@ import {
 } from '@/lib/format'
 import { cmDetectStageMessage, isStationFixableCMStage } from '@/lib/cm-detect-stage'
 import { ingestDisplay, type IngestDisplay } from '@/lib/ingest'
+import { useNow } from '@/lib/use-now'
 import { useLiveCapability } from '@/lib/capabilities'
 import { recordingFileURL } from '@/lib/playback-position'
 import { recordingDetailQueryKey, seedRecordingDetail } from '@/lib/recording-detail-cache'
@@ -301,13 +302,9 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
   }
-  // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    if (!showChase || recording.status !== 'recording') return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [showChase, recording.status])
+  // 追っかけ中の録画端を 1 秒ごとに進める。非表示時は購読せず、従来の表示中だけ進む挙動を保つ。
+  const now = useNow(1000, showChase && recording.status === 'recording')
+  const ingestNow = useNow(10_000, recording.ingest?.state === 'transferring')
   const timeline = recordingTimeline(recording, recording.status === 'recording' ? { nowMs: now } : {})
   const recordedSpanMs = timeline.recordedDurationMs ?? Number.NaN
   /**
@@ -561,10 +558,7 @@ export function RecordingDetail({
   const hasDrops =
     recording.dropSummary != null &&
     recording.dropSummary.drops + recording.dropSummary.errors + recording.dropSummary.scrambled > 0
-  // 詳細データの再取得ごとに取り込み状態を現在時刻で再評価する。mount 時に固定
-  // すると、停滞表示が更新されなくなるため state 初期値には移せない。
-  // oxlint-disable-next-line react/purity -- 再取得ごとの現在時刻スナップショットが必要
-  const ingestState = ingestDisplay(recording, Date.now())
+  const ingestState = ingestDisplay(recording, ingestNow)
   const registeredSites = unwrap(useListSites().data) ?? []
   const showSite = shouldShowRecordingSite(registeredSites, [recording.site])
   const seriesQuery = useQuery({
