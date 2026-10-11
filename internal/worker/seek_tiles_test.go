@@ -201,10 +201,10 @@ func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir stri
 
 func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error {
 	t.Helper()
-	return w.Work(context.Background(), &river.Job[SeekTilesJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   SeekTilesJobArgs{RecordingID: recordingID},
-	})
+	return runWorkerViaJobQFake(context.Background(), w,
+
+		SeekTilesJobArgs{RecordingID: recordingID},
+	)
 }
 
 func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {
@@ -246,7 +246,7 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 			Args:   SeekTilesJobArgs{RecordingID: recordingID},
 		}
 		go func(job *river.Job[SeekTilesJobArgs]) {
-			results <- w.Work(context.Background(), job)
+			results <- runWorkerViaJobQFake(context.Background(), w, job.Args)
 		}(job)
 	}
 

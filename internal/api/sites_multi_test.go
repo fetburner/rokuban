@@ -17,10 +17,10 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // getJSONForTest は GET して 200 なら body を out にデコードする（epg_test.go の
@@ -548,7 +548,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -606,7 +606,7 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}

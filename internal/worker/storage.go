@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -25,7 +23,7 @@ type storageRoot struct {
 }
 
 // StorageSyncWorker は storage.media_dir / storage.scratch_dir の容量を
-// storage_sync に全量投影する River ワーカー（issue #238 M7-5）。
+// storage_sync に全量投影する queue worker（issue #238 M7-5）。
 //
 // 存在理由は不変条件 1（api ロールはファイルシステムに依存しない）。ファイル
 // システムを持つ worker がここで観測し、api はこの射影だけを読んで
@@ -38,7 +36,6 @@ type storageRoot struct {
 // 観測ループを止めて再起動しても、次のパスが全量を書き直すので収束する
 // （crash-only。TestStorageSyncWorker_RestartConverges で固定）。
 type StorageSyncWorker struct {
-	river.WorkerDefaults[jobs.StorageSyncArgs]
 	Pool *pgxpool.Pool
 
 	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
@@ -56,11 +53,6 @@ type StorageSyncWorker struct {
 	Stat func(path string) (diskUsage, error)
 }
 
-// Timeout は River の既定（1 分）と同じ上限を明示する。
-func (w *StorageSyncWorker) Timeout(job *river.Job[jobs.StorageSyncArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 	if w.Stat != nil {
 		return w.Stat
@@ -69,7 +61,7 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 }
 
 // Work はストレージ観測の全量同期を 1 パス実行する。
-func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[jobs.StorageSyncArgs]) error {
+func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) error {
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
 	}
@@ -167,7 +159,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ *river.Job[jobs.StorageS
 
 	if observed == 0 {
 		// 1 つも観測できなかった（media_dir すら statfs に失敗した）場合は
-		// ジョブそのものを失敗させ River のリトライに委ねる --- 「observed_at が
+		// ジョブそのものを失敗させ queue の再試行に委ねる --- 「observed_at が
 		// 全く進んでいない」ことをジョブの失敗としても表出させるため
 		// （EpgSyncWorker が空レスポンスでスイープを見送るのと同じ、警告を
 		// 見逃さない側に倒す判断）。

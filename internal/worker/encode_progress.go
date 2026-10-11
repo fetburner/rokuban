@@ -42,7 +42,7 @@ type encodeProgressReporter struct {
 // 順序は排除していない（未検証: 実際に遅延する頻度は測っていない）。また
 // flush の notify には start に渡された ctx をそのまま使うため、親 ctx が
 // cancel と同時にキャンセルされる経路（worker 停止または encode job timeout。
-// EncodeWorker.Timeout は保存済み timeout を返し、River が派生 ctx を作る）
+// EncodeJobArgs.Spec().Timeout は保存済み timeout を返し、queue adapter が派生 ctx を作る）
 // では notify 自体が失敗し、flush は実質何もしない（notifyCtx.Err() != nil のときは警告ログも
 // 出さない --- 「notify を打ち切らない」が成り立つのは、呼び出し元が親 ctx を
 // 生かしたまま stop() だけを呼ぶ場合に限る）。

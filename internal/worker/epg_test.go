@@ -94,7 +94,7 @@ func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 		JobRow: &rivertype.JobRow{},
 		Args:   EpgSyncArgs{Site: testSite},
 	}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 }
@@ -791,7 +791,7 @@ func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
 
 	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-b"}}
-	err := w.Work(context.Background(), job)
+	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -814,7 +814,7 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 
 	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-a"}}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 

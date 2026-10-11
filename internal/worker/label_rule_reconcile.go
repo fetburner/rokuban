@@ -3,10 +3,8 @@ package worker
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -34,13 +32,7 @@ const (
 // トランザクションと通知だけを持つ。Go 側で評価を書くと、トリガーとジョブの
 // 2 人の書き手が別々の規則を持ちうる。
 type LabelRuleReconcileWorker struct {
-	river.WorkerDefaults[jobs.LabelRuleReconcileArgs]
 	Pool *pgxpool.Pool
-}
-
-// Timeout は分類ルール再評価の締切を Args.Spec から返す。
-func (w *LabelRuleReconcileWorker) Timeout(job *river.Job[jobs.LabelRuleReconcileArgs]) time.Duration {
-	return jobTimeout(job)
 }
 
 // Work は 1 回の全件再評価を 1 トランザクションで実行する。
@@ -51,7 +43,7 @@ func (w *LabelRuleReconcileWorker) Timeout(job *river.Job[jobs.LabelRuleReconcil
 //
 // 変化があったときだけ recordings トピックへ 1 回通知する。当たりの表に
 // 行トリガーを付けると、全件再評価で行数ぶんの通知が出る。
-func (w *LabelRuleReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.LabelRuleReconcileArgs]) error {
+func (w *LabelRuleReconcileWorker) Work(ctx context.Context, _ jobs.LabelRuleReconcileArgs) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning label rule re-evaluation: %w", err)

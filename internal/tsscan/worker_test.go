@@ -2,7 +2,7 @@ package tsscan
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,26 +12,31 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertest"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func workContext(t *testing.T, pool *pgxpool.Pool) context.Context {
-	t.Helper()
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
-	if err != nil {
-		t.Fatalf("river.NewClient: %v", err)
-	}
-	return rivertest.WorkContext(context.Background(), client)
+func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T], args T) error {
+	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
+}
+
+type recordingEnqueuer struct {
+	args []jobq.Args
+}
+
+func (enqueuer *recordingEnqueuer) Enqueue(_ context.Context, args jobq.Args, _ ...jobq.EnqueueOpt) (jobq.Result, error) {
+	enqueuer.args = append(enqueuer.args, args)
+	return jobq.Result{}, nil
+}
+
+func (*recordingEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
+	return jobq.Result{}, errors.New("recordingEnqueuer does not support transactions")
 }
 
 func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {
@@ -92,11 +97,8 @@ func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET size_bytes = $2 WHERE id = $1`, assetID, len(data)+1); err != nil {
 		t.Fatalf("changing DB size: %v", err)
 	}
-	job := &river.Job[ScanArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ScanArgs{RecordingID: recordingID},
-	}
-	if err := (&ScanWorker{Pool: pool, MediaDir: mediaDir}).Work(context.Background(), job); err == nil {
+	args := ScanArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), (&ScanWorker{Pool: pool, MediaDir: mediaDir}), args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with DB size != file size, want error")
 	}
 	stats, positions := readTSScanRows(t, pool, assetID)
@@ -116,8 +118,8 @@ func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 func TestReconcileWorker_RecordsLastPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	metrics.TSScanReconcileLastPass.Set(0)
-	job := &river.Job[ReconcileArgs]{JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25}}
-	if err := (&ReconcileWorker{Pool: pool}).Work(workContext(t, pool), job); err != nil {
+	args := ReconcileArgs{}
+	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Pool: pool, Enqueuer: &recordingEnqueuer{}}), args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	if got := promtestutil.ToFloat64(metrics.TSScanReconcileLastPass); got < float64(time.Now().Add(-time.Minute).Unix()) {
@@ -143,11 +145,8 @@ type tsScanPositionRow struct {
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
 	worker := &ScanWorker{Pool: pool, MediaDir: mediaDir}
-	job := &river.Job[ScanArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ScanArgs{RecordingID: recordingID},
-	}
-	if err := worker.Work(context.Background(), job); err != nil {
+	args := ScanArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), worker, args); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
 	}
 }
@@ -289,11 +288,8 @@ func TestTSScan_ReplacementRollsBackStatisticsAndMarkerTogether(t *testing.T) {
 	})
 
 	worker := &ScanWorker{Pool: pool, MediaDir: mediaDir}
-	job := &river.Job[ScanArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ScanArgs{RecordingID: recordingID},
-	}
-	if err := worker.Work(ctx, job); err == nil {
+	args := ScanArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(ctx, worker, args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with failing drop_positions trigger, want error")
 	}
 	gotStats, gotPositions := readTSScanRows(t, pool, assetID)
@@ -353,21 +349,17 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	w := &ReconcileWorker{Pool: pool}
-	job := &river.Job[ReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ReconcileArgs{},
-	}
-	if err := w.Work(workContext(t, pool), job); err != nil {
+	enqueuer := &recordingEnqueuer{}
+	w := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer}
+	args := ReconcileArgs{}
+	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	var got []int64
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, (ScanArgs{}).Kind()) {
-		var args ScanArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding queued scan job %d args: %v", row.ID, err)
+	for _, queued := range enqueuer.args {
+		if args, ok := queued.(ScanArgs); ok {
+			got = append(got, args.RecordingID)
 		}
-		got = append(got, args.RecordingID)
 	}
 	slices.Sort(got)
 	want := []int64{missingScanID, staleScanID}
@@ -388,36 +380,23 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	secondID := insertTestRecordingWithEventID(t, pool, 12912)
 	seedOriginalAsset(t, pool, mediaDir, firstID, "ts-scan/window-first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "ts-scan/window-second.m2ts", []byte("second"))
-	firstWorker := &ReconcileWorker{Pool: pool, RowLimit: 1}
-	firstJob := &river.Job[ReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ReconcileArgs{},
-	}
-	ctx := workContext(t, pool)
-	if err := firstWorker.Work(ctx, firstJob); err != nil {
+	enqueuer := &recordingEnqueuer{}
+	firstWorker := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer, RowLimit: 1}
+	ctx := context.Background()
+	if err := runWorkerViaJobQFake(ctx, firstWorker, ReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
 	}
-	if got := countTSScanJobs(t, pool, firstID); got != 1 {
+	if got := countTSScanJobs(enqueuer, firstID); got != 1 {
 		t.Fatalf("first recording jobs after first pass = %d, want 1", got)
 	}
-	if got := countTSScanJobs(t, pool, secondID); got != 0 {
+	if got := countTSScanJobs(enqueuer, secondID); got != 0 {
 		t.Fatalf("second recording jobs after first pass = %d, want 0", got)
 	}
 	var continuationAfter int64
-	var continuationJobID int64
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, (ReconcileArgs{}).Kind()) {
-		if row.State != rivertype.JobStateAvailable && row.State != rivertype.JobStateRetryable && row.State != rivertype.JobStateRunning {
-			continue
+	for _, queued := range enqueuer.args {
+		if args, ok := queued.(ReconcileArgs); ok {
+			continuationAfter = args.AfterRecordingID
 		}
-		if row.ID < continuationJobID {
-			continue
-		}
-		var args ReconcileArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding reconcile job %d args: %v", row.ID, err)
-		}
-		continuationAfter = args.AfterRecordingID
-		continuationJobID = row.ID
 	}
 	if continuationAfter != firstID {
 		t.Fatalf("continuation cursor = %d, want first recording ID %d", continuationAfter, firstID)
@@ -425,15 +404,11 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 
 	// KEDA starts a fresh --once process for each queue item. The next page must
 	// come from the continuation args, not state held by the previous worker.
-	secondWorker := &ReconcileWorker{Pool: pool, RowLimit: 1}
-	secondJob := &river.Job[ReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   ReconcileArgs{AfterRecordingID: continuationAfter},
-	}
-	if err := secondWorker.Work(ctx, secondJob); err != nil {
+	secondWorker := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer, RowLimit: 1}
+	if err := runWorkerViaJobQFake(ctx, secondWorker, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
 		t.Fatalf("second reconcile page: %v", err)
 	}
-	if got := countTSScanJobs(t, pool, secondID); got != 1 {
+	if got := countTSScanJobs(enqueuer, secondID); got != 1 {
 		t.Fatalf("second recording jobs after continuation page = %d, want 1", got)
 	}
 }
@@ -496,15 +471,10 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 	return size
 }
 
-func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
-	t.Helper()
+func countTSScanJobs(enqueuer *recordingEnqueuer, recordingID int64) int {
 	var count int
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (ScanArgs{}).Kind()) {
-		var args ScanArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding scan job %d args: %v", row.ID, err)
-		}
-		if args.RecordingID == recordingID {
+	for _, queued := range enqueuer.args {
+		if args, ok := queued.(ScanArgs); ok && args.RecordingID == recordingID {
 			count++
 		}
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -513,7 +514,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 		JobRow: &rivertype.JobRow{ID: 7},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() = %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
@@ -560,7 +561,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
 
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() first run: %v", err)
 	}
 
@@ -592,7 +593,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	if err := os.WriteFile(outPath, marker, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() second run: %v", err)
 	}
 	got2, err := os.ReadFile(outPath)
@@ -661,7 +662,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 
@@ -692,7 +693,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 
 	// 冪等スキップ（既に active な encoded がある）では再発火しない。
 	rec.reset()
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() second run: %v", err)
 	}
 	if events := rec.received(); len(events) != 0 {
@@ -733,7 +734,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 			t.Fatalf("recording prior failure %d: updated=%v err=%v", i+1, updated, err)
 		}
 	}
-	if err := w.Work(context.Background(), job); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
 
@@ -811,7 +812,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-	if err := w.Work(ctx, job); err == nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err == nil {
 		t.Fatal("expected error with canceled ctx")
 	}
 	if events := rec.received(); len(events) != 0 {
@@ -838,7 +839,7 @@ func TestEncodeJobArgs_RiverIdentityIncludesTimeout(t *testing.T) {
 		return
 	}
 	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "x/unique-timeout.m2ts", nil, []byte("data"))
-	client, err := NewClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -877,18 +878,20 @@ func TestEncodeRebuildArgs_InsertOptsQueue(t *testing.T) {
 	}
 }
 
-func TestEncodeRebuildWorker_WithoutClientErrors(t *testing.T) {
+func TestEncodeRebuildWorker_WithoutEnqueuerErrors(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	w := &EncodeRebuildWorker{}
-	job := &river.Job[EncodeRebuildArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   EncodeRebuildArgs{RecordingID: 999999, Profile: "cut"},
+	mediaDir := t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/no-enqueuer.m2ts", []string{"h264"}, []byte("payload"))
+	w := &EncodeRebuildWorker{
+		Pool:     pool,
+		Profiles: encodeConfigWith("h264"),
 	}
-	if err := w.Work(context.Background(), job); err == nil {
-		t.Fatal("expected error when no river client is attached to ctx, got nil")
+	err := runWorkerViaJobQFake(context.Background(), w, EncodeRebuildArgs{RecordingID: recordingID, Profile: "h264"})
+	if err == nil || !strings.Contains(err.Error(), "job enqueuer is nil") {
+		t.Fatalf("Work() error = %v, want missing enqueuer error", err)
 	}
 }
 
@@ -908,8 +911,8 @@ func TestEncodeRebuildWorker_EnqueuesOnlyRequestedProfile(t *testing.T) {
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
-	worker := &EncodeRebuildWorker{Pool: pool, Profiles: profiles}
-	if err := worker.Work(riverWorkContext(t, pool), job); err != nil {
+	worker := &EncodeRebuildWorker{Enqueuer: newRiverTestEnqueuer(t, pool), Pool: pool, Profiles: profiles}
+	if err := runWorkerViaJobQFake(context.Background(), worker, job.Args); err != nil {
 		t.Fatalf("EncodeRebuildWorker.Work: %v", err)
 	}
 	if got := countEncodeJobs(t, pool, recordingID, "h264"); got != 1 {

@@ -451,7 +451,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	job := newEncodeJob(recordingID, "cut")
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 
@@ -481,7 +481,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
-	if err := w.Work(ctx, newEncodeJob(recordingID, "cut")); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, newEncodeJob(recordingID, "cut").Args); err != nil {
 		t.Fatalf("second Work: %v", err)
 	}
 	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
@@ -694,8 +694,9 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		JobRow: &rivertype.JobRow{},
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"},
 	}
-	workCtx := riverWorkContext(t, pool)
-	if err := w.Work(workCtx, job); err != nil {
+	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	workCtx := context.Background()
+	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -759,8 +760,9 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		JobRow: &rivertype.JobRow{},
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"},
 	}
-	workCtx := riverWorkContext(t, pool)
-	if err := w.Work(workCtx, job); err != nil {
+	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	workCtx := context.Background()
+	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 

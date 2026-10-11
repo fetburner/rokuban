@@ -12,9 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/serverevent"
 )
@@ -193,10 +190,10 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	}
 	workDone := make(chan error, 1)
 	go func() {
-		workDone <- w.Work(context.Background(), &river.Job[EncodeJobArgs]{
-			JobRow: &rivertype.JobRow{},
-			Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
-		})
+		workDone <- runWorkerViaJobQFake(context.Background(), w,
+
+			EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
+		)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -245,10 +242,10 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
-	if err := w.Work(context.Background(), &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
-	}); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w,
+
+		EncodeJobArgs{RecordingID: recordingID, Profile: "mobile"},
+	); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 

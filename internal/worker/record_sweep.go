@@ -3,19 +3,17 @@ package worker
 import (
 	"context"
 	"fmt"
-	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
-// RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する River ワーカー。
+// RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する queue worker。
 //
 // ロジックは internal/watcher の Watcher.Sweep にそのまま置いてあり、ここでは
 // 呼び出すだけ（ロジックの移植はしない）。M2-16 で processRecord が
@@ -24,11 +22,11 @@ import (
 // しても recordings は重複しない（docs/recording.md §3.3「record 処理は並行実行
 // しても壊れない」）。
 type RecordSweepWorker struct {
-	river.WorkerDefaults[jobs.RecordSweepArgs]
+	Enqueuer jobq.Enqueuer
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の watcher_<site> キューを同時に購読しうる。Work は
-	// verifySite で job.Args.Site に対応するクライアントを取り出してから
+	// verifySite で args.Site に対応するクライアントを取り出してから
 	// watcher.New に渡す（issue #139）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
@@ -36,35 +34,24 @@ type RecordSweepWorker struct {
 	Webhook *webhook.Client
 }
 
-// Timeout は Args の Spec が返す watcher pass の締切を返す。
-func (w *RecordSweepWorker) Timeout(job *river.Job[jobs.RecordSweepArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は watcher の定期全量突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ジョブの排他がサイト単位のため）。
 //
-// Watcher は ingest ジョブを同一トランザクションで InsertTx するため、実行中の
-// River クライアントを渡す必要がある。Deps に river.Client を持たせると
-// NewWorkers（クライアント生成前に呼ばれる）で鶏と卵になるため、ruler_pass の
-// ヒント投入と同じ手法（river.ClientFromContextSafely）でジョブ実行コンテキストから
-// 取り出す。Worker の Work() 内では必ず取得できる（River のドキュメント通り、
-// ここで失敗することはない）。
-func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[jobs.RecordSweepArgs]) error {
+// Watcher は ingest ジョブを同一トランザクションで enqueue するため、Enqueuer を渡す。
+func (w *RecordSweepWorker) Work(ctx context.Context, args jobs.RecordSweepArgs) error {
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、`GET /api/recording/records` の全量取得から他インスタンスの
 	// record をこのサイトの recording として processRecord が取り込みうる
 	// （issue #139）。watcher.New/Sweep より前に照合する。
-	client, err := verifySite(w.MirakcClients, job.Args.Site, jobs.RecordSweepQueue)
+	client, err := verifySite(w.MirakcClients, args.Site, jobs.RecordSweepQueue)
 	if err != nil {
 		return err
 	}
 
-	riverClient, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("getting river client from job context: %w", err)
+	if w.Enqueuer == nil {
+		return fmt.Errorf("record sweep: job enqueuer is nil")
 	}
 
-	wt := watcher.New(job.Args.Site, client, w.Pool, riverClient, w.Webhook)
+	wt := watcher.New(args.Site, client, w.Pool, w.Enqueuer, w.Webhook)
 	return wt.Sweep(ctx)
 }

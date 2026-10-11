@@ -10,6 +10,7 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -70,7 +71,7 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 			"tokyo": mirakc.NewClient(srv.URL, nil),
 		},
 	})
-	client, err := worker.NewClient(pool, workers, worker.ClientConfig{BoundSites: []string{"tokyo"}})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, worker.ClientConfig{BoundSites: []string{"tokyo"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -234,7 +235,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	client, err := worker.NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}

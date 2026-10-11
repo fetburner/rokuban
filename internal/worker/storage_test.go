@@ -18,7 +18,7 @@ import (
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 	t.Helper()
 	job := &river.Job[StorageSyncArgs]{JobRow: &rivertype.JobRow{}, Args: StorageSyncArgs{}}
-	return w.Work(context.Background(), job)
+	return runWorkerViaJobQFake(context.Background(), w, job.Args)
 }
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {

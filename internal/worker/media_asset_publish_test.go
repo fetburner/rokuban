@@ -167,8 +167,8 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", thumbnailRelPath(id),
 		func() error {
-			return w.Work(context.Background(), &river.Job[ThumbnailJobArgs]{
-				JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}})
+			return runWorkerViaJobQFake(context.Background(), w,
+				ThumbnailJobArgs{RecordingID: id})
 		}, tinyJPEG)
 }
 
@@ -210,7 +210,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 			Args:   ThumbnailJobArgs{RecordingID: id},
 		}
 		go func(job *river.Job[ThumbnailJobArgs]) {
-			results <- w.Work(context.Background(), job)
+			results <- runWorkerViaJobQFake(context.Background(), w, job.Args)
 		}(job)
 	}
 

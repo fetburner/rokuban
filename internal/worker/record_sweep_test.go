@@ -13,6 +13,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -21,8 +22,8 @@ import (
 
 // record_sweep は Args.Spec で既定より長い有限の締切を持つ。
 func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
-	w := &RecordSweepWorker{}
-	got := w.Timeout(nil)
+	args := RecordSweepArgs{}
+	got := args.Spec().Timeout(args)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
 	}
@@ -118,11 +119,8 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	srv := newRecordSweepStub(t, []mirakc.Record{record})
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
+	client := newLegacyRegistryTestClient(t, pool,
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()
@@ -204,7 +202,7 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 		JobRow: &rivertype.JobRow{ID: 906},
 		Args:   jobs.RecordSweepArgs{Site: testSite},
 	}
-	if err := w.Work(riverWorkContext(t, pool), job); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
 		t.Fatal("Work() error = nil, want record list failure")
 	}
 
@@ -226,7 +224,7 @@ func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -270,9 +268,8 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 // mirakc に一切触れずに fail-fast することを確認する（issue #139）。
 // スタブは 200 を返す（弱い
 // テストにしないため。issue #139 のテスト規律）。RecordSweepWorker.Work は
-// river.ClientFromContextSafely でジョブ実行コンテキストから River クライアント
-// を取り出すため、他のワーカーのように w.Work を直接呼べず、実際に
-// client.Insert → client.Start でジョブとして実行させる必要がある。
+// Work は site を検証してから Enqueuer を要求するため、site mismatch の確認は
+// queue client を起動せずに直接呼び出せる。
 // TestRecordSweepWorker_SiteMismatch_NeverDequeued は queue 修飾（issue #185
 // M4-13）による一次防御を確認する: site-a に束縛された worker は watcher_site-a
 // しか購読しないので、site-b 向けの record_sweep ジョブ（watcher_site-b に乗る）は
@@ -301,7 +298,7 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 
 	// このプロセスは site-a に束縛されている: watcher_site-a しか購読しない。
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -367,7 +364,7 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	}
 
 	job := &river.Job[RecordSweepArgs]{JobRow: &rivertype.JobRow{}, Args: RecordSweepArgs{Site: "site-b"}}
-	err := w.Work(context.Background(), job)
+	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -386,11 +383,9 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	srv := newRecordSweepStub(t, nil)
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
+	client := newLegacyRegistryTestClient(t, pool,
+		&Deps{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil))},
+		ClientConfig{BoundSites: []string{"site-a"}})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()

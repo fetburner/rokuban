@@ -11,7 +11,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -23,7 +22,6 @@ import (
 // It deliberately has no retry budget: saving the area again is the user-visible
 // retry operation and leaves the previous candidate available for inspection.
 type CMLogoCandidateWorker struct {
-	river.WorkerDefaults[jobs.CMLogoCandidateJobArgs]
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -31,15 +29,9 @@ type CMLogoCandidateWorker struct {
 	FFprobe    string
 }
 
-// Timeout returns the two-times recording-duration cap with a thirty-minute floor.
-func (w *CMLogoCandidateWorker) Timeout(job *river.Job[jobs.CMLogoCandidateJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work persists running before touching the original. Every analysis failure after
 // that point becomes a failed candidate row, so the desired view cannot hot-loop.
-func (w *CMLogoCandidateWorker) Work(ctx context.Context, job *river.Job[jobs.CMLogoCandidateJobArgs]) error {
-	args := job.Args
+func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandidateJobArgs) error {
 	q := sqlcgen.New(w.Pool)
 	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
 		NetworkID: args.NetworkID,

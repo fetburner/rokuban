@@ -55,7 +55,7 @@ func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *Tun
 func runTunerSync(t *testing.T, w *TunerSyncWorker) {
 	t.Helper()
 	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: testSite}}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 }
@@ -331,7 +331,7 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
 
 	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-b"}}
-	err := w.Work(context.Background(), job)
+	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -354,7 +354,7 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 
 	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-a"}}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 

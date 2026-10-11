@@ -5,14 +5,12 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
-	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
@@ -33,7 +31,7 @@ const (
 )
 
 // EncodeReconcileWorker は desired（recording_encode_policy.encode_profiles）−
-// observed（active な encoded media_assets）の差分を定期的に埋める River ワーカー
+// observed（active な encoded media_assets）の差分を定期的に埋める queue worker
 // （issue #163）。
 //
 // エンコード投入は本来レベルトリガー（不変条件 5）だが、実際に差分を埋める
@@ -96,8 +94,8 @@ const (
 // mirakc にもファイルにも触れない（DB 読み + River Insert のみ）。どの site に
 // 束縛された worker が拾っても結果は同じ。
 type EncodeReconcileWorker struct {
-	river.WorkerDefaults[jobs.EncodeReconcileArgs]
-	Pool *pgxpool.Pool
+	Enqueuer jobq.Enqueuer
+	Pool     *pgxpool.Pool
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
@@ -117,26 +115,17 @@ type EncodeReconcileWorker struct {
 	// resumeAfter は次のパスが候補を探し始める位置（この recording_id より
 	// 大きい候補から見る。0 = 先頭から）。プロセスローカルで永続化しない
 	// （上の doc コメント「窓を回す」参照）。ワーカーはプロセス生存期間中
-	// 1 インスタンスが river.AddWorker に登録されて使い回されるので、この値は
-	// パスをまたいで残る。atomic にしてあるのは、River がどの goroutine で
+	// 1 worker instance が Registry に登録されて使い回されるので、この値は
+	// パスをまたいで残る。atomic にしてあるのは、runner がどの goroutine で
 	// パスを実行するかに依存しないため。対象 args は全件 args と異なるので、
 	// concurrency の設定によっては対象パスと全件パスが同時に実行される。
 	resumeAfter atomic.Int64
 }
 
-// Timeout は Args の Spec が返す encode reconcile の締切を返す。
-func (w *EncodeReconcileWorker) Timeout(job *river.Job[jobs.EncodeReconcileArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
-// enqueueEncodeReconcileFromContext は指定録画の reconcile を River に投入する。
+// enqueueEncodeReconcile は指定録画の reconcile を投入する。
 // ingest 後の best-effort 投入なので、失敗しても呼び出し元の処理は巻き戻さない。
-func enqueueEncodeReconcileFromContext(ctx context.Context, recordingID int64) {
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return
-	}
-	if _, err := client.Insert(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID}, nil); err != nil {
+func enqueueEncodeReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) {
+	if err := enqueueJob(ctx, enqueuer, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
 		slog.Error("encode_reconcile: failed to enqueue targeted pass", "recording_id", recordingID, "err", err)
 	}
 }
@@ -152,13 +141,12 @@ func enqueueEncodeReconcileFromContext(ctx context.Context, recordingID int64) {
 // 1 件の失敗でパス全体を止めない（record_sweep の processRecord・
 // delete_reconcile の deleteMediaAsset と同じ判断）。次パスが同じ候補を
 // 拾い直す。
-func (w *EncodeReconcileWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeReconcileArgs]) error {
-	recordingID := job.Args.RecordingID
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
+func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconcileArgs) error {
+	recordingID := args.RecordingID
+	if w.Enqueuer == nil {
 		// このジョブの主目的が「encode ジョブを実際に投入すること」なので、client が取れないことを
 		// 黙った no-op にすると取りこぼしの回復そのものが消える。
-		return fmt.Errorf("encode reconcile: getting river client: %w", err)
+		return fmt.Errorf("encode reconcile: job enqueuer is nil")
 	}
 
 	rowLimit := w.RowLimit
@@ -226,7 +214,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, job *river.Job[jobs.En
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
 			continue
 		}
-		if _, err := client.Insert(ctx, args, nil); err != nil {
+		if err := enqueueJob(ctx, w.Enqueuer, args); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue missing encodes",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)

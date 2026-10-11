@@ -8,11 +8,10 @@ import (
 	"slices"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -32,16 +31,16 @@ const (
 // mirakc が未知の型を返した場合、そのサービスだけ捨てて同期は続行する。
 var validChannelTypes = map[string]bool{"GR": true, "BS": true, "CS": true, "SKY": true}
 
-// EpgSyncWorker は mirakc の services / programs を Postgres に全量投影する River ワーカー。
+// EpgSyncWorker は mirakc の services / programs を Postgres に全量投影する queue worker。
 //
 // プロジェクションは使い捨てキャッシュで、真実は常に mirakc 側にある。
 // そのため差分同期はせず、毎回の全量ポーリング + スイープでレベルトリガーに収束させる。
 type EpgSyncWorker struct {
-	river.WorkerDefaults[jobs.EpgSyncArgs]
+	Enqueuer jobq.Enqueuer
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
-	// verifySite で job.Args.Site に対応するクライアントを取り出してから使う
+	// verifySite で args.Site に対応するクライアントを取り出してから使う
 	// （issue #139）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
@@ -52,19 +51,13 @@ type EpgSyncWorker struct {
 	RetentionGrace time.Duration
 }
 
-// Timeout は Args の Spec が返す全量同期の締切を返す。
-//
+// Work runs the EPG full sync; jobs.EpgSyncArgs.Spec().Timeout bounds the pass.
 // 全量同期の所要は番組数に比例する。GR のみ 7139 件で 1.7 秒なので既定でも足りるが、
 // BS/CS を含めて十万件規模になると既定を超えうる。一方 ingest と違って無制限に
 // したくはない（mirakc が応答しないまま掴み続けるのを避ける）ので、上限は置く。
-func (w *EpgSyncWorker) Timeout(job *river.Job[jobs.EpgSyncArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
-// Work は EPG の全量同期を 1 パス実行する。
 // services / programs を upsert し、今回観測しなかった行と放送済み番組を削除する。
-func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[jobs.EpgSyncArgs]) error {
-	site := job.Args.Site
+func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
+	site := args.Site
 	log := slog.With("site", site)
 
 	started := time.Now()
@@ -158,11 +151,9 @@ func (w *EpgSyncWorker) Work(ctx context.Context, job *river.Job[jobs.EpgSyncArg
 	// 「EPG 同期の完了」）。EPG が変わったら評価を早める。ここでの投入はルール
 	// 書き込みのようなトランザクション整合の要求（dual-write 回避）はなく、
 	// あくまで定期パスを前倒しするヒントなので、同一トランザクションである
-	// 必要はない。river.ClientFromContextSafely でジョブ実行中の Client を
-	// 取り出す（EpgSyncWorker 自身に river.Client を持たせずに済む）。Client が
-	// 取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
-	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
-		if _, insertErr := riverClient.Insert(ctx, jobs.RulerPassArgs{Site: site}, nil); insertErr != nil {
+	// 必要はなく、投入できない場合も次の定期パスに委ねる。
+	if w.Enqueuer != nil {
+		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
 			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
 		}
 	}

@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
@@ -179,7 +180,7 @@ func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	done := make(chan error, 1)
-	go func() { done <- w.Work(context.Background(), jobWithID(1, recordingID)) }()
+	go func() { done <- runWorkerViaJobQFake(context.Background(), w, jobWithID(1, recordingID).Args) }()
 
 	waitReached(t, reached, done)
 	got, err := os.ReadFile(finalPath)
@@ -228,10 +229,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- w.Work(ctx, jobWithID(2, recordingID)) }()
+	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(2, recordingID).Args) }()
 	waitReached(t, reached, doneB)
 
-	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, jobWithID(1, recordingID).Args); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
 	contentA, err := os.ReadFile(finalPath)
@@ -351,9 +352,8 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Fatalf("publishEncoded published over a newer row")
 	}
 	if rowState == "active" {
-		var snooze *rivertype.JobSnoozeError
-		if !errors.As(r.err, &snooze) {
-			t.Fatalf("publishEncoded err = %v, want *rivertype.JobSnoozeError (replan via snooze, not success)", r.err)
+		if _, ok := jobq.SnoozeDelay(r.err); !ok {
+			t.Fatalf("publishEncoded err = %v, want jobq snooze (replan via snooze, not success)", r.err)
 		}
 	} else if r.err != nil {
 		t.Fatalf("publishEncoded err = %v, want a successful skip", r.err)
@@ -426,7 +426,7 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 
 // snooze（計画のやり直し）は失敗ではないので試行に数えない。
 func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
-	if shouldCountEncodeFailure(fmt.Errorf("wrapped: %w", river.JobSnooze(time.Second)), nil) {
+	if shouldCountEncodeFailure(fmt.Errorf("wrapped: %w", jobq.Snooze(time.Second)), nil) {
 		t.Error("a snooze must not count as an encode failure")
 	}
 	if !shouldCountEncodeFailure(errors.New("boom"), nil) {
@@ -450,10 +450,10 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return first.CompareAndSwap(false, true) })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- w.Work(ctx, jobWithID(2, recordingID)) }()
+	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(2, recordingID).Args) }()
 	waitReached(t, reached, doneB)
 
-	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, jobWithID(1, recordingID).Args); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
 	bScratchPattern := filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*", "out.mp4")

@@ -17,13 +17,15 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertest"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -161,7 +163,7 @@ func clearEncodeReconcileJobs(t *testing.T, pool *pgxpool.Pool) {
 
 func TestEncodeJobsInsertInCallerTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -218,7 +220,7 @@ const wantKeepOriginal409Message = "cannot set keepOriginal=until_encoded withou
 // 保持ポリシー変更が encode_reconcile を投入しないことも確認する（issue #697）。
 func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -474,7 +476,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	}
 
 	w := &worker.DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := w.Work(context.Background(), nil); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
 	var state string
@@ -522,7 +524,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 	}
 
 	w := &worker.DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := w.Work(context.Background(), nil); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
 	var state string
@@ -543,7 +545,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 // （issue #133 の受け入れ 1 個目）。
 func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -598,7 +600,7 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 // 一切見ないが、受け入れ基準の文言どおり明示的に固定する。
 func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -686,7 +688,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 // 行を新規に作りながら追記する。
 func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -741,7 +743,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 // 再 POST でも同じで、ヒントも投入される。
 func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -824,7 +826,7 @@ func decodeErrorResponse(t *testing.T, resp *http.Response) ErrorResponse {
 // 対して不正確だった。
 func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -857,7 +859,7 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 // until_encoded でエンコード完了後に retention reconcile が原本を消した状態を模す。
 func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -901,7 +903,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 // `state <> 'deleted'` に緩めるとこのテストが落ちる。
 func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -997,13 +999,15 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	workers := worker.NewWorkers(&worker.Deps{Pool: pool, Encode: config.EncodeConfig{Profiles: []config.EncodeProfile{{
+	deferred := &jobq.Deferred{}
+	workers := worker.NewWorkers(&worker.Deps{Enqueuer: deferred, Pool: pool, Encode: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}})
-	riverClient, err := worker.NewClient(pool, workers, worker.ClientConfig{})
+	riverClient, err := riveradapter.NewLegacyRegistryClient(pool, workers, worker.ClientConfig{})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}
+	deferred.Set(riveradapter.NewRiverEnqueuer(riverClient))
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
@@ -1072,7 +1076,7 @@ waitHint:
 func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -1117,12 +1121,13 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 		t.Fatalf("targeted encode_reconcile job count = %d, want 1", targetedPasses)
 	}
 
-	job := &river.Job[jobs.EncodeReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 26},
-		Args:   jobs.EncodeReconcileArgs{RecordingID: id},
+	encodeEnqueuer := riveradapter.NewRiverEnqueuer(riverClient)
+	encodeReconcileWorker := &worker.EncodeReconcileWorker{
+		Enqueuer: encodeEnqueuer,
+		Pool:     pool,
+		Profiles: profiles,
 	}
-	workerCtx := rivertest.WorkContext(ctx, riverClient)
-	if err := (&worker.EncodeReconcileWorker{Pool: pool, Profiles: profiles}).Work(workerCtx, job); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, encodeReconcileWorker, jobs.EncodeReconcileArgs{RecordingID: id}); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	for profile, want := range map[string]int{"cut": 0, "h264": 1} {

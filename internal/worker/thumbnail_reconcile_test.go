@@ -28,11 +28,8 @@ func runThumbnailReconcilePass(t *testing.T, pool *pgxpool.Pool, w *ThumbnailRec
 
 func runThumbnailReconcilePassArgs(t *testing.T, pool *pgxpool.Pool, w *ThumbnailReconcileWorker, args ThumbnailReconcileArgs) {
 	t.Helper()
-	job := &river.Job[ThumbnailReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   args,
-	}
-	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("ThumbnailReconcileWorker.Work: %v", err)
 	}
 }
@@ -42,7 +39,7 @@ func TestThumbnailReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T)
 	if pool == nil {
 		return
 	}
-	client, err := NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
@@ -212,7 +209,7 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 		JobRow: &rivertype.JobRow{},
 		Args:   ThumbnailJobArgs{RecordingID: recordingID},
 	}
-	if err := thumbnailWorker.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), thumbnailWorker, job.Args); err != nil {
 		t.Fatalf("ThumbnailWorker.Work: %v", err)
 	}
 	if _, err := sqlcgen.New(pool).GetActiveThumbnailMediaAssetID(context.Background(), recordingID); err != nil {
@@ -538,7 +535,7 @@ func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   ThumbnailReconcileArgs{},
 	}
-	if err := w.Work(context.Background(), job); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
 		t.Fatal("expected error when no river client is attached to ctx, got nil")
 	}
 }
@@ -560,7 +557,7 @@ func TestThumbnailReconcileArgs_KindAndInsertOpts(t *testing.T) {
 }
 
 func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:               true,
 		ThumbnailReconcile:         true,
 		ThumbnailReconcileInterval: time.Hour,
@@ -572,7 +569,7 @@ func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:       false,
 		ThumbnailReconcile: true,
 	})
@@ -721,7 +718,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 		},
 	}
 	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: noChapters}}
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	cur, err := q.LockActiveThumbnailMediaAsset(ctx, noChapters)
@@ -769,7 +766,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 		},
 	}
 	job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}}
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)

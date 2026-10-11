@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/catalog"
@@ -89,7 +88,7 @@ type deleteTarget struct {
 }
 
 // DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
-// ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する River ワーカー（docs/storage.md §7）。
+// ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する queue worker（docs/storage.md §7）。
 //
 // 削除プロトコルは冪等: media_assets.state を active → deleting → deleted と
 // 遷移させる。deleting のまま落ちても次パスの ListMediaAssetsPendingDelete が
@@ -140,7 +139,6 @@ type deleteTarget struct {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	river.WorkerDefaults[jobs.DeleteReconcileArgs]
 	Pool     *pgxpool.Pool
 	MediaDir string
 
@@ -154,13 +152,8 @@ type DeleteReconcileWorker struct {
 	Webhook *webhook.Client
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。
-func (w *DeleteReconcileWorker) Timeout(job *river.Job[jobs.DeleteReconcileArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は 1 パス分の削除 reconcile を実行する。
-func (w *DeleteReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.DeleteReconcileArgs]) error {
+func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
 	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
 	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。

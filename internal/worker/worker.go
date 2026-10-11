@@ -5,11 +5,10 @@ import (
 	"sort"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -80,6 +79,10 @@ func sortedSiteNames(clients map[string]*mirakc.Client) []string {
 
 // Deps は各ワーカーに注入する依存。
 type Deps struct {
+	// Enqueuer schedules follow-up work. Callers may pass jobq.Deferred to resolve the
+	// construction cycle between workers and the queue adapter.
+	Enqueuer jobq.Enqueuer
+
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
 	// 単一の MirakcClient / Site string の対を置き換えた）。mirakc/FS に触る
@@ -148,12 +151,13 @@ type Deps struct {
 	Cleanup config.CleanupConfig
 }
 
-// NewWorkers は全 kind のワーカーを登録した river.Workers を返す。
+// NewWorkers は全 kind のワーカーを登録した jobq.Registry を返す。
 // 購読キューは client 設定で絞るため、ここでは登録を減らさない。
 // k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
-func NewWorkers(deps *Deps) *river.Workers {
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &IngestWorker{
+func NewWorkers(deps *Deps) *jobq.Registry {
+	workers := jobq.NewRegistry()
+	riveradapter.Register(workers, &IngestWorker{
+		Enqueuer:      deps.Enqueuer,
 		MirakcClients: deps.MirakcClients,
 		Pool:          deps.Pool,
 		MediaDir:      deps.MediaDir,
@@ -162,7 +166,7 @@ func NewWorkers(deps *Deps) *river.Workers {
 		CutProfiles:   deps.Encode.CutProfileSet(),
 		LiveEnabled:   deps.LiveEnabled,
 	})
-	river.AddWorker(workers, &EncodeWorker{
+	riveradapter.Register(workers, &EncodeWorker{
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
@@ -171,78 +175,85 @@ func NewWorkers(deps *Deps) *river.Workers {
 		Profiles:   deps.Encode,
 		Webhook:    deps.Webhook,
 	})
-	river.AddWorker(workers, &EncodeRebuildWorker{Pool: deps.Pool, Profiles: deps.Encode})
-	river.AddWorker(workers, &EncodeReconcileWorker{
-		Pool: deps.Pool,
+	riveradapter.Register(workers, &EncodeRebuildWorker{Enqueuer: deps.Enqueuer, Pool: deps.Pool, Profiles: deps.Encode})
+	riveradapter.Register(workers, &EncodeReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Pool:     deps.Pool,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.InsertOpts のコメント参照）。
 		Profiles: deps.Encode,
 	})
-	river.AddWorker(workers, &EpgSyncWorker{
+	riveradapter.Register(workers, &EpgSyncWorker{
+		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,
 		Pool:           deps.Pool,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
-	river.AddWorker(workers, &TunerSyncWorker{
+	riveradapter.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
 		Pool:          deps.Pool,
 	})
-	river.AddWorker(workers, &RulerPassWorker{
+	riveradapter.Register(workers, &RulerPassWorker{
+		Enqueuer:          deps.Enqueuer,
 		Pool:              deps.Pool,
 		RetentionGrace:    deps.RulerRetentionGrace,
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,
 	})
-	river.AddWorker(workers, &LabelRuleReconcileWorker{Pool: deps.Pool})
-	river.AddWorker(workers, &ReconcilePassWorker{
+	riveradapter.Register(workers, &LabelRuleReconcileWorker{Pool: deps.Pool})
+	riveradapter.Register(workers, &ReconcilePassWorker{
 		MirakcClients:   deps.MirakcClients,
 		Pool:            deps.Pool,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
-	river.AddWorker(workers, &RecordSweepWorker{
+	riveradapter.Register(workers, &RecordSweepWorker{
+		Enqueuer:      deps.Enqueuer,
 		MirakcClients: deps.MirakcClients,
 		Pool:          deps.Pool,
 		Webhook:       deps.Webhook,
 	})
-	river.AddWorker(workers, &CatalogExportWorker{
+	riveradapter.Register(workers, &CatalogExportWorker{
 		Pool:     deps.Pool,
 		MediaDir: deps.MediaDir,
 	})
-	river.AddWorker(workers, &ThumbnailWorker{
+	riveradapter.Register(workers, &ThumbnailWorker{
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
-	river.AddWorker(workers, &SeekTilesWorker{
+	riveradapter.Register(workers, &SeekTilesWorker{
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
-	river.AddWorker(workers, &ThumbnailReconcileWorker{
-		Pool: deps.Pool,
+	riveradapter.Register(workers, &ThumbnailReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Pool:     deps.Pool,
 	})
-	river.AddWorker(workers, &CMDetectWorker{
+	riveradapter.Register(workers, &CMDetectWorker{
+		Enqueuer:   deps.Enqueuer,
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		CMDetect:   deps.CMDetect,
 		FFprobe:    deps.Encode.FFprobe,
 	})
-	river.AddWorker(workers, &CMLogoCandidateWorker{
+	riveradapter.Register(workers, &CMLogoCandidateWorker{
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		CMDetect:   deps.CMDetect,
 		FFprobe:    deps.Encode.FFprobe,
 	})
-	river.AddWorker(workers, &CMDetectReconcileWorker{
-		Pool: deps.Pool, RescueStuckJobsAfter: deps.RescueStuckJobsAfter,
+	riveradapter.Register(workers, &CMDetectReconcileWorker{
+		Enqueuer: deps.Enqueuer,
+		Pool:     deps.Pool, RescueStuckJobsAfter: deps.RescueStuckJobsAfter,
 	})
-	river.AddWorker(workers, &DeleteReconcileWorker{
+	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
@@ -252,28 +263,18 @@ func NewWorkers(deps *Deps) *river.Workers {
 		MissingAssetAge:   deps.Cleanup.MissingAssetAge,
 		Webhook:           deps.Webhook,
 	})
-	river.AddWorker(workers, &StorageSyncWorker{
+	riveradapter.Register(workers, &StorageSyncWorker{
 		Pool:       deps.Pool,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 	})
-	river.AddWorker(workers, &tsscan.ScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
-	river.AddWorker(workers, &tsscan.ReconcileWorker{Pool: deps.Pool})
+	riveradapter.Register(workers, &tsscan.ScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Pool: deps.Pool})
 	return workers
 }
 
-// ClientConfig is retained for callers that still construct River workers directly.
+// ClientConfig is the River adapter configuration used by transitional callers.
 type ClientConfig = riveradapter.Config
 
-// DefaultSoftStopTimeout is the River shutdown grace used by the adapter.
+// DefaultSoftStopTimeout is the adapter's default graceful shutdown period.
 const DefaultSoftStopTimeout = riveradapter.DefaultSoftStopTimeout
-
-// NewClient creates a River client from the existing River worker registry.
-func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*river.Client[pgx5.Tx], error) {
-	return riveradapter.NewLegacyClient(pool, workers, cfg)
-}
-
-// NewInsertOnlyClient creates a River client that does not execute jobs.
-func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
-	return riveradapter.NewInsertOnlyClient(pool)
-}

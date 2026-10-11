@@ -60,7 +60,7 @@ func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID in
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   tsscan.ScanArgs{RecordingID: recordingID},
 	}
-	if err := worker.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), worker, job.Args); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
 	}
 }
@@ -169,8 +169,8 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
-	w.enqueueIngestFollowups(riverWorkContext(t, pool), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
+	w := &IngestWorker{Enqueuer: newRiverTestEnqueuer(t, pool), Pool: pool, MediaDir: mediaDir}
+	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if got := countTSScanJobs(t, pool, recordingID); got != 1 {
 		t.Fatalf("TS scan jobs after ingest followup = %d, want 1", got)
@@ -186,18 +186,18 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 	if got, want := scanArgs.Kind(), "ts_scan"; got != want {
 		t.Errorf("ScanArgs.Kind() = %q, want %q", got, want)
 	}
-	if got := scanArgs.InsertOpts().Queue; got != "ts_scan" {
-		t.Errorf("ScanArgs queue = %q, want %q", got, "ts_scan")
+	if got := scanArgs.Spec().Queue; got != "ts_scan" {
+		t.Errorf("ScanArgs.Spec().Queue = %q, want %q", got, "ts_scan")
 	}
 	reconcileArgs := tsscan.ReconcileArgs{AfterRecordingID: 456}
 	if got, want := reconcileArgs.Kind(), "ts_scan_reconcile"; got != want {
 		t.Errorf("ReconcileArgs.Kind() = %q, want %q", got, want)
 	}
-	if got := reconcileArgs.InsertOpts().Queue; got != "ts_scan" {
-		t.Errorf("ReconcileArgs queue = %q, want %q", got, "ts_scan")
+	if got := reconcileArgs.Spec().Queue; got != "ts_scan" {
+		t.Errorf("ReconcileArgs.Spec().Queue = %q, want %q", got, "ts_scan")
 	}
 
-	registered, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	registered, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    true,
 		TSScanReconcile: true,
 	})
@@ -207,7 +207,7 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 	if len(registered.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want one TS scan reconcile job", len(registered.PeriodicJobs))
 	}
-	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    false,
 		TSScanReconcile: true,
 	})

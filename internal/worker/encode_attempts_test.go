@@ -21,6 +21,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 )
 
 // waitFor は cond が true を返すまで最大 timeout 待つ（10ms 間隔でポーリング）。
@@ -105,7 +106,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 		JobRow: &rivertype.JobRow{},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work(): %v", err)
 	}
 
@@ -135,7 +136,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
 	}
-	if err := w.Work(context.Background(), job); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
 		t.Fatal("expected error for unknown profile")
 	}
 
@@ -310,7 +311,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	}
 
 	workErr := make(chan error, 1)
-	go func() { workErr <- w.Work(ctx, job) }()
+	go func() { workErr <- runWorkerViaJobQFake(ctx, w, job.Args) }()
 
 	// running 行が書かれる（cmd.Start より前）のを待つ。行自体はテストの
 	// アサーション対象（cancel 前の状態）でもあるので残す。
@@ -378,17 +379,17 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "missing"},
 	}
 	for attempt := int32(1); attempt <= 25; attempt++ {
-		err := w.Work(context.Background(), job)
+		err := runWorkerViaJobQFake(context.Background(), w, job.Args)
 		if attempt < 25 && err == nil {
 			t.Fatalf("Work at domain attempt %d succeeded; want retryable failure", attempt)
 		}
-		if attempt == 25 && !isJobCancel(err) {
-			t.Fatalf("Work at domain attempt 25 = %v, want river.JobCancel after recording failure", err)
+		if attempt == 25 && !errors.Is(err, jobq.ErrDiscard) {
+			t.Fatalf("Work at domain attempt 25 = %v, want jobq.ErrDiscard after recording failure", err)
 		}
 	}
-	// 上限到達後の Work は runEncode の前に JobCancel を返す。
-	if err := w.Work(context.Background(), job); !isJobCancel(err) {
-		t.Fatalf("Work after the domain limit = %v, want river.JobCancel", err)
+	// 上限到達後の Work は runEncode の前に ErrDiscard を返す。
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); !errors.Is(err, jobq.ErrDiscard) {
+		t.Fatalf("Work after the domain limit = %v, want jobq.ErrDiscard", err)
 	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "missing"); !ok || state != "failed" {
 		t.Fatalf("state at domain limit = %q, ok=%v, want failed", state, ok)
@@ -396,11 +397,6 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	if count, ok := encodeAttemptCount(t, pool, recordingID, "missing"); !ok || count != 25 {
 		t.Errorf("attempt_count at domain limit = %d, ok=%v, want 25", count, ok)
 	}
-}
-
-func isJobCancel(err error) bool {
-	var cancel *rivertype.JobCancelError
-	return errors.As(err, &cancel)
 }
 
 func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
@@ -462,9 +458,8 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if args.Timeout != 135*time.Minute {
 		t.Fatalf("queued timeout = %s, want 2h15m (90m recording × 1.5)", args.Timeout)
 	}
-	worker := &EncodeWorker{}
-	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: args}); got != 135*time.Minute {
-		t.Errorf("Timeout() = %s, want queued 2h15m", got)
+	if got := args.Spec().Timeout(args); got != 135*time.Minute {
+		t.Errorf("EncodeJobArgs.Spec timeout = %s, want queued 2h15m", got)
 	}
 	shortEndedAt := startedAt.Add(5 * time.Minute)
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET ended_at = $2 WHERE id = $1`, recordingID, shortEndedAt); err != nil {
@@ -478,12 +473,12 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	if shortArgs.Timeout != time.Hour {
 		t.Fatalf("queued timeout for short recording = %s, want 1h floor (5m recording × rate 4 = 20m)", shortArgs.Timeout)
 	}
-	if got := worker.Timeout(&river.Job[EncodeJobArgs]{Args: shortArgs}); got != time.Hour {
-		t.Errorf("Timeout() for short recording = %s, want queued 1h", got)
+	if got := shortArgs.Spec().Timeout(shortArgs); got != time.Hour {
+		t.Errorf("EncodeJobArgs.Spec timeout for short recording = %s, want queued 1h", got)
 	}
 	legacy := &river.Job[EncodeJobArgs]{Args: EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}}
-	if got := worker.Timeout(legacy); got != 12*time.Hour {
-		t.Errorf("Timeout() for old args = %s, want 12h", got)
+	if got := legacy.Args.Spec().Timeout(legacy.Args); got != 12*time.Hour {
+		t.Errorf("EncodeJobArgs.Spec timeout for old args = %s, want 12h", got)
 	}
 	// started_at / ended_at が NULL（ライブラリ取り込み）なら番組長（既定 30 分）で計算する。
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = NULL, ended_at = NULL, program_duration_ms = 3 * 3600 * 1000 WHERE id = $1`, recordingID); err != nil {
@@ -581,7 +576,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
 	}
 	workDone := make(chan error, 1)
-	go func() { workDone <- w.Work(ctx, job) }()
+	go func() { workDone <- runWorkerViaJobQFake(ctx, w, job.Args) }()
 	waitFor(t, 6*time.Second, func() bool {
 		_, err := os.Stat(startedPath)
 		return err == nil
@@ -858,7 +853,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	}
 
 	start := time.Now()
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work(): %v (log: %s)", err, logBuf.String())
 	}
 	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ ffmpeg が

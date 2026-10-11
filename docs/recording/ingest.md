@@ -97,7 +97,7 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 `RecordFollowReader` は読み取り中の本文が止まったときだけ stall timer を動かす。`ingest.stall_timeout`（既定 30 秒）を超えた本文を閉じ、temp に書けた offset から Range を再開する。消費側の `Write` が遅い間は `Read` が呼ばれないため、その時間を mirakc の stall と誤認しない。録画全体を 1 Work の総時間制限に収めず、4 分の slice ごとに snooze して再開する。
 
-reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（River にジョブを戻さない）なので、temp file と offset が同じ Work の中で生き続ける。slice が終わると層 2 が temp と SHA-256 state を保存して同じ job を snooze する。プロセス死で checkpoint が使えない場合も、temp を replay して状態を復元する。
+reader は `Range → 追い付き時の status → 待つ` を繰り返す。待ちはジョブ内（queue にジョブを戻さない）なので、temp file と offset が同じ Work の中で生き続ける。slice が終わると層 2 が temp と SHA-256 state を保存して同じ Args を snooze する。プロセス死で checkpoint が使えない場合も、temp を replay して状態を復元する。
 
 **接続断のたびに進捗を書き出す。** Range 本文がバイトを返した後にエラー（読み取りエラー・stall）で終わったら、reader は再試行の前に最新の書き込み位置を `progress.flush` へ渡す。正常に終わった Range では呼ばない（追従中は 500ms ごとに Range が終わるので、間引きを無視すると秒 2 行になる）。temp への書き込みエラーは mirakc の一時障害として再試行せず、Work に返す。
 
@@ -107,23 +107,23 @@ reader は `Range → 追い付き時の status → 待つ` を繰り返す。�
 `SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。
 同じ temp のサイズを Range の開始点にする。
 
-#### 層 2: River によるプロセス死の回収
+#### 層 2: ジョブ契約によるプロセス死の回収
 
-`IngestWorker.Timeout()` は 5 分、1 回の replay と転送の区切りは 4 分である。残り 1 分は HEAD、SHA-256 確認、fsync、DB commit に使う。区切りを有限にすることで、録画全体の長さや低速回線に依存せず、River が停止した Work を回収できる。
+`IngestJobArgs.Spec().Timeout` は 5 分、1 回の replay と転送の区切りは 4 分である。残り 1 分は HEAD、SHA-256 確認、fsync、DB commit に使う。区切りを有限にすることで、録画全体の長さや低速回線に依存せず、queue adapter が停止した Work を回収できる。`TestIngestWorker_TimeoutFitsBeforeRescue` はこの timeout と区切りの値を固定する。
 
-`worker.rescue_stuck_jobs_after` の既定は 6 分で、ingest の `Timeout()` 5 分と client の既定 `JobTimeout` 1 分より長い。River の JobRescuer は設定した閾値と worker 固有の `Timeout()` の長い方を待つため、プロセス死で `running` のまま残った ingest job は約 6 分で retry が予約される。長い worker timeout を持つ他の kind は、その timeout が経過するまで待つ。
+`worker.rescue_stuck_jobs_after` の既定は 6 分で、ingest の `Spec.Timeout` 5 分と既定 job timeout 1 分より長い。River adapter の JobRescuer は設定した閾値と `Spec.Timeout` の長い方を待つため、プロセス死で実行中のまま残った ingest job は約 6 分で再試行対象になる。長い timeout を持つ kind は、その timeout が経過するまで待つ。
 
-生きている Work は 4 分の区切りで temp を fsync し、SHA-256 の binary state と offset を `.checkpoint` sidecar に保存して `river.JobSnooze(0)` を返す。snooze は同じ River job row を available に戻し、`attempt` を消費しない。次の Work は同じ job ID と record 固有 temp を使う。
+生きている Work は 4 分の区切りで temp を fsync し、SHA-256 の binary state と offset を `.checkpoint` sidecar に保存して `jobq.Snooze(0)` を返す。snooze は同じ Args の再配送を依頼し、試行回数を消費しない。この挙動は `TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` で jobqfake を使って固定する。
 
 checkpoint の offset が temp サイズ以下なら、保存した hash state を復元して残りのバイトだけを replay する。checkpoint が無い、破損している、または offset が temp サイズを超える場合は先頭から全量 replay する。replay 自体が区切りに達した場合も途中状態を保存して snooze するため、大きな temp の再試行が毎回先頭から始まらない。
 
 SHA-256 state の書き込みと読み出しは temp の flock を保持したまま行う。checkpoint は temp と同じ削除条件に従い、mtime 猶予と aging による orphan 回収の対象になる。checkpoint が無効な場合に全量 replay へ戻すのは、状態ファイルだけが temp の正しさを決めないためである。
 
-`--once` の KEDA Job は Work が snooze を返すと 1 件を消化した扱いで終了する。次の Pod が同じ job row を再開するため、各区切りで KEDA の検出・スケジューリング・Pod 起動の時間が加わる。4 分は replay と転送に割り当てる上限で、1 分の後処理を足した Work Timeout 5 分が rescue の既定 6 分より短くなるように選んだ。Pod 起動時間はクラスタとイメージ状態に依存するため、運用クラスタの起動時間を測り、通常の起動時間に対して十分長い区切りであることを確認する。
+`--once` の KEDA Job は Work が snooze を返すと 1 件を消化した扱いで終了する。次の Pod が同じ Args を再開するため、各区切りで KEDA の検出・スケジューリング・Pod 起動の時間が加わる。4 分は replay と転送に割り当てる上限で、1 分の後処理を足した Work timeout 5 分が rescue の既定 6 分より短くなるように選んだ。Pod 起動時間はクラスタとイメージ状態に依存するため、運用クラスタの起動時間を測り、通常の起動時間に対して十分長い区切りであることを確認する。
 
 この経路では ingest の job-id advisory lock や `record_sweep` による River 行の生 SQL 回収を使わない。`record_sweep` は mirakc の record を定期取得し、欠けた ingest job の投入を補う。temp の flock は同じ record の書き込みを直列化し、公開時は DB の一意 reservation と rel_path lock が採用を決める。
 
-SIGTERM による停止は River の Work context が `Canceled` になる。5 分の deadline 超過は `DeadlineExceeded` として失敗に数え、停止中断は最終結果のメトリクスへ数えない。checkpoint 保存が区切りに達する前の停止では、次の Work が最後の保存位置から残りを replay する。
+SIGTERM による停止では Work context が `Canceled` になる。5 分の deadline 超過は `DeadlineExceeded` として失敗に数え、停止中断は最終結果のメトリクスへ数えない。checkpoint 保存が区切りに達する前の停止では、次の Work が最後の保存位置から残りを replay する。
 
 #### 層 3: 完全性検証とコミット
 
@@ -131,9 +131,9 @@ pull 完了後に書き込みバイト数を HEAD の Content-Length と照合�
 
 `content.sha256` が `null` または欠落している場合、finished 後の mirakc がハッシュを計算中の可能性がある。
 finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消す。
-同じ River job を snooze して待つため、worker 枠を占有しない。
-次の Work は同じ job ID と temp を使い、毎回 temp を replay しない。
-`TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` は snooze 後の `attempt=0` を確認する。
+同じ Args を snooze して待つため、worker 枠を占有しない。
+次の Work は record 固有 temp を使い、毎回 temp を replay しない。
+`TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` は jobqfake の連続した再配送で `attempt=1` が保たれることを確認する。
 `TestIngestWorker_CompletesUntilLateContentSHA256` は hash 到着後の `verified` commit を確認する。
 
 待ちの期限は転送済みバイト数を速度見積もりで割って決め、mirakc の `recording.endTime` を起点にする。値が nil または未来なら temp の mtime を使う。報告された実測は 2.35 GB の読み直しに約 4 分（約 9.8 MB/s）で、25% の余裕を含めて 7.8 MB/s とする（計測点が 1 件のため設定キーにはしない）。下限は 10 秒で、地デジ 30 分（約 3.8 GB）では約 8 分、BS 2 時間（約 20 GB）では約 43 分になる。期限後もハッシュが無ければ `timeout_skipped` で commit する。HEAD の長さが不明（`-1`）なら転送完了を先に判定できないため待たずに commit する。実機での新しい待ち時間は未検証。期限の起点は `TestIngestSHA256WaitDeadline` で確認する。
@@ -197,7 +197,7 @@ ingest commit と通常削除は同じ `rel_path` の予約 lock file に対す�
 対象区間は rename / unlink から DB commit までである。canonical orphan は公開状態を判定できないため、
 自動削除せず aging 後に報告する。
 - **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる。SIGKILL されたプロセス自身はもう書かないが、RWX ではカーネルが未書き込みのページを後から書き戻しうる（未検証）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では 30 秒以上止まったプロセスと、DB から分断されたが生きている worker でも代替実行が走る。そのぶん当たる確率が上がる
-- **同一録画の再試行**: Work は 4 分の transfer slice ごとに同じ River job を snooze する。プロセス死で running 行だけが残った場合は JobRescuer が retry を予約する。snooze では同じ job ID と record 固有 temp で再開し、temp の flock が同時書き込みを防ぐ。checkpoint が使えない場合は full replay に戻る
+- **同一録画の再試行**: Work は 4 分の transfer slice ごとに同じ Args を snooze する。プロセス死で実行中のまま残ったジョブは adapter の回収機構が再試行を予約する。snooze 後も record 固有 temp で再開し、temp の flock が同時書き込みを防ぐ。checkpoint が使えない場合は full replay に戻る
 - **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。rename 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
 
 **弱い FS へ原本を直接書く設計は、FUSE の rename 非対応や fsync/Close の不確かな意味論に合わせるための将来課題へ戻した**。本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
@@ -215,13 +215,13 @@ ingest commit と通常削除は同じ `rel_path` の予約 lock file に対す�
 
 **この余り枠は 2 つの仕事を兼ねる。** 追従後も全速 pull は残る（障害復旧後のバックログ・`record_sweep` の再投入・遅れて枠を得た追従の追い付き）。枠を録画数ちょうどにすると全速 pull が枠待ちで詰まり、逆に録画数に合わせて広げると復旧中の全速 pull が並列に走ってエッジの録画書き込みと競合する。N 本録画中は N 枠を追従が持ち、残りだけが全速 pull に回る。録画が無いときは全枠が全速 pull に回るが、そのときは邪魔する録画書き込みも無い。
 
-**追従は追い付きより優先する。** watcher は投入時にどちらかを知っているので、River の `Priority` で追従を 1、finished 後の追い付きを 2 にする。バックログ消化中に始まった生録画の追従が、枠待ちで後ろに回らないようにするためである。
+**追従は追い付きより優先する。** watcher は投入時にどちらかを知っているので、`jobq.Priority` で追従を 1、finished 後の追い付きを 2 にする。queue adapter はこの優先度をジョブへ渡す。バックログ消化中に始まった生録画の追従が、枠待ちで後ろに回らないようにするためである。
 
 ### 5.5 ingest 完了後のフロー
 
 **同一トランザクションでの投入はしない**。`media_assets` のコミット後に、対象録画を指定した `encode_reconcile` を best-effort で積む。判定は定期パスと同じ query を使うため、ヒント側に不足分の判定を持たない。投入に失敗してもログのみで、コミット済み ingest は巻き戻さない。
 
-**落としたヒントは定期パスが埋める**。ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブである（`internal/worker/encode_reconcile.go`、既定 15 分周期）。専用クエリが desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の不足分を一括取得する。取得するのは不足している `(recording_id, profile)` であり、それを River に投入する。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
+**落としたヒントは定期パスが埋める**。ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブである（`internal/worker/encode_reconcile.go`、既定 15 分周期）。専用クエリが desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の不足分を一括取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
 
 対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧にある。
 

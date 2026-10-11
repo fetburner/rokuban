@@ -8,9 +8,9 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -20,7 +20,7 @@ const (
 	encodeProcessDeathReason       = "encode process died before completing"
 )
 
-// errEncodeAttemptLimit は river.JobCancel に包んで返す、ドメイン上限到達の理由。
+// errEncodeAttemptLimit は jobq.ErrDiscard に包んで返す、ドメイン上限到達の理由。
 var errEncodeAttemptLimit = fmt.Errorf("encode attempt limit (%d) reached; fix the cause and re-request with POST /api/recordings/{id}/encode-profiles", encodeAttemptLimit)
 
 type encodeAttemptStart struct {
@@ -198,8 +198,8 @@ func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64
 }
 
 func shouldCountEncodeFailure(err, ctxErr error) bool {
-	var snooze *rivertype.JobSnoozeError
-	return err != nil && !errors.Is(ctxErr, context.Canceled) && !errors.As(err, &snooze)
+	_, snoozed := jobq.SnoozeDelay(err)
+	return err != nil && !errors.Is(ctxErr, context.Canceled) && !snoozed
 }
 
 func (w *EncodeWorker) notifyEncodeFailure(ctx context.Context, args jobs.EncodeJobArgs, attempt int32) {

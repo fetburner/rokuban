@@ -10,9 +10,9 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
@@ -23,7 +23,7 @@ const (
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
 type CMDetectReconcileWorker struct {
-	river.WorkerDefaults[jobs.CMDetectReconcileArgs]
+	Enqueuer              jobq.Enqueuer
 	Pool                  *pgxpool.Pool
 	RowLimit              int32
 	RescueStuckJobsAfter  time.Duration
@@ -32,21 +32,15 @@ type CMDetectReconcileWorker struct {
 	candidateAfterService atomic.Int32
 }
 
-// Timeout returns the cap for candidate scans and River inserts.
-func (w *CMDetectReconcileWorker) Timeout(job *river.Job[jobs.CMDetectReconcileArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 func cmDetectionTimeout(durationMs int64) time.Duration {
 	args := jobs.CMLogoCandidateJobArgs{RecordingDurationMs: durationMs}
 	return args.Spec().Timeout(args)
 }
 
 // Work schedules the current desired set and fails candidates without active jobs.
-func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CMDetectReconcileArgs]) error {
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("CM detection reconcile: getting River client: %w", err)
+func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectReconcileArgs) error {
+	if w.Enqueuer == nil {
+		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
 	}
 	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RescueStuckJobsAfter); err != nil {
 		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
@@ -64,9 +58,9 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CM
 	}
 	failed := 0
 	for _, recording := range rows {
-		if _, err := client.Insert(ctx, jobs.CMDetectJobArgs{
+		if err := enqueueJob(ctx, w.Enqueuer, jobs.CMDetectJobArgs{
 			RecordingID: recording.RecordingID, RecordingDurationMs: recording.RecordingDurationMs,
-		}, nil); err != nil {
+		}); err != nil {
 			failed++
 			slog.Error("cm_detect_reconcile: failed to enqueue detection", "recording_id", recording.RecordingID, "err", err)
 		}
@@ -90,11 +84,11 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CM
 	}
 	candidateFailures := 0
 	for _, candidate := range candidateRows {
-		_, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+		err := enqueueJob(ctx, w.Enqueuer, jobs.CMLogoCandidateJobArgs{
 			NetworkID: candidate.NetworkID, ServiceID: candidate.ServiceID,
 			RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.AreaUpdatedAt,
 			RecordingDurationMs: candidate.RecordingDurationMs,
-		}, nil)
+		})
 		if err != nil {
 			candidateFailures++
 			slog.Error("cm_detect_reconcile: failed to enqueue logo candidate",
@@ -157,10 +151,7 @@ func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueS
 }
 
 // EnqueueCMDetectionIfNeeded shares the periodic pass predicate for ingest's immediate hint.
-func EnqueueCMDetectionIfNeeded(ctx context.Context, pool *pgxpool.Pool, client *river.Client[pgx5.Tx], recordingID int64) error {
-	if client == nil {
-		return nil
-	}
+func EnqueueCMDetectionIfNeeded(ctx context.Context, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, recordingID int64) error {
 	desired, err := sqlcgen.New(pool).IsCMDetectionDesired(ctx, recordingID)
 	if err != nil {
 		return fmt.Errorf("checking desired CM detection for recording %d: %w", recordingID, err)
@@ -172,9 +163,9 @@ func EnqueueCMDetectionIfNeeded(ctx context.Context, pool *pgxpool.Pool, client 
 	if err != nil {
 		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
 	}
-	if _, err := client.Insert(ctx, jobs.CMDetectJobArgs{
+	if err := enqueueJob(ctx, enqueuer, jobs.CMDetectJobArgs{
 		RecordingID: recordingID, RecordingDurationMs: durationMs,
-	}, nil); err != nil {
+	}); err != nil {
 		return fmt.Errorf("inserting CM detection for recording %d: %w", recordingID, err)
 	}
 	return nil
