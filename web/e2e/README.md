@@ -654,6 +654,23 @@ pnpm check:colors
 検査が見ていない書き方（動的なクラス名の合成・CSS の名前付き色・3 桁の 16 進・
 `public/` の資産）は `scripts/check-colors.mjs` に書き出してあり、実行のたびに出力する。
 
+### README のスクリーンショット（`readme-screenshots.mjs`）
+
+**判定ではなく撮影だけをする。** ルートの `README.md` が載せるスクリーンショットを `docs/images/` に書き出す。
+画面を変えて README の絵が古くなったら、これを回して差し替える。
+
+公開リポジトリに載せるので、実放送の映像と番組情報は使わない。
+局と番組は架空のもので、映像は Blender Foundation のオープンムービー（CC BY 3.0）の予告編から切り出す。
+予告編は初回だけ取得して `E2E_README_MEDIA_DIR`（既定は OS の一時ディレクトリ）に置く。
+素材を変えたら README のクレジットも直す。
+
+フィクスチャは他の判定と同じく `pnpm e2e:fixtures` で契約と照合されるので、API の形が変わると CI で気付ける。
+
+```sh
+pnpm build && pnpm preview --port 4173 --strictPort &
+E2E_URL=http://localhost:4173 pnpm screenshots:readme
+```
+
 ### フォントスケール（`font-scale.mjs`）
 
 `pnpm e2e:font-scale` は、移行した `text-xs` が実ブラウザで 12px かを測る。

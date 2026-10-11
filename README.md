@@ -4,6 +4,31 @@
 
 EPGStation の漸進的改善ではなく、ゼロベースで再設計する。EPGStation は単一ホスト構成で動作する一方、Node.js IPC によるプロセス結合、プロセス内のエンコード待ち行列・実行管理、共有ファイルシステム前提、シングルライター前提を持つ。これらはホストをまたぐプロセス分割や複数レプリカへの水平スケールに制約を与える。状態の永続化を含む比較の範囲は [全体アーキテクチャ](docs/overview.md) の「背景」を参照。
 
+## 画面
+
+![ホーム。続きから見る 1 本と、ほかの新着が並ぶ](docs/images/readme-home.jpg)
+
+| 番組表 | 録画の再生 |
+|---|---|
+| ![番組表。ジャンルで色分けし、予約済みの番組に印が付く](docs/images/readme-programs.jpg) | ![録画の再生。同じシリーズのほかの回が横に並ぶ](docs/images/readme-recording.jpg) |
+
+| ライブ視聴 |
+|---|
+| ![ライブ視聴。局ごとにいま放送中の番組が並ぶ](docs/images/readme-live.jpg) |
+
+| スマホのホーム | スマホの番組表 | スマホの録画の再生 |
+|---|---|---|
+| ![スマホのホーム。下のタブで画面を切り替える](docs/images/readme-home-mobile.jpg) | ![スマホの番組表。番組を時刻順に並べる](docs/images/readme-programs-mobile.jpg) | ![スマホの録画の再生](docs/images/readme-recording-mobile.jpg) |
+
+画面の局と番組は架空のもので、映像の作品とは関係がない。
+映像は次の 2 作品の予告編から静止画を切り出し、16:9 に切り抜いて縮小したものである。
+どちらも [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) で公開されている。
+
+- [Sintel](https://durian.blender.org/): © copyright Blender Foundation | durian.blender.org
+- [Big Buck Bunny](https://peach.blender.org/): (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
+
+撮り直す手順は [web/e2e/README.md](web/e2e/README.md) の「README のスクリーンショット」にある。
+
 ## 基本方針
 
 - 録画の実行は mirakc に全面委譲。Rokuban は TS パケットを触らず、オーケストレーションと I/O に徹する
