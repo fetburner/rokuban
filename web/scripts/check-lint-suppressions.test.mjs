@@ -17,6 +17,7 @@ describe('lint suppression checker', () => {
       'const example = "// oxlint-disable-next-line react/refs"',
       'const template = `/* oxlint-disable react/purity */`',
       '// oxlint-disable-next-line react/refs, react/purity -- test case',
+      '// eslint-disable-next-line react/refs -- ESLint compatibility alias',
       'function Example() { return null }',
       '/* oxlint-disable-line react/refs -- block comment */',
     ].join('\n'))
@@ -24,7 +25,29 @@ describe('lint suppression checker', () => {
     try {
       expect(collectSuppressions(srcDir, root)).toEqual({
         'react/purity': { 'src/sample.tsx': 1 },
-        'react/refs': { 'src/sample.tsx': 2 },
+        'react/refs': { 'src/sample.tsx': 3 },
+      })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('finds comments inside empty blocks and JSX comment containers, not JSX text', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'rokuban-suppression-trivia-'))
+    const srcDir = path.join(root, 'src')
+    mkdirSync(srcDir)
+    writeFileSync(path.join(srcDir, 'sample.tsx'), [
+      'function EmptyBlock() {',
+      '  // eslint-disable react/purity -- empty block fixture',
+      '}',
+      'const jsxComment = <div>{/* oxlint-disable-next-line react/refs -- JSX comment fixture */}</div>',
+      'const jsxText = <div>// oxlint-disable react/refs</div>',
+    ].join('\n'))
+
+    try {
+      expect(collectSuppressions(srcDir, root)).toEqual({
+        'react/purity': { 'src/sample.tsx': 1 },
+        'react/refs': { 'src/sample.tsx': 1 },
       })
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -38,13 +61,14 @@ describe('lint suppression checker', () => {
     writeFileSync(path.join(srcDir, 'sample.tsx'), [
       '// oxlint-disable -- fixture',
       '// oxlint-disable',
+      '// eslint-disable -- ESLint compatibility alias',
     ].join('\n'))
 
     try {
       const actual = collectSuppressions(srcDir, root)
-      expect(actual).toEqual({ '*': { 'src/sample.tsx': 2 } })
+      expect(actual).toEqual({ '*': { 'src/sample.tsx': 3 } })
       expect(validateSuppressions(actual, actual)).toContain(
-        '  * src/sample.tsx: 台帳 2 件 / 実際 2 件。全規則の抑制は規則別に監査できないため、個別の規則名を明示してください',
+        '  * src/sample.tsx: 台帳 3 件 / 実際 3 件。全規則の抑制は規則別に監査できないため、個別の規則名を明示してください',
       )
     } finally {
       rmSync(root, { recursive: true, force: true })
@@ -104,7 +128,7 @@ describe('lint suppression checker', () => {
     const fixtureDir = mkdtempSync(path.join(webDir, 'src', '.tmp-lint-suppressions-'))
     const fixturePath = path.join(fixtureDir, 'mismatch.tsx')
     const relativePath = path.relative(webDir, fixturePath).split(path.sep).join('/')
-    writeFileSync(fixturePath, '// oxlint-disable-next-line react/refs -- checker integration fixture\n')
+    writeFileSync(fixturePath, '// eslint-disable-next-line react/refs -- checker integration fixture\n')
 
     try {
       const result = spawnSync(process.execPath, [path.join(webDir, 'scripts', 'check-lint-suppressions.mjs')], {

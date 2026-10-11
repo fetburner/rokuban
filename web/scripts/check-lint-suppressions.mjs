@@ -1,4 +1,4 @@
-// `web/src` の oxlint 抑制コメントを規則・ファイルごとに数え、台帳と照合する。
+// `web/src` の Oxlint 抑制コメント（eslint-* 互換 alias を含む）を規則・ファイルごとに数え、台帳と照合する。
 // テストも対象に含める。テスト内の抑制もアサーションの意図を弱める可能性があり、
 // 実装と同じくレビューに見える形で管理する。
 //
@@ -52,19 +52,26 @@ function commentTokens(file, source) {
         : ts.ScriptKind.JS
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true, scriptKind)
   const ranges = new Map()
+  const jsxTextRanges = []
 
   function visit(node) {
+    if (node.kind === ts.SyntaxKind.JsxText) jsxTextRanges.push([node.pos, node.end])
     for (const group of [
       ts.getLeadingCommentRanges(source, node.pos),
       ts.getTrailingCommentRanges(source, node.end),
     ]) {
       for (const range of group ?? []) ranges.set(range.pos, range)
     }
-    ts.forEachChild(node, visit)
+    // getChildren includes punctuation tokens, so comments inside otherwise empty blocks
+    // and JSX comment containers still have a token boundary to attach to.
+    for (const child of node.getChildren(sourceFile)) visit(child)
   }
   visit(sourceFile)
 
   return [...ranges.values()]
+    // getTrailingCommentRanges can interpret JSX text beginning with `//` as a comment.
+    // Such text is not trivia, so discard any range that starts inside a JSX text node.
+    .filter((range) => !jsxTextRanges.some(([start, end]) => range.pos >= start && range.pos < end))
     .sort((left, right) => left.pos - right.pos)
     .map(({ pos, end }) => source.slice(pos, end))
 }
@@ -78,7 +85,7 @@ function directivesInComment(comment) {
   const rules = []
   for (const line of text.split(/\r?\n/)) {
     const content = line.replace(/^\s*\*\s?/, '').trim()
-    const match = content.match(/^oxlint-disable(?:-next-line|-line)?(?=\s|$)(?:\s+(.*))?$/)
+    const match = content.match(/^(?:oxlint|eslint)-disable(?:-next-line|-line)?(?=\s|$)(?:\s+(.*))?$/)
     if (!match) continue
 
     let ruleText = (match[1] ?? '').trim()
