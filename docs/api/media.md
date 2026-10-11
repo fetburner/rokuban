@@ -1,4 +1,4 @@
-> [docs/api.md](../api.md)（索引）の分割本文。メディア配信（録画バイト配信・サムネイル・ライブ HLS・SPA アセット）の仕様はここが唯一の権威（openapi.yaml には載せない）。
+> [docs/api.md](../api.md)（索引）の分割本文。メディア配信（録画バイト配信・サムネイル・ライブ HLS・IPTV / XMLTV エクスポート・SPA アセット）の仕様はここが唯一の権威（openapi.yaml には載せない）。
 
 ## メディア配信（Range 対応・X-Accel-Redirect オプション）
 
@@ -124,6 +124,53 @@ streamer は位置を知らない（Range 要求の位置は再生位置では�
 `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存し、視聴済み印は
 `/api/recordings/{id}/watched` で扱う。決定と表の割り方は
 [frontend/recordings.md](../frontend/recordings.md) §視聴状態。
+
+### IPTV / XMLTV エクスポート
+
+外部プレイヤーには既存のサービス・録画・EPG 射影を投影した標準形式を渡す。
+**共有リンクやアプリ内認証は追加しない。**
+
+```text
+GET /api/iptv/playlist.m3u?include=all&liveProfile=<name>&recordingProfile=<name>
+GET /api/iptv/xmltv.xml
+```
+
+`include` は `all`（既定）、`live`、`recordings` を受け付ける。`all` はライブ局と
+録画の両方を載せる。`liveProfile` を省略すると既定のライブプロファイルを使う。
+`recordingProfile` を省略すると原本を選び、名前を指定するとその encoded profile の
+active アセットだけを載せる。録画は完了済み・ごみ箱外・未 supersede で、選択した
+アセットが active のものに限る。`live.enabled: false` では `include=live` は 404、
+`include=all` は録画だけを返す。
+
+M3U の URL は既存のライブ HLS パスと `/api/media/recordings/{id}/file` を直接指す。
+出力するのはルート相対 URL なので、外部プレイヤーには**M3U の URL をネットワークから
+直接読み込ませる**。ファイルへ保存してから開くと、URL の基準になる接続先を失う。
+XMLTV と M3U の URL にホスト名・ユーザー名・パスワード・署名トークンを含めない。
+
+URL に期限は設けない。配信のたびに既存の streamer が active アセットと録画の削除状態を
+確認するため、M3U を取得した後にごみ箱へ移した録画や削除済みアセットは 404 になる。
+原本を削除すると既定 M3U からその録画を除く。原本が無くても指定した encoded profile が
+active なら、その profile の M3U には残る。期限付きトークンや XMLTV 用の別 ID は作らない。
+
+XMLTV は `epg_services` と `epg_programs` の現在の射影だけを出す。時間範囲は現在時刻の
+3 時間前から 7 日間である。録画一覧や予約は XMLTV の正本として扱わない。番組名・説明・
+放送時刻は EPG 射影の値を使い、時刻には数値オフセットを付ける。stop が start より後で
+ない番組は stop を省略する。
+
+| 外部形式のキー | 対応する既存資源 |
+|---|---|
+| ライブ局の M3U `tvg-id` / XMLTV `channel id` と `programme channel` | `rokuban.<site>.<networkId>.<serviceId>`。サイトと放送サービスの組を表すエクスポート内の照合値。録画エントリには付けない（局の現在の番組に録画が紐付くため） |
+| XMLTV `programme/url`（system=`rokuban-api`） | `/api/sites/{site}/programs/{programId}`。番組 API の既存キー |
+| XMLTV `channel/url`（system=`rokuban-live`） | 既存のサービス単位ライブ HLS URL。ライブが無効なら省略 |
+
+これらのエクスポートは `text/plain` / XML の応答で、生成 TypeScript クライアントは
+JSON として読むため OpenAPI には載せない。ストリーム本体の配信は従来どおり
+`internal/streamer` が所有する。XMLTV の `<channel>` と `<programme>` は
+[XMLTV DTD](https://github.com/XMLTV/xmltv/blob/master/xmltv.dtd) に沿って出力する。
+
+認証が必要な場合はリバースプロキシでエクスポート・HLS・録画ファイルの全パスを保護する。
+外部プレイヤーにはプロキシの認証を設定し、URL に資格情報を埋め込まない。
+実機の Range・字幕・認証確認は [runbook/iptv.md](../runbook/iptv.md) を参照。
 
 #### X-Accel-Redirect（`storage.accel_location`）
 
