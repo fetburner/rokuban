@@ -1012,6 +1012,32 @@ describe('ホーム: 警告セクション', () => {
     expect(screen.queryByText(/BSが 1 本不足しています/)).not.toBeInTheDocument()
   })
 
+  it('正時前に期限切れになる超過区間を共有時計で警告から除く', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(nowMs)
+    const { fetchMock } = stubApi({ overages: [overage(0, 10 * 60_000)] })
+    renderHome()
+
+    expect(await screen.findByText(/BSが 1 本不足しています/)).toBeInTheDocument()
+
+    // 取得キーは 20:00 のまま、共有時計だけ 20:20 まで進める。SSE 再描画などを
+    // 待たず、正時をまたがない間に終わった区間が警告から消えることを測る。
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20 * 60_000)
+    })
+
+    await waitFor(() => {
+      expect(screen.queryByText(/BSが 1 本不足しています/)).not.toBeInTheDocument()
+    })
+    expect(screen.getByText('表示できる項目がありません')).toBeInTheDocument()
+    const starts = fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), 'http://localhost'))
+      .filter((url) => url.pathname === '/api/capacity/overages')
+      .map((url) => url.searchParams.get('start'))
+    expect(starts).toContain(new Date(2026, 6, 25, 20, 0, 0, 0).toISOString())
+    expect(starts).not.toContain(new Date(2026, 6, 25, 21, 0, 0, 0).toISOString())
+  })
+
   it('時境界より前に始まり進行中の超過区間は警告に出す（回収が広すぎない）', async () => {
     vi.setSystemTime(halfPastNowMs)
     // 18:00〜21:00 = 量子化した `start`（20:00）より前に始まっているが進行中。
