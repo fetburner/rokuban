@@ -7,10 +7,11 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "oxlint --max-warnings=2",
+    "lint": "oxlint --max-warnings=2 --report-unused-disable-directives-severity=error && node scripts/check-lint-suppressions.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "check:colors": "node scripts/check-colors.mjs",
+    "check:lint-suppressions": "node scripts/check-lint-suppressions.mjs",
     "e2e": "node e2e/checks.mjs",
     "e2e:live": "node e2e/live.mjs",
     "e2e:live-audio": "node e2e/live-audio.mjs",

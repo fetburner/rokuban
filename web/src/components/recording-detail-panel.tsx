@@ -301,7 +301,6 @@ export function RecordingDetail({
       generation: current.generation + 1,
     })
   }
-  // oxlint-disable-next-line react/purity -- the live recording edge needs a clock snapshot
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (!showChase || recording.status !== 'recording') return
