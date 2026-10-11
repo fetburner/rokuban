@@ -2385,12 +2385,20 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 	}
 }
 
-// failAfterEnqueueTx は内側の EnqueueTx を呼んだ直後にエラーを返す。processRecord では
+// failAfterEnqueueTx は内側の投入を呼んだ直後にエラーを返す。processRecord では
 // EnqueueTx が commit 直前の最後の書き込みなので、ここでの失敗は ingest 投入まで
-// 済んだ tx の rollback を起こす。
+// 済んだ tx の rollback を起こす。Enqueue も同じく失敗させるので、tx の外へ投入する
+// 実装では rollback 後もジョブが残り、件数のアサーションで落ちる。
 type failAfterEnqueueTx struct{ jobq.Enqueuer }
 
-var errAfterEnqueueTx = errors.New("injected failure after EnqueueTx")
+var errAfterEnqueueTx = errors.New("injected failure after enqueue")
+
+func (f failAfterEnqueueTx) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if _, err := f.Enqueuer.Enqueue(ctx, args, opts...); err != nil {
+		return jobq.Result{}, err
+	}
+	return jobq.Result{}, errAfterEnqueueTx
+}
 
 func (f failAfterEnqueueTx) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
 	if _, err := f.Enqueuer.EnqueueTx(ctx, tx, args, opts...); err != nil {
