@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +54,100 @@ func TestMapWorkerError(t *testing.T) {
 
 func TestContract(t *testing.T) {
 	contracttest.Run(t, newRiverContractFixture)
+}
+
+func TestStopAllowsActiveWorkToEnqueue(t *testing.T) {
+	var adapter *Adapter
+	started := make(chan struct{}, 1)
+	enqueued := make(chan error, 1)
+	worker := riverContractWorkerFunc(func(ctx context.Context, args contracttest.Args) error {
+		if args.Value != "active" {
+			return nil
+		}
+		started <- struct{}{}
+		<-ctx.Done()
+		_, err := adapter.Enqueue(context.Background(), contracttest.Args{
+			Value: "enqueued during stop", TimeoutMS: 1000, MaxAttempts: 1,
+		})
+		enqueued <- err
+		return err
+	})
+	adapter = newLifecycleTestAdapter(t, worker, 20*time.Millisecond)
+	startAdapter(t, adapter)
+	if _, err := adapter.Enqueue(context.Background(), contracttest.Args{
+		Value: "active", TimeoutMS: 5000, MaxAttempts: 1,
+	}); err != nil {
+		t.Fatalf("Enqueue(active) error = %v", err)
+	}
+	receiveSignal(t, started)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	err := adapter.Stop(stopCtx)
+	cancel()
+	if err != nil {
+		t.Fatalf("Stop() error = %v, want nil after cancelled Work enqueues", err)
+	}
+	if err := receiveError(t, enqueued); err != nil {
+		t.Fatalf("Enqueue() from Work error = %v", err)
+	}
+}
+
+func TestRestartAfterTimedOutStopAllowsActiveWorkToEnqueue(t *testing.T) {
+	var adapter *Adapter
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	releaseWork := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseWork) }) }
+	defer release()
+	enqueued := make(chan error, 1)
+	followupRan := make(chan struct{}, 1)
+	worker := riverContractWorkerFunc(func(ctx context.Context, args contracttest.Args) error {
+		if args.Value != "active" {
+			followupRan <- struct{}{}
+			return nil
+		}
+		started <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		<-releaseWork
+		_, err := adapter.Enqueue(context.Background(), contracttest.Args{
+			Value: "follow-up", TimeoutMS: 1000, MaxAttempts: 1,
+		})
+		enqueued <- err
+		return err
+	})
+	adapter = newLifecycleTestAdapter(t, worker, 20*time.Millisecond)
+	startAdapter(t, adapter)
+	if _, err := adapter.Enqueue(context.Background(), contracttest.Args{
+		Value: "active", TimeoutMS: 5000, MaxAttempts: 1,
+	}); err != nil {
+		t.Fatalf("Enqueue(active) error = %v", err)
+	}
+	receiveSignal(t, started)
+
+	stopCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	err := adapter.Stop(stopCtx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop() error = %v, want DeadlineExceeded while Work is held", err)
+	}
+	receiveSignal(t, cancelled)
+
+	startCtx, cancelStart := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelStart()
+	startCtxObserved := &signalDoneContext{Context: startCtx, doneObserved: make(chan struct{})}
+	startedAgain := make(chan error, 1)
+	go func() { startedAgain <- adapter.Start(startCtxObserved) }()
+	receiveSignal(t, startCtxObserved.doneObserved)
+	release()
+	if err := receiveError(t, enqueued); err != nil {
+		t.Fatalf("Enqueue() from Work error = %v", err)
+	}
+	if err := receiveError(t, startedAgain); err != nil {
+		t.Fatalf("Start() after timed-out Stop error = %v", err)
+	}
+	receiveSignal(t, followupRan)
 }
 
 type riverContractFixture struct {
@@ -201,3 +296,69 @@ func (fixture *riverContractFixture) RecoveryGrace() time.Duration {
 }
 
 var _ contracttest.Fixture = (*riverContractFixture)(nil)
+
+type riverContractWorkerFunc func(context.Context, contracttest.Args) error
+
+func (worker riverContractWorkerFunc) Work(ctx context.Context, args contracttest.Args) error {
+	return worker(ctx, args)
+}
+
+func newLifecycleTestAdapter(t *testing.T, worker jobq.Worker[contracttest.Args], softStopTimeout time.Duration) *Adapter {
+	t.Helper()
+	registry := jobq.NewRegistry()
+	Register(registry, worker)
+	adapter, err := NewAdapter(testutil.SetupDB(t), registry, Config{
+		Queues:               []string{"default"},
+		JobTimeout:           time.Millisecond,
+		RescueStuckJobsAfter: riverContractRescueAfter,
+		SoftStopTimeout:      softStopTimeout,
+		TestOnly:             true,
+	})
+	if err != nil {
+		t.Fatalf("NewAdapter() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = adapter.Stop(ctx)
+	})
+	return adapter
+}
+
+func startAdapter(t *testing.T, adapter *Adapter) {
+	t.Helper()
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+}
+
+func receiveSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for signal")
+	}
+}
+
+func receiveError(t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for result")
+		return nil
+	}
+}
+
+type signalDoneContext struct {
+	context.Context
+	doneObserved chan struct{}
+	once         sync.Once
+}
+
+func (ctx *signalDoneContext) Done() <-chan struct{} {
+	ctx.once.Do(func() { close(ctx.doneObserved) })
+	return ctx.Context.Done()
+}

@@ -24,6 +24,9 @@ const adapterWorkerKey = "river"
 
 // Adapter implements jobq.Enqueuer and jobq.Runner with one River client.
 type Adapter struct {
+	// lifecycleMu serializes Start and Stop without blocking client snapshots from Work.
+	lifecycleMu sync.Mutex
+	// mu protects client and restartAfterStop; never hold it while calling River.
 	mu               sync.Mutex
 	pool             *pgxpool.Pool
 	registry         *jobq.Registry
@@ -119,25 +122,33 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 	if adapter == nil {
 		return errors.New("riveradapter: client is nil")
 	}
+	adapter.lifecycleMu.Lock()
+	defer adapter.lifecycleMu.Unlock()
+
 	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if adapter.client == nil {
+	client := adapter.client
+	restartAfterStop := adapter.restartAfterStop
+	adapter.mu.Unlock()
+	if client == nil {
 		return errors.New("riveradapter: client is nil")
 	}
-	if adapter.restartAfterStop {
+	if restartAfterStop {
 		select {
-		case <-adapter.client.Stopped():
+		case <-client.Stopped():
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		client, err := newRiverClient(adapter.pool, adapter.registry, adapter.config)
+		newClient, err := newRiverClient(adapter.pool, adapter.registry, adapter.config)
 		if err != nil {
 			return err
 		}
-		adapter.client = client
+		adapter.mu.Lock()
+		adapter.client = newClient
 		adapter.restartAfterStop = false
+		adapter.mu.Unlock()
+		client = newClient
 	}
-	if err := adapter.client.Start(ctx); err != nil {
+	if err := client.Start(ctx); err != nil {
 		return fmt.Errorf("riveradapter: starting River client: %w", err)
 	}
 	return nil
@@ -148,14 +159,20 @@ func (adapter *Adapter) Stop(ctx context.Context) error {
 	if adapter == nil {
 		return errors.New("riveradapter: client is nil")
 	}
+	adapter.lifecycleMu.Lock()
+	defer adapter.lifecycleMu.Unlock()
+
 	adapter.mu.Lock()
-	defer adapter.mu.Unlock()
-	if adapter.client == nil {
+	client := adapter.client
+	adapter.mu.Unlock()
+	if client == nil {
 		return errors.New("riveradapter: client is nil")
 	}
-	if err := adapter.client.Stop(ctx); err != nil {
-		cancelErr := adapter.client.StopAndCancel(ctx)
+	if err := client.Stop(ctx); err != nil {
+		cancelErr := client.StopAndCancel(ctx)
+		adapter.mu.Lock()
 		adapter.restartAfterStop = true
+		adapter.mu.Unlock()
 		if cancelErr != nil && !errors.Is(cancelErr, err) && !errors.Is(cancelErr, context.DeadlineExceeded) {
 			return errors.Join(err, fmt.Errorf("riveradapter: cancelling stopped work: %w", cancelErr))
 		}
@@ -220,8 +237,8 @@ func (worker *riverWorker[T]) Timeout(job *river.Job[riverArgs[T]]) time.Duratio
 
 func (worker *riverWorker[T]) Work(ctx context.Context, job *river.Job[riverArgs[T]]) error {
 	err := worker.registry.Work(ctx, job.Args.args)
-	if err == nil && ctx.Err() != nil {
-		err = ctx.Err()
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		err = ctxErr
 	}
 	return mapWorkerError(err)
 }

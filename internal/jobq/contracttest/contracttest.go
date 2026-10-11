@@ -42,6 +42,7 @@ func Run(t *testing.T, factory Factory) {
 		{"Snooze does not consume MaxAttempts", testSnoozeAttempts},
 		{"Snooze delay is a lower bound", testSnoozeDelay},
 		{"timeout cancels Work and retries it", testTimeout},
+		{"timeout takes precedence over Snooze", testTimeoutOverridesSnooze},
 		{"Stop cancels overdue Work and retries it", testStop},
 		{"process death makes active Work eligible again", testCrash},
 		{"coalescing accepts one or more deliveries", testCoalescing},
@@ -209,6 +210,30 @@ func testTimeout(t *testing.T, factory Factory) {
 		if got := receiveWithin(t, calls, limit); !errors.Is(got, context.DeadlineExceeded) {
 			t.Errorf("Work context error = %v, want DeadlineExceeded", got)
 		}
+	}
+}
+
+func testTimeoutOverridesSnooze(t *testing.T, factory Factory) {
+	var calls atomic.Int32
+	contexts := make(chan error, 1)
+	fixture := newFixture(t, factory, contractWorker{work: func(ctx context.Context, _ contractArgs) error {
+		if calls.Add(1) != 1 {
+			return nil
+		}
+		<-ctx.Done()
+		contexts <- ctx.Err()
+		return jobq.Snooze(20 * time.Millisecond)
+	}})
+	start(t, fixture)
+	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 20, MaxAttempts: 1}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	waitIdle(t, fixture)
+	if got := receive(t, contexts); !errors.Is(got, context.DeadlineExceeded) {
+		t.Errorf("Work context error = %v, want DeadlineExceeded", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("Work calls after timed-out Snooze = %d, want literal 1", got)
 	}
 }
 
