@@ -150,6 +150,59 @@ WHERE want.profile <> ''
 GROUP BY c.recording_id, want.profile
 ORDER BY c.recording_id, min(want.ordinality);
 
+-- CountEncodeQueue は encode 待機列の全件数を返す。queued の候補述語は
+-- ListMissingEncodeProfiles と同じ: そのクエリと同じファイルに置き、設定から渡す
+-- known/cut profile を含む条件の変更を隣で確認できるようにする。row_limit や
+-- after_recording_id は適用しない。running は試行表の running 行数で、該当する
+-- (recording_id, profile) は queued から差し引く。
+--
+-- name: CountEncodeQueue :one
+WITH missing_profiles AS (
+  SELECT DISTINCT p.recording_id, want.profile::text AS profile
+  FROM recording_encode_policy p
+  JOIN recordings r ON r.id = p.recording_id
+  CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
+  WHERE r.deleted_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = p.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+    )
+    AND want.profile <> ''
+    AND want.profile = ANY(sqlc.arg('known_profiles')::text[])
+    AND (
+      NOT (want.profile = ANY(sqlc.arg('cut_profiles')::text[]))
+      OR EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o
+        WHERE o.recording_id = p.recording_id
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM media_assets e
+      WHERE e.recording_id = p.recording_id
+        AND e.kind = 'encoded'
+        AND e.state = 'active'
+        AND e.profile = want.profile
+    )
+)
+SELECT
+  (
+    SELECT count(*)::bigint
+    FROM missing_profiles m
+    WHERE NOT EXISTS (
+      SELECT 1 FROM recording_encode_attempts a
+      WHERE a.recording_id = m.recording_id
+        AND a.profile = m.profile
+        AND a.state = 'running'
+    )
+  )::bigint AS queued,
+  (
+    SELECT count(*)::bigint
+    FROM recording_encode_attempts
+    WHERE state = 'running'
+  )::bigint AS running;
+
 -- ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
 -- 確認していない」録画数をプロファイル名別に返す（メトリクス
 -- rokuban_cut_awaiting_review）。

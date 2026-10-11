@@ -46,6 +46,10 @@ type Server struct {
 
 	// encodeProfileNames は定義順の名前一覧（GET /api/encode-profiles 用。issue #68）。
 	encodeProfileNames []string
+	// queueEncodeProfileNames / queueCutProfileNames は待機列の導出に渡す設定値。
+	// SQL の ANY は NULL 配列を空配列と異なる意味にするため、どちらも non-nil にする。
+	queueEncodeProfileNames []string
+	queueCutProfileNames    []string
 
 	// liveProfiles は定義順のライブプロファイル一覧（GET /api/live-profiles 用。issue #869）。
 	liveProfiles []LiveProfileSummary
@@ -58,7 +62,7 @@ type Server struct {
 }
 
 // NewServer は Server を生成する。riverClient はワーカーを持たない River クライアントで、
-// ヒント投入とエンコード待機列の JobList に使う。nil なら River を使う操作だけ
+// ルール変更のヒント投入と録画一覧の encodeState 絞り込みに使う。nil なら River を使う操作だけ
 // 失敗する（RouterConfig.RiverClient 参照）。
 // sites が空なら db.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
 // 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
@@ -101,9 +105,11 @@ func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []st
 		pool: pool, river: riverClient,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
-		cutProfiles:  cut,
-		liveProfiles: append([]LiveProfileSummary(nil), liveProfiles...),
-		capabilities: caps,
+		queueEncodeProfileNames: append([]string{}, encodeProfileNames...),
+		queueCutProfileNames:    append([]string{}, cutProfileNames...),
+		cutProfiles:             cut,
+		liveProfiles:            append([]LiveProfileSummary(nil), liveProfiles...),
+		capabilities:            caps,
 	}
 }
 

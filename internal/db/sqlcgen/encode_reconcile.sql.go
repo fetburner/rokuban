@@ -9,6 +9,76 @@ import (
 	"context"
 )
 
+const countEncodeQueue = `-- name: CountEncodeQueue :one
+WITH missing_profiles AS (
+  SELECT DISTINCT p.recording_id, want.profile::text AS profile
+  FROM recording_encode_policy p
+  JOIN recordings r ON r.id = p.recording_id
+  CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
+  WHERE r.deleted_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = p.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+    )
+    AND want.profile <> ''
+    AND want.profile = ANY($1::text[])
+    AND (
+      NOT (want.profile = ANY($2::text[]))
+      OR EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o
+        WHERE o.recording_id = p.recording_id
+      )
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM media_assets e
+      WHERE e.recording_id = p.recording_id
+        AND e.kind = 'encoded'
+        AND e.state = 'active'
+        AND e.profile = want.profile
+    )
+)
+SELECT
+  (
+    SELECT count(*)::bigint
+    FROM missing_profiles m
+    WHERE NOT EXISTS (
+      SELECT 1 FROM recording_encode_attempts a
+      WHERE a.recording_id = m.recording_id
+        AND a.profile = m.profile
+        AND a.state = 'running'
+    )
+  )::bigint AS queued,
+  (
+    SELECT count(*)::bigint
+    FROM recording_encode_attempts
+    WHERE state = 'running'
+  )::bigint AS running
+`
+
+type CountEncodeQueueParams struct {
+	KnownProfiles []string
+	CutProfiles   []string
+}
+
+type CountEncodeQueueRow struct {
+	Queued  int64
+	Running int64
+}
+
+// CountEncodeQueue は encode 待機列の全件数を返す。queued の候補述語は
+// ListMissingEncodeProfiles と同じ: そのクエリと同じファイルに置き、設定から渡す
+// known/cut profile を含む条件の変更を隣で確認できるようにする。row_limit や
+// after_recording_id は適用しない。running は試行表の running 行数で、該当する
+// (recording_id, profile) は queued から差し引く。
+func (q *Queries) CountEncodeQueue(ctx context.Context, arg CountEncodeQueueParams) (CountEncodeQueueRow, error) {
+	row := q.db.QueryRow(ctx, countEncodeQueue, arg.KnownProfiles, arg.CutProfiles)
+	var i CountEncodeQueueRow
+	err := row.Scan(&i.Queued, &i.Running)
+	return i, err
+}
+
 const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
 SELECT want.profile::text AS profile, count(*)::bigint AS recordings
 FROM recording_encode_policy p

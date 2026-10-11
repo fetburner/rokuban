@@ -36,8 +36,9 @@ type RouterConfig struct {
 	Sites []string
 
 	// RiverClient が非 nil なら、ルール作成/更新/削除のヒント投入と、
-	// JobList によるエンコード待機列の参照に使う。ワーカー群を登録しない
-	// River クライアントで足り、api がジョブを実行することはない
+	// 録画一覧の encodeState 絞り込みに使う。ワーカー群を登録しない
+	// River クライアントで足り、api がジョブを実行することはない。待機列の要約は
+	// ドメイン表から導出する（TestGetEncodeQueueSummaryFromDomainState）
 	// （不変条件: api は mirakc に問い合わせず ffmpeg も実行しない）。
 	// nil は River を使わない API テストの部分構成だけで許容する。
 	RiverClient *river.Client[pgx5.Tx]

@@ -2,78 +2,37 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
-	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-const encodeJobListPageSize = 10_000
-
 type encodeQueueSnapshot struct {
-	queuedRecordingIDs  []int64
-	runningRecordingIDs []int64
+	queued  int64
+	running int64
 }
 
-// loadEncodeQueue は River の公開 API から active な encode ジョブを全件取得する。
+// loadEncodeQueue は desired と encoded の差分、および実行中の試行から待機列を導出する
+// （TestGetEncodeQueueSummaryFromDomainState）。
 func (h *Server) loadEncodeQueue(ctx context.Context) (encodeQueueSnapshot, error) {
-	if h.river == nil {
-		return encodeQueueSnapshot{}, fmt.Errorf("river client is not configured")
+	counts, err := sqlcgen.New(h.pool).CountEncodeQueue(ctx, sqlcgen.CountEncodeQueueParams{
+		KnownProfiles: h.queueEncodeProfileNames,
+		CutProfiles:   h.queueCutProfileNames,
+	})
+	if err != nil {
+		return encodeQueueSnapshot{}, fmt.Errorf("counting encode queue: %w", err)
 	}
-
-	params := river.NewJobListParams().
-		Kinds((jobs.EncodeJobArgs{}).Kind()).
-		States(
-			rivertype.JobStateAvailable,
-			rivertype.JobStatePending,
-			rivertype.JobStateScheduled,
-			rivertype.JobStateRetryable,
-			rivertype.JobStateRunning,
-		).
-		First(encodeJobListPageSize)
-
-	var snapshot encodeQueueSnapshot
-	for {
-		result, err := h.river.JobList(ctx, params)
-		if err != nil {
-			return encodeQueueSnapshot{}, fmt.Errorf("listing encode jobs: %w", err)
-		}
-		for _, job := range result.Jobs {
-			var args jobs.EncodeJobArgs
-			if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
-				return encodeQueueSnapshot{}, fmt.Errorf("decoding encode job %d args: %w", job.ID, err)
-			}
-			switch job.State {
-			case rivertype.JobStateAvailable, rivertype.JobStatePending,
-				rivertype.JobStateScheduled, rivertype.JobStateRetryable:
-				snapshot.queuedRecordingIDs = append(snapshot.queuedRecordingIDs, args.RecordingID)
-			case rivertype.JobStateRunning:
-				snapshot.runningRecordingIDs = append(snapshot.runningRecordingIDs, args.RecordingID)
-			default:
-				return encodeQueueSnapshot{}, fmt.Errorf("unexpected active encode job state %q", job.State)
-			}
-		}
-		if len(result.Jobs) < encodeJobListPageSize {
-			return snapshot, nil
-		}
-		if result.LastCursor == nil {
-			return encodeQueueSnapshot{}, fmt.Errorf("listing encode jobs: full page has no cursor")
-		}
-		params = params.After(result.LastCursor)
-	}
+	return encodeQueueSnapshot{queued: counts.Queued, running: counts.Running}, nil
 }
 
-// GetEncodeQueue は active なエンコードジョブを待機中と実行中に分けて返す。
+// GetEncodeQueue は現在 desired で未観測のエンコードと実行中の試行数を返す。
 func (h *Server) GetEncodeQueue(ctx context.Context, _ GetEncodeQueueRequestObject) (GetEncodeQueueResponseObject, error) {
 	snapshot, err := h.loadEncodeQueue(ctx)
 	if err != nil {
 		return nil, err
 	}
 	return GetEncodeQueue200JSONResponse{
-		Queued:  int64(len(snapshot.queuedRecordingIDs)),
-		Running: int64(len(snapshot.runningRecordingIDs)),
+		Queued:  snapshot.queued,
+		Running: snapshot.running,
 	}, nil
 }
