@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -11,7 +11,6 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -20,7 +19,7 @@ import (
 const (
 	defaultCMDetectReconcileInterval = 15 * time.Minute
 	cmDetectReconcileTimeout         = 5 * time.Minute
-	cmLogoCandidateJobListPageSize   = 10_000
+	riverDefaultRescueStuckJobsAfter = time.Hour
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
@@ -28,6 +27,7 @@ type CMDetectReconcileWorker struct {
 	river.WorkerDefaults[jobs.CMDetectReconcileArgs]
 	Pool                  *pgxpool.Pool
 	RowLimit              int32
+	RescueStuckJobsAfter  time.Duration
 	resumeAfter           atomic.Int64
 	candidateAfterNetwork atomic.Int32
 	candidateAfterService atomic.Int32
@@ -44,7 +44,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CM
 	if err != nil {
 		return fmt.Errorf("CM detection reconcile: getting River client: %w", err)
 	}
-	if err := failOrphanCMLogoCandidates(ctx, client, w.Pool); err != nil {
+	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RescueStuckJobsAfter); err != nil {
 		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
 	}
 	limit := w.RowLimit
@@ -114,46 +114,35 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CM
 	return nil
 }
 
-// failOrphanCMLogoCandidates uses River's documented job-list API to find active
-// candidate jobs, then marks only still-current candidate rows that have no match.
-func failOrphanCMLogoCandidates(ctx context.Context, client *river.Client[pgx5.Tx], pool *pgxpool.Pool) error {
+// failOrphanCMLogoCandidates marks running candidates whose worker deadline and rescue grace elapsed.
+// MaxAttempts is 1, so no River retry delay can leave a candidate running; changing it requires
+// revisiting this recovery rule.
+func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueStuckJobsAfter time.Duration) error {
 	candidates, err := sqlcgen.New(pool).ListRunningCMLogoCandidates(ctx)
 	if err != nil {
 		return fmt.Errorf("listing running CM logo candidates: %w", err)
 	}
-	active := make(map[cmLogoCandidateKey]struct{})
-	params := activeCMLogoCandidateJobListParams(nil)
-	for {
-		page, err := client.JobList(ctx, params)
-		if err != nil {
-			return fmt.Errorf("listing active CM logo candidate jobs: %w", err)
-		}
-		for _, job := range page.Jobs {
-			var args jobs.CMLogoCandidateJobArgs
-			if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
-				return fmt.Errorf("decoding CM logo candidate job %d args: %w", job.ID, err)
-			}
-			active[cmLogoCandidateKeyFromArgs(args)] = struct{}{}
-		}
-		if len(page.Jobs) < cmLogoCandidateJobListPageSize {
-			break
-		}
-		if page.LastCursor == nil {
-			return fmt.Errorf("listing active CM logo candidate jobs: full page has no cursor")
-		}
-		params = activeCMLogoCandidateJobListParams(page.LastCursor)
+	if rescueStuckJobsAfter == 0 {
+		// River resolves an explicit zero to its documented one-hour default.
+		rescueStuckJobsAfter = riverDefaultRescueStuckJobsAfter
 	}
 
 	q := sqlcgen.New(pool)
 	for _, candidate := range candidates {
-		key := cmLogoCandidateKeyFor(candidate.NetworkID, candidate.ServiceID,
-			candidate.RecordingID, candidate.ObservedAreaUpdatedAt)
-		if _, ok := active[key]; ok {
+		durationMs, err := q.GetCMRecordingDuration(ctx, candidate.RecordingID)
+		if errors.Is(err, pgx5.ErrNoRows) {
+			// 録画行が消えた候補は実行側の Timeout を引けない。結果に意味が無く、遅い書き込みは attempted_at 照合で拒否されるので最小締切で回収する。
+			durationMs = 0
+		} else if err != nil {
+			return fmt.Errorf("getting recording %d duration for orphan CM logo candidate: %w", candidate.RecordingID, err)
+		}
+		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(rescueStuckJobsAfter)
+		if !candidate.CurrentTime.After(deadline) {
 			continue
 		}
 		if _, err := q.FailOrphanCMLogoCandidate(ctx, sqlcgen.FailOrphanCMLogoCandidateParams{
 			NetworkID: candidate.NetworkID, ServiceID: candidate.ServiceID,
-			RecordingID: &candidate.RecordingID, AreaUpdatedAt: candidate.ObservedAreaUpdatedAt,
+			RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.ObservedAreaUpdatedAt,
 			AttemptedAt: candidate.AttemptedAt,
 		}); err != nil {
 			return fmt.Errorf("failing orphan CM logo candidate for network %d service %d: %w",
@@ -161,41 +150,6 @@ func failOrphanCMLogoCandidates(ctx context.Context, client *river.Client[pgx5.T
 		}
 	}
 	return nil
-}
-
-type cmLogoCandidateKey struct {
-	networkID            int32
-	serviceID            int32
-	recordingID          int64
-	areaUpdatedAtUnixMic int64
-}
-
-func cmLogoCandidateKeyFromArgs(args jobs.CMLogoCandidateJobArgs) cmLogoCandidateKey {
-	return cmLogoCandidateKeyFor(args.NetworkID, args.ServiceID, args.RecordingID, args.AreaUpdatedAt)
-}
-
-func cmLogoCandidateKeyFor(networkID, serviceID int32, recordingID int64, areaUpdatedAt time.Time) cmLogoCandidateKey {
-	return cmLogoCandidateKey{
-		networkID: networkID, serviceID: serviceID, recordingID: recordingID,
-		areaUpdatedAtUnixMic: areaUpdatedAt.UTC().UnixMicro(),
-	}
-}
-
-func activeCMLogoCandidateJobListParams(cursor *river.JobListCursor) *river.JobListParams {
-	params := river.NewJobListParams().
-		Kinds("cm_logo_candidate").
-		States(
-			rivertype.JobStateAvailable,
-			rivertype.JobStatePending,
-			rivertype.JobStateRetryable,
-			rivertype.JobStateRunning,
-			rivertype.JobStateScheduled,
-		).
-		First(cmLogoCandidateJobListPageSize)
-	if cursor != nil {
-		params = params.After(cursor)
-	}
-	return params
 }
 
 // EnqueueCMDetectionIfNeeded shares the periodic pass predicate for ingest's immediate hint.

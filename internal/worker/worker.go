@@ -211,6 +211,10 @@ type Deps struct {
 	// （docs/recording/ingest.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
 
+	// RescueStuckJobsAfter は River が running ジョブを救済対象とみなす猶予。
+	// CM ロゴ候補の孤児判定も同じ設定を使う。
+	RescueStuckJobsAfter time.Duration
+
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
 	// recording.finished/failed は record_sweep 経由の processRecord から、
 	// encode.finished/failed は EncodeWorker から、recording.deleted は
@@ -312,7 +316,9 @@ func NewWorkers(deps *Deps) *river.Workers {
 		CMDetect:   deps.CMDetect,
 		FFprobe:    deps.Encode.FFprobe,
 	})
-	river.AddWorker(workers, &CMDetectReconcileWorker{Pool: deps.Pool})
+	river.AddWorker(workers, &CMDetectReconcileWorker{
+		Pool: deps.Pool, RescueStuckJobsAfter: deps.RescueStuckJobsAfter,
+	})
 	river.AddWorker(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		MediaDir:          deps.MediaDir,
