@@ -30,21 +30,42 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 
 ## 構成図
 
-```
-[エッジ]                       [サーバー / クラウド]
-┌────────────┐    ┌─────────────────────────────────────────┐
-│ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│             │    │  ├ api:        REST、UI 配信(go:embed)        │
-│             │    │  ├ notifier:   NOTIFY 購読→ブラウザへ SSE 配信 │
-│             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
-└────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
-   ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
-   │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
-   │               │    ruler_pass / reconcile_pass / epg_sync   │
-   └───────────────├─────────────────────────────────────────┤
-                   │ PostgreSQL（Rokuban の DB / ジョブキュー）       │
-                   │ メディアストレージ（原本・派生物。分散時は共有） │
-                   └─────────────────────────────────────────┘
+```mermaid
+flowchart RL
+    user(["ユーザー（ブラウザ）"])
+    subgraph official["rokuban（公式イメージ）"]
+        watcher
+        worker["worker（外部ツールを使わないキュー）"]
+        api
+        notifier
+    end
+    subgraph full["rokuban-full（公式イメージ + 外部ツール。セルフビルド）"]
+        subgraph streamer["streamer"]
+            sff[["ffmpeg / ffprobe"]]
+        end
+        subgraph fworker["worker（外部ツールを使うキュー）"]
+            wff[["ffmpeg / ffprobe"]]
+            cm[["chapter_exe / logoframe / join_logo_scp"]]
+        end
+    end
+    mirakc["mirakc（エッジ）"]
+    pg[("PostgreSQL（DB / ジョブキュー）")]
+    media[("メディアストレージ（分散時は共有）")]
+    user -->|"REST / UI 配信（go:embed）"| api
+    user -->|"SSE（変更通知）"| notifier
+    user -->|"HLS・ファイル配信（ライブ・追っかけ・VOD）"| streamer
+    api -->|"読み書き・ジョブ投入"| pg
+    notifier -->|"LISTEN"| pg
+    watcher -->|"録画の観測・ingest 投入"| pg
+    watcher -->|"SSE 購読・録画の照会"| mirakc
+    worker --> pg
+    worker -->|"取り込み・予約同期・EPG"| mirakc
+    worker -->|"保存・解析・削除"| media
+    streamer -->|"放送・録画中の TS"| mirakc
+    streamer -->|"原本・派生物を読む"| media
+    streamer --> pg
+    fworker -->|"派生物の生成"| media
+    fworker --> pg
 ```
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc が予約と録画バッファを保持し、Rokuban は原本・派生物を置くメディアストレージにも依存する。
