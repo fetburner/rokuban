@@ -125,8 +125,13 @@ describe('lint suppression checker', () => {
   })
 
   it('allows lowering an existing react/purity file without editing the baseline', () => {
-    // home.tsx / programs.tsx は上限 1 件だが、実測も台帳も 0 件に下げただけならエラーにしない。
-    expect(validateSuppressions({}, {})).toEqual([])
+    // 上限 2 のファイルを台帳と実測の両方で下げただけならエラーにしない。
+    const purityBaseline = new Map([['src/pages/example.tsx', 2]])
+    const options = { purityBaseline, purityAllowlist: new Map() }
+    for (const count of [1, 0]) {
+      const table = { 'react/purity': { 'src/pages/example.tsx': count } }
+      expect(validateSuppressions(table, table, options)).toEqual([])
+    }
   })
 
   it('exits unsuccessfully when the CLI finds a ledger mismatch', () => {

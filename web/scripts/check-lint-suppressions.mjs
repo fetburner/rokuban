@@ -88,8 +88,8 @@ function directivesInComment(comment) {
     if (ruleText.startsWith('--')) ruleText = ''
     else ruleText = ruleText.replace(/\s+--\s+[\s\S]*$/, '').trim()
 
-    // 規則名なしは全規則の抑制として記録する。特に `*` は react/purity も
-    // 抑制するが、別の検査で必ずエラーにする。
+    // 規則名なしは全規則の抑制として `*` で記録する。`*` は規則別に監査
+    // できないので、validateSuppressions で必ずエラーにする。
     const names = ruleText
       ? [...new Set(ruleText.split(',').map((name) => name.trim()).filter(Boolean))]
       : ['*']
