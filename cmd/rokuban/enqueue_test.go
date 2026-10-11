@@ -203,7 +203,18 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "ts-scan-reconcile", "")
+	first := requireEnqueuedJob(t, ctx, pool, "ts-scan-reconcile", "")
+	if first.Queue != "ts_scan" {
+		t.Errorf("ts_scan_reconcile queue = %q, want literal %q", first.Queue, "ts_scan")
+	}
+
+	var duplicate bytes.Buffer
+	if err := runEnqueue(ctx, pool, "ts-scan-reconcile", "", &duplicate); err != nil {
+		t.Fatalf("runEnqueue duplicate: %v", err)
+	}
+	if !strings.Contains(duplicate.String(), "already pending") {
+		t.Errorf("duplicate output = %q, want coalescing", duplicate.String())
+	}
 }
 
 func TestRunEnqueue_CMDetectReconcile(t *testing.T) {
