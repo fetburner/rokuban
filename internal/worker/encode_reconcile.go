@@ -24,20 +24,11 @@ const (
 	// このパスが**新しく投入する**のは、ヒント経路（ingest 完了時のベストエフォート
 	// 投入と POST /api/recordings/{id}/encode-profiles のヒントジョブ）が落ちた
 	// ぶんだけである（候補には実行中・待機中のエンコードも含まれるが、それらへの
-	// 投入は River の UniqueOpts が合流させるので新しいジョブにはならない）。
+	// 投入は、args（締切を含む）が同じ間だけ River の UniqueOpts が合流させる）。
 	// 落としたヒントの回復が数十分遅れても失うものは無い一方、何時間も放置は
 	// したくないので、同じく「普段は新しい仕事を作らないバックストップ」である
 	// delete_reconcile と同じ 15 分に揃える。
 	defaultEncodeReconcileInterval = 15 * time.Minute
-
-	// encodeReconcileTimeout は 1 パス全体の上限。
-	//
-	// River の既定（1 分）より長く与える: 候補の読み取りは専用クエリでまとめるが、
-	// 不足している (recording_id, profile) ごとの River Insert は残るため、候補数
-	// （最大 encodeReconcileRowLimit）とプロファイル数に比例して DB の処理が積み上がる。
-	// ffmpeg は一切起動しない（不変条件 4 に触れない。投入するだけ）ので、
-	// encode ジョブ本体のような長時間 timeout は要らない。
-	encodeReconcileTimeout = 5 * time.Minute
 
 	// encodeReconcileRowLimit は 1 パスで拾う候補録画の既定上限
 	// （EncodeReconcileWorker.RowLimit で上書きできる）。
@@ -145,10 +136,9 @@ type EncodeReconcileWorker struct {
 	resumeAfter atomic.Int64
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。理由は
-// encodeReconcileTimeout のコメントを参照。
-func (w *EncodeReconcileWorker) Timeout(*river.Job[jobs.EncodeReconcileArgs]) time.Duration {
-	return encodeReconcileTimeout
+// Timeout は Args の Spec が返す encode reconcile の締切を返す。
+func (w *EncodeReconcileWorker) Timeout(job *river.Job[jobs.EncodeReconcileArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // enqueueEncodeReconcileFromContext は指定録画の reconcile を River に投入する。

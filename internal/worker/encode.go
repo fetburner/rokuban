@@ -117,22 +117,12 @@ func probeEncodeDuration(
 	return probeDuration(probeCtx, ffprobe, inputPath, run)
 }
 
-// encodeUnknownDurationTimeout は実尺が取れないときと、締切を持たない旧 args の締切。
-// River の executor はこの値を ffmpeg の ctx 締切にそのまま使うので、短く見積もると
-// 長尺の encode が毎回締切超過で失敗する。誤った締切超過で失敗を積むより、
-// プロセス死の検知が遅れる方を選ぶ。
-const encodeUnknownDurationTimeout = 12 * time.Hour
-
 // encodeMinTimeout は実尺から計算する締切の下限。
 const encodeMinTimeout = time.Hour
 
-// Timeout は EncodeJobArgs に保存した rescue 締切を返す。
-// 旧 args に締切が無い場合は encodeUnknownDurationTimeout を返す。
+// Timeout は EncodeJobArgs の Spec が返す保存済みまたは既定の締切を返す。
 func (w *EncodeWorker) Timeout(job *river.Job[jobs.EncodeJobArgs]) time.Duration {
-	if job.Args.Timeout > 0 {
-		return job.Args.Timeout
-	}
-	return encodeUnknownDurationTimeout
+	return jobTimeout(job)
 }
 
 // Work は encode ジョブを実行する。
@@ -1388,11 +1378,11 @@ func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64
 	}, nil
 }
 
-// encodeJobTimeout は max(1h, 実尺 × rate)。実尺が不明（0 以下）なら
-// encodeUnknownDurationTimeout を返す。
+// encodeJobTimeout は max(1h, 実尺 × rate)。実尺が不明（0 以下）なら Spec の
+// 未知尺用締切を返す。
 func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Duration {
 	if recordingDuration <= 0 {
-		return encodeUnknownDurationTimeout
+		return jobs.EncodeUnknownDurationTimeout
 	}
 	if rate <= 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
 		rate = config.DefaultEncodeProfileRate
@@ -1409,6 +1399,11 @@ type EncodeRebuildWorker struct {
 	river.WorkerDefaults[jobs.EncodeRebuildArgs]
 	Pool     *pgxpool.Pool
 	Profiles config.EncodeConfig
+}
+
+// Timeout は明示要求された encode rebuild の締切を Args.Spec から返す。
+func (w *EncodeRebuildWorker) Timeout(job *river.Job[jobs.EncodeRebuildArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は指定された録画・プロファイルの encode ジョブだけを投入する。

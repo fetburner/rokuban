@@ -52,13 +52,6 @@ const (
 	// TSScanQueue は原本 TS の解析ジョブを site 非依存で処理するキュー名。
 	TSScanQueue = "ts_scan"
 
-	// UniqueByQueue はキュー名を River の一意性キーへ含める設定。
-	// site 修飾やキューのリネーム後も、旧キューのジョブが新キューへの投入を
-	// 塞がないようにする。**キュー名を変えた（変える予定がある）キューにだけ
-	// 付ける。** 対象外のキュー（encode/thumbnail/ruler）まで広げても保険には
-	// ならず、なぜ付いているかの説明が要る範囲だけが広がる。
-	UniqueByQueue = true
-
 	// RiverQueueNameMaxLen は River が許容するキュー名の最大長。
 	RiverQueueNameMaxLen = 64
 )

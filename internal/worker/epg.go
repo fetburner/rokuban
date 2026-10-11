@@ -26,9 +26,6 @@ const (
 
 	// epgNotifyTopic は SSE クライアントへ配る番組表更新のトピック名。
 	epgNotifyTopic = "epg"
-
-	// epgSyncTimeout は全量同期 1 パスの上限。
-	epgSyncTimeout = 10 * time.Minute
 )
 
 // validChannelTypes は epg_services.channel_type の CHECK 制約に対応する。
@@ -55,13 +52,13 @@ type EpgSyncWorker struct {
 	RetentionGrace time.Duration
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。
+// Timeout は Args の Spec が返す全量同期の締切を返す。
 //
 // 全量同期の所要は番組数に比例する。GR のみ 7139 件で 1.7 秒なので既定でも足りるが、
 // BS/CS を含めて十万件規模になると既定を超えうる。一方 ingest と違って無制限に
 // したくはない（mirakc が応答しないまま掴み続けるのを避ける）ので、上限は置く。
-func (w *EpgSyncWorker) Timeout(*river.Job[jobs.EpgSyncArgs]) time.Duration {
-	return epgSyncTimeout
+func (w *EpgSyncWorker) Timeout(job *river.Job[jobs.EpgSyncArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は EPG の全量同期を 1 パス実行する。

@@ -210,7 +210,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, client interface {
 }
 
 // TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert は
-// issue #185 のレビューで見つかった問題を再現し、修正（ByQueue: UniqueByQueue）が
+// issue #185 のレビューで見つかった問題を再現し、Spec から River への ByQueue 投影が
 // 効いていることを固定する。
 //
 // # 何が起きていたか
@@ -226,7 +226,7 @@ func waitForNotAvailable(t *testing.T, ctx context.Context, client interface {
 //
 // # このテストが検出すべき変異
 //
-// `UniqueByQueue`（internal/jobs/queue.go）を `false` に戻す変異。
+// `RiverInsertOpts` の ByQueue を `false` に戻す変異。
 // この変異を注入すると、このテストの最後のアサーション
 // （`UniqueSkippedAsDuplicate == false` を期待する）が
 // `true` に反転して落ちる。実際に注入して確認済み（PR 本文の失敗出力を参照）。
@@ -265,13 +265,13 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 
 	// 2. 「デプロイ後」に同じ record を record_sweep が再投入する状況を再現する
 	//    --- 今の IngestJobArgs.InsertOpts()（Queue: PhysicalQueueName で
-	//    "ingest_tokyo"、ByQueue: UniqueByQueue）で同じ args を Insert する。
+	//    "ingest_tokyo"、Spec.Coalesce の投影）で同じ args を Insert する。
 	newRes, err := client.Insert(ctx, args, nil)
 	if err != nil {
 		t.Fatalf("inserting new-style job: %v", err)
 	}
 
-	// ByQueue: UniqueByQueue が効いていれば、旧キューの行があっても
+	// River projection の ByQueue が効いていれば、旧キューの行があっても
 	// UniqueSkippedAsDuplicate にはならず、新しい行が作られる（新旧の
 	// unique_key がキュー名を含むかどうかで異なるハッシュになるため）。
 	// **この分岐が最初に来ることが重要**: バグがあると River は
@@ -281,8 +281,8 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	// （実際に踏んだ。旧行に合流したので Queue も旧行のものが返っていた）。
 	if newRes.UniqueSkippedAsDuplicate {
 		t.Fatal("new-style insert was skipped as a duplicate of the stale old-queue row --- " +
-			"ByQueue: UniqueByQueue is not effective; the record would never be re-ingested " +
-			"（UniqueByQueue の定義を確認する。internal/jobs/queue.go の UniqueByQueue の doc コメント参照）")
+			"River projection omitted ByQueue; the record would never be re-ingested " +
+			"（internal/jobs.RiverInsertOpts の Spec.Coalesce projection を確認する）")
 	}
 	if newRes.Job.ID == oldRes.Job.ID {
 		t.Fatal("new-style insert reused the old job's row instead of creating a new one")

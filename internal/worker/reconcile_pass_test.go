@@ -74,8 +74,7 @@ func (s *scheduleStub) count() int {
 	return len(s.schedules)
 }
 
-// reconciler は無制限にはせず、既定より長い上限を置く（reconcilePassTimeout の
-// コメント参照）。
+// reconciler は Args.Spec で既定より長い有限の締切を持つ。
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 	w := &ReconcilePassWorker{}
 	got := w.Timeout(nil)

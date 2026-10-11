@@ -18,7 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// record_sweep は無制限にはせず、既定より長い上限を置く（recordSweepTimeout のコメント参照）。
+// record_sweep は Args.Spec で既定より長い有限の締切を持つ。
 func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
 	w := &RecordSweepWorker{}
 	got := w.Timeout(nil)

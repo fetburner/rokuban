@@ -28,11 +28,6 @@ const (
 	// defaultDeleteReconcileInterval は削除 reconcile 定期パスの既定間隔。
 	defaultDeleteReconcileInterval = 15 * time.Minute
 
-	// deleteReconcileTimeout は 1 パス（ファイル走査 + 物理 unlink 多数）の上限。
-	// record_sweep と同じ理由（River 既定の 1 分では I/O 量に対して短すぎる）で
-	// 長めに与える。
-	deleteReconcileTimeout = 10 * time.Minute
-
 	// defaultTrashRetention はごみ箱（recordings.deleted_at）の既定猶予（30 日）。
 	defaultTrashRetention = 30 * 24 * time.Hour
 
@@ -76,7 +71,7 @@ const (
 	// deleteReconcileNotifyBudget は 1 パスの webhook 発火全体に与える時間上限。
 	// 発火は削除がすべて終わった後に行うので削除の進捗を遅らせることはないが、
 	// 通知先がハングすると 1 件あたり timeout × 2（既定 10 秒）を数十件分積み上げ、
-	// deleteReconcileTimeout を食い潰してパスごと失敗させうる。webhook より
+	// ジョブの締切予算を食い潰してパスごと失敗させうる。webhook より
 	// 本処理を優先する（M3-11）ため、超過分は捨てて件数をログに残す。
 	deleteReconcileNotifyBudget = 2 * time.Minute
 
@@ -163,8 +158,8 @@ type DeleteReconcileWorker struct {
 }
 
 // Timeout は River の既定（1 分）より長い上限を与える。
-func (w *DeleteReconcileWorker) Timeout(*river.Job[jobs.DeleteReconcileArgs]) time.Duration {
-	return deleteReconcileTimeout
+func (w *DeleteReconcileWorker) Timeout(job *river.Job[jobs.DeleteReconcileArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は 1 パス分の削除 reconcile を実行する。
@@ -423,7 +418,7 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
 		// deleteOrphanCleanupTimeout を待ち切って進むと、DB が詰まった状態では
-		// パス全体が deleteReconcileTimeout を超えうる）。残った孤児は次パスの
+		// パス全体の締切を超えうる）。残った孤児は次パスの
 		// agedUnpublishedOrphans が拾い直す（レベルトリガー、不変条件 5）。
 		if ctx.Err() != nil {
 			return

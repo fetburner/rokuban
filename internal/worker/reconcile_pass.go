@@ -17,20 +17,6 @@ const (
 	// 自前タイマー（reconciler.defaultConfig の ReconcileInterval）が使っていた
 	// 30 秒をそのまま引き継ぐ（docs/recording.md §3.2「定期（既定 30 秒）」）。
 	defaultReconcilePassInterval = 30 * time.Second
-
-	// reconcilePassTimeout は 1 パス（存在の突き合わせ + オプション差分反映 + GC 相当の
-	// never-scheduled 記録）全体の上限。
-	//
-	// ruler（rulerPassTimeout、5 分）は mirakc に一切触れない純粋な Postgres 処理だが、
-	// reconciler は mirakc への HTTP を伴う: schedules の全量 GET が 1 回、加えて
-	// desired 集合との差分ぶんの POST（作成）/ DELETE（削除。ただし全損シグネチャの
-	// サーキットブレーカーが発動中はゼロになる）が観測対象の件数に比例して発生する。
-	// ネットワーク往復が支配的になりうる点は
-	// epg_sync（mirakc への GET 2 回 + 応答の Postgres 投影）と同じ性質なので、
-	// epg_sync と同じ既定より長い上限を与える。ingest は転送を bounded slice ごとに
-	// snooze して継続するが、ここでは 1 回の HTTP 呼び出しが数百 MB を転送するわけではなく、mirakc 側の応答が
-	// 返らない限りいつまでも待ち続ける理由がないため、無制限にはしない。
-	reconcilePassTimeout = 10 * time.Minute
 )
 
 // ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する River ワーカー。
@@ -54,10 +40,9 @@ type ReconcilePassWorker struct {
 	StartDelayGrace time.Duration
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。理由は reconcilePassTimeout の
-// コメントを参照。
-func (w *ReconcilePassWorker) Timeout(*river.Job[jobs.ReconcilePassArgs]) time.Duration {
-	return reconcilePassTimeout
+// Timeout は Args の Spec が返す reconciler パスの締切を返す。
+func (w *ReconcilePassWorker) Timeout(job *river.Job[jobs.ReconcilePassArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は reconciler の 1 パス突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ

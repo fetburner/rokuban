@@ -832,7 +832,7 @@ func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 	}
 }
 
-func TestEncodeJobArgs_UniqueKeyIgnoresTimeout(t *testing.T) {
+func TestEncodeJobArgs_RiverIdentityIncludesTimeout(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -843,9 +843,10 @@ func TestEncodeJobArgs_UniqueKeyIgnoresTimeout(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := client.Insert(ctx, EncodeJobArgs{
+	first, err := client.Insert(ctx, EncodeJobArgs{
 		RecordingID: recordingID, Profile: "h264", Timeout: time.Hour,
-	}, nil); err != nil {
+	}, nil)
+	if err != nil {
 		t.Fatal(err)
 	}
 	second, err := client.Insert(ctx, EncodeJobArgs{
@@ -854,8 +855,11 @@ func TestEncodeJobArgs_UniqueKeyIgnoresTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !second.UniqueSkippedAsDuplicate {
-		t.Fatal("insert with a different timeout was not merged into the recording/profile job")
+	if second.UniqueSkippedAsDuplicate {
+		t.Fatal("insert with a different timeout was merged despite the complete Args identity")
+	}
+	if second.Job.ID == 0 || second.Job.ID == first.Job.ID {
+		t.Fatalf("insert with a different timeout reused or omitted the job row: first=%d second=%d", first.Job.ID, second.Job.ID)
 	}
 }
 

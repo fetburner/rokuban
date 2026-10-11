@@ -431,12 +431,28 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	}
 }
 
-// ruler は無制限にはせず、既定より長い上限を置く（rulerPassTimeout のコメント参照）。
+// ruler は Args.Spec で既定より長い有限の締切を持つ。
 func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 	w := &RulerPassWorker{}
 	got := w.Timeout(nil)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
+	}
+}
+
+func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
+	args := jobs.LabelRuleReconcileArgs{}
+	got := (&LabelRuleReconcileWorker{}).Timeout(&river.Job[jobs.LabelRuleReconcileArgs]{Args: args})
+	if got != time.Minute {
+		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
+	}
+}
+
+func TestEncodeRebuildWorker_TimeoutUsesSpec(t *testing.T) {
+	args := jobs.EncodeRebuildArgs{}
+	got := (&EncodeRebuildWorker{}).Timeout(&river.Job[jobs.EncodeRebuildArgs]{Args: args})
+	if got != time.Minute {
+		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
 	}
 }
 

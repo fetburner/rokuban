@@ -20,16 +20,6 @@ const (
 	// （旧 watcher.defaultConfig の ReconcileInterval）が使っていた 5 分をそのまま
 	// 引き継ぐ（docs/recording.md §3.3）。
 	defaultRecordSweepInterval = 5 * time.Minute
-
-	// recordSweepTimeout は 1 パス（schedules / `GET /api/recording/records` の全量
-	// 取得 + record ごとの processRecord）全体の上限。
-	//
-	// reconciler（reconcilePassTimeout、10 分）と同じ理由で river の既定（1 分）より
-	// 長く与える: mirakc への HTTP（schedules / records の全量 GET）に加え、record ごとに
-	// DB トランザクションが 1 回発生する（record_sync の行ロック確保 + recordings
-	// upsert 相当）ため、record 件数に比例して往復コストが積み上がる。record の
-	// バイト転送そのものはこのジョブに含まれず、別の ingest job が担う。
-	recordSweepTimeout = 10 * time.Minute
 )
 
 // RecordSweepWorker は watcher の定期全量突き合わせ（(c)）を実行する River ワーカー。
@@ -53,10 +43,9 @@ type RecordSweepWorker struct {
 	Webhook *webhook.Client
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。理由は recordSweepTimeout の
-// コメントを参照。
-func (w *RecordSweepWorker) Timeout(*river.Job[jobs.RecordSweepArgs]) time.Duration {
-	return recordSweepTimeout
+// Timeout は Args の Spec が返す watcher pass の締切を返す。
+func (w *RecordSweepWorker) Timeout(job *river.Job[jobs.RecordSweepArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は watcher の定期全量突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ

@@ -35,7 +35,6 @@ import (
 const (
 	thumbnailSeekFraction = 0.10
 	thumbnailSeekMax      = 30 * time.Second
-	thumbnailTimeout      = 5 * time.Minute
 )
 
 // ThumbnailWorker は原本または利用可能なエンコード版から代表フレームを JPEG 抽出し、
@@ -73,9 +72,9 @@ type thumbnailWorkPlan struct {
 	replaced  string
 }
 
-// Timeout はサムネイル 1 件の上限。大容量 TS への入力シークでも 5 分あれば足りる。
-func (w *ThumbnailWorker) Timeout(*river.Job[jobs.ThumbnailJobArgs]) time.Duration {
-	return thumbnailTimeout
+// Timeout は Args の Spec が返すサムネイル生成の締切を返す。
+func (w *ThumbnailWorker) Timeout(job *river.Job[jobs.ThumbnailJobArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は thumbnail ジョブを実行する。

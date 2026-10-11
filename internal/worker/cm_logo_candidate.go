@@ -33,7 +33,7 @@ type CMLogoCandidateWorker struct {
 
 // Timeout returns the two-times recording-duration cap with a thirty-minute floor.
 func (w *CMLogoCandidateWorker) Timeout(job *river.Job[jobs.CMLogoCandidateJobArgs]) time.Duration {
-	return cmDetectionTimeout(job.Args.RecordingDurationMs)
+	return jobTimeout(job)
 }
 
 // Work persists running before touching the original. Every analysis failure after

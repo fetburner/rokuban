@@ -22,10 +22,6 @@ const (
 	// reconcile と揃える。
 	defaultThumbnailReconcileInterval = 15 * time.Minute
 
-	// thumbnailReconcileTimeout は 1 パス全体の上限。thumbnail の抽出自体は
-	// ThumbnailWorker が行い、このパスは候補の読み取りと River への投入だけを行う。
-	thumbnailReconcileTimeout = 5 * time.Minute
-
 	// thumbnailReconcileRowLimit は 1 パスで拾う録画候補の既定上限。
 	thumbnailReconcileRowLimit = 1000
 )
@@ -66,8 +62,8 @@ type ThumbnailReconcileWorker struct {
 
 // Timeout は River の既定（1 分）より長い上限を与える。thumbnail の生成時間は
 // 含まず、候補の読み取りと投入だけに使う。
-func (w *ThumbnailReconcileWorker) Timeout(*river.Job[jobs.ThumbnailReconcileArgs]) time.Duration {
-	return thumbnailReconcileTimeout
+func (w *ThumbnailReconcileWorker) Timeout(job *river.Job[jobs.ThumbnailReconcileArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は thumbnail reconcile を全件または指定録画について実行する。
