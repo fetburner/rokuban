@@ -21,15 +21,8 @@ import (
 )
 
 const (
-	reconcileTimeout  = 5 * time.Minute
 	reconcileRowLimit = 1000
 	scanBatchSize     = 500
-
-	// scanTimeout is how long one scan attempt may run before River cancels it, and
-	// also the point after which River's rescuer treats a running job as dead.
-	// 未検証: the longest original and the read throughput were not measured. If the
-	// value is too short, a long original's scan times out and is retried forever.
-	scanTimeout = 6 * time.Hour
 )
 
 // ScanWorker reads an active original and replaces its TS statistics atomically.
@@ -41,7 +34,13 @@ type ScanWorker struct {
 
 // Timeout bounds one scan attempt so River's rescuer can recover a job whose
 // process died. A scan is idempotent and restartable, so a timeout only costs a retry.
-func (*ScanWorker) Timeout(*river.Job[ScanArgs]) time.Duration { return scanTimeout }
+func (*ScanWorker) Timeout(job *river.Job[ScanArgs]) time.Duration {
+	args := ScanArgs{}
+	if job != nil {
+		args = job.Args
+	}
+	return args.Spec().Timeout(args)
+}
 
 // Work reads an original from byte zero, then replaces its statistics and scan marker
 // in one database transaction. A size change during the read leaves it eligible for
@@ -124,8 +123,12 @@ type ReconcileWorker struct {
 }
 
 // Timeout bounds candidate selection and River inserts for one reconciliation pass.
-func (*ReconcileWorker) Timeout(*river.Job[ReconcileArgs]) time.Duration {
-	return reconcileTimeout
+func (*ReconcileWorker) Timeout(job *river.Job[ReconcileArgs]) time.Duration {
+	args := ReconcileArgs{}
+	if job != nil {
+		args = job.Args
+	}
+	return args.Spec().Timeout(args)
 }
 
 // Work enqueues one bounded window and persists the next page in a continuation job.

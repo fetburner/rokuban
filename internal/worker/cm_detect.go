@@ -87,7 +87,7 @@ type CMDetectWorker struct {
 
 // Timeout returns the two-times recording-duration cap with a thirty-minute floor.
 func (w *CMDetectWorker) Timeout(job *river.Job[jobs.CMDetectJobArgs]) time.Duration {
-	return cmDetectionTimeout(job.Args.RecordingDurationMs)
+	return jobTimeout(job)
 }
 
 // Work learns a missing station logo, runs JL analysis, and commits only a complete result.
@@ -564,18 +564,6 @@ func readStationLogo(dir, channel string) ([]byte, error) {
 }
 
 type frameRange struct{ start, end int64 }
-
-func cmDetectionTimeout(durationMs int64) time.Duration {
-	minimum := 30 * time.Minute
-	if durationMs <= 0 || durationMs > int64((time.Duration(math.MaxInt64)/2)/time.Millisecond) {
-		return minimum
-	}
-	d := 2 * time.Duration(durationMs) * time.Millisecond
-	if d < minimum {
-		return minimum
-	}
-	return d
-}
 
 // cmRangesFromCutAVS は obs_cut.avs の Trim() を本編区間とみなし、その補集合を CM として返す。
 // durationMs は原本の実尺。

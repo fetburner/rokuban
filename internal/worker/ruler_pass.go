@@ -17,21 +17,6 @@ const (
 	// defaultRulerPassInterval は定期パスの既定間隔。docs/recording.md §3.1 の
 	// 起動契機の表で「定期（既定 10 分）」としている値と揃える。
 	defaultRulerPassInterval = 10 * time.Minute
-
-	// rulerPassTimeout は 1 パス（全ルール評価 + GC）全体の上限。
-	//
-	// ingest の転送は bounded slice ごとに snooze して継続し、1 回の Work を有限にする。
-	// ruler は mirakc に一切触れない（不変条件 1）
-	// 純粋な Postgres 処理で、外部ネットワーク転送のように所要時間が無制限に伸びる
-	// 要因がないため、無制限にする理由がない。
-	//
-	// 一方で既定の 1 分（river.JobTimeoutDefault）は窮屈になりうる。評価そのものは
-	// 秒未満（docs/recording.md §3.1「規模は問題にならない」）だが、現在の実装は
-	// ルールごとに 1 回 DB ラウンドトリップを行う（rulequery.MatchProgramIDsForRule）
-	// ため、「数十〜数百ルール」（同 §3.1）に増えるとラウンドトリップの積み重ねで
-	// 既定を超えうる。同一パス内で番組終了後の GC（runGC）も走る。epg_sync が既定を
-	// 超える 10 分を与えているのと同じ検討に基づき、既定より余裕を持たせた値を置く。
-	rulerPassTimeout = 5 * time.Minute
 )
 
 // RulerPassWorker は ruler の 1 パス評価を実行する River ワーカー。
@@ -68,10 +53,9 @@ type RulerPassWorker struct {
 	RetractGrace time.Duration
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。理由は rulerPassTimeout の
-// コメントを参照。
-func (w *RulerPassWorker) Timeout(*river.Job[jobs.RulerPassArgs]) time.Duration {
-	return rulerPassTimeout
+// Timeout は Args の Spec が返す ruler パスの締切を返す。
+func (w *RulerPassWorker) Timeout(job *river.Job[jobs.RulerPassArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は ruler の 1 パス評価を実行する。対象サイトはジョブ引数の 1 サイトのみ

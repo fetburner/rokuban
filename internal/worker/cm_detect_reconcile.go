@@ -18,8 +18,8 @@ import (
 
 const (
 	defaultCMDetectReconcileInterval = 15 * time.Minute
-	cmDetectReconcileTimeout         = 5 * time.Minute
 	riverDefaultRescueStuckJobsAfter = time.Hour
+	cmLogoCandidateJobListPageSize   = 10_000
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
@@ -34,8 +34,8 @@ type CMDetectReconcileWorker struct {
 }
 
 // Timeout returns the cap for candidate scans and River inserts.
-func (w *CMDetectReconcileWorker) Timeout(*river.Job[jobs.CMDetectReconcileArgs]) time.Duration {
-	return cmDetectReconcileTimeout
+func (w *CMDetectReconcileWorker) Timeout(job *river.Job[jobs.CMDetectReconcileArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work schedules the current desired set and fails candidates without active jobs.

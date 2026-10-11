@@ -38,10 +38,6 @@ const (
 	seekTilesHeight   = 90
 	seekTilesColumns  = 10
 	seekTilesMaxTiles = 1080
-	// seekTilesTimeout はタイル 1 件の上限。合成 TS で測った 45 ms/枚を
-	// 1080 枚へ外挿すると約 49 秒で、合成とコピーを足しても十分な余裕がある。
-	// 外挿も実録画・J4125 での生成時間も未検証（測定は 10 分・60 枚）。
-	seekTilesTimeout = 15 * time.Minute
 )
 
 // SeekTilesWorker は原本からシークプレビュー用のタイル画像を生成し、
@@ -77,9 +73,9 @@ type SeekTilesWorker struct {
 	runCmd func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-// Timeout はタイル 1 件の上限。
-func (w *SeekTilesWorker) Timeout(*river.Job[jobs.SeekTilesJobArgs]) time.Duration {
-	return seekTilesTimeout
+// Timeout は Args の Spec が返すタイル生成の締切を返す。
+func (w *SeekTilesWorker) Timeout(job *river.Job[jobs.SeekTilesJobArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 // Work は seek_tiles ジョブを実行する。

@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
+
+	"github.com/fetburner/rokuban/internal/jobq"
 )
 
 // IngestJobArgs は ingest ジョブの引数。mirakc サイトと record ID を指定する。
@@ -17,14 +19,7 @@ func (IngestJobArgs) Kind() string { return "ingest" }
 
 // InsertOpts は ingest キューへ投入するための River 挿入オプションを返す。
 func (a IngestJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: PhysicalQueueName(IngestQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(a, a.Site)
 }
 
 // EpgSyncArgs は EPG 全量同期ジョブの引数。
@@ -37,14 +32,7 @@ func (EpgSyncArgs) Kind() string { return "epg_sync" }
 
 // InsertOpts は EPG キューへ投入するための River 挿入オプションを返す。
 func (a EpgSyncArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: PhysicalQueueName(EpgQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(a, a.Site)
 }
 
 // TunerSyncArgs はチューナー射影ジョブの引数。
@@ -57,14 +45,7 @@ func (TunerSyncArgs) Kind() string { return "tuner_sync" }
 
 // InsertOpts は EPG キューへ投入するための River 挿入オプションを返す。
 func (a TunerSyncArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: PhysicalQueueName(EpgQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(a, a.Site)
 }
 
 // RulerPassArgs は ruler の 1 パスジョブの引数。
@@ -81,13 +62,7 @@ func (RulerPassArgs) Kind() string { return "ruler_pass" }
 // ruler は mirakc に一切触れない DB のみの仕事で、site 単位の到達性ガードが
 // 要らない（issue #185 M4-13、issue #138 の決定表）。
 func (RulerPassArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: RulerQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(RulerPassArgs{}, "")
 }
 
 // ReconcilePassArgs は reconciler の 1 パス突き合わせジョブの引数。
@@ -101,14 +76,7 @@ func (ReconcilePassArgs) Kind() string { return "reconcile_pass" }
 // InsertOpts は site 修飾済みの reconciler キューへ投入するための River 挿入
 // オプションを返す。
 func (a ReconcilePassArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: PhysicalQueueName(ReconcilerQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(a, a.Site)
 }
 
 // RecordSweepArgs は watcher の定期全量突き合わせジョブの引数。
@@ -122,20 +90,13 @@ func (RecordSweepArgs) Kind() string { return "record_sweep" }
 // InsertOpts は site 修飾済みの watcher キューへ投入するための River 挿入
 // オプションを返す。
 func (a RecordSweepArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: PhysicalQueueName(RecordSweepQueue, a.Site),
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(a, a.Site)
 }
 
 // EncodeJobArgs は encode ジョブの引数。recording、プロファイル、rescue 用の締切を指定する。
 type EncodeJobArgs struct {
-	RecordingID int64         `json:"recording_id" river:"unique"`
-	Profile     string        `json:"profile" river:"unique"`
+	RecordingID int64         `json:"recording_id"`
+	Profile     string        `json:"profile"`
 	Timeout     time.Duration `json:"timeout,omitempty"`
 }
 
@@ -144,16 +105,7 @@ func (EncodeJobArgs) Kind() string { return "encode" }
 
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 func (EncodeJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: EncodeQueue,
-		// 停止による Canceled は River の attempt を消費するがドメインでは数えない。
-		// 26 > 25 は River が先に discard しない保証ではない（reconcile が新ジョブで回復する）。
-		MaxAttempts: 26,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(EncodeJobArgs{}, "")
 }
 
 // ThumbnailJobArgs は thumbnail ジョブの引数。
@@ -166,13 +118,7 @@ func (ThumbnailJobArgs) Kind() string { return "thumbnail" }
 
 // InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
 func (ThumbnailJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: ThumbnailQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(ThumbnailJobArgs{}, "")
 }
 
 // SeekTilesJobArgs はシークプレビュー用タイル画像（kind = 'seek_tiles'）ジョブの
@@ -196,14 +142,7 @@ func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
 // 後から ingest された録画の poster が一覧に出ない。下げても、いま走っている
 // 1 件ぶんの待ちは残る。
 func (SeekTilesJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue:    ThumbnailQueue,
-		Priority: 4,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(SeekTilesJobArgs{}, "")
 }
 
 // ThumbnailReconcileArgs は thumbnail の desired−observed reconcile ジョブの引数。
@@ -217,18 +156,12 @@ func (ThumbnailReconcileArgs) Kind() string { return "thumbnail_reconcile" }
 
 // InsertOpts は thumbnail キューへ投入するための River 挿入オプションを返す。
 func (ThumbnailReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: ThumbnailQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(ThumbnailReconcileArgs{}, "")
 }
 
 // CMDetectJobArgs identifies a recording whose CM ranges should be detected.
 type CMDetectJobArgs struct {
-	RecordingID         int64 `json:"recording_id" river:"unique"`
+	RecordingID         int64 `json:"recording_id"`
 	RecordingDurationMs int64 `json:"recording_duration_ms"`
 }
 
@@ -237,11 +170,7 @@ func (CMDetectJobArgs) Kind() string { return "cm_detect" }
 
 // InsertOpts routes CM detection to its dedicated queue with a short retry budget.
 func (CMDetectJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue:       CMDetectQueue,
-		MaxAttempts: 10,
-		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
-	}
+	return riverInsertOpts(CMDetectJobArgs{}, "")
 }
 
 // CMDetectReconcileArgs requests one desired-minus-observed CM detection pass.
@@ -252,20 +181,17 @@ func (CMDetectReconcileArgs) Kind() string { return "cm_detect_reconcile" }
 
 // InsertOpts routes reconciliation to the CM detection queue.
 func (CMDetectReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue:      CMDetectQueue,
-		UniqueOpts: river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
-	}
+	return riverInsertOpts(CMDetectReconcileArgs{}, "")
 }
 
 // CMLogoCandidateJobArgs identifies one station-area analysis. The area version
 // prevents an older hint from analyzing a recording after the user has saved a
 // newer area.
 type CMLogoCandidateJobArgs struct {
-	NetworkID           int32     `json:"network_id" river:"unique"`
-	ServiceID           int32     `json:"service_id" river:"unique"`
-	RecordingID         int64     `json:"recording_id" river:"unique"`
-	AreaUpdatedAt       time.Time `json:"area_updated_at" river:"unique"`
+	NetworkID           int32     `json:"network_id"`
+	ServiceID           int32     `json:"service_id"`
+	RecordingID         int64     `json:"recording_id"`
+	AreaUpdatedAt       time.Time `json:"area_updated_at"`
 	RecordingDurationMs int64     `json:"recording_duration_ms"`
 }
 
@@ -275,11 +201,7 @@ func (CMLogoCandidateJobArgs) Kind() string { return "cm_logo_candidate" }
 // InsertOpts routes candidate analysis to the CM detection queue with no retry:
 // the user can save the area again to request a fresh analysis.
 func (CMLogoCandidateJobArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue:       CMDetectQueue,
-		MaxAttempts: 1,
-		UniqueOpts:  river.UniqueOpts{ByArgs: true, ByState: pendingJobStates},
-	}
+	return riverInsertOpts(CMLogoCandidateJobArgs{}, "")
 }
 
 // LabelRuleReconcileArgs は分類ルールの変更を録画全件へ再評価するジョブの引数。
@@ -308,7 +230,7 @@ func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 // 73,000 行）。編集はまれな操作なので許容する。advisory lock が直列化するので、
 // 最後に走る 1 本は必ず最新のルール集合で評価する。
 func (LabelRuleReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{Queue: CleanupQueue}
+	return riverInsertOpts(LabelRuleReconcileArgs{}, "")
 }
 
 // EncodeReconcileArgs は encode の desired−observed reconcile ジョブの引数。
@@ -327,13 +249,7 @@ func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 // このパスは走らない。許容する: エンコードが詰まっている系では今すぐ投入しても
 // 実行されないので、検出が遅れても失うものが無い。
 func (EncodeReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: EncodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(EncodeReconcileArgs{}, "")
 }
 
 // EncodeRebuildArgs は利用者が明示した再エンコード命令の引数。
@@ -349,13 +265,7 @@ func (EncodeRebuildArgs) Kind() string { return "encode_rebuild" }
 // InsertOpts は encode キューへ投入するための River 挿入オプションを返す。
 // 同じ録画・プロファイルへの待機中または実行中の要求を合流させる。
 func (EncodeRebuildArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: EncodeQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(EncodeRebuildArgs{}, "")
 }
 
 // DeleteReconcileArgs は削除 reconcile ジョブの引数。
@@ -366,14 +276,7 @@ func (DeleteReconcileArgs) Kind() string { return "delete_reconcile" }
 
 // InsertOpts は cleanup キューへ投入するための River 挿入オプションを返す。
 func (DeleteReconcileArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: CleanupQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(DeleteReconcileArgs{}, "")
 }
 
 // CatalogExportArgs は catalog エクスポートジョブの引数。
@@ -388,14 +291,7 @@ func (CatalogExportArgs) Kind() string { return "catalog_export" }
 
 // InsertOpts は cleanup キューへ投入するための River 挿入オプションを返す。
 func (CatalogExportArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: CleanupQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(CatalogExportArgs{}, "")
 }
 
 // StorageSyncArgs はストレージ観測ジョブの引数。
@@ -409,23 +305,40 @@ func (StorageSyncArgs) Kind() string { return "storage_sync" }
 
 // InsertOpts は storage キューへ投入するための River 挿入オプションを返す。
 func (StorageSyncArgs) InsertOpts() river.InsertOpts {
-	return river.InsertOpts{
-		Queue: StorageQueue,
-		UniqueOpts: river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: UniqueByQueue,
-			ByState: pendingJobStates,
-		},
-	}
+	return riverInsertOpts(StorageSyncArgs{}, "")
 }
 
-// 全契約型が River のジョブ引数インタフェースを満たすことのコンパイル時検査。
+func riverInsertOpts(args jobq.Args, site string) river.InsertOpts {
+	spec := args.Spec()
+	return RiverInsertOpts(spec, PhysicalQueueName(spec.Queue, site))
+}
+
+// 全 Args が jobq 契約と旧 River ジョブ引数インタフェースを満たすことのコンパイル時検査。
 //
 // 満たすべきは JobArgs（Kind だけ）ではなく JobArgsWithInsertOpts である。
 // JobArgs で書くと InsertOpts を消してもコンパイルが通り、そのジョブは黙って
 // default キューへ行く。deploy/k8s の ScaledJob は default を数えるトリガを
 // 持たないので、ロール分割デプロイでは誰にも実行されないまま滞留する。
 var (
+	_ jobq.Args                   = IngestJobArgs{}
+	_ jobq.Args                   = EpgSyncArgs{}
+	_ jobq.Args                   = TunerSyncArgs{}
+	_ jobq.Args                   = RulerPassArgs{}
+	_ jobq.Args                   = ReconcilePassArgs{}
+	_ jobq.Args                   = RecordSweepArgs{}
+	_ jobq.Args                   = EncodeJobArgs{}
+	_ jobq.Args                   = ThumbnailJobArgs{}
+	_ jobq.Args                   = SeekTilesJobArgs{}
+	_ jobq.Args                   = ThumbnailReconcileArgs{}
+	_ jobq.Args                   = CMDetectJobArgs{}
+	_ jobq.Args                   = CMDetectReconcileArgs{}
+	_ jobq.Args                   = CMLogoCandidateJobArgs{}
+	_ jobq.Args                   = EncodeReconcileArgs{}
+	_ jobq.Args                   = EncodeRebuildArgs{}
+	_ jobq.Args                   = LabelRuleReconcileArgs{}
+	_ jobq.Args                   = DeleteReconcileArgs{}
+	_ jobq.Args                   = CatalogExportArgs{}
+	_ jobq.Args                   = StorageSyncArgs{}
 	_ river.JobArgsWithInsertOpts = IngestJobArgs{}
 	_ river.JobArgsWithInsertOpts = EpgSyncArgs{}
 	_ river.JobArgsWithInsertOpts = TunerSyncArgs{}

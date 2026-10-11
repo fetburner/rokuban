@@ -26,10 +26,6 @@ import (
 // 今のところ無い（docs/runbook/setup.md の record_sweep の前例。issue #238）。
 const defaultStorageSyncInterval = 5 * time.Minute
 
-// storageSyncTimeout は 1 パス（root ごとの statfs + DB upsert 高々 2 回）の上限。
-// tuner_sync と同じ理由で、River の既定（1 分）を明示する。
-const storageSyncTimeout = time.Minute
-
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
 type storageRoot struct {
 	// name は storage_sync.root の値（'media' | 'scratch'）。config キー名
@@ -72,8 +68,8 @@ type StorageSyncWorker struct {
 }
 
 // Timeout は River の既定（1 分）と同じ上限を明示する。
-func (w *StorageSyncWorker) Timeout(*river.Job[jobs.StorageSyncArgs]) time.Duration {
-	return storageSyncTimeout
+func (w *StorageSyncWorker) Timeout(job *river.Job[jobs.StorageSyncArgs]) time.Duration {
+	return jobTimeout(job)
 }
 
 func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
