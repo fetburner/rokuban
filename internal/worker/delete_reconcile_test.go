@@ -1971,7 +1971,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 }
 
-// canonicalPublishWhileWorkPaused は、old な orphan_files 行を持つ canonical 孤児に対して
+// canonicalPublishWhileWorkPaused は、古い orphan_files 行を持つ canonical 孤児に対して
 // worker.Work を走らせ、候補収集後の同期点で止めている間に ingest commit で公開する。
 // commit は Work の完了を待たずに終わらねばならず、Work 再開後も公開内容が残らねばならない。
 // beforeResume は Work が止まった直後・公開前に呼ばれる。
@@ -2009,15 +2009,24 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	release := func() { releaseOnce.Do(func() { close(releaseWork) }) }
 	originalHook := afterDeleteCandidatesCollected
 	workDone := make(chan error, 1)
+	workFinished := make(chan struct{})
 	t.Cleanup(func() {
 		release()
+		select {
+		case <-workFinished:
+		case <-time.After(5 * time.Second):
+			t.Error("Work did not finish after release")
+		}
 		afterDeleteCandidatesCollected = originalHook
 	})
 	afterDeleteCandidatesCollected = func() {
 		close(workPaused)
 		<-releaseWork
 	}
-	go func() { workDone <- worker.Work(ctx, nil) }()
+	go func() {
+		workDone <- worker.Work(ctx, nil)
+		close(workFinished)
+	}()
 	select {
 	case <-workPaused:
 	case <-time.After(5 * time.Second):
@@ -2076,9 +2085,11 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(cleanupPool.Close)
+	var closeOnce sync.Once
+	closeCleanupPool := func() { closeOnce.Do(cleanupPool.Close) }
+	t.Cleanup(closeCleanupPool)
 	worker := &DeleteReconcileWorker{Pool: cleanupPool, MediaDir: mediaDir}
-	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/db-disconnect.m2ts", cleanupPool.Close)
+	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/db-disconnect.m2ts", closeCleanupPool)
 }
 
 // canonical orphan は aging 後も残り、Warn とメトリクスに出る。削除数ブレーカーには入らない。

@@ -917,7 +917,7 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 // reportAgedOrphanFiles はエイジング済みの canonical 孤児を Warn とゲージで報告する。
 // orphan_files は reconcile が観測した候補を持つ。公開前を示す予約名は自動回収対象なので
 // 報告から除き、canonical 名は人が調査・削除するまで記録を保持する。
-// 登録済みパスの行は、同じパスの直前の reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
+// 登録済み rel_path の行は、同じ reconcile パスで先に走る reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
 func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
 	agedPaths, err := q.ListAgedOrphanFiles(ctx, time.Now().Add(-age))
 	if err != nil {
