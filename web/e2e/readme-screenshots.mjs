@@ -19,6 +19,7 @@ import path from 'node:path'
 import {
   GetRecordingResponse,
   ListContinueWatchingResponseItem,
+  ListLiveProfilesResponseItem,
   ListProgramsResponseItem,
   ListRecordingsResponseItem,
   ListRecordingUpcomingResponseItem,
@@ -55,12 +56,13 @@ const SITE = 'default'
 
 // --- 局と番組表 ---------------------------------------------------------------
 
+// id は契約どおり networkId * 100000 + serviceId（Service.id の合成規則）。
 const services = [
-  { id: 3200101, networkId: 32001, serviceId: 101, name: 'みなと総合', channelType: 'GR', channel: '13', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
-  { id: 3200202, networkId: 32002, serviceId: 202, name: 'みなと教育', channelType: 'GR', channel: '14', remoteControlKeyId: 2, hasLogoData: false, hasPrograms: true },
-  { id: 3200404, networkId: 32004, serviceId: 404, name: 'ひかり放送', channelType: 'GR', channel: '16', remoteControlKeyId: 4, hasLogoData: false, hasPrograms: true },
-  { id: 3200505, networkId: 32005, serviceId: 505, name: 'あさひテレビ', channelType: 'GR', channel: '18', remoteControlKeyId: 5, hasLogoData: false, hasPrograms: true },
-  { id: 3200808, networkId: 32008, serviceId: 808, name: 'さくらテレビ', channelType: 'GR', channel: '20', remoteControlKeyId: 8, hasLogoData: false, hasPrograms: true },
+  { id: 3200100101, networkId: 32001, serviceId: 101, name: 'みなと総合', channelType: 'GR', channel: '13', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true },
+  { id: 3200200202, networkId: 32002, serviceId: 202, name: 'みなと教育', channelType: 'GR', channel: '14', remoteControlKeyId: 2, hasLogoData: false, hasPrograms: true },
+  { id: 3200400404, networkId: 32004, serviceId: 404, name: 'ひかり放送', channelType: 'GR', channel: '16', remoteControlKeyId: 4, hasLogoData: false, hasPrograms: true },
+  { id: 3200500505, networkId: 32005, serviceId: 505, name: 'あさひテレビ', channelType: 'GR', channel: '18', remoteControlKeyId: 5, hasLogoData: false, hasPrograms: true },
+  { id: 3200800808, networkId: 32008, serviceId: 808, name: 'さくらテレビ', channelType: 'GR', channel: '20', remoteControlKeyId: 8, hasLogoData: false, hasPrograms: true },
   { id: 400151, networkId: 4, serviceId: 151, name: 'BSそら', channelType: 'BS', channel: 'BS01_0', remoteControlKeyId: 0, hasLogoData: false, hasPrograms: true },
 ]
 
@@ -287,6 +289,7 @@ const onAir = {
 }
 const recordings = [onAir, ...dragonEpisodes, ...others]
 const continueWatching = [hero, ...others]
+const liveProfiles = [{ name: '720p', height: 720 }]
 const upcoming = [{
   site: SITE,
   programId: reservations[0].programId,
@@ -306,6 +309,7 @@ await validateFixturesOrExit([
   ...continueWatching.map((r, i) => [`continueWatching[${i}]`, ListContinueWatchingResponseItem, r]),
   ['hero', GetRecordingResponse, hero],
   ['upcoming[0]', ListRecordingUpcomingResponseItem, upcoming[0]],
+  ['liveProfiles[0]', ListLiveProfilesResponseItem, liveProfiles[0]],
 ], ng)
 
 // --- 映像素材 -----------------------------------------------------------------
@@ -358,15 +362,16 @@ ffmpeg([
 const heroVideo = readFileSync(heroVideoPath)
 
 // ライブは「みなと教育」の世界のドキュメント（砂漠の隊商）。静止画の HLS を 12 秒ぶん作る。
-// 実配信と同じく映像と音声を持たせる（音声は無音）。
+// 実配信と同じく映像と音声を持たせ（音声は無音）、ENDLIST を付けずライブの形にする。
 const LIVE_SERVICE = services[1]
 const LIVE_DIR = path.join(MEDIA_DIR, 'live')
 mkdirSync(path.join(LIVE_DIR, 'segments'), { recursive: true })
+const liveStill = await grab(...stills.find(([id]) => id === 22).slice(1), path.join(MEDIA_DIR, 'live.jpg'))
 ffmpeg([
-  '-loop', '1', '-framerate', '30000/1001', '-i', path.join(MEDIA_DIR, 'still-22.jpg'),
+  '-loop', '1', '-framerate', '30000/1001', '-i', liveStill,
   '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12',
   '-c:v', 'libx264', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
-  '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_base_url', 'segments/',
+  '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_flags', 'omit_endlist', '-hls_base_url', 'segments/',
   '-hls_segment_filename', path.join(LIVE_DIR, 'segments', 'segment_%03d.ts'), path.join(LIVE_DIR, 'playlist.m3u8'),
 ])
 
@@ -390,7 +395,7 @@ function serveRange(route, bytes) {
 
 async function handler({ path: p, url, json, route }) {
   if (p === '/api/events') return sseKeepAlive(route)
-  if (p === '/api/live-profiles') return json([{ name: '720p', height: 720 }])
+  if (p === '/api/live-profiles') return json(liveProfiles)
   if (p.endsWith('/live/playlist.m3u8')) {
     return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(path.join(LIVE_DIR, 'playlist.m3u8')) })
   }
@@ -462,7 +467,7 @@ const context = await browser.newContext({
 })
 mkdirSync(OUT_DIR, { recursive: true })
 
-async function shoot(name, pathname, viewport, ready, { fullPage = false } = {}) {
+async function shoot(name, pathname, viewport, ready) {
   const page = await context.newPage()
   await page.setViewportSize(viewport)
   await page.clock.setFixedTime(FIXED_NOW)
@@ -484,7 +489,7 @@ async function shoot(name, pathname, viewport, ready, { fullPage = false } = {})
   await page.waitForFunction(() => [...document.images].every((img) => img.complete), undefined, { timeout: 10_000 })
   await page.mouse.move(0, 0)
   const out = path.join(OUT_DIR, `readme-${name}.jpg`)
-  await page.screenshot({ path: out, type: 'jpeg', quality: 82, fullPage })
+  await page.screenshot({ path: out, type: 'jpeg', quality: 82 })
   log(`  ${out}`)
   await page.close()
 }
@@ -500,19 +505,22 @@ await shoot('programs', '/programs?view=grid', { width: 1440, height: 900 }, asy
   await page.locator('[data-testid="program-grid-cell"]').first().waitFor({ timeout: 15_000 })
 })
 
-await shoot('recording', `/recordings/${hero.id}`, { width: 1440, height: 1000 }, async (page) => {
+await shoot('recording', `/recordings/${hero.id}`, { width: 1440, height: 1130 }, async (page) => {
   await page.waitForFunction(() => {
     const video = document.querySelector('video')
     return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking
   }, undefined, { timeout: 15_000 })
-// 動画は画面の高さに合わせて伸びるので、下端で版やシリーズの行が切れないようページ全体を撮る。
-}, { fullPage: true })
+})
 
 await shoot('live', `/live?service=${LIVE_SERVICE.id}`, { width: 1440, height: 900 }, async (page) => {
+  // 「再生」ボタンはプレイヤーを開くだけで、再生は始めない（選択と視聴開始を分ける）。
+  // 利用者と同じく、開いたプレイヤーの再生ボタンをもう一度押す。
   await page.getByRole('button', { name: /再生/ }).click()
+  await page.waitForFunction(() => document.querySelector('video')?.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA, undefined, { timeout: 15_000 })
+  await page.getByRole('button', { name: /再生/ }).first().click()
   await page.waitForFunction(() => {
     const video = document.querySelector('video')
-    return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+    return video && !video.paused && video.currentTime > 0.5
   }, undefined, { timeout: 15_000 })
 })
 
