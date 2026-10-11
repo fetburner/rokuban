@@ -65,7 +65,8 @@
     "e2e:search-shortcut": "node e2e/search-shortcut.mjs",
     "e2e:subtitles": "node e2e/subtitles.mjs",
     "e2e:shelves-split": "node e2e/shelves-split.mjs",
-    "e2e:fixtures": "node e2e/validate-fixtures.mjs"
+    "e2e:fixtures": "node e2e/validate-fixtures.mjs",
+    "screenshots:readme": "node e2e/readme-screenshots.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
