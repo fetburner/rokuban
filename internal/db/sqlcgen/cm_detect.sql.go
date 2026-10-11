@@ -994,11 +994,16 @@ func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissi
 }
 
 const listRunningCMLogoCandidates = `-- name: ListRunningCMLogoCandidates :many
-SELECT network_id, service_id, COALESCE(recording_id, 0)::bigint AS recording_id,
-       observed_area_updated_at, attempted_at
-FROM cm_logo_candidates
-WHERE state = 'running'
-ORDER BY network_id, service_id
+SELECT c.network_id, c.service_id, COALESCE(c.recording_id, 0)::bigint AS recording_id,
+       c.observed_area_updated_at, c.attempted_at,
+       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
+                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
+                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms,
+       now()::timestamptz AS current_time
+FROM cm_logo_candidates c
+LEFT JOIN recordings r ON r.id = c.recording_id
+WHERE c.state = 'running'
+ORDER BY c.network_id, c.service_id
 `
 
 type ListRunningCMLogoCandidatesRow struct {
@@ -1007,6 +1012,8 @@ type ListRunningCMLogoCandidatesRow struct {
 	RecordingID           int64
 	ObservedAreaUpdatedAt time.Time
 	AttemptedAt           time.Time
+	RecordingDurationMs   int64
+	CurrentTime           time.Time
 }
 
 func (q *Queries) ListRunningCMLogoCandidates(ctx context.Context) ([]ListRunningCMLogoCandidatesRow, error) {
@@ -1024,6 +1031,8 @@ func (q *Queries) ListRunningCMLogoCandidates(ctx context.Context) ([]ListRunnin
 			&i.RecordingID,
 			&i.ObservedAreaUpdatedAt,
 			&i.AttemptedAt,
+			&i.RecordingDurationMs,
+			&i.CurrentTime,
 		); err != nil {
 			return nil, err
 		}

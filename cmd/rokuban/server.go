@@ -647,6 +647,7 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 		RulerRetractGrace:        rulerRetractGrace,
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 		IngestStallTimeout:       cfg.Ingest.StallTimeout,
+		RescueStuckJobsAfter:     clientCfg.RescueStuckJobsAfter,
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})

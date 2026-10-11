@@ -29,14 +29,18 @@ func newCandidateTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset
 
 // seedTaughtArea は局 32736/1024 に枠を置き、その updated_at を返す。
 func seedTaughtArea(t *testing.T, pool *pgxpool.Pool, x int) time.Time {
+	return seedTaughtAreaForService(t, pool, 1024, x)
+}
+
+func seedTaughtAreaForService(t *testing.T, pool *pgxpool.Pool, serviceID int32, x int) time.Time {
 	t.Helper()
 	q := sqlcgen.New(pool)
 	if err := q.UpsertCMLogoArea(context.Background(), sqlcgen.UpsertCMLogoAreaParams{
-		NetworkID: 32736, ServiceID: 1024, X: int32(x), Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+		NetworkID: 32736, ServiceID: serviceID, X: int32(x), Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
 	}); err != nil {
 		t.Fatal(err)
 	}
-	area, err := q.GetCMLogoArea(context.Background(), sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: 1024})
+	area, err := q.GetCMLogoArea(context.Background(), sqlcgen.GetCMLogoAreaParams{NetworkID: 32736, ServiceID: serviceID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,8 +48,12 @@ func seedTaughtArea(t *testing.T, pool *pgxpool.Pool, x int) time.Time {
 }
 
 func candidateRow(t *testing.T, pool *pgxpool.Pool) (state, stage string, ok bool) {
+	return candidateRowForService(t, pool, 1024)
+}
+
+func candidateRowForService(t *testing.T, pool *pgxpool.Pool, serviceID int32) (state, stage string, ok bool) {
 	t.Helper()
-	c, err := sqlcgen.New(pool).GetCMLogoCandidate(context.Background(), sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
+	c, err := sqlcgen.New(pool).GetCMLogoCandidate(context.Background(), sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: serviceID})
 	if errors.Is(err, pgx5.ErrNoRows) {
 		return "", "", false
 	}
@@ -202,9 +210,13 @@ func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
 }
 
 func insertRunningCandidate(t *testing.T, pool *pgxpool.Pool, recordingID int64, areaAt time.Time) time.Time {
+	return insertRunningCandidateForService(t, pool, 1024, recordingID, areaAt)
+}
+
+func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceID int32, recordingID int64, areaAt time.Time) time.Time {
 	t.Helper()
 	attemptedAt, err := sqlcgen.New(pool).InsertCMLogoCandidateRunning(context.Background(), sqlcgen.InsertCMLogoCandidateRunningParams{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID, AreaUpdatedAt: areaAt,
+		NetworkID: 32736, ServiceID: serviceID, RecordingID: recordingID, AreaUpdatedAt: areaAt,
 	})
 	if err != nil {
 		t.Fatalf("InsertCMLogoCandidateRunning: %v", err)
@@ -255,85 +267,65 @@ func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) 
 	}
 }
 
-// 対応する active River job がある candidate は保ち、job が終端になれば failed にする。
-func TestFailOrphanCMLogoCandidates(t *testing.T) {
+func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx, cancel := context.WithTimeout(riverWorkContext(t, pool), 10*time.Second)
-	defer cancel()
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	ctx := context.Background()
 	id := seedCMRecording(t, pool, t.TempDir(), 948)
-	areaAt := seedTaughtArea(t, pool, 1180)
-	job, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: id, AreaUpdatedAt: areaAt,
-	}, nil)
+	if _, err := pool.Exec(ctx, `
+		UPDATE recordings
+		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
+		WHERE id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	var dbNow time.Time
+	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+		t.Fatal(err)
+	}
+	grace := 2 * time.Minute
+	deadline := cmDetectionTimeout(45 * 60 * 1000)
+	if deadline != 90*time.Minute {
+		t.Fatalf("cmDetectionTimeout(45m) = %s, want 90m", deadline)
+	}
+	ages := map[int32]time.Duration{
+		1024: deadline + grace + 5*time.Second,
+		1025: deadline + grace/2,
+		1026: deadline - 15*time.Minute,
+	}
+	for serviceID, age := range ages {
+		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
+		if attemptedAt := insertRunningCandidateForService(t, pool, serviceID, id, areaAt); attemptedAt.IsZero() {
+			t.Fatalf("attempted_at for service %d is zero", serviceID)
+		}
+		if _, err := pool.Exec(ctx, `
+			UPDATE cm_logo_candidates SET attempted_at = $3
+			WHERE network_id = 32736 AND service_id = $1 AND recording_id = $2`,
+			serviceID, id, dbNow.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := sqlcgen.New(pool).ListRunningCMLogoCandidates(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	insertRunningCandidate(t, pool, id, areaAt)
-
-	if err := failOrphanCMLogoCandidates(ctx, client, pool); err != nil {
+	if len(rows) != len(ages) {
+		t.Fatalf("running candidates = %d, want %d", len(rows), len(ages))
+	}
+	for _, row := range rows {
+		if row.RecordingDurationMs != 45*60*1000 {
+			t.Errorf("service %d recording duration = %dms, want 2700000ms", row.ServiceID, row.RecordingDurationMs)
+		}
+	}
+	if err := failOrphanCMLogoCandidates(ctx, pool, grace); err != nil {
 		t.Fatal(err)
 	}
-	if state, _, _ := candidateRow(t, pool); state != "running" {
-		t.Fatalf("candidate with a matching active job = %q, want running", state)
+	for serviceID, want := range map[int32]string{1024: "failed", 1025: "running", 1026: "running"} {
+		state, stage, ok := candidateRowForService(t, pool, serviceID)
+		if !ok || state != want {
+			t.Errorf("candidate service %d = %q/%q, want %q", serviceID, state, stage, want)
+		}
 	}
-	if _, err := client.JobCancel(ctx, job.Job.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := failOrphanCMLogoCandidates(ctx, client, pool); err != nil {
-		t.Fatal(err)
-	}
-	if state, stage, _ := candidateRow(t, pool); state != "failed" || stage != "stopped" {
-		t.Errorf("orphan candidate = %q/%q, want failed/stopped", state, stage)
-	}
-}
-
-func TestActiveCMLogoCandidateJobListParamsAppliesCursor(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := riverWorkContext(t, pool)
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: 948,
-		AreaUpdatedAt: time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC),
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1025, RecordingID: 949,
-		AreaUpdatedAt: time.Date(2025, time.January, 2, 3, 4, 5, 0, time.UTC),
-	}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstPage, err := client.JobList(ctx, river.NewJobListParams().Kinds("cm_logo_candidate").First(1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(firstPage.Jobs) != 1 || firstPage.Jobs[0].ID != first.Job.ID || firstPage.LastCursor == nil {
-		t.Fatalf("first page = %#v, want job %d and a cursor", firstPage.Jobs, first.Job.ID)
-	}
-	secondPage, err := client.JobList(ctx, activeCMLogoCandidateJobListParams(firstPage.LastCursor))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(secondPage.Jobs) != 1 || secondPage.Jobs[0].ID != second.Job.ID {
-		t.Fatalf("second page = %#v, want only job %d", secondPage.Jobs, second.Job.ID)
-	}
-}
-
-func TestCMLogoCandidateKeyUsesTimestampInstant(t *testing.T) {
-	instant := time.Date(2025, time.January, 2, 3, 4, 5, 123456000, time.UTC)
-	jobKey := cmLogoCandidateKeyFor(32736, 1024, 948, instant)
-	candidateKey := cmLogoCandidateKeyFor(32736, 1024, 948, instant.In(time.FixedZone("offset", 9*60*60)))
-	if jobKey != candidateKey {
-		t.Fatalf("keys for the same area update instant differ: %#v != %#v", jobKey, candidateKey)
+	if state, stage, _ := candidateRowForService(t, pool, 1024); state != "failed" || stage != "stopped" {
+		t.Errorf("expired candidate = %q/%q, want failed/stopped", state, stage)
 	}
 }
 
@@ -441,7 +433,16 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 
 func listCandidateJobs(t *testing.T, ctx context.Context, client *river.Client[pgx5.Tx]) []*rivertype.JobRow {
 	t.Helper()
-	page, err := client.JobList(ctx, activeCMLogoCandidateJobListParams(nil))
+	page, err := client.JobList(ctx, river.NewJobListParams().
+		Kinds("cm_logo_candidate").
+		States(
+			rivertype.JobStateAvailable,
+			rivertype.JobStatePending,
+			rivertype.JobStateRetryable,
+			rivertype.JobStateRunning,
+			rivertype.JobStateScheduled,
+		).
+		First(10_000))
 	if err != nil {
 		t.Fatal(err)
 	}
