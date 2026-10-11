@@ -38,6 +38,11 @@ func (w *CMDetectReconcileWorker) Timeout(job *river.Job[jobs.CMDetectReconcileA
 	return jobTimeout(job)
 }
 
+func cmDetectionTimeout(durationMs int64) time.Duration {
+	args := jobs.CMLogoCandidateJobArgs{RecordingDurationMs: durationMs}
+	return args.Spec().Timeout(args)
+}
+
 // Work schedules the current desired set and fails candidates without active jobs.
 func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ *river.Job[jobs.CMDetectReconcileArgs]) error {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
