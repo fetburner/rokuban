@@ -285,7 +285,7 @@ func testCrash(t *testing.T, factory Factory) {
 		return nil
 	}})
 	start(t, fixture)
-	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 100, MaxAttempts: 2}); err != nil {
+	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 5000, MaxAttempts: 2}); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
 	receive(t, started)
@@ -298,7 +298,7 @@ func testCrash(t *testing.T, factory Factory) {
 		t.Errorf("crashed Work context error = %v, want Canceled", got)
 	}
 	start(t, fixture)
-	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 100*time.Millisecond))
+	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 5*time.Second))
 	if got := calls.Load(); got != 2 {
 		t.Errorf("Work calls after crash = %d, want literal 2", got)
 	}

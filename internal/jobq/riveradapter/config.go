@@ -18,23 +18,134 @@ import (
 )
 
 const (
-	defaultIngestConcurrency          = 3
-	defaultEpgSyncInterval            = 10 * time.Minute
-	defaultTunerSyncInterval          = 10 * time.Minute
-	defaultTSScanReconcileInterval    = 15 * time.Minute
-	defaultRulerPassInterval          = 10 * time.Minute
-	defaultReconcilePassInterval      = 30 * time.Second
-	defaultRecordSweepInterval        = 5 * time.Minute
-	defaultCatalogExportInterval      = 24 * time.Hour
-	defaultDeleteReconcileInterval    = 15 * time.Minute
+	// defaultIngestConcurrency / defaultEpgSyncInterval は config.Ingest.Concurrency
+	// / config.Epg.SyncInterval と同値の二重既定（config.defaults() 参照）だが、
+	// 消さずに残す。Config は cmd/rokuban 経由の本番配線だけでなく、この
+	// パッケージの多数のテストが `Config{...}` を直接組み立てて渡す
+	// ライブラリ境界でもある（config.Load を経由しない）。
+	//
+	// **既定値の権威は config 側にあり、ingest.concurrency を 3 にした根拠も
+	// そちら（config.IngestConfig.Concurrency の doc コメント）に書いてある。**
+	//
+	// IngestConcurrency=0 を渡すと allQueues の
+	// `river.QueueConfig{MaxWorkers: 0}` になり、river.NewClient がこれを
+	// 明示的な起動時エラーで拒否する（river@v0.47.0 client.go の
+	// `c.MaxWorkers < 1` チェック。読んで確認済み）。
+	// EpgSyncInterval=0 は `river.PeriodicInterval(0)` になり、こちらは panic
+	// しない（PeriodicInterval.Next は単に `t.Add(0) = t` を返すだけ）が、
+	// 定期ジョブの nextRunAt が前に進まなくなるため、river 内部の
+	// PeriodicJobEnqueuer がタイマーを毎回ほぼ 0 でリセットするビジーループに
+	// 陥り、ループ 1 周ごとに insertParamsFromConstructor + insertBatch で
+	// Postgres への insert を試み続ける。river@v0.47.0 internal/maintenance/
+	// periodic_job_enqueuer.go を読んで確認した --- タイマー側は
+	// timeUntilNextRun / timerUntilNextRun.Reset、insert ループ側は
+	// insertParamsFromConstructor / insertBatch。実際に client を起動してこのループを観測してはいない。
+	//
+	// 責務を config に移すのは config.Config の話であって、config を経由しない
+	// 呼び出し元（このパッケージのテスト）まで持つ Config の 0-fallback を
+	// 消す話ではない（issue #445 のファイル列挙が ingest.go/epg.go/storage.go に
+	// 留めていたのもこの境界の違いから）。
+	defaultIngestConcurrency = 3
+	defaultEpgSyncInterval   = 10 * time.Minute
+
+	// defaultTunerSyncInterval はチューナー射影の既定間隔。
+	//
+	// チューナー構成の変更には mirakc の再起動が要るので更新頻度は低くてよく、
+	// EPG 全量同期と同じ 10 分で足りる（issue #21「EPG 全量同期（既定 10 分）と
+	// 同じジョブで投影すれば十分」）。専用の設定キーは設けていない --- 運用者が
+	// 触る理由がないので、設定面を広げない。
+	defaultTunerSyncInterval       = 10 * time.Minute
+	defaultTSScanReconcileInterval = 15 * time.Minute
+
+	// defaultRulerPassInterval は定期パスの既定間隔。docs/recording.md §3.1 の
+	// 起動契機の表で「定期（既定 10 分）」としている値と揃える。
+	defaultRulerPassInterval = 10 * time.Minute
+
+	// defaultReconcilePassInterval は定期パスの既定間隔。従来の reconciler の
+	// 自前タイマー（reconciler.defaultConfig の ReconcileInterval）が使っていた
+	// 30 秒をそのまま引き継ぐ（docs/recording.md §3.2「定期（既定 30 秒）」）。
+	defaultReconcilePassInterval = 30 * time.Second
+
+	// defaultRecordSweepInterval は定期パスの既定間隔。従来の watcher の自前タイマー
+	// （旧 watcher.defaultConfig の ReconcileInterval）が使っていた 5 分をそのまま
+	// 引き継ぐ（docs/recording.md §3.3）。
+	defaultRecordSweepInterval = 5 * time.Minute
+
+	// defaultCatalogExportInterval は catalog エクスポートの既定間隔（日次相当）。
+	// docs/storage.md §8「日次 + 世代保持」。
+	defaultCatalogExportInterval = 24 * time.Hour
+
+	// defaultDeleteReconcileInterval は削除 reconcile 定期パスの既定間隔。
+	defaultDeleteReconcileInterval = 15 * time.Minute
+
+	// defaultLabelRuleReconcileInterval は定期の全件再評価の既定間隔。
+	//
+	// これは必須の窓閉じである。分類ルールの編集の前後でコミットした録画は、
+	// 旧ルールで評価された当たりを持ったままになる（トリガーは自分の行しか
+	// 見ない）。encode 系の定期パスと同じ 15 分に揃える。
 	defaultLabelRuleReconcileInterval = 15 * time.Minute
-	defaultEncodeReconcileInterval    = 15 * time.Minute
+
+	// defaultEncodeReconcileInterval は encode の desired−observed 定期パスの
+	// 既定間隔。
+	//
+	// このパスが**新しく投入する**のは、ヒント経路（ingest 完了時のベストエフォート
+	// 投入と POST /api/recordings/{id}/encode-profiles のヒントジョブ）が落ちた
+	// ぶんだけである（候補には実行中・待機中のエンコードも含まれるが、それらへの
+	// 投入は、args（締切を含む）が同じ間だけ River の UniqueOpts が合流させる）。
+	// 落としたヒントの回復が数十分遅れても失うものは無い一方、何時間も放置は
+	// したくないので、同じく「普段は新しい仕事を作らないバックストップ」である
+	// delete_reconcile と同じ 15 分に揃える。
+	defaultEncodeReconcileInterval = 15 * time.Minute
+
+	// defaultThumbnailReconcileInterval は thumbnail の desired−observed 定期パスの
+	// 既定間隔。ingest 完了時のヒント投入を補うバックストップとして encode
+	// reconcile と揃える。
 	defaultThumbnailReconcileInterval = 15 * time.Minute
-	defaultCMDetectReconcileInterval  = 15 * time.Minute
-	defaultStorageSyncInterval        = 5 * time.Minute
+
+	defaultCMDetectReconcileInterval = 15 * time.Minute
+
+	// defaultStorageSyncInterval はストレージ観測の既定間隔。
+	//
+	// tuner_sync（10 分）より短くしているが、この値そのものに測定的根拠はない
+	// （未検証。record_sweep の 5 分に合わせただけの初期値）。実際のアラート整備
+	// （time() 差分での閾値検討）は本 PR のスコープ外 --- rokuban_storage_root_*
+	// メトリクスを export するようになった今は組めるようになったが、アラート自体は
+	// 未着手。専用の設定キーは設けていない --- tuner_sync / catalog_export /
+	// delete_reconcile / record_sweep の既定間隔と同じく、運用者が調整する理由が
+	// 今のところ無い（docs/runbook/setup.md の record_sweep の前例。issue #238）。
+	defaultStorageSyncInterval = 5 * time.Minute
 )
 
 // DefaultSoftStopTimeout は Config.SoftStopTimeout の既定値。
+//
+// **停止の合図（SIGTERM = Start に渡した ctx の cancel、または Stop の呼び出し）を
+// 受けてから、実行中のジョブを打ち切るまでの猶予**である。この時間内に終われば
+// ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
+// エスカレートする（river@v0.47.0 client.go の `softStopTimer`）。
+//
+// **5 秒という値は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に
+// している。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒で、
+// そのどちらの内側にも収まる長さを選んだ（実測: 猶予を使い切る停止でも 5.1 秒）。
+// **どのジョブが 5 秒で終わるかは測っていない。**
+//
+// 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
+// 畳み終える前に SIGKILL が来る**。実測: 既定 30 秒のプロセスは停止に 30.09 秒
+// 必要で、k8s の既定猶予 30 秒に 0.09 秒負けた。負けると River の行は一時的に
+// `running` のまま残る。ingest は有限の Timeout と `JobRescuer`（既定 6 分）、
+// encode は保存した締切後の `JobRescuer`、cm_detect は `cm_detect_reconcile` が回収する。
+// その他のジョブも `JobRescuer` に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
+// 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
+// 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
+//
+// 数時間かかる encode は当然この既定では完走できない。ingest は短い区切りで
+// checkpoint と snooze を行う。長い drain を要するデプロイは `--soft-stop-timeout` と
+// k8s の `terminationGracePeriodSeconds` を **対で**引き上げる
+// （docs/operations.md §5「Deployment 併用時」）。
+//
+// **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
+// work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
+// StopAndCancel 相当になる）である。cmd/rokuban 側は `--soft-stop-timeout` の
+// 0 以下を起動エラーにし、BuildConfig は 0 をこの既定値に読み替える。
 const DefaultSoftStopTimeout = 5 * time.Second
 
 const (
@@ -87,9 +198,14 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 // Config は River クライアントの設定。
 type Config struct {
 	// JobTimeout は River の既定ジョブタイムアウト。Spec.Timeout がある worker はその値を使う。
+	// 共有契約テストが RescueStuckJobsAfter を短くするために 0 でない値を渡す。River は
+	// RescueStuckJobsAfter < JobTimeout を設定エラーにする（river@v0.47.0 client.go の検証）ので、
+	// この値はその検証を通すためにある。
 	JobTimeout time.Duration
 
-	// TestOnly は River のテスト用設定を有効にする。
+	// TestOnly は River の TestOnly を有効にする。メンテナンスサービスの起動遅延を省いて
+	// Start / Stop を速くする契約テスト用で、本番では使わない（river@v0.47.0 の doc も
+	// テスト以外での使用を禁じている）。
 	TestOnly bool
 
 	// BoundSites はこのプロセスが束縛されている mirakc サイト名の集合
@@ -569,7 +685,23 @@ func NewLegacyClient(pool *pgxpool.Pool, workers *river.Workers, cfg Config) (*r
 	return client, nil
 }
 
-// NewInsertOnlyClient creates a River client that can enqueue and inspect jobs but cannot run them.
+// NewInsertOnlyClient はワーカーを持たない River クライアントを返す。
+//
+// Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
+// 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
+// insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
+// JobList は利用できる。api ロールはヒント投入だけに使い、エンコード待機列は
+// ドメイン表から導出する。
+//
+// api ロールと `rokuban enqueue` サブコマンドはジョブを実行しない
+// （不変条件: api は mirakc に問い合わせず、ffmpeg も実行しない）。
+// NewWorkers が返すフルのワーカー群を登録すると ingest/encode 等まで
+// そのプロセスに紐付いてしまうため、ジョブを実行しない最小構成にする。
+//
+// watcher ロール単独のプロセスも同じ理由でこれを使う（issue #113）。watcher が
+// River を使うのは ingest ジョブの投入（InsertTx）だけで、worker ロールが無い
+// 限り EncodeWorker/ThumbnailWorker のような ffmpeg/ffprobe に依存するワーカーを
+// 登録・実行してはならない（不変条件 4）。
 func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {

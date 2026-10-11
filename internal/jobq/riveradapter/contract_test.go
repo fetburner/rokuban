@@ -92,6 +92,21 @@ func TestStopAllowsActiveWorkToEnqueue(t *testing.T) {
 	}
 }
 
+func TestStartAfterSuccessfulStopUsesNewClient(t *testing.T) {
+	adapter := newLifecycleTestAdapter(t, riverContractWorkerFunc(func(context.Context, contracttest.Args) error { return nil }), time.Second)
+	startAdapter(t, adapter)
+	first := adapter.clientSnapshot()
+	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := adapter.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	startAdapter(t, adapter)
+	if adapter.clientSnapshot() == first {
+		t.Fatal("Start() after a successful Stop reused the stopped River client")
+	}
+}
+
 func TestRestartAfterTimedOutStopAllowsActiveWorkToEnqueue(t *testing.T) {
 	var adapter *Adapter
 	started := make(chan struct{}, 1)

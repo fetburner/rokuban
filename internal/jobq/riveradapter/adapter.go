@@ -26,13 +26,14 @@ const adapterWorkerKey = "river"
 type Adapter struct {
 	// lifecycleMu serializes Start and Stop without blocking client snapshots from Work.
 	lifecycleMu sync.Mutex
-	// mu protects client and restartAfterStop; never hold it while calling River.
-	mu               sync.Mutex
-	pool             *pgxpool.Pool
-	registry         *jobq.Registry
-	config           Config
-	client           *river.Client[pgx.Tx]
-	restartAfterStop bool
+	// mu protects client and stopped (Stop was called, so the next Start needs a new
+	// client); never hold it while calling River.
+	mu       sync.Mutex
+	pool     *pgxpool.Pool
+	registry *jobq.Registry
+	config   Config
+	client   *river.Client[pgx.Tx]
+	stopped  bool
 }
 
 // NewAdapter builds River workers from registry and creates a PostgreSQL-backed adapter.
@@ -127,12 +128,12 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 
 	adapter.mu.Lock()
 	client := adapter.client
-	restartAfterStop := adapter.restartAfterStop
+	stopped := adapter.stopped
 	adapter.mu.Unlock()
 	if client == nil {
 		return errors.New("riveradapter: client is nil")
 	}
-	if restartAfterStop {
+	if stopped {
 		select {
 		case <-client.Stopped():
 		case <-ctx.Done():
@@ -144,7 +145,7 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		}
 		adapter.mu.Lock()
 		adapter.client = newClient
-		adapter.restartAfterStop = false
+		adapter.stopped = false
 		adapter.mu.Unlock()
 		client = newClient
 	}
@@ -168,11 +169,13 @@ func (adapter *Adapter) Stop(ctx context.Context) error {
 	if client == nil {
 		return errors.New("riveradapter: client is nil")
 	}
+	// River does not guarantee that a client can Start again after Stop, so the next Start
+	// always builds a new client, whether or not this Stop succeeds.
+	adapter.mu.Lock()
+	adapter.stopped = true
+	adapter.mu.Unlock()
 	if err := client.Stop(ctx); err != nil {
 		cancelErr := client.StopAndCancel(ctx)
-		adapter.mu.Lock()
-		adapter.restartAfterStop = true
-		adapter.mu.Unlock()
 		if cancelErr != nil && !errors.Is(cancelErr, err) && !errors.Is(cancelErr, context.DeadlineExceeded) {
 			return errors.Join(err, fmt.Errorf("riveradapter: cancelling stopped work: %w", cancelErr))
 		}
@@ -287,46 +290,9 @@ func makeInsertOpts(args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpt
 	if spec.MaxAttempts < 0 {
 		return river.InsertOpts{}, fmt.Errorf("riveradapter: %s max attempts must not be negative", kind)
 	}
-	insertOpts := river.InsertOpts{
-		Queue:       jobs.PhysicalQueueName(spec.Queue, siteOf(args)),
-		MaxAttempts: spec.MaxAttempts,
-		Priority:    jobq.EffectivePriority(spec, options...),
-	}
-	if spec.Coalesce {
-		insertOpts.UniqueOpts = river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: true,
-			ByState: jobs.PendingJobStates(),
-		}
-	}
+	insertOpts := jobs.RiverInsertOpts(spec, jobs.PhysicalQueueFor(args))
+	insertOpts.Priority = jobq.EffectivePriority(spec, options...)
 	return insertOpts, nil
-}
-
-func siteOf(args jobq.Args) string {
-	switch args := args.(type) {
-	case jobs.IngestJobArgs:
-		return args.Site
-	case jobs.EpgSyncArgs:
-		return args.Site
-	case jobs.TunerSyncArgs:
-		return args.Site
-	case jobs.ReconcilePassArgs:
-		return args.Site
-	case jobs.RecordSweepArgs:
-		return args.Site
-	case *jobs.IngestJobArgs:
-		return args.Site
-	case *jobs.EpgSyncArgs:
-		return args.Site
-	case *jobs.TunerSyncArgs:
-		return args.Site
-	case *jobs.ReconcilePassArgs:
-		return args.Site
-	case *jobs.RecordSweepArgs:
-		return args.Site
-	default:
-		return ""
-	}
 }
 
 var (

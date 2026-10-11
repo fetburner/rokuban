@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,7 +35,8 @@ type Spec struct {
 	// adapter must make the job eligible for redelivery within this duration plus its
 	// recovery grace, which the adapter declares (the shared contract tests take it from
 	// Fixture.RecoveryGrace). The prior invocation stopping and retaining the same job ID
-	// are not guaranteed.
+	// are not guaranteed. Work that returns after the deadline is treated as failed
+	// regardless of its return value (including nil, Snooze, and ErrDiscard).
 	Timeout func(Args) time.Duration
 	// MaxAttempts is the maximum number of failures before the adapter stops delivery.
 	// Failures include non-nil errors, timeout, and process death. Zero selects the
@@ -270,11 +272,21 @@ func (registry *Registry) RegisterAdapterWorkers(adapter string, dst any) error 
 		kinds = append(kinds, kind)
 	}
 	slices.Sort(kinds)
+	var missing []string
+	for kind := range registry.handlers {
+		if _, ok := workers[kind]; !ok {
+			missing = append(missing, kind)
+		}
+	}
+	slices.Sort(missing)
 	builders := make([]func(any) error, len(kinds))
 	for i, kind := range kinds {
 		builders[i] = workers[kind]
 	}
 	registry.mu.RUnlock()
+	if len(missing) > 0 {
+		return fmt.Errorf("jobq: kinds registered without an adapter %q worker: %s", adapter, strings.Join(missing, ", "))
+	}
 	if len(builders) == 0 {
 		return fmt.Errorf("jobq: no workers registered for adapter %q", adapter)
 	}

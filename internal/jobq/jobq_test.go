@@ -195,6 +195,19 @@ func TestRegisterAdapterWorkers(t *testing.T) {
 	}
 }
 
+func TestRegisterAdapterWorkersRejectsKindWithoutAdapterWorker(t *testing.T) {
+	registry := NewRegistry()
+	Register[testArgs](registry, testWorker{})
+	Register[secondTestArgs](registry, secondTestWorker{})
+	if err := registry.AddAdapterWorker("test-adapter", "test_kind", func(any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	err := registry.RegisterAdapterWorkers("test-adapter", new([]string))
+	if err == nil || !strings.Contains(err.Error(), "another_test_kind") {
+		t.Fatalf("RegisterAdapterWorkers() error = %v, want it to name another_test_kind", err)
+	}
+}
+
 func TestRegisterEmptyKindPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil || !strings.Contains(r.(string), "empty kind") {
