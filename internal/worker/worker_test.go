@@ -367,7 +367,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, EpgSyncArgs{Site: testSite}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, EpgSyncArgs{Site: testSite}); err != nil {
 		t.Fatalf("inserting epg_sync job: %v", err)
 	}
 
@@ -425,13 +425,13 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	}
 
 	args := EpgSyncArgs{Site: "default"}
-	first, err := client.Insert(ctx, args, nil)
+	first, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
 
 	// 未完了のうちは重複として弾かれる（同時実行を防ぐ）
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 		t.Fatalf("completed epg_sync state = %q, want %q", result.Job.State, rivertype.JobStateCompleted)
 	}
 
-	again, err := client.Insert(ctx, args, nil)
+	again, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting after completion: %v", err)
 	}
@@ -691,7 +691,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RulerPassArgs{Site: site}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("inserting ruler_pass job: %v", err)
 	}
 
@@ -761,10 +761,10 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 	}
 
 	args := RulerPassArgs{Site: "default"}
-	if _, err := client.Insert(ctx, args, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}

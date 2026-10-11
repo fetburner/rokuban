@@ -39,7 +39,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, CatalogExportArgs{}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, CatalogExportArgs{}); err != nil {
 		t.Fatalf("inserting catalog_export: %v", err)
 	}
 
@@ -105,18 +105,11 @@ func TestCatalogExportArgs_KindAndQueue(t *testing.T) {
 	if args.Kind() != "catalog_export" {
 		t.Errorf("Kind = %q", args.Kind())
 	}
-	opts := args.InsertOpts()
-	if opts.Queue != "cleanup" {
-		t.Errorf("Queue = %q, want %q", opts.Queue, "cleanup")
+	spec := args.Spec()
+	if spec.Queue != "cleanup" {
+		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "cleanup")
 	}
-	// UniqueOpts が設定されていること（空 args の同時実行を防ぐ）。
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("ByArgs should be true")
-	}
-	// ByQueue が立っていること（issue #185 レビュー: キュー名の変更が一意キーに
-	// 影響しないと、旧キュー（river.QueueDefault）の残骸が新キュー（cleanup）への
-	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。
-	if !opts.UniqueOpts.ByQueue {
-		t.Error("ByQueue should be true (キュー名変更が一意キーに影響しないと旧キューの残骸が新キューへの insert を塞ぐ)")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
 }

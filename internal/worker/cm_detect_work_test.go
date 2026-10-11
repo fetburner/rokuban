@@ -853,27 +853,27 @@ func TestCMRecordingDurationChangesRiverIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	first, err := client.Insert(ctx, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 1000}, nil)
+	first, err := insertJobWithSpec(ctx, client, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 1000})
 	if err != nil || first.UniqueSkippedAsDuplicate {
 		t.Fatalf("first CM detect insert = %#v, %v", first, err)
 	}
-	second, err := client.Insert(ctx, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 900000}, nil)
+	second, err := insertJobWithSpec(ctx, client, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 900000})
 	if err != nil || second.UniqueSkippedAsDuplicate || second.Job.ID == first.Job.ID {
 		t.Fatalf("same recording with another duration = %#v, %v; want a distinct job from %d", second, err, first.Job.ID)
 	}
 
 	areaAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	logoFirst, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+	logoFirst, err := insertJobWithSpec(ctx, client, jobs.CMLogoCandidateJobArgs{
 		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
 		RecordingDurationMs: 1000,
-	}, nil)
+	})
 	if err != nil || logoFirst.UniqueSkippedAsDuplicate {
 		t.Fatalf("first CM logo candidate insert = %#v, %v", logoFirst, err)
 	}
-	logoSecond, err := client.Insert(ctx, jobs.CMLogoCandidateJobArgs{
+	logoSecond, err := insertJobWithSpec(ctx, client, jobs.CMLogoCandidateJobArgs{
 		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
 		RecordingDurationMs: 900000,
-	}, nil)
+	})
 	if err != nil || logoSecond.UniqueSkippedAsDuplicate || logoSecond.Job.ID == logoFirst.Job.ID {
 		t.Fatalf("same logo candidate with another duration = %#v, %v; want a distinct job from %d", logoSecond, err, logoFirst.Job.ID)
 	}

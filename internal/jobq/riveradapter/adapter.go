@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -21,6 +22,16 @@ import (
 )
 
 const adapterWorkerKey = "river"
+
+// pendingJobStates limits coalescing to jobs that have not reached a terminal state.
+// Keeping River's state types here leaves the jobq and jobs contracts adapter-independent.
+var pendingJobStates = []rivertype.JobState{
+	rivertype.JobStateAvailable,
+	rivertype.JobStatePending,
+	rivertype.JobStateRetryable,
+	rivertype.JobStateRunning,
+	rivertype.JobStateScheduled,
+}
 
 // Adapter implements jobq.Enqueuer and jobq.Runner with one River client.
 type Adapter struct {
@@ -381,7 +392,18 @@ func makeInsertOpts(args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpt
 	if err != nil {
 		return river.InsertOpts{}, err
 	}
-	insertOpts := jobs.RiverInsertOpts(spec, physicalQueue)
+	insertOpts := river.InsertOpts{
+		Queue:       physicalQueue,
+		MaxAttempts: spec.MaxAttempts,
+		Priority:    spec.Priority,
+	}
+	if spec.Coalesce {
+		insertOpts.UniqueOpts = river.UniqueOpts{
+			ByArgs:  true,
+			ByQueue: true,
+			ByState: append([]rivertype.JobState(nil), pendingJobStates...),
+		}
+	}
 	insertOpts.Priority = jobq.EffectivePriority(spec, options...)
 	return insertOpts, nil
 }

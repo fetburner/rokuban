@@ -3,8 +3,6 @@ package jobs
 import (
 	"time"
 
-	"github.com/riverqueue/river"
-
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
@@ -122,7 +120,7 @@ func (a RulerPassArgs) Spec() jobq.Spec {
 }
 
 // Spec は reconciler パスの論理キュー、10 分締切、合流ヒントを返す。
-// Queue は論理名のままにし、River 互換の InsertOpts では site を修飾する。
+// Queue は論理名のままにし、adapter が site 束縛に応じて物理キュー名を導出する。
 func (a ReconcilePassArgs) Spec() jobq.Spec {
 	return spec(ReconcilerQueue, fixedTimeout(reconcilePassJobTimeout), 0, true, 1)
 }
@@ -211,22 +209,4 @@ func (a CatalogExportArgs) Spec() jobq.Spec {
 // Spec は storage sync の論理キュー、1 分締切、合流ヒントを返す。
 func (a StorageSyncArgs) Spec() jobq.Spec {
 	return spec(StorageQueue, fixedTimeout(storageSyncJobTimeout), 0, true, 1)
-}
-
-// RiverInsertOpts projects a Spec into the legacy River insert contract.
-// physicalQueue must be produced by PhysicalQueueName so enqueue and subscription use the same rule.
-func RiverInsertOpts(spec jobq.Spec, physicalQueue string) river.InsertOpts {
-	opts := river.InsertOpts{
-		Queue:       physicalQueue,
-		MaxAttempts: spec.MaxAttempts,
-		Priority:    spec.Priority,
-	}
-	if spec.Coalesce {
-		opts.UniqueOpts = river.UniqueOpts{
-			ByArgs:  true,
-			ByQueue: true,
-			ByState: pendingJobStates,
-		}
-	}
-	return opts
 }

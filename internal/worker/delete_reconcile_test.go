@@ -1141,7 +1141,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	if err != nil {
 		t.Fatalf("creating insert-only client: %v", err)
 	}
-	if _, err := insertOnly.Insert(context.Background(), EncodeJobArgs{RecordingID: recordingA, Profile: profile}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), insertOnly, EncodeJobArgs{RecordingID: recordingA, Profile: profile}); err != nil {
 		t.Fatalf("inserting active encode job for recording A: %v", err)
 	}
 
@@ -3132,8 +3132,7 @@ func TestDeleteReconcileWorker_HasGenerousTimeout(t *testing.T) {
 	}
 }
 
-// Kind / InsertOpts の形。UniqueOpts が無いと定期ジョブが実質ワンショット化する
-// 事故（internal/jobs/queue.go の pendingJobStates コメント参照）を防ぐための確認。
+// Kind / Spec の形。Coalesce が無いと重複投入が増えるため、ここでは hint を固定する。
 //
 // Queue の期待値はリテラル "cleanup" で書く（cleanupQueue 定数と比較すると、
 // 実装も同じ定数を参照しているだけなので、定数の値が何であっても常に一致して
@@ -3143,21 +3142,12 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	if args.Kind() != "delete_reconcile" {
 		t.Errorf("Kind = %q", args.Kind())
 	}
-	opts := args.InsertOpts()
-	if opts.Queue != "cleanup" {
-		t.Errorf("Queue = %q, want %q", opts.Queue, "cleanup")
+	spec := args.Spec()
+	if spec.Queue != "cleanup" {
+		t.Errorf("Spec().Queue = %q, want %q", spec.Queue, "cleanup")
 	}
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("ByArgs should be true")
-	}
-	if len(opts.UniqueOpts.ByState) == 0 {
-		t.Error("ByState should be set to pendingJobStates (completed を含めると定期ジョブがワンショット化する)")
-	}
-	// ByQueue が立っていること（issue #185 レビュー: キュー名の変更が一意キーに
-	// 影響しないと、旧キュー（river.QueueDefault）の残骸が新キュー（cleanup）への
-	// insert を UniqueSkippedAsDuplicate として黙って塞ぐ。
-	if !opts.UniqueOpts.ByQueue {
-		t.Error("ByQueue should be true (キュー名変更が一意キーに影響しないと旧キューの残骸が新キューへの insert を塞ぐ)")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
 }
 

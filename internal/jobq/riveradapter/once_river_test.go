@@ -47,14 +47,13 @@ import (
 func onceRiverOutcome(t *testing.T, gate *OnceGate, idleTimeout time.Duration, events <-chan *river.Event) (OnceOutcome, river.EventKind) {
 	t.Helper()
 
-	tee := make(chan *river.Event, 1)
+	tee := make(chan struct{}, 1)
 	kinds := make(chan river.EventKind, 1)
 	go func() {
-		defer close(tee)
 		defer close(kinds)
 		if ev, ok := <-events; ok {
 			kinds <- ev.Kind
-			tee <- ev
+			tee <- struct{}{}
 		}
 	}()
 
@@ -164,7 +163,7 @@ func TestSubscribeOnceEvents_AllTerminalKindsEndWaitViaEventsWithoutMiddleware(t
 			}
 
 			gate := NewOnceGate()
-			events, unsubscribe := SubscribeOnceEvents(client)
+			events, unsubscribe := subscribeRiverOnceEvents(client)
 			defer unsubscribe()
 
 			clientCtx, clientCancel := context.WithCancel(ctx)

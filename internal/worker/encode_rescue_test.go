@@ -81,7 +81,7 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		}
 	})
 
-	if _, err := client.Insert(context.Background(), EncodeJobArgs{RecordingID: 1, Profile: "rescue-test"}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), client, EncodeJobArgs{RecordingID: 1, Profile: "rescue-test"}); err != nil {
 		t.Fatalf("inserting encode job: %v", err)
 	}
 	if err := client.Start(context.Background()); err != nil {

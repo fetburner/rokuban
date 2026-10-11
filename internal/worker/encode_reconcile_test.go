@@ -63,10 +63,10 @@ func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
-	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), client, EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("inserting full pass: %v", err)
 	}
-	if _, err := client.Insert(context.Background(), EncodeReconcileArgs{RecordingID: 42}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), client, EncodeReconcileArgs{RecordingID: 42}); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
 	count := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
@@ -285,14 +285,14 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
 	ctx := context.Background()
-	first, err := client.Insert(ctx, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"}, nil)
+	first, err := insertJobWithSpec(ctx, client, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"})
 	if err != nil {
 		t.Fatalf("first Insert: %v", err)
 	}
 	if first.UniqueSkippedAsDuplicate {
 		t.Fatal("first Insert was skipped as duplicate; the measurement below would be meaningless")
 	}
-	second, err := client.Insert(ctx, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"}, nil)
+	second, err := insertJobWithSpec(ctx, client, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"})
 	if err != nil {
 		t.Fatalf("second Insert: %v", err)
 	}
@@ -307,11 +307,11 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	}
 
 	// パスのジョブ自身も pending 中は 1 本に合流する。
-	firstPass, err := client.Insert(ctx, EncodeReconcileArgs{}, nil)
+	firstPass, err := insertJobWithSpec(ctx, client, EncodeReconcileArgs{})
 	if err != nil {
 		t.Fatalf("first EncodeReconcileArgs Insert: %v", err)
 	}
-	secondPass, err := client.Insert(ctx, EncodeReconcileArgs{}, nil)
+	secondPass, err := insertJobWithSpec(ctx, client, EncodeReconcileArgs{})
 	if err != nil {
 		t.Fatalf("second EncodeReconcileArgs Insert: %v", err)
 	}
@@ -861,19 +861,16 @@ func TestEncodeReconcileWorker_Work_WithoutEnqueuer_Errors(t *testing.T) {
 
 // ジョブ種別名とキュー・一意化の形。期待値はリテラルで書く（実装の定数と
 // 比べると定数を変えたときに何も主張しなくなる）。
-func TestEncodeReconcileArgs_KindAndInsertOpts(t *testing.T) {
+func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 	if kind := (EncodeReconcileArgs{}).Kind(); kind != "encode_reconcile" {
 		t.Errorf("Kind() = %q, want encode_reconcile", kind)
 	}
-	opts := EncodeReconcileArgs{}.InsertOpts()
-	if opts.Queue != "encode" {
-		t.Errorf("Queue = %q, want encode", opts.Queue)
+	spec := EncodeReconcileArgs{}.Spec()
+	if spec.Queue != "encode" {
+		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
 	}
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("UniqueOpts.ByArgs should be true")
-	}
-	if slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateCompleted) {
-		t.Error("UniqueOpts.ByState must not include completed (the periodic job would become one-shot)")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
 }
 

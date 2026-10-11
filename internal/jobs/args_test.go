@@ -1,13 +1,8 @@
 package jobs
 
 import (
-	"reflect"
-	"slices"
 	"testing"
 	"time"
-
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 )
@@ -48,73 +43,6 @@ func TestCMDetectionSpecsUseRecordingDuration(t *testing.T) {
 	}
 }
 
-// River's projection explicitly excludes finalized states from its current duplicate filter.
-func TestRiverProjectionLimitsCoalescingToUnfinishedStates(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		opts river.InsertOpts
-	}{
-		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
-		{"ingest", IngestJobArgs{}.InsertOpts()},
-		{"encode", EncodeJobArgs{}.InsertOpts()},
-		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
-		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
-		{"catalog_export", CatalogExportArgs{}.InsertOpts()},
-		{"storage_sync", StorageSyncArgs{}.InsertOpts()},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			states := tt.opts.UniqueOpts.ByState
-			if len(states) == 0 {
-				t.Fatal("coalescing projection omitted the explicit state list")
-			}
-			for _, state := range states {
-				switch state {
-				case rivertype.JobStateCompleted, rivertype.JobStateDiscarded, rivertype.JobStateCancelled:
-					t.Errorf("finalized state %q is in River's current coalescing filter", state)
-				}
-			}
-			if !slices.Contains(states, rivertype.JobStateRunning) {
-				t.Error("running is missing from River's current coalescing filter")
-			}
-		})
-	}
-}
-
-func TestRiverProjectionIncludesQueueWhenCoalescing(t *testing.T) {
-	for _, tt := range []struct {
-		name string
-		opts river.InsertOpts
-	}{
-		{"ingest", IngestJobArgs{}.InsertOpts()},
-		{"epg_sync", EpgSyncArgs{}.InsertOpts()},
-		{"tuner_sync", TunerSyncArgs{}.InsertOpts()},
-		{"ruler_pass", RulerPassArgs{}.InsertOpts()},
-		{"reconcile_pass", ReconcilePassArgs{}.InsertOpts()},
-		{"record_sweep", RecordSweepArgs{}.InsertOpts()},
-		{"encode", EncodeJobArgs{}.InsertOpts()},
-		{"thumbnail", ThumbnailJobArgs{}.InsertOpts()},
-		{"seek_tiles", SeekTilesJobArgs{}.InsertOpts()},
-		{"thumbnail_reconcile", ThumbnailReconcileArgs{}.InsertOpts()},
-		{"cm_detect", CMDetectJobArgs{}.InsertOpts()},
-		{"cm_detect_reconcile", CMDetectReconcileArgs{}.InsertOpts()},
-		{"cm_logo_candidate", CMLogoCandidateJobArgs{}.InsertOpts()},
-		{"encode_reconcile", EncodeReconcileArgs{}.InsertOpts()},
-		{"encode_rebuild", EncodeRebuildArgs{}.InsertOpts()},
-		{"delete_reconcile", DeleteReconcileArgs{}.InsertOpts()},
-		{"catalog_export", CatalogExportArgs{}.InsertOpts()},
-		{"storage_sync", StorageSyncArgs{}.InsertOpts()},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			if !tt.opts.UniqueOpts.ByQueue {
-				t.Error("River projection must include the physical queue in its duplicate key")
-			}
-		})
-	}
-	if got := (LabelRuleReconcileArgs{}).InsertOpts().UniqueOpts; !reflect.DeepEqual(got, river.UniqueOpts{}) {
-		t.Errorf("non-coalescing label rule projection = %+v, want zero UniqueOpts", got)
-	}
-}
-
 func TestSeekTilesPriorityComesFromSpec(t *testing.T) {
 	thumb := ThumbnailJobArgs{}.Spec()
 	tiles := SeekTilesJobArgs{}.Spec()
@@ -123,8 +51,5 @@ func TestSeekTilesPriorityComesFromSpec(t *testing.T) {
 	}
 	if tiles.Priority != 4 || thumb.Priority != 1 {
 		t.Fatalf("Spec priorities = tiles:%d thumbnail:%d, want literal 4 and 1", tiles.Priority, thumb.Priority)
-	}
-	if got := (SeekTilesJobArgs{}).InsertOpts().Priority; got != 4 {
-		t.Errorf("River priority = %d, want literal 4", got)
 	}
 }

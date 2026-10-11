@@ -4,6 +4,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/db"
+	rivermigrate "github.com/fetburner/rokuban/internal/jobq/riveradapter/migrate"
 )
 
 func newMigrateCmd() *cobra.Command {
@@ -27,7 +28,11 @@ func newMigrateUpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return db.MigrateUp(cmd.Context(), cfg.DB.DSN())
+			dsn := cfg.DB.DSN()
+			if err := db.MigrateUp(cmd.Context(), dsn); err != nil {
+				return err
+			}
+			return rivermigrate.Up(cmd.Context(), dsn)
 		},
 	}
 }

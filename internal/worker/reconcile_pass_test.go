@@ -174,7 +174,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, ReconcilePassArgs{Site: testSite}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, ReconcilePassArgs{Site: testSite}); err != nil {
 		t.Fatalf("inserting reconcile_pass job: %v", err)
 	}
 
@@ -205,10 +205,10 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 	}
 
 	args := ReconcilePassArgs{Site: testSite}
-	if _, err := client.Insert(ctx, args, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
 		t.Fatalf("inserting first job: %v", err)
 	}
-	dup, err := client.Insert(ctx, args, nil)
+	dup, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting duplicate: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 		<-client.Stopped()
 	}()
 
-	if _, err := client.Insert(ctx, RulerPassArgs{Site: testSite}, nil); err != nil {
+	if _, err := insertJobWithSpec(ctx, client, RulerPassArgs{Site: testSite}); err != nil {
 		t.Fatalf("inserting ruler_pass job: %v", err)
 	}
 

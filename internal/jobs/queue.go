@@ -1,4 +1,4 @@
-// Package jobs は River ジョブのメッセージ契約を提供する。
+// Package jobs は非同期ジョブの引数とキューの契約を提供する。
 //
 // ジョブ引数の型とキューの規約は、ジョブを実行する worker だけでなく、
 // ジョブを投入する api・watcher・CLI も共有する。実行側の依存を持たない
@@ -9,9 +9,6 @@ package jobs
 import (
 	"slices"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/db"
 )
 
@@ -21,8 +18,8 @@ const (
 	// 除くのに同じ値を使う。
 	EncodeAttemptLimit int32 = 25
 
-	// DefaultQueue は River の既定キュー名。
-	DefaultQueue = river.QueueDefault
+	// DefaultQueue は既定キュー名。
+	DefaultQueue = "default"
 
 	// IngestQueue は録画取り込みジョブのキュー名。
 	IngestQueue = "ingest"
@@ -56,25 +53,6 @@ const (
 	RiverQueueNameMaxLen = 64
 )
 
-// pendingJobStates は「まだ終わっていない」ジョブの状態。
-//
-// UniqueOpts.ByState に渡して、一意化の対象を実行前・実行中に限定する。
-// River の既定（rivertype.UniqueOptsByStateDefault）は completed と discarded を
-// 含むため、既定のままだと「一度成功した引数のジョブは二度と投入できない」に
-// なってしまう。定期ジョブは実質ワンショットになり、失敗して破棄されたジョブも
-// 再投入できない。
-//
-// 同時実行を防ぐのが目的なので、終わったジョブは一意性の判定から外す。
-// 「もう処理済みか」は River のジョブ履歴ではなく DB の状態（media_assets 行の
-// 有無など）が真実である。
-var pendingJobStates = []rivertype.JobState{
-	rivertype.JobStateAvailable,
-	rivertype.JobStatePending,
-	rivertype.JobStateRetryable,
-	rivertype.JobStateRunning,
-	rivertype.JobStateScheduled,
-}
-
 // siteBoundQueueNames は mirakc への到達を必要とする、site 単位の論理キュー名。
 // ingest・epg・reconciler・watcher の 4 つで、挿入側と購読側の両方がこの集合を
 // 共有する。
@@ -92,13 +70,6 @@ var siteBoundQueueNames = []string{
 	RecordSweepQueue,
 }
 
-// PendingJobStates は一意性の対象にする未完了ジョブの状態を返す。
-//
-// 呼び出し側が返り値を変更しても契約の共有状態を壊さないよう、コピーを返す。
-func PendingJobStates() []rivertype.JobState {
-	return append([]rivertype.JobState(nil), pendingJobStates...)
-}
-
 // qualifyQueueName は site 単位のキューの物理名を組み立てる。
 //
 // **直接呼ばない。site 修飾するかどうかの判定は PhysicalQueueName の 1 系統
@@ -114,12 +85,11 @@ func qualifyQueueName(base, site string) string {
 	return base + "_" + site
 }
 
-// PhysicalQueueName は論理キュー名から、このプロセスが実際に River へ Insert
-// / 購読する物理キュー名を返す。site 単位のキューだけ site 修飾し、それ以外は
-// 論理名をそのまま返す。
+// PhysicalQueueName は論理キュー名から、adapter が Insert / 購読する物理キュー名を
+// 返す。site 単位のキューだけ site 修飾し、それ以外は論理名をそのまま返す。
 //
-// InsertOpts と worker の購読設定の両方がこの関数を通ることで、site 単位の判定が
-// 2 箇所に分かれて食い違う経路を作らない。
+// adapter の投入と購読の両方がこの関数を通ることで、site 単位の判定を 2 箇所に
+// 分けて食い違う経路を作らない。
 func PhysicalQueueName(logical, boundSite string) string {
 	if !slices.Contains(siteBoundQueueNames, logical) {
 		return logical

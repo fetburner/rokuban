@@ -34,7 +34,7 @@ func onceWorkFunc(t *testing.T, g *OnceGate) func(func(context.Context) error) e
 // 現れる。そのまま呼ぶと go test 全体のタイムアウト（45 秒後の panic ダンプ）に
 // なり、何が壊れたのか出力から読めない --- ここで打ち切ってテストの失敗として
 // 報告する。
-func waitOutcome(t *testing.T, g *OnceGate, idleTimeout time.Duration, events <-chan *river.Event) OnceOutcome {
+func waitOutcome(t *testing.T, g *OnceGate, idleTimeout time.Duration, events <-chan struct{}) OnceOutcome {
 	t.Helper()
 	out := make(chan OnceOutcome, 1)
 	go func() { out <- g.Wait(context.Background(), idleTimeout, events) }()
@@ -191,8 +191,8 @@ func TestOnceGate_WaitReturnsCanceledOnContextDone(t *testing.T) {
 // idleTimeout まで戻らず、waitOutcome が打ち切って落ちる）。
 func TestOnceGate_TerminalEventEndsWaitWithoutMiddleware(t *testing.T) {
 	g := NewOnceGate()
-	events := make(chan *river.Event, 1)
-	events <- &river.Event{Kind: river.EventKindJobFailed}
+	events := make(chan struct{}, 1)
+	events <- struct{}{}
 
 	out := make(chan OnceOutcome, 1)
 	go func() { out <- g.Wait(context.Background(), 30*time.Second, events) }()
@@ -221,8 +221,8 @@ func TestOnceGate_WorkedJobIsNotReportedAsUnhandled(t *testing.T) {
 		}
 
 		// worked なジョブの終了イベント（River は completed でもイベントを出す）。
-		events := make(chan *river.Event, 1)
-		events <- &river.Event{Kind: river.EventKindJobCompleted}
+		events := make(chan struct{}, 1)
+		events <- struct{}{}
 
 		if got := waitOutcome(t, g, 30*time.Second, events); got != OnceOutcomeJobDone {
 			t.Fatalf("iteration %d: Wait() = %v, want %v", i, got, OnceOutcomeJobDone)
@@ -238,7 +238,7 @@ func TestOnceGate_WorkedJobIsNotReportedAsUnhandled(t *testing.T) {
 // 閉じたチャネル + 短い idleTimeout なら idle_timeout が正解。
 func TestOnceGate_ClosedEventChannelIsNotAJob(t *testing.T) {
 	g := NewOnceGate()
-	events := make(chan *river.Event)
+	events := make(chan struct{})
 	close(events)
 
 	if got := waitOutcome(t, g, 50*time.Millisecond, events); got != OnceOutcomeIdleTimeout {
@@ -259,7 +259,7 @@ func TestOnceGate_ClosedEventChannelDoesNotEndARunningJob(t *testing.T) {
 	for i := range 20 {
 		g := NewOnceGate()
 		work := onceWorkFunc(t, g)
-		events := make(chan *river.Event)
+		events := make(chan struct{})
 		close(events)
 
 		release := make(chan struct{})
@@ -292,7 +292,7 @@ func TestOnceGate_ClosedEventChannelDoesNotEndARunningJob(t *testing.T) {
 func TestOnceGate_ClosedEventChannelStillObservesMiddleware(t *testing.T) {
 	g := NewOnceGate()
 	work := onceWorkFunc(t, g)
-	events := make(chan *river.Event)
+	events := make(chan struct{})
 	close(events)
 
 	go func() { _ = work(func(context.Context) error { return nil }) }()
@@ -306,7 +306,7 @@ func TestOnceGate_ClosedEventChannelStillObservesMiddleware(t *testing.T) {
 // （events の case が「常に戻る」に化けていないことの反対方向）。
 func TestOnceGate_EmptyEventChannelStillTimesOut(t *testing.T) {
 	g := NewOnceGate()
-	events := make(chan *river.Event)
+	events := make(chan struct{})
 	if got := waitOutcome(t, g, 20*time.Millisecond, events); got != OnceOutcomeIdleTimeout {
 		t.Errorf("Wait() = %v, want %v", got, OnceOutcomeIdleTimeout)
 	}

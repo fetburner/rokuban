@@ -319,7 +319,7 @@ func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Serve
 		t.Fatalf("client.Start: %v", err)
 	}
 
-	inserted, err := client.Insert(context.Background(), jobs.IngestJobArgs{Site: "default", RecordID: recordID}, nil)
+	inserted, err := insertJobWithSpec(context.Background(), client, jobs.IngestJobArgs{Site: "default", RecordID: recordID})
 	if err != nil {
 		t.Fatalf("inserting ingest job: %v", err)
 	}

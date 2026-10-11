@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"slices"
 	"testing"
 	"time"
 
@@ -43,10 +42,10 @@ func TestThumbnailReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
-	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), client, ThumbnailReconcileArgs{}); err != nil {
 		t.Fatalf("inserting full pass: %v", err)
 	}
-	if _, err := client.Insert(context.Background(), ThumbnailReconcileArgs{RecordingID: 42}, nil); err != nil {
+	if _, err := insertJobWithSpec(context.Background(), client, ThumbnailReconcileArgs{RecordingID: 42}); err != nil {
 		t.Fatalf("inserting targeted pass: %v", err)
 	}
 	count := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "thumbnail_reconcile"))
@@ -540,19 +539,16 @@ func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 	}
 }
 
-func TestThumbnailReconcileArgs_KindAndInsertOpts(t *testing.T) {
+func TestThumbnailReconcileArgs_KindAndSpec(t *testing.T) {
 	if kind := (ThumbnailReconcileArgs{}).Kind(); kind != "thumbnail_reconcile" {
 		t.Errorf("Kind() = %q, want thumbnail_reconcile", kind)
 	}
-	opts := ThumbnailReconcileArgs{}.InsertOpts()
-	if opts.Queue != "thumbnail" {
-		t.Errorf("Queue = %q, want thumbnail", opts.Queue)
+	spec := ThumbnailReconcileArgs{}.Spec()
+	if spec.Queue != "thumbnail" {
+		t.Errorf("Spec().Queue = %q, want thumbnail", spec.Queue)
 	}
-	if !opts.UniqueOpts.ByArgs {
-		t.Error("UniqueOpts.ByArgs should be true")
-	}
-	if slices.Contains(opts.UniqueOpts.ByState, rivertype.JobStateCompleted) {
-		t.Error("UniqueOpts.ByState must not include completed (the periodic job would become one-shot)")
+	if !spec.Coalesce {
+		t.Error("Spec().Coalesce should be true")
 	}
 }
 

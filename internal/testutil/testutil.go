@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	rivermigrate "github.com/fetburner/rokuban/internal/jobq/riveradapter/migrate"
 )
 
 // DatabaseURL は ROKUBAN_TEST_DATABASE_URL を返す。未設定なら Skip する。
@@ -176,6 +177,9 @@ func ensurePackageTestDatabase(ctx context.Context, base string) (string, error)
 
 	if err := db.MigrateUp(ctx, dbURLStr); err != nil {
 		return "", fmt.Errorf("migrating package test database: %w", err)
+	}
+	if err := rivermigrate.Up(ctx, dbURLStr); err != nil {
+		return "", fmt.Errorf("migrating River schema: %w", err)
 	}
 	return dbURLStr, nil
 }

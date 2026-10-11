@@ -180,7 +180,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Enqueuer: deps.Enqueuer,
 		Pool:     deps.Pool,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
-		// 設定を読む。EncodeReconcileArgs.InsertOpts のコメント参照）。
+		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
 	})
 	riveradapter.Register(workers, &EpgSyncWorker{

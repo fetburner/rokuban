@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/riverqueue/river"
-
 	"github.com/fetburner/rokuban/internal/config"
 )
 
@@ -168,7 +166,7 @@ func TestPhysicalQueueName(t *testing.T) {
 		{"thumbnail is NOT qualified", ThumbnailQueue, "tokyo", "thumbnail"},
 		{"cleanup is NOT qualified", CleanupQueue, "tokyo", "cleanup"},
 		{"storage is NOT qualified (site-independent, issue #238)", StorageQueue, "tokyo", "storage"},
-		{"default is NOT qualified", river.QueueDefault, "tokyo", "default"},
+		{"default is NOT qualified", "default", "tokyo", "default"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

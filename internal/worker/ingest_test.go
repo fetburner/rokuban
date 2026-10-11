@@ -2093,7 +2093,7 @@ func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
 	}()
 
 	args := jobs.IngestJobArgs{Site: "default", RecordID: "rec-completed-job-reinsert"}
-	first, err := client.Insert(ctx, args, nil)
+	first, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting first ingest job: %v", err)
 	}
@@ -2101,7 +2101,7 @@ func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
 		t.Fatal("first ingest job is nil")
 	}
 	waitForCompletedIngestJob(t, completedEvents, first.Job.ID)
-	second, err := client.Insert(ctx, args, nil)
+	second, err := insertJobWithSpec(ctx, client, args)
 	if err != nil {
 		t.Fatalf("inserting ingest job after completion: %v", err)
 	}
