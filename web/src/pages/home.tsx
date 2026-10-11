@@ -204,7 +204,7 @@ export function HomePage() {
     { query: { enabled: mode === 'ops' } },
   )
   // 0 時を越えてキーが変わっても時間軸を読み込み中に戻さない
-  // （home.test.tsx「0 時をまたぐ操作では前日の項目を窓外へ除き、時間軸を読み込み中に戻さない」）。
+  // （home.test.tsx「0 時をまたいで再取得しても前日の項目を窓外へ除き、時間軸を読み込み中に戻さない」）。
   // 前日のデータも下の現在の窓との重なり判定を通すため、窓外の行は描かれない。
   const timelineFinishedQuery = useListRecordings(
     {

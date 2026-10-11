@@ -1439,12 +1439,12 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     expect(await screen.findByTestId('home-ops-timeline-frame')).toBeInTheDocument()
   })
 
-  it('0 時をまたぐ操作では前日の項目を窓外へ除き、時間軸を読み込み中に戻さない', async () => {
+  it('0 時をまたいで再取得しても前日の項目を窓外へ除き、時間軸を読み込み中に戻さない', async () => {
     const nextDayStart = new Date(dayStart)
     nextDayStart.setDate(nextDayStart.getDate() + 1)
     vi.setSystemTime(nextDayStart.getTime() - 1_000)
 
-    const { fetchMock, unresolvedCount } = stubApi({
+    const { fetchMock, resolvePending, unresolvedCount } = stubApi({
       finished: [
         recording(501, '前日の完了', 'finished', {
           startAt: new Date(nextDayStart.getTime() - 2 * HOUR).toISOString(),
@@ -1465,6 +1465,8 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
         reservation(503, '翌日の予約', nextDayStart.getTime() + 30 * 60_000 - nowMs),
       ],
       pendingTimelineStatusesAfterFirstCall: new Set(['finished', 'failed']),
+      // storage は timelinePending に入らないので、初回の時間軸表示を妨げない。
+      pendingPaths: new Set(['/api/storage']),
     })
     renderHome()
 
@@ -1476,19 +1478,11 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
       '翌日の予約',
     ].sort())
 
-    // 時計を進めるだけではレンダーされない。モード切替を操作して HomePage を
-    // 再レンダーし、日付由来の finished / failed キーを切り替える。
+    // 時計を進めるだけではレンダーされない。storage の解決が HomePage を ops モードの
+    // まま再レンダーし、日付由来の finished / failed キーを切り替える。
     vi.setSystemTime(nextDayStart.getTime() + 1_000)
-    fireEvent.click(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: '見る' }))
-    await waitFor(() =>
-      expect(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: '見る' }))
-        .toHaveAttribute('aria-current', 'page'),
-    )
-    fireEvent.click(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: /管理/ }))
-    await waitFor(() =>
-      expect(within(screen.getByTestId('home-mode-toggle')).getByRole('link', { name: /管理/ }))
-        .toHaveAttribute('aria-current', 'page'),
-    )
+    resolvePending()
+    await waitFor(() => expect(unresolvedCount('/api/recordings?status=failed')).toBe(1))
 
     const timelineCalls = fetchMock.mock.calls
       .map(([input]) => new URL(String(input), 'http://localhost'))
@@ -1501,7 +1495,8 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
     }
 
     // 日付変更後のクエリはまだ未解決。窓外の完了行は消え、窓をまたぐ finished / failed
-    // 行と翌日の予約は残り、時間軸は読み込み中へ戻らない。
+    // 行と翌日の予約は残り、時間軸は読み込み中へ戻らない。ブロックは描画側の幅ガードでも
+    // 隠れるので、窓外の行が消えたことは詳細一覧で判定する。
     expect(screen.queryByRole('status', { name: '時間軸を読み込み中' })).not.toBeInTheDocument()
     expect(screen.getByTestId('home-ops-timeline-frame')).toBeInTheDocument()
     expect(
@@ -1510,6 +1505,10 @@ describe('ホーム管理モード: 時間軸の読み込み', () => {
         .map((block) => block.getAttribute('title'))
         .sort(),
     ).toEqual(['日またぎの完了', '日またぎの失敗', '翌日の予約'].sort())
+
+    const details = await openTimelineDetails()
+    expect(within(details).queryByText(/前日の完了/)).not.toBeInTheDocument()
+    expect(within(details).getByText(/日またぎの完了/)).toBeInTheDocument()
   })
 
   it('警告は 4 本（ブレーカー・容量超過・ドロップ検出・失敗録画）すべての解決を待つ: 容量超過が遅い場合', async () => {
