@@ -543,15 +543,12 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 	}
 
 	if f.EncodeState != "" {
-		snapshot, err := h.loadEncodeQueue(ctx)
+		rows, err := h.loadEncodeQueueRows(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("loading encode queue: %w", err)
 		}
-		ids := snapshot.runningRecordingIDs
-		if f.EncodeState == ListRecordingsParamsEncodeStateQueued {
-			ids = snapshot.queuedRecordingIDs
-		}
-		f.EncodeRecordingIDs = &ids
+		recordingIDs := encodeQueueRecordingIDs(rows, f.EncodeState == ListRecordingsParamsEncodeStateRunning)
+		f.EncodeRecordingIDs = &recordingIDs
 	}
 
 	result, err := queryRecordings(ctx, h.pool, f, h.profileSets())

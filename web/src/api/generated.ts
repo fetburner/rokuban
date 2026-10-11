@@ -1653,16 +1653,16 @@ export interface CircuitBreaker {
 }
 
 /**
- * active なエンコードジョブの件数（録画 × プロファイル単位）。
+ * エンコード待機列の件数（録画 × プロファイル単位）。
  */
 export interface EncodeQueueSummary {
   /**
-     * 待機中（available / pending / scheduled / retryable）のジョブ数。
+     * 待機中（desired で未観測かつ実行中の試行が無い）の件数。
      * @minimum 0
      */
   queued: number;
   /**
-     * 実行中のジョブ数。
+     * 実行中の試行がある件数。
      * @minimum 0
      */
   running: number;
@@ -1785,9 +1785,10 @@ service?: number[];
  */
 status?: ListRecordingsStatus;
 /**
- * active な River encode ジョブの状態。`queued` は `available` /
- * `pending` / `scheduled` / `retryable`、`running` は実行中を表す。
- * 件数は録画数ではなく録画 × プロファイルのジョブ数になる。
+ * エンコード待機列の状態。`queued` は現在の desired で未観測のプロファイルが
+ * あり実行中の試行が無い録画、`running` は実行中の試行がある録画。
+ * `GET /api/encode-queue` の件数と同じ行から導出する。1 本に
+ * 両方の行があれば両方の絞り込みに現れる。
  */
 encodeState?: ListRecordingsEncodeState;
 source?: ListRecordingsSource;
@@ -5690,7 +5691,7 @@ export const getListRecordingsUrl = (params?: ListRecordingsParams,) => {
  *   explode: true`）。`service` は `Service.id`（例: `?service=400101`）。
  *   **すべての軸は「軸内は OR、軸間は AND」**
  * - `status` / `source` / `ruleId` は録画自身の観測・出自での絞り込み
- * - `encodeState` は River の active な encode ジョブを待機中 / 実行中で絞る。
+ * - `encodeState` は `GET /api/encode-queue` と同じ待機列の行（録画 × プロファイル）を持つ録画で絞る。
  * - `from` / `to` は `program_start_at` の範囲（`from` 以上 `to` 未満）
  *
  * 不正な値（enum に一致しない `status`/`source`/`encodeState`/`qTarget`/`channelType`/
@@ -5888,7 +5889,7 @@ export const getListRecordingShelvesUrl = (params?: ListRecordingShelvesParams,)
  *
  * `trash` / `seriesOf` / `order` / ページング / `encodeState` は受けない。
  * 棚はごみ箱を含まず、並びは固定で、全件を返す。`encodeState` は録画と
- * エンコードジョブを結合した行で絞るので、棚の件数が膨らむ。
+ * 待機列の行（録画 × プロファイル）で絞るので、棚の件数が膨らむ。
  * @summary List series shelves
  */
 export const listRecordingShelves = async (params?: ListRecordingShelvesParams, options?: Parameters<typeof customInstance>[1]): Promise<listRecordingShelvesResponse> => {
@@ -9084,14 +9085,15 @@ export const getGetEncodeQueueUrl = () => {
 }
 
 /**
- * River の active な encode ジョブを待機中と実行中に分けて数える。
- * `queued` は `available` / `pending` / `scheduled` / `retryable`、
- * `running` は実行中。録画 1 本に複数プロファイルがあれば複数件になる。
+ * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
+ * プロファイル（録画 × プロファイル）を、待機中と実行中に分けて数える。
+ * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
+ * 達して worker が作らない失敗行は数えない。ごみ箱の録画と設定に無い
+ * プロファイルも数えない。
  *
  * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
- * 待機件数には使わない。River の内部状態名はこの API の外へ出さず、
- * UI が必要とする 2 分類だけを返す。
- * @summary Get active encode job counts
+ * 待機件数には使わない。ジョブエンジンの状態名はこの API の外へ出さない。
+ * @summary Get encode queue counts
  */
 export const getEncodeQueue = async ( options?: Parameters<typeof customInstance>[1]): Promise<getEncodeQueueResponse> => {
 
@@ -9162,7 +9164,7 @@ export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQue
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 /**
- * @summary Get active encode job counts
+ * @summary Get encode queue counts
  */
 
 export function useGetEncodeQueue<TData = Awaited<ReturnType<typeof getEncodeQueue>>, TError = unknown>(

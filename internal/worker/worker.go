@@ -868,7 +868,8 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, cfg ClientConfig) (*r
 // Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
 // 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
 // insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
-// JobList は利用できる。api ロールはヒント投入に加えてエンコード待機列の参照にも使う。
+// JobList は利用できる。api ロールはヒント投入だけに使い、エンコード待機列は
+// ドメイン表から導出する。
 //
 // api ロールと `rokuban enqueue` サブコマンドはジョブを実行しない
 // （不変条件: api は mirakc に問い合わせず、ffmpeg も実行しない）。
