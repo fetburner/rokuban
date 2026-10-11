@@ -159,7 +159,7 @@ describe('AppShell / Sidebar の畳み込み', () => {
     renderShell()
 
     expect(await findToggle()).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('録番')).toBeInTheDocument()
+    expect(screen.getByText('Rokuban')).toBeInTheDocument()
   })
 
   it('トグルを押すと畳まれ、もう一度押すと展開に戻る（両方向）', async () => {
@@ -172,13 +172,13 @@ describe('AppShell / Sidebar の畳み込み', () => {
     expect(getToggle()).toHaveAttribute('aria-expanded', 'false')
     expect(getToggle()).toHaveAttribute('aria-label', 'ナビゲーションを開く')
     // ロゴの見出しは畳んだ状態では出ない（DOM から消える。CSS の hidden ではない）
-    expect(screen.queryByText('録番')).not.toBeInTheDocument()
+    expect(screen.queryByText('Rokuban')).not.toBeInTheDocument()
 
     // 畳む → 展開
     await user.click(getToggle())
     expect(getToggle()).toHaveAttribute('aria-expanded', 'true')
     expect(getToggle()).toHaveAttribute('aria-label', 'ナビゲーションを畳む')
-    expect(screen.getByText('録番')).toBeInTheDocument()
+    expect(screen.getByText('Rokuban')).toBeInTheDocument()
   })
 
   it('畳んだ状態でもサイドバーの全項目が読み上げ名で引ける', async () => {
@@ -225,7 +225,7 @@ describe('AppShell / Sidebar の畳み込み', () => {
     renderShell()
 
     expect(await findToggle()).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('録番')).not.toBeInTheDocument()
+    expect(screen.queryByText('Rokuban')).not.toBeInTheDocument()
   })
 
   it('展開状態を保存した場合も次回の初期化で復元する（未保存の展開と区別する）', async () => {
@@ -242,7 +242,7 @@ describe('AppShell / Sidebar の畳み込み', () => {
     renderShell()
 
     expect(await findToggle()).toHaveAttribute('aria-expanded', 'true')
-    expect(screen.getByText('録番')).toBeInTheDocument()
+    expect(screen.getByText('Rokuban')).toBeInTheDocument()
   })
 
   it('保存済みで畳んだ状態から始めても正しく初期化される', async () => {
@@ -251,7 +251,7 @@ describe('AppShell / Sidebar の畳み込み', () => {
     renderShell()
 
     expect(await findToggle()).toHaveAttribute('aria-expanded', 'false')
-    expect(screen.queryByText('録番')).not.toBeInTheDocument()
+    expect(screen.queryByText('Rokuban')).not.toBeInTheDocument()
   })
 
   it('md 未満向けのボトムタブは畳み状態に関係なく常に出る', async () => {

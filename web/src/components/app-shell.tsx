@@ -335,7 +335,7 @@ function Sidebar() {
           <Menu className="size-5" />
         </button>
         {!collapsed && (
-          <span className="truncate text-lg font-semibold tracking-tight">録番</span>
+          <span className="truncate text-lg font-semibold tracking-tight">Rokuban</span>
         )}
       </div>
       {/* 最初の tooltip は意図して止まったときに出し、以降はレールをなぞって名前を

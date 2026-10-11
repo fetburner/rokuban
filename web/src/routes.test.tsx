@@ -580,37 +580,37 @@ describe('routeTree', () => {
       </QueryClientProvider>,
     )
 
-    // どのルートも「画面名 · 録番」の形になる（index.html の固定 "Rokuban" の
+    // どのルートも「画面名 · Rokuban」の形になる（index.html の固定 "Rokuban" の
     // まま止まらない）。主要ルート（issue #304 が Playwright で確認した 6 つ）
     // に加え、issue の一覧には無いが同じ理由（`document.title` はナビゲーション
     // だけでは前の値に戻らない）で `/live` と詳細 2 ルートも見る。
     await router.navigate({ to: '/' })
-    await expectSteadyTitle('ホーム · 録番')
+    await expectSteadyTitle('ホーム · Rokuban')
 
     await router.navigate({ to: '/programs' })
-    await expectSteadyTitle('番組 · 録番')
+    await expectSteadyTitle('番組 · Rokuban')
 
     await router.navigate({ to: '/recordings' })
-    await expectSteadyTitle('録画 · 録番')
+    await expectSteadyTitle('録画 · Rokuban')
 
     await router.navigate({ to: '/reservations' })
-    await expectSteadyTitle('予約 · 録番')
+    await expectSteadyTitle('予約 · Rokuban')
 
     await router.navigate({ to: '/search' })
-    await expectSteadyTitle('検索 · 録番')
+    await expectSteadyTitle('検索 · Rokuban')
 
     await router.navigate({ to: '/rules' })
-    await expectSteadyTitle('ルール · 録番')
+    await expectSteadyTitle('ルール · Rokuban')
 
     await router.navigate({ to: '/live' })
-    await expectSteadyTitle('ライブ · 録番')
+    await expectSteadyTitle('ライブ · Rokuban')
 
     // 録画名を積んでいないので、単体取得のスタブが実在の録画を返す限り
     // `id` の値そのものは何でもよい。ただし `[]` のような形の合わない
     // レスポンスだとページがクラッシュして title が空文字に落ちる
     // （`stubDetailFetch` 参照）。それを検知するのが `expectSteadyTitle`。
     await router.navigate({ to: '/recordings/$id', params: { id: '1' } })
-    await expectSteadyTitle('録画の詳細 · 録番')
+    await expectSteadyTitle('録画の詳細 · Rokuban')
     // ページ本体が実際に描画されている（クラッシュ後の汎用フォールバック
     // 画面ではない）ことも確認する --- title が定常でも、たまたま別の理由で
     // 空でない title を返す壊れ方だと `expectSteadyTitle` だけでは拾えない。
@@ -620,7 +620,7 @@ describe('routeTree', () => {
       to: '/reservations/$site/$programId',
       params: { site: 'default', programId: '1' },
     })
-    await expectSteadyTitle('予約の詳細 · 録番')
+    await expectSteadyTitle('予約の詳細 · Rokuban')
     expect(await screen.findByText('予約詳細テスト番組')).toBeInTheDocument()
   })
 })

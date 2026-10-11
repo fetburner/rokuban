@@ -37,7 +37,7 @@ const rootRoute = createRootRoute({
   // （issue #304。子の `head` が無ければこの既定に落ちる。TanStack Router は
   // 末端から見て最初に見つかったタイトルを使うので、子が定義すればここは
   // 上書きされる）。
-  head: () => ({ meta: [{ title: '録番' }] }),
+  head: () => ({ meta: [{ title: 'Rokuban' }] }),
   component: () => (
     <>
       {/* HeadContent が各ルートの `head` を実際の <title>/<meta> に描く。React 19
@@ -290,7 +290,7 @@ const reservationDetailRoute = createRoute({
   // その架け替え（loader を新設し、コンポーネント側の react-query 取得と
   // 二重管理させない）をこの issue の範囲外とし、`pages/
   // reservation-detail.tsx` の `<h1>` と同じ「予約の詳細」という画面の
-  // 識別子に留めた（番組名を積むと、無い間 `undefined · 録番` が一瞬出る
+  // 識別子に留めた（番組名を積むと、無い間 `undefined · Rokuban` が一瞬出る
   // ことにもなる。CLAUDE.md テスト規律「非同期の空虚な成功に注意する」と
   // 同じ穴）。番組名は本文の `<h2>` に任せる。
   head: () => ({ meta: [{ title: pageTitle('予約の詳細') }] }),
@@ -456,8 +456,8 @@ const liveRoute = createRoute({
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を
   // 積まないと、`headContentUtils.js` が末端の match から見て最初に見つかった
-  // title を使う仕様上、上記 rootRoute の既定（画面名の付かない「録番」だけ）に
-  // 落ちる（実測: ルール → `/live` で `document.title === '録番'`。「直前の
+  // title を使う仕様上、上記 rootRoute の既定（画面名の付かない製品名だけ）に
+  // 落ちる（実測: ルール → `/live` で `document.title` が rootRoute の既定のまま。「直前の
   // ルールのタイトルが残る」わけではない --- rootRoute の既定はフロアとして
   // 必ず勝つ）。それでも画面を名乗れない既定のままにする理由は無いので、
   // 主要ルートと同じ扱いにする。
