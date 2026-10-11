@@ -5,7 +5,13 @@
 - mirakc が動いていて `GET /api/version` が返る
 - mirakc の `recording.basedir` と `recording.records-dir` が設定されている
   （どちらも未設定だと `/api/recording/*` が 404 になる）
+- mirakc の `tuners:` では専用チューナーを兼用チューナーより前に並べる
 - mirakc のイメージに **`cat` と `dd` が含まれている**
+
+mirakc main の実装（`mirakc-core/src/tuner.rs` の `activate_tuner`）を読んだ限り、
+mirakc は設定順で最初に空いているチューナーを選ぶ。兼用チューナーを先に置くと、
+専用チューナーで受けられる種別にも兼用チューナーを使い、他の種別の余地を減らす。
+専用チューナーを先にしても、番組の途中でチューナーを替えられないため防げない失敗は残る。
 
 最後の項目は見落としやすい。`FROM scratch` + magicpak のように必要なバイナリだけを
 含むイメージだと、`GET /api/recording/records/{id}/stream` が **500** を返して
