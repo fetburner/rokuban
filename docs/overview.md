@@ -64,21 +64,27 @@ api のサーバーレス配置、scale-to-zero、serverless Postgres がこれ�
 
 ## 構成図
 
-```
-[エッジ]                       [サーバー / クラウド]
-┌────────────┐    ┌─────────────────────────────────────────┐
-│ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│             │    │  ├ api:        REST、UI 配信(go:embed)        │
-│             │    │  ├ notifier:   NOTIFY 購読→ブラウザへ SSE 配信 │
-│             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
-└────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
-   ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
-   │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
-   │               │    ruler_pass / reconcile_pass / epg_sync   │
-   └───────────────├─────────────────────────────────────────┤
-                   │ PostgreSQL（Rokuban の DB / ジョブキュー）       │
-                   │ メディアストレージ（原本・派生物。分散時は共有） │
-                   └─────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph edge["エッジ"]
+        mirakc
+    end
+    subgraph server["サーバー / クラウド"]
+        worker["rokuban worker（別イメージ、0〜N スケール）<br/>ingest / encode / thumbnail / cleanup /<br/>ruler_pass / reconcile_pass / epg_sync"]
+        subgraph bin["rokuban（Go、単一バイナリ）"]
+            api["api: REST、UI 配信（go:embed）"]
+            notifier["notifier: NOTIFY 購読 → ブラウザへ SSE 配信"]
+            watcher["watcher: mirakc SSE 購読 → 状態反映"]
+            streamer["streamer: ライブ視聴（mirakc → ffmpeg → HLS）"]
+        end
+        pg[("PostgreSQL（Rokuban の DB / ジョブキュー）")]
+        media[("メディアストレージ（原本・派生物。分散時は共有）")]
+    end
+    mirakc <-->|record pull / 予約 / EPG| worker
+    mirakc -->|SSE| watcher
+    mirakc -->|ライブ| streamer
+    api & notifier & watcher & streamer & worker --- pg
+    worker & streamer --- media
 ```
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
