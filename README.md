@@ -14,28 +14,34 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 ## 構成図
 
 ```mermaid
-flowchart LR
-    subgraph edge["エッジ"]
-        mirakc
+flowchart RL
+    user(["ユーザー（ブラウザ）"])
+    subgraph bin["rokuban（Go、単一バイナリ）"]
+        api
+        notifier
+        watcher
+        streamer
     end
-    subgraph server["サーバー / クラウド"]
-        worker["rokuban worker（別イメージ、0〜N スケール）<br/>ingest / encode / thumbnail / cleanup /<br/>ruler_pass / reconcile_pass / epg_sync"]
-        subgraph bin["rokuban（Go、単一バイナリ）"]
-            api["api: REST、UI 配信（go:embed）"]
-            notifier["notifier: NOTIFY 購読 → ブラウザへ SSE 配信"]
-            watcher["watcher: mirakc SSE 購読 → 状態反映"]
-            streamer["streamer: ライブ視聴（mirakc → ffmpeg → HLS）"]
-        end
-        pg[("PostgreSQL（Rokuban の DB / ジョブキュー）")]
-        media[("メディアストレージ（原本・派生物。分散時は共有）")]
-        ffmpeg[["ffmpeg / ffprobe（exec）"]]
-    end
-    mirakc <-->|record pull / 予約 / EPG| worker
-    mirakc -->|SSE| watcher
-    mirakc -->|ライブ| streamer
-    api & notifier & watcher & streamer & worker --- pg
-    worker & streamer --- media
-    worker & streamer -.-> ffmpeg
+    worker["worker（別イメージ、0〜N スケール）"]
+    pg[("PostgreSQL（DB / ジョブキュー）")]
+    mirakc["mirakc（エッジ）"]
+    media[("メディアストレージ（分散時は共有）")]
+    ffmpeg[["ffmpeg / ffprobe（exec）"]]
+    user -->|"REST / UI 配信（go:embed）"| api
+    user -->|"SSE（変更通知）"| notifier
+    user -->|"HLS（ライブ・追っかけ・VOD）"| streamer
+    api -->|"読み書き・ジョブ投入"| pg
+    notifier -->|"LISTEN"| pg
+    watcher -->|"録画の観測・ingest 投入"| pg
+    watcher -->|"SSE（録画イベント）"| mirakc
+    streamer -->|"原本の所在"| pg
+    streamer -->|"放送・録画中の TS"| mirakc
+    streamer -->|"原本を読む"| media
+    streamer -.-> ffmpeg
+    worker -->|"ジョブ取得"| pg
+    worker -->|"録画の取り込み・予約同期・EPG"| mirakc
+    worker -->|"原本の保存・派生物の生成と削除"| media
+    worker -.-> ffmpeg
 ```
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc が予約と録画バッファを保持し、Rokuban は原本・派生物を置くメディアストレージにも依存する。

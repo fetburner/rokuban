@@ -65,31 +65,37 @@ api のサーバーレス配置、scale-to-zero、serverless Postgres がこれ�
 ## 構成図
 
 ```mermaid
-flowchart LR
-    subgraph edge["エッジ"]
-        mirakc
+flowchart RL
+    user(["ユーザー（ブラウザ）"])
+    subgraph bin["rokuban（Go、単一バイナリ）"]
+        api
+        notifier
+        watcher
+        streamer
     end
-    subgraph server["サーバー / クラウド"]
-        worker["rokuban worker（別イメージ、0〜N スケール）<br/>ingest / encode / thumbnail / cleanup /<br/>ruler_pass / reconcile_pass / epg_sync"]
-        subgraph bin["rokuban（Go、単一バイナリ）"]
-            api["api: REST、UI 配信（go:embed）"]
-            notifier["notifier: NOTIFY 購読 → ブラウザへ SSE 配信"]
-            watcher["watcher: mirakc SSE 購読 → 状態反映"]
-            streamer["streamer: ライブ視聴（mirakc → ffmpeg → HLS）"]
-        end
-        pg[("PostgreSQL（Rokuban の DB / ジョブキュー）")]
-        media[("メディアストレージ（原本・派生物。分散時は共有）")]
-        ffmpeg[["ffmpeg / ffprobe（exec）"]]
-    end
-    mirakc <-->|record pull / 予約 / EPG| worker
-    mirakc -->|SSE| watcher
-    mirakc -->|ライブ| streamer
-    api & notifier & watcher & streamer & worker --- pg
-    worker & streamer --- media
-    worker & streamer -.-> ffmpeg
+    worker["worker（別イメージ、0〜N スケール）"]
+    pg[("PostgreSQL（DB / ジョブキュー）")]
+    mirakc["mirakc（エッジ）"]
+    media[("メディアストレージ（分散時は共有）")]
+    ffmpeg[["ffmpeg / ffprobe（exec）"]]
+    user -->|"REST / UI 配信（go:embed）"| api
+    user -->|"SSE（変更通知）"| notifier
+    user -->|"HLS（ライブ・追っかけ・VOD）"| streamer
+    api -->|"読み書き・ジョブ投入"| pg
+    notifier -->|"LISTEN"| pg
+    watcher -->|"録画の観測・ingest 投入"| pg
+    watcher -->|"SSE（録画イベント）"| mirakc
+    streamer -->|"原本の所在"| pg
+    streamer -->|"放送・録画中の TS"| mirakc
+    streamer -->|"原本を読む"| media
+    streamer -.-> ffmpeg
+    worker -->|"ジョブ取得"| pg
+    worker -->|"録画の取り込み・予約同期・EPG"| mirakc
+    worker -->|"原本の保存・派生物の生成と削除"| media
+    worker -.-> ffmpeg
 ```
 
-**線の無い組み合わせは触らない。** このうち 2 つは `.golangci.yml` の depguard が判定する。api は mirakc・ファイルシステム・ffmpeg に触らない（不変条件 1）。ffmpeg を exec するのは worker と streamer だけ（不変条件 4）。それ以外の線は lint では判定していない。
+矢印は接続を張る向き（リクエストの向き）で、ラベルはその用途を表す。**線の無い組み合わせは触らない。** このうち 2 つは `.golangci.yml` の depguard が判定する。api は mirakc・ファイルシステム・ffmpeg に触らない（不変条件 1）。ffmpeg を exec するのは worker と streamer だけ（不変条件 4）。それ以外の線は lint では判定していない。
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
 
