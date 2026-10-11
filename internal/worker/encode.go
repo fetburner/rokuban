@@ -49,10 +49,9 @@ import (
 // (recording, profile) の encode が 2 本並走しうる。
 //
 //   - **scratch は recording / profile / domain attempt ごと**に作る。River の ID や
-//     queue attempt は使わず、再配送後もドメインキーで追える。共有 flock は cleanup
-//     と実行中 scratch の競合だけを避ける。encode 同士は共有 lock を同時に持てるため
-//     直列化しない。cleanup は実行中 encode がある間は見送る
-//     （TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。canonical の公開直前には
+//     queue attempt は使わず、再配送後もドメインキーで追える。各試行は自分の scratch dir に
+//     flock を持ち続け、cleanup は lock が取れた（死んだ）dir だけを消す。encode 同士は
+//     別 dir なので直列化しない（TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。canonical の公開直前には
 //     `recording_encode_attempts.attempt_count` を読み直し、古い試行を拒否する。代償として、
 //     cancel を無視する古い試行が新しい試行とともに ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
@@ -252,8 +251,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 	}
 
 	// プロセス死の残骸を回収し、domain attempt ごとに scratch を分ける。
-	// cleanup は同じ (recording_id, profile) だけを対象にし、共有 flock で
-	// 他の実行中 encode の scratch を残す。
+	// cleanup は同じ (recording_id, profile) の、dir lock を誰も持たない dir だけを消す。
 	removeStaleEncodeScratch(w.ScratchDir, args.RecordingID, args.Profile, log)
 	scratchDir, scratchLock, err := newEncodeScratchDir(w.ScratchDir, args.RecordingID, args.Profile, attempt)
 	if err != nil {

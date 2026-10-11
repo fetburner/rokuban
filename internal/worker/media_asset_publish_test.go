@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -362,39 +363,15 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 		}
 		return path
 	}
-	staleAttempt1 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-1-old"))
-	staleAttempt2 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-2-old"))
+	stale1 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-1-old"))
+	stale2 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-2-old"))
 	otherProfile := makeDir(filepath.Join("encode", encodeScratchScope(7, "cut")+"-1-other"))
 	otherRecording := makeDir(filepath.Join("encode", encodeScratchScope(70, "h264")+"-1-other"))
 	otherKind := makeDir("thumbnail/7-other")
-	liveScratch, liveLock, err := newEncodeScratchDir(root, 7, "h264", 3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lockOpen := true
-	t.Cleanup(func() {
-		if lockOpen {
-			_ = closeEncodeScratchLock(liveLock)
-		}
-	})
-
-	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
-	for _, path := range []string{staleAttempt1, staleAttempt2, liveScratch} {
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("active encode prevented cleanup of %s: %v", path, err)
-		}
-	}
-	if err := closeEncodeScratchLock(liveLock); err != nil {
-		t.Fatal(err)
-	}
-	lockOpen = false
-	if err := os.RemoveAll(liveScratch); err != nil {
-		t.Fatal(err)
-	}
 
 	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
 
-	for _, path := range []string{staleAttempt1, staleAttempt2} {
+	for _, path := range []string{stale1, stale2} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("stale scratch %s stat error = %v, want os.ErrNotExist", path, err)
 		}
@@ -403,6 +380,145 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Errorf("unrelated scratch %s was removed: %v", path, err)
 		}
+	}
+}
+
+// 生きた試行は同じ scope でも残し、死んだ兄弟は消す。
+func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
+	root := t.TempDir()
+	live, liveLock, err := newEncodeScratchDir(root, 7, "h264", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeEncodeScratchLock(liveLock) })
+	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-2-dead")
+	if err := os.MkdirAll(dead, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("live attempt of the same scope was removed: %v", err)
+	}
+	if _, err := os.Stat(dead); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dead sibling stat error = %v, want os.ErrNotExist", err)
+	}
+	if err := closeEncodeScratchLock(liveLock); err != nil {
+		t.Fatal(err)
+	}
+	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+	if _, err := os.Stat(live); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("released attempt stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
+// 別の recording / profile の生きた encode があっても、対象 scope の死んだ残骸は消える。
+func TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope(t *testing.T) {
+	root := t.TempDir()
+	otherRecording, l1, err := newEncodeScratchDir(root, 70, "h264", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeEncodeScratchLock(l1) })
+	otherProfile, l2, err := newEncodeScratchDir(root, 7, "cut", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeEncodeScratchLock(l2) })
+	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-1-dead")
+	if err := os.MkdirAll(dead, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+
+	if _, err := os.Stat(dead); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dead scratch stat error = %v, want os.ErrNotExist (blocked by another scope's live encode)", err)
+	}
+	for _, path := range []string{otherRecording, otherProfile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("live scratch %s was removed: %v", path, err)
+		}
+	}
+}
+
+// 作成（MkdirTemp から dir lock 取得まで）の間は掃除が入れない。gate を外から
+// 保持して、掃除が待つこと・解放後に進むことを見る。
+func TestRemoveStaleEncodeScratchWaitsForScratchCreationGate(t *testing.T) {
+	root := t.TempDir()
+	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-1-dead")
+	if err := os.MkdirAll(dead, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gate, err := openEncodeScratchGate(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+		close(done)
+	}()
+	select {
+	case <-done:
+		t.Fatal("cleanup ran while the creation gate was held")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if _, err := os.Stat(dead); err != nil {
+		t.Errorf("dead scratch removed while gate held: %v", err)
+	}
+	if err := closeEncodeScratchLock(gate); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cleanup did not proceed after the gate was released")
+	}
+	if _, err := os.Stat(dead); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dead scratch stat error = %v, want os.ErrNotExist", err)
+	}
+}
+
+// 作成側も gate を取る。掃除側の待ちと合わせて、作成直後で lock 前の dir が消される窓が塞がる。
+func TestNewEncodeScratchDirWaitsForScratchCreationGate(t *testing.T) {
+	root := t.TempDir()
+	gate, err := openEncodeScratchGate(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		lock *os.File
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		_, lock, err := newEncodeScratchDir(root, 7, "h264", 1)
+		done <- result{lock, err}
+	}()
+	select {
+	case <-done:
+		t.Fatal("scratch creation ran while the gate was held")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if err := closeEncodeScratchLock(gate); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		_ = closeEncodeScratchLock(r.lock)
+	case <-time.After(5 * time.Second):
+		t.Fatal("scratch creation did not proceed after the gate was released")
 	}
 }
 

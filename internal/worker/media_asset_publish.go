@@ -39,18 +39,19 @@ func encodeScratchScope(recordingID int64, profile string) string {
 	return fmt.Sprintf("%d-%x", recordingID, profileDigest)
 }
 
-func openEncodeScratchLock(scratchRoot string) (*os.File, error) {
+// openEncodeScratchGate は scratch root の作成・掃除の直列化に使う lock file を開く。
+func openEncodeScratchGate(scratchRoot string) (*os.File, error) {
 	if scratchRoot == "" {
 		return nil, fmt.Errorf("scratch dir is empty")
 	}
 	if err := os.MkdirAll(scratchRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("creating scratch root: %w", err)
 	}
-	lock, err := os.OpenFile(filepath.Join(scratchRoot, ".encode-scratch.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	gate, err := os.OpenFile(filepath.Join(scratchRoot, ".encode-scratch.lock"), os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("opening encode scratch cleanup lock: %w", err)
+		return nil, fmt.Errorf("opening encode scratch gate: %w", err)
 	}
-	return lock, nil
+	return gate, nil
 }
 
 func flockScratch(lock *os.File, operation int) error {
@@ -62,53 +63,65 @@ func flockScratch(lock *os.File, operation int) error {
 	}
 }
 
+// closeEncodeScratchLock は flock を解いて閉じる。dir lock と gate の両方に使う。
 func closeEncodeScratchLock(lock *os.File) error {
 	unlockErr := flockScratch(lock, syscall.LOCK_UN)
 	closeErr := lock.Close()
 	return errors.Join(unlockErr, closeErr)
 }
 
-// newEncodeScratchDir は (recording_id, profile, attempt_count) ごとの scratch を作る。
-// 共有 flock は実行中 directory の掃除を止めるだけで、複数の encode は同時に保持できる。
+// newEncodeScratchDir は (recording_id, profile, attempt_count) ごとの scratch を作り、
+// その directory 自体に LOCK_EX を取って返す。encode は終了まで返り値の lock を持ち続ける。
+//
+// MkdirTemp から dir lock 取得までの間は「誰も保持していない dir」に見えるので、
+// 同じ scope の removeStaleEncodeScratch に消されうる。この区間だけ gate
+// （.encode-scratch.lock の LOCK_EX）で掃除と直列化して塞ぐ。gate は dir lock を
+// 取ったら放し、encode 実行中は持たない（TestRemoveStaleEncodeScratchWaitsForScratchCreationGate）。
 func newEncodeScratchDir(scratchRoot string, recordingID int64, profile string, attemptCount int32) (string, *os.File, error) {
-	lock, err := openEncodeScratchLock(scratchRoot)
+	gate, err := openEncodeScratchGate(scratchRoot)
 	if err != nil {
 		return "", nil, err
 	}
-	if err := flockScratch(lock, syscall.LOCK_SH); err != nil {
-		_ = lock.Close()
-		return "", nil, fmt.Errorf("locking encode scratch: %w", err)
-	}
-	root := filepath.Join(scratchRoot, "encode")
-	if err := os.MkdirAll(root, 0o700); err != nil {
-		_ = closeEncodeScratchLock(lock)
-		return "", nil, fmt.Errorf("creating encode scratch root: %w", err)
+	defer func() { _ = closeEncodeScratchLock(gate) }()
+	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
+		return "", nil, fmt.Errorf("locking encode scratch gate: %w", err)
 	}
 	prefix := fmt.Sprintf("%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
-	dir, err := os.MkdirTemp(root, prefix)
+	dir, err := newWorkerScratchDir(scratchRoot, "encode", prefix)
 	if err != nil {
-		_ = closeEncodeScratchLock(lock)
 		return "", nil, fmt.Errorf("creating encode scratch directory: %w", err)
+	}
+	lock, err := os.Open(dir)
+	if err == nil {
+		err = flockScratch(lock, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err != nil {
+			_ = lock.Close()
+		}
+	}
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return "", nil, fmt.Errorf("locking encode scratch directory: %w", err)
 	}
 	return dir, lock, nil
 }
 
-// removeStaleEncodeScratch は同じ (recording_id, profile) の残骸だけを best-effort で消す。
-// encode の共有 flock が取れない間は全ての実行中 scratch を残す
-// （TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts / TestRemoveStaleEncodeScratchScopesByRecordingAndProfile）。
+// removeStaleEncodeScratch は同じ (recording_id, profile) の死んだ試行の scratch だけを
+// best-effort で消す。dir lock を取れた（どのプロセスも保持していない）dir だけを消し、
+// 同じ scope で並走中の試行と、他の scope の encode の有無には影響されない
+// （TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope /
+// TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope）。
+// 作成中の dir を消さないよう gate で newEncodeScratchDir と直列化する。
 func removeStaleEncodeScratch(scratchRoot string, recordingID int64, profile string, log *slog.Logger) {
-	lock, err := openEncodeScratchLock(scratchRoot)
+	gate, err := openEncodeScratchGate(scratchRoot)
 	if err != nil {
 		return
 	}
-	defer func() { _ = lock.Close() }()
-	if err := flockScratch(lock, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
-			log.Warn("encode: stale scratch lock failed", "err", err)
-		}
+	defer func() { _ = gate.Close() }()
+	if err := flockScratch(gate, syscall.LOCK_EX); err != nil {
+		log.Warn("encode: stale scratch gate failed", "err", err)
 		return
 	}
-	defer func() { _ = flockScratch(lock, syscall.LOCK_UN) }()
+	defer func() { _ = flockScratch(gate, syscall.LOCK_UN) }()
 
 	root := filepath.Join(scratchRoot, "encode")
 	entries, err := os.ReadDir(root)
@@ -121,13 +134,28 @@ func removeStaleEncodeScratch(scratchRoot string, recordingID int64, profile str
 			continue
 		}
 		path := filepath.Join(root, entry.Name())
+		dir, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		if err := flockScratch(dir, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+			_ = dir.Close()
+			if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+				log.Warn("encode: stale scratch lock failed", "dir", path, "err", err)
+			}
+			continue
+		}
 		if err := os.RemoveAll(path); err != nil {
 			log.Warn("encode: stale scratch cleanup failed", "dir", path, "err", err)
 		}
+		_ = closeEncodeScratchLock(dir)
 	}
 }
 
-// newDomainScratchDir はドメインキーに対応する固定 scratch directory を残骸から作り直す。
+// newDomainScratchDir はドメインキーに対応する固定 scratch directory を、同じキーの
+// 残骸があれば消して作り直す。プロセス死の残骸を回収する仕組みではない。
+// CM 検出の key は attempt_count を含み、死後の次の開始で番号が進むので、消せるのは
+// 停止キャンセルで同じ番号に戻った場合だけである。
 func newDomainScratchDir(scratchRoot, kind, key string) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")

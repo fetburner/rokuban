@@ -137,7 +137,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 	tiles := seekTileCount(duration)
 	rows := (tiles + seekTilesColumns - 1) / seekTilesColumns
 
-	// 前回の残骸ごと捨ててから作る。部分成果を残さない。
+	// 毎回 MkdirTemp で新規に作り、終了時に消す。部分成果を残さない。
 	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "seek_tiles", fmt.Sprintf("%d-", recordingID))
 	if err != nil {
 		return fmt.Errorf("creating scratch dir: %w", err)

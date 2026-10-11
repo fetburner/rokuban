@@ -34,6 +34,9 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    scratch の directory 名は Worker の復旧単位から決める。encode は
    `(recording_id, profile, attempt_count)`、CM detect は `(recording_id, attempt_count)` を使う。
    CM logo candidate は `(recording_id, attempted_at)` を使う。
+   この 2 つはプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が
+   進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と
+   小さいファイルだけなので、残っても実害は小さいとして許容する。
    thumbnail と seek tiles は recording ID を接頭辞にして毎回 `MkdirTemp` で作る。
    **ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
    `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。
@@ -41,12 +44,12 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    `.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` /
    `.rokuban-media-asset-` で始まる basename は予約名であり、mirakc の contentPath には使わない。
    1 つ目は ingest temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file、
-	4 つ目は thumbnail / seek tiles の公開前 staging file（後述）である。rel_path lock
-	は media root の `.rokuban-locks/` に置く。
-	この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
-	encode の staged 出力も
-	同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
-	canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
+   4 つ目は thumbnail / seek tiles の公開前 staging file（後述）である。rel_path lock
+   は media root の `.rokuban-locks/` に置く。
+   この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
+   encode の staged 出力も
+   同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
+   canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
    `content.sha256` 照合 → temp の `fsync` → `Close`
    → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
    を canonical へ atomic rename → 親ディレクトリ `fsync`、の順で進める。
@@ -132,11 +135,18 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256
   digest にして basename の長さを抑える。長い名前も作成できる
-  （`TestNewEncodeScratchDirSupportsLongProfileNames`）。掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。
-  実行中 encode が共有 flock を持つ間は掃除を見送る
-  （`TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` /
-  `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。各試行は開始時に増えた
-  attempt count を fencing token として公開時に照合する。
+  （`TestNewEncodeScratchDirSupportsLongProfileNames`）。
+  掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。
+  各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）
+  directory だけを消す。他の recording や profile の encode が走っていても、同じ scope の
+  死んだ残骸は消える（`TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` /
+  `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope` /
+  `TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope` /
+  `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。
+  作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る
+  （`TestRemoveStaleEncodeScratchWaitsForScratchCreationGate` /
+  `TestNewEncodeScratchDirWaitsForScratchCreationGate`）。
+  各試行は開始時に増えた attempt count を fencing token として公開時に照合する。
   古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
   ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
