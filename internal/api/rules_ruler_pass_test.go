@@ -10,14 +10,16 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // ルール作成/更新/削除は同一トランザクションで RulerPassArgs を投入する
-// （ヒント経路。docs/recording.md §3.1「ヒントは api がルール書き込みと同一
-// トランザクションで InsertTx する」）。dual-write を避けるためのものなので、
+// （ヒント経路。docs/recording/ruler.md §3.1「api がルール書き込みと同一
+// トランザクションで EnqueueTx する」）。dual-write を避けるためのものなので、
 // ここでは実際に River のジョブが現れることを確認する。
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -28,7 +30,7 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -109,7 +111,7 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -132,10 +134,56 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	}
 }
 
-// RiverClient が nil でもルール CRUD 自体は動くこと（h.insertRulerPassHint の
+func TestInsertRulerPassHint_FollowsTransaction(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	riverClient, err := worker.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating insert-only river client: %v", err)
+	}
+	h := &Server{enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}
+
+	rolledBack, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning rollback transaction: %v", err)
+	}
+	defer func() { _ = rolledBack.Rollback(ctx) }()
+	if err := h.insertRulerPassHint(ctx, rolledBack, db.DefaultSite); err != nil {
+		t.Fatalf("insertRulerPassHint(rollback): %v", err)
+	}
+	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
+		t.Fatalf("ruler_pass job count before rollback = %d, want 0", got)
+	}
+	if err := rolledBack.Rollback(ctx); err != nil {
+		t.Fatalf("rolling back transaction: %v", err)
+	}
+	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
+		t.Fatalf("ruler_pass job count after rollback = %d, want 0", got)
+	}
+
+	committed, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning commit transaction: %v", err)
+	}
+	defer func() { _ = committed.Rollback(ctx) }()
+	if err := h.insertRulerPassHint(ctx, committed, db.DefaultSite); err != nil {
+		t.Fatalf("insertRulerPassHint(commit): %v", err)
+	}
+	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
+		t.Fatalf("ruler_pass job count before commit = %d, want 0", got)
+	}
+	if err := committed.Commit(ctx); err != nil {
+		t.Fatalf("committing transaction: %v", err)
+	}
+	if got := countRulerPassJobs(t, ctx, pool); got != 1 {
+		t.Fatalf("ruler_pass job count after commit = %d, want 1", got)
+	}
+}
+
+// Enqueuer が nil でもルール CRUD 自体は動くこと（h.insertRulerPassHint の
 // nil チェックの回帰。既存の TestRulesCRUD が RouterConfig{Pool: pool} だけで
 // 動いていることの裏付けでもある）。
-func TestCreateRule_WithoutRiverClient_StillSucceeds(t *testing.T) {
+func TestCreateRule_WithoutEnqueuer_StillSucceeds(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := NewRouter(RouterConfig{Pool: pool})
 	srv := httptest.NewServer(router)

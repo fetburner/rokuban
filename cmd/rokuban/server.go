@@ -508,11 +508,11 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			return nil, fmt.Errorf("embedded dist/ not found: %w", err)
 		}
 		routerCfg.DistFS = distFS
-		apiRiverClient, err := riveradapter.NewInsertOnlyClient(pool)
+		apiEnqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
 		if err != nil {
 			return nil, err
 		}
-		routerCfg.RiverClient = apiRiverClient
+		routerCfg.Enqueuer = apiEnqueuer
 		routerCfg.EncodeProfileNames = cfg.Encode.ProfileNames()
 		routerCfg.CutProfileNames = cfg.Encode.CutProfileNames()
 	}
@@ -692,7 +692,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pool, riverClient, webhookClient)
+				w := watcher.New(site.Site, mc, pool, riveradapter.NewLegacyEnqueuer(riverClient), webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

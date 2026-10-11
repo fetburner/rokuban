@@ -5,11 +5,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/riverqueue/river"
+
+	"github.com/fetburner/rokuban/internal/jobq"
 )
 
 // RouterConfig は NewRouter の設定。
@@ -35,14 +35,13 @@ type RouterConfig struct {
 	// （issue #184 M4-12）。
 	Sites []string
 
-	// RiverClient が非 nil なら、ルール作成/更新/削除のヒント投入と、
-	// ヒント投入に使う。ワーカー群を登録しない
-	// River クライアントで足り、api がジョブを実行することはない。待機列の要約と
+	// Enqueuer が非 nil なら、ルール作成/更新/削除のヒント投入に使う。api は
+	// jobq の投入契約だけを持ち、ジョブ実行エンジンに依存しない。待機列の要約と
 	// 録画一覧の encodeState 絞り込みはドメイン表から導出する
 	// （TestGetEncodeQueueSummaryFromDomainState）
 	// （不変条件: api は mirakc に問い合わせず ffmpeg も実行しない）。
-	// nil は River を使わない API テストの部分構成だけで許容する。
-	RiverClient *river.Client[pgx5.Tx]
+	// nil はジョブ投入を使わない API テストの部分構成だけで許容する。
+	Enqueuer jobq.Enqueuer
 
 	// DistFS が非 nil なら SPA を配信する。
 	DistFS fs.FS
@@ -145,7 +144,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.RiverClient, cfg.Sites, cfg.EncodeProfileNames,
+	handler := NewServer(cfg.Pool, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

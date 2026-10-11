@@ -10,11 +10,11 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -31,20 +31,20 @@ type Watcher struct {
 	site     string
 	mirakc   *mirakc.Client
 	pool     *pgxpool.Pool
-	river    *river.Client[pgx5.Tx]
+	enqueuer jobq.Enqueuer
 	webhook  *webhook.Client
 	services []mirakc.Service
 }
 
-// New は Watcher を生成する。webhook は任意（nil 可）。録画 finished / failed の通知に
-// 使う（M3-11）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, rc *river.Client[pgx5.Tx], wh *webhook.Client) *Watcher {
+// New は Watcher を生成する。enqueuer は ingest 投入に使う。webhook は任意（nil 可）で、
+// 録画 finished / failed の通知に使う（M3-11）。
+func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
 	return &Watcher{
-		site:    site,
-		mirakc:  mc,
-		pool:    pool,
-		river:   rc,
-		webhook: wh,
+		site:     site,
+		mirakc:   mc,
+		pool:     pool,
+		enqueuer: enqueuer,
+		webhook:  wh,
 	}
 }
 
@@ -291,17 +291,14 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	}
 
 	if recordingID != nil && (record.Recording.Status == db.RecordingStatusRecording || record.Recording.Status == db.RecordingStatusFinished) {
-		var insertOpts *river.InsertOpts
+		var enqueueOpts []jobq.EnqueueOpt
 		if record.Recording.Status == db.RecordingStatusFinished {
-			// 録画中の追従は番組長のあいだ worker 枠を保持する。finished 後に
-			// 初めて投入されるバックログ（または安全網の再投入）より先に
-			// 枠を得る必要があるので、River priority 1 の追従より priority 2
-			// の追い付きへ下げる。recording の nil は IngestJobArgs の既定値
-			// priority 1 と UniqueOpts をそのまま使うために残す。
-			priority := 2
-			insertOpts = &river.InsertOpts{Priority: priority}
+			// 録画中に始める ingest は番組長のあいだ worker 枠を保持する。
+			// finished 後に初めて取り込む記録は priority を下げて投入する。
+			// recording は IngestJobArgs の既定 priority をそのまま使う。
+			enqueueOpts = append(enqueueOpts, jobq.Priority(2))
 		}
-		if _, err := w.river.InsertTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, insertOpts); err != nil {
+		if _, err := w.enqueuer.EnqueueTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, enqueueOpts...); err != nil {
 			return fmt.Errorf("enqueuing ingest job: %w", err)
 		}
 	}

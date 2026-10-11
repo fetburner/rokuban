@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -29,7 +30,7 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -75,7 +76,7 @@ func TestPutProgramIntent_ProgramNotInProjection_DoesNotEnqueueRulerPassHint(t *
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RiverClient: riverClient})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

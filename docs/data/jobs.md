@@ -19,7 +19,7 @@
 
 エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
 
-ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。River の `InsertOpts` は移行中の互換投影で、`Spec` から作る。投入側のうち api と watcher は worker の実装へ依存せず、この契約だけを使う。CLI は insert-only の River client を組み立てる都合で `internal/worker` を import する。実行側の handler は `internal/worker` に置く。
+ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。River の `InsertOpts` は移行中の互換投影で、`Spec` から作る。API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。River クライアントからこの契約への変換は `cmd/rokuban` の配線と `internal/jobq/riveradapter` に置く。実行側の handler は `internal/worker` に置く。
 
 契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
