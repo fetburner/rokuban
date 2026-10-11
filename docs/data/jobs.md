@@ -24,7 +24,7 @@
 契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
 - ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- `Spec.Timeout` は必須の有限値で、Work の context に締切を与える。期限超過とプロセス死の後にいつ再配送できるかは adapter の猶予に従う。`Spec.MaxAttempts` は失敗回数の保険で、0 は adapter の既定、Snooze は回数を消費しない
+- `Spec.Timeout` は必須の有限値で、締切で Work の context は `DeadlineExceeded` になる。実行中にプロセスが死んだ場合も、締切 + adapter の復旧猶予以内に再配送対象となる。古い Work が止まったことや同じ job ID であることは保証しない。`Spec.MaxAttempts` は通常エラー・締切超過・プロセス死の失敗回数で止める保険で、0 は adapter の既定、Snooze は回数を消費しない
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3

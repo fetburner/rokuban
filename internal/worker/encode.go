@@ -1398,6 +1398,11 @@ type EncodeRebuildWorker struct {
 	Profiles config.EncodeConfig
 }
 
+// Timeout は明示要求された encode rebuild の締切を Args.Spec から返す。
+func (w *EncodeRebuildWorker) Timeout(job *river.Job[jobs.EncodeRebuildArgs]) time.Duration {
+	return jobTimeout(job)
+}
+
 // Work は指定された録画・プロファイルの encode ジョブだけを投入する。
 func (w *EncodeRebuildWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeRebuildArgs]) error {
 	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)

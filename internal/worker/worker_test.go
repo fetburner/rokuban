@@ -440,6 +440,22 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 	}
 }
 
+func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
+	args := jobs.LabelRuleReconcileArgs{}
+	got := (&LabelRuleReconcileWorker{}).Timeout(&river.Job[jobs.LabelRuleReconcileArgs]{Args: args})
+	if got != time.Minute {
+		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
+	}
+}
+
+func TestEncodeRebuildWorker_TimeoutUsesSpec(t *testing.T) {
+	args := jobs.EncodeRebuildArgs{}
+	got := (&EncodeRebuildWorker{}).Timeout(&river.Job[jobs.EncodeRebuildArgs]{Args: args})
+	if got != time.Minute {
+		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
+	}
+}
+
 // BoundSites を指定すると ruler_pass が定期ジョブとして投入され、登録済み
 // ワーカーが ruler キューで拾うこと（配線の確認）。BoundSites は
 // epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep の 5 種を

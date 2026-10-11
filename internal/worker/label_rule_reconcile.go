@@ -45,6 +45,11 @@ type LabelRuleReconcileWorker struct {
 	Pool *pgxpool.Pool
 }
 
+// Timeout は分類ルール再評価の締切を Args.Spec から返す。
+func (w *LabelRuleReconcileWorker) Timeout(job *river.Job[jobs.LabelRuleReconcileArgs]) time.Duration {
+	return jobTimeout(job)
+}
+
 // Work は 1 回の全件再評価を 1 トランザクションで実行する。
 //
 // **1 トランザクションにするのは、読者に中途半端な棚を見せないためである。**
