@@ -137,7 +137,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
   `failed` の後に新しいロゴや枠で再び desired になったら予算は 1 からやり直す（`TestCMDetectionNewDesireAfterFailedStartsNewBudget`）。
   結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
 - **`attempted_at` から録画実尺に応じた締切と rescue 猶予を過ぎた候補を failed にする**。
-  締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は録画時刻の差を使い、未確定なら番組長を使う。
+  締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は投入側と同じ `GetCMRecordingDuration` で引く（引けない候補は触らない）。
   境界テストは `TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace` を参照する。
   締切式は `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum` で固定する。
   `MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる（`TestCMLogoCandidateWorkerCancellationClearsRunningRow`）。設定値 0 は River の既定 1 時間として扱う。

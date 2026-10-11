@@ -335,12 +335,8 @@ RETURNING attempted_at;
 -- name: ListRunningCMLogoCandidates :many
 SELECT c.network_id, c.service_id, COALESCE(c.recording_id, 0)::bigint AS recording_id,
        c.observed_area_updated_at, c.attempted_at,
-       COALESCE(GREATEST(CASE WHEN r.ended_at IS NOT NULL AND r.started_at IS NOT NULL
-                           THEN (EXTRACT(EPOCH FROM (r.ended_at - r.started_at)) * 1000)::bigint
-                           ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms,
        now()::timestamptz AS current_time
 FROM cm_logo_candidates c
-LEFT JOIN recordings r ON r.id = c.recording_id
 WHERE c.state = 'running'
 ORDER BY c.network_id, c.service_id;
 

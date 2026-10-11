@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -128,7 +129,15 @@ func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueS
 
 	q := sqlcgen.New(pool)
 	for _, candidate := range candidates {
-		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(candidate.RecordingDurationMs)).Add(rescueStuckJobsAfter)
+		durationMs, err := q.GetCMRecordingDuration(ctx, candidate.RecordingID)
+		if errors.Is(err, pgx5.ErrNoRows) {
+			// 投入側は実尺が引けないと投入しないので Timeout が不明。誤って failed にする方が危険なので触らない。
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("getting recording %d duration for orphan CM logo candidate: %w", candidate.RecordingID, err)
+		}
+		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(rescueStuckJobsAfter)
 		if !candidate.CurrentTime.After(deadline) {
 			continue
 		}

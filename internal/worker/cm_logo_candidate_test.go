@@ -293,9 +293,7 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	}
 	for serviceID, age := range ages {
 		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
-		if attemptedAt := insertRunningCandidateForService(t, pool, serviceID, id, areaAt); attemptedAt.IsZero() {
-			t.Fatalf("attempted_at for service %d is zero", serviceID)
-		}
+		_ = insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
 		if _, err := pool.Exec(ctx, `
 			UPDATE cm_logo_candidates SET attempted_at = $3
 			WHERE network_id = 32736 AND service_id = $1 AND recording_id = $2`,
@@ -303,29 +301,16 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	rows, err := sqlcgen.New(pool).ListRunningCMLogoCandidates(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(rows) != len(ages) {
-		t.Fatalf("running candidates = %d, want %d", len(rows), len(ages))
-	}
-	for _, row := range rows {
-		if row.RecordingDurationMs != 45*60*1000 {
-			t.Errorf("service %d recording duration = %dms, want 2700000ms", row.ServiceID, row.RecordingDurationMs)
-		}
-	}
 	if err := failOrphanCMLogoCandidates(ctx, pool, grace); err != nil {
 		t.Fatal(err)
 	}
-	for serviceID, want := range map[int32]string{1024: "failed", 1025: "running", 1026: "running"} {
+	for serviceID, want := range map[int32][2]string{
+		1024: {"failed", "stopped"}, 1025: {"running", ""}, 1026: {"running", ""},
+	} {
 		state, stage, ok := candidateRowForService(t, pool, serviceID)
-		if !ok || state != want {
-			t.Errorf("candidate service %d = %q/%q, want %q", serviceID, state, stage, want)
+		if !ok || state != want[0] || (want[1] != "" && stage != want[1]) {
+			t.Errorf("candidate service %d = %q/%q, want %q/%q", serviceID, state, stage, want[0], want[1])
 		}
-	}
-	if state, stage, _ := candidateRowForService(t, pool, 1024); state != "failed" || stage != "stopped" {
-		t.Errorf("expired candidate = %q/%q, want failed/stopped", state, stage)
 	}
 }
 
