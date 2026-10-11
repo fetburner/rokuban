@@ -324,6 +324,11 @@ export function ProgramsPage() {
   const gridQuery = useQuery({
     queryKey: [programsQueryKeyPrefix, 'grid', sites, originMs, gridEndMs, selectedServiceParam],
     enabled: showGrid && sites.length > 0,
+    // 正時で queryKey が変わってもグリッドを外さない。番組の時刻は絶対時刻なので、
+    // 前の窓のデータを新しい軸へそのまま投影できる。軸・日付目盛りは新しい
+    // `originMs`、現在時刻と放送終了判定は `nowMs` へ進める（ProgramGrid の
+    // 30 秒時計だけに任せると、再レンダー直後は前の正時の時刻が残る）。
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const responses = await Promise.all(
         sites.map((site) =>
@@ -391,7 +396,7 @@ export function ProgramsPage() {
       start: new Date(originMs).toISOString(),
       end: new Date(gridEndMs).toISOString(),
     },
-    { query: { enabled: showGrid } },
+    { query: { enabled: showGrid, placeholderData: keepPreviousData } },
   )
   // 一覧 API は全サイトの区間を返す。各帯は同じ site の番組列に重ねるので
   // site を落とさず CapacityBands へ渡す。
@@ -845,6 +850,8 @@ export function ProgramsPage() {
       {showGrid ? (
         <ProgramGridView
           axis={axis}
+          nowSnapshot={nowMs}
+          preserveTimeOnAxisAdvance={dayOffset === 0}
           programs={gridPrograms}
           services={gridServices}
           serviceById={siteServiceByKey}
@@ -1016,6 +1023,8 @@ function GridScaleChips({
  */
 function ProgramGridView({
   axis,
+  nowSnapshot,
+  preserveTimeOnAxisAdvance,
   programs,
   services,
   serviceById,
@@ -1031,6 +1040,10 @@ function ProgramGridView({
   matchedProgramIds,
 }: {
   axis: TimeAxis
+  /** 親の再レンダー時刻。placeholder 中も現在時刻の線・セル判定を遅らせない。 */
+  nowSnapshot: number
+  /** 「今日」の軸が時刻とともに進む場合、表示中の絶対時刻を保つ。 */
+  preserveTimeOnAxisAdvance: boolean
   programs: SiteProgram[]
   services: SiteService[]
   serviceById: Map<string, SiteService>
@@ -1144,6 +1157,8 @@ function ProgramGridView({
           services={services}
           programs={programs}
           axis={axis}
+          nowSnapshot={nowSnapshot}
+          preserveTimeOnAxisAdvance={preserveTimeOnAxisAdvance}
           reservationByProgramId={actions.reservedProgramIds}
           selectedProgramId={selected ? programIdentity(selected.site, selected.programId) : null}
           onSelect={(program) => setSelectedProgramId(programIdentity(program.site, program.programId))}
