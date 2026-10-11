@@ -19,16 +19,20 @@ import (
 const defaultMaxAttempts = 25
 
 // Config exposes deliberate violations of jobq's non-guarantees for adversarial tests.
-// The zero Config disables coalescing and reverses insertion order regardless of priority.
-// A non-zero Config uses only the options explicitly set. SnoozeDelay overrides the
-// requested delay when non-nil; setting it to zero ignores delay.
+// Whatever the other fields say, the fake never coalesces and delivers the newest entry first,
+// ignoring priority, because that is the weakest behavior jobq's contract allows. Coalesce and
+// InOrder strengthen it; they give guarantees the contract does not, so use them only in the
+// fake's own tests. SnoozeDelay overrides the requested delay when non-nil; setting it to zero
+// ignores delay.
 type Config struct {
 	// DuplicateDelivery queues one extra copy before the first Work call finishes.
 	DuplicateDelivery bool
-	// NoCoalesce accepts every insertion, even when its Spec asks to coalesce.
-	NoCoalesce bool
-	// Reorder ignores queue order and priority, taking the newest entry first.
-	Reorder bool
+	// Coalesce merges an insertion whose Spec asks for it with identical pending or active work.
+	// This is stronger than the contract; do not use it outside the fake's own tests.
+	Coalesce bool
+	// InOrder delivers by priority, then insertion order. This is stronger than the contract;
+	// do not use it outside the fake's own tests.
+	InOrder bool
 	// RedeliverAfterSuccess queues one more delivery after Work returns nil.
 	RedeliverAfterSuccess bool
 	// SnoozeDelay overrides the requested delay; a pointer to zero ignores it.
@@ -87,14 +91,10 @@ type Queue struct {
 	stopping   bool
 }
 
-// New creates a fake queue using registry and config. The zero Config disables coalescing
-// and ignores insertion order and priority, as tested by TestDefaultConfigDoesNotCoalesce
-// and TestDefaultConfigIgnoresOrderingHints.
+// New creates a fake queue using registry and config. Unless Config.Coalesce or
+// Config.InOrder is set, it does not coalesce and ignores insertion order and priority,
+// as tested by TestKnobsKeepWeakestDefaults.
 func New(registry *jobq.Registry, config Config) *Queue {
-	if config == (Config{}) {
-		config.NoCoalesce = true
-		config.Reorder = true
-	}
 	if config.SnoozeDelay != nil {
 		delay := *config.SnoozeDelay
 		config.SnoozeDelay = &delay
@@ -167,7 +167,7 @@ func (queue *Queue) enqueue(payload []byte, kind string, spec jobq.Spec, priorit
 		return jobq.Result{}, errors.New("jobqfake: snooze delay override must not be negative")
 	}
 	coalesceKey := kind + "\x00" + spec.Queue + "\x00" + string(payload)
-	if spec.Coalesce && !queue.config.NoCoalesce && queue.findCoalescedLocked(coalesceKey) {
+	if spec.Coalesce && queue.config.Coalesce && queue.findCoalescedLocked(coalesceKey) {
 		return jobq.Result{Coalesced: true}, nil
 	}
 	queue.sequence++
@@ -312,7 +312,7 @@ func (queue *Queue) next() (*execution, time.Duration, <-chan struct{}, bool) {
 }
 
 func (queue *Queue) precedes(candidate, current *entry) bool {
-	if queue.config.Reorder {
+	if !queue.config.InOrder {
 		return candidate.sequence > current.sequence
 	}
 	if candidate.priority != current.priority {
@@ -558,6 +558,10 @@ func (queue *Queue) WaitIdle(ctx context.Context) error {
 		}
 	}
 }
+
+// RecoveryGrace reports the fake's recovery grace. It redelivers at once after Crash or
+// Stop, so the grace is small.
+func (queue *Queue) RecoveryGrace() time.Duration { return time.Second }
 
 // Deliveries returns a copy of the deliveries observed so far.
 func (queue *Queue) Deliveries() []Delivery {

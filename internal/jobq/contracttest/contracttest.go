@@ -20,6 +20,9 @@ type Fixture interface {
 	WaitIdle(context.Context) error
 	BeginTx(context.Context) (db.Tx, error)
 	Crash(context.Context) error
+	// RecoveryGrace is the adapter's recovery grace in jobq.Spec.Timeout: how long after the
+	// timeout it may take to make a job whose process died eligible for redelivery.
+	RecoveryGrace() time.Duration
 }
 
 // Factory creates an isolated adapter fixture that uses registry.
@@ -200,9 +203,10 @@ func testTimeout(t *testing.T, factory Factory) {
 	if _, err := fixture.Enqueue(context.Background(), contractArgs{TimeoutMS: 20, MaxAttempts: 2}); err != nil {
 		t.Fatalf("Enqueue() error = %v", err)
 	}
-	waitIdle(t, fixture)
+	limit := redeliveryLimit(fixture, 20*time.Millisecond)
+	waitIdleWithin(t, fixture, limit)
 	for range 2 {
-		if got := receive(t, calls); !errors.Is(got, context.DeadlineExceeded) {
+		if got := receiveWithin(t, calls, limit); !errors.Is(got, context.DeadlineExceeded) {
 			t.Errorf("Work context error = %v, want DeadlineExceeded", got)
 		}
 	}
@@ -236,7 +240,7 @@ func testStop(t *testing.T, factory Factory) {
 		t.Errorf("stopped Work context error = %v, want Canceled", got)
 	}
 	start(t, fixture)
-	waitIdle(t, fixture)
+	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 5*time.Second))
 	if got := calls.Load(); got != 2 {
 		t.Errorf("Work calls after Stop = %d, want literal 2", got)
 	}
@@ -269,7 +273,7 @@ func testCrash(t *testing.T, factory Factory) {
 		t.Errorf("crashed Work context error = %v, want Canceled", got)
 	}
 	start(t, fixture)
-	waitIdle(t, fixture)
+	waitIdleWithin(t, fixture, redeliveryLimit(fixture, 5*time.Second))
 	if got := calls.Load(); got != 2 {
 		t.Errorf("Work calls after crash = %d, want literal 2", got)
 	}
@@ -387,9 +391,20 @@ func start(t *testing.T, fixture Fixture) {
 	}
 }
 
+// redeliveryLimit bounds waits for redelivery: the job's timeout, the adapter's recovery
+// grace, and a fixed margin for scheduling.
+func redeliveryLimit(fixture Fixture, timeout time.Duration) time.Duration {
+	return timeout + fixture.RecoveryGrace() + 10*time.Second
+}
+
 func waitIdle(t *testing.T, fixture Fixture) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	waitIdleWithin(t, fixture, 10*time.Second)
+}
+
+func waitIdleWithin(t *testing.T, fixture Fixture, limit time.Duration) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	if err := fixture.WaitIdle(ctx); err != nil {
 		t.Fatalf("WaitIdle() error = %v", err)
@@ -398,10 +413,15 @@ func waitIdle(t *testing.T, fixture Fixture) {
 
 func receive[T any](t *testing.T, ch <-chan T) T {
 	t.Helper()
+	return receiveWithin(t, ch, 10*time.Second)
+}
+
+func receiveWithin[T any](t *testing.T, ch <-chan T, limit time.Duration) T {
+	t.Helper()
 	select {
 	case value := <-ch:
 		return value
-	case <-time.After(10 * time.Second):
+	case <-time.After(limit):
 		t.Fatal("timed out waiting for worker")
 		var zero T
 		return zero

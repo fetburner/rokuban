@@ -8,26 +8,57 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
+// 各締切の根拠。現行 River 投影では、締切は実行の ctx 締切であり、同時に rescuer が
+// 実行中のジョブを死んだとみなす時刻でもある。River の既定は 1 分である。
+// ingest / ruler / reconciler / record_sweep / epg_sync / encode_reconcile / catalog_export /
+// delete_reconcile の締切が既定より長いのは、DB の往復・mirakc への HTTP・ファイル I/O が
+// 件数に比例して積み上がり、1 分では足りなくなりうるからである。
+// ffmpeg を起動しないジョブ（reconcile 系）は encode のような長時間締切を要しない。
 const (
-	defaultJobTimeout            = time.Minute
-	ingestJobTimeout             = 5 * time.Minute
-	epgSyncJobTimeout            = 10 * time.Minute
-	tunerSyncJobTimeout          = time.Minute
-	rulerPassJobTimeout          = 5 * time.Minute
-	reconcilePassJobTimeout      = 10 * time.Minute
-	recordSweepJobTimeout        = 10 * time.Minute
-	thumbnailJobTimeout          = 5 * time.Minute
-	seekTilesJobTimeout          = 15 * time.Minute
+	defaultJobTimeout = time.Minute
+	// ingest は転送を区切りごとに snooze して継続するので、締切は録画全体の長さや転送速度で
+	// 決まらない。5 分は River の既定より長く、現行 River 投影の rescue 既定 6 分より短い
+	// （長いと実行中の締切より先に rescuer が死亡扱いにする）。
+	// 追従の無進捗検知は従来どおり StallTimeout が担う。
+	ingestJobTimeout = 5 * time.Minute
+	// epg_sync は mirakc への GET 2 回と Postgres 射影を含む全量同期 1 パスの上限。
+	epgSyncJobTimeout = 10 * time.Minute
+	// tuner_sync は数本〜十数本を返す /api/tuners だけなので既定と同じ。無応答のまま
+	// ジョブを掴み続けないよう上限は明示する。
+	tunerSyncJobTimeout = time.Minute
+	// ruler は mirakc に触れない純粋な Postgres 処理だが、ルールごとに DB 往復があり、
+	// 数十〜数百ルールと GC で既定の 1 分を超えうる。
+	rulerPassJobTimeout = 5 * time.Minute
+	// reconciler は mirakc への schedules 全量 GET と差分の POST / DELETE を含み、
+	// ネットワーク往復が支配的になりうるので epg_sync と同じ姿勢で長めに置く。
+	reconcilePassJobTimeout = 10 * time.Minute
+	// record_sweep は records 全量 GET と record ごとの DB トランザクションを含む。
+	// record のバイト転送は別の ingest が担う。
+	recordSweepJobTimeout = 10 * time.Minute
+	// thumbnail は大容量 TS への入力シークでも 5 分あれば足りる（未検証）。
+	thumbnailJobTimeout = 5 * time.Minute
+	// seek_tiles は合成 TS で測った 45 ms/枚を 1080 枚へ外挿すると約 49 秒である。
+	// 外挿も実録画・J4125 での生成時間も未検証（測定は 10 分・60 枚）。
+	seekTilesJobTimeout = 15 * time.Minute
+	// thumbnail_reconcile は候補の読み取りと投入だけを行う（抽出は ThumbnailWorker）。
 	thumbnailReconcileJobTimeout = 5 * time.Minute
 	cmDetectReconcileJobTimeout  = 5 * time.Minute
-	encodeReconcileJobTimeout    = 5 * time.Minute
-	deleteReconcileJobTimeout    = 10 * time.Minute
-	catalogExportJobTimeout      = 5 * time.Minute
-	storageSyncJobTimeout        = time.Minute
+	// encode_reconcile は ffmpeg を起動しないが、不足している (recording_id, profile) ごとに
+	// 投入が発生し、候補数とプロファイル数に比例して DB の処理が積み上がる。
+	encodeReconcileJobTimeout = 5 * time.Minute
+	// delete_reconcile は 1 パスでファイル走査と物理 unlink を多数行う。
+	deleteReconcileJobTimeout = 10 * time.Minute
+	// catalog_export は DB 読みと JSON 書き込みと刈り取りで、対象は数 MB 規模である。
+	catalogExportJobTimeout = 5 * time.Minute
+	// storage_sync は root ごとの statfs と DB upsert 高々 2 回で、tuner_sync と同じ理由で
+	// 既定を明示する。
+	storageSyncJobTimeout = time.Minute
 )
 
 // EncodeUnknownDurationTimeout is the execution limit for an encode job without a saved
-// duration-based deadline, including older queued arguments.
+// duration-based deadline, including older queued arguments. Current River projections use
+// the deadline as ffmpeg's context deadline, so a short estimate would fail every long
+// encode as timed out. Slower detection of a dead process is the cheaper error.
 const EncodeUnknownDurationTimeout = 12 * time.Hour
 
 func fixedTimeout(timeout time.Duration) func(jobq.Args) time.Duration {
@@ -102,6 +133,8 @@ func (a RecordSweepArgs) Spec() jobq.Spec {
 
 // Spec は encode の論理キュー、保存済み締切または既定の 12 時間締切、26 回の
 // adapter 試行上限、合流ヒントを返す。
+// 停止による Canceled は River の attempt を消費するがドメインでは数えない。26 > 25 は
+// River が先に discard しない保証ではない（reconcile が新ジョブで回復する）。
 func (a EncodeJobArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, func(raw jobq.Args) time.Duration {
 		args, ok := raw.(EncodeJobArgs)

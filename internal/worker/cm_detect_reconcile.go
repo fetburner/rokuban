@@ -19,7 +19,6 @@ import (
 const (
 	defaultCMDetectReconcileInterval = 15 * time.Minute
 	riverDefaultRescueStuckJobsAfter = time.Hour
-	cmLogoCandidateJobListPageSize   = 10_000
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.

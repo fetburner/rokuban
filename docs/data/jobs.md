@@ -28,7 +28,7 @@
 - at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
 - 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
   - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
-- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。現行 River runtime は `UniqueOpts` で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は現在の River runtime にはない
+- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。現行 River runtime は `UniqueOpts` で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は現在の River runtime にはない。未解決: River 以外の adapter には ruler の並走（古い評価結果による上書き）を止める機構が無い。
 - **現行 River runtime では `UniqueOpts` が通常運用の重複抑止にも使われる**。worker の `MaxWorkers: 1` はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。River の `UniqueOpts` も行の重複を抑える機能であり、rescue 後に旧 Work が止まらなければ 2 実行が並走する
   - 並走すると壊れるもの（コード読解による。並走を起こしての確認はしていない）
     - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
@@ -87,8 +87,13 @@ identity にならない。**キュー名を変える（リネーム・site 修�
 部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、
 タグは使わない。Args は実行条件なので、部分選択では異なる仕事を同じ identity にまとめる
 おそれがある。たとえば encode の保存済み締切が異なる Args は別の identity になる。
-投入重複を減らすための合流なので、既存の待ち行の key が切り替わる deploy 直後に余分な
-実行が 1 回生じても、正しさには影響しない。
+締切だけが違う投入は同じ仕事であり、導出値（実尺 × profile の rate）が identity に入る代償を払う。
+(i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
+(ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
+(iii) 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。
+すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。
+既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
+いずれも正しさは壊れない。
 
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 
