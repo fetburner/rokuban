@@ -6,7 +6,7 @@
 // 「この区間は超過している」は確実だが、**返らなかった区間が「収まる」ことは
 // 保証しない**。Rokuban から見えない消費者（並走する EPGStation・ライブ視聴・
 // mirakc の EPG 収集ジョブ）がいるうえ、mirakc の excluded_channels は
-// /api/tuners に載らない。mirakc main の実装（mirakc-core/src/tuner.rs の
+// /api/tuners に載らない。mirakc main（`4f2493f98374`）の実装（mirakc-core/src/tuner.rs の
 // activate_tuner）を読んだ限り録画中はチューナーを替えず、空きチューナーは設定順で
 // 選ぶため、区間ごとの Hall 条件を満たしても録画できない場合がある。既知の盲点は
 // すべて「警告を見逃す」方向に偏っている。
