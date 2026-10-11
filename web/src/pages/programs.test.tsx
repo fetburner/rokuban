@@ -222,6 +222,14 @@ function errorResponse(status: number, message: string): Response {
   })
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
+
 /**
  * encodeProfiles は「番組表からの予約でエンコード設定を指定する」テスト
  * （issue #132）が使うプロファイル一覧のスタブ。`GET /api/encode-profiles` は
@@ -1521,6 +1529,167 @@ describe('ProgramsPage の容量超過の帯', () => {
     expect(asked.at(-1)?.searchParams.get('end')).toBe(
       new Date(origin + 24 * 3_600_000).toISOString(),
     )
+  })
+
+  it('正時後の再取得中も番組・超過帯を保ち、現在時刻で表示を更新する', async () => {
+    const nextOrigin = origin + 3_600_000
+    const nextOriginISO = new Date(nextOrigin).toISOString()
+    const midnightOrigin = new Date(nextOrigin)
+    midnightOrigin.setDate(midnightOrigin.getDate() + 1)
+    midnightOrigin.setHours(0, 0, 0, 0)
+    const midnightOriginISO = midnightOrigin.toISOString()
+    const boundaryProgram = programAtAbsolute(
+      9001,
+      1024,
+      nextOrigin - 15 * 60_000,
+      '境界後の番組',
+    )
+    boundaryProgram.endAt = new Date(nextOrigin + 15 * 60_000).toISOString()
+    boundaryProgram.durationMs = 30 * 60_000
+    const currentOverage = {
+      site: 'default',
+      startAt: new Date(nextOrigin + 2.5 * 3_600_000).toISOString(),
+      endAt: new Date(nextOrigin + 3.5 * 3_600_000).toISOString(),
+      shortfall: 1,
+      jammedTypes: ['BS'] as CapacityOverage['jammedTypes'],
+    }
+    const fetchMock = stubApi([], [currentOverage], [boundaryProgram])
+    const originalFetch = fetchMock.getMockImplementation()
+    expect(originalFetch).toBeDefined()
+
+    const pendingPrograms = deferred<Response>()
+    const pendingOverages = deferred<Response>()
+    const pendingMidnightPrograms = deferred<Response>()
+    const pendingMidnightOverages = deferred<Response>()
+    let programsPending = false
+    let overagesPending = false
+    let midnightProgramsPending = false
+    let midnightOveragesPending = false
+    fetchMock.mockImplementation((input, init) => {
+      const url = new URL(String(input), 'http://localhost')
+      const start = url.searchParams.get('start')
+      if (url.pathname === '/api/sites/default/programs' && start === midnightOriginISO) {
+        midnightProgramsPending = true
+        return pendingMidnightPrograms.promise
+      }
+      if (url.pathname === '/api/capacity/overages' && start === midnightOriginISO) {
+        midnightOveragesPending = true
+        return pendingMidnightOverages.promise
+      }
+      if (url.pathname === '/api/sites/default/programs' && start === nextOriginISO) {
+        programsPending = true
+        return pendingPrograms.promise
+      }
+      if (url.pathname === '/api/capacity/overages' && start === nextOriginISO) {
+        overagesPending = true
+        return pendingOverages.promise
+      }
+      return originalFetch!(input, init)
+    })
+
+    stubMatchMedia(true)
+    vi.setSystemTime(origin + 3_600_000 - 25_000)
+    const { queryClient } = renderPage('/programs?view=grid')
+    try {
+      await screen.findByTestId('program-grid')
+      await overagesSettled(queryClient)
+      expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
+
+      // 時計だけでは ProgramsPage は再レンダーされない。EPG 再取得の契機を
+      // 作った時点で正時を越えておき、変わった queryKey の応答を保留する。
+      await act(async () => {
+        vi.setSystemTime(nextOrigin + 20 * 60_000)
+      })
+      await userEvent.click(screen.getByTestId('genre-filter-7'))
+      await waitFor(() => {
+        expect(programsPending).toBe(true)
+        expect(overagesPending).toBe(true)
+      })
+
+      // placeholder 中は旧キーの絶対時刻データを新しい軸へ投影する。
+      // 日付目盛りと現在時刻・放送終了判定は新しいレンダー時刻へ追従させる。
+      expect(screen.getByTestId('program-grid')).toBeInTheDocument()
+      expect(screen.queryByText('読み込み中')).not.toBeInTheDocument()
+      expect(screen.getAllByTestId('program-grid-tick')[0]).toHaveTextContent('13:00')
+      expect(screen.getByTestId('program-grid-now-line')).toBeInTheDocument()
+      expect(screen.getByTestId('program-grid-now-time')).toHaveTextContent('13:20')
+      expect(
+        Number.parseFloat(screen.getByTestId('program-grid-now-line').style.top),
+      ).toBeCloseTo(40, 1)
+      expect(
+        document.querySelector(
+          `[data-testid="program-grid-cell"][data-program-id="${boundaryProgram.programId}"]`,
+        ),
+      ).toHaveAttribute('data-ended', 'true')
+      expect(screen.getByTestId('capacity-band')).toBeInTheDocument()
+
+      pendingPrograms.resolve(jsonResponse([boundaryProgram]))
+      pendingOverages.resolve(jsonResponse([currentOverage]))
+      await waitFor(() => {
+        const gridQuery = queryClient
+          .getQueryCache()
+          .findAll({ queryKey: [programsQueryKeyPrefix, 'grid'] })
+          .find((query) => query.queryKey[3] === nextOrigin)
+        const overageQuery = queryClient
+          .getQueryCache()
+          .findAll({ queryKey: ['/api/capacity/overages'] })
+          .find(
+            (query) =>
+              (query.queryKey[1] as { start?: string } | undefined)?.start === nextOriginISO,
+          )
+        expect(gridQuery?.state.status).toBe('success')
+        expect(overageQuery?.state.status).toBe('success')
+      })
+
+      const dayGroup = screen.getByRole('group', { name: '日付' })
+      const currentDay = dayGroup.querySelector('button[aria-current="date"]')
+      expect(currentDay?.getAttribute('aria-label')).toMatch(/^8月14日\(金\)(?:,|$)/)
+
+      // 翌日の 0 時でも placeholder 表示のまま日付見出しと時間軸を進める。
+      await act(async () => {
+        vi.setSystemTime(midnightOrigin.getTime() + 20 * 60_000)
+      })
+      await userEvent.click(screen.getByTestId('genre-filter-7'))
+      await waitFor(() => {
+        expect(midnightProgramsPending).toBe(true)
+        expect(midnightOveragesPending).toBe(true)
+      })
+      expect(screen.getByTestId('program-grid')).toBeInTheDocument()
+      expect(screen.getAllByTestId('program-grid-tick')[0]).toHaveTextContent('00:00')
+      expect(screen.getByTestId('program-grid-now-time')).toHaveTextContent('00:20')
+      expect(
+        Number.parseFloat(screen.getByTestId('program-grid-now-line').style.top),
+      ).toBeCloseTo(40, 1)
+      expect(
+        dayGroup
+          .querySelector('button[aria-current="date"]')
+          ?.getAttribute('aria-label'),
+      ).toMatch(/^8月15日\(土\)(?:,|$)/)
+
+      pendingMidnightPrograms.resolve(jsonResponse([]))
+      pendingMidnightOverages.resolve(jsonResponse([]))
+      await waitFor(() => {
+        const gridQuery = queryClient
+          .getQueryCache()
+          .findAll({ queryKey: [programsQueryKeyPrefix, 'grid'] })
+          .find((query) => query.queryKey[3] === midnightOrigin.getTime())
+        const overageQuery = queryClient
+          .getQueryCache()
+          .findAll({ queryKey: ['/api/capacity/overages'] })
+          .find(
+            (query) =>
+              (query.queryKey[1] as { start?: string } | undefined)?.start === midnightOriginISO,
+          )
+        expect(gridQuery?.state.status).toBe('success')
+        expect(overageQuery?.state.status).toBe('success')
+      })
+    } finally {
+      pendingPrograms.resolve(jsonResponse([boundaryProgram]))
+      pendingOverages.resolve(jsonResponse([currentOverage]))
+      pendingMidnightPrograms.resolve(jsonResponse([]))
+      pendingMidnightOverages.resolve(jsonResponse([]))
+      vi.setSystemTime(pinnedNow)
+    }
   })
 
   it('予約すると超過を取り直す（帯は予約集合からの導出値）', async () => {
