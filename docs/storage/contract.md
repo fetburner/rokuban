@@ -138,11 +138,12 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   （`TestNewEncodeScratchDirSupportsLongProfileNames`）。
   掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。
   各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）
-  directory だけを消す。他の recording や profile の encode が走っていても、同じ scope の
-  死んだ残骸は消える（`TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` /
-  `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope` /
-  `TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope` /
+  directory だけを消す。
+  範囲は `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` で固定する。
+  並走中の試行は残る（`TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope` /
   `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。
+  他の scope の encode が走っていても、死んだ残骸は消える
+  （`TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`）。
   作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る
   （`TestRemoveStaleEncodeScratchWaitsForScratchCreationGate` /
   `TestNewEncodeScratchDirWaitsForScratchCreationGate`）。
