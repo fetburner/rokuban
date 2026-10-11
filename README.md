@@ -12,6 +12,10 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 |---|---|
 | ![番組表。ジャンルで色分けし、予約済みの番組に印が付く](docs/images/readme-programs.jpg) | ![録画の再生。同じシリーズのほかの回が横に並ぶ](docs/images/readme-recording.jpg) |
 
+| ライブ視聴 | スマホ |
+|---|---|
+| ![ライブ視聴。局ごとにいま放送中の番組が並ぶ](docs/images/readme-live.jpg) | <img src="docs/images/readme-home-mobile.jpg" alt="スマホのホーム。下のタブで画面を切り替える" width="240"> |
+
 画面の局と番組は架空のもので、映像の作品とは関係がない。
 映像は次の 2 作品の予告編から静止画を切り出し、16:9 に切り抜いて縮小したものである。
 どちらも [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) で公開されている。

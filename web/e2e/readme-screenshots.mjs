@@ -1,4 +1,5 @@
-// README に載せるスクリーンショット（ホーム・番組表・録画の再生）を撮る。判定はしない。
+// README に載せるスクリーンショット（ホーム・番組表・録画の再生・ライブ・スマホのホーム）を撮る。
+// 判定はしない。
 //
 // 公開リポジトリに載せるので、実放送の映像・番組情報は使わない。番組・局は架空で、
 // 映像は Blender Foundation のオープンムービー（CC BY 3.0）の予告編から切り出す。
@@ -143,7 +144,8 @@ const fillers = [
 function programsFor(startISO, endISO, serviceIds) {
   const start = Date.parse(startISO)
   const end = Date.parse(endISO)
-  const targets = serviceIds.length ? services.filter((s) => serviceIds.includes(String(s.serviceId))) : services
+  // `service` クエリは Service.id（合成 id）。SI の serviceId ではない。
+  const targets = serviceIds.length ? services.filter((s) => serviceIds.includes(String(s.id))) : services
   const out = []
   for (const service of targets) {
     // 前日 17:00 から 1 日ずつ同じ編成を敷く。8 時間の外は局ごとにずらした fillers で埋める。
@@ -181,7 +183,8 @@ function programsFor(startISO, endISO, serviceIds) {
 
 /** programAt は番組表の「いま」の日に `serviceId` で `name` を流している番組を引く。 */
 function programAt(serviceId, name) {
-  return programsFor(iso(jst(17)), iso(jst(17, 0, 1)), [String(serviceId)]).find((p) => p.name === name)
+  const service = services.find((s) => s.serviceId === serviceId)
+  return programsFor(iso(jst(17)), iso(jst(17, 0, 1)), [String(service.id)]).find((p) => p.name === name)
 }
 
 const reservedPrograms = [
@@ -354,6 +357,19 @@ ffmpeg([
 ])
 const heroVideo = readFileSync(heroVideoPath)
 
+// ライブは「みなと教育」の世界のドキュメント（砂漠の隊商）。静止画の HLS を 12 秒ぶん作る。
+// 実配信と同じく映像と音声を持たせる（音声は無音）。
+const LIVE_SERVICE = services[1]
+const LIVE_DIR = path.join(MEDIA_DIR, 'live')
+mkdirSync(path.join(LIVE_DIR, 'segments'), { recursive: true })
+ffmpeg([
+  '-loop', '1', '-framerate', '30000/1001', '-i', path.join(MEDIA_DIR, 'still-22.jpg'),
+  '-f', 'lavfi', '-i', 'anullsrc=r=48000:cl=stereo', '-t', '12',
+  '-c:v', 'libx264', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+  '-f', 'hls', '-hls_time', '2', '-hls_list_size', '0', '-hls_base_url', 'segments/',
+  '-hls_segment_filename', path.join(LIVE_DIR, 'segments', 'segment_%03d.ts'), path.join(LIVE_DIR, 'playlist.m3u8'),
+])
+
 // --- スタブ -------------------------------------------------------------------
 
 function serveRange(route, bytes) {
@@ -374,6 +390,16 @@ function serveRange(route, bytes) {
 
 async function handler({ path: p, url, json, route }) {
   if (p === '/api/events') return sseKeepAlive(route)
+  if (p === '/api/live-profiles') return json([{ name: '720p', height: 720 }])
+  if (p.endsWith('/live/playlist.m3u8')) {
+    return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(path.join(LIVE_DIR, 'playlist.m3u8')) })
+  }
+  const segment = /\/live\/segments\/(segment_\d+\.ts)$/.exec(p)
+  if (segment) {
+    const file = path.join(LIVE_DIR, 'segments', segment[1])
+    if (!existsSync(file)) return route.fulfill({ status: 404 })
+    return route.fulfill({ status: 200, contentType: 'video/mp2t', body: readFileSync(file) })
+  }
   if (p === '/api/sites') return json([SITE])
   if (p === '/api/capabilities') return json({ live: true, cmDetect: false })
   if (p === '/api/encode-profiles') return json([{ name: 'h264-720p', container: 'mp4' }])
@@ -412,7 +438,7 @@ async function handler({ path: p, url, json, route }) {
     return json(programsFor(
       url.searchParams.get('start') ?? iso(nowMs),
       url.searchParams.get('end') ?? iso(nowMs + 6 * HOUR),
-      url.searchParams.getAll('serviceId'),
+      url.searchParams.getAll('service'),
     ))
   }
   if (/\/overlaps$/.test(p)) return json({ count: 0, reservations: [] })
@@ -436,9 +462,9 @@ const context = await browser.newContext({
 })
 mkdirSync(OUT_DIR, { recursive: true })
 
-async function shoot(name, pathname, height, ready, { fullPage = false } = {}) {
+async function shoot(name, pathname, viewport, ready, { fullPage = false } = {}) {
   const page = await context.newPage()
-  await page.setViewportSize({ width: 1440, height })
+  await page.setViewportSize(viewport)
   await page.clock.setFixedTime(FIXED_NOW)
   await installApiStubs(page, handler)
   await page.goto(URL_BASE + pathname, { waitUntil: 'networkidle' })
@@ -463,23 +489,38 @@ async function shoot(name, pathname, height, ready, { fullPage = false } = {}) {
   await page.close()
 }
 
-await shoot('home', '/?mode=watch', 800, async (page) => {
+await shoot('home', '/?mode=watch', { width: 1440, height: 800 }, async (page) => {
   await page.waitForFunction(() => {
     const video = document.querySelector('[data-testid="home-hero-resume-video"]')
     return ['ready', 'failed'].includes(video?.getAttribute('data-resume-state'))
   }, undefined, { timeout: 15_000 })
 })
 
-await shoot('programs', '/programs?view=grid', 900, async (page) => {
+await shoot('programs', '/programs?view=grid', { width: 1440, height: 900 }, async (page) => {
   await page.locator('[data-testid="program-grid-cell"]').first().waitFor({ timeout: 15_000 })
 })
 
-await shoot('recording', `/recordings/${hero.id}`, 1000, async (page) => {
+await shoot('recording', `/recordings/${hero.id}`, { width: 1440, height: 1000 }, async (page) => {
   await page.waitForFunction(() => {
     const video = document.querySelector('video')
     return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking
   }, undefined, { timeout: 15_000 })
 // 動画は画面の高さに合わせて伸びるので、下端で版やシリーズの行が切れないようページ全体を撮る。
 }, { fullPage: true })
+
+await shoot('live', `/live?service=${LIVE_SERVICE.id}`, { width: 1440, height: 900 }, async (page) => {
+  await page.getByRole('button', { name: /再生/ }).click()
+  await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+  }, undefined, { timeout: 15_000 })
+})
+
+await shoot('home-mobile', '/?mode=watch', { width: 390, height: 844 }, async (page) => {
+  await page.waitForFunction(() => {
+    const video = document.querySelector('[data-testid="home-hero-resume-video"]')
+    return ['ready', 'failed'].includes(video?.getAttribute('data-resume-state'))
+  }, undefined, { timeout: 15_000 })
+})
 
 await finish(ng, browser)
