@@ -314,6 +314,41 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	}
 }
 
+// 録画行が消えて recording_id が NULL になった候補も、最小締切と猶予で回収する。
+func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 949)
+	var dbNow time.Time
+	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
+		t.Fatal(err)
+	}
+	grace := 2 * time.Minute
+	deadline := cmDetectionTimeout(0)
+	ages := map[int32]time.Duration{
+		1024: deadline + grace + 5*time.Second,
+		1025: deadline + grace/2,
+	}
+	for serviceID, age := range ages {
+		areaAt := seedTaughtAreaForService(t, pool, serviceID, 1180)
+		_ = insertRunningCandidateForService(t, pool, serviceID, id, areaAt)
+		if _, err := pool.Exec(ctx, `
+			UPDATE cm_logo_candidates SET recording_id = NULL, attempted_at = $2
+			WHERE network_id = 32736 AND service_id = $1`, serviceID, dbNow.Add(-age)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := failOrphanCMLogoCandidates(ctx, pool, grace); err != nil {
+		t.Fatal(err)
+	}
+	for serviceID, want := range map[int32][2]string{1024: {"failed", "stopped"}, 1025: {"running", ""}} {
+		state, stage, ok := candidateRowForService(t, pool, serviceID)
+		if !ok || state != want[0] || (want[1] != "" && stage != want[1]) {
+			t.Errorf("candidate service %d = %q/%q, want %q/%q", serviceID, state, stage, want[0], want[1])
+		}
+	}
+}
+
 // The ingest hint and periodic reconciliation both pass actual recording duration to River jobs.
 func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	pool := testutil.SetupDB(t)

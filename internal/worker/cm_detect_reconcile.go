@@ -131,10 +131,9 @@ func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueS
 	for _, candidate := range candidates {
 		durationMs, err := q.GetCMRecordingDuration(ctx, candidate.RecordingID)
 		if errors.Is(err, pgx5.ErrNoRows) {
-			// 投入側は実尺が引けないと投入しないので Timeout が不明。誤って failed にする方が危険なので触らない。
-			continue
-		}
-		if err != nil {
+			// 録画行が消えた候補は実行側の Timeout を引けない。結果に意味が無く、遅い書き込みは attempted_at 照合で拒否されるので最小締切で回収する。
+			durationMs = 0
+		} else if err != nil {
 			return fmt.Errorf("getting recording %d duration for orphan CM logo candidate: %w", candidate.RecordingID, err)
 		}
 		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(rescueStuckJobsAfter)
@@ -143,7 +142,7 @@ func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueS
 		}
 		if _, err := q.FailOrphanCMLogoCandidate(ctx, sqlcgen.FailOrphanCMLogoCandidateParams{
 			NetworkID: candidate.NetworkID, ServiceID: candidate.ServiceID,
-			RecordingID: &candidate.RecordingID, AreaUpdatedAt: candidate.ObservedAreaUpdatedAt,
+			RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.ObservedAreaUpdatedAt,
 			AttemptedAt: candidate.AttemptedAt,
 		}); err != nil {
 			return fmt.Errorf("failing orphan CM logo candidate for network %d service %d: %w",

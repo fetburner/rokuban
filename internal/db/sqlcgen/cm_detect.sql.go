@@ -296,7 +296,7 @@ SET state = 'failed', stage = 'stopped',
     error = 'CM logo candidate job ended without recording a result'
 WHERE network_id = $1
   AND service_id = $2
-  AND recording_id = $3
+  AND COALESCE(recording_id, 0) = $3::bigint
   AND state = 'running'
   AND observed_area_updated_at = $4::timestamptz
   AND attempted_at = $5::timestamptz
@@ -305,7 +305,7 @@ WHERE network_id = $1
 type FailOrphanCMLogoCandidateParams struct {
 	NetworkID     int32
 	ServiceID     int32
-	RecordingID   *int64
+	RecordingID   int64
 	AreaUpdatedAt time.Time
 	AttemptedAt   time.Time
 }

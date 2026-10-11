@@ -346,7 +346,7 @@ SET state = 'failed', stage = 'stopped',
     error = 'CM logo candidate job ended without recording a result'
 WHERE network_id = sqlc.arg('network_id')
   AND service_id = sqlc.arg('service_id')
-  AND recording_id = sqlc.arg('recording_id')
+  AND COALESCE(recording_id, 0) = sqlc.arg('recording_id')::bigint
   AND state = 'running'
   AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
   AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
