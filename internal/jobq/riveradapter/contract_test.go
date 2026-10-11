@@ -188,7 +188,7 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 	}
 
 	resident := fixture.newClient()
-	if err := resident.Start(ctx); err != nil {
+	if err := resident.Start(context.Background()); err != nil {
 		return fmt.Errorf("starting resident River client: %w", err)
 	}
 	fixture.current = resident
