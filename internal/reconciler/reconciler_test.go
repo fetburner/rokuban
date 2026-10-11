@@ -115,6 +115,14 @@ func (m *mockMirakc) getSchedules() map[int64]mirakc.Schedule {
 	return cp
 }
 
+func (m *mockMirakc) setScheduleState(programID int64, state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	schedule := m.schedules[programID]
+	schedule.State = state
+	m.schedules[programID] = schedule
+}
+
 func (m *mockMirakc) getDeleteCalls() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -884,6 +892,65 @@ func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
 	}
 	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore+float64(len(staleStates)) {
 		t.Errorf("reconcile schedules deleted = %v, want %v", got, deletesBefore+float64(len(staleStates)))
+	}
+}
+
+func TestReconciler_DeletesDeferredScheduleAfterItFinishes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const orphanedProgramID int64 = 998
+	mock := newMockMirakc()
+	mock.schedules[orphanedProgramID] = mirakc.Schedule{
+		State:   mirakc.ScheduleStateRecording,
+		Program: mirakc.Program{ID: orphanedProgramID},
+		Tags:    []string{mirakc.ProgramTag(orphanedProgramID)},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	// 別の desired reservation を残し、total-loss breaker に削除を隠されずに
+	// orphan schedule の state が進んだ後の次パスを検証する。
+	createReservation(t, ctx, q, 100000500019703, "desired", time.Now().Add(time.Hour))
+
+	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("first RunPass: %v", err)
+	}
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Fatalf("recording schedule should be deferred on first pass, got DELETE calls %v", calls)
+	}
+	if got := gaugeValue(t, "delete"); got != 0 {
+		t.Errorf("first pass pending_diff{action=delete} = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 1 {
+		t.Errorf("first pass pending_diff{action=delete_deferred} = %v, want 1", got)
+	}
+	if got, exists := mock.getSchedules()[orphanedProgramID]; !exists || got.State != mirakc.ScheduleStateRecording {
+		t.Fatalf("schedule after first pass = %+v, exists=%v; want recording schedule retained", got, exists)
+	}
+
+	mock.setScheduleState(orphanedProgramID, mirakc.ScheduleStateFinished)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("second RunPass: %v", err)
+	}
+	if _, exists := mock.getSchedules()[orphanedProgramID]; exists {
+		t.Error("finished orphan schedule should be deleted on the next pass")
+	}
+	if calls := mock.getDeleteCalls(); len(calls) != 1 || calls[0] != orphanedProgramID {
+		t.Errorf("DELETE calls after second pass = %v, want [%d]", calls, orphanedProgramID)
+	}
+	if got := gaugeValue(t, "delete"); got != 1 {
+		t.Errorf("second pass pending_diff{action=delete} = %v, want 1", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 0 {
+		t.Errorf("second pass pending_diff{action=delete_deferred} = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore+1 {
+		t.Errorf("actual deleted schedules counter = %v, want %v", got, deletesBefore+1)
 	}
 }
 
