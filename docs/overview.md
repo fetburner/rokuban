@@ -110,7 +110,7 @@ api の境界と exec の境界は `.golangci.yml` の depguard が判定する�
 rokuban-full は公式イメージに ffmpeg / ffprobe と CM 検出のツールを足したもので、ユーザーが `Dockerfile.full` でセルフビルドする（後述の「イメージ戦略と配布物」）。
 どちらのイメージにも同じ単一バイナリが入っていて、ロールは起動時の `--roles` で選ぶ。
 k8s でどのキューがどちらのイメージを使うかは `deploy/k8s/` のマニフェストの `image:` が決める。
-外部ツールを要るキューだけが rokuban-full を指すことは `deploy/k8s/workloads_test.go` が判定する。
+外部ツールを要するキューの ScaledJob だけが rokuban-full を指すことは `deploy/k8s/workloads_test.go` が判定する。
 Docker Compose の monolithic mode（`--all`）は、全ロールを rokuban-full の 1 プロセスで動かす。
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
