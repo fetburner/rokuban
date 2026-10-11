@@ -114,7 +114,7 @@ func jobWithID(id, recordingID int64) *river.Job[EncodeJobArgs] {
 }
 
 func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int32) func(string) bool {
-	prefix := fmt.Sprintf("/encode/%d-%x-%d-", recordingID, profile, attemptCount)
+	prefix := fmt.Sprintf("/encode/%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
 	return func(scratchOut string) bool {
 		return strings.Contains(filepath.ToSlash(scratchOut), prefix)
 	}
@@ -455,7 +455,7 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	if err := w.Work(ctx, jobWithID(1, recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
-	bScratchPattern := filepath.Join(scratchDir, "encode", fmt.Sprintf("%d-68323634-1-*", recordingID), "out.mp4")
+	bScratchPattern := filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*", "out.mp4")
 	bScratch, err := filepath.Glob(bScratchPattern)
 	if err != nil {
 		t.Fatalf("finding B's scratch output: %v", err)
@@ -470,7 +470,7 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	if err := waitDone(t, doneB); err != nil {
 		t.Fatalf("Work B: %v", err)
 	}
-	bScratch, err = filepath.Glob(filepath.Join(scratchDir, "encode", fmt.Sprintf("%d-68323634-1-*", recordingID)))
+	bScratch, err = filepath.Glob(filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*"))
 	if err != nil || len(bScratch) != 0 {
 		t.Errorf("B's scratch was not cleaned up: paths=%v err=%v", bScratch, err)
 	}

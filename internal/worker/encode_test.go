@@ -498,9 +498,9 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 		}
 		return dir
 	}
-	stale := mk(fmt.Sprintf("encode/%d-68323634-3-abc", recordingID))
-	otherProfile := mk(fmt.Sprintf("encode/%d-637574-1-abc", recordingID))
-	otherRecording := mk(fmt.Sprintf("encode/%d-68323634-1-abc", recordingID+1))
+	stale := mk(filepath.Join("encode", encodeScratchScope(recordingID, "h264")+"-3-abc"))
+	otherProfile := mk(filepath.Join("encode", encodeScratchScope(recordingID, "cut")+"-1-abc"))
+	otherRecording := mk(filepath.Join("encode", encodeScratchScope(recordingID+1, "h264")+"-1-abc"))
 	thumbnail := mk(fmt.Sprintf("thumbnail/%d-abc", recordingID))
 
 	w := &EncodeWorker{
