@@ -434,7 +434,7 @@ func TestShouldCountEncodeFailure_SnoozeIsNotAFailure(t *testing.T) {
 }
 
 // T4: scratch は recording/profile/domain attempt ごと。別の実行中 attempt の scratch は
-// cleanup の共有 flock により、先行 attempt が終わるまで残る。
+// 各試行が自分の scratch dir に持つ flock により、cleanup は実行中の試行の dir を消さず、先行 attempt が終わるまで残る。
 func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

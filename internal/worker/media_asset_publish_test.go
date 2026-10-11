@@ -383,17 +383,23 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 	}
 }
 
-// 生きた試行は同じ scope でも残し、死んだ兄弟は消す。
+// 生きた試行は同じ scope でも残し、死んだ兄弟は消す。生きた試行は attempt 2 で、
+// os.ReadDir の名前順では -1-dead < -2-<random> < -3-dead になる。生きた試行に
+// 当たっても走査を打ち切らず、後ろの -3-dead も消えることを見る。
 func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
 	root := t.TempDir()
-	live, liveLock, err := newEncodeScratchDir(root, 7, "h264", 3)
+	live, liveLock, err := newEncodeScratchDir(root, 7, "h264", 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = closeEncodeScratchLock(liveLock) })
-	dead := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+"-2-dead")
-	if err := os.MkdirAll(dead, 0o700); err != nil {
-		t.Fatal(err)
+	var dead []string
+	for _, name := range []string{"-1-dead", "-3-dead"} {
+		d := filepath.Join(root, "encode", encodeScratchScope(7, "h264")+name)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		dead = append(dead, d)
 	}
 
 	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
@@ -401,8 +407,10 @@ func TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope(t *testing.T) {
 	if _, err := os.Stat(live); err != nil {
 		t.Errorf("live attempt of the same scope was removed: %v", err)
 	}
-	if _, err := os.Stat(dead); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("dead sibling stat error = %v, want os.ErrNotExist", err)
+	for _, d := range dead {
+		if _, err := os.Stat(d); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("dead sibling %s stat error = %v, want os.ErrNotExist", filepath.Base(d), err)
+		}
 	}
 	if err := closeEncodeScratchLock(liveLock); err != nil {
 		t.Fatal(err)
