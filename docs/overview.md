@@ -65,21 +65,30 @@ api のサーバーレス配置、scale-to-zero、serverless Postgres がこれ�
 ## 構成図
 
 ```
-[エッジ]                       [サーバー / クラウド]
-┌────────────┐    ┌─────────────────────────────────────────┐
-│ mirakc      │◀──▶│ rokuban（Go、単一バイナリ）                  │
-│             │    │  ├ api:        REST、UI 配信(go:embed)        │
-│             │    │  ├ notifier:   NOTIFY 購読→ブラウザへ SSE 配信 │
-│             │    │  ├ watcher:    mirakc SSE購読→状態反映       │
-└────────────┘    │  └ streamer:   ライブ視聴 (mirakc→ffmpeg→HLS)│
-   ▲               │ rokuban worker（別イメージ、0〜Nスケール）     │
-   │record pull    │  └ ingest / encode / thumbnail / cleanup /  │
-   │               │    ruler_pass / reconcile_pass / epg_sync   │
-   └───────────────├─────────────────────────────────────────┤
-                   │ PostgreSQL（Rokuban の DB / ジョブキュー）       │
-                   │ メディアストレージ（原本・派生物。分散時は共有） │
-                   └─────────────────────────────────────────┘
+[エッジ]         [サーバー / クラウド]
+┌──────────┐     ┌──────────────────────────────────────────────────────────────┐
+│ mirakc   │◀──▶ │ rokuban（Go、単一バイナリ。ロールは起動引数で選ぶ）          │
+│          │     │ ┌─ 公式イメージ（Dockerfile。ffmpeg 無し） ────────────────┐ │
+│          │     │ │ api:      REST、UI 配信(go:embed)                        │ │
+│          │     │ │ notifier: NOTIFY 購読→ブラウザへ SSE 配信                │ │
+└──────────┘     │ │ watcher:  mirakc SSE 購読→状態反映                       │ │
+   ▲             │ │ worker:   ffmpeg / JLS を使わないキュー                  │ │
+   │ record      │ │           （ingest / reconciler / cleanup 等。0〜N）     │ │
+   │ pull        │ └──────────────────────────────────────────────────────────┘ │
+   │             │ ┌─ full イメージ（Dockerfile.full。ユーザーがビルド） ─────┐ │
+   │             │ │ = 公式イメージ + ffmpeg / ffprobe                        │ │
+   │             │ │   + JLS（chapter_exe / logoframe / join_logo_scp）       │ │
+   │             │ │ streamer: ライブ視聴（mirakc→ffmpeg→HLS）                │ │
+   │             │ │ worker:   encode / thumbnail（ffmpeg）/                  │ │
+   │             │ │           cm_detect（JLS。0〜N）                         │ │
+   │             │ └──────────────────────────────────────────────────────────┘ │
+   └─────────────├──────────────────────────────────────────────────────────────┤
+                 │ PostgreSQL（Rokuban の DB / ジョブキュー）                   │
+                 │ メディアストレージ（原本・派生物。分散時は共有）             │
+                 └──────────────────────────────────────────────────────────────┘
 ```
+
+**イメージはロールではなく購読するキューで決まる。**encode / thumbnail を購読する worker は起動時に ffmpeg / ffprobe を検査する。cm_detect を購読する worker は、`cm_detect.enabled` のときだけ JLS を検査する（`jobs.RequiresEncodeTools` / `jobs.RequiresCMDetectTools`）。キューを絞らない `--all` は encode も購読するので、full イメージが要る。streamer が ffmpeg を要るのは `live.enabled` のときだけである。
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc の予約と録画バッファ、Rokuban のメディアストレージも永続状態・永続データとして存在する。メディアストレージの書き込み順序、共有要件、録画バッファとの分離は [ストレージ契約](storage/contract.md) §3–5 を正典とする。
 
