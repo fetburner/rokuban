@@ -113,33 +113,21 @@ func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*Adapt
 	if registry == nil {
 		return nil, errors.New("riveradapter: registry is required")
 	}
-	client, err := newRiverClient(pool, registry, cfg)
+	client, err := NewLegacyRegistryClient(pool, registry, cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &Adapter{pool: pool, registry: registry, config: cfg, client: client}, nil
 }
 
-func newRiverClient(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*river.Client[pgx.Tx], error) {
-	workers := river.NewWorkers()
-	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, workers); err != nil {
-		return nil, fmt.Errorf("riveradapter: building workers: %w", err)
-	}
-	riverCfg, err := BuildConfig(workers, cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
-	if err != nil {
-		return nil, fmt.Errorf("riveradapter: creating River client: %w", err)
-	}
-	return client, nil
-}
-
 // Register adds a jobq worker to registry and records how River should register it.
 func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
+	args := zeroArgs[T]()
+	kind := args.Kind()
+	if _, err := jobs.PhysicalQueueFor(args); err != nil {
+		panic(fmt.Sprintf("riveradapter: registering %q: %v", kind, err))
+	}
 	jobq.Register(registry, worker)
-	kind := zeroArgs[T]().Kind()
 	err := registry.AddAdapterWorker(adapterWorkerKey, kind, func(dst any) error {
 		workers, ok := dst.(*river.Workers)
 		if !ok || workers == nil {
@@ -151,6 +139,29 @@ func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 	if err != nil {
 		panic(fmt.Sprintf("riveradapter: registering %q: %v", kind, err))
 	}
+}
+
+// BuildRegistryConfig projects a jobq Registry into River workers and builds River config.
+func BuildRegistryConfig(registry *jobq.Registry, cfg Config) (*river.Config, error) {
+	workers := river.NewWorkers()
+	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, workers); err != nil {
+		return nil, fmt.Errorf("riveradapter: building workers: %w", err)
+	}
+	return BuildConfig(workers, cfg)
+}
+
+// NewLegacyRegistryClient builds a River client from a jobq Registry for transitional callers
+// that still need River's event and inspection APIs.
+func NewLegacyRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*river.Client[pgx.Tx], error) {
+	riverCfg, err := BuildRegistryConfig(registry, cfg)
+	if err != nil {
+		return nil, err
+	}
+	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
+	if err != nil {
+		return nil, fmt.Errorf("riveradapter: creating River client: %w", err)
+	}
+	return client, nil
 }
 
 // Enqueue inserts args using the options derived from its jobq Spec.
@@ -211,7 +222,7 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		newClient, err := newRiverClient(adapter.pool, adapter.registry, adapter.config)
+		newClient, err := NewLegacyRegistryClient(adapter.pool, adapter.registry, adapter.config)
 		if err != nil {
 			return err
 		}
@@ -366,7 +377,11 @@ func makeInsertOpts(args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpt
 	if spec.MaxAttempts < 0 {
 		return river.InsertOpts{}, fmt.Errorf("riveradapter: %s max attempts must not be negative", kind)
 	}
-	insertOpts := jobs.RiverInsertOpts(spec, jobs.PhysicalQueueFor(args))
+	physicalQueue, err := jobs.PhysicalQueueFor(args)
+	if err != nil {
+		return river.InsertOpts{}, err
+	}
+	insertOpts := jobs.RiverInsertOpts(spec, physicalQueue)
 	insertOpts.Priority = jobq.EffectivePriority(spec, options...)
 	return insertOpts, nil
 }

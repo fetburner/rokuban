@@ -14,6 +14,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -77,8 +78,8 @@ func (s *scheduleStub) count() int {
 
 // reconciler は Args.Spec で既定より長い有限の締切を持つ。
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
-	w := &ReconcilePassWorker{}
-	got := w.Timeout(nil)
+	args := ReconcilePassArgs{}
+	got := args.Spec().Timeout(args)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
 	}
@@ -156,11 +157,8 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
+	client := newLegacyRegistryTestClient(t, pool,
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()
@@ -201,7 +199,7 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -239,11 +237,8 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	srv := httptest.NewServer(stub)
 	defer srv.Close()
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
+	client := newLegacyRegistryTestClient(t, pool,
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	waiter := newPeriodicJobEventWaiter(subscribeCh)
@@ -315,7 +310,7 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	}
 
 	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-b"}}
-	err := w.Work(context.Background(), job)
+	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -340,7 +335,7 @@ func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 	}
 
 	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-a"}}
-	if err := w.Work(context.Background(), job); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 }

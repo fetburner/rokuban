@@ -21,11 +21,10 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/jobq"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -243,17 +242,19 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 
 func newIngestLifecycleRiverClient(t *testing.T, pool *pgxpool.Pool, ingestWorker *worker.IngestWorker) *river.Client[pgx5.Tx] {
 	t.Helper()
-	workers := river.NewWorkers()
-	river.AddWorker(workers, ingestWorker)
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			jobs.PhysicalQueueName(jobs.IngestQueue, watcher.DefaultSite): {MaxWorkers: 1},
-		},
-		Workers: workers,
+	deferred := &jobq.Deferred{}
+	ingestWorker.Enqueuer = deferred
+	registry := jobq.NewRegistry()
+	riveradapter.Register(registry, ingestWorker)
+	client, err := riveradapter.NewLegacyRegistryClient(pool, registry, riveradapter.Config{
+		BoundSites:        []string{watcher.DefaultSite},
+		PeriodicJobs:      false,
+		IngestConcurrency: 1,
 	})
 	if err != nil {
 		t.Fatalf("creating River client: %v", err)
 	}
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 	return client
 }
 

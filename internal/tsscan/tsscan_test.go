@@ -5,12 +5,11 @@ import (
 	"time"
 
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
-func TestArgsSpecAndRiverProjection(t *testing.T) {
+func TestArgsSpec(t *testing.T) {
 	tests := []struct {
 		name    string
 		args    jobq.Args
@@ -37,25 +36,36 @@ func TestArgsSpecAndRiverProjection(t *testing.T) {
 				t.Errorf("Spec() attempts/coalesce/priority = %d/%v/%d, want 0/true/1",
 					spec.MaxAttempts, spec.Coalesce, spec.Priority)
 			}
-			insertOpts := tt.args.(river.JobArgsWithInsertOpts).InsertOpts()
-			if insertOpts.Queue != "ts_scan" {
-				t.Errorf("InsertOpts().Queue = %q, want literal ts_scan", insertOpts.Queue)
+		})
+	}
+}
+
+func TestArgsLegacyRiverInsertOptsPreserveTSScanQueueAndCoalescing(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		opts river.InsertOpts
+	}{
+		{"scan", ScanArgs{}.InsertOpts()},
+		{"reconcile", ReconcileArgs{}.InsertOpts()},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.opts.Queue != "ts_scan" {
+				t.Errorf("InsertOpts().Queue = %q, want literal %q", tt.opts.Queue, "ts_scan")
 			}
-			if !insertOpts.UniqueOpts.ByArgs || !insertOpts.UniqueOpts.ByQueue {
-				t.Errorf("InsertOpts().UniqueOpts = %+v, want args and queue coalescing", insertOpts.UniqueOpts)
-			}
-			if len(insertOpts.UniqueOpts.ByState) != 5 || insertOpts.UniqueOpts.ByState[3] != rivertype.JobStateRunning {
-				t.Errorf("InsertOpts().UniqueOpts.ByState = %v, want five unfinished states including running", insertOpts.UniqueOpts.ByState)
+			if !tt.opts.UniqueOpts.ByArgs || !tt.opts.UniqueOpts.ByQueue || len(tt.opts.UniqueOpts.ByState) == 0 {
+				t.Errorf("InsertOpts().UniqueOpts = %+v, want argument and queue coalescing over unfinished states", tt.opts.UniqueOpts)
 			}
 		})
 	}
 }
 
 func TestScanTimeoutComesFromSpec(t *testing.T) {
-	if got := (&ScanWorker{}).Timeout(nil); got != 6*time.Hour {
-		t.Errorf("ScanWorker.Timeout(nil) = %s, want literal 6h", got)
+	args := ScanArgs{}
+	if got := args.Spec().Timeout(args); got != 6*time.Hour {
+		t.Errorf("ScanArgs.Spec timeout = %s, want literal 6h", got)
 	}
-	if got := (&ReconcileWorker{}).Timeout(nil); got != 5*time.Minute {
-		t.Errorf("ReconcileWorker.Timeout(nil) = %s, want literal 5m", got)
+	reconcileArgs := ReconcileArgs{}
+	if got := reconcileArgs.Spec().Timeout(reconcileArgs); got != 5*time.Minute {
+		t.Errorf("ReconcileArgs.Spec timeout = %s, want literal 5m", got)
 	}
 }

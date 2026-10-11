@@ -11,7 +11,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
@@ -60,8 +59,6 @@ const (
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
-	river.WorkerDefaults[jobs.SeekTilesJobArgs]
-
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -73,17 +70,12 @@ type SeekTilesWorker struct {
 	runCmd func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
-// Timeout は Args の Spec が返すタイル生成の締切を返す。
-func (w *SeekTilesWorker) Timeout(job *river.Job[jobs.SeekTilesJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は seek_tiles ジョブを実行する。
 //
 // レベルトリガー: original が無くても / active な seek_tiles が既にあっても
 // 成功扱いで終える（desired − observed が空なら何もしない）。
-func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTilesJobArgs]) error {
-	recordingID := job.Args.RecordingID
+func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) error {
+	recordingID := args.RecordingID
 	log := slog.With("recording_id", recordingID, "job", "seek_tiles")
 
 	started := time.Now()
@@ -122,7 +114,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, job *river.Job[jobs.SeekTile
 
 	// poster と違い、長さが取れないまま続行しない（0 秒も含む）。1 枚だけの格子を
 	// コミットすると行の存在が「全部そろっている」を主張し、定期パスが二度と作り
-	// 直さず、until_encoded の原本削除の条件まで満たしてしまう。River の再試行に任せる。
+	// 直さず、until_encoded の原本削除の条件まで満たしてしまう。queue の再試行に任せる。
 	duration, err := w.probeVideoDuration(ctx, inputPath)
 	if err != nil {
 		return fmt.Errorf("probing video duration: %w", err)

@@ -507,7 +507,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 		JobRow: &rivertype.JobRow{ID: 847001},
 		Args:   args,
 	}
-	if err := w.Work(ctx, firstJob); err == nil {
+	if err := runWorkerViaJobQFake(ctx, w, firstJob.Args); err == nil {
 		t.Fatal("first Work() error = nil, want cancellation after partial transfer")
 	} else if !errors.Is(err, context.Canceled) {
 		t.Fatalf("first Work() error = %v, want context.Canceled", err)
@@ -527,7 +527,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 		JobRow: &rivertype.JobRow{ID: 847002},
 		Args:   args,
 	}
-	if err := w.Work(context.Background(), secondJob); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, secondJob.Args); err != nil {
 		t.Fatalf("resumed Work() error: %v", err)
 	}
 

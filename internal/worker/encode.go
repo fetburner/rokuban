@@ -20,14 +20,13 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -45,11 +44,11 @@ import (
 //
 // # 並走する 2 本の encode から canonical を守る
 //
-// Timeout 後に JobRescuer が同じ River job を再実行すると、同じ
-// (recording, profile) の encode が 2 本並走しうる。
+// job timeout 後、queue adapter が同じ Args を再配送する前に以前の Work が
+// 終わる保証はなく、同じ (recording, profile) の encode が 2 本並走しうる。
 //
-//   - **scratch は recording / profile / domain attempt ごと**に作る。River の ID や
-//     queue attempt は使わず、再配送後もドメインキーで追える。各試行は自分の scratch dir に
+//   - **scratch は recording / profile / domain attempt ごと**に作る。queue job ID や
+//     配送回数は使わず、再配送後もドメインキーで追える。各試行は自分の scratch dir に
 //     flock を持ち続け、cleanup は lock が取れた（死んだ）dir だけを消す。encode 同士は
 //     別 dir なので直列化しない（TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。canonical の公開直前には
 //     `recording_encode_attempts.attempt_count` を読み直し、古い試行を拒否する。代償として、
@@ -65,7 +64,7 @@ import (
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
 //     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
 //     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
-//     cut のときだけ）成功で飛ばさず、公開せずに River の snooze で戻して計画を
+//     cut のときだけ）成功で飛ばさず、公開せずに jobq の snooze で戻して計画を
 //     やり直す（現在の keep を読み直して、一致すれば冒頭の (b) で skip、違えば次の
 //     世代で作り直す。skip すると新しいチャプター編集が黙って消える）。行が active
 //     でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
@@ -91,7 +90,6 @@ import (
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
-	river.WorkerDefaults[jobs.EncodeJobArgs]
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -120,58 +118,52 @@ func probeEncodeDuration(
 // encodeMinTimeout は実尺から計算する締切の下限。
 const encodeMinTimeout = time.Hour
 
-// Timeout は EncodeJobArgs の Spec が返す保存済みまたは既定の締切を返す。
-func (w *EncodeWorker) Timeout(job *river.Job[jobs.EncodeJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は encode ジョブを実行する。
 //
 // 停止による ctx キャンセルと snooze は試行に数えず、締切超過と通常の失敗は
 // recording_encode_attempts の回数に反映する。ドメイン上限に達したら
-// river.JobCancel を返し、River 上でも completed ではなく cancelled に見せる。
+// jobq.ErrDiscard を返して、adapter に再配信不要と伝える。
 // 解除は POST /api/recordings/{id}/encode-profiles（failed 行を消して予算を戻す）。
-func (w *EncodeWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
-	start, err := w.beginEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile)
+func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error {
+	start, err := w.beginEncodeAttempt(ctx, args.RecordingID, args.Profile)
 	if err != nil {
 		return err
 	}
 	if start.deadAttempt > 0 {
-		w.notifyEncodeFailure(ctx, job.Args, start.deadAttempt)
+		w.notifyEncodeFailure(ctx, args, start.deadAttempt)
 	}
 	if start.terminal {
-		return river.JobCancel(errEncodeAttemptLimit)
+		return errors.Join(jobq.ErrDiscard, errEncodeAttemptLimit)
 	}
 
-	err = w.runEncode(ctx, job, start.count)
+	err = w.runEncode(ctx, args, start.count)
 	if err == nil {
-		if clearErr := w.clearEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile, start.count); clearErr != nil {
-			logEncodeAttemptWriteFailure("clear success", job.Args.RecordingID, job.Args.Profile, clearErr)
+		if clearErr := w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile, start.count); clearErr != nil {
+			logEncodeAttemptWriteFailure("clear success", args.RecordingID, args.Profile, clearErr)
 		}
 		return nil
 	}
 	if shouldCountEncodeFailure(err, ctx.Err()) {
-		updated, updateErr := w.markEncodeAttemptFailed(ctx, job.Args.RecordingID, job.Args.Profile, start.count, err)
+		updated, updateErr := w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, start.count, err)
 		if updateErr != nil {
 			return errors.Join(err, updateErr)
 		}
 		if updated {
-			w.notifyEncodeFailure(ctx, job.Args, start.count)
+			w.notifyEncodeFailure(ctx, args, start.count)
 			if start.count >= encodeAttemptLimit {
-				return river.JobCancel(errors.Join(errEncodeAttemptLimit, err))
+				return errors.Join(jobq.ErrDiscard, errEncodeAttemptLimit, err)
 			}
 		}
 		return err
 	}
-	if restoreErr := w.restoreEncodeAttempt(ctx, job.Args.RecordingID, job.Args.Profile, start); restoreErr != nil {
+	if restoreErr := w.restoreEncodeAttempt(ctx, args.RecordingID, args.Profile, start); restoreErr != nil {
 		return errors.Join(err, restoreErr)
 	}
 	return err
 }
 
 // runEncode は encode ジョブの本体。
-func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.EncodeJobArgs], attempt int32) (err error) {
-	args := job.Args
+func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, attempt int32) (err error) {
 	log := slog.With("recording_id", args.RecordingID, "profile", args.Profile)
 
 	started := time.Now()
@@ -302,8 +294,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		cut:           cut,
 	})
 	if err != nil {
-		var snooze *rivertype.JobSnoozeError
-		if errors.As(err, &snooze) {
+		if _, snoozed := jobq.SnoozeDelay(err); snoozed {
 			// 計画が古い。成功で skip すると新しい chapters の編集が消えるので、
 			// snooze のまま返して現在の keep から計画をやり直させる（attempt は消費しない）。
 			log.Info("encode: publish plan is stale, snoozing to replan")
@@ -633,7 +624,7 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInp
 
 // encodeCommandError は ffmpeg の終了結果をジョブエラーへ変換する。
 //
-// コンテキストキャンセルは River の停止やタイムアウト。
+// コンテキストキャンセルは queue worker の停止やタイムアウト。
 func encodeCommandError(ctx context.Context, cmd *exec.Cmd, waitErr error, stderr string, log *slog.Logger) error {
 	if waitErr == nil {
 		return nil
@@ -780,7 +771,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	if plan.stale {
-		return 0, false, river.JobSnooze(encodeReplanDelay)
+		return 0, false, jobq.Snooze(encodeReplanDelay)
 	}
 	if plan.skip {
 		return 0, false, nil
@@ -1348,11 +1339,6 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 	return io.Copy(dst, contextReader{ctx: ctx, r: src})
 }
 
-// JobInserter は encode ジョブ投入に使う最小面（*river.Client が満たす）。
-type JobInserter interface {
-	Insert(ctx context.Context, args river.JobArgs, opts *river.InsertOpts) (*rivertype.JobInsertResult, error)
-}
-
 func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
 	times, err := q.GetRecordingEncodeTimes(ctx, recordingID)
 	if err != nil {
@@ -1396,30 +1382,21 @@ func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Durati
 
 // EncodeRebuildWorker は利用者が明示した再エンコード命令を通常の encode ジョブへ渡す。
 type EncodeRebuildWorker struct {
-	river.WorkerDefaults[jobs.EncodeRebuildArgs]
+	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 	Profiles config.EncodeConfig
 }
 
-// Timeout は明示要求された encode rebuild の締切を Args.Spec から返す。
-func (w *EncodeRebuildWorker) Timeout(job *river.Job[jobs.EncodeRebuildArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は指定された録画・プロファイルの encode ジョブだけを投入する。
-func (w *EncodeRebuildWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeRebuildArgs]) error {
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("encode rebuild: getting river client: %w", err)
-	}
-	args, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), job.Args.RecordingID, job.Args.Profile, w.Profiles)
+func (w *EncodeRebuildWorker) Work(ctx context.Context, args jobs.EncodeRebuildArgs) error {
+	encodeArgs, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, w.Profiles)
 	if err != nil {
 		return fmt.Errorf("building encode job args for rebuild of recording %d profile %q: %w",
-			job.Args.RecordingID, job.Args.Profile, err)
+			args.RecordingID, args.Profile, err)
 	}
-	if _, err := client.Insert(ctx, args, nil); err != nil {
+	if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
 		return fmt.Errorf("inserting encode job for rebuild of recording %d profile %q: %w",
-			job.Args.RecordingID, job.Args.Profile, err)
+			args.RecordingID, args.Profile, err)
 	}
 	return nil
 }

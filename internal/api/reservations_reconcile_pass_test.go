@@ -13,7 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // 意図の書き込み（PUT/DELETE .../intent）は同一トランザクションで RulerPassArgs を
@@ -25,7 +24,7 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}
@@ -71,7 +70,7 @@ func TestPutProgramIntent_ProgramNotInProjection_DoesNotEnqueueRulerPassHint(t *
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only river client: %v", err)
 	}

@@ -16,12 +16,12 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -76,7 +76,7 @@ func cmFailureStage(err error) *string {
 
 // CMDetectWorker analyzes a committed original and stores its commercial ranges.
 type CMDetectWorker struct {
-	river.WorkerDefaults[jobs.CMDetectJobArgs]
+	Enqueuer   jobq.Enqueuer
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -85,55 +85,50 @@ type CMDetectWorker struct {
 	FFprobe string
 }
 
-// Timeout returns the two-times recording-duration cap with a thirty-minute floor.
-func (w *CMDetectWorker) Timeout(job *river.Job[jobs.CMDetectJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work learns a missing station logo, runs JL analysis, and commits only a complete result.
-func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJobArgs]) error {
+func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) error {
 	started := time.Now()
 	defer func() { metrics.CMDetectDuration.Observe(time.Since(started).Seconds()) }()
 
 	q := sqlcgen.New(w.Pool)
-	item, err := q.GetCMDetectionWorkItem(ctx, job.Args.RecordingID)
+	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
 	if err != nil {
-		return fmt.Errorf("CM detection: loading recording %d: %w", job.Args.RecordingID, err)
+		return fmt.Errorf("CM detection: loading recording %d: %w", args.RecordingID, err)
 	}
 	if !item.CmDetect || item.IsTrashed || item.OriginalMissing || item.Detected || item.RelPath == nil {
 		return nil
 	}
-	desired, err := q.IsCMDetectionDesired(ctx, job.Args.RecordingID)
+	desired, err := q.IsCMDetectionDesired(ctx, args.RecordingID)
 	if err != nil {
-		return fmt.Errorf("CM detection: checking desired state for recording %d: %w", job.Args.RecordingID, err)
+		return fmt.Errorf("CM detection: checking desired state for recording %d: %w", args.RecordingID, err)
 	}
 	if !desired {
 		return nil
 	}
 	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
-		RecordingID: job.Args.RecordingID,
+		RecordingID: args.RecordingID,
 		MaxAttempts: cmDetectMaxTries,
 	})
 	if err != nil {
-		return fmt.Errorf("CM detection: beginning attempt for recording %d: %w", job.Args.RecordingID, err)
+		return fmt.Errorf("CM detection: beginning attempt for recording %d: %w", args.RecordingID, err)
 	}
 	if !attempt.ShouldRun {
 		return nil
 	}
 	attemptCount := attempt.AttemptCount
-	if err := w.detect(ctx, job.Args.RecordingID, item, attemptCount); err != nil {
+	if err := w.detect(ctx, args.RecordingID, item, attemptCount); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failureCancel()
 			params := sqlcgen.DeleteCMDetectionRunningAttemptParams{
-				RecordingID: job.Args.RecordingID, AttemptCount: attemptCount,
+				RecordingID: args.RecordingID, AttemptCount: attemptCount,
 			}
 			var cleanupErr error
 			if attemptCount == 1 {
 				_, cleanupErr = q.DeleteCMDetectionRunningAttempt(failureCtx, params)
 			} else {
 				_, cleanupErr = q.CancelCMDetectionRunningAttempt(failureCtx, sqlcgen.CancelCMDetectionRunningAttemptParams{
-					RecordingID: job.Args.RecordingID, AttemptCount: attemptCount,
+					RecordingID: args.RecordingID, AttemptCount: attemptCount,
 				})
 			}
 			if cleanupErr != nil {
@@ -160,11 +155,11 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 			State:        state,
 			Stage:        stage,
 			Error:        &message,
-			RecordingID:  job.Args.RecordingID,
+			RecordingID:  args.RecordingID,
 			AttemptCount: attemptCount,
 		})
 		if markErr != nil {
-			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", job.Args.RecordingID, err),
+			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", args.RecordingID, err),
 				fmt.Errorf("marking CM detection %s: %w", state, markErr))
 		}
 		if marked == 0 {
@@ -173,7 +168,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		if terminalAdoptionWait {
 			return nil
 		}
-		return fmt.Errorf("CM detection for recording %d: %w", job.Args.RecordingID, err)
+		return fmt.Errorf("CM detection for recording %d: %w", args.RecordingID, err)
 	}
 	return nil
 }
@@ -386,10 +381,7 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 	}
 	// CM ranges make an existing thumbnail eligible for reselection. This is only
 	// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
-	if client, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr != nil {
-		slog.Warn("cm_detect: could not enqueue thumbnail reselection hint",
-			"recording_id", item.ID, "err", clientErr)
-	} else if _, enqueueErr := client.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: item.ID}, nil); enqueueErr != nil {
+	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID}); enqueueErr != nil {
 		slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
 			"recording_id", item.ID, "err", enqueueErr)
 	}
@@ -530,10 +522,10 @@ func cmLogoMatchPercent(output []byte) (float64, error) {
 
 // writeStationLogo は学習済みの局ロゴを dir へ書く。
 //
-// **上書きが原子的でないことは問題にならない。** dir は呼び出し元が作る job ID
-// ごとの scratch（`{scratch}/cm-detect/{job_id}/logos`）で、同じ (recording) の
-// 並走実行も別ジョブ ID なので別ディレクトリになる（締切後に River が再試行した実行と
-// 前の実行が並走しうるが、衝突するのは scratch の中身だけである）。読み手も同じ実行の
+// **上書きが原子的でないことは問題にならない。** dir は呼び出し元が作る domain
+// attempt ごとの scratch（`{scratch}/cm-detect/{recording_id}-{attempt}/logos`）で、
+// timeout 後に queue が再配送した実行は新しい domain attempt を使う。古い Work が
+// 並走しても scratch は分かれる。読み手も同じ実行の
 // readStationLogo だけで、書いた内容はそのまま DB の Upsert へ渡す。encode の公開のように共有の canonical へ書く経路が
 // 無いので、ここへ temp + rename は持ち込まない。
 func writeStationLogo(dir, channel string, data []byte) error {

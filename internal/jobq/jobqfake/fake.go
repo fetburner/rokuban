@@ -41,7 +41,8 @@ type Config struct {
 	NewIDEachDelivery bool
 }
 
-// Delivery records one attempt made by the fake runner.
+// Delivery records one worker invocation. Attempt is the retry attempt number; snoozes keep
+// the same number because they do not consume the failure budget.
 type Delivery struct {
 	JobID   string
 	Kind    string
@@ -61,7 +62,6 @@ type entry struct {
 	availableAt        time.Time
 	sequence           uint64
 	failures           int
-	deliveries         int
 	duplicateRemaining int
 	redelivered        bool
 }
@@ -343,13 +343,12 @@ func (queue *Queue) execute(parent context.Context, active *execution) {
 		return
 	}
 	active.cancel = cancel
-	entry.deliveries++
 	deliveryID := entry.id
 	if queue.config.NewIDEachDelivery {
 		deliveryID = queue.nextIDLocked()
 	}
 	queue.deliveries = append(queue.deliveries, Delivery{
-		JobID: deliveryID, Kind: entry.kind, Attempt: entry.deliveries,
+		JobID: deliveryID, Kind: entry.kind, Attempt: entry.failures + 1,
 		Args: slices.Clone(entry.payload), Started: time.Now(),
 	})
 	queue.notifyLocked()

@@ -3,10 +3,10 @@ package tsscan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -18,13 +18,11 @@ type ScanArgs struct {
 	RecordingID int64 `json:"recording_id"`
 }
 
-// Kind returns the River job kind for a single TS scan.
+// Kind returns the job kind for a single TS scan.
 func (ScanArgs) Kind() string { return "ts_scan" }
 
 // Spec returns the scan queue, six-hour timeout, default retry limit, and coalescing hint.
-// In the current River projection the timeout is the attempt's context deadline, and
-// River's rescuer does not treat a running job as dead until the longer of this timeout
-// and rescue_stuck_jobs_after has passed. Unverified: the
+// The timeout is the attempt's context deadline. Unverified: the
 // longest original and the read throughput were not measured. If six hours is too short,
 // a long original's scan times out and is retried forever. A scan is idempotent and
 // restartable, so a timeout only costs a retry.
@@ -39,7 +37,7 @@ func (ScanArgs) Spec() jobq.Spec {
 	}
 }
 
-// InsertOpts routes scans to the dedicated queue and merges pending work by recording.
+// InsertOpts routes legacy direct River inserts to the scan queue and merges pending work by recording.
 func (ScanArgs) InsertOpts() river.InsertOpts {
 	return jobs.RiverInsertOpts((ScanArgs{}).Spec(), jobs.TSScanQueue)
 }
@@ -64,7 +62,7 @@ func (ReconcileArgs) Spec() jobq.Spec {
 	}
 }
 
-// InsertOpts routes reconciliation to the scan queue and merges pending work for the same page.
+// InsertOpts routes legacy direct River inserts to the scan queue and merges pending work for the same page.
 func (ReconcileArgs) InsertOpts() river.InsertOpts {
 	return jobs.RiverInsertOpts((ReconcileArgs{}).Spec(), jobs.TSScanQueue)
 }
@@ -78,8 +76,11 @@ var (
 
 // EnqueueScan inserts a best-effort hint for the committed original of recordingID.
 // The periodic reconcile pass remains the source of truth if this insert fails.
-func EnqueueScan(ctx context.Context, client *river.Client[pgx5.Tx], recordingID int64) error {
-	if _, err := client.Insert(ctx, ScanArgs{RecordingID: recordingID}, nil); err != nil {
+func EnqueueScan(ctx context.Context, enqueuer jobq.Enqueuer, recordingID int64) error {
+	if enqueuer == nil {
+		return errors.New("TS scan enqueuer is nil")
+	}
+	if _, err := enqueuer.Enqueue(ctx, ScanArgs{RecordingID: recordingID}); err != nil {
 		return fmt.Errorf("inserting TS scan for recording %d: %w", recordingID, err)
 	}
 	return nil

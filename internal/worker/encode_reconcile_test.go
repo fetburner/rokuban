@@ -39,19 +39,16 @@ func encodeConfigWith(names ...string) config.EncodeConfig {
 	return config.EncodeConfig{Profiles: profiles}
 }
 
-// runEncodeReconcilePass は EncodeReconcileWorker を River のジョブ実行と同じ
-// コンテキスト（river.Client が載った ctx）で 1 パス回す。
+// runEncodeReconcilePass runs EncodeReconcileWorker with a real adapter enqueuer so
+// follow-up insertions can be checked through River's public test APIs.
 func runEncodeReconcilePass(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker) {
 	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{})
 }
 
 func runEncodeReconcilePassArgs(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker, args EncodeReconcileArgs) {
 	t.Helper()
-	job := &river.Job[EncodeReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   args,
-	}
-	if err := w.Work(riverWorkContext(t, pool), job); err != nil {
+	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 }
@@ -62,7 +59,7 @@ func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	client, err := NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
@@ -161,8 +158,8 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 //
 //  1. ingest は成功してコミットする（原本 media_asset + recording_encode_policy）
 //  2. しかし encode 投入のヒントは飛ばない（enqueueEncodeReconcileFromContext は
-//     river.Client が取れないと黙って return する。ここでは Work を素の
-//     context.Background() で呼んでその状態を作る。「ヒント投入に失敗して
+//     Enqueuer が無いと黙って return する。ここでは worker に Enqueuer を注入せず
+//     その状態を作る。「ヒント投入に失敗して
 //     ログだけ出た」場合と DB から見た結果は同じ ---どちらも encode ジョブが
 //     1 件も入っていない）
 //  3. エッジ record の削除は成功する（＝ヒントを再送する唯一の経路だった
@@ -231,8 +228,8 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Args:   IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"},
 	}
 
-	// river.Client を載せない ctx = ヒントが飛ばない。
-	if err := iw.Work(context.Background(), job); err != nil {
+	// Enqueuer を注入しない状態 = ヒントが飛ばない。
+	if err := runWorkerViaJobQFake(context.Background(), iw, job.Args); err != nil {
 		t.Fatalf("IngestWorker.Work: %v", err)
 	}
 
@@ -283,7 +280,7 @@ func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
 	}
 
 	// River の一意制約そのものの挙動（doc コメントが「実測」と書いている内容）。
-	client, err := NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyClient: %v", err)
 	}
@@ -574,7 +571,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// （until_encoded_deletable_originals は known_profiles で絞らないので、
 	// 「desired が揃っている」という判定に永久に到達しない）。
 	dw := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := dw.Work(context.Background(), nil); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}
 	if got := assetState(t, pool, originalID); got != "active" {
@@ -850,20 +847,15 @@ func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T
 	}
 }
 
-// river.Client が取れない ctx ではエラーを返すこと（対象パスと
-// 同じ判断 --- 黙って no-op にすると取りこぼしの回復そのものが消える）。
-func TestEncodeReconcileWorker_Work_WithoutClient_Errors(t *testing.T) {
+// Enqueuer が無いときはエラーを返す（黙って no-op にすると取りこぼしの回復そのものが消える）。
+func TestEncodeReconcileWorker_Work_WithoutEnqueuer_Errors(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	w := &EncodeReconcileWorker{Pool: pool}
-	job := &river.Job[EncodeReconcileArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   EncodeReconcileArgs{},
-	}
-	if err := w.Work(context.Background(), job); err == nil {
-		t.Fatal("expected error when no river client is attached to ctx, got nil")
+	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err == nil {
+		t.Fatal("expected error when worker has no enqueuer, got nil")
 	}
 }
 
@@ -888,7 +880,7 @@ func TestEncodeReconcileArgs_KindAndInsertOpts(t *testing.T) {
 // worker.periodic_jobs が有効なら encode_reconcile が定期ジョブとして登録される
 // こと（登録漏れは「実装したのに永久に走らない」で終わる）。
 func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:            true,
 		EncodeReconcile:         true,
 		EncodeReconcileInterval: time.Hour,
@@ -900,7 +892,7 @@ func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:    false,
 		EncodeReconcile: true,
 	})

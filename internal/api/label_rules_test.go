@@ -21,7 +21,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 // postLabelRule は分類ルールを作り、応答を返す。
@@ -625,7 +624,7 @@ func getRecordingsSeries(t *testing.T, srvURL string) []Recording {
 // 検査用）。insert-only のクライアントで足りる。
 func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	client, err := worker.NewInsertOnlyClient(pool)
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatalf("creating river client: %v", err)
 	}

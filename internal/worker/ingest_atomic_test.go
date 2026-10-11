@@ -76,10 +76,10 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	go func() {
-		results <- result{data: tsDataA, recordID: jobA.Args.RecordID, err: wA.Work(context.Background(), jobA)}
+		results <- result{data: tsDataA, recordID: jobA.Args.RecordID, err: runWorkerViaJobQFake(context.Background(), wA, jobA.Args)}
 	}()
 	go func() {
-		results <- result{data: tsDataB, recordID: jobB.Args.RecordID, err: wB.Work(context.Background(), jobB)}
+		results <- result{data: tsDataB, recordID: jobB.Args.RecordID, err: runWorkerViaJobQFake(context.Background(), wB, jobB.Args)}
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -525,7 +525,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			t.Cleanup(restoreHooks)
 			tt.installFailure(t)
 
-			if err := w.Work(context.Background(), job); err == nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
 				t.Fatal("first Work() returned nil despite the injected stop point")
 			}
 			assertIngestAssetCount(t, pool, recordingID, 0)
@@ -558,7 +558,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			}
 
 			restoreHooks()
-			if err := w.Work(context.Background(), job); err != nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 			assertIngestAssetCount(t, pool, recordingID, 1)

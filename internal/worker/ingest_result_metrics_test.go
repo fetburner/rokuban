@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,15 +14,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
+	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -187,10 +191,10 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 
 	beforeResults := ingestJobResults()
 	durationBefore := ingestDurationSamples(t)
-	err := w.Work(ctx, &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 999},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-timeout-metrics"},
-	})
+	err := runWorkerViaJobQFake(ctx, w,
+
+		IngestJobArgs{Site: "default", RecordID: "rec-timeout-metrics"},
+	)
 	if err == nil {
 		t.Fatal("Work() with an expired deadline returned nil")
 	}
@@ -215,68 +219,52 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	recordID := "rec-sha256-river-complete"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
+	delay := 10 * time.Millisecond
+	registry := jobq.NewRegistry()
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 		Pool:          pool,
 	}
-	workers := river.NewWorkers()
-	river.AddWorker(workers, w)
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			jobs.PhysicalQueueName(jobs.IngestQueue, "default"): {MaxWorkers: 1},
-		},
-		Workers: workers,
-	})
-	if err != nil {
-		t.Fatalf("river.NewClient: %v", err)
-	}
-	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed)
-	defer cancelSubscribe()
-	clientCtx, clientCancel := context.WithCancel(context.Background())
-	defer clientCancel()
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("client.Start: %v", err)
+	jobq.Register(registry, w)
+	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
+	w.Enqueuer = queue
+	if err := queue.Start(context.Background()); err != nil {
+		t.Fatalf("queue.Start: %v", err)
 	}
 	t.Cleanup(func() {
-		clientCancel()
-		<-client.Stopped()
+		stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := queue.Stop(stopCtx); err != nil {
+			t.Errorf("queue.Stop: %v", err)
+		}
 	})
 
 	beforeResults := ingestJobResults()
 	durationBefore := ingestDurationSamples(t)
-	inserted, err := client.Insert(context.Background(), jobs.IngestJobArgs{Site: "default", RecordID: recordID}, nil)
+	_, err := queue.Enqueue(context.Background(), jobs.IngestJobArgs{Site: "default", RecordID: recordID})
 	if err != nil {
 		t.Fatalf("inserting ingest job: %v", err)
 	}
-	var event *river.Event
-	select {
-	case event = <-events:
-	case <-time.After(30 * time.Second):
-		t.Fatal("ingest job did not snooze while content.sha256 remained null")
+	deadline := time.Now().Add(30 * time.Second)
+	for len(queue.Deliveries()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
-	if event.Job.ID != inserted.Job.ID {
-		t.Errorf("snoozed job id = %d, want %d", event.Job.ID, inserted.Job.ID)
+	deliveries := queue.Deliveries()
+	if len(deliveries) < 2 {
+		t.Fatal("ingest job was not delivered twice while content.sha256 remained null")
 	}
-	if event.Kind != river.EventKindJobSnoozed {
-		t.Fatalf("event kind = %q, want job snoozed", event.Kind)
+	for i, delivery := range deliveries[:2] {
+		if delivery.Attempt != 1 {
+			t.Errorf("delivery %d attempt = %d, want 1 because snooze preserves attempts", i+1, delivery.Attempt)
+		}
 	}
 	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending snooze")
 	if got := ingestDurationSamples(t); got != durationBefore {
 		t.Errorf("IngestDuration samples after pending snooze = %d, want %d", got, durationBefore)
 	}
 
-	jobAfterSnooze, err := client.JobGet(context.Background(), inserted.Job.ID)
-	if err != nil {
-		t.Fatalf("getting snoozed River job through public API: %v", err)
-	}
-	if jobAfterSnooze.State != rivertype.JobStateScheduled {
-		t.Errorf("snoozed job state = %q, want scheduled", jobAfterSnooze.State)
-	}
-	if jobAfterSnooze.Attempt != 0 {
-		t.Errorf("snoozed job attempt = %d, want 0", jobAfterSnooze.Attempt)
-	}
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
 		t.Fatalf("counting media_assets while waiting: %v", err)
@@ -302,12 +290,6 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		t.Errorf("SHA-256 checkpoint while waiting: %v, want present", err)
 	}
 
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer stopCancel()
-	if err := client.Stop(stopCtx); err != nil {
-		t.Fatalf("client.Stop: %v", err)
-	}
-	<-client.Stopped()
 }
 
 // runGracefulStopIngest は ingest ジョブを 1 件走らせ、ハンドラが started を閉じた
@@ -325,19 +307,11 @@ func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Serve
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, recordID)
 
-	workers := river.NewWorkers()
-	river.AddWorker(workers, w)
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues: map[string]river.QueueConfig{
-			jobs.PhysicalQueueName(jobs.IngestQueue, "default"): {MaxWorkers: 1},
-		},
-		Workers: workers,
-		// 既定（5 秒）では停止が遅いだけなので縮める。値そのものは何も主張しない。
+	client := newRiverIngestClient(t, pool, w, riveradapter.Config{
+		BoundSites:      []string{"default"},
+		PeriodicJobs:    false,
 		SoftStopTimeout: 100 * time.Millisecond,
 	})
-	if err != nil {
-		t.Fatalf("river.NewClient: %v", err)
-	}
 
 	clientCtx, clientCancel := context.WithCancel(context.Background())
 	defer clientCancel()
@@ -377,18 +351,23 @@ func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Serve
 	}
 }
 
-// TestIngestWorker_RemoteCancelIsCountedAsCanceled は、River のリモート取消
-// （Client.JobCancel が work ctx を rivertype.ErrJobCancelledRemotely で取り消す）
-// で終わったジョブの result を固定する。
-//
-// **実 River は使わない。** rokuban に JobCancel の呼び出し元は無く、River の
-// 配線ごと動かすと検証したい分岐の外側（producer / completer）に依存する。
-// ここで見るのは Work の defer が cause から何を決めるかである。
-//
-// ケースが 2 つあるのは、River が **err != nil のときだけ**リモート取消を
-// cancelled にし、nil のときは completed にするため（job_executor.go の 157 行目は
-// res.Err != nil のときにしか cause で置き換えない）。Work 側も同じ向きに揃える。
-func TestIngestWorker_RemoteCancelIsCountedAsCanceled(t *testing.T) {
+func newRiverIngestClient(t *testing.T, pool *pgxpool.Pool, worker *IngestWorker, cfg riveradapter.Config) *river.Client[pgx.Tx] {
+	t.Helper()
+	deferred := &jobq.Deferred{}
+	worker.Enqueuer = deferred
+	registry := jobq.NewRegistry()
+	riveradapter.Register(registry, worker)
+	client, err := riveradapter.NewLegacyRegistryClient(pool, registry, cfg)
+	if err != nil {
+		t.Fatalf("creating River client: %v", err)
+	}
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
+	return client
+}
+
+// TestIngestWorker_ContextCancellationIsNotCounted fixes the metric behavior for a
+// canceled context without depending on a queue-specific cancellation type.
+func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 	t.Run("Work returns an error", func(t *testing.T) {
 		pool := setupTestPool(t)
 		if pool == nil {
@@ -408,18 +387,18 @@ func TestIngestWorker_RemoteCancelIsCountedAsCanceled(t *testing.T) {
 		recordingID := insertTestRecording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-err")
 
-		ctx, cancel := context.WithCancelCause(context.Background())
-		cancel(river.ErrJobCancelledRemotely)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
 
 		before := ingestJobResults()
-		err := w.Work(ctx, &river.Job[IngestJobArgs]{
-			JobRow: &rivertype.JobRow{ID: 425020},
-			Args:   IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-err"},
-		})
+		err := runWorkerViaJobQFake(ctx, w,
+
+			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-err"},
+		)
 		if err == nil {
 			t.Fatal("Work() = nil, want an error（ctx を取り消した状態では最初の DB 取得で失敗する）")
 		}
-		assertIngestResultDeltas(t, before, map[string]float64{"canceled": 1}, "remote cancel（Work が err を返す）")
+		assertIngestResultDeltas(t, before, nil, "context cancellation with error")
 	})
 
 	t.Run("Work returns nil", func(t *testing.T) {
@@ -427,14 +406,14 @@ func TestIngestWorker_RemoteCancelIsCountedAsCanceled(t *testing.T) {
 		if pool == nil {
 			return
 		}
-		ctx, cancel := context.WithCancelCause(context.Background())
-		defer cancel(nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
 
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// 原本が既にあるので Work は転送せず handleAlreadyCommittedIngest へ入る。
 			// その最初の HTTP 要求（DeleteRecord）で取り消すと、削除の失敗はログだけ
 			// なので Work は nil を返す。
-			cancel(river.ErrJobCancelledRemotely)
+			cancel()
 			http.NotFound(w, r)
 		}))
 		t.Cleanup(srv.Close)
@@ -450,13 +429,53 @@ func TestIngestWorker_RemoteCancelIsCountedAsCanceled(t *testing.T) {
 		insertTestOriginalMediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
-		err := w.Work(ctx, &river.Job[IngestJobArgs]{
-			JobRow: &rivertype.JobRow{ID: 425021},
-			Args:   IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-nil"},
-		})
+		err := runWorkerViaJobQFake(ctx, w,
+
+			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-nil"},
+		)
 		if err != nil {
 			t.Fatalf("Work() = %v, want nil", err)
 		}
-		assertIngestResultDeltas(t, before, map[string]float64{"success": 1}, "remote cancel（Work が nil を返す）")
+		assertIngestResultDeltas(t, before, map[string]float64{"success": 1}, "context cancellation with nil result")
 	})
+}
+
+func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	tsData := makeTSData(2)
+	var deletes atomic.Int32
+	srv := newInstrumentedIngestServer(t, tsData, "test/followup-enqueue-failure.m2ts", func() { deletes.Add(1) })
+	recordingID := insertTestRecording(t, pool)
+	const recordID = "rec-followup-enqueue-failure"
+	insertTestRecordSync(t, pool, recordingID, recordID)
+
+	var logs strings.Builder
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	worker := &IngestWorker{
+		Enqueuer:      &jobq.Deferred{},
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		MediaDir:      t.TempDir(),
+	}
+	if err := runWorkerViaJobQFake(context.Background(), worker,
+		IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
+		t.Fatalf("Work() = %v, want best-effort enqueue failures to be ignored", err)
+	}
+	for _, want := range []string{
+		"encode_reconcile: failed to enqueue targeted pass",
+		"ingest: failed to enqueue thumbnail reconcile",
+		"ingest: failed to enqueue TS scan",
+	} {
+		if !strings.Contains(logs.String(), want) {
+			t.Errorf("logs do not contain %q: %s", want, logs.String())
+		}
+	}
+	if got := deletes.Load(); got != 1 {
+		t.Errorf("DeleteRecord calls = %d, want 1 after best-effort enqueue failures", got)
+	}
 }

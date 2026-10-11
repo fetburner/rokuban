@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -634,7 +635,9 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 	if cfg.Ruler.RetractGrace != nil {
 		rulerRetractGrace = *cfg.Ruler.RetractGrace
 	}
+	deferred := &jobq.Deferred{}
 	workers := worker.NewWorkers(&worker.Deps{
+		Enqueuer:                 deferred,
 		MirakcClients:            mirakcClients,
 		Pool:                     pool,
 		MediaDir:                 cfg.Storage.MediaDir,
@@ -652,7 +655,12 @@ func buildFullRiverClient(cfg *config.Config, bound []config.MirakcSite, clientC
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})
-	return riveradapter.NewLegacyClient(pool, workers, clientCfg)
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, clientCfg)
+	if err != nil {
+		return nil, err
+	}
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
+	return client, nil
 }
 
 // superviseOnceMode は once モードの完了を待ち、プロセス停止を開始する。

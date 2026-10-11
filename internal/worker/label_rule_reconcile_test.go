@@ -94,7 +94,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	drainNotifications(t, listenConn)
 
 	// 変化は無い（当たりはトリガーが正しい状態にしている）。通知しない。
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	assertNoNotification(t, listenConn)
@@ -107,7 +107,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	}
 	drainNotifications(t, listenConn)
 
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if got := waitTopic(t, listenConn); got != "recordings" {
@@ -115,7 +115,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	}
 
 	// もう一度走らせても当たりは変わらない。通知は来ない。
-	if err := w.Work(ctx, job); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
 		t.Fatalf("third pass: %v", err)
 	}
 	assertNoNotification(t, listenConn)

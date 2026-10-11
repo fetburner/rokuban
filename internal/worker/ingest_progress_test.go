@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -191,10 +189,10 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Work(context.Background(), &river.Job[IngestJobArgs]{
-			JobRow: &rivertype.JobRow{},
-			Args:   IngestJobArgs{Site: "default", RecordID: "rec-progress"},
-		})
+		done <- runWorkerViaJobQFake(context.Background(), w,
+
+			IngestJobArgs{Site: "default", RecordID: "rec-progress"},
+		)
 	}()
 
 	// 転送の途中で「1 バイト以上書けた」が見えるまで待つ。
@@ -320,10 +318,10 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	recordingID = insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
 
-	err := w.Work(context.Background(), &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
-	})
+	err := runWorkerViaJobQFake(context.Background(), w,
+
+		IngestJobArgs{Site: "default", RecordID: "rec-interrupted-progress"},
+	)
 	if err == nil {
 		t.Fatal("Work() succeeded, want transfer failure")
 	}
@@ -410,10 +408,10 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-failing")
 
-	err := w.Work(context.Background(), &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-failing"},
-	})
+	err := runWorkerViaJobQFake(context.Background(), w,
+
+		IngestJobArgs{Site: "default", RecordID: "rec-failing"},
+	)
 	if err == nil {
 		t.Fatal("Work() succeeded, want size mismatch error")
 	}
@@ -489,10 +487,10 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Work(ctx, &river.Job[IngestJobArgs]{
-			JobRow: &rivertype.JobRow{},
-			Args:   IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
-		})
+		done <- runWorkerViaJobQFake(ctx, w,
+
+			IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
+		)
 	}()
 	defer func() { cancel(); <-done }()
 

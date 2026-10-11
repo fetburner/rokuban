@@ -124,17 +124,17 @@ func TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum(t *testing.T
 func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
 	cmJob := cmJob(1, 1)
 	cmJob.Args.RecordingDurationMs = 45 * 60 * 1000
-	if got := (&CMDetectWorker{}).Timeout(cmJob); got != 90*time.Minute {
-		t.Errorf("CMDetectWorker.Timeout = %s, want 90m", got)
+	if got := cmJob.Args.Spec().Timeout(cmJob.Args); got != 90*time.Minute {
+		t.Errorf("CMDetectJobArgs.Spec timeout = %s, want 90m", got)
 	}
 	logoJob := cmLogoCandidateJob(1, 2, time.Now())
 	logoJob.Args.RecordingDurationMs = 45 * 60 * 1000
-	if got := (&CMLogoCandidateWorker{}).Timeout(logoJob); got != 90*time.Minute {
-		t.Errorf("CMLogoCandidateWorker.Timeout = %s, want 90m", got)
+	if got := logoJob.Args.Spec().Timeout(logoJob.Args); got != 90*time.Minute {
+		t.Errorf("CMLogoCandidateJobArgs.Spec timeout = %s, want 90m", got)
 	}
 	logoJob.Args.RecordingDurationMs = 0 // Old queued args omit this field.
-	if got := (&CMLogoCandidateWorker{}).Timeout(logoJob); got != 30*time.Minute {
-		t.Errorf("old CMLogoCandidateJobArgs timeout = %s, want 30m", got)
+	if got := logoJob.Args.Spec().Timeout(logoJob.Args); got != 30*time.Minute {
+		t.Errorf("old CMLogoCandidateJobArgs.Spec timeout = %s, want 30m", got)
 	}
 }
 

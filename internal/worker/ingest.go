@@ -17,13 +17,13 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 	"golang.org/x/sys/unix"
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -36,8 +36,8 @@ import (
 // canceled / failed で終わったことを表す sentinel（RecordFollowReader の status hook が wrap し、
 // Work が errors.Is で拾う）。
 //
-// **これを River の再試行に戻してはならない。** cancel / fail は中身が不採用と
-// 確定した終端なので、Work は temp を破棄して再試行を止める。River の MaxAttempts
+// **これを queue の再試行に戻してはならない。** cancel / fail は中身が不採用と
+// 確定した終端なので、Work は temp を破棄して再試行を止める。Spec の MaxAttempts
 // は既定のまま（25）で、エッジの record は commit 成功時にしか消えないため、
 // 取り消した長時間録画が全量再取得を繰り返す形にしてはいけない。
 //
@@ -160,8 +160,8 @@ func duplicateIngestFile(locked *os.File) (*os.File, error) {
 }
 
 // lockIngestTempFile は temp を作成し、同時に 1 つの ingest だけが掴めるように
-// 排他 flock を取る。LOCK_NB にするのは、同じ record の別ジョブが live な転送を
-// 壊さず River の再試行へ戻るためである。
+// 排他 flock を取る。LOCK_NB にするのは、同じ record の別配送が live な転送を
+// 壊さず queue の再試行へ戻るためである。
 //
 // 返した fd は writer の元 fd として使い、openIngestFile はこれを dup する。
 // lock fd と writer fd を別々に path open すると、ロック取得後の unlink / rename
@@ -217,7 +217,7 @@ func ingestTempLockBusy(err error) bool {
 	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }
 
-// ingestTempFilePath は同じ site / record_id の River 再試行が同じ temp を開くための
+// ingestTempFilePath は同じ site / record_id の再配送が同じ temp を開くための
 // パスを返す。record_id は通常 mirakc の hex ID だが、念のためファイル名に使えない
 // 区切りを含む値が media_dir の外へ出ないようにする。site も map から直接渡るため
 // 同じ防御を適用する。
@@ -317,9 +317,9 @@ func syncIngestDirectory(path string) error {
 	return nil
 }
 
-// IngestWorker は mirakc からの TS ファイル転送を行う River ワーカー。
+// IngestWorker は mirakc からの TS ファイル転送を行う queue worker。
 type IngestWorker struct {
-	river.WorkerDefaults[jobs.IngestJobArgs]
+	Enqueuer jobq.Enqueuer
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532。1 プロセスが
 	// N site を束縛できるため、この 1 インスタンスが複数 site の ingest_<site>
@@ -349,15 +349,6 @@ type IngestWorker struct {
 	ProgressInterval time.Duration
 }
 
-// Timeout は ingest 1 試行の上限を返す。
-//
-// 4 分の replay / 転送区切りに、HEAD・ハッシュ確認・fsync・commit のため 1 分を足す。
-// 区切りでは temp と SHA-256 状態を保存して snooze するため、録画全体の転送速度や長さで
-// ジョブの締切は決まらない。追従の無進捗検知は従来どおり StallTimeout が担う。
-func (w *IngestWorker) Timeout(job *river.Job[jobs.IngestJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // resolveProgressInterval は設定された ProgressInterval があればそれを、
 // なければ既定の ingestProgressInterval を返す（config キーが無いフィールドの
 // 「0 は未設定」規約。ProgressInterval の doc コメント参照）。
@@ -369,13 +360,14 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・DB コミット・エッジ削除を行う。
+// jobs.IngestJobArgs.Spec().Timeout が 1 試行を 5 分に制限する。4 分の replay / 転送区切りで
+// temp と SHA-256 状態を保存して snooze するため、録画全体の長さでは締切が決まらない。
 //
 // 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
 // metrics.IngestJobs / IngestDuration へ記録するためである（記録の値域と
 // 中断を数えない理由は下の defer のコメントと
 // docs/operations/monitoring.md の rokuban_ingest_jobs_total）。
-func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobArgs]) (err error) {
-	args := job.Args
+func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err error) {
 	log := slog.With("site", args.Site, "record_id", args.RecordID)
 
 	started := time.Now()
@@ -389,23 +381,16 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 		// result は success / failure / canceled の 3 値。**この 3 値の外に増やさない**
 		// （低カーディナリティが前提。record id や理由は入れない）。
 		//
-		cause := context.Cause(ctx)
-		remote := errors.Is(cause, river.ErrJobCancelledRemotely)
 		ctxErr := ctx.Err()
-		// stop は中断として数えず、締切超過は試行失敗として数える。River が作る
-		// work ctx は stop なら Canceled、Timeout 超過なら DeadlineExceeded になる。
-		if ctxErr == context.Canceled && !remote &&
-			(errors.Is(err, context.Canceled) || errors.Is(err, cause)) {
+		// 停止による中断は数えず、締切超過は試行失敗として数える。adapter が
+		// context.Cause に独自の error を設定した場合も、その cause を運んだ
+		// 失敗なら中断として扱う。Work が nil を返した場合は成功として記録する。
+		cause := context.Cause(ctx)
+		if ctxErr == context.Canceled && (errors.Is(err, context.Canceled) || (cause != nil && errors.Is(err, cause))) {
 			return
 		}
 		if ctxErr == context.DeadlineExceeded {
 			result = "failure"
-		}
-		// リモート取消は canceled に倒す。ただし **err == nil のときは倒さない** ---
-		// River は res.Err != nil のときだけ cause で置き換えて cancelled にするので
-		// （job_executor.go）、nil は completed（= その時点の result）のままにする。
-		if err != nil && remote {
-			result = "canceled"
 		}
 		metrics.IngestDuration.Observe(time.Since(started).Seconds())
 		metrics.IngestJobs.WithLabelValues(result).Inc()
@@ -448,11 +433,11 @@ func (w *IngestWorker) Work(ctx context.Context, job *river.Job[jobs.IngestJobAr
 	if err := w.ingestResolvedRecord(ctx, client, args, recordingID, expectedBytes, log, &result); err != nil {
 		if errors.Is(err, errIngestSHA256Pending) {
 			skipMetrics = true
-			return river.JobSnooze(ingestSHA256SnoozeInterval)
+			return jobq.Snooze(ingestSHA256SnoozeInterval)
 		}
 		if errors.Is(err, errIngestSliceElapsed) {
 			skipMetrics = true
-			return river.JobSnooze(0)
+			return jobq.Snooze(0)
 		}
 		return err
 	}
@@ -492,7 +477,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		return fmt.Errorf("opening ingest temporary file %s: %w", tempPath, err)
 	}
 	// temp はプロセス死・ctx キャンセル・一時的な I/O / DB 失敗では残す。次の
-	// River 試行が同じファイルを replay して続けるためである。中身が悪いと確定
+	// job delivery が同じファイルを replay して続けるためである。中身が悪いと確定
 	// した場合だけ下の removeTemp を立てる。rename 後は tempPath が存在しないので
 	// cleanup の Remove は no-op になり、canonical file は orphan として報告される。
 	removeTemp := false
@@ -526,7 +511,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 
 	// replay と pull を合わせて 1 区切りにし、既存 temp が大きい場合も途中で再開できる。
-	// River の Timeout はこの区切りより 1 分長く、checkpoint の fsync と commit に使う。
+	// Args Spec の Timeout はこの区切りより 1 分長く、checkpoint の fsync と commit に使う。
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
 	progress := &ingestProgressReporter{
@@ -586,7 +571,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// 同じ result="failure" に混ぜると、利用者が止めた録画が失敗率に
 			// 積まれて本物の失敗が埋もれる。
 			*result = "canceled"
-			return river.JobCancel(err)
+			return errors.Join(jobq.ErrDiscard, err)
 		}
 		return err
 	}
@@ -754,7 +739,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
 	}
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
-	enqueueEncodeReconcileFromContext(ctx, recordingID)
+	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
 	if _, err := client.DeleteRecord(ctx, args.RecordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (already committed)", "err", err)
 	}
@@ -853,19 +838,17 @@ func recordIngestMetrics(offset int64) {
 // thumbnail 投入も対象録画を絞った reconcile で、poster・再選択・seek_tiles を
 // 定期パスと同じ query で判定する。
 // TS scan もヒント。候補の真実は periodic reconcile が DB から取り直す。
-// River クライアントが無いテスト経路では黙ってスキップする。
+// すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
-	enqueueEncodeReconcileFromContext(ctx, recordingID)
-	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
-		if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, riverClient, recordingID); enqueueErr != nil {
-			log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
-		}
-		if _, enqueueErr := riverClient.Insert(ctx, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}, nil); enqueueErr != nil {
-			log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
-		}
-		if enqueueErr := tsscan.EnqueueScan(ctx, riverClient, recordingID); enqueueErr != nil {
-			log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)
-		}
+	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
+	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, w.Enqueuer, recordingID); enqueueErr != nil {
+		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
+	}
+	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {
+		log.Error("ingest: failed to enqueue thumbnail reconcile", "recording_id", recordingID, "err", enqueueErr)
+	}
+	if enqueueErr := tsscan.EnqueueScan(ctx, w.Enqueuer, recordingID); enqueueErr != nil {
+		log.Error("ingest: failed to enqueue TS scan", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if _, err := client.DeleteRecord(ctx, recordID, true); err != nil {
 		log.Error("ingest: failed to delete edge record (committed OK)", "err", err)

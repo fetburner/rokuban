@@ -20,12 +20,18 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq"
+	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T], args T) error {
+	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
+}
 
 // singleSiteClients は 1 site だけを束縛するテスト用の Deps.MirakcClients /
 // *Worker.MirakcClients を組み立てる（issue #532 で単一の *mirakc.Client
@@ -37,6 +43,32 @@ func singleSiteClients(site string, client *mirakc.Client) map[string]*mirakc.Cl
 		site = db.DefaultSite
 	}
 	return map[string]*mirakc.Client{site: client}
+}
+
+func newRiverTestEnqueuer(t *testing.T, pool *pgxpool.Pool) jobq.Enqueuer {
+	t.Helper()
+	client, err := riveradapter.NewInsertOnlyClient(pool)
+	if err != nil {
+		t.Fatalf("creating River insert-only client: %v", err)
+	}
+	return riveradapter.NewLegacyEnqueuer(client)
+}
+
+func newLegacyRegistryTestClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig) *river.Client[pgx.Tx] {
+	t.Helper()
+	if deps == nil {
+		deps = &Deps{}
+	}
+	deps.Pool = pool
+	deferred := &jobq.Deferred{}
+	deps.Enqueuer = deferred
+	registry := NewWorkers(deps)
+	client, err := riveradapter.NewLegacyRegistryClient(pool, registry, cfg)
+	if err != nil {
+		t.Fatalf("creating River client: %v", err)
+	}
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
+	return client
 }
 
 // TestVerifySite は issue #532 の受け入れ基準 3 を固定する: verifySite は
@@ -99,10 +131,10 @@ func TestNoOpJob(t *testing.T) {
 	// River の配線（投入 → 実行 → 完了イベント）だけを確かめるための何もしない
 	// ワーカー。本番の NewWorkers には登録しない（テスト専用のジョブ種別が
 	// 本番のキューに存在してしまうのを避ける）。
-	workers := NewWorkers(&Deps{Pool: pool})
+	workers := river.NewWorkers()
 	river.AddWorker(workers, &noOpWorker{})
 
-	client, err := NewClient(pool, workers, ClientConfig{IngestConcurrency: 2})
+	client, err := riveradapter.NewLegacyClient(pool, workers, ClientConfig{IngestConcurrency: 2})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -144,12 +176,18 @@ func TestNoOpJob(t *testing.T) {
 func startPeriodicJobClient(t *testing.T, pool *pgxpool.Pool, deps *Deps, cfg ClientConfig, eventKind river.EventKind) *periodicJobEventWaiter {
 	t.Helper()
 	ctx := context.Background()
+	if deps == nil {
+		deps = &Deps{}
+	}
 	deps.Pool = pool
+	deferred := &jobq.Deferred{}
+	deps.Enqueuer = deferred
 	workers := NewWorkers(deps)
-	client, err := NewClient(pool, workers, cfg)
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, cfg)
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
+	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
 
 	subscribeCh, subscribeCancel := client.Subscribe(eventKind)
 	t.Cleanup(subscribeCancel)
@@ -312,11 +350,8 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 
 	srv := newEpgServer(t, &epgFixture{})
 
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
+	client := newLegacyRegistryTestClient(t, pool,
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()
@@ -353,25 +388,26 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 
 // 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。
 func TestIngestWorker_TimeoutFitsBeforeRescue(t *testing.T) {
-	w := &IngestWorker{}
-	if got := w.Timeout(nil); got != 5*time.Minute {
+	args := jobs.IngestJobArgs{}
+	got := args.Spec().Timeout(args)
+	if got != 5*time.Minute {
 		t.Errorf("Timeout() = %v, want 5m", got)
 	}
 	if got := ingestTransferSlice; got != 4*time.Minute {
 		t.Errorf("ingest transfer slice = %v, want 4m", got)
 	}
-	if w.Timeout(nil) <= river.JobTimeoutDefault {
-		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", w.Timeout(nil), river.JobTimeoutDefault)
+	if got <= river.JobTimeoutDefault {
+		t.Errorf("Spec timeout = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
 	}
-	if w.Timeout(nil) >= 6*time.Minute {
-		t.Errorf("Timeout() = %v, want < 6m rescue threshold", w.Timeout(nil))
+	if got >= 6*time.Minute {
+		t.Errorf("Spec timeout = %v, want < 6m rescue threshold", got)
 	}
 }
 
 // EPG 同期は無制限にはせず、既定より長い上限を置く。
 func TestEpgSyncWorker_HasGenerousTimeout(t *testing.T) {
-	w := &EpgSyncWorker{}
-	got := w.Timeout(nil)
+	args := EpgSyncArgs{}
+	got := args.Spec().Timeout(args)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
 	}
@@ -383,7 +419,7 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -435,8 +471,8 @@ func TestEpgSync_ReinsertableAfterCompletion(t *testing.T) {
 
 // ruler は Args.Spec で既定より長い有限の締切を持つ。
 func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
-	w := &RulerPassWorker{}
-	got := w.Timeout(nil)
+	args := jobs.RulerPassArgs{}
+	got := args.Spec().Timeout(args)
 	if got <= river.JobTimeoutDefault {
 		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
 	}
@@ -444,7 +480,7 @@ func TestRulerPassWorker_HasGenerousTimeout(t *testing.T) {
 
 func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
 	args := jobs.LabelRuleReconcileArgs{}
-	got := (&LabelRuleReconcileWorker{}).Timeout(&river.Job[jobs.LabelRuleReconcileArgs]{Args: args})
+	got := args.Spec().Timeout(args)
 	if got != time.Minute {
 		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
 	}
@@ -452,7 +488,7 @@ func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
 
 func TestEncodeRebuildWorker_TimeoutUsesSpec(t *testing.T) {
 	args := jobs.EncodeRebuildArgs{}
-	got := (&EncodeRebuildWorker{}).Timeout(&river.Job[jobs.EncodeRebuildArgs]{Args: args})
+	got := args.Spec().Timeout(args)
 	if got != time.Minute {
 		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
 	}
@@ -491,7 +527,7 @@ func TestRulerPassPeriodicJob(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))})
-	client, err := NewClient(pool, workers, ClientConfig{
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
 		BoundSites:        []string{"default"},
 		RulerPassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
@@ -555,7 +591,7 @@ func TestRulerPassPeriodicJob_MultiSite(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{
 		PeriodicJobs:      true,
 		BoundSites:        []string{"site-a", "site-b"},
 		RulerPassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
@@ -636,7 +672,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 	}
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -697,7 +733,7 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 
 	w := &RulerPassWorker{Pool: pool}
 	job := &river.Job[RulerPassArgs]{Args: RulerPassArgs{Site: "default"}}
-	if err := w.Work(ctx, job); err == nil {
+	if err := runWorkerViaJobQFake(ctx, w, job.Args); err == nil {
 		t.Fatal("Work() error = nil, want canceled ruler pass to fail")
 	}
 
@@ -719,7 +755,7 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -742,7 +778,7 @@ func TestRulerPass_DuplicateInsertMerges(t *testing.T) {
 // worker.queues に未知のキュー名を渡すと起動時エラーになること（typo で静かに
 // 何も引かなくなる事故を防ぐ knob。docs/configuration.md の worker.queues）。
 func TestBuildRiverConfig_UnknownQueueErrors(t *testing.T) {
-	_, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{Queues: []string{"bogus"}})
+	_, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{Queues: []string{"bogus"}})
 	if err == nil {
 		t.Fatal("unknown queue のとき error を期待したが nil だった")
 	}
@@ -763,7 +799,7 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if _, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{BoundSites: []string{"tokyo"}}); err != nil {
+	if _, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{BoundSites: []string{"tokyo"}}); err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
 
@@ -795,7 +831,7 @@ func TestBuildRiverConfig_LogsSubscribedQueues(t *testing.T) {
 // 実測: `SoftStopTimeout: 0` を river.Config に渡す変異で 2 行とも赤くなる
 // ことを確認した。
 func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{})
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{})
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
@@ -805,7 +841,7 @@ func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 	}
 
 	// 明示した値はそのまま載る（既定に丸められない）。
-	explicit, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{SoftStopTimeout: 90 * time.Second})
+	explicit, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{SoftStopTimeout: 90 * time.Second})
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
@@ -818,7 +854,7 @@ func TestBuildRiverConfig_SoftStopTimeoutIsNeverZero(t *testing.T) {
 // （0 のまま渡せば river.NewClient が 1h に解決する）。k8s e2e の故障注入 3 は
 // この値を縮めて rescuer の回収を数分で観測する。
 func TestBuildRiverConfig_RescueStuckJobsAfterPassesThrough(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{RescueStuckJobsAfter: 90 * time.Second})
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{RescueStuckJobsAfter: 90 * time.Second})
 	if err != nil {
 		t.Fatalf("BuildConfig: %v", err)
 	}
@@ -830,7 +866,7 @@ func TestBuildRiverConfig_RescueStuckJobsAfterPassesThrough(t *testing.T) {
 // encode / thumbnail キューが allQueues に載り、concurrency が独立に効くこと
 // （issue #64。ワーカー本体は M3-3 / M3-4 で、枠だけ先に用意する）。
 func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		EncodeConcurrency:    3,
 		ThumbnailConcurrency: 2,
 	})
@@ -848,7 +884,7 @@ func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
 		t.Errorf("thumbnail MaxWorkers = %d, want 2", qc.MaxWorkers)
 	}
 	// 既定（0）は 1 になる
-	defaults, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{})
+	defaults, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{})
 	if err != nil {
 		t.Fatalf("BuildConfig defaults: %v", err)
 	}
@@ -863,7 +899,7 @@ func TestBuildRiverConfig_EncodeThumbnailConcurrency(t *testing.T) {
 // worker.periodic_jobs: false のとき、BoundSites が設定されていても
 // PeriodicJobs が登録されないこと。
 func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: false,
 		BoundSites:   []string{"default"},
 	})
@@ -880,7 +916,7 @@ func TestBuildRiverConfig_PeriodicJobsDisabled(t *testing.T) {
 // ruler_pass/reconcile_pass/record_sweep）全部が BoundSites の 1 site ぶん
 // 登録されること。
 func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: true,
 		BoundSites:   []string{"default"},
 	})
@@ -904,7 +940,7 @@ func TestBuildRiverConfig_PeriodicJobsEnabled(t *testing.T) {
 // （TestBuildRiverConfig_PeriodicJobsEnabled の 1-site ケースと数を比較して
 // 初めて検出できるので、2 つのテストは対になっている）。
 func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs: true,
 		BoundSites:   []string{"tokyo", "takamatsu"},
 	})
@@ -930,7 +966,7 @@ func TestBuildRiverConfig_PeriodicJobsPerSite(t *testing.T) {
 // （`ingest_takamatsu` 等）が river.Config.Queues に一度も現れず、この
 // テストが落ちる。実際に注入して確認済み（golangci-lint 通過後の変異確認）。
 func TestBuildRiverConfig_SubscribesSiteBoundQueuesPerSite(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		BoundSites: []string{"tokyo", "takamatsu"},
 	})
 	if err != nil {

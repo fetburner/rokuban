@@ -16,6 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -74,7 +75,7 @@ func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWork
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- w.Work(ctx, cmLogoCandidateJob(recordingID, jobID, areaUpdatedAt))
+		done <- runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(recordingID, jobID, areaUpdatedAt).Args)
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -131,7 +132,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			tools, recordingID := tc.setup(t, pool, mediaDir)
 			areaAt := seedTaughtArea(t, pool, 1180)
 
-			err := newCandidateTestWorker(pool, mediaDir, tools).Work(ctx, cmLogoCandidateJob(recordingID, 4400, areaAt))
+			err := runWorkerViaJobQFake(ctx, newCandidateTestWorker(pool, mediaDir, tools), cmLogoCandidateJob(recordingID, 4400, areaAt).Args)
 			if err == nil {
 				t.Fatal("Work succeeded, want the failure returned")
 			}
@@ -352,11 +353,12 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 // The ingest hint and periodic reconciliation both pass actual recording duration to River jobs.
 func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := riverWorkContext(t, pool)
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	ctx := context.Background()
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 	setRecordingDuration := func(recordingID int64) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `
@@ -369,7 +371,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	hintRecording := seedCMRecording(t, pool, t.TempDir(), 951)
 	setRecordingDuration(hintRecording)
-	if err := EnqueueCMDetectionIfNeeded(ctx, pool, client, hintRecording); err != nil {
+	if err := EnqueueCMDetectionIfNeeded(ctx, pool, enqueuer, hintRecording); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration := func(recordingID int64) {
@@ -396,7 +398,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	reconcileRecording := seedCMRecording(t, pool, t.TempDir(), 952)
 	setRecordingDuration(reconcileRecording)
-	if err := (&CMDetectReconcileWorker{Pool: pool}).Work(ctx, nil); err != nil {
+	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}), jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration(reconcileRecording)
@@ -405,11 +407,12 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 // 定期パスは、枠があって候補の無い局に解析ジョブを積む。失敗した候補がある局には積まない。
 func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := riverWorkContext(t, pool)
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
+	ctx := context.Background()
+	client, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
+	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 	id := seedCMRecording(t, pool, t.TempDir(), 949)
 	if _, err := pool.Exec(context.Background(), `
 		UPDATE recordings
@@ -419,8 +422,8 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	}
 	areaAt := seedTaughtArea(t, pool, 1180)
 	count := func() int { return len(listCandidateJobs(t, ctx, client)) }
-	w := &CMDetectReconcileWorker{Pool: pool}
-	if err := w.Work(ctx, nil); err != nil {
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}
+	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := count(); got != 1 {
@@ -443,7 +446,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Work(ctx, nil); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := count(); got != 1 {
@@ -523,7 +526,7 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 		t.Fatalf("IsCMDetectionDesired = %v, %v; want true so the adopt attempt can be written", desired, err)
 	}
 
-	if err := newCMDetectTestWorker(pool, mediaDir, tools).Work(ctx, cmJob(id, 1)); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	var state, stage string

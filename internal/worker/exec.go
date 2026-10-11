@@ -39,7 +39,7 @@ func commandOutput(ctx context.Context, name string, args ...string) ([]byte, er
 		// runEncode と同型）。watchCtx の Cancel が os.ErrProcessDone を返す
 		// 競合（プロセスは既に exit 0 していた）では err は一旦 nil のままで、
 		// 後から WaitDelay の分岐だけが ErrWaitDelay を立てる。ここで
-		// ctx.Err() を先に見ないと、River のシャットダウンが ffmpeg/ffprobe の
+		// ctx.Err() を先に見ないと、queue worker の停止が ffmpeg/ffprobe の
 		// exit 0 直後に当たったケースを黙って成功扱いにしてしまう。
 		if ctx.Err() != nil {
 			return out, ctx.Err()

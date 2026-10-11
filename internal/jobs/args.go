@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"fmt"
+	"slices"
 	"time"
 
 	"github.com/riverqueue/river"
@@ -324,21 +326,32 @@ func (StorageSyncArgs) InsertOpts() river.InsertOpts {
 }
 
 func riverInsertOpts(args jobq.Args) river.InsertOpts {
-	return RiverInsertOpts(args.Spec(), PhysicalQueueFor(args))
+	queue, err := PhysicalQueueFor(args)
+	if err != nil {
+		panic(err)
+	}
+	return RiverInsertOpts(args.Spec(), queue)
 }
 
 // siteBound は site 束縛キューに載る Args が実装する。site 修飾に使う site の取り出しは
 // この 1 か所だけにする。RulerPassArgs は意図的に実装しない（InsertOpts の注記参照）。
 type siteBound interface{ QueueSite() string }
 
-// PhysicalQueueFor は args が実際に投入される物理キュー名を返す。旧 River 経路と
-// jobq adapter の両方がこれを通る。
-func PhysicalQueueFor(args jobq.Args) string {
-	site := ""
-	if b, ok := args.(siteBound); ok {
-		site = b.QueueSite()
+// PhysicalQueueFor は args が実際に投入される物理キュー名を返す。
+// site 束縛キューの Args が QueueSite を実装しない場合は error を返す。
+func PhysicalQueueFor(args jobq.Args) (string, error) {
+	if args == nil {
+		return "", fmt.Errorf("jobs: args are nil")
 	}
-	return PhysicalQueueName(args.Spec().Queue, site)
+	logical := args.Spec().Queue
+	if slices.Contains(siteBoundQueueNames, logical) {
+		bound, ok := args.(siteBound)
+		if !ok {
+			return "", fmt.Errorf("jobs: %s queue args %T do not implement QueueSite", logical, args)
+		}
+		return PhysicalQueueName(logical, bound.QueueSite()), nil
+	}
+	return logical, nil
 }
 
 // 全 Args が jobq 契約と旧 River ジョブ引数インタフェースを満たすことのコンパイル時検査。

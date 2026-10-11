@@ -12,9 +12,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/tsstat"
@@ -27,25 +27,15 @@ const (
 
 // ScanWorker reads an active original and replaces its TS statistics atomically.
 type ScanWorker struct {
-	river.WorkerDefaults[ScanArgs]
 	Pool     *pgxpool.Pool
 	MediaDir string
 }
 
-// Timeout bounds one scan attempt so River's rescuer can recover a job whose
-// process died. A scan is idempotent and restartable, so a timeout only costs a retry.
-func (*ScanWorker) Timeout(job *river.Job[ScanArgs]) time.Duration {
-	args := ScanArgs{}
-	if job != nil {
-		args = job.Args
-	}
-	return args.Spec().Timeout(args)
-}
-
 // Work reads an original from byte zero, then replaces its statistics and scan marker
-// in one database transaction. A size change during the read leaves it eligible for
-// the next reconcile pass.
-func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) error {
+// in one database transaction. ScanArgs.Spec().Timeout bounds the attempt so the queue
+// adapter can recover it after process death. A size change during the read leaves the
+// original eligible for the next reconcile pass.
+func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 	started := time.Now()
 	result := "failure"
 	defer func() {
@@ -54,13 +44,13 @@ func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) error {
 	}()
 
 	q := sqlcgen.New(w.Pool)
-	asset, err := q.GetActiveOriginalForTSScan(ctx, job.Args.RecordingID)
+	asset, err := q.GetActiveOriginalForTSScan(ctx, args.RecordingID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		result = "success"
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("loading active original for recording %d: %w", job.Args.RecordingID, err)
+		return fmt.Errorf("loading active original for recording %d: %w", args.RecordingID, err)
 	}
 
 	counter, size, err := scanFile(ctx, w.MediaDir, asset.RelPath, asset.SizeBytes)
@@ -117,39 +107,29 @@ func (w *ScanWorker) Work(ctx context.Context, job *river.Job[ScanArgs]) error {
 
 // ReconcileWorker enqueues missing or stale scans from the current database state.
 type ReconcileWorker struct {
-	river.WorkerDefaults[ReconcileArgs]
+	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 	RowLimit int32
 }
 
-// Timeout bounds candidate selection and River inserts for one reconciliation pass.
-func (*ReconcileWorker) Timeout(job *river.Job[ReconcileArgs]) time.Duration {
-	args := ReconcileArgs{}
-	if job != nil {
-		args = job.Args
-	}
-	return args.Spec().Timeout(args)
-}
-
 // Work enqueues one bounded window and persists the next page in a continuation job.
-func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[ReconcileArgs]) error {
-	client, err := river.ClientFromContextSafely[pgx.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("TS scan reconcile: getting river client: %w", err)
+func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
+	if w.Enqueuer == nil {
+		return fmt.Errorf("TS scan reconcile: job enqueuer is nil")
 	}
 	rowLimit := w.RowLimit
 	if rowLimit <= 0 {
 		rowLimit = reconcileRowLimit
 	}
 	rows, err := sqlcgen.New(w.Pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
-		AfterRecordingID: job.Args.AfterRecordingID,
+		AfterRecordingID: args.AfterRecordingID,
 		RowLimit:         rowLimit,
 	})
 	if err != nil {
 		return fmt.Errorf("listing originals that need TS scans: %w", err)
 	}
 	for _, recordingID := range rows {
-		if err := EnqueueScan(ctx, client, recordingID); err != nil {
+		if err := EnqueueScan(ctx, w.Enqueuer, recordingID); err != nil {
 			slog.Error("ts_scan_reconcile: failed to enqueue scan", "recording_id", recordingID, "err", err)
 		}
 	}
@@ -157,7 +137,7 @@ func (w *ReconcileWorker) Work(ctx context.Context, job *river.Job[ReconcileArgs
 	var continuationAfter int64
 	if int32(len(rows)) >= rowLimit {
 		continuationAfter = rows[len(rows)-1]
-		if _, err := client.Insert(ctx, ReconcileArgs{AfterRecordingID: continuationAfter}, nil); err != nil {
+		if _, err := w.Enqueuer.Enqueue(ctx, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
 			return fmt.Errorf("enqueuing TS scan reconcile continuation after recording %d: %w", continuationAfter, err)
 		}
 	}

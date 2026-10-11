@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 	"sync/atomic"
-	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
@@ -22,7 +20,7 @@ const (
 )
 
 // ThumbnailReconcileWorker は missing thumbnail / seek_tiles と、チャプターにより
-// 再選択が必要な thumbnail を定期パスで見つける River ワーカー。
+// 再選択が必要な thumbnail を定期パスで見つける queue worker。
 //
 // ingest 後の対象限定パスと定期全件パスは同じ候補クエリを使う。対象限定パスが
 // 投入されなかった場合も、定期パスは DB の状態を真実として差分を拾い直す。
@@ -34,7 +32,7 @@ const (
 // 回転で扱う。
 //
 // thumbnail_reconcile は ThumbnailWorker / SeekTilesWorker と同じ thumbnail
-// キューを使う。River のキュー単位 MaxWorkers はジョブ種を区別しないため、
+// キューを使う。queue adapter のキュー単位並列度はジョブ種を区別しないため、
 // thumbnail の抽出中はこのパスも待つが、次の周期に同じ desired−observed を
 // 再確認すればよい。
 //
@@ -43,7 +41,7 @@ const (
 // の窓は独立に巡回する。どちらかだけが上限に張り付いたとき、共通カーソルで他方の
 // 候補を飛ばさないためである。
 type ThumbnailReconcileWorker struct {
-	river.WorkerDefaults[jobs.ThumbnailReconcileArgs]
+	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 	RowLimit int32
 
@@ -55,23 +53,16 @@ type ThumbnailReconcileWorker struct {
 	seekTilesResumeAfter atomic.Int64
 }
 
-// Timeout は River の既定（1 分）より長い上限を与える。thumbnail の生成時間は
-// 含まず、候補の読み取りと投入だけに使う。
-func (w *ThumbnailReconcileWorker) Timeout(job *river.Job[jobs.ThumbnailReconcileArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は thumbnail reconcile を全件または指定録画について実行する。
 //
 // missing thumbnail、thumbnail の再選択、seek_tiles は recording_id 単位で独立に
 // keyset pagination する。各窓が RowLimit ちょうどまで返ったときは最後に見た
 // recording_id を保存して次のパスで進み、少ないときは先頭へ戻る。恒久的に失敗する
 // 録画が先頭に残っても後続候補を無期限に隠さない。
-func (w *ThumbnailReconcileWorker) Work(ctx context.Context, job *river.Job[jobs.ThumbnailReconcileArgs]) error {
-	recordingID := job.Args.RecordingID
-	client, err := river.ClientFromContextSafely[pgx5.Tx](ctx)
-	if err != nil {
-		return fmt.Errorf("thumbnail reconcile: getting river client: %w", err)
+func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.ThumbnailReconcileArgs) error {
+	recordingID := args.RecordingID
+	if w.Enqueuer == nil {
+		return fmt.Errorf("thumbnail reconcile: job enqueuer is nil")
 	}
 
 	rowLimit := w.RowLimit
@@ -110,7 +101,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, job *river.Job[jobs
 
 	failed := 0
 	for _, recordingID := range rows {
-		if _, err := client.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: recordingID}, nil); err != nil {
+		if err := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: recordingID}); err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue missing thumbnail",
 				"recording_id", recordingID, "err", err)
@@ -137,14 +128,14 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, job *river.Job[jobs
 		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue
 		}
-		if _, err := client.Insert(ctx, jobs.ThumbnailJobArgs{RecordingID: row.RecordingID}, nil); err != nil {
+		if err := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: row.RecordingID}); err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue reselection",
 				"recording_id", row.RecordingID, "err", err)
 		}
 	}
 
-	seekTilesFailed := w.enqueueMissingSeekTiles(ctx, client, rowLimit, targetID)
+	seekTilesFailed := w.enqueueMissingSeekTiles(ctx, w.Enqueuer, rowLimit, targetID)
 	failed += seekTilesFailed
 
 	if recordingID == 0 {
@@ -184,7 +175,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, job *river.Job[jobs
 // enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを埋める。
 // thumbnail と同じ窓の形（keyset pagination）だが、全件パスでは再開位置を独立に
 // 持つ。戻り値は投入に失敗した件数。
-func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, client *river.Client[pgx5.Tx], rowLimit int32, targetID *int64) int {
+func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, enqueuer jobq.Enqueuer, rowLimit int32, targetID *int64) int {
 	after := int64(0)
 	if targetID == nil {
 		after = w.seekTilesResumeAfter.Load()
@@ -202,7 +193,7 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, 
 
 	failed := 0
 	for _, recordingID := range rows {
-		if _, err := client.Insert(ctx, jobs.SeekTilesJobArgs{RecordingID: recordingID}, nil); err != nil {
+		if err := enqueueJob(ctx, enqueuer, jobs.SeekTilesJobArgs{RecordingID: recordingID}); err != nil {
 			failed++
 			slog.Error("thumbnail_reconcile: failed to enqueue missing seek tiles",
 				"recording_id", recordingID, "err", err)

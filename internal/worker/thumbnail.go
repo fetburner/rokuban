@@ -15,7 +15,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -49,8 +48,6 @@ const (
 // mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
 // の doc コメント参照。
 type ThumbnailWorker struct {
-	river.WorkerDefaults[jobs.ThumbnailJobArgs]
-
 	Pool       *pgxpool.Pool
 	MediaDir   string
 	ScratchDir string
@@ -72,17 +69,12 @@ type thumbnailWorkPlan struct {
 	replaced  string
 }
 
-// Timeout は Args の Spec が返すサムネイル生成の締切を返す。
-func (w *ThumbnailWorker) Timeout(job *river.Job[jobs.ThumbnailJobArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は thumbnail ジョブを実行する。
 //
 // レベルトリガー: 初回生成では active original が無ければ成功扱いで終える。
 // 既存 thumbnail は、チャプター上で抽出位置が CM 区間に入ったときだけ選び直す。
-func (w *ThumbnailWorker) Work(ctx context.Context, job *river.Job[jobs.ThumbnailJobArgs]) error {
-	recordingID := job.Args.RecordingID
+func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) error {
+	recordingID := args.RecordingID
 	log := slog.With("recording_id", recordingID, "job", "thumbnail")
 
 	started := time.Now()

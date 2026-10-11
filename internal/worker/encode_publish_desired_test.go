@@ -28,7 +28,7 @@ func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	done := make(chan error, 1)
-	go func() { done <- w.Work(ctx, jobWithID(5, recordingID)) }()
+	go func() { done <- runWorkerViaJobQFake(ctx, w, jobWithID(5, recordingID).Args) }()
 
 	waitReached(t, reached, done)
 	if err := sqlcgen.New(pool).RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{

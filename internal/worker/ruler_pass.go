@@ -5,15 +5,14 @@ import (
 	"log/slog"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ruler"
 )
 
-// RulerPassWorker は ruler の 1 パス評価を実行する River ワーカー。
+// RulerPassWorker は ruler の 1 パス評価を実行する queue worker。
 //
 // ロジックは internal/ruler にそのまま置いてあり、ここでは呼び出すだけ
 // （ロジックの移植はしない）。ruler は mirakc に触れない（不変条件 1）ので、
@@ -27,8 +26,8 @@ import (
 // 起きないので、verifySite は導入していない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
 type RulerPassWorker struct {
-	river.WorkerDefaults[jobs.RulerPassArgs]
-	Pool *pgxpool.Pool
+	Enqueuer jobq.Enqueuer
+	Pool     *pgxpool.Pool
 
 	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
 	// 猶予。0 なら ruler 側の既定値を使う（epg.retention_grace をそのまま流用する
@@ -47,16 +46,11 @@ type RulerPassWorker struct {
 	RetractGrace time.Duration
 }
 
-// Timeout は Args の Spec が返す ruler パスの締切を返す。
-func (w *RulerPassWorker) Timeout(job *river.Job[jobs.RulerPassArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work は ruler の 1 パス評価を実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ruler.New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
-func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[jobs.RulerPassArgs]) error {
-	r := ruler.New([]string{job.Args.Site}, w.Pool, &ruler.Config{
+func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
+	r := ruler.New([]string{args.Site}, w.Pool, &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
 		RetractGrace:      w.RetractGrace,
@@ -69,10 +63,9 @@ func (w *RulerPassWorker) Work(ctx context.Context, job *river.Job[jobs.RulerPas
 	// §3.2「ruler パスの完了」）。base が変われば mirakc に反映すべき差分が増えるため、
 	// reconcile を早める。epg_sync 完了時の ruler_pass ヒント（epg.go 参照）と同じ形。
 	// トランザクション整合の要求はなく、あくまで定期パスを前倒しするヒントなので、
-	// river.ClientFromContextSafely でジョブ実行中の Client を取り出すだけで足りる。
-	// Client が取れない場合（単体テストで Work を直接呼ぶ等）は投入せず、次の定期パスに委ねる。
-	if riverClient, clientErr := river.ClientFromContextSafely[pgx5.Tx](ctx); clientErr == nil {
-		if _, insertErr := riverClient.Insert(ctx, jobs.ReconcilePassArgs{Site: job.Args.Site}, nil); insertErr != nil {
+	// Enqueuer が無い場合は投入せず次の定期パスに委ねる。
+	if w.Enqueuer != nil {
+		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.ReconcilePassArgs(args)); insertErr != nil {
 			slog.Warn("ruler pass: inserting reconcile_pass hint failed", "err", insertErr)
 		}
 	}

@@ -4,10 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/capacity"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -16,18 +14,17 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
-// TunerSyncWorker は mirakc の /api/tuners を tuner_sync に全量投影する River ワーカー。
+// TunerSyncWorker は mirakc の /api/tuners を tuner_sync に全量投影する queue worker。
 //
 // EpgSyncWorker と同じ使い捨てプロジェクション（真実は常に mirakc 側）なので、
 // 差分同期はせず毎回の全量ポーリング + スイープでレベルトリガーに収束させる。
 // 存在理由は不変条件 1（api ロールは mirakc に問い合わせない）で、
 // 容量判定（internal/capacity）はこの射影だけを読む。
 type TunerSyncWorker struct {
-	river.WorkerDefaults[jobs.TunerSyncArgs]
 
 	// MirakcClients は site → mirakc クライアントの map（issue #532）。この
 	// 1 インスタンスが複数 site の epg_<site> キューを同時に購読しうる。Work は
-	// verifySite で job.Args.Site に対応するクライアントを取り出してから
+	// verifySite で args.Site に対応するクライアントを取り出してから
 	// ListTuners を呼ぶ（issue #139。TunerSyncArgs は EpgSyncArgs と同じ epg
 	// キューを使う「使い捨てプロジェクションの全量同期」で、mirakc への
 	// アクセスを伴うため EpgSyncWorker と同じ理由でガードが要る）。
@@ -35,15 +32,10 @@ type TunerSyncWorker struct {
 	Pool          *pgxpool.Pool
 }
 
-// Timeout は Args の Spec が返す全量同期の締切を返す。
-func (w *TunerSyncWorker) Timeout(job *river.Job[jobs.TunerSyncArgs]) time.Duration {
-	return jobTimeout(job)
-}
-
 // Work はチューナーの全量同期を 1 パス実行する。
 // upsert 後、今回観測しなかった行を削除する。
-func (w *TunerSyncWorker) Work(ctx context.Context, job *river.Job[jobs.TunerSyncArgs]) error {
-	site := job.Args.Site
+func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) error {
+	site := args.Site
 	log := slog.With("site", site)
 
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの

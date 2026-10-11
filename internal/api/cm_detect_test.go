@@ -21,7 +21,6 @@ import (
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 type testCMDetectReconcileWorker struct {
@@ -155,7 +154,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 
 func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -692,7 +691,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := worker.NewInsertOnlyClient(pool)
+	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
 	if err != nil {
 		t.Fatal(err)
 	}

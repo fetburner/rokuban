@@ -129,7 +129,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	requestEncodedRemoval(t, pool, f.recordingID, "h264")
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := w.Work(context.Background(), nil); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -196,7 +196,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	setAssetState(t, pool, stuck.h264ID, "deleting")
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := w.Work(context.Background(), nil); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -231,7 +231,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	requestEncodedRemoval(t, pool, b.recordingID, "h264")
 
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MaxDeletesPerPass: 2}
-	if err := w.Work(context.Background(), nil); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 

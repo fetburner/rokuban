@@ -21,7 +21,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	workers := NewWorkers(&Deps{Pool: pool, MediaDir: mediaDir})
-	client, err := NewClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 
 // CatalogExport が PeriodicJobs に載ること。
 func TestBuildRiverConfig_CatalogExportPeriodic(t *testing.T) {
-	riverCfg, err := riveradapter.BuildConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
 		PeriodicJobs:  true,
 		CatalogExport: true,
 	})
