@@ -48,13 +48,13 @@ import (
 // Timeout 後に JobRescuer が同じ River job を再実行すると、同じ
 // (recording, profile) の encode が 2 本並走しうる。
 //
-//   - **scratch はジョブ ID と domain attempt ごと**（encode/<jobID>-<attempt>-<random>）。
-//     Timeout 後に再実行してもディレクトリが衝突しない。**flock で
-//     (recording, profile) を直列化しない**: scratch は pod ローカルなので同じ pod 内
-//     しか直列化できず、SIGSTOP 中の旧実行が lock を握る間ずっと失敗が積み上がる。
-//     canonical の公開直前には `recording_encode_attempts.attempt_count` を読み直し、
-//     古い試行を拒否する。代償として、cancel を無視する古い試行が新しい試行とともに
-//     ffmpeg を完走することはある。
+//   - **scratch は recording / profile / domain attempt ごと**に作る。River の ID や
+//     queue attempt は使わず、再配送後もドメインキーで追える。共有 flock は cleanup
+//     と実行中 scratch の競合だけを避ける。encode 同士は共有 lock を同時に持てるため
+//     直列化しない。cleanup は実行中 encode がある間は見送る
+//     （TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts）。canonical の公開直前には
+//     `recording_encode_attempts.attempt_count` を読み直し、古い試行を拒否する。代償として、
+//     cancel を無視する古い試行が新しい試行とともに ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
 //     → tx → advisory xact lock）の中で判定 → rename（サイドカー → 本体）→ 親 dir
@@ -251,9 +251,11 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		return fmt.Errorf("resolving encoded path: %w", err)
 	}
 
-	// プロセス死の残骸を回収する。古い試行は fencing で公開できないので消してよい。
-	removeStaleEncodeScratch(w.ScratchDir, job.ID, log)
-	scratchDir, err := newWorkerScratchDir(w.ScratchDir, "encode", job.ID, int(attempt))
+	// プロセス死の残骸を回収し、domain attempt ごとに scratch を分ける。
+	// cleanup は同じ (recording_id, profile) だけを対象にし、共有 flock で
+	// 他の実行中 encode の scratch を残す。
+	removeStaleEncodeScratch(w.ScratchDir, args.RecordingID, args.Profile, log)
+	scratchDir, scratchLock, err := newEncodeScratchDir(w.ScratchDir, args.RecordingID, args.Profile, attempt)
 	if err != nil {
 		return fmt.Errorf("creating encode scratch directory: %w", err)
 	}
@@ -263,6 +265,9 @@ func (w *EncodeWorker) runEncode(ctx context.Context, job *river.Job[jobs.Encode
 		// 回収する想定だが、正常系では残さない）。
 		if rmErr := os.RemoveAll(scratchDir); rmErr != nil {
 			log.Warn("encode: scratch cleanup failed", "dir", scratchDir, "err", rmErr)
+		}
+		if lockErr := closeEncodeScratchLock(scratchLock); lockErr != nil {
+			log.Warn("encode: scratch lock release failed", "err", lockErr)
 		}
 	}()
 

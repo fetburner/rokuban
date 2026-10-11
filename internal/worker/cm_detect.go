@@ -121,7 +121,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 		return nil
 	}
 	attemptCount := attempt.AttemptCount
-	if err := w.detect(ctx, job.ID, item, attemptCount); err != nil {
+	if err := w.detect(ctx, job.Args.RecordingID, item, attemptCount); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failureCancel()
@@ -178,7 +178,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, job *river.Job[jobs.CMDetectJ
 	return nil
 }
 
-func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.GetCMDetectionWorkItemRow, attemptCount int32) error {
+func (w *CMDetectWorker) detect(ctx context.Context, recordingID int64, item sqlcgen.GetCMDetectionWorkItemRow, attemptCount int32) error {
 	if item.RelPath == nil {
 		return cmFailure("setup", fmt.Errorf("active original is missing"))
 	}
@@ -186,7 +186,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, jobID int64, item sqlcgen.G
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	jobDir, err := newJobScratchDir(w.ScratchDir, "cm-detect", jobID)
+	jobDir, err := newDomainScratchDir(w.ScratchDir, "cm-detect", fmt.Sprintf("%d-%d", recordingID, attemptCount))
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
 	}

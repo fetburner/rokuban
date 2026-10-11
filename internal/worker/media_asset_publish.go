@@ -2,12 +2,14 @@ package worker
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
+	"syscall"
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,10 +21,8 @@ import (
 type skipMediaAssetPublish func(context.Context, *sqlcgen.Queries) (bool, error)
 type mediaAssetUpsert func(context.Context, *sqlcgen.Queries, int64) error
 
-// newWorkerScratchDir は試行ごとに一意な scratch directory を作る。River の Timeout が
-// 正のジョブはこちらを使う。timeout した試行がまだ動いている間に River の rescuer が
-// 同じ job ID を再実行しうるので、試行どうしで directory を共有させない。
-func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (string, error) {
+// newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
+func newWorkerScratchDir(scratchRoot, kind, prefix string) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")
 	}
@@ -30,28 +30,101 @@ func newWorkerScratchDir(scratchRoot, kind string, jobID int64, attempt int) (st
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
 	}
-	return os.MkdirTemp(root, fmt.Sprintf("%d-%d-", jobID, attempt))
+	return os.MkdirTemp(root, prefix)
 }
 
-// removeStaleEncodeScratch は同じ job の前の試行が残した encode scratch を消す
-// （<scratch>/encode/<jobID>-*）。best-effort。
-func removeStaleEncodeScratch(scratchRoot string, jobID int64, log *slog.Logger) {
-	matches, err := filepath.Glob(filepath.Join(scratchRoot, "encode", strconv.FormatInt(jobID, 10)+"-*"))
-	if err != nil {
-		return
+// encodeScratchScope は (recording_id, profile) の衝突しない filesystem prefix を返す。
+func encodeScratchScope(recordingID int64, profile string) string {
+	return fmt.Sprintf("%d-%s", recordingID, hex.EncodeToString([]byte(profile)))
+}
+
+func openEncodeScratchLock(scratchRoot string) (*os.File, error) {
+	if scratchRoot == "" {
+		return nil, fmt.Errorf("scratch dir is empty")
 	}
-	for _, m := range matches {
-		if err := os.RemoveAll(m); err != nil {
-			log.Warn("encode: stale scratch cleanup failed", "dir", m, "err", err)
+	root := filepath.Join(scratchRoot, "encode")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, fmt.Errorf("creating encode scratch root: %w", err)
+	}
+	lock, err := os.OpenFile(filepath.Join(root, ".cleanup.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("opening encode scratch cleanup lock: %w", err)
+	}
+	return lock, nil
+}
+
+func flockScratch(lock *os.File, operation int) error {
+	for {
+		err := syscall.Flock(int(lock.Fd()), operation)
+		if !errors.Is(err, syscall.EINTR) {
+			return err
 		}
 	}
 }
 
-// newJobScratchDir は job ID で固定した scratch directory を、前回の残骸を消してから作る。
-// River の Timeout が -1 のジョブはこちらを使う。rescuer は Timeout が負のジョブを
-// 再実行しないので同じ ID の試行は重ならず、開始時の RemoveAll が異常終了した前回の
-// 試行の残骸を回収する。Timeout を -1 から正の値に変えたジョブは newWorkerScratchDir へ移す。
-func newJobScratchDir(scratchRoot, kind string, jobID int64) (string, error) {
+func closeEncodeScratchLock(lock *os.File) error {
+	unlockErr := flockScratch(lock, syscall.LOCK_UN)
+	closeErr := lock.Close()
+	return errors.Join(unlockErr, closeErr)
+}
+
+// newEncodeScratchDir は (recording_id, profile, attempt_count) ごとの scratch を作る。
+// 共有 flock は実行中 directory の掃除を止めるだけで、複数の encode は同時に保持できる。
+func newEncodeScratchDir(scratchRoot string, recordingID int64, profile string, attemptCount int32) (string, *os.File, error) {
+	lock, err := openEncodeScratchLock(scratchRoot)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := flockScratch(lock, syscall.LOCK_SH); err != nil {
+		_ = lock.Close()
+		return "", nil, fmt.Errorf("locking encode scratch: %w", err)
+	}
+	root := filepath.Join(scratchRoot, "encode")
+	prefix := fmt.Sprintf("%s-%d-", encodeScratchScope(recordingID, profile), attemptCount)
+	dir, err := os.MkdirTemp(root, prefix)
+	if err != nil {
+		_ = closeEncodeScratchLock(lock)
+		return "", nil, fmt.Errorf("creating encode scratch directory: %w", err)
+	}
+	return dir, lock, nil
+}
+
+// removeStaleEncodeScratch は同じ (recording_id, profile) の残骸だけを best-effort で消す。
+// encode の共有 flock が取れない間は全ての実行中 scratch を残す
+// （TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts / TestRemoveStaleEncodeScratchScopesByRecordingAndProfile）。
+func removeStaleEncodeScratch(scratchRoot string, recordingID int64, profile string, log *slog.Logger) {
+	lock, err := openEncodeScratchLock(scratchRoot)
+	if err != nil {
+		return
+	}
+	defer func() { _ = lock.Close() }()
+	if err := flockScratch(lock, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
+			log.Warn("encode: stale scratch lock failed", "err", err)
+		}
+		return
+	}
+	defer func() { _ = flockScratch(lock, syscall.LOCK_UN) }()
+
+	root := filepath.Join(scratchRoot, "encode")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return
+	}
+	prefix := encodeScratchScope(recordingID, profile) + "-"
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), prefix) {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if err := os.RemoveAll(path); err != nil {
+			log.Warn("encode: stale scratch cleanup failed", "dir", path, "err", err)
+		}
+	}
+}
+
+// newDomainScratchDir はドメインキーに対応する固定 scratch directory を残骸から作り直す。
+func newDomainScratchDir(scratchRoot, kind, key string) (string, error) {
 	if scratchRoot == "" {
 		return "", fmt.Errorf("scratch dir is empty")
 	}
@@ -59,7 +132,7 @@ func newJobScratchDir(scratchRoot, kind string, jobID int64) (string, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return "", fmt.Errorf("creating %s scratch root: %w", kind, err)
 	}
-	jobDir := filepath.Join(root, strconv.FormatInt(jobID, 10))
+	jobDir := filepath.Join(root, key)
 	if err := os.RemoveAll(jobDir); err != nil {
 		return "", fmt.Errorf("cleaning previous %s scratch directory: %w", kind, err)
 	}

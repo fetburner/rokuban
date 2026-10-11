@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -349,13 +350,84 @@ func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T)
 	}
 }
 
-func TestNewWorkerScratchDirIsUniqueForSameJobAndAttempt(t *testing.T) {
+func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 	root := t.TempDir()
-	first, err := newWorkerScratchDir(root, "thumbnail", 42, 3)
+	makeDir := func(rel string) string {
+		t.Helper()
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	staleAttempt1 := makeDir("encode/7-68323634-1-old")
+	staleAttempt2 := makeDir("encode/7-68323634-2-old")
+	otherProfile := makeDir("encode/7-637574-1-other")
+	otherRecording := makeDir("encode/70-68323634-1-other")
+	otherKind := makeDir("thumbnail/7-other")
+	liveScratch, liveLock, err := newEncodeScratchDir(root, 7, "h264", 3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := newWorkerScratchDir(root, "thumbnail", 42, 3)
+	lockOpen := true
+	t.Cleanup(func() {
+		if lockOpen {
+			_ = closeEncodeScratchLock(liveLock)
+		}
+	})
+
+	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+	for _, path := range []string{staleAttempt1, staleAttempt2, liveScratch} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("active encode prevented cleanup of %s: %v", path, err)
+		}
+	}
+	if err := closeEncodeScratchLock(liveLock); err != nil {
+		t.Fatal(err)
+	}
+	lockOpen = false
+	if err := os.RemoveAll(liveScratch); err != nil {
+		t.Fatal(err)
+	}
+
+	removeStaleEncodeScratch(root, 7, "h264", slog.Default())
+
+	for _, path := range []string{staleAttempt1, staleAttempt2} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("stale scratch %s stat error = %v, want os.ErrNotExist", path, err)
+		}
+	}
+	for _, path := range []string{otherProfile, otherRecording, otherKind} {
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("unrelated scratch %s was removed: %v", path, err)
+		}
+	}
+}
+
+func TestNewEncodeScratchDirUsesRecordingProfileAndAttempt(t *testing.T) {
+	root := t.TempDir()
+	dir, lock, err := newEncodeScratchDir(root, 42, "h264", 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closeEncodeScratchLock(lock) })
+
+	wantPrefix := filepath.Join(root, "encode", "42-68323634-3-")
+	if !strings.HasPrefix(dir, wantPrefix) {
+		t.Errorf("encode scratch directory = %q, want prefix %q", dir, wantPrefix)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("encode scratch directory stat = (%v, %v), want directory", info, err)
+	}
+}
+
+func TestNewWorkerScratchDirIsUniqueForSameRecording(t *testing.T) {
+	root := t.TempDir()
+	first, err := newWorkerScratchDir(root, "thumbnail", "42-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newWorkerScratchDir(root, "thumbnail", "42-")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,11 +448,11 @@ func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
 	}{
 		{
 			name: "attempt-unique",
-			make: func() (string, error) { return newWorkerScratchDir("", "thumbnail", 42, 3) },
+			make: func() (string, error) { return newWorkerScratchDir("", "thumbnail", "42-") },
 		},
 		{
-			name: "job-fixed",
-			make: func() (string, error) { return newJobScratchDir("", "encode", 42) },
+			name: "domain-fixed",
+			make: func() (string, error) { return newDomainScratchDir("", "cm_detect", "42-1") },
 		},
 	}
 	for _, tc := range cases {
@@ -392,9 +464,9 @@ func TestScratchDirectoryHelpersRejectEmptyRoot(t *testing.T) {
 	}
 }
 
-func TestNewJobScratchDirClearsPreviousResidue(t *testing.T) {
+func TestNewDomainScratchDirClearsPreviousResidue(t *testing.T) {
 	root := t.TempDir()
-	dir, err := newJobScratchDir(root, "cm_detect", 42)
+	dir, err := newDomainScratchDir(root, "cm_detect", "42-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,7 +475,7 @@ func TestNewJobScratchDirClearsPreviousResidue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	otherJobDir, err := newJobScratchDir(root, "cm_detect", 43)
+	otherJobDir, err := newDomainScratchDir(root, "cm_detect", "43-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -414,7 +486,7 @@ func TestNewJobScratchDirClearsPreviousResidue(t *testing.T) {
 		t.Errorf("creating another job's scratch directory changed the first job's residue: %v", err)
 	}
 
-	restartedDir, err := newJobScratchDir(root, "cm_detect", 42)
+	restartedDir, err := newDomainScratchDir(root, "cm_detect", "42-1")
 	if err != nil {
 		t.Fatal(err)
 	}
