@@ -31,8 +31,9 @@ type Spec struct {
 	// Timeout returns the maximum execution time for Args. Work's context must end with
 	// context.DeadlineExceeded when it expires. If the process dies while Work runs, the
 	// adapter must make the job eligible for redelivery within this duration plus its
-	// recovery grace (contracttest.Fixture.RecoveryGrace). The prior invocation stopping and retaining the same job ID are not
-	// guaranteed.
+	// recovery grace, which the adapter declares (the shared contract tests take it from
+	// Fixture.RecoveryGrace). The prior invocation stopping and retaining the same job ID
+	// are not guaranteed.
 	Timeout func(Args) time.Duration
 	// MaxAttempts is the maximum number of failures before the adapter stops delivery.
 	// Failures include non-nil errors, timeout, and process death. Zero selects the

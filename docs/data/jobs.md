@@ -85,9 +85,9 @@ identity にならない。**キュー名を変える（リネーム・site 修�
 
 合流の intended identity は **kind + 論理キュー + Args 全体の JSON** とする。River の
 部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、
-タグは使わない。Args は実行条件なので、部分選択では異なる仕事を同じ identity にまとめる
-おそれがある。たとえば encode の保存済み締切が異なる Args は別の identity になる。
-締切だけが違う投入は同じ仕事であり、導出値（実尺 × profile の rate）が identity に入る代償を払う。
+タグは使わない。Args 全体の JSON なら、どの adapter でも同じ identity を再現できる。
+代償として、encode の保存済み締切のように導出値が Args に入ると、締切だけが違う投入も別の identity になる。
+それは同じ仕事なので、重複として次の形で現れる。
 (i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
 (ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
 (iii) 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。

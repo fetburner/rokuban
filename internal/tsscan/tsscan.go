@@ -22,8 +22,9 @@ type ScanArgs struct {
 func (ScanArgs) Kind() string { return "ts_scan" }
 
 // Spec returns the scan queue, six-hour timeout, default retry limit, and coalescing hint.
-// In the current River projection the timeout is both the attempt's context deadline and
-// the point after which River's rescuer treats a running job as dead. Unverified: the
+// In the current River projection the timeout is the attempt's context deadline, and
+// River's rescuer does not treat a running job as dead until the longer of this timeout
+// and rescue_stuck_jobs_after has passed. Unverified: the
 // longest original and the read throughput were not measured. If six hours is too short,
 // a long original's scan times out and is retried forever. A scan is idempotent and
 // restartable, so a timeout only costs a retry.
