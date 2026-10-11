@@ -31,6 +31,26 @@ describe('lint suppression checker', () => {
     }
   })
 
+  it('parses an all-rules directive as a wildcard and rejects it', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'rokuban-suppression-wildcard-'))
+    const srcDir = path.join(root, 'src')
+    mkdirSync(srcDir)
+    writeFileSync(path.join(srcDir, 'sample.tsx'), [
+      '// oxlint-disable -- fixture',
+      '// oxlint-disable',
+    ].join('\n'))
+
+    try {
+      const actual = collectSuppressions(srcDir, root)
+      expect(actual).toEqual({ '*': { 'src/sample.tsx': 2 } })
+      expect(validateSuppressions(actual, actual)).toContain(
+        '  * src/sample.tsx: 台帳 2 件 / 実際 2 件。全規則の抑制は規則別に監査できないため、個別の規則名を明示してください',
+      )
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('fails when a suppression is added without changing the ledger', () => {
     const ledger = { 'react/purity': { 'src/pages/programs.tsx': 1 } }
     const actual = { 'react/purity': { 'src/pages/programs.tsx': 2 } }
@@ -74,6 +94,47 @@ describe('lint suppression checker', () => {
       purityBaseline: new Map(),
       purityAllowlist: new Map([[newFile, 'fixture reason']]),
     })).toEqual([])
+    expect(validateSuppressions(updated, updated, {
+      purityBaseline: new Map(),
+      purityAllowlist: new Map([[newFile, '  ']]),
+    })).toContain(`  react/purity ${newFile}: REACT_PURITY_ALLOWLIST に理由がありません`)
+  })
+
+  it('exits unsuccessfully when the CLI finds a ledger mismatch', () => {
+    const fixtureDir = mkdtempSync(path.join(webDir, 'src', '.tmp-lint-suppressions-'))
+    const fixturePath = path.join(fixtureDir, 'mismatch.tsx')
+    const relativePath = path.relative(webDir, fixturePath).split(path.sep).join('/')
+    writeFileSync(fixturePath, '// oxlint-disable-next-line react/refs -- checker integration fixture\n')
+
+    try {
+      const result = spawnSync(process.execPath, [path.join(webDir, 'scripts', 'check-lint-suppressions.mjs')], {
+        cwd: webDir,
+        encoding: 'utf8',
+      })
+      expect(result.error).toBeUndefined()
+      expect(result.status).toBe(1)
+      expect(result.stderr).toContain(`react/refs ${relativePath}: 台帳 0 件 / 実際 1 件`)
+    } finally {
+      rmSync(fixtureDir, { recursive: true, force: true })
+    }
+  })
+
+  it('exits successfully when the CLI finds a synchronized ledger', () => {
+    const result = spawnSync(process.execPath, [path.join(webDir, 'scripts', 'check-lint-suppressions.mjs')], {
+      cwd: webDir,
+      encoding: 'utf8',
+    })
+
+    expect(result.error).toBeUndefined()
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain('oxlint 抑制コメントは台帳と一致しています')
+  })
+
+  it('runs the ledger checker as the final pnpm lint command', () => {
+    const packageJSON = JSON.parse(readFileSync(path.join(webDir, 'package.json'), 'utf8'))
+    const lintCommands = packageJSON.scripts.lint.split(' && ')
+
+    expect(lintCommands.at(-1)).toBe('node scripts/check-lint-suppressions.mjs')
   })
 
   it('makes pnpm lint fail on an unused disable directive', () => {
