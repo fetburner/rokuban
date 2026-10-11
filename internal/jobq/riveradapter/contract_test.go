@@ -56,12 +56,13 @@ func TestContract(t *testing.T) {
 }
 
 type riverContractFixture struct {
-	t        *testing.T
-	pool     *pgxpool.Pool
-	registry *jobq.Registry
-	cfg      Config
-	current  *Adapter
-	clients  []*Adapter
+	t                       *testing.T
+	pool                    *pgxpool.Pool
+	registry                *jobq.Registry
+	cfg                     Config
+	current                 *Adapter
+	clients                 []*Adapter
+	claimantApplicationName string
 }
 
 func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.Worker[contracttest.Args]) contracttest.Fixture {
@@ -77,15 +78,29 @@ func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.
 		},
 	}
 	Register(registry, worker)
-	jobqAdapter.current = jobqAdapter.newClient()
+	jobqAdapter.current = jobqAdapter.newClient("claimant")
 	return jobqAdapter
 }
 
-func (fixture *riverContractFixture) newClient() *Adapter {
+func (fixture *riverContractFixture) newClient(role string) *Adapter {
 	fixture.t.Helper()
-	client, err := NewAdapter(fixture.pool, fixture.registry, fixture.cfg)
+	poolConfig, err := pgxpool.ParseConfig(testutil.DatabaseConfig(fixture.t).DSN())
+	if err != nil {
+		fixture.t.Fatalf("parsing River client pool config: %v", err)
+	}
+	applicationName := "rokuban-riveradapter-" + role
+	poolConfig.ConnConfig.RuntimeParams["application_name"] = applicationName
+	clientPool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
+	if err != nil {
+		fixture.t.Fatalf("creating River client pool: %v", err)
+	}
+	fixture.t.Cleanup(clientPool.Close)
+	client, err := NewAdapter(clientPool, fixture.registry, fixture.cfg)
 	if err != nil {
 		fixture.t.Fatalf("NewAdapter() error = %v", err)
+	}
+	if role == "claimant" {
+		fixture.claimantApplicationName = applicationName
 	}
 	fixture.clients = append(fixture.clients, client)
 	return client
@@ -101,7 +116,7 @@ func (fixture *riverContractFixture) EnqueueTx(ctx context.Context, tx db.Tx, ar
 
 func (fixture *riverContractFixture) Start(ctx context.Context) error {
 	if fixture.current == nil {
-		fixture.current = fixture.newClient()
+		fixture.current = fixture.newClient("claimant")
 	}
 	return fixture.current.Start(ctx)
 }
@@ -164,7 +179,7 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 		return fmt.Errorf("running contract jobs = %d, want 1", len(running.Jobs))
 	}
 	jobID := running.Jobs[0].ID
-	resident := fixture.newClient()
+	resident := fixture.newClient("resident")
 	if err := resident.Start(ctx); err != nil {
 		return fmt.Errorf("starting resident River client: %w", err)
 	}
@@ -189,8 +204,50 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 	if command.RowsAffected() != 1 {
 		return fmt.Errorf("stale running rows = %d, want 1", command.RowsAffected())
 	}
+	// A timed-out StopAndCancel cannot release the claimant while its Work is deliberately
+	// blocked. Terminate only this fixture's PostgreSQL sessions to model the process exiting;
+	// the resident client then has to acquire leadership and rescue the still-running job.
+	if err := fixture.terminateClientConnections(ctx, fixture.claimantApplicationName); err != nil {
+		return fmt.Errorf("terminating crashed client's PostgreSQL sessions: %w", err)
+	}
 
 	fixture.current = resident
+	return nil
+}
+
+func (fixture *riverContractFixture) terminateClientConnections(ctx context.Context, applicationName string) error {
+	rows, err := fixture.pool.Query(ctx,
+		"SELECT pid FROM pg_stat_activity WHERE application_name = $1 AND pid <> pg_backend_pid()",
+		applicationName)
+	if err != nil {
+		return fmt.Errorf("listing client PostgreSQL sessions: %w", err)
+	}
+	var pids []int32
+	for rows.Next() {
+		var pid int32
+		if err := rows.Scan(&pid); err != nil {
+			rows.Close()
+			return fmt.Errorf("scanning client PostgreSQL session: %w", err)
+		}
+		pids = append(pids, pid)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("reading client PostgreSQL sessions: %w", err)
+	}
+	rows.Close()
+	if len(pids) == 0 {
+		return fmt.Errorf("no PostgreSQL sessions found for application_name %q", applicationName)
+	}
+	for _, pid := range pids {
+		var terminated bool
+		if err := fixture.pool.QueryRow(ctx, "SELECT pg_terminate_backend($1)", pid).Scan(&terminated); err != nil {
+			return fmt.Errorf("terminating PostgreSQL backend %d: %w", pid, err)
+		}
+		if !terminated {
+			return fmt.Errorf("PostgreSQL backend %d was not terminated", pid)
+		}
+	}
 	return nil
 }
 
