@@ -38,7 +38,7 @@ CLI は insert-only の River クライアントを組み立てる都合で `int
 - エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。
   試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
   `GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
-  `TestGetEncodeQueueSummaryFromDomainState` が分割・上限・observed の除外・cut の所有条件・絞り込みとの一致を固定する。
+  `TestGetEncodeQueueSummaryFromDomainState` が分割・上限・observed の除外・cut の所有条件を固定し、`TestListRecordingsEncodeStateMatchesQueueCounts` が絞り込みとの一致を固定する。
 - worker が encode 中に死ぬと、次の試行が始まるまで試行行は `running` のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は `running` に数える。
 - desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
 

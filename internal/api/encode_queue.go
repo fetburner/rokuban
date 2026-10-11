@@ -23,7 +23,7 @@ func (h *Server) loadEncodeQueueRows(ctx context.Context) ([]encodeQueueRow, err
 	// SQL の ANY は NULL 配列を空配列と異なる意味にするため、nil は空にする。
 	rows, err := sqlcgen.New(h.pool).ListEncodeQueue(ctx, sqlcgen.ListEncodeQueueParams{
 		KnownProfiles: append([]string{}, h.encodeProfileNames...),
-		CutProfiles:   slices.Collect(maps.Keys(h.cutProfiles)),
+		CutProfiles:   slices.AppendSeq([]string{}, maps.Keys(h.cutProfiles)),
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 	})
 	if err != nil {
@@ -58,7 +58,8 @@ func (h *Server) GetEncodeQueue(ctx context.Context, _ GetEncodeQueueRequestObje
 func encodeQueueRecordingIDs(rows []encodeQueueRow, running bool) []int64 {
 	ids := []int64{}
 	for _, r := range rows {
-		if r.running == running && !slices.Contains(ids, r.recordingID) {
+		// 行は ORDER BY recording_id なので、重複は直前の ID との比較で落とせる。
+		if r.running == running && (len(ids) == 0 || ids[len(ids)-1] != r.recordingID) {
 			ids = append(ids, r.recordingID)
 		}
 	}

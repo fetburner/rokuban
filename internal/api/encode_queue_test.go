@@ -136,6 +136,25 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	}
 }
 
+// cut プロファイルが 1 つも無い構成でも、cut 以外のプロファイルは待機列に数える。
+func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	id := seedRecording(t, pool, "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951)
+	seedIngested(t, pool, id, 1000, nil)
+	setEncodeProfiles(t, pool, id, []string{"h264"})
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}}))
+	t.Cleanup(srv.Close)
+
+	var got struct {
+		Queued  int64 `json:"queued"`
+		Running int64 `json:"running"`
+	}
+	getJSON(t, srv.URL+"/api/encode-queue", &got)
+	if got.Queued != 1 || got.Running != 0 {
+		t.Errorf("encode queue = queued %d, running %d; want queued 1, running 0", got.Queued, got.Running)
+	}
+}
+
 func TestListRecordingsEncodeStateMatchesQueueCounts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	wantQueued, wantRunning := encodeQueueFixture(t, pool)
