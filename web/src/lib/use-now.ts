@@ -3,6 +3,7 @@ import { useCallback, useSyncExternalStore } from 'react'
 type ClockSubscriber = {
   intervalMs: number
   nextTickAtMs: number
+  wakeAtMs: number | undefined
   notify: () => void
 }
 
@@ -29,6 +30,9 @@ function createClockStore(readNow: () => number) {
     let nextDeadlineMs = Number.POSITIVE_INFINITY
     for (const subscriber of subscribers) {
       nextDeadlineMs = Math.min(nextDeadlineMs, subscriber.nextTickAtMs)
+      if (subscriber.wakeAtMs !== undefined) {
+        nextDeadlineMs = Math.min(nextDeadlineMs, subscriber.wakeAtMs)
+      }
     }
     if (timer !== undefined && timerDeadlineMs === nextDeadlineMs) return
 
@@ -47,13 +51,14 @@ function createClockStore(readNow: () => number) {
     if (nowMs < snapshot) {
       for (const subscriber of subscribers) subscriber.nextTickAtMs = nowMs
     }
-    if (nowMs !== snapshot) {
-      snapshot = nowMs
-      for (const subscriber of subscribers) {
-        if (nowMs < subscriber.nextTickAtMs) continue
-        subscriber.nextTickAtMs = nowMs + subscriber.intervalMs
-        subscriber.notify()
-      }
+    snapshot = nowMs
+    for (const subscriber of subscribers) {
+      const intervalDue = nowMs >= subscriber.nextTickAtMs
+      const wakeDue = subscriber.wakeAtMs !== undefined && nowMs >= subscriber.wakeAtMs
+      if (!intervalDue && !wakeDue) continue
+      if (intervalDue) subscriber.nextTickAtMs = nowMs + subscriber.intervalMs
+      if (wakeDue) subscriber.wakeAtMs = undefined
+      subscriber.notify()
     }
 
     scheduleNextTick()
@@ -61,9 +66,12 @@ function createClockStore(readNow: () => number) {
 
   return {
     getSnapshot: () => snapshot,
-    subscribe(intervalMs: number, notify: () => void): () => void {
+    subscribe(intervalMs: number, wakeAtMs: number | undefined, notify: () => void): () => void {
       if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
         throw new RangeError('useNow intervalMs must be a positive finite number')
+      }
+      if (wakeAtMs !== undefined && !Number.isFinite(wakeAtMs)) {
+        throw new RangeError('useNow wakeAtMs must be a finite number')
       }
 
       // 最初の購読時に現在時刻を読み直す。前回の画面が閉じてから長時間経っていても、
@@ -73,6 +81,7 @@ function createClockStore(readNow: () => number) {
       const subscriber: ClockSubscriber = {
         intervalMs,
         nextTickAtMs: snapshot + intervalMs,
+        wakeAtMs,
         notify,
       }
       subscribers.add(subscriber)
@@ -89,12 +98,13 @@ function createClockStore(readNow: () => number) {
 const clockStore = createClockStore(() => Date.now())
 
 /**
- * useNow は一定間隔で更新される epoch ミリ秒を返す。
+ * useNow は一定間隔または指定時刻に更新される epoch ミリ秒を返す。
  *
  * 購読者がいる間だけストアにタイマーを 1 本置き、誰もいなければ止める。最も早い
  * 購読期限でそのタイマーを動かすが、短い間隔の購読者がいても、長い間隔を指定した
- * コンポーネントには自分の期限でだけ通知する。追っかけ再生中の 1 秒時計で、番組表や
- * 一覧の行まで毎秒再描画しないためである。
+ * コンポーネントには自分の期限でだけ通知する。`wakeAtMs` を渡すと、その時刻にも一度
+ * 通知する（`use-now.test.tsx`「指定時刻にも共有時計を更新する」）。追っかけ再生中の
+ * 1 秒時計と番組境界のような予約時刻を、別タイマーにせず共有するためである。
  *
  * 購読者が 0 の間はスナップショットを更新しないため、購読前の初回描画には最後の
  * tick（またはモジュール読み込み時）の値が出る。購読直後に時刻を読み直して再描画
@@ -103,11 +113,11 @@ const clockStore = createClockStore(() => Date.now())
  * `active` を false にすると購読しない。表示されていない追っかけの録画端のように、
  * 時計の進行が不要な間はタイマーを共有ストアへ追加しない。
  */
-export function useNow(intervalMs: number, active = true): number {
+export function useNow(intervalMs: number, active = true, wakeAtMs?: number): number {
   const subscribe = useCallback(
     (notify: () => void) =>
-      active ? clockStore.subscribe(intervalMs, notify) : () => {},
-    [active, intervalMs],
+      active ? clockStore.subscribe(intervalMs, wakeAtMs, notify) : () => {},
+    [active, intervalMs, wakeAtMs],
   )
 
   return useSyncExternalStore(subscribe, clockStore.getSnapshot, clockStore.getSnapshot)

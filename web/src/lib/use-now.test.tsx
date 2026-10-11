@@ -7,12 +7,14 @@ function ClockReader({
   label,
   intervalMs,
   active = true,
+  wakeAtMs,
 }: {
   label: string
   intervalMs: number
   active?: boolean
+  wakeAtMs?: number
 }) {
-  const nowMs = useNow(intervalMs, active)
+  const nowMs = useNow(intervalMs, active, wakeAtMs)
   return <output data-testid={label}>{nowMs}</output>
 }
 
@@ -93,5 +95,22 @@ describe('useNow', () => {
       await vi.advanceTimersByTimeAsync(1000)
     })
     expect(screen.getByTestId('a')).toHaveTextContent(String(startMs - 60 * 60_000 + 2000))
+  })
+
+  it('指定時刻にも共有時計を更新する', async () => {
+    vi.useFakeTimers()
+    const initialNowMs = Date.parse('2026-10-01T00:00:00Z')
+    const wakeAtMs = initialNowMs + 2_500
+    vi.setSystemTime(initialNowMs)
+
+    render(<ClockReader label="scheduled" intervalMs={1000} wakeAtMs={wakeAtMs} />)
+    expect(screen.getByTestId('scheduled')).toHaveTextContent(String(initialNowMs))
+    expect(vi.getTimerCount()).toBe(1)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+    expect(screen.getByTestId('scheduled')).toHaveTextContent(String(wakeAtMs))
+    expect(vi.getTimerCount()).toBe(1)
   })
 })
