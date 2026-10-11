@@ -720,62 +720,6 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 	}
 }
 
-func TestReconciler_DeferredDeletesDoNotTripTotalLossBreaker(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	mock := newMockMirakc()
-	for i, state := range []string{
-		mirakc.ScheduleStateTracking,
-		mirakc.ScheduleStateRecording,
-		mirakc.ScheduleStateRescheduling,
-		"future-state",
-	} {
-		programID := int64(981 + i)
-		mock.schedules[programID] = mirakc.Schedule{
-			State:   state,
-			Program: mirakc.Program{ID: programID},
-			Tags:    []string{mirakc.ProgramTag(programID)},
-		}
-	}
-
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
-	mc := mirakc.NewClient(srv.URL, nil)
-
-	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
-	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
-	rec := reconciler.New("default", mc, pool, nil)
-	if err := rec.RunPass(ctx); err != nil {
-		t.Fatalf("RunPass: %v", err)
-	}
-
-	if calls := mock.getDeleteCalls(); len(calls) != 0 {
-		t.Errorf("deferred schedules should not be deleted, got %v", calls)
-	}
-	if schedules := mock.getSchedules(); len(schedules) != 4 {
-		t.Errorf("protected schedules = %d, want 4: %v", len(schedules), schedules)
-	}
-	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
-		Site: "default", Name: breaker.ReconcileTotalLoss,
-	}); err == nil {
-		t.Error("deferred schedules should not count toward the total-loss signature")
-	}
-	if got := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips); got != tripsBefore {
-		t.Errorf("total-loss breaker trips = %v, want unchanged %v", got, tripsBefore)
-	}
-	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore {
-		t.Errorf("actual deleted schedules counter = %v, want unchanged %v", got, deletesBefore)
-	}
-	if got := gaugeValue(t, "delete"); got != 0 {
-		t.Errorf("pending_diff{action=delete} = %v, want 0", got)
-	}
-	if got := gaugeValue(t, "delete_deferred"); got != 4 {
-		t.Errorf("pending_diff{action=delete_deferred} = %v, want 4", got)
-	}
-}
-
 func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

@@ -81,7 +81,7 @@ desired にない自分の schedule も、state の allowlist に入る場合だ
 
 削除用 allowlist は再作成用と別にする。終端 schedule は片付けとして DELETE できるが、オプション差分を反映する再作成には使えない。`IsDeleteAllowed` と `IsRecreateAllowed` は別々の集合を定義する。
 
-持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。allowlist は `TestIsDeleteAllowed` と `TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates` が固定する。
+持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。開始時刻を過ぎても `scheduled` のままの schedule（開始遅延）は allowlist に入るので、desired から外れれば DELETE する（録画はまだ動いていない）。allowlist は `TestIsDeleteAllowed` と `TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates` が固定する。
 
 #### 1 パスの再作成数に上限を設ける
 

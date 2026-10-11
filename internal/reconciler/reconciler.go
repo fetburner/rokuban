@@ -322,9 +322,10 @@ func (r *Reconciler) observePendingDiff(missing, stale, deleteDeferred, updateDi
 // logCarriedOver は持ち越した件数を黙って落とさず、「収束しない」原因が見えるように
 // 削除・再作成の state ガードと MaxRecreatesPerPass のどちらで持ち越したかを分けて出す。
 // deleteDeferred / stateGuarded / limitCarriedOver と同じ扱いで endGuarded もログに出す。
-// メトリクスは増やさない — 上2つは複数パスにまたがって残留しうる持ち越し（録画中は
-// priority 変更が反映されないまま残る、MaxRecreatesPerPass で溢れた分が次パスに送られる）
-// だからゲージで監視する価値があるのに対し、endGuarded は本パスの recordNeverScheduled
+// メトリクスは増やさない — deleteDeferred / stateGuarded / limitCarriedOver は複数パスに
+// またがって残留しうる持ち越し（録画中の schedule は録画が終わるまで削除を見送り続ける、
+// 録画中は priority 変更が反映されないまま残る、MaxRecreatesPerPass で溢れた分が次パスに
+// 送られる）だからゲージで監視する価値があるのに対し、endGuarded は本パスの recordNeverScheduled
 // （旧 markOrphaned）が同じ判定式で recordings に never-scheduled 行を作るので、次パスには
 // 同じ予約が二度と現れない（1 パスで自己解消する）。ReconcilePendingDiff の「create」
 // ゲージに混ぜると、埋まらない別の理由（mirakc 障害等）と区別できなくなる。
