@@ -16,17 +16,24 @@ EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 ```mermaid
 flowchart RL
     user(["ユーザー（ブラウザ）"])
-    subgraph bin["rokuban（Go、単一バイナリ）"]
+    subgraph official["rokuban（公式イメージ）"]
+        watcher
+        worker["worker（外部ツールを使わないキュー）"]
         api
         notifier
-        watcher
-        streamer
     end
-    worker["worker（別イメージ、0〜N スケール）"]
-    pg[("PostgreSQL（DB / ジョブキュー）")]
+    subgraph full["rokuban-full（公式イメージ + 外部ツール。セルフビルド）"]
+        subgraph streamer["streamer"]
+            sff[["ffmpeg / ffprobe"]]
+        end
+        subgraph fworker["worker（外部ツールを使うキュー）"]
+            wff[["ffmpeg / ffprobe"]]
+            cm[["chapter_exe / logoframe / join_logo_scp"]]
+        end
+    end
     mirakc["mirakc（エッジ）"]
+    pg[("PostgreSQL（DB / ジョブキュー）")]
     media[("メディアストレージ（分散時は共有）")]
-    ffmpeg[["ffmpeg / ffprobe（exec）"]]
     user -->|"REST / UI 配信（go:embed）"| api
     user -->|"SSE（変更通知）"| notifier
     user -->|"HLS（ライブ・追っかけ・VOD）"| streamer
@@ -34,14 +41,14 @@ flowchart RL
     notifier -->|"LISTEN"| pg
     watcher -->|"録画の観測・ingest 投入"| pg
     watcher -->|"SSE（録画イベント）"| mirakc
-    streamer -->|"原本の所在"| pg
+    worker --> pg
+    worker -->|"取り込み・予約同期・EPG"| mirakc
+    worker -->|"原本の保存・削除"| media
     streamer -->|"放送・録画中の TS"| mirakc
     streamer -->|"原本を読む"| media
-    streamer -.-> ffmpeg
-    worker -->|"ジョブ取得"| pg
-    worker -->|"録画の取り込み・予約同期・EPG"| mirakc
-    worker -->|"原本の保存・派生物の生成と削除"| media
-    worker -.-> ffmpeg
+    streamer --> pg
+    fworker -->|"派生物の生成"| media
+    fworker --> pg
 ```
 
 ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc が予約と録画バッファを保持し、Rokuban は原本・派生物を置くメディアストレージにも依存する。
