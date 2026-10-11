@@ -31,16 +31,16 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ
    temp の EOF へ追記する。ランダムライトはしない
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
-	scratch の directory は River の `Timeout` で選ぶ。正の値なら timeout 後の再試行が前の実行と
-	重なりうるため試行ごとに一意にし、`-1` なら job ID 固定にして開始時に前回の残骸を消す。
-	**ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
-	`.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを
-	開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため
-	確定操作には使わない。
-	`.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` /
-	`.rokuban-media-asset-` で始まる
-	basename は予約名であり、mirakc の contentPath には使わない。1 つ目は ingest
-	temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file、
+   scratch の directory 名は Worker の復旧単位から決める。encode は
+   `(recording_id, profile, attempt_count)`、CM detect は `(recording_id, attempt_count)` を使う。
+   CM logo candidate は `(recording_id, attempted_at)` を使う。
+   thumbnail と seek tiles は recording ID を接頭辞にして毎回 `MkdirTemp` で作る。
+   **ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
+   `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。
+   scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
+   `.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` /
+   `.rokuban-media-asset-` で始まる basename は予約名であり、mirakc の contentPath には使わない。
+   1 つ目は ingest temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file、
 	4 つ目は thumbnail / seek tiles の公開前 staging file（後述）である。rel_path lock
 	は media root の `.rokuban-locks/` に置く。
 	この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
@@ -130,9 +130,13 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
 の試行が一時的に並走しうる。そのため:
 
-- scratch は**job ID と domain attempt ごと**に分ける。同じ job ID の再試行も
-  `<jobID>-<attempt>-<random>` の別ディレクトリを使い、encode は新しい scratch を作る前に同じ job の `<jobID>-*` を消す（古い試行は fencing で公開できない）。各試行は JobRescuer の締切後に
-  起動し、開始時に増えた attempt count を fencing token として公開時に照合する。
+- scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256
+  digest にして basename の長さを抑える。長い名前も作成できる
+  （`TestNewEncodeScratchDirSupportsLongProfileNames`）。掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。
+  実行中 encode が共有 flock を持つ間は掃除を見送る
+  （`TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` /
+  `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。各試行は開始時に増えた
+  attempt count を fencing token として公開時に照合する。
   古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
   ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
@@ -170,9 +174,9 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 
 ### thumbnail / seek tiles の公開
 
-thumbnail と seek tiles の ffmpeg 出力先は試行ごとに `MkdirTemp` で作る scratch
-directory とする（Timeout が正なので、§3 ルール 2 の選択規則で試行ごとになる）。
-同じ recording の River job や、同じ job の試行が重なっても scratch file を共有しない。
+thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして
+`MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の
+実行が重なっても scratch file を共有しない（`TestNewWorkerScratchDirIsUniqueForSameRecording`）。
 完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
 file `fsync` する。次に rel_path filesystem lock → transaction → advisory xact lock の順に取る。
 transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged

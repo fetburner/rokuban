@@ -3,7 +3,9 @@ package worker
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -360,10 +362,10 @@ func TestRemoveStaleEncodeScratchScopesByRecordingAndProfile(t *testing.T) {
 		}
 		return path
 	}
-	staleAttempt1 := makeDir("encode/7-68323634-1-old")
-	staleAttempt2 := makeDir("encode/7-68323634-2-old")
-	otherProfile := makeDir("encode/7-637574-1-other")
-	otherRecording := makeDir("encode/70-68323634-1-other")
+	staleAttempt1 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-1-old"))
+	staleAttempt2 := makeDir(filepath.Join("encode", encodeScratchScope(7, "h264")+"-2-old"))
+	otherProfile := makeDir(filepath.Join("encode", encodeScratchScope(7, "cut")+"-1-other"))
+	otherRecording := makeDir(filepath.Join("encode", encodeScratchScope(70, "h264")+"-1-other"))
 	otherKind := makeDir("thumbnail/7-other")
 	liveScratch, liveLock, err := newEncodeScratchDir(root, 7, "h264", 3)
 	if err != nil {
@@ -412,12 +414,28 @@ func TestNewEncodeScratchDirUsesRecordingProfileAndAttempt(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = closeEncodeScratchLock(lock) })
 
-	wantPrefix := filepath.Join(root, "encode", "42-68323634-3-")
+	wantPrefix := filepath.Join(root, "encode", "42-72a6c9135f1b59693330c8ae39e10e2c1fcc87a6c40865ca66b59d24dadacf60-3-")
 	if !strings.HasPrefix(dir, wantPrefix) {
 		t.Errorf("encode scratch directory = %q, want prefix %q", dir, wantPrefix)
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		t.Errorf("encode scratch directory stat = (%v, %v), want directory", info, err)
+	}
+}
+
+func TestNewEncodeScratchDirSupportsLongProfileNames(t *testing.T) {
+	root := t.TempDir()
+	profile := strings.Repeat("profile", 128)
+	dir, lock, err := newEncodeScratchDir(root, 42, profile, 3)
+	if err != nil {
+		t.Fatalf("newEncodeScratchDir with long profile name: %v", err)
+	}
+	t.Cleanup(func() { _ = closeEncodeScratchLock(lock) })
+	if got, want := filepath.Base(dir), fmt.Sprintf("42-%x-3-", sha256.Sum256([]byte(profile))); !strings.HasPrefix(got, want) {
+		t.Errorf("encode scratch directory = %q, want prefix %q", got, want)
+	}
+	if got := len(filepath.Base(dir)); got > 255 {
+		t.Errorf("encode scratch basename is %d bytes, want at most 255", got)
 	}
 }
 

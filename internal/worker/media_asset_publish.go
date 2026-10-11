@@ -2,7 +2,7 @@ package worker
 
 import (
 	"context"
-	"encoding/hex"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -33,9 +33,10 @@ func newWorkerScratchDir(scratchRoot, kind, prefix string) (string, error) {
 	return os.MkdirTemp(root, prefix)
 }
 
-// encodeScratchScope は (recording_id, profile) の衝突しない filesystem prefix を返す。
+// encodeScratchScope は profile の固定長 digest を含む filesystem prefix を返す。
 func encodeScratchScope(recordingID int64, profile string) string {
-	return fmt.Sprintf("%d-%s", recordingID, hex.EncodeToString([]byte(profile)))
+	profileDigest := sha256.Sum256([]byte(profile))
+	return fmt.Sprintf("%d-%x", recordingID, profileDigest)
 }
 
 func openEncodeScratchLock(scratchRoot string) (*os.File, error) {
