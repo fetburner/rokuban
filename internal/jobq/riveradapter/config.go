@@ -690,18 +690,12 @@ func NewLegacyClient(pool *pgxpool.Pool, workers *river.Workers, cfg Config) (*r
 // Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
 // 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
 // insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
-// JobList は利用できる。api ロールはヒント投入だけに使い、エンコード待機列は
-// ドメイン表から導出する。
+// JobList は利用できる。jobq.Enqueuer として使う呼び出し元は NewInsertOnlyEnqueuer
+// を使い、既存の worker クライアントを共有する配線箇所だけがこの型を直接受け取る。
 //
-// api ロールと `rokuban enqueue` サブコマンドはジョブを実行しない
-// （不変条件: api は mirakc に問い合わせず、ffmpeg も実行しない）。
-// NewWorkers が返すフルのワーカー群を登録すると ingest/encode 等まで
-// そのプロセスに紐付いてしまうため、ジョブを実行しない最小構成にする。
-//
-// watcher ロール単独のプロセスも同じ理由でこれを使う（issue #113）。watcher が
-// River を使うのは ingest ジョブの投入（InsertTx）だけで、worker ロールが無い
-// 限り EncodeWorker/ThumbnailWorker のような ffmpeg/ffprobe に依存するワーカーを
-// 登録・実行してはならない（不変条件 4）。
+// watcher 単独プロセスの配線では同じクライアントを LegacyEnqueuer で包み、ingest の
+// 投入に使う（issue #113）。worker のフルのワーカー群を登録すると ingest/encode 等が
+// 実行されるため、単独 watcher にはワーカーを持たない構成が必要である。
 func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {

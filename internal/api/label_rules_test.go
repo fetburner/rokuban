@@ -628,7 +628,7 @@ func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	if err != nil {
 		t.Fatalf("creating river client: %v", err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: client}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(client)}))
 	t.Cleanup(srv.Close)
 	return srv
 }

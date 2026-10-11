@@ -234,18 +234,18 @@ func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (D
 }
 
 // insertRulerPassHint は指定した site の RulerPassArgs を同一トランザクションで
-// InsertTx する（ヒント経路。docs/recording.md §3.1「ルールの作成 / 更新 / 削除」）。
+// EnqueueTx する（ヒント経路。docs/recording.md §3.1「ルールの作成 / 更新 / 削除」）。
 // dual-write を避けるため、書き込みが失敗すればこのジョブも一緒にロールバックされる。
 //
-// h.river が nil の場合は何もしない（テストや、将来 River を持たない api 構成を許容する
-// ため。RouterConfig.RiverClient のコメント参照）。RulerPassArgs.InsertOpts の
+// h.enqueuer が nil の場合は何もしない（テストや、将来ジョブキューを持たない api 構成を許容する
+// ため。RouterConfig.Enqueuer のコメント参照）。RulerPassArgs の
 // UniqueOpts{ByArgs, ByState} により、同一サイトのヒントは定期実行に合流する。
 func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string) error {
-	if h.river == nil {
+	if h.enqueuer == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, jobs.RulerPassArgs{Site: site}, nil); err != nil {
-		return fmt.Errorf("inserting ruler_pass hint for site %s: %w", site, err)
+	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.RulerPassArgs{Site: site}); err != nil {
+		return fmt.Errorf("enqueuing ruler_pass hint for site %s: %w", site, err)
 	}
 	return nil
 }

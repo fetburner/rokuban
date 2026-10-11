@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -44,7 +45,7 @@ func (w *RecordSweepWorker) Timeout(job *river.Job[jobs.RecordSweepArgs]) time.D
 // Work は watcher の定期全量突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ジョブの排他がサイト単位のため）。
 //
-// Watcher は ingest ジョブを同一トランザクションで InsertTx するため、実行中の
+// Watcher は ingest ジョブを同一トランザクションで EnqueueTx するため、実行中の
 // River クライアントを渡す必要がある。Deps に river.Client を持たせると
 // NewWorkers（クライアント生成前に呼ばれる）で鶏と卵になるため、ruler_pass の
 // ヒント投入と同じ手法（river.ClientFromContextSafely）でジョブ実行コンテキストから
@@ -65,6 +66,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, job *river.Job[jobs.Record
 		return fmt.Errorf("getting river client from job context: %w", err)
 	}
 
-	wt := watcher.New(job.Args.Site, client, w.Pool, riverClient, w.Webhook)
+	wt := watcher.New(job.Args.Site, client, w.Pool, riveradapter.NewLegacyEnqueuer(riverClient), w.Webhook)
 	return wt.Sweep(ctx)
 }

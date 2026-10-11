@@ -24,6 +24,7 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -63,7 +64,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	}
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, client, nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(client), nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()

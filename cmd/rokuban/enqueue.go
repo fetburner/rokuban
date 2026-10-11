@@ -8,11 +8,11 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -32,7 +32,7 @@ type enqueueJob struct {
 	// Args に site を渡す。false なら --site を受け付けず（渡されたらエラー）、
 	// site 無しで Args を組み立てる。
 	RequiresSite bool
-	NewArgs      func(site string) river.JobArgs
+	NewArgs      func(site string) jobq.Args
 }
 
 // enqueueJobs はユーザー向けジョブ名（ハイフン区切り）から River の JobArgs を
@@ -47,39 +47,39 @@ type enqueueJob struct {
 var enqueueJobs = map[string]enqueueJob{
 	"epg-sync": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return jobs.EpgSyncArgs{Site: site} },
+		NewArgs:      func(site string) jobq.Args { return jobs.EpgSyncArgs{Site: site} },
 	},
 	"tuner-sync": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return jobs.TunerSyncArgs{Site: site} },
+		NewArgs:      func(site string) jobq.Args { return jobs.TunerSyncArgs{Site: site} },
 	},
 	"ruler-pass": {
 		// キューは site 非修飾（site 修飾されるキューの集合の外）だが Args.Site 必須。
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return jobs.RulerPassArgs{Site: site} },
+		NewArgs:      func(site string) jobq.Args { return jobs.RulerPassArgs{Site: site} },
 	},
 	"reconcile-pass": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return jobs.ReconcilePassArgs{Site: site} },
+		NewArgs:      func(site string) jobq.Args { return jobs.ReconcilePassArgs{Site: site} },
 	},
 	"record-sweep": {
 		RequiresSite: true,
-		NewArgs:      func(site string) river.JobArgs { return jobs.RecordSweepArgs{Site: site} },
+		NewArgs:      func(site string) jobq.Args { return jobs.RecordSweepArgs{Site: site} },
 	},
 	"catalog-export": {
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.CatalogExportArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.CatalogExportArgs{} },
 	},
 	"delete-reconcile": {
 		// 物理ストレージは単一の media_dir で site に従属しない
 		// （jobs.DeleteReconcileArgs のコメント。catalog-export と同じ位置づけ）。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.DeleteReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.DeleteReconcileArgs{} },
 	},
 	"label-rule-reconcile": {
 		// 分類ルールの再評価は全録画を 1 回見る site 非依存の DB ジョブ。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.LabelRuleReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.LabelRuleReconcileArgs{} },
 	},
 	"encode-reconcile": {
 		// エンコードは site の属性を持たない（アーカイブもプロファイルも単一。
@@ -89,7 +89,7 @@ var enqueueJobs = map[string]enqueueJob{
 		// ここに載せる --- 載せないと、その構成ではこの定期パスが一度も走らず
 		// issue #163 の穴（ヒントを落とすと黙って再投入されない）が塞がらない。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.EncodeReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.EncodeReconcileArgs{} },
 	},
 	"thumbnail-reconcile": {
 		// thumbnail は encode と同じく site 非依存の共有ストレージ上の仕事。
@@ -97,24 +97,24 @@ var enqueueJobs = map[string]enqueueJob{
 		// 起動できるようにする。**シークプレビュー用タイル（seek_tiles）の
 		// ギャップもこのパスが埋める**ので、投入口を分けていない。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.ThumbnailReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.ThumbnailReconcileArgs{} },
 	},
 	"ts-scan-reconcile": {
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return tsscan.ReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return tsscan.ReconcileArgs{} },
 	},
 	"cm-detect-reconcile": {
 		// CM detection shares storage and recording state across sites. Kubernetes
 		// disables River's in-process periodic jobs, so its CronJob uses this entry.
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.CMDetectReconcileArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.CMDetectReconcileArgs{} },
 	},
 	"storage-sync": {
 		// catalog-export と同じ理由（アーカイブ/スクラッチが単一で Site を
 		// 持たない。issue #238 M7-5）。delete_reconcile とは異なり読み取り専用
 		// （statfs のみ）の観測なので、手動 enqueue の対象から外す理由がない。
 		RequiresSite: false,
-		NewArgs:      func(string) river.JobArgs { return jobs.StorageSyncArgs{} },
+		NewArgs:      func(string) jobq.Args { return jobs.StorageSyncArgs{} },
 	},
 }
 
@@ -122,8 +122,8 @@ var enqueueJobs = map[string]enqueueJob{
 //
 // worker.periodic_jobs を無効化したデプロイ（k8s）では、CronJob がこのコマンドを
 // 叩いて定期ジョブを投入する（docs/data.md §2「定期実行の契機はデプロイ形態に委ねる」）。
-// 手動での即時実行にも使える。insert-only の River クライアントで 1 件投入して即終了する
-// ため、worker のワーカー群（ingest/encode 等）はこのプロセスに一切紐付かない。
+// 手動での即時実行にも使える。insert-only の Enqueuer で 1 件投入して即終了するため、
+// worker のワーカー群（ingest/encode 等）はこのプロセスに一切紐付かない。
 func newEnqueueCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "enqueue <job>",
@@ -194,7 +194,7 @@ func resolveEnqueueJobSite(cmd *cobra.Command, job string, registry []config.Mir
 	return resolveSiteFlag(cmd, registry)
 }
 
-// runEnqueue はジョブ名から JobArgs を組み立てて insert-only クライアントで 1 件
+// runEnqueue はジョブ名から Args を組み立てて jobq.Enqueuer で 1 件
 // 投入する。DB / River とのやりとりをここに閉じ込め、cobra の RunE は薄い配線に
 // とどめる（runRescue と同じ切り出し方）。
 //
@@ -208,25 +208,25 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out i
 		return fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
 	}
 
-	client, err := riveradapter.NewInsertOnlyClient(pool)
+	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
 	if err != nil {
 		return err
 	}
 
-	res, err := client.Insert(ctx, spec.NewArgs(site), nil)
+	res, err := enqueuer.Enqueue(ctx, spec.NewArgs(site))
 	if err != nil {
-		return fmt.Errorf("inserting job %q: %w", job, err)
+		return fmt.Errorf("enqueuing job %q: %w", job, err)
 	}
 
 	suffix := ""
 	if site != "" {
 		suffix = fmt.Sprintf(" for site %q", site)
 	}
-	if res.UniqueSkippedAsDuplicate {
+	if res.Coalesced {
 		_, _ = fmt.Fprintf(out, "job %q already pending%s, not inserted\n", job, suffix)
 		return nil
 	}
-	_, _ = fmt.Fprintf(out, "inserted job %q (id=%d)%s\n", job, res.Job.ID, suffix)
+	_, _ = fmt.Fprintf(out, "inserted job %q%s\n", job, suffix)
 	return nil
 }
 

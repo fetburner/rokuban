@@ -12,6 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -296,7 +297,7 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	}
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -399,7 +400,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	}
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
-		RiverClient:        riverClient,
+		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))

@@ -1065,16 +1065,16 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 }
 
 // insertEncodeReconcile は encode_profiles の更新と同じトランザクションで、
-// 対象録画を指定した EncodeReconcileArgs を InsertTx する。
+// 対象録画を指定した EncodeReconcileArgs を EnqueueTx する。
 //
-// h.river が nil の場合は何もしない（テストや、将来 River を持たない api 構成を
+// h.enqueuer が nil の場合は何もしない（テストや、将来キューを持たない api 構成を
 // 許容するため）。
 func (h *Server) insertEncodeReconcile(ctx context.Context, tx pgx.Tx, recordingID int64) error {
-	if h.river == nil {
+	if h.enqueuer == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeReconcileArgs{RecordingID: recordingID}, nil); err != nil {
-		return fmt.Errorf("inserting encode_reconcile for recording %d: %w", recordingID, err)
+	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
+		return fmt.Errorf("enqueuing encode_reconcile for recording %d: %w", recordingID, err)
 	}
 	return nil
 }
@@ -1082,11 +1082,11 @@ func (h *Server) insertEncodeReconcile(ctx context.Context, tx pgx.Tx, recording
 // insertEncodeRebuild は利用者が明示した再エンコード命令を同じトランザクションで
 // River に記録する。判定を持たないため encode_reconcile へは載せない。
 func (h *Server) insertEncodeRebuild(ctx context.Context, tx pgx.Tx, recordingID int64, profile string) error {
-	if h.river == nil {
+	if h.enqueuer == nil {
 		return nil
 	}
-	if _, err := h.river.InsertTx(ctx, tx, jobs.EncodeRebuildArgs{RecordingID: recordingID, Profile: profile}, nil); err != nil {
-		return fmt.Errorf("inserting encode_rebuild for recording %d profile %q: %w", recordingID, profile, err)
+	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.EncodeRebuildArgs{RecordingID: recordingID, Profile: profile}); err != nil {
+		return fmt.Errorf("enqueuing encode_rebuild for recording %d profile %q: %w", recordingID, profile, err)
 	}
 	return nil
 }

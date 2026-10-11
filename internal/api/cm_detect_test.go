@@ -158,7 +158,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, RiverClient: riverClient}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: legacyEnqueuerForTest(riverClient)}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)
@@ -593,7 +593,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	completedEvents, unsubscribe := riverClient.Subscribe(river.EventKindJobCompleted)
 	defer unsubscribe()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	queued := func(want int) {
@@ -695,7 +695,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, RiverClient: riverClient}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: legacyEnqueuerForTest(riverClient)}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)

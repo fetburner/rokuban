@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -86,7 +87,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	rc := newTestRiverClient(t, pool)
 
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 	return w, pool
 }
 
@@ -1071,7 +1072,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1170,7 +1171,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1270,7 +1271,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1365,7 +1366,7 @@ func TestSweep_RecoversFailedSchedule(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1457,7 +1458,7 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1556,7 +1557,7 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1645,8 +1646,8 @@ func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
-	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.river, nil)
+	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
+	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
 	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
 	// を発生させない。
 	sweepWatcher.services = services
@@ -1805,7 +1806,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, rc, nil)
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -1879,7 +1880,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, rc, nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1956,7 +1957,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -2145,7 +2146,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, rc, nil)
+	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,

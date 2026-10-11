@@ -7,12 +7,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/reservation"
 )
 
@@ -20,8 +19,8 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool  *pgxpool.Pool
-	river *river.Client[pgx.Tx]
+	pool     *pgxpool.Pool
+	enqueuer jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
@@ -57,9 +56,8 @@ type Server struct {
 	capabilities Capabilities
 }
 
-// NewServer は Server を生成する。riverClient はワーカーを持たない River クライアントで、
-// ルール変更のヒント投入に使う。nil なら River を使う操作だけ
-// 失敗する（RouterConfig.RiverClient 参照）。
+// NewServer は Server を生成する。enqueuer はジョブ投入の契約で、実行エンジンを
+// api から隠す。nil ならジョブ投入が必要な操作は投入を省略する（RouterConfig.Enqueuer 参照）。
 // sites が空なら db.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
 // 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
 // encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
@@ -69,7 +67,7 @@ type Server struct {
 // （すべて無効）は config の既定と一致する。
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
-func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+func NewServer(pool *pgxpool.Pool, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -98,7 +96,7 @@ func NewServer(pool *pgxpool.Pool, riverClient *river.Client[pgx.Tx], sites []st
 		}
 	}
 	return &Server{
-		pool: pool, river: riverClient,
+		pool: pool, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,
