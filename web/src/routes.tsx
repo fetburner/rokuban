@@ -456,8 +456,8 @@ const liveRoute = createRoute({
   // `pages/live.tsx` の `<PageHeader title="ライブ">` と同じ表記。issue #304 は
   // Playwright で確認した 6 ルートを挙げているが、`/live` だけ `head` を
   // 積まないと、`headContentUtils.js` が末端の match から見て最初に見つかった
-  // title を使う仕様上、上記 rootRoute の既定（画面名の付かない「Rokuban」だけ）に
-  // 落ちる（実測: ルール → `/live` で `document.title === 'Rokuban'`。「直前の
+  // title を使う仕様上、上記 rootRoute の既定（画面名の付かない製品名だけ）に
+  // 落ちる（実測: ルール → `/live` で `document.title` が rootRoute の既定のまま。「直前の
   // ルールのタイトルが残る」わけではない --- rootRoute の既定はフロアとして
   // 必ず勝つ）。それでも画面を名乗れない既定のままにする理由は無いので、
   // 主要ルートと同じ扱いにする。
