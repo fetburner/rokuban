@@ -169,6 +169,9 @@ var (
 	//
 	// action:
 	//   - "create" / "delete": 存在の差分
+	//   - "delete_deferred": desired にない schedule だが state の allowlist で
+	//     削除を見送った数。録画中・追従中の schedule や未知 state は、録画完了か
+	//     mirakc の state 追加を待つため非ゼロが正常でありうる
 	//   - "update": 予約オプション（priority / tag）が観測結果と食い違っていて、
 	//     かつ**このパスで反映しようとした**schedule の数。MaxRecreatesPerPass で
 	//     次パスに持ち越した分は含む（数パスで収束するので、持続すれば上限が

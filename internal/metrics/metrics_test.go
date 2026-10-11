@@ -40,6 +40,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	EncodeDuration.Observe(1)
 	EncodeJobs.WithLabelValues("success").Inc()
 	ReconcilePendingDiff.WithLabelValues("create").Set(0)
+	ReconcilePendingDiff.WithLabelValues("delete_deferred").Set(0)
 	ReconcilePendingDiff.WithLabelValues("update").Set(0)
 	ReconcileSchedules.WithLabelValues("created").Inc()
 	ReconcileSchedules.WithLabelValues("recreated").Inc()

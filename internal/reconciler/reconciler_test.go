@@ -115,6 +115,14 @@ func (m *mockMirakc) getSchedules() map[int64]mirakc.Schedule {
 	return cp
 }
 
+func (m *mockMirakc) setScheduleState(programID int64, state string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	schedule := m.schedules[programID]
+	schedule.State = state
+	m.schedules[programID] = schedule
+}
+
 func (m *mockMirakc) getDeleteCalls() []int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -639,6 +647,254 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	}
 	if len(schedules) != 1 {
 		t.Errorf("expected exactly 1 schedule after cleanup, got %d: %v", len(schedules), schedules)
+	}
+}
+
+func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	staleStates := map[int64]string{
+		991: mirakc.ScheduleStateTracking,
+		992: mirakc.ScheduleStateRecording,
+		993: mirakc.ScheduleStateRescheduling,
+		994: "future-state",
+	}
+	for programID, state := range staleStates {
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   state,
+			Program: mirakc.Program{ID: programID},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	// 別の desired reservation を残し、total-loss breaker が保護対象の DELETE を
+	// 隠さない状態で削除ガードを検証する。
+	res := createReservation(t, ctx, q, 100000500019701, "desired", time.Now().Add(time.Hour))
+
+	var logs bytes.Buffer
+	prevLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(prevLogger) })
+
+	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Errorf("recording or unknown schedules should not be deleted, got %v", calls)
+	}
+	schedules := mock.getSchedules()
+	for programID, state := range staleStates {
+		if got, exists := schedules[programID]; !exists || got.State != state {
+			t.Errorf("protected schedule %d state = %q, exists=%v; want it retained in state %q", programID, got.State, exists, state)
+		}
+	}
+	if _, exists := schedules[res.ProgramID]; !exists {
+		t.Errorf("desired schedule %d should remain present", res.ProgramID)
+	}
+	if got := gaugeValue(t, "delete"); got != 0 {
+		t.Errorf("pending_diff{action=delete} = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != float64(len(staleStates)) {
+		t.Errorf("pending_diff{action=delete_deferred} = %v, want %d", got, len(staleStates))
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore {
+		t.Errorf("actual deleted schedules counter = %v, want unchanged %v", got, deletesBefore)
+	}
+	if !strings.Contains(logs.String(), `level=INFO msg="reconciler: delete candidates deferred to next pass (schedule state guard)"`) || !strings.Contains(logs.String(), "count=4") {
+		t.Errorf("deferred delete count missing from logs: %s", logs.String())
+	}
+	if _, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	}); err == nil {
+		t.Error("protected schedules alone should not trip the total-loss breaker")
+	}
+}
+
+func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	states := map[int64]string{
+		980: mirakc.ScheduleStateFinished,
+		981: mirakc.ScheduleStateTracking,
+		982: mirakc.ScheduleStateRecording,
+		983: mirakc.ScheduleStateRescheduling,
+		984: "future-state",
+	}
+	for programID, state := range states {
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   state,
+			Program: mirakc.Program{ID: programID},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
+	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Errorf("total-loss breaker should withhold eligible deletes, got %v", calls)
+	}
+	if schedules := mock.getSchedules(); len(schedules) != len(states) {
+		t.Errorf("schedules after breaker = %d, want %d", len(schedules), len(states))
+	}
+	cb, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{
+		Site: "default", Name: breaker.ReconcileTotalLoss,
+	})
+	if err != nil {
+		t.Fatalf("expected the breaker for one allowed candidate, GetCircuitBreaker: %v", err)
+	}
+	if cb.Pending != 1 {
+		t.Errorf("breaker pending = %d, want only the finished schedule", cb.Pending)
+	}
+	var sample breaker.Sample
+	if err := json.Unmarshal(cb.Detail, &sample); err != nil {
+		t.Fatalf("unmarshalling breaker detail: %v", err)
+	}
+	if sample.Total != 1 || len(sample.Programs) != 1 || sample.Programs[0].ProgramID != 980 {
+		t.Errorf("breaker sample = %+v, want only allowed program 980", sample)
+	}
+	if got := gaugeValue(t, "delete"); got != 1 {
+		t.Errorf("pending_diff{action=delete} = %v, want 1", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 4 {
+		t.Errorf("pending_diff{action=delete_deferred} = %v, want 4", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips); got != tripsBefore+1 {
+		t.Errorf("total-loss breaker trips = %v, want %v", got, tripsBefore+1)
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore {
+		t.Errorf("actual deleted schedules counter = %v, want unchanged %v", got, deletesBefore)
+	}
+}
+
+func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	mock := newMockMirakc()
+	staleStates := map[int64]string{
+		995: mirakc.ScheduleStateScheduled,
+		996: mirakc.ScheduleStateFinished,
+		997: mirakc.ScheduleStateFailed,
+	}
+	for programID, state := range staleStates {
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   state,
+			Program: mirakc.Program{ID: programID},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	// desired を残すことで、意図した通常の orphan cleanup として削除経路を通す。
+	createReservation(t, ctx, q, 100000500019702, "desired", time.Now().Add(time.Hour))
+
+	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	for programID, state := range staleStates {
+		if _, exists := mock.getSchedules()[programID]; exists {
+			t.Errorf("stale schedule %d in state %q should be deleted", programID, state)
+		}
+	}
+	if got := mock.getDeleteCalls(); len(got) != len(staleStates) {
+		t.Errorf("DELETE calls = %v, want %d calls", got, len(staleStates))
+	}
+	if got := gaugeValue(t, "delete"); got != float64(len(staleStates)) {
+		t.Errorf("pending_diff{action=delete} = %v, want %d", got, len(staleStates))
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 0 {
+		t.Errorf("pending_diff{action=delete_deferred} = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore+float64(len(staleStates)) {
+		t.Errorf("reconcile schedules deleted = %v, want %v", got, deletesBefore+float64(len(staleStates)))
+	}
+}
+
+func TestReconciler_DeletesDeferredScheduleAfterItFinishes(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const orphanedProgramID int64 = 998
+	mock := newMockMirakc()
+	mock.schedules[orphanedProgramID] = mirakc.Schedule{
+		State:   mirakc.ScheduleStateRecording,
+		Program: mirakc.Program{ID: orphanedProgramID},
+		Tags:    []string{mirakc.ProgramTag(orphanedProgramID)},
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+	mc := mirakc.NewClient(srv.URL, nil)
+
+	// 別の desired reservation を残し、total-loss breaker に削除を隠されずに
+	// orphan schedule の state が進んだ後の次パスを検証する。
+	createReservation(t, ctx, q, 100000500019703, "desired", time.Now().Add(time.Hour))
+
+	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
+	rec := reconciler.New("default", mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("first RunPass: %v", err)
+	}
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Fatalf("recording schedule should be deferred on first pass, got DELETE calls %v", calls)
+	}
+	if got := gaugeValue(t, "delete"); got != 0 {
+		t.Errorf("first pass pending_diff{action=delete} = %v, want 0", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 1 {
+		t.Errorf("first pass pending_diff{action=delete_deferred} = %v, want 1", got)
+	}
+	if got, exists := mock.getSchedules()[orphanedProgramID]; !exists || got.State != mirakc.ScheduleStateRecording {
+		t.Fatalf("schedule after first pass = %+v, exists=%v; want recording schedule retained", got, exists)
+	}
+
+	mock.setScheduleState(orphanedProgramID, mirakc.ScheduleStateFinished)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("second RunPass: %v", err)
+	}
+	if _, exists := mock.getSchedules()[orphanedProgramID]; exists {
+		t.Error("finished orphan schedule should be deleted on the next pass")
+	}
+	if calls := mock.getDeleteCalls(); len(calls) != 1 || calls[0] != orphanedProgramID {
+		t.Errorf("DELETE calls after second pass = %v, want [%d]", calls, orphanedProgramID)
+	}
+	if got := gaugeValue(t, "delete"); got != 1 {
+		t.Errorf("second pass pending_diff{action=delete} = %v, want 1", got)
+	}
+	if got := gaugeValue(t, "delete_deferred"); got != 0 {
+		t.Errorf("second pass pending_diff{action=delete_deferred} = %v, want 0", got)
+	}
+	if got := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted")); got != deletesBefore+1 {
+		t.Errorf("actual deleted schedules counter = %v, want %v", got, deletesBefore+1)
 	}
 }
 

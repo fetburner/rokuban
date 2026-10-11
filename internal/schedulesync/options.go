@@ -110,3 +110,15 @@ func EffectivePriority(defaultPriority int, opts reservation.Options) int {
 func IsRecreateAllowed(state string) bool {
 	return state == mirakc.ScheduleStateScheduled
 }
+
+// IsDeleteAllowed は desired から外れた schedule を片付ける DELETE を
+// 安全に実行できる状態かを返す。
+//
+// IsRecreateAllowed とは許す状態が異なる。finished / failed は終端 schedule の
+// 片付けとして削除できるが、予約オプション差分を反映する再作成には使えないため、
+// allowlist は別々に保つ。mirakc が将来 state を追加しても、未知の値は削除しない。
+func IsDeleteAllowed(state string) bool {
+	return state == mirakc.ScheduleStateScheduled ||
+		state == mirakc.ScheduleStateFinished ||
+		state == mirakc.ScheduleStateFailed
+}

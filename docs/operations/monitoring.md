@@ -237,7 +237,8 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 
 | メトリクス | 説明 |
 |---|---|
-| `rokuban_reconcile_pending_diff{action="create"\|"delete"}` | desired（reservations）と observed（schedule_sync）の**存在**の差分。通常はゼロ付近に収束する |
+| `rokuban_reconcile_pending_diff{action="create"\|"delete"}` | desired（reservations）と observed（schedule_sync）の**存在**の差分。`delete` は削除 allowlist の `scheduled` / `finished` / `failed` だけを数える。通常はゼロ付近に収束する |
+| `rokuban_reconcile_pending_diff{action="delete_deferred"}` | desired にないが state allowlist で削除を見送った数。録画中・追従中または未知 state なら非ゼロが正常なのでアラートしない |
 | `rokuban_reconcile_pending_diff{action="update"}` | 予約オプション（priority / tag）の差分のうち、このパスで反映しようとした件数。収束する。**持続する非ゼロはアラート対象** --- mirakc が POST を拒否し続けている、または `MaxRecreatesPerPass` が低すぎる |
 | `rokuban_reconcile_pending_diff{action="update_deferred"}` | 差分はあるが schedule の state が `scheduled` でないため**意図的に触らなかった**件数。**アラートしない** --- 録画中の番組の priority を変えると録画が終わるまで（数時間）非ゼロが続くのが正常。`update` と分けてあるのはこのため（[録画エンジン](../recording.md) §3.2「再作成のガード」） |
 | `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
