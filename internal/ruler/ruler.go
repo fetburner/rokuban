@@ -1,9 +1,9 @@
 // Package ruler はルール評価から reservations.base を導出する 1 パス評価ロジック。
 //
 // ruler はシングルトンではなくジョブ（internal/worker の RulerPassWorker）
-// として実行される。共通契約（jobq）は排他を保証せず、現行の
-// 重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による。ruler の並走による
-// 上書きは未解決（docs/data.md §2）。
+// として実行される。共通契約（jobq）は排他を保証せず、
+// 現行の重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による。
+// ruler の並走による上書きは未解決（docs/data.md §2）。
 // このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
 // どの契機で呼ぶか（定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 //
@@ -172,7 +172,7 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 
 // markSuccessfulPasses は site ごとの ruler パス成功 marker を更新する。
 // marker の更新に失敗した場合も RunPass を失敗扱いにすることで、DB に成功を
-// 記録できていないのに ジョブだけが成功する状態を避ける。
+// 記録できていないのにジョブだけが成功する状態を避ける。
 func (r *Ruler) markSuccessfulPasses(ctx context.Context, sites []string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
