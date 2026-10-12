@@ -6,24 +6,24 @@
 （`ruleId` が無い手動予約由来の録画では**セクションごと出さない** ---
 「機能しないコントロールは置かない」の既存規律）。
 
-- **ルール名は一覧のキャッシュから解決する。** ルールごとの単体取得は増やさない。
+- **ルール名は一覧のキャッシュから解決する。** 単体取得エンドポイント（`GET /api/rules/{id}` / `useGetRule`）はあるが使わない。
   `RulesPage` が常に全件の一覧を読む設計に乗り、`/rules` を経由していればキャッシュを使う。
   まだ一覧を読んでいないときは詳細を開いて取得し、取得中は `#N` から名前へ差し替える。
 - 同じ一覧に同名のルールが複数あるときは、名前に `#<id>` を添えて識別する。
   名前が重複していないときは補助ラベルを付けない。録画の帰属とリンク先はいずれも `ruleId` で決まるため、表示名の一意性制約は置かない。
-- **一覧にまだ載っていない `ruleId` は一時的に `#N` と表示する。**
+- **一覧にまだ載っていない `ruleId` は一時的に `#N` と表示する**。ただしこれは「ルールが削除された」ケースではない。
   ルール削除後は `ON DELETE SET NULL` で `recordings.rule_id` が NULL になり、`Recording.ruleId` は省略される。その結果、「ルール」節も消える。
   一覧クエリが未解決または失敗している間、または新しいルールが一覧へ届く前だけ `#N` にする。
 - ルール名または `#N` を `/search?ruleId=N` へのリンクにする。
   「このルールの録画で絞る」は `/recordings?ruleId=N` にする。
-  前者はルールの編集画面へ、後者は録画一覧の条件変更へ進む。
+  前者は `RuleRow` のルール名リンクと同じ着地先（ルールの実質的な編集画面）へ、後者は同一ページ内の検索条件変更で、`parseRecordingsSearch` を通るので条件チップにもそのまま出る。
 
 <details><summary>根拠</summary>
 
 - 全件一覧をキャッシュし、ルール名を解決する: `useListRules`、`useListRules()`、`GET /api/rules/{id}`、`useGetRule`、`RulesPage`、`rules`
 - 削除後はルール節を出さない: `recordings.rule_id` の FK、`ON DELETE SET NULL`、`Recording.ruleId`
 - 未解決の `ruleId` は `#N` にする: `rules.find`、`query.data`、`undefined`。
-- テスト: `recording-detail.test.tsx`「一覧にない ruleId でも #N 表記に落ちて壊れない」
+- テスト: `recording-detail.test.tsx`「ルール一覧にまだ載っていない ruleId でも #N 表記に落ちて壊れない」
 - ルール検索リンクと条件チップ: `RuleRow`、`parseRecordingsSearch`、`lib/recording-search.ts`
 
 </details>

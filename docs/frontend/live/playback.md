@@ -31,7 +31,7 @@ Safari と Chrome を区別できない。Playwright の 3 エンジンで実測
 
 `video/mp2t` は streamer が実際にセグメントへ付ける Content-Type である。これを demux できるのは WebKit だけで、Chromium / Firefox はできない。hls.js が TS を fMP4 へ remux して MSE に載せる理由もここにある。
 
-つまり判定するのは、ブラウザが配信物をそのまま再生できるかである。エンジンや拡張子で推測しない。実ブラウザの判定は e2e で固定する。
+つまり判定するのは、ブラウザが配信物をそのまま再生できるかである。エンジンや拡張子で推測しない。判定は `web/e2e/live.mjs` の⑥が実ブラウザで固定する。
 
 **この表をテストの入力にする**。**実在しない戻り値で主張しない**。
 `expect(supportsNativeHls(() => 'probably')).toBe(true)` は通る。しかし
@@ -61,19 +61,20 @@ hls.js へ URL を渡す前に 1 回取得して成否を確認する。この G
 
 したがって **`error` だけでは足りない**。セグメントの無応答や壊れたプレイリストでは `error` が出ない。一方、`stalled` / `waiting` を即失敗とするのも誤りで、正常なライブでもバッファ枯れで出る。
 
-**`error` は即時、`stalled` / `waiting` はイベント発生から 12 秒待つ。** 実測では `stalled` は途絶から 3.6 秒後に出たため、猶予は途絶から約 15.6 秒後に満了する。2 秒セグメントなら約 8 本分の時間にあたる。
+**`error` は即時、`stalled` / `waiting` は `liveStallTimeoutMs`（12 秒）の猶予つきにする**。猶予の根拠は、`stalled` が出るのが途絶から 3 秒後、セグメント長が 2 秒なので、正常なら 3 セグメント以上落ちないと到達しないことである。
 
 猶予中に `playing` / `canplay` / `timeupdate` / `pause` が来たら回復として捨てる。満了したらエラー表示の前に画質の自動降格を試す（[quality.md](quality.md)「停滞したら画質を 1 段下げる」）。
 
 hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ役割を持ち、MSE では `waiting` が正常時にも出るため誤検知になる。
 
-**一時停止中は猶予を張らない。ただし再生が一度始まった後に限る。** WebKit は `pause()` と同時に `stalled` を出すことがあるが、配信は正常である。解除イベントが来ないため、そのまま 12 秒待つとエラー画面が出て `<video>` が消える。実測は playing@0.0 → pause@2.3 → stalled@2.3 → 12 秒後にエラー表示だった。
+**一時停止中は猶予を張らない。ただし再生が一度始まった後に限る。** WebKit は `pause()` した瞬間にも `stalled` を出す（フェッチを止めるため）が、配信は正常である。解除イベントは一時停止中には来ないので、放置すると正常な配信に必ずエラー画面が出て `<video>` が invisible になる。実測は playing@0.0 → pause@2.3 → stalled@2.3 → 12 秒後にエラー表示だった。
 
 `paused` だけで抑止すると、再生前の監視まで止まる。`<video>` に `autoPlay` は無く、読み込み直後は `paused === true` である。無応答時は `stalled` だけが届き、20 秒待っても `error` / `waiting` は来ないため、永久に黒いままになる。
 
 そのため `playing` を一度でも観測したかを持ち、`hasStarted && paused` のときだけ抑止する。再開後も配信が止まっていれば `waiting` が再送される。実測は pause@6.05s → play@12.05s → waiting@12.05s である。
 
-判定手段はユニットテストと実 WebKit の e2e である。テストでは、`error` と猶予満了で表示し、猶予中の回復・一時停止中の `stalled` / `pause` では表示しないことを確認する。再生前の `stalled` と、再開後も復帰しない場合の再通知も見る。
+判定手段は `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件である。
+内訳は `error` で出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で出さない / 猶予中の `pause` で出さない、である。さらに再生前の `stalled` では出す / 再開後に復帰していなければ再び出す、も見る。
 
 実 WebKit では 404 と無応答の両方でエラー表示と再読み込みが出る。e2e は `play()` を呼ばないため、再生前の窓を塞がないことも同時に見ている。
 
@@ -81,8 +82,11 @@ hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ
 
 <details><summary>根拠</summary>
 
-- 配線とテスト: `live-player.test.tsx`「ネイティブ経路のメディア失敗」および hls.js 経路で stalled を拾わないテスト
-- 実ブラウザ: `web/e2e/live.mjs` ⑦
+- `error` と猶予経過でエラーを出す: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
+- 猶予中の `playing` / `pause` と、一時停止中の `stalled` では出さない: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
+- 再生前の `stalled` では出し、再開後に復帰していなければ再び出す: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
+- hls.js 経路では `stalled` を拾わない: `live-player.test.tsx`（1 件）
+- 実 WebKit で 404 と無応答の両方にエラー表示と再読み込みが出る。`play()` を呼ばないので再生前の窓を塞がないことも見る: `web/e2e/live.mjs` ⑦
 
 </details>
 

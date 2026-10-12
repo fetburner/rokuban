@@ -9,7 +9,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 出さない**ようにする。そのうえで `POST .../live/leave` を投げる
 （`sendLiveLeaveHint`）。
 
-- **離脱ヒントは停止命令ではない。** サーバーはセッションを止めず、idle 期限を短い猶予（既定 8 秒）まで詰めるだけである（[api.md](../../api.md) `ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」）。
+- **離脱ヒントは停止命令ではない。** サーバーはセッションを止めず、idle 期限を短い猶予（既定 8 秒）まで詰めるだけである（[api.md](../../api.md) §ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」）。
 - 同じチャンネルを見ている別の視聴者がいれば、その人の要求が期限を戻す。
   そのためヒントは送れなくても、送りすぎても壊れない。
 - **素朴な「セッションを閉じる API」にしてはならない。**
@@ -35,12 +35,12 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 実バイナリを偽 mirakc と偽 ffmpeg につないで測った。
 `rokuban_live_active_sessions{kind="live"}` が 0 に戻るまでを 1 秒間隔でポーリングし、ヒントありは 13 秒、ヒント無しは 33 秒だった。
 実チューナー・実 ffmpeg では ffmpeg の停止に掛かる時間だけ伸びうる（未測定）。
+手順は [runbook.md](../../runbook.md) のライブ視聴の節 ①-4。
 
 <details><summary>根拠</summary>
 
 - GC 周期と猶予の設定: `internal/config/config.go`、`internal/streamer/live.go` の `gcInterval`
 - 実測環境と active session の観測: `rokuban server --roles streamer`、`rokuban_live_active_sessions{kind="live"}`
-- 再現手順: [runbook.md](../../runbook.md) のライブ視聴の節 ①-4
 
 </details>
 
@@ -84,6 +84,6 @@ hls.js のフェイク配線は、動的 import が別バンドルチャンク�
 - hls.js 経路の配線: `components/live-player.test.tsx`、`vi.mock('hls.js', ...)`、`supportsNativeHls`
 - 変異検出: `supportsNativeHls` を `true` に固定する、cleanup を削除する、の両方が `waitFor` で落ちる
 - 純関数の URL・分類・初期選択・時間窓・中断伝播: `lib/live.test.ts`、`probeLivePlaylist`
-- 実ブラウザ + 実バイナリの画質切替と旧 service の要求ログ: `web/e2e/live.mjs` ⑨、`web/e2e/live.mjs`、[verification.md](verification.md)
+- 実ブラウザ + 実バイナリの画質切替と旧 service の要求ログ: `web/e2e/live.mjs` ⑨、`web/e2e/live.mjs`、[verification.md](verification.md)「実機確認について」
 
 </details>

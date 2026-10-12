@@ -52,7 +52,7 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api/media.md](../../api/
 
 - 90% 到達の視聴済み PUT が通ったら録画クエリを取り直し、ボタンと未視聴の印を更新する。速度だけは端末ごとの好みなので localStorage に残し、既存の localStorage 位置キーは起動時に削除する。
 
-- 追っかけの offset は chaseStartByteOffset による推定値である。原本 HLS・encoded の位置と映像上で一致する精度は**未検証**であり、再生元を切り替えた瞬間に映像が飛んで見える場合がある。
+- 追っかけの offset は `chaseStartByteOffset` による推定値である。原本 HLS・encoded の位置と映像上で一致する精度は**未検証**である。再生元を切り替えた後の原本時間軸はその再生元の時刻で表示するため、切替の瞬間に映像が飛んで見える場合がある。
 
 - 原本 HLS は変換中の EVENT playlist なので、シークできる範囲は変換の先端まで伸びる。endedAt があれば、時間軸の分母は録画ファイル先頭から endedAt までの実尺とする。予定尺 durationMs や変換先端は分母にしない。
 - ファイル先頭は max(startedAt, startAt) である。started_at はチューナーを開いた時刻で、ファイル先頭ではない。endedAt が無い録画は予定尺を代用し、分母が 0 ならシークバーは効かない。
@@ -77,7 +77,7 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api/media.md](../../api/
 - 開始 offset は録画ごとに最初の保存位置で固定する。固定しないと再生中の保存で位置が動くたびにセッションを張り直す。
 - 着地は offset の起点と currentTime の和で判定する。操作バーの枠（自動非表示・フォーカス・映像タップ・全画面・PiP）は encoded と同じフックを使う。
 
-- **終端の 90% 到達で視聴済みにするのは ENDLIST 後だけである。** hls.js は level details の live === false と ended イベント、native HLS は ended だけを信号にする。
+- **終端の 90% 到達で視聴済みにするのは ENDLIST 後だけである。** 信号は、hls.js では level details が `live === false` になることと `ended` イベントである。ネイティブ HLS は ENDLIST を直接見られず、`ended` だけを信号にする。
 
 - デスクトップ（`md` 以上）の操作バーは下端の帯 1 本である。シークバーの下の行に、左から再生、
   前 / 次のチャプター（チャプターがありカット版でないときだけ）、ミュート / 音量、時刻、いまのチャプター名を置く。
@@ -186,16 +186,18 @@ HLS / hls.js を使わない。原本 HLS の詳細は [api/media.md](../../api/
 <details><summary>根拠</summary>
 
 - 利用可能な MP4 資産と音声トラックの切替: `Recording.encodedAssets`、`profile`、`sizeBytes`、`LivePlayer`
-- 原本 HLS の開始位置・ライブ端の再表明・終端丸め: `web/e2e/recording-original-vod.mjs` ⑤-a・⑤-d・⑤-manual・⑤-route・⑤-f・⑧〜⑪
-- 最初の保存位置で固定: `live-player.test.tsx`
+- ライブ端への丸めに対する再表明: `web/e2e/recording-original-vod.mjs` ⑤-a・⑤-d・⑤-manual・⑤-route
+- 末尾付近 offset の 416 を後退丸めで張り直す: `web/e2e/recording-original-vod.mjs` ⑤-f
+- 続きから再生の着地判定: `web/e2e/recording-original-vod.mjs` ⑧〜⑪、`offset の起点 + currentTime`
+- 開始 offset を最初の保存位置で固定し、再生中の保存で張り直さない: `live-player.test.tsx`「…最初の保存位置で固定し…」
 - モバイル操作幕と中央ボタンの並び: `web/e2e/chapters.mjs` ①-a・⑧・⑨
-- ENDLIST 後の視聴済みと原本 HLS の再開位置: `web/e2e/recording-original-vod.mjs`
+- 原本 HLS の再開位置と ENDLIST のない先端の確認: `web/e2e/recording-original-vod.mjs`
 - 画質切替で同じページの位置を保つ: `RecordingPlayer`「同じページ内の画質切替」、`resumePositionMs`、`keepRanges`
 - 位置保存と端末の好み: `/api/recordings/{id}/playback-position`、`localStorage`
 - 追っかけ位置の精度は未検証: `chaseStartByteOffset`
 - 原本 HLS の時間軸: `endedAt`、`durationMs`、`startedAt`、`startAt`、`started_at`、`max(startedAt, startAt)`
 - セッション内の位置と範囲外 seek: `session offset + video.currentTime`、`seekable`、`startPosition`
-- 最初の保存位置と再開位置: `offset の起点 + currentTime`、`live === false`
+- ENDLIST 後だけ視聴済みにする信号: `live === false`、`ended`
 
 </details>
 

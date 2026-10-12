@@ -45,9 +45,9 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
   ルール削除後も `?ruleId=N` の URL は残るため、選択欄にはその値を一時的な候補として足す。
   一覧に無い値で先頭の「問わない」へ戻さない。
 - ルール節はルールが 1 件以上あるか、`ruleId` が決まっているときだけ出す。
-  新規インストールでルールが 0 件なら、機能しない節を表示しない。
+  新規インストールでルールが 0 件なら節ごと出さない（サイト節と同じ「機能しないコントロールは置かない」規律）。
 - `ruleId` が決まっているとき、「手動」「帰属なし」は選べないようにする。
-  その組み合わせは 0 件になり、どのルールかを選んだ後に出自を問う必要もない。
+  どのルールかが分かれば出自をさらに問う必要がなく、常に 0 件になる組み合わせを選べるまま残すより、条件を設定したのに 0 件になる理由を探させない方が明確だからである。
   `source='rule'` は矛盾しないため選べる。
 - **矛盾する `ruleId` と `source=manual` は URL のパース時点でも落とす。**
   パネルだけで塞ぐと、手編集や古い共有 URL では条件が残り、種別チップが active のまま disabled になる。
@@ -184,7 +184,7 @@ Shift+右クリックはブラウザのメニューへ渡す。
 編集モード中だけ checkbox を描画し、全面行リンクを外して行クリックも選択トグルにする。
 
 - 一覧は `role=listbox` の 1 つの Tab 位置にし、↑ / ↓ で行を移る。Space で現在行を切り替える。
-- Shift+↑ / ↓ と Shift+クリックは起点から現在行までを範囲選択にする。範囲は操作ごとに置き換わり、戻れば縮む。範囲外で個別に選んだ行は残す。
+- Shift+↑ / ↓ と Shift+クリックは起点から現在行までを範囲選択にする。Finder と同じく、範囲は動かすたびに置き換わり、戻れば縮む。範囲外で個別に選んだ行は残す。
 - 選択モードに入った後のレイアウトで、sticky ヘッダーの下端から固定選択バーの上端までに収まる最初の行を現在行と範囲の起点にする。
   checkbox でカードが伸びた後に対象を決めるので、選択バーの裏に隠れない。先頭行固定では、画面外へフォーカスが飛び最初の ↓ や Space が見えない行に作用する。
 - 行ごとに Tab を止めず、矢印で移動できるようにする。16px checkbox は状態表示に残すが Tab 順から外し、Tab は DOM 順で次の要素へ進める。
@@ -222,8 +222,6 @@ debounce（キーワード）もチップの個別解除も常に `replace` で 
 
 - 通常のルートマッチの合成: `@tanstack/router-core` の `router.js`、`matchRoutesInternal`、`preMatchSearch`、`parentSearch`
 - 実際の合成式: `preMatchSearch = { ...parentSearch, ...strictSearch }`
-- 無限クエリのライブラリ: `@tanstack/react-query`、`useInfiniteQuery`
-- query key からページカーソルを除く。カーソル表記は `（カーソル `。識別子は `before`、区切りは ` / `、次の識別子は `beforeId`
 - リンク生成時の軽量マッチ: `matchRoutesLightweight`、`accumulatedSearch`、`Object.assign(accumulatedSearch, validateSearch(...))`
 - 不正な値を上書きする形: `{ ...x, k: undefined }`
 
@@ -244,6 +242,7 @@ orval が生成するのは単発の `useQuery` ラッパーで、無限クエ�
 <details><summary>根拠</summary>
 
 - 生成された一覧関数と query key: `listRecordings`、`getListRecordingsQueryKey`
+- 無限クエリのライブラリ: `@tanstack/react-query`、`useInfiniteQuery`
 - ページカーソルは query key に入れない: `before` / `beforeId`
 - 前方一致で一覧を invalidate する: `RecordingActions`、`invalidateQueries({ queryKey: ['/api/recordings'] })`
 

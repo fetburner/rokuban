@@ -48,16 +48,17 @@ Mirakurun は `networkId * 100000 + serviceId` の合成 id を使う。GR / BS 
 `?service=` の変更だけでは probe もセッション（チューナー確保 + ffmpeg 起動）も起こさず、チャンネル一覧・現在番組・チャンネル種別の表示だけを変える。
 
 - `LivePlayer` は「再生」を押すまでマウントしない。確認ダイアログは使わず、選択状態の画面そのものを値札として、再生は 1 タップにする。
-- 「チューナーが空いています」などの肯定・保証は書かない。mirakc には Rokuban から見えない消費者がいるため、空きの有無を断言できない。
+- 「チューナーが空いています」等の**肯定・保証は文言に書かない**（下界主義。[data.md](../../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない消費者がいる）。
 
-操作の摩擦は明示的な再生のコストに合わせ、確認ダイアログでタップを重ねない。チューナーが有限でない環境にまで余計な操作を求めない。
+摩擦をコストに比例させる方針上、デスクトップ LAN でも再生 1 押しより増やさない（ダイアログを重ねると、チューナーが有限でない環境の利用者にまで同じ摩擦を強いる）。
 
 `playingKey` と `selectedKey` の一致判定はレンダー中に行う（effect ではない）。
 直リンクで来た場合も、チャンネル一覧で切り替えた場合も、選択ごとに再生同意を求める。
 - 一度再生した後に B へ切り替え、A に戻っても、自動再開はしない。再度「再生」を押す。
 - `useEffect` で「選択が変わったら false に戻す」と、1 コミットだけ古い再生中フラグが残る。
-  子の `LivePlayer` が親の `LivePage` より先に effect を実行し、B の `<LivePlayer serviceId={B}>` が 1 件の playlist.m3u8 を要求する。jsdom と実ブラウザの両方で確認済みである。
-- `LivePlayer` を先に mount するとサーバー側のセッションは残る。`AbortController.abort()` だけではセッションを止めない。
+  passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。そのため `selectedKey` が B に変わった直後の 1 コミットだけ `<LivePlayer serviceId={B}>` が透過的にマウントされる。B 向けの `playlist.m3u8` への要求が 1 件飛ぶ。jsdom と実ブラウザの両方で確認済みである。
+  その直後に親の reset effect が走って unmount してももう遅い。
+- `internal/streamer/session.go` のセッションは `context.WithCancel(context.Background())` で回る。そのためクライアント側の `AbortController.abort()` はセッション自体を止めない --- 押していないチャンネルのチューナー + ffmpeg が残る。
 - 離脱ヒントも期限を縮めるだけで 0 にはしない。押していないチャンネルを掴む時間は猶予（既定 8 秒）+ GC 周期となる。
 - レンダー中に一致を判定すれば、`selectedKey` が変わった時点で再生中でないと確定し、別 serviceId の中間 mount を作らない。
 
@@ -107,10 +108,10 @@ JSON 404 にしてある。**能力 API
 | `unknown`（取得失敗） | 「利用できるかを確認できませんでした」 |
 | `true` | ライブ視聴を有効として扱う |
 
-導線側は未確定を無効に倒してよい。画面と違って原因を断言せず、黙って消えるだけだからである。状態を一つに潰すと
+導線側（ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで誤った原因を主張しないため（[shell.md](../shell.md)）。画面側で状態を一つに潰すと
 **`live.enabled: true` のデプロイで能力 API が瞬断しただけでも「設定が無効」と
 表示され**、この画面が消したかった「原因にたどり着けない」を別の顔で再演する。
-潰した実装では画面のテスト 2 件が落ちることを確認済みである（[shell.md](../shell.md)）。
+潰した実装では画面のテスト 2 件が落ちることを確認済みである。
 
 **「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを
 表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たまま
@@ -118,18 +119,16 @@ JSON 404 にしてある。**能力 API
 
 <details><summary>根拠</summary>
 
-- 不正な service 値を明示的に落とす: `routes.tsx` の `validateSearch`、`undefined` を明示代入
-- 外部導線のリンクと識別子: `components/program-row.tsx`、`ProgramListItem`、`composeServiceId`、`lib/service-id.ts`
-- チャンネル変更に debounce を置かない: `pages/live.tsx`、`channelSwitchDebounceMs`
-- 合成 id と site を使う初期選択: `GET /api/sites/{site}/services`、`networkId`、`serviceId`、`Service.id`、`lib/live.ts`
-- 初期選択関数と引数: `pickInitialService(services, requestedId, requestedSite)`
-- 再生同意は選択ごとに必要: `pages/live.tsx` の `playingKey` / `selectedKey`、`selection.md` の選択判定
-- 先行 mount で残るサーバーセッション: `internal/streamer/session.go`、`context.WithCancel(context.Background())`、`AbortController.abort()`
-- 能力の取得元と導線: `lib/capabilities.ts`、`GET /api/capabilities`、`live.enabled`
-- 未登録ルートの JSON 404: `internal/api/spa.go`、`spaOrAPINotFound`
-- capability 状態の分岐: `useLiveEnabled()`、`useLiveCapability()`、`pending`、`unknown`
-- 状態を混同したときの回帰: `pages/live.test.tsx` の 2 件
-- 誤った playlist 要求を防ぐ: `playlist.m3u8`
-- チューナーの空きを断定しない規律: [data.md](../../data.md) §6.5
+- 不正な `?service=` を `undefined` の明示代入で落とす: `routes.tsx` の `validateSearch`
+- 放送中行の「ライブで見る」「追っかけ再生」の遷移先を合成 id で渡す: `components/program-row.tsx`、`ProgramListItem`、`composeServiceId`（`lib/service-id.ts`）
+- チャンネル切り替えに debounce を置かない（そのような定数は無い）: `pages/live.tsx`、`channelSwitchDebounceMs`
+- 同じ `serviceId` が重なる一覧と合成 id: `GET /api/sites/{site}/services`、`networkId`、`serviceId`、`Service.id`
+- 初期選択の判定: `pickInitialService(services, requestedId, requestedSite)`（`lib/live.ts`）
+- 再生同意は選択ごとに必要で、一致判定はレンダー中に行う: `pages/live.tsx` の `playingKey` / `selectedKey`
+- 先行 mount でサーバー側のセッションが残る: `internal/streamer/session.go`、`context.WithCancel(context.Background())`、`AbortController.abort()`
+- 導線は能力 API の `live` に一本化する: `lib/capabilities.ts`、`GET /api/capabilities`、`live.enabled`
+- `/api/` 配下の未登録パスは JSON 404 にする: `internal/api/spa.go`、`spaOrAPINotFound`
+- 真偽値ではなく 4 値で分ける: `useLiveEnabled()`、`useLiveCapability()`、`pending`、`unknown`
+- 状態を潰した実装で落ちる: `pages/live.test.tsx` の 2 件
 
 </details>

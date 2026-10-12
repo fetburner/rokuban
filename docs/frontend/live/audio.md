@@ -28,9 +28,11 @@ streamer は 3 本の音声 rendition を常に出しているので
 
 **切替を跨いで持ち越すのは、字幕の表示と「再生中だったか」である。** cleanup 時に `<video>` のトラック状態と `paused` を読む。再生中なら `canplay` を待って再開する（[quality.md](quality.md)「降格のあとは再生を再開する」）。
 
-**字幕は hls.js が新しいマニフェストを読むと既定選択へ戻すため、表示状態を戻す。** 実装確認では `SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す。`MANIFEST_PARSED` で `subtitleDisplay` を設定し直し、後のトラック選択がその値を読む。
+**字幕は hls.js が新しいマニフェストを読むと既定選択へ戻すため、表示状態を戻す。** 実装確認では `SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す。`MANIFEST_PARSED` で `subtitleDisplay` を設定し直す。その時点では既定トラックはまだ選ばれていない（`onManifestParsed` はトラック一覧を入れるだけ）ので、この設定は後の選択のときに `toggleTrackModes` が読む値として効く。
 
-ネイティブ経路も `loadedmetadata` でトラックの mode を揃え直す。この因果は実ブラウザで未検証である（判定手段がまだ無い）。
+ネイティブ経路は `loadedmetadata` でトラックの mode を揃え直す。
+
+上の字幕を戻す因果（hls.js が選択を既定に戻す → `MANIFEST_PARSED` で設定し直す → 後の選択で効く）は実ブラウザで未検証である（判定手段がまだ無い）。
 
 <details><summary>根拠</summary>
 
