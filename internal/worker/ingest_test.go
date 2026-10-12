@@ -2073,7 +2073,7 @@ func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
 	ctx := context.Background()
 	workers := river.NewWorkers()
 	river.AddWorker(workers, &completedIngestJobTestWorker{})
-	client, err := riveradapter.NewLegacyClient(pool, workers, ClientConfig{
+	client, err := riveradapter.NewLegacyClient(pool, workers, riveradapter.Config{
 		BoundSites:   []string{"default"},
 		PeriodicJobs: false,
 	})

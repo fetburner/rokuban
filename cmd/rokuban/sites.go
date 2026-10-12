@@ -105,7 +105,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // **watcher** と **worker** はどちらも 1 プロセスが N site を束縛できる
 // （issue #532。watcher は site ごとに goroutine + advisory lock を持ち
 // （server.go、watcherLockName）、worker は Deps.MirakcClients /
-// ClientConfig.BoundSites が site → 値の map / 集合になったため）。
+// riveradapter.Config.BoundSites が site → 値の map / 集合になったため）。
 // そのため、束縛サイト数そのものに対する上限・下限の検査はここには無い ---
 // 残るのは次の 1 つだけ:
 //

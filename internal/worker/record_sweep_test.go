@@ -40,7 +40,7 @@ func TestRecordSweepPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{
 		PeriodicJobs:        true,
 		BoundSites:          []string{testSite},
 		RecordSweepInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
@@ -120,7 +120,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	defer srv.Close()
 
 	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()
@@ -224,7 +224,7 @@ func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
 
 	// このプロセスは site-a に束縛されている: watcher_site-a しか購読しない。
 	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil))})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{BoundSites: []string{"site-a"}})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{BoundSites: []string{"site-a"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -385,7 +385,7 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 
 	client := newLegacyRegistryTestClient(t, pool,
 		&Deps{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil))},
-		ClientConfig{BoundSites: []string{"site-a"}})
+		riveradapter.Config{BoundSites: []string{"site-a"}})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()

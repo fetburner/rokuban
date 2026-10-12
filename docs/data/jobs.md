@@ -19,7 +19,7 @@
 
 エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
 
-ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。River クライアントと `InsertOpts` への変換は `internal/jobq/riveradapter` に閉じ込める。`.golangci.yml` の depguard が、本番コードでこの境界を判定する。テストは River の公開 API を使って実挙動を検証できる。KEDA の SQL テストも River の状態名を照合する。
+ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。River クライアントと `InsertOpts` への変換は `internal/jobq/riveradapter` に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するため River adapter を通し、他の adapter は中立な `jobq.Registry` を使う。`.golangci.yml` の depguard は River adapter の直接 import を本番コードで禁止し、この例外を `internal/worker/worker.go` の 1 ファイルだけに絞る。テストは River の公開 API を使って実挙動を検証できる。KEDA の SQL テストも River の状態名を照合する。
 
 契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 

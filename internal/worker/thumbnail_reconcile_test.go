@@ -553,7 +553,7 @@ func TestThumbnailReconcileArgs_KindAndSpec(t *testing.T) {
 }
 
 func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:               true,
 		ThumbnailReconcile:         true,
 		ThumbnailReconcileInterval: time.Hour,
@@ -565,7 +565,7 @@ func TestBuildRiverConfig_RegistersThumbnailReconcilePeriodicJob(t *testing.T) {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:       false,
 		ThumbnailReconcile: true,
 	})

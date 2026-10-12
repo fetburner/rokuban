@@ -64,6 +64,19 @@ linters:
           deny:
             - pkg: github.com/riverqueue/river
               desc: River imports are limited to internal/jobq/riveradapter
+        riveradapter-import:
+          # River adapter の直接 import は内部の本番コードで禁止する。
+          # worker.go だけは River の公開登録 API が具体型を要求するため例外にする。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/**"
+            - "!${config-path}/internal/jobq/riveradapter/**"
+            - "!${config-path}/internal/worker/worker.go"
+            - "!${config-path}/internal/testutil/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/jobq/riveradapter
+              desc: internal production code uses the neutral jobq.Registry
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
           # ツールの存在だけを検証する。テストの子プロセス起動は対象外。

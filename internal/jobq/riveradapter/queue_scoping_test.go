@@ -72,7 +72,7 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 			"tokyo": mirakc.NewClient(srv.URL, nil),
 		},
 	})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, worker.ClientConfig{BoundSites: []string{"tokyo"}})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{BoundSites: []string{"tokyo"}})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}

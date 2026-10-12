@@ -247,7 +247,7 @@ func newServerCmd() *cobra.Command {
 	// --soft-stop-timeout も同じ「起動形態」の軸（softStopTimeoutFlagName の
 	// コメント）。対になる k8s の terminationGracePeriodSeconds は
 	// shutdownBudget を包む長さにする。
-	cmd.Flags().Duration(softStopTimeoutFlagName, worker.DefaultSoftStopTimeout,
+	cmd.Flags().Duration(softStopTimeoutFlagName, riveradapter.DefaultSoftStopTimeout,
 		"how long a running job may keep going after SIGTERM before its context is cancelled "+
 			"(the pod's terminationGracePeriodSeconds must cover this)")
 
@@ -277,7 +277,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	}
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
-	// 以降の判定（validateSiteBinding / RequiresEncodeTools / ClientConfig.Queues）は
+	// 以降の判定（validateSiteBinding / RequiresEncodeTools / riveradapter.Config.Queues）は
 	// すべてこの解決済みの queues を見る --- 片方だけが config を直接見ると、
 	// argv で絞った Pod が「絞ったつもりで検査だけ全キュー基準」になる
 	// （resolveWorkerQueues のコメント参照）。

@@ -197,7 +197,7 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 		t.Errorf("ReconcileArgs.Spec().Queue = %q, want %q", got, "ts_scan")
 	}
 
-	registered, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	registered, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:    true,
 		TSScanReconcile: true,
 	})
@@ -207,7 +207,7 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 	if len(registered.PeriodicJobs) != 1 {
 		t.Fatalf("PeriodicJobs = %d, want one TS scan reconcile job", len(registered.PeriodicJobs))
 	}
-	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:    false,
 		TSScanReconcile: true,
 	})
