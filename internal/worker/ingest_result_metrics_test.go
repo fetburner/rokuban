@@ -2,50 +2,32 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
-// このファイルは IngestWorker.Work が result をどう決めるか（ジョブの結末の
-// 分類）を固定する。
-//
-// 3 つの経路を分けて数えるのが目的である。
-//
-//   - graceful stop（River の soft stop）: 数えない。中断はジョブの結末ではない
-//     --- River は attempt を消費せず行を available に戻し、次のプロセスが
-//     再開して、そこで結末を 1 回だけ数える。
-//   - 取り消された録画: canceled。
-//   - 本当の失敗: failure。
-//
-// 分類の判定は Work の defer にあり、River 側の判定
-// （internal/jobexecutor/job_executor.go の isSoftStopCancelError と、157 行目の
-// res.Err の置き換え）と同じ材料（context.Cause(ctx) と返す err）を使う。
+// このファイルは IngestWorker.Work の結果分類を固定する。実行コンテキストの
+// キャンセルは数えず、録画取り消しは canceled、本当の失敗は failure として数える。
+// 判定は Work の defer で context.Cause(ctx) と返す err から行う。
 
 // ingestJobResultValues は IngestJobs の result ラベル値の全体。増やすときは
 // docs/operations/monitoring.md と internal/metrics/metrics.go の説明も揃える。
@@ -85,17 +67,6 @@ func ingestDurationSamples(t *testing.T) uint64 {
 	return m.GetHistogram().GetSampleCount()
 }
 
-// writeRecordingRecord は mirakc の GET /records/{id} の応答を書く。
-func writeRecordingRecord(w http.ResponseWriter, status, contentPath string) {
-	record := mirakc.Record{
-		Recording: mirakc.RecordInfo{Status: status, Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
-		Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(record)
-}
-
 // insertTestOriginalMediaAsset は録画に原本 media_asset を 1 行足す。Work の
 // 冪等性チェック（hasOriginalMediaAsset）を通して handleAlreadyCommittedIngest
 // へ入れるようにするためで、他の意味は無い。
@@ -109,72 +80,6 @@ func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID 
 	}); err != nil {
 		t.Fatalf("inserting original media_asset: %v", err)
 	}
-}
-
-// TestIngestWorker_GracefulStopIsNotCounted は、River の soft stop で打ち切られた
-// ingest が result の 3 値のどれも Inc せず、IngestDuration にも Observe しない
-// ことを、実 River client + 実 DB で固定する。
-//
-// **実 River を使う理由:** 中断の判定材料（work ctx の cause が ErrStop であること・
-// SoftStopTimeout が work ctx を WithoutCancel の子にする こと）は River の配線が
-// 決める。合成した ctx では「本番でもそうなる」ことの根拠にならない。
-//
-// b2（blocking-records-get）が検出するのは **カウンタ側**であって River の行では
-// ない。b2 が踏む経路（net/http が返す context.Cause(ctx)）は context.Canceled を
-// 包まないので、`errors.Is(err, cause)` の項を消すと b2 だけが落ちる。
-func TestIngestWorker_GracefulStopIsNotCounted(t *testing.T) {
-	t.Run("following", func(t *testing.T) {
-		started := make(chan struct{})
-		var once sync.Once
-		var recordGets atomic.Int32
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch {
-			case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-				// 追い付いた状態のまま。record は recording なので Work は追従を続ける。
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-			case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-				if recordGets.Add(1) >= 2 {
-					// 1 回目は determineRelPath、2 回目は転送ループの status
-					// ポーリング。2 回目＝Work が追従ループに入った合図。
-					once.Do(func() { close(started) })
-				}
-				writeRecordingRecord(w, "recording", "test/graceful-follow.m2ts")
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-		t.Cleanup(srv.Close)
-
-		pool := setupTestPool(t)
-		if pool == nil {
-			return
-		}
-		runGracefulStopIngest(t, pool, srv, "rec-graceful-follow", started)
-	})
-
-	t.Run("blocking-records-get", func(t *testing.T) {
-		started := make(chan struct{})
-		var once sync.Once
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/") {
-				// 最初の GetRecord は determineRelPath。応答を書かずに ctx の
-				// 取り消しまで待つと、クライアント側が受け取るのは ctx.Err()
-				// ではなく context.Cause(ctx)（= River の ErrStop）である
-				// （net/http の transport.go が cancelRequest で cause を返す）。
-				once.Do(func() { close(started) })
-				<-r.Context().Done()
-				return
-			}
-			http.NotFound(w, r)
-		}))
-		t.Cleanup(srv.Close)
-
-		pool := setupTestPool(t)
-		if pool == nil {
-			return
-		}
-		runGracefulStopIngest(t, pool, srv, "rec-graceful-block", started)
-	})
 }
 
 func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
@@ -219,7 +124,8 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	recordID := "rec-sha256-river-complete"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
-	delay := 10 * time.Millisecond
+	delay := time.Duration(0)
+	workResult := make(chan error, 1)
 	registry := jobq.NewRegistry()
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
@@ -227,7 +133,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		StallTimeout:  time.Second,
 		Pool:          pool,
 	}
-	jobq.Register(registry, w)
+	jobq.Register(registry, snoozeResultCapturingIngestWorker{worker: w, result: workResult})
 	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
 	w.Enqueuer = queue
 	if err := queue.Start(context.Background()); err != nil {
@@ -248,17 +154,21 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		t.Fatalf("inserting ingest job: %v", err)
 	}
 	deadline := time.Now().Add(30 * time.Second)
-	for len(queue.Deliveries()) < 2 && time.Now().Before(deadline) {
+	for len(queue.Deliveries()) < 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	deliveries := queue.Deliveries()
-	if len(deliveries) < 2 {
-		t.Fatal("ingest job was not delivered twice while content.sha256 remained null")
+	if len(deliveries) != 1 {
+		t.Fatalf("ingest job deliveries before completion = %d, want exactly 1", len(deliveries))
 	}
-	for i, delivery := range deliveries[:2] {
-		if delivery.Attempt != 1 {
-			t.Errorf("delivery %d attempt = %d, want 1 because snooze preserves attempts", i+1, delivery.Attempt)
-		}
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWait()
+	if err := queue.WaitIdle(waitCtx); err != nil {
+		t.Fatalf("queue.WaitIdle: %v", err)
+	}
+	result := <-workResult
+	if got, ok := jobq.SnoozeDelay(result); !ok || got != 30*time.Second {
+		t.Fatalf("IngestWorker.Work snooze = %v, %v; want 30s while content.sha256 is null", got, ok)
 	}
 	assertIngestResultDeltas(t, beforeResults, nil, "SHA-256 pending snooze")
 	if got := ingestDurationSamples(t); got != durationBefore {
@@ -292,79 +202,20 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 
 }
 
+type snoozeResultCapturingIngestWorker struct {
+	worker *IngestWorker
+	result chan<- error
+}
+
+func (worker snoozeResultCapturingIngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) error {
+	err := worker.worker.Work(ctx, args)
+	worker.result <- err
+	return nil
+}
+
 // runGracefulStopIngest は ingest ジョブを 1 件走らせ、ハンドラが started を閉じた
 // ところで client.Stop をかける。停止後に「result の 3 値も IngestDuration の観測数も
 // 動いていないこと」と「River が attempt を消費していないこと」を確認する。
-func runGracefulStopIngest(t *testing.T, pool *pgxpool.Pool, srv *httptest.Server, recordID string, started <-chan struct{}) {
-	t.Helper()
-
-	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-	}
-	recordingID := insertTestRecording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, recordID)
-
-	client := newRiverIngestClient(t, pool, w, riveradapter.Config{
-		BoundSites:      []string{"default"},
-		PeriodicJobs:    false,
-		SoftStopTimeout: 100 * time.Millisecond,
-	})
-
-	clientCtx, clientCancel := context.WithCancel(context.Background())
-	defer clientCancel()
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("client.Start: %v", err)
-	}
-
-	inserted, err := insertJobWithSpec(context.Background(), client, jobs.IngestJobArgs{Site: "default", RecordID: recordID})
-	if err != nil {
-		t.Fatalf("inserting ingest job: %v", err)
-	}
-
-	before := ingestJobResults()
-	durationBefore := ingestDurationSamples(t)
-
-	select {
-	case <-started:
-	case <-time.After(30 * time.Second):
-		t.Fatal("ingest が停止させる地点に到達しない")
-	}
-
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer stopCancel()
-	if err := client.Stop(stopCtx); err != nil {
-		t.Fatalf("client.Stop: %v", err)
-	}
-	<-client.Stopped()
-
-	assertIngestResultDeltas(t, before, nil, "graceful stop")
-	if got := ingestDurationSamples(t); got != durationBefore {
-		t.Errorf("IngestDuration の観測数 = %d, want %d（中断した試行は所要時間ではない）", got, durationBefore)
-	}
-
-	job := riveradaptertest.MustGetRiverJob(t, context.Background(), client, inserted.Job.ID)
-	if job.State != rivertype.JobStateAvailable || job.Attempt != 0 {
-		t.Errorf("job state=%q attempt=%d, want available / 0（soft stop は attempt を消費せず行を available に戻す）", job.State, job.Attempt)
-	}
-}
-
-func newRiverIngestClient(t *testing.T, pool *pgxpool.Pool, worker *IngestWorker, cfg riveradapter.Config) *river.Client[pgx.Tx] {
-	t.Helper()
-	deferred := &jobq.Deferred{}
-	worker.Enqueuer = deferred
-	registry := jobq.NewRegistry()
-	riveradapter.Register(registry, worker)
-	client, err := riveradapter.NewLegacyRegistryClient(pool, registry, cfg)
-	if err != nil {
-		t.Fatalf("creating River client: %v", err)
-	}
-	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
-	return client
-}
-
 // TestIngestWorker_ContextCancellationIsNotCounted fixes the metric behavior for a
 // canceled context without depending on a queue-specific cancellation type.
 func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {

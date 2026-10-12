@@ -88,7 +88,7 @@ esac
 			if scratch := tt.tamper(t, tools, mediaDir, id); scratch != "" {
 				w.ScratchDir = scratch
 			}
-			if err := runWorkerViaJobQFake(ctx, w, cmJob(id, 1).Args); err == nil {
+			if err := runWorkerViaJobQFake(ctx, w, cmJob(id)); err == nil {
 				t.Fatal("Work succeeded on a broken path")
 			}
 			var state string

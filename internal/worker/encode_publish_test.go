@@ -15,8 +15,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
@@ -108,11 +106,8 @@ func waitDone(t *testing.T, done <-chan error) error {
 	}
 }
 
-func jobWithID(id, recordingID int64) *river.Job[EncodeJobArgs] {
-	return &river.Job[EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{ID: id, Attempt: 1, MaxAttempts: 25},
-		Args:   EncodeJobArgs{RecordingID: recordingID, Profile: "h264"},
-	}
+func jobWithID(recordingID int64) EncodeJobArgs {
+	return EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 }
 
 func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int32) func(string) bool {
@@ -180,7 +175,7 @@ func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	done := make(chan error, 1)
-	go func() { done <- runWorkerViaJobQFake(context.Background(), w, jobWithID(1, recordingID).Args) }()
+	go func() { done <- runWorkerViaJobQFake(context.Background(), w, jobWithID(recordingID)) }()
 
 	waitReached(t, reached, done)
 	got, err := os.ReadFile(finalPath)
@@ -229,10 +224,10 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(2, recordingID).Args) }()
+	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
 	waitReached(t, reached, doneB)
 
-	if err := runWorkerViaJobQFake(ctx, w, jobWithID(1, recordingID).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
 	contentA, err := os.ReadFile(finalPath)
@@ -450,10 +445,10 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return first.CompareAndSwap(false, true) })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
 	doneB := make(chan error, 1)
-	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(2, recordingID).Args) }()
+	go func() { doneB <- runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)) }()
 	waitReached(t, reached, doneB)
 
-	if err := runWorkerViaJobQFake(ctx, w, jobWithID(1, recordingID).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, jobWithID(recordingID)); err != nil {
 		t.Fatalf("Work A: %v", err)
 	}
 	bScratchPattern := filepath.Join(scratchDir, "encode", encodeScratchScope(recordingID, "h264")+"-1-*", "out.mp4")

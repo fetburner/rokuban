@@ -10,12 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -80,43 +75,8 @@ func (s *scheduleStub) count() int {
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
 	args := ReconcilePassArgs{}
 	got := args.Spec().Timeout(args)
-	if got <= river.JobTimeoutDefault {
-		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
-	}
-}
-
-// BoundSites を指定すると reconcile_pass が定期ジョブとして投入され、
-// 登録済みワーカーが reconciler キューで拾うこと（配線の確認。BoundSites は
-// reconcile_pass 以外の 4 種も同時に登録するが、waitPeriodicJobEvent が
-// kind で選り分ける）。
-func TestReconcilePassPeriodicJob(t *testing.T) {
-	pool := testutil.SetupDB(t)
-
-	stub := newScheduleStub()
-	srv := httptest.NewServer(stub)
-	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
-	t.Cleanup(srv.Close)
-
-	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{
-		PeriodicJobs:          true,
-		BoundSites:            []string{testSite},
-		ReconcilePassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	}, river.EventKindJobCompleted)
-
-	event := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
-	if event.Job.Kind != "reconcile_pass" {
-		t.Errorf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
-	}
-	wantQueue := jobs.PhysicalQueueName(reconcilerQueue, testSite)
-	if event.Job.Queue != wantQueue {
-		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-	}
-	var args ReconcilePassArgs
-	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-		t.Fatalf("unmarshalling job args: %v", err)
-	}
-	if args.Site != testSite {
-		t.Errorf("job args site = %q, want %q", args.Site, testSite)
+	if got != 10*time.Minute {
+		t.Errorf("Timeout() = %v, want 10m", got)
 	}
 }
 
@@ -157,66 +117,17 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		t.Fatalf("creating reservation fixture: %v", err)
 	}
 
-	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	w := &ReconcilePassWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := insertJobWithSpec(ctx, client, ReconcilePassArgs{Site: testSite}); err != nil {
-		t.Fatalf("inserting reconcile_pass job: %v", err)
-	}
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "reconcile_pass" {
-			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "reconcile_pass")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for reconcile_pass job completion")
+	if err := runWorkerViaJobQFake(ctx, w, ReconcilePassArgs{Site: testSite}); err != nil {
+		t.Fatalf("ReconcilePassWorker.Work: %v", err)
 	}
 
 	if n := stub.count(); n != 1 {
 		t.Fatalf("mirakc schedule count = %d, want 1 (reconcile_pass ジョブが突き合わせを実行して schedule を作ったはず)", n)
 	}
-}
-
-// UniqueOpts による合流: 同じサイトの reconcile_pass を 2 回投入すると 1 件しか
-// 作られないこと（docs/data.md §2「UniqueOpts が担うもの」）。
-func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
-
-	args := ReconcilePassArgs{Site: testSite}
-	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
-		t.Fatalf("inserting first job: %v", err)
-	}
-	dup, err := insertJobWithSpec(ctx, client, args)
-	if err != nil {
-		t.Fatalf("inserting duplicate: %v", err)
-	}
-	if !dup.UniqueSkippedAsDuplicate {
-		t.Error("同じサイトの reconcile_pass を 2 回投入したのに合流しなかった")
-	}
-
-	riveradaptertest.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // ruler パスの完了は reconcile_pass 起動契機のヒントの 1 つ（docs/recording.md
@@ -225,64 +136,14 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-
-	// ヒントとして投入された reconcile_pass ジョブは同じクライアントが reconciler
-	// キューも引くため実行される。ReconcilePassWorker は MirakcClients に依存するので、
-	// ruler 単体のテストであってもここでは mirakc スタブを与えておく必要がある
-	// （与えないと verifySite が bound sites に無いエラーで fail-fast し続け、
-	// 下の 2 つ目の待ち受けが reconcile_pass の JobCompleted を一生受け取れない。
-	// #532 より前は MirakcClient が nil のまま reconciler.New に渡り nil pointer
-	// panic していたが、#532 の verifySite マップ化以降はこの経路では panic しない）。
-	stub := newScheduleStub()
-	srv := httptest.NewServer(stub)
-	defer srv.Close()
-
-	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	waiter := newPeriodicJobEventWaiter(subscribeCh)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	enqueuer := newRecordingEnqueuer()
+	w := &RulerPassWorker{Pool: pool, Enqueuer: enqueuer}
+	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: testSite}); err != nil {
+		t.Fatalf("RulerPassWorker.Work: %v", err)
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := insertJobWithSpec(ctx, client, RulerPassArgs{Site: testSite}); err != nil {
-		t.Fatalf("inserting ruler_pass job: %v", err)
-	}
-
-	_ = waitPeriodicJobEvent(t, waiter, "ruler_pass")
-
-	hint := riveradaptertest.RequireRiverInserted(ctx, t, pool, ReconcilePassArgs{Site: testSite}, nil)
-	if hint.Args.Site != testSite {
-		t.Errorf("reconcile_pass hint site = %q, want %q", hint.Args.Site, testSite)
-	}
-
-	// 上ではヒントの投入と site 引数を確認した。ここではヒント自体が実際に
-	// 正常完了する（issue #553）ところまで確認する。この riveradapter.Config{}
-	// は PeriodicJobs/BoundSites を登録しないため、存在しうる reconcile_pass は
-	// このヒント 1 つだけ --- worker_test.go の TestRulerPassPeriodicJob と違い、
-	// 定期ジョブの reconcile_pass と合流して区別できなくなる余地が無い。
-	//
-	// oracle: ヒントの投入（riverClient.Insert）を止めると（ruler_pass.go の
-	// Work 末尾）、RequireRiverInserted がジョブ不在で失敗する。ヒントは投入される
-	// が実行が失敗する場合（例えば MirakcClients を外す）は、reconcile_pass の
-	// JobCompleted が来ず、下の待ち受けが 20 秒でタイムアウトして落ちる。
-	hintEvent := waitPeriodicJobEvent(t, waiter, "reconcile_pass")
-	var hintArgs ReconcilePassArgs
-	if err := json.Unmarshal(hintEvent.Job.EncodedArgs, &hintArgs); err != nil {
-		t.Fatalf("unmarshalling reconcile_pass hint args: %v", err)
-	}
-	if hintArgs.Site != testSite {
-		t.Errorf("reconcile_pass hint job args site = %q, want %q", hintArgs.Site, testSite)
+	hints := enqueuedArgs[jobs.ReconcilePassArgs](enqueuer, "reconcile_pass")
+	if len(hints) != 1 || hints[0].Site != testSite {
+		t.Fatalf("enqueued reconcile_pass hints = %+v, want one hint for site %q", hints, testSite)
 	}
 }
 
@@ -309,8 +170,8 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 		Pool:          pool,
 	}
 
-	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-b"}}
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	job := ReconcilePassArgs{Site: "site-b"}
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -334,8 +195,8 @@ func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 		Pool:          pool,
 	}
 
-	job := &river.Job[ReconcilePassArgs]{JobRow: &rivertype.JobRow{}, Args: ReconcilePassArgs{Site: "site-a"}}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := ReconcilePassArgs{Site: "site-a"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 }

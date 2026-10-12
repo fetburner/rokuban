@@ -1,4 +1,4 @@
-package worker
+package riveradapter_test
 
 import (
 	"context"
@@ -12,7 +12,9 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 type encodeRescueExecution struct {
@@ -21,30 +23,27 @@ type encodeRescueExecution struct {
 }
 
 type encodeRescueTestWorker struct {
-	river.WorkerDefaults[EncodeJobArgs]
+	river.WorkerDefaults[jobs.EncodeJobArgs]
 	timeout    time.Duration
 	executions chan encodeRescueExecution
 	release    <-chan struct{}
 }
 
-func (w *encodeRescueTestWorker) Timeout(*river.Job[EncodeJobArgs]) time.Duration {
+func (w *encodeRescueTestWorker) Timeout(*river.Job[jobs.EncodeJobArgs]) time.Duration {
 	return w.timeout
 }
 
-func (w *encodeRescueTestWorker) Work(ctx context.Context, job *river.Job[EncodeJobArgs]) error {
+func (w *encodeRescueTestWorker) Work(ctx context.Context, job *river.Job[jobs.EncodeJobArgs]) error {
 	w.executions <- encodeRescueExecution{ctx: ctx, attempt: job.Attempt}
 	<-w.release // Deliberately ignore ctx cancellation until the test releases this attempt.
 	return nil
 }
 
-// TestEncodeWorker_RiverRescuesAfterWorkerTimeout verifies River's public per-worker
+// TestEncodeWorker_RiverRescuesAfterWorkerTimeout checks River's public per-worker
 // Timeout contract with a live PostgreSQL client. RescueStuckJobsAfter is shorter than
 // the worker timeout, so an early second execution means River ignored the override.
 func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
+	pool := testutil.SetupDB(t)
 	const workerTimeout = 1500 * time.Millisecond
 	executions := make(chan encodeRescueExecution, 2)
 	release := make(chan struct{})
@@ -81,7 +80,10 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		}
 	})
 
-	if _, err := insertJobWithSpec(context.Background(), client, EncodeJobArgs{RecordingID: 1, Profile: "rescue-test"}); err != nil {
+	if _, err := riveradapter.NewLegacyEnqueuer(client).Enqueue(context.Background(), jobs.EncodeJobArgs{
+		RecordingID: 1,
+		Profile:     "rescue-test",
+	}); err != nil {
 		t.Fatalf("inserting encode job: %v", err)
 	}
 	if err := client.Start(context.Background()); err != nil {
@@ -119,10 +121,8 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		t.Fatalf("River did not cancel first Work after its worker timeout %s", workerTimeout)
 	}
 
-	// River's public maintenance cadence is not configurable here. Give its real
-	// JobRescuer time to observe the expired worker-specific deadline. River's public
-	// client config does not expose its 30-second maintenance interval, so allow two
-	// intervals for leadership startup and the next rescuer tick.
+	// The public client config does not expose River's 30-second rescuer cadence.
+	// Allow two intervals for leadership startup and the next rescue tick.
 	select {
 	case next := <-executions:
 		if next.attempt < 2 {
@@ -132,8 +132,8 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		t.Fatal("River JobRescuer did not retry the timed-out encode job")
 	}
 
-	// The first Work has deliberately ignored cancellation. Let both copies return
-	// before stopping the client; this also keeps the integration test self-contained.
+	// The first Work deliberately ignored cancellation. Release both copies before
+	// stopping the client so the test remains self-contained.
 	releaseAll()
 	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

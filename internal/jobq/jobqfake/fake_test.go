@@ -205,6 +205,48 @@ func TestNewIDEachDeliveryDoesNotCoalesce(t *testing.T) {
 	}
 }
 
+func TestWaitIdleWaitsForActiveWorker(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	completed := make(chan struct{})
+	queue := newQueue(t, Config{}, fakeWorkerFunc(func(context.Context, fakeArgs) error {
+		close(entered)
+		<-release
+		close(completed)
+		return nil
+	}))
+	if _, err := queue.Enqueue(context.Background(), fakeArgs{Value: "wait-idle", TimeoutMS: 2000}); err != nil {
+		t.Fatalf("Enqueue() error = %v", err)
+	}
+	startQueue(t, queue)
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err := queue.WaitIdle(ctx)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("WaitIdle() error while worker is active = %v, want context deadline exceeded", err)
+	}
+	select {
+	case <-completed:
+		t.Fatal("worker completed before it was released")
+	default:
+	}
+
+	close(release)
+	waitQueue(t, queue)
+	select {
+	case <-completed:
+	default:
+		t.Fatal("WaitIdle() returned before the worker completed")
+	}
+}
+
 // enqueueABC inserts A (priority 5), B (priority 1), C (priority 5). Priority order is
 // B A C, insertion order A B C, and newest first C B A, so each policy gives a distinct result.
 func enqueueABC(t *testing.T, queue *Queue) {

@@ -8,8 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -17,8 +15,8 @@ import (
 
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 	t.Helper()
-	job := &river.Job[StorageSyncArgs]{JobRow: &rivertype.JobRow{}, Args: StorageSyncArgs{}}
-	return runWorkerViaJobQFake(context.Background(), w, job.Args)
+	job := StorageSyncArgs{}
+	return runWorkerViaJobQFake(context.Background(), w, job)
 }
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {

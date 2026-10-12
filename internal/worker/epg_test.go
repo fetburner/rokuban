@@ -12,9 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/programid"
@@ -90,11 +87,8 @@ func testProgram(networkID, serviceID, eventID int, name string, start time.Time
 
 func runEpgSync(t *testing.T, w *EpgSyncWorker) {
 	t.Helper()
-	job := &river.Job[EpgSyncArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   EpgSyncArgs{Site: testSite},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := EpgSyncArgs{Site: testSite}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 }
@@ -790,8 +784,8 @@ func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
 
-	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-b"}}
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	job := EpgSyncArgs{Site: "site-b"}
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -813,8 +807,8 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 
 	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 
-	job := &river.Job[EpgSyncArgs]{JobRow: &rivertype.JobRow{}, Args: EpgSyncArgs{Site: "site-a"}}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := EpgSyncArgs{Site: "site-a"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 

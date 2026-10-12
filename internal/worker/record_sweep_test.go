@@ -9,57 +9,29 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+// recordSweepRecordingEnqueuer captures enqueue intent; transaction semantics live in contract tests.
+type recordSweepRecordingEnqueuer struct {
+	*recordingEnqueuer
+}
+
+func (enqueuer *recordSweepRecordingEnqueuer) EnqueueTx(ctx context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	return enqueuer.Enqueue(ctx, args, opts...)
+}
+
 // record_sweep は Args.Spec で既定より長い有限の締切を持つ。
 func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
 	args := RecordSweepArgs{}
 	got := args.Spec().Timeout(args)
-	if got <= river.JobTimeoutDefault {
-		t.Errorf("Timeout() = %v, want > JobTimeoutDefault (%v)", got, river.JobTimeoutDefault)
-	}
-}
-
-// BoundSites を指定すると record_sweep が定期ジョブとして投入され、
-// 登録済みワーカーが watcher キューで拾うこと（配線の確認。BoundSites は
-// record_sweep 以外の 4 種も同時に登録するが、waitPeriodicJobEvent が
-// kind で選り分ける）。
-func TestRecordSweepPeriodicJob(t *testing.T) {
-	pool := testutil.SetupDB(t)
-
-	srv := newRecordSweepStub(t, nil)
-	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
-	t.Cleanup(srv.Close)
-
-	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{
-		PeriodicJobs:        true,
-		BoundSites:          []string{testSite},
-		RecordSweepInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	}, river.EventKindJobCompleted)
-
-	event := waitPeriodicJobEvent(t, waiter, "record_sweep")
-	if event.Job.Kind != "record_sweep" {
-		t.Errorf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
-	}
-	wantQueue := jobs.PhysicalQueueName(recordSweepQueue, testSite)
-	if event.Job.Queue != wantQueue {
-		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-	}
-	var args RecordSweepArgs
-	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-		t.Fatalf("unmarshalling job args: %v", err)
-	}
-	if args.Site != testSite {
-		t.Errorf("job args site = %q, want %q", args.Site, testSite)
+	if got != 10*time.Minute {
+		t.Errorf("Timeout() = %v, want 10m", got)
 	}
 }
 
@@ -119,37 +91,14 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	srv := newRecordSweepStub(t, []mirakc.Record{record})
 	defer srv.Close()
 
-	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	enqueuer := &recordSweepRecordingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
+	w := &RecordSweepWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:          pool,
+		Enqueuer:      enqueuer,
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: testSite}); err != nil {
-		t.Fatalf("inserting record_sweep job: %v", err)
-	}
-
-	found := false
-	for !found {
-		select {
-		case event := <-subscribeCh:
-			if event.Job.Kind == "record_sweep" {
-				found = true
-			}
-		case <-time.After(20 * time.Second):
-			t.Fatal("timed out waiting for record_sweep job completion")
-		}
+	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: testSite}); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v", err)
 	}
 
 	var recCount int
@@ -162,9 +111,9 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	ingest := riveradaptertest.RequireRiverInserted(ctx, t, pool, jobs.IngestJobArgs{Site: testSite, RecordID: record.ID}, nil)
-	if ingest.Args.Site != testSite || ingest.Args.RecordID != record.ID {
-		t.Errorf("ingest args = %+v, want site=%q record_id=%q", ingest.Args, testSite, record.ID)
+	ingest := enqueuedArgs[jobs.IngestJobArgs](enqueuer.recordingEnqueuer, "ingest")
+	if len(ingest) != 1 || ingest[0].Site != testSite || ingest[0].RecordID != record.ID {
+		t.Errorf("enqueued ingest args = %+v, want one job with site=%q record_id=%q", ingest, testSite, record.ID)
 	}
 
 	var markerCount int
@@ -198,11 +147,8 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
 		Pool:          pool,
 	}
-	job := &river.Job[jobs.RecordSweepArgs]{
-		JobRow: &rivertype.JobRow{ID: 906},
-		Args:   jobs.RecordSweepArgs{Site: testSite},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
+	job := jobs.RecordSweepArgs{Site: testSite}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 		t.Fatal("Work() error = nil, want record list failure")
 	}
 
@@ -215,33 +161,6 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	if markerCount != 0 {
 		t.Errorf("record sweep marker rows after failed sweep = %d, want 0", markerCount)
 	}
-}
-
-// UniqueOpts による合流: 同じサイトの record_sweep を 2 回投入すると 1 件しか
-// 作られないこと（docs/data.md §2「UniqueOpts が担うもの」）。
-func TestRecordSweep_DuplicateInsertMerges(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
-
-	args := RecordSweepArgs{Site: "default"}
-	if _, err := insertJobWithSpec(ctx, client, args); err != nil {
-		t.Fatalf("inserting first job: %v", err)
-	}
-	dup, err := insertJobWithSpec(ctx, client, args)
-	if err != nil {
-		t.Fatalf("inserting duplicate: %v", err)
-	}
-	if !dup.UniqueSkippedAsDuplicate {
-		t.Error("同じサイトの record_sweep を 2 回投入したのに合流しなかった")
-	}
-
-	riveradaptertest.RequireRiverInserted(ctx, t, pool, args, nil)
 }
 
 // newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/records と
@@ -261,84 +180,6 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
 	})
 	return httptest.NewServer(mux)
-}
-
-// TestRecordSweepWorker_SiteMismatch は、job.Args.Site がワーカーの束縛
-// サイト集合（Deps.MirakcClients 経由の w.MirakcClients）に含まれないジョブが
-// mirakc に一切触れずに fail-fast することを確認する（issue #139）。
-// スタブは 200 を返す（弱い
-// テストにしないため。issue #139 のテスト規律）。RecordSweepWorker.Work は
-// Work は site を検証してから Enqueuer を要求するため、site mismatch の確認は
-// queue client を起動せずに直接呼び出せる。
-// TestRecordSweepWorker_SiteMismatch_NeverDequeued は queue 修飾（issue #185
-// M4-13）による一次防御を確認する: site-a に束縛された worker は watcher_site-a
-// しか購読しないので、site-b 向けの record_sweep ジョブ（watcher_site-b に乗る）は
-// 一度も掴まれない。verifySite（issue #139）は二次防御であり、ここでは
-// キュー選択の時点で分離できていることを、モックへのリクエスト 0 件だけでなく
-// 「ジョブが available のまま残る」ことで確認する（issue #185 の受け入れ基準）。
-func TestRecordSweepWorker_SiteMismatch_NeverDequeued(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	var requests atomic.Int32
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		mux.ServeHTTP(w, r)
-	}))
-	defer countingSrv.Close()
-
-	// このプロセスは site-a に束縛されている: watcher_site-a しか購読しない。
-	workers := NewWorkers(&Deps{Pool: pool, MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil))})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{BoundSites: []string{"site-a"}})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
-	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	res, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: "site-b"})
-	if err != nil {
-		t.Fatalf("inserting record_sweep job: %v", err)
-	}
-	wantQueue := jobs.PhysicalQueueName(recordSweepQueue, "site-b")
-	if res.Job.Queue != wantQueue {
-		t.Fatalf("job queue = %q, want %q", res.Job.Queue, wantQueue)
-	}
-
-	// この worker は watcher_site-b を購読していないので、しばらく待っても
-	// dequeue されないはず。掴まれてしまえば mirakc への要求が発生するので、
-	// 要求が来ないことも合わせて確認する。
-	time.Sleep(2 * time.Second)
-
-	job, err := client.JobGet(ctx, res.Job.ID)
-	if err != nil {
-		t.Fatalf("getting job: %v", err)
-	}
-	if job.State != rivertype.JobStateAvailable {
-		t.Errorf("job state = %q, want %q (site-b の worker がいないので dequeue されないはず)",
-			job.State, rivertype.JobStateAvailable)
-	}
-	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (job must never be dequeued by the site-a worker)", got)
-	}
 }
 
 // TestRecordSweepWorker_VerifySiteDirect は verifySite（issue #139）を Work() へ
@@ -363,8 +204,8 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 		Pool:          pool,
 	}
 
-	job := &river.Job[RecordSweepArgs]{JobRow: &rivertype.JobRow{}, Args: RecordSweepArgs{Site: "site-b"}}
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	job := RecordSweepArgs{Site: "site-b"}
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -374,8 +215,7 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 }
 
 // TestRecordSweepWorker_SiteMatch は、args.Site が一致するジョブは従来どおり
-// 処理されることを確認する（TestRecordSweepWorker_SiteMismatch_NeverDequeued /
-// TestRecordSweepWorker_VerifySiteDirect と対になる両方向の確認）。
+// 処理されることを確認する（TestRecordSweepWorker_VerifySiteDirect と対になる確認）。
 func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -383,34 +223,19 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	srv := newRecordSweepStub(t, nil)
 	defer srv.Close()
 
-	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil))},
-		riveradapter.Config{BoundSites: []string{"site-a"}})
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	w := &RecordSweepWorker{
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		Enqueuer:      newRecordingEnqueuer(),
+		Pool:          pool,
 	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := insertJobWithSpec(ctx, client, RecordSweepArgs{Site: "site-a"}); err != nil {
-		t.Fatalf("inserting record_sweep job: %v", err)
+	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: "site-a"}); err != nil {
+		t.Fatalf("RecordSweepWorker.Work: %v", err)
 	}
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "record_sweep" {
-			t.Fatalf("job kind = %q, want %q", event.Job.Kind, "record_sweep")
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("timed out waiting for record_sweep job completion")
+	var markerCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM record_sweep_snapshots WHERE site = 'site-a'`).Scan(&markerCount); err != nil {
+		t.Fatalf("querying record sweep marker: %v", err)
+	}
+	if markerCount != 1 {
+		t.Errorf("record sweep marker rows = %d, want 1", markerCount)
 	}
 }

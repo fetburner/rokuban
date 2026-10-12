@@ -18,13 +18,12 @@ import (
 	"testing"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -52,18 +51,14 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
-	client := newIngestLifecycleRiverClient(t, pool, ingestWorker)
-	events, cancelSubscribe := client.Subscribe(river.EventKindJobSnoozed, river.EventKindJobCompleted)
-	defer cancelSubscribe()
+	workResults := make(chan error, 2)
+	queue := newIngestLifecycleQueue(t, ingestWorker, workResults)
+	watcherEnqueuer := &ingestLifecycleEnqueuer{}
 
 	runCtx, cancel := context.WithCancel(context.Background())
-	if err := client.Start(runCtx); err != nil {
-		cancel()
-		t.Fatalf("starting River client: %v", err)
-	}
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(client), nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, watcherEnqueuer, nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -72,10 +67,10 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Error("watcher did not stop after context cancellation")
 		}
-		select {
-		case <-client.Stopped():
-		case <-time.After(5 * time.Second):
-			t.Error("River client did not stop after context cancellation")
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		if err := queue.Stop(stopCtx); err != nil {
+			t.Errorf("jobqfake queue did not stop: %v", err)
 		}
 	})
 
@@ -86,20 +81,29 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	}
 	mcServer.setEndTime(time.Now())
 	mcServer.recordSaved <- struct{}{}
-	first := waitForIngestLifecycleEvent(t, events, river.EventKindJobSnoozed)
-	if first.Job.State != rivertype.JobStateScheduled || first.Job.Attempt != 0 {
-		t.Fatalf("first ingest state/attempt = %q/%d, want scheduled/0 while SHA-256 is null", first.Job.State, first.Job.Attempt)
+	waitForIngestLifecycleEnqueues(t, watcherEnqueuer, 1)
+	enqueued := watcherEnqueuer.IngestJobs()
+	if _, err := queue.Enqueue(context.Background(), enqueued[0].args, enqueued[0].opts...); err != nil {
+		t.Fatalf("queueing first watcher ingest hint: %v", err)
 	}
-	assertIngestLifecycleWaited(t, client, pool, first.Job.ID, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
+	waitForIngestLifecycleDeliveries(t, queue, 1)
+	waitForIngestLifecycleQueue(t, queue)
+	if delay, ok := jobq.SnoozeDelay(<-workResults); !ok || delay != 30*time.Second {
+		t.Fatalf("first ingest result snooze = %v, %v; want 30s while SHA-256 is null", delay, ok)
+	}
+	assertIngestLifecycleWaited(t, pool, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
 
 	mcServer.setHash(lifecycleSHA256(tsData))
 	mcServer.recordSaved <- struct{}{}
-	second := waitForIngestLifecycleEvent(t, events, river.EventKindJobCompleted)
-	if second.Job.ID != first.Job.ID {
-		t.Fatalf("resumed ingest job ID = %d, want same snoozed job ID %d", second.Job.ID, first.Job.ID)
+	waitForIngestLifecycleEnqueues(t, watcherEnqueuer, 2)
+	enqueued = watcherEnqueuer.IngestJobs()
+	if _, err := queue.Enqueue(context.Background(), enqueued[1].args, enqueued[1].opts...); err != nil {
+		t.Fatalf("queueing second watcher ingest hint: %v", err)
 	}
-	if second.Job.State != rivertype.JobStateCompleted {
-		t.Fatalf("resumed ingest state = %q, want completed after SHA-256 arrives", second.Job.State)
+	waitForIngestLifecycleDeliveries(t, queue, 2)
+	waitForIngestLifecycleQueue(t, queue)
+	if err := <-workResults; err != nil {
+		t.Fatalf("ingest result after late SHA-256 arrived: %v", err)
 	}
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
@@ -240,55 +244,109 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 	return run
 }
 
-func newIngestLifecycleRiverClient(t *testing.T, pool *pgxpool.Pool, ingestWorker *worker.IngestWorker) *river.Client[pgx5.Tx] {
-	t.Helper()
-	deferred := &jobq.Deferred{}
-	ingestWorker.Enqueuer = deferred
-	registry := jobq.NewRegistry()
-	riveradapter.Register(registry, ingestWorker)
-	client, err := riveradapter.NewLegacyRegistryClient(pool, registry, riveradapter.Config{
-		BoundSites:        []string{watcher.DefaultSite},
-		PeriodicJobs:      false,
-		IngestConcurrency: 1,
-	})
-	if err != nil {
-		t.Fatalf("creating River client: %v", err)
-	}
-	deferred.Set(riveradapter.NewLegacyEnqueuer(client))
-	return client
+type ingestLifecycleWorker struct {
+	worker *worker.IngestWorker
+	result chan<- error
 }
 
-func waitForIngestLifecycleEvent(t *testing.T, events <-chan *river.Event, wantKind river.EventKind) *river.Event {
-	t.Helper()
-	deadline := time.NewTimer(time.Minute)
-	defer deadline.Stop()
-	for {
-		select {
-		case event := <-events:
-			if event.Kind != wantKind {
-				continue
-			}
-			if event.Job == nil {
-				t.Fatalf("River event %q has no job", wantKind)
-			}
-			return event
-		case <-deadline.C:
-			t.Fatalf("ingest job did not emit River event %q after record-saved", wantKind)
-			return nil
+type ingestLifecycleEnqueue struct {
+	args jobq.Args
+	opts []jobq.EnqueueOpt
+}
+
+// ingestLifecycleEnqueuer records the watcher request; EnqueueTx behavior is covered by the queue contract tests.
+type ingestLifecycleEnqueuer struct {
+	mu   sync.Mutex
+	jobs []ingestLifecycleEnqueue
+}
+
+func (enqueuer *ingestLifecycleEnqueuer) Enqueue(_ context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	return enqueuer.record(args, opts...), nil
+}
+
+func (enqueuer *ingestLifecycleEnqueuer) EnqueueTx(_ context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	return enqueuer.record(args, opts...), nil
+}
+
+func (enqueuer *ingestLifecycleEnqueuer) record(args jobq.Args, opts ...jobq.EnqueueOpt) jobq.Result {
+	enqueuer.mu.Lock()
+	defer enqueuer.mu.Unlock()
+	enqueuer.jobs = append(enqueuer.jobs, ingestLifecycleEnqueue{args: args, opts: append([]jobq.EnqueueOpt(nil), opts...)})
+	return jobq.Result{}
+}
+
+func (enqueuer *ingestLifecycleEnqueuer) IngestJobs() []ingestLifecycleEnqueue {
+	enqueuer.mu.Lock()
+	defer enqueuer.mu.Unlock()
+	var found []ingestLifecycleEnqueue
+	for _, enqueued := range enqueuer.jobs {
+		if enqueued.args.Kind() == (jobs.IngestJobArgs{}).Kind() {
+			found = append(found, enqueued)
 		}
 	}
+	return found
 }
 
-func assertIngestLifecycleWaited(t *testing.T, client *river.Client[pgx5.Tx], pool *pgxpool.Pool, jobID int64, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
+func (worker ingestLifecycleWorker) Work(ctx context.Context, args jobs.IngestJobArgs) error {
+	worker.result <- worker.worker.Work(ctx, args)
+	return nil
+}
+
+func newIngestLifecycleQueue(t *testing.T, ingestWorker *worker.IngestWorker, workResults chan<- error) *jobqfake.Queue {
+	t.Helper()
+	registry := jobq.NewRegistry()
+	jobq.Register(registry, ingestLifecycleWorker{worker: ingestWorker, result: workResults})
+	delay := time.Duration(0)
+	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
+	ingestWorker.Enqueuer = queue
+	if err := queue.Start(context.Background()); err != nil {
+		t.Fatalf("starting jobqfake queue: %v", err)
+	}
+	return queue
+}
+
+func waitForIngestLifecycleDeliveries(t *testing.T, queue *jobqfake.Queue, want int) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		count := 0
+		for _, delivery := range queue.Deliveries() {
+			if delivery.Kind == (jobs.IngestJobArgs{}).Kind() {
+				count++
+			}
+		}
+		if count >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("ingest deliveries = %d, want at least %d after record-saved", len(queue.Deliveries()), want)
+}
+
+func waitForIngestLifecycleEnqueues(t *testing.T, enqueuer *ingestLifecycleEnqueuer, want int) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if got := len(enqueuer.IngestJobs()); got >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("watcher ingest enqueue requests = %d, want at least %d after record-saved", len(enqueuer.IngestJobs()), want)
+}
+
+func waitForIngestLifecycleQueue(t *testing.T, queue *jobqfake.Queue) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := queue.WaitIdle(ctx); err != nil {
+		t.Fatalf("jobqfake.WaitIdle: %v", err)
+	}
+}
+
+func assertIngestLifecycleWaited(t *testing.T, pool *pgxpool.Pool, deleteAttempts int32, mediaDir, recordID string, wantTempSize int64) {
 	t.Helper()
 	ctx := context.Background()
-	job, err := client.JobGet(ctx, jobID)
-	if err != nil {
-		t.Fatalf("getting snoozed River job through public API: %v", err)
-	}
-	if job.State != rivertype.JobStateScheduled || job.Attempt != 0 {
-		t.Errorf("snoozed River job state/attempt = %q/%d, want scheduled/0", job.State, job.Attempt)
-	}
 	var assetCount int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM media_assets WHERE kind = 'original'").Scan(&assetCount); err != nil {
 		t.Fatalf("counting original media assets while waiting: %v", err)

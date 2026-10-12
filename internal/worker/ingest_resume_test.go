@@ -19,9 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
 
@@ -503,11 +500,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
-	firstJob := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 847001},
-		Args:   args,
-	}
-	if err := runWorkerViaJobQFake(ctx, w, firstJob.Args); err == nil {
+	if err := runWorkerViaJobQFake(ctx, w, args); err == nil {
 		t.Fatal("first Work() error = nil, want cancellation after partial transfer")
 	} else if !errors.Is(err, context.Canceled) {
 		t.Fatalf("first Work() error = %v, want context.Canceled", err)
@@ -523,11 +516,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 		t.Fatalf("preserved ingest temp size = %d, want %d", info.Size(), cutoff)
 	}
 
-	secondJob := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 847002},
-		Args:   args,
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, secondJob.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("resumed Work() error: %v", err)
 	}
 

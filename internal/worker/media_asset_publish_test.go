@@ -17,8 +17,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
@@ -205,12 +203,9 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	}
 
 	for attempt := 3; attempt <= 4; attempt++ {
-		job := &river.Job[ThumbnailJobArgs]{
-			JobRow: &rivertype.JobRow{ID: 42, Attempt: attempt},
-			Args:   ThumbnailJobArgs{RecordingID: id},
-		}
-		go func(job *river.Job[ThumbnailJobArgs]) {
-			results <- runWorkerViaJobQFake(context.Background(), w, job.Args)
+		job := ThumbnailJobArgs{RecordingID: id}
+		go func(job ThumbnailJobArgs) {
+			results <- runWorkerViaJobQFake(context.Background(), w, job)
 		}(job)
 	}
 

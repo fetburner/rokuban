@@ -11,9 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
-
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
@@ -241,12 +238,9 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	}
 
 	for attempt := 3; attempt <= 4; attempt++ {
-		job := &river.Job[SeekTilesJobArgs]{
-			JobRow: &rivertype.JobRow{ID: 42, Attempt: attempt},
-			Args:   SeekTilesJobArgs{RecordingID: recordingID},
-		}
-		go func(job *river.Job[SeekTilesJobArgs]) {
-			results <- runWorkerViaJobQFake(context.Background(), w, job.Args)
+		job := SeekTilesJobArgs{RecordingID: recordingID}
+		go func(job SeekTilesJobArgs) {
+			results <- runWorkerViaJobQFake(context.Background(), w, job)
 		}(job)
 	}
 

@@ -16,13 +16,10 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -236,11 +233,8 @@ func seedCMRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID 
 	return id
 }
 
-func cmJob(recordingID int64, attempt int) *river.Job[jobs.CMDetectJobArgs] {
-	return &river.Job[jobs.CMDetectJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 4242, Attempt: attempt, MaxAttempts: 10},
-		Args:   jobs.CMDetectJobArgs{RecordingID: recordingID, RecordingDurationMs: 0},
-	}
+func cmJob(recordingID int64) jobs.CMDetectJobArgs {
+	return jobs.CMDetectJobArgs{RecordingID: recordingID, RecordingDurationMs: 0}
 }
 
 func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testing.T) {
@@ -254,7 +248,7 @@ func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testin
 
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
 	w.ScratchDir = ""
-	err := runWorkerViaJobQFake(ctx, w, cmJob(id, 1).Args)
+	err := runWorkerViaJobQFake(ctx, w, cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "scratch dir is empty") {
 		args, readErr := os.ReadFile(tools.logoframeArgs)
 		t.Fatalf("Work error = %v, want empty-scratch error; logoframe args = %q (read error %v)", err, args, readErr)
@@ -267,13 +261,10 @@ func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testin
 	}
 }
 
-func cmLogoCandidateJob(recordingID, jobID int64, areaUpdatedAt time.Time) *river.Job[jobs.CMLogoCandidateJobArgs] {
-	return &river.Job[jobs.CMLogoCandidateJobArgs]{
-		JobRow: &rivertype.JobRow{ID: jobID, Attempt: 1, MaxAttempts: 1},
-		Args: jobs.CMLogoCandidateJobArgs{
-			NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID,
-			AreaUpdatedAt: areaUpdatedAt, RecordingDurationMs: 0,
-		},
+func cmLogoCandidateJob(recordingID int64, areaUpdatedAt time.Time) jobs.CMLogoCandidateJobArgs {
+	return jobs.CMLogoCandidateJobArgs{
+		NetworkID: 32736, ServiceID: 1024, RecordingID: recordingID,
+		AreaUpdatedAt: areaUpdatedAt, RecordingDurationMs: 0,
 	}
 }
 
@@ -285,7 +276,7 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	id := seedCMRecording(t, pool, mediaDir, 910)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "20.020000")
 
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	args, err := os.ReadFile(tools.logoframeArgs)
@@ -328,7 +319,7 @@ func TestCMDetectWorkSavesLogoWhenPreviewCannotBeRendered(t *testing.T) {
 	id := seedCMRecording(t, pool, mediaDir, 911)
 	tools := newFakeCMTools(t, []byte("not an lgd"), 0, "Trim(0,299)", "10.010000")
 
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	var lgd, preview []byte
@@ -353,7 +344,7 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	if _, err := os.Stat(tools.logoframeArgs); !errors.Is(err, os.ErrNotExist) {
@@ -388,7 +379,7 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 3).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	if _, statErr := os.Stat(tools.logoframeArgs); !errors.Is(statErr, os.ErrNotExist) {
@@ -439,7 +430,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	if err := runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, 4343, area.UpdatedAt).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	candidate, err := sqlcgen.New(pool).GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
@@ -490,7 +481,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
-	err = runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, 4344, area.UpdatedAt).Args)
+	err = runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt))
 	if err == nil || !strings.Contains(err.Error(), "1440x1080") {
 		t.Fatalf("Work error = %v, want resolution mismatch", err)
 	}
@@ -518,7 +509,7 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 3).Args)
+	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil {
 		t.Fatal("Work succeeded although the learned logo is for another resolution")
 	}
@@ -553,7 +544,7 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 3).Args)
+	err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "below") {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
@@ -576,7 +567,7 @@ func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
 	id := seedCMRecording(t, pool, mediaDir, 924)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
 
-	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 3).Args)
+	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "below") {
 		t.Fatalf("Work error = %v, want a low-match failure", err)
 	}
@@ -599,7 +590,7 @@ func TestCMDetectWorkRequiresLogoMatchOutput(t *testing.T) {
 	id := seedCMRecording(t, pool, mediaDir, 925)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "")
 
-	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 3).Args)
+	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	if err == nil || !strings.Contains(err.Error(), "does not contain") {
 		t.Fatalf("Work error = %v, want missing-match-output failure", err)
 	}
@@ -627,7 +618,7 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 		attempt   int
 		wantState string
 	}{{1, "retrying"}, {2, "retrying"}, {3, "failed"}} {
-		if err := runWorkerViaJobQFake(ctx, w, cmJob(id, tt.attempt).Args); err == nil {
+		if err := runWorkerViaJobQFake(ctx, w, cmJob(id)); err == nil {
 			t.Fatalf("attempt %d: Work succeeded although chapter_exe exits 3", tt.attempt)
 		}
 		var detections int
@@ -703,7 +694,7 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 			defer cancel()
 			done := make(chan error, 1)
 			go func() {
-				done <- runWorkerViaJobQFake(workCtx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args)
+				done <- runWorkerViaJobQFake(workCtx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 			}()
 			waitForCMLogoframeStart(t, tools)
 			if tc.cancelWork {
@@ -793,7 +784,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		// Leave the state running to model a process that died before returning.
 	}
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(dead, 1).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(dead)); err != nil {
 		t.Fatalf("Work after the third dead execution: %v", err)
 	}
 	var state string
@@ -846,39 +837,6 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 }
 
-func TestCMRecordingDurationChangesRiverIdentity(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := context.Background()
-	first, err := insertJobWithSpec(ctx, client, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 1000})
-	if err != nil || first.UniqueSkippedAsDuplicate {
-		t.Fatalf("first CM detect insert = %#v, %v", first, err)
-	}
-	second, err := insertJobWithSpec(ctx, client, jobs.CMDetectJobArgs{RecordingID: 99001, RecordingDurationMs: 900000})
-	if err != nil || second.UniqueSkippedAsDuplicate || second.Job.ID == first.Job.ID {
-		t.Fatalf("same recording with another duration = %#v, %v; want a distinct job from %d", second, err, first.Job.ID)
-	}
-
-	areaAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
-	logoFirst, err := insertJobWithSpec(ctx, client, jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
-		RecordingDurationMs: 1000,
-	})
-	if err != nil || logoFirst.UniqueSkippedAsDuplicate {
-		t.Fatalf("first CM logo candidate insert = %#v, %v", logoFirst, err)
-	}
-	logoSecond, err := insertJobWithSpec(ctx, client, jobs.CMLogoCandidateJobArgs{
-		NetworkID: 32736, ServiceID: 1024, RecordingID: 99002, AreaUpdatedAt: areaAt,
-		RecordingDurationMs: 900000,
-	})
-	if err != nil || logoSecond.UniqueSkippedAsDuplicate || logoSecond.Job.ID == logoFirst.Job.ID {
-		t.Fatalf("same logo candidate with another duration = %#v, %v; want a distinct job from %d", logoSecond, err, logoFirst.Job.ID)
-	}
-}
-
 // workHeld は logoframe のダミーが走っている間に during を実行してから Work を終わらせる。
 // 実 logoframe が長く走る間に API が割り込む窓の再現。
 func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset, id int64, during func()) error {
@@ -888,7 +846,7 @@ func workHeld(t *testing.T, pool *pgxpool.Pool, mediaDir string, tools cmToolset
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args)
+		done <- runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {

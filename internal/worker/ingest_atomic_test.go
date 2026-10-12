@@ -18,8 +18,6 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -60,14 +58,8 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
-	jobA := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 731101},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"},
-	}
-	jobB := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 731102},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"},
-	}
+	jobA := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
+	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
 	type result struct {
 		data     []byte
@@ -76,10 +68,10 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	go func() {
-		results <- result{data: tsDataA, recordID: jobA.Args.RecordID, err: runWorkerViaJobQFake(context.Background(), wA, jobA.Args)}
+		results <- result{data: tsDataA, recordID: jobA.RecordID, err: runWorkerViaJobQFake(context.Background(), wA, jobA)}
 	}()
 	go func() {
-		results <- result{data: tsDataB, recordID: jobB.Args.RecordID, err: runWorkerViaJobQFake(context.Background(), wB, jobB.Args)}
+		results <- result{data: tsDataB, recordID: jobB.RecordID, err: runWorkerViaJobQFake(context.Background(), wB, jobB)}
 	}()
 
 	for i := 0; i < 2; i++ {
@@ -509,10 +501,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}
-			job := &river.Job[IngestJobArgs]{
-				JobRow: &rivertype.JobRow{ID: int64(731200 + i)},
-				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
-			}
+			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			originalRename := renameIngestFile
 			originalSync := syncIngestParentDir
@@ -525,7 +514,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			t.Cleanup(restoreHooks)
 			tt.installFailure(t)
 
-			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 				t.Fatal("first Work() returned nil despite the injected stop point")
 			}
 			assertIngestAssetCount(t, pool, recordingID, 0)
@@ -558,7 +547,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			}
 
 			restoreHooks()
-			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 			assertIngestAssetCount(t, pool, recordingID, 1)
