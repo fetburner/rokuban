@@ -12,8 +12,8 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 進行方向の読み込み（時間窓の継ぎ足し） / ボトムタブの裏に隠れる行（到達可能性のみ保証） | [frontend/scroll.md](frontend/scroll.md) |
 | 予約の操作・予約詳細・録られない理由の表示 | [frontend/reservations.md](frontend/reservations.md) |
 | 検索 `/search` とルール条件の共有 | [frontend/search.md](frontend/search.md) |
-| 録画一覧・録画検索・録画単体の着地先・録画詳細の面積配分と構成・ブラウザ再生・ドロップ統計 | [frontend/recordings.md](frontend/recordings.md) |
-| ライブ視聴 | [frontend/live.md](frontend/live.md) |
+| 録画一覧・詳細・ブラウザ再生・検索・シリーズ・ストレージ残高 | [frontend/recordings.md](frontend/recordings.md) |
+| ライブ視聴・録画中の追っかけ再生 UI | [frontend/live.md](frontend/live.md) |
 | アセット配信（go:embed / S3+CDN・キャッシュ規約） | [frontend/assets.md](frontend/assets.md) |
 | ファビコン・走査線 | [frontend/branding.md](frontend/branding.md) |
 
@@ -27,8 +27,18 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | 「番組リスト」/「リストを第一級に置く。グリッドはその上に足す」/「グリッドは lg 以上でのみ出し、モバイルは常にリスト」/「仮想化はライブラリを入れず自前」/「セルの高さに下限を設けない」/「容量超過は番組ではなく区間に描く」/「リスト・予約一覧・モバイル: 同じ文言のバッジ」/「受け入れは実機で行う」 | [frontend/programs.md](frontend/programs.md) |
 | 「エラーの本文も UI まで運ぶ」/「サイトの扱い」 | [frontend/shell.md](frontend/shell.md) |
 | 「検索とルールは同じ条件 UI を双方向に共有する」 | [frontend/search.md](frontend/search.md) |
-| 「録画検索は `/recordings` に同居する」/「debounce と URL 同期で履歴を汚さない」/「ごみ箱タブと検索条件は直交させる」/「録画詳細の面積配分と構成」 | [frontend/recordings.md](frontend/recordings.md) |
-| §ライブ視聴 / §フロントエンド実装 / §実機確認について | [frontend/live.md](frontend/live.md) |
+| 録画単体の着地先 / 録画詳細の面積配分と構成 / 次のエピソードとシリーズ | [frontend/recordings/detail.md](frontend/recordings/detail.md) |
+| 録画のブラウザ再生 / 視聴状態（続きから・視聴済み） | [frontend/recordings/playback.md](frontend/recordings/playback.md) |
+| CM 検出のロゴ位置 / チャプター（CM の目盛り・自動スキップ・修正） / キー操作 | [frontend/recordings/chapters.md](frontend/recordings/chapters.md) |
+| 録画検索は /recordings に同居する / 条件は URL に持つ / debounce と URL 同期 / validateSearch / ごみ箱タブ | [frontend/recordings/search.md](frontend/recordings/search.md) |
+| 取り込み中であることを画面に出す / エンコード状態 / 録画が見られるか / ドロップ統計はバッジ + PID 表 | [frontend/recordings/status.md](frontend/recordings/status.md) |
+| ルール名の解決 / シリーズ一覧 / シリーズの導線 / 番組ハブの宛先 | [frontend/recordings/series.md](frontend/recordings/series.md) |
+| §ライブ視聴 | [frontend/live.md](frontend/live.md) |
+| §フロントエンド実装 | [frontend/live/ui.md](frontend/live/ui.md) |
+| 既定は URL に書き戻さない / 画質選択と自動降格 | [frontend/live/quality.md](frontend/live/quality.md) |
+| いま放送中は予定であって観測ではない / 録画予約による中断予測 | [frontend/live/planning.md](frontend/live/planning.md) |
+| 遅延・バッファの計器 | [frontend/live/metrics.md](frontend/live/metrics.md) |
+| §実機確認について | [frontend/live/verification.md](frontend/live/verification.md) |
 | アセット配信 | [frontend/assets.md](frontend/assets.md) |
 
 読む順の目安:
