@@ -22,7 +22,7 @@
 `lib.mjs` は各スクリプトの前置きを共有する。中身はブラウザの起動・終了、`/api/**` の
 配線、配っている bundle が `dist/` の現物と一致するかの確認、結果の集計と終了コード
 である。あわせてフィクスチャが orval 生成の zod スキーマと一致するかの確認
-（`validateFixturesOrExit`。詳細は下記 §デザイン）も持つ。各スクリプト固有の判定
+（`validateFixturesOrExit`。詳細は [checks/design.md](checks/design.md) §デザイン）も持つ。各スクリプト固有の判定
 （何が OK/NG かの基準）はここには置かず各 *.mjs 本体にとどめる ---
 フィクスチャ自体（どの値を使うか）はスクリプトごとに違うためである。
 `validateFixturesOrExit` は「フィクスチャ配列 → 呼び出し側が組む」形にして
@@ -82,10 +82,6 @@ CI では browser-e2e ジョブが一部だけ回し、残りはローカルの�
 
 ## 節 → ファイル
 
-### 読む順の目安
-
-まず冒頭と「使い方」で共通の前提を読み、次に目的の判定節を表から開く。複数の節を読む場合は、表の並びを目安にする。
-
 | 節 | ファイル |
 |---|---|
 | フィクスチャ契約の CI 検証 | [README.md](README.md) |
@@ -134,6 +130,17 @@ CI では browser-e2e ジョブが一部だけ回し、残りはローカルの�
 | 検索欄の `/` フォーカス（`search-shortcut.mjs`） | [checks/reservations-search.md](checks/reservations-search.md) |
 | 畳んだサイドバーの項目名（`sidebar-tooltips.mjs`） | [checks/layout.md](checks/layout.md) |
 
+読む順の目安:
+
+- **判定を足す** → 冒頭・§使い方・§判定を足すときの規律を読んでから、近い画面のファイルを開く
+- **番組表・番組リスト** → [checks/programs.md](checks/programs.md)（⓪ の説明もここ）
+- **再生（追っかけ・原本 VOD・シークバー・チャプター）** → [checks/playback.md](checks/playback.md)
+- **ライブ視聴** → [checks/live.md](checks/live.md)
+- **色・トークン・スクリーンショット・フォントスケール** → [checks/design.md](checks/design.md)
+- **ヘッダー・ボトムタブ・セーフエリア・CLS** → [checks/layout.md](checks/layout.md)
+- **予約・検索** → [checks/reservations-search.md](checks/reservations-search.md)
+- **録画一覧・次のエピソード・CM 検出** → [checks/recordings.md](checks/recordings.md)
+
 ## 外部参照される節名
 
 | 参照される節名 | 分割後の場所 |
@@ -142,6 +149,7 @@ CI では browser-e2e ジョブが一部だけ回し、残りはローカルの�
 | jsdom が測れないもの | [README.md](README.md) |
 | 判定を足すときの規律 | [README.md](README.md) |
 | デザイン | [checks/design.md](checks/design.md) |
+| ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・design.mjs の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジの導線 |
 
 ## CI で回す判定とそれ以外
 
@@ -179,7 +187,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 いない（CLAUDE.md「テスト規律」のユニットテストと同じ）。
 
 **時計を固定した判定は、時計が動くことに起因する欠陥を検出できない。** `page.clock.setFixedTime`
-（このファイルの各判定）も jsdom の `vi.setSystemTime`（`pnpm test`）も時計を止めている。
+（`checks/` の各判定）も jsdom の `vi.setSystemTime`（`pnpm test`）も時計を止めている。
 その代償として、時計が動くことで露呈する欠陥はどちらの経路でも原理的に見えない。たとえば
 「レンダーのたびに変わる値（生の `Date.now()` 等）をキャッシュキーに載せて無限再取得になる」
 欠陥は、時計を止めた構成では再現しない（`pages/home.tsx` の容量超過クエリで実際に踏んだ）。

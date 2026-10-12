@@ -1,4 +1,4 @@
-> web/e2e/README.md の一部。索引から辿る
+> [web/e2e/README.md](../README.md) の一部。索引から辿る
 
 ### SSE 抜きでの定期再取得・接続断バナー（`sse-refresh.mjs`）
 

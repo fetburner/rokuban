@@ -1,4 +1,4 @@
-> web/e2e/README.md の一部。索引から辿る
+> [web/e2e/README.md](../README.md) の一部。索引から辿る
 
 ### 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`）
 

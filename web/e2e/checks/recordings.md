@@ -1,4 +1,4 @@
-> web/e2e/README.md の一部。索引から辿る
+> [web/e2e/README.md](../README.md) の一部。索引から辿る
 
 ### 次のエピソード・終端カード・棚（`recording-next-episode.mjs`）
 

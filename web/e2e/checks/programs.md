@@ -1,4 +1,4 @@
-> web/e2e/README.md の一部。索引から辿る
+> [web/e2e/README.md](../README.md) の一部。索引から辿る
 
 ### 多 site 番組表（`multi-site.mjs`）
 
