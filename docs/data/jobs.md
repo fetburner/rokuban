@@ -19,7 +19,11 @@
 
 エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
 
-ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。River クライアントと `InsertOpts` への変換は `internal/jobq/riveradapter` に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するため River adapter を通し、他の adapter は中立な `jobq.Registry` を使う。`.golangci.yml` の depguard は `internal/` の本番コードによる River adapter の直接 import を禁止する。例外は worker の登録（`internal/worker/worker.go`）とテスト DB 作成（`internal/testutil`）だけである。`cmd/` は構成の根として adapter を組み立てるので対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。
+- ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。
+- API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。
+- River クライアントと `InsertOpts` への変換は `internal/jobq/riveradapter` に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するため River adapter を通し、他の adapter は中立な `jobq.Registry` を使う。
+- `.golangci.yml` の depguard は `internal/` の本番コードによる River adapter の直接 import を禁止する。例外は worker の登録（`internal/worker/worker.go`）とテスト DB 作成（`internal/testutil`）だけである。`cmd/` は構成の根として adapter を組み立てるので対象外にする。
+- テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。
 
 契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
@@ -37,9 +41,15 @@
 - エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。
   試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
   `GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
-  `TestGetEncodeQueueSummaryFromDomainState` が分割・上限・observed の除外・cut の所有条件を固定し、`TestListRecordingsEncodeStateMatchesQueueCounts` が絞り込みとの一致を固定する。
 - worker が encode 中に死ぬと、次の試行が始まるまで試行行は `running` のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は `running` に数える。
 - desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
+
+<details><summary>根拠</summary>
+
+- 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`
+- 待機列と `encodeState` 絞り込みの一致: `TestListRecordingsEncodeStateMatchesQueueCounts`
+
+</details>
 
 ### 定期実行の契機はデプロイ形態に委ねる
 
@@ -92,11 +102,11 @@ identity にならない。**キュー名を変える（リネーム・site 修�
 タグは使わない。Args 全体の JSON なら、どの adapter でも同じ identity を再現できる。
 代償として、encode の保存済み締切のように導出値が Args に入ると、締切だけが違う投入も別の identity になる。
 それは同じ仕事なので、重複として次の形で現れる。
-(i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
-(ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
-(iii) 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。
-すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。
-既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
+
+- (i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
+- (ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
+- (iii) 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
+
 いずれも正しさは壊れない。
 
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
@@ -137,21 +147,45 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。`Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う（River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ）。プロセス死は締切後に River の JobRescuer が再試行する。`recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。Worker は queue の job ID / attempt を使わず、scratch は `(recording_id, profile, attempt_count)` で分ける。掃除は `(recording_id, profile)` に限る。範囲は `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` で固定する。各試行は自分の scratch directory の flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。他の scope の encode の有無には影響されない（`TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`）。並走中の試行は残る（`TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。ドメイン上限（25）に達したら `river.JobCancel` を返し、River 上も cancelled にする。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。停止による `Canceled` は River の attempt を消費するがドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
-- **CM 検出とロゴ候補解析は、録画の実尺を args に入れて `Timeout()` を決める**。実尺は `recordings.ended_at - started_at` である。どちらかが NULL（EPGStation 取り込み等）なら `program_duration_ms` を使う（`TestCMRecordingDurationQueriesUseStartedAndEndedAt`）。scratch の識別に job ID / attempt は使わない。CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)` を使う。
-  2 倍の実尺と 30 分の下限は `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum` で固定する。
-  rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
-- **CM 検出の試行回数は `recording_cm_attempts.attempt_count` で数える**。失敗と締切超過は試行になり、プロセス死は次の開始時に running 行を進めて数える。
-  停止時のキャンセルは回数に入れない。過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする（`TestCMDetectDeadlineCountsAndCancellationDoesNotCount`）。
-  `failed` の後に新しいロゴや枠で再び desired になったら予算は 1 からやり直す（`TestCMDetectionNewDesireAfterFailedStartsNewBudget`）。
-  結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。
+  - 投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。
+  - `Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う（River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ）。
+  - プロセス死は締切後に River の JobRescuer が再試行する。
+  - `recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。
+  - Worker は queue の job ID / attempt を使わず、scratch は `(recording_id, profile, attempt_count)` で分ける。掃除は `(recording_id, profile)` に限る。
+  - 各試行は自分の scratch directory の flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。他の scope の encode の有無には影響されない。並走中の試行は残る。
+  - 停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。
+  - ドメイン上限（25）に達したら `river.JobCancel` を返し、River 上も cancelled にする。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。
+  - 停止による `Canceled` は River の attempt を消費するがドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
+- **CM 検出とロゴ候補解析は、録画の実尺を args に入れて `Timeout()` を決める**。
+  - 実尺は `recordings.ended_at - started_at` である。どちらかが NULL（EPGStation 取り込み等）なら `program_duration_ms` を使う。
+  - scratch の識別に job ID / attempt は使わない。CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)` を使う。
+  - 2 倍の実尺と 30 分の下限を締切にする。
+  - rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
+- **CM 検出の試行回数は `recording_cm_attempts.attempt_count` で数える**。
+  - 失敗と締切超過は試行になり、プロセス死は次の開始時に running 行を進めて数える。
+  - 停止時のキャンセルは回数に入れない。過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする。
+  - `failed` の後に新しいロゴや枠で再び desired になったら予算は 1 からやり直す。
+  - 結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
 - **`attempted_at` から録画実尺に応じた締切と rescue 猶予を過ぎた候補を failed にする**。
-  締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は投入側と同じ `GetCMRecordingDuration` で引く（録画行が無ければ最小締切で回収する）。
-  境界テストは `TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace` を参照する。
-  締切式は `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum` で固定する。
-  `MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる（`TestCMLogoCandidateWorkerCancellationClearsRunningRow`）。設定値 0 は River の既定 1 時間として扱う。
+  - 締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は投入側と同じ `GetCMRecordingDuration` で引く（録画行が無ければ最小締切で回収する）。
+  - `MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる。設定値 0 は River の既定 1 時間として扱う。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
+
+<details><summary>根拠</summary>
+
+- encode の scratch 掃除の範囲が `(recording_id, profile)` に限ること: `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile`
+- 他の scope の encode の有無に掃除が影響されないこと: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
+- 並走中の試行の scratch が残ること: `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`
+- CM の実尺が `started_at` / `ended_at` から引かれること: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
+- 2 倍の実尺と 30 分の下限（CM 検出の締切式）: `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum`
+- 停止時のキャンセルが回数に入らず、締切超過が数えられること: `TestCMDetectDeadlineCountsAndCancellationDoesNotCount`
+- 失敗後に新しいロゴや枠で desired になると予算が 1 からやり直されること: `TestCMDetectionNewDesireAfterFailedStartsNewBudget`
+- 孤児ロゴ候補の回収が締切と猶予を待つ境界: `TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace`
+- 停止時のキャンセルが候補行を消すこと: `TestCMLogoCandidateWorkerCancellationClearsRunningRow`
+
+</details>
 
 ### 飢餓防止の実装規律
 
