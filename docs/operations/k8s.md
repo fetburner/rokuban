@@ -12,10 +12,10 @@ worker ロールを持つかどうかに関わらず、ジョブを実行しな�
 1. **watcher 単独プロセスは River クライアントを Start しない**（`--roles worker`
    を含む場合だけ `river.Client.Start` を呼ぶ）。加えて watcher 単独プロセスは
    `worker.NewWorkers` のフルのワーカー群（`EncodeWorker` / `ThumbnailWorker` を
-   含む）を登録しない --- api ロールと同じ `worker.NewInsertOnlyClient`（ingest
-   ジョブの `InsertTx` 専用、`Queues` / `Workers` を持たないため `Start` 自体が
-   呼べない構成）を使う。watcher が必要とするのは ingest ジョブの投入だけであり、
-   実行（キューの購読）ではないので、これで用は足りる
+   含む）を登録しない。api ロールと同じ `riveradapter.NewInsertOnlyEnqueuer` を使い、
+   River クライアントは worker ロールを持つプロセスだけが `Start` する。watcher が
+   必要とするのは ingest ジョブの投入だけであり、実行（キューの購読）ではないので、
+   これで用は足りる
 2. **`worker.queues`（同じ値を argv で渡す `--queues` も同義）は worker ロールが
    引くキューの絞り込みであり、既定（どちらも無し）は全キュー購読**。worker ロールが無いプロセスはこの設定に関わらずキューを
    一切引かない（[configuration.md](../configuration.md) の `worker.queues`）

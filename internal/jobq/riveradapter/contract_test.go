@@ -208,9 +208,9 @@ func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.
 
 func (fixture *riverContractFixture) newClient() *Adapter {
 	fixture.t.Helper()
-	riverCfg, err := BuildRegistryConfig(fixture.registry, fixture.cfg)
+	riverCfg, err := buildRegistryConfig(fixture.registry, fixture.cfg)
 	if err != nil {
-		fixture.t.Fatalf("BuildRegistryConfig() error = %v", err)
+		fixture.t.Fatalf("buildRegistryConfig() error = %v", err)
 	}
 	if _, exists := riverCfg.Queues[fixture.queueName]; exists {
 		// Use the production constructor whenever it already processes the queue under test,

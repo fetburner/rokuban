@@ -33,6 +33,7 @@ import (
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -410,10 +411,7 @@ func (scaledJobTriggerProbeArgs) Kind() string { return "scaledjob_trigger_probe
 // rivertype の定数照合で担う）。
 func TestScaledJobTriggerQueriesRunAgainstRiverSchema(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only River client: %v", err)
-	}
+	client := riveradaptertest.NewRiverClient(t, pool)
 
 	ctx := context.Background()
 	for _, w := range scaledJobs(t) {
