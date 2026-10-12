@@ -38,25 +38,28 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
   独立に選択・解除できる。**site を identity に混ぜない** --- 混ぜると
   「高松の録画を全部」がチャンネルの列挙でしか表せず、`service` だけが
   他の軸と違う意味論（3 つ組の選言）になる。軸内は OR、軸間は AND
-- **ルールは絞り込みパネルの「ルール」節から選べる。** 候補はルール一覧の返す順で
-  並べ、選択した `ruleId` を URL と `GET /api/recordings` に渡す。`rules.name` は
-  一意ではないので、同名の候補には `#<id>` を名前に添えて押し分ける。名前が
-  重複していない候補には補助ラベルを付けない。適用中のチップは同じ一覧から
-  ルール名を解決し `ルール: <名前>` と表示する（他のチップと同じく軸を
-  前置する）。一覧で解決できないとき（削除済みルール。`recordings.rule_id` は
-  `ON DELETE SET NULL` だが `?ruleId=N` の URL 自体は残る）は `ルール #N` と表示する
-  --- select 側も同じ `ruleId` をフォールバック option として足し、一覧に無い値で
-  先頭（「問わない」）へ落ちないようにする。**節自体はルールが 1 件以上あるか
-  `ruleId` が決まっているときだけ出す**（サイト節と同じ「機能しないコントロール
-  は置かない」規律。新規インストールでルールが 0 件なら節ごと出さない）。
-  `ruleId` が決まっているとき、0 件になる「手動」「帰属なし」は選べないように
-  する（`source='rule'` は矛盾しないので対象外）。どのルールかが分かれば出自を
-  さらに問う必要がなく、常に 0 件になる組み合わせを選べるまま残すより、条件を
-  設定したのに結果が 0 件になる理由を探させない方が明確だからである。**この
-  組み合わせは URL のパース時点（`parseRecordingsSearch`）でも落とす** ---
-  パネル操作の経路（`updateRuleFilter`）を塞ぐだけでは、URL を直接編集した
-  リンクや古い共有リンクが `ruleId` と `source=manual` を独立に運べてしまい、
-  種別チップが active のまま disabled になる（表現不可能になっていない）。
+- **ルールは絞り込みパネルから選ぶ。** 候補は一覧の順に並べ、選んだ `ruleId` を URL と録画一覧 API に渡す。
+  `rules.name` は一意でないため、同名の候補だけ `#<id>` を添える。
+  適用中のチップは一覧から名前を解決し、`ルール: <名前>` と表示する。他のチップと同じく軸名を前置する。
+- **一覧で名前を解決できないときは `ルール #N` と表示する。**
+  ルール削除後も `?ruleId=N` の URL は残るため、選択欄にはその値を一時的な候補として足す。
+  一覧に無い値で先頭の「問わない」へ戻さない。
+- ルール節はルールが 1 件以上あるか、`ruleId` が決まっているときだけ出す。
+  新規インストールでルールが 0 件なら節ごと出さない（サイト節と同じ「機能しないコントロールは置かない」規律）。
+- `ruleId` が決まっているとき、「手動」「帰属なし」は選べないようにする。
+  どのルールかが分かれば出自をさらに問う必要がなく、常に 0 件になる組み合わせを選べるまま残すより、条件を設定したのに 0 件になる理由を探させない方が明確だからである。
+  `source='rule'` は矛盾しないため選べる。
+- **矛盾する `ruleId` と `source=manual` は URL のパース時点でも落とす。**
+  パネルだけで塞ぐと、手編集や古い共有 URL では条件が残り、種別チップが active のまま disabled になる。
+
+<details><summary>根拠</summary>
+
+- 一覧名の解決と削除後の URL: `rules.name`、`recordings.rule_id`、`ON DELETE SET NULL`
+- URL/API の受け渡し: `ruleId`、`GET /api/recordings`、`source='rule'`、`source=manual`
+- 矛盾条件の排除: `parseRecordingsSearch`、`updateRuleFilter`
+
+</details>
+
 - **サイト絞り込みの選択肢は、レジストリと現在の `?site=` 絞り込みの和集合から作る。**
   レジストリから消えた site が絞り込みに残っていても見えて解除できるようにするためで、
   `/search` のサイトチップと同じ判定規律に揃える。**節自体は選択肢が 2 件以上のときだけ
@@ -179,17 +182,14 @@ Shift+右クリックはブラウザのメニューへ渡す。
 
 一括操作は破壊的で頻度が低いため、常時 checkbox を並べず `PageHeader` 右端の「選択」から編集モードへ入る。
 編集モード中だけ checkbox を描画し、全面行リンクを外して行クリックも選択トグルにする。
-編集モード中の一覧は `role=listbox` の 1 つの Tab 位置にし、行間は ↑ / ↓ で移る。
-Space で現在行を切り替え、Shift+↑ / ↓ と Shift+クリックで起点から現在行までを選択範囲にする。
-Finder と同じく、Shift の範囲は動かすたびに置き換わり、戻れば縮む。範囲の外でクリックや Space で選んだ行は残す。
-選択モードに入ったら、その後のレイアウトで sticky ヘッダーの下端から固定選択バーの上端までに収まる最初の行を現在行と範囲の起点にする。
-入る前のレイアウトで選ぶと、checkbox でカードが伸びて押し出され、選んだ行が選択バーの裏に入る。
-先頭行にすると、下の方で入ったときに画面外の行へフォーカスが乗り、最初の ↓ で先頭へ飛び、Space で見えない行を選ぶ。
-行ごとに Tab を止めると件数分だけ移動させるため、矢印で行を移れる形にする。
-行内の 16px checkbox は状態表示として残すが Tab の順から外す。Tab は横取りせず、DOM 順で一覧の次の要素へ進む。
-Cmd+A / Ctrl+A は読み込み済みの行だけを選び、Shift+Cmd+A / Shift+Ctrl+A は選択を解除する。
-Shift+Cmd+A は Mac の Chrome ではタブ検索の既定ショートカットでもあり、ページに届くかは未検証である。固定バーのボタンでも解除できる。
-Esc で選択モードを終了する。選択モード外と入力欄では Cmd+A / Ctrl+A をブラウザの文字選択に任せる。
+
+- 一覧は `role=listbox` の 1 つの Tab 位置にし、↑ / ↓ で行を移る。Space で現在行を切り替える。
+- Shift+↑ / ↓ と Shift+クリックは起点から現在行までを範囲選択にする。Finder と同じく、範囲は動かすたびに置き換わり、戻れば縮む。範囲外で個別に選んだ行は残す。
+- 選択モードに入った後のレイアウトで、sticky ヘッダーの下端から固定選択バーの上端までに収まる最初の行を現在行と範囲の起点にする。
+  checkbox でカードが伸びた後に対象を決めるので、選択バーの裏に隠れない。先頭行固定では、画面外へフォーカスが飛び最初の ↓ や Space が見えない行に作用する。
+- 行ごとに Tab を止めず、矢印で移動できるようにする。16px checkbox は状態表示に残すが Tab 順から外し、Tab は DOM 順で次の要素へ進める。
+- Cmd+A / Ctrl+A は読み込み済みの行だけを選び、Shift+Cmd+A / Shift+Ctrl+A は選択を解除する。Shift+Cmd+A が Mac Chrome のタブ検索に届くかは未検証なので、固定バーにも解除ボタンを置く。
+- Esc で選択モードを終了する。選択モード外と入力欄では Cmd+A / Ctrl+A をブラウザの文字選択に任せる。
 
 選択バーは「n 件を選択中」と表示し、全選択は「読み込み済みの n 件を選択」と明記する。
 無限スクロールでまだ取得していない録画は対象にしない。
@@ -210,20 +210,22 @@ debounce（キーワード）もチップの個別解除も常に `replace` で 
 
 ### TanStack Router の `validateSearch` は無効な値を「省略」しても消えない
 
-`parseRecordingsSearch` は非 strict モード（既定）の TanStack Router で使われる。
-このモードは、`validateSearch` の戻り値を「生の（未検証の）`location.search` の
-上に重ねる」形で合成する。実際のルートマッチでもそうなる。`matchRoutesInternal`
-（`@tanstack/router-core` の `router.js` 内）では
-`preMatchSearch = { ...parentSearch, ...strictSearch }` を使う。ここで
-`parentSearch` は生の未検証の値である。ビルドロケーション用の軽量マッチでも
-同じである。`matchRoutesLightweight` の `accumulatedSearch` に
-`Object.assign(accumulatedSearch, validateSearch(...))` する。
-**戻り値からキーを省略すると、その
-キーは上書きされない**。そのため生の不正な値（`?status=bogus` の文字列そのもの等）が
-「検証済みのつもり」の結果へそのまま残って漏れる --- 実機で確認済み（壊れた URL の
-不正な値がチップにそのまま出た）。対策は**落とした次元も `undefined` を明示的に
-代入する**（キーを省略しない）。`{ ...x, k: undefined }` はどちらの合成方式で見ても
-実際に上書きになるため、これで確実に消える。
+`parseRecordingsSearch` は既定の非 strict モードで使われる。
+このモードでは `validateSearch` の戻り値を未検証の `location.search` に重ねる。
+実際のルートマッチと、リンク生成時の軽量マッチのどちらでもこの合成になる。
+- 戻り値からキーを省略すると、生の値が上書きされず残る。
+  壊れた URL の `?status=bogus` がチップに出ることを実機で確認済みである。
+- 無効な次元を落とすときはキーを省略せず `undefined` を明示代入する。
+  これで合成後の値を上書きできる。
+
+<details><summary>根拠</summary>
+
+- 通常のルートマッチの合成: `@tanstack/router-core` の `router.js`、`matchRoutesInternal`、`preMatchSearch`、`parentSearch`
+- 実際の合成式: `preMatchSearch = { ...parentSearch, ...strictSearch }`
+- リンク生成時の軽量マッチ: `matchRoutesLightweight`、`accumulatedSearch`、`Object.assign(accumulatedSearch, validateSearch(...))`
+- 不正な値を上書きする形: `{ ...x, k: undefined }`
+
+</details>
 
 `/live` の `service` と `/search` の `ruleId` はどちらもこの形に揃えてある
 （`routes.tsx`）。`routes.test.tsx` が `router.state.matches` の `search` を
@@ -231,14 +233,20 @@ debounce（キーワード）もチップの個別解除も常に `replace` で 
 
 ### 一覧は自前で組んだ `useInfiniteQuery`
 
-orval は無限クエリのフックを生成しない（生成されるのは単発の `useQuery` ラッパーの
-み）。そのため生成された `listRecordings` 関数を、`@tanstack/react-query` の
-`useInfiniteQuery` に自分で渡す。`queryKey` は `getListRecordingsQueryKey(絞り込み +
-limit)`（カーソル `before` / `beforeId` を含めない）にする。同じ絞り込みの中で
-ページを積んでいくのが `useInfiniteQuery` の前提であり、カーソルを含めるとページ
-ごとに別クエリになってしまう。先頭要素が `'/api/recordings'` になる形は保たれる。
-そのため `RecordingActions` の
-`invalidateQueries({ queryKey: ['/api/recordings'] })`（前方一致）が変わらず効く。
+orval が生成するのは単発の `useQuery` ラッパーで、無限クエリのフックは生成しない。
+そのため録画一覧関数を自前の `useInfiniteQuery` に渡す。
+`queryKey` は絞り込みと limit で作り、ページカーソルは含めない。
+同じ条件のページを積むためのキーであり、カーソルを含めるとページごとに別クエリになる。
+キーの先頭は `'/api/recordings'` のままにし、一覧の invalidate に前方一致を使える形にする。
+
+<details><summary>根拠</summary>
+
+- 生成された一覧関数と query key: `listRecordings`、`getListRecordingsQueryKey`
+- 無限クエリのライブラリ: `@tanstack/react-query`、`useInfiniteQuery`
+- ページカーソルは query key に入れない: `before` / `beforeId`
+- 前方一致で一覧を invalidate する: `RecordingActions`、`invalidateQueries({ queryKey: ['/api/recordings'] })`
+
+</details>
 
 進行方向の読み込み（番兵 + IntersectionObserver、失敗後はボタンへ落とす）は、
 `pages/programs.tsx` と同じ部品を再利用する。部品は `lib/auto-load.ts` の

@@ -52,18 +52,11 @@ mirakc の優先度調停では録画が勝つため、視聴中に同じチャ�
   根拠は `internal/capacity/load.go` の `demandFromRow` で、`eff.IsSkipped()` が
   true の行は容量の需要から除外される（docs/data.md §6.5）。API が返す `Reservation.skip`
   はまさにこの `effective.skip` なので、フロント側もこの値で同じ除外を適用する
-- **下界主義は容量バッジと同じ規律（docs/data.md §6.5）**。「中断されます」と
-  断言しない。チューナーに余裕があれば中断されないが、余裕があるとも言えない
-  （見えない消費者。並走 EPGStation・他のライブ視聴セッション・mirakc の
-  `excluded_channels`。**加えてチャンネル種別一致だけを見ているため、BS/CS
-  兼用チューナー等、別種別でも同じチューナーを取り合う構成では警告が出ない
-  --- サーバー側の Hall 条件は `tuner_sync.types` でこの兼用を扱うが、フロントは
-  そこまで見ていない。沈黙側に倒れているので下界主義には反しないが既知の盲点**）。
-  文言は「HH:MM から録画予約があります。チューナーが
-  不足すると視聴は中断されます」という条件付きにする。**「録画予約はありません =
-  安全に見られます」は出さない** --- 肯定的な文言を一切持たない。沈黙は保証では
-  ない（`CapacityShortfallBadge` / `ProgramOverlapWarning` と同じ「余計な枠を
-  出さない」流儀）
+- **下界主義は容量バッジと同じ規律（docs/data.md §6.5）。** 「中断されます」と断言しない。チューナーに余裕があれば中断されないが、余裕があるとも言えない。見えない消費者は次のとおり。
+  - 並走 EPGStation・他のライブ視聴セッション・mirakc の `excluded_channels`
+  - **チャンネル種別一致だけを見ているため、BS/CS 兼用チューナー等、別種別でも同じチューナーを取り合う構成では警告が出ない**。サーバー側の Hall 条件は `tuner_sync.types` でこの兼用を扱うが、フロントはそこまで見ていない。沈黙側に倒れているので下界主義には反しないが既知の盲点
+- 文言は「HH:MM から録画予約があります。チューナーが不足すると視聴は中断されます」という条件付きにする。
+- **「録画予約はありません = 安全に見られます」は出さない。** 肯定的な文言を一切持たない。沈黙は保証ではない（`CapacityShortfallBadge` / `ProgramOverlapWarning` と同じ「余計な枠を出さない」流儀）。
 - **鮮度は SSE の `reservations` トピックに相乗りする。専用トピックは作らない**
   （容量バッジと同じ判断。`lib/events.ts` の `queryGroups` の reservations が既に
   `/api/reservations` を接頭辞に持つため、予約が変わればこの表示も自動で
@@ -73,24 +66,15 @@ mirakc の優先度調停では録画が勝つため、視聴中に同じチャ�
   `pages/live.tsx` ではチャンネル名・種別バッジ・番組表への導線と同じ情報欄
   （`isPlaying` の分岐の外）に置くことで、1 箇所の実装で両方の受け入れ条件を
   満たしている
-- **「いま」を更新する tick（`pages/live.tsx` の `scheduleClockTickMs`）や番組境界での
-  窓クエリの更新を跨いでも警告は消えない**。判定に使う値（`reservations` と視聴対象の
-  `channelType`）は、tick で変わらないクエリにしか依存しない。そのクエリは `GET /api/reservations` で、
-  SSE の `reservations` トピックで invalidate されるだけである。判定を EPG の時間窓クエリ経由にすると、
-  `nowMs` を含む時間窓がクエリキーに入るため、tick のたびにキーが割れて
-  react-query が新しいキャッシュエントリとして扱い、取得完了までの間**表示中の
-  警告が一時的に消えていた**（実測: jsdom で 30038ms 後・実 Chromium で 28258ms
-  後に消失。レビューでの指摘）。直接比較に変えたことでこの経路自体が無くなった
+- **30 秒の tick や番組境界の更新を跨いでも警告を保つ。** 判定に使うのは現在時刻で変化しない予約一覧と視聴対象の channelType である。
+- 予約一覧は /api/reservations から読み、変更時は SSE の reservations トピックで invalidate する。
+- EPG の時間窓クエリで判定すると、nowMs が tick ごとに変わり query key が割れ、react-query が新しいキャッシュエントリとして扱う。取得完了までの間、表示中の警告が一時的に消えていた（実測: jsdom で 30,038 ms 後、実 Chromium で 28,258 ms 後）。予約との直接比較に変えてこの経路をなくした。
 
-判定手段は 3 つある。`lib/live-interruption.test.ts`（一致するとき返す /
-skip・別チャンネル種別・別サイトでは返さない、の両方向）。
-`pages/live.test.tsx`「録画予約による中断予測」は、選択状態・視聴中画面の
-両方に出る / skip・別チャンネル種別では出ない、の end-to-end wiring を見る。
-30 秒の tick を実時間で跨いでも警告が消え続けないこともポーリングで確認する。
-`components/live-interruption-warning.test.tsx` は `reservation` が null のとき
-**描画そのものが無いこと**を `toBeEmptyDOMElement()` で見る。文言の regex
-一致だけでは、指定した語を含まない別の肯定文言への変異を検出できない
-（レビューでの指摘）。
+判定は純関数、画面配線、警告表示の 3 層で行う。予約が条件に一致するときは警告を出し、skip・別チャンネル種別・別 site では出さない。
+
+選択中と視聴中の両方に警告を表示する。予約が null のときは何も描画せず、30 秒の tick を実時間で跨いでも表示が消えないことを確認する。
+
+文言の regex 一致だけでは、指定語を含まない肯定的な文への変異を検出できない。空状態の DOM 自体を確認する。
 
 **未検証・要確認の 2 点**（blocking ではないが、既知の不正確さとして書いておく）:
 
@@ -109,3 +93,16 @@ skip・別チャンネル種別・別サイトでは返さない、の両方向�
   docs/data/capacity.md）までは見ていない。仕様どおり種別一致で実装しており、
   沈黙側に倒れているので下界主義には反しないが、既知の盲点として上記
   「下界主義」の項の見えない消費者の一覧に挙げてある
+
+<details><summary>根拠</summary>
+
+- 容量の下界と未観測の負荷: [docs/data.md](../../data.md) §6.5、`CapacityShortfallBadge`、`ProgramOverlapWarning`、`excluded_channels`、`tuner_sync.types`
+- skip の需要除外: `internal/capacity/load.go` の `demandFromRow`、`eff.IsSkipped()`、`Reservation.skip`
+- 予約一覧の更新: `GET /api/reservations`、SSE `reservations`、`lib/events.ts` の `queryGroups`、`nowMs`
+- 時計と表示場所: `pages/live.tsx` の `scheduleClockTickMs`、`LiveInterruptionWarning`、`components/live-interruption-warning.tsx`
+- 純関数: `lib/live-interruption.test.ts`
+- 画面の両方向と tick: `pages/live.test.tsx`「録画予約による中断予測」
+- null のときの空表示: `components/live-interruption-warning.test.tsx`、`reservation`、`toBeEmptyDOMElement()`
+- 同一サービスの共有範囲: `internal/streamer/live.go` の `LiveStreamer`
+
+</details>

@@ -5,11 +5,11 @@
 | 元の節・機能 | 内容 | ファイル |
 |---|---|---|
 | ライブの操作バー・番組軸・チャンネル行 | 操作バー・番組軸・チャンネル一覧 | [controls.md](controls.md) |
-| 同節 | site と service の同定、選択、リンク、能力 API | [selection.md](selection.md) |
-| 同節 | 画質選択と自動降格 | [quality.md](quality.md) |
-| 同節 | 音声・字幕・キー操作 | [audio.md](audio.md) |
-| 同節 | ブラウザ再生能力、probe、エラー分類 | [playback.md](playback.md) |
-| 同節 | 離脱ヒントとセッション表示 | [sessions.md](sessions.md) |
+| サイトとサービスの同定・選択・リンク | site と service の同定、選択、リンク、能力 API | [selection.md](selection.md) |
+| 画質選択と自動降格 | 画質選択と自動降格 | [quality.md](quality.md) |
+| 音声・字幕・キー操作 | 音声・字幕・キー操作 | [audio.md](audio.md) |
+| ブラウザ再生能力、probe、エラー分類 | ブラウザ再生能力、probe、エラー分類 | [playback.md](playback.md) |
+| 離脱ヒントとセッション表示 | 離脱ヒントとセッション表示 | [sessions.md](sessions.md) |
 | いま放送中は予定であって観測ではない / 録画予約による中断予測 | 予定番組と予約による割り込み | [planning.md](planning.md) |
 | チューナー状態の行 | チューナー射影の表示 | [tuners.md](tuners.md) |
 | 遅延・バッファの計器 | 再生経路別の計測 | [metrics.md](metrics.md) |

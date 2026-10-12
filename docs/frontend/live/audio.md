@@ -1,6 +1,8 @@
 > [live.md](../live.md) の音声・字幕・キー操作。索引から辿る
 
-**音声（二重音声の主 / 副）を選ぶ UI を持つ**（issue #870）。`標準` / `主音声` /
+### 音声・字幕・キー操作
+
+**音声（二重音声の主 / 副）を選ぶ UI を持つ。**`標準` / `主音声` /
 `副音声` の 3 択で、選択は `?audio=main|sub` に持つ（標準は書かない）。
 streamer は 3 本の音声 rendition を常に出しているので
 （[api.md](../../api.md) §音声）、**切替は `LivePlayer` が取るトラックを替えるだけ**で
@@ -24,17 +26,20 @@ streamer は 3 本の音声 rendition を常に出しているので
   聴いてから切り替える。WebKit は `audioTracks` と取得する rendition を見る
   （ネイティブ HLS の音は WebAudio に来ないので、鳴っている音は測れない）
 
-**切替を跨いで持ち越すのは字幕の表示と「再生中だったか」である。**
-`LivePlayer` が effect の cleanup で `<video>` のトラックと `paused` から読む。
-再生は `canplay` を待って再開する（[quality.md](quality.md)「降格のあとは再生を再開する」を参照）。
-**字幕は hls.js が新しいマニフェストを読むと選択を既定に戻すため**に戻す。
-`SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す
-（`node_modules/hls.js` 1.7.1 で確認済み）。そこで `MANIFEST_PARSED` で
-`subtitleDisplay` を設定し直す。**その時点では既定トラックはまだ選ばれていない**
-（同コントローラの `onManifestParsed` はトラック一覧を入れるだけ）ので、この設定は
-**後の選択のときに `toggleTrackModes` が読む値**として効く。ネイティブ経路は
-`loadedmetadata` でトラックの mode を揃え直す。この因果は実ブラウザで未検証である
-（判定手段がまだ無い。下記）。
+**切替を跨いで持ち越すのは、字幕の表示と「再生中だったか」である。** cleanup 時に `<video>` のトラック状態と `paused` を読む。再生中なら `canplay` を待って再開する（[quality.md](quality.md)「降格のあとは再生を再開する」）。
+
+**字幕は hls.js が新しいマニフェストを読むと既定選択へ戻すため、表示状態を戻す。** 実装確認では `SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す。`MANIFEST_PARSED` で `subtitleDisplay` を設定し直す。その時点では既定トラックはまだ選ばれていない（`onManifestParsed` はトラック一覧を入れるだけ）ので、この設定は後の選択のときに `toggleTrackModes` が読む値として効く。
+
+ネイティブ経路は `loadedmetadata` でトラックの mode を揃え直す。
+
+上の字幕を戻す因果（hls.js が選択を既定に戻す → `MANIFEST_PARSED` で設定し直す → 後の選択で効く）は実ブラウザで未検証である（判定手段がまだ無い）。
+
+<details><summary>根拠</summary>
+
+- 実装: hls.js 1.7.1 の `SubtitleTrackController.onManifestLoading` / `onManifestParsed`、`toggleTrackModes`
+- 配線: `LivePlayer` の cleanup、`MANIFEST_PARSED`、ネイティブ `loadedmetadata`
+
+</details>
 
 **音量とミュートは持ち越す必要が無い（実測）。** cleanup は
 `removeAttribute('src')` + `load()` を行うが、`load()` は音量・ミュートを既定に
@@ -66,13 +71,12 @@ streamer は 3 本の音声 rendition を常に出しているので
 Safari は利用者が有効にするまで出さない。実測）。したがって 2 方向を見ている ——
 hls.js 経路は「切ったまま」、ネイティブ経路は「入にしたまま」。
 
-**ライブでも Space（再生 / 一時停止）・M（ミュート）・F（フルスクリーン）を使えるようにする。**
-操作バーに同じボタンがあるので、キーも同じように効かせる。
-シークのページショートカット（← / →・J / L・0〜9）はライブに適用しない。
-番組軸は録画の再生時間軸ではなく、0〜9 の割合シークにも有限の尺がないためである。
-入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` にフォーカスがある間は
-ページショートカットを処理しない。`<video>` は除外しない。
-自前の操作バーを使い、`controls={false}` なのでネイティブ controls との二重処理にはならない
-（キー操作の適用表は [recordings/chapters.md](../recordings/chapters.md) §キー操作）。
-端末共通の速度設定も通常のライブには適用しない。ネイティブ HLS の `playbackRate` が
-実 Safari で有効かは未検証なので、速度変更をライブへ広げる根拠にはしない。
+**ライブでも Space（再生 / 一時停止）・M（ミュート）・F（フルスクリーン）を使える。** 操作バーに同じボタンがあるので、キー操作も同じにする。
+
+シークのページショートカット（← / →・J / L・0〜9）はライブに適用しない。番組軸は録画の再生時間軸ではなく、0〜9 の割合シークにも有限の尺がない。
+
+入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` にフォーカスがある間はページショートカットを処理しない。`<video>` は除外しない。`controls={false}` の自前操作バーなので、ネイティブ controls との二重処理はない。
+
+キー操作の適用表は [recordings/chapters.md](../recordings/chapters.md) §キー操作を参照する。
+
+端末共通の速度設定も通常のライブには適用しない。ネイティブ HLS の `playbackRate` が実 Safari で有効かは未検証であり、速度変更をライブへ広げる根拠はない。

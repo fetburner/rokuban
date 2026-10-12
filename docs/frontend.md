@@ -35,7 +35,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | ルール名の解決 / シリーズ一覧 / シリーズの導線 / 番組ハブの宛先 | [frontend/recordings/series.md](frontend/recordings/series.md) |
 | §ライブ視聴 | [frontend/live.md](frontend/live.md) |
 | §フロントエンド実装 | [frontend/live/ui.md](frontend/live/ui.md) |
-| 既定は URL に書き戻さない / 画質選択と自動降格 | [frontend/live/quality.md](frontend/live/quality.md) |
+| 画質選択と自動降格 | [frontend/live/quality.md#画質選択と自動降格](frontend/live/quality.md#画質選択と自動降格) |
 | いま放送中は予定であって観測ではない / 録画予約による中断予測 | [frontend/live/planning.md](frontend/live/planning.md) |
 | 遅延・バッファの計器 | [frontend/live/metrics.md](frontend/live/metrics.md) |
 | §実機確認について | [frontend/live/verification.md](frontend/live/verification.md) |
