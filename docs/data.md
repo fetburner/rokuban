@@ -4,10 +4,10 @@
 
 ```mermaid
 flowchart LR
-    app[Rokuban] <-->|キュー| pg[(PostgreSQL)]
-    app <-->|通知| pg
-    app <-->|排他| pg
-    app <-->|検索| pg
+    app[Rokuban] <-->|キュー: River / SKIP LOCKED| pg[(PostgreSQL)]
+    app <-->|通知: LISTEN / NOTIFY| pg
+    app <-->|排他: advisory lock| pg
+    app <-->|検索: pg_trgm / POSIX ARE| pg
 ```
 
 | 節 | 内容 | ファイル |

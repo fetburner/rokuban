@@ -7,8 +7,9 @@
 flowchart LR
     buffer[mirakc 録画バッファ] -->|ingest| original[アーカイブ / 原本]
     original -->|encode| derived[派生物]
-    original -->|保持ポリシー| delete[削除]
-    derived -->|明示的な版の削除要求| delete
+    original -->|until_encoded| delete[削除]
+    derived -->|版を外す| delete
+    original & derived -->|ごみ箱の猶予超過 / 今すぐ purge| delete
 ```
 
 | 節 | 内容 | ファイル |
