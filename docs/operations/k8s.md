@@ -55,7 +55,7 @@ site 単位のキューを一切購読できない。中央プロセスでは `w
 
 <details><summary>根拠</summary>
 
-- キュー購読は worker ロールだけ: `river.Client.Start` / `riveradapter.NewInsertOnlyClient`
+- キュー購読は worker ロールだけ: `river.Client.Start` / `riveradapter.NewInsertOnlyEnqueuer`
 - site ごとのキュー修飾と中央プロセスの束縛判定: `internal/jobs/queue.go` の `siteBoundQueueNames` / `jobs.RequiresSiteBinding`
 - ffmpeg/ffprobe の起動検査: 不変条件 4、`jobs.RequiresEncodeTools`
 
