@@ -85,7 +85,8 @@ cooldown の記録と session map からの削除は同じ lock 区間で行う�
 再生中の失敗では、hls.js の playlist 再試行が尽きて fatal になった後、再生元選択の probe が 502 を受ける。
 cooldown が 3 秒より短いと、再生元を選び直す前に hls.js の再試行が新しい session を作ることがある。
 
-10 秒は既定 backoff の約 3 秒より長く、3 倍強の余裕を取る値である。実測値ではない（未検証）。
+hls.js 1.7.3 の既定は再試行 2 回・初回待ち 1 秒・指数 backoff なので、待ちは 1 秒と 2 秒の計 3 秒前後になる。
+10 秒はこの約 3 秒より長く、3 倍強の余裕を取る値である。実測値ではない（未検証）。
 
 ライブと追っかけのセッション数は合算し、Prometheus の
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は
