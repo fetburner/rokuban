@@ -84,7 +84,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 **最短** 2 秒間隔 --- バイトが流れたときにしか書かないので、極端に遅い回線では
 これより粗くなる）。`written_bytes` は temp replay で再開した試行なら末尾から続く。
 サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る
-（[recording/ingest.md](../recording/ingest.md) §5.3）。rename 後の親ディレクトリ fsync または
+（[recording/ingest.md](../recording/ingest.md) §5.3）。
+
+rename 後の親ディレクトリ fsync または
 DB commit の失敗では temp が canonical へ移動済みだが、次の ingest は orphan 回収を待たず
 全量 pull を開始する。残った canonical orphan は再試行の rename で置き換わるか、報告されて
 人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで

@@ -20,22 +20,20 @@ worker ロールを持つかどうかに関わらず、ジョブを実行しな�
    引くキューの絞り込みであり、既定（どちらも無し）は全キュー購読**。worker ロールが無いプロセスはこの設定に関わらずキューを
    一切引かない（[configuration.md](../configuration.md) の `worker.queues`）
 
-ffmpeg/ffprobe の起動時検査（不変条件 4）も、実際に encode/thumbnail キューを
-購読するときだけ行う（`jobs.RequiresEncodeTools`）。`worker.queues` で
+ffmpeg/ffprobe の起動時検査も、実際に encode/thumbnail キューを
+購読するときだけ行う。`worker.queues` で
 encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg
 の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では
 起動時に LookPath で検査し、無ければ即座に落ちる。ffmpeg が無い環境で
 encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
 
-**`worker.queues` に書く名前は論理名（unqualified）である**。KEDA のスケーラが
-引くキュー名は物理名に修飾される場合がある。mirakc への到達性を要する site 単位の
-キュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）だけが対象になる。
-修飾名はプロセスが束縛されているサイト名で `<論理名>_<site>`（例: `ingest_tokyo`）となる。
-それ以外（`internal/jobs/queue.go` の `siteBoundQueueNames` に無いキュー）は
-site に依存しないので修飾されない。修飾は `worker.queues` の
-設定値・未知キューのエラーメッセージのどちらにも現れない。設定・エラー文言は
-常に論理名のままで、実際にキューを引くプロセス（KEDA のスケーラ定義や Prometheus の
-`river_job` メトリクス等）だけが物理名を見る。
+**`worker.queues` には論理名（unqualified）を書く。** 設定値と未知キューのエラーメッセージは論理名のままである。
+
+mirakc への到達性を要する site 単位のキュー（`ingest` / `epg`（`tuner_sync` も同じ）/ `reconciler` / `watcher`）は、プロセスの束縛サイト名で修飾される。
+
+実キュー名は `<論理名>_<site>`（例: `ingest_tokyo`）になる。それ以外の site 非依存キューは修飾されない。
+
+KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど、実際にキューを引く側だけが物理名を見る。
 
 キューごとの要求が置き場所を決める（ロールではなくキューの割り当てで置き場所が決まる。
 [overview.md](../overview.md) §サーバーレスデプロイとハイブリッド構成）:
@@ -48,13 +46,20 @@ site に依存しないので修飾されない。修飾は `worker.queues` の
 | `ruler` | DB のみ | どちらでも | 非依存（`args.Site` はクエリの絞り込み） |
 
 0 サイト束縛（中央プロセス、`server --sites=`）の worker は
-site 単位のキューを一切購読できない（`jobs.RequiresSiteBinding` が起動時に
-強制する）。中央プロセスで動かせるのは `worker.queues` / `--queues` を site 非依存キュー
-（`internal/jobs/queue.go` の `siteBoundQueueNames` に無いもの）に絞った構成だけである。
+site 単位のキューを一切購読できない。中央プロセスでは `worker.queues` / `--queues` を site 非依存キューに
+絞る。
 ただし `cleanup` / `storage` は表の通りファイルシステムを要求するので、
 「0 サイト束縛」（mirakc の site 数の話）と「ファイルシステム不要」を混同しないこと。
 中央プロセスであっても media_dir/scratch_dir のマウントに到達できるノードで
 動かす必要がある。
+
+<details><summary>根拠</summary>
+
+- キュー購読は worker ロールだけ: `river.Client.Start` / `riveradapter.NewInsertOnlyEnqueuer`
+- site ごとのキュー修飾と中央プロセスの束縛判定: `internal/jobs/queue.go` の `siteBoundQueueNames` / `jobs.RequiresSiteBinding`
+- ffmpeg/ffprobe の起動検査: 不変条件 4、`jobs.RequiresEncodeTools`
+
+</details>
 
 **PVC マウントの所有権は `fsGroup` で与える。** イメージは `/mnt/media` を実行ユーザー（uid/gid `65534`）所有で焼いてある。ただしこれが効くのは Docker の named volume の copy-up 経由だけである。**PVC には copy-up が無い**ので、所有権を与えないと `permission denied` になる。
 
@@ -102,10 +107,9 @@ consistent hash と既定 replicas=1 の可逆性は変わらない。
 
 #### 録画配信はセッション親和性を必要としない
 
-録画配信は完全にステートレスで（DB からアセットを解決して `http.ServeContent` で
-配るだけ。`internal/streamer`）、貼り付けるべき状態が無い。**sticky を Service /
-Ingress に書かない**。書くと、数 GB の Range 読みという最も分散させたい経路で
-分散が効かなくなる。X-Accel-Redirect でバイト転送を前段に委ねる構成とも噛み合わない。
+**sticky を Service / Ingress に書かない。** 録画配信は完全にステートレスで、貼り付けるべき状態が無い。
+
+録画配信は DB からアセットを解決して `http.ServeContent` で配る（`internal/streamer`）。sticky を書くと、数 GB の Range 読みという最も分散させたい経路で分散が効かなくなる。X-Accel-Redirect でバイト転送を前段に委ねる構成とも噛み合わない。
 
 アーカイブは単一である（[§4](storage.md) / [docs/storage.md](../storage.md) §5 の 2 階層。録画バッファは
 サイトごとのエッジ、アーカイブは 1 つ）。したがって**複数サイト構成でも録画配信の
@@ -117,8 +121,7 @@ Pod は site 非依存**で、どの Pod でもどの録画を配れる。`recor
 
 #### ライブ視聴は mirakc の隣、シャード鍵はサービスの同定子
 
-生 TS は 17 Mbps 連続なので WAN に出さない。**トランスコードは mirakc と同じサイトで
-行い、HLS になったものだけがサイトの外に出る**。
+**トランスコードは mirakc と同じサイトで行い、HLS になったものだけをサイトの外へ出す。** 生 TS は 17 Mbps 連続なので WAN に出さない。
 
 セッションを Pod に貼り付ける代わりに、**前段で `(site, networkId, serviceId)` の
 consistent hash によって振る**。この鍵は既に資源同定の中にある
@@ -167,11 +170,9 @@ playlist 0.5 req/s とセグメント 0.5 req/s である。`segment_seconds` �
 
 #### ライブのセグメントを録画バッファと同じディスクに置かない
 
-エッジの録画バッファ（mirakc `recording.basedir`）は「I/O 飽和 = ドロップ直結」で、
-要求は絶対帯域ではなくレイテンシである（[§4](storage.md)）。ライブの HLS セグメント書き出しが同じ
-ディスクに乗ると、**視聴が録画を壊す**。セグメントは数 MB × 数本なので tmpfs
-（k8s なら `emptyDir: {medium: Memory}`）で足りる。Postgres datadir とエンコード
-scratch を分ける指針（[§3](database.md)）と同じ系列の規則。
+**ライブ HLS セグメントは tmpfs（k8s なら `emptyDir: {medium: Memory}`）に置く。** セグメントは数 MB × 数本なので tmpfs で足りる。
+
+エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのは絶対帯域ではなくレイテンシである（[§4](storage.md)）。同じディスクにライブ HLS を書き出すと、視聴が録画を壊す。これは Postgres datadir と encode scratch を分ける指針（[§3](database.md)）と同じ規則である。
 
 **原本だけの完了録画も `live.segment_dir` を使う。**
 原本 MPEG-2 TS は site streamer が media PVC から read-only で開く。変換済み HLS は
@@ -180,15 +181,12 @@ read-only のままでよい。`rel_path` lock は取らず、開いてから DB
 media root に `.rokuban-locks` を作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。
 
 **録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。**
-URL は固定深さである。開始位置を指定する場合は `/offset/{offset}` を含む。
-site を前段のルーティングキーにして、録画を担当する site の streamer へ送る。
-標準の Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
-録画 id は DB 内の mirakc record id を隠すための公開キーで、同じ streamer 内のセッションを
-共有する。同じ録画の異なる開始位置は別セッションになる。
-いずれも hash key は `(site, recordings.id)` でよい（同じ録画の全オフセットを同じ Pod に固定するため）。
-ライブ・追っかけ・原本 VOD は同じ process-local な `live.max_sessions` を共有する。
-メトリクスは `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` /
-`{kind="original_vod"}` に分かれるが、scratch の容量は合算する。
+
+- URL は固定深さで、開始位置を指定する場合は `/offset/{offset}` を含む。
+- site を前段のルーティングキーにして、録画を担当する site の streamer へ送る。標準の Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
+- 録画 id は DB 内の mirakc record id を隠す公開キーで、同じ streamer 内のセッションを共有する。同じ録画の異なる開始位置は別セッションになる。
+- hash key は `(site, recordings.id)` とし、同じ録画の全オフセットを同じ Pod に固定する。
+- ライブ・追っかけ・原本 VOD は同じ process-local な `live.max_sessions` を共有する。メトリクスは `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` / `{kind="original_vod"}` に分かれるが、scratch 容量は合算する。
 
 追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、
 ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存の
@@ -212,7 +210,7 @@ tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録�
 
 **base は複数サイトを知らない。** レジストリは常に 1 要素、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
 
-**Helm chart は持たない。** `values.yaml` は後から狭められない公開 API で、どの値を露出するかを決める前に形を固定することになる（不変条件 11）。加えてサイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay がサイト単位で薄く書ける。Helm が要るなら kustomize の出力を写す形で後から足す。
+**Helm chart は持たない。** サイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay をサイト単位で薄く書ける。`values.yaml` は**後から狭められない**公開 API で、露出する値を決める判定基準より先に形を固定してしまう。Helm が要るなら kustomize の出力を写す形で後から足す。
 
 **ConfigMap は 1 個で、全 Pod が同じ config.yml を共有する。Pod ごとに違うのは argv だけ**にする。ここを Pod 別の config キーにすると、サイトを増やすたびに ConfigMap が増える（[configuration.md](../configuration.md) の「ロール別 Deployment でも config は同一ファイルを共有する」が崩れる）。
 
@@ -228,7 +226,16 @@ tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録�
 
 **レプリカを増やすだけでは可用性にならない。** PodDisruptionBudget が無い Pod は `kubectl drain` が無条件に退去させるので、ノード 1 台の退避・アップグレードで全レプリカが同時に落ちる。Service の後ろに置く役には PDB を対で書く。
 
-マニフェストの検査は「YAML として組めるか」（`kustomize build`）と「スキーマに合うか」（kubeconform）だけでは足りない。**オブジェクト間の参照はどちらも検出しない。** 存在しない ConfigMap を `envFrom` に書いても、probe が指す名前付きポートが消えても、Service の selector がどの Pod にも当たらなくても緑になる。ConfigMap に入れる config 本体の中身（strict なパーサが弾くキーの typo）も見ない。これらの検査は別に持つ（`deploy/k8s/manifests_test.go`）。
+マニフェストは YAML として組めるか（`kustomize build`）とスキーマに合うか（kubeconform）を確認する。
+
+この 2 つだけでは、存在しない ConfigMap を `envFrom` に書いても、probe が指す名前付きポートが消えても、Service の selector に一致する Pod が無くても検出できない（緑になる）。ConfigMap 内の config にある strict parser が弾く typo も別に検査する。
+
+<details><summary>根拠</summary>
+
+- Helm chart を先に公開 API として固定しない: 不変条件 11
+- オブジェクト間の参照と ConfigMap の config 本体を検査する: `deploy/k8s/manifests_test.go`
+
+</details>
 
 ### worker: KEDA ScaledJob（長時間ジョブ保護）
 
@@ -245,8 +252,10 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 **Job は 1 件消化して自分で終了する（`rokuban server --roles worker --once`）。** ScaledJob は Job の自己終了を前提にした機構である。常駐する `--roles worker` をそのまま載せると Job が `succeeded` に到達せず、「0 → 1 → 0」が成立しない。`--once` の形は次に固定してある。
 
 - ジョブ 1 件の Work を抜けたらプロセスを畳む。**成功・失敗を問わず exit 0**（リトライは River が持つので、k8s 側は `backoffLimit: 0` / `restartPolicy: Never` にして二重にリトライしない）
-- ingest は Work が `river.JobSnooze(0)` を返した時点でこの 1 件を消化した扱いになり、Pod は終了する。snooze は同じ River job row を `attempt` を増やさず再投入するため、次に起きた Pod がその job ID から続ける。各 slice の間には KEDA の検出・Pod のスケジューリングと起動時間が加わる。4 分の転送 slice と 1 分の後処理予算で Timeout を 5 分にし、6 分の rescue 既定より先に Work が終わるようにする。起動時間はクラスタとイメージ状態に依存するため、配備先で通常の起動時間が slice より十分短いことを確認する。SHA-256 の待ちも 30 秒ごとに同じ job を snooze するので、`--once` では待っている間 30 秒ごとに Pod が入れ替わる。待ちの上限は録画サイズ ÷ `ingestSHA256BytesPerSecond` で、10 GB なら約 21 分、約 40 回である
-- **`--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。** 「1 件も掴めないまま待った時間」にしか効かないので、数時間のエンコードは対象にならない。KEDA が滞留を過大評価して起こした空振りの Job を終わらせるためだけの値である（`riveradapter.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`）
+- ingest は Work が `river.JobSnooze(0)` を返した時点で 1 件を消化した扱いになり、Pod は終了する。snooze は同じ River job row を `attempt` を増やさず再投入するため、次の Pod はその job ID から続ける。
+  - 各 slice の間には KEDA の検出・Pod のスケジューリングと起動時間が加わる。4 分の転送 slice と 1 分の後処理予算で Timeout を 5 分にし、6 分の rescue 既定より先に Work が終わるようにする。配備先では通常の Pod 起動が slice より十分短いことを確認する。
+  - SHA-256 の待ちも 30 秒ごとに同じ job を snooze するため、`--once` では待っている間 30 秒ごとに Pod が入れ替わる。待ちの上限は録画サイズ ÷ `ingestSHA256BytesPerSecond` で、10 GB なら約 21 分、約 40 回である。
+- **`--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。** 「1 件も掴めないまま待った時間」にしか効かず、KEDA が滞留を過大評価して起こした空振りの Job を終了させる値である。
 - **打ち切りうるのは SIGTERM のほうである。** ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算。**上限を外すつもりで `0` と書くと起動エラー** --- 0 は「無制限」ではなく「待たない」である）
 - 引くキューはちょうど 1 つで、その `MaxWorkers` は 1 に落とす（KEDA 側が「1 Job = 1 アイテム」で数を合わせるため）。`worker.periodic_jobs: true` との併用は起動エラー —— 1 件で終わる Job がリーダーになると、定期投入の間隔が Job の起動回数で決まってしまう
 - argv の制約は 3 つで、いずれも起動エラーになる
@@ -255,21 +264,26 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
     - `--once-idle-timeout` を `--once` 無しで書かないこと
 - ffmpeg / JLSE を使うキュー（encode / thumbnail / cm_detect）の ScaledJob だけ `Dockerfile.full` のイメージを使う。公式イメージはこれらを同梱しないので、該当キューを購読する worker は起動時に fail-fast する（`jobs.RequiresEncodeTools` / `jobs.RequiresCMDetectTools`）
 
-**停止の順序が「実行中を打ち切らない」を支えている。** 1 件消化モードは、先に River の graceful stop を撃つ（producer の fetch を止めて実行中を待つ）。そのあとでプロセスを畳む。畳む側は Start に渡した ctx の cancel である。順序は `TestStopOnceProcess` が固定している。
+**1 件消化モードでは、先に River の graceful stop を実行し、そのあとプロセスを畳む。** 前者は producer の fetch を止めて実行中の仕事を待ち、後者は Start に渡した ctx を cancel する。
 
 逆順にすると、掴んでいたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
 
 既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。**打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけ**で、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（`Stop` は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
 
-失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る（`TestServerCmd_OnceModeExitsZeroOnJobFailure`）。**次の Job がそれを引き直すところまでは測っていない。**
+失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る。**次の Job がそれを引き直すところまでは測っていない。**
 
-**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らない。そのため購読した終了イベントで観測している（`riveradapter.SubscribeOnceEvents`）。版ずれで踏む --- 新しいイメージの CronJob / api が、古い worker の知らない kind を投入する形である。`TestServerCmd_OnceModeExitsOnUnhandledJobKind` が固定している。
+**登録されていない kind のジョブを掴んだ場合は 1 回失敗させて終了する**（ログの `outcome` 属性が `job_unhandled`）。River の executor はこの場合ワーカーのミドルウェアを通らないため、購読した終了イベントで観測している。版ずれで踏む --- 新しいイメージの CronJob / api が古い worker の知らない kind を投入する形である。
 
 **スケーラのクエリは `available` と `retryable` を数える。** 常駐 client の JobScheduler が retryable を昇格させるため、この集合は rescue の正しさを担わない。backoff 中から KEDA の backlog に含めるので、まだ claim できない job のために Pod が起きることがある。空振り Pod は `--once-idle-timeout` で終了する。
 
 **JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。** notifier は常時起動し、api ではなく site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
-**死んだ `running` の job は、回収されるまで同じ kind × site の投入を飲み込む。** その行が一意キーを占有し、同じ kind × site の後続の投入は合流して消える。通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client `JobTimeout`（既定 1 分）より長い。worker 固有の `Timeout()` が設定値より長ければ、その長い時間が rescue 判定に使われる。ingest は Timeout 5 分なので、停止した Work は約 6 分で retry が予約される。encode の締切は enqueue 時に録画実尺と profile rate から args へ保存し、実尺が不明な場合と締切のない旧 args は 12 時間を使う。常駐 client が変えるのは回収する主体であって、回収までの時間ではない。`Timeout() < 0` の cm_detect / cm_logo_candidate はそれぞれの reconcile が回収する。値を明示的に 0 にすると River の既定 1 時間になる。1 分未満は起動しない。
+**死んだ `running` の job は、回収されるまで同じ kind × site の投入を飲み込む。** その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は黙って無かったことになる）。
+
+- 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client `JobTimeout`（既定 1 分）より長い。worker 固有の `Timeout()` が設定値より長ければ、その長い時間を rescue 判定に使う。
+- ingest は Timeout 5 分なので、停止した Work は約 6 分で retry が予約される。encode の締切は enqueue 時に録画実尺と profile rate から args へ保存する。実尺が不明な場合と締切のない旧 args は 12 時間を使う。
+- 常駐 client が変えるのは回収する主体であり、回収までの時間ではない。`Timeout() < 0` の cm_detect / cm_logo_candidate はそれぞれの reconcile が回収する。
+- 値を明示的に 0 にすると River の既定 1 時間になる。1 分未満は起動しない。
 
 **キューは argv で絞る（`--queues`）。** ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が崩れる）。`--queues` と `worker.queues` の**両方指定は起動エラー**にしてある --- どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が黙って生まれる。
 
@@ -291,6 +305,16 @@ ScaledJob 本体への annotation だけでは消えない。KEDA が rollout �
 
 site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い** --- 症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
 
+<details><summary>根拠</summary>
+
+- `--once-idle-timeout` が実行中のジョブを打ち切らない: `riveradapter.OnceGate` / `TestOnceGate_IdleTimeoutDoesNotCutRunningJob`
+- 1 件消化後に graceful stop を先行する: `TestStopOnceProcess`
+- 失敗したジョブも exit 0 でプロセスを終了する: `TestServerCmd_OnceModeExitsZeroOnJobFailure`
+- 未登録 kind のジョブを検出して終了する: `riveradapter.SubscribeOnceEvents` / `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
+- JobRescuer の回収条件: [故障注入 suite の F3](../../deploy/k8s/e2e/README.md)
+
+</details>
+
 #### 将来オプション: チャンク並列エンコード（未実装）
 
 preemption 対策は上記の ScaledJob で十分であり、チャンク化の価値はクラウドバーストによる高速化（数時間のエンコードを worker N 台で数分の壁時計時間に短縮）に限られる。自宅の HW エンコード（QSV/VAAPI）は実時間の数倍で足りるため価値が薄く、クラウド構成専用のオプション。初期実装には含めない。
@@ -304,9 +328,16 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 - **argv は平たい要素で書く。** `sh -c "rokuban enqueue ..."` でくるむと、判定ハーネスが投入側の CronJob を見つけられない。探索は argv の要素として `enqueue` と ジョブ名 と `--site <site>` を見る
 - 対象は `rokuban enqueue --help` が出す一覧が権威。site 束縛のもの（`--site` が要る）はサイトごとに 1 本ずつ作る
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
-- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐため、**両方を `deploy/k8s/workloads_test.go` が対で固定している**。**したがって判定 2 が測るのは出荷される schedule ではない**
+- **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐ。**したがって判定 2 が測るのは出荷される schedule ではない**
 - **間隔は in-process の既定に合わせる**（`worker.periodic_jobs: true` の monolith）。揃っていないと「docker-compose では 15 分で走るのに k8s では走らない」形になる。`reconcile-pass` だけは合わせられない。in-process の既定は 30 秒だが CronJob の分解能は 1 分である。レベルトリガーなので取りこぼしは次のパスが拾い、差は「予約が mirakc に届くまでの遅延の上限」にだけ効く
-- **`rokuban enqueue` にあるジョブは全部 CronJob にする。** 1 つ落とすと、その定期パスが**一度も走らない構成**が黙って立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は `deploy/k8s/workloads_test.go` の `TestCronJobsCoverEveryEnqueueJob` が見ている
+- **`rokuban enqueue` にあるジョブは全部 CronJob にする。** 1 つ落とすと、その定期パスが**一度も走らない構成**が黙って立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は CI で回る Go テストが固定する。
+
+<details><summary>根拠</summary>
+
+- base の実運用 schedule と判定用 overlay の schedule: `deploy/k8s/workloads_test.go`
+- `rokuban enqueue` のジョブを CronJob が網羅すること: `deploy/k8s/workloads_test.go` の `TestCronJobsCoverEveryEnqueueJob`
+
+</details>
 
 ### Deployment 併用時: SIGTERM drain + pod-deletion-cost
 
@@ -315,26 +346,28 @@ Deployment 型で worker を運用する場合（またはその併用）の定�
 - SIGTERM で **drain**（実行中ジョブは完走、新規 claim 停止）+ 長い `terminationGracePeriodSeconds`
 - busy な worker が `controller.kubernetes.io/pod-deletion-cost` を上げてスケールイン犠牲者から外れる
 
-**drain の猶予は `--soft-stop-timeout`（既定 5 秒、`river.Config.SoftStopTimeout`）である。** SIGTERM を受けてから実行中のジョブを打ち切るまでの時間で、その内側に終われば完走する。実バイナリで両方向を確認した。猶予 60 秒に対して、SIGTERM の 40 秒後に終わるジョブは `completed` になった。猶予 5 秒に対して、同じジョブは 5 秒で ctx を切られて `available` に戻った（`attempt=0` / `errors` は空）。**停止による打ち切りは River v0.44 以降ジョブのエラーとして記録されず、試行も消費しない。**
-その代償として、**打ち切りは `river_job` に痕跡を残さない**（`errors` は空、`attempt` も進まない）。
-デプロイ由来の打ち切りかどうかはテーブルからは判別できない。
-**ログでも「どのジョブが切られたか」は見えない。** River に `Config.Logger` を渡していないので、
-River 自身の既定ロガー（WARN 止まり）だけが出る。
-見えるのは猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）で、
-判別できるのは「猶予が切れた」までである。テストは `TestServerCmd_SigtermDrainsRunningJob`（実 DB + mirakc モック、両方向）。
+**長時間ジョブの `--soft-stop-timeout` と `terminationGracePeriodSeconds` を対で設定する。** drain の猶予は `--soft-stop-timeout`（既定 5 秒）である。
+
+SIGTERM を受けてから猶予内に終わったジョブは完走する。実バイナリでは、猶予 60 秒で SIGTERM の 40 秒後に終わるジョブは `completed` になった。
+
+猶予 5 秒では同じジョブが 5 秒で ctx を切られて `available` に戻った（`attempt=0` / `errors` は空）。**停止による打ち切りは River v0.44 以降、ジョブのエラーとして記録されず試行も消費しない。**
+
+打ち切りは **`river_job` に痕跡を残さない**（`errors` は空、`attempt` も進まない）。デプロイ由来の打ち切りかどうかはテーブルから判別できない。
+
+**ログでも「どのジョブが切られたか」は見えない。** River に `Config.Logger` を渡していないので、River の既定ロガー（WARN 止まり）だけが出る。猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）から判別できるのは、「猶予が切れた」までである。
 
 `--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に効く。**0 以下は起動エラー**、そして **worker ロールを持たないプロセスでの指定も起動エラー**である。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を黙って無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-`terminationGracePeriodSeconds` の経過後は、River の外で SIGKILL が来る。これが真の上限である。
-猶予が k8s の設定を超えると、SIGKILL が先に来て実行中の job は `running` のまま残る。
-ingest は有限 Timeout と JobRescuer が回収する。
-encode は enqueue 時に保存した締切の後に、notifier Deployment の常駐 River client の JobRescuer が再試行する。
-cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。
-その他の job も JobRescuer に委ねる。
-Work が ctx cancellation に従わない待ちは締切後も残りうるため、k8s の liveness probe でプロセスを終了させる。
-猶予内に止めれば、プロセス自身が job を `available` に戻す。
+`terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。**drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て**実行中の job は `running` のまま残る。
+
+- ingest は有限 Timeout と JobRescuer が回収する。
+- encode は enqueue 時に保存した締切の後、notifier Deployment の常駐 River client の JobRescuer が再試行する。
+- cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が lock 解放後に代替ジョブを投入する。
+- その他の job も JobRescuer に委ねる。
+
+Work が ctx cancellation に従わない待ちは締切後も残りうるため、k8s の liveness probe でプロセスを終了させる。猶予内に止めれば、プロセス自身が job を `available` に戻す。
 
 **worker ロールを走らせる Pod**（Deployment でも KEDA ScaledJob が起こす Job Pod でも同じ）のプロセス側の最悪値は次の足し算になる:
 
@@ -345,22 +378,38 @@ preStop の sleep + 10s + --soft-stop-timeout + 10s      ← 既定なら preSto
 
 **`terminationGracePeriodSeconds` はこれより長く取る。等号にしない** --- 上の値はプロセスが消えるまでの最悪値そのものなので、等号だと SIGKILL と同着になる。しかも同着になるのは予算を使い切ったケース、つまりここで避けようとしている「行が `running` のまま残る」経路そのものである。既定なら 30 秒（`docker-compose.yml` の `stop_grace_period` がこの値）。
 
-- **worker ロールを持たない Pod では後ろ 2 項が落ちる**（River クライアントを Start するのは worker ロールだけ）。api がこれで、要求は `preStop の sleep + 10s` になる。実際の値は `deploy/k8s/base/api.yaml` の 30 秒で、`deploy/k8s/manifests_test.go` の `TestTerminationBudgetCoversPreStop` が固定している
+- **worker ロールを持たない Pod では後ろ 2 項が落ちる**（River クライアントを Start するのは worker ロールだけ）。api がこれで、要求は `preStop の sleep + 10s` になる。実際の値は `deploy/k8s/base/api.yaml` の 30 秒である。
 - 2 項目は **errgroup の停止待ち**で、**drain と足し合わせる**。2 つは SIGTERM を契機に重なって進むので、実際の停止はもっと早いことが多い（River の soft stop タイマーは SIGTERM の瞬間から走る）。それでもプロセスが `Stop` に課す締切は errgroup が畳み終わってから測るので、**上界は和**になる。重なるぶんは安全側のマージンとして残す。**worker 単独の Pod ではこの上限を決めるのは HTTP の停止**（`http.Server.Shutdown` の 10 秒）だけで、それが 10s の出どころである。`--all`（monolith）では ffmpeg の終了待ち（ライブ視聴）や watcher の畳みも同じ待ちに入る。**それらの所要は測っていない**ので、`--all` で 10s に収まる根拠は無い
 - SSE（`/api/events`）を掴んだクライアントが居ると HTTP の停止はこの上限を使い切る。`Shutdown` は実行中のリクエストの ctx を cancel せず、SSE ハンドラは自分の接続が切れるまで抜けないからである（機構からの導出。実測はしていない）
 - 3 項目は**猶予が切れたあと畳み終えるぶん**（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。**所要は測っていない** --- HTTP の停止と同じ大きさに揃えただけである
 - 数時間のエンコード / ingest は既定の 5 秒では完走しない。**`--soft-stop-timeout` と `terminationGracePeriodSeconds` は対で引き上げる**（片方だけ上げても、短い側が先に効く）
 - **既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測: 既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は一時的に `running` のまま残る。ingest は JobRescuer（既定 6 分）、encode は保存された締切後の JobRescuer、cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が回収する。実尺が不明な場合と締切のない旧 args の encode は 12 時間を使う。**長い drain は、猶予を明示的に書いたデプロイだけが手に入れる**
 - **ローリング更新の間は worker の DB コネクション budget が二重に乗る**（旧 Pod が drain のあいだプールを握り続ける。[§3](database.md) のロール別 budget）。猶予を数時間に取る構成では、その時間ぶん重なる
-- プロセス側の待ちが猶予から導かれていることは `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout` が固定している。猶予より長いことは `TestShutdownBudget_CoversTheSoftStop` が固定している。ここが固定値だと、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされない）。ingest と encode はその後 JobRescuer が回収し、cm_detect は定期 reconcile が拾う。どちらも復帰までの遅延が増えるので、猶予不足を前提にしない
+- プロセス側の待ちは猶予から導く。固定値にすると、猶予の内側で完走するはずのジョブを**プロセスが先に抜けることで**打ち切る（このときジョブの ctx は cancel すらされない）。ingest と encode はその後 JobRescuer が回収し、cm_detect は定期 reconcile が拾う。どちらも復帰までの遅延が増えるので、猶予不足を前提にしない
 
 **バイナリを戻すときは argv からも消す。** `--soft-stop-timeout` を書いたマニフェストのままイメージを古い版に戻すと `unknown flag` で起動しない（実測）。Deployment なら CrashLoopBackOff、ScaledJob なら Job が即 failed になり、KEDA は滞留を見続けて Job を作り続ける。DB スキーマは触っていないので、argv さえ戻せば可逆である。
 
 `docker-compose.yml` の `stop_grace_period` も同じ形で置いてある。**Docker の既定は 10 秒**なので、書かないと drain の途中で SIGKILL される。
 
-**SIGTERM を 2 発撃てば強制終了できる。** drain 中に 2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。数時間の猶予を設定した worker を手で止めるときの逃げ道である。**代償は SIGKILL と同じ**である --- River の completer は結果を書けないので、実行中だったジョブの行は一時的に `running` のまま残る。ingest と encode は JobRescuer（encode は保存された締切後）、cm_detect（ロゴ候補解析を含む）は次の `cm_detect_reconcile` が回収する。その他のジョブも JobRescuer に委ねられる。急いで止めたいときだけ使う。実測（猶予 600 秒・drain 中）: 2 発目で即座に exit 143。**登録を外さないと 2 発目は捨てられ**、同じ条件でプロセスは生き残ってジョブの完走まで走り続けた（手順は [runbook/testing.md](../runbook/testing.md)）。
+**SIGTERM を 2 発撃てば強制終了できる。** 数時間の猶予を設定した worker を手で止めるときの逃げ道である。実測（猶予 600 秒・drain 中）では 2 発目で即座に exit 143 になった。
+
+drain 中に 2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。**代償は SIGKILL と同じ**である --- River の completer は結果を書けず、実行中だったジョブの行は一時的に `running` のまま残る。
+
+ingest と encode は JobRescuer（encode は保存された締切後）、cm_detect（ロゴ候補解析を含む）は次の `cm_detect_reconcile` が回収する。その他のジョブも JobRescuer に委ねられる。急いで止めたいときだけ使う。
+
+**登録を外さないと 2 発目は捨てられる。** 同じ条件ではプロセスが生き残ってジョブの完走まで走り続けた（手順は [runbook/testing.md](../runbook/testing.md)）。
 
 1 件消化モードの graceful stop にも同じ猶予が効く（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。ジョブ 1 件を消化したあとの正常終了の経路も同じで、**取りこぼしのジョブ（上記「既知の窓」）を掴んでいた場合、その完走を待つのは猶予までである**。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
+
+<details><summary>根拠</summary>
+
+- drain の猶予内で完走・打ち切りになる: `TestServerCmd_SigtermDrainsRunningJob`
+- drain の猶予設定: `river.Config.SoftStopTimeout`
+- worker を持たない api の停止予算: `deploy/k8s/base/api.yaml` / `deploy/k8s/manifests_test.go` の `TestTerminationBudgetCoversPreStop`
+- graceful stop の締切が猶予に従う: `TestStopRiverForShutdown_DeadlineFollowsSoftStopTimeout`
+- HTTP 停止予算が soft-stop の猶予を覆う: `TestShutdownBudget_CoversTheSoftStop`
+
+</details>
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
@@ -391,7 +440,7 @@ k8s の Lease API に依存しないため monolithic mode でも同じコード
 
 `/healthz` は **liveness probe 専用**。依存サービス（DB・mirakc）の状態は一切チェックせず、プロセスが HTTP を返せる限り常に 200 を返す。
 
-- 不変条件 1「api ロールは mirakc に問い合わせない」により、mirakc チェックは構造的に不可
+- api ロールから mirakc をチェックすることは構造的にできない
 - ハイブリッド構成（[overview.md](../overview.md)）ではクラウド側 api から mirakc に到達できないのが正常状態
 - liveness に依存チェックを入れると「依存ダウン → 全プロセス再起動ループ」になる（liveness probe の定番アンチパターン）
 - DB は起動時に fail-fast で検証済み。ランタイムの DB 断は各ロールがリトライ / クラッシュで対処する（crash-only 原則）
@@ -400,12 +449,18 @@ mirakc の健全性は watcher が `observed_at` として DB に記録し、UI 
 
 **readiness は `/readyz` に分けてあり、こちらは DB への ping を見る。** api を Service の後ろに置く以上、DB に繋がっていない Pod にトラフィックが振られる窓が実際に開くため。liveness と readiness で見るものが逆になるのは、問いが違うからである --- liveness は「このプロセスは再起動すべきか」、readiness は「今トラフィックを受けられるか」。
 
-- 見るのは DB への ping だけ。**mirakc への到達性は見ない**（不変条件 1。ハイブリッド構成ではクラウド側 api から mirakc に到達できないのが正常状態）
+- 見るのは DB への ping だけ。**mirakc への到達性は見ない**（ハイブリッド構成ではクラウド側 api から mirakc に到達できないのが正常状態）
 - **プールが無ければ 503**（fail-closed）。実バイナリではプールは常にある（起動時に fail-fast する）ので、これはルータの組み立てを誤ったときに 200 で隠さないための保険
 - `pgxpool.Pool.Ping` はプールからコネクションを 1 本取る。したがってプールが飽和している間もタイムアウトして 503 になりうる（未測定。`Acquire` が待つことからの帰結）。**この応答から DB 断と輻輳は区別できない**
 - 輻輳で 503 が続くと**全レプリカが同時に Endpoints から抜ける**（同じ DB を見ているのでレプリカを増やしても同時に落ちる）。probe の `failureThreshold` を上げて猶予を作ってはいるが、これは遅らせるだけである。この形の全断が起きるなら閾値ではなく DB 側（プール上限・`statement_timeout`。[§3](database.md)）を見る
 - ハンドラ側にも応答の上限を持つ（probe の `timeoutSeconds` はそれより長くする。同値以下だと kubelet が先に諦めるので、ハンドラが 503 を返す経路が一度も通らない）
 - Host allowlist の免除対象に入れる。免除し忘れると readiness が 400 で落ち、Pod は永久に Service の後ろに入らない
+
+<details><summary>根拠</summary>
+
+- api が mirakc に問い合わせない: 不変条件 1
+
+</details>
 
 ### DB 接続失敗: fail-fast + 明示ログ
 
