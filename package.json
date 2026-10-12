@@ -2,7 +2,7 @@
   "name": "rokuban-docs",
   "private": true,
   "scripts": {
-    "docs:lint": "textlint 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md'",
+    "docs:lint": "textlint 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md' && node scripts/docs-paragraph-length.mjs --max-violations 226 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md'",
     "third-party-notices": "node scripts/third-party-notices.mjs"
   },
   "devDependencies": {
