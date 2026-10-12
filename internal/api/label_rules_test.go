@@ -18,8 +18,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -389,7 +387,7 @@ func TestListRecordingShelves_RejectsUnknownKey(t *testing.T) {
 // （トリガーは自分の行しか見ない）。docs/data/series.md §8「評価結果の持ち方」。
 func TestCreateLabelRule_EnqueuesReconcileInSameTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
+	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	resp, created := postLabelRule(t, srv.URL, map[string]any{
 		"value": "作品X", "keyword": "作品X", "priority": 10,
@@ -404,18 +402,19 @@ func TestCreateLabelRule_EnqueuesReconcileInSameTransaction(t *testing.T) {
 		t.Errorf("priority = %v, want 10", created.Priority)
 	}
 
-	riveradaptertest.RequireRiverKindInserted(t, context.Background(), pool, "label_rule_reconcile")
+	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 1 {
+		t.Errorf("label_rule_reconcile enqueue count = %d, want 1", got)
+	}
 }
 
 // 削除も全件再評価を投入する。当たりの表は勝者しか持たないので、CASCADE だけ
 // では次点のルールに移らない（docs/data/series.md §8）。
 func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
-	ctx := context.Background()
+	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
-	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "label_rule_reconcile")
+	enqueuer.Reset()
 	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/label-rules/"+itoa(created.Id), nil)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -426,7 +425,9 @@ func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)
 	}
 
-	riveradaptertest.RequireRiverKindInserted(t, ctx, pool, "label_rule_reconcile")
+	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 1 {
+		t.Errorf("label_rule_reconcile enqueue count = %d, want 1", got)
+	}
 
 	// 消えた id への DELETE は 404。
 	req, _ = http.NewRequest(http.MethodDelete, srv.URL+"/api/label-rules/"+itoa(created.Id), nil)
@@ -440,31 +441,26 @@ func TestDeleteLabelRule_EnqueuesReconcile(t *testing.T) {
 	}
 }
 
-// 2 回続けて編集すると、再評価のジョブも 2 本入る。
-//
-// **一意化すると 2 本目が捨てられる。** 実行中に来た編集を捨てると、1 本目が古い
-// ルール集合で評価し終えた時点で打ち止めになり、次の定期再評価（15 分）まで
-// 反映されない。River は running を外した ByState を挿入時にエラーにするので、
-// 「実行中だけ除く」では代用できない（docs/data/series.md §8）。
+// 2 回続けて編集すると、API が再評価の投入を 2 回依頼する。
 func TestCreateLabelRule_TwoEditsEnqueueTwoJobs(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
-	ctx := context.Background()
+	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X"})
 	postLabelRule(t, srv.URL, map[string]any{"value": "作品Y", "keyword": "作品Y"})
 
-	riveradaptertest.RequireManyRiverKindsInserted(t, ctx, pool, "label_rule_reconcile", "label_rule_reconcile")
+	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 2 {
+		t.Errorf("label_rule_reconcile enqueue count after two edits = %d, want 2", got)
+	}
 }
 
 // PATCH は上書きで、keyword の変更も再評価を投入する。存在しない id は 404。
 func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
-	ctx := context.Background()
+	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	_, created := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "作品X", "priority": 0})
-	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "label_rule_reconcile")
+	enqueuer.Reset()
 	raw, _ := json.Marshal(map[string]any{"value": "作品Y", "keyword": "作品Y", "priority": 5})
 	req, _ := http.NewRequest(http.MethodPatch, srv.URL+"/api/label-rules/"+itoa(created.Id), bytes.NewReader(raw))
 	resp, err := http.DefaultClient.Do(req)
@@ -483,7 +479,9 @@ func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 		t.Errorf("updated = %+v, want the new value and keyword", updated)
 	}
 
-	riveradaptertest.RequireRiverKindInserted(t, ctx, pool, "label_rule_reconcile")
+	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 1 {
+		t.Errorf("label_rule_reconcile enqueue count after edit = %d, want 1", got)
+	}
 
 	raw, _ = json.Marshal(map[string]any{"value": "作品Y", "keyword": "作品Y"})
 	req, _ = http.NewRequest(http.MethodPatch, srv.URL+"/api/label-rules/999999", bytes.NewReader(raw))
@@ -501,7 +499,7 @@ func TestUpdateLabelRule_EnqueuesReconcileAndReports404(t *testing.T) {
 // 場合と、キーワードが空の場合。
 func TestCreateLabelRule_RejectsMeaninglessRules(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
+	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	cases := []struct {
 		name string
@@ -620,17 +618,12 @@ func getRecordingsSeries(t *testing.T, srvURL string) []Recording {
 	return got
 }
 
-// newAPIServerWithRiver は River クライアント付きの API を立てる（ヒント投入の
-// 検査用）。insert-only のクライアントで足りる。
-func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
+func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httptest.Server, *recordingEnqueuer) {
 	t.Helper()
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating river client: %v", err)
-	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(client)}))
+	enqueuer := newRecordingEnqueuer()
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, enqueuer
 }
 
 // value は自動キーと同じ正規化を通るので、最初の空白で切れる。API は実効の棚キー
@@ -638,7 +631,7 @@ func newAPIServerWithRiver(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 // `NHK高校講座 化学` は同じ棚キーになる（割るつもりのルールが同じ棚に落ちる）。
 func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
+	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	resp, created := postLabelRule(t, srv.URL, map[string]any{"value": "NHK高校講座 数学I", "keyword": "数学"})
 	if resp.StatusCode != http.StatusCreated {
@@ -677,7 +670,7 @@ func TestLabelRule_ValueKeyIsTheTruncatedShelfKey(t *testing.T) {
 // priority が int32 を外れる値も黙って折り返さず 400。
 func TestCreateLabelRule_RejectsBlankKeywordAndOutOfRangePriority(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := newAPIServerWithRiver(t, pool)
+	srv, _ := newAPIServerWithRecordingEnqueuer(t, pool)
 
 	cases := []struct {
 		name string

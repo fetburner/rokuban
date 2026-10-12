@@ -13,50 +13,45 @@ import (
 	"testing"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// testIngestWorker は jobs.IngestJobArgs 用の no-op ワーカー。このパッケージの
-// テストはジョブを実際に実行せず、River の公開 API で投入結果を確認するが、
-// InsertTx は挿入時点で Kind が Workers バンドルに登録済みであることを要求するため、
-// 何もしないワーカーだけ登録しておく。
-type testIngestWorker struct {
-	river.WorkerDefaults[jobs.IngestJobArgs]
+func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCall {
+	t.Helper()
+	enqueuer, ok := watcher.enqueuer.(*jobqtestutil.RecordingEnqueuer)
+	if !ok {
+		t.Fatalf("watcher enqueuer = %T, want *RecordingEnqueuer", watcher.enqueuer)
+	}
+	return enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
 }
 
-func (testIngestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) error { return nil }
-
-func listIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []*rivertype.JobRow {
+func requireIngestArgs(t *testing.T, call jobqtestutil.EnqueueCall) jobs.IngestJobArgs {
 	t.Helper()
-	return riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, jobs.IngestJobArgs{}.Kind())
+	args, ok := call.Args.(jobs.IngestJobArgs)
+	if !ok {
+		t.Fatalf("ingest args = %T, want jobs.IngestJobArgs", call.Args)
+	}
+	return args
 }
 
-func countIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordID string) int {
+func countIngestEnqueues(t *testing.T, watcher *Watcher, recordID string) int {
 	t.Helper()
-	jobRows := listIngestJobs(t, ctx, pool)
+	calls := listIngestEnqueues(t, watcher)
 	if recordID == "" {
-		return len(jobRows)
+		return len(calls)
 	}
 	count := 0
-	for _, row := range jobRows {
-		var args jobs.IngestJobArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding ingest job %d args: %v", row.ID, err)
-		}
+	for _, call := range calls {
+		args := requireIngestArgs(t, call)
 		if args.RecordID == recordID {
 			count++
 		}
@@ -64,32 +59,23 @@ func countIngestJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool, reco
 	return count
 }
 
-// newTestRiverClient はテスト用の River クライアントを作る。
-//
-// internal/worker.NewClient は使わない（同じ理由で internal/worker を import
-// できないため）。
-func newTestRiverClient(t *testing.T, pool *pgxpool.Pool) *river.Client[pgx5.Tx] {
+func requireIngestEnqueuesCoalesce(t *testing.T, calls []jobqtestutil.EnqueueCall) {
 	t.Helper()
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &testIngestWorker{})
-	rc, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:  map[string]river.QueueConfig{river.QueueDefault: {MaxWorkers: 1}},
-		Workers: workers,
-	})
-	if err != nil {
-		t.Fatalf("creating test river client: %v", err)
+	for _, call := range calls {
+		args := requireIngestArgs(t, call)
+		if !args.Spec().Coalesce {
+			t.Errorf("ingest args %#v do not request coalescing", args)
+		}
 	}
-	return rc
 }
 
 func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 
-	rc := newTestRiverClient(t, pool)
-
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, enqueuer, nil)
 	return w, pool
 }
 
@@ -381,13 +367,20 @@ func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
 	assertRecordingSnapshotColumns(t, pool, *syncRecordingID, snapshotFromRecord(record))
 
 	// Verify ingest job
-	jobRows := listIngestJobs(t, ctx, pool)
-	if len(jobRows) != 1 {
-		t.Errorf("ingest job count = %d, want 1", len(jobRows))
+	calls := listIngestEnqueues(t, w)
+	if len(calls) != 1 {
+		t.Errorf("ingest enqueue calls = %d, want 1", len(calls))
 	}
-	if len(jobRows) == 1 && jobRows[0].Priority != 2 {
-		t.Errorf("finished ingest priority = %d, want 2", jobRows[0].Priority)
+	if len(calls) == 1 {
+		args := requireIngestArgs(t, calls[0])
+		if args.RecordID != record.ID || args.Site != DefaultSite {
+			t.Errorf("ingest args = %+v, want record %q at site %q", args, record.ID, DefaultSite)
+		}
+		if got := jobq.EffectivePriority(args.Spec(), calls[0].Options...); got != 2 {
+			t.Errorf("finished ingest priority = %d, want 2", got)
+		}
 	}
+	requireIngestEnqueuesCoalesce(t, calls)
 }
 
 func TestProcessRecord_Idempotent(t *testing.T) {
@@ -411,8 +404,10 @@ func TestProcessRecord_Idempotent(t *testing.T) {
 		t.Errorf("recording count = %d, want 1", recCount)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
-		t.Errorf("ingest job count = %d, want 1", jobCount)
+	calls := listIngestEnqueues(t, w)
+	requireIngestEnqueuesCoalesce(t, calls)
+	if got := len(calls); got != 3 {
+		t.Errorf("ingest enqueue calls after 3 processRecord calls = %d, want 3", got)
 	}
 }
 
@@ -429,13 +424,20 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 
 	// 録画開始時点で ingest を投入する。追従ジョブが録画中ずっと枠を
 	// 保持することで、finished 後の全量 pull と同じ job 形を使える。
-	jobRows := listIngestJobs(t, ctx, pool)
-	if len(jobRows) != 1 {
-		t.Errorf("ingest job count during recording = %d, want 1", len(jobRows))
+	calls := listIngestEnqueues(t, w)
+	if len(calls) != 1 {
+		t.Errorf("ingest enqueue calls during recording = %d, want 1", len(calls))
 	}
-	if len(jobRows) == 1 && jobRows[0].Priority != 1 {
-		t.Errorf("recording ingest priority = %d, want 1", jobRows[0].Priority)
+	if len(calls) == 1 {
+		args := requireIngestArgs(t, calls[0])
+		if args.RecordID != record.ID || args.Site != DefaultSite {
+			t.Errorf("recording ingest args = %+v, want record %q at site %q", args, record.ID, DefaultSite)
+		}
+		if got := jobq.EffectivePriority(args.Spec(), calls[0].Options...); got != 1 {
+			t.Errorf("recording ingest priority = %d, want 1", got)
+		}
 	}
+	requireIngestEnqueuesCoalesce(t, calls)
 
 	var recStatus string
 	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
@@ -460,12 +462,26 @@ func TestProcessRecord_StatusProgression(t *testing.T) {
 		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
 	}
 
-	jobRows = listIngestJobs(t, ctx, pool)
-	if len(jobRows) != 1 {
-		t.Errorf("ingest job count after finished = %d, want 1", len(jobRows))
+	calls = listIngestEnqueues(t, w)
+	if len(calls) != 2 {
+		t.Errorf("ingest enqueue calls after finished = %d, want 2", len(calls))
 	}
-	if len(jobRows) == 1 && jobRows[0].Priority != 1 {
-		t.Errorf("finished notification must reuse the recording job at priority 1, got %d", jobRows[0].Priority)
+	requireIngestEnqueuesCoalesce(t, calls)
+	for i, call := range calls {
+		args := requireIngestArgs(t, call)
+		if args.RecordID != record.ID {
+			t.Errorf("finished ingest args record_id = %q, want %q", args.RecordID, record.ID)
+		}
+		if args.Site != DefaultSite {
+			t.Errorf("finished ingest site = %q, want %q", args.Site, DefaultSite)
+		}
+		wantPriority := 1
+		if i == 1 {
+			wantPriority = 2
+		}
+		if got := jobq.EffectivePriority(args.Spec(), call.Options...); got != wantPriority {
+			t.Errorf("ingest enqueue call %d priority = %d, want %d", i+1, got, wantPriority)
+		}
 	}
 
 	// Still only one recording
@@ -561,8 +577,10 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 		t.Errorf("new recording superseded_at = %v, want nil", newSupersededAt)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
-		t.Errorf("ingest job count = %d, want 1 (成功 record を取り込む ingest が起動するはず)", jobCount)
+	calls := listIngestEnqueues(t, w)
+	requireIngestEnqueuesCoalesce(t, calls)
+	if got := len(calls); got != 1 {
+		t.Errorf("ingest enqueue calls = %d, want 1 (成功 record を取り込む ingest が起動するはず)", got)
 	}
 
 	// 失敗の履歴が失われていないこと（CLAUDE.md 不変条件 3 / docs/schema §5
@@ -749,8 +767,10 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 			"(failed 行 1 + 成功行 1 のまま増減しないはず)", totalCount)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 1 {
-		t.Errorf("ingest job count = %d, want 1 (3 回処理しても ingest は 1 回だけ)", jobCount)
+	calls := listIngestEnqueues(t, w)
+	requireIngestEnqueuesCoalesce(t, calls)
+	if got := len(calls); got != 3 {
+		t.Errorf("ingest enqueue calls after 3 processRecord calls = %d, want 3", got)
 	}
 
 	var failedSupersededAt *time.Time
@@ -873,8 +893,8 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 	}
 
 	// No ingest job
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 0 {
-		t.Errorf("ingest job count = %d, want 0 for untagged record", jobCount)
+	if callCount := countIngestEnqueues(t, w, ""); callCount != 0 {
+		t.Errorf("ingest enqueue calls = %d, want 0 for untagged record", callCount)
 	}
 }
 
@@ -943,8 +963,10 @@ func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
 			t.Fatalf("round %d: recording count = %d, want 1 (concurrent processRecord must be idempotent)", round, recCount)
 		}
 
-		if jobCount := countIngestJobs(t, ctx, pool, recordID); jobCount != 1 {
-			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
+		calls := listIngestEnqueues(t, w)
+		requireIngestEnqueuesCoalesce(t, calls)
+		if got := countIngestEnqueues(t, w, recordID); got != goroutinesPerRound {
+			t.Errorf("round %d: ingest enqueue calls for %s = %d, want %d", round, recordID, got, goroutinesPerRound)
 		}
 	}
 }
@@ -979,8 +1001,8 @@ func TestProcessRecord_ConcurrentUntaggedRecord(t *testing.T) {
 		t.Errorf("expected recording_id nil for untagged record, got %d", *syncRecordingID)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 0 {
-		t.Errorf("ingest job count = %d, want 0 for untagged record", jobCount)
+	if callCount := countIngestEnqueues(t, w, ""); callCount != 0 {
+		t.Errorf("ingest enqueue calls = %d, want 0 for untagged record", callCount)
 	}
 }
 
@@ -1025,7 +1047,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	programID := int64(327361024100)
 	createTestReservation(t, pool, programID)
@@ -1074,7 +1096,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1131,7 +1153,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	programID := int64(327361024101)
 	createTestReservation(t, pool, programID)
 
@@ -1173,7 +1195,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, enqueuer, nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1234,7 +1256,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	createTestReservation(t, pool, 200001)
 	createTestReservation(t, pool, 200002)
@@ -1273,7 +1295,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, enqueuer, nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1295,8 +1317,10 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("recordings count = %d, want 2", recCount)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 2 {
-		t.Errorf("ingest job count = %d, want 2", jobCount)
+	calls := listIngestEnqueues(t, w)
+	requireIngestEnqueuesCoalesce(t, calls)
+	if got := len(calls); got != 2 {
+		t.Errorf("ingest enqueue calls = %d, want 2", got)
 	}
 
 	// Run sweep again — verify idempotency
@@ -1311,8 +1335,10 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		t.Errorf("recordings count after 2nd sweep = %d, want 2", recCount)
 	}
 
-	if jobCount := countIngestJobs(t, ctx, pool, ""); jobCount != 2 {
-		t.Errorf("ingest job count after 2nd sweep = %d, want 2", jobCount)
+	calls = listIngestEnqueues(t, w)
+	requireIngestEnqueuesCoalesce(t, calls)
+	if got := len(calls); got != 4 {
+		t.Errorf("ingest enqueue calls after 2nd sweep = %d, want 4", got)
 	}
 }
 
@@ -1787,7 +1813,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	b := testRecord("sse-mid-loop", 700001, "finished")
 	createTestReservation(t, pool, 700001)
@@ -1808,7 +1834,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, enqueuer, nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -1848,7 +1874,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	const rounds = 20
 	for round := 0; round < rounds; round++ {
@@ -1882,7 +1908,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, enqueuer, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1922,8 +1948,10 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 				"((a) handleEvent と (c) Sweep の並行実行は冪等でなければならない)", round, recCount)
 		}
 
-		if jobCount := countIngestJobs(t, ctx, pool, recordID); jobCount != 1 {
-			t.Errorf("round %d: ingest job count = %d, want 1", round, jobCount)
+		calls := listIngestEnqueues(t, w)
+		requireIngestEnqueuesCoalesce(t, calls)
+		if got := countIngestEnqueues(t, w, recordID); got != 2 {
+			t.Errorf("round %d: ingest enqueue calls for %s = %d, want 2", round, recordID, got)
 		}
 	}
 }
@@ -1936,7 +1964,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	var recordsCalls, eventsCalls int32
 	mux := http.NewServeMux()
@@ -1959,7 +1987,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, enqueuer, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -2108,7 +2136,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	rc := newTestRiverClient(t, pool)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
 	ruleID := createTestRule(t, pool)
 	programID := int64(700004)
@@ -2148,7 +2176,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, riveradapter.NewLegacyEnqueuer(rc), nil)
+	w := New(DefaultSite, mc, pool, enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -2373,22 +2401,23 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 				t.Fatalf("processRecord (2nd call): %v", err)
 			}
 
-			jobCount := countIngestJobs(t, ctx, pool, recordID)
-			wantJobCount := 0
+			calls := listIngestEnqueues(t, w)
+			requireIngestEnqueuesCoalesce(t, calls)
+			callCount := countIngestEnqueues(t, w, recordID)
+			wantCallCount := 0
 			if tt.wantIngestJob {
-				wantJobCount = 1
+				wantCallCount = 2
 			}
-			if jobCount != wantJobCount {
-				t.Errorf("ingest job count = %d, want %d", jobCount, wantJobCount)
+			if callCount != wantCallCount {
+				t.Errorf("ingest enqueue calls = %d, want %d", callCount, wantCallCount)
 			}
 		})
 	}
 }
 
-// failAfterEnqueueTx は内側の投入を呼んだ直後にエラーを返す。processRecord では
-// EnqueueTx が commit 直前の最後の書き込みなので、ここでの失敗は ingest 投入まで
-// 済んだ tx の rollback を起こす。Enqueue も同じく失敗させるので、tx の外へ投入する
-// 実装では rollback 後もジョブが残り、件数のアサーションで落ちる。
+// failAfterEnqueueTx は内側の投入要求を記録した直後にエラーを返す。
+// processRecord の失敗で recordings が rollback されることと、呼び出し側が EnqueueTx
+// と transaction を渡すことを確認する。
 type failAfterEnqueueTx struct{ jobq.Enqueuer }
 
 var errAfterEnqueueTx = errors.New("injected failure after enqueue")
@@ -2407,13 +2436,13 @@ func (f failAfterEnqueueTx) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.A
 	return jobq.Result{}, errAfterEnqueueTx
 }
 
-// TestProcessRecord_IngestEnqueueFollowsTransaction は ingest 投入が recordings 行と
-// 同じ tx に乗っていることを確かめる。投入後に失敗させると、recordings 行も
-// ingest ジョブも残らない。
+// TestProcessRecord_IngestEnqueueFollowsTransaction は ingest 投入要求が recordings 行と
+// 同じ tx に渡ることを確かめる。River adapter の契約テストが、実ジョブの rollback を検証する。
 func TestProcessRecord_IngestEnqueueFollowsTransaction(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
-	w.enqueuer = failAfterEnqueueTx{w.enqueuer}
+	enqueuer := w.enqueuer.(*jobqtestutil.RecordingEnqueuer)
+	w.enqueuer = failAfterEnqueueTx{enqueuer}
 
 	createTestReservation(t, pool, 327360102415397)
 	record := testRecord("rollback123", 327360102415397, "finished")
@@ -2421,8 +2450,12 @@ func TestProcessRecord_IngestEnqueueFollowsTransaction(t *testing.T) {
 	if err := w.processRecord(ctx, record); !errors.Is(err, errAfterEnqueueTx) {
 		t.Fatalf("processRecord error = %v, want errAfterEnqueueTx", err)
 	}
-	if n := countIngestJobs(t, ctx, pool, ""); n != 0 {
-		t.Errorf("ingest jobs after rollback = %d, want 0", n)
+	calls := enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
+	if len(calls) != 1 {
+		t.Fatalf("ingest enqueue calls = %d, want 1", len(calls))
+	}
+	if !calls[0].Transactional || calls[0].Tx == nil {
+		t.Errorf("ingest enqueue call = %#v, want EnqueueTx with a transaction", calls[0])
 	}
 	var rows int
 	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&rows); err != nil {

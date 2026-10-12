@@ -1,20 +1,27 @@
-package riveradapter_test
+package riveradapter
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/jobq/contracttest"
 )
 
+func configTestRegistry() *jobq.Registry {
+	registry := jobq.NewRegistry()
+	Register(registry, riverContractWorkerFunc(func(context.Context, contracttest.Args) error { return nil }))
+	return registry
+}
+
 func TestWorkerBuildConfigRejectsUnknownQueue(t *testing.T) {
-	_, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{Queues: []string{"bogus"}})
+	_, err := buildRegistryConfig(configTestRegistry(), Config{Queues: []string{"bogus"}})
 	if err == nil {
-		t.Fatal("BuildRegistryConfig error = nil, want unknown queue error")
+		t.Fatal("buildRegistryConfig error = nil, want unknown queue error")
 	}
 }
 
@@ -24,8 +31,8 @@ func TestWorkerBuildConfigLogsPhysicalQueues(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if _, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{BoundSites: []string{"tokyo"}}); err != nil {
-		t.Fatalf("BuildRegistryConfig: %v", err)
+	if _, err := buildRegistryConfig(configTestRegistry(), Config{BoundSites: []string{"tokyo"}}); err != nil {
+		t.Fatalf("buildRegistryConfig: %v", err)
 	}
 	for _, want := range []string{"ingest_tokyo", "epg_tokyo", "reconciler_tokyo", "watcher_tokyo", "cleanup", "ruler", "bound_sites=[tokyo]"} {
 		if !strings.Contains(logBuf.String(), want) {
@@ -35,9 +42,9 @@ func TestWorkerBuildConfigLogsPhysicalQueues(t *testing.T) {
 }
 
 func TestWorkerBuildConfigStopAndRescueDefaults(t *testing.T) {
-	cfg, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{})
+	cfg, err := buildRegistryConfig(configTestRegistry(), Config{})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig: %v", err)
+		t.Fatalf("buildRegistryConfig: %v", err)
 	}
 	if cfg.SoftStopTimeout <= 0 {
 		t.Errorf("SoftStopTimeout = %s, want a positive default", cfg.SoftStopTimeout)
@@ -46,12 +53,12 @@ func TestWorkerBuildConfigStopAndRescueDefaults(t *testing.T) {
 		t.Errorf("RescueStuckJobsAfter = %s, want zero to select River default", cfg.RescueStuckJobsAfter)
 	}
 
-	explicit, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	explicit, err := buildRegistryConfig(configTestRegistry(), Config{
 		SoftStopTimeout:      90 * time.Second,
 		RescueStuckJobsAfter: 2 * time.Minute,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig with explicit timeouts: %v", err)
+		t.Fatalf("buildRegistryConfig with explicit timeouts: %v", err)
 	}
 	if explicit.SoftStopTimeout != 90*time.Second {
 		t.Errorf("explicit SoftStopTimeout = %s, want 90s", explicit.SoftStopTimeout)
@@ -62,20 +69,20 @@ func TestWorkerBuildConfigStopAndRescueDefaults(t *testing.T) {
 }
 
 func TestWorkerBuildConfigQueueConcurrency(t *testing.T) {
-	cfg, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	cfg, err := buildRegistryConfig(configTestRegistry(), Config{
 		EncodeConcurrency: 3, ThumbnailConcurrency: 2,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig: %v", err)
+		t.Fatalf("buildRegistryConfig: %v", err)
 	}
 	for queue, want := range map[string]int{"encode": 3, "thumbnail": 2} {
 		if got := cfg.Queues[queue].MaxWorkers; got != want {
 			t.Errorf("queue %q MaxWorkers = %d, want %d", queue, got, want)
 		}
 	}
-	defaults, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{})
+	defaults, err := buildRegistryConfig(configTestRegistry(), Config{})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig defaults: %v", err)
+		t.Fatalf("buildRegistryConfig defaults: %v", err)
 	}
 	for _, queue := range []string{"encode", "thumbnail"} {
 		if got := defaults.Queues[queue].MaxWorkers; got != 1 {
@@ -85,15 +92,15 @@ func TestWorkerBuildConfigQueueConcurrency(t *testing.T) {
 }
 
 func TestWorkerBuildConfigPeriodicJobsAndSiteQueues(t *testing.T) {
-	base := riveradapter.Config{
+	base := Config{
 		PeriodicJobs:  true,
 		BoundSites:    []string{"tokyo", "takamatsu"},
 		CatalogExport: true, DeleteReconcile: true,
 		EncodeReconcile: true, ThumbnailReconcile: true,
 	}
-	configured, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), base)
+	configured, err := buildRegistryConfig(configTestRegistry(), base)
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig: %v", err)
+		t.Fatalf("buildRegistryConfig: %v", err)
 	}
 	if got, want := len(configured.PeriodicJobs), 14; got != want {
 		t.Fatalf("PeriodicJobs = %d, want %d (5 site jobs per site plus 4 global jobs)", got, want)
@@ -105,9 +112,9 @@ func TestWorkerBuildConfigPeriodicJobsAndSiteQueues(t *testing.T) {
 	}
 
 	base.PeriodicJobs = false
-	disabled, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), base)
+	disabled, err := buildRegistryConfig(configTestRegistry(), base)
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig with periodic jobs disabled: %v", err)
+		t.Fatalf("buildRegistryConfig with periodic jobs disabled: %v", err)
 	}
 	if len(disabled.PeriodicJobs) != 0 {
 		t.Errorf("PeriodicJobs with PeriodicJobs=false = %d, want 0", len(disabled.PeriodicJobs))
@@ -115,23 +122,23 @@ func TestWorkerBuildConfigPeriodicJobsAndSiteQueues(t *testing.T) {
 }
 
 func TestWorkerBuildConfigTSScanPeriodicRegistration(t *testing.T) {
-	registered, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	registered, err := buildRegistryConfig(configTestRegistry(), Config{
 		PeriodicJobs:    true,
 		TSScanReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig with periodic TS scan: %v", err)
+		t.Fatalf("buildRegistryConfig with periodic TS scan: %v", err)
 	}
 	if got := len(registered.PeriodicJobs); got != 1 {
 		t.Fatalf("PeriodicJobs = %d, want one TS scan reconcile job", got)
 	}
 
-	disabled, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	disabled, err := buildRegistryConfig(configTestRegistry(), Config{
 		PeriodicJobs:    false,
 		TSScanReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig with periodic jobs disabled: %v", err)
+		t.Fatalf("buildRegistryConfig with periodic jobs disabled: %v", err)
 	}
 	if got := len(disabled.PeriodicJobs); got != 0 {
 		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", got)
@@ -139,22 +146,22 @@ func TestWorkerBuildConfigTSScanPeriodicRegistration(t *testing.T) {
 }
 
 func TestWorkerBuildConfigDeleteReconcilePeriodicRegistration(t *testing.T) {
-	registered, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	registered, err := buildRegistryConfig(configTestRegistry(), Config{
 		PeriodicJobs:    true,
 		DeleteReconcile: true,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig: %v", err)
+		t.Fatalf("buildRegistryConfig: %v", err)
 	}
 	if got := len(registered.PeriodicJobs); got != 1 {
 		t.Fatalf("PeriodicJobs = %d, want one delete reconcile job", got)
 	}
 
-	disabled, err := riveradapter.BuildRegistryConfig(worker.NewWorkers(&worker.Deps{}), riveradapter.Config{
+	disabled, err := buildRegistryConfig(configTestRegistry(), Config{
 		PeriodicJobs: true,
 	})
 	if err != nil {
-		t.Fatalf("BuildRegistryConfig with DeleteReconcile disabled: %v", err)
+		t.Fatalf("buildRegistryConfig with DeleteReconcile disabled: %v", err)
 	}
 	if got := len(disabled.PeriodicJobs); got != 0 {
 		t.Fatalf("PeriodicJobs = %d, want zero when DeleteReconcile is disabled", got)

@@ -5,9 +5,11 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -16,13 +18,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -607,6 +609,15 @@ func TestServerCmd_OnceModeTerminates(t *testing.T) {
 type e2eProbeArgs struct{}
 
 func (e2eProbeArgs) Kind() string { return "e2e_probe" }
+func (e2eProbeArgs) Spec() jobq.Spec {
+	return jobq.Spec{
+		Queue: "cleanup",
+		Timeout: func(jobq.Args) time.Duration {
+			return time.Minute
+		},
+		MaxAttempts: 25,
+	}
+}
 
 // TestServerCmd_OnceModeExitsOnUnhandledJobKind は**未登録 kind のジョブを
 // 掴んでも Job が終わること**を確認する。River の executor は登録されていない
@@ -628,16 +639,15 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	ctx := context.Background()
 	path := writeOnceModeConfig(t)
 
-	// 製品の投入経路には無い kind だが、insert-only client の公開 API を使って
-	// 入れる。Workers == nil の client は未登録 kind の検査をスキップする。
+	// 製品の投入経路には無い kind だが、insert-only enqueuer の jobq API で入れる。
 	// **max_attempts はハーネスの 1 ではなく 25 にする** ---
 	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
 	// 下の attempt の主張が何も検出しなくなる。
-	insertClient, err := riveradapter.NewInsertOnlyClient(pool)
+	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
 	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
+		t.Fatalf("creating insert-only enqueuer: %v", err)
 	}
-	if _, err := insertClient.Insert(ctx, e2eProbeArgs{}, &river.InsertOpts{Queue: "cleanup", MaxAttempts: 25}); err != nil {
+	if _, err := enqueuer.Enqueue(ctx, e2eProbeArgs{}); err != nil {
 		t.Fatalf("inserting unhandled-kind job: %v", err)
 	}
 
@@ -656,6 +666,177 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	if job.Attempt != 1 {
 		t.Errorf("attempt = %d, want 1（同じ Job が掴み直して試行回数を潰している。state=%s）", job.Attempt, job.State)
 	}
+}
+
+func TestServerBinaryAllProcessesAPIAndCLIEnqueues(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	dbCfg := testutil.DatabaseConfig(t)
+	user := dbCfg.User
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	password := dbCfg.Password
+	if password == "" {
+		password = "unused"
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserving server port: %v", err)
+	}
+	port := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("releasing server port: %v", err)
+	}
+
+	mediaDir := t.TempDir()
+	scratchDir := t.TempDir()
+	configPath := writeServerTestConfig(t, fmt.Sprintf(`
+server:
+  listen: "127.0.0.1:%d"
+  allowed_hosts: ["127.0.0.1"]
+db:
+  host: %q
+  port: %d
+  user: %q
+  password: %q
+  database: %q
+  sslmode: %q
+mirakcs:
+  - site: home
+    url: http://127.0.0.1:1
+  - site: other
+    url: http://127.0.0.1:1
+storage:
+  media_dir: %q
+  scratch_dir: %q
+worker:
+  queues: [ruler]
+  periodic_jobs: false
+`, port, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode, mediaDir, scratchDir))
+
+	workDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getting package directory: %v", err)
+	}
+	binaryPath := filepath.Join(t.TempDir(), "rokuban")
+	build := exec.Command("go", "build", "-o", binaryPath, ".")
+	build.Dir = workDir
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building rokuban binary: %v\n%s", err, output)
+	}
+
+	logPath := filepath.Join(t.TempDir(), "server.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("creating server log: %v", err)
+	}
+	server := exec.Command(binaryPath, "--config", configPath, "server", "--all", "--sites", "home,other")
+	server.Stdout, server.Stderr = logFile, logFile
+	if err := server.Start(); err != nil {
+		_ = logFile.Close()
+		t.Fatalf("starting rokuban server --all: %v", err)
+	}
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Wait() }()
+	readServerLog := func() string {
+		_ = logFile.Sync()
+		contents, _ := os.ReadFile(logPath)
+		return string(contents)
+	}
+	serverExited := false
+	t.Cleanup(func() {
+		if !serverExited {
+			_ = server.Process.Signal(os.Interrupt)
+			select {
+			case <-serverDone:
+			case <-time.After(15 * time.Second):
+				_ = server.Process.Kill()
+				<-serverDone
+				t.Errorf("rokuban server did not stop after interrupt")
+			}
+		}
+		_ = logFile.Close()
+	})
+
+	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
+	client := &http.Client{Timeout: time.Second}
+	readyBy := time.Now().Add(15 * time.Second)
+	for time.Now().Before(readyBy) {
+		select {
+		case err := <-serverDone:
+			serverExited = true
+			t.Fatalf("rokuban server exited before HTTP readiness: %v\n%s", err, readServerLog())
+		default:
+		}
+		resp, err := client.Get(baseURL + "/api/rules")
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				break
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if time.Now().After(readyBy) {
+		t.Fatalf("rokuban server did not become ready\n%s", readServerLog())
+	}
+
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/api/rules", strings.NewReader(`{"name":"api-enqueue","sites":["home"]}`))
+	if err != nil {
+		t.Fatalf("creating API enqueue request: %v", err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST /api/rules: %v\n%s", err, readServerLog())
+	}
+	responseBody, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil {
+		t.Fatalf("reading API response: %v", readErr)
+	}
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("POST /api/rules status = %d, want %d: %s", response.StatusCode, http.StatusCreated, responseBody)
+	}
+
+	cliCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cli := exec.CommandContext(cliCtx, binaryPath, "--config", configPath, "enqueue", "ruler-pass", "--site", "other")
+	if output, err := cli.CombinedOutput(); err != nil {
+		t.Fatalf("rokuban enqueue ruler-pass --site other: %v\n%s", err, output)
+	}
+
+	waitForCompletedRulerPassJobs(t, pool, []string{"home", "other"}, readServerLog)
+}
+
+func waitForCompletedRulerPassJobs(t *testing.T, pool *pgxpool.Pool, wantSites []string, readServerLog func() string) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(15 * time.Second)
+	var got map[string]string
+	for time.Now().Before(deadline) {
+		got = make(map[string]string)
+		for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, jobs.RulerPassArgs{}.Kind()) {
+			args := riveradaptertest.MustDecodeRiverJobArgs[jobs.RulerPassArgs](t, row)
+			got[args.Site] = string(row.State)
+		}
+		complete := true
+		for _, site := range wantSites {
+			if got[site] != "completed" {
+				complete = false
+				break
+			}
+		}
+		if complete {
+			if len(got) != len(wantSites) {
+				t.Fatalf("completed ruler_pass sites = %v, want exactly %v", got, wantSites)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("ruler_pass jobs did not complete for sites %v (states %v)\n%s", wantSites, got, readServerLog())
 }
 
 // **ffmpeg/ffprobe の存在検査が `--queues` に従うこと。** 検査が config の
@@ -1012,21 +1193,23 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 		// ときだけ書かれ、`JobSetStateInterrupted` は触らないので、**実際に
 		// worked された行である**ことの
 		// 肯定形の主張になる。
-		var job *rivertype.JobRow
+		var state string
+		var attempt int
+		var errs string
 		for _, candidate := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "epg_sync") {
 			if candidate.AttemptedAt == nil {
 				continue
 			}
-			if job != nil {
+			if state != "" {
 				t.Fatal("worked された epg_sync の行が複数ある")
 			}
-			job = candidate
+			state = string(candidate.State)
+			attempt = candidate.Attempt
+			errs = fmt.Sprintf("%+v", candidate.Errors)
 		}
-		if job == nil {
+		if state == "" {
 			t.Fatal("worked された epg_sync の行が無い（ジョブが起きなかった）")
 		}
-		state, attempt := job.State, job.Attempt
-		errs := fmt.Sprintf("%+v", job.Errors)
 		// **River が帳簿を書き終えてから畳んでいることも見る。** プロセスが
 		// completer の flush を待たずに抜けると行は `running` のまま残り、
 		// 回収は JobRescuer（既定 1 時間。ロール分割構成では動かす常駐

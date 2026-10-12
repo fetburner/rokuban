@@ -12,7 +12,6 @@ import (
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -80,10 +79,10 @@ func TestEncodeWorker_RiverRescuesAfterWorkerTimeout(t *testing.T) {
 		}
 	})
 
-	if _, err := riveradapter.NewLegacyEnqueuer(client).Enqueue(context.Background(), jobs.EncodeJobArgs{
+	if _, err := client.Insert(context.Background(), jobs.EncodeJobArgs{
 		RecordingID: 1,
 		Profile:     "rescue-test",
-	}); err != nil {
+	}, &river.InsertOpts{Queue: jobs.EncodeQueue, MaxAttempts: 25}); err != nil {
 		t.Fatalf("inserting encode job: %v", err)
 	}
 	if err := client.Start(context.Background()); err != nil {

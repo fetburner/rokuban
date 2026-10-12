@@ -7,10 +7,7 @@ import (
 	"strings"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -163,7 +160,7 @@ const (
 // 論理名のままにするため（issue #185 の「罠」「エラーメッセージも論理名で出す」）。
 //
 // site 単位のキュー（internal/jobs の siteBoundQueueNames）を実際に Insert/購読
-// するときの物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。BuildConfig が
+// するときの物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。buildConfig が
 // river.Config.Queues を組み立てる直前にこの展開を行う。
 func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
@@ -359,7 +356,7 @@ type Config struct {
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
 	// プロセスを畳む（OnceGate、docs/operations.md §5）。
 	//
-	// このモードでは BuildConfig が次の 3 つを強制する:
+	// このモードでは buildConfig が次の 3 つを強制する:
 	//
 	//   - 引くキューはちょうど 1 つ（ScaledJob はキュー単位に作るため）
 	//   - そのキューの MaxWorkers は 1（同時 claim を 1 件に抑える。
@@ -373,11 +370,11 @@ type Config struct {
 	Once *OnceGate
 }
 
-// BuildConfig は Config から river.Config を組み立てる。
+// buildConfig は Config から river.Config を組み立てる。
 //
-// river.NewClient を呼ぶ NewClient から分離してあるのは、DB 接続なしで
-// queues 検証や PeriodicJobs の有無を単体テストできるようにするため。
-func BuildConfig(workers *river.Workers, cfg Config) (*river.Config, error) {
+// newRegistryClient から分離してあるのは、DB 接続なしで queues 検証や
+// PeriodicJobs の有無を単体テストできるようにするため。
+func buildConfig(workers *river.Workers, cfg Config) (*river.Config, error) {
 	physicalQueues, err := resolveQueues(cfg)
 	if err != nil {
 		return nil, err
@@ -700,37 +697,4 @@ func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-// NewLegacyClient creates a River client from the existing River worker registry.
-// New application code should use NewAdapter with a jobq.Registry.
-func NewLegacyClient(pool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river.Client[pgx5.Tx], error) {
-	riverCfg, err := BuildConfig(workers, cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating River client: %w", err)
-	}
-	return client, nil
-}
-
-// NewInsertOnlyClient はワーカーを持たない River クライアントを返す。
-//
-// Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
-// 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
-// insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
-// JobList は利用できる。jobq.Enqueuer として使う呼び出し元は NewInsertOnlyEnqueuer
-// を使い、既存の worker クライアントを共有する配線箇所だけがこの型を直接受け取る。
-//
-// watcher 単独プロセスの配線では同じクライアントを LegacyEnqueuer で包み、ingest の
-// 投入に使う（issue #113）。worker のフルのワーカー群を登録すると ingest/encode 等が
-// 実行されるため、単独 watcher にはワーカーを持たない構成が必要である。
-func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("creating insert-only River client: %w", err)
-	}
-	return client, nil
 }

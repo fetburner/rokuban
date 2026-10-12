@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river/rivertype"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -16,7 +15,11 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) *rivertype.JobRow {
+type enqueuedJob struct {
+	Queue string
+}
+
+func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) enqueuedJob {
 	t.Helper()
 	row := riveradaptertest.RequireRiverKindInserted(t, ctx, pool, strings.ReplaceAll(job, "-", "_"))
 	if site != "" {
@@ -27,7 +30,7 @@ func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, j
 			t.Errorf("%s site = %q, want %q", job, args.Site, site)
 		}
 	}
-	return row
+	return enqueuedJob{Queue: row.Queue}
 }
 
 // rokuban enqueue ruler-pass がジョブを投入すること。
