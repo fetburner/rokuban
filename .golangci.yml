@@ -78,6 +78,21 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/jobq/riveradapter
               desc: use the neutral jobq contracts; only cmd/ wires the River adapter
+        notifier-db-source:
+          # notifier の EventHub と SSE 配信は DB を知らない。DB への接続は Source の
+          # 実装のサブパッケージに閉じ込める。テストは実 DB を使う統合テストを含むので対象外。
+          list-mode: lax
+          files:
+            - "${config-path}/internal/notifier/**"
+            - "!${config-path}/internal/notifier/pgsource/**"
+            - "!$test"
+          deny:
+            - pkg: github.com/jackc/pgx
+              desc: notifier reaches the database only through a Source subpackage
+            - pkg: github.com/fetburner/rokuban/internal/db
+              desc: notifier reaches the database only through a Source subpackage
+            - pkg: database/sql
+              desc: notifier reaches the database only through a Source subpackage
         exec-role:
           # os/exec は worker/streamer が実行に使い、config は LookPath で
           # ツールの存在だけを検証する。テストの子プロセス起動は対象外。

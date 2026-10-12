@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -135,6 +138,129 @@ func waitForClients(t *testing.T, hub *EventHub, n int) {
 	t.Fatalf("clients = %d, want %d", hub.clientCount(), n)
 }
 
+type sourceFunc func(context.Context, func(), chan<- string) error
+
+func (f sourceFunc) Listen(ctx context.Context, ready func(), out chan<- string) error {
+	return f(ctx, ready, out)
+}
+
+func TestEventHub_RunWaitsForSourceReady(t *testing.T) {
+	hub := NewEventHub()
+	entered := make(chan struct{})
+	allowReady := make(chan struct{})
+	src := sourceFunc(func(ctx context.Context, ready func(), _ chan<- string) error {
+		close(entered)
+		select {
+		case <-allowReady:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		ready()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hub.Run(ctx, src) }()
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("Source.Listen was not called")
+	}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	err := hub.waitListening(waitCtx)
+	waitCancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("waitListening before ready = %v, want deadline exceeded", err)
+	}
+
+	close(allowReady)
+	readyCtx, readyCancel := context.WithTimeout(context.Background(), time.Second)
+	defer readyCancel()
+	if err := hub.waitListening(readyCtx); err != nil {
+		t.Fatalf("waitListening after ready: %v", err)
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("Run error = %v, want context canceled", err)
+	}
+}
+
+func TestEventHub_RunRetriesSourceAfterError(t *testing.T) {
+	hub := NewEventHub()
+	hub.retryInterval = time.Millisecond
+	var attempts atomic.Int32
+	calls := make(chan int32, 2)
+	src := sourceFunc(func(ctx context.Context, ready func(), _ chan<- string) error {
+		attempt := attempts.Add(1)
+		calls <- attempt
+		if attempt == 1 {
+			return errors.New("temporary source error")
+		}
+		ready()
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hub.Run(ctx, src) }()
+	for want := int32(1); want <= 2; want++ {
+		select {
+		case got := <-calls:
+			if got != want {
+				t.Fatalf("Listen call = %d, want %d", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("Listen call %d did not happen", want)
+		}
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("Run error = %v, want context canceled", err)
+	}
+}
+
+func TestEventHub_RunDeliversSourcePayloadThroughCoalesce(t *testing.T) {
+	hub := NewEventHub()
+	sub, unsubscribe := hub.Subscribe()
+	defer unsubscribe()
+	src := sourceFunc(func(ctx context.Context, ready func(), out chan<- string) error {
+		ready()
+		select {
+		case out <- "recordings":
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- hub.Run(ctx, src) }()
+	select {
+	case got := <-sub:
+		if got != "recordings" {
+			t.Fatalf("subscriber payload = %q, want recordings", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("source payload did not reach the subscriber")
+	}
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Errorf("Run error = %v, want context canceled", err)
+	}
+}
+
 // runHub は hub の LISTEN ループを t の生存期間だけ回す。
 func runHub(t *testing.T, hub *EventHub, pool *pgxpool.Pool) {
 	t.Helper()
@@ -142,7 +268,7 @@ func runHub(t *testing.T, hub *EventHub, pool *pgxpool.Pool) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_ = hub.Run(ctx, pool)
+		_ = hub.Run(ctx, pgsource.New(pool))
 	}()
 	t.Cleanup(func() {
 		cancel()
