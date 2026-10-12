@@ -107,7 +107,8 @@ Work slice 内の転送で無進捗を検知する時間。この時間バイト
 - `ruler.max_deletes_per_pass` は 1 site・1 pass あたりの導出削除数の上限。超えると対象の削除をすべて止め、削除サーキットブレーカーを発動する。
   - 数えるのは、ルールが `base` を供給していた予約が desired から外れた場合だけ。
   - ユーザーが投資を手放す操作（intent の skip・クリア、最後の investment となる overrides の削除）で起きる削除は数えず、発動中も実行する。
-  - 発動後は件数が下がっても自動では解除しない。上限を下げると、一時的な EPG 欠損や一括編集で発動しやすくなる一方、誤判定で失う予約数を抑えられる。既定の 50 は通常の 1 site の active 予約数を超える値である。
+  - 発動後は件数が下がっても自動では解除しない。`POST /api/sites/{site}/breakers/ruler_deletes/resume` を手動で呼ぶまで停止するラッチである。
+  - 上限を下げると、一時的な EPG 欠損や一括編集で発動しやすくなる一方、誤判定で失う予約数を抑えられる。既定の 50 は通常の 1 site の active 予約数を超える値である。
 - `reconciler.start_delay_grace`: 開始遅延検出器（[recording.md](recording.md) §3.3）の猶予。「開始時刻 + この時間」を過ぎても `recordings.started_at` が観測されない予約を検出してアラートする。mirakc 側の未知の不具合への保険（EPGStation#724: チューナー再接続ハングで開始が 10 分遅延した実例あり）。開始直後は mirakc の SSE 到達と watcher の処理に遅れがあるため、短すぎると正常な録画開始でも誤検知してアラートが常時鳴る
 
 <details><summary>根拠</summary>
@@ -296,7 +297,7 @@ argv は `cut` のときだけ filtergraph になる:
 
 表に無い引数と裸の位置引数は起動エラーにする。値なしフラグを明示するため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスを値として偽装できない。`-filter:v:0` / `-lavfi` など別名や stream 指定子つき表記も許さず、denylist が別名を取りこぼす形にしない。
 
-live ではさらに `-an` / `-vn` / `-sn` / `-map` を拒否する。live は `-var_stream_map` で映像・音声 rendition 3 本・字幕の順を持つため、利用者には ffmpeg 起動失敗が 504 として見える（[api/media.md](api/media.md) §音声）。
+live ではさらに `-an` / `-vn` / `-sn` / `-map` を拒否する。live は `-var_stream_map` で映像・音声 rendition 3 本・字幕の順を持ち、その順序を崩すと ffmpeg が起動時に失敗する。起動失敗は利用者には 504 として見える（[api/media.md](api/media.md) §音声）。
 
 **範囲外**: device ノードのマウントはデプロイ側（k8s `resources.limits` / Docker `--device`）。**`hwaccel.device` の存在は起動時に検査しない** --- 公式イメージや device の無い CI を壊す。無い device を書いたプロファイルはジョブ / セッションの失敗として現れる。`-global_quality` / `-cq` / `-q:v` のような、コーデック指定より後ろに出せる（= `extra_args` で届く）品質オプションはキー化しない。
 
