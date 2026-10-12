@@ -82,7 +82,7 @@ data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0
 テーブルへ保存すると、再起動後に不要な情報のために WAL・dead tuple・vacuum 対象を
 増やす一方、配送保証を足しても完了判定の真実にはできないため。
 
-プッシュデータを信頼して手元状態を書き換える設計（Socket.IO 時代の EPGStation）より壊れ方が大幅に単純になる。
+プッシュデータを信頼して手元状態を書き換える設計より、壊れ方が大幅に単純になる。
 
 #### 取りこぼしを回復するのは定期 invalidate（`staleTime` ではない）
 

@@ -4,7 +4,7 @@
 
 具体的なテーブル定義（DDL）は [データベーススキーマ v1](../schema.md) 参照。
 
-EPGStation の Reserve テーブルは「予約」「録画中状態」「録画結果」が混在していた。Rokuban では k8s の spec/status と同じ分離をスキーマに刻む:
+「予約」「録画中状態」「録画結果」は書き手も寿命も違うので、1 つの表に同居させない。k8s の spec/status と同じ分離をスキーマに刻む:
 
 - `rules` → `reservations` --- desired state。ルール評価の純粋な出力。手動予約もルール由来の予約も同じテーブルに入り、区別は `program_intents.action` の有無から導出する
 - `program_intents` / `program_overrides` --- 番組単位のユーザー意図（録れ / 録るな）とパラメータの上書き。**api だけが書き ruler は読むだけ**の永続表 2 つ。導出行（reservations）とは別に置くことで、ruler が毎パス base を再計算しても意図が失われない

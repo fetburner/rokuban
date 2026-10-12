@@ -64,7 +64,7 @@ function reservationDetailQueryKey(site: string, programId: number) {
  * ReservationDetailPage は予約 1 件の詳細。
  *
  * base（ルールが書く）と overrides（ユーザーが書く）は同形の jsonb なので、
- * ルール由来予約と手動予約を 1 画面で扱える（EPGStation は編集画面が分裂している）。
+ * ルール由来予約と手動予約を 1 画面で扱える。
  *
  * encodeProfiles / keepOriginal は M3 で worker が消費するため編集可能
  * （issue #68）。priority は reconciler が mirakc への差分反映を持つが

@@ -870,8 +870,7 @@ mirakc の設定を触る。
 
 mirakc の優先度調停では録画が勝つため、視聴中に同じチャンネル種別の録画予約が
 始まるとチューナーを取られて視聴側が中断されうる。Rokuban は予約（desired state）
-を持っているので、視聴開始前に「この後中断されうるか」を知らせられる ---
-EPGStation・KonomiTV には構造的にできない表示。
+を持っているので、視聴開始前に「この後中断されうるか」を知らせられる。
 
 **判定は純関数 `lib/live-interruption.ts` の `upcomingInterruptingReservation` である**。
 材料は `GET /api/reservations`（全サイト分。絞り込みパラメータを持たない）が返す

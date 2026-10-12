@@ -2,16 +2,14 @@
 
 Rokuban は、クラウドネイティブに設計された録画サーバー。EPGStation の漸進的改善ではなく、ゼロベースで再設計する。
 
-## 背景: なぜ EPGStation の改修ではないのか
+## 背景: 前提を変えたので作り直す
 
-EPGStation のコードを調査した結果、プロセスをホストまたぎで分割したり、複数レプリカへ水平スケールしたりする際の構造的な制約が4つある：
+EPGStation は単一ホストで完結する設計であり、その前提では次の 4 点はどれも筋が通っている。Rokuban はプロセスをホストまたぎで分割し、複数レプリカへ水平スケールすることを要件に加えた。この要件の下では 4 点がそのまま制約になるため、改修ではなく作り直しを選んだ：
 
 1. **プロセス間通信が Node.js の `child_process` IPC**（Operator / Service / EPGUpdater の3プロセス構成）。ネットワーク越しに分離できない
 2. **プロセス内状態への依存が残る**。エンコード待ち行列・実行管理と録画スケジュールの実行タイマーはプロセス内にある一方、予約・録画メタデータは DB に永続化される。「状態がほぼ全部インメモリ」とは一般化しない。根拠は EPGStation の [`DBOperator`](https://github.com/l3tnun/EPGStation/blob/5cf2ea383d37937eacecf424820dbd7a278d577e/src/model/db/DBOperator.ts#L34-L81) と [`EncodeManageModel`](https://github.com/l3tnun/EPGStation/blob/5cf2ea383d37937eacecf424820dbd7a278d577e/src/model/service/encode/EncodeManageModel.ts#L15-L73)
 3. **共有ファイルシステム前提**。録画・サムネイル・HLS セグメントを全プロセスがローカルパスで読み書き
 4. **シングルライター前提**。排他制御がプロセス内 Promise キューのみで、多重起動すると二重録画する
-
-加えて EPGStation は公式にメンテナンスモードであり、変則編成（野球延長・イベントリレー等）での録画失敗が知られている。
 
 ## 基本方針
 
@@ -157,7 +155,7 @@ nginx は構成図上の「箱」ではなく、推奨デプロイパターン�
   機構が同じでも、相手・向き・障害時の影響範囲が無関係である。そのため別ロールのまま置く
   （[api.md](api.md) §SSE）
 
-コード上はただの modular monolith。**IPC は最初から作らない**ので、EPGStation が抱えた「分離しようにも IPC が剥がせない」問題は構造的に発生しない。
+コード上はただの modular monolith。**IPC は最初から作らない**ので、ロールは後からでもネットワーク越しに分けられる。
 
 ロールの詳細と分散デプロイ時の構成については [operations.md](operations.md) を参照。
 
