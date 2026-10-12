@@ -361,7 +361,7 @@ SIGTERM を受けてから猶予内に終わったジョブは完走する。実
 
 **0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
-`terminationGracePeriodSeconds` が SIGKILL までの上限である。設定した drain 猶予を超えると SIGKILL が先に来て、実行中の job は `running` のまま残る。
+`terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。**drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て**実行中の job は `running` のまま残る。
 
 - ingest は有限 Timeout と JobRescuer が回収する。
 - encode は enqueue 時に保存した締切の後、notifier Deployment の常駐 River client の JobRescuer が再試行する。
