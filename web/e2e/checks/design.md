@@ -108,7 +108,9 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   NG（border-color だけを見落としたレビュー指摘が実際にあったため、
   ロングハンド込みで前方一致を掛けている）。
 
-  同じ手で両方向を確認する。hover の背景色は従来どおり遷移する。押下フィードバックも遷移し続ける。対象は `active:...:translate-y-px` で、Tailwind v4 では `translate` にコンパイルされる。
+  同じ手で両方向を確認する。hover の背景色の遷移が従来どおり起きること。
+  押下フィードバック（`active:...:translate-y-px`。Tailwind v4 では
+  `translate` プロパティにコンパイルされる）が遷移し**続ける**こと。
 - 接続断バナー（`components/connection-banner.tsx`、issue #456）の地が無彩か。
   `/api/events` は明示のスタブを持たず catch-all（200 json）に落ちるので、
   Content-Type 不一致で SSE が即座に失敗し、追加の配線なしで「切断中」を作れる。

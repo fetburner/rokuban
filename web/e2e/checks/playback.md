@@ -58,7 +58,9 @@ offset 張り直し・保存位置からの開始を確認する。WebKit では
   では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。
 
   終端の 1 秒後の `ended` は判定に使わない。
-  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出し、`currentTime` を 0 に戻すことがある。13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない。次のポスター判定は⑬
+  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出し、
+  `currentTime` を 0 に戻すことがある。13 回の実行の 26 判定中 4 回。
+  `seeking` / `loadstart` / `emptied` は出ない。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で

@@ -179,7 +179,7 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 
 3 つ目を別に持つ理由は、前 2 つが緑のまま通る事故があるため。存在しない ConfigMap を
 `envFrom` に書く / ポート名の解決先を失う / config.yml のキーを typo する、の
-いずれも実測で両方緑だった。
+いずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。
 壊れるのはクラスタに載せた後になる。
 
 **CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する。**
@@ -188,7 +188,7 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の
 `spec.jobTargetRef.template` は対応済みで、未知の kind は検査で落ちる。
 
-**argv とキュー名の噛み合わせは検査する。** 見ているものは
+**argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは
 次のとおり。
 
 - `--queues` とトリガのクエリが同じ物理キュー名を指していること
@@ -203,9 +203,7 @@ Go テスト側は CRD でも Pod テンプレートを見つけて検査する�
 
 <details><summary>根拠</summary>
 
-- 手作業で漏れる参照の検査: `manifests_test.go`
 - 全 workload の走査と未知 kind の拒否: `workloads_test.go` の `TestEveryWorkloadIsInspected`
-- argv と物理キュー名の一致: `workloads_test.go`
 
 </details>
 
