@@ -230,7 +230,7 @@ func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <
 			if err == nil {
 				return fmt.Errorf("source stopped without an error")
 			}
-			return fmt.Errorf("waiting for notification: %w", err)
+			return fmt.Errorf("source: %w", err)
 
 		case <-flushAt:
 			for key, payload := range pending {

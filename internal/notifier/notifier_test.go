@@ -190,6 +190,21 @@ func TestEventHub_RunWaitsForSourceReady(t *testing.T) {
 	}
 }
 
+func TestEventHub_CoalesceWrapsSourceErrorOnce(t *testing.T) {
+	hub := NewEventHub()
+	boom := errors.New("boom")
+	waitErr := make(chan error, 1)
+	waitErr <- boom
+
+	err := hub.coalesce(context.Background(), make(chan string), waitErr)
+	if !errors.Is(err, boom) {
+		t.Fatalf("errors.Is(err, boom) = false, err = %v", err)
+	}
+	if got, want := err.Error(), "source: boom"; got != want {
+		t.Fatalf("err = %q, want %q", got, want)
+	}
+}
+
 func TestEventHub_RunRetriesSourceAfterError(t *testing.T) {
 	hub := NewEventHub()
 	hub.retryInterval = time.Millisecond
