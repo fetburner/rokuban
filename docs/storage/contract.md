@@ -302,7 +302,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   ingest は前置前に相対パスが `.` であることを明示的に検査して弾く。
 - **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収は symlink かどうかを見ずに台帳と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。
 
-  hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。`(dev, ino)` による検出は、バックアップ復元をまたぐと inode が変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
+  hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。`(dev, ino)` による検出は、スキャンをまたぐと inode がバックアップ復元で変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
 - **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査は symlink を辿らないため、配下のファイルは孤児候補にも rescue にも見えず、災害復旧で救えない。symlink エントリ自身は孤児として報告するが、自動削除しない。
 
   リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける。
