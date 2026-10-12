@@ -114,7 +114,7 @@ HIG の「サイドバーのアイコンはアプリのアクセント色を使�
 **判定を足したことと、それが効いていることは別。** 合成の実装を入れても、淡い地を持つのが外側の要素で文字を持つのが内側の要素だと、locator が内側だけを掴んで背景が透明になる。その結果、合成が恒等関数になる。この状態では、色を暗くした修正を revert しても判定は緑のまま通った。
 いまは祖先を遡って最初に不透明な面に当たるまで重ねる。掴んだ要素の背景が透明なら、そのこと自体で判定を失敗させる。
 
-Chromium は計算値も `oklch(...)` のまま返すため、`getComputedStyle` から実画素は読めない。1px 塗って画素を採取して判定する。`background-image` に直接書いた色も読めないので、縞の色はカスタムプロパティに出す（下記「走査線は読み込み中・ON AIR の 2 箇所限定」）。
+Chromium は計算値も `oklch(...)` のまま返す（canvas の `fillStyle` も同じ）ため、`getComputedStyle` から実画素は読めない。1px 塗って画素を採取して判定する。`background-image` に直接書いた色も読めないので、縞の色はカスタムプロパティに出す（下記「走査線は読み込み中・ON AIR の 2 箇所限定」）。
 
 下限を割る組み合わせは除外せず、通常の失敗判定に入れる。`knownGaps` のような除外リストは持たない。
 失敗バッジはライトの destructive の明度を下げて直した。色相は動かしていない。タリーと近いままで、彩度だけがその明度で sRGB 色域に収まる上限まで下がる（上記「タリーレッドと destructive は色相が近い」）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の形の差で保つ。
@@ -156,10 +156,10 @@ chip と day-strip は、常時ではなく hover で `bg-muted` が乗る形で
 - foreground にした他のラベル: `ReservationVerdictBadge`、ルール一覧の「無効」、ライブのチャンネル種別タグ・チャンネル一覧のリモコン番号タグ
 - chip / day-strip の hover: `components/ui/chip.tsx`、`components/day-strip.tsx`、`hover:bg-muted`、`hover:text-foreground`
 - 録画詳細の実測: `/recordings/$id`、`RecordingDetail`、`<dt>`「チャンネル」
-- ルール読み込み中の未測定面: `RuleSourceBanner`、`components/rule-form.tsx`、`bg-muted/40`、`text-destructive`
+- ルール読み込み中の面: `RuleSourceBanner`、`components/rule-form.tsx`、`bg-muted/40`、`text-destructive`
 - エンコード設定の hover: `components/encode-settings-fields.tsx`、`hover:bg-muted/60`、`text-muted-foreground`
-- destructive の未測定面: `Button variant="destructive"`、`hover:bg-destructive/20`
-- ブレーカーバナーの未測定文字: `circuit-breaker-banner.tsx`、`text-destructive/80`、`bg-destructive/10`
+- destructive の面: `Button variant="destructive"`、`hover:bg-destructive/20`
+- ブレーカーバナーの文字: `circuit-breaker-banner.tsx`、`text-destructive/80`、`bg-destructive/10`
 - ポップオーバーの未マウント状態: `ChannelOption`、`keepMounted`
 
 </details>

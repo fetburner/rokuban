@@ -100,7 +100,6 @@ Rokuban は**リストをモバイルの妥協物ではなく第一級のビュ�
 - 操作列の寸法と配置: `border-l`、`web/e2e/design.mjs` の操作標的判定
 - グリッドの純関数と実装: `web/src/lib/epg-grid.ts`、`web/src/components/program-grid.tsx`、`visibleTimeWindow`、`visibleColumnRange`
 - 予約済みセルの実画素判定: `web/e2e/grid-reserved.mjs`
-
 - グリッドから選択ダイアログを開く: `ProgramRow` と `ProgramGrid`
 
 </details>

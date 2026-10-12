@@ -270,18 +270,16 @@ CM 検出に失敗しても録画自体は見られるため、失敗録画や�
 
 - 警告対象の完了録画上限: `DROP_WARNING_SCAN_LIMIT`、`FAILED_RECORDING_SCAN_LIMIT`
 - 失敗の recency 窓: `FAILED_RECORDING_WARNING_WINDOW_MS`
-- 予定尺と実尺の書き込み経路: `durationMs`、`startedAt`、`endedAt`、`UpdateRecordingStatus`、`CreateFailedRecording`、`recording.failed` SSE
-- CM 検出の段階と修復画面: `cmDetection.state`、`cmDetection.stage`、`/cm-logos/{networkId}/{serviceId}`
-- 局画面で扱う5段階: `logo`、`area`、`match`、`resolution`、`adopt`
+- 予定尺と実尺の書き込み経路: `durationMs`、`startedAt`、`endedAt`、`started_at`、`ended_at`、`UpdateRecordingStatus`、`CreateFailedRecording`
+- record の観測より先に SSE が届く窓でも「未開始」になる: `recording.failed`、`recording.failed` SSE
+- CM 検出の失敗状態と修復画面: `cmDetection.state='failed'`、`cmDetection.state`、`cmDetection.stage`、`/cm-logos/{networkId}/{serviceId}`
+- 局画面で扱う5段階: `logo`、`area`、`match`、`resolution`、`adopt`、`stage='logo'`、`'area'`、`'match'`、`'resolution'`、`'adopt'`
 - 局単位・録画単位の行順は完了録画の応答順を使う
 - 失敗一覧から supersede 済みの擬似行を除く判定: `internal/api/recordings_query.go`、`TestListRecordings_FailedFilterExcludesSuperseded`
 - 失敗理由の入力と表示: `quality_events`、`drop_stats.scrambled`、`mirakc.FailedReason`、`json.Marshal`、`JSON.stringify`、`FailedReason.Type`
 - 現在の失敗イベント: `recording.failed`、`recording.record-broken`。両書き手は object を記録する
 - `reason` は mirakc の生の理由をそのまま保持する: 不変条件 7
 - 無条件一覧とごみ箱には履歴を残す: `docs/schema/recordings.md`、不変条件 7
-- CM の失敗状態と局単位で修正する段階: `cmDetection.state='failed'`、`stage='logo'`、`'area'`、`'match'`、`'resolution'`、`'adopt'`
-- 尺が書かれる列と書き込み経路: `started_at`、`ended_at`、`UpdateRecordingStatus`、`CreateFailedRecording`
-- record の観測より先に `recording.failed` の SSE が届く窓でも「未開始」になる: `recording.failed`
 - 開始のみの形（終端が無い mirakc failed record）: `endTime`
 - 尺と理由の区切り: `（尺 / 理由: …）`
 
@@ -315,7 +313,6 @@ CM 検出に失敗しても録画自体は見られるため、失敗録画や�
 
 - 時間値の量子化とキャッシュキー: `dayOrigin(0, now)`、`dayOrigin(2, now)`、`pages/programs.tsx`、`openapi.yaml` の `start`
 - 終了済みと進行中を分ける両方向の判定: `activeOverages`、`pages/home.test.tsx`「既に終わった超過区間は警告に出さない」／「時境界より前に始まり進行中の超過区間は警告に出す」
-
 - 前者の判定が落ちる変異（フィルタを常に true にする）: `() => true`
 
 </details>
