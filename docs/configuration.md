@@ -210,7 +210,7 @@ live の argv は同じ規則を入力 1 本・出力 N 本へ展開する。
 |---|---|
 | 入力 | `live.hwaccel` → `-probesize` / `-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` |
 | 各 profile | `-map`（映像 1 本と音声 3 本）→ `-c:v` / `-c:a` → 主 / 副の `-filter:a:N` |
-| 映像 filter と品質 | `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]` |
+| 映像 filter と品質 | `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf\|-qp]` → `[-preset]` |
 | filter の組み立て | `deinterlace` が true なら解除を先頭に置き、`height` があれば後ろに scale を 1 個連結 |
 | HLS 出力 | `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...` |
 
