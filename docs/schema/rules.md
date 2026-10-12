@@ -146,7 +146,7 @@ CREATE TABLE rule_sites (
 
 - 書き込み時の照合の実装: `validateRuleSites`（`internal/api/rules.go`）
 - web の編集フォームが GET で得た値を載せ直すこと: `web/src/lib/program-search.test.ts` の preserve テスト
-- 照合の免除が両方向を押さえていること: `TestRuleSites_RegistryDriftAllowsRoundTripUpdate`
+- 保存済みの消えた site 名を載せ直す PATCH は通り、新しい未知の名前を足す PATCH は 400 になること（両方向）: `TestRuleSites_RegistryDriftAllowsRoundTripUpdate`
 - レジストリから site が消えた後、フォーク（`POST`）だけが `unknown site` で拒否されること: `TestRuleSites_RegistryDriftRejectsFork`
 
 </details>

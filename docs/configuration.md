@@ -223,7 +223,8 @@ argv は `cut` のときだけ filtergraph になる:
 
 **映像も音声も時刻（入力の最早 start_time が原点。チャプターの原点と同じ）で切る**。映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS では映像だけがずれる。境界は同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとに A/V のずれが蓄積しない。trim の後に PTS から区間の開始時刻を引くのは、`concat` が各区間の先頭を 0 とみなすため。`PTS-STARTPTS` ではなく開始時刻を引き、映像の先頭が区間の頭より遅れる場合も遅れを残す。
 
-**HW フレームも trim / setpts / concat を通せる。**FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
+**HW フレームも trim / setpts / concat を通せる。**
+FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
 
 VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG-2 のデコード surface が固定 6 枚で、カット版では枯れて `get_buffer() failed` からつなぎ目にブロックノイズが出る。ジョブは成功扱いで終わるので、壊れたカット版がそのまま公開される。
 
