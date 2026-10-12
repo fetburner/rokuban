@@ -20,29 +20,29 @@
 
 - API パスは常に**ルート相対パス `/api/*`**（ドメインを含まない絶対パス）を使用する。CDN / リバースプロキシ構成で CORS 不要・実行時コンフィグ注入不要とするため
 - **絶対 URL ビルダーは作らない。** Rokuban には絶対 URL を生成している箇所が現状ゼロ（API・webhook ペイロードともルート相対パスのみ）。無い箇所にビルダーを先回りで作らない（不変条件 11）。必要になった時点で単一ビルダーへ一元化する。絶対 URL 生成を散らばせると、後からホストや接頭辞の書き換えを効かせられない
-- **API 資源に site を含めるかは、存在と状態が特定 1 つの site の観測に閉じるかで決める**（[スキーマ](../schema.md) §1-5）。件数や種類名では決めない。判定には資源のあるべき形を使い、現行レスポンスからパスを正当化しない。
+- **API 資源に site を含めるかは、存在と状態が特定 1 つの site の観測に閉じるかで決める**（[スキーマ](../schema.md) §1-5）。件数や種類名では決めない。判定の入力は資源のあるべき形であり、現行レスポンスからパスを正当化しない（現状の形を根拠に現状のパスを正当化すると、判定基準が何も条件しなくなる）。
 - **集合を返す操作も同じ基準に従う。** mirakc の record や、その site の EPG に存在するかで決まる programId は単体・一覧とも site をパスに含める。番組・意図・上書きの形は `/api/sites/{site}/programs/{programId}...` である。同じ種類でも、site 非依存 worker が書く行は site を含めない。
 - **複数 site を 1 応答に集約するのは、その資源が構造的に site をまたぐ場合に限る。** 運用上便利という理由では例外にしない。`GET /api/reservations` と `GET /api/capacity/overages` は各要素が site に属しながら全 site を集約する例である（下記「録画一覧」の「既定は全サイトを返す」）。
-- **検索も構造的な複数 site 集約に当たる。** ルールはマッチした全 site で評価され、site ごとに 1 予約を作る（[ruler](../recording/ruler.md)「サイトの扱い」の N 予約）。検索結果は実際にマッチした site を保持し、`sites` で絞る。パスは `/api/programs/search` で `{site}` を置かず、パスによる既知 site の検証もしない。
+- **検索も構造的な複数 site 集約に当たる。** ルールはマッチした全 site で評価され、site ごとに 1 予約を作る（[ruler](../recording/ruler.md)「サイトの扱い」の N 予約）。実装は `sites`（絞り込み条件。空 = 全 site）で複数 site を横断し、結果の各行が実際にマッチした site を運ぶ（畳まない）。絞り込みは `sites` に一本化する。パスは `/api/programs/search` で `{site}` を置かず、パスによる既知 site の検証もしない。
 - site に束縛されない資源（rokuban 採番の `recordings.id` など）は site をパスに固定せず、絞り込み条件か応答本体で指定する。
 - **api プロセスは特定 site に束縛されない。** 権威は `config.mirakcs` の site レジストリで、1 プロセスが全 site を処理できる。存在しない site への GET は 404、POST / PUT / PATCH / DELETE は 400。`GET /api/sites` は存在する site の一覧を返し、mirakc の URL は含まない。
 - 導出行が作る id を書き込みの宛先にしない（[invariants.md](../invariants.md) §9「identity」）。
-- **サーキットブレーカーの再開もこの判定基準に従う。** site を持つ `ruler_deletes` / `reconcile_total_loss` は `/api/sites/{site}/breakers/{name}/resume` に分ける。
-  site 非依存 worker が書く `delete_reconcile` は `/api/breakers/{name}/resume` に分ける。種類名ではなく資源ごとの分類で決まる。
+- **サーキットブレーカーの再開もこの判定基準に従う。** site を持つ名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。対象は `ruler_deletes` / `reconcile_total_loss` である。
+  site 非依存 worker が書く `delete_reconcile` は `POST /api/breakers/{name}/resume` に分ける。種類名ではなく資源ごとの分類で決まる。
 
 <details><summary>根拠</summary>
 
 - 資源の site 境界は観測の範囲で決める: 不変条件 1、11
 - 導出行の id を宛先にしない: 不変条件 9
 - サーキットブレーカーの site 分類: `internal/breaker.IsSiteless`
-- site を持つ再開先: `POST /api/sites/{site}/breakers/{name}/resume`
-- site 非依存の再開先: `POST /api/breakers/{name}/resume`
 
 </details>
 
 ### 機能の有効/無効は能力 API で観測する
 
 **機能の有効/無効は `GET /api/capabilities` の真偽値の集合で観測する。** フロントは応答に基づいて導線を出し、設定値や実行時に使えるかどうかは取得しない。
+
+`live.enabled` のように「無効ならその機能への導線ごと出したくない」設定がある。`live.enabled: false` のときも主ナビに「ライブ」が出続け、プレイリストの URL が SPA フォールバックの HTML 200 を返していたため、**「無効な機能」ではなく「壊れた再生」として見えていた**。
 
 - **設定値そのものは返さない**。返すのは「導線を出してよいか」だけである。config の
   キー名・値・ffmpeg のパス・プロファイル定義は載せない（`GET /api/encode-profiles`
@@ -73,14 +73,9 @@ HTML 200 に分かれると、この規則を覚えていられない。
 
 <details><summary>根拠</summary>
 
-- api ロールは設定ファイルを配らないため、フロントは config を直接読めない（不変条件 1）。
-- `live.enabled: false` でも主ナビに「ライブ」が出続け、プレイリスト URL は SPA フォールバックの HTML 200 を返していた。無効な機能が「壊れた再生」に見えるため、能力 API と `/api/` 未マッチの 404 を合わせて使う。
-- 設定値を返さない規律は `GET /api/encode-profiles` と `GET /api/sites` にも適用する。将来 `live.profiles` の一覧が必要なら、能力ではなく選択肢の API とする。
-- 全フィールドを required にすると、欠けた項目の解釈を導線ごとに分けずに済む。
-- `live: true` は config が有効である事実を表す。streamer 停止やチューナー不足のような実行時状態は当該 API の 404 / 503 に任せる（[frontend/live.md](../frontend/live.md)）。
-- ビルド時フラグでは、実行時 config で切り替える機能と同じ SPA アセットを全構成へ配る設計が合わない。
-- 能力の値を api ロールに依存させない: `cmd/rokuban/server.go` は `Sites` / `MetricsRegistry` を無条件に渡す。
-- `/api/` の未マッチを SPA に落とさない: `internal/api/spa.go`。
+- フロントが config を直接読めない理由: 不変条件 1
+- 能力の値を api ロールに依存させない: `cmd/rokuban/server.go` は `Sites` / `MetricsRegistry` を無条件に渡す
+- `/api/` の未マッチを SPA に落とさない: `internal/api/spa.go`
 
 </details>
 
@@ -187,9 +182,7 @@ API 契約として破綻する。1 エンドポイントの前提が `trash` �
 
 #### 動的 WHERE ビルダ（sqlc の静的クエリにしない）
 
-WHERE は指定された条件だけを追加する動的な形にする。sqlc の静的 querytext に
-`($n IS NULL OR ...)` を全軸分並べると、`q` のような選択条件でも汎用述語が残り、
-trgm 式 GIN が使われないことがある。
+WHERE は指定された条件だけを追加する動的な形にする。`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ `arg` クロージャ方式で WHERE を組む。sqlc の静的 querytext に `($n IS NULL OR ...)` を全軸分並べると、`q` のような選択条件でも汎用述語が残り、trgm 式 GIN が使われないことがある。
 条件を指定されたときだけ SQL に含めるため、最初の plan は入力された条件に応じた形になる。
 
 通常一覧と `trash=true` は同じ動的 WHERE の組み立てを使う。棚の絞り込みも条件部分を共有するが、ページング・並び順・番組ハブは一覧だけの軸なので共有しない。静的な形との速度差は無かったが、条件の修正を両方へ反映するために組み立てを共有する。
@@ -198,19 +191,22 @@ trgm 式 GIN が使われないことがある。
 
 generic plan は bind 値を見ず、trgm 式 GIN が選ばれない可能性がある。実測では 6 回目の実行が 0.7ms から 290ms になった。
 
-この経路では unnamed statement で毎回再計画する。絞り込みの組み合わせごとに SQL テキストが変わり、named statement のキャッシュを維持する利点が薄いためである。これは `($n IS NULL OR ...)` の汎用述語による劣化とは別に塞ぐ。
+`queryRecordings` はこの経路だけ `pgx.QueryExecModeExec` を指定し、unnamed statement で毎回再計画する。絞り込みの組み合わせごとに SQL テキストが変わり、named statement のキャッシュを維持する利点が薄いためである。これは汎用述語（`$n IS NULL OR ...`）による劣化とは別に塞ぐ。
 
-録画検索のキーワード正規化は EPG 検索と同じ方式を使うが、検索エンジンは共有しない（[data.md](../data.md) §5「録画検索は rulequery を共有しない」）。
+録画検索のキーワード正規化は EPG 検索と同じ `normalize_search_text` を使う。ただし検索エンジン（`internal/rulequery`）は共有しない（[data.md](../data.md) §5「録画検索は rulequery を共有しない」）。
 
 <details><summary>根拠</summary>
 
 - WHERE の組み立てと通常 / ごみ箱一覧の実行経路: `internal/api/recordings_query.go`、`buildRecordingsQuery`、`queryRecordings`
-- 任意条件を静的 SQL に並べる形: `$n IS NULL OR ...`
 - q 検索の式 GIN index: `recordings_title_trgm`、`recordings_description_trgm`
 - worker の DB テスト用クエリであり HTTP 一覧には使わない: `ListTrashRecordings`
-- 棚と一覧で共有する条件部分: `recordingsFilterWhere`、`buildRecordingShelvesQuery`
-- 汎用述語の builder と keyword normalization: `internal/rulequery.Compile`、`arg`、`normalize_search_text`、`internal/rulequery`
-- named statement の既定と unnamed 再計画: `QueryExecModeCacheStatement`、`pgx.QueryExecModeExec`
+- 棚と一覧で共有する条件部分: `recordingsFilterWhere`
+- 静的な形との速度差を測った数値を doc コメントに持つ: `buildRecordingShelvesQuery`
+- 同じ `arg` クロージャ方式の WHERE builder: `internal/rulequery.Compile`、`arg`
+- EPG 検索と共有するキーワード正規化: `normalize_search_text`
+- 共有しない検索エンジン: `internal/rulequery`
+- named statement の既定: `QueryExecModeCacheStatement`
+- unnamed 再計画を指定する箇所: `pgx.QueryExecModeExec`
 
 </details>
 
@@ -238,9 +234,11 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 
 未完了のエンコードプロファイルの状態は `Recording.encodeStatus` として一覧と単体 GET に載せる。専用エンドポイントを増やすと、一覧の行ごとに N+1 の要求が必要になる。
 
-状態は worker が書く `recording_encode_attempts` と active な `encoded` `media_assets` から毎リクエスト導出する。完了状態は `encodedAssets` が表すため、`encodeStatus` には未完了プロファイルだけを置き、列には保存しない。
+取り込み状態（上記）と同じ 3 点を同じ理由で決めている。
 
-専用 SSE トピックや NOTIFY は作らない。既存の `recordings` グループによる 60 秒 invalidate で変化を反映する。
+- **別エンドポイントにしない。** 「この録画のエンコードは進んでいるのか」は一覧を引いた時点で答えが要る質問で、分けると行数ぶんの N+1 になる。
+- **毎リクエスト導出する。** 真実は worker が書いた `recording_encode_attempts` の行である。api はそれと `media_assets` の active な `encoded` から毎回組み立てる（列に焼かない）。
+- **SSE で押さない。** 専用トピックも NOTIFY も持たず、既存の `recordings` グループの 60 秒 invalidate で収束させる。
 
 取り込み状態と違う点は 2 つある。
 

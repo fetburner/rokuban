@@ -22,7 +22,7 @@ POST /api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave
 	       → 204（離脱のヒント）
 ```
 
-これらは録画ファイル配信と同じ理由で `openapi.yaml` に載せない（[recording.md](recording.md)「OpenAPI には載せない」）。`{id}` は `recordings.id` の十進正準形であり、`record_sync` と `kind='original'` の `media_assets` を引いてセッション可否を決める。
+これらは録画ファイル配信と同じ理由で `openapi.yaml` に載せない（[recording.md](recording.md)「OpenAPI には載せない」）。`{id}` は `recordings.id` の十進正準形である。`record_sync` の `(site, record_id, status)` と `kind='original'` の `media_assets` 行の有無を逆引きして、セッション可否を決める。
 
 | 状態 | 挙動 |
 |---|---|
@@ -31,7 +31,7 @@ POST /api/sites/{site}/recordings/{id}/chase/offset/{offset}/leave
 | 録画が正常終了し、既にセッションがある | EVENT playlist とセグメントを idle GC まで取得できる |
 | ごみ箱、commit 済みで保持セッション無し、失敗、未束縛、存在しない id、または URL の `site` と DB の録画 site が不一致 | 404 |
 
-URL の `site` は streamer の site binding へのルーティング値であり、DB の録画 site と一致させる。
+URL の `site` は `cmd/rokuban` の site 束縛へルーティングするための値であり、DB の録画 site と一致させる。
 
 mirakc へは `GET /api/recording/records/{record_id}/stream` を Range なし・優先度ヘッダーなしで要求する。これは offset を省略したときに録画先頭から追従する経路である。
 
@@ -60,8 +60,9 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 追っかけは `EVENT` playlist とし、`hls_list_size=0` / `temp_file` を使って `delete_segments` は使わない。ffmpeg は stdin の EOF で `ENDLIST` を書くので、入力を閉じる時点で終端の意味が決まる。stdin が開いたままなら書かず、kill 時も書かない。
 
 - **EOF にするのは録画末尾まで読んだ後だけ。** mirakc が `finished` / `canceled` / `failed` を返し、同じ offset の最後の Range も空になったときに限る。canceled / failed でも録れた所まで配信して `ENDLIST` を付ける。
-- **mirakc record が 404 なら、読み取り位置と commit 済み原本のサイズが一致するときだけ EOF にする。**
-  ingest は録画の終了と最後の空 Range を見てから commit する。一致しなければ終端とせずエラーにする。
+- **mirakc record が 404 なら、読み取り位置と commit 済み原本のサイズが一致するときだけ EOF にする**。
+  ingest は mirakc が録画の終了を返し、最後の Range が空になるまで読んでから commit する。だから commit されたバイト数は終了時点のファイル長である。
+  一致しなければ終端とせずエラーにする。
   ffmpeg の遅れ、別経路の原本、mirakc の record 消失では一致しない場合がある。
 - **追従配信が閉じても EOF にしない。** mirakc 側の無入力 timeout で録画中にも閉じることがある（頻度は未検証）。正常終了でも途中切断でも消費位置から Range で追い、Content-Length が無い本文も読む。
 - **Range 本文が 30 秒 stall したら再接続する。** timer は本文を `Read` して待っている間だけ動かし、ffmpeg stdin の backpressure で reader が呼ばれない間は止める。
@@ -71,7 +72,7 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 
 | 状態 | セッションと応答 |
 |---|---|
-| 入力 EOF 後に ffmpeg が正常終了 | idle GC まで playlist と全 segment を保持し、既存 playlist から profile を切り替えられる |
+| 入力 EOF 後に ffmpeg が正常終了 | idle GC まで playlist と全 segment を保持し、既存 playlist から `?profile=` を切り替えられる |
 | ffmpeg が異常終了（kill を含む） | 壊れた session とファイルを直ちに解放する |
 | mirakc 入力の読み取りエラー | 録画 ID ごとに 10 秒 cooldown を記録し、新規 session を止める。既存の健全な offset session は共有できる |
 | cooldown 中に新 session が必要 | `502 Bad Gateway` を返し、`追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。` と残り秒数の `Retry-After` を付ける |
@@ -105,12 +106,8 @@ cooldown が 3 秒より短いと、再生元を選び直す前に hls.js の再
 - 正常終了後の profile 切替: `TestFinishedChaseProfileSwitchServesRetainedPlaylists`
 - idle GC や ffmpeg crash は入力失敗にしない: `TestChaseIdleGCIsNotRecordedAsInputFailure`
 - finished / ingest 前の新規 session: `TestFinishedUncommittedChaseUsesOriginalRowExistence`
-- sync row lookup fields: `(site, record_id, status)`
-- profile selection query: `?profile=`
-- routing binding と site 照合: `cmd/rokuban`
 - hls.js 1.7.3 の設定箇所: `playlistLoadPolicy.default.errorRetry`
 - 再試行の設定: `maxNumRetry: 2`、`retryDelayMs: 1000`
-- 既定 backoff: 1 秒と 2 秒
 
 </details>
 
@@ -188,14 +185,14 @@ ffprobe の後に descriptor を先頭へ戻し、FFmpeg も先頭から読め�
 
 | 合成 660 秒 TS での判定 | 結果 |
 |---|---|
-| format duration 660.010 秒と比較 | 映像の終端後にある offset 660 が通り、FFmpeg は出力せず playlist 待ちの 15 秒後に 504 |
+| format duration 660.010 秒と比較 | `[映像の終端, format の duration)` に入る offset 660 が通り、FFmpeg は出力せず playlist 待ちの 15 秒後に 504 |
 | video duration 660.000 秒から求めた終端（`start_time + duration - format の start_time`） | 終端の 0.5 秒手前より後ろの offset を 416 にする |
 | offset 659 | 200、0.14 秒 |
 | offset 660 / 661 / 99999 | 416、0.03 秒 |
 
 終端ちょうどでも最後のフレームより後ろを指して空出力になる可能性があるため、0.5 秒の余白を取る。範囲外 offset は利用者入力なので ERROR でなく INFO に記録する。
 
-**原本 VOD の退避は mirakc の 5 秒チューナー解放待ちを挟まない。** 原本 VOD はチューナーを持たない。`max_sessions: 2` で容量が埋まった状態からの seek は、待ちありで約 5.4 秒、待ちなしで 0.13 秒だった（実バイナリ、合成 660 秒 TS）。
+**原本 VOD の退避は mirakc のチューナー解放待ち（`liveMirakcReleaseWait`、5 秒）を挟まない。** 原本 VOD はチューナーを持たない。`max_sessions: 2` で容量が埋まった状態からの seek は、待ちありで約 5.4 秒、待ちなしで 0.13 秒だった（実バイナリ、合成 660 秒 TS）。
 
 #### offset seek の精度と開始時間の測定
 
@@ -217,7 +214,7 @@ HLS の PTS 自体を 0 にそろえているわけではない。
 25 fps の 320×80 映像に録画先頭からの `秒:フレーム番号` を焼き込んだ。
 映像は MPEG-2（GOP 15、B-frame 2、closed GOP）、音声は MP2 で、1 Mbit/s MPEG-TS muxrate でまとめた。
 format duration は 660.010022 秒、video stream duration は 660.000000 秒である。
-測定に使った runner はリポジトリに置いておらず、再実行できる形では残っていない。
+測定に使った runner は、不変条件 4（ffmpeg の exec は worker / streamer のみ）を破るためリポジトリに置いていない。再実行できる形では残っていない。
 
 | 要求した offset | HLS の先頭フレーム表示 | offset との差 |
 | ---: | ---: | ---: |
@@ -257,9 +254,8 @@ player だけが出る状態を避ける。
 - 変換中に playlist を配信: `TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting`
 - offset seek の精度と範囲: `TestOriginalVODOffsetRealFFmpegSeekAccuracyAndRange`、`runSession`、`ROKUBAN_REQUIRE_FFMPEG`
 - seekable descriptor を子プロセスへ渡す: `cmd.ExtraFiles`、`/dev/fd/3`
-- format duration の判定に戻したときの範囲外 offset: `[映像の終端, format の duration)`
-- canonical unlink の直列化: `MarkMediaAssetDeleting`、`media_assets_rel_path_idx`
-- 原本 VOD は tuner を使わない: `liveMirakcReleaseWait`
+- live な行がある `rel_path` へ別の書き手が公開できない: `media_assets_rel_path_idx`
+- unlink は deleting 状態の commit より後にしか起きない: `MarkMediaAssetDeleting`
 - 測定 runner をリポジトリに置かない: 不変条件 4
 
 </details>

@@ -248,8 +248,8 @@ master から参照される variant playlist（映像・音声）と字幕 play
 （master の名前や未知のプロファイルは 404）、セッションが無ければ作る
 （上記「セッションが消えても URL が死なない」）。`.vtt` は字幕有効時だけ受け付ける。
 
-- **DB を引かない。** `(networkId, serviceId)` から mirakc の
-  `GET /api/services/{id}/stream?decode=1` に渡す service id を作る。ライブセッションは
+- **DB を引かない。** パスの `(networkId, serviceId)` から mirakc の
+  `GET /api/services/{id}/stream?decode=1` の `{id}` を合成する。ライブセッションは
   インメモリの使い捨てで、認可はリバースプロキシに委譲し、同時上限もプロセスローカルなので DB を引く理由が無い。
 - **id セグメントは 16 bit 符号なし整数の十進正準形だけを受け付ける。**
   SI の network_id / service_id の幅に合わせ、先頭ゼロも拒否する。読めなければ 400 にし、mirakc には触れない。
@@ -309,14 +309,10 @@ master から参照される variant playlist（映像・音声）と字幕 play
 <details><summary>根拠</summary>
 
 - mirakc の service id 合成: `internal/programid.ServiceID`
-- mirakc request path の id: `{id}`
-- id の正準形: `strconv.ParseUint(s, 10, 16)`、`TestLiveStreamer_RejectsHostileIDSegments`
-- 400 で拒否する path segments: `%2F` / `%3F` / 非数値 / 空 / 符号付き
-- その他の拒否値: 16 bit 超 / 桁あふれ / 全角数字 / 先頭ゼロ。偽 mirakc への要求は 0 件
-- mirakc の Request-URI は数値 path segments から組み立てる: `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`
-- 試験で受け取る upstream URI: `/api/services/3192053248/stream?decode=1`
+- id の正準形: `strconv.ParseUint(s, 10, 16)`
+- `%2F` / `%3F` / 非数値 / 空 / 符号付き / 16 bit 超 / 桁あふれ / 全角数字 / 先頭ゼロは 400。偽 mirakc は要求を 1 件も受け取らない: `TestLiveStreamer_RejectsHostileIDSegments`
+- mirakc の Request-URI は `/api/services/3192053248/stream?decode=1` ちょうどになる。固定するテスト: `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`
 - 上流拒否時の 503: `TestLiveStreamer_UpstreamRejectionBecomes503`
-- config と DB に置く優先度の値: `live.tuner_priority`、`rules.priority`
 - 起動時の tmpfs 内容削除: `NewLive`
 
 </details>
@@ -362,7 +358,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
 
 <details><summary>根拠</summary>
 
-- PDT によるライブ音声の切替・復帰: `web/e2e/live-audio.mjs`
+- PDT によるライブ音声の切替・復帰（PDT を外すと落ちる。変異で確認済み）: `web/e2e/live-audio.mjs`
 - 追っかけ音声の切替、同一セッション内 seek、offset 再開: `web/e2e/chase-audio.mjs`
 
 </details>

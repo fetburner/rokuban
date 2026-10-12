@@ -65,7 +65,7 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 
 **`/seek-tiles` はシークプレビュー用タイル（`kind = 'seek_tiles'`）を 1 枚の JPEG で返す。** タイルは 10 秒間隔、10 列で並び、最後の行の余りは黒で埋める。間隔・画像サイズ・列数・上限は worker とクライアントで同じ固定値を使う。
 
-メディア配信は OpenAPI の対象外で、worker から UI へ値を渡す経路はない。値を変えたときは既存タイルを再生成する。
+メディア配信は `openapi.yaml` の対象外なので、worker から UI へ値を渡す経路はない。値を変えたときは既存タイルを再生成する。
 
 未生成なら 404 を返し、クライアントは poster だけの表示に戻る。要求中に生成を待たず、thumbnail reconcile の定期パスで作る。
 
@@ -82,7 +82,7 @@ GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
 | 入力 | `kind = 'original'` の原本だけを使い、縮小や SAR の焼き込みはしない |
 | `X-Coded-Width` / `X-Coded-Height` | `at` のコマで返す JPEG 自身の幅と高さを返す。途中で解像度が変わり、渡した枠が録画の最初の映像ストリームと異なる場合、検出は失敗する |
 | `X-Sample-Aspect-Ratio` | `at` のコマの SAR を返し、画面表示比を補正する。保存する枠は SAR 適用前の記録上の座標を使う |
-| SAR の取得 | JPEG から SAR を読めず、ffmpeg は途中で変化しても先頭ストリームの SAR を渡す。そのため `at` の手前から調べ、pts が `at` 以上の最初のコマの SAR を使う |
+| SAR の取得 | JPEG から SAR を読めず、ffmpeg は途中で変化しても先頭ストリームの SAR を渡す。そのため ffprobe で `at` の手前から読み、pts が `at` 以上の最初のコマの SAR を使う |
 | コマの選択 | ffmpeg の `-ss` が `at` から 1 コマずれる規則は未特定。採ったコマのサイズが JPEG の SOF と違う場合は 1 コマ前を調べ、どちらも一致しなければ 500 を返す |
 
 同じ寸法のまま SAR だけが変わる境目では、SAR を 1 コマ取り違える可能性がある（未検証）。
@@ -118,8 +118,6 @@ streamer は位置を知らない（Range 要求の位置は再生位置では�
 - メディア配信のロール境界と monolith での登録: `internal/streamer`、不変条件 1、`api.RouterConfig.Mounter`。`--all` でも streamer が有効なときに登録する
 - ingest と共有するパス検証: `internal/mediapath.Resolve`
 - seek tile のクライアント側固定値: `web/src/lib/seek-tiles.ts`
-- UI に返すプロファイル済みアセット分類: `encoded`
-- seek tile を伝える OpenAPI 経路が無い: `openapi.yaml`
 - seek tile の定期生成: `thumbnail_reconcile`
 
 </details>
