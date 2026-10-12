@@ -101,12 +101,12 @@ e2e は一時停止を一度も作らないので、そこは jsdom のテスト
 **エラーは 3 種に分類する（`classifyLiveLoadError`）。**
 
 - `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド
-  構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](../overview.md)
+  構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](../../overview.md)
   §サーバーレスデプロイ）ため、destructive な赤ではなく中立の文言にする
 - `capacity`（503）: 同時セッション上限 / チューナー枯渇 / シャットダウン中の
   いずれか。本文（プレーンテキスト）はいずれも「今は無理なので後で試す」という
   同じ対応を要求するので UI 側の分岐は 1 つにまとめ、本文はそのまま見せる
-  （[shell.md](shell.md)「エラーの本文も UI まで運ぶ」と同じ規律）
+  （[shell.md](../shell.md)「エラーの本文も UI まで運ぶ」と同じ規律）
 - `other`: 想定外のステータス。本文をそのまま見せる
 
 いずれも再読み込みボタンで `probeLivePlaylist` からやり直せる。

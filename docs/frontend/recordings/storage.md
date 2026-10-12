@@ -41,7 +41,7 @@ root の種類が増えた時点で専用ページを検討する。
 **見込みが参照する root は `media`（`storage.media_dir`、アーカイブ）だけ**。
 `scratch` は取り込みの一時領域で、録画の最終的な保存先ではない。そのため
 残量の表示には含めるが、今後の予約による消費見込みには使わない。出所は
-[storage/contract.md](../storage/contract.md) の §残量の観測と、同ファイル §5
+[storage/contract.md](../../storage/contract.md) の §残量の観測と、同ファイル §5
 「2 階層: 録画バッファとアーカイブ」である。
 
 ### 4 つの沈黙
@@ -84,7 +84,7 @@ root の種類が増えた時点で専用ページを検討する。
 場合のみ」参照 --- 未 ingest も含む）も除く。
 
 **`sizeBytes` は原本 TS のみでエンコード派生物を含まない**。エンコードプロファイル
-を設定しているルール（既定 `keepOriginal: always`。[storage/retention.md](../storage/retention.md)）
+を設定しているルール（既定 `keepOriginal: always`。[storage/retention.md](../../storage/retention.md)）
 では実消費は原本 + 派生物なので、この見込みは**過小**に振れる。逆に
 `keepOriginal: until_encoded` を選んでいるルールでは、エンコード完了後に原本が
 削除され、実消費が派生物サイズ（原本の 1/4〜1/10、同 doc）へ縮む。原本サイズを
@@ -94,7 +94,7 @@ root の種類が増えた時点で専用ページを検討する。
 ### 鮮度: 1 時間を超えたら「古い可能性」
 
 `GET /api/storage` の `observedAt` は「観測ループが止まっていても行は消えない」
-契約（[storage/contract.md](../storage/contract.md) §残量の観測）なので、鮮度は
+契約（[storage/contract.md](../../storage/contract.md) §残量の観測）なので、鮮度は
 UI 側で必ず判定する。worker の観測間隔は現在 **5 分固定**
 （`internal/worker/storage.go` の `defaultStorageSyncInterval`）。
 `worker.Config.StorageSyncInterval` というフィールド自体はあるが、
@@ -109,7 +109,7 @@ worker 側の実装詳細であって `GET /api/storage` の契約に含まれ�
 本当に止まっていれば、1 時間以内に検知できる。将来この間隔が実際に設定可能になり
 既定より大きく延ばす運用が出てきた場合は基準が弱くなるため、そのときに見直す。
 
-この行自体は 5 分周期の定期 invalidate で取り直している（[docs/api/sse.md](../api/sse.md)
+この行自体は 5 分周期の定期 invalidate で取り直している（[docs/api/sse.md](../../api/sse.md)
 の「ストレージ」グループ）。取り直す周期（5 分）と古さの判定基準（1 時間）は
 独立に選んだ別の値で、前者は「得るものが無い頻度で REST を引かない」ため、
 後者は「1 回の失敗パスで誤検知しない」ための安全マージン。
@@ -122,7 +122,7 @@ worker 側の実装詳細であって `GET /api/storage` の契約に含まれ�
 合算する。
 
 **`skip === true` の予約は消費に数えない**。`skip` は `effective.skip`
-（[recording/reservation-model.md](../recording/reservation-model.md) §4.3「同期の
+（[recording/reservation-model.md](../../recording/reservation-model.md) §4.3「同期の
 可否を決めるのは state ではなく effective.skip である」）である。true の間
 reconciler は mirakc に同期しない --- つまりディスクを消費しない。`state`
 （active/detached/orphaned）は表示用の導出値であって同期可否のフィルタに使っては

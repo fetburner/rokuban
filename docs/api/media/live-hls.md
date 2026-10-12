@@ -12,7 +12,7 @@
 ライブセッションはインメモリの使い捨て状態（全体アーキテクチャの crash-only 例外）で、「クライアントがいなくなったら ffmpeg を止める」idle GC が要る。セグメント要求がアプリを通れば last-access の更新がタダで手に入るが、nginx が scratch から直接配るとアプリはクライアントの生存を見失う。`auth_request` やログ監視で回収はできるが、セグメントは数 MB で転送負荷が軽く、複雑さに見合わない。**既定は streamer ロールのアプリ配信のまま**とする。遅延を目標にする構成では、パッケージングと生存判定をまとめて外の packager に移す（下記「パッケージャは MediaMTX の LL-HLS を選べる形にする」）。
 
 **`live.enabled: false` ならこれらのルートは登録されず、404（JSON）になる**。
-SPA フォールバックには落とさない（[rest.md](rest.md)「機能の有効/無効は能力 API で
+SPA フォールバックには落とさない（[rest.md](../rest.md)「機能の有効/無効は能力 API で
 観測する」）。落とすと「無い」が HTML の 200 になり、probe するクライアントが成功と
 誤認する。導線そのものを出さない判断は `GET /api/capabilities` 側。
 
@@ -36,7 +36,7 @@ SPA フォールバックには落とさない（[rest.md](rest.md)「機能の�
 **この値はセグメントの公開端とプレイヤーの latency からの導出値である。** 放送時刻を
 映像に焼き込んだ比較ではない（ffmpeg の再 mux で TDT/TOT が落ちるため）。したがって
 「放送から 6.2 秒」と断言はしない。測定の条件と経路ごとの内訳は
-[frontend/live.md](../frontend/live.md) §「遅延・バッファの計器」に置く。
+[frontend/live.md](../../frontend/live.md) §「遅延・バッファの計器」に置く。
 
 #### パッケージャは MediaMTX の LL-HLS を選べる形にする
 
@@ -106,7 +106,7 @@ MediaMTX に由来するかは未検証である。
   一番効く
 - **スケールアウトの鍵が既に資源同定の中にある**。`(site, networkId, serviceId)` は
   前段の consistent hash の鍵にそのまま使える。そのため streamer のレプリカを増やしても
-  URL・クライアント・API は変わらない（[operations.md](../operations.md) §5
+  URL・クライアント・API は変わらない（[operations.md](../../operations.md) §5
   「streamer のスケール」。URL を固定深さにする制約もそこに書いてある）
 - **セッションが消えても URL が死なない。**Pod 死・ハッシュの担当移動・idle GC の
   後でも、同じ URL への再要求が新しいセッションを起こす。「セッション ID を握った
@@ -226,7 +226,7 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 **ロール分割で api と streamer に別の config を配る構成では、この一覧と実際に
 配られるプロファイルがずれる。** ずれを検出する手段は無い。一覧は api が読む
 config から作り、実際に配るのは streamer である。したがって**「一覧にあるから
-見られる」とは言えない**（下界主義。[data.md](../data.md) §6.5 と同じ規律）。
+見られる」とは言えない**（下界主義。[data.md](../../data.md) §6.5 と同じ規律）。
 
 #### 実装（`internal/streamer`）
 
@@ -262,7 +262,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
   Request-URI が `/api/services/3192053248/stream?decode=1` ちょうどであること）
 - **正準形だけを受けるのは前段の hash 鍵が URL 文字列だから。**`1024` と `01024` は
   streamer 内部では同じセッション鍵（合成後の整数）になるが、
-  [operations.md](../operations.md) §5 の `map $uri $live_key` は URL の文字列を
+  [operations.md](../../operations.md) §5 の `map $uri $live_key` は URL の文字列を
   鍵にするので、別名を許すと同じチャンネルが 2 つの Pod に落ちてチューナーを
   2 本掴む。「同じチャンネルの視聴者は同じ Pod」という鍵の取り方の前提を、
   URL の正準性に暗黙依存させない
@@ -273,7 +273,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路
   （hls.js/MSE）は事実上再生できない。mirakc フィルタ + `-c copy` では受信端末を
   満たせないため、ffmpeg で H.264/AAC に変換する（`live.profiles`、
-  [configuration.md](../configuration.md) 参照）
+  [configuration.md](../../configuration.md) 参照）
 - **`profile` クエリが空なら `live.profiles` の先頭を既定として使う。**セグメント
   URL 自体は `?profile=` を持たない --- ffmpeg が書き出すファイル名にプロファイル名を
   接頭辞として焼くため、プレイリストが指す相対パスだけで一意に解決できる
@@ -283,12 +283,12 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **チューナー調停は mirakc のリクエスト優先度に一元化する**。ライブの GET には
   `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。ruler が生成する
   schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が
-  録画側を常に勝たせる（[recording.md](../recording.md) §2「チューナー調停」）。
+  録画側を常に勝たせる（[recording.md](../../recording.md) §2「チューナー調停」）。
   予約表を見て拒否する案は採らない --- streamer が予約エンジンに依存し、mirakc 固有の
   優先度概念を永続テーブルに持ち込む誘惑を生む（不変条件 7）。**`live.tuner_priority <
   rules.priority` を Rokuban は強制しない**。前者は config、後者は DB でユーザーが
   自由に変えられる値である。両者を跨いで検証する権威がどちらの層にも無い（config は
-  デプロイ環境の性質、DB は運用中の意思。[configuration.md](../configuration.md) §config
+  デプロイ環境の性質、DB は運用中の意思。[configuration.md](../../configuration.md) §config
   と DB の境界）。ルールの priority を既定 10 未満まで下げると、この既定値のままでは
   ライブが録画に勝ってしまう --- 運用者が両方の値を意識して選ぶ前提とする
 - **同時セッション上限（`live.max_sessions`）はプロセスローカル。**超えた要求・
@@ -312,7 +312,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
   存在しないチャンネルへの要求でも idle セッションの退避が走る（近似分析が
   受け入れている性質）
 - **セグメントは `live.segment_dir`（tmpfs 前提）に書く**。録画バッファとは別ディスクに
-  する（[operations.md](../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
+  する（[operations.md](../../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
   置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ
   経路で全セッションを止め、ディレクトリも削除する。**tmpfs はノード再起動でしか
   消えない**（k8s の `emptyDir: {medium: Memory}` はコンテナ / Pod の再起動をまたいで
@@ -321,7 +321,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
   **中身**を掃くことで、前回プロセスの残骸を毎起動で必ず消す。**`segment_dir` 自体は
   消さない** --- `emptyDir` を `segment_dir` に直接マウントする構成では、Linux は
   マウントポイント自体への rmdir を EBUSY で拒むため（詳細は
-  [configuration.md](../configuration.md) §live）
+  [configuration.md](../../configuration.md) §live）
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない

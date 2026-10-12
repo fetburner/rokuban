@@ -9,7 +9,7 @@
 `status = finished` は mirakc の録画完了であって取り込み完了ではない。原本が
 コミットされるまで再生も事後エンコードもできないのに、それを表すものが
 `sizeBytes` の省略しか無かった。`Recording.ingest`（サーバーが DB 行から毎回導出する。
-[recording/ingest.md](../recording/ingest.md) §5.6）を 2 段に分けて出す。
+[recording/ingest.md](../../recording/ingest.md) §5.6）を 2 段に分けて出す。
 
 - **行のバッジ**（`IngestBadge`。一覧の行と単体ページのヘッダー）: 「取り込み待ち」/
   「取り込み中 42%」/ 分母が無ければ「取り込み中 1.2 GB」。進捗が 60 秒以上更新されて
@@ -40,7 +40,7 @@
     「取り込み中（停滞）」を名乗り続けることはない
 
 **`status = 'recording'` も取り込みを出す。** watcher は録画開始を観測した時点で
-ingest を投入し、worker が録画に追従する（[recording/ingest.md](../recording/ingest.md)
+ingest を投入し、worker が録画に追従する（[recording/ingest.md](../../recording/ingest.md)
 §5.1）。したがって録画中の行にも「取り込み待ち」（進捗行がまだ無い開始直後の数秒）と
 「取り込み中」が出る。以前は「録画中に取り込みの数字は動かない」前提でここを伏せて
 いたが、追従では数字が動く。**停滞を出さないことの根拠も変わった** --- 追い付いている
@@ -48,7 +48,7 @@ ingest を投入し、worker が録画に追従する（[recording/ingest.md](..
 
 **色は使わない**（`bg-muted` のまま）。停滞も含めて状況の説明であって、タリー
 （いま電波に乗っている）でも destructive（取り返しがつかない）でもない
-（[design.md](design.md)「色は信号のみ」）。停滞は文言で言う。
+（[design.md](../design.md)「色は信号のみ」）。停滞は文言で言う。
 
 **「原本は削除済み」と言えるのは `committed` かつ `sizeBytes` 無しのときだけ**。
 `sizeBytes` の省略は「取り込んだ後に消した」と「まだ取り込めていない」の両方を
@@ -80,7 +80,7 @@ worker が追従するので、進捗が新しい間は 5 秒周期の対象に�
 扱いで、`observed_at` が健全なポーリングで進む限り短い周期を保つ。**この周期は
 録画時間の間ずっと続く**（無限リストの積んだページを毎回取り直す）。
 
-いずれも [shell.md](shell.md) の 60 秒 invalidate（`lib/events.ts` の
+いずれも [shell.md](../shell.md) の 60 秒 invalidate（`lib/events.ts` の
 `operationalRefreshIntervalMs`）が拾うので、放置ではなく「周期を落とす」だけになる。
 **「終わっている画面はポーリングしない」を保つには、未完了の状態すべてを短い周期の
 対象にしてはならない** --- `record_sync` 行が消えない以上、「未完了」は恒久的に残り
@@ -130,7 +130,7 @@ worker が追従するので、進捗が新しい間は 5 秒周期の対象に�
 - **`failed` だけ destructive**（`bg-destructive/10` + `text-destructive`。
   `DropBadges` と同じ判断: 実害があるので色で目立たせる）。`queued` /
   `running` は `IngestBadge` と同じ `bg-muted`（状況の説明であって信号ではない。
-  [design.md](design.md)「色は信号のみ」）
+  [design.md](../design.md)「色は信号のみ」）
 - **バッジにはプロファイル名を前置する**（`h264: エンコード失敗`）。事後追加で
   複数プロファイルを依頼した録画では「どのプロファイルが失敗したか」が言えないと
   運用判断に使えない（ドロップ統計の種別列と同じ判断）
@@ -140,7 +140,7 @@ worker が追従するので、進捗が新しい間は 5 秒周期の対象に�
   恒久失敗（入力ファイルの破損など）に対する `EncodeReconcileWorker` の 15 分ごとの
   再投入のたびに `running` へ戻る（`queued` へは戻らない --- 試行行は成功するまで
   消えないので `queued` は初回試行の前だけ）。判断の詳細は
-  [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts`
+  [schema/recordings.md](../../schema/recordings.md) の `recording_encode_attempts`
   節
 - ホームに出す場合は失敗録画と同じ「異常」の置き場に合わせる想定だが、本機能
   自体はホームへの統合を含まない --- 一覧・単体ページで沈黙と区別できれば足りるため
@@ -225,7 +225,7 @@ PID 別内訳も同じ判定で返し、未計測は空配列になる。未計�
 
 PID 表には**種別**列を置く（映像 / 音声 / PAT 等）。PID 数値だけの統計では
 「映像が壊れたのか EIT が数回落ちただけか」を区別できず運用判断に使えないため
-（[recording.md](../recording.md) §1「例外の境界」）。分類できなかった PID は
+（[recording.md](../../recording.md) §1「例外の境界」）。分類できなかった PID は
 種別を空にして PID 数値だけ出す — 分類の失敗で統計そのものを隠さない。
 
 ドロップ位置は「録画開始からの経過」と原本内の byte offset で表示する。PCR を

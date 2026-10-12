@@ -74,7 +74,7 @@
 ## シリーズの導線（番組ハブと次のエピソード）
 
 録画から `/recordings/$id/series` を開くと、番組ハブは次の 3 ブロックを出す。
-シリーズの同一性は [docs/data/series.md](../data/series.md) §8 が持つ。
+シリーズの同一性は [docs/data/series.md](../../data/series.md) §8 が持つ。
 
 - **identity と操作は並び順に依存しない**: 最新録画・最新話・サムネイル・最新日時・
   「毎回録画中」の判定・「自動: X」は、エピソードの並び順とは別に取った新しい順の
@@ -126,7 +126,7 @@ NFKC 正規化を通る一方、検索条件の照合には別の正規化があ
 - **`Recording.series` が null の録画には導線を出さない**（ハブも「次回」も 0 件になる）。
   `RecordingDetail` はこの 1 条件だけを見て、タイトル行のシリーズ名のリンクと棚を出す
 - 「次回」の予約状態は**結合しない**。予約一覧を別に引いて突き合わせるのは番組リストと
-  同じ判断（[api/rest.md](../api/rest.md)「予約状態は番組と結合しない」）
+  同じ判断（[api/rest.md](../../api/rest.md)「予約状態は番組と結合しない」）
 - クエリキーの先頭は「次回」が `programsQueryKeyPrefix`、一覧が `recordingsQueryKeyPrefix`。
   **分類ルールを足した直後に開いているハブが SSE で更新される**のは、`recordings`
   トピックが両方の接頭辞を invalidate するためである（`lib/events.ts`）

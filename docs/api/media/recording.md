@@ -123,7 +123,7 @@ size_bytes は ingest / encode 時に照合した値なので、
 streamer は位置を知らない（Range 要求の位置は再生位置ではない）。再開位置は
 `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存し、視聴済み印は
 `/api/recordings/{id}/watched` で扱う。決定と表の割り方は
-[frontend/recordings.md](../frontend/recordings.md) §視聴状態。
+[frontend/recordings.md](../../frontend/recordings.md) §視聴状態。
 
 #### X-Accel-Redirect（`storage.accel_location`）
 

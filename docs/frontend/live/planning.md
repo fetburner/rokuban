@@ -7,7 +7,7 @@
 番組名を断言せず、予定であることが読み取れる形にする。
 
 **放送波を正とした「今の番組」は持たない。** 真実は EIT[p/f] にしかなく、読むには
-多重化波ごとに恒久専有チューナーを払う（[../recording/delegation.md](../recording/delegation.md)
+多重化波ごとに恒久専有チューナーを払う（[../recording/delegation.md](../../recording/delegation.md)
 「onair tracker は採らない」）。ここで番組名は装飾で、外れてもユーザーは映っているものを
 見ている --- 掛け金が合わない。番組名が外れて実害が出るのは録画側で、そこは終了だけ
 mirakc が追従している（同「PSI/SI 追従」）。

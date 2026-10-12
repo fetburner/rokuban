@@ -8,7 +8,7 @@
 
 選択中のチャンネルは `?service=<Service.id>` に持つ。`routes.tsx` の
 `validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
-消えない（[recordings.md](recordings.md)「TanStack Router の `validateSearch` は
+消えない（[recordings.md](../recordings.md)「TanStack Router の `validateSearch` は
 無効な値を『省略』しても消えない」）。
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
 ようにする。
@@ -62,7 +62,7 @@ site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキー
 でも再生 1 押しより増やさない（ダイアログを重ねると、チューナーが有限でない
 環境の利用者にまで同じ摩擦を強いる）。
 「チューナーが空いています」等の**肯定・保証は文言に書かない**（下界主義。
-[data.md](../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない
+[data.md](../../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない
 消費者がいる）。
 
 `playingKey` と `selectedKey` の一致判定は**レンダー中に行う**（effect
@@ -101,17 +101,17 @@ passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。�
 
 **視聴中チャンネルの情報欄に「この局の番組表」リンクを置く。**
 `/programs`（番組表）の `?service=` へ、視聴中の 1 局を配列 1 要素で渡す
-（[programs.md](programs.md)「番組リスト」の絞り込みと同じ形。`service?: number[]`）。
+（[番組表](../programs.md)「番組リスト」の絞り込みと同じ形。`service?: number[]`）。
 このリンクは通常の push ナビゲーション（`replace` にしない） --- チャンネル一覧の
 ザッピングとは違い 1 回だけの遷移なので、戻るボタンで視聴中チャンネルへ戻れる
 方が自然。逆方向（番組表 → ライブ）はページ単位の導線を置かない（理由は
-[programs.md](programs.md)「番組リスト」の該当箇条書き）。
+[番組表](../programs.md)「番組リスト」の該当箇条書き）。
 
 **ライブへの導線はサーバーの `live.enabled` に連動させる。**
 `live.enabled: false` のとき streamer はライブのルートを一切登録しないので、
 導線を出しても行き先が無い。判断は `GET /api/capabilities` の `live` に一本化し、
 フロント側の入口は `lib/capabilities.ts` だけにする（ナビの出し分けは
-[shell.md](shell.md)「無効な機能の項目は出さない」）。`/live` のルート自体は
+[shell.md](../shell.md)「無効な機能の項目は出さない」）。`/live` のルート自体は
 残す。**直リンク・ブックマークで来たときは「この環境ではライブ視聴が無効です」+
 `live.enabled` という手がかりを出す** --- ルートを消すと SPA の 404 になるだけで、
 運用者は原因（サーバー設定）に辿り着けない。無効のときはプレイリストを一度も
@@ -132,7 +132,7 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
 表示され**、この画面が消したかった「原因にたどり着けない」を別の顔で再演する。
 潰した実装で `pages/live.test.tsx` の 2 件が落ちることは確認済みである。導線側
 （ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで誤った原因を
-主張しないため（[shell.md](shell.md)）。
+主張しないため（[shell.md](../shell.md)）。
 
 **「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを
 表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たまま

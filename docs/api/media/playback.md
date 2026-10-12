@@ -128,7 +128,7 @@ finished の録画でも、原本行がなく取り込み前なら新しいセ�
 `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は
 どちらも `live.segment_dir` 配下で、録画バッファとは別の tmpfs / scratch に置く。追っかけ
 は録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた
-容量を見積もる。詳細は [operations.md](../operations.md) §5 を参照する。
+容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
 
 ### 録画原本のブラウザ再生
 
@@ -269,5 +269,5 @@ player だけが出る状態を避ける。
 
 原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。
 正常終了後も idle GC まで録画全体の変換済み segment が残るため、録画時間、全 live profile の
-出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../operations.md)
+出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../../operations.md)
 §5）。
