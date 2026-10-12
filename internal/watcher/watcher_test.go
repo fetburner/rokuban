@@ -2416,9 +2416,11 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 }
 
 // failAfterEnqueueTx は内側の投入要求を記録した直後にエラーを返す。
-// processRecord の失敗で recordings が rollback されることと、呼び出し側が EnqueueTx
-// と transaction を渡すことを確認する。
-type failAfterEnqueueTx struct{ jobq.Enqueuer }
+// verifyTx は EnqueueTx が受け取った tx の状態を検証する。
+type failAfterEnqueueTx struct {
+	jobq.Enqueuer
+	verifyTx func(context.Context, db.Tx, jobq.Args) error
+}
 
 var errAfterEnqueueTx = errors.New("injected failure after enqueue")
 
@@ -2433,6 +2435,11 @@ func (f failAfterEnqueueTx) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.A
 	if _, err := f.Enqueuer.EnqueueTx(ctx, tx, args, opts...); err != nil {
 		return jobq.Result{}, err
 	}
+	if f.verifyTx != nil {
+		if err := f.verifyTx(ctx, tx, args); err != nil {
+			return jobq.Result{}, err
+		}
+	}
 	return jobq.Result{}, errAfterEnqueueTx
 }
 
@@ -2442,13 +2449,42 @@ func TestProcessRecord_IngestEnqueueFollowsTransaction(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
 	enqueuer := w.enqueuer.(*jobqtestutil.RecordingEnqueuer)
-	w.enqueuer = failAfterEnqueueTx{enqueuer}
+	var recordingVisibleInEnqueueTx bool
+	w.enqueuer = failAfterEnqueueTx{
+		Enqueuer: enqueuer,
+		verifyTx: func(ctx context.Context, tx db.Tx, args jobq.Args) error {
+			ingestArgs, ok := args.(jobs.IngestJobArgs)
+			if !ok {
+				return fmt.Errorf("enqueue args = %T, want jobs.IngestJobArgs", args)
+			}
+			var visible bool
+			err := tx.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM record_sync AS rs
+					JOIN recordings AS r ON r.id = rs.recording_id
+					WHERE rs.site = $1 AND rs.record_id = $2
+				)
+			`, ingestArgs.Site, ingestArgs.RecordID).Scan(&visible)
+			if err != nil {
+				return fmt.Errorf("querying recording through enqueue tx: %w", err)
+			}
+			if !visible {
+				return fmt.Errorf("enqueue tx cannot see recording for site %q record %q", ingestArgs.Site, ingestArgs.RecordID)
+			}
+			recordingVisibleInEnqueueTx = true
+			return nil
+		},
+	}
 
 	createTestReservation(t, pool, 327360102415397)
 	record := testRecord("rollback123", 327360102415397, "finished")
 
 	if err := w.processRecord(ctx, record); !errors.Is(err, errAfterEnqueueTx) {
 		t.Fatalf("processRecord error = %v, want errAfterEnqueueTx", err)
+	}
+	if !recordingVisibleInEnqueueTx {
+		t.Fatal("enqueue tx did not verify the uncommitted recording row")
 	}
 	calls := enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
 	if len(calls) != 1 {
