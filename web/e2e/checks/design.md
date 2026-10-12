@@ -25,11 +25,17 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 
 **フィクスチャは契約で検証される。**「唯一の視覚オラクル」が欠損データのまま
 撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という壊れ方が
-実際にあった。ルールの `textMatches` が旧形 `{ field, kind }` のまま
+実際にあった。
+
+ルールの `textMatches` が旧形 `{ field, kind }` のまま
 `{ target, mode }` に追従しておらず、ルール一覧に「undefinedに…を含む」が
-描かれたまま exit 0 していた。判定本体は `validateFixturesOrExit`
+描かれたまま exit 0 していた。
+
+判定本体は `validateFixturesOrExit`
 （`e2e/lib.mjs`）である。これは `verifyBundleMatchesOrExit` と同じ**前提条件**チェックで、
-スクリプト固有の OK/NG 判定ではないため、共有ハーネス側に置いてある。フィクスチャを
+スクリプト固有の OK/NG 判定ではないため、共有ハーネス側に置いてある。
+
+フィクスチャを
 orval 生成の zod スキーマ（`web/src/api/zod.ts` の `List*ResponseItem`）で
 `parse` し、1 件でも不一致なら他の判定を一切せず exit 1 する。これは ⓪ の
 `verifyBundleMatchesOrExit` と同じ「前提が崩れていたら打ち切る」扱いである。
@@ -57,6 +63,7 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   ライト / ダーク × デスクトップ / モバイル。加えて番組表グリッド・
   サーキットブレーカー発動中・モバイルの「その他」を開いた状態・読み込み中
   （Skeleton の走査線を撮るため録画一覧の応答を遅延させたもの）を撮る。
+
   空状態（EmptyState の文言。既定のショットでは折り返しの下に隠れて
   文字が写らないので、スクロールしてから撮る）とホームの全セクション空状態
   （`home-empty-*`）を足す。
@@ -99,10 +106,11 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   `transitionstart` イベント（プロパティ名つき）を実ブラウザで観測する ---
   box-shadow / outline* / border-*-color のいずれかが遷移対象に上がったら
   NG（border-color だけを見落としたレビュー指摘が実際にあったため、
-  ロングハンド込みで前方一致を掛けている）。同じ手で両方向を確認する:
-  hover の背景色の遷移は従来どおり起きること、`active:...:translate-y-px`
-  の押下フィードバック（Tailwind v4 では `translate` プロパティにコンパイル
-  される）は遷移し**続ける**こと
+  ロングハンド込みで前方一致を掛けている）。
+
+  同じ手で両方向を確認する。hover の背景色の遷移が従来どおり起きること。
+  押下フィードバック（`active:...:translate-y-px`。Tailwind v4 では
+  `translate` プロパティにコンパイルされる）が遷移し**続ける**こと。
 - 接続断バナー（`components/connection-banner.tsx`、issue #456）の地が無彩か。
   `/api/events` は明示のスタブを持たず catch-all（200 json）に落ちるので、
   Content-Type 不一致で SSE が即座に失敗し、追加の配線なしで「切断中」を作れる。
@@ -115,7 +123,9 @@ Node の ESM スクリプトから `../src/api/zod.ts` を直接 import でき�
   意図的な重なり件数を出力し、
   実効 hit 寸法が 24×24 CSS px 未満なら exit 1 にする。`::before` / `::after` による
   当たり判定の拡張と祖先の overflow によるクリップを含めるので、クラス名だけの
-  推測にならない。未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。
+  推測にならない。
+
+  未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。
   日付セル・チャンネル候補・行主操作・ライブチャンネルは別途 44px 高、モバイルナビは
   幅44px・高さ56pxを、#729 のトースト action は 32px、close は 28px を個別に
   固定する。全面リンク等の意図的な重なりがあるため、間隔に全画面一律の閾値は置かず、
@@ -218,6 +228,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
   「速度変更イベントが端末に保存され、録画をまたいで実 `<video>` に載る」こと**で、
   `savePlaybackRate` を no-op にする変異では保存待ちが失敗し、保存値の適用を外す変異では
   次の録画の `<video>.playbackRate` 判定が失敗する。
+
   **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる
   effect の依存漏れ）はここでは踏めない** --- 現在の UI では必ず一覧を経由し、
   `RecordingPlayer` が新規マウントして localStorage から読み直すため。その

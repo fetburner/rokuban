@@ -22,7 +22,7 @@ schemas/         kubeconform に渡す CRD スキーマ（KEDA の ScaledJob）
 束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。
 サイトを増やす差分は「`mirakcs:` に
 1 要素 + `site/` を 1 組生やす」だけになる（`overlays/e2e` が実例）。
-判定は `workloads_test.go` の `TestBaseIsSiteIndependent`。
+この形はテストで固定する。
 
 `site/` は site 名 `default` で書いてある。`base/config.yml` の `mirakcs:` も
 1 要素目の site を `default` にしてあるので、**単一サイトの site ワークロードは
@@ -45,6 +45,12 @@ patch を 1 つも書かない**。入口のライブ経路だけは Ingress に
   Pod は数秒で消えるので scrape が間に合わない**。ジョブ側の観測は
   `river_job` を読む滞留メトリクス（どのロールの `/metrics` にも出る）で行う
   （docs/operations.md §1）
+
+<details><summary>根拠</summary>
+
+- base が site 非依存: `workloads_test.go` の `TestBaseIsSiteIndependent`
+
+</details>
 
 ## 前提
 
@@ -127,12 +133,12 @@ CRD が無いクラスタに apply すると、その部分だけが
 - **worker の `terminationGracePeriodSeconds` は drain を包む。**
   `preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする
   （[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。
-  判定は `workloads_test.go` の `TestWorkerGraceCoversTheSoftStop`）。**api の
+  終了猶予はテストで固定する）。**api の
   値をそのまま写さないこと** --- api は River クライアントを Start しないので、
   足し算の後ろ 2 項が落ちている
 - **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは
   `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを
-  数え続けて永久にスケールしない**（判定は `TestScaledJobTriggersMatchTheirQueue`）
+  数え続けて永久にスケールしない**（クエリと物理キュー名の一致はテストで固定する）
 - **パスワードに改行を含むものは使えない。前後の空白は落ちる**（`base/config.yml`
   の `password:` のコメントに実測付き）。記号（`'` `"` `\` `*` `{` `#` `: `）は通る
 - **image はロールごとに差し替えられる。** overlay の `images:` で
@@ -156,6 +162,13 @@ CRD が無いクラスタに apply すると、その部分だけが
 
 kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md)。
 
+<details><summary>根拠</summary>
+
+- worker の drain 余裕: `workloads_test.go` の `TestWorkerGraceCoversTheSoftStop`
+- ScaledJob のキュー名: `workloads_test.go` の `TestScaledJobTriggersMatchTheirQueue`
+
+</details>
+
 ## 検査
 
 | 何を見るか | どこで回るか |
@@ -173,8 +186,7 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 `-ignore-missing-schemas` は未知の kind を黙って飛ばすので採らない。
 出どころと「`-strict` を効かせるための加工」は [schemas/README.md](schemas/README.md)。
 Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の
-`spec.jobTargetRef.template` は対応済みで、未知の kind は
-`TestEveryWorkloadIsInspected` が落とす。
+`spec.jobTargetRef.template` は対応済みで、未知の kind は検査で落ちる。
 
 **argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは
 次のとおり。
@@ -188,6 +200,12 @@ Go テスト側は CRD でも Pod テンプレートを見つけて検査する�
 **キューやジョブを足した日に、マニフェスト側の書き忘れがここで落ちる。**
 一覧は `internal/jobs.AllQueueNames()` と `cmd/rokuban/enqueue.go` を
 権威にしてあり、テストに書き写していない。
+
+<details><summary>根拠</summary>
+
+- 全 workload の走査と未知 kind の拒否: `workloads_test.go` の `TestEveryWorkloadIsInspected`
+
+</details>
 
 ## ここを使うハーネス
 
