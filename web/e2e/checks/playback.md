@@ -55,9 +55,10 @@ offset 張り直し・保存位置からの開始を確認する。WebKit では
   `ENDLIST` を付ける。壁時計の録画時間は 20 秒、原本 HLS fixture は 20 秒以上ある。⑪ は完了の取得の後に、
   ⑫ は前に `ENDLIST` を付ける。**main の実装（壁時計の終端の 1.5 秒手前より前なら移る）で ⑪ が
   `sameVideo:false`・原本 HLS 要求 2 件になって落ちる**。**前回の実装（5 秒の許容と、完了の取得を待つ保留）
-  では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。終端の 1 秒後の `ended` は判定に使わない。
-  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出して `currentTime` を 0 に戻すことがある
-  （13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない）。次のポスター判定は⑬
+  では ⑪ と ⑫ の両方が同じ形で落ちる**（以上 Chromium で確認）。
+
+  終端の 1 秒後の `ended` は判定に使わない。
+  Playwright の WebKit は `ended` の約 0.9 秒後に `durationchange` だけを出し、`currentTime` を 0 に戻すことがある。13 回の実行の 26 判定中 4 回。`seeking` / `loadstart` / `emptied` は出ない。次のポスター判定は⑬
 
 `E2E_BROWSER=webkit` で同じ判定を Safari 相当のネイティブ HLS 経路で回す。
 画質切替の位置の持ち越しは hls.js（`startPosition`）とネイティブ（要素への代入）で
@@ -96,7 +97,9 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRA
 
 この判定は ffmpeg / ffprobe / Go と Chromium / WebKit を使うため、これらが必要である。
 現在の合成 fixture では、非カット MP4 基準の差は Chromium + hls.js と WebKit native HLS の
-両方で、HLS offset 0 / 10 と MP4 の全目印が 0.00ms だった。比較の許容差は半フレームではなく
+両方で、HLS offset 0 / 10 と MP4 の全目印が 0.00ms だった。
+
+比較の許容差は半フレームではなく
 1ms である。原本 HLS は B フレームを無効にし、`-ss` と再生軸を同じフレーム格子へ揃える。
 offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 23.37ms ずれる。
 表の再生時刻比較と編集モードの境界操作は別の判定であり、スクリプト全体の終了状態には両方が含まれる。
@@ -204,26 +207,37 @@ Playwright の Chromium は H.264 を持たない構成があり、コーデッ�
 **変異で落ちることを確認済み**: プレビューを `hidden` にする（①②③が落ちる）。
 `SEEK_TILES_COLUMNS` を 5 にする変異も、①の位置判定で落ちる。
 実測の文言は「タイル #9 の background-position が -1280px -180px（期待 -2880px 0px）」である。
+
 ホバーの受け口を帯から外枠（映像を含む）へ広げる変異は③で落ちる。
 クリック先だけ 0.8 倍にずらす変異は⑤⑦で落ちる（「-960px 0px を見てクリックしたが 28.0s（タイル #2）へ飛んだ」）。
 狭い画面で縮めない変異は⑥で落ちる（「preview 32..352 / scrub 32..308」）。
+
 ホバーの受け口を `onMouseMove` / `onMouseLeave` に戻す変異（修正前の実装）は⑦で落ちる。
 追加した cut 判定は、修正前の実装でタイル問い合わせが始まらず、25.5 秒・50.5 秒のプレビューも出ずに落ちた。
+
 タイル位置への cut → 原本写像を外し、cut 秒をそのまま格子に使う変異では⑨が落ちる。
 実測は「cut 50.5s のタイル位置が -1600px 0px（原本 60.5s の期待 -1920px 0px）」で、
 表示した tile #5 と期待する tile #6 を区別する。これは合成動画でクライアントの写像を測る判定で、
 実録画のタイル生成と keep 区間の時刻軸が一致することは保証しない。
 
 **Go 側と TS 側の定数が揃っていること自体は、ここでは測れない。**
-`internal/worker/seek_tiles.go` と `src/lib/seek-tiles.ts` に同じ値が 2 つある。
-この判定のフィクスチャは手書きで、Go が作る格子を再現していない。
-揃っていることは両側の単体テスト（`TestSeekTileCount` /
-`TestSeekTilesWorker_ComposeSheetArgs` と `seek-tiles.test.ts`）がリテラルで固定している。
+同じ値を持つファイルが 2 つある。この判定のフィクスチャは手書きで、Go が作る格子を再現していない。
+揃っていることは両側の単体テストでリテラル固定する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:seek-tiles
 ```
+
+<details><summary>根拠</summary>
+
+- Go 側のタイル定数: `internal/worker/seek_tiles.go`
+- TS 側のタイル定数: `src/lib/seek-tiles.ts`
+- Go 側のタイル数: `TestSeekTileCount`
+- worker のシート引数: `TestSeekTilesWorker_ComposeSheetArgs`
+- TS 側の格子: `seek-tiles.test.ts`
+
+</details>
 
 ### チャプターの目盛りと自動スキップ（`chapters.mjs`）
 

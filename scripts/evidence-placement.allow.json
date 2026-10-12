@@ -1,6 +1,4 @@
 {
-  "deploy/k8s/README.md": 4,
-  "deploy/k8s/e2e/README.md": 3,
   "docs/api/media/live-hls.md": 3,
   "docs/api/media/playback.md": 15,
   "docs/data/series.md": 3,
@@ -9,6 +7,5 @@
   "docs/invariants.md": 1,
   "docs/runbook/testing.md": 1,
   "docs/runbook/troubleshooting.md": 1,
-  "docs/schema/recordings.md": 1,
-  "web/e2e/checks/playback.md": 2
+  "docs/schema/recordings.md": 1
 }

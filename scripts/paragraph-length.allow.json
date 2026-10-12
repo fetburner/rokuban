@@ -1,6 +1,4 @@
 {
-  "CLAUDE.md": 4,
-  "deploy/k8s/e2e/README.md": 3,
   "docs/api/deployment.md": 2,
   "docs/api/media/live-hls.md": 5,
   "docs/api/media/playback.md": 8,
@@ -25,13 +23,5 @@
   "docs/frontend/recordings/storage.md": 3,
   "docs/frontend/reservations.md": 3,
   "docs/frontend/shell.md": 4,
-  "docs/schema.md": 1,
-  "web/e2e/README.md": 1,
-  "web/e2e/checks/design.md": 5,
-  "web/e2e/checks/layout.md": 1,
-  "web/e2e/checks/live.md": 3,
-  "web/e2e/checks/playback.md": 3,
-  "web/e2e/checks/programs.md": 3,
-  "web/e2e/checks/recordings.md": 1,
-  "web/e2e/checks/reservations-search.md": 1
+  "docs/schema.md": 1
 }

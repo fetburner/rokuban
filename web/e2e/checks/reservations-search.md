@@ -11,7 +11,9 @@ SSE の通知を 1 通も届けないまま接続だけ維持したとき、**�
 
 **接続断バナー（`components/connection-banner.tsx`、issue #456）もここで見る**。
 `/api/events` を `page.route` で abort し、`disconnectedBannerDelayMs`（10 秒。
-`page.clock` の仮想時計で進める）後に帯が出る。そこから route を復旧させ、
+`page.clock` の仮想時計で進める）後に帯が出る。
+
+そこから route を復旧させ、
 帯が消えるまでを実ブラウザで確認する。復旧の再接続はブラウザ実装側のタイマー
 （実時間、`page.clock` は進めない）に依るため実時間でポーリングする。加えて、
 帯と `CircuitBreakerBanner`（`/api/breakers` を 1 件返して同時に出す）が

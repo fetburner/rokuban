@@ -25,6 +25,7 @@ Compose の smoke test はコンテナ起動と catalog 書き込みを検査す
 worker kill は実行中 encode Pod だけに `--force --grace-period=0` を送る。
 PostgreSQL outage は DB Pod や `emptyDir` を消さず、Service selector を一時的に空振りさせる。
 そのうえで既存 app connection を切り、`readyz=503` を観測してから Service を戻す。
+
 中断時は EXIT trap が selector と CronJob を戻す。
 trap が走らなかった場合は、次回の `run.sh` が `deploy_scaffold` で `scaffold.yaml` を再適用して selector を戻す。
 CronJob は `restore_cronjobs` が戻す（この復元経路は未検証）。
@@ -67,9 +68,7 @@ preflight は Service selector を見ない。
   `epg-sync` の 1 本だけ
 - **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は
   実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、
-  `overlays/e2e` が毎分に patch している。**出荷値のほうは
-  `deploy/k8s/workloads_test.go` が固定している**（`TestCronSchedulesAreProductionValues`
-  と `TestE2EOverlayShortensTheCronScheduleItMeasures` が対）--- 判定だけを見て
+  `overlays/e2e` が毎分に patch している。**出荷値のほうは別の判定で固定している** --- 判定だけを見て
   いると、「判定が緑になるから」で base が毎分になったことに気付けない
 - **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている
   `component=streamer` は録画配信のほうである
@@ -136,6 +135,13 @@ preflight は Service selector を見ない。
 TODO でも PASS でもなく FAIL にする** --- 黙って 1 つ目を選ぶと、無関係な
 オブジェクトを判定して緑を出す。
 
+<details><summary>根拠</summary>
+
+- 出荷 cron の値: `TestCronSchedulesAreProductionValues`（`deploy/k8s/workloads_test.go`）
+- E2E overlay の短縮値: `TestE2EOverlayShortensTheCronScheduleItMeasures`（`deploy/k8s/workloads_test.go`）
+
+</details>
+
 ## クラスタの中身
 
 ```
@@ -197,12 +203,18 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 
 F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。
 client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
+
 Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
+
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
+
 F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。
 `--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
+
 F3.4 は再実行の completed を見る。
+
 resident client の値を 24h にする変異では F3.3 が FAIL することを確認する。
+
 **F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できる。
 `E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
 
@@ -345,15 +357,17 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
 - **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には
   「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を
   1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する
-  （ログの `outcome` 属性が `job_unhandled`）。単体では
-  `TestServerCmd_OnceModeExitsOnUnhandledJobKind` が同じ形を固定している。
-  つまり **`e2e_probe` は「長時間 Job」にはならない**ので、判定 3 の
-  既定 producer は実物の encode ワークロードに対しては使えない
+  （ログの `outcome` 属性が `job_unhandled`）。単体でも同じ形を固定する。
+
+  つまり **`e2e_probe` は「長時間 Job」にはならない**。
+  そのため、判定 3 の既定 producer は実物の encode ワークロードに使えない
   （`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。
   **判定 5 は `discarded` では壊れない。** 5.1 はサイト B の ScaledJob を
-  pause してから積むので誰も消化せず、5.3 は待ち行列ではなく「新しく現れた
-  Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。ただし実物の worker
-  込みでハーネスを 1 周させた確認はまだ無い。
+  pause してから積むので誰も消化しない。5.3 は待ち行列ではなく「新しく現れた
+  Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。
+
+  ただし実物の worker 込みでハーネスを 1 周させた確認はまだ無い。
+
 - **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。**
   判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。
   ところが intent の PUT が入れるのは `ruler_pass` のヒントである
@@ -408,6 +422,12 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   つまり受け入れ 3 が一度も検査されないまま終わる。形を変えるなら判定も同じ
   PR で書き換えること
 
+
+<details><summary>根拠</summary>
+
+- `--once` worker の unhandled job 終了: `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
+
+</details>
 
 ## ファイル
 
