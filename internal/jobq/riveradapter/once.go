@@ -214,7 +214,7 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // 「まだ掴んでいない」と「掴んで実行中」を区別できず、実行中のジョブを
 // idleTimeout で打ち切ることになる。2 つの観測点が両方要る。
 //
-// **ただし本番の配線（BuildConfig。cfg.Once != nil なら常に
+// **ただし本番の配線（buildConfig。cfg.Once != nil なら常に
 // OnceGate.Middleware() も一緒に登録する）では、4 つの購読のうち実際に
 // 効いているのは EventKindJobFailed だけである。** 未登録 kind のジョブは
 // Work を一度も呼ばれないので、起こしようがあるのは job_failed だけ

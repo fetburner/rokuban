@@ -1,10 +1,6 @@
 # データベーススキーマ v1（索引）
 
-設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md)。
-
-**「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める。導出テーブルまで先に固めて churn を生んだ経緯は不変条件 11 にある（[invariants.md](invariants.md) §11）。
-
-**本文は `docs/schema/` に分割してある。節番号は分割前のまま**なので、コードコメントの「schema.md §3.5」等はこの表で該当ファイルを引ける。
+PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる。
 
 | 節 | 内容 | ファイル |
 |---|---|---|
@@ -17,6 +13,12 @@
 | §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |
 | — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ） | [schema/rules.md](schema/rules.md) |
 | §10 | マイグレーションの権威の所在 | [schema/future.md](schema/future.md) |
+
+**本文は `docs/schema/` に分割してある。節番号は分割前のまま**なので、コードコメントの「schema.md §3.5」等はこの表で該当ファイルを引ける。
+
+設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md)。
+
+**「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める。導出テーブルまで先に固めて churn を生んだ経緯は不変条件 11 にある（[invariants.md](invariants.md) §11）。
 
 ## 2. 全体図
 

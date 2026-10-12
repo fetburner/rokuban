@@ -8,33 +8,23 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 // ルール作成/更新/削除は同一トランザクションで RulerPassArgs を投入する
 // （ヒント経路。docs/recording/ruler.md §3.1「api がルール書き込みと同一
 // トランザクションで EnqueueTx する」）。dual-write を避けるためのものなので、
-// ここでは実際に River のジョブが現れることを確認する。
+// ここでは各操作が ruler_pass の投入を依頼することを確認する。
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
+	enqueuer := newRecordingEnqueuer()
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	if n := countRulerPassJobs(t, ctx, pool); n != 0 {
-		t.Fatalf("initial ruler_pass job count = %d, want 0", n)
+	if n := countRulerPassEnqueues(enqueuer); n != 0 {
+		t.Fatalf("initial ruler_pass enqueue calls = %d, want 0", n)
 	}
 
 	// Create
@@ -52,13 +42,12 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if n := countRulerPassJobs(t, ctx, pool); n != 1 {
-		t.Fatalf("ruler_pass job count after create = %d, want 1", n)
+	if n := countRulerPassEnqueues(enqueuer); n != 1 {
+		t.Fatalf("ruler_pass enqueue calls after create = %d, want 1", n)
 	}
 
-	// UniqueOpts の合流で次の書き込みが弾かれてしまうと「投入されたこと」を検証
-	// できなくなるので、都度クリアしてから次の操作を見る。
-	clearRulerPassJobs(t, ctx, pool)
+	// 記録をクリアし、次の操作が行った投入要求だけを見る。
+	enqueuer.Reset()
 
 	// Update
 	updateBody := map[string]any{"name": "アニメ全録2", "priority": 30}
@@ -76,10 +65,10 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("update status = %d", resp.StatusCode)
 	}
-	if n := countRulerPassJobs(t, ctx, pool); n != 1 {
-		t.Fatalf("ruler_pass job count after update = %d, want 1", n)
+	if n := countRulerPassEnqueues(enqueuer); n != 1 {
+		t.Fatalf("ruler_pass enqueue calls after update = %d, want 1", n)
 	}
-	clearRulerPassJobs(t, ctx, pool)
+	enqueuer.Reset()
 
 	// Delete
 	req, err = http.NewRequest(http.MethodDelete, srv.URL+"/api/rules/"+itoa(created.Id), nil)
@@ -94,23 +83,16 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("delete status = %d", resp.StatusCode)
 	}
-	if n := countRulerPassJobs(t, ctx, pool); n != 1 {
-		t.Fatalf("ruler_pass job count after delete = %d, want 1", n)
+	if n := countRulerPassEnqueues(enqueuer); n != 1 {
+		t.Fatalf("ruler_pass enqueue calls after delete = %d, want 1", n)
 	}
 }
 
-// ルール書き込みが失敗（存在しない ID の削除で 404）すると、同一トランザクション
-// なので RulerPassArgs の投入も一緒にロールバックされ、ジョブは残らないこと。
+// ルール書き込みが失敗（存在しない ID の削除で 404）すると、投入要求も行われない。
 func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)})
+	enqueuer := newRecordingEnqueuer()
+	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -127,8 +109,8 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 		t.Fatalf("delete status = %d, want 404", resp.StatusCode)
 	}
 
-	if n := countRulerPassJobs(t, ctx, pool); n != 0 {
-		t.Fatalf("ruler_pass job count = %d, want 0 "+
+	if n := countRulerPassEnqueues(enqueuer); n != 0 {
+		t.Fatalf("ruler_pass enqueue calls = %d, want 0 "+
 			"(存在しないルールの削除はロールバックされ、ヒントも投入されないはず)", n)
 	}
 }
@@ -136,46 +118,23 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 func TestInsertRulerPassHint_FollowsTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	h := &Server{enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}
+	enqueuer := newRecordingEnqueuer()
+	h := &Server{enqueuer: enqueuer}
 
-	rolledBack, err := pool.Begin(ctx)
+	tx, err := pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("beginning rollback transaction: %v", err)
+		t.Fatalf("beginning transaction: %v", err)
 	}
-	defer func() { _ = rolledBack.Rollback(ctx) }()
-	if err := h.insertRulerPassHint(ctx, rolledBack, db.DefaultSite); err != nil {
-		t.Fatalf("insertRulerPassHint(rollback): %v", err)
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := h.insertRulerPassHint(ctx, tx, db.DefaultSite); err != nil {
+		t.Fatalf("insertRulerPassHint: %v", err)
 	}
-	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
-		t.Fatalf("ruler_pass job count before rollback = %d, want 0", got)
+	calls := enqueuer.CallsOfKind("ruler_pass")
+	if len(calls) != 1 {
+		t.Fatalf("ruler_pass enqueue count = %d, want 1", len(calls))
 	}
-	if err := rolledBack.Rollback(ctx); err != nil {
-		t.Fatalf("rolling back transaction: %v", err)
-	}
-	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
-		t.Fatalf("ruler_pass job count after rollback = %d, want 0", got)
-	}
-
-	committed, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("beginning commit transaction: %v", err)
-	}
-	defer func() { _ = committed.Rollback(ctx) }()
-	if err := h.insertRulerPassHint(ctx, committed, db.DefaultSite); err != nil {
-		t.Fatalf("insertRulerPassHint(commit): %v", err)
-	}
-	if got := countRulerPassJobs(t, ctx, pool); got != 0 {
-		t.Fatalf("ruler_pass job count before commit = %d, want 0", got)
-	}
-	if err := committed.Commit(ctx); err != nil {
-		t.Fatalf("committing transaction: %v", err)
-	}
-	if got := countRulerPassJobs(t, ctx, pool); got != 1 {
-		t.Fatalf("ruler_pass job count after commit = %d, want 1", got)
+	if !calls[0].Transactional || calls[0].Tx != tx {
+		t.Errorf("enqueue call = %#v, want EnqueueTx with caller transaction", calls[0])
 	}
 }
 
@@ -200,12 +159,6 @@ func TestCreateRule_WithoutEnqueuer_StillSucceeds(t *testing.T) {
 	}
 }
 
-func countRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) int {
-	t.Helper()
-	return len(riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass"))
-}
-
-func clearRulerPassJobs(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
-	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
+func countRulerPassEnqueues(enqueuer *recordingEnqueuer) int {
+	return len(enqueuer.CallsOfKind("ruler_pass"))
 }

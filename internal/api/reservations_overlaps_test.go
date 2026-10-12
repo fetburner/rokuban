@@ -249,7 +249,7 @@ INSERT INTO recordings (
 // reservations 行が復活する、という経路で「reservations 行が存在するのに
 // effective.skip=true」という状態が実際に起こりうる。
 //
-// ここでは River ジョブ経由で実際に ruler パスを回す代わりに、上記の経路が
+// ここでは jobq に ruler_pass を依頼して実際に ruler パスを回す代わりに、上記の経路が
 // 最終的に作る DB 状態（reservations 行 + program_intents.action='skip' +
 // program_overrides 行）を直接組み立てて、api 層の判定だけを確かめる。
 func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {

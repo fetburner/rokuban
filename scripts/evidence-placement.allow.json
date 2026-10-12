@@ -2,12 +2,10 @@
   "deploy/k8s/README.md": 4,
   "deploy/k8s/e2e/README.md": 3,
   "docs/api/media.md": 18,
-  "docs/data/jobs.md": 9,
   "docs/data/series.md": 3,
   "docs/frontend/home.md": 1,
   "docs/frontend/live.md": 1,
   "docs/invariants.md": 1,
-  "docs/operations/k8s.md": 8,
   "docs/recording/breaker.md": 3,
   "docs/recording/delegation.md": 2,
   "docs/recording/ingest.md": 15,
@@ -16,9 +14,8 @@
   "docs/runbook/testing.md": 1,
   "docs/runbook/troubleshooting.md": 1,
   "docs/schema/recordings.md": 1,
-  "docs/schema/rules.md": 2,
   "docs/storage/contract.md": 8,
   "docs/storage/rescue.md": 3,
   "docs/storage/retention.md": 5,
-  "web/e2e/README.md": 2
+  "web/e2e/checks/playback.md": 2
 }

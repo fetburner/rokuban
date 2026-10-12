@@ -7,23 +7,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// TestInsertHelpers_FollowTransaction は、ドメイン書き込みと同一トランザクションで
-// 投入するヘルパが tx の外へ投入していないことを確かめる。rollback で 0 件、commit
-// 前に 0 件、commit 後に 1 件でなければ dual-write になる。
-func TestInsertHelpers_FollowTransaction(t *testing.T) {
+// TestInsertHelpers_UseCallerTransaction は、ドメイン書き込みと同じ tx を
+// EnqueueTx に渡すことを確認する。コミット連動の配送は adapter の契約テストで固定する。
+func TestInsertHelpers_UseCallerTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	enqueuer := riveradapter.NewLegacyEnqueuer(riverClient)
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	recordingID := seedRecording(t, pool, "cm", time.Now(), "finished", 1)
 
 	cases := []struct {
@@ -43,38 +37,21 @@ func TestInsertHelpers_FollowTransaction(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			count := func() int {
-				return len(riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, tc.kind))
+			enqueuer.Reset()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
 			}
-			run := func(commit bool) {
-				tx, err := pool.Begin(ctx)
-				if err != nil {
-					t.Fatalf("begin: %v", err)
-				}
-				defer func() { _ = tx.Rollback(ctx) }()
-				if err := tc.insert(ctx, tx); err != nil {
-					t.Fatalf("insert: %v", err)
-				}
-				if got := count(); got != 0 {
-					t.Fatalf("%s jobs before end of tx = %d, want 0", tc.kind, got)
-				}
-				if !commit {
-					if err := tx.Rollback(ctx); err != nil {
-						t.Fatalf("rollback: %v", err)
-					}
-					return
-				}
-				if err := tx.Commit(ctx); err != nil {
-					t.Fatalf("commit: %v", err)
-				}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if err := tc.insert(ctx, tx); err != nil {
+				t.Fatalf("insert: %v", err)
 			}
-			run(false)
-			if got := count(); got != 0 {
-				t.Fatalf("%s jobs after rollback = %d, want 0", tc.kind, got)
+			calls := enqueuer.CallsOfKind(tc.kind)
+			if len(calls) != 1 {
+				t.Fatalf("%s enqueue calls = %d, want 1", tc.kind, len(calls))
 			}
-			run(true)
-			if got := count(); got != 1 {
-				t.Fatalf("%s jobs after commit = %d, want 1", tc.kind, got)
+			if !calls[0].Transactional || calls[0].Tx != tx {
+				t.Errorf("%s enqueue call = %#v, want EnqueueTx with caller transaction", tc.kind, calls[0])
 			}
 		})
 	}

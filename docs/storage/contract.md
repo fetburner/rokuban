@@ -184,6 +184,14 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   `rokuban_orphan_files_unresolved` に出す。rel_path lock file は Close または次回 GC で消える。
   拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
 
+### 字幕サイドカー
+
+字幕を有効にしたエンコードは、encoded ファイルの隣に同じ basename の `.vtt`
+サイドカーを置く。字幕は `media_assets.kind` を増やさず、
+`/file?profile=X&track=subtitles` で encoded アセットから解決する。ARIB 外字・ルビは
+libaribcaption のテキスト化により Unicode 私用領域または近似字へ落ちるため、画像字幕と
+同じ見た目を保証しない。
+
 ### thumbnail / seek tiles の公開
 
 thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして

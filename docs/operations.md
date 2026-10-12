@@ -1,8 +1,6 @@
 # 運用（索引）
 
-Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運用に関する設計指針をまとめる。
-
-**本文は `docs/operations/` に分割してある。節番号は分割前のまま**なので、コードコメントの「operations.md §3」等はこの表で該当ファイルを引ける。
+運用者向けに、監視・アラート、DB・ストレージ、k8s の運用判断をまとめる。
 
 | 節 | 内容 | ファイル |
 |---|---|---|
@@ -19,4 +17,6 @@ Rokuban の監視・アラート・DB 運用・ストレージ運用・k8s 運�
 - **ディスクのサイジング・復旧** → §4
 - **ロール分割デプロイ・KEDA・streamer / ライブ視聴のスケール** → §5（`worker.queues` は [configuration.md](configuration.md) と対で読む）
 
-> 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ・ロール分類）/ [data.md](data.md)（River・NOTIFY）/ [configuration.md](configuration.md)（設定）/ [storage.md](storage.md)（ストレージ契約）/ [runbook.md](runbook.md)（手動での動作確認手順）
+**本文は `docs/operations/` に分割してある。節番号は分割前のまま**なので、コードコメントの「operations.md §3」等はこの表で該当ファイルを引ける。
+
+> 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ・ロール分類）/ [data.md](data.md)（River・NOTIFY）/ [configuration.md](configuration.md)（設定）/ [storage.md](storage.md)（ストレージ契約）/ [runbook.md](runbook.md)（導入・移行・運用手順）
