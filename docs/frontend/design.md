@@ -109,51 +109,58 @@ HIG の「サイドバーのアイコンはアプリのアクセント色を使�
 ### コントラストは毎回測る
 
 **数値はここに転記せず、実ブラウザで毎回測る。** 文字の下限は 4.5、面と線は 3。
-半透明の地は、文字が実際に重なる背景へ合成してから比を出す。
+半透明の地は、文字が実際に重なる背景へ合成してから比を出す。`text-warning` が乗るのは地ではなく `bg-warning/10` の上なので、地に対する比だけを見ると 0.5〜0.7 ほど甘い数字が出る。
 
-判定は要素の背景だけでなく、祖先にある最初の不透明な面まで重ねる。文字の要素だけを掴んで背景が透明のままなら、判定そのものを失敗させる。
+**判定を足したことと、それが効いていることは別。** 合成の実装を入れても、淡い地を持つのが外側の要素で文字を持つのが内側の要素だと、locator が内側だけを掴んで背景が透明になる。その結果、合成が恒等関数になる。この状態では、色を暗くした修正を revert しても判定は緑のまま通った。
+いまは祖先を遡って最初に不透明な面に当たるまで重ねる。掴んだ要素の背景が透明なら、そのこと自体で判定を失敗させる。
 
-Chromium の計算値から実画素を読めない色表現があるため、画素を採取して判定する。背景画像に直接置いた色も採取できる形にする。
+Chromium は計算値も `oklch(...)` のまま返すため、`getComputedStyle` から実画素は読めない。1px 塗って画素を採取して判定する。`background-image` に直接書いた色も読めないので、縞の色はカスタムプロパティに出す（下記「走査線は読み込み中・ON AIR の 2 箇所限定」）。
 
-下限を割る組み合わせは除外しない。失敗バッジはライトの destructive の明度を下げ、色相を動かさず、sRGB に収まる彩度まで下げている。録画中との区別は塗りと文字、文字と淡い地の形で保つ。
+下限を割る組み合わせは除外せず、通常の失敗判定に入れる。`knownGaps` のような除外リストは持たない。
+失敗バッジはライトの destructive の明度を下げて直した。色相は動かしていない。タリーと近いままで、彩度だけがその明度で sRGB 色域に収まる上限まで下がる（上記「タリーレッドと destructive は色相が近い」）。録画中との識別は、従来どおり「塗り + 紙白の文字」と「文字 + 淡い地」の形の差で保つ。
 
-一覧行の hover は 4 画面で `bg-muted/40` と `text-muted-foreground` を組み合わせ、ライトとダークの両方で測る。録画一覧の選択行にも同じ面を使う。hover は Lighthouse の対象外だが、常時見える選択行は監査対象である。
+一覧行の hover 中の副情報は `text-muted-foreground` を維持する。4 画面（録画一覧・予約一覧・ホーム・番組リスト）の `hover:bg-muted/40` を最も近い薄さへ揃え、通常時の「本文 = foreground / 副情報 = muted」の階層を崩さない。
+hover の実測は、代表として録画一覧の行を `e2e:design` が実際に hover して行い、ライト・ダークの両テーマで測る。4 画面すべてを測ってはいない。
+録画一覧の選択モードで選んだ行も同じ `bg-muted/40` に揃えてある。こちらは常時見える面で Lighthouse の監査対象なので、hover と同じ理屈で `e2e:design` が実測する。
 
-ライトでは `bg-muted` の上に `text-muted-foreground` を置くと下限を割る。背景値は変えず、該当する小バッジの文字を `text-foreground` にする。foreground は無彩の地の値であり、「色は信号のみ」と矛盾しない。
+ライトでは `bg-muted` + `text-muted-foreground` が下限 4.5 を割る。地・文字とも走査線グレー側の段を経由するためである。
+走査線グレーの値そのものは動かさず、該当する小バッジの文字を `text-foreground` にして直した。foreground は地の無彩 3 値の一部で信号色ではないので「色は信号のみ」と矛盾しない。新しく `bg-muted` の小バッジを足すときは、この手を最初から使う。
 
-- `bg-muted` 上の文字色の網羅は測定結果の出力が権威である。出力に無い組み合わせは未測定であり、合格とは見なさない。
-- **未検証**: ルール読み込み中のバナー、エンコード設定行の hover、destructive ボタンの hover、ブレーカーバナーの理由文は測っていない。他の不透明度の実測から外挿しない。
-- モバイル番組のチャンネルピッカーのトリガーは `bg-background` と `text-foreground` の対で、地の無彩 3 値として測る。古い「トリガーが読めない」という観測が指した要素は未同定である。リモコン番号タグは開いたポップオーバーの候補側にあり、閉じた状態では DOM に存在しない。
+chip と day-strip は、常時ではなく hover で `bg-muted` が乗る形である。Lighthouse は hover を測らないので合否の対象ではないが、同じ組み合わせである以上、揃えて `hover:text-foreground` を対にしてある。
+
+**上の列挙は `bg-muted` 系の面に muted の文字が乗る箇所の網羅ではない。** 網羅の権威は `e2e:design` の出力の側に置く。そこに出ていない組み合わせは「測っていない」であって「通っている」ではない。いま分かっている残りは次のとおり。
+
+- **測ってあり、下限を満たす**: 録画詳細（`/recordings/$id`）の説明文・`<dt>` 群・品質イベントの muted 文字。詳細本体はページ地へ直接置き、`e2e:design` は `<dt>`「チャンネル」の文字色をページ地に対して測る。同じ色トークンを使う説明文・品質イベントも同じコントラストになる。常時見えるため Lighthouse の監査対象に入る。
+- **未検証**: 検索の `RuleSourceBanner` の読み込み中の枝（`bg-muted/40`）。ここではルールが解決した本体が `text-muted-foreground` を持たず、エラーの枝は `text-destructive` である。
+- **未検証**: エンコード対象プロファイルの行の hover（`hover:bg-muted/60`）。コンテナ名が `text-muted-foreground` である。
+- 上の 2 つは一瞬 / hover 中しか出ないため判定に載せていない。**他の不透明度の実測値から外挿もしない。** 判定を足すまでは「同じ手で直した」扱いにも「通っている」扱いにもしない。
+- **未検証**: destructive 側の `Button variant="destructive"` の hover（`hover:bg-destructive/20`。基底の `/10` より濃い面）。
+- **未検証**: ブレーカーバナーの理由文（`bg-destructive/10` の上の `text-destructive/80`。文字自身が半透明）。
+
+モバイル番組のチャンネルピッカーのトリガー（`bg-background` + `text-foreground`）は、上記のバッジ群とは別の組み合わせである。専用には測っておらず、他所で測っている地の無彩 3 値そのものの対に当たるため、ここでは測っていない。
+「トリガーが読めない」という古い観測がどの要素を指していたかは同定できていない（未検証）。リモコン番号タグはトリガーの中ではなく、開いたポップオーバーの選択肢側にある。ポップオーバーは `keepMounted` を付けていないので、閉じている間は DOM に存在しない。
 
 <details><summary>根拠</summary>
 
 - コントラストの実ブラウザ判定: `pnpm e2e:design`、`web/e2e/design.mjs`
-- 背景の合成と画素採取: `getComputedStyle`、`canvas` の `fillStyle`、`getImageData`、`background-image`、カスタムプロパティ
+- 半透明の地を合成して測る（地だけだと 0.5〜0.7 甘い）: `text-warning`、`bg-warning/10`
+- 合成が恒等関数になる失敗: 祖先を遡って最初に不透明な面まで重ねる、背景が透明なら落とす
+- 実画素の採取: `getComputedStyle`、`canvas` の `fillStyle`、`getImageData`、`oklch(...)`、`background-image`、カスタムプロパティ
 - 除外リストを置かない判定: `knownGaps`
-- 行 hover と選択行: `components/program-row.tsx`、`components/recording-row.tsx`、`pages/reservations.tsx`、`pages/home.tsx`
-- `bg-muted` の文字色修正: `ReservationVerdictBadge`、`components/ui/chip.tsx`、`components/day-strip.tsx`、`text-foreground`
-- ルール読み込み中の未測定面: `RuleSourceBanner`、`components/rule-form.tsx`、`bg-muted/40`
-- RuleSourceBanner の色: 本体は `text-muted-foreground` を持たず、エラー枝は `text-destructive`
+- 失敗バッジの色相と彩度: `--destructive`、`--tally`、`web/src/index.css`
+- 行 hover と選択行: `hover:bg-muted/40`
+- 行 hover の対象 4 画面: `components/program-row.tsx`、`components/recording-row.tsx`、`pages/reservations.tsx`、`pages/home.tsx`
+- `bg-muted` の文字色修正: `text-foreground`、`bg-muted`、`text-muted-foreground`
+- foreground にした録画ラベル: 「完了」、取り込みバッジ、site タグ（録画一覧）
+- foreground にした番組ラベル: sticky 日付見出し（番組リスト）、番組表グリッドとチャンネルピッカーのリモコン番号タグ
+- foreground にした他のラベル: `ReservationVerdictBadge`、ルール一覧の「無効」、ライブのチャンネル種別タグ・チャンネル一覧のリモコン番号タグ
+- chip / day-strip の hover: `components/ui/chip.tsx`、`components/day-strip.tsx`、`hover:bg-muted`、`hover:text-foreground`
+- 録画詳細の実測: `/recordings/$id`、`RecordingDetail`、`<dt>`「チャンネル」
+- ルール読み込み中の未測定面: `RuleSourceBanner`、`components/rule-form.tsx`、`bg-muted/40`、`text-destructive`
 - エンコード設定の hover: `components/encode-settings-fields.tsx`、`hover:bg-muted/60`、`text-muted-foreground`
-- destructive の未測定面: `Button variant="destructive"`、`circuit-breaker-banner.tsx`
-- 録画詳細とチャンネル候補: `/recordings/$id`、`RecordingDetail`、`ChannelOption`、`keepMounted`
-- トークンの権威と測定対象: `web/src/index.css`、`--warning`、`--destructive`、`--tally`
-- 半透明の警告文字の組み合わせ: `text-warning`、`bg-warning/10`、`oklch(...)`
-- 地だけを基準にした場合の過大差: 実際の半透明面との比より 0.5〜0.7 高い
-- hover の測定値: `hover:bg-muted/40`、`hover:text-foreground`
-- 未測定 hover 面: `hover:bg-muted/60`、`hover:bg-destructive/20`、`text-destructive/80`
-- destructive の hover 面は基底の `/10` より濃い `/20`: `hover:bg-destructive/20`
+- destructive の未測定面: `Button variant="destructive"`、`hover:bg-destructive/20`
 - ブレーカーバナーの未測定文字: `circuit-breaker-banner.tsx`、`text-destructive/80`、`bg-destructive/10`
-- foreground を適用した録画ラベル: 完了、取り込み、site
-- foreground を適用した番組ラベル: sticky 日付、グリッド、チャンネル番号
-- foreground を適用した他のラベル: `ReservationVerdictBadge`、ルールの「無効」、ライブの種別・番号
-- foreground を適用した画面群: 録画一覧、予約一覧、ホーム、番組リスト
-- foreground を適用した録画・番組要素: `RecordingRow`、`ProgramRow`、`ChannelPicker`
-- foreground を適用した live / rule 要素: チャンネル種別タグ、リモコン番号タグ、無効ラベル
-- chip / day-strip の hover 面: `components/ui/chip.tsx`、`components/day-strip.tsx`、`hover:bg-muted`
-- 実測済みの録画詳細: `RecordingDetail` の「チャンネル」`<dt>`、ページ地との文字色
-- 同じ色を使う説明文と品質イベント: `RecordingDetail`。destructive の淡い地: `bg-destructive/10`
-- ポップオーバーの未マウント状態: `keepMounted` を使わない `ChannelOption`
+- ポップオーバーの未マウント状態: `ChannelOption`、`keepMounted`
 
 </details>
 
@@ -174,7 +181,8 @@ Chromium の計算値から実画素を読めない色表現があるため、�
 測定では、実際に見える標的だけを列挙し、visual 寸法と hit 寸法を分ける。隠れた要素は除外し、擬似要素が当たり判定を広げる場合は実効寸法へ加える。標的間隔も記録するが、全面リンクと行内操作など意図した重なりがあるため、全画面に一律の gap は課さない。
 
 - fine のデスクトップと coarse の 360px モバイルで測る。
-- 実寸は 24px の下限と、役割ごとに決めた 44px の契約で判定する。
+- 合否は、列挙漏れがないこと、実効寸法が 24px の下限を満たすこと、44px を役割として決めた標的の個別契約を満たすことで決まる。
+- 行の操作列のように折りたたまれた要素は「見えない標的」として数えない。
 - undo トーストの action は 32px、close は 28px として判定に含める。
 
 44 × 44px は強い参考線だが、WCAG AAA、Apple、Material の指針は対象と単位が異なる。CSS px にそのまま置き換えず、用途とポインタを分けて測る。
@@ -263,33 +271,36 @@ tabular-nums の実効性（どの書体が実際に等幅を作るか）は
 
 ## 走査線は読み込み中・ON AIR の 2 箇所限定
 
-走査線は Skeleton と ON AIR バッジだけに使う。ファビコンの 3 値は構造を流用し、本文で縞の上に文字を置くのは ON AIR だけにする。
-空状態には縞を敷かない。Skeleton と同じ質感になると、データが無い状態と読み込み中を見分けにくくなるためである。周期は輝線 1px と間隙 1px の 2px にし、ファビコンと揃える。
+走査線は共通の `Skeleton` / `ListSkeleton` と ON AIR バッジだけに使う。形は `web/src/index.css` の `.scanlines`（読み込み中）と `.tally-scanlines`（ON AIR）の 2 ユーティリティである。ファビコンの 3 値は構造を流用し、本文で縞の上に文字を置くのは ON AIR だけにする。
+空状態には縞を敷かない。Skeleton と同じ質感になると、データが無い状態と読み込み中を見分けにくくなるためである。周期は輝線 1px と間隙 1px の 2px にし、[branding.md](branding.md)「走査線は 3 値で描く」のファビコンと同じ設計を流用する。
 
-「読み込み中」は共通の Skeleton / ListSkeleton に限る。ListSkeleton は 1 リージョンに 1 つの `role="status"` と読み上げ文を持ち、内側の Skeleton は装飾として隠す。すべての一覧の初回読み込みでこの形を使う。
+「読み込み中」は共通の `Skeleton` / `ListSkeleton`（components/page.tsx）に限る。`ListSkeleton` は 1 リージョンに 1 つの `role="status"` と sr-only の「読み込み中」を持ち、内側の `Skeleton` は装飾のみで `aria-hidden` にする。すべての一覧の初回読み込みでこの形を使う。
 
 各画面固有の `<p>読み込み中…</p>` は一覧の初回読み込みではないため、個々の status にする。対象はサイト取得、チャンネル選択、ルール条件、番組詳細、由来バナー、ドロップ統計、ライブプレイヤーである。
 
 一覧の続き取得には `role="status"` を付けない。IntersectionObserver でスクロールのたびに mount / unmount すると、連続スクロール中に読み上げが繰り返されるためである。
 
-ListSkeleton は固定高の行が縦に並ぶ一覧に使う。ポップオーバーの幅制約、チップの折り返し、単一行の詳細、列のある表にはこの形を使わない。
+`ListSkeleton` は固定高の行が縦に並ぶ一覧に使う。ポップオーバーの幅制約、チップの折り返し、単一行の詳細、列のある表にはこの形を使わない。
 
-- ON AIR の文字は `text-tally-foreground` とし、縞の両方とのコントラストを測る。Skeleton は文字を持たない装飾である。
-- 縞の片方にはタリーそのものを使い、もう片方は色相と彩度を保って明度だけ下げる。oklch の補間で色相がずれる方法は使わない。
+- ON AIR の文字は `text-tally-foreground` とし、縞の両方とのコントラストを測る。片方を最悪ケースと決め打つと、もう一方を文字と同色にする変異が判定をすり抜ける。`Skeleton` は `aria-hidden` の装飾で、文字を持たない。色の具体値はここに書かない。`index.css` が権威である。
+- ON AIR だけは「色は信号のみ」の例外として、タリーレッドの塗りを使ってよい（上記「色は信号のみ」）。縞の片方にはタリーそのもの（録画中バッジと同じ、AA を満たす組み合わせ）を使い、もう片方は色相と彩度を保って明度だけ下げる。
+- 色相を変える手段（`color-mix(in oklch, ...)` を墨と混ぜる等）は使わない。oklch の補間が色相を極座標の最短弧で結ぶため、タリーの色相から外れた第 5 の信号色（マゼンタ寄り）を生みかねない。
 - 色相・彩度を変えずに明度だけ動かすため、相対カラー構文 `oklch(from var(--tally) calc(l * ...) c h)` を使う。
-- 縞の色は `background-color` とグラデーションから読めるよう別々のカスタムプロパティにする。背景画像の中に直接置いた色は測れない。
+- 縞の 2 色は `--scan-gap`（`background-color`）と `--scan-lit`（`background-image` のグラデーション）に分けたカスタムプロパティにする。背景画像の中に直接置いた色は測れないが、分けると `e2e:design` が両方を測れる。
 
-走査線自体に動きは付けない。他の状態色も静止しているためである。Skeleton の `animate-pulse` は走査線ではなく、読み込み中の明滅である。
+CRT の走査を模した動きは検討したが、このアプリの他の状態色がどれも静止していることを理由に見送った。走査線そのものの動きは無い。ただし読み込み中（`Skeleton`）は走査線とは無関係に `animate-pulse`（不透明度の明滅）を持つ。
 
 <details><summary>根拠</summary>
 
 - 色の値と縞の定義: `web/src/index.css`、`scripts/gen-favicon.mjs`、`--scan-gap`、`--scan-lit`
 - ON AIR の文字色と縞の両方を測る判定: `web/e2e/design.mjs`、`text-tally-foreground`
-- 用途を Skeleton と ON AIR に制限する検査: `web/tests/scanline-usage.test.ts`
+- 用途を `Skeleton` と ON AIR に制限する検査: `web/tests/scanline-usage.test.ts`
+- 閉じている範囲（別の使用元を足すと落ちる）: `scanlines` は `index.css` 定義 + `components/page.tsx`、`tally-scanlines` は `index.css` 定義 + `pages/live.tsx`
 - `<p>読み込み中…</p>` の画面固有 status: サイト、チャンネル、ルール、番組詳細、由来バナー、ドロップ統計、ライブ
 - ListSkeleton の読み上げ: `role="status"`、sr-only、内側の `Skeleton` は `aria-hidden`
+- 画面固有の status のうち `?ruleId=` の由来バナー: `?ruleId=`
 - 続き読み込みの例外: `IntersectionObserver`、mount / unmount、`role="status"`
-- 使用箇所の手動点検: `grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/src | grep -v '\.test\.'`
+- 使用箇所の手動点検: `tally-scanlines` は文字列として `scanlines` を含むので、ヒットしたファイルを目で見て 2 用途に収まっているかを判断する。`grep -rln --include='*.ts' --include='*.tsx' --include='*.css' 'scanlines' web/src | grep -v '\.test\.'`
 - 走査線の使用元: `components/page.tsx`、`pages/live.tsx`、`scanlines`、`tally-scanlines`
 - 使用クラスの境界: `.scanlines`、`.tally-scanlines`、`scanlines`、`tally-scanlines`
 - CSS Color 4 の相対カラー構文と oklch 補間: `color-mix(in oklch, ...)`
@@ -300,7 +311,7 @@ ListSkeleton は固定高の行が縦に並ぶ一覧に使う。ポップオー�
 
 動きは Skeleton の明滅、Popover / Dialog の出入り、Button の押下フィードバックにある。洗い出しは網羅ではない。
 
-個別のクラスごとに縮退を書かず、一つの `prefers-reduced-motion` 規則へ集約する。時間をほぼ 0 に短縮し、animation 自体は消さない。
+個別のクラスごとに縮退を書かず、一つの `prefers-reduced-motion` 規則へ集約する。時間をほぼ 0 に短縮し、animation 自体は消さない。`animation: none` にはしない。理由は `index.css` のコメントにある。
 
 縮退時と通常時の両方向を実ブラウザで確認する。
 
