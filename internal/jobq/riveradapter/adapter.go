@@ -51,7 +51,8 @@ type Adapter struct {
 }
 
 // NewInsertOnlyEnqueuer creates an Adapter with an empty worker registry and does not start
-// delivery. TestNewInsertOnlyEnqueuerDoesNotStartWorkers fixes this boundary.
+// delivery. With no registered workers River refuses to Start, so the adapter cannot deliver;
+// TestNewInsertOnlyEnqueuerDoesNotStartWorkers fixes that Start fails.
 func NewInsertOnlyEnqueuer(pool *pgxpool.Pool) (*Adapter, error) {
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {

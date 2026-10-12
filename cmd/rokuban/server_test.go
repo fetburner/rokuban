@@ -762,6 +762,7 @@ worker:
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: time.Second}
 	readyBy := time.Now().Add(15 * time.Second)
+	ready := false
 	for time.Now().Before(readyBy) {
 		select {
 		case err := <-serverDone:
@@ -773,12 +774,13 @@ worker:
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
+				ready = true
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if time.Now().After(readyBy) {
+	if !ready {
 		t.Fatalf("rokuban server did not become ready\n%s", readServerLog())
 	}
 

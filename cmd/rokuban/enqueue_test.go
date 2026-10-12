@@ -15,11 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-type enqueuedJob struct {
-	Queue string
-}
-
-func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) enqueuedJob {
+func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, job, site string) string {
 	t.Helper()
 	row := riveradaptertest.RequireRiverKindInserted(t, ctx, pool, strings.ReplaceAll(job, "-", "_"))
 	if site != "" {
@@ -30,7 +26,7 @@ func requireEnqueuedJob(t *testing.T, ctx context.Context, pool *pgxpool.Pool, j
 			t.Errorf("%s site = %q, want %q", job, args.Site, site)
 		}
 	}
-	return enqueuedJob{Queue: row.Queue}
+	return row.Queue
 }
 
 // rokuban enqueue ruler-pass がジョブを投入すること。
@@ -207,8 +203,8 @@ func TestRunEnqueue_TSScanReconcile(t *testing.T) {
 	}
 
 	first := requireEnqueuedJob(t, ctx, pool, "ts-scan-reconcile", "")
-	if first.Queue != "ts_scan" {
-		t.Errorf("ts_scan_reconcile queue = %q, want literal %q", first.Queue, "ts_scan")
+	if first != "ts_scan" {
+		t.Errorf("ts_scan_reconcile queue = %q, want literal %q", first, "ts_scan")
 	}
 
 	var duplicate bytes.Buffer
@@ -277,12 +273,12 @@ func TestRunEnqueue_DeleteReconcile(t *testing.T) {
 		t.Errorf("output = %q, site-independent job must not mention site", out.String())
 	}
 
-	job := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
+	queue := requireEnqueuedJob(t, ctx, pool, "delete-reconcile", "")
 	// cleanup キューに乗ること（DeleteReconcileArgs.Spec）。KEDA の
 	// スケーラはキュー名で引くので、ここがずれると CronJob が投入しても
 	// 誰も起きない。
-	if job.Queue != "cleanup" {
-		t.Errorf("delete_reconcile queue = %q, want %q", job.Queue, "cleanup")
+	if queue != "cleanup" {
+		t.Errorf("delete_reconcile queue = %q, want %q", queue, "cleanup")
 	}
 }
 

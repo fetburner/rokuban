@@ -17,15 +17,12 @@ func TestNewInsertOnlyEnqueuerDoesNotStartWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewInsertOnlyEnqueuer: %v", err)
 	}
-	if adapter.started {
-		t.Fatal("insert-only adapter started delivery during construction")
+	if err := adapter.Start(context.Background()); err == nil {
+		t.Fatal("insert-only adapter Start succeeded, want error (cannot start delivery)")
 	}
 
 	if _, err := adapter.Enqueue(context.Background(), jobs.EpgSyncArgs{Site: "tokyo"}); err != nil {
 		t.Fatalf("enqueueing EPG sync: %v", err)
-	}
-	if adapter.started {
-		t.Fatal("enqueue started delivery")
 	}
 	row := riveradaptertest.MustSingleRiverJobOfKind(t, context.Background(), pool, "epg_sync")
 	if row.State != rivertype.JobStateAvailable {
