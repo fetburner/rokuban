@@ -11,7 +11,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）が
 - **対象は、ルールが base を供給していた予約が desired から外れた削除である**。desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から決まる。
 - `toDelete` には EPG の unmatch とユーザー操作の両方が現れる。ユーザーが投資を手放さないと起きない削除は対象外とし、ラッチ中でも実行する。
 - 対象外は `NOT EXISTS program_investments` に加えて、`reservations.rule_id IS NULL` または `program_intents.action='skip'` を満たす場合である。
-- **`rule_id IS NULL` だけではユーザー操作の証明にならない**。EPG の変化だけでも NULL になる。投資のある予約は desired に残り、ruler が `base` と重複根拠を更新しても削除されない。
+- **`rule_id IS NULL` だけではユーザー操作の証明にならない**。EPG の変化だけでも NULL になる。投資のある予約は desired に残り、`base` と重複根拠 2 列は凍結されるが、`rule_id` は NULL に更新される。
 - intent skip はユーザーが「録るな」と明示した状態である。intent のクリアと最後の investment だった overrides の削除は、前項の対象外に当たる。
 - ルール編集で勝者が変わった予約は `rule_id` が残るため対象のままにする。ルール削除は `toDelete` を通らない。
 - `rule_id` が NULL になる経路でも、ルール削除は投資なしの予約を先に消す。そのため生き残る予約は投資を持っていた行であり、投資を消す別の書き込みが必要になる。
@@ -29,7 +29,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）が
 <details><summary>根拠</summary>
 
 - EPG unmatch と投資中の削除防止: `TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease`
-- base と重複根拠の更新: `internal/ruler/sql.go` の `resolved` CTE
+- EPG unmatch 時の base と重複根拠 2 列の凍結: `internal/ruler/sql.go` の `resolved` CTE
 - ラッチ中の intent クリア: `TestRunPass_LatchDoesNotWithholdIntentClearDelete`
 - intent クリアを件数に含めないこと: `TestRunPass_IntentClearDeletesDoNotCountTowardBreaker`
 - ラッチ中の intent skip: `TestRunPass_LatchDoesNotWithholdSkipIntentDelete`

@@ -97,7 +97,8 @@ catalog/
 
 <details><summary>根拠</summary>
 
-- catalog と走査から消えたファイルを登録しないこと: `TestRescueCatalogMissingFiles`、`TestRescueScanCandidateRemoved`
+- catalog の実体無し asset を `deleted` として復元すること: `TestRescueCatalogMissingFiles`
+- 走査後に消えたファイルを登録しないこと: `TestRescueScanCandidateRemoved`
 - 削除と復元の排他を両経路で保つこと: `TestRescueDeletionSerialization`
 
 </details>
