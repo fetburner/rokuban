@@ -27,13 +27,11 @@
 - [Sintel](https://durian.blender.org/): © copyright Blender Foundation | durian.blender.org
 - [Big Buck Bunny](https://peach.blender.org/): (c) copyright 2008, Blender Foundation / www.bigbuckbunny.org
 
-撮り直す手順は [web/e2e/README.md](web/e2e/README.md) の「README のスクリーンショット」にある。
-
 ## できること
 
 - **CM カット**: 録画ごとに CM 区間を自動で検出し、再生中は CM を自動で飛ばす。
   シークバーには CM の区間が色で出る。検出の結果は再生しながら確認し、手で直せる。
-  確認した CM を落としたカット版も作れる。設定で有効にして使う（[CM 区間の検出](docs/configuration.md#cm-区間の検出)）
+  確認した CM を落としたカット版も作れる。
 - **追っかけ再生**: 録画中の番組を、録画の完了を待たずに頭から見られる。
   ライブ視聴中でも、その番組を録画中なら「最初から」で同じプレイヤーのまま録画からの再生に切り替わる。
   ライブ視聴を有効にした構成で使える
@@ -43,7 +41,7 @@
 - **続きから見る**: 途中まで見た録画をホームに出し、止めた位置から再生する。
   再生位置はサーバーに置くので、別の端末でも続きから見られる
 - **番組表とルールによる自動予約**: キーワードなどのルールで番組を予約する
-- **ライブ視聴**: ブラウザでいま放送中の番組を見られる。設定で有効にして使う（[live](docs/configuration.md#live)）
+- **ライブ視聴**: ブラウザでいま放送中の番組を見られる。
 - **スマホ幅の画面**: ホーム・番組表・録画の再生はスマホ幅でも使える
 - **EPGStation からの移行**: 録画とルールを取り込める（[移行の手順](docs/runbook/import-epgstation.md)）
 
@@ -93,8 +91,6 @@ flowchart RL
     fworker -->|"派生物の生成"| media
     fworker --> pg
 ```
-
-ここでいう PostgreSQL 一本は、Rokuban のアプリケーション DB とジョブキューに限る。システム全体では、mirakc が予約と録画バッファを保持し、Rokuban は原本・派生物を置くメディアストレージにも依存する。
 
 ## 使ってみる
 
