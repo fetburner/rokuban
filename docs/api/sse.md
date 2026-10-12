@@ -6,14 +6,17 @@
 例外は、次の通知で上書きされ再起動後に復元する必要もない揮発テレメトリ
 （`encode-progress`）だけで、接続中の表示に payload を直接使ってよい。
 
-**実装は `internal/notifier` ロールの所有物。** api ロールは mirakc にもファイルシステムにも
-依存しない（不変条件 1）のと同じ理由で、長寿命接続である SSE も持たない。api は desired
-state を Postgres に書くだけの純粋なリクエスト/レスポンス層に留め、Postgres を LISTEN して
-ブラウザへ配り直すだけの小さな常駐プロセスを notifier として分けている。
-monolith（`--all`）では `internal/api.RouterConfig.Mounter` 経由で streamer と同じ
-リスナーに相乗りする（`api.Mounters` で束ねる）。ロールを分けて起動したときは、notifier
-ロールが自分の HTTP サーバーで同じパスを serve する。**api ロール単独では `/api/events` は
-登録されず 404 になる。**
+**SSE の所有物は notifier ロールである。** api は desired state を Postgres に書くリクエスト / レスポンス層に留まり、長寿命接続を持たない。Postgres を LISTEN してブラウザへ配る常駐プロセスを notifier として分ける。
+
+monolith（`--all`）では notifier と streamer が同じリスナーに相乗りする。ロールを分けて起動すると notifier 自身の HTTP サーバーが同じパスを serve し、api ロール単独では `/api/events` が登録されず 404 になる。api が mirakc やファイルシステムに依存しないのと同じ境界に SSE も置く。
+
+<details><summary>根拠</summary>
+
+- SSE の常駐プロセス: `internal/notifier`
+- monolith で router に notifier を載せる: `internal/api.RouterConfig.Mounter`、`api.Mounters`
+- api ロールの依存境界: 不変条件 1
+
+</details>
 
 ### 実装
 

@@ -29,11 +29,17 @@
 
 ### 要件一覧
 
-単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけを入力にする。メソッド・クエリ・ヘッダー・正規表現に依存せず、すべての経路の backend が一意に決まることを判定基準とする。`/api/events` は Exact で notifier へ振れる。site を具体化できるライブ配信と追っかけ再生は、それぞれ `/api/sites/<site>/networks` と `/api/sites/<site>/recordings` の Prefix で site streamer へ振れる。録画 VOD は `{id}` の後ろで api と streamer が分かれるため、現行の `/api/recordings/{id}/...` では不足する。そこで応答の性質を表す固定接頭辞 `/api/media/recordings` へ移設した。
+単一ホスト名で api / notifier / streamer を分けるときは、標準 Ingress の `Exact` またはパス要素単位の `Prefix` だけで全経路の backend が一意に決まることを判定基準にする。メソッド・クエリ・ヘッダー・正規表現には依存しない。
+
+| 経路 | Ingress での振り分け |
+|---|---|
+| SSE | `/api/events` を Exact で notifier へ送る |
+| ライブ配信・追っかけ再生 | site を含む `/api/sites/<site>/networks` と `/api/sites/<site>/recordings` の Prefix で site streamer へ送る |
+| 録画 VOD | `{id}` の後ろで api と streamer が分かれる `/api/recordings/{id}/...` は使わず、応答の性質を示す固定接頭辞 `/api/media/recordings` で送る |
 
 | 要件 | 詳細 |
 |---|---|
-| `X-Forwarded-Host` の解釈 | `server.trust_forwarded_host: true` を明示した構成に限り、Host allowlist（`internal/api.AllowedHosts`）の検証対象をヘッダーの値に切り替える。既定（false）では常に `Host` を使う |
+| `X-Forwarded-Host` の解釈 | `server.trust_forwarded_host: true` を明示した構成に限り、Host allowlist の検証対象をヘッダーの値に切り替える。既定（false）では常に `Host` を使う |
 | ルート相対パスの徹底 | API・アセット参照はすべてドメインを含まないルート相対パス（`/api/...`） |
 | WebSocket 不使用 | SSE は `proxy_buffering off` だけで通る。WebSocket のアップグレード要件を持ち込まない |
 | SPA フォールバック | Go 側の catch-all で `index.html` を返す |
@@ -43,14 +49,25 @@
 
 ### 検討したが実装しないもの
 
-- **`X-Forwarded-For`**: 解釈しない。Rokuban は認証・レート制限・認可を持たない（本ファイル §認証）ため、なりすまされても実害はアクセスログの精度が落ちるだけだが、**そのアクセスログ機構自体が存在しない**（`internal/api` にリクエスト単位のロギングが無い）。出力先の無いヘッダー解釈は意味を持たないコードになる（不変条件 10）。アクセスログを新設する機会があれば、そのとき合わせて検討する
-- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）**: 実装しない。絶対 URL を生成している箇所を、Go 側（`internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook`）と TS 側（`web/src`）の双方で棚卸しした。結果はゼロだった。API はすべてルート相対パス `/api/*`（[rest.md](rest.md) §エンドポイント設計の規約）、webhook のペイロードにも URL は載らない（[configuration.md](../configuration.md) §webhook）。ビルダーが要る箇所が無いので作らない（不変条件 11「これを書く/使うコードは今あるか」）。サブパス配信（`X-Forwarded-Prefix`）が必要になる構成が出てきたら、そのときに棚卸しからやり直す
+- **`X-Forwarded-For` は解釈しない。** 認証・レート制限・認可は持たず（本ファイル §認証）、リクエスト単位のアクセスログも無い。ログの出力先が無いヘッダー解釈は意味を持たないコードになるため、アクセスログを新設する機会があれば再検討する。
+- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）は実装しない。** API はルート相対パス `/api/*` を使う。webhook の payload に URL は載らない（[rest.md](rest.md) §エンドポイント設計の規約、[configuration.md](../configuration.md) §webhook）。
+  Go と TS の棚卸しでは絶対 URL の生成箇所が見つからなかった。使い手の無いビルダーは先回りで作らない。サブパス配信が必要になったら棚卸しからやり直す。
 
 ### 単一バイナリの自己完結は維持
 
 `--all` で nginx なしでも全機能動作する。ミニ PC にコンポーネントを増やさないという基本方針を崩さない（参照: [overview.md](../overview.md) の monolithic mode）。
 
 nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デプロイパターンの一部」。構成図は変更なし、HTTP 層の設計要件として現れる。
+
+<details><summary>根拠</summary>
+
+- Host allowlist の検証先: `internal/api.AllowedHosts`
+- リクエスト単位のアクセスログ: `internal/api`
+- 絶対 URL の棚卸し対象: `internal/api` / `internal/streamer` / `internal/notifier` / `internal/webhook` / `web/src`
+- 出力先の無い解釈を作らない: 不変条件 10
+- 使うコードが無い段階では形を作らない: 不変条件 11
+
+</details>
 
 ## nginx リファレンス構成
 

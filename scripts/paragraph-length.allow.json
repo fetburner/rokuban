@@ -1,12 +1,6 @@
 {
   "CLAUDE.md": 4,
   "deploy/k8s/e2e/README.md": 3,
-  "docs/api/deployment.md": 2,
-  "docs/api/media/live-hls.md": 5,
-  "docs/api/media/playback.md": 8,
-  "docs/api/media/recording.md": 2,
-  "docs/api/rest.md": 3,
-  "docs/api/sse.md": 1,
   "docs/frontend/live/audio.md": 2,
   "docs/frontend/live/controls.md": 2,
   "docs/frontend/live/metrics.md": 1,

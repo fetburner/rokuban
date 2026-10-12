@@ -40,10 +40,7 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 生成物から得るものもない。利用可能なプロファイル（名前 + サイズ）は
 `Recording.encodedAssets`（一覧 API）で返す。
 
-**`internal/streamer` の所有物として実装する。** api ロールはファイルシステムに
-依存しない（不変条件 1）ため、バイト転送はロールとして分ける。monolith では
-`api.RouterConfig.Mounter` 経由で同一リスナーに相乗りするが、コードの境界は
-最初から引いてある。streamer ロールが有効なとき（`--all` を含む）だけ登録される。
+**メディアのバイト転送は streamer ロールが所有する。** api ロールはファイルシステムに依存しないため、転送は別ロールに置く。monolith では同じ HTTP リスナーに相乗りし、streamer が有効なときだけ登録する。
 
 **`/file` は `profile` クエリが無いときは原本（`kind = 'original'`）、あるときは
 `kind = 'encoded'` かつそのプロファイル名を返す**。**`/thumbnail` はサムネイル
@@ -64,21 +61,15 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 発生する。ただしこれはコミットと実ファイルの不整合を示す WARN では扱わない（配信側は
 サイドカーかどうかを知っているので、その経路だけログを出さない）。
 
-**`rel_path` は配信側でも独立に検証する。** `internal/mediapath.Resolve` を
-ingest と共有し、メディアディレクトリの外を指す `rel_path` は 404 にする。
-書き込み時に検証済みでも、DB に不正な行が入った場合に任意ファイルを
-読み出させないため片側だけでは足りない。
+**`rel_path` は配信側でも独立に検証する。** メディアディレクトリ外を指す値は 404 にする。書き込み時に検証済みでも、DB に不正な行が入った場合に任意ファイルを読み出させないため、配信時の検証も要る。
 
-**`/seek-tiles` はシークプレビュー用のタイル画像（`kind = 'seek_tiles'`）を返す。**
-1 枚の JPEG で、10 秒間隔のタイルが 10 列の格子に並んでいる（枚数が列数の倍数でない
-ときの余りは黒）。間隔・1 枚の大きさ・列数・上限は worker の固定値である。
-クライアントは同じ値を `web/src/lib/seek-tiles.ts` に持つ ——
-メディア配信は `openapi.yaml` の対象外なので値の伝達経路が無い。
-**値を変えたら既存のタイルの再生成が要る。**
-**未生成なら 404 を返し、クライアントは poster だけの従来の見た目に戻る** ——
-要求の経路で生成を待たせない（生成は `thumbnail_reconcile` の定期パスが行う）。
-寿命は poster と同じである（原本が消えても派生物として残り、ごみ箱で 404、完全削除で
-アセットグループごと消える）。
+**`/seek-tiles` はシークプレビュー用タイル（`kind = 'seek_tiles'`）を 1 枚の JPEG で返す。** タイルは 10 秒間隔、10 列で並び、最後の行の余りは黒で埋める。間隔・画像サイズ・列数・上限は worker とクライアントで同じ固定値を使う。
+
+メディア配信は OpenAPI の対象外で、worker から UI へ値を渡す経路はない。値を変えたときは既存タイルを再生成する。
+
+未生成なら 404 を返し、クライアントは poster だけの表示に戻る。要求中に生成を待たず、thumbnail reconcile の定期パスで作る。
+
+タイルの寿命は poster と同じである。原本が消えた後も派生物として残り、ごみ箱では 404、完全削除でアセットグループごと消える。
 
 **`/frame` は CM 検出のロゴ位置を教えるためのコマを返す。**
 
@@ -86,18 +77,15 @@ ingest と共有し、メディアディレクトリの外を指す `rel_path` �
 GET /api/media/recordings/{id}/frame?at=<milliseconds> → image/jpeg
 ```
 
-原本（`kind = 'original'`）だけを入力にする。画像の縮小や SAR の焼き込みはしない。
-応答には `X-Coded-Width` と `X-Coded-Height` を付ける。
-値は返す JPEG 自身の幅と高さで、先頭のストリームではなく `at` のコマのものである。
-途中で解像度が変わる録画でも、幅と高さ（寸法だけ）は画像と一致する。
-教えた枠が後半の解像度なら、検出側は録画の解像度（最初の映像ストリーム）と合わず、失敗として残す。
-さらに `X-Sample-Aspect-Ratio` を付ける。値は `at` のコマの SAR で、画面はこの SAR で表示比を補正する。
-保存する枠は SAR 適用前の記録上の座標を使う。
-SAR は ffmpeg が返す JPEG からは読めない。ffmpeg は途中で SAR が変わっても、ストリーム先頭の SAR を出力へ渡す。
-そのため ffprobe で `at` の手前から読み、pts が `at` 以上の最初のコマの SAR を採る。
-ffmpeg の `-ss` は `at` から 1 コマずれたコマを返すことがある（規則は特定できていない）。
-採ったコマの大きさが JPEG の SOF と違えば 1 つ前のコマを見て、どちらも合わなければ 500 を返す。
-大きさが同じで SAR だけ変わる境目（720x480 の 4:3 と 16:9 の切り替えなど）では、境目の 1 コマ分の SAR を取り違えうる（未検証）。
+| 項目 | 挙動 |
+|---|---|
+| 入力 | `kind = 'original'` の原本だけを使い、縮小や SAR の焼き込みはしない |
+| `X-Coded-Width` / `X-Coded-Height` | `at` のコマで返す JPEG 自身の幅と高さを返す。途中で解像度が変わり、渡した枠が録画の最初の映像ストリームと異なる場合、検出は失敗する |
+| `X-Sample-Aspect-Ratio` | `at` のコマの SAR を返し、画面表示比を補正する。保存する枠は SAR 適用前の記録上の座標を使う |
+| SAR の取得 | JPEG から SAR を読めず、ffmpeg は途中で変化しても先頭ストリームの SAR を渡す。そのため `at` の手前から調べ、pts が `at` 以上の最初のコマの SAR を使う |
+| コマの選択 | ffmpeg の `-ss` が `at` から 1 コマずれる規則は未特定。採ったコマのサイズが JPEG の SOF と違う場合は 1 コマ前を調べ、どちらも一致しなければ 500 を返す |
+
+同じ寸法のまま SAR だけが変わる境目では、SAR を 1 コマ取り違える可能性がある（未検証）。
 
 `at` が無い、負数、数値でない場合は 400 を返す。
 ごみ箱、原本の行が無い録画、原本の実体が無い録画は 404 を返す。
@@ -124,6 +112,17 @@ streamer は位置を知らない（Range 要求の位置は再生位置では�
 `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存し、視聴済み印は
 `/api/recordings/{id}/watched` で扱う。決定と表の割り方は
 [frontend/recordings/playback.md](../../frontend/recordings/playback.md) §視聴状態。
+
+<details><summary>根拠</summary>
+
+- メディア配信のロール境界と monolith での登録: `internal/streamer`、不変条件 1、`api.RouterConfig.Mounter`。`--all` でも streamer が有効なときに登録する
+- ingest と共有するパス検証: `internal/mediapath.Resolve`
+- seek tile のクライアント側固定値: `web/src/lib/seek-tiles.ts`
+- UI に返すプロファイル済みアセット分類: `encoded`
+- seek tile を伝える OpenAPI 経路が無い: `openapi.yaml`
+- seek tile の定期生成: `thumbnail_reconcile`
+
+</details>
 
 #### X-Accel-Redirect（`storage.accel_location`）
 

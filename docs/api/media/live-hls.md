@@ -115,33 +115,34 @@ MediaMTX に由来するかは未検証である。
   要求もセッションを作り直す。master だけにすると、セッションが消えた後の variant
   要求が 404 になり、hls.js は 4xx を再試行せずに止まる
 
-セッション ID を持つ設計（`POST` でセッションを作って ID 付きの URL を配る）は、
-**導出物の identity を宛先にする**形になる（不変条件 9 の identity 系）。ライブ
-セッションは使い捨ての導出物なので、宛先は「このサービスが見たい」という欲求の側で
-名指しする --- レベルトリガー（不変条件 5）と同じ形である。
+セッション ID を持つ設計（`POST` でセッションを作って ID 付きの URL を配る）は、導出物の identity を宛先にしてしまう。ライブセッションは使い捨てなので、宛先は「このサービスが見たい」という要求で名指しする。
 
-**パスの id 空間は一覧 API に揃える**。`{networkId}` / `{serviceId}` は
-`GET /api/sites/{site}/services` が返すのと同じ **SI の値そのもの**である。
-mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serviceId`）
-への変換は、streamer が `internal/programid.ServiceID` で行う。
+**パスの id 空間は一覧 API に揃える。** `{networkId}` / `{serviceId}` は `GET /api/sites/{site}/services` と同じ SI の値である。mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serviceId`）は streamer 側で変換する。
 
 - **同じ URL 階層に 2 つの id 空間を同居させない。**`services/{serviceId}` が
   一覧では SI の値、ライブでは合成 id を指す状態は、将来
   `GET /api/sites/{site}/.../services/{serviceId}` を足したときにどちらの空間か
-  決められなくする。API の資源同定は差し替えコストが最も高い先払い（不変条件 11）
-  なので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
+  決められなくする。API の資源同定は差し替えコストが最も高い先払いなので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
 - **mirakc の id 規則を Rokuban の一番外側に置かない。**合成 id は mirakc /
-  Mirakurun の内部規則（`internal/programid.ServiceID`）であり、変換を web に置くと
-  同じ規則の実装が Go と TypeScript に二重化する。URL は永続テーブルより
-  差し替えが高いので、mirakc 固有の概念を置く場所として最悪である（不変条件 7 の
-  精神）
+  Mirakurun の内部規則であり、変換を web に置くと同じ規則の実装が Go と TypeScript に二重化する。URL は永続テーブルより差し替えが高いので、mirakc 固有の概念を置く場所として最悪である。
 - **`serviceId` 単独では鍵にならない。**SI の service_id は network をまたぐと
   一意でない（Mirakurun が合成 id を発明した理由そのもの）。宛先を SI の値で
   名指しするなら `networkId` も URL に要る --- 放送イベントを
-  `(site, network_id, service_id, event_id)` で引く不変条件 9 と同じ形
+  `(site, network_id, service_id, event_id)` で引く場合と同じ形
 
 帰結として **idle GC の粒度もサービス単位**になる（そのサービスへのセグメント要求が
 一定時間来なければ ffmpeg を止める）。「クライアント 1 人ごとの生存」は追わない。
+
+<details><summary>根拠</summary>
+
+- セッション URL に導出 ID を置かない: 不変条件 9
+- 要求を宛先にする設計: 不変条件 5
+- 資源同定を先に決める: 不変条件 11
+- Mirakurun の合成 service id と実装箇所: `internal/programid.ServiceID`
+- mirakc 固有概念を外側の設計に持ち込まない: 不変条件 7
+- 放送イベントは site / network / service を含む id で引く: 不変条件 9、`(site, network_id, service_id, event_id)`
+
+</details>
 
 #### 離脱は「ヒント」であって停止命令ではない
 
@@ -161,7 +162,7 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
   **別の部屋で同じチャンネルを見ている視聴者の再生を一方的に切れてしまう**。
   他に視聴者がいれば、その人の次のセグメント / プレイリスト要求が last-access を
   更新して期限が元に戻る --- **ヒントは収束を速めるだけで、「誰かが見ているか」と
-  いう真実は既存の観測（セグメント要求）が持つ**。レベルトリガー（不変条件 5）と
+  いう真実は既存の観測（セグメント要求）が持つ**。レベルトリガーと
   同じ形であり、クライアントの identity も参照カウントも要らない
 - **宛先は `(site, networkId, serviceId)`。** セッション ID は導入しない（この節の決定）。
   固定深さも保つので前段の consistent hash 鍵の取り出しはそのまま効く
@@ -169,19 +170,14 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
   `sendBeacon` に再送の材料も与えない）。**POST なのは `navigator.sendBeacon` が
   POST しか出せないから** --- モバイル Safari では `unload` が発火しないので、
   ページ離脱時に届く送信手段はこれしかない
-- **猶予は設定キーにせず `live.profiles[].segment_seconds` から導出する**
-  （`3 × 最長の segment_seconds + 2s`。既定 8 秒）。**`idle_timeout` でクリップしない**
-  --- クリップすると `segment_seconds: 6` + `idle_timeout: 2s` のような設定で猶予が
-  セグメント長を下回る。猶予が `idle_timeout` 以上になる設定では、ヒントが no-op に
-  なる方へ倒す。理由は `leaveGrace` の doc コメントにある。守るべき性質は「猶予 > 生きている視聴者の次の要求が来るまでの間隔」で、
-  その間隔を決めているのはセグメント長そのもの。独立したキーにすると
-  `segment_seconds: 6` と 1 秒の猶予のような組み合わせが書けてしまい、**leave が
-  「他人の視聴を切る道具」に化ける**。導出ならその組み合わせは表現不可能になる
-- **期限は縮む方向にしか動かない**。ヒントが**延命**に使えてしまわないよう、
-  last-access は巻き戻しだけを許す（猶予が `live.idle_timeout` 以上になる設定
-  では、詰め先が現在の期限より後ろになるのでヒントは何も起こさない）
-- **待っている客も客**。セッションの起動待ち（mirakc 接続 + ffmpeg 起動 +
-  プレイリストの 1 本目が出るまで。最大 `playlistStartupTimeout` = 15 秒）は、
+- **猶予は独立した設定キーにせず、最長の `live.profiles[].segment_seconds` から導出する**。
+  値は `3 × 最長の segment_seconds + 2s`（既定 8 秒）で、`idle_timeout` ではクリップしない。
+- **猶予が `idle_timeout` 以上になる構成ではヒントを no-op にする。**
+  たとえば `segment_seconds: 6` / `idle_timeout: 2s` をそのままクリップすると、猶予がセグメント長を下回る。
+- **猶予は生きている視聴者の次の要求までの間隔を上回る。** この間隔を決めるのはセグメント長であり、独立した短い猶予を許すと leave が別の視聴者の再生を切る道具になる。
+- **期限は縮む方向にしか動かさない。** last-access の巻き戻しだけを許し、ヒントでセッションを延命させない。猶予が `live.idle_timeout` 以上なら詰め先が現行期限より後ろになるため、ヒントは何も起こさない。
+- **待っている客も客。** セッションの起動待ち（mirakc 接続 + ffmpeg 起動 +
+  playlist の 1 本目が出るまで。最大 15 秒）は、
   誰も要求を出さない無音区間に見える。**そこにはそのセッションを待っている
   視聴者がいる**。ここで last-access が止まったままだと、この区間に届いた
   ヒント 1 発で起動待ちの視聴者ごとセッションが回収される（実測: 504）。
@@ -197,6 +193,14 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 **プロファイルはクエリ（`?profile=`）で受け、ハッシュ鍵には入れない。**鍵に入れると
 同じサービスを別プロファイルで見たときに 2 つの Pod に割れ、チューナーを 2 本掴む。
 1 つの Pod の中で 1 チューナーから複数プロファイルを出す。
+
+<details><summary>根拠</summary>
+
+- 猶予の導出式: `leaveGrace`
+- 起動待ちの上限: `playlistStartupTimeout`
+- イベントはヒント、真実は既存観測: 不変条件 5
+
+</details>
 
 #### 一覧の契約（`GET /api/live-profiles`）
 
@@ -244,32 +248,16 @@ master から参照される variant playlist（映像・音声）と字幕 play
 （master の名前や未知のプロファイルは 404）、セッションが無ければ作る
 （上記「セッションが消えても URL が死なない」）。`.vtt` は字幕有効時だけ受け付ける。
 
-- **DB を引かない。**パスの `(networkId, serviceId)` から mirakc の
-  `GET /api/services/{id}/stream?decode=1` の `{id}` を合成するだけ
-  （`internal/programid.ServiceID` の純関数）。ライブセッションはインメモリの
-  使い捨てで、認可はリバースプロキシ委譲、同時上限もプロセスローカルなので、
-  DB を引く理由が無い
-- **id セグメントは 16 bit 符号なし整数の十進正準形としてだけ受け付ける**
-  （`strconv.ParseUint(s, 10, 16)` + 先頭ゼロの拒否。SI の network_id /
-  service_id の幅）。読めなければ 400 で、mirakc には触れない。**mirakc に渡るのは
-  常にここで合成した整数であり、URL の文字列ではない**ので、パス区切り（`%2F`）や
-  クエリ（`%3F`）を仕込んで mirakc の別エンドポイントへの要求に化けさせる経路が
-  無い。測っているのは
-  `TestLiveStreamer_RejectsHostileIDSegments`（`%2F` / `%3F` / 非数値 / 空 /
-  符号付き / 16 bit 超 / 桁あふれ / 全角数字 / 先頭ゼロを 400 で止め、偽 mirakc が
-  1 件も要求を受け取らないこと）と
-  `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`（mirakc が受け取る
-  Request-URI が `/api/services/3192053248/stream?decode=1` ちょうどであること）
-- **正準形だけを受けるのは前段の hash 鍵が URL 文字列だから。**`1024` と `01024` は
-  streamer 内部では同じセッション鍵（合成後の整数）になるが、
-  [operations.md](../../operations.md) §5 の `map $uri $live_key` は URL の文字列を
-  鍵にするので、別名を許すと同じチャンネルが 2 つの Pod に落ちてチューナーを
-  2 本掴む。「同じチャンネルの視聴者は同じ Pod」という鍵の取り方の前提を、
-  URL の正準性に暗黙依存させない
-- **「不明な id を mirakc がどう扱うか」は測っていないし、依存もしていない**。
-  実在しない id での起動失敗は、他の失敗（チューナー枯渇・ffmpeg 起動失敗）と同じく
-  503 にまとまる。`TestLiveStreamer_UpstreamRejectionBecomes503` は、上流が拒否
-  ステータスを返したとき、本文も含めて他の起動失敗と同じ 503 になることを見る
+- **DB を引かない。** `(networkId, serviceId)` から mirakc の
+  `GET /api/services/{id}/stream?decode=1` に渡す service id を作る。ライブセッションは
+  インメモリの使い捨てで、認可はリバースプロキシに委譲し、同時上限もプロセスローカルなので DB を引く理由が無い。
+- **id セグメントは 16 bit 符号なし整数の十進正準形だけを受け付ける。**
+  SI の network_id / service_id の幅に合わせ、先頭ゼロも拒否する。読めなければ 400 にし、mirakc には触れない。
+- mirakc へ渡すのは URL 文字列でなく合成した整数である。そのため `%2F` や `%3F` を含む要求が mirakc の別 endpoint に化ける経路は無い。
+- **URL の正準形は前段の hash 鍵に必要である。** streamer 内では `1024` と `01024` が同じ session key になる。
+  [operations.md](../../operations.md) §5 の `map $uri $live_key` は生 URL を使う。別名を許すと同じチャンネルが 2 Pod に分かれ、チューナーを 2 本使う。
+  「同じチャンネルの視聴者は同じ Pod」という前提を守るため、URL の正準性を保つ。
+- **不明な id を mirakc がどう扱うかは未測定であり、その挙動には依存しない。** 上流が要求を拒否した場合は他の起動失敗と同じ 503 にする。
 - **トランスコードは必須。**ISDB-T 地上波の映像は MPEG-2 で、ブラウザの HLS 経路
   （hls.js/MSE）は事実上再生できない。mirakc フィルタ + `-c copy` では受信端末を
   満たせないため、ffmpeg で H.264/AAC に変換する（`live.profiles`、
@@ -280,17 +268,11 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **1 サービス = 1 ffmpeg プロセス = mirakc の 1 チューナー。**設定済みの全プロファイルを
   1 回の ffmpeg 起動で同時に出す（見られていないプロファイルの CPU も使うトレードオフ
   はあるが、プロファイルを跨いだ ffmpeg の使い分けを実装しない分シンプルになる）
-- **チューナー調停は mirakc のリクエスト優先度に一元化する**。ライブの GET には
-  `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。ruler が生成する
-  schedule の既定 priority（10）より低く保つことで、チューナー枯渇時に mirakc が
-  録画側を常に勝たせる（[recording.md](../../recording.md) §2「チューナー調停」）。
-  予約表を見て拒否する案は採らない --- streamer が予約エンジンに依存し、mirakc 固有の
-  優先度概念を永続テーブルに持ち込む誘惑を生む（不変条件 7）。**`live.tuner_priority <
-  rules.priority` を Rokuban は強制しない**。前者は config、後者は DB でユーザーが
-  自由に変えられる値である。両者を跨いで検証する権威がどちらの層にも無い（config は
-  デプロイ環境の性質、DB は運用中の意思。[configuration.md](../../configuration.md) §config
-  と DB の境界）。ルールの priority を既定 10 未満まで下げると、この既定値のままでは
-  ライブが録画に勝ってしまう --- 運用者が両方の値を意識して選ぶ前提とする
+- **チューナー調停は mirakc のリクエスト優先度に一元化する。** ライブ GET は `live.tuner_priority`（既定 1）を `X-Mirakurun-Priority` に載せる。
+  既定の ruler schedule priority（10）より低いため、枯渇時は録画が優先される（[recording.md](../../recording.md) §2「チューナー調停」）。
+- 予約表を見てライブ要求を拒否しない。streamer を予約エンジンに依存させず、mirakc 固有の優先度を永続テーブルに持ち込まない。
+- **Rokuban は `live.tuner_priority < rules.priority` を強制しない。** 前者は config、後者は運用中に DB で変える値である。両者を跨いで検証する権威は無い（[configuration.md](../../configuration.md) §config と DB の境界）。
+  ルールの priority を 10 未満に下げれば、既定値のままではライブが録画に勝つ。運用者が両方の値を選ぶ。
 - **同時セッション上限（`live.max_sessions`）はプロセスローカル。**超えた要求・
   mirakc 側のチューナー枯渇はいずれも既存セッションを壊さずに 503 を返す
   （エラーの本文はプレーンテキスト。OpenAPI 対象外のため生成クライアントの契約は無い）
@@ -311,20 +293,33 @@ master から参照される variant playlist（映像・音声）と字幕 play
   service への要求も同じ 404/503 で返すため、streamer 側では区別できない。結果として、
   存在しないチャンネルへの要求でも idle セッションの退避が走る（近似分析が
   受け入れている性質）
-- **セグメントは `live.segment_dir`（tmpfs 前提）に書く**。録画バッファとは別ディスクに
-  する（[operations.md](../../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに
-  置かない」）。プロセス終了（`--all`/`--roles streamer` の SIGTERM）時は idle GC と同じ
-  経路で全セッションを止め、ディレクトリも削除する。**tmpfs はノード再起動でしか
-  消えない**（k8s の `emptyDir: {medium: Memory}` はコンテナ / Pod の再起動をまたいで
-  残る）。そのため SIGKILL によるクラッシュ（SIGTERM が効かない）の後始末は、
-  それだけでは終わらない。起動時（`NewLive`、HTTP リスナーが立つ前）に `live.segment_dir` の
-  **中身**を掃くことで、前回プロセスの残骸を毎起動で必ず消す。**`segment_dir` 自体は
-  消さない** --- `emptyDir` を `segment_dir` に直接マウントする構成では、Linux は
-  マウントポイント自体への rmdir を EBUSY で拒むため（詳細は
-  [configuration.md](../../configuration.md) §live）
+- **セグメントは `live.segment_dir` の tmpfs に書き、録画バッファとは別に置く**（[operations.md](../../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに置かない」）。
+
+| 状態 | 後始末 |
+|---|---|
+| `--all` / `--roles streamer` の SIGTERM | idle GC と同じ経路で全セッションを止め、ディレクトリを削除する |
+| SIGKILL などのクラッシュ | tmpfs はノード再起動まで残る。k8s の `emptyDir: {medium: Memory}` もコンテナ / Pod の再起動をまたいで残る |
+| 次回起動 | HTTP listener の前に `live.segment_dir` の中身を掃除する。directory 自体は削除しない |
+
+`emptyDir` を `segment_dir` に直接 mount した構成では、Linux が mount point への rmdir を EBUSY で拒む（[configuration.md](../../configuration.md) §live）。
 - **ffmpeg の LookPath 検査は `live.enabled: true` のときだけ行う。**公式イメージ
   （ffmpeg 無し）で streamer ロールを起動する構成（録画配信 / サムネイルのみ）を
   壊さない
+
+<details><summary>根拠</summary>
+
+- mirakc の service id 合成: `internal/programid.ServiceID`
+- mirakc request path の id: `{id}`
+- id の正準形: `strconv.ParseUint(s, 10, 16)`、`TestLiveStreamer_RejectsHostileIDSegments`
+- 400 で拒否する path segments: `%2F` / `%3F` / 非数値 / 空 / 符号付き
+- その他の拒否値: 16 bit 超 / 桁あふれ / 全角数字 / 先頭ゼロ。偽 mirakc への要求は 0 件
+- mirakc の Request-URI は数値 path segments から組み立てる: `TestLiveStreamer_MirakcPathIsComposedFromPathSegments`
+- 試験で受け取る upstream URI: `/api/services/3192053248/stream?decode=1`
+- 上流拒否時の 503: `TestLiveStreamer_UpstreamRejectionBecomes503`
+- config と DB に置く優先度の値: `live.tuner_priority`、`rules.priority`
+- 起動時の tmpfs 内容削除: `NewLive`
+
+</details>
 
 #### 音声（二重音声の主 / 副）
 
@@ -352,25 +347,22 @@ master から参照される variant playlist（映像・音声）と字幕 play
   単一 ES の実放送 dual mono は未観測
 - **並び順が UI との契約である。** グループ内の 0 = 標準 / 1 = 主 / 2 = 副で選ぶ。
   master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれる
-- **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、
-  前に聴いた音声へ戻ったときに止まる。止まるのは、ライブの窓
-  （`playlist_size` × `segment_seconds`）より後で戻った場合である。判定は `web/e2e/live-audio.mjs`（PDT を外すと落ちる）
-- **追っかけは PDT を付けない。** EVENT playlist は segment を消さず窓がスライドしないので、PDT が無くても
-  各トラックを 15 秒聴いて戻っても止まらない。hls.js が何で位置を揃えているかは測っていない。
-  15 秒ごとの切替・同じセッション内 seek・offset 再開は `web/e2e/chase-audio.mjs` で確認する
+- **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、ライブの窓（`playlist_size` × `segment_seconds`）より後で前に聴いた音声へ戻ったときに止まる。
+- **追っかけの EVENT playlist には PDT を付けない。** segment を消さず窓もスライドしないため、PDT が無くても各トラックを 15 秒聴いて戻れる。hls.js が位置を揃える仕組みは未測定である。
 - **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。**
   1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの
   `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
-- **追っかけ再生は画質を `?profile=` で選べる。** 追っかけのセレクタは
-  `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ
-  渡す。画質の切替は `(recordingID, offset)` で同定された既存セッションの別
-  プレイリストを取るだけで、セッションを作り直さない。再生位置は profile によらず
-  原本時間軸で保存する。追っかけも標準 / 主 / 副の 3 音声 rendition を profile 別 master
-  から選ぶ。選択は `/recordings/$id?audio=main|sub#chase` に保持し、HLS URL と共有セッションを
-  変えず rendition だけを切り替える。EVENT が過去の segment を残すので、音声選択を加えても
-  同じセッション内 seek と offset 再開が通ることを `web/e2e/chase-audio.mjs` で確認する
+- **追っかけ再生は画質を `?profile=` で選ぶ。** セレクタは `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ渡す。画質切替は `(recordingID, offset)` のセッションを共有し、別 playlist を取得するだけである。再生位置は profile によらず原本時間軸で保存する。
+- **追っかけ再生は音声 rendition も視聴者ごとに選べる。** 追っかけも profile 別 master から標準 / 主 / 副の 3 rendition を選ぶ。`/recordings/$id?audio=main|sub#chase` に選択を保持し、HLS URL と共有セッションは変えず rendition だけを切り替える。EVENT は過去の segment を保持するため、同じ session 内の seek と offset 再開も続けられる。
 - **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。**
   ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる
 - 未検証: 音声 ES 数が変わる番組境界を跨いだライブセッションの追従。ffmpeg の map は
   起動時に固定される。実 Safari・iOS の切替も未検証（WebKit では取得する rendition
   が替わることまで確認）
+
+<details><summary>根拠</summary>
+
+- PDT によるライブ音声の切替・復帰: `web/e2e/live-audio.mjs`
+- 追っかけ音声の切替、同一セッション内 seek、offset 再開: `web/e2e/chase-audio.mjs`
+
+</details>
