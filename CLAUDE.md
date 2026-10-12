@@ -35,7 +35,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 
 **`go test ./...` は Postgres を要求する**。`ROKUBAN_TEST_DATABASE_URL` を設定していないと DB を使うテストが落ちる（`internal/testutil` がパッケージごとに DB を作り、テストごとに TRUNCATE する）。ローカルなら `postgres://localhost:5432/postgres?sslmode=disable` で足りる。
 
-**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ）。全対象文書に同一プロファイル（1 文 120 文字の上限と読点 5 個の上限）を適用し、違反 0 件を gate にする（閾値では逃げられない）。対象は `README.md` / `CLAUDE.md` / `deploy/**/*.md` / `docs/**/*.md` / `web/e2e/**/*.md` の 5 グロブで、`package.json` の `docs:lint` が権威。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**（実際に PR を出してから気付いた）。
+**docs を触ったら `npm run docs:lint` を回す**（textlint。CI の `docs-lint` ジョブと同じ。対象は `package.json` の `docs:lint` が権威）。文の長さと読点の数は違反 0 件で gate する。段落長・ファイルの大きさ・根拠の置き場は `scripts/textlint-rules/` のローカルルールが、ファイルごとの許容件数と実測の一致で gate する。**許容を上げる PR は理由を書く**。**Go のテストや `deploy/k8s/` の検査を全部回しても、この 1 つだけは別に落ちる**。
 
 **sqlc は式の型を推論しきれないことがある。** `program_start_at + interval '...'` のような
 式に `::timestamptz` を明示しないと `int32` として生成され、`Scan` で必ず落ちる。
