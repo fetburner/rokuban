@@ -4,22 +4,26 @@
 
 ### scrambled > 0（B-CAS / 復号障害）
 
-復号が正常なら `scrambling_control` は常にゼロのはず。**scrambled > 0 は放送品質ではなくエッジ環境の異常**（B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味するので、ドロップ数とは別枠のアラート対象とする。EPGStation ドロップログの scramble 列と同じ役割。
+scrambled > 0 はドロップ数とは別枠のアラート対象とする。EPGStation ドロップログの scramble 列と同じ役割。
+
+復号が正常なら `scrambling_control` は常にゼロのはずであり、**scrambled > 0 は放送品質ではなくエッジ環境の異常**（B-CAS カード接触不良・pcscd 死亡・decode-filter 設定漏れ）を意味する。
 
 ### エッジディスク残量（未 ingest 滞留）
 
 未 ingest record 総量メトリクスとエッジディスク残量を突き合わせてアラートする。ingest が詰まって未 ingest の record が溜まり続けるシナリオへの備え（[ストレージ](../storage.md) のサイジング指針と対）。
 
-**このアラートは回線断を検知できない**。未 ingest 総量が数えるのは `record_sync` に `status='finished'` として観測済みの record だけである。その行は watcher が mirakc を観測して初めて作られる。**エッジ↔クラウドの回線が切れている間に始まった録画はここに現れないので、断のあいだこの値は平らなまま**（録画中に断が始まったぶんも、`finished` への更新が復帰後になるので同じ）。回線断は `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の**停滞**で別に見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
+回線断は `rokuban_sweep_last_success_timestamp_seconds{site}` / `rokuban_epg_sync_last_success_timestamp_seconds` の**停滞**で別に見張る。断が `epg.retention_grace` を超えると encode 意図が落ちる（[ストレージ運用](storage.md)「N 日は容量だけでは決まらない」）。
+
+**このアラートは回線断を検知できない。** 未 ingest 総量が数えるのは `record_sync` に `status='finished'` として観測済みの record だけである。その行は watcher が mirakc を観測して初めて作られる。**エッジ↔クラウドの回線が切れている間に始まった録画はここに現れないので、断のあいだこの値は平らなまま**（録画中に断が始まったぶんも、`finished` への更新が復帰後になるので同じ）。
 
 **`canceled` / `failed` の record の滞留も数えない。** これらは取り込まれず、エッジから回収もされない（[ingest](../recording/ingest.md) §5.3 層 3）。後継の無い途中終了の中身はエッジのディスクに残り続けるが、このアラートには現れない。
 
 ### 大量削除サーキットブレーカー発動
 
-EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定する。reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
-
 - 1 回の ruler パスでの削除数に閾値（`ruler.max_deletes_per_pass`）を設け、超えたら削除せず停止してアラート
 - 削除エンジンの物理 unlink についても、ソースを問わず 1 パスの物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート
+
+EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定する。reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
 
 **アラートは `rokuban_circuit_breaker_tripped{site,breaker}` を見る**。既存の
 `*_circuit_breaker_trips_total` は「何回発動したか」しか答えられないが、ブレーカーは
@@ -61,8 +65,9 @@ canonical file は自動削除されない。必要なら正式な登録経路�
 
 ### 開始前の未同期または観測不能
 
-予約の受付が DB に成功したことは、mirakc に実効 schedule が反映されたことを意味しない。
 次の主系列をサイトごとに使う。
+
+予約の受付が DB に成功したことは、mirakc に実効 schedule が反映されたことを意味しない。
 
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
 - `rokuban_presync_pending{site,reason="options"}` — observed schedule が `scheduled` state にある。
@@ -140,13 +145,13 @@ lead >= (
 skip は分母から除外する。現スコープではこの履歴を保存せず、collector は現在の desired /
 observed と snapshot 鮮度だけを出す。
 
-常駐 `PeriodicJobs` では reconciler が full snapshot を確定し、常駐プロセスの `/metrics`
-が DB の marker を読む。ScaledJob `--once` ではジョブ Pod 自身の process gauge を
-scrape しようとせず、常駐 Pod の collector が同じ marker を読む。ジョブ未投入・Pod
-未起動・パス失敗では marker が進まない。復旧して full snapshot がコミットされ、desired
-と observed の差分が解消すれば、marker は新しくなり pending は 0 に戻る。予約の削除・
-再実体化を跨いでも、collector はその時点の `(site, program_id)` と DB の desired /
-observed を再計算するため、`synced` 成功状態を永続化して古い成功を残さない。
+常駐 `PeriodicJobs` では reconciler が full snapshot を確定する。常駐プロセスの `/metrics` は DB の marker を読む。
+
+ScaledJob `--once` ではジョブ Pod 自身の process gauge を scrape しようとせず、常駐 Pod の collector が同じ marker を読む。
+
+ジョブ未投入・Pod 未起動・パス失敗では marker が進まない。復旧して full snapshot がコミットされ、desired と observed の差分が解消すれば、marker は新しくなり pending は 0 に戻る。
+
+予約の削除・再実体化を跨いでも、collector はその時点の `(site, program_id)` と DB の desired / observed を再計算する。`synced` 成功状態を永続化して古い成功を残すことはない。
 
 未測定の範囲は、定期投入から通知到達までの p95/p99、mirakc の POST 後に schedule が
 再観測されるまでの遅延、サイトごとの EPG 時刻変更頻度である。実測後に alert rule の
