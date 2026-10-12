@@ -16,6 +16,8 @@
 | ライブ視聴 | [live/overview.md](live/overview.md) |
 | フロントエンド実装 | [live/ui.md](live/ui.md) |
 | 実機確認について | [live/verification.md](live/verification.md) |
+| 既定は URL に書き戻さない | [live/quality.md](live/quality.md) |
+| いま放送中は予定であって観測ではない | [live/planning.md](live/planning.md) |
 | 遅延・バッファの計器 | [live/metrics.md](live/metrics.md) |
 
 読む順の目安:

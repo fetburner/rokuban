@@ -23,6 +23,10 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 
 | 節名 | ファイル |
 |---|---|
+| 「色は信号のみ」/「トークン外の生の色値を書かない」/「地は「イ」の 3 値」/「合否は画素で測る」 | [frontend/design.md](frontend/design.md) |
+| 「番組リスト」/「リストを第一級に置く。グリッドはその上に足す」/「グリッドは lg 以上でのみ出し、モバイルは常にリスト」/「仮想化はライブラリを入れず自前」/「セルの高さに下限を設けない」/「容量超過は番組ではなく区間に描く」/「リスト・予約一覧・モバイル: 同じ文言のバッジ」/「受け入れは実機で行う」 | [frontend/programs.md](frontend/programs.md) |
+| 「エラーの本文も UI まで運ぶ」/「サイトの扱い」 | [frontend/shell.md](frontend/shell.md) |
+| 「検索とルールは同じ条件 UI を双方向に共有する」 | [frontend/search.md](frontend/search.md) |
 | 録画単体の着地先 / 録画詳細の面積配分と構成 | [frontend/recordings/detail.md](frontend/recordings/detail.md) |
 | 録画のブラウザ再生 / 視聴状態（続きから・視聴済み） / キー操作 | [frontend/recordings/playback.md](frontend/recordings/playback.md) |
 | CM 検出のロゴ位置 / チャプター（CM の目盛り・自動スキップ・修正） | [frontend/recordings/chapters.md](frontend/recordings/chapters.md) |
@@ -35,6 +39,7 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | いま放送中は予定であって観測ではない / 録画予約による中断予測 | [frontend/live/planning.md](frontend/live/planning.md) |
 | 遅延・バッファの計器 | [frontend/live/metrics.md](frontend/live/metrics.md) |
 | §実機確認について | [frontend/live/verification.md](frontend/live/verification.md) |
+| アセット配信 | [frontend/assets.md](frontend/assets.md) |
 
 読む順の目安:
 
