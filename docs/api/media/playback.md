@@ -77,7 +77,7 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 | cooldown 中に新 session が必要 | `502 Bad Gateway` を返し、`追っかけ入力のエラーが続いているため、再作成を一時停止しています。しばらく待ってから再読み込みしてください。` と残り秒数の `Retry-After` を付ける |
 | cooldown 終了後 | 次の要求で再作成を試し、入力失敗が続けば cooldown を更新する |
 | ffmpeg 自身の異常終了または idle GC | mirakc 入力失敗として記録しない |
-| finished だが ingest 前 | 原本行があれば新しい session を開始できる。ingest 後で保持 session が無ければ 404 |
+| finished だが ingest 前 | 原本行が無い間は新しい session を開始できる。ingest 後で保持 session が無ければ 404 |
 
 cooldown の記録と session map からの削除は同じ lock 区間で行うため、同時要求も新しい session を作らない。`502` と `Retry-After` の組み合わせで streamer の cooldown と proxy の 502 を区別する。proxy の 502 にはこの header が無く、入力失敗として扱わず再生元を選び直せる。上流入力の失敗を示す 502 は、チューナーや session 数不足を示す `503 Service Unavailable` と分類を分ける。
 

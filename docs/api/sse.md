@@ -136,27 +136,38 @@ window focus も別操作も起きない」画面は、`staleTime` だけでは�
   それぞれ取得する）が、こちらは自画面の mutation でしか変わらない前提で優先度を
   下げている --- 他タブ・ruler 側の変更は届かない未解決点として残る
 
-周期と経路は 2 段で測っている。
-
-- **jsdom**（`web/src/lib/events.test.tsx`）: 偽タイマーを進めて**再取得の回数を数える**。
-  数えているのは次の 7 点である。
-  - 「SSE が来なくても運用状態のクエリは 60 秒周期で取り直す」
-  - 「EPG は運用状態より長い周期でしか取り直さない」
-  - 「SSE が来なくてもストレージ残高は専用の周期で取り直す」
-  - 「storage にはトピックが無く、SSE イベントでは取り直されない」
-  - 「再接続したら切断中の変更を全グループ取り直す」
-  - 「背面タブでは定期取得を投げず、前面に戻ると再開する」
-  - 「epg のイベントで番組リスト（手書きのクエリキー）も取り直す」
-- **実ブラウザ**（`web/e2e/sse-refresh.mjs`。Chromium + ビルド済み bundle + `page.clock`）:
-  SSE を張ったまま 1 通も送らず、`/api/**` のリクエスト数を数える。実測は
-  60 秒で `/api/reservations` `/api/breakers` が 1 → 2、10 分で
-  `/api/sites/{site}/programs` `/api/sites/{site}/services` が 1 → 2、
-  `/api/reservations` が 11（10 分ぶんの 10 回 + 初回）。`/api/storage`
-  （`/recordings` に設置している `StorageBalance`）は 5 分で 1 → 2、10 分で
-  2 → 3
-
 **実 notifier に対する収束時間と、切断時に実際の `EventSource` が `error` → `open` を
 この順で出すことは未計測**（仕様上はそうなる。再接続の経路を確かめているのはスタブの方だけ）。
+
+<details><summary>根拠</summary>
+
+定期 invalidate は jsdom の偽タイマーと Chromium の実ブラウザで確認する。jsdom のテストは再取得の回数を数え、ブラウザでは SSE を張ったままイベントを送らず `/api/**` のリクエスト数を測る。
+
+| jsdom テスト（`web/src/lib/events.test.tsx`） | 確認すること |
+|---|---|
+| `SSE が来なくても運用状態のクエリは 60 秒周期で取り直す` | SSE が無くても運用状態と録画一覧を 60 秒ごとに再取得する |
+| `予約詳細は運用状態グループ（60 秒）で取り直す` | 予約詳細は EPG の 10 分周期でなく運用状態の周期で再取得する |
+| `EPG は運用状態より長い周期でしか取り直さない` | EPG は 10 分周期で再取得し、番組リストの手書きキーも対象にする |
+| `SSE が来なくてもストレージ残高は専用の周期で取り直す` | storage は 5 分周期で再取得する |
+| `SSE が来なくてもチューナー状態は専用の周期で取り直す` | tuners は 5 分周期で再取得する |
+| `5 分と 10 分のタイマーが同時に発火しても tuners は余分に取り直さない` | 5 分と 10 分が重なる時刻にも tuners の重複再取得を起こさない |
+| `storage にはトピックが無く、SSE イベントでは取り直されない` | storage は SSE イベントで invalidate されない |
+| `tuners にはトピックが無く、どの SSE イベントでも取り直されない` | tuners は SSE イベントで invalidate されない |
+| `epg のイベントで番組リスト（手書きのクエリキー）も取り直す` | epg イベントが番組リストを invalidate する |
+| `背面タブでは定期取得を投げず、前面に戻ると再開する` | 背面では止まり、前面へ戻ると定期取得を再開する |
+| `再接続したら切断中の変更を全グループ取り直す` | 切断後の再接続で全グループを invalidate する |
+
+**Chromium 実ブラウザ**（`web/e2e/sse-refresh.mjs`、ビルド済み bundle、`page.clock`）での `/api/**` リクエスト数:
+
+| 経過時間 | 対象 | 件数 |
+|---|---|---|
+| 60 秒 | `/api/reservations`、`/api/breakers` | 各 1 → 2 |
+| 10 分 | `/api/sites/{site}/programs`、`/api/sites/{site}/services` | 各 1 → 2 |
+| 10 分 | `/api/reservations` | 11（初回 + 10 回） |
+| 5 分 | `/api/storage`（`/recordings` の `StorageBalance`） | 1 → 2 |
+| 10 分 | `/api/storage`（`/recordings` の `StorageBalance`） | 2 → 3 |
+
+</details>
 
 ### 水平スケール
 
