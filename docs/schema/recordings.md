@@ -136,22 +136,14 @@ CREATE TABLE recording_purge_requests (
 );
 ```
 
-`recording_purge_requests` は `recordings` の列ではなく衛星表に置く。行の存在が即時削除要求、行の DELETE が取消を表す（不変条件 10 / 13）。
-
-定常運用で要求を作成・取消するのは api ロールであり、`recordings` の試行結果を書く watcher / reconciler とは書き手が異なる。rescue は catalog から全表を復元するため、この表も同じように復元する。
-
-`deleted_at` と `superseded_at` は `recordings` 本体に残す。部分一意索引の述語が同じ行のこの 2 列を読むためである。述語から別表は参照できないので、要求行は述語に含めない。
+**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。
+  - 理由は書き手にある —— この要求を定常運用で立てるのも取り消すのも api ロールであり、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない。rescue は別枠である —— 災害復旧で catalog ダンプから全表を書き戻すので、この表も他の表と同じように書く。
+  - 「`deleted_at` が本体にあるから隣に置く」は根拠にならない。`deleted_at` / `superseded_at` が本体に残っているのは、部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照するからである。述語は他表を参照できないので、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
 
 - 完了後（`purged_at`）に要求行を掃除する経路は作らない。掃除役を足すと削除 reconcile が 2 人目の書き手になる（不変条件 12）。「ユーザーが即時削除を要求した」は完了後も真なので tombstone と一緒に残す
 - `requested_at` は「いつ要求されたか」だけを持ち、判定には使わない。ここを `<= now()` で比較し始めたら、実質 boolean を timestamptz で持っていた旧列（`recordings.purge_after`）に戻る
 - **復元（`deleted_at` を消す + 要求行を DELETE）は 1 文のデータ変更 CTE ではなく、トランザクション内の 2 文で書く**。CTE はアーム全体が 1 つのスナップショットを共有する。そのため行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行はその場では何も起こさないが、次の普通の論理削除で猶予をバイパスする。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える
 - **この表に行を入れる経路は、対象の `recordings` 行を先にロックする**（個別 purge は `recordings` の UPDATE アームがそれを兼ねている）。復元を 2 文に割っただけでは窓は閉じない —— DELETE が 0 行だったときロックは何も残らない（READ COMMITTED に述語ロックは無い）。そこへロックせずに INSERT する経路（例: 一括 purge を `INSERT ... SELECT` で書く）を足すと、復元の DELETE 後・COMMIT 前に commit された要求行が残り、猶予バイパスが再発する
-
-<details><summary>根拠</summary>
-
-- 部分一意索引の述語: `recordings_unique_active_event` が `deleted_at` / `superseded_at` を参照する。他表の列は述語に置けない
-
-</details>
 
 ### encoded_asset_removal_requests — 外したエンコード版の要求（衛星表）
 

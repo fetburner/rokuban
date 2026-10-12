@@ -36,7 +36,7 @@ import (
 //
 // **1 プロセスが N site を束縛しうるため、もはや「一致するか」ではなく「clients に
 // jobSite のエントリがあるか」を見る。** 同じ IngestWorker/EpgSyncWorker/... の
-// 1 インスタンスが複数 site の物理キューを同時に購読しうる（BuildConfig が
+// 1 インスタンスが複数 site の物理キューを同時に購読しうる（riveradapter の buildConfig が
 // site ごとに物理名を組み立てて subscribe する）ため、ワーカーはもう単一の
 // 「自分自身の site」を持たない。見つかれば、呼び出し側がそのまま使う
 // *mirakc.Client を返す（呼び出し側が再度 map を引く必要をなくし、verifySite が

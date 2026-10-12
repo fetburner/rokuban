@@ -17,8 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -547,12 +546,8 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 // 全サイトに ruler_pass ヒントが投入される（issue #184 M4-12「含むもの」3）。
 func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -565,7 +560,7 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
 
-	sites := rulerPassJobSites(t, ctx, pool)
+	sites := rulerPassJobSites(t, enqueuer)
 	want := map[string]bool{"tokyo": true, "osaka": true}
 	if len(sites) != 2 || !want[sites[0]] || !want[sites[1]] {
 		t.Errorf("ruler_pass job sites = %v, want exactly {tokyo, osaka}", sites)
@@ -575,12 +570,8 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 // ルール作成時に対象サイトを明示すると、そのサイトにだけヒントが投入される。
 func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -593,7 +584,7 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
 
-	sites := rulerPassJobSites(t, ctx, pool)
+	sites := rulerPassJobSites(t, enqueuer)
 	if len(sites) != 1 || sites[0] != "tokyo" {
 		t.Errorf("ruler_pass job sites = %v, want exactly [tokyo]", sites)
 	}
@@ -605,12 +596,8 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 // サイトにまで ruler_pass が飛ぶ（過剰投入）。
 func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), Sites: []string{"tokyo", "osaka"}})
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+	router := api.NewRouter(api.RouterConfig{Pool: pool, Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -626,7 +613,7 @@ func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *te
 	if err := json.NewDecoder(resp.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	clearRulerPassJobsForTest(t, ctx, pool)
+	enqueuer.Reset()
 
 	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/rules/"+itoa(created.Id), nil)
 	if err != nil {
@@ -641,28 +628,23 @@ func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *te
 		t.Fatalf("delete status = %d, want 200", dresp.StatusCode)
 	}
 
-	sites := rulerPassJobSites(t, ctx, pool)
+	sites := rulerPassJobSites(t, enqueuer)
 	if len(sites) != 1 || sites[0] != "osaka" {
 		t.Errorf("ruler_pass job sites after delete = %v, want exactly [osaka] "+
 			"(rule_sites を削除後に読むと空になり、誤って全サイト分投入される)", sites)
 	}
 }
 
-func rulerPassJobSites(t *testing.T, ctx context.Context, pool *pgxpool.Pool) []string {
+func rulerPassJobSites(t *testing.T, enqueuer *jobqtestutil.RecordingEnqueuer) []string {
 	t.Helper()
 	var sites []string
-	for _, job := range riveradaptertest.MustListRiverJobsOfKind(t, ctx, pool, "ruler_pass") {
-		var args jobs.RulerPassArgs
-		if err := json.Unmarshal(job.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding ruler_pass job %d args: %v", job.ID, err)
+	for _, call := range enqueuer.CallsOfKind("ruler_pass") {
+		args, ok := call.Args.(jobs.RulerPassArgs)
+		if !ok {
+			t.Fatalf("ruler_pass args = %T, want jobs.RulerPassArgs", call.Args)
 		}
 		sites = append(sites, args.Site)
 	}
 	slices.Sort(sites)
 	return sites
-}
-
-func clearRulerPassJobsForTest(t *testing.T, ctx context.Context, pool *pgxpool.Pool) {
-	t.Helper()
-	riveradaptertest.MustDeleteRiverJobsOfKind(t, ctx, pool, "ruler_pass")
 }
