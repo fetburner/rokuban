@@ -125,7 +125,7 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
 の試行が一時的に並走しうる。そのため:
 
-- scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。
+- scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
 - 掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。
 - 並走中の試行は残り、他の scope の encode が走っていても死んだ残骸は消える。
 - 作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る。
@@ -297,10 +297,10 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **前置するのは ingest であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。ここで前置すれば、reconciler が生成する contentPath やユーザーの `filename_template` の内容に関わらず名前空間が保たれる。
 - **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと、前置前の相対パスは `.`（カレントディレクトリ）になる。
 
-  前置後は `sites/{site}/.` の `.` が `Join` / `Clean` で消え、`sites/{site}` という一見正当なパスになる。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が `MkdirAll` で not a directory になり失敗し続ける。
+  前置後は `sites/{site}/.` の `.` が `Join` / `Clean` で消え、`sites/{site}` という一見正当なパスになり、`mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が `MkdirAll` で not a directory になり失敗し続ける。
 
   ingest は前置前に相対パスが `.` であることを明示的に検査して弾く。
-- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収は symlink かどうかを見ずに台帳と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない。
+- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収は symlink かどうかを見ずに台帳と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。
 
   hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。`(dev, ino)` による検出は、バックアップ復元をまたぐと inode が変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
 - **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査は symlink を辿らないため、配下のファイルは孤児候補にも rescue にも見えず、災害復旧で救えない。symlink エントリ自身は孤児として報告するが、自動削除しない。
@@ -308,7 +308,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける。
 - **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。rescue と削除 reconcile の両方が root を `filepath.EvalSymlinks` で解決してから walk するためである。
 
-  この解決を外すと両方とも黙って壊れる。`filepath.Walk` / `WalkDir` は symlink root に `Lstat` し、`IsDir()` が false なら callback を 1 回呼んで終わる。rescue は 0 件のまま「成功」する。
+  この解決を外すと両方とも黙って壊れる。`filepath.Walk` / `WalkDir` は symlink root に `Lstat` し、`IsDir()` が false なら callback を 1 回呼んで終わる。rescue は 0 件のまま「成功」する（災害復旧が最も要る場面だけが壊れる）。
 
   削除 reconcile は `seenOnDisk` が `.` の 1 件になるため、全損セーフガード（走査結果が 0 件なら記録を見送る）が働かない。その結果 `active` 行を全件「実体無し」と誤報する。
 

@@ -66,7 +66,7 @@ override の削除（reset）は既存 schedule に反映しない。戻り先�
 
 再作成は `state == "scheduled"` の allowlist の下でだけ起きる。そのため録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
 
-比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
+比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。この前提は `mirakc 4.0.0-dev.0` 相当の pin に対してだけ判定している。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
 
 <details><summary>根拠</summary>
 

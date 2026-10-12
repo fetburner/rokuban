@@ -10,7 +10,7 @@
 
 **凍結は ingest が原本 media_asset をコミットする tx の中で行う。** 予約確定時でも録画開始時でもない。
 
-導出元の `reservations` / `program_overrides` / `program_intents` は放送終了後の猶予期間で GC される。一方、`recordings` は永続資産である。
+導出元の `reservations` / `program_overrides` / `program_intents` は放送終了後の猶予期間で GC される。一方、`recordings` は永続資産である（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。
 
 毎回の再導出に頼ると、EPG から番組が消えて導出元が GC された時に desired が空になる。エンコード未完了の原本を削除できず、再エンコードも投入できなくなる。
 
@@ -18,9 +18,9 @@
 
 **ingest 完了後の override 変更はその録画には反映されない**。この境界を越えて変更する場合は、録画単位の API を明示的に呼ぶ（[録画エンジン](../recording.md) §4.5）。
 
-**予約は外から与えられた放送イベントキーで引く**: `(site, network_id, service_id, event_id)` を使い、`reservations` への FK や導出器が作る予約 id では引かない。
+**予約は外から与えられた放送イベントキーで引く**: `(site, network_id, service_id, event_id)` を使う。`reservations` への FK や、導出器が作る予約 id では引かない（不変条件 9 / [invariants.md](../invariants.md) §9）。
 
-このキーは `recordings` が録画開始時から凍結して持つ。録画開始から ingest 完了まで数時間かかっても、予約行が GC や再実体化されて失われない。
+このキーは `recordings` が録画開始時から凍結して持つ。録画開始から ingest 完了まで数時間かかっても、予約行が GC や再実体化（EPG フリッカー、ルール編集、dedup）されて失われない。
 
 `program_snapshots` で `(network_id, service_id, event_id)` から `program_id` を引き、`reservations` をその id で結合する。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される短寿命の表である（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）。
 
