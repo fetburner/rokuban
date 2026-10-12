@@ -73,7 +73,13 @@ EPG 更新完了で `reservationManage.updateAll()` を呼び、全手動予約�
 
 denpa は同じ問題に「開始 N 時間前以降はルールから外れても引っ込めない。ただしルールごと削除・停止されたぶんは直前でも引っ込める（人が押した結果だから）」で答えている。その根拠は「手違いで消す方が余分に録るより高い」である（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」と同じ判断）。Rokuban も `ruler.retract_grace`（既定 1h、0 で無効）で同じ猶予を入れる。
 
-**方針は変えない**: 全量評価・差分書き込み・レベルトリガー。猶予は desired の**導出規則**に足すのであって、予約行に「猶予中」の列は焼かない（不変条件 9）。既存の active 予約（前パスで `rule_id IS NOT NULL`）が今パスでどのルールにもマッチしなくなったとする。このとき `epg_programs.start_at`（射影の最新値）が `now()` 以降かつ `now() + retract_grace` 以内であるとする。そのうえでそのルールが今も `enabled` なら、削除候補（`derivedDeletes`）に残さない。行には触らない（base も `rule_id` も前パスのまま）。**判定は `program_snapshots.start_at` ではなく `epg_programs.start_at` を直接見る**。`program_snapshots` は「射影にまだ居る予約すべて」に追従するので unmatch のパスでも通常は追従済みである。だが猶予の正しさを、その同期対象の広さや同一パス内の実行順序に結合させたくない --- `epg_programs` を直接見れば他の書き込みの並びに依存しない。mirakc が録画に入った schedule は reconciler の削除ガードが守る（[reconciler.md](reconciler.md) §「削除のガード」）。開始時刻を過ぎても `scheduled` のままの schedule は守らない（録画はまだ動いていない）。終了後に予約行を落とすのは既存の GC である。**投資（record 意図 ∪ overrides）を持つ行はそもそも猶予の対象にならない** --- desired に残るので削除候補にすら入らない（`program_investments` view が別に守る）。**ユーザーの明示操作（intent skip / intent クリア / 最後の investment だった overrides の削除）で desired から外れた行も対象外である**。猶予を掛けるのは、その削除を素通りした残り（`derivedDeletes`）にだけである。その削除とは「ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除」（`DeleteReleasedReservationsBySiteAndProgramIDs`）である。`rule_id` が前パスから非 NULL のままユーザーが `intent{skip}` を立てた行まで猶予が守ってしまうと、「これは録らない」という直接の明示操作が直前の猶予に呑まれて一生解放されなくなるため。
+**方針は変えない**: 全量評価・差分書き込み・レベルトリガー。猶予は desired の**導出規則**に足すのであって、予約行に「猶予中」の列は焼かない（不変条件 9）。既存の active 予約（前パスで `rule_id IS NOT NULL`）が今パスでどのルールにもマッチしなくなったとする。このとき `epg_programs.start_at`（射影の最新値）が `now()` 以降かつ `now() + retract_grace` 以内であるとする。そのうえでそのルールが今も `enabled` なら、削除候補（`derivedDeletes`）に残さない。行には触らない（base も `rule_id` も前パスのまま）。
+
+**判定は `program_snapshots.start_at` ではなく `epg_programs.start_at` を直接見る**。`program_snapshots` は「射影にまだ居る予約すべて」に追従するので unmatch のパスでも通常は追従済みである。だが猶予の正しさを、その同期対象の広さや同一パス内の実行順序に結合させたくない --- `epg_programs` を直接見れば他の書き込みの並びに依存しない。mirakc が録画に入った schedule は reconciler の削除ガードが守る（[reconciler.md](reconciler.md) §「削除のガード」）。
+
+開始時刻を過ぎても `scheduled` のままの schedule は守らない（録画はまだ動いていない）。終了後に予約行を落とすのは既存の GC である。**投資（record 意図 ∪ overrides）を持つ行はそもそも猶予の対象にならない** --- desired に残るので削除候補にすら入らない（`program_investments` view が別に守る）。**ユーザーの明示操作（intent skip / intent クリア / 最後の investment だった overrides の削除）で desired から外れた行も対象外である**。
+
+猶予を掛けるのは、その削除を素通りした残り（`derivedDeletes`）にだけである。その削除とは「ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除」（`DeleteReleasedReservationsBySiteAndProgramIDs`）である。`rule_id` が前パスから非 NULL のままユーザーが `intent{skip}` を立てた行まで猶予が守ってしまうと、「これは録らない」という直接の明示操作が直前の猶予に呑まれて一生解放されなくなるため。
 
 **ルールの無効化は猶予の対象外である**。対象の絞り込みは `internal/db/queries/ruler.sql` の `ListRetractGraceProtectedProgramIDsBySiteAndProgramIDs` が行う。条件は `EXISTS (rules ru WHERE ru.id = r.rule_id AND ru.enabled)` である。denpa と同じく「ルールごと削除・停止されたぶんは直前でも引っ込める」。「ルールの編集で条件を狭めた」は EPG 由来の unmatch と区別できない（[breaker.md](breaker.md) が同じ整理）ので、こちらは猶予の対象のまま --- 録り過ぎ側に倒す非対称。ルールの削除（`DeleteRule`）は同一 tx で投資なしの行を先に消す既存経路なので、猶予に関係なく影響を受けない。
 
@@ -86,7 +92,11 @@ denpa は同じ問題に「開始 N 時間前以降はルールから外れて�
 #### 重複排除（再放送スキップ）
 
 - EPGStation#704 の教訓: 囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。**記号除去 + 完全一致ではなく、pg_trgm の類似度ベース**で設計する（閾値はルール単位で調整可能に）
-- EPGStation#473 の要望（この番組を重複扱いにする / しないを手動で上書きする）のうち、**予約側は実装済みである**。`program_intents.action = 'record'` が dedup の `base.skip` に勝つ合成として、`reservation.EffectiveOptions` が解く（§4.2）。**履歴（`recordings`）側の除外印は作らない** —— 誤って抑制された放送は、予約側の `action = 'record'` で個別に勝たせればよい。**1 本録れた時点でその録画が新しい抑制元になって、以降の再放送はまた弾かれる**（下記「ルールの削除は履歴のスコープを消す」と同じ一過性）。この挙動は `TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain` が固定している。したがって特定の録画を比較対象から外す印は、同じ状態に恒久の構造を足すだけになる。抑制が 1 本外しても止まらないのは閾値がそのシリーズに対して低いときで、それを直すのは印ではなく `rules.dedupe_threshold` / `dedupe_window` である（外した次に録れた 1 本が同じ抑制元になる）。逆向き（録れていない番組を今後スキップさせる）は紐づける `recording_id` が無く、意味は予約側の `action = 'skip'` そのもの。境界: 予約側の印は射影に出ている放送にしか付けられないので、まだ EPG に無い先の放送を先回りして「重複扱いにしない」とは言えない。
+- EPGStation#473 の要望（この番組を重複扱いにする / しないを手動で上書きする）のうち、**予約側は実装済みである**。`program_intents.action = 'record'` が dedup の `base.skip` に勝つ合成として、`reservation.EffectiveOptions` が解く（§4.2）。**履歴（`recordings`）側の除外印は作らない** —— 誤って抑制された放送は、予約側の `action = 'record'` で個別に勝たせればよい。**1 本録れた時点でその録画が新しい抑制元になって、以降の再放送はまた弾かれる**（下記「ルールの削除は履歴のスコープを消す」と同じ一過性）。
+
+  したがって特定の録画を比較対象から外す印は、同じ状態に恒久の構造を足すだけになる。抑制が 1 本外しても止まらないのは閾値がそのシリーズに対して低いときで、それを直すのは印ではなく `rules.dedupe_threshold` / `dedupe_window` である（外した次に録れた 1 本が同じ抑制元になる）。逆向き（録れていない番組を今後スキップさせる）は紐づける `recording_id` が無く、意味は予約側の `action = 'skip'` そのもの。
+
+  境界: 予約側の印は射影に出ている放送にしか付けられないので、まだ EPG に無い先の放送を先回りして「重複扱いにしない」とは言えない。
 - 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする
 
 実装は `internal/ruler/dedupe.go`（候補の集合を jsonb で渡す集合演算 1 文）。判定規約:
@@ -99,7 +109,9 @@ denpa は同じ問題に「開始 N 時間前以降はルールから外れて�
 | 時間窓 | `rules.dedupe_window` が NULL なら**無制限**（`rules` の CHECK は `dedupe_enabled` のとき `dedupe_threshold` だけを要求し window は任意） |
 | 勝者 | `DISTINCT ON (program_id)` で類似度最大の 1 件。tie-break は `recordings.id ASC` |
 
-**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない。`effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled` / `detectStartDelays` の入力からも外れる。**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持つという前提。Mirakurun の ID 合成規則からの演繹で未検証。[スキーマ](../schema.md) §1-5）。マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある。
+**自分自身の録画は除外する**（`(network_id, service_id, event_id)` の不一致）。放送済み番組の予約は GC（終了 + `retention_grace`）まで残り、EPG 射影も同じ地平まで番組を保持するので、録画が `finished` になった次のパスで **similarity = 1.0 の自己一致が必ず起きる**。実装中に除外述語を外して再現済み。害は表示だけではない。`effective.skip = true` になると `reconciler.listDesired` から落ち、`recordNeverScheduled` / `detectStartDelays` の入力からも外れる。
+
+**重複排除が無関係な状態機械の DB 状態を変えてしまう**。site は比較に入れない（同一放送は全サイトで同じ programId を持つという前提。Mirakurun の ID 合成規則からの演繹で未検証。[スキーマ](../schema.md) §1-5）。マッチした全サイトで予約を作る N 予約が既定なので、サイト間の共食いも同時に防ぐ必要がある。
 
 tie-break を決定的にするのは必須で、任意ではない。同じ類似度の録画が複数あるときに勝者が毎パス入れ替わると、base の差分書き込みが発火し続けて NOTIFY が鳴り止まない。mirakc に更新 API がないため、reconciler が schedule を DELETE + POST で作り直し続けるフラッピングになる（本節「複数ルール解決」の priority 同率タイと同じクラスの問題）。
 
@@ -114,7 +126,7 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 1. `recordings.rule_id` は `rules` への FK `recordings_rule_id_fkey` が `ON DELETE SET NULL` なので、そのルールで録れた履歴の `rule_id` が NULL に落ちる。以後どのルールの比較対象にもならない
 2. 同じ条件でルールを**作り直しても** id は新しくなるので、過去の録画は 1 件もマッチしない。直後のパスでは重複としてスキップされなくなる（実際に余分に録れる量は下記のとおり一過性）
 
-**これは仕様である**。根拠は `internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete` である。このテストは 3 段階で固定している。ルールが生きていれば skip し、削除→作り直し直後は skip せず、新ルールで 1 本録れるとまた skip する。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI のルール名リンク）は id を保つので履歴も保たれる。
+**これは仕様である**。ルールが生きていれば skip し、削除→作り直し直後は skip せず、新ルールで 1 本録れるとまた skip する。条件を大きく変えたいだけなら**削除して作り直すのではなく編集する** —— `PATCH /api/rules/{id}`（UI のルール名リンク）は id を保つので履歴も保たれる。
 
 `deleted_at` の tombstone 契約（上表）との非対称に見えるが、守っている主語が違う。tombstone が守るのは「録画したという不可逆な事実」で、ユーザーがファイルを消しても事実は残る。ルール削除で失われるのは事実ではなく**比較の枠**で、`recordings` の行は 1 行も減っていない。倒れる方向も「録り逃し」ではなく「余計に録る」側である（[予約モデル](reservation-model.md) §4.3「迷ったら録る側に倒す」）。**新ルールの下で 1 本録れれば、以降の再放送はまた弾かれる**（上と同じテストの段階 3 で測っている。`base.skip` が true に戻り、根拠 2 列は新しい録画を指す）。これは履歴が積み直るまでの一過性の過剰録画になる。この一文が受け入れ可能かどうかの分かれ目で、偽なら帰結は「窓の中の再放送を全部録り直す」に戻る。
 
@@ -123,6 +135,13 @@ tie-break を決定的にするのは必須で、任意ではない。同じ類�
 削除の確認ダイアログは、`dedupeEnabled` なルールに限りこの帰結を事前に伝える（`web/src/pages/rules.tsx` の `deleteRuleWarning`）。文面は上の測定に合わせ、「次の再放送を録り直す / 1 本録れれば以降はまた弾かれる」までを言う。**重複排除の設定自体を編集する UI は現状無い**（`web/src` で `dedupe*` に触るのは `buildRuleInput` の `preserve` と skip 理由の表示だけ）。`dedupeEnabled` なルールは `POST` / `PATCH /api/rules` を直接叩いて作ったものに限られ、この確認文に到達する経路も今はそこだけになる。
 
 **類似度検索に trgm GIN は効かない。** `gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値をルール単位ではなく GUC `pg_trgm.similarity_threshold` から読む。そのため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/ruler/dedupe.go` のコメントに残してある）。家庭用の履歴規模では素の走査で足りるので、隠れたセッション状態を持ち込む前に実測する。
+
+<details><summary>根拠</summary>
+
+- record 意図後に次の録画が抑制元になること: `TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain`
+- ルール削除後に履歴のスコープが切れ、1 本録ると再抑制されること: `internal/ruler/dedupe_test.go` の `TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete`
+
+</details>
 
 #### サイトの扱い
 
@@ -136,15 +155,35 @@ NID/SID は放送規格のスコープでサイトに依存しないため、地
 
 #### 録画・ingest 完了後の fulfilled 削除
 
-予約は mirakc に同期すべき schedule を表す。原本 `media_asset`（`kind='original'`、state 不問）が存在する放送イベントは録画と ingest が完了しており、`epg.retention_grace`（既定 24h）を待たずに desired から外す。判定は `collectDesired` が放送イベントキーで行う（導出器が作る予約 id で引かない。不変条件 9 / [invariants.md](../invariants.md) §9）。削除は同じパスの後段で `DeleteFulfilledReservationsBySiteAndProgramIDs` が行う。対象の一覧は `internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite` が返す。原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled のままである。これは `keepOriginal=until_encoded` でエンコード後に原本を消す運用が予約を再表示させないための回帰である。対象は `TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved` である。
+予約は mirakc に同期すべき schedule を表す。原本 `media_asset`（`kind='original'`、state 不問）が存在する放送イベントは録画と ingest が完了しており、`epg.retention_grace`（既定 24h）を待たずに desired から外す。判定は `collectDesired` が放送イベントキーで行う（導出器が作る予約 id で引かない。不変条件 9 / [invariants.md](../invariants.md) §9）。削除は同じパスの後段で `DeleteFulfilledReservationsBySiteAndProgramIDs` が行う。
 
-fulfilled 削除は観測された事実（ingest 完了）に基づく確定的な寿命終了で、EPG 欠損に起因する導出削除ではない。したがって `program_investments`（record 意図・overrides）や EPG 射影の残存に依存しない。大量削除サーキットブレーカーの対象にもならない。1 点目は `TestRunPass_FulfilledWithInvestmentStillRemoved` が固定している。2 点目は `TestRunPass_FulfilledDeletesDoNotCountTowardBreaker` が固定している。ingest は原本 `media_asset` の INSERT と同じ transaction で `recording_encode_policy` を凍結する。そのためこの削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
+対象の一覧は `internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite` が返す。原本を後から tombstone しても、録画・ingest が完了した事実は戻らないので fulfilled のままである。これは `keepOriginal=until_encoded` でエンコード後に原本を消す運用が予約を再表示させないための回帰である。
 
-録画が finished でも原本がまだ無い録画（ingest 待ち・転送中）と欠測（`never_scheduled_events`）は fulfilled ではない。これらは従来どおり予約に残し、要確認に含める（`TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted`）。
+fulfilled 削除は観測された事実（ingest 完了）に基づく確定的な寿命終了で、EPG 欠損に起因する導出削除ではない。したがって `program_investments`（record 意図・overrides）や EPG 射影の残存に依存しない。大量削除サーキットブレーカーの対象にもならない。
+
+ingest は原本 `media_asset` の INSERT と同じ transaction で `recording_encode_policy` を凍結する。そのためこの削除が走るのは凍結の lookup より後になる（凍結との競合は生じない）。
+
+録画が finished でも原本がまだ無い録画（ingest 待ち・転送中）と欠測（`never_scheduled_events`）は fulfilled ではない。これらは従来どおり予約に残し、要確認に含める。
+
+<details><summary>根拠</summary>
+
+- fulfilled 候補を返す query: `internal/db/queries/ruler.sql` の `ListFulfilledProgramIDsBySite`
+- tombstone 済み原本の予約削除: `TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved`
+- investment がある予約の fulfilled 削除: `TestRunPass_FulfilledWithInvestmentStillRemoved`
+- fulfilled 削除をブレーカー件数から除くこと: `TestRunPass_FulfilledDeletesDoNotCountTowardBreaker`
+- 原本コミット前の予約を残すこと: `TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted`
+
+</details>
 
 #### 番組終了後の GC
 
-対象は `reservations` / `program_intents` / `program_overrides` の物理削除（GC）と `never_scheduled_events` の物理削除である。これらは ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う。実装は `internal/ruler/ruler.go` の `runGC` である。**DELETE は 2 本ある**。1 本目は `program_snapshots` が対象で、`start_at + duration_ms < now() - 猶予` を満たす行を消す。これは `reservations` の active/detached/orphaned を問わない。`(site, program_id)` FK が `ON DELETE CASCADE` なので、`reservations` / `program_intents` / `program_overrides` はスナップショットと一緒に落ちる。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。2 本目は `never_scheduled_events` が対象である。この表は `program_snapshots` への FK を持たないため 1 本目の CASCADE では消えない。そこで `retention_grace + 30日` を超えた行だけを独立に刈る。この表の読者（`never_recorded` の導出・容量需要・重複判定）は通常どおり `reservations` 行を経由して届くが、`program_id` 再利用で新番組が旧番組と同じキーから到達可能になる経路ではこの寿命差が実害を持つ。`program_id` 再利用の発生頻度と判定基準は未検証で、ruler は現在検出だけを行う。`recordings` はこの 2 本の削除で録画履歴（recordings/media_assets）を失わない。
+対象は `reservations` / `program_intents` / `program_overrides` の物理削除（GC）と `never_scheduled_events` の物理削除である。これらは ruler の 1 パス内で、全サイト評価の後に 1 回だけ行う。実装は `internal/ruler/ruler.go` の `runGC` である。**DELETE は 2 本ある**。1 本目は `program_snapshots` が対象で、`start_at + duration_ms < now() - 猶予` を満たす行を消す。
+
+これは `reservations` の active/detached/orphaned を問わない。`(site, program_id)` FK が `ON DELETE CASCADE` なので、`reservations` / `program_intents` / `program_overrides` はスナップショットと一緒に落ちる。猶予には既存の `epg.retention_grace`（既定 24h、EPG プロジェクションのローリングウィンドウと同じ設定）をそのまま流用する。専用の設定項目を増やさず、「EPG から消える」と「予約・意図として GC される」の寿命を揃える。
+
+2 本目は `never_scheduled_events` が対象である。この表は `program_snapshots` への FK を持たないため 1 本目の CASCADE では消えない。そこで `retention_grace + 30日` を超えた行だけを独立に刈る。この表の読者（`never_recorded` の導出・容量需要・重複判定）は通常どおり `reservations` 行を経由して届くが、`program_id` 再利用で新番組が旧番組と同じキーから到達可能になる経路ではこの寿命差が実害を持つ。`program_id` 再利用の発生頻度と判定基準は未検証で、ruler は現在検出だけを行う。
+
+`recordings` はこの 2 本の削除で録画履歴（recordings/media_assets）を失わない。
 
 **GC は大量削除サーキットブレーカー（`MaxDeletesPerPass`）の対象にせず、ブレーカー発動中でも動く**。GC の削除対象は時刻の比較だけで決定的に定まり、EPG の状態には一切左右されないため（理由の全体は [breaker.md](breaker.md)「GC は対象にしない」）。
 

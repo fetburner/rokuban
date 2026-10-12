@@ -21,11 +21,6 @@
   "docs/operations/database.md": 3,
   "docs/operations/k8s.md": 7,
   "docs/operations/monitoring.md": 2,
-  "docs/recording/breaker.md": 2,
-  "docs/recording/ingest.md": 9,
-  "docs/recording/reconciler.md": 1,
-  "docs/recording/reservation-model.md": 4,
-  "docs/recording/ruler.md": 6,
   "docs/runbook/live.md": 5,
   "docs/runbook/nginx.md": 1,
   "docs/runbook/setup.md": 1,
@@ -37,7 +32,5 @@
   "docs/schema/reservations.md": 2,
   "docs/schema/rules.md": 2,
   "docs/storage/contract.md": 10,
-  "docs/storage/rescue.md": 1,
-  "docs/storage/retention.md": 13,
   "web/e2e/README.md": 18
 }
