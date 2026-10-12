@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/notifier"
+	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -549,9 +550,10 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	}
 	if slices.Contains(roles, "notifier") {
 		hub := notifier.NewEventHub()
+		source := pgsource.New(pool)
 		mounters = append(mounters, hub)
 		eg.Go(func() error {
-			if err := hub.Run(egCtx, pool); err != nil && !errors.Is(err, context.Canceled) {
+			if err := hub.Run(egCtx, source); err != nil && !errors.Is(err, context.Canceled) {
 				return fmt.Errorf("notifier: %w", err)
 			}
 			return nil

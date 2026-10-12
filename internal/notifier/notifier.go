@@ -1,13 +1,13 @@
-// Package notifier は Postgres の LISTEN/NOTIFY を購読し、ブラウザ向けの
-// SSE (/api/events) として配り直す notifier ロールを実装する。
+// Package notifier は通知元を購読し、ブラウザ向けの SSE (/api/events) として
+// 配り直す notifier ロールを実装する。
 //
 // api ロールはリクエスト/レスポンスに徹し、mirakc にもファイルシステムにも
 // 依存しない（不変条件 1）ため、長寿命接続を張り続ける SSE 配信はこの
 // notifier に分離している（issue #24 M2-19、issue #25 §4）。
 //
-// notifier はシングルトンではない。複数レプリカが立っても各自が Postgres を
-// LISTEN し、自分にぶら下がる SSE クライアントへ配るだけなので、Redis
-// アダプタのような追加の配送基盤は要らない（docs/data.md §3）。
+// notifier はシングルトンではない。複数レプリカが立っても各自が通知元を購読し、
+// 自分にぶら下がる SSE クライアントへ配るだけなので、Redis アダプタのような
+// 追加の配送基盤は要らない（docs/data.md §3）。
 package notifier
 
 import (
@@ -20,15 +20,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/serverevent"
 )
 
 const (
-	// notifyChannel は Postgres の LISTEN/NOTIFY チャネル名。
-	notifyChannel = "rokuban"
-
 	// coalesceWindow はトピックごとに通知を合流させる時間窓。
 	// トリガーは行単位で発火するため、まとめ書きや updated_at だけが変わる UPDATE で
 	// 同じトピックが連続して届く。ヒントとしては 1 回で十分なので合流させる。
@@ -52,6 +48,16 @@ type serverEvent struct {
 	coalesceKey string
 }
 
+// Source は EventHub に通知 payload を供給する。
+//
+// Listen は購読が確立した後に ready を呼ぶ。これ以降に発行された通知は out へ
+// 届く。再接続のたびに ready を呼んでよい。接続が壊れたら error を返し、ctx が
+// 終わったら ctx.Err() を返す。out への送信中に ctx が終わった場合も送信を止めて
+// 戻る。通知の配送保証はない。
+type Source interface {
+	Listen(ctx context.Context, ready func(), out chan<- string) error
+}
+
 func decodeNotification(payload string) serverEvent {
 	var progress serverevent.EncodeProgressEvent
 	if json.Unmarshal([]byte(payload), &progress) == nil && progress.Type == serverevent.EncodeProgressEventType {
@@ -68,18 +74,20 @@ func decodeNotification(payload string) serverEvent {
 	}
 }
 
-// EventHub は Postgres の NOTIFY を購読し、接続中の SSE クライアントへ配る。
+// EventHub は Source から通知を受け取り、接続中の SSE クライアントへ配る。
 //
-// notifier レプリカを増やしても、各レプリカが自分で LISTEN するだけなので
-// Redis アダプタのような追加基盤は要らない（issue #5、docs/data.md §3）。
+// notifier レプリカを増やしても、各レプリカが通知元を購読して自分の SSE
+// クライアントへ配るだけなので Redis アダプタのような追加基盤は要らない
+// （docs/data.md §3）。
 type EventHub struct {
 	mu      sync.Mutex
 	clients map[chan string]struct{}
 
-	// listening は LISTEN が確立するたびに閉じ直される合図。
-	// NOTIFY は「その時点で LISTEN しているセッション」にしか届かず、後から来た
-	// listener には配送されない。LISTEN 確立前に発行された通知は失われるため、
-	// 通知を期待する側（テストや readiness チェック）が確立を待てるようにする。
+	retryInterval time.Duration
+
+	// listening は Source が購読確立を知らせた合図。
+	// 確立前に発行された通知は届かないことがあるため、通知を期待する側が
+	// Source の ready 前後を区別できるようにする。
 	listeningMu sync.Mutex
 	listening   chan struct{}
 }
@@ -87,8 +95,9 @@ type EventHub struct {
 // NewEventHub は EventHub を生成する。
 func NewEventHub() *EventHub {
 	return &EventHub{
-		clients:   make(map[chan string]struct{}),
-		listening: make(chan struct{}),
+		clients:       make(map[chan string]struct{}),
+		retryInterval: listenRetryInterval,
+		listening:     make(chan struct{}),
 	}
 }
 
@@ -99,7 +108,7 @@ func (h *EventHub) listeningC() chan struct{} {
 	return h.listening
 }
 
-// markListening は LISTEN が確立したことを通知する。
+// markListening は Source の購読が確立したことを通知する。
 func (h *EventHub) markListening() {
 	h.listeningMu.Lock()
 	defer h.listeningMu.Unlock()
@@ -111,7 +120,7 @@ func (h *EventHub) markListening() {
 	}
 }
 
-// waitListening は LISTEN が確立するまで待つ。確立済みなら即座に返る。
+// waitListening は Source の購読が確立するまで待つ。確立済みなら即座に返る。
 func (h *EventHub) waitListening(ctx context.Context) error {
 	select {
 	case <-h.listeningC():
@@ -161,75 +170,39 @@ func (h *EventHub) clientCount() int {
 	return len(h.clients)
 }
 
-// Run は Postgres を LISTEN し、ctx がキャンセルされるまで通知を配り続ける。
-// コネクションが切れた場合は待機して再接続する。
-func (h *EventHub) Run(ctx context.Context, pool *pgxpool.Pool) error {
+// Run は Source を購読し、ctx がキャンセルされるまで通知を配り続ける。
+// Source が error を返した場合は待機して再接続する。
+func (h *EventHub) Run(ctx context.Context, src Source) error {
 	for {
-		if err := h.listenOnce(ctx, pool); err != nil {
+		if err := h.listenOnce(ctx, src); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			slog.Error("event hub: listen failed, retrying", "err", err)
+			slog.Error("event hub: source failed, retrying", "err", err)
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(listenRetryInterval):
+		case <-time.After(h.retryInterval):
 		}
 	}
 }
 
-// listenOnce は 1 本のコネクションで LISTEN し、切断されるまで通知を配る。
-func (h *EventHub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
-	conn, err := pool.Acquire(ctx)
-	if err != nil {
-		return fmt.Errorf("acquiring connection: %w", err)
-	}
-	defer conn.Release()
-
-	if _, err := conn.Exec(ctx, "LISTEN "+notifyChannel); err != nil {
-		return fmt.Errorf("LISTEN %s: %w", notifyChannel, err)
-	}
-	slog.Info("event hub: listening", "channel", notifyChannel)
-	h.markListening()
-
-	// 通知待ちはブロックするので専用の goroutine に出し、合流は呼び出し側のループで行う。
-	ctx, cancel := context.WithCancel(ctx)
-
-	// goroutine が conn.Conn() をまだ触っている間に conn.Release() でコネクションが
-	// プールに返り、別の利用者に渡ってしまう窓を防ぐ。done は goroutine の終了で
-	// 閉じる合図。
-	//
-	// defer は LIFO で実行されるので、ここで登録した defer は上の
-	// `defer conn.Release()` より先に実行される。つまり実行順は
-	// 「cancel() → goroutine の終了を待つ (<-done) → conn.Release()」になり、
-	// Release が呼ばれる時点で goroutine は conn に触れていないことが保証される。
-	done := make(chan struct{})
-	defer func() {
-		cancel()
-		<-done
-	}()
-
+// listenOnce は Source.Listen を 1 回実行し、切断されるまで通知を配る。
+func (h *EventHub) listenOnce(ctx context.Context, src Source) error {
 	topics := make(chan string)
 	waitErr := make(chan error, 1)
+	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		for {
-			n, err := conn.Conn().WaitForNotification(ctx)
-			if err != nil {
-				waitErr <- err
-				return
-			}
-			select {
-			case topics <- n.Payload:
-			case <-ctx.Done():
-				return
-			}
-		}
+		waitErr <- src.Listen(ctx, h.markListening, topics)
 	}()
 
-	return h.coalesce(ctx, topics, waitErr)
+	err := h.coalesce(ctx, topics, waitErr)
+	// 次の Listen を始める前に前の Source goroutine が戻るのを待つ。
+	<-done
+	return err
 }
 
 // coalesce は届いた payload を coalesceWindow の間まとめてから Publish する。
@@ -254,7 +227,10 @@ func (h *EventHub) coalesce(ctx context.Context, topics <-chan string, waitErr <
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("waiting for notification: %w", err)
+			if err == nil {
+				return fmt.Errorf("source stopped without an error")
+			}
+			return fmt.Errorf("source: %w", err)
 
 		case <-flushAt:
 			for key, payload := range pending {
