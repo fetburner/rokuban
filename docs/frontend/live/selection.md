@@ -130,5 +130,6 @@ JSON 404 にしてある。**能力 API
 - capability 状態の分岐: `useLiveEnabled()`、`useLiveCapability()`、`pending`、`unknown`
 - 状態を混同したときの回帰: `pages/live.test.tsx` の 2 件
 - 誤った playlist 要求を防ぐ: `playlist.m3u8`
+- チューナーの空きを断定しない規律: [data.md](../../data.md) §6.5
 
 </details>

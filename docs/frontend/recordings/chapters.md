@@ -53,6 +53,8 @@ EPG 上の番組長だけで、ファイルの実尺ではない）。
 - **境界の整数 ms とフレームの表示区間を分ける。**
   フレーム k の映像は `[k×T, (k+1)×T)` 秒に表示され、保存する境界 ms は `k×T` を整数 ms に丸めた値である。
   丸めで `k×T` より手前になった ms を `currentTime` に渡すと、フレーム k−1 の映像が出る。
+- **境界 ms は表示・再生位置へ変換する。** `chapterBoundaryMsToSeekSeconds` は境界 ms からフレーム番号を戻し、そのフレームの中央へシークする。
+  これは保存値の量子化・比較ではない。Go の `MsToFrame` / `QuantizeMs` と保存形式は変えない。
 - 境界を狙う編集一覧・前後チャプター・自動スキップの着地点・フィルムストリップ境界ボタン・±調整・「境界から」・「境界まで」は、境界変換を通す。
 - シークバー・再生位置キー・境界以外のフィルムストリップ・「前後 3 秒」・「境界まで」の開始位置は任意の再生時刻を指すため、境界変換を通さない。
   フレーム中央へ寄せると指定した時刻をずらすためである。
@@ -75,7 +77,7 @@ EPG 上の番組長だけで、ファイルの実尺ではない）。
   区間の先頭に差し掛かったときだけ**で、手動のシークで区間の中に入ったときは
   飛ばさない（見たくてシークした人を追い出さない）。判定は「直前の観測位置が
   先頭より手前で、今回の観測位置が区間の中」で行う（`lib/chapters.ts` の
-  `skipTarget`）。区間の終端が動画の終端を越えるときは終端で止める
+  `skipTarget`）。飛び先は `min(区間終端, 動画の終端)` とする。尺が未確定なら区間終端を使う
 - ON / OFF は `rokuban:playback-rate` と同じく端末ごとに localStorage へ持つ
   （キー `rokuban:chapter-skip`、既定は有効）
 - **3 種類の境界再生中は自動スキップを止める。** `前後 3 秒` は境界の 3 秒前から
@@ -111,7 +113,7 @@ EPG 上の番組長だけで、ファイルの実尺ではない）。
 
 - 合成の唯一の実装と保存値の量子化: `internal/chapters/`、`lib/chapters.ts`、`chapterBoundaryMsToSeekSeconds`、`MsToFrame`、`QuantizeMs`
 - 表示中フレームから境界を求める: `requestVideoFrameCallback`、`displayedFrameBoundaryMs`
-- 目印フレームと境界操作の実ブラウザ判定: `web/e2e/recording-playback-timeline.mjs`、`web/e2e/README.md`
+- 目印フレームと境界操作の実ブラウザ判定: `web/e2e/recording-playback-timeline.mjs`、[web/e2e/README.md](../../../web/e2e/README.md)
   Chrome / WebKit で表示画素を確認する。境界の 0.5 秒手前から目印フレームを選び、画面と保存 PUT の ms を検証する。
   編集モードは非カット MP4 と原本 HLS（offset 0 / 10）で、境界選択・±1 フレーム・「境界まで」・「境界から」・長押し・400×800 の帯の重なりを測る。
 - 自動スキップと再生中のシーク判定: `web/e2e/chapters.mjs` ③・⑤・⑤-b

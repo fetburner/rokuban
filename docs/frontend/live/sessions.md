@@ -40,7 +40,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 
 - GC 周期と猶予の設定: `internal/config/config.go`、`internal/streamer/live.go` の `gcInterval`
 - 実測環境と active session の観測: `rokuban server --roles streamer`、`rokuban_live_active_sessions{kind="live"}`
-- 再現手順: `runbook.md` のライブ視聴の節 ①-4
+- 再現手順: [runbook.md](../../runbook.md) のライブ視聴の節 ①-4
 
 </details>
 
@@ -53,7 +53,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 
 <details><summary>根拠</summary>
 
-- 選択だけでは probe・セッションを始めず、再生同意が必要: `selection.md` の `playingKey` / `selectedKey`、`LivePlayer`
+- 選択だけでは probe・セッションを始めず、再生同意が必要: [selection.md](selection.md) の `playingKey` / `selectedKey`、`LivePlayer`
 - 別チャンネルへ切り替えたときの選択状態と要求数: `pages/live.test.tsx`「再生中に別チャンネルへ切り替えると選択状態に戻る（同意はチャンネルごとに必要）」、`playlistFetchCallCount()`
 - 実ブラウザでの要求ログ: `web/e2e/live.mjs` ⓪'
 
@@ -84,6 +84,6 @@ hls.js のフェイク配線は、動的 import が別バンドルチャンク�
 - hls.js 経路の配線: `components/live-player.test.tsx`、`vi.mock('hls.js', ...)`、`supportsNativeHls`
 - 変異検出: `supportsNativeHls` を `true` に固定する、cleanup を削除する、の両方が `waitFor` で落ちる
 - 純関数の URL・分類・初期選択・時間窓・中断伝播: `lib/live.test.ts`、`probeLivePlaylist`
-- 実ブラウザ + 実バイナリの画質切替と旧 service の要求ログ: `web/e2e/live.mjs` ⑨、`web/e2e/live.mjs`、`verification.md`
+- 実ブラウザ + 実バイナリの画質切替と旧 service の要求ログ: `web/e2e/live.mjs` ⑨、`web/e2e/live.mjs`、[verification.md](verification.md)
 
 </details>
