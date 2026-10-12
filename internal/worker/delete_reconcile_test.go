@@ -3153,7 +3153,7 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 
 // DeleteReconcile が PeriodicJobs に載ること。
 func TestBuildRiverConfig_DeleteReconcilePeriodic(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:    true,
 		DeleteReconcile: true,
 	})
@@ -3167,7 +3167,7 @@ func TestBuildRiverConfig_DeleteReconcilePeriodic(t *testing.T) {
 
 // DeleteReconcile を立てないと定期ジョブに載らないこと（フラグの逆方向）。
 func TestBuildRiverConfig_DeleteReconcileDisabled(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs: true,
 	})
 	if err != nil {

@@ -35,7 +35,6 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
-	"github.com/fetburner/rokuban/internal/worker"
 )
 
 const (
@@ -539,9 +538,9 @@ func TestWorkerGraceCoversTheSoftStop(t *testing.T) {
 		if !slices.Contains(strings.Split(roles, ","), "worker") {
 			continue
 		}
-		// --soft-stop-timeout が無ければコードの既定（worker.DefaultSoftStopTimeout）。
+		// --soft-stop-timeout が無ければコードの既定（riveradapter.DefaultSoftStopTimeout）。
 		// 既定値の変更を見逃さないよう、リテラルでなく定数を参照する。
-		soft := worker.DefaultSoftStopTimeout.String()
+		soft := riveradapter.DefaultSoftStopTimeout.String()
 		if v, ok := flagValue(args, "soft-stop-timeout"); ok {
 			soft = v
 		}

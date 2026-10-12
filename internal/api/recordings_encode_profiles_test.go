@@ -1003,7 +1003,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	workers := worker.NewWorkers(&worker.Deps{Enqueuer: deferred, Pool: pool, Encode: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}})
-	riverClient, err := riveradapter.NewLegacyRegistryClient(pool, workers, worker.ClientConfig{})
+	riverClient, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
 	}

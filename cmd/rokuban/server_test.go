@@ -914,7 +914,7 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 //
 // RunE を丸ごと走らせるのが要点 --- `--soft-stop-timeout` → `riveradapter.Config`
 // → `river.Config` の配線は、`BuildConfig` を直接見るテストでは検証できない
-// （フラグを ClientConfig に渡し忘れても、既定値で組まれた client がそこにある）。
+// （フラグを riveradapter.Config に渡し忘れても、既定値で組まれた client がそこにある）。
 //
 // **`riverClient.Stop` に与える待ちの上限（shutdownBudget）はここでは測れない。**
 // 猶予より長い時間走るジョブを実際に走らせることになるので、テストの所要が
@@ -939,7 +939,7 @@ func startWorkerWithRunningJob(t *testing.T, pool *pgxpool.Pool, mock *blockingM
 //   - `river.Config.SoftStopTimeout` を 0 に戻す（この issue 以前の形）: 完走側が
 //     `state=available` / `error="… context canceled"` で赤。エスカレート側も
 //     「SIGTERM から終了まで 2.1〜2.6ms」と `attempt = 1` で赤（3 回）
-//   - `ClientConfig.SoftStopTimeout` の代入を消す（フラグの配線落ち）:
+//   - `riveradapter.Config.SoftStopTimeout` の代入を消す（フラグの配線落ち）:
 //     エスカレート側が 5.0 秒（上限判定 3.5 秒）で赤
 func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 	// 実行中のジョブが SIGTERM の後に終わることを主張するので、cancel の
@@ -988,7 +988,7 @@ func TestServerCmd_SigtermDrainsRunningJob(t *testing.T) {
 			t.Errorf("SIGTERM から終了まで %s、want >= %s（猶予を待たずに打ち切っている）", elapsed, softStop)
 		}
 		// **上限も見る。** 下限だけだと、`--soft-stop-timeout` が River に
-		// 渡っておらず既定値（worker.DefaultSoftStopTimeout = 5 秒）で
+		// 渡っておらず既定値（riveradapter.DefaultSoftStopTimeout = 5 秒）で
 		// 待っている場合も通ってしまう --- フラグの配線を落とす変異が
 		// そのまま緑になる。
 		//

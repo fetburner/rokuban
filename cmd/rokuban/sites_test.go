@@ -137,7 +137,7 @@ func TestValidateSiteBinding(t *testing.T) {
 			[]string{"worker"}, nil, []string{"encode", "thumbnail"}, false,
 		},
 		{"worker with one site and default queues is fine", []string{"worker"}, []config.MirakcSite{tokyo}, nil, false},
-		// issue #532: worker.Deps.MirakcClients / worker.ClientConfig.BoundSites が
+		// issue #532: worker.Deps.MirakcClients / riveradapter.Config.BoundSites が
 		// site → 値の map / 集合になったので、2 サイト以上への束縛も起動できる。
 		{"worker with two sites is fine (N-site binding)", []string{"worker"}, []config.MirakcSite{tokyo, takamatsu}, nil, false},
 		{

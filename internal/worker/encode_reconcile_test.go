@@ -877,7 +877,7 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 // worker.periodic_jobs が有効なら encode_reconcile が定期ジョブとして登録される
 // こと（登録漏れは「実装したのに永久に走らない」で終わる）。
 func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:            true,
 		EncodeReconcile:         true,
 		EncodeReconcileInterval: time.Hour,
@@ -889,7 +889,7 @@ func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
 		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
 	}
 
-	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), ClientConfig{
+	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
 		PeriodicJobs:    false,
 		EncodeReconcile: true,
 	})

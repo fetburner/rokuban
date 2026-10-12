@@ -8,7 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/fetburner/rokuban/internal/worker"
+	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 )
 
 // workerRole は resolveWorkerQueues に渡す既定のロール集合（キューを引くのは
@@ -21,7 +21,7 @@ func newQueuesTestCmd(t *testing.T) *cobra.Command {
 	cmd.Flags().StringSlice(queuesFlagName, nil, "")
 	cmd.Flags().Bool(onceFlagName, false, "")
 	cmd.Flags().Duration(onceIdleTimeoutFlagName, defaultOnceIdleTimeout, "")
-	cmd.Flags().Duration(softStopTimeoutFlagName, worker.DefaultSoftStopTimeout, "")
+	cmd.Flags().Duration(softStopTimeoutFlagName, riveradapter.DefaultSoftStopTimeout, "")
 	return cmd
 }
 
@@ -407,7 +407,7 @@ func TestNewServerCmd_HasQueueAndOnceFlags(t *testing.T) {
 	if got := cmd.Flags().Lookup(onceIdleTimeoutFlagName).DefValue; got != "30s" {
 		t.Errorf("--%s の既定 = %q, want \"30s\"", onceIdleTimeoutFlagName, got)
 	}
-	// **既定値はリテラルで書く。** worker.DefaultSoftStopTimeout を参照すると、
+	// **既定値はリテラルで書く。** riveradapter.DefaultSoftStopTimeout を参照すると、
 	// 定数を変えたときに何も主張しなくなる。
 	//
 	// この 5 秒は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に

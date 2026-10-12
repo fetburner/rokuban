@@ -839,7 +839,7 @@ func TestEncodeJobArgs_RiverIdentityIncludesTimeout(t *testing.T) {
 		return
 	}
 	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "x/unique-timeout.m2ts", nil, []byte("data"))
-	client, err := riveradapter.NewLegacyRegistryClient(pool, NewWorkers(&Deps{Pool: pool}), ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, NewWorkers(&Deps{Pool: pool}), riveradapter.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -97,7 +97,7 @@ func TestReconcilePassPeriodicJob(t *testing.T) {
 	// t.Cleanup（defer だとクライアント停止より先に走り、動いている最中にスタブを閉じる）。
 	t.Cleanup(srv.Close)
 
-	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{
+	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{
 		PeriodicJobs:          true,
 		BoundSites:            []string{testSite},
 		ReconcilePassInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
@@ -158,7 +158,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	}
 
 	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	defer subscribeCancel()
@@ -199,7 +199,7 @@ func TestReconcilePass_DuplicateInsertMerges(t *testing.T) {
 	ctx := context.Background()
 
 	workers := NewWorkers(&Deps{Pool: pool})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, ClientConfig{})
+	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
 	if err != nil {
 		t.Fatalf("creating client: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	defer srv.Close()
 
 	client := newLegacyRegistryTestClient(t, pool,
-		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, ClientConfig{})
+		&Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{})
 
 	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
 	waiter := newPeriodicJobEventWaiter(subscribeCh)
@@ -267,7 +267,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	}
 
 	// 上ではヒントの投入と site 引数を確認した。ここではヒント自体が実際に
-	// 正常完了する（issue #553）ところまで確認する。この ClientConfig{}
+	// 正常完了する（issue #553）ところまで確認する。この riveradapter.Config{}
 	// は PeriodicJobs/BoundSites を登録しないため、存在しうる reconcile_pass は
 	// このヒント 1 つだけ --- worker_test.go の TestRulerPassPeriodicJob と違い、
 	// 定期ジョブの reconcile_pass と合流して区別できなくなる余地が無い。

@@ -154,6 +154,8 @@ type Deps struct {
 // NewWorkers は全 kind のワーカーを登録した jobq.Registry を返す。
 // 購読キューは client 設定で絞るため、ここでは登録を減らさない。
 // k8s の常駐 client も `ruler` queue だけを購読しながら全 kind を登録する。
+// River の公開 AddWorker[T] API は worker の具体型を要求するため、ここで riveradapter.Register を通す。
+// River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	riveradapter.Register(workers, &IngestWorker{
@@ -272,9 +274,3 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Pool: deps.Pool})
 	return workers
 }
-
-// ClientConfig is the River adapter configuration used by transitional callers.
-type ClientConfig = riveradapter.Config
-
-// DefaultSoftStopTimeout is the adapter's default graceful shutdown period.
-const DefaultSoftStopTimeout = riveradapter.DefaultSoftStopTimeout
