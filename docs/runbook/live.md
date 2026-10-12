@@ -31,7 +31,9 @@ docker compose restart rokuban
    「このブラウザはライブ視聴（HLS）に対応していません」になる**。再生経路の
    判定（`supportsNativeHls`）は macOS の WebKit / Chromium / Chrome / Firefox
    では実測して固定してある（`web/e2e/live.mjs` の⑥）。**iOS 実機は誰も
-   確認していない**。`canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
+   確認していない**。
+
+   `canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
    同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる
    （iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では
    `claimsHlsPlaylistSupport` の最後の砦で `<video>` に直接渡る形になる）。
@@ -54,14 +56,18 @@ docker compose restart rokuban
    十数秒**（猶予 8 秒 = `3 × segment_seconds + 2s` + GC 周期 4 秒ぶんの遅れ。
    実測 13 秒）で
    `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、
-   `rokuban_live_idle_gc_reclaimed_total` が `1` 増える。同時に
+   `rokuban_live_idle_gc_reclaimed_total` が `1` 増える。
+
+   同時に
    `rokuban_live_leave_hints_total{result="deadline_shortened"}` も `1` 増えている
    はず（**ここが増えずに回収された場合、ヒントは届いていない** ---
    その場合の回収は `live.idle_timeout` 既定 30 秒 + GC 周期 4 秒 = **30 秒強**
    後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ
    （`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 /
    ヒント無し 33 秒。`rokuban_live_active_sessions{kind="live"}` が 0 に戻るまでを 1 秒間隔で
-   ポーリング）。**実チューナー・実 ffmpeg では未測定** ---
+   ポーリング）。
+
+   **実チューナー・実 ffmpeg では未測定** ---
    ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
    - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、
      `rokuban_live_leave_hints_total` は増えるが
@@ -77,7 +83,9 @@ docker compose restart rokuban
    「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
    選択自体（`?service=<Service.id>` を切り替えるだけ）はセッションを起こさない**
    （選択と視聴開始は分離してある）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
-   通り過ぎただけのチャンネルは対象外 --- 以前あった 400ms のデバウンス
+   通り過ぎただけのチャンネルは対象外である。
+
+   以前あった 400ms のデバウンス
    （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
    なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
    離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（上の 4）
@@ -85,7 +93,9 @@ docker compose restart rokuban
    ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
    WebKit は**一時停止した瞬間にも `stalled` を出す**。そのため一度でも再生が
    始まった後の一時停止中は失敗と見なさないようにしてある
-   （`live-player.tsx` の `watchNativeMedia`）。**この抑止をブラウザ側で
+   （`live-player.tsx` の `watchNativeMedia`）。
+
+   **この抑止をブラウザ側で
    機械判定する手段は無い**。`web/e2e/live.mjs` は一時停止を一度も作らない。
    実装側の分岐は `live-player.test.tsx`（jsdom）が測る。ブラウザが実際に
    pause 時に `stalled` を出し再開時に `waiting` を再送することは、
@@ -272,6 +282,7 @@ pnpm exec playwright install chromium webkit
    ままであること。**後者は `loadedmetadata` で揃えるだけでは落ちる**（WebKit は
    その時点でまだトラックを作っていない。実測で `disabled` に戻った）。
    `LivePlayer` が `TextTrackList` の `addtrack` でも適用している理由である
+
 9. **画質（プロファイル）の切替**（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）を
    **わざと保留したまま**「再生」を押し、後から届かせても**プレイリストを取り直さない**
    ことを見る（`LivePlayer` に導出した既定を渡す実装だと、一覧の到着で `profile` が
@@ -281,26 +292,30 @@ pnpm exec playwright install chromium webkit
    `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある**（音量・
    ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で
    `<video>` を作り直さないことの側である。`docs/frontend/live.md`）
+
 8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と
    同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
    `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
    差し替えた関数が呼ばれたかという配線だけで、実ブラウザが本当にネットワーク
    要求として送出するかはここでしか出ない。離れた側（A）にだけ飛ぶことを見る。
    これから見るチャンネル（B）には飛ばないことも見る
+
 11. **停滞したら画質が 1 段下がる**（⑪。issue #871）。**まず実再生させ**（`currentTime`
    が進むことを確かめる）、そのうえで配信を止める。`?profile=` が無いときは 1 段
-   下がった先（`sd`）のプレイリストを取りに行き、通知（`映像が止まったため、画質を
-   sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致し、離脱ヒントを
-   送らないことを見る。**さらに配信を復旧させ、そのまま再生が続くこと**
-   （`currentTime` が進み `paused=false`）と、**配信側が実際にセグメントを配った
+   下がった先（`sd`）のプレイリストを取りに行くことを見る。通知（`映像が止まったため、画質を
+   sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致することと、離脱ヒントを
+   送らないことも見る。**さらに配信を復旧させ、そのまま再生が続くこと**
+   （`currentTime` が進み `paused=false`）を見る。**配信側が実際にセグメントを配った
    こと**（`currentTime` の前進だけでは「切替で 0 秒から読み直して 1 本だけ再生した」
-   場合と区別できない）を見る --- 切替は `load()` で `paused` を戻すので、ここを
+   場合と区別できない）も見る。切替は `load()` で `paused` を戻すので、ここを
    見ないと「画質だけ下げて黒いまま」を見逃す。
+
    **利用者が明示的に選んだ画質（`?profile=hd`）では下げない**側も見る（同じ壊し方・
    同じ待ち時間で、自動側が実際に下がっていることが前提にあるので「下がらない」が
    空虚な成功にならない）。**停滞の閾値（12 秒）は実時間なので、この判定だけで
-   1 分半ほどかかる**（実測: 自動は 22〜23 秒で降格し、復旧後は再生が続く。
-   降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く）
+   1 分半ほどかかる**。
+   実測: 自動は 22〜23 秒で降格し、復旧後は再生が続く。
+   降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く
    （`docs/frontend/live.md` §フロントエンド実装）
 
 初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード

@@ -177,6 +177,16 @@ snapshot からの経過時間として見える。
 | site 束縛 | `rokuban enqueue --help` の「site 束縛ジョブ」 | 多サイトでは必須（1 サイトなら省略可） | **サイトごとに 1 本**（`--site tokyo` 等） |
 | site 非依存 | 上記以外 | **付けない**（付けるとエラー） | **全体で 1 本**（サイトごとに立てない） |
 
+site 非依存にする理由は、単一の資源（アーカイブ・プロファイル・DB 全体）を相手にすることである。例:
+
+- `catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
+- `encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
+- `thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
+- `ts-scan-reconcile` は共有アーカイブ上の原本を走査する。
+- `delete-reconcile` は単一の物理ストレージ全体を走査する。
+
+以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
+
 **`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。
 **`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。**
 ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
@@ -189,21 +199,11 @@ thumbnail reconcile の候補から除外される既知の原本欠落は `roku
 
 `rokuban_sweep_last_success_timestamp_seconds{site}` を監視する。record_sweep はパス成功時に DB marker を更新し、mirakc の取得失敗時は更新しない。
 
-**record_sweep は定期投入だけが契機で、既定間隔は 5 分である。** ruler / reconciler と違ってヒント経路（前倒し投入）はない。
+**record_sweep は定期投入だけが契機で、既定間隔は 5 分である。** ruler / reconciler と違ってヒント経路（前倒し投入）はない（[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」）。
 
-取りこぼしの大半は SSE の (a)(b) が吸収するため、record_sweep は定期パスとして収束させる保険という位置づけである。
+取りこぼしの大半は SSE の (a)(b) が吸収するため、record_sweep は定期パスとして収束させる保険という位置づけで、5 分間隔で十分と判断している。
 
-SSE 再接続をヒントにする案は採らない。呼び出し側へ再接続を通知できないためである。
-
-site 非依存にする理由は、単一の資源（アーカイブ・プロファイル・DB 全体）を相手にすることである。例:
-
-- `catalog-export` / `storage-sync` はアーカイブ（+ スクラッチ）が単一なので site の属性を持たない。
-- `encode-reconcile` はエンコードのプロファイルとアーカイブがどちらも単一である。
-- `thumbnail-reconcile` はサムネイルの名前空間とアーカイブが単一である。
-- `ts-scan-reconcile` は共有アーカイブ上の原本を走査する。
-- `delete-reconcile` は単一の物理ストレージ全体を走査する。
-
-以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
+SSE 再接続をヒントにする案は採らない。mirakc クライアントの SSE 購読が再接続を内部に隠しているため、呼び出し側へ再接続を通知できないためである。
 
 <details><summary>根拠</summary>
 

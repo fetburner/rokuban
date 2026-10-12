@@ -55,7 +55,7 @@ site 単位のキューを一切購読できない。中央プロセスでは `w
 
 <details><summary>根拠</summary>
 
-- キュー購読は worker ロールだけ: worker ロールの境界
+- キュー購読は worker ロールだけ: `river.Client.Start` / `riveradapter.NewInsertOnlyClient`
 - site ごとのキュー修飾と中央プロセスの束縛判定: `internal/jobs/queue.go` の `siteBoundQueueNames` / `jobs.RequiresSiteBinding`
 - ffmpeg/ffprobe の起動検査: 不変条件 4、`jobs.RequiresEncodeTools`
 
@@ -210,7 +210,7 @@ tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録�
 
 **base は複数サイトを知らない。** レジストリは常に 1 要素、どの Pod も site に束縛しない（`server` は `--sites=` の明示的な空、`enqueue` は `--site` を渡さない）。サイトを増やす差分は「`mirakcs:` に 1 要素 + Pod セット 1 組」に保つ。`site/` は site 名 `default`（`base/config.yml` の `mirakcs:` 1 要素目と同じ名前）で書いてあり、単一サイトの overlay はそのまま使える。
 
-**Helm chart は持たない。** サイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay をサイト単位で薄く書ける。`values.yaml` は公開 API で、露出する値を決める判定基準より先に形を固定してしまう。Helm が要るなら kustomize の出力を写す形で後から足す。
+**Helm chart は持たない。** サイトごとの差分は argv（`--roles` / `--sites`）だけなので、overlay をサイト単位で薄く書ける。`values.yaml` は**後から狭められない**公開 API で、露出する値を決める判定基準より先に形を固定してしまう。Helm が要るなら kustomize の出力を写す形で後から足す。
 
 **ConfigMap は 1 個で、全 Pod が同じ config.yml を共有する。Pod ごとに違うのは argv だけ**にする。ここを Pod 別の config キーにすると、サイトを増やすたびに ConfigMap が増える（[configuration.md](../configuration.md) の「ロール別 Deployment でも config は同一ファイルを共有する」が崩れる）。
 
@@ -228,7 +228,7 @@ tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録�
 
 マニフェストは YAML として組めるか（`kustomize build`）とスキーマに合うか（kubeconform）を確認する。
 
-この 2 つだけでは、存在しない ConfigMap、probe が指す名前付きポートの欠落、Service の selector に一致する Pod が無い状態を検出できない。ConfigMap 内の config にある strict parser が弾く typo も別に検査する。
+この 2 つだけでは、存在しない ConfigMap を `envFrom` に書いても、probe が指す名前付きポートが消えても、Service の selector に一致する Pod が無くても検出できない（緑になる）。ConfigMap 内の config にある strict parser が弾く typo も別に検査する。
 
 <details><summary>根拠</summary>
 
@@ -268,7 +268,7 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 逆順にすると、掴んでいたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
 
-既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。**打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけ**で、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
+既知の窓: Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、1 つの Job が 2 件消化して終わりうる。`MaxWorkers` が 1 なので同時には走らない。**打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけ**で、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（`Stop` は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。**窓の中の挙動そのものは未測定**である。
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも **exit 0** になる。ジョブは River 側で未完了のまま（`attempt=1`）残る。**次の Job がそれを引き直すところまでは測っていない。**
 
@@ -276,9 +276,9 @@ River の at-least-once / 冪等性は「殺されても正しい」を保証済
 
 **スケーラのクエリは `available` と `retryable` を数える。** 常駐 client の JobScheduler が retryable を昇格させるため、この集合は rescue の正しさを担わない。backoff 中から KEDA の backlog に含めるので、まだ claim できない job のために Pod が起きることがある。空振り Pod は `--once-idle-timeout` で終了する。
 
-**JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。** notifier は常時起動し、api ではなく site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は受け入れハーネスで固定する。
+**JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。** notifier は常時起動し、api ではなく site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 
-**死んだ `running` の job は回収まで一意キーを占有する。** 同じ kind × site の後続投入は既存行に合流する。
+**死んだ `running` の job は、回収されるまで同じ kind × site の投入を飲み込む。** その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は黙って無かったことになる）。
 
 - 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client `JobTimeout`（既定 1 分）より長い。worker 固有の `Timeout()` が設定値より長ければ、その長い時間を rescue 判定に使う。
 - ingest は Timeout 5 分なので、停止した Work は約 6 分で retry が予約される。encode の締切は enqueue 時に録画実尺と profile rate から args へ保存する。実尺が不明な場合と締切のない旧 args は 12 時間を使う。
@@ -312,7 +312,6 @@ site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/READ
 - 失敗したジョブも exit 0 でプロセスを終了する: `TestServerCmd_OnceModeExitsZeroOnJobFailure`
 - 未登録 kind のジョブを検出して終了する: `riveradapter.SubscribeOnceEvents` / `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
 - JobRescuer の回収条件: [故障注入 suite の F3](../../deploy/k8s/e2e/README.md)
-- rollout strategy と site 修飾の挙動: deploy/k8s/e2e の `O3.mut-rollout` / `O3.mut-omitted`
 
 </details>
 
@@ -331,7 +330,7 @@ preemption 対策は上記の ScaledJob で十分であり、チャンク化の�
 - `enqueue` は同じジョブが待機中なら投入せず exit 0 を返すので、重ねて叩いても安全（CronJob が失敗扱いにならない）
 - **schedule は base に実運用の間隔を書く。** 受け入れ判定は 180 秒以内の自然発火を要求するので、判定用の overlay 側で毎分に patch する。base の値が判定の都合で短くなるのを防ぐ。**したがって判定 2 が測るのは出荷される schedule ではない**
 - **間隔は in-process の既定に合わせる**（`worker.periodic_jobs: true` の monolith）。揃っていないと「docker-compose では 15 分で走るのに k8s では走らない」形になる。`reconcile-pass` だけは合わせられない。in-process の既定は 30 秒だが CronJob の分解能は 1 分である。レベルトリガーなので取りこぼしは次のパスが拾い、差は「予約が mirakc に届くまでの遅延の上限」にだけ効く
-- **`rokuban enqueue` にあるジョブは全部 CronJob にする。** 1 つ落とすと、その定期パスが**一度も走らない構成**が黙って立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は受け入れ判定で固定する。
+- **`rokuban enqueue` にあるジョブは全部 CronJob にする。** 1 つ落とすと、その定期パスが**一度も走らない構成**が黙って立つ（`worker.periodic_jobs: false` では投入経路がここしかない）。網羅は CI で回る Go テストが固定する。
 
 <details><summary>根拠</summary>
 
@@ -394,7 +393,7 @@ preStop の sleep + 10s + --soft-stop-timeout + 10s      ← 既定なら preSto
 
 **SIGTERM を 2 発撃てば強制終了できる。** 数時間の猶予を設定した worker を手で止めるときの逃げ道である。実測（猶予 600 秒・drain 中）では 2 発目で即座に exit 143 になった。
 
-2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。**代償は SIGKILL と同じ**である --- River の completer は結果を書けず、実行中だったジョブの行は一時的に `running` のまま残る。
+drain 中に 2 発目を受けると、シグナルの登録は既に外れているので既定動作でプロセスが落ちる。**代償は SIGKILL と同じ**である --- River の completer は結果を書けず、実行中だったジョブの行は一時的に `running` のまま残る。
 
 ingest と encode は JobRescuer（encode は保存された締切後）、cm_detect（ロゴ候補解析を含む）は次の `cm_detect_reconcile` が回収する。その他のジョブも JobRescuer に委ねられる。急いで止めたいときだけ使う。
 

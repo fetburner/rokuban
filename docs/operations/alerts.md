@@ -65,9 +65,9 @@ canonical file は自動削除されない。必要なら正式な登録経路�
 
 ### 開始前の未同期または観測不能
 
-次の主系列をサイトごとに使う。
-
 予約の受付が DB に成功したことは、mirakc に実効 schedule が反映されたことを意味しない。
+
+次の主系列をサイトごとに使う。
 
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
 - `rokuban_presync_pending{site,reason="options"}` — observed schedule が `scheduled` state にある。
