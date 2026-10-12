@@ -4,7 +4,7 @@
 
 **大量削除ブレーカーは、ruler の 1 パスあたりの削除数に `ruler.max_deletes_per_pass` の上限を設ける。** 超過時は削除を止めてアラートし、手動確認後に再開する。
 
-EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）があると、素朴な ruler は予約を大量に「不要」と判定する。reconciler はそれを mirakc へ忠実に反映して一斉 DELETE する。EPGStation#692（予約と録画が勝手に消える）はこの障害クラスの実例。
+予約は「ルール x EPG」から導出される。そのため EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）があると、素朴な ruler は予約を大量に「不要」と判定する。reconciler はそれを mirakc へ忠実に反映して一斉 DELETE する。EPGStation#692（予約と録画が勝手に消える）はこの障害クラスの実例。
 
 **対象は、ルールが base を供給していた予約が desired から外れた削除だけである**。desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から決まる。そのため `toDelete`（既存予約のうち desired から外れた行）には、EPG の unmatch とユーザーの明示操作の両方が現れる。このうちユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除は、ブレーカーの外に置く。カウントにも入れず、ラッチ中でも実行する。
 

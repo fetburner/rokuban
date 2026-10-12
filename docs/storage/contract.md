@@ -137,7 +137,7 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
   **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
   Upsert → commit**。
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
-  通常削除も同じ filesystem lock を取る。公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
+  通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
 - tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
   一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で（カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら公開しない**。
 

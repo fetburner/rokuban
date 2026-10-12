@@ -16,7 +16,7 @@
 
 凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」を表す。`recordings` 行と同時に生まれ、同時に死ぬため、別表に置いても行の寿命は混ざらない。衛星表として分けることは「行の寿命が同じ」ことと矛盾しない（不変条件 13）。
 
-**ingest 完了後の override 変更はその録画には反映されない**。この境界を越えて変更する場合は、録画単位の API を明示的に呼ぶ（[録画エンジン](../recording.md) §4.5）。
+**ingest 完了後の override 変更はその録画には反映されない**。この境界を越えて変更するのは、録画単位の API を明示的に呼んだ場合だけである（[録画エンジン](../recording.md) §4.5）。
 
 **予約は外から与えられた放送イベントキーで引く**: `(site, network_id, service_id, event_id)` を使う。`reservations` への FK や、導出器が作る予約 id では引かない（不変条件 9 / [invariants.md](../invariants.md) §9）。
 
@@ -24,7 +24,7 @@
 
 `program_snapshots` で `(network_id, service_id, event_id)` から `program_id` を引き、`reservations` をその id で結合する。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される短寿命の表である（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）。
 
-通常の ingest は録画終了直後に走るが、滞留の設計は GC の猶予を越える遅延も許容する（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
+通常の ingest は録画終了直後（GC の猶予期間より十分前）に走るが、滞留の設計は GC の猶予を越える遅延も許容する（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
 
 `recordings.source` は録画作成時に一度だけ焼く snapshot であり、凍結時の JOIN 失敗の異常度を判定する軸になる。
 
@@ -32,7 +32,7 @@
 
 この記録で JOIN に失敗したら「予約はあったのに引けなくなった」ため、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。
 
-`source = 'manual'` は作成時点で `action = 'record'` の意図があった記録で、予約を引けない場合は `slog.Warn` にする。`source = 'unattributed'` は予約も意図も特定できなかった記録で、予約が最初から無い JOIN 失敗は `slog.Info` にする。
+`source = 'manual'` は作成時点で `action = 'record'` の意図があった記録で、予約を引けない場合は `slog.Warn` にする。`source = 'unattributed'` は予約も意図も特定できなかった記録で、手動起動などで予約が最初から無い日常的な JOIN 失敗は `slog.Info` にする。
 
 どの source でも JOIN 失敗を黙って return せず、識別子を残す。
 
