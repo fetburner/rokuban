@@ -191,7 +191,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 - encode scratch の scope: `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile`
 - 他 scope の実行中 encode の保護: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
 - 並走中の scratch の保護: `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`
-- CM 実尺取得: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
+- CM 実尺の取得元（`started_at` / `ended_at`）: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
 - CM 締切式: `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum`
 - CM キャンセルと試行回数: `TestCMDetectDeadlineCountsAndCancellationDoesNotCount`
 - 新しい CM 検出予算: `TestCMDetectionNewDesireAfterFailedStartsNewBudget`

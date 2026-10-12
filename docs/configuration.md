@@ -210,11 +210,12 @@ live の argv は同じ規則を入力 1 本・出力 N 本へ展開する。
 |---|---|
 | 入力 | `live.hwaccel` → `-probesize` / `-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` |
 | 各 profile | `-map`（映像 1 本と音声 3 本）→ `-c:v` / `-c:a` → 主 / 副の `-filter:a:N` |
-| 映像 filter と品質 | `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf\|-qp]` → `[-preset]` |
+| 映像 filter と品質 | `[-vf]`（captions 有効時は `-filter:v:N`）→ CRF または QP → `[-preset]` |
 | filter の組み立て | `deinterlace` が true なら解除を先頭に置き、`height` があれば後ろに scale を 1 個連結 |
 | HLS 出力 | `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...` |
 
 音声 3 本の意味は [api/media.md](api/media.md) §音声を参照する。
+品質指定は VOD と同じ `[-crf|-qp]` のいずれかで、`[-preset]` が続く。
 
 `deinterlace` は bool とし、filter の実体を `scaler` から導出する。`scaler: software` なのに `deinterlace_vaapi` を書くような矛盾した設定や、`-vf` を別名で自由に書く設定を表現できないようにするためである。`deinterlace: false`（省略）のときは、生成する argv を従来から変えない。
 
