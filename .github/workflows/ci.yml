@@ -175,8 +175,20 @@ jobs:
         if: failure()
         run: cat "${RUNNER_TEMP}/rokuban-e2e-server.log"
 
-  test:
+  # go test を 2 ランナーに分ける。4 コアのランナー 1 台に全パッケージ（race 付きの合計は
+  # 約 600 秒）を詰めると、CPU の取り合いで最長パッケージがそのままジョブ長になるため。
+  # 分ける軸は所要時間で、ffmpeg の要否ではない。ffmpeg を見るテストは ROKUBAN_REQUIRE_FFMPEG を
+  # 見ずに黙って skip するもの（internal/ffargs）があるので、両シャードに ffmpeg を入れる。
+  # heavy は HEAVY_PKGS に挙げた長いパッケージ、rest は `go list ./...` から heavy を除いた残り全部
+  # （将来足されたパッケージは自動で rest に入る）。HEAVY_PKGS の綴り違いは `go list` が落とす。
+  # 必須チェック名 `test` は下の集約ジョブが担う。
+  test-shard:
+    name: test (${{ matrix.shard }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [heavy, rest]
     services:
       postgres:
         image: postgres:17
@@ -196,6 +208,8 @@ jobs:
       # 実 ffmpeg / ffprobe を回すテスト（この変数を見るもの）を
       # skip させない。ライブの音声 rendition の並びと PDT を実経路で見ているのはそれらだけ。
       ROKUBAN_REQUIRE_FFMPEG: "1"
+      # 単独で数十秒〜100 秒かかるパッケージ。均す対象なので、実測が動いたら入れ替える。
+      HEAVY_PKGS: ./internal/streamer ./internal/worker ./cmd/rokuban ./internal/api
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
@@ -245,10 +259,29 @@ jobs:
       # 実測に対して 2 倍以上の余裕を取る。実測が 10 分の半分に近づいたら、-timeout を上げる前に
       # 実時間の待ち（WaitDelay・ポーリング・バックオフ）を疑う。
       # -p はパッケージの同時実行数。既定は GOMAXPROCS（ランナーでは 4）で、import path 順に
-      # 詰めるので最長の internal/worker が最後に回り、ステップ長が「全パッケージの合計 ÷ 4」で
-      # 決まる。同時実行数を上げると CPU を取り合って各パッケージは遅くなるが、最長の
-      # internal/worker の開始が早まるので、ステップ全体は縮む。
-      - run: go test -race -p 8 ./... -count=1 -timeout 10m
+      # 詰めるので長いパッケージが後ろに回ると、ステップ長が「シャード内の合計 ÷ 4」で決まる。
+      # 同時実行数を上げると CPU を取り合って各パッケージは遅くなるが、後ろの長いパッケージの
+      # 開始が早まるので、ステップ全体は縮む。
+      - name: Run go test shard
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          heavy=$(go list $HEAVY_PKGS)
+          if [ "$SHARD" = heavy ]; then
+            pkgs=$heavy
+          else
+            pkgs=$(go list ./... | grep -vxF "$heavy")
+          fi
+          go test -race -p 8 -count=1 -timeout 10m $pkgs
+
+  # 必須チェック名 test を保つ集約ジョブ。skip / cancelled / failure を緑にしない。
+  test:
+    needs: test-shard
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - run: test "${{ needs.test-shard.result }}" = success
 
   # rokuban が mirakc に期待する挙動（`internal/mirakc.Client` が叩く API の形）を、
   # 実物の mirakc コンテナに対して機械判定する（internal/mirakc/conformance）。
