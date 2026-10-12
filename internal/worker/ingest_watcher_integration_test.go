@@ -339,8 +339,8 @@ func waitForIngestLifecycleEnqueues(t *testing.T, enqueuer *ingestLifecycleEnque
 
 // waitForIngestLifecycleRecordSync waits for the watcher transaction that issued the ingest hint to commit.
 // ingestLifecycleEnqueuer records EnqueueTx before that commit, unlike the jobq contract, so delivering the
-// hint earlier lets the worker miss record_sync. Only the second wait is skipped: the fixture changes just
-// sha256 and endTime, neither stored in record_sync, so the second transaction rewrites the same values.
+// hint earlier lets the worker miss record_sync. The second hint needs no wait: between the hints the fixture
+// changes only sha256, which the worker reads from mirakc, and UpsertRecordSync keeps the committed recording_id.
 func waitForIngestLifecycleRecordSync(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)
