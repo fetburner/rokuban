@@ -212,11 +212,20 @@ func (fixture *riverContractFixture) newClient() *Adapter {
 	if err != nil {
 		fixture.t.Fatalf("BuildRegistryConfig() error = %v", err)
 	}
-	if _, exists := riverCfg.Queues[fixture.queueName]; !exists {
-		// The contract can pass a physical queue name that is not an application logical queue.
-		// Inject it through River's public config so the fixture actually processes that name.
-		riverCfg.Queues[fixture.queueName] = river.QueueConfig{MaxWorkers: 1}
+	if _, exists := riverCfg.Queues[fixture.queueName]; exists {
+		// Use the production constructor whenever it already processes the queue under test,
+		// so contract cases notice changes to NewAdapter.
+		client, err := NewAdapter(fixture.pool, fixture.registry, fixture.cfg)
+		if err != nil {
+			fixture.t.Fatalf("NewAdapter() error = %v", err)
+		}
+		fixture.clients = append(fixture.clients, client)
+		return client
 	}
+	// The contract passes a physical queue name that is not an application logical queue, which
+	// NewAdapter never processes. Inject it through River's public config so the fixture
+	// actually delivers jobs from that name.
+	riverCfg.Queues[fixture.queueName] = river.QueueConfig{MaxWorkers: 1}
 	client, err := river.NewClient(riverpgxv5.New(fixture.pool), riverCfg)
 	if err != nil {
 		fixture.t.Fatalf("river.NewClient() error = %v", err)

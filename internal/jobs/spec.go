@@ -131,8 +131,9 @@ func (a RecordSweepArgs) Spec() jobq.Spec {
 }
 
 // Spec は encode の論理キュー、保存済み締切または既定の 12 時間締切、26 回の
-// adapter failure 上限、合流ヒントを返す。adapter の failure 数と永続化する
-// encode 試行数は別で、上限に達して配信が止まった場合は encode reconcile が再投入する。
+// adapter failure 上限、合流ヒントを返す。26 は EncodeAttemptLimit (25) より 1 多い。
+// adapter が失敗を何回と数えるかは jobq の契約外なので、ドメインの上限 25 が先に効く
+// 保証ではない。adapter の上限に達して配信が止まったら encode reconcile が再投入する。
 func (a EncodeJobArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, func(raw jobq.Args) time.Duration {
 		args, ok := raw.(EncodeJobArgs)

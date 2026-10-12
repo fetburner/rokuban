@@ -60,7 +60,11 @@ func Run(t *testing.T, factory Factory) {
 }
 
 func testQueueNameMaxLen(t *testing.T, factory Factory) {
-	queueName := strings.Repeat("q", jobq.MaxQueueNameLen)
+	// Lowercase letters, digits, "_" and "-" all appear, the length is exactly the maximum, and
+	// the name ends with an alphanumeric character, as the jobq.MaxQueueNameLen doc guarantees.
+	queueName := strings.Repeat("a1_b2-", jobq.MaxQueueNameLen)[:jobq.MaxQueueNameLen]
+	queueName = strings.TrimRight(queueName, "_-")
+	queueName += strings.Repeat("z", jobq.MaxQueueNameLen-len(queueName))
 	args := contractArgs{Queue: queueName, Value: "maximum queue name", TimeoutMS: 2000, MaxAttempts: 1}
 	if got := args.Spec().Queue; got != queueName {
 		t.Fatalf("Spec().Queue = %q, want %q", got, queueName)

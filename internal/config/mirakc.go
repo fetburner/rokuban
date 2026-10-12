@@ -32,8 +32,12 @@ func (c Config) Registry() []MirakcSite {
 	return c.Mirakcs
 }
 
-// mirakcSiteNamePattern は site 名の構文制約。物理キュー名へ組み立てるため、
-// 小文字 ASCII と `_` / `-` の範囲に制限する。
+// mirakcSiteNamePattern は site 名の構文制約。
+//
+// **jobq.MaxQueueNameLen の doc が全 adapter に保証する物理キュー名の文字種
+// （小文字 ASCII 英数字を単独の `_` / `-` で区切った名前）と同一で、緩めない。**
+// site 単位キューは `<base>_<site>` の物理名になるため、大文字や `.` を許すと
+// 物理名が jobq の契約外になり、adapter に弾かれうる。
 var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
 
 // MirakcSiteNameMaxLen は site 名の最大長。
