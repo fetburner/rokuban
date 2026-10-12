@@ -2,16 +2,18 @@
 
 ## ストレージ残高と満杯見込み
 
-`/recordings` のヘッダー領域（`RecordingFilters` の下）に、ストレージ残高と
-エンコード待機列をまとめた管理情報行を置く（`components/storage-balance.tsx`）。
-通常時のストレージ要約は「空き X GB / 詳細」までを常置し、今後 7 日の予約による
-見込みは常に「詳細」を展開した側へ移す（警告の有無に関わらない。下記「要約に
-出すかどうかは警告に連動させない」参照）。これにより、視聴対象へ向かう録画行の
-位置を下げずに、必要な容量情報へは 1 操作で到達できる。`<details>` を展開すると、
-`media`（アーカイブ）と、設定されている場合の `scratch`（ローカルスクラッチ）を
-名前・総容量・使用済み・空き・観測時刻に分けて表示する。単一世帯では録画一覧
-から容量を確認できれば足りるため、専用ページは作らない。見る頻度やストレージ
-root の種類が増えた時点で専用ページを検討する。
+`/recordings` のヘッダー領域に、ストレージ残高とエンコード待機列をまとめた管理情報行を置く。
+通常時は「空き X GB / 詳細」だけを常置し、今後 7 日の予約による見込みは警告の有無に関わらず詳細側へ置く。
+
+詳細を開くと、`media`（アーカイブ）と、設定されている場合の `scratch`（ローカルスクラッチ）を名前・総容量・使用済み・空き・観測時刻に分けて表示する。
+録画一覧で容量を確認できれば単一世帯には足りるため、専用ページは作らない。見る頻度やストレージ root の種類が増えた時点で専用ページを検討する。
+
+<details><summary>根拠</summary>
+
+- 管理情報行の位置と実装: `RecordingFilters` の下、`components/storage-balance.tsx`
+- 予約見込みの表示場所: 「要約に出すかどうかは警告に連動させない」
+
+</details>
 
 ただし、情報量を減らすために警告を隠してはいけない。満杯見込み日と、1 時間を
 超えた観測の「古い可能性」は要約に残す。観測時刻そのもの（stale でない通常の
@@ -56,32 +58,39 @@ root の種類が増えた時点で専用ページを検討する。
 - **見込み消費が残量に収まる**ときは満杯見込み日を出さない（下界主義。
   `lib/capacity.ts` の「主張は下界に限る」と同じ精神）
 
-**「取得失敗」と「正当な 0 件」を混同しない**。予約の取得が失敗/未解決のときは
-`estimateStorageForecast` が `hasEstimate: false` を返す。見込み
-そのものを算出しない。判定材料は `lib/storage-forecast.ts` の
-`upcomingReservationSchedule` の結果で、それが `undefined` のときである。予約が正当に 0 件のとき（結果が空配列 `[]`）は見込みを
-算出した上で `projectedConsumptionBytes: 0` になる。**この 2 つを区別せず
-`undefined` を `[]` にフォールバックすると、取得失敗時に「今後 7 日の予約で
-約 +0 B の見込み」という、欠損データから捏造した肯定を描いてしまう**。
-実際にこの不具合を実装直後のレビューで指摘された。プローブで実際の描画
-「空き 931.3 GB今後7日の予約で約 +0 B の見込み観測: 8/13 15:57」を確認済みである。
-録画側（`recordings` が `undefined`）も同じ理由で `averageBitrate` を
-`undefined` のまま渡し、`0` にフォールバックしない。
+**「取得失敗」と「正当な 0 件」を混同しない。**
+予約の取得が失敗または未解決なら、見込みを算出しない。
+予約が正当に 0 件なら見込みを算出し、`projectedConsumptionBytes: 0` にする。
+`undefined` を `[]` に置き換えると、取得失敗時に「今後 7 日の予約で約 +0 B の見込み」と欠損データから肯定を捏造する。
+プローブでは実際に「空き 931.3 GB今後7日の予約で約 +0 B の見込み観測: 8/13 15:57」と描画されることを確認済みである。
+録画一覧の取得結果が未解決なら、平均ビットレートも未解決のまま渡し、`0` にフォールバックしない。
+
+<details><summary>根拠</summary>
+
+- 予約取得失敗と正当な 0 件の分岐: `estimateStorageForecast`、`hasEstimate`、`hasEstimate: false`
+- 予約日程の入力: `lib/storage-forecast.ts` の `upcomingReservationSchedule`
+- 予約 0 件の出力: `projectedConsumptionBytes`
+- 録画取得が未解決のとき平均ビットレートを作らない: `recordings`、`averageBitrate`
+
+</details>
 
 ヘッダーの補助情報 1 つのために専用のエラー表示（`ErrorState`）を割かず、
 取得失敗はすべて上記の沈黙（残高だけ出す）に縮退させる。
 
 ### 母数: 直近 20 件の finished 録画
 
-`GET /api/recordings?status=finished&limit=20`（`lib/storage-forecast.ts` の
-`recentRecordingSampleLimit`）。日数ではなく件数にしたのは、録画頻度が運用ごとに
-大きく違うため（固定の日数では少ない側で標本が枯渇し、多い側で 1 回のフェッチの
-上限 200 件に収まらなくなる）。`status=finished` に絞るのは、`Recording.durationMs`
-が番組の放送時間（全尺）であって実際に録画できた時間ではないためである。`failed`
-（途中で終わった録画）を含めると「途中までの `sizeBytes`」を「全尺の `durationMs`」
-で割ることになり、ビットレートが実際より低く出る方向に偏る。`sizeBytes` が無い
-録画（原本削除済み。`Recording.sizeBytes` の説明「原本の実サイズ。ingest 済みの
-場合のみ」参照 --- 未 ingest も含む）も除く。
+母数は `GET /api/recordings?status=finished&limit=20` が返す直近 20 件とする。
+日数ではなく件数にするのは、録画頻度が運用ごとに大きく違い、固定日数では少ない側で標本が枯渇し、多い側では 1 回の取得上限 200 件を超えるためである。
+`finished` に絞る。`failed` は途中までの `sizeBytes` を番組全尺の `durationMs` で割ることになり、平均ビットレートを実際より低く見積もる。
+原本の実サイズが無い録画（原本削除済み、または未 ingest）も除く。
+
+<details><summary>根拠</summary>
+
+- 直近 20 件を使う上限: `lib/storage-forecast.ts` の `recentRecordingSampleLimit`
+- 録画状態の絞り込み: `status=finished`
+- `durationMs` は番組の放送時間、`sizeBytes` は ingest 済み原本の実サイズ: `Recording.durationMs`、`Recording.sizeBytes`
+
+</details>
 
 **`sizeBytes` は原本 TS のみでエンコード派生物を含まない**。エンコードプロファイル
 を設定しているルール（既定 `keepOriginal: always`。[storage/retention.md](../../storage/retention.md)）

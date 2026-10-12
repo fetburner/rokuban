@@ -1,13 +1,14 @@
 > [live.md](../live.md) のチャンネル選択と URL。索引から辿る
 
+### サイトとサービスの同定・選択・リンク
+
 **ライブ配信・セッション・離脱ヒント、URL、音声切替、チューナー状態の行は
 既存のまま保つ。** 画質・音声を切り替えてもライブセッションを作り直さず、画質の
 `?profile=` と音声の `?audio=`、チューナー状態の表示も維持する。今回変えるのは
 ライブの操作面と予定番組の見せ方であり、配信の資源同定やチューナー表示の意味を
 変える理由は無い。
 
-選択中のチャンネルは `?service=<Service.id>` に持つ。`routes.tsx` の
-`validateSearch` が不正な値に `undefined` を**明示代入**して落とす。省略では
+選択中のチャンネルは `?service=<Service.id>` に持つ。不正な値は `undefined` を**明示代入**して落とす。省略では
 消えない（[recordings.md](../recordings.md)「TanStack Router の `validateSearch` は
 無効な値を『省略』しても消えない」）。
 チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらない
@@ -21,24 +22,15 @@ desktop ではプレイヤーとチャンネル一覧を隣り合わせにし、
 箱は 1 つに保つ。phone の縦積みは変えない。1180px 前後の配置は既存のラフを保ち、
 高さ上限が効く広い画面だけでプレイヤー幅を抑える。
 
-**site も含めてチャンネルを同定する**。**SI の `serviceId` 単独では network をまたぐと一意でない**。Mirakurun が
-`networkId * 100000 + serviceId` の合成 id を発明した理由そのものである。
-`GET /api/sites/{site}/services` は GR / BS / CS を混ぜて返すため、同じ
-`serviceId` を持つサービスが 2 つ返る構成がありうる。**そこで API が合成 id を
-`Service.id`（`networkId * 100000 + serviceId`）として返し、画面内の同定は
-site と組み合わせて行う**。同定が要るのは選択中のハイライト・`aria-current`・
-再生中チャンネルの記憶である。**`/live` の URL は `?service=<Service.id>&site=<site>` で
-site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキーマで検証する）。
-初期選択は「site と `Service.id` が一致すればそれ、無ければ番組を持つ先頭」だけで
-決まる。関数は `pickInitialService(services, requestedId, requestedSite)`
-（`lib/live.ts`）である。
-番組リスト（`components/program-row.tsx`）の放送中行には、予約ボタンの左に 44px の
-`Play` アイコンボタンを置く。これは行に対する動作なので展開領域のテキストリンクには
-しない。対応する録画中録画が無いときは「ライブで見る」とし、
-`/live?service=<Service.id>&site=<site>` へ遷移する。対応する録画があるときだけ
-「追っかけ再生」とし、`/recordings/{recordingId}#chase` へ切り替える。
-`ProgramListItem` が SI の `networkId` / `serviceId` を持つため、ライブの遷移先は
-`composeServiceId`（`lib/service-id.ts`）で合成してから渡す。
+**site も含めてチャンネルを同定する。** SI の `serviceId` 単独では network をまたぐと一意でない。
+Mirakurun は `networkId * 100000 + serviceId` の合成 id を使う。GR / BS / CS を混ぜる一覧では同じ `serviceId` が重なることがあるため、API は合成値を `Service.id` として返す。
+
+- 選択中ハイライト・`aria-current`・再生中チャンネルの記憶は site と `Service.id` の組で行う。
+  `/live` の URL は `?service=<Service.id>&site=<site>` とする。`service` の値域は `/programs` と同じ生成スキーマで検証する。
+- 初期選択は、site と `Service.id` が一致すればそれを使い、無ければ番組を持つ先頭にする。
+- 番組リストの放送中行には、予約ボタンの左に 44px の `Play` アイコンボタンを置く。行に対する動作なので、展開領域のテキストリンクにはしない。
+- 対応する録画中録画が無いときは「ライブで見る」で `/live?service=<Service.id>&site=<site>` へ進む。
+  録画があるときだけ「追っかけ再生」で `/recordings/{recordingId}#chase` へ進む。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを
 受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の
@@ -51,41 +43,23 @@ site も運ぶ**（`?service=` の値域も `/programs` と同じ生成スキー
 `?site=<site>` で運ぶ。録画では site が
 別軸（`?site=`）で、軸内は OR・軸間は AND。
 
-**「選ぶ」（`?service=` を変える）と「流す」（`LivePlayer` をマウントする）を
-別のタップに分ける。** 選択面のクリックで再生できるが、2 段階同意は維持する。
-チャンネルを選ぶこと自体は probe もセッション（チューナー確保 + ffmpeg 起動）も
-起こさない --- 起きるのはチャンネル一覧・いま放送中の番組・チャンネル種別
-（GR/BS/CS）の表示だけである。`LivePlayer` は「再生」ボタンを押すまでマウント
-しない（`pages/live.tsx` の `playingKey`。`selectedKey` と一致するときだけ再生中と
-みなす）。確認ダイアログは使わない --- 選択状態の画面そのものが値札であり、
-再生は 1 タップで足りる。摩擦をコストに比例させる方針上、デスクトップ LAN
-でも再生 1 押しより増やさない（ダイアログを重ねると、チューナーが有限でない
-環境の利用者にまで同じ摩擦を強いる）。
-「チューナーが空いています」等の**肯定・保証は文言に書かない**（下界主義。
-[data.md](../../data.md) §6.5 と同じ規律 --- mirakc には Rokuban から見えない
-消費者がいる）。
+**「選ぶ」（`?service=` を変える）と「流す」（`LivePlayer` をマウントする）を別のタップに分ける。**
+選択画面から再生できるが、二段階の同意は維持する。
+`?service=` の変更だけでは probe もセッション（チューナー確保 + ffmpeg 起動）も起こさず、チャンネル一覧・現在番組・チャンネル種別の表示だけを変える。
 
-`playingKey` と `selectedKey` の一致判定は**レンダー中に行う**（effect
-ではない）。これは直リンク・ブックマークで来た場合だけでなく、チャンネル一覧で
-他のチャンネルへ切り替えた場合も同じである。**同意はチャンネルの選択ごとに 1 回
-必要**という設計の要点そのものだ --- 一度再生した後に別チャンネルへザップし、また
-元のチャンネルへ戻ってきても、そのチャンネルの再生は再度「再生」ボタンを押すまで
-再開しない。**この判定を `useEffect` で「選択が変わったら false に戻す」形にすると、
-1 コミットぶん透過的にバグる**。レビューでの指摘であり、実測でも A 再生中に B へ
-切り替えると、jsdom でも実ブラウザでも B 向けの `playlist.m3u8` への要求が 1 件飛ぶ。
-passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。そのため
-`selectedKey` が B に変わった直後の 1 コミットだけ古い再生中フラグが残り、
-`<LivePlayer serviceId={B}>` が透過的にマウントされ probe を投げてしまう。
-その直後に親の reset effect が走って unmount してももう遅い。
-`internal/streamer/session.go` のセッションは
-`context.WithCancel(context.Background())` で回る。そのためクライアント側の
-`AbortController.abort()` はセッション自体を止めない --- 押していないチャンネルの
-チューナー + ffmpeg が残る。**離脱ヒントを送っても縮むだけで 0 にはならない** ---
-押していないチャンネルを掴む時間は「猶予（既定 8 秒）+ GC 周期」であって、
-掴まないのとは違う。レンダー中に判定すれば、
-`selectedKey` が変わった**その場のレンダーで**「再生中でない」が確定する。
-異なる serviceId で透過的にマウントされる中間コミット自体が存在しない
-（詳細は `pages/live.tsx` の `playingKey` 定義部のコメント）。
+- `LivePlayer` は「再生」を押すまでマウントしない。確認ダイアログは使わず、選択状態の画面そのものを値札として、再生は 1 タップにする。
+- 「チューナーが空いています」などの肯定・保証は書かない。mirakc には Rokuban から見えない消費者がいるため、空きの有無を断言できない。
+
+操作の摩擦は明示的な再生のコストに合わせ、確認ダイアログでタップを重ねない。チューナーが有限でない環境にまで余計な操作を求めない。
+
+`playingKey` と `selectedKey` の一致判定はレンダー中に行う（effect ではない）。
+直リンクで来た場合も、チャンネル一覧で切り替えた場合も、選択ごとに再生同意を求める。
+- 一度再生した後に B へ切り替え、A に戻っても、自動再開はしない。再度「再生」を押す。
+- `useEffect` で「選択が変わったら false に戻す」と、1 コミットだけ古い再生中フラグが残る。
+  子の `LivePlayer` が親の `LivePage` より先に effect を実行し、B の `<LivePlayer serviceId={B}>` が 1 件の playlist.m3u8 を要求する。jsdom と実ブラウザの両方で確認済みである。
+- `LivePlayer` を先に mount するとサーバー側のセッションは残る。`AbortController.abort()` だけではセッションを止めない。
+- 離脱ヒントも期限を縮めるだけで 0 にはしない。押していないチャンネルを掴む時間は猶予（既定 8 秒）+ GC 周期となる。
+- レンダー中に一致を判定すれば、`selectedKey` が変わった時点で再生中でないと確定し、別 serviceId の中間 mount を作らない。
 
 **直リンク・ブックマーク（`/live?service=<Service.id>` の直開き）も選択状態で止まる**。
 再生開始の同意を取る構造は、通常のチャンネル一覧からの選択と直リンクで区別しない
@@ -95,8 +69,7 @@ passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。�
 
 **チャンネル切り替えのデバウンスは持たない**。選択自体が probe もセッションも
 起こさないので、デバウンスする対象（= 選択の瞬間にコストのかかる処理）が
-そもそも発生しない --- 何も守らないものは置かない。`pages/live.tsx` に
-`channelSwitchDebounceMs` は無い。チャンネル一覧のリンクはクリックで即座に
+そもそも発生しない --- 何も守らないものは置かない。チャンネル一覧のリンクはクリックで即座に
 ナビゲートする。
 
 **視聴中チャンネルの情報欄に「この局の番組表」リンクを置く。**
@@ -110,7 +83,7 @@ passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。�
 **ライブへの導線はサーバーの `live.enabled` に連動させる。**
 `live.enabled: false` のとき streamer はライブのルートを一切登録しないので、
 導線を出しても行き先が無い。判断は `GET /api/capabilities` の `live` に一本化し、
-フロント側の入口は `lib/capabilities.ts` だけにする（ナビの出し分けは
+フロント側の入口を一つにする（ナビの出し分けは
 [shell.md](../shell.md)「無効な機能の項目は出さない」）。`/live` のルート自体は
 残す。**直リンク・ブックマークで来たときは「この環境ではライブ視聴が無効です」+
 `live.enabled` という手がかりを出す** --- ルートを消すと SPA の 404 になるだけで、
@@ -121,19 +94,41 @@ passive effect は子（`LivePlayer`）→親（`LivePage`）の順に走る。�
 フォールバックに落とすと、ライブのルートが無いパスは index.html を 200 で返す。
 そのため probe は通ってしまう --- その後 hls.js / `<video>` が m3u8 として
 解釈できずに再生エラーになる。その結果「無効」ではなく「壊れている」と読める。だから `/api/` 配下は
-JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**能力 API
+JSON 404 にしてある。**能力 API
 （導線を消す）とこの 404 化は両方要る。どちらか一方では足りない。**
 
 **「無効」と断言するのは `live: false` を実際に受け取ったときだけにする**。
-この画面は原因（サーバー設定）を名指しするので、`useLiveEnabled()` の真偽値では
-なく `useLiveCapability()` の 4 値を見る。`pending` は読み込み中に、`unknown`
-（能力 API が失敗）は「利用できるかを確認できませんでした」に分ける。潰すと
+この画面は原因（サーバー設定）を名指しするので、能力 API の状態を次のように分ける。
+
+| 能力 API の状態 | 表示 |
+|---|---|
+| `false` | 「この環境ではライブ視聴が無効です」+ `live.enabled` の手がかり |
+| `pending` | 読み込み中 |
+| `unknown`（取得失敗） | 「利用できるかを確認できませんでした」 |
+| `true` | ライブ視聴を有効として扱う |
+
+導線側は未確定を無効に倒してよい。画面と違って原因を断言せず、黙って消えるだけだからである。状態を一つに潰すと
 **`live.enabled: true` のデプロイで能力 API が瞬断しただけでも「設定が無効」と
 表示され**、この画面が消したかった「原因にたどり着けない」を別の顔で再演する。
-潰した実装で `pages/live.test.tsx` の 2 件が落ちることは確認済みである。導線側
-（ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで誤った原因を
-主張しないため（[shell.md](../shell.md)）。
+潰した実装では画面のテスト 2 件が落ちることを確認済みである（[shell.md](../shell.md)）。
 
 **「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを
 表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たまま
 プレイリスト取得の 404 / 503 として[playback.md](playback.md)のエラー分類に出る。
+
+<details><summary>根拠</summary>
+
+- 不正な service 値を明示的に落とす: `routes.tsx` の `validateSearch`、`undefined` を明示代入
+- 外部導線のリンクと識別子: `components/program-row.tsx`、`ProgramListItem`、`composeServiceId`、`lib/service-id.ts`
+- チャンネル変更に debounce を置かない: `pages/live.tsx`、`channelSwitchDebounceMs`
+- 合成 id と site を使う初期選択: `GET /api/sites/{site}/services`、`networkId`、`serviceId`、`Service.id`、`lib/live.ts`
+- 初期選択関数と引数: `pickInitialService(services, requestedId, requestedSite)`
+- 再生同意は選択ごとに必要: `pages/live.tsx` の `playingKey` / `selectedKey`、`selection.md` の選択判定
+- 先行 mount で残るサーバーセッション: `internal/streamer/session.go`、`context.WithCancel(context.Background())`、`AbortController.abort()`
+- 能力の取得元と導線: `lib/capabilities.ts`、`GET /api/capabilities`、`live.enabled`
+- 未登録ルートの JSON 404: `internal/api/spa.go`、`spaOrAPINotFound`
+- capability 状態の分岐: `useLiveEnabled()`、`useLiveCapability()`、`pending`、`unknown`
+- 状態を混同したときの回帰: `pages/live.test.tsx` の 2 件
+- 誤った playlist 要求を防ぐ: `playlist.m3u8`
+
+</details>

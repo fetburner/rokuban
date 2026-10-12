@@ -46,14 +46,14 @@ WHEP 側の再ネゴシエーションの都合であり、hls.js のポーリ�
 にするだけで、`_latency` は直前値のまま残るためである。それでも止めるのは、意味の
 無くなった値を毎秒読み続けない衛生のためであって例外対策ではない。
 
-判定手段は `lib/live.test.ts`（欠損値・`NaN` の丸め・経路ごとの表示差の純関数
-テスト）と `live-player.test.tsx`「計器」である。あわせて `pages/live.tsx` 側の
-表示配線テストと `web/e2e/live.mjs` ③も見る。
-`live-player.test.tsx`「計器」は、`onDiagnostics` が 1 秒ごとに実際に
-読み直した値で呼ばれることを検証する。あわせてネイティブ経路では `latencySec` が
-常に `null` であること・`hls.latency` が `0` のままでも欠損として扱うこと・
-fatal エラー後にポーリングを止めることも、フェイクの hls.js で検証する。
-`web/e2e/live.mjs` ③は実 Chrome + 実 hls.js で「放送から約
-n 秒 / 先読み n 秒」が実際に 0 でない数値になることを確認する。bundled
-Chromium は H.264/AAC の実デコードが進まず `hls.latency` が更新されないため、
-ここでしか測れない。
+**実測（実 Chrome + 実 hls.js）**: 「放送から約 n 秒 / 先読み n 秒」が 0 以外の数値になる。bundled Chromium は H.264/AAC のデコードが進まず `hls.latency` が更新されないため、この確認は実 Chrome で行う。
+
+<details><summary>根拠</summary>
+
+- 純関数: `lib/live.test.ts`（欠損値・`NaN` の丸め・経路ごとの表示差）
+- 値の契約: `latencySec` は native 経路では `null`
+- 計器: `live-player.test.tsx`「計器」。`onDiagnostics` が実値を 1 秒ごとに読むこと、ネイティブの `latencySec=null`、`hls.latency=0` の欠損扱い、fatal エラー後の停止を確認する
+- 画面配線: `pages/live.tsx` の表示テスト
+- 実ブラウザ: `web/e2e/live.mjs` ③
+
+</details>
