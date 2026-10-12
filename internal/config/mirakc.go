@@ -34,19 +34,16 @@ func (c Config) Registry() []MirakcSite {
 
 // mirakcSiteNamePattern は site 名の構文制約。
 //
-// **River のキュー名の制約（`validateQueueName`、river@v0.47.0 client.go）と
-// 同一で、緩めない。** M4-13 がキュー名を `ingest_<site>` の形に site で修飾する
-// ため、ここを緩めると M4-13 が site 名をキュー名として弾くことになる
-// （issue #183 の「罠」）。
+// **jobq.MaxQueueNameLen の doc が全 adapter に保証する物理キュー名の文字種
+// （小文字 ASCII 英数字を単独の `_` / `-` で区切った名前）と同一で、緩めない。**
+// site 単位キューは `<base>_<site>` の物理名になるため、大文字や `.` を許すと
+// 物理名が jobq の契約外になり、adapter に弾かれうる。
 var mirakcSiteNamePattern = regexp.MustCompile(`^[a-z0-9]([_-]?[a-z0-9])*$`)
 
 // MirakcSiteNameMaxLen は site 名の最大長。
 //
-// River のキュー名の上限（internal/jobs.RiverQueueNameMaxLen、64 文字）から、
-// site 単位のキュー（internal/jobs の siteBoundQueueNames = ingest/epg/
-// reconciler/watcher）を jobs.PhysicalQueueName で `<base>_<site>` に修飾したときの
-// prefix のうち最長のもの（`reconciler_`、11 文字。base の中で `reconciler` が
-// 最長のため）を引いた値: 64 - 11 = 53。**siteBoundQueueNames に `reconciler`
+// jobq.MaxQueueNameLen (64) から、site 単位キューを `<base>_<site>` にしたときの
+// 最長 prefix (`reconciler_`, 11 文字) を引いた値: 64 - 11 = 53。**siteBoundQueueNames に `reconciler`
 // より長い論理名が増えたら、この 53 を引き直す必要がある**
 // （internal/jobs.TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen が
 // この関係を機械的に固定している）。
@@ -74,8 +71,8 @@ func validateSiteName(name string) []string {
 	}
 	if len(name) > MirakcSiteNameMaxLen {
 		errs = append(errs, fmt.Sprintf(
-			"site name %q exceeds %d characters (River's queue name limit is 64 characters, and "+
-				"site-bound queues carry a prefix such as \"reconciler_\"; the site name itself "+
+			"site name %q exceeds %d characters (the site-bound queue name carries a prefix such as "+
+				"\"reconciler_\"; the site name itself "+
 				"must leave room for that prefix)",
 			name, MirakcSiteNameMaxLen))
 	}

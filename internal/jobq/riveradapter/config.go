@@ -119,14 +119,14 @@ const (
 
 // DefaultSoftStopTimeout は Config.SoftStopTimeout の既定値。
 //
-// **停止の合図（SIGTERM = Start に渡した ctx の cancel、または Stop の呼び出し）を
-// 受けてから、実行中のジョブを打ち切るまでの猶予**である。この時間内に終われば
-// ジョブは完走し、超えたら River が work ctx を cancel してハードストップに
-// エスカレートする（river@v0.47.0 client.go の `softStopTimer`）。
+// River v0.47.0 の公開契約では、Stop または Start に渡した ctx のキャンセルで
+// graceful stop を始めると、この猶予の後に実行中ジョブの ctx が cancel される。
+// StopAndCancel は猶予を待たずに cancel する。中断されたジョブは attempt が
+// 開始前の値に戻り、errors を増やさず `available` に戻る（River v0.47.0 API:
+// Client.Stop / StopAndCancel, Config.SoftStopTimeout; CHANGELOG.md §0.44.0）。
 //
-// **5 秒という値は「何も設定しなかった人が SIGKILL されない」ことだけを根拠に
-// している。** プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒で、
-// そのどちらの内側にも収まる長さを選んだ（実測: 猶予を使い切る停止でも 5.1 秒）。
+// **5 秒という値は、既定の停止猶予の内側に収めるために選んでいる。** Docker の
+// 既定猶予は 10 秒、k8s は 30 秒である（実測: 猶予を使い切る停止でも 5.1 秒）。
 // **どのジョブが 5 秒で終わるかは測っていない。**
 //
 // 既定を長く（例えば 30 秒に）すると、猶予を書いていないデプロイで**プロセスが
@@ -135,18 +135,16 @@ const (
 // `running` のまま残る。ingest は有限の Timeout と `JobRescuer`（既定 6 分）、
 // encode は保存した締切後の `JobRescuer`、cm_detect は `cm_detect_reconcile` が回収する。
 // その他のジョブも `JobRescuer` に委ねられる --- **設定を間違えた人ではなく、何も書かなかった人に
-// 当たる**壊れ方を増やさないためにも猶予を正しく設定する。この PR の前は同じ操作が
-// 「試行を 1 つ潰して即座に `available`」で済んでいたので、そこを退行させない。
+// 当たる**壊れ方を増やさないためにも猶予を正しく設定する。
 //
-// 数時間かかる encode は当然この既定では完走できない。ingest は短い区切りで
+// 数時間かかる encode はこの既定では完走できない。ingest は短い区切りで
 // checkpoint と snooze を行う。長い drain を要するデプロイは `--soft-stop-timeout` と
 // k8s の `terminationGracePeriodSeconds` を **対で**引き上げる
 // （docs/operations.md §5「Deployment 併用時」）。
 //
-// **0 を「無制限」の意味に使えない。** River は SoftStopTimeout が 0 のとき
-// work ctx を start ctx から継ぐので、0 は「待たない」（SIGTERM が即
-// StopAndCancel 相当になる）である。cmd/rokuban 側は `--soft-stop-timeout` の
-// 0 以下を起動エラーにし、BuildConfig は 0 をこの既定値に読み替える。
+// **0 を「無制限」の意味に使えない。** River 自身の SoftStopTimeout の既定は無期限
+// 待ちだが、この adapter は 0 をこの 5 秒の既定値に読み替える。cmd/rokuban 側も
+// `--soft-stop-timeout` の 0 以下を起動エラーにする。
 const DefaultSoftStopTimeout = 5 * time.Second
 
 const (
@@ -198,7 +196,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 
 // Config は River クライアントの設定。
 type Config struct {
-	// JobTimeout は River の既定ジョブタイムアウト。Spec.Timeout がある worker はその値を使う。
+	// JobTimeout は River の既定ジョブタイムアウト（1 分）。Spec.Timeout がある worker はその値を使う。
 	// 共有契約テストが RescueStuckJobsAfter を短くするために 0 でない値を渡す。River は
 	// RescueStuckJobsAfter < JobTimeout を設定エラーにする（river@v0.47.0 client.go の検証）ので、
 	// この値はその検証を通すためにある。
@@ -342,19 +340,14 @@ type Config struct {
 	// SoftStopTimeout は停止の合図を受けてから実行中のジョブを打ち切るまでの猶予。
 	// 0 なら既定値（DefaultSoftStopTimeout）。
 	//
-	// **これを設定しないと SIGTERM が drain にならない。** River は
-	// SoftStopTimeout が未設定（0）のとき work ctx を start ctx から継ぐので、
-	// `signal.NotifyContext` の ctx を `Start` に渡している構成では **SIGTERM が
-	// そのまま StopAndCancel 相当のハードストップになる**（river@v0.47.0 client.go の
-	// workParentCtx）。実行中のジョブは即座に ctx を切られ、試行回数を 1 つ
-	// 潰して `available` に戻る。0 を既定値に読み替えるのはこのためで、
-	// 「設定し忘れ」が最も危険な側に倒れないようにする。
+	// River v0.47.0 の公開契約では、SoftStopTimeout が設定されている場合、Stop または
+	// Start ctx の cancel は graceful stop となり、期限後にジョブ ctx を cancel する。
+	// StopAndCancel はこの猶予を待たずに cancel する（River API: Client.Start / Stop /
+	// StopAndCancel, Config.SoftStopTimeout）。中断されたジョブは attempt が開始前の値に
+	// 戻り、errors を増やさず `available` に戻る（River v0.47.0 CHANGELOG.md §0.44.0）。
 	//
-	// 効くのは停止の合図の種類を問わない（Start の ctx の cancel / Stop /
-	// StopAndCancel のいずれでも同じ）。したがって 1 件消化モードの正常終了
-	// （cmd/rokuban の stopOnceProcess が撃つ graceful stop）にも上限が付く ---
-	// 1 件消化した後に取りこぼしのジョブを掴んでいた場合、その完走を待つのは
-	// この猶予までである。
+	// 1 件消化モードの正常終了では `stopOnceProcess` が graceful stop を使うため、
+	// すでに掴んでいる追加ジョブの完走待ちにもこの猶予が適用される。
 	SoftStopTimeout time.Duration
 
 	// RescueStuckJobsAfter は river.Config.RescueStuckJobsAfter にそのまま渡す。

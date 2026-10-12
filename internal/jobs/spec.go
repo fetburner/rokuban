@@ -6,9 +6,9 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
-// 各締切の根拠。現行 River 投影では、締切は実行の ctx 締切である。プロセス死後の回収は、
-// 締切と rescue_stuck_jobs_after（既定 6 分）の長い方を過ぎるまで始まらない。
-// River の既定の締切は 1 分である。
+// 各締切の根拠。jobq.Spec.Timeout は Work の context を DeadlineExceeded で終了させ、
+// プロセス死後の再配送は締切 + adapter の回収猶予以内に始まる。
+// 標準の締切は 1 分である。
 // ingest / ruler / reconciler / record_sweep / epg_sync / encode_reconcile / catalog_export /
 // delete_reconcile の締切が既定より長いのは、DB の往復・mirakc への HTTP・ファイル I/O が
 // 件数に比例して積み上がり、1 分では足りなくなりうるからである。
@@ -16,8 +16,8 @@ import (
 const (
 	defaultJobTimeout = time.Minute
 	// ingest は転送を区切りごとに snooze して継続するので、締切は録画全体の長さや転送速度で
-	// 決まらない。5 分は River の既定より長く、現行 River 投影の rescue 既定 6 分より短い
-	// （6 分より長くすると、プロセス死後の回収がその締切まで遅れる）。
+	// 決まらない。5 分にしたのは、jobq の契約ではプロセス死後の再配送が締切 + adapter の
+	// 回収猶予以内だからである。締切を長くするとプロセス死後の再配送上限も長くなる。
 	// 追従の無進捗検知は従来どおり StallTimeout が担う。
 	ingestJobTimeout = 5 * time.Minute
 	// epg_sync は mirakc への GET 2 回と Postgres 射影を含む全量同期 1 パスの上限。
@@ -55,9 +55,9 @@ const (
 )
 
 // EncodeUnknownDurationTimeout is the execution limit for an encode job without a saved
-// duration-based deadline, including older queued arguments. Current River projections use
-// the deadline as ffmpeg's context deadline, so a short estimate would fail every long
-// encode as timed out. Slower detection of a dead process is the cheaper error.
+// duration-based deadline, including older queued arguments. Spec.Timeout is Work's context
+// deadline, so a short estimate would fail every long encode. Slower redelivery after a process
+// dies is the cheaper error.
 const EncodeUnknownDurationTimeout = 12 * time.Hour
 
 func fixedTimeout(timeout time.Duration) func(jobq.Args) time.Duration {
@@ -131,9 +131,9 @@ func (a RecordSweepArgs) Spec() jobq.Spec {
 }
 
 // Spec は encode の論理キュー、保存済み締切または既定の 12 時間締切、26 回の
-// adapter 試行上限、合流ヒントを返す。
-// 停止による Canceled は River の attempt を消費するがドメインでは数えない。26 > 25 は
-// River が先に discard しない保証ではない（reconcile が新ジョブで回復する）。
+// adapter failure 上限、合流ヒントを返す。26 は EncodeAttemptLimit (25) より 1 多い。
+// adapter が失敗を何回と数えるかは jobq の契約外なので、ドメインの上限 25 が先に効く
+// 保証ではない。adapter の上限に達して配信が止まったら encode reconcile が再投入する。
 func (a EncodeJobArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, func(raw jobq.Args) time.Duration {
 		args, ok := raw.(EncodeJobArgs)
@@ -179,7 +179,7 @@ func (a CMLogoCandidateJobArgs) Spec() jobq.Spec {
 	return spec(CMDetectQueue, cmDetectionTimeout, 1, true, 1)
 }
 
-// Spec は分類ルール reconcile の論理キュー、River 既定と同じ 1 分締切を返す。
+// Spec は分類ルール reconcile の論理キュー、1 分締切を返す。
 // Coalesce は無効にし、編集中に投入された各変更を残す。
 func (a LabelRuleReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 0, false, 1)
@@ -190,7 +190,7 @@ func (a EncodeReconcileArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, fixedTimeout(encodeReconcileJobTimeout), 0, true, 1)
 }
 
-// Spec は利用者が要求した encode rebuild の論理キュー、River 既定と同じ 1 分締切、
+// Spec は利用者が要求した encode rebuild の論理キュー、1 分締切、
 // 合流ヒントを返す。
 func (a EncodeRebuildArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, fixedTimeout(defaultJobTimeout), 0, true, 1)

@@ -234,9 +234,9 @@ func (g *OnceGate) waitDone(ctx context.Context, events <-chan struct{}) OnceOut
 // と考えられる（根拠の強さは上記の通り一様ではない）。
 //
 // **River v0.44 で 5 つ目の終わり方（EventKindJobInterrupted）が増えたが、
-// これは購読しない。** クライアントの停止で実行中のジョブが打ち切られた場合
-// （`SoftStopTimeout` 切れ）にだけ起き、行は attempt を消費せず available に
-// 戻る（river@v0.47.0 event.go の `EventKindJobInterrupted`）。1 件消化モードでこれが起きるのは
+// これは購読しない。** クライアントの停止で実行中のジョブが中断されたとき
+// （`SoftStopTimeout` 経過または `StopAndCancel`）に起き、行は attempt を消費せず available に
+// 戻る（River v0.47.0 CHANGELOG.md §0.44.0）。1 件消化モードでこれが起きるのは
 // **停止が始まったあと**、つまり Start に渡した ctx が cancel されたか
 // stopOnceProcess が Stop を撃ったあとだけである。前者では Wait が
 // ctx.Done で OnceOutcomeCanceled を返し、後者では Wait が既に戻っている。

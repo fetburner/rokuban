@@ -16,6 +16,14 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 )
 
+// MaxQueueNameLen is the maximum length, in characters, of a physical queue name
+// accepted by every jobq adapter.
+//
+// Every adapter also accepts a physical queue name made of lowercase ASCII letters and digits
+// separated by single "_" or "-" characters (^[a-z0-9]([_-]?[a-z0-9])*$) up to this length.
+// Names outside that character set are outside the contract and an adapter may reject them.
+const MaxQueueNameLen = 64
+
 // Args identifies a job kind and supplies the options shared by enqueue and run.
 type Args interface {
 	Kind() string
