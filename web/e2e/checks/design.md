@@ -4,7 +4,7 @@
 
 **色は jsdom では測れない。** Tailwind のクラスは解決されず、oklch も計算されない。
 `pnpm test` が全部通っても、色については何の保証にもならない ---
-[docs/frontend/design.md](../../docs/frontend/design.md) の「合否は画素で測る」に
+[docs/frontend/design.md](../../../docs/frontend/design.md) の「合否は画素で測る」に
 実行可能な形を与えるのがこれ。
 
 ```sh
@@ -195,7 +195,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 
 ### 個人化の持続（`personalization.mjs`）
 
-個人設定の置き場所（[docs/frontend/design.md](../../docs/frontend/design.md)
+個人設定の置き場所（[docs/frontend/design.md](../../../docs/frontend/design.md)
 §個人化）が実ブラウザで効いていることを見る。**jsdom では原理的に測れないもの
 だけ**を対象にする --- Vitest の「再マウント」はリロードではないので、
 `localStorage` が本当にページの読み込みをまたいで効くかは測れない。

@@ -101,7 +101,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit E2E_TIMELINE_EXPECTED_SHIFT_FRA
 offset 10 秒の起点は 9.976633 秒なので、整数の 10 秒を足すと 23.37ms ずれる。
 表の再生時刻比較と編集モードの境界操作は別の判定であり、スクリプト全体の終了状態には両方が含まれる。
 この合成 fixture はソフトウェア libx264 に限る。実録画（GR/BS）とハードウェアエンコーダーは未測定である。
-測定条件と差の内訳は [`docs/frontend/recordings.md`](../../docs/frontend/recordings.md) に記録している。
+測定条件と差の内訳は [`docs/frontend/recordings.md`](../../../docs/frontend/recordings.md) に記録している。
 
 ### 原本 HLS VOD の再生開始（`recording-original-vod.mjs`）
 

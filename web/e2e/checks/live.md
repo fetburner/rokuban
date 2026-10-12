@@ -7,7 +7,7 @@
 （hls.js のバンドル分割）・MSE への実再生・チャンネル切替時の cleanup は
 jsdom で原理的に測れない。`vi.mock` によるフェイクの配線検査（Vitest）でも
 「配線が呼ばれること」までしか見えない。手順は
-[docs/runbook/live.md](../../docs/runbook/live.md) §②。
+[docs/runbook/live.md](../../../docs/runbook/live.md) §②。
 
 ```sh
 E2E_LIVE_SERVICE_A=9001 E2E_LIVE_SERVICE_B=9002 pnpm e2e:live
@@ -48,7 +48,7 @@ jsdom では判定できないため、ここが唯一の判定手段になる�
    ことは「壊れる側のブラウザで測っている」ことを意味しない。⑥（WebKit）を
    足して初めて機械判定できるようになった
 
-詳細は [docs/runbook/live.md](../../docs/runbook/live.md)（実機確認の判定項目と回帰の記録）。
+詳細は [docs/runbook/live.md](../../../docs/runbook/live.md)（実機確認の判定項目と回帰の記録）。
 
 **⑨〜⑪ は画質まわりである**（画質の切替が #869、停滞時の自動降格が #871）。
 ⑨ は一覧が遅れて届いてもプレイリストを取り直さないことを見る。

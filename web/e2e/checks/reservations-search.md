@@ -4,7 +4,7 @@
 
 SSE の通知を 1 通も届けないまま接続だけ維持したとき、**定めた周期で REST 再取得が
 実際に起きるか**を、リクエスト数を数えて判定する。周期と対象は運用状態 60 秒 /
-ストレージ残高 5 分 / EPG 10 分で、[docs/api/sse.md](../../docs/api/sse.md)
+ストレージ残高 5 分 / EPG 10 分で、[docs/api/sse.md](../../../docs/api/sse.md)
 §レベルトリガーの対称性に書いてある。時計は `page.clock.runFor` で進めるので 10 分待たない。
 `design.mjs` と同じく `/api/**` を丸ごと差し替えるため、mirakc も DB も Go サーバーも
 要らない。
@@ -46,7 +46,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 
 番組リストの予約 / 取消 / ライブボタンを含む操作列を「ホバー / フォーカスした行・
 展開中の行」だけ立てる（issue #310 / #755）。判断は
-[docs/frontend/reservations.md](../../docs/frontend/reservations.md) §番組リストの操作列は
+[docs/frontend/reservations.md](../../../docs/frontend/reservations.md) §番組リストの操作列は
 ホバー / フォーカスした行だけ立てるに従う。**この開閉は
 `:hover` / `:focus-visible` / `pointer:` メディア特性で駆動するので jsdom では
 原理的に測れない**。jsdom はレイアウトを持たず、
