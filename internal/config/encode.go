@@ -70,8 +70,8 @@ func (c CMDetectConfig) ValidateTools(ffprobe string) error {
 
 // EncodeProfile は構造化エンコードプロファイルの定義。
 //
-// 自由形式の cmd 文字列は採らない（EPGStation の命令的テンプレートを繰り返さない。
-// issue #64）。worker がこのフィールドから ffmpeg 引数を組み立てる（M3-3、
+// 自由形式の cmd 文字列は採らない（構造化すれば worker の起動時に定義を検証できる
+// ため。issue #64）。worker がこのフィールドから ffmpeg 引数を組み立てる（M3-3、
 // M3-3 拡張版 issue #321 が HW エンコードの構造化フィールドを追加）。
 //
 // # 追加したキーの命名の理由（issue #321 決定コメント）
