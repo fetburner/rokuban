@@ -71,17 +71,13 @@ GR/BS 両対応チューナーが混ざると単純な「重なり数 vs 総本�
 
 `cap` に数えるのは**存在して恒久的に壊れていない**チューナー（設定で無効化・故障報告は除外）。**現在の利用者は引かない** --- 一時的な占有であり将来の区間の容量とは無関係で、「見えない消費者は数えない = 下界」の性質と一貫する。
 
-**この除外条件は Mirakurun のセマンティクスであって、mirakc に対しては恒真である。**
-`/api/tuners` は Mirakurun 互換 API である。Mirakurun 本体では `isFault` は
-チューナープロセスの `error` を 3 回数えたら立つラッチで、以後クリアされない
-（`TunerDevice.ts`）。`isAvailable` は fault が立っていると二度と true に戻らない。
-**mirakc はこの 2 つを実装していない。** リテラルの `true` / `false` を返す。
-根拠は `mirakc-core/src/models.rs` の doc comment（`Always true.` /
-`Always false.`）。2019 年の初回実装から条件分岐が入った形跡は無い。
-設定で無効化したチューナーはそもそも一覧に現れない（mirakc が起動時に落とす）。
-したがって mirakc 相手では `is_available AND NOT is_fault` は射影の全行に一致する。
-**式は残す** --- 互換 API の契約としては正当で、mirakc が将来実装したときに効く。
-ただし**この条件が容量を減らすことに依存した設計をしてはいけない**（減らない）。
+この除外条件は Mirakurun 互換 API のセマンティクスであり、mirakc 相手では恒真である。`/api/tuners` の射影式 `is_available AND NOT is_fault` は残すが、mirakc で容量を減らす条件としては扱わない。
+
+Mirakurun 本体では `isFault` はチューナープロセスの `error` を 3 回数えると立つラッチで、その後クリアされない。`isAvailable` も fault 後に true へ戻らない。
+
+mirakc は `isFault` と `isAvailable` を実装せず、リテラルの `true` / `false` を返す。初回実装以降、この値に条件分岐が入った形跡は無い。設定で無効化したチューナーは mirakc が起動時に一覧から落とす。
+
+mirakc が将来このセマンティクスを実装したときに効くよう、互換 API の条件として式を残す。ただしこの条件が容量を減らすことに依存した設計はしない。
 
 ### これは原理的に近似であり、誤りの向きが偏っている
 
@@ -104,6 +100,13 @@ mirakc main（`4f2493f98374`）の実装（`mirakc-core/src/tuner.rs` の `activ
 つまり **「不足している」という主張は信頼できるが、沈黙は保証ではない**。UI は沈黙を「大丈夫」と読ませてはいけない（だから文言は「この時間帯はチューナーが不足しています」の側だけを出し、「収まります」とは言わない）。
 
 縮約は必須ではない。将来 `excluded_channels` が API に載るか設定から読めるようになったら、素の二部マッチングに戻せばよい（需要 ≤ 10、チューナー ≤ 10 の規模なので素朴な増加路法で足りる）。縮約を選ぶ理由は計算量ではなく、**不足本数と詰まった種別が副産物として出る**という UI 上の利点にある。
+
+<details><summary>根拠</summary>
+
+- Mirakurun の故障ラッチ: `TunerDevice.ts`
+- mirakc の定数値: `mirakc-core/src/models.rs` の doc comment（`Always true.` / `Always false.`）
+
+</details>
 
 ### 計算: 累積和はチャンネル単位に張り、0↔1 遷移だけを拾う
 
