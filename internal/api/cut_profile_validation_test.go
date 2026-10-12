@@ -12,8 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -290,13 +289,10 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
-		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
+		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -319,15 +315,29 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
 	}
-	rebuilds := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
-		return args.RecordingID == id && args.Profile == "cut"
-	})
+	rebuilds := 0
+	for _, call := range enqueuer.CallsOfKind("encode_rebuild") {
+		args, ok := call.Args.(jobs.EncodeRebuildArgs)
+		if !ok {
+			t.Fatalf("encode_rebuild args = %T, want jobs.EncodeRebuildArgs", call.Args)
+		}
+		if args.RecordingID == id && args.Profile == "cut" {
+			rebuilds++
+		}
+	}
 	if rebuilds != 1 {
 		t.Errorf("encode_rebuild jobs = %d, want 1", rebuilds)
 	}
-	encodes := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode", func(args jobs.EncodeJobArgs) bool {
-		return args.RecordingID == id
-	})
+	encodes := 0
+	for _, call := range enqueuer.CallsOfKind("encode") {
+		args, ok := call.Args.(jobs.EncodeJobArgs)
+		if !ok {
+			t.Fatalf("encode args = %T, want jobs.EncodeJobArgs", call.Args)
+		}
+		if args.RecordingID == id {
+			encodes++
+		}
+	}
 	if encodes != 0 {
 		t.Errorf("encode jobs before worker handles rebuild = %d, want 0", encodes)
 	}
@@ -393,13 +403,10 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only river client: %v", err)
-	}
+	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
-		Enqueuer:           riveradapter.NewLegacyEnqueuer(riverClient),
+		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -425,9 +432,16 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 		if resp.StatusCode != http.StatusConflict {
 			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
 		}
-		n := riveradaptertest.CountRiverJobsOfKind(t, ctx, pool, "encode_rebuild", func(args jobs.EncodeRebuildArgs) bool {
-			return args.RecordingID == id
-		})
+		n := 0
+		for _, call := range enqueuer.CallsOfKind("encode_rebuild") {
+			args, ok := call.Args.(jobs.EncodeRebuildArgs)
+			if !ok {
+				t.Fatalf("encode_rebuild args = %T, want jobs.EncodeRebuildArgs", call.Args)
+			}
+			if args.RecordingID == id {
+				n++
+			}
+		}
 		if n != 0 {
 			t.Errorf("%s: encode_rebuild jobs = %d, want 0", name, n)
 		}

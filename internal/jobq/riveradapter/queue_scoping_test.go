@@ -12,6 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
+	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -45,7 +46,7 @@ import (
 //     振る舞う、または常に qualifyQueueName を呼ぶ） --- 自分の site の
 //     ジョブが期待したキュー名にならず、Insert 直後のリテラル比較か、
 //     「自分の site のジョブは処理される」チェックが落ちる。
-//  4. BuildConfig が cfg.BoundSites を渡さない/無視する --- 自分の
+//  4. buildConfig が cfg.BoundSites を渡さない/無視する --- 自分の
 //     site のジョブが二度と処理されなくなり、「自分の site のジョブは
 //     処理される」チェックが（誤検出防止の canary として）落ちる。
 //
@@ -72,24 +73,29 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 			"tokyo": mirakc.NewClient(srv.URL, nil),
 		},
 	})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{BoundSites: []string{"tokyo"}})
+	adapter, err := riveradapter.NewAdapter(pool, workers, riveradapter.Config{BoundSites: []string{"tokyo"}})
 	if err != nil {
-		t.Fatalf("creating client: %v", err)
+		t.Fatalf("creating adapter: %v", err)
 	}
+	reader := riveradaptertest.NewRiverClient(t, pool)
 
 	clientCtx, clientCancel := context.WithCancel(ctx)
 	defer clientCancel()
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
+	if err := adapter.Start(clientCtx); err != nil {
+		t.Fatalf("starting adapter: %v", err)
 	}
 	defer func() {
 		clientCancel()
-		<-client.Stopped()
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer stopCancel()
+		if err := adapter.Stop(stopCtx); err != nil {
+			t.Errorf("stopping adapter: %v", err)
+		}
 	}()
-	enqueuer := riveradapter.NewLegacyEnqueuer(client)
+	enqueuer := adapter
 	findQueueJob := func(kind, queue string) *rivertype.JobRow {
 		t.Helper()
-		result, err := client.JobList(ctx, river.NewJobListParams().Kinds(kind).Queues(queue))
+		result, err := reader.JobList(ctx, river.NewJobListParams().Kinds(kind).Queues(queue))
 		if err != nil {
 			t.Fatalf("listing %s jobs in %s: %v", kind, queue, err)
 		}
@@ -177,13 +183,13 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	// available のまま残っていても「worker が単に死んでいるだけ」の
 	// 偽陰性と区別できない（各キュー種別ごとに canary を置く理由）。
 	for _, r := range results {
-		waitForNotAvailable(t, ctx, client, r.name, r.tokyoID)
+		waitForNotAvailable(t, ctx, reader, r.name, r.tokyoID)
 	}
 
 	// 他サイト（takamatsu）の 4 件は、tokyo の worker が十分な時間動いた後でも
 	// available のまま残っているはず（1 件も掴んでいない）。
 	for _, r := range results {
-		job, err := client.JobGet(ctx, r.otherID)
+		job, err := reader.JobGet(ctx, r.otherID)
 		if err != nil {
 			t.Fatalf("[%s] querying takamatsu job state: %v", r.name, err)
 		}
@@ -248,11 +254,11 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	client, err := riveradapter.NewInsertOnlyClient(pool)
+	client := riveradaptertest.NewRiverClient(t, pool)
+	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
 	if err != nil {
-		t.Fatalf("creating client: %v", err)
+		t.Fatalf("creating insert-only enqueuer: %v", err)
 	}
-	enqueuer := riveradapter.NewLegacyEnqueuer(client)
 
 	args := jobs.IngestJobArgs{Site: "tokyo", RecordID: "rec-1"}
 

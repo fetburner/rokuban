@@ -12,48 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
-
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-type testCMDetectReconcileWorker struct {
-	river.WorkerDefaults[jobs.CMDetectReconcileArgs]
-}
-
-func (testCMDetectReconcileWorker) Work(context.Context, *river.Job[jobs.CMDetectReconcileArgs]) error {
-	return nil
-}
-
-type testCMLogoCandidateWorker struct {
-	river.WorkerDefaults[jobs.CMLogoCandidateJobArgs]
-}
-
-func (testCMLogoCandidateWorker) Work(context.Context, *river.Job[jobs.CMLogoCandidateJobArgs]) error {
-	return nil
-}
-
-func waitForTestRiverJobCompletion(t *testing.T, events <-chan *river.Event, kind string) {
-	t.Helper()
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case event := <-events:
-			if event != nil && event.Job != nil && event.Job.Kind == kind {
-				return
-			}
-		case <-timer.C:
-			t.Fatalf("timed out waiting for %s completion", kind)
-		}
-	}
-}
 
 func startCMDetectionAttemptForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64) int32 {
 	t.Helper()
@@ -154,11 +117,8 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 
 func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}))
+	enqueuer := newRecordingEnqueuer()
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)
@@ -207,9 +167,16 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&attempts); err != nil {
 		t.Fatal(err)
 	}
-	detectArgs := riveradaptertest.RequireRiverInserted(context.Background(), t, pool, jobs.CMDetectJobArgs{}, nil).Args
 	if detections != 0 || attempts != 0 {
 		t.Fatalf("after retry: detections=%d attempts=%d; want 0/0", detections, attempts)
+	}
+	calls := enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind())
+	if len(calls) != 1 {
+		t.Fatalf("cm_detect enqueue count = %d, want 1", len(calls))
+	}
+	detectArgs, ok := calls[0].Args.(jobs.CMDetectJobArgs)
+	if !ok {
+		t.Fatalf("cm_detect args = %T, want jobs.CMDetectJobArgs", calls[0].Args)
 	}
 	if detectArgs.RecordingID != id || detectArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("retry job args = %#v, want recording %d and 2700000ms", detectArgs, id)
@@ -581,31 +548,20 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 
 func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &testCMDetectReconcileWorker{})
-	river.AddWorker(workers, &testCMLogoCandidateWorker{})
-	riverClient, err := river.NewClient(riverpgxv5.New(pool), &river.Config{
-		Queues:  map[string]river.QueueConfig{jobs.CMDetectQueue: {MaxWorkers: 1}},
-		Workers: workers,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	completedEvents, unsubscribe := riverClient.Subscribe(river.EventKindJobCompleted)
-	defer unsubscribe()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient), CMDetectEnabled: true}))
+	enqueuer := newRecordingEnqueuer()
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer, CMDetectEnabled: true}))
 	defer srv.Close()
 
 	queued := func(want int) {
 		t.Helper()
-		got := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectReconcileArgs{}.Kind()))
+		got := len(enqueuer.CallsOfKind(jobs.CMDetectReconcileArgs{}.Kind()))
 		if got != want {
 			t.Fatalf("CM reconcile jobs = %d, want %d", got, want)
 		}
 	}
 	candidateQueued := func(want int) {
 		t.Helper()
-		got := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind()))
+		got := len(enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind()))
 		if got != want {
 			t.Fatalf("CM logo candidate jobs = %d, want %d", got, want)
 		}
@@ -641,9 +597,10 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		t.Fatalf("PUT status = %d (%s), want 204", putResp.StatusCode, body)
 	}
 	candidateQueued(1)
-	var candidateArgs jobs.CMLogoCandidateJobArgs
-	if err := json.Unmarshal(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMLogoCandidateJobArgs{}.Kind())[0].EncodedArgs, &candidateArgs); err != nil {
-		t.Fatal(err)
+	candidateCalls := enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind())
+	candidateArgs, ok := candidateCalls[0].Args.(jobs.CMLogoCandidateJobArgs)
+	if !ok {
+		t.Fatalf("candidate args = %T, want jobs.CMLogoCandidateJobArgs", candidateCalls[0].Args)
 	}
 	if candidateArgs.RecordingID != id || candidateArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("candidate job args = %#v, want recording %d and 2700000ms", candidateArgs, id)
@@ -663,17 +620,6 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	queued(1)
 
-	clientCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := riverClient.Start(clientCtx); err != nil {
-		t.Fatalf("starting River client: %v", err)
-	}
-	defer func() {
-		cancel()
-		<-riverClient.Stopped()
-	}()
-	waitForTestRiverJobCompletion(t, completedEvents, jobs.CMDetectReconcileArgs{}.Kind())
-
 	deleteLogoReq, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -691,11 +637,8 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	riverClient, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: riveradapter.NewLegacyEnqueuer(riverClient)}))
+	enqueuer := newRecordingEnqueuer()
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)
@@ -727,7 +670,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("retry status = %d, want 409", resp.StatusCode)
 	}
-	jobsCount := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, jobs.CMDetectJobArgs{}.Kind()))
+	jobsCount := len(enqueuer.CallsOfKind(jobs.CMDetectJobArgs{}.Kind()))
 	if jobsCount != 0 {
 		t.Fatalf("cm_detect jobs after rejected retry = %d, want 0", jobsCount)
 	}
