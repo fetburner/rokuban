@@ -26,7 +26,7 @@ streamer は 3 本の音声 rendition を常に出しているので
 
 **切替を跨いで持ち越すのは字幕の表示と「再生中だったか」である。**
 `LivePlayer` が effect の cleanup で `<video>` のトラックと `paused` から読む。
-再生は `canplay` を待って再開する（上の「降格のあとは再生を再開する」を参照）。
+再生は `canplay` を待って再開する（[quality.md](quality.md)「降格のあとは再生を再開する」を参照）。
 **字幕は hls.js が新しいマニフェストを読むと選択を既定に戻すため**に戻す。
 `SubtitleTrackController.onManifestLoading` が `trackId` を `-1` に戻す
 （`node_modules/hls.js` 1.7.1 で確認済み）。そこで `MANIFEST_PARSED` で
@@ -73,6 +73,6 @@ hls.js 経路は「切ったまま」、ネイティブ経路は「入にした�
 入力欄・選択欄・リンク・ボタン・編集可能領域・`[role="slider"]` にフォーカスがある間は
 ページショートカットを処理しない。`<video>` は除外しない。
 自前の操作バーを使い、`controls={false}` なのでネイティブ controls との二重処理にはならない
-（キー操作の適用表は [recordings.md](../recordings.md) §キー操作）。
+（キー操作の適用表は [recordings/chapters.md](../recordings/chapters.md) §キー操作）。
 端末共通の速度設定も通常のライブには適用しない。ネイティブ HLS の `playbackRate` が
 実 Safari で有効かは未検証なので、速度変更をライブへ広げる根拠にはしない。

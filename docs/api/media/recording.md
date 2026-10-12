@@ -26,8 +26,8 @@ HEAD /api/media/recordings/{id}/seek-tiles        →  ヘッダーのみ
 
 **active な encoded のブラウザ VOD は MP4 progressive + Range を使う。**
 家庭 LAN のオンデマンド再生では、単一ファイル + `http.ServeContent` の Range が十分である。
-原本だけが残る完了録画は一時 HLS でブラウザ再生する（下記「録画原本のブラウザ再生」）。
-ライブ視聴の HLS は別経路（下記「ライブ視聴の HLS」）のまま。
+原本だけが残る完了録画は一時 HLS でブラウザ再生する（[playback.md](playback.md)「録画原本のブラウザ再生」）。
+ライブ視聴の HLS は別経路（[live-hls.md](live-hls.md)「ライブ視聴の HLS」）のまま。
 
 **HEAD も登録する。** VLC やブラウザはシーク前に HEAD で `Content-Length` と
 `Accept-Ranges` を取るため、405 を返すとシーク再生に失敗しうる。
@@ -123,7 +123,7 @@ size_bytes は ingest / encode 時に照合した値なので、
 streamer は位置を知らない（Range 要求の位置は再生位置ではない）。再開位置は
 `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存し、視聴済み印は
 `/api/recordings/{id}/watched` で扱う。決定と表の割り方は
-[frontend/recordings.md](../../frontend/recordings.md) §視聴状態。
+[frontend/recordings/playback.md](../../frontend/recordings/playback.md) §視聴状態。
 
 #### X-Accel-Redirect（`storage.accel_location`）
 

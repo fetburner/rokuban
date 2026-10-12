@@ -136,4 +136,4 @@ JSON 404 にしてある（`internal/api/spa.go` の `spaOrAPINotFound`）。**�
 
 **「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを
 表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たまま
-プレイリスト取得の 404 / 503 として下記のエラー分類に出る。
+プレイリスト取得の 404 / 503 として[playback.md](playback.md)のエラー分類に出る。

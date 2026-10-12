@@ -36,7 +36,7 @@ SPA フォールバックには落とさない（[rest.md](../rest.md)「機能�
 **この値はセグメントの公開端とプレイヤーの latency からの導出値である。** 放送時刻を
 映像に焼き込んだ比較ではない（ffmpeg の再 mux で TDT/TOT が落ちるため）。したがって
 「放送から 6.2 秒」と断言はしない。測定の条件と経路ごとの内訳は
-[frontend/live.md](../../frontend/live.md) §「遅延・バッファの計器」に置く。
+[frontend/live/metrics.md](../../frontend/live/metrics.md) §「遅延・バッファの計器」に置く。
 
 #### パッケージャは MediaMTX の LL-HLS を選べる形にする
 

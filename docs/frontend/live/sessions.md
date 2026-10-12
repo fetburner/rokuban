@@ -45,7 +45,7 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 いう事態自体が起きなくなった**。
 `?service=` を切り替えるだけでは probe もセッション開始も走らないため、
 チャンネル一覧を何度触っても掴まれるチューナーは 0 のまま増えない。前提は
-上記「フロントエンド実装」の `playingKey`/`selectedKey` の判定である。
+[selection.md](selection.md) の `playingKey`/`selectedKey` の判定である。
 掴まれるのは利用者が明示的に「再生」を押したチャンネルだけであり、その本数分
 だけ**離脱ヒントが届けば十数秒、届かなければ最終アクセスから 30 秒強**残る
 （実測値は下記）。既定 `max_sessions` の 4 を明示的な再生の連打で超えると、
@@ -91,4 +91,4 @@ in-flight `fetch` を `AbortController` で中断する。hls.js の `destroy()`
 セグメントを投入して再生が進む」ことは検証していない。この 2 点は
 `web/e2e/live.mjs` が実ブラウザ・実 hls.js で担う。あわせて「チャンネル切り替え後に
 旧 `serviceId` へのセグメント要求が実際に 0 件になる」こと（= 保証の実効性そのもの）
-も担う（後述「実機確認について」）。
+も担う（[verification.md](verification.md)「実機確認について」）。

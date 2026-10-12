@@ -14,7 +14,7 @@
 展開」は無限リストで対象が読み込み済みとは限らず成立しないため、別ルートにした。
 
 本体（プレイヤー・メタデータ・削除系操作）は `RecordingDetail`
-（`components/recording-detail-panel.tsx`）が持つ。対象は下記「ブラウザ再生」節と
+（`components/recording-detail-panel.tsx`）が持つ。対象は[playback.md](playback.md)「ブラウザ再生」節と
 「ドロップ統計」節である。単体ページ
 （`pages/recording-detail.tsx`）がこれを描画する。一覧はこの本体を
 インライン展開せず、行本体から単体ページへ移動する。以下の各節（ブラウザ再生の
@@ -38,7 +38,7 @@ prop で 1 段ずつ配線する形（`onMutated` のような穴）は採らな
 
 `GET /api/recordings/{id}` はごみ箱の録画も 200 で返す（メタデータの
 可視性はメディア配信の 404 契約とは別の判断。[api/rest.md](../../api/rest.md)
-「録画単体」）。単体ページはこの `deletedAt` の有無で、下記のごみ箱の
+「録画単体」）。単体ページはこの `deletedAt` の有無で、[search.md](search.md)のごみ箱の
 出し分け規律をそのまま適用する。
 
 ## 録画詳細の面積配分と構成
