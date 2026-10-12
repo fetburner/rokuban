@@ -4,48 +4,50 @@
 
 ### 輻輳時の隔離
 
-「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への対策。DB 輻輳から分離できる処理はあるが、故障モードを常に「収束の遅れ」とは一般化しない。運用上の保証は次の条件付きである:
+**DB 輻輳時の運用上の保証は次の条件付きである。** DB 輻輳から分離できる処理はあるが、故障モードを常に「収束の遅れ」とは一般化しない。
+
+これは「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への対策である:
 
 - **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
 - **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。4 分の slice ごとに temp と SHA-256 checkpoint を保存し、同じ River job を snooze して再開する。プロセス死では JobRescuer が同じ job を回収する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` のコミットで決まる**。投入時に `max(1h, 録画実尺 × profile rate)` の締切を args に保存する。River の JobRescuer はその締切後に同じ job ID を再試行する。
-  ドメイン試行数は `recording_encode_attempts` に保存し、公開 tx で fencing token として照合する。試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても出力は衝突しない。
-  公開前に一時ファイルを canonical と同じディレクトリへコピーする。rel_path の filesystem lock と DB transaction を取り、行を読み直してから rename する（`O_TRUNC` で canonical を直接書かない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
-  `rel_path` が計画時と違い、行が active なら River の snooze で再計画する。行が active でなければ成功で飛ばす。RWX のメディア越しに `flock` が効くかは未検証。
-  cancel を無視する処理やネットワーク filesystem の停止は job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
+- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開も `media_assets` のコミットで決まる。**
+  - 投入時に `max(1h, 録画実尺 × profile rate)` の締切を args に保存する。River の JobRescuer はその締切後に同じ job ID を再試行する。ドメイン試行数は `recording_encode_attempts` に保存し、公開 tx で fencing token として照合する。
+  - 試行ごとの scratch は別ディレクトリにする。締切後も cancel を無視する古い ffmpeg が動いていても出力は衝突しない。
+  - 公開前に一時ファイルを canonical と同じディレクトリへコピーする。rel_path の filesystem lock と DB transaction を取り、行を読み直してから rename する（`O_TRUNC` で canonical を直接書かない）。既に active で（カット版は凍結区間も）同じ内容なら、成功で飛ばして何も置かない。
+  - `rel_path` が計画時と違い、行が active なら River の snooze で再計画する。行が active でなければ成功で飛ばす。RWX のメディア越しに `flock` が効くかは未検証。cancel を無視する処理やネットワーク filesystem の停止は job timeout で止められない。k8s の liveness が最後の停止手段になる（詳細は [k8s 運用](k8s.md)）。
 - **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](storage.md) §4 と [ストレージ](../storage.md) §6 を参照する
 - **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答
 
 実装規律:
 
 - **ロール別コネクションプール上限を分ける**。api が全コネクションを食い潰して worker / reconciler が待つ事態を防ぐ。
-  ただしプロセスは常に 1 個のコネクションプールしか持たない（`cmd/rokuban/server.go` が起動時に 1 回だけ作り、
-  そのプロセスが担う全ロールが共有する）。したがって「ロール別」とは複数プールを作ることではなく、
-  **そのプロセスが担う roles 集合と束縛サイト数から、そのプロセスが持つ唯一のプールの `MaxConns` を決める**
-  ことを指す（`internal/db.NewPool`）。`db.max_conns` を明示すればそれを使い、未指定ならロールごとの
-  budget（1 サイト束縛時: api: 10 / worker: 床 8（下記）/ watcher: 3 / notifier: 3 / streamer: 4。根拠は
-  `internal/db.roleConnBudget` の doc コメント）を roles の分だけ合計する。monolith（`--all`）は
-  全ロール分の合計になる。**1 プロセスが N サイトを束縛できるため（`--sites`）、watcher は
-  束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける**（site ごとに
-  `role.RunSingleton` の goroutine を持つ。`cmd/rokuban/server.go` の watcher ループ）。
-  2 サイト目以降は budget にも自動で上乗せされる（`internal/db.perSiteConnBudget`）。
-- **worker の budget は床 8 の固定値**（`internal/db.roleConnBudget`）。内訳は River の LISTEN 1 本と、
+  - プロセスは常に 1 個のコネクションプールしか持たず、担う全ロールが共有する。「ロール別」とは複数プールを作ることではない。
+  - そのプロセスの roles 集合と束縛サイト数から、唯一のプールの `MaxConns` を決めることを指す。
+  - `db.max_conns` を明示すればその値を使う。未指定ならロールごとの budget を roles の分だけ合計する。
+  - 1 サイト束縛時の budget は api: 10 / worker: 床 8（下記）/ watcher: 3 / notifier: 3 / streamer: 4 である。monolith（`--all`）では全ロール分の合計になる。
+  - 1 プロセスが N サイトを束縛できる（`--sites`）ため、watcher は束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける。2 サイト目以降は budget にも自動で上乗せする。
+- **worker の budget は床 8 の固定値**。内訳は River の LISTEN 1 本と、
   ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリで、実測に基づく値ではない。
   どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。
-- `db.max_conns` を明示指定する場合の fail-fast（`internal/db.minRequiredConns`）が数える対象は
+- `db.max_conns` を明示指定する場合の fail-fast が数える対象は
   **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
   （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が下限になる。
   **lock をプール外の接続で張る案は採らない** --- `db.max_conns` がプロセスの接続上限だという
   契約を破ることになる。
-- **API 系クエリに `statement_timeout`** を設定する。クエリ単位の context timeout だと「付け忘れた 1 本」が
-  必ず生まれる。接続の `RuntimeParams`（起動パケットの session default）で一括適用する
-  （`db.api_statement_timeout`、未指定なら 30s）。**api ロールを含むプロセスのプール全体に適用される**。
-  monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる。
-  世帯スケールの通常クエリを十分に上回る値（既定 30s）にしてあるので実害は想定していないが、
-  ロールを分離すれば worker 単独プロセスには一切適用されなくなる。`statement_timeout` は行ロック待ちにも
-  効く（Postgres は「クエリの実行時間」と「ロック待ちの時間」を区別しない）ため、monolith で
-  `record_sweep` 等が別トランザクションの行ロックを長く待つ状況では statement_timeout で中断されうる。
-  中断されても River が再試行するので致命的ではないが、意図しない再試行が増える兆候として覚えておく
+- **API 系クエリに `statement_timeout` を設定する。** クエリ単位の context timeout だと「付け忘れた 1 本」が必ず生まれる。
+  接続の `RuntimeParams`（起動パケットの session default）で一括適用する（`db.api_statement_timeout`、未指定なら 30s）。
+  - api ロールを含むプロセスのプール全体に適用される。monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる。世帯スケールの通常クエリを十分に上回る既定値にしてあるので実害は想定していないが、ロールを分離すれば worker 単独プロセスには適用されない。
+  - `statement_timeout` は行ロック待ちにも効く（Postgres は「クエリの実行時間」と「ロック待ちの時間」を区別しない）。monolith で `record_sweep` 等が別トランザクションの行ロックを長く待つと中断されうる。River が再試行するが、意図しない再試行が増える兆候として覚えておく。
+
+<details><summary>根拠</summary>
+
+- プロセスのプール作成: `cmd/rokuban/server.go` / `internal/db.NewPool`
+- ロール budget の合算と worker の下限: `internal/db.roleConnBudget`
+- `db.max_conns` の fail-fast 下限: `internal/db.minRequiredConns`
+- 束縛サイトごとの追加 budget: `internal/db.perSiteConnBudget`
+- watcher の advisory lock 専用接続: `role.RunSingleton`
+
+</details>
 
 ### transaction pooling は通さない
 
@@ -70,17 +72,17 @@ Job の失敗を解消してから、Job を delete して手順を再実行す�
 
 ### EPG churn / autovacuum
 
-EPG テーブルは 1 日に何度も大量 upsert されるため、遅くなるとしたら検索ではなく書き込みと autovacuum の追従。対策:
-
 - バッチ upsert
 - GIN fastupdate
 - **テーブル別 autovacuum チューニング**（EPG テーブルに対して `autovacuum_vacuum_scale_factor` を小さく設定する等）
+
+EPG テーブルは 1 日に何度も大量 upsert されるため、遅くなるとしたら検索ではなく書き込みと autovacuum の追従。
 
 EPG テーブルは 8 日分 + 猶予のローリングウィンドウであり、永遠に太らない。検索性能自体は世帯スケール（数万〜20 万行）では問題にならない。
 
 ### Postgres datadir とエンコード scratch の分離
 
-monolith モードでは Postgres のデータディレクトリとエンコードの scratch が同じディスクに載りやすい。実際に競合しやすいのはロックよりディスク I/O であり、**両者を同じディスクに置かない構成を推奨する**。
+**両者を同じディスクに置かない構成を推奨する。** monolith モードでは Postgres のデータディレクトリとエンコードの scratch が同じディスクに載りやすい。実際に競合しやすいのはロックよりディスク I/O である。
 
 ### バックアップ
 

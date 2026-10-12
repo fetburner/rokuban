@@ -1,11 +1,11 @@
 // Package reconciler は予約（desired）と mirakc の schedules（observed）の差分を
 // POST/DELETE で消す 1 パス評価ロジック。
 //
-// reconciler はシングルトンではなく River のジョブ（internal/worker の
+// reconciler はシングルトンではなくジョブ（internal/worker の
 // ReconcilePassWorker）として実行される。パスを跨ぐ状態を持たない（サーキット
 // ブレーカーの発動状態も含め毎パス DB と mirakc から読み直す。発動のラッチ自体は
-// internal/breaker が circuit_breakers に持続させる）。排他は advisory lock ではなく
-// UniqueOpts（サイト単位）で担保する。並走すると壊れるものは docs/data.md §2 が権威。
+// internal/breaker が circuit_breakers に持続させる）。共通契約（jobq）は排他を
+// 保証せず、現行の重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による（docs/data.md §2）。
 // このパッケージは 1 パス分のロジックだけを持ち、いつ・どの契機で呼ぶか
 // （定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 package reconciler
@@ -107,7 +107,7 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 
 // RunPass は 1 サイトに対して突き合わせパスを 1 回実行する。
 //
-// reconciler はシングルトンではなく River のジョブとして呼ばれる。起動契機は
+// reconciler はシングルトンではなくジョブとして呼ばれる。起動契機は
 // 定期実行（真実）・予約の作成/取消・ruler パスの完了（いずれもヒント）の 3 つが
 // あるが、すべて RunPass を呼ぶ 1 本の経路に合流する（docs/recording.md §3.2）。
 // 削除の大量発動を守るサーキットブレーカー（breaker.ReconcileTotalLoss）は

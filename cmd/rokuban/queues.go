@@ -124,7 +124,7 @@ func resolveWorkerQueues(cmd *cobra.Command, configured []string, roles []string
 			queuesFlagName, strings.Join(names, ", "), strings.Join(configured, ", "))
 	}
 
-	// 未知の名前はここで弾く（BuildConfig にも同じ検査があるが、そちらの
+	// 未知の名前はここで弾く（riveradapter 内の buildConfig にも同じ検査があるが、そちらの
 	// エラーは `worker.queues:` と名乗るので、argv から来た値の出自が分からなく
 	// なる）。同じ名前の重複は 1 つに畳む --- `--queues ingest,ingest` が
 	// 1 件消化モードの「ちょうど 1 キュー」検査に 2 キューとして映らないように

@@ -111,19 +111,12 @@ find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
 
 旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
 
-全 ScaledJob は更新時に旧イメージの実行中 Job が完走するまで新しい Job と並走する。
+k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。
 この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
 
-並走を避けるには、更新前に media を mount する ScaledJob の新規起動を止め、旧 Job が全て終わったことを確認してから新しいイメージを適用する。新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
+並走を避けるには、更新前に media を mount する ScaledJob の新規起動を止め、`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
 
 止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上のコマンドで消す。
-
-<details><summary>根拠</summary>
-
-- ScaledJob の更新時の並走設定: `worker-scaledjobs.yaml` にある `rollout.strategy: gradual`
-- 旧 Job が完了したことの確認: `kubectl get jobs`
-
-</details>
 
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
@@ -304,7 +297,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **前置するのは ingest であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。ここで前置すれば、reconciler が生成する contentPath やユーザーの `filename_template` の内容に関わらず名前空間が保たれる。
 - **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと、前置前の相対パスは `.`（カレントディレクトリ）になる。
 
-  前置後は `sites/{site}/.` の `.` が path joining / cleaning で消え、`sites/{site}` という一見正当なパスになる。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が not a directory で失敗し続ける。
+  前置後は `sites/{site}/.` の `.` が `Join` / `Clean` で消え、`sites/{site}` という一見正当なパスになる。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が `MkdirAll` で not a directory になり失敗し続ける。
 
   ingest は前置前に相対パスが `.` であることを明示的に検査して弾く。
 - **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収は symlink かどうかを見ずに台帳と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない。
@@ -313,7 +306,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査は symlink を辿らないため、配下のファイルは孤児候補にも rescue にも見えず、災害復旧で救えない。symlink エントリ自身は孤児として報告するが、自動削除しない。
 
   リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける。
-- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。rescue と削除 reconcile の両方が root を解決してから walk するためである。
+- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。rescue と削除 reconcile の両方が root を `filepath.EvalSymlinks` で解決してから walk するためである。
 
   この解決を外すと両方とも黙って壊れる。`filepath.Walk` / `WalkDir` は symlink root に `Lstat` し、`IsDir()` が false なら callback を 1 回呼んで終わる。rescue は 0 件のまま「成功」する。
 
@@ -335,11 +328,8 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 - `.rokuban-locks/` を `rel_path` に使わない検査: `mediapath.Resolve`
 - `sites/{site}/` の前置と空 path の拒否: `internal/worker/ingest.go` の `determineRelPath`
-- 空の相対パスが `.` へ正規化される過程: `Join`、`Clean`、`MkdirAll`
 - 孤児回収の file walk と root symlink の解決: `internal/worker/delete_reconcile.go` の `walkMediaFiles`
 - rescue が root symlink を解決し、in-place 登録時に symlink を拒否すること: `rescueStorage`、`inplace.Register`
-- root symlink の解決: `filepath.EvalSymlinks`; walk の root 判定: `filepath.Walk`, `WalkDir`, `Lstat`, `IsDir()`
-- symlink root を directory entry 1 件として数える変数: `seenOnDisk`
 - `catalog/` の除外と相対パスの基準に同じ root を使うこと: `filepath.Rel`
 - 派生物の `rel_path` を作る関数: `EncodedRelPath`
 - 予約ディレクトリと site 名の定義: `internal/config`, `internal/config.reservedSiteNames`
@@ -351,11 +341,10 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る
 （`UNIQUE (recording_id, kind, profile)`）。
 
-- **投入（レベルトリガー）**:
-  - active な original があり、active な thumbnail がなく、ごみ箱に入っていない録画だけに unique ジョブ（`recording_id`）を積む。
-  - ごみ箱の録画は配信できないため、生成しても猶予期間ぶん ffmpeg を使うだけになる。
-  - ingest 後の対象限定パスと全件パスは同じ候補 query を使う。
-  - 原本の実体が無い録画は候補から除く。ファイル復旧後にその状態が消えれば、次のパスで再び候補になる。
+- **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」ことである。
+  - ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん ffmpeg を無駄打ちするだけになる。
+  - ingest 後の対象限定パスと `thumbnail_reconcile` の全件パスは同じ候補 query を使う。
+  - delete reconcile が原本の実体無しを確認した `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが消えれば、次のパスで再び候補になる。
   - 命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない。
 - **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は
   原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は
@@ -398,8 +387,6 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 <details><summary>根拠</summary>
 
 - ごみ箱の録画をサムネイル配信対象から除くこと: `GetThumbnailMediaAssetForServing`
-- ごみ箱判定の条件: `recordings.deleted_at IS NOT NULL` と `deleted_at IS NULL`
-- enqueue する River queue 名: `thumbnail`
 - ingest 後の対象限定パスと全件パスが同じ候補を使うこと: `thumbnail_reconcile`
 - 原本の実体が見つからない状態の除外: `missing_media_assets`
 - keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`

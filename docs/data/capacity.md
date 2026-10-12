@@ -72,16 +72,13 @@ GR/BS 両対応チューナーが混ざると単純な「重なり数 vs 総本�
 `cap` に数えるのは**存在して恒久的に壊れていない**チューナー（設定で無効化・故障報告は除外）。**現在の利用者は引かない** --- 一時的な占有であり将来の区間の容量とは無関係で、「見えない消費者は数えない = 下界」の性質と一貫する。
 
 **この除外条件は Mirakurun のセマンティクスであって、mirakc に対しては恒真である。**
-`/api/tuners` は Mirakurun 互換 API である。Mirakurun 本体では `isFault` は
-チューナープロセスの `error` を 3 回数えたら立つラッチで、以後クリアされない
-（`TunerDevice.ts`）。`isAvailable` は fault が立っていると二度と true に戻らない。
-**mirakc はこの 2 つを実装していない。** リテラルの `true` / `false` を返す。
-根拠は `mirakc-core/src/models.rs` の doc comment（`Always true.` /
-`Always false.`）。2019 年の初回実装から条件分岐が入った形跡は無い。
-設定で無効化したチューナーはそもそも一覧に現れない（mirakc が起動時に落とす）。
-したがって mirakc 相手では `is_available AND NOT is_fault` は射影の全行に一致する。
-**式は残す** --- 互換 API の契約としては正当で、mirakc が将来実装したときに効く。
-ただし**この条件が容量を減らすことに依存した設計をしてはいけない**（減らない）。
+`/api/tuners` は Mirakurun 互換 API である。
+
+Mirakurun 本体では `isFault` はチューナープロセスの `error` を 3 回数えたら立つラッチで、以後クリアされない（`TunerDevice.ts`）。`isAvailable` は fault が立っていると二度と true に戻らない。
+
+**mirakc はこの 2 つを実装していない。** リテラルの `true` / `false` を返す。根拠は `mirakc-core/src/models.rs` の doc comment（`Always true.` / `Always false.`）。2019 年の初回実装から条件分岐が入った形跡は無い。設定で無効化したチューナーはそもそも一覧に現れない（mirakc が起動時に落とす）。したがって mirakc 相手では `is_available AND NOT is_fault` は射影の全行に一致する。
+
+**式は残す** --- 互換 API の契約としては正当で、mirakc が将来実装したときに効く。ただし**この条件が容量を減らすことに依存した設計をしてはいけない**（減らない）。
 
 ### これは原理的に近似であり、誤りの向きが偏っている
 

@@ -136,7 +136,9 @@ CREATE TABLE recording_purge_requests (
 );
 ```
 
-**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。理由は書き手にある —— この要求を定常運用で立てるのも取り消すのも api ロールであり、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない。rescue は別枠である —— 災害復旧で catalog ダンプから全表を書き戻すので、この表も他の表と同じように書く。「`deleted_at` が本体にあるから隣に置く」は根拠にならない。`deleted_at` / `superseded_at` が本体に残っているのは、部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照するからである。述語は他表を参照できないので、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
+**即時要求は `recordings` の列ではなく `recording_purge_requests` 衛星表に置く。行の存在 = 要求、取り消しは DELETE**（不変条件 10 / 13）。
+  - 理由は書き手にある —— この要求を定常運用で立てるのも取り消すのも api ロールであり、`recordings` 本体を書く watcher / reconciler（試行の帰結の観測）ではない。rescue は別枠である —— 災害復旧で catalog ダンプから全表を書き戻すので、この表も他の表と同じように書く。
+  - 「`deleted_at` が本体にあるから隣に置く」は根拠にならない。`deleted_at` / `superseded_at` が本体に残っているのは、部分一意索引 `recordings_unique_active_event` の述語がこの 2 列を参照するからである。述語は他表を参照できないので、即時要求はその述語に出ない（枠が明くのは `deleted_at` / `superseded_at` だけ）。
 
 - 完了後（`purged_at`）に要求行を掃除する経路は作らない。掃除役を足すと削除 reconcile が 2 人目の書き手になる（不変条件 12）。「ユーザーが即時削除を要求した」は完了後も真なので tombstone と一緒に残す
 - `requested_at` は「いつ要求されたか」だけを持ち、判定には使わない。ここを `<= now()` で比較し始めたら、実質 boolean を timestamptz で持っていた旧列（`recordings.purge_after`）に戻る

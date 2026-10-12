@@ -75,7 +75,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | [docs/frontend.md](docs/frontend.md) | フロントエンド | **索引** → `docs/frontend/` |
 | [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | 単一 |
 | [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | **索引** → `docs/operations/` |
-| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 | **索引** → `docs/runbook/` |
+| [docs/runbook.md](docs/runbook.md) | 導入・移行・運用手順 | **索引** → `docs/runbook/` |
 | [docs/invariants.md](docs/invariants.md) | 不変条件 9〜14 の失敗の形（いま先に浮かぶ案が壊すもの）。ルールの根拠を辿るときだけ | 単一 |
 | [docs/workflow.md](docs/workflow.md) | タスク分解・docs 保守・並行作業の規律。該当作業のときだけ | 単一 |
 

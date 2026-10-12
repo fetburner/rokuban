@@ -7,10 +7,7 @@ import (
 	"strings"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -163,7 +160,7 @@ const (
 // 論理名のままにするため（issue #185 の「罠」「エラーメッセージも論理名で出す」）。
 //
 // site 単位のキュー（internal/jobs の siteBoundQueueNames）を実際に Insert/購読
-// するときの物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。BuildConfig が
+// するときの物理名（`<base>_<site>`）への展開は jobs.PhysicalQueueName が担う。buildConfig が
 // river.Config.Queues を組み立てる直前にこの展開を行う。
 func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) map[string]river.QueueConfig {
 	return map[string]river.QueueConfig{
@@ -351,7 +348,8 @@ type Config struct {
 	SoftStopTimeout time.Duration
 
 	// RescueStuckJobsAfter は river.Config.RescueStuckJobsAfter にそのまま渡す。
-	// 0 なら River の既定（1h）。設定キーは worker.rescue_stuck_jobs_after。
+	// 0 なら River の既定（公開ドキュメントは 1h、JobTimeout が長ければ JobTimeout + 1h。
+	// RecoveryGrace は JobTimeout > 0 なら常に JobTimeout + 1h とみなす）。設定キーは worker.rescue_stuck_jobs_after。
 	RescueStuckJobsAfter time.Duration
 
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
@@ -359,7 +357,7 @@ type Config struct {
 	// 起動形態で、ジョブ 1 件の Work を抜けたら（成功・失敗を問わず）
 	// プロセスを畳む（OnceGate、docs/operations.md §5）。
 	//
-	// このモードでは BuildConfig が次の 3 つを強制する:
+	// このモードでは buildConfig が次の 3 つを強制する:
 	//
 	//   - 引くキューはちょうど 1 つ（ScaledJob はキュー単位に作るため）
 	//   - そのキューの MaxWorkers は 1（同時 claim を 1 件に抑える。
@@ -373,11 +371,11 @@ type Config struct {
 	Once *OnceGate
 }
 
-// BuildConfig は Config から river.Config を組み立てる。
+// buildConfig は Config から river.Config を組み立てる。
 //
-// river.NewClient を呼ぶ NewClient から分離してあるのは、DB 接続なしで
-// queues 検証や PeriodicJobs の有無を単体テストできるようにするため。
-func BuildConfig(workers *river.Workers, cfg Config) (*river.Config, error) {
+// newRegistryClient から分離してあるのは、DB 接続なしで queues 検証や
+// PeriodicJobs の有無を単体テストできるようにするため。
+func buildConfig(workers *river.Workers, cfg Config) (*river.Config, error) {
 	physicalQueues, err := resolveQueues(cfg)
 	if err != nil {
 		return nil, err
@@ -702,35 +700,32 @@ func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	return names
 }
 
-// NewLegacyClient creates a River client from the existing River worker registry.
-// New application code should use NewAdapter with a jobq.Registry.
-func NewLegacyClient(pool *pgxpool.Pool, workers *river.Workers, cfg Config) (*river.Client[pgx5.Tx], error) {
-	riverCfg, err := BuildConfig(workers, cfg)
-	if err != nil {
-		return nil, err
-	}
-	client, err := river.NewClient(riverpgxv5.New(pool), riverCfg)
-	if err != nil {
-		return nil, fmt.Errorf("creating River client: %w", err)
-	}
-	return client, nil
-}
+// recoveryMargin は RecoveryGrace が River の救済閾値に足す余裕。
+//
+// 救済閾値を過ぎた running ジョブを rescuer が実際に拾うまでの遅れを見込む値だが、
+// rescuer の実行間隔は river@v0.47.0 の river.Config の公開ドキュメントに書かれておらず、
+// この 2 分の根拠は未検証である。測定は 1 回だけで、共有契約テストのプロセス死ケース
+// （閾値 6 秒、attempted_at はクラッシュ時刻）の再配送に 35.6 秒かかり、この余裕の範囲に
+// 収まった。rescuer の間隔が環境で変わるかは見ていない。
+const recoveryMargin = 2 * time.Minute
 
-// NewInsertOnlyClient はワーカーを持たない River クライアントを返す。
+// RecoveryGrace は jobq.Spec.Timeout の契約が言う「回復猶予」の申告値を返す。
+// プロセスが死んだ running ジョブが、Timeout の経過後この時間以内に再配送の対象になることを
+// adapter として申告する。cmd/rokuban が worker へ渡し、共有契約テストの fixture も同じ値を使う。
 //
-// Queues を省略し Workers も登録しないため、Start は呼べない（呼ばないことが
-// 前提。river@v0.47.0 client.go が説明する insert-only mode）。名前の
-// insert-only は「ジョブを実行しない」という構成名で、公開された読み取り API の
-// JobList は利用できる。jobq.Enqueuer として使う呼び出し元は NewInsertOnlyEnqueuer
-// を使い、既存の worker クライアントを共有する配線箇所だけがこの型を直接受け取る。
-//
-// watcher 単独プロセスの配線では同じクライアントを LegacyEnqueuer で包み、ingest の
-// 投入に使う（issue #113）。worker のフルのワーカー群を登録すると ingest/encode 等が
-// 実行されるため、単独 watcher にはワーカーを持たない構成が必要である。
-func NewInsertOnlyClient(pool *pgxpool.Pool) (*river.Client[pgx5.Tx], error) {
-	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("creating insert-only River client: %w", err)
+// River の救済閾値 river.Config.RescueStuckJobsAfter は、公開ドキュメント（river@v0.47.0
+// client.go）に「既定は 1 時間、JobTimeout が 1 時間を超えるなら JobTimeout + 1 時間」とある。
+// ドキュメントは 1 時間を超える場合だけを書いている。0 < JobTimeout <= 1h でも JobTimeout + 1h を
+// 申告すれば、ドキュメントの値（1h）以上になる。回復猶予は長い側に誤るほうが安全
+// （孤児判定が生きている候補を失敗させない）ので、JobTimeout > 0 なら常にこちらを使う。
+// 0 のときのこの解釈はここに閉じ込める。申告値は閾値に recoveryMargin を足す。
+func (c Config) RecoveryGrace() time.Duration {
+	after := c.RescueStuckJobsAfter
+	if after == 0 {
+		after = time.Hour
+		if c.JobTimeout > 0 {
+			after = c.JobTimeout + time.Hour
+		}
 	}
-	return client, nil
+	return after + recoveryMargin
 }

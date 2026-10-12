@@ -14,7 +14,7 @@
 
 毎回の再導出に頼ると、EPG から番組が消えて導出元が GC された時に desired が空になる。エンコード未完了の原本を削除できず、再エンコードも投入できなくなる。
 
-凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」を表す。`recordings` 行と同時に生まれ、同時に死ぬため、別表に置いても行の寿命は混ざらない。
+凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」を表す。`recordings` 行と同時に生まれ、同時に死ぬため、別表に置いても行の寿命は混ざらない。衛星表として分けることは「行の寿命が同じ」ことと矛盾しない（不変条件 13）。
 
 **ingest 完了後の override 変更はその録画には反映されない**。この境界を越えて変更する場合は、録画単位の API を明示的に呼ぶ（[録画エンジン](../recording.md) §4.5）。
 
@@ -73,11 +73,11 @@ TS 解析の記録が無い場合や、記録したサイズと現在の原本�
 
 > **encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）であって、リングバッファの N 日ではない。滞留を N 日まで許すつもりなら `epg.retention_grace >= N` にする。**
 
-GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（括弧内は確認しているテスト）:
+GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（確認しているテストは節末の根拠欄）:
 
 - encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される。**原本は残るのでデータは失われず、エンコードだけが投入されない**
 - 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引く。そのためルール由来の録画でも、予約と意図を失った時点の `source` は `unattributed` になる。`rule_id` は NULL になる
-- `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。
+- `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、上記の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 - 事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）**だけ**。**`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない**。理由は `ListMissingEncodeProfiles`（`internal/db/queries/encode_reconcile.sql`）が `cardinality(encode_profiles) > 0` を要求するからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、**失われた意図は誰も取り戻さない**
 
 **GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない**。留め置きの根拠にできるのは `record_sync` 行であり、それは watcher が mirakc を観測して初めて作られる。`internal/watcher/watcher.go` の `processRecord` 入口の `AcquireRecordSync` が status を問わず作り、`Sweep` は進行中の record も列挙する。したがって:
@@ -188,9 +188,9 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 | 公開前と分かる孤児 | mtime 猶予 + エイジング | 予約名の temp / staging の回収 |
 | canonical 名の孤児 | エイジング後に報告 | DB 喪失後も公開済みファイルを保持して調査する |
 
-ingest は canonical file と同じディレクトリに record 固有の`.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp をreplay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
+ingest は canonical file と同じディレクトリに record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
 
-名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しのrescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlinkするので、同名パスの差し替えで別の temp を削除しない。
+名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink するので、同名パスの差し替えで別の temp を削除しない。
 
 NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に報告する。自動削除や rescue の昇格には進まない。
 

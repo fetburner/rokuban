@@ -208,9 +208,9 @@ func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.
 
 func (fixture *riverContractFixture) newClient() *Adapter {
 	fixture.t.Helper()
-	riverCfg, err := BuildRegistryConfig(fixture.registry, fixture.cfg)
+	riverCfg, err := buildRegistryConfig(fixture.registry, fixture.cfg)
 	if err != nil {
-		fixture.t.Fatalf("BuildRegistryConfig() error = %v", err)
+		fixture.t.Fatalf("buildRegistryConfig() error = %v", err)
 	}
 	if _, exists := riverCfg.Queues[fixture.queueName]; exists {
 		// Use the production constructor whenever it already processes the queue under test,
@@ -319,7 +319,11 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 	// Recreate the persisted state left by a process that died during Work. River may
 	// settle the cancelled job into a different state during shutdown, so replace that
 	// state directly after the claimant has released leadership.
-	staleAt := time.Now().Add(-riverContractRescueAfter - time.Second)
+	// attempted_at is the crash time, not already past the rescue threshold: recovery then takes
+	// the threshold plus the rescuer's own delay, which is what RecoveryGrace must cover. A
+	// row already past the threshold is rescued at once and would pass even with a zero grace
+	// (measured: RecoveryGrace() = 0 passed TestContract with that older setup).
+	staleAt := time.Now()
 	command, err := fixture.pool.Exec(ctx,
 		//nolint:gocritic // Invariant 14 permits River SQL only to create stale rescue state in this test.
 		"UPDATE river_job SET state = 'running', attempted_at = $1 WHERE id = $2",
@@ -341,7 +345,7 @@ func (fixture *riverContractFixture) Crash(ctx context.Context) error {
 
 func (fixture *riverContractFixture) RecoveryGrace() time.Duration {
 	// TestContract's process-death case measures recovery through the configured River rescuer.
-	return riverContractRescueAfter + 2*time.Minute
+	return fixture.cfg.RecoveryGrace()
 }
 
 var _ contracttest.Fixture = (*riverContractFixture)(nil)

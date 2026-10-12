@@ -88,10 +88,10 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 ### 5.3 リトライ設計（3 層）
 
-- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。完了後と録画中の Range 応答を判定している。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
+- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`mirakc 4.0.0-dev.0` 相当の pin に対して、完了後と録画中の Range 応答を判定している。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
 - **フィルタ併用時は Range を黙って無視して 200 になる**。ingest は素の TS が欲しいのでフィルタなしで pull する。
 - Range を無視した 200 は offset 0 だけ受理する。途中再開の offset > 0 では拒否する（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
-- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）。そのため HEAD を打つのは下記「層 3」のとおり録画完了後に限る。実測では録画中に `-1` を返し、完了後は Content-Length と一致する
+- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）。そのため HEAD を打つのは下記「層 3」のとおり録画完了後に限る。実測では録画中に `-1` を返し、完了後は Content-Length と一致する。ここまでの実測は `mirakc 4.0.0-dev.0` 相当の pin に対する判定であり、他の版では未判定である
 
 <details><summary>根拠</summary>
 
@@ -283,7 +283,7 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 
 `recordings.status = finished` は **mirakc の録画完了**であって取り込み完了ではない。原本がコミットされるまでブラウザ再生も事後エンコードもできないが、その時間帯を表すものが `sizeBytes` の省略しか無かったため、遅い回線（実測で数百 KB/s 台）では**止まっているのか進んでいるのか判別できなかった**。ingest worker は転送中に `recording_ingest_progress`（[schema/recordings.md](../schema/recordings.md) §5 の衛星表）へ書けたバイト数を写し、api はそれを `Recording.ingest` として返す。
 
-転送開始を表す`written_bytes=0` は進捗の間引き時計に含めず、最初にファイルへ書けた値は直ちに記録する。その後の更新だけを最短 2 秒間隔にし、継続ストリームで DB 書き込みが Copy バッファ単位に増えないようにする。接続断を含め、バイトを書けた転送試行が終わるときは、間引かれていた最新値を記録してから再開または終了する。0 バイトで終わった試行は進捗ではないので`observed_at` を更新しない。
+転送開始を表す `written_bytes=0` は進捗の間引き時計に含めず、最初にファイルへ書けた値は直ちに記録する。その後の更新だけを最短 2 秒間隔にし、継続ストリームで DB 書き込みが Copy バッファ単位に増えないようにする。接続断を含め、バイトを書けた転送試行が終わるときは、間引かれていた最新値を記録してから再開または終了する。0 バイトで終わった試行は進捗ではないので `observed_at` を更新しない。
 
 **進捗の置き場は衛星表**（ジョブ引数でも `record_sync` でもない）。理由は 3 つとも別方向:
 
@@ -295,7 +295,7 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 
 **分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として観測済みの値）。転送開始時に読んで衛星表へ写し、追従中は下記のとおり `GetRecord` の `content.length` で更新する（開始時の値に固定すると録画中に 100% で止まる）。HEAD の `Content-Length` は転送完了後の照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールがファイルシステムに触れない（不変条件 1）ので分母にできない。
 
-mirakc が length を返さない record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を置かない）。この分母が録画中も非 null で時間とともに増えることは、mirakc 4.0.0-dev.0 相当で判定している。`records/{id}/stream` の `Content-Length` ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。**録画中の最初の観測は 0 でありうる（実測）。**
+mirakc が length を返さない record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を置かない）。この分母が録画中も非 null で時間とともに増えることは、`mirakc 4.0.0-dev.0` 相当の pin に対する判定で、他の版では未判定である。`records/{id}/stream` の `Content-Length` ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。**録画中の最初の観測は 0 でありうる（実測）。**
 
 0 は「mirakc が length を返さない」場合の NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りするので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外。
 
@@ -326,7 +326,7 @@ mirakc が length を返さない record では分母を NULL のままにし、
 `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
-**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である。**この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。**この述語は `has_ingestable_record` の否定にしてはならない。**未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
+**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である**。この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。**この述語は `has_ingestable_record` の否定にしてはならない**。未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
 
 終端する status の集合は worker の `errIngestRecordEndedAbnormally` と一致させる。
 
@@ -342,8 +342,6 @@ mirakc が length を返さない record では分母を NULL のままにし、
 進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる
 tx の中で進捗行が消える。
 
----
-
 <details><summary>根拠</summary>
 
 - 転送中の表示と書き込み間引き: `TestIngestWorker_ProgressVisibleDuringTransfer`、`TestIngestProgressReporter_ThrottlesContinuedWrites`
@@ -353,6 +351,8 @@ tx の中で進捗行が消える。
 - 未知 status を job 内で再試行すること: `TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart`
 
 </details>
+
+---
 
 ## 6. B-CAS 復号の責務境界
 

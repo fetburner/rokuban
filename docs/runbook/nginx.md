@@ -273,7 +273,9 @@ test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 - `internal/streamer/streamer.go` の `accelURI` から `url.PathEscape` を一時的に
   外す。`segments[i] = seg` だけに変えると `net/url` が未使用でビルドが落ちるので、
   import も `_ "net/url"` にしてコンパイルが通る形で壊す。`%` を含む
-  `$REL_PATH` の配信が `404` になることを確認する。nginx は不正なエスケープを
+  `$REL_PATH` の配信が `404` になることを確認する。
+
+  nginx は不正なエスケープを
   黙って捨てるので、error.log には `50OFF` のように壊れた名前で `open() failed`
   が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。
   日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを

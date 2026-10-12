@@ -36,7 +36,7 @@ import (
 //
 // **1 プロセスが N site を束縛しうるため、もはや「一致するか」ではなく「clients に
 // jobSite のエントリがあるか」を見る。** 同じ IngestWorker/EpgSyncWorker/... の
-// 1 インスタンスが複数 site の物理キューを同時に購読しうる（BuildConfig が
+// 1 インスタンスが複数 site の物理キューを同時に購読しうる（riveradapter の buildConfig が
 // site ごとに物理名を組み立てて subscribe する）ため、ワーカーはもう単一の
 // 「自分自身の site」を持たない。見つかれば、呼び出し側がそのまま使う
 // *mirakc.Client を返す（呼び出し側が再度 map を引く必要をなくし、verifySite が
@@ -137,9 +137,9 @@ type Deps struct {
 	// （docs/recording/ingest.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
 
-	// RescueStuckJobsAfter は River が running ジョブを救済対象とみなす猶予。
-	// CM ロゴ候補の孤児判定も同じ設定を使う。
-	RescueStuckJobsAfter time.Duration
+	// RecoveryGrace はジョブエンジン adapter が申告する回復猶予（jobq.Spec.Timeout の契約）。
+	// CM ロゴ候補の孤児判定が締切に足す。構成の根が adapter の申告値を渡す。
+	RecoveryGrace time.Duration
 
 	// Webhook は録画ライフサイクル通知用クライアント（M3-11）。nil 可。
 	// recording.finished/failed は record_sweep 経由の processRecord から、
@@ -253,7 +253,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &CMDetectReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Pool:     deps.Pool, RescueStuckJobsAfter: deps.RescueStuckJobsAfter,
+		Pool:     deps.Pool, RecoveryGrace: deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,

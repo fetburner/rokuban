@@ -2,14 +2,7 @@
 
 フロントエンドとの通信を REST・SSE・メディア配信に分ける。
 REST の判断は [api/rest.md](api/rest.md)、形（パス・パラメータ・enum・既定値）は `openapi.yaml` が権威。
-SSE・メディア配信・SPA アセット・認証・プロキシの判断は本文にある。
-
-```mermaid
-flowchart LR
-    browser[ブラウザ] <-->|JSON / REST| rokuban[Rokuban]
-    rokuban -->|イベント| browser
-    rokuban -->|録画バイト / HLS / サムネイル| browser
-```
+SSE・メディア配信・SPA アセット・認証・プロキシは `docs/api/` が唯一の権威で、openapi.yaml には載せない。
 
 | 節 | 内容 | ファイル |
 |---|---|---|

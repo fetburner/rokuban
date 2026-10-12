@@ -58,7 +58,11 @@ CREATE INDEX ON reservations (rule_id);
 
 ### active / detached / orphaned は API が都度導出する
 
-`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から導出する。`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
+`state` という列は存在しない。**この状態を列に焼いてはならない** --- 導出値と不可逆な観測を 1 列に潰す形そのもので、実装は式ではなく前パスからの遷移を書くことになり、片側の分岐しか持たなくなる（[invariants.md](../invariants.md) §9「式」）。
+
+予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から導出する。
+
+`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
 
 **「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合には、不安定な導出 id ではなく放送イベント `(site, network_id, service_id, event_id)` を使う。これは不変条件 9 の identity であり、`internal/db/queries/reservations.sql` のコメントが権威である。
 
@@ -199,7 +203,10 @@ CREATE TABLE program_snapshots (
 
 - **値の出所は EPG プロジェクションただ 1 つ**。書き手は api と ruler の 2 人だが、両者とも射影から引くので値の権威は割れない。api は意図・上書きの作成時に `ensureProgramSnapshot` が `GetProgramSnapshotSource` で `epg_programs ⋈ epg_services` から引く。ruler は毎パス `UpsertProgramSnapshotsFromProjection` で引く。**クライアントからは受け取らない**（サーバー権威）。射影に番組がなければ 400
 - **射影にある間は更新、消えたら凍結。** 延長・繰り下げで EPG 側の時刻は変わるので、射影に番組がある間は毎パス追従し、消えたときに凍結する。凍結しっぱなしにしないのは、GC 判定・容量超過判定（[データ層](../data.md) §6.5）が予約の時刻を需要区間として使うため。予約が無く skip 意図だけが行を支える場合も、skip 意図を導出値と混同せず、番組が射影にある限り ruler が追従させる
-- **未解決: `program_id` 再利用による下流の付け替え窓がある**。EPG の放送地平を約 8 日、旧番組 A と新番組 B が同時には射影されないと仮定する。すると (a) `program_snapshots` は A の終了 + `retention_grace` まで残る。そのため B の開始が A の終了から 8 日を超えて `8日 + retention_grace` 以内の約 1 日幅で、A の snapshot が B に上書きされる。(b) `never_scheduled_events` の A の欠測行は `retention_grace + 30日` 生きる。そのため B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で B が A の欠測として扱われる。identity は変更せず、検出器（`ListProgramIDReusesBySite` / `rokuban_ruler_program_id_reuse_total`）で実測を試みる。だがこの検出器が `program_snapshots ⋈ epg_programs` を引く以上、観測できるのは A の snapshot がまだ生きている窓 (a) だけである。窓 (b) は snapshot が先に GC された後の話なので、検出器には原理的に映らない。したがってカウンタが 0 でも「再利用が起きていない」ことの根拠にはならず、「窓 (a) では観測されなかった」ことしか意味しない
+- **未解決: `program_id` 再利用による下流の付け替え窓がある**。
+  - EPG の放送地平を約 8 日、旧番組 A と新番組 B が同時には射影されないと仮定する。すると (a) `program_snapshots` は A の終了 + `retention_grace` まで残る。そのため B の開始が A の終了から 8 日を超えて `8日 + retention_grace` 以内の約 1 日幅で、A の snapshot が B に上書きされる。
+  - (b) `never_scheduled_events` の A の欠測行は `retention_grace + 30日` 生きる。そのため B の開始が A の終了から 8 日を超えて既定の 31 日以内なら、約 23 日幅で B が A の欠測として扱われる。
+  - identity は変更せず、検出器（`ListProgramIDReusesBySite` / `rokuban_ruler_program_id_reuse_total`）で実測を試みる。だがこの検出器が `program_snapshots ⋈ epg_programs` を引く以上、観測できるのは A の snapshot がまだ生きている窓 (a) だけである。窓 (b) は snapshot が先に GC された後の話なので、検出器には原理的に映らない。したがってカウンタが 0 でも「再利用が起きていない」ことの根拠にはならず、「窓 (a) では観測されなかった」ことしか意味しない
 - **チャンネル識別はスナップショットする（programId を分解しない）**。Mirakurun 互換の programId は `NID*10^10 + SID*10^5 + EID` という合成規則を持つが、本番コードでこれを逆算してはならない。`network_id` / `service_id` / `channel_type` / `channel` は API のフィールドから素直に引く
   - reconciler の contentPath 生成はこのスナップショットを読む
   - 容量超過の判定（[データ層](../data.md) §6.5）の需要単位が `(channel_type, channel)` なので、使い捨ての EPG 射影への JOIN に頼らずここを読む

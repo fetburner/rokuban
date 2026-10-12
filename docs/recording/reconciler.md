@@ -50,9 +50,11 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 **差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。rokuban の tag があれば true）。
 
-**テンプレート生成の `contentPath` は初回生成値を固定し、以後変更しない**（`overrides.contentPath` で明示指定した値は差分反映の対象。下記参照）。ただし固定の実体は `reservations.base` への書き戻しではない —— `base` / `reservations` の列に contentPath を焼く書き手は存在しない。実際に固定を実現しているのは、再作成時に observed の contentPath を引き継ぐことである（`internal/reconciler/reconciler.go` の `recreateSchedule`）。
+**テンプレート生成の `contentPath` は初回生成値に固定し、以後変更しない**（`overrides.contentPath` で明示指定した値は差分反映の対象。下記参照）。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。
 
-下記「再作成の POST は observed の contentPath を引き継ぐ」を参照。schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われる。「固定」は「同一 schedule の再作成の間」だけ有効な機構上の性質であり、schedule 自体が消えて張り直された場合には及ばない。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。
+固定の実体は `reservations.base` への書き戻しではない。`base` / `reservations` の列に contentPath を焼く書き手は存在しない。固定を実現しているのは、再作成時に observed の contentPath を引き継ぐことである。実装は `internal/reconciler/reconciler.go` の `recreateSchedule` で、下記「再作成の POST は observed の contentPath を引き継ぐ」に書く。
+
+この固定は「同一 schedule の再作成の間」だけ有効な機構上の性質である。schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われ、固定は及ばない。
 
 差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 
