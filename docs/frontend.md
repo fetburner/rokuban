@@ -2,8 +2,6 @@
 
 Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し、同じ `dist/` を S3+CDN 配信にも使う。
 
-**本文は `docs/frontend/` に分割してある。** コードコメントや他 doc にある「docs/frontend.md「節名」」形式の参照は、下の表で該当ファイルを引ける。
-
 | 内容 | ファイル |
 |---|---|
 | デザイン言語（トークン / 状態色 / 原則）。**UI を触るなら最初に読む** | [frontend/design.md](frontend/design.md) |
@@ -18,6 +16,8 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | ライブ視聴 | [frontend/live.md](frontend/live.md) |
 | アセット配信（go:embed / S3+CDN・キャッシュ規約） | [frontend/assets.md](frontend/assets.md) |
 | ファビコン・走査線 | [frontend/branding.md](frontend/branding.md) |
+
+**本文は `docs/frontend/` に分割してある。** コードコメントや他 doc にある「docs/frontend.md「節名」」形式の参照は、下の表で該当ファイルを引ける。
 
 外部（コード・他 doc）から参照されている節名の対応:
 

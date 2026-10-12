@@ -1,8 +1,14 @@
 # データ層: PostgreSQL 一本化（索引）
 
-ステートフルな基盤は **PostgreSQL ただ一つ**。Redis / NATS / 専用ジョブキュー等のミドルウェアは置かない。キュー・通知・排他・検索をすべて Postgres に背負わせるブローカーレス設計。
+ステートフルな基盤を PostgreSQL に集約し、キュー・通知・排他・検索を担わせる。Redis / NATS / 専用ジョブキューは置かない。
 
-**本文は `docs/data/` に分割してある。節番号は分割前のまま**なので、コードコメントや他 doc の「data.md §6.5」等はこの表で該当ファイルを引ける。
+```mermaid
+flowchart LR
+    app[Rokuban] <-->|キュー| pg[(PostgreSQL)]
+    app <-->|通知| pg
+    app <-->|排他| pg
+    app <-->|検索| pg
+```
 
 | 節 | 内容 | ファイル |
 |---|---|---|
@@ -20,5 +26,7 @@
 - **容量判定・チューナー射影を触る** → §6.5（前提として §6 の非正規化スナップショット）
 - **シリーズ棚・番組ハブ・分類ルールを触る** → §8
 - **DB 輻輳・プール設定を触る** → §7 と [operations.md](operations.md) §3
+
+**本文は `docs/data/` に分割してある。節番号は分割前のまま**なので、コードコメントや他 doc の「data.md §6.5」等はこの表で該当ファイルを引ける。
 
 > 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ）/ [schema.md](schema.md)（スキーマ DDL）/ [recording.md](recording.md)（録画エンジン）/ [storage.md](storage.md)（メディアストレージ）/ [operations.md](operations.md)（運用）
