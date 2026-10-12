@@ -37,7 +37,7 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）が
 - 運用者が明示的に走らせる catalog rescue の復元（`internal/catalog/rescue.go`）。`program_intents` を upsert するので record を skip で上書きしうる。バルクだが EPG に駆動されない。
 - `program_snapshots` の GC CASCADE。予約行も一緒に落ちるので `toDelete` に現れない。
 
-EPG 同期・ruler・reconciler はこの 2 表（`program_intents` / `program_investments`）に一切書かない。そのため EPG が壊れても、ブレーカー外の削除件数は人が書いた回数で頭打ちになる。
+EPG 同期・ruler・reconciler はこの 2 表（`program_intents` / `program_overrides`。`program_investments` はこの 2 表から作る view）に一切書かない。そのため EPG が壊れても、ブレーカー外の削除件数は人が書いた回数で頭打ちになる。
 
 **混ぜたままにしたときの実害は、ラッチが無期限であるぶん無期限に続く。** intent クリアは `effective.skip` を立てない（クリアは「意見なし」であって「録るな」ではない）。そのためラッチ中に残る予約行は `listDesired`（`reservation.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さない。番組は録画され続ける。失うのは導出で作り直せる予約行ではなく、ディスクとチューナーであり、ブレーカーが守ろうとしているものより重い。
 
