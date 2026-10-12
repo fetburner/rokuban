@@ -4,8 +4,8 @@
 // reconciler はシングルトンではなくジョブ（internal/worker の
 // ReconcilePassWorker）として実行される。パスを跨ぐ状態を持たない（サーキット
 // ブレーカーの発動状態も含め毎パス DB と mirakc から読み直す。発動のラッチ自体は
-// internal/breaker が circuit_breakers に持続させる）。排他は advisory lock ではなく
-// UniqueOpts（サイト単位）で担保する。並走すると壊れるものは docs/data.md §2 が権威。
+// internal/breaker が circuit_breakers に持続させる）。共通契約（jobq）は排他を
+// 保証せず、現行の重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による（docs/data.md §2）。
 // このパッケージは 1 パス分のロジックだけを持ち、いつ・どの契機で呼ぶか
 // （定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 package reconciler

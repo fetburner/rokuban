@@ -1,8 +1,9 @@
 // Package ruler はルール評価から reservations.base を導出する 1 パス評価ロジック。
 //
 // ruler はシングルトンではなくジョブ（internal/worker の RulerPassWorker）
-// として実行される。排他は advisory lock ではなく UniqueOpts（サイト単位）で担保する。
-// 並走すると壊れるものと、UniqueOpts が担うものの判定基準は docs/data.md §2 が権威。
+// として実行される。共通契約（jobq）は排他を保証せず、現行の
+// 重複抑止はジョブエンジン adapter の UniqueOpts（サイト単位）による。ruler の並走による
+// 上書きは未解決（docs/data.md §2）。
 // このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
 // どの契機で呼ぶか（定期実行の起動契機はデプロイ形態に委ねる）は呼び出し側の責務。
 //

@@ -348,7 +348,8 @@ type Config struct {
 	SoftStopTimeout time.Duration
 
 	// RescueStuckJobsAfter は river.Config.RescueStuckJobsAfter にそのまま渡す。
-	// 0 なら River の既定（1h）。設定キーは worker.rescue_stuck_jobs_after。
+	// 0 なら River の既定（公開ドキュメントは 1h、JobTimeout が長ければ JobTimeout + 1h。
+	// RecoveryGrace は JobTimeout > 0 なら常に JobTimeout + 1h とみなす）。設定キーは worker.rescue_stuck_jobs_after。
 	RescueStuckJobsAfter time.Duration
 
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
@@ -714,12 +715,15 @@ const recoveryMargin = 2 * time.Minute
 //
 // River の救済閾値 river.Config.RescueStuckJobsAfter は、公開ドキュメント（river@v0.47.0
 // client.go）に「既定は 1 時間、JobTimeout が 1 時間を超えるなら JobTimeout + 1 時間」とある。
+// ドキュメントは 1 時間を超える場合だけを書いている。0 < JobTimeout <= 1h でも JobTimeout + 1h を
+// 申告すれば、ドキュメントの値（1h）以上になる。回復猶予は長い側に誤るほうが安全
+// （孤児判定が生きている候補を失敗させない）ので、JobTimeout > 0 なら常にこちらを使う。
 // 0 のときのこの解釈はここに閉じ込める。申告値は閾値に recoveryMargin を足す。
 func (c Config) RecoveryGrace() time.Duration {
 	after := c.RescueStuckJobsAfter
 	if after == 0 {
 		after = time.Hour
-		if c.JobTimeout > time.Hour {
+		if c.JobTimeout > 0 {
 			after = c.JobTimeout + time.Hour
 		}
 	}
