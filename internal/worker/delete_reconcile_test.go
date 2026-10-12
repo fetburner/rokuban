@@ -1116,10 +1116,8 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 //
 // 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
 // この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
-// recordingA は desired なプロファイル h264 が未コミットのまま encode ジョブが
-// 実行中（ジョブの有無そのものは判定に効かない --- 添えるのは「たまたま」で
-// はなく実際に active な試行が走っている状況を再現するため）。条件 2 は SQL
-// 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
+// recordingA は desired なプロファイル h264 が未コミット（判定はジョブの有無を
+// 見ない）。条件 2 は SQL 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
 // がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
 // 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
 // untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を

@@ -474,7 +474,7 @@ func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 	w := &ThumbnailReconcileWorker{Pool: pool}
 	job := ThumbnailReconcileArgs{}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
-		t.Fatal("expected error when no river client is attached to ctx, got nil")
+		t.Fatal("expected error when no Enqueuer is configured, got nil")
 	}
 }
 

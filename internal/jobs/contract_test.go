@@ -1,6 +1,8 @@
 package jobs
 
 import (
+	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -71,6 +73,26 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 			}
 			if gotPhysicalQueue != tt.physicalQueue {
 				t.Errorf("PhysicalQueueFor(args) = %q, want literal %q", gotPhysicalQueue, tt.physicalQueue)
+			}
+
+			// JSON を経由しても Args が変わらない（json:"-" で Timeout 等が落ちない）ことを固定する。
+			raw, err := json.Marshal(tt.args)
+			if err != nil {
+				t.Fatalf("json.Marshal(%T): %v", tt.args, err)
+			}
+			ptr := reflect.New(reflect.TypeOf(tt.args))
+			if err := json.Unmarshal(raw, ptr.Interface()); err != nil {
+				t.Fatalf("json.Unmarshal(%s) into %T: %v", raw, tt.args, err)
+			}
+			rt, ok := ptr.Elem().Interface().(jobq.Args)
+			if !ok {
+				t.Fatalf("%T is not jobq.Args after round trip", ptr.Elem().Interface())
+			}
+			if !reflect.DeepEqual(rt, tt.args) {
+				t.Errorf("JSON round trip of %T = %+v, want %+v (json %s)", tt.args, rt, tt.args, raw)
+			}
+			if got := rt.Spec().Timeout(rt); got != tt.timeout {
+				t.Errorf("Spec().Timeout after round trip of %T = %s, want literal %s", tt.args, got, tt.timeout)
 			}
 		})
 	}

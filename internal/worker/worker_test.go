@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -32,6 +31,8 @@ func singleSiteClients(site string, client *mirakc.Client) map[string]*mirakc.Cl
 	return map[string]*mirakc.Client{site: client}
 }
 
+// recordingEnqueuer は投入された Args を記録する。tx の commit / rollback は観測しない
+// （投入の原子性は jobq の契約テストが守る）。
 type recordingEnqueuer struct {
 	mu   sync.Mutex
 	args []jobq.Args
@@ -46,8 +47,8 @@ func (enqueuer *recordingEnqueuer) Enqueue(_ context.Context, args jobq.Args, _ 
 	return jobq.Result{}, nil
 }
 
-func (*recordingEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return jobq.Result{}, errors.New("recordingEnqueuer does not support transactions")
+func (enqueuer *recordingEnqueuer) EnqueueTx(ctx context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	return enqueuer.Enqueue(ctx, args, opts...)
 }
 
 func (enqueuer *recordingEnqueuer) Enqueued(kind string) []jobq.Args {

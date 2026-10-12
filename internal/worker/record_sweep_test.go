@@ -9,22 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// recordSweepRecordingEnqueuer captures enqueue intent; transaction semantics live in contract tests.
-type recordSweepRecordingEnqueuer struct {
-	*recordingEnqueuer
-}
-
-func (enqueuer *recordSweepRecordingEnqueuer) EnqueueTx(ctx context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return enqueuer.Enqueue(ctx, args, opts...)
-}
 
 // record_sweep は Args.Spec で既定より長い有限の締切を持つ。
 func TestRecordSweepWorker_HasGenerousTimeout(t *testing.T) {
@@ -91,7 +80,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	srv := newRecordSweepStub(t, []mirakc.Record{record})
 	defer srv.Close()
 
-	enqueuer := &recordSweepRecordingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
+	enqueuer := newRecordingEnqueuer()
 	w := &RecordSweepWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		Pool:          pool,
@@ -111,7 +100,7 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		t.Fatalf("recordings count = %d, want 1 (record_sweep ジョブが未処理の finished record を拾ったはず)", recCount)
 	}
 
-	ingest := enqueuedArgs[jobs.IngestJobArgs](enqueuer.recordingEnqueuer, "ingest")
+	ingest := enqueuedArgs[jobs.IngestJobArgs](enqueuer, "ingest")
 	if len(ingest) != 1 || ingest[0].Site != testSite || ingest[0].RecordID != record.ID {
 		t.Errorf("enqueued ingest args = %+v, want one job with site=%q record_id=%q", ingest, testSite, record.ID)
 	}
@@ -186,7 +175,7 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 // 直接呼び出して確認する二次防御のテスト（epg_test.go の
 // TestEpgSyncWorker_SiteMismatch / reconcile_pass_test.go の
 // TestReconcilePassWorker_SiteMismatch と同じ形）。queue 修飾（一次防御。
-// TestRecordSweepWorker_SiteMismatch_NeverDequeued）を素通りしてしまうケース
+// internal/jobq/riveradapter/queue_scoping_test.go の TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues）を素通りしてしまうケース
 // （手で INSERT した / 将来のヒント投入のバグで queue と args.Site がずれた場合）
 // への保険が効いていることを、queue 選択を経由せずに固定する。
 func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {

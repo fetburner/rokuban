@@ -409,7 +409,7 @@ func TestIngestTempFilePath_DoesNotEscapeForSlashInRecordID(t *testing.T) {
 }
 
 // TestIngestWorker_ResumesExistingTempAfterWorkCancellation は、Work が途中で
-// 終了した後の新しい River job が、DB の進捗値ではなく同じ deterministic temp を
+// 終了した後の新しい job が、DB の進捗値ではなく同じ deterministic temp を
 // replay して Range を末尾から再開することを固定する。
 func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	full := makeTSData(8)

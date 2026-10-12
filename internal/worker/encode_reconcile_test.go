@@ -365,7 +365,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 }
 
 // TestEncodeReconcileWorker_BatchesCandidateReads は、reconcile パスが候補ごとの
-// 原本・ポリシー・encoded の再取得をしないことを固定する。River Insert は不足
+// 原本・ポリシー・encoded の再取得をしないことを固定する。enqueue は不足
 // プロファイルごとに残るが、読み取りは候補数に比例して増えない。
 func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
 	pool := setupTestPool(t)

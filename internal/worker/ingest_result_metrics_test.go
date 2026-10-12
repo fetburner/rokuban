@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -213,9 +214,6 @@ func (worker snoozeResultCapturingIngestWorker) Work(ctx context.Context, args j
 	return nil
 }
 
-// runGracefulStopIngest は ingest ジョブを 1 件走らせ、ハンドラが started を閉じた
-// ところで client.Stop をかける。停止後に「result の 3 値も IngestDuration の観測数も
-// 動いていないこと」と「River が attempt を消費していないこと」を確認する。
 // TestIngestWorker_ContextCancellationIsNotCounted fixes the metric behavior for a
 // canceled context without depending on a queue-specific cancellation type.
 func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
@@ -288,6 +286,46 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			t.Fatalf("Work() = %v, want nil", err)
 		}
 		assertIngestResultDeltas(t, before, map[string]float64{"success": 1}, "context cancellation with nil result")
+	})
+
+	t.Run("Work returns the context cause", func(t *testing.T) {
+		pool := setupTestPool(t)
+		if pool == nil {
+			return
+		}
+		ctx, cancel := context.WithCancelCause(context.Background())
+		defer cancel(nil)
+
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/") {
+				cancel(errors.New("adapter stop"))
+				<-r.Context().Done()
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		t.Cleanup(srv.Close)
+
+		w := &IngestWorker{
+			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			MediaDir:      t.TempDir(),
+			StallTimeout:  time.Second,
+			Pool:          pool,
+		}
+		recordingID := insertTestRecording(t, pool)
+		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-cause")
+
+		before := ingestJobResults()
+		durationBefore := ingestDurationSamples(t)
+		// net/http は取り消し時に context.Cause(ctx) を返し、それは context.Canceled を
+		// 包まない。だから ingest の分類は errors.Is(err, cause) の項も見る必要がある。
+		_ = runWorkerViaJobQFake(ctx, w,
+			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-cause"},
+		)
+		assertIngestResultDeltas(t, before, nil, "context cancellation with cause")
+		if got := ingestDurationSamples(t); got != durationBefore {
+			t.Errorf("IngestDuration samples = %d, want %d (unchanged)", got, durationBefore)
+		}
 	})
 }
 

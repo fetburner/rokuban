@@ -1577,7 +1577,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		}
 	}
 	if !completed {
-		t.Fatal("same River job did not complete within five resumed slices")
+		t.Fatal("same job did not complete within five resumed slices")
 	}
 	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
 	got, err := os.ReadFile(canonicalPath)
