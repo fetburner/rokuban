@@ -640,7 +640,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		RulerRetractGrace:        rulerRetractGrace,
 		ReconcileStartDelayGrace: cfg.Reconciler.StartDelayGrace,
 		IngestStallTimeout:       cfg.Ingest.StallTimeout,
-		RescueStuckJobsAfter:     clientCfg.RescueStuckJobsAfter,
+		RecoveryGrace:            clientCfg.RecoveryGrace(),
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})

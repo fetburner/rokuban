@@ -16,17 +16,12 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
-const (
-	defaultCMDetectReconcileInterval = 15 * time.Minute
-	riverDefaultRescueStuckJobsAfter = time.Hour
-)
-
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
 type CMDetectReconcileWorker struct {
 	Enqueuer              jobq.Enqueuer
 	Pool                  *pgxpool.Pool
 	RowLimit              int32
-	RescueStuckJobsAfter  time.Duration
+	RecoveryGrace         time.Duration
 	resumeAfter           atomic.Int64
 	candidateAfterNetwork atomic.Int32
 	candidateAfterService atomic.Int32
@@ -42,7 +37,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if w.Enqueuer == nil {
 		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
 	}
-	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RescueStuckJobsAfter); err != nil {
+	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RecoveryGrace); err != nil {
 		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
 	}
 	limit := w.RowLimit
@@ -112,17 +107,13 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	return nil
 }
 
-// failOrphanCMLogoCandidates marks running candidates whose worker deadline and rescue grace elapsed.
-// MaxAttempts is 1, so no River retry delay can leave a candidate running; changing it requires
-// revisiting this recovery rule.
-func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueStuckJobsAfter time.Duration) error {
+// failOrphanCMLogoCandidates marks running candidates whose worker deadline and the adapter's
+// recovery grace (jobq.Spec.Timeout contract) elapsed. MaxAttempts is 1, so no retry delay can
+// leave a candidate running; changing it requires revisiting this recovery rule.
+func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, recoveryGrace time.Duration) error {
 	candidates, err := sqlcgen.New(pool).ListRunningCMLogoCandidates(ctx)
 	if err != nil {
 		return fmt.Errorf("listing running CM logo candidates: %w", err)
-	}
-	if rescueStuckJobsAfter == 0 {
-		// River resolves an explicit zero to its documented one-hour default.
-		rescueStuckJobsAfter = riverDefaultRescueStuckJobsAfter
 	}
 
 	q := sqlcgen.New(pool)
@@ -134,7 +125,7 @@ func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, rescueS
 		} else if err != nil {
 			return fmt.Errorf("getting recording %d duration for orphan CM logo candidate: %w", candidate.RecordingID, err)
 		}
-		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(rescueStuckJobsAfter)
+		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(recoveryGrace)
 		if !candidate.CurrentTime.After(deadline) {
 			continue
 		}

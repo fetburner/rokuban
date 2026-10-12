@@ -348,7 +348,8 @@ type Config struct {
 	SoftStopTimeout time.Duration
 
 	// RescueStuckJobsAfter は river.Config.RescueStuckJobsAfter にそのまま渡す。
-	// 0 なら River の既定（1h）。設定キーは worker.rescue_stuck_jobs_after。
+	// 0 なら River の既定（公開ドキュメントは 1h、JobTimeout が長ければ JobTimeout + 1h。
+	// RecoveryGrace は JobTimeout > 0 なら常に JobTimeout + 1h とみなす）。設定キーは worker.rescue_stuck_jobs_after。
 	RescueStuckJobsAfter time.Duration
 
 	// Once が非 nil なら 1 件消化モード（`rokuban server --once`）になる。
@@ -697,4 +698,34 @@ func sortedQueueNames(m map[string]river.QueueConfig) []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// recoveryMargin は RecoveryGrace が River の救済閾値に足す余裕。
+//
+// 救済閾値を過ぎた running ジョブを rescuer が実際に拾うまでの遅れを見込む値だが、
+// rescuer の実行間隔は river@v0.47.0 の river.Config の公開ドキュメントに書かれておらず、
+// この 2 分の根拠は未検証である。測定は 1 回だけで、共有契約テストのプロセス死ケース
+// （閾値 6 秒、attempted_at はクラッシュ時刻）の再配送に 35.6 秒かかり、この余裕の範囲に
+// 収まった。rescuer の間隔が環境で変わるかは見ていない。
+const recoveryMargin = 2 * time.Minute
+
+// RecoveryGrace は jobq.Spec.Timeout の契約が言う「回復猶予」の申告値を返す。
+// プロセスが死んだ running ジョブが、Timeout の経過後この時間以内に再配送の対象になることを
+// adapter として申告する。cmd/rokuban が worker へ渡し、共有契約テストの fixture も同じ値を使う。
+//
+// River の救済閾値 river.Config.RescueStuckJobsAfter は、公開ドキュメント（river@v0.47.0
+// client.go）に「既定は 1 時間、JobTimeout が 1 時間を超えるなら JobTimeout + 1 時間」とある。
+// ドキュメントは 1 時間を超える場合だけを書いている。0 < JobTimeout <= 1h でも JobTimeout + 1h を
+// 申告すれば、ドキュメントの値（1h）以上になる。回復猶予は長い側に誤るほうが安全
+// （孤児判定が生きている候補を失敗させない）ので、JobTimeout > 0 なら常にこちらを使う。
+// 0 のときのこの解釈はここに閉じ込める。申告値は閾値に recoveryMargin を足す。
+func (c Config) RecoveryGrace() time.Duration {
+	after := c.RescueStuckJobsAfter
+	if after == 0 {
+		after = time.Hour
+		if c.JobTimeout > 0 {
+			after = c.JobTimeout + time.Hour
+		}
+	}
+	return after + recoveryMargin
 }
