@@ -15,14 +15,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -39,40 +36,22 @@ func encodeConfigWith(names ...string) config.EncodeConfig {
 	return config.EncodeConfig{Profiles: profiles}
 }
 
-// runEncodeReconcilePass runs EncodeReconcileWorker with a real adapter enqueuer so
-// follow-up insertions can be checked through River's public test APIs.
-func runEncodeReconcilePass(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker) {
-	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{})
+// runEncodeReconcilePass runs one pass and records the Args it asks the queue to deliver.
+func runEncodeReconcilePass(t *testing.T, w *EncodeReconcileWorker) *recordingEnqueuer {
+	return runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{})
 }
 
-func runEncodeReconcilePassArgs(t *testing.T, pool *pgxpool.Pool, w *EncodeReconcileWorker, args EncodeReconcileArgs) {
+func runEncodeReconcilePassArgs(t *testing.T, w *EncodeReconcileWorker, args EncodeReconcileArgs) *recordingEnqueuer {
 	t.Helper()
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	enqueuer, ok := w.Enqueuer.(*recordingEnqueuer)
+	if !ok {
+		enqueuer = newRecordingEnqueuer()
+		w.Enqueuer = enqueuer
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
-}
-
-// Targeted and full passes have different args and must remain separate River jobs.
-func TestEncodeReconcileArgs_TargetAndFullPassBothRemainPending(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("NewInsertOnlyClient: %v", err)
-	}
-	if _, err := insertJobWithSpec(context.Background(), client, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("inserting full pass: %v", err)
-	}
-	if _, err := insertJobWithSpec(context.Background(), client, EncodeReconcileArgs{RecordingID: 42}); err != nil {
-		t.Fatalf("inserting targeted pass: %v", err)
-	}
-	count := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, "encode_reconcile"))
-	if count != 2 {
-		t.Fatalf("pending encode_reconcile jobs = %d, want 2 (full and recording_id=42)", count)
-	}
+	return enqueuer
 }
 
 func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullStateAlone(t *testing.T) {
@@ -98,13 +77,13 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
 	w.resumeAfter.Store(9_000_000_000_000_000_000)
-	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{RecordingID: target})
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: target})
 
 	for _, tc := range []struct {
 		id   int64
 		want int
 	}{{first, 0}, {target, 1}, {third, 0}} {
-		if got := countEncodeJobs(t, pool, tc.id, "h265"); got != tc.want {
+		if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), tc.id, "h265"); got != tc.want {
 			t.Errorf("encode jobs for recording %d = %d, want %d", tc.id, got, tc.want)
 		}
 	}
@@ -139,16 +118,16 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 	}
 
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")}
-	runEncodeReconcilePassArgs(t, pool, w, EncodeReconcileArgs{RecordingID: recordingID})
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Fatalf("targeted encode jobs for trashed recording = %d, want 0", got)
 	}
 
 	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, recordingID); err != nil {
 		t.Fatalf("restoring recording: %v", err)
 	}
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 1 {
 		t.Fatalf("full-pass encode jobs after restore = %d, want 1", got)
 	}
 }
@@ -223,13 +202,10 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Pool:          pool,
 		StallTimeout:  5 * time.Second,
 	}
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}
 
 	// Enqueuer を注入しない状態 = ヒントが飛ばない。
-	if err := runWorkerViaJobQFake(context.Background(), iw, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), iw, job); err != nil {
 		t.Fatalf("IngestWorker.Work: %v", err)
 	}
 
@@ -241,83 +217,19 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	if !deleteRequested.Load() {
 		t.Fatal("edge record was not deleted; the lost-hint scenario needs the re-hint path closed")
 	}
+	// 定期パスが差分を埋める。
+	w := &EncodeReconcileWorker{
+		Enqueuer: newRecordingEnqueuer(), Pool: pool, Profiles: encodeConfigWith("h265"),
+	}
 	// 前提 3: ヒントは落ちた（encode ジョブが 1 件も入っていない）。
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Fatalf("encode jobs before the periodic pass = %d, want 0 (the hint must be lost for this regression to mean anything)", got)
 	}
 
-	// 定期パスが差分を埋める。
-	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")})
+	runEncodeReconcilePass(t, w)
 
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs after the periodic pass = %d, want 1", got)
-	}
-}
-
-// TestEncodeReconcile_DoesNotDoubleEnqueue は「定期パスを繰り返し回しても
-// encode ジョブが二重に入らない」ことと、その根拠である River の一意制約の
-// 実際の挙動（EncodeReconcileArgs.Spec の合流ヒントが前提にしている
-// 一意制約）を固定する。
-func TestEncodeReconcile_DoesNotDoubleEnqueue(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "dup/a.m2ts",
-		[]string{"h265"}, []byte("payload"))
-
-	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")}
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
-		t.Fatalf("encode jobs after first pass = %d, want 1", got)
-	}
-
-	// 2 パス目。まだ encoded は無いので候補には挙がり続けるが、投入は増えない。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
-		t.Errorf("encode jobs after second pass = %d, want 1", got)
-	}
-
-	// River の一意制約そのものの挙動（doc コメントが「実測」と書いている内容）。
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("NewInsertOnlyClient: %v", err)
-	}
-	ctx := context.Background()
-	first, err := insertJobWithSpec(ctx, client, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"})
-	if err != nil {
-		t.Fatalf("first Insert: %v", err)
-	}
-	if first.UniqueSkippedAsDuplicate {
-		t.Fatal("first Insert was skipped as duplicate; the measurement below would be meaningless")
-	}
-	second, err := insertJobWithSpec(ctx, client, EncodeJobArgs{RecordingID: recordingID, Profile: "dedupe"})
-	if err != nil {
-		t.Fatalf("second Insert: %v", err)
-	}
-	if !second.UniqueSkippedAsDuplicate {
-		t.Error("second Insert of the same (recording_id, profile) was not skipped as duplicate")
-	}
-	if second.Job.ID != first.Job.ID {
-		t.Errorf("second Insert returned job id %d, want the first job's id %d", second.Job.ID, first.Job.ID)
-	}
-	if got := countEncodeJobs(t, pool, recordingID, "dedupe"); got != 1 {
-		t.Errorf("encode job rows for the duplicated args = %d, want 1", got)
-	}
-
-	// パスのジョブ自身も pending 中は 1 本に合流する。
-	firstPass, err := insertJobWithSpec(ctx, client, EncodeReconcileArgs{})
-	if err != nil {
-		t.Fatalf("first EncodeReconcileArgs Insert: %v", err)
-	}
-	secondPass, err := insertJobWithSpec(ctx, client, EncodeReconcileArgs{})
-	if err != nil {
-		t.Fatalf("second EncodeReconcileArgs Insert: %v", err)
-	}
-	if !secondPass.UniqueSkippedAsDuplicate || secondPass.Job.ID != firstPass.Job.ID {
-		t.Errorf("second encode_reconcile insert: skipped=%v id=%d, want skipped=true id=%d",
-			secondPass.UniqueSkippedAsDuplicate, secondPass.Job.ID, firstPass.Job.ID)
 	}
 }
 
@@ -453,7 +365,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 }
 
 // TestEncodeReconcileWorker_BatchesCandidateReads は、reconcile パスが候補ごとの
-// 原本・ポリシー・encoded の再取得をしないことを固定する。River Insert は不足
+// 原本・ポリシー・encoded の再取得をしないことを固定する。enqueue は不足
 // プロファイルごとに残るが、読み取りは候補数に比例して増えない。
 func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
 	pool := setupTestPool(t)
@@ -467,7 +379,7 @@ func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
 	counter := &encodeReconcileQueryCounter{}
 	tracedPool := poolWithQueryTracer(t, pool, counter)
 	w := &EncodeReconcileWorker{Pool: tracedPool, Profiles: encodeConfigWith("h264", "h265"), RowLimit: 2}
-	runEncodeReconcilePass(t, tracedPool, w)
+	runEncodeReconcilePass(t, w)
 
 	if got := counter.listMissing.Load(); got != 1 {
 		t.Errorf("ListMissingEncodeProfiles calls = %d, want 1", got)
@@ -588,9 +500,10 @@ func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
 	}
 	seedRecordingWithOriginal(t, pool, t.TempDir(), "none/a.m2ts", nil, []byte("x"))
 
-	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")})
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264")}
+	runEncodeReconcilePass(t, w)
 
-	if jobs := len(riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())); jobs != 0 {
+	if jobs := len(enqueuedArgs[jobs.EncodeJobArgs](w.Enqueuer.(*recordingEnqueuer), jobs.EncodeJobArgs{}.Kind())); jobs != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobs)
 	}
 }
@@ -617,15 +530,15 @@ func TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig(t *testing.T) {
 		[]string{"gone"}, []byte("x"))
 
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")}
-	runEncodeReconcilePass(t, pool, w)
+	runEncodeReconcilePass(t, w)
 
-	if got := countEncodeJobs(t, pool, mixed, "h265"); got != 1 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), mixed, "h265"); got != 1 {
 		t.Errorf("encode jobs for the configured profile = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, pool, mixed, "gone"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), mixed, "gone"); got != 0 {
 		t.Errorf("encode jobs for the removed profile (same recording) = %d, want 0", got)
 	}
-	if got := countEncodeJobs(t, pool, onlyGone, "gone"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), onlyGone, "gone"); got != 0 {
 		t.Errorf("encode jobs for the removed profile (only desired) = %d, want 0", got)
 	}
 
@@ -664,74 +577,53 @@ func TestEncodeReconcileWorker_WindowRotatesPastStuckCandidates(t *testing.T) {
 	}
 
 	// encode は一切走らせない。候補は一度も減らない = 恒久失敗と同じ状況。
-	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
+	enqueuer := newRecordingEnqueuer()
+	w := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
 
 	// パス 1: 1 件目にだけ投入される。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
 		t.Fatalf("pass 1: encode jobs for first = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 0 {
 		t.Fatalf("pass 1: encode jobs for second = %d, want 0", got)
 	}
 
 	// パス 2: 窓が回って 2 件目に届く。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 1 {
 		t.Fatalf("pass 2: encode jobs for second = %d, want 1 (the window must rotate past the stuck first candidate)", got)
 	}
-	if got := countEncodeJobs(t, pool, third, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "h265"); got != 0 {
 		t.Fatalf("pass 2: encode jobs for third = %d, want 0", got)
 	}
 
 	// パス 3: 3 件目に届く。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, third, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "h265"); got != 1 {
 		t.Fatalf("pass 3: encode jobs for third = %d, want 1", got)
 	}
 
-	// 巻き戻りの観測はジョブ件数では見えない（UniqueOpts が pending 中の
-	// 1 本に合流させるため、1 件目に再投入してもジョブ数は増えない）。
-	// 1 件目のジョブ行を削除してから巻き戻りを起こし、復活することで
-	// 「もう一度 examine された」ことを見る。
-	jobRows := riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind())
-	riverClient := riveradaptertest.NewRiverClient(t, pool)
-	deleted := false
-	for _, row := range jobRows {
-		var args EncodeJobArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
-		}
-		if args.RecordingID != first || args.Profile != "h265" {
-			continue
-		}
-		if _, err := riverClient.JobDelete(context.Background(), row.ID); err != nil {
-			t.Fatalf("deleting first recording's encode job: %v", err)
-		}
-		deleted = true
-		break
-	}
-	if !deleted {
-		t.Fatal("first recording's h265 encode job not found for the rewind check")
-	}
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 0 {
-		t.Fatalf("after delete: encode jobs for first = %d, want 0 (setup for the rewind check)", got)
+	// 先行パスの投入を完了した状態にして、再投入が観測できるよう記録を空にする。
+	enqueuer.Reset()
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 0 {
+		t.Fatalf("after completing prior enqueues: encode jobs for first = %d, want 0", got)
 	}
 
 	// パス 4: 3 件目より後ろに候補は無い。窓は末尾を越えて空になる
 	// （まだ先頭には戻っていない）。1 件目は resumeAfter=third より手前なので
 	// このパスでは見ていない。
-	runEncodeReconcilePass(t, pool, w)
+	runEncodeReconcilePass(t, w)
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 0 {
 		t.Fatalf("pass 4: candidates gauge = %v, want 0 (window ran past the end)", got)
 	}
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 0 {
 		t.Fatalf("pass 4: encode jobs for first = %d, want 0 (not yet rewound)", got)
 	}
 
 	// パス 5: 先頭へ巻き戻り、1 件目がもう一度 examine されて復活する。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
 		t.Errorf("pass 5: encode jobs for first = %d, want 1 (the window must wrap around to the beginning)", got)
 	}
 }
@@ -753,16 +645,16 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	}
 
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 2}
-	runEncodeReconcilePass(t, pool, w)
+	runEncodeReconcilePass(t, w)
 
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
 		t.Errorf("encode jobs for first = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 1 {
 		t.Errorf("encode jobs for second = %d, want 1", got)
 	}
 	// 3 件目は RowLimit=2 を超えるのでこのパスでは examine されない。
-	if got := countEncodeJobs(t, pool, third, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "h265"); got != 0 {
 		t.Errorf("encode jobs for third = %d, want 0 (a single pass must not examine more than RowLimit candidates)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 2 {
@@ -794,21 +686,21 @@ func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
 	}
 
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264", "h265"), RowLimit: 1}
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, first, "h264"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h264"); got != 1 {
 		t.Errorf("pass 1: encode jobs for first/h264 = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, pool, first, "h265"); got != 1 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
 		t.Errorf("pass 1: encode jobs for first/h265 = %d, want 1 (all profiles of one recording must be returned)", got)
 	}
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 0 {
 		t.Errorf("pass 1: encode jobs for second/h265 = %d, want 0 (RowLimit is in recordings)", got)
 	}
 
 	// 1 profile ではなく 1 録画を window の単位にしているので、次のパスで 2 件目へ
 	// 進む。
-	runEncodeReconcilePass(t, pool, w)
-	if got := countEncodeJobs(t, pool, second, "h265"); got != 1 {
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 1 {
 		t.Errorf("pass 2: encode jobs for second/h265 = %d, want 1 (resume position must be a recording id)", got)
 	}
 }
@@ -832,9 +724,9 @@ func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T
 
 	// プロファイルが 1 つも無い設定。
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{}}
-	runEncodeReconcilePass(t, pool, w)
+	runEncodeReconcilePass(t, w)
 
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Errorf("encode jobs = %d, want 0 (nothing can be encoded without profiles)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 0 {
@@ -871,32 +763,5 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")
-	}
-}
-
-// worker.periodic_jobs が有効なら encode_reconcile が定期ジョブとして登録される
-// こと（登録漏れは「実装したのに永久に走らない」で終わる）。
-func TestBuildRiverConfig_RegistersEncodeReconcilePeriodicJob(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:            true,
-		EncodeReconcile:         true,
-		EncodeReconcileInterval: time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig: %v", err)
-	}
-	if len(riverCfg.PeriodicJobs) != 1 {
-		t.Fatalf("PeriodicJobs = %d, want 1", len(riverCfg.PeriodicJobs))
-	}
-
-	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:    false,
-		EncodeReconcile: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig (periodic disabled): %v", err)
-	}
-	if len(disabled.PeriodicJobs) != 0 {
-		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))
 	}
 }

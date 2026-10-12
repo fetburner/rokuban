@@ -25,7 +25,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -1117,10 +1116,8 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 //
 // 旧条件 3（キューの pending 状態を直接見るガード）は issue #516 で削除した ---
 // この安全性は until_encoded_deletable_originals（条件 2）が代わりに担保する。
-// recordingA は desired なプロファイル h264 が未コミットのまま encode ジョブが
-// 実行中（ジョブの有無そのものは判定に効かない --- 添えるのは「たまたま」で
-// はなく実際に active な試行が走っている状況を再現するため）。条件 2 は SQL
-// 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
+// recordingA は desired なプロファイル h264 が未コミット（判定はジョブの有無を
+// 見ない）。条件 2 は SQL 側（view）で判定するので A は untilEncodedRows に一度も現れない --- した
 // がって条件 2 側の完備候補を recordingB 1 件にすると、until_encoded ループが
 // 複数件のうち先頭 1 件だけを処理して残りを無視する変異を注入しても
 // untilEncodedRows の要素数が 1 のままで検出できない。recordingC も条件 2 を
@@ -1130,20 +1127,12 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	mediaDir := t.TempDir()
 	profile := "h264"
 
-	// recordingA: h264 が未コミット（encode ジョブが実行中）+ サムネイルのみ
-	// コミット済み。条件 2 を満たさないので原本は残る。
+	// recordingA: h264 が未コミット + サムネイルのみコミット済み。
+	// 条件 2 を満たさないので原本は残る。
 	recordingA := insertTestRecording(t, pool)
 	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/partial-a.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
 	markRecordingUntilEncoded(t, pool, recordingA, []string{profile})
-
-	insertOnly, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatalf("creating insert-only client: %v", err)
-	}
-	if _, err := insertJobWithSpec(context.Background(), insertOnly, EncodeJobArgs{RecordingID: recordingA, Profile: profile}); err != nil {
-		t.Fatalf("inserting active encode job for recording A: %v", err)
-	}
 
 	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
 	// 条件 2 を満たす（削除されるべき）候補が 2 件同時に存在する状態を作る。
@@ -3148,32 +3137,5 @@ func TestDeleteReconcileArgs_KindAndQueue(t *testing.T) {
 	}
 	if !spec.Coalesce {
 		t.Error("Spec().Coalesce should be true")
-	}
-}
-
-// DeleteReconcile が PeriodicJobs に載ること。
-func TestBuildRiverConfig_DeleteReconcilePeriodic(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:    true,
-		DeleteReconcile: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig: %v", err)
-	}
-	if len(riverCfg.PeriodicJobs) != 1 {
-		t.Fatalf("PeriodicJobs = %d, want 1 (delete_reconcile only)", len(riverCfg.PeriodicJobs))
-	}
-}
-
-// DeleteReconcile を立てないと定期ジョブに載らないこと（フラグの逆方向）。
-func TestBuildRiverConfig_DeleteReconcileDisabled(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig: %v", err)
-	}
-	if len(riverCfg.PeriodicJobs) != 0 {
-		t.Fatalf("PeriodicJobs = %d, want 0 (DeleteReconcile not set)", len(riverCfg.PeriodicJobs))
 	}
 }

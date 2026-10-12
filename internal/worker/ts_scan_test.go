@@ -12,11 +12,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/tsscan"
@@ -56,11 +52,8 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
 	worker := &tsscan.ScanWorker{Pool: pool, MediaDir: mediaDir}
-	job := &river.Job[tsscan.ScanArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   tsscan.ScanArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), worker, job.Args); err != nil {
+	job := tsscan.ScanArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), worker, job); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
 	}
 }
@@ -169,19 +162,20 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	w := &IngestWorker{Enqueuer: newRiverTestEnqueuer(t, pool), Pool: pool, MediaDir: mediaDir}
+	enqueuer := newRecordingEnqueuer()
+	w := &IngestWorker{Enqueuer: enqueuer, Pool: pool, MediaDir: mediaDir}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	if got := countTSScanJobs(t, pool, recordingID); got != 1 {
+	if got := countTSScanJobs(t, enqueuer, recordingID); got != 1 {
 		t.Fatalf("TS scan jobs after ingest followup = %d, want 1", got)
 	}
-	thumbs := countRiverJobsForRecording(t, pool, "thumbnail_reconcile", recordingID)
+	thumbs := countEnqueuedForRecording(t, enqueuer, "thumbnail_reconcile", recordingID)
 	if thumbs != 1 {
 		t.Errorf("thumbnail_reconcile jobs after ingest followup = %d, want 1", thumbs)
 	}
 }
 
-func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
+func TestTSScanArgsAndSiteBinding(t *testing.T) {
 	scanArgs := tsscan.ScanArgs{RecordingID: 123}
 	if got, want := scanArgs.Kind(), "ts_scan"; got != want {
 		t.Errorf("ScanArgs.Kind() = %q, want %q", got, want)
@@ -197,26 +191,6 @@ func TestTSScanArgsAndPeriodicRegistration(t *testing.T) {
 		t.Errorf("ReconcileArgs.Spec().Queue = %q, want %q", got, "ts_scan")
 	}
 
-	registered, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:    true,
-		TSScanReconcile: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig with periodic TS scan: %v", err)
-	}
-	if len(registered.PeriodicJobs) != 1 {
-		t.Fatalf("PeriodicJobs = %d, want one TS scan reconcile job", len(registered.PeriodicJobs))
-	}
-	disabled, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:    false,
-		TSScanReconcile: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig with periodic jobs disabled: %v", err)
-	}
-	if len(disabled.PeriodicJobs) != 0 {
-		t.Errorf("PeriodicJobs with periodic_jobs=false = %d, want 0", len(disabled.PeriodicJobs))
-	}
 	if jobs.RequiresSiteBinding([]string{jobs.TSScanQueue}) {
 		t.Error("ts_scan must be site independent")
 	}
@@ -280,14 +254,6 @@ func scannedSize(t *testing.T, pool *pgxpool.Pool, assetID int64) int64 {
 	return size
 }
 
-func countTSScanJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
-	t.Helper()
-	count := 0
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (tsscan.ScanArgs{}).Kind()) {
-		args := riveradaptertest.MustDecodeRiverJobArgs[tsscan.ScanArgs](t, row)
-		if args.RecordingID == recordingID {
-			count++
-		}
-	}
-	return count
+func countTSScanJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64) int {
+	return countEnqueuedForRecording(t, enqueuer, (tsscan.ScanArgs{}).Kind(), recordingID)
 }

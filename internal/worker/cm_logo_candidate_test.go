@@ -2,7 +2,6 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -11,12 +10,9 @@ import (
 
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -68,14 +64,14 @@ func candidateRowForService(t *testing.T, pool *pgxpool.Pool, serviceID int32) (
 }
 
 // candidateWorkHeld は logoframe のダミーが止まっている間に during を実行してから Work を終わらせる。
-func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWorker, tools cmToolset, recordingID, jobID int64, areaUpdatedAt time.Time, during func()) error {
+func candidateWorkHeld(ctx context.Context, t *testing.T, w *CMLogoCandidateWorker, tools cmToolset, recordingID int64, areaUpdatedAt time.Time, during func()) error {
 	t.Helper()
 	if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(recordingID, jobID, areaUpdatedAt).Args)
+		done <- runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(recordingID, areaUpdatedAt))
 	}()
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -132,7 +128,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			tools, recordingID := tc.setup(t, pool, mediaDir)
 			areaAt := seedTaughtArea(t, pool, 1180)
 
-			err := runWorkerViaJobQFake(ctx, newCandidateTestWorker(pool, mediaDir, tools), cmLogoCandidateJob(recordingID, 4400, areaAt).Args)
+			err := runWorkerViaJobQFake(ctx, newCandidateTestWorker(pool, mediaDir, tools), cmLogoCandidateJob(recordingID, areaAt))
 			if err == nil {
 				t.Fatal("Work succeeded, want the failure returned")
 			}
@@ -180,7 +176,7 @@ func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	areaAt := seedTaughtArea(t, pool, 1180)
 	w := newCandidateTestWorker(pool, mediaDir, tools)
 
-	err := candidateWorkHeld(context.Background(), t, w, tools, id, 4401, areaAt, func() { seedTaughtArea(t, pool, 1100) })
+	err := candidateWorkHeld(context.Background(), t, w, tools, id, areaAt, func() { seedTaughtArea(t, pool, 1100) })
 	if err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -198,7 +194,7 @@ func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := candidateWorkHeld(ctx, t, newCandidateTestWorker(pool, mediaDir, tools), tools, id, 4402, areaAt, cancel)
+	err := candidateWorkHeld(ctx, t, newCandidateTestWorker(pool, mediaDir, tools), tools, id, areaAt, cancel)
 	if err == nil {
 		t.Fatal("Work succeeded after its context was canceled")
 	}
@@ -350,15 +346,11 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 	}
 }
 
-// The ingest hint and periodic reconciliation both pass actual recording duration to River jobs.
+// The ingest hint and periodic reconciliation both pass the actual recording duration in Args.
 func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enqueuer := riveradapter.NewLegacyEnqueuer(client)
+	enqueuer := newRecordingEnqueuer()
 	setRecordingDuration := func(recordingID int64) {
 		t.Helper()
 		if _, err := pool.Exec(ctx, `
@@ -376,15 +368,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	}
 	assertDuration := func(recordingID int64) {
 		t.Helper()
-		page, err := client.JobList(ctx, river.NewJobListParams().Kinds(jobs.CMDetectJobArgs{}.Kind()).First(10))
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, row := range page.Jobs {
-			var args jobs.CMDetectJobArgs
-			if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-				t.Fatal(err)
-			}
+		for _, args := range enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind()) {
 			if args.RecordingID == recordingID {
 				if args.RecordingDurationMs != 45*60*1000 {
 					t.Errorf("recording %d job duration = %dms, want 2700000ms", recordingID, args.RecordingDurationMs)
@@ -408,11 +392,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	client, err := riveradapter.NewInsertOnlyClient(pool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	enqueuer := riveradapter.NewLegacyEnqueuer(client)
+	enqueuer := newRecordingEnqueuer()
 	id := seedCMRecording(t, pool, t.TempDir(), 949)
 	if _, err := pool.Exec(context.Background(), `
 		UPDATE recordings
@@ -421,7 +401,9 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 		t.Fatal(err)
 	}
 	areaAt := seedTaughtArea(t, pool, 1180)
-	count := func() int { return len(listCandidateJobs(t, ctx, client)) }
+	count := func() int {
+		return len(enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind()))
+	}
 	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
@@ -429,11 +411,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Fatalf("candidate jobs after the first pass = %d, want 1", got)
 	}
-	args := listCandidateJobs(t, ctx, client)[0]
-	var candidateArgs jobs.CMLogoCandidateJobArgs
-	if err := json.Unmarshal(args.EncodedArgs, &candidateArgs); err != nil {
-		t.Fatal(err)
-	}
+	candidateArgs := enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind())[0]
 	if candidateArgs.RecordingID != id || candidateArgs.NetworkID != 32736 || candidateArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
 	}
@@ -452,24 +430,6 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Errorf("candidate jobs after a failed candidate = %d, want still 1", got)
 	}
-}
-
-func listCandidateJobs(t *testing.T, ctx context.Context, client *river.Client[pgx5.Tx]) []*rivertype.JobRow {
-	t.Helper()
-	page, err := client.JobList(ctx, river.NewJobListParams().
-		Kinds("cm_logo_candidate").
-		States(
-			rivertype.JobStateAvailable,
-			rivertype.JobStatePending,
-			rivertype.JobStateRetryable,
-			rivertype.JobStateRunning,
-			rivertype.JobStateScheduled,
-		).
-		First(10_000))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return page.Jobs
 }
 
 // 採用の直前に始まった旧ロゴのジョブの結果は保存しない。実行中に採用（learned_at の更新）が
@@ -526,7 +486,7 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 		t.Fatalf("IsCMDetectionDesired = %v, %v; want true so the adopt attempt can be written", desired, err)
 	}
 
-	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id, 1).Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	var state, stage string

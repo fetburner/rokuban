@@ -14,8 +14,6 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
@@ -227,11 +225,8 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 		runCmd:     fakeThumbnailTools(t, 100.0),
 	}
 
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -318,11 +313,8 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 			return nil, nil
 		},
 	}
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	// chapter boundary 60,000ms is quantized to source frame 59,993ms; the
@@ -405,11 +397,8 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 			return nil, nil
 		},
 	}
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	if gotInputSeek != "30.000" {
@@ -474,11 +463,8 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 			return nil, nil
 		},
 	}
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	if gotInputSeek != "89.993" {
@@ -543,14 +529,11 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 		},
 	}
 
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("first Work: %v", err)
 	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("second Work: %v", err)
 	}
 
@@ -589,11 +572,8 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 		},
 	}
 
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 }
@@ -718,11 +698,8 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 		runCmd:     fakeThumbnailTools(t, 100.0),
 	}
 
-	job := &river.Job[ThumbnailJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   ThumbnailJobArgs{RecordingID: recordingID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := ThumbnailJobArgs{RecordingID: recordingID}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -988,8 +965,8 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 		},
 	}
 	for id, rel := range map[int64]string{noChapters: noChaptersRel, trashed: trashedRel} {
-		job := &river.Job[ThumbnailJobArgs]{JobRow: &rivertype.JobRow{}, Args: ThumbnailJobArgs{RecordingID: id}}
-		if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+		job := ThumbnailJobArgs{RecordingID: id}
+		if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 			t.Fatalf("Work(%d) error: %v", id, err)
 		}
 		cur, err := q.LockActiveThumbnailMediaAsset(ctx, id)

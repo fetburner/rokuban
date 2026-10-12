@@ -3,9 +3,8 @@ package worker
 import "github.com/fetburner/rokuban/internal/jobs"
 
 // worker パッケージのテストは、契約が internal/jobs へ移る前からこのパッケージに
-// 生えていたジョブ名・キュー名でハンドラのフィクスチャを組み立てている。
-// 契約の実体を書き直させずに済むよう、型とキュー名定数だけのテスト専用 alias を
-// ここに残す（約 250 箇所から参照されており、書き直すより残す方が安い）。
+// 生えていたジョブ型名でハンドラのフィクスチャを組み立てている。契約の実体を
+// 書き直さずに済むよう、型だけのテスト専用 alias をここに残す。
 //
 // 判定ロジック（qualifyQueueName / physicalQueueName / AllQueueNames /
 // RequiresEncodeTools / RequiresSiteBinding / uniqueByQueue / riverQueueNameMaxLen /
@@ -27,14 +26,3 @@ type EncodeRebuildArgs = jobs.EncodeRebuildArgs
 type DeleteReconcileArgs = jobs.DeleteReconcileArgs
 type CatalogExportArgs = jobs.CatalogExportArgs
 type StorageSyncArgs = jobs.StorageSyncArgs
-
-const (
-	ingestQueue      = jobs.IngestQueue
-	epgQueue         = jobs.EpgQueue
-	rulerQueue       = jobs.RulerQueue
-	reconcilerQueue  = jobs.ReconcilerQueue
-	recordSweepQueue = jobs.RecordSweepQueue
-	encodeQueue      = jobs.EncodeQueue
-	thumbnailQueue   = jobs.ThumbnailQueue
-	cleanupQueue     = jobs.CleanupQueue
-)

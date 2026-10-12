@@ -51,6 +51,9 @@ func Run(t *testing.T, factory Factory) {
 		{"Stop cancels overdue Work and retries it", testStop},
 		{"process death makes active Work eligible again", testCrash},
 		{"coalescing accepts one or more deliveries", testCoalescing},
+		{"coalescing releases completed Args", testCoalescingAfterCompletion},
+		{"coalescing distinguishes different Args", testCoalescingDistinguishesArgs},
+		{"coalescing distinguishes Timeout in Args", testCoalescingDistinguishesTimeout},
 		{"Register rejects a nonpositive timeout", testRegisterTimeout},
 		{"Enqueue rejects a nonpositive timeout", testEnqueueTimeout},
 	}
@@ -350,6 +353,93 @@ func testCoalescing(t *testing.T, factory Factory) {
 	waitIdle(t, fixture)
 	if got := calls.Load(); got < 1 {
 		t.Errorf("Work calls = %d, want at least literal 1", got)
+	}
+}
+
+func testCoalescingAfterCompletion(t *testing.T, factory Factory) {
+	var calls atomic.Int32
+	fixture := newFixture(t, factory, contractWorker{work: func(context.Context, contractArgs) error {
+		calls.Add(1)
+		return nil
+	}})
+	args := contractArgs{Value: "same", TimeoutMS: 2000, Coalesce: true}
+	start(t, fixture)
+	if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+		t.Fatalf("first Enqueue() error = %v", err)
+	}
+	waitIdle(t, fixture)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Work calls after first enqueue = %d, want literal 1", got)
+	}
+	if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+		t.Fatalf("second Enqueue() error = %v", err)
+	}
+	waitIdle(t, fixture)
+	if got := calls.Load(); got != 2 {
+		t.Errorf("Work calls after completed Args were enqueued again = %d, want literal 2", got)
+	}
+}
+
+func testCoalescingDistinguishesArgs(t *testing.T, factory Factory) {
+	calls := make(chan contractArgs, 2)
+	fixture := newFixture(t, factory, contractWorker{work: func(_ context.Context, args contractArgs) error {
+		calls <- args
+		return nil
+	}})
+	want := []contractArgs{
+		{Value: "first identity", TimeoutMS: 2000, Coalesce: true},
+		{Value: "second identity", TimeoutMS: 2000, Coalesce: true},
+	}
+	for _, args := range want {
+		if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+			t.Fatalf("Enqueue(%q) error = %v", args.Value, err)
+		}
+	}
+	start(t, fixture)
+	waitIdle(t, fixture)
+	if got := len(calls); got != 2 {
+		t.Fatalf("Work calls for distinct Args = %d, want literal 2", got)
+	}
+	seen := map[string]int{}
+	for range 2 {
+		seen[receive(t, calls).Value]++
+	}
+	for _, args := range want {
+		if seen[args.Value] != 1 {
+			t.Errorf("delivery count for %q = %d, want literal 1", args.Value, seen[args.Value])
+		}
+	}
+}
+
+func testCoalescingDistinguishesTimeout(t *testing.T, factory Factory) {
+	calls := make(chan contractArgs, 2)
+	fixture := newFixture(t, factory, contractWorker{work: func(_ context.Context, args contractArgs) error {
+		calls <- args
+		return nil
+	}})
+	want := []contractArgs{
+		{Value: "same identity", TimeoutMS: 2000, Coalesce: true},
+		{Value: "same identity", TimeoutMS: 3000, Coalesce: true},
+	}
+	for _, args := range want {
+		if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+			t.Fatalf("Enqueue(TimeoutMS=%d) error = %v", args.TimeoutMS, err)
+		}
+	}
+	start(t, fixture)
+	waitIdle(t, fixture)
+	if got := len(calls); got != 2 {
+		t.Fatalf("Work calls for Args differing only in Timeout = %d, want literal 2", got)
+	}
+	seen := map[int64]int{}
+	for range 2 {
+		args := receive(t, calls)
+		seen[args.TimeoutMS]++
+	}
+	for _, args := range want {
+		if seen[args.TimeoutMS] != 1 {
+			t.Errorf("delivery count for TimeoutMS=%d = %d, want literal 1", args.TimeoutMS, seen[args.TimeoutMS])
+		}
 	}
 }
 

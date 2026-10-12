@@ -12,12 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -55,8 +51,8 @@ func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *Tun
 
 func runTunerSync(t *testing.T, w *TunerSyncWorker) {
 	t.Helper()
-	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: testSite}}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := TunerSyncArgs{Site: testSite}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 }
@@ -267,43 +263,6 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 	}
 }
 
-// BoundSites を指定すると tuner_sync が定期ジョブとして投入され、登録済み
-// ワーカーが epg キューで拾うこと（配線の確認。BoundSites は tuner_sync 以外の
-// 4 種も同時に登録するが、waitPeriodicJobEvent が kind で選り分ける）。
-func TestTunerSyncPeriodicJob(t *testing.T) {
-	pool := setupTestPool(t)
-
-	srv := newTunerServer(t, &tunerFixture{tuners: []mirakc.Tuner{
-		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
-	}})
-
-	waiter := startPeriodicJobClient(t, pool, &Deps{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil))}, riveradapter.Config{
-		PeriodicJobs:      true,
-		BoundSites:        []string{testSite},
-		TunerSyncInterval: time.Hour, // RunOnStart で 1 回だけ走らせる
-	}, river.EventKindJobCompleted)
-
-	event := waitPeriodicJobEvent(t, waiter, "tuner_sync")
-	if event.Job.Kind != "tuner_sync" {
-		t.Errorf("job kind = %q, want %q", event.Job.Kind, "tuner_sync")
-	}
-	wantQueue := jobs.PhysicalQueueName(epgQueue, testSite)
-	if event.Job.Queue != wantQueue {
-		t.Errorf("job queue = %q, want %q", event.Job.Queue, wantQueue)
-	}
-	var args TunerSyncArgs
-	if err := json.Unmarshal(event.Job.EncodedArgs, &args); err != nil {
-		t.Fatalf("unmarshalling job args: %v", err)
-	}
-	if args.Site != testSite {
-		t.Errorf("job args site = %q, want %q", args.Site, testSite)
-	}
-
-	if rows := allTuners(t, pool); len(rows) != 1 {
-		t.Errorf("tuner_sync rows = %+v, want 1 after the periodic job ran", rows)
-	}
-}
-
 // TestTunerSyncWorker_SiteMismatch は、job.Args.Site がワーカー自身の site
 // （w.Site）と一致しないジョブが mirakc に一切触れずに fail-fast することを
 // 確認する（issue #139）。tuner_sync は epg_sync と同じ epg キューを使う
@@ -331,8 +290,8 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
 
-	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-b"}}
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	job := TunerSyncArgs{Site: "site-b"}
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -354,8 +313,8 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 
 	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
 
-	job := &river.Job[TunerSyncArgs]{JobRow: &rivertype.JobRow{}, Args: TunerSyncArgs{Site: "site-a"}}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := TunerSyncArgs{Site: "site-a"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 

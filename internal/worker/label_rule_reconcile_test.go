@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -75,7 +74,7 @@ func TestLabelRuleReconcileWorker_NotifiesOnlyOnChange(t *testing.T) {
 	}
 
 	w := &LabelRuleReconcileWorker{Pool: pool}
-	job := &river.Job[jobs.LabelRuleReconcileArgs]{}
+	job := jobs.LabelRuleReconcileArgs{}
 
 	// **ルールを先に入れる。** 録画の INSERT に付けたトリガーが当たりを張るので、
 	// この順でないと「最初の 1 パスが作る差分」を測ってしまう。
@@ -94,7 +93,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	drainNotifications(t, listenConn)
 
 	// 変化は無い（当たりはトリガーが正しい状態にしている）。通知しない。
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	assertNoNotification(t, listenConn)
@@ -107,7 +106,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	}
 	drainNotifications(t, listenConn)
 
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
 	if got := waitTopic(t, listenConn); got != "recordings" {
@@ -115,7 +114,7 @@ VALUES ('manual', 'default', 1, 1, 1, 'test', 'GR', '1',
 	}
 
 	// もう一度走らせても当たりは変わらない。通知は来ない。
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("third pass: %v", err)
 	}
 	assertNoNotification(t, listenConn)

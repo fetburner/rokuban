@@ -14,14 +14,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 )
@@ -451,7 +448,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	job := newEncodeJob(recordingID, "cut")
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 
@@ -481,7 +478,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
-	if err := runWorkerViaJobQFake(ctx, w, newEncodeJob(recordingID, "cut").Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, newEncodeJob(recordingID, "cut")); err != nil {
 		t.Fatalf("second Work: %v", err)
 	}
 	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
@@ -524,11 +521,8 @@ func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapt
 }
 
 // newEncodeJob は EncodeWorker.Work に渡す最小のジョブを組み立てる。
-func newEncodeJob(recordingID int64, profile string) *river.Job[jobs.EncodeJobArgs] {
-	return &river.Job[jobs.EncodeJobArgs]{
-		JobRow: &rivertype.JobRow{Attempt: 1, MaxAttempts: 25},
-		Args:   jobs.EncodeJobArgs{RecordingID: recordingID, Profile: profile},
-	}
+func newEncodeJob(recordingID int64, profile string) jobs.EncodeJobArgs {
+	return jobs.EncodeJobArgs{RecordingID: recordingID, Profile: profile}
 }
 
 // TestEncodeReconcile_CutProfilesWaitForReview は受け入れの「所有していない
@@ -553,8 +547,8 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: cfg}
 
 	// 未確認: cut は投入されず、h264 だけが投入される。
-	runEncodeReconcilePass(t, pool, w)
-	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"h264"}) {
+	enqueuer := runEncodeReconcilePass(t, w)
+	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles before review = %v, want [h264] (cut must wait)", got)
 	}
 
@@ -563,8 +557,9 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
-	runEncodeReconcilePass(t, pool, w)
-	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"cut", "h264"}) {
+	enqueuer.Reset()
+	runEncodeReconcilePass(t, w)
+	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"cut", "h264"}) {
 		t.Fatalf("pending profiles after review = %v, want [cut h264]", got)
 	}
 }
@@ -609,28 +604,18 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
 		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
-	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg},
+	enqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: cfg},
 		EncodeReconcileArgs{RecordingID: recordingID})
-	if got := pendingEncodeProfiles(t, pool, recordingID); !slices.Equal(got, []string{"h264"}) {
+	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles after adding h264 = %v, want [h264] (stale cut requires an explicit rebuild command)", got)
 	}
 }
 
-// pendingEncodeProfiles は投入済み（pending/available/running）の encode ジョブの
-// プロファイル名をソートして返す。
-func pendingEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64) []string {
+// pendingEncodeProfiles は記録した encode 投入要求のプロファイル名をソートして返す。
+func pendingEncodeProfiles(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64) []string {
 	t.Helper()
-	ctx := context.Background()
-	client := riveradaptertest.NewRiverClient(t, pool)
-	rows := riveradaptertest.MustListRiverJobs(t, ctx, client, river.NewJobListParams().
-		Kinds((jobs.EncodeJobArgs{}).Kind()).
-		States(rivertype.JobStateAvailable, rivertype.JobStatePending, rivertype.JobStateRunning, rivertype.JobStateScheduled))
 	var out []string
-	for _, row := range rows {
-		var args jobs.EncodeJobArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
-		}
+	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, (jobs.EncodeJobArgs{}).Kind()) {
 		if args.RecordingID == recordingID {
 			out = append(out, args.Profile)
 		}
@@ -690,13 +675,10 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		CutProfiles: map[string]struct{}{"cut": {}},
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"},
-	}
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"}
+	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -756,13 +738,10 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		LiveEnabled:   true,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"},
-	}
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}
+	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -803,11 +782,11 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	partial := seed("cut/partial.m2ts", chapters.Span{StartMs: 500, EndMs: 1000})
 
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}
-	runEncodeReconcilePass(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
-	if got := pendingEncodeProfiles(t, pool, allCut); len(got) != 0 {
+	enqueuer := runEncodeReconcilePass(t, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
+	if got := pendingEncodeProfiles(t, enqueuer, allCut); len(got) != 0 {
 		t.Errorf("reconcile path: all-cut recording pending = %v, want none", got)
 	}
-	if got := pendingEncodeProfiles(t, pool, partial); !slices.Equal(got, []string{"cut"}) {
+	if got := pendingEncodeProfiles(t, enqueuer, partial); !slices.Equal(got, []string{"cut"}) {
 		t.Errorf("reconcile path: partial recording pending = %v, want [cut]", got)
 	}
 }

@@ -24,14 +24,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
-	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
-	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -179,12 +175,9 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-001")
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-001"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-001"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -263,12 +256,9 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 	recordingID := insertTestRecordingForSite(t, pool, "site-b", 20240101)
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingID, "rec-mismatch", 327361024000099)
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "site-b", RecordID: "rec-mismatch"},
-	}
+	job := IngestJobArgs{Site: "site-b", RecordID: "rec-mismatch"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
@@ -327,12 +317,9 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	recordingID := insertTestRecordingForSite(t, pool, "site-a", 20240102)
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "site-a", RecordID: "rec-match"},
-	}
+	job := IngestJobArgs{Site: "site-a", RecordID: "rec-match"}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil for matching site", err)
 	}
 
@@ -515,12 +502,9 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-partial")
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-partial"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-partial"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1325,15 +1309,12 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-mismatch")
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-mismatch"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-mismatch"}
 
 	// 即座に失敗で終わる経路（再試行の予算を使い切るまで 500 を返す経路は約 6 秒
 	// かかるので使わない）で、本当の失敗が failure として数えられることを固定する。
 	before := ingestJobResults()
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("expected error for size mismatch, got nil")
 	}
@@ -1372,12 +1353,9 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch, got nil")
 	}
@@ -1480,10 +1458,10 @@ func runLateSHA256IngestCase(t *testing.T, tc lateSHA256IngestCase) {
 	beforeResults := ingestJobResults()
 	durationBefore := ingestDurationSamples(t)
 	mismatchesBefore := promtestutil.ToFloat64(metrics.IngestHashMismatches)
-	run.runPending(t, 91565, true, beforeResults, durationBefore)
-	run.runPending(t, 91565, false, beforeResults, durationBefore)
+	run.runPending(t, true, beforeResults, durationBefore)
+	run.runPending(t, false, beforeResults, durationBefore)
 	syncsBefore := run.tempSyncs.Load()
-	thirdErr := run.complete(t, 91565, tc)
+	thirdErr := run.complete(t, tc)
 	if got := run.tempSyncs.Load() - syncsBefore; got != tc.wantFinalSyncs {
 		t.Errorf("temp Sync calls in the final job = %d, want %d", got, tc.wantFinalSyncs)
 	}
@@ -1569,12 +1547,9 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 	}
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 9917},
-		Args:   IngestJobArgs{Site: "default", RecordID: recordID},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
-	firstErr := runWorkerViaJobQFake(context.Background(), worker, job.Args)
+	firstErr := runWorkerViaJobQFake(context.Background(), worker, job)
 	if _, ok := jobq.SnoozeDelay(firstErr); !ok {
 		t.Fatalf("first Work() error = %v, want slice snooze", firstErr)
 	}
@@ -1592,7 +1567,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 
 	completed := false
 	for slice := 1; slice <= 5; slice++ {
-		err := runWorkerViaJobQFake(context.Background(), worker, job.Args)
+		err := runWorkerViaJobQFake(context.Background(), worker, job)
 		if err == nil {
 			completed = true
 			break
@@ -1602,7 +1577,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		}
 	}
 	if !completed {
-		t.Fatal("same River job did not complete within five resumed slices")
+		t.Fatal("same job did not complete within five resumed slices")
 	}
 	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
 	got, err := os.ReadFile(canonicalPath)
@@ -1673,11 +1648,8 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	return run
 }
 
-func (run *lateSHA256IngestRun) job(id int64) *river.Job[IngestJobArgs] {
-	return &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: id},
-		Args:   IngestJobArgs{Site: "default", RecordID: run.recordID},
-	}
+func (run *lateSHA256IngestRun) job() IngestJobArgs {
+	return IngestJobArgs{Site: "default", RecordID: run.recordID}
 }
 
 func (run *lateSHA256IngestRun) offsets() []int64 {
@@ -1686,9 +1658,9 @@ func (run *lateSHA256IngestRun) offsets() []int64 {
 	return slices.Clone(run.rangeOffsets)
 }
 
-func (run *lateSHA256IngestRun) runPending(t *testing.T, jobID int64, first bool, beforeResults map[string]float64, durationBefore uint64) {
+func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResults map[string]float64, durationBefore uint64) {
 	t.Helper()
-	err := runWorkerViaJobQFake(context.Background(), run.worker, run.job(jobID).Args)
+	err := runWorkerViaJobQFake(context.Background(), run.worker, run.job())
 	if _, ok := jobq.SnoozeDelay(err); !ok {
 		t.Fatalf("pending Work error = %v, want jobq snooze", err)
 	}
@@ -1726,7 +1698,7 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, jobID int64, first bool
 	}
 }
 
-func (run *lateSHA256IngestRun) complete(t *testing.T, jobID int64, tc lateSHA256IngestCase) error {
+func (run *lateSHA256IngestRun) complete(t *testing.T, tc lateSHA256IngestCase) error {
 	t.Helper()
 	if tc.lateHash != nil {
 		lateHash := tc.lateHash(run.tsData)
@@ -1738,7 +1710,7 @@ func (run *lateSHA256IngestRun) complete(t *testing.T, jobID int64, tc lateSHA25
 			t.Fatalf("aging temp mtime past SHA-256 deadline: %v", err)
 		}
 	}
-	return runWorkerViaJobQFake(context.Background(), run.worker, run.job(jobID).Args)
+	return runWorkerViaJobQFake(context.Background(), run.worker, run.job())
 }
 
 func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256IngestCase, beforeResults map[string]float64, durationBefore uint64, mismatchesBefore float64, workErr error) {
@@ -1860,12 +1832,9 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				MediaDir:      t.TempDir(),
 				StallTimeout:  5 * time.Second,
 			}
-			job := &river.Job[IngestJobArgs]{
-				JobRow: &rivertype.JobRow{},
-				Args:   IngestJobArgs{Site: "default", RecordID: recordID},
-			}
+			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
-			err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+			err := runWorkerViaJobQFake(context.Background(), w, job)
 			if tt.wantError {
 				if err == nil {
 					t.Fatal("Work() error = nil, want hash mismatch")
@@ -1946,11 +1915,8 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 913001},
-		Args:   IngestJobArgs{Site: "default", RecordID: recordID},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
@@ -2019,11 +1985,8 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
 	t.Cleanup(func() { slog.SetDefault(originalLogger) })
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{ID: 913002},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-unknown-head-length"},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := IngestJobArgs{Site: "default", RecordID: "rec-unknown-head-length"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work with unknown HEAD length: %v", err)
 	}
 	if !strings.Contains(logOutput.String(), "sha256_verification=timeout_skipped") {
@@ -2041,75 +2004,6 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	}
 	if got := deleteAttempts.Load(); got != 1 {
 		t.Errorf("DeleteRecord attempts = %d, want 1", got)
-	}
-}
-
-type completedIngestJobTestWorker struct {
-	river.WorkerDefaults[jobs.IngestJobArgs]
-}
-
-func (completedIngestJobTestWorker) Work(context.Context, *river.Job[jobs.IngestJobArgs]) error {
-	return nil
-}
-
-func waitForCompletedIngestJob(t *testing.T, events <-chan *river.Event, jobID int64) {
-	t.Helper()
-	timer := time.NewTimer(20 * time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case event := <-events:
-			if event != nil && event.Job != nil && event.Job.ID == jobID {
-				return
-			}
-		case <-timer.C:
-			t.Fatalf("timed out waiting for ingest job %d to complete", jobID)
-		}
-	}
-}
-
-func TestIngestJobCanBeInsertedAfterPreviousJobCompletes(t *testing.T) {
-	pool := setupTestPool(t)
-	ctx := context.Background()
-	workers := river.NewWorkers()
-	river.AddWorker(workers, &completedIngestJobTestWorker{})
-	client, err := riveradapter.NewLegacyClient(pool, workers, riveradapter.Config{
-		BoundSites:   []string{"default"},
-		PeriodicJobs: false,
-	})
-	if err != nil {
-		t.Fatalf("creating River client: %v", err)
-	}
-	completedEvents, unsubscribe := client.Subscribe(river.EventKindJobCompleted)
-	defer unsubscribe()
-	clientCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting River client: %v", err)
-	}
-	defer func() {
-		cancel()
-		<-client.Stopped()
-	}()
-
-	args := jobs.IngestJobArgs{Site: "default", RecordID: "rec-completed-job-reinsert"}
-	first, err := insertJobWithSpec(ctx, client, args)
-	if err != nil {
-		t.Fatalf("inserting first ingest job: %v", err)
-	}
-	if first.Job == nil {
-		t.Fatal("first ingest job is nil")
-	}
-	waitForCompletedIngestJob(t, completedEvents, first.Job.ID)
-	second, err := insertJobWithSpec(ctx, client, args)
-	if err != nil {
-		t.Fatalf("inserting ingest job after completion: %v", err)
-	}
-	if second.UniqueSkippedAsDuplicate {
-		t.Fatal("completed ingest job blocked a new record-saved / record_sweep job")
-	}
-	if second.Job == nil || second.Job.ID == first.Job.ID {
-		t.Errorf("second ingest job = %v, want a new job ID after %d", second.Job, first.Job.ID)
 	}
 }
 
@@ -2199,12 +2093,9 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-order"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-durable-order"}
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -2277,12 +2168,9 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}
-			job := &river.Job[IngestJobArgs]{
-				JobRow: &rivertype.JobRow{},
-				Args:   IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"},
-			}
+			job := IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"}
 
-			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 				t.Fatal("first Work() error = nil, want injected durability failure")
 			}
 			var assetCount int
@@ -2301,7 +2189,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			// 再試行では実装本来の opener に戻す。失敗した試行の temp を replay して、
 			// 正しい原本を続きから公開できることを確認する。
 			openIngestFile = originalOpenFile
-			if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+			if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 
@@ -2404,12 +2292,9 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-stall")
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-stall"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-stall"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2728,12 +2613,9 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-reexec"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-reexec"}
 
-	err := runWorkerViaJobQFake(context.Background(), w, job.Args)
+	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2822,13 +2704,10 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-reingest")
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-reingest"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-reingest"}
 
 	// 1 回目: 転送・コミットは成功するが、DeleteRecord は失敗する。
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
 
@@ -2844,7 +2723,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 
 	// record_sweep が「まだ mirakc に record がある」ことを検知して同じジョブ引数を
 	// 再投入したのと同じ状況を、同じ job で Work をもう一度呼ぶことで再現する。
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("second Work() error: %v", err) // (a)
 	}
 
@@ -3148,20 +3027,21 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 	}))
 	defer deleteServer.Close()
 
-	w := &IngestWorker{Pool: pool, Enqueuer: newRiverTestEnqueuer(t, pool)}
+	enqueuer := newRecordingEnqueuer()
+	w := &IngestWorker{Pool: pool, Enqueuer: enqueuer}
 	w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(deleteServer.URL, nil),
 		jobs.IngestJobArgs{Site: "default", RecordID: "already-committed"}, recordingID, slog.Default())
-	if got := countEncodeJobs(t, pool, recordingID, "cut"); got != 0 {
+	if got := countEncodeJobs(t, enqueuer, recordingID, "cut"); got != 0 {
 		t.Fatalf("cut encode jobs after already-committed ingest = %d, want 0", got)
 	}
-	targetedPasses := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID)
+	targetedPasses := countEnqueuedForRecording(t, enqueuer, "encode_reconcile", recordingID)
 	if targetedPasses != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", targetedPasses)
 	}
-	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{
+	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{
 		Profiles: []config.EncodeProfile{cutFFmpegProfile()},
 	}}, EncodeReconcileArgs{RecordingID: recordingID})
-	if got := countEncodeJobs(t, pool, recordingID, "cut"); got != 0 {
+	if got := countEncodeJobs(t, passEnqueuer, recordingID, "cut"); got != 0 {
 		t.Errorf("cut encode jobs after targeted pass = %d, want 0", got)
 	}
 }
@@ -3204,14 +3084,10 @@ func encodePolicyRowExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) 
 	return count == 1
 }
 
-func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int {
+func countEncodeJobs(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64, profile string) int {
 	t.Helper()
 	count := 0
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
-		var args EncodeJobArgs
-		if err := json.Unmarshal(row.EncodedArgs, &args); err != nil {
-			t.Fatalf("decoding encode job %d args: %v", row.ID, err)
-		}
+	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
 		if args.RecordingID == recordingID && args.Profile == profile {
 			count++
 		}
@@ -3219,16 +3095,8 @@ func countEncodeJobs(t *testing.T, pool *pgxpool.Pool, recordingID int64, profil
 	return count
 }
 
-func countEncodeJobsForRecording(t *testing.T, pool *pgxpool.Pool, recordingID int64) int {
-	t.Helper()
-	count := 0
-	for _, row := range riveradaptertest.MustListRiverJobsOfKind(t, context.Background(), pool, (EncodeJobArgs{}).Kind()) {
-		args := riveradaptertest.MustDecodeRiverJobArgs[EncodeJobArgs](t, row)
-		if args.RecordingID == recordingID {
-			count++
-		}
-	}
-	return count
+func countEncodeJobsForRecording(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64) int {
+	return countEnqueuedForRecording(t, enqueuer, jobs.EncodeJobArgs{}.Kind(), recordingID)
 }
 
 // TestIngestWorker_SnapshotsEncodePolicyFromRuleBase は issue #103 の受け入れ基準
@@ -3259,14 +3127,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-base"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-base"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	w.Enqueuer = newRecordingEnqueuer()
 	ctx := context.Background()
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3277,13 +3142,13 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265]", profiles)
 	}
-	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
 	}
 }
@@ -3338,14 +3203,11 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-override"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-override"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3356,16 +3218,16 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (override should win over base's [h264])", profiles)
 	}
-	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264", "h265")},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h264", "h265")},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, pool, recordingID, "h264"); got != 0 {
+	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h264"); got != 0 {
 		t.Errorf("encode jobs for h264 = %d, want 0 (base profile must be fully replaced by override)", got)
 	}
 }
@@ -3424,14 +3286,11 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3443,7 +3302,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty", profiles)
 	}
 
-	jobCount := countEncodeJobsForRecording(t, pool, recordingID)
+	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*recordingEnqueuer), recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}
@@ -3474,14 +3333,11 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-none"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-none"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	w.Enqueuer = newRecordingEnqueuer()
 	ctx := context.Background()
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3493,7 +3349,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		t.Errorf("encode_profiles = %v, want empty (default, unchanged)", profiles)
 	}
 
-	jobCount := countEncodeJobsForRecording(t, pool, recordingID)
+	jobCount := countEncodeJobsForRecording(t, w.Enqueuer.(*recordingEnqueuer), recordingID)
 	if jobCount != 0 {
 		t.Errorf("encode jobs = %d, want 0", jobCount)
 	}
@@ -3585,13 +3441,10 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	w.Enqueuer = newRecordingEnqueuer()
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3607,7 +3460,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	if len(profiles) != 0 {
 		t.Errorf("encode_profiles = %v, want empty （予約の h265 は GC で失われている。issue #214）", profiles)
 	}
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Errorf("encode jobs for h265 = %d, want 0 "+
 			"（原本は keep_original='always' で残るがエンコードは投入されない。issue #214）", got)
 	}
@@ -3670,14 +3523,11 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"}
 
-	w.Enqueuer = newRiverTestEnqueuer(t, pool)
+	w.Enqueuer = newRecordingEnqueuer()
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3688,13 +3538,13 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	if !slices.Equal(profiles, []string{"h265"}) {
 		t.Errorf("encode_profiles = %v, want [h265] (予約の再実体化を跨いで解決できているはず)", profiles)
 	}
-	if got := countRiverJobsForRecording(t, pool, "encode_reconcile", recordingID); got != 1 {
+	if got := countEnqueuedForRecording(t, w.Enqueuer.(*recordingEnqueuer), "encode_reconcile", recordingID); got != 1 {
 		t.Fatalf("targeted encode_reconcile jobs = %d, want 1", got)
 	}
-	runEncodeReconcilePassArgs(t, pool, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
+	passEnqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: encodeConfigWith("h265")},
 		jobs.EncodeReconcileArgs{RecordingID: recordingID})
 
-	if got := countEncodeJobs(t, pool, recordingID, "h265"); got != 1 {
+	if got := countEncodeJobs(t, passEnqueuer, recordingID, "h265"); got != 1 {
 		t.Errorf("encode jobs for h265 = %d, want 1", got)
 	}
 }
@@ -3738,10 +3588,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -3749,7 +3596,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3814,10 +3661,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -3825,7 +3669,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	workCtx := context.Background()
-	if err := runWorkerViaJobQFake(workCtx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(workCtx, w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3908,17 +3752,14 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 		Pool:          pool,
 		StallTimeout:  5 * time.Second,
 	}
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"}
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -3996,11 +3837,8 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 101)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo", 327361024000101)
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -4046,11 +3884,8 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 102)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-fallback", 327361024000102)
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-fallback"},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err != nil {
+	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-fallback"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 
@@ -4097,11 +3932,8 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 103)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-degenerate", 327361024000103)
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-degenerate"},
-	}
-	if err := runWorkerViaJobQFake(context.Background(), w, job.Args); err == nil {
+	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-degenerate"}
+	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 		t.Fatal("Work() error = nil, want non-nil for a record with no usable content path")
 	}
 
@@ -4186,19 +4018,13 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	jobA := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"},
-	}
-	jobB := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "site-b", RecordID: "rec-collide-b"},
-	}
+	jobA := IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"}
+	jobB := IngestJobArgs{Site: "site-b", RecordID: "rec-collide-b"}
 
-	if err := runWorkerViaJobQFake(context.Background(), wA, jobA.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), wA, jobA); err != nil {
 		t.Fatalf("first Work() (site-a) error: %v", err)
 	}
-	if err := runWorkerViaJobQFake(context.Background(), wB, jobB.Args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), wB, jobB); err != nil {
 		t.Fatalf("second Work() (site-b) error: %v (site prefix likely missing, colliding on rel_path %q)", err, sharedContentPath)
 	}
 
@@ -4370,12 +4196,9 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"}
 
-	err = runWorkerViaJobQFake(ctx, w, job.Args)
+	err = runWorkerViaJobQFake(ctx, w, job)
 	if err == nil {
 		t.Fatal("Work() error = nil, want an explicit failure for a conflicting rel_path")
 	}
@@ -4472,12 +4295,9 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 		StallTimeout:  5 * time.Second,
 	}
 
-	job := &river.Job[IngestJobArgs]{
-		JobRow: &rivertype.JobRow{},
-		Args:   IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"},
-	}
+	job := IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}
 
-	if err := runWorkerViaJobQFake(ctx, w, job.Args); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work() error = %v, want nil (a tombstoned rel_path must be reusable)", err)
 	}
 

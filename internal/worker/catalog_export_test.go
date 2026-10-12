@@ -5,12 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
-
-	"github.com/riverqueue/river"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	riveradapter "github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -20,36 +16,9 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	workers := NewWorkers(&Deps{Pool: pool, MediaDir: mediaDir})
-	client, err := riveradapter.NewLegacyRegistryClient(pool, workers, riveradapter.Config{})
-	if err != nil {
-		t.Fatalf("creating client: %v", err)
-	}
-
-	subscribeCh, subscribeCancel := client.Subscribe(river.EventKindJobCompleted)
-	defer subscribeCancel()
-
-	clientCtx, clientCancel := context.WithCancel(ctx)
-	defer clientCancel()
-	if err := client.Start(clientCtx); err != nil {
-		t.Fatalf("starting client: %v", err)
-	}
-	defer func() {
-		clientCancel()
-		<-client.Stopped()
-	}()
-
-	if _, err := insertJobWithSpec(ctx, client, CatalogExportArgs{}); err != nil {
-		t.Fatalf("inserting catalog_export: %v", err)
-	}
-
-	select {
-	case event := <-subscribeCh:
-		if event.Job.Kind != "catalog_export" {
-			t.Fatalf("job kind = %q, want catalog_export", event.Job.Kind)
-		}
-	case <-time.After(15 * time.Second):
-		t.Fatal("timed out waiting for catalog_export completion")
+	worker := &CatalogExportWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(ctx, worker, CatalogExportArgs{}); err != nil {
+		t.Fatalf("CatalogExportWorker.Work: %v", err)
 	}
 
 	entries, err := os.ReadDir(catalog.Dir(mediaDir))
@@ -77,20 +46,6 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	}
 	if doc.Version != catalog.Version {
 		t.Errorf("version = %d, want %d", doc.Version, catalog.Version)
-	}
-}
-
-// CatalogExport が PeriodicJobs に載ること。
-func TestBuildRiverConfig_CatalogExportPeriodic(t *testing.T) {
-	riverCfg, err := riveradapter.BuildRegistryConfig(NewWorkers(&Deps{}), riveradapter.Config{
-		PeriodicJobs:  true,
-		CatalogExport: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildConfig: %v", err)
-	}
-	if len(riverCfg.PeriodicJobs) != 1 {
-		t.Fatalf("PeriodicJobs = %d, want 1 (catalog_export only)", len(riverCfg.PeriodicJobs))
 	}
 }
 
