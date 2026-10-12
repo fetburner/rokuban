@@ -133,12 +133,12 @@ CI では browser-e2e ジョブが一部だけ回し、残りはローカルの�
 読む順の目安:
 
 - **判定を足す** → 冒頭・§使い方・§判定を足すときの規律を読んでから、近い画面のファイルを開く
-- **番組表・番組リスト** → [checks/programs.md](checks/programs.md)（⓪ の説明もここ）
+- **番組表（グリッド・番組リストの空時間窓）** → [checks/programs.md](checks/programs.md)（⓪ の説明もここ）
 - **再生（追っかけ・原本 VOD・シークバー・チャプター）** → [checks/playback.md](checks/playback.md)
 - **ライブ視聴** → [checks/live.md](checks/live.md)
 - **色・トークン・スクリーンショット・フォントスケール** → [checks/design.md](checks/design.md)
 - **ヘッダー・ボトムタブ・セーフエリア・CLS** → [checks/layout.md](checks/layout.md)
-- **予約・検索** → [checks/reservations-search.md](checks/reservations-search.md)
+- **予約・検索・番組リストの操作列** → [checks/reservations-search.md](checks/reservations-search.md)
 - **録画一覧・次のエピソード・CM 検出** → [checks/recordings.md](checks/recordings.md)
 
 ## 外部参照される節名
