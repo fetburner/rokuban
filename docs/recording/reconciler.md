@@ -50,7 +50,13 @@ reconciler は存在の突き合わせだけでなく、**effective options と 
 
 **差分の対象にするのは自分が作った schedule だけ。** tag のない schedule（mirakc を直接叩いた・別のツールが作った）は観測はするが触らない。外部が作った schedule と取り合いになるのを避けるためで、既存の DELETE 側と同じ判定（`mirakc.IsOurs` が false なら対象外。rokuban の tag があれば true）。
 
-**テンプレート生成の `contentPath` は初回生成値を固定し、以後変更しない**（`overrides.contentPath` で明示指定した値は差分反映の対象。下記参照）。ただし固定の実体は `reservations.base` への書き戻しではない —— `base` / `reservations` の列に contentPath を焼く書き手は存在しない。実際に固定を実現しているのは、再作成時に observed の contentPath を引き継ぐことである（`internal/reconciler/reconciler.go` の `recreateSchedule`）。下記「再作成の POST は observed の contentPath を引き継ぐ」を参照。schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われる。「固定」は「同一 schedule の再作成の間」だけ有効な機構上の性質であり、schedule 自体が消えて張り直された場合には及ばない。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
+**テンプレート生成の `contentPath` は初回生成値に固定し、以後変更しない**（`overrides.contentPath` で明示指定した値は差分反映の対象。下記参照）。reconciler は番組名からパスを生成するため、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと **EPG 更新のたびに schedule が消えて作り直される** churn になる。
+
+固定の実体は `reservations.base` への書き戻しではない。`base` / `reservations` の列に contentPath を焼く書き手は存在しない。固定を実現しているのは、再作成時に observed の contentPath を引き継ぐことである。実装は `internal/reconciler/reconciler.go` の `recreateSchedule` で、下記「再作成の POST は observed の contentPath を引き継ぐ」に書く。
+
+この固定は「同一 schedule の再作成の間」だけ有効な機構上の性質である。schedule が mirakc 側で外部に削除されて observed が無くなった場合（EPG が一度消えて再実体化した等）は、次パスがテンプレートから新規生成する通常の作成として扱われ、固定は及ばない。
+
+差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。ファイル名を変えたい場合はユーザーが overrides で明示的に指定する。
 
 差分対象にするのは `opts.ContentPath` が非 nil かつ非空のときだけ。desired は `SanitizeContentPath(*opts.ContentPath)`、比較相手は observed の生値（POST する値と比較する値を同じにして 1 パスで収束させる）。この区別に列も伝播も要らない。`reservations.base` に contentPath を載せる書き手が存在しないからである（ruler の `computeBase` が意図的に除外している）。そのため effective の非 nil = ユーザーの明示指定と同値になる。**ruler が base に contentPath を載せた瞬間にこの同値が崩れ、テンプレート生成値が差分に混ざって churn が戻る**（これが今でも先に浮かぶ壊し方）。
 
@@ -60,7 +66,13 @@ override の削除（reset）は既存 schedule に反映しない。戻り先�
 
 再作成は `state == "scheduled"` の allowlist の下でだけ起きる。そのため録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
 
-比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。この前提は `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip` が mirakc 4.0.0-dev.0 相当に対して判定している。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
+比較は mirakc が `options.contentPath` をそのまま返す（正規化しない）ことに依存する。この前提は `mirakc 4.0.0-dev.0` 相当の pin に対してだけ判定している。正規化して返す実装だと毎パス再作成になるので、`rokuban_reconcile_pending_diff{action="update"}` がゼロに戻らないことと `reason=content_path` の再作成ログの反復で観測する。
+
+<details><summary>根拠</summary>
+
+- `contentPath` の往復: `internal/mirakc/conformance` の `TestConformance/ContentPathRoundTrip`
+
+</details>
 
 **再作成の POST は observed の `contentPath` を引き継ぐ**（テンプレートから再生成しない）。「差分と見なさない」だけでは priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになり、**priority を変えただけでファイル名が変わる**という副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `schedulesync.ExplicitContentPath` の 1 箇所に集約してある）。
 
@@ -81,7 +93,14 @@ desired にない自分の schedule も、state の allowlist に入る場合だ
 
 削除用 allowlist は再作成用と別にする。終端 schedule は片付けとして DELETE できるが、オプション差分を反映する再作成には使えない。`IsDeleteAllowed` と `IsRecreateAllowed` は別々の集合を定義する。
 
-持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。開始時刻を過ぎても `scheduled` のままの schedule（開始遅延）は allowlist に入るので、desired から外れれば DELETE する（録画はまだ動いていない）。allowlist は `TestIsDeleteAllowed` と `TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates` が固定する。
+持ち越した件数は `rokuban_reconcile_pending_diff{action="delete_deferred"}` とログに出す。state で見送った schedule は `delete` として数えず、全損ブレーカーの削除候補にも含めない。開始時刻を過ぎても `scheduled` のままの schedule（開始遅延）は allowlist に入るので、desired から外れれば DELETE する（録画はまだ動いていない）。
+
+<details><summary>根拠</summary>
+
+- 削除可能な state の集合: `TestIsDeleteAllowed`
+- recording / unknown state の schedule を持ち越すこと: `TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates`
+
+</details>
 
 #### 1 パスの再作成数に上限を設ける
 

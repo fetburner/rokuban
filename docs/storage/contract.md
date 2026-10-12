@@ -30,50 +30,43 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 
 1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ
    temp の EOF へ追記する。ランダムライトはしない
-2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync。MP4 のシーク問題と書きかけファイル問題が同時に消える。
-   scratch の directory 名は Worker の復旧単位から決める。encode は
-   `(recording_id, profile, attempt_count)`、CM detect は `(recording_id, attempt_count)` を使う。
-   CM logo candidate は `(recording_id, attempted_at)` を使う。
-   この 2 つはプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が
-   進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と
-   小さいファイルだけなので、残っても実害は小さいとして許容する。
-   thumbnail と seek tiles は recording ID を接頭辞にして毎回 `MkdirTemp` で作る。
-   **ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は
-   `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。
-   scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
-   `.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` /
-   `.rokuban-media-asset-` で始まる basename は予約名であり、mirakc の contentPath には使わない。
-   1 つ目は ingest temp、2 つ目は旧形式 lock file の予約名、3 つ目は encode の公開前 staging file、
-   4 つ目は thumbnail / seek tiles の公開前 staging file（後述）である。rel_path lock
-   は media root の `.rokuban-locks/` に置く。
-   この directory 名も予約し、`mediapath.Resolve` は DB の `rel_path` として拒否する。
-   encode の staged 出力も
-   同じディレクトリに置く --- scratch から rename すると `EXDEV` になる。
-   canonical path は転送中に触らず、HEAD の長さ照合と、存在する場合の
-   `content.sha256` 照合 → temp の `fsync` → `Close`
-   → DB transaction 内の original 行 INSERT（rel_path の一意 reservation）→ temp
-   を canonical へ atomic rename → 親ディレクトリ `fsync`、の順で進める。
+2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync する。MP4 のシーク問題と書きかけファイル問題が同時に消える。
+   - scratch directory 名は Worker の復旧単位から決める。encode は `(recording_id, profile, attempt_count)`、CM detect は `(recording_id, attempt_count)` を使う。CM logo candidate は `(recording_id, attempted_at)` を使う。
+   - CM detect と CM logo candidate はプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と小さいファイルだけなので、残っても実害は小さいとして許容する。
+   - thumbnail と seek tiles は recording ID を接頭辞にして毎回 `MkdirTemp` で作る。
+   - **ingest は同じ root・同じディレクトリの record 固有 temp へ書く**。temp 名は `.rokuban-ingest-{site}-{record_id}` と決め、プロセス再起動後も同じファイルを開く。scratch から rename すると `EXDEV` になり、コピーへの劣化を許すため確定操作には使わない。
+   - 予約 basename は次の prefix で始まり、mirakc の contentPath には使わない。
+   - `.rokuban-ingest-` / `.rokuban-rel-path-lock-` / `.rokuban-encode-` / `.rokuban-media-asset-` が対象である。
+   - これらの prefix は順に ingest temp、旧形式 lock file、encode staging file、thumbnail / seek tiles staging file を表す。
+   - rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。
+   - encode の staged 出力も同じディレクトリに置く。scratch から rename すると `EXDEV` になるためである。
+   - canonical path は転送中に触らない。
+   - HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。
+   - 次に DB transaction 内で original 行を INSERT して rel_path を予約し、temp を canonical へ atomic rename して親ディレクトリを `fsync` する。
 3. **公開点は DB commit**: DB transaction 内の INSERT は一意性を予約するが、
    他セッションから見える公開ではない。rename と親ディレクトリ `fsync` が成功して
    から transaction を commit し、commit が成功した時点で `media_assets` 行と
-   canonical file の組を公開する。rename 後に fsync または DB commit が失敗した
-   場合は transaction を rollback し、canonical file は orphan として記録・報告する。
-   名前だけでは公開済みか判定できないため、自動 unlink はしない。mirakc record は削除しない。
-   中身の不一致または record の cancel / fail
-   が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
-   **この順序を反転させない**: DB commit 後に rename すると、行が指す実体の
-   欠落を作る。
-   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書く順序は、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないために必要である。区切りごとの fsync のコストは NFS / JuiceFS で未測定である。S3 系 FUSE は原本 ingest 先から外れているので、途中 fsync で fd に書けなくなる実装は対象外である。Linux では
-   遅延した書き込みエラー（ENOSPC / I/O エラー）が `Close` では報告されず `fsync`
-   でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry
-   の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
-   ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime
-   を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ
-   rename すると元のパスは消えるため、回収時に lock は取らず unlink 直前に mtime を再確認する。
-   canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は
-   `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
+   canonical file の組を公開する。
+
+   rename 後に fsync または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として記録・報告する。名前だけでは公開済みか判定できないため、自動 unlink はしない。mirakc record は削除しない。中身の不一致または record の cancel / fail が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
+
+   **この順序を反転させない**: DB commit 後に rename すると、行が指す実体の欠落を作る。
+
+   **ingest のコピー完了には fsync と Close のエラー確認まで含める**。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
+
+   区切りごとの fsync のコストは NFS / JuiceFS で未測定である。S3 系 FUSE は原本 ingest 先から外れているため、途中 fsync で fd に書けなくなる実装は対象外である。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
+
+   ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消えるため、回収時に lock は取らず unlink 直前に mtime を再確認する。
+
+   canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
    の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+
+<details><summary>根拠</summary>
+
+- `.rokuban-locks/` を `rel_path` として受け入れないこと: `mediapath.Resolve`
+
+</details>
 
 ### rel_path lock file の寿命
 
@@ -117,15 +110,13 @@ find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
 ```
 
 旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
-k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は
-旧イメージの実行中 Job が完走するまで新しい Job と並走する。この窓では旧 worker が
-新 worker の gate を知らないまま同じ rel_path を別の inode で lock しうる。
-並走を避けるには、更新の前に media を mount する ScaledJob の新規起動を止め、
-`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。
-新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
-止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に
-lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上の
-コマンドで消す。
+
+k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。
+この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
+
+並走を避けるには、更新前に media を mount する ScaledJob の新規起動を止め、`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
+
+止められない場合は、この並走窓で同じ rel_path を触る ingest / encode / 削除が二重に lock を取りうるリスクを受け入れる。旧形式の残置 file は、全旧 worker の停止後に上のコマンドで消す。
 
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
@@ -134,55 +125,46 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
 の試行が一時的に並走しうる。そのため:
 
-- scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256
-  digest にして basename の長さを抑える。長い名前も作成できる
-  （`TestNewEncodeScratchDirSupportsLongProfileNames`）。
-  掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。
-  各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）
-  directory だけを消す。
-  範囲は `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile` で固定する。
-  並走中の試行は残る（`TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope` /
-  `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`）。
-  他の scope の encode が走っていても、死んだ残骸は消える
-  （`TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`）。
-  作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る
-  （`TestRemoveStaleEncodeScratchWaitsForScratchCreationGate` /
-  `TestNewEncodeScratchDirWaitsForScratchCreationGate`）。
-  各試行は開始時に増えた attempt count を fencing token として公開時に照合する。
-  古い token の試行は canonical を公開できない。ctx cancellation に従わない古い
-  ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる
+- scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
+- 掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。
+- 並走中の試行は残り、他の scope の encode が走っていても死んだ残骸は消える。
+- 作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る。
+- 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
+- ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
 - staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
   rel_path lock の外でストリームコピー + `fsync`** する。
   公開は lock（filesystem lock → tx）の中で、次の順に行う。
   **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
   Upsert → commit**。
   canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
-  通常削除は同じ filesystem lock を取るので、公開と commit の間で lock を離すと、commit 前の行と
-  消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う
+  通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
 - tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
-  一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で
-  （カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら
-  公開しない**。
-  (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が
-  失敗すると、ファイルは後発の中身で行は先発のサイズになる。
-  (a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
-  (b) は成功で飛ばす。(a) は「誰かが済ませた」ではなく「自分の計画が古い」を意味する。
-  行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しい
-  チャプター編集が黙って消える。公開せずに River の snooze で戻し、現在の keep で
-  計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。
-  行が active でない（ごみ箱など）ときは成功で飛ばす
-- (c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、
-  外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では
-  塞げない。desired は `FOR SHARE` で読み、版を外す tx の
-  policy 行ロックと直列化する
-- 通常削除（`deleteMediaAsset`）は同じ filesystem lock を取る。RWX 越しに
-  `flock` が効くかは未検証（ルール 4 と同じ前提）
-- 置き忘れた staging file は孤児候補になる。`walkMediaFiles` は `.rokuban-locks/`
-  と catalog directory を飛ばし、旧形式 lock filename も候補にしない。
-  mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後に、`deleteOrphanFile` が
-  mtime を再確認して lock を取らずに消す。canonical 名の orphan は削除せず、確認を促す Warn と
-  `rokuban_orphan_files_unresolved` に出す。rel_path lock file は Close または次回 GC で消える。
-  拡張子が無いので catalog 無し rescue の対象にはならず、原本へ昇格しない
+  一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で（カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら公開しない**。
+
+  (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が失敗すると、ファイルは後発の中身で行は先発のサイズになる。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
+
+  (b) は成功で飛ばす。(a) は「誰かが済ませた」ではなく「自分の計画が古い」を意味する。行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しいチャプター編集が黙って消える。公開せずに River の snooze で戻し、現在の keep で計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。
+
+  行が active でない（ごみ箱など）ときは成功で飛ばす。
+- (c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では塞げない。desired は `FOR SHARE` で読み、版を外す tx の policy 行ロックと直列化する。
+- 通常削除は同じ filesystem lock を取る。RWX 越しに `flock` が効くかは未検証（ルール 4 と同じ前提）。
+- 置き忘れた staging file は孤児候補になる。`.rokuban-locks/` と catalog directory と旧形式 lock filename は走査から除外する。
+- mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後、canonical 名でない孤児を lock なしで消す。mtime は unlink 直前に再確認する。canonical 名の orphan は削除せず、確認を促す Warn と `rokuban_orphan_files_unresolved` に出す。
+- rel_path lock file は Close または次回 GC で消える。拡張子が無い staging file は catalog 無し rescue の対象にはならず、原本へ昇格しない。
+
+<details><summary>根拠</summary>
+
+- 長い profile 名を扱う scratch directory: `TestNewEncodeScratchDirSupportsLongProfileNames`
+- scratch cleanup の同じ record/profile 範囲: `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile`
+- 同じ scope の実行中 attempt を残す: `TestRemoveStaleEncodeScratchKeepsLiveAttemptOfSameScope`
+- encode worker cleanup が active attempt を skip する: `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`
+- 別 scope の実行中 encode がいても stale scratch を掃除する: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
+- scratch cleanup が作成 gate を待つ: `TestRemoveStaleEncodeScratchWaitsForScratchCreationGate`
+- 新しい scratch directory の作成が gate を待つ: `TestNewEncodeScratchDirWaitsForScratchCreationGate`
+- remove と publish の同じ filesystem lock: `deleteMediaAsset`
+- staged file の walk と削除: `walkMediaFiles`、`deleteOrphanFile`
+
+</details>
 
 ### 字幕サイドカー
 
@@ -194,19 +176,24 @@ libaribcaption のテキスト化により Unicode 私用領域または近似�
 
 ### thumbnail / seek tiles の公開
 
-thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして
-`MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の
-実行が重なっても scratch file を共有しない（`TestNewWorkerScratchDirIsUniqueForSameRecording`）。
-完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして
-file `fsync` する。次に rel_path filesystem lock → transaction の順に取る。
-transaction 内で active な派生行と原本の生存を再確認し、派生行がまだ無く原本も active なら media asset row を予約する。その後 staged
-file を canonical へ rename して親 directory を `fsync` し、最後に commit する。先行 job が
-すでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
+thumbnail と seek tiles の ffmpeg 出力先は recording ID を接頭辞にして `MkdirTemp` で作る scratch directory とする。毎回 suffix が異なるため、同じ recording の実行が重なっても scratch file を共有しない。
+
+完成後は canonical と同じ directory の `.rokuban-media-asset-` staged file にコピーして file `fsync` する。次に rel_path filesystem lock → transaction の順に取る。
+
+transaction 内で active な派生行と原本の生存を再確認する。派生行がまだ無く原本も active なら media asset row を予約し、staged file を canonical へ rename して親 directory を `fsync` した後に commit する。
+
+先行 job がすでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
 staged file は予約名付きの orphan 候補として mtime 猶予と aging の後に回収する。回収時に
 lock は取らず mtime を再確認する。拡張子によらず catalog 無し
 rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が
 途中の画像を観測する窓を作らない。
+
+<details><summary>根拠</summary>
+
+- 同じ recording の並行実行で scratch directory を共有しないこと: `TestNewWorkerScratchDirIsUniqueForSameRecording`
+
+</details>
 
 ### catalog 世代の公開
 
@@ -300,40 +287,71 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 アーカイブ（`media_assets`）は `site` 列を持たず単一だが、原本の `rel_path` は mirakc の contentPath 由来でサイトスコープの名前である。2 サイトが同じ contentPath で録ると、同じ実ファイルを取り合う。DB は `rel_path` の一意索引で片方の commit を落とすが、実ファイルは先に書いた方が上書きされて壊れる。そのため**原本は `sites/{site}/` を前置する**。
 
 - **トップレベルの予約ディレクトリは `catalog/` / `thumbnails/` / `sites/` の 3 つ**。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する予約ディレクトリである。`thumbnails/` はサムネイルの名前空間（§5.1）、`sites/` が site スコープの原本の名前空間である
-- **前置の 1 段目を site 名そのもの（`{site}/...`）にせず、固定の `sites/` を挟む**。当初案（site 名を先頭成分にする）は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する。例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書いていて、かつ site 名が `tokyo` だと、新規 ingest の rel_path が既存行と同じになる。すると一意索引が効く前に、実ファイルが上書きされる。site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない。`sites/` を固定の 1 段目に挟むことで、新規 ingest の rel_path は必ず `sites/` から始まる。それ以前の既存行が `sites/` から始まっていない限り、構造的に衝突しない
-- **前置するのは ingest（`internal/worker/ingest.go` の `determineRelPath`）であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。そのためここで前置すれば、入力（reconciler が生成する contentPath の形や、ユーザーが書く `filename_template` の内容）に関わらず名前空間が保たれる
-- **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと前置前の相対パスは `.`（カレントディレクトリ）になる。前置後は `sites/{site}/.` が `Join`/`Clean` で `.` が消えて `sites/{site}` という一見正当なパスになり `mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作ってしまい、以後その site 配下の ingest が全て `MkdirAll` で「not a directory」になる。`determineRelPath` は前置前に相対パスが `.` であることを明示的に検査して弾く
-- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収の走査（`internal/worker/delete_reconcile.go` の `walkMediaFiles`）は symlink かどうかを見ずに台帳と突き合わせる。そのため未知の canonical 名になったリンクは孤児として報告されるが、自動削除はしない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ（`(dev, ino)` による検出はスキャンをまたぐと inode がバックアップ復元で変わるため実装しない）。rescue の走査と `inplace.Register` は symlink だけを弾く
-- **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査はどちらも symlink を辿らないため、配下のファイルは孤児候補にすらならず rescue からも見えない（災害復旧で救えない）。symlink エントリ自身は孤児として報告されるが、自動削除はしない。リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける
-- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。**成り立つのは、走査 2 本が root を `filepath.EvalSymlinks` で解決してから walk しているからである**。走査 2 本とは、rescue の `rescueStorage` と削除 reconcile の `walkMediaFiles` である。**この解決を外すと両方とも黙って壊れる**。`filepath.Walk` / `WalkDir` は root を `Lstat` して `IsDir()` が false ならコールバックを 1 回呼んで終わる。そのため rescue は 0 件のまま「成功」する（災害復旧が最も要る場面だけが壊れる）。削除 reconcile は `seenOnDisk` が `.` の 1 件になるため、全損セーフガード（走査が 0 件なら記録を見送る）も働かない。その結果 `active` な行が全件「実体無し」と誤報される。解決した値は root だけでなく、`catalog/` の除外判定と `rel_path` の基準にも同じものを使う（片方だけ解決すると `filepath.Rel` が `../` を積んだ rel_path を返し、台帳と一致しなくなる）。root を解決することと、配下にリンクを作らないこと（上の 2 つ）は別の話である。片方をもう片方の根拠にしない
+- **前置の 1 段目は site 名そのもの（`{site}/...`）ではなく固定の `sites/` にする**。当初案は、前置前に ingest 済みの既存行の先頭成分と site 名が偶然一致すると衝突する。
+
+  例えば `filename_template` が `"tokyo/..."` のような静的接頭辞を書き、site 名も `tokyo` だと、新規 ingest の rel_path が既存行と同じになる。一意索引が効く前に実ファイルが上書きされる。
+
+  site 名の構文 `^[a-z0-9]([_-]?[a-z0-9])*$` は日付ディレクトリ名や `anime` のような静的な語も許すため、理論上だけの懸念ではない。
+
+  固定の `sites/` を 1 段目に挟むと、新規 ingest の rel_path は必ず `sites/` から始まる。それ以前の既存行が `sites/` から始まっていない限り、構造的に衝突しない。
+- **前置するのは ingest であって、contentPath テンプレートではない**。ingest は原本 `rel_path` の唯一の書き手である。ここで前置すれば、reconciler が生成する contentPath やユーザーの `filename_template` の内容に関わらず名前空間が保たれる。
+- **前置は空の相対パスを通す前に弾く。** contentPath / Content.Path がどちらも空だと、前置前の相対パスは `.`（カレントディレクトリ）になる。
+
+  前置後は `sites/{site}/.` の `.` が `Join` / `Clean` で消え、`sites/{site}` という一見正当なパスになり、`mediapath.Resolve` の脱出検知を通ってしまう。すると一時ファイル作成が `{media_dir}/sites/{site}` を通常ファイルとして作り、その後その site 配下の ingest が `MkdirAll` で not a directory になり失敗し続ける。
+
+  ingest は前置前に相対パスが `.` であることを明示的に検査して弾く。
+- **`media_dir` 配下に、録画の実体を指すリンクを作らない（symlink / hard link）**。孤児回収は symlink かどうかを見ずに台帳と突き合わせる。未知の canonical 名になったリンクは孤児として報告するが、自動削除しない（`mediapath.Resolve` は字句判定のみで symlink を評価しない）。
+
+  hard link は regular file と区別できず、同じ実体に live な録画が 2 行並ぶ。`(dev, ino)` による検出は、スキャンをまたぐと inode がバックアップ復元で変わるため実装しない。rescue の走査と in-place 登録は symlink だけを弾く。
+- **ディレクトリへの symlink も作らない。** rescue と孤児回収の走査は symlink を辿らないため、配下のファイルは孤児候補にも rescue にも見えず、災害復旧で救えない。symlink エントリ自身は孤児として報告するが、自動削除しない。
+
+  リンク先が `media_dir` 内を指す構成では、配下の active 行が実体無しとして誤報され続ける。
+- **`media_dir` 自身が symlink であることは許す**（`/var/lib/rokuban/media -> /mnt/disk1/media`）。rescue と削除 reconcile の両方が root を `filepath.EvalSymlinks` で解決してから walk するためである。
+
+  この解決を外すと両方とも黙って壊れる。`filepath.Walk` / `WalkDir` は symlink root に `Lstat` し、`IsDir()` が false なら callback を 1 回呼んで終わる。rescue は 0 件のまま「成功」する（災害復旧が最も要る場面だけが壊れる）。
+
+  削除 reconcile は `seenOnDisk` が `.` の 1 件になるため、全損セーフガード（走査結果が 0 件なら記録を見送る）が働かない。その結果 `active` 行を全件「実体無し」と誤報する。
+
+  解決した値は root だけでなく、`catalog/` の除外判定と `rel_path` の基準にも同じものを使う。片方だけ解決すると、相対パスは `../` を含み台帳と一致しなくなる。
+
+  root を解決することと配下にリンクを作らないこと（上の 2 つ）は別の話であり、片方をもう片方の根拠にしない。
 - **サムネイルは `thumbnails/{recording_id}.jpg` のまま**（§5.1）。原本の contentPath に依存しないので `sites/` 前置の影響を受けない（構造的に衝突しない）
-- **派生物は原本の dir を引き継ぐので自動的に前置される**（`EncodedRelPath`、[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/20240101/....m2ts` なら、派生物は `sites/tokyo/20240101/...._h264.mp4` になる
+- **派生物は原本の dir を引き継ぐので自動的に前置される**（[retention.md](retention.md) §6 参照）。原本が `sites/tokyo/20240101/....m2ts` なら、派生物は `sites/tokyo/20240101/...._h264.mp4` になる
 - **原本と encoded の全行は `sites/{site}/` 前置済みである。** 前置なしの行は worker の起動時検査で拒否する
-- **2 種類の予約を分けて理解する。** どちらも `internal/config` にコードがあるが、根拠が違う:
-  1. **トップレベルディレクトリ名の予約**（`catalog` / `thumbnails` / `sites` の 3 つ）。これは**今も load-bearing**: `catalog/` は削除 reconcile の孤児回収と rescue スキャンが SkipDir する対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間。この 3 つのいずれかを一般のディレクトリ名として使うと実際に壊れるので、この予約は外せない
-  2. **site 名としての `catalog` / `thumbnails` の禁止**（`internal/config.reservedSiteNames`）。導入時の根拠は「`{site}/` を先頭成分にする前提で、site 名がこの 2 つと一致するとトップレベル予約ディレクトリと直接衝突する」だった。だが `sites/` を挟んだことで、site 名は常に `sites/{site}/...` に閉じ込められる。トップレベルの `catalog/` / `thumbnails/` とは構造的に衝突しなくなった。**この禁止を残しているのはパス衝突を防ぐためではない**。緩めても得られる自由度（`catalog` / `thumbnails` を site 名にしたい運用要求は無い）が、緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないためである。`sites` 自体を site 名にすることは禁止する必要がない（`sites/sites/...` になるだけで衝突しない）
+- **2 種類の予約を分けて理解する。** トップレベルディレクトリ名の予約と site 名の禁止は、根拠が異なる。
+  1. **トップレベルディレクトリ名の予約**は `catalog` / `thumbnails` / `sites` の 3 つである。`catalog/` は削除 reconcile の孤児回収と rescue スキャンが読み飛ばす対象、`thumbnails/` はサムネイルの名前空間、`sites/` は本節の原本の名前空間である。いずれも一般のディレクトリ名として使うと壊れるため、この予約は外せない。
+  2. **site 名としての `catalog` / `thumbnails` は禁止する**。導入時は `{site}/` を先頭成分にしており、この 2 つはトップレベル予約ディレクトリと直接衝突していた。`sites/` を挟んだ今は、site 名が `sites/{site}/...` に閉じるため、トップレベルの `catalog/` / `thumbnails/` と構造的に衝突しない。
+
+     この禁止を残すのはパス衝突を防ぐためではない。`catalog` / `thumbnails` を site 名にしたい運用要求がなく、禁止を緩める自由度がバリデーションとテストの変更コストに見合わないためである。`sites` 自体を site 名にしても `sites/sites/...` となるだけで衝突しない。
+
+<details><summary>根拠</summary>
+
+- `.rokuban-locks/` を `rel_path` に使わない検査: `mediapath.Resolve`
+- `sites/{site}/` の前置と空 path の拒否: `internal/worker/ingest.go` の `determineRelPath`
+- 孤児回収の file walk と root symlink の解決: `internal/worker/delete_reconcile.go` の `walkMediaFiles`
+- rescue が root symlink を解決し、in-place 登録時に symlink を拒否すること: `rescueStorage`、`inplace.Register`
+- `catalog/` の除外と相対パスの基準に同じ root を使うこと: `filepath.Rel`
+- 派生物の `rel_path` を作る関数: `EncodedRelPath`
+- 予約ディレクトリと site 名の定義: `internal/config`, `internal/config.reservedSiteNames`
+
+</details>
 
 ## 5.1 サムネイル
 
 録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る
 （`UNIQUE (recording_id, kind, profile)`）。
 
-- **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ
-  unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な
-  thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」
-  ことである。ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）
-  が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん
-  ffmpeg を無駄打ちするだけになる。ingest 後の対象限定パスと `thumbnail_reconcile`
-  の全件パスは同じ候補 query を使う。delete reconcile が原本の実体無しを確認した
-  `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが
-  消えれば、次のパスで再び候補になる。命令的チェーン（「ingest 成功 → 必ず thumbnail」）
-  は採らない
+- **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」ことである。
+  - ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん ffmpeg を無駄打ちするだけになる。
+  - ingest 後の対象限定パスと `thumbnail_reconcile` の全件パスは同じ候補 query を使う。
+  - delete reconcile が原本の実体無しを確認した `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが消えれば、次のパスで再び候補になる。
+  - 命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない。
 - **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は
   原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は
   CM 検出を待たず、従来どおり原本から作る。設定キーは設けない
 - **CM 検出後の選び直し**: 同じ `min(尺 × 10%, 30s)` ポリシーを、CM 区間を除いた
   keep の合計尺に適用する。原本またはカットしない encoded 版ではその位置を
-  `UnmapMs(keep, seek)` で原本時間軸へ写して抽出する。カット版では凍結した
+  原本時間軸へ写して抽出する。カット版では凍結した
   `media_asset_cuts.keep_ranges` の合計尺で位置を決め、抽出位置を同じ凍結 keep から
   原本時間軸へ戻す。カット版の尺は ffprobe せず凍結 keep の合計を使う
 - **再選択入力**: active かつ `missing_media_assets` に無い原本を優先し、次に
@@ -347,8 +365,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
   録画を recording ID の窓で巡回し、Go の共通判定で対象だけを投入する。ごみ箱は除外し、
   `seek_tiles` や初回生成とは別の再開位置を持つ。CM 検出の保存後に 1 件ヒントを出すが、
   ヒントはベストエフォート。手動編集は次の窓で拾う
-- **時間軸**: `ffargs.CutFilterComplex` は入力の最早 `start_time` を 0 とする秒で
-  カット境界を適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ
+- **時間軸**: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ
   数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` /
   `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まる
   ことがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。
@@ -366,6 +383,16 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 - **位置の事実**: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の
   `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
+
+<details><summary>根拠</summary>
+
+- ごみ箱の録画をサムネイル配信対象から除くこと: `GetThumbnailMediaAssetForServing`
+- ingest 後の対象限定パスと全件パスが同じ候補を使うこと: `thumbnail_reconcile`
+- 原本の実体が見つからない状態の除外: `missing_media_assets`
+- keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`
+- 入力の時間原点を 0 にしてカット境界を適用すること: `ffargs.CutFilterComplex`
+
+</details>
 
 ## 5.2 シークプレビュー用タイル
 

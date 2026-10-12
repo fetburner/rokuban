@@ -88,10 +88,18 @@ clean なファイルでは「誤検知がないこと」しか確かめられ�
 
 ### 5.3 リトライ設計（3 層）
 
-- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`internal/mirakc/conformance` が mirakc 4.0.0-dev.0 相当に対して判定している。対象は `TestConformance/CompletedRecordStreamAndDelete`（完了後）と `TestConformance/RecordingInProgress`（録画中）である。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
+- `GET /records/{id}/stream` は **Range ヘッダー対応** → `Range: bytes=N-` で途中再開可能。`mirakc 4.0.0-dev.0` 相当の pin に対して、完了後と録画中の Range 応答を判定している。録画中の Range 応答は `Content-Range: bytes N-M/*` のように総サイズが `*`（不明）になる（実測。Content-Length 自体は具体値を返す）
 - **フィルタ併用時は Range を黙って無視して 200 になる**。ingest は素の TS が欲しいのでフィルタなしで pull する。
 - Range を無視した 200 は offset 0 だけ受理する。途中再開の offset > 0 では拒否する（ソース確認。`mirakc-core/src/web/api/recording/records/stream.rs`。conformance テストはフィルタを併用しないので未判定）
-- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）。そのため HEAD を打つのは下記「層 3」のとおり録画完了後に限る。これらは mirakc 4.0.0-dev.0 相当に対して判定されている。`TestConformance/RecordingInProgress` は録画中に `-1` を返すことを判定している。`TestConformance/CompletedRecordStreamAndDelete` は完了後の Content-Length 一致を判定している
+- **HEAD エンドポイントあり** → 転送せず正確な Content-Length を取得できる。ただし録画中は Content-Length を返さない（`HeadRecordStream` は `-1`。黙って `-1` を長さとして使うと ingest がゼロ長ファイルを正しいものとして扱いかねない）。そのため HEAD を打つのは下記「層 3」のとおり録画完了後に限る。実測では録画中に `-1` を返し、完了後は Content-Length と一致する。ここまでの実測は `mirakc 4.0.0-dev.0` 相当の pin に対する判定であり、他の版では未判定である
+
+<details><summary>根拠</summary>
+
+- 測定対象の pin: `mirakc 4.0.0-dev.0`
+- 完了後の Range と HEAD の Content-Length: `internal/mirakc/conformance` の `TestConformance/CompletedRecordStreamAndDelete`
+- 録画中の Range と HEAD の Content-Length=-1: `internal/mirakc/conformance` の `TestConformance/RecordingInProgress`
+
+</details>
 
 #### 層 1: 接続断の再開（ジョブ内リトライループ）
 
@@ -109,11 +117,11 @@ reader は `Range → 追い付き時の status → 待つ` を繰り返す。�
 
 #### 層 2: ジョブ契約によるプロセス死の回収
 
-`IngestJobArgs.Spec().Timeout` は 5 分、1 回の replay と転送の区切りは 4 分である。残り 1 分は HEAD、SHA-256 確認、fsync、DB commit に使う。区切りを有限にすることで、録画全体の長さや低速回線に依存せず、queue adapter が停止した Work を回収できる。`TestIngestWorker_TimeoutFitsBeforeRescue` はこの timeout と区切りの値を固定する。
+`IngestJobArgs.Spec().Timeout` は 5 分、1 回の replay と転送の区切りは 4 分である。残り 1 分は HEAD、SHA-256 確認、fsync、DB commit に使う。区切りを有限にすることで、録画全体の長さや低速回線に依存せず、queue adapter が停止した Work を回収できる。
 
 `worker.rescue_stuck_jobs_after` の既定は 6 分で、ingest の `Spec.Timeout` 5 分と既定 job timeout 1 分より長い。River adapter の JobRescuer は設定した閾値と `Spec.Timeout` の長い方を待つため、プロセス死で実行中のまま残った ingest job は約 6 分で再試行対象になる。長い timeout を持つ kind は、その timeout が経過するまで待つ。
 
-生きている Work は 4 分の区切りで temp を fsync し、SHA-256 の binary state と offset を `.checkpoint` sidecar に保存して `jobq.Snooze(0)` を返す。snooze は同じ Args の再配送を依頼し、試行回数を消費しない。この挙動は `TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` で jobqfake を使って固定する。
+生きている Work は 4 分の区切りで temp を fsync し、SHA-256 の binary state と offset を `.checkpoint` sidecar に保存して `jobq.Snooze(0)` を返す。snooze は同じ Args の再配送を依頼し、試行回数を消費しない。jobqfake で同じ Args の再配送を固定している。
 
 checkpoint の offset が temp サイズ以下なら、保存した hash state を復元して残りのバイトだけを replay する。checkpoint が無い、破損している、または offset が temp サイズを超える場合は先頭から全量 replay する。replay 自体が区切りに達した場合も途中状態を保存して snooze するため、大きな temp の再試行が毎回先頭から始まらない。
 
@@ -125,18 +133,22 @@ SHA-256 state の書き込みと読み出しは temp の flock を保持した�
 
 SIGTERM による停止では Work context が `Canceled` になる。5 分の deadline 超過は `DeadlineExceeded` として失敗に数え、停止中断は最終結果のメトリクスへ数えない。checkpoint 保存が区切りに達する前の停止では、次の Work が最後の保存位置から残りを replay する。
 
+<details><summary>根拠</summary>
+
+- Work timeout と有限区切り: `TestIngestWorker_TimeoutFitsBeforeRescue`
+- checkpoint 後の snooze が試行回数を消費しないこと: `TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics`
+
+</details>
+
 #### 層 3: 完全性検証とコミット
 
 pull 完了後に書き込みバイト数を HEAD の Content-Length と照合する。finished を観測した record では、同じ転送バイト列の SHA-256 と `content.sha256` も照合する。Range 再開を含む全バイトを 1 パスで計算する。これは stream レスポンスの Digest / ETag ヘッダーではない。
 
-`content.sha256` が `null` または欠落している場合、finished 後の mirakc がハッシュを計算中の可能性がある。
-finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消す。
-同じ Args を snooze して待つため、worker 枠を占有しない。
-次の Work は record 固有 temp を使い、毎回 temp を replay しない。
-`TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics` は jobqfake の連続した再配送で `attempt=1` が保たれることを確認する。
-`TestIngestWorker_CompletesUntilLateContentSHA256` は hash 到着後の `verified` commit を確認する。
+`content.sha256` が `null` または欠落している場合、finished 後の mirakc がハッシュを計算中の可能性がある。finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消す。同じ Args を snooze して待つため、worker 枠を占有しない。次の Work は record 固有 temp を使い、毎回 temp を replay しない。jobqfake の連続した再配送で `attempt=1` が保たれる。
 
-待ちの期限は転送済みバイト数を速度見積もりで割って決め、mirakc の `recording.endTime` を起点にする。値が nil または未来なら temp の mtime を使う。報告された実測は 2.35 GB の読み直しに約 4 分（約 9.8 MB/s）で、25% の余裕を含めて 7.8 MB/s とする（計測点が 1 件のため設定キーにはしない）。下限は 10 秒で、地デジ 30 分（約 3.8 GB）では約 8 分、BS 2 時間（約 20 GB）では約 43 分になる。期限後もハッシュが無ければ `timeout_skipped` で commit する。HEAD の長さが不明（`-1`）なら転送完了を先に判定できないため待たずに commit する。実機での新しい待ち時間は未検証。期限の起点は `TestIngestSHA256WaitDeadline` で確認する。
+hash 到着後は `verified` で commit する。
+
+待ちの期限は転送済みバイト数を速度見積もりで割って決め、mirakc の `recording.endTime` を起点にする。値が nil または未来なら temp の mtime を使う。報告された実測は 2.35 GB の読み直しに約 4 分（約 9.8 MB/s）で、25% の余裕を含めて 7.8 MB/s とする（計測点が 1 件のため設定キーにはしない）。下限は 10 秒で、地デジ 30 分（約 3.8 GB）では約 8 分、BS 2 時間（約 20 GB）では約 43 分になる。期限後もハッシュが無ければ `timeout_skipped` で commit する。HEAD の長さが不明（`-1`）なら転送完了を先に判定できないため待たずに commit する。実機での新しい待ち時間は未検証。
 
 空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
@@ -170,11 +182,21 @@ rename 前の失敗なら、残った temp を replay して pull を続けら�
 
 運用上の主なリスクは**長時間の転送失敗でエッジのリングバッファが溜まり続ける**こと。`IngestWorker` 自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も record_sweep（5 分周期の定期全量突き合わせ。[watcher.md](watcher.md) §3.3 の (c)）が同じ finished record を見つける。そして `processRecord` が同一トランザクションで ingest ジョブを再投入し続ける。「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせてアラートする（[storage.md](../storage.md) のサイジング指針参照）。
 
-**帰結はディスクだけではない。** 滞留が `epg.retention_grace`（既定 24h）を跨ぐと、その録画の encode policy は予約から解決できず既定値で凍結される（エンコードが投入されない）。原本は残るのでデータは失われない。`recordings.source` と `rule_id` がどうなるかは、その録画の `recordings` 行が作られたのが GC より前か後かで分かれる。作成時にまだ予約が引ければどちらも通常どおり書かれ、影響は encode policy の凍結だけにとどまる。作成が GC 後にずれ込んだ場合は `rule_id` が NULL になり `source` も `unattributed` に落ちる。**このケースは下記 §5.5 の `encode_reconcile` でも回復しない**（desired が空になるので候補に入らない）。詳細と、滞留の型ごとに見るメトリクスが分かれること（**未 ingest 総量は回線断の滞留を数えない**）は [storage.md](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」と [operations.md](../operations.md) §4。
+**帰結はディスクだけではない。** 滞留が `epg.retention_grace`（既定 24h）を跨ぐと、その録画の encode policy は予約から解決できず既定値で凍結される（エンコードが投入されない）。原本は残るのでデータは失われない。`recordings.source` と `rule_id` がどうなるかは、その録画の `recordings` 行が作られたのが GC より前か後かで分かれる。作成時にまだ予約が引ければどちらも通常どおり書かれ、影響は encode policy の凍結だけにとどまる。
+
+作成が GC 後にずれ込んだ場合は `rule_id` が NULL になり `source` も `unattributed` に落ちる。**このケースは下記 §5.5 の `encode_reconcile` でも回復しない**（desired が空になるので候補に入らない）。詳細と、滞留の型ごとに見るメトリクスが分かれること（**未 ingest 総量は回線断の滞留を数えない**）は [storage.md](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」と [operations.md](../operations.md) §4。
 
 **`canceled` / `failed` の record は誰も回収しない。** ingest は commit しないのでエッジの record を消さず、mirakc にも record の保持期限は無い。後継の試行が同じ content path を上書きした場合、中身は後継の commit 時の purge で消え、record の JSON だけが残る。中身が残り続けるのは後継が無い場合（番組途中の失敗、再予約されない取消）だけである。このときエッジの部分ファイルは唯一のデータなので、消さないことを許容する。
 
 **この record を `purge=true` で素直に回収してはならない。** mirakc の `remove_record` は content path を共有する別の record を見ずにファイルを消す。後継の録画のファイルまで消える。未解決: 同じ content path を持つ生きた record が無いものだけを回収する経路と、残った部分を手動で原本に採用する経路。どちらもまだ書き手が無い。
+
+<details><summary>根拠</summary>
+
+- hash 到着待ちで同じ Args を再配送し、`attempt=1` を保つこと: `TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics`
+- late hash の到着後に verified commit すること: `TestIngestWorker_CompletesUntilLateContentSHA256`
+- SHA-256 待ちの期限起点: `TestIngestSHA256WaitDeadline`
+
+</details>
 
 #### 冪等性: コミット済みなら転送をやり直さない
 
@@ -189,7 +211,9 @@ ingest と通常削除の競合を直列化する。canonical orphan は削除�
 `checkRelPathConflict` / `GetLiveMediaAssetByRelPath`
 は転送前の安価なヒントであり、転送中は lock を保持しない。
 
-各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。通常削除は同じ rel_path filesystem lock を使うため、公開と unlink の競合は直列化される。転送前の `GetLiveMediaAssetByRelPath` はヒントであり、最終判断は一意索引と適用時の状態遷移に残る。
+各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
+
+通常削除は同じ rel_path filesystem lock を使うため、公開と unlink の競合は直列化される。転送前の `GetLiveMediaAssetByRelPath` はヒントであり、最終判断は一意索引と適用時の状態遷移に残る。
 
 - **rel_path の filesystem lock は公開・通常削除の区間だけに使う。**
 canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
@@ -221,7 +245,9 @@ ingest commit と通常削除は同じ `rel_path` の予約 lock file に対す�
 
 **同一トランザクションでの投入はしない**。`media_assets` のコミット後に、対象録画を指定した `encode_reconcile` を best-effort で積む。判定は定期パスと同じ query を使うため、ヒント側に不足分の判定を持たない。投入に失敗してもログのみで、コミット済み ingest は巻き戻さない。
 
-**落としたヒントは定期パスが埋める**。ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブである（`internal/worker/encode_reconcile.go`、既定 15 分周期）。専用クエリが desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の不足分を一括取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
+**落としたヒントは定期パスが埋める**。ヒント投入の失敗とエッジ record の削除成功（`DeleteRecord`。上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず黙ってエンコードされないまま残る。これを塞ぐのが `encode_reconcile` ジョブである（`internal/worker/encode_reconcile.go`、既定 15 分周期）。
+
+専用クエリが desired（`recording_encode_policy.encode_profiles`）− observed（active な `encoded` の `media_assets`）の不足分を一括取得する。取得するのは不足している `(recording_id, profile)` であり、それを queue に投入する。真実は DB の状態であって「ヒントが飛んだかどうか」ではない（不変条件 5）。
 
 対象は「原本（`kind='original'`）が active でコミット済み」かつ「ごみ箱に入っていない」録画に限る（ingest 未完了の録画とユーザーが捨てた録画を掘り起こさない）。エンコードは site の属性を持たない（アーカイブもプロファイルも単一）ので、このジョブは record_sweep のような site 単位ではなく全体で 1 本。`worker.periodic_jobs: false` の構成では、`rokuban enqueue encode-reconcile` を CronJob から叩く。一覧は [operations/monitoring.md](../operations/monitoring.md) の CronJob 一覧にある。
 
@@ -229,12 +255,11 @@ ingest commit と通常削除は同じ `rel_path` の予約 lock file に対す�
 
 対象録画の即時パスは poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
-**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、`tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。
-`media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。
-計測済みの判定は view `current_ts_scanned_originals` にまとめてある。理由は [削除エンジン](../storage/retention.md) の「削除可否の述語に名前を与える」を参照。
-候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。
-KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。この動作は `TestTSScanReconcile_ContinuationSurvivesFreshWorker` で固定する。
-scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
+**TS scan も定期パスで不足分を埋める**。`ts_scan` は active な original を先頭から全体読み、`tsstat.Counter` で `drop_stats` / `drop_positions` を置き換える。`media_asset_ts_scans` には計測サイズを記録し、サイズが変われば再計測する。ごみ箱の録画と `missing_media_assets` の原本は候補から除外する。計測済みの判定は view `current_ts_scanned_originals` にまとめてある。理由は [削除エンジン](../storage/retention.md) の「削除可否の述語に名前を与える」を参照。
+
+候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、advisory lock は持たない。
+
+timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。scan は ingest の後に原本を全量読む。追加読み出しのコストは未検証である。
 
@@ -244,23 +269,21 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 
 **挙動の変更**: このパスが入るまで、25 回失敗して discarded になった encode ジョブはそこで止まっていた。これからは `encoded` が生まれない限り 15 分ごとに投入し直す（River の一意制約は pending 状態にしか効かず、discarded 済みの引数には合流しない）。真実は River のジョブ履歴ではなく `media_assets` の有無なのでレベルトリガーとしては意図通りだが、**恒久的に失敗するエンコードは「静かに諦める」から「延々と再試行する」に変わる**。
 
-**窓を回す**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、「毎パス先頭から」窓を開くと永久に満たせない候補（録画単位の恒久失敗）が先頭に溜まったとき、それより後ろの録画に到達できなくなる。これを避けるため、窓は前パスが止まった位置の続きから開き、末尾に達したら先頭へ戻る（再開位置はプロセスローカルで永続化しない）。1000 件はこれにより「1 パスのコストの上限」という意味だけを持つ純粋なつまみになり、被覆は候補集合の大きさに応じて有限パス数で完了する。窓が埋まったパスは `rokuban_encode_reconcile_candidates` ゲージで見える。`resume_after` フィールドを持つ Warn / pass-complete Info ログでも見える（回転が実際に進んでいることを確かめる唯一の手段）。再開位置を失う（プロセス再起動）と挙動は「毎パス先頭から」に戻るだけで、悪化はしない。
+**窓を回す**: 候補は `recording_id` 昇順で 1000 件に切る。このパス自身は候補を減らさない（減らすのは encode の完了）ため、「毎パス先頭から」窓を開くと永久に満たせない候補（録画単位の恒久失敗）が先頭に溜まったとき、それより後ろの録画に到達できなくなる。これを避けるため、窓は前パスが止まった位置の続きから開き、末尾に達したら先頭へ戻る（再開位置はプロセスローカルで永続化しない）。1000 件はこれにより「1 パスのコストの上限」という意味だけを持つ純粋なつまみになり、被覆は候補集合の大きさに応じて有限パス数で完了する。
+
+窓が埋まったパスは `rokuban_encode_reconcile_candidates` ゲージで見える。`resume_after` フィールドを持つ Warn / pass-complete Info ログでも見える（回転が実際に進んでいることを確かめる唯一の手段）。再開位置を失う（プロセス再起動）と挙動は「毎パス先頭から」に戻るだけで、悪化はしない。
+
+<details><summary>根拠</summary>
+
+- TS scan の継続カーソルが新しい worker で再開すること: `TestTSScanReconcile_ContinuationSurvivesFreshWorker`
+
+</details>
 
 ### 5.6 転送の途中経過を見せる
 
-`recordings.status = finished` は **mirakc の録画完了**であって取り込み完了ではない。原本が
-コミットされるまでブラウザ再生も事後エンコードもできないが、その時間帯を表すものが
-`sizeBytes` の省略しか無かったため、遅い回線（実測で数百 KB/s 台）では**止まっているのか
-進んでいるのか判別できなかった**。ingest worker は転送中に
-`recording_ingest_progress`（[schema/recordings.md](../schema/recordings.md) §5 の衛星表）へ
-書けたバイト数を写し、api はそれを `Recording.ingest` として返す。転送開始を表す
-`written_bytes=0` は進捗の間引き時計に含めず、最初にファイルへ書けた値は直ちに記録する。
-その後の更新だけを最短 2 秒間隔にし、継続ストリームで DB 書き込みが Copy バッファ単位に
-増えないようにする。接続断を含め、バイトを書けた転送試行が終わるときは、間引かれていた
-最新値を記録してから再開または終了する。0 バイトで終わった試行は進捗ではないので
-`observed_at` を更新しない。この挙動は `TestIngestWorker_ProgressVisibleDuringTransfer` /
-`TestIngestProgressReporter_ThrottlesContinuedWrites` が固定している。
-`TestIngestWorker_ProgressFlushesInterruptedBurst` も同じである。
+`recordings.status = finished` は **mirakc の録画完了**であって取り込み完了ではない。原本がコミットされるまでブラウザ再生も事後エンコードもできないが、その時間帯を表すものが `sizeBytes` の省略しか無かったため、遅い回線（実測で数百 KB/s 台）では**止まっているのか進んでいるのか判別できなかった**。ingest worker は転送中に `recording_ingest_progress`（[schema/recordings.md](../schema/recordings.md) §5 の衛星表）へ書けたバイト数を写し、api はそれを `Recording.ingest` として返す。
+
+転送開始を表す `written_bytes=0` は進捗の間引き時計に含めず、最初にファイルへ書けた値は直ちに記録する。その後の更新だけを最短 2 秒間隔にし、継続ストリームで DB 書き込みが Copy バッファ単位に増えないようにする。接続断を含め、バイトを書けた転送試行が終わるときは、間引かれていた最新値を記録してから再開または終了する。0 バイトで終わった試行は進捗ではないので `observed_at` を更新しない。
 
 **進捗の置き場は衛星表**（ジョブ引数でも `record_sync` でもない）。理由は 3 つとも別方向:
 
@@ -270,18 +293,11 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 - `recordings` 本体の列にすると、書き手が脊椎（watcher / reconciler）でない状態が脊椎に
   混ざる（不変条件 13）
 
-**分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として
-観測済みの値）。転送開始時に読んで衛星表へ写し、追従中は下記のとおり `GetRecord` の
-`content.length` で更新する（開始時の値に固定すると録画中に 100% で止まる）。HEAD の
-`Content-Length` は転送完了後の照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールが
-ファイルシステムに触れない（不変条件 1）ので分母にできない。mirakc が length を返さない
-record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を
-置かない）。この分母が録画中も非 null で時間とともに増えることは、`TestConformance/RecordingInProgress`
-が mirakc 4.0.0-dev.0 相当に対して判定している。`records/{id}/stream` の `Content-Length`
-ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。
-**録画中の最初の観測は 0 でありうる（実測）。** 0 は「mirakc が length を返さない」場合の
-NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りする
-ので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外。
+**分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として観測済みの値）。転送開始時に読んで衛星表へ写し、追従中は下記のとおり `GetRecord` の `content.length` で更新する（開始時の値に固定すると録画中に 100% で止まる）。HEAD の `Content-Length` は転送完了後の照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールがファイルシステムに触れない（不変条件 1）ので分母にできない。
+
+mirakc が length を返さない record では分母を NULL のままにし、UI は % を出さずバイト数だけを出す（でっち上げた分母を置かない）。この分母が録画中も非 null で時間とともに増えることは、`mirakc 4.0.0-dev.0` 相当の pin に対する判定で、他の版では未判定である。`records/{id}/stream` の `Content-Length` ヘッダ（録画中は不明）とは別物であることに注意（上記「HEAD エンドポイントあり」参照）。**録画中の最初の観測は 0 でありうる（実測）。**
+
+0 は「mirakc が length を返さない」場合の NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りするので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外。
 
 **「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには
 `river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる
@@ -294,11 +310,11 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 
 **健全な status 観測は `observed_at` を進める（0 バイトでも）。** 追い付いている状態は止まっているのではなく、追従が正常な状態そのものである。observed_at を「バイトを書けたときだけ」進めると、**正常に追従できている録画ほど** UI の停滞判定（60 秒）に引っかかり「取り込み中（停滞）」と表示される。未知の status と失敗経路は進捗として記録しない。
 
-間引きは既存の進捗書き込みと同じ最短 2 秒なので、追従中の DB 書き込みは録画 1 本あたり秒 0.5 行に留まる。これに接続断ごとの 1 行が加わる。正常 Range での flush は `TestIngestWorker_CleanRangeEndsDoNotFlushProgress` が禁じている。接続断の再試行はここを通らないため、**「0 バイトの試行は進捗ではない」という規律は失敗経路側に残る**（`TestIngestWorker_ProgressFlushesInterruptedBurst` が固定している）。
+間引きは既存の進捗書き込みと同じ最短 2 秒なので、追従中の DB 書き込みは録画 1 本あたり秒 0.5 行に留まる。これに接続断ごとの 1 行が加わる。正常 Range では flush しない。接続断の再試行はここを通らないため、**「0 バイトの試行は進捗ではない」という規律は失敗経路側に残る**。
 
 **進捗の分母は追い付き時の status 観測で更新する。** `record_sync.content_length` は watcher が観測した時点の値である。Work 開始時に固定すると、録画が伸びて `written_bytes` が分母を追い越し、UI が「取り込み中 100%」を録画中ずっと出し続ける。Web 側は `min(100, ...)` で頭打ちにするので、嘘が % として出る。
 
-`GetRecord` は空 Range の後だけ呼ぶため、録画中の分母更新も追い付き時に限る。録画中は UI が % を表示しない。`TestIngestWorker_FollowingCaughtUpKeepsProgressFresh` が分母と observed_at の両方を固定している。
+`GetRecord` は空 Range の後だけ呼ぶため、録画中の分母更新も追い付き時に限る。録画中は UI が % を表示しない。分母と observed_at は追い付き時に更新する。
 
 **録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合に使わず、finished 確認後に HEAD と `content.sha256` を照合する。SHA-256 が無い場合は、HEAD の長さが分かる間だけ期限までジョブを完了して待ち、期限後または長さ不明なら `timeout_skipped` で commit する。
 
@@ -310,13 +326,8 @@ NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `content
 `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
 名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
-**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である。**
-この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。
-DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。
-残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。
-**この述語は `has_ingestable_record` の否定にしてはならない。**
-未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
-`TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart` がこの動作を固定する。
+**原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である**。この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。**この述語は `has_ingestable_record` の否定にしてはならない**。未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
+
 終端する status の集合は worker の `errIngestRecordEndedAbnormally` と一致させる。
 
 **`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
@@ -330,6 +341,16 @@ DELETE が失敗してもログだけで続行するため、進捗行が残る�
 **途中ファイルのサイズを `sizeBytes` に混ぜない**（不変条件 3。コミット = DB 行）。
 進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる
 tx の中で進捗行が消える。
+
+<details><summary>根拠</summary>
+
+- 転送中の表示と書き込み間引き: `TestIngestWorker_ProgressVisibleDuringTransfer`、`TestIngestProgressReporter_ThrottlesContinuedWrites`
+- 接続断時だけ進捗を flush すること: `TestIngestWorker_ProgressFlushesInterruptedBurst`、`TestIngestWorker_CleanRangeEndsDoNotFlushProgress`
+- 録画中の length 観測: `TestConformance/RecordingInProgress`
+- 追い付き時の分母と observed_at: `TestIngestWorker_FollowingCaughtUpKeepsProgressFresh`
+- 未知 status を job 内で再試行すること: `TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart`
+
+</details>
 
 ---
 

@@ -2,25 +2,73 @@
 
 #### 大量削除サーキットブレーカー
 
-予約は「ルール x EPG」から導出される。そのため EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）があると、素朴な ruler は予約を大量に「不要」と判定する。reconciler はそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう。EPGStation#692（予約と録画が勝手に消える）はこの障害クラスの実例。
+**大量削除ブレーカーは、ruler の 1 パスあたりの削除数に `ruler.max_deletes_per_pass` の上限を設ける。** 超過時は削除を止めてアラートし、手動確認後に再開する。
 
-対策:
+予約は「ルール x EPG」から導出される。そのため EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）があると、素朴な ruler は予約を大量に「不要」と判定する。reconciler はそれを mirakc へ忠実に反映して一斉 DELETE する。EPGStation#692（予約と録画が勝手に消える）はこの障害クラスの実例。
 
-- **1 回の ruler パスでの削除数に閾値**（`ruler.max_deletes_per_pass`）を設け、超えたら削除せず停止してアラート。手動確認後に再開
-- **数えて止めるのは「ルールが base を供給しているのに desired から外れた」削除だけ**。desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から導出される。そのため `toDelete`（既存予約のうち desired から外れた行）には EPG 由来の unmatch とユーザーの明示操作が混ざる。このうち**ユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除はブレーカーの外**に置き、カウントにも入れずラッチ中でも実行する。判定は削除文の `WHERE` が適用の瞬間に行い（Go 側の読み取りに移すと、読みと適用の間に着地した意図を踏み潰す窓が戻る）、`program_investments` が空であることに加えて次のどちらかが立てば対象:
-  - `reservations.rule_id IS NULL` — いまルールが base を供給していない行。**この列は EPG の変化だけでも NULL になる**ので、**これ単体はユーザー由来の証明にならない**。投資を持つ行はルールが外れても desired に残るのでそのパスで upsert され、`internal/ruler/sql.go` の `resolved` CTE が凍結するのは `base` と dedup 根拠 2 列だけである。`rule_id = EXCLUDED.rule_id` がそのまま NULL を書く（`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が実測で固定）
-  - `program_intents.action='skip'` — ユーザーが「録るな」と書いた
+**対象は、ルールが base を供給していた予約が desired から外れた削除だけである**。desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 ∪ overrides）」から決まる。そのため `toDelete`（既存予約のうち desired から外れた行）には、EPG の unmatch とユーザーの明示操作の両方が現れる。このうちユーザー（運用者）が投資を手放す書き込みをしない限り起きない削除は、ブレーカーの外に置く。カウントにも入れず、ラッチ中でも実行する。
 
-  intent クリア（`DELETE .../intent`）と「最後の investment だった overrides の削除」は前者、intent skip は後者に落ちる。**ルールの編集**で勝者が変わる経路は `rule_id` が残るので EPG 由来の unmatch と区別できず、ブレーカー対象のまま。**ルールの削除**はそもそも `toDelete` を経由しない（下記「止められる場所は ruler だけ」の表）
-- **守備範囲を保っているのは `NOT EXISTS program_investments` のほうである**。`rule_id IS NULL` の行は、その NULL が書かれた時点で必ず投資を持っていた。ruler の upsert が NULL を書くのは「勝者なしで desired」= 投資ありの行だけである。もう 1 つの経路である `rules` の FK `ON DELETE SET NULL` も同じで、`DeleteRule` が同一 tx で投資なしの行を**先に**消すので、生き残るのは投資ありの行だけである。したがってブレーカーの外に出るには、**投資を消す書き込みが別途必要**である。それができる経路は次の 3 つだけである。1 つ目は per-program の api 3 本（`DELETE .../intent` / `DELETE .../overrides` / `PUT .../intent{skip}`）である。これらの `openapi.yaml` のパスは `{programId}` を含み、バルクは無い。2 つ目は運用者が明示的に走らせる catalog rescue の復元である（`internal/catalog/rescue.go`）。これは `program_intents` を upsert するので record を skip で上書きしうる。バルクだが EPG に駆動されない。3 つ目は `program_snapshots` の GC CASCADE である（このとき予約行も一緒に落ちるので `toDelete` に現れない）。**EPG 同期・ruler・reconciler はこの 2 表に一切書かない**ので、EPG が壊れてもブレーカー外の削除件数は「人が書いた回数」で頭打ちになる
-- **混ぜたままにしたときの実害は、ラッチが無期限であるぶん無期限に続く**。intent クリアは `effective.skip` を立てない（クリアは「意見なし」であって「録るな」ではない）。そのためラッチ中に残る予約行は `listDesired`（`reservation.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さない。番組は録画され続ける。失うのは導出で作り直せる予約行ではなく、ディスクとチューナーである。ブレーカーが守ろうとしているものより重い。この実害は `TestRunPass_LatchDoesNotWithholdIntentClearDelete` / `TestRunPass_IntentClearDeletesDoNotCountTowardBreaker` が固定している。`TestRunPass_LatchDoesNotWithholdSkipIntentDelete` も同じである。intent skip 側の実害はもともと予約一覧の表示上の残留だけだった（`TestReconciler_SkippedReservationNotScheduled`）。これは `intent.action='skip'` が `effective.skip` を立てるので録画が防がれるためである。それでも「明示操作は対象外、ただし skip を除く」という例外を増やさないため、同じ側に置く
-- **境界が 3 つある**（「明示操作は必ず即座に効く」「EPG では絶対に起きない」とは書かない）:
-  - (a) ルール由来の unmatch と明示操作が同じ番組で重なった場合（`rule_id` が残ったままの行の意図を消した）は前者と区別できないのでブレーカー対象のまま。ブレーカーが発動しているのはまさにルール x EPG が大きく動いたときなので保守側に倒す
-  - (b) 削除候補になる前提として EPG 射影に番組が残っている必要がある（射影から消えた番組の凍結は別の防御。EPG が復旧すれば次パスで自動的に解け、ラッチと違い人間の再開を待たない）
-  - (c) **EPG 欠損中は投資を持つ行の `rule_id` が一斉に NULL に落ちる**ので、その最中にユーザーが投資を消すと、健全な EPG ならルール由来で残ったはずの予約がブレーカーの外で消える。EPG 復旧後の次パスでルールが作り直すので自己修復する。だがこの削除は「明示操作**からしか**説明できない」ものではない。`TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease` が (c) の前半 = `rule_id` の NULL 化と、投資がある間は消えないことの両方を測っている
-- **不変条件: 録画済みデータ（media_assets）に至る自動削除経路は retention reconcile のみ**。EPG・予約側の状態変化から録画物の削除に到達するパスを作らない
-- programId が EPG から消えた予約は即削除せず猶予を置く（mirakc 自身も removed-from-epg を理由付き failed として通知してくる）。なお導出値 `orphaned` はこの用途ではない。`orphaned` は「番組終了後に schedule が観測されなかった欠測があり、本物の録画試行が無い」を意味する。この値は `never_scheduled_events` と `recordings` から読むたびに導出する（[schema.md](../schema.md) §3）
-- **放送開始直前の unmatch は `ruler.retract_grace`（[ruler.md](ruler.md)「直前 unmatch の猶予」）がこのブレーカーより先に受け止める**。猶予で `toDelete` から外れた行はブレーカーの分子にも分母にも入らない。EPG 欠損時、開始直前の予約は猶予で残り、開始が遠い予約はこのブレーカーで止まる、という二段の防御になる
+判定は削除文の `WHERE` が適用の瞬間に行う。Go 側の読み取りに移すと、読みと適用の間に着地した意図を踏み潰す窓が戻る。`program_investments` が空であることに加えて、次のどちらかが立てば対象外になる。
+
+- `reservations.rule_id IS NULL` — いまルールが base を供給していない行
+- `program_intents.action='skip'` — ユーザーが「録るな」と書いた
+
+`rule_id IS NULL` だけでは、ユーザー由来の証明にならない。この列は EPG の変化だけでも NULL になる。投資を持つ行はルールが外れても desired に残るのでそのパスで upsert される。`internal/ruler/sql.go` の `resolved` CTE が凍結するのは `base` と dedup 根拠 2 列だけで、`rule_id = EXCLUDED.rule_id` がそのまま NULL を書く。
+
+削除の経路ごとの分類は次のとおりである（`toDelete` に現れる行だけ。ルール削除と GC は `toDelete` を通らないので下記「止められる場所は ruler だけ」の表に置く）。
+
+| 削除の経路 | 満たす条件 | ブレーカー |
+|---|---|---|
+| EPG の unmatch で勝者が消えた（投資なし） | どちらでもない（`rule_id` が残る） | 対象 |
+| ルール**編集**で勝者が変わった | どちらでもない（`rule_id` が残る） | 対象。EPG の unmatch と区別できない |
+| intent skip を書いた | `action='skip'` | 対象外 |
+| intent クリア（`DELETE .../intent`） | `rule_id IS NULL` | 対象外 |
+| 最後の investment だった overrides の削除 | `rule_id IS NULL` | 対象外 |
+| EPG 欠損中に投資を消した（境界 (c)） | `rule_id IS NULL`（欠損で NULL 化済み） | 対象外 |
+
+**守備範囲を保っているのは `NOT EXISTS program_investments` のほうである。** `rule_id IS NULL` の行は、その NULL が書かれた時点で必ず投資を持っていた。NULL を書く経路は 2 つあり、どちらも投資ありの行だけが残る。
+
+- ruler の upsert が NULL を書くのは「勝者なしで desired」、つまり投資ありの行だけである。
+- `rules` の FK `ON DELETE SET NULL` も同じである。`DeleteRule` が同一 tx で投資なしの行を先に消すので、生き残るのは投資ありの行だけである。
+
+したがってブレーカーの外に出るには、投資を消す書き込みが別途必要になる。それができる経路は次の 3 つだけである。
+
+- per-program の api 3 本（`DELETE .../intent` / `DELETE .../overrides` / `PUT .../intent{skip}`）。`openapi.yaml` のパスは `{programId}` を含み、バルクは無い。
+- 運用者が明示的に走らせる catalog rescue の復元（`internal/catalog/rescue.go`）。`program_intents` を upsert するので record を skip で上書きしうる。バルクだが EPG に駆動されない。
+- `program_snapshots` の GC CASCADE。予約行も一緒に落ちるので `toDelete` に現れない。
+
+EPG 同期・ruler・reconciler はこの 2 表（`program_intents` / `program_overrides`。`program_investments` はこの 2 表から作る view）に一切書かない。そのため EPG が壊れても、ブレーカー外の削除件数は人が書いた回数で頭打ちになる。
+
+**混ぜたままにしたときの実害は、ラッチが無期限であるぶん無期限に続く。** intent クリアは `effective.skip` を立てない（クリアは「意見なし」であって「録るな」ではない）。そのためラッチ中に残る予約行は `listDesired`（`reservation.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さない。番組は録画され続ける。失うのは導出で作り直せる予約行ではなく、ディスクとチューナーであり、ブレーカーが守ろうとしているものより重い。
+
+intent skip 側の実害は、もともと予約一覧の表示上の残留だけだった。`intent.action='skip'` が `effective.skip` を立てるので録画は防がれる。それでも「明示操作は対象外、ただし skip を除く」という例外を増やさないため、同じ側に置く。
+
+境界は 3 つある。「明示操作は必ず即座に効く」「EPG では絶対に起きない」とは書かない。
+
+- (a) ルール由来の unmatch と明示操作が同じ番組で重なった場合（`rule_id` が残ったままの行の意図を消した）は、前者と区別できないのでブレーカー対象のままにする。ブレーカーが発動しているのはまさにルール x EPG が大きく動いたときなので、保守側に倒す。
+- (b) 削除候補になる前提として、EPG 射影に番組が残っている必要がある。射影から消えた番組の凍結は別の防御である。EPG が復旧すれば次パスで自動的に解け、ラッチと違い人間の再開を待たない。
+- (c) EPG 欠損中は投資を持つ行の `rule_id` が一斉に NULL に落ちる。その最中にユーザーが投資を消すと、健全な EPG ならルール由来で残ったはずの予約がブレーカーの外で消える。EPG 復旧後の次パスでルールが作り直すので自己修復する。ただしこの削除は、明示操作からしか説明できないものではない。テストが測っているのは (c) の前半、つまり `rule_id` の NULL 化と、投資がある間は消えないことの両方だけである。
+
+**録画済みデータ（`media_assets`）に至る自動削除経路は retention reconcile だけにする（不変条件）。** EPG・予約側の状態変化から録画物の削除に到達するパスを作らない。
+
+`programId` が EPG から消えた予約は、即削除せず猶予を置く。mirakc 自身も removed-from-epg を理由付き failed として通知してくる。導出値 `orphaned` はこの用途ではない。`orphaned` は「番組終了後に schedule が観測されなかった欠測があり、本物の録画試行が無い」を意味する。この値は `never_scheduled_events` と `recordings` から読むたびに導出する（[schema.md](../schema.md) §3）。
+
+**放送開始直前の unmatch は、このブレーカーより先に `ruler.retract_grace`（[ruler.md](ruler.md)「直前 unmatch の猶予」）が受け止める**。猶予で `toDelete` から外れた行は、ブレーカーの分子にも分母にも入らない。EPG 欠損時、開始直前の予約は猶予で残り、開始が遠い予約はこのブレーカーで止まる。二段の防御になる。
+
+<details><summary>根拠</summary>
+
+- EPG unmatch で `rule_id` が NULL になり、投資がある間は消えないこと（(c) の前半）: `TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease`
+- EPG unmatch で凍結されるのは `base` と dedup 根拠 2 列だけであること: `internal/ruler/sql.go` の `resolved` CTE
+- EPG unmatch で `rule_id` に NULL が書かれること: `rule_id = EXCLUDED.rule_id`
+- ラッチ中でも intent クリアの削除が止まらないこと: `TestRunPass_LatchDoesNotWithholdIntentClearDelete`
+- intent クリアの削除を件数に含めないこと: `TestRunPass_IntentClearDeletesDoNotCountTowardBreaker`
+- ラッチ中でも intent skip の削除が止まらないこと: `TestRunPass_LatchDoesNotWithholdSkipIntentDelete`
+- skip の予約を mirakc に作らないこと: `TestReconciler_SkippedReservationNotScheduled`
+- 明示操作の判定が削除文の `WHERE` にあること: `internal/db/queries/ruler.sql` の `DeleteReleasedReservationsBySiteAndProgramIDs`
+- intent クリア中も予約が desired に残ること: `reservation.EvaluateSyncCandidates` の `Skipped`
+- catalog rescue が intent を upsert すること: `internal/catalog/rescue.go`
+
+</details>
 
 ##### 止められる場所は ruler だけ
 

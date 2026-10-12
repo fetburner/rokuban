@@ -8,13 +8,35 @@
 
 **ルール（または個別予約）が保持ポリシーを持つ**: `keepOriginal: always / until_encoded`。実効値（ルールの base + 予約単位の overrides）は次の 2 列へスナップショットされる。対象は `recording_encode_policy.keep_original` と `recording_encode_policy.encode_profiles` である。これは「この録画の望ましい最終状態は『派生物のみ、原本なし』」という desired state になる。`recording_encode_policy` は `recordings` を `recording_id` で指す衛星表で、行の存在そのものが「凍結済み」を意味する（[スキーマ](../schema.md) §5 参照）。
 
-**凍結する瞬間は ingest が原本 media_asset をコミットする tx の中**（`internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`）である。予約確定時でも録画開始時でもない。再導出（reservations 経由で毎回引き直す）は選べない —— 導出元（`reservations` / `program_overrides` / `program_intents`）は放送終了 + 猶予後に GC される寿命の短い表である。一方 `recordings` は永続資産である（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。導出に依存させると、番組が EPG から消えて GC された時点で desired が空になり、エンコード未完了の録画で原本削除が止まる／再エンコードが投入できなくなる。凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」である。`recordings` 行と同時に生まれて同時に死ぬので、不変条件 12 には反しない（衛星表として別テーブルに置くことは「行の寿命が同じ」であることと矛盾しない。不変条件 13 参照）。ただし凍結する以上、**ingest 完了より後の override 変更はその録画には反映されない**という境界が生まれる（[録画エンジン](../recording.md) §4.5）。この境界を越えて変更するのは、下記の録画単位 API を明示的に呼んだ場合だけである。
+**凍結は ingest が原本 media_asset をコミットする tx の中で行う。** 予約確定時でも録画開始時でもない。
 
-**予約をどのキーで引くか**: `resolveAndSnapshotEncodePolicy` は予約を `reservations` への FK では引かない。代わりに使うのは放送イベントキー `(site, network_id, service_id, event_id)` である。導出器が作る予約 id では引かない（不変条件 9 / [invariants.md](../invariants.md) §9）。放送イベントキーは `recordings` が録画開始時から凍結して持つ列なので、録画開始から ingest 完了までの窓（番組の尺ぶん、数時間）で予約行が GC・再実体化（EPG フリッカー、ルール編集、dedup）されても見失わない。
+導出元の `reservations` / `program_overrides` / `program_intents` は放送終了後の猶予期間で GC される。一方、`recordings` は永続資産である（CLAUDE.md 不変条件 12「表は行の寿命で割る」）。
 
-具体的には `program_snapshots` で `(network_id, service_id, event_id)` → `program_id` を引き、`reservations` を `program_id` で結合する。実装は `GetReservationEncodePolicyByEvent`（`internal/db/queries/recording_policy.sql`）である。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される寿命の短い表である（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）。ingest は通常なら録画終了直後 --- GC の猶予期間より十分前 --- に走る。**ただし「通常なら」であって、滞留の設計はこれを超える遅延を明示的に許容している**（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
+毎回の再導出に頼ると、EPG から番組が消えて導出元が GC された時に desired が空になる。エンコード未完了の原本を削除できず、再エンコードも投入できなくなる。
 
-`recordings.source`（`DeriveRecordingSource`、`internal/reservation/source.go`）は録画作成時に一度だけ焼く snapshot である。凍結時の JOIN 失敗の異常度を判定する軸にもなる。`source = 'rule'` は「作成時点で予約があり、かつ `program_intents.action = 'record'` の行が無かった」を意味する。そのため JOIN が失敗するのは常に「**予約はあったのに引けなくなった**」を意味する。この場合は `slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。`source = 'manual'` は「作成時点で `action = 'record'` の意図があった」ことを意味するので、予約が引けなければ同じく `slog.Warn` にする。`source = 'unattributed'` は作成時点で予約も意図も特定できなかったことを意味するので、手動起動などで予約が最初から無い日常的な JOIN 失敗は `slog.Info` にする。どの source でも黙って return せず、識別子を残す。**この 3 値化より前に作られた `manual` 行は 2 経路が混ざったままで、遡って分類しない**（区別する材料が残っていない）。それらの行は Warn 側に倒れるので、切り替え直後に残っていた未 ingest のぶんだけ偽の Warn が出る。
+凍結した `recording_encode_policy` の行は「この録画の望ましい最終状態」を表す。`recordings` 行と同時に生まれ、同時に死ぬため、別表に置いても行の寿命は混ざらない。衛星表として分けることは「行の寿命が同じ」ことと矛盾しない（不変条件 13）。
+
+**ingest 完了後の override 変更はその録画には反映されない**。この境界を越えて変更するのは、録画単位の API を明示的に呼んだ場合だけである（[録画エンジン](../recording.md) §4.5）。
+
+**予約は外から与えられた放送イベントキーで引く**: `(site, network_id, service_id, event_id)` を使う。`reservations` への FK や、導出器が作る予約 id では引かない（不変条件 9 / [invariants.md](../invariants.md) §9）。
+
+このキーは `recordings` が録画開始時から凍結して持つ。録画開始から ingest 完了まで数時間かかっても、予約行が GC や再実体化（EPG フリッカー、ルール編集、dedup）されて失われない。
+
+`program_snapshots` で `(network_id, service_id, event_id)` から `program_id` を引き、`reservations` をその id で結合する。`program_snapshots` は放送後 `epg.retention_grace`（既定 24h）で GC される短寿命の表である（[スキーマ](../schema.md) §3「射影にある間は更新、消えたら凍結」）。
+
+通常の ingest は録画終了直後（GC の猶予期間より十分前）に走るが、滞留の設計は GC の猶予を越える遅延も許容する（下記「凍結が依存する寿命と、エッジの滞留の交点」）。
+
+`recordings.source` は録画作成時に一度だけ焼く snapshot であり、凍結時の JOIN 失敗の異常度を判定する軸になる。
+
+`source = 'rule'` は作成時点で予約があり、`program_intents.action = 'record'` の行が無かった記録である。
+
+この記録で JOIN に失敗したら「予約はあったのに引けなくなった」ため、`slog.Warn` に識別子（site/network_id/service_id/event_id）と recording_id を残す。
+
+`source = 'manual'` は作成時点で `action = 'record'` の意図があった記録で、予約を引けない場合は `slog.Warn` にする。`source = 'unattributed'` は予約も意図も特定できなかった記録で、手動起動などで予約が最初から無い日常的な JOIN 失敗は `slog.Info` にする。
+
+どの source でも JOIN 失敗を黙って return せず、識別子を残す。
+
+**この 3 値化より前に作られた `manual` 行は 2 経路が混ざったままで、遡って分類しない**（区別する材料が残っていない）。それらの行は Warn 側に倒れるので、切り替え直後に残っていた未 ingest のぶんだけ偽の Warn が出る。
 
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
@@ -22,25 +44,40 @@
 2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。
    原本の `media_asset_ts_scans.scanned_size_bytes` は `media_assets.size_bytes` と一致する。
 
-TS 解析の記録が無い場合や、記録したサイズと現在の原本サイズが違う場合は削除しない。解析が恒久的に失敗する原本は保持され続ける（`TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`）。
+TS 解析の記録が無い場合や、記録したサイズと現在の原本サイズが違う場合は削除しない。解析が恒久的に失敗する原本は保持され続ける。
 
-「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記 2 が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る（`TestEncodeWorker_SuccessAndIdempotent` / `TestThumbnailWorker_IdempotentRerun`）。ただし両テストは原本を残したまま再実行するだけで、チェックが原本を開く前に走ることそのものは未検証。この同値性は `encode_profiles` が追加専用であることに依っている --- desired を縮める経路ができれば、既に積まれたジョブが条件 2 の外に出てこの整理は崩れる。
+「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記 2 が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る。ただし原本を残したまま再実行するケースしか測っておらず、チェックが原本を開く前に走ることそのものは未検証。この同値性は `encode_profiles` が追加専用であることに依っている --- desired を縮める経路ができれば、既に積まれたジョブが条件 2 の外に出てこの整理は崩れる。
 
 命令的なジョブチェーン（最後のエンコードジョブが削除ジョブを投入）だと、複数プロファイル時の「全部終わったら」の fan-in・途中失敗・再実行で壊れやすい。レベルトリガーなら「観測された派生物の集合 >= 望ましい集合」を毎回評価するだけで、どこで落ちても収束する。
 
 上記 2 の「desired な派生物」は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける（満たせない desired に対して原本を捨てないのが仕様 --- 設定の 1 行の編集で原本という不可逆な資産が削除可能になる方を避ける）。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
+<details><summary>根拠</summary>
+
+- 現在サイズに一致する TS scan: `TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`
+- encode 完了後のジョブ再実行: `TestEncodeWorker_SuccessAndIdempotent`
+- thumbnail 完了後のジョブ再実行: `TestThumbnailWorker_IdempotentRerun`
+- ingest 完了 tx での凍結: `internal/worker/ingest.go` の `resolveAndSnapshotEncodePolicy`
+- reservation を event key で引く query: `GetReservationEncodePolicyByEvent`、`internal/db/queries/recording_policy.sql`
+- source を録画作成時に焼く実装: `DeriveRecordingSource`、`internal/reservation/source.go`
+- `recordings` と satellite row の寿命: 不変条件 12、13
+- 外部イベントキーを使い、導出された予約 id は使わないこと（不変条件 9）: [invariants.md](../invariants.md) §9
+
+</details>
+
 ### 凍結が依存する寿命と、エッジの滞留の交点
 
-凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる。式は `start_at + duration_ms` + `epg.retention_grace` である。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まる。エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする。録画中の record はすでに ingest が追従しているため、未 ingest 総量として滞留を数えるのは例外時の finished record に限る（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
+凍結の JOIN 先（`program_snapshots` と、そこへの FK CASCADE で連なる `reservations` / `program_intents` / `program_overrides`）の**行の寿命は放送の時計**で決まる。式は `start_at + duration_ms` + `epg.retention_grace` である。一方、その最後の読者である ingest がいつ走るかは**エッジの排出の時計**で決まる。エッジのリングバッファは「回線断・クラウド側障害で未 ingest の record が N 日分溜まる」ことを前提にサイジングする。
+
+録画中の record はすでに ingest が追従しているため、未 ingest 総量として滞留を数えるのは例外時の finished record に限る（[運用](../operations.md) §4「録画バッファのサイジング」）。2 つの時計の間には制約が書かれていない。交点はこう書ける:
 
 > **encode 意図が生き残る滞留の上限は `epg.retention_grace`（既定 24h）であって、リングバッファの N 日ではない。滞留を N 日まで許すつもりなら `epg.retention_grace >= N` にする。**
 
-GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（括弧内は確認しているテスト）:
+GC 済みのスナップショットの上で ingest が走った場合に何が起きるか（確認しているテストは節末の根拠欄）:
 
-- encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される。対象のテストは `TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults` である。`TestIngestWorker_NoReservation_LeavesEncodePolicyDefault` も同じである。**原本は残るのでデータは失われず、エンコードだけが投入されない**
-- 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引く。そのためルール由来の録画でも、予約と意図を失った時点の `source` は `unattributed` になる。`rule_id` は NULL になる（`TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed`）
-- `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。これは `TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable` が固定している。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。これは `TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable` が固定している。この 2 段（GC → `unattributed` → Info）は上記 2 テストの合成である（パッケージ境界）
+- encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で凍結される。**原本は残るのでデータは失われず、エンコードだけが投入されない**
+- 落ちるのは encode 意図だけではない。復帰時に `recordings` 行を作る `internal/watcher` の `createRecording` も同じ GC 済みの予約を引く。そのためルール由来の録画でも、予約と意図を失った時点の `source` は `unattributed` になる。`rule_id` は NULL になる
+- `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、上記の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 - 事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）**だけ**。**`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない**。理由は `ListMissingEncodeProfiles`（`internal/db/queries/encode_reconcile.sql`）が `cardinality(encode_profiles) > 0` を要求するからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、**失われた意図は誰も取り戻さない**
 
 **GC 側を滞留と連動させる案（未 ingest の `record_sync` が指す放送イベントのスナップショットを刈らない）は採らない**。留め置きの根拠にできるのは `record_sync` 行であり、それは watcher が mirakc を観測して初めて作られる。`internal/watcher/watcher.go` の `processRecord` 入口の `AcquireRecordSync` が status を問わず作り、`Sweep` は進行中の record も列挙する。したがって:
@@ -55,23 +92,41 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 **ただし「上げれば済む」ではない。既定は上げない** —— コストは滞留を N 日許す構成にだけ課す:
 
 - `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
-- **同じキーが EPG 射影のローリングウィンドウも駆動する**。`cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）。そのため N 日にすると、`epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDsForRule`）は時間で絞らないので、その放送済み番組も拾う。終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
+- **同じキーが EPG 射影のローリングウィンドウも駆動する**。`cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）。そのため N 日にすると、`epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDsForRule`）は時間で絞らないので、その放送済み番組も拾う。
+
+  終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
 
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
 
 **「クラウド側障害」と「回線断」を同じ結論で括らない**。上の帰結が決定論的に成り立つのは「GC は動き続けたが ingest が猶予を跨いで遅れた」場合である。ruler ごと止まる障害（worker 全停止・DB 到達不能）では**断のあいだ GC も進まない**。復帰時は sweep + ingest と `ruler_pass` の競争になり、ingest が先に走れば意図は守られる。どちらになるかはジョブの実行順に依存する（未検証）。
 
+<details><summary>根拠</summary>
+
+- GC 済み snapshot の既定値: `TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults`
+- 予約なしの既定値: `TestIngestWorker_NoReservation_LeavesEncodePolicyDefault`
+- GC 済み予約で録画 source が unattributed になること: `TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed`
+- unattributed source の JOIN 失敗を Info にすること: `TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable`
+- manual source の JOIN 失敗を Warn にすること: `TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable`
+
+</details>
+
 ### 書き込みの冪等性・型変換・安全側クランプ
 
 - **冪等性**: `FreezeRecordingEncodePolicy` は `ON CONFLICT` を持たない素の INSERT で、既存の派生物の有無を見て分岐しない。これは「この tx は録画ごとに 1 回しか実行されない」という別の不変（`internal/worker/ingest.go` の `Work` が転送開始前に原本 media_asset の有無で冪等性チェックする）に依っている。一部のエンコードが既に完了しているからといって desired を空に戻す分岐を作らない
 - **`EncodeProfiles` の nil**: `reservation.Options.EncodeProfiles`（`*[]string`）は nil=未指定 / `&[]string{}`=明示的な「エンコードなし」を区別する。しかし `recording_encode_policy.encode_profiles` は NOT NULL text[] で「未指定」という第三の状態を表現できないため、凍結時は両者を等しく `'{}'` に潰す。区別が必要な場面（override の差分表示等）は `program_overrides.overrides` 自身に当たればよく、このスナップショットの役目ではない
-- **クランプ**: ルールと override はそれぞれ自分の表の中では `keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くとこの INSERT は CHECK 違反でロールバックする。原本 media_asset の INSERT と同一 tx なので、そのロールバックは**録画そのものの消失**に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に安全側へ倒す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら `always` に倒してから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる
+- **クランプ**: ルールと override はそれぞれ自分の表の中では `keepOriginal='until_encoded'` に `encodeProfiles` が空という組み合わせを禁止する CHECK を満たしている。それでも `EffectiveOptions` のマージ結果としてこのドリフトが生成されうる。`recording_encode_policy` にも同じ組み合わせを禁止する CHECK（下記「条件 2 の『全プロファイル完備』」参照）がある。実効値をそのまま書くとこの INSERT は CHECK 違反でロールバックする。
+
+  原本 media_asset の INSERT と同一 tx なので、そのロールバックは**録画そのものの消失**に直結する（不変条件 3「コミット = DB 行」）。原本を失うリスクを負ってまで守る価値のある不変ではないので、書く直前に安全側へ倒す。実効的な `encodeProfiles` が空で `keepOriginal` が `until_encoded` なら `always` に倒してから書く。ユーザーの意図（override の値そのもの）は `program_overrides` 側に残るので失われない。
+
+  失われるのはこの録画のスナップショットにおける効力だけで、次にルールがプロファイルを持てば別の録画では正しく `until_encoded` になる
 
 ### 安全性
 
 - **放送データが 0 コピーになる瞬間は構造的に存在しない**。エッジの record 削除は ingest コミット後（[録画エンジン](../recording.md) 参照）、原本削除はエンコード検証後。常に 1 コピー以上ある
 - **「唯一のコピーを消す」パスがない**。エンコードが恒久的に失敗すれば条件 2 が満たされず原本は自然に保持され続ける（+ アラート対象）
-- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く
+- **条件 2 の「全プロファイル完備」は `encode_profiles` が空でないことも要求する**。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して `until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。
+
+  `cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に効く
 - **削除プロトコルも冪等**: アセット行を deleting にマーク → unlink → deleted にマーク。どこで落ちても reconcile が拾い直す。公開前を示す予約名の残骸は孤児回収が拾う
 - **メタデータは tombstone として残す**。ドロップスキャン結果・録画品質は原本削除後も UI で見られる（「ドロップがあったから再放送を待つ」判断は削除後にこそ必要）。原本のサイズだけは API が省略する側に回り、その省略自体が「原本削除済み」を表す
 
@@ -91,9 +146,15 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 - **この API の範囲は追加のみ**。`POST /api/recordings/{id}/encode-profiles` の実装は `internal/api/recordings.go` の `AddRecordingEncodeProfiles` である。書き込みは `AppendRecordingEncodeProfiles`（`internal/db/queries/recordings.sql`）で行う。union + dedup にしか書けない。全置換にすると、ユーザーが誤って既存のプロファイル指定を消す事故につながるため、その経路自体を用意しない
 - **原本が active でなければ不可**。`GetActiveOriginalMediaAsset` が `ErrNoRows` の録画には 409 を返す。該当するのは、原本削除済みか `state = 'deleting'` か、そもそも ingest が完了しておらず `kind='original'` の行自体が無い場合である。`state = 'deleting'` は unlink 待ちの状態を指す。一覧の射影は `state <> 'deleted'` なので、UI 上は「原本あり」に見える。ここで明示的に検査し、後段の reconcile が何もしない場合に 204 を返さない
-- **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`resolveAndSnapshotEncodePolicy` を経由しない。この関数は `internal/worker/ingest.go` にある。そのため `recording_encode_policy` 行が無いまま、原本だけが active な録画が存在しうる。`AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっている。この INSERT に到達する時点で「原本 active」は保証されている
+- **`recording_encode_policy` に行が無い（未凍結）録画でも、原本が active なら追加できる**。`internal/inplace.Register`（災害復旧。カタログを 1 世代も持たない状態からのストレージ再スキャン）が作る原本は、`resolveAndSnapshotEncodePolicy` を経由しない。この関数は `internal/worker/ingest.go` にある。そのため `recording_encode_policy` 行が無いまま、原本だけが active な録画が存在しうる。
+
+  `AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない —— 原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっている。
+
+  この INSERT に到達する時点で「原本 active」は保証されている
 - **実行経路**: api は `encode_profiles` の更新と同じトランザクションで、対象録画を指定した `encode_reconcile` を積む。対象限定パスと定期パスは同じ候補 query を使い、不足分の判定を二重に持たない。ごみ箱の録画も desired は更新できるが、候補 query が除外する。復元すれば定期パスが反映する
-- **保持ポリシーの変更**: `PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを録画単位で上書きし、`encode_profiles` には触れない。この API は新しい `recording_encode_policy` 行を凍結しない —— `SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。未凍結の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。「desired プロファイルが 1 つ以上あるか」の判定は事前読み取りではなく、この UPDATE 自身の WHERE（`cardinality(encode_profiles) > 0`）が適用の瞬間に再評価する。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
+- **保持ポリシーの変更**: `PATCH /api/recordings/{id}/encode-policy` は `keep_original` だけを録画単位で上書きし、`encode_profiles` には触れない。この API は新しい `recording_encode_policy` 行を凍結しない —— `SetRecordingKeepOriginal` は UPDATE のみ（INSERT アームを持たない）で書く。未凍結の録画は既に `always` と同じ扱いなので、`always` への変更は 0 行のまま 204（no-op）、`until_encoded` への変更は 0 行のまま 409 にする。
+
+  「desired プロファイルが 1 つ以上あるか」の判定は事前読み取りではなく、この UPDATE 自身の WHERE（`cardinality(encode_profiles) > 0`）が適用の瞬間に再評価する。`always` 方向では原本の状態を検査しないので、原本が `deleting` の間でも次の reconcile パスで条件が再評価され、ファイルが残っていれば `active` に戻せる。
 - **保持ポリシー変更は物理削除しない**。River のヒントジョブも投入せず、削除 reconcile のレベルトリガーに任せる。定期パスは既定 15 分間隔なので、条件を満たす原本の削除には最大 15 分かかる。これは追加された desired を直ちに encode queue へ反映する事後追加 API とは意図的に非対称である。
 - この表の api 側の書き手は、ingest と同じくユーザーが宣言した desired state を書く。観測を複数ループで更新する脊椎表ではないため、`recording_encode_policy` は分割しない。
 - この例外を経ても「ingest 完了時点で確定した最終状態」という設計そのものは変わらない。凍結後の変更は、`encode_profiles` の事後追加と、この API による `keep_original` の明示的な上書きと、下記の版の削除に限る。
@@ -127,18 +188,11 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 | 公開前と分かる孤児 | mtime 猶予 + エイジング | 予約名の temp / staging の回収 |
 | canonical 名の孤児 | エイジング後に報告 | DB 喪失後も公開済みファイルを保持して調査する |
 
-ingest は canonical file と同じディレクトリに record 固有の
-`.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を
-replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。
-プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。
-予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
-名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの
-rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。
-temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は
-次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink
-するので、同名パスの差し替えで別の temp を削除しない。
-NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に
-報告する。自動削除や rescue の昇格には進まない。
+ingest は canonical file と同じディレクトリに record 固有の `.rokuban-ingest-{site}-{record_id}` temp を作る。同じ record の再試行はその temp を replay して末尾から続ける。中身の不一致または record の cancel / fail だけで temp を消す。プロセス死や rename 後の DB 失敗で残った temp / canonical file は孤児候補である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
+
+名前だけでは公開済みか判定できないため、canonical file は自動削除しない。catalog 無しの rescue 走査はこの temp 接頭辞を明示的に除外するので、一時バイトを original として登録しない。temp の物理削除時は ingest と同じ flock を非 blocking で取得し、replay や追記中の temp は次の reconcile pass へ延期する。ロック取得後に inode と mtime を再確認してから unlink するので、同名パスの差し替えで別の temp を削除しない。
+
+NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に報告する。自動削除や rescue の昇格には進まない。
 
 thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` 接頭辞を持つ。
 active row が無い間は孤児候補であり、mtime 猶予とエイジングの後に回収する。
@@ -172,7 +226,9 @@ API は現在のタイムラインから導出した keep 区間と凍結した�
 再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。
 この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
 
-この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。ただし `stage = 'adopt'` は諦めではなく候補の採用待ちなので、採用待ちの局があるとその局の `until_encoded` の原本は消えない。削除エンジンに容量トリガーは無く、ディスク残量の警告で気付く。
+この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
+
+この学習による再検出が効くのは、原本が残っている場合（`keep_original=always` や削除 reconcile の前）に限る。API の再試行操作は結果と試行行を消し、active な原本があれば再び desired にする。ただし `stage = 'adopt'` は諦めではなく候補の採用待ちなので、採用待ちの局があるとその局の `until_encoded` の原本は消えない。削除エンジンに容量トリガーは無く、ディスク残量の警告で気付く。
 
 ### 不変条件の修正
 
@@ -186,8 +242,16 @@ API は現在のタイムラインから導出した keep 区間と凍結した�
 - 物理削除後も tombstone は残る → ドロップ統計・録画履歴は消えず、**ごみ箱を空にしても再放送重複排除は壊れない**
 - **`recordings.purged_at` は「完全削除が完了した」不可逆な事実を持つ列**。削除 reconcile がパス末尾で、条件を満たす録画に一度だけ立てる。条件は「ごみ箱条件を満たし、かつ物理削除が終わっていない `media_assets` が 1 行も残っていない」ことである。tombstone は上の行のとおり残り続けるが、ごみ箱一覧（`GET /api/recordings?trash=true`）は `purged_at IS NULL` も要求するので、purge が完了した録画はごみ箱一覧には出ない。「`media_assets` に未削除行が 0」を毎パス導出する案は採らない —— アセットを一度も持ったことがない録画では、この条件が purge 前から真になる。「消した」と「元から無い」を区別できないためである（CLAUDE.md 不変条件 9）
 - 将来オプション: ごみ箱サイズの UI 表示 + 空き容量逼迫時に猶予期間前でも古い順に purge する容量トリガー。初期実装は期間ベースのみ
-- **復元と物理削除の競合**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態である。**復元は `media_assets` に一切触れない**（`recordings.deleted_at` を消して即時削除の要求行を消すだけ）。そのため unlink が失敗して `deleting` のまま次パスに持ち越されると、「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は、無条件に unlink へ進むのではない。trash 猶予超過 / until_encoded 派生物完備の判定（上記「削除可否の述語に名前を与える」の 2 つの名前付き述語）を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets`（この 2 述語への `NOT EXISTS`）で候補として挙げる。`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻す。既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）、`active` には戻さず `deleted` を確定する。ここで無条件に `active` へ戻すと、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまう。これは復元 API 側で `deleting → active` を即時に書き換える方式（却下案）を採らなかった理由そのものである
-- **復元と即時削除要求の競合**: 復元は「`deleted_at` を消す」と「即時削除の要求行を DELETE する」の 2 表更新で、**1 文のデータ変更 CTE ではなくトランザクション内の 2 文**で流す。CTE はアーム全体が 1 つのスナップショットを共有するため、行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。残った要求行は上の「ごみ箱腕」が `deleted_at IS NOT NULL` を要求するのでその場では何も起こさないが、**次の普通の論理削除で猶予をバイパスして即時 purge の対象になる**（ユーザーは即時削除を要求していない）。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える。**ただし窓を閉じているのは 2 文に割ったことではなく、要求行を入れる経路が先に対象の `recordings` 行をロックすること**である。DELETE が 0 行だったとき、ロックは何も残らない（READ COMMITTED に述語ロックは無い）。そのため「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。個別 purge は `recordings` の UPDATE がそのロックを兼ねている。**上の「一括」を素直に書くと、`recordings` をロックしないので窓が開き直る** —— この表に行を入れる経路は、必ず対象の `recordings` 行を先にロックする。素直な書き方とは `INSERT INTO recording_purge_requests SELECT id FROM recordings WHERE deleted_at IS NOT NULL` である
+- **復元と物理削除の競合**: `media_assets.state = 'deleting'` は unlink 待ちの間しか続かない一時状態である。**復元は `media_assets` に一切触れない**（`recordings.deleted_at` を消して即時削除の要求行を消すだけ）。そのため unlink が失敗して `deleting` のまま次パスに持ち越されると、「復元したのに次パスで消える」窓ができうる。前パスの `deleting` 行を拾い直す経路（`ListMediaAssetsPendingDelete`）は、無条件に unlink へ進むのではない。
+
+  trash 猶予超過 / until_encoded 派生物完備の判定（上記「削除可否の述語に名前を与える」の 2 つの名前付き述語）を**適用の瞬間に再評価**する。該当しなくなった行は `ListUnqualifiedDeletingAssets`（この 2 述語への `NOT EXISTS`）で候補として挙げる。`resolveUnqualifiedDeletingAsset` がファイルの現存を `stat` で確認したうえで、まだ存在すれば `active` に戻す。
+
+  既に無ければ（unlink 成功後 `MarkMediaAssetDeleted` のコミット前にプロセスが落ちていた場合）、`active` には戻さず `deleted` を確定する。ここで無条件に `active` へ戻すと、「`active` なのにファイルが無い行」を revert 経路自身が作ってしまう。これは復元 API 側で `deleting → active` を即時に書き換える方式（却下案）を採らなかった理由そのものである
+- **復元と即時削除要求の競合**: 復元は「`deleted_at` を消す」と「即時削除の要求行を DELETE する」の 2 表更新で、**1 文のデータ変更 CTE ではなくトランザクション内の 2 文**で流す。CTE はアーム全体が 1 つのスナップショットを共有するため、行ロックで UPDATE アームが待たされている間に commit された要求行が DELETE アームから見えず、「復元は成功したのに要求行だけ残る」が観測される。
+
+  残った要求行は上の「ごみ箱腕」が `deleted_at IS NOT NULL` を要求するのでその場では何も起こさないが、**次の普通の論理削除で猶予をバイパスして即時 purge の対象になる**（ユーザーは即時削除を要求していない）。2 文なら DELETE が UPDATE の後に新しいスナップショットを取るので要求行が見える。**ただし窓を閉じているのは 2 文に割ったことではなく、要求行を入れる経路が先に対象の `recordings` 行をロックすること**である。DELETE が 0 行だったとき、ロックは何も残らない（READ COMMITTED に述語ロックは無い）。
+
+  そのため「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。個別 purge は `recordings` の UPDATE がそのロックを兼ねている。**上の「一括」を素直に書くと、`recordings` をロックしないので窓が開き直る** —— この表に行を入れる経路は、必ず対象の `recordings` 行を先にロックする。素直な書き方とは `INSERT INTO recording_purge_requests SELECT id FROM recordings WHERE deleted_at IS NOT NULL` である
 
 ### 孤児の報告と回収
 
@@ -206,7 +270,11 @@ DB リストア後も canonical file は自動削除しない。自動回収す�
 孤児回収の 3 重の安全弁と同じ慎重さを、逆方向の形で 2 つ持つ:
 
 1. **エイジング**: 候補は `first_seen` を記録し、既定 24 時間連続で観測され続けたものだけを確認済みとして報告する（`missing_asset_age`）。これは単発の走査揺れを異常と区別するためである。孤児エイジングの 14 日と揃える必要はない --- 削除の猶予ではなく通知の遅れを抑える値なので短めにしている
-2. **全損シグネチャ**: 「この 1 回の走査でファイルを 1 件も観測できなかったのに `active` な行が存在する」という**形**で検知する。これは件数の閾値ではなく、reconciler の `breaker.ReconcileTotalLoss` と同じ考え方である。検知したパスは記録を丸ごと見送る（`rokuban_missing_asset_scan_suspected_storage_failure_total` が進む）。既存の確認済み候補にも触れない --- 疑わしいパスの結果で前回までの状態を上書きしない。**この形が「マウントが落ちている」を捕まえられるのは 1 マウント = `media_dir` 全体という構成でだけ**である。判定に使うのは、走査が観測した全ファイル（`catalog/` 以外）の件数である。そのため `media_dir` 直下がローカルディスクで、その下のサブツリーだけがマウントされている場合（アーカイブ階層だけが落ちる部分マウント障害）は発動しない。`.DS_Store` / `lost+found` / mtime が新しくて孤児回収も消せない残骸が 1 個でもある場合も、`0 件` にならず発動しない。その場合は死んだサブツリー配下の `active` 行が全部、エイジング後に確認済みとして報告される（削除はしないので被害は騒音のみ）。マウント単位で判定する形にはしていない —— `media_dir` 配下のどこにマウント境界があるかは設定にも `rel_path` にも現れず、Rokuban はそれを知らない
+2. **全損シグネチャ**: 「この 1 回の走査でファイルを 1 件も観測できなかったのに `active` な行が存在する」という**形**で検知する。これは件数の閾値ではなく、reconciler の `breaker.ReconcileTotalLoss` と同じ考え方である。検知したパスは記録を丸ごと見送る（`rokuban_missing_asset_scan_suspected_storage_failure_total` が進む）。既存の確認済み候補にも触れない --- 疑わしいパスの結果で前回までの状態を上書きしない。
+
+   **この形が「マウントが落ちている」を捕まえられるのは 1 マウント = `media_dir` 全体という構成でだけ**である。判定に使うのは、走査が観測した全ファイル（`catalog/` 以外）の件数である。そのため `media_dir` 直下がローカルディスクで、その下のサブツリーだけがマウントされている場合（アーカイブ階層だけが落ちる部分マウント障害）は発動しない。`.DS_Store` / `lost+found` / mtime が新しくて孤児回収も消せない残骸が 1 個でもある場合も、`0 件` にならず発動しない。
+
+   その場合は死んだサブツリー配下の `active` 行が全部、エイジング後に確認済みとして報告される（削除はしないので被害は騒音のみ）。マウント単位で判定する形にはしていない —— `media_dir` 配下のどこにマウント境界があるかは設定にも `rel_path` にも現れず、Rokuban はそれを知らない
 
 サーキットブレーカーは持たない。孤児回収・`until_encoded` の安全弁は「大量削除という不可逆な操作」を止めるためのものだが、この検出は削除を一切行わないので止める対象が無い。
 

@@ -61,10 +61,16 @@ catalog/
 - **公開点は「manifest を書き終えたこと」であって rename ではない**。§2 の通り S3/FUSE にアトミック rename は無い（Mountpoint は rename 自体が無い）。そのため `latest` を差し替える・一時名から最終名へ移す、はどちらも公開点に使えない。本体も manifest も**最初から最終名へ一発書きする**（§3 ルール 1）。順序（本体 → fsync → manifest）だけが公開のプロトコルになる
 - **manifest を先に書くと完成宣言にならない。** 先に置いた manifest は「これから書く予定」しか主張できず、途中停止と区別が付かない
 - **manifest 自身が途中で切れても安全側に倒れる。** 途中まで書かれた JSON は閉じ括弧を欠いて parse に失敗し（判定 1）、たとえ parse できても本体の sha256 検証（判定 5）を通らない限り完成扱いにならない。manifest 自身の checksum は自己参照になるので持たない —— **manifest の正しさは「本体を言い当てられているか」で測る**
-- **parse 成功だけでは足りない**。JSON 文字列の中の 1 バイトが化けた本体は parse に成功する。`TestVerifyGeneration_RejectsSilentByteFlip` の実測では、parse は通り、sha256 だけが不一致になる。だから**サイズと sha256 の照合**を判定に入れる
+- **parse 成功だけでは足りない**。JSON 文字列の中の 1 バイトが化けた本体は parse に成功する。実測では、parse は通り、sha256 だけが不一致になる。だから**サイズと sha256 の照合**を判定に入れる
 - **`schemaVersion` は「読めない」を意味するので、列や JSON キーの引っ越しでは上げない**。判定 3 は「自分より新しい版は読めない」で**拒否する**ゲートである。そのため上げた瞬間から、新しいバイナリが書いたダンプは古いバイナリで rescue できなくなる —— 災害復旧で古いバイナリしか手元にない状況を作りたくない。同じ事実を別のキー・別の配列に移したときは版を据え置く。代償は「新ダンプ × 旧バイナリ」で、旧バイナリは知らないキーを黙って無視するので引っ越した事実が落ちる。だから**引っ越してよいのは、落ちたときに安全側へ倒れる事実だけ**（例: 即時削除の要求が落ちても、その録画はごみ箱に残って猶予超過で消える。要求より遅く消える側）。落ちると取り返せない事実（録画本体・アセット・tombstone）を新しいキーへ移すなら版を上げる
 - **同じ方針を `manifestVersion` にも適用する**。manifest 自体の形（`document` / `sizeBytes` / `sha256` のキー）を変えたとき、旧バイナリが新形式を読むと欠けたキーのせいで完成判定そのものが「無条件に不完全」へ倒れる。これは安全側に倒れる引っ越しではなく世代が丸ごと読めなくなる引っ越しである。`schemaVersion` と同じ基準に従うと `manifestVersion` は上げる側になる。
 - **世代名は再利用しない。** 同じ秒に 2 回書くことになったら `-02`, `-03` とゼロ詰めの連番を足して別の世代を作る。既存の完成世代を上書きしに行かないので、「書き直しの途中で前の完成世代も壊れる」窓が無い。ゼロ詰めなのは**辞書順が「新しい順」の唯一の根拠**だから（`-2` と `-10` を並べると 10 本目が 2 本目より古い側に落ちる）
+
+<details><summary>根拠</summary>
+
+- parse 成功だけでは完成と判定しないこと: `TestVerifyGeneration_RejectsSilentByteFlip`
+
+</details>
 
 ### 完成の確認（DB に触らずに見る）
 
@@ -72,17 +78,12 @@ catalog/
 
 ### rescue の世代選択とフォールバック
 
-`rokuban rescue` は DB を catalog の内容で更新する。catalog が無い場合はストレージを走査して
-asset row を登録する。実行前に file や media asset を変更する worker を止める。
-対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。rescue 終了後まで再開しない。
-catalog 復元は全 asset の rel_path をソートして、公開・削除と共通の filesystem lock を
-DB トランザクションの開始前に取得し、コミットまで保持する。走査の in-place 登録も
-ファイルの再確認からコミットまで同じ lock を保持する。DB 接続の切断だけでは排他が消えない。
-`TestRescueDeletionSerialization` が両経路のファイル確認後に実際の削除を試みて検証する。
+`rokuban rescue` は DB を catalog の内容で更新する。catalog が無い場合はストレージを走査して asset row を登録する。実行前に file や media asset を変更する worker を止める。対象は ingest / encode / thumbnail / seek tiles / delete_reconcile などである。rescue 終了後まで再開しない。catalog 復元は全 asset の rel_path をソートして、公開・削除と共通の filesystem lock を DB トランザクションの開始前に取得し、コミットまで保持する。
+
+走査の in-place 登録もファイルの再確認からコミットまで同じ lock を保持する。DB 接続の切断だけでは排他が消えない。
 
 スナップショット後にファイルが消えた asset は履歴・統計を残して `deleted` として復元し、
 件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
-`TestRescueCatalogMissingFiles` と `TestRescueScanCandidateRemoved` がこの再確認を検証する。
 この排他はファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの
 上書きを防ぐものではないため、復旧中に worker を止める運用要件は続く。
 共有ストレージでは全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
@@ -93,6 +94,14 @@ DB トランザクションの開始前に取得し、コミットまで保持�
 2. 完成世代が 1 つも無ければストレージスキャン（次節）
 
 つまり**最新世代が不完全・checksum 不一致なら 1 つ前の完成世代から復元する**。「最新に見えるもの」ではなく「最新の**検証済み**」を選ぶ。
+
+<details><summary>根拠</summary>
+
+- catalog の実体無し asset を `deleted` として復元すること: `TestRescueCatalogMissingFiles`
+- 走査後に消えたファイルを登録しないこと: `TestRescueScanCandidateRemoved`
+- 削除と復元の排他を両経路で保つこと: `TestRescueDeletionSerialization`
+
+</details>
 
 ### 不完全世代の保持と掃除
 
