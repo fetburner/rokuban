@@ -150,7 +150,7 @@ Chromium の計算値から実画素を読めない色表現があるため、�
 - foreground を適用した画面群: 録画一覧、予約一覧、ホーム、番組リスト
 - foreground を適用した録画・番組要素: `RecordingRow`、`ProgramRow`、`ChannelPicker`
 - foreground を適用した live / rule 要素: チャンネル種別タグ、リモコン番号タグ、無効ラベル
-- hover の共通面: `components/ui/chip.tsx`、`components/day-strip.tsx`、`hover:bg-muted/40`
+- chip / day-strip の hover 面: `components/ui/chip.tsx`、`components/day-strip.tsx`、`hover:bg-muted`
 - 実測済みの録画詳細: `RecordingDetail` の「チャンネル」`<dt>`、ページ地との文字色
 - 同じ色を使う説明文と品質イベント: `RecordingDetail`。destructive の淡い地: `bg-destructive/10`
 - ポップオーバーの未マウント状態: `keepMounted` を使わない `ChannelOption`
