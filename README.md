@@ -111,14 +111,15 @@ docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokub
 
 | ドキュメント | 内容 |
 |---|---|
-| [docs/configuration.md](docs/configuration.md) | 設定 |
+| [config.example.yml](config.example.yml) | 設定項目と例 |
 | [docs/operations.md](docs/operations.md) | 運用 |
-| [docs/runbook.md](docs/runbook.md) | 手動での動作確認手順 |
+| [docs/runbook.md](docs/runbook.md) | 導入・移行・運用手順 |
 
 ### 開発する人向け
 
 | ドキュメント | 内容 |
 |---|---|
+| [docs/configuration.md](docs/configuration.md) | 設定の判断 |
 | [docs/overview.md](docs/overview.md) | 全体アーキテクチャ |
 | [docs/recording.md](docs/recording.md) | 録画エンジン |
 | [docs/schema.md](docs/schema.md) | DB スキーマ |

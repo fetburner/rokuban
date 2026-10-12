@@ -1,8 +1,6 @@
-# シャドー運用 runbook（索引）
+# 導入・移行・運用手順（索引）
 
-既存の mirakc（EPGStation と共有）に Rokuban をぶら下げ、実放送で確認する手順。
-
-**本文は `docs/runbook/` に分割してある。** やることに対応するファイルだけ開く。
+mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対応の手順。
 
 | ファイル | 内容 |
 |---|---|
@@ -16,5 +14,7 @@
 | [runbook/testing.md](runbook/testing.md) | 開発時のテスト |
 | [runbook/cutover.md](runbook/cutover.md) | 主運用の切替 —— 出口基準チェックリスト / エンコード・ごみ箱・ブレーカー・rescue 練習の手順 / 二重録画を避ける切替順 / ロールバック |
 | [runbook/import-epgstation.md](runbook/import-epgstation.md) | EPGStation からの移行（`rokuban import epgstation`）—— ルール取り込みの手順とライブラリ JSON の書き出し方 |
+
+**本文は `docs/runbook/` に分割してある。** やることに対応するファイルだけ開く。
 
 UI の画面構成とルートは [frontend.md](frontend.md) を参照。
