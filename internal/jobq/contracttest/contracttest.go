@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -25,8 +26,11 @@ type Fixture interface {
 	RecoveryGrace() time.Duration
 }
 
-// Factory registers worker in registry and creates an isolated adapter fixture.
-type Factory func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[Args]) Fixture
+// Factory registers worker in registry and creates an isolated adapter fixture for queueName.
+// Passing the queue lets the shared contract exercise the maximum supported name while each
+// fixture processes the queue under test; a default-only fixture could accept an enqueue without
+// ever delivering it.
+type Factory func(t *testing.T, registry *jobq.Registry, worker jobq.Worker[Args], queueName string) Fixture
 
 // Run executes the common adapter contract tests against factory.
 func Run(t *testing.T, factory Factory) {
@@ -36,6 +40,7 @@ func Run(t *testing.T, factory Factory) {
 		run  func(*testing.T, Factory)
 	}{
 		{"enqueue decodes the JSON round trip", testEnqueueRoundTrip},
+		{"accepts a queue name at the contract maximum", testQueueNameMaxLen},
 		{"EnqueueTx waits for commit and disappears on rollback", testEnqueueTx},
 		{"MaxAttempts stops after the literal limit", testMaxAttempts},
 		{"ErrDiscard is not delivered again", testErrDiscard},
@@ -51,6 +56,27 @@ func Run(t *testing.T, factory Factory) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) { test.run(t, factory) })
+	}
+}
+
+func testQueueNameMaxLen(t *testing.T, factory Factory) {
+	queueName := strings.Repeat("q", jobq.MaxQueueNameLen)
+	args := contractArgs{Queue: queueName, Value: "maximum queue name", TimeoutMS: 2000, MaxAttempts: 1}
+	if got := args.Spec().Queue; got != queueName {
+		t.Fatalf("Spec().Queue = %q, want %q", got, queueName)
+	}
+	calls := make(chan contractArgs, 1)
+	fixture := newFixtureForQueue(t, factory, contractWorker{work: func(_ context.Context, got contractArgs) error {
+		calls <- got
+		return nil
+	}}, queueName)
+	start(t, fixture)
+	if _, err := fixture.Enqueue(context.Background(), args); err != nil {
+		t.Fatalf("Enqueue() with %d-character queue name error = %v", len(queueName), err)
+	}
+	waitIdle(t, fixture)
+	if got := receive(t, calls); !reflect.DeepEqual(got, args) {
+		t.Errorf("decoded args = %#v, want %#v", got, args)
 	}
 }
 
@@ -344,6 +370,7 @@ func testEnqueueTimeout(t *testing.T, factory Factory) {
 }
 
 type contractArgs struct {
+	Queue          string
 	Value          string
 	Values         []int
 	TimeoutMS      int64
@@ -359,8 +386,12 @@ type Args = contractArgs
 func (contractArgs) Kind() string { return "contracttest" }
 
 func (args contractArgs) Spec() jobq.Spec {
+	queue := args.Queue
+	if queue == "" {
+		queue = "default"
+	}
 	return jobq.Spec{
-		Queue: "default",
+		Queue: queue,
 		Timeout: func(raw jobq.Args) time.Duration {
 			args, ok := raw.(contractArgs)
 			if !ok {
@@ -400,9 +431,13 @@ func (worker contractWorker) Work(ctx context.Context, args contractArgs) error 
 }
 
 func newFixture(t *testing.T, factory Factory, worker contractWorker) Fixture {
+	return newFixtureForQueue(t, factory, worker, "default")
+}
+
+func newFixtureForQueue(t *testing.T, factory Factory, worker contractWorker, queueName string) Fixture {
 	t.Helper()
 	registry := jobq.NewRegistry()
-	fixture := factory(t, registry, worker)
+	fixture := factory(t, registry, worker, queueName)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

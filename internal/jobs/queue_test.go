@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/jobq"
 )
 
 func TestAllQueueNames(t *testing.T) {
@@ -177,32 +178,17 @@ func TestPhysicalQueueName(t *testing.T) {
 	}
 }
 
-// TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen は、
-// config.MirakcSiteNameMaxLen まで許した site 名を qualifyQueueName で修飾しても
-// RiverQueueNameMaxLen を超えないことを機械的に固定する。この関係の両端
-// （siteBoundQueueNames・qualifyQueueName・RiverQueueNameMaxLen）はすべて
-// internal/jobs 自身の契約なので、テストも jobs 側に置く --- config は
-// MirakcSiteNameMaxLen の根拠としてこの契約を import するだけで、逆方向
-// （jobs → config）の import は発生しない。site 名の長さ検査は
-// config.validateSiteName の 1 本だけなので（worker 側の重複検査は無くした）、
-// この関係が壊れると config のロード時検査を通った site 名が qualifyQueueName で
-// 64 文字を超える。それを渡した先は worker ロールを持つプロセスなら起動時
-// （river.NewClient → Config.validate → `queueConfig.validate` が
-// river@v0.47.0 client.go の `validateQueueName` を呼ぶ）に落ち、insert-only
-// クライアント（`rokuban enqueue` 等）では Insert 時（river@v0.47.0 client.go の
-// `validateQueueName`）に初めて落ちる。
-//
-// siteBoundQueueNames のどの論理名についても、site 名を
-// config.MirakcSiteNameMaxLen まで許してキュー修飾しても RiverQueueNameMaxLen を
-// 超えないことを検査する。破る典型は siteBoundQueueNames に `reconciler` より
-// 長い論理名を足す、または config.MirakcSiteNameMaxLen を大きくすること。
+// TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen は、最大長の site 名で作った
+// 物理キュー名が jobq の共通上限内に収まることを固定する。siteBoundQueueNames に
+// `reconciler` より長い論理名を追加するか、config.MirakcSiteNameMaxLen を大きくすると
+// このテストが落ちる。
 func TestSiteBoundQueueNames_FitWithinMirakcSiteNameMaxLen(t *testing.T) {
 	maxLenSite := strings.Repeat("a", config.MirakcSiteNameMaxLen)
 	for _, base := range siteBoundQueueNames {
 		name := qualifyQueueName(base, maxLenSite)
-		if len(name) > RiverQueueNameMaxLen {
-			t.Errorf("qualifyQueueName(%q, <%d-char site>) = %q (%d chars) exceeds RiverQueueNameMaxLen(%d)",
-				base, len(maxLenSite), name, len(name), RiverQueueNameMaxLen)
+		if len(name) > jobq.MaxQueueNameLen {
+			t.Errorf("qualifyQueueName(%q, <%d-char site>) = %q (%d chars) exceeds jobq.MaxQueueNameLen(%d)",
+				base, len(maxLenSite), name, len(name), jobq.MaxQueueNameLen)
 		}
 	}
 }

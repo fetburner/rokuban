@@ -198,7 +198,7 @@ func allQueues(ingestConcurrency, encodeConcurrency, thumbnailConcurrency int) m
 
 // Config は River クライアントの設定。
 type Config struct {
-	// JobTimeout は River の既定ジョブタイムアウト。Spec.Timeout がある worker はその値を使う。
+	// JobTimeout は River の既定ジョブタイムアウト（1 分）。Spec.Timeout がある worker はその値を使う。
 	// 共有契約テストが RescueStuckJobsAfter を短くするために 0 でない値を渡す。River は
 	// RescueStuckJobsAfter < JobTimeout を設定エラーにする（river@v0.47.0 client.go の検証）ので、
 	// この値はその検証を通すためにある。

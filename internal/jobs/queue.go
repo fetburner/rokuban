@@ -48,9 +48,6 @@ const (
 	StorageQueue = "storage"
 	// TSScanQueue は原本 TS の解析ジョブを site 非依存で処理するキュー名。
 	TSScanQueue = "ts_scan"
-
-	// RiverQueueNameMaxLen は River が許容するキュー名の最大長。
-	RiverQueueNameMaxLen = 64
 )
 
 // siteBoundQueueNames は mirakc への到達を必要とする、site 単位の論理キュー名。
