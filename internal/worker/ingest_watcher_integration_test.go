@@ -82,14 +82,16 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	mcServer.setEndTime(time.Now())
 	mcServer.recordSaved <- struct{}{}
 	waitForIngestLifecycleEnqueues(t, watcherEnqueuer, 1)
+	waitForIngestLifecycleRecordSync(t, pool, record.ID)
 	enqueued := watcherEnqueuer.IngestJobs()
 	if _, err := queue.Enqueue(context.Background(), enqueued[0].args, enqueued[0].opts...); err != nil {
 		t.Fatalf("queueing first watcher ingest hint: %v", err)
 	}
 	waitForIngestLifecycleDeliveries(t, queue, 1)
 	waitForIngestLifecycleQueue(t, queue)
-	if delay, ok := jobq.SnoozeDelay(<-workResults); !ok || delay != 30*time.Second {
-		t.Fatalf("first ingest result snooze = %v, %v; want 30s while SHA-256 is null", delay, ok)
+	firstResult := <-workResults
+	if delay, ok := jobq.SnoozeDelay(firstResult); !ok || delay != 30*time.Second {
+		t.Fatalf("first ingest result = %T %v (snooze %v, %v); want 30s snooze while SHA-256 is null", firstResult, firstResult, delay, ok)
 	}
 	assertIngestLifecycleWaited(t, pool, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
 
@@ -333,6 +335,28 @@ func waitForIngestLifecycleEnqueues(t *testing.T, enqueuer *ingestLifecycleEnque
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("watcher ingest enqueue requests = %d, want at least %d after record-saved", len(enqueuer.IngestJobs()), want)
+}
+
+// waitForIngestLifecycleRecordSync waits for the watcher transaction that issued the ingest hint to commit.
+// ingestLifecycleEnqueuer records EnqueueTx before that commit, unlike the jobq contract, so delivering the
+// hint earlier lets the worker miss record_sync. Only the second wait is skipped: the fixture changes just
+// sha256 and endTime, neither stored in record_sync, so the second transaction rewrites the same values.
+func waitForIngestLifecycleRecordSync(t *testing.T, pool *pgxpool.Pool, recordID string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		var committed bool
+		if err := pool.QueryRow(context.Background(),
+			"SELECT EXISTS (SELECT 1 FROM record_sync WHERE site = 'default' AND record_id = $1 AND recording_id IS NOT NULL)", recordID,
+		).Scan(&committed); err != nil {
+			t.Fatalf("checking committed record_sync: %v", err)
+		}
+		if committed {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("record_sync for %s was not committed with a recording_id", recordID)
 }
 
 func waitForIngestLifecycleQueue(t *testing.T, queue *jobqfake.Queue) {
