@@ -1,6 +1,6 @@
 // Package ruler はルール評価から reservations.base を導出する 1 パス評価ロジック。
 //
-// ruler はシングルトンではなく River のジョブ（internal/worker の RulerPassWorker）
+// ruler はシングルトンではなくジョブ（internal/worker の RulerPassWorker）
 // として実行される。排他は advisory lock ではなく UniqueOpts（サイト単位）で担保する。
 // 並走すると壊れるものと、UniqueOpts が担うものの判定基準は docs/data.md §2 が権威。
 // このパッケージは 1 パス分の評価ロジックだけを持ち、いつ・
@@ -117,7 +117,7 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 // RunPass は全サイトに対して全量評価パスを 1 回実行し、続けて番組終了後の GC
 // （runGC）を行う。
 //
-// ruler はシングルトンではなく River のジョブ（internal/worker の RulerPassWorker）
+// ruler はシングルトンではなくジョブ（internal/worker の RulerPassWorker）
 // として呼ばれる。起動契機は定期実行（真実）・ルール編集・EPG 同期完了（いずれも
 // ヒント）の 3 つがあるが、すべて RunPass を呼ぶ 1 本の経路に合流する
 // （docs/recording.md §3.1）。
@@ -171,7 +171,7 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 
 // markSuccessfulPasses は site ごとの ruler パス成功 marker を更新する。
 // marker の更新に失敗した場合も RunPass を失敗扱いにすることで、DB に成功を
-// 記録できていないのに River のジョブだけが成功する状態を避ける。
+// 記録できていないのに ジョブだけが成功する状態を避ける。
 func (r *Ruler) markSuccessfulPasses(ctx context.Context, sites []string) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {

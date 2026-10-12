@@ -25,7 +25,7 @@ const (
 	// 「永久に満たせない候補が先頭に溜まると窓を恒久的に占有する」という到達性の
 	// 穴になっていたが、EncodeReconcileWorker.resumeAfter が窓を回すことでコストと
 	// 被覆を分離した。**この定数は今は純粋なコストのつまみ**（1 パスあたりの
-	// 候補録画数と、それに伴う River Insert 数の上限）で、値を変えても被覆の保証
+	// 候補録画数と、それに伴う enqueue 数の上限）で、値を変えても被覆の保証
 	// （EncodeReconcileWorker の doc コメント「窓を回す」の C1/C2/C3）は変わらない。
 	encodeReconcileRowLimit = 1000
 )
@@ -48,7 +48,7 @@ const (
 // 止まっていた。これからは「encoded が無い」という観測が続く限り 15 分ごとに
 // 投入し直す（pendingJobStates に discarded は含まれないので、UniqueOpts は
 // discarded 済みの引数を合流させない）。レベルトリガーとしては意図通り ---
-// 真実は River のジョブ履歴ではなく media_assets の有無である --- だが、
+// 真実は ジョブ履歴ではなく media_assets の有無である --- だが、
 // **失敗し続けるエンコードは「静かに諦める」から「延々と再試行する」に変わる**。
 // 恒久失敗の代表格（設定から消えたプロファイル）は下記の絞り込みで投入対象から
 // 外しているので、ここに残るのは入力ファイルの破損など録画単位の失敗である。
@@ -91,7 +91,7 @@ const (
 // 再開位置がゼロ値に戻るという実装の性質からの推論である）。
 //
 // site 照合ガード（issue #139）は不要: EncodeReconcileArgs は site を持たず、
-// mirakc にもファイルにも触れない（DB 読み + River Insert のみ）。どの site に
+// mirakc にもファイルにも触れない（DB 読み + enqueue のみ）。どの site に
 // 束縛された worker が拾っても結果は同じ。
 type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
