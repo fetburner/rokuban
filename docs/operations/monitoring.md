@@ -19,7 +19,7 @@
 | `rokuban_records_broken_total{reason}` | Counter | `recording.record-broken` 理由別 |
 | `rokuban_ingest_bytes_total` | Counter | ingest バイト数 |
 | `rokuban_ingest_duration_seconds` | Histogram | ingest 所要時間。**中断は含まない**（下記 `ingest_jobs_total`） |
-| `rokuban_ingest_jobs_total{result}` | Counter | ingest の結果別件数。`success` / `failure` / `canceled` の 3 値。**値域は増やさない**（低カーディナリティが前提）。`success` は転送して commit した、または原本が既にコミット済みだった。`failure` は attempt を消費した試行なので、River の再試行で毎回 +1 される（`success` / `canceled` はジョブごとに 1 回で、**失敗率の分母が違う**）。**`canceled` は取り消し・失敗した録画**（利用者が止めた録画）で、`failure` に混ぜない --- 混ぜると失敗率に取消が積まれて本物の失敗が埋もれる。**SHA-256 待ちは同じ River job を snooze し、結果の 3 値と duration に数えない**。snooze は attempt を消費しない。待ちの間の録画は `rokuban_uningested_records` に残り、hash 到着後の完了または失敗を 1 回だけ数える。**River の soft stop（graceful stop）は 3 値のどれにも数えない**。中断はジョブの結末ではない --- River は attempt を消費せず行を `available` に戻し、次のプロセスが再開して、そこで結末を 1 回だけ数える。それゆえ `failure` の意味は中断を含まない分だけ狭く、**録画中の rolling update はここに乗らない**。中断が繰り返されているかは `rokuban_uningested_records` / `_bytes` で見る。**`interrupted` を足さない理由**: 中断の +1 はプロセスが終了する直前の窓（既定 `SoftStopTimeout` 5 秒 + completer の flush）でしか起きず、終了したプロセスは scrape できないので、その窓に scrape が重ならなかった分は失われる（失われる割合は scrape 間隔次第で未測定）。**1 件消化モード（ScaledJob）では `success` / `failure` の +1 も同じ窓に入る** --- 「`success` / `failure` なら安全」と読める形にしない |
+| `rokuban_ingest_jobs_total{result}` | Counter | ingest の結果別件数（下記 ingest） |
 | `rokuban_uningested_records{site}` | Gauge（DB） | 未 ingest record 総量（件数）。**`finished` として観測済みのぶんだけ**（下記 ingest） |
 | `rokuban_uningested_record_bytes{site}` | Gauge（DB） | 未 ingest record 総量（バイト）。同上 |
 | `rokuban_uningested_backlog_scrape_errors_total{site}` | Counter | 上記の取得失敗 |
@@ -38,7 +38,7 @@
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | **いま止まっているか**（1 = 発動中）。ラッチなのでアラートはこちら。`breaker="delete_reconcile"` は site が空文字列 |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | **開始時刻を過ぎたのに録画が始まっていない予約数**。収束すればゼロに戻る |
-| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数。`reason="missing"` は schedule 不在、`reason="options"` は `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致、`reason="options_deferred"` は state allowlist により今は再作成できない同不一致。skip と終了済みは除外する。DB 版の `rokuban_reconcile_pending_diff{action="create"}`（`missing`）/ `{action="update"}`（`options`）/ `{action="update_deferred"}`（`options_deferred`）に相当する |
+| `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前〜録画中の desired reservation と observed schedule の未収束数（下記 reconcile） |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | 同じ reason で pending な予約のうち最も開始が近い番組の start_at。件数だけでは判別できない「開始が近い未同期」と「十分先の未同期」を区別する。pending が 0 の reason には系列が出ない |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | `schedule_sync` の全量 upsert + stale 削除 + marker 更新を同一トランザクションでコミットした最後の時刻。未確立は 0。`presync_pending` と対で観測不能を判定する |
 | `rokuban_presync_scrape_errors_total{site}` | Counter（DB） | presync collector の DB 読み取りまたは observed options の解釈に失敗した回数。失敗時は pending / snapshot を 0 として報告しない |
@@ -63,16 +63,16 @@
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_media_assets_missing{kind}` | Gauge | `state='active'` なのに実体ファイルが無いと確認できた media_asset 数（kind 別。孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定）。**ゼロは「大丈夫」の証明ではない** --- 下記「沈黙は保証ではない」参照 |
 | `rokuban_orphan_files_unresolved` | Gauge | `media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数。削除 reconcile は個別 Warn を上限 20 行まで出し、超過分を件数でまとめる。**非ゼロは調査が必要**。canonical file は自動削除しない |
-| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 上記の検出パスが「1 件もファイルを観測しなかったのに active な行が存在する」形でスキップされた回数。**進んでいる間は `rokuban_media_assets_missing` が更新されず前回値のまま凍結する**（マウント失敗・空マウントを疑う）。**この形は「資産が本当に全部消えた」小規模系（active が数件しか無くその全件が消えた等）でも発動し、真の異常をゲージから隠す** --- 安全側の判断としては正しいが、進んだら「マウントか、全損そのものか」の両方を見る |
+| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 上記の検出パスが「1 件もファイルを観測しなかったのに active な行が存在する」形でスキップされた回数（下記「沈黙は保証ではない」） |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻。**このパスはヒントを落とした録画を拾うバックストップなので、止まっても症状が静か**（[ingest](../recording/ingest.md) §5.5） |
-| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数。エンコード実行中の録画も数えるので非ゼロは異常ではない。窓はパスをまたいで回るので、**候補上限（1000）に張り付いてもそれより後ろの録画への到達性は失われない**（次パスが続きから見る）。バックログが窓を埋めている系では末尾を越えたパスでこのゲージが上限を下回る（バックログ件数 mod 1000。ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない）。窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（同 §5.5） |
+| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスが見た「原本があるのに encoded が無い」録画数（下記 encode reconcile） |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 凍結済みの desired が現在の `encode.profiles` に無い録画数。**非ゼロ = プロファイルの改名 / 削除でその名前の過去録画が永久にエンコードされない**（投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている） |
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | **全 root を観測できた**パスの時刻。1 root でも失敗した部分成功では進まない（下の per-root ゲージと対で見る） |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root（`media` / `scratch`）ごとに最後に観測できた時刻。片方だけ恒久的に壊れているケースをここで特定する（下記「沈黙は保証ではない」）。**この鮮度でアラートを組んでよい** |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数。`GET /api/storage` を経由せず Prometheus 側で容量アラートを組める |
 | `rokuban_live_active_sessions{kind}` | GaugeVec | ライブ / 追っかけ / 原本 VOD セッション数（`kind`: `live` / `chase` / `original_vod`。**per-process**。全体は Prometheus 側で sum。[k8s 運用](k8s.md) §5） |
 | `rokuban_live_session_start_failures_total{reason}` | Counter | ライブ / 追っかけセッション開始失敗（`reason` の値は `internal/streamer/session.go` の `LiveSessionStartFailures` 呼び出しが権威。例: `session_limit` / `ffmpeg_error`） |
-| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブ / 追っかけセッション数（`reason`: `upstream` / `session_limit`、`result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`。`retry_abandoned` は退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった件数で、mirakc 側の失敗（`retry_failed`）とは区別する） |
+| `rokuban_live_session_evictions_total{reason,result}` | Counter | 起動失敗からの再試行のために退避したライブ / 追っかけセッション数（下記 ライブ視聴） |
 | `rokuban_live_idle_gc_reclaimed_total` | Counter | idle GC が回収したライブ / 追っかけセッション数 |
 | `rokuban_live_leave_hints_total{result}` | Counter | ライブ / 追っかけの離脱ヒント受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
@@ -102,10 +102,12 @@ PID 別のドロップ内訳はメトリクスにしない（PID × 録画数で
 
 | メトリクス | ソース | 用途 |
 |---|---|---|
-| `recording.failed` 理由別カウンタ | watcher が mirakc SSE または `record_sweep` の schedules / records API から観測。理由は構造化されている: `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` | 録画失敗の傾向分析、mirakc 品質の実測 |
+| `recording.failed` 理由別カウンタ | watcher が mirakc SSE または `record_sweep` の schedules / records API から観測（理由は表の下） | 録画失敗の傾向分析、mirakc 品質の実測 |
 | `recording.record-broken` | watcher が mirakc SSE から受信（理由付き、複数回あり） | 録画中の異常検出 |
 | ドロップ統計（PID 別 continuity counter 不連続 / TEI） | `ts_scan` が原本を全量読む | EPGStation のドロップログ相当。PID 別サマリを `drop_stats` テーブルに格納し UI で表示 |
 | scrambled カウンタ | `ts_scan` が `scrambling_control` ビットを数える | B-CAS/復号障害の検出（[アラート設計](alerts.md) の対象） |
+
+`recording.failed` の理由は構造化されている。値は `start-recording-failed` / `io-error` / `pipeline-error` / `need-rescheduling` / `schedule-expired` / `removed-from-epg` である。
 
 ### ジョブ化されたループの監視
 
@@ -172,19 +174,58 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 ### ruler
 
+**`rokuban_ruler_reservations_total{action}` の `updated` が毎パス予約数と同じ値で増え続けるなら、差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。
+
 | メトリクス | 説明 |
 |---|---|
 | `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
-| `rokuban_ruler_reservations_total{action}` | `created` / `updated` / `deleted` / `released` / `gc` / `fulfilled`。**`updated` が毎パス予約数と同じ値で増え続けるなら差分書き込みが効いていない**（[録画エンジン](../recording.md) §3.1）。`released` は**ブレーカーを通っていない削除**（ユーザーが投資を手放す書き込みをしない限り起きないもの。同 §3.2）で、`deleted`（EPG 由来の導出削除）と混ぜない。`fulfilled` は録画・ingest 完了（原本 `media_asset` あり）による削除で、同じくブレーカーを通らない（同 §3.1「録画・ingest 完了後の fulfilled 削除」）。`ruler.retract_grace` で見送った件数はこのメトリクスに無い（パスごとに再計上される水準なのでカウンタに乗せると増加率の意味が壊れる）--- ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る |
-| `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行を、ruler の各パスで観測した件数。snapshot が更新されるまで同じ不一致を複数回数えうる。`followSnapshots` が追従させるのは desired ∪ skip 意図 ∪ 既存予約だけ。`program_overrides` だけが支える snapshot は追従されず、`retention_grace` の間ずっと数え続ける。カウンタは再利用イベント数ではないため、件数は warn ログの `program_id` で重複を除いて読む。検出は読み取り専用 |
+| `rokuban_ruler_reservations_total{action}` | ruler が書いた予約の action 別件数（値は表の下） |
+| `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行の観測件数（読み方は表の下） |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
 | `rokuban_circuit_breaker_tripped{breaker="ruler_deletes"}` | **1 の間は導出削除が一切走らない**（手動再開まで止まるラッチ）。カウンタと違い「いま止まっているか」に答える |
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
 
-`deleted` と `gc` は区別する。`deleted` は「ルールがマッチしなくなった」導出削除で**サーキットブレーカーの対象**、`gc` は「番組終了 + 猶予経過」の時間駆動で**対象外**（停止後の再開で大量に消えるのが正常）。
+`rokuban_ruler_reservations_total{action}` の `action` は次の値を取る。削除を表す値のうちブレーカーを通るのは `deleted` だけなので、他と混ぜない。
+
+- `created` / `updated`: 予約の作成・更新
+- `deleted`: 「ルールがマッチしなくなった」EPG 由来の導出削除。**サーキットブレーカーの対象**
+- `released`: **ブレーカーを通っていない削除**。ユーザーが投資を手放す書き込みをしない限り起きない（[録画エンジン](../recording.md) §3.2）
+- `gc`: 「番組終了 + 猶予経過」の時間駆動の削除。**ブレーカーの対象外**（停止後の再開で大量に消えるのが正常）
+- `fulfilled`: 録画・ingest 完了（原本 `media_asset` あり）による削除。ブレーカーを通らない（[録画エンジン](../recording.md) §3.1「録画・ingest 完了後の fulfilled 削除」）
+
+`ruler.retract_grace` で見送った件数はこのメトリクスに無い。パスごとに再計上される水準なので、カウンタに乗せると増加率の意味が壊れる。ブレーカーのラッチと見分けたいときは `ruler: pass complete` ログの `grace_protected` フィールドを見る。
+
+**`rokuban_ruler_program_id_reuse_total` は再利用イベント数ではない。** 件数は warn ログの `program_id` で重複を除いて読む。
+
+- ruler の各パスで観測するたびに進むので、snapshot が更新されるまで同じ不一致を複数回数えうる
+- snapshot を追従させるのは desired ∪ skip 意図 ∪ 既存予約だけである。`program_overrides` だけが支える snapshot は追従されず、`retention_grace` の間ずっと数え続ける
+- 検出は読み取り専用で、再利用を検出しても挙動は変えない
+
+<details><summary>根拠</summary>
+
+- snapshot を追従させる範囲（desired ∪ skip 意図 ∪ 既存予約）: `followSnapshots`
+
+</details>
 
 ### ingest
+
+`rokuban_ingest_jobs_total{result}` の値域は `success` / `failure` / `canceled` の 3 値である。**値域は増やさない**（低カーディナリティが前提）。
+
+**`failure` と他の 2 値では失敗率の分母が違う。** `failure` は attempt を消費した試行なので、River の再試行で毎回 +1 される。`success` / `canceled` はジョブごとに 1 回である。
+
+- `success`: 転送して commit した、または原本が既にコミット済みだった
+- `failure`: attempt を消費した試行。中断を含まない分だけ意味が狭く、**録画中の rolling update はここに乗らない**
+- `canceled`: **取り消し・失敗した録画**（利用者が止めた録画）。`failure` に混ぜない --- 混ぜると失敗率に取消が積まれて本物の失敗が埋もれる
+
+次の 2 つは 3 値のどれにも数えない。
+
+- **SHA-256 待ち**: 同じ River job を snooze し、結果の 3 値と duration に数えない。snooze は attempt を消費しない。待ちの間の録画は `rokuban_uningested_records` に残り、hash 到着後の完了または失敗を 1 回だけ数える
+- **River の soft stop（graceful stop）**: 中断はジョブの結末ではない。River は attempt を消費せず行を `available` に戻し、次のプロセスが再開して、そこで結末を 1 回だけ数える。中断が繰り返されているかは `rokuban_uningested_records` / `_bytes` で見る
+
+**`interrupted` を足さない理由**: 中断の +1 はプロセスが終了する直前の窓（既定 `SoftStopTimeout` 5 秒 + completer の flush）でしか起きない。終了したプロセスは scrape できないので、その窓に scrape が重ならなかった分は失われる（失われる割合は scrape 間隔次第で未測定）。
+
+**1 件消化モード（ScaledJob）では `success` / `failure` の +1 も同じ窓に入る** --- 「`success` / `failure` なら安全」と読める形にしない。
 
 | メトリクス | 説明 |
 |---|---|
@@ -192,6 +233,14 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 | 未 ingest record 総量 | **`finished` として観測済みで、まだコミットされていない** record の量。エッジディスク残量と突き合わせてアラートの基礎とする。エッジのリングバッファの中身そのものではない（回線断のあいだに始まった／録画中だったぶんは含まれない。[アラート設計](alerts.md)「エッジディスク残量」） |
 
 ジョブは諦めず再試行し続ける（max attempts で dead-letter にすると record が宙に浮く）。長時間の転送失敗でエッジのリングバッファが溜まり続けるのが**エッジに到達できている間の**主な運用リスクであり、このメトリクスで可視化する。到達できていない間（回線断）はこのメトリクスでは見えないので、上記の「エッジのリングバッファの中身そのものではない」を読む。
+
+### encode reconcile
+
+**`rokuban_encode_reconcile_candidates` の非ゼロは異常ではない。** エンコード実行中の録画も数える。
+
+- 窓はパスをまたいで回る。**候補上限（1000）に張り付いても、それより後ろの録画への到達性は失われない**（次パスが続きから見る）
+- バックログが窓を埋めている系では、末尾を越えたパスでこのゲージが上限を下回る。値はバックログ件数 mod 1000 で、ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない
+- 窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（[ingest](../recording/ingest.md) §5.5）
 
 ### TS scan
 
@@ -219,6 +268,12 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 `pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。**意図的に見送った差分を混ぜると正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。**
 
+`rokuban_presync_pending{site,reason}` は `pending_diff` の DB 版で、開始前〜録画中の未収束を数える。skip と終了済みは除外する。`reason` は `missing` / `options` / `options_deferred` の 3 値で、それぞれ次の意味を持つ。
+
+- `reason="missing"`: schedule 不在。DB 版の `rokuban_reconcile_pending_diff{action="create"}` に相当する
+- `reason="options"`: `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致。`{action="update"}` に相当する
+- `reason="options_deferred"`: state allowlist により今は再作成できない同じ不一致。`{action="update_deferred"}` に相当する
+
 ### 開始遅延検出器
 
 **「開始時刻を過ぎたのに `recording.started` が観測されない予約」を reconcile ループで検出する。**
@@ -226,6 +281,15 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 検出値は `rokuban_reconcile_start_delayed{site}` に出る（アラートの取り方は [アラート設計](alerts.md)）。
 
 録画開始は mirakc に委譲済みで Rokuban 側から防ぐ手段がない。mirakc 側の未知の不具合への保険であり、EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）のような事例に対応する。レベルトリガーの枠内で安価に実装できる。
+
+### ライブ視聴
+
+`rokuban_live_session_evictions_total{reason,result}` のラベルは次の値を取る。
+
+- `reason`: `upstream` / `session_limit`
+- `result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`
+
+`retry_abandoned` は、退避完了後、mirakc の解放待ちの間に呼び出し元が切断して再試行しなかった件数である。mirakc 側の失敗（`retry_failed`）とは区別する。
 
 ### 沈黙は保証ではない
 
@@ -243,8 +307,23 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは「観測が続いている」ことを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 | worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない。**drain 中は HTTP を先に閉じてからジョブを走らせ続ける**ので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる（猶予を数時間に取る encode 構成では、その間ずっと）。停止のたびに出る | 同時刻に `stopping river client` の ERROR が出ていないこと |
-| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。`riverClient.Stop` の戻り値は ERROR ログに落としており、**終了コードには出ない**。予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。ingest は JobRescuer（既定 6 分）、encode は保存した締切後の JobRescuer、cm_detect（ロゴ候補解析を含む）は `cm_detect_reconcile` が回収し、その他のジョブも JobRescuer に依存する（[§5](k8s.md)「Deployment 併用時」） | ログの `stopping river client`（ERROR）をアラート対象にする |
+| `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。drain の失敗は**終了コードには出ない**（表の下） | ログの `stopping river client`（ERROR）をアラート対象にする |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。マウントが落ちている・空マウントを疑ったパスは記録自体を見送るため、その間はこのゲージが前回値のまま凍結する。**疑いを経ずに凍結する経路もある** --- 走査エラー・DB エラーでパスが途中 return した場合はゲージに触れないまま終わり、疑いのカウンタも進まない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと **かつ** `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること（前者は疑い経路、後者はエラー経路の凍結を捕まえる） |
+
+**`rokuban server` の drain の失敗は ERROR ログにだけ出る。** 予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。回収する経路は次の通り（[§5](k8s.md)「Deployment 併用時」）。
+
+- ingest: JobRescuer（既定 6 分）
+- encode: 保存した締切後の JobRescuer
+- cm_detect（ロゴ候補解析を含む）: `cm_detect_reconcile`
+- その他のジョブ: JobRescuer
+
+`rokuban_missing_asset_scan_suspected_storage_failure_total` が進んだら、**マウントの故障と全損そのものの両方を疑う**。進んでいる間は `rokuban_media_assets_missing` が更新されず、前回値のまま凍結する（マウント失敗・空マウントを疑う）。この形は「資産が本当に全部消えた」小規模系でも発動し、真の異常をゲージから隠す。例えば active が数件しか無く、その全件が消えた場合である。スキップ自体は安全側の判断として正しい。
+
+<details><summary>根拠</summary>
+
+- drain の失敗を ERROR ログに落とし、終了コードに出さない: `riverClient.Stop` の戻り値の扱い
+
+</details>
 
 ### チューナー故障はライブ画面の 1 行で見せる
 
