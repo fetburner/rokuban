@@ -4,31 +4,19 @@
 
 ### 原本 ingest 先の FS 契約
 
-`storage.media_dir` は、ファイル `fsync`、`Close` のエラー報告、同一 FS 内の
-atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる root に限定する。
-worker は ingest キューを購読する起動時に、temp 作成 → file `fsync` → `Close` →
-同一ディレクトリ内 rename → 親ディレクトリ `fsync` の probe を行う。この probe は
-実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を
-推測する検査ではない。
+`storage.media_dir` は、ファイル `fsync`、`Close` のエラー報告、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる root に限定する。worker は ingest キューを購読する起動時に、temp 作成 → file `fsync` → `Close` → 同一ディレクトリ内 rename → 親ディレクトリ `fsync` の probe を行う。この probe は実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-- ローカル FS / JuiceFS / NFS は対象内。ただし NFS export は `sync`、client mount は
-  `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）は canonical
-  orphan として報告されることがある。自動削除はせず、ファイルを閉じた後に状態を確認する
-- geesefs / s3fs / AWS Mountpoint など FUSE S3 は原本 ingest 先に使わない。atomic
-  rename、file/parent `fsync`、`Close` のエラー意味論を原本の公開根拠として信頼できない
-- FUSE S3 の実機検証の範囲は派生物専用の領域に限る。`storage.media_dir` を
-  FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない
+- ローカル FS / JuiceFS / NFS は対象内。ただし NFS export は `sync`、client mount は `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）は canonical orphan として報告されることがある。自動削除はせず、ファイルを閉じた後に状態を確認する
+- geesefs / s3fs / AWS Mountpoint など FUSE S3 は原本 ingest 先に使わない。atomic rename、file/parent `fsync`、`Close` のエラー意味論を原本の公開根拠として信頼できない
+- FUSE S3 の実機検証の範囲は派生物専用の領域に限る。`storage.media_dir` を FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない
 
-ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死で残った
-ingest temp は mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。rename 後の DB 失敗で
-残った canonical orphan は aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、
-手動調査まで保持する。rescue の catalog 無し走査は temp を original として復元しない。
+ingest の一時ファイルは canonical path と同じディレクトリに作られる。プロセス死で残った ingest temp は mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。rename 後の DB 失敗で残った canonical orphan は aging 後に Warn と `rokuban_orphan_files_unresolved` で報告し、手動調査まで保持する。rescue の catalog 無し走査は temp を original として復元しない。
 
 ### 録画バッファのサイジング
 
 録画バッファ（mirakc `recording.basedir`、エッジのローカルディスク）のサイジング指針:
 
-- **容量の支配項は同時録画数ではなく「ingest が詰まったときの滞留分」**。回線断・クラウド側障害時は未 ingest の record が溜まり続ける。推奨値は**「N 日分の全録画を保持できる容量」**（地デジ約 7 GB/時で見積り）
+- **容量の支配項は同時録画数ではなく「ingest が詰まったときの滞留分」**。回線断・クラウド側障害時は未 ingest の record が溜まり続ける。推奨値は「**N 日分の全録画を保持できる容量**」（地デジ約 7 GB/時で見積り）
 - **速度要件は絶対帯域ではなくレイテンシ**。書き込みは 1 録画あたり約 2 MB/s（地デジ 17 Mbps）で、同時 8 本でも 16 MB/s に過ぎない。怖いのは他 I/O との競合によるレイテンシスパイクで、ingest pull のサイト単位 1〜2 本キャップはこのための決定でもある
 
 録画バッファの容量アラート（[監視メトリクス](monitoring.md) の「未 ingest record 総量」と[アラート設計](alerts.md) のエッジディスク残量アラート）とセットで運用する。
@@ -45,7 +33,7 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 **`epg.retention_grace` を上げるのは無料ではない**。同じキーが EPG 射影のローリングウィンドウ（`PruneEpgPrograms`）も駆動する。N 日にすると `epg_programs` に全サービスの放送済み番組が N 日ぶん残る。終了済み番組に対して `never_scheduled_events` へ欠測行が作られる窓も同じだけ広がる（増加量は未検証）。`never_scheduled_events` の GC 閾値は `retention_grace + 30日` なので、行の寿命も N + 30 日に追従して伸びる（表は有界のまま）。詳細と、**GC 側を滞留と連動させない理由**、確認しているテストは [ストレージ](../storage.md) §6「凍結が依存する寿命と、エッジの滞留の交点」にある。
 
-見張るメトリクスは**「その record が `finished` としてクラウドに観測されていたか」**で分かれる（「リンクが生きているか」ではない）。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
+見張るメトリクスは「**その record が `finished` としてクラウドに観測されていたか**」で分かれる（「リンクが生きているか」ではない）。**どちらも閾値は「悪い状態が `epg.retention_grace` を超えて続いたか」**（[監視メトリクス](monitoring.md) の一覧）:
 
 | 滞留の型 | 見るメトリクス |
 |---|---|
@@ -58,8 +46,7 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 
 ### アーカイブの速度要件
 
-アーカイブ（Rokuban のメディアストレージ。ローカル FS / 条件付き NFS / JuiceFS）は
-低速で良い。ただし `storage.media_dir` は上の強い FS 契約を満たす必要がある:
+アーカイブ（Rokuban のメディアストレージ。ローカル FS / 条件付き NFS / JuiceFS）は低速で良い。ただし `storage.media_dir` は上の強い FS 契約を満たす必要がある:
 
 - **平均スループット >= 1 日の録画総量 / 24 時間**。瞬間的な変動は録画バッファが吸収するので、リアルタイム性は一切要求されない。エンコードの読み出しもバッチなので遅くて良い
 - 唯一レイテンシが人間に見えるのは**再生時のシーク**（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る
@@ -71,9 +58,7 @@ GC がその番組のスナップショットを刈った後に ingest が走る
 - `catalog/` に**完成世代**（manifest まで書き終えた世代ディレクトリ。[storage.md](../storage.md) §8）があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元。最新世代が不完全なら 1 世代前へ落ち、飛ばした世代を理由付きで出力する
 - catalog にない `sites/{site}/` 前置付きファイルはディレクトリ規約・ファイル名から推定できる範囲で「素の asset」として登録（UI から見えて再生できる状態に戻す）。前置の無い動画ファイルは Warn を出して登録しない
 
-復旧中はメディアを変更する worker を止め、終了後に再開する。
-ファイルと asset row は共通 lock で守るが、catalog は録画・保持ポリシーも上書きするためである。
-欠損ファイルの扱いと共有ストレージの lock 要件は [rescue の契約](../storage/rescue.md#rescue-の世代選択とフォールバック) を参照する。
+復旧中はメディアを変更する worker を止め、終了後に再開する。ファイルと asset row は共通 lock で守るが、catalog は録画・保持ポリシーも上書きするためである。欠損ファイルの扱いと共有ストレージの lock 要件は [rescue の契約](../storage/rescue.md#rescue-の世代選択とフォールバック) を参照する。
 
 実装は `rokuban import epgstation` の in-place 登録機構と同型なので共有する。
 

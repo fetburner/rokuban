@@ -82,10 +82,7 @@ Grafana Loki / Tempo の `-config.expand-env` と同じ、**YAML パース前の
 | `log.level` | `info` | debug / info / warn / error |
 | `log.format` | `json` | json / text |
 
-`log.*` は config を読む全サブコマンドに共通の入口で `slog` の既定ロガーへ適用される。
-対象は server / migrate / rescue / enqueue / catalog / config validate。
-config の読み込みより前に出るログだけは既定（text 形式・Info 以上）のままになる
-（`--config` のパース失敗など）。
+`log.*` は config を読む全サブコマンドに共通の入口で `slog` の既定ロガーへ適用される。対象は server / migrate / rescue / enqueue / catalog / config validate。config の読み込みより前に出るログだけは既定（text 形式・Info 以上）のままになる（`--config` のパース失敗など）。
 
 ### 必須キー
 
@@ -197,14 +194,9 @@ filter は `deinterlace` が true なら解除を先頭に置き、height があ
 
 ### カット版（`encode.profiles[].cut`）
 
-**切る対象は録画側の事実でチャプターが持ち、その出力に切り取りを適用するかは出力の性質でプロファイルが持つ**。
-チャプターは自動検出（`cm_detect`）の結果をユーザーが確認したもの（`recording_chapter_ownership` の行がある状態）で、その `cut=true` 区間が落ちる。
-自動検出のままでは作らない --- 誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えると取り返せない。
+**切る対象は録画側の事実でチャプターが持ち、その出力に切り取りを適用するかは出力の性質でプロファイルが持つ**。チャプターは自動検出（`cm_detect`）の結果をユーザーが確認したもの（`recording_chapter_ownership` の行がある状態）で、その `cut=true` 区間が落ちる。自動検出のままでは作らない --- 誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えると取り返せない。
 
-**`cut: true` を選ぶなら、`cut` でないプロファイルを 1 つ以上含めること。**
-原本 TS はブラウザで再生できないので、確認に再生が要り、再生に encode が要り、encode に確認が要る循環になる。
-ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut` だけになった場合は凍結時に `cut` を落とす。
-意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
+**`cut: true` を選ぶなら、`cut` でないプロファイルを 1 つ以上含めること。** 原本 TS はブラウザで再生できないので、確認に再生が要り、再生に encode が要り、encode に確認が要る循環になる。ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
 
 argv は `cut` のときだけ filtergraph になる:
 
@@ -223,17 +215,13 @@ argv は `cut` のときだけ filtergraph になる:
 
 **映像も音声も時刻（入力の最早 start_time が原点。チャプターの原点と同じ）で切る**。映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS では映像だけがずれる。境界は同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとに A/V のずれが蓄積しない。trim の後に PTS から区間の開始時刻を引くのは、`concat` が各区間の先頭を 0 とみなすため。`PTS-STARTPTS` ではなく開始時刻を引き、映像の先頭が区間の頭より遅れる場合も遅れを残す。
 
-**HW フレームも trim / setpts / concat を通せる。**
-FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
+**HW フレームも trim / setpts / concat を通せる。** FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
 
 VAAPI の GPU 経路では FFmpeg 7.1 以降を推奨する。5.1〜7.0 は MPEG-2 のデコード surface が固定 6 枚で、カット版では枯れて `get_buffer() failed` からつなぎ目にブロックノイズが出る。ジョブは成功扱いで終わるので、壊れたカット版がそのまま公開される。
 
 7.1 以降は動的プールになり、7.1.5-0+deb13u1 / libva 2.22.0-3 / iHD 25.2.3 でつなぎ目 3 の 30 分原本全体を処理しても `get_buffer() failed` は出なかった。未検証: 7.1 以降でつなぎ目の多い録画。
 
-**5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。** 足りない枚数はつなぎ目の数で増えるので、固定値では足りない。
-5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。
-つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。
-救済経路は `-hwaccel` を付けずに CPU でデコードするので、このプールを使わない。
+**5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。** 足りない枚数はつなぎ目の数で増えるので、固定値では足りない。5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。救済経路は `-hwaccel` を付けずに CPU でデコードするので、このプールを使わない。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は最大解像度、音声は最大チャンネル数、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
@@ -364,10 +352,7 @@ DNS rebinding の攻撃ページはブラウザから見て Rokuban と同一オ
 
 この原則により**エンコードプロファイルは config 側**に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性。DB のルールからは名前参照とし、ルール保存時に存在検証（なければ **400**）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（下記「encode/live の HW エンコード」）。**`-vf`（filtergraph）を直接書けるキーも作らない**。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになる。
 
-`encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0。
-encode ジョブ投入時に `recordings.ended_at - started_at` と rate から締切を解決して
-args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、
-実行ジョブに対して同じ締切を使える。締切は `max(1 時間, 実尺 × rate)` である。実尺は `ended_at - started_at` を使い、取れなければ番組長（`program_duration_ms`）で代用する。それも取れない場合と締切のない旧 args は 12 時間となる。River はこの値をそのまま ffmpeg の締切に使うので、短く見積もると長尺が毎回締切超過で失敗する。誤った締切超過より、死亡検知が遅れる方を選ぶ。
+`encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0。encode ジョブ投入時に `recordings.ended_at - started_at` と rate から締切を解決して args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、実行ジョブに対して同じ締切を使える。締切は `max(1 時間, 実尺 × rate)` である。実尺は `ended_at - started_at` を使い、取れなければ番組長（`program_duration_ms`）で代用する。それも取れない場合と締切のない旧 args は 12 時間となる。River はこの値をそのまま ffmpeg の締切に使うので、短く見積もると長尺が毎回締切超過で失敗する。誤った締切超過より、死亡検知が遅れる方を選ぶ。
 
 ## 運用補助
 

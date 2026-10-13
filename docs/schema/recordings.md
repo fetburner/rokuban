@@ -78,10 +78,7 @@ CREATE INDEX ON recordings (purged_at) WHERE purged_at IS NULL;  -- ごみ箱一
 -- 使われない（% の閾値は GUC pg_trgm.similarity_threshold 由来でルール単位の閾値と噛み合わない）。
 ```
 
-`quality_events` は `recording.failed` / `recording.record-broken` の履歴を持つ。
-スクランブル件数は `drop_stats.scrambled` から導けるため、ここには重ねて記録しない。
-旧 catalog も読み込めるため、rescue は `bcas_anomaly` だけ除き、他のイベント順は保つ
-（`TestRescueLegacyQualityEvents`）。
+`quality_events` は `recording.failed` / `recording.record-broken` の履歴を持つ。スクランブル件数は `drop_stats.scrambled` から導けるため、ここには重ねて記録しない。旧 catalog も読み込めるため、rescue は `bcas_anomaly` だけ除き、他のイベント順は保つ（`TestRescueLegacyQualityEvents`）。
 
 ### 行の作られ方
 
@@ -156,10 +153,7 @@ CREATE TABLE encoded_asset_removal_requests (
 );
 ```
 
-**行の存在 = 「ユーザーがこの版を外した」という主張**（不変条件 10。`recording_purge_requests` と同じ形）。
-書き手は api（`DELETE /api/recordings/{id}/encoded/{profile}` と事後追加）と削除 reconcile である。
-削除 reconcile は版の `deleted` 確定と同じ文で行を消し、事後追加は同じ profile を足し直す文で行を消す。
-desired（`encode_profiles`）は別に `recording_encode_policy` が持つ。判定は 2 つを組み合わせた view `removed_encoded_assets` が持つ（[storage/retention.md](../storage/retention.md) §7）。
+**行の存在 = 「ユーザーがこの版を外した」という主張**（不変条件 10。`recording_purge_requests` と同じ形）。書き手は api（`DELETE /api/recordings/{id}/encoded/{profile}` と事後追加）と削除 reconcile である。削除 reconcile は版の `deleted` 確定と同じ文で行を消し、事後追加は同じ profile を足し直す文で行を消す。desired（`encode_profiles`）は別に `recording_encode_policy` が持つ。判定は 2 つを組み合わせた view `removed_encoded_assets` が持つ（[storage/retention.md](../storage/retention.md) §7）。
 
 ### 同一イベントの重複防止
 
@@ -298,8 +292,7 @@ CREATE TABLE cm_logo_areas (
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
-原本の取り込み（ingest）が「どこまで書けたか」を持つ。書き手は ingest worker
-（`internal/worker/ingest_progress.go`）だけ。
+原本の取り込み（ingest）が「どこまで書けたか」を持つ。書き手は ingest worker（`internal/worker/ingest_progress.go`）だけ。
 
 ```sql
 CREATE TABLE recording_ingest_progress (
@@ -312,10 +305,7 @@ CREATE TABLE recording_ingest_progress (
 
 - **行の存在そのものが「転送中」を意味する**（不変条件 10）。転送していないことを表す行は作らない。消えるのは 2 経路だけである。1 つは原本 `media_assets` を INSERT する tx である（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）。もう 1 つは `recordings` 行の削除（`ON DELETE CASCADE`）である。
 - **書き手は脊椎（watcher / reconciler）ではない**ので本体の列にしない（不変条件 13。`recording_encode_policy` と同じ判断）。`record_sync` にも載せない —— あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）
-- **`written_bytes` は単調増加しない**。ジョブ内リトライ（Range 再開）とプロセス死後の
-  temp replay では値が積み上がる。サイズ / SHA-256 不一致や record の cancel / fail で
-  temp を捨てると、次の試行は 0 から始まる（[recording/ingest.md](../recording/ingest.md)
-  §5.3 の層 2）。「いま temp に書けているバイト数」の観測であって累積の転送実績ではない
+- **`written_bytes` は単調増加しない**。ジョブ内リトライ（Range 再開）とプロセス死後の temp replay では値が積み上がる。サイズ / SHA-256 不一致や record の cancel / fail で temp を捨てると、次の試行は 0 から始まる（[recording/ingest.md](../recording/ingest.md) §5.3 の層 2）。「いま temp に書けているバイト数」の観測であって累積の転送実績ではない
 - **`expected_bytes` は `record_sync.content_length` のコピー**（転送開始時に読む）。mirakc が length を返さなければ NULL のままにする —— でっち上げた分母を置かない
 - ジョブが失敗して River のバックオフ待ちに入ると、行は `observed_at` が古いまま残る。これは意図した挙動で、`river_job` を API 契約に露出させない代わりに停滞を読ませる唯一の材料になる（[recording/ingest.md](../recording/ingest.md) §5.6）
 
@@ -417,10 +407,7 @@ CREATE TABLE media_asset_cuts (
 
 ### media_asset_thumbnail_seeks — サムネイルの抽出位置
 
-サムネイル JPEG の内容から抽出時刻は取り直せない。`seek_ms` は導出値ではなく、
-そのファイルを実際に切り出した位置という事実である（不変条件 9）。thumbnail worker
-だけが書く値なので `media_assets` 本体の列にせず、同じ tx でアセットを INSERT /
-UPDATE する衛星表に置く（不変条件 12 / 13）。
+サムネイル JPEG の内容から抽出時刻は取り直せない。`seek_ms` は導出値ではなく、そのファイルを実際に切り出した位置という事実である（不変条件 9）。thumbnail worker だけが書く値なので `media_assets` 本体の列にせず、同じ tx でアセットを INSERT / UPDATE する衛星表に置く（不変条件 12 / 13）。
 
 ```sql
 CREATE TABLE media_asset_thumbnail_seeks (
@@ -429,9 +416,5 @@ CREATE TABLE media_asset_thumbnail_seeks (
 );
 ```
 
-- `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ原本時間軸の
-  ms。サムネイルを作るたび必ず 1 行書く。行の不在はこの表より前に作られ位置が不明な
-  サムネイルだけを意味する。不明は NULL 列ではなく行の不在で表す（不変条件 10）
-- 主キーと FK が `media_assets` を指すのは、行の寿命がサムネイルアセットと同時だから。
-  カタログ export / rescue では運ばない。失われた位置はチャプターがある録画なら次の
-  reconcile pass で選び直せる
+- `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ原本時間軸の ms。サムネイルを作るたび必ず 1 行書く。行の不在はこの表より前に作られ位置が不明なサムネイルだけを意味する。不明は NULL 列ではなく行の不在で表す（不変条件 10）
+- 主キーと FK が `media_assets` を指すのは、行の寿命がサムネイルアセットと同時だから。カタログ export / rescue では運ばない。失われた位置はチャプターがある録画なら次の reconcile pass で選び直せる

@@ -13,8 +13,7 @@ mirakc のエッジから Rokuban のアーカイブストレージへ録画デ�
 - **コードパスが 1 本**。HTTP pull は monolith / 分散 / ハイブリッドの全構成で動く唯一の方法
 - **所有権が明確**。basedir は mirakc の所有物で、Rokuban は API 越しの客に徹する
 
-**ingest は初回から Range で追従する。** `RecordFollowReader` は `Range: bytes=N-` を N=0 から送り、各応答をリクエスト時点のサイズまでの有限な差分として読む。先頭からの追っかけ再生だけは最初に mirakc の非 Range 追従配信を使い、その本文が閉じた後を同じ reader が Range で続ける。
-初回から Range を使うことで、通常の追従と切断後の再開を同じ HTTP 契約で扱う。
+**ingest は初回から Range で追従する。** `RecordFollowReader` は `Range: bytes=N-` を N=0 から送り、各応答をリクエスト時点のサイズまでの有限な差分として読む。先頭からの追っかけ再生だけは最初に mirakc の非 Range 追従配信を使い、その本文が閉じた後を同じ reader が Range で続ける。初回から Range を使うことで、通常の追従と切断後の再開を同じ HTTP 契約で扱う。
 
 **record の status が録画終了の真実である**（不変条件 5）。本文が空の Range に追い付いたときだけ `GetRecord` で status を読む。空ではない差分を読んだ直後には status を取り直さない。未知の status は終了とみなさず、連続失敗として再試行する。
 
@@ -28,7 +27,7 @@ mirakc のエッジから Rokuban のアーカイブストレージへ録画デ�
 
 offset > 0 では本文が先頭から始まる。そのまま追記すると先頭から offset ぶんが二重になり、先頭を捨てて読むとポーリングごとに offset バイトを再転送する黙った O(n^2) になる。どちらも取らず、原因がログに残る形で失敗させる。フィルタを併用すると mirakc は Range を黙って無視するので、この分岐はその構成でだけ到達しうる（ingest はフィルタなしで pull する）。
 
-**「同居時の basedir 直読み」は loopback が実測でボトルネックになった時の最適化オプション（YAGNI）。**契約は **mirakc とは常に API、自身のストレージとは常にファイルシステム**の 2 面で固定（[storage.md](../storage.md) 参照）。
+**「同居時の basedir 直読み」は loopback が実測でボトルネックになった時の最適化オプション（YAGNI）**。契約は **mirakc とは常に API、自身のストレージとは常にファイルシステム**の 2 面で固定（[storage.md](../storage.md) 参照）。
 
 ### 5.2 TS 統計の解析ジョブ
 
@@ -46,9 +45,7 @@ PID 別サマリを media_assets に紐づくテーブルへ格納し、UI で�
 
 #### 判定の規約（誤検知を出さないために必要なもの）
 
-continuity counter の不連続を数えるだけでは実放送で大量の誤検知が出る。実測した
-既知の良品（NHK 総合、5.3GB / 2841 万パケット）では `discontinuity_indicator` が
-230 回立っていた。以下を守って初めて drop が 0 になる。
+continuity counter の不連続を数えるだけでは実放送で大量の誤検知が出る。実測した既知の良品（NHK 総合、5.3GB / 2841 万パケット）では `discontinuity_indicator` が 230 回立っていた。以下を守って初めて drop が 0 になる。
 
 | 規約 | 扱い |
 |---|---|
@@ -61,30 +58,19 @@ continuity counter の不連続を数えるだけでは実放送で大量の誤�
 | `transport_error_indicator` | error に数え、**CC の追跡から外す**（後述） |
 | `transport_scrambling_control` | `00` 以外を異常として数える |
 
-**16 の倍数の欠落は原理的に検知できない。** CC は 4 ビットなので、ちょうど 16n 個
-欠落すると CC が期待値と完全に一致し、payload を見ても正常な次のパケットと区別が
-つかない。これは規格上の限界で、他実装も同じ。
+**16 の倍数の欠落は原理的に検知できない。** CC は 4 ビットなので、ちょうど 16n 個欠落すると CC が期待値と完全に一致し、payload を見ても正常な次のパケットと区別がつかない。これは規格上の限界で、他実装も同じ。
 
 #### 検証方法
 
-`internal/tsstat/integration_test.go` が既知の良品に対する差分テストを持つ。
-`ROKUBAN_TEST_TS_FILE` に別実装で drop / error /
-scrambled がいずれも 0 と確認済みの .m2ts を指すと有効になる。ファイルは巨大かつ
-著作物なのでリポジトリには置かない。
+`internal/tsstat/integration_test.go` が既知の良品に対する差分テストを持つ。`ROKUBAN_TEST_TS_FILE` に別実装で drop / error / scrambled がいずれも 0 と確認済みの .m2ts を指すと有効になる。ファイルは巨大かつ著作物なのでリポジトリには置かない。
 
-clean なファイルでは「誤検知がないこと」しか確かめられないので、検知側は同じ
-ファイルをストリーム処理中に**メモリ上で**壊して検証する（欠落・TEI・scrambling を
-注入。ディスクに改変コピーは作らない）。
+clean なファイルでは「誤検知がないこと」しか確かめられないので、検知側は同じファイルをストリーム処理中に**メモリ上で**壊して検証する（欠落・TEI・scrambling を注入。ディスクに改変コピーは作らない）。
 
 #### [tspacketchk](https://github.com/kaikoma-soft/tspacketchk) との差分
 
-判定ロジックは概ね一致している（重複を payload 比較で見分ける点、payload なし
-パケットの CC を検査する点は同実装から取り入れた）。意図的に違えているのは 1 点:
+判定ロジックは概ね一致している（重複を payload 比較で見分ける点、payload なしパケットの CC を検査する点は同実装から取り入れた）。意図的に違えているのは 1 点:
 
-**TEI パケットの CC を信用しない**。tspacketchk は TEI 時に error を数えつつ CC を
-更新するため、直後のパケットで drop も 1 数える（1 つの破損が error と drop の両方に
-計上される）。Rokuban は TEI 時に継続性の追跡を打ち切り、次のパケットで基準を
-取り直す。破損の実数を二重に数えないことを優先した。
+**TEI パケットの CC を信用しない**。tspacketchk は TEI 時に error を数えつつ CC を更新するため、直後のパケットで drop も 1 数える（1 つの破損が error と drop の両方に計上される）。Rokuban は TEI 時に継続性の追跡を打ち切り、次のパケットで基準を取り直す。破損の実数を二重に数えないことを優先した。
 
 ### 5.3 リトライ設計（3 層）
 
@@ -111,9 +97,7 @@ reader は `Range → 追い付き時の status → 待つ` を繰り返す。�
 
 リトライ上限は「連続した一時障害」の数である。数時間の録画中に散在する失敗で上限に達しないよう累積しない。`204` / `416` / `206` の 0 バイトは接続失敗ではない。連続 5 回まで再試行し、6 回目で Work を失敗させる。
 
-**録画中の worker 再起動は temp の末尾から再開する。** 追従では録画中も ingest ジョブが走る。
-`SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。
-同じ temp のサイズを Range の開始点にする。
+**録画中の worker 再起動は temp の末尾から再開する。** 追従では録画中も ingest ジョブが走る。`SoftStopTimeout` を超える SIGTERM でも、次のジョブは DB の進捗値を使わない。同じ temp のサイズを Range の開始点にする。
 
 #### 層 2: ジョブ契約によるプロセス死の回収
 
@@ -152,23 +136,11 @@ hash 到着後は `verified` で commit する。
 
 空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`HeadRecordStream` が `-1`）なら長さの照合だけをスキップする（`ingest.go` の `expectedLen >= 0` ガード）。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
-長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに
-作った record 固有 temp の `fsync` → `Close` を行う。区切りでの fsync（checkpoint 保存の直前）とは別に、replay
-した既存部分を含めて完了時にも行う。バッファごとには行わない。
+長さと（存在する場合の）SHA-256 の照合を通ったら、canonical rel_path と同じディレクトリに作った record 固有 temp の `fsync` → `Close` を行う。区切りでの fsync（checkpoint 保存の直前）とは別に、replay した既存部分を含めて完了時にも行う。バッファごとには行わない。
 
-その後の短い確定区間で、media root の `rel_path` 固有 filesystem lock を取得する。
-original の
-`media_assets` 行を INSERT して rel_path の一意性を予約する。INSERT は
-commit まで他セッションに見えない。transaction と filesystem lock を保持して temp を
-canonical に atomic rename し、親ディレクトリを `fsync` する。その後 DB transaction を
-commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
+その後の短い確定区間で、media root の `rel_path` 固有 filesystem lock を取得する。original の `media_assets` 行を INSERT して rel_path の一意性を予約する。INSERT は commit まで他セッションに見えない。transaction と filesystem lock を保持して temp を canonical に atomic rename し、親ディレクトリを `fsync` する。その後 DB transaction を commit する。**DB commit が公開点であり、mirakc 側の record 削除は commit 後だけ**である。
 
-rename 前の失敗では temp を残して次の試行へ渡す。ただし長さ / SHA-256 の不一致と
-`canceled` / `failed` は中身が不採用と確定しているので temp を消す。rename 後の親ディレクトリ
-`fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan
-として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。
-mirakc record は削除しない。rename と DB commit の順序を反転させて、
-DB が指す実体を先に公開してはならない。
+rename 前の失敗では temp を残して次の試行へ渡す。ただし長さ / SHA-256 の不一致と `canceled` / `failed` は中身が不採用と確定しているので temp を消す。rename 後の親ディレクトリ `fsync` または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として aging 後に報告する。名前だけでは公開済みか判定できないため、自動削除はしない。mirakc record は削除しない。rename と DB commit の順序を反転させて、DB が指す実体を先に公開してはならない。
 
 **`canceled` / `failed` で終わった record の途中までのバイトは資産にしない。** 理由は 3 つある。
 
@@ -204,22 +176,14 @@ rename 前の失敗なら、残った temp を replay して pull を続けら�
 
 #### 同じ rel_path の競合: 一意 reservation で採用を決める
 
-canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの
-record 固有 temp へ並行して pull できる。同じ record は temp の flock で直列化する。
-公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の
-ingest と通常削除の競合を直列化する。canonical orphan は削除せず、aging 後に報告する。
-`checkRelPathConflict` / `GetLiveMediaAssetByRelPath`
-は転送前の安価なヒントであり、転送中は lock を保持しない。
+canonical path へ転送中のバイトが存在しないため、異なる record の ingest は、それぞれの record 固有 temp へ並行して pull できる。同じ record は temp の flock で直列化する。公開時は rel_path filesystem lock と DB の一意 reservation を使い、同じ canonical path の ingest と通常削除の競合を直列化する。canonical orphan は削除せず、aging 後に報告する。`checkRelPathConflict` / `GetLiveMediaAssetByRelPath` は転送前の安価なヒントであり、転送中は lock を保持しない。
 
 各 transaction の original INSERT が部分一意索引を予約する。先に INSERT した transaction が rename・親 directory `fsync`・DB commit を完了すれば、その内容が canonical file の勝者になる。後発 transaction の INSERT は先発の commit / rollback を待ち、先発が commit した場合は unique violation で失敗する。後発の temp は失敗時の規約に従って残るので、canonical file は勝者の内容のまま保たれ、残った temp は orphan 回収に委ねられる。
 
 通常削除は同じ rel_path filesystem lock を使うため、公開と unlink の競合は直列化される。転送前の `GetLiveMediaAssetByRelPath` はヒントであり、最終判断は一意索引と適用時の状態遷移に残る。
 
 - **rel_path の filesystem lock は公開・通常削除の区間だけに使う。**
-canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。
-ingest commit と通常削除は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。
-対象区間は rename / unlink から DB commit までである。canonical orphan は公開状態を判定できないため、
-自動削除せず aging 後に報告する。
+canonical path に直接転送しないので、転送全体の job lock heartbeat や lock 喪失による cancel は不要である。ingest commit と通常削除は同じ `rel_path` の予約 lock file に対する POSIX `flock` を保持する。対象区間は rename / unlink から DB commit までである。canonical orphan は公開状態を判定できないため、自動削除せず aging 後に報告する。
 - **未検証: RWX の media 越しの `flock`。** 別ノードの 2 レプリカ構成（`maxReplicaCount: 2` + RWX の media PVC）で、RWX 越しの `flock` 排他が効くかを確かめていない。効かなければ旧実行と代替実行が同じ temp へ書く。これは旧実行が生きたまま lock だけを失ったときに起きる。SIGKILL されたプロセス自身はもう書かないが、RWX ではカーネルが未書き込みのページを後から書き戻しうる（未検証）。heartbeat が応答待ち上限を超えて接続が閉じられる既存の窓に加え、lease 方式では 30 秒以上止まったプロセスと、DB から分断されたが生きている worker でも代替実行が走る。そのぶん当たる確率が上がる
 - **同一録画の再試行**: Work は 4 分の transfer slice ごとに同じ Args を snooze する。プロセス死で実行中のまま残ったジョブは adapter の回収機構が再試行を予約する。snooze 後も record 固有 temp で再開し、temp の flock が同時書き込みを防ぐ。checkpoint が使えない場合は full replay に戻る
 - **孤児と追加 I/O**: 中身の不一致または record の cancel / fail では temp を消し、それ以外の失敗では次の試行へ残す。ingest temp は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に回収する。temp の回収は同じ flock に参加し、実行中の ingest と競合した場合は次の pass へ延期する。rename 後に残った canonical orphan は aging 後に報告し、自動削除しない。replay は同じ temp のローカル読み直しなので、scratch 経由の全長コピーは追加せず、追加コストは replay・temp の rename・親 directory `fsync` である
@@ -288,10 +252,8 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 **進捗の置き場は衛星表**（ジョブ引数でも `record_sync` でもない）。理由は 3 つとも別方向:
 
 - ジョブ引数（`river_job.args`）に持たせると UI が River の内部表を読むことになる
-- `record_sync` は mirakc 側の観測で書き手は watcher。転送の進捗は Rokuban 側のファイルに
-  何バイト書けたかなので、1 表 2 書き手になる（不変条件 12）
-- `recordings` 本体の列にすると、書き手が脊椎（watcher / reconciler）でない状態が脊椎に
-  混ざる（不変条件 13）
+- `record_sync` は mirakc 側の観測で書き手は watcher。転送の進捗は Rokuban 側のファイルに何バイト書けたかなので、1 表 2 書き手になる（不変条件 12）
+- `recordings` 本体の列にすると、書き手が脊椎（watcher / reconciler）でない状態が脊椎に混ざる（不変条件 13）
 
 **分母は `record_sync.content_length`**（watcher が mirakc record の `content.length` として観測済みの値）。転送開始時に読んで衛星表へ写し、追従中は下記のとおり `GetRecord` の `content.length` で更新する（開始時の値に固定すると録画中に 100% で止まる）。HEAD の `Content-Length` は転送完了後の照合（層 3）にしか取っておらず転送中には使えない。ファイル stat は api ロールがファイルシステムに触れない（不変条件 1）ので分母にできない。
 
@@ -299,12 +261,7 @@ mirakc が length を返さない record では分母を NULL のままにし、
 
 0 は「mirakc が length を返さない」場合の NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りするので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外。
 
-**「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには
-`river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる
-（不変条件 9 / 12）必要がある。代わりに `observed_at`（進捗を最後に観測した時刻）を返し、
-停滞はその古さで読ませる。UI の停滞しきい値は 60 秒である。既定のストール検知
-（`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないためである
-（`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
+**「リトライ中」を「取り込み待ち」と区別する値は API に持たない。** 区別するには `river_job` を API 契約に露出させるか、失敗の観測という別寿命の値を進捗行に混ぜる（不変条件 9 / 12）必要がある。代わりに `observed_at`（進捗を最後に観測した時刻）を返し、停滞はその古さで読ませる。UI の停滞しきい値は 60 秒である。既定のストール検知（`ingest.stall_timeout` = 30 秒）で正常に再接続している往復を「停滞」と呼ばないためである（`web/src/lib/ingest.ts` の `ingestStaleAfterMs`）。
 
 **追従の待ちを「停滞」と呼ばない。** stall timer は Range 本文の `Read` 中だけ動く。信号断で録画ファイルが伸びない間は空 Range の後に status を読み、待って再試行する。消費側の逆圧は stall 判定に入らない。
 
@@ -318,29 +275,15 @@ mirakc が length を返さない record では分母を NULL のままにし、
 
 **録画中の分母は最終サイズではないので、UI は % を出さない。** 録画中に読めるのは「mirakc がその時点で観測しているサイズ」であり、`writtenBytes` がそれを追い越すことがある。割合にすると `min(100, ...)` で「録画全体を取り込み済み」と読める嘘になる。分母が確定するのは録画終了後で、% はそこから出す（`web/src/lib/ingest.ts` の `ingestDisplay`）。分母が NULL のときも同じくバイト数だけを出す。`content.length` は照合に使わず、finished 確認後に HEAD と `content.sha256` を照合する。SHA-256 が無い場合は、HEAD の長さが分かる間だけ期限までジョブを完了して待ち、期限後または長さ不明なら `timeout_skipped` で commit する。
 
-**API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値では
-ない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が
-`state` を問わず存在すれば `committed` である。`state='deleted'`（取り込んだ後に削除した）でも
-`committed` のままにするのは、**「取り込めなかった」と「取り込んだ後に消した」を混同しない**
-ためである（原本が**いま**あるかは
-`sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を
-名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
+**API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値ではない。`internal/api/recordings.go` の `ingestProgressFromFields`）。`kind='original'` の行が `state` を問わず存在すれば `committed` である。`state='deleted'`（取り込んだ後に削除した）でも `committed` のままにするのは、**「取り込めなかった」と「取り込んだ後に消した」を混同しない**ためである（原本が**いま**あるかは `sizeBytes` の有無が答える）。取り残された進捗行がコミット済みの録画に「取り込み中」を名乗らないのも、この優先順位による（真実は `media_assets` 側。不変条件 5）。
 
 **原本の次に優先するのは「record が `failed` / `canceled` で終わった観測」である**。この観測は進捗行より先に見る。worker は cancel / fail の観測後に進捗行を消し、ジョブを終端する。DELETE が失敗してもログだけで続行するため、進捗行が残ることがある。残った行があると、二度と取り込まれない録画を「取り込み中（停滞）」と表示する。**この述語は `has_ingestable_record` の否定にしてはならない**。未知の status では共有 reader が再試行を続けるため、進捗行は生きた観測である。
 
 終端する status の集合は worker の `errIngestRecordEndedAbnormally` と一致させる。
 
-**`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に
-揃える**（`record_sync.status` が `recording` または `finished`）。`record_sync` 行の**存在**を根拠にしては
-ならない。行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない
-（本番に `DELETE FROM record_sync` の経路は無い）。そのため ingest ジョブが一度も投入されない
-録画が**永久に「取り込み待ち」を名乗る**。`pending` は「これから来る」の断定なので、
-来る根拠が述語として書けないものを入れない（表示側の規律は
-[frontend/recordings.md](../frontend/recordings.md)「取り込み中であることを画面に出す」）。
+**`pending`（取り込み待ち）の根拠は、watcher が ingest ジョブを投入する条件と同じ述語に揃える**（`record_sync.status` が `recording` または `finished`）。`record_sync` 行の**存在**を根拠にしてはならない。行は `failed` / `canceled` の record にも作られ、Rokuban はこの行を消さない（本番に `DELETE FROM record_sync` の経路は無い）。そのため ingest ジョブが一度も投入されない録画が**永久に「取り込み待ち」を名乗る**。`pending` は「これから来る」の断定なので、来る根拠が述語として書けないものを入れない（表示側の規律は [frontend/recordings.md](../frontend/recordings.md)「取り込み中であることを画面に出す」）。
 
-**途中ファイルのサイズを `sizeBytes` に混ぜない**（不変条件 3。コミット = DB 行）。
-進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる
-tx の中で進捗行が消える。
+**途中ファイルのサイズを `sizeBytes` に混ぜない**（不変条件 3。コミット = DB 行）。進捗は `ingest.writtenBytes` という別のフィールドで、原本 `media_assets` 行が生まれる tx の中で進捗行が消える。
 
 <details><summary>根拠</summary>
 

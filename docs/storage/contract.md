@@ -6,30 +6,19 @@
 
 ## 2. FUSE 越し S3 の制約
 
-S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以下を
-`storage.media_dir` の原本 root の契約として信頼できない:
+S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では以下を `storage.media_dir` の原本 root の契約として信頼できない:
 
-- **同一 FS 内の atomic rename がない**（コピー + 削除になる。数十 GB の録画で
-  実コピーが走る。Mountpoint は rename 自体非対応）
-- **ランダムライトができない/遅い**。特に **ffmpeg は MP4 出力時にヘッダ
-  （moov atom）を書き戻すためシークする**ので、S3 マウント上への直接エンコード
-  出力は壊れるか激遅になる
-- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイル
-  ロックの意味論が、原本を公開する根拠として信頼できない
+- **同一 FS 内の atomic rename がない**（コピー + 削除になる。数十 GB の録画で実コピーが走る。Mountpoint は rename 自体非対応）
+- **ランダムライトができない/遅い**。特に **ffmpeg は MP4 出力時にヘッダ（moov atom）を書き戻すためシークする**ので、S3 マウント上への直接エンコード出力は壊れるか激遅になる
+- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイルロックの意味論が、原本を公開する根拠として信頼できない
 
-したがって FUSE S3 は原本の ingest 先には使わない。派生物を置く領域としての
-利用可能性と、原本 root の契約を混同しない（実機検証の対象範囲もこの境界に
-従う）。
+したがって FUSE S3 は原本の ingest 先には使わない。派生物を置く領域としての利用可能性と、原本 root の契約を混同しない（実機検証の対象範囲もこの境界に従う）。
 
 ## 3. ストレージ契約（4 つのルール）
 
-`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、
-rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル
-FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。
-以下のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する:
+`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。以下のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する:
 
-1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ
-   temp の EOF へ追記する。ランダムライトはしない
+1. **書き込みは常にシーケンシャル**。初回は一発書き、プロセス再起動後は同じ temp の EOF へ追記する。ランダムライトはしない
 2. **「作業はローカル、置くのは一回」**: ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync する。MP4 のシーク問題と書きかけファイル問題が同時に消える。
    - scratch directory 名は Worker の復旧単位から決める。encode は `(recording_id, profile, attempt_count)`、CM detect は `(recording_id, attempt_count)` を使う。CM logo candidate は `(recording_id, attempted_at)` を使う。
    - CM detect と CM logo candidate はプロセス死の残骸を回収しない。CM 検出は死後の次の開始で `attempt_count` が進み同じ名前に戻らず、ロゴ候補は `MkdirTemp` だからである。中身は原本への symlink と小さいファイルだけなので、残っても実害は小さいとして許容する。
@@ -43,10 +32,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    - canonical path は転送中に触らない。
    - HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。
    - 次に DB transaction 内で original 行を INSERT して rel_path を予約し、temp を canonical へ atomic rename して親ディレクトリを `fsync` する。
-3. **公開点は DB commit**: DB transaction 内の INSERT は一意性を予約するが、
-   他セッションから見える公開ではない。rename と親ディレクトリ `fsync` が成功して
-   から transaction を commit し、commit が成功した時点で `media_assets` 行と
-   canonical file の組を公開する。
+3. **公開点は DB commit**: DB transaction 内の INSERT は一意性を予約するが、他セッションから見える公開ではない。rename と親ディレクトリ `fsync` が成功してから transaction を commit し、commit が成功した時点で `media_assets` 行と canonical file の組を公開する。
 
    rename 後に fsync または DB commit が失敗した場合は transaction を rollback し、canonical file は orphan として記録・報告する。名前だけでは公開済みか判定できないため、自動 unlink はしない。mirakc record は削除しない。中身の不一致または record の cancel / fail が分かった場合だけ temp を消し、それ以外の失敗では次の試行へ残す。
 
@@ -59,8 +45,7 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
    ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消えるため、回収時に lock は取らず unlink 直前に mtime を再確認する。
 
    canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
-4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッション
-   の状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
+4. **DB には相対パスのみ保存**。ルートは設定で与える。DB にロック・xattr・パーミッションの状態は保存しない。temp の同時実行排他は、対象 FS 上の協調的な POSIX `flock` に依存する
 
 <details><summary>根拠</summary>
 
@@ -70,39 +55,19 @@ FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest
 
 ### rel_path lock file の寿命
 
-rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。
-canonical file と同じ directory entry ではないため、canonical の rename / unlink で
-lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、
-lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode /
-delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う
-固定 file として残る。
+rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。canonical file と同じ directory entry ではないため、canonical の rename / unlink で lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode / delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う固定 file として残る。
 
-取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて
-gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と
-同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が
-新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。
-lock 取得や cleanup に失敗したときはファイル操作を進めず、安全側に倒す。
+取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。lock 取得や cleanup に失敗したときはファイル操作を進めず、安全側に倒す。
 
 この GC は lock file の directory entry だけを扱い、メディアファイルは扱わない。
 
-プロセスが異常終了すると kernel が gate と per-rel_path flock を解放する。unlink 前なら
-lock file の directory entry は残るが、次の lock 取得時の GC が gate 排他下で stale file を
-回収する。GC 中に active owner がいる file は flock が取れず削除されない。複数プロセスは
-同じ media root とこの gate protocol を使う必要がある。POSIX `flock` の前提はこの文書の
-ルール 4 と同じで、JuiceFS / NFS 越しの実効性は未検証。
+プロセスが異常終了すると kernel が gate と per-rel_path flock を解放する。unlink 前なら lock file の directory entry は残るが、次の lock 取得時の GC が gate 排他下で stale file を回収する。GC 中に active owner がいる file は flock が取れず削除されない。複数プロセスは同じ media root とこの gate protocol を使う必要がある。POSIX `flock` の前提はこの文書のルール 4 と同じで、JuiceFS / NFS 越しの実効性は未検証。
 
-lock directory は mode `0777`、gate / per-rel_path file は `0666` で作り、通常どおり umask
-を適用する。異なる uid の worker を同じ media root で動かす場合は、共有 group / ACL が
-directory の作成・削除と lock file の read-write を許すことを先に確認する。
+lock directory は mode `0777`、gate / per-rel_path file は `0666` で作り、通常どおり umask を適用する。異なる uid の worker を同じ media root で動かす場合は、共有 group / ACL が directory の作成・削除と lock file の read-write を許すことを先に確認する。
 
-旧形式（canonical と同じ directory の `.rokuban-rel-path-lock-*.lock`）は移行時に自動削除
-しない。旧 worker は gate に参加しないため、旧形式 file を unlink すると旧プロセスの waiter
-が古い inode を握る可能性がある。
+旧形式（canonical と同じ directory の `.rokuban-rel-path-lock-*.lock`）は移行時に自動削除しない。旧 worker は gate に参加しないため、旧形式 file を unlink すると旧プロセスの waiter が古い inode を握る可能性がある。
 
-新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す
-`find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。
-旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない
-（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
+新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す `find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
 
 ```bash
 find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
@@ -111,8 +76,7 @@ find "$MEDIA_ROOT" -type d -name .rokuban-locks -prune -o \
 
 旧 worker と新 worker が同じ media root に並走している間は、この削除も実行しない。
 
-k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。
-この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
+k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual` なので、更新中は旧イメージの実行中 Job が完走するまで新しい Job と並走する。並走の原因はこの設定であり、ScaledJob 一般の性質ではない。この窓では旧 worker が新 worker の gate を知らないまま、同じ rel_path を別の inode で lock しうる。
 
 並走を避けるには、更新前に media を mount する ScaledJob の新規起動を止め、`kubectl get jobs` で旧 Job が全て終わったことを確認してから新しいイメージを適用する。新規起動を止める具体的な操作（KEDA の pause 等）と、その間に積む queue の扱いは未検証。
 
@@ -120,10 +84,7 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 ### 派生物の公開（encode）は既存の canonical を上書きする
 
-encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに
-1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を
-再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)`
-の試行が一時的に並走しうる。そのため:
+encode の出力は原本と違って**既にある行の `rel_path` を指す**（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため:
 
 - scratch は `(recording_id, profile, attempt_count)` ごとに作る。profile 名は固定長 SHA-256 digest にして basename の長さを抑える。長い profile 名でも作成できる。
 - 掃除は同じ `(recording_id, profile)` の残骸だけを対象にする。各試行は自分の scratch directory に flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。
@@ -131,15 +92,8 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 - 作成直後で lock 前の directory は、作成と掃除を短い排他区間で直列化して守る。
 - 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
-- staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、
-  rel_path lock の外でストリームコピー + `fsync`** する。
-  公開は lock（filesystem lock → tx）の中で、次の順に行う。
-  **判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の
-  Upsert → commit**。
-  canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。
-  通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
-- tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と
-  一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で（カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら公開しない**。
+- staging は **canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、rel_path lock の外でストリームコピー + `fsync`** する。公開は lock（filesystem lock → tx）の中で、次の順に行う。**判定 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → `media_assets` の Upsert → commit**。canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
+- tx 内では最初に `recording_encode_attempts.attempt_count` がこの試行の token と一致することを確かめる。続けて行を読み直し、**(a) `rel_path` が計画時と違う、(b) 既に active で（カット版は凍結区間も）この試行と一致する、(c) profile が desired に無い、のどれかなら公開しない**。
 
   (b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が失敗すると、ファイルは後発の中身で行は先発のサイズになる。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
 
@@ -168,11 +122,7 @@ encode の出力は原本と違って**既にある行の `rel_path` を指す**
 
 ### 字幕サイドカー
 
-字幕を有効にしたエンコードは、encoded ファイルの隣に同じ basename の `.vtt`
-サイドカーを置く。字幕は `media_assets.kind` を増やさず、
-`/file?profile=X&track=subtitles` で encoded アセットから解決する。ARIB 外字・ルビは
-libaribcaption のテキスト化により Unicode 私用領域または近似字へ落ちるため、画像字幕と
-同じ見た目を保証しない。
+字幕を有効にしたエンコードは、encoded ファイルの隣に同じ basename の `.vtt` サイドカーを置く。字幕は `media_assets.kind` を増やさず、 `/file?profile=X&track=subtitles` で encoded アセットから解決する。ARIB 外字・ルビは libaribcaption のテキスト化により Unicode 私用領域または近似字へ落ちるため、画像字幕と同じ見た目を保証しない。
 
 ### thumbnail / seek tiles の公開
 
@@ -184,10 +134,7 @@ transaction 内で active な派生行と原本の生存を再確認する。派
 
 先行 job がすでに active row を commit していた場合や、ffmpeg 実行中に録画が削除され原本が active でなくなった場合、後続 job は公開を飛ばして成功扱いにする。
 
-staged file は予約名付きの orphan 候補として mtime 猶予と aging の後に回収する。回収時に
-lock は取らず mtime を再確認する。拡張子によらず catalog 無し
-rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が
-途中の画像を観測する窓を作らない。
+staged file は予約名付きの orphan 候補として mtime 猶予と aging の後に回収する。回収時に lock は取らず mtime を再確認する。拡張子によらず catalog 無し rescue から除外する。canonical を `O_TRUNC` で直接開かないため、処理中に配信・削除側が途中の画像を観測する窓を作らない。
 
 <details><summary>根拠</summary>
 
@@ -197,14 +144,9 @@ rescue から除外する。canonical を `O_TRUNC` で直接開かないため�
 
 ### catalog 世代の公開
 
-catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子的に予約する。
-同じ `ExportedAt` を持つ並列 export は `-02` 以降の別 directory を取得する。世代内では
-`catalog.json` を一度書いて file `fsync` し、sha256 とサイズを持つ `manifest.json` を最後に
-書いて `fsync` する。manifest が完成世代の判定点で、rename や DB row は使わない。
+catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子的に予約する。同じ `ExportedAt` を持つ並列 export は `-02` 以降の別 directory を取得する。世代内では `catalog.json` を一度書いて file `fsync` し、sha256 とサイズを持つ `manifest.json` を最後に書いて `fsync` する。manifest が完成世代の判定点で、rename や DB row は使わない。
 
-別 export の prune が書き込み途中の世代を消さないよう、不完全世代は 7 日間保持する。
-7 日より古い不完全世代は、より新しい完成世代がある場合だけ prune する。catalog directory
-以外へは触れない。
+別 export の prune が書き込み途中の世代を消さないよう、不完全世代は 7 日間保持する。7 日より古い不完全世代は、より新しい完成世代がある場合だけ prune する。catalog directory 以外へは触れない。
 
 ### カット版・サムネイルの置き換え（「置くのは一回」の 2 つの例外）
 
@@ -217,17 +159,11 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
-- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替えは
-  `thumbnails/{recording_id}.g{n}.jpg`（最初の差し替えは `.g1`）へ置く
-- 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` /
-  `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える → commit 後に
-  旧パスを unlink する
-- **行は消さずに UPDATE する**。行 id と配信対象を保ったまま世代を進める。unlink は
-  commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
+- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替えは `thumbnails/{recording_id}.g{n}.jpg`（最初の差し替えは `.g1`）へ置く
+- 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` / `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
+- **行は消さずに UPDATE する**。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
 
-ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS
-契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の
-種類や atomic rename の実装品質をパス文字列から推測しない。
+ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の種類や atomic rename の実装品質をパス文字列から推測しない。
 
 ## 4. クラウド側のマウント選択肢
 
@@ -269,18 +205,9 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ### 残量の観測
 
-`storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の
-容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影する。
-`GET /api/storage` で読める。api ロールはファイルシステムに
-依存しない（不変条件 1）。そのため観測は、ファイルシステムを持つ worker の仕事に
-限る --- mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は
-対象外である。Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
+`storage.media_dir`（アーカイブ）と `storage.scratch_dir`（ローカルスクラッチ）の容量は、worker が定期的に statfs 相当で観測して `storage_sync` に射影する。`GET /api/storage` で読める。api ロールはファイルシステムに依存しない（不変条件 1）。そのため観測は、ファイルシステムを持つ worker の仕事に限る --- mirakc の recording.basedir（録画バッファ、上記「2 階層」表のエッジ側）は対象外である。Rokuban 自身が直接読み書きする 2 つのローカルパスだけを見る。
 
-`tuner_sync`（[docs/data.md](../data.md) §6.5）と同じ「使い捨てプロジェクション」の
-形を採る。真実は常にファイルシステム側にあり、毎パス全量を作り直せる観測値である。
-そのため全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。
-不変条件 9）。`observed_at` の鮮度が「観測ループが止まっている」ことを示す唯一の
-手がかりになる（沈黙は保証ではない --- docs/data.md §6.5 の同じ姿勢）。
+`tuner_sync`（[docs/data.md](../data.md) §6.5）と同じ「使い捨てプロジェクション」の形を採る。真実は常にファイルシステム側にあり、毎パス全量を作り直せる観測値である。そのため全行 upsert で常に最新観測だけを保持する（過去の観測を積むログにはしない。不変条件 9）。`observed_at` の鮮度が「観測ループが止まっている」ことを示す唯一の手がかりになる（沈黙は保証ではない --- docs/data.md §6.5 の同じ姿勢）。
 
 ### rel_path の名前空間
 
@@ -338,50 +265,23 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ## 5.1 サムネイル
 
-録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る
-（`UNIQUE (recording_id, kind, profile)`）。
+録画 1 本につき `kind = 'thumbnail'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
 
 - **投入（レベルトリガー）**: 次の条件を満たす録画だけ、River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む。条件は「active な original があり、active な thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていない」ことである。
   - ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん ffmpeg を無駄打ちするだけになる。
   - ingest 後の対象限定パスと `thumbnail_reconcile` の全件パスは同じ候補 query を使う。
   - delete reconcile が原本の実体無しを確認した `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが消えれば、次のパスで再び候補になる。
   - 命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない。
-- **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は
-  原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は
-  CM 検出を待たず、従来どおり原本から作る。設定キーは設けない
-- **CM 検出後の選び直し**: 同じ `min(尺 × 10%, 30s)` ポリシーを、CM 区間を除いた
-  keep の合計尺に適用する。原本またはカットしない encoded 版ではその位置を
-  原本時間軸へ写して抽出する。カット版では凍結した
-  `media_asset_cuts.keep_ranges` の合計尺で位置を決め、抽出位置を同じ凍結 keep から
-  原本時間軸へ戻す。カット版の尺は ffprobe せず凍結 keep の合計を使う
-- **再選択入力**: active かつ `missing_media_assets` に無い原本を優先し、次に
-  プロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。
-  未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら
-  再選択を繰り返さない
-- **作り直す条件**: 記録済み位置が現在の keep 外にあり、同じ入力選択で計画した
-  位置とも異なる場合だけ。`seek_ms` が無い旧サムネイルは、チャプターと使える入力が
-  あれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない
-- **再選択 reconcile**: active なサムネイルと CM 検出または所有済みチャプターがある
-  録画を recording ID の窓で巡回し、Go の共通判定で対象だけを投入する。ごみ箱は除外し、
-  `seek_tiles` や初回生成とは別の再開位置を持つ。CM 検出の保存後に 1 件ヒントを出すが、
-  ヒントはベストエフォート。手動編集は次の窓で拾う
-- **時間軸**: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ
-  数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` /
-  `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まる
-  ことがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。
-  そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が
-  揃うことは実録画で確認する
-- **画素縦横比**: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから
-  JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
-- **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後に
-  メディアへストリームコピー + fsync する。初回は `media_assets` と
-  `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは両方を同じ tx で
-  UPDATE する（差し替え規約は §3）
-- **相対パス**: 初回は `thumbnails/{recording_id}.jpg`。差し替えは
-  `thumbnails/{recording_id}.g{n}.jpg`（n は現行パスの次の世代）。原本の contentPath に
-  依存しないので、原本削除後もパスが安定する
-- **位置の事実**: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の
-  `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
+- **初回の抽出位置（仮サムネイル）**: `seek = min(duration × 10%, 30s)`。duration は原本の ffprobe が読む実ファイル長。取れなければ 0 秒（先頭フレーム）。初回は CM 検出を待たず、従来どおり原本から作る。設定キーは設けない
+- **CM 検出後の選び直し**: 同じ `min(尺 × 10%, 30s)` ポリシーを、CM 区間を除いた keep の合計尺に適用する。原本またはカットしない encoded 版ではその位置を原本時間軸へ写して抽出する。カット版では凍結した `media_asset_cuts.keep_ranges` の合計尺で位置を決め、抽出位置を同じ凍結 keep から原本時間軸へ戻す。カット版の尺は ffprobe せず凍結 keep の合計を使う
+- **再選択入力**: active かつ `missing_media_assets` に無い原本を優先し、次にプロファイル名昇順のカットしない encoded、最後に同じ順のカット版を選ぶ。未確認の自動 CM 検出も使う。チャプターがない録画は再選択せず、keep が空なら再選択を繰り返さない
+- **作り直す条件**: 記録済み位置が現在の keep 外にあり、同じ入力選択で計画した位置とも異なる場合だけ。`seek_ms` が無い旧サムネイルは、チャプターと使える入力があれば一度選び直す。位置が keep 内なら、望ましい位置との違いだけでは作り直さない
+- **再選択 reconcile**: active なサムネイルと CM 検出または所有済みチャプターがある録画を recording ID の窓で巡回し、Go の共通判定で対象だけを投入する。ごみ箱は除外し、`seek_tiles` や初回生成とは別の再開位置を持つ。CM 検出の保存後に 1 件ヒントを出すが、ヒントはベストエフォート。手動編集は次の窓で拾う
+- **時間軸**: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まることがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が揃うことは実録画で確認する
+- **画素縦横比**: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
+- **ストレージ契約**: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後にメディアへストリームコピー + fsync する。初回は `media_assets` と `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは両方を同じ tx で UPDATE する（差し替え規約は §3）
+- **相対パス**: 初回は `thumbnails/{recording_id}.jpg`。差し替えは `thumbnails/{recording_id}.g{n}.jpg`（n は現行パスの次の世代）。原本の contentPath に依存しないので、原本削除後もパスが安定する
+- **位置の事実**: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - **配信**: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
 
 <details><summary>根拠</summary>
@@ -396,49 +296,17 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ## 5.2 シークプレビュー用タイル
 
-録画 1 本につき `kind = 'seek_tiles'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。
-中身は 1 枚の JPEG で、`thumbnails/{recording_id}_tiles.jpg` に置く。poster（§5.1）と同じ
-`thumbnails/` の名前空間なので、`rel_path` の名前空間の検査は増えない。
+録画 1 本につき `kind = 'seek_tiles'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。中身は 1 枚の JPEG で、`thumbnails/{recording_id}_tiles.jpg` に置く。poster（§5.1）と同じ `thumbnails/` の名前空間なので、`rel_path` の名前空間の検査は増えない。
 
-**形は固定値である**（設定キーは設けない。poster と同じ流儀）。間隔 10 秒・1 枚 160x90・
-10 列・上限 1080 枚（3 時間）。3 時間を超える部分にはタイルが無く、クライアントは
-プレビューを出さない。尺に応じて間隔を変える方式は採らない —— ffprobe の長さと
-`<video>` の長さのずれが境界でタイル位置を狂わせる。
+**形は固定値である**（設定キーは設けない。poster と同じ流儀）。間隔 10 秒・1 枚 160x90・10 列・上限 1080 枚（3 時間）。3 時間を超える部分にはタイルが無く、クライアントはプレビューを出さない。尺に応じて間隔を変える方式は採らない —— ffprobe の長さと `<video>` の長さのずれが境界でタイル位置を狂わせる。
 
-- **投入**: `thumbnail_reconcile` の全件パスと ingest 後の対象限定パスが seek_tiles を投入する。
-  両者は poster と同じ候補 query を使い、`missing_media_assets` の原本を除外する。
-  対象限定パスも seek_tiles を拾うため、タイルは ingest 直後に投入される。パス内では
-  poster と再選択を先に投入してからタイルを積む。**priority は poster より下げる**。同じ priority だと既存録画ぶんのタイルが片付くまで
-  新しい録画の poster が一覧に出ない。
-  thumbnail キューは既定で同時実行数 1 なので、タイルの処理中に来た poster はその 1 件を
-  待つ
-- **原本が無い録画には作らない。** タイルは原本からしか作らないので、タイル導入前に
-  `until_encoded` で原本を消した録画にはタイルが付かない
-- **生成方式**: タイルごとに入力シーク（`-ss` を `-i` の前）で 1 枚ずつ取り、最後に
-  `tile` フィルタで 1 枚に並べる。**読む量が枚数にだけ比例し、番組長に比例しない**
-  （合成 TS 10 分・60 枚の実測で、全デコード方式の 23.6 秒に対し 2.7 秒）。
-  そのため「先頭 N 分に限る」打ち切りは要らず、上限は枚数だけで決まる。
-  **実放送・J4125 での生成時間とサイズは未検証**。合成 TS・M3 Max の実装 PR 測定では、10 分・60 枚で生成 1.865 秒、成果物 221.8 KB（3.70 KB/枚）だった。
-- **失敗したら scratch を捨ててやり直す。** 部分成果はコミットしない（行の存在 = 全部そろっている）。
-  poster と違い、長さが取れないとき（0 秒を含む）は 1 枚で続行せずに失敗する。1 枚の格子をコミットすると
-  定期パスが二度と作り直さず、`until_encoded` の原本削除の条件まで満たしてしまう。
-  版によっては ffmpeg が 0 フレームでも終了コード 0 で終わるかもしれない（未検証。ffmpeg 9.0.2 は非 0）。
-  そのため 1 枚ごとに出力の有無を確かめる
-- **最後のタイルは映像の終端から 1 秒手前より後ろに置かない。** 枚数は長さの切り上げで決めるので、
-  長さが 10 秒の倍数をわずかに超える録画では最後のタイルが映像の終端を指す。そこへの入力シークは
-  1 フレームも出せずに失敗し、毎回同じ枚で落ちて原本が消えなくなる。映像ストリームの長さちょうどでも
-  失敗し、1 秒手前なら成功した（合成 TS 30 秒・ffmpeg 9.0.2）。長さは format ではなく映像ストリームから取る。
-  format の長さは音声などの最も長いストリームで決まるためである
-- **1 秒の余白で足りるのは MPEG-2 と GOP 1 秒程度の H.264 まで。** GOP の長い H.264 は最後の
-  キーフレームより後ろが取れず、x264 GOP 5 秒では終端の 2 秒手前でも失敗した。何秒戻れば足りるかは
-  GOP で決まるので、**最後の 1 枚に限り、取れなければ直前のタイルで埋める**。x264 GOP 5 秒・40 秒の
-  合成 TS を実 ffmpeg で回すと、埋めなければ最後の 1 枚で落ち、埋めればコミットまで通った。
-  途中のタイルと、1 枚しか無いときの失敗は埋めずに失敗させる
-- **画素縦横比**: poster と同じく SAR を正方形ピクセルへ焼き込んでから 16:9 の枠へ収め、
-  余白は pad で埋める（4:3 の映像は左右が黒帯になる）
-- **列数は固定で 10。** 枚数が列数の倍数でないときの余りは黒で埋まる。クライアントは
-  列数と 1 枚の大きさだけを知っていれば位置を計算できる（行数を知らなくてよい）
-- **`internal/worker/seek_tiles.go` と `web/src/lib/seek-tiles.ts` に同じ値が 2 つある。**
-  メディア配信は `openapi.yaml` の対象外なので値の伝達経路が無い。**値を変えたら
-  既存のタイルは位置がずれるので再生成が要る**（`rel_path` も行も同じまま中身だけが変わる）
+- **投入**: `thumbnail_reconcile` の全件パスと ingest 後の対象限定パスが seek_tiles を投入する。両者は poster と同じ候補 query を使い、`missing_media_assets` の原本を除外する。対象限定パスも seek_tiles を拾うため、タイルは ingest 直後に投入される。パス内では poster と再選択を先に投入してからタイルを積む。**priority は poster より下げる**。同じ priority だと既存録画ぶんのタイルが片付くまで新しい録画の poster が一覧に出ない。thumbnail キューは既定で同時実行数 1 なので、タイルの処理中に来た poster はその 1 件を待つ
+- **原本が無い録画には作らない。** タイルは原本からしか作らないので、タイル導入前に `until_encoded` で原本を消した録画にはタイルが付かない
+- **生成方式**: タイルごとに入力シーク（`-ss` を `-i` の前）で 1 枚ずつ取り、最後に `tile` フィルタで 1 枚に並べる。**読む量が枚数にだけ比例し、番組長に比例しない**（合成 TS 10 分・60 枚の実測で、全デコード方式の 23.6 秒に対し 2.7 秒）。そのため「先頭 N 分に限る」打ち切りは要らず、上限は枚数だけで決まる。**実放送・J4125 での生成時間とサイズは未検証**。合成 TS・M3 Max の実装 PR 測定では、10 分・60 枚で生成 1.865 秒、成果物 221.8 KB（3.70 KB/枚）だった。
+- **失敗したら scratch を捨ててやり直す。** 部分成果はコミットしない（行の存在 = 全部そろっている）。poster と違い、長さが取れないとき（0 秒を含む）は 1 枚で続行せずに失敗する。1 枚の格子をコミットすると定期パスが二度と作り直さず、`until_encoded` の原本削除の条件まで満たしてしまう。版によっては ffmpeg が 0 フレームでも終了コード 0 で終わるかもしれない（未検証。ffmpeg 9.0.2 は非 0）。そのため 1 枚ごとに出力の有無を確かめる
+- **最後のタイルは映像の終端から 1 秒手前より後ろに置かない。** 枚数は長さの切り上げで決めるので、長さが 10 秒の倍数をわずかに超える録画では最後のタイルが映像の終端を指す。そこへの入力シークは 1 フレームも出せずに失敗し、毎回同じ枚で落ちて原本が消えなくなる。映像ストリームの長さちょうどでも失敗し、1 秒手前なら成功した（合成 TS 30 秒・ffmpeg 9.0.2）。長さは format ではなく映像ストリームから取る。format の長さは音声などの最も長いストリームで決まるためである
+- **1 秒の余白で足りるのは MPEG-2 と GOP 1 秒程度の H.264 まで。** GOP の長い H.264 は最後のキーフレームより後ろが取れず、x264 GOP 5 秒では終端の 2 秒手前でも失敗した。何秒戻れば足りるかは GOP で決まるので、**最後の 1 枚に限り、取れなければ直前のタイルで埋める**。x264 GOP 5 秒・40 秒の合成 TS を実 ffmpeg で回すと、埋めなければ最後の 1 枚で落ち、埋めればコミットまで通った。途中のタイルと、1 枚しか無いときの失敗は埋めずに失敗させる
+- **画素縦横比**: poster と同じく SAR を正方形ピクセルへ焼き込んでから 16:9 の枠へ収め、余白は pad で埋める（4:3 の映像は左右が黒帯になる）
+- **列数は固定で 10。** 枚数が列数の倍数でないときの余りは黒で埋まる。クライアントは列数と 1 枚の大きさだけを知っていれば位置を計算できる（行数を知らなくてよい）
+- **`internal/worker/seek_tiles.go` と `web/src/lib/seek-tiles.ts` に同じ値が 2 つある。** メディア配信は `openapi.yaml` の対象外なので値の伝達経路が無い。**値を変えたら既存のタイルは位置がずれるので再生成が要る**（`rel_path` も行も同じまま中身だけが変わる）
 - **配信**: streamer の `GET /api/media/recordings/{id}/seek-tiles`（openapi 外。api はファイルを開かない）

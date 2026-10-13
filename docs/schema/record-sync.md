@@ -48,21 +48,13 @@ CREATE TABLE drop_stats (
 ```
 
 - 原本のコミット後に `ts_scan` ジョブが書く。`media_asset_ts_scans` は計測時のサイズを記録し、保持エンジンは原本の現在サイズと一致する解析記録を要求する
-- `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、
-  `circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。
-  値集合は `video` / `audio` / `other`（PMT に載っているが映像でも音声でもない ES。
-  字幕・文字スーパー・データ放送はすべてここ）/ 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` /
-  `pmt`（PAT が PMT の在り処として指した PID）。**分類できなかった PID は NULL**（空文字は永続化しない）
-- 分類は PAT → PMT の `stream_type` までで**記述子は読まない**ため、字幕と文字スーパーは
-  区別できない（ARIB では両方 `stream_type = 0x06`）。境界の理由は
-  [録画エンジン](../recording.md) §1「例外の境界」
-- PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は
-  **最後に見たものを採用**する。分類の変化回数は保存しない
+- `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、`circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。値集合は `video` / `audio` / `other` / 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` / `pmt`（PAT が PMT の在り処として指した PID）。`other` は PMT に載っているが映像でも音声でもない ES で、字幕・文字スーパー・データ放送はすべてここに入る。**分類できなかった PID は NULL**（空文字は永続化しない）
+- 分類は PAT → PMT の `stream_type` までで**記述子は読まない**ため、字幕と文字スーパーは区別できない（ARIB では両方 `stream_type = 0x06`）。境界の理由は[録画エンジン](../recording.md) §1「例外の境界」
+- PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は**最後に見たものを採用**する。分類の変化回数は保存しない
 
 ### drop_positions — ドロップ位置（原本解析の観測結果）
 
-`drop_stats` が畳んだ合計だけでは「全域が壊れているのか、1 か所で数秒詰まっただけか」が分からない。
-`ts_scan` が drop を検知した位置を、`drop_stats` と同じ transaction で置き換える。
+`drop_stats` が畳んだ合計だけでは「全域が壊れているのか、1 か所で数秒詰まっただけか」が分からない。`ts_scan` が drop を検知した位置を、`drop_stats` と同じ transaction で置き換える。
 
 ```sql
 CREATE TABLE drop_positions (
@@ -74,16 +66,8 @@ CREATE TABLE drop_positions (
 );
 ```
 
-- 統計は原本が残っている間は `ts_scan` を再実行して作り直せる。`until_encoded` の削除は現在の
-  `media_assets.size_bytes` と一致する計測記録を待つため、原本の削除後も位置は解析時の観測として残る。
-  エンコード後の出力からは欠落位置を復元できない（デコーダの error concealment が隠蔽の跡を残さない）
-- 主キーが `(media_asset_id, byte_offset)` なのは、1 パケットは常に 1 PID にしか属さないため。
-  同じ原本内の同じバイト位置で 2 つの PID がドロップを起こすことはなく、連番の代理キーは要らない
-- `elapsed_ms` は最初に観測した PCR を録画開始とみなした相対経過で、PCR を 1 つも観測していなければ
-  NULL にする（`drop_stats.pid_type` を NULL にするのと同じ理由）。採れなかったことは 0 のような
-  値ではなく NULL で表す。
-- 保存件数を「真の drops」と別列（`truncated` 等）で持たない。`count(*) < drop_stats.drops` で
-  上限に達したかどうかを導出できるため、値を複製する列を作らない
-- 絶対放送時刻ではなく「録画開始からの経過」で持つ。`recordings.started_at` は mirakc がチューナーを
-  開いた時刻で、予定時刻より約 15 秒早い（構造的なずれで、実測もある）。`started_at + elapsed_ms` を
-  放送時刻として扱うとこの誤差が乗るため、API も UI も経過時間のまま扱う
+- 統計は原本が残っている間は `ts_scan` を再実行して作り直せる。`until_encoded` の削除は現在の `media_assets.size_bytes` と一致する計測記録を待つため、原本の削除後も位置は解析時の観測として残る。エンコード後の出力からは欠落位置を復元できない（デコーダの error concealment が隠蔽の跡を残さない）
+- 主キーが `(media_asset_id, byte_offset)` なのは、1 パケットは常に 1 PID にしか属さないため。同じ原本内の同じバイト位置で 2 つの PID がドロップを起こすことはなく、連番の代理キーは要らない
+- `elapsed_ms` は最初に観測した PCR を録画開始とみなした相対経過で、PCR を 1 つも観測していなければ NULL にする（`drop_stats.pid_type` を NULL にするのと同じ理由）。採れなかったことは 0 のような値ではなく NULL で表す。
+- 保存件数を「真の drops」と別列（`truncated` 等）で持たない。`count(*) < drop_stats.drops` で上限に達したかどうかを導出できるため、値を複製する列を作らない
+- 絶対放送時刻ではなく「録画開始からの経過」で持つ。`recordings.started_at` は mirakc がチューナーを開いた時刻で、予定時刻より約 15 秒早い（構造的なずれで、実測もある）。`started_at + elapsed_ms` を放送時刻として扱うとこの誤差が乗るため、API も UI も経過時間のまま扱う

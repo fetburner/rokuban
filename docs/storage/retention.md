@@ -41,8 +41,7 @@
 **retention reconcile ループ**（worker の cleanup 系ジョブ）が定期的に走り、次を**すべて**満たす原本アセットを削除する:
 
 1. ポリシーが `until_encoded`
-2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。
-   原本の `media_asset_ts_scans.scanned_size_bytes` は `media_assets.size_bytes` と一致する。
+2. desired な派生物（全エンコードプロファイル + サムネイル + シークプレビュー用タイル）が `media_assets` にコミット済みである。原本の `media_asset_ts_scans.scanned_size_bytes` は `media_assets.size_bytes` と一致する。
 
 TS 解析の記録が無い場合や、記録したサイズと現在の原本サイズが違う場合は削除しない。解析が恒久的に失敗する原本は保持され続ける。
 
@@ -85,7 +84,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - **断が始まる前に一度でも観測された record にはアンカーがある** —— この分は案 1 でも留め置ける（`status='recording'` の段階で観測されていれば足りる）
 - **断の最中に始まった録画にはアンカーが無い。** 行ができるのは復帰後で、そのときには GC は済んでいる（`runGC` は ruler のサイトパスが失敗しても実行され、削除条件は時計の比較だけ）
 
-つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」**で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存する。そのため ingest が恒久的に完了しない record が、スナップショットと予約を無期限にピン留めする漏れができる。
+つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」** で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存する。そのため ingest が恒久的に完了しない record が、スナップショットと予約を無期限にピン留めする漏れができる。
 
 同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、断の最中に始まった録画ではクラウドから見た「録画開始時」が「復帰時」になる）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない未観測ぶんの両方を 1 つの数で覆う。
 
@@ -94,7 +93,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
 - **同じキーが EPG 射影のローリングウィンドウも駆動する**。`cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）。そのため N 日にすると、`epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDsForRule`）は時間で絞らないので、その放送済み番組も拾う。
 
-  終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
+  終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が **`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
 
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
 
@@ -161,9 +160,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 
 ### 凍結の 3 つ目の例外: 版を 1 本ずつ減らす
 
-容量が厳しいとき、プロファイル A と B でエンコードした録画から A だけを消して B を残したい。
-`DELETE /api/recordings/{id}/encoded/{profile}` はユーザー起点で `encode_profiles` から 1 つを外す。
-同じ tx で衛星表 `encoded_asset_removal_requests` に要求行を入れる。全置換の API は引き続き作らない。
+容量が厳しいとき、プロファイル A と B でエンコードした録画から A だけを消して B を残したい。`DELETE /api/recordings/{id}/encoded/{profile}` はユーザー起点で `encode_profiles` から 1 つを外す。同じ tx で衛星表 `encoded_asset_removal_requests` に要求行を入れる。全置換の API は引き続き作らない。
 
 - **「desired に無い encoded は消す」という導出だけで動かさない**。rescue や `inplace.Register` を経て desired と実ファイルがずれた録画があると、その版を黙って一括削除する述語になる。ずれが実在するかは未検証。要求行という明示の主張を条件に入れる（不変条件 10）
 - **ごみ箱は経由しない**。容量を空けるための操作で、何か 1 つは見られる状態を API が保証するので、猶予で守るものが無い
@@ -194,10 +191,7 @@ ingest は canonical file と同じディレクトリに record 固有の `.roku
 
 NFS で open 中 unlink による `.nfsXXXX` が見えた場合は、canonical orphan として aging 後に報告する。自動削除や rescue の昇格には進まない。
 
-thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` 接頭辞を持つ。
-active row が無い間は孤児候補であり、mtime 猶予とエイジングの後に回収する。
-回収時は lock を取らず、unlink 直前に mtime を再確認する。
-catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原本へ昇格させない。
+thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` 接頭辞を持つ。active row が無い間は孤児候補であり、mtime 猶予とエイジングの後に回収する。回収時は lock を取らず、unlink 直前に mtime を再確認する。catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原本へ昇格させない。
 
 **一括削除サーキットブレーカーはループ全体に 1 つ**: 孤児回収を含む物理削除が閾値（件数 / ライブラリ比率 / 総バイト数、例: 5% or 100 GB）を超えたら停止してアラート。報告だけの canonical orphan は削除数に含めない。
 
@@ -210,21 +204,12 @@ catalog 無し rescue は接頭辞で明示的に除外し、staged bytes を原
 - **until_encoded 腕**: パラメータを取らないので view `until_encoded_deletable_originals` にする。条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて塞いである。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
 - **TS の計測済み判定（view `current_ts_scanned_originals`）**: 計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - **ごみ箱腕**: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
-- **外した版の腕**: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。
-  他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
+- **外した版の腕**: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
 - 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる
 
-**`cut: true` のプロファイルは確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない**。
-この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。
-確認前にカット版を作ると誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
-確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に効く。
-確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
+**`cut: true` のプロファイルは確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない**。この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。確認前にカット版を作ると誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に効く。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 
-**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が黙って本編から消える。
-API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。
-ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
-再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。
-この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
+**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が黙って本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
 
 この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が0区間でも検出完了であり、試行表が `failed` なら3回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
 

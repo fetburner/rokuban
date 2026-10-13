@@ -26,16 +26,9 @@
   - `db.max_conns` を明示すればその値を使う。未指定ならロールごとの budget を roles の分だけ合計する。
   - 1 サイト束縛時の budget は api: 10 / worker: 床 8（下記）/ watcher: 3 / notifier: 3 / streamer: 4 である。monolith（`--all`）では全ロール分の合計になる。
   - 1 プロセスが N サイトを束縛できる（`--sites`）ため、watcher は束縛サイトごとに advisory lock 用コネクションを 1 本専有し続ける。2 サイト目以降は budget にも自動で上乗せする。
-- **worker の budget は床 8 の固定値**。内訳は River の LISTEN 1 本と、
-  ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリで、実測に基づく値ではない。
-  どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。
-- `db.max_conns` を明示指定する場合の fail-fast が数える対象は
-  **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock
-  （1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が下限になる。
-  **lock をプール外の接続で張る案は採らない** --- `db.max_conns` がプロセスの接続上限だという
-  契約を破ることになる。
-- **API 系クエリに `statement_timeout` を設定する。** クエリ単位の context timeout だと「付け忘れた 1 本」が必ず生まれる。
-  接続の `RuntimeParams`（起動パケットの session default）で一括適用する（`db.api_statement_timeout`、未指定なら 30s）。
+- **worker の budget は床 8 の固定値**。内訳は River の LISTEN 1 本と、ジョブ claim・進捗書き込み・`/metrics` のバックログクエリ等の短いクエリで、実測に基づく値ではない。どのジョブも Work の間に接続を保持し続けないので、`ingest.concurrency` や束縛サイト数では増えない。
+- `db.max_conns` を明示指定する場合の fail-fast が数える対象は **「解放が別の接続取得に依存する専有」** である。内訳は watcher の advisory lock（1 サイトあたり 1 本）と、worker / notifier の LISTEN である。合計に余地 1 本を足した値が下限になる。**lock をプール外の接続で張る案は採らない** --- `db.max_conns` がプロセスの接続上限だという契約を破ることになる。
+- **API 系クエリに `statement_timeout` を設定する。** クエリ単位の context timeout だと「付け忘れた 1 本」が必ず生まれる。接続の `RuntimeParams`（起動パケットの session default）で一括適用する（`db.api_statement_timeout`、未指定なら 30s）。
   - api ロールを含むプロセスのプール全体に適用される。monolith で api と worker/watcher を同居させると worker 側のクエリにも同じ上限がかかる。世帯スケールの通常クエリを十分に上回る既定値にしてあるので実害は想定していないが、ロールを分離すれば worker 単独プロセスには適用されない。
   - `statement_timeout` は行ロック待ちにも効く（Postgres は「クエリの実行時間」と「ロック待ちの時間」を区別しない）。monolith で `record_sweep` 等が別トランザクションの行ロックを長く待つと中断されうる。River が再試行するが、意図しない再試行が増える兆候として覚えておく。
 
@@ -51,18 +44,11 @@
 
 ### transaction pooling は通さない
 
-Rokuban は transaction pooling を通さない。
-worker は River の LISTEN を使い、`notifier.New` の 1 個の Listener を elector と job-available 通知で共有する（`river@v0.47.0` で確認済み）。
-watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、transaction pooling で接続が要求ごとに入れ替わると壊れる（[data.md](../data.md) §2 / §3）。
-将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
+Rokuban は transaction pooling を通さない。worker は River の LISTEN を使い、`notifier.New` の 1 個の Listener を elector と job-available 通知で共有する（`river@v0.47.0` で確認済み）。watcher は advisory lock、notifier は SSE 用の LISTEN を使うため、transaction pooling で接続が要求ごとに入れ替わると壊れる（[data.md](../data.md) §2 / §3）。将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
 
 ### managed PostgreSQL の `btree_gist`
 
-チャプター区間の `EXCLUDE` 制約を作る migration は、先に `btree_gist` を `public` へ追加する。
-この文が失敗すると `migrate up` はそこで止まり、後続の migration に進まない。
-k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が失敗し、手順は `kubectl wait` で止まる。
-api の Deployment は同じ `kubectl apply` で新しい版へ更新されており、migration 未完了のスキーマに乗る。
-Job の失敗を解消してから、Job を delete して手順を再実行する（順序と理由は [deploy/k8s/README.md](../../deploy/k8s/README.md) §使い方）。
+チャプター区間の `EXCLUDE` 制約を作る migration は、先に `btree_gist` を `public` へ追加する。この文が失敗すると `migrate up` はそこで止まり、後続の migration に進まない。k8s では [`migrate-job.yaml`](../../deploy/k8s/base/migrate-job.yaml) の Job が失敗し、手順は `kubectl wait` で止まる。api の Deployment は同じ `kubectl apply` で新しい版へ更新されており、migration 未完了のスキーマに乗る。Job の失敗を解消してから、Job を delete して手順を再実行する（順序と理由は [deploy/k8s/README.md](../../deploy/k8s/README.md) §使い方）。
 
 - PostgreSQL 標準の `btree_gist` は trusted extension なので、対象 DB の `CREATE` 権限があれば作れる（[btree_gist](https://www.postgresql.org/docs/current/btree-gist.html)）。ただし managed provider がこの拡張を許可するかは接続先ごとに違う
 - `IF NOT EXISTS` は既存の拡張があると作らずに notice を返す。成功しても新規作成権限の証明にはならない

@@ -1,13 +1,10 @@
 # managed PostgreSQL での `btree_gist` の確認
 
-チャプター区間の `EXCLUDE` 制約を作る migration が、migration Job のロールで通るかを確かめる手順。
-判断（なぜ止まるか、`IF NOT EXISTS` が証明にならない理由）は [operations/database.md](../operations/database.md) §managed PostgreSQL の `btree_gist`。
+チャプター区間の `EXCLUDE` 制約を作る migration が、migration Job のロールで通るかを確かめる手順。判断（なぜ止まるか、`IF NOT EXISTS` が証明にならない理由）は [operations/database.md](../operations/database.md) §managed PostgreSQL の `btree_gist`。
 
 ## 接続
 
-provider の公式コンソールで、本番相当の project、branch、read-write endpoint と migration Job が使う `db.user` を特定する。
-pooler を避けて direct endpoint に接続し、password は `psql -W` の prompt で入力する。
-接続 URI や password をコマンド引数、shell history、ログ、issue に貼らない。
+provider の公式コンソールで、本番相当の project、branch、read-write endpoint と migration Job が使う `db.user` を特定する。pooler を避けて direct endpoint に接続し、password は `psql -W` の prompt で入力する。接続 URI や password をコマンド引数、shell history、ログ、issue に貼らない。
 
 ```sh
 psql -W "host=ENDPOINT_HOST port=5432 dbname=DATABASE_NAME user=MIGRATION_ROLE sslmode=require"
@@ -34,8 +31,7 @@ SELECT EXISTS (
 
 ## 作成権限の確認
 
-同じ migration role で migration と同じ文を実行する。拡張が未導入なら追加され、導入済みなら何も変更しない。
-Down は拡張を削除しない。
+同じ migration role で migration と同じ文を実行する。拡張が未導入なら追加され、導入済みなら何も変更しない。Down は拡張を削除しない。
 
 ```sql
 CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;

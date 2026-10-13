@@ -4,11 +4,7 @@
 
 ### `media_dir` に書けない（`permission denied`）
 
-**録画が 1 件も無くても、起動直後に `river_job` にエラーが出る**のがこの症状の
-最初の形。`catalog_export` は起動時に 1 回走る定期ジョブなので、`media_dir` に
-書けない構成ではこれが最初に落ちる（ingest・サムネイル生成・エンコードも同じ
-理由で落ちるが、そちらは録画ができるまで走らない）。`/healthz` は通り続けるので、
-ジョブ側を見ないと気付けない。
+**録画が 1 件も無くても、起動直後に `river_job` にエラーが出る**のがこの症状の最初の形。`catalog_export` は起動時に 1 回走る定期ジョブなので、`media_dir` に書けない構成ではこれが最初に落ちる（ingest・サムネイル生成・エンコードも同じ理由で落ちるが、そちらは録画ができるまで走らない）。`/healthz` は通り続けるので、ジョブ側を見ないと気付けない。
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
@@ -22,29 +18,15 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 creating catalog dir: mkdir /mnt/media/catalog: permission denied
 ```
 
-実測: 所有権を焼く前のイメージで `docker-compose.test.yml` を起動したときの
-`river_job` 行。このとき `/healthz` は `{"status":"ok"}` を返し続けた。
+実測: 所有権を焼く前のイメージで `docker-compose.test.yml` を起動したときの `river_job` 行。このとき `/healthz` は `{"status":"ok"}` を返し続けた。
 
-イメージは `/mnt/media` を実行ユーザー所有で焼いてある（uid/gid `65534` =
-`nobody:nogroup`）。**空の** named volume なら手当ては要らない。Docker の
-copy-up がマウント点の所有権を volume 側にコピーするため。所有権を焼く前の
-イメージで**起動しただけ**の volume も、書き込みが一度も無ければ空である。
-イメージを上げ直すだけで直る（実測: 空 volume を旧イメージでマウントすると
-`/mnt/media` は `root:root`。そのあと修正後イメージでマウントすると
-`nobody:nogroup` になり `touch` が通る）。
+イメージは `/mnt/media` を実行ユーザー所有で焼いてある（uid/gid `65534` = `nobody:nogroup`）。**空の** named volume なら手当ては要らない。Docker の copy-up がマウント点の所有権を volume 側にコピーするため。所有権を焼く前のイメージで**起動しただけ**の volume も、書き込みが一度も無ければ空である。イメージを上げ直すだけで直る（実測: 空 volume を旧イメージでマウントすると `/mnt/media` は `root:root`。そのあと修正後イメージでマウントすると `nobody:nogroup` になり `touch` が通る）。
 
-**手当てが要るのは volume に既に中身がある場合**。典型は、この不具合を踏んで
-compose 側で `user: "0:0"` を当てて回避した volume。root のまま録画やカタログを
-書いてしまっている。copy-up は空の volume にしか効かないので、イメージを
-上げ直しても所有権は変わらない。
+**手当てが要るのは volume に既に中身がある場合**。典型は、この不具合を踏んで compose 側で `user: "0:0"` を当てて回避した volume。root のまま録画やカタログを書いてしまっている。copy-up は空の volume にしか効かないので、イメージを上げ直しても所有権は変わらない。
 
-`chown` は **`-R` でかける**。`/mnt/media` だけを chown しても配下の
-`catalog/` などが root 所有のまま残る。`os.MkdirAll` は既存ディレクトリに
-`nil` を返すので、ファイル作成で同じ `permission denied` になる。
+`chown` は **`-R` でかける**。`/mnt/media` だけを chown しても配下の `catalog/` などが root 所有のまま残る。`os.MkdirAll` は既存ディレクトリに `nil` を返すので、ファイル作成で同じ `permission denied` になる。
 
-実測: root で `catalog/` を書いた volume では、非再帰 `chown` 後も
-`touch /mnt/media/catalog/probe` が `Permission denied` になった。
-`chown -R` 後は成功した。
+実測: root で `catalog/` を書いた volume では、非再帰 `chown` 後も `touch /mnt/media/catalog/probe` が `Permission denied` になった。`chown -R` 後は成功した。
 
 ```sh
 docker compose down   # user: "0:0" を当てて回避していたら、この機に消す
@@ -53,8 +35,7 @@ docker run --rm --user 0 --entrypoint chown \
 docker compose up -d
 ```
 
-bind mount には copy-up が無いので、ホスト側を先に用意する
-（[setup.md](setup.md) の「録画の保存先」）。
+bind mount には copy-up が無いので、ホスト側を先に用意する（[setup.md](setup.md) の「録画の保存先」）。
 
 ### `ingest: transfer complete` が出ない
 
@@ -63,59 +44,33 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
   "SELECT id, kind, state, attempt, errors FROM river_job WHERE kind='ingest' ORDER BY id DESC LIMIT 3"
 ```
 
-- `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（[setup.md](setup.md) の前提を参照）。
-  HEAD だけ試すと成功するので騙されやすい
-- `errors` に **`context deadline exceeded`** — 5 分の Work Timeout を超えた。
-  通常は 4 分の slice で snooze するため、長い replay / 後処理や設定を調べる
-- `state=retryable` のまま進まない — mirakc への到達性か、`media_dir` の
-  書き込み権限（上記「`media_dir` に書けない」）を確認する
+- `errors` に **500** — mirakc のイメージに `cat` / `dd` が無い（[setup.md](setup.md) の前提を参照）。HEAD だけ試すと成功するので騙されやすい
+- `errors` に **`context deadline exceeded`** — 5 分の Work Timeout を超えた。通常は 4 分の slice で snooze するため、長い replay / 後処理や設定を調べる
+- `state=retryable` のまま進まない — mirakc への到達性か、`media_dir` の書き込み権限（上記「`media_dir` に書けない」）を確認する
 
-**「転送しているが遅いだけ」と「止まっている」は UI で見分けられる**。録画一覧・
-録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/
-「取り込み待ち」。[frontend/recordings.md](../frontend/recordings.md)）。DB を直接
-見るなら次:
+**「転送しているが遅いだけ」と「止まっている」は UI で見分けられる**。録画一覧・録画詳細に取り込み状態が出る（「取り込み中 42%」/「取り込み中 1.2 GB（停滞）」/ 「取り込み待ち」。[frontend/recordings.md](../frontend/recordings.md)）。DB を直接見るなら次:
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
   "SELECT recording_id, written_bytes, expected_bytes, observed_at FROM recording_ingest_progress"
 ```
 
-`observed_at` が現在時刻から離れていくなら転送は止まっている（進捗の書き直しは
-**最短** 2 秒間隔 --- バイトが流れたときにしか書かないので、極端に遅い回線では
-これより粗くなる）。`written_bytes` は temp replay で再開した試行なら末尾から続く。
-サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る
-（[recording/ingest.md](../recording/ingest.md) §5.3）。
+`observed_at` が現在時刻から離れていくなら転送は止まっている（進捗の書き直しは**最短** 2 秒間隔 --- バイトが流れたときにしか書かないので、極端に遅い回線ではこれより粗くなる）。`written_bytes` は temp replay で再開した試行なら末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る（[recording/ingest.md](../recording/ingest.md) §5.3）。
 
-rename 後の親ディレクトリ fsync または
-DB commit の失敗では temp が canonical へ移動済みだが、次の ingest は orphan 回収を待たず
-全量 pull を開始する。残った canonical orphan は再試行の rename で置き換わるか、報告されて
-人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで
-転送を省略する。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで
-worker 停止とは断定しない。
+rename 後の親ディレクトリ fsync または DB commit の失敗では temp が canonical へ移動済みだが、次の ingest は orphan 回収を待たず全量 pull を開始する。残った canonical orphan は再試行の rename で置き換わるか、報告されて人が調査・回復するまで残る。DB commit が成立して応答だけ失われた場合は、冪等性チェックで転送を省略する。replay 中は進捗行がまだ更新されないので、古い `observed_at` だけで worker 停止とは断定しない。
 
 ### エンコードが失敗している（理由を知りたい）
 
-一覧・詳細のバッジは「`h264: エンコード失敗`」までしか言わない。**失敗の理由と
-最後に試した時刻は API に出さない**（プロファイル名以上の内部情報を配らない）ので、
-運用者は DB を直接見る:
+一覧・詳細のバッジは「`h264: エンコード失敗`」までしか言わない。**失敗の理由と最後に試した時刻は API に出さない**（プロファイル名以上の内部情報を配らない）ので、運用者は DB を直接見る:
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
   "SELECT recording_id, profile, state, error, attempted_at FROM recording_encode_attempts ORDER BY attempted_at DESC LIMIT 20"
 ```
 
-- `error` は ffmpeg の失敗メッセージを含む先頭 2000 バイト（`EncodeWorker` が
-  切り詰める。全文は worker のログ）
-- `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた可能性が
-  ある行。encode の JobRescuer は enqueue 時に args へ保存した締切後に同じ job を
-  再試行する。締切は `max(1 時間, 実尺 × profile rate)` で、実尺が不明な場合と締切のない旧 args は 12 時間となる。
-  `recording_encode_attempts.attempt_count` は次の worker 起動時に死亡した試行を数える。
-  締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker の
-  ログを確認する
-- `error` に `unknown encode profile` —— 設定から消えたプロファイル。
-  `config.encode.profiles` に戻すか、その録画の `recording_encode_policy` から
-  外す（[schema/recordings.md](../schema/recordings.md) の
-  `recording_encode_attempts` 節）
+- `error` は ffmpeg の失敗メッセージを含む先頭 2000 バイト（`EncodeWorker` が切り詰める。全文は worker のログ）
+- `state='running'` のまま `attempted_at` が古い —— worker が実行中に落ちた可能性がある行。encode の JobRescuer は enqueue 時に args へ保存した締切後に同じ job を再試行する。締切は `max(1 時間, 実尺 × profile rate)` で、実尺が不明な場合と締切のない旧 args は 12 時間となる。`recording_encode_attempts.attempt_count` は次の worker 起動時に死亡した試行を数える。締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker のログを確認する
+- `error` に `unknown encode profile` —— 設定から消えたプロファイル。`config.encode.profiles` に戻すか、その録画の `recording_encode_policy` から外す（[schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節）
 
 ### encode が上限に達して止まった
 
@@ -127,9 +82,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 ### EPG 同期が一度しか走らない
 
-`river_job` の `epg_sync` に完了済みの行が残っていて `unique_key` を占有している。
-`UniqueOpts.ByState` の設定を変更した場合に起きる（[データ層](../data.md) の
-「River のジョブ一意性の注意」）。
+`river_job` の `epg_sync` に完了済みの行が残っていて `unique_key` を占有している。`UniqueOpts.ByState` の設定を変更した場合に起きる（[データ層](../data.md) の「River のジョブ一意性の注意」）。
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
@@ -140,17 +93,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 ### デプロイ直後、旧キューの残骸が `river_job` に残っている
 
-**実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**。
-site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` 等。
-[運用](../operations.md) の「`worker.queues` に書く名前は論理名」参照）がある。
-`delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設もある。
-どちらも、デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
+**実測（このリリースノートを書くために実バイナリで確認済み。手順は下記）**。site 単位のキュー名を修飾する変更（`ingest` → `ingest_<site>` 等。[運用](../operations.md) の「`worker.queues` に書く名前は論理名」参照）がある。`delete_reconcile` / `catalog_export` の `default` → `cleanup` への移設もある。どちらも、デプロイ前に投入済みだった旧キューの行を新キューへ自動移行しない。
 
-**現在の River 投影（`UniqueOpts.ByQueue: true`）では、旧キューの残骸があっても
-新しいジョブの投入自体は
-ブロックされない**。一意キーがキュー名を含むため、旧キュー（キューを含まない
-鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に
-確認した挙動:
+**現在の River 投影（`UniqueOpts.ByQueue: true`）では、旧キューの残骸があっても新しいジョブの投入自体はブロックされない**。一意キーがキュー名を含むため、旧キュー（キューを含まない鍵）と新キュー（キューを含む鍵）は別のハッシュになり衝突しない。実際に確認した挙動:
 
 ```console
 $ rokuban enqueue reconcile-pass --site tokyo   # 旧バイナリで投入（旧キュー "reconciler"）
@@ -168,12 +113,7 @@ SELECT id, kind, queue, state FROM river_job ORDER BY id;
 --   3 | reconcile_pass | reconciler_tokyo | available   ← 新キュー。worker が正しく引く
 ```
 
-**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も購読しないキューに永久に残り、
-`state='available'` のままで滞留メトリクスを汚し続けるため、残さない方がよい。
-デプロイ後に 1 回だけ次を実行する。
-`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態を対象にする。
-`available`/`scheduled`/`retryable` だけでは不十分である。
-`pending`/`running` の残骸も取りこぼさない。
+**それでも掃除は推奨する**。旧キューの残骸（上の `id=1`）はどの worker も購読しないキューに永久に残り、`state='available'` のままで滞留メトリクスを汚し続けるため、残さない方がよい。デプロイ後に 1 回だけ次を実行する。`internal/jobs/queue.go` の `pendingJobStates` と同じ 5 状態を対象にする。`available`/`scheduled`/`retryable` だけでは不十分である。`pending`/`running` の残骸も取りこぼさない。
 
 ```sh
 docker compose exec postgres psql -U rokuban -d rokuban -c \
@@ -185,15 +125,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
        )"
 ```
 
-**`worker.queues` に `default` を含めない中央 cleanup worker（例:
-`queues: [cleanup]`）を運用する構成を考える**。**この構成では `default` キューの残骸
-（旧 `delete_reconcile` / `catalog_export`）はどの worker も購読しないままに
-なる**。`queue = 'default'` の分岐を上の DELETE から省略しないこと。
-「`default` は引き続き購読対象なので掃除不要」という判断は、`default` を
-含む `worker.queues` を書いている構成にしか当てはまらない。
+**`worker.queues` に `default` を含めない中央 cleanup worker（例: `queues: [cleanup]`）を運用する構成を考える**。**この構成では `default` キューの残骸（旧 `delete_reconcile` / `catalog_export`）はどの worker も購読しないままになる**。`queue = 'default'` の分岐を上の DELETE から省略しないこと。「`default` は引き続き購読対象なので掃除不要」という判断は、`default` を含む `worker.queues` を書いている構成にしか当てはまらない。
 
-上のコマンドを実際に実行して `id=1` の行が消え、`id=3` だけが残ることを
-確認済み（このリリースノートの検証手順）。
+上のコマンドを実際に実行して `id=1` の行が消え、`id=3` だけが残ることを確認済み（このリリースノートの検証手順）。
 
 ### 番組リストが空
 
@@ -201,9 +135,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 curl -s "$MIRAKC_URL/api/programs" | jq 'length'
 ```
 
-0 なら mirakc 側の問題。mirakc は再起動直後に EPG キャッシュを読み込み終えて
-おらず空を返すことがある。Rokuban は空レスポンスでプロジェクションを消さない
-ようにしてあるので、mirakc の EPG が復帰すれば次の同期で戻る。
+0 なら mirakc 側の問題。mirakc は再起動直後に EPG キャッシュを読み込み終えておらず空を返すことがある。Rokuban は空レスポンスでプロジェクションを消さないようにしてあるので、mirakc の EPG が復帰すれば次の同期で戻る。
 
 ### ルールを作ったのに予約ができない
 
@@ -223,12 +155,9 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
      WHERE kind IN ('ruler_pass','reconcile_pass') ORDER BY id DESC LIMIT 5"
 ```
 
-- 1 が 0 件 — 条件そのものの問題（射影に番組が無いか、条件が厳しすぎる）。検索は
-  `enabled` を見ないので、ここが非ゼロでもルールが無効なら予約はできない
-- 1 は非ゼロだが `desired` が 0 — ルールが `enabled: false`、または `sites` /
-  `periodStartAt` / `periodEndAt` で絞られている
-- ログに何も出ない — `worker.periodic_jobs` が false（`rokuban enqueue ruler-pass`）か、
-  worker ロールが起動していない
+- 1 が 0 件 — 条件そのものの問題（射影に番組が無いか、条件が厳しすぎる）。検索は `enabled` を見ないので、ここが非ゼロでもルールが無効なら予約はできない
+- 1 は非ゼロだが `desired` が 0 — ルールが `enabled: false`、または `sites` / `periodStartAt` / `periodEndAt` で絞られている
+- ログに何も出ない — `worker.periodic_jobs` が false（`rokuban enqueue ruler-pass`）か、worker ロールが起動していない
 - **サーキットブレーカーは疑わなくてよい**。止まるのは削除だけで、作成は続く
 
 ### 予約はあるのに mirakc に schedule が作られない
@@ -238,12 +167,9 @@ curl -s http://localhost:40773/api/reservations | \
   jq '.[] | select(.title == "<番組名>") | {state, skip, dedupMatchRecordingId}'
 ```
 
-- `skip: true` — 除外か重複排除。`dedupMatchRecordingId` / `dedupSimilarity` が
-  入っていれば重複排除（相手の録画 ID と類似度まで説明できる）。無ければ
-  ユーザーの除外（`program_intents.action = 'skip'`）
+- `skip: true` — 除外か重複排除。`dedupMatchRecordingId` / `dedupSimilarity` が入っていれば重複排除（相手の録画 ID と類似度まで説明できる）。無ければユーザーの除外（`program_intents.action = 'skip'`）
 - `state: "orphaned"` — 同期対象外（放送済み番組の予約は GC まで残る）
-- どちらでもない — `rokuban_reconcile_pending_diff{action="create"}` が減らないなら
-  mirakc が作成を拒否している。`reconciler: creating schedule` の ERROR を見る
+- どちらでもない — `rokuban_reconcile_pending_diff{action="create"}` が減らないなら mirakc が作成を拒否している。`reconciler: creating schedule` の ERROR を見る
 
 ### `overrides.contentPath` を明示指定したのに既存 schedule のパスが変わらない・毎パス再作成される
 
@@ -259,8 +185,7 @@ curl -s http://localhost:9090/api/v1/query --data-urlencode \
 
 ### `/api/capacity/overages` が常に空
 
-`tuner_sync` の射影が空だと**何も主張しない**設計なので、超過が無いのか判定が
-無効なのかを区別できない。空配列を見たら、射影が動いているかを先に確認する。
+`tuner_sync` の射影が空だと**何も主張しない**設計なので、超過が無いのか判定が無効なのかを区別できない。空配列を見たら、射影が動いているかを先に確認する。
 
 ```sh
 curl -s http://localhost:40773/metrics |
@@ -276,27 +201,17 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 ```
 
 - 行が無い / `rokuban_tuners_projected` が 0 — 射影が空。判定は無効
-- `tuner sync: mirakc returned no projectable tuners, skipping sweep` — mirakc が
-  空を返したのでスイープを見送った（既存の射影は消さない）
-- `tuner sync: skipping tuner with unknown channel type` — 未知の種別を持つ
-  チューナーを**丸ごと捨てた**。`cap(A)` が 1 本少なくなるので警告が過剰に出る側に
-  ずれる（見逃す側にはずれない）
-- 行はあるが `is_available = false` / `is_fault = true` が全台 — この場合は**判定する**
-  （射影された事実であって我々の無知ではない）
+- `tuner sync: mirakc returned no projectable tuners, skipping sweep` — mirakc が空を返したのでスイープを見送った（既存の射影は消さない）
+- `tuner sync: skipping tuner with unknown channel type` — 未知の種別を持つチューナーを**丸ごと捨てた**。`cap(A)` が 1 本少なくなるので警告が過剰に出る側にずれる（見逃す側にはずれない）
+- 行はあるが `is_available = false` / `is_fault = true` が全台 — この場合は**判定する**（射影された事実であって我々の無知ではない）
 
 ### ドロップ統計で音声 PID が `other` に見える
 
-**`pidType` が `other` の音声 PID**（LATM AAC / `stream_type = 0x11`）は
-「誤読しやすい正常」で、ドロップ統計そのものは正しい。`gots` の
-`IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は
-作らない方針。ISDB の GR/BS/CS は 0x0F（MPEG-2 AAC）が主なので実害は
-4K/8K に限られる見込みだが、観測したら「分類の限界」であってドロップではない。
-1 行で足せるので観測したら報告する。
+**`pidType` が `other` の音声 PID**（LATM AAC / `stream_type = 0x11`）は「誤読しやすい正常」で、ドロップ統計そのものは正しい。`gots` の `IsAudioContent()` の値域に従っているだけで、自前の `stream_type` 表は作らない方針。ISDB の GR/BS/CS は 0x0F（MPEG-2 AAC）が主なので実害は 4K/8K に限られる見込みだが、観測したら「分類の限界」であってドロップではない。1 行で足せるので観測したら報告する。
 
 ### 録画が開始直後に失敗する
 
-`recording.failed` の `need-rescheduling` が録画開始の数秒後に出る場合、
-チューナーの競合が濃厚。
+`recording.failed` の `need-rescheduling` が録画開始の数秒後に出る場合、チューナーの競合が濃厚。
 
 ```sh
 curl -s "$MIRAKC_URL/api/tuners" | jq '.[] | {name, isAvailable, users}'

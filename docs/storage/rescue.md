@@ -6,24 +6,15 @@
 
 失うと痛いデータを仕分けすると、EPG プロジェクションは mirakc から再構築可能で、ジョブキューは一時的である。**保護対象は「ルール・シリーズ分類ルール・録画履歴・media_assets・原本 TS 計測記録・ドロップ統計・ドロップ位置・tombstone・手動オーバーライド・ユーザーが置いたチャプター・視聴済みの印」のみ（数 MB）**。
 
-シリーズ分類ルール（`label_rules`）もユーザーが書いた再取得できない設定なので保護対象である。id を保って復元し、`value_key` / `keyword_key` は生成列なので書かない。
-当たりの表（`label_rule_hits`）は作り直せるので入れない。rescue は同じトランザクションの末尾で全件を再評価して閉じる（worker の定期再評価を待たない）。トリガーは新規行と title 変更しか見ないので、DB に残っていた録画はこの再評価でしか追従しない。
+シリーズ分類ルール（`label_rules`）もユーザーが書いた再取得できない設定なので保護対象である。id を保って復元し、`value_key` / `keyword_key` は生成列なので書かない。当たりの表（`label_rule_hits`）は作り直せるので入れない。rescue は同じトランザクションの末尾で全件を再評価して閉じる（worker の定期再評価を待たない）。トリガーは新規行と title 変更しか見ないので、DB に残っていた録画はこの再評価でしか追従しない。
 
-チャプターの所有 2 表（`recording_chapter_ownership` / `recording_chapter_spans`）も保護対象である。
-ユーザーの修正は二度と再取得できない事実だからである（[スキーマ](../schema/recordings.md) §recording_chapter_ownership）。
-自動検出の結果（`recording_cm_detections`）は導出値なので含めない。
-所有の行が無い録画は自動層のままなので何も復元しない（行の不在そのものが意味を持つ。不変条件 10）。
+チャプターの所有 2 表（`recording_chapter_ownership` / `recording_chapter_spans`）も保護対象である。ユーザーの修正は二度と再取得できない事実だからである（[スキーマ](../schema/recordings.md) §recording_chapter_ownership）。自動検出の結果（`recording_cm_detections`）は導出値なので含めない。所有の行が無い録画は自動層のままなので何も復元しない（行の不在そのものが意味を持つ。不変条件 10）。
 
-視聴済みの印（`recording_watched`）はユーザーが付けた世帯共有の事実なので export / rescue に含める。
-再生位置（`recording_playback_positions`）は一時的な利便状態なので catalog には含めず、復旧後は続きからを再作成する。
+視聴済みの印（`recording_watched`）はユーザーが付けた世帯共有の事実なので export / rescue に含める。再生位置（`recording_playback_positions`）は一時的な利便状態なので catalog には含めず、復旧後は続きからを再作成する。
 
-書き込み順は `recordings → media_assets → チャプターの所有 2 表 → drop_stats → drop_positions → media_asset_ts_scans` である。
-区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。
-そのため rescue の 2 回目は `ON CONFLICT DO NOTHING` で受ける —— 素の INSERT だと同じ区間が自分自身と衝突し、1 世代まるごと復元できなくなる。
+書き込み順は `recordings → media_assets → チャプターの所有 2 表 → drop_stats → drop_positions → media_asset_ts_scans` である。区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。そのため rescue の 2 回目は `ON CONFLICT DO NOTHING` で受ける —— 素の INSERT だと同じ区間が自分自身と衝突し、1 世代まるごと復元できなくなる。
 
-`media_asset_ts_scans` は原本ごとに TS 計測時のサイズを記録する。
-古い catalog にこの配列が無い場合、`drop_stats` がある原本を計測済みとして復元し、サイズには当時の `media_assets.size_bytes` を使う。
-`drop_stats` のない原本は未計測のままにし、復旧後の TS 計測ジョブが読み直す。
+`media_asset_ts_scans` は原本ごとに TS 計測時のサイズを記録する。古い catalog にこの配列が無い場合、`drop_stats` がある原本を計測済みとして復元し、サイズには当時の `media_assets.size_bytes` を使う。`drop_stats` のない原本は未計測のままにし、復旧後の TS 計測ジョブが読み直す。
 
 ### catalog エクスポート
 
@@ -82,11 +73,7 @@ catalog/
 
 走査の in-place 登録もファイルの再確認からコミットまで同じ lock を保持する。DB 接続の切断だけでは排他が消えない。
 
-スナップショット後にファイルが消えた asset は履歴・統計を残して `deleted` として復元し、
-件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。
-この排他はファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの
-上書きを防ぐものではないため、復旧中に worker を止める運用要件は続く。
-共有ストレージでは全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
+スナップショット後にファイルが消えた asset は履歴・統計を残して `deleted` として復元し、件数を CLI に表示する。走査後に消えたファイルは登録せず、その件数も表示する。この排他はファイルと asset row の整合性を守る。古い catalog による録画・保持ポリシーなどの上書きを防ぐものではないため、復旧中に worker を止める運用要件は続く。共有ストレージでは全参加プロセスから同じ lock namespace が見え、flock が相互に効く必要がある。
 
 `rokuban rescue` は次の順で入力を選ぶ:
 
@@ -116,23 +103,12 @@ catalog/
 `rokuban rescue`: ストレージを走査し、
 
 - `catalog/` があれば照合してフルメタデータ（番組情報・ドロップ統計・保持ポリシー）ごと復元
-- catalog が無ければ `sites/{site}/` 前置を持つ TS / M2TS を `original` として登録する。
-  MP4 / MKV / WebM は `encoded`（`profile = rescue-<拡張子>`）として登録する。登録は現在位置のまま行う。タイトルはファイル名から作り、
-  `program_start_at` は初回 rescue 時の mtime とする。番組・サービス情報は「metadata unavailable」と明示した素の録画になる。
-  この列は recording identity にも含まれるが、再走査では rel_path から recording を再利用するため、
-  後から mtime が変わっても別 recording は作られない。mtime を rel_path 由来の値へ置き換える案は、
-  既存 rescue 行の移行が必要で表示時刻も失うため採らない
+- catalog が無ければ `sites/{site}/` 前置を持つ TS / M2TS を `original` として登録する。MP4 / MKV / WebM は `encoded`（`profile = rescue-<拡張子>`）として登録する。登録は現在位置のまま行う。タイトルはファイル名から作り、`program_start_at` は初回 rescue 時の mtime とする。番組・サービス情報は「metadata unavailable」と明示した素の録画になる。この列は recording identity にも含まれるが、再走査では rel_path から recording を再利用するため、後から mtime が変わっても別 recording は作られない。mtime を rel_path 由来の値へ置き換える案は、既存 rescue 行の移行が必要で表示時刻も失うため採らない
 - `catalog/` 自身、未知拡張子、symlink は走査対象にしない。ファイル本体はコピーも変更もしない
 - 同じ相対パスは安定した合成番組 identity へ写し、再実行しても録画・asset が増殖しない
-- 走査対象の site は `sites/{site}/` 前置（[contract.md](contract.md) §rel_path の名前空間）から決める。
-  前置の無いファイルは site を決められないため登録せず、ファイルごとに Warn を 1 回出す。
-  台帳に載らないため、孤児として mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に報告する。
-  手動で登録するか、不要と確認して削除する。移行後は前置の無いファイルが存在しないことを前提にする。
-  前置の site がレジストリ（`mirakcs:`）に無ければ typo やゴミディレクトリの疑いとして
-  site ごとに Warn を出すが、復元は止めない
+- 走査対象の site は `sites/{site}/` 前置（[contract.md](contract.md) §rel_path の名前空間）から決める。前置の無いファイルは site を決められないため登録せず、ファイルごとに Warn を 1 回出す。台帳に載らないため、孤児として mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に報告する。手動で登録するか、不要と確認して削除する。移行後は前置の無いファイルが存在しないことを前提にする。前置の site がレジストリ（`mirakcs:`）に無ければ typo やゴミディレクトリの疑いとして site ごとに Warn を出すが、復元は止めない
 
-登録トランザクションは `internal/inplace` に置き、`rokuban import epgstation` も同じ
-in-place 登録機構を使う。DB 行のコミットが公開であるというストレージ契約は通常 ingest と同じ。
+登録トランザクションは `internal/inplace` に置き、`rokuban import epgstation` も同じ in-place 登録機構を使う。DB 行のコミットが公開であるというストレージ契約は通常 ingest と同じ。
 
 ### Postgres 運用
 

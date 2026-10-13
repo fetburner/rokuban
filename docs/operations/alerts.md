@@ -25,9 +25,7 @@ scrambled > 0 はドロップ数とは別枠のアラート対象とする。EPG
 
 EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で素朴な ruler は予約を大量に「不要」と判定する。reconciler がそれを mirakc へ忠実に反映（= 一斉 DELETE）してしまう（EPGStation#692 の障害クラス）。
 
-**アラートは `rokuban_circuit_breaker_tripped{site,breaker}` を見る**。既存の
-`*_circuit_breaker_trips_total` は「何回発動したか」しか答えられないが、ブレーカーは
-**手動で再開するまで止まり続けるラッチ**なので「いま止まっているか」が知りたい情報である。
+**アラートは `rokuban_circuit_breaker_tripped{site,breaker}` を見る**。既存の `*_circuit_breaker_trips_total` は「何回発動したか」しか答えられないが、ブレーカーは**手動で再開するまで止まり続けるラッチ**なので「いま止まっているか」が知りたい情報である。
 
 | ブレーカー | 何を守るか | 発動したら |
 |---|---|---|
@@ -35,33 +33,21 @@ EPG の一時欠損（mirakc 再起動・再スキャン・SI 取得不良）で
 | `reconcile_total_loss` | 「desired が空なのに自分の schedule が観測されている」という全損シグネチャ | DB 接続・`reservations` の中身を確認。**件数の閾値ではない**ので、発動したら本当に異常である |
 | `delete_reconcile` | 削除 reconcile（ごみ箱の猶予超過 / `until_encoded` の派生物完備 / ユーザーが外したエンコード版 / 予約名付き temp・staging 回収を含む 4 ソースをまとめた 1 パス分の物理 unlink） | **`ruler_deletes` と異なり `detail` に対象の抜粋は載らない**（`internal/worker/delete_reconcile.go` は `breaker.Sample{Total: total}` しか渡さず、`breaker.Sample`/`SampleProgram` にファイルを表す欄も無い。未検証で「ファイルを確認」とは書けない）。`GET /api/breakers` の `pending`/`threshold` で規模を確認し、対象の内訳が要るなら DB を直接クエリする — **ごみ箱・`until_encoded` 待ち・外した版の 3 ソースは `media_assets`（外した版は view `removed_encoded_assets`）、公開前孤児の候補は `orphan_files`（`rel_path` と `first_seen`。`first_seen` はエイジング判定の根拠なので内訳確認にも使える。孤児は定義上 `media_assets` に無いファイルなので `media_assets` では引けない）**（4 ソースの判定条件は [storage/retention.md](../storage/retention.md)）→ 正当なら `POST /api/breakers/delete_reconcile/resume`（site を持たないブレーカーなので site をパスに含めない） |
 
-**1 が続く間、導出削除は一切実行されない**。これは「reconcile が収束できていない」ではなく
-「人間の確認を待っている」を意味する。放置すると mirakc 側に不要な schedule が残り続けるため、
-`for` の待ち時間を長く取らず即座に通知する。
+**1 が続く間、導出削除は一切実行されない**。これは「reconcile が収束できていない」ではなく「人間の確認を待っている」を意味する。放置すると mirakc 側に不要な schedule が残り続けるため、`for` の待ち時間を長く取らず即座に通知する。
 
-発動中でも**削除以外は動く**（予約の作成・base の更新・schedule の作成・番組終了後の GC）。
-「録画されない」ではなく「消えないものが残る」障害なので、慌てて resume せず `detail` を
-確認してからにする。
+発動中でも**削除以外は動く**（予約の作成・base の更新・schedule の作成・番組終了後の GC）。「録画されない」ではなく「消えないものが残る」障害なので、慌てて resume せず `detail` を確認してからにする。
 
 ### 未解決の canonical orphan
 
-`rokuban_orphan_files_unresolved > 0` は、aging を超えた未登録の canonical file がある状態である。
-このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。
+`rokuban_orphan_files_unresolved > 0` は、aging を超えた未登録の canonical file がある状態である。このゲージは削除 reconcile の通常パスで更新されるため、最終完走時刻も併せて見る。
 
-`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。
-対象 file と `media_assets` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。
-canonical file は自動削除されない。必要なら正式な登録経路で回復し、不要と確認できた file は
-手動で整理する。ファイルが無くなるか `media_assets` に登録されると、次の reconcile で候補が消える。
+`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で候補を確認する。対象 file と `media_assets` を照合し、DB 復旧後の登録漏れや公開失敗の残骸かを調べる。canonical file は自動削除されない。必要なら正式な登録経路で回復し、不要と確認できた file は手動で整理する。ファイルが無くなるか `media_assets` に登録されると、次の reconcile で候補が消える。
 
 ### 開始時刻超過で recording.started 未観測
 
-`rokuban_reconcile_start_delayed > 0` でアラートする。**`for` を長く取らないこと** ---
-検出窓が「開始 + 猶予 〜 終了時刻」に限定されているので、番組が終わればゲージは自然にゼロへ戻る。
-待ち時間を番組長より長くすると、短い番組の遅延を一度も通知しないまま取りこぼす。
+`rokuban_reconcile_start_delayed > 0` でアラートする。**`for` を長く取らないこと** --- 検出窓が「開始 + 猶予 〜 終了時刻」に限定されているので、番組が終わればゲージは自然にゼロへ戻る。待ち時間を番組長より長くすると、短い番組の遅延を一度も通知しないまま取りこぼす。
 
-`rokuban_recordings_failed_total{reason}` が同時に増えているなら mirakc が理由を返しているので
-そちらが一次情報になる。**増えていないのにこのゲージが立つのが最も危険**な状態で、mirakc が
-失敗を報告せずに録画を始めていないことを意味する（EPGStation#724 のクラス）。
+`rokuban_recordings_failed_total{reason}` が同時に増えているなら mirakc が理由を返しているのでそちらが一次情報になる。**増えていないのにこのゲージが立つのが最も危険**な状態で、mirakc が失敗を報告せずに録画を始めていないことを意味する（EPGStation#724 のクラス）。
 
 ### 開始前の未同期または観測不能
 
@@ -70,31 +56,16 @@ canonical file は自動削除されない。必要なら正式な登録経路�
 次の主系列をサイトごとに使う。
 
 - `rokuban_presync_pending{site,reason="missing"}` — desired に対する observed schedule が無い
-- `rokuban_presync_pending{site,reason="options"}` — observed schedule が `scheduled` state にある。
-  priority / `program:{programId}` tag / 明示 `contentPath` が desired と一致しない場合に数える。
-  この差分は reconciler が再作成できる
-- `rokuban_presync_pending{site,reason="options_deferred"}` — options の不一致はあるが、state が
-  `scheduled` ではないため再作成を見送っている。放送終了を待つか、必要なら手動介入する
-- `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で
-  pending な予約のうち最も開始が近い番組の start_at。pending が 0 の reason には
-  この系列が出ない（0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴る）
-- `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に
-  整合した形で最後に確定した時刻。0 は未確立
+- `rokuban_presync_pending{site,reason="options"}` — observed schedule が `scheduled` state にある。priority / `program:{programId}` tag / 明示 `contentPath` が desired と一致しない場合に数える。この差分は reconciler が再作成できる
+- `rokuban_presync_pending{site,reason="options_deferred"}` — options の不一致はあるが、state が `scheduled` ではないため再作成を見送っている。放送終了を待つか、必要なら手動介入する
+- `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` — 同じ reason で pending な予約のうち最も開始が近い番組の start_at。pending が 0 の reason にはこの系列が出ない（0 を出すと `earliest - time() < lead` が常に真になり、健全な状態で鳴る）
+- `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` — schedule 全量 snapshot が DB に整合した形で最後に確定した時刻。0 は未確立
 
-判定は **観測不能 → 未同期（missing） → 未同期（options） → 未同期（options_deferred） → 同期済み**
-の順に読む。`options` は reconciler / mirakc / DB を確認して開始前に直す対象、
-`options_deferred` は現在の schedule state では原理的に再作成できない対象で、担当者のアクションが異なる。
-snapshot が 0 または stale なら、pending の値が 0 でも「同期済み」とは扱わない。collector
-の DB 読み取りに失敗したときは pending / snapshot 自体が出ず、
-`rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
+判定は **観測不能 → 未同期（missing） → 未同期（options） → 未同期（options_deferred） → 同期済み**の順に読む。`options` は reconciler / mirakc / DB を確認して開始前に直す対象、`options_deferred` は現在の schedule state では原理的に再作成できない対象で、担当者のアクションが異なる。snapshot が 0 または stale なら、pending の値が 0 でも「同期済み」とは扱わない。collector の DB 読み取りに失敗したときは pending / snapshot 自体が出ず、`rokuban_presync_scrape_errors_total{site}` が増えるので、0 への置換でアラートを消さない。
 
-件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり
-区別できない。開始が近いかどうかは件数ではなく
-`rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
+件数の gauge だけでは、8 日先の予約 1 件と 2 分後開始の予約 1 件が同値になり区別できない。開始が近いかどうかは件数ではなく `rokuban_presync_pending_earliest_start_timestamp_seconds` で判定する。
 
-アラート式の閾値は、現時点ではリポジトリに固定しない。Prometheus 側で運用値を設定する
-（`<snapshot_stale_seconds>` と `<lead_seconds>` は環境ごとの recording rule / alert rule
-の値に置き換える）。論理形は次のとおり。
+アラート式の閾値は、現時点ではリポジトリに固定しない。Prometheus 側で運用値を設定する（`<snapshot_stale_seconds>` と `<lead_seconds>` は環境ごとの recording rule / alert rule の値に置き換える）。論理形は次のとおり。
 
 ```promql
 # 先に観測不能を通知する。
@@ -114,20 +85,11 @@ and on (site)
 )
 ```
 
-**`options_deferred` はアラートしない**。録画中の番組の priority を変えると、
-録画が終わるまで（数時間）`earliest` が過去のまま非ゼロが続くのが正常である
-（`update_deferred` と同じ判断。[monitoring.md](monitoring.md) §reconcile）。
-`missing` / `options` と分けて別系列にしたのは、この reason を上のアラート式から
-除外するためである。調査の入口は [troubleshooting.md](../runbook/troubleshooting.md) にある。
+**`options_deferred` はアラートしない**。録画中の番組の priority を変えると、録画が終わるまで（数時間）`earliest` が過去のまま非ゼロが続くのが正常である（`update_deferred` と同じ判断。[monitoring.md](monitoring.md) §reconcile）。`missing` / `options` と分けて別系列にしたのは、この reason を上のアラート式から除外するためである。調査の入口は [troubleshooting.md](../runbook/troubleshooting.md) にある。
 
-`for:` はここでは「pending が続いた時間」ではなく 1 scrape 分の揺らぎ吸収だけに
-使う。開始までの残り時間は上式が `earliest - time()` で直接見ているので、
-`for` を長く取る必要はない。
+`for:` はここでは「pending が続いた時間」ではなく 1 scrape 分の揺らぎ吸収だけに使う。開始までの残り時間は上式が `earliest - time()` で直接見ているので、`for` を長く取る必要はない。
 
-通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` を
-ルーティングに残す。`missing` / `options` は開始前に reconciler・mirakc・DB を
-確認する通常の未同期ルートにする。観測不能は同期状態の断定より優先して、担当者が
-reconciler の投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
+通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` をルーティングに残す。`missing` / `options` は開始前に reconciler・mirakc・DB を確認する通常の未同期ルートにする。観測不能は同期状態の断定より優先して、担当者が reconciler の投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
 
 `<lead_seconds>` を決める式は次のとおり（p95/p99 の実測値を代入する）。
 
@@ -138,12 +100,7 @@ lead >= (
 ) の p95/p99 + 運用者の介入余裕
 ```
 
-将来「開始までに同期できた割合」を測る場合の母集団は、サイトと放送イベントの
-`(site, program_id)` 単位にする。測定 lead より前に desired が確定し、明示 skip ではなく、
-開始前に options 一致を確認できた候補を分母にする。直前に作られた手動予約、開始後の
-操作、EPG の開始時刻変更で旧イベントと新イベントを跨いだ候補は別の母集団に分ける。
-skip は分母から除外する。現スコープではこの履歴を保存せず、collector は現在の desired /
-observed と snapshot 鮮度だけを出す。
+将来「開始までに同期できた割合」を測る場合の母集団は、サイトと放送イベントの `(site, program_id)` 単位にする。測定 lead より前に desired が確定し、明示 skip ではなく、開始前に options 一致を確認できた候補を分母にする。直前に作られた手動予約、開始後の操作、EPG の開始時刻変更で旧イベントと新イベントを跨いだ候補は別の母集団に分ける。skip は分母から除外する。現スコープではこの履歴を保存せず、collector は現在の desired / observed と snapshot 鮮度だけを出す。
 
 常駐 `PeriodicJobs` では reconciler が full snapshot を確定する。常駐プロセスの `/metrics` は DB の marker を読む。
 
@@ -153,6 +110,4 @@ ScaledJob `--once` ではジョブ Pod 自身の process gauge を scrape しよ
 
 予約の削除・再実体化を跨いでも、collector はその時点の `(site, program_id)` と DB の desired / observed を再計算する。`synced` 成功状態を永続化して古い成功を残すことはない。
 
-未測定の範囲は、定期投入から通知到達までの p95/p99、mirakc の POST 後に schedule が
-再観測されるまでの遅延、サイトごとの EPG 時刻変更頻度である。実測後に alert rule の
-閾値を変更し、アプリケーションを再ビルドしない。
+未測定の範囲は、定期投入から通知到達までの p95/p99、mirakc の POST 後に schedule が再観測されるまでの遅延、サイトごとの EPG 時刻変更頻度である。実測後に alert rule の閾値を変更し、アプリケーションを再ビルドしない。

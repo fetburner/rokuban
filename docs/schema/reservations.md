@@ -62,7 +62,7 @@ CREATE INDEX ON reservations (rule_id);
 
 予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から導出する。
 
-`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
+`orphaned` は 「**この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか**」から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
 
 **「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合には、不安定な導出 id ではなく放送イベント `(site, network_id, service_id, event_id)` を使う。これは不変条件 9 の identity であり、`internal/db/queries/reservations.sql` のコメントが権威である。
 
@@ -162,21 +162,12 @@ CREATE TABLE circuit_breakers (
 );
 ```
 
-- **行の存在そのものが「発動中」**。停止していない状態を表す行は無い（§3.5 の
-  `program_overrides` と同じ規律）。再開は行の DELETE
-- **このスキーマで唯一の「導出できない状態」。** 他のテーブルはすべて desired（ユーザーが
-  書く）か observed（再取得できる）か導出結果だが、**誰かが確認したという事実は再取得
-  できない**。レベルトリガー設計の例外として意図的に置く（[録画エンジン](../recording.md)
-  §3.2「発動はラッチ」）
-- `tripped_at` は再発動で更新しない。「いつから止まっているか」が運用上の関心事なので、
-  パスごとに現在時刻へ進めてはならない
-- `name` に CHECK を置かない。ブレーカーの追加をマイグレーションなしでできるようにする
-  ため、値の権威は Go 側の定数（`internal/breaker`）。§1「型の規律」の「状態は text +
-  CHECK」の例外だが、これは状態ではなく識別子である
-- `detail` に内容の CHECK を置かない。**手動確認のための材料**であり、ブレーカー自身の
-  ロジックは中身を一切使わない不透明なペイロード（UI が表示するだけ）
-- SSE は専用の `breakers` トピック。既存の reservations / rules / recordings とは
-  関心事が違う（「トピック名はテーブル名ではなくクライアントの関心事に揃える」）
+- **行の存在そのものが「発動中」**。停止していない状態を表す行は無い（§3.5 の `program_overrides` と同じ規律）。再開は行の DELETE
+- **このスキーマで唯一の「導出できない状態」。** 他のテーブルはすべて desired（ユーザーが書く）か observed（再取得できる）か導出結果だが、**誰かが確認したという事実は再取得できない**。レベルトリガー設計の例外として意図的に置く（[録画エンジン](../recording.md) §3.2「発動はラッチ」）
+- `tripped_at` は再発動で更新しない。「いつから止まっているか」が運用上の関心事なので、パスごとに現在時刻へ進めてはならない
+- `name` に CHECK を置かない。ブレーカーの追加をマイグレーションなしでできるようにするため、値の権威は Go 側の定数（`internal/breaker`）。§1「型の規律」の「状態は text + CHECK」の例外だが、これは状態ではなく識別子である
+- `detail` に内容の CHECK を置かない。**手動確認のための材料**であり、ブレーカー自身のロジックは中身を一切使わない不透明なペイロード（UI が表示するだけ）
+- SSE は専用の `breakers` トピック。既存の reservations / rules / recordings とは関心事が違う（「トピック名はテーブル名ではなくクライアントの関心事に揃える」）
 
 ## 3.7 program_snapshots — 番組の事実のスナップショット
 
