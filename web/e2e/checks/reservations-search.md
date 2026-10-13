@@ -61,7 +61,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:reserve-visibility
 
 1280px では対象・モード・値の top がほぼ一致すること（= 同じ行にある）を見て従来のデスクトップの一行レイアウトを確認し、④と⑥も同じ条件で実行する。`sm:flex-row` を落として一行を崩す変異で実際に落ちることを確認済み。`page.route` のスタブは mirakc も DB も使わず、検索 API と番組詳細の 2 本を差し替える。
 
-**ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す。**この `aria-label` の `<nav>` はサイドバーとボトムタブの 2 本あり、`.last()` で当てると `AppShell` の DOM 順に依存する。順が入れ替わると 390px でも `hidden md:flex` のサイドバー側を掴んで矩形が null になり、**重なり判定が黙って消えて全体は green のまま**になる。`md` 未満で矩形が取れないことは NG として報告する（スキップしない）。
+**ボトムタブは `nav[aria-label="主ナビゲーション"].fixed` で指す**。この `aria-label` の `<nav>` はサイドバーとボトムタブの 2 本あり、`.last()` で当てると `AppShell` の DOM 順に依存する。順が入れ替わると 390px でも `hidden md:flex` のサイドバー側を掴んで矩形が null になり、**重なり判定が黙って消えて全体は green のまま**になる。`md` 未満で矩形が取れないことは NG として報告する（スキップしない）。
 
 `design.mjs` と同じ手（`/api/**` を `page.route` で丸ごと差し替え）で mirakc も DB も要らない。⓪（配っている bundle と `dist/` の一致）も自分で確認する。
 

@@ -84,7 +84,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - **断が始まる前に一度でも観測された record にはアンカーがある** —— この分は案 1 でも留め置ける（`status='recording'` の段階で観測されていれば足りる）
 - **断の最中に始まった録画にはアンカーが無い。** 行ができるのは復帰後で、そのときには GC は済んでいる（`runGC` は ruler のサイトパスが失敗しても実行され、削除条件は時計の比較だけ）
 
-つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」**で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存する。そのため ingest が恒久的に完了しない record が、スナップショットと予約を無期限にピン留めする漏れができる。
+つまり**正しい分割は「リンクが生きているか」ではなく「その record の観測が届いていたか」** で、数日の断ではその大半が未観測になるので、案 1 は主要部分を塞げない。加えて `DeleteEndedProgramSnapshots`（この表から行を消す唯一の経路。`internal/db/queries/program_snapshots.sql`）が `record_sync` の状態に依存する。そのため ingest が恒久的に完了しない record が、スナップショットと予約を無期限にピン留めする漏れができる。
 
 同じ理由で**凍結を録画開始時へ前倒す案も採らない**（`recordings` 行の生成も watcher の観測に依存するので、断の最中に始まった録画ではクラウドから見た「録画開始時」が「復帰時」になる）。加えて[録画エンジン](../recording.md) §4.5 の「録画開始後の変更でも ingest 完了までは効く」を失う。`epg.retention_grace` を上げることは、この 2 案が塞げる範囲と塞げない未観測ぶんの両方を 1 つの数で覆う。
 
@@ -93,7 +93,7 @@ GC 済みのスナップショットの上で ingest が走った場合に何が
 - `reservations` / `program_snapshots` / `program_intents` / `program_overrides` の行が「予約された番組数 × N 日」ぶん長く残る。時間窓で絞らずこれらを読む経路がある（`ListCapacityDemand` / `ListCapacityDemandAllSites`）
 - **同じキーが EPG 射影のローリングウィンドウも駆動する**。`cfg.Epg.RetentionGrace` は ruler の GC と EPG 射影の `PruneEpgPrograms`（`internal/worker/epg.go`）の**両方**に渡される（`cmd/rokuban/server.go`）。そのため N 日にすると、`epg_programs` に**予約の有無に関わらず全サービスの放送済み番組**が N 日ぶん残る。ルール照合（`internal/rulequery` の `MatchProgramIDsForRule`）は時間で絞らないので、その放送済み番組も拾う。
 
-  終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が**`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
+  終了済み番組の予約に対して reconciler の `programEnded` 分岐と `recordNeverScheduled` が **`never_scheduled_events` に欠測行**を作る窓が、24h から N 日に広がる。**行がどれだけ増えるかは未検証**（この節の他の記述と違い、測っていない）。`never_scheduled_events` 自身の寿命も N に追従する。ruler の GC 閾値は `retention_grace + 30日` なので、この窓の行は N + 30 日で刈られる（無限には残らない）。
 
 滞留を見張るメトリクスと閾値は[運用](../operations.md) §4 にある。
 

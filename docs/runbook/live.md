@@ -162,7 +162,7 @@ pnpm exec playwright install chromium webkit
 **この手段が実際に発見した回帰（2 件）**:
 
 1. `supportsNativeHls`（`lib/live.ts`）が `canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行していなかった --- `canPlayType` が jsdom では常に `''` を返すため
-2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**になっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回していなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて機械判定できるようになった。判定は「プレイリストとセグメントの両方の Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは WebKit だけ）に置き換えてある
+2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**になっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回していなかったので、この回帰は e2e 緑のまま通った**。⑥（WebKit）を足して初めて機械判定できるようになった。判定は「プレイリストとセグメントの両方の Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは WebKit だけ）に置き換えてある
 
 #### 音声の切替（`web/e2e/live-audio.mjs`。サーバーも DB も不要）
 

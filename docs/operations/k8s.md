@@ -217,7 +217,7 @@ ScaledJob 本体への annotation だけでは消えない。KEDA が rollout �
 
 表と annotation の件は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) の `O3.mut-rollout` / `O3.mut-omitted` で実測した。運用でこれを踏むのはイメージのタグを上げたときである。症状は「デプロイしたら録画のエンコードが飛ぶ」になる。上の「実行中の犠牲者選定という問題自体が消える」はこの一行に依存している。
 
-**postgresql トリガの接続先はクラスタ内 FQDN で書く。** 接続を張るのは Job の Pod ではなく **keda 名前空間の operator** なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」ではなく「いつまでもスケールしない」**になる（kind で実測）。
+**postgresql トリガの接続先はクラスタ内 FQDN で書く。** 接続を張るのは Job の Pod ではなく **keda 名前空間の operator** なので、同じ名前空間のつもりで短い Service 名を書くと解決されない。このとき ScaledJob は `Ready=False / ScaledJobCheckFailed` のまま Job を一度も起こさず、**症状は「KEDA が壊れた」ではなく「いつまでもスケールしない」** になる（kind で実測）。
 
 site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/README.md) のハーネスが機械判定する（判定 5 / 3）。**接続先の FQDN には判定が無い** --- 症状はスケールしないことなので判定 2 / 3 / 5 の赤として現れるが、原因を名指しはしない。
 
@@ -274,7 +274,7 @@ SIGTERM を受けてから猶予内に終わったジョブは完走する。実
 
 `--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に効く。**0 以下は起動エラー**、そして **worker ロールを持たないプロセスでの指定も起動エラー**である。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を黙って無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
 
-**0 は「無制限」ではなく「待たない」**である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
+**0 は「無制限」ではなく「待たない」** である。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
 `terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。**drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て**実行中の job は `running` のまま残る。
 

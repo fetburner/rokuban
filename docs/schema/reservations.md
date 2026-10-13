@@ -62,7 +62,7 @@ CREATE INDEX ON reservations (rule_id);
 
 予約の状態は API 層（`internal/api/handler.go` の `reservationState`）が読むたびに計算して返す。`active` / `detached` は `(rule_id, base)` から導出する。
 
-`orphaned` は **「この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか」**から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
+`orphaned` は 「**この予約の放送イベントに `never_scheduled_events` の欠測行があり、かつ同じイベントの `recordings` 行が 1 つも無いか**」から導出する。判定に使うのは `GetReservationFull` / `ListReservationsFull` の `never_recorded` 列である。
 
 **「schedule が観測されなかった」は `epg_last_seen_at` のようなタイムスタンプからは導出できない** --- 観測側が事実として欠測行を書く必要がある。予約行の結合には、不安定な導出 id ではなく放送イベント `(site, network_id, service_id, event_id)` を使う。これは不変条件 9 の identity であり、`internal/db/queries/reservations.sql` のコメントが権威である。
 

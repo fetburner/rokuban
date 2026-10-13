@@ -103,7 +103,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 - ⑤ Escape で閉じ、クリック元セルへフォーカスが戻る
 - ⑥ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
 
-**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の「trigger or previously focused element」）に任せている。**controlled Dialog（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、このページ側で `finalFocus` を自作する必要は無い。自作すると、ボタンのクリックで focus を移さない macOS/iOS Safari で `document.body` を掴んでしまい、既定より悪化する。
+**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の「trigger or previously focused element」）に任せている**。controlled Dialog（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、このページ側で `finalFocus` を自作する必要は無い。自作すると、ボタンのクリックで focus を移さない macOS/iOS Safari で `document.body` を掴んでしまい、既定より悪化する。
 
 API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。
 
