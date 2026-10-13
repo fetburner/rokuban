@@ -135,7 +135,7 @@ CREATE TABLE rule_sites (
   - **未解決: 免除を作成側にも届かせる（複製元を受け取る）か、フォーク時に web が「レジストリに無い site」を見せて明示的に外させるか**。どちらも API / UI の形を決める判断なので書き込み時照合と同じ PR では決めない（黙って落とす選択だけは取らない —— 絞り込みが無音で全サイトへ反転する）
 - **空文字列の拒否を `items.minLength: 1` にしない**。このリポジトリには OpenAPI のリクエスト検証ミドルウェアが無い（`kin-openapi` 系の依存は無し、`minLength` は `openapi.yaml` 全体で 0 件）。スキーマに書いた制約を強制する主体が居ない。強制できるのは `validateRuleSites` だけであり、保存済み名の免除もスキーマでは表現できない。そこで同じフィールドの検証権威を 2 つに割らず、ハンドラ 1 箇所に集める（`openapi.yaml` の description は 400 になる条件の記述に留める）
 
-- **`reservations.rule_id` が持つのは勝者ルールのみ**。負けたルールは記録しない。予約を引くクエリは `DeleteReservationsByRuleWithoutIntent` と `CountReservationsByRuleWithIntent`（`internal/db/queries/rules.sql`）である。どちらも勝者の `reservations.rule_id` で引くので、負けたルールを削除しても無効化しても予約は 1 行も変わらない。全マッチの逆引きが必要になれば、enabled ルールを `rulequery.MatchProgramIDsForRule` で回せば同じ集合が作り直せる（ruler が毎パスやっている計算そのもの）
+- **`reservations.rule_id` が持つのは勝者ルールのみ**。負けたルールは記録しない。ルールの削除・無効化は、予約を 2 つのクエリで引く（`internal/db/queries/rules.sql`）。`DeleteReservationsByRuleWithoutIntent` と `CountReservationsByRuleWithIntent` で、どちらも勝者の `reservations.rule_id` で引く。そのため、負けたルールを削除しても無効化しても予約は 1 行も変わらない。全マッチの逆引きが必要になれば、enabled ルールを `rulequery.MatchProgramIDsForRule` で回せば同じ集合が作り直せる（ruler が毎パスやっている計算そのもの）
 
 <details><summary>根拠</summary>
 
