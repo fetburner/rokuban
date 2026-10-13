@@ -20,7 +20,9 @@
 // - 見出しは祖先の見出しも渡す（読み手は索引から見出しを辿って来る）。祖先の節の本文は渡さない
 //
 // 問いを置く節: 自身の本文（子の節・<details>・コードブロックを除く）が LEAD_CHARS 字を
-// 超える節すべて。これ以下の節は冒頭がほぼ全文になり、このテストでは何も測れない。
+// 超える節すべて。これ以下の節は全文を読んでも負担が小さいので問わない（段落が複数あれば
+// 冒頭は全文にならず、測れないわけではない）。種の問いは issue の指定で対象の ### 節すべてに
+// 置いたので、この基準以下の節にも問いがある。
 // `--missing <doc...>` が、この基準を満たすのに問いが無い節を列挙する。本文タスクは
 // その一覧に問いを足す。
 //
@@ -30,12 +32,12 @@
 // 答えさせ、書かれていなければ「書かれていない」と答えさせる。採点器には抜粋を見せず、
 // 回答と要点だけを突き合わせる。判定の根拠を回答に限るためである。
 //
-// 揺れ: 同じ問いを `--runs` 回（既定 3）回し、多数決で判定する（同数は FAIL）。2026-10-13 の
-// main で種の問い 17 問を 3 回ずつ 2 巡したところ、3 回の結果が割れたのは 34 組中 1 組
-// だった。多数決後の判定は 2 巡で全問一致した。要点を結論の文に絞っても割れは 0 に
-// ならなかったので、要点の書き方だけでは抑えず多数決にする。要点に括弧書きで条件を
-// 足すと、結論は読めているのにその条件だけで毎回落ちた（3 回とも FAIL なので多数決では
-// 消えない）。要点は結論だけを書く。
+// 揺れ: 同じ問いを `--runs` 回（既定 3）回し、多数決で判定する（同数は FAIL）。2026-10-13 に
+// 現行の 17 問を 3 回ずつ 3 巡回した（2 巡は main、1 巡は「設計」だけ書き直した一時コピー）。
+// 3 回の結果が割れた組は 51 組中 0 組だった。要点を直す前の版では 34 組中 1 組が割れた。
+// 抜粋に無い言い換え（原因ではなく帰結）でも要点を満たせた問いである。割れは要点の書き方で
+// 減るが、0 になる保証は無いので多数決を残す。要点に括弧書きで条件を足すと、結論は読めて
+// いるのにその条件だけで 3 回とも落ちた（多数決では消えない）。要点は結論だけを書く。
 //
 // CI には入れない。`claude` の認証が要り、実行ごとに費用がかかり、結果が非決定的なので、
 // 赤くなっても原因がコードの変更とは限らない。本文の書き直しの前後に手で回す。
@@ -50,7 +52,7 @@
 import { spawn } from 'node:child_process'
 import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 
@@ -197,15 +199,22 @@ function loadQuestions(files, root) {
   })
 }
 
+function questionFiles() {
+  return readdirSync(questionsDir)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => join(questionsDir, name))
+}
+
 function listMissing(docs, root) {
   const asked = new Set(
-    readdirSync(questionsDir).flatMap((name) => {
-      const set = JSON.parse(readFileSync(join(questionsDir, name), 'utf8'))
+    questionFiles().flatMap((path) => {
+      const set = JSON.parse(readFileSync(path, 'utf8'))
       return set.questions.map((q) => `${set.file}\0${q.heading}`)
     }),
   )
   let count = 0
-  for (const doc of docs) {
+  for (const arg of docs) {
+    const doc = relative(root, resolve(root, arg))
     for (const s of parseSections(readFileSync(join(root, doc), 'utf8'))) {
       if (proseLength(s) > LEAD_CHARS && !asked.has(`${doc}\0${s.title}`)) {
         console.log(`${doc}\t${s.path.join(' > ')}\t${proseLength(s)} 字`)
@@ -229,9 +238,10 @@ async function main() {
   if (values.missing) return listMissing(positionals, resolve(values.root))
 
   const runs = Number(values.runs)
+  if (!Number.isInteger(runs) || runs < 1) throw new Error(`--runs は 1 以上の整数: ${values.runs}`)
   const files = positionals.length
     ? positionals.map((p) => resolve(p))
-    : readdirSync(questionsDir).map((name) => join(questionsDir, name))
+    : questionFiles()
   const questions = loadQuestions(files, resolve(values.root))
 
   const cwd = mkdtempSync(join(tmpdir(), 'docs-reading-'))
