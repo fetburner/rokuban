@@ -56,6 +56,7 @@ import { parseArgs } from 'node:util'
 
 const MODEL = 'claude-sonnet-5-5'
 const LEAD_CHARS = 300
+// 6 並列で 102 回の呼び出しを 2 本同時に流しても失敗しなかった（2026-10-13）。
 const CONCURRENCY = 6
 
 const scriptDir = dirname(fileURLToPath(import.meta.url))
@@ -196,7 +197,7 @@ function loadQuestions(files, root) {
   })
 }
 
-function listMissing(docs) {
+function listMissing(docs, root) {
   const asked = new Set(
     readdirSync(questionsDir).flatMap((name) => {
       const set = JSON.parse(readFileSync(join(questionsDir, name), 'utf8'))
@@ -205,7 +206,7 @@ function listMissing(docs) {
   )
   let count = 0
   for (const doc of docs) {
-    for (const s of parseSections(readFileSync(join(repoRoot, doc), 'utf8'))) {
+    for (const s of parseSections(readFileSync(join(root, doc), 'utf8'))) {
       if (proseLength(s) > LEAD_CHARS && !asked.has(`${doc}\0${s.title}`)) {
         console.log(`${doc}\t${s.path.join(' > ')}\t${proseLength(s)} 字`)
         count++
@@ -225,7 +226,7 @@ async function main() {
       missing: { type: 'boolean', default: false },
     },
   })
-  if (values.missing) return listMissing(positionals)
+  if (values.missing) return listMissing(positionals, resolve(values.root))
 
   const runs = Number(values.runs)
   const files = positionals.length
