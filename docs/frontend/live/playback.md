@@ -51,7 +51,7 @@ hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ
 
 そのため `playing` を一度でも観測したかを持ち、`hasStarted && paused` のときだけ抑止する。再開後も配信が止まっていれば `waiting` が再送される。実測は pause@6.05s → play@12.05s → waiting@12.05s である。
 
-判定手段は `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件である。内訳は `error` で出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で出さない / 猶予中の `pause` で出さない、である。さらに再生前の `stalled` では出す / 再開後に復帰していなければ再び出す、も見る。
+判定手段は `live-player.test.tsx` の「ネイティブ経路のメディア失敗」である。内訳は `error` で出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で出さない / 猶予中の `pause` で出さない、である。さらに再生前の `stalled` では出す / 再開後に復帰していなければ再び出す、も見る。
 
 実 WebKit では 404 と無応答の両方でエラー表示と再読み込みが出る。e2e は `play()` を呼ばないため、再生前の窓を塞がないことも同時に見ている。
 
@@ -62,7 +62,7 @@ hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ
 - `error` と猶予経過でエラーを出す: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
 - 猶予中の `playing` / `pause` と、一時停止中の `stalled` では出さない: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
 - 再生前の `stalled` では出し、再開後に復帰していなければ再び出す: `live-player.test.tsx`「ネイティブ経路のメディア失敗」
-- hls.js 経路では `stalled` を拾わない: `live-player.test.tsx`（1 件）
+- hls.js 経路では `stalled` を拾わない: `live-player.test.tsx`
 - 実 WebKit で 404 と無応答の両方にエラー表示と再読み込みが出る。`play()` を呼ばないので再生前の窓を塞がないことも見る: `web/e2e/live.mjs` ⑦
 
 </details>

@@ -6,13 +6,13 @@
 
 選択中のチャンネルは `?service=<Service.id>` に持つ。不正な値は `undefined` を**明示代入**して落とす。省略では消えない（[recordings.md](../recordings.md)「TanStack Router の `validateSearch` は無効な値を『省略』しても消えない」）。チャンネル一覧のリンクは `replace` にし、ザッピングでブラウザ履歴が積み上がらないようにする。
 
-desktop ではプレイヤーとチャンネル一覧を隣り合わせにし、映像の高さを局名・番組名・時刻の 3 行が初期 viewport に入る上限に合わせる。上限に当たった分の横幅はチャンネル一覧に回し、一覧を多段にする。高さだけを制限して動画を横に引き伸ばさない。`lg` 以上ではプレイヤー列を sticky にして、長い一覧のスクロール中も映像と番組情報を残す。sticky の `top` は居座りバナーと `PageHeader` の実測高を足し、ページのスクロール箱は 1 つに保つ。phone の縦積みは変えない。1180px 前後の配置は既存のラフを保ち、高さ上限が効く広い画面だけでプレイヤー幅を抑える。
+desktop ではプレイヤーとチャンネル一覧を隣り合わせにし、映像の高さを局名・番組名・時刻の 3 行が初期 viewport に入る上限に合わせる。上限に当たった分の横幅はチャンネル一覧に回し、一覧を多段にする。高さだけを制限して動画を横に引き伸ばさない。`lg` 以上ではプレイヤー列を sticky にして、長い一覧のスクロール中も映像と番組情報を残す。sticky の `top` は居座りバナーと `PageHeader` の実測高を足し、ページのスクロール箱は 1 つに保つ。phone の縦積みは変えない。高さ上限が効く広い画面だけでプレイヤー幅を抑える。
 
 **site も含めてチャンネルを同定する。** SI の `serviceId` 単独では network をまたぐと一意でない。Mirakurun は `networkId * 100000 + serviceId` の合成 id を使う。GR / BS / CS を混ぜる一覧では同じ `serviceId` が重なることがあるため、API は合成値を `Service.id` として返す。
 
-- 選択中ハイライト・`aria-current`・再生中チャンネルの記憶は site と `Service.id` の組で行う。 `/live` の URL は `?service=<Service.id>&site=<site>` とする。`service` の値域は `/programs` と同じ生成スキーマで検証する。
+- 選択中ハイライト・再生中チャンネルの記憶は site と `Service.id` の組で行う。 `/live` の URL は `?service=<Service.id>&site=<site>` とする。`service` の値域は `/programs` と同じ生成スキーマで検証する。
 - 初期選択は、site と `Service.id` が一致すればそれを使い、無ければ番組を持つ先頭にする。
-- 番組リストの放送中行には、予約ボタンの左に 44px の `Play` アイコンボタンを置く。行に対する動作なので、展開領域のテキストリンクにはしない。
+- 番組リストの放送中行には、予約ボタンの左に `Play` アイコンボタンを置く。行に対する動作なので、展開領域のテキストリンクにはしない。
 - 対応する録画中録画が無いときは「ライブで見る」で `/live?service=<Service.id>&site=<site>` へ進む。録画があるときだけ「追っかけ再生」で `/recordings/{recordingId}#chase` へ進む。
 
 **番組表と録画の絞り込みも network を含む厳密形式を持つ。** 高松の地上波だけを受信する実運用 mirakc では 19 サービス中の重複は 0 件だったが、この測定は GR の範囲しか覆わない。公式割当には BS `(network_id=4, service_id=101)` と 110 度 CS `(network_id=6, service_id=101)` の実例がある。そのため GR / BS / CS を混ぜる一般の構成では、`serviceId` 単独を identity にできない。
@@ -52,7 +52,7 @@ desktop ではプレイヤーとチャンネル一覧を隣り合わせにし、
 | `unknown`（取得失敗） | 「利用できるかを確認できませんでした」 |
 | `true` | ライブ視聴を有効として扱う |
 
-導線側（ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで誤った原因を主張しないため（[shell.md](../shell.md)）。画面側で状態を一つに潰すと **`live.enabled: true` のデプロイで能力 API が瞬断しただけでも「設定が無効」と表示され**、この画面が消したかった「原因にたどり着けない」を別の顔で再演する。潰した実装では画面のテスト 2 件が落ちることを確認済みである。
+導線側（ナビ）は逆に未確定を無効に倒してよい --- 黙って消えるだけで誤った原因を主張しないため（[shell.md](../shell.md)）。画面側で状態を一つに潰すと **`live.enabled: true` のデプロイで能力 API が瞬断しただけでも「設定が無効」と表示され**、この画面が消したかった「原因にたどり着けない」を別の顔で再演する。潰した実装では画面のテストが落ちることを確認済みである。
 
 **「有効」と「今すぐ見られる」は別**である。`live: true` は config の状態だけを表し、streamer が動いていない / チューナーが埋まっている場合は導線が出たままプレイリスト取得の 404 / 503 として[playback.md](playback.md)のエラー分類に出る。
 
@@ -68,6 +68,6 @@ desktop ではプレイヤーとチャンネル一覧を隣り合わせにし、
 - 導線は能力 API の `live` に一本化する: `lib/capabilities.ts`、`GET /api/capabilities`、`live.enabled`
 - `/api/` 配下の未登録パスは JSON 404 にする: `internal/api/spa.go`、`spaOrAPINotFound`
 - 真偽値ではなく 4 値で分ける: `useLiveEnabled()`、`useLiveCapability()`、`pending`、`unknown`
-- 状態を潰した実装で落ちる: `pages/live.test.tsx` の 2 件
+- 状態を潰した実装で落ちる: `pages/live.test.tsx`
 
 </details>
