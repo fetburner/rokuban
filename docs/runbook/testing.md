@@ -139,7 +139,7 @@ psql -h localhost -d $DB -tAc \
 
 1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を新しい版に変える
 2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
-3. 落ちた項目があれば、まず **mirakc 側の変更**か**rokuban の前提の誤り**かを切り分ける。`docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見る、`docker logs` でコンテナ内の `mirakc` 自体のエラーを見る、の 2 つがまず効く
+3. 落ちた項目があれば、まず **mirakc 側の変更**か**rokuban の前提の誤り**かを切り分ける。まず効くのは 2 つで、1 つは `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見ること。もう 1 つは `docker logs` でコンテナ内の `mirakc` 自体のエラーを見ること
 4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md / watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら実装を直す
 5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言（`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
 

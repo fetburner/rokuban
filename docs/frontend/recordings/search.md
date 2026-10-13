@@ -14,7 +14,7 @@ EPGStation にある「録画済みの検索」に対応する機能だが、`/s
 
 `RecordingsPageSearch`（型）・`parseRecordingsSearch`（`validateSearch`）・`buildListRecordingsParams`（→ API クエリ）はすべてここに置く。`describeRecordingsFilters`（→ 適用中の条件チップ）・`clearRecordingsFilters` も同様である。`lib/program-search.ts`（`/search` の下書き）とは意図的に分離している --- 条件モデルを共有しないので、変換ロジックを共有する理由も無い。
 
-- **チャンネルは `Service.id` で、site は `?site=` で URL と API に載せる。**`serviceId` は network をまたいで一意でないが、合成 id なら BS 101 と CS 101 を独立に選択・解除できる。**site を identity に混ぜない** --- 混ぜると「高松の録画を全部」がチャンネルの列挙でしか表せず、`service` だけが他の軸と違う意味論（3 つ組の選言）になる。軸内は OR、軸間は AND
+- **チャンネルは `Service.id` で、site は `?site=` で URL と API に載せる**。`serviceId` は network をまたいで一意でないが、合成 id なら BS 101 と CS 101 を独立に選択・解除できる。**site を identity に混ぜない** --- 混ぜると「高松の録画を全部」がチャンネルの列挙でしか表せず、`service` だけが他の軸と違う意味論（3 つ組の選言）になる。軸内は OR、軸間は AND
 - **ルールは絞り込みパネルから選ぶ。** 候補は一覧の順に並べ、選んだ `ruleId` を URL と録画一覧 API に渡す。`rules.name` は一意でないため、同名の候補だけ `#<id>` を添える。適用中のチップは一覧から名前を解決し、`ルール: <名前>` と表示する。他のチップと同じく軸名を前置する。
 - **一覧で名前を解決できないときは `ルール #N` と表示する。** ルール削除後も `?ruleId=N` の URL は残るため、選択欄にはその値を一時的な候補として足す。一覧に無い値で先頭の「問わない」へ戻さない。
 - ルール節はルールが 1 件以上あるか、`ruleId` が決まっているときだけ出す。新規インストールでルールが 0 件なら節ごと出さない（サイト節と同じ「機能しないコントロールは置かない」規律）。

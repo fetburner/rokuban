@@ -142,7 +142,7 @@ rokuban import epgstation --config config.yml --library-json library.json
    ```
 
 2. 各行について `{media_dir}/{rel_path}` を `{media_dir}/sites/{site}/{rel_path}` へ `mkdir -p` + `mv` する（同一 FS 内なので rename）。
-3. 全ファイルの `mv` が終わったら 1 トランザクションで `UPDATE media_assets SET rel_path = 'sites/' || r.site || '/' || a.rel_path` を対象行に適用する（`deleting` 状態の行も対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き実体無しと誤検出する）。
+3. 全ファイルの `mv` が終わったら 1 トランザクションで `UPDATE media_assets SET rel_path = 'sites/' || r.site || '/' || a.rel_path` を対象行に適用する。`deleting` 状態の行も対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
 4. 旧パスを指す `orphan_files` の行が残っていれば削除する（導出台帳なので次パスで作り直される）。
 5. `rokuban enqueue catalog-export` で新しい catalog 世代を書き、`rokuban catalog verify` で完成を確認する。以後 rescue は移行前の `rel_path` を持つ旧世代を選ばせないよう、確認後に旧世代を消す。
 

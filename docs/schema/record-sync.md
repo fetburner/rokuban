@@ -48,7 +48,7 @@ CREATE TABLE drop_stats (
 ```
 
 - 原本のコミット後に `ts_scan` ジョブが書く。`media_asset_ts_scans` は計測時のサイズを記録し、保持エンジンは原本の現在サイズと一致する解析記録を要求する
-- `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、`circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。値集合は `video` / `audio` / `other`（PMT に載っているが映像でも音声でもない ES。字幕・文字スーパー・データ放送はすべてここ）/ 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` / `pmt`（PAT が PMT の在り処として指した PID）。**分類できなかった PID は NULL**（空文字は永続化しない）
+- `pid_type` に CHECK は置かない。値の権威は Go 側（`internal/tsstat` の公開 const）で、`circuit_breakers.name` と同じ理由（分類の追加をマイグレーションなしでできるようにする）。値集合は `video` / `audio` / `other` / 固定 PID 名 `pat` `cat` `nit` `sdt` `eit` `tot` / `pmt`（PAT が PMT の在り処として指した PID）。`other` は PMT に載っているが映像でも音声でもない ES で、字幕・文字スーパー・データ放送はすべてここに入る。**分類できなかった PID は NULL**（空文字は永続化しない）
 - 分類は PAT → PMT の `stream_type` までで**記述子は読まない**ため、字幕と文字スーパーは区別できない（ARIB では両方 `stream_type = 0x06`）。境界の理由は[録画エンジン](../recording.md) §1「例外の境界」
 - PMT の更新（version 更新・番組の境目での PID 再割り当て）で同一 PID の分類が変わった場合は**最後に見たものを採用**する。分類の変化回数は保存しない
 

@@ -91,7 +91,7 @@ KEDA のスケーラ定義や Prometheus の `river_job` メトリクスなど�
 
 収まらなくなったら **replica を増やし、前段に `(site, networkId, serviceId)` の consistent hash を設定するだけでよい**。URL・クライアント・API は変わらない。この可逆性を保つために実装側で守るのは次の 3 点:
 
-1. **プレイリスト / セグメントの URL を固定深さにする**。前段が 1 つの nginx 変数で鍵を取り出せる形にする。OSS nginx なら `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/networks/(?<n>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$n/$sv"; }` → `hash $live_key consistent;`。可変長パスやクエリ文字列に鍵を置くと書けない（ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは未検証）
+1. **プレイリスト / セグメントの URL を固定深さにする**。前段が 1 つの nginx 変数で鍵を取り出せる形にする。OSS nginx なら `map` で鍵を取り出し、`hash $live_key consistent;` で振り分ける。`map` は `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/networks/(?<n>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$n/$sv"; }` と書く。可変長パスやクエリ文字列に鍵を置くと書けない（ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは未検証）
 2. **同時セッション上限はプロセスローカルであることを前提にする**。グローバルな天井はチューナー数であり、その裁定者は mirakc である。「アプリが握る唯一のグローバル上限」を作ると、レプリカを増やした瞬間に嘘になる
 3. **セッション数のメトリクスは per-process gauge にする**。Prometheus 側で sum する。1 Pod の値を全体として読む UI を作らない
 

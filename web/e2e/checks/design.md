@@ -36,11 +36,11 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 - 合否（exit code）。以下をすべて実画素・実描画で判定する:
   - サイドバーの現在地の塗りと、そのリンクに出る 2px フォーカスリングが、ライト / ダークともページの地と 3:1 以上か。PNG の実画素を測り、現在地のリングは 2px のオフセットでページ地に出ることも見る
   - 共通 Button の focus-visible リングがライト / ダークともページ地と 3:1 以上か。PNG のリング画素そのものを測るため、`ring-ring/50` への退行も検出する
-  - 状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・**WCAG コントラスト**（文字は 4.5、面と線は 3 が下限）。`bg-muted` 系の淡い面に乗る文字は、塗り・`/80` の sticky 日付見出し・`/30` の録画詳細パネルに加えて **hover 中の面**（一覧の行の `hover:bg-muted/40`）まで測る --- Lighthouse は hover を測らないので、監査に出ない面はここでしか押さえられない（下限を割ったものは除外せず、通常の失敗として扱う）。選択モードで選んだ行も同じ `bg-muted/40` を敷くが、こちらは常時見えるので測る
+  - 状態色（塗りか文字か / 赤か琥珀か）・地の無彩性・**WCAG コントラスト**（文字は 4.5、面と線は 3 が下限）。`bg-muted` 系の淡い面に乗る文字は、塗り・`/80` の sticky 日付見出し・`/30` の録画詳細パネルに加えて **hover 中の面**（一覧の行の `hover:bg-muted/40`）まで測る。Lighthouse は hover を測らないので、監査に出ない面はここでしか押さえられない（下限を割ったものは除外せず、通常の失敗として扱う）。選択モードで選んだ行も同じ `bg-muted/40` を敷くが、こちらは常時見えるので測る
   - **和文が実際に Noto Sans JP、英数字が実際に Geist で描画されているか**を見る。CDP `CSS.getPlatformFontsForNode` に番組リストの行（`li[data-program-id]`）を渡し、その実使用フォントを読む。`main` や `body` のようなブロック要素だけを子に持つノードを渡すと常に空配列が返るため使えない。`getComputedStyle().fontFamily` は指定文字列を返すだけで実描画の保証にはならない。あわせて**和文まじりの文字列でも tabular-nums が実際に等幅を作っているか**を DOM の実測幅で見る（`docs/frontend/stack.md`「フォントは英数字と和文で 2 書体を使い分ける」）
 - シリーズ一覧（`/series`）の格子とリスト（①-B）。360px のモバイルと 2560px のデスクトップで実測する。格子が 2 列 / 4 列・リストが 1 列になること、サムネイルが 16:9（誤差 0.01）であること、横にはみ出さないこと。画像が無いときの代替表示が `bg-muted` の塗りで走査線でないこと、メタが 14px であること。サムネイルを 16:9 でなくすると（`h-16 w-28` に戻す）リストの 2 判定が落ちることを確認した。
 - 色以外にも、jsdom では原理的に測れないキーボード到達性を 1 件持つ。録画一覧の行リンクを Enter で開いて詳細（`/recordings/$id`）へ遷移し、詳細で Tab 走査だけで `<video>` へ到達すること（視聴は詳細ページに寄せる）。 `<video>` に `tabIndex` を明示すると（jsdom の focus spy では検出できない形で）Tab 走査から外れてしまう退行が M5-4（issue #227）で実際に一度起きたため、ここで実ブラウザから固定している
-- 共通 `Button` のフォーカスリング（`:focus-visible` の `ring-3` = box-shadow、および `border-ring` = 1px 罫線の border-color）が遷移**しない**こと。`transition-all` は CSS が実際に発火するかどうかまでは jsdom はもちろん `getComputedStyle` の 1 回読みでも確認できないため、ボタン要素に張った `transitionstart` イベント（プロパティ名つき）を実ブラウザで観測する --- box-shadow / outline* / border-*-color のいずれかが遷移対象に上がったら NG（border-color だけを見落としたレビュー指摘が実際にあったため、ロングハンド込みで前方一致を掛けている）。
+- 共通 `Button` のフォーカスリング（`:focus-visible` の `ring-3` = box-shadow、および `border-ring` = 1px 罫線の border-color）が遷移**しない**こと。`transition-all` で CSS が実際に発火するかどうかは、jsdom はもちろん `getComputedStyle` の 1 回読みでも確認できない。そこでボタン要素に張った `transitionstart` イベント（プロパティ名つき）を実ブラウザで観測する。box-shadow / outline* / border-*-color のいずれかが遷移対象に上がったら NG とする。border-color だけを見落としたレビュー指摘が実際にあったため、ロングハンド込みで前方一致を掛けている。
 
   同じ手で両方向を確認する。hover の背景色の遷移が従来どおり起きること。押下フィードバック（`active:...:translate-y-px`。Tailwind v4 では `translate` プロパティにコンパイルされる）が遷移し**続ける**こと。
 - 接続断バナー（`components/connection-banner.tsx`、issue #456）の地が無彩か。 `/api/events` は明示のスタブを持たず catch-all（200 json）に落ちるので、Content-Type 不一致で SSE が即座に失敗し、追加の配線なしで「切断中」を作れる。`disconnectedBannerDelayMs`（10 秒）分は実時間で待つ
@@ -49,7 +49,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 
   未フォーカスの sr-only スキップリンクは既存の Tab 後計測で扱う。日付セル・チャンネル候補・行主操作・ライブチャンネルは別途 44px 高、モバイルナビは幅44px・高さ56pxを、#729 のトースト action は 32px、close は 28px を個別に固定する。全面リンク等の意図的な重なりがあるため、間隔に全画面一律の閾値は置かず、配置の意味は `docs/frontend/reservations.md` に従う
 - モバイルの「その他」ポップオーバー（`components/app-shell.tsx` の `MoreMenu`）を開いた状態の判定。固定されたボトムバーの上に浮くオーバーレイなので、はみ出し・重なりは jsdom（`app-shell.test.tsx`）では原理的に測れない。ここで実測するのは 3 点: ボトムタブが常に 4 個か / 開いたポップオーバーがビューポート内に収まるか / ポップオーバーがトリガーの上端より上に出るか（バーの下に隠れていないか）。開いた状態のショットも `more-menu-open-*.png` として出る
-- `prefers-reduced-motion: reduce` で主要な動き（Skeleton の `animate-pulse`・ポップオーバーの `slide-in-from-*`/`zoom-in-95`・共通 `Button` の `translate` 遷移）が縮退し、既定（`no-preference`）では従来どおり動くこと。**両方向**を見る --- 縮退側だけの判定は、動きを恒久的に殺した実装も通してしまう。Playwright の `reducedMotion` コンテキストオプションで OS 設定をエミュレートし、実要素の `getComputedStyle().animationDuration` / `transitionDuration` を実測する（jsdom は matchMedia も CSS の適用も測れない）
+- `prefers-reduced-motion: reduce` で主要な動きが縮退し、既定（`no-preference`）では従来どおり動くこと。主要な動きは Skeleton の `animate-pulse`・ポップオーバーの `slide-in-from-*`/`zoom-in-95`・共通 `Button` の `translate` 遷移である。**両方向**を見る --- 縮退側だけの判定は、動きを恒久的に殺した実装も通してしまう。Playwright の `reducedMotion` コンテキストオプションで OS 設定をエミュレートする。そのうえで実要素の `getComputedStyle().animationDuration` / `transitionDuration` を実測する。jsdom は matchMedia も CSS の適用も測れない
 
 判定の設計で外してはいけない点が 2 つある。
 
@@ -100,9 +100,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 - ② カード表示が本当に段組みになり（1 行目に 2 枚以上）、サムネイルの枠が行表示より広い。**列数もサムネイルの実寸も jsdom では 0 のまま**なので、グリッドのクラスが当たっていない退行はここでしか出ない
 - ③ 検索を押すと条件が `?cond=` に載り、リロードで条件と結果の両方が戻る。リロード後に走る検索が **1 回だけ**であること（URL のハイドレーションとフォームの初期化で二重に叩く退行の検出）
 - ④ 条件なしで `/search` を開くと、前回の条件はフォームに戻るが**検索は走らない**（未検索の案内が出たまま）
-- ⑤ 録画詳細で実 `<video>.playbackRate` を 1.5 に変え、標準 controls と同じ `ratechange` 経路で保存されること、一覧を経由して別の録画の詳細へ移っても実 `<video>.playbackRate` が 1.5 のままなこと。**測っているのは「速度変更イベントが端末に保存され、録画をまたいで実 `<video>` に載る」こと**で、`savePlaybackRate` を no-op にする変異では保存待ちが失敗し、保存値の適用を外す変異では次の録画の `<video>.playbackRate` 判定が失敗する。
+- ⑤ 録画詳細で実 `<video>.playbackRate` を 1.5 に変え、標準 controls と同じ `ratechange` 経路で保存されること。一覧を経由して別の録画の詳細へ移っても、実 `<video>.playbackRate` が 1.5 のままなこと。**測っているのは「速度変更イベントが端末に保存され、録画をまたいで実 `<video>` に載る」こと**である。`savePlaybackRate` を no-op にする変異では保存待ちが失敗し、保存値の適用を外す変異では次の録画の `<video>.playbackRate` 判定が失敗する。
 
-  **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる effect の依存漏れ）はここでは踏めない** --- 現在の UI では必ず一覧を経由し、`RecordingPlayer` が新規マウントして localStorage から読み直すため。その退行を捕まえているのは `src/components/recording-player.test.tsx` の `rerender` を使う jsdom テスト（実測で確認済み）
+  **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる effect の依存漏れ）はここでは踏めない**。現在の UI では必ず一覧を経由し、`RecordingPlayer` が新規マウントして localStorage から読み直すためである。その退行を捕まえているのは `src/components/recording-player.test.tsx` の `rerender` を使う jsdom テスト（実測で確認済み）
 
 一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` はサイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を測ってしまう（実際に踏んだ）。
 

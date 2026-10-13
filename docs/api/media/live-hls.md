@@ -30,7 +30,7 @@
 - **idle GC は packager 側に移り、下限は約 30 秒になる。** 最後の要求から publisher が止まるまで、既定では約 60 秒かかる。`hlsMuxerCloseAfter` と `runOnDemandCloseAfter` を 1 秒に詰めても約 32 秒である（HLS セッションの inactive 判定が支配的）。現行の `idle_timeout`（既定 30 秒）と同等である
 - **未解決: 離脱ヒントの猶予（`3 × segment_seconds + 2s` = 8 秒）に相当するものが MediaMTX に無い。** ヒントを受けた rokuban が publisher を止める経路を作れるかは未検証である。作れなければ、チューナーが 1 本のサイトでは切り替えのたびの解放が 8 秒から約 30 秒へ伸びる
 - **`/live/segments/` の実パスは契約ではない。** hls.js も VLC もプレイリスト URL からの相対解決しかしないので、外から見える契約はプレイリスト URL だけである。現行の `segments/<name>` は ffmpeg の `-hls_base_url` が書く値で、クライアントは組み立てない。MediaMTX の LL-HLS も `init.mp4` / `*_partN.mp4` / `*_segN.mp4` をプレイリストと同じディレクトリの相対 URI で書く
-- **前段はプレイリストだけでなく全要求の接頭辞を写す。** 相対 URI は、クライアントが要求した `.../live/` の下で解決される。そのため前段は全要求の接頭辞 `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/` を、MediaMTX のパス `live/{site}/{networkId}/{serviceId}/` へ書き換える。加えて `playlist.m3u8` を `index.m3u8` へ写す。試作では計器自身が立てた同一オリジンのリバースプロキシがこの写しを担い、実 Chrome + hls.js が 30 分再生できた
+- **前段はプレイリストだけでなく全要求の接頭辞を写す。** 相対 URI は、クライアントが要求した `.../live/` の下で解決される。そのため前段は全要求の接頭辞を、MediaMTX のパスへ書き換える。接頭辞は `/api/sites/{site}/networks/{networkId}/services/{serviceId}/live/` である。書き換え先は `live/{site}/{networkId}/{serviceId}/` である。加えて `playlist.m3u8` を `index.m3u8` へ写す。試作では計器自身が立てた同一オリジンのリバースプロキシがこの写しを担い、実 Chrome + hls.js が 30 分再生できた
 - **プロファイルはパスを分ける。** 1 パスに映像 2 本を publish しても、MediaMTX は 2 本目を `skipping track 3 (H264)` として捨て、ABR の master を書かない（実測）。 `?profile=` の選択を保つには、プロファイルごとのパスと、それを束ねる master の書き手が要る
 - **未解決: 音声レンディションと字幕。** 試作では音声 2 本が rendition として master に載った。上記の契約（標準 / 主 / 副の 3 本、`captions: true` の WebVTT 字幕）を MediaMTX の経路でどう満たすかは未測定である
 - **未解決: MediaMTX の LL-HLS はセッション ID を URI のクエリに載せる**（`?session=<uuid>`）。master が書く variant の URI（`video1_stream.m3u8?session=…`）にも載る。つまり hls.js が取り直し続ける variant の URL が session を握る。MediaMTX の再起動・ハッシュの担当移動・idle GC の後に、未知の session を持つ variant 要求へ MediaMTX が何を返すかは未検証である。404 なら下記「資源同定」が塞いでいる「セッション ID を握ったクライアントが 404 で詰む」経路そのものになり、この形は採れない
@@ -47,7 +47,7 @@
 
 **パスの id 空間は一覧 API に揃える。** `{networkId}` / `{serviceId}` は `GET /api/sites/{site}/services` と同じ SI の値である。mirakc が要求する Mirakurun 合成 service id（`networkId * 100_000 + serviceId`）は streamer 側で変換する。
 
-- **同じ URL 階層に 2 つの id 空間を同居させない。**`services/{serviceId}` が一覧では SI の値、ライブでは合成 id を指す状態は、将来 `GET /api/sites/{site}/.../services/{serviceId}` を足したときにどちらの空間か決められなくする。API の資源同定は差し替えコストが最も高い先払いなので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
+- **同じ URL 階層に 2 つの id 空間を同居させない**。`services/{serviceId}` が一覧では SI の値、ライブでは合成 id を指すとする。すると将来 `GET /api/sites/{site}/.../services/{serviceId}` を足したとき、どちらの空間か決められない。API の資源同定は差し替えコストが最も高い先払いなので、読者が 1 つ（同梱 SPA）しかいない今のうちに払う
 - **mirakc の id 規則を Rokuban の一番外側に置かない。**合成 id は mirakc / Mirakurun の内部規則であり、変換を web に置くと同じ規則の実装が Go と TypeScript に二重化する。URL は永続テーブルより差し替えが高いので、mirakc 固有の概念を置く場所として最悪である。
 - **`serviceId` 単独では鍵にならない。**SI の service_id は network をまたぐと一意でない（Mirakurun が合成 id を発明した理由そのもの）。宛先を SI の値で名指しするなら `networkId` も URL に要る --- 放送イベントを `(site, network_id, service_id, event_id)` で引く場合と同じ形
 
@@ -99,10 +99,10 @@ POST /api/sites/{site}/networks/{networkId}/services/{serviceId}/live/leave
 
 画質セレクタが出すのは `config.live.profiles` の名前である。その公開面は **`GET /api/live-profiles`** に置く（`LiveProfileSummary { name, height? }`）。
 
-- **`GET /api/capabilities` の `live` を object にしない。** あちらの規律は「返すのは真偽値だけで、config のキー名・値は載せない」（`ListEncodeProfiles` / `ListSites` と同じ）であり、一覧は「何が選べるか」、`live` は「導線を出してよいか」という別の問いである。畳むと `lib/capabilities.ts` の 4 値判定（`pending` / `unknown` / `enabled` / `disabled`）の派生が濁る
-- **載せるのは `name` と表示用の `height` だけ。** `video_codec` / `crf` / `qp` / `preset` / `extra_args` / ffmpeg パスは出さない --- 出すとフロントがそれを再現する形に育つ（`EncodeProfileSummary` と同じ規律）。`height` は実際の出力高で、0 または省略は「スケールしない」
+- **`GET /api/capabilities` の `live` を object にしない**。 あちらの規律は「返すのは真偽値だけで、config のキー名・値は載せない」（`ListEncodeProfiles` / `ListSites` と同じ）であり、一覧は「何が選べるか」、`live` は「導線を出してよいか」という別の問いである。畳むと `lib/capabilities.ts` の 4 値判定（`pending` / `unknown` / `enabled` / `disabled`）の派生が濁る
+- **載せるのは `name` と表示用の `height` だけ**。 `video_codec` / `crf` / `qp` / `preset` / `extra_args` / ffmpeg パスは出さない --- 出すとフロントがそれを再現する形に育つ（`EncodeProfileSummary` と同じ規律）。`height` は実際の出力高で、0 または省略は「スケールしない」
 - **順序が既定の根拠である。** 先頭が `?profile=` を省略したときの既定（`LiveConfig.profile` と同じ決め方）で、フロントは並びを変えない
-- **`live.enabled` は見ない。** 返るのは `config.live.profiles` の写しで、**無効なデプロイでも profiles が書かれていれば返る**（`config.compose.yml` は `enabled: false` と `profiles` を並べて出荷している）。有効かどうかは `GET /api/capabilities` の `live` の問いである --- ここで無効を空配列に潰すと、同じ config の状態を 2 箇所で判定することになる。未定義なら空配列（`null` ではない）
+- **`live.enabled` は見ない**。 返るのは `config.live.profiles` の写しで、**無効なデプロイでも profiles が書かれていれば返る**（`config.compose.yml` は `enabled: false` と `profiles` を並べて出荷している）。有効かどうかは `GET /api/capabilities` の `live` の問いである --- ここで無効を空配列に潰すと、同じ config の状態を 2 箇所で判定することになる。未定義なら空配列（`null` ではない）
 - **未知の名前は 400。** `?profile=` が空なら既定（先頭）に落ちるが、一覧に無い名前は `unknown live profile` を返す（セッションを起こす前に拒否する）。フロントは一覧に照らして先に落とすので、この 400 は直リンク・手書き URL の受け皿になる
 
 **ロール分割で api と streamer に別の config を配る構成では、この一覧と実際に配られるプロファイルがずれる。** ずれを検出する手段は無い。一覧は api が読む config から作り、実際に配るのは streamer である。したがって**「一覧にあるから見られる」とは言えない**（下界主義。[data.md](../../data.md) §6.5 と同じ規律）。
@@ -168,7 +168,7 @@ master から参照される variant playlist（映像・音声）と字幕 play
 - **並び順が UI との契約である。** グループ内の 0 = 標準 / 1 = 主 / 2 = 副で選ぶ。master の `NAME` は ffmpeg が `audio_<n>` で固定し、n はプロファイル数でずれる
 - **ライブの playlist には `EXT-X-PROGRAM-DATE-TIME` を付ける。** 無いと hls.js は、ライブの窓（`playlist_size` × `segment_seconds`）より後で前に聴いた音声へ戻ったときに止まる。
 - **追っかけの EVENT playlist には PDT を付けない。** segment を消さず窓もスライドしないため、PDT が無くても各トラックを 15 秒聴いて戻れる。hls.js が位置を揃える仕組みは未測定である。
-- **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ。** 1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
+- **captions 無効時はプロファイル別の出力のまま、各出力が自分の master を持つ**。 1 つの master にまとめると `hls_time` が 1 つになり、プロファイルごとの `segment_seconds` が書けなくなる（captions 有効時はそのため同一値を要求している）
 - **追っかけ再生は画質を `?profile=` で選ぶ。** セレクタは `/recordings/$id?liveProfile=<name>#chase` に置き、一覧 API の名前を streamer へ渡す。画質切替は `(recordingID, offset)` のセッションを共有し、別 playlist を取得するだけである。再生位置は profile によらず原本時間軸で保存する。
 - **追っかけ再生は音声 rendition も視聴者ごとに選べる。** 追っかけも profile 別 master から標準 / 主 / 副の 3 rendition を選ぶ。`/recordings/$id?audio=main|sub#chase` に選択を保持し、HLS URL と共有セッションは変えず rendition だけを切り替える。EVENT は過去の segment を保持するため、同じ session 内の seek と offset 再開も続けられる。
 - **ライブの `extra_args` / `input_extra_args` では `-an` `-vn` `-sn` `-map` を拒否する。** ストリームの並びは `-var_stream_map` が持つ。並びを変えると ffmpeg が起動時に落ちる

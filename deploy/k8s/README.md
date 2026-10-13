@@ -72,7 +72,7 @@ kubectl rollout status deployment/rokuban-api
 **この順序に意味がある。**
 
 - **`kubectl apply` は Job と Deployment を同時に起こす。** api の `/readyz` は DB への ping しか見ず、スキーマの有無は見ない。待ち合わせを挟まないと、migration の完了前に api がまだ無いテーブルを引く（未検証）
-- **Job の `spec` は immutable。** Job が残っている状態（実行中、または完走後 `ttlSecondsAfterFinished: 3600` の窓の内側）で apply すると、**Job だけが `field is immutable` で失敗し、Deployment は成功する。** 未マイグレートの DB に新しい api が乗る形になるので、先に `delete --ignore-not-found` する。TTL を 1 時間にしてあるのは、失敗したマイグレーションのログを朝まで残すため
+- **Job の `spec` は immutable**。Job が残っているのは、実行中か、完走後 `ttlSecondsAfterFinished: 3600` の窓の内側である。この間に apply すると、**Job だけが `field is immutable` で失敗し、Deployment は成功する**。未マイグレートの DB に新しい api が乗る形になるので、先に `delete --ignore-not-found` する。TTL を 1 時間にしてあるのは、失敗したマイグレーションのログを朝まで残すため
 
 ## 覚えておくこと
 
@@ -81,7 +81,7 @@ kubectl rollout status deployment/rokuban-api
 - **env で渡すのは機微情報だけ**（`${POSTGRES_PASSWORD}` の 1 つ）。それ以外の環境差は overlay で patch を当てる
 - **Pod ごとに違うのは argv だけ。** キューの絞り込みも argv（`--queues`）に寄せてある。config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増えるため。**共有する config.yml に `worker.queues` を書くと、 `--queues` を渡している worker が全部起動エラーになる**（両方指定は排他）
 - **worker の Job は 1 件消化して自分で終了する**（`--once`）。ScaledJob は Job の自己終了を前提にした機構で、常駐する `--roles worker` を載せると「0 → 1 → 0」が成立しない。`--once` は成功・失敗を問わず exit 0 なので `backoffLimit: 0` / `restartPolicy: Never` と組ませる（リトライは River が持つ）
-- **worker の `terminationGracePeriodSeconds` は drain を包む。**`preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする（[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。終了猶予はテストで固定する）。**api の値をそのまま写さないこと** --- api は River クライアントを Start しないので、足し算の後ろ 2 項が落ちている
+- **worker の `terminationGracePeriodSeconds` は drain を包む**。`preStop の sleep + 10s + --soft-stop-timeout + 10s` より長くする（[docs/operations.md](../../docs/operations.md) §5「Deployment 併用時」。終了猶予はテストで固定する）。**api の値をそのまま写さないこと** --- api は River クライアントを Start しないので、足し算の後ろ 2 項が落ちている
 - **KEDA のトリガのクエリは物理キュー名で書く。** site 束縛キューは `<論理名>_<site>` に修飾される。論理名のまま書くと**誰も入れないキューを数え続けて永久にスケールしない**（クエリと物理キュー名の一致はテストで固定する）
 - **パスワードに改行を含むものは使えない。前後の空白は落ちる**（`base/config.yml` の `password:` のコメントに実測付き）。記号（`'` `"` `\` `*` `{` `#` `: `）は通る
 - **image はロールごとに差し替えられる。** overlay の `images:` で `ghcr.io/fetburner/rokuban` を置換する（`overlays/kind` が実例）。ffmpeg を要する役（worker / site のライブ streamer）は別の image 名を書く（公式イメージは ffmpeg を含まない。`Dockerfile.full` でセルフビルドする）。共有 config の `live.enabled: true` による起動時検査を通すため、中央の streamer も full image を指すが、中央 Pod は `--sites=` なので ffmpeg を実際の要求には使わない
@@ -135,4 +135,4 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 
 - **postgres と Secret の供給はハーネス側の責務。** base はどちらも出荷しない
 - **`kubectl delete job rokuban-migrate --ignore-not-found` → apply → `kubectl wait --for=condition=complete` の順序は必須**（上記「使い方」の理由）
-- **パスワードの出どころは 1 つにする。** 突き合わせるものが無いので、ズレると症状は「api が起動しない」だけになり、どちらが正なのか分からない。`overlays/kind` は自分の secretGenerator に持っているが、ハーネスは postgres 側にも同じ値を渡す必要があるため `overlays/e2e` に Secret を置かず、`deploy/k8s/e2e/lib/env.sh` の 1 変数から run.sh が両方に配っている
+- **パスワードの出どころは 1 つにする。** 突き合わせるものが無いので、ズレると症状は「api が起動しない」だけになり、どちらが正なのか分からない。`overlays/kind` は自分の secretGenerator に持っている。ハーネスは postgres 側にも同じ値を渡す必要があるため、`overlays/e2e` に Secret を置かず、`deploy/k8s/e2e/lib/env.sh` の 1 変数から run.sh が両方に配っている

@@ -168,7 +168,7 @@ mirakc は実機ではなくモックで確認している（同 README）。全
 
 - **遅い。** 判定 2 は CronJob の**自然な発火**（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が効かない種類の待ちである。実測で `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）
 - **CI イメージに kind / KEDA / Postgres という新しい依存が増える。** さらに判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る
-- **静的に見られるぶんは既に CI にある。** キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理キュー名であること・overlay の patch が site 名を指していることは `go test ./deploy/k8s/`（`workloads_test.go`）が見る。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる
+- **静的に見られるぶんは既に CI にある**。`go test ./deploy/k8s/`（`workloads_test.go`）が見るのは次の 4 つである。キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理キュー名であること・overlay の patch が site 名を指していること。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる
 
 **回さないなら「いつ誰が回すのか」を決めておく**（誰も回さない判定手段は無いのと同じ）。
 
@@ -190,5 +190,5 @@ CI が見るのはクラスタが要らない範囲の 3 つ。`--faults` を含
 
 - **判定が全部 TODO で、しかも対象を作ったはずなのに TODO のまま**: 判定はラベル（`app.kubernetes.io/component=<役>`）と argv（`--sites <site>`）とキュー名への言及で対象を引く。`kubectl get deploy,scaledjob,cronjob -n rokuban-e2e` で、その 3 つのどれかに手掛かりが載っているか見る
 - **ScaledJob が `Ready=False / ScaledJobCheckFailed` のまま Job を起こさない**: トリガの接続先を疑う。理由は [operations.md](../operations.md) §5「worker: KEDA ScaledJob」。ログは `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い
-- **`--oracles` を中断した後、製品の Job が起きない / CronJob が止まっている**: オラクル 2〜5 は製品のワークロードを止めてから回す。身代わりと同じキューと同じ mirakc モックを共有しているためである（[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。止めた印はクラスタ側の annotation（`rokuban-e2e/paused-by-harness`）にあり、**次の `run.sh` が起動時に戻す**。手で戻すなら `kubectl -n rokuban-e2e get scaledjobs,cronjobs,deployments -o json | grep paused-by-harness` で対象を出してから、`autoscaling.keda.sh/paused` の annotation と `spec.suspend` / `spec.replicas` を戻す
+- **`--oracles` を中断した後、製品の Job が起きない / CronJob が止まっている**: オラクル 2〜5 は製品のワークロードを止めてから回す。身代わりと同じキューと同じ mirakc モックを共有しているためである（[deploy/k8s/e2e/README.md](../../deploy/k8s/e2e/README.md)）。止めた印はクラスタ側の annotation（`rokuban-e2e/paused-by-harness`）にあり、**次の `run.sh` が起動時に戻す**。手で戻すなら `kubectl -n rokuban-e2e get scaledjobs,cronjobs,deployments -o json | grep paused-by-harness` で対象を出す。次に `autoscaling.keda.sh/paused` の annotation と `spec.suspend` / `spec.replicas` を戻す
 - **クラスタを作り直したい**: `run.sh --fresh`（`--down` してから立て直す）

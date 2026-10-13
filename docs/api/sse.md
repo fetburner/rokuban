@@ -95,7 +95,7 @@ data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0
 - **背面タブでは投げない。** 復帰時は `refetchOnWindowFocus`（`main.tsx` の QueryClient 既定）が拾う
 - **SSE が再接続したとき（切断を観測した後の `open`）は全グループを invalidate する。** 切断中に飛んだ通知は再送されないので、周期を待たずに取り直す。初回接続では invalidate しない（各クエリの mount 時の取得と二重になるだけ）
 - **再接続時の invalidate だけでは足りない。** 接続を切らずに個別の通知だけ落としたケースを回復できるのは定期 invalidate の方だけ
-- 上の接頭辞に載っていないクエリ（`/api/rules` `/api/version` 等）はこの定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も同じ形で漏れている（`pages/rules.tsx` / `components/recording-detail-panel.tsx` / `pages/search.tsx` がそれぞれ取得する）が、こちらは自画面の mutation でしか変わらない前提で優先度を下げている --- 他タブ・ruler 側の変更は届かない未解決点として残る
+- 上の接頭辞に載っていないクエリ（`/api/rules` `/api/version` 等）はこの定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も同じ形で漏れている（`pages/rules.tsx` / `components/recording-detail-panel.tsx` / `pages/search.tsx` がそれぞれ取得する）。こちらは自画面の mutation でしか変わらない前提で優先度を下げている --- 他タブ・ruler 側の変更は届かない未解決点として残る
 
 **実 notifier に対する収束時間と、切断時に実際の `EventSource` が `error` → `open` をこの順で出すことは未計測**（仕様上はそうなる。再接続の経路を確かめているのはスタブの方だけ）。
 

@@ -133,7 +133,7 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 それ以外の判定（`lib.mjs` と `validate-fixtures.mjs` は共有部品）は**ローカルでの受け入れ確認**の位置づけである。[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。回さない理由は 3 類型ある。
 
-- 実メディアが要る: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio` は ffmpeg でフィクスチャを作る。`home-resume-frame` / `live` / `live-audio` は webkit も要る
+- 実メディアが要る: ffmpeg でフィクスチャを作る。対象は `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio`。`home-resume-frame` / `live` / `live-audio` は webkit も要る
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。`live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
 - 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は 63 枚のショットを撮るぶん重い
 

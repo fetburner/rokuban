@@ -23,11 +23,11 @@ E2E_URL=http://localhost:4173 pnpm e2e:sse-refresh
 
 ### 番組リストの操作列（`reserve-visibility.mjs`）
 
-番組リストの予約 / 取消 / ライブボタンを含む操作列を「ホバー / フォーカスした行・展開中の行」だけ立てる（issue #310 / #755）。判断は [docs/frontend/reservations.md](../../../docs/frontend/reservations.md) §番組リストの操作列はホバー / フォーカスした行だけ立てるに従う。**この開閉は `:hover` / `:focus-visible` / `pointer:` メディア特性で駆動するので jsdom では原理的に測れない**。jsdom はレイアウトを持たず、`getBoundingClientRect().width` は常に 0 になるためだ。`pnpm test` は「常時開いたまま」というクラス名の変異を検出できない。単体側（`program-row.test.tsx`）が見るのは `group` / `peer` マーカーと `data-testid` の配線だけで、可視性そのものはここが唯一の判定手段。
+番組リストの予約 / 取消 / ライブボタンを含む操作列を「ホバー / フォーカスした行・展開中の行」だけ立てる（issue #310 / #755）。判断は [docs/frontend/reservations.md](../../../docs/frontend/reservations.md) §番組リストの操作列はホバー / フォーカスした行だけ立てるに従う。**この開閉は `:hover` / `:focus-visible` / `pointer:` メディア特性で駆動するので jsdom では原理的に測れない**。jsdom はレイアウトを持たず、`getBoundingClientRect().width` は常に 0 になるためだ。`pnpm test` は「常時開いたまま」というクラス名の変異を検出できない。単体側（`program-row.test.tsx`）が見るのは `group` / `peer` マーカーと `data-testid` の配線だけで、可視性はここが唯一の判定手段。
 
 見るのは 4 状態である（すべて操作列の実描画幅 `getBoundingClientRect().width` を直接読む）。畳は約 0px、通常行の開は 97px、放送中行はライブボタン分を足した 141px である。どちらも `box-content` でボタン合計幅を content box として確保した上に、右 padding 16px と `border-l` の 1px が外側に乗った外寸:
 
-- ① 細ポインタ（既定の Chromium = hover:hover + pointer:fine）: ホバーもフォーカスもしていない通常行と放送中行は畳む。ホバー・`:focus-visible` でそれぞれ 97px / 141px まで開く（両方向）。あわせてホバー前後で行の高さが変わらない（CLS 無し）こと、開いている列の中でボタンが `overflow-hidden` に切られていない（`scrollWidth <= clientWidth`）こと、開いている通常行でのワンタップ予約が実際に `PUT .../intent` を飛ばすことを測る
+- ① 細ポインタ（既定の Chromium = hover:hover + pointer:fine）: ホバーもフォーカスもしていない通常行と放送中行は畳む。ホバー・`:focus-visible` でそれぞれ 97px / 141px まで開く（両方向）。あわせて次の 3 つを測る。ホバー前後で行の高さが変わらない（CLS 無し）こと。開いている列の中でボタンが `overflow-hidden` に切られていない（`scrollWidth <= clientWidth`）こと。開いている通常行でのワンタップ予約が実際に `PUT .../intent` を飛ばすこと
 - ② 細ポインタで展開すると、行ヘッダから hover / focus が外れても見えたまま（展開パネルは `.group` の外の兄弟なので `peer-aria-expanded` を pointer 種別で縛らないことで担保）。通常行の展開幅が 97px のまま、折りたたみ直すと消える
 - ③ タッチ / 粗いポインタ（hasTouch + isMobile = hover:none + pointer:coarse）: 通常行と放送中行の折りたたみ行は畳み、展開行はそれぞれ 97px / 141px まで開く。加えて外付けキーボード想定で `:focus-visible` だけでも開く（WCAG 2.4.7 / 2.4.11）
 - ④ 折りたたみ行の操作列を実座標へ `page.touchscreen.tap()` で生タップ（ロケータのアクショナビリティ判定を迂回する）しても PUT が飛ばない・トーストも出ない。**これがレビューで見つかった欠陥そのもの**である。`opacity-0` では見えない 80×56px がヒットテストに残って予約が成立していた。幅 0 + `overflow-hidden` は列そのものを畳むので飛ばない。放送中行は操作列に遷移する `<a>`（ライブボタン）が入っているため、同じ生タップの後も URL が `/programs` のままで `/live` へ遷移していないことも測る

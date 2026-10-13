@@ -55,7 +55,7 @@
 - **プロファイル未設定・全プロファイル完了済みの録画では `encodeStatus` が省略される**。そのため `EncodeStatusBadges` は何も描かない --- 機能しないキュー画面や空の進捗バーを出さない判断は、サーバー側のこの省略で表現されている。フロントはそれをそのまま描くだけでよい
 - **`failed` だけ destructive**（`bg-destructive/10` + `text-destructive`。`DropBadges` と同じ判断: 実害があるので色で目立たせる）。`queued` / `running` は `IngestBadge` と同じ `bg-muted`（状況の説明であって信号ではない。[design.md](../design.md)「色は信号のみ」）
 - **バッジにはプロファイル名を前置する**（`h264: エンコード失敗`）。事後追加で複数プロファイルを依頼した録画では「どのプロファイルが失敗したか」が言えないと運用判断に使えない（ドロップ統計の種別列と同じ判断）
-- **`queued` は「来る根拠」があるものしか出ない**（サーバー側の導出。ごみ箱の録画とプロファイル自体が丸ごと省略されるので、フロントは何もフィルタしない）。`failed` は「二度と来ない」の断定でもない --- River の既定リトライと、録画単位の恒久失敗（入力ファイルの破損など）に対する `EncodeReconcileWorker` の 15 分ごとの再投入のたびに `running` へ戻る（`queued` へは戻らない --- 試行行は成功するまで消えないので `queued` は初回試行の前だけ）。判断の詳細は [schema/recordings.md](../../schema/recordings.md) の `recording_encode_attempts` 節
+- **`queued` は「来る根拠」があるものしか出ない**（サーバー側の導出。ごみ箱の録画とプロファイル自体が丸ごと省略されるので、フロントは何もフィルタしない）。`failed` は「二度と来ない」の断定でもない。River の既定リトライのたびに `running` へ戻る。録画単位の恒久失敗（入力ファイルの破損など）でも、`EncodeReconcileWorker` が 15 分ごとに再投入するたびに `running` へ戻る。`queued` へは戻らない --- 試行行は成功するまで消えないので、`queued` は初回試行の前だけである。判断の詳細は [schema/recordings.md](../../schema/recordings.md) の `recording_encode_attempts` 節
 - ホームに出す場合は失敗録画と同じ「異常」の置き場に合わせる想定だが、本機能自体はホームへの統合を含まない --- 一覧・単体ページで沈黙と区別できれば足りるため
 - **完了・失敗の真実は引き続き REST の `encodeStatus` / `encodedAssets`。**`encode-progress` SSE は接続中だけ届く揮発テレメトリで、`running` の文言に割合を重ねるためだけに使う。durable 状態が `running` でなくなったら最後の値を破棄し、`progress=end` や 100% だけで完了を断定しない
 - **進捗はテーブルへ保存しない**。再起動後に不要な秒単位の値で WAL・dead tuple・vacuum 対象を増やさないためである。worker → PostgreSQL NOTIFY → notifier の EventHub → SSE という best-effort 経路で、最大 1 回/秒だけ運ぶ。画面を途中から開いた場合は REST 由来の `running` を先に出し、次のイベントから割合を表示する

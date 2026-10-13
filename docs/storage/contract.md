@@ -160,7 +160,7 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
 - 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替えは `thumbnails/{recording_id}.g{n}.jpg`（最初の差し替えは `.g1`）へ置く
-- 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` / `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える → commit 後に旧パスを unlink する
+- 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` / `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
 - **行は消さずに UPDATE する**。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の種類や atomic rename の実装品質をパス文字列から推測しない。

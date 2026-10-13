@@ -43,8 +43,8 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 - **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、`overlays/e2e` が毎分に patch している。**出荷値のほうは別の判定で固定している** --- 判定だけを見ていると、「判定が緑になるから」で base が毎分になったことに気付けない
 - **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている `component=streamer` は録画配信のほうである
 - **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が 1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、requests は worker 10m / 常駐 25m。**削らないと判定が `Insufficient cpu` で止まる**（実測）。ScaledJob は滞留 1 件ごとに Job を起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。出荷値は base 側にある
-- **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` / `encode_rebuild` が同じキューに載るので、長いエンコードの裏で詰まらせないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の 1 つ目を追いかけるので、2 本目が起きると**短い方を観測して**「窓の中で完走した」= TODO に化ける
-- **RWX は検証していない。** media の PVC は base では `ReadWriteMany` だが、`overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて `ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない（同じノード上のディレクトリを複数の Pod が開いているだけ）
+- **`encode` の同時実行本数は出荷値ではない**。base は 2 だが、`overlays/e2e` は 1 に絞っている。base が 2 なのは、`encode_reconcile` / `encode_rebuild` が同じキューに載るので、長いエンコードの裏で詰まらせないためである。e2e が 1 なのは、判定 3 が active な Job の 1 つ目を追いかけるからである。2 本目が起きると**短い方を観測して**「窓の中で完走した」= TODO に化ける
+- **RWX は検証していない**。media の PVC は base では `ReadWriteMany` である。`overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて、`ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない（同じノード上のディレクトリを複数の Pod が開いているだけ）
 
 **網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている**（`deploy/k8s/workloads_test.go`）。クラスタを立てずに機械判定できるのは次の 3 つ。
 
@@ -184,7 +184,7 @@ API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの
 **効くことを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことがそのまま意味なので、ここに明記しておく。
 
 - **判定 3.2（待ち行列が空になっても殺されない）には変異が無い。** ScaledJob の意味論上、KEDA はキューが空になっても実行中の Job を消さない。身代わりを壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
-- **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が無い。** 製品の worker が入ったので、両方とも実際に緑になることは確認済み（`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」だった。ただし**壊して赤くなることは確かめていない。** 判定 4 が本物のイメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、`epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで通せる
+- **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が無い**。 製品の worker が入ったので、両方とも実際に緑になることは確認済み（`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」だった。ただし**壊して赤くなることは確かめていない**。 判定 4 が本物のイメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、`epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで通せる
 
 変異イメージは**リポジトリの複製**（rsync したツリー）に当てて焼く。`git stash` は使わない --- ワークツリーは他の作業と共有されうるし、隔離 worktree と併用すると stash が互いに干渉する。変異は**コンパイルが通る形**で入れる（未使用変数でビルドが落ちると、判定が「FAIL になった」ではなく「イメージが無い」で赤くなる）。
 
@@ -211,7 +211,7 @@ ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切�
   ただし実物の worker 込みでハーネスを 1 周させた確認はまだ無い。
 
 - **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。** 判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。ところが intent の PUT が入れるのは `ruler_pass` のヒントである（`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` はその `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。`ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。しかもメッセージは「予約が mirakc に届かない … reservations=0」なので **reconciler を疑わせる**。
-- **判定 3 の producer は既定を差し替えてある**（`lib/env.sh` の `E2E_ENCODE_PRODUCER` = `lib/kube.sh` の `produce_real_encode_job`）。既定の `insert_probe_job` では緑にならない --- `e2e_probe` は実物の worker には未登録 kind なので数秒で終わり、「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる（TODO が 1 件でも `summary` は exit 2 を返す）。差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は「殺された」ではなく TODO で抜ける**:
+- **判定 3 の producer は既定を差し替えてある**（`lib/env.sh` の `E2E_ENCODE_PRODUCER` = `lib/kube.sh` の `produce_real_encode_job`）。既定の `insert_probe_job` では緑にならない。`e2e_probe` は実物の worker には未登録 kind なので数秒で終わり、「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる。TODO が 1 件でも `summary` は exit 2 を返す。差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は「殺された」ではなく TODO で抜ける**:
     - `overlays/e2e/config.yml` の `encode.profiles`（`e2e-slow`）。**狙って遅くしてある。** 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を取るので、エンコードはその合計より長く走り続ける必要がある
     - ffmpeg 入りイメージ。触る場所は 3 つある（`lib/env.sh` の `E2E_FULL_IMAGE`、`lib/cluster.sh` の build と `kind load`、`overlays/e2e/kustomization.yaml` の `images:`）
     - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。**ツールボックスからは書けない。** 製品の PVC はツールボックスより後に立つので、挿すと足場が Pending で止まる

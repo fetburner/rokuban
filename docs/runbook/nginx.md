@@ -205,7 +205,7 @@ test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 正常系だけでは nginx の設定漏れを見逃す。一度に 1 つだけ変更し、確認後に元へ戻す。
 
 - `auth_basic` を一時的に削除し、認証なしの API が `200` になることを確認する。その後に戻して `401` を確認する。
-- `proxy_buffering off` を一時的に削除し、SSE の挙動を確認する。Rokuban の `X-Accel-Buffering: no` が残っている限り、このアプリでは削除だけで遅延が再現しないため、nginx 固有の差を確認するときは検証用 upstream でそのヘッダーを返さないようにする（または一時的に `proxy_ignore_headers X-Accel-Buffering;` を加える）。その後に元へ戻して、25 秒以内に `: ping` が届くことを確認する。
+- `proxy_buffering off` を一時的に削除し、SSE の挙動を確認する。Rokuban の `X-Accel-Buffering: no` が残っている限り、このアプリでは削除だけで遅延が再現しない。nginx 固有の差を確認するときは、検証用 upstream でそのヘッダーを返さないようにする（または一時的に `proxy_ignore_headers X-Accel-Buffering;` を加える）。その後に元へ戻して、25 秒以内に `: ping` が届くことを確認する。
 - `alias /mnt/media/` を存在しないディレクトリに変え、Range が `404` になることを確認する。その後に戻して日本語ファイル名が `206` になることを確認する。
 - `internal` を一時的に削除し、直接 `/_media/` が読める状態になることを確認する。その後に戻して直接アクセスが `404` になることを確認する。
 - `location = /api` を一時的に削除し、`/api` が JSON の `404` ではなく nginx の `301` になることを確認する。prefix location `/api/` の auto_redirect がアプリより先に応答する経路で、`/api/` 側の確認では見えない。その後に戻す。

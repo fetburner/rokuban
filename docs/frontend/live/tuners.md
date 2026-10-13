@@ -9,7 +9,7 @@
 - **n は射影の全行数ではなく `isAvailable && !isFault` の本数にする**（`internal/capacity` の `countable` と揃える。docs/data/capacity.md §6.5）。射影の生本数のままだと、設定で無効化した本数まで「使える本数」に見えてしまい、この行が消したかった「警告が無い = 大丈夫」の誤読が n 自体で復活する。故障の本数は n に含めない別枠の警告として添える
 - **故障 0 本のときは「（故障 m）」を出さない。** 故障は `destructive` の淡い地 + 文字（docs/frontend/design.md「色は信号のみ」）。利用可であることに色は使わない --- 緑を持たない
 - **射影が 0 行のサイトは何も主張しない。** 応答が空配列なら行自体を描かない（docs/data/capacity.md §6.5 と同じ規律）
-- **鮮度は `observedAt`（射影内で最も古いもの）で見る。** 専用のしきい値は作らず、`isObservationStale`（`lib/storage-forecast.ts`）の既定しきい値（`observationStaleAfterMs`。1 時間）をそのまま再利用する。`tuner_sync` は worker の定期全量同期でしか値が変わらない使い捨てプロジェクションである。ストレージ観測（`GET /api/storage`）と性質が同じなので、同じしきい値を使う。独自の数字は発明しない
+- **鮮度は `observedAt`（射影内で最も古いもの）で見る**。 専用のしきい値は作らず、`isObservationStale`（`lib/storage-forecast.ts`）の既定しきい値（`observationStaleAfterMs`。1 時間）をそのまま再利用する。`tuner_sync` は worker の定期全量同期でしか値が変わらない使い捨てプロジェクションである。ストレージ観測（`GET /api/storage`）と性質が同じなので、同じしきい値を使う。独自の数字は発明しない
 - **クライアント側の取り直しは `lib/events.ts` の専用グループ（`tuners`）に登録してある。** `storage` と同じ「トピックを持たず専用の周期だけで収束させる」形である。周期も storage と同じ値（`storageRefreshIntervalMs`）を流用する。クエリキーは URL ではなく手書きにする。`/api/sites/{site}/tuners` のままだと `epg` グループの接頭辞（`/api/sites/`）にも一致するため。周期タイマーは周期の値ごとに別の `setInterval` に分かれているので、周期の違う 2 グループに同じキーが入ると、両方が発火する時刻（5 分と 10 分なら 10 分ごと）に同じクエリが 2 回取り直される。接頭辞はグループ定義と同じ定数を参照させ、片方だけ改名して取り直しが止まる drift を防ぐ
 - **mirakc は `isFault` を実装しておらず、常に false を返す**（`isAvailable` も常に true。根拠は docs/data/capacity.md §6.5）。つまり「（故障 m）」は現行の mirakc では出ない。それでも読む形にしてあるのは、Mirakurun 互換 API のフィールドであり mirakc が将来実装したら効くため。**この表示の実用上の値は鮮度表示のほうにある** --- そちらは射影ループの停止を実際に捉える
 

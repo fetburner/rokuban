@@ -20,7 +20,7 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 
 録画詳細の再生枠は 1 つで、録画中かつライブ能力が有効なら追っかけを再生元に選ぶ。通常の詳細表示ではポスターと再生ボタンを出し、押すまでは `/chase/playlist.m3u8` を要求しない。ホームの「録画中」帯、番組リスト、番組表グリッドのダイアログからは `/recordings/{recordings.id}#chase` へリンクし、詳細を開くと再生を始める。明示的な再生操作の後にだけ変換セッションを作ることで、表示するだけの閲覧で streamer の資源を保持しない。
 
-放送が終わって `recordings.status` が `finished` になっても、`ingest.state` が `pending` / `transferring` なら詳細から新しい追っかけを始められる。commit 前の追っかけは状態更新だけでは再生元を替えず、同じ `<video>` と既存 EVENT playlist で続ける。commit 後に mirakc の record が消えて再生元エラーになったときは、詳細が REST で録画状態を取り直してから原本 HLS / encoded を選ぶ。SSE はヒントなので、この切替を SSE の到着に依存させない。再生元は詳細を開いたときに選び、再生中は範囲外へのシーク、再生元のエラー、詳細を開き直したときだけ選び直す。追っかけの終端は録画ファイルの終端なので選び直さない（[recordings/playback.md](../recordings/playback.md) §録画のブラウザ再生）。
+放送が終わって `recordings.status` が `finished` になっても、`ingest.state` が `pending` / `transferring` なら詳細から新しい追っかけを始められる。commit 前の追っかけは状態更新だけでは再生元を替えず、同じ `<video>` と既存 EVENT playlist で続ける。commit 後に mirakc の record が消えて再生元エラーになったときは、詳細が REST で録画状態を取り直してから原本 HLS / encoded を選ぶ。SSE はヒントなので、切替を SSE の到着に依存させない。再生元は詳細を開いたときに選び、再生中は範囲外へのシーク、再生元のエラー、詳細を開き直したときだけ選び直す。追っかけの終端は録画ファイルの終端なので選び直さない（[recordings/playback.md](../recordings/playback.md) §録画のブラウザ再生）。
 
 番組リストと番組表グリッドのダイアログにも同じ着地先への入口を置く。番組画面は番組一覧 API が番組と同じ放送イベントに対応する録画中録画の `recordings.id` を `recordingId` として任意で返す。サーバーは `site`・`networkId`・`serviceId`・`eventId`・`startAt` を使って `recordings` を照合する。`programId` と `recordings.id` は別の identity なので、リンク先には API が返した `recordingId` を使う。対応する録画が無い場合は、既存の再生ボタンを従来どおりライブへ向ける。録画が終了・失敗・キャンセル・ごみ箱の場合も追っかけへは切り替えない。録画状態の SSE 通知を受けた番組表は一覧 API を取り直す。
 
@@ -69,4 +69,4 @@ Rokuban 自体のライブ視聴は「チャンネル一覧から選んでブラ
 
 追っかけは録画再生なので、VOD と共通の `rokuban:playback-rate` に速度を保存し、通常のライブ視聴には適用しない（実時間の放送は先端より先へ進めないため）。macOS Safari 26.6.2 では、ENDLIST の無い EVENT playlist の 1.25 / 1.5 / 2 倍再生が止まる一方、1 倍は進むため、有限尺になるまで 1 倍に固定し、完了後に保存速度へ戻す。
 
-再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する。live の配信プロファイルや VOD のエンコードプロファイルでは分けず、原本 VOD と共通の値を使う。追っかけではプレイヤー内部の相対秒に開始 offset を加えて保存する。成長中の EVENT playlist では duration を終端とみなさず、視聴済み判定もしない。再生中は 15 秒ごと、pause / seeked / pagehide で保存する。画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を送る。オフセット付きなら同じ `/offset/{offset}` を含め、sendBeacon を優先する。これは共有セッションを即時停止する命令ではなく idle GC を早めるヒントである。
+再生位置は `/api/recordings/{id}/playback-position` に原本時間軸の ms で保存する。live の配信プロファイルや VOD のエンコードプロファイルでは分けず、原本 VOD と共通の値を使う。追っかけではプレイヤー内部の相対秒に開始 offset を加えて保存する。成長中の EVENT playlist では duration を終端とみなさず、視聴済み判定もしない。再生中は 15 秒ごと、pause / seeked / pagehide で保存する。画面遷移・`pagehide`・visibility hidden では `POST .../chase/leave` を送る。オフセット付きなら同じ `/offset/{offset}` を含め、sendBeacon を優先する。これは共有セッションの即時停止命令ではなく idle GC を早めるヒントである。
