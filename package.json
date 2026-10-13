@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "docs:lint": "textlint --rulesdir scripts/textlint-rules 'README.md' 'CLAUDE.md' 'deploy/**/*.md' 'docs/**/*.md' 'web/e2e/**/*.md'",
-    "third-party-notices": "node scripts/third-party-notices.mjs"
+    "third-party-notices": "node scripts/third-party-notices.mjs",
+    "docs:reading": "node scripts/docs-reading/run.mjs"
   },
   "devDependencies": {
     "textlint": "15.8.0",
