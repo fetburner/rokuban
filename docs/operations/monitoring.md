@@ -186,7 +186,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 | `rokuban_ruler_last_pass_timestamp_seconds` | 最終パス時刻。`time() - この値` でパスが止まっていることを検出する（gauge が凍る問題への対策） |
 | `rokuban_ruler_last_success_timestamp_seconds{site}` | DB に確定した site 単位の最終成功時刻。ScaledJob ではこちらで停止を検出する |
 
-`rokuban_ruler_reservations_total{action}` の `action` は次の値を取る。削除を表す 4 値は、ブレーカーを通るかどうかが違うので混ぜない。
+`rokuban_ruler_reservations_total{action}` の `action` は次の値を取る。削除を表す値のうちブレーカーを通るのは `deleted` だけなので、他と混ぜない。
 
 - `created` / `updated`: 予約の作成・更新
 - `deleted`: 「ルールがマッチしなくなった」EPG 由来の導出削除。**サーキットブレーカーの対象**
@@ -236,10 +236,10 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 ### encode reconcile
 
-**`rokuban_encode_reconcile_candidates` は 0 まで落ちることを期待しない。** エンコード実行中の録画も数えるので、非ゼロは異常ではない。
+**`rokuban_encode_reconcile_candidates` の非ゼロは異常ではない。** エンコード実行中の録画も数える。
 
 - 窓はパスをまたいで回る。**候補上限（1000）に張り付いても、それより後ろの録画への到達性は失われない**（次パスが続きから見る）
-- バックログが窓を埋めている系では、末尾を越えたパスでこのゲージが上限を下回る。値はバックログ件数 mod 1000 で、ちょうど倍数のときだけ 0 になる
+- バックログが窓を埋めている系では、末尾を越えたパスでこのゲージが上限を下回る。値はバックログ件数 mod 1000 で、ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない
 - 窓が継続して埋まっているかを見たいなら `max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（[ingest](../recording/ingest.md) §5.5）
 
 ### TS scan
@@ -287,10 +287,9 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 `rokuban_live_session_evictions_total{reason,result}` のラベルは次の値を取る。
 
 - `reason`: `upstream` / `session_limit`
-- `result`:
-  - `retry_succeeded`: 再試行が成功した
-  - `retry_failed`: mirakc 側の失敗で再試行が失敗した
-  - `retry_abandoned`: 退避完了後、mirakc の解放待ち中に呼び出し元が切断して再試行しなかった。mirakc 側の失敗（`retry_failed`）とは区別する
+- `result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`
+
+`retry_abandoned` は、退避完了後に mirakc の解放待ち中に呼び出し元が切断して、再試行しなかった件数である。mirakc 側の失敗（`retry_failed`）とは区別する。
 
 ### 沈黙は保証ではない
 
