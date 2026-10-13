@@ -220,7 +220,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 次の 2 つは 3 値のどれにも数えない。
 
-- **SHA-256 待ち**: 同じ River job を snooze する。snooze は attempt を消費しないので、結果の 3 値と duration に数えない。待ちの間の録画は `rokuban_uningested_records` に残り、hash 到着後の完了または失敗を 1 回だけ数える
+- **SHA-256 待ち**: 同じ River job を snooze し、結果の 3 値と duration に数えない。snooze は attempt を消費しない。待ちの間の録画は `rokuban_uningested_records` に残り、hash 到着後の完了または失敗を 1 回だけ数える
 - **River の soft stop（graceful stop）**: 中断はジョブの結末ではない。River は attempt を消費せず行を `available` に戻し、次のプロセスが再開して、そこで結末を 1 回だけ数える。中断が繰り返されているかは `rokuban_uningested_records` / `_bytes` で見る
 
 **`interrupted` を足さない理由**: 中断の +1 はプロセスが終了する直前の窓（既定 `SoftStopTimeout` 5 秒 + completer の flush）でしか起きない。終了したプロセスは scrape できないので、その窓に scrape が重ならなかった分は失われる（失われる割合は scrape 間隔次第で未測定）。
@@ -268,7 +268,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 `pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。**意図的に見送った差分を混ぜると正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。**
 
-`rokuban_presync_pending{site,reason}` は、同じ未収束を DB から数えるゲージである。skip と終了済みは除外する。`reason` は `missing` / `options` / `options_deferred` の 3 値で、それぞれ次の意味を持つ。
+`rokuban_presync_pending{site,reason}` は `pending_diff` の DB 版で、開始前〜録画中の未収束を数える。skip と終了済みは除外する。`reason` は `missing` / `options` / `options_deferred` の 3 値で、それぞれ次の意味を持つ。
 
 - `reason="missing"`: schedule 不在。DB 版の `rokuban_reconcile_pending_diff{action="create"}` に相当する
 - `reason="options"`: `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致。`{action="update"}` に相当する
@@ -289,7 +289,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 - `reason`: `upstream` / `session_limit`
 - `result`: `retry_succeeded` / `retry_failed` / `retry_abandoned`
 
-`retry_abandoned` は、退避完了後に mirakc の解放待ち中に呼び出し元が切断して、再試行しなかった件数である。mirakc 側の失敗（`retry_failed`）とは区別する。
+`retry_abandoned` は、退避完了後、mirakc の解放待ちの間に呼び出し元が切断して再試行しなかった件数である。mirakc 側の失敗（`retry_failed`）とは区別する。
 
 ### 沈黙は保証ではない
 
