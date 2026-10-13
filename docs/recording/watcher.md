@@ -14,31 +14,15 @@
 
 この 3 つで record の反映と finished record の ingest 漏れは構造的に起きない。
 
-ただし、この 3 段構えが保証する範囲は record と ingest に限る。`recording.failed` と
-`recording.record-broken` は record の状態反映とは別の品質イベントで、mirakc が接続時に
-再送するのは `record-saved` だけである。したがって、失敗イベント全般を SSE の取りこぼし
-なしで回収できる、という意味ではない。
+ただし、この 3 段構えが保証する範囲は record と ingest に限る。`recording.failed` と `recording.record-broken` は record の状態反映とは別の品質イベントで、mirakc が接続時に再送するのは `record-saved` だけである。したがって、失敗イベント全般を SSE の取りこぼしなしで回収できる、という意味ではない。
 
 `Watcher.Sweep` が failed を再構成できる範囲は次の通りである。
 
-- `GET /api/recording/schedules` に `state=failed` と `failedReason` が残っており、かつ
-  Rokuban の予約として特定できる schedule がある。この schedule は、record が無くても
-  `recordings.status=failed` と `quality_events` を作る。schedule が mirakc から削除された後は
-  この経路では回収できない。
-- `GET /api/recording/records` に残る `recording.status=failed` と `recording.failedReason` を
-  持つ record は、通常の record と同じく扱う。この record は `record_sync` / `recordings` に
-  反映し、失敗理由も `quality_events` に残す。これは mirakc が失敗 record のメタデータを
-  保持している場合に限る。
-- record が無く、failed schedule も既に削除済み、または `failedReason` が返らない
-  `recording.failed` は API から再構成できないため、SSE 専用で sweep では回収されない。
-  `recording.record-broken` も同様に、イベントの record ID と理由を API が履歴として返さない
-  ため SSE 専用である。records API に「コンテンツが無い」record が見えても、それだけから
-  どの record-broken が何回発生したかを推測して品質イベントを捏造しない。
+- `GET /api/recording/schedules` に `state=failed` と `failedReason` が残っており、かつ Rokuban の予約として特定できる schedule がある。この schedule は、record が無くても `recordings.status=failed` と `quality_events` を作る。schedule が mirakc から削除された後はこの経路では回収できない。
+- `GET /api/recording/records` に残る `recording.status=failed` と `recording.failedReason` を持つ record は、通常の record と同じく扱う。この record は `record_sync` / `recordings` に反映し、失敗理由も `quality_events` に残す。これは mirakc が失敗 record のメタデータを保持している場合に限る。
+- record が無く、failed schedule も既に削除済み、または `failedReason` が返らない `recording.failed` は API から再構成できないため、SSE 専用で sweep では回収されない。`recording.record-broken` も同様に、イベントの record ID と理由を API が履歴として返さないため SSE 専用である。records API に「コンテンツが無い」record が見えても、それだけからどの record-broken が何回発生したかを推測して品質イベントを捏造しない。
 
-failed 行は active-event の一意制約で SSE と sweep のどちらが先でも一行に収束する。
-sweep が同じ失敗を次回以降も観測しても、同じ event と reason の品質イベントは一度だけ
-追記する。一方、SSE で届く `recording.record-broken` や繰り返しの `recording.failed` は
-観測されたイベント履歴として既存の追記経路に残す。
+failed 行は active-event の一意制約で SSE と sweep のどちらが先でも一行に収束する。sweep が同じ失敗を次回以降も観測しても、同じ event と reason の品質イベントは一度だけ追記する。一方、SSE で届く `recording.record-broken` や繰り返しの `recording.failed` は観測されたイベント履歴として既存の追記経路に残す。
 
 **真実（レベルトリガー）がジョブで、ヒント源が常駐**という配置になった。ruler / reconciler が「定期パスが真実、作成/更新イベントはヒント」という形をジョブとして持つのと対称で、watcher の (c) も同じ形にはまる。(a)(b) は SSE という長寿命コネクションでしか実現できないヒント経路なので常駐に残る。
 
@@ -54,9 +38,7 @@ sweep が同じ失敗を次回以降も観測しても、同じ event と reason
 
 ruler / reconciler と違い、**起動契機は定期のみ**（ヒントで前倒しする経路を持たない）。
 
-`record_sweep` は mirakc の全 record を取得し、DB に同期されていない finished record を
-`processRecord` で補う。プロセス死後に `running` のまま残った ingest は River の
-`JobRescuer` が回収する。record_sweep は River の job 行を直接変更しない。
+`record_sweep` は mirakc の全 record を取得し、DB に同期されていない finished record を `processRecord` で補う。プロセス死後に `running` のまま残った ingest は River の `JobRescuer` が回収する。record_sweep は River の job 行を直接変更しない。
 
 | 契機 | 種別 |
 |---|---|
@@ -66,10 +48,7 @@ ruler / reconciler は「作成・更新イベント」というヒントを同�
 
 #### 品質メタデータ記録
 
-`recording.record-broken` / `recording.failed` イベントは構造化された品質シグナルとして
-record に紐づけて DB に記録する（「録画品質の実測」計画の入力）。`recording.failed` は
-上記の範囲で schedules / records sweep からも補完するが、`record-broken` と API に残らない
-recordless failed は SSE 専用である。
+`recording.record-broken` / `recording.failed` イベントは構造化された品質シグナルとして record に紐づけて DB に記録する（「録画品質の実測」計画の入力）。`recording.failed` は上記の範囲で schedules / records sweep からも補完するが、`record-broken` と API に残らない recordless failed は SSE 専用である。
 
 #### 開始遅延検出器
 

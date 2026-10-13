@@ -31,14 +31,9 @@ PMT は原本内で更新されうる（version 更新、番組の境目での P
 
 ### ブラウザにも同じ境界を適用する
 
-**フロントエンドも放送 TS を解釈しない。** 放送 TS とは、mirakc が返すストリームと録画原本のことである。
-ブラウザが扱うのは ffmpeg の出力（HLS / fMP4 / WebVTT）だけで、放送 TS をブラウザへ渡して再生・解読させる経路は持たない。
-理由はサーバー側と同じで、ARIB 固有の知識をコードベースに入れないためである。ブラウザで demux・ARIB 字幕・BML を扱えば、その知識が `web/src` に入る。
-保証する範囲（[overview.md](../overview.md) §保証する構成と機能の範囲）の機能は、どれもブラウザで放送 TS を扱う必要がない。
+**フロントエンドも放送 TS を解釈しない。** 放送 TS とは、mirakc が返すストリームと録画原本のことである。ブラウザが扱うのは ffmpeg の出力（HLS / fMP4 / WebVTT）だけで、放送 TS をブラウザへ渡して再生・解読させる経路は持たない。理由はサーバー側と同じで、ARIB 固有の知識をコードベースに入れないためである。ブラウザで demux・ARIB 字幕・BML を扱えば、その知識が `web/src` に入る。保証する範囲（[overview.md](../overview.md) §保証する構成と機能の範囲）の機能は、どれもブラウザで放送 TS を扱う必要がない。
 
-**hls.js が MPEG-TS のセグメントを demux するのは対象外である。** ライブと追っかけ再生のセグメントは ffmpeg が書いた MPEG-TS である。
-中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT である。放送由来の SI・ARIB 字幕・データ放送は含まない（字幕は ffmpeg が WebVTT に変換して別に書く）。
-境界は器の形式ではなく、放送由来の構造を読むかどうかで引く。
+**hls.js が MPEG-TS のセグメントを demux するのは対象外である。** ライブと追っかけ再生のセグメントは ffmpeg が書いた MPEG-TS である。中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT である。放送由来の SI・ARIB 字幕・データ放送は含まない（字幕は ffmpeg が WebVTT に変換して別に書く）。境界は器の形式ではなく、放送由来の構造を読むかどうかで引く。
 
 | 機能 | 放送 TS を読む場所 | 判定 |
 |---|---|---|
@@ -48,9 +43,7 @@ PMT は原本内で更新されうる（version 更新、番組の境目での P
 | データ放送 | ブラウザで DSM-CC / BML を解読する | **非整合**。採るなら先にこの境界を改める |
 | ブラウザでの放送 TS の変換・復号（WASM 等） | ブラウザ | **非整合**。MPEG-2 → H.264 のビットストリーム変換の実測でも、帯域・再生バッファ・ソフトウェアデコードの代償が大きかった |
 
-機械判定は 2 つある。Go は `.golangci.yml` の depguard（`ts-inspection`）が gots の import を `internal/tsstat` に閉じる。
-Web は `web/tests/broadcast-ts-boundary.test.ts` が、放送 TS を扱うライブラリを本番の依存から締め出す。
-e2e の計器が基準として放送 TS を読むことは許すので、`devDependencies` は対象にしない。
+機械判定は 2 つある。Go は `.golangci.yml` の depguard（`ts-inspection`）が gots の import を `internal/tsstat` に閉じる。Web は `web/tests/broadcast-ts-boundary.test.ts` が、放送 TS を扱うライブラリを本番の依存から締め出す。e2e の計器が基準として放送 TS を読むことは許すので、`devDependencies` は対象にしない。
 
 ---
 
@@ -101,9 +94,7 @@ remote tracker も使えない。GR は network_id が地域ごとに別なの�
 | present / following | present は前番組、following が予約対象 | record の event_id は対象だが、録画パイプラインは対象 `startAt` より早く始まる（今回の観測は数秒〜十数秒） |
 | event_id 振り直し | 予約対象が消え、同じ時間帯に別 event_id が現れる | `recording.failed` にはならず、予約対象 event_id の record が finished まで残る。置換 event_id は録らない |
 
-ARIB TR-B14 の「開始判定は following の `start_time` を使う」という解釈そのものは、
-このテストの範囲では規格根拠を確認していない。上表はあくまで `mirakc 4.0.0-dev.0` 相当の pin に対する mirakc の
-観測結果であり、規格解釈の根拠としては扱わない。
+ARIB TR-B14 の「開始判定は following の `start_time` を使う」という解釈そのものは、このテストの範囲では規格根拠を確認していない。上表はあくまで `mirakc 4.0.0-dev.0` 相当の pin に対する mirakc の観測結果であり、規格解釈の根拠としては扱わない。
 
 <details><summary>根拠</summary>
 

@@ -2,44 +2,23 @@
 
 ## ライブ視聴の確認手順
 
-2 段に分かれる。**①は実 mirakc / 実チューナーが要る**（streamer が実際に ffmpeg を
-起動してチューナーを掴む）。**②は要らない**（ブラウザ側の配線 --- hls.js の動的
-import・MSE への実再生・チャンネル切替時の cleanup --- だけを見る）。
+2 段に分かれる。**①は実 mirakc / 実チューナーが要る**（streamer が実際に ffmpeg を起動してチューナーを掴む）。**②は要らない**（ブラウザ側の配線 --- hls.js の動的 import・MSE への実再生・チャンネル切替時の cleanup --- だけを見る）。
 
 ### ① idle GC と実再生（実 mirakc が必要）
 
-前提: `live.enabled: true`、`live.ffmpeg` が PATH にある、`live.profiles` を
-1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
+前提: `live.enabled: true`、`live.ffmpeg` が PATH にある、`live.profiles` を 1 つ以上設定済み（[config.example.yml](../../config.example.yml) の `live:` 節）。
 
-**`live.enabled` が false（既定。`config.compose.yml` の `live:` 節も `enabled: false`）だと
-そもそもライブに辿り着けない**。主ナビに「ライブ」が出ず、`/live` を
-直接開くと「この環境ではライブ視聴が無効です」になる。設定が効いているかは
-`curl -s http://localhost:40773/api/capabilities` の `live` が `true` かで
-確かめられる。
+**`live.enabled` が false（既定。`config.compose.yml` の `live:` 節も `enabled: false`）だとそもそもライブに辿り着けない**。主ナビに「ライブ」が出ず、`/live` を直接開くと「この環境ではライブ視聴が無効です」になる。設定が効いているかは `curl -s http://localhost:40773/api/capabilities` の `live` が `true` かで確かめられる。
 
 ```sh
 # config.compose.yml の live.enabled を true にしてから
 docker compose restart rokuban
 ```
 
-1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない
-   --- 選択と視聴開始は分離してある）。「再生」ボタンを押すと
-   数秒で再生が始まる
-2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）**。
-   iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と
-   違う）。**ネイティブ HLS 経路に入れないと iOS 17.1 未満では
-   「このブラウザはライブ視聴（HLS）に対応していません」になる**。再生経路の
-   判定（`supportsNativeHls`）は macOS の WebKit / Chromium / Chrome / Firefox
-   では実測して固定してある（`web/e2e/live.mjs` の⑥）。**iOS 実機は誰も
-   確認していない**。
+1. ブラウザで `/live` を開き、チャンネルを選ぶ（この時点ではまだ何も始まらない --- 選択と視聴開始は分離してある）。「再生」ボタンを押すと数秒で再生が始まる
+2. **iPhone の Safari で `/live` を開いて再生できることを確認する（未実施）**。iPhone は `window.MediaSource` を持たない（`ManagedMediaSource` のみ。iPad と違う）。**ネイティブ HLS 経路に入れないと iOS 17.1 未満では「このブラウザはライブ視聴（HLS）に対応していません」になる**。再生経路の判定（`supportsNativeHls`）は macOS の WebKit / Chromium / Chrome / Firefox では実測して固定してある（`web/e2e/live.mjs` の⑥）。**iOS 実機は誰も確認していない**。
 
-   `canPlayType('video/mp2t')` の戻り値が macOS の WebKit と
-   同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる
-   （iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では
-   `claimsHlsPlaylistSupport` の最後の砦で `<video>` に直接渡る形になる）。
-   確認できる人が実機で開いて、①再生できること ②開発者ツールで
-   `assets/hls-*.js` を読み込んでいないこと（読み込んでいたらネイティブ分岐に
-   入れていない）を見る
+   `canPlayType('video/mp2t')` の戻り値が macOS の WebKit と同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる（iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では `claimsHlsPlaylistSupport` の最後の砦で `<video>` に直接渡る形になる）。確認できる人が実機で開いて、①再生できること ②開発者ツールで `assets/hls-*.js` を読み込んでいないこと（読み込んでいたらネイティブ分岐に入れていない）を見る
 3. 別ターミナルでメトリクスを見る:
 
    ```sh
@@ -52,70 +31,25 @@ docker compose restart rokuban
    ```
 
    ライブ再生中は `rokuban_live_active_sessions{kind="live"}` が `1`（見ているチャンネル数）になる
-4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。**離脱ヒントが届けば
-   十数秒**（猶予 8 秒 = `3 × segment_seconds + 2s` + GC 周期 4 秒ぶんの遅れ。
-   実測 13 秒）で
-   `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、
-   `rokuban_live_idle_gc_reclaimed_total` が `1` 増える。
+4. ブラウザのタブを閉じる（または別チャンネルへ切り替える）。**離脱ヒントが届けば十数秒**（猶予 8 秒 = `3 × segment_seconds + 2s` + GC 周期 4 秒ぶんの遅れ。実測 13 秒）で `rokuban_live_active_sessions{kind="live"}` が `0` に戻り、`rokuban_live_idle_gc_reclaimed_total` が `1` 増える。
 
-   同時に
-   `rokuban_live_leave_hints_total{result="deadline_shortened"}` も `1` 増えている
-   はず（**ここが増えずに回収された場合、ヒントは届いていない** ---
-   その場合の回収は `live.idle_timeout` 既定 30 秒 + GC 周期 4 秒 = **30 秒強**
-   後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ
-   （`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 /
-   ヒント無し 33 秒。`rokuban_live_active_sessions{kind="live"}` が 0 に戻るまでを 1 秒間隔で
-   ポーリング）。
+   同時に `rokuban_live_leave_hints_total{result="deadline_shortened"}` も `1` 増えているはず（**ここが増えずに回収された場合、ヒントは届いていない** --- その場合の回収は `live.idle_timeout` 既定 30 秒 + GC 周期 4 秒 = **30 秒強**後になる（実測 33 秒））。**この秒数は偽 mirakc + 偽 ffmpeg に対する実バイナリ（`rokuban server --roles streamer`）で実測した**（ヒントあり 13 秒 / ヒント無し 33 秒。`rokuban_live_active_sessions{kind="live"}` が 0 に戻るまでを 1 秒間隔でポーリング）。
 
-   **実チューナー・実 ffmpeg では未測定** ---
-   ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
-   - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、
-     `rokuban_live_leave_hints_total` は増えるが
-     `rokuban_live_active_sessions{kind="live"}` は `1` のまま下がらない（残っているタブの
-     セグメント要求が idle 期限を戻す）。**これがヒントを「停止命令」にしなかった
-     理由そのもの**（[api.md](../api.md) §ライブ視聴の HLS）。偽 mirakc に対する
-     実バイナリでは実測済み（2 秒ごとに `leave` を送りながらセグメントを取り
-     続ける形で 20 秒間、セッションは落ちなかった。ヒント 10 回に対し回収 0 回）
-5. チューナー本数が少ない環境で複数チャンネルへ連続で「再生」を押すと、
-   `live.max_sessions`（既定 4）に達した時点で 503
-   `too many concurrent live sessions on this process` が、チューナー自体が
-   枯渇した場合は 503 `live stream unavailable` が返る（画面には
-   「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル
-   選択自体（`?service=<Service.id>` を切り替えるだけ）はセッションを起こさない**
-   （選択と視聴開始は分離してある）ため、ここで積まれるのは実際に「再生」を押した本数だけで、
-   通り過ぎただけのチャンネルは対象外である。
+   **実チューナー・実 ffmpeg では未測定** --- ffmpeg の停止に掛かる時間だけ伸びうるので、この手順で確かめる
+   - 同じチャンネルを 2 つのタブで開いて片方だけ閉じると、`rokuban_live_leave_hints_total` は増えるが `rokuban_live_active_sessions{kind="live"}` は `1` のまま下がらない（残っているタブのセグメント要求が idle 期限を戻す）。**これがヒントを「停止命令」にしなかった理由そのもの**（[api.md](../api.md) §ライブ視聴の HLS）。偽 mirakc に対する実バイナリでは実測済み（2 秒ごとに `leave` を送りながらセグメントを取り続ける形で 20 秒間、セッションは落ちなかった。ヒント 10 回に対し回収 0 回）
+5. チューナー本数が少ない環境で複数チャンネルへ連続で「再生」を押すと、`live.max_sessions`（既定 4）に達した時点で 503 `too many concurrent live sessions on this process` が、チューナー自体が枯渇した場合は 503 `live stream unavailable` が返る（画面には「チューナー不足または同時視聴数の上限」+ 30 秒待つ案内が出る）。**チャンネル選択自体（`?service=<Service.id>` を切り替えるだけ）はセッションを起こさない**（選択と視聴開始は分離してある）ため、ここで積まれるのは実際に「再生」を押した本数だけで、通り過ぎただけのチャンネルは対象外である。
 
-   以前あった 400ms のデバウンス
-   （ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 に
-   なったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは
-   離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（上の 4）
-6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）**。
-   ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、
-   WebKit は**一時停止した瞬間にも `stalled` を出す**。そのため一度でも再生が
-   始まった後の一時停止中は失敗と見なさないようにしてある
-   （`live-player.tsx` の `watchNativeMedia`）。
+   以前あった 400ms のデバウンス（ザッピングでセッションが積まれないようにする緩和）は選択自体がコスト 0 になったことで存在理由が消え、削除した。押して留まったチャンネルの前セッションは離脱ヒントが届けば十数秒、届かなければ 30 秒強残る（上の 4）
+6. **実配信で一時停止しても誤ってエラーにならないことを確認する（未実施）**。ネイティブ経路は `stalled` / `waiting` が猶予（12 秒）を超えたら失敗と見なすが、WebKit は**一時停止した瞬間にも `stalled` を出す**。そのため一度でも再生が始まった後の一時停止中は失敗と見なさないようにしてある（`live-player.tsx` の `watchNativeMedia`）。
 
-   **この抑止をブラウザ側で
-   機械判定する手段は無い**。`web/e2e/live.mjs` は一時停止を一度も作らない。
-   実装側の分岐は `live-player.test.tsx`（jsdom）が測る。ブラウザが実際に
-   pause 時に `stalled` を出し再開時に `waiting` を再送することは、
-   レビュー時の WebKit 手動測定が根拠である。**実配信では未確認**（e2e の
-   フィクスチャは `-hls_list_size 0` 生成の `#EXT-X-ENDLIST` を持つ VOD 形で、
-   実配信のローリングウィンドウとは挙動が違いうる）。実機で再生 →
-   一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
+   **この抑止をブラウザ側で機械判定する手段は無い**。`web/e2e/live.mjs` は一時停止を一度も作らない。実装側の分岐は `live-player.test.tsx`（jsdom）が測る。ブラウザが実際に pause 時に `stalled` を出し再開時に `waiting` を再送することは、レビュー時の WebKit 手動測定が根拠である。**実配信では未確認**（e2e のフィクスチャは `-hls_list_size 0` 生成の `#EXT-X-ENDLIST` を持つ VOD 形で、実配信のローリングウィンドウとは挙動が違いうる）。実機で再生 → 一時停止 → 30 秒放置 → エラー画面が出ないこと、再開して再生が続くことを見る
 
 #### 画質の切替でチューナーが増えないことの確認（偽 mirakc + 偽 ffmpeg で足りる）
 
-**実チューナーは要らない。** 見るのは「1 サービス = 1 ffmpeg = mirakc の 1 チューナー」が
-画質の切替で崩れないことだけなので、mirakc に何も要求しない偽 mirakc で確かめられる。
-`live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、同じ
-`(networkId, serviceId)` に対して違う `?profile=` を順に取る。実測（実バイナリ +
-偽 mirakc + 実 ffmpeg 9.0.2。偽 mirakc は 90 秒の TS を実時間で流す）:
+**実チューナーは要らない。** 見るのは「1 サービス = 1 ffmpeg = mirakc の 1 チューナー」が画質の切替で崩れないことだけなので、mirakc に何も要求しない偽 mirakc で確かめられる。`live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、同じ `(networkId, serviceId)` に対して違う `?profile=` を順に取る。実測（実バイナリ + 偽 mirakc + 実 ffmpeg 9.0.2。偽 mirakc は 90 秒の TS を実時間で流す）:
 
-- `?profile=hd` → master は `hd.0.m3u8`（映像）と音声 `hd.1`〜`hd.3.m3u8` を指す。
-  偽 mirakc の stream 要求は 1 件、`rokuban_live_active_sessions{kind="live"}` は `1`
-- `?profile=sd`（切替）→ **同じセッションの別 master**（`sd.0.m3u8` …）が返る。
-  stream 要求も gauge も **1 のまま**
+- `?profile=hd` → master は `hd.0.m3u8`（映像）と音声 `hd.1`〜`hd.3.m3u8` を指す。偽 mirakc の stream 要求は 1 件、`rokuban_live_active_sessions{kind="live"}` は `1`
+- `?profile=sd`（切替）→ **同じセッションの別 master**（`sd.0.m3u8` …）が返る。stream 要求も gauge も **1 のまま**
 - `?profile=does-not-exist` → **400**（セッションを起こす前に拒否する）
 
 **実チューナーでは未測定。** 以下の手順で確かめる。
@@ -131,10 +65,7 @@ curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind
 
 #### 追っかけの画質切替でセッションが増えないことの確認（偽 mirakc + 偽 ffmpeg で足りる）
 
-**実チューナーは要らない。** 同じ録画・同じ offset のセッションから
-別プロファイルの playlist を取るだけで、`rokuban_live_active_sessions{kind="chase"}`
-が増えないことを見る。`live.profiles` を 2 つ以上書いた config で
-`--roles streamer` を起動し、偽 mirakc と偽 ffmpeg を用意する。
+**実チューナーは要らない。** 同じ録画・同じ offset のセッションから別プロファイルの playlist を取るだけで、`rokuban_live_active_sessions{kind="chase"}` が増えないことを見る。`live.profiles` を 2 つ以上書いた config で `--roles streamer` を起動し、偽 mirakc と偽 ffmpeg を用意する。
 
 ```sh
 B=http://localhost:40773/api/sites/default/recordings/1/chase/playlist.m3u8
@@ -143,22 +74,13 @@ curl -s "$B?profile=sd" | tail -1     # 同じ録画の別プロファイル
 curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind="chase"}'
 ```
 
-実バイナリ（`rokuban server --roles streamer`）+ 偽 mirakc + 偽 ffmpeg で測定した。
-結果は `?profile=hd` / `?profile=sd` とも 200、active sessions は 1 だった。
-偽 mirakc の録画 stream 要求は 1 件、`?profile=does-not-exist` は 400
-`unknown chase profile` だった。オフセット付きでも同じ
-`/chase/offset/{offset}/playlist.m3u8` を 2 プロファイルで取り、offset を跨いでいない
-ことを確認する。実チューナー・実 ffmpeg での追っかけ画質切替は未測定である。
+実バイナリ（`rokuban server --roles streamer`）+ 偽 mirakc + 偽 ffmpeg で測定した。結果は `?profile=hd` / `?profile=sd` とも 200、active sessions は 1 だった。偽 mirakc の録画 stream 要求は 1 件、`?profile=does-not-exist` は 400 `unknown chase profile` だった。オフセット付きでも同じ `/chase/offset/{offset}/playlist.m3u8` を 2 プロファイルで取り、offset を跨いでいないことを確認する。実チューナー・実 ffmpeg での追っかけ画質切替は未測定である。
 
 #### 音声（二重音声の主 / 副）の確認（実放送が必要）
 
-**二重音声の放送でしか確かめられない**（実放送が SCE 2 つ + `channel_configuration=2`
-の形かは未検証。[api/media.md](../api/media.md) §音声）。手元で測ったのは次の 2 つである。
+**二重音声の放送でしか確かめられない**（実放送が SCE 2 つ + `channel_configuration=2` の形かは未検証。[api/media.md](../api/media.md) §音声）。手元で測ったのは次の 2 つである。
 
-- 実バイナリ + 偽 mirakc + 実 ffmpeg で、合成した二重音声（440Hz / 880Hz のモノラル
-  AAC 2 本を 1 フレームに継いだ TS）を流した。`hd.1`（標準）は L 440 / R 880、
-  `hd.2`（主）は 440 / 440、`hd.3`（副）は 880 / 880 だった（HTTP 越しにデコードして
-  左右の周波数を測った）
+- 実バイナリ + 偽 mirakc + 実 ffmpeg で、合成した二重音声（440Hz / 880Hz のモノラル AAC 2 本を 1 フレームに継いだ TS）を流した。`hd.1`（標準）は L 440 / R 880、`hd.2`（主）は 440 / 440、`hd.3`（副）は 880 / 880 だった（HTTP 越しにデコードして左右の周波数を測った）
 - ブラウザ側の切替は `pnpm e2e:live-audio`（下記 ②）
 
 実放送では、番組表で「二か国語」「副音声」の番組を選んで次を確かめる。
@@ -172,39 +94,15 @@ curl -s http://localhost:40773/metrics | grep 'rokuban_live_active_sessions{kind
 
 ### ② ブラウザ側の配線（mirakc 不要）
 
-`web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route`
-でブラウザ側から丸ごと差し替える。streamer 側は `live.enabled` を立てる
-必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。
-`GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと
-画面が「無効です」になって①〜⑦が全滅するため。**`GET /api/live-profiles` も
-差し替えている**（実サーバーは config の `live.profiles` を返すが、⑨ は
-「2 件以上あるデプロイ」を前提にするので固定する）。
+`web/e2e/live.mjs`。HLS プレイリスト/セグメントは Playwright の `page.route` でブラウザ側から丸ごと差し替える。streamer 側は `live.enabled` を立てる必要すら無い（サーバーは「サービス一覧を返す」以外の実仕事をしない）。`GET /api/capabilities` も同じく差し替えている --- 立てていないサーバーだと画面が「無効です」になって①〜⑦が全滅するため。**`GET /api/live-profiles` も差し替えている**（実サーバーは config の `live.profiles` を返すが、⑨ は「2 件以上あるデプロイ」を前提にするので固定する）。
 
-**jsdom で測れない領域は、実装より先に判定手段を作る。** この ② はその教訓の実例である
-（CLAUDE.md「テスト規律」）。
+**jsdom で測れない領域は、実装より先に判定手段を作る。** この ② はその教訓の実例である（CLAUDE.md「テスト規律」）。
 
-`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら
-9001 / 9002）。セグメント/プレイリスト/離脱ヒントの URL に載るのも SI の
-`(network_id, service_id)` そのものである。そちら側の読み替えは要らない。一方
-`/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）を
-使う。スクリプトは起動時に `GET /api/sites/{site}/services` から対応する
-`Service.id` を引く（`resolveServiceId`）。
+`E2E_LIVE_SERVICE_A` / `_B` に渡すのは **SI の `serviceId`**（下の投入例なら 9001 / 9002）。セグメント/プレイリスト/離脱ヒントの URL に載るのも SI の `(network_id, service_id)` そのものである。そちら側の読み替えは要らない。一方 `/live` のページ URL は他画面と同じ `?service=<Service.id>`（合成 id）を使う。スクリプトは起動時に `GET /api/sites/{site}/services` から対応する `Service.id` を引く（`resolveServiceId`）。
 
-**`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える**。
-ここが食い違うと `resolveServiceId` が一致するサービスを見つけられず、
-`page.goto` の前に例外で落ちる（`E2E_LIVE_NETWORK_ID=2` で実測。exit 1）。
-`E2E_LIVE_SITE` を間違えた場合も同じ関数が 404 を名指しして落ちる。⓪ はさらに
-**選ばれたチャンネルそのものを assert する**。チャンネル一覧の
-`aria-current="page"` がちょうど 1 件で、その `href` に要求した `Service.id`
-が載っていることを見る。`resolveServiceId` は「投入した行が見つかるか」までしか
-見ない。この assert が無いと、要求件数の判定だけは通り続けて「要求した id が
-実際に選ばれた」という主張が抜け落ちる。
+**`E2E_LIVE_NETWORK_ID`（既定 `1`）は投入した行の `network_id` と揃える**。ここが食い違うと `resolveServiceId` が一致するサービスを見つけられず、`page.goto` の前に例外で落ちる（`E2E_LIVE_NETWORK_ID=2` で実測。exit 1）。`E2E_LIVE_SITE` を間違えた場合も同じ関数が 404 を名指しして落ちる。⓪ はさらに**選ばれたチャンネルそのものを assert する**。チャンネル一覧の `aria-current="page"` がちょうど 1 件で、その `href` に要求した `Service.id` が載っていることを見る。`resolveServiceId` は「投入した行が見つかるか」までしか見ない。この assert が無いと、要求件数の判定だけは通り続けて「要求した id が実際に選ばれた」という主張が抜け落ちる。
 
-**⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。** 既定のフォールバック先
-（番組を持つ先頭）はこの投入例では A になる。要求先が既定と同じだと、この assert は
-「要求が効いた」と「一致に失敗して既定に落ちた」を区別できない。A で判定して
-いたときの実測では、`pickInitialService` を `serviceId` 一致に変異させても
-⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり href も違う）。
+**⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。** 既定のフォールバック先（番組を持つ先頭）はこの投入例では A になる。要求先が既定と同じだと、この assert は「要求が効いた」と「一致に失敗して既定に落ちた」を区別できない。A で判定していたときの実測では、`pickInitialService` を `serviceId` 一致に変異させても⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり href も違う）。
 
 準備（初回のみ）:
 
@@ -239,112 +137,36 @@ pnpm exec playwright install chromium webkit
 
 判定する点（詳細はスクリプト冒頭のコメント）:
 
-0. **選択と視聴開始の分離**: `/live?service=<Service.id>` を
-   開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）。
-   「再生」ボタンを押して初めて要求が飛ぶ。**併せて、要求した `Service.id` が
-   実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` が
-   ちょうど 1 件で、その `href` に要求した id が載っていることを確かめる。
-   1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの壊れ方
-   （`pages/live.test.tsx` で固定）。
-   ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、
-   ①〜⑦と異なりゲートしていない。
-   ①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後に
-   このボタンを押す手順を挟んでいる
+0. **選択と視聴開始の分離**: `/live?service=<Service.id>` を開いた直後はプレイリスト/セグメント要求が 0 件（`page.route` で観測）。「再生」ボタンを押して初めて要求が飛ぶ。**併せて、要求した `Service.id` が実際に選ばれたことも見る**。チャンネル一覧の `aria-current="page"` がちょうど 1 件で、その `href` に要求した id が載っていることを確かめる。1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの壊れ方（`pages/live.test.tsx` で固定）。ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、①〜⑦と異なりゲートしていない。①〜⑦は「再生」ボタンを押した後の挙動を見るものなので、`page.goto` の後にこのボタンを押す手順を挟んでいる
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される
-2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は
-   hls.js が `sourceopen` 後に object URL を revoke するので短命である。
-   これだけを見ると取り逃がす
-3. **実 Chrome のみ**（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）:
-   `video.play()` 後に `currentTime` が進み、`videoWidth > 0`。あわせて
-   遅延・バッファの計器（「放送から約 n 秒 / 先読み n 秒」）が実際に数値になり、
-   `NaN` を描画していないことも見る（`docs/frontend/live.md`
-   §遅延・バッファの計器）
-4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる
-   （`LivePlayer` の effect cleanup が実際に効いていることの検証）
+2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は hls.js が `sourceopen` 後に object URL を revoke するので短命である。これだけを見ると取り逃がす
+3. **実 Chrome のみ**（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）: `video.play()` 後に `currentTime` が進み、`videoWidth > 0`。あわせて遅延・バッファの計器（「放送から約 n 秒 / 先読み n 秒」）が実際に数値になり、`NaN` を描画していないことも見る（`docs/frontend/live.md` §遅延・バッファの計器）
+4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる（`LivePlayer` の effect cleanup が実際に効いていることの検証）
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する
-6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を
-   **読み込まない**・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が
-   進む（`currentTime` が進み `videoWidth > 0`。WebKit は `<video>` が MPEG-2 TS
-   を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる）
-7. **ネイティブ経路のメディア失敗が画面に出る**（WebKit）: プレイリストは 200 だが
-   セグメントが 404 / 無応答のとき、エラー表示と `再読み込み` ボタンが出る。
-   probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと
-   **永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う
-   （404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る。**無応答側の
-   窓は 40 秒ある** --- 自動降格（⑪）が猶予の満了で 1 回挟まるためで、実測
-   31.5 秒かかる（降格の導入前は 30 秒で足りていた）。窓そのものが「黒いままに
-   ならない」の上限なので、40 秒より広げない（降格は段が尽きるまで繰り返すので、
-   プロファイルが 3 件以上のデプロイではこの時間はさらに伸びる）
+6. **WebKit（Safari 相当）でネイティブ HLS 経路に入る**: `assets/hls-*.js` を**読み込まない**・`<video>` に m3u8 の URL がそのまま渡る・そのまま再生が進む（`currentTime` が進み `videoWidth > 0`。WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる）
+7. **ネイティブ経路のメディア失敗が画面に出る**（WebKit）: プレイリストは 200 だがセグメントが 404 / 無応答のとき、エラー表示と `再読み込み` ボタンが出る。probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと**永久に止まった黒いプレイヤー**になる。壊れ方で出るイベントが違う（404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る。**無応答側の窓は 40 秒ある** --- 自動降格（⑪）が猶予の満了で 1 回挟まるためで、実測 31.5 秒かかる（降格の導入前は 30 秒で足りていた）。窓そのものが「黒いままにならない」の上限なので、40 秒より広げない（降格は段が尽きるまで繰り返すので、プロファイルが 3 件以上のデプロイではこの時間はさらに伸びる）
 10. **字幕の表示が画質の切替で失われないか**（⑩。issue #869）。フィクスチャに
-   字幕レンディション（master playlist + WebVTT）を持たせ、**2 方向**を見る。
-   hls.js 経路（Chromium）は利用者が切ってから切り替えても `hidden` のままである
-   こと。ネイティブ経路（WebKit）は利用者が入にしてから切り替えても `showing` の
-   ままであること。**後者は `loadedmetadata` で揃えるだけでは落ちる**（WebKit は
-   その時点でまだトラックを作っていない。実測で `disabled` に戻った）。
-   `LivePlayer` が `TextTrackList` の `addtrack` でも適用している理由である
+   字幕レンディション（master playlist + WebVTT）を持たせ、**2 方向**を見る。hls.js 経路（Chromium）は利用者が切ってから切り替えても `hidden` のままであること。ネイティブ経路（WebKit）は利用者が入にしてから切り替えても `showing` のままであること。**後者は `loadedmetadata` で揃えるだけでは落ちる**（WebKit はその時点でまだトラックを作っていない。実測で `disabled` に戻った）。`LivePlayer` が `TextTrackList` の `addtrack` でも適用している理由である
 
-9. **画質（プロファイル）の切替**（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）を
-   **わざと保留したまま**「再生」を押し、後から届かせても**プレイリストを取り直さない**
-   ことを見る（`LivePlayer` に導出した既定を渡す実装だと、一覧の到着で `profile` が
-   変わって `<video>` が作り直され、先頭から再生し直しになる）。あわせて、選択中の
-   画質で `?profile=` が実際に要求に載ること・切替で離脱ヒントを送らないこと・
-   切替を跨いで音量とミュートが保たれることを見る。**この 4 点は
-   `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある**（音量・
-   ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で
-   `<video>` を作り直さないことの側である。`docs/frontend/live.md`）
+9. **画質（プロファイル）の切替**（issue #869 / M4-21）。一覧（`GET /api/live-profiles`）を**わざと保留したまま**「再生」を押し、後から届かせても**プレイリストを取り直さない**ことを見る（`LivePlayer` に導出した既定を渡す実装だと、一覧の到着で `profile` が変わって `<video>` が作り直され、先頭から再生し直しになる）。あわせて、選択中の画質で `?profile=` が実際に要求に載ること・切替で離脱ヒントを送らないこと・切替を跨いで音量とミュートが保たれることを見る。**この 4 点は `key={activeProfile}` を足す変異で 4 件とも落ちることを確認してある**（音量・ミュートは「復元しなくても通る」ので、この 2 件が守っているのは切替で `<video>` を作り直さないことの側である。`docs/frontend/live.md`）
 
-8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と
-   同じ切り替え操作を観測する）。**jsdom では原理的に測れない** ---
-   `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは
-   差し替えた関数が呼ばれたかという配線だけで、実ブラウザが本当にネットワーク
-   要求として送出するかはここでしか出ない。離れた側（A）にだけ飛ぶことを見る。
-   これから見るチャンネル（B）には飛ばないことも見る
+8. **チャンネル切り替えで離脱ヒントが実際に飛ぶ**（`POST .../live/leave`。④ と同じ切り替え操作を観測する）。**jsdom では原理的に測れない** --- `navigator.sendBeacon` が jsdom に無いため、ユニットテストが見ているのは差し替えた関数が呼ばれたかという配線だけで、実ブラウザが本当にネットワーク要求として送出するかはここでしか出ない。離れた側（A）にだけ飛ぶことを見る。これから見るチャンネル（B）には飛ばないことも見る
 
 11. **停滞したら画質が 1 段下がる**（⑪。issue #871）。**まず実再生させ**（`currentTime`
-   が進むことを確かめる）、そのうえで配信を止める。`?profile=` が無いときは 1 段
-   下がった先（`sd`）のプレイリストを取りに行くことを見る。通知（`映像が止まったため、画質を
-   sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致することと、離脱ヒントを
-   送らないことも見る。**さらに配信を復旧させ、そのまま再生が続くこと**
-   （`currentTime` が進み `paused=false`）を見る。**配信側が実際にセグメントを配った
-   こと**（`currentTime` の前進だけでは「切替で 0 秒から読み直して 1 本だけ再生した」
-   場合と区別できない）も見る。切替は `load()` で `paused` を戻すので、ここを
-   見ないと「画質だけ下げて黒いまま」を見逃す。
+   が進むことを確かめる）、そのうえで配信を止める。`?profile=` が無いときは 1 段下がった先（`sd`）のプレイリストを取りに行くことを見る。通知（`映像が止まったため、画質を sd（480p）に下げました`）と画質セレクタの表示が下がった先に一致することと、離脱ヒントを送らないことも見る。**さらに配信を復旧させ、そのまま再生が続くこと**（`currentTime` が進み `paused=false`）を見る。**配信側が実際にセグメントを配ったこと**（`currentTime` の前進だけでは「切替で 0 秒から読み直して 1 本だけ再生した」場合と区別できない）も見る。切替は `load()` で `paused` を戻すので、ここを見ないと「画質だけ下げて黒いまま」を見逃す。
 
-   **利用者が明示的に選んだ画質（`?profile=hd`）では下げない**側も見る（同じ壊し方・
-   同じ待ち時間で、自動側が実際に下がっていることが前提にあるので「下がらない」が
-   空虚な成功にならない）。**停滞の閾値（12 秒）は実時間なので、この判定だけで
-   1 分半ほどかかる**。
-   実測: 自動は 22〜23 秒で降格し、復旧後は再生が続く。
-   降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く
-   （`docs/frontend/live.md` §フロントエンド実装）
+   **利用者が明示的に選んだ画質（`?profile=hd`）では下げない**側も見る（同じ壊し方・同じ待ち時間で、自動側が実際に下がっていることが前提にあるので「下がらない」が空虚な成功にならない）。**停滞の閾値（12 秒）は実時間なので、この判定だけで 1 分半ほどかかる**。実測: 自動は 22〜23 秒で降格し、復旧後は再生が続く。降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く（`docs/frontend/live.md` §フロントエンド実装）
 
-初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコード
-した 40 秒ぶん）を生成する。`os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1`
-で強制再生成）。**ffmpeg が無い環境・Chrome が無い環境では、その判定だけを
-「未測定」として報告し（NG にはしない）残りは続行する**。
+初回実行は ffmpeg で固定フィクスチャ（testsrc + sine を H.264/AAC でエンコードした 40 秒ぶん）を生成する。`os.tmpdir()` にキャッシュする（`E2E_LIVE_REBUILD_FIXTURE=1` で強制再生成）。**ffmpeg が無い環境・Chrome が無い環境では、その判定だけを「未測定」として報告し（NG にはしない）残りは続行する**。
 
 **この手段が実際に発見した回帰（2 件）**:
 
-1. `supportsNativeHls`（`lib/live.ts`）が
-   `canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と
-   見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の
-   本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら
-   Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず
-   沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行して
-   いなかった --- `canPlayType` が jsdom では常に `''` を返すため
-2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**に
-   なっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、
-   codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは
-   codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回して
-   いなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて
-   機械判定できるようになった。判定は「プレイリストとセグメントの両方の
-   Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは
-   WebKit だけ）に置き換えてある
+1. `supportsNativeHls`（`lib/live.ts`）が `canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行していなかった --- `canPlayType` が jsdom では常に `''` を返すため
+2. その修正（`'probably'` のみを対応と見なす）が**どの実ブラウザでも false**になっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは codecs の有無であってエンジンではない。**①〜⑤ が Chromium 系しか回していなかったので、この回帰は e2e 緑のまま通った。**⑥（WebKit）を足して初めて機械判定できるようになった。判定は「プレイリストとセグメントの両方の Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは WebKit だけ）に置き換えてある
 
 #### 音声の切替（`web/e2e/live-audio.mjs`。サーバーも DB も不要）
 
-`pnpm preview` だけで回る（`/api/**` とライブの HLS を `page.route` で差し替える）。
-ライブの HLS は ffmpeg が L 440Hz / R 880Hz のステレオから実時間で書き続ける。
+`pnpm preview` だけで回る（`/api/**` とライブの HLS を `page.route` で差し替える）。ライブの HLS は ffmpeg が L 440Hz / R 880Hz のステレオから実時間で書き続ける。
 
 ```sh
 cd web && pnpm build
@@ -352,15 +174,8 @@ pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:live-audio
 ```
 
-変異で落ちることを確かめてある。ffmpeg の引数から `program_date_time` を外すと
-① の「標準へ戻る」で落ちる。`LivePlayer` の hls.js への適用を外すと主 / 副で落ちる。
-② は 11 回中 1 回、副を選んでも `audioTracks` が揃わず落ちた（原因は未特定。PDT の
-有無とは無関係だった）。落ちたら 10 秒後の `enabled` の並びが出る。
+変異で落ちることを確かめてある。ffmpeg の引数から `program_date_time` を外すと① の「標準へ戻る」で落ちる。`LivePlayer` の hls.js への適用を外すと主 / 副で落ちる。② は 11 回中 1 回、副を選んでも `audioTracks` が揃わず落ちた（原因は未特定。PDT の有無とは無関係だった）。落ちたら 10 秒後の `enabled` の並びが出る。
 
 ### CI では回さない
 
-`web/e2e/checks.mjs` と同じ理由（実サーバー・実データ依存）。①は実 mirakc/
-実チューナーも要るため輪をかけて CI に載せられない。②のみなら理論上は
-サーバー + Postgres + Chrome があれば CI でも回せる。ただし、実 Chrome チャンネルの
-インストールと ffmpeg の用意が CI イメージに新しい依存を足すため、現時点では
-ローカル受け入れ確認の位置づけのままにしてある。
+`web/e2e/checks.mjs` と同じ理由（実サーバー・実データ依存）。①は実 mirakc/ 実チューナーも要るため輪をかけて CI に載せられない。②のみなら理論上はサーバー + Postgres + Chrome があれば CI でも回せる。ただし、実 Chrome チャンネルのインストールと ffmpeg の用意が CI イメージに新しい依存を足すため、現時点ではローカル受け入れ確認の位置づけのままにしてある。

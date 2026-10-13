@@ -1,10 +1,8 @@
 # ロール分割デプロイの受け入れ判定ハーネス（kind + KEDA）
 
-**k8s デプロイには `pnpm test` に相当するものが無い。** kind を立てるまで何も
-分からない。ここはその「立てて機械判定する」側を持つ。
+**k8s デプロイには `pnpm test` に相当するものが無い。** kind を立てるまで何も分からない。ここはその「立てて機械判定する」側を持つ。
 
-実行手順は [docs/runbook/k8s.md](../../../docs/runbook/k8s.md)
-§受け入れ判定ハーネス。**CI では回さない**（同節に理由と「いつ誰が回すか」）。
+実行手順は [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス。**CI では回さない**（同節に理由と「いつ誰が回すか」）。
 
 ```sh
 ./deploy/k8s/e2e/run.sh                      # 5 項目を判定する
@@ -15,21 +13,11 @@ E2E_ORACLES_ONLY=3 ./deploy/k8s/e2e/run.sh --oracles   # オラクルも一部�
 ./deploy/k8s/e2e/run.sh --down               # クラスタを消す
 ```
 
-`--faults` は通常の 5 項目と別に走る。同じ使い捨て kind + KEDA クラスタを使う。
-**PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。**
-Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままにする。
-故障後の収束の正本はこの kind suite にする。
-役割分割のキュー、DB 接続、永続 volume をまとめて扱えるためである。
+`--faults` は通常の 5 項目と別に走る。同じ使い捨て kind + KEDA クラスタを使う。**PostgreSQL・worker・media volume・mirakc mock を含む実デプロイの状態遷移を測る。** Compose の smoke test はコンテナ起動と catalog 書き込みを検査する目的のままにする。故障後の収束の正本はこの kind suite にする。役割分割のキュー、DB 接続、永続 volume をまとめて扱えるためである。
 
-この suite はデータを持たない `rokuban-e2e` 名前空間に限る。
-worker kill は実行中 encode Pod だけに `--force --grace-period=0` を送る。
-PostgreSQL outage は DB Pod や `emptyDir` を消さず、Service selector を一時的に空振りさせる。
-そのうえで既存 app connection を切り、`readyz=503` を観測してから Service を戻す。
+この suite はデータを持たない `rokuban-e2e` 名前空間に限る。worker kill は実行中 encode Pod だけに `--force --grace-period=0` を送る。PostgreSQL outage は DB Pod や `emptyDir` を消さず、Service selector を一時的に空振りさせる。そのうえで既存 app connection を切り、`readyz=503` を観測してから Service を戻す。
 
-中断時は EXIT trap が selector と CronJob を戻す。
-trap が走らなかった場合は、次回の `run.sh` が `deploy_scaffold` で `scaffold.yaml` を再適用して selector を戻す。
-CronJob は `restore_cronjobs` が戻す（この復元経路は未検証）。
-preflight は Service selector を見ない。
+中断時は EXIT trap が selector と CronJob を戻す。trap が走らなかった場合は、次回の `run.sh` が `deploy_scaffold` で `scaffold.yaml` を再適用して selector を戻す。CronJob は `restore_cronjobs` が戻す（この復元経路は未検証）。preflight は Service selector を見ない。
 
 ## 出力は 3 値である
 
@@ -41,56 +29,24 @@ preflight は Service selector を見ない。
 
 終了コードは `0`（全部 PASS）/ `1`（FAIL あり）/ `2`（FAIL なし・TODO あり）。
 
-**2 値にしない。** 「まだ作っていない」と「作ったが壊れている」を同じ赤に
-すると、残りのワークロードを足していく途中で何が退行したのか出力から分から
-なくなる。`TODO` のメッセージには**何が見つからなかったか**を書く（「未実装」
-とだけ書かない）。
+**2 値にしない。** 「まだ作っていない」と「作ったが壊れている」を同じ赤にすると、残りのワークロードを足していく途中で何が退行したのか出力から分からなくなる。`TODO` のメッセージには**何が見つからなかったか**を書く（「未実装」とだけ書かない）。
 
-**`2` を `0` に丸めない。** TODO が 1 つでも残っている限りこのハーネスは成功を
-返してはならない。同じ理由で、`--only` で一部だけ回したときも 0 は返さない。
+**`2` を `0` に丸めない。** TODO が 1 つでも残っている限りこのハーネスは成功を返してはならない。同じ理由で、`--only` で一部だけ回したときも 0 は返さない。
 
-**ただし `0` は「選んだ suite の判定を完了した」であって「ワークロードが揃った」
-ではない。** `0` が保証**しない**もの:
+**ただし `0` は「選んだ suite の判定を完了した」であって「ワークロードが揃った」ではない。** `0` が保証**しない**もの:
 
-- **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue`
-  の対象は複数ある（一覧は `rokuban enqueue --help`）。
-  `worker.periodic_jobs: false` の下では全部が CronJob 側に移るので、
-  1 本を除いて全部欠けていても 0 になる
-- **ScaledJob は `epg_<site>` / `reconciler_<site>` / `encode` しか見ていない。**
-  `ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
-- **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの
-  網羅は見ていない（site B の watcher が無くても判定 1 は緑）
-- **役ごとの到達性は見ていない。** Service も Ingress も無い notifier でも、
-  Deployment が Ready なら判定 1.2 は緑になる。`/api/events` が notifier に
-  届くかは誰も測っていない
-- **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では
-  in-process の定期ジョブ（`rokuban enqueue --help` の全ジョブ）が CronJob 側に移る。判定が見るのは
-  `epg-sync` の 1 本だけ
-- **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は
-  実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、
-  `overlays/e2e` が毎分に patch している。**出荷値のほうは別の判定で固定している** --- 判定だけを見て
-  いると、「判定が緑になるから」で base が毎分になったことに気付けない
-- **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている
-  `component=streamer` は録画配信のほうである
-- **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が
-  1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、
-  requests は worker 10m / 常駐 25m。**削らないと判定が
-  `Insufficient cpu` で止まる**（実測）。ScaledJob は滞留 1 件ごとに Job を
-  起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。
-  出荷値は base 側にある
-- **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` /
-  `encode_rebuild` が同じキューに載るので、長いエンコードの裏で詰まらせ
-  ないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の
-  1 つ目を追いかけるので、2 本目が起きると**短い方を観測して**「窓の中で
-  完走した」= TODO に化ける
-- **RWX は検証していない。** media の PVC は base では `ReadWriteMany` だが、
-  `overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて
-  `ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない
-  （同じノード上のディレクトリを複数の Pod が開いているだけ）
+- **CronJob は `epg-sync --site <A>` の 1 本しか見ていない。** `rokuban enqueue` の対象は複数ある（一覧は `rokuban enqueue --help`）。`worker.periodic_jobs: false` の下では全部が CronJob 側に移るので、1 本を除いて全部欠けていても 0 になる
+- **ScaledJob は `epg_<site>` / `reconciler_<site>` / `encode` しか見ていない。**`ingest_<site>` / `watcher_<site>` が欠けていても 0 になる
+- **Deployment は役ごとの存在と「宣言した数だけ Ready」だけ。** サイトごとの網羅は見ていない（site B の watcher が無くても判定 1 は緑）
+- **役ごとの到達性は見ていない。** Service も Ingress も無い notifier でも、Deployment が Ready なら判定 1.2 は緑になる。`/api/events` が notifier に届くかは誰も測っていない
+- **定期パスの網羅も見ていない。** `worker.periodic_jobs: false` の下では in-process の定期ジョブ（`rokuban enqueue --help` の全ジョブ）が CronJob 側に移る。判定が見るのは `epg-sync` の 1 本だけ
+- **判定 2 が測るのは出荷される schedule ではない。** base の epg-sync は実運用の 10 分間隔だが、判定 2.3 は 180 秒以内の自然発火を要求するので、`overlays/e2e` が毎分に patch している。**出荷値のほうは別の判定で固定している** --- 判定だけを見ていると、「判定が緑になるから」で base が毎分になったことに気付けない
+- **ライブ視聴の streamer（`site/live-streamer.yaml`）は見ていない。** 判定 1.4 が Ready を見ている `component=streamer` は録画配信のほうである
+- **レプリカ数と `resources.requests` は出荷値ではない。** `overlays/e2e` が 1 ノードの kind に収まるように削っている。notifier / streamer は 1 で、requests は worker 10m / 常駐 25m。**削らないと判定が `Insufficient cpu` で止まる**（実測）。ScaledJob は滞留 1 件ごとに Job を起こすので、CronJob が毎分投入する構成では Pod が十数個並ぶ。出荷値は base 側にある
+- **`encode` の同時実行本数は出荷値ではない。** base は 2（`encode_reconcile` / `encode_rebuild` が同じキューに載るので、長いエンコードの裏で詰まらせないため）だが、`overlays/e2e` は 1 に絞っている --- 判定 3 は active な Job の 1 つ目を追いかけるので、2 本目が起きると**短い方を観測して**「窓の中で完走した」= TODO に化ける
+- **RWX は検証していない。** media の PVC は base では `ReadWriteMany` だが、`overlays/e2e` は kind の既定 StorageClass（rancher.io/local-path）に合わせて `ReadWriteOnce` に落としている。判定が緑でも「RWX が効いた」証拠にはならない（同じノード上のディレクトリを複数の Pod が開いているだけ）
 
-**網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている**
-（`deploy/k8s/workloads_test.go`）。クラスタを立てずに機械判定できるのは
-次の 3 つ。
+**網羅を判定に入れる代わりに、`go test ./deploy/k8s/` が形で見ている**（`deploy/k8s/workloads_test.go`）。クラスタを立てずに機械判定できるのは次の 3 つ。
 
 - 全キューに ScaledJob があるか
 - `rokuban enqueue` の全ジョブに CronJob があるか
@@ -100,14 +56,9 @@ preflight は Service selector を見ない。
 
 **このハーネスが見るのは、そこから先の「実際に動くか」だけである。**
 
-**判定が黙って死ぬのも 0 にしない。** 各判定は自分が記録するはずの id を
-`plan` で先に宣言し、宣言と記録が食い違えば集計側が FAIL を書き足す。これが
-無いと、全部 PASS になった後で「判定 5 が起動直後に落ちた」が exit 0 になる。
+**判定が黙って死ぬのも 0 にしない。** 各判定は自分が記録するはずの id を `plan` で先に宣言し、宣言と記録が食い違えば集計側が FAIL を書き足す。これが無いと、全部 PASS になった後で「判定 5 が起動直後に落ちた」が exit 0 になる。
 
-**環境の破損を TODO にしない。** 判定の前に preflight（0.1〜0.5）が走り、
-クラスタ・名前空間・KEDA の CRD・製品マニフェスト・DB とマイグレーション・
-身代わりの残骸を確かめる。ここが無いと、KEDA の導入に失敗しただけで全項目が
-「まだ実装されていない」と**1 文字違わない出力**になる。
+**環境の破損を TODO にしない。** 判定の前に preflight（0.1〜0.5）が走り、クラスタ・名前空間・KEDA の CRD・製品マニフェスト・DB とマイグレーション・身代わりの残骸を確かめる。ここが無いと、KEDA の導入に失敗しただけで全項目が「まだ実装されていない」と**1 文字違わない出力**になる。
 
 ## 判定する 5 項目
 
@@ -119,21 +70,11 @@ preflight は Service selector を見ない。
 | 4 | watcher を 2 レプリカにしても二重に動かない（advisory lock の実効） | site A の watcher Deployment |
 | 5 | サイト B の滞留でサイト A の Job が起きない | `epg_A` / `epg_B` の ScaledJob |
 
-この表は判定を足したり対象を変えたりする人が更新する。**実測の結果はここに
-書かない** --- 環境と対にして [docs/runbook/k8s.md](../../../docs/runbook/k8s.md)
-§受け入れ判定ハーネス に置いてある（両方に書くと片方だけ古くなる）。
+この表は判定を足したり対象を変えたりする人が更新する。**実測の結果はここに書かない** --- 環境と対にして [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) §受け入れ判定ハーネス に置いてある（両方に書くと片方だけ古くなる）。
 
-判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側を
-それぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に
-入った状態で 1.7 が「作っていないのに壊れている」に化ける（同じ ScaledJob が
-両方に一致する構成でも通る。どうまとめるかは判定側で決めない）。
+判定 1.6 は `epg_<site>` を、判定 1.7 は `reconciler_<site>` を消化する側をそれぞれ別に探す。1 つの鍵で両方を代表させると、epg の ScaledJob だけ先に入った状態で 1.7 が「作っていないのに壊れている」に化ける（同じ ScaledJob が両方に一致する構成でも通る。どうまとめるかは判定側で決めない）。
 
-判定は**名前ではなく振る舞いと argv で対象を引く**（`lib/kube.sh`）。
-`app.kubernetes.io/component=<役>` のラベル（base が既に採っている規約）と、
-`--sites <site>` / キュー名への言及で探す。命名の合意まで要求しないため
-（不変条件 11: 形を固定する前に判定基準を書く）。**一致が複数あったら
-TODO でも PASS でもなく FAIL にする** --- 黙って 1 つ目を選ぶと、無関係な
-オブジェクトを判定して緑を出す。
+判定は**名前ではなく振る舞いと argv で対象を引く**（`lib/kube.sh`）。`app.kubernetes.io/component=<役>` のラベル（base が既に採っている規約）と、 `--sites <site>` / キュー名への言及で探す。命名の合意まで要求しないため（不変条件 11: 形を固定する前に判定基準を書く）。**一致が複数あったら TODO でも PASS でもなく FAIL にする** --- 黙って 1 つ目を選ぶと、無関係なオブジェクトを判定して緑を出す。
 
 <details><summary>根拠</summary>
 
@@ -160,40 +101,19 @@ kind クラスタ rokuban-e2e / 名前空間 rokuban-e2e
     投入側の CronJob（base の site 非依存 + site 束縛 ×2）
 ```
 
-**mirakc は実機ではなくモックで確認した。** 実機はチューナー資源を要求し、
-EPG が揃うまで待たされるので kind に載せられない。モックが実装しているのは
-rokuban が実際に叩く経路だけで、未実装のパスは 404 ではなく 501 を返す
-（「モックが持っていない」と「mirakc が持っていない」を出力で区別するため）。
+**mirakc は実機ではなくモックで確認した。** 実機はチューナー資源を要求し、EPG が揃うまで待たされるので kind に載せられない。モックが実装しているのは rokuban が実際に叩く経路だけで、未実装のパスは 404 ではなく 501 を返す（「モックが持っていない」と「mirakc が持っていない」を出力で区別するため）。
 
-モックのレスポンスは **`internal/mirakc` の型をそのまま組み立てて**返す。wire 形を
-書き写すと、JSON タグのズレを止めるものが無くなる（症状は「番組表が空」で、
-モックを疑うまでがいちばん遠い）。`go test ./deploy/k8s/e2e/...` は**製品の
-クライアントで**モックの全エンドポイントを読み、製品が実際に見るフィールドが
-埋まっていることまで見る。
+モックのレスポンスは **`internal/mirakc` の型をそのまま組み立てて**返す。wire 形を書き写すと、JSON タグのズレを止めるものが無くなる（症状は「番組表が空」で、モックを疑うまでがいちばん遠い）。`go test ./deploy/k8s/e2e/...` は**製品のクライアントで**モックの全エンドポイントを読み、製品が実際に見るフィールドが埋まっていることまで見る。
 
-モックが持つハーネス固有の機能は 2 つ。1 つは **`/events` の同時接続数を数えて
-`/mock/stats` で公開する**こと。判定 4 はこの数値だけで機械判定できる。
-watcher の singleton 性が主張しているのは「mirakc に N 本の SSE を張らない」
-ことそのものだからである（`internal/role/leader.go` のパッケージコメント）。
-もう 1 つは **`POST /mock/reset`** で、周回ごとに録画予約を空へ戻す。
+モックが持つハーネス固有の機能は 2 つ。1 つは **`/events` の同時接続数を数えて `/mock/stats` で公開する**こと。判定 4 はこの数値だけで機械判定できる。watcher の singleton 性が主張しているのは「mirakc に N 本の SSE を張らない」ことそのものだからである（`internal/role/leader.go` のパッケージコメント）。もう 1 つは **`POST /mock/reset`** で、周回ごとに録画予約を空へ戻す。
 
-**判定は前の周回の残骸を消してから測る。** クラスタは使い回す設計なので、
-消さないと判定 1 が「前回の EPG と予約が見える」ことを主張するだけになる。
-同じ理由で Job の観測は `--watch-only` + 開始時点のスナップショットで
-「**今回新しく現れた Job**」に限定している。`--watch` は既存の Job を ADDED で
-吐くので、前回の完走 Job がそのまま今回の証拠になってしまう。
+**判定は前の周回の残骸を消してから測る。** クラスタは使い回す設計なので、消さないと判定 1 が「前回の EPG と予約が見える」ことを主張するだけになる。同じ理由で Job の観測は `--watch-only` + 開始時点のスナップショットで「**今回新しく現れた Job**」に限定している。`--watch` は既存の Job を ADDED で吐くので、前回の完走 Job がそのまま今回の証拠になってしまう。
 
-`worker.periodic_jobs` は **false** で出荷している（`overlays/e2e/config.yml`）。
-true のままだと、判定 2 が「worker が自分で投入して自分で消化した」でも緑に
-なりうる。
+`worker.periodic_jobs` は **false** で出荷している（`overlays/e2e/config.yml`）。true のままだと、判定 2 が「worker が自分で投入して自分で消化した」でも緑になりうる。
 
 ## 故障注入 suite（`--faults`）
 
-通常の 5 項目は「健全なクラスタで各ロールが動くか」を見る。`--faults` はそれと
-別の suite で、故障を実際に起こしてから durable な状態が収束することを判定する。
-この suite の正本は kind + KEDA にする。worker Pod の kill、River queue、PostgreSQL
-接続、media PVC を同じデプロイ上で検査でき、Compose の monolith smoke test では
-確認できないからである。
+通常の 5 項目は「健全なクラスタで各ロールが動くか」を見る。`--faults` はそれと別の suite で、故障を実際に起こしてから durable な状態が収束することを判定する。この suite の正本は kind + KEDA にする。worker Pod の kill、River queue、PostgreSQL 接続、media PVC を同じデプロイ上で検査でき、Compose の monolith smoke test では確認できないからである。
 
 | 判定 | 注入 | 機械判定する収束 |
 |---|---|---|
@@ -201,93 +121,53 @@ true のままだと、判定 2 が「worker が自分で投入して自分で�
 | F2 | PostgreSQL Service selector を一時的に空振りさせ、既存 app connection を切断 | `/readyz` が 503 になり、Service 復帰後に 200 へ戻る。DB outage 中に失った mirakc mock の schedule が `reconcile-pass` で戻る |
 | F3 | mirakc mock の `/api/tuners` を止めて `tuner_sync` を掴ませ、その worker Pod を force-delete。CronJob は止めない | 締切（`max(worker.rescue_stuck_jobs_after, Timeout)`）+ 300 秒以内に River の JobRescuer が rescue し（F3.3）、再実行が completed になる（F3.4）。rescue の時刻、そのときの leader、kill からの秒数をログに出す |
 
-F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。
-client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
+F3.1 は CronJob を動かしたまま、notifier Deployment の常駐 River client 設定を確認し、toolbox に手動起動した worker client がないことも実行プロセスから確認する。client は `--roles notifier,worker --queues ruler --sites=` で起動し、`--once` は付けない。
 
 Ruler は site 非依存で DB のみを使う。既存の ruler ScaledJob も同じ queue を引き、River が job claim を調停する。
 
 `overlays/e2e/config.yml` の `worker.rescue_stuck_jobs_after: 1m` は、この判定を数分で終えるためだけに縮めてある。
 
-F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。
-`--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
+F3.3 は rescue の時刻・leader・kill からの秒数を記録し、**rescue 時点の leader が `rokuban-notifier-*` の Pod でなければ FAIL にする**。 `--once` の Pod が leader になって rescue した場合は、常駐 client の回収と数えない。
 
 F3.4 は再実行の completed を見る。
 
 resident client の値を 24h にする変異では F3.3 が FAIL することを確認する。
 
-**F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できる。
-`E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
+**F3 は既定の `--faults` に含める。** `E2E_FAULTS_ONLY=03 ./deploy/k8s/e2e/run.sh --faults` で単独実行できる。`E2E_FAULTS_ONLY` を付けた実行は、すべて緑でも一部実行として 0 ではなく 2 を返す。合う script が無ければ FAIL にする。
 
-F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・
-worker・KEDA operator からの新規接続を失わせ、既存の pool connection も
-`pg_terminate_backend` で切る。`readyz=503` を確認できなければ outage と見なさず FAIL
-にする。中断時は EXIT trap が Service selector と CronJob を復元する。
+F2 は postgres Pod / `emptyDir` を削除しない。Service endpoint の切り離しにより API・worker・KEDA operator からの新規接続を失わせ、既存の pool connection も `pg_terminate_backend` で切る。`readyz=503` を確認できなければ outage と見なさず FAIL にする。中断時は EXIT trap が Service selector と CronJob を復元する。
 
-worker kill の判定は次の 2 つを直接固定する。
-JobRescuer による F1.4 の再試行または encoded asset 公開が成立しないと FAIL する。
-`until_encoded_deletable_originals` の「全プロファイルがエンコード済み」の条件を外すと、
-F1.3 で original が削除されて FAIL になる。
-fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。
-F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
+worker kill の判定は次の 2 つを直接固定する。JobRescuer による F1.4 の再試行または encoded asset 公開が成立しないと FAIL する。`until_encoded_deletable_originals` の「全プロファイルがエンコード済み」の条件を外すと、F1.3 で original が削除されて FAIL になる。fixture に有効な thumbnail と seek_tiles を入れてあるので、original を守るのはこの条件だけである。F2.2 は期待した `program_id` の mirakc schedule を照合するため、単に worker が起きたことでは PASS しない。
 
-fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。
-その場合は F2 の予約 seed が mirakc に届かない。
-F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
+fixture の録画の放送イベントが mock の EPG と同じだと、ruler はその番組を fulfilled として desired から外す。その場合は F2 の予約 seed が mirakc に届かない。F1 の録画は service_id を EPG と重ならない値にしてあるので、この衝突は起きない。
 
-API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite では注入しない。
-どれも「fixture を作って故障を起こし、durable な状態の収束を DB と API で判定する」形に収まらない。
-収束の判定基準が故障ごとに別で、状態遷移の期待値を先に決める必要があるためである。
-基準が決まったときに、別の状態遷移判定として足す。
+API restart、NOTIFY/SSE 欠落、media mount 遅延、mirakc 再起動はこの suite では注入しない。どれも「fixture を作って故障を起こし、durable な状態の収束を DB と API で判定する」形に収まらない。収束の判定基準が故障ごとに別で、状態遷移の期待値を先に決める必要があるためである。基準が決まったときに、別の状態遷移判定として足す。
 
-`--faults` は 240 秒の media fixture と stale recovery の 1 分閾値、実 encode の完了
-を待つので数分以上かかる。クラスタを起動する動的判定は CI では回さない。
-CI は shellcheck・YAML schema・既存のクラスタ不要 selftest を回す。
-k8s / recovery / storage の変更を出す人は PR 前に `run.sh --faults` を実行する（詳細は
-[docs/runbook/k8s.md](../../../docs/runbook/k8s.md) と
-[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
+`--faults` は 240 秒の media fixture と stale recovery の 1 分閾値、実 encode の完了を待つので数分以上かかる。クラスタを起動する動的判定は CI では回さない。CI は shellcheck・YAML schema・既存のクラスタ不要 selftest を回す。k8s / recovery / storage の変更を出す人は PR 前に `run.sh --faults` を実行する（詳細は [docs/runbook/k8s.md](../../../docs/runbook/k8s.md) と [docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
 
 ## オラクルの自己検査（`--oracles`）
 
-**「判定が存在すること」と「判定が効くこと」は違う。** `--oracles` は
-判定 1〜5 のそれぞれについて
+**「判定が存在すること」と「判定が効くこと」は違う。** `--oracles` は判定 1〜5 のそれぞれについて
 
 1. 正しく動く**身代わり**（`fixtures/`）を立てて判定が緑になることを見る
 2. **それを 1 か所だけ壊して**判定が赤になることを見る
 
 の 2 本立てで確かめる。**2 が無ければ 1 は何も保証しない。**
 
-身代わりは製品のワークロードではない。判定 2 / 3 / 5 が見ているのは
-「KEDA のトリガが site 修飾されたキューを見て、滞留があるときだけ Job を
-起こすか」であって Job の中身ではないので、身代わりの中身は psql 1 行で足りる。
-**ここに製品のマニフェストを先に書かない**（書くと、判定が「自分で書いた正解」と
-突き合わせるだけになる）。判定 4 だけは本物の rokuban イメージを動かす ---
-`pg_try_advisory_lock` の実効を見る判定なので、身代わりにすると製品のコードを
-一度も通らない。
+身代わりは製品のワークロードではない。判定 2 / 3 / 5 が見ているのは「KEDA のトリガが site 修飾されたキューを見て、滞留があるときだけ Job を起こすか」であって Job の中身ではないので、身代わりの中身は psql 1 行で足りる。**ここに製品のマニフェストを先に書かない**（書くと、判定が「自分で書いた正解」と突き合わせるだけになる）。判定 4 だけは本物の rokuban イメージを動かす --- `pg_try_advisory_lock` の実効を見る判定なので、身代わりにすると製品のコードを一度も通らない。
 
-身代わりは製品と同じ役ラベル・同じキュー名を名乗るので、オラクル 2〜5 は
-**探索を身代わりに絞って**回す（`E2E_FIXTURE_SCOPE`）。絞らないと、製品の
-ワークロードが入った瞬間に両方が一致して全部 AMBIGUOUS になる。
+身代わりは製品と同じ役ラベル・同じキュー名を名乗るので、オラクル 2〜5 は**探索を身代わりに絞って**回す（`E2E_FIXTURE_SCOPE`）。絞らないと、製品のワークロードが入った瞬間に両方が一致して全部 AMBIGUOUS になる。
 
-**絞るだけでは足りない。** 絞っているのは「どのオブジェクトを判定対象にするか」
-だけで、River のキューも mirakc モックも共有のままである。製品のワークロードが
-入った周回で実測した壊れ方が 2 つある。
+**絞るだけでは足りない。** 絞っているのは「どのオブジェクトを判定対象にするか」だけで、River のキューも mirakc モックも共有のままである。製品のワークロードが入った周回で実測した壊れ方が 2 つある。
 
-- **O3.mut-rollout が FAIL**（判定 3.3 が期待の FAIL ではなく TODO）。製品の
-  `encode` の ScaledJob が、身代わりのために積んだ encode ジョブを先に掴んだ
-- **O5.control が FAIL**（判定 5.3）。positive control で サイト A に積んだ
-  滞留を、製品の `epg_sitea` の ScaledJob が消化した
+- **O3.mut-rollout が FAIL**（判定 3.3 が期待の FAIL ではなく TODO）。製品の `encode` の ScaledJob が、身代わりのために積んだ encode ジョブを先に掴んだ
+- **O5.control が FAIL**（判定 5.3）。positive control で サイト A に積んだ滞留を、製品の `epg_sitea` の ScaledJob が消化した
 
-したがって**オラクル 2〜5 の間は製品のワークロードを止める**
-（`pause_product_workloads`）。ScaledJob は pause、CronJob は suspend、
-watcher の Deployment は 0 レプリカにする。止めたものだけをクラスタ側の
-annotation で覚えて戻すので、中断しても次の `run.sh` が起動時に戻す。
+したがって**オラクル 2〜5 の間は製品のワークロードを止める**（`pause_product_workloads`）。ScaledJob は pause、CronJob は suspend、watcher の Deployment は 0 レプリカにする。止めたものだけをクラスタ側の annotation で覚えて戻すので、中断しても次の `run.sh` が起動時に戻す。
 
-**オラクル 1 は含めない。** あちらは製品の役が上がっていることを見る
-オラクルなので、止めると判定 1.3 が「replicas が 0」で落ちる。
+**オラクル 1 は含めない。** あちらは製品の役が上がっていることを見るオラクルなので、止めると判定 1.3 が「replicas が 0」で落ちる。
 
-**判定 4 は止めないと嘘の緑になる。** 判定 4 が数えるのは mirakc モックの
-`/events` の同時接続数なので、製品の watcher が 1 本張っていると、身代わりが
-0 本でも「1 本」に見える（身代わりが壊れていても緑）。
+**判定 4 は止めないと嘘の緑になる。** 判定 4 が数えるのは mirakc モックの `/events` の同時接続数なので、製品の watcher が 1 本張っていると、身代わりが 0 本でも「1 本」に見える（身代わりが壊れていても緑）。
 
 | 変異 | どこを壊すか | 期待 |
 |---|---|---|
@@ -299,128 +179,49 @@ annotation で覚えて戻すので、中断しても次の `run.sh` が起動�
 | `O4.mut-lock` | **`pg_try_advisory_lock` の戻り値を無視したイメージ**（`mutants/ignore-advisory-lock.py`） | 判定 4.2 が FAIL |
 | `O5.mut-queue` | サイト A のトリガから site 修飾を外す（`queue LIKE 'epg%'`） | 判定 5.2 が FAIL |
 
-**上の変異はすべて実際に注入して、期待どおり判定が赤くなることを確認してある。**
-実測値（件数）は環境と対にして `docs/runbook/k8s.md` §受け入れ判定ハーネス に
-置いてある。ここには書かない（両方に書いたら片方だけ古くなった）。
+**上の変異はすべて実際に注入して、期待どおり判定が赤くなることを確認してある。** 実測値（件数）は環境と対にして `docs/runbook/k8s.md` §受け入れ判定ハーネス に置いてある。ここには書かない（両方に書いたら片方だけ古くなった）。
 
-**効くことを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことが
-そのまま意味なので、ここに明記しておく。
+**効くことを確かめていない判定が 2 つある。** どちらも「変異表に無い」ことがそのまま意味なので、ここに明記しておく。
 
-- **判定 3.2（待ち行列が空になっても殺されない）には変異が無い。** ScaledJob の
-  意味論上、KEDA はキューが空になっても実行中の Job を消さない。身代わりを
-  壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
-- **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が
-  無い。** 製品の worker が入ったので、両方とも実際に緑になることは確認済み
-  （`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」
-  だった。ただし**壊して赤くなることは確かめていない。** 判定 4 が本物の
-  イメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、
-  `epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで
-  通せる
+- **判定 3.2（待ち行列が空になっても殺されない）には変異が無い。** ScaledJob の意味論上、KEDA はキューが空になっても実行中の Job を消さない。身代わりを壊して赤くする方法が思い付かなかった（3.3 と 3.4 は確かめてある）
+- **判定 1.6 / 1.7（番組表が見える / 予約が mirakc に反映される）には変異が無い。** 製品の worker が入ったので、両方とも実際に緑になることは確認済み（`run.sh` の実測）。それ以前は「緑になったことも赤になったこともない判定」だった。ただし**壊して赤くなることは確かめていない。** 判定 4 が本物のイメージで身代わりを立てているのと同じやり方（`fixtures/watcher.yaml`）で、`epg_sync` と `reconcile_pass` を消化する身代わりを足せば、ここも変異まで通せる
 
-変異イメージは**リポジトリの複製**（rsync したツリー）に当てて焼く。
-`git stash` は使わない --- ワークツリーは他の作業と共有されうるし、隔離
-worktree と併用すると stash が互いに干渉する。変異は**コンパイルが通る形**で
-入れる（未使用変数でビルドが落ちると、判定が「FAIL になった」ではなく
-「イメージが無い」で赤くなる）。
+変異イメージは**リポジトリの複製**（rsync したツリー）に当てて焼く。`git stash` は使わない --- ワークツリーは他の作業と共有されうるし、隔離 worktree と併用すると stash が互いに干渉する。変異は**コンパイルが通る形**で入れる（未使用変数でビルドが落ちると、判定が「FAIL になった」ではなく「イメージが無い」で赤くなる）。
 
 ## 残りのワークロードを書くときに
 
-ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切る軸）は
-[docs/operations.md](../../../docs/operations.md) §5「worker: KEDA ScaledJob」が
-権威。ここにはハーネス側の契約と未解決の穴だけ置く。
+ScaledJob 自体の書き方（トリガの接続先・`rollout.strategy`・切る軸）は [docs/operations.md](../../../docs/operations.md) §5「worker: KEDA ScaledJob」が権威。ここにはハーネス側の契約と未解決の穴だけ置く。
 
 ### 製品のワークロードが満たしている前提
 
-**ここに挙がっているものは全部入っている**（`deploy/k8s/base` と
-`deploy/k8s/site`）。書き換えるときに壊してはいけない形として残す。
+**ここに挙がっているものは全部入っている**（`deploy/k8s/base` と `deploy/k8s/site`）。書き換えるときに壊してはいけない形として残す。
 
-- **判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。**
-  base の epg-sync は実運用の 10 分間隔なので、`overlays/e2e` が毎分に
-  patch している。**したがって判定 2 が測るのは出荷される schedule ではない**
-  （上の「0 が保証しないもの」）。出荷値のほうは
-  `deploy/k8s/workloads_test.go` が固定している
+- **判定 2.3 は CronJob が 180 秒以内に自然発火することを要求する。** base の epg-sync は実運用の 10 分間隔なので、`overlays/e2e` が毎分に patch している。**したがって判定 2 が測るのは出荷される schedule ではない**（上の「0 が保証しないもの」）。出荷値のほうは `deploy/k8s/workloads_test.go` が固定している
 
-- **worker の Job は `--once` で 1 件消化して終了する。** `--roles worker` は
-  常駐するので、そのまま載せると Job が `succeeded` に到達せず判定 2.4 が
-  永久に FAIL する。`--once` は成功・失敗を問わず exit 0 なので
-  `backoffLimit: 0` / `restartPolicy: Never` と組ませる。
-  `--once-idle-timeout`（既定 30 秒）は **1 件も掴めなかった場合にしか効かない**
-- **キューは `--queues <名前>` で絞る**（config の `worker.queues` との両方指定は
-  起動エラー）。`--once` はちょうど 1 キューを要求する。中央の encode は
-  `--sites= --queues=encode`（`Dockerfile.full` のイメージ。公式イメージは
-  ffmpeg 非同梱で fail-fast する）
-- **`rokuban enqueue delete-reconcile` が使える。** 以前は enqueue に載って
-  おらず、`worker.periodic_jobs: false` ではこのパスが一度も走らなかった
+- **worker の Job は `--once` で 1 件消化して終了する。** `--roles worker` は常駐するので、そのまま載せると Job が `succeeded` に到達せず判定 2.4 が永久に FAIL する。`--once` は成功・失敗を問わず exit 0 なので `backoffLimit: 0` / `restartPolicy: Never` と組ませる。 `--once-idle-timeout`（既定 30 秒）は **1 件も掴めなかった場合にしか効かない**
+- **キューは `--queues <名前>` で絞る**（config の `worker.queues` との両方指定は起動エラー）。`--once` はちょうど 1 キューを要求する。中央の encode は `--sites= --queues=encode`（`Dockerfile.full` のイメージ。公式イメージは ffmpeg 非同梱で fail-fast する）
+- **`rokuban enqueue delete-reconcile` が使える。** 以前は enqueue に載っておらず、`worker.periodic_jobs: false` ではこのパスが一度も走らなかった
 
 ### ハーネス側の契約と、残っている穴
 
-- **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には
-  「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を
-  1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する
-  （ログの `outcome` 属性が `job_unhandled`）。単体でも同じ形を固定する。
+- **`insert_probe_job` が入れる `e2e_probe` は、実物の worker には「登録されていない kind」である。** 掴んだ worker は 1 回失敗させて試行回数を 1 つ潰す（実データには触れない）。`--once` の worker はそこで終了する（ログの `outcome` 属性が `job_unhandled`）。単体でも同じ形を固定する。
 
-  つまり **`e2e_probe` は「長時間 Job」にはならない**。
-  そのため、判定 3 の既定 producer は実物の encode ワークロードに使えない
-  （`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。
-  **判定 5 は `discarded` では壊れない。** 5.1 はサイト B の ScaledJob を
-  pause してから積むので誰も消化しない。5.3 は待ち行列ではなく「新しく現れた
-  Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。
+  つまり **`e2e_probe` は「長時間 Job」にはならない**。そのため、判定 3 の既定 producer は実物の encode ワークロードに使えない（`E2E_ENCODE_PRODUCER` の差し替えが要る。判定 3 の冒頭コメント）。**判定 5 は `discarded` では壊れない。** 5.1 はサイト B の ScaledJob を pause してから積むので誰も消化しない。5.3 は待ち行列ではなく「新しく現れた Job 名」を見る（`checks/05` の 85-86 行 / 157-159 行）。
 
   ただし実物の worker 込みでハーネスを 1 周させた確認はまだ無い。
 
-- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。**
-  判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。
-  ところが intent の PUT が入れるのは `ruler_pass` のヒントである
-  （`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` は
-  その `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。
-  `ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。
-  しかもメッセージは「予約が mirakc に届かない … reservations=0」なので
-  **reconciler を疑わせる**。
-- **判定 3 の producer は既定を差し替えてある**（`lib/env.sh` の
-  `E2E_ENCODE_PRODUCER` = `lib/kube.sh` の `produce_real_encode_job`）。
-  既定の `insert_probe_job` では緑にならない --- `e2e_probe` は実物の worker には
-  未登録 kind なので数秒で終わり、「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed`
-  分岐で TODO」になる（TODO が 1 件でも `summary` は exit 2 を返す）。
-  差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は
-  「殺された」ではなく TODO で抜ける**:
-    - `overlays/e2e/config.yml` の `encode.profiles`（`e2e-slow`）。**狙って
-      遅くしてある。** 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を
-      取るので、エンコードはその合計より長く走り続ける必要がある
-    - ffmpeg 入りイメージ。触る場所は 3 つある（`lib/env.sh` の
-      `E2E_FULL_IMAGE`、`lib/cluster.sh` の build と `kind load`、
-      `overlays/e2e/kustomization.yaml` の `images:`）
-    - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。
-      **ツールボックスからは書けない。** 製品の PVC はツールボックスより後に
-      立つので、挿すと足場が Pending で止まる
+- **判定 1.7 は `ruler` キュー（site 修飾されない）を引く消化側も要求する。** 判定が探す鍵は `epg_<site>` と `reconciler_<site>` の 2 つだけである。ところが intent の PUT が入れるのは `ruler_pass` のヒントである（`internal/api/rules.go` の `insertRulerPassHint`）。`reconcile_pass` はその `ruler_pass` が入れる（`internal/worker/ruler_pass.go`）。`ruler` を引く Pod が無いと 1.7 は TODO ではなく **240 秒待って FAIL** する。しかもメッセージは「予約が mirakc に届かない … reservations=0」なので **reconciler を疑わせる**。
+- **判定 3 の producer は既定を差し替えてある**（`lib/env.sh` の `E2E_ENCODE_PRODUCER` = `lib/kube.sh` の `produce_real_encode_job`）。既定の `insert_probe_job` では緑にならない --- `e2e_probe` は実物の worker には未登録 kind なので数秒で終わり、「3.1 は PASS、3.2 / 3.3 / 3.4 が `completed` 分岐で TODO」になる（TODO が 1 件でも `summary` は exit 2 を返す）。差し替えが噛み合わせているものは 5 つで、**どれか 1 つでも欠けると判定 3 は「殺された」ではなく TODO で抜ける**:
+    - `overlays/e2e/config.yml` の `encode.profiles`（`e2e-slow`）。**狙って遅くしてある。** 3.2 と 3.3 がそれぞれ `2 × pollingInterval` の窓を取るので、エンコードはその合計より長く走り続ける必要がある
+    - ffmpeg 入りイメージ。触る場所は 3 つある（`lib/env.sh` の `E2E_FULL_IMAGE`、`lib/cluster.sh` の build と `kind load`、`overlays/e2e/kustomization.yaml` の `images:`）
+    - media ボリュームの上の原本（`cluster/media-seed-job.yaml`）。**ツールボックスからは書けない。** 製品の PVC はツールボックスより後に立つので、挿すと足場が Pending で止まる
     - その原本を指す `recordings` / `media_assets` の行
-    - `encode` キューへの直 INSERT（**`rokuban enqueue` に `encode` は無い**。
-      あるのは DB を読んで投入する `encode-reconcile`）
-- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は
-  滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が
-  180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも
-  入るので、
-  `enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が
-  `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。backoff 中も
-  KEDA の backlog に数えるので one-shot Pod が先に起きることはあるが、claim できない
-  job しか無ければ `--once-idle-timeout` で終了する。
-- **トリガが数える River の状態は `available` / `retryable`。** ハーネスの
-  「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。
-  ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が
-  誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
-- **env の解決に失敗した ScaledJob は、原因を直しても spec が変わらなければ
-  再 reconcile されない**（接続文字列を直した後も 3 分間
-  `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
-- **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、掴まれていた
-  `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切
-  （最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、
-  `produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media
-  ボリュームの原本も周回の頭で消してから測り直す。
-  **`$producer` は関数名でもコマンド文字列でも受ける**
-  （引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
-- **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。**
-  別の形（Deployment + HPA 等）を採るなら、この判定は永久に TODO のままになる。
-  つまり受け入れ 3 が一度も検査されないまま終わる。形を変えるなら判定も同じ
-  PR で書き換えること
+    - `encode` キューへの直 INSERT（**`rokuban enqueue` に `encode` は無い**。あるのは DB を読んで投入する `encode-reconcile`）
+- **前の周回が残した `retryable` 1 件で判定 2 が二重に落ちうる。** `retryable` は滞留（`riverBacklogStates`）に数えられるので、2.2 の「待ち行列が空」が 180 秒粘って FAIL する。同時に `pendingJobStates`（`internal/jobs/queue.go`）にも入るので、`enqueue` が投入をスキップして 2.3 も落ちる。notifier の常駐 River client が `JobScheduler` を動かすため、`retryable` は backoff 後に昇格する。backoff 中も KEDA の backlog に数えるので one-shot Pod が先に起きることはあるが、claim できない job しか無ければ `--once-idle-timeout` で終了する。
+- **トリガが数える River の状態は `available` / `retryable`。** ハーネスの「滞留」の定義（`lib/kube.sh` の `riverBacklogStates`）と同じ集合にすること。ずれると、失敗して指数バックオフ中（`scheduled`）のジョブ 1 件で判定 2 が誤 FAIL し、判定 5 が「滞留を作れない」で落ちる
+- **env の解決に失敗した ScaledJob は、原因を直しても spec が変わらなければ再 reconcile されない**（接続文字列を直した後も 3 分間 `ScaledJobCheckFailed` のままだった。実測）。作り直すのが早い
+- **判定 3 が置いていく残骸が 2 つある。** 3.4 が Job を消すので、掴まれていた `river_job` の行は一時的に **`running` のまま残る**。encode は保存した締切（最低 1 時間）までは `running` のままなので、ハーネスは rescue を待たず、`produce_real_encode_job` が次の周回の頭で行を消してから測り直す。それと media ボリュームの原本も周回の頭で消してから測り直す。 **`$producer` は関数名でもコマンド文字列でも受ける**（引用せずに展開する）ので、別の作り方を試すときは env で差し替えればよい
+- **未解決: 判定 3 は encode を KEDA ScaledJob で回す形を前提にしている。** 別の形（Deployment + HPA 等）を採るなら、この判定は永久に TODO のままになる。つまり受け入れ 3 が一度も検査されないまま終わる。形を変えるなら判定も同じ PR で書き換えること
 
 
 <details><summary>根拠</summary>
@@ -453,12 +254,7 @@ mutants/               変異（イメージを焼き直す種類のもの）
 mirakcmock/            mirakc モック（Go。`go test ./deploy/k8s/e2e/...` が見る）
 ```
 
-**このモックと `internal/mirakc/conformance/`（mirakc 実物への conformance テスト）は両方持つ。**
-ここが判定したいのは KEDA / ロール分割で、軽量・高速に何度も回したい。
-mirakc 実物を要求するとそれが重くなる。
-mirakc の実挙動そのものの契約は conformance 側の役目である。
-ここのモックはその判定結果に合わせて直す
-（[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
+**このモックと `internal/mirakc/conformance/`（mirakc 実物への conformance テスト）は両方持つ。** ここが判定したいのは KEDA / ロール分割で、軽量・高速に何度も回したい。mirakc 実物を要求するとそれが重くなる。mirakc の実挙動そのものの契約は conformance 側の役目である。ここのモックはその判定結果に合わせて直す（[docs/runbook/testing.md](../../../docs/runbook/testing.md)）。
 
 変更したら次の 2 つを回す:
 
@@ -470,14 +266,6 @@ shellcheck -x -e SC1091,SC2034,SC2317,SC2329 \
   deploy/k8s/e2e/lib/*.sh deploy/k8s/e2e/checks/*.sh
 ```
 
-SC2317 / SC2329（到達しない・使われないように見えるコード）を外しているのは、
-判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため。番号が
-2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（CI は
-版を固定している）。
+SC2317 / SC2329（到達しない・使われないように見えるコード）を外しているのは、判定の述語を `retry_until` と `trap` に**間接的に**渡す形が多いため。番号が 2 つあるのは、shellcheck の版によってどちらで報告されるかが違うから（CI は版を固定している）。
 
-**`lib/` の純粋な部分にはテストがある**（対象の探索・watch ログの読み取り・
-終了コード）。そこが無かったせいで、レビュー修正で入れた「複数一致は FAIL」の
-経路が**大域変数の代入が `$( )` の子シェルに閉じるせいで一度も動いていな
-かった**。実機 2 周でも変異注入でも捕まえられなかった（変異がその状態を
-作らなかったため）。判定の外側（クラスタが要る部分）は変異注入で、内側は
-ここで見る。
+**`lib/` の純粋な部分にはテストがある**（対象の探索・watch ログの読み取り・終了コード）。そこが無かったせいで、レビュー修正で入れた「複数一致は FAIL」の経路が**大域変数の代入が `$( )` の子シェルに閉じるせいで一度も動いていなかった**。実機 2 周でも変異注入でも捕まえられなかった（変異がその状態を作らなかったため）。判定の外側（クラスタが要る部分）は変異注入で、内側はここで見る。

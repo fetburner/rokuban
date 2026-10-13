@@ -2,9 +2,7 @@
 
 ### 録画中の追っかけ再生
 
-録画中の `recordings` を、録画開始位置から現在の録画末尾まで HLS で追従再生する。
-ライブ視聴と同じ `LiveStreamer` のセッション管理・`live.max_sessions`・idle GC・離脱
-ヒントを共有するが、資源の同定子は録画の durable id である。
+録画中の `recordings` を、録画開始位置から現在の録画末尾まで HLS で追従再生する。ライブ視聴と同じ `LiveStreamer` のセッション管理・`live.max_sessions`・idle GC・離脱ヒントを共有するが、資源の同定子は録画の durable id である。
 
 ```
 GET  /api/sites/{site}/recordings/{id}/chase/playlist.m3u8[?profile=<name>]
@@ -43,27 +41,14 @@ mirakc の Range 応答は要求時点までの有限 snapshot である。先�
 
 録画終了と競合して 416 / 空の 206 と終了状態を同時に見た場合は、同じ位置へすぐ Range を再送する。最後の Range が空になるまで続け、終了直前の追記を読み残さない。status は空 Range の後だけ取得し、未知の status は終了とみなさず同じ位置で再試行する。
 
-Range を無視してオフセット付き要求に 200（先頭からの本文）を返す mirakc は安全のため
-受け付けず、オフセット再生を 503 にする。Range 対応は mirakc の録画配信 API における
-seek + finite response の契約が必要である。現在の運用対象はこの契約を含む
-`mirakc 4.0.0-dev.0` 系（実際に配備するイメージは同じ API 契約を満たす版に固定する）で、
-古い版では `{offset}` を使わず従来の URL を使う。録画ファイルがまだ 0 バイトなら 204、
-追従中に現在位置が末尾へ到達したら 416/空の 206 を返し得るため、いずれも録画終了まで
-一定時間待って再試行する。起動待ちの上限（既存の playlist 起動上限 15 秒）を超えたとき
-だけ 503/504 とする。204/416 の待機は上流接続失敗として数えない。
+Range を無視してオフセット付き要求に 200（先頭からの本文）を返す mirakc は安全のため受け付けず、オフセット再生を 503 にする。Range 対応は mirakc の録画配信 API における seek + finite response の契約が必要である。現在の運用対象はこの契約を含む `mirakc 4.0.0-dev.0` 系（実際に配備するイメージは同じ API 契約を満たす版に固定する）で、古い版では `{offset}` を使わず従来の URL を使う。録画ファイルがまだ 0 バイトなら 204、追従中に現在位置が末尾へ到達したら 416/空の 206 を返し得るため、いずれも録画終了まで一定時間待って再試行する。起動待ちの上限（既存の playlist 起動上限 15 秒）を超えたときだけ 503/504 とする。204/416 の待機は上流接続失敗として数えない。
 
-オフセットが現在の録画可能範囲以上なら新しいセッションを作らず 416 を返す。録画開始時刻・
-コンテンツ長からの初期位置は可変ビットレート等の影響を受ける概算であり、開始後は通常の
-HLS シークで補正できる。許容誤差は放送・エンコーダーごとに異なるため、固定値を API 契約
-として保証しない。
+オフセットが現在の録画可能範囲以上なら新しいセッションを作らず 416 を返す。録画開始時刻・コンテンツ長からの初期位置は可変ビットレート等の影響を受ける概算であり、開始後は通常の HLS シークで補正できる。許容誤差は放送・エンコーダーごとに異なるため、固定値を API 契約として保証しない。
 
 追っかけは `EVENT` playlist とし、`hls_list_size=0` / `temp_file` を使って `delete_segments` は使わない。ffmpeg は stdin の EOF で `ENDLIST` を書くので、入力を閉じる時点で終端の意味が決まる。stdin が開いたままなら書かず、kill 時も書かない。
 
 - **EOF にするのは録画末尾まで読んだ後だけ。** mirakc が `finished` / `canceled` / `failed` を返し、同じ offset の最後の Range も空になったときに限る。canceled / failed でも録れた所まで配信して `ENDLIST` を付ける。
-- **mirakc record が 404 なら、読み取り位置と commit 済み原本のサイズが一致するときだけ EOF にする**。
-  ingest は mirakc が録画の終了を返し、最後の Range が空になるまで読んでから commit する。だから commit されたバイト数は終了時点のファイル長である。
-  一致しなければ終端とせずエラーにする。
-  ffmpeg の遅れ、別経路の原本、mirakc の record 消失では一致しない場合がある。
+- **mirakc record が 404 なら、読み取り位置と commit 済み原本のサイズが一致するときだけ EOF にする**。ingest は mirakc が録画の終了を返し、最後の Range が空になるまで読んでから commit する。だから commit されたバイト数は終了時点のファイル長である。一致しなければ終端とせずエラーにする。ffmpeg の遅れ、別経路の原本、mirakc の record 消失では一致しない場合がある。
 - **追従配信が閉じても EOF にしない。** mirakc 側の無入力 timeout で録画中にも閉じることがある（頻度は未検証）。正常終了でも途中切断でも消費位置から Range で追い、Content-Length が無い本文も読む。
 - **Range 本文が 30 秒 stall したら再接続する。** timer は本文を `Read` して待っている間だけ動かし、ffmpeg stdin の backpressure で reader が呼ばれない間は止める。
 - **一過性の失敗は再試行する。** 5xx、通信断、本文 stall、未知 status は連続 5 回まで再試行し、6 回目でエラーにする。待ちは 200ms から倍々で、5 回目の前が最大 3.2 秒である。
@@ -82,17 +67,11 @@ HLS シークで補正できる。許容誤差は放送・エンコーダーご�
 
 cooldown の記録と session map からの削除は同じ lock 区間で行うため、同時要求も新しい session を作らない。`502` と `Retry-After` の組み合わせで streamer の cooldown と proxy の 502 を区別する。proxy の 502 にはこの header が無く、入力失敗として扱わず再生元を選び直せる。上流入力の失敗を示す 502 は、チューナーや session 数不足を示す `503 Service Unavailable` と分類を分ける。
 
-再生中の失敗では、hls.js の playlist 再試行が尽きて fatal になった後、再生元選択の probe が 502 を受ける。
-cooldown が 3 秒より短いと、再生元を選び直す前に hls.js の再試行が新しい session を作ることがある。
+再生中の失敗では、hls.js の playlist 再試行が尽きて fatal になった後、再生元選択の probe が 502 を受ける。cooldown が 3 秒より短いと、再生元を選び直す前に hls.js の再試行が新しい session を作ることがある。
 
-hls.js 1.7.3 の既定は再試行 2 回・初回待ち 1 秒・指数 backoff なので、待ちは 1 秒と 2 秒の計 3 秒前後になる。
-10 秒はこの約 3 秒より長く、3 倍強の余裕を取る値である。実測値ではない（未検証）。
+hls.js 1.7.3 の既定は再試行 2 回・初回待ち 1 秒・指数 backoff なので、待ちは 1 秒と 2 秒の計 3 秒前後になる。10 秒はこの約 3 秒より長く、3 倍強の余裕を取る値である。実測値ではない（未検証）。
 
-ライブと追っかけのセッション数は合算し、Prometheus の
-`rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先は
-どちらも `live.segment_dir` 配下で、録画バッファとは別の tmpfs / scratch に置く。追っかけ
-は録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた
-容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
+ライブと追っかけのセッション数は合算し、Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"}` で内訳を見る。セグメントの保存先はどちらも `live.segment_dir` 配下で、録画バッファとは別の tmpfs / scratch に置く。追っかけは録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
 
 <details><summary>根拠</summary>
 
@@ -114,12 +93,7 @@ hls.js 1.7.3 の既定は再試行 2 回・初回待ち 1 秒・指数 backoff �
 
 ### 録画原本のブラウザ再生
 
-完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg → HLS の一時セッションとして
-変換する。これは `media_assets` に保存する派生物ではない。資源同定は
-`(recordings.id, offset)` で、profile は出力 playlist の選択にだけ使うため、同じ録画・同じ
-offset の視聴者と profile 切替は 1 本の FFmpeg セッションを共有する。省略 offset と `0` は
-同じ先頭セッションである。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを使う。
-Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
+完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg → HLS の一時セッションとして変換する。これは `media_assets` に保存する派生物ではない。資源同定は `(recordings.id, offset)` で、profile は出力 playlist の選択にだけ使うため、同じ録画・同じ offset の視聴者と profile 切替は 1 本の FFmpeg セッションを共有する。省略 offset と `0` は同じ先頭セッションである。live / chase と同じ `live.max_sessions`、idle GC、離脱ヒントを使う。Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
 
 ```
 GET  /api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8[?profile=<name>]
@@ -138,17 +112,9 @@ POST /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave
          → 204（離脱のヒント）
 ```
 
-`{offset}` は録画先頭からの秒を表す正準な 10 進整数である。`007`、`+5`、`5.0` などの
-非正準形は 400、原本の長さ以上は 416 にする。offset ごとに session key と HLS scratch を分ける。
-offset 付き playlist / segment / leave はすべて同じ offset の session を参照する。
-各 offset は通常の原本 HLS セッションとして `live.max_sessions` に数え、leave ヒント・idle GC・
-容量圧力時の idle session 退避も共有する。`offset/0` と offset 無しの URL は同じ session と scratch
-を使う。
+`{offset}` は録画先頭からの秒を表す正準な 10 進整数である。`007`、`+5`、`5.0` などの非正準形は 400、原本の長さ以上は 416 にする。offset ごとに session key と HLS scratch を分ける。offset 付き playlist / segment / leave はすべて同じ offset の session を参照する。各 offset は通常の原本 HLS セッションとして `live.max_sessions` に数え、leave ヒント・idle GC・容量圧力時の idle session 退避も共有する。`offset/0` と offset 無しの URL は同じ session と scratch を使う。
 
-これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の
-`finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、
-同じ asset ID がまだ active で `rel_path` も一致することを DB で再確認する（open-then-verify）。
-一致しなければ 404 にする。`rel_path` lock は取らず、streamer は media に何も書かない。
+これらのバイナリ配信ルートは `openapi.yaml` に載せない。開始時に DB から同じ site の `finished` 録画と `state='active'` の original を引く。原本を read-only で open してから、同じ asset ID がまだ active で `rel_path` も一致することを DB で再確認する（open-then-verify）。一致しなければ 404 にする。`rel_path` lock は取らず、streamer は media に何も書かない。
 
 lock を取らなくても open した inode と active な原本行を照合できる。
 
@@ -207,15 +173,9 @@ CI の seek 精度確認は実 ffmpeg / ffprobe と lavfi 生成の 40 秒 MPEG-
 
 この条件は 40 秒の合成映像だけで、PTS の不連続・wraparound を含む放送 TS の実録画では未検証である。
 
-HLS の先頭セグメントの映像 PTS は、どの offset でも 1.48 秒だった（上のテストのログ）。
-mpegts muxer の既定の遅延で、offset によらない。ブラウザの `currentTime` は 0 から始まる。
-HLS の PTS 自体を 0 にそろえているわけではない。
+HLS の先頭セグメントの映像 PTS は、どの offset でも 1.48 秒だった（上のテストのログ）。mpegts muxer の既定の遅延で、offset によらない。ブラウザの `currentTime` は 0 から始まる。HLS の PTS 自体を 0 にそろえているわけではない。
 
-10 分以上の入力での精度は 660 秒の合成 TS で 1 回測った。
-25 fps の 320×80 映像に録画先頭からの `秒:フレーム番号` を焼き込んだ。
-映像は MPEG-2（GOP 15、B-frame 2、closed GOP）、音声は MP2 で、1 Mbit/s MPEG-TS muxrate でまとめた。
-format duration は 660.010022 秒、video stream duration は 660.000000 秒である。
-測定に使った runner は、不変条件 4（ffmpeg の exec は worker / streamer のみ）を破るためリポジトリに置いていない。再実行できる形では残っていない。
+10 分以上の入力での精度は 660 秒の合成 TS で 1 回測った。25 fps の 320×80 映像に録画先頭からの `秒:フレーム番号` を焼き込んだ。映像は MPEG-2（GOP 15、B-frame 2、closed GOP）、音声は MP2 で、1 Mbit/s MPEG-TS muxrate でまとめた。format duration は 660.010022 秒、video stream duration は 660.000000 秒である。測定に使った runner は、不変条件 4（ffmpeg の exec は worker / streamer のみ）を破るためリポジトリに置いていない。再実行できる形では残っていない。
 
 | 要求した offset | HLS の先頭フレーム表示 | offset との差 |
 | ---: | ---: | ---: |
@@ -225,8 +185,7 @@ format duration は 660.010022 秒、video stream duration は 660.000000 秒で
 | 603 秒 | 603.20 秒 | +0.20 秒 |
 | 659 秒 | 659.36 秒 | +0.36 秒 |
 
-同じ 5 offset を各 3 回 FFmpeg で変換し、原本 open 後から master playlist が読めるまでを測った。
-非ゼロ offset は duration probe と FFmpeg 起動を含む。DB lookup、HTTP/router、原本 open は計時外である。
+同じ 5 offset を各 3 回 FFmpeg で変換し、原本 open 後から master playlist が読めるまでを測った。非ゼロ offset は duration probe と FFmpeg 起動を含む。DB lookup、HTTP/router、原本 open は計時外である。
 
 | offset | master ready 中央値（最小–最大） |
 | ---: | ---: |
@@ -238,15 +197,9 @@ format duration は 660.010022 秒、video stream duration は 660.000000 秒で
 
 非ゼロ offset の duration probe は 17–20 ms だった。659 秒では残り 1 秒の短い出力になる。
 
-原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、
-active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を
-持たない FFmpeg build は `live.enabled` の streamer 起動前に拒否し、再生要求後に空の HLS
-player だけが出る状態を避ける。
+原本だけの完了録画はこの経路をブラウザ再生の既定にする。active な録画は既存の chase、active な encoded がある完了録画は MP4 progressive + Range を使う。原本 MPEG-2 decoder を持たない FFmpeg build は `live.enabled` の streamer 起動前に拒否し、再生要求後に空の HLS player だけが出る状態を避ける。
 
-原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。
-正常終了後も idle GC まで録画全体の変換済み segment が残るため、録画時間、全 live profile の
-出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../../operations.md)
-§5）。
+原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。正常終了後も idle GC まで録画全体の変換済み segment が残るため、録画時間、全 live profile の出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../../operations.md) §5）。
 
 <details><summary>根拠</summary>
 

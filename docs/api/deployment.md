@@ -50,8 +50,7 @@
 ### 検討したが実装しないもの
 
 - **`X-Forwarded-For` は解釈しない。** 認証・レート制限・認可は持たない（本ファイル §認証）ので、なりすまされても実害はアクセスログの精度が落ちるだけである。しかしそのアクセスログ機構自体が存在しない（リクエスト単位のログが無い）。出力先の無いヘッダー解釈は意味を持たないコードになるため、アクセスログを新設する機会があれば再検討する。
-- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）は実装しない。** API はルート相対パス `/api/*` を使う。webhook の payload に URL は載らない（[rest.md](rest.md) §エンドポイント設計の規約、[configuration.md](../configuration.md) §webhook）。
-  Go と TS の棚卸しでは絶対 URL の生成箇所が見つからなかった。使い手の無いビルダーは先回りで作らない。サブパス配信が必要になったら棚卸しからやり直す。
+- **`X-Forwarded-Proto` / `X-Forwarded-Prefix` / `public_url`（絶対 URL ビルダー）は実装しない。** API はルート相対パス `/api/*` を使う。webhook の payload に URL は載らない（[rest.md](rest.md) §エンドポイント設計の規約、[configuration.md](../configuration.md) §webhook）。Go と TS の棚卸しでは絶対 URL の生成箇所が見つからなかった。使い手の無いビルダーは先回りで作らない。サブパス配信が必要になったら棚卸しからやり直す。
 
 ### 単一バイナリの自己完結は維持
 
@@ -71,10 +70,7 @@ nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デ�
 
 ## nginx リファレンス構成
 
-実ファイルの構成例を [`deploy/nginx/nginx.conf`](../../deploy/nginx/nginx.conf)
-に同梱する。ホスト名・upstream・証明書・認証ファイルのパスだけを環境に合わせて
-変更し、Rokuban の埋め込み SPA と録画ディレクトリを nginx へ read-only で渡す。
-カバーする構成:
+実ファイルの構成例を [`deploy/nginx/nginx.conf`](../../deploy/nginx/nginx.conf) に同梱する。ホスト名・upstream・証明書・認証ファイルのパスだけを環境に合わせて変更し、Rokuban の埋め込み SPA と録画ディレクトリを nginx へ read-only で渡す。カバーする構成:
 
 - **TLS 終端** + Let's Encrypt
 - **Basic 認証**（または Authelia 等の外部認証連携）
@@ -82,8 +78,7 @@ nginx は「アーキテクチャ図に現れる箱」ではなく「推奨デ�
 - **SSE 設定** --- `proxy_buffering off` + タイムアウト調整
 - **SPA は proxy するだけ** --- SPA はバイナリに go:embed 済みなので、nginx は配らずアプリへ委ねる
 
-これは推奨構成であり、Caddy / k8s Ingress / Cloudflare Access 等でも同等の構成が可能。
-実機での確認は [nginx runbook](../runbook/nginx.md) にまとめる。
+これは推奨構成であり、Caddy / k8s Ingress / Cloudflare Access 等でも同等の構成が可能。実機での確認は [nginx runbook](../runbook/nginx.md) にまとめる。
 
 ## プロトコル選定の根拠
 

@@ -2,24 +2,18 @@
 
 ## 開発時のテスト
 
-`docker compose up -d postgres` で立てた postgres をテストに使える
-（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
+`docker compose up -d postgres` で立てた postgres をテストに使える（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
 
 ```sh
 export ROKUBAN_TEST_DATABASE_URL="postgres://rokuban:<password>@localhost:5432/rokuban_test?sslmode=disable"
 go test ./...
 ```
 
-**この URL が指す DB は直接使われない**。`testutil.SetupDB` はここから
-**パッケージごとの DB 名を導出**する（`rokuban_test_api` 等）。プロセスごとに 1 回だけ
-DROP → CREATE → マイグレーションしてから、各テストは TRUNCATE で空にする。
+**この URL が指す DB は直接使われない**。`testutil.SetupDB` はここから**パッケージごとの DB 名を導出**する（`rokuban_test_api` 等）。プロセスごとに 1 回だけ DROP → CREATE → マイグレーションしてから、各テストは TRUNCATE で空にする。
 
-- パッケージが DB を共有しないので `go test ./...` の並行実行で踏み合わない
-  （以前は advisory lock で直列化していた）。待たされた側が `lock_timeout` で
-  落ちて CI が flaky になっていた
+- パッケージが DB を共有しないので `go test ./...` の並行実行で踏み合わない（以前は advisory lock で直列化していた）。待たされた側が `lock_timeout` で落ちて CI が flaky になっていた
 - マイグレーションはテストごとではなくプロセスごとに 1 回なので速い
-- **派生 DB は実行後も残る**（次回の実行が DROP して作り直す）。失敗時の事後調査に使える。
-  掃除したいときは:
+- **派生 DB は実行後も残る**（次回の実行が DROP して作り直す）。失敗時の事後調査に使える。掃除したいときは:
 
 ```sh
 psql -h localhost -d postgres -tAc \
@@ -27,35 +21,23 @@ psql -h localhost -d postgres -tAc \
   xargs -I{} psql -h localhost -d postgres -c 'DROP DATABASE {}'
 ```
 
-ホストで既に PostgreSQL が 5432 を使っている場合は `.env` の `POSTGRES_PORT` を
-変えて、URL 側も合わせる。
+ホストで既に PostgreSQL が 5432 を使っている場合は `.env` の `POSTGRES_PORT` を変えて、URL 側も合わせる。
 
 ### k8s の故障注入
 
-worker process を強制終了した後に River の JobRescuer が encode job を再実行することを検査する。
-PostgreSQL 接続断の間に失った mirakc schedule の再照合も検査する。
-どちらも単体テストや Compose smoke test では、実デプロイのキュー・Pod・media volume を通らない。
-そのため専用の使い捨て kind + KEDA suite を実行する。
+worker process を強制終了した後に River の JobRescuer が encode job を再実行することを検査する。PostgreSQL 接続断の間に失った mirakc schedule の再照合も検査する。どちらも単体テストや Compose smoke test では、実デプロイのキュー・Pod・media volume を通らない。そのため専用の使い捨て kind + KEDA suite を実行する。
 
 ```sh
 ./deploy/k8s/e2e/run.sh --faults
 ```
 
-`run.sh` は `kind-rokuban-e2e` / `rokuban-e2e` を固定して使い、Docker daemon と kind /
-kubectl / kustomize 等を要求する。故障注入先はこの名前空間に限られ、本番 context
-や任意の既存クラスタは対象にしない。PostgreSQL test outage は DB Pod / data dir を
-削除せず Service endpoint を外して起こす。中断時は trap が selector と CronJob を戻す。
+`run.sh` は `kind-rokuban-e2e` / `rokuban-e2e` を固定して使い、Docker daemon と kind / kubectl / kustomize 等を要求する。故障注入先はこの名前空間に限られ、本番 context や任意の既存クラスタは対象にしない。PostgreSQL test outage は DB Pod / data dir を削除せず Service endpoint を外して起こす。中断時は trap が selector と CronJob を戻す。
 
-この動的 suite は encode source 作成・worker kill・saved timeout の経過待ちがあるため CI では回さない。
-CI は fault scripts の shellcheck と Kubernetes manifest schema を検査する。
+この動的 suite は encode source 作成・worker kill・saved timeout の経過待ちがあるため CI では回さない。CI は fault scripts の shellcheck と Kubernetes manifest schema を検査する。
 
-`internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。
-`deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1〜F3 を走らせる。`E2E_FAULTS_ONLY=03` は F3 だけの判定に使えるが、一部実行なので成功時も終了コードは 2 になる。
-判定内容と注入の仕組みは
-[kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
+`internal/worker` の recovery / deletion、DB 接続復旧、media asset 公開を変える PR の作者は、PR 前に `run.sh --faults` を回す。`deploy/k8s/e2e/faults/` を変える PR の作者も同じである。既定の `--faults` は F1〜F3 を走らせる。`E2E_FAULTS_ONLY=03` は F3 だけの判定に使えるが、一部実行なので成功時も終了コードは 2 になる。判定内容と注入の仕組みは [kind + KEDA harness](../../deploy/k8s/e2e/README.md) を参照。
 
-実機（mirakc）や実録画データに依存するテストは `test/integration/` に置く。
-環境依存性が大きいため **追跡対象外**（`.gitignore`）で、各自のローカルにだけ置く。
+実機（mirakc）や実録画データに依存するテストは `test/integration/` に置く。環境依存性が大きいため **追跡対象外**（`.gitignore`）で、各自のローカルにだけ置く。
 
 ```sh
 MIRAKC_URL=http://192.168.1.10:40772 \
@@ -65,18 +47,11 @@ ROKUBAN_TEST_TS_FILE=/path/to/clean.m2ts \
 
 ### SIGTERM の drain を実バイナリで確かめる
 
-`--soft-stop-timeout` を触ったときはこれを回す。**テストでは猶予より長く走る
-ジョブを実際に走らせられない**（テストの所要が猶予そのものになるため、
-`TestServerCmd_SigtermDrainsRunningJob` は猶予を数秒に絞って両方向を見ている）。
-長い猶予（数十秒〜）を跨ぐ側は実バイナリでしか測れない。
+`--soft-stop-timeout` を触ったときはこれを回す。**テストでは猶予より長く走るジョブを実際に走らせられない**（テストの所要が猶予そのものになるため、`TestServerCmd_SigtermDrainsRunningJob` は猶予を数秒に絞って両方向を見ている）。長い猶予（数十秒〜）を跨ぐ側は実バイナリでしか測れない。
 
-作るものは「ヘッダーだけ即返して**ボディを遅らせる** mirakc」である。ボディを
-遅らせるのは、mirakc クライアントの `ResponseHeaderTimeout`（30 秒）が先に
-効いてしまうためである。全体の上限は `http.Client.Timeout` の 60 秒なので、
-40 秒のジョブはこの形でしか作れない。
+作るものは「ヘッダーだけ即返して**ボディを遅らせる** mirakc」である。ボディを遅らせるのは、mirakc クライアントの `ResponseHeaderTimeout`（30 秒）が先に効いてしまうためである。全体の上限は `http.Client.Timeout` の 60 秒なので、40 秒のジョブはこの形でしか作れない。
 
-遅延モック（`python3 /tmp/mock-mirakc.py` で立てる。`/api/services` のボディだけを
-遅らせ、それ以外は空リストを即返す）:
+遅延モック（`python3 /tmp/mock-mirakc.py` で立てる。`/api/services` のボディだけを遅らせ、それ以外は空リストを即返す）:
 
 ```python
 import http.server, time
@@ -95,9 +70,7 @@ class H(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("127.0.0.1", 40799), H).serve_forever()
 ```
 
-config は使い捨ての DB とこのモックを指すものを書く。**`storage.media_dir` と
-`db.password` を省くと `migrate up` が起動時検査で落ちる**（password は空文字も
-拒否されるので、trust 認証でもダミーが要る）。
+config は使い捨ての DB とこのモックを指すものを書く。**`storage.media_dir` と `db.password` を省くと `migrate up` が起動時検査で落ちる**（password は空文字も拒否されるので、trust 認証でもダミーが要る）。
 
 ```sh
 DB=rokuban_softstop
@@ -143,19 +116,9 @@ psql -h localhost -d $DB -tAc \
   "select state, attempt, errors::text from river_job where kind = 'epg_sync'"
 ```
 
-**モックの `DELAY` は mirakc クライアントの全体タイムアウトより短くする。**
-上限は 60 秒（`internal/mirakc.shortRequestTimeout`）である。
-超えると 60s の側が `completed` にならず、`state` は猶予切れと同じ `available`
-になる（導出: `attempt=1` + `errors` あり、で見分けられる）。
-前のセッションが残した `DELAY=90` のモックが 40799 を掴んだままで実際に踏んだ。
-**モックを `&` で背景起動すると、ポートが埋まっていても気付きにくい。**
-`OSError: Address already in use` の traceback を出して即死するだけである。
-撃つ前に `lsof -nP -iTCP:40799` で確かめること。
+**モックの `DELAY` は mirakc クライアントの全体タイムアウトより短くする。** 上限は 60 秒（`internal/mirakc.shortRequestTimeout`）である。超えると 60s の側が `completed` にならず、`state` は猶予切れと同じ `available` になる（導出: `attempt=1` + `errors` あり、で見分けられる）。前のセッションが残した `DELAY=90` のモックが 40799 を掴んだままで実際に踏んだ。**モックを `&` で背景起動すると、ポートが埋まっていても気付きにくい。**`OSError: Address already in use` の traceback を出して即死するだけである。撃つ前に `lsof -nP -iTCP:40799` で確かめること。
 
-実測（2026-09-05、river v0.47.0。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）。
-**既定（フラグ省略 = 5 秒）でも 1 回測ること。** 既定は「何も設定しなかった人が
-SIGKILL されない」ことを根拠に選んである。Docker の既定猶予 10 秒・k8s の
-既定猶予 30 秒に収まっている必要がある（実測 5.06 秒）:
+実測（2026-09-05、river v0.47.0。`--soft-stop-timeout` を 60s と 5s で 1 回ずつ）。**既定（フラグ省略 = 5 秒）でも 1 回測ること。** 既定は「何も設定しなかった人が SIGKILL されない」ことを根拠に選んである。Docker の既定猶予 10 秒・k8s の既定猶予 30 秒に収まっている必要がある（実測 5.06 秒）:
 
 | 猶予 | プロセスの終了 | `river_job` |
 |---|---|---|
@@ -164,57 +127,22 @@ SIGKILL されない」ことを根拠に選んである。Docker の既定猶�
 
 既定で測るときは `--soft-stop-timeout` を argv から外すだけでよい。
 
-60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の
-待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。
-この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての
-`Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。
-ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
+60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。この側は**プロセス側の待ちが固定値ではないこと**も同時に見ている（かつての `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
-**2 発目の SIGTERM で強制終了できること**も同じ形で確かめられる。上の
-`kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる
-（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、
-猶予のあいだ Ctrl-C も `kill -TERM` も効かなくなる。
+**2 発目の SIGTERM で強制終了できること**も同じ形で確かめられる。上の `kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、猶予のあいだ Ctrl-C も `kill -TERM` も効かなくなる。
 
-**mock では検出できない前提は `internal/mirakc/conformance` が判定する。**
-実物の mirakc コンテナに対して回す（Docker が要る）。
-コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。
-reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。
-これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を
-POST した値のまま返すことに依存する。
-`/events` の再送・録画中の Range 挙動も同様で、テストの mock ではなくこちらが権威になる。
-症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
+**mock では検出できない前提は `internal/mirakc/conformance` が判定する。** 実物の mirakc コンテナに対して回す（Docker が要る）。コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock ではなくこちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
 ## mirakc の版を上げる手順
 
-**「版を上げる」は常に「`main-debian` のより新しい digest に pin を差し替える」を意味する。**
-rokuban はどの版の mirakc イメージも自身で出荷しない。
-mirakc は運用者が用意するものである。
-だから番号付きリリースへ「戻す」判断は無い。
-`main` を pin し続けるのが恒常の形である。
+**「版を上げる」は常に「`main-debian` のより新しい digest に pin を差し替える」を意味する。** rokuban はどの版の mirakc イメージも自身で出荷しない。mirakc は運用者が用意するものである。だから番号付きリリースへ「戻す」判断は無い。`main` を pin し続けるのが恒常の形である。
 
-1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を
-   新しい版に変える
+1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を新しい版に変える
 2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
-3. 落ちた項目があれば、まず **mirakc 側の変更**か**rokuban の前提の誤り**かを切り分ける。
-   `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールの
-   オプション・出力形式が変わっていないか見る、`docker logs` でコンテナ内の
-   `mirakc` 自体のエラーを見る、の 2 つがまず効く
-4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md /
-   watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら
-   実装を直す
-5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言
-   （`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
+3. 落ちた項目があれば、まず **mirakc 側の変更**か**rokuban の前提の誤り**かを切り分ける。`docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見る、`docker logs` でコンテナ内の `mirakc` 自体のエラーを見る、の 2 つがまず効く
+4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md / watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら実装を直す
+5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc の版の文言（`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
 
-週次の `main-debian` conformance job が赤くなったら、ログに出た digest を使って
-上記の手順を実行する。
-緑でも、古い digest の prune を避けるため、ログの digest を pin に上げる契機として扱う。
+週次の `main-debian` conformance job が赤くなったら、ログに出た digest を使って上記の手順を実行する。緑でも、古い digest の prune を避けるため、ログの digest を pin に上げる契機として扱う。
 
-**この digest はいずれ取れなくなる。**
-出どころの `main-debian` タグはビルドのたびに上書きされる可動タグだからである。
-古い digest は Docker Hub 側でタグ無し（untagged）manifest として prune されうる。
-そうなると CI は「テストが落ちた」ではなく「pull できない」で赤くなる。
-**これは conformance の回帰ではなく pin の失効である。**
-まず `docker pull mirakc/mirakc:main-debian` で最新の digest を取り直す。
-digest は `docker inspect --format '{{index .RepoDigests 0}}' mirakc/mirakc:main-debian`
-で確認できる。
-確認できたら上記の手順で pin を差し替える。
+**この digest はいずれ取れなくなる。** 出どころの `main-debian` タグはビルドのたびに上書きされる可動タグだからである。古い digest は Docker Hub 側でタグ無し（untagged）manifest として prune されうる。そうなると CI は「テストが落ちた」ではなく「pull できない」で赤くなる。**これは conformance の回帰ではなく pin の失効である。** まず `docker pull mirakc/mirakc:main-debian` で最新の digest を取り直す。digest は `docker inspect --format '{{index .RepoDigests 0}}' mirakc/mirakc:main-debian` で確認できる。確認できたら上記の手順で pin を差し替える。

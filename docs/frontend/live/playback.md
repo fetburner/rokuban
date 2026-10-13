@@ -2,23 +2,15 @@
 
 ### ブラウザ再生能力、probe、エラー分類
 
-**hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）**。
-`pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに
-分かれることを確認済み。他画面のバンドル（`assets/index-*.js`）には乗らない。
+**hls.js はライブ視聴画面だけ動的 import する（`components/live-player.tsx`）**。`pnpm build` の出力で hls.js が `assets/hls-*.js`（約 520 KB）として独立チャンクに分かれることを確認済み。他画面のバンドル（`assets/index-*.js`）には乗らない。
 
 **再生経路は 3 段の梯子で選ぶ。各段は「実際に確かめた能力」で選ぶ。**
 
-1. `<video>` が**プレイリストとセグメントの両方**を再生できる → ネイティブ HLS
-   （hls.js は import すらしない）
+1. `<video>` が**プレイリストとセグメントの両方**を再生できる → ネイティブ HLS（hls.js は import すらしない）
 2. hls.js が動く（`Hls.isSupported()`。MSE / ManagedMediaSource がある）→ hls.js
-3. どちらも駄目だが `<video>` が m3u8 の MIME に支持を表明する → ネイティブへ
-   最後の望みを託す（`claimsHlsPlaylistSupport`）。ここに来るのは MSE も
-   ManagedMediaSource も無いブラウザ（iOS 17.1 未満の iPhone Safari）だけで、
-   「非対応です」と断じるとネイティブなら完璧に再生できる端末を締め出す
+3. どちらも駄目だが `<video>` が m3u8 の MIME に支持を表明する → ネイティブへ最後の望みを託す（`claimsHlsPlaylistSupport`）。ここに来るのは MSE も ManagedMediaSource も無いブラウザ（iOS 17.1 未満の iPhone Safari）だけで、「非対応です」と断じるとネイティブなら完璧に再生できる端末を締め出す
 
-**1 段目でセグメントの MIME（`video/mp2t`）まで問うのが要点**。プレイリストの
-MIME（`application/vnd.apple.mpegurl`）に対する `canPlayType` の戻り値では
-Safari と Chrome を区別できない。Playwright の 3 エンジンで実測した値:
+**1 段目でセグメントの MIME（`video/mp2t`）まで問うのが要点**。プレイリストの MIME（`application/vnd.apple.mpegurl`）に対する `canPlayType` の戻り値では Safari と Chrome を区別できない。Playwright の 3 エンジンで実測した値:
 
 | `canPlayType` の引数 | WebKit 605.1.15 | Chromium 151 | Chrome 151 | Firefox 153 |
 |---|---|---|---|---|
@@ -33,25 +25,11 @@ Safari と Chrome を区別できない。Playwright の 3 エンジンで実測
 
 つまり判定するのは、ブラウザが配信物をそのまま再生できるかである。エンジンや拡張子で推測しない。判定は `web/e2e/live.mjs` の⑥が実ブラウザで固定する。
 
-**この表をテストの入力にする**。**実在しない戻り値で主張しない**。
-`expect(supportsNativeHls(() => 'probably')).toBe(true)` は通る。しかし
-**`'probably'` を返す実ブラウザは存在しない**ので、これは実在しない入力についての
-主張であり、何も守っていない。`lib/live.test.ts` はこの実測値の表を入力にしている。
-判定を変えるときは同じ実測をやり直す。
+**この表をテストの入力にする**。**実在しない戻り値で主張しない**。`expect(supportsNativeHls(() => 'probably')).toBe(true)` は通る。しかし **`'probably'` を返す実ブラウザは存在しない**ので、これは実在しない入力についての主張であり、何も守っていない。`lib/live.test.ts` はこの実測値の表を入力にしている。判定を変えるときは同じ実測をやり直す。
 
-**再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。**
-`<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや
-本文を運ばない。両方の再生経路で同じエラー表示を出すため、実際に `<video>` /
-hls.js へ URL を渡す前に 1 回取得して成否を確認する。この GET 自体もセグメント
-要求と同じ経路（streamer のアプリ配信）を通るので、idle GC の last-access 更新にも
-自然に乗る。
+**再生前に `probeLivePlaylist`（`lib/live.ts`）でプレイリストを 1 回 `fetch` する。** `<video>` の `error` イベント・hls.js のエラーイベントはいずれも HTTP ステータスや本文を運ばない。両方の再生経路で同じエラー表示を出すため、実際に `<video>` / hls.js へ URL を渡す前に 1 回取得して成否を確認する。この GET 自体もセグメント要求と同じ経路（streamer のアプリ配信）を通るので、idle GC の last-access 更新にも自然に乗る。
 
-**probe は HTTP 層しか見ないので、メディア層の失敗は `<video>` のイベントで拾う
-（`watchNativeMedia`。ネイティブ経路のみ）。** プレイリストが 200 で返ってもセグメントが
-壊れていれば再生は始まらない。ここを聴かないと**永久に止まった黒いプレイヤー**に
-なる（文言も読み込み表示も再読み込みボタンも出ない）--- WebKit で実測された症状で
-ある。聴く種類は同じ実測から決めた（プレイリスト 200 のまま、セグメントだけを
-3 通りに壊して WebKit で観測）:
+**probe は HTTP 層しか見ないので、メディア層の失敗は `<video>` のイベントで拾う（`watchNativeMedia`。ネイティブ経路のみ）。** プレイリストが 200 で返ってもセグメントが壊れていれば再生は始まらない。ここを聴かないと**永久に止まった黒いプレイヤー**になる（文言も読み込み表示も再読み込みボタンも出ない）--- WebKit で実測された症状である。聴く種類は同じ実測から決めた（プレイリスト 200 のまま、セグメントだけを 3 通りに壊して WebKit で観測）:
 
 | 壊し方 | `<video>` が出すもの | `video.error` |
 |---|---|---|
@@ -73,8 +51,7 @@ hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ
 
 そのため `playing` を一度でも観測したかを持ち、`hasStarted && paused` のときだけ抑止する。再開後も配信が止まっていれば `waiting` が再送される。実測は pause@6.05s → play@12.05s → waiting@12.05s である。
 
-判定手段は `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件である。
-内訳は `error` で出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で出さない / 猶予中の `pause` で出さない、である。さらに再生前の `stalled` では出す / 再開後に復帰していなければ再び出す、も見る。
+判定手段は `live-player.test.tsx` の「ネイティブ経路のメディア失敗」6 件である。内訳は `error` で出る / 猶予経過で出る / 猶予中の `playing` で出さない / 一時停止中の `stalled` で出さない / 猶予中の `pause` で出さない、である。さらに再生前の `stalled` では出す / 再開後に復帰していなければ再び出す、も見る。
 
 実 WebKit では 404 と無応答の両方でエラー表示と再読み込みが出る。e2e は `play()` を呼ばないため、再生前の窓を塞がないことも同時に見ている。
 
@@ -92,13 +69,8 @@ hls.js 経路にはこの watcher を張らない。`Hls.Events.ERROR` が同じ
 
 **エラーは 3 種に分類する（`classifyLiveLoadError`）。**
 
-- `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド
-  構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](../../overview.md)
-  §サーバーレスデプロイ）ため、destructive な赤ではなく中立の文言にする
-- `capacity`（503）: 同時セッション上限 / チューナー枯渇 / シャットダウン中の
-  いずれか。本文（プレーンテキスト）はいずれも「今は無理なので後で試す」という
-  同じ対応を要求するので UI 側の分岐は 1 つにまとめ、本文はそのまま見せる
-  （[shell.md](../shell.md)「エラーの本文も UI まで運ぶ」と同じ規律）
+- `unreachable`（`fetch` 自体が reject）: streamer に到達できない。ハイブリッド構成では自宅側が落ちているだけの正常状態でありうる（[overview.md](../../overview.md) §サーバーレスデプロイ）ため、destructive な赤ではなく中立の文言にする
+- `capacity`（503）: 同時セッション上限 / チューナー枯渇 / シャットダウン中のいずれか。本文（プレーンテキスト）はいずれも「今は無理なので後で試す」という同じ対応を要求するので UI 側の分岐は 1 つにまとめ、本文はそのまま見せる（[shell.md](../shell.md)「エラーの本文も UI まで運ぶ」と同じ規律）
 - `other`: 想定外のステータス。本文をそのまま見せる
 
 いずれも再読み込みボタンで `probeLivePlaylist` からやり直せる。

@@ -4,24 +4,14 @@
 
 ### エンドポイント
 
-`GET /metrics` で Prometheus の text exposition format を返す。**ロールに関わらず
-すべてのプロセスが公開する** — worker だけの Pod でも滞留メトリクスを scrape したいため、
-HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり
-生成クライアントの対象外）。
+`GET /metrics` で Prometheus の text exposition format を返す。**ロールに関わらずすべてのプロセスが公開する** — worker だけの Pod でも滞留メトリクスを scrape したいため、HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text format であり生成クライアントの対象外）。
 
-**`/metrics` と `/healthz` / `/readyz` は Host allowlist を免除する**。監視基盤は Pod IP や
-サービス名で叩くため allowlist に載せようがない（IP は動的）。allowlist の内側に
-置くと k8s の liveness / readiness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が
-守ろうとしているのはブラウザ経由でデータを読み書きされることなので、機密を含まない
-インフラ用エンドポイントを免除しても防壁は薄くならない。
+**`/metrics` と `/healthz` / `/readyz` は Host allowlist を免除する**。監視基盤は Pod IP やサービス名で叩くため allowlist に載せようがない（IP は動的）。allowlist の内側に置くと k8s の liveness / readiness probe と Prometheus の scrape が 400 で落ちる。DNS rebinding が守ろうとしているのはブラウザ経由でデータを読み書きされることなので、機密を含まないインフラ用エンドポイントを免除しても防壁は薄くならない。
 
 実装は `internal/metrics`。2 種類を使い分けている。
 
-- **プロセス内カウンタ / ヒストグラム**: そのプロセスで起きた事象を数える。
-  再起動でリセットされるが Prometheus はカウンタのリセットを扱える
-- **DB を引くゲージ**: scrape のたびに真実を DB から取り直す。プロセス内に
-  溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、
-  真実はテーブル再読」と同じ考え方
+- **プロセス内カウンタ / ヒストグラム**: そのプロセスで起きた事象を数える。再起動でリセットされるが Prometheus はカウンタのリセットを扱える
+- **DB を引くゲージ**: scrape のたびに真実を DB から取り直す。プロセス内に溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、真実はテーブル再読」と同じ考え方
 
 | 実装済みメトリクス | 型 | 意味 |
 |---|---|---|
@@ -87,40 +77,24 @@ HTTP リスナーは常に 1 本立てる。OpenAPI には載せない（text fo
 | `rokuban_live_leave_hints_total{result}` | Counter | ライブ / 追っかけの離脱ヒント受信数（`deadline_shortened` / `no_session` / `no_effect`）。**回収数と対で読む** --- ヒントは停止命令ではないので一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら「猶予 ≥ `live.idle_timeout`」でヒントが効かない設定 |
 | `rokuban_live_idle_gc_last_pass_timestamp_seconds` | Gauge | 最後に完走した idle GC パスの時刻 |
 
-**ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は DB 側 5 本である**。
-対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。
-加えて、次の 2 本を使う。
+**ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は DB 側 5 本である**。対象は上表の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。加えて、次の 2 本を使う。
 
 - `rokuban_ruler_last_success_timestamp_seconds{site}`
 - `rokuban_sweep_last_success_timestamp_seconds{site}`
 
-プロセス内ゲージの `rokuban_reconcile_pending_diff` は reconciler のジョブを実行した
-Pod でしか値を持たない。その Pod は `--once` で終了するため scrape 窓が無い
-（下記「ジョブ化されたループの監視」）。
+プロセス内ゲージの `rokuban_reconcile_pending_diff` は reconciler のジョブを実行した Pod でしか値を持たない。その Pod は `--once` で終了するため scrape 窓が無い（下記「ジョブ化されたループの監視」）。
 
-**録画失敗は観測した時点で数える**。予約の照会や mirakc への問い合わせより後に
-置くと、それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
+**録画失敗は観測した時点で数える**。予約の照会や mirakc への問い合わせより後に置くと、それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
 
-**`reconcile 差分数` はゲージ**。カウンタ（`..._schedules_total`）は単調増加なので
-「収束しているか」を表せない。ゼロに戻らないまま続くのは reconcile が収束できて
-いないということで（mirakc が作成を拒否し続ける、サーキットブレーカーが削除を
-止めている等）、アラートすべきはゲージ側。
+**`reconcile 差分数` はゲージ**。カウンタ（`..._schedules_total`）は単調増加なので「収束しているか」を表せない。ゼロに戻らないまま続くのは reconcile が収束できていないということで（mirakc が作成を拒否し続ける、サーキットブレーカーが削除を止めている等）、アラートすべきはゲージ側。
 
-**ゲージには「最後に成功した時刻」を必ず対で持つ**。ゲージは値が凍結するので、
-`pending_diff` や `epg_programs_projected` だけでは「収束した」と「ループが動いて
-いない」を区別できない。シングルトンがロックを取れていない・定期ジョブが投入されなく
-なった場合を `time() - <last_*_timestamp> > 閾値` で検出する。実際に `UniqueOpts` の
-設定ミスで EPG の定期同期がワンショット化していた事故があり、この指標があれば
-気づけた。
+**ゲージには「最後に成功した時刻」を必ず対で持つ**。ゲージは値が凍結するので、`pending_diff` や `epg_programs_projected` だけでは「収束した」と「ループが動いていない」を区別できない。シングルトンがロックを取れていない・定期ジョブが投入されなくなった場合を `time() - <last_*_timestamp> > 閾値` で検出する。実際に `UniqueOpts` の設定ミスで EPG の定期同期がワンショット化していた事故があり、この指標があれば気づけた。
 
-**滞留メトリクスは取得失敗時に 0 を報告しない**。0 を出すと「滞留なし」と区別できず、
-滞留アラートを黙って無効化してしまう。代わりに専用のエラーカウンタを進める。
+**滞留メトリクスは取得失敗時に 0 を報告しない**。0 を出すと「滞留なし」と区別できず、滞留アラートを黙って無効化してしまう。代わりに専用のエラーカウンタを進める。
 
-PID 別のドロップ内訳はメトリクスにしない（PID × 録画数でカーディナリティが爆発する）。
-`drop_stats` テーブルと `/api/recordings/{id}/drop-stats` で見る。
+PID 別のドロップ内訳はメトリクスにしない（PID × 録画数でカーディナリティが爆発する）。`drop_stats` テーブルと `/api/recordings/{id}/drop-stats` で見る。
 
-未実装: エッジディスク残量（mirakc 側の値であり
-Rokuban からは観測できない。node_exporter 等で別に取る）。
+未実装: エッジディスク残量（mirakc 側の値であり Rokuban からは観測できない。node_exporter 等で別に取る）。
 
 ### 録画品質
 
@@ -147,26 +121,13 @@ ruler / reconciler / record_sweep（watcher の 3 段構えのうち (c) 定期�
 
 3 番目が k8s 特有の落とし穴。k8s は `worker.periodic_jobs: false` で出荷しており、投入元は CronJob だけである（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
-`rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は**プロセス内の
-ゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を
-scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）は
-そのジョブを一度も走らせないので、値は成功時刻を表さない。ruler / record_sweep については、
-この既存ゲージを互換性のため残したまま、DB-backed の site ラベル付きメトリクスを追加した。
+`rokuban_*_last_pass_timestamp_seconds`（`reconcile` / `ruler` / `sweep`）は**プロセス内のゲージ**である。ジョブを走らせたプロセスは 1 件消化して終了する（`--once`）ので、その値を scrape できる窓が実質的に無い。常駐している Pod（api / notifier / watcher / streamer）はそのジョブを一度も走らせないので、値は成功時刻を表さない。ruler / record_sweep については、この既存ゲージを互換性のため残したまま、DB-backed の site ラベル付きメトリクスを追加した。
 
-予約同期（reconcile）の鮮度には、この実測を踏まえて DB-backed の
-`rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。
-常駐 Pod（api / notifier / watcher / streamer）や別の worker が scrape しても、同じ DB
-の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した
-snapshot からの経過時間として見える。
+予約同期（reconcile）の鮮度には、この実測を踏まえて DB-backed の `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` を新設した。常駐 Pod（api / notifier / watcher / streamer）や別の worker が scrape しても、同じ DB の値になる。reconciler のジョブが未投入・未起動・途中失敗のどの場合も、最後に確定した snapshot からの経過時間として見える。
 
-`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い / 0 のときは
-「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐
-構成と ScaledJob 構成の収集元・復旧条件は [アラート設計](alerts.md) にまとめる。
+`rokuban_presync_pending` は snapshot の鮮度を代用しない。snapshot が古い / 0 のときは「未同期」と断定せず、まず観測不能として扱う。freshness と pending の判定順、常駐構成と ScaledJob 構成の収集元・復旧条件は [アラート設計](alerts.md) にまとめる。
 
-`ruler_pass` と `record_sweep` は成功したパスの最後に site 単位の衛星表を upsert する。
-処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した
-時刻」であり「最後に試みた時刻」ではない。各 marker は常駐プロセスの scrape から読めるため、
-`time() - <metric> > 閾値` を ScaledJob 構成の停止検出に使える。
+`ruler_pass` と `record_sweep` は成功したパスの最後に site 単位の衛星表を upsert する。処理が途中で失敗した場合は marker を更新しないので、DB-backed の値は「最後に成功した時刻」であり「最後に試みた時刻」ではない。各 marker は常駐プロセスの scrape から読めるため、`time() - <metric> > 閾値` を ScaledJob 構成の停止検出に使える。
 
 手動で走らせたいときは `rokuban enqueue <job>`。既に待機中なら投入せず終了コード 0 を返すので、cron から重ねて叩いても安全。
 
@@ -187,11 +148,7 @@ site 非依存にする理由は、単一の資源（アーカイブ・プロフ
 
 以上のジョブをサイトごとの CronJob から叩くと N 回投入される（River の一意制約で 1 本に合流はするが意図が読めない）。
 
-**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。
-**`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。**
-ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。
-検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。
-thumbnail とシークプレビュー用タイルは同じパスが埋めるので `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
+**`worker.periodic_jobs: false` の構成では `storage-sync` の CronJob を忘れると `storage_sync` が一度も投入されない**。`GET /api/storage` が永遠に空配列を返す。**`encode-reconcile` / `thumbnail-reconcile` を忘れた場合の症状は静かである。** ヒントを落とした録画だけが派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。検出は `rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。thumbnail とシークプレビュー用タイルは同じパスが埋めるので `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
 
 `ts-scan-reconcile` を忘れた場合は scan 記録のない原本が残る。検出は `rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` の鮮度で行う。投入を忘れれば値が進まない。`rokuban_ts_scan_jobs_total` は ingest のヒントでも増えるので、投入停止の検出には使わない。
 
@@ -260,9 +217,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 | `rokuban_reconcile_schedules_total{action="recreated"}` | 予約オプションの差分反映で DELETE → POST の再作成が成功した件数 |
 | `rokuban_reconcile_schedule_lost_total` | 再作成で **DELETE には成功したが POST が失敗**し、schedule が消えたまま残った回数。**0 以外はアラート対象**。レベルトリガーで次パスが再作成するが、その間に開始時刻を越えると取りこぼす（[録画エンジン](../recording.md) §3.2「DELETE 成功 → POST 失敗」） |
 
-`pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が
-「ゼロに戻らないまま続く = 収束できていない」だからである。**意図的に見送った差分を混ぜると
-正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。**
+`pending_diff` の `update` と `update_deferred` を分けているのは、このゲージの読み方が「ゼロに戻らないまま続く = 収束できていない」だからである。**意図的に見送った差分を混ぜると正常なユーザー操作でアラートが鳴り、ゲージがアラート不能になる。**
 
 ### 開始遅延検出器
 
@@ -274,9 +229,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 ### 沈黙は保証ではない
 
-観測のうち、**「出ていない = 大丈夫」と読んではいけない**ものを 1 箇所に
-まとめる。設計上ここは全部「警告を見逃す」側に偏らせてある（過剰に警告しない代わりに
-沈黙が保証にならない、という取引）。
+観測のうち、**「出ていない = 大丈夫」と読んではいけない**ものを 1 箇所にまとめる。設計上ここは全部「警告を見逃す」側に偏らせてある（過剰に警告しない代わりに沈黙が保証にならない、という取引）。
 
 | 沈黙 | 何を意味しないか | 何を見るか |
 |---|---|---|
@@ -295,22 +248,8 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 ### チューナー故障はライブ画面の 1 行で見せる
 
-`tuner_sync.is_fault` はどこにも出力しておらず、`internal/capacity` が `cap(A)` を
-数えるかどうかの判定に使うだけである。これを見る手段が UI 以外に無いか、専用
-メトリクスがあるかを先に確かめた。上表の `rokuban_tuners_projected` /
-`rokuban_tuner_sync_last_success_timestamp_seconds` はどちらも射影の本数と鮮度の
-ゲージで、`is_fault` を出すゲージは無い。アラート設計にもチューナー故障の節が
-無い。したがって UI に出さない選択は「既存の手段で足りるから省く」ではなく、
-新設そのものを見送ることになる。
+`tuner_sync.is_fault` はどこにも出力しておらず、`internal/capacity` が `cap(A)` を数えるかどうかの判定に使うだけである。これを見る手段が UI 以外に無いか、専用メトリクスがあるかを先に確かめた。上表の `rokuban_tuners_projected` / `rokuban_tuner_sync_last_success_timestamp_seconds` はどちらも射影の本数と鮮度のゲージで、`is_fault` を出すゲージは無い。アラート設計にもチューナー故障の節が無い。したがって UI に出さない選択は「既存の手段で足りるから省く」ではなく、新設そのものを見送ることになる。
 
-出す場所は毎日開く画面かどうかで選んだ。専用の「チューナー」ページを新設する
-案もあったが、疑ってから開く画面では「警告が無い = 大丈夫」という誤読は解けない。
-ライブ画面はチューナーを実際に掴む操作の直前に開く画面なので、故障が意味を持つ
-瞬間に居合わせる。そこでライブ画面のチャンネル一覧の脇に「チューナー n 本
-（故障 m）」の 1 行を出す形にした。故障 0 本のときは「（故障 m）」を出さない。
+出す場所は毎日開く画面かどうかで選んだ。専用の「チューナー」ページを新設する案もあったが、疑ってから開く画面では「警告が無い = 大丈夫」という誤読は解けない。ライブ画面はチューナーを実際に掴む操作の直前に開く画面なので、故障が意味を持つ瞬間に居合わせる。そこでライブ画面のチャンネル一覧の脇に「チューナー n 本（故障 m）」の 1 行を出す形にした。故障 0 本のときは「（故障 m）」を出さない。
 
-ただし **mirakc は `isFault` を実装しておらず常に false を返す**（根拠は
-[データ層](../data/capacity.md) §6.5）。現行の mirakc では故障の表示は出ない。
-同じ 1 行に `observedAt` の鮮度（射影ループが止まっていないか）を併置して
-あるので、**実用上の値はそちらにある** --- 射影ループの停止は実際に捉えられる。
-故障のほうは Mirakurun 互換 API の契約として読む形だけ残してある。
+ただし **mirakc は `isFault` を実装しておらず常に false を返す**（根拠は[データ層](../data/capacity.md) §6.5）。現行の mirakc では故障の表示は出ない。同じ 1 行に `observedAt` の鮮度（射影ループが止まっていないか）を併置してあるので、**実用上の値はそちらにある** --- 射影ループの停止は実際に捉えられる。故障のほうは Mirakurun 互換 API の契約として読む形だけ残してある。

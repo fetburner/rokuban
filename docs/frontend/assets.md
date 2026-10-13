@@ -16,14 +16,9 @@
 
 ## ハッシュを持たないファイルに no-cache を付け忘れない
 
-`index.html` だけでなく `public/` 由来のファイル（`favicon.svg` / `favicon.ico` /
-`apple-touch-icon.png`）もハッシュを持たない。内容が変わってもパスが変わらないので、
-キャッシュ指定を落とすと差し替えが伝わらない。
+`index.html` だけでなく `public/` 由来のファイル（`favicon.svg` / `favicon.ico` / `apple-touch-icon.png`）もハッシュを持たない。内容が変わってもパスが変わらないので、キャッシュ指定を落とすと差し替えが伝わらない。
 
-埋め込んだ FS の `ModTime` はゼロ値なので `http.ServeContent` は `Last-Modified`
-も `ETag` も出せない。`Cache-Control` がなければ検証子もないので、ブラウザの
-ヒューリスティックキャッシュに委ねることになる。**ファビコンを差し替えたのに
-古いものが出続ける**、という形で効く。
+埋め込んだ FS の `ModTime` はゼロ値なので `http.ServeContent` は `Last-Modified` も `ETag` も出せない。`Cache-Control` がなければ検証子もないので、ブラウザのヒューリスティックキャッシュに委ねることになる。**ファビコンを差し替えたのに古いものが出続ける**、という形で効く。
 
 そのため `assets/*` 以外は一律 no-cache にする。
 

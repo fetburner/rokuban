@@ -38,9 +38,7 @@
     - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
     - reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う
 - **共通契約の `Coalesce` と `Priority` はヒントである**。`Coalesce` は「合流してよい」という意思表示に限り、1 行にすることも並走を止めることも保証しない。`Priority` も順序を保証しない。正しさはこれらに依存させない。現行 River 投影では `Coalesce` を River の `UniqueOpts` に写し、重複 enqueue を減らす
-- エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。
-  試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
-  `GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
+- エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。`GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
 - worker が encode 中に死ぬと、次の試行が始まるまで試行行は `running` のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は `running` に数える。
 - desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
 
@@ -64,44 +62,21 @@ River の `PeriodicJobs` は**リーダーに選出されたクライアント�
 
 `PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする（両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが意図が曖昧になる）。副次的な利点として、k8s では**何がいつ走るかが CronJob の spec に一元化される**（Go のコードと YAML に散らない）。
 
-**k8s の JobRescuer / JobScheduler は notifier Deployment の常駐 River client が担う。**
-client は全 kind を登録する。購読するのは site 非依存の `ruler` queue だけである。
-Ruler は DB 完結なので中央で実行できる。
-`worker.periodic_jobs: false` は維持するため、定期ジョブの投入元は引き続き CronJob である。
-載せ先と queue の判断は [k8s 運用](../operations/k8s.md) §5 にある。
+**k8s の JobRescuer / JobScheduler は notifier Deployment の常駐 River client が担う。** client は全 kind を登録する。購読するのは site 非依存の `ruler` queue だけである。Ruler は DB 完結なので中央で実行できる。`worker.periodic_jobs: false` は維持するため、定期ジョブの投入元は引き続き CronJob である。載せ先と queue の判断は [k8s 運用](../operations/k8s.md) §5 にある。
 
 ### River のジョブ一意性の注意
 
-現行の River 投影では `UniqueOpts.ByState` を**必ず明示する**。River の既定
-（`UniqueOptsByStateDefault`）は
-`completed` と `discarded` を含むため、既定のままだと「一度終わった引数のジョブは
-二度と投入できない」になる。定期ジョブ（`epg_sync`）は実質ワンショットになり、
-破棄された ingest も再投入できない。Rokuban は
-`available / pending / retryable / running / scheduled` に限定している
-（同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実）。
+現行の River 投影では `UniqueOpts.ByState` を**必ず明示する**。River の既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含むため、既定のままだと「一度終わった引数のジョブは二度と投入できない」になる。定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している（同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実）。
 
-`unique_states` は**行ごとに保存される** — 一意索引は
-`river_job_state_in_bitmask(unique_states, state)` を条件に持つ。つまり
-**古い設定で投入された行は設定を直しても鍵を占有し続ける**。この設定を変更した際は
-既存の該当ジョブ行を一度削除する必要がある:
+`unique_states` は**行ごとに保存される** — 一意索引は `river_job_state_in_bitmask(unique_states, state)` を条件に持つ。つまり**古い設定で投入された行は設定を直しても鍵を占有し続ける**。この設定を変更した際は既存の該当ジョブ行を一度削除する必要がある:
 
 ```sql
 DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 ```
 
-River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブで
-キューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した
-identity にならない。**キュー名を変える（リネーム・site 修飾の追加）とき、Queue を
-一意キーに含めていないと旧キューの残骸が新キューへの Insert を黙って塞ぐ**。この結果は
-`UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は
-[runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの
-残骸が `river_job` に残っている」を参照。
+River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブでキューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した identity にならない。**キュー名を変える（リネーム・site 修飾の追加）とき、Queue を一意キーに含めていないと旧キューの残骸が新キューへの Insert を黙って塞ぐ**。この結果は `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの残骸が `river_job` に残っている」を参照。
 
-合流の intended identity は **kind + 論理キュー + Args 全体の JSON** とする。River の
-部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、
-タグは使わない。Args 全体の JSON なら、どの adapter でも同じ identity を再現できる。
-代償として、encode の保存済み締切のように導出値が Args に入ると、締切だけが違う投入も別の identity になる。
-それは同じ仕事なので、重複として次の形で現れる。
+合流の intended identity は **kind + 論理キュー + Args 全体の JSON** とする。River の部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、タグは使わない。Args 全体の JSON なら、どの adapter でも同じ identity を再現できる。代償として、encode の保存済み締切のように導出値が Args に入ると、締切だけが違う投入も別の identity になる。それは同じ仕事なので、重複として次の形で現れる。
 
 - (i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
 - (ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
@@ -122,18 +97,9 @@ identity にならない。**キュー名を変える（リネーム・site 修�
 
 NOTIFY はコミット時にのみ配送される組み込み pub/sub。各コンポーネントは NOTIFY を「何か変わった」のヒントとして受け、**実データは必ずテーブルから読み直す**（レベルトリガー）。通知の取りこぼしは定期 reconcile で収束するため、配送保証に依存しない。
 
-**狭い例外は、テーブルに載せない揮発テレメトリ（エンコード進捗）だけ**。ffmpeg の
-`out_time` を実入力 duration に対する割合にして、最大 1 回/秒で NOTIFY する。notifier の
-EventHub が接続中のブラウザへ SSE として渡す。**テーブルへ保存しない**のは、秒単位で
-変わる復元不要の値を永続化すると再起動後に WAL・dead tuple・vacuum 対象を増やすため。
-**完了判定には使わない**。NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうる
-からである。欠落しても真実は `recording_encode_attempts` / `media_assets` の再読で
-復元できなければならない（不変条件 5）。
+**狭い例外は、テーブルに載せない揮発テレメトリ（エンコード進捗）だけ**。ffmpeg の `out_time` を実入力 duration に対する割合にして、最大 1 回/秒で NOTIFY する。notifier の EventHub が接続中のブラウザへ SSE として渡す。**テーブルへ保存しない**のは、秒単位で変わる復元不要の値を永続化すると再起動後に WAL・dead tuple・vacuum 対象を増やすため。**完了判定には使わない**。NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうるからである。欠落しても真実は `recording_encode_attempts` / `media_assets` の再読で復元できなければならない（不変条件 5）。
 
-フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造:
-durable な状態のイベントは TanStack Query の `invalidateQueries` に徹し、真実は常に REST
-から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、
-durable 状態が `running` でなくなれば破棄する。
+フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造: durable な状態のイベントは TanStack Query の `invalidateQueries` に徹し、真実は常に REST から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、durable 状態が `running` でなくなれば破棄する。
 
 **ブラウザへの SSE 配送 (`/api/events`) の担い手は notifier ロール**（api ではない）。api ロールは mirakc にもファイルシステムにも依存しない（不変条件 1）。同じ理由で、長寿命接続である LISTEN セッションも持たない --- サーバーレス（scale-to-zero）に載せるためには、そもそも常駐前提の LISTEN を api に置けない。notifier は「Postgres を LISTEN してブラウザへ配り直すだけ」の小さな常駐プロセスとして分離してある。
 
@@ -191,8 +157,7 @@ notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `si
 
 実装済み。詳細と数値の根拠は [operations.md](../operations.md) §3「輻輳時の隔離」を参照:
 
-- ロール別にコネクションプール上限を分ける（api が全コネクションを食い潰して worker/reconciler が待つ事態を防ぐ）。
-  プロセスが持つプールは常に 1 個なので、実体は「そのプロセスが担う roles からその 1 個の `MaxConns` を決める」こと
+- ロール別にコネクションプール上限を分ける（api が全コネクションを食い潰して worker/reconciler が待つ事態を防ぐ）。プロセスが持つプールは常に 1 個なので、実体は「そのプロセスが担う roles からその 1 個の `MaxConns` を決める」こと
 - API 系クエリに `statement_timeout` を設定（api ロールを含むプロセスのプールにだけ適用）
 
 ### monolith モードの注意

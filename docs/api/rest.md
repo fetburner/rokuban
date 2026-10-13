@@ -12,9 +12,7 @@
 ### 契約の保護
 
 - 破壊的変更は生成物の差分として **CI で検知**する
-- UI と API のデプロイタイミングはずれ得るため、**運用開始後は API の後方互換を保つ**（参照: [frontend.md](../frontend.md) のアセット配信）。
-  **運用開始前は保たない。** 互換のための分岐は「壊れたときに気付けない」形（旧パラメータが黙って無視され全件が返る等）で残り続けるので、
-  外から見える資源同定（パス・識別子・クエリパラメータ）を直す機会は運用開始前しかない（不変条件 11「将来への先払いは高い方から」）
+- UI と API のデプロイタイミングはずれ得るため、**運用開始後は API の後方互換を保つ**（参照: [frontend.md](../frontend.md) のアセット配信）。**運用開始前は保たない。** 互換のための分岐は「壊れたときに気付けない」形（旧パラメータが黙って無視され全件が返る等）で残り続けるので、外から見える資源同定（パス・識別子・クエリパラメータ）を直す機会は運用開始前しかない（不変条件 11「将来への先払いは高い方から」）
 
 ### エンドポイント設計の規約
 
@@ -27,8 +25,7 @@
 - site に束縛されない資源（rokuban 採番の `recordings.id` など）は site をパスに固定せず、絞り込み条件か応答本体で指定する。
 - **api プロセスは特定 site に束縛されない。** 権威は `config.mirakcs` の site レジストリで、1 プロセスが全 site を処理できる。存在しない site への GET は 404、POST / PUT / PATCH / DELETE は 400。`GET /api/sites` は存在する site の一覧を返し、mirakc の URL は含まない。
 - 導出行が作る id を書き込みの宛先にしない（[invariants.md](../invariants.md) §9「identity」）。
-- **サーキットブレーカーの再開もこの判定基準に従う。** site を持つ名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。対象は `ruler_deletes` / `reconcile_total_loss` である。
-  site 非依存 worker が書く `delete_reconcile` は `POST /api/breakers/{name}/resume` に分ける。種類名ではなく資源ごとの分類で決まる。
+- **サーキットブレーカーの再開もこの判定基準に従う。** site を持つ名前は `POST /api/sites/{site}/breakers/{name}/resume` に分ける。対象は `ruler_deletes` / `reconcile_total_loss` である。site 非依存 worker が書く `delete_reconcile` は `POST /api/breakers/{name}/resume` に分ける。種類名ではなく資源ごとの分類で決まる。
 
 <details><summary>根拠</summary>
 
@@ -44,32 +41,14 @@
 
 フロントは config を読めない（api ロールは設定ファイルを配らない）。`live.enabled` のように「無効ならその機能への導線ごと出したくない」設定がある。`live.enabled: false` のときも主ナビに「ライブ」が出続け、プレイリストの URL が SPA フォールバックの HTML 200 を返していたため、**「無効な機能」ではなく「壊れた再生」として見えていた**。
 
-- **設定値そのものは返さない**。返すのは「導線を出してよいか」だけである。config の
-  キー名・値・ffmpeg のパス・プロファイル定義は載せない（`GET /api/encode-profiles`
-  / `GET /api/sites` と同じ規律）。将来 `live.profiles` の一覧が要るなら、それは
-  能力ではなく選択肢なので別のエンドポイントになる
-- **フィールドは全て required にする。** 欠けた項目を「未対応の古いサーバー」と
-  読むか「無効」と読むかをフロントに判断させると、判断が導線ごとにばらける
-- **「有効」は「今すぐ使える」ではない。** `live: true` は config が有効という
-  事実だけを表す。streamer が動いていない / チューナーが埋まっているといった
-  実行時の状態は、従来どおり当該 API の 404 / 503 として出る
-  （[frontend/live.md](../frontend/live.md)）
-- **ビルド時フラグにはしない。** 実行時 config で on/off する設計と食い違う
-  （同じ SPA アセットがどの構成にも配れる、という前提を壊す）
+- **設定値そのものは返さない**。返すのは「導線を出してよいか」だけである。config のキー名・値・ffmpeg のパス・プロファイル定義は載せない（`GET /api/encode-profiles` / `GET /api/sites` と同じ規律）。将来 `live.profiles` の一覧が要るなら、それは能力ではなく選択肢なので別のエンドポイントになる
+- **フィールドは全て required にする。** 欠けた項目を「未対応の古いサーバー」と読むか「無効」と読むかをフロントに判断させると、判断が導線ごとにばらける
+- **「有効」は「今すぐ使える」ではない。** `live: true` は config が有効という事実だけを表す。streamer が動いていない / チューナーが埋まっているといった実行時の状態は、従来どおり当該 API の 404 / 503 として出る（[frontend/live.md](../frontend/live.md)）
+- **ビルド時フラグにはしない。** 実行時 config で on/off する設計と食い違う（同じ SPA アセットがどの構成にも配れる、という前提を壊す）
 
-**能力の値はロールに依存させない**。生成ルートはロールで絞られない（api ロールを
-持たないプロセスでも `/api/capabilities` は生える）。そのため注入を api ロールの分岐に
-置くと、同じ config の別プロセスだけが違う答えを返す（`cmd/rokuban/server.go`。
-`Sites` / `MetricsRegistry` を無条件に渡しているのと同じ理由）。
+**能力の値はロールに依存させない**。生成ルートはロールで絞られない（api ロールを持たないプロセスでも `/api/capabilities` は生える）。そのため注入を api ロールの分岐に置くと、同じ config の別プロセスだけが違う答えを返す（`cmd/rokuban/server.go`。`Sites` / `MetricsRegistry` を無条件に渡しているのと同じ理由）。
 
-**`/api/` 配下の未マッチは SPA に落とさず 404（JSON）にする**（`internal/api/spa.go`）。
-落とすと「無い」が「200 の HTML」になり、プレイリストを probe するような
-「取れたか」で判断するクライアントが成功と誤認する。ライブに限らず、
-登録されないルート全般（api ロール単独の `/api/events` など）に効く。
-`/api` そのもの（末尾スラッシュ無し）も同じ扱い --- 末尾 1 文字で 404 と
-HTML 200 に分かれると、この規則を覚えていられない。
-ナビを消すだけではディープリンクの再生は壊れて見え、404 化だけではナビは残る。
-能力 API とこの 404 は片方だけでは足りない。
+**`/api/` 配下の未マッチは SPA に落とさず 404（JSON）にする**（`internal/api/spa.go`）。落とすと「無い」が「200 の HTML」になり、プレイリストを probe するような「取れたか」で判断するクライアントが成功と誤認する。ライブに限らず、登録されないルート全般（api ロール単独の `/api/events` など）に効く。 `/api` そのもの（末尾スラッシュ無し）も同じ扱い --- 末尾 1 文字で 404 と HTML 200 に分かれると、この規則を覚えていられない。ナビを消すだけではディープリンクの再生は壊れて見え、404 化だけではナビは残る。能力 API とこの 404 は片方だけでは足りない。
 
 <details><summary>根拠</summary>
 
@@ -85,105 +64,52 @@ HTML 200 に分かれると、この規則を覚えていられない。
 
 #### 時間窓がカーソル。ページネーショントークンを持たない
 
-`GET /api/sites/{site}/programs` は `start` / `end` の時間窓で引く。一覧だが site をパスに残すのは、
-EPG 射影の存在がその site の観測に閉じているため（§エンドポイント設計の規約の判定基準）。
-トークン方式を採らない理由:
+`GET /api/sites/{site}/programs` は `start` / `end` の時間窓で引く。一覧だが site をパスに残すのは、EPG 射影の存在がその site の観測に閉じているため（§エンドポイント設計の規約の判定基準）。トークン方式を採らない理由:
 
-- **データ量が有界** — EPG はローリングウィンドウで、実測 8 日分 2680 件
-  （GR のみ 7 チャンネル）。「ページ 500」が原理的に発生しないので、
-  ページネーションが解決する問題が存在しない
-- **トークンの中身が時間窓の言い換えになる** — 安定ソート鍵は
-  `(start_at, network_id, service_id)` であり、これを opaque token に包むと
-  日付ディープリンクができず、キャッシュも効かなくなるだけ
-- **プロジェクションが 10 分ごとに全量書き換わる** — カーソルが指していた番組が
-  消えているケースを常に扱う必要が出る。時間窓なら「同じ窓 → 常に同じ完全な結果」で、
-  クエリキーが自然に決まり EPG の churn にも強い
+- **データ量が有界** — EPG はローリングウィンドウで、実測 8 日分 2680 件（GR のみ 7 チャンネル）。「ページ 500」が原理的に発生しないので、ページネーションが解決する問題が存在しない
+- **トークンの中身が時間窓の言い換えになる** — 安定ソート鍵は `(start_at, network_id, service_id)` であり、これを opaque token に包むと日付ディープリンクができず、キャッシュも効かなくなるだけ
+- **プロジェクションが 10 分ごとに全量書き換わる** — カーソルが指していた番組が消えているケースを常に扱う必要が出る。時間窓なら「同じ窓 → 常に同じ完全な結果」で、クエリキーが自然に決まり EPG の churn にも強い
 
-窓の最大幅を超えたら 400 を返し、**無言の切り詰めはしない**
-（切り詰めると「全部取れた」と誤解される）。窓の重なり判定・幅の上限・
-`service=<Service.id>` の複数指定は openapi.yaml の description が権威。
+窓の最大幅を超えたら 400 を返し、**無言の切り詰めはしない**（切り詰めると「全部取れた」と誤解される）。窓の重なり判定・幅の上限・`service=<Service.id>` の複数指定は openapi.yaml の description が権威。
 
 #### サービス一覧は `hasPrograms` を足すが、それでは絞らない
 
-`Service.hasPrograms` は、EPG プロジェクション**全体**（表示中の時間窓ではない）に
-そのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、
-フロントのチャンネル絞り込み候補をこのフラグから作るためである（[frontend.md](../frontend.md)）。
-候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられ
-なくなる」「ページを読み込むほど候補が増える」という壊れ方をする。
+`Service.hasPrograms` は、EPG プロジェクション**全体**（表示中の時間窓ではない）にそのサービスの番組が 1 件でもあるかを表す。時間窓に依存させないのは、フロントのチャンネル絞り込み候補をこのフラグから作るためである（[frontend.md](../frontend.md)）。候補が時間窓や絞り込み選択に依存すると、「1 局に絞ると他局へ切り替えられなくなる」「ページを読み込むほど候補が増える」という壊れ方をする。
 
-**このエンドポイント自体は `hasPrograms` で行を絞らない。** 番組を持たない
-サービスも含めて全件返す。理由は 2 つ:
+**このエンドポイント自体は `hasPrograms` で行を絞らない。** 番組を持たないサービスも含めて全件返す。理由は 2 つ:
 
-- ルールの新規作成フォームと検索画面（`/search`）がサービスを選ぶので、
-  いま番組を持っていない局も選べる必要がある
-- このエンドポイントは「EPG プロジェクションのサービス一覧」であり、射影に
-  居るが番組ゼロのサービスもその定義上の正当な構成員である。絞ると一覧の
-  名前が実体と食い違う
+- ルールの新規作成フォームと検索画面（`/search`）がサービスを選ぶので、いま番組を持っていない局も選べる必要がある
+- このエンドポイントは「EPG プロジェクションのサービス一覧」であり、射影に居るが番組ゼロのサービスもその定義上の正当な構成員である。絞ると一覧の名前が実体と食い違う
 
 #### 一覧と詳細で形を分ける（段階的開示）
 
-番組は一覧（`ProgramListItem`。軽い形）と詳細（`Program`。extended / video /
-audios 込み）で形を分ける。`epg_programs` は UI 完全形なので `extended`
-（出演者等）が数 KB あり、全列返すと 1 日分 335 行で 1.5 MB になるが、
-一覧用の軽い列だけなら約 85 KB/日。UI は行を展開したときに詳細を取る。
+番組は一覧（`ProgramListItem`。軽い形）と詳細（`Program`。extended / video / audios 込み）で形を分ける。`epg_programs` は UI 完全形なので `extended`（出演者等）が数 KB あり、全列返すと 1 日分 335 行で 1.5 MB になるが、一覧用の軽い列だけなら約 85 KB/日。UI は行を展開したときに詳細を取る。
 
-**フィールド選択（`?fields=`）は入れない**。生成される型が実質 `Partial<T>` に
-劣化して、OpenAPI + コード生成の利点が消える。TanStack Query のドキュメント
-キャッシュも分裂する（フィールドセットが違うと別エントリになる）。GraphQL を
-却下した論拠「クライアントは 1 つで、必要なクエリの形はすべて既知」に従い、
-**形を名前付きで少数だけ用意する**。形が 4 つ 5 つと増えて組み合わせ爆発の兆候が
-出たら、それが GraphQL を再検討するシグナルであり、`?fields=` を黙って足す話ではない。
+**フィールド選択（`?fields=`）は入れない**。生成される型が実質 `Partial<T>` に劣化して、OpenAPI + コード生成の利点が消える。TanStack Query のドキュメントキャッシュも分裂する（フィールドセットが違うと別エントリになる）。GraphQL を却下した論拠「クライアントは 1 つで、必要なクエリの形はすべて既知」に従い、**形を名前付きで少数だけ用意する**。形が 4 つ 5 つと増えて組み合わせ爆発の兆候が出たら、それが GraphQL を再検討するシグナルであり、`?fields=` を黙って足す話ではない。
 
 #### 予約状態は番組と結合しない
 
-番組リストの各行に「予約済み」を出すために `ProgramListItem` へ `reservationId` を
-持たせる（サーバーで JOIN する）ことはしない。`/api/reservations` を別に取って
-クライアント側で結合する。
+番組リストの各行に「予約済み」を出すために `ProgramListItem` へ `reservationId` を持たせる（サーバーで JOIN する）ことはしない。`/api/reservations` を別に取ってクライアント側で結合する。
 
 - 予約は頻繁に変わり番組はほとんど変わらない。**キャッシュの寿命が違う**
-- サーバーで JOIN すると、1 件予約するたびに SSE で番組リスト全体を
-  invalidate することになる。分けておけば予約クエリだけ捨てれば済む
+- サーバーで JOIN すると、1 件予約するたびに SSE で番組リスト全体を invalidate することになる。分けておけば予約クエリだけ捨てれば済む
 - 予約は数十件なのでクライアント結合は Map 1 つで済む
 
 ### 録画一覧: 絞り込み + キーセットページング
 
-`GET /api/recordings` の絞り込みパラメータ・キーセットカーソルの使い方・
-既定値と上限は openapi.yaml の `listRecordings` の description が権威。
-ここには openapi.yaml に載らない判断だけを残す。
+`GET /api/recordings` の絞り込みパラメータ・キーセットカーソルの使い方・既定値と上限は openapi.yaml の `listRecordings` の description が権威。ここには openapi.yaml に載らない判断だけを残す。
 
-**既定は全サイトを返す。** api は不変条件 1 により site に束縛されないため、
-1 プロセスがレジストリの全 site を扱う。`GET /api/reservations` /
-`GET /api/capacity/overages` も同じ形（全サイトを返し、各要素が `site` を持つ）。
-これは上記「エンドポイント設計の規約」の判定基準が名指す**唯一の例外**（複数
-site の要素を意図して 1 応答に集約する）であり、要素自体は site に閉じている。
+**既定は全サイトを返す。** api は不変条件 1 により site に束縛されないため、1 プロセスがレジストリの全 site を扱う。`GET /api/reservations` / `GET /api/capacity/overages` も同じ形（全サイトを返し、各要素が `site` を持つ）。これは上記「エンドポイント設計の規約」の判定基準が名指す**唯一の例外**（複数 site の要素を意図して 1 応答に集約する）であり、要素自体は site に閉じている。
 
-**`?site=` は「絞り込み」であって「束縛」ではない。** 束縛はプロセスがどの
-mirakc に触れるかの話で、絞り込みは読み出しの述語にすぎないので不変条件 1 とは
-別の軸である。site を `service` の識別子に混ぜてはならない --- 混ぜると
-「あるサイトの録画を全部」がチャンネルの列挙でしか表せず、`service` だけが
-他の軸と違う意味論（組の選言）を持つことになる。全軸を「軸内は OR、軸間は
-AND」に揃える。
+**`?site=` は「絞り込み」であって「束縛」ではない。** 束縛はプロセスがどの mirakc に触れるかの話で、絞り込みは読み出しの述語にすぎないので不変条件 1 とは別の軸である。site を `service` の識別子に混ぜてはならない --- 混ぜると「あるサイトの録画を全部」がチャンネルの列挙でしか表せず、`service` だけが他の軸と違う意味論（組の選言）を持つことになる。全軸を「軸内は OR、軸間は AND」に揃える。
 
-**`GET /api/storage` は上記と違って `site` フィールドを持たない**。アーカイブ
-（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は、mirakc サイトの
-ように複数存在しうる資源ではなく単一である。そのため「全サイトを返し各要素に
-`site` を持たせる」形は当てはまらない（詳細は
-[docs/storage.md](../storage.md) §5「残量の観測」）。
+**`GET /api/storage` は上記と違って `site` フィールドを持たない**。アーカイブ（`storage.media_dir`）とスクラッチ（`storage.scratch_dir`）は、mirakc サイトのように複数存在しうる資源ではなく単一である。そのため「全サイトを返し各要素に `site` を持たせる」形は当てはまらない（詳細は [docs/storage.md](../storage.md) §5「残量の観測」）。
 
-**`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at`
-降順にしない）。一覧・ごみ箱を 1 つのキーセット契約に統一するにあたり、`trash` に
-よってカーソル軸が変わる形は採らなかった。`before` / `beforeId` の意味が
-`trash` の値に依存すると、同じパラメータ名で違う軸を指すことになり、
-API 契約として破綻する。1 エンドポイントの前提が `trash` という別のフラグの値で
-変わるのは、形をモード分岐させる代償の方が大きい（不変条件 11）。ごみ箱 UI で「最近捨てた
-ものが上」が要る場合は、フロント側で `deletedAt` により再ソートする（1 ページ内
-なら安価。ページを跨いだ再ソートが要るなら別途検討）。
-旧 `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更であり、戻さない。
+**`trash=true` でもカーソル軸は `program_start_at` 降順のまま**（`deleted_at` 降順にしない）。一覧・ごみ箱を 1 つのキーセット契約に統一するにあたり、`trash` によってカーソル軸が変わる形は採らなかった。`before` / `beforeId` の意味が `trash` の値に依存すると、同じパラメータ名で違う軸を指すことになり、API 契約として破綻する。1 エンドポイントの前提が `trash` という別のフラグの値で変わるのは、形をモード分岐させる代償の方が大きい（不変条件 11）。ごみ箱 UI で「最近捨てたものが上」が要る場合は、フロント側で `deletedAt` により再ソートする（1 ページ内なら安価。ページを跨いだ再ソートが要るなら別途検討）。旧 `ListTrashRecordings` の `deleted_at` 降順からの意図的な変更であり、戻さない。
 
 #### 動的 WHERE ビルダ（sqlc の静的クエリにしない）
 
-WHERE は指定された条件だけを追加する動的な形にする。`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ `arg` クロージャ方式で WHERE を組む。sqlc の静的 querytext に `($n IS NULL OR ...)` を全軸分並べると、`q` のような選択条件でも汎用述語が残り、trgm 式 GIN が使われないことがある。
-条件を指定されたときだけ SQL に含めるため、最初の plan は入力された条件に応じた形になる。
+WHERE は指定された条件だけを追加する動的な形にする。`internal/api/recordings_query.go` が `internal/rulequery.Compile` と同じ `arg` クロージャ方式で WHERE を組む。sqlc の静的 querytext に `($n IS NULL OR ...)` を全軸分並べると、`q` のような選択条件でも汎用述語が残り、trgm 式 GIN が使われないことがある。条件を指定されたときだけ SQL に含めるため、最初の plan は入力された条件に応じた形になる。
 
 通常一覧と `trash=true` は同じ動的 WHERE の組み立てを使う。棚の絞り込みも条件部分を共有するが、ページング・並び順・番組ハブは一覧だけの軸なので共有しない。静的な形との速度差は無かったが、条件の修正を両方へ反映するために組み立てを共有する。
 
@@ -212,23 +138,11 @@ generic plan は bind 値を見ず、trgm 式 GIN が選ばれない可能性が
 
 ### 取り込み状態は一覧の要素に載せる（別エンドポイントにしない）
 
-原本の取り込み（ingest）がどこまで進んだかは `Recording.ingest` として一覧要素と
-単体 GET の両方に載せる。**専用のエンドポイントを足さない** --- 取り込み中かどうかは
-「その録画が再生できるか」と同じ質問であり、一覧を引いた時点で答えが要る（別
-エンドポイントにすると、一覧の行数ぶん N+1 のリクエストになる）。
+原本の取り込み（ingest）がどこまで進んだかは `Recording.ingest` として一覧要素と単体 GET の両方に載せる。**専用のエンドポイントを足さない** --- 取り込み中かどうかは「その録画が再生できるか」と同じ質問であり、一覧を引いた時点で答えが要る（別エンドポイントにすると、一覧の行数ぶん N+1 のリクエストになる）。
 
-api ロールは mirakc に問い合わせない（不変条件 1）ので、進捗の真実は worker が
-DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リクエストでその行と
-`media_assets` / `record_sync` の有無から状態を導出する**（列に焼かない。不変条件 9）。
-状態の値の意味と、なぜ「リトライ中」を持たないかは `openapi.yaml` の
-`IngestProgress` と [recording/ingest.md](../recording/ingest.md) §5.6。
+api ロールは mirakc に問い合わせない（不変条件 1）ので、進捗の真実は worker が DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リクエストでその行と `media_assets` / `record_sync` の有無から状態を導出する**（列に焼かない。不変条件 9）。状態の値の意味と、なぜ「リトライ中」を持たないかは `openapi.yaml` の `IngestProgress` と [recording/ingest.md](../recording/ingest.md) §5.6。
 
-**進捗は SSE で押さない。** SSE はヒントであって真実ではない（不変条件 5）ので、
-クライアントは REST の再取得で収束させる。ただし短い周期（5 秒）を張るのは
-**進捗の数字が動いている間だけ**で、それ以外は SSE グループの 60 秒 invalidate に
-落とす（[frontend/recordings.md](../frontend/recordings.md)）。「未完了なら短い周期」に
-すると、`pending` が恒久的に残りうる（`record_sync` 行は消えない）ためポーリングが
-止まらない。
+**進捗は SSE で押さない。** SSE はヒントであって真実ではない（不変条件 5）ので、クライアントは REST の再取得で収束させる。ただし短い周期（5 秒）を張るのは**進捗の数字が動いている間だけ**で、それ以外は SSE グループの 60 秒 invalidate に落とす（[frontend/recordings.md](../frontend/recordings.md)）。「未完了なら短い周期」にすると、`pending` が恒久的に残りうる（`record_sync` 行は消えない）ためポーリングが止まらない。
 
 ### エンコードの試行状態も一覧の要素に載せる
 
@@ -242,23 +156,12 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 
 取り込み状態と違う点は 2 つある。
 
-- **完了したプロファイルは出さない。** `encodedAssets` の存在が「完了」を表すので、
-  同じ情報を 2 つの配列で主張しない（`encodeStatus` は desired − observed の差だけ）。
-- **`queued` は「来る根拠」があるものにしか付けない。** api ロールは worker にも
-  mirakc にも問い合わせない（不変条件 1）ので、「来る」と言えるかどうかは DB と
-  自分の設定だけで決める必要がある。ごみ箱の録画は省略する。reconciler が
-  `deleted_at IS NULL` で絞るので、ジョブは二度と投入されない。`config.encode.profiles`
-  から消えたプロファイルも省略する。reconciler の `known_profiles` 絞り込みが
-  投入対象から外すためである。これは進捗の無いプログレスバーを出さないのと同じ判断
-  （[frontend/recordings.md](../frontend/recordings.md)）。**「設定を読む」判定を
-  api に置いたのはここだけで、mirakc への問い合わせは足していない。**
+- **完了したプロファイルは出さない。** `encodedAssets` の存在が「完了」を表すので、同じ情報を 2 つの配列で主張しない（`encodeStatus` は desired − observed の差だけ）。
+- **`queued` は「来る根拠」があるものにしか付けない。** api ロールは worker にも mirakc にも問い合わせない（不変条件 1）ので、「来る」と言えるかどうかは DB と自分の設定だけで決める必要がある。ごみ箱の録画は省略する。reconciler が `deleted_at IS NULL` で絞るので、ジョブは二度と投入されない。`config.encode.profiles` から消えたプロファイルも省略する。reconciler の `known_profiles` 絞り込みが投入対象から外すためである。これは進捗の無いプログレスバーを出さないのと同じ判断（[frontend/recordings.md](../frontend/recordings.md)）。**「設定を読む」判定を api に置いたのはここだけで、mirakc への問い合わせは足していない。**
 
-`running`/`failed` の各値の意味と、失敗が固定される条件は `openapi.yaml` の
-`EncodeJobStatus`。表そのものの判断は
-[schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節。
+`running`/`failed` の各値の意味と、失敗が固定される条件は `openapi.yaml` の `EncodeJobStatus`。表そのものの判断は [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節。
 
-失敗理由（`error`）と最後の試行時刻（`attempted_at`）は**契約に載せない** ---
-読み手は運用者の SELECT（[runbook/troubleshooting.md](../runbook/troubleshooting.md)）。
+失敗理由（`error`）と最後の試行時刻（`attempted_at`）は**契約に載せない** --- 読み手は運用者の SELECT（[runbook/troubleshooting.md](../runbook/troubleshooting.md)）。
 
 <details><summary>根拠</summary>
 
@@ -269,53 +172,22 @@ DB に残した観測（`recording_ingest_progress`）だけ。api は**毎リ�
 
 ### 録画単体: `GET /api/recordings/{id}`
 
-一覧要素と同形の 1 件（skip 理由・予約からの導線の着地先）。
-**ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す** --- 一覧の
-`trash=true` が既にメタデータを 200 で返している。そのため単体 GET だけ厳しくする
-理由が無い（メディア配信が `deleted_at IS NOT NULL` を 404 にする契約
-[api/media.md](media.md) とは別の判断）。**完全削除（purge）済みの
-tombstone（`purged_at` が立った行）だけは 404** にする --- ファイルが既に無く
-通常一覧・ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形に
-しない。
+一覧要素と同形の 1 件（skip 理由・予約からの導線の着地先）。**ごみ箱（`deleted_at IS NOT NULL`）の録画も 200 で返す** --- 一覧の `trash=true` が既にメタデータを 200 で返している。そのため単体 GET だけ厳しくする理由が無い（メディア配信が `deleted_at IS NOT NULL` を 404 にする契約 [api/media.md](media.md) とは別の判断）。**完全削除（purge）済みの tombstone（`purged_at` が立った行）だけは 404** にする --- ファイルが既に無く通常一覧・ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
 
-再開位置は同じ録画行を宛先にし、`/api/recordings/{id}/playback-position` の
-`PUT` / `DELETE` で扱う。再生中の資産によらず原本時間軸の ms で保存する。`GET
-/api/recordings/continue-watching` は位置の更新時刻が新しい順に返す。世帯共有の
-視聴済み印は `/api/recordings/{id}/watched` の `PUT` / `DELETE` で扱う。印は選択した行へ
-書き、読むときは同じ `(network_id, service_id, program_start_at)` の行を束ねる。
-そのため未視聴へ戻す操作は同じイベントの印をすべて消す。
+再開位置は同じ録画行を宛先にし、`/api/recordings/{id}/playback-position` の `PUT` / `DELETE` で扱う。再生中の資産によらず原本時間軸の ms で保存する。`GET /api/recordings/continue-watching` は位置の更新時刻が新しい順に返す。世帯共有の視聴済み印は `/api/recordings/{id}/watched` の `PUT` / `DELETE` で扱う。印は選択した行へ書き、読むときは同じ `(network_id, service_id, program_start_at)` の行を束ねる。そのため未視聴へ戻す操作は同じイベントの印をすべて消す。
 
 ### シリーズの棚と分類ルール: `GET /api/recording-shelves` / `/api/label-rules`
 
-棚は録画の一覧を実効シリーズごとに集計した射影であって、行の同一性もキーセットの軸も変えない
-（`/api/recordings` に `series` という**絞り込み軸を足していない**）。
-`Recording.series` は実効シリーズ（分類ルールが当たればその値、当たらなければ
-自動キー）で、棚の `value` と同じ空間の値である。
+棚は録画の一覧を実効シリーズごとに集計した射影であって、行の同一性もキーセットの軸も変えない（`/api/recordings` に `series` という**絞り込み軸を足していない**）。`Recording.series` は実効シリーズ（分類ルールが当たればその値、当たらなければ自動キー）で、棚の `value` と同じ空間の値である。
 
-母集団は `deleted_at IS NULL AND superseded_at IS NULL` の録画全体である。
-録画中・取り込み待ち・失敗も含む。`count` はこの母集団の件数である。
-`playableCount` は原本または有効な encoded 資産がある録画の件数である。
-`latestStartAt` は棚内で最も新しい番組開始時刻、`representativeId` はその録画の id である。
-`title` は代表録画の生タイトルで、`value` を正規化前の表示名として置き換えるものではない。
+母集団は `deleted_at IS NULL AND superseded_at IS NULL` の録画全体である。録画中・取り込み待ち・失敗も含む。`count` はこの母集団の件数である。`playableCount` は原本または有効な encoded 資産がある録画の件数である。`latestStartAt` は棚内で最も新しい番組開始時刻、`representativeId` はその録画の id である。`title` は代表録画の生タイトルで、`value` を正規化前の表示名として置き換えるものではない。
 
-画面の `/series` は `value` をシリーズ名、`title` を補助表示に使い、`playableCount`
-と `latestStartAt` を添える。`value` が `NULL` の棚は番組ハブを開けないため画面には出さず、
-API は状態を失わないよう返す。棚全体を選ぶリンクは
-`/recordings/{representativeId}/series` に向く。
+画面の `/series` は `value` をシリーズ名、`title` を補助表示に使い、`playableCount` と `latestStartAt` を添える。`value` が `NULL` の棚は番組ハブを開けないため画面には出さず、API は状態を失わないよう返す。棚全体を選ぶリンクは `/recordings/{representativeId}/series` に向く。
 
-**パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}` と
-id=`shelves` で曖昧になる。
+**パスを `/api/recordings/shelves` にしない。** `/api/recordings/{id}` と id=`shelves` で曖昧になる。
 
-`label_rules` の CRUD は `/api/rules`（録画ルール）に倣う形である。
-作成・更新・削除は同じトランザクションで全件再評価のジョブを投入する
-（トリガーは自分の行しか見ないので、既にコミット済みの録画はそのジョブでしか
-追従しない）。値が正規化で空になるルールは 400 で拒否する --- 何も主張しない
-ルールを作らせない。
+`label_rules` の CRUD は `/api/rules`（録画ルール）に倣う形である。作成・更新・削除は同じトランザクションで全件再評価のジョブを投入する（トリガーは自分の行しか見ないので、既にコミット済みの録画はそのジョブでしか追従しない）。値が正規化で空になるルールは 400 で拒否する --- 何も主張しないルールを作らせない。
 
-`LabelRule.valueKey` は実効の棚キー（`value` に自動キーと同じ正規化を通した結果）で、`value` と食い違いうる（最初の空白で切れる）。
-一覧はこれを見せ、フォームは入力中の値を `GET /api/label-rule-value-key` に問い合わせて見せる。正規化は SQL 関数の 1 箇所に置き、クライアントへ複製しない。
+`LabelRule.valueKey` は実効の棚キー（`value` に自動キーと同じ正規化を通した結果）で、`value` と食い違いうる（最初の空白で切れる）。一覧はこれを見せ、フォームは入力中の値を `GET /api/label-rule-value-key` に問い合わせて見せる。正規化は SQL 関数の 1 箇所に置き、クライアントへ複製しない。
 
-分類ルールの画面は `/rules` に置く。シリーズ画面からルールを作る導線も同じ画面の
-フォームを開き、作成・更新・削除後は再評価ジョブの完了に合わせて棚を更新する。
-値が `NULL` の棚は番組ハブを開けないので画面に出さない。API は件数によらず
-全部の棚を返す。判断の根拠は [data/series.md](../data/series.md) §8。
+分類ルールの画面は `/rules` に置く。シリーズ画面からルールを作る導線も同じ画面のフォームを開き、作成・更新・削除後は再評価ジョブの完了に合わせて棚を更新する。値が `NULL` の棚は番組ハブを開けないので画面に出さない。API は件数によらず全部の棚を返す。判断の根拠は [data/series.md](../data/series.md) §8。
