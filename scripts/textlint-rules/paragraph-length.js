@@ -14,8 +14,8 @@
 // `<details>` の中は、開きタグの直後に空行を置いたときだけ段落になり数えられる。空行が
 // 無いと中身ごと HTML ブロックになり、このルールも textlint の他のルールも見ない。
 //
-// 字数: 段落に見えている文字列（地の文とインラインコード）の Unicode コードポイント数。
-// リンクの URL・インライン HTML・改行とその前後の空白は数えない。全角も半角も 1 字。
+// 字数: 段落に見えている文字列の字数。数え方は表のセルと共有し、scripts/textlint-chars.js に
+// ある。
 //
 // 上限 400 字: 2026-10-12 時点の対象文書（75 ファイル・3,939 単位）で、この単位の
 // 中央値 131 字・p90 333 字・最大 2,065 字、400 字超は 226 単位だった。400 字は p90 の上に
@@ -27,21 +27,19 @@
 'use strict';
 
 const ratchet = require('../textlint-allow.js');
+const chars = require('../textlint-chars.js');
 
 const MAX_CHARS = 400;
 const check = ratchet('scripts/paragraph-length.allow.json', ` ${MAX_CHARS} 字超の段落`);
 
-const text = (n) =>
-  n.type === 'Html' ? '' : n.value ?? (n.children ?? []).map(text).join('');
-
 // overlong は木の中の 400 字超の段落を文書順に返す。段落の中に段落は無いので、段落で止まる。
 const overlong = (n, out = []) => {
   if (n.type === 'Paragraph') {
-    const chars = [...text(n).replace(/[ \t]*\r?\n[ \t]*/g, '')].length;
-    if (chars > MAX_CHARS) {
+    const c = chars(n);
+    if (c > MAX_CHARS) {
       out.push({
         node: n,
-        message: `段落が ${chars} 字（上限 ${MAX_CHARS} 字）。表か番号付きの短文に割る`,
+        message: `段落が ${c} 字（上限 ${MAX_CHARS} 字）。小見出しか番号付きリストに割る。表のセルは一言（名前・型・値）に限り、長文をセルへ移さない`,
       });
     }
   } else {
