@@ -2,7 +2,7 @@
 
 ## 前提
 
-導入の前に、mirakc が動き、録画の保存先が設定され、イメージに cat と dd が含まれ、専用チューナーが兼用チューナーより前に並んでいることを確かめる。
+導入の前に、mirakc が動いていて、録画の保存先が設定されていることを確かめる。mirakc のイメージに cat と dd が含まれていることと、専用チューナーが兼用チューナーより前に並んでいることも確かめる。
 
 - mirakc が動いていて `GET /api/version` が返る
 - mirakc の `recording.basedir` と `recording.records-dir` が設定されている。どちらも未設定だと `/api/recording/*` が 404 になる
@@ -17,13 +17,13 @@
 
 ### チューナーの並び順
 
-mirakc は設定順で最初に空いているチューナーを選ぶ。兼用チューナーを先に置くと、専用チューナーで受けられる種別にも兼用チューナーを使い、他の種別の余地を減らす。
+mirakc の実装を読んだ限り、mirakc は設定順で最初に空いているチューナーを選ぶ。兼用チューナーを先に置くと、専用チューナーで受けられる種別にも兼用チューナーを使い、他の種別の余地を減らす。
 
 専用チューナーを先にしても、mirakc は後に来る予約を見ずに選び、番組の途中でチューナーを替えない。そのため防げない失敗は残る。並び順はどちらにも反例がある。
 
 <details><summary>根拠</summary>
 
-- mirakc main（`4f2493f98374`）で設定順に最初の空きチューナーを選ぶ実装: `mirakc-core/src/tuner.rs` の `activate_tuner`
+- 設定順に最初の空きチューナーを選ぶ、mirakc main（`4f2493f98374`）の実装: `mirakc-core/src/tuner.rs` の `activate_tuner`
 
 </details>
 
@@ -52,10 +52,16 @@ rokuban は SIGTERM を受けると、実行中のジョブを `--soft-stop-time
 
 ジョブごとの回収は次の通り。
 
-- ingest は JobRescuer が回収する
-- encode は、args に保存された締切後に JobRescuer が同じ job を再試行する。実尺が不明な場合と、締切のない旧 args は 12 時間を使う
+- ingest は回収処理が回収する
+- encode は、args に保存された締切後に回収処理が同じ job を再試行する。実尺が不明な場合と、締切のない旧 args は 12 時間を使う
 - cm_detect は、次の `cm_detect_reconcile` が lock の解放を確認して代替ジョブへ置き換える
-- その他のジョブは JobRescuer が回収する
+- その他のジョブは回収処理が回収する
+
+<details><summary>根拠</summary>
+
+- 回収処理: `JobRescuer`
+
+</details>
 
 ### 起動直後の同期
 
@@ -128,16 +134,16 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 | `reconcile_pass` | 30 秒 | なし | 予約の作成 / 取消、`ruler_pass` の完了 |
 | `record_sweep` | 5 分 | なし | なし |
 
-- 5 つとも `RunOnStart` なので、プロセス起動直後に 1 回走る
-- ヒントは `UniqueOpts{ByArgs, ByState}` で定期実行に合流する。ルールや予約を連続で編集してもパスは 1 回で足りる
+- 5 つとも起動直後に 1 回走る設定になっている
+- ヒントは、引数と状態で一意にして定期実行に合流する。ルールや予約を連続で編集してもパスは 1 回で足りる
 - `worker.periodic_jobs: false`（k8s 構成）ではどのジョブも自動投入されない。CronJob から `rokuban enqueue` で投入する
+
+`tuner_sync` はコード固定で設定キーを持たない。運用者が触る理由がないからである。ルールの編集は api が同一トランザクションでヒントを投入し、予約の作成 / 取消も同一トランザクションで投入する。`record_sweep` は SSE の再接続を契機にする案を見送ったので、前倒しのヒントを持たない。
 
 <details><summary>根拠</summary>
 
-- `tuner_sync` に設定キーが無い理由: コード固定で、運用者が触る理由がない
-- ルールの作成 / 更新 / 削除のヒント: api が同一トランザクションで投入する
-- 予約の作成 / 取消のヒント: 同一トランザクションで投入する
-- `record_sweep` に前倒しのヒントが無い理由: SSE 再接続を契機にする案は見送った
+- 起動直後に 1 回走る設定: `RunOnStart`
+- 定期実行に合流させる一意化: `UniqueOpts{ByArgs, ByState}`
 
 </details>
 
@@ -172,7 +178,7 @@ flowchart LR
 ```
 
 1. 番組が EPG の射影に入る。`epg_sync`（最大 10 分）が担う。その手前に mirakc の `update-schedules`（既定 1 日 2 回）があるので、放送直前の番組はそもそも射影に無いことがある。ruler は射影しか見ない（不変条件 1）
-2. ruler が `reservations.base` を導出する。ルール書き込みと同一トランザクションでヒントが入るので通常は即座である。ヒントが落ちれば最大 10 分かかる
+2. ruler が予約の基底を導出する。ルール書き込みと同一トランザクションでヒントが入るので通常は即座である。ヒントが落ちれば最大 10 分かかる
 3. reconciler が mirakc に schedule を作る。`ruler_pass` の完了がヒントなので続けて走る。落ちれば最大 30 秒かかる
 
 <details><summary>根拠</summary>

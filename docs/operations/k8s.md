@@ -2,7 +2,7 @@
 
 ## 5. k8s 運用
 
-k8s ではロールごとに Pod を分けて動かす。運用者は、キューの購読・スケール・終了猶予・死活監視を、Pod の形に合わせてマニフェストに書く。
+k8s では Pod を分けて動かす。運用者は、キューの購読・スケール・終了猶予・死活監視を、Pod の形に合わせて書く。
 
 ### ロールとキュー購読の関係
 
@@ -13,13 +13,13 @@ worker を含まない構成（`--roles watcher` 等）を組んでも、起動�
 1. watcher 単独プロセスは River クライアントを起動しない（`--roles worker` を含む場合だけ起動する）。実行用のワーカー群（エンコードとサムネイルを含む）も登録せず、api ロールと同じ投入専用の enqueuer を使う。watcher が必要とするのは ingest ジョブの投入だけであり、キューの購読ではないので、これで用は足りる
 2. `worker.queues`（同じ値を argv で渡す `--queues` も同義）は worker ロールが引くキューの絞り込みであり、既定（どちらも無し）は全キュー購読である。worker ロールが無いプロセスはこの設定に関わらずキューを一切引かない（[configuration.md](../configuration.md) の `worker.queues`）
 
-ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読するときだけ起動時に検査する。`worker.queues` で encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では、起動時に LookPath で検査し、無ければ即座に落ちる。ffmpeg が無い環境で encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
+ffmpeg と ffprobe は、実際に encode/thumbnail のキューを購読するときだけ起動時に検査する。`worker.queues` で encode/thumbnail を明示的に除外した worker Pod（例: ingest 専用 Pod）は ffmpeg の存在を要求されない。逆に既定（全キュー購読）や encode/thumbnail を含む設定では、起動時に実行ファイルの存在を検査し、無ければ即座に落ちる。ffmpeg が無い環境で encode/thumbnail ジョブが River の再試行を焼き続けてから気付く、という壊れ方を防ぐ。
 
 <details><summary>根拠</summary>
 
 - キュー購読は worker ロールだけ: `river.Client.Start` / `riveradapter.NewInsertOnlyEnqueuer`
 - watcher 単独プロセスはフルのワーカー群を登録しない: `worker.NewWorkers` / `EncodeWorker` / `ThumbnailWorker`
-- ffmpeg/ffprobe の起動検査は encode/thumbnail を購読するときだけ: 不変条件 4、`jobs.RequiresEncodeTools`
+- ffmpeg/ffprobe の起動検査は encode/thumbnail を購読するときだけ: 不変条件 4、`jobs.RequiresEncodeTools`、`LookPath`
 
 </details>
 
@@ -118,11 +118,11 @@ publisher は `runOnDemand` が子プロセスとして起動する rokuban の�
 
 セッションを Pod に貼り付ける代わりに、**前段でサイト・ネットワーク・サービスの組の consistent hash によって振る**。この鍵は既に資源同定の中にある（`/api/sites/{site}/networks/{networkId}/services/{serviceId}/...`。[api.md](../api.md) §ライブ視聴の HLS）。SI の service_id は network をまたぐと一意でないので、鍵も 3 項になる。鍵が資源同定にあるので、レプリカを増やしても URL もクライアントも変わらない。
 
-cookie による affinity は使わない。外部プレイヤー（VLC 等）は cookie を持たない。OSS nginx に `sticky cookie` が無い（nginx-plus の機能）。ingress-nginx の既定 `affinity-mode: balanced` はスケール時に生きている Pod からもクライアントを剥がす
+cookie による affinity は使わない。外部プレイヤー（VLC 等）は cookie を持たない。OSS nginx に `sticky cookie` が無い（nginx-plus の機能）。ingress-nginx の既定 `affinity-mode: balanced` はスケール時に生きている Pod からもクライアントを剥がす。
 
-同じチャンネルの視聴者は同じ Pod に落ちるので、ffmpeg 1 本・チューナー 1 本を共有する。チューナーは録画と取り合う唯一の共有資源である。これは偶然の利益ではない。鍵をサービスの同定子に取る理由そのものである
+同じチャンネルの視聴者は同じ Pod に落ちるので、ffmpeg 1 本・チューナー 1 本を共有する。チューナーは録画と取り合う唯一の共有資源である。これは偶然の利益ではない。鍵をサービスの同定子に取る理由そのものである。
 
-Pod が落ちても、ハッシュの担当が移っても自己修復する。視聴者の再要求が新しい Pod に落ちてそこで ffmpeg が起き、旧 Pod は要求が来なくなるので idle GC がチューナーを解放する。クライアント側にセッションの概念が無いので、見えるのは再バッファリングだけである
+Pod が落ちても、ハッシュの担当が移っても自己修復する。視聴者の再要求が新しい Pod に落ちてそこで ffmpeg が起き、旧 Pod は要求が来なくなるので idle GC がチューナーを解放する。クライアント側にセッションの概念が無いので、見えるのは再バッファリングだけである。
 
 #### 既定を 1 にする根拠と、増やす判定基準
 
@@ -130,13 +130,13 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 ライブ 1 本がチューナー 1 本を占有し、残りが録画に使われる。Pod の CPU は天井にならない。
 
-1 Pod に収まる間は増やす理由が無い。収まらなくなったら replica を増やし、前段に `(site, networkId, serviceId)` の consistent hash を設定するだけでよい。URL・クライアント・API は変わらない。この可逆性を保つために実装側で守るのは次の 3 点である。
+1 サイトのチューナー数ぶんのトランスコードが 1 Pod に収まる間は、増やす理由が無い。収まらなくなったら replica を増やし、前段に `(site, networkId, serviceId)` の consistent hash を設定するだけでよい。URL・クライアント・API は変わらない。この可逆性を保つために実装側で守るのは次の 3 点である。
 
 1. プレイリストとセグメントの URL を固定深さにする。前段が 1 つの nginx 変数で鍵を取り出せる形にする。OSS nginx なら `map` で鍵を取り出し、`hash $live_key consistent;` で振り分ける。`map` は `map $uri $live_key { ~^/api/sites/(?<s>[^/]+)/networks/(?<n>[^/]+)/services/(?<sv>[^/]+)/live/ "$s/$n/$sv"; }` と書く。可変長パスやクエリ文字列に鍵を置くと書けない（ingress-nginx の `upstream-hash-by` で同じキャプチャがどう書けるかは未検証）
 2. 同時セッション上限はプロセスローカルであることを前提にする。グローバルな天井はチューナー数であり、その裁定者は mirakc である。「アプリが握る唯一のグローバル上限」を作ると、レプリカを増やした時点で偽になる
 3. セッション数のメトリクスは per-process gauge にする。Prometheus 側で sum する。1 Pod の値を全体として読む UI を作らない
 
-要求レートの実測値は、`segment_seconds: 2`・映像プロファイル 1 本・視聴者 1 人で playlist 0.5 req/s とセグメント 0.5 req/s である。`segment_seconds` を 1 へ詰めると 1.4 req/s と 0.7 req/s になる。増えるのは要求数であって、Pod を増やす理由にはならない。天井は上に書いたとおりチューナー数である。ここに記録するのは、セグメント長を短くする判断が要求数を約 2 倍にすることを、スケールの見積もりで読み違えないためである。
+要求レートの実測値は、`segment_seconds: 2`・映像プロファイル 1 本・視聴者 1 人で playlist 0.5 req/s とセグメント 0.5 req/s である。`segment_seconds` を 1 へ詰めると 1.4 req/s と 0.7 req/s になる。増えるのは要求数であって、Pod を増やす理由にはならない。ここに記録するのは、セグメント長を短くする判断が要求数を約 2 倍にすることを、スケールの見積もりで読み違えないためである。
 
 #### ライブのセグメントを録画バッファと同じディスクに置かない
 
@@ -248,10 +248,10 @@ Job は 1 件消化して自分で終了させる。ScaledJob は Job の自己�
 
 #### 実行中のジョブを打ち切る条件
 
-1 件消化モードで実行中のジョブを打ち切りうるのは、SIGTERM を受けたあとの猶予切れだけである。
+1 件消化モードで実行中のジョブを打ち切りうるのは、空振りの待ち時間でなく SIGTERM のあとの猶予切れである。
 
 - `--once-idle-timeout`（既定 30 秒）は実行中のジョブを打ち切らない。「1 件も掴めないまま待った時間」にしか効かず、KEDA が滞留を過大評価して起こした空振りの Job を終了させる値である。
-- ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）。上限を外すつもりで `0` と書くと起動エラーになる。0 は「待たない」であり、「無制限」にはならない。
+- ノード退避・ローリング更新で SIGTERM を受けた Job は、`--soft-stop-timeout`（既定 5 秒）を超えた時点で実行中のジョブの ctx を切る。**長時間キュー（`encode` / `ingest`）の ScaledJob では `--soft-stop-timeout` を明示する。** 既定のままだと、猶予を 300 秒に取った ScaledJob でも drain は 5 秒で終わる。`terminationGracePeriodSeconds` と対で引き上げること（下記「Deployment 併用時」の足し算）。上限を外すつもりで `0` と書くと起動エラーになる。
 
 1 件消化モードでは、先に River の graceful stop を実行し、そのあとプロセスを畳む。前者は producer の fetch を止めて実行中の仕事を待ち、後者は Start に渡した ctx を cancel する。逆順にすると、掴んでいたジョブが完走に使える時間が `--soft-stop-timeout` の猶予まで縮む（下記「Deployment 併用時」）。graceful stop を先に撃つほうが、猶予を消費せずに完走できる。
 
@@ -266,7 +266,7 @@ Job は 1 件消化して自分で終了させる。ScaledJob は Job の自己�
 
 1 つの Job が 2 件消化して終わる窓が既知であり、窓の中の挙動は未測定である。
 
-Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、これが起きる。最大同時実行数が 1 なので同時には走らない。打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけで、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（`Stop` は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。窓の中の挙動そのものは未測定である。
+Work を抜けてから producer が止まるまでの間に次のジョブが fetch されると、これが起きる。最大同時実行数が 1 なので同時には走らない。打ち切られるのは `--soft-stop-timeout` の猶予を超えたときだけで、超えればその 2 件目は試行を消費せず `available` に戻る。これは上記の順序と River の実装からの導出であって、測定ではない（停止処理は producer を止めてから実行中の完了を待ち、猶予が切れたら work ctx を cancel する）。実害は KEDA の数が 1 つずれることと、その再試行だけである。実測では 25 回試してこの窓に入らなかった。窓の中の挙動そのものは未測定である。
 
 失敗するジョブ（到達不能な mirakc への `epg_sync`）でも exit 0 になる。ジョブは River 側で未完了のまま（`attempt=1`）残る。**次の Job がそれを引き直すところまでは測っていない。**
 
@@ -275,6 +275,7 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 <details><summary>根拠</summary>
 
 - 失敗したジョブも exit 0 でプロセスを終了する: `TestServerCmd_OnceModeExitsZeroOnJobFailure`
+- 停止処理: `Stop`
 - 未登録 kind のジョブを検出して終了する: `riveradapter.SubscribeOnceEvents` / `TestServerCmd_OnceModeExitsOnUnhandledJobKind`
 
 </details>
@@ -289,13 +290,14 @@ JobRescuer と JobScheduler を動かす常駐 River client は notifier Deploym
 
 実行中のまま死んだジョブは、回収されるまで同じ種類・同じサイトの投入を飲み込む。その行が一意キーを占有するので、同じ kind × site の後続の投入は既存行に合流して消える（投入は気づかないうちに無かったことになる）。
 
-- 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client の `JobTimeout`（既定 1 分）より長い。worker 固有の `Timeout()` が設定値より長ければ、その長い時間を rescue 判定に使う。
+- 通常の既定は `worker.rescue_stuck_jobs_after: 6m` で、client のジョブ timeout（既定 1 分）より長い。worker 固有の timeout が設定値より長ければ、その長い時間を rescue 判定に使う。
 - ingest は Timeout 5 分なので、停止した Work は約 6 分で retry が予約される。encode の締切は enqueue 時に録画実尺と profile rate から args へ保存する。実尺が不明な場合と締切のない旧 args は 12 時間を使う。
-- 常駐 client が変えるのは回収する主体であり、回収までの時間ではない。`Timeout() < 0` の cm_detect / cm_logo_candidate はそれぞれの reconcile が回収する。
+- 常駐 client が変えるのは回収する主体であり、回収までの時間ではない。timeout が負の cm_detect / cm_logo_candidate はそれぞれの reconcile が回収する。
 - 値を明示的に 0 にすると River の既定 1 時間になる。1 分未満は起動しない。
 
 <details><summary>根拠</summary>
 
+- ジョブの timeout: `JobTimeout` / `Timeout()` / `Timeout() < 0`
 - JobRescuer の回収条件: [故障注入 suite の F3](../../deploy/k8s/e2e/README.md)
 
 </details>
@@ -304,9 +306,9 @@ JobRescuer と JobScheduler を動かす常駐 River client は notifier Deploym
 
 ScaledJob のキューは起動引数で絞り、共有する ConfigMap にはキューの指定を書かない。
 
-ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が成り立たなくなる）。`--queues` と `worker.queues` の両方指定は起動エラーにしてある。どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んで `verifySite` で全滅する Pod が気づかないうちに生まれる。
+ScaledJob はキュー単位に作るのに ConfigMap は 1 個である。キューを config キー（`worker.queues`）でしか指定できないと、ScaledJob の数だけ ConfigMap が増える（上記「マニフェストの配布形式」の決定が成り立たなくなる）。`--queues` と `worker.queues` の両方指定は起動エラーにしてある。どちらが勝つかを覚えておく形にすると、monolith と k8s で購読集合の出所が分かれる。`--queues=`（明示的な空）も起動エラーである。「全キュー」に化けると、site 束縛キューまで掴んでサイトの検証で全滅する Pod が気づかないうちに生まれる。
 
-この排他は共有 ConfigMap と結合している。`--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた時点で、`--queues` を渡している worker Pod がすべて起動エラーになる。ConfigMap を 1 個に保つ決定（上記「マニフェストの配布形式」）と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。
+この排他は共有 ConfigMap と結合している。`--queues` を使う構成では、共有する config.yml に `worker.queues` を書いてはならない。書いた時点で、`--queues` を渡している worker Pod がすべて起動エラーになる。ConfigMap を 1 個に保つ決定と組み合わせると、この 1 行が全 worker を落とす形になるので、キューの指定は argv 側に一本化する。
 
 <details><summary>根拠</summary>
 
@@ -348,7 +350,7 @@ site 修飾と `rollout.strategy` は [deploy/k8s/e2e](../../deploy/k8s/e2e/READ
 
 チャンク並列エンコードは未実装で、初期実装には含めない。価値はクラウドバーストによる高速化に限られ、クラウド構成専用のオプションである。
 
-preemption 対策は上記の ScaledJob で十分である。チャンク化の価値はクラウドバーストによる高速化（数時間のエンコードを worker N 台で数分の壁時計時間に短縮）に限られる。自宅の HW エンコード（QSV/VAAPI）は実時間の数倍で足りるため価値が薄い。
+preemption 対策は上記の ScaledJob で十分である。高速化とは、数時間のエンコードを worker N 台で数分の壁時計時間に短縮することである。自宅の HW エンコード（QSV/VAAPI）は実時間の数倍で足りるため価値が薄い。
 
 実装方針の見立て: 実ファイルは分割せず、各ジョブに (開始時刻, 長さ) を渡して 2 段 seek（`-ss` を `-i` の前後で併用）でフレーム精度の境界を出す。映像はチャンクごとに独立ジョブ（境界は強制 IDR）。音声は音声フレーム境界のズレによる接合ノイズを避けるため分割せず、全体を 1 パスで別エンコードして最後に mux（ISDB の番組途中の音声レイアウト切替の正規化もここに集約）。全チャンク完了後に concat demuxer でロスレス結合 + 検証の fan-in ジョブ。構造化エンコードプロファイル（[docs/storage.md](../storage.md)）とは独立な executor の戦略なので、プロファイル定義に手を入れず後付けできる。
 
@@ -380,11 +382,11 @@ Deployment 型（またはその併用）の定石は 2 つある。1 つは、S
 
 drain の猶予は `--soft-stop-timeout`（既定 5 秒）である。SIGTERM を受けてから猶予内に終わったジョブは完走する。実バイナリでは、猶予 60 秒で SIGTERM の 40 秒後に終わるジョブは `completed` になった。猶予 5 秒では同じジョブが 5 秒で ctx を切られて `available` に戻った（`attempt=0` / `errors` は空）。停止による打ち切りは River v0.44 以降、ジョブのエラーとして記録されず試行も消費しない。
 
-打ち切りは `river_job` に痕跡を残さない（`errors` は空、`attempt` も進まない）。デプロイ由来の打ち切りかどうかはテーブルから判別できない。ログでも「どのジョブが切られたか」は見えない。River に `Config.Logger` を渡していないので、River の既定ロガー（WARN 止まり）だけが出る。猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）から判別できるのは、「猶予が切れた」までである。
+打ち切りは `river_job` に痕跡を残さない（`errors` は空、`attempt` も進まない）。デプロイ由来の打ち切りかどうかはテーブルから判別できない。ログでも「どのジョブが切られたか」は見えない。River にロガーを渡していないので、River の既定ロガー（WARN 止まり）だけが出る。猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）から判別できるのは、「猶予が切れた」までである。
 
 `--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に効く。**0 以下は起動エラー**であり、worker ロールを持たないプロセスでの指定も起動エラーである。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を気づかないうちに無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
 
-0 は「待たない」であり、「無制限」にはならない。River は `SoftStopTimeout` が 0 のとき work ctx を start ctx から継ぐ。`signal.NotifyContext` の ctx を `Start` に渡しているこの構成では、SIGTERM が `StopAndCancel` 相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
+0 は「待たない」であり、「無制限」にはならない。River は猶予が 0 のとき work ctx を start ctx から継ぐ。シグナルで cancel される ctx を River の起動に渡しているこの構成では、SIGTERM が実行中ジョブの ctx を即座に切る停止相当になる（この節が長く「未解決」として抱えていた壊れ方そのもの）。
 
 `terminationGracePeriodSeconds` の経過後に SIGKILL が来るため、これが真の上限である。drain の猶予が `terminationGracePeriodSeconds` を超えると、SIGKILL が先に来て実行中の job は `running` のまま残る。
 
@@ -396,6 +398,7 @@ Work が ctx cancellation に従わない待ちは締切後も残りうるため
 
 - drain の猶予内で完走・打ち切りになる: `TestServerCmd_SigtermDrainsRunningJob`
 - drain の猶予設定: `river.Config.SoftStopTimeout`
+- 猶予 0: `SoftStopTimeout` / `signal.NotifyContext` / `Start` / `StopAndCancel`
 - 打ち切りのログと痕跡: `river_job` / `Config.Logger`
 
 </details>
@@ -408,7 +411,7 @@ worker ロールを走らせる Pod は、Deployment でも KEDA ScaledJob が�
 
 ```mermaid
 flowchart LR
-  A[SIGTERM] --> B[preStop の sleep]
+  A[preStop の sleep] --> B[SIGTERM]
   B --> C[停止待ち 10 秒]
   C --> D[drain: soft-stop の猶予]
   D --> E[畳み 10 秒]
@@ -419,12 +422,13 @@ flowchart LR
 `terminationGracePeriodSeconds` はこれより長く取る。等号にしない。上の値はプロセスが消えるまでの最悪値そのものなので、等号だと SIGKILL と同着になる。しかも同着になるのは予算を使い切ったケース、つまりここで避けようとしている「行が `running` のまま残る」経路そのものである。既定なら 30 秒（`docker-compose.yml` の `stop_grace_period` がこの値）。
 
 - worker ロールを持たない Pod では後ろ 2 項が落ちる（River クライアントを Start するのは worker ロールだけ）。api がこれで、要求は `preStop の sleep + 10s` になる。実際の値は `deploy/k8s/base/api.yaml` の 30 秒である。
-- 2 項目は errgroup の停止待ちで、drain と足し合わせる。2 つは SIGTERM を契機に重なって進むので、実際の停止はもっと早いことが多い（River の soft stop タイマーは SIGTERM の時点から走る）。それでもプロセスが `Stop` に課す締切は errgroup が畳み終わってから測るので、上界は和になる。重なるぶんは安全側のマージンとして残す。worker 単独の Pod ではこの上限を決めるのは HTTP の停止（`http.Server.Shutdown` の 10 秒）だけで、それが 10s の出どころである。`--all`（monolith）では ffmpeg の終了待ち（ライブ視聴）や watcher の畳みも同じ待ちに入る。**それらの所要は測っていない**ので、`--all` で 10s に収まる根拠は無い
-- SSE（`/api/events`）を掴んだクライアントが居ると HTTP の停止はこの上限を使い切る。`Shutdown` は実行中のリクエストの ctx を cancel せず、SSE ハンドラは自分の接続が切れるまで抜けないからである（機構からの導出。実測はしていない）
-- 3 項目は猶予が切れたあと畳み終えるぶん（ctx を切られたジョブが `Work` から戻り、River の completer が結果を書く）。所要は測っていない。HTTP の停止と同じ大きさに揃えただけである
+- 2 項目は errgroup の停止待ちで、drain と足し合わせる。2 つは SIGTERM を契機に重なって進むので、実際の停止はもっと早いことが多い（River の soft stop タイマーは SIGTERM の時点から走る）。それでもプロセスが River の停止に課す締切は errgroup が畳み終わってから測るので、上界は和になる。重なるぶんは安全側のマージンとして残す。worker 単独の Pod ではこの上限を決めるのは HTTP の停止（HTTP サーバーの停止待ちの 10 秒）だけで、それが 10s の出どころである。`--all`（monolith）では ffmpeg の終了待ち（ライブ視聴）や watcher の畳みも同じ待ちに入る。**それらの所要は測っていない**ので、`--all` で 10s に収まる根拠は無い
+- SSE（`/api/events`）を掴んだクライアントが居ると HTTP の停止はこの上限を使い切る。HTTP サーバーの停止は実行中のリクエストの ctx を cancel せず、SSE ハンドラは自分の接続が切れるまで抜けないからである（機構からの導出。実測はしていない）
+- 3 項目は猶予が切れたあと畳み終えるぶん（ctx を切られたジョブがワーカー処理から戻り、River の completer が結果を書く）。所要は測っていない。HTTP の停止と同じ大きさに揃えただけである
 
 <details><summary>根拠</summary>
 
+- 停止処理: `http.Server.Shutdown` / `Shutdown` / `Stop` / `Work`
 - worker を持たない api の停止予算: `deploy/k8s/base/api.yaml` / `deploy/k8s/manifests_test.go` の `TestTerminationBudgetCoversPreStop`
 - HTTP 停止予算が soft-stop の猶予を覆う: `TestShutdownBudget_CoversTheSoftStop`
 
@@ -434,17 +438,17 @@ flowchart LR
 
 数時間のジョブを完走させるには、soft-stop の猶予と終了猶予を対で引き上げる。
 
-数時間のエンコード / ingest は既定の 5 秒では完走しない。`--soft-stop-timeout` と `terminationGracePeriodSeconds` は対で引き上げる（片方だけ上げても、短い側が先に効く）
+既定の 5 秒では完走しない。`--soft-stop-timeout` と `terminationGracePeriodSeconds` は、片方だけ上げても短い側が先に効く。
 
-既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測では、既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は一時的に `running` のまま残り、上記の SIGKILL 後の回収に任せることになる。長い drain は、猶予を明示的に書いたデプロイだけが手に入れる
+既定が短いのは「何も書かなかった人が SIGKILL されない」ためである。プラットフォーム側の既定の猶予は Docker が 10 秒、k8s が 30 秒しかない。実測では、既定（5 秒）のプロセスは停止に 5.06 秒しか使わない（2026-09-05、river v0.47.0）。かつての既定 30 秒では 30.09 秒必要で、k8s の既定猶予に 0.09 秒負けた。負けると行は一時的に `running` のまま残り、上記の SIGKILL 後の回収に任せることになる。長い drain は、猶予を明示的に書いたデプロイだけが手に入れる。
 
-ローリング更新の間は worker の DB コネクション budget が二重に乗る（旧 Pod が drain のあいだプールを握り続ける。[§3](database.md) のロール別 budget）。猶予を数時間に取る構成では、その時間ぶん重なる
+ローリング更新の間は worker の DB コネクション budget が二重に乗る（旧 Pod が drain のあいだプールを握り続ける。[§3](database.md) のロール別 budget）。猶予を数時間に取る構成では、その時間ぶん重なる。
 
-プロセス側の待ちは猶予から導く。固定値にすると、猶予の内側で完走するはずのジョブをプロセスが先に抜けることで打ち切る（このときジョブの ctx は cancel すらされない）。ingest と encode はその後 JobRescuer が回収し、cm_detect は定期 reconcile が拾う。どちらも復帰までの遅延が増えるので、猶予不足を前提にしない
+プロセス側の待ちは猶予から導く。固定値にすると、猶予の内側で完走するはずのジョブをプロセスが先に抜けることで打ち切る（このときジョブの ctx は cancel すらされない）。ingest と encode はその後 JobRescuer が回収し、cm_detect は定期 reconcile が拾う。どちらも復帰までの遅延が増えるので、猶予不足を前提にしない。
 
 イメージを古いバージョンに戻すときは、新しい引数も argv から消す。`--soft-stop-timeout` を書いたマニフェストのまま戻すと `unknown flag` で起動しない（実測）。Deployment なら CrashLoopBackOff、ScaledJob なら Job が即 failed になり、KEDA は滞留を見続けて Job を作り続ける。DB スキーマは触っていないので、argv さえ戻せば可逆である。
 
-`docker-compose.yml` の `stop_grace_period` も同じ形で置いてある。Docker の既定は 10 秒なので、書かないと drain の途中で SIGKILL される。
+`docker-compose.yml` の `stop_grace_period` も同じ形で置いてある。書かないと drain の途中で SIGKILL される。
 
 <details><summary>根拠</summary>
 
@@ -462,7 +466,7 @@ flowchart LR
 
 登録を外さないと 2 発目は捨てられる。同じ条件ではプロセスが生き残ってジョブの完走まで走り続けた（手順は [runbook/testing.md](../runbook/testing.md)）。
 
-1 件消化モードの graceful stop にも同じ猶予が効く（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。ジョブ 1 件を消化したあとの正常終了の経路も同じで、取りこぼしのジョブ（上記「既知の窓」）を掴んでいた場合、その完走を待つのは猶予までである。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
+1 件消化モードの graceful stop にも同じ猶予が効く（`--once` の Job もノード退避やローリング更新で SIGTERM を受ける）。1 件消化後の正常終了も同じで、取りこぼしのジョブ（上記「既知の窓」）を掴んでいた場合、その完走を待つのは猶予までである。ctx を見ないワーカーはそれでも止まらないので、最終的な上限が SIGKILL であることは変わらない。
 
 ### シングルトンロール: pg_advisory_lock リーダー選出
 
@@ -470,7 +474,7 @@ watcher はシングルトンロールで、DB のアドバイザリロックで
 
 ruler / reconciler / record_sweep はジョブなので対象外である。watcher の singleton 性はもはや「正しさ」の要件ではない。「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。リーダーは監督ループで選出する（[データ層](../data.md) §2）。イベント処理は冪等化済みである（[データ層](../data.md) §2、[録画エンジン](../recording.md) §3.3）。
 
-したがって `replicas: 1`（`deploy/k8s/site/watcher.yaml`）は既定であって要件ではない。2 レプリカにしても壊れず、負けた側は待機したまま mirakc に繋がない。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
+2 レプリカでも、負けた側は待機したまま mirakc に繋がない（既定は `deploy/k8s/site/watcher.yaml` の `replicas: 1`）。これは推測でなく kind での実測である。受け入れ判定ハーネスの判定 4 が、2 レプリカのあいだ mirakc モックの `/events` の同時接続数を数えている（`deploy/k8s/e2e/checks/04-watcher-singleton.sh`）。最大値は 1 だった。
 
 watcher はサイトごとに 1 つ動く。advisory lock のキーにはロール名だけでなく束縛サイトも含み、`watcher:<site>` の形である。多サイト構成で 2 サイトの watcher プロセスを立てると、両方が自分のサイトのロックを取得して両方の mirakc の SSE を購読する。同じロックキーだと片方が「role already held by another process」で待機に入り、負けた側の mirakc の SSE を誰も購読しなくなる（ログ上は正常に見えるので気付きにくい）。同一サイトで 2 プロセス立てた場合は従来どおり片方だけが動く。
 
@@ -484,9 +488,8 @@ watcher はサイトごとに 1 つ動く。advisory lock のキーにはロー�
 ```mermaid
 stateDiagram-v2
   [*] --> 待機
-  待機 --> リーダー: ロック取得
+  待機 --> リーダー: ロック取得（解放後は次の poll で取得）
   リーダー --> 待機: heartbeat 失敗でロール停止
-  リーダー --> 待機: セッション断で PG 側ロック解放
 ```
 
 k8s の Lease API に依存しないため monolithic mode でも同じコードが動く（[データ層](../data.md) 参照）。フェイルオーバー遅延は最大 poll 間隔（〜15s）だが、いずれも定期 reconcile 前提のロールなので許容範囲。短時間の split-brain はシングルトンロールの仕事がすべて冪等（レベルトリガー + 冪等原則）であるため安全。
@@ -502,7 +505,13 @@ k8s の Lease API に依存しないため monolithic mode でも同じコード
 
 リーダー選出のパッケージは、呼び出し元が 1 つでも畳まない。ソケットを接続し続ける形のロールが存在する限り必要な機構だからである（[overview.md](../overview.md) §ロール分類の基準）。
 
-利用箇所は `cmd/rokuban/server.go` の 1 箇所だけである。それでも独立したパッケージとして残す。リーダー選出の失敗モード（heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
+利用箇所はサーバー起動の 1 箇所だけである。それでも独立したパッケージとして残す。リーダー選出の失敗モード（heartbeat 喪失・split-brain・フェイルオーバー遅延）はテストで固定しておく価値が単独である。呼び出し元が 1 つであることは、機構の複雑さが 1 つに減ったという成果であって、削除の根拠ではない。
+
+<details><summary>根拠</summary>
+
+- 利用箇所: `cmd/rokuban/server.go`
+
+</details>
 
 ### healthz と readyz: liveness は依存を見ない、readiness は DB を見る
 

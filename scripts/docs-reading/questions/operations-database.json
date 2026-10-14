@@ -67,7 +67,7 @@
       "heading": "EPG churn / autovacuum",
       "question": "EPG テーブルで遅くなるのは何か。対策は何か。",
       "points": [
-        "遅くなるのは書き込みと autovacuum の追従である",
+        "遅くなるとしたら、書き込みと autovacuum の追従である",
         "対策はバッチ upsert、GIN fastupdate、テーブル別 autovacuum チューニングである"
       ]
     },

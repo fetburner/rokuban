@@ -5,7 +5,7 @@
       "heading": "開発時のテスト",
       "question": "開発時のテストは DB をどう使うか。渡した URL の DB は直接使われるか。",
       "points": [
-        "docker compose で立てた postgres に対して回す",
+        "docker compose で立てた postgres をテストに使える",
         "URL が指す DB は直接使われず、パッケージごとに別の DB を導出して使う"
       ]
     },

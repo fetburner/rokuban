@@ -77,7 +77,7 @@ nginx をホストで起動する場合、証明書・認証ファイル・media
 
 <details><summary>根拠</summary>
 
-- 検証用録画の ID は録画の主キー: `recording_id`
+- 検証用録画の指定に使う ID: `recording_id`
 - `%` がサニタイザを通り抜ける: `internal/contentpath`
 
 </details>
@@ -121,9 +121,9 @@ docker run --rm --name rokuban-nginx-check \
 
 ## 受け入れ確認
 
-以下の確認は、nginx の HTTPS の入口に curl で当てる。自己署名証明書を使うので、curl には -k を付ける。
+以下の確認は、nginx の HTTPS の入口に curl で当てる。自己署名証明書を使う。
 
-`$URL` は `https://rokuban.example.com:8443`、 `$AUTH` は `rokuban:change-this-password` とする。curl の `-k` は自己署名証明書のためである。
+`$URL` は `https://rokuban.example.com:8443`、 `$AUTH` は `rokuban:change-this-password` とする。自己署名証明書のため、curl には `-k` を付ける。
 
 ### TLS・Basic 認証・SPA
 
@@ -230,6 +230,6 @@ test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 - `proxy_read_timeout` を ping 間隔より短い `10s` に一時変更する。ping と read timeout の関係が壊れる唯一の経路で、`--max-time 120` の前に接続が切れることを確認する。その後に戻して `--max-time 120` まで接続が保たれることを確認する。
 - `internal/streamer/streamer.go` の `accelURI` から `url.PathEscape` を一時的に外す。`segments[i] = seg` だけに変えると `net/url` が未使用でビルドが落ちるので、import も `_ "net/url"` にしてコンパイルが通る形で壊す。`%` を含む `$REL_PATH` の配信が `404` になることを確認する。
 
-  nginx は不正なエスケープを、エラーを出さずに捨てるので、error.log には `50OFF` のように壊れた名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
+  nginx は不正なエスケープを捨てて名前を組み立てるので、error.log には `50OFF` のように壊れた名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
 
 設定を戻すたびに `nginx -t` を通し、reload 後に正常系を 1 回繰り返す。Go 側を戻したときは `go build` し直してから確認する。

@@ -135,7 +135,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 ### 詰まったとき
 
-詰まったときに疑うのは、service links の環境変数との衝突、完走した migration Job の残り、Secret の欠落や空の値の 3 系統である。症状から次の項目を引く。
+詰まったときに疑うのは、service links の環境変数との衝突、完走した migration Job の残り、Secret の欠落や空の値である。症状から次の項目を引く。
 
 - `cannot unmarshal string into Go struct field Config.DB of type int` で起動しない: service links の env と衝突している。`postgres` Service があると `POSTGRES_PORT=tcp://10.96.x.x:5432` が注入される。同梱の config.yml はこの名前を参照していないが、`${VAR}` を足すと再発する。Pod 側の `enableServiceLinks: false` が落ちていないか見る
 - `kubectl apply` が migration Job で `field is immutable` と言う: 完走した Job がまだ残っている。`kubectl delete job rokuban-migrate` してから apply する
@@ -172,7 +172,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 ### 実測と所要時間
 
-ビルドを除くと、通常の判定は約 10 分、判定そのものの検査（変異注入）は約 40 分かかる。mirakc の確認にはモックを使い、実機は使っていない（同 README）。
+実測で、ビルドを除くと、通常の判定は約 10 分、判定そのものの検査（変異注入）は約 40 分かかる。mirakc の確認にはモックを使い、実機では確認していない（同 README）。
 
 全 5 判定と `--oracles` を最後に通した環境は kind v0.32.0 / k8s v1.36.1 / KEDA v2.20.2（Colima 2 CPU / 3.8 GB、2026-08-28）。そのときの結果は次のとおり。 `--only 3` の行だけ 2026-10-01 に Colima aarch64 で通した。
 
@@ -202,15 +202,15 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 回さない理由は 3 つある。遅いこと、CI に新しい依存が増えること、静的に見られる範囲は既に CI にあることである。
 
-遅い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が効かない種類の待ちである。実測で `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）
+遅い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が効かない種類の待ちである。実測で `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）。
 
-CI イメージに kind / KEDA / Postgres という新しい依存が増える。さらに判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る
+CI イメージに kind / KEDA / Postgres という新しい依存が増える。さらに判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る。
 
-静的に見られるぶんは既に CI にある。`go test ./deploy/k8s/`（`workloads_test.go`）が見るのは次の 4 つである。キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理キュー名であること・overlay の patch が site 名を指していること。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる
+静的に見られるぶんは既に CI にある。`go test ./deploy/k8s/` が見るのは次の 4 つである。キューと ScaledJob の対応・`rokuban enqueue` の全ジョブに CronJob があること・トリガのクエリが物理キュー名であること・overlay の patch が site 名を指していること。ここが赤くなる類の退行は、クラスタを立てなくても CI で止まる。
 
 #### 回すタイミング
 
-変更した人が、PR を出す前に、変更の種類に応じて通常実行・変異注入・故障注入のどれかを回す。誰も回さない判定手段は無いのと同じなので、いつ誰が回すかを決めておく。
+変更した人が、PR を出す前に、変更の種類に応じて、通常実行・変異注入・故障注入のうち該当するものを回す。誰も回さない判定手段は無いのと同じなので、いつ誰が回すかを決めておく。
 
 | いつ | 誰 | 何を見る |
 |---|---|---|
@@ -228,11 +228,18 @@ CI が見るのは、クラスタが要らない範囲の 3 つである。回�
 
 - `manifests`: マニフェストが `kustomize build` + kubeconform（KEDA の CRD を含む。スキーマは `deploy/k8s/schemas/`）を通る
 - `manifests`: `deploy/k8s/e2e/lib/selftest.sh` と shellcheck
-- `test`: `go test ./deploy/k8s/` が overlay の `config.yml` を `config.Load` に通し、**argv とキュー名の噛み合わせ**（`workloads_test.go`）を見る。どちらも kustomize にも kubeconform にも見えない
+- `test`: `go test ./deploy/k8s/` が overlay の `config.yml` を設定の読み込み処理に通し、**argv とキュー名の噛み合わせ**を見る。どちらも kustomize にも kubeconform にも見えない
+
+<details><summary>根拠</summary>
+
+- 設定の読み込み処理: `config.Load`
+- 静的な検査を置いたテストファイル: `workloads_test.go`
+
+</details>
 
 ### 詰まったとき（ハーネス）
 
-ハーネスで詰まったときに疑うのは、判定が対象を引く手掛かりの欠落、KEDA のトリガの接続先、中断したオラクルが止めたままのワークロードの 3 系統である。症状から次の項目を引く。
+ハーネスで詰まったときに疑うのは、判定が対象を引く手掛かりの欠落、KEDA のトリガの接続先、中断したオラクルが止めたままのワークロードである。症状から次の項目を引く。
 
 - 判定が全部 TODO で、しかも対象を作ったはずなのに TODO のまま: 判定はラベル（`app.kubernetes.io/component=<役>`）と argv（`--sites <site>`）とキュー名への言及で対象を引く。`kubectl get deploy,scaledjob,cronjob -n rokuban-e2e` で、その 3 つのどれかに手掛かりが載っているか見る
 - ScaledJob が `Ready=False / ScaledJobCheckFailed` のまま Job を起こさない: トリガの接続先を疑う。理由は [operations.md](../operations.md) §5「worker: KEDA ScaledJob」。ログは `kubectl -n keda logs deploy/keda-operator | grep -i error` で見る。直しても spec が変わらないと再 reconcile されない。ScaledJob を作り直すのが早い

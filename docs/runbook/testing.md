@@ -2,7 +2,7 @@
 
 ## 開発時のテスト
 
-開発時のテストは、docker compose で立てた postgres に対して回す。渡した URL が指す DB は直接使われず、そこからパッケージごとに別の DB を導出して使う。
+開発時のテストには、docker compose で立てた postgres を使える。渡した URL が指す DB は直接使われず、そこからパッケージごとに別の DB を導出して使う。
 
 `docker compose up -d postgres` で立てた postgres をテストに使える（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
 
@@ -186,7 +186,7 @@ flowchart TD
 | 60s | SIGTERM の約 39 秒後（ジョブの完走を待った）・exit 0 | `completed` |
 | 5s | SIGTERM の 5.0 秒後（猶予切れでエスカレート）・exit 0 | `available` / `attempt=0` / `errors` は空 |
 
-**既定（フラグ省略 = 5 秒）でも 1 回測ること。** 既定は「何も設定しなかった人が SIGKILL されない」ことを根拠に選んである。Docker の既定猶予 10 秒・k8s の既定猶予 30 秒に収まっている必要がある（実測 5.06 秒）。既定で測るときは `--soft-stop-timeout` を argv から外すだけでよい。
+既定は「何も設定しなかった人が SIGKILL されない」ことを根拠に選んである。Docker の既定猶予 10 秒・k8s の既定猶予 30 秒に収まっている必要がある（実測 5.06 秒）。既定で測るときは `--soft-stop-timeout` を argv から外すだけでよい。
 
 60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。この側はプロセス側の待ちが固定値ではないことも同時に見ている（かつての `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
@@ -196,7 +196,7 @@ flowchart TD
 
 mock では検出できない前提は、実物の mirakc コンテナに対する conformance テストが判定する。Docker が要る。
 
-コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock より、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
+コマンドは `go test -tags conformance ./internal/mirakc/conformance/...`。reconciler の `overrides.contentPath` の既存 schedule への反映も対象である。これは mirakc が `GET /api/recording/schedules` で `options.contentPath` を POST した値のまま返すことに依存する。 `/events` の再送・録画中の Range 挙動も同様で、テストの mock は権威にならず、こちらが権威になる。症状と観測手段は [troubleshooting.md](troubleshooting.md) の該当項目。
 
 <details><summary>根拠</summary>
 
@@ -208,7 +208,7 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 **バージョンを上げるとは、main-debian タグのより新しい digest に pin を差し替えることである。** 番号付きリリースへ戻す判断は無い。
 
-rokuban はどのバージョンの mirakc イメージも自身で出荷しない。mirakc は運用者が用意するものである。だから番号付きリリースへ「戻す」判断は無い。`main` を pin し続けるのが恒常の形である。手順は次の通り。
+その理由は、rokuban がどのバージョンの mirakc イメージも自身で出荷せず、mirakc は運用者が用意するものだからである。`main` を pin し続けるのが恒常の形である。手順は次の通り。
 
 1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を新しいバージョンに変える
 2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
@@ -222,7 +222,7 @@ rokuban はどのバージョンの mirakc イメージも自身で出荷しな�
 
 ```mermaid
 flowchart TD
-  A["週次の conformance job が赤い"] --> B{"pull できないか"}
+  A["conformance の CI が赤い"] --> B{"pull できないか"}
   B -- "できない" --> C["pin の失効<br/>conformance の回帰ではない<br/>docker pull で最新の digest を取り直して pin を差し替える"]
   B -- "できる（テストが落ちた）" --> D{"原因はどちらか"}
   D -- "mirakc 側の変更" --> E["docs を実際の挙動に合わせて直す"]

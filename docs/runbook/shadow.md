@@ -25,7 +25,7 @@ flowchart TD
   D -->|"ない"| F["priority で調停する<br>負けた側は need-rescheduling になる"]
 ```
 
-負けた側は `recording.failed` の `need-rescheduling` になる（`rokuban_recordings_failed_total{reason="need-rescheduling"}`）。調停は `priority` で行い、Rokuban の既定は 10 である。EPGStation 側の優先度と揃えてもよい。
+負けた側は `recording.failed` の `need-rescheduling` になる（`rokuban_recordings_failed_total{reason="need-rescheduling"}`）。調停は `priority` で行い、Rokuban の既定は 10 である。EPGStation 側の優先度と揃えるのも安全である。
 
 <details><summary>根拠</summary>
 

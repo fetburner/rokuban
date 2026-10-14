@@ -64,7 +64,7 @@ EPGStation の REST API（`GET /api/recorded`）は実ファイルの相対パ�
 
 #### 2. JSON を書き出す
 
-JSON は EPGStation の DB から書き出す。SQLite と MySQL で SQL が違う。MySQL では raw 指定を省略せず、ファイルのパスはマウントした先から見た相対パスに書き換える。
+JSON は EPGStation の DB から書き出す。SQLite と MySQL で SQL が違う。MySQL では raw 指定を省略しない。どちらの DB でも、ファイルのパスはマウントした先から見た相対パスに書き換える。
 
 EPGStation の DB スキーマは、EPGStation の migrations で確認した。テーブル名は snake_case で、列名は camelCase のままである。
 
@@ -144,12 +144,6 @@ SQL
 
 書き出される JSON の例は次の通り（1 件だけ示す）。
 
-<details><summary>根拠</summary>
-
-- JSON の型: `internal/epgimport.LibraryItem` の配列
-
-</details>
-
 ```json
 [
   {
@@ -170,6 +164,12 @@ SQL
   }
 ]
 ```
+
+<details><summary>根拠</summary>
+
+- JSON の型: `internal/epgimport.LibraryItem` の配列
+
+</details>
 
 - `videoFiles[].type` は `"ts"` だけを取り込む。`"encoded"` は rokuban の encode profile 名前空間と対応が取れないため警告してスキップする
 - `thumbnails` は 1 件目だけ取り込む。2 件目以降は警告してスキップする。録画 1 件につき thumbnail 1 行までしか持てないからである
@@ -208,12 +208,12 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 1. 対象行を出す。`site` は import 時に指定した site 名である。
 
    ```sql
-      SELECT a.id, a.rel_path, r.site
-        FROM media_assets a JOIN recordings r ON r.id = a.recording_id
-       WHERE a.state <> 'deleted'
-         AND a.kind = 'original'
-         AND a.rel_path NOT LIKE 'sites/%';
-      ```
+   SELECT a.id, a.rel_path, r.site
+     FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+    WHERE a.state <> 'deleted'
+      AND a.kind = 'original'
+      AND a.rel_path NOT LIKE 'sites/%';
+   ```
 
 2. 各行について `{media_dir}/{rel_path}` を `{media_dir}/sites/{site}/{rel_path}` へ `mkdir -p` + `mv` する（同一 FS 内なので rename）。
 3. 全ファイルの `mv` が終わったら、1 トランザクションで `UPDATE media_assets SET rel_path = 'sites/' || r.site || '/' || a.rel_path` を対象行に適用する。`deleting` 状態の行も対象に含める。含めないと delete_reconcile が旧パスを unlink しに行き、実体無しと誤検出する。
@@ -222,7 +222,7 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 
 <details><summary>根拠</summary>
 
-- 検査で拒否される対象: `active`
+- 一時的に実体無しと誤検出される有効な行: `active`
 - 孤児候補の行: `orphan_files`
 
 </details>

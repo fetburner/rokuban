@@ -19,6 +19,6 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 
 ## 読む順の目安
 
-初めて導入するなら setup.md から読み、詰まったら troubleshooting.md を引く。EPGStation から移るなら、shadow.md で並走し、import-epgstation.md でルールとライブラリを取り込み、cutover.md で切り替える。nginx・k8s・ライブ視聴は、その構成を使うときだけ開く。testing.md は開発時だけ読む。
+初めて導入するなら setup.md から読み、詰まったら troubleshooting.md を引く。EPGStation から移るなら cutover.md を入口にし、並走の注意は shadow.md、取り込みのコマンドは import-epgstation.md を引く。nginx・k8s・ライブ視聴は、その構成を使うときだけ開く。testing.md は開発時だけ読む。
 
 UI の画面構成とルートは [frontend.md](frontend.md) を参照。
