@@ -1,0 +1,13 @@
+{
+  "file": "docs/frontend/live/verification.md",
+  "questions": [
+    {
+      "heading": "実機確認について",
+      "question": "ライブ視聴で誰も確認していないものは何で、確認の手段はどこにあるか。",
+      "points": [
+        "iOS 実機（iPhone Safari）は誰も確認していない",
+        "手段・判定項目・回帰の記録は運用手順書と e2e の README にある"
+      ]
+    }
+  ]
+}
