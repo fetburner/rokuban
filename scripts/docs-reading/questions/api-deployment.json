@@ -1,0 +1,95 @@
+{
+  "file": "docs/api/deployment.md",
+  "questions": [
+    {
+      "heading": "帰結",
+      "question": "アプリ内に認証を持たないことで、アプリの側に何が残り何が残らないか。",
+      "points": [
+        "ユーザーという概念を持たず、状態は世帯全体で共有する",
+        "アプリに残るセキュリティ要件は Host ヘッダー検証だけで、認証が要る構成はリバースプロキシに委ねる"
+      ]
+    },
+    {
+      "heading": "要件一覧",
+      "question": "リバースプロキシの前段で Rokuban に課している要件は何か。",
+      "points": [
+        "単一ホスト名で api・notifier・streamer を分けるとき、標準 Ingress の完全一致かパス接頭辞だけで全経路の振り分け先が決まること",
+        "X-Forwarded-Host は、明示した構成に限って信頼する opt-in にする"
+      ]
+    },
+    {
+      "heading": "検討したが実装しないもの",
+      "question": "X-Forwarded-For・X-Forwarded-Proto・public_url を実装するか。",
+      "points": [
+        "実装しない。出力先も使い手も無いまま先回りで作らない",
+        "必要になったら再検討する（アクセスログを新設するとき、サブパス配信が必要になったとき）"
+      ]
+    },
+    {
+      "heading": "nginx リファレンス構成",
+      "question": "同梱の nginx 構成は何をカバーし、nginx 以外でも使えるか。",
+      "points": [
+        "TLS 終端、Basic 認証、録画ファイル配信の nginx への委譲、SSE の設定をカバーする",
+        "推奨構成であり、Caddy や k8s Ingress などでも同等に構成できる"
+      ]
+    },
+    {
+      "heading": "REST + OpenAPI を選び、GraphQL / tRPC / Connect-RPC を選ばない理由",
+      "question": "API のプロトコルに REST + OpenAPI を選び、tRPC・GraphQL・Connect-RPC を選ばなかった理由は、選択肢ごとに何か。",
+      "points": [
+        "tRPC は Go なので使えない",
+        "GraphQL の自由度は、自前の SPA 一つには要らない",
+        "Connect-RPC は HTTP キャッシュ・curl でのデバッグ・HLS との統一感で REST に劣る"
+      ]
+    },
+    {
+      "heading": "根拠: 法的制約がスコープを決める",
+      "question": "なぜ認証・認可機構を作り込まないのか。",
+      "points": [
+        "録画が適法なのは私的使用の範囲に限られ、Rokuban は構造的に単一世帯用アプリだから",
+        "認証を作り込む理由が法的に存在しない"
+      ]
+    },
+    {
+      "heading": "経路の振り分け",
+      "question": "経路の振り分けで、Ingress のどの機能に依存してよいか。",
+      "points": [
+        "標準 Ingress の完全一致かパス要素単位の接頭辞だけで、全経路の振り分け先が決まるようにする",
+        "メソッド・クエリ・ヘッダー・正規表現には依存しない"
+      ]
+    },
+    {
+      "heading": "そのほかの要件",
+      "question": "経路の振り分けのほかに、プロキシ越しで動くために課している要件は何か。",
+      "points": [
+        "パスはルート相対にし、WebSocket を使わない",
+        "SPA のフォールバックはアプリが返し、X-Forwarded-Host は opt-in にする",
+        "keep-alive 付きのプロキシは、アイドルタイムアウトをサーバー以下にする"
+      ]
+    },
+    {
+      "heading": "X-Forwarded-Host の扱い",
+      "question": "X-Forwarded-Host はどの構成で信頼するか。",
+      "points": [
+        "opt-in で、信頼できるプロキシが必ず前段に居り、外来のヘッダーを上書きする構成でだけ有効にする",
+        "直接露出する構成で無条件に信頼すると、Host の検証を自己申告値で素通りできてしまう"
+      ]
+    },
+    {
+      "heading": "keep-alive のアイドル接続",
+      "question": "プロキシのアイドルタイムアウトはどう設定するか。",
+      "points": [
+        "upstream keep-alive を有効にしているプロキシでは、サーバーの 120 秒以下に揃える",
+        "長く取ると、プロキシが生きていると思う接続をサーバー側が先に切る"
+      ]
+    },
+    {
+      "heading": "SSE を選び、WebSocket / Socket.IO を選ばない理由",
+      "question": "通知になぜ WebSocket ではなく SSE を選んだか。",
+      "points": [
+        "再接続処理が対称になり、Redis アダプタが要らず、プロキシ設定も単純で済む",
+        "クライアントからサーバーへの継続的プッシュが要る場面が無い"
+      ]
+    }
+  ]
+}
