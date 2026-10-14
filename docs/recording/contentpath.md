@@ -2,53 +2,82 @@
 
 #### ファイル名テンプレート
 
-`filenameTemplate`（予約オプション。[reservation-model.md](reservation-model.md) §4.2 の一覧表参照）は Go の [`text/template`](https://pkg.go.dev/text/template) 記法。reconciler が予約行のスナップショットだけを使って展開する（`internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる）。拡張子は含まない前提で、常に `.m2ts` を付す。未指定・空文字なら既定の `DefaultTemplate`（見た目は `YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts` と同じ）を使う。既定も他の template と同じく JST で解決するため、サーバー TZ が JST 以外の環境では既定パスが変わる。
+録画のファイル名は、ユーザーが書いたテンプレートを、Go の標準のテンプレート記法として予約のスナップショットだけで展開して決める。未指定なら既定を使う。ルールの作成・更新時に検証し、誤りは 400 で弾くので、ファイル名の誤りに数週間後に気づくことが無い。
 
-`text/template` を採る理由は、**ルール作成/更新時にテンプレートを検証して 400 で弾ける**ことである。検証は `internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ（既存の正規表現検証と同じ場所・同じ形）。変数名の誤りが黙って空文字になる記法だと、ユーザーは数週間後にファイル名が崩れて初めて気づく。
+記法は Go の標準のテンプレート記法である。展開するのは reconciler で、テンプレートは拡張子を含まない前提で、展開結果の末尾には常に拡張子を付す。このテンプレートは予約オプションの 1 つで、[reservation-model.md](reservation-model.md) §4.2 の一覧表にある。
+
+既定のテンプレートは、見た目が日付ディレクトリの下に「時刻_タイトル_サービスID」を置く形と同じである。既定も他のテンプレートと同じく JST で解決する。そのため、サーバーのタイムゾーンが JST 以外の環境では既定のパスが変わる。
+
+Go の標準のテンプレート記法を採る理由は、ルール作成・更新時にテンプレートを検証して 400 で弾けることである。検証は、既存の正規表現の検証と同じ場所で、同じ形で行う。変数名の誤りが気づかないうちに空文字になる記法だと、ユーザーは数週間後にファイル名が崩れて初めて気づく。
+
+<details><summary>根拠</summary>
+
+- 記法: [`text/template`](https://pkg.go.dev/text/template)
+- 展開と呼び出し元: `internal/contentpath` パッケージ。`internal/reconciler` の `buildContentPath` から呼ばれる
+- 予約オプション名: `filenameTemplate`
+- 拡張子: `.m2ts`
+- 既定: `DefaultTemplate`（`YYYYMMDD/HHMMSS_タイトル_サービスID.m2ts`）
+- 検証: `internal/api/rules.go` の `validateRuleInput` が `internal/contentpath.Validate` を呼ぶ
+
+</details>
 
 ##### 使えるフィールド
 
-`internal/contentpath.Data` の公開フィールドに対応する。
+使えるのは、開始時刻、年月日時分秒、曜日、番組名、物理チャンネル、サービス ID、チャンネル種別である。局名はまだ足しておらず、mirakc と EPGStation の ID は、スナップショットから解決できないので対応しない。
+
+存在しないフィールドを参照するとテンプレートは無効になり、ルール作成・更新時点で 400 になる（後述）。フィールドは `internal/contentpath.Data` の公開フィールドに対応する。
 
 | フィールド | 値 | 出所 |
 |---|---|---|
-| `{{.StartAt}}` | 番組開始時刻（JST の `time.Time`）。`{{.StartAt.Format "2006-01"}}` のように任意の書式を書ける | `program_snapshots.start_at` |
+| `{{.StartAt}}` | 開始時刻（JST の `time.Time`） | `program_snapshots.start_at` |
 | `{{.Year}}` | 4 桁年（JST） | 同 |
 | `{{.ShortYear}}` | 2 桁年（JST） | 同 |
 | `{{.Month}}` `{{.Day}}` `{{.Hour}}` `{{.Min}}` `{{.Sec}}` | 2 桁ゼロ埋め（JST） | 同 |
 | `{{.DOW}}` | 曜日（`日`〜`土`） | 同 |
-| `{{.Title}}` | 番組名（パス成分としてサニタイズ済み） | `program_snapshots.title` |
+| `{{.Title}}` | 番組名（サニタイズ済み） | `program_snapshots.title` |
 | `{{.Channel}}` | 物理チャンネル（同上） | `program_snapshots.channel` |
 | `{{.ServiceID}}` | サービス ID | `program_snapshots.service_id` |
 | `{{.ChannelType}}` | チャンネル種別（同上） | `program_snapshots.channel_type` |
 
-例:
+`{{.StartAt.Format "2006-01"}}` のように、開始時刻には任意の書式を書ける。例を示す。
 
 ```
 {{.Year}}/{{.Month}}/{{.Title}}_{{.Hour}}{{.Min}}
 ```
 
-**非対応（解決はできるが、まだ足していない）**: 局名（EPGStation の `%CHNAME%` 相当）。`program_snapshots.service_name` は NOT NULL で存在し `buildContentPath` はその場で持っているので、**技術的な障害はない**。`Data` に足すかどうかは「足す PR」で決める（不変条件 11: フィールドは、それを書く/使うコードと同じ PR で決める）。ここで先に形だけ固定しない。
+##### 局名の扱い
 
-**非対応（スナップショットからは解決できない）**: mirakc 内部 ID（`%CHID%` 相当）/ EPGStation の番組 ID（`%ID%` 相当）。予約行のスナップショットだけからは解決できず、mirakc への問い合わせや EPG プロジェクションの JOIN が要る。reconciler は mirakc に触れず（不変条件 1）ファイル I/O 専任という設計に反するため対応しない。
+局名は技術的な障害が無く、解決はできる。ただし、まだフィールドとして足していない。足すかどうかは、足す PR で決める。ここで先に形だけ固定しない（不変条件 11: フィールドは、それを書く・使うコードと同じ PR で決める）。
 
-`Data` に存在しないフィールドを参照するとテンプレートは無効になり、ルール作成/更新時点で 400 になる（後述）。
+局名は EPGStation の `%CHNAME%` 相当である。`program_snapshots.service_name` は NOT NULL で存在し、`buildContentPath` がその場で持っている。足す先は `Data` である。
+
+##### 解決できない ID
+
+mirakc 内部の ID と EPGStation の番組 ID は、予約行のスナップショットだけからは解決できないので対応しない。解決には mirakc への問い合わせや EPG プロジェクションの JOIN が要る。reconciler は mirakc に触れず（不変条件 1）、ファイル I/O 専任という設計に反する。
+
+mirakc 内部 ID は `%CHID%` 相当、EPGStation の番組 ID は `%ID%` 相当である。
 
 ##### サニタイズと階層の規約
 
-- `Title` / `Channel` / `ChannelType` は `internal/contentpath.NewData` の時点で `sanitizeComponent` を通した「1 パス成分に収まる」文字列になっている。ただし空文字は空文字のままである。番組名に `/` が普通に入る（「A/B」等）ため、データ由来の `/` が区切りに昇格することはない
-- **階層を作れるのはテンプレートに書かれた `/`（および `{{.StartAt.Format "2006/01"}}` のようにユーザーが明示的に書いた書式）だけ**
-- **拡張子はテンプレートに含めない**。常に `.m2ts` を付す
-- 展開結果は最後に必ず `internal/contentpath.SanitizeContentPath` を通すため、テンプレート自体に `..` や絶対パスが書かれていてもパストラバーサル・意図しない絶対パスにはならない
-- 時刻は必ず JST で解決する（サーバーのタイムゾーン設定に依存させない）
+番組名などデータ由来の値に区切りの文字が入っても、パスの区切りにはならない。階層を作れるのは、テンプレートにユーザーが明示的に書いた区切りだけで、展開結果は最後に必ずパスの正規化を通る。
+
+番組名にはスラッシュが普通に入る（「A/B」等）ので、データ由来のスラッシュが区切りに昇格することは無いようにしてある。テンプレートに書かれた `/` と、`{{.StartAt.Format "2006/01"}}` のようにユーザーが書式へ明示的に書いた `/` が、階層になる。
+
+`Title` / `Channel` / `ChannelType` は、`internal/contentpath.NewData` の時点で `sanitizeComponent` を通し、1 つのパス成分に収まる文字列にする。ただし空文字は空文字のままである。
+
+展開結果は最後に必ず `internal/contentpath.SanitizeContentPath` を通す。そのため、テンプレート自体に `..` や絶対パスが書かれていても、パストラバーサルや意図しない絶対パスにはならない。拡張子はテンプレートに含めず、常に `.m2ts` を付す。時刻は必ず JST で解決し、サーバーのタイムゾーン設定には依存させない。
 
 ##### ルール作成時の検証
 
-`text/template` として `Parse` した後、サンプルデータに対して `Execute` まで行って初めて有効と判定する。`{{.Foo}}` のような未知フィールドは `Parse` では素通りし、`Execute` で初めてエラーになるためである。構文エラー・未知フィールドはどちらもルール作成/更新 API で 400 になる。
+検証は、構文を解析した後、サンプルデータに対して展開まで行って初めて有効と判定する。未知のフィールドは解析では素通りし、展開で初めてエラーになるからである。構文エラーも未知フィールドも、ルール作成・更新 API で 400 になる。
+
+解析は `Parse`、展開は `Execute` である。`{{.Foo}}` のような未知フィールドが `Parse` を通り、`Execute` で初めて落ちる。
 
 ##### EPGStation からの変換（`rokuban import epgstation`）
 
-`rokuban import epgstation --rules` は EPGStation の `recordedFormat`（`%変数%` 記法）を移行する。変換は以下の表に従って `text/template` 記法へ機械的に行う。
+移行コマンドは、EPGStation のファイル名の書式を、次の表に従ってテンプレート記法へ機械的に変換する。局名・チャンネル ID・番組 ID の変数は、予約のスナップショットだけからは解決できないので未対応である（上の「局名の扱い」「解決できない ID」を参照）。
+
+コマンドは `rokuban import epgstation --rules` で、変換元は EPGStation の `recordedFormat`（`%変数%` 記法）、変換先は `text/template` 記法である。未対応の変数は `%CHNAME%` / `%CHID%` / `%ID%` である。
 
 | EPGStation | Rokuban |
 |---|---|
@@ -64,5 +93,5 @@
 | `%CH%` | `{{.Channel}}` |
 | `%SID%` | `{{.ServiceID}}` |
 | `%TYPE%` | `{{.ChannelType}}` |
-| `%CHNAME%` / `%CHID%` / `%ID%` | **未対応**（予約行のスナップショットだけからは解決できない。上記「非対応」参照） |
+| `%CHNAME%` / `%CHID%` / `%ID%` | 未対応 |
 

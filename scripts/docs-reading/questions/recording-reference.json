@@ -1,0 +1,13 @@
+{
+  "file": "docs/recording/reference.md",
+  "questions": [
+    {
+      "heading": "7. mirakc schedule options",
+      "question": "mirakc に予約を登録するとき、録画の開始・終了マージンは予約ごとに指定できるか。",
+      "points": [
+        "できない。どちらも予約単位では動かせない固定の仕組みで決まる",
+        "追従するのは終了だけで、開始側は PSI/SI 追従の賭けに乗っている"
+      ]
+    }
+  ]
+}
