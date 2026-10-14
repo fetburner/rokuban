@@ -32,7 +32,7 @@ SPA フォールバックは Go 側が catch-all、S3 側が CloudFront Function
 
 SSE だけは、api（scale-to-zero）には向けず、常駐する notifier へルーティングする。CDN のパスルーティングで SSE のパスを先に notifier origin へ、残りの API を api origin へ振り分ける。
 
-API のパスの中で例外になるのは `/api/events` だけで、`/api/*` との最長一致的に先に振り分ける。タイムアウトとキャッシュ無効化の設定も要る。CDN を迂回して notifier に直接繋ぐ選択肢も残す。
+API のパスの中で例外になるのは `/api/events` だけで、`/api/*` より先に、最長一致的に振り分ける。タイムアウトとキャッシュ無効化の設定も要る。CDN を迂回して notifier に直接繋ぐ選択肢も残す。
 
 ### キャッシュ規約
 
