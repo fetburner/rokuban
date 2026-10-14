@@ -29,7 +29,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 ### scratch と temp の置き場所
 
-ffmpeg の出力はワーカーのローカルスクラッチへ書く。取り込みの一時ファイルと派生物の staging file は、最終的に置くのと同じ root・同じディレクトリに作る。scratch からの rename は別の FS をまたいでコピーに劣化するので、確定操作には使わない。
+ffmpeg の出力はワーカーのローカルスクラッチへ書く。取り込みの一時ファイルと派生物の staging file は、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
 
 scratch から rename すると `EXDEV` になり、コピーへの劣化を許すことになる。
 
@@ -75,7 +75,7 @@ canonical orphan は aging 後に報告するだけで unlink しない。通常
 
 rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。canonical file と同じ directory entry ではないため、canonical の rename / unlink で lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode / delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う固定 file として残る。
 
-取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。lock 取得や cleanup に失敗したときはファイル操作を進めず、止まる。
+取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。lock 取得や cleanup に失敗したときは、ファイル操作を進めずにエラーを返す。
 
 この GC は lock file の directory entry だけを扱い、メディアファイルは扱わない。
 
@@ -87,7 +87,7 @@ lock directory は mode `0777`、gate / per-rel_path file は `0666` で作り�
 
 旧形式の lock file は、移行時に自動削除しない。旧 worker が新しい排他の手順に参加しないため、消すと旧プロセスの待機側が古い inode を握る可能性がある。旧 worker と新 worker が並走している間は、消す操作も実行しない。
 
-旧形式とは、canonical と同じ directory の `.rokuban-rel-path-lock-*.lock` である。旧 worker は gate に参加しないため、旧形式 file を unlink すると旧プロセスの waiter が古い inode を握る可能性がある。
+旧形式とは、canonical と同じ directory の `.rokuban-rel-path-lock-*.lock` である。
 
 新形式も同じ接頭辞を `.rokuban-locks/` の下で使う。そのため接頭辞だけで消す `find -name '.rokuban-rel-path-lock-*' -delete` は、稼働中の新形式 lock まで消す。旧形式だけを消すときは `.rokuban-locks/` を除外する。`-delete` は `-prune` と併用できない（`-depth` を暗黙に有効にする）ので `-exec rm` を使う。
 
@@ -123,22 +123,6 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後、canonical 名でない孤児を lock なしで消す。mtime は unlink 直前に再確認する。canonical 名の orphan は削除せず、確認を促す Warn と `rokuban_orphan_files_unresolved` に出す。
 - rel_path lock file は Close または次回 GC で消える。拡張子が無い staging file は catalog 無し rescue の対象にはならず、原本へ昇格しない。
 
-#### 公開時の tx 内の再確認
-
-公開時の tx の中では、まず試行回数が自分の token と一致することを確かめる。続けて行を読み直し、計画が古いか、既に済んでいるか、版が外されていれば公開しない。ただし計画が古いだけで行が active のままなら、成功で飛ばさず、いったん戻して計画をやり直す。
-
-この確認は、最初に `recording_encode_attempts.attempt_count` がこの試行の token と一致することを確かめ、続けて行を読み直して行う。次のどれかなら公開しない。
-
-- (a) `rel_path` が計画時と違う
-- (b) 既に active で（カット版は凍結区間も）この試行と一致する
-- (c) profile が desired に無い
-
-(b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が失敗すると、ファイルは後発の中身で行は先発のサイズになる。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
-
-(b) は成功で飛ばす。(a) は自分の計画が古いことを意味し、他の誰かが済ませたことを意味する (b) とは別である。行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しいチャプター編集が気づかないうちに消える。公開せずに River の snooze で戻し、現在の keep で計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。行が active でない（ごみ箱など）ときは成功で飛ばす。
-
-(c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では塞げない。desired は `FOR SHARE` で読み、版を外す tx の policy 行ロックと直列化する。
-
 <details><summary>根拠</summary>
 
 - 長い profile 名を扱う scratch directory: `TestNewEncodeScratchDirSupportsLongProfileNames`
@@ -153,9 +137,38 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 
 </details>
 
+#### 公開時の tx 内の再確認
+
+公開時の tx の中では、まず試行回数が自分の token と一致することを確かめ、続けて行を読み直す。計画時とパスが違う、既に同じ試行の内容で active になっている、または profile が desired に無いときは公開しない。ただし計画が古いだけで行が active のままなら、成功で飛ばさず、いったん戻して計画をやり直す。
+
+```mermaid
+flowchart TD
+    A[tx 開始: token を照合] -->|不一致| X[古い試行: 公開しない]
+    A -->|一致| B[行を読み直す]
+    B -->|c: profile が desired に無い| S[成功で飛ばす]
+    B -->|b: 既に active で一致| S
+    B -->|a: rel_path が計画時と違う| C{行は active か}
+    C -->|active| R[公開せず snooze で戻し計画をやり直す]
+    C -->|active でない| S
+    B -->|どれにも当たらない| P[rename し Upsert して commit]
+```
+
+この確認は、最初に `recording_encode_attempts.attempt_count` がこの試行の token と一致することを確かめ、続けて行を読み直して行う。次のどれかなら公開しない。
+
+- (a) `rel_path` が計画時と違う
+- (b) 既に active で（カット版は凍結区間も）この試行と一致する
+- (c) profile が desired に無い
+
+(b) が無いと、先発の commit の後に後発が rename で上書きする。後発の commit が失敗すると、ファイルは後発の中身で行は先発のサイズになる。(a) が無いと、行が先の世代へ進んだ後に古い計画の実行が行を巻き戻す。
+
+(b) は成功で飛ばす。(a) は自分の計画が古いことを意味し、他の誰かが済ませたことを意味する (b) とは別である。行が active のまま (a) だけが立つ（カット版で区間が違う）ときは、成功で飛ばすと新しいチャプター編集が気づかないうちに消える。公開せずに River の snooze で戻し、現在の keep で計画をやり直す。snooze は attempt を消費せず、失敗通知も出さない。行が active でない（ごみ箱など）ときは成功で飛ばす。
+
+(c) は成功で飛ばす。ユーザーが外した版（[retention.md](retention.md) §6「凍結の 3 つ目の例外」）を、外す前に積まれた実行中・再試行待ちのジョブが公開して復活させるのを止める。ジョブの cancel では塞げない。desired は `FOR SHARE` で読み、版を外す tx の policy 行ロックと直列化する。
+
+
 ### 字幕サイドカー
 
-字幕を有効にしたエンコードは、エンコード済みファイルの隣に同じ basename の字幕サイドカーを置く。字幕のために media asset の種別は増やさず、エンコード済みアセットから解決する。
+字幕を有効にしたエンコードは、エンコード済みファイルの隣に同じ basename の字幕サイドカーを置く。
 
 サイドカーの拡張子は `.vtt` で、字幕は `media_assets.kind` を増やさず、`/file?profile=X&track=subtitles` で encoded アセットから解決する。ARIB 外字・ルビは libaribcaption のテキスト化により Unicode 私用領域または近似字へ落ちるため、画像字幕と同じ見た目を保証しない。
 
@@ -183,9 +196,9 @@ staged file は予約名付きの orphan 候補として mtime 猶予と aging �
 
 catalog の世代は、最後に書く manifest が完成の判定点である。rename や DB 行は使わない。不完全な世代は 7 日間保持し、より新しい完成世代があるときだけ prune する。
 
-catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子的に予約する。同じ `ExportedAt` を持つ並列 export は `-02` 以降の別 directory を取得する。世代内では `catalog.json` を一度書いて file `fsync` し、sha256 とサイズを持つ `manifest.json` を最後に書いて `fsync` する。manifest が完成世代の判定点で、rename や DB row は使わない。
+catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子的に予約する。同じ `ExportedAt` を持つ並列 export は `-02` 以降の別 directory を取得する。世代内では `catalog.json` を一度書いて file `fsync` し、sha256 とサイズを持つ `manifest.json` を最後に書いて `fsync` する。
 
-別 export の prune が書き込み途中の世代を消さないよう、不完全世代は 7 日間保持する。7 日より古い不完全世代は、より新しい完成世代がある場合だけ prune する。catalog directory 以外へは触れない。
+別 export の prune が書き込み途中の世代を消さないよう、不完全世代は保持する。catalog directory 以外へは触れない。
 
 ### カット版・サムネイルの置き換え（「置くのは一回」の 2 つの例外）
 
@@ -208,7 +221,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ## 4. クラウド側のマウント選択肢
 
-クラウドで原本を置く先は、ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象にする。S3 系の FUSE は原本の取り込み先に使わない。JuiceFS のメタデータストアには、Rokuban とは別の Postgres を使う。
+クラウドで原本を置く先は、ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象にする。S3 系の FUSE は原本の取り込み先に使わない。JuiceFS のメタデータストアに Postgres を使うなら、Rokuban とは別のインスタンスにする（推奨）。
 
 | 選択肢 | 特徴 |
 |---|---|
@@ -342,13 +355,21 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 
 #### 投入の条件
 
-投入するのは、有効な原本があり、有効なサムネイルが無く、ごみ箱に入っていない録画だけである。原本の実体が無いと確認された録画も除く。ingest 後の限定パスと定期の全件パスは、同じ条件を使う。
+レベルトリガーで投入するのは、有効な原本があり、有効なサムネイルが無く、ごみ箱に入っていない録画だけである。原本の実体が無いと確認された録画も除く。ingest 後の限定パスと定期の全件パスは、同じ条件を使う。
 
-River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む対象は、次の条件を満たす録画だけである。active な original があり、active な thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていないこと。
+投入はレベルトリガーで、River `thumbnail` キューへ unique ジョブ（`recording_id`）を積む対象は、次の条件を満たす録画だけである。active な original があり、active な thumbnail が無く、かつごみ箱（`recordings.deleted_at IS NOT NULL`）に入っていないこと。
 
 ごみ箱の録画を除外するのは、配信側（`GetThumbnailMediaAssetForServing`）が `deleted_at IS NULL` を要求するためである。生成しても誰にも配られず、猶予期間ぶん ffmpeg を無駄打ちするだけになる。
 
 ingest 後の対象限定パスと `thumbnail_reconcile` の全件パスは同じ候補 query を使う。delete reconcile が原本の実体無しを確認した `missing_media_assets` の原本は、両方のパスで除外する。ファイル復旧後にマーカーが消えれば、次のパスで再び候補になる。命令的チェーン（「ingest 成功 → 必ず thumbnail」）は採らない。
+
+<details><summary>根拠</summary>
+
+- ごみ箱の録画をサムネイル配信対象から除くこと: `GetThumbnailMediaAssetForServing`
+- ingest 後の対象限定パスと全件パスが同じ候補を使うこと: `thumbnail_reconcile`
+- 原本の実体が見つからない状態の除外: `missing_media_assets`
+
+</details>
 
 #### 抽出位置の選び直し
 
@@ -364,9 +385,6 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 <details><summary>根拠</summary>
 
-- ごみ箱の録画をサムネイル配信対象から除くこと: `GetThumbnailMediaAssetForServing`
-- ingest 後の対象限定パスと全件パスが同じ候補を使うこと: `thumbnail_reconcile`
-- 原本の実体が見つからない状態の除外: `missing_media_assets`
 - keep range の位置を原本時間へ写すこと: `UnmapMs(keep, seek)`
 - 入力の時間原点を 0 にしてカット境界を適用すること: `ffargs.CutFilterComplex`
 

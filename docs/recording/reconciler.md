@@ -43,7 +43,7 @@ api は reconcile を直接投入しない。意図・上書き・ルールの�
 
 **reconciler は予約の存在だけでなく、有効なオプションと mirakc の観測結果の差分も反映する。** mirakc に更新 API が無いので反映は再作成になり、差分の対象は最小にする。優先度とタグの不一致は反映し、テンプレート生成のファイル名は初回の値に固定して反映しない。
 
-effective options と `schedule_sync.options`（mirakc の観測結果）の差分を消す。ruler が base を毎パス再計算する以上、ルール編集で既存予約の effective が変わる。そのためこれは ruler の前提である。編集 UI だけの前提ではない。
+effective options と `schedule_sync.options`（mirakc の観測結果）の差分を消す。ruler が base を毎パス再計算する以上、ルール編集で既存予約の effective が変わる。そのためこれは編集 UI の前提ではない。ruler の前提である。
 
 mirakc に schedule の更新 API は無い（`GET` / `POST` / `GET{id}` / `DELETE{id}` の 4 つだけ）。反映は DELETE → POST の再作成になり、その間 schedule が存在しない窓ができる。
 
@@ -94,15 +94,15 @@ reconciler は番組名からパスを生成するので、EPG の番組名が�
 
 ###### 再作成時に引き継ぐ contentPath
 
-再作成の POST は、テンプレートから再生成せず、observed の contentPath を引き継ぐ。「差分と見なさない」だけでは、priority 変更で再作成するときに何を入れるかが決まらない。再生成すると、priority を変えただけでファイル名が変わってしまう。
+再作成の POST は、テンプレートから再生成せず、observed の contentPath を引き継ぐ。再生成すると、priority を変えただけでファイル名が変わってしまうからである。
 
-再生成すると、EPG の番組名が変わっていれば別のパスになり、priority を変えただけでファイル名が変わる副作用になる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `schedulesync.ExplicitContentPath` の 1 箇所に集約してある）。
+「差分と見なさない」だけでは、priority 変更で再作成するときに何を入れるかが決まらない。再生成すると EPG の番組名が変わっていれば別のパスになる。引き継げば「初回生成値に固定し以後変更しない」が文字どおり保たれる。引き継ぐ値は自分が書いたものの往復だが、mirakc 側を直接触られていた場合の保険として `SanitizeContentPath` は通す。明示 override があるときだけそれが observed への引き継ぎに勝ち、その場合もテンプレート再生成には落ちない（決定は `schedulesync.ExplicitContentPath` の 1 箇所に集約してある）。
 
 ##### 反映しない変更
 
-override の削除（reset）は、既存の schedule に反映しない。戻り先がテンプレート生成値という安定でない値で、反映すると作り直しが戻るからである。録画開始後の変更も反映しない。
+override の削除（reset）と録画開始後の変更は、既存の schedule に反映しない。reset は戻り先がテンプレート生成値という安定でない値で、反映すると作り直しが戻るからである。
 
-reset は、戻り先がテンプレート生成値（安定でない値）なので、反映すると churn が戻る。set は常に反映・reset は常に非反映で、priority を同時に触ったかどうかには左右されない。再作成は `state == "scheduled"` の allowlist の下でだけ起きる。そのため録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
+set は常に反映・reset は常に非反映で、priority を同時に触ったかどうかには左右されない。再作成は `state == "scheduled"` の allowlist の下でだけ起きる。そのため録画開始後の変更は反映されない（未反映は `rokuban_reconcile_pending_diff{action="update_deferred"}`）。ファイルが 1 バイトも書かれていない schedule だけを張り替えるので、宛先変更で原本が取り残される経路は無い。
 
 ##### 比較が依存する前提
 
@@ -126,7 +126,7 @@ state の文字列は `internal/mirakc` に定数として置く。持ち越し�
 
 #### 削除のガード
 
-desired に無い自分の schedule は、許可した状態のときだけ DELETE する。許可するのは予定済みと、終端の終了済み・失敗である。録画中・延長追従中・未知の状態は、次のパスへ持ち越す。削除用の許可は、再作成用とは別の集合にする。
+desired に無い自分の schedule は、許可した状態のときだけ DELETE する。許可するのは予定済みと、終端の終了済み・失敗である。追跡中・録画中・延長追従中・未知の状態は、次のパスへ持ち越す。削除用の許可は、再作成用とは別の集合にする。
 
 状態の名前では、`scheduled` と終端の `finished` / `failed` を許可する。`tracking` / `recording` / `rescheduling` と未知 state は次のパスへ持ち越す。
 
@@ -153,6 +153,6 @@ desired に無い自分の schedule は、許可した状態のときだけ DELE
 
 削除に成功して作成に失敗すると、schedule が消えたまま次のパスまで残り、その間に開始時刻を越えると録画を取りこぼす。再作成の対象は開始まで間がある状態だけなので、窓は小さい。観測は専用のカウンタとエラーログで行う。
 
-観測には、専用のカウンタメトリクスと `slog.Error` を使う。`quality_events` には書けない。それは `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないことがある。allowlist のガードにより再作成の対象は `scheduled`（開始まで間がある）だけなので、取りこぼしの窓自体は元々小さい。
+観測には専用のカウンタメトリクスと `slog.Error` を使う。`quality_events` には書けない。それは `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないことがある。再作成の対象は `scheduled`（開始まで間がある）だけである。
 
 upstream への要望として、`priority` の部分更新 API があれば、再作成の窓ごと消える。`RecordingOptions` 全体を差し替える汎用 PUT より通りやすく、mirakc 側が触る内部状態（スケジューラのキュー）も小さい。priority は開始前の schedule に対して mirakc のスケジューラが素直に扱える性質のフィールドでもある（予約オプション一覧表のとおり、録画開始後は効かない可能性が高い・未測定）。

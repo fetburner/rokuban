@@ -64,7 +64,7 @@
       "question": "クラウドで原本の置き場に使えるマウントはどれか。",
       "points": [
         "ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象になる。S3 系の FUSE は原本の取り込み先に使わない",
-        "JuiceFS のメタデータストアには、Rokuban とは別の Postgres を使う"
+        "JuiceFS のメタデータストアに Postgres を使うなら、Rokuban とは別のインスタンスにする（推奨）"
       ]
     },
     {
@@ -120,7 +120,7 @@
       "question": "ffmpeg の出力と、取り込みの一時ファイルや派生物の staging file は、それぞれどこに置くか。",
       "points": [
         "ffmpeg の出力はワーカーのローカルスクラッチへ書く",
-        "取り込みの一時ファイルと staging file は、最終的に置くのと同じ root・同じディレクトリに作る。scratch から rename すると別の FS をまたいでコピーに劣化するため"
+        "取り込みの一時ファイルと staging file は、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるため"
       ]
     },
     {

@@ -41,14 +41,15 @@ flowchart TD
   B -- 空でない --> A
   B -- 空 --> C[status を取得]
   C -- 録画中 --> D[間隔をあけて待つ] --> A
-  C -- 録画済み・取消・失敗 --> E[同じ offset へ最後の Range を送る]
-  E --> F{status}
-  F -- 録画済み --> G[空を確かめて終了]
-  F -- 取消・失敗 --> H[ジョブをキャンセルし temp は commit しない]
+  C -- 取消・失敗 --> H[観測した時点でキャンセルし temp は commit しない]
+  C -- 録画済み --> E[同じ offset へ最後の Range を送る]
+  E --> F{差分は空か}
+  F -- 空 --> G[終了]
+  F -- 空でない --> A
   C -- 未知 --> I[連続失敗として再試行] --> A
 ```
 
-録画中なら待って Range を再要求する。通常の要求は 500ms 以上あけ、追い付いた状態が続けば 1 秒まで間隔を広げる。録画済み・取消・失敗の後は、同じ offset へ最後の Range を送り、空であることを確かめる。取消と失敗は ingest の status hook がジョブをキャンセルし、temp を commit しない。
+録画中なら待って Range を再要求する。通常の要求は 500ms 以上あけ、追い付いた状態が続けば 1 秒まで間隔を広げる。取消・失敗は、観測した時点で ingest の status hook がジョブをキャンセルし、temp を commit しない。最後の Range は送らない。録画済みの後は、同じ offset へ最後の Range を送り、空であることを確かめる。
 
 追い付いた Range は、204・416・206 の 0 バイトで返りうる。録画中は終端のサイズを持たない Content-Range の組み立てが first/last を検査しないため、206 になる。これらの応答は接続障害として数えず、status を再取得する。未知の status・本文の切断・stall は、共通の連続失敗回数とバックオフを使う。204 は content file がまだ 0 バイトの状態で、録画開始直後に出る。これも同じく待つ。
 
@@ -63,15 +64,15 @@ flowchart TD
 
 #### Range を無視した 200 の扱い
 
-Range を無視した完全な応答は、offset が 0 のときだけ受理する。offset が 0 より大きいときは、原因がログに残る形で失敗させる。
+**Range を無視した完全な応答は、offset が 0 のときだけ受理する。** offset が 0 より大きいときは、原因がログに残る形で失敗させる。
 
-**Range を無視した 200 は offset 0 だけ受理する。** RFC 9110 はサーバが Range を無視して完全な表現を返すことを許す。offset 0 では本文が求めた差分と同一なので、そのまま受理してよい。
+RFC 9110 はサーバが Range を無視して完全な表現を返すことを許す。offset 0 では本文が求めた差分と同一なので、そのまま受理してよい。
 
 offset > 0 では本文が先頭から始まる。そのまま追記すると先頭から offset ぶんが二重になる。先頭を捨てて読むと、ポーリングごとに offset バイトを再転送する O(n^2) が気づかないうちに起きる。どちらも取らず、原因がログに残る形で失敗させる。フィルタを併用すると mirakc は Range を無視するので、この分岐はその構成でだけ到達しうる（ingest はフィルタなしで pull する）。
 
 <details><summary>根拠</summary>
 
-- 受理するのは offset 0 の `200` だけ。offset > 0 は失敗させる
+- Range を無視した応答の扱い（RFC 9110 が許す完全な表現）: `200`
 
 </details>
 
@@ -215,6 +216,7 @@ KEDA で 1 件ずつ動かす Job は、区切りごとに終了して次の Pod
 - ジョブの timeout: `IngestJobArgs.Spec().Timeout`（5 分）。回収はこの `Spec.Timeout` と閾値の長い方を待つ
 - 回収の既定: `worker.rescue_stuck_jobs_after`（既定 6 分）
 - 区切りで保存する sidecar: `.checkpoint`。再配送の依頼は `jobq.Snooze(0)`
+- 同じ Args の再配送を固定するテスト基盤: jobqfake
 - Work timeout と有限区切り: `TestIngestWorker_TimeoutFitsBeforeRescue`
 - checkpoint 後の snooze が試行回数を消費しないこと: `TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics`
 
@@ -275,7 +277,7 @@ rename 後の親ディレクトリ fsync または DB commit の失敗では、t
 
 DB commit が成立して応答だけ失われた場合は、次の冪等性チェックで転送を省略する。
 
-##### 途中で終わった record は資産にしない
+##### 途中で終わった record の扱い
 
 **取消または失敗で終わった record の、途中までのバイトは資産にしない。** 原本行の存在は「録れた」と読まれて後継の録画が取り消されうる上、エッジの部分ファイルは後継の試行に上書きされうる安定しない事実でもあるからである。
 
@@ -319,9 +321,7 @@ ingest は commit しないのでエッジの record を消さず、mirakc に�
 - 長さ不明のときの照合スキップ: `ingest.go` の `expectedLen >= 0` ガード
 - 原本の有無で予約を外す ruler の関数: `ListFulfilledProgramIDsBySite`
 - discard されうる ingest worker: `IngestWorker`。再投入する処理: `processRecord`
-- 突き合わせのジョブ: `record_sweep`
 - 公開の要素: `fsync` / `Close`、`rel_path`
-- 回収で素直に使えない mirakc の削除: `purge=true`、`remove_record`
 
 </details>
 
@@ -385,12 +385,9 @@ rename 後に残った canonical orphan は aging 後に報告し、自動削除
 
 ### 5.4 負荷分担: worker
 
-**ingest の同時実行数は、mirakc サイト単位で「チューナー数 + 全速 pull の許容本数（1〜2）」にする。** 律速になるのはエッジ側のアップリンク帯域とディスクで、クラウド側は律速にならない。worker を増やしても速くならない。
+**ingest の同時実行数は、mirakc サイト単位で「チューナー数 + 全速 pull の許容本数（1〜2）」にする。** 律速になるのはエッジ側のアップリンク帯域とディスクで、クラウド側は律速にならない。ハイブリッド構成では、worker を増やしても速くならない。
 
-stream の負荷が乗るのは worker（ingest ジョブ、KEDA で 0〜N）であり、reconciler は数百件のメタデータ diff を回すだけの軽いジョブのままである。ボトルネックがエッジ側にある理由は 2 つある。
-
-- ハイブリッド構成では自宅アップリンク帯域が律速である
-- エッジでは録画中の書き込みと pull の読み出しが同じディスクで競合する。pull がディスクを飽和させて録画をドロップさせるのは本末転倒である
+stream の負荷が乗るのは worker（ingest ジョブ、KEDA で 0〜N）であり、reconciler は数百件のメタデータ diff を回すだけの軽いジョブのままである。ボトルネックがエッジ側にある理由は、ハイブリッド構成では自宅アップリンク帯域が律速であることと、エッジでは録画中の書き込みと pull の読み出しが同じディスクで競合することである。pull がディスクを飽和させて録画をドロップさせては本末転倒になる。
 
 同時実行数は `ingest.concurrency` で絞る（サイト別キュー or River の同時実行数設定）。worker の水平スケールが効くのは、encode（CPU バウンド、入力はクラウド側ストレージ）の方である。
 
@@ -427,8 +424,6 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 <details><summary>根拠</summary>
 
-- ヒントのジョブ: `encode_reconcile`
-- エッジ record の削除: `DeleteRecord`
 - 補完ジョブ: `internal/worker/encode_reconcile.go`（既定 15 分周期）
 
 </details>
@@ -456,9 +451,9 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 </details>
 
-#### 再試行の挙動の変更
+#### 失敗したエンコードの再投入
 
-このパスが入るまで、25 回失敗して discarded になったエンコードのジョブはそこで止まっていた。これからは、エンコード結果が生まれない限り 15 分ごとに投入し直す。
+失敗して discarded になったエンコードのジョブも、エンコード結果が生まれない限り 15 分ごとに投入し直す。25 回失敗して discarded になっても、そこでは止まらない。
 
 River の一意制約は pending 状態にしか効かず、discarded 済みの引数には合流しない。真実は River のジョブ履歴でなく `media_assets` の有無なので、レベルトリガーとしては意図どおりである。ただし**恒久的に失敗するエンコードは「気づかないうちに諦める」から「延々と再試行する」に変わる**。
 
@@ -554,9 +549,9 @@ finished は mirakc の録画完了を指す。取り込みの完了は原本の
 
 分母は、watcher が観測した mirakc の record の長さである。転送開始時に読んで進捗の表へ写し、追従中は追い付き時の status 観測で更新する。録画中の分母は最終サイズでないので、UI は % を出さない。
 
-**分母は `record_sync.content_length` である。** watcher が mirakc record の `content.length` として観測済みの値を使う。HEAD の `Content-Length` は転送完了後の照合（層 3）にしか取っておらず、転送中には使えない。ファイル stat は api ロールがファイルシステムに触れない（不変条件 1）ので、分母にできない。
+**分母は `record_sync.content_length` である。** watcher が mirakc record の `content.length` として観測済みの値を使う。HEAD の `Content-Length` は転送完了後の照合（層 3）にしか取っておらず、転送中には使えない。この分母は完全性の照合に使わない。照合は録画済みの確認後に、HEAD の長さと `content.sha256` で行う。ファイル stat は api ロールがファイルシステムに触れない（不変条件 1）ので、分母にできない。
 
-mirakc が length を返さない record では、分母を NULL のままにし、UI は % を出さずバイト数だけを出す。でっち上げた分母は置かない。この分母が録画中も非 null で時間とともに増えることは、`mirakc 4.0.0-dev.0` 相当の pin に対する判定で、他の版では未判定である。`records/{id}/stream` の `Content-Length` ヘッダ（録画中は不明）とは別物である（上記「HEAD エンドポイントあり」参照）。録画中の最初の観測は 0 でありうる（実測）。
+mirakc が length を返さない record では、分母を NULL のままにし、UI は % を出さずバイト数だけを出す。でっち上げた分母は置かない。この分母が録画中も非 null で時間とともに増えることは、`mirakc 4.0.0-dev.0` 相当の pin に対する判定で、他の版では未判定である。`records/{id}/stream` の `Content-Length` ヘッダ（録画中は不明）とは別物である（「Range と HEAD の前提」参照）。録画中の最初の観測は 0 でありうる（実測）。
 
 0 は「mirakc が length を返さない」場合の NULL とは違う。非 null な `*int64(0)` として `watcher.go` の `contentLengthPtr` を素通りするので、上記の NULL ガードでは捕まらない。0 を分母にした場合の UI の挙動は本稿の対象外である。
 
@@ -597,7 +592,7 @@ Work 開始時に分母を固定すると、録画が伸びて `written_bytes` �
 
 API の状態は 4 値で、原本の有無を最優先に導出する。次に取消・失敗の観測を見て、取り込み待ちは watcher がジョブを投入する条件と同じ述語に揃える。
 
-**API の状態は 4 値で、原本 `media_assets` 行の有無を最優先に導出する**（列に焼いた値ではない。`internal/api/recordings.go` の `ingestProgressFromFields`）。
+状態は列に焼いた値でなく、毎回導出する（`internal/api/recordings.go` の `ingestProgressFromFields`）。最優先で見るのは、原本 `media_assets` 行の有無である。
 
 ```mermaid
 flowchart TD

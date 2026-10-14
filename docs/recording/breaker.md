@@ -70,7 +70,7 @@ EPG 同期・ruler・reconciler はこの 2 表（`program_intents` / `program_o
 
 intent クリアを対象に混ぜたままにすると、ラッチが無期限であるぶん、番組が録画され続ける実害も無期限に続く。失うのはディスクとチューナーで、ブレーカーが守ろうとしているものより重い。そのため明示操作は対象外に置く。
 
-intent クリアは `effective.skip` を立てない。クリアは「意見なし」を表し、「録るな」とは違うからである。そのためラッチ中に残る予約行は `listDesired`（`reservation.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さない。番組は録画され続ける。失うのは、ディスクとチューナーである。導出で作り直せる予約行とは違い、ブレーカーが守ろうとしているものより重い。
+intent クリアは `effective.skip` を立てない。クリアは「意見なし」を表し、「録るな」とは違うからである。そのためラッチ中に残る予約行は `listDesired`（`reservation.EvaluateSyncCandidates` の `Skipped`）からも除外されず、reconciler は schedule を消さない。番組は録画され続ける。
 
 intent skip 側の実害は、もともと予約一覧の表示上の残留だけだった。`intent.action='skip'` が `effective.skip` を立てるので録画は防がれる。それでも「明示操作は対象外、ただし skip を除く」という例外を増やさないため、同じ側に置く。
 
@@ -110,7 +110,7 @@ EPG や予約側の状態変化から、録画済みデータの削除に到達�
 
 これは不変条件である。EPG・予約側の状態変化から録画物の削除に到達するパスは作らない。
 
-録画済みデータとは `media_assets` のことである。ブレーカーの外にある削除でも、この境界は動かさない。
+録画済みデータとは `media_assets` のことである。
 
 `programId` が EPG から消えた予約は、即削除せず猶予を置く。mirakc 自身も removed-from-epg を理由付き failed として通知してくる。導出値 `orphaned` はこの用途ではない。`orphaned` は「番組終了後に schedule が観測されなかった欠測があり、本物の録画試行が無い」を意味する。この値は `never_scheduled_events` と `recordings` から読むたびに導出する（[schema.md](../schema.md) §3）。
 
@@ -184,7 +184,7 @@ site を持たないブレーカー（`delete_reconcile`。`internal/breaker.IsS
 
 ##### GC は対象にしない
 
-番組終了後の GC（[ruler.md](ruler.md)「番組終了後の GC」）は、削除数の上限の対象にしない。GC の削除対象は時刻の比較だけで決まり EPG の状態に左右されず、長時間停止後に溜まった期限切れ行を一括で消すのは正常だからである。
+番組終了後の GC（[ruler.md](ruler.md)「番組終了後の GC」）は、削除数の上限の対象にしない。GC の削除対象は時刻の比較だけで決まり EPG の状態に一切左右されず、長時間停止後に溜まった期限切れ行を一括で消すのは正常だからである。
 
 上限とは `MaxDeletesPerPass` である。
 
