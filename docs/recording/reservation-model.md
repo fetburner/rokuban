@@ -395,7 +395,7 @@ api が行を直接消さない理由は、ruler 側の GC ロジックと同じ
 
 凍結の設計の権威は、[ストレージ](../storage.md) §6「原本 TS の保持ポリシー」にある。ingest コミット時に凍結する理由は、導出元の短命な表への依存を断つためである。参照のまま依存させると、原本削除と再エンコードが壊れる。
 
-導出元は `reservations` / `program_intents` / `program_overrides` で、放送終了 + 猶予後に GC される。衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計も、同 §6 にある。凍結の例外は、`POST /api/recordings/{id}/encode-profiles` による追加専用の事後書き換えである（原本が active でなければ 409）。これらはいずれも同 §6 を参照。
+導出元は `reservations` / `program_intents` / `program_overrides` で、放送終了 + 猶予後に GC される。衛星表 `recording_encode_policy`（行の存在 = 凍結済み）の設計も、同 §6 にある。凍結の例外（事後追加・保持ポリシーの上書き・版を 1 本ずつ減らす）も同 §6 にある。
 
 ### 4.6 スコープ外
 
