@@ -1,0 +1,114 @@
+{
+  "file": "docs/operations/database.md",
+  "questions": [
+    {
+      "heading": "輻輳時の隔離",
+      "question": "DB が輻輳したとき、すべての処理は収束が遅れるだけで済むか。",
+      "points": [
+        "DB が輻輳しても止まらない処理と、DB に依存し続ける処理がある",
+        "保証は処理ごとに条件が付き、故障モードを常に「収束の遅れ」とは一般化しない"
+      ]
+    },
+    {
+      "heading": "encode",
+      "question": "実行中の encode は DB が止まっても動くか。公開は何で決まるか。",
+      "points": [
+        "ffmpeg のバイト処理だけを見れば DB の外側にある",
+        "公開は DB のコミットで決まる"
+      ]
+    },
+    {
+      "heading": "コネクションプールの上限",
+      "question": "接続プールの上限はなぜロール別に分けるか。",
+      "points": [
+        "api が全コネクションを食い潰して、worker や reconciler が待つ事態を防ぐため"
+      ]
+    },
+    {
+      "heading": "API 系クエリのタイムアウト",
+      "question": "API 系クエリのタイムアウトはなぜクエリ単位の context timeout で付けないか。どう適用するか。",
+      "points": [
+        "クエリ単位だと、付け忘れた 1 本が必ず生まれるため",
+        "接続の起動時パラメータで一括適用する"
+      ]
+    },
+    {
+      "heading": "transaction pooling は通さない",
+      "question": "transaction pooling を通すか。なぜか。",
+      "points": [
+        "通さない",
+        "接続が要求ごとに入れ替わると、LISTEN と advisory lock を使うロールが壊れるため"
+      ]
+    },
+    {
+      "heading": "managed PostgreSQL の `btree_gist`",
+      "question": "managed PostgreSQL が拡張の作成を許可しないとどうなるか。どう対処するか。",
+      "points": [
+        "migration がそこで止まる",
+        "DB 管理者が同じ文を事前に実行してから、migration を再実行する"
+      ]
+    },
+    {
+      "heading": "migration が止まったとき",
+      "question": "拡張の追加に失敗すると migration はどうなるか。",
+      "points": [
+        "そこで止まり、後続の migration に進まない"
+      ]
+    },
+    {
+      "heading": "拡張の権限",
+      "question": "btree_gist は何の権限があれば作れるか。managed provider では常に許可されるか。",
+      "points": [
+        "対象 DB の作成権限があれば作れる",
+        "managed provider が許可するかは接続先ごとに違う"
+      ]
+    },
+    {
+      "heading": "EPG churn / autovacuum",
+      "question": "EPG テーブルで遅くなるのは何か。対策は何か。",
+      "points": [
+        "遅くなるのは書き込みと autovacuum の追従である",
+        "対策はバッチ upsert、GIN fastupdate、テーブル別 autovacuum チューニングである"
+      ]
+    },
+    {
+      "heading": "Postgres datadir とエンコード scratch の分離",
+      "question": "Postgres のデータディレクトリとエンコード scratch を同じディスクに置いてよいか。",
+      "points": [
+        "同じディスクに置かない構成を推奨する",
+        "実際に競合しやすいのはロックよりディスク I/O である"
+      ]
+    },
+    {
+      "heading": "バックアップ",
+      "question": "バックアップの基本は何か。pg_dump は必須か。",
+      "points": [
+        "catalog エクスポートを基本とする",
+        "pg_dump は推奨だが必須ではない"
+      ]
+    },
+    {
+      "heading": "catalog エクスポート",
+      "question": "catalog エクスポートは何をどこへ書き出すか。メディアが生き残る障害のとき、catalog はどうなるか。",
+      "points": [
+        "worker の定期ジョブが、コアデータを JSON でメディアストレージ自身の配下に書き出す",
+        "メディアが生き残る障害では、この書き出しも一緒に生き残る"
+      ]
+    },
+    {
+      "heading": "catalog の健全性確認",
+      "question": "catalog の健全性はどう確認するか。",
+      "points": [
+        "専用の検証コマンドで確認する",
+        "manifest の存在を目視するだけでは確認にならない"
+      ]
+    },
+    {
+      "heading": "rescue は健全性確認に使わない",
+      "question": "rescue を健全性の確認に使ってよいか。",
+      "points": [
+        "使わない。破壊的な操作なので、使うのは DB を失った後だけである"
+      ]
+    }
+  ]
+}

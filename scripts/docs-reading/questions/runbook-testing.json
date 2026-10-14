@@ -1,0 +1,70 @@
+{
+  "file": "docs/runbook/testing.md",
+  "questions": [
+    {
+      "heading": "開発時のテスト",
+      "question": "開発時のテストは DB をどう使うか。渡した URL の DB は直接使われるか。",
+      "points": [
+        "docker compose で立てた postgres に対して回す",
+        "URL が指す DB は直接使われず、パッケージごとに別の DB を導出して使う"
+      ]
+    },
+    {
+      "heading": "k8s の故障注入",
+      "question": "worker の強制終了と DB 接続断からの回復は、何で検査するか。なぜか。",
+      "points": [
+        "使い捨ての kind + KEDA suite で検査する",
+        "実デプロイのキュー・Pod・media volume を通すため"
+      ]
+    },
+    {
+      "heading": "SIGTERM の drain を実バイナリで確かめる",
+      "question": "SIGTERM の drain を実バイナリで確かめるのはいつか。なぜテストでは足りないか。",
+      "points": [
+        "soft stop の猶予を変えたときに回す",
+        "猶予より長く走るジョブはテストでは作れないので、猶予を跨ぐ側を実バイナリで測る"
+      ]
+    },
+    {
+      "heading": "モックの落とし穴",
+      "question": "遅延モックの遅延は、どう決めるか。",
+      "points": [
+        "mirakc クライアントの全体タイムアウトより短くする",
+        "上限は 60 秒である"
+      ]
+    },
+    {
+      "heading": "結果の見方",
+      "question": "猶予が 60 秒のときと 5 秒のときで、プロセスの終了はどうなるか。既定でも測るか。",
+      "points": [
+        "60 秒ならジョブの完走を待ってから終了する",
+        "5 秒なら猶予切れでエスカレートして終了する",
+        "既定の 5 秒でも 1 回測る"
+      ]
+    },
+    {
+      "heading": "mock では検出できない前提",
+      "question": "mock では検出できない前提は、何が判定するか。",
+      "points": [
+        "実物の mirakc コンテナに対する conformance テストが判定する",
+        "Docker が要る"
+      ]
+    },
+    {
+      "heading": "mirakc の版を上げる手順",
+      "question": "mirakc のバージョンを上げるとは何をすることか。番号付きリリースへ戻す判断はあるか。",
+      "points": [
+        "より新しい digest に pin を差し替えること",
+        "番号付きリリースへ戻す判断は無い"
+      ]
+    },
+    {
+      "heading": "digest が取れなくなったとき",
+      "question": "pin した digest が取れなくなって CI が赤くなったら、どう扱うか。",
+      "points": [
+        "conformance の回帰ではなく、pin の失効として扱う",
+        "最新の digest を取り直して pin を差し替える"
+      ]
+    }
+  ]
+}

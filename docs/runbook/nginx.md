@@ -2,11 +2,13 @@
 
 # nginx 前段の実機確認
 
-`deploy/nginx/nginx.conf` は、Rokuban の前段に nginx を置く構成例である。nginx は TLS と Basic 認証を担当する。API と SSE は Rokuban へプロキシする。録画ファイルのバイト転送だけは X-Accel-Redirect で nginx に委ねる。
+Rokuban の前段に nginx を置く構成例が、実機で意図どおりに働くことを確かめる手順である。nginx は TLS と Basic 認証を担当し、API と SSE は Rokuban へプロキシする。録画ファイルのバイト転送だけは X-Accel-Redirect で nginx に委ねる。
+
+構成例は `deploy/nginx/nginx.conf` にある。
 
 ## 構成の前提
 
-以降の手順で共通して使う変数をまとめて定義し、確認用ディレクトリを作る。同じシェルセッションで以下の手順を順に実行する前提とする。
+以降の手順で共通して使う変数を定義し、確認用ディレクトリを作る。Rokuban の設定は、公開ホスト名と X-Accel-Redirect の場所を一致させる。同じシェルセッションで以下の手順を順に実行する前提とする。
 
 ```sh
 DOMAIN=rokuban.example.com
@@ -21,7 +23,7 @@ mkdir -p "$TLS_ROOT/live/$DOMAIN" "$TLS_ROOT/archive/$DOMAIN" \
 
 nginx と Rokuban が同じホストにいる場合、設定の upstream は `127.0.0.1:40773` のままにする。nginx をコンテナで動かす場合は、同じネットワークのサービス名か `host.docker.internal:40773` に変更する。
 
-Rokuban の設定は、公開ホスト名と X-Accel-Redirect の場所を一致させる。
+Rokuban の設定の例は次の通り。
 
 ```yaml
 server:
@@ -34,10 +36,7 @@ storage:
   accel_location: /_media/
 ```
 
-nginx から次の 2 つが読めるようにする。
-
-- `/mnt/media`: Rokuban の `storage.media_dir` と同じ録画ディレクトリ
-- `/etc/letsencrypt` と `/etc/nginx/htpasswd/rokuban`: 証明書と認証ファイル
+nginx から、次の 2 つが読めるようにする。1 つは Rokuban の `storage.media_dir` と同じ録画ディレクトリ `/mnt/media` である。もう 1 つは証明書と認証ファイルの置き場 `/etc/letsencrypt` と `/etc/nginx/htpasswd/rokuban` である。
 
 SPA は Go バイナリのビルド時に go:embed で埋め込まれるため、nginx へは渡さない。
 
@@ -45,9 +44,9 @@ SPA は Go バイナリのビルド時に go:embed で埋め込まれるため�
 
 ## TLS と認証の準備
 
-本番では HTTP-01 または DNS-01 で Let's Encrypt の証明書を取得する。HTTP-01 の webroot は `/var/www/certbot` を使う。
+本番では HTTP-01 または DNS-01 で Let's Encrypt の証明書を取得する。ローカル確認では、同じパスに自己署名証明書を置けばよい。
 
-ローカル確認では、同じパスに自己署名証明書を置けばよい。自己署名証明書は通信経路の確認用で、Let's Encrypt の代わりにはならない。
+HTTP-01 の webroot は `/var/www/certbot` を使う。自己署名証明書は通信経路の確認用で、Let's Encrypt の代わりにはならない。
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
@@ -70,9 +69,18 @@ nginx -s reload
 
 ## 実機の起動
 
-Rokuban を `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用録画の `recording_id` は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。 `%` は `internal/contentpath` のサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。
+Rokuban を 127.0.0.1:40773 で起動し、その前段に nginx を起動する。nginx はホストでも Docker でも動かせるが、実測があるのは Docker 経路だけで、ホストで起動する経路は未検証である。
+
+Rokuban は `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用の録画は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。`%` はパスのサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。
 
 nginx をホストで起動する場合、証明書・認証ファイル・media・certbot webroot を `nginx.conf` が読む実パスへ配置してから `nginx -t` を通す。**この経路は未検証。実測は次項の Docker 経路のみ。**
+
+<details><summary>根拠</summary>
+
+- 検証用録画の ID は録画の主キー: `recording_id`
+- `%` がサニタイザを通り抜ける: `internal/contentpath`
+
+</details>
 
 ```sh
 cd /path/to/rokuban
@@ -113,11 +121,13 @@ docker run --rm --name rokuban-nginx-check \
 
 ## 受け入れ確認
 
-以下の `$URL` は `https://rokuban.example.com:8443`、 `$AUTH` は `rokuban:change-this-password` とする。自己署名証明書のため curl には `-k` を付ける。
+以下の確認は、nginx の HTTPS の入口に curl で当てる。自己署名証明書を使うので、curl には -k を付ける。
+
+`$URL` は `https://rokuban.example.com:8443`、 `$AUTH` は `rokuban:change-this-password` とする。curl の `-k` は自己署名証明書のためである。
 
 ### TLS・Basic 認証・SPA
 
-認証なしの API・録画・SSE・SPA はすべて `401` になることを確認する。
+認証なしの API・録画・SSE・SPA はすべて 401 になることを確認する。
 
 ```sh
 curl -sk -o /dev/null -w '%{http_code}\n' "$URL/api/version"
@@ -152,7 +162,9 @@ curl -sS -H 'Host: rokuban.example.com' \
 
 ### 録画の Range と X-Accel-Redirect
 
-日本語・空白・括弧を含む fixture を使い、認証付き HEAD が `200`、`Accept-Ranges: bytes` と正しい `Content-Length` を返すことを確認する。
+日本語・空白・括弧を含む fixture で、認証付きの HEAD・Range 取得・X-Accel-Redirect の経路を順に確認する。
+
+まず、認証付き HEAD が `200`、`Accept-Ranges: bytes` と正しい `Content-Length` を返すことを確認する。
 
 ```sh
 curl -skI -u "$AUTH" "$URL/api/media/recordings/$ID/file"
@@ -187,11 +199,17 @@ curl -sk -u "$AUTH" -o /dev/null -w '%{http_code}\n' \
 
 ### `accel_location` 無効時の経路
 
+X-Accel-Redirect を無効にしても、アプリが本文を返し、nginx 経由の Range が通ることを確認する。
+
 Rokuban の `storage.accel_location` を空にして再起動する。アプリ直接の応答に `X-Accel-Redirect` が無く、本文が返ることを確認する。同じ Range 要求を nginx 経由でも行い、`206` と正しい範囲が返ることを確認する。確認後は `/_media/` の設定を戻して再起動する。
 
 ### SSE の長時間接続
 
-認証付きの SSE はすぐに `retry: 3000` を返し、25 秒間隔で `: ping` を繰り返す。Rokuban 自身も `X-Accel-Buffering: no` を返すが、nginx 側の `proxy_buffering off` も明示して、upstream の実装や経路を変えても SSE を溜めないことを構成として固定する。`nginx.conf` の `proxy_read_timeout` は 90 秒なので、これを跨がない確認では ping の有無で結果が変わらない。 `--max-time 120` を使い、終了コードが `28` になることと、25 秒間隔の ping が複数回届いていることを両方確認する。認証なしの SSE は `401` で、ストリームを作らない。
+認証付きの SSE が長時間つながり続け、25 秒間隔の ping が届くことを確認する。
+
+認証付きの SSE はすぐに `retry: 3000` を返し、25 秒間隔で `: ping` を繰り返す。Rokuban 自身も `X-Accel-Buffering: no` を返すが、nginx 側の `proxy_buffering off` も明示して、upstream の実装や経路を変えても SSE を溜めないことを構成として固定する。認証なしの SSE は `401` で、ストリームを作らない。
+
+`nginx.conf` の `proxy_read_timeout` は 90 秒なので、これを跨がない確認では ping の有無で結果が変わらない。`--max-time 120` を使い、終了コードが `28` になることと、25 秒間隔の ping が複数回届いていることを両方確認する。
 
 ```sh
 curl -skN --max-time 120 -u "$AUTH" \
@@ -208,10 +226,10 @@ test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 - `proxy_buffering off` を一時的に削除し、SSE の挙動を確認する。Rokuban の `X-Accel-Buffering: no` が残っている限り、このアプリでは削除だけで遅延が再現しない。nginx 固有の差を確認するときは、検証用 upstream でそのヘッダーを返さないようにする（または一時的に `proxy_ignore_headers X-Accel-Buffering;` を加える）。その後に元へ戻して、25 秒以内に `: ping` が届くことを確認する。
 - `alias /mnt/media/` を存在しないディレクトリに変え、Range が `404` になることを確認する。その後に戻して日本語ファイル名が `206` になることを確認する。
 - `internal` を一時的に削除し、直接 `/_media/` が読める状態になることを確認する。その後に戻して直接アクセスが `404` になることを確認する。
-- `location = /api` を一時的に削除し、`/api` が JSON の `404` ではなく nginx の `301` になることを確認する。prefix location `/api/` の auto_redirect がアプリより先に応答する経路で、`/api/` 側の確認では見えない。その後に戻す。
+- `location = /api` を一時的に削除し、`/api` が nginx の `301` になり、JSON の `404` を返さなくなることを確認する。prefix location `/api/` の auto_redirect がアプリより先に応答する経路で、`/api/` 側の確認では見えない。その後に戻す。
 - `proxy_read_timeout` を ping 間隔より短い `10s` に一時変更する。ping と read timeout の関係が壊れる唯一の経路で、`--max-time 120` の前に接続が切れることを確認する。その後に戻して `--max-time 120` まで接続が保たれることを確認する。
 - `internal/streamer/streamer.go` の `accelURI` から `url.PathEscape` を一時的に外す。`segments[i] = seg` だけに変えると `net/url` が未使用でビルドが落ちるので、import も `_ "net/url"` にしてコンパイルが通る形で壊す。`%` を含む `$REL_PATH` の配信が `404` になることを確認する。
 
-  nginx は不正なエスケープを黙って捨てるので、error.log には `50OFF` のように壊れた名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
+  nginx は不正なエスケープを、エラーを出さずに捨てるので、error.log には `50OFF` のように壊れた名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
 
 設定を戻すたびに `nginx -t` を通し、reload 後に正常系を 1 回繰り返す。Go 側を戻したときは `go build` し直してから確認する。

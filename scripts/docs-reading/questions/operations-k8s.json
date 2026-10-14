@@ -1,0 +1,238 @@
+{
+  "file": "docs/operations/k8s.md",
+  "questions": [
+    {
+      "heading": "ロールとキュー購読の関係",
+      "question": "キューを引いてジョブを実行するのはどのロールか。worker ロールを持たないプロセスはキューを引くか。",
+      "points": [
+        "キューを引くのは worker ロールだけである",
+        "worker ロールを持たないプロセスは、設定にかかわらずキューを引かない"
+      ]
+    },
+    {
+      "heading": "streamer のスケール",
+      "question": "streamer は録画配信とライブ視聴でロールを分けるか。両者で違うのは何か。",
+      "points": [
+        "ロールは分けず、同じロール・同じバイナリを使う",
+        "違うのはデプロイのパラメータ（置き場所とスケールの仕方）だけである"
+      ]
+    },
+    {
+      "heading": "録画配信はセッション親和性を必要としない",
+      "question": "録画配信の Service や Ingress に sticky を書くか。",
+      "points": [
+        "sticky は書かない",
+        "録画配信は完全にステートレスで、貼り付けるべき状態が無いから"
+      ]
+    },
+    {
+      "heading": "ライブ視聴は mirakc の隣、シャード鍵はサービスの同定子",
+      "question": "ライブのトランスコードはどこで行い、サイトの外へ何を出すか。",
+      "points": [
+        "トランスコードは mirakc と同じサイトで行う",
+        "HLS になったものだけをサイトの外へ出す"
+      ]
+    },
+    {
+      "heading": "既定を 1 にする根拠と、増やす判定基準",
+      "question": "ライブ視聴の streamer の既定のレプリカ数はいくつか。その天井を決めるものは何か。",
+      "points": [
+        "既定は 1 である",
+        "天井を決めるのはサイトのチューナー数である"
+      ]
+    },
+    {
+      "heading": "ライブのセグメントを録画バッファと同じディスクに置かない",
+      "question": "ライブ HLS のセグメントはどこに置くか。録画バッファと同じディスクに置かない理由は何か。",
+      "points": [
+        "メモリ上の tmpfs に置く",
+        "同じディスクに書くと、視聴が録画を壊すから"
+      ]
+    },
+    {
+      "heading": "マニフェストの配布形式: 素の kustomize",
+      "question": "マニフェストは何で配るか。サイトを増やすときの差分はどう保つか。",
+      "points": [
+        "素の kustomize で配り、Helm chart は持たない",
+        "サイトを増やす差分は、設定の 1 要素と Pod セット 1 組を足すだけに保つ"
+      ]
+    },
+    {
+      "heading": "worker: KEDA ScaledJob（長時間ジョブ保護）",
+      "question": "長時間ジョブの worker は Deployment と ScaledJob のどちらで動かすか。実行中のジョブはどう守られるか。",
+      "points": [
+        "KEDA ScaledJob で動かす",
+        "キューアイテムごとに Job を起こすので、ジョブは完走するまで殺されない"
+      ]
+    },
+    {
+      "heading": "将来オプション: チャンク並列エンコード（未実装）",
+      "question": "チャンク並列エンコードは実装するか。価値はどこにあるか。",
+      "points": [
+        "未実装で、初期実装には含めない",
+        "価値はクラウドバーストによる高速化に限られる"
+      ]
+    },
+    {
+      "heading": "定期投入: `rokuban enqueue` の CronJob",
+      "question": "定期ジョブはどこから投入するか。worker 側の定期投入はどうするか。",
+      "points": [
+        "定期ジョブは CronJob から投入する",
+        "worker 側の定期投入は無効にして出荷する"
+      ]
+    },
+    {
+      "heading": "Deployment 併用時: SIGTERM drain + pod-deletion-cost",
+      "question": "Deployment 型で worker を運用するとき、停止時に何をするか。",
+      "points": [
+        "SIGTERM で実行中のジョブを完走させ、新規の取得を止める",
+        "終了猶予を長く取る"
+      ]
+    },
+    {
+      "heading": "シングルトンロール: pg_advisory_lock リーダー選出",
+      "question": "watcher のレプリカ数 1 は要件か。2 にするとどうなるか。",
+      "points": [
+        "要件ではなく既定である",
+        "2 レプリカにしても壊れない"
+      ]
+    },
+    {
+      "heading": "healthz と readyz: liveness は依存を見ない、readiness は DB を見る",
+      "question": "liveness probe と readiness probe はそれぞれ何を見るか。",
+      "points": [
+        "liveness は依存サービスを見ない",
+        "readiness は DB への ping を見る"
+      ]
+    },
+    {
+      "heading": "キュー名の修飾",
+      "question": "キューの絞り込みには、論理名と実キュー名のどちらを書くか。",
+      "points": [
+        "論理名を書く"
+      ]
+    },
+    {
+      "heading": "キューごとの置き場所",
+      "question": "キューの置き場所は何が決めるか。",
+      "points": [
+        "キューごとの要求が決める",
+        "ロールは置き場所を決めない"
+      ]
+    },
+    {
+      "heading": "PVC マウントの所有権",
+      "question": "media の PVC をマウントする Pod に、所有権をどう与えるか。",
+      "points": [
+        "Pod のセキュリティ設定で、所有グループを指定する"
+      ]
+    },
+    {
+      "heading": "ライブのパッケージングを MediaMTX に委ねる形",
+      "question": "ライブのパッケージングを MediaMTX に委ねる形では、MediaMTX と publisher をどこに置くか。",
+      "points": [
+        "同じコンテナに置く"
+      ]
+    },
+    {
+      "heading": "ConfigMap と env",
+      "question": "ConfigMap は何個作り、Pod ごとの違いはどこで持つか。",
+      "points": [
+        "全 Pod が共有する 1 個にまとめる",
+        "Pod ごとの違いは argv だけにする"
+      ]
+    },
+    {
+      "heading": "Secret と可用性",
+      "question": "Secret をマニフェストに出荷するか。Service の後ろの Pod には何を対で書くか。",
+      "points": [
+        "Secret は出荷しない",
+        "PodDisruptionBudget を対で書く"
+      ]
+    },
+    {
+      "heading": "1 件消化モード",
+      "question": "ScaledJob が起こす worker の Job は、ジョブを 1 件消化したあとどうするか。なぜか。",
+      "points": [
+        "1 件消化して自分で終了する",
+        "ScaledJob は Job の自己終了を前提にした機構だから"
+      ]
+    },
+    {
+      "heading": "実行中のジョブを打ち切る条件",
+      "question": "1 件消化モードで、実行中のジョブを打ち切りうるのは何か。",
+      "points": [
+        "SIGTERM を受けたあとの猶予切れだけである"
+      ]
+    },
+    {
+      "heading": "既知の窓と未測定の挙動",
+      "question": "1 件消化モードの既知の窓とは何か。窓の中の挙動は測っているか。",
+      "points": [
+        "1 つの Job が 2 件消化して終わる窓がある",
+        "窓の中の挙動は未測定である"
+      ]
+    },
+    {
+      "heading": "スケーラのクエリと回収",
+      "question": "KEDA のスケーラは何を数えるか。期限切れジョブの回収はどの client が担うか。",
+      "points": [
+        "待機中と再試行待ちのジョブを数える",
+        "回収は notifier の常駐 River client が担う"
+      ]
+    },
+    {
+      "heading": "キューは argv で絞る",
+      "question": "ScaledJob のキューの絞り込みはどこに書くか。共有 ConfigMap にはどうするか。",
+      "points": [
+        "起動引数で絞る",
+        "共有 ConfigMap にはキューの指定を書かない"
+      ]
+    },
+    {
+      "heading": "rollout 戦略による実行中 Job の保護",
+      "question": "ScaledJob の rollout 戦略は省略してよいか。省略するとどうなるか。",
+      "points": [
+        "段階的な切り替えを必ず明示する",
+        "省略すると、Pod テンプレートの更新で実行中の Job が消える"
+      ]
+    },
+    {
+      "heading": "postgresql トリガの接続先",
+      "question": "postgresql トリガの接続先はどう書くか。",
+      "points": [
+        "クラスタ内の完全修飾名で書く",
+        "短い Service 名ではスケールしない"
+      ]
+    },
+    {
+      "heading": "終了猶予の足し算",
+      "question": "worker ロールを走らせる Pod の終了猶予は、プロセスの最悪の停止時間に対してどう取るか。",
+      "points": [
+        "最悪の停止時間より長く取る"
+      ]
+    },
+    {
+      "heading": "猶予の引き上げ",
+      "question": "数時間のジョブを完走させるには、どの猶予をどうするか。",
+      "points": [
+        "soft-stop の猶予と Pod の終了猶予を対で引き上げる"
+      ]
+    },
+    {
+      "heading": "SIGTERM の 2 発で強制終了",
+      "question": "数時間の猶予を設定した worker を手で止めたいときは、どうするか。",
+      "points": [
+        "SIGTERM を 2 発撃てば強制終了できる"
+      ]
+    },
+    {
+      "heading": "`internal/role`（`RunSingleton`）は watcher 専用だが畳まない",
+      "question": "リーダー選出のパッケージは、呼び出し元が 1 つだけでも残すか。なぜか。",
+      "points": [
+        "呼び出し元が 1 つでも残し、畳まない",
+        "ソケットを接続し続ける形のロールが存在する限り必要な機構だから"
+      ]
+    }
+  ]
+}
