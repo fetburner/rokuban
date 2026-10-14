@@ -17,7 +17,7 @@
 | 遅延・バッファの計器 | 再生経路別の計測 | [metrics.md](metrics.md) |
 | 実機確認について | 実機確認の手順 | [verification.md](verification.md) |
 
-3 組ごとの読み先は次の通り。チャンネル選択・画質・音声は [selection.md](selection.md)、[quality.md](quality.md)、[audio.md](audio.md) を読む。再生経路・離脱時の動作は [playback.md](playback.md) と [sessions.md](sessions.md) を読む。予定・予約・チューナー・遅延は [planning.md](planning.md)、[tuners.md](tuners.md)、[metrics.md](metrics.md) を読む。
+3 組の読み先は、順に [selection.md](selection.md)・[quality.md](quality.md)・[audio.md](audio.md)、[playback.md](playback.md)・[sessions.md](sessions.md)、[planning.md](planning.md)・[tuners.md](tuners.md)・[metrics.md](metrics.md) である。
 
 ## 外部から参照されている節名の対応
 

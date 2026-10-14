@@ -13,6 +13,7 @@ denpa の遅延・バッファ表示に相当するものを持つ。中断予�
 <details><summary>根拠</summary>
 
 - 値の取得と受け渡し: `LivePlayer`（`components/live-player.tsx`）、`onDiagnostics` コールバック prop
+- 画面配線: `pages/live.tsx` の表示テスト
 
 </details>
 
@@ -26,6 +27,9 @@ hls.js 経路（Chrome / Firefox 等）は、1 秒ごとに放送からの遅延
 
 - hls.js 経路で読む値: `hls.latency`（放送から）、`hls.mainForwardBufferInfo.len`（先読み）
 - ネイティブ経路の近似: `video.buffered` の末尾 - `currentTime`
+- 経路ごとの表示差: `lib/live.test.ts`
+- 値の契約: `latencySec` は native 経路では `null`
+- 計器: `live-player.test.tsx`「計器」。`onDiagnostics` が実値を 1 秒ごとに読むこと、ネイティブの `latencySec=null` を確認する
 
 </details>
 
@@ -53,6 +57,8 @@ hls.js は、同期点が決まる前の遅延として 0 を返す。NaN は返
 - 0 を返す実装: `node_modules/hls.js`（1.6.17）の `LatencyController.get latency()` は `this._latency || 0` を実装している。`_latency` は同期点が決まるまで `null` のまま
 - 前提にしてはならない値: `NaN`。実際に返る値: `0`
 - 欠損として弾く読み取り: `readHlsDiagnostics`（`components/live-player.tsx`）
+- 欠損値と `NaN` の丸め: `lib/live.test.ts`
+- `hls.latency=0` の欠損扱い: `live-player.test.tsx`「計器」
 
 </details>
 
@@ -64,12 +70,13 @@ hls.js は、同期点が決まる前の遅延として 0 を返す。NaN は返
 
 #### 破棄後のポーリング停止
 
-hls.js の fatal エラーで破棄した後は、計器のポーリングを止める。止めるのは、意味の無くなった値を毎秒読み続けない衛生のためである。例外を避けるためには止めない。
+hls.js の fatal エラーで破棄した後は、計器のポーリングを止める。止めるのは、意味の無くなった値を毎秒読み続けない衛生のためであって、例外対策ではない。
 
 実 hls.js は、破棄の後に遅延や先読みを読んでも例外を投げない。内部の hls 参照を null にするだけで、遅延の内部値は直前の値のまま残るためである。
 
 <details><summary>根拠</summary>
 
+- fatal エラー後の停止: `live-player.test.tsx`「計器」
 - 破棄の呼び出し: `hls.destroy()`、`latency` / `mainForwardBufferInfo` を読んでも例外が出ないこと
 - 参照だけを外す実装: `LatencyController.destroy()`、`destroy()`、内部の `hls` 参照、`_latency`
 
@@ -81,10 +88,6 @@ hls.js の fatal エラーで破棄した後は、計器のポーリングを止
 
 <details><summary>根拠</summary>
 
-- 純関数: `lib/live.test.ts`（欠損値・`NaN` の丸め・経路ごとの表示差）
-- 値の契約: `latencySec` は native 経路では `null`
-- 計器: `live-player.test.tsx`「計器」。`onDiagnostics` が実値を 1 秒ごとに読むこと、ネイティブの `latencySec=null`、`hls.latency=0` の欠損扱い、fatal エラー後の停止を確認する
-- 画面配線: `pages/live.tsx` の表示テスト
 - 実ブラウザ: `web/e2e/live.mjs` ③
 
 </details>
