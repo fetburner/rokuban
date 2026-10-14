@@ -1,0 +1,13 @@
+{
+  "file": "docs/frontend.md",
+  "questions": [
+    {
+      "heading": "フロントエンド（索引）",
+      "question": "フロントエンドは何で作り、どう配信するか。",
+      "points": [
+        "Vite + React + TypeScript の SPA で、go:embed で単一バイナリに同梱する",
+        "同じビルド成果物を S3+CDN 配信にも使う"
+      ]
+    }
+  ]
+}
