@@ -43,12 +43,7 @@ Vue 3 / Svelte 5 でも成立する領域であり、決定打はエコシステ
 
 `<html lang="ja">` のこの UI では本文のほぼ全部が和文だが、Geist は日本語グリフを持たない。単独指定のままだと和文は「指定していないシステムフォールバック」で描画される（ファビコンは既に Noto Sans JP Black で、書体は既に意匠の一部 [branding.md](branding.md)）。
 
-**Geist を廃止せず、`--font-sans` の先頭に残したまま Noto Sans JP を足す。**
-
-```
---font-sans: 'Geist Variable', 'Noto Sans JP Variable', 'Hiragino Kaku Gothic ProN',
-  'Hiragino Sans', 'Yu Gothic Medium', 'Yu Gothic', 'Meiryo', sans-serif;
-```
+**Geist を廃止せず、`--font-sans` の先頭に残したまま Noto Sans JP を足す。**（並びの権威は `web/src/index.css` の `--font-sans`。）
 
 `font-family` のフォールバックは **要素単位ではなく文字単位**で解決される（1 つのテキストノードの中でも、グリフを持つ最初のフォントが文字ごとに選ばれる）。そのため「英数字は Geist、和文は Noto Sans JP」という使い分けをコンポーネント側の条件分岐で書く必要が無い --- `--font-sans` を 1 回変えるだけで両方に効く。和文システムフォント（ヒラギノ / 游ゴシック / メイリオ）は Noto Sans JP のダウンロード中（`font-display: swap`）とダウンロード失敗時の保険。
 

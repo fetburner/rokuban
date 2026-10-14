@@ -36,6 +36,6 @@
 
 ラスタ版（`favicon.ico` / `apple-touch-icon.png`）は npm 依存にない外部ツール（rsvg-convert / ImageMagick）で作るため自動化していない。
 
-フォールバックも置く。`rel="icon"` の SVG は Safari 16 未満で無視されるので `favicon.ico`（16/32）を `alternate icon` として併記し、`apple-touch-icon.png`（180）も置く。PWA は入れないが iOS の「ホーム画面に追加」はマニフェストなしでも使われ、指定がないと画面のスクリーンショットが使われてしまう。
+フォールバックも置く。`rel="icon"` の SVG は Safari 16 未満で無視されるので `favicon.ico` を `alternate icon` として併記し、`apple-touch-icon.png` も置く。PWA は入れないが iOS の「ホーム画面に追加」はマニフェストなしでも使われ、指定がないと画面のスクリーンショットが使われてしまう。
 
 `public/` に置いたファイルは Vite が `dist/` 直下に出すので、go:embed 経路と S3 経路の両方に自動で乗る。

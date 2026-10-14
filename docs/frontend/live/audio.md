@@ -9,7 +9,7 @@
 - **トラックは位置で選ぶ**（0 = 標準 / 1 = 主 / 2 = 副。`liveAudioTrackIndex`）。hls.js は `audioTrack`、WebKit のネイティブ経路は `video.audioTracks` の `enabled` を使う
 - **メイン effect の依存に `audio` を入れない。** 入れると切替のたびに hls.js を作り直す。画質の切替などで作り直されたときは、トラック一覧が届いた時点（`AUDIO_TRACKS_UPDATED` / `addtrack`）で URL の選択に揃え直す
 - **チャンネルを切り替えても音声を保つ**（一覧のリンクが `?audio=` を運ぶ）
-- **判定は `web/e2e/live-audio.mjs`**（実ブラウザ + ffmpeg が書き続ける実ライブ HLS）。Chromium は WebAudio で左右の周波数を測る。主 → 副 → 標準 → 主と各 15 秒聴いてから切り替える。WebKit は `audioTracks` と取得する rendition を見る（ネイティブ HLS の音は WebAudio に来ないので、鳴っている音は測れない）
+- **判定は `web/e2e/live-audio.mjs`**（実ブラウザ + ffmpeg が書き続ける実ライブ HLS）。Chromium は WebAudio で左右の周波数を測る。主 → 副 → 標準 → 主とそれぞれ聴いてから切り替える。WebKit は `audioTracks` と取得する rendition を見る（ネイティブ HLS の音は WebAudio に来ないので、鳴っている音は測れない）
 
 **切替を跨いで持ち越すのは、字幕の表示と「再生中だったか」である。** cleanup 時に `<video>` のトラック状態と `paused` を読む。再生中なら `canplay` を待って再開する（[quality.md](quality.md)「降格のあとは再生を再開する」）。
 
