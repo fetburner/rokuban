@@ -376,7 +376,7 @@ ruler の停止はパス時刻のゲージで、書き込みの異常は予約�
 
 #### 予約の action の値
 
-削除を表す action のうち、サーキットブレーカーを通るのは削除の導出だけなので、他と混ぜない。
+予約の action を集計するときは、削除の導出を他の削除と混ぜない。削除を表す値のうち、サーキットブレーカーを通るのは削除の導出だけだからである。
 
 通るのは `deleted` だけである。
 
@@ -616,8 +616,10 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 | 沈黙 | 何を意味しないか | 何を見るか |
 |---|---|---|
-| `GET /api/storage` に root が載っている | 最新の観測とは限らない。1 root の statfs 失敗時は前回の観測行をそのまま残すため、行の存在だけでは観測が続いていることを保証しない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
-| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない。下の説明の通り、疑いを経ずに凍結する経路もある | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
+| `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
+| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
+
+1 root の statfs が失敗すると、前回の観測行をそのまま残す。そのため、行の存在だけでは観測が続いていることを保証しない。
 
 欠損ゲージが 0 でも安心できない理由は 2 つある。マウントが落ちている、または空マウントを疑ったパスは、記録自体を見送る。その間、このゲージは前回値のまま凍結する。もう 1 つは疑いを経ない凍結で、走査エラーや DB エラーでパスが途中 return した場合に、ゲージに触れないまま終わり、疑いのカウンタも進まない。
 
@@ -631,10 +633,10 @@ worker の scrape が落ちても、サーバーが exit 0 で終わっても、
 
 | 沈黙 | 何を意味しないか | 何を見るか |
 |---|---|---|
-| worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない。drain 中は HTTP を先に閉じてからジョブを走らせ続けるので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる。停止のたびに出る | 同時刻に `stopping river client` の ERROR が出ていないこと |
+| worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない | 同時刻に `stopping river client` の ERROR が出ていないこと |
 | `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。drain の失敗は終了コードには出ない | ログの `stopping river client`（ERROR）をアラート対象にする |
 
-猶予を数時間に取る encode 構成では、scrape が落ちる時間もその間ずっと続く。
+drain 中は HTTP を先に閉じてからジョブを走らせ続けるので、`--soft-stop-timeout` のあいだ `/metrics` も `/healthz` も落ちる。scrape の欠落は停止のたびに出る。猶予を数時間に取る encode 構成では、scrape が落ちる時間もその間ずっと続く。
 
 `rokuban server` の drain の失敗は、ERROR ログにだけ出る。予算切れで戻った場合、実行中だったジョブの行は一時的に `running` のまま残る。回収する経路は、ジョブごとに次の通りである（[§5](k8s.md)「Deployment 併用時」）。
 
