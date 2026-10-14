@@ -1,26 +1,52 @@
 # データベーススキーマ v1（索引）
 
-PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる。
+PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる。本文は分割先のファイルにあり、節番号は分割前のままなので、この表から該当ファイルを引く。最終形で切る対象は永続資産に限り、導出テーブルの列は、それを書くコードと同じ PR で決める。
 
 | 節 | 内容 | ファイル |
 |---|---|---|
-| §1 | **設計原則**（desired/observed 分離 / mirakc 固有概念の隔離 / tombstone / サイトスコープ / 導出値と事実の分離 / 行の寿命 / 型の規律） | [schema/principles.md](schema/principles.md) |
-| §3 §3.5 §3.6 §3.7 | **desired**: `reservations`（予約）/ `program_intents`・`program_overrides`（ユーザー意図）/ `circuit_breakers`（ブレーカーのラッチ）/ `program_snapshots`（番組の事実のスナップショット。Phase 1） | [schema/reservations.md](schema/reservations.md) |
-| §4 | **observed**: `schedule_sync`（mirakc schedule の観測）/ `schedule_sync_snapshots`（サイト単位の全量観測鮮度）。`ruler_pass_snapshots` / `record_sweep_snapshots`（ループのパス鮮度） | [schema/schedule-sync.md](schema/schedule-sync.md) |
-| §5 §6 | **永続資産**: `recordings`（録画履歴）/ `media_assets`（メディアアセット台帳）。`recording_encode_policy`（原本保持ポリシーの凍結）・`recording_ingest_progress`（転送の途中経過）・`recording_purge_requests`（即時完全削除の要求）・`encoded_asset_removal_requests`（外したエンコード版の要求）・`recording_encode_attempts`（encode ジョブの直近の試行状態）・`recording_playback_positions`（世帯共有の再開位置）・`recording_watched`（世帯共有の視聴済み印）などの衛星表も§5 内、`missing_media_assets`（実体無しの観測）は§6 内。`never_scheduled_events`（放送地平を超えて残す schedule 欠測）は `retention_grace + 30日` で刈る | [schema/recordings.md](schema/recordings.md) |
-| §7 | **observed**: `record_sync`（mirakc record の観測）/ `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
+| §1 | 設計原則（desired/observed 分離・mirakc 固有概念の隔離・tombstone・サイトスコープ・導出値と事実の分離・行の寿命・型の規律） | [schema/principles.md](schema/principles.md) |
+| §3 §3.5 §3.6 §3.7 | desired: `reservations` / `program_intents`・`program_overrides` / `circuit_breakers` / `program_snapshots` | [schema/reservations.md](schema/reservations.md) |
+| §4 | observed: `schedule_sync` / `schedule_sync_snapshots` / `ruler_pass_snapshots` / `record_sweep_snapshots` | [schema/schedule-sync.md](schema/schedule-sync.md) |
+| §5 §6 | 永続資産: `recordings` / `media_assets` と、その衛星表 | [schema/recordings.md](schema/recordings.md) |
+| §7 | observed: `record_sync` / `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
-| §9 §9.5 | **使い捨てキャッシュ**: `epg_services` / `epg_programs`（EPG 射影）/ `tuner_sync`（チューナー射影） | [schema/projections.md](schema/projections.md) |
-| — | **永続資産**: `rules` 一式（`rules` + 条件の子テーブル 6 つ） | [schema/rules.md](schema/rules.md) |
+| §9 §9.5 | 使い捨てキャッシュ: `epg_services` / `epg_programs` / `tuner_sync` | [schema/projections.md](schema/projections.md) |
+| — | 永続資産: `rules` と条件の子テーブル 6 つ | [schema/rules.md](schema/rules.md) |
 | §10 | マイグレーションの権威の所在 | [schema/future.md](schema/future.md) |
 
-**本文は `docs/schema/` に分割してある。節番号は分割前のまま**なので、コードコメントの「schema.md §3.5」等はこの表で該当ファイルを引ける。
+コードコメントの「schema.md §3.5」などは、この表で該当ファイルを引ける。設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md) にある。
 
-設計根拠は [データ層](data.md)・[メディアストレージ](storage.md)、および [invariants.md](invariants.md)。
+**「最終形で切る」の対象は永続資産に限る。** 永続資産は `recordings` / `media_assets` / `drop_stats` / `rules` である。導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める。導出テーブルまで先に固めて churn を生んだ経緯は不変条件 11 にある（[invariants.md](invariants.md) §11）。
 
-**「最終形で切る」の対象は永続資産（`recordings` / `media_assets` / `drop_stats` / `rules`）に限る**。導出テーブル（`reservations` / `*_sync` / 射影）の列は、それを書くコードと同じ PR で決める。導出テーブルまで先に固めて churn を生んだ経緯は不変条件 11 にある（[invariants.md](invariants.md) §11）。
+<details><summary>根拠</summary>
+
+- 本文の分割先: `docs/schema/`
+
+</details>
+
+## 永続資産の衛星表
+
+永続資産の衛星表は、録画履歴かメディアアセットを指す小さな表である。主なものは録画履歴の節（§5）にあり、メディアアセットの節（§6）にもある。行の存在そのものが 1 つの事実を表すものが多い。
+
+録画履歴の節の主なものは、原本保持ポリシーの凍結、転送の途中経過、即時完全削除の要求、外したエンコード結果の要求、encode ジョブの直近の試行状態、世帯共有の再開位置、世帯共有の視聴済み印などである。
+
+<details><summary>根拠</summary>
+
+- 原本保持ポリシーの凍結: `recording_encode_policy`
+- 転送の途中経過: `recording_ingest_progress`
+- 即時完全削除の要求: `recording_purge_requests`
+- 外したエンコード結果の要求: `encoded_asset_removal_requests`
+- encode ジョブの直近の試行状態: `recording_encode_attempts`
+- 世帯共有の再開位置: `recording_playback_positions`
+- 世帯共有の視聴済み印: `recording_watched`
+
+</details>
+
+メディアアセットの節には、実体無しの観測を持つ `missing_media_assets` などがある。放送地平を超えて残す schedule 欠測の `never_scheduled_events` は衛星表ではない。保持猶予に 30 日を足した期間で刈る（`retention_grace + 30日`）。
 
 ## 2. 全体図
+
+意図・上書き・予約は互いに対応付けず、三者とも共通の番組キーで番組スナップショットに結びつく。意図がスキップで上書きの無い番組は予約行を持たないので、予約と意図は常に 1 対 1 になるとは限らない。
 
 ```mermaid
 erDiagram
@@ -48,10 +74,64 @@ erDiagram
     media_assets ||--o| missing_media_assets : "media_asset_id (実体無しの観測。衛星表)"
 ```
 
-- **desired**: `rules` + 子表（ユーザーが書く永続資産）/ `program_intents` + `program_overrides`（番組単位のユーザー意図。永続）/ `reservations`（ruler が導出）
-- **番組の事実のスナップショット**: `program_snapshots`（EPG プロジェクションから複製した、放送の寿命を持つキャッシュ。Phase 1。§3.7）
-- **observed**: `schedule_sync` / `record_sync`（mirakc の観測。短命・使い捨て）。`schedule_sync_snapshots` は schedule 全量観測のコミット鮮度だけを持つサイト単位マーカー
-- **永続資産**: `recordings` / `media_assets` / `drop_stats`。`recording_encode_policy` は `recordings` を指す衛星表（行の存在 = 凍結済み。`recordings` の削除で CASCADE）。`recording_ingest_progress` も同じく衛星表で、行の存在 = 原本を転送中（コミットで消える）。`recording_purge_requests` も衛星表で、行の存在 = ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）。`encoded_asset_removal_requests` も衛星表で、行の存在 = ユーザーがその版を外した（版の削除確定か足し直しで DELETE）。`recording_encode_attempts` も衛星表で、行の存在 = encode ジョブが running か failed のどちらか（完了で消える）。`recording_playback_positions` は世帯共有の一時的な再開位置、`recording_watched` は取り消し可能な世帯共有の視聴済み印で、どちらも API が書く
-- `missing_media_assets` は `media_assets` を指す衛星表（行の存在 = 直前の走査で実体ファイルを観測できなかった）。**削除 reconcile が毎パス作り直す観測**であって台帳ではないので `media_assets` の列にしない（不変条件 13）。この表を根拠に自動削除する経路は無い（[storage/retention.md](storage/retention.md) §7「孤児回収の逆」）。同じ削除 reconcile の帳簿でも `orphan_files` は `media_assets` にまだ無いファイルを追う表なので FK も衛星関係も持たず、この図には現れない
-- `program_intents` / `program_overrides` と `reservations` は互いに FK では対応しない。三者はいずれも共通の `(site, program_id)` で `program_snapshots` への FK（`ON DELETE CASCADE`）を持つことで結びつく（Phase 1）。**意図が skip で、かつ上書きが無い番組は `reservations` に行を持たない**（overrides があれば skip でも行は残る。detached として保持。§3.5）ため、常に 1:1 ではない
-- `reservations.rule_id` が持つのは**勝者ルール**のみ。負けたルールは記録しない —— 勝者以外は `base` に何も供給しないので、削除も無効化も予約を変えない（[schema/rules.md](schema/rules.md)）。マイグレーションの一覧は `internal/db/migrations/` が権威
+### 表の分類
+
+表は、ユーザーが書く・ruler が導出する desired、mirakc の観測、永続資産の 3 つに分かれる。desired は、ルールと条件の子表（ユーザーが書く永続資産）、番組単位のユーザー意図と上書き（永続）、予約（ruler が導出）である。番組の事実のスナップショットは、EPG 射影から複製した放送の寿命を持つキャッシュで、別に分類する。
+
+observed は mirakc の観測で、短命で使い捨てである。schedule 全量観測のコミット鮮度だけを持つサイト単位のマーカーも、この仲間に入る。永続資産は録画履歴・メディアアセット・ドロップ統計である。
+
+<details><summary>根拠</summary>
+
+- desired: `rules` + 子表 / `program_intents` + `program_overrides` / `reservations`
+- 番組の事実のスナップショット: `program_snapshots`（Phase 1。§3.7）
+- observed: `schedule_sync` / `record_sync`。全量観測マーカーは `schedule_sync_snapshots`
+- 永続資産: `recordings` / `media_assets` / `drop_stats`
+
+</details>
+
+### 衛星表の読み方
+
+衛星表の多くは、行の存在が 1 つの事実を表す。実体無しの観測は、削除の走査が毎回作り直せるので、メディアアセットの列にしない（不変条件 13）。行が表す事実は、凍結済み、原本を転送中、完全削除の要求、版を外した、encode ジョブが実行中か失敗、のいずれかである。世帯共有の再開位置と視聴済み印は、API が書くユーザーの状態で、値を持つ。
+
+実体無しの観測は削除 reconcile が毎パス作り直す。この表を根拠に自動削除する経路は無い（[storage/retention.md](storage/retention.md) §7「孤児回収の逆」）。同じ削除 reconcile の帳簿でも、まだメディアアセットに無いファイルを追う表は、外部キーも衛星関係も持たないので、この図には現れない。
+
+<details><summary>根拠</summary>
+
+- 凍結済み（行の存在）: `recording_encode_policy`。`recordings` の削除で CASCADE
+- 原本を転送中（コミットで消える）: `recording_ingest_progress`
+- ごみ箱の猶予を待たない完全削除の要求（復元は DELETE）: `recording_purge_requests`
+- ユーザーがそのエンコード結果を外した（削除の確定か足し直しで DELETE）: `encoded_asset_removal_requests`
+- encode ジョブが running か failed（完了で消える）: `recording_encode_attempts`
+- API が書く世帯共有の状態: `recording_playback_positions`（再開位置）/ `recording_watched`（視聴済み印）
+- 直前の走査で実体ファイルを観測できなかった: `missing_media_assets`（`media_assets` を指す衛星表）
+- まだ `media_assets` に無いファイルを追う表: `orphan_files`
+
+</details>
+
+### 番組キーによる結びつき
+
+意図・上書きと予約は、互いには外部キーで対応しない。三者とも、共通の番組キーで番組スナップショットへの外部キーを持ち、削除は連動する（Phase 1）。
+
+意図がスキップで、かつ上書きが無い番組は、予約に行を持たない。上書きがあればスキップでも行は残り、切り離された予約として保持する（§3.5）。そのため、予約と意図が常に 1 対 1 になるとは限らない。
+
+<details><summary>根拠</summary>
+
+- 共通の番組キー: `(site, program_id)`。`program_snapshots` への FK は `ON DELETE CASCADE`
+- 対応しない表: `program_intents` / `program_overrides` と `reservations`
+- 行を持たない条件: 意図が skip で上書きが無い番組（`reservations` に行なし）
+- 残る条件: `program_overrides` があれば skip でも行は残る（detached）
+
+</details>
+
+### 勝者ルールだけを記録する
+
+予約が持つルールの参照は、勝者ルールだけである。負けたルールは記録しない。勝者以外は base に何も供給しないので、削除も無効化も予約を変えない（[schema/rules.md](schema/rules.md)）。
+
+マイグレーションの一覧は `internal/db/migrations/` が権威である。
+
+<details><summary>根拠</summary>
+
+- 勝者ルールを持つ列: `reservations.rule_id`
+- 予約へ供給されるもの: `base`
+
+</details>

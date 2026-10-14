@@ -1,0 +1,21 @@
+{
+  "file": "docs/schema/schedule-sync.md",
+  "questions": [
+    {
+      "heading": "4. schedule_sync — mirakc schedule の観測（observed state）",
+      "question": "schedule の観測表は何を持ち、誰が書くか。全量同期で行はどうなるか。",
+      "points": [
+        "mirakc の schedule の全量取得をそのまま写した使い捨ての表で、reconciler だけが書く",
+        "全量同期は、取得に含まれない行を観測表から消す"
+      ]
+    },
+    {
+      "heading": "schedule_sync_snapshots — サイト単位の全量観測マーカー",
+      "question": "全量観測マーカーの時刻は何を表し、何のために持つか。",
+      "points": [
+        "取得が成功した時刻ではなく、全量の反映が 1 つのトランザクションでコミットされた時刻である",
+        "空の全量取得と観測ループの停止を、観測表の行の有無から推測しないために持つ"
+      ]
+    }
+  ]
+}
