@@ -4,6 +4,8 @@
 
 ## 節 → ファイル
 
+録画まわりの判断は話題ごとにファイルが分かれている。読みたい話題の節を、次の表からファイルへ辿る。
+
 | 節 | 内容 | ファイル |
 |---|---|---|
 | 録画単体の着地先 / 録画詳細の面積配分と構成 / 次のエピソードとシリーズ | 単体 URL・詳細画面・次のエピソード | [recordings/detail.md](recordings/detail.md) |
@@ -16,6 +18,8 @@
 
 ## 外部から参照されている節名の対応
 
+次の表は、コードや他の文書が名指しで参照している節名と、その節があるファイルの対応である。
+
 | 節名 | ファイル |
 |---|---|
 | 録画単体の着地先 / 録画詳細の面積配分と構成 / 次のエピソードとシリーズ | [recordings/detail.md](recordings/detail.md) |
@@ -25,10 +29,4 @@
 | 取り込み中であることを画面に出す / エンコード状態 / 録画が見られるか / ドロップ統計はバッジ + PID 表 | [recordings/status.md](recordings/status.md) |
 | ルール名の解決 / シリーズ一覧 / シリーズの導線 / 番組ハブの宛先 | [recordings/series.md](recordings/series.md) |
 
-読む順の目安:
-
-- 録画の着地先・詳細画面 → [recordings/detail.md](recordings/detail.md)
-- 再生・チャプター操作 → [recordings/playback.md](recordings/playback.md) と [recordings/chapters.md](recordings/chapters.md)
-- 検索・一括操作 → [recordings/search.md](recordings/search.md)
-- シリーズ・ルール導線 → [recordings/series.md](recordings/series.md)
-- 録画状態・保存量 → [recordings/status.md](recordings/status.md) と [recordings/storage.md](recordings/storage.md)
+読む順の目安は次の通り。録画の着地先と詳細画面は [recordings/detail.md](recordings/detail.md)、再生とチャプター操作は [recordings/playback.md](recordings/playback.md) と [recordings/chapters.md](recordings/chapters.md)、検索と一括操作は [recordings/search.md](recordings/search.md) を読む。シリーズとルールの導線は [recordings/series.md](recordings/series.md)、録画状態と保存量は [recordings/status.md](recordings/status.md) と [recordings/storage.md](recordings/storage.md) を読む。
