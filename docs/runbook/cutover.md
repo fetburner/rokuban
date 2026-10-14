@@ -2,13 +2,15 @@
 
 ## EPGStation から Rokuban へ主運用を切り替える
 
-EPGStation を止めて Rokuban を主運用にする手順と、その判断に使う出口基準。この文書が確かめるのは**視聴・寿命・移行**である。並走中の注意（二重録画など）は [shadow.md](shadow.md) にある。
+EPGStation を止めて Rokuban を主運用にする手順と、その判断に使う出口基準を扱う。この文書が確かめるのは視聴・寿命・移行である。並走中の注意（二重録画など）は [shadow.md](shadow.md) にある。
 
-コマンドはリポジトリの `docker-compose.yml` で動かしている前提で書く。`docker compose exec rokuban rokuban ...` はコンテナ内の CLI を呼ぶ。SQL は `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` で流す。
+コマンドは、リポジトリの `docker-compose.yml` で動かしている前提で書く。`docker compose exec rokuban rokuban ...` はコンテナ内の CLI を呼ぶ。SQL は `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` で流す。
 
 ### 出口基準チェックリスト
 
-切替は全項目を満たしてから行う。各項目の確かめ方は下の節にある。
+切替は、切替前に確かめる全項目を満たしてから行う。切替の後には、ライブラリの欠けと実体無しの 2 項目を確かめ、どちらかが落ちたらロールバックを検討する。各項目の確かめ方は下の節にある。
+
+切替の前に確かめる項目は次の表の通り。
 
 | # | 項目 | 合格の判定 |
 |---|---|---|
@@ -19,50 +21,73 @@ EPGStation を止めて Rokuban を主運用にする手順と、その判断に
 | 5 | catalog | `rokuban catalog verify` が終了コード 0。練習 DB への rescue が通る |
 | 6 | webhook（使う場合） | 実際の受け口が `recording.finished` を 1 件受け取る |
 
-切替後に次の 2 項目を確かめる。どちらかが落ちたらロールバックを検討する。
+切替の後に確かめる項目は次の表の通り。
 
 | # | 項目 | 合格の判定 |
 |---|---|---|
 | 7 | ライブラリの欠け | EPGStation の録画件数と取り込んだ件数の差を全件説明できる。マウント配下の未登録ファイルが、消えてよいものだけ |
 | 8 | 実体無し | 取り込みから 24 時間以上後に `rokuban_media_assets_missing` の系列が 1 つも無い。`rokuban_missing_asset_scan_suspected_storage_failure_total` も増えていない |
 
-**切替手順は、並走中に Rokuban 側でも同じルールが有効になっていることを前提にする**。その間は両方が録る（[shadow.md](shadow.md) の「二重録画に注意」）。二重録画を避けるために Rokuban のルールを無効にしていたなら、切替の前に有効にする。二重録画は資源を余分に使うだけで、録り逃しより安い。
+**切替手順は、並走中に Rokuban 側でも同じルールが有効になっていることを前提にする。** その間は両方が録る（[shadow.md](shadow.md) の「二重録画に注意」）。二重録画を避けるために Rokuban のルールを無効にしていたなら、切替の前に有効にする。二重録画は資源を余分に使うだけで、録り逃しより安い。
 
 ### エンコードプロファイル
 
+取り込んだルールにはエンコードプロファイルが入らないので、UI でプロファイルを選ぶ。HW エンコードでは、device の存在が起動時に検査されず、足し忘れは encode ジョブの失敗として出る。
+
 プロファイルの形は [config.example.yml](../../config.example.yml) の `encode.profiles` が権威である。software（`libx264`）・VAAPI（`h264_vaapi`）・カット版の例がそこにある。キーの判断は [configuration.md](../configuration.md) の「encode/live の HW エンコード」にある。
 
-HW エンコードで踏みやすいもの:
+#### HW エンコードで踏みやすいもの
 
-- **device の存在は起動時に検査しない**。compose なら `rokuban` サービスに `devices: ["/dev/dri:/dev/dri"]` を足す。足し忘れは起動エラーではなく encode ジョブの失敗として出る
-- **`rokuban:full` の ffmpeg は apt 版**で、`h264_vaapi` / `hevc_vaapi` を持つ。ARIB 字幕（`subtitles: webvtt`）を使うなら libaribcaption 入りの ffmpeg に差し替える。差し替えると apt 版のエンコーダを失う（`Dockerfile.full` の冒頭コメント）
+デバイスの存在は起動時に検査されず、足し忘れは encode ジョブの失敗として出る。同梱の ffmpeg は apt 版で、ARIB 字幕を使うなら差し替えるが、差し替えると apt 版のエンコーダを失う。
+
+- device の存在は起動時に検査しない。compose なら `rokuban` サービスに `devices: ["/dev/dri:/dev/dri"]` を足す。足し忘れは encode ジョブの失敗として出る
+- `rokuban:full` の ffmpeg は apt 版で、`h264_vaapi` / `hevc_vaapi` を持つ。ARIB 字幕（`subtitles: webvtt`）を使うなら libaribcaption 入りの ffmpeg に差し替える。差し替えると apt 版のエンコーダを失う
 - エンコーダの有無は `docker compose exec rokuban ffmpeg -hide_banner -encoders | grep vaapi` で見る
 - 設定から消したプロファイルを参照するルールは `unknown encode profile` で失敗する（[troubleshooting.md](troubleshooting.md)）
 
-**取り込んだルールはエンコードしない**。`import epgstation --rules` は `keepOriginal: always`・プロファイル空でルールを作る（EPGStation のエンコード設定は写さない）。UI のルール編集でプロファイルを選んでから、必要なら `until_encoded` にする。プロファイルが空のままでは `until_encoded` を選べない。 `--rules` を再実行しても、Rokuban 側で設定したプロファイルと保持ポリシーは上書きされない。
+<details><summary>根拠</summary>
+
+- 差し替えで apt 版のエンコーダを失う: `Dockerfile.full` の冒頭コメント
+
+</details>
+
+#### 取り込んだルールのエンコード
+
+**取り込んだルールはエンコードしない。** EPGStation のエンコード設定は写さない。
+
+`import epgstation --rules` は `keepOriginal: always`・プロファイル空でルールを作る。
+
+UI のルール編集でプロファイルを選んでから、必要なら `until_encoded` にする。プロファイルが空のままでは `until_encoded` を選べない。`--rules` を再実行しても、Rokuban 側で設定したプロファイルと保持ポリシーは上書きされない。
 
 ### 派生物の再生と `until_encoded`（項目 1・2）
 
+エンコードが終わるまでは原本が残り、派生物が揃った後は原本だけが削除されて、エンコード版は再生できることを確かめる。試験用のルールで短い番組を 1 本録って行う。原本が消えた後は再エンコードできない。
+
 1. 試験用のルールを 1 本作り、プロファイルを 1 つと `keepOriginal: until_encoded` を設定する。短い番組に当たる条件にする
-2. 録画が終わったら録画 ID を控え、アセットの状態を見る:
+2. 録画が終わったら録画 ID を控え、アセットの状態を見る。エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
 
    ```sql
    SELECT kind, profile, state, rel_path FROM media_assets
     WHERE recording_id = <ID> ORDER BY id;
    ```
 
-   エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
-3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。条件の権威は view `until_encoded_deletable_originals` で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
+3. 派生物が揃ったら、削除 reconcile の次のパス（既定 15 分間隔）を待つ。原本はエンコード完了だけでは消えない。サムネイルや TS 計測なども待つ。条件の権威は DB の view で、判断は [storage/retention.md](../storage/retention.md) §6 §7 にある。待たずに確かめるなら `docker compose exec rokuban rokuban enqueue delete-reconcile --config /config.yml`
 4. 同じ SQL で `original` が `deleted`、`encoded` が `active` になっていることを見る
 5. 録画詳細の画面で encoded 版を末尾までシークして再生する（項目 1）
 
-原本が消えた後は再エンコードできない。
+<details><summary>根拠</summary>
+
+- 原本を消してよい条件の権威: view `until_encoded_deletable_originals`
+
+</details>
 
 ### ごみ箱の復元（項目 3）
 
-復元は `recordings.deleted_at` を消すだけで、ファイルに触れない。それを実物で確かめる。
+復元はファイルに触れない。削除して復元し、前後でファイルの inode と更新時刻が変わらないことを実物で確かめる。ごみ箱の猶予は既定 30 日で、過ぎた録画と、今すぐ完全削除した録画だけが実際に削除される。
 
-1. 適当な録画の `rel_path` を上の SQL で引き、inode と mtime を控える:
+復元は、録画を削除済みにする印を消すだけである。
+
+1. 適当な録画の相対パスを上の SQL で引き、inode と mtime を控える。
 
    ```sh
    docker compose exec rokuban stat -c '%i %Y' /mnt/media/<rel_path>
@@ -70,18 +95,28 @@ HW エンコードで踏みやすいもの:
 
 2. UI で削除する（`DELETE /api/recordings/{id}`）。ごみ箱に出ることを見る
 3. ごみ箱から復元する（`POST /api/recordings/{id}/restore`）
-4. 1 と同じ `stat` の出力が変わっていないこと、`media_assets.state` が `active` のままであることを見る
+4. 1 と同じ `stat` の出力が変わっていないこと、アセットの状態が `active` のままであることを見る
 
-ごみ箱の猶予は `cleanup.trash_retention`（既定 30 日）。猶予を過ぎた録画と「今すぐ完全削除」した録画だけを削除 reconcile が unlink する。
+ごみ箱の猶予は `cleanup.trash_retention`（既定 30 日）である。猶予を過ぎた録画と「今すぐ完全削除」した録画だけを、削除 reconcile が unlink する。
+
+<details><summary>根拠</summary>
+
+- 復元で消す印: `recordings.deleted_at`
+- 状態を見る列: `media_assets.state`
+- 相対パスの列: `rel_path`
+
+</details>
 
 ### ブレーカーが発動したとき（項目 4）
 
-ブレーカーは**削除だけ**を止めるラッチで、手で再開するまで止まり続ける。発動中も予約の作成と録画は続くので、慌てて再開しない。各ブレーカーの意味と再開の可否の判断は [operations/alerts.md](../operations/alerts.md) の「大量削除サーキットブレーカー発動」にある。手順だけを書く:
+ブレーカーは削除だけを止めるラッチで、手で再開するまで止まり続ける。発動中も予約の作成と録画は続くので、慌てて再開せず、原因が正当かを確かめてから手で再開する。
 
-1. `curl -s http://localhost:40773/api/breakers | jq` で発動中のブレーカーと `pending` / `threshold` を見る
+各ブレーカーの意味と再開の可否の判断は [operations/alerts.md](../operations/alerts.md) の「大量削除サーキットブレーカー発動」にある。ここには手順だけを書く。
+
+1. `curl -s http://localhost:40773/api/breakers | jq` で、発動中のブレーカーと `pending` / `threshold` を見る
 2. `ruler_deletes` は `detail` に消されようとしていた番組が載る。EPG の欠損で番組が消えていないかを確かめる
-3. `delete_reconcile` は `detail` に対象が載らない。内訳は DB で見る。孤児回収の候補は公開前を示す予約名の temp / staging だけである。canonical orphan は削除候補にもブレーカーにも含まれない。`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で確認する
-4. 正当なら再開する。site を持つブレーカーと持たないブレーカーで URL が違う:
+3. `delete_reconcile` は `detail` に対象が載らない。内訳は DB で見る。孤児回収の候補は、公開前を示す予約名の temp / staging だけである。canonical orphan は削除候補にもブレーカーにも含まれない。`SELECT rel_path, first_seen FROM orphan_files ORDER BY first_seen;` で確認する
+4. 正当なら再開する。site を持つブレーカーと持たないブレーカーで URL が違う。
 
    ```sh
    # ruler_deletes / reconcile_total_loss（site は GET /api/breakers の値）
@@ -90,13 +125,21 @@ HW エンコードで踏みやすいもの:
    curl -X POST http://localhost:40773/api/breakers/delete_reconcile/resume
    ```
 
-`reconcile_total_loss` は件数ではなく「desired が空なのに自分の schedule がある」という形で発動する。発動したら DB 接続と `reservations` の中身を先に疑う。
+`reconcile_total_loss` は、「desired が空なのに自分の schedule がある」という形で発動する。件数は発動条件にならない。発動したら、DB 接続と予約の中身を先に疑う。
+
+<details><summary>根拠</summary>
+
+- 先に疑う予約の中身: `reservations`
+
+</details>
 
 ### catalog と rescue の練習（項目 5）
 
-rescue は DB を失った後にだけ使う。**live DB に向けて練習しない**（catalog の内容で上書きする）。練習は別名の DB に向けて行う。
+rescue は DB を失った後にだけ使う。練習は別名の DB に向けて行い、live の DB には向けない。練習 DB に向けてサーバーを起動しない。
 
-1. catalog の世代を新しくしてから完成を確かめる:
+live の DB に向けると、catalog の内容で上書きする。
+
+1. catalog の世代を新しくしてから完成を確かめる。
 
    ```sh
    docker compose exec rokuban rokuban enqueue catalog-export --config /config.yml
@@ -104,7 +147,7 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
    ```
 
    `enqueue` は投入だけして終わるので、直後の `verify` は 1 つ前の世代を見ることがある。rescue が使う世代の名前（`catalog-<UTC 時刻>`）が投入より後の時刻になるまで `verify` を繰り返す。`catalog verify` は DB に触らない。完成世代が 1 つも無ければ非ゼロで終わる
-2. 練習 DB を作り、マイグレーションと rescue を流す。`config.compose.yml` は `POSTGRES_DB` を DB 名に使うので、環境変数だけで向け先を変えられる:
+2. 練習 DB を作り、マイグレーションと rescue を流す。`config.compose.yml` は `POSTGRES_DB` を DB 名に使うので、環境変数だけで向け先を変えられる。
 
    ```sh
    docker compose exec postgres sh -c 'createdb -U "$POSTGRES_USER" rokuban_drill'
@@ -112,7 +155,7 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
    docker compose run --rm --no-deps -e POSTGRES_DB=rokuban_drill rokuban rescue --config /config.yml
    ```
 
-3. live DB と練習 DB で件数を比べる。差は世代時刻より後に起きた録画・削除・ごみ箱移動・状態の変化で説明できるはずである:
+3. live DB と練習 DB で件数を比べる。差は、世代時刻より後に起きた録画・削除・ごみ箱移動・状態の変化で説明できるはずである。
 
    ```sql
    SELECT count(*) FROM recordings WHERE deleted_at IS NULL;
@@ -121,30 +164,43 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 
 4. 練習 DB を消す: `docker compose exec postgres sh -c 'dropdb -U "$POSTGRES_USER" rokuban_drill'`
 
-**練習 DB に向けて `server` を起動しない**。削除 reconcile が練習 DB の内容で共有の `media_dir` を unlink しに行く。rescue 自身はファイルを変更しない。ただしファイル操作の lock を live の worker と共有するので、走っている間は公開と削除が待たされる。世代の選び方と復元の契約は [storage/rescue.md](../storage/rescue.md) にある。
+**練習 DB に向けて `server` を起動しない。** 削除 reconcile が練習 DB の内容で共有の `media_dir` を unlink しに行く。rescue 自身はファイルを変更しない。ただしファイル操作の lock を live の worker と共有するので、走っている間は公開と削除が待たされる。世代の選び方と復元の契約は [storage/rescue.md](../storage/rescue.md) にある。
 
 ### webhook の疎通（項目 6）
 
-`webhook.url` に実際の受け口を書き、短い番組を 1 本録って `recording.finished` が届くことを見る。受け口がまだ無ければ、別ホストで `nc -l 8080` を開いて URL に向けると、ヘッダと本文を目で見られる（`X-Rokuban-Webhook-Secret` は `webhook.secret` が空でないときだけ付く）。`nc` は応答を返さないので、Rokuban 側には timeout のログが出る。イベントの種類とペイロードは [configuration.md](../configuration.md) の「webhook のイベントとペイロード」にある。webhook の失敗は録画や ingest を止めない。
+webhook を使うなら、実際の受け口を設定して短い番組を 1 本録り、録画完了の通知が届くことを確かめる。webhook の失敗は録画や取り込みを止めない。
+
+`webhook.url` に実際の受け口を書き、短い番組を 1 本録って `recording.finished` が届くことを見る。受け口がまだ無ければ、別ホストで `nc -l 8080` を開いて URL に向けると、ヘッダと本文を目で見られる（`X-Rokuban-Webhook-Secret` は `webhook.secret` が空でないときだけ付く）。`nc` は応答を返さないので、Rokuban 側には timeout のログが出る。イベントの種類とペイロードは [configuration.md](../configuration.md) の「webhook のイベントとペイロード」にある。
 
 ### 切替手順
 
-並走中は両方が録っているので、切替は EPGStation 側を止めるだけで済む。Rokuban の schedule は並走中から mirakc にあるので、切替で録り逃す窓は無い。**手順の順序を決めるのは、`--rules` の取り込みが EPGStation 側の `enabled` を写すことである**。
+並走中は両方が録っているので、切替は EPGStation 側を止めるだけで済む。順序は、ルールの取り込みが EPGStation 側の有効 / 無効の値を写すことで決まる。無効にした後は、ルールの取り込みを再実行しない。
 
-1. 並走中に EPGStation 側で足した・変えたルールを取り込み直す。EPGStation のルールが有効なうちに行う。警告が出たルールは中身を見る（[import-epgstation.md](import-epgstation.md)）:
+Rokuban の schedule は並走中から mirakc にあるので、切替で録り逃す窓は無い。
+
+```mermaid
+flowchart LR
+  P["並走<br>両方が録る"] --> R["手順 1・2<br>ルールを取り込み直し、予約を導出する"]
+  R --> D["手順 3<br>EPGStation のルールを無効にする<br>ここから Rokuban だけが録る"]
+  D --> S["手順 4・5<br>設定を済ませ、EPGStation を止める"]
+  S --> L["手順 6・7<br>ライブラリを取り込み、欠けを確かめる"]
+  D -. "ここから先は<br>ルールの取り込みを再実行しない" .-> S
+```
+
+1. 並走中に EPGStation 側で足した・変えたルールを取り込み直す。EPGStation のルールが有効なうちに行う。警告が出たルールは中身を見る（[import-epgstation.md](import-epgstation.md)）。
 
    ```sh
    docker compose exec rokuban rokuban import epgstation --config /config.yml --rules \
      --epgstation-url http://<epgstation>:8888
    ```
 
-2. 取り込んだルールから予約を導出させる:
+2. 取り込んだルールから予約を導出させる。
 
    ```sh
    docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
    ```
 
-   EPGStation にしか無い予約は 2 種類ある。1 つはルール由来でない EPGStation の手動予約で、`--rules` の対象外なので Rokuban の番組表から予約し直す。もう 1 つは条件が 1 つも残らず無効で取り込まれたルールの予約で、条件を直して有効にする。手動予約の一覧は次で出る（`total` が 1000 を超えるなら `offset` を進める）:
+   EPGStation にしか無い予約は 2 種類ある。1 つはルール由来でない EPGStation の手動予約で、`--rules` の対象外なので Rokuban の番組表から予約し直す。もう 1 つは条件が 1 つも残らず無効で取り込まれたルールの予約で、条件を直して有効にする。手動予約の一覧は次で出る（`total` が 1000 を超えるなら `offset` を進める）。
 
    ```sh
    curl -s "http://<epgstation>:8888/api/reserves?type=all&isHalfWidth=false&limit=1000&offset=0" \
@@ -153,7 +209,7 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 
 3. EPGStation の UI で全ルールを無効にし、手動予約を消す。上の `/api/reserves` の `total` が 0 になることを見る。ここから先は Rokuban だけが録る
 4. 取り込んだルールにエンコードプロファイルと保持ポリシーを設定する（上の「エンコードプロファイル」）
-5. EPGStation の最後の録画が終わったら、録画件数を控えてから EPGStation を止める:
+5. EPGStation の最後の録画が終わったら、録画件数を控えてから EPGStation を止める。
 
    ```sh
    curl -s "http://<epgstation>:8888/api/recorded?isHalfWidth=false&limit=1&offset=0" | jq .total
@@ -163,20 +219,26 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 6. ライブラリを取り込む（下の「ライブラリの取り込み」）
 7. 取り込みの欠けを確かめる（下の「ライブラリの欠け」）
 
-**手順 3 の後に `--rules` を再実行しない**。再実行は `enabled` を EPGStation 側の値で上書きするので、手順 3 で無効にした状態が Rokuban の全ルールに写る。
+**手順 3 の後に `--rules` を再実行しない。** 再実行は、有効 / 無効の値を EPGStation 側の値で上書きするので、手順 3 で無効にした状態が Rokuban の全ルールに写る。
+
+<details><summary>根拠</summary>
+
+- 取り込みが写す値: `enabled`
+
+</details>
 
 ### ライブラリの取り込み
 
-**EPGStation の録画ディレクトリを `media_dir` の配下に置くと、孤児検出の対象になる**。走査は `catalog/` 以外の全ファイルを見る。登録されなかった canonical file は mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に Warn と `rokuban_orphan_files_unresolved` で報告される。名前だけでは公開済みか分からないため、canonical file は自動削除しない。自動回収されるのは ingest temp と予約名付き staging file だけである。
+EPGStation の録画ディレクトリをマウントして取り込む。マウントした録画ディレクトリは孤児検出の対象になるが、登録されなかった録画ファイルは報告されるだけで自動では削除されない。取り込むのは原本とサムネイル 1 件だけで、エンコード済みのファイルは警告付きで飛ばされる。
 
-1. **取り込めないファイルを確認する**。取り込むのは `type=ts` の原本とサムネイル 1 件だけである。EPGStation のエンコード済みファイル（`type=encoded`）は警告付きで飛ばされる。不要と確認できたファイルはマウント前に別の場所へ移すか、取り込み後に手動で整理する
-2. 録画ディレクトリを `sites/<site>/` の配下にマウントする。compose なら `rokuban` サービスの `volumes` に足す（例）:
+1. 取り込めないファイルを確認する。取り込むのは `type=ts` の原本とサムネイル 1 件だけである。EPGStation のエンコード済みファイル（`type=encoded`）は警告付きで飛ばされる。不要と確認できたファイルは、マウント前に別の場所へ移すか、取り込み後に手動で整理する
+2. 録画ディレクトリを `sites/<site>/` の配下にマウントする。compose なら `rokuban` サービスの `volumes` に次のように足す（例）。
 
    ```yaml
    - /opt/epgstation/recorded:/mnt/media/sites/<site>/epgstation
    ```
 
-3. JSON を書き出してコンテナへ渡し、取り込む。JSON の書き出し方は [import-epgstation.md](import-epgstation.md) の「ライブラリ」:
+3. JSON を書き出してコンテナへ渡し、取り込む。JSON の書き出し方は [import-epgstation.md](import-epgstation.md) の「ライブラリ」にある。
 
    ```sh
    docker compose cp library.json rokuban:/tmp/library.json
@@ -185,9 +247,19 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 
 未解決: エンコード済みファイルしか持たない EPGStation の録画（原本をエンコード後に消したもの）は再生できる形で取り込めない。サムネイルがあればサムネイルだけの録画（再生不可）として登録され、無ければ飛ばされる。
 
+#### 孤児検出の扱い
+
+EPGStation の録画ディレクトリをメディアの置き場の配下に置くと、孤児検出の対象になる。登録されなかった録画ファイルは、猶予とエイジングの後に警告とメトリクスで報告されるだけで、自動では削除されない。
+
+走査は `catalog/` 以外の全ファイルを見る。置き場は `media_dir` である。登録されなかった canonical file は、mtime 猶予（既定 7 日）とエイジング（既定 14 日）の後に Warn と `rokuban_orphan_files_unresolved` で報告される。
+
+**名前だけでは公開済みか分からないため、canonical file は自動削除しない。** 自動回収されるのは ingest temp と予約名付き staging file だけである。
+
 ### ライブラリの欠け（項目 7）
 
-1. 件数を比べる。EPGStation 側は切替手順 5 で控えた値を使う。Rokuban 側はマウント先の前置で数える:
+取り込んだ件数を EPGStation の録画件数と比べ、差を取り込みの警告で説明する。マウント配下の未登録ファイルも突き合わせて出す。未登録ファイルの出力が空になるか、未登録の理由をすべて説明できれば合格とする。
+
+1. 件数を比べる。EPGStation 側は切替手順 5 で控えた値を使う。Rokuban 側はマウント先の前置で数える。
 
    ```sql
    SELECT count(DISTINCT recording_id) FROM media_assets
@@ -195,7 +267,7 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
    ```
 
    差は、取り込みの警告（encoded しか無い録画など）で説明できるはずである
-2. マウント配下のファイルと登録済みの `rel_path` を突き合わせ、未登録のファイルを出す。`orphan_files` には mtime 猶予を過ぎた候補が記録される。canonical の未登録ファイルは自動削除されないため、一覧だけに頼らずディスク全体と照合する:
+2. マウント配下のファイルと登録済みの相対パスを突き合わせ、未登録のファイルを出す。孤児候補の一覧には mtime 猶予を過ぎた候補が記録される。canonical の未登録ファイルは自動削除されないため、一覧だけに頼らずディスク全体と照合する。
 
    ```sh
    docker compose exec -T rokuban sh -c 'cd /mnt/media && find sites/<site>/epgstation -type f' | sort > files.txt
@@ -212,16 +284,30 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
 
 未解決: EPGStation の録画履歴（再放送の重複排除の種）は取り込めない。切替直後は、EPGStation で録った番組の再放送を Rokuban がもう一度録りうる。
 
+<details><summary>根拠</summary>
+
+- 登録済みのパスの列: `rel_path`
+- 孤児候補の一覧: `orphan_files`
+
+</details>
+
 ### ロールバック
 
-**Rokuban を止めるだけでは録画は止まらない**。録画は mirakc が実行するので、Rokuban が作った schedule は mirakc に残って録り続ける。
+**Rokuban を止めるだけでは録画は止まらない。** 録画は mirakc が実行するので、Rokuban が作った schedule が mirakc に残って録り続ける。mirakc の schedule を直接消して EPGStation を戻し、ライブラリを取り込み済みなら録画ディレクトリのマウントを外す。
 
 全ルールを無効にして reconciler に消させる手は使えない。desired が空になった時点で `reconcile_total_loss` が発動し、再開しても次のパスで同じ形を観測して再発動する。mirakc の schedule を直接消す。
 
-手順 2 から 4 までの間はどちらも録らない。録画中が無く、次の予約の開始まで余裕がある時間帯に行う。録り逃しより二重録画を選ぶなら、手順 4 を先に済ませてから 1 を始める。
+手順 2 から 4 までの間は、どちらも録らない。録画中が無く、次の予約の開始まで余裕がある時間帯に行う。録り逃しより二重録画を選ぶなら、手順 4 を先に済ませてから 1 を始める。
+
+```mermaid
+flowchart LR
+  A["切替後<br>Rokuban だけが録っている"] -->|"手順 1<br>Rokuban を止める"| B["Rokuban が作った schedule が<br>mirakc に残って録り続ける"]
+  B -->|"手順 2・3<br>schedule を消す"| C["どちらも録らない"]
+  C -->|"手順 4<br>EPGStation を起動しルールを戻す"| D["EPGStation が録る"]
+```
 
 1. Rokuban を止める: `docker compose stop rokuban`
-2. Rokuban が作った schedule（tag が `program:` で始まる）を mirakc から消す。`MIRAKC_URL` は `.env` にしか無いので、先にシェルへ読み込む:
+2. Rokuban が作った schedule（tag が `program:` で始まる）を mirakc から消す。`MIRAKC_URL` は `.env` にしか無いので、先にシェルへ読み込む。
 
    ```sh
    set -a; . ./.env; set +a
@@ -230,11 +316,23 @@ rescue は DB を失った後にだけ使う。**live DB に向けて練習し�
      | while read -r id; do curl -s -X DELETE "$MIRAKC_URL/api/recording/schedules/$id"; done
    ```
 
-   録画中の schedule を消したときの mirakc の挙動は未検証である。録画中（`state` が `recording`）のものは終わるのを待ってから消すのが安全
+   録画中の schedule を消したときの mirakc の挙動は未検証である。録画中のものは終わるのを待ってから消すのが安全である
 3. 同じ `GET` の結果に `program:` の tag が 0 件であることを見る
 4. EPGStation を起動し、ルールを有効に戻す。切替手順 3 で消した手動予約は戻らないので、入れ直す
-5. ライブラリを取り込んだ後なら、取り込みで加えた変更を戻す:
+5. ライブラリを取り込んだ後なら、取り込みで加えた変更を戻す。
    - 「ライブラリの取り込み」の手順 1 でマウントの外へ移したエンコード済みファイルを元の場所へ戻す。EPGStation の DB は元のパスを指している
-   - `rokuban` サービスの `volumes` から録画ディレクトリのマウントを外す。**外さずに Rokuban を起動すると、EPGStation の新しい録画は未登録 orphan として報告され、残り続ける**
+   - `rokuban` サービスの `volumes` から録画ディレクトリのマウントを外す。外さずに Rokuban を起動すると、EPGStation の新しい録画は未登録 orphan として報告され、残り続ける
 
-Rokuban の DB とメディアはそのまま残る。マウントを外した後は、取り込んだ録画の行が実体無しとして報告される（削除はされない）。Rokuban を戻すときは、`volumes` の変更を反映するために `docker compose up -d rokuban` で作り直す。ルールが有効なままなら、次の reconcile パスで schedule が作り直される。切替を再試行するときは、並走の状態（両方が録る）に戻ってから切替手順 1 からやり直す。ライブラリは「ライブラリの取り込み」の手順どおり、マウントから取り込み直す。
+<details><summary>根拠</summary>
+
+- 録画中の判定: `state` が `recording`
+
+</details>
+
+#### ロールバック後の状態と再試行
+
+Rokuban の DB とメディアはそのまま残る。マウントを外した後は、取り込んだ録画の行が実体無しとして報告される（削除はされない）。
+
+Rokuban を戻すときは、`volumes` の変更を反映するために `docker compose up -d rokuban` で作り直す。ルールが有効なままなら、次の reconcile パスで schedule が作り直される。
+
+切替を再試行するときは、並走の状態（両方が録る）に戻ってから切替手順 1 からやり直す。ライブラリは「ライブラリの取り込み」の手順どおり、マウントから取り込み直す。

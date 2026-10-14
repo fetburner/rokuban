@@ -1,0 +1,83 @@
+{
+  "file": "docs/operations/storage.md",
+  "questions": [
+    {
+      "heading": "原本 ingest 先の FS 契約",
+      "question": "原本の ingest 先にはどんな FS が使えるか。起動時に何を確かめるか。",
+      "points": [
+        "ファイルの同期、クローズ時のエラー報告、atomic rename、親ディレクトリの同期を信頼できる FS に限る",
+        "ingest を引く worker は、起動時に実際の操作列が一度成功することを probe で確かめる"
+      ]
+    },
+    {
+      "heading": "対象内と対象外",
+      "question": "原本の ingest 先として使える FS と使えない FS は何か。",
+      "points": [
+        "ローカル FS、JuiceFS、NFS は対象内である",
+        "FUSE S3 は対象外である"
+      ]
+    },
+    {
+      "heading": "録画バッファのサイジング",
+      "question": "録画バッファの容量と速度は何で決めるか。",
+      "points": [
+        "容量は ingest が詰まったときの滞留分で決める",
+        "速度はレイテンシを優先して見る"
+      ]
+    },
+    {
+      "heading": "N 日は容量だけでは決まらない: `epg.retention_grace` との交点",
+      "question": "滞留を N 日まで許すとき、ディスク以外に何を揃えるか。なぜか。",
+      "points": [
+        "EPG の保持猶予も N 日以上にする",
+        "encode 意図が生き残る滞留の上限は、猶予で決まるため"
+      ]
+    },
+    {
+      "heading": "猶予を跨いだ ingest の帰結",
+      "question": "GC が番組を刈った後に ingest が走るとどうなるか。",
+      "points": [
+        "既定ポリシーで凍結され、原本は残るがエンコードは投入されない"
+      ]
+    },
+    {
+      "heading": "猶予を上げる代償",
+      "question": "保持猶予を上げると何が広がるか。",
+      "points": [
+        "番組の保持と、欠測行を作る窓が広がる"
+      ]
+    },
+    {
+      "heading": "滞留の型と見るメトリクス",
+      "question": "滞留の型は何で分かれるか。",
+      "points": [
+        "その record が終了済みとしてクラウドに観測されていたかで分かれる",
+        "リンクが生きているかでは分かれない"
+      ]
+    },
+    {
+      "heading": "アーカイブの速度要件",
+      "question": "アーカイブの速度要件は何か。FS 契約は緩むか。",
+      "points": [
+        "低速で良い",
+        "原本の ingest 先として、強い FS 契約は満たす必要がある"
+      ]
+    },
+    {
+      "heading": "disaster recovery（catalog + rescue）",
+      "question": "rescue はいつ使うか。健全性の確認に使ってよいか。",
+      "points": [
+        "DB を失った後にだけ使う",
+        "live DB を catalog の内容で上書きするので、健全性の確認には使わない"
+      ]
+    },
+    {
+      "heading": "rescue が復元するもの",
+      "question": "rescue は何を復元するか。",
+      "points": [
+        "完成世代が catalog にあれば、メタデータごと復元する",
+        "catalog に無いファイルは、サイトの前置が付いたものに限り、推定できる範囲で素の asset として登録する"
+      ]
+    }
+  ]
+}

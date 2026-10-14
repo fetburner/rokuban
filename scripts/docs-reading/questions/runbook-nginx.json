@@ -1,0 +1,60 @@
+{
+  "file": "docs/runbook/nginx.md",
+  "questions": [
+    {
+      "heading": "構成の前提",
+      "question": "前提の節で、Rokuban の設定は何を一致させるか。手順はどのシェルで実行する前提か。",
+      "points": [
+        "公開ホスト名と X-Accel-Redirect の場所を一致させる",
+        "同じシェルセッションで順に実行する"
+      ]
+    },
+    {
+      "heading": "TLS と認証の準備",
+      "question": "証明書は本番とローカル確認でどう用意するか。",
+      "points": [
+        "本番は HTTP-01 または DNS-01 で Let's Encrypt の証明書を取得する",
+        "ローカル確認では同じパスに自己署名証明書を置く"
+      ]
+    },
+    {
+      "heading": "実機の起動",
+      "question": "nginx をホストで起動する経路は検証済みか。",
+      "points": [
+        "実測があるのは Docker 経路だけである",
+        "ホストで起動する経路は未検証である"
+      ]
+    },
+    {
+      "heading": "TLS・Basic 認証・SPA",
+      "question": "認証なしで API・録画・SSE・SPA を叩くと、応答はどうなるべきか。",
+      "points": [
+        "すべて 401 になる"
+      ]
+    },
+    {
+      "heading": "録画の Range と X-Accel-Redirect",
+      "question": "録画配信の確認ではどんな fixture を使い、何を順に確認するか。",
+      "points": [
+        "日本語・空白・括弧を含む fixture を使う",
+        "認証付きの HEAD、Range 取得、X-Accel-Redirect の経路を順に確認する"
+      ]
+    },
+    {
+      "heading": "SSE の長時間接続",
+      "question": "SSE の長時間接続では何を確認するか。",
+      "points": [
+        "認証付きの SSE が長時間つながり続ける",
+        "25 秒間隔の ping が届く"
+      ]
+    },
+    {
+      "heading": "壊して確認する項目",
+      "question": "設定を壊して確認するとき、一度にいくつ変更するか。確認後はどうするか。",
+      "points": [
+        "一度に 1 つだけ変更する",
+        "確認後に元へ戻す"
+      ]
+    }
+  ]
+}

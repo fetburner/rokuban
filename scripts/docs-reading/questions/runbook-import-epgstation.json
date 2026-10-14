@@ -1,0 +1,38 @@
+{
+  "file": "docs/runbook/import-epgstation.md",
+  "questions": [
+    {
+      "heading": "1. EPGStation の録画ディレクトリを rokuban の `media_dir` 配下にマウントする",
+      "question": "録画ファイルはコピーするか。マウント先はどこにするか。",
+      "points": [
+        "ファイルはコピーせず、既存の録画ディレクトリをそのままマウントする",
+        "マウント先は site の名前空間の配下にする。JSON のパスにはその前置を含めない"
+      ]
+    },
+    {
+      "heading": "2. JSON を書き出す",
+      "question": "ライブラリの JSON をどう書き出すか。落とし穴は何か。",
+      "points": [
+        "EPGStation 自身の DB から書き出す",
+        "MySQL では出力のエスケープを止める raw 指定を省略しない",
+        "ファイルのパスはマウントした先から見た相対パスに書き換える"
+      ]
+    },
+    {
+      "heading": "前置導入前に取り込んだライブラリの移行",
+      "question": "この移行はどんなときに要り、何を前提にして行うか。",
+      "points": [
+        "site の前置を自動で付ける前の版で取り込んだ原本はパスに前置が無く、worker が起動時に拒否する",
+        "worker と streamer を止めてから、ファイルを移動してパスを更新する"
+      ]
+    },
+    {
+      "heading": "履歴（RecordedHistory）は未対応",
+      "question": "EPGStation の録画履歴は取り込めるか。",
+      "points": [
+        "取り込まない",
+        "取り込んでも重複排除に効かないので、別途扱う"
+      ]
+    }
+  ]
+}

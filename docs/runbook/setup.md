@@ -2,16 +2,34 @@
 
 ## 前提
 
+導入の前に、mirakc が動いていて、録画の保存先が設定されていることを確かめる。mirakc のイメージに cat と dd が含まれていることと、専用チューナーが兼用チューナーより前に並んでいることも確かめる。
+
 - mirakc が動いていて `GET /api/version` が返る
-- mirakc の `recording.basedir` と `recording.records-dir` が設定されている（どちらも未設定だと `/api/recording/*` が 404 になる）
+- mirakc の `recording.basedir` と `recording.records-dir` が設定されている。どちらも未設定だと `/api/recording/*` が 404 になる
 - mirakc の `tuners:` では専用チューナーを兼用チューナーより前に並べる
-- mirakc のイメージに **`cat` と `dd` が含まれている**
+- mirakc のイメージに `cat` と `dd` が含まれている
 
-最後の項目は見落としやすい。`FROM scratch` + magicpak のように必要なバイナリだけを含むイメージだと、`GET /api/recording/records/{id}/stream` が **500** を返して ingest が完走しない。HEAD はファイルのメタデータだけで応答できるので**成功する**ため、「HEAD は通るのに GET が 500」という切り分けにくい形で出る。
+### イメージに cat と dd が要る理由
 
-mirakc main（`4f2493f98374`）の実装（`mirakc-core/src/tuner.rs` の `activate_tuner`）を読んだ限り、mirakc は設定順で最初に空いているチューナーを選ぶ。兼用チューナーを先に置くと、専用チューナーで受けられる種別にも兼用チューナーを使い、他の種別の余地を減らす。専用チューナーを先にしても、mirakc は後に来る予約を見ずに選び、番組の途中でチューナーを替えないため、防げない失敗は残る（並び順はどちらにも反例がある）。
+必要なバイナリだけを含むイメージだと、録画ストリームの取得が 500 で失敗して ingest が完走しない。HEAD は成功するので、「HEAD は通るのに GET が 500」という切り分けにくい形で出る。
+
+`FROM scratch` + magicpak のようなイメージだと、`GET /api/recording/records/{id}/stream` が 500 を返す。HEAD はファイルのメタデータだけで応答できるので成功する。
+
+### チューナーの並び順
+
+mirakc の実装を読んだ限り、mirakc は設定順で最初に空いているチューナーを選ぶ。兼用チューナーを先に置くと、専用チューナーで受けられる種別にも兼用チューナーを使い、他の種別の余地を減らす。
+
+専用チューナーを先にしても、mirakc は後に来る予約を見ずに選び、番組の途中でチューナーを替えない。そのため防げない失敗は残る。並び順はどちらにも反例がある。
+
+<details><summary>根拠</summary>
+
+- 設定順に最初の空きチューナーを選ぶ、mirakc main（`4f2493f98374`）の実装: `mirakc-core/src/tuner.rs` の `activate_tuner`
+
+</details>
 
 ## 起動
+
+docker compose up で起動する。初回は公式イメージに ffmpeg を積んだ full イメージをローカルでビルドする。自前の compose を持っている場合は、停止の猶予を確認する。
 
 ```sh
 cp .env.example .env
@@ -20,15 +38,32 @@ docker compose up -d  # 初回は公式イメージに ffmpeg を積んだ rokub
 docker compose logs -f rokuban
 ```
 
-初回 `up` は `Dockerfile.full` を使って `rokuban:full` を組む。公式イメージ `ghcr.io/fetburner/rokuban` を pull し、その上に apt で ffmpeg を足し、CM 検出の JLSE ツールを C/C++ のソースからビルドして載せる。Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布ではないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。HW エンコード等で自前イメージを使うなら `.env` の `ROKUBAN_IMAGE` で差し替える。
+初回の `up` は `Dockerfile.full` を使って `rokuban:full` を組む。公式イメージ `ghcr.io/fetburner/rokuban` を pull し、その上に apt で ffmpeg を足し、CM 検出の JLSE ツールを C/C++ のソースからビルドして載せる。Go / Node のソースビルドは走らない。ffmpeg を自分用にビルドするのは再配布ではないので、公式配布物は ffmpeg 非同梱のまま保てる（[docs/overview.md](../overview.md)）。HW エンコード等で自前イメージを使うなら、`.env` の `ROKUBAN_IMAGE` で差し替える。
 
 `http://localhost:40773` で UI が開く。
 
-**自分の `docker-compose.yml` を持っている場合は `stop_grace_period` を確認する。**
+### 自前の compose の停止の猶予
 
-rokuban は SIGTERM を受けると実行中のジョブを `--soft-stop-timeout`（既定 5 秒）まで待ってから畳む。**Docker の既定の猶予は 10 秒**なので、既定のままなら収まるが、猶予を伸ばす（長いエンコードを守る）ときは `stop_grace_period` も対で伸ばす。足りないと `docker compose down` / `stop` のたびに実行中のジョブが SIGKILL される。
+自前の compose を持っている場合は、停止の猶予を確認する。ジョブの待ち時間を伸ばす（長いエンコードを守る）なら、猶予も対で伸ばす。足りないと停止のたびに、実行中のジョブが SIGKILL される。
 
-ingest は JobRescuer が回収する。encode は args に保存された締切後に JobRescuer が同じ job を再試行し、実尺が不明な場合と締切のない旧 args は 12 時間を使う。cm_detect は次の `cm_detect_reconcile` が lock の解放を確認して代替ジョブへ置き換える。その他のジョブは JobRescuer が回収する。リポジトリの `docker-compose.yml` には 30 秒を書いてある（[docs/operations.md](../operations.md) §5「Deployment 併用時」の足し算）。
+確認するのは `docker-compose.yml` の `stop_grace_period` である。`docker compose down` / `stop` のたびに、猶予が足りないと実行中のジョブが落ちる。
+
+rokuban は SIGTERM を受けると、実行中のジョブを `--soft-stop-timeout`（既定 5 秒）まで待ってから畳む。Docker の既定の猶予は 10 秒なので、既定のままなら収まる。リポジトリの `docker-compose.yml` には 30 秒を書いてある（[docs/operations.md](../operations.md) §5「Deployment 併用時」の足し算）。
+
+ジョブごとの回収は次の通り。
+
+- ingest は回収処理が回収する
+- encode は、args に保存された締切後に回収処理が同じ job を再試行する。実尺が不明な場合と、締切のない旧 args は 12 時間を使う
+- cm_detect は、次の `cm_detect_reconcile` が lock の解放を確認して代替ジョブへ置き換える
+- その他のジョブは回収処理が回収する
+
+<details><summary>根拠</summary>
+
+- 回収処理: `JobRescuer`
+
+</details>
+
+### 起動直後の同期
 
 正常なら起動から 30 秒ほどで EPG の全量同期が 1 回走る。
 
@@ -36,9 +71,9 @@ ingest は JobRescuer が回収する。encode は args に保存された締切
 INFO epg sync complete services_projected=19 programs_fetched=7139 programs_projected=2680 ...
 ```
 
-`programs_projected` が 0 のままなら mirakc 側の EPG がまだ空か、`update-schedules` ジョブが一度も走っていない（既定は 1 日 2 回）。
+`programs_projected` が 0 のままなら、mirakc 側の EPG がまだ空か、`update-schedules` ジョブが一度も走っていない（既定は 1 日 2 回）。
 
-同じ頃にチューナーの射影も 1 回走る。容量超過の判定はこの射影だけを読むので、これが出ていない間は**超過が一切報告されない**（[troubleshooting.md](troubleshooting.md) の「`/api/capacity/overages` が常に空」）。
+同じ頃にチューナーの射影も 1 回走る。容量超過の判定はこの射影だけを読むので、これが出ていない間は超過が一切報告されない（[troubleshooting.md](troubleshooting.md) の「`/api/capacity/overages` が常に空」）。
 
 ```
 INFO tuner sync complete site=default tuners_fetched=4 tuners_projected=4 stale=0 capacity_overages=0
@@ -46,18 +81,20 @@ INFO tuner sync complete site=default tuners_fetched=4 tuners_projected=4 stale=
 
 ## 設定の 2 段構え
 
-compose 運用の設定は 2 箇所に分かれる。
+compose 運用の設定は 2 箇所に分かれる。環境ごとに変わる値は環境変数のファイルに置き、恒久的な設定は Rokuban 本体の設定ファイルに直接書く。キーの網羅は config.example.yml が権威である。
 
-1. **`.env`** — `docker-compose.yml` が読む環境変数。`MIRAKC_URL` と `POSTGRES_PASSWORD` は必須（無いと compose が起動を拒否する）。他は任意で、コメントアウトされたキー（ポート・イメージ・ログレベル等）は既定値を持つ
-2. **`config.compose.yml`** — compose がコンテナ内の `/config.yml` に read-only マウントする Rokuban 本体の設定。`${VAR:-default}` の形で `.env` の値を参照しているキー（`ingest.concurrency` / `epg.sync_interval` / `log.*` 等）は `.env` から変えられる
+キーの網羅は [config.example.yml](../../config.example.yml)、各値をどう決めるかの判断材料は [docs/configuration.md](../configuration.md) を見る。環境ごとに変わる値は `.env` に、恒久的な設定は `config.compose.yml` に書く。
 
-**`media_dir` や `ruler.max_deletes_per_pass` のような恒久的な設定は `config.compose.yml` に書く**。`.env` に口があるのは環境ごとに変わる値だけで、それ以外のキーは `config.compose.yml` を直接編集する（書かれていないキーは既定値で動くので、変えたいキーを書き足す）。キーの網羅は [config.example.yml](../../config.example.yml) が権威、各値をどう決めるかの判断材料は [docs/configuration.md](../configuration.md)。
+1. `.env` は、`docker-compose.yml` が読む環境変数である。`MIRAKC_URL` と `POSTGRES_PASSWORD` は必須で、無いと compose が起動を拒否する。他は任意で、コメントアウトされたキー（ポート・イメージ・ログレベル等）は既定値を持つ
+2. `config.compose.yml` は、compose がコンテナ内の `/config.yml` に read-only マウントする Rokuban 本体の設定である。`${VAR:-default}` の形で `.env` の値を参照しているキー（`ingest.concurrency` / `epg.sync_interval` / `log.*` 等）は、`.env` から変えられる
+
+`media_dir` や `ruler.max_deletes_per_pass` のような恒久的な設定は `config.compose.yml` に書く。`.env` に口があるのは環境ごとに変わる値だけで、それ以外のキーは `config.compose.yml` を直接編集する。書かれていないキーは既定値で動くので、変えたいキーを書き足す。
 
 ## 録画の保存先
 
-既定では named volume `media` がコンテナの `/mnt/media`（`storage.media_dir`）にマウントされる。つまり**録画ファイルは Docker が管理する volume 領域に置かれる**。
+既定では、録画ファイルは Docker が管理する named volume に置かれる。実ディスクや NAS に置くには、bind mount に差し替え、ホスト側のディレクトリを uid/gid 65534 で書き込めるようにしておく。
 
-実ディスクや NAS に置くには、`docker-compose.yml` の `rokuban` サービスの volume 行を bind mount に差し替える。
+named volume `media` は、コンテナの `/mnt/media`（`storage.media_dir`）にマウントされる。bind mount にするには、`docker-compose.yml` の `rokuban` サービスの volume 行を差し替える。
 
 ```yaml
     volumes:
@@ -66,36 +103,55 @@ compose 運用の設定は 2 箇所に分かれる。
       - /mnt/nas/rokuban-media:/mnt/media
 ```
 
-コンテナ内のパス（`/mnt/media`）を変えないかぎり `config.compose.yml` の `storage.media_dir` はそのままでよい。
+コンテナ内のパス（`/mnt/media`）を変えないかぎり、`config.compose.yml` の `storage.media_dir` はそのままでよい。
 
-**bind mount には Dockerfile 側の所有権修正（`/mnt/media` を nobody 所有で焼き込む）が効かない**。named volume の copy-up はボリューム管理領域だけの挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるため。ホスト側のディレクトリを事前に uid/gid `65534`（`nobody:nogroup`、rokuban コンテナの実行ユーザー）で書き込めるようにしておくこと。
+### bind mount の所有権
+
+bind mount には Dockerfile 側の所有権修正が効かないので、ホスト側のディレクトリを事前に uid/gid 65534 で書き込めるようにしておく。
+
+効かないのは、named volume の copy-up がボリューム管理領域だけの挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるからである。Dockerfile は `/mnt/media` を nobody 所有で焼き込んでいる。uid/gid `65534`（`nobody:nogroup`）は rokuban コンテナの実行ユーザーである。
 
 ```sh
 sudo mkdir -p /mnt/nas/rokuban-media
 sudo chown 65534:65534 /mnt/nas/rokuban-media
 ```
 
-chown できない共有ストレージ（一部の NAS 等）では、代わりに compose 側で `rokuban` サービスに `user:` を指定してホスト側の既存 uid/gid に合わせる。**この回避策は未検証**（計測環境が Docker Desktop for Mac で、bind mount の所有権がホストと一致しないため測れていない）。
+chown できない共有ストレージ（一部の NAS 等）では、代わりに compose 側で `rokuban` サービスに `user:` を指定して、ホスト側の既存 uid/gid に合わせる。この回避策は未検証である。計測環境が Docker Desktop for Mac で、bind mount の所有権がホストと一致しないため測れていない。
 
-**`user:` を使うのは bind mount のときだけにする。** named volume では copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にすると逆に書けなくなる。実測: 空の named volume を `--user 1000:1000` でマウントすると、マウント点は `nobody:nogroup` のままで `touch` が `Permission denied` になった。
+`user:` を使うのは bind mount のときだけにする。named volume では copy-up が `nobody` 所有を焼くので、`user:` を 65534 以外にすると書けなくなる。実測では、空の named volume を `--user 1000:1000` でマウントすると、マウント点は `nobody:nogroup` のままで `touch` が `Permission denied` になった。
 
 ## 定期ジョブの周期とヒント
 
-ルールを作ってから録画が始まるまでの待ち時間はほぼこの表で決まる。**定期パスが真実**で、ヒントは投入を早めるだけ（落としても次の定期パスが拾う。不変条件 5）。
+定期パスが真実で、ヒントは投入を早めるだけである。落としても次の定期パスが拾う。ルールを作ってから録画が始まるまでの待ちは、EPG への取り込み・予約の導出・mirakc への schedule 作成の 3 段で、放送直前の番組は EPG の射影に無いことがある。
+
+この原則は不変条件 5 に基づく。待ち時間は、次の表の周期でほぼ決まる。
 
 | ジョブ | 既定周期 | 設定キー | 前倒しするヒント |
 |---|---|---|---|
 | `epg_sync` | 10 分 | `epg.sync_interval` | なし |
-| `tuner_sync` | 10 分 | **なし**（コード固定。運用者が触る理由がないため） | なし |
-| `ruler_pass` | 10 分 | なし | ルールの作成 / 更新 / 削除（api が**同一トランザクションで**投入）・`epg_sync` の完了 |
-| `reconcile_pass` | 30 秒 | なし | 予約の作成 / 取消（同一トランザクション）・`ruler_pass` の完了 |
-| `record_sweep` | 5 分 | なし | なし（SSE 再接続を契機にする案は見送った） |
+| `tuner_sync` | 10 分 | なし | なし |
+| `ruler_pass` | 10 分 | なし | ルールの作成 / 更新 / 削除、`epg_sync` の完了 |
+| `reconcile_pass` | 30 秒 | なし | 予約の作成 / 取消、`ruler_pass` の完了 |
+| `record_sweep` | 5 分 | なし | なし |
 
-- 5 つとも `RunOnStart` なので**プロセス起動直後に 1 回走る**
-- ヒントは `UniqueOpts{ByArgs, ByState}` で定期実行に合流する。ルールや予約を連続で編集してもパスは 1 回で足りる
+- 5 つとも起動直後に 1 回走る設定になっている
+- ヒントは、引数と状態で一意にして定期実行に合流する。ルールや予約を連続で編集してもパスは 1 回で足りる
 - `worker.periodic_jobs: false`（k8s 構成）ではどのジョブも自動投入されない。CronJob から `rokuban enqueue` で投入する
 
-手で即時実行できる。ジョブ名はハイフン区切り。site 束縛ジョブは多サイトでは `--site` が必須で、site 非依存ジョブには `--site` を付けない。どちらに属するかは `rokuban enqueue --help` が列挙する（[operations.md](../operations.md) §ジョブ化されたループの監視）。
+`tuner_sync` はコード固定で設定キーを持たない。運用者が触る理由がないからである。ルールの編集は api が同一トランザクションでヒントを投入し、予約の作成 / 取消も同一トランザクションで投入する。`record_sweep` は SSE の再接続を契機にする案を見送ったので、前倒しのヒントを持たない。
+
+<details><summary>根拠</summary>
+
+- 起動直後に 1 回走る設定: `RunOnStart`
+- 定期実行に合流させる一意化: `UniqueOpts{ByArgs, ByState}`
+
+</details>
+
+### 手での即時実行
+
+ジョブは手で即時実行できる。ジョブ名はハイフン区切りで、site 束縛ジョブには多サイトでは site の指定が要る。
+
+site 束縛ジョブは多サイトでは `--site` が必須で、site 非依存ジョブには `--site` を付けない。どちらに属するかは `rokuban enqueue --help` が列挙する（[operations.md](../operations.md) §ジョブ化されたループの監視）。
 
 ```sh
 docker compose exec rokuban rokuban enqueue ruler-pass --config /config.yml
@@ -110,8 +166,23 @@ docker compose exec rokuban rokuban enqueue storage-sync --config /config.yml
 # inserted job "storage-sync" (id=44)
 ```
 
-**ルールを作ってから録画が始まるまでに待つものは 3 段ある。**
+### 録画開始までに待つもの
 
-1. **番組が EPG プロジェクションに入る** — `epg_sync`（最大 10 分）。その手前に mirakc の `update-schedules`（既定 1 日 2 回）があるので、**放送直前の番組はそもそも射影に無い**ことがある。ruler は射影しか見ない（不変条件 1）
-2. **ruler が `reservations.base` を導出する** — ルール書き込みと同一トランザクションでヒントが入るので通常は即座。ヒントが落ちれば最大 10 分
-3. **reconciler が mirakc に schedule を作る** — `ruler_pass` の完了がヒントなので続けて走る。落ちれば最大 30 秒
+ルールを作ってから録画が始まるまでに待つものは 3 段ある。番組が EPG の射影に入ること、予約の導出、mirakc への schedule 作成である。
+
+```mermaid
+flowchart LR
+  A["ルールを作る"] --> B["1 番組が EPG の射影に入る<br>epg_sync、最大 10 分"]
+  B --> C["2 予約を導出する<br>通常は即座、ヒントが落ちれば最大 10 分"]
+  C --> D["3 mirakc に schedule を作る<br>続けて走る、落ちれば最大 30 秒"]
+```
+
+1. 番組が EPG の射影に入る。`epg_sync`（最大 10 分）が担う。その手前に mirakc の `update-schedules`（既定 1 日 2 回）があるので、放送直前の番組はそもそも射影に無いことがある。ruler は射影しか見ない（不変条件 1）
+2. ruler が予約の基底を導出する。ルール書き込みと同一トランザクションでヒントが入るので通常は即座である。ヒントが落ちれば最大 10 分かかる
+3. reconciler が mirakc に schedule を作る。`ruler_pass` の完了がヒントなので続けて走る。落ちれば最大 30 秒かかる
+
+<details><summary>根拠</summary>
+
+- 2 段目の導出先: `reservations.base`
+
+</details>
