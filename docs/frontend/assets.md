@@ -2,25 +2,69 @@
 
 # アセット配信 --- go:embed / S3+CDN 両対応
 
-同一の `dist/` を (a) go:embed での同梱と (b) S3 バケットへの同期の両方に使う。フロントのコードとビルドは両モードで完全に同一である。
+同じビルド成果物を、バイナリへの同梱と S3 バケットへの同期の両方に使う。フロントのコードとビルドは両モードで完全に同一である。
+
+<details><summary>根拠</summary>
+
+- 同じ成果物: `dist/`
+
+</details>
 
 ## 両立のための規約
 
-| 規約 | 詳細 |
+両モードで同じ挙動にするために、SPA フォールバック・API パス・SSE の振り分け・キャッシュ・後方互換の 5 点を揃える。各規約の要点は次の表の通り。
+
+| 規約 | 要点 |
 |---|---|
-| SPA フォールバック | 両モードで用意。Go 側は catch-all、S3 側は CloudFront Function rewrite 等 |
-| API パス | 常に相対パス `/api/*` を叩く。S3 配信時は CDN のパスベースルーティングで `/api/*` をバックエンド origin へ振り分ける（CORS 不要、実行時コンフィグ注入不要） |
-| SSE の振り分け | `/api/events` だけは `/api/*` の中でも例外で、**api（scale-to-zero）ではなく notifier（常駐）へ**ルーティングする。CDN のパスルーティングで最長一致的に `/api/events` を先に notifier origin へ、残りの `/api/*` を api origin へ振り分ける。タイムアウト・キャッシュ無効化の設定も必要。CDN を迂回して notifier に直接繋ぐ選択肢も残す |
-| キャッシュ規約 | ハッシュ付きアセット（`assets/*`）は `Cache-Control: immutable`、**それ以外はすべて no-cache**。go:embed モードでも同じヘッダを付けて挙動を揃える |
-| 後方互換 | UI と API のデプロイタイミングはずれ得るため、**運用開始後は** API の後方互換を保つ（運用開始前は保たない。[api/rest.md](../api/rest.md) §契約の保護）。破壊的変更は OpenAPI 生成クライアントの差分として CI で検知 |
+| SPA フォールバック | 両モードで用意 |
+| API パス | 常に相対パス `/api/*` |
+| SSE の振り分け | notifier へ直送 |
+| キャッシュ規約 | 内容ハッシュ付きだけ immutable |
+| 後方互換 | 運用開始後は API を保つ |
+
+### SPA フォールバックと API パス
+
+SPA フォールバックは両モードで用意し、API は常に相対パスで叩く。S3 配信時は CDN のパスルーティングで API をバックエンド origin へ振り分けるので、CORS も実行時のコンフィグ注入も要らない。
+
+SPA フォールバックは Go 側が catch-all、S3 側が CloudFront Function の rewrite などで用意する。API のパスは `/api/*` で、S3 配信時にその全体をバックエンド origin へ振り分ける。
+
+### SSE の振り分け
+
+SSE だけは、api（scale-to-zero）には向けず、常駐する notifier へルーティングする。CDN のパスルーティングで SSE のパスを先に notifier origin へ、残りの API を api origin へ振り分ける。
+
+API のパスの中で例外になるのは `/api/events` だけで、`/api/*` との最長一致で先に振り分ける。タイムアウトとキャッシュ無効化の設定も要る。CDN を迂回して notifier に直接繋ぐ選択肢も残す。
+
+### キャッシュ規約
+
+内容ハッシュ付きのアセットだけに immutable を付け、**それ以外はすべて no-cache にする。** go:embed モードでも同じヘッダを付けて挙動を揃える。
+
+ヘッダは `Cache-Control` である。
+
+### 後方互換
+
+UI と API のデプロイのタイミングはずれうるので、運用開始後は API の後方互換を保つ。運用開始前は保たない（[api/rest.md](../api/rest.md) §契約の保護）。破壊的変更は、OpenAPI 生成クライアントの差分として CI で検知する。
+
+<details><summary>根拠</summary>
+
+- ハッシュ付きアセットの置き場: `assets/*`
+- immutable を付けるヘッダ: `Cache-Control: immutable`
+- SSE の振り分け先: `/api/events`
+
+</details>
 
 ## ハッシュを持たないファイルに no-cache を付け忘れない
 
-`index.html` だけでなく `public/` 由来のファイル（`favicon.svg` / `favicon.ico` / `apple-touch-icon.png`）もハッシュを持たない。内容が変わってもパスが変わらないので、キャッシュ指定を落とすと差し替えが伝わらない。
+ハッシュ付きアセット以外は、一律 no-cache にする。内容ハッシュを持たないのは、エントリの HTML と、静的ファイル置き場由来のファビコン類である。内容が変わってもパスが変わらないので、キャッシュ指定を落とすと差し替えが伝わらない。
 
-埋め込んだ FS の `ModTime` はゼロ値なので `http.ServeContent` は `Last-Modified` も `ETag` も出せない。`Cache-Control` がなければ検証子もないので、ブラウザのヒューリスティックキャッシュに委ねることになる。**ファビコンを差し替えたのに古いものが出続ける**、という形で効く。
+埋め込んだ FS の更新時刻はゼロ値なので、標準の配信関数は `Last-Modified` も `ETag` も出せない。`Cache-Control` がなければ検証子もなく、ブラウザのヒューリスティックキャッシュに委ねることになる。「ファビコンを差し替えたのに古いものが出続ける」という形で効く。
 
-そのため `assets/*` 以外は一律 no-cache にする。
+<details><summary>根拠</summary>
+
+- ハッシュを持たないファイル: `index.html`、`public/` 由来の `favicon.svg` / `favicon.ico` / `apple-touch-icon.png`
+- 更新時刻がゼロ値で検証子が出せない: 埋め込み FS の `ModTime`、`http.ServeContent`
+- ハッシュ付きアセットの置き場: `assets/*`
+
+</details>
 
 ## 配信経路の整理
 

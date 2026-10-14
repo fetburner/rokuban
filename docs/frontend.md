@@ -1,10 +1,10 @@
 # フロントエンド（索引）
 
-Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し、同じ `dist/` を S3+CDN 配信にも使う。
+Vite + React + TypeScript の SPA である。go:embed で単一バイナリに同梱し、同じビルド成果物を S3+CDN 配信にも使う。本文は分割してあり、この索引は節から該当ファイルを引くためにある。
 
 | 内容 | ファイル |
 |---|---|
-| デザイン言語（トークン / 状態色 / 原則）。**UI を触るなら最初に読む** | [frontend/design.md](frontend/design.md) |
+| デザイン言語（トークン / 状態色 / 原則）。UI を触るなら最初に読む | [frontend/design.md](frontend/design.md) |
 | 前提条件 / 採用スタック / 技術選定の決め手 | [frontend/stack.md](frontend/stack.md) |
 | 共通シェル: ナビゲーション / サイトの扱い（多サイト時に何が見えるか） / 生成クライアントとエラー運搬 / SSE 通知 / `<html lang>` / PWA | [frontend/shell.md](frontend/shell.md) |
 | ホーム（`/`）: 集約するセクション・窓と上限・空セクションの扱い | [frontend/home.md](frontend/home.md) |
@@ -17,9 +17,9 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | アセット配信（go:embed / S3+CDN・キャッシュ規約） | [frontend/assets.md](frontend/assets.md) |
 | ファビコン・走査線 | [frontend/branding.md](frontend/branding.md) |
 
-**本文は `docs/frontend/` に分割してある。** コードコメントや他 doc にある「docs/frontend.md「節名」」形式の参照は、下の表で該当ファイルを引ける。
+本文の分割先は上の表の通り。コードコメントや他 doc にある「docs/frontend.md「節名」」形式の参照は、下の表で該当ファイルを引ける。
 
-外部（コード・他 doc）から参照されている節名の対応:
+外部（コード・他 doc）から参照されている節名の対応は次の通り。
 
 | 節名 | ファイル |
 |---|---|
@@ -41,14 +41,21 @@ Vite + React + TypeScript の SPA。go:embed で単一バイナリに同梱し�
 | §実機確認について | [frontend/live/verification.md](frontend/live/verification.md) |
 | アセット配信 | [frontend/assets.md](frontend/assets.md) |
 
-読む順の目安:
+読む順の目安は次の通り。
 
-- **色・余白・状態表示を触る（= UI を触るなら常に）** → [frontend/design.md](frontend/design.md)
-- **ホームを触る** → [frontend/home.md](frontend/home.md)
-- **番組表・番組リストを触る** → [frontend/programs.md](frontend/programs.md)（時間窓の継ぎ足しは [frontend/scroll.md](frontend/scroll.md)）
-- **録画一覧を触る** → [frontend/recordings.md](frontend/recordings.md)
-- **ライブ視聴を触る** → [frontend/live.md](frontend/live.md)（資源同定は [api.md](api.md) §ライブ視聴の HLS が権威）
-- **配信・キャッシュ・CDN を触る** → [frontend/assets.md](frontend/assets.md)
-- **新しい画面・共通 UI を足す** → [frontend/shell.md](frontend/shell.md) と [frontend/stack.md](frontend/stack.md)
+- 色・余白・状態表示を触る（= UI を触るなら常に） → [frontend/design.md](frontend/design.md)
+- ホームを触る → [frontend/home.md](frontend/home.md)
+- 番組表・番組リストを触る → [frontend/programs.md](frontend/programs.md)（時間窓の継ぎ足しは [frontend/scroll.md](frontend/scroll.md)）
+- 録画一覧を触る → [frontend/recordings.md](frontend/recordings.md)
+- ライブ視聴を触る → [frontend/live.md](frontend/live.md)（資源同定は [api.md](api.md) §ライブ視聴の HLS が権威）
+- 配信・キャッシュ・CDN を触る → [frontend/assets.md](frontend/assets.md)
+- 新しい画面・共通 UI を足す → [frontend/shell.md](frontend/shell.md) と [frontend/stack.md](frontend/stack.md)
 
 > 関連ドキュメント: [overview.md](overview.md)（全体アーキテクチャ）/ [api.md](api.md)（REST・SSE・メディア配信）/ [data.md](data.md)（データ層。SSE = invalidate の対称性）/ [runbook.md](runbook.md)（実機確認の手順）
+
+<details><summary>根拠</summary>
+
+- 本文の置き場: `docs/frontend/`
+- 成果物の置き場: `dist/`
+
+</details>

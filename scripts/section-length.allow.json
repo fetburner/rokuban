@@ -1,9 +1,5 @@
 {
   "CLAUDE.md": 1,
-  "docs/frontend/home.md": 1,
-  "docs/frontend/programs.md": 1,
-  "docs/frontend/search.md": 2,
-  "docs/frontend/shell.md": 1,
   "docs/operations/k8s.md": 2,
   "docs/operations/monitoring.md": 2,
   "docs/runbook/live.md": 2,
