@@ -3,8 +3,6 @@
   "docs/api/media/live-hls.md": 1,
   "docs/api/media/playback.md": 2,
   "docs/api/media/recording.md": 1,
-  "docs/configuration.md": 3,
-  "docs/data/series.md": 1,
   "docs/frontend/home.md": 1,
   "docs/frontend/live/controls.md": 1,
   "docs/frontend/live/overview.md": 1,
@@ -22,6 +20,5 @@
   "docs/operations/k8s.md": 2,
   "docs/operations/monitoring.md": 2,
   "docs/runbook/live.md": 2,
-  "docs/schema/principles.md": 1,
   "web/e2e/checks/design.md": 1
 }

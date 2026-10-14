@@ -2,9 +2,11 @@
 
 ## 8. jsonb ドキュメント形式
 
+DB に jsonb で持つドキュメントの形を、予約オプション・品質イベント・失敗理由の順に示す。キーは camelCase にそろえる。
+
 ### 予約オプション（reservations.base / program_overrides.overrides、同形）
 
-キーは camelCase（Go の JSON 規約と揃える）。overrides は「ユーザーが上書きしたキーのみ」を持つ疎なドキュメントで、`program_intents` ではなく `program_overrides` 表にある（§3.5）。
+予約オプションは camelCase のキーを持つ JSON で、検証はアプリ層が行い、DB は形を強制しない。上書き側はユーザーが上書きしたキーだけを持つ疎なドキュメントで、予約の意図の表とは別の上書きの表にある（§3.5）。
 
 ```jsonc
 {
@@ -17,13 +19,24 @@
 }
 ```
 
-- ruler が base を供給しない manual 予約は base = NULL で、全フィールドが `program_overrides.overrides` に入る
-- `skip` は overrides のキーではなく `program_intents.action` の列（§3.5）
-- `filenameTemplate` と `contentPath` は両方指定されうるが、`contentPath`（展開済みのフルパス）が優先される。`filenameTemplate` はルール由来（ruler が base に載せる）かユーザーの明示的な上書きのどちらか
-- 検証はアプリ層（Go の struct へのマッピング）で行う。DB は形を強制しない
-- **命名規則の境界**: jsonb 内は camelCase（Go/JSON 規約）、SQL カラムは snake_case。recordings へのスナップショット時にアプリ層が変換する（例: jsonb の `"keepOriginal": "untilEncoded"` → SQL の `keep_original = 'until_encoded'`）
+ruler が基底を供給しない manual 予約は、基底が NULL で、全フィールドが上書き側に入る。スキップは意図の表の行動列に持ち、上書きのキーには入れない（§3.5）。
+
+`filenameTemplate` と `contentPath` は両方指定されうるが、`contentPath`（展開済みのフルパス）が優先される。`filenameTemplate` はルール由来（ruler が基底に載せる）か、ユーザーの明示的な上書きのどちらかである。検証は Go の struct へのマッピングで行う。
+
+jsonb 内は camelCase（Go と JSON の規約）、SQL のカラムは snake_case で、命名規則の境界になる。録画履歴へスナップショットするとき、アプリ層が変換する。例は jsonb の `"keepOriginal": "untilEncoded"` が、SQL の `keep_original = 'until_encoded'` になる変換である。
+
+<details><summary>根拠</summary>
+
+- 意図の表と上書きの表: `program_intents`、`program_overrides`
+- 上書きのキーを持つ列: `program_overrides.overrides`
+- スキップの置き場: `program_intents.action`、上書きのキー `skip`
+- 基底が NULL になる条件: `base`
+
+</details>
 
 ### quality_events（recordings、append-only 配列）
+
+品質イベントは、録画の失敗と record 破損の履歴を、追記だけの配列で持つ。理由は mirakc のペイロードをそのまま格納する。
 
 ```jsonc
 [
@@ -37,5 +50,11 @@
 
 ### failed_reason（schedule_sync / record_sync）
 
-mirakc の `FailedReason`（discriminated union）をそのまま格納。
+失敗理由は、mirakc の失敗理由（discriminated union）をそのまま格納する。
+
+<details><summary>根拠</summary>
+
+- mirakc の失敗理由の型: `FailedReason`
+
+</details>
 

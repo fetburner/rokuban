@@ -1,0 +1,13 @@
+{
+  "file": "docs/schema/jsonb.md",
+  "questions": [
+    {
+      "heading": "予約オプション（reservations.base / program_overrides.overrides、同形）",
+      "question": "予約オプションの JSON はどんな形か。上書き側は全キーを持つか。検証はどこでするか。",
+      "points": [
+        "キーは camelCase で、上書き側はユーザーが上書きしたキーだけを持つ疎な形",
+        "検証はアプリ層で行い、DB は形を強制しない"
+      ]
+    }
+  ]
+}

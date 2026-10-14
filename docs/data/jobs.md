@@ -2,48 +2,143 @@
 
 ## 1. 方針: PostgreSQL 一本
 
+データベースは PostgreSQL 一本にする。決め手は、コミットに連動する通知の仕組みが MySQL には無いことと、その上に載る既製のジョブキューライブラリが MySQL には育っていないことである。
+
 ### MySQL との比較
+
+決め手は、コミットに連動する通知の仕組みが MySQL には無いことと、その上に載る既製のジョブキューライブラリの層が MySQL には育っていないことである。調停の仕組みだけなら MySQL でも成立する。
 
 | 機能 | PostgreSQL | MySQL 8.0 |
 |---|---|---|
 | SKIP LOCKED | あり | あり（同等） |
 | アドバイザリロック | `pg_advisory_lock` | `GET_LOCK()`（代用可能） |
-| コミット連動の pub/sub | **LISTEN/NOTIFY** | **なし**（ポーリングか外部ブローカー） |
+| コミット連動の pub/sub | LISTEN/NOTIFY | なし（ポーリングか外部ブローカー） |
 | ジョブキューライブラリ | River / pg-boss / Oban / Solid Queue 等が成熟 | この層がほぼ空白 |
 | 日本語検索 | pg_trgm / PGroonga | InnoDB FTS + ngram（見劣り） |
 | JSON | JSONB + GIN | JSON 型 + 生成列（やや不便） |
 
-調停プリミティブ（SKIP LOCKED / アドバイザリロック相当）だけなら MySQL でも成立する。決定打は **LISTEN/NOTIFY の不在**（ブローカーレス設計の根幹。MySQL では変更伝搬がポーリングしかなく、反応性を上げるほど DB を無駄に叩く）と、**その上に載る既製ライブラリの層が MySQL には育っていない**こと。
-
-## 2. ジョブキュー: River（Postgres バックエンド）
-
-エンコード・取り込み・サムネイル・掃除はすべてジョブ。[River](https://github.com/riverqueue/river) を採用する。
-
-- ジョブ引数の型は `internal/jobs` に置き、投入側と実行側は `internal/jobq` の `Kind` / `Spec` 契約を共有する。
-- API と watcher は `EnqueueTx` でドメインの書き込みと同じトランザクションへ投入する。CLI は `Enqueue` で単発投入し、合流の有無を `Result.Coalesced` から表示する。
-- River クライアントと `InsertOpts` への変換は `internal/jobq/riveradapter` に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するため River adapter を通し、他の adapter は中立な `jobq.Registry` を使う。
-- `.golangci.yml` の depguard は `internal/` の本番コードによる River adapter の直接 import を禁止する。例外は worker の登録（`internal/worker/worker.go`）とテスト DB 作成（`internal/testutil`）だけである。`cmd/` は構成の根として adapter を組み立てるので対象外にする。
-- テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。
-
-契約は River と asynq の共通部分に絞る。queue・timeout・retry・enqueue・work・runner lifecycle だけを扱い、排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
-
-- ワーカーは `FOR UPDATE SKIP LOCKED` で 1 件確保。複数ワーカーが同時に来ても行ロックで排他され、同一ジョブの二重実行はトランザクション分離の性質として起きない
-- `Spec.Timeout` は必須の有限値で、締切で Work の context は `DeadlineExceeded` になる。実行中にプロセスが死んだ場合も、締切 + adapter の復旧猶予以内に再配送対象となる。古い Work が止まったことや同じ job ID であることは保証しない。`Spec.MaxAttempts` は通常エラー・締切超過・プロセス死の失敗回数で止める保険で、0 は adapter の既定、Snooze は回数を消費しない
-- at-least-once なのでジョブは冪等に書く（出力は一時パスに書いて完了時に公開、DB 登録は `ON CONFLICT` で吸収）
-- 常駐シングルトンロール（watcher）は `pg_advisory_lock` によるリーダー選出。セッション断で自動解放されるのでフェイルオーバーも自然に付く。k8s の Lease API に依存しないため monolithic mode でも同じコードが動く
-  - **watcher のシングルトン性は「正しさ」の要件ではない**。record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても `recordings` は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3
-- **ルール評価（ruler）と reconciler はシングルトンではなくジョブ**。定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じである。現行 River runtime は `UniqueOpts` で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は現在の River runtime にはない。未解決: River 以外の adapter には ruler の並走（古い評価結果による上書き）を止める機構が無い。
-- **現行 River runtime では `UniqueOpts` が通常運用の重複抑止にも使われる**。worker の `MaxWorkers: 1` はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。River の `UniqueOpts` も行の重複を抑える機能であり、rescue 後に旧 Work が止まらなければ 2 実行が並走する
-  - 並走すると壊れるもの（コード読解による。並走を起こしての確認はしていない）
-    - ruler: パスの読み（`runPassForSite` の前半）と書き（後半のトランザクション）が別トランザクションなので、古いルール集合で評価したパスが後からコミットすると新しいパスの結果を上書きする。`label_rule_reconcile` が advisory xact lock で止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証
-    - reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う
-- **共通契約の `Coalesce` と `Priority` はヒントである**。`Coalesce` は「合流してよい」という意思表示に限り、1 行にすることも並走を止めることも保証しない。`Priority` も順序を保証しない。正しさはこれらに依存させない。現行 River 投影では `Coalesce` を River の `UniqueOpts` に写し、重複 enqueue を減らす
-- エンコード待機列（`internal/api/encode_queue.go`）はドメイン表から導出する。`ListMissingEncodeProfiles` と同じ述語の「不足プロファイル」を、実行中の試行行の有無で `running` と `queued` に分ける。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。`GET /api/recordings` の `encodeState` 絞り込みも同じ行から録画 ID を取る。River の `JobList` は使わない。
-- worker が encode 中に死ぬと、次の試行が始まるまで試行行は `running` のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は `running` に数える。
-- desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである
+調停プリミティブ（SKIP LOCKED / アドバイザリロック相当）だけなら、MySQL でも成立する。**決定打は LISTEN/NOTIFY の不在である。** ブローカーレス設計の根幹であり、MySQL では変更伝搬がポーリングしかなく、反応性を上げるほど DB を無駄に叩く。もう 1 つの決定打は、その上に載る既製ライブラリの層が MySQL には育っていないことである。
 
 <details><summary>根拠</summary>
 
+- 比較表のアドバイザリロック: `pg_advisory_lock` と `GET_LOCK()`
+
+</details>
+
+## 2. ジョブキュー: River（Postgres バックエンド）
+
+エンコード・取り込み・サムネイル・掃除は、すべて [River](https://github.com/riverqueue/river) のジョブとして動かす。ジョブは at-least-once で再実行されるので、冪等に書く。常駐シングルトンのロールは watcher だけで、ruler と reconciler はジョブとして動かす。
+
+### 契約と adapter の境界
+
+ジョブ引数の型は共有の置き場に置き、River への依存は adapter に閉じ込める。契約は River と asynq の共通部分に絞り、排他・一覧・定期投入は adapter 固有のまま外に置く。
+
+API と watcher は、ドメインの書き込みと同じトランザクションへジョブを投入する。CLI は単発で投入し、合流の有無を結果から表示する。
+
+River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。他の adapter は中立なレジストリを使う。
+
+import 境界の linter は、本番コードによる River adapter の直接 import を禁止する。例外は worker の登録とテスト DB 作成だけである。構成の根である起動コードは adapter を組み立てるので、対象外にする。テストも River の import を adapter に閉じる。唯一の例外は KEDA の SQL テストで、ScaledJob の状態名を River のスキーマと照合する。
+
+契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle だけである。排他、一覧、job ID / 試行番号、定期投入、`--once`、購読は adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
+
+<details><summary>根拠</summary>
+
+- ジョブ引数の型の置き場: `internal/jobs`
+- 投入側と実行側が共有する契約: `internal/jobq` の `Kind` / `Spec`
+- トランザクション内の投入と CLI の単発投入: `EnqueueTx` / `Enqueue`、合流の表示は `Result.Coalesced`
+- River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
+- 中立なレジストリ: `jobq.Registry`
+- import 境界の判定: `.golangci.yml` の depguard
+- import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
+- 対象外にする起動コード: `cmd/`
+
+</details>
+
+### ジョブの確保と再実行
+
+ワーカーは行ロックでジョブを 1 件ずつ確保し、複数ワーカーが同時に来ても同一ジョブの二重実行はトランザクション分離の性質として起きない。再実行は at-least-once なので、ジョブは冪等に書く。
+
+タイムアウトは必須の有限値で、締切に達すると Work の context は締切超過になる。実行中にプロセスが死んだ場合も、締切と adapter の復旧猶予以内に再配送対象となる。古い Work が止まったことや同じ job ID であることは保証しない。
+
+最大試行回数は、通常エラー・締切超過・プロセス死の失敗回数で止める保険である。0 は adapter の既定を使い、Snooze は回数を消費しない。
+
+at-least-once なので、ジョブは冪等に書く。出力は一時パスに書いて完了時に公開し、DB 登録は競合時に吸収する。
+
+<details><summary>根拠</summary>
+
+- 1 件の確保: `FOR UPDATE SKIP LOCKED`
+- 必須の有限タイムアウト: `Spec.Timeout`、締切超過は `DeadlineExceeded`
+- 失敗回数の保険: `Spec.MaxAttempts`
+- DB 登録の吸収: `ON CONFLICT`
+
+</details>
+
+### 常駐シングルトンとジョブ化
+
+常駐シングルトンのロールは watcher だけで、リーダー選出はアドバイザリロックで行う。ただしそのシングルトン性は接続数の配慮であり、正しさの要件には入らない。ruler と reconciler はシングルトンにせず、ジョブにする。
+
+リーダー選出はセッション断で自動解放されるので、フェイルオーバーも自然に付く。k8s の Lease API に依存しないため、monolithic mode でも同じコードが動く。
+
+**watcher のシングルトン性は正しさの要件ではない。** record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても録画行は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3 を参照。
+
+ruler と reconciler をジョブにするのは、定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じだからである。現行 River runtime は、一意性の指定で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は、現在の River runtime にはない。未解決: River 以外の adapter には、ruler の並走（古い評価結果による上書き）を止める機構が無い。
+
+<details><summary>根拠</summary>
+
+- リーダー選出: `pg_advisory_lock`
+- 一意性の指定: `UniqueOpts`
+
+</details>
+
+#### 重複抑止と並走の限界
+
+現行 River runtime では、一意性の指定が通常運用の重複抑止にも使われる。ただし抑えるのは行の重複だけで、rescue 後に旧 Work が止まらなければ 2 実行が並走する。並走すると古い評価結果による上書きなどが起きうるが、これはコード読解による推定で、並走を起こしての確認はしていない。
+
+worker の最大並列数はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。
+
+並走すると壊れるものは次の通りである。これはコード読解による推定で、並走を起こしての確認はしていない。
+
+1. ruler: パスの前半の読みと後半の書きが別トランザクションなので、古いルール集合で評価したパスが後からコミットすると、新しいパスの結果を上書きする。ラベルルールの reconcile がアドバイザリのトランザクションロックで止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証である。
+2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う。
+
+<details><summary>根拠</summary>
+
+- 重複抑止に使う指定: `UniqueOpts`
+- プロセスごとの並列数: `MaxWorkers: 1`
+- ruler のパスの読みと書き: `runPassForSite`
+- 同じ形で止めているラベルルールの reconcile: `label_rule_reconcile`
+
+</details>
+
+### Coalesce と Priority はヒント
+
+合流と優先度の指定は、ヒントとして扱う。合流してよいという意思表示に限り、1 行にすることも並走を止めることも保証しない。優先度も順序を保証しない。
+
+正しさはこれらに依存させない。現行 River 投影では、合流の指定を River の一意性の指定に写し、重複 enqueue を減らす。
+
+<details><summary>根拠</summary>
+
+- 共通契約のヒント: `Coalesce` と `Priority`
+- 合流の写し先: `UniqueOpts`
+
+</details>
+
+### エンコード待機列
+
+エンコード待機列は、ドメイン表から導出する。River のジョブ一覧は使わない。
+
+不足プロファイルを、実行中の試行行の有無で実行中と待機中に分ける。不足プロファイルの述語は、不足を列挙する関数と同じである。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。録画一覧 API の絞り込み（`GET /api/recordings` の encodeState）も、同じ行から録画 ID を取る。
+
+worker が encode 中に死ぬと、次の試行が始まるまで試行行は実行中のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は実行中に数える。
+
+desired から外れた後も River に残るジョブは、待機列に数えない。ジョブエンジンの状態より、現在の desired と observed の差を「これから作るもの」の根拠にするためである。
+
+<details><summary>根拠</summary>
+
+- 待機列の導出: `internal/api/encode_queue.go`
+- 不足プロファイルの述語: `ListMissingEncodeProfiles`
+- 実行中と待機中の区分: `running` と `queued`
+- 使わない River の API: `JobList`
 - 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`
 - 待機列と `encodeState` 絞り込みの一致: `TestListRecordingsEncodeStateMatchesQueueCounts`
 
@@ -51,115 +146,300 @@
 
 ### 定期実行の契機はデプロイ形態に委ねる
 
-River の `PeriodicJobs` は**リーダーに選出されたクライアントだけが投入する**。k8s の worker は KEDA で 0〜N に伸縮する短命な client なので、定期投入の担い手に向かず、スケールアップのたびに `RunOnStart` が走るのも望ましくない。1 件消化モード（`--once`）は `periodic_jobs: true` だと起動を拒む。
+定期ジョブの投入は、Docker ではプロセス内の定期投入が担う。k8s の worker は伸縮する短命なクライアントなので、CronJob が投入用のコマンドを叩く。
 
-そこで定期実行の契機をアプリの外に出せるようにする。
+River の `PeriodicJobs` は、リーダーに選出されたクライアントだけが投入する。k8s の worker は KEDA で 0〜N に伸縮する短命な client なので、定期投入の担い手に向かない。スケールアップのたびに `RunOnStart` が走るのも望ましくない。1 件消化モード（`--once`）は、`periodic_jobs: true` だと起動を拒む。
 
 | デプロイ形態 | 定期投入の担い手 |
 |---|---|
 | Docker（monolith） | プロセス内の River `PeriodicJobs`（既定で有効） |
-| k8s | **CronJob が `rokuban enqueue <job>` を叩く**（insert-only クライアントで 1 件投入して即終了） |
+| k8s | CronJob が `rokuban enqueue <job>` を叩く |
 
-`PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする（両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが意図が曖昧になる）。副次的な利点として、k8s では**何がいつ走るかが CronJob の spec に一元化される**（Go のコードと YAML に散らない）。
+k8s の CronJob は、insert-only クライアントで 1 件投入して即終了する。`PeriodicJobs` の登録は設定で切れるようにし、k8s では無効にする。両方有効だと二重投入になる。`UniqueOpts` で合流するので害は小さいが、意図が曖昧になる。副次的な利点として、k8s では何がいつ走るかが CronJob の spec に一元化される。Go のコードと YAML に散らない。
 
 **k8s の JobRescuer / JobScheduler は notifier Deployment の常駐 River client が担う。** client は全 kind を登録する。購読するのは site 非依存の `ruler` queue だけである。Ruler は DB 完結なので中央で実行できる。`worker.periodic_jobs: false` は維持するため、定期ジョブの投入元は引き続き CronJob である。載せ先と queue の判断は [k8s 運用](../operations/k8s.md) §5 にある。
 
 ### River のジョブ一意性の注意
 
-現行の River 投影では `UniqueOpts.ByState` を**必ず明示する**。River の既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含むため、既定のままだと「一度終わった引数のジョブは二度と投入できない」になる。定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している（同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実）。
+一意性を判定する状態は必ず明示する。既定は完了済みと破棄済みを含み、一度終わった引数のジョブを二度と投入できなくする。設定は行ごとに保存されるので、変更したときは古い行の削除が要る。
 
-`unique_states` は**行ごとに保存される** — 一意索引は `river_job_state_in_bitmask(unique_states, state)` を条件に持つ。つまり**古い設定で投入された行は設定を直しても鍵を占有し続ける**。この設定を変更した際は既存の該当ジョブ行を一度削除する必要がある:
+現行の River 投影では `UniqueOpts.ByState` を必ず明示する。既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含む。そのため既定のままだと、定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している。同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実だからである。
+
+#### 状態設定の変更と残骸
+
+状態の設定は行ごとに保存されるので、古い設定で投入された行は、設定を直しても鍵を占有し続ける。変更したときは、既存の該当ジョブ行を一度削除する。
+
+`unique_states` は行ごとに保存される。一意索引は `river_job_state_in_bitmask(unique_states, state)` を条件に持つ。そのため、**古い設定で投入された行は設定を直しても鍵を占有し続ける。** この設定を変更したときは、既存の該当ジョブ行を一度削除する必要がある。例は次の通りである。
 
 ```sql
 DELETE FROM river_job WHERE kind = 'epg_sync' AND state = 'completed';
 ```
 
-River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブでキューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した identity にならない。**キュー名を変える（リネーム・site 修飾の追加）とき、Queue を一意キーに含めていないと旧キューの残骸が新キューへの Insert を黙って塞ぐ**。この結果は `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの残骸が `river_job` に残っている」を参照。
+<details><summary>根拠</summary>
 
-合流の intended identity は **kind + 論理キュー + Args 全体の JSON** とする。River の部分フィールド選択を `river:"unique"` タグで指定すると adapter 固有の identity になるため、タグは使わない。Args 全体の JSON なら、どの adapter でも同じ identity を再現できる。代償として、encode の保存済み締切のように導出値が Args に入ると、締切だけが違う投入も別の identity になる。それは同じ仕事なので、重複として次の形で現れる。
+- 行ごとに保存される設定: `unique_states`
+- 一意索引の条件: `river_job_state_in_bitmask(unique_states, state)`
+- 削除する対象の表: `river_job`
 
-- (i) deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
-- (ii) 運用者が profile の rate を変えるたびに、同じ重複が起きる。
-- (iii) 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
+</details>
+
+#### キュー名の変更
+
+キュー名を変えるときは、キューを一意キーに含めておく。含めていないと、旧キューの残骸が新キューへの投入を気づかないうちに塞ぐ。エラーを返さないので、ログにも出ない。
+
+River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true` の全ジョブでキューを一意キーへ含める。`ByArgs` と `ByQueue` は別軸なので、片方だけでは意図した identity にならない。キュー名を変える（リネーム・site 修飾の追加）ときに Queue を一意キーに含めていないと、旧キューの残骸が新キューへの Insert を塞ぐ。この結果は `UniqueSkippedAsDuplicate` で、エラーを返さないのでログにも出ない。トラブルシュート手順は [runbook/troubleshooting.md](../runbook/troubleshooting.md) 「デプロイ直後、旧キューの残骸が `river_job` に残っている」を参照。
+
+#### 合流の identity
+
+合流の identity は、種別・論理キュー・引数全体の JSON とする。導出値が引数に入ると、導出値だけが違う投入も別の identity になり、重複して実行されうるが、正しさは壊れない。
+
+部分フィールドを選ぶ `river:"unique"` タグは使わない。引数全体の JSON なら、どの adapter でも同じ identity を再現できる。代償として、encode の保存済み締切のように導出値が引数に入ると、締切だけが違う投入も別の identity になる。それは同じ仕事なので、重複として次の形で現れる。
+
+1. deploy 直後は、待ち行列と実行中の encode の全件が 1 回ずつ重複しうる。
+2. 運用者が profile の rate を変えるたびに、同じ重複が起きる。
+3. 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
 
 いずれも正しさは壊れない。
 
+<details><summary>根拠</summary>
+
+- 試行番号を進める処理: `beginEncodeAttempt`
+
+</details>
+
 ### Redis バックエンド（Sidekiq 系）を採用しない理由
 
-1. **dual-write 問題**: 「録画完了を DB に登録」と「エンコードジョブを積む」は常にセットである。だが書き込み先が DB と Redis に分かれると、コミット前 enqueue（ワーカーが未コミットデータを読む race）か、コミット後 enqueue（隙間のクラッシュでジョブ消失）かの二択になる。真面目に解決すると outbox パターン = 結局 DB 上のキューを作ることになる
-2. **ステートフル基盤が増える**: ミニ PC にはコンテナ 1 つ、クラウドにはマネージド Redis が 1 つ増え、バックアップ・監視・障害モードが 2 系統になる
-3. **スループットが要らない**: このシステムの負荷は「1 日数十件、1 件数十分」のジョブ。キューに必要なのはスループットではなく耐久性と可視性（再起動で消えない・SQL で覗ける・ドメイン更新と同一トランザクション）で、これは RDB の得意領域
-4. 傍証: Rails 8 が Solid Queue（DB バックエンド）をデフォルトに変えた。中規模まででは Redis を挟む価値が薄いという業界側の再評価
+DB と Redis に書き込み先が分かれると、コミット前投入では競合、コミット後投入ではジョブ消失が起きる。ステートフル基盤が増え、スループットも要らないので、Redis バックエンド（Sidekiq 系）は採用しない。
 
-なお DB キューの一般的な弱点（数千 jobs/sec で vacuum・ロック競合が苦しい、コネクション数がワーカー数に比例）はこのワークロードでは遠く及ばない。
+1. dual-write 問題: 「録画完了を DB に登録」と「エンコードジョブを積む」は常にセットである。だが書き込み先が DB と Redis に分かれると、コミット前 enqueue（ワーカーが未コミットデータを読む race）か、コミット後 enqueue（隙間のクラッシュでジョブ消失）かの二択になる。真面目に解決すると outbox パターン、つまり結局 DB 上のキューを作ることになる。
+2. ステートフル基盤が増える: ミニ PC にはコンテナ 1 つ、クラウドにはマネージド Redis が 1 つ増え、バックアップ・監視・障害モードが 2 系統になる。
+3. スループットが要らない: このシステムの負荷は「1 日数十件、1 件数十分」のジョブである。キューに必要なのは耐久性と可視性（再起動で消えない・SQL で覗ける・ドメイン更新と同一トランザクション）で、これは RDB の得意領域である。
+
+傍証として、Rails 8 が Solid Queue（DB バックエンド）をデフォルトに変えた。中規模までは Redis を挟む価値が薄いという業界側の再評価である。DB キューの一般的な弱点（数千 jobs/sec で vacuum・ロック競合が苦しい、コネクション数がワーカー数に比例）は、このワークロードでは遠く及ばない。
 
 ## 3. イベント通知: LISTEN/NOTIFY
 
-NOTIFY はコミット時にのみ配送される組み込み pub/sub。各コンポーネントは NOTIFY を「何か変わった」のヒントとして受け、**実データは必ずテーブルから読み直す**（レベルトリガー）。通知の取りこぼしは定期 reconcile で収束するため、配送保証に依存しない。
+NOTIFY は「何か変わった」のヒントとして受け、実データは必ずテーブルから読み直す（レベルトリガー）。通知の取りこぼしは定期 reconcile で収束するので、配送保証には依存しない。例外は、テーブルに載せない揮発のエンコード進捗だけで、完了判定には使わない。
 
-**狭い例外は、テーブルに載せない揮発テレメトリ（エンコード進捗）だけ**。ffmpeg の `out_time` を実入力 duration に対する割合にして、最大 1 回/秒で NOTIFY する。notifier の EventHub が接続中のブラウザへ SSE として渡す。**テーブルへ保存しない**のは、秒単位で変わる復元不要の値を永続化すると再起動後に WAL・dead tuple・vacuum 対象を増やすため。**完了判定には使わない**。NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうるからである。欠落しても真実は `recording_encode_attempts` / `media_assets` の再読で復元できなければならない（不変条件 5）。
+NOTIFY はコミット時にのみ配送される組み込み pub/sub である。各コンポーネントは、これを「何か変わった」のヒントとして受ける。
 
-フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造: durable な状態のイベントは TanStack Query の `invalidateQueries` に徹し、真実は常に REST から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、durable 状態が `running` でなくなれば破棄する。
+### 揮発テレメトリの例外
 
-**ブラウザへの SSE 配送 (`/api/events`) の担い手は notifier ロール**（api ではない）。api ロールは mirakc にもファイルシステムにも依存しない（不変条件 1）。同じ理由で、長寿命接続である LISTEN セッションも持たない --- サーバーレス（scale-to-zero）に載せるためには、そもそも常駐前提の LISTEN を api に置けない。notifier は「Postgres を LISTEN してブラウザへ配り直すだけ」の小さな常駐プロセスとして分離してある。
+エンコード進捗は、テーブルに保存せず、通知で直接ブラウザへ渡す。完了判定には使わない。欠落しても、真実はテーブルの再読で復元できなければならない。
 
-notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `singletonRoles` に含まれない）。各レプリカが独立に LISTEN し、自分に繋がっている SSE クライアントにだけ配る。レプリカ間で配送内容を調停する必要が構造的にない（各クライアントは 1 つのレプリカにしか繋がっておらず、そのレプリカの LISTEN だけが届けば十分）ため、レプリカを増やしても Redis アダプタのような追加の配送基盤は不要。この点は、reconciler/ruler のジョブ化によりシングルトンが watcher だけになったのとは別の理由づけである点に注意。あちらは「冪等だから複数動いても壊れない」、notifier は「配送先が自分にぶら下がる接続だけなので調停自体が要らない」。
+ffmpeg の `out_time` を実入力 duration に対する割合にして、最大 1 回/秒で NOTIFY する。notifier の EventHub が接続中のブラウザへ SSE として渡す。テーブルへ保存しないのは、秒単位で変わる復元不要の値を永続化すると、再起動後に WAL・dead tuple・vacuum 対象を増やすためである。
 
-**もう一つの長寿命接続（watcher が mirakc から受ける SSE 購読）とは意図的に分離したまま**。「長寿命接続を持ち続ける」という機構は同じでも、相手も向きも障害時の影響範囲も無関係なので、1 つの抽象/プロセスにまとめない。詳細は [api.md](../api.md) の「2 つの SSE を 1 つに集約しない」を参照。
+**完了判定には使わない。** NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうるからである。欠落しても、真実は `recording_encode_attempts` / `media_assets` の再読で復元できなければならない（不変条件 5）。
 
-## 7. DB 輻輳時の隔離
-
-「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への整理。DB 輻輳から分離できる処理はあるが、**故障モードを常に「収束の遅れ」とは一般化しない**。保証は次の条件付きである:
-
-- **録画は、mirakc に番組終了前まで同期済みの予約に限って DB 停止から分離される**。スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件であり、新規・変更予約は reconciler が期限内に同期できなければ録画されない
-- **実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する**。開始時の `record_sync` 参照、進捗の書き込み、公開点である `media_assets` コミットが必要である。有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）
-- **実行中の encode は ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は `media_assets` のコミットで決まる**。
-  - 投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。
-  - `Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う（River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ）。
-  - プロセス死は締切後に River の JobRescuer が再試行する。
-  - `recording_encode_attempts.attempt_count` はドメイン試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。
-  - Worker は queue の job ID / attempt を使わず、scratch は `(recording_id, profile, attempt_count)` で分ける。掃除は `(recording_id, profile)` に限る。
-  - 各試行は自分の scratch directory の flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。他の scope の encode の有無には影響されない。並走中の試行は残る。
-  - 停止による `Canceled` と snooze は数えず、締切超過は失敗として数える（詳細は [k8s 運用](../operations/k8s.md)）。
-  - ドメイン上限（25）に達したら `river.JobCancel` を返し、River 上も cancelled にする。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。
-  - 停止による `Canceled` は River の attempt を消費するがドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
-- **CM 検出とロゴ候補解析は、録画の実尺を args に入れて `Timeout()` を決める**。
-  - 実尺は `recordings.ended_at - started_at` である。どちらかが NULL（EPGStation 取り込み等）なら `program_duration_ms` を使う。
-  - scratch の識別に job ID / attempt は使わない。CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)` を使う。
-  - 2 倍の実尺と 30 分の下限を締切にする。
-  - rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
-- **CM 検出の試行回数は `recording_cm_attempts.attempt_count` で数える**。
-  - 失敗と締切超過は試行になり、プロセス死は次の開始時に running 行を進めて数える。
-  - 停止時のキャンセルは回数に入れない。過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする。
-  - `failed` の後に新しいロゴや枠で再び desired になったら予算は 1 からやり直す。
-  - 結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
-- **`attempted_at` から録画実尺に応じた締切と rescue 猶予を過ぎた候補を failed にする**。
-  - 締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は投入側と同じ `GetCMRecordingDuration` で引く（録画行が無ければ最小締切で回収する）。
-  - `MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる。設定値 0 は River の既定 1 時間として扱う。
-- **長時間の滞留はポリシーを失うことがある**。ingest が `epg.retention_grace` を跨ぐと、予約から encode policy を解決できず既定値で凍結され、作成時点で予約も意図も無ければ `source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する
-- **ルール評価は UI と同期しない**。ルール編集 API は編集を書いて再評価ジョブを投入するだけで即応答し、評価は ruler がバックグラウンドで実行。ユーザーが連打してもキューで直列化され、DB を占有する形にならない
+フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造である。durable な状態のイベントは、TanStack Query の `invalidateQueries` に徹し、真実は常に REST から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、durable 状態が `running` でなくなれば破棄する。
 
 <details><summary>根拠</summary>
 
+- 進捗の元の値: `out_time`
+- 再読で復元する対象の表: `recording_encode_attempts` / `media_assets`
+- フロントエンドの再取得: `invalidateQueries`
+- 進捗を破棄する条件の状態: `running`
+
+</details>
+
+### 配送の担い手
+
+ブラウザへの SSE 配送の担い手は notifier ロールで、api ロールは担わない。api ロールは mirakc にもファイルシステムにも依存せず（不変条件 1）、長寿命接続の LISTEN セッションも持たない。
+
+配送のエンドポイントは `/api/events` である。サーバーレス（scale-to-zero）に載せるためには、常駐前提の LISTEN を api に置けない。notifier は「Postgres を LISTEN してブラウザへ配り直すだけ」の小さな常駐プロセスとして分離してある。
+
+### notifier の多重化
+
+notifier はシングルトンにしない。各レプリカが独立に LISTEN し、自分に繋がっている SSE クライアントにだけ配る。レプリカ間の調停は構造的に要らないので、追加の配送基盤も要らない。
+
+レプリカ間で配送内容を調停する必要は、構造的にない。各クライアントは 1 つのレプリカにしか繋がっておらず、そのレプリカの LISTEN だけが届けば十分だからである。したがって、レプリカを増やしても Redis アダプタのような追加の配送基盤は要らない。
+
+この理由づけは、reconciler と ruler のジョブ化によりシングルトンが watcher だけになったのとは別である。あちらは「冪等だから複数動いても壊れない」、notifier は「配送先が自分にぶら下がる接続だけなので調停自体が要らない」。
+
+<details><summary>根拠</summary>
+
+- シングルトンに含まれないこと: `cmd/rokuban/server.go` の `singletonRoles`
+
+</details>
+
+### mirakc の SSE 購読との分離
+
+watcher が mirakc から受ける SSE 購読とは、意図的に分離したままにする。「長寿命接続を持ち続ける」という機構は同じでも、相手も向きも障害時の影響範囲も無関係なので、1 つの抽象やプロセスにまとめない。詳細は [api.md](../api.md) の「2 つの SSE を 1 つに集約しない」を参照。
+
+## 7. DB 輻輳時の隔離
+
+録画は、mirakc に同期済みの予約に限って DB 停止から分離される。取り込みとエンコードは、バイト処理だけが DB の外にあり、ジョブ全体は DB に依存する。DB 障害で失敗しても、再試行できる範囲では収束する。
+
+「ユーザー操作で DB が詰まったら録画やエンコードに影響しないか」という懸念への整理である。DB 輻輳から分離できる処理はあるが、故障モードを常に「収束の遅れ」とは一般化しない。保証は、次の各節の条件付きである。
+
+```mermaid
+flowchart LR
+  D[DB が止まる] --> A[録画: 同期済みの予約は mirakc が継続]
+  D --> B[取り込み: バイト転送は継続]
+  D --> C[エンコード: ffmpeg は継続]
+  B --> E[開始・進捗・公開のコミットは待つ]
+  C --> E
+  E --> F[再試行で収束する]
+```
+
+### 録画の分離
+
+録画は、mirakc に番組終了前まで同期済みの予約に限って、DB 停止から分離される。新規・変更の予約は、reconciler が期限内に同期できなければ録画されない。
+
+スケジュールは mirakc 側の `schedules.json` に永続化済みで、録画実行は mirakc が自律的に行う。ただし mirakc 自身、録画バッファ、チューナーが動作していることが条件である。
+
+<details><summary>根拠</summary>
+
+- mirakc 側に永続化済みのスケジュール: `schedules.json`
+
+</details>
+
+### 取り込みの継続
+
+実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にあるが、ジョブ全体は DB に依存する。DB 障害で失敗しても、録画バッファに record が残り、再試行できる範囲では収束する。
+
+DB が必要なのは、開始時の同期行の参照、進捗の書き込み、公開点である原本アセットのコミットである。
+
+有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失った場合の詳細は [ingest](../recording/ingest.md) §5.3 を参照。
+
+<details><summary>根拠</summary>
+
+- 開始時に参照する同期行: `record_sync`
+- 公開点のコミット: `media_assets`
+
+</details>
+
+### エンコードの継続
+
+実行中の encode は、ffmpeg のバイト処理だけを見れば DB の外側にあり、公開は DB のコミットで決まる。投入時に録画実尺とプロファイル rate から締切を計算し、args に保存する。
+
+#### 締切と死亡検知
+
+プロセス死は、締切後に JobRescuer が再試行する。実尺が不明な場合の締切は 12 時間である。
+
+締切は `max(1 時間, 実尺 × rate)` で、実尺は録画時刻、取れなければ番組長で代用する。`Timeout()` は保存した締切を返し、実尺が不明な場合と締切のない旧 args は 12 時間を使う。River が ffmpeg の締切にそのまま使うので、誤った締切超過で失敗を積むより死亡検知が遅れる方を選ぶ。
+
+<details><summary>根拠</summary>
+
+- 締切の式: `max(1 時間, 実尺 × rate)`
+- 保存した締切を返す関数: `Timeout()`
+
+</details>
+
+#### 試行回数と scratch
+
+試行回数は、ドメインの試行回数と公開時の fencing token を兼ね、遅れて戻った旧試行の公開を拒否する。scratch は試行ごとに分け、掃除は同じ録画とプロファイルの範囲に限る。並走中の試行は残る。
+
+Worker は queue の job ID / attempt を使わず、scratch は `(recording_id, profile, attempt_count)` で分ける。掃除は `(recording_id, profile)` に限る。各試行は自分の scratch directory の flock を持ち続け、掃除は lock が取れた（死んだ）directory だけを消す。他の scope の encode の有無には影響されない。並走中の試行は残る。
+
+<details><summary>根拠</summary>
+
+- 試行回数と fencing token を兼ねる列: `recording_encode_attempts.attempt_count`
+- scratch の分け方: `(recording_id, profile, attempt_count)`、掃除の範囲は `(recording_id, profile)`
 - encode の scratch 掃除の範囲が `(recording_id, profile)` に限ること: `TestRemoveStaleEncodeScratchScopesByRecordingAndProfile`
 - 他の scope の encode の有無に掃除が影響されないこと: `TestRemoveStaleEncodeScratchIgnoresLiveEncodeOfOtherScope`
 - 並走中の試行の scratch が残ること: `TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts`
+
+</details>
+
+#### 上限と解除
+
+停止による取り消しと snooze は試行に数えず、締切超過は失敗として数える。ドメイン上限（25）に達したら、River 上も cancelled にする。解除は failed 行を消して予算を戻す操作である。
+
+詳細は [k8s 運用](../operations/k8s.md) を参照。ドメイン上限（25）に達したら `river.JobCancel` を返す。解除は `POST /api/recordings/{id}/encode-profiles` が failed 行を消して予算を戻す。
+
+停止による `Canceled` は River の attempt を消費するが、ドメインでは数えない。そのため `MaxAttempts` 26 は、River が先に discard しない保証ではない。その場合は reconcile が新しいジョブで回復する。
+
+<details><summary>根拠</summary>
+
+- 停止による取り消し: `Canceled`
+- 上限到達で返す値: `river.JobCancel`
+- 解除の API: `POST /api/recordings/{id}/encode-profiles`
+- River の最大試行回数: `MaxAttempts`
+
+</details>
+
+### CM 検出とロゴ候補解析の締切
+
+CM 検出とロゴ候補解析は、録画の実尺から締切を決める。締切は実尺の 2 倍と 30 分の下限のうち、大きい方である。実尺が取れなければ番組長で代用する。
+
+実尺は `recordings.ended_at - started_at` である。どちらかが NULL（EPGStation 取り込み等）なら `program_duration_ms` を使う。scratch の識別に job ID / attempt は使わない。CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)` を使う。rescue までの待ち時間は通常の規則に従い、`max(1h, Timeout())` になる。
+
+<details><summary>根拠</summary>
+
+- 実尺の元の列: `recordings.ended_at - started_at`（実体は `recordings` の `started_at` / `ended_at`）
+- 実尺が取れないときの代用: `program_duration_ms`
+- scratch の識別: CM 検出は `(recording_id, attempt_count)`、ロゴ候補解析は `(recording_id, attempted_at)`
+- rescue までの待ち時間: `max(1h, Timeout())`
 - CM の実尺が `started_at` / `ended_at` から引かれること: `TestCMRecordingDurationQueriesUseStartedAndEndedAt`
 - 2 倍の実尺と 30 分の下限（CM 検出の締切式）: `TestCMDetectionTimeoutUsesTwiceDurationWithThirtyMinuteMinimum`
+
+</details>
+
+### CM 検出の試行回数
+
+CM 検出の試行回数は、試行表の回数で数える。失敗と締切超過は試行になり、停止時のキャンセルは回数に入れない。
+
+プロセス死は、次の開始時に running 行を進めて数える。停止時のキャンセルは、過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする。`failed` の後に新しいロゴや枠で再び desired になったら、予算は 1 からやり直す。結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
+
+<details><summary>根拠</summary>
+
+- 試行回数の列: `recording_cm_attempts.attempt_count`
+- 戻した後の状態: `retrying`、上限到達後の状態は `failed`
 - 停止時のキャンセルが回数に入らず、締切超過が数えられること: `TestCMDetectDeadlineCountsAndCancellationDoesNotCount`
 - 失敗後に新しいロゴや枠で desired になると予算が 1 からやり直されること: `TestCMDetectionNewDesireAfterFailedStartsNewBudget`
+
+</details>
+
+### ロゴ候補の回収
+
+録画実尺に応じた締切と rescue 猶予を過ぎた候補は、failed にして回収する。基準は候補の解析開始時刻である。
+
+締切は実行側と共通の `cmDetectionTimeout` で求める。実尺は投入側と同じ `GetCMRecordingDuration` で引く（録画行が無ければ最小締切で回収する）。`MaxAttempts: 1` なので、失敗後の再解析は利用者がロゴ領域を保存し直す。停止時のキャンセルは候補行を消し、再 reconcile に任せる。設定値 0 は River の既定 1 時間として扱う。
+
+<details><summary>根拠</summary>
+
+- 基準になる解析開始時刻: `attempted_at`
+- 実行側と共通の締切: `cmDetectionTimeout`
+- 投入側と同じ実尺の取得: `GetCMRecordingDuration`
+- 再解析を利用者に任せる最大試行: `MaxAttempts: 1`
 - 孤児ロゴ候補の回収が締切と猶予を待つ境界: `TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace`
 - 停止時のキャンセルが候補行を消すこと: `TestCMLogoCandidateWorkerCancellationClearsRunningRow`
 
 </details>
 
+### 長時間の滞留とポリシー
+
+長時間の滞留は、ポリシーを失うことがある。ingest が滞留して EPG の保持猶予を跨ぐと、予約から encode policy を解決できず、既定値で凍結される。
+
+保持猶予は `epg.retention_grace` である。作成時点で予約も意図も無ければ、`source` は `unattributed` になる。原本の保持・エンコードの扱い、回線断を含む滞留の測り方は [ストレージ運用](../operations.md) §4 と [ストレージ](../storage.md) §6 を参照する。
+
+<details><summary>根拠</summary>
+
+- 滞留の許容期間: `epg.retention_grace`
+- 予約も意図も無いときの由来: `source` が `unattributed`
+
+</details>
+
+### ルール評価は UI と同期しない
+
+ルール評価は UI と同期しない。ルール編集 API は、編集を書いて再評価ジョブを投入するだけで即応答する。
+
+評価は ruler がバックグラウンドで実行する。ユーザーが連打してもキューで直列化され、DB を占有する形にならない。
+
 ### 飢餓防止の実装規律
 
-実装済み。詳細と数値の根拠は [operations.md](../operations.md) §3「輻輳時の隔離」を参照:
+コネクションプールの上限をロールごとに分け、API 系クエリには実行時間の上限を置く。実装済みで、詳細と数値の根拠は [operations.md](../operations.md) §3「輻輳時の隔離」を参照する。
 
-- ロール別にコネクションプール上限を分ける（api が全コネクションを食い潰して worker/reconciler が待つ事態を防ぐ）。プロセスが持つプールは常に 1 個なので、実体は「そのプロセスが担う roles からその 1 個の `MaxConns` を決める」こと
-- API 系クエリに `statement_timeout` を設定（api ロールを含むプロセスのプールにだけ適用）
+ロール別に分けるのは、api が全コネクションを食い潰して worker や reconciler が待つ事態を防ぐためである。プロセスが持つプールは常に 1 個なので、実体は「そのプロセスが担う roles からその 1 個の `MaxConns` を決める」ことになる。実行時間の上限 `statement_timeout` は、api ロールを含むプロセスのプールにだけ適用する。
+
+<details><summary>根拠</summary>
+
+- プール上限: `MaxConns`
+- API 系クエリの実行時間の上限: `statement_timeout`
+
+</details>
 
 ### monolith モードの注意
 
-実際に競合しやすいのはロックよりディスク I/O。Postgres のデータディレクトリとエンコードの scratch は同じディスクに置かない構成を推奨（インストールドキュメント事項）。
+monolith モードでは、Postgres のデータディレクトリとエンコードの scratch を、同じディスクに置かない構成を推奨する（インストールドキュメント事項）。実際に競合しやすいのは、ロックよりディスク I/O だからである。
