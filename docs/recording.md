@@ -27,7 +27,6 @@ flowchart LR
 
 分割した本文は `docs/recording/` にある。
 
-
 | 節 | 内容 | ファイル |
 |---|---|---|
 | §1 | 方針、例外の境界、ブラウザの境界 | [recording/delegation.md](recording/delegation.md) |
@@ -83,7 +82,7 @@ flowchart LR
 
 用語の補足は次の通り。表のセルに書ききれない条件を、ここに置く。
 
-watcher は、record の状態を `recordings` に反映し、録画済みの record について ingest を投入する。base は `reservations.base` に載り、ruler だけが書く。overrides は `program_overrides` 表に載り、api だけが書く。effective は base と overrides を重ねた値で、mirakc に同期され、ingest と encode が参照するのは常にこれである。
+watcher は、record の状態を `recordings` に反映し、録画中または録画済みの record について ingest を投入する。base は `reservations.base` に載り、ruler だけが書く。overrides は `program_overrides` 表に載り、api だけが書く。effective は base と overrides を重ねた値で、mirakc に同期され、ingest と encode が参照するのは常にこれである。
 
 orphaned は、`never_scheduled_events` の欠測行があり、本物の `recordings` 行が無いときに導出する。detached は、かつてのルールが凍結した base を持つ予約で、実質は manual である。active と detached は、`(rule_id, base)` から読むたびに導出する。
 
