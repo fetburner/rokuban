@@ -290,7 +290,7 @@ VOD の順序は次の通り。
 
 カット版の相対パスには世代番号が入る（1 世代目から付ける）。チャプターを直しても自動では作り直さず、UI の「編集前の内容です」から `POST /api/recordings/{id}/encoded/{profile}/reencode` で作り直す（[storage/contract.md](storage/contract.md) §3）。
 
-原本 TS はブラウザで再生できないので循環になる。ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut: true` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
+ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut: true` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
 
 <details><summary>根拠</summary>
 
@@ -332,15 +332,17 @@ VOD の順序は次の通り。
 
 HW フレームは trim と concat を通せる。VAAPI の GPU 経路は FFmpeg 7.1 以降を推奨し、5.1〜7.0 では救済経路を使う。
 
-<details><summary>根拠</summary>
-
-- FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
-
-</details>
-
 5.1〜7.0 は MPEG-2 のデコード surface が固定 6 枚で、カット版では枯れて `get_buffer() failed` からつなぎ目にブロックノイズが出る。ジョブは成功扱いで終わるので、壊れたカット版がそのまま公開される。7.1 以降は動的プールになり、7.1.5-0+deb13u1 / libva 2.22.0-3 / iHD 25.2.3 でつなぎ目 3 の 30 分原本全体を処理しても `get_buffer() failed` は出なかった。未検証: 7.1 以降でつなぎ目の多い録画。
 
 5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。足りない枚数はつなぎ目の数で増えるので、固定値では足りない。5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。救済経路は `-hwaccel` なしの CPU デコードなので、このプールを使わない。
+
+<details><summary>根拠</summary>
+
+- HW フレームが trim / concat を通れるソース上の根拠（n5.1.6 / n9.0）: trim.c・avf_concat.c がフレーム内容と HW pixel format を見ない
+- 同じく、filter の出力が入力の HW フレームの文脈を引き継ぐ: avfilter.c の `hw_frames_ctx`
+- 同じことの実測（ffmpeg 9.0.2、VideoToolbox）: trim → setpts → concat → `scale_vt` → `h264_videotoolbox`
+
+</details>
 
 #### 追加引数の許可リスト
 
@@ -402,7 +404,7 @@ flowchart TD
   W -->|"引かない"| OK["起動"]
 ```
 
-`--sites=` は明示的な空、`--sites tokyo` は tokyo への束縛である。2 要素以上で未指定のときに暗黙に全部にしないのは、意図しない束縛を避けるためである。`--sites tokyo,tokyo` のような重複は、束縛数の判定が紛らわしいエラーにならないよう 1 つに畳む。
+`--sites=` は明示的な空、`--sites tokyo` は tokyo への束縛である。未指定でも暗黙に全部にはしない。`--sites tokyo,tokyo` のような重複は、束縛数の判定が紛らわしいエラーにならないよう 1 つに畳む。
 
 - `watcher` ロールは 1 プロセスが N サイトを束縛できる。束縛サイトごとに独立した goroutine と advisory lock（`watcher:<site>`）を持つため、複数サイトを同じプロセスで watch しても互いに干渉しない。0 サイト束縛では watch 対象が無いだけで、起動エラーにはしない
 - `worker` ロールも 1 プロセスが N サイトを束縛できる。mirakc クライアントは site → 値の map になり、site 単位のキュー・定期ジョブが対象にする束縛サイトは集合になった。site 単位のキュー（ingest/epg/reconciler/watcher）は束縛サイトの数だけ物理キュー（`<queue>_<site>`）を購読する。site 単位の定期ジョブ（epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）も束縛サイトごとに 1 本ずつ登録する
@@ -518,7 +520,7 @@ webhook が送るのは、録画の完了・失敗、エンコードの完了・
 
 ## config と DB の境界
 
-**設定はデプロイ環境の性質、DB は運用中に UI から変えたい意思を持つ。** エンコードプロファイルは設定側に置き、ルールからは名前で参照する。自由形式のコマンド文字列とフィルタグラフの直接指定は許さない。
+**設定はホストやクラスタを建て直すと変わるデプロイ環境の性質、DB は運用中に UI から変えたい意思（ルール・予約・視聴履歴）を持つ。** エンコードプロファイルは設定側に置き、ルールからは名前で参照する。自由形式のコマンド文字列とフィルタグラフの直接指定は許さない。
 
 エンコードプロファイルは config 側に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性である。DB のルールからは名前参照とし、ルール保存時に存在検証する（なければ 400）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（上記「encode/live の HW エンコード」）。`-vf`（filtergraph）を直接書けるキーも作らない。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになるためである。
 
