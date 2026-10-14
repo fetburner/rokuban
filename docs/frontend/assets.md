@@ -18,7 +18,7 @@
 |---|---|
 | SPA フォールバック | 両モードで用意 |
 | API パス | 常に相対パス `/api/*` |
-| SSE の振り分け | notifier へ直送 |
+| SSE の振り分け | notifier（常駐）へ |
 | キャッシュ規約 | 内容ハッシュ付きだけ immutable |
 | 後方互換 | 運用開始後は API を保つ |
 
@@ -32,13 +32,13 @@ SPA フォールバックは Go 側が catch-all、S3 側が CloudFront Function
 
 SSE だけは、api（scale-to-zero）には向けず、常駐する notifier へルーティングする。CDN のパスルーティングで SSE のパスを先に notifier origin へ、残りの API を api origin へ振り分ける。
 
-API のパスの中で例外になるのは `/api/events` だけで、`/api/*` との最長一致で先に振り分ける。タイムアウトとキャッシュ無効化の設定も要る。CDN を迂回して notifier に直接繋ぐ選択肢も残す。
+API のパスの中で例外になるのは `/api/events` だけで、`/api/*` との最長一致的に先に振り分ける。タイムアウトとキャッシュ無効化の設定も要る。CDN を迂回して notifier に直接繋ぐ選択肢も残す。
 
 ### キャッシュ規約
 
 内容ハッシュ付きのアセットだけに immutable を付け、**それ以外はすべて no-cache にする。** go:embed モードでも同じヘッダを付けて挙動を揃える。
 
-ヘッダは `Cache-Control` である。
+付けるヘッダは `Cache-Control` である。
 
 ### 後方互換
 
@@ -48,7 +48,7 @@ UI と API のデプロイのタイミングはずれうるので、運用開始
 
 - ハッシュ付きアセットの置き場: `assets/*`
 - immutable を付けるヘッダ: `Cache-Control: immutable`
-- SSE の振り分け先: `/api/events`
+- 先に notifier へ振り分ける SSE のパス: `/api/events`
 
 </details>
 
