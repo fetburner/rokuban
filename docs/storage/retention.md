@@ -77,7 +77,9 @@ retention reconcile ループ（worker の cleanup 系ジョブ）が定期的�
 
 命令的なジョブチェーン（最後のエンコードジョブが削除ジョブを投入）は採らない。複数プロファイル時の「全部終わったら」の fan-in・途中失敗・再実行で壊れやすいからである。レベルトリガーなら「観測された派生物の集合 >= 望ましい集合」を毎回評価するだけで、どこで落ちても収束する。
 
-「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記の 2 つ目が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る。ただし原本を残したまま再実行するケースしか測っておらず、チェックが原本を開く前に走ることそのものは未検証。この同値性は `encode_profiles` が追加専用であることに依っている。desired を縮める経路ができれば、既に積まれたジョブが上記の 2 つ目の外に出てこの整理は成り立たなくなる。
+「原本を入力とする実行中・再試行中のジョブがない」という条件は持たない。encode ジョブは凍結済み `encode_profiles` に含まれるプロファイルにしか積まれず、サムネイルは常に desired なので、出力未コミットの間は上記の 2 つ目が原本を守る。出力コミット後のジョブは各ワーカー冒頭の冪等チェックが打ち切る。ただし原本を残したまま再実行するケースしか測っておらず、チェックが原本を開く前に走ることそのものは未検証。
+
+desired を縮める経路があっても、この整理は保たれる。縮める経路はコミット済みの版を 1 本外すもの（§6「凍結の 3 つ目の例外」）だけで、外す API はその版の有効なエンコード結果が無ければ 404 を返す。外す前から上記の 2 つ目はその版で満たされているので、外しても成否は変わらない。外した版の積み残しのジョブは守られなくなるが、その出力は公開されない。コミット前の版を外せる経路ができれば、既に積まれたジョブが上記の 2 つ目の外に出てこの整理は成り立たなくなる。
 
 上記の desired な派生物は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
@@ -86,6 +88,8 @@ retention reconcile ループ（worker の cleanup 系ジョブ）が定期的�
 - 現在サイズに一致する TS scan: `TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`
 - encode 完了後のジョブ再実行: `TestEncodeWorker_SuccessAndIdempotent`
 - thumbnail 完了後のジョブ再実行: `TestThumbnailWorker_IdempotentRerun`
+- 外せるのはコミット済みの版だけ: `RemoveRecordingEncodedAsset` の 404、`TestRemoveRecordingEncodedAsset_NotFound`
+- 外した版のジョブは公開しない: `TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished`
 
 </details>
 
