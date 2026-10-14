@@ -4,6 +4,8 @@
 
 ## 節 → ファイル
 
+メディア配信の本文は、録画の配信・ライブ視聴・追っかけ再生とブラウザ再生・SPA アセットとロゴの 4 つのファイルに分けてある。節名は分割前のままなので、次の表から該当ファイルを引ける。
+
 | 節 | 内容 | ファイル |
 |---|---|---|
 | メディア配信 / 録画済みファイルのストリーミング | Range 配信と X-Accel-Redirect | [media/recording.md](media/recording.md) |
@@ -13,6 +15,8 @@
 
 ## 外部から参照されている節名の対応
 
+他の文書やコードは、節名でこの配下の節を名指しして参照している。次の表は節名から該当ファイルを引く対応で、参照を壊さないよう表の節名は変えない。
+
 | 節名 | ファイル |
 |---|---|
 | 録画済みファイルのストリーミング | [media/recording.md](media/recording.md) |
@@ -20,7 +24,9 @@
 | 録画中の追っかけ再生 / 録画原本のブラウザ再生 / offset seek の精度と開始時間の測定 | [media/playback.md](media/playback.md) |
 | SPA アセット配信 / サービスロゴ: ドロップ | [media/assets.md](media/assets.md) |
 
-読む順の目安:
+### 読む順の目安
+
+話題ごとに、先に開くファイルは次の通り。
 
 - 録画ファイルの Range 配信 → [media/recording.md](media/recording.md)
 - ライブ視聴の URL・HLS・音声 → [media/live-hls.md](media/live-hls.md)

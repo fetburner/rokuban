@@ -2,9 +2,11 @@
 
 ## SSE (`/api/events`) --- ヒント配送、状態の真実は REST から再取得
 
-サーバー → クライアントの一方向プッシュ。基本の役割は **「どのデータが変わったか」のヒント配送**。例外は、次の通知で上書きされ再起動後に復元する必要もない揮発テレメトリ（`encode-progress`）だけで、接続中の表示に payload を直接使ってよい。
+SSE は「どのデータが変わったか」というヒントをブラウザへ配る、サーバーからクライアントへの一方向の経路である。状態の真実は REST から再取得する。接続を持つのは notifier ロールで、api ロールは長寿命接続を持たない。
 
-**SSE の所有物は notifier ロールである。** api は desired state を Postgres に書くリクエスト / レスポンス層に留まり、長寿命接続を持たない。Postgres を LISTEN してブラウザへ配る常駐プロセスを notifier として分ける。
+例外は、次の通知で上書きされ再起動後に復元する必要もない揮発テレメトリ（`encode-progress`）だけである。この値は接続中の表示に payload を直接使ってよい。
+
+**SSE の所有物は notifier ロールである。** api は desired state を Postgres に書くリクエスト / レスポンス層に留まる。Postgres を LISTEN してブラウザへ配る常駐プロセスを notifier として分ける。
 
 monolith（`--all`）では notifier と streamer が同じリスナーに相乗りする。ロールを分けて起動すると notifier 自身の HTTP サーバーが同じパスを serve し、api ロール単独では `/api/events` が登録されず 404 になる。api が mirakc やファイルシステムに依存しないのと同じ境界に SSE も置く。
 
@@ -18,28 +20,57 @@ monolith（`--all`）では notifier と streamer が同じリスナーに相乗
 
 ### 実装
 
-**OpenAPI には載せない。** 長寿命ストリームは OpenAPI のリクエスト/レスポンスモデルに乗らず、コード生成させると応答をバッファリングする形になってしまう。クライアントも生成フックではなく `EventSource` を直接使うため、生成物から得るものがない。ルーターに直接登録し、仕様はここに置く。
+SSE は OpenAPI に載せず、ルーターへ直接登録して仕様をここに置く。トピックはクライアントの関心事に揃える。通知は、書き込み量の小さいテーブルでは行トリガー、全量 upsert する EPG では同期ジョブがパス完了時に 1 回だけ送る。
 
-**トピック**は表ではなくクライアントの関心事に揃える。1 トピックが 1 つのクエリキー接頭辞に対応する。
+長寿命ストリームは OpenAPI のリクエスト/レスポンスモデルに乗らず、コード生成させると応答をバッファリングする形になってしまう。クライアントは生成フックを使わず `EventSource` を直接使うので、生成物から得るものがない。
+
+#### トピック
+
+トピックはテーブルの単位には揃えず、クライアントの関心事に揃える。1 トピックが 1 つのクエリキー接頭辞に対応する。
 
 | トピック | 発火元 | クライアントが invalidate するもの |
 |---|---|---|
-| `reservations` | `reservations` の行トリガー | 予約一覧・予約詳細（容量超過の導出値も一緒に） |
-| `recordings` | `recordings` / `media_assets` の行トリガー | 録画一覧・録画詳細（サイズ・ドロップ統計も含む） |
+| `reservations` | `reservations` の行トリガー | 予約一覧・予約詳細 |
+| `recordings` | `recordings` / `media_assets` の行トリガー | 録画一覧・録画詳細 |
 | `epg` | EPG 同期ジョブが明示的に `pg_notify` | 番組表グリッド・番組リスト・サービス一覧 |
 | `breakers` | `circuit_breakers` の行トリガー | ブレーカー一覧（バナー） |
-| `rules` | `rules` の行トリガー | （現在クライアントは購読していない。notifier は選別せず全トピックを転送する — `web/src/lib/events.ts` の `queryGroups` が購読の一覧） |
+| `rules` | `rules` の行トリガー | なし |
 
-`encode-progress` は invalidate トピックではなく型付きイベント。`recordingId + profile` を識別子、実入力 duration に対する割合を payload に持ち、EventHub はこの識別子ごとに区間中の最新値へ縮約する。通常トピックの payload 全体を event 名にする従来形式とは入口で分けるため、値の違う進捗が別キーとして溜まったり JSON が event 名になったりしない。
+`reservations` の invalidate は容量超過の導出値も一緒に取り直し、`recordings` はサイズ・ドロップ統計も含む。`rules` は現在クライアントが購読していない。notifier は選別せず全トピックを転送し、購読の一覧は `web/src/lib/events.ts` の `queryGroups` が権威である。
 
-**通知の出し方はテーブルの書き込み量で分ける。**
+#### 進捗の型付きイベント
 
-- **行トリガー**（`reservations` / `recordings` / `media_assets`）: 書き手が通知を忘れる種類のバグを構造的に消せる。これらは書き込み量が小さい
-- **明示的な `pg_notify`**（`epg_programs`）: 全量 upsert で 1 パス数千行になるためトリガーでは細かすぎる。同期ジョブがパス完了時に 1 回だけ送る。EPG が実際に更新されたときだけ通知できる利点もある
+エンコード進捗は invalidate トピックに含めず、型付きイベントとして別に流す。割合は識別子ごとに最新値へ縮約するので、値の違う進捗が別キーとして溜まらない。
 
-**重複・空振りの通知は起こりうる**（`updated_at` だけが変わる UPDATE 等）。ヒントなので害はないが、notifier 側の `EventHub` がトピックごとに 200ms の窓で合流させて量を抑える。
+`encode-progress` は `recordingId + profile` を識別子とし、実入力 duration に対する割合を payload に持つ。イベントハブはこの識別子ごとに区間中の最新値へ縮約する。通常トピックは payload 全体を event 名にする従来形式なので、入口で分けて JSON が event 名にならないようにしている。
 
-**ストリームの形式:**
+<details><summary>根拠</summary>
+
+- 識別子ごとに最新値へ縮約するイベントハブ: `EventHub`
+
+</details>
+
+#### 通知の出し方
+
+**通知の出し方はテーブルの書き込み量で分ける。** 書き込み量が小さいテーブルは行トリガー、全量 upsert する EPG は同期ジョブがパス完了時に 1 回だけ明示的に送る。
+
+行トリガー（`reservations` / `recordings` / `media_assets`）は、書き手が通知を忘れる種類のバグを構造的に消せる。これらは書き込み量が小さい。
+
+明示的な `pg_notify`（EPG の番組表）は、全量 upsert で 1 パス数千行になるためトリガーでは細かすぎる。同期ジョブがパス完了時に 1 回だけ送る。EPG が実際に更新されたときだけ通知できる利点もある。
+
+重複・空振りの通知は起こりうる（更新時刻だけが変わる UPDATE 等）。ヒントなので害はないが、notifier 側のイベントハブがトピックごとに 200ms の窓で合流させて量を抑える。
+
+<details><summary>根拠</summary>
+
+- 空振りの通知を生む更新: `updated_at`
+- 200ms の窓で合流させるイベントハブ: `EventHub`
+- 明示的に通知する EPG の番組表: `epg_programs`
+
+</details>
+
+#### ストリームの形式
+
+イベントは名前付きの SSE 形式で送り、25 秒ごとのコメント行でアイドルタイムアウトを避ける。クライアントのバッファが埋まったら通知を捨て、欠落は定期再取得で回復する。
 
 ```
 retry: 3000
@@ -53,53 +84,110 @@ data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0
 : ping
 ```
 
-- `data` は必須。`EventSource` は data が空のイベントを dispatch しない
-- 25 秒ごとにコメント行（`: ping`）を送る。リバースプロキシ・CDN のアイドルタイムアウト対策
+- `data` は必須である。`EventSource` は data が空のイベントを dispatch しない
+- 25 秒ごとにコメント行（`: ping`）を送る。リバースプロキシ・CDN のアイドルタイムアウト対策である
 - `X-Accel-Buffering: no` を付ける。nginx がイベントを溜め込むのを防ぐ
 - クライアントのバッファが埋まっていたら通知を**捨てる**。詰まった 1 クライアントのために全体を止めない。落とした invalidate はクライアント側の定期再取得で回復する（下記「レベルトリガーの対称性」）。進捗は次の値が上書きするまで不明でよく、欠落自体に状態の意味を持たせない
 - LISTEN コネクションが切れたら 5 秒後に再接続する。切断中の変更も同様に回復する
 
 ### レベルトリガーの対称性
 
-バックエンドは「NOTIFY はヒント、真実はテーブル再読」のレベルトリガー設計（参照: [data.md](../data.md)）。フロントも同じ形にする:
+フロントエンドも、バックエンドと同じレベルトリガーの形にする。SSE イベントを受けたら該当クエリを invalidate して REST から再取得し、durable な状態はプッシュの中身で画面状態を書き換えない。例外は揮発する進捗の割合だけである。
 
-1. SSE イベントを受信したら、該当クエリの `invalidateQueries` を実行
-2. 真実は常に REST から再取得
-3. **durable な状態について、プッシュの中身を直接信頼して画面状態を書き換えない**
+バックエンドは「NOTIFY はヒント、真実はテーブル再読」のレベルトリガー設計である（参照: [data.md](../data.md)）。フロントも同じ形にするため、SSE イベントを受信したら該当クエリの invalidate を実行し、真実は常に REST から再取得する。durable な状態について、プッシュの中身を直接信頼して画面状態を書き換えない。
 
-狭い例外として、`encode-progress` の割合だけはメモリ上へ直接置く。この値は完了・失敗を主張せず、REST の `encodeStatus` が `running` でなくなれば破棄される。秒単位の値をテーブルへ保存すると、再起動後に不要な情報のために WAL・dead tuple・vacuum 対象を増やす一方、配送保証を足しても完了判定の真実にはできないため。
+狭い例外として、`encode-progress` の割合だけはメモリ上へ直接置く。この値は完了・失敗を主張せず、REST の進捗状態が実行中でなくなれば破棄される。秒単位の値をテーブルへ保存すると、再起動後に不要な情報のために WAL・dead tuple・vacuum 対象を増やす一方、配送保証を足しても完了判定の真実にはできないため。
 
 プッシュデータを信頼して手元状態を書き換える設計より、壊れ方が大幅に単純になる。
 
+<details><summary>根拠</summary>
+
+- クエリの invalidate: `invalidateQueries`
+- 進捗の破棄条件（REST の進捗状態が実行中でなくなること）: `encodeStatus` / `running`
+
+</details>
+
 #### 取りこぼしを回復するのは定期 invalidate（`staleTime` ではない）
+
+取りこぼした通知は、クライアントが張る定期 invalidate のタイマーが回復する。staleTime の期限が来ても再取得は起きないので、staleTime を長く取るだけでは古い表示が残る。
 
 `staleTime` は「データを stale と判定する期限」であって、期限に達したら再取得を起こす周期タイマーではない。したがって「通知が捨てられた・接続は生きたまま・再 mount も window focus も別操作も起きない」画面は、`staleTime` だけでは古い表示が無期限に残る。回復はクライアント側（`web/src/lib/events.ts`）が張るタイマーが担う。
 
-**「`staleTime` を長く取れば取りこぼしは自然回復する」は今でも先に浮かぶ読みだが、`staleTime` の経過そのものは再取得を起こさない**。レベルトリガー（不変条件 5）の「イベントはヒント、真実は定期再取得」は、定期の側がフロントに実在して初めて成立する。
+「`staleTime` を長く取れば取りこぼしは自然回復する」は今でも先に浮かぶ読みである。**`staleTime` の経過そのものは再取得を起こさない。** レベルトリガー（不変条件 5）の「イベントはヒント、真実は定期再取得」は、定期の側がフロントに実在して初めて成立する。
 
-**グループの寿命・変更頻度・応答の大きさで周期を分ける。** 接頭辞の網羅は `web/src/lib/events.ts` の `queryGroups` が権威で、下表は代表だけを挙げる。
+##### 周期のグループ分け
+
+**周期はグループの寿命・変更頻度・応答の大きさで分ける。** 運用状態は 60 秒、EPG は 10 分、ストレージ・チューナーは 5 分で、SSE が無くてもこの上限内に収束する。
+
+接頭辞の網羅は `web/src/lib/events.ts` の `queryGroups` が権威で、下表は代表だけを挙げる。
 
 | グループ | クエリキー接頭辞 | SSE 無しでの収束の上限 | 周期を決めた理由 |
 |---|---|---|---|
 | 運用状態 | `/api/reservations` `/api/capacity/overages` `/api/recordings` `/api/breakers` | 60 秒 | 応答が小さく、変化が速い |
-| EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い |
-| ストレージ・チューナー | `/api/storage` `/api/tuners`（手書きキー） | 5 分 | ディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。SSE のトピックは持たない --- `storage_sync` は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）。SSE トピックからの invalidate は持たないので、収束はこの定期 invalidate に加えて、再接続時の全グループ invalidate と mount / window focus に依る。チューナーも `tuner_sync` の定期全量同期でしか変わらない射影なので、同じ周期を流用する |
+| EPG | `/api/sites/`（番組表グリッド・サービス一覧・重なり）+ `/api/programs`（番組リストの手書きキー） | 10 分 | 大きな時間窓を 1 回で取り、同期ジョブも遅い |
+| ストレージ・チューナー | `/api/storage` `/api/tuners`（手書きキー） | 5 分 | 観測の射影で、値の変わる頻度が低い |
 
-**キーの先頭要素がグループの所属を決める**。接頭辞の照合はクエリキーの先頭要素に対する前方一致である。そのため**URL が `/api/sites/...` でも、先頭要素が `'/api/reservations'` なら運用状態グループに入る**（逆も同じ）。ここが所属を決める唯一の場所であり、生成キーをそのまま使うと意図と食い違うことがある。フロント側の規律は 2 つ。
+EPG は数十チャンネル x 24 時間の大きな時間窓を 1 回で取る。EPG 同期ジョブ自体が分オーダーでしか動かないので、短周期で回しても得るものが無い。
 
-- **単体ページのキーは先頭要素を一覧と揃える**（`['/api/reservations', 'detail', site, programId]` / `['/api/recordings', 'detail', id]`）。orval の生成キーは URL 1 要素なので、一覧側の mutater の invalidate にも SSE トピックにも掛からない
-- **URL をキーにできないクエリは接頭辞をここに登録する**。番組リスト（`pages/programs.tsx` の `useInfiniteQuery`）はページの形が「取得した半開区間」なので手書きの `['/api/programs', 'infinite', ...]` を使う
+ストレージはディスクの statfs 観測の射影で、worker の観測ループが書き換えたときにしか値が変わらない。運用状態（60 秒）と同じ周期にしても同じ値を余分に引くだけで得るものが無い。一方、応答は軽量なので EPG（10 分）ほど長くする理由もない。
 
-どちらも守らないと、そのクエリは SSE のトピックでも定期 invalidate でも取り直されない（番組リスト）か、意図と違うグループの周期で収束する（予約詳細が EPG の 10 分側に落ちていた）。キーの先頭要素の見落としは**同じ形で繰り返し出る**（番組リストと予約詳細）ので、1 箇所直しても他を数え直す。
+ストレージ・チューナーは SSE のトピックを持たない。ストレージの同期表は行トリガーの対象にしていないため（statfs の頻度そのものに通知量を結合させたくない）。SSE トピックからの invalidate は持たないので、収束はこの定期 invalidate に加えて、再接続時の全グループ invalidate と mount / window focus に依る。チューナーもチューナー同期表の定期全量同期でしか変わらない射影なので、同じ周期を流用する。
 
-- **背面タブでは投げない。** 復帰時は `refetchOnWindowFocus`（`main.tsx` の QueryClient 既定）が拾う
-- **SSE が再接続したとき（切断を観測した後の `open`）は全グループを invalidate する。** 切断中に飛んだ通知は再送されないので、周期を待たずに取り直す。初回接続では invalidate しない（各クエリの mount 時の取得と二重になるだけ）
-- **再接続時の invalidate だけでは足りない。** 接続を切らずに個別の通知だけ落としたケースを回復できるのは定期 invalidate の方だけ
-- 上の接頭辞に載っていないクエリ（`/api/rules` `/api/version` 等）はこの定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も同じ形で漏れている（`pages/rules.tsx` / `components/recording-detail-panel.tsx` / `pages/search.tsx` がそれぞれ取得する）。こちらは自画面の mutation でしか変わらない前提で優先度を下げている --- 他タブ・ruler 側の変更は届かない未解決点として残る
+<details><summary>根拠</summary>
+
+- 行トリガーの対象にしないストレージの同期表: `storage_sync`
+- 定期全量同期でしか変わらないチューナーの射影: `tuner_sync`
+
+</details>
+
+##### クエリキーの先頭要素
+
+**キーの先頭要素がグループの所属を決める。** 接頭辞の照合はクエリキーの先頭要素に対する前方一致なので、URL がどこを指していても、先頭要素が合えばそのグループに入る。
+
+たとえば URL が `/api/sites/...` でも、先頭要素が `'/api/reservations'` なら運用状態グループに入る（逆も同じ）。ここが所属を決める唯一の場所であり、生成キーをそのまま使うと意図と食い違うことがある。フロント側の規律は 2 つある。
+
+- 単体ページのキーは先頭要素を一覧と揃える（`['/api/reservations', 'detail', site, programId]` / `['/api/recordings', 'detail', id]`）。orval の生成キーは URL 1 要素なので、一覧側の mutater の invalidate にも SSE トピックにも掛からない
+- URL をキーにできないクエリは接頭辞をここに登録する。番組リスト（無限スクロール用クエリ）はページの形が「取得した半開区間」なので手書きの `['/api/programs', 'infinite', ...]` を使う
+
+どちらも守らないと、そのクエリは SSE のトピックでも定期 invalidate でも取り直されない（番組リスト）か、意図と違うグループの周期で収束する（予約詳細が EPG の 10 分側に落ちていた）。キーの先頭要素の見落としは同じ形で繰り返し出る（番組リストと予約詳細）ので、1 箇所直しても他を数え直す。
+
+<details><summary>根拠</summary>
+
+- 手書きキーを使う番組リストのクエリ: `pages/programs.tsx` の `useInfiniteQuery`
+
+</details>
+
+##### 背面タブ・再接続・定期経路に乗らないクエリ
+
+定期 invalidate は背面タブでは投げず、復帰時に取り直す。SSE の再接続時には全グループを取り直す。接頭辞に載っていないクエリは定期経路に乗らず、mount と window focus でしか取り直されない。
+
+```mermaid
+flowchart TD
+  A["取りこぼしの種類"] --> B["接続中に個別の通知が落ちた"]
+  A --> C["切断された"]
+  A --> D["背面タブ"]
+  A --> E["接頭辞に未登録のクエリ"]
+  A --> F["ストレージ・チューナー（SSE のトピックが無い）"]
+  B --> P["定期 invalidate"]
+  C --> R["再接続時に全グループを invalidate（error の後の open。初回接続では invalidate しない）"]
+  D --> W["何も投げない。前面に戻ると window focus で再取得"]
+  E --> M1["mount と window focus でだけ取り直す"]
+  F --> P
+  F --> R
+  F --> M2["mount と window focus"]
+```
 
 **実 notifier に対する収束時間と、切断時に実際の `EventSource` が `error` → `open` をこの順で出すことは未計測**（仕様上はそうなる。再接続の経路を確かめているのはスタブの方だけ）。
 
+- 背面タブでは投げない。復帰時は window focus での再取得（QueryClient の既定）が拾う
+- SSE が再接続したとき（切断を観測した後の `open`）は全グループを invalidate する。切断中に飛んだ通知は再送されないので、周期を待たずに取り直す。初回接続では invalidate しない（各クエリの mount 時の取得と二重になるだけ）
+- 再接続時の invalidate だけでは足りない。接続を切らずに個別の通知だけ落としたケースを回復できるのは定期 invalidate の方だけである
+- 上の接頭辞に載っていないクエリ（`/api/rules` `/api/version` 等）はこの定期経路に乗っていない。mount と window focus でのみ取り直す。`/api/rules` も同じ形で漏れている（ルール一覧・録画詳細パネル・検索画面がそれぞれ取得する）。こちらは自画面の mutation でしか変わらない前提で優先度を下げている。他タブ・ruler 側の変更は届かない未解決点として残る
+
 <details><summary>根拠</summary>
+
+- 背面タブからの復帰で拾う再取得（QueryClient の既定）: `refetchOnWindowFocus`（`main.tsx`）
+- 定期経路に乗らない `/api/rules` の取得箇所: `pages/rules.tsx` / `components/recording-detail-panel.tsx` / `pages/search.tsx`
 
 定期 invalidate は jsdom の偽タイマーと Chromium の実ブラウザで確認する。jsdom のテストは再取得の回数を数え、ブラウザでは SSE を張ったままイベントを送らず `/api/**` のリクエスト数を測る。
 
@@ -117,7 +205,7 @@ data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0
 | `背面タブでは定期取得を投げず、前面に戻ると再開する` | 背面では止まり、前面へ戻ると定期取得を再開する |
 | `再接続したら切断中の変更を全グループ取り直す` | 切断後の再接続で全グループを invalidate する |
 
-**Chromium 実ブラウザ**（`web/e2e/sse-refresh.mjs`、ビルド済み bundle、`page.clock`）での `/api/**` リクエスト数:
+**Chromium 実ブラウザ**（`web/e2e/sse-refresh.mjs`、ビルド済み bundle、`page.clock`）での `/api/**` リクエスト数は次の通り。
 
 | 経過時間 | 対象 | 件数 |
 |---|---|---|
@@ -131,19 +219,37 @@ data: {"type":"encode-progress","recordingId":42,"profile":"mobile","progress":0
 
 ### 水平スケール
 
-notifier ロールを複数レプリカにしても、各レプリカが Postgres の NOTIFY を購読して配るだけなので **Redis アダプタ等の追加基盤は不要**。notifier は**シングルトンではない**（`cmd/rokuban/server.go` の `singletonRoles` に含まれない） --- 各レプリカが独立に LISTEN し、自分にぶら下がる SSE クライアントにだけ配る。レプリカ間で配送を調停する必要が構造的にない（参照: [data.md](../data.md) §3）。
+notifier を複数レプリカにしても、Redis アダプタ等の追加基盤は不要である。各レプリカが独立に LISTEN して自分の SSE クライアントにだけ配るので、レプリカ間で配送を調停する必要が構造的にない。
+
+各レプリカが Postgres の NOTIFY を購読して配るだけなので、notifier は**シングルトンではない**。参照: [data.md](../data.md) §3。
+
+<details><summary>根拠</summary>
+
+- notifier がシングルトンでない: `cmd/rokuban/server.go` の `singletonRoles` に含まれない
+
+</details>
 
 ### SSE とサーバーレスの関係
 
-SSE は長寿命接続でありサーバーレスとは相性が悪い。ハイブリッド構成では CDN のパスルーティングで `/api/events` だけ **notifier ロール**へ振り分ける（api ロールには SSE エンドポイント自体が存在しない）。自宅ダウン中は invalidation が止まるだけで読み書きは動く --- きれいな劣化（参照: [overview.md](../overview.md) のハイブリッド構成）。
+ハイブリッド構成では、CDN のパスルーティングで SSE のエンドポイントだけを notifier ロールへ振り分ける。自宅がダウンしている間は invalidation が止まるだけで、読み書きは動く。
+
+SSE は長寿命接続でありサーバーレスとは相性が悪い。そのため `/api/events` だけ **notifier ロール**へ振り分ける（api ロールには SSE エンドポイント自体が存在しない）。自宅ダウン中は機能が部分的に落ちるだけで済む（参照: [overview.md](../overview.md) のハイブリッド構成）。
 
 ### 2 つの SSE を 1 つに集約しない
 
-Rokuban には長寿命接続が 2 つある --- notifier がブラウザへ送る `/api/events` と、watcher が mirakc から受ける mirakc 側の `/events` 購読。**どちらも「長寿命接続を張り続ける」という機構は同じだが、関心事は無関係なので 1 つのプロセス/抽象にまとめない。**
+2 つの長寿命接続は、機構が同じでも関心事が無関係なので、**1 つのプロセスにも 1 つの抽象にもまとめない。** 一緒にすると、mirakc が落ちたときにブラウザ配信まで巻き込まれる。
+
+Rokuban には長寿命接続が 2 つある。notifier がブラウザへ送る `/api/events` と、watcher が mirakc から受ける mirakc 側の `/events` 購読である。どちらも「長寿命接続を張り続ける」という機構は同じだが、関心事は無関係なので 1 つのプロセス/抽象にまとめない。
 
 | | 相手 | 向き | 落ちたときの影響 |
 |---|---|---|---|
 | notifier の `/api/events` | ブラウザ | 送る | UI の自動更新が止まる（読み書き自体は動く） |
-| watcher の mirakc `/events` | mirakc | 受ける | ingest の投入が遅れる（`record_sweep` の定期突き合わせが拾う） |
+| watcher の mirakc `/events` | mirakc | 受ける | ingest の投入が遅れる（録画の掃引の定期突き合わせが拾う） |
 
 機構でまとめると、mirakc が落ちたときにブラウザ配信も巻き込まれるといった不要な結合が生まれる。小規模構成で常駐プロセスを減らしたいという動機は monolith（`--all`）が既に満たしており、抽象を共有する理由にはならない。
+
+<details><summary>根拠</summary>
+
+- 録画の掃引の定期突き合わせ: `record_sweep`
+
+</details>
