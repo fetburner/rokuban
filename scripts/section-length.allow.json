@@ -21,12 +21,7 @@
   "docs/frontend/shell.md": 1,
   "docs/operations/k8s.md": 2,
   "docs/operations/monitoring.md": 2,
-  "docs/recording/breaker.md": 1,
-  "docs/recording/ingest.md": 3,
-  "docs/recording/reconciler.md": 1,
   "docs/runbook/live.md": 2,
   "docs/schema/principles.md": 1,
-  "docs/storage/contract.md": 1,
-  "docs/storage/retention.md": 2,
   "web/e2e/checks/design.md": 1
 }

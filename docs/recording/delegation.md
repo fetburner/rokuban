@@ -1,123 +1,255 @@
-> [recording.md](../recording.md) §1「方針」・§2「mirakc に任せること」の一部。索引から辿る。
+> [recording.md](../recording.md) §1「方針」・§2「mirakc に任せること」の一部。索引から辿る
 
 ## 1. 方針: mirakc への全面委譲
 
+録画はリアルタイムでハードウェアに依存するので、エッジの mirakc に全面的に委譲する。サーバー側に残るのは、ルール評価・予約の生成・mirakc への宣言的同期というコントロールプレーンだけである。TS のストリーム処理は行わず、例外は原本のコミット後の読み取り専用の統計採取だけである。
+
 **「録画（リアルタイム・ハードウェア依存）はエッジの mirakc に、それ以外はサーバー側で弾力的に」**
 
-mirakc に録画を委譲することで、Rokuban のサーバー側に残るのは録画の **コントロールプレーン** --- ルール評価、予約（desired state）生成、mirakc への宣言的同期 --- のみとなる。k8s コントローラと同型のレベルトリガーループで動作する。
+mirakc に録画を委譲すると、Rokuban のサーバー側に残るのは、録画のコントロールプレーンだけになる。ルール評価、予約（desired state）の生成、mirakc への宣言的同期である。k8s コントローラと同型のレベルトリガーのループで動作する。
 
-重要な帰結として、**Rokuban は TS のストリーム処理（録画・demux・変換）を行わない**。読み取り専用の統計採取だけは例外で、原本のコミット後に非同期の解析ジョブが行う（[ingest](ingest.md) §5.2）。
+重要な帰結として、Rokuban は TS のストリーム処理（録画・demux・変換）を行わない。読み取り専用の統計採取だけは例外で、原本のコミット後に、非同期の解析ジョブが行う（[ingest](ingest.md) §5.2）。
 
 ### 例外の境界
 
-ドロップ統計に PID の種別（映像 / 音声）を出すため、解析ジョブが PSI（PAT / PMT）を読む。PID 数値だけの統計では「映像が壊れたのか EIT が数回落ちただけか」を区別できず運用判断に使えない。ただし境界を条文として固定する。
+PSI（PAT / PMT）を読むのは、PID の種別（映像・音声）を統計に出すためで、記述子は一切読まない。記述子を読まないことが歯止めの本体で、機械的に判定でき、EIT の解析も自動的に排除される。
+
+この境界を条文として固定する。読む範囲は、PAT / PMT から ES の PID と種別までである。
+
+PID 数値だけの統計では、映像が壊れたのか、EIT が数回落ちただけなのかを区別できず、運用判断に使えない。そこで解析ジョブが PSI を読む。
 
 | 許す | 許さない |
 |---|---|
-| PAT / PMT のセクション再構成 | **記述子を一切読まない**（`component_tag` も含む） |
-| ES ループの `elementary_PID` と `stream_type` の読み取り | 他テーブル（TDT / EIT / SDT / NIT / TOT）の解析 |
-| 固定 PID の静的表による命名（PAT / CAT / NIT / SDT / EIT / TOT。解析不要） | ES ペイロードの解釈（字幕デコード・映像解析） |
-| PID → 種別の対応を統計メタデータとして記録 | PSI を根拠に EPG プロジェクションを補正すること |
-| 適応フィールドの `discontinuity_indicator` と PCR の読み取り（ドロップ位置の経過時刻に限る） | — |
-| — | TS の書き出し・変換・demux（この不変条件の本体） |
+| PAT / PMT のセクション再構成 | 記述子を一切読まない |
+| ES ループの PID と種別の読み取り | 他テーブルの解析 |
+| 固定 PID の静的表による命名 | ES ペイロードの解釈 |
+| PID と種別の対応を統計メタデータとして記録 | PSI を根拠にした EPG プロジェクションの補正 |
+| 適応フィールドの不連続指標と PCR の読み取り | TS の書き出し・変換・demux |
 
-**「記述子を読まない」が歯止めの本体。** 機械的に判定できる（`Descriptors()` を呼んでいたらレビューで落ちる）し、EIT の解析も自動的に排除される（EIT の中身は記述子）。
+表の見方は次の通り。記述子には `component_tag` も含む。固定 PID は PAT / CAT / NIT / SDT / EIT / TOT で、解析は要らない。他テーブルは TDT / EIT / SDT / NIT / TOT である。ES ペイロードの解釈には、字幕のデコードや映像解析が入る。不連続指標と PCR の読み取りは、ドロップ位置の経過時刻に限る。TS の書き出し・変換・demux は、この不変条件の本体である。
 
-**字幕と文字スーパーは区別しない。** ARIB では両者とも `stream_type = 0x06`（private PES）で、区別には `component_tag`（記述子タグ 0x52）が必要になる。守りたいのは映像と音声なので、`stream_type` だけで足りる分類にとどめる。この割り切りにより **ARIB 固有の知識がコードベースに一切入らない**（`stream_type` は ISO/IEC 13818-1 の標準値）。既存依存の gots が `IsVideoContent()` / `IsAudioContent()` を含めて必要なものを全て持っており、自前実装はセクションの取り回しだけになる。
+#### 歯止めは記述子を読まないこと
 
-**PSI 解析の失敗は ingest の失敗にしない。** 種別が不明なら PID 数値のまま表示する。壊れた PMT で転送や原本のコミットを失敗させない。
+記述子を読まないことが、歯止めの本体である。機械的に判定でき、EIT の解析も自動的に排除される。EIT の中身は記述子だからである。
 
-PMT は原本内で更新されうる（version 更新、番組の境目での PID 再割り当て）。同一 PID の分類が途中で変わった場合は**最後に見たものを採用する**。
+記述子を取得する `Descriptors()` を呼んでいたら、レビューで落ちる。
+
+#### 字幕と文字スーパー
+
+字幕と文字スーパーは区別しない。守りたいのは映像と音声なので、ストリーム種別だけで足りる分類にとどめる。
+
+ARIB では両者とも private PES で、区別には記述子タグ 0x52 の `component_tag` が必要になる。
+
+この割り切りで、ARIB 固有の知識がコードベースに一切入らない。`stream_type` は ISO/IEC 13818-1 の標準値だからである。既存依存の gots が必要なものを全て持っており、自前実装はセクションの取り回しだけになる。
+
+#### 解析の失敗と PMT の更新
+
+PSI 解析の失敗は、ingest の失敗にしない。種別が不明なら PID 数値のまま表示する。壊れた PMT で、転送や原本のコミットを失敗させない。
+
+PMT は原本内で更新されうる。version の更新や、番組の境目での PID の再割り当てである。同一 PID の分類が途中で変わった場合は、最後に見たものを採用する。
+
+<details><summary>根拠</summary>
+
+- 許さない記述子: `component_tag` も含む
+- 読んでよい ES ループの項目: `elementary_PID` と `stream_type`
+- 読んでよい適応フィールドの項目: `discontinuity_indicator`
+- 機械判定の条件: `Descriptors()` を呼んでいたらレビューで落ちる
+- 字幕と文字スーパーの種別: `stream_type = 0x06`（private PES）。区別に要るのは記述子タグ 0x52 の `component_tag`
+- 既存依存: gots の `IsVideoContent()` / `IsAudioContent()`
+
+</details>
 
 ### ブラウザにも同じ境界を適用する
 
-**フロントエンドも放送 TS を解釈しない。** 放送 TS とは、mirakc が返すストリームと録画原本のことである。ブラウザが扱うのは ffmpeg の出力（HLS / fMP4 / WebVTT）だけで、放送 TS をブラウザへ渡して再生・解読させる経路は持たない。理由はサーバー側と同じで、ARIB 固有の知識をコードベースに入れないためである。ブラウザで demux・ARIB 字幕・BML を扱えば、その知識が `web/src` に入る。保証する範囲（[overview.md](../overview.md) §保証する構成と機能の範囲）の機能は、どれもブラウザで放送 TS を扱う必要がない。
+フロントエンドも放送 TS を解釈しない。ブラウザが扱うのは ffmpeg の出力だけで、放送 TS を渡して再生や解読をさせる経路は持たない。ARIB 固有の知識をコードベースに入れないためである。hls.js が ffmpeg の書いた TS セグメントを demux するのは、この境界の対象外である。
 
-**hls.js が MPEG-TS のセグメントを demux するのは対象外である。** ライブと追っかけ再生のセグメントは ffmpeg が書いた MPEG-TS である。中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT である。放送由来の SI・ARIB 字幕・データ放送は含まない（字幕は ffmpeg が WebVTT に変換して別に書く）。境界は器の形式ではなく、放送由来の構造を読むかどうかで引く。
+放送 TS とは、mirakc が返すストリームと録画原本のことで、ブラウザが扱う ffmpeg の出力は HLS / fMP4 / WebVTT になる。理由はサーバー側と同じで、ブラウザで demux・ARIB 字幕・BML を扱えば、その知識が `web/src` に入る。保証する範囲（[overview.md](../overview.md) §保証する構成と機能の範囲）の機能は、どれもブラウザで放送 TS を扱う必要がない。
+
+#### hls.js の demux は対象外
+
+hls.js が MPEG-TS のセグメントを demux するのは、この境界の対象外である。ライブと追っかけ再生のセグメントは、ffmpeg が書いた MPEG-TS である。中身は H.264 / AAC と、ffmpeg が作り直した PAT / PMT / SDT で、放送由来の SI・ARIB 字幕・データ放送は含まない。字幕は ffmpeg が WebVTT に変換して別に書く。
+
+境界は、器の形式では引かない。放送由来の構造を読むかどうかで引く。
+
+#### 機能ごとの判定
+
+放送 TS を読む場所で機能を分けると、原本の再生とオフライン保存は境界に整合し、データ放送とブラウザでの変換・復号は整合しない。
 
 | 機能 | 放送 TS を読む場所 | 判定 |
 |---|---|---|
-| 原本 MPEG-2 のブラウザ再生 | ffmpeg（streamer）が HLS に変換する | 整合 |
-| オフライン保存 | なし（HLS や encoded を保存する） | 整合 |
-| 実況コメントの時刻合わせ | ingest が TOT を読む | サーバー側の例外表の改訂が要る。TOT の固定部（`JST_time`）だけを許す方針で、改訂は実況を読む側と同じ PR で入れる（未解決） |
-| データ放送 | ブラウザで DSM-CC / BML を解読する | **非整合**。採るなら先にこの境界を改める |
-| ブラウザでの放送 TS の変換・復号（WASM 等） | ブラウザ | **非整合**。MPEG-2 → H.264 のビットストリーム変換の実測でも、帯域・再生バッファ・ソフトウェアデコードの代償が大きかった |
+| 原本 MPEG-2 のブラウザ再生 | ffmpeg（streamer） | 整合 |
+| オフライン保存 | なし | 整合 |
+| 実況コメントの時刻合わせ | ingest が TOT を読む | 例外表の改訂が要る |
+| データ放送 | ブラウザ | 非整合 |
+| ブラウザでの放送 TS の変換・復号 | ブラウザ | 非整合 |
 
-機械判定は 2 つある。Go は `.golangci.yml` の depguard（`ts-inspection`）が gots の import を `internal/tsstat` に閉じる。Web は `web/tests/broadcast-ts-boundary.test.ts` が、放送 TS を扱うライブラリを本番の依存から締め出す。e2e の計器が基準として放送 TS を読むことは許すので、`devDependencies` は対象にしない。
+表の補足は次の通り。原本 MPEG-2 は、ffmpeg が HLS に変換してから再生する。オフライン保存は HLS や encoded を保存する。
+
+実況コメントの時刻合わせには、サーバー側の例外表の改訂が要る。TOT の固定部（`JST_time`）だけを許す方針で、改訂は実況を読む側と同じ PR で入れる（未解決）。データ放送はブラウザで DSM-CC / BML を解読するので非整合で、採るなら先にこの境界を改める。
+
+ブラウザでの放送 TS の変換・復号（WASM 等）も非整合である。MPEG-2 → H.264 のビットストリーム変換の実測でも、帯域・再生バッファ・ソフトウェアデコードの代償が大きかった。
+
+#### 機械判定
+
+境界は 2 つの機械判定で守る。Go は import を 1 つのパッケージに閉じ、Web は放送 TS を扱うライブラリを本番の依存から締め出す。
+
+Go は `.golangci.yml` の depguard（`ts-inspection`）が、gots の import を `internal/tsstat` に閉じる。Web は `web/tests/broadcast-ts-boundary.test.ts` が検査する。e2e の計器が基準として放送 TS を読むことは許すので、`devDependencies` は対象にしない。
 
 ---
 
 ## 2. mirakc に任せること
 
-mirakc の録画機能は分散システムのバックエンドとして非常に都合の良い性質を持つ:
+mirakc の録画機能は、分散システムのバックエンドとして都合の良い性質を持つ。予約は mirakc 側で永続化され、チューナーの調停も mirakc に一元化され、録画物と状態の変化は API とイベントで取り出せる。
 
 ### schedule API による予約
 
-`POST /api/recording/schedules`（programId 単位）でスケジュールを登録する。スケジュールは `recording.basedir/schedules.json` に mirakc 側で永続化されるため、**Rokuban が落ちていても録画は走る**。
+予約の登録は、mirakc の schedule API に番組 ID 単位で行う。スケジュールは mirakc 側で永続化されるので、Rokuban が落ちていても録画は走る。
+
+<details><summary>根拠</summary>
+
+- 登録: `POST /api/recording/schedules`（programId 単位）
+- 永続化先: `recording.basedir/schedules.json`
+
+</details>
 
 ### チューナー調停
 
-mirakc の優先度機構（`X-Mirakurun-Priority` 相当 + schedule options の `priority`）に一元化する。ライブ視聴・録画・（併用する場合の）KonomiTV 等が同じ mirakc に載っても、いざという時は録画が勝つ。
+チューナーの調停は、mirakc の優先度機構に一元化する。ライブ視聴・録画・（併用する場合の）KonomiTV 等が同じ mirakc に載っても、いざという時は録画が勝つ。
+
+<details><summary>根拠</summary>
+
+- 優先度機構: `X-Mirakurun-Priority` 相当 + schedule options の `priority`
+
+</details>
 
 ### PSI/SI 追従 --- 追従するのは終了だけ
 
-**終了は TS 内の EIT[p/f] に追従する。** 既定の `filters.program-filter`（`mirakc-arib filter-program`）が録画ストリームの EIT[p/f] からイベント時刻を取る。その終端で切る（`--end-margin=2000`）。
+録画が追従するのは番組の終了だけである。終了は放送波の EIT に従って終端で切る。開始は追従せず、予定の少し前にチューナーを開くだけなので、開始が大きく繰り下がると録画失敗になり、遅れて録ることはない。
 
-**開始は追従しない。賭けている。** mirakc は EPG 予定時刻の 15 秒前（`PREP_SECS`）にチューナーを開くだけで、その時刻自体は放送波を見ていない。filter-program はそこから EIT[p/f] を見て、対象 `eid` が present なら流し、following なら待つ。**どちらでもなければ待たずに失敗する**（`might have been canceled` を出して `stop_`）。待たせる `--wait-until` は録画経路では一切渡されない。`server.program-stream-max-start-delay` は `/api/programs/{id}/stream` 専用のノブで、予約録画には効かない。
+終了は、TS 内の EIT[p/f] に追従する。既定のプログラムフィルタが録画ストリームの EIT[p/f] からイベント時刻を取り、その終端で切る。
 
-つまり繰り下げに耐えるのは「予定の 15 秒前に対象イベントがまだ following に見えている」範囲だけ。数分押している程度なら following のまま残るので実境界で録れる。p/f の並びが入れ替わるほどの繰り下げは**遅れて録るのではなく `recording.failed` になる**。延長・繰り下げの通知（`recording.rescheduled`）と理由付きの失敗（`need-rescheduling` / `removed-from-epg` 等）はここを観測するためにある。
+#### 開始は追従しない
 
-**`recordings.started_at` を実開始として読んではいけない。** watcher が入れるのは mirakc の `record.Recording.StartTime`、つまりチューナーを開いた時刻そのままである。**構造的に「予定 − 15 秒」になる**（実測: 正常終了した録画は全て `-00:00:14.99`）。`reconciler.start_delay_grace` はこの前提に乗っている --- 予定 + 猶予を過ぎて `started_at` が無ければ mirakc 側の異常とみなす検出器であって、実開始のずれを測る道具ではない。
+開始は追従しない。賭けている。mirakc は、EPG 予定時刻の 15 秒前にチューナーを開くだけで、その時刻自体は放送波を見ていない。プログラムフィルタはそこから EIT[p/f] を見て、対象のイベントが present なら流し、following なら待つ。どちらでもなければ、待たずに失敗する。
+
+待たせる `--wait-until` は、録画経路では一切渡されない。`server.program-stream-max-start-delay` は `/api/programs/{id}/stream` 専用の設定で、予約録画には効かない。
+
+```mermaid
+flowchart TD
+    open[予定の 15 秒前にチューナーを開く] --> eit{対象イベントの位置}
+    eit -->|present| rec[流して録画]
+    eit -->|following| wait[待つ]
+    wait --> rec
+    eit -->|どちらでもない| fail[待たずに録画失敗]
+```
+
+つまり繰り下げに耐えるのは、予定の 15 秒前に、対象イベントがまだ following に見えている範囲だけである。数分押している程度なら following のまま残るので、実境界で録れる。p/f の並びが入れ替わるほどの繰り下げは録画失敗になり、遅れて録ることはない。延長・繰り下げの通知と、理由付きの失敗は、ここを観測するためにある。
+
+#### 録画の開始時刻は実開始ではない
+
+録画行の開始時刻を、実開始として読んではいけない。watcher が入れるのはチューナーを開いた時刻そのままなので、構造的に「予定 − 15 秒」になる。
+
+実測では、正常終了した録画は全て `-00:00:14.99` だった。値は mirakc の record の開始時刻である。
+
+開始遅延の猶予は、この前提に乗っている。予定に猶予を足した時刻を過ぎても開始時刻が無ければ、mirakc 側の異常とみなす検出器であって、実開始のずれを測る道具ではない。
+
+<details><summary>根拠</summary>
+
+- 対象イベントの照合に使う識別子: `eid`
+- 終了に追従するフィルタ: 既定の `filters.program-filter`（`mirakc-arib filter-program`）。`--end-margin=2000`
+- チューナーを開く時刻: 予定の 15 秒前（`PREP_SECS`）
+- 待たずに失敗する経路: `might have been canceled` を出して `stop_`
+- 待たせる引数: `--wait-until`
+- 予約録画に効かない設定: `server.program-stream-max-start-delay`（`/api/programs/{id}/stream` 専用）
+- 繰り下げの通知と理由付きの失敗: `recording.rescheduled` / `need-rescheduling` / `removed-from-epg`、失敗は `recording.failed`
+- 実開始として読んではいけない列: `recordings.started_at`（略称 `started_at`）（mirakc の `record.Recording.StartTime`）
+- 猶予の設定: `reconciler.start_delay_grace`
+
+</details>
 
 ### onair tracker は採らない --- 観測は継続受信の副産物としてのみ採る
 
-開始まで追従させる（および「今放送中」を放送波から得る）には `onair-program-trackers` が要る。**採らない。** チューナー本数の問題ではなく、同じ単価で厳密に優れた買い物があるため。
+onair tracker は採らない。多重化波ごとにチューナーを恒久的に専有する単価を払って、得られるのは表示ラベルだけで、同じ単価で厳密に優れた買い物がある。観測は、他の目的で既に継続受信している構成の副産物としてのみ採る。
 
-「今」の真実（EIT[p/f]）は放送波の中にしかなく、外部の番組表は予定しか配らない。読むには**多重化波 1 本あたりチューナー 1 本を恒久的に**払う必要があり、この単価は総本数に依らない。
+開始まで追従させる、あるいは「今放送中」を放送波から得るには、onair tracker の設定が要る。チューナー本数の問題は、採らない理由にならない。理由は、同じ単価で厳密に優れた買い物があることである。
 
-`onair-program-trackers.local` はその単価（`uses.tuner` は専用で他と共有されない）を払って、表示ラベルだけをサービス単位の直列ポーリングで返す。実測: tune の TTFB は約 2.1 秒（recdvb + PX-S1UD / GR）なので 1 サービス約 7 秒。実運用の 19 サービス構成では 1 周 135 秒で、mirakc が想定する 60 秒周期に収まらない。
+#### 恒久的なチューナーの単価
 
-同じ単価の `timeshift.recorders` はチューナーを多重化波に固定し、同一波の全サービスで共有する。実イベント境界（`EventStart` / `EventUpdate` / `EventEnd`）を連続で返した上に、追っかけ再生と全録が付く。**tracker の出力は timeshift の真部分集合で遅延だけ大きい**ので、チューナーが潤沢な構成でも選ぶ理由が無い。
+「今」の真実（EIT[p/f]）は放送波の中にしかなく、外部の番組表は予定しか配らない。読むには、多重化波 1 本あたりチューナー 1 本を恒久的に払う必要がある。この単価は、総本数に依らない。
+
+tracker はこの単価を払って、表示ラベルだけを、サービス単位の直列ポーリングで返す。専用のチューナーは他と共有されない。実測では、tune の TTFB が約 2.1 秒（recdvb + PX-S1UD / GR）で、1 サービスに約 7 秒かかる。実運用の 19 サービス構成では 1 周 135 秒になり、mirakc が想定する 60 秒周期に収まらない。
+
+#### timeshift のほうが優れる
+
+同じ単価なら、timeshift のほうが優れる。チューナーを多重化波に固定して同一波の全サービスで共有し、実イベント境界を連続で返した上に、追っかけ再生と全録が付く。
+
+実イベント境界は `EventStart` / `EventUpdate` / `EventEnd` である。
+
+tracker の出力は timeshift の真部分集合で、遅延だけが大きい。チューナーが潤沢な構成でも、tracker を選ぶ理由が無い。
 
 > **観測のために新たに恒久専有チューナーを増やさない。観測は、他の目的（timeshift / 全録）で既にその多重化波を継続受信している構成の副産物としてのみ採る。**
 
-remote tracker も使えない。GR は network_id が地域ごとに別なので、他サイトの観測はこちらのサービスについて何も言わない。全国共通の BS/CS を配れる方向には受信設備が無い。**onair はサイトローカルな概念で、全国で 1 つの正本にはならない。**
+#### remote tracker と将来の timeshift
 
-将来 timeshift を入れるなら観測は追加コスト 0 で付いてくる。ただし mirakc は timeshift の観測を `/api/onair` に結線していないので、そこは上流に足す話になる。採らない側の帰結（予定を正本にし、それを画面で明示する）は [frontend/live.md](../frontend/live.md)「いま放送中」は予定であって観測ではない。
+remote tracker も使えない。GR は network_id が地域ごとに別なので、他サイトの観測は、こちらのサービスについて何も言わない。全国共通の BS/CS を配れる方向には受信設備が無い。onair はサイトローカルな概念で、全国で 1 つの記録にはならない。
 
-`internal/mirakc/conformance` は、正常系とは別コンテナで次の 4 病態を測定する（対象は `mirakc 4.0.0-dev.0` 相当の pin）。判定は Rokuban の期待値を実装するものではなく、mirakc の実際の record / SSE の結果を機械判定し、テストログにも `event_id` と `recording.startTime` / 失敗理由を残す。
+将来 timeshift を入れるなら、観測は追加コスト 0 で付いてくる。ただし mirakc は timeshift の観測を `/api/onair` に結線していないので、そこは上流に足す話になる。採らない側の帰結は、予定を比較の基準にし、それを画面で明示することである（[frontend/live.md](../frontend/live.md)「いま放送中」は予定であって観測ではない）。
 
-| ケース | 測定している挙動 | 判定 |
-|---|---|---|
-| 前番組延長 | present が別 event_id・duration=0xFFFFFF の間 | record の event_id は対象だが、`recording.startTime` は対象 `startAt` より早い（今回の観測は数秒〜十数秒） |
-| `running_status=2` | 予約対象が present だが「数秒後に開始」 | record の event_id は対象だが、`recording.startTime` は対象 `startAt` より早い |
-| present / following | present は前番組、following が予約対象 | record の event_id は対象だが、録画パイプラインは対象 `startAt` より早く始まる（今回の観測は数秒〜十数秒） |
-| event_id 振り直し | 予約対象が消え、同じ時間帯に別 event_id が現れる | `recording.failed` にはならず、予約対象 event_id の record が finished まで残る。置換 event_id は録らない |
+<details><summary>根拠</summary>
 
-ARIB TR-B14 の「開始判定は following の `start_time` を使う」という解釈そのものは、このテストの範囲では規格根拠を確認していない。上表はあくまで `mirakc 4.0.0-dev.0` 相当の pin に対する mirakc の観測結果であり、規格解釈の根拠としては扱わない。
+- tracker の設定: `onair-program-trackers` / `onair-program-trackers.local`（`uses.tuner` は専用で他と共有されない）
+- 継続受信で観測を得る設定: `timeshift.recorders`
+- timeshift の観測の結線先: `/api/onair`（mirakc は結線していない）
+
+</details>
+
+#### 放送境界の conformance
+
+mirakc の放送境界の挙動は、正常系とは別コンテナで、4 つの病態として測定している。判定は mirakc の実際の record と SSE の結果を機械判定するもので、Rokuban の期待値は実装しない。
+
+測定は `internal/mirakc/conformance` が行い、対象は `mirakc 4.0.0-dev.0` 相当の pin である。テストログにも、イベント ID と録画開始時刻・失敗理由を残す。
+
+| ケース | 測定している挙動 |
+|---|---|
+| 前番組延長 | present が別イベントで、長さ未定の間 |
+| `running_status=2` | 予約対象が present だが「数秒後に開始」 |
+| present / following | present は前番組、following が予約対象 |
+| event_id 振り直し | 予約対象が消え、同じ時間帯に別イベントが現れる |
+
+最初の 3 ケースの判定は共通で、record のイベント ID は対象だが、録画開始時刻は対象の予定より早い。録画パイプラインが予定より早く始まるためで、今回の観測は数秒から十数秒だった。event_id の振り直しでは、`recording.failed` にはならず、予約対象のイベント ID の record が finished まで残る。置換されたイベント ID は録らない。
+
+ARIB TR-B14 の「開始判定は following の `start_time` を使う」という解釈そのものは、このテストの範囲では規格根拠を確認していない（未検証）。上の結果は `mirakc 4.0.0-dev.0` 相当の pin に対する mirakc の観測であり、規格解釈の根拠としては扱わない。
 
 <details><summary>根拠</summary>
 
 - 測定対象の pin: `mirakc 4.0.0-dev.0`
 - 放送境界の 4 病態を測る conformance: `internal/mirakc/conformance/TestBroadcastPathologies`
+- 前番組延長の長さ未定: `duration=0xFFFFFF`
+- 判定に使う値: `event_id` / `recording.startTime` / `startAt`
 
 </details>
 
 ### Records API
 
-録画物は `GET /api/recording/records/{id}/stream` で HTTP 取り出し可能。エッジとサーバー間に共有ファイルシステムが不要になる。
-
-### SSE 再送
-
-`/events` SSE は接続時に既存全 record の `recording.record-saved` を再送する。watcher が落ちていた間のイベントを取りこぼしても、再接続すれば現状と突き合わせて回復できる（実質 at-least-once + 状態同期）。
-
-この再送と、同一 record への `record-saved` の複数回配信は、`internal/mirakc/conformance` が `mirakc 4.0.0-dev.0` 相当の pin に対して判定している。他の版では未判定である。
+録画物は HTTP で取り出せるので、エッジとサーバーの間に共有ファイルシステムが要らない。
 
 <details><summary>根拠</summary>
 
+- 取り出し: `GET /api/recording/records/{id}/stream`
+
+</details>
+
+### SSE 再送
+
+mirakc のイベント配信は、接続時に既存の全 record の保存イベントを再送する。watcher が落ちていた間のイベントを取りこぼしても、再接続すれば現状と突き合わせて回復できる。実質は at-least-once と状態同期である。
+
+この再送と、同一 record への保存イベントの複数回配信は、`mirakc 4.0.0-dev.0` 相当の pin に対して conformance が判定している。他のバージョンでは未判定である。
+
+<details><summary>根拠</summary>
+
+- イベント配信: `/events` SSE。再送されるのは既存全 record の `recording.record-saved`（略称 `record-saved`）
+- 判定している conformance: `internal/mirakc/conformance`
 - 接続時の再送: `TestConformance/RecordSavedResentOnConnect`
 - 同一 record への複数回配信: `TestConformance/RecordSavedFiresMultipleTimes`
 
 </details>
-
----
