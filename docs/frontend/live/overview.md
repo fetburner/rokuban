@@ -118,7 +118,7 @@ flowchart TD
   E -->|commit 後| G[張り直さず、詳細画面が再生元を選び直す]
 ```
 
-張り直す前に再生中だったなら、張り直した後も再生を続ける（原本 HLS と同じ）。commit 後に張り直さないのは、新しい追っかけセッションを作れないからである。範囲外のシークでは、詳細画面が最新の録画状態で再生元を選び直す。finished でも ingest が `pending` / `transferring` の間は、追っかけを続けられる（[recordings/playback.md](../recordings/playback.md) §録画のブラウザ再生）。
+張り直す前に再生中だったなら、張り直した後も再生を続ける（原本 HLS と同じ）。commit 後に張り直さないのは、新しい追っかけセッションを作れないからである。commit 後の範囲外のシークでは、詳細画面が最新の録画状態で再生元を選び直す。finished でも ingest が `pending` / `transferring` の間は、追っかけを続けられる（[recordings/playback.md](../recordings/playback.md) §録画のブラウザ再生）。
 
 <details><summary>根拠</summary>
 
