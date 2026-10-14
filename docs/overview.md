@@ -148,9 +148,9 @@ nginx は構成図上の「箱」に描かない。推奨デプロイパター�
 
 ## 単一バイナリ、ロールで分割
 
-単一レプリカでの配置、水平スケール、scale-to-zero は、別の保証である。scale-to-zero できるのは、長寿命接続を持たない api のリクエスト経路に限る。
+単一バイナリを、全ロール 1 プロセスの monolithic mode と、ロールごとに分ける distributed mode の両方で最初から動かす。単一レプリカ・水平スケール・scale-to-zero は別の保証で、scale-to-zero は api の DB-only なリクエスト経路に限る。
 
-ユーザーの大半は、ミニ PC や自宅サーバー 1 台で動かす。マイクロサービス前提の設計は、その層を切り捨てる。そこで、Loki / Tempo と同じ monolithic mode / distributed mode を設計に入れる。
+ユーザーの大半は、ミニ PC や自宅サーバー 1 台で動かす。マイクロサービス前提の設計は、その層を切り捨てる。そこで、Loki / Tempo と同じ monolithic mode / distributed mode を最初から設計に入れる。
 
 2 つの形は次の通り。
 
@@ -201,7 +201,6 @@ SSE を扱うことは、ソケットを持ち続けるので、ロールの根�
 
 - 周期実行を投入する River の機構: `PeriodicJobs`
 - キューごとにロールを増やした場合に生まれる名前: `ingester` / `encoder` / `thumbnailer`
-- 引くキューを決めるロール内のパラメータ: `worker`
 
 </details>
 
@@ -255,7 +254,7 @@ nginx は必須コンポーネントにしない。ただし、前段に置け�
 
 **ベースイメージを distroless/static に置き換えると、そのまま Docker Compose の healthcheck が壊れる。** 攻撃面を縮めたいという動機は正しい。だがそれは、healthcheck を別の手段に作り替える判断と一緒でなければ成立しない（Go 側に自己チェック用のサブコマンドを持たせる等）。イメージだけ差し替えるのは変更にならない。
 
-ベースイメージは Debian の slim 版に、証明書と HTTP クライアントを足したものである。実行ユーザーは一般ユーザーにする。同梱する HTTP クライアントは `curl` 1 つだけで、healthcheck が HTTP を叩く手段を必要とするためである。
+ベースイメージは Debian の slim 版に、証明書と HTTP クライアントを足したものである。実行ユーザーは非特権ユーザーにする。同梱する HTTP クライアントは `curl` 1 つだけで、healthcheck が HTTP を叩く手段を必要とするためである。
 
 <details><summary>根拠</summary>
 
@@ -292,7 +291,7 @@ notice は `npm run third-party-notices` で生成する。生成器は追加の
 
 予約・ルールの書き込みも DB だけで完結し、mirakc への同期は別の reconciler が非同期に行うので、api ロールはサーバーレス（Cloud Run / Lambda 等）で scale-to-zero にできる。SSE は api に置かず notifier ロールへ分ける。録画を保証するのは、mirakc に番組終了前まで同期済みの予約だけである。
 
-レベルトリガー設計の帰結として、書き込みも DB だけで完結する。Postgres が使え、同期を担う reconciler が別に動いていることが条件である。
+レベルトリガー設計の帰結として、書き込みも DB だけで完結する。Postgres が使え、同期を担う reconciler が別に動いている構成なら、api をサーバーレスにできる。
 
 API は desired state を Postgres に書くだけで、mirakc への同期は reconciler が非同期に収束させる。API の書き込みだけでは録画予約は確定しない。reconciler が放送開始前までに mirakc へ同期できなかった新規・変更予約の録画は保証されない。
 
@@ -304,13 +303,11 @@ API は desired state を Postgres に書くだけで、mirakc への同期は r
 
 ### SSE の置き場所
 
-**SSE を api ロールに置いてはならない。** api を scale-to-zero にできなくなる。SSE は CDN のパスルーティングで notifier ロールへ振り分ける。
+**SSE を api ロールに置いてはならない。** 振り分け先が api 自身になるので、api を scale-to-zero にできなくなる。ハイブリッド構成では、SSE は CDN のパスルーティングで notifier ロールへ振り分ける。
 
 SSE は notifier ロールに分離されており、api は mirakc にもファイルシステムにも長寿命接続にも依存しない、純粋なリクエスト/レスポンス層である。api の scale-to-zero はこの経路の配置条件であり、全ロールに共通する保証ではない。
 
-ブラウザは `/api/events` で notifier に接続する。
-
-振り分け先が api 自身になるので、api を scale-to-zero にできなくなる。SSE は長寿命接続なのでサーバーレスには乗せず、`/api/events` だけを notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても、自宅側に置いても成立する。
+SSE は長寿命接続なのでサーバーレスには乗せず、`/api/events` だけを notifier ロールへ振り分ける（詳細: [api.md](api.md)）。notifier は mirakc への到達性を必要としない（Postgres の NOTIFY を配るだけ）ため、クラウド側に常駐プロセスとして置いても、自宅側に置いても成立する。
 
 ### 推奨のハイブリッド構成
 
@@ -332,6 +329,7 @@ worker が自宅側にあるのは、キューの置き場所に制約がある�
 - mirakc への到達性を要するキュー: `reconciler` / `epg` / `watcher` / `ingest`
 - アーカイブのファイルシステムを要するキュー: `encode` / `thumbnail` / `cleanup`
 - DB しか触らないキュー: `ruler`
+- 自宅側に置くロール: `worker`
 
 </details>
 

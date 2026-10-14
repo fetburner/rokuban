@@ -32,9 +32,9 @@ mirakc の record id は同期表にだけ存在し、同期表から永続側�
 
 #### 未解決: 同一 mirakc を共有する複数の Rokuban
 
-同一の mirakc を複数の Rokuban が共有すると、自分の予約を見分ける tag が衝突し、互いの予約を自分のものと誤認して消し合う。
+未解決: 同一の mirakc を複数の Rokuban が共有すると、自分の予約を見分ける tag が衝突し、互いの予約と録画を自分のものと誤認して消し合う。
 
-未解決: 設定で tag を焼き分けても解消しない。mirakc の schedule は programId が主キーなので、複数の Rokuban が同一番組を取り合う問題が tag の手前で残る。対処は「複数共有を支持するか」の判定基準を決めてからにする。
+設定で tag を焼き分けても解消しない。mirakc の schedule は programId が主キーなので、複数の Rokuban が同一番組を取り合う問題が tag の手前で残る。対処は「複数共有を支持するか」の判定基準を決めてからにする。
 
 <details><summary>根拠</summary>
 
@@ -67,7 +67,7 @@ mirakc が指すものは 2 種類ある。record id はインスタンス単位
 
 #### 識別子の 2 種類
 
-record id を取り違えると、別の録画を指してしまう。programId はサービスの識別子と同型で、取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）。
+record id を取り違えると、別の録画を指してしまう。programId は放送から合成される値で、サービスの id も同じく放送から合成される。どちらも存在のスコープしか持たず、取り違えても別の番組にはならず、その site の EPG に無ければ 404 になるだけである（[ruler](../recording/ruler.md)「サイトの扱い」）。
 
 同一放送なら全 site で同一の programId になる、という前提がある。これは Mirakurun の ID 合成規則（NID・SID・eventId から合成する）からの演繹で、複数サイトの実機で測った結果ではない（未検証）。式は [reservations.md](reservations.md)「チャンネル識別はスナップショットする」にある。ruler の N 予約と重複排除は、この前提の上に成り立つ。
 
@@ -95,7 +95,7 @@ record id を取り違えると、別の録画を指してしまう。programId 
 
 site は設定ファイルで定義するサイト名で、各要素に必須であり、既定値は無い。サイトのレジストリは設定であり、DB に sites テーブルは作らない。
 
-site を持つのは、mirakc の観測と番組に由来する表である。予約・同期表・録画・EPG プロジェクションが当たる。メディア資産とドロップ統計は中央ストレージの記録なので持たない。
+site を持つのは、mirakc の観測と番組に由来する表である。予約・同期表・録画・EPG プロジェクションなどが当たる。メディア資産とドロップ統計は中央ストレージの記録なので持たない。
 
 検索も同じ観測側に立つ。検索結果の programId は存在のスコープなので、同一放送が複数 site でマッチすれば、行ごとに site を持つ複数行を返し、畳まない。
 
@@ -103,7 +103,7 @@ site を持つのは、mirakc の観測と番組に由来する表である。�
 
 - 設定の拡張先: `mirakcs:` リスト
 - サイト名の定義: `config.mirakcs[].site`
-- site を持つ表: `reservations` / `schedule_sync` / `record_sync` / `recordings` / EPG プロジェクション
+- site を持つ表: `reservations` / `schedule_sync` / `record_sync` / `recordings` / EPG プロジェクションなど
 - site を持たない表: `media_assets` / `drop_stats`
 - 列: `site`
 
@@ -157,7 +157,7 @@ site に束縛されない資源は、単体か一覧かによらず site をパ
 
 不変条件 10 に従い、行の存在そのものを主張として使う。空の上書きは「行が無い」で表し、停止していないブレーカーも「行が無い」で表す。詳細は [invariants.md](../invariants.md) §10 にある。
 
-#### 同じ述語は view にする
+#### 述語の共有
 
 同じ述語を 2 箇所目のクエリファイルに書く前に、view にする。述語の一致をコメント（「揃えること」）で守る方法は、CHECK で禁止するより弱い。view なら乖離が表現不可能になる。
 

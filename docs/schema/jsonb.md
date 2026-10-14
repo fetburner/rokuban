@@ -2,7 +2,7 @@
 
 ## 8. jsonb ドキュメント形式
 
-DB に jsonb で持つドキュメントの形を、予約オプション・品質イベント・失敗理由の順に示す。キーは camelCase にそろえる。
+DB に jsonb で持つドキュメントの形を、予約オプション・品質イベント・失敗理由の順に示す。品質イベントと失敗理由は mirakc のペイロードをそのまま持つ。予約オプションのキーだけが camelCase である。
 
 ### 予約オプション（reservations.base / program_overrides.overrides、同形）
 

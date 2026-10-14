@@ -3,10 +3,10 @@
   "questions": [
     {
       "heading": "4. schedule_sync — mirakc schedule の観測（observed state）",
-      "question": "schedule の観測表は何を持ち、誰が書くか。外部産の予定は消すか。",
+      "question": "schedule の観測表は何を持ち、誰が書くか。全量同期で行はどうなるか。",
       "points": [
         "mirakc の schedule の全量取得をそのまま写した使い捨ての表で、reconciler だけが書く",
-        "全量同期は取得に含まれない行を消すが、Rokuban の印が無い外部産の予定は触らない"
+        "全量同期は、取得に含まれない行を観測表から消す"
       ]
     },
     {

@@ -2,7 +2,7 @@
 
 ## 4. schedule_sync — mirakc schedule の観測（observed state）
 
-schedule の観測表は、mirakc の schedule を全量取得した結果をそのまま写した使い捨ての表で、書くのは reconciler だけである。全量同期は取得に含まれない行を消すが、Rokuban の印が無い外部産の予定は触らない。**mirakc の形をしてよい唯一の予約側テーブル**である。
+schedule の観測表は、mirakc の schedule を全量取得した結果をそのまま写した使い捨ての表で、書くのは reconciler だけである。全量同期は、取得に含まれない行を観測表から消す。**mirakc の形をしてよい唯一の予約側テーブル**である。
 
 ```sql
 CREATE TABLE schedule_sync (
@@ -27,11 +27,11 @@ CREATE TABLE schedule_sync (
 
 全量同期は、サイト単位に、upsert と「今回観測されなかった行の削除」を 1 つのトランザクションで行う。あるサイトへの疎通断が、他サイトの観測を消さない。
 
-削除対象を決める軸は、Rokuban の印が付いた schedule かどうかである。印が無い外部産の schedule だけを触らない（[reconciler.md](../recording/reconciler.md)「tags 対応付け」）。かつてあった予約 id の列は、書き手はいたが読み手が本番コードに 1 つも無かったため落とした。
+観測表の削除は、外部産かどうかを区別しない。印の判定は、reconciler が mirakc 側の schedule を消すかどうかの判定に使う。印が無い外部産の schedule は、mirakc 側では触らない（[reconciler.md](../recording/reconciler.md)「tags 対応付け」）。かつてあった予約 id の列は、書き手はいたが読み手が本番コードに 1 つも無かったため落とした。
 
 <details><summary>根拠</summary>
 
-- 削除対象の軸: `mirakc.IsOurs(tags)`。`IsOurs` が false（rokuban tag が無い = 外部産）の schedule は触らない
+- 印の判定: `mirakc.IsOurs(tags)`。`IsOurs` が false（rokuban tag が無い = 外部産）の schedule は、reconciler が mirakc 側で触らない
 - 落とした列: `reservation_id`
 
 </details>

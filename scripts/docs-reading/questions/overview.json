@@ -44,10 +44,11 @@
     },
     {
       "heading": "単一バイナリ、ロールで分割",
-      "question": "単一レプリカでの配置、水平スケール、scale-to-zero はそれぞれ同じ保証か。scale-to-zero できるのはどのロールか。",
+      "question": "単一バイナリはどの 2 つの形で動かすか。単一レプリカ・水平スケール・scale-to-zero は同じ保証か。scale-to-zero できるのはどこか。",
       "points": [
-        "別の保証である",
-        "scale-to-zero できるのは、長寿命接続を持たない api のリクエスト経路に限る"
+        "全ロール 1 プロセスの monolithic mode と、ロールごとに分ける distributed mode の両方で動かす",
+        "単一レプリカ・水平スケール・scale-to-zero は別の保証",
+        "scale-to-zero は api の DB-only なリクエスト経路に限る"
       ]
     },
     {
@@ -79,7 +80,7 @@
     },
     {
       "heading": "爆風半径は有界（意図せず手に入っている担保）",
-      "question": "mirakc の形をしているのは何か。mirakc を載せ替えるとき、ライブラリと履歴は持ち越せるか。",
+      "question": "mirakc の形をしているのは何か。mirakc を載せ替えるとき、ライブラリと履歴は持ち越せるか。番組 ID はどうなるか。",
       "points": [
         "mirakc の形をしているのは短命な導出状態だけ",
         "ライブラリと履歴は無傷で持ち越せる",
@@ -139,10 +140,10 @@
     },
     {
       "heading": "SSE の置き場所",
-      "question": "SSE を api ロールに置いてよいか。どこへ振り分けるか。",
+      "question": "SSE を api ロールに置いてよいか。ハイブリッド構成ではどこへ振り分けるか。",
       "points": [
         "置いてはならない。api を scale-to-zero にできなくなる",
-        "SSE は CDN のパスルーティングで notifier ロールへ振り分ける"
+        "ハイブリッド構成では、SSE は notifier ロールへ分ける"
       ]
     },
     {

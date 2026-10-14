@@ -6,8 +6,6 @@
 
 設定の入口は YAML 1 ファイルと環境変数の展開だけにする。CLI フラグは起動形態を表すものに限り、設定値そのものはフラグで渡さない。
 
-入口は「YAML 1 ファイル + `${VAR}` 展開」のみ。フラグは `--config` のパスと `--all` / ロール選択などに限る。
-
 ## 展開方式
 
 展開は YAML をパースする前の生テキストに対して常に行う。未定義の変数があれば、起動時に失敗させる。
@@ -40,7 +38,7 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 
 キーの網羅の基準は、リポジトリ直下のコメント付きサンプル設定ファイルである。この文書の表はキー・既定値・一言に留め、値を選んだ理由だけを各節に書く。
 
-[`config.example.yml`](../config.example.yml) の YAML を写さないのは、片方だけ直って気づかないうちにずれるためである。既定値の実装は `internal/config/config.go`（`defaults()` と各 `applyDefaults`）にある。
+[`config.example.yml`](../config.example.yml) の YAML を写さないのは、片方だけ直って気づかないうちにずれるためである。既定値の実装は `internal/config/config.go`（`defaults()` と各 `applyDefaults` / 呼び出し先の既定）にある。
 
 #### サーバーから CM 検出までのキー
 
@@ -69,7 +67,7 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 | `worker.periodic_jobs` | `true` | 定期ジョブをプロセス内で投入するか |
 | `worker.queues` | `[]`（全キュー） | worker ロールが引くキューの絞り込み |
 | `encode.ffmpeg` / `encode.ffprobe` | `ffmpeg` / `ffprobe` | PATH 検索。フルパス指定可 |
-| `encode.concurrency` | `1` | encode キューの MaxWorkers |
+| `encode.concurrency` | `1` | encode キューの MaxWorkers（ingest とは独立） |
 | `encode.thumbnail_concurrency` | `1` | thumbnail キューの MaxWorkers |
 | `encode.profiles` | `[]` | 構造化エンコードプロファイル |
 | `cm_detect.enabled` | `false` | CM 検出を有効にするか |
@@ -91,7 +89,7 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 |---|---|---|
 | `live.enabled` | `false` | ライブ視聴のルートを登録するか |
 | `live.ffmpeg` | `ffmpeg` | PATH 検索 |
-| `live.ffprobe` | `ffprobe` | 字幕ストリーム判定。PATH 検索 |
+| `live.ffprobe` | `ffprobe` | `live.captions` 有効時の字幕ストリーム判定。PATH 検索 |
 | `live.captions` | `false` | ARIB 字幕を WebVTT で出力するか |
 | `live.segment_dir` | —（`enabled: true` なら必須） | HLS セグメントの書き出し先 |
 | `live.max_sessions` | `4` | プロセスローカルの同時セッション上限 |
@@ -117,7 +115,6 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 
 `log.*` は config を読む全サブコマンドに共通の入口で、`slog` の既定ロガーへ適用される。対象は server / migrate / rescue / enqueue / catalog / config validate である。config の読み込みより前に出るログだけは既定（text 形式・Info 以上）のままになる（`--config` のパース失敗など）。
 
-
 ### 必須キー
 
 最小構成で書くのは 3 つだけで、残りは全部既定値を持つ。最小構成は 10 行程度に収まる。
@@ -128,7 +125,7 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 
 接続プールの上限と api ロール向けの statement timeout の 2 つで、詳細は [operations.md](operations.md) §3「DB 運用」に決まっている。
 
-`db.max_conns` は、プロセスが常に 1 個のプールしか持たず全ロールが共有するため、未指定（0）なら起動時の roles からロール別 budget を合計して自動算出する。`db.api_statement_timeout` は api ロールを含むプロセスのプール全体に適用される（monolith では worker 側にもかかる）。既定は 30s である。
+`db.max_conns`: プロセスは常に 1 個のプールしか持たず、全ロールが共有する。未指定（0）なら起動時の roles からロール別 budget を合計して自動算出する。`db.api_statement_timeout` は api ロールを含むプロセスのプール全体に適用される（monolith では worker 側にもかかる）。既定は 30s である。
 
 ### ingest.stall_timeout
 
@@ -146,7 +143,13 @@ Work slice 内の転送で無進捗を検知する時間で、既定は 30 秒�
 
 発動すると、手動で `POST /api/sites/{site}/breakers/ruler_deletes/resume` するまで止まり続けるラッチになる。件数が閾値以下に戻っても自動では解けない（[recording.md](recording.md) §3.2「大量削除サーキットブレーカー」）。下げると EPG の一時的な欠損やルールの一括編集で発動しやすくなる代わりに、誤判定で一気に失う予約の上限が下がる。既定値 50 は、通常運用で 1 サイトが同時に抱えるアクティブ予約数を明確に超える値として選んである。
 
-`reconciler.start_delay_grace` は、開始遅延検出器（[recording.md](recording.md) §3.3）の猶予である。開始時刻にこの時間を足した時刻を過ぎても録画の開始（`recordings.started_at`）が観測されない予約を検出して、アラートする。mirakc 側の未知の不具合への保険で、EPGStation#724 のチューナー再接続ハングで開始が 10 分遅延した実例がある。開始直後は mirakc の SSE 到達と watcher の処理に遅れがあるため、短すぎると正常な録画開始でも誤検知してアラートが常時鳴る。
+`reconciler.start_delay_grace` は、開始遅延検出器（[recording.md](recording.md) §3.3）の猶予である。開始時刻にこの時間を足した時刻を過ぎても録画の開始が観測されない予約を検出して、アラートする。mirakc 側の未知の不具合への保険で、EPGStation#724 のチューナー再接続ハングで開始が 10 分遅延した実例がある。開始直後は mirakc の SSE 到達と watcher の処理に遅れがあるため、短すぎると正常な録画開始でも誤検知してアラートが常時鳴る。
+
+<details><summary>根拠</summary>
+
+- 録画の開始の観測: `recordings.started_at`
+
+</details>
 
 ### worker.periodic_jobs と worker.queues
 
@@ -202,13 +205,13 @@ worker 起動時に、`cm_detect.binary_dir` の 3 コマンドと ffprobe（原
 
 `live.max_sessions` は、このプロセスが同時に持てるライブ / 追っかけセッション（≒ ffmpeg プロセス）数である。プロセスローカルな上限であり、グローバルな天井（チューナー数、mirakc が裁定）ではない（[operations.md](operations.md) §5「既定を 1 にする根拠」）。
 
-`live.idle_timeout` はサービス単位の idle GC 猶予で、この時間セグメント要求が来なければ ffmpeg を止める（クライアント 1 人ごとの生存は追わない）。離脱ヒント（`POST .../live/leave`）を受けたときに詰める短い猶予は、設定キーにしない。`3 × 最長の live.profiles[].segment_seconds + 2s`（既定 8 秒）として導出する。
+`live.idle_timeout` はサービス単位の idle GC 猶予で、この時間セグメント要求が来なければ ffmpeg を止める（クライアント 1 人ごとの生存は追わない）。離脱ヒント（`POST .../live/leave`）を受けたときに詰める短い猶予は、設定キーにしない。`3 × 最長の live.profiles[].segment_seconds + 2s`（既定 8 秒）で導出する。
 
 この猶予は `idle_timeout` ではクリップしない。クリップすると `segment_seconds: 6` + `idle_timeout: 2s` のような設定で猶予がセグメント長を下回り、leave が「他人の視聴を切る道具」になってしまう。猶予が `idle_timeout` 以上になる設定では、ヒントは詰める先が「いま」より後ろにならないので no-op になる（起動を止めるより運用者の意思を尊重する）。
 
 猶予は「生きている視聴者の次の要求が来るまでの間隔」より長くなければならない。その間隔を決めているのはセグメント長そのものなので、独立したキーにすると 2 つの値が矛盾する組み合わせを運用者が書けてしまう（[api.md](api.md) §ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」）。config と DB の境界と同じく、別の値から必ず導けるものはキーにしない。
 
-`live.tuner_priority` は mirakc への X-Mirakurun-Priority で、ruler が生成する schedule の既定 priority（10）より低くする（[recording.md](recording.md) §2「チューナー調停」）。**Rokuban はこの不等式を強制しない。** ルールの priority は DB 側（`rules.priority`、既定 10）でユーザーが自由に変えられ、ライブ側は config 側なので、両者を跨いで比較検証する権威がどちらにも無い。ユーザーがルールの priority を 0 や 1 まで下げると、この既定値のままではライブが録画に勝ってしまう。運用者が両方の値を意識して選ぶ前提とする。
+`live.tuner_priority` は mirakc への X-Mirakurun-Priority である。チューナーが足りないときに録画を勝たせるため、ruler が生成する schedule の既定 priority（10）より低くする（[recording.md](recording.md) §2「チューナー調停」）。**Rokuban はこの不等式を強制しない。** ルールの priority は DB 側（`rules.priority`、既定 10）でユーザーが自由に変えられ、ライブ側は config 側なので、両者を跨いで比較検証する権威がどちらにも無い。ユーザーがルールの priority を 0 や 1 まで下げると、この既定値のままではライブが録画に勝ってしまう。運用者が両方の値を意識して選ぶ前提とする。
 
 `live.profiles` は `encode.profiles` とは別の構造体である。HLS はセグメント長・プレイリスト長という VOD には無い制約を持つ。`name` は `?profile=` から参照する一意な名前で、英数字・ハイフン・アンダースコアのみ（セグメントファイル名の接頭辞に使うため）。ISDB-T の映像は MPEG-2 でブラウザの HLS 経路では事実上再生できないため、H.264 への変換が前提となる。この並びが `/live` の画質セレクタの並びで、先頭が `?profile=` 省略時の既定になる。一覧は `GET /api/live-profiles` が返し、名前と `height` だけで、コーデック・品質・extra_args は出さない。
 
@@ -216,7 +219,7 @@ worker 起動時に、`cm_detect.binary_dir` の 3 コマンドと ffprobe（原
 
 構造化するのは、追加引数では届かない位置、つまり入力より前のオプションとアプリが握るスケール filter だけである。コーデック指定より後ろのオプションは既存の追加引数で足りるので構造化しない。
 
-届かない位置とは、`-i` より前のオプションと、アプリが `-vf` を握っているスケール filter である。コーデック指定より後ろのオプション（`extra_args` が既に出ている位置）は既存のキーで足りる。`-global_quality` / `-cq` / `-q:v` のような品質オプションもこれに当たり、キー化しない。
+`extra_args` が既に出ている位置は既存のキーで足りる。`-global_quality / `-cq` / `-q:v` のような品質オプションもこれに当たり、キー化しない。
 
 | キー | 説明 |
 |---|---|
@@ -273,7 +276,7 @@ VOD の順序は次の通り。
 -f CONTAINER -progress pipe:1 -loglevel error OUTPUT           # アプリ所有の末尾
 ```
 
-ライブの順序は、同じ規則を入力 1 本・出力 N 本の形に展開したものである。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` と並ぶ。そのあと、プロファイルごとに `-map`（映像 1 本と音声 3 本）→ `-c:v`/`-c:a` → 主 / 副の `-filter:a:N` と並ぶ。
+ライブは同じ規則を入力 1 本・出力 N 本に展開する。入力側は `live.hwaccel` → `-probesize`/`-analyzeduration` → `live.input_extra_args` → `-f mpegts -i pipe:0` と並ぶ。そのあと、プロファイルごとに `-map`（映像 1 本と音声 3 本）→ `-c:v`/`-c:a` → 主 / 副の `-filter:a:N` と並ぶ。
 
 その後ろに `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]` が続く。さらに `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...` と並ぶ。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。音声 3 本の意味は [api/media.md](api/media.md) §音声にある。
 
@@ -281,11 +284,13 @@ VOD の順序は次の通り。
 
 ### カット版（`encode.profiles[].cut`）
 
-カット版を出すプロファイルを選ぶなら、カットしないプロファイルを 1 つ以上含める。原本は再生できず、確認に再生が要るので循環になるためである。自動検出のままではカット版を作らず、ユーザーが確認したチャプターだけが対象である。
+カット版を出すプロファイルを選ぶなら、カットしないプロファイルを 1 つ以上含める。確認に再生が要り、再生にエンコードが要り、エンコードに確認が要る循環になるためである。自動検出のままではカット版を作らず、ユーザーが確認したチャプターだけが対象である。
 
 **切る対象は録画側の事実としてチャプターが持ち、その出力に切り取りを適用するかは出力の性質としてプロファイルが持つ。** チャプターは自動検出（`cm_detect`）の結果をユーザーが確認したもので、その `cut=true` 区間が落ちる。自動検出のままでは作らない。誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えると取り返せないためである。
 
 カット版の相対パスには世代番号が入る（1 世代目から付ける）。チャプターを直しても自動では作り直さず、UI の「編集前の内容です」から `POST /api/recordings/{id}/encoded/{profile}/reencode` で作り直す（[storage/contract.md](storage/contract.md) §3）。
+
+原本 TS はブラウザで再生できないので循環になる。ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut: true` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
 
 <details><summary>根拠</summary>
 
@@ -295,11 +300,9 @@ VOD の順序は次の通り。
 
 </details>
 
-`cut: true` を選ぶ構成では、`cut` でないプロファイルを 1 つ以上含めること。原本 TS はブラウザで再生できないので、この循環になる。ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
-
 #### カット版の argv と切る時刻
 
-カット版の argv は filtergraph で組み、時刻の原点は入力の最早の開始時刻である。
+カット版は filtergraph で組み、映像も音声も時刻で切る。原点は入力の最早の開始時刻で、チャプターの原点と同じである。
 
 ```
 -hide_banner -nostats -y
@@ -312,7 +315,7 @@ VOD の順序は次の通り。
 
 `hwaccel.output_format` があれば、通常の encode と同じ hwaccel 引数を `-i` の前に出す。省略時は従来の救済経路を使う。`hwaccel.kind: vaapi` なら `-vaapi_device D` を出す。各区間を映像は `trim=start=…:end=…`、音声は `atrim=start=…:end=…` で切り、`concat` したあとに、`scaler` から導出した deinterlace / scale を連結する。VAAPI の GPU 経路は `deinterlace_vaapi` → `scale_vaapi` を使い、`format=nv12,hwupload` は付けない。救済経路では CPU filter の後ろに `format=nv12,hwupload` を付ける。
 
-映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS では映像だけがずれる。境界は同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとに A/V のずれが蓄積しない。trim の後に PTS から区間の開始時刻を引くのは、`concat` が各区間の先頭を 0 とみなすためである。`PTS-STARTPTS` は使わず開始時刻を引くことで、映像の先頭が区間の頭より遅れる場合も遅れを残す。
+映像を「最初の映像フレームから数えたフレーム番号」で切ると、放送 TS では映像だけずれる。境界は同じフレーム番号から秒へ換算する（`frame / fps`）ので、区間ごとに A/V のずれが蓄積しない。trim の後に PTS から区間の開始時刻を引くのは、`concat` が各区間の先頭を 0 とみなすためである。`PTS-STARTPTS` は使わず開始時刻を引くことで、映像の先頭が区間の頭より遅れる場合も遅れを残す。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は画面サイズが最大のもの、音声はチャンネル数が最大のもの、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
@@ -329,17 +332,23 @@ VOD の順序は次の通り。
 
 HW フレームは trim と concat を通せる。VAAPI の GPU 経路は FFmpeg 7.1 以降を推奨し、5.1〜7.0 では救済経路を使う。
 
-FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
+<details><summary>根拠</summary>
+
+- FFmpeg n5.1.6 / n9.0 の trim.c と avf_concat.c はフレーム内容を参照せず、HW pixel format を除外しない。avfilter.c はこれらの filter の入力 `hw_frames_ctx` を出力へ引き継ぐ。ffmpeg 9.0.2 の VideoToolbox で trim → setpts → concat → `scale_vt` → `h264_videotoolbox` を実測した。
+
+</details>
 
 5.1〜7.0 は MPEG-2 のデコード surface が固定 6 枚で、カット版では枯れて `get_buffer() failed` からつなぎ目にブロックノイズが出る。ジョブは成功扱いで終わるので、壊れたカット版がそのまま公開される。7.1 以降は動的プールになり、7.1.5-0+deb13u1 / libva 2.22.0-3 / iHD 25.2.3 でつなぎ目 3 の 30 分原本全体を処理しても `get_buffer() failed` は出なかった。未検証: 7.1 以降でつなぎ目の多い録画。
 
-5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。足りない枚数はつなぎ目の数で増えるので、固定値では足りない。5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。救済経路は `-hwaccel` を付けずに CPU でデコードするので、このプールを使わない。
+5.1〜7.0 は `-extra_hw_frames` で直さず、救済経路を使う。足りない枚数はつなぎ目の数で増えるので、固定値では足りない。5.1.9-0+deb12u1 / libva 2.17.0 / iHD 23.1.1 では、つなぎ目 1 は 1 枚、つなぎ目 3 は 4 枚の追加で解消した。つなぎ目 15 は 16 枚の追加でも `Cannot allocate memory` で止まった。救済経路は `-hwaccel` なしの CPU デコードなので、このプールを使わない。
 
 #### 追加引数の許可リスト
 
 値の個数まで既知の許可リストにあるものだけを受け付ける。
 
-`extra_args` / `input_extra_args` で値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re` である。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a` である。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も許可リストの外であり、完全一致の denylist が別名を取りこぼす形は採らない。
+`extra_args` / `input_extra_args` で値を取らないのは `-an` `-vn` `-sn` `-dn` `-shortest` `-nostdin` `-re` である。直後の 1 トークンを値として取るのは `-movflags` `-map` `-global_quality` `-cq` `-q:v` `-b:v` `-b:a` である。`-probesize` `-analyzeduration` `-extra_hw_frames` も 1 トークンを取る。それ以外と裸の位置引数は起動エラーになる。
+
+値を取らないフラグも明示しているため、`["-an", "/tmp/evil.mp4"]` のように 2 本目の出力パスをフラグの値に見せかけることはできない。`-filter:v:0` / `-lavfi` のような filtergraph の別名・ストリーム指定子付き表記も許可リストの外であり、完全一致の denylist が別名を取りこぼす形は採らない。
 
 **ライブではさらに `-an` `-vn` `-sn` `-map` を拒否する。** ライブはストリームの並び（映像・音声 rendition 3 本・字幕）を `-var_stream_map` で持つ。並びを変えると ffmpeg が起動時に落ち、利用者には 504 しか見えない（[api/media.md](api/media.md) §音声）。
 
@@ -363,6 +372,10 @@ site は省略も重複もできず、文字種と長さを制約する。削除
 - レジストリ内の site 名の重複も不可である。違反はすべて起動エラーとして全件列挙される（規約 4）
 - 削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）は site 列を持たず、値は空文字列である。他の 2 種のブレーカー名のように実際の束縛 site をキーにしない。再開は site を含まない `POST /api/breakers/delete_reconcile/resume` を使う。
 
+構文は `^[a-z0-9]([_-]?[a-z0-9])*$` で、53 文字以内である。文字種は River のキュー名の制約と同じにし、緩めない。キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。上限の 53 は、River のキュー名上限 64 から、site 修飾される論理キューのうち最長の prefix（`reconciler_`、11 文字）を引いた値である（64 − 11 = 53）。この検査は設定のロード時に行うので、`--sites` で束縛していないレジストリ上の site 名も対象になる。
+
+`catalog` と `thumbnails` は site 名にできない。この禁止は今は必須ではない。`rel_path` の前置が `sites/{site}/` になったので、site 名がトップレベルの `catalog/` / `thumbnails/` と直接衝突することはない。緩めても得られる自由度（この 2 語を site 名にしたい運用要求は無い）が緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため、禁止だけ残してある。トップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も必要）とは別の話で、[docs/storage.md](storage.md) §5 で分けて説明している。
+
 <details><summary>根拠</summary>
 
 - site 列を持たないブレーカー: `breaker.DeleteReconcile`、`internal/worker/delete_reconcile.go`
@@ -370,31 +383,37 @@ site は省略も重複もできず、文字種と長さを制約する。削除
 
 </details>
 
-構文は `^[a-z0-9]([_-]?[a-z0-9])*$` で、53 文字以内である。キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。上限の 53 は、River のキュー名上限 64 から、site 修飾される論理キューのうち最長の prefix（`reconciler_`、11 文字）を引いた値である（64 − 11 = 53）。この検査は設定のロード時に行うので、`--sites` で束縛していないレジストリ上の site 名も対象になる。束縛するときに初めて起動エラーになる、ということは無い。
-
-`catalog` と `thumbnails` は site 名にできない。この禁止は今は必須ではない。`rel_path` の前置が `sites/{site}/` になったので、site 名がトップレベルの `catalog/` / `thumbnails/` と直接衝突することはない。緩めても得られる自由度（この 2 語を site 名にしたい運用要求は無い）が緩めるコスト（`internal/config` のバリデーション・テストの変更）に見合わないため、禁止だけ残してある。トップレベルディレクトリ名の予約（`catalog/` / `thumbnails/` / `sites/` の 3 つ。今も必要）とは別の話で、[docs/storage.md](storage.md) §5 で分けて説明している。
-
 #### プロセスの site 束縛
 
 束縛は起動時のフラグで表す。watcher と worker は複数の site を束縛でき、中央プロセスの worker は site 非依存のキューに絞る。
 
 `server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。
 
-`--sites` を設定キーにしないのは、下記「やらないこと」の CLI フラグ方針に沿うためである。`--all` / ロール選択と同じ「起動形態」の軸に当たる。
+`--sites` は `--all` / ロール選択と同じ「起動形態」の軸で、下記「やらないこと」の CLI フラグ方針に沿う。
 
-未指定でレジストリが 1 要素ならその 1 つに束縛し、2 要素以上なら起動エラーにする（暗黙に全部にしない）。`--sites=`（明示的な空）は束縛なしの中央プロセス、`--sites tokyo` は tokyo への束縛である。`--sites tokyo,tokyo` のような重複は 1 つに畳む。束縛数の判定が紛らわしいエラーにならないようにするためである。
+```mermaid
+flowchart TD
+  A{"--sites"} -->|"未指定・1 要素"| B["その site に束縛"]
+  A -->|"未指定・2 要素以上"| E["起動エラー"]
+  A -->|"空"| C["束縛なし（中央プロセス）"]
+  A -->|"列挙"| D["列挙した site に束縛（重複は畳む）"]
+  C --> W{"worker が site 単位のキューを引くか"}
+  W -->|"引く"| E
+  W -->|"引かない"| OK["起動"]
+```
+
+`--sites=` は明示的な空、`--sites tokyo` は tokyo への束縛である。2 要素以上で未指定のときに暗黙に全部にしないのは、意図しない束縛を避けるためである。`--sites tokyo,tokyo` のような重複は、束縛数の判定が紛らわしいエラーにならないよう 1 つに畳む。
 
 - `watcher` ロールは 1 プロセスが N サイトを束縛できる。束縛サイトごとに独立した goroutine と advisory lock（`watcher:<site>`）を持つため、複数サイトを同じプロセスで watch しても互いに干渉しない。0 サイト束縛では watch 対象が無いだけで、起動エラーにはしない
 - `worker` ロールも 1 プロセスが N サイトを束縛できる。mirakc クライアントは site → 値の map になり、site 単位のキュー・定期ジョブが対象にする束縛サイトは集合になった。site 単位のキュー（ingest/epg/reconciler/watcher）は束縛サイトの数だけ物理キュー（`<queue>_<site>`）を購読する。site 単位の定期ジョブ（epg_sync/tuner_sync/ruler_pass/reconcile_pass/record_sweep）も束縛サイトごとに 1 本ずつ登録する
 - 0 サイト（中央プロセス）の worker は、`worker.queues` / `--queues` を site 非依存キューに絞ったときだけ許す。`worker.queues` が空（既定=全キュー）のまま、または site 単位のキューを含んだまま 0 サイトで起動すると、届く site 単位のジョブは束縛サイトの集合のどれとも一致せず全滅して再試行し続けるだけになる。そのため起動エラーにする
-- どのキューが site 単位か、物理キュー名への展開は [operations.md](operations.md) §5 を参照する
 - `enqueue` サブコマンドは site 束縛ジョブだけ `--site` で投入先を選ぶ（未指定かつレジストリ 1 要素ならその 1 つ、2 要素以上なら必須）
 - site 非依存ジョブには `--site` を付けない。どれが site 非依存かは `rokuban enqueue --help` が列挙する（詳細は [operations.md](operations.md) §1「ジョブ化されたループの監視」）
 - `rescue` は site 非依存で、`--site` を持たない。catalog の各行は自分の site を持ち、catalog が無い場合のストレージ走査も `sites/{site}/` 前置から site を決める。前置の無いファイルは登録せず Warn にする
 
 ### server.allowed_hosts と server.trust_forwarded_host（X-Forwarded-Host は opt-in）
 
-許可リストは DNS rebinding を防ぐ唯一の機構で、Host を正規化して完全一致で比べる。転送ホストはクライアントが自己申告できる値なので、明示的に有効にした構成でだけ検証対象にし、有効にすると localhost 系の常時許可は効かなくなる。
+許可リストはアプリ内に残る唯一のセキュリティ機構で、DNS rebinding を防ぐ。Host を正規化して完全一致で比べる。転送ホストはクライアントが自己申告できる値なので、明示的に有効にした構成でだけ検証対象にし、有効にすると localhost 系の常時許可は効かなくなる。
 
 許可リストは DNS rebinding 対策で、アプリ内に認証を持たないため、この防壁の唯一の要になる（[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、`X-Forwarded-Host` を検証対象にしておらず `Host` を直接使っているときに限り、許可リストの設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で許可リストを素通りできてしまう。
 
@@ -501,8 +520,6 @@ webhook が送るのは、録画の完了・失敗、エンコードの完了・
 
 **設定はデプロイ環境の性質、DB は運用中に UI から変えたい意思を持つ。** エンコードプロファイルは設定側に置き、ルールからは名前で参照する。自由形式のコマンド文字列とフィルタグラフの直接指定は許さない。
 
-設定はそのホストやクラスタを再構築すると変わるもので、DB はルール・予約・視聴履歴のように UI から変える意思である。
-
 エンコードプロファイルは config 側に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性である。DB のルールからは名前参照とし、ルール保存時に存在検証する（なければ 400）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（上記「encode/live の HW エンコード」）。`-vf`（filtergraph）を直接書けるキーも作らない。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになるためである。
 
 `encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0 である。encode ジョブ投入時に録画の終了時刻と開始時刻の差と rate から締切を解決して args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、実行ジョブに対して同じ締切を使える。
@@ -533,6 +550,6 @@ webhook が送るのは、録画の完了・失敗、エンコードの完了・
   - 例外は「このプロセスが何を担当し、どう畳むか」を表すフラグに限る（`--sites` / `--queues` / `--once` / `--once-idle-timeout` / `--soft-stop-timeout`）。
   - `--queues` は config キー `worker.queues` と同じ値を取るが、その値自体がデプロイ時のパラメータであって環境の設定ではない。**両方指定は起動エラー**にして、値の出所が 2 つに分かれないようにしている。
   - `--once` とその `--once-idle-timeout` も argv 側に置く。前者は起動形態そのもので、後者はその形態にしか意味を持たない値なので、config キーにすると常駐プロセスにも見える場所に置くことになる。
-  - `--soft-stop-timeout`（SIGTERM 後に実行中のジョブを打ち切るまでの猶予）も同じ扱いである。対になるのは k8s の `terminationGracePeriodSeconds` で、プラットフォーム側の SIGKILL が真の上限になる。その値はワークロードごとに桁で違う（数時間の encode と数秒の ruler）。共有 ConfigMap 1 個ではその違いを表現できず、同じ Pod spec に 2 つの数値を並べて書けることが対応関係を保つ唯一の手段になる。
+  - `--soft-stop-timeout`（SIGTERM 後に実行中のジョブを打ち切るまでの猶予）も同じ扱いである。対になるのは k8s の `terminationGracePeriodSeconds` で、config には置かない。プラットフォーム側の SIGKILL が真の上限になる。その値はワークロードごとに桁で違う（数時間の encode と数秒の ruler）。共有 ConfigMap 1 個ではその違いを表現できず、同じ Pod spec に 2 つの数値を並べて書けることが対応関係を保つ唯一の手段になる。
   - k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せるため、これらは argv 側に無いと ConfigMap が Pod セットの数だけ増える（[operations.md](operations.md) §5）
 - SIGHUP 等のホットリロードは採らない。設定変更は再起動で反映する。crash-only + level-triggered 設計なら再起動は無害で、リロードは「どの値がいつから有効か」という追跡困難性を別の形で持ち込むだけである
