@@ -2,6 +2,8 @@
 
 # ライブ画面の分割索引
 
+ライブ画面の文書を節ごとのファイルに分けた索引で、元の節名から担当ファイルを引ける。読む順は、チャンネル選択・画質・音声、再生経路・離脱、予定・予約・チューナー・遅延の 3 組である。
+
 | 元の節・機能 | 内容 | ファイル |
 |---|---|---|
 | ライブの操作バー・番組軸・チャンネル行 | 操作バー・番組軸・チャンネル一覧 | [controls.md](controls.md) |
@@ -15,7 +17,11 @@
 | 遅延・バッファの計器 | 再生経路別の計測 | [metrics.md](metrics.md) |
 | 実機確認について | 実機確認の手順 | [verification.md](verification.md) |
 
+3 組の読み先は、順に [selection.md](selection.md)・[quality.md](quality.md)・[audio.md](audio.md)、[playback.md](playback.md)・[sessions.md](sessions.md)、[planning.md](planning.md)・[tuners.md](tuners.md)・[metrics.md](metrics.md) である。
+
 ## 外部から参照されている節名の対応
+
+他の文書やコードが名指しで参照している節名と、その節があるファイルの対応を示す。「フロントエンド実装」は、分割した全ファイルに対応する。
 
 | 節名 | ファイル |
 |---|---|
@@ -25,9 +31,3 @@
 | チューナー状態の行 | [tuners.md](tuners.md) |
 | 遅延・バッファの計器 | [metrics.md](metrics.md) |
 | 実機確認について | [verification.md](verification.md) |
-
-読む順の目安:
-
-- チャンネル選択・画質・音声 → [selection.md](selection.md), [quality.md](quality.md), [audio.md](audio.md)
-- 再生経路・離脱時の動作 → [playback.md](playback.md) と [sessions.md](sessions.md)
-- 予定・予約・チューナー・遅延 → [planning.md](planning.md), [tuners.md](tuners.md), [metrics.md](metrics.md)
