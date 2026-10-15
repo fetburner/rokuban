@@ -116,10 +116,7 @@ const clearRecordingCMDetection = `-- name: ClearRecordingCMDetection :exec
 UPDATE recording_encode_policy
 SET cm_detect = false,
     cm_detect_changed_at = CASE
-        WHEN cm_detect THEN GREATEST(
-            clock_timestamp(),
-            COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz)
-        )
+        WHEN cm_detect THEN cm_policy_next_generation_changed_at(cm_detect_changed_at)
         ELSE cm_detect_changed_at
     END,
     updated_at = now()
@@ -678,10 +675,8 @@ WHERE r.id = $1
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
     cm_detect_changed_at = CASE
-        WHEN NOT recording_encode_policy.cm_detect THEN GREATEST(
-            clock_timestamp(),
-            COALESCE(recording_encode_policy.cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz)
-        )
+        WHEN NOT recording_encode_policy.cm_detect THEN
+            cm_policy_next_generation_changed_at(recording_encode_policy.cm_detect_changed_at)
         ELSE recording_encode_policy.cm_detect_changed_at
     END,
     updated_at = now()
