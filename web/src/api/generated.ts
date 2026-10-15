@@ -7370,10 +7370,10 @@ export const getReencodeRecordingProfileUrl = (id: number,
  * 原本の media_assets 行が `state = 'active'` でない録画には 409 を返す
  * （カット版は原本から作り直すしかない。`POST
  * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
- * または全区間がカットで keep が空のときも 409 を返す（worker が投入しないので、
- * 204 を返すと作り直しが黙って起きない）。
- * 指定プロファイルが録画の desired（`encodeProfiles`）に無いときも 409 を返す
- * （worker が公開直前に捨てるので、204 を返すと作り直しが黙って起きない）。
+ * または全区間がカットで keep が空のときも 409 を返す。
+ * 指定プロファイルが録画の desired（`encodeProfiles`）に無いときも 409 を返す。
+ * 204 は操作時点の keep 区間を DB に記録したことを示す。commit 後の reconcile
+ * ヒントが失われても、定期 reconcile が要求を拾う。
  * @summary Rebuild the cut version of a recording with the current chapters
  */
 export const reencodeRecordingProfile = async (id: number,
@@ -9086,9 +9086,11 @@ export const getGetEncodeQueueUrl = () => {
 
 /**
  * 現在の desired（凍結したエンコードポリシー）で、active な encoded がまだ無い
- * プロファイル（録画 × プロファイル）を、待機中と実行中に分けて数える。
+ * プロファイルと、明示的な作り直し要求が残っているプロファイル（録画 ×
+ * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
+ * encoded があっても待機列に含める。
  * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
- * 達して worker が作らない失敗行は数えない。ごみ箱の録画と設定に無い
+ * 達して worker が作らない不足行は数えない。ごみ箱の録画と設定に無い
  * プロファイルも数えない。
  *
  * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
