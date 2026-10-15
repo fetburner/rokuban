@@ -13,14 +13,16 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool     *pgxpool.Pool
-	enqueuer jobq.Enqueuer
+	pool         *pgxpool.Pool
+	chapterStore store.ChapterEdits
+	enqueuer     jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
@@ -67,7 +69,8 @@ type Server struct {
 // （すべて無効）は config の既定と一致する。
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
-func NewServer(pool *pgxpool.Pool, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+// chapterStore はチャプター編集の永続化契約。nil はチャプター操作を呼ばない部分テストでのみ許容する。
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -96,7 +99,7 @@ func NewServer(pool *pgxpool.Pool, enqueuer jobq.Enqueuer, sites []string, encod
 		}
 	}
 	return &Server{
-		pool: pool, enqueuer: enqueuer,
+		pool: pool, chapterStore: chapterStore, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,
