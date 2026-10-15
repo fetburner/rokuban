@@ -62,9 +62,9 @@ linters:
             - "!${config-path}/internal/store/pgstore/**"
           deny:
             - pkg: github.com/jackc/pgx/v5
-              desc: store の契約は pgx に依存しない
+              desc: store contracts do not depend on pgx
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
-              desc: store の契約は生成された DB クエリに依存しない
+              desc: store contracts do not depend on generated database queries
         river-adapter-only:
           # River の型はテストも含め runtime adapter の境界に閉じ込める。
           # KEDA の SQL テストだけは YAML の状態名を River のスキーマと照合する。

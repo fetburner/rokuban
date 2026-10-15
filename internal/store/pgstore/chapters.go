@@ -99,7 +99,7 @@ func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion 
 	if expectedVersion != chapterVersion(state, userSpans) {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrStaleVersion)
 	}
-	if requireDetectionComplete && snapshotFromState(state).DetectionPending(true) {
+	if snapshotFromState(state).DetectionPending(requireDetectionComplete) {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrDetectionPending)
 	}
 
