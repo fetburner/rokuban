@@ -38,6 +38,8 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 
 チャプター編集は、状態の読み取り、版を比較した置き換え、自動層へ戻す操作を一つのドメイン契約に置く。置き換えと自動層へ戻す操作は、tx の最初に録画の行をロックする。CM 検出の書き込みも同じ行をロックするので、両者は直列化される。
 
+カット版の作り直し要求の記録と、カット版の公開も同じ行をロックする。作り直し要求に記録する keep と、公開時に照合する keep が、途中のチャプター編集で変わらないようにするためである。
+
 読み取った版を置き換えるときに再確認することで、古い下書きが新しい内容を上書きしない。区間の重なりは、最後に区間の排他制約が拒否する。その違反は `ErrConflict` に写す。
 
 <details><summary>根拠</summary>
@@ -45,6 +47,7 @@ River の `InsertTx` のように同じ tx でジョブを投入すると、DB �
 - ドメイン契約: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Store`
 - 録画単位の直列化: `LockRecording` / `internal/worker/cm_detect.go`
+- 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
 - 範囲制約: `recording_chapter_spans` の排他制約
 - 導出値と事実: 不変条件 9
 - 意味のある行: 不変条件 10
