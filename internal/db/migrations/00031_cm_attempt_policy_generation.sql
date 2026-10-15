@@ -53,22 +53,18 @@ WHERE a.kind = 'original'
   AND p.keep_original = 'until_encoded'
   AND r.deleted_at IS NULL
   AND cardinality(p.encode_profiles) > 0
+  AND NOT EXISTS (
+      SELECT 1 FROM encoded_asset_rebuild_requests q
+      WHERE q.recording_id = r.id
+  )
   AND EXISTS (
       SELECT 1
       FROM current_ts_scanned_originals s
       WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-      SELECT 1
-      FROM unnest(p.encode_profiles) AS want(profile)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-      )
+      SELECT 1 FROM unencoded_desired_profiles u
+      WHERE u.recording_id = r.id
   )
   AND EXISTS (
       SELECT 1 FROM media_assets t
@@ -108,22 +104,18 @@ WHERE a.kind = 'original'
   AND p.keep_original = 'until_encoded'
   AND r.deleted_at IS NULL
   AND cardinality(p.encode_profiles) > 0
+  AND NOT EXISTS (
+      SELECT 1 FROM encoded_asset_rebuild_requests q
+      WHERE q.recording_id = r.id
+  )
   AND EXISTS (
       SELECT 1
       FROM current_ts_scanned_originals s
       WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-      SELECT 1
-      FROM unnest(p.encode_profiles) AS want(profile)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-      )
+      SELECT 1 FROM unencoded_desired_profiles u
+      WHERE u.recording_id = r.id
   )
   AND EXISTS (
       SELECT 1 FROM media_assets t
