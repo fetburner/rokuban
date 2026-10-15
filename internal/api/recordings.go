@@ -806,9 +806,10 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 // 行を入れる。ファイルは消さない。削除 reconcile が名前付き述語
 // removed_encoded_assets で拾って unlink する。
 //
-// 同じ録画の版を同時に外す 2 本の tx が 0 コピーを作らないよう、policy 行を
-// FOR UPDATE で取ってから書き、0 コピー検査は書いた後の状態で行う（不変条件 9
-// 「適用の瞬間」）。検査は削除 reconcile と同じ view に任せる。
+// 録画行を先にロックしてから policy 行を FOR UPDATE で取る。encode 公開と同じ
+// ロック順にし、外す tx と公開 tx の循環待ちを防ぐ。同じ録画の版を同時に外す
+// 2 本の tx が 0 コピーを作らないよう、0 コピー検査は書いた後の状態で行う
+// （不変条件 9「適用の瞬間」）。検査は削除 reconcile と同じ view に任せる。
 func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveRecordingEncodedAssetRequestObject) (RemoveRecordingEncodedAssetResponseObject, error) {
 	tx, err := h.pool.Begin(ctx)
 	if err != nil {
@@ -817,12 +818,12 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := sqlcgen.New(tx)
-	rec, err := q.GetRecordingByID(ctx, req.Id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && rec.PurgedAt != nil) {
+	locked, err := q.LockRecording(ctx, req.Id)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && locked.IsPurged) {
 		return RemoveRecordingEncodedAsset404JSONResponse{Error: "recording not found"}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+		return nil, fmt.Errorf("locking recording %d before removing encoded asset: %w", req.Id, err)
 	}
 	profile := req.Profile
 	assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{

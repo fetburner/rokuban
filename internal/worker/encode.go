@@ -1741,18 +1741,21 @@ func (w *EncodeRebuildWorker) Work(ctx context.Context, args jobs.EncodeRebuildA
 	if err != nil {
 		return fmt.Errorf("encoding legacy rebuild keep for recording %d: %w", args.RecordingID, err)
 	}
-	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
-		RecordingID: args.RecordingID,
-		Profiles:    []string{args.Profile},
-	}); err != nil {
-		return fmt.Errorf("resetting failed legacy rebuild attempt for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
-	}
-	if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+	inserted, err := q.InsertEncodedAssetRebuildRequestIfAbsent(ctx, sqlcgen.InsertEncodedAssetRebuildRequestIfAbsentParams{
 		RecordingID:   args.RecordingID,
 		Profile:       args.Profile,
 		RequestedKeep: requestedKeep,
-	}); err != nil {
+	})
+	if err != nil {
 		return fmt.Errorf("persisting legacy rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if inserted > 0 {
+		if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+			RecordingID: args.RecordingID,
+			Profiles:    []string{args.Profile},
+		}); err != nil {
+			return fmt.Errorf("resetting failed legacy rebuild attempt for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing legacy rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)

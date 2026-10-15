@@ -495,6 +495,35 @@ func (q *Queries) GetRecordingEncodeProfilesForShare(ctx context.Context, record
 	return encode_profiles, err
 }
 
+const insertEncodedAssetRebuildRequestIfAbsent = `-- name: InsertEncodedAssetRebuildRequestIfAbsent :execrows
+INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+VALUES (
+    $1,
+    $2,
+    (
+        SELECT range_agg(int8range((item.range ->> 'startMs')::bigint, (item.range ->> 'endMs')::bigint))
+        FROM jsonb_array_elements($3::jsonb) AS item(range)
+    )::int8multirange
+)
+ON CONFLICT (recording_id, profile) DO NOTHING
+`
+
+type InsertEncodedAssetRebuildRequestIfAbsentParams struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep json.RawMessage
+}
+
+// 旧 encode_rebuild ジョブの互換変換用。新しい利用者要求がすでにある場合は
+// その keep と世代を保つ。互換ジョブは新しい要求の書き手ではない。
+func (q *Queries) InsertEncodedAssetRebuildRequestIfAbsent(ctx context.Context, arg InsertEncodedAssetRebuildRequestIfAbsentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertEncodedAssetRebuildRequestIfAbsent, arg.RecordingID, arg.Profile, arg.RequestedKeep)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertEncodedAssetRemovalRequest = `-- name: InsertEncodedAssetRemovalRequest :exec
 INSERT INTO encoded_asset_removal_requests (recording_id, profile)
 VALUES ($1, $2)

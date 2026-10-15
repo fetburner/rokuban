@@ -298,6 +298,116 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 	}
 }
 
+// Encoded asset の削除 API は録画行を policy 行より先にロックする。
+// encode 公開側も録画行を先に取るため、逆順で policy を持ったまま録画行の FK
+// 検査を待つ循環を作らない。
+func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "削除ロック順", time.Now().Truncate(time.Second), "finished", 711)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "h265")
+
+	recordingTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = recordingTx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(recordingTx).LockRecording(ctx, id); err != nil {
+		t.Fatalf("locking recording row: %v", err)
+	}
+
+	policyTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policyTx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(policyTx).LockRecordingEncodePolicy(ctx, id); err != nil {
+		t.Fatalf("locking encode policy row: %v", err)
+	}
+
+	type response struct {
+		status int
+		err    error
+	}
+	result := make(chan response, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d/encoded/h264", srv.URL, id), nil)
+		if err != nil {
+			result <- response{err: err}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			result <- response{err: err}
+			return
+		}
+		_ = resp.Body.Close()
+		result <- response{status: resp.StatusCode}
+	}()
+	waitForLockWaiter(t, pool, "encoded removal handler")
+	if err := policyTx.Commit(ctx); err != nil {
+		t.Fatalf("committing policy lock: %v", err)
+	}
+
+	// もう一方の tx が録画行を保持している間、handler が待っている SQL は
+	// recordings の FOR UPDATE でなければならない。旧順序では policy を先に取り、
+	// encoded_asset_removal_requests の FK 検査でここに詰まる。
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND wait_event_type = 'Lock'
+				  AND pid <> pg_backend_pid()
+				  AND query ILIKE '%FROM recordings%'
+				  AND query ILIKE '%FOR UPDATE%'
+			)`).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("polling for recording row lock waiter: %v", err)
+		}
+		if waiting {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var waiting bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND wait_event_type = 'Lock'
+			  AND pid <> pg_backend_pid()
+			  AND query ILIKE '%FROM recordings%'
+			  AND query ILIKE '%FOR UPDATE%'
+		)`).Scan(&waiting); err != nil {
+		t.Fatalf("checking recording row lock waiter: %v", err)
+	}
+	if !waiting {
+		t.Fatal("encoded removal handler did not wait on the recording row before acquiring policy")
+	}
+
+	if err := recordingTx.Commit(ctx); err != nil {
+		t.Fatalf("committing recording lock: %v", err)
+	}
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("encoded removal request: %v", got.err)
+		}
+		if got.status != http.StatusNoContent {
+			t.Errorf("encoded removal status = %d, want 204", got.status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("encoded removal did not finish after the recording row lock was released")
+	}
+}
+
 // 外す tx が要求行を書いて commit する前に足し直しが走っても、commit 後に要求行が残らない。
 // 足し直し側は policy 行のロックを待ち、外す側の commit 後のスナップショットで要求行を消す。
 func TestAddRecordingEncodeProfiles_WaitsForConcurrentRemovalAndClearsRequest(t *testing.T) {
