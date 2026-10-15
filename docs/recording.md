@@ -62,9 +62,9 @@ flowchart LR
 
 ## 用語
 
-分割本文で定義済みの用語の早見表である。定義の権威は、正典列が指す節にある。
+分割本文で定義済みの用語の早見表である。定義の権威は、「定義の節」列が指す節にある。
 
-| 用語 | 定義 | 正典 |
+| 用語 | 定義 | 定義の節 |
 |---|---|---|
 | ruler | ルールと EPG を評価して `reservations` の base を作るループ | §3.1 [ruler.md](recording/ruler.md) |
 | reconciler | desired と observed の差を mirakc へ反映するループ | §3.2 [reconciler.md](recording/reconciler.md) |

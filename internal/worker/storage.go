@@ -108,7 +108,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 	// ラベルが取り残され、二度と掃除されない（不変条件 5: レベルトリガー。
 	// TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica で固定）。
 	// 取り残されたラベルは「凍結した鮮度ゲージ」= Pod を再起動するまで消えない
-	// 偽陽性アラートになる（docs/operations/monitoring.md §沈黙は保証ではない が
+	// 偽陽性アラートになる（docs/operations/monitoring.md §警告が出ないことは保証ではない が
 	// この鮮度を判断材料に挙げている）。
 	for _, r := range allRoots {
 		if slices.Contains(desired, r.name) {
@@ -131,7 +131,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 			// StorageRootLastSuccess / バイト数ゲージはそのまま残す（更新しない）。
 			// observed_at とこれらのゲージの鮮度だけが「観測が止まっている」
 			// ことを伝える手がかりになる（M7-6 で UI がこの鮮度を出せるように
-			// なる想定。metrics.TunerSyncLastSuccess と同じ「沈黙は保証ではない」
+			// なる想定。metrics.TunerSyncLastSuccess と同じ「警告が出ないことは保証ではない」
 			// 姿勢）。
 			slog.Warn("storage sync: statfs failed, keeping previous observation",
 				"root", r.name, "path", r.path, "err", err)

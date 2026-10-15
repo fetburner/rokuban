@@ -79,7 +79,7 @@
       ]
     },
     {
-      "heading": "爆風半径は有界（意図せず手に入っている担保）",
+      "heading": "影響範囲は限られる（意図せず得ている保証）",
       "question": "mirakc の形をしているのは何か。mirakc を載せ替えるとき、ライブラリと履歴は持ち越せるか。番組 ID はどうなるか。",
       "points": [
         "mirakc の形をしているのは短命な導出状態だけ",
@@ -125,7 +125,7 @@
       "heading": "ベースイメージ",
       "question": "ベースイメージを distroless に置き換えてよいか。その理由は何か。",
       "points": [
-        "そのまま置き換えると、Docker Compose の healthcheck が壊れる",
+        "そのまま置き換えると、Docker Compose の healthcheck が動かなくなる",
         "攻撃面を縮める動機は正しいが、healthcheck を別の手段に作り替える判断と一緒でなければ成立しない"
       ]
     },

@@ -107,9 +107,9 @@ named volume `media` は、コンテナの `/mnt/media`（`storage.media_dir`）
 
 ### bind mount の所有権
 
-bind mount には Dockerfile 側の所有権修正が効かないので、ホスト側のディレクトリを事前に uid/gid 65534 で書き込めるようにしておく。
+bind mount には Dockerfile 側の所有権修正が適用されないので、ホスト側のディレクトリを事前に uid/gid 65534 で書き込めるようにしておく。
 
-効かないのは、named volume の copy-up がボリューム管理領域だけの挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるからである。Dockerfile は `/mnt/media` を nobody 所有で焼き込んでいる。uid/gid `65534`（`nobody:nogroup`）は rokuban コンテナの実行ユーザーである。
+適用されないのは、named volume の copy-up がボリューム管理領域だけの挙動で、bind mount はホスト側のディレクトリの所有権をそのまま見せるからである。Dockerfile は `/mnt/media` を nobody 所有で焼き込んでいる。uid/gid `65534`（`nobody:nogroup`）は rokuban コンテナの実行ユーザーである。
 
 ```sh
 sudo mkdir -p /mnt/nas/rokuban-media
@@ -122,7 +122,7 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 ## 定期ジョブの周期とヒント
 
-定期パスが真実で、ヒントは投入を早めるだけである。落としても次の定期パスが拾う。ルールを作ってから録画が始まるまでの待ちは、EPG への取り込み・予約の導出・mirakc への schedule 作成の 3 段で、放送直前の番組は EPG の射影に無いことがある。
+定期パスが状態の権威で、ヒントは投入を早めるだけである。落としても次の定期パスが拾う。ルールを作ってから録画が始まるまでの待ちは、EPG への取り込み・予約の導出・mirakc への schedule 作成の 3 段で、放送直前の番組は EPG の射影に無いことがある。
 
 この原則は不変条件 5 に基づく。待ち時間は、次の表の周期でほぼ決まる。
 

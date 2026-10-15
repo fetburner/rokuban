@@ -11,8 +11,8 @@ import { interruptionWarningMessage } from '@/lib/live-interruption'
  * どちらの時点でも同じ判断材料を出す必要がある。
  *
  * `reservation` が null（該当する予約が無い）なら何も描画しない --- 「録画予約は
- * ありません = 安全に見られます」という肯定的な文言は出さない（沈黙は保証では
- * ない。`ProgramOverlapWarning` / `CapacityShortfallBadge` と同じ「余計な枠を
+ * ありません = 安全に見られます」という肯定的な文言は出さない（警告が出ない
+ * ことは保証ではない。`ProgramOverlapWarning` / `CapacityShortfallBadge` と同じ「余計な枠を
  * 出さない」流儀）。
  */
 export function LiveInterruptionWarning({

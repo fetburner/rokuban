@@ -17,7 +17,7 @@ import { renderInRouter } from '@/test/router'
 /**
  * StorageBalance の表示分岐（issue #239 M7-6）。導出そのもの（母数・累積曲線・
  * 境界値）は `lib/storage-forecast.test.ts` が担当するので、ここでは
- * 「4 つの沈黙」と「表示に出るべき数字」を実際の DOM で確認する
+ * 「表示を省く 4 つの場合」と「表示に出るべき数字」を実際の DOM で確認する
  * （CLAUDE.md テスト規律「CI が緑でも実バイナリ・実ブラウザを起動して確かめる」の
  * 手前 --- まずユニットテストで DOM に出るところまで固定する）。
  *

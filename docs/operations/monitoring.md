@@ -2,7 +2,7 @@
 
 ## 1. 監視メトリクス
 
-この節は、メトリクスの公開の仕組み、実装済みメトリクスの一覧、ループごとの読み方、メトリクスが沈黙しても安全とは言えない場合をまとめる。
+この節は、メトリクスの公開の仕組み、実装済みメトリクスの一覧、ループごとの読み方、メトリクスに異常が出ていなくても安全とは言えない場合をまとめる。
 
 ### エンドポイント
 
@@ -24,7 +24,7 @@ Prometheus の text exposition format で返す。**ロールに関わらずす�
 
 メトリクスは、そのプロセスで起きた事象を数えるものと、scrape のたびに DB から取り直すゲージの 2 種類を使い分けている。
 
-プロセス内のカウンタとヒストグラムは、再起動でリセットされる。Prometheus はカウンタのリセットを扱えるので問題にならない。DB を引くゲージは、scrape のたびに真実を DB から取り直す。プロセス内に溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、真実はテーブル再読」と同じ考え方である。
+プロセス内のカウンタとヒストグラムは、再起動でリセットされる。Prometheus はカウンタのリセットを扱えるので問題にならない。DB を引くゲージは、scrape のたびに正しい状態を DB から取り直す。プロセス内に溜めないので、どのロールが scrape されても同じ値になる。「イベントはヒント、正しい状態はテーブルの再読で得る」と同じ考え方である。
 
 <details><summary>根拠</summary>
 
@@ -148,7 +148,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_tuner_sync_last_success_timestamp_seconds{site}` | Gauge | 最後に成功したチューナー全量同期の時刻 |
 | `rokuban_capacity_overages{site}` | Gauge | チューナー不足区間の数 |
 
-チューナーの投影本数は、射影が空になっていないかを見るために出す。チューナー不足区間は、非ゼロは信頼できるが、ゼロは保証ではない（「沈黙は保証ではない」）。
+チューナーの投影本数は、射影が空になっていないかを見るために出す。チューナー不足区間は、非ゼロは信頼できるが、ゼロは保証ではない（「警告が出ないことは保証ではない」）。
 
 #### 削除とストレージのメトリクス
 
@@ -166,15 +166,15 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root ごとに最後に観測できた時刻 |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数 |
 
-`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「沈黙は保証ではない」）。
+`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
 `rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
 
 非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
 
-`rokuban_missing_asset_scan_suspected_storage_failure_total` は、上の検出パスがスキップされた回数である。スキップされるのは、1 件もファイルを観測しなかったのに active な行が存在する形のときである（「沈黙は保証ではない」）。
+`rokuban_missing_asset_scan_suspected_storage_failure_total` は、上の検出パスがスキップされた回数である。スキップされるのは、1 件もファイルを観測しなかったのに active な行が存在する形のときである（「警告が出ないことは保証ではない」）。
 
-`rokuban_storage_sync_last_success_timestamp_seconds` は、1 root でも失敗した部分成功では進まない。root ごとのゲージと対で見る。root（`media` / `scratch`）ごとの最終観測時刻は、片方だけ恒久的に壊れているケースを特定するために使い、この鮮度でアラートを組んでよい（「沈黙は保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で容量アラートを組むために出す。
+`rokuban_storage_sync_last_success_timestamp_seconds` は、1 root でも失敗した部分成功では進まない。root ごとのゲージと対で見る。root（`media` / `scratch`）ごとの最終観測時刻は、片方だけ恒久的に動かなくなっているケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で容量アラートを組むために出す。
 
 <details><summary>根拠</summary>
 
@@ -197,7 +197,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 セッション数のゲージは per-process なので、全体は Prometheus 側で sum する（[k8s 運用](k8s.md) §5）。`kind` の値は `live` / `chase` / `original_vod` である。開始失敗の `reason` の値は、実装の呼び出し箇所が権威で、`session_limit` や `ffmpeg_error` などがある。退避のラベルは、ライブ視聴の節にある。
 
-離脱ヒントの `result` は `deadline_shortened` / `no_session` / `no_effect` の 3 値である。回収数と対で読む。ヒントは停止命令ではないので、回収数とは一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが効かない設定になっている。
+離脱ヒントの `result` は `deadline_shortened` / `no_session` / `no_effect` の 3 値である。回収数と対で読む。ヒントは停止命令ではないので、回収数とは一致しない（差が開いていれば共有セッションが多い）。`no_effect` が定常的に出るなら、猶予が `live.idle_timeout` 以上で、ヒントが機能しない設定になっている。
 
 <details><summary>根拠</summary>
 
@@ -209,7 +209,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 
 ゲージには最後に成功した時刻を必ず対で持たせ、取得に失敗したときは 0 を報告しない。
 
-ゲージは値が凍結する。`pending_diff` や `epg_programs_projected` だけでは、「収束した」と「ループが動いていない」を区別できない。シングルトンがロックを取れていない場合や、定期ジョブが投入されなくなった場合は、`time() - <last_*_timestamp> > 閾値` で検出する。実際に定期ジョブの一意性の設定ミスで EPG の定期同期がワンショット化していた事故があり、この指標があれば気づけた。
+ゲージは値が凍結する。`pending_diff` や `epg_programs_projected` だけでは、「収束した」と「ループが動いていない」を区別できない。シングルトンがロックを取れていない場合や、定期ジョブが投入されなくなった場合は、`time() - <last_*_timestamp> > 閾値` で検出する。実際に定期ジョブの一意性の設定ミスで EPG の定期同期がワンショット化していたトラブルがあり、この指標があれば気づけた。
 
 ロール分割（KEDA ScaledJob）構成でアラートに使う成功鮮度は、DB 側の 5 本である。対象は、前掲の `rokuban_presync_pending` 系列 3 本（pending / earliest / snapshot）である。加えて、`rokuban_ruler_last_success_timestamp_seconds{site}` と `rokuban_sweep_last_success_timestamp_seconds{site}` を使う。プロセス内ゲージの `rokuban_reconcile_pending_diff` は、reconciler のジョブを実行した Pod でしか値を持たない。その Pod は `--once` で終了するため、scrape 窓が無い（「ジョブ化されたループの監視」）。
 
@@ -276,7 +276,7 @@ flowchart TD
 | `river_job` の ingest キューで `state='running'` が上限に張り付き、`available` が滞留している | ingest の枠不足。`ingest.concurrency` が録画数に対して小さく、UI では取り込み待ちが続く |
 | `river_job` が増えない | **投入自体が止まっている。** `worker.periodic_jobs: false` なのに CronJob が動いていない、あるいはリーダーが不在 |
 
-最後の行が k8s 特有の落とし穴である。k8s は `worker.periodic_jobs: false` で出荷しており、投入元は CronJob だけである（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
+最後の行が k8s 特有の注意点である。k8s は `worker.periodic_jobs: false` で出荷しており、投入元は CronJob だけである（[データ層](../data.md) §2）。`rokuban enqueue` を叩く CronJob が設定されているかを最初に疑う。
 
 #### 常駐 Pod のゲージが使えない理由
 
@@ -356,7 +356,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 ruler の削除は、ルールに合わなくなったことによるものと、番組終了から猶予が過ぎたための掃除を分けて数える。前者だけが大量削除のサーキットブレーカーの対象で、後者は停止明けに大量に出ても正常である。
 
-`rokuban_ruler_reservations_total{action}` の `updated` が毎パス予約数と同じ値で増え続けるなら、差分書き込みが効いていない（[録画エンジン](../recording.md) §3.1）。
+`rokuban_ruler_reservations_total{action}` の `updated` が毎パス予約数と同じ値で増え続けるなら、差分書き込みが機能していない（[録画エンジン](../recording.md) §3.1）。
 
 #### ruler のメトリクス
 
@@ -364,7 +364,7 @@ ruler の停止はパス時刻のゲージで、書き込みの異常は予約�
 
 | メトリクス | 説明 |
 |---|---|
-| `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影が有界なので伸び続けることはない |
+| `rokuban_ruler_pass_duration_seconds` | 1 パス（全ルール x 全射影番組）の所要時間。射影の件数に上限があるので伸び続けることはない |
 | `rokuban_ruler_reservations_total{action}` | ruler が書いた予約の action 別件数（値は下の節） |
 | `rokuban_ruler_program_id_reuse_total` | 終了済みの旧 snapshot と EPG 射影の開始時刻が 24 時間超ずれた行の観測件数（読み方は下の節） |
 | `rokuban_ruler_circuit_breaker_trips_total` | 大量削除で停止した回数。EPG の一時欠損を疑う入口 |
@@ -392,7 +392,7 @@ ruler の停止はパス時刻のゲージで、書き込みの異常は予約�
 
 `released` は、ユーザーが投資を手放す書き込みをしない限り起きない（[録画エンジン](../recording.md) §3.2）。`gc` は、停止後の再開で大量に消えるのが正常である。`fulfilled` の根拠は [録画エンジン](../recording.md) §3.1「録画・ingest 完了後の fulfilled 削除」にある。
 
-`ruler.retract_grace` で見送った件数は、このメトリクスに無い。パスごとに再計上される水準なので、カウンタに乗せると増加率の意味が壊れる。ブレーカーのラッチと見分けたいときは、`ruler: pass complete` ログの `grace_protected` フィールドを見る。
+`ruler.retract_grace` で見送った件数は、このメトリクスに無い。パスごとに再計上される水準なので、カウンタに乗せると増加率の意味が成り立たなくなる。ブレーカーのラッチと見分けたいときは、`ruler: pass complete` ログの `grace_protected` フィールドを見る。
 
 #### program_id 再利用カウンタの読み方
 
@@ -566,26 +566,26 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 `retry_abandoned` は、退避完了後、mirakc の解放待ちの間に呼び出し元が切断して再試行しなかった件数である。mirakc 側の失敗（`retry_failed`）とは区別する。
 
-### 沈黙は保証ではない
+### 警告が出ないことは保証ではない
 
-メトリクスや警告が出ていないことを、大丈夫の保証と読んではいけない。設計上ここは全部「警告を見逃す」側に偏らせてあり、過剰に警告しない代わりに沈黙が保証にならない、という取引になっている。
+メトリクスや警告が出ていないことを、大丈夫の保証と読んではいけない。設計上ここは全部「警告を見逃す」側に偏らせてあり、過剰に警告しない代わりに警告が出ないことが保証にならない、という取引になっている。
 
 以下は、「出ていない = 大丈夫」と読んではいけない観測を、1 箇所にまとめたものである。
 
-#### チューナー容量と射影の沈黙
+#### チューナー容量と射影で警告が出ない場合
 
 チューナー容量の警告が空でも、収まるとは限らない。射影が空なら、警告そのものが出せない。
 
-| 沈黙 | 何を意味しないか | 何を見るか |
+| 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `/api/capacity/overages` が空 | 収まるとは限らない。並走 EPGStation・ライブ視聴・EPG 収集は見えず、mirakc の `excluded_channels` は `/api/tuners` に載らないので知る術がない | `rokuban_tuners_projected` が 0 でないこと |
-| 同上（射影が空） | 射影が 1 行も無いサイトは何も主張しないので、同期が壊れると警告が気づかないうちに消える | `tuner_sync` の行と `rokuban_tuner_sync_last_success_timestamp_seconds{site}` の鮮度 |
+| 同上（射影が空） | 射影が 1 行も無いサイトは何も主張しないので、同期が動かなくなると警告が気づかないうちに消える | `tuner_sync` の行と `rokuban_tuner_sync_last_success_timestamp_seconds{site}` の鮮度 |
 
-#### ドロップ統計の沈黙
+#### ドロップ統計で警告が出ない場合
 
 ドロップ統計が空、または分類が無いことは、ドロップが無いことを意味しない。
 
-| 沈黙 | 何を意味しないか | 何を見るか |
+| 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `drop-stats` の `pidType` が無い | 分類できなかっただけで、ドロップ統計そのものは正しい | `packets` / `drops` は種別と独立に信頼できる |
 | `drop-stats` が `[]` | ドロップ無しとは限らない。未計測と再計測待ち（in-place 更新後）も空を返す | `Recording.dropSummary` の有無（有りで `[]` なら計測済みの空） |
@@ -600,21 +600,21 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 </details>
 
-#### 重なり・ブレーカー・開始遅延の沈黙
+#### 重なり・ブレーカー・開始遅延で警告が出ない場合
 
 重なりの数が 0 でも、ブレーカーが空でも、開始遅延が 0 でも、問題が起きていない保証にならない。
 
-| 沈黙 | 何を意味しないか | 何を見るか |
+| 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `/api/sites/{site}/programs/{programId}/overlaps` の `count = 0` | 録れるとは限らない（他サイトや mirakc の他の消費者は数えていない） | 重なりの手動確認（[docs/runbook/](../runbook.md) 側） |
-| `/api/breakers` が空 | 削除が正しかったとは限らない。閾値を下回る削除は素通りし、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
+| `/api/breakers` が空 | 削除が正しかったとは限らない。閾値を下回る削除はすり抜け、明示操作由来の削除（`action="released"`）はそもそもブレーカーを通らない | `rokuban_ruler_reservations_total{action="deleted"}` の増え方 |
 | `rokuban_reconcile_start_delayed` が 0 | 録画が始まったことの確認ではない（猶予 3 分の内側は検出しない） | `recordings.started_at` |
 
-#### ストレージ観測の沈黙
+#### ストレージ観測で警告が出ない場合
 
 ストレージの行が載っていることや、欠損ゲージが 0 であることは、観測が続いていることを意味しない。
 
-| 沈黙 | 何を意味しないか | 何を見るか |
+| 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
 | `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
@@ -627,11 +627,11 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 `rokuban_missing_asset_scan_suspected_storage_failure_total` が進んだら、マウントの故障と全損そのものの両方を疑う。進んでいる間は、`rokuban_media_assets_missing` が更新されず、前回値のまま凍結する（マウント失敗・空マウントを疑う）。この形は「資産が本当に全部消えた」小規模系でも発動し、真の異常をゲージから隠す。例えば、active が数件しか無く、その全件が消えた場合である。スキップ自体は、安全側の判断として正しい。
 
-#### worker の停止と drain の沈黙
+#### worker の停止と drain で警告が出ない場合
 
 worker の scrape が落ちても、サーバーが exit 0 で終わっても、それだけでは正常終了とも異常終了とも決められない。
 
-| 沈黙 | 何を意味しないか | 何を見るか |
+| 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | worker Pod の scrape が落ちた（`up == 0`） | 死んだとは限らない | 同時刻に `stopping river client` の ERROR が出ていないこと |
 | `rokuban server` が exit 0 で終わった | drain が成功したとは限らない。drain の失敗は終了コードには出ない | ログの `stopping river client`（ERROR）をアラート対象にする |
@@ -660,7 +660,7 @@ drain 中は HTTP を先に閉じてからジョブを走らせ続けるので�
 
 故障の情報は、どこにも出力しておらず、容量の計算で数えるかどうかの判定に使うだけである。これを見る手段が UI 以外に無いか、専用メトリクスがあるかを先に確かめた。実装済みメトリクスの `rokuban_tuners_projected` と `rokuban_tuner_sync_last_success_timestamp_seconds` は、どちらも射影の本数と鮮度のゲージで、故障を出すゲージは無い。アラート設計にもチューナー故障の節が無い。したがって UI に出さない選択は、「既存の手段で足りるから省く」ことにならず、新設そのものを見送ることになる。
 
-出す場所は、毎日開く画面かどうかで選んだ。専用の「チューナー」ページを新設する案もあったが、疑ってから開く画面では「警告が無い = 大丈夫」という誤読は解けない。ライブ画面は、チューナーを実際に掴む操作の直前に開く画面なので、故障が意味を持つ瞬間に居合わせる。そこでライブ画面のチャンネル一覧の脇に、「チューナー n 本（故障 m）」の 1 行を出す形にした。故障 0 本のときは「（故障 m）」を出さない。
+出す場所は、毎日開く画面かどうかで選んだ。専用の「チューナー」ページを新設する案もあったが、疑ってから開く画面では「警告が無い = 大丈夫」という誤読は解けない。ライブ画面は、チューナーを実際に取る操作の直前に開く画面なので、故障が意味を持つ瞬間に居合わせる。そこでライブ画面のチャンネル一覧の脇に、「チューナー n 本（故障 m）」の 1 行を出す形にした。故障 0 本のときは「（故障 m）」を出さない。
 
 ただし、mirakc は故障の項目を実装しておらず、常に false を返す（根拠は[データ層](../data/capacity.md) §6.5）。現行の mirakc では、故障の表示は出ない。同じ 1 行に `observedAt` の鮮度（射影ループが止まっていないか）を併置してあるので、**実用上の値はそちらにある。** 射影ループの停止は、実際に捉えられる。故障のほうは、Mirakurun 互換 API の契約として読む形だけ残してある。
 

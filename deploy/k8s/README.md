@@ -67,7 +67,7 @@ kubectl rollout status deployment/rokuban-api
 
 **`site/` は base と別に apply する。** 実際の運用では overlay（`overlays/kind` が単一サイトの実例）が両方を `resources` に持つので、apply は 1 回で済む。
 
-**KEDA が要る。** `site/` と base の worker は KEDA の `ScaledJob` である。CRD が無いクラスタに apply すると、その部分だけが `no matches for kind "ScaledJob"` で失敗する（Deployment 側の apply は成功するので、**ジョブを誰も消化しない構成が黙って立つ**）。
+**KEDA が要る。** `site/` と base の worker は KEDA の `ScaledJob` である。CRD が無いクラスタに apply すると、その部分だけが `no matches for kind "ScaledJob"` で失敗する（Deployment 側の apply は成功するので、**ジョブを誰も消化しない構成が警告なしに立つ**）。
 
 **この順序に意味がある。**
 
@@ -107,9 +107,9 @@ kind での動作確認手順は [docs/runbook/k8s.md](../../docs/runbook/k8s.md
 | 各オブジェクトが k8s のスキーマに合うか | `kubeconform`（同ジョブ） |
 | オブジェクト間の参照・名前の解決・config.yml の中身 | `go test ./deploy/k8s/` |
 
-3 つ目を別に持つ理由は、前 2 つが緑のまま通る事故があるため。存在しない ConfigMap を `envFrom` に書く / ポート名の解決先を失う / config.yml のキーを typo する、のいずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。壊れるのはクラスタに載せた後になる。
+3 つ目を別に持つ理由は、前 2 つが緑のまま通ってしまう誤りがあるため。存在しない ConfigMap を `envFrom` に書く / ポート名の解決先を失う / config.yml のキーを typo する、のいずれも実測で両方緑だった（一覧は `manifests_test.go` の冒頭コメント）。動かないと分かるのはクラスタに載せた後になる。
 
-**CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する。** `-ignore-missing-schemas` は未知の kind を黙って飛ばすので採らない。出どころと「`-strict` を効かせるための加工」は [schemas/README.md](schemas/README.md)。Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の `spec.jobTargetRef.template` は対応済みで、未知の kind は検査で落ちる。
+**CRD（KEDA の `ScaledJob`）は `schemas/` に置いたスキーマで検査する。** `-ignore-missing-schemas` は未知の kind を何も表示せず飛ばすので採らない。出どころと「`-strict` を有効にするための加工」は [schemas/README.md](schemas/README.md)。Go テスト側は CRD でも Pod テンプレートを見つけて検査する。`ScaledJob` の `spec.jobTargetRef.template` は対応済みで、未知の kind は検査で落ちる。
 
 **argv とキュー名の噛み合わせは `workloads_test.go` が見る。** 見ているものは次のとおり。
 

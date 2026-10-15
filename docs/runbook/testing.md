@@ -13,7 +13,7 @@ go test ./...
 
 **この URL が指す DB は直接使われない。** テスト用 DB の準備処理はここからパッケージごとの DB 名を導出する（`rokuban_test_api` 等）。プロセスごとに 1 回だけ DROP → CREATE → マイグレーションしてから、各テストは TRUNCATE で空にする。
 
-パッケージが DB を共有しないので、`go test ./...` の並行実行で踏み合わない（以前は advisory lock で直列化していた）。待たされた側がロック待ちのタイムアウトで落ちて CI が flaky になっていた。マイグレーションは、テストごとには走らず、プロセスごとに 1 回だけ走るので速い。
+パッケージが DB を共有しないので、`go test ./...` の並行実行で衝突しない（以前は advisory lock で直列化していた）。待たされた側がロック待ちのタイムアウトで落ちて CI が flaky になっていた。マイグレーションは、テストごとには走らず、プロセスごとに 1 回だけ走るので速い。
 
 派生 DB は実行後も残る（次回の実行が DROP して作り直す）。失敗時の事後調査に使える。掃除したいときは次のコマンドを使う。
 
@@ -74,7 +74,7 @@ soft stop の猶予を変えたときに回す手順である。猶予より長�
 
 #### 遅延モックの mirakc
 
-作るのは、ヘッダーだけ即返してボディを遅らせる mirakc である。ボディを遅らせるのは、mirakc クライアントのヘッダー待ちのタイムアウト（30 秒）が先に効いてしまうためである。全体の上限は HTTP クライアントのタイムアウトの 60 秒なので、40 秒のジョブはこの形でしか作れない。
+作るのは、ヘッダーだけ即返してボディを遅らせる mirakc である。ボディを遅らせるのは、mirakc クライアントのヘッダー待ちのタイムアウト（30 秒）が先に発動してしまうためである。全体の上限は HTTP クライアントのタイムアウトの 60 秒なので、40 秒のジョブはこの形でしか作れない。
 
 遅延モックは次の通り（`python3 /tmp/mock-mirakc.py` で立てる。`/api/services` のボディだけを遅らせ、それ以外は空リストを即返す）。
 
@@ -145,7 +145,7 @@ go build -o /tmp/rokuban ./cmd/rokuban
 /tmp/rokuban enqueue epg-sync --site home --config $CFG
 /tmp/rokuban server --roles worker --sites home --queues=epg \
   --soft-stop-timeout=60s --config $CFG & PID=$!
-# **ジョブが実行中になるまで待つ。** 待たずに撃つと claim 前に畳んで終わり、
+# **ジョブが実行中になるまで待つ。** 待たずに実行すると claim 前に畳んで終わり、
 # 「完走した」も「打ち切られた」も観測できない（空虚な緑になる）
 until psql -h localhost -d $DB -tAc \
   "select 1 from river_job where state = 'running'" | grep -q 1; do sleep 1; done
@@ -160,7 +160,7 @@ psql -h localhost -d $DB -tAc \
 
 **モックの遅延は、mirakc クライアントの全体タイムアウトより短くする。** 上限は 60 秒である。
 
-超えると 60s の側が `completed` にならず、`state` は猶予切れと同じ `available` になる（導出: `attempt=1` + `errors` あり、で見分けられる）。前のセッションが残した `DELAY=90` のモックが 40799 を掴んだままで実際に踏んだ。モックを `&` で背景起動すると、ポートが埋まっていても気付きにくい。`OSError: Address already in use` の traceback を出して即死するだけである。撃つ前に `lsof -nP -iTCP:40799` で確かめること。
+超えると 60s の側が `completed` にならず、`state` は猶予切れと同じ `available` になる（導出: `attempt=1` + `errors` あり、で見分けられる）。前のセッションが残した `DELAY=90` のモックが 40799 を使ったままで実際に起きた。モックを `&` で背景起動すると、ポートが埋まっていても気付きにくい。`OSError: Address already in use` の traceback を出して即死するだけである。実行する前に `lsof -nP -iTCP:40799` で確かめること。
 
 <details><summary>根拠</summary>
 
@@ -190,7 +190,7 @@ flowchart TD
 
 60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。この側はプロセス側の待ちが固定値ではないことも同時に見ている（かつての `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
-2 発目の SIGTERM で強制終了できることも同じ形で確かめられる。上の `kill -TERM $PID` の直後にもう一度撃つと、drain の途中でもプロセスが落ちる（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、猶予のあいだ Ctrl-C も `kill -TERM` も効かなくなる。
+2 発目の SIGTERM で強制終了できることも同じ形で確かめられる。上の `kill -TERM $PID` の直後にもう一度送ると、drain の途中でもプロセスが落ちる（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、猶予のあいだプロセスが Ctrl-C にも `kill -TERM` にも反応しなくなる。
 
 #### mock では検出できない前提
 
@@ -204,7 +204,7 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 </details>
 
-## mirakc の版を上げる手順
+## mirakc のバージョンを上げる手順
 
 **バージョンを上げるとは、main-debian タグのより新しい digest に pin を差し替えることである。** 番号付きリリースへ戻す判断は無い。
 
@@ -212,7 +212,7 @@ mock では検出できない前提は、実物の mirakc コンテナに対す�
 
 1. `internal/mirakc/conformance/helpers_test.go` の `mirakcImage` / `mirakcVersion` を新しいバージョンに変える
 2. `go test -tags conformance ./internal/mirakc/conformance/...` を回す
-3. 落ちた項目があれば、まず mirakc 側の変更か rokuban の前提の誤りかを切り分ける。まず効くのは 2 つで、1 つは `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見ること。もう 1 つは `docker logs` でコンテナ内の `mirakc` 自体のエラーを見ること
+3. 落ちた項目があれば、まず mirakc 側の変更か rokuban の前提の誤りかを切り分ける。まず役に立つのは 2 つで、1 つは `docker run --entrypoint mirakc-arib <image> <subcommand> --help` で該当ツールのオプション・出力形式が変わっていないか見ること。もう 1 つは `docker logs` でコンテナ内の `mirakc` 自体のエラーを見ること
 4. mirakc 側の変更なら、対応する docs（delegation.md / reconciler.md / ingest.md / watcher.md）の記述を実際の挙動に合わせて直す。rokuban 側の前提が誤っていたなら実装を直す
 5. `internal/mirakc/conformance/` 配下のテストが引用している mirakc のバージョンの文言（`mirakc 4.0.0-dev.0 相当` 等）も同じ PR で書き換える
 

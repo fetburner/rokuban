@@ -14,7 +14,7 @@ import { AppShell } from '@/components/app-shell'
 
 /**
  * デスクトップのサイドバーに出る全項目。並びは頻度順
- * （docs/frontend/design.md §頻度 3 段: 一等地=ホーム・番組・録画 / 中間=予約・
+ * （docs/frontend/design.md §頻度 3 段: 最上位=ホーム・番組・録画 / 中間=予約・
  * ライブ / 端=検索・ルール。ホームは M8-3 で新設）で、`app-shell.tsx` の
  * `navItems` と比較するのではなくここにリテラルで書く（実装の定数と比較する
  * テストは並びが崩れても検知できない）。

@@ -16,7 +16,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 
 **mirakc も実チューナーも DB も要らない。** `/api/**` は `page.route` でブラウザ側から丸ごと差し替える（`live.mjs` が HLS でやっているのと同じ手）。時刻も `page.clock.setFixedTime` で固定してあるので、ショットの差分は実装の差分だけになる。
 
-**フィクスチャは契約で検証される。**「唯一の視覚オラクル」が欠損データのまま撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という壊れ方が実際にあった。
+**フィクスチャは契約で検証される。**「唯一の視覚オラクル」が欠損データのまま撮れていても、契約（`openapi.yaml`）が動くたびに誰も気付かない、という失敗が実際にあった。
 
 ルールの `textMatches` が旧形 `{ field, kind }` のまま `{ target, mode }` に追従しておらず、ルール一覧に「undefinedに…を含む」が描かれたまま exit 0 していた。
 
@@ -54,11 +54,11 @@ E2E_URL=http://localhost:4173 pnpm e2e:design
 判定の設計で外してはいけない点が 2 つある。
 
 - **半透明の地は合成してから測る。** `text-warning` が乗るのは地ではなく `bg-warning/10` の上。地に対する比だけを見ると 0.5〜0.7 甘い数字が出る
-- **下限を割るものは通常の失敗にする。** 既知の不足を理由に合否から外したり、閾値を静かに下げたりしない
+- **下限を割るものは通常の失敗にする。** 既知の不足を理由に合否から外したり、閾値を断りなく下げたりしない
 
 ダークは Playwright context の `colorScheme` で OS 設定をエミュレートする。`design.mjs` はクラスを直接付けず、アプリが初回描画前に `html.dark` へ同期する到達経路を判定する。
 
-**`getComputedStyle()` の戻り値を正規表現で読んではいけない**。トークンが oklch なので Chromium は計算値も `oklch(...)` のまま返し、`rgb(...)` を期待した実装は全部の判定を「読めない」で素通りさせる。`design.mjs` は 1px 塗って `getImageData` で実画素を採っている。
+**`getComputedStyle()` の戻り値を正規表現で読んではいけない**。トークンが oklch なので Chromium は計算値も `oklch(...)` のまま返し、`rgb(...)` を期待した実装は全部の判定を「読めない」ですり抜けさせる。`design.mjs` は 1px 塗って `getImageData` で実画素を採っている。
 
 トークン外の生の色値（`bg-amber-700` / `bg-black` / `#rrggbb`）の検出は実ブラウザが要らないので、そちらは別のコマンドにしてあり **CI の lint job で回る**。
 
@@ -92,7 +92,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 
 ### 個人化の持続（`personalization.mjs`）
 
-個人設定の置き場所（[docs/frontend/design.md](../../../docs/frontend/design.md) §個人化）が実ブラウザで効いていることを見る。**jsdom では原理的に測れないものだけ**を対象にする --- Vitest の「再マウント」はリロードではないので、`localStorage` が本当にページの読み込みをまたいで効くかは測れない。
+個人設定の置き場所（[docs/frontend/design.md](../../../docs/frontend/design.md) §個人化）が実ブラウザで機能していることを見る。**jsdom では原理的に測れないものだけ**を対象にする --- Vitest の「再マウント」はリロードではないので、`localStorage` が本当にページの読み込みをまたいで有効かは測れない。
 
 見るのは 5 点:
 
@@ -104,7 +104,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 
   **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる effect の依存漏れ）はここでは踏めない**。現在の UI では必ず一覧を経由し、`RecordingPlayer` が新規マウントして localStorage から読み直すためである。その退行を捕まえているのは `src/components/recording-player.test.tsx` の `rerender` を使う jsdom テスト（実測で確認済み）
 
-一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` はサイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を測ってしまう（実際に踏んだ）。
+一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` はサイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を測ってしまう（実際に起きた）。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -113,7 +113,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:personalization
 
 ### チップの横あふれ（`chip-overflow.mjs`）
 
-サービスチップに補助ラベル（同名のワンセグ / サブサービスを見分けるためのリモコン番号・物理チャンネル・serviceId。issue #306）を足すと、名前だけなら収まっていたチップが親の幅を超える。`Chip` は `shrink-0` を持つので **flex-basis が内容の最大幅を要求し、ページ全体が横に伸びる**。jsdom は `scrollWidth` / `clientWidth` を計算しない（常に 0）ので、この壊れ方は `pnpm test` が全部通っても検出できない。
+サービスチップに補助ラベル（同名のワンセグ / サブサービスを見分けるためのリモコン番号・物理チャンネル・serviceId。issue #306）を足すと、名前だけなら収まっていたチップが親の幅を超える。`Chip` は `shrink-0` を持つので **flex-basis が内容の最大幅を要求し、ページ全体が横に伸びる**。jsdom は `scrollWidth` / `clientWidth` を計算しない（常に 0）ので、この失敗は `pnpm test` が全部通っても検出できない。
 
 見るのは 320px 幅（実機で最も狭い層）で 3 点:
 

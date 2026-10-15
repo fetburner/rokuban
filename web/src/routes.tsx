@@ -343,7 +343,7 @@ export type RecordingDetailSearch = {
 }
 
 /**
- * 録画単体の着地先（issue #232 M6-4）。`recordings.id` は ingest（watcher）が
+ * 録画単体の遷移先（issue #232 M6-4）。`recordings.id` は ingest（watcher）が
  * 一度作ったら変わらない不可逆な事実の id なので、`/reservations/$site/$programId`
  * （issue #99、旧 `reservations.id` が ruler の再実体化で変わったため id を避けた）と
  * 違って id をそのまま URL に使ってよい。
@@ -414,7 +414,7 @@ export type LivePageSearch = {
 
 /**
  * ライブ視聴は独立したルートに置く（issue #92 の着手時コメント）。番組表グリッド
- * は `lg` 以上でしか出ない（`docs/frontend.md`「リストを第一級に置く」）ため、
+ * は `lg` 以上でしか出ない（`docs/frontend.md`「リストを基本のビューにする」）ため、
  * グリッドの「いま」から入る形にすると入口がモバイルとデスクトップで割れる。
  */
 const liveRoute = createRoute({

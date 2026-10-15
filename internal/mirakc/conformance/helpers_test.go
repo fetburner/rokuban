@@ -32,7 +32,7 @@ import (
 // **この digest はいずれ Docker Hub 上で prune されうる**（`main-debian` は継続的に
 // 上書きされる可動タグで、古い digest は untagged manifest として残るだけ）。
 // pull 失敗はテストの回帰ではなく pin の失効なので、docs/runbook/testing.md の
-// 「mirakc の版を上げる手順」の手順で最新の digest に取り直す。
+// 「mirakc のバージョンを上げる手順」の手順で最新の digest に取り直す。
 const mirakcImage = "docker.io/mirakc/mirakc@sha256:3fd884b3bb7c5c33f6d9241abf36db81b6fe25e42a869b8f14ecddd482a41c93"
 
 const mirakcImageEnv = "ROKUBAN_CONFORMANCE_MIRAKC_IMAGE"
