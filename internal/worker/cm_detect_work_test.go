@@ -1005,6 +1005,54 @@ func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T
 	}
 }
 
+// attempt_count > 1 の取り消し経路でも、古い世代の worker は同じ回数 (2) を持つ
+// 新しい世代の行に触れない。
+func TestCMDetectionOldGenerationWorkerCannotCancelNewAttempt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 918)
+	q := sqlcgen.New(pool)
+
+	reachSecondAttempt := func() sqlcgen.BeginCMDetectionAttemptRow {
+		t.Helper()
+		first := startCMDetectionTestAttemptRow(t, ctx, q, id)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, first.AttemptCount, "retrying", nil, nil)
+		second := startCMDetectionTestAttemptRow(t, ctx, q, id)
+		if second.AttemptCount != 2 {
+			t.Fatalf("second attempt = %#v, want attempt_count 2", second)
+		}
+		return second
+	}
+	oldAttempt := reachSecondAttempt()
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
+	}
+	// 新しい世代の最初の Begin は行を作り直して回数 1 になる。もう 1 回失敗させて 2 に揃える。
+	newAttempt := reachSecondAttempt()
+	if oldAttempt.PolicyGeneration == newAttempt.PolicyGeneration {
+		t.Fatalf("generations old=%d new=%d, want different", oldAttempt.PolicyGeneration, newAttempt.PolicyGeneration)
+	}
+
+	if n, err := q.CancelCMDetectionRunningAttempt(ctx, sqlcgen.CancelCMDetectionRunningAttemptParams{
+		RecordingID: id, AttemptCount: 2, PolicyGeneration: oldAttempt.PolicyGeneration,
+	}); err != nil || n != 0 {
+		t.Fatalf("old-generation CancelCMDetectionRunningAttempt = %d, %v; want 0 rows", n, err)
+	}
+	var state string
+	var count int32
+	if err := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count); err != nil || state != "running" || count != 2 {
+		t.Fatalf("new-generation attempt = %q/%d, %v; want running/2 untouched", state, count, err)
+	}
+	if n, err := q.CancelCMDetectionRunningAttempt(ctx, sqlcgen.CancelCMDetectionRunningAttemptParams{
+		RecordingID: id, AttemptCount: 2, PolicyGeneration: newAttempt.PolicyGeneration,
+	}); err != nil || n != 1 {
+		t.Fatalf("current-generation CancelCMDetectionRunningAttempt = %d, %v; want 1 row", n, err)
+	}
+}
+
 func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

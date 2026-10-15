@@ -30,12 +30,10 @@ SELECT r.id, r.network_id, r.service_id, o.rel_path,
        COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        (r.deleted_at IS NOT NULL)::boolean AS is_trashed,
        EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id) AS original_missing,
-       EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected,
-       ca.state AS attempt_state
+       EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS detected
 FROM recordings r
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
 WHERE r.id = sqlc.arg('recording_id');
 
 -- name: GetCMRetryOriginal :one
