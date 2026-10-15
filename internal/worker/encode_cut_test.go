@@ -367,7 +367,7 @@ func TestBuildCutFilter_UploadMatchesDecodePath(t *testing.T) {
 	}
 }
 
-// TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath は置き換えの受け入れを
+// TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath は明示要求による置き換えを
 // 固定する: 新しい世代のパスに置き換わり、旧パスが消え、凍結区間が差し替わる。
 func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	pool := setupTestPool(t)
@@ -447,7 +447,9 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		t.Fatalf("setFrozenCuts: %v", err)
 	}
 
+	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	job := newCutEncodeJob(recordingID)
+	job.RequestedCutKeep = requestedKeep
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -518,6 +520,64 @@ func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapt
 		return err
 	}
 	return replaceMediaAssetCuts(context.Background(), sqlcgen.New(pool), assetID, ranges)
+}
+
+func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/unrequested-replacement.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatalf("adopting chapters: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(400000, 800000), 'CM', true)`, recordingID); err != nil {
+		t.Fatalf("seeding current chapter span: %v", err)
+	}
+	currentKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(currentKeep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", currentKeep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/stale_cut.mp4")
+	oldKeep := []chapters.Range{{StartMs: 0, EndMs: 200000}, {StartMs: 300000, EndMs: 1800000}}
+	if err := setFrozenCuts(t, pool, assetID, oldKeep); err != nil {
+		t.Fatalf("seeding frozen cut ranges: %v", err)
+	}
+	if _, err := sqlcgen.New(pool).CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
+		RecordingID: recordingID,
+		Profile:     "cut",
+	}); err != nil {
+		t.Fatalf("seeding running encode attempt: %v", err)
+	}
+
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", &cutContext{keep: currentKeep}, nil)
+	if err != nil {
+		t.Fatalf("observing stale encoded asset: %v", err)
+	}
+	if observed.skip || observed.replaced == "" {
+		t.Fatalf("observed plan = %+v, want an active stale cut that an ordinary job might replace", observed)
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning publish check: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	w := &EncodeWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	decision, err := w.prepareEncodePublish(ctx, tx, sqlcgen.New(tx), encodePublishInput{
+		recordingID: recordingID,
+		profile:     "cut",
+		attempt:     1,
+		observed:    observed,
+		cut:         &cutContext{keep: currentKeep},
+	})
+	if err != nil {
+		t.Fatalf("preparing ordinary publish: %v", err)
+	}
+	if !decision.skip {
+		t.Fatal("ordinary job was allowed to replace an active cut asset without a matching rebuild request")
+	}
 }
 
 func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingID int64, keep []chapters.Range) json.RawMessage {

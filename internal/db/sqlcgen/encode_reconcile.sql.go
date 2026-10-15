@@ -389,6 +389,11 @@ WITH candidate_recordings AS (
             AND e.state = 'active'
             AND e.profile = want.profile
         )
+        AND NOT EXISTS (
+          SELECT 1 FROM encoded_asset_rebuild_requests rebuild
+          WHERE rebuild.recording_id = p.recording_id
+            AND rebuild.profile = want.profile
+        )
     )
   ORDER BY recording_id
   LIMIT $5
@@ -411,6 +416,11 @@ WHERE want.profile <> ''
       AND e.kind = 'encoded'
       AND e.state = 'active'
       AND e.profile = want.profile
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM encoded_asset_rebuild_requests rebuild
+    WHERE rebuild.recording_id = c.recording_id
+      AND rebuild.profile = want.profile
   )
 GROUP BY c.recording_id, want.profile
 ORDER BY c.recording_id, min(want.ordinality)
@@ -472,7 +482,8 @@ type ListMissingEncodeProfilesRow struct {
 // ListMissingEncodeProfiles との突き合わせで検出する。
 // ListMissingEncodeProfiles は「原本が active でコミット済み、かつ
 // known_profiles に含まれる desired のうち少なくとも 1 つについて active な
-// encoded が無い」録画について、不足している (recording_id, profile) を返す。
+// encoded が無く、永続 rebuild 要求も無い」録画について、不足している
+// (recording_id, profile) を返す。rebuild 要求は固定 keep を持つ別経路で投入する。
 // recording_id が after_recording_id より大きい録画を recording_id 昇順で
 // row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
 // 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。

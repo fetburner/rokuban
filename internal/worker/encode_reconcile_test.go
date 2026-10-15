@@ -221,6 +221,49 @@ func TestEncodeReconcile_RecoversRebuildRequestsAndClearsStaleOnes(t *testing.T)
 	}
 }
 
+func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/missing-asset.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatalf("adopting chapters: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatalf("seeding chapter span: %v", err)
+	}
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
+
+	enqueuer := newRecordingEnqueuer()
+	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
+	w := &EncodeReconcileWorker{
+		Enqueuer: enqueuer,
+		Pool:     pool,
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}},
+	}
+	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
+
+	var got []jobs.EncodeJobArgs
+	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
+		if args.RecordingID == recordingID && args.Profile == "cut" {
+			got = append(got, args)
+		}
+	}
+	if len(got) != 1 {
+		t.Fatalf("queued cut jobs = %d, want exactly one request-bound job", len(got))
+	}
+	requestedKeep, present, err := decodeRequestedCutKeep(got[0].RequestedCutKeep)
+	if err != nil || !present || !chapters.SameRanges(requestedKeep, keep) {
+		t.Errorf("queued request keep = %v, present %v, err %v; want %v", requestedKeep, present, err, keep)
+	}
+}
+
 func mustMarshalKeep(t *testing.T, keep []chapters.Range) json.RawMessage {
 	t.Helper()
 	raw, err := json.Marshal(keep)

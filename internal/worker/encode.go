@@ -932,6 +932,11 @@ func (w *EncodeWorker) prepareEncodePublish(
 	if decision.plan.stale {
 		return encodePublishDecision{}, jobq.Snooze(encodeReplanDelay)
 	}
+	if in.cut != nil && decision.plan.replaced != "" && !decision.plan.skip && !decision.hasRebuildRequest {
+		// An ordinary queued job may predate an explicit re-encode request. It must not
+		// replace an active cut asset after that request has been consumed or gone stale.
+		return encodePublishDecision{skip: true}, nil
+	}
 	if decision.plan.skip {
 		if decision.hasRebuildRequest {
 			if err := clearSatisfiedRebuildRequestInTx(ctx, tx, q, in, decision.rebuildRequest); err != nil {
