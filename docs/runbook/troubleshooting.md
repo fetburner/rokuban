@@ -373,4 +373,4 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 curl -s "$MIRAKC_URL/api/tuners" | jq '.[] | {name, isAvailable, users}'
 ```
 
-EPGStation のライブ視聴・EPG 収集・別チャンネルの録画が掴んでいないか確認する。
+EPGStation のライブ視聴・EPG 収集・別チャンネルの録画がチューナーを取っていないか確認する。

@@ -104,7 +104,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:font-scale
 
   **同一インスタンスのまま録画だけ差し替わる経路（`playbackRate` を当てる effect の依存漏れ）はここでは踏めない**。現在の UI では必ず一覧を経由し、`RecordingPlayer` が新規マウントして localStorage から読み直すためである。その退行を捕まえているのは `src/components/recording-player.test.tsx` の `rerender` を使う jsdom テスト（実測で確認済み）
 
-一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` はサイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を測ってしまう（実際に踏んだ）。
+一覧の `<ul>` は行のテキストから `ancestor::ul[1]` で辿る。素の `ul li` はサイドバーのナビゲーションにも当たり、「1 行目に 1 枚」という無関係な値を測ってしまう（実際に起きた）。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &

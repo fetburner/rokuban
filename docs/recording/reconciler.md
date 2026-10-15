@@ -22,7 +22,7 @@ tags 対応付けでは、mirakc schedule の `tags` に programId を埋め込�
 
 contentPath 生成では、`recording.basedir` 相対パスを必須とする。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行う。以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐ。これにより実質固定される（`reservations.base` に生成値を書き戻すコードは無い）。
 
-終了済み番組は作らない。番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別の判定である。`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う。ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける。
+終了済み番組は作らない。番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別の判定である。`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う。ずらすと同じ予約が毎パス作成対象のまま残って POST を送り続ける。
 
 #### 起動契機
 

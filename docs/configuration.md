@@ -256,7 +256,7 @@ filter の文字列は直接書かせず、系統名と真偽値で指定する�
 
 `encode.profiles[].input_extra_args` と `live.input_extra_args` は、`-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数である。
 
-device ノードのマウントはデプロイ側の仕事である（k8s `resources.limits` / Docker `--device`）。`hwaccel.device` の存在は起動時に検査しない。公式イメージや device の無い CI を止めるためである。無い device を書いたプロファイルは、ジョブ / セッションの失敗として現れる。
+device ノードのマウントはデプロイ側の仕事である（k8s `resources.limits` / Docker `--device`）。`hwaccel.device` の存在は起動時に検査しない。検査すると公式イメージや device の無い CI が落ちる。無い device を書いたプロファイルは、ジョブ / セッションの失敗として現れる。
 
 #### argv の順序
 

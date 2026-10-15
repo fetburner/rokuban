@@ -467,7 +467,7 @@ flowchart TD
 
 シリーズ画面は、番組ハブを開ける棚だけを出す。API は状態を失わないよう、開けない棚も返す。
 
-`/series` は `value` をシリーズ名、`title` を補助表示に使い、`playableCount` と `latestStartAt` を添える。`value` が `NULL` の棚が、番組ハブを開けない棚である。棚全体を選ぶリンクは `/recordings/{representativeId}/series` に向く。
+`/series` は `value` をシリーズ名、`title` を補助表示に使い、`playableCount` と `latestStartAt` を付ける。`value` が `NULL` の棚が、番組ハブを開けない棚である。棚全体を選ぶリンクは `/recordings/{representativeId}/series` に向く。
 
 #### 棚のパス
 

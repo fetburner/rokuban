@@ -145,7 +145,7 @@ go build -o /tmp/rokuban ./cmd/rokuban
 /tmp/rokuban enqueue epg-sync --site home --config $CFG
 /tmp/rokuban server --roles worker --sites home --queues=epg \
   --soft-stop-timeout=60s --config $CFG & PID=$!
-# **ジョブが実行中になるまで待つ。** 待たずに撃つと claim 前に畳んで終わり、
+# **ジョブが実行中になるまで待つ。** 待たずに実行すると claim 前に畳んで終わり、
 # 「完走した」も「打ち切られた」も観測できない（空虚な緑になる）
 until psql -h localhost -d $DB -tAc \
   "select 1 from river_job where state = 'running'" | grep -q 1; do sleep 1; done
@@ -190,7 +190,7 @@ flowchart TD
 
 60s の側が「約」なのは、`DELAY` がジョブの要求時刻から測られるのに対し、上の待ちが 1 秒刻みのポーリングだからである（その遅れぶん手前で終わる。実測 38.96 秒）。この側はプロセス側の待ちが固定値ではないことも同時に見ている（かつての `Stop(30 秒)` のままなら 30 秒で先に抜け、ジョブは一時的に `running` のまま残る）。ingest と encode は JobRescuer が回収する（encode は保存した timeout の期限後）。cm_detect は定期 reconcile が拾う。
 
-2 発目の SIGTERM で強制終了できることも同じ形で確かめられる。上の `kill -TERM $PID` の直後にもう一度送ると、drain の途中でもプロセスが落ちる（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、猶予のあいだ Ctrl-C も `kill -TERM` も反応しなくなる。
+2 発目の SIGTERM で強制終了できることも同じ形で確かめられる。上の `kill -TERM $PID` の直後にもう一度送ると、drain の途中でもプロセスが落ちる（実測: 2 発目の直後に exit 143）。1 発目のあとシグナルの登録を外していないと、猶予のあいだプロセスが Ctrl-C にも `kill -TERM` にも反応しなくなる。
 
 #### mock では検出できない前提
 

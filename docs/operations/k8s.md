@@ -384,7 +384,7 @@ drain の猶予は `--soft-stop-timeout`（既定 5 秒）である。SIGTERM �
 
 打ち切りは `river_job` に痕跡を残さない（`errors` は空、`attempt` も進まない）。デプロイ由来の打ち切りかどうかはテーブルから判別できない。ログでも「どのジョブが切られたか」は見えない。River にロガーを渡していないので、River の既定ロガー（WARN 止まり）だけが出る。猶予切れ側の `Client: Soft stop timeout; cancelling remaining job contexts`（WARN）から判別できるのは、「猶予が切れた」までである。
 
-`--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に掛かる。**0 以下は起動エラー**であり、worker ロールを持たないプロセスでの指定も起動エラーである。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。無効な argv を気づかないうちに無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
+`--soft-stop-timeout` の検査は 2 つあり、`--once` かどうかに関わらず全 `server` 起動に掛かる。**0 以下は起動エラー**であり、worker ロールを持たないプロセスでの指定も起動エラーである。キューを引くのは worker ロールだけなので、`--roles watcher --soft-stop-timeout 5m` は何も待たずに畳む。効かない argv を気づかないうちに無視すると、ScaledJob の argv から写し間違えた Pod が「drain するつもりで drain しない」形になる。
 
 0 は「待たない」であり、「無制限」にはならない。River は猶予が 0 のとき work ctx を start ctx から継ぐ。シグナルで cancel される ctx を River の起動に渡しているこの構成では、SIGTERM が実行中ジョブの ctx を即座に切る停止相当になる（この節が長く「未解決」として抱えていた失敗そのもの）。
 
