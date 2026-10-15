@@ -53,7 +53,7 @@
       "question": "ラスタ版のアイコンとフォールバックはどうするか。",
       "points": [
         "ラスタ版は外部ツールで作り、自動化していない",
-        "SVG が効かない古い Safari 向けに ICO を併記し、iOS 向けに apple-touch-icon も置く"
+        "SVG に対応しない古い Safari 向けに ICO を併記し、iOS 向けに apple-touch-icon も置く"
       ]
     }
   ]

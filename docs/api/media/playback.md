@@ -216,7 +216,7 @@ hls.js 1.7.3 の既定は再試行 2 回・初回待ち 1 秒・指数 backoff �
 
 #### 終了後のセッション
 
-ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist と全 segment を保持する。異常終了したとき（kill を含む）は、壊れた session とファイルを直ちに解放する。
+ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist と全 segment を保持する。異常終了したとき（kill を含む）は、使えなくなった session とファイルを直ちに解放する。
 
 正常終了の後は、既存の playlist から `?profile=` を切り替えられる。録画が finished でも ingest 前なら、原本行が無い間は新しい session を開始できる。ingest 後で保持 session が無ければ 404 である。
 
@@ -275,7 +275,7 @@ POST /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave
 
 lock を取らなくても open した inode と active な原本行を照合できる。
 
-| 順序・制約 | 帰結 |
+| 順序・制約 | 結果 |
 |---|---|
 | canonical file は DB 行の commit より前に rename する | active 行の公開時には canonical file が既にある |
 | unlink は deleting 状態の commit より後に行う | active 行を確認した inode が並行削除で別 file にならない |

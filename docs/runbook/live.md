@@ -74,7 +74,7 @@ iPhone の Safari でライブ視聴が再生できることは、**誰も確認
 
 iPhone は MSE の MediaSource を持たない（ManagedMediaSource だけを持つ。iPad と違う）。再生経路の判定は、macOS の WebKit / Chromium / Chrome / Firefox では実測して固定してある。iOS 実機は誰も確認していない。
 
-video/mp2t の canPlayType の戻り値が macOS の WebKit と同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる。iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では最後の砦で video 要素に直接渡る形になる。
+video/mp2t の canPlayType の戻り値が macOS の WebKit と同じ `'maybe'` である保証は無い。違っていた場合は hls.js 経路へ落ちる。iOS 17.1 以降なら ManagedMediaSource で再生できるが、それ未満では最後の手段で video 要素に直接渡る形になる。
 
 確認できる人が実機で開いて、次の 2 点を見る。
 
@@ -86,7 +86,7 @@ video/mp2t の canPlayType の戻り値が macOS の WebKit と同じ `'maybe'` 
 
 - iPhone に MediaSource が無い: `window.MediaSource`、`ManagedMediaSource`
 - 再生経路の判定を macOS の 4 ブラウザで固定した: `supportsNativeHls`、`web/e2e/live.mjs` の⑥
-- 最後の砦が video 要素に直接渡す: `canPlayType('video/mp2t')`、`claimsHlsPlaylistSupport`、`<video>`
+- 最後の手段が video 要素に直接渡す: `canPlayType('video/mp2t')`、`claimsHlsPlaylistSupport`、`<video>`
 
 </details>
 
@@ -188,7 +188,7 @@ e2e に渡すチャンネルは、SI の serviceId で指定する。ページ U
 
 ⓪ はさらに、選ばれたチャンネルそのものを assert する。チャンネル一覧の現在位置の印がちょうど 1 件で、その遷移先に要求した `Service.id` が載っていることを見る。引く関数は「投入した行が見つかるか」までしか見ない。この assert が無いと、要求件数の判定だけは通り続けて「要求した id が実際に選ばれた」という主張が抜け落ちる。
 
-⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。既定のフォールバック先（番組を持つ先頭）は、この投入例では A になる。要求先が既定と同じだと、この assert は「要求が効いた」と「一致に失敗して既定に落ちた」を区別できない。A で判定していたときの実測では、初期チャンネルの選択を `serviceId` 一致に変異させても ⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり遷移先も違う）。
+⓪ が直開きするのは B（`E2E_LIVE_SERVICE_B`）である。既定のフォールバック先（番組を持つ先頭）は、この投入例では A になる。要求先が既定と同じだと、この assert は「要求が反映された」と「一致に失敗して既定に落ちた」を区別できない。A で判定していたときの実測では、初期チャンネルの選択を `serviceId` 一致に変異させても ⓪ が緑のまま通った。B に変えると同じ変異で落ちる（印が 2 件になり遷移先も違う）。
 
 <details>
 <summary>根拠</summary>
@@ -242,22 +242,22 @@ pnpm exec playwright install chromium webkit
 
 0. 選択と視聴開始の分離。`/live?service=<Service.id>` を開いた直後はプレイリスト / セグメント要求が 0 件である（route の差し替えで観測）。「再生」ボタンを押して初めて要求が飛ぶ。
 
-   併せて、要求した `Service.id` が実際に選ばれたことも見る。チャンネル一覧の現在位置の印がちょうど 1 件で、その遷移先に要求した id が載っていることを確かめる。1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの壊れ方で、ユニットテストで固定した。ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、①〜⑦ と異なり、前提が無い環境でも未測定として飛ばさない。①〜⑦ は「再生」ボタンを押した後の挙動を見るものなので、ページ遷移の後にこのボタンを押す手順を挟んでいる。
+   併せて、要求した `Service.id` が実際に選ばれたことも見る。チャンネル一覧の現在位置の印がちょうど 1 件で、その遷移先に要求した id が載っていることを確かめる。1 件でなく 2 件付くのは `serviceId` 単独で同定していたときの失敗の仕方で、ユニットテストで固定した。ffmpeg 不要（フィクスチャを使わない）で bundled Chromium だけで測れるため、①〜⑦ と異なり、前提が無い環境でも未測定として飛ばさない。①〜⑦ は「再生」ボタンを押した後の挙動を見るものなので、ページ遷移の後にこのボタンを押す手順を挟んでいる。
 1. hls.js の動的 import チャンク（`assets/hls-*.js`）が実際に要求される。
 2. MSE がアタッチされる。`video.currentSrc` が `blob:` になる。`src` は hls.js が `sourceopen` 後に object URL を revoke するので短命であり、これだけを見ると取り逃がす。
 3. 実 Chrome のみ（`channel: 'chrome'`。bundled Chromium は H.264/AAC 非対応）で、`video.play()` 後に `currentTime` が進み、`videoWidth > 0` になる。あわせて遅延・バッファの計器（「放送から約 n 秒 / 先読み n 秒」）が実際に数値になり、`NaN` を描画していないことも見る（`docs/frontend/live.md` §遅延・バッファの計器）。
-4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる（プレーヤーの effect cleanup が実際に効いていることの検証）。
+4. チャンネル切替後、旧チャンネルへのセグメント要求が 0 件になる（プレーヤーの effect cleanup が実際に機能していることの検証）。
 5. 503（本文つき）でエラー文言が出て、再読み込みで復帰する。
 6. WebKit（Safari 相当）でネイティブ HLS 経路に入る。`assets/hls-*.js` を読み込まない。`<video>` に m3u8 の URL がそのまま渡る。そのまま再生が進む。再生の判定は `currentTime` の前進と `videoWidth > 0` である。WebKit は `<video>` が MPEG-2 TS を demux できる唯一のエンジンなので、フィクスチャをネイティブに再生できる。
 7. ネイティブ経路のメディア失敗が画面に出る（WebKit）。プレイリストは 200 だがセグメントが 404 / 無応答のとき、エラー表示と `再読み込み` ボタンが出る。
 
-   probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと永久に止まった黒いプレイヤーになる。壊れ方で出るイベントが違う（404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る。無応答側の窓は 40 秒ある。自動降格（⑪）が猶予の満了で 1 回挟まるためで、実測 31.5 秒かかる（降格の導入前は 30 秒で足りていた）。窓そのものが「黒いままにならない」の上限なので、40 秒より広げない。降格は段が尽きるまで繰り返すので、プロファイルが 3 件以上のデプロイではこの時間はさらに伸びる。
+   probe は HTTP 層しか見ないので、ここを `<video>` のイベントで拾えていないと永久に止まった黒いプレイヤーになる。失敗の仕方で出るイベントが違う（404 は `error`、無応答は `stalled` のみ）ので 2 通りとも見る。無応答側の窓は 40 秒ある。自動降格（⑪）が猶予の満了で 1 回挟まるためで、実測 31.5 秒かかる（降格の導入前は 30 秒で足りていた）。窓そのものが「黒いままにならない」の上限なので、40 秒より広げない。降格は段が尽きるまで繰り返すので、プロファイルが 3 件以上のデプロイではこの時間はさらに伸びる。
 
 <details>
 <summary>根拠</summary>
 
 - 選択と視聴開始の分離: `page.route`、`page.goto`
-- 2 件付く壊れ方の固定: `aria-current="page"`、`href`、`serviceId`、`pages/live.test.tsx`
+- 2 件付く失敗の仕方の固定: `aria-current="page"`、`href`、`serviceId`、`pages/live.test.tsx`
 - cleanup の検証: `LivePlayer`
 - ネイティブ経路のメディア失敗: `<video>`、`error`、`stalled`
 
@@ -278,7 +278,7 @@ pnpm exec playwright install chromium webkit
 
     さらに配信を復旧させ、そのまま再生が続くこと（`currentTime` が進み `paused=false`）を見る。配信側が実際にセグメントを配ったことも見る。`currentTime` の前進だけでは、「切替で 0 秒から読み直して 1 本だけ再生した」場合と区別できないためである。切替は `load()` で `paused` を戻すので、ここを見ないと「画質だけ下げて黒いまま」を見逃す。
 
-    利用者が明示的に選んだ画質（`?profile=hd`）では下げない側も見る（同じ壊し方・同じ待ち時間で、自動側が実際に下がっていることが前提にあるので「下がらない」が空虚な成功にならない）。停滞の閾値（12 秒）は実時間なので、この判定だけで 1 分半ほどかかる。実測では、自動は 22〜23 秒で降格し、復旧後は再生が続く。降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く（`docs/frontend/live.md` §フロントエンド実装）。
+    利用者が明示的に選んだ画質（`?profile=hd`）では下げない側も見る（同じ障害の起こし方・同じ待ち時間で、自動側が実際に下がっていることが前提にあるので「下がらない」が空虚な成功にならない）。停滞の閾値（12 秒）は実時間なので、この判定だけで 1 分半ほどかかる。実測では、自動は 22〜23 秒で降格し、復旧後は再生が続く。降格を待つ窓は 30 秒、復旧を待つ窓はプレイリストの再取得間隔から導く（`docs/frontend/live.md` §フロントエンド実装）。
 
 <details>
 <summary>根拠</summary>
@@ -292,9 +292,9 @@ pnpm exec playwright install chromium webkit
 
 #### 実際に発見した回帰
 
-この e2e は、jsdom のユニットテストが通ったまま壊れていた回帰を 2 件見つけた。どちらも、ネイティブ HLS に対応しているかの判定の誤りである。
+この e2e は、jsdom のユニットテストが通ったまま正しく動かなくなっていたリグレッションを 2 件見つけた。どちらも、ネイティブ HLS に対応しているかの判定の誤りである。
 
-1. ネイティブ HLS の対応判定が、`canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら、Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず沈黙して再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行していなかった。`canPlayType` が jsdom では常に `''` を返すためである。
+1. ネイティブ HLS の対応判定が、`canPlayType('application/vnd.apple.mpegurl')` の戻り値 `'maybe'` も対応と見なしていた。実 Chrome（bundled Chromium だけでなく `channel: 'chrome'` の本物でも）はこの MIME タイプに `'maybe'` を返す。そのままリリースしていたら、Chrome ユーザー全員が `video.src` に m3u8 を直接渡され、hls.js を一切経由せず、何も表示しないまま再生できなかった。ユニットテスト（jsdom）はこの分岐を一度も実行していなかった。`canPlayType` が jsdom では常に `''` を返すためである。
 2. その修正（`'probably'` のみを対応と見なす）が、どの実ブラウザでも false になっていた。3 エンジンとも codecs 無しの m3u8 には `'maybe'` しか返さず、codecs 付きなら 3 エンジンとも `'probably'` を返す。戻り値を決めているのは codecs の有無であってエンジンではない。①〜⑤ が Chromium 系しか回していなかったので、この回帰は e2e 緑のまま通った。⑥（WebKit）を足して初めて機械判定できるようになった。判定は「プレイリストとセグメントの両方の Content-Type を `<video>` が再生できるか」（`video/mp2t` を demux できるのは WebKit だけ）に置き換えてある。
 
 <details>

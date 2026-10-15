@@ -96,7 +96,7 @@ ruler と reconciler をジョブにするのは、定期・冪等・パスを�
 
 worker の最大並列数はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。
 
-並走すると壊れるものは次の通りである。これはコード読解による推定で、並走を起こしての確認はしていない。
+並走するとおかしくなるものは次の通りである。これはコード読解による推定で、並走を起こしての確認はしていない。
 
 1. ruler: パスの前半の読みと後半の書きが別トランザクションなので、古いルール集合で評価したパスが後からコミットすると、新しいパスの結果を上書きする。ラベルルールの reconcile がアドバイザリのトランザクションロックで止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証である。
 2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う。
@@ -163,7 +163,7 @@ k8s の CronJob は、insert-only クライアントで 1 件投入して即終�
 
 一意性を判定する状態は必ず明示する。既定は完了済みと破棄済みを含み、一度終わった引数のジョブを二度と投入できなくする。設定は行ごとに保存されるので、変更したときは古い行の削除が要る。
 
-現行の River 投影では `UniqueOpts.ByState` を必ず明示する。既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含む。そのため既定のままだと、定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している。同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が真実だからである。
+現行の River 投影では `UniqueOpts.ByState` を必ず明示する。既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含む。そのため既定のままだと、定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している。同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が権威だからである。
 
 #### 状態設定の変更と残骸
 
@@ -191,7 +191,7 @@ River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true`
 
 #### 合流の identity
 
-合流の identity は、種別・論理キュー・引数全体の JSON とする。導出値が引数に入ると、導出値だけが違う投入も別の identity になり、重複して実行されうるが、正しさは壊れない。
+合流の identity は、種別・論理キュー・引数全体の JSON とする。導出値が引数に入ると、導出値だけが違う投入も別の identity になり、重複して実行されうるが、正しさは損なわれない。
 
 部分フィールドを選ぶ `river:"unique"` タグは使わない。引数全体の JSON なら、どの adapter でも同じ identity を再現できる。代償として、encode の保存済み締切のように導出値が引数に入ると、締切だけが違う投入も別の identity になる。それは同じ仕事なので、重複として次の形で現れる。
 
@@ -199,7 +199,7 @@ River projection は `UniqueOpts.ByQueue` を使い、現在は `Coalesce: true`
 2. 運用者が profile の rate を変えるたびに、同じ重複が起きる。
 3. 同時実行数が 2 以上か複数 Pod なら、重複側の `beginEncodeAttempt` が試行番号を進める。すると実行中だった側の公開は古い試行として拒否され、ffmpeg の結果が捨てられる。既定の同時実行数 1 では、重複は後から実行され、公開判定で飛ばされる。
 
-いずれも正しさは壊れない。
+いずれも正しさは損なわれない。
 
 <details><summary>根拠</summary>
 
@@ -225,13 +225,13 @@ NOTIFY はコミット時にのみ配送される組み込み pub/sub である�
 
 ### 揮発テレメトリの例外
 
-エンコード進捗は、テーブルに保存せず、通知で直接ブラウザへ渡す。完了判定には使わない。欠落しても、真実はテーブルの再読で復元できなければならない。
+エンコード進捗は、テーブルに保存せず、通知で直接ブラウザへ渡す。完了判定には使わない。欠落しても、正しい状態はテーブルの再読で復元できなければならない。
 
 ffmpeg の `out_time` を実入力 duration に対する割合にして、最大 1 回/秒で NOTIFY する。notifier の EventHub が接続中のブラウザへ SSE として渡す。テーブルへ保存しないのは、秒単位で変わる復元不要の値を永続化すると、再起動後に WAL・dead tuple・vacuum 対象を増やすためである。
 
-**完了判定には使わない。** NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうるからである。欠落しても、真実は `recording_encode_attempts` / `media_assets` の再読で復元できなければならない（不変条件 5）。
+**完了判定には使わない。** NOTIFY に配送保証が無く、切断・遅参・notifier 停止で欠落しうるからである。欠落しても、正しい状態は `recording_encode_attempts` / `media_assets` の再読で復元できなければならない（不変条件 5）。
 
-フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造である。durable な状態のイベントは、TanStack Query の `invalidateQueries` に徹し、真実は常に REST から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、durable 状態が `running` でなくなれば破棄する。
+フロントエンド（[フロントエンドアーキテクチャ](../frontend.md) 参照）の SSE も同じ構造である。durable な状態のイベントは、TanStack Query の `invalidateQueries` に徹し、正しい状態は常に REST から再取得する。エンコード進捗だけは上記の揮発テレメトリとして payload を直接表示し、durable 状態が `running` でなくなれば破棄する。
 
 <details><summary>根拠</summary>
 
@@ -254,7 +254,7 @@ notifier はシングルトンにしない。各レプリカが独立に LISTEN 
 
 レプリカ間で配送内容を調停する必要は、構造的にない。各クライアントは 1 つのレプリカにしか繋がっておらず、そのレプリカの LISTEN だけが届けば十分だからである。したがって、レプリカを増やしても Redis アダプタのような追加の配送基盤は要らない。
 
-この理由づけは、reconciler と ruler のジョブ化によりシングルトンが watcher だけになったのとは別である。あちらは「冪等だから複数動いても壊れない」、notifier は「配送先が自分にぶら下がる接続だけなので調停自体が要らない」。
+この理由づけは、reconciler と ruler のジョブ化によりシングルトンが watcher だけになったのとは別である。あちらは「冪等だから複数動いてもおかしくならない」、notifier は「配送先が自分にぶら下がる接続だけなので調停自体が要らない」。
 
 <details><summary>根拠</summary>
 

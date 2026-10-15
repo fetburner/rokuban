@@ -183,9 +183,9 @@ worker 起動時に、`cm_detect.binary_dir` の 3 コマンドと ffprobe（原
 
 無効（既定）なら、ffmpeg の無い公式イメージで streamer を起動する構成（録画配信とサムネイルのみ）を壊さない（不変条件 4）。
 
-`live.enabled` だけは `GET /api/capabilities` の `live` にも出る。フロントは config を読めず、これが無いと無効な機能への導線を出し続けるためである。ロール分割構成でも config ファイルは共有する（上記「関心事別にセクションを切る」）ので、値はそのまま公開面に写し、streamer には問い合わせない（不変条件 1）。
+`live.enabled` だけは `GET /api/capabilities` の `live` にも出る。フロントは config を読めず、これが無いと無効な機能への入口を出し続けるためである。ロール分割構成でも config ファイルは共有する（上記「関心事別にセクションを切る」）ので、値はそのまま公開面に写し、streamer には問い合わせない（不変条件 1）。
 
-この値を返すのは api ロールのプロセスに限らない。REST の生成ルートはロールで絞られないので、HTTP を持つどのプロセスに聞いても同じ答えになる。そうしないとロールごとに答えが割れる（[api/rest.md](api/rest.md)「機能の有効/無効は能力 API で観測する」）。答えが表すのは常に「この config が有効か」であり、**「api の config では有効だが streamer を動かしていない」構成では導線が出る**（押した先はプレイリストの 404）。
+この値を返すのは api ロールのプロセスに限らない。REST の生成ルートはロールで絞られないので、HTTP を持つどのプロセスに聞いても同じ答えになる。そうしないとロールごとに答えが割れる（[api/rest.md](api/rest.md)「機能の有効/無効は能力 API で観測する」）。答えが表すのは常に「この config が有効か」であり、**「api の config では有効だが streamer を動かしていない」構成では入口が出る**（押した先はプレイリストの 404）。
 
 #### セグメントの書き出し先
 
@@ -256,7 +256,7 @@ filter の文字列は直接書かせず、系統名と真偽値で指定する�
 
 `encode.profiles[].input_extra_args` と `live.input_extra_args` は、`-i`（VOD）/ `-f mpegts -i pipe:0`（live）の直前に追加する引数である。
 
-device ノードのマウントはデプロイ側の仕事である（k8s `resources.limits` / Docker `--device`）。`hwaccel.device` の存在は起動時に検査しない。公式イメージや device の無い CI を壊すためである。無い device を書いたプロファイルは、ジョブ / セッションの失敗として現れる。
+device ノードのマウントはデプロイ側の仕事である（k8s `resources.limits` / Docker `--device`）。`hwaccel.device` の存在は起動時に検査しない。公式イメージや device の無い CI を止めるためである。無い device を書いたプロファイルは、ジョブ / セッションの失敗として現れる。
 
 #### argv の順序
 
@@ -319,7 +319,7 @@ VOD の順序は次の通り。
 
 **出力側に `-map` を書けないので、アプリがストリームを選ぶ。** ffmpeg の既定の選択（映像は画面サイズが最大のもの、音声はチャンネル数が最大のもの、同点は若い番号）を ffprobe で再現する。再現しないとカット版だけ別のストリームが選ばれ、カットしない版と音声が食い違う。
 
-字幕サイドカーは同じ ffmpeg 起動の別出力なので `trim` が効かない。書き出した後に同じ keep 区間の写像で時刻を付け替える。CM 区間の中に収まるキューは捨て、境界をまたぐキューは keep 側でクリップする。
+字幕サイドカーは同じ ffmpeg 起動の別出力なので `trim` が掛からない。書き出した後に同じ keep 区間の写像で時刻を付け替える。CM 区間の中に収まるキューは捨て、境界をまたぐキューは keep 側でクリップする。
 
 カット版にだけ掛かる起動エラーは次の通り。HW フレームに CPU filter を掛ける組み合わせと、VAAPI の前提が揃わない組み合わせである。
 
@@ -415,9 +415,9 @@ flowchart TD
 
 ### server.allowed_hosts と server.trust_forwarded_host（X-Forwarded-Host は opt-in）
 
-許可リストはアプリ内に残る唯一のセキュリティ機構で、DNS rebinding を防ぐ。Host を正規化して完全一致で比べる。転送ホストはクライアントが自己申告できる値なので、明示的に有効にした構成でだけ検証対象にし、有効にすると localhost 系の常時許可は効かなくなる。
+許可リストはアプリ内に残る唯一のセキュリティ機構で、DNS rebinding を防ぐ。Host を正規化して完全一致で比べる。転送ホストはクライアントが自己申告できる値なので、明示的に有効にした構成でだけ検証対象にし、有効にすると localhost 系の常時許可は無効になる。
 
-許可リストは DNS rebinding 対策で、アプリ内に認証を持たないため、この防壁の唯一の要になる（[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、`X-Forwarded-Host` を検証対象にしておらず `Host` を直接使っているときに限り、許可リストの設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で許可リストを素通りできてしまう。
+許可リストは DNS rebinding 対策で、アプリ内に認証を持たないため、この防壁の唯一の要になる（[api.md](api.md) §認証 帰結3）。localhost 系（`localhost` / `127.0.0.1` / `::1`）は、`X-Forwarded-Host` を検証対象にしておらず `Host` を直接使っているときに限り、許可リストの設定に関わらず常に許可する。`X-Forwarded-Host` はクライアント側が自己申告できる値なので、転送値にも同じ緩和を適用すると `X-Forwarded-Host: localhost` で許可リストを回避できてしまう。
 
 判定の流れは次の図の通り。
 
@@ -444,17 +444,17 @@ flowchart TD
 
 `allowed_hosts` が空（開発用にチェック無効）のときは、この検証自体が丸ごとスキップされ、absolute-form も拒否されない。`/healthz` / `/readyz` / `/metrics` の Host 許可リストの免除は [operations/monitoring.md](operations/monitoring.md) を参照する。
 
-docker-compose の既定構成（`.env` に `ROKUBAN_ALLOWED_HOSTS` を設定しない）でも空になり、同じ緩和が掛かる。空のまま利用者が気付かず公開ポートに晒す事故を防ぐため、起動時に `allowed_hosts` が空なら WARN ログを出す。この WARN はロールに関わらず出る。OpenAPI 由来のルートはどのロール構成でも生えるため、ロール分割デプロイでは全 Pod が同じ判定になる。
+docker-compose の既定構成（`.env` に `ROKUBAN_ALLOWED_HOSTS` を設定しない）でも空になり、同じ緩和が掛かる。空のまま利用者が気付かず公開ポートに晒すミスを防ぐため、起動時に `allowed_hosts` が空なら WARN ログを出す。この WARN はロールに関わらず出る。OpenAPI 由来のルートはどのロール構成でも生えるため、ロール分割デプロイでは全 Pod が同じ判定になる。
 
 #### 転送ホストの信頼
 
 前段のプロキシが外来の値を必ず上書きする構成に限って有効にする。
 
-**`X-Forwarded-Host` は `server.trust_forwarded_host: true` を明示した構成でのみ検証対象にする（既定 `false`）**。DNS rebinding の攻撃ページはブラウザから見て Rokuban と同一オリジンなので、CORS のプリフライトなしに任意のリクエストヘッダーを付けられる。前段にリバースプロキシが無い直接露出構成（`--all` の既定構成）を考える。ここで `X-Forwarded-Host` を無条件に信頼すると、攻撃ページが `X-Forwarded-Host: <allowlist に載っている値>` を自己申告するだけで許可リストを素通りできてしまう。
+**`X-Forwarded-Host` は `server.trust_forwarded_host: true` を明示した構成でのみ検証対象にする（既定 `false`）**。DNS rebinding の攻撃ページはブラウザから見て Rokuban と同一オリジンなので、CORS のプリフライトなしに任意のリクエストヘッダーを付けられる。前段にリバースプロキシが無い直接露出構成（`--all` の既定構成）を考える。ここで `X-Forwarded-Host` を無条件に信頼すると、攻撃ページが `X-Forwarded-Host: <allowlist に載っている値>` を自己申告するだけで許可リストを回避できてしまう。
 
 この値は `config.example.yml` に載る類の推測可能な名前である。前段に正しいリバースプロキシが居て、かつそのプロキシが外来の `X-Forwarded-Host` を必ず上書きする構成に限り、この設定を有効にしてよい。
 
-`trust_forwarded_host: true` の構成では、`Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。これを前提に、`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定する。`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。この構成では localhost 系の常時許可は効かなくなるので、nginx 経由で `http://localhost/` を見る運用なら `allowed_hosts` に明示的に列挙する。
+`trust_forwarded_host: true` の構成では、`Host` がプロキシ自身の値（例: コンテナ内部の DNS 名）に書き換わり、元のクライアント向け Host は `X-Forwarded-Host` に移る。これを前提に、`X-Forwarded-Host` があればそちらを検証対象にし、無ければ `Host` を使う。nginx リファレンス構成では `proxy_set_header X-Forwarded-Host $host;` を設定する。`allowed_hosts` にはブラウザからアクセスする外部ホスト名（例: `rokuban.example.com`）を書く。この構成では localhost 系の常時許可は適用されなくなるので、nginx 経由で `http://localhost/` を見る運用なら `allowed_hosts` に明示的に列挙する。
 
 この構成では、リクエストラインに absolute-form（`GET http://host/path HTTP/1.1`）でホストを書いた要求は 400 で拒否する。Go 標準の HTTP サーバーは absolute-form の request-target が来ると `Host` ヘッダーを常に削除してしまう。そのためサーバー側からは「リクエストラインと `Host` ヘッダーが食い違うか」を判定できず、リクエストラインからこの許可リストを満たすことはできない。
 
@@ -470,7 +470,7 @@ docker-compose の既定構成（`.env` に `ROKUBAN_ALLOWED_HOSTS` を設定し
 
 ### db は構造化フィールド
 
-DB 接続情報は構造化フィールドで書く。1 本の DSN は採らず、パスワードの URL エスケープ事故を避ける。
+DB 接続情報は構造化フィールドで書く。1 本の DSN は採らず、パスワードの URL エスケープ漏れを避ける。
 
 `url:` 1 本の DSN は採らない。
 

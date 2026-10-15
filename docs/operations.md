@@ -4,7 +4,7 @@
 
 | 節 | 内容 | ファイル |
 |---|---|---|
-| §1 | 監視メトリクス: `/metrics` エンドポイント / 実装済みメトリクス一覧 / 録画品質 / ジョブ化されたループの監視（`rokuban enqueue`）/ ruler / ingest / reconcile / 開始遅延検出器 / 沈黙は保証ではない | [operations/monitoring.md](operations/monitoring.md) |
+| §1 | 監視メトリクス: `/metrics` エンドポイント / 実装済みメトリクス一覧 / 録画品質 / ジョブ化されたループの監視（`rokuban enqueue`）/ ruler / ingest / reconcile / 開始遅延検出器 / 警告が出ないことは保証ではない | [operations/monitoring.md](operations/monitoring.md) |
 | §2 | アラート設計: scrambled / エッジディスク残量 / 大量削除サーキットブレーカー / 開始遅延 | [operations/alerts.md](operations/alerts.md) |
 | §3 | DB 運用: 輻輳時の隔離（プール上限 / statement_timeout）/ セッション依存機構 / autovacuum / datadir と scratch の分離 / バックアップ | [operations/database.md](operations/database.md) |
 | §4 | ストレージ運用: 録画バッファのサイジング / アーカイブの速度要件 / disaster recovery（catalog + rescue） | [operations/storage.md](operations/storage.md) |

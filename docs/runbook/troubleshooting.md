@@ -42,7 +42,7 @@ bind mount には copy-up が無いので、ホスト側を先に用意する（
 
 volume に既に中身がある場合は、イメージを上げ直しても所有権は変わらない。所有権を再帰的にかけ直す。
 
-典型は、この不具合を踏んで compose 側で `user: "0:0"` を当てて回避した volume である。root のまま録画やカタログを書いてしまっている。copy-up は空の volume にしか効かない。
+典型は、この不具合に当たって compose 側で `user: "0:0"` を当てて回避した volume である。root のまま録画やカタログを書いてしまっている。copy-up は空の volume にしか適用されない。
 
 `chown` は `-R` でかける。`/mnt/media` だけを chown しても、配下の `catalog/` などが root 所有のまま残る。ディレクトリ作成は既存ディレクトリに対してエラーを返さないので、ファイル作成で同じ `permission denied` になる。
 

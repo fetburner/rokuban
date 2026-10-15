@@ -2,7 +2,7 @@
 
 ### 3.2 reconciler（宣言的同期）
 
-**reconciler は、予約（desired）と mirakc の観測結果（observed）の差分を消す、レベルトリガーの宣言的同期ループである。** 差分は作成と削除の呼び出しで消す。ruler と同じ形のジョブとして動き、定期パスが真実で、ruler パスの完了は投入を早めるヒントにすぎない。
+**reconciler は、予約（desired）と mirakc の観測結果（observed）の差分を消す、レベルトリガーの宣言的同期ループである。** 差分は作成と削除の呼び出しで消す。ruler と同じ形のジョブとして動き、定期パスが状態の権威で、ruler パスの完了は投入を早めるヒントにすぎない。
 
 `reservations`（desired）と `schedule_sync`（observed: `GET /api/recording/schedules` の観測結果）の差分を POST/DELETE で消す。何度落ちても再実行で収束し、時刻精度もプロセス生存性も要求されない。
 
@@ -22,17 +22,17 @@ tags 対応付けでは、mirakc schedule の `tags` に programId を埋め込�
 
 contentPath 生成では、`recording.basedir` 相対パスを必須とする。ファイル名テンプレート（[contentpath.md](contentpath.md)）の展開もここで行う。生成はテンプレートから初回作成時のみ行う。以後の再作成（後述の差分反映）は、明示 override（`overrides.contentPath`）があればその値、無ければ observed（mirakc に登録済みの schedule）の contentPath を引き継ぐ。これにより実質固定される（`reservations.base` に生成値を書き戻すコードは無い）。
 
-終了済み番組は作らない。番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別物である。`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う。ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける。
+終了済み番組は作らない。番組の終了時刻（`program_snapshots.start_at + duration_ms`）を過ぎた予約には `POST` しない。放置すると mirakc が数秒で `need-rescheduling` として failed にし、`recordings` に content_length=0 の failed 行を量産する。判定は「番組終了後の GC」（[ruler.md](ruler.md)）とは別の判定である。`never_scheduled_events` への欠測記録（`recordNeverScheduled`）と同じ式・同じ材料を使う。ずらすと同じ予約が毎パス作成対象のまま残って POST を撃ち続ける。
 
 #### 起動契機
 
-reconciler は ruler と同じ形の River ジョブで、シングルトンにはしない。起動契機は定期とヒントの 2 つで、定期パスが真実、ヒントは投入を早めるだけである。排他はサイト単位の一意制約で担保し、advisory lock は使わない。
+reconciler は ruler と同じ形の River ジョブで、シングルトンにはしない。起動契機は定期とヒントの 2 つで、定期パスが状態の権威、ヒントは投入を早めるだけである。排他はサイト単位の一意制約で保証し、advisory lock は使わない。
 
-ジョブの実体は `internal/worker` の `ReconcilePassWorker` である。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。そのため排他は `UniqueOpts`（サイト単位）で担保し、advisory lock は使わない（[データ層](../data.md) §2）。ヒントを落としても定期パスが拾う。
+ジョブの実体は `internal/worker` の `ReconcilePassWorker` である。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。そのため排他は `UniqueOpts`（サイト単位）で保証し、advisory lock は使わない（[データ層](../data.md) §2）。ヒントを落としても定期パスが拾う。
 
 | 契機 | 種別 | 投入するもの |
 |---|---|---|
-| 定期（既定 30 秒） | 真実 | River `PeriodicJobs` か k8s CronJob（[データ層](../data.md) §2） |
+| 定期（既定 30 秒） | 権威 | River `PeriodicJobs` か k8s CronJob（[データ層](../data.md) §2） |
 | ruler パスの完了 | ヒント | ruler_pass ワーカー |
 
 ruler パスの完了は、パス完了時に ruler_pass ワーカーが投入する。base が変われば mirakc に反映すべき差分が増えるためである。ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。
@@ -84,7 +84,7 @@ flowchart TD
 
 reconciler は番組名からパスを生成するので、EPG の番組名が変われば生成結果も変わる。これを差分と見なすと、EPG 更新のたびに schedule が消えて作り直される churn になる。
 
-`overrides.contentPath` で明示指定した値は、差分反映の対象になる。ファイル名を変えたい場合は、ユーザーが overrides で明示的に指定する。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で潰したのと同じクラスの問題。§3.1）。
+`overrides.contentPath` で明示指定した値は、差分反映の対象になる。ファイル名を変えたい場合は、ユーザーが overrides で明示的に指定する。差分書き込みという設計は desired が安定していることを前提として要求する（同率 priority のタイを全順序で解消したのと同じクラスの問題。§3.1）。
 
 固定の実体は `reservations.base` への書き戻しではない。`base` / `reservations` の列に contentPath を焼く書き手は存在しない。固定を実現しているのは、再作成時に observed の contentPath を引き継ぐことである。実装は `internal/reconciler/reconciler.go` の `recreateSchedule` で、下記「再作成時に引き継ぐ contentPath」に書く。
 

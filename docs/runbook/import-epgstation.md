@@ -138,9 +138,9 @@ LEFT JOIN channel c ON c.id = r.channelId;
 SQL
 ```
 
-**`-r`/`--raw` は省略しない。** `mysql -B` の既定（batch）出力は `\`・タブ・改行をエスケープする。すると `JSON_OBJECT` が出す `\"` がさらに `\\"` になり、番組名にダブルクオートを含む行が 1 つでもあると JSON が壊れる。`--raw` はこのエスケープを止める。SQLite の CLI にはこの問題がない。
+**`-r`/`--raw` は省略しない。** `mysql -B` の既定（batch）出力は `\`・タブ・改行をエスケープする。すると `JSON_OBJECT` が出す `\"` がさらに `\\"` になり、番組名にダブルクオートを含む行が 1 つでもあると JSON が正しく読めなくなる。`--raw` はこのエスケープを止める。SQLite の CLI にはこの問題がない。
 
-`v.filePath` / `t.filePath` は、EPGStation が実際に書き込んだパスである。設定とバージョンによって、絶対パスのことも、`parentDirectoryName` からの相対パスのこともある。手順 1 でマウントした先から見た相対パスに必ず書き換える。絶対パスをそのまま貼るなら、SQL 側で `REPLACE(v.filePath, '/opt/epgstation/recorded/', 'epgstation/')` のように前段で潰しておくと楽である。
+`v.filePath` / `t.filePath` は、EPGStation が実際に書き込んだパスである。設定とバージョンによって、絶対パスのことも、`parentDirectoryName` からの相対パスのこともある。手順 1 でマウントした先から見た相対パスに必ず書き換える。絶対パスをそのまま貼るなら、SQL 側で `REPLACE(v.filePath, '/opt/epgstation/recorded/', 'epgstation/')` のように前段で置換しておくと楽である。
 
 書き出される JSON の例は次の通り（1 件だけ示す）。
 
@@ -229,7 +229,7 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 
 ### 履歴（RecordedHistory）は未対応
 
-EPGStation の履歴（再放送の重複排除の種）は、このコマンドに含まない。取り込んでも重複排除には一切効かないので、Rokuban 側の対応と合わせて別途扱う。
+EPGStation の履歴（再放送の重複排除の種）は、このコマンドに含まない。取り込んでも重複排除には一切役に立たないので、Rokuban 側の対応と合わせて別途扱う。
 
 Rokuban の重複排除は、ルール id が一致する行だけを比較対象にする。ライブラリ import が使う登録は、ルール id を書く列を持たない。履歴自体にも EPGStation 側のルール id が無い。
 

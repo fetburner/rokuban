@@ -227,9 +227,9 @@ test "$(grep -c ': ping' "$TMP/events.txt")" -ge 4
 - `alias /mnt/media/` を存在しないディレクトリに変え、Range が `404` になることを確認する。その後に戻して日本語ファイル名が `206` になることを確認する。
 - `internal` を一時的に削除し、直接 `/_media/` が読める状態になることを確認する。その後に戻して直接アクセスが `404` になることを確認する。
 - `location = /api` を一時的に削除し、`/api` が nginx の `301` になり、JSON の `404` を返さなくなることを確認する。prefix location `/api/` の auto_redirect がアプリより先に応答する経路で、`/api/` 側の確認では見えない。その後に戻す。
-- `proxy_read_timeout` を ping 間隔より短い `10s` に一時変更する。ping と read timeout の関係が壊れる唯一の経路で、`--max-time 120` の前に接続が切れることを確認する。その後に戻して `--max-time 120` まで接続が保たれることを確認する。
+- `proxy_read_timeout` を ping 間隔より短い `10s` に一時変更する。ping と read timeout の関係が成り立たなくなる唯一の経路で、`--max-time 120` の前に接続が切れることを確認する。その後に戻して `--max-time 120` まで接続が保たれることを確認する。
 - `internal/streamer/streamer.go` の `accelURI` から `url.PathEscape` を一時的に外す。`segments[i] = seg` だけに変えると `net/url` が未使用でビルドが落ちるので、import も `_ "net/url"` にしてコンパイルが通る形で壊す。`%` を含む `$REL_PATH` の配信が `404` になることを確認する。
 
-  nginx は不正なエスケープを捨てて名前を組み立てるので、error.log には `50OFF` のように壊れた名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
+  nginx は不正なエスケープを捨てて名前を組み立てるので、error.log には `50OFF` のように不正な名前で `open() failed` が出る。その後に戻して同じ fixture が `200` / `206` で返ることを確認する。日本語・空白・括弧だけの fixture はエスケープを外しても `200` で通ることを実測済みで、この経路の検出には使えない。Go 側の unit test はヘッダーがエスケープ済みであることまでしか主張できない。
 
 設定を戻すたびに `nginx -t` を通し、reload 後に正常系を 1 回繰り返す。Go 側を戻したときは `go build` し直してから確認する。
