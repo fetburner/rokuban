@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,7 +77,11 @@ func getChapters(t *testing.T, url string) RecordingChapters {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("GET %s status = %d, want 200", url, resp.StatusCode)
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("GET %s status = %d, reading error body: %v", url, resp.StatusCode, err)
+		}
+		t.Fatalf("GET %s status = %d, want 200; body=%s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var out RecordingChapters
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
