@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -285,8 +286,8 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 		return 0, 0, fmt.Errorf("listing encoded asset rebuild requests: %w", err)
 	}
 	for _, request := range requests {
-		requestedKeep, present, err := decodeRequestedCutKeep(request.RequestedKeep)
-		if err != nil || !present {
+		requestedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
+		if err != nil {
 			failed++
 			slog.Error("encode_reconcile: decoding requested keep ranges",
 				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
@@ -330,7 +331,13 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
 			continue
 		}
-		encodeArgs.RequestedCutKeep = append(json.RawMessage(nil), request.RequestedKeep...)
+		encodeArgs.RequestedCutKeep, err = json.Marshal(requestedKeep)
+		if err != nil {
+			failed++
+			slog.Error("encode_reconcile: encoding requested keep ranges",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
 		if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
 			failed++
 			slog.Error("encode_reconcile: failed to enqueue rebuild request",

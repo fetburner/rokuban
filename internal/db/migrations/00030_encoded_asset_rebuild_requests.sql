@@ -19,6 +19,59 @@ ALTER SEQUENCE encoded_asset_rebuild_request_generation_seq
 COMMENT ON TABLE encoded_asset_rebuild_requests IS
     '利用者が明示したカット版の再作成要求。requested_keep は操作時点の量子化済み区間。catalog には含めない。';
 
+-- encodable_recordings は「エンコードしてよい録画」の録画単位の述語である。
+-- ごみ箱の録画は作ってはならず、原本が active でない録画は入力が無いので作れない。
+-- encode の不足の補完（ListMissingEncodeProfiles）・待機列（ListEncodeQueue）・
+-- 作り直し要求の列挙（ListEncodedAssetRebuildRequests）と、それが落とした側を
+-- 数えるメトリクス（ListUnsatisfiableEncodeProfiles / ListCutAwaitingReview）が
+-- この view を引く。条件を足すときはここだけを変える（写しの片方だけを直すと、
+-- 待機列に出るのに投入されない・投入されるのに待機列に出ない、が起きる）。
+-- 原本を消してよいかの until_encoded_deletable_originals は別の判定で、これを使わない。
+CREATE VIEW encodable_recordings AS
+SELECT r.id AS recording_id
+FROM recordings r
+WHERE r.deleted_at IS NULL
+  AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = r.id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+  );
+
+COMMENT ON VIEW encodable_recordings IS
+    'EncodableRecording は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
+
+-- encodable_profile は「エンコードしてよいプロファイル」のプロファイル単位の述語
+-- である。空文字でなく、現在の設定（known_profiles）にあり、cut_profiles に含まれる
+-- なら利用者がチャプターを確認済み（recording_chapter_ownership の行がある）。
+-- 設定値を引数に取るので view にはできない。使う側は不足の補完
+-- （ListMissingEncodeProfiles）と待機列（ListEncodeQueue）である。作り直し要求の
+-- 列挙（ListEncodedAssetRebuildRequests）はこれで絞らない。確認が外れた要求を
+-- reconcile が古い要求として消すには、その要求を読む必要があるためである。
+--
+-- known_profiles は non-NULL でなければならない。`x = ANY(NULL::text[])` は false
+-- ではなく NULL なので、NULL を渡すとこの関数は常に NULL を返し、WHERE で候補が
+-- 全滅する。関数の引数にしても SQL の 3 値論理はそのまま通る（STRICT にしていない
+-- ので、NULL の扱いはインラインで書いた式と同じ）。呼び出し側は
+-- config.EncodeConfig.ProfileNames()（空設定でも non-nil）を渡す。
+CREATE FUNCTION encodable_profile(rec_id bigint, profile_name text, known_profiles text[], cut_profiles text[])
+RETURNS boolean
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT profile_name <> ''
+       AND profile_name = ANY(known_profiles)
+       AND (
+           NOT (profile_name = ANY(cut_profiles))
+           OR EXISTS (
+               SELECT 1 FROM recording_chapter_ownership o
+               WHERE o.recording_id = rec_id
+           )
+       )
+$$;
+
+COMMENT ON FUNCTION encodable_profile(bigint, text, text[], text[]) IS
+    'encodable_profile は、録画 rec_id のプロファイル profile_name が現在の設定で作れるかを返す。cut プロファイルはチャプター確認済みを要求する。known_profiles に NULL を渡すと NULL を返す。';
+
 -- 未充足の作り直し命令がある間は原本を保持する。要求が stale になれば
 -- encode_reconcile が比較交換で要求行を消し、次の削除パスで原本を再判定する。
 CREATE OR REPLACE VIEW until_encoded_deletable_originals AS
@@ -133,4 +186,6 @@ WHERE a.kind = 'original'
       )
   );
 
+DROP FUNCTION encodable_profile(bigint, text, text[], text[]);
+DROP VIEW encodable_recordings;
 DROP TABLE encoded_asset_rebuild_requests;

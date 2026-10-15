@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -244,9 +245,9 @@ type encodeAttemptRow struct {
 // 「来る根拠」が無いので queued を出さない 2 パターン:
 //
 //  1. ごみ箱の録画（r.DeletedAt が非 nil）。EncodeReconcileWorker の
-//     ListMissingEncodeProfiles は deleted_at IS NULL で絞っており、ごみ箱の
-//     録画に reconcile から encode ジョブは投入されない
-//     （internal/worker/encode_reconcile.go 参照）。EncodedAssets/プレイヤーを
+//     ListMissingEncodeProfiles は view encodable_recordings でごみ箱を除いて
+//     おり、ごみ箱の録画に reconcile から encode ジョブは投入されない
+//     （internal/db/queries/encode_reconcile.sql 参照）。EncodedAssets/プレイヤーを
 //     trash で出さないのと揃え、**running/failed の行が既にあっても
 //     （削除前に始まっていた試行）試行状態を丸ごと省略する** --- 削除後に
 //     その試行が本当に終わるかは api ロールには分からない（不変条件 1: api は
@@ -981,7 +982,7 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	}); err != nil {
 		return nil, fmt.Errorf("resetting failed encode attempt for recording %d profile %q: %w", req.Id, req.Profile, err)
 	}
-	requestedKeep, err := json.Marshal(keep)
+	requestedKeep, err := db.KeepRangesParam(keep)
 	if err != nil {
 		return nil, fmt.Errorf("encoding requested keep ranges for recording %d: %w", req.Id, err)
 	}

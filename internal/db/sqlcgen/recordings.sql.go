@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const appendQualityEvents = `-- name: AppendQualityEvents :exec
@@ -859,10 +861,7 @@ INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_kee
 VALUES (
     $1,
     $2,
-    (
-        SELECT range_agg(int8range((item.range ->> 'startMs')::bigint, (item.range ->> 'endMs')::bigint))
-        FROM jsonb_array_elements($3::jsonb) AS item(range)
-    )::int8multirange
+    $3::int8multirange
 )
 ON CONFLICT (recording_id, profile) DO UPDATE SET
     requested_keep = EXCLUDED.requested_keep,
@@ -873,11 +872,11 @@ ON CONFLICT (recording_id, profile) DO UPDATE SET
 type UpsertEncodedAssetRebuildRequestParams struct {
 	RecordingID   int64
 	Profile       string
-	RequestedKeep json.RawMessage
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 }
 
 // Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
-// JSON は chapters.Range の境界を受け取り、DB 側で int8multirange に正規化する。
+// keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
 func (q *Queries) UpsertEncodedAssetRebuildRequest(ctx context.Context, arg UpsertEncodedAssetRebuildRequestParams) error {
 	_, err := q.db.Exec(ctx, upsertEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile, arg.RequestedKeep)
 	return err

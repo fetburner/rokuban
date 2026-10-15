@@ -7,7 +7,8 @@ package sqlcgen
 
 import (
 	"context"
-	"encoding/json"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteEncodedAssetRebuildRequestIfKeep = `-- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
@@ -15,24 +16,19 @@ DELETE FROM encoded_asset_rebuild_requests q
 WHERE q.recording_id = $1
   AND q.profile = $2
   AND q.request_generation = $3
-  AND q.requested_keep = (
-      SELECT range_agg(int8range(
-          (item.range ->> 'startMs')::bigint,
-          (item.range ->> 'endMs')::bigint
-      ))
-      FROM jsonb_array_elements($4::jsonb) AS item(range)
-  )::int8multirange
+  AND q.requested_keep = $4::int8multirange
 `
 
 type DeleteEncodedAssetRebuildRequestIfKeepParams struct {
 	RecordingID       int64
 	Profile           string
 	RequestGeneration int64
-	RequestedKeep     json.RawMessage
+	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 }
 
 // stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
 // されても、その行は消さない。generation は同じ keep の再要求による ABA も区別する。
+// requested_keep には読んだ multirange をそのまま渡す。
 func (q *Queries) DeleteEncodedAssetRebuildRequestIfKeep(ctx context.Context, arg DeleteEncodedAssetRebuildRequestIfKeepParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequestIfKeep,
 		arg.RecordingID,
@@ -46,69 +42,13 @@ func (q *Queries) DeleteEncodedAssetRebuildRequestIfKeep(ctx context.Context, ar
 	return result.RowsAffected(), nil
 }
 
-const getEncodedAssetRebuildRequest = `-- name: GetEncodedAssetRebuildRequest :one
-WITH request AS (
-    SELECT q.requested_keep
-    FROM encoded_asset_rebuild_requests q
-    WHERE q.recording_id = $1
-      AND q.profile = $2
-)
-SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
-       COALESCE(
-           (
-               SELECT jsonb_agg(
-                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
-                   ORDER BY lower(cut_range)
-               )
-               FROM request r
-               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
-           ),
-           '[]'::jsonb
-       )::jsonb AS requested_keep
-`
-
-type GetEncodedAssetRebuildRequestParams struct {
-	RecordingID int64
-	Profile     string
-}
-
-type GetEncodedAssetRebuildRequestRow struct {
-	RequestExists bool
-	RequestedKeep json.RawMessage
-}
-
-// EncodeWorker が要求に由来する encode job を開始する前に、要求がまだ存在し、
-// 同じ keep を指していることを確かめる。編集で要求を消した後の古い job が、
-// 現在の（ユーザーが確認していない）タイムラインで再作成するのを防ぐ。
-func (q *Queries) GetEncodedAssetRebuildRequest(ctx context.Context, arg GetEncodedAssetRebuildRequestParams) (GetEncodedAssetRebuildRequestRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile)
-	var i GetEncodedAssetRebuildRequestRow
-	err := row.Scan(&i.RequestExists, &i.RequestedKeep)
-	return i, err
-}
-
 const getEncodedAssetRebuildRequestForUpdate = `-- name: GetEncodedAssetRebuildRequestForUpdate :one
-WITH request AS (
-    SELECT q.requested_keep,
-           q.request_generation
-    FROM encoded_asset_rebuild_requests q
-    WHERE q.recording_id = $1
-      AND q.profile = $2
-    FOR UPDATE
-)
-SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
-       COALESCE((SELECT request_generation FROM request), 0)::bigint AS request_generation,
-       COALESCE(
-           (
-               SELECT jsonb_agg(
-                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
-                   ORDER BY lower(cut_range)
-               )
-               FROM request r
-               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
-           ),
-           '[]'::jsonb
-       )::jsonb AS requested_keep
+SELECT q.requested_keep,
+       q.request_generation
+FROM encoded_asset_rebuild_requests q
+WHERE q.recording_id = $1
+  AND q.profile = $2
+FOR UPDATE
 `
 
 type GetEncodedAssetRebuildRequestForUpdateParams struct {
@@ -117,34 +57,30 @@ type GetEncodedAssetRebuildRequestForUpdateParams struct {
 }
 
 type GetEncodedAssetRebuildRequestForUpdateRow struct {
-	RequestExists     bool
+	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 	RequestGeneration int64
-	RequestedKeep     json.RawMessage
 }
 
-// 公開 tx では要求行をロックしてから現在の keep と照合し、公開と同じ tx で消す。
+// GetEncodedAssetRebuildRequestForUpdate は要求行を行ロックして読む。行が無ければ
+// pgx.ErrNoRows。公開 tx では、ロックしてから現在の keep と照合し、公開と同じ tx で
+// 消す。エンコード前の確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から
+// 呼ぶ。その場合ロックは文の終わりで外れ、読み取りとしてだけ働く（他の tx が行を
+// ロックしていれば、その commit / rollback を待ってから最新の行を読む）。
 func (q *Queries) GetEncodedAssetRebuildRequestForUpdate(ctx context.Context, arg GetEncodedAssetRebuildRequestForUpdateParams) (GetEncodedAssetRebuildRequestForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequestForUpdate, arg.RecordingID, arg.Profile)
 	var i GetEncodedAssetRebuildRequestForUpdateRow
-	err := row.Scan(&i.RequestExists, &i.RequestGeneration, &i.RequestedKeep)
+	err := row.Scan(&i.RequestedKeep, &i.RequestGeneration)
 	return i, err
 }
 
 const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
 SELECT want.profile::text AS profile, count(*)::bigint AS recordings
 FROM recording_encode_policy p
-JOIN recordings r ON r.id = p.recording_id
+JOIN encodable_recordings er ON er.recording_id = p.recording_id
 CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-WHERE r.deleted_at IS NULL
-  AND want.profile = ANY($1::text[])
+WHERE want.profile = ANY($1::text[])
   AND NOT EXISTS (
       SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = p.recording_id
-  )
-  AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = p.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
   )
 GROUP BY want.profile
 ORDER BY want.profile
@@ -165,9 +101,9 @@ type ListCutAwaitingReviewRow struct {
 // 見えるようにするためである（ListUnsatisfiableEncodeProfiles が拾うのは設定から
 // 消えたプロファイルで、こちらは別の集合）。
 //
-// 原本が active のものだけ数える（原本が無ければ確認しても投入できないので、
-// 削除済み・未取り込みの録画を「待ち」に混ぜない。ListMissingEncodeProfiles と
-// 同じ述語）。
+// エンコードしてよい録画（encodable_recordings。ListMissingEncodeProfiles と同じ
+// view）だけ数える。原本が無ければ確認しても投入できないので、削除済み・未取り込みの
+// 録画を「待ち」に混ぜない。
 func (q *Queries) ListCutAwaitingReview(ctx context.Context, cutProfiles []string) ([]ListCutAwaitingReviewRow, error) {
 	rows, err := q.db.Query(ctx, listCutAwaitingReview, cutProfiles)
 	if err != nil {
@@ -189,59 +125,22 @@ func (q *Queries) ListCutAwaitingReview(ctx context.Context, cutProfiles []strin
 }
 
 const listEncodeQueue = `-- name: ListEncodeQueue :many
-WITH missing_profiles AS (
-  SELECT DISTINCT p.recording_id, want.profile::text AS profile
+WITH pending_profiles AS (
+  SELECT p.recording_id, want.profile::text AS profile
   FROM recording_encode_policy p
-  JOIN recordings r ON r.id = p.recording_id
   CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-  WHERE r.deleted_at IS NULL
-    AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = p.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
-    )
-    AND want.profile <> ''
-    AND want.profile = ANY($2::text[])
-    AND (
-      NOT (want.profile = ANY($3::text[]))
-      OR EXISTS (
-        SELECT 1 FROM recording_chapter_ownership o
-        WHERE o.recording_id = p.recording_id
-      )
-    )
-    AND NOT EXISTS (
-      SELECT 1 FROM media_assets e
-      WHERE e.recording_id = p.recording_id
-        AND e.kind = 'encoded'
-        AND e.state = 'active'
-        AND e.profile = want.profile
-    )
-), pending_profiles AS (
-  SELECT recording_id, profile
-  FROM missing_profiles
+  WHERE NOT EXISTS (
+    SELECT 1 FROM media_assets e
+    WHERE e.recording_id = p.recording_id
+      AND e.kind = 'encoded'
+      AND e.state = 'active'
+      AND e.profile = want.profile
+  )
 
   UNION
 
   SELECT q.recording_id, q.profile
   FROM encoded_asset_rebuild_requests q
-  JOIN recordings r ON r.id = q.recording_id
-  WHERE r.deleted_at IS NULL
-    AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = q.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
-    )
-    AND q.profile <> ''
-    AND q.profile = ANY($2::text[])
-    AND (
-      NOT (q.profile = ANY($3::text[]))
-      OR EXISTS (
-        SELECT 1 FROM recording_chapter_ownership o
-        WHERE o.recording_id = q.recording_id
-      )
-    )
 )
 SELECT
   m.recording_id,
@@ -253,20 +152,22 @@ SELECT
       AND a.state = 'running'
   )::boolean AS running
 FROM pending_profiles m
-WHERE NOT EXISTS (
-  SELECT 1 FROM recording_encode_attempts a
-  WHERE a.recording_id = m.recording_id
-    AND a.profile = m.profile
-    AND a.state = 'failed'
-    AND GREATEST(a.attempt_count, 1) >= $1::int
-)
+JOIN encodable_recordings er ON er.recording_id = m.recording_id
+WHERE encodable_profile(m.recording_id, m.profile, $1::text[], $2::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM recording_encode_attempts a
+    WHERE a.recording_id = m.recording_id
+      AND a.profile = m.profile
+      AND a.state = 'failed'
+      AND GREATEST(a.attempt_count, 1) >= $3::int
+  )
 ORDER BY m.recording_id, m.profile
 `
 
 type ListEncodeQueueParams struct {
-	AttemptLimit  int32
 	KnownProfiles []string
 	CutProfiles   []string
+	AttemptLimit  int32
 }
 
 type ListEncodeQueueRow struct {
@@ -275,19 +176,22 @@ type ListEncodeQueueRow struct {
 	Running     bool
 }
 
-// ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。
-// desired の不足だけでなく、active な encoded が残っていても明示要求の行がある
-// プロファイルを含める。再作成要求もユーザーが待っている仕事であり、active な
+// ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語は
+// ListMissingEncodeProfiles と同じ encodable_recordings / encodable_profile で、
+// 直書きしない（ファイル冒頭「共有する述語」）。desired の不足と作り直し要求を先に
+// 合わせ、述語は合わせた後に 1 回だけ掛ける。作り直し要求は、active な encoded が
+// 残っていても待機列に入る。再作成要求もユーザーが待っている仕事であり、active な
 // asset の存在だけでは完了を意味しない。row_limit や after_recording_id は適用しない。
 //
 // 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 // ある印（行は queued と running の分割になる）。active な encoded が既にある、
-// ごみ箱、設定から消えた profile の running 行は missing_profiles に入らないので
+// ごみ箱、設定から消えた profile の running 行は pending_profiles か述語で落ちるので
 // 数えない。state = 'failed' で GREATEST(attempt_count, 1) >= attempt_limit の行は
 // worker が開始時に cancel して作られないため除く（beginEncodeAttempt と同じ判定。
-// 旧 worker の attempt_count = 0 は 1 回と数える）。
+// 旧 worker の attempt_count = 0 は 1 回と数える）。reconcile はこの行も投入する
+// （worker が開始時に捨てる）ので、ここだけが ListMissingEncodeProfiles と食い違う。
 func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams) ([]ListEncodeQueueRow, error) {
-	rows, err := q.db.Query(ctx, listEncodeQueue, arg.AttemptLimit, arg.KnownProfiles, arg.CutProfiles)
+	rows, err := q.db.Query(ctx, listEncodeQueue, arg.KnownProfiles, arg.CutProfiles, arg.AttemptLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -310,23 +214,11 @@ const listEncodedAssetRebuildRequests = `-- name: ListEncodedAssetRebuildRequest
 SELECT q.recording_id,
        q.profile,
        q.request_generation,
-       jsonb_agg(
-           jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
-           ORDER BY lower(cut_range)
-       )::jsonb AS requested_keep
+       q.requested_keep
 FROM encoded_asset_rebuild_requests q
-JOIN recordings r ON r.id = q.recording_id
-CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
-WHERE ($1::bigint IS NULL
-       OR q.recording_id = $1::bigint)
-  AND r.deleted_at IS NULL
-  AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = q.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
-  )
-GROUP BY q.recording_id, q.profile, q.request_generation, q.requested_keep
+JOIN encodable_recordings er ON er.recording_id = q.recording_id
+WHERE $1::bigint IS NULL
+   OR q.recording_id = $1::bigint
 ORDER BY q.recording_id, q.profile
 `
 
@@ -334,13 +226,15 @@ type ListEncodedAssetRebuildRequestsRow struct {
 	RecordingID       int64
 	Profile           string
 	RequestGeneration int64
-	RequestedKeep     json.RawMessage
+	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 }
 
-// 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
-// ごみ箱の録画と原本が active でない録画の要求は返さない（ListMissingEncodeProfiles と
-// 同じ理由。投入しても EncodeWorker が作れない / ごみ箱の録画を作る）。要求行は消さず、
-// 復元されたら再び拾う。
+// ListEncodedAssetRebuildRequests は reconcile が投入し直す作り直し要求を返す。
+// エンコードしてよくない録画（encodable_recordings に無い = ごみ箱・原本が active で
+// ない）の要求は返さない。投入してもごみ箱の録画を作る / EncodeWorker が作れない。
+// 要求行は消さず、復元されたら再び拾う。プロファイル単位の encodable_profile では
+// 絞らない。確認が外れた要求を古い要求として比較交換で消すには、読む必要がある。
+// keep は int8multirange のまま返し、Go 側は db.KeepRangesFromMultirange で戻す。
 // 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
 // DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
 func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]ListEncodedAssetRebuildRequestsRow, error) {
@@ -370,80 +264,44 @@ func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recording
 
 const listMissingEncodeProfiles = `-- name: ListMissingEncodeProfiles :many
 
-WITH candidate_recordings AS (
-  SELECT p.recording_id, p.encode_profiles
+WITH missing AS (
+  SELECT p.recording_id, want.profile::text AS profile, want.ordinality
   FROM recording_encode_policy p
-  JOIN recordings r ON r.id = p.recording_id
-  WHERE p.recording_id > $3::bigint
-    AND ($4::bigint IS NULL OR p.recording_id = $4::bigint)
-    AND cardinality(p.encode_profiles) > 0
-    AND r.deleted_at IS NULL
-    AND EXISTS (
-      SELECT 1 FROM media_assets o
-      WHERE o.recording_id = p.recording_id
-        AND o.kind = 'original'
-        AND o.state = 'active'
+  JOIN encodable_recordings er ON er.recording_id = p.recording_id
+  CROSS JOIN LATERAL unnest(p.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
+  WHERE p.recording_id > $1::bigint
+    AND ($2::bigint IS NULL OR p.recording_id = $2::bigint)
+    AND encodable_profile(p.recording_id, want.profile, $3::text[], $4::text[])
+    AND NOT EXISTS (
+      SELECT 1 FROM media_assets e
+      WHERE e.recording_id = p.recording_id
+        AND e.kind = 'encoded'
+        AND e.state = 'active'
+        AND e.profile = want.profile
     )
-    AND EXISTS (
-      SELECT 1 FROM unnest(p.encode_profiles) AS want(profile)
-      WHERE want.profile <> ''
-        AND want.profile = ANY($1::text[])
-        AND (
-          NOT (want.profile = ANY($2::text[]))
-          OR EXISTS (
-            SELECT 1 FROM recording_chapter_ownership o
-            WHERE o.recording_id = p.recording_id
-          )
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM media_assets e
-          WHERE e.recording_id = p.recording_id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM encoded_asset_rebuild_requests rebuild
-          WHERE rebuild.recording_id = p.recording_id
-            AND rebuild.profile = want.profile
-        )
+    AND NOT EXISTS (
+      SELECT 1 FROM encoded_asset_rebuild_requests rebuild
+      WHERE rebuild.recording_id = p.recording_id
+        AND rebuild.profile = want.profile
     )
+), candidate_recordings AS (
+  SELECT DISTINCT recording_id
+  FROM missing
   ORDER BY recording_id
   LIMIT $5
 )
-SELECT c.recording_id, want.profile::text AS profile
-FROM candidate_recordings c
-CROSS JOIN LATERAL unnest(c.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
-WHERE want.profile <> ''
-  AND want.profile = ANY($1::text[])
-  AND (
-    NOT (want.profile = ANY($2::text[]))
-    OR EXISTS (
-      SELECT 1 FROM recording_chapter_ownership o
-      WHERE o.recording_id = c.recording_id
-    )
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM media_assets e
-    WHERE e.recording_id = c.recording_id
-      AND e.kind = 'encoded'
-      AND e.state = 'active'
-      AND e.profile = want.profile
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM encoded_asset_rebuild_requests rebuild
-    WHERE rebuild.recording_id = c.recording_id
-      AND rebuild.profile = want.profile
-  )
-GROUP BY c.recording_id, want.profile
-ORDER BY c.recording_id, min(want.ordinality)
+SELECT m.recording_id, m.profile
+FROM missing m
+JOIN candidate_recordings c ON c.recording_id = m.recording_id
+GROUP BY m.recording_id, m.profile
+ORDER BY m.recording_id, min(m.ordinality)
 `
 
 type ListMissingEncodeProfilesParams struct {
-	KnownProfiles    []string
-	CutProfiles      []string
 	AfterRecordingID int64
 	RecordingID      *int64
+	KnownProfiles    []string
+	CutProfiles      []string
 	RowLimit         int32
 }
 
@@ -452,106 +310,85 @@ type ListMissingEncodeProfilesRow struct {
 	Profile     string
 }
 
-// encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）が
-// 読むクエリ。record_sweep（watcher の定期全量突き合わせ）とは対象集合が違う
-// ので、クエリを共有せず新規に切る --- record_sweep が見るのは mirakc のエッジに
-// 残っている record（DB の外の観測）で、こちらは「原本をコミット済みなのに
-// desired なプロファイルの encoded が揃っていない録画」（DB だけで閉じる）。
+// encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）と
+// api の待機列（internal/api/encode_queue.go）が読むクエリ。record_sweep（watcher の
+// 定期全量突き合わせ）とは対象集合が違うので、クエリを共有せず新規に切る ---
+// record_sweep が見るのは mirakc のエッジに残っている record（DB の外の観測）で、
+// こちらは「原本をコミット済みなのに desired なプロファイルの encoded が揃っていない
+// 録画」（DB だけで閉じる）。
 //
-// # 名前付き述語 until_encoded_deletable_originals との関係
+// # 共有する述語
 //
-// 「desired が全部揃っているか」は名前付き述語の view
-// `until_encoded_deletable_originals` にも入っている（あちらは**揃っている**側、
-// ここは**欠けている**側）。view をそのまま使えないのは、view の粒度が
-// 「削除してよい原本アセット 1 行」であり、`keep_original = 'until_encoded'` と
-// 「サムネイルが active」という**削除エンジン固有の条件**が畳み込まれているため
-// （このパスの対象は keep_original を問わない録画で、サムネイルの有無とも無関係）。
-// **同じ形の述語がこれで 4 箇所目**であることは意識して書いている ---
-// ドリフトの実績がある（view を切り出した理由そのもの。docs/storage/retention.md）。
-// 現時点の差分は 1 つだけで、意図的:
+// 「エンコードしてよいか」はスキーマ側の 2 つの名前に置き、ここには直書きしない:
 //
-//   - ここは desired を `known_profiles`（現在の encode.profiles）で絞る。view は
-//     絞らない。view にとって「設定から消えたプロファイル」は永久に揃わない条件
-//     として原本を残す方向（安全側）に効くが、このパスにとっては投入しても
-//     EncodeWorker が弾くだけのゴミになる（EncodeReconcileWorker の doc コメント）
+//   - 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
+//   - プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
+//     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
 //
-// 述語をスキーマ側の名前に寄せる案は検討した上で見送ることを決定済み。理由は 2 つ:
+// 不足の補完（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ述語を
+// 持たなければならない。片方にだけ条件を書き足すと、待機列に出るのに投入されない
+// （またはその逆の）録画ができる。条件を足すときは上の 2 つを変える。両経路が同じ
+// (recording_id, profile) の集合に合意することは internal/worker の
+// TestEncodeReconcileAndQueueAgreeOnPendingSet が固定する。
 //
-//  1. 粒度が違う。このパスの粒度は録画単位で、view の粒度はアセット単位
-//     （削除エンジン固有の keep_original / サムネイル条件が畳み込まれている）。
-//     寄せるなら view の切り直し（マイグレーション）が要る。
-//  2. 本質的な理由。上の差分（known_profiles で絞るかどうか）は補集合ではなく、
-//     両側とも今の挙動が正しい仕様として確定している。共通の述語にするには
-//     known_profiles を引数に取る必要があり、view は引数を取れないので SQL 関数に
-//     なる --- そうするとドリフトのリスクが述語の本体から呼び出し側の引数の
-//     渡し方へ移るだけで、しかもそちらの方が読んで気付きにくい（呼び出し側 2 箇所を
-//     突き合わせないと分からない）。寄せることはドリフトを減らさない。
+// # until_encoded_deletable_originals との関係
 //
-// したがって 4 箇所（この述語、until_encoded_deletable_originals、下の
-// ListUnsatisfiableEncodeProfiles と ListEncodeQueue）は共通化せず、この非対称を
-// 仕様としてコメントに固定する。ドリフトの検出は internal/worker のテストが担う
-// （同じフィクスチャで両側の答えが食い違うことを固定する）。ListEncodeQueue の
-// コピーは internal/api の TestGetEncodeQueueSummaryFromDomainState が
-// ListMissingEncodeProfiles との突き合わせで検出する。
-// ListMissingEncodeProfiles は「原本が active でコミット済み、かつ
-// known_profiles に含まれる desired のうち少なくとも 1 つについて active な
-// encoded が無く、永続 rebuild 要求も無い」録画について、不足している
-// (recording_id, profile) を返す。rebuild 要求は固定 keep を持つ別経路で投入する。
+// 「desired が全部揃っているか」は削除側の view `until_encoded_deletable_originals`
+// にもある（あちらは**揃っている**側、ここは**欠けている**側）。これには寄せない。
+// あちらの粒度は「削除してよい原本アセット 1 行」で、`keep_original =
+// 'until_encoded'` やサムネイルなど削除エンジン固有の条件を畳み込んでいる。しかも
+// desired を `known_profiles` で絞らない。設定から消えたプロファイルは永久に揃わない
+// 条件として原本を残す方向（安全側）に効く。ここで絞るのは、投入しても EncodeWorker
+// が弾くだけのゴミになるからである。この非対称は仕様であって揃え忘れではない
+// （docs/storage/retention.md §保持ポリシー。internal/worker の
+// TestUnknownDesiredProfile_PredicateAsymmetry が両側から固定する）。
+// ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
+// desired のうち、エンコードしてよいプロファイル（encodable_profile）で、active な
+// encoded が無く、作り直し要求も無い」(recording_id, profile) を返す。作り直し要求は
+// 固定 keep を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
 // recording_id が after_recording_id より大きい録画を recording_id 昇順で
 // row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
 // 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
 //
 // 条件の意味:
 //   - recording_encode_policy に行がある = エンコードポリシーが凍結済み
-//     （行が無い = 未凍結。不変条件 10。JOIN で自然に落ちる）
-//   - cardinality(encode_profiles) > 0 = desired が空でない
-//   - 原本 media_assets（kind='original', state='active'）の EXISTS = ingest
-//     コミット済み。ingest 未完了の録画を対象にしない。原本が until_encoded で
-//     物理削除済みの録画も候補にしない
-//   - r.deleted_at IS NULL = ごみ箱の録画は対象外。対象録画を絞った即時パスも
-//     このクエリを使うため、全件パスとごみ箱の扱いがずれない
-//     until_encoded_deletable_originals が同じ述語を持つのと同じ理由
-//   - want.profile が空文字列でなく、known_profiles に含まれる = 現在の設定に存在する
-//     非空のプロファイルだけを欠落判定の対象にする。設定から消えたプロファイルを候補に含めると、投入しても
+//     （行が無い = 未凍結。不変条件 10。JOIN で自然に落ちる）。desired が空なら
+//     unnest が行を作らないので候補にならない
+//   - encodable_recordings = ごみ箱でなく、原本 media_assets が active（ingest
+//     コミット済みで、until_encoded で物理削除されていない）。対象録画を絞った
+//     即時パスもこのクエリを使うため、全件パスとごみ箱の扱いがずれない
+//   - encodable_profile = 現在の設定に存在する非空のプロファイルで、cut なら
+//     recording_chapter_ownership の行がある（不変条件 10: 行の存在 = ユーザーが
+//     確認済み）。設定から消えたプロファイルを候補に含めると、投入しても
 //     EncodeWorker が `unknown encode profile` で弾く（encode.go）録画が窓を
-//     恒久的に占有し続ける（他の候補が減らない限り）。空文字列のプロファイル名も
-//     ここで明示的に落とす
-//   - want.profile が cut_profiles に含まれるなら recording_chapter_ownership の
-//     行が要る（不変条件 10: 行の存在 = ユーザーが確認済み）。cut: true の
-//     プロファイルは確認済みのタイムラインを切るので、確認前に投入すると誤検出の
-//     まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。
-//     確認 UI は cut でないプロファイルの encoded で再生するので、原本 TS を
-//     ブラウザで再生できないという循環もここで断つ
+//     恒久的に占有し続ける。cut を確認前に投入すると、誤検出のまま本編が削られ、
+//     原本がごみ箱を経由せずに消えて取り返せなくなる。確認 UI は cut でない
+//     プロファイルの encoded で再生するので、原本 TS をブラウザで再生できないという
+//     循環もここで断つ
 //   - p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
 //     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
 //     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
 //     「前回止まった位置の続きから」開くことで、候補が一度も減らない最悪条件
 //     （録画単位の恒久失敗が LIMIT 件を超える）でも有限パス数で全候補に到達する
-//     （EncodeReconcileWorker の doc コメント「窓を回す」）。recording_id は PK
-//     なのでこの keyset 述語はそのまま索引に乗る。
+//     （EncodeReconcileWorker の doc コメント「窓を回す」）。
 //   - recording_id が NULL でなければ、その録画だけに候補を絞る（ingest 完了後や
 //     encode_profiles の事後追加で投入する即時パス）。このとき呼び出し側は
 //     after_recording_id を 0 にし、全件パスの再開窓とは独立させる
 //
-// **known_profiles は non-NULL でなければならない。** `x = ANY(NULL::text[])` は
-// false ではなく NULL なので、NULL（Go 側の nil スライス）を渡すと EXISTS が
-// 常に偽になり候補が全滅する。しかも下の ListUnsatisfiableEncodeProfiles の
+// **known_profiles は non-NULL でなければならない**（encodable_profile の注意。
+// NULL を渡すと候補が全滅する）。しかも下の ListUnsatisfiableEncodeProfiles の
 // `NOT (... = ANY(...))` も同時に NULL になるため、**空振りしていることすら
 // 見えなくなる**（バックストップが無症状で死ぬ）。呼び出し側が渡すのは
 // config.EncodeConfig.ProfileNames() で、空設定でも non-nil を返す契約
 // （internal/config の TestEncodeConfig_ProfileNames_EmptyIsNonNil、
 // internal/worker の TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent
 // が両側から固定している）。
-//
-// until_encoded_deletable_originals は known_profiles で絞らない。
-// これは意図的な非対称（安全側の仕様。上の「名前付き述語」節と
-// docs/storage/retention.md §保持ポリシー）であって揃え忘れではない。
 func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissingEncodeProfilesParams) ([]ListMissingEncodeProfilesRow, error) {
 	rows, err := q.db.Query(ctx, listMissingEncodeProfiles,
-		arg.KnownProfiles,
-		arg.CutProfiles,
 		arg.AfterRecordingID,
 		arg.RecordingID,
+		arg.KnownProfiles,
+		arg.CutProfiles,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -575,22 +412,15 @@ func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissing
 const listUnsatisfiableEncodeProfiles = `-- name: ListUnsatisfiableEncodeProfiles :many
 SELECT want.profile::text AS profile, count(*)::bigint AS recordings
 FROM recording_encode_policy p
-JOIN recordings r ON r.id = p.recording_id
+JOIN encodable_recordings er ON er.recording_id = p.recording_id
 CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-WHERE r.deleted_at IS NULL
-  AND NOT (want.profile = ANY($1::text[]))
+WHERE NOT (want.profile = ANY($1::text[]))
   AND (
     NOT (want.profile = ANY($2::text[]))
     OR EXISTS (
       SELECT 1 FROM recording_chapter_ownership o
       WHERE o.recording_id = p.recording_id
     )
-  )
-  AND EXISTS (
-    SELECT 1 FROM media_assets o
-    WHERE o.recording_id = p.recording_id
-      AND o.kind = 'original'
-      AND o.state = 'active'
   )
   AND NOT EXISTS (
     SELECT 1 FROM media_assets e
@@ -613,11 +443,12 @@ type ListUnsatisfiableEncodeProfilesRow struct {
 	Recordings int64
 }
 
-// ListUnsatisfiableEncodeProfiles は上のクエリが**落とした**側 --- 凍結済みの
+// ListUnsatisfiableEncodeProfiles は ListMissingEncodeProfiles が**落とした**側 --- 凍結済みの
 // desired が known_profiles に無いために永久に満たせない (プロファイル名, 録画数)
 // を返す。
 //
-// 落とす判断（上のクエリ）と落としたことを見せる責務を分けている。プロファイルを
+// 落とす判断（ListMissingEncodeProfiles）と落としたことを見せる責務を分けている。
+// 録画単位は同じ encodable_recordings を引く。プロファイルを
 // 改名 / 削除するとその名前で凍結済みの過去録画が一斉にここへ落ちるので、
 // 数を出さないと「エンコードされない録画」が静かに増える（過去に塞いだ
 // 症状そのものを、別の原因で再現してしまう）。

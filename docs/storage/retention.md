@@ -131,7 +131,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、根拠欄の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 
-事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles`（`internal/db/queries/encode_reconcile.sql`）が `cardinality(encode_profiles) > 0` を要求するからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
+事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles`（`internal/db/queries/encode_reconcile.sql`）が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
 
 <details><summary>根拠</summary>
 
@@ -312,7 +312,7 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 カット版は、利用者がチャプターを確認するまで作らない。チャプターを直した後も自動では作り直さず、利用者が明示的に要求したときだけ作り直す。CM 検出を有効にした録画では、CM 検出の結果か最終失敗の記録が揃うまで、原本は消さない。
 
-`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に機能する。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
+`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は encode の投入と待機列が共有する関数 `encodable_profile` が持ち、削除側の view は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に機能する。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 
 **チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
 

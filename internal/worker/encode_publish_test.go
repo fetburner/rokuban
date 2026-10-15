@@ -519,22 +519,14 @@ func TestEncodeWorker_PublishSkipsWhenChaptersChangeAfterRebuildRequest(t *testi
 	if err != nil || asset.ID != assetID || asset.RelPath != "rebuild/edited_cut.g1.mp4" {
 		t.Fatalf("encoded asset after stale publish = %+v, err %v; want previous generation", asset, err)
 	}
-	request, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	})
-	if err != nil || !request.RequestExists {
-		t.Fatalf("stale rebuild request exists=%v err=%v; want row retained for reconcile CAS", request.RequestExists, err)
+	if !rebuildRequestExists(t, pool, recordingID) {
+		t.Fatal("stale rebuild request is missing; want row retained for reconcile CAS")
 	}
 	reconcileProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
 	reconcile := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{reconcileProfile}}}
 	runEncodeReconcilePass(t, reconcile)
-	request, err = sqlcgen.New(pool).GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	})
-	if err != nil || request.RequestExists {
-		t.Fatalf("stale rebuild request after reconcile exists=%v err=%v; want deleted", request.RequestExists, err)
+	if rebuildRequestExists(t, pool, recordingID) {
+		t.Fatal("stale rebuild request after reconcile still exists; want deleted")
 	}
 }
 

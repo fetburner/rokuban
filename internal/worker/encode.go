@@ -18,12 +18,12 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -379,21 +379,23 @@ func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.Enc
 	}
 
 	q := sqlcgen.New(w.Pool)
-	request, err := q.GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
+	// tx の外なので行ロックは文の終わりで外れ、読み取りとしてだけ働く。公開 tx が
+	// 同じクエリで改めてロックして照合する。
+	request, err := q.GetEncodedAssetRebuildRequestForUpdate(ctx, sqlcgen.GetEncodedAssetRebuildRequestForUpdateParams{
 		RecordingID: args.RecordingID,
 		Profile:     args.Profile,
 	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return nil, expectedKeep, true, true, nil
+	}
 	if err != nil {
 		return nil, nil, false, false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
 	}
-	if !request.RequestExists {
-		return nil, expectedKeep, true, true, nil
-	}
-	storedKeep, stored, err := decodeRequestedCutKeep(request.RequestedKeep)
+	storedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
 	if err != nil {
 		return nil, nil, false, false, fmt.Errorf("decoding stored rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
 	}
-	if !stored || !chapters.SameRanges(storedKeep, expectedKeep) {
+	if !chapters.SameRanges(storedKeep, expectedKeep) {
 		return nil, expectedKeep, true, true, nil
 	}
 	profile, ok := w.Profiles.Profile(args.Profile)
@@ -935,17 +937,17 @@ func lockAndValidateEncodeRebuildRequest(
 		RecordingID: recordingID,
 		Profile:     profile,
 	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, true, nil
+	}
 	if err != nil {
 		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, fmt.Errorf("locking rebuild request for recording %d profile %q: %w", recordingID, profile, err)
 	}
-	if !request.RequestExists {
-		return request, false, true, nil
-	}
-	requestedKeep, present, err := decodeRequestedCutKeep(request.RequestedKeep)
+	requestedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
 	if err != nil {
 		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
 	}
-	if !present || !chapters.SameRanges(requestedKeep, currentKeep) ||
+	if !chapters.SameRanges(requestedKeep, currentKeep) ||
 		(expectedKeep != nil && !chapters.SameRanges(requestedKeep, expectedKeep)) {
 		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, nil
 	}
@@ -1044,9 +1046,9 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	defer func() { _ = fileLock.Close() }()
 
-	var ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	var ranges db.KeepRanges
 	if in.cut != nil {
-		if ranges, err = keepRangesParam(in.cut.keep); err != nil {
+		if ranges, err = db.KeepRangesParam(in.cut.keep); err != nil {
 			return 0, false, err
 		}
 	}
@@ -1322,7 +1324,7 @@ func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, ru
 
 // replaceMediaAssetCuts は 1 つの media_asset の凍結区間を差し替える
 // （DELETE → INSERT）。呼び出し側の tx の中で使う。
-func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]) error {
+func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges db.KeepRanges) error {
 	if err := q.DeleteMediaAssetCuts(ctx, assetID); err != nil {
 		return fmt.Errorf("clearing media_asset_cuts: %w", err)
 	}
@@ -1333,31 +1335,6 @@ func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int6
 		return fmt.Errorf("writing media_asset_cuts: %w", err)
 	}
 	return nil
-}
-
-// keepRangesParam は ms の半開区間列を int8multirange の param へ写す。
-// 昇順・非交差へ正規化してから渡す（値どうしの一致比較をするため）。
-func keepRangesParam(keep []chapters.Range) (pgtype.Multirange[pgtype.Range[pgtype.Int8]], error) {
-	out := make(pgtype.Multirange[pgtype.Range[pgtype.Int8]], 0, len(keep))
-	for _, r := range keep {
-		if r.EndMs <= r.StartMs {
-			continue
-		}
-		out = append(out, pgtype.Range[pgtype.Int8]{
-			Lower:     pgtype.Int8{Int64: r.StartMs, Valid: true},
-			Upper:     pgtype.Int8{Int64: r.EndMs, Valid: true},
-			LowerType: pgtype.Inclusive,
-			UpperType: pgtype.Exclusive,
-			// Valid を立てないと pgx が「NULL の要素」として符号化を拒否する
-			// （multirange cannot contain NULL element）。
-			Valid: true,
-		})
-	}
-	if len(out) == 0 {
-		// CHECK (NOT isempty(keep_ranges)) が拒否する。先に落とす。
-		return nil, errors.New("keep ranges are empty")
-	}
-	return out, nil
 }
 
 // BuildFFmpegArgs は構造化 EncodeProfile から ffmpeg 引数を組み立てる。

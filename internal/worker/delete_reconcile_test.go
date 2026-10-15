@@ -21,6 +21,7 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -959,7 +960,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
 			RecordingID:   recordingID,
 			Profile:       profile,
-			RequestedKeep: []byte(`[{"startMs":0,"endMs":1000}]`),
+			RequestedKeep: mustKeepRanges(t, []chapters.Range{{StartMs: 0, EndMs: 1000}}),
 		}); err != nil {
 			t.Errorf("inserting rebuild request after candidate collection: %v", err)
 			return

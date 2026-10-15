@@ -95,6 +95,11 @@ type DropStat struct {
 	PidType      *string
 }
 
+// EncodableRecording は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
+type EncodableRecording struct {
+	RecordingID int64
+}
+
 // 利用者が明示したカット版の再作成要求。requested_keep は操作時点の量子化済み区間。catalog には含めない。
 type EncodedAssetRebuildRequest struct {
 	RecordingID       int64

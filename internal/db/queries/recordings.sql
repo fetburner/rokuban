@@ -322,16 +322,13 @@ VALUES (sqlc.arg('recording_id'), sqlc.arg('profile'))
 ON CONFLICT (recording_id, profile) DO NOTHING;
 
 -- Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
--- JSON は chapters.Range の境界を受け取り、DB 側で int8multirange に正規化する。
+-- keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
 -- name: UpsertEncodedAssetRebuildRequest :exec
 INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 VALUES (
     sqlc.arg('recording_id'),
     sqlc.arg('profile'),
-    (
-        SELECT range_agg(int8range((item.range ->> 'startMs')::bigint, (item.range ->> 'endMs')::bigint))
-        FROM jsonb_array_elements(sqlc.arg('requested_keep')::jsonb) AS item(range)
-    )::int8multirange
+    sqlc.arg('requested_keep')::int8multirange
 )
 ON CONFLICT (recording_id, profile) DO UPDATE SET
     requested_keep = EXCLUDED.requested_keep,
