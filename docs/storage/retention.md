@@ -83,7 +83,7 @@ desired を縮める経路があっても、この整理は保たれる。縮め
 
 上記の desired な派生物は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
-揃いの判定は encode と共有する view `unencoded_desired_profiles` で、設定では絞らない。
+揃っているかは encode と共有する view `unencoded_desired_profiles` で判定し、設定では絞らない。
 
 <details><summary>根拠</summary>
 
