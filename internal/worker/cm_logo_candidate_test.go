@@ -398,7 +398,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 		t.Helper()
 		id := seedCMRecording(t, pool, t.TempDir(), eventID)
 		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "failed", nil, nil)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", nil, nil)
 		return id
 	}
 	attemptRows := func(recordingID int64) int {
@@ -422,10 +422,11 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	if rows, err := q.SetRecordingCMDetection(ctx, quicklyReenabled); err != nil || rows != 1 {
 		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", quicklyReenabled, rows, err)
 	}
-	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || desired {
-		t.Fatalf("desired before reconcile for quick toggle = %v, %v; want false while old failed row remains", desired, err)
+	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
+		t.Fatalf("desired before reconcile for quick toggle = %v, %v; want true (the old failed row is not a current attempt)", desired, err)
 	}
 
+	// 再有効化の後に始めた試行は現在の世代で、同値の再送では消えない。
 	newAttemptAfterReenable := seedCMRecording(t, pool, t.TempDir(), 955)
 	if err := q.ClearRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil {
 		t.Fatal(err)
@@ -434,27 +435,9 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
 	}
 	attemptCount := startCMDetectionTestAttempt(t, ctx, q, newAttemptAfterReenable)
-	markCMDetectionTestFailure(t, ctx, q, newAttemptAfterReenable, attemptCount, "failed", nil, nil)
-	if _, err := pool.Exec(ctx, `
-		UPDATE recording_cm_attempts
-		SET attempted_at = p.cm_detect_changed_at + interval '1 second'
-		FROM recording_encode_policy p
-		WHERE p.recording_id = recording_cm_attempts.recording_id
-		  AND recording_cm_attempts.recording_id = $1`, newAttemptAfterReenable); err != nil {
-		t.Fatal(err)
-	}
-	var markerBefore, markerAfter time.Time
-	if err := pool.QueryRow(ctx, `SELECT cm_detect_changed_at FROM recording_encode_policy WHERE recording_id = $1`, newAttemptAfterReenable).Scan(&markerBefore); err != nil {
-		t.Fatal(err)
-	}
+	markCMDetectionTestFailure(t, ctx, pool, q, newAttemptAfterReenable, attemptCount, "failed", nil, nil)
 	if rows, err := q.SetRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil || rows != 1 {
 		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT cm_detect_changed_at FROM recording_encode_policy WHERE recording_id = $1`, newAttemptAfterReenable).Scan(&markerAfter); err != nil {
-		t.Fatal(err)
-	}
-	if !markerAfter.Equal(markerBefore) {
-		t.Fatalf("idempotent enable moved state-change marker from %s to %s", markerBefore, markerAfter)
 	}
 
 	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}

@@ -205,7 +205,7 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 	// 終端の失敗行があれば引き取れる（自動層は空 = CM 無しという主張）。
 	q := sqlcgen.New(pool)
 	attemptCount := startCMDetectionAttemptForTest(t, context.Background(), q, id)
-	markCMDetectionFailureForTest(t, context.Background(), q, id, attemptCount, nil, strPtr("detector unavailable"))
+	markCMDetectionFailureForTest(t, context.Background(), pool, q, id, attemptCount, nil, strPtr("detector unavailable"))
 	resp = putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT after terminal failure status = %d, want 204", resp.StatusCode)
@@ -221,29 +221,18 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 	id := seedRecording(t, pool, "再有効化後の検出待ち", time.Now().Truncate(time.Second), "finished", 987)
 	enableCMDetect(t, pool, id)
 	q := sqlcgen.New(pool)
+	seedActiveOriginalForTest(t, ctx, q, id)
 	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
 	message := "previous policy generation failed"
-	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, nil, &message)
+	markCMDetectionFailureForTest(t, ctx, pool, q, id, attemptCount, nil, &message)
 
 	url := chaptersURL(srv.URL, id)
 	before := getChapters(t, url)
 	if before.DetectionPending {
 		t.Fatal("final failure was reported as pending before the policy changed")
 	}
-	if _, err := pool.Exec(ctx, `
-		UPDATE recording_encode_policy
-		SET cm_detect = false,
-		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
-		WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
-		UPDATE recording_encode_policy
-		SET cm_detect = true,
-		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
-		WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
-	}
+	toggleCMDetectionForTest(t, ctx, q, id, false)
+	toggleCMDetectionForTest(t, ctx, q, id, true)
 	after := getChapters(t, url)
 	if !after.DetectionPending {
 		t.Fatal("chapter GET did not report detection pending after quick re-enable")

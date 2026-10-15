@@ -35,7 +35,7 @@ SELECT r.id, r.network_id, r.service_id, o.rel_path,
 FROM recordings r
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
-LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
+LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
 WHERE r.id = sqlc.arg('recording_id');
 
 -- name: GetCMRetryOriginal :one
@@ -53,46 +53,27 @@ DELETE FROM recording_cm_detections WHERE recording_id = sqlc.arg('recording_id'
 -- name: DeleteCMDetectionAttempt :exec
 DELETE FROM recording_cm_attempts WHERE recording_id = sqlc.arg('recording_id');
 
--- Clear attempts disabled by policy before scheduling the current desired set. The
--- policy marker also catches a disable followed by a re-enable between periodic passes.
+-- 現在の試行（方針が有効で世代が一致する）でない行を消す。方針が無効・無い録画と、
+-- 無効化から再有効化までの間に世代が進んだ録画の古い試行が対象。API は試行表を書かない。
 -- name: DeleteStaleCMDetectionAttempts :exec
 DELETE FROM recording_cm_attempts ca
 WHERE NOT EXISTS (
-    SELECT 1
-    FROM recording_encode_policy p
-    WHERE p.recording_id = ca.recording_id
-      AND p.cm_detect
-      AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
+    SELECT 1 FROM current_cm_attempts cur
+    WHERE cur.recording_id = ca.recording_id
 );
 
--- name: LockCMDetectionPolicy :one
-SELECT cm_detect, cm_detect_changed_at
-FROM recording_encode_policy
-WHERE recording_id = sqlc.arg('recording_id')
-FOR UPDATE;
-
+-- 方針の現在の世代を同じ文で読み、世代の違う行は新しい試行として作り直す
+-- （無効化から再有効化までの間に reconcile が行を消していなくても予算は 1 から数える）。
 -- name: BeginCMDetectionAttempt :one
-INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count)
+INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count, policy_generation)
 VALUES (
-    sqlc.arg('recording_id'), 'running', NULL,
-    GREATEST(
-        clock_timestamp(),
-        COALESCE((
-            SELECT cm_detect_changed_at + interval '1 microsecond'
-            FROM recording_encode_policy
-            WHERE recording_id = sqlc.arg('recording_id')
-        ), '-infinity'::timestamptz)
-    ),
-    1
+    sqlc.arg('recording_id'), 'running', NULL, now(), 1,
+    COALESCE((SELECT p.cm_detect_generation FROM recording_encode_policy p
+              WHERE p.recording_id = sqlc.arg('recording_id')), 0)
 )
 ON CONFLICT (recording_id) DO UPDATE
 SET state = CASE
-        -- A retry queued before disable/re-enable belongs to the old desired state.
-        -- Start a fresh budget even if it runs before periodic reconcile deletes the row.
-        WHEN cm_attempt_is_prior_enabled_generation(
-            recording_cm_attempts.recording_id,
-            recording_cm_attempts.attempted_at
-        ) THEN 'running'
+        WHEN recording_cm_attempts.policy_generation <> EXCLUDED.policy_generation THEN 'running'
         -- Work calls this only after cm_detection_desired says a failed attempt
         -- has a newer logo or area to analyze.
         WHEN recording_cm_attempts.state = 'failed' THEN 'running'
@@ -103,10 +84,7 @@ SET state = CASE
         ELSE 'running'
     END,
     attempt_count = CASE
-        WHEN cm_attempt_is_prior_enabled_generation(
-            recording_cm_attempts.recording_id,
-            recording_cm_attempts.attempted_at
-        ) THEN 1
+        WHEN recording_cm_attempts.policy_generation <> EXCLUDED.policy_generation THEN 1
         -- A new desire after failed starts a new budget, like the API retry
         -- (which deletes the row and restarts at 1).
         WHEN recording_cm_attempts.state = 'failed' THEN 1
@@ -115,45 +93,28 @@ SET state = CASE
         ELSE recording_cm_attempts.attempt_count + 1
     END,
     stage = CASE
-        WHEN cm_attempt_is_prior_enabled_generation(
-            recording_cm_attempts.recording_id,
-            recording_cm_attempts.attempted_at
-        ) THEN NULL
+        WHEN recording_cm_attempts.policy_generation <> EXCLUDED.policy_generation THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'stopped'
         ELSE NULL
     END,
     error = CASE
-        WHEN cm_attempt_is_prior_enabled_generation(
-            recording_cm_attempts.recording_id,
-            recording_cm_attempts.attempted_at
-        ) THEN NULL
+        WHEN recording_cm_attempts.policy_generation <> EXCLUDED.policy_generation THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN 'CM detection process stopped while job was running'
         ELSE NULL
     END,
     attempted_at = CASE
-        WHEN cm_attempt_is_prior_enabled_generation(
-            recording_cm_attempts.recording_id,
-            recording_cm_attempts.attempted_at
-        ) THEN GREATEST(
-            clock_timestamp(),
-            COALESCE((
-                SELECT p.cm_detect_changed_at + interval '1 microsecond'
-                FROM recording_encode_policy p
-                WHERE p.recording_id = recording_cm_attempts.recording_id
-            ), '-infinity'::timestamptz)
-        )
+        WHEN recording_cm_attempts.policy_generation <> EXCLUDED.policy_generation THEN now()
         WHEN recording_cm_attempts.state = 'failed' THEN now()
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= sqlc.arg('max_attempts')::integer THEN recording_cm_attempts.attempted_at
         ELSE now()
-    END
-RETURNING attempt_count, state, (state = 'running')::boolean AS should_run,
-          (SELECT p.cm_detect_changed_at FROM recording_encode_policy p
-           WHERE p.recording_id = recording_cm_attempts.recording_id) AS cm_detect_changed_at;
+    END,
+    policy_generation = EXCLUDED.policy_generation
+RETURNING attempt_count, state, (state = 'running')::boolean AS should_run, policy_generation;
 
 -- name: MarkCMDetectionFailure :execrows
 -- **attempted_at は書き換えない**（ジョブ開始時刻のまま）。再投入の判定は
@@ -162,12 +123,14 @@ UPDATE recording_cm_attempts
 SET state = sqlc.arg('state'), stage = sqlc.narg('stage'), error = sqlc.arg('error')
 WHERE recording_id = sqlc.arg('recording_id')
   AND attempt_count = sqlc.arg('attempt_count')
+  AND policy_generation = sqlc.arg('policy_generation')::bigint
   AND state = 'running';
 
 -- name: DeleteCMDetectionRunningAttempt :execrows
 DELETE FROM recording_cm_attempts
 WHERE recording_id = sqlc.arg('recording_id')
   AND attempt_count = sqlc.arg('attempt_count')
+  AND policy_generation = sqlc.arg('policy_generation')::bigint
   AND state = 'running';
 
 -- name: CancelCMDetectionRunningAttempt :execrows
@@ -179,12 +142,14 @@ SET state = 'retrying', attempt_count = sqlc.arg('attempt_count')::integer - 1,
 WHERE recording_id = sqlc.arg('recording_id')
   AND attempt_count = sqlc.arg('attempt_count')
   AND attempt_count > 1
+  AND policy_generation = sqlc.arg('policy_generation')::bigint
   AND state = 'running';
 
 -- name: LockCMDetectionAttempt :one
 SELECT attempt_count
 FROM recording_cm_attempts
 WHERE recording_id = sqlc.arg('recording_id')
+  AND policy_generation = sqlc.arg('policy_generation')::bigint
   AND state = 'running'
 FOR UPDATE;
 
@@ -286,15 +251,12 @@ FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN cm_logo_candidates c ON c.network_id = r.network_id AND c.service_id = r.service_id
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
-LEFT JOIN recording_cm_attempts ca
+LEFT JOIN current_cm_attempts ca
     ON ca.recording_id = r.id
    AND ca.state = 'failed'
    AND ca.stage IS DISTINCT FROM 'adopt'
    AND desired.recording_id IS NULL
-   AND COALESCE(p.cm_detect, true)
-   AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
 LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
 WHERE r.deleted_at IS NULL
 -- a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。

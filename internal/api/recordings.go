@@ -983,7 +983,7 @@ const wantKeepOriginalUntilEncodedMessage = "cannot set keepOriginal=until_encod
 // cmDetect=true は active な原本を適用時に再確認し、未凍結なら既定の保持方針と
 // 空の encode_profiles で policy を作る。false は未凍結 policy を作らない。
 // CM 検出ジョブはここでは投入せず、worker の定期 reconcile に任せる。
-// cmDetect の切り替え時刻を policy に記録し、試行行の削除は CM reconcile に任せる。
+// cmDetect が切り替わるたびに policy の世代番号を進め、試行行の削除は CM reconcile に任せる。
 //
 // 物理削除もヒントジョブの投入も行わない。原本保持の変更は削除 reconcile が、
 // CM 検出の変更は CM 定期 reconcile が DB の現在値から検出する。

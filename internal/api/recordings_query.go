@@ -417,11 +417,8 @@ LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 -- 方針変更より前の試行は reconcile が削除するまで残ることがある。
--- 再有効化直後に古い失敗を出さないよう、その世代で始まった試行だけを射影する。
-LEFT JOIN recording_cm_attempts ca
-    ON ca.recording_id = r.id
-   AND p.cm_detect
-   AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
+-- 現在の世代の試行だけを view 越しに射影する。
+LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
 LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
 -- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、

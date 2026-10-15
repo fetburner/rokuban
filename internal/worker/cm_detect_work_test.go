@@ -678,7 +678,7 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 			q := sqlcgen.New(pool)
 			for range tc.priorFailures {
 				attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-				markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
+				markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "retrying", nil, nil)
 			}
 			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 			if err := os.WriteFile(tools.hold, nil, 0o600); err != nil {
@@ -819,7 +819,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount, first.CmDetectChangedAt); err != nil {
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount, first.PolicyGeneration); err != nil {
 		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
 	var detections int
@@ -834,6 +834,62 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 	if state != "running" || attemptCount != 2 {
 		t.Errorf("current attempt after stale result = %q/%d, want running/2", state, attemptCount)
+	}
+}
+
+// cmPolicyGeneration は recording_encode_policy の cm_detect_generation を読む。
+func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64) int64 {
+	t.Helper()
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT cm_detect_generation FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	return generation
+}
+
+func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 921)
+	q := sqlcgen.New(pool)
+	enable := func() {
+		t.Helper()
+		if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+			t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
+		}
+	}
+	if got := cmPolicyGeneration(t, ctx, pool, id); got != 0 {
+		t.Fatalf("generation of a freshly frozen policy = %d, want 0", got)
+	}
+	enable() // idempotent re-send
+	if got := cmPolicyGeneration(t, ctx, pool, id); got != 0 {
+		t.Fatalf("generation after idempotent enable = %d, want 0", got)
+	}
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
+		t.Fatalf("generation after disable = %d, want 1", got)
+	}
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil { // idempotent re-send
+		t.Fatal(err)
+	}
+	if got := cmPolicyGeneration(t, ctx, pool, id); got != 1 {
+		t.Fatalf("generation after idempotent disable = %d, want 1", got)
+	}
+	enable()
+	if got := cmPolicyGeneration(t, ctx, pool, id); got != 2 {
+		t.Fatalf("generation after re-enable = %d, want 2", got)
+	}
+
+	// 未凍結録画の初回凍結（cm_detect=true）も切り替えとして数える。
+	frozen := insertTestRecordingWithEventID(t, pool, 920)
+	seedOriginalAsset(t, pool, t.TempDir(), frozen, "cm/920.ts", []byte("ts"))
+	if rows, err := q.SetRecordingCMDetection(ctx, frozen); err != nil || rows != 1 {
+		t.Fatalf("first-freeze SetRecordingCMDetection(%d) = %d, %v; want 1 row", frozen, rows, err)
+	}
+	if got := cmPolicyGeneration(t, ctx, pool, frozen); got != 1 {
+		t.Fatalf("generation after first freeze with cm_detect=true = %d, want 1", got)
 	}
 }
 
@@ -863,9 +919,8 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	if err != nil || !newAttempt.ShouldRun || newAttempt.AttemptCount != 1 {
 		t.Fatalf("new attempt after toggle = %#v, %v; want a fresh running/1 attempt", newAttempt, err)
 	}
-	if newAttempt.CmDetectChangedAt == nil || (oldAttempt.CmDetectChangedAt != nil &&
-		!newAttempt.CmDetectChangedAt.After(*oldAttempt.CmDetectChangedAt)) {
-		t.Fatalf("policy markers old=%v new=%v; want a strictly newer marker", oldAttempt.CmDetectChangedAt, newAttempt.CmDetectChangedAt)
+	if oldAttempt.PolicyGeneration != 0 || newAttempt.PolicyGeneration != 2 {
+		t.Fatalf("attempt generations old=%d new=%d, want 0 and 2", oldAttempt.PolicyGeneration, newAttempt.PolicyGeneration)
 	}
 
 	item, err := q.GetCMDetectionWorkItem(ctx, id)
@@ -873,7 +928,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newCMDetectTestWorker(pool, mediaDir, cmToolset{})
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", oldAttempt.AttemptCount, oldAttempt.CmDetectChangedAt); err != nil {
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", oldAttempt.AttemptCount, oldAttempt.PolicyGeneration); err != nil {
 		t.Fatalf("saving result from pre-toggle worker: %v", err)
 	}
 	var detections int
@@ -891,7 +946,7 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	if state != "running" || attemptCount != 1 {
 		t.Fatalf("current attempt after stale worker result = %q/%d, want running/1", state, attemptCount)
 	}
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", newAttempt.AttemptCount, newAttempt.CmDetectChangedAt); err != nil {
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", newAttempt.AttemptCount, newAttempt.PolicyGeneration); err != nil {
 		t.Fatalf("saving result from current worker: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections); err != nil {
@@ -902,6 +957,54 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	}
 }
 
+// 古い世代の worker は、同じ attempt_count (1) を持つ新しい世代の行に触れない。
+// attempt_count だけの柵では区別できない ABA の形。
+func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 919)
+	q := sqlcgen.New(pool)
+
+	oldAttempt := startCMDetectionTestAttemptRow(t, ctx, q, id)
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
+	}
+	newAttempt := startCMDetectionTestAttemptRow(t, ctx, q, id)
+	if oldAttempt.AttemptCount != 1 || newAttempt.AttemptCount != 1 || oldAttempt.PolicyGeneration == newAttempt.PolicyGeneration {
+		t.Fatalf("old=%#v new=%#v; want attempt_count 1 in both and different generations", oldAttempt, newAttempt)
+	}
+
+	message := "old worker failure"
+	if n, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+		RecordingID: id, AttemptCount: 1, PolicyGeneration: oldAttempt.PolicyGeneration,
+		State: "failed", Error: &message,
+	}); err != nil || n != 0 {
+		t.Fatalf("old-generation MarkCMDetectionFailure = %d, %v; want 0 rows", n, err)
+	}
+	if n, err := q.DeleteCMDetectionRunningAttempt(ctx, sqlcgen.DeleteCMDetectionRunningAttemptParams{
+		RecordingID: id, AttemptCount: 1, PolicyGeneration: oldAttempt.PolicyGeneration,
+	}); err != nil || n != 0 {
+		t.Fatalf("old-generation DeleteCMDetectionRunningAttempt = %d, %v; want 0 rows", n, err)
+	}
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state); err != nil || state != "running" {
+		t.Fatalf("new-generation attempt state = %q, %v; want running", state, err)
+	}
+	if _, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
+		RecordingID: id, PolicyGeneration: oldAttempt.PolicyGeneration,
+	}); !errors.Is(err, pgx5.ErrNoRows) {
+		t.Fatalf("old-generation LockCMDetectionAttempt error = %v, want ErrNoRows", err)
+	}
+	if count, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
+		RecordingID: id, PolicyGeneration: newAttempt.PolicyGeneration,
+	}); err != nil || count != 1 {
+		t.Fatalf("current-generation LockCMDetectionAttempt = %d, %v; want 1", count, err)
+	}
+}
+
 func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -909,12 +1012,12 @@ func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	first := startCMDetectionTestAttempt(t, ctx, q, id)
-	markCMDetectionTestFailure(t, ctx, q, id, first, "retrying", nil, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, first, "retrying", nil, nil)
 	second := startCMDetectionTestAttempt(t, ctx, q, id)
 	if second != 2 {
 		t.Fatalf("second queued retry attempt count = %d, want 2", second)
 	}
-	markCMDetectionTestFailure(t, ctx, q, id, second, "retrying", nil, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, second, "retrying", nil, nil)
 	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
 		t.Fatal(err)
 	}
@@ -922,6 +1025,10 @@ func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
 	}
 
+	// 方針の世代が進んだ直後は、行が残っていても desired（現在の試行が無い）。
+	if desired, err := q.IsCMDetectionDesired(ctx, id); err != nil || !desired {
+		t.Fatalf("desired right after quick re-enable = %v, %v; want true before reconcile", desired, err)
+	}
 	// A retry already in the queue can run before the next periodic cleanup.
 	restarted, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
 		RecordingID: id, MaxAttempts: cmDetectMaxTries,
@@ -929,16 +1036,8 @@ func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 	if err != nil || !restarted.ShouldRun || restarted.AttemptCount != 1 {
 		t.Fatalf("queued retry after toggle = %#v, %v; want running/1", restarted, err)
 	}
-	var attemptedAt, changedAt time.Time
-	if err := pool.QueryRow(ctx, `
-		SELECT ca.attempted_at, p.cm_detect_changed_at
-		FROM recording_cm_attempts ca
-		JOIN recording_encode_policy p ON p.recording_id = ca.recording_id
-		WHERE ca.recording_id = $1`, id).Scan(&attemptedAt, &changedAt); err != nil {
-		t.Fatal(err)
-	}
-	if !attemptedAt.After(changedAt) {
-		t.Fatalf("new attempt timestamp %s is not after policy marker %s", attemptedAt, changedAt)
+	if restarted.PolicyGeneration != 2 {
+		t.Fatalf("restarted attempt generation = %d, want 2", restarted.PolicyGeneration)
 	}
 }
 
@@ -1062,7 +1161,7 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	q := sqlcgen.New(pool)
 	for range 2 {
 		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "retrying", nil, nil)
 	}
 
 	err := workHeld(t, pool, mediaDir, tools, id, func() {

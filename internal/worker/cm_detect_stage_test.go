@@ -112,7 +112,7 @@ func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
 	q := sqlcgen.New(pool)
 	firstAttempt := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "logo"
-	markCMDetectionTestFailure(t, ctx, q, id, firstAttempt, "retrying", &stage, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, firstAttempt, "retrying", &stage, nil)
 	if got := startCMDetectionTestAttempt(t, ctx, q, id); got != 2 {
 		t.Fatalf("second attempt count = %d, want 2", got)
 	}

@@ -205,11 +205,8 @@ SELECT COALESCE(p.cm_detect, false)::boolean AS cm_detect,
        COALESCE((SELECT (extract(epoch FROM o.adopted_at) * 1000000)::bigint
                  FROM recording_chapter_ownership o WHERE o.recording_id = r.id), 0)::bigint AS adopted_at_us,
        EXISTS (
-           SELECT 1 FROM recording_cm_attempts ca
-           WHERE ca.recording_id = r.id
-             AND ca.state = 'failed'
-             AND p.cm_detect
-             AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
+           SELECT 1 FROM current_cm_attempts ca
+           WHERE ca.recording_id = r.id AND ca.state = 'failed'
        ) AS failed,
        EXISTS (
            SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id

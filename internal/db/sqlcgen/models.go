@@ -73,6 +73,16 @@ type CmLogoCandidateDesired struct {
 	RecordingID   int64
 }
 
+type CurrentCmAttempt struct {
+	RecordingID      int64
+	State            string
+	Stage            *string
+	Error            *string
+	AttemptedAt      time.Time
+	AttemptCount     int32
+	PolicyGeneration int64
+}
+
 // CurrentTsScannedOriginal は、計測サイズが現在のコミット済みサイズと一致する原本を表す。state は削除済み原本の drop summary を保つため条件に含めず、active 限定が必要な呼び出し側で絞る。
 type CurrentTsScannedOriginal struct {
 	MediaAssetID int64
@@ -303,12 +313,13 @@ type RecordingChapterSpan struct {
 }
 
 type RecordingCmAttempt struct {
-	RecordingID  int64
-	State        string
-	Error        *string
-	AttemptedAt  time.Time
-	Stage        *string
-	AttemptCount int32
+	RecordingID      int64
+	State            string
+	Error            *string
+	AttemptedAt      time.Time
+	Stage            *string
+	AttemptCount     int32
+	PolicyGeneration int64
 }
 
 type RecordingCmDetection struct {
@@ -327,13 +338,13 @@ type RecordingEncodeAttempt struct {
 }
 
 type RecordingEncodePolicy struct {
-	RecordingID       int64
-	KeepOriginal      string
-	EncodeProfiles    []string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	CmDetect          bool
-	CmDetectChangedAt *time.Time
+	RecordingID        int64
+	KeepOriginal       string
+	EncodeProfiles     []string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CmDetect           bool
+	CmDetectGeneration int64
 }
 
 type RecordingIngestProgress struct {

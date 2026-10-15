@@ -384,9 +384,16 @@ CM 検出の試行回数は、試行表の回数で数える。失敗と締切�
 
 プロセス死は、次の開始時に running 行を進めて数える。停止時のキャンセルは、過去の失敗が無い最初の試行なら行を消し、失敗後の試行なら回数を戻して `retrying` にする。`failed` の後に新しいロゴや枠で再び desired になったら、予算は 1 からやり直す。結果の保存は開始時の回数を照合するため、古い試行は後から結果を確定できない。
 
+**試行行の新旧は、方針の世代番号（`recording_encode_policy.cm_detect_generation`）で決める。** 世代は `cm_detect` が実際に切り替わるときだけ 1 進み、同じ値の再送では進まない。試行行は作られた時点の世代を持ち、方針が有効で世代が一致する行だけが現在の試行になる。時刻で比べると、トランザクションの時刻の意味や時計の精度といった DB 方言の挙動に契約が依存する。読み手（画面・章・ロゴ状態・原本の削除判定・desired）は現在の試行だけを 1 つの view 越しに読み、判定を複製しない。無効化から再有効化までに残った古い行は、reconcile が削除する。試行の開始は世代の違う行を新しい試行として作り直すので、予算は 1 から数え直す。
+
+worker の書き込み（失敗の記録・キャンセル・結果の保存）は、試行回数に加えてこの世代で試行行自身を絞る。回数だけでは、再有効化の前の worker が同じ回数 1 の新しい行を書き換える ABA を防げない。方針表（メディア側の表）はロックしない。無効化の後に届いた検出結果の保存は受け入れる。無効化は検出結果を消さないので、「無効だが検出済み」は元から取りうる状態である。API は試行表を書かない。
+
 <details><summary>根拠</summary>
 
 - 試行回数の列: `recording_cm_attempts.attempt_count`
+- 世代の列と現在の試行の view: `recording_cm_attempts.policy_generation`、`current_cm_attempts`
+- 世代の進み方: `TestCMDetectionGenerationAdvancesOnlyOnRealTransitions`
+- 古い世代の worker が新しい行に触れないこと: `TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt`
 - 戻した後の状態: `retrying`、上限到達後の状態は `failed`
 - 停止時のキャンセルが回数に入らず、締切超過が数えられること: `TestCMDetectDeadlineCountsAndCancellationDoesNotCount`
 - 失敗後に新しいロゴや枠で desired になると予算が 1 からやり直されること: `TestCMDetectionNewDesireAfterFailedStartsNewBudget`

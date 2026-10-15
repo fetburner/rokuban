@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -27,9 +29,32 @@ func startCMDetectionTestAttempt(t *testing.T, ctx context.Context, q *sqlcgen.Q
 	return attempt.AttemptCount
 }
 
+// cmAttemptGeneration は試行行が持つ方針世代を読む。ABA を狙わないテストが
+// 「その試行を始めた worker」と同じ世代で書くために使う。
+func cmAttemptGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, recordingID int64) int64 {
+	t.Helper()
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT policy_generation FROM recording_cm_attempts WHERE recording_id = $1`, recordingID).Scan(&generation); err != nil {
+		t.Fatal(err)
+	}
+	return generation
+}
+
+func startCMDetectionTestAttemptRow(t *testing.T, ctx context.Context, q *sqlcgen.Queries, recordingID int64) sqlcgen.BeginCMDetectionAttemptRow {
+	t.Helper()
+	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: recordingID, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !attempt.ShouldRun {
+		t.Fatalf("BeginCMDetectionAttempt(%d) = %#v, %v", recordingID, attempt, err)
+	}
+	return attempt
+}
+
 func markCMDetectionTestFailure(
 	t *testing.T,
 	ctx context.Context,
+	pool *pgxpool.Pool,
 	q *sqlcgen.Queries,
 	recordingID int64,
 	attemptCount int32,
@@ -45,6 +70,7 @@ func markCMDetectionTestFailure(
 	n, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
 		RecordingID: recordingID, AttemptCount: attemptCount,
 		State: state, Stage: stage, Error: message,
+		PolicyGeneration: cmAttemptGeneration(t, ctx, pool, recordingID),
 	})
 	if err != nil || n != 1 {
 		t.Fatalf("MarkCMDetectionFailure(%d, %d) = %d, %v", recordingID, attemptCount, n, err)
@@ -290,7 +316,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 		if id == ids[6] {
 			state = "retrying"
 		}
-		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, state, nil, nil)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, state, nil, nil)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, ids[5]); err != nil {
 		t.Fatal(err)
@@ -368,7 +394,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 		t.Helper()
 		message := "failed"
 		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "failed", stage, &message)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", stage, &message)
 	}
 	wantDesired := func(t *testing.T, id int64, want bool) {
 		t.Helper()
@@ -467,7 +493,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 		t.Fatalf("eligible originals before CM completion = %d, want 0", got)
 	}
 	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
-	markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "retrying", nil, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "retrying", nil, nil)
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals while retrying = %d, want 0", got)
 	}
@@ -477,19 +503,11 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after final failure = %d, want 1", got)
 	}
-	if _, err := pool.Exec(ctx, `
-		UPDATE recording_encode_policy
-		SET cm_detect = false,
-		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
-		WHERE recording_id = $1`, id); err != nil {
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `
-		UPDATE recording_encode_policy
-		SET cm_detect = true,
-		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
-		WHERE recording_id = $1`, id); err != nil {
-		t.Fatal(err)
+	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
 	}
 	if got := count(); got != 0 {
 		t.Fatalf("eligible originals after quick re-enable with an old failure = %d, want 0", got)
@@ -552,7 +570,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	}
 	attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "adopt"
-	markCMDetectionTestFailure(t, ctx, q, id, attemptCount, "failed", &stage, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", &stage, nil)
 	var eligible int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM until_encoded_deletable_originals WHERE recording_id = $1`, id).Scan(&eligible); err != nil {
 		t.Fatal(err)

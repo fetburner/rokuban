@@ -324,7 +324,7 @@ CREATE TABLE recording_encode_policy (
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     cm_detect       boolean NOT NULL DEFAULT false,
-    cm_detect_changed_at timestamptz, -- 状態変更前の試行行を遅延削除する境界
+    cm_detect_generation bigint NOT NULL DEFAULT 0, -- 切り替えごとに +1
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
