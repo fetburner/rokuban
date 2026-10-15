@@ -62,7 +62,7 @@ WHERE NOT EXISTS (
     FROM recording_encode_policy p
     WHERE p.recording_id = ca.recording_id
       AND p.cm_detect
-      AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+      AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
 );
 
 -- name: LockCMDetectionPolicy :one
@@ -89,12 +89,9 @@ ON CONFLICT (recording_id) DO UPDATE
 SET state = CASE
         -- A retry queued before disable/re-enable belongs to the old desired state.
         -- Start a fresh budget even if it runs before periodic reconcile deletes the row.
-        WHEN EXISTS (
-            SELECT 1 FROM recording_encode_policy p
-            WHERE p.recording_id = recording_cm_attempts.recording_id
-              AND p.cm_detect
-              AND p.cm_detect_changed_at IS NOT NULL
-              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        WHEN cm_attempt_is_prior_enabled_generation(
+            recording_cm_attempts.recording_id,
+            recording_cm_attempts.attempted_at
         ) THEN 'running'
         -- Work calls this only after cm_detection_desired says a failed attempt
         -- has a newer logo or area to analyze.
@@ -106,12 +103,9 @@ SET state = CASE
         ELSE 'running'
     END,
     attempt_count = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM recording_encode_policy p
-            WHERE p.recording_id = recording_cm_attempts.recording_id
-              AND p.cm_detect
-              AND p.cm_detect_changed_at IS NOT NULL
-              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        WHEN cm_attempt_is_prior_enabled_generation(
+            recording_cm_attempts.recording_id,
+            recording_cm_attempts.attempted_at
         ) THEN 1
         -- A new desire after failed starts a new budget, like the API retry
         -- (which deletes the row and restarts at 1).
@@ -121,12 +115,9 @@ SET state = CASE
         ELSE recording_cm_attempts.attempt_count + 1
     END,
     stage = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM recording_encode_policy p
-            WHERE p.recording_id = recording_cm_attempts.recording_id
-              AND p.cm_detect
-              AND p.cm_detect_changed_at IS NOT NULL
-              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        WHEN cm_attempt_is_prior_enabled_generation(
+            recording_cm_attempts.recording_id,
+            recording_cm_attempts.attempted_at
         ) THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
@@ -134,12 +125,9 @@ SET state = CASE
         ELSE NULL
     END,
     error = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM recording_encode_policy p
-            WHERE p.recording_id = recording_cm_attempts.recording_id
-              AND p.cm_detect
-              AND p.cm_detect_changed_at IS NOT NULL
-              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        WHEN cm_attempt_is_prior_enabled_generation(
+            recording_cm_attempts.recording_id,
+            recording_cm_attempts.attempted_at
         ) THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
@@ -147,12 +135,9 @@ SET state = CASE
         ELSE NULL
     END,
     attempted_at = CASE
-        WHEN EXISTS (
-            SELECT 1 FROM recording_encode_policy p
-            WHERE p.recording_id = recording_cm_attempts.recording_id
-              AND p.cm_detect
-              AND p.cm_detect_changed_at IS NOT NULL
-              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        WHEN cm_attempt_is_prior_enabled_generation(
+            recording_cm_attempts.recording_id,
+            recording_cm_attempts.attempted_at
         ) THEN GREATEST(
             clock_timestamp(),
             COALESCE((
@@ -250,20 +235,10 @@ SELECT r.network_id, r.service_id,
        count(DISTINCT r.id)::bigint AS recording_count,
        l.learned_at,
        l.preview_png,
-       count(DISTINCT ca.recording_id) FILTER (
-           WHERE ca.state = 'failed'
-             AND ca.stage IS DISTINCT FROM 'adopt'
-             AND desired.recording_id IS NULL
-             AND COALESCE(p.cm_detect, true)
-             AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
-       )::bigint AS failed_count,
+       count(DISTINCT ca.recording_id)::bigint AS failed_count,
        count(DISTINCT desired.recording_id)::bigint AS pending_count,
        COALESCE(((array_agg(ca.stage ORDER BY ca.attempted_at DESC) FILTER (
-           WHERE ca.state = 'failed'
-             AND ca.stage IS DISTINCT FROM 'adopt'
-             AND desired.recording_id IS NULL
-             AND COALESCE(p.cm_detect, true)
-             AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+           WHERE ca.recording_id IS NOT NULL
        ))[1])::text, '')::text AS last_failure_stage,
        count(DISTINCT d.recording_id)::bigint AS detected_count,
        count(DISTINCT d.recording_id) FILTER (
@@ -312,9 +287,15 @@ LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN cm_logo_candidates c ON c.network_id = r.network_id AND c.service_id = r.service_id
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
-LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
-LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
 LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
+LEFT JOIN recording_cm_attempts ca
+    ON ca.recording_id = r.id
+   AND ca.state = 'failed'
+   AND ca.stage IS DISTINCT FROM 'adopt'
+   AND desired.recording_id IS NULL
+   AND COALESCE(p.cm_detect, true)
+   AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
+LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
 WHERE r.deleted_at IS NULL
 -- a の列は主キー (network_id, service_id) の関数従属なので、この 2 列だけで足りる。
 GROUP BY r.network_id, r.service_id, l.learned_at, l.preview_png,

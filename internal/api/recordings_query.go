@@ -421,7 +421,7 @@ LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN recording_cm_attempts ca
     ON ca.recording_id = r.id
    AND p.cm_detect
-   AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+   AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
 LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
 -- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、

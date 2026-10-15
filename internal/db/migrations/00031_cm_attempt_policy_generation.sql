@@ -50,7 +50,7 @@ WHERE a.kind = 'original'
           WHERE ca.recording_id = r.id
             AND ca.state = 'failed'
             AND ca.stage IS DISTINCT FROM 'adopt'
-            AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+            AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
       )
   );
 

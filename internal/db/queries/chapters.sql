@@ -32,7 +32,7 @@ SELECT COALESCE(p.cm_detect, false)::boolean AS cm_detect,
            WHERE ca.recording_id = r.id
              AND ca.state = 'failed'
              AND p.cm_detect
-             AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+             AND cm_attempt_is_current_generation(ca.attempted_at, p.cm_detect_changed_at)
        ) AS failed,
        EXISTS (
            SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id
