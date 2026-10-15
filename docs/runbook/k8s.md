@@ -50,7 +50,7 @@ kustomize build deploy/k8s/overlays/kind | kubectl apply -f -
 kubectl wait --for=condition=complete job/rokuban-migrate --timeout=180s
 
 # 4. 起動しているのが手元のイメージであることを確かめる。overlay の images: の
-#    名前が typo だと kustomize はそれを黙って無視し、ghcr の公開イメージが
+#    名前が typo だと kustomize はそれを警告なしに無視し、ghcr の公開イメージが
 #    起動する（測っているものが手元の変更でなくなる）
 kubectl get pods -l app.kubernetes.io/component=api \
   -o jsonpath='{.items[*].spec.containers[*].image}'   # rokuban:kind-test
@@ -119,7 +119,7 @@ kubectl drain "$(kubectl get node -o name | head -1 | cut -d/ -f2)" \
 
 ### config を変えると rollout が起きること
 
-config を編集すると、Pod が入れ替わる rollout が起きることを見る。rokuban は config を起動時に 1 回しか読まないので、**この rollout が起きなければ設定変更は効かない。**
+config を編集すると、Pod が入れ替わる rollout が起きることを見る。rokuban は config を起動時に 1 回しか読まないので、**この rollout が起きなければ設定変更は反映されない。**
 
 config 本体は `configMapGenerator` 経由なので、編集すると ConfigMap 名のハッシュが変わり、Pod テンプレートも変わる。
 
@@ -156,13 +156,13 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 ### 終了コード
 
-終了コードは、判定が緑か、壊れているか、未実装かを分ける。使い方の誤りと環境の不足は、判定を記録しない別のコードで返す。
+終了コードは、判定が緑か、誤動作しているか、未実装かを分ける。使い方の誤りと環境の不足は、判定を記録しない別のコードで返す。
 
 | | 意味 |
 |---|---|
 | `0` | 走らせた判定がすべて緑（`--only` などで絞った場合は 0 を返さない） |
-| `1` | 壊れている判定がある |
-| `2` | 壊れてはいないが、まだ実装されていない判定がある |
+| `1` | 誤動作している判定がある |
+| `2` | 誤動作はしていないが、まだ実装されていない判定がある |
 | `64` | 使い方の誤り（`--only` の値が判定番号でない、未知のオプション） |
 | `70` | 環境の不足・準備の失敗（道具が無い、クラスタを用意できない） |
 
@@ -182,7 +182,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 | `run.sh --oracles` | `PASS 19 / FAIL 0` | 0 | 約 40 分（同上） |
 | `run.sh --only 3` | `PASS 9 / FAIL 0 / TODO 0` | 2（部分実行のため仕様どおり） | 未計測 |
 
-`--oracles` は長い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、短縮が効かない。
+`--oracles` は長い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。変異のたびにその待ちを通るので、短縮できない。
 
 製品のワークロードが入ってからさらに伸びた。O1 の変異（api の Service セレクタを外す）で判定 1.6 / 1.7 が実際に走るようになったためである。到達できない api を 240 秒ずつ待つ経路が増えた（それ以前は対象が無くて即 TODO で抜けていた）。一部だけ見たいときは `E2E_ORACLES_ONLY=3`。
 
@@ -202,7 +202,7 @@ kubectl get pod -l app.kubernetes.io/component=api -o name   # Pod 名が入れ�
 
 回さない理由は 3 つある。遅いこと、CI に新しい依存が増えること、静的に見られる範囲は既に CI にあることである。
 
-遅い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮が効かない種類の待ちである。実測で `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）。
+遅い。判定 2 は CronJob の自然な発火（分単位）を待ち、判定 3 / 5 は「起きないこと」を窓で見る。どちらも短縮できない種類の待ちである。実測で `run.sh` が約 10 分、`--oracles` が約 40 分（上の表）。
 
 CI イメージに kind / KEDA / Postgres という新しい依存が増える。さらに判定 3 は実際に ffmpeg でエンコードを回すので、CPU も要る。
 
@@ -215,7 +215,7 @@ CI イメージに kind / KEDA / Postgres という新しい依存が増える�
 | いつ | 誰 | 何を見る |
 |---|---|---|
 | `deploy/k8s/` 配下を触る PR を出す前 | その PR の作者 | `run.sh` が 0 を返すこと（5 項目が緑のまま） |
-| 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が効いていること） |
+| 判定・身代わり（`fixtures/`）を足す / 変えるとき | 変更した人 | `run.sh --oracles` が全部緑（判定が機能していること） |
 | River recovery / `delete_reconcile` / `encode_reconcile` / DB 接続復旧 / media asset 公開、または `deploy/k8s/e2e/faults/` を変える PR を出す前 | その PR の作者 | `run.sh --faults` が 0 を返し、worker kill・PostgreSQL 接続断・rescuer の各シナリオが PASS |
 
 #### CI が見る範囲

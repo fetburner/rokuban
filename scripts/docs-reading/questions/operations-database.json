@@ -37,7 +37,7 @@
       "question": "transaction pooling を通すか。なぜか。",
       "points": [
         "通さない",
-        "接続が要求ごとに入れ替わると、LISTEN と advisory lock を使うロールが壊れるため"
+        "接続が要求ごとに入れ替わると、LISTEN と advisory lock を使うロールが正しく動かなくなるため"
       ]
     },
     {

@@ -4,10 +4,10 @@
 
 `pnpm test`（Vitest + jsdom）はレイアウトを計算しない。`getBoundingClientRect()` は常に 0 を返し、`IntersectionObserver` も無い。したがって**スクロール位置・要素の可視性・レイアウトシフトに関する機能は、ユニットテストが全部通っても何の保証にもならない**。
 
-この規律は番組リストの遡行（前の時間窓をリスト先頭に差し込んで、見ている位置を保つ機能。**現在は廃止済みで存在しない**）で生まれた。実際に **「テストが通った」を根拠に 3 回リリースして 3 回とも実機で壊れていた**。壊れ方はそれぞれ違った。
+この規律は番組リストの遡行（前の時間窓をリスト先頭に差し込んで、見ている位置を保つ機能。**現在は廃止済みで存在しない**）で生まれた。実際に **「テストが通った」を根拠に 3 回リリースして 3 回とも実機で正しく動いていなかった**。失敗の仕方はそれぞれ違った。
 
 1. `document.documentElement.scrollHeight` の差分で補正 → 差し込み直後の高さは見積もりで、実測が後から届いて再びずれる
-2. DOM のアンカー要素を掴んで位置を合わせる → **仮想化では差し込んだ瞬間にその要素が DOM から消える**ので、補正が一度も走らない
+2. DOM のアンカー要素を取得して位置を合わせる → **仮想化では差し込んだ瞬間にその要素が DOM から消える**ので、補正が一度も走らない
 3. `scrollToIndex` で復元 → ボタンがリスト最上部（画面外）にあり、押すためのスクロールがアンカーの記録より先に走って、記録する行が変わっていた
 
 いずれも jsdom では**原理的に検出できない**。ここに置いた判定はそのためのもの。
@@ -48,7 +48,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 
 各スクリプトが使う API フィクスチャと `web/src/api/zod.ts` の生成スキーマの一致だけは、実ブラウザを使わずに `pnpm e2e:fixtures` で検証する。これは `E2E_VALIDATE_FIXTURES_ONLY=1` を付けて契約検証を持つスクリプトを起動し、検証後に各プロセスを終了する経路である。preview サーバー、`dist/`、Playwright のブラウザ本体は必要ない。
 
-対象スクリプトは `e2e/validate-fixtures.mjs` が手書きの一覧ではなくファイル内容（`validateFixturesOrExit` の呼び出しの有無）から導出する。手書きだと、並行して増えたスクリプトの契約検証が一覧への追加漏れで静かに検査対象から外れる。各スクリプトはこのモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。実ブラウザを使う判定はこのコマンドの対象外である。CI では browser-e2e ジョブが一部だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す判定とそれ以外）。子プロセスは順番にすべて実行するので、先のスクリプトが失敗しても後続のフィクスチャ検証を省略しない。
+対象スクリプトは `e2e/validate-fixtures.mjs` が手書きの一覧ではなくファイル内容（`validateFixturesOrExit` の呼び出しの有無）から導出する。手書きだと、並行して増えたスクリプトの契約検証が一覧への追加漏れで気付かないうちに検査対象から外れる。各スクリプトはこのモードで全フィクスチャを検証してから `launchBrowser` や bundle 検証へ進まない。実ブラウザを使う判定はこのコマンドの対象外である。CI では browser-e2e ジョブが一部だけ回し、残りはローカルの個別 E2E で行う（下記 §CI で回す判定とそれ以外）。子プロセスは順番にすべて実行するので、先のスクリプトが失敗しても後続のフィクスチャ検証を省略しない。
 
 **`E2E_VALIDATE_FIXTURES_ONLY=1` をシェルに export したまま忘れると、以降の `pnpm e2e:*` は全部「契約検証だけして exit 0」になる。実判定を 1 つも走らせていない緑になる**。このコマンドを使うときはコマンドの前にだけ付ける。
 
@@ -59,7 +59,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | フィクスチャ契約の CI 検証 | [README.md](README.md) |
 | 多 site 番組表（`multi-site.mjs`） | [checks/programs.md](checks/programs.md) |
 | 正時をまたぐグリッド再取得（`programs-grid-hour-boundary.mjs`） | [checks/programs.md](checks/programs.md) |
-| 参照バッジの導線（`badge-links.mjs`） | [checks/programs.md](checks/programs.md) |
+| 参照バッジのリンク（`badge-links.mjs`） | [checks/programs.md](checks/programs.md) |
 | シリーズ一覧の分割（`shelves-split.mjs`） | [checks/programs.md](checks/programs.md) |
 | ライブ視聴（`live.mjs`） | [checks/live.md](checks/live.md) |
 | 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
@@ -121,7 +121,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | jsdom が測れないもの | [README.md](README.md) |
 | 判定を足すときの規律 | [README.md](README.md) |
 | デザイン | [checks/design.md](checks/design.md) |
-| ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・design.mjs の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジの導線 |
+| ⓪ 配っている bundle と dist/ の一致（lib.mjs・checks.mjs・live.mjs・design.mjs の「README.md 参照」） | [checks/programs.md](checks/programs.md) §参照バッジのリンク |
 
 ## CI で回す判定とそれ以外
 
@@ -147,8 +147,8 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 **`waitFor` の失敗を `.catch(() => {})` で飲むときは、後段が飲んで良い理由になっているかを確かめる**。後段が「待っていた条件そのもの」を直接読み直して合否を出す形（例: `document.activeElement === el` を評価し直す）なら、待ちの成否を経由しないので飲んでよい。
 
-そうでない形（後段が別の要素・別の状態を測る）で飲むと、「待ちが失敗した」ことがその別の判定の NG 文言に化けて出る --- スタイル回帰と区別が付かず、しかもタイミング依存で再実行すると消える。この規律自体はまだこのリポジトリで踏み抜いたことを実測で示せていない（予防的なもの）--- 下記 ChannelOption の一件は、調べる過程でこの形の壊れ方ではないと分かった。
+そうでない形（後段が別の要素・別の状態を測る）で飲むと、「待ちが失敗した」ことがその別の判定の NG 文言に化けて出る --- スタイル回帰と区別が付かず、しかもタイミング依存で再実行すると消える。この規律自体はまだこのリポジトリで踏み抜いたことを実測で示せていない（予防的なもの）--- 下記 ChannelOption の一件は、調べる過程でこの形の失敗ではないと分かった。
 
-**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと壊れる**。`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に踏んだ。base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる（queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定（before と after が同じなら NG）が偽陽性を出していた。
+**before/after diff を取る共有ヘルパーは、before の基準を自分で制御しないと正しく動かない**。`design.mjs` の `checkExplicitFocusRing`（ChannelOption 呼び出し）で実際に起きた。base-ui の Popover は開いた直後、先頭候補へ非同期に既定フォーカスを当てる（queueMicrotask → requestAnimationFrame 1 回）。この既定フォーカスが「まだ来ていない」か「もう来た」かで before の box-shadow が実行のたびに割れ、before/after の差分判定（before と after が同じなら NG）が偽陽性を出していた。
 
 ポップアップの開閉待ち自体は 5000ms の予算に対し 1〜3ms で毎回成功しており、swallow とは無関係だった（4 回計測、8/8 で `beforeShadow !== 'none'` と NG が一致）。直すには before を測る前に明示的に `blur()` して基準を確定させ、かつ相手の既定フォーカスが済むのを待ってから呼ぶ（rAF 2 回。フレーム数は負荷で増えないので固定回数で足りる）。

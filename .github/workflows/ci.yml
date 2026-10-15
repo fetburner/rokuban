@@ -551,7 +551,7 @@ jobs:
       # **CRD（KEDA の ScaledJob）はリポジトリに置いたスキーマで検査する。**
       # `-ignore-missing-schemas` は採らない --- 未知の kind を黙って飛ばすので
       # `kind: ScaledJobb` のような typo も一緒に飛ばす。スキーマの出どころと、
-      # `-strict` を効かせるための加工（`additionalProperties: false`）は
+      # `-strict` を有効にするための加工（`additionalProperties: false`）は
       # deploy/k8s/schemas/README.md。**ファイル名が小文字なのは
       # `{{.ResourceKind}}` が小文字化した名前を埋めるため**で、大文字にすると
       # macOS では通って Linux の CI だけが落ちる。

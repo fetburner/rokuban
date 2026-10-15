@@ -599,7 +599,7 @@ var (
 	// root ごとの直近の観測バイト数。GET /api/storage を経由せずに Prometheus 側で
 	// 直接容量アラートを組めるようにするための対（PR #258 のレビュー指摘）。
 	// 統計に失敗した root は更新しない（前回値のまま。StorageRootLastSuccess と
-	// 同じ「沈黙は保証ではない」姿勢 --- 値が古くなっていることは
+	// 同じ「警告が出ないことは保証ではない」姿勢 --- 値が古くなっていることは
 	// StorageRootLastSuccess の鮮度で判別する）。
 	StorageRootTotalBytes = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_storage_total_bytes",
