@@ -18,12 +18,12 @@ import (
 	"time"
 
 	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -123,7 +123,7 @@ const encodeMinTimeout = time.Hour
 // 停止による ctx キャンセルと snooze は試行に数えず、締切超過と通常の失敗は
 // recording_encode_attempts の回数に反映する。ドメイン上限に達したら
 // jobq.ErrDiscard を返して、adapter に再配信不要と伝える。
-// 解除は POST /api/recordings/{id}/encode-profiles（failed 行を消して予算を戻す）。
+// POST /api/recordings/{id}/encode-profiles と cut 版の /reencode は failed 行を消して予算を戻す。
 func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error {
 	start, err := w.beginEncodeAttempt(ctx, args.RecordingID, args.Profile)
 	if err != nil {
@@ -182,16 +182,11 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	// ユーザーがチャプターを直した後に再エンコードのジョブが来たときに、
 	// 古いカット版を「完了済み」と読むと編集が反映されない。
 	//
-	cut, err := w.loadCutContext(ctx, args.RecordingID, args.Profile)
+	observed, cut, expectedCutKeep, skip, err := w.observeEncodePlan(ctx, args, log)
 	if err != nil {
 		return err
 	}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, cut, nil)
-	if err != nil {
-		return fmt.Errorf("checking existing encoded asset: %w", err)
-	}
-	if observed.skip {
-		log.Info("encode: encoded asset already committed, skipping")
+	if skip {
 		result = "success"
 		return nil
 	}
@@ -200,8 +195,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	if err != nil {
 		return err
 	}
-	// reporter.start をここで呼ぶ（prepareEncodeInput 側ではない）理由は
-	// prepareEncodeInput の doc コメント参照。
+	// reporter.start は prepareEncodeInput ではなく、ここで呼ぶ（理由は prepareEncodeInput の doc コメント参照）。
 	var reportProgress func(time.Duration)
 	if duration > 0 {
 		reporter := encodeProgressReporter{
@@ -292,6 +286,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		subtitleOut:   subtitleOut,
 		withSubtitles: withSubtitles,
 		cut:           cut,
+		expectedKeep:  expectedCutKeep,
 	})
 	if err != nil {
 		if _, snoozed := jobq.SnoozeDelay(err); snoozed {
@@ -327,6 +322,94 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		Profile:     args.Profile,
 	})
 	return nil
+}
+
+// observeEncodePlan は cut の状態を読み、既存の active な版が現在の要求を既に
+// 満たしているか（skip してよいか）を判定する。満たしていれば、対応する作り直し要求も消す。
+func (w *EncodeWorker) observeEncodePlan(
+	ctx context.Context,
+	args jobs.EncodeJobArgs,
+	log *slog.Logger,
+) (observed encodePlan, cut *cutContext, expectedKeep []chapters.Range, skip bool, err error) {
+	cut, expectedKeep, hasExpectedKeep, skip, err := w.loadRequestedEncodeCut(ctx, args)
+	if err != nil {
+		return encodePlan{}, nil, nil, false, err
+	}
+	if skip {
+		log.Info("encode: rebuild request is no longer current; skipping")
+		return encodePlan{}, nil, expectedKeep, true, nil
+	}
+	if !hasExpectedKeep {
+		cut, err = w.loadCutContext(ctx, args.RecordingID, args.Profile)
+		if err != nil {
+			return encodePlan{}, nil, nil, false, err
+		}
+	}
+	observed, err = planEncodePublish(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, cut, nil)
+	if err != nil {
+		return encodePlan{}, nil, nil, false, fmt.Errorf("checking existing encoded asset: %w", err)
+	}
+	if observed.skip {
+		log.Info("encode: encoded asset already committed, skipping")
+		if cut != nil {
+			if err := w.clearSatisfiedEncodeRebuildRequest(ctx, args.RecordingID, args.Profile, cut.keep, expectedKeep); err != nil {
+				return encodePlan{}, nil, nil, false, fmt.Errorf("clearing satisfied rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+			}
+		}
+		return observed, cut, expectedKeep, true, nil
+	}
+	return observed, cut, expectedKeep, false, nil
+}
+
+// loadRequestedEncodeCut は rebuild 要求に束縛された keep 区間を検証する。
+// 要求が解決済み・置換済み・現在の確認済みチャプターと不一致なら skip を返す。
+func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.EncodeJobArgs) (
+	cut *cutContext,
+	expectedKeep []chapters.Range,
+	hasExpectedKeep bool,
+	skip bool,
+	err error,
+) {
+	expectedKeep, hasExpectedKeep, err = decodeRequestedCutKeep(args.RequestedCutKeep)
+	if err != nil {
+		return nil, nil, false, false, fmt.Errorf("decoding requested cut keep for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if !hasExpectedKeep {
+		return nil, nil, false, false, nil
+	}
+
+	q := sqlcgen.New(w.Pool)
+	// tx の外なので行ロックは文の終わりで外れ、読み取りとしてだけ働く。公開 tx が
+	// 同じクエリで改めてロックして照合する。
+	request, err := q.GetEncodedAssetRebuildRequestForUpdate(ctx, sqlcgen.GetEncodedAssetRebuildRequestForUpdateParams{
+		RecordingID: args.RecordingID,
+		Profile:     args.Profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return nil, expectedKeep, true, true, nil
+	}
+	if err != nil {
+		return nil, nil, false, false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	storedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
+	if err != nil {
+		return nil, nil, false, false, fmt.Errorf("decoding stored rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if !chapters.SameRanges(storedKeep, expectedKeep) {
+		return nil, expectedKeep, true, true, nil
+	}
+	profile, ok := w.Profiles.Profile(args.Profile)
+	if !ok || !profile.Cut {
+		return nil, expectedKeep, true, true, nil
+	}
+	keep, owned, err := currentCutKeep(ctx, q, args.RecordingID)
+	if err != nil {
+		return nil, nil, false, false, err
+	}
+	if !owned || !chapters.SameRanges(keep, expectedKeep) {
+		return nil, expectedKeep, true, true, nil
+	}
+	return &cutContext{keep: keep}, expectedKeep, true, false, nil
 }
 
 // cutContext は cut プロファイルの encode に要る、録画側の事実から導出した
@@ -393,6 +476,65 @@ func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) 
 		return nil, false, fmt.Errorf("decoding chapter spans for recording %d: %w", recordingID, err)
 	}
 	return chapters.KeepRanges(chapters.Derive(true, spans, nil, state.ProgramDurationMs)), true, nil
+}
+
+func decodeRequestedCutKeep(raw json.RawMessage) ([]chapters.Range, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var keep []chapters.Range
+	if err := json.Unmarshal(raw, &keep); err != nil {
+		return nil, false, err
+	}
+	if len(keep) == 0 {
+		return nil, false, errors.New("requested keep ranges are empty")
+	}
+	return keep, true, nil
+}
+
+// clearSatisfiedEncodeRebuildRequest は「既に最新」の早期 skip 経路で、満たされた作り直し
+// 要求を消す。公開 tx と同じ判定（lockAndValidateEncodeRebuildRequest と
+// deleteSatisfiedRebuildRequest）を、チャプター編集と同じ録画ロックの下で行い、
+// tx はここで開いて commit する。
+func (w *EncodeWorker) clearSatisfiedEncodeRebuildRequest(ctx context.Context, recordingID int64, profile string, keep, expectedKeep []chapters.Range) error {
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning satisfied rebuild request check: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	locked, err := q.LockRecording(ctx, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && locked.IsPurged) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("locking recording %d: %w", recordingID, err)
+	}
+	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && !slices.Contains(desired, profile)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("loading desired encode profiles for recording %d: %w", recordingID, err)
+	}
+	request, has, current, err := lockAndValidateEncodeRebuildRequest(ctx, q, recordingID, profile, keep, expectedKeep)
+	if err != nil {
+		return err
+	}
+	if !has || !current {
+		return nil
+	}
+	cleared, err := deleteSatisfiedRebuildRequest(ctx, q, recordingID, profile, keep, request)
+	if err != nil {
+		return err
+	}
+	if !cleared {
+		return nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing satisfied rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	return nil
 }
 
 // assetKeepRanges は media_asset に凍結された keep 区間を読む。凍結していない
@@ -682,7 +824,176 @@ type encodePublishInput struct {
 	observed encodePlan
 	// cut はカット版のときだけ非 nil。commit で凍結した keep 区間を同じ tx で
 	// 差し替える。
-	cut *cutContext
+	cut          *cutContext
+	expectedKeep []chapters.Range
+}
+
+// encodePublishDecision は prepareEncodePublish の判定結果。skip のとき公開しない。
+type encodePublishDecision struct {
+	plan              encodePlan
+	rebuildRequest    sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow
+	hasRebuildRequest bool
+	// cleared は skip の理由が「要求を満たしていた」で、その要求行を消したこと。
+	// 消した tx を commit するのは publishEncoded（tx を開いた側）。
+	cleared bool
+	skip    bool
+}
+
+// prepareEncodePublish は DB の fencing・カット要求・公開計画を tx 内で再確認する。
+func (w *EncodeWorker) prepareEncodePublish(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	in encodePublishInput,
+) (encodePublishDecision, error) {
+	if in.cut != nil {
+		locked, err := q.LockRecording(ctx, in.recordingID)
+		if errors.Is(err, pgx5.ErrNoRows) || (err == nil && locked.IsPurged) {
+			return encodePublishDecision{skip: true}, nil
+		}
+		if err != nil {
+			return encodePublishDecision{}, fmt.Errorf("locking recording %d before encoded publish: %w", in.recordingID, err)
+		}
+	}
+
+	activeAttempt, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
+		RecordingID: in.recordingID,
+		Profile:     in.profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (activeAttempt.State != "running" || activeAttempt.AttemptCount != in.attempt)) {
+		return encodePublishDecision{skip: true}, nil
+	}
+	if err != nil {
+		return encodePublishDecision{}, fmt.Errorf("loading current encode attempt: %w", err)
+	}
+
+	// 判定 (c): desired に無い profile は公開しない。FOR SHARE で版を外す tx と直列化する。
+	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
+	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
+		return encodePublishDecision{}, fmt.Errorf("loading desired encode profiles: %w", err)
+	}
+	if !slices.Contains(desired, in.profile) {
+		return encodePublishDecision{skip: true}, nil
+	}
+
+	decision := encodePublishDecision{}
+	if in.cut != nil {
+		var cutStillCurrent bool
+		decision.rebuildRequest, decision.hasRebuildRequest, cutStillCurrent, err = lockAndValidateEncodeRebuildRequest(ctx, q, in.recordingID, in.profile, in.cut.keep, in.expectedKeep)
+		if err != nil {
+			return encodePublishDecision{}, err
+		}
+		if !cutStillCurrent || (!decision.hasRebuildRequest && in.expectedKeep != nil) {
+			// 要求に由来するジョブは、それを認可した要求行より長く生きてはならない。
+			return encodePublishDecision{skip: true}, nil
+		}
+	}
+
+	decision.plan, err = planEncodePublish(ctx, q, in.recordingID, in.profile, in.cut, &in.observed)
+	if err != nil {
+		return encodePublishDecision{}, err
+	}
+	if decision.plan.stale {
+		return encodePublishDecision{}, jobq.Snooze(encodeReplanDelay)
+	}
+	if in.cut != nil && decision.plan.replaced != "" && !decision.plan.skip && !decision.hasRebuildRequest {
+		// 通常の待機ジョブは明示的な作り直し要求より前のものでありうる。その要求が
+		// 消費済み・無効になった後に、active なカット版を置き換えてはならない。
+		return encodePublishDecision{skip: true}, nil
+	}
+	if decision.plan.skip {
+		if decision.hasRebuildRequest {
+			decision.cleared, err = deleteSatisfiedRebuildRequest(ctx, q, in.recordingID, in.profile, in.cut.keep, decision.rebuildRequest)
+			if err != nil {
+				return encodePublishDecision{}, err
+			}
+		}
+		decision.skip = true
+	}
+	return decision, nil
+}
+
+// lockAndValidateEncodeRebuildRequest は作り直し要求を行ロックし、要求がまだ
+// ユーザー確認済みの現在のタイムラインを指していることを確かめる。録画ロックは
+// 呼び出し側が先に取る。戻り値は (要求, 要求行が有効か, 現在の keep が cutKeep のままか)。
+// expectedKeep が非 nil のときは、ジョブに束縛された keep とも一致を求める。
+func lockAndValidateEncodeRebuildRequest(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	recordingID int64,
+	profile string,
+	cutKeep, expectedKeep []chapters.Range,
+) (sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow, bool, bool, error) {
+	currentKeep, owned, err := currentCutKeep(ctx, q, recordingID)
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, nil
+	}
+	if err != nil {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, fmt.Errorf("rechecking chapter keep before publish for recording %d: %w", recordingID, err)
+	}
+	if !owned || !chapters.SameRanges(currentKeep, cutKeep) {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, nil
+	}
+	request, err := q.GetEncodedAssetRebuildRequestForUpdate(ctx, sqlcgen.GetEncodedAssetRebuildRequestForUpdateParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, true, nil
+	}
+	if err != nil {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, fmt.Errorf("locking rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	requestedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
+	if err != nil {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	if !chapters.SameRanges(requestedKeep, currentKeep) ||
+		(expectedKeep != nil && !chapters.SameRanges(requestedKeep, expectedKeep)) {
+		return sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow{}, false, false, nil
+	}
+	return request, true, true, nil
+}
+
+// deleteSatisfiedRebuildRequest は、active な版が既に keep を凍結しているときだけ
+// 作り直し要求を比較交換で消す。「要求を満たした」判定の唯一の実装で、エンコード前の
+// skip 経路（clearSatisfiedEncodeRebuildRequest）と公開 tx（prepareEncodePublish）の
+// 両方が呼ぶ。tx は呼び出し側が持ち、commit も呼び出し側がする。戻り値は実際に
+// 行を消したか。
+func deleteSatisfiedRebuildRequest(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	recordingID int64,
+	profile string,
+	keep []chapters.Range,
+	request sqlcgen.GetEncodedAssetRebuildRequestForUpdateRow,
+) (bool, error) {
+	asset, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && asset.State != "active") {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("rechecking encoded asset for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	frozenKeep, err := assetKeepRanges(ctx, q, asset.ID)
+	if err != nil {
+		return false, err
+	}
+	if !chapters.SameRanges(frozenKeep, keep) {
+		return false, nil
+	}
+	deleted, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
+		RecordingID:       recordingID,
+		Profile:           profile,
+		RequestGeneration: request.RequestGeneration,
+		RequestedKeep:     request.RequestedKeep,
+	})
+	if err != nil {
+		return false, fmt.Errorf("clearing satisfied rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	return deleted > 0, nil
 }
 
 // publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
@@ -735,9 +1046,9 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	defer func() { _ = fileLock.Close() }()
 
-	var ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	var ranges db.KeepRanges
 	if in.cut != nil {
-		if ranges, err = keepRangesParam(in.cut.keep); err != nil {
+		if ranges, err = db.KeepRangesParam(in.cut.keep); err != nil {
 			return 0, false, err
 		}
 	}
@@ -747,33 +1058,16 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := sqlcgen.New(tx)
-	activeAttempt, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
-		RecordingID: in.recordingID,
-		Profile:     in.profile,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (activeAttempt.State != "running" || activeAttempt.AttemptCount != in.attempt)) {
-		return 0, false, nil
-	}
-	if err != nil {
-		return 0, false, fmt.Errorf("loading current encode attempt: %w", err)
-	}
-	// 判定 (c): desired に無い profile は公開しない。外した版を、実行中・再試行待ちの
-	// ジョブが公開して復活させるのをこれが止める（ジョブの cancel では塞げない）。FOR SHARE で版を外す tx と直列化する。
-	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return 0, false, fmt.Errorf("loading desired encode profiles: %w", err)
-	}
-	if !slices.Contains(desired, in.profile) {
-		return 0, false, nil
-	}
-	plan, err := planEncodePublish(ctx, q, in.recordingID, in.profile, in.cut, &in.observed)
+	decision, err := w.prepareEncodePublish(ctx, q, in)
 	if err != nil {
 		return 0, false, err
 	}
-	if plan.stale {
-		return 0, false, jobq.Snooze(encodeReplanDelay)
-	}
-	if plan.skip {
+	if decision.skip {
+		if decision.cleared {
+			if err := tx.Commit(ctx); err != nil {
+				return 0, false, fmt.Errorf("committing satisfied rebuild request for recording %d profile %q: %w", in.recordingID, in.profile, err)
+			}
+		}
 		return 0, false, nil
 	}
 	if err := beforeEncodeFilePublication(in.scratchOut, ctx, tx); err != nil {
@@ -802,6 +1096,16 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	if in.cut != nil {
 		if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
 			return 0, false, fmt.Errorf("committing encoded asset: %w", err)
+		}
+		if decision.hasRebuildRequest {
+			if _, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
+				RecordingID:       in.recordingID,
+				Profile:           in.profile,
+				RequestGeneration: decision.rebuildRequest.RequestGeneration,
+				RequestedKeep:     decision.rebuildRequest.RequestedKeep,
+			}); err != nil {
+				return 0, false, fmt.Errorf("committing encoded asset: clearing rebuild request: %w", err)
+			}
 		}
 	}
 	if err := beforeEncodeCommit(in.scratchOut); err != nil {
@@ -1020,7 +1324,7 @@ func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, ru
 
 // replaceMediaAssetCuts は 1 つの media_asset の凍結区間を差し替える
 // （DELETE → INSERT）。呼び出し側の tx の中で使う。
-func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges pgtype.Multirange[pgtype.Range[pgtype.Int8]]) error {
+func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges db.KeepRanges) error {
 	if err := q.DeleteMediaAssetCuts(ctx, assetID); err != nil {
 		return fmt.Errorf("clearing media_asset_cuts: %w", err)
 	}
@@ -1031,31 +1335,6 @@ func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int6
 		return fmt.Errorf("writing media_asset_cuts: %w", err)
 	}
 	return nil
-}
-
-// keepRangesParam は ms の半開区間列を int8multirange の param へ写す。
-// 昇順・非交差へ正規化してから渡す（値どうしの一致比較をするため）。
-func keepRangesParam(keep []chapters.Range) (pgtype.Multirange[pgtype.Range[pgtype.Int8]], error) {
-	out := make(pgtype.Multirange[pgtype.Range[pgtype.Int8]], 0, len(keep))
-	for _, r := range keep {
-		if r.EndMs <= r.StartMs {
-			continue
-		}
-		out = append(out, pgtype.Range[pgtype.Int8]{
-			Lower:     pgtype.Int8{Int64: r.StartMs, Valid: true},
-			Upper:     pgtype.Int8{Int64: r.EndMs, Valid: true},
-			LowerType: pgtype.Inclusive,
-			UpperType: pgtype.Exclusive,
-			// Valid を立てないと pgx が「NULL の要素」として符号化を拒否する
-			// （multirange cannot contain NULL element）。
-			Valid: true,
-		})
-	}
-	if len(out) == 0 {
-		// CHECK (NOT isempty(keep_ranges)) が拒否する。先に落とす。
-		return nil, errors.New("keep ranges are empty")
-	}
-	return out, nil
 }
 
 // BuildFFmpegArgs は構造化 EncodeProfile から ffmpeg 引数を組み立てる。
@@ -1378,25 +1657,4 @@ func encodeJobTimeout(recordingDuration time.Duration, rate float64) time.Durati
 		return time.Duration(math.MaxInt64)
 	}
 	return max(encodeMinTimeout, time.Duration(math.Ceil(calculated)))
-}
-
-// EncodeRebuildWorker は利用者が明示した再エンコード命令を通常の encode ジョブへ渡す。
-type EncodeRebuildWorker struct {
-	Enqueuer jobq.Enqueuer
-	Pool     *pgxpool.Pool
-	Profiles config.EncodeConfig
-}
-
-// Work は指定された録画・プロファイルの encode ジョブだけを投入する。
-func (w *EncodeRebuildWorker) Work(ctx context.Context, args jobs.EncodeRebuildArgs) error {
-	encodeArgs, err := newEncodeJobArgs(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, w.Profiles)
-	if err != nil {
-		return fmt.Errorf("building encode job args for rebuild of recording %d profile %q: %w",
-			args.RecordingID, args.Profile, err)
-	}
-	if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
-		return fmt.Errorf("inserting encode job for rebuild of recording %d profile %q: %w",
-			args.RecordingID, args.Profile, err)
-	}
-	return nil
 }

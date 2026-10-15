@@ -104,6 +104,11 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	id := seedRecording(t, pool, "版を外す", time.Now().Truncate(time.Second), "finished", 701)
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'h264', '{[0,100)}'::int8multirange)`, id); err != nil {
+		t.Fatalf("seeding rebuild request: %v", err)
+	}
 
 	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
@@ -113,6 +118,13 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	}
 	if got := removalRequests(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("removal requests = %v, want [h264]", got)
+	}
+	var rebuildRequests int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'h264'`, id).Scan(&rebuildRequests); err != nil {
+		t.Fatal(err)
+	}
+	if rebuildRequests != 0 {
+		t.Errorf("rebuild requests after removing h264 = %d, want 0", rebuildRequests)
 	}
 	if got := listedEncodedProfiles(t, srv.URL, id); !slices.Equal(got, []string{"h265"}) {
 		t.Errorf("encodedAssets = %v, want [h265] right after the removal", got)
@@ -146,6 +158,11 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("first removal status = %d, want 204", resp.StatusCode)
 	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'h265', '{[0,100)}'::int8multirange)`, id); err != nil {
+		t.Fatalf("seeding rebuild request before rejected removal: %v", err)
+	}
 	resp := deleteEncoded(t, srv.URL, id, "h265")
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("last-copy removal status = %d, want 409", resp.StatusCode)
@@ -155,6 +172,13 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	}
 	if got := removalRequests(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("removal requests after 409 = %v, want [h264] (rolled back)", got)
+	}
+	var rebuildRequests int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'h265'`, id).Scan(&rebuildRequests); err != nil {
+		t.Fatal(err)
+	}
+	if rebuildRequests != 1 {
+		t.Errorf("rebuild requests after rejected removal = %d, want 1 (rolled back)", rebuildRequests)
 	}
 }
 
@@ -271,6 +295,116 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 	}
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("encode_profiles = %v, want [h264]", got)
+	}
+}
+
+// Encoded asset の削除 API は録画行を policy 行より先にロックする。
+// encode 公開側も録画行を先に取るため、逆順で policy を持ったまま録画行の FK
+// 検査を待つ循環を作らない。
+func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "削除ロック順", time.Now().Truncate(time.Second), "finished", 711)
+	seedIngested(t, pool, id, 1000, nil)
+	seedEncodedVersions(t, pool, id, "h264", "h265")
+
+	recordingTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = recordingTx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(recordingTx).LockRecording(ctx, id); err != nil {
+		t.Fatalf("locking recording row: %v", err)
+	}
+
+	policyTx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = policyTx.Rollback(ctx) }()
+	if _, err := sqlcgen.New(policyTx).LockRecordingEncodePolicy(ctx, id); err != nil {
+		t.Fatalf("locking encode policy row: %v", err)
+	}
+
+	type response struct {
+		status int
+		err    error
+	}
+	result := make(chan response, 1)
+	go func() {
+		req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d/encoded/h264", srv.URL, id), nil)
+		if err != nil {
+			result <- response{err: err}
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			result <- response{err: err}
+			return
+		}
+		_ = resp.Body.Close()
+		result <- response{status: resp.StatusCode}
+	}()
+	waitForLockWaiter(t, pool, "encoded removal handler")
+	if err := policyTx.Commit(ctx); err != nil {
+		t.Fatalf("committing policy lock: %v", err)
+	}
+
+	// もう一方の tx が録画行を保持している間、handler が待っている SQL は
+	// recordings の FOR UPDATE でなければならない。旧順序では policy を先に取り、
+	// encoded_asset_removal_requests の FK 検査でここに詰まる。
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var waiting bool
+		err := pool.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_stat_activity
+				WHERE datname = current_database()
+				  AND wait_event_type = 'Lock'
+				  AND pid <> pg_backend_pid()
+				  AND query ILIKE '%FROM recordings%'
+				  AND query ILIKE '%FOR UPDATE%'
+			)`).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("polling for recording row lock waiter: %v", err)
+		}
+		if waiting {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	var waiting bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM pg_stat_activity
+			WHERE datname = current_database()
+			  AND wait_event_type = 'Lock'
+			  AND pid <> pg_backend_pid()
+			  AND query ILIKE '%FROM recordings%'
+			  AND query ILIKE '%FOR UPDATE%'
+		)`).Scan(&waiting); err != nil {
+		t.Fatalf("checking recording row lock waiter: %v", err)
+	}
+	if !waiting {
+		t.Fatal("encoded removal handler did not wait on the recording row before acquiring policy")
+	}
+
+	if err := recordingTx.Commit(ctx); err != nil {
+		t.Fatalf("committing recording lock: %v", err)
+	}
+	select {
+	case got := <-result:
+		if got.err != nil {
+			t.Fatalf("encoded removal request: %v", got.err)
+		}
+		if got.status != http.StatusNoContent {
+			t.Errorf("encoded removal status = %d, want 204", got.status)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("encoded removal did not finish after the recording row lock was released")
 	}
 }
 

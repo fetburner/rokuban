@@ -83,9 +83,12 @@ desired を縮める経路があっても、この整理は保たれる。縮め
 
 上記の desired な派生物は凍結時点の `encode_profiles` であり、現在の `encode.profiles` 設定とは突き合わせない。プロファイルを改名・削除して現在の設定に存在しなくなったプロファイルを、まだエンコードしていない録画がある。この録画は `until_encoded` でも原本を保持し続ける。満たせない desired に対して原本を捨てないのが仕様で、設定の 1 行の編集で原本という不可逆な資産が削除可能になる事態を避けるためである。`rokuban_encode_reconcile_unsatisfiable` はプロファイル名別の該当録画数を出すが、`keep_original` を問わず数える（`always` の録画も含む）ため、この保持件数そのものとは一致しない。
 
+揃っているかは encode と共有する view `unencoded_desired_profiles` で判定し、設定では絞らない。
+
 <details><summary>根拠</summary>
 
 - 現在サイズに一致する TS scan: `TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan`
+- 消えたプロファイルの原本保持: `TestUnknownDesiredProfile_PredicateAsymmetry`
 - encode 完了後のジョブ再実行: `TestEncodeWorker_SuccessAndIdempotent`
 - thumbnail 完了後のジョブ再実行: `TestThumbnailWorker_IdempotentRerun`
 - 外せるのはコミット済みの版だけ: `RemoveRecordingEncodedAsset` の 404、`TestRemoveRecordingEncodedAsset_NotFound`
@@ -131,7 +134,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、根拠欄の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 
-事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles`（`internal/db/queries/encode_reconcile.sql`）が `cardinality(encode_profiles) > 0` を要求するからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
+事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
 
 <details><summary>根拠</summary>
 
@@ -312,9 +315,15 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 カット版は、利用者がチャプターを確認するまで作らない。チャプターを直した後も自動では作り直さず、利用者が明示的に要求したときだけ作り直す。CM 検出を有効にした録画では、CM 検出の結果か最終失敗の記録が揃うまで、原本は消さない。
 
-`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に機能する。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
+`cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は関数 `encodable_profile` が持ち、削除側の view は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に機能する。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 
-**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
+**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
+
+要求は、操作時点の量子化済み keep 区間とともに `encoded_asset_rebuild_requests` に記録する。通常の不足補完は、作り直し要求がある profile を候補から外す。active なカット版を置き換えるのは、現在の確認済み keep と一致する要求行があるときだけである。要求の commit 後に投入する `encode_reconcile` は、すぐ実行するためのヒントにすぎない。失われても定期パスが要求を拾う。
+
+チャプターが変わって要求の keep と一致しなくなったら、reconcile は比較交換で、読んだ時点の要求だけを消す。公開時は、要求行の keep と現在の確認済み keep を照合し、一致すれば公開と同じトランザクションで要求を消す。active な版の凍結済み区間が要求の keep と既に一致している場合は、再エンコードせずに要求を消す。作り直しでは、カット版を新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
+
+`keepOriginal: until_encoded` の録画は、作り直し要求が残っている間、原本を削除対象にしない。要求行はカタログに含めない。要求行は、指定プロファイルの作り直しが公開されるか、要求の keep が現在のタイムラインと一致しなくなるか、ユーザーが対象の encoded を外すまで残る。
 
 この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が 0 区間でも検出完了であり、試行表が `failed` なら 3 回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
 

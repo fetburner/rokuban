@@ -246,12 +246,12 @@ metadata:
     rokuban.fetburner.net/queue: encode
 spec:
   pollingInterval: 30
-  # **`encode` キューには 3 種類のジョブが載る。** 実エンコード（`encode`）に
-  # 加えて、`encode_reconcile`（全件のバックストップと録画単位の即時パス）と
-  # `encode_rebuild`（利用者が明示した再エンコード命令）である
-  # （internal/jobs の各 InsertOpts）。
+  # **`encode` キューには 2 種類のジョブが載る。** 実エンコード（`encode`）と
+  # `encode_reconcile`（全件のバックストップと録画単位の即時パス）である
+  # （internal/jobs の各 InsertOpts）。明示的な作り直し要求は DB に保存し、
+  # reconcile が通常の encode を投入する。
   #
-  # **`1` にすると後ろの 2 種類が実エンコードの裏で待たされる。** 1 件消化モード
+  # **`1` にすると reconcile が実エンコードの裏で待たされる。** 1 件消化モード
   # では 1 Job = 1 アイテムなので、数時間のエンコードが走っている間、KEDA は
   # `maxReplicaCount - 実行中 = 0` と数えて新しい Job を起こさない ---
   # ヒントを落とした録画を拾うための経路が、まさにその「時間のかかる

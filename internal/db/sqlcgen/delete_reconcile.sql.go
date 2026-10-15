@@ -624,6 +624,26 @@ func (q *Queries) MarkPurgedRecordings(ctx context.Context, graceCutoff time.Tim
 	return items, nil
 }
 
+const markUntilEncodedOriginalDeleting = `-- name: MarkUntilEncodedOriginalDeleting :execrows
+UPDATE media_assets a SET state = 'deleting', updated_at = now()
+WHERE a.id = $1
+  AND a.state = 'active'
+  AND EXISTS (
+      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+  )
+`
+
+// until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
+// ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
+// 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
+func (q *Queries) MarkUntilEncodedOriginalDeleting(ctx context.Context, assetID int64) (int64, error) {
+	result, err := q.db.Exec(ctx, markUntilEncodedOriginalDeleting, assetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revertMediaAssetToActive = `-- name: RevertMediaAssetToActive :execrows
 UPDATE media_assets a
 SET state = 'active', updated_at = now()

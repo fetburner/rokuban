@@ -9,6 +9,8 @@ import (
 	"context"
 	"encoding/json"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const appendQualityEvents = `-- name: AppendQualityEvents :exec
@@ -351,6 +353,23 @@ func (q *Queries) CreateRecording(ctx context.Context, arg CreateRecordingParams
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const deleteEncodedAssetRebuildRequest = `-- name: DeleteEncodedAssetRebuildRequest :exec
+DELETE FROM encoded_asset_rebuild_requests
+WHERE recording_id = $1
+  AND profile = $2
+`
+
+type DeleteEncodedAssetRebuildRequestParams struct {
+	RecordingID int64
+	Profile     string
+}
+
+// 作り直し前に版を外す。同じ tx でユーザー命令を消す。
+func (q *Queries) DeleteEncodedAssetRebuildRequest(ctx context.Context, arg DeleteEncodedAssetRebuildRequestParams) error {
+	_, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile)
+	return err
 }
 
 const deleteRecordingPlaybackPosition = `-- name: DeleteRecordingPlaybackPosition :execrows
@@ -834,6 +853,32 @@ func (q *Queries) UpdateRecordingStatus(ctx context.Context, arg UpdateRecording
 		arg.EndedAt,
 		arg.ID,
 	)
+	return err
+}
+
+const upsertEncodedAssetRebuildRequest = `-- name: UpsertEncodedAssetRebuildRequest :exec
+INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+VALUES (
+    $1,
+    $2,
+    $3::int8multirange
+)
+ON CONFLICT (recording_id, profile) DO UPDATE SET
+    requested_keep = EXCLUDED.requested_keep,
+    request_generation = nextval('encoded_asset_rebuild_request_generation_seq'),
+    requested_at = now()
+`
+
+type UpsertEncodedAssetRebuildRequestParams struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+}
+
+// Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
+// keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
+func (q *Queries) UpsertEncodedAssetRebuildRequest(ctx context.Context, arg UpsertEncodedAssetRebuildRequestParams) error {
+	_, err := q.db.Exec(ctx, upsertEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile, arg.RequestedKeep)
 	return err
 }
 

@@ -28,7 +28,6 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"reconcile_pass", ReconcilePassArgs{Site: "tokyo"}, "reconcile_pass", ReconcilerQueue, "reconciler_tokyo", 10 * time.Minute, 0, true, 1},
 		{"record_sweep", RecordSweepArgs{Site: "tokyo"}, "record_sweep", RecordSweepQueue, "watcher_tokyo", 10 * time.Minute, 0, true, 1},
 		{"encode", EncodeJobArgs{RecordingID: 1, Profile: "mobile", Timeout: 2 * time.Hour}, "encode", EncodeQueue, "encode", 2 * time.Hour, 26, true, 1},
-		{"encode_rebuild", EncodeRebuildArgs{RecordingID: 1, Profile: "cut"}, "encode_rebuild", EncodeQueue, "encode", time.Minute, 0, true, 1},
 		{"thumbnail", ThumbnailJobArgs{RecordingID: 1}, "thumbnail", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},
 		{"seek_tiles", SeekTilesJobArgs{RecordingID: 1}, "seek_tiles", ThumbnailQueue, "thumbnail", 15 * time.Minute, 0, true, 4},
 		{"thumbnail_reconcile", ThumbnailReconcileArgs{}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},

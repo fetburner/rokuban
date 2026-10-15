@@ -160,39 +160,23 @@ func TestEncodeJobInsertHelpersUseCallerTransaction(t *testing.T) {
 	h := &Server{enqueuer: enqueuer}
 	ctx := context.Background()
 
-	for _, tc := range []struct {
-		name   string
-		kind   string
-		insert func(pgx.Tx) error
-	}{
-		{name: "reconcile", kind: "encode_reconcile", insert: func(tx pgx.Tx) error {
-			return h.insertEncodeReconcile(ctx, tx, 42)
-		}},
-		{name: "rebuild", kind: "encode_rebuild", insert: func(tx pgx.Tx) error {
-			return h.insertEncodeRebuild(ctx, tx, 42, "cut")
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			enqueuer.Reset()
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("beginning transaction: %v", err)
-			}
-			if err := tc.insert(tx); err != nil {
-				_ = tx.Rollback(ctx)
-				t.Fatalf("inserting job: %v", err)
-			}
-			calls := enqueuer.CallsOfKind(tc.kind)
-			if len(calls) != 1 {
-				t.Fatalf("%s enqueue calls = %d, want 1", tc.kind, len(calls))
-			}
-			if !calls[0].Transactional || calls[0].Tx != tx {
-				t.Errorf("%s enqueue call = %#v, want EnqueueTx with caller transaction", tc.kind, calls[0])
-			}
-			if err := tx.Rollback(ctx); err != nil {
-				t.Fatalf("rolling back transaction: %v", err)
-			}
-		})
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning transaction: %v", err)
+	}
+	if err := h.insertEncodeReconcile(ctx, tx, 42); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatalf("inserting job: %v", err)
+	}
+	calls := enqueuer.CallsOfKind("encode_reconcile")
+	if len(calls) != 1 {
+		t.Fatalf("encode_reconcile enqueue calls = %d, want 1", len(calls))
+	}
+	if !calls[0].Transactional || calls[0].Tx != tx {
+		t.Errorf("encode_reconcile enqueue call = %#v, want EnqueueTx with caller transaction", calls[0])
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rolling back transaction: %v", err)
 	}
 }
 
@@ -1023,8 +1007,8 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	}
 }
 
-// Adding another profile leaves an active stale cut complete. Only an explicit
-// encode_rebuild request replaces that asset.
+// TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut は、別のプロファイルを足しても
+// active な古いカット版は完了扱いのままで、明示的な作り直し要求だけがその版を置き換えることを固定する。
 func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

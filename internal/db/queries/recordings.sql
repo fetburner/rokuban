@@ -321,6 +321,26 @@ INSERT INTO encoded_asset_removal_requests (recording_id, profile)
 VALUES (sqlc.arg('recording_id'), sqlc.arg('profile'))
 ON CONFLICT (recording_id, profile) DO NOTHING;
 
+-- Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
+-- keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
+-- name: UpsertEncodedAssetRebuildRequest :exec
+INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+VALUES (
+    sqlc.arg('recording_id'),
+    sqlc.arg('profile'),
+    sqlc.arg('requested_keep')::int8multirange
+)
+ON CONFLICT (recording_id, profile) DO UPDATE SET
+    requested_keep = EXCLUDED.requested_keep,
+    request_generation = nextval('encoded_asset_rebuild_request_generation_seq'),
+    requested_at = now();
+
+-- 作り直し前に版を外す。同じ tx でユーザー命令を消す。
+-- name: DeleteEncodedAssetRebuildRequest :exec
+DELETE FROM encoded_asset_rebuild_requests
+WHERE recording_id = sqlc.arg('recording_id')
+  AND profile = sqlc.arg('profile');
+
 -- 外した後の状態で 0 コピー検査をする。判定は削除 reconcile と同じ名前付き述語
 -- removed_encoded_assets（他の版が残ること）に任せ、ここで条件を複製しない。
 -- name: IsRemovedEncodedAsset :one

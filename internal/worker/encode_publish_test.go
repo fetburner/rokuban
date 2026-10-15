@@ -133,8 +133,12 @@ func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) 
 }
 
 func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64) int32 {
+	return beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "h264")
+}
+
+func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, "h264")
+	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,18 +289,28 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"h264"}, []byte("original payload t3"))
-	attempt := beginEncodeAttemptForPublishTest(t, pool, recordingID)
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"cut"}, []byte("original payload t3"))
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	cutKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(cutKeep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", cutKeep, owned, err)
+	}
+	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 
-	g1, g2, g3 := "20240101/t3_h264.g1.mp4", "20240101/t3_h264.g2.mp4", "20240101/t3_h264.g3.mp4"
+	g1, g2, g3 := "20240101/t3_cut.g1.mp4", "20240101/t3_cut.g2.mp4", "20240101/t3_cut.g3.mp4"
 	abs := func(rel string) string { return filepath.Join(mediaDir, filepath.FromSlash(rel)) }
-	assetID := seedEncodedAsset(t, pool, recordingID, "h264", g1)
-	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 2000}}); err != nil {
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", g1)
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1000}}); err != nil {
 		t.Fatal(err)
 	}
 
-	cut := &cutContext{keep: []chapters.Range{{StartMs: 0, EndMs: 1000}}}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "h264", cut, nil)
+	cut := &cutContext{keep: cutKeep}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -318,7 +332,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	never := make(chan error)
 	go func() {
 		_, published, err := w.publishEncoded(ctx, encodePublishInput{
-			recordingID: recordingID, profile: "h264", attempt: attempt, relPath: g2, finalPath: abs(g2),
+			recordingID: recordingID, profile: "cut", attempt: attempt, relPath: g2, finalPath: abs(g2),
 			scratchOut: scratchOut, observed: observed, cut: cut,
 		})
 		res <- result{published, err}
@@ -367,6 +381,153 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 		t.Errorf("g2 file exists (err=%v), want it never published", err)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(abs(g2)))
+}
+
+func TestEncodeWorker_PublishConsumesMatchingRebuildRequest(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/publish.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/publish_cut.g1.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatal(err)
+	}
+	cut := &cutContext{keep: keep}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	if err != nil || observed.skip {
+		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
+	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
+	scratchOut := filepath.Join(scratchDir, "rebuild.mp4")
+	if err := os.WriteFile(scratchOut, []byte("rebuilt cut"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finalRel := "rebuild/publish_cut.g2.mp4"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(finalRel))
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	if _, published, err := w.publishEncoded(ctx, encodePublishInput{
+		recordingID:  recordingID,
+		profile:      "cut",
+		attempt:      attempt,
+		relPath:      finalRel,
+		finalPath:    finalPath,
+		scratchOut:   scratchOut,
+		observed:     observed,
+		cut:          cut,
+		expectedKeep: keep,
+	}); err != nil || !published {
+		t.Fatalf("publish = %v, err %v; want committed replacement", published, err)
+	}
+	var requests int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, recordingID).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("rebuild requests after publish = %d, want 0", requests)
+	}
+	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     stringPtr("cut"),
+	})
+	if err != nil || asset.ID != assetID || asset.RelPath != finalRel {
+		t.Fatalf("encoded asset after publish = %+v, err %v; want id %d at %s", asset, err, assetID, finalRel)
+	}
+	frozen, err := assetKeepRanges(ctx, sqlcgen.New(pool), assetID)
+	if err != nil || !chapters.SameRanges(frozen, keep) {
+		t.Fatalf("frozen keep after publish = %v, err %v; want %v", frozen, err, keep)
+	}
+	if _, err := os.Stat(finalPath); err != nil {
+		t.Errorf("published output missing: %v", err)
+	}
+}
+
+func TestEncodeWorker_PublishSkipsWhenChaptersChangeAfterRebuildRequest(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/edited-before-publish.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	requestedKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(requestedKeep) == 0 {
+		t.Fatalf("initial currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/edited_cut.g1.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatal(err)
+	}
+	cut := &cutContext{keep: requestedKeep}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	if err != nil || observed.skip {
+		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
+	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
+	if _, err := pool.Exec(ctx, `UPDATE recording_chapter_spans SET span = int8range(500000, 900000) WHERE recording_id = $1`, recordingID); err != nil {
+		t.Fatalf("editing chapters before publish: %v", err)
+	}
+	scratchOut := filepath.Join(scratchDir, "stale-rebuild.mp4")
+	if err := os.WriteFile(scratchOut, []byte("unapproved output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finalRel := "rebuild/edited_cut.g2.mp4"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(finalRel))
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	if _, published, err := w.publishEncoded(ctx, encodePublishInput{
+		recordingID:  recordingID,
+		profile:      "cut",
+		attempt:      attempt,
+		relPath:      finalRel,
+		finalPath:    finalPath,
+		scratchOut:   scratchOut,
+		observed:     observed,
+		cut:          cut,
+		expectedKeep: requestedKeep,
+	}); err != nil || published {
+		t.Fatalf("publish = %v, err %v; want successful stale-plan skip", published, err)
+	}
+	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
+		t.Errorf("unapproved output stat err = %v, want file absent", err)
+	}
+	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     stringPtr("cut"),
+	})
+	if err != nil || asset.ID != assetID || asset.RelPath != "rebuild/edited_cut.g1.mp4" {
+		t.Fatalf("encoded asset after stale publish = %+v, err %v; want previous generation", asset, err)
+	}
+	if !rebuildRequestExists(t, pool, recordingID) {
+		t.Fatal("stale rebuild request is missing; want row retained for reconcile CAS")
+	}
+	reconcileProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
+	reconcile := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{reconcileProfile}}}
+	runEncodeReconcilePass(t, reconcile)
+	if rebuildRequestExists(t, pool, recordingID) {
+		t.Fatal("stale rebuild request after reconcile still exists; want deleted")
+	}
 }
 
 func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
@@ -803,5 +964,73 @@ func TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication(t *test
 	}
 	if state != "active" || size != int64(len(contentB)) {
 		t.Errorf("encoded row after retries = state %q, size %d; want active, %d", state, size, len(contentB))
+	}
+}
+
+// TestEncodeWorker_PublishSkipConsumesSatisfiedRebuildRequest は、観測後に別の公開が
+// 要求の keep を満たす版へ置き換えていたとき、公開 tx が何も公開せず要求行だけを
+// 消して commit することを固定する（エンコード前の skip 経路とは別の、公開 tx 内の経路）。
+func TestEncodeWorker_PublishSkipConsumesSatisfiedRebuildRequest(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/txskip.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/txskip_cut.g1.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatal(err)
+	}
+	cut := &cutContext{keep: keep}
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	if err != nil || observed.skip {
+		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
+	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
+	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'rebuild/txskip_cut.g2.mp4' WHERE id = $1`, assetID); err != nil {
+		t.Fatal(err)
+	}
+	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
+		t.Fatal(err)
+	}
+	scratchOut := filepath.Join(scratchDir, "rebuild.mp4")
+	if err := os.WriteFile(scratchOut, []byte("late"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	finalRel := "rebuild/txskip_cut.g2.mp4"
+	w := newH264Worker(pool, mediaDir, scratchDir, "")
+	if _, published, err := w.publishEncoded(ctx, encodePublishInput{
+		recordingID:  recordingID,
+		profile:      "cut",
+		attempt:      attempt,
+		relPath:      finalRel,
+		finalPath:    filepath.Join(mediaDir, filepath.FromSlash(finalRel)),
+		scratchOut:   scratchOut,
+		observed:     observed,
+		cut:          cut,
+		expectedKeep: keep,
+	}); err != nil || published {
+		t.Fatalf("publish = %v, err %v; want a skip", published, err)
+	}
+	var requests int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, recordingID).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("rebuild requests after satisfied skip = %d, want 0", requests)
 	}
 }

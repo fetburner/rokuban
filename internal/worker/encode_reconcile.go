@@ -2,13 +2,18 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -97,6 +102,10 @@ type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 
+	// beforeDeleteStaleRebuildRequest は、無効な要求の比較交換削除のテストが読み取りと
+	// 削除の間に割り込むためのフック。本番の worker では nil のまま。
+	beforeDeleteStaleRebuildRequest func(context.Context, sqlcgen.ListEncodedAssetRebuildRequestsRow)
+
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
 	//
@@ -171,6 +180,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	// 実行していない（例: パスごとに新しいインスタンスを作った）場合は常に 0 に
 	// 戻り、窓は回らない（EncodeReconcileWorker の doc コメント「窓を回す」参照）。
 	q := sqlcgen.New(w.Pool)
+	rebuildQueued, failed, err := w.reconcileRebuildRequests(ctx, q, targetID)
+	if err != nil {
+		return fmt.Errorf("reconciling encoded asset rebuild requests: %w", err)
+	}
 	missing, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: after,
 		RecordingID:      targetID,
@@ -187,7 +200,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	// 昇順なので、ここで候補録画を一度だけ数える。RowLimit は profile 行数ではなく
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
-	failed := 0
 	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
 		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
@@ -250,15 +262,91 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		w.reportUnsatisfiable(ctx, q, known)
 		w.reportAwaitingReview(ctx, q)
 
-		if len(candidates) > 0 || failed > 0 {
+		if len(candidates) > 0 || rebuildQueued > 0 || failed > 0 {
 			slog.Info("encode_reconcile: pass complete",
-				"candidates", len(candidates), "failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
+				"candidates", len(candidates), "rebuild_requests", rebuildQueued,
+				"failed", failed, "row_limit", rowLimit, "resume_after", resumeAfter)
 		}
-	} else if len(candidates) > 0 || failed > 0 {
+	} else if len(candidates) > 0 || rebuildQueued > 0 || failed > 0 {
 		slog.Info("encode_reconcile: targeted pass complete",
-			"recording_id", recordingID, "candidates", len(candidates), "failed", failed)
+			"recording_id", recordingID, "candidates", len(candidates),
+			"rebuild_requests", rebuildQueued, "failed", failed)
 	}
 	return nil
+}
+
+// reconcileRebuildRequests は永続化済みの cut 再構築要求を検証して encode queue へ戻す。
+func (w *EncodeReconcileWorker) reconcileRebuildRequests(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	targetID *int64,
+) (queued, failed int, err error) {
+	requests, err := q.ListEncodedAssetRebuildRequests(ctx, targetID)
+	if err != nil {
+		return 0, 0, fmt.Errorf("listing encoded asset rebuild requests: %w", err)
+	}
+	for _, request := range requests {
+		requestedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
+		if err != nil {
+			failed++
+			slog.Error("encode_reconcile: decoding requested keep ranges",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
+
+		keep, owned, err := currentCutKeep(ctx, q, request.RecordingID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			owned = false
+		} else if err != nil {
+			failed++
+			slog.Error("encode_reconcile: loading requested cut keep",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
+		profile, configured := w.Profiles.Profile(request.Profile)
+		stale := !owned || len(keep) == 0 || !chapters.SameRanges(requestedKeep, keep)
+		if configured && !profile.Cut {
+			stale = true
+		}
+		if stale {
+			if w.beforeDeleteStaleRebuildRequest != nil {
+				w.beforeDeleteStaleRebuildRequest(ctx, request)
+			}
+			if _, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams(request)); err != nil {
+				failed++
+				slog.Error("encode_reconcile: clearing stale rebuild request",
+					"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			}
+			continue
+		}
+		if !configured {
+			// 設定から外れた profile は EncodeWorker が開始できないので、設定が戻るまで
+			// 要求行を保持する。再び有効になれば次の全件パスが拾う。
+			continue
+		}
+		encodeArgs, err := newEncodeJobArgs(ctx, q, request.RecordingID, request.Profile, w.Profiles)
+		if err != nil {
+			failed++
+			slog.Error("encode_reconcile: building encode args for rebuild request",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
+		encodeArgs.RequestedCutKeep, err = json.Marshal(requestedKeep)
+		if err != nil {
+			failed++
+			slog.Error("encode_reconcile: encoding requested keep ranges",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
+		if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
+			failed++
+			slog.Error("encode_reconcile: failed to enqueue rebuild request",
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+			continue
+		}
+		queued++
+	}
+	return queued, failed, nil
 }
 
 // reportUnsatisfiable は「凍結済みの desired が現在の encode.profiles に無い」
@@ -267,10 +355,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 // パスの本体（投入）とは独立した観測なので、失敗してもパスは成功のまま終える
 // （ここで error を返すと、投入は済んでいるのにジョブが再試行される）。
 func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlcgen.Queries, known []string) {
-	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, sqlcgen.ListUnsatisfiableEncodeProfilesParams{
-		KnownProfiles: known,
-		CutProfiles:   w.Profiles.CutProfileNames(),
-	})
+	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, known)
 	if err != nil {
 		slog.Error("encode_reconcile: listing unsatisfiable encode profiles", "err", err)
 		return

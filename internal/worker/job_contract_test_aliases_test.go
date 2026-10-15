@@ -22,7 +22,6 @@ type ThumbnailJobArgs = jobs.ThumbnailJobArgs
 type SeekTilesJobArgs = jobs.SeekTilesJobArgs
 type ThumbnailReconcileArgs = jobs.ThumbnailReconcileArgs
 type EncodeReconcileArgs = jobs.EncodeReconcileArgs
-type EncodeRebuildArgs = jobs.EncodeRebuildArgs
 type DeleteReconcileArgs = jobs.DeleteReconcileArgs
 type CatalogExportArgs = jobs.CatalogExportArgs
 type StorageSyncArgs = jobs.StorageSyncArgs

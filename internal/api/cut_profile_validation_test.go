@@ -266,7 +266,6 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
 		t.Fatal(err)
 	}
-
 	post := func(profile string) int {
 		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/"+profile+"/reencode", "application/json", nil)
 		if err != nil {
@@ -286,7 +285,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}
 }
 
-func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
+func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
@@ -306,6 +305,16 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
 		t.Fatal(err)
 	}
+	for _, attempt := range []struct {
+		profile string
+		state   string
+	}{{profile: "cut", state: "failed"}, {profile: "h264", state: "running"}} {
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_at, attempt_count)
+			VALUES ($1, $2, $3, now(), 25)`, id, attempt.profile, attempt.state); err != nil {
+			t.Fatalf("seeding %s attempt for %s: %v", attempt.state, attempt.profile, err)
+		}
+	}
 
 	resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
 	if err != nil {
@@ -315,18 +324,38 @@ func TestReencodeRecordingProfile_EnqueuesEncodeRebuild(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
 	}
-	rebuilds := 0
-	for _, call := range enqueuer.CallsOfKind("encode_rebuild") {
-		args, ok := call.Args.(jobs.EncodeRebuildArgs)
-		if !ok {
-			t.Fatalf("encode_rebuild args = %T, want jobs.EncodeRebuildArgs", call.Args)
-		}
-		if args.RecordingID == id && args.Profile == "cut" {
-			rebuilds++
-		}
+	var requestedKeepJSON []byte
+	if err := pool.QueryRow(ctx, `
+		SELECT coalesce(jsonb_agg(jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range)) ORDER BY lower(cut_range)), '[]'::jsonb)
+		FROM encoded_asset_rebuild_requests q
+		CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
+		WHERE q.recording_id = $1 AND q.profile = 'cut'`, id).Scan(&requestedKeepJSON); err != nil {
+		t.Fatalf("loading committed rebuild request: %v", err)
 	}
-	if rebuilds != 1 {
-		t.Errorf("encode_rebuild jobs = %d, want 1", rebuilds)
+	var gotKeep []chapters.Range
+	if err := json.Unmarshal(requestedKeepJSON, &gotKeep); err != nil {
+		t.Fatalf("decoding committed rebuild keep: %v", err)
+	}
+	wantKeep := chapters.KeepRanges(chapters.Derive(true, []chapters.Span{{StartMs: 600000, EndMs: 900000, Label: "CM", Cut: true}}, nil, 1800000))
+	if !chapters.SameRanges(gotKeep, wantKeep) {
+		t.Fatalf("requested keep = %v, want current quantized keep %v", gotKeep, wantKeep)
+	}
+	var failedCutAttempts, runningH264Attempts int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FILTER (WHERE profile = 'cut' AND state = 'failed'),
+		       count(*) FILTER (WHERE profile = 'h264' AND state = 'running')
+		FROM recording_encode_attempts WHERE recording_id = $1`, id).Scan(&failedCutAttempts, &runningH264Attempts); err != nil {
+		t.Fatal(err)
+	}
+	if failedCutAttempts != 0 || runningH264Attempts != 1 {
+		t.Errorf("failed cut attempts = %d and running h264 attempts = %d, want 0 and 1", failedCutAttempts, runningH264Attempts)
+	}
+	reconcileHints := enqueuer.CallsOfKind("encode_reconcile")
+	if len(reconcileHints) != 1 {
+		t.Fatalf("encode_reconcile hints = %d, want 1", len(reconcileHints))
+	}
+	if args, ok := reconcileHints[0].Args.(jobs.EncodeReconcileArgs); !ok || args.RecordingID != id {
+		t.Fatalf("encode_reconcile hint = %#v, want targeted recording %d", reconcileHints[0].Args, id)
 	}
 	encodes := 0
 	for _, call := range enqueuer.CallsOfKind("encode") {
@@ -398,8 +427,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 }
 
 // TestReencodeRecordingProfile_NotDesiredIs409 は desired に無い cut profile の作り直しが
-// 409 で、encode_rebuild を積まないことを固定する（worker は公開直前に捨てるだけなので、
-// 積むと ffmpeg を回した後に黙って無駄になる）。policy 行が無い録画も同じ。
+// 409 で、要求行を残さないことを固定する。policy 行が無い録画も同じ。
 func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -432,18 +460,124 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 		if resp.StatusCode != http.StatusConflict {
 			t.Errorf("%s: status = %d, want 409", name, resp.StatusCode)
 		}
-		n := 0
-		for _, call := range enqueuer.CallsOfKind("encode_rebuild") {
-			args, ok := call.Args.(jobs.EncodeRebuildArgs)
-			if !ok {
-				t.Fatalf("encode_rebuild args = %T, want jobs.EncodeRebuildArgs", call.Args)
-			}
-			if args.RecordingID == id {
-				n++
-			}
+		var requests int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, id).Scan(&requests); err != nil {
+			t.Fatalf("%s: counting rebuild requests: %v", name, err)
 		}
-		if n != 0 {
-			t.Errorf("%s: encode_rebuild jobs = %d, want 0", name, n)
+		if requests != 0 {
+			t.Errorf("%s: rebuild requests = %d, want 0", name, requests)
 		}
+	}
+}
+
+// TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudget は、
+// 試行上限に達した作り直し要求を待機列に数えず（worker が作らないため）、押し直し
+// （API が failed 試行行を消す）の後は数えることを両方向で固定する。
+func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudget(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	for _, sql := range []string{
+		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`,
+		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		 VALUES ($1, 'encoded', 'cut', 'queue-exhausted/cut.mp4', 1000, 'active')`,
+		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,600000),[900000,1800000)}'::int8multirange)`,
+		`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_at, attempt_count)
+		 VALUES ($1, 'cut', 'failed', now(), 25)`,
+	} {
+		if _, err := pool.Exec(ctx, sql, id); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	queued := func() int64 {
+		t.Helper()
+		var got struct {
+			Queued  int64 `json:"queued"`
+			Running int64 `json:"running"`
+		}
+		resp, err := http.Get(srv.URL + "/api/encode-queue")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Queued + got.Running
+	}
+	if got := queued(); got != 0 {
+		t.Fatalf("queue with exhausted rebuild request = %d, want 0", got)
+	}
+	resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
+	}
+	if got := queued(); got != 1 {
+		t.Fatalf("queue after reencode reset the budget = %d, want 1", got)
+	}
+}
+
+// TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted は、原本が active でない録画の
+// 作り直し要求を待機列に数えず、active なら数えることを固定する。
+func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	for _, sql := range []string{
+		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
+		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		 VALUES ($1, 'encoded', 'cut', 'queue-noorig/cut.mp4', 1000, 'active')`,
+		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1800000)}'::int8multirange)`,
+		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`,
+	} {
+		if _, err := pool.Exec(ctx, sql, id); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	queued := func() int64 {
+		t.Helper()
+		var got struct {
+			Queued  int64 `json:"queued"`
+			Running int64 `json:"running"`
+		}
+		resp, err := http.Get(srv.URL + "/api/encode-queue")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Queued + got.Running
+	}
+	if got := queued(); got != 0 {
+		t.Fatalf("queue without active original = %d, want 0", got)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'active' WHERE recording_id = $1 AND kind = 'original'`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := queued(); got != 1 {
+		t.Fatalf("queue with active original = %d, want 1", got)
 	}
 }

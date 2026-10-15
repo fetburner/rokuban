@@ -47,7 +47,7 @@ func (s ChapterSnapshot) DetectionPending(cmDetectEnabled bool) bool {
 //
 // 各メソッドは自身のトランザクションを完了してから返す。Replace と Reset は
 // チャプターの状態を読み書きする前に録画の行をロックするので、同じロックを使う
-// CM 検出の書き込みと直列化する。
+// CM 検出の書き込み、カット版の作り直し要求の記録、カット版の公開と直列化する。
 type ChapterEdits interface {
 	// Read は有効なチャプター層と不透明な版を返す。
 	// 状態と区間は同じスナップショットから読む（一貫したスナップショットを返す）。
