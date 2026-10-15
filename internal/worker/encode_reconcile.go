@@ -355,10 +355,7 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 // パスの本体（投入）とは独立した観測なので、失敗してもパスは成功のまま終える
 // （ここで error を返すと、投入は済んでいるのにジョブが再試行される）。
 func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlcgen.Queries, known []string) {
-	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, sqlcgen.ListUnsatisfiableEncodeProfilesParams{
-		KnownProfiles: known,
-		CutProfiles:   w.Profiles.CutProfileNames(),
-	})
+	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, known)
 	if err != nil {
 		slog.Error("encode_reconcile: listing unsatisfiable encode profiles", "err", err)
 		return

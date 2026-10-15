@@ -39,7 +39,7 @@ WHERE r.deleted_at IS NULL
   );
 
 COMMENT ON VIEW encodable_recordings IS
-    'EncodableRecording は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
+    'encodable_recordings は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。';
 
 -- encodable_profile は「エンコードしてよいプロファイル」のプロファイル単位の述語
 -- である。空文字でなく、現在の設定（known_profiles）にあり、cut_profiles に含まれる
@@ -72,8 +72,35 @@ $$;
 COMMENT ON FUNCTION encodable_profile(bigint, text, text[], text[]) IS
     'encodable_profile は、録画 rec_id のプロファイル profile_name が現在の設定で作れるかを返す。cut プロファイルはチャプター確認済みを要求する。known_profiles に NULL を渡すと NULL を返す。';
 
+-- unencoded_desired_profiles は「凍結済みの desired のうち、active な encoded が
+-- 無い (recording_id, profile)」である。ordinality は encode_profiles 内の位置。
+-- encode の不足の補完（ListMissingEncodeProfiles）・待機列（ListEncodeQueue）・
+-- 満たせないプロファイルの計数（ListUnsatisfiableEncodeProfiles）と、削除側の
+-- until_encoded_deletable_originals（この view に行が無い = desired が揃っている）が引く。
+--
+-- 現在の設定（known_profiles）では絞らない。絞ると、設定からプロファイルを消す
+-- 編集だけで、それを凍結した until_encoded 録画が「揃っている」になり、原本が
+-- 不可逆に消える。設定での絞りは encodable_profile の側に置く。
+CREATE VIEW unencoded_desired_profiles AS
+SELECT p.recording_id,
+       want.profile::text AS profile,
+       want.ordinality::bigint AS ordinality
+FROM recording_encode_policy p
+CROSS JOIN LATERAL unnest(p.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
+WHERE NOT EXISTS (
+    SELECT 1 FROM media_assets e
+    WHERE e.recording_id = p.recording_id
+      AND e.kind = 'encoded'
+      AND e.state = 'active'
+      AND e.profile = want.profile
+);
+
+COMMENT ON VIEW unencoded_desired_profiles IS
+    'unencoded_desired_profiles は、凍結済みの desired のうち active な encoded が無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。';
+
 -- 未充足の作り直し命令がある間は原本を保持する。要求が stale になれば
 -- encode_reconcile が比較交換で要求行を消し、次の削除パスで原本を再判定する。
+-- desired が揃っているかは unencoded_desired_profiles に行が無いことで判定する。
 CREATE OR REPLACE VIEW until_encoded_deletable_originals AS
 SELECT a.id AS asset_id,
        a.recording_id,
@@ -97,16 +124,8 @@ WHERE a.kind = 'original'
       WHERE s.media_asset_id = a.id
   )
   AND NOT EXISTS (
-      SELECT 1
-      FROM unnest(p.encode_profiles) AS want(profile)
-      WHERE NOT EXISTS (
-          SELECT 1
-          FROM media_assets e
-          WHERE e.recording_id = r.id
-            AND e.kind = 'encoded'
-            AND e.state = 'active'
-            AND e.profile = want.profile
-      )
+      SELECT 1 FROM unencoded_desired_profiles u
+      WHERE u.recording_id = r.id
   )
   AND EXISTS (
       SELECT 1 FROM media_assets t
@@ -186,6 +205,7 @@ WHERE a.kind = 'original'
       )
   );
 
+DROP VIEW unencoded_desired_profiles;
 DROP FUNCTION encodable_profile(bigint, text, text[], text[]);
 DROP VIEW encodable_recordings;
 DROP TABLE encoded_asset_rebuild_requests;

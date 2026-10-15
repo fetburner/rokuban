@@ -126,16 +126,8 @@ func (q *Queries) ListCutAwaitingReview(ctx context.Context, cutProfiles []strin
 
 const listEncodeQueue = `-- name: ListEncodeQueue :many
 WITH pending_profiles AS (
-  SELECT p.recording_id, want.profile::text AS profile
-  FROM recording_encode_policy p
-  CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-  WHERE NOT EXISTS (
-    SELECT 1 FROM media_assets e
-    WHERE e.recording_id = p.recording_id
-      AND e.kind = 'encoded'
-      AND e.state = 'active'
-      AND e.profile = want.profile
-  )
+  SELECT u.recording_id, u.profile
+  FROM unencoded_desired_profiles u
 
   UNION
 
@@ -177,7 +169,8 @@ type ListEncodeQueueRow struct {
 }
 
 // ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語は
-// ListMissingEncodeProfiles と同じ encodable_recordings / encodable_profile で、
+// ListMissingEncodeProfiles と同じ unencoded_desired_profiles / encodable_recordings /
+// encodable_profile で、
 // 直書きしない（ファイル冒頭「共有する述語」）。desired の不足と作り直し要求を先に
 // 合わせ、述語は合わせた後に 1 回だけ掛ける。作り直し要求は、active な encoded が
 // 残っていても待機列に入る。再作成要求もユーザーが待っている仕事であり、active な
@@ -265,24 +258,16 @@ func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recording
 const listMissingEncodeProfiles = `-- name: ListMissingEncodeProfiles :many
 
 WITH missing AS (
-  SELECT p.recording_id, want.profile::text AS profile, want.ordinality
-  FROM recording_encode_policy p
-  JOIN encodable_recordings er ON er.recording_id = p.recording_id
-  CROSS JOIN LATERAL unnest(p.encode_profiles) WITH ORDINALITY AS want(profile, ordinality)
-  WHERE p.recording_id > $1::bigint
-    AND ($2::bigint IS NULL OR p.recording_id = $2::bigint)
-    AND encodable_profile(p.recording_id, want.profile, $3::text[], $4::text[])
-    AND NOT EXISTS (
-      SELECT 1 FROM media_assets e
-      WHERE e.recording_id = p.recording_id
-        AND e.kind = 'encoded'
-        AND e.state = 'active'
-        AND e.profile = want.profile
-    )
+  SELECT u.recording_id, u.profile, u.ordinality
+  FROM unencoded_desired_profiles u
+  JOIN encodable_recordings er ON er.recording_id = u.recording_id
+  WHERE u.recording_id > $1::bigint
+    AND ($2::bigint IS NULL OR u.recording_id = $2::bigint)
+    AND encodable_profile(u.recording_id, u.profile, $3::text[], $4::text[])
     AND NOT EXISTS (
       SELECT 1 FROM encoded_asset_rebuild_requests rebuild
-      WHERE rebuild.recording_id = p.recording_id
-        AND rebuild.profile = want.profile
+      WHERE rebuild.recording_id = u.recording_id
+        AND rebuild.profile = u.profile
     )
 ), candidate_recordings AS (
   SELECT DISTINCT recording_id
@@ -319,32 +304,31 @@ type ListMissingEncodeProfilesRow struct {
 //
 // # 共有する述語
 //
-// 「エンコードしてよいか」はスキーマ側の 2 つの名前に置き、ここには直書きしない:
+// 述語はスキーマ側の名前に置き、ここには直書きしない:
 //
+//   - 不足: view `unencoded_desired_profiles`（凍結済みの desired のうち active な
+//     encoded が無い (recording_id, profile)。設定では絞らない）
 //   - 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
 //   - プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
 //     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
 //
 // 不足の補完（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ述語を
 // 持たなければならない。片方にだけ条件を書き足すと、待機列に出るのに投入されない
-// （またはその逆の）録画ができる。条件を足すときは上の 2 つを変える。両経路が同じ
-// (recording_id, profile) の集合に合意することは internal/worker の
-// TestEncodeReconcileAndQueueAgreeOnPendingSet が固定する。
+// （またはその逆の）録画ができる。条件を足すときは上の名前の定義を変える。両経路が
+// 同じ集合に合意することは、設定から引数を組み立てる api の配線も含めて
+// internal/api の TestEncodeReconcileAndQueueAgreeOnPendingSet が固定する。
 //
 // # until_encoded_deletable_originals との関係
 //
-// 「desired が全部揃っているか」は削除側の view `until_encoded_deletable_originals`
-// にもある（あちらは**揃っている**側、ここは**欠けている**側）。これには寄せない。
-// あちらの粒度は「削除してよい原本アセット 1 行」で、`keep_original =
-// 'until_encoded'` やサムネイルなど削除エンジン固有の条件を畳み込んでいる。しかも
-// desired を `known_profiles` で絞らない。設定から消えたプロファイルは永久に揃わない
-// 条件として原本を残す方向（安全側）に効く。ここで絞るのは、投入しても EncodeWorker
-// が弾くだけのゴミになるからである。この非対称は仕様であって揃え忘れではない
-// （docs/storage/retention.md §保持ポリシー。internal/worker の
+// 削除側の view `until_encoded_deletable_originals` も、「desired が揃っている」を
+// unencoded_desired_profiles に行が無いことで判定する。設定での絞り（known_profiles）
+// は encodable_profile にだけ置き、unencoded_desired_profiles には足さない。足すと、
+// 設定からプロファイルを消す編集だけで、それを凍結した until_encoded 録画の原本が
+// 不可逆に消える（docs/storage/retention.md §保持ポリシー。internal/worker の
 // TestUnknownDesiredProfile_PredicateAsymmetry が両側から固定する）。
 // ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
-// desired のうち、エンコードしてよいプロファイル（encodable_profile）で、active な
-// encoded が無く、作り直し要求も無い」(recording_id, profile) を返す。作り直し要求は
+// 不足（unencoded_desired_profiles）のうち、エンコードしてよいプロファイル
+// （encodable_profile）で、作り直し要求も無い」(recording_id, profile) を返す。作り直し要求は
 // 固定 keep を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
 // recording_id が after_recording_id より大きい録画を recording_id 昇順で
 // row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
@@ -352,8 +336,8 @@ type ListMissingEncodeProfilesRow struct {
 //
 // 条件の意味:
 //   - recording_encode_policy に行がある = エンコードポリシーが凍結済み
-//     （行が無い = 未凍結。不変条件 10。JOIN で自然に落ちる）。desired が空なら
-//     unnest が行を作らないので候補にならない
+//     （行が無い = 未凍結。不変条件 10。unencoded_desired_profiles に行が出ない）。
+//     desired が空なら不足の行も無いので候補にならない
 //   - encodable_recordings = ごみ箱でなく、原本 media_assets が active（ingest
 //     コミット済みで、until_encoded で物理削除されていない）。対象録画を絞った
 //     即時パスもこのクエリを使うため、全件パスとごみ箱の扱いがずれない
@@ -365,7 +349,7 @@ type ListMissingEncodeProfilesRow struct {
 //     原本がごみ箱を経由せずに消えて取り返せなくなる。確認 UI は cut でない
 //     プロファイルの encoded で再生するので、原本 TS をブラウザで再生できないという
 //     循環もここで断つ
-//   - p.recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
+//   - recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
 //     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
 //     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
 //     「前回止まった位置の続きから」開くことで、候補が一度も減らない最悪条件
@@ -410,33 +394,13 @@ func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissing
 }
 
 const listUnsatisfiableEncodeProfiles = `-- name: ListUnsatisfiableEncodeProfiles :many
-SELECT want.profile::text AS profile, count(*)::bigint AS recordings
-FROM recording_encode_policy p
-JOIN encodable_recordings er ON er.recording_id = p.recording_id
-CROSS JOIN LATERAL unnest(p.encode_profiles) AS want(profile)
-WHERE NOT (want.profile = ANY($1::text[]))
-  AND (
-    NOT (want.profile = ANY($2::text[]))
-    OR EXISTS (
-      SELECT 1 FROM recording_chapter_ownership o
-      WHERE o.recording_id = p.recording_id
-    )
-  )
-  AND NOT EXISTS (
-    SELECT 1 FROM media_assets e
-    WHERE e.recording_id = p.recording_id
-      AND e.kind = 'encoded'
-      AND e.state = 'active'
-      AND e.profile = want.profile
-  )
-GROUP BY want.profile
-ORDER BY want.profile
+SELECT u.profile, count(*)::bigint AS recordings
+FROM unencoded_desired_profiles u
+JOIN encodable_recordings er ON er.recording_id = u.recording_id
+WHERE NOT (u.profile = ANY($1::text[]))
+GROUP BY u.profile
+ORDER BY u.profile
 `
-
-type ListUnsatisfiableEncodeProfilesParams struct {
-	KnownProfiles []string
-	CutProfiles   []string
-}
 
 type ListUnsatisfiableEncodeProfilesRow struct {
 	Profile    string
@@ -461,10 +425,11 @@ type ListUnsatisfiableEncodeProfilesRow struct {
 // 永久に「揃っていない」ため、原本が回収されない
 // （docs/storage/retention.md §保持ポリシー）。
 //
-// `want.profile::text` の明示キャストは必須（sqlc は unnest 由来の列型を
-// 推論できず interface{} で生成する。CLAUDE.md「sqlc は式の型を推論しきれない」）。
-func (q *Queries) ListUnsatisfiableEncodeProfiles(ctx context.Context, arg ListUnsatisfiableEncodeProfilesParams) ([]ListUnsatisfiableEncodeProfilesRow, error) {
-	rows, err := q.db.Query(ctx, listUnsatisfiableEncodeProfiles, arg.KnownProfiles, arg.CutProfiles)
+// cut の確認条件は持たない。cut_profiles は known_profiles と同じ設定
+// （config.EncodeConfig.CutProfileNames は ProfileNames と同じ Profiles から cut: true を
+// 選ぶ）から作る部分集合なので、known_profiles に無いプロファイルは cut でもない。
+func (q *Queries) ListUnsatisfiableEncodeProfiles(ctx context.Context, knownProfiles []string) ([]ListUnsatisfiableEncodeProfilesRow, error) {
+	rows, err := q.db.Query(ctx, listUnsatisfiableEncodeProfiles, knownProfiles)
 	if err != nil {
 		return nil, err
 	}

@@ -95,7 +95,7 @@ type DropStat struct {
 	PidType      *string
 }
 
-// EncodableRecording は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
+// encodable_recordings は、ごみ箱になく原本が active な録画を表す。encode の不足の補完・待機列・作り直し要求の列挙が共有する。
 type EncodableRecording struct {
 	RecordingID int64
 }
@@ -494,6 +494,13 @@ type TunerSync struct {
 	IsAvailable bool
 	IsFault     bool
 	ObservedAt  time.Time
+}
+
+// unencoded_desired_profiles は、凍結済みの desired のうち active な encoded が無い (recording_id, profile) を表す。現在の設定では絞らない。encode の不足の補完・待機列と、until_encoded の削除判定が共有する。
+type UnencodedDesiredProfile struct {
+	RecordingID int64
+	Profile     string
+	Ordinality  int64
 }
 
 type UntilEncodedDeletableOriginal struct {
