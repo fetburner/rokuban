@@ -21,7 +21,7 @@ const (
 )
 
 // errEncodeAttemptLimit は jobq.ErrDiscard に包んで返す、ドメイン上限到達の理由。
-var errEncodeAttemptLimit = fmt.Errorf("encode attempt limit (%d) reached; fix the cause and re-request with POST /api/recordings/{id}/encode-profiles", encodeAttemptLimit)
+var errEncodeAttemptLimit = fmt.Errorf("encode attempt limit (%d) reached; fix the cause and re-request with POST /api/recordings/{id}/encode-profiles or cut /reencode", encodeAttemptLimit)
 
 type encodeAttemptStart struct {
 	count int32

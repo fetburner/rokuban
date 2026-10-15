@@ -861,6 +861,12 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 	}); err != nil {
 		return nil, fmt.Errorf("removing encode profile %q from recording %d: %w", req.Profile, req.Id, err)
 	}
+	if err := q.DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
+		RecordingID: req.Id,
+		Profile:     req.Profile,
+	}); err != nil {
+		return nil, fmt.Errorf("clearing rebuild request for recording %d encoded %q: %w", req.Id, req.Profile, err)
+	}
 	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{
 		RecordingID: req.Id,
 		Profile:     req.Profile,
@@ -889,9 +895,9 @@ func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveReco
 // ユーザーが確認していない区間が黙って本編から消える。api は「今のタイムラインは
 // 凍結した区間と違う」ことを導出して見せるだけで、作り直しはユーザーの操作で行う。
 //
-// 投入は encode_rebuild ジョブ経由で指定 profile の encode を直接依頼する。
-// 通常の reconcile は active な encoded を完了として扱うため、既存の cut 版を
-// 作り直す命令は別種のジョブとして記録する。
+// keep 区間を衛星表に記録してから commit し、encode_reconcile をヒントとして投入する。
+// 通常の reconcile は active な encoded を完了として扱うため、明示要求は DB 行で
+// 区別し、ジョブが失われても定期パスが拾えるようにする。
 //
 // 原本が active でないなら 409（カット版は原本から作り直すしかない）。
 func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecordingProfileRequestObject) (ReencodeRecordingProfileResponseObject, error) {
@@ -913,6 +919,14 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	q := sqlcgen.New(tx)
+	// チャプター編集も recordings 行を先にロックする。操作時点の keep を一貫して
+	// 記録できるよう、同じ行で直列化する。
+	if _, err := q.LockRecording(ctx, req.Id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
+		}
+		return nil, fmt.Errorf("locking recording %d: %w", req.Id, err)
+	}
 	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
@@ -948,9 +962,9 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if len(keep) == 0 {
 		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
 	}
-	// desired に無い profile は worker が公開直前の判定 (c) で捨てる（encode_rebuild の
-	// worker は判定を持たない）。ffmpeg を回した後に黙って捨てるより、同じ tx で desired を
-	// 読んでここで 409 にする。行が無い（未凍結）録画は desired が空として扱う。
+	// desired に無い profile は worker が公開直前の判定 (c) で捨てる。
+	// ffmpeg を回した後に黙って捨てるより、同じ tx で desired を読んでここで 409 にする。
+	// 行が無い（未凍結）録画は desired が空として扱う。
 	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, req.Id)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("loading desired encode profiles for recording %d: %w", req.Id, err)
@@ -958,14 +972,29 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if !slices.Contains(desired, req.Profile) {
 		return ReencodeRecordingProfile409JSONResponse{Error: fmt.Sprintf("profile %q is not in the desired encode profiles of this recording; nothing to encode", req.Profile)}, nil
 	}
-	// 再エンコード要求は不足分から導出できない利用者の命令なので、通常の
-	// reconcile とは別のジョブ種別で記録する。
-	if err := h.insertEncodeRebuild(ctx, tx, req.Id, req.Profile); err != nil {
-		return nil, err
+	// 明示的な再要求で失敗済みの試行予算を戻す。running は別の実行の fencing
+	// token なので消さず、同じトランザクションで request を保存する。
+	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+		RecordingID: req.Id,
+		Profiles:    []string{req.Profile},
+	}); err != nil {
+		return nil, fmt.Errorf("resetting failed encode attempt for recording %d profile %q: %w", req.Id, req.Profile, err)
+	}
+	requestedKeep, err := json.Marshal(keep)
+	if err != nil {
+		return nil, fmt.Errorf("encoding requested keep ranges for recording %d: %w", req.Id, err)
+	}
+	if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+		RecordingID:   req.Id,
+		Profile:       req.Profile,
+		RequestedKeep: requestedKeep,
+	}); err != nil {
+		return nil, fmt.Errorf("recording rebuild request for recording %d profile %q: %w", req.Id, req.Profile, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("committing rebuild request for recording %d profile %q: %w", req.Id, req.Profile, err)
 	}
+	h.enqueueEncodeReconcileHint(ctx, req.Id)
 	return ReencodeRecordingProfile204Response{}, nil
 }
 
@@ -1079,16 +1108,16 @@ func (h *Server) insertEncodeReconcile(ctx context.Context, tx pgx.Tx, recording
 	return nil
 }
 
-// insertEncodeRebuild は利用者が明示した再エンコード命令を同じトランザクションで
-// River に記録する。判定を持たないため encode_reconcile へは載せない。
-func (h *Server) insertEncodeRebuild(ctx context.Context, tx pgx.Tx, recordingID int64, profile string) error {
+// enqueueEncodeReconcileHint は DB commit 後に対象録画の reconcile を best effort で
+// 投入する。命令の真実は DB 行なので、失敗しても定期パスが拾い直す。
+func (h *Server) enqueueEncodeReconcileHint(ctx context.Context, recordingID int64) {
 	if h.enqueuer == nil {
-		return nil
+		return
 	}
-	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.EncodeRebuildArgs{RecordingID: recordingID, Profile: profile}); err != nil {
-		return fmt.Errorf("enqueuing encode_rebuild for recording %d profile %q: %w", recordingID, profile, err)
+	if _, err := h.enqueuer.Enqueue(ctx, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
+		slog.ErrorContext(ctx, "api: failed to enqueue encode reconcile hint for rebuild request",
+			"recording_id", recordingID, "err", err)
 	}
-	return nil
 }
 
 // ListRecordingDropStats は録画の PID 別ドロップ統計を返す。

@@ -95,6 +95,14 @@ type DropStat struct {
 	PidType      *string
 }
 
+// 利用者が明示したカット版の再作成要求。requested_keep は操作時点の量子化済み区間。catalog には含めない。
+type EncodedAssetRebuildRequest struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	RequestedAt   time.Time
+}
+
 type EncodedAssetRemovalRequest struct {
 	RecordingID int64
 	Profile     string

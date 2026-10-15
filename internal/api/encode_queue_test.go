@@ -84,8 +84,13 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	mk("未確認 cut", "cut")
 	co := mk("確認済み cut", "cut")
 	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, co)
+	rebuild := mk("明示的な作り直し", "cut")
+	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, rebuild)
+	seedEncodedAsset(t, pool, rebuild, "cut", 1000)
+	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuild)
 
-	return []string{"待機と実行", "削除中の encoded", "失敗 count 0", "失敗 count 24", "確認済み cut"},
+	return []string{"待機と実行", "削除中の encoded", "失敗 count 0", "失敗 count 24", "確認済み cut", "明示的な作り直し"},
 		[]string{"待機と実行"}
 }
 
@@ -113,8 +118,8 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
 	}
-	if got.Queued != 5 || got.Running != 1 {
-		t.Errorf("encode queue summary = queued %d, running %d; want queued 5, running 1", got.Queued, got.Running)
+	if got.Queued != 6 || got.Running != 1 {
+		t.Errorf("encode queue summary = queued %d, running %d; want queued 6, running 1", got.Queued, got.Running)
 	}
 	if got.Queued != int64(len(queuedTitles)) || got.Running != int64(len(runningTitles)) {
 		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
@@ -130,9 +135,9 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
 	const exhausted = 1
-	if got.Queued+got.Running != int64(len(missing)-exhausted) {
-		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows and %d exhausted; want %d",
-			got.Queued+got.Running, len(missing), exhausted, len(missing)-exhausted)
+	if got.Queued+got.Running != int64(len(missing)-exhausted+1) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows, %d exhausted, and one explicit rebuild; want %d",
+			got.Queued+got.Running, len(missing), exhausted, len(missing)-exhausted+1)
 	}
 }
 

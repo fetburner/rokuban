@@ -314,7 +314,11 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 `cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は encode reconcile の候補 query `ListMissingEncodeProfiles` が持ち、view は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。確認していない録画は desired が満たされないので、view の腕が原状を残す方向に自然に効く。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 
-**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。再エンコード要求は不足分から導けない利用者の命令なので `encode_reconcile` に含めず、指定プロファイルの `encode_rebuild` として記録する。この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
+**チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。要求は操作時点の量子化済み keep 区間とともに `encoded_asset_rebuild_requests` に記録する。commit 後の `encode_reconcile` は即時実行のヒントにすぎず、失われても定期パスが要求を拾う。
+
+チャプターが変わって要求の keep と一致しなくなれば、reconcile は古い値だけを比較交換で消す。公開時は要求行の keep と現在の確認済み keep を照合し、同じトランザクションで要求を消す。既存の凍結済み区間が一致する場合も、再エンコードせず要求を消す。この操作は新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。
+
+`keepOriginal: until_encoded` は未処理要求がある間、原本を削除対象にしない。要求行はカタログ対象ではなく、指定プロファイルの再作成が公開されるか、要求が stale になるか、対象 encoded を利用者が外すまで保持する。
 
 この view は `recording_encode_policy.cm_detect` が true の録画について、CM 検出結果または最終失敗の記録も要求する。結果表の行が存在すれば CM が 0 区間でも検出完了であり、試行表が `failed` なら 3 回の自動試行を終えたことを示す。`running` / `retrying` は削除を許可しない。`failed` になると view は削除を許すので、その後に同じ局のロゴが新しく学習されて再検出が desired に戻っても、原本が既に削除されていれば再検出はできない。
 

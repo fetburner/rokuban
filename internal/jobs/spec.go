@@ -190,12 +190,6 @@ func (a EncodeReconcileArgs) Spec() jobq.Spec {
 	return spec(EncodeQueue, fixedTimeout(encodeReconcileJobTimeout), 0, true, 1)
 }
 
-// Spec は利用者が要求した encode rebuild の論理キュー、1 分締切、
-// 合流ヒントを返す。
-func (a EncodeRebuildArgs) Spec() jobq.Spec {
-	return spec(EncodeQueue, fixedTimeout(defaultJobTimeout), 0, true, 1)
-}
-
 // Spec は delete reconcile の論理キュー、10 分締切、合流ヒントを返す。
 func (a DeleteReconcileArgs) Spec() jobq.Spec {
 	return spec(CleanupQueue, fixedTimeout(deleteReconcileJobTimeout), 0, true, 1)

@@ -152,10 +152,10 @@ WHERE want.profile <> ''
 GROUP BY c.recording_id, want.profile
 ORDER BY c.recording_id, min(want.ordinality);
 
--- ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語
--- （CTE missing_profiles）は ListMissingEncodeProfiles と同じ: そのクエリと同じ
--- ファイルに置き、設定から渡す known/cut profile を含む条件の変更を隣で確認できる
--- ようにする。row_limit や after_recording_id は適用しない。
+-- ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。
+-- desired の不足だけでなく、active な encoded が残っていても明示要求の行がある
+-- プロファイルを含める。再作成要求もユーザーが待っている仕事であり、active な
+-- asset の存在だけでは完了を意味しない。row_limit や after_recording_id は適用しない。
 --
 -- 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 -- ある印（行は queued と running の分割になる）。active な encoded が既にある、
@@ -193,6 +193,29 @@ WITH missing_profiles AS (
         AND e.state = 'active'
         AND e.profile = want.profile
     )
+), pending_profiles AS (
+  SELECT recording_id, profile, false AS rebuild_requested
+  FROM missing_profiles
+
+  UNION ALL
+
+  SELECT q.recording_id, q.profile, true AS rebuild_requested
+  FROM encoded_asset_rebuild_requests q
+  JOIN recordings r ON r.id = q.recording_id
+  WHERE r.deleted_at IS NULL
+    AND q.profile <> ''
+    AND q.profile = ANY(sqlc.arg('known_profiles')::text[])
+    AND (
+      NOT (q.profile = ANY(sqlc.arg('cut_profiles')::text[]))
+      OR EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o
+        WHERE o.recording_id = q.recording_id
+      )
+    )
+), merged_profiles AS (
+  SELECT recording_id, profile, bool_or(rebuild_requested) AS rebuild_requested
+  FROM pending_profiles
+  GROUP BY recording_id, profile
 )
 SELECT
   m.recording_id,
@@ -203,8 +226,8 @@ SELECT
       AND a.profile = m.profile
       AND a.state = 'running'
   )::boolean AS running
-FROM missing_profiles m
-WHERE NOT EXISTS (
+FROM merged_profiles m
+WHERE m.rebuild_requested OR NOT EXISTS (
   SELECT 1 FROM recording_encode_attempts a
   WHERE a.recording_id = m.recording_id
     AND a.profile = m.profile
@@ -212,6 +235,82 @@ WHERE NOT EXISTS (
     AND GREATEST(a.attempt_count, 1) >= sqlc.arg('attempt_limit')::int
 )
 ORDER BY m.recording_id, m.profile;
+
+-- 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
+-- 同じ recording/profile を新しい要求で upsert しても、呼び出し側が読んだ古い値は
+-- DeleteEncodedAssetRebuildRequestIfKeep の WHERE で比較交換する。
+-- name: ListEncodedAssetRebuildRequests :many
+SELECT q.recording_id,
+       q.profile,
+       jsonb_agg(
+           jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+           ORDER BY lower(cut_range)
+       )::jsonb AS requested_keep
+FROM encoded_asset_rebuild_requests q
+CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
+WHERE sqlc.narg('recording_id')::bigint IS NULL
+   OR q.recording_id = sqlc.narg('recording_id')::bigint
+GROUP BY q.recording_id, q.profile, q.requested_keep
+ORDER BY q.recording_id, q.profile;
+
+-- EncodeWorker が要求に由来する encode job を開始する前に、要求がまだ存在し、
+-- 同じ keep を指していることを確かめる。編集で要求を消した後の古い job が、
+-- 現在の（ユーザーが確認していない）タイムラインで再作成するのを防ぐ。
+-- name: GetEncodedAssetRebuildRequest :one
+WITH request AS (
+    SELECT q.requested_keep
+    FROM encoded_asset_rebuild_requests q
+    WHERE q.recording_id = sqlc.arg('recording_id')
+      AND q.profile = sqlc.arg('profile')
+)
+SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE(
+           (
+               SELECT jsonb_agg(
+                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+                   ORDER BY lower(cut_range)
+               )
+               FROM request r
+               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
+           ),
+           '[]'::jsonb
+       )::jsonb AS requested_keep;
+
+-- 公開 tx では要求行をロックしてから現在の keep と照合し、公開と同じ tx で消す。
+-- name: GetEncodedAssetRebuildRequestForUpdate :one
+WITH request AS (
+    SELECT q.requested_keep
+    FROM encoded_asset_rebuild_requests q
+    WHERE q.recording_id = sqlc.arg('recording_id')
+      AND q.profile = sqlc.arg('profile')
+    FOR UPDATE
+)
+SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE(
+           (
+               SELECT jsonb_agg(
+                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+                   ORDER BY lower(cut_range)
+               )
+               FROM request r
+               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
+           ),
+           '[]'::jsonb
+       )::jsonb AS requested_keep;
+
+-- stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
+-- されても、その行は消さない。
+-- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
+DELETE FROM encoded_asset_rebuild_requests q
+WHERE q.recording_id = sqlc.arg('recording_id')
+  AND q.profile = sqlc.arg('profile')
+  AND q.requested_keep = (
+      SELECT range_agg(int8range(
+          (item.range ->> 'startMs')::bigint,
+          (item.range ->> 'endMs')::bigint
+      ))
+      FROM jsonb_array_elements(sqlc.arg('requested_keep')::jsonb) AS item(range)
+  )::int8multirange;
 
 -- ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
 -- 確認していない」録画数をプロファイル名別に返す（メトリクス

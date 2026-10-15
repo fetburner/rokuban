@@ -896,6 +896,38 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	originalRelPath := "orig/pending-rebuild.m2ts"
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
+	profile := "cut"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/pending-rebuild.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/pending-rebuild.jpg", []byte("thumbnail"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/pending-rebuild-tiles.jpg")
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+
+	assertUntilEncodedQualifies(t, pool, originalID, true)
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
+		t.Fatalf("seeding pending rebuild request: %v", err)
+	}
+	assertUntilEncodedQualifies(t, pool, originalID, false)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, originalID); got != "active" {
+		t.Fatalf("original state with pending cut rebuild = %q, want active", got)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
+		t.Errorf("original file with pending rebuild request: %v", err)
+	}
+}
+
 func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()

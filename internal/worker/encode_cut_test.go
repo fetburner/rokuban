@@ -447,7 +447,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		t.Fatalf("setFrozenCuts: %v", err)
 	}
 
-	job := newEncodeJob(recordingID, "cut")
+	job := newCutEncodeJob(recordingID)
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	// 2 回目は冪等にスキップする（凍結区間が一致しているので作り直さない）。
-	if err := runWorkerViaJobQFake(ctx, w, newEncodeJob(recordingID, "cut")); err != nil {
+	if err := runWorkerViaJobQFake(ctx, w, newCutEncodeJob(recordingID)); err != nil {
 		t.Fatalf("second Work: %v", err)
 	}
 	again, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
@@ -520,9 +520,143 @@ func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapt
 	return replaceMediaAssetCuts(context.Background(), sqlcgen.New(pool), assetID, ranges)
 }
 
-// newEncodeJob は EncodeWorker.Work に渡す最小のジョブを組み立てる。
-func newEncodeJob(recordingID int64, profile string) jobs.EncodeJobArgs {
-	return jobs.EncodeJobArgs{RecordingID: recordingID, Profile: profile}
+func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingID int64, keep []chapters.Range) json.RawMessage {
+	t.Helper()
+	requestedKeep, err := json.Marshal(keep)
+	if err != nil {
+		t.Fatalf("encoding rebuild keep ranges: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+		RecordingID:   recordingID,
+		Profile:       "cut",
+		RequestedKeep: requestedKeep,
+	}); err != nil {
+		t.Fatalf("seeding encoded asset rebuild request: %v", err)
+	}
+	return requestedKeep
+}
+
+func TestEncodeWorker_ClearsSatisfiedRebuildRequestWithoutRunningFFmpeg(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/noop.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/noop_cut.mp4")
+	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
+		t.Fatalf("freezing current keep ranges: %v", err)
+	}
+	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
+	profile := cutFFmpegProfile()
+	w := &EncodeWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
+		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
+	}
+	job := newCutEncodeJob(recordingID)
+	job.RequestedCutKeep = requestedKeep
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	var requests int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, recordingID).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 0 {
+		t.Fatalf("satisfied rebuild requests = %d, want 0", requests)
+	}
+	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     stringPtr("cut"),
+	})
+	if err != nil || asset.ID != assetID {
+		t.Fatalf("encoded asset after no-op = %+v, err %v; want existing asset %d", asset, err, assetID)
+	}
+}
+
+func TestEncodeWorker_SkipsObsoleteRequestedKeepAfterChapterEdit(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
+		t.Fatal(err)
+	}
+	requestedKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || len(requestedKeep) == 0 {
+		t.Fatalf("initial currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
+	}
+	requestJSON := seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
+	if _, err := pool.Exec(ctx, `UPDATE recording_chapter_spans SET span = int8range(500000, 900000) WHERE recording_id = $1`, recordingID); err != nil {
+		t.Fatalf("editing chapters after request: %v", err)
+	}
+	currentKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
+		t.Fatalf("edited currentCutKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/edited_cut.mp4")
+	if err := setFrozenCuts(t, pool, assetID, currentKeep); err != nil {
+		t.Fatal(err)
+	}
+	profile := cutFFmpegProfile()
+	w := &EncodeWorker{
+		Pool:       pool,
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
+		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
+	}
+	job := newCutEncodeJob(recordingID)
+	job.RequestedCutKeep = requestJSON
+	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
+		t.Fatalf("Work: %v", err)
+	}
+	request, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
+		RecordingID: recordingID,
+		Profile:     "cut",
+	})
+	if err != nil || !request.RequestExists {
+		t.Fatalf("obsolete request before reconcile exists=%v err=%v; want row retained for CAS cleanup", request.RequestExists, err)
+	}
+	reconcile := &EncodeReconcileWorker{
+		Pool:     pool,
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
+	}
+	runEncodeReconcilePass(t, reconcile)
+	request, err = sqlcgen.New(pool).GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
+		RecordingID: recordingID,
+		Profile:     "cut",
+	})
+	if err != nil || request.RequestExists {
+		t.Fatalf("obsolete request after reconcile exists=%v err=%v; want deleted", request.RequestExists, err)
+	}
+}
+
+// newCutEncodeJob は EncodeWorker.Work に渡す cut プロファイルの最小ジョブを組み立てる。
+func newCutEncodeJob(recordingID int64) jobs.EncodeJobArgs {
+	return jobs.EncodeJobArgs{RecordingID: recordingID, Profile: "cut"}
 }
 
 // TestEncodeReconcile_CutProfilesWaitForReview は受け入れの「所有していない

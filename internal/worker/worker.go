@@ -177,7 +177,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Profiles:   deps.Encode,
 		Webhook:    deps.Webhook,
 	})
-	riveradapter.Register(workers, &EncodeRebuildWorker{Enqueuer: deps.Enqueuer, Pool: deps.Pool, Profiles: deps.Encode})
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Pool:     deps.Pool,

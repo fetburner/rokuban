@@ -210,14 +210,6 @@ func TestLabelRuleReconcileWorker_TimeoutUsesSpec(t *testing.T) {
 	}
 }
 
-func TestEncodeRebuildWorker_TimeoutUsesSpec(t *testing.T) {
-	args := jobs.EncodeRebuildArgs{}
-	got := args.Spec().Timeout(args)
-	if got != time.Minute {
-		t.Errorf("Timeout() = %v, want Spec timeout 1m", got)
-	}
-}
-
 // ruler_pass ジョブが投入され、実際に実行されて予約が作られること
 // （ロジック自体は internal/ruler でテスト済みなので、ここでは「ジョブとして
 // 呼ばれると本当に動く」という配線だけを確認する）。

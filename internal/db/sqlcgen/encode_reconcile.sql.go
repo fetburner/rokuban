@@ -7,7 +7,118 @@ package sqlcgen
 
 import (
 	"context"
+	"encoding/json"
 )
+
+const deleteEncodedAssetRebuildRequestIfKeep = `-- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
+DELETE FROM encoded_asset_rebuild_requests q
+WHERE q.recording_id = $1
+  AND q.profile = $2
+  AND q.requested_keep = (
+      SELECT range_agg(int8range(
+          (item.range ->> 'startMs')::bigint,
+          (item.range ->> 'endMs')::bigint
+      ))
+      FROM jsonb_array_elements($3::jsonb) AS item(range)
+  )::int8multirange
+`
+
+type DeleteEncodedAssetRebuildRequestIfKeepParams struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep json.RawMessage
+}
+
+// stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
+// されても、その行は消さない。
+func (q *Queries) DeleteEncodedAssetRebuildRequestIfKeep(ctx context.Context, arg DeleteEncodedAssetRebuildRequestIfKeepParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequestIfKeep, arg.RecordingID, arg.Profile, arg.RequestedKeep)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getEncodedAssetRebuildRequest = `-- name: GetEncodedAssetRebuildRequest :one
+WITH request AS (
+    SELECT q.requested_keep
+    FROM encoded_asset_rebuild_requests q
+    WHERE q.recording_id = $1
+      AND q.profile = $2
+)
+SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE(
+           (
+               SELECT jsonb_agg(
+                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+                   ORDER BY lower(cut_range)
+               )
+               FROM request r
+               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
+           ),
+           '[]'::jsonb
+       )::jsonb AS requested_keep
+`
+
+type GetEncodedAssetRebuildRequestParams struct {
+	RecordingID int64
+	Profile     string
+}
+
+type GetEncodedAssetRebuildRequestRow struct {
+	RequestExists bool
+	RequestedKeep json.RawMessage
+}
+
+// EncodeWorker が要求に由来する encode job を開始する前に、要求がまだ存在し、
+// 同じ keep を指していることを確かめる。編集で要求を消した後の古い job が、
+// 現在の（ユーザーが確認していない）タイムラインで再作成するのを防ぐ。
+func (q *Queries) GetEncodedAssetRebuildRequest(ctx context.Context, arg GetEncodedAssetRebuildRequestParams) (GetEncodedAssetRebuildRequestRow, error) {
+	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile)
+	var i GetEncodedAssetRebuildRequestRow
+	err := row.Scan(&i.RequestExists, &i.RequestedKeep)
+	return i, err
+}
+
+const getEncodedAssetRebuildRequestForUpdate = `-- name: GetEncodedAssetRebuildRequestForUpdate :one
+WITH request AS (
+    SELECT q.requested_keep
+    FROM encoded_asset_rebuild_requests q
+    WHERE q.recording_id = $1
+      AND q.profile = $2
+    FOR UPDATE
+)
+SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE(
+           (
+               SELECT jsonb_agg(
+                   jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+                   ORDER BY lower(cut_range)
+               )
+               FROM request r
+               CROSS JOIN LATERAL unnest(r.requested_keep) AS ranges(cut_range)
+           ),
+           '[]'::jsonb
+       )::jsonb AS requested_keep
+`
+
+type GetEncodedAssetRebuildRequestForUpdateParams struct {
+	RecordingID int64
+	Profile     string
+}
+
+type GetEncodedAssetRebuildRequestForUpdateRow struct {
+	RequestExists bool
+	RequestedKeep json.RawMessage
+}
+
+// 公開 tx では要求行をロックしてから現在の keep と照合し、公開と同じ tx で消す。
+func (q *Queries) GetEncodedAssetRebuildRequestForUpdate(ctx context.Context, arg GetEncodedAssetRebuildRequestForUpdateParams) (GetEncodedAssetRebuildRequestForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequestForUpdate, arg.RecordingID, arg.Profile)
+	var i GetEncodedAssetRebuildRequestForUpdateRow
+	err := row.Scan(&i.RequestExists, &i.RequestedKeep)
+	return i, err
+}
 
 const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
 SELECT want.profile::text AS profile, count(*)::bigint AS recordings
@@ -96,6 +207,29 @@ WITH missing_profiles AS (
         AND e.state = 'active'
         AND e.profile = want.profile
     )
+), pending_profiles AS (
+  SELECT recording_id, profile, false AS rebuild_requested
+  FROM missing_profiles
+
+  UNION ALL
+
+  SELECT q.recording_id, q.profile, true AS rebuild_requested
+  FROM encoded_asset_rebuild_requests q
+  JOIN recordings r ON r.id = q.recording_id
+  WHERE r.deleted_at IS NULL
+    AND q.profile <> ''
+    AND q.profile = ANY($2::text[])
+    AND (
+      NOT (q.profile = ANY($3::text[]))
+      OR EXISTS (
+        SELECT 1 FROM recording_chapter_ownership o
+        WHERE o.recording_id = q.recording_id
+      )
+    )
+), merged_profiles AS (
+  SELECT recording_id, profile, bool_or(rebuild_requested) AS rebuild_requested
+  FROM pending_profiles
+  GROUP BY recording_id, profile
 )
 SELECT
   m.recording_id,
@@ -106,8 +240,8 @@ SELECT
       AND a.profile = m.profile
       AND a.state = 'running'
   )::boolean AS running
-FROM missing_profiles m
-WHERE NOT EXISTS (
+FROM merged_profiles m
+WHERE m.rebuild_requested OR NOT EXISTS (
   SELECT 1 FROM recording_encode_attempts a
   WHERE a.recording_id = m.recording_id
     AND a.profile = m.profile
@@ -129,10 +263,10 @@ type ListEncodeQueueRow struct {
 	Running     bool
 }
 
-// ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語
-// （CTE missing_profiles）は ListMissingEncodeProfiles と同じ: そのクエリと同じ
-// ファイルに置き、設定から渡す known/cut profile を含む条件の変更を隣で確認できる
-// ようにする。row_limit や after_recording_id は適用しない。
+// ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。
+// desired の不足だけでなく、active な encoded が残っていても明示要求の行がある
+// プロファイルを含める。再作成要求もユーザーが待っている仕事であり、active な
+// asset の存在だけでは完了を意味しない。row_limit や after_recording_id は適用しない。
 //
 // 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 // ある印（行は queued と running の分割になる）。active な encoded が既にある、
@@ -150,6 +284,50 @@ func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams
 	for rows.Next() {
 		var i ListEncodeQueueRow
 		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.Running); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listEncodedAssetRebuildRequests = `-- name: ListEncodedAssetRebuildRequests :many
+SELECT q.recording_id,
+       q.profile,
+       jsonb_agg(
+           jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
+           ORDER BY lower(cut_range)
+       )::jsonb AS requested_keep
+FROM encoded_asset_rebuild_requests q
+CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
+WHERE $1::bigint IS NULL
+   OR q.recording_id = $1::bigint
+GROUP BY q.recording_id, q.profile, q.requested_keep
+ORDER BY q.recording_id, q.profile
+`
+
+type ListEncodedAssetRebuildRequestsRow struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep json.RawMessage
+}
+
+// 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
+// 同じ recording/profile を新しい要求で upsert しても、呼び出し側が読んだ古い値は
+// DeleteEncodedAssetRebuildRequestIfKeep の WHERE で比較交換する。
+func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]ListEncodedAssetRebuildRequestsRow, error) {
+	rows, err := q.db.Query(ctx, listEncodedAssetRebuildRequests, recordingID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListEncodedAssetRebuildRequestsRow
+	for rows.Next() {
+		var i ListEncodedAssetRebuildRequestsRow
+		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.RequestedKeep); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

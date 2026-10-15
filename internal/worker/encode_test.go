@@ -815,60 +815,6 @@ func TestEncodeJobArgs_InsertOptsQueue(t *testing.T) {
 	}
 }
 
-// EncodeRebuildArgs は encode キューと pending 状態での ByArgs 一意化を使う。
-func TestEncodeRebuildArgs_InsertOptsQueue(t *testing.T) {
-	spec := EncodeRebuildArgs{}.Spec()
-	if spec.Queue != "encode" {
-		t.Errorf("Spec().Queue = %q, want encode", spec.Queue)
-	}
-	if !spec.Coalesce {
-		t.Error("Spec().Coalesce should be true")
-	}
-}
-
-func TestEncodeRebuildWorker_WithoutEnqueuerErrors(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/no-enqueuer.m2ts", []string{"h264"}, []byte("payload"))
-	w := &EncodeRebuildWorker{
-		Pool:     pool,
-		Profiles: encodeConfigWith("h264"),
-	}
-	err := runWorkerViaJobQFake(context.Background(), w, EncodeRebuildArgs{RecordingID: recordingID, Profile: "h264"})
-	if err == nil || !strings.Contains(err.Error(), "job enqueuer is nil") {
-		t.Fatalf("Work() error = %v, want missing enqueuer error", err)
-	}
-}
-
-// EncodeRebuildWorker は明示要求で指定されたプロファイルだけを encode に渡す。
-func TestEncodeRebuildWorker_EnqueuesOnlyRequestedProfile(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/a.m2ts",
-		[]string{"h264", "h265"}, []byte("payload"))
-	job := EncodeRebuildArgs{RecordingID: recordingID, Profile: "h264"}
-	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
-		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
-	}}}
-	enqueuer := newRecordingEnqueuer()
-	worker := &EncodeRebuildWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles}
-	if err := runWorkerViaJobQFake(context.Background(), worker, job); err != nil {
-		t.Fatalf("EncodeRebuildWorker.Work: %v", err)
-	}
-	if got := countEncodeJobs(t, enqueuer, recordingID, "h264"); got != 1 {
-		t.Errorf("h264 encode jobs = %d, want 1", got)
-	}
-	if got := countEncodeJobs(t, enqueuer, recordingID, "h265"); got != 0 {
-		t.Errorf("h265 encode jobs = %d, want 0", got)
-	}
-}
-
 // TestBuildFFmpegArgs_SubtitleFixSubDuration は VOD 側でも ARIB 字幕の duration
 // 欠如への対処が -i より前に入ることを固定する。
 //

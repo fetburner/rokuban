@@ -104,6 +104,11 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	id := seedRecording(t, pool, "版を外す", time.Now().Truncate(time.Second), "finished", 701)
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'h264', '{[0,100)}'::int8multirange)`, id); err != nil {
+		t.Fatalf("seeding rebuild request: %v", err)
+	}
 
 	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
@@ -113,6 +118,13 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	}
 	if got := removalRequests(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("removal requests = %v, want [h264]", got)
+	}
+	var rebuildRequests int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'h264'`, id).Scan(&rebuildRequests); err != nil {
+		t.Fatal(err)
+	}
+	if rebuildRequests != 0 {
+		t.Errorf("rebuild requests after removing h264 = %d, want 0", rebuildRequests)
 	}
 	if got := listedEncodedProfiles(t, srv.URL, id); !slices.Equal(got, []string{"h265"}) {
 		t.Errorf("encodedAssets = %v, want [h265] right after the removal", got)
@@ -146,6 +158,11 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	if resp := deleteEncoded(t, srv.URL, id, "h264"); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("first removal status = %d, want 204", resp.StatusCode)
 	}
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'h265', '{[0,100)}'::int8multirange)`, id); err != nil {
+		t.Fatalf("seeding rebuild request before rejected removal: %v", err)
+	}
 	resp := deleteEncoded(t, srv.URL, id, "h265")
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("last-copy removal status = %d, want 409", resp.StatusCode)
@@ -155,6 +172,13 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	}
 	if got := removalRequests(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Errorf("removal requests after 409 = %v, want [h264] (rolled back)", got)
+	}
+	var rebuildRequests int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'h265'`, id).Scan(&rebuildRequests); err != nil {
+		t.Fatal(err)
+	}
+	if rebuildRequests != 1 {
+		t.Errorf("rebuild requests after rejected removal = %d, want 1 (rolled back)", rebuildRequests)
 	}
 }
 

@@ -1,6 +1,7 @@
 package jobs
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"time"
@@ -74,9 +75,10 @@ func (RecordSweepArgs) Kind() string { return "record_sweep" }
 
 // EncodeJobArgs は encode ジョブの引数。recording、プロファイル、rescue 用の締切を指定する。
 type EncodeJobArgs struct {
-	RecordingID int64         `json:"recording_id"`
-	Profile     string        `json:"profile"`
-	Timeout     time.Duration `json:"timeout,omitempty"`
+	RecordingID      int64           `json:"recording_id"`
+	Profile          string          `json:"profile"`
+	Timeout          time.Duration   `json:"timeout,omitempty"`
+	RequestedCutKeep json.RawMessage `json:"requested_cut_keep,omitempty"`
 }
 
 // Kind はジョブ種別名を返す。
@@ -152,16 +154,6 @@ type EncodeReconcileArgs struct {
 // Kind はジョブ種別名を返す。
 func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 
-// EncodeRebuildArgs は利用者が明示した再エンコード命令の引数。
-// reconcile は不足分だけを導出するため、既存の cut 版を置き換える命令は別種にする。
-type EncodeRebuildArgs struct {
-	RecordingID int64  `json:"recording_id"`
-	Profile     string `json:"profile"`
-}
-
-// Kind はジョブ種別名を返す。
-func (EncodeRebuildArgs) Kind() string { return "encode_rebuild" }
-
 // DeleteReconcileArgs は削除 reconcile ジョブの引数。
 type DeleteReconcileArgs struct{}
 
@@ -224,7 +216,6 @@ var (
 	_ jobq.Args = CMDetectReconcileArgs{}
 	_ jobq.Args = CMLogoCandidateJobArgs{}
 	_ jobq.Args = EncodeReconcileArgs{}
-	_ jobq.Args = EncodeRebuildArgs{}
 	_ jobq.Args = LabelRuleReconcileArgs{}
 	_ jobq.Args = DeleteReconcileArgs{}
 	_ jobq.Args = CatalogExportArgs{}
