@@ -3,12 +3,15 @@ package pgstore
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -19,7 +22,7 @@ import (
 var contractEventID atomic.Int32
 
 func TestChapterEditsContract(t *testing.T) {
-	contracttest.Run(t, func(t *testing.T) (store.ChapterEdits, contracttest.NewRecording) {
+	contracttest.Run(t, func(t *testing.T) contracttest.Fixture {
 		pool := testutil.SetupDB(t)
 		newRecording := func(t *testing.T, options contracttest.RecordingOptions) int64 {
 			t.Helper()
@@ -61,8 +64,51 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 			}
 			return id
 		}
-		return New(pool), newRecording
+		return contracttest.Fixture{
+			Store:        New(pool),
+			NewRecording: newRecording,
+			SaveCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) {
+				t.Helper()
+				if err := sqlcgen.New(pool).SaveCMDetection(context.Background(), sqlcgen.SaveCMDetectionParams{
+					RecordingID: id,
+					CmRanges:    multirange(ranges),
+				}); err != nil {
+					t.Fatalf("saving CM detection: %v", err)
+				}
+			},
+			BeginCMDetection: func(t *testing.T, id int64, ranges []chapters.Range) func() {
+				t.Helper()
+				ctx := context.Background()
+				tx, err := pool.Begin(ctx)
+				if err != nil {
+					t.Fatalf("beginning detection tx: %v", err)
+				}
+				t.Cleanup(func() { _ = tx.Rollback(ctx) })
+				// 検出 worker の保存 tx と同じ順序（行ロック、結果の書き込み）。
+				q := sqlcgen.New(tx)
+				if _, err := q.LockRecording(ctx, id); err != nil {
+					t.Fatalf("locking recording: %v", err)
+				}
+				if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: id, CmRanges: multirange(ranges)}); err != nil {
+					t.Fatalf("writing CM result: %v", err)
+				}
+				return func() {
+					if err := tx.Commit(ctx); err != nil {
+						t.Errorf("committing detection tx: %v", err)
+					}
+				}
+			},
+		}
 	})
+}
+
+// multirange は区間列を int8multirange のテキスト表現にする。
+func multirange(ranges []chapters.Range) string {
+	parts := make([]string, len(ranges))
+	for i, r := range ranges {
+		parts[i] = fmt.Sprintf("[%d,%d)", r.StartMs, r.EndMs)
+	}
+	return "{" + strings.Join(parts, ",") + "}"
 }
 
 func TestMapDatabaseErrorMapsUniqueAndRangeConflicts(t *testing.T) {

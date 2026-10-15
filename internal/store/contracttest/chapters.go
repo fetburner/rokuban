@@ -1,4 +1,4 @@
-// Package contracttest contains integration checks for store contracts.
+// Package contracttest は store の契約を実装に対して検査する統合テストを持つ。
 package contracttest
 
 import (
@@ -6,38 +6,108 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RecordingOptions describes the minimal recording state needed by a contract case.
+// RecordingOptions は契約のケースが要る録画の最小限の状態を表す。
 type RecordingOptions struct {
 	CMDetectionEnabled bool
 	Trashed            bool
 	Purged             bool
 }
 
-// NewRecording creates a persisted recording fixture for a contract case.
+// NewRecording は契約のケース用に永続化済みの録画を作る。
 type NewRecording func(t *testing.T, options RecordingOptions) int64
 
-// NewStore creates a real contract implementation and a fixture factory.
-type NewStore func(t *testing.T) (store.ChapterEdits, NewRecording)
+// Fixture は契約の実装と、ケースが状態を作るためのフックをまとめる。
+// フックは実装ごとの DB へ直接書くので、実装側のテストが与える。
+type Fixture struct {
+	Store        store.ChapterEdits
+	NewRecording NewRecording
+	// SaveCMDetection は CM 検出結果を commit する。
+	SaveCMDetection func(t *testing.T, recordingID int64, ranges []chapters.Range)
+	// BeginCMDetection は CM 検出 worker と同じく録画の行をロックして結果を書く
+	// tx を開き、commit する関数を返す。commit までロックを保持する。
+	BeginCMDetection func(t *testing.T, recordingID int64, ranges []chapters.Range) (commit func())
+}
 
-// Run executes the chapter edit contract against a real store implementation.
+// NewStore は実在の契約実装とフィクスチャを作る。
+type NewStore func(t *testing.T) Fixture
+
+// Run は実在の store 実装に対してチャプター編集の契約を実行する。
 func Run(t *testing.T, newStore NewStore) {
 	t.Helper()
 
 	t.Run("read and missing recording", func(t *testing.T) { runReadAndMissing(t, newStore) })
 	t.Run("replace checks version and reset is idempotent", func(t *testing.T) { runReplaceAndReset(t, newStore) })
 	t.Run("detection gate follows deployment setting", func(t *testing.T) { runDetectionGate(t, newStore) })
+	t.Run("detection commit changes the version", func(t *testing.T) { runDetectionChangesVersion(t, newStore) })
+	t.Run("replace serializes with detection commit", func(t *testing.T) { runDetectionSerialization(t, newStore) })
 	t.Run("trashed recordings reject writes", func(t *testing.T) { runTrashed(t, newStore) })
 	t.Run("database range conflict rolls back replacement", func(t *testing.T) { runConflictRollback(t, newStore) })
 	t.Run("concurrent replacements serialize", func(t *testing.T) { runConcurrentReplacements(t, newStore) })
 }
 
+func runDetectionChangesVersion(t *testing.T, newStore NewStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t, RecordingOptions{CMDetectionEnabled: true})
+	before, err := f.Store.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading before detection: %v", err)
+	}
+	f.SaveCMDetection(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
+	spans := []chapters.Span{{StartMs: 0, EndMs: 1001, Cut: true}}
+	if err := f.Store.Replace(ctx, id, before.Version, spans, false); !errors.Is(err, store.ErrStaleVersion) {
+		t.Fatalf("Replace(version before detection) error = %v, want ErrStaleVersion", err)
+	}
+	after, err := f.Store.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading after detection: %v", err)
+	}
+	if after.Owned || len(after.UserSpans) != 0 || after.Version == before.Version || !after.Detected {
+		t.Fatalf("snapshot after stale replacement = %+v, want an unowned detected layer with a changed version", after)
+	}
+	if err := f.Store.Replace(ctx, id, after.Version, spans, true); err != nil {
+		t.Fatalf("Replace after detection completed = %v, want success even when detection is required", err)
+	}
+}
+
+// runDetectionSerialization は、進行中の検出 tx がある間 Replace が待ち、
+// commit 後に新しい状態を見て ErrStaleVersion を返すことを確かめる。
+// 待ちの判定は固定時間なので、遅い環境では偽陽性で通りうるが、偽陰性では落ちない。
+func runDetectionSerialization(t *testing.T, newStore NewStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t, RecordingOptions{CMDetectionEnabled: true})
+	pending, err := f.Store.Read(ctx, id)
+	if err != nil {
+		t.Fatalf("reading pending state: %v", err)
+	}
+	commit := f.BeginCMDetection(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
+
+	result := make(chan error, 1)
+	go func() {
+		result <- f.Store.Replace(ctx, id, pending.Version, []chapters.Span{{StartMs: 0, EndMs: 1001, Cut: true}}, true)
+	}()
+	select {
+	case err := <-result:
+		commit()
+		t.Fatalf("Replace returned %v while the detection transaction was open, want it to wait", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	commit()
+	if err := <-result; !errors.Is(err, store.ErrStaleVersion) {
+		t.Fatalf("Replace after detection commit error = %v, want ErrStaleVersion", err)
+	}
+}
+
 func runReadAndMissing(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	if _, err := s.Read(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Read(missing) error = %v, want ErrNotFound", err)
@@ -69,7 +139,8 @@ func runReadAndMissing(t *testing.T, newStore NewStore) {
 }
 
 func runReplaceAndReset(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	id := newRecording(t, RecordingOptions{})
 	initial, err := s.Read(ctx, id)
@@ -140,7 +211,8 @@ func runReplaceAndReset(t *testing.T, newStore NewStore) {
 }
 
 func runDetectionGate(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	id := newRecording(t, RecordingOptions{CMDetectionEnabled: true})
 	state, err := s.Read(ctx, id)
@@ -157,7 +229,8 @@ func runDetectionGate(t *testing.T, newStore NewStore) {
 }
 
 func runTrashed(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	id := newRecording(t, RecordingOptions{Trashed: true})
 	state, err := s.Read(ctx, id)
@@ -173,7 +246,8 @@ func runTrashed(t *testing.T, newStore NewStore) {
 }
 
 func runConflictRollback(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	id := newRecording(t, RecordingOptions{})
 	initial, err := s.Read(ctx, id)
@@ -197,7 +271,8 @@ func runConflictRollback(t *testing.T, newStore NewStore) {
 }
 
 func runConcurrentReplacements(t *testing.T, newStore NewStore) {
-	s, newRecording := newStore(t)
+	f := newStore(t)
+	s, newRecording := f.Store, f.NewRecording
 	ctx := context.Background()
 	for round := range 20 {
 		runReplacementRound(t, ctx, s, newRecording, round)

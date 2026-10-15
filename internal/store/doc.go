@@ -1,7 +1,6 @@
-// Package store defines domain-specific persistence contracts.
+// Package store はドメインごとの永続化契約を定義する。
 //
-// Each interface models one domain, and each method owns its database transaction.
-// The contracts share this package because their errors and domain types form one
-// application boundary; separate packages can be added when a domain needs an
-// independent import boundary.
+// interface は 1 ドメインを表し、各メソッドが自身のトランザクションを持つ。
+// 契約が 1 パッケージを共有するのは、エラーとドメイン型が一つのアプリケーション
+// 境界を成すためである。ドメインが独立した import 境界を要るときに分ける。
 package store

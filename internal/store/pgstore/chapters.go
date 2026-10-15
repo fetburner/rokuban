@@ -1,4 +1,4 @@
-// Package pgstore implements store contracts with PostgreSQL.
+// Package pgstore は store の契約を PostgreSQL で実装する。
 package pgstore
 
 import (
@@ -18,19 +18,20 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Store implements the application persistence contracts with PostgreSQL.
+// Store は PostgreSQL によるアプリケーションの永続化契約の実装。
 type Store struct {
 	pool *pgxpool.Pool
 }
 
-// New creates a PostgreSQL-backed store.
+// New は PostgreSQL を使う Store を作る。
 func New(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// Read returns the current chapter layer and an opaque optimistic-concurrency version.
+// Read は現在のチャプター層と、楽観的並行制御用の不透明な版を返す。
+// 読み取り専用の RepeatableRead tx で、状態と区間を同じスナップショットから読む。
 func (s *Store) Read(ctx context.Context, recordingID int64) (store.ChapterSnapshot, error) {
-	tx, err := s.pool.Begin(ctx)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return store.ChapterSnapshot{}, fmt.Errorf("beginning chapter read for recording %d: %w", recordingID, err)
 	}
@@ -45,13 +46,7 @@ func (s *Store) Read(ctx context.Context, recordingID int64) (store.ChapterSnaps
 		return store.ChapterSnapshot{}, fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
 	}
 
-	snapshot := store.ChapterSnapshot{
-		Owned:              state.Owned,
-		ProgramDurationMs:  state.ProgramDurationMs,
-		CMDetectionEnabled: state.CmDetect,
-		Detected:           state.Detected,
-		DetectionFailed:    state.Failed,
-	}
+	snapshot := snapshotFromState(state)
 	if state.Owned {
 		raw, err := q.GetRecordingChapterSpansJSON(ctx, recordingID)
 		if err != nil {
@@ -78,7 +73,7 @@ func (s *Store) Read(ctx context.Context, recordingID int64) (store.ChapterSnaps
 	return snapshot, nil
 }
 
-// Replace adopts or replaces the complete user chapter layer in one transaction.
+// Replace はユーザー層の全体を 1 つの tx で引き取る、または置き換える。
 func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -104,7 +99,7 @@ func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion 
 	if expectedVersion != chapterVersion(state, userSpans) {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrStaleVersion)
 	}
-	if requireDetectionComplete && chapterDetectionPending(state) {
+	if requireDetectionComplete && snapshotFromState(state).DetectionPending(true) {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrDetectionPending)
 	}
 
@@ -135,7 +130,7 @@ func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion 
 	return nil
 }
 
-// Reset removes the user layer and returns the recording to its automatic layer.
+// Reset はユーザー層を消し、録画を自動層に戻す。
 func (s *Store) Reset(ctx context.Context, recordingID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -156,9 +151,10 @@ func (s *Store) Reset(ctx context.Context, recordingID int64) error {
 	return nil
 }
 
+// lockRecording は録画の行をロックし、消去済み・ごみ箱の録画を弾く。
 func lockRecording(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
-	// This must be the first query in each write transaction, matching the CM
-	// detection worker's lock on recordings so both writers observe each other.
+	// 書き込み tx の最初のクエリでなければならない。CM 検出 worker の recordings
+	// ロックと同じ行を取り、両方の書き込みが互いを観測できるようにする。
 	lock, err := q.LockRecording(ctx, recordingID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -175,13 +171,21 @@ func lockRecording(ctx context.Context, q *sqlcgen.Queries, recordingID int64) e
 	return nil
 }
 
-func chapterDetectionPending(state sqlcgen.GetRecordingChapterStateRow) bool {
-	return !state.Owned && state.CmDetect && !state.Detected && !state.Failed
+// snapshotFromState は sqlcgen の行から ChapterSnapshot の状態部分を作る。
+// Read と Replace が同じ判定を共有するための唯一の変換。
+func snapshotFromState(state sqlcgen.GetRecordingChapterStateRow) store.ChapterSnapshot {
+	return store.ChapterSnapshot{
+		Owned:              state.Owned,
+		ProgramDurationMs:  state.ProgramDurationMs,
+		CMDetectionEnabled: state.CmDetect,
+		Detected:           state.Detected,
+		DetectionFailed:    state.Failed,
+	}
 }
 
-// chapterVersion returns the opaque token used by Read and rechecked by Replace.
-// Owned tokens include the stored spans so each user edit changes the token;
-// TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit covers that behavior.
+// chapterVersion は Read が返し、Replace が再確認する不透明な版を返す。
+// 所有時の版は保存済みの区間を含むので、ユーザーが編集するたびに版が変わる
+// （TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit が検査する）。
 func chapterVersion(state sqlcgen.GetRecordingChapterStateRow, userSpans json.RawMessage) string {
 	switch {
 	case state.Owned:
@@ -196,6 +200,7 @@ func chapterVersion(state sqlcgen.GetRecordingChapterStateRow, userSpans json.Ra
 	}
 }
 
+// mapDatabaseError は一意違反と排他制約違反を store.ErrConflict に写す。
 func mapDatabaseError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && (pgErr.Code == "23505" || pgErr.Code == "23P01") {
@@ -204,6 +209,7 @@ func mapDatabaseError(err error) error {
 	return err
 }
 
+// rollback は tx を捨てる。commit 済みなら何もしない。
 func rollback(tx pgx.Tx) {
 	_ = tx.Rollback(context.Background())
 }

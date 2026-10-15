@@ -8,21 +8,22 @@ import (
 )
 
 var (
-	// ErrNotFound means the recording does not exist or has been purged.
-	ErrNotFound = errors.New("recording not found")
-	// ErrTrashed means the recording is in the trash and cannot be edited.
-	ErrTrashed = errors.New("recording is in the trash")
-	// ErrStaleVersion means the supplied version no longer describes the chapter layer.
-	ErrStaleVersion = errors.New("chapter layer has changed")
-	// ErrDetectionPending means a required CM detection has not reached a terminal state.
-	ErrDetectionPending = errors.New("CM detection is pending")
-	// ErrConflict means persisted chapter data conflicts with a database constraint.
-	ErrConflict = errors.New("chapter edit conflicts with persisted data")
+	// ErrNotFound は対象が存在しない、または消去済みであることを表す。
+	// 対象の文脈は返す側が wrap で足す。
+	ErrNotFound = errors.New("not found")
+	// ErrTrashed は対象がごみ箱にあり、編集できないことを表す。
+	ErrTrashed = errors.New("in the trash")
+	// ErrStaleVersion は渡された版が現在の状態を指していないことを表す。
+	ErrStaleVersion = errors.New("stale version")
+	// ErrDetectionPending は必要な検出が終端に達していないことを表す。
+	ErrDetectionPending = errors.New("detection is pending")
+	// ErrConflict は永続化済みのデータが DB の制約と衝突することを表す。
+	ErrConflict = errors.New("conflict")
 )
 
-// ChapterSnapshot contains the chapter layer selected for a recording and the
-// state needed by the API to report whether CM detection is still pending.
-// Version is opaque to callers and is only meaningful when passed to Replace.
+// ChapterSnapshot は録画で選ばれているチャプター層と、CM 検出が未完かを
+// 判定するための状態を持つ。
+// Version は呼び出し側には不透明で、Replace に渡す以外の意味を持たない。
 type ChapterSnapshot struct {
 	Owned              bool
 	ProgramDurationMs  int64
@@ -34,17 +35,26 @@ type ChapterSnapshot struct {
 	CMRanges           []chapters.Range
 }
 
-// ChapterEdits persists the user-owned chapter layer for recordings.
+// DetectionPending は、所有前で検出が終端に達していないかを返す。
+// cmDetectEnabled はデプロイ側の CM 検出の有効/無効で、無効なら常に偽になる。
+// その構成では検出ジョブが積まれず終端に永久に達しないので、編集を封じると
+// 機能ごと使えなくなる。
+func (s ChapterSnapshot) DetectionPending(cmDetectEnabled bool) bool {
+	return !s.Owned && cmDetectEnabled && s.CMDetectionEnabled && !s.Detected && !s.DetectionFailed
+}
+
+// ChapterEdits は録画のユーザー層チャプターを永続化する。
 //
-// Each method completes its own transaction before returning. Replace and Reset
-// lock the recording row before reading or writing chapter state, so they
-// serialize with CM detection writes that use the same lock.
+// 各メソッドは自身のトランザクションを完了してから返す。Replace と Reset は
+// チャプターの状態を読み書きする前に録画の行をロックするので、同じロックを使う
+// CM 検出の書き込みと直列化する。
 type ChapterEdits interface {
-	// Read returns the active chapter layer and its opaque version.
+	// Read は有効なチャプター層と不透明な版を返す。
+	// 状態と区間は同じスナップショットから読む（一貫したスナップショットを返す）。
 	Read(ctx context.Context, recordingID int64) (ChapterSnapshot, error)
-	// Replace atomically replaces the user layer if expectedVersion is current.
-	// requireDetectionComplete is true when the deployment runs CM detection.
+	// Replace は expectedVersion が現在の版と一致するときだけ、ユーザー層を原子的に置き換える。
+	// requireDetectionComplete は、デプロイが CM 検出を動かしているときに真にする。
 	Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error
-	// Reset removes the user layer and returns the recording to its automatic layer.
+	// Reset はユーザー層を消し、録画を自動層に戻す。
 	Reset(ctx context.Context, recordingID int64) error
 }

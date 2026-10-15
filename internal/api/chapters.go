@@ -16,13 +16,6 @@ const chapterDetectionPendingMessage = "CM detection has not finished for this r
 // 検出中の 409 と区別できるよう文言を分ける。
 const chapterStaleVersionMessage = "the chapter layer changed since it was fetched (re-detected, adopted, or reset); reload and edit again"
 
-// chapterDetectionPending は所有前で検出が終端に達していないかを返す。
-// **デプロイ側で CM 検出が無効なら偽** --- その構成では検出ジョブが積まれず、
-// 終端に永久に達しないので、編集を封じると機能ごと使えなくなる。
-func (h *Server) chapterDetectionPending(s store.ChapterSnapshot) bool {
-	return !s.Owned && h.capabilities.CmDetect && s.CMDetectionEnabled && !s.Detected && !s.DetectionFailed
-}
-
 // GetRecordingChapters は録画の有効なチャプターを返す。
 //
 // 返すのは CM とユーザーが置いた区間だけで、隙間の本編は返さない。DB が持つ長さは
@@ -59,7 +52,7 @@ func (h *Server) GetRecordingChapters(ctx context.Context, req GetRecordingChapt
 	return GetRecordingChapters200JSONResponse{
 		Source:           Auto,
 		Version:          state.Version,
-		DetectionPending: h.chapterDetectionPending(state),
+		DetectionPending: state.DetectionPending(h.capabilities.CmDetect),
 		Spans:            chapterSpansToAPI(chapters.AutoSpans(state.CMRanges, state.ProgramDurationMs)),
 	}, nil
 }
