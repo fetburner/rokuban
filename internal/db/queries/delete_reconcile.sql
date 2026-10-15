@@ -192,6 +192,17 @@ RETURNING r.id, r.site, r.title;
 UPDATE media_assets SET state = 'deleting', updated_at = now()
 WHERE id = $1 AND state = 'active';
 
+-- until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
+-- ロックした tx 内で資格を再評価してから deleting にする。API の要求書き込みも
+-- 同じ recordings 行を先にロックするため、要求の commit と原本削除は直列化される。
+-- name: MarkUntilEncodedOriginalDeleting :execrows
+UPDATE media_assets a SET state = 'deleting', updated_at = now()
+WHERE a.id = sqlc.arg('asset_id')
+  AND a.state = 'active'
+  AND EXISTS (
+      SELECT 1 FROM until_encoded_deletable_originals v WHERE v.asset_id = a.id
+  );
+
 -- 外した版の要求行（encoded_asset_removal_requests）を deleted の確定と同じ
 -- 文で消す。要求行は「この版を外した」という主張なので、版が消えたら残す意味が無い。
 -- name: MarkMediaAssetDeleted :execrows

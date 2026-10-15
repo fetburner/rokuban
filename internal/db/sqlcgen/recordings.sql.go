@@ -866,6 +866,7 @@ VALUES (
 )
 ON CONFLICT (recording_id, profile) DO UPDATE SET
     requested_keep = EXCLUDED.requested_keep,
+    request_generation = nextval('encoded_asset_rebuild_request_generation_seq'),
     requested_at = now()
 `
 

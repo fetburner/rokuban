@@ -237,11 +237,12 @@ WHERE m.rebuild_requested OR NOT EXISTS (
 ORDER BY m.recording_id, m.profile;
 
 -- 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
--- 同じ recording/profile を新しい要求で upsert しても、呼び出し側が読んだ古い値は
--- DeleteEncodedAssetRebuildRequestIfKeep の WHERE で比較交換する。
+-- 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
+-- DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
 -- name: ListEncodedAssetRebuildRequests :many
 SELECT q.recording_id,
        q.profile,
+       q.request_generation,
        jsonb_agg(
            jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
            ORDER BY lower(cut_range)
@@ -250,7 +251,7 @@ FROM encoded_asset_rebuild_requests q
 CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
 WHERE sqlc.narg('recording_id')::bigint IS NULL
    OR q.recording_id = sqlc.narg('recording_id')::bigint
-GROUP BY q.recording_id, q.profile, q.requested_keep
+GROUP BY q.recording_id, q.profile, q.request_generation, q.requested_keep
 ORDER BY q.recording_id, q.profile;
 
 -- EncodeWorker が要求に由来する encode job を開始する前に、要求がまだ存在し、
@@ -279,13 +280,15 @@ SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
 -- 公開 tx では要求行をロックしてから現在の keep と照合し、公開と同じ tx で消す。
 -- name: GetEncodedAssetRebuildRequestForUpdate :one
 WITH request AS (
-    SELECT q.requested_keep
+    SELECT q.requested_keep,
+           q.request_generation
     FROM encoded_asset_rebuild_requests q
     WHERE q.recording_id = sqlc.arg('recording_id')
       AND q.profile = sqlc.arg('profile')
     FOR UPDATE
 )
 SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE((SELECT request_generation FROM request), 0)::bigint AS request_generation,
        COALESCE(
            (
                SELECT jsonb_agg(
@@ -299,11 +302,12 @@ SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
        )::jsonb AS requested_keep;
 
 -- stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
--- されても、その行は消さない。
+-- されても、その行は消さない。generation は同じ keep の再要求による ABA も区別する。
 -- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
 DELETE FROM encoded_asset_rebuild_requests q
 WHERE q.recording_id = sqlc.arg('recording_id')
   AND q.profile = sqlc.arg('profile')
+  AND q.request_generation = sqlc.arg('request_generation')
   AND q.requested_keep = (
       SELECT range_agg(int8range(
           (item.range ->> 'startMs')::bigint,

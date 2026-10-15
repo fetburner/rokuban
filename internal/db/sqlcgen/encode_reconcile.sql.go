@@ -14,25 +14,32 @@ const deleteEncodedAssetRebuildRequestIfKeep = `-- name: DeleteEncodedAssetRebui
 DELETE FROM encoded_asset_rebuild_requests q
 WHERE q.recording_id = $1
   AND q.profile = $2
+  AND q.request_generation = $3
   AND q.requested_keep = (
       SELECT range_agg(int8range(
           (item.range ->> 'startMs')::bigint,
           (item.range ->> 'endMs')::bigint
       ))
-      FROM jsonb_array_elements($3::jsonb) AS item(range)
+      FROM jsonb_array_elements($4::jsonb) AS item(range)
   )::int8multirange
 `
 
 type DeleteEncodedAssetRebuildRequestIfKeepParams struct {
-	RecordingID   int64
-	Profile       string
-	RequestedKeep json.RawMessage
+	RecordingID       int64
+	Profile           string
+	RequestGeneration int64
+	RequestedKeep     json.RawMessage
 }
 
 // stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
-// されても、その行は消さない。
+// されても、その行は消さない。generation は同じ keep の再要求による ABA も区別する。
 func (q *Queries) DeleteEncodedAssetRebuildRequestIfKeep(ctx context.Context, arg DeleteEncodedAssetRebuildRequestIfKeepParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequestIfKeep, arg.RecordingID, arg.Profile, arg.RequestedKeep)
+	result, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequestIfKeep,
+		arg.RecordingID,
+		arg.Profile,
+		arg.RequestGeneration,
+		arg.RequestedKeep,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -82,13 +89,15 @@ func (q *Queries) GetEncodedAssetRebuildRequest(ctx context.Context, arg GetEnco
 
 const getEncodedAssetRebuildRequestForUpdate = `-- name: GetEncodedAssetRebuildRequestForUpdate :one
 WITH request AS (
-    SELECT q.requested_keep
+    SELECT q.requested_keep,
+           q.request_generation
     FROM encoded_asset_rebuild_requests q
     WHERE q.recording_id = $1
       AND q.profile = $2
     FOR UPDATE
 )
 SELECT EXISTS (SELECT 1 FROM request)::boolean AS request_exists,
+       COALESCE((SELECT request_generation FROM request), 0)::bigint AS request_generation,
        COALESCE(
            (
                SELECT jsonb_agg(
@@ -108,15 +117,16 @@ type GetEncodedAssetRebuildRequestForUpdateParams struct {
 }
 
 type GetEncodedAssetRebuildRequestForUpdateRow struct {
-	RequestExists bool
-	RequestedKeep json.RawMessage
+	RequestExists     bool
+	RequestGeneration int64
+	RequestedKeep     json.RawMessage
 }
 
 // 公開 tx では要求行をロックしてから現在の keep と照合し、公開と同じ tx で消す。
 func (q *Queries) GetEncodedAssetRebuildRequestForUpdate(ctx context.Context, arg GetEncodedAssetRebuildRequestForUpdateParams) (GetEncodedAssetRebuildRequestForUpdateRow, error) {
 	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequestForUpdate, arg.RecordingID, arg.Profile)
 	var i GetEncodedAssetRebuildRequestForUpdateRow
-	err := row.Scan(&i.RequestExists, &i.RequestedKeep)
+	err := row.Scan(&i.RequestExists, &i.RequestGeneration, &i.RequestedKeep)
 	return i, err
 }
 
@@ -297,6 +307,7 @@ func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams
 const listEncodedAssetRebuildRequests = `-- name: ListEncodedAssetRebuildRequests :many
 SELECT q.recording_id,
        q.profile,
+       q.request_generation,
        jsonb_agg(
            jsonb_build_object('startMs', lower(cut_range), 'endMs', upper(cut_range))
            ORDER BY lower(cut_range)
@@ -305,19 +316,20 @@ FROM encoded_asset_rebuild_requests q
 CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
 WHERE $1::bigint IS NULL
    OR q.recording_id = $1::bigint
-GROUP BY q.recording_id, q.profile, q.requested_keep
+GROUP BY q.recording_id, q.profile, q.request_generation, q.requested_keep
 ORDER BY q.recording_id, q.profile
 `
 
 type ListEncodedAssetRebuildRequestsRow struct {
-	RecordingID   int64
-	Profile       string
-	RequestedKeep json.RawMessage
+	RecordingID       int64
+	Profile           string
+	RequestGeneration int64
+	RequestedKeep     json.RawMessage
 }
 
 // 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
-// 同じ recording/profile を新しい要求で upsert しても、呼び出し側が読んだ古い値は
-// DeleteEncodedAssetRebuildRequestIfKeep の WHERE で比較交換する。
+// 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
+// DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
 func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]ListEncodedAssetRebuildRequestsRow, error) {
 	rows, err := q.db.Query(ctx, listEncodedAssetRebuildRequests, recordingID)
 	if err != nil {
@@ -327,7 +339,12 @@ func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recording
 	var items []ListEncodedAssetRebuildRequestsRow
 	for rows.Next() {
 		var i ListEncodedAssetRebuildRequestsRow
-		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.RequestedKeep); err != nil {
+		if err := rows.Scan(
+			&i.RecordingID,
+			&i.Profile,
+			&i.RequestGeneration,
+			&i.RequestedKeep,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

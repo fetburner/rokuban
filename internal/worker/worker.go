@@ -184,6 +184,13 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
 	})
+	// Keep the legacy kind registered through rollout so queued encode_rebuild jobs
+	// are converted into persistent requests by EncodeRebuildWorker.
+	riveradapter.Register(workers, &EncodeRebuildWorker{
+		Enqueuer: deps.Enqueuer,
+		Pool:     deps.Pool,
+		Profiles: deps.Encode,
+	})
 	riveradapter.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,

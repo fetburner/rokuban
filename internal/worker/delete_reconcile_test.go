@@ -928,6 +928,59 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	}
 }
 
+func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCollection(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	recordingID := insertTestRecording(t, pool)
+	originalRelPath := "orig/candidate-race.m2ts"
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
+	profile := "cut"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/candidate-race.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/candidate-race.jpg", []byte("thumbnail"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/candidate-race-tiles.jpg")
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	assertUntilEncodedQualifies(t, pool, originalID, true)
+
+	originalHook := afterDeleteCandidatesCollected
+	t.Cleanup(func() { afterDeleteCandidatesCollected = originalHook })
+	afterDeleteCandidatesCollected = func() {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Errorf("beginning rebuild request transaction: %v", err)
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		q := sqlcgen.New(tx)
+		if _, err := q.LockRecording(ctx, recordingID); err != nil {
+			t.Errorf("locking recording for rebuild request: %v", err)
+			return
+		}
+		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+			RecordingID:   recordingID,
+			Profile:       profile,
+			RequestedKeep: []byte(`[{"startMs":0,"endMs":1000}]`),
+		}); err != nil {
+			t.Errorf("inserting rebuild request after candidate collection: %v", err)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Errorf("committing rebuild request after candidate collection: %v", err)
+		}
+	}
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, originalID); got != "active" {
+		t.Fatalf("original state after concurrent rebuild request = %q, want active", got)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
+		t.Errorf("original file after concurrent rebuild request: %v", err)
+	}
+}
+
 func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()

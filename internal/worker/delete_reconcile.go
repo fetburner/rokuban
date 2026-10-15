@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -449,11 +450,42 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 		defer func() { _ = fileLock.Close() }()
 	}
 
-	// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
-	// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
-	if _, err := q.MarkMediaAssetDeleting(ctx, t.ID); err != nil {
-		log.Error("delete_reconcile: marking asset deleting", "err", err)
-		return
+	// 新規 until_encoded 候補は列挙後に作り直し要求が追加される可能性がある。
+	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
+	// 名前付き述語で再確認してから deleting にする。
+	if source == "until_encoded" {
+		tx, err := w.Pool.Begin(ctx)
+		if err != nil {
+			log.Error("delete_reconcile: beginning until_encoded delete", "err", err)
+			return
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		txq := sqlcgen.New(tx)
+		if _, err := txq.LockRecording(ctx, t.RecordingID); err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				log.Error("delete_reconcile: locking recording before until_encoded delete", "err", err)
+			}
+			return
+		}
+		marked, err := txq.MarkUntilEncodedOriginalDeleting(ctx, t.ID)
+		if err != nil {
+			log.Error("delete_reconcile: rechecking until_encoded eligibility", "err", err)
+			return
+		}
+		if marked == 0 {
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			log.Error("delete_reconcile: committing until_encoded delete", "err", err)
+			return
+		}
+	} else {
+		// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
+		// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
+		if _, err := q.MarkMediaAssetDeleting(ctx, t.ID); err != nil {
+			log.Error("delete_reconcile: marking asset deleting", "err", err)
+			return
+		}
 	}
 	beforeMediaAssetUnlink(t.RelPath)
 

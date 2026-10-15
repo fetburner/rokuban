@@ -101,6 +101,10 @@ type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 
+	// beforeDeleteStaleRebuildRequest synchronizes the stale-request compare-and-delete test.
+	// Production workers leave it nil.
+	beforeDeleteStaleRebuildRequest func(context.Context, sqlcgen.ListEncodedAssetRebuildRequestsRow)
+
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
 	//
@@ -304,6 +308,9 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 			stale = true
 		}
 		if stale {
+			if w.beforeDeleteStaleRebuildRequest != nil {
+				w.beforeDeleteStaleRebuildRequest(ctx, request)
+			}
 			if _, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams(request)); err != nil {
 				failed++
 				slog.Error("encode_reconcile: clearing stale rebuild request",

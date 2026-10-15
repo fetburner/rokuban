@@ -154,6 +154,16 @@ type EncodeReconcileArgs struct {
 // Kind はジョブ種別名を返す。
 func (EncodeReconcileArgs) Kind() string { return "encode_reconcile" }
 
+// EncodeRebuildArgs は旧バージョンが投入した再エンコード要求の引数。
+// 新しい要求は DB に永続化するが、展開中に残ったジョブを移行するため kind を保つ。
+type EncodeRebuildArgs struct {
+	RecordingID int64  `json:"recording_id"`
+	Profile     string `json:"profile"`
+}
+
+// Kind はジョブ種別名を返す。
+func (EncodeRebuildArgs) Kind() string { return "encode_rebuild" }
+
 // DeleteReconcileArgs は削除 reconcile ジョブの引数。
 type DeleteReconcileArgs struct{}
 
@@ -216,6 +226,7 @@ var (
 	_ jobq.Args = CMDetectReconcileArgs{}
 	_ jobq.Args = CMLogoCandidateJobArgs{}
 	_ jobq.Args = EncodeReconcileArgs{}
+	_ jobq.Args = EncodeRebuildArgs{}
 	_ jobq.Args = LabelRuleReconcileArgs{}
 	_ jobq.Args = DeleteReconcileArgs{}
 	_ jobq.Args = CatalogExportArgs{}

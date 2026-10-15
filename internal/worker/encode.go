@@ -560,9 +560,10 @@ func (w *EncodeWorker) clearSatisfiedEncodeRebuildRequest(ctx context.Context, r
 		return fmt.Errorf("encoding rebuild keep ranges for recording %d profile %q: %w", recordingID, profile, err)
 	}
 	deleted, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
-		RecordingID:   recordingID,
-		Profile:       profile,
-		RequestedKeep: requestedKeepJSON,
+		RecordingID:       recordingID,
+		Profile:           profile,
+		RequestGeneration: request.RequestGeneration,
+		RequestedKeep:     requestedKeepJSON,
 	})
 	if err != nil {
 		return fmt.Errorf("clearing rebuild request for recording %d profile %q: %w", recordingID, profile, err)
@@ -1007,9 +1008,10 @@ func clearSatisfiedRebuildRequestInTx(
 		return nil
 	}
 	deleted, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
-		RecordingID:   in.recordingID,
-		Profile:       in.profile,
-		RequestedKeep: request.RequestedKeep,
+		RecordingID:       in.recordingID,
+		Profile:           in.profile,
+		RequestGeneration: request.RequestGeneration,
+		RequestedKeep:     request.RequestedKeep,
 	})
 	if err != nil {
 		return fmt.Errorf("clearing satisfied rebuild request for recording %d profile %q: %w", in.recordingID, in.profile, err)
@@ -1121,9 +1123,10 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		}
 		if decision.hasRebuildRequest {
 			if _, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
-				RecordingID:   in.recordingID,
-				Profile:       in.profile,
-				RequestedKeep: decision.rebuildRequest.RequestedKeep,
+				RecordingID:       in.recordingID,
+				Profile:           in.profile,
+				RequestGeneration: decision.rebuildRequest.RequestGeneration,
+				RequestedKeep:     decision.rebuildRequest.RequestedKeep,
 			}); err != nil {
 				return 0, false, fmt.Errorf("committing encoded asset: clearing rebuild request: %w", err)
 			}
@@ -1687,6 +1690,77 @@ func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64
 		Profile:     profile,
 		Timeout:     encodeJobTimeout(duration, rate),
 	}, nil
+}
+
+// EncodeRebuildWorker は旧 encode_rebuild キューに残った命令を永続要求へ移す。
+// 新しい要求の書き手ではなく、ローリング展開中に作られたジョブの互換用である。
+type EncodeRebuildWorker struct {
+	Enqueuer jobq.Enqueuer
+	Pool     *pgxpool.Pool
+	Profiles config.EncodeConfig
+}
+
+// Work は旧ジョブの対象を現在の確認済み keep で永続化し、対象 reconcile を促す。
+func (w *EncodeRebuildWorker) Work(ctx context.Context, args jobs.EncodeRebuildArgs) error {
+	tx, err := w.Pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("beginning legacy rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := sqlcgen.New(tx)
+	locked, err := q.LockRecording(ctx, args.RecordingID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (locked.IsTrashed || locked.IsPurged)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("locking recording %d for legacy rebuild request: %w", args.RecordingID, err)
+	}
+	if _, err := q.GetActiveOriginalMediaAsset(ctx, args.RecordingID); errors.Is(err, pgx5.ErrNoRows) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("checking original for legacy rebuild request on recording %d: %w", args.RecordingID, err)
+	}
+	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, args.RecordingID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && !slices.Contains(desired, args.Profile)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("loading desired profiles for legacy rebuild request on recording %d: %w", args.RecordingID, err)
+	}
+	if profile, configured := w.Profiles.Profile(args.Profile); configured && !profile.Cut {
+		return nil
+	}
+	keep, owned, err := currentCutKeep(ctx, q, args.RecordingID)
+	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (!owned || len(keep) == 0)) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("loading confirmed keep for legacy rebuild request on recording %d: %w", args.RecordingID, err)
+	}
+	requestedKeep, err := json.Marshal(keep)
+	if err != nil {
+		return fmt.Errorf("encoding legacy rebuild keep for recording %d: %w", args.RecordingID, err)
+	}
+	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+		RecordingID: args.RecordingID,
+		Profiles:    []string{args.Profile},
+	}); err != nil {
+		return fmt.Errorf("resetting failed legacy rebuild attempt for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+		RecordingID:   args.RecordingID,
+		Profile:       args.Profile,
+		RequestedKeep: requestedKeep,
+	}); err != nil {
+		return fmt.Errorf("persisting legacy rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("committing legacy rebuild request for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
+	}
+	if w.Enqueuer != nil {
+		enqueueEncodeReconcile(ctx, w.Enqueuer, args.RecordingID)
+	}
+	return nil
 }
 
 // encodeJobTimeout は max(1h, 実尺 × rate)。実尺が不明（0 以下）なら Spec の
