@@ -7372,8 +7372,9 @@ export const getReencodeRecordingProfileUrl = (id: number,
  * /api/recordings/{id}/encode-profiles` と同じ判定）。チャプターが未確認、
  * または全区間がカットで keep が空のときも 409 を返す。
  * 指定プロファイルが録画の desired（`encodeProfiles`）に無いときも 409 を返す。
- * 204 は操作時点の keep 区間を DB に記録したことを示す。commit 後の reconcile
- * ヒントが失われても、定期 reconcile が要求を拾う。
+ * どちらも、204 を返すと作り直しが起きないことにユーザーが気付けないためである。
+ * 204 は、操作時点の keep 区間を作り直し要求として DB に記録したことを示す。
+ * commit 後に投入する reconcile のヒントが失われても、定期 reconcile が要求を拾う。
  * @summary Rebuild the cut version of a recording with the current chapters
  */
 export const reencodeRecordingProfile = async (id: number,
@@ -9090,8 +9091,8 @@ export const getGetEncodeQueueUrl = () => {
  * プロファイル）を、待機中と実行中に分けて数える。作り直し要求は active な
  * encoded があっても待機列に含める。
  * `running` は実行中の試行行があるもの、`queued` はそれ以外。試行回数の上限に
- * 達して worker が作らない行は、不足行も作り直し要求も数えない（作り直しを
- * 押し直すと試行の予算が戻り、再び数える）。ごみ箱の録画と設定に無い
+ * 達して worker が作らない行は、不足行も作り直し要求も数えない。作り直しを
+ * 押し直すと試行の予算が戻り、再び数える。ごみ箱の録画と設定に無い
  * プロファイルも数えない。
  *
  * ffmpeg の進捗率を運ぶ `encode-progress` SSE は揮発テレメトリであり、
