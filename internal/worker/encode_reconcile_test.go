@@ -1097,3 +1097,99 @@ func TestEncodeReconcileArgs_KindAndSpec(t *testing.T) {
 		t.Error("Spec().Coalesce should be true")
 	}
 }
+
+// TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued は、ごみ箱の録画に
+// 作り直し要求が残っていても定期パスが encode を投入せず、復元後の全件パスで
+// 投入することを両方向で固定する。要求行は消さない。
+func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "review/trash.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), id)
+	if err != nil || !owned || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
+	}
+	assetID := seedEncodedAsset(t, pool, id, "cut", "review/trash_cut.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatal(err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, id, keep)
+	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+
+	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}}
+	enq := runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, enq, id, "cut"); got != 0 {
+		t.Fatalf("encode jobs for trashed recording's rebuild request = %d, want 0", got)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, id).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("request rows after trashed pass = %d, err %v, want 1", rows, err)
+	}
+
+	if _, err := sqlcgen.New(pool).RestoreRecording(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
+		t.Fatalf("encode jobs after restore = %d, want 1", got)
+	}
+}
+
+// TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued は、原本が active でない
+// 録画の作り直し要求から encode を投入せず、原本が active に戻れば投入することを固定する。
+func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "review/noorig.m2ts", []string{"cut"}, []byte("original"))
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	keep, _, err := currentCutKeep(ctx, sqlcgen.New(pool), id)
+	if err != nil || len(keep) == 0 {
+		t.Fatalf("currentCutKeep = %v, err %v", keep, err)
+	}
+	assetID := seedEncodedAsset(t, pool, id, "cut", "review/noorig_cut.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatal(err)
+	}
+	seedEncodedAssetRebuildRequest(t, pool, id, keep)
+	setOriginal := func(state string) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE recording_id = $1 AND kind = 'original'`, id, state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setOriginal("deleting")
+
+	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
+	w := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}}
+	enq := runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, enq, id, "cut"); got != 0 {
+		t.Fatalf("encode jobs without active original = %d, want 0", got)
+	}
+	setOriginal("active")
+	runEncodeReconcilePass(t, w)
+	if got := countEncodeJobs(t, enq, id, "cut"); got != 1 {
+		t.Fatalf("encode jobs with active original = %d, want 1", got)
+	}
+}

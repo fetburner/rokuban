@@ -1007,8 +1007,8 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	}
 }
 
-// Adding another profile leaves an active stale cut complete. Only an explicit
-// rebuild request replaces that asset.
+// TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut は、別のプロファイルを足しても
+// active な古いカット版は完了扱いのままで、明示的な作り直し要求だけがその版を置き換えることを固定する。
 func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

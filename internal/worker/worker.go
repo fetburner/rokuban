@@ -184,8 +184,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
 	})
-	// Keep the legacy kind registered through rollout so queued encode_rebuild jobs
-	// are converted into persistent requests by EncodeRebuildWorker.
+	// 展開中に River へ残った encode_rebuild ジョブを永続要求へ変換するため、旧 kind を
+	// 登録したままにする（EncodeRebuildWorker の doc コメントに削除条件がある）。
 	riveradapter.Register(workers, &EncodeRebuildWorker{
 		Enqueuer: deps.Enqueuer,
 		Pool:     deps.Pool,

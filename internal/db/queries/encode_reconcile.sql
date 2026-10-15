@@ -205,15 +205,21 @@ WITH missing_profiles AS (
         AND e.profile = want.profile
     )
 ), pending_profiles AS (
-  SELECT recording_id, profile, false AS rebuild_requested
+  SELECT recording_id, profile
   FROM missing_profiles
 
-  UNION ALL
+  UNION
 
-  SELECT q.recording_id, q.profile, true AS rebuild_requested
+  SELECT q.recording_id, q.profile
   FROM encoded_asset_rebuild_requests q
   JOIN recordings r ON r.id = q.recording_id
   WHERE r.deleted_at IS NULL
+    AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = q.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+    )
     AND q.profile <> ''
     AND q.profile = ANY(sqlc.arg('known_profiles')::text[])
     AND (
@@ -223,10 +229,6 @@ WITH missing_profiles AS (
         WHERE o.recording_id = q.recording_id
       )
     )
-), merged_profiles AS (
-  SELECT recording_id, profile, bool_or(rebuild_requested) AS rebuild_requested
-  FROM pending_profiles
-  GROUP BY recording_id, profile
 )
 SELECT
   m.recording_id,
@@ -237,8 +239,8 @@ SELECT
       AND a.profile = m.profile
       AND a.state = 'running'
   )::boolean AS running
-FROM merged_profiles m
-WHERE m.rebuild_requested OR NOT EXISTS (
+FROM pending_profiles m
+WHERE NOT EXISTS (
   SELECT 1 FROM recording_encode_attempts a
   WHERE a.recording_id = m.recording_id
     AND a.profile = m.profile
@@ -248,6 +250,9 @@ WHERE m.rebuild_requested OR NOT EXISTS (
 ORDER BY m.recording_id, m.profile;
 
 -- 要求 keep を Go の chapters.Derive と比較できるよう JSON 配列で返す。
+-- ごみ箱の録画と原本が active でない録画の要求は返さない（ListMissingEncodeProfiles と
+-- 同じ理由。投入しても EncodeWorker が作れない / ごみ箱の録画を作る）。要求行は消さず、
+-- 復元されたら再び拾う。
 -- 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
 -- DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
 -- name: ListEncodedAssetRebuildRequests :many
@@ -259,9 +264,17 @@ SELECT q.recording_id,
            ORDER BY lower(cut_range)
        )::jsonb AS requested_keep
 FROM encoded_asset_rebuild_requests q
+JOIN recordings r ON r.id = q.recording_id
 CROSS JOIN LATERAL unnest(q.requested_keep) AS ranges(cut_range)
-WHERE sqlc.narg('recording_id')::bigint IS NULL
-   OR q.recording_id = sqlc.narg('recording_id')::bigint
+WHERE (sqlc.narg('recording_id')::bigint IS NULL
+       OR q.recording_id = sqlc.narg('recording_id')::bigint)
+  AND r.deleted_at IS NULL
+  AND EXISTS (
+      SELECT 1 FROM media_assets o
+      WHERE o.recording_id = q.recording_id
+        AND o.kind = 'original'
+        AND o.state = 'active'
+  )
 GROUP BY q.recording_id, q.profile, q.request_generation, q.requested_keep
 ORDER BY q.recording_id, q.profile;
 

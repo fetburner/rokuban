@@ -127,7 +127,11 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 
 エンコード待機列は、ドメイン表から導出する。River のジョブ一覧は使わない。
 
-不足プロファイルを、実行中の試行行の有無で実行中と待機中に分ける。不足プロファイルの述語は、不足を列挙する関数と同じである。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。録画一覧 API の絞り込み（`GET /api/recordings` の encodeState）も、同じ行から録画 ID を取る。
+不足プロファイルを、実行中の試行行の有無で実行中と待機中に分ける。不足プロファイルの述語は、不足を列挙する関数と同じである。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
+
+作り直し要求の行は、active な版があっても待機列に入る。active な版の存在は、ユーザーが明示した作り直しの完了を意味しないためである。ただし、ごみ箱の録画、原本が active でない録画、設定に無いプロファイルの要求は数えない。投入しても worker が作れない、または作ってはならないからである。試行回数が上限に達した要求も数えない。worker は開始時に cancel するので、数えると「待機中」のまま何も起きない件数になる。作り直しを押し直すと失敗行が消えて予算が戻るので、その時点から再び数える。
+
+録画一覧 API の絞り込み（`GET /api/recordings` の encodeState）も、同じ行から録画 ID を取る。
 
 worker が encode 中に死ぬと、次の試行が始まるまで試行行は実行中のまま残る。River の rescue は締切後（実尺が不明なら最大 12 時間）なので、その間は実行中に数える。
 
@@ -136,7 +140,9 @@ desired から外れた後も River に残るジョブは、待機列に数え�
 <details><summary>根拠</summary>
 
 - 待機列の導出: `internal/api/encode_queue.go`
+- 不足プロファイルと作り直し要求を合わせた導出: `ListEncodeQueue`
 - 不足プロファイルの述語: `ListMissingEncodeProfiles`
+- 作り直し要求の列挙（reconcile 側）: `ListEncodedAssetRebuildRequests`
 - 実行中と待機中の区分: `running` と `queued`
 - 使わない River の API: `JobList`
 - 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`

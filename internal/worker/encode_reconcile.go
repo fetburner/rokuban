@@ -101,8 +101,8 @@ type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
 
-	// beforeDeleteStaleRebuildRequest synchronizes the stale-request compare-and-delete test.
-	// Production workers leave it nil.
+	// beforeDeleteStaleRebuildRequest は、無効な要求の比較交換削除のテストが読み取りと
+	// 削除の間に割り込むためのフック。本番の worker では nil のまま。
 	beforeDeleteStaleRebuildRequest func(context.Context, sqlcgen.ListEncodedAssetRebuildRequestsRow)
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の

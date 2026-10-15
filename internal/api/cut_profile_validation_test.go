@@ -469,3 +469,115 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 		}
 	}
 }
+
+// TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudget は、
+// 試行上限に達した作り直し要求を待機列に数えず（worker が作らないため）、押し直し
+// （API が failed 試行行を消す）の後は数えることを両方向で固定する。
+func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudget(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	for _, sql := range []string{
+		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`,
+		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		 VALUES ($1, 'encoded', 'cut', 'queue-exhausted/cut.mp4', 1000, 'active')`,
+		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,600000),[900000,1800000)}'::int8multirange)`,
+		`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_at, attempt_count)
+		 VALUES ($1, 'cut', 'failed', now(), 25)`,
+	} {
+		if _, err := pool.Exec(ctx, sql, id); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	queued := func() int64 {
+		t.Helper()
+		var got struct {
+			Queued  int64 `json:"queued"`
+			Running int64 `json:"running"`
+		}
+		resp, err := http.Get(srv.URL + "/api/encode-queue")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Queued + got.Running
+	}
+	if got := queued(); got != 0 {
+		t.Fatalf("queue with exhausted rebuild request = %d, want 0", got)
+	}
+	resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reencode status = %d, want 204", resp.StatusCode)
+	}
+	if got := queued(); got != 1 {
+		t.Fatalf("queue after reencode reset the budget = %d, want 1", got)
+	}
+}
+
+// TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted は、原本が active でない録画の
+// 作り直し要求を待機列に数えず、active なら数えることを固定する。
+func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodeProfileNames: []string{"cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	for _, sql := range []string{
+		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
+		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
+		 VALUES ($1, 'encoded', 'cut', 'queue-noorig/cut.mp4', 1000, 'active')`,
+		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1800000)}'::int8multirange)`,
+		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`,
+	} {
+		if _, err := pool.Exec(ctx, sql, id); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	queued := func() int64 {
+		t.Helper()
+		var got struct {
+			Queued  int64 `json:"queued"`
+			Running int64 `json:"running"`
+		}
+		resp, err := http.Get(srv.URL + "/api/encode-queue")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		return got.Queued + got.Running
+	}
+	if got := queued(); got != 0 {
+		t.Fatalf("queue without active original = %d, want 0", got)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'active' WHERE recording_id = $1 AND kind = 'original'`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := queued(); got != 1 {
+		t.Fatalf("queue with active original = %d, want 1", got)
+	}
+}

@@ -565,7 +565,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	w := &EncodeWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
-	decision, err := w.prepareEncodePublish(ctx, tx, sqlcgen.New(tx), encodePublishInput{
+	decision, err := w.prepareEncodePublish(ctx, sqlcgen.New(tx), encodePublishInput{
 		recordingID: recordingID,
 		profile:     "cut",
 		attempt:     1,
