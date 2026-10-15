@@ -115,6 +115,77 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 	}
 }
 
+func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	defer srv.Close()
+
+	cases := []struct {
+		name         string
+		state        string
+		attemptCount int32
+	}{
+		{name: "failed", state: "failed", attemptCount: 1},
+		{name: "retrying", state: "retrying", attemptCount: 2},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id := seedRecording(t, pool, tc.name, time.Now().Add(time.Duration(i)*time.Second).Truncate(time.Second), "finished", int32(983+i))
+			if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+				RecordingID: id,
+				Kind:        db.AssetKindOriginal,
+				RelPath:     fmt.Sprintf("test/%d.ts", id),
+				SizeBytes:   1000,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pool.Exec(ctx, `
+				INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+				VALUES ($1, 'always', '{}', true)`, id); err != nil {
+				t.Fatal(err)
+			}
+
+			attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
+			for attemptCount < tc.attemptCount {
+				attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+					RecordingID: id, MaxAttempts: 3,
+				})
+				if err != nil || !attempt.ShouldRun {
+					t.Fatalf("BeginCMDetectionAttempt(%d) = %#v, %v", id, attempt, err)
+				}
+				attemptCount = attempt.AttemptCount
+			}
+			updated, err := q.MarkCMDetectionFailure(ctx, sqlcgen.MarkCMDetectionFailureParams{
+				RecordingID: id, AttemptCount: attemptCount, State: tc.state,
+			})
+			if err != nil || updated != 1 {
+				t.Fatalf("MarkCMDetectionFailure(%d, %d) = %d, %v", id, attemptCount, updated, err)
+			}
+
+			if resp := patchCMDetection(t, encodePolicyURL(srv.URL, id), false); resp.StatusCode != http.StatusNoContent {
+				t.Fatalf("disable status = %d, want 204", resp.StatusCode)
+			}
+			var remaining int
+			var gotState string
+			if err := pool.QueryRow(ctx, `SELECT count(*), COALESCE(max(state), '') FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&remaining, &gotState); err != nil {
+				t.Fatal(err)
+			}
+			if remaining != 1 || gotState != tc.state {
+				t.Fatalf("attempts after disable = %d/%q, want 1/%q until CM reconcile", remaining, gotState, tc.state)
+			}
+			var disabled, hasStateChangeMarker bool
+			if err := pool.QueryRow(ctx, `SELECT NOT cm_detect, cm_detect_changed_at IS NOT NULL FROM recording_encode_policy WHERE recording_id = $1`, id).Scan(&disabled, &hasStateChangeMarker); err != nil {
+				t.Fatal(err)
+			}
+			if !disabled || !hasStateChangeMarker {
+				t.Fatalf("policy after disable = disabled %v, marker %v; want disabled with marker", disabled, hasStateChangeMarker)
+			}
+		})
+	}
+}
+
 func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()

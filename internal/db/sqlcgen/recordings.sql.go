@@ -114,11 +114,17 @@ func (q *Queries) AppendRecordingEncodeProfiles(ctx context.Context, arg AppendR
 
 const clearRecordingCMDetection = `-- name: ClearRecordingCMDetection :exec
 UPDATE recording_encode_policy
-SET cm_detect = false, updated_at = now()
+SET cm_detect = false,
+    cm_detect_changed_at = CASE
+        WHEN cm_detect THEN clock_timestamp()
+        ELSE cm_detect_changed_at
+    END,
+    updated_at = now()
 WHERE recording_id = $1
 `
 
 // 未凍結録画で false は既定値との同値なので no-op。凍結済み policy だけ更新する。
+// 状態変更時刻は再有効化後も残し、次回 reconcile が切替前の試行を消せるようにする。
 func (q *Queries) ClearRecordingCMDetection(ctx context.Context, recordingID int64) error {
 	_, err := q.db.Exec(ctx, clearRecordingCMDetection, recordingID)
 	return err
@@ -659,8 +665,8 @@ func (q *Queries) RemoveRecordingEncodeProfile(ctx context.Context, arg RemoveRe
 }
 
 const setRecordingCMDetection = `-- name: SetRecordingCMDetection :execrows
-INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
-SELECT r.id, 'always', '{}', true
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_changed_at)
+SELECT r.id, 'always', '{}', true, clock_timestamp()
 FROM recordings r
 JOIN media_assets o ON o.recording_id = r.id AND o.kind = 'original' AND o.state = 'active'
 WHERE r.id = $1
@@ -668,6 +674,10 @@ WHERE r.id = $1
   AND NOT EXISTS (SELECT 1 FROM missing_media_assets m WHERE m.media_asset_id = o.id)
 ON CONFLICT (recording_id) DO UPDATE
 SET cm_detect = true,
+    cm_detect_changed_at = CASE
+        WHEN NOT recording_encode_policy.cm_detect THEN clock_timestamp()
+        ELSE recording_encode_policy.cm_detect_changed_at
+    END,
     updated_at = now()
 WHERE EXISTS (
     SELECT 1 FROM media_assets o
@@ -684,6 +694,7 @@ WHERE EXISTS (
 // cm_detect の切り替えは凍結済み policy の更新、または active な原本を持つ
 // 未凍結録画の初回凍結として適用する。原本の状態はこの INSERT/UPDATE の瞬間に
 // 再評価し、読み取りと書き込みの間に原本が消える窓を作らない。
+// 最後の状態変更時刻は、同じ値の再送では進めない。失敗行を消す境界として使う。
 func (q *Queries) SetRecordingCMDetection(ctx context.Context, recordingID int64) (int64, error) {
 	result, err := q.db.Exec(ctx, setRecordingCMDetection, recordingID)
 	if err != nil {

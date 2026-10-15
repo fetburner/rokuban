@@ -53,6 +53,18 @@ DELETE FROM recording_cm_detections WHERE recording_id = sqlc.arg('recording_id'
 -- name: DeleteCMDetectionAttempt :exec
 DELETE FROM recording_cm_attempts WHERE recording_id = sqlc.arg('recording_id');
 
+-- Clear attempts disabled by policy before scheduling the current desired set. The
+-- policy marker also catches a disable followed by a re-enable between periodic passes.
+-- name: DeleteStaleCMDetectionAttempts :exec
+DELETE FROM recording_cm_attempts ca
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM recording_encode_policy p
+    WHERE p.recording_id = ca.recording_id
+      AND p.cm_detect
+      AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+);
+
 -- name: BeginCMDetectionAttempt :one
 INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count)
 VALUES (sqlc.arg('recording_id'), 'running', NULL, now(), 1)

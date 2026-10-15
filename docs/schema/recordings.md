@@ -324,6 +324,7 @@ CREATE TABLE recording_encode_policy (
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     cm_detect       boolean NOT NULL DEFAULT false,
+    cm_detect_changed_at timestamptz, -- 状態変更前の試行行を遅延削除する境界
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
@@ -338,7 +339,7 @@ CREATE TABLE recording_encode_policy (
 
 既存録画への backfill は、原本のメディアアセットの有無で「凍結済みか」を判定して行を作る。列の値そのものは判定に使わない（不変条件 9）。
 
-CM 検出の要求は、取り込み時のデプロイ設定または録画単位の API が宣言した値である。保持ポリシーと同じく録画ごとに凍結し、worker はこの値と active original の両方を満たす行だけを処理する。
+CM 検出の要求も `cm_detect` に凍結し、worker は true かつ active original がある録画だけを処理する。
 
 <details><summary>根拠</summary>
 

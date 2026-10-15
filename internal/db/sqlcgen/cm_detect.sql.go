@@ -290,6 +290,24 @@ func (q *Queries) DeleteCMLogoCandidateRunningAttempt(ctx context.Context, arg D
 	return result.RowsAffected(), nil
 }
 
+const deleteStaleCMDetectionAttempts = `-- name: DeleteStaleCMDetectionAttempts :exec
+DELETE FROM recording_cm_attempts ca
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM recording_encode_policy p
+    WHERE p.recording_id = ca.recording_id
+      AND p.cm_detect
+      AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
+)
+`
+
+// Clear attempts disabled by policy before scheduling the current desired set. The
+// policy marker also catches a disable followed by a re-enable between periodic passes.
+func (q *Queries) DeleteStaleCMDetectionAttempts(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteStaleCMDetectionAttempts)
+	return err
+}
+
 const failOrphanCMLogoCandidate = `-- name: FailOrphanCMLogoCandidate :execrows
 UPDATE cm_logo_candidates
 SET state = 'failed', stage = 'stopped',

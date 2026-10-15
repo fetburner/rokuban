@@ -37,6 +37,9 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if w.Enqueuer == nil {
 		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
 	}
+	if err := sqlcgen.New(w.Pool).DeleteStaleCMDetectionAttempts(ctx); err != nil {
+		return fmt.Errorf("CM detection reconcile: clearing disabled attempts: %w", err)
+	}
 	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RecoveryGrace); err != nil {
 		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
 	}

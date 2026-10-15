@@ -327,12 +327,13 @@ type RecordingEncodeAttempt struct {
 }
 
 type RecordingEncodePolicy struct {
-	RecordingID    int64
-	KeepOriginal   string
-	EncodeProfiles []string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	CmDetect       bool
+	RecordingID       int64
+	KeepOriginal      string
+	EncodeProfiles    []string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+	CmDetect          bool
+	CmDetectChangedAt *time.Time
 }
 
 type RecordingIngestProgress struct {

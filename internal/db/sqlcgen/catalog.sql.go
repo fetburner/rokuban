@@ -469,21 +469,32 @@ func (q *Queries) CatalogListProgramSnapshots(ctx context.Context) ([]ProgramSna
 }
 
 const catalogListRecordingEncodePolicies = `-- name: CatalogListRecordingEncodePolicies :many
-SELECT recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect FROM recording_encode_policy ORDER BY recording_id
+SELECT recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
+FROM recording_encode_policy
+ORDER BY recording_id
 `
+
+type CatalogListRecordingEncodePoliciesRow struct {
+	RecordingID    int64
+	KeepOriginal   string
+	EncodeProfiles []string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	CmDetect       bool
+}
 
 // recording_encode_policy 衛星表（issue #159）。行が無い録画は未凍結（省略）で
 // 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
 // ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
-func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context) ([]RecordingEncodePolicy, error) {
+func (q *Queries) CatalogListRecordingEncodePolicies(ctx context.Context) ([]CatalogListRecordingEncodePoliciesRow, error) {
 	rows, err := q.db.Query(ctx, catalogListRecordingEncodePolicies)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []RecordingEncodePolicy
+	var items []CatalogListRecordingEncodePoliciesRow
 	for rows.Next() {
-		var i RecordingEncodePolicy
+		var i CatalogListRecordingEncodePoliciesRow
 		if err := rows.Scan(
 			&i.RecordingID,
 			&i.KeepOriginal,
