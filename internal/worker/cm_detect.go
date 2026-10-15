@@ -116,19 +116,20 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 		return nil
 	}
 	attemptCount := attempt.AttemptCount
-	if err := w.detect(ctx, args.RecordingID, item, attemptCount); err != nil {
+	policyGeneration := attempt.PolicyGeneration
+	if err := w.detect(ctx, args.RecordingID, item, attemptCount, policyGeneration); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failureCancel()
-			params := sqlcgen.DeleteCMDetectionRunningAttemptParams{
-				RecordingID: args.RecordingID, AttemptCount: attemptCount,
-			}
+			// 世代は試行行自身の識別子。方針表をロックせず、世代の違う行には何も書かない。
 			var cleanupErr error
 			if attemptCount == 1 {
-				_, cleanupErr = q.DeleteCMDetectionRunningAttempt(failureCtx, params)
+				_, cleanupErr = q.DeleteCMDetectionRunningAttempt(failureCtx, sqlcgen.DeleteCMDetectionRunningAttemptParams{
+					RecordingID: args.RecordingID, AttemptCount: attemptCount, PolicyGeneration: policyGeneration,
+				})
 			} else {
 				_, cleanupErr = q.CancelCMDetectionRunningAttempt(failureCtx, sqlcgen.CancelCMDetectionRunningAttemptParams{
-					RecordingID: args.RecordingID, AttemptCount: attemptCount,
+					RecordingID: args.RecordingID, AttemptCount: attemptCount, PolicyGeneration: policyGeneration,
 				})
 			}
 			if cleanupErr != nil {
@@ -152,11 +153,12 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer failureCancel()
 		marked, markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
-			State:        state,
-			Stage:        stage,
-			Error:        &message,
-			RecordingID:  args.RecordingID,
-			AttemptCount: attemptCount,
+			State:            state,
+			Stage:            stage,
+			Error:            &message,
+			RecordingID:      args.RecordingID,
+			AttemptCount:     attemptCount,
+			PolicyGeneration: policyGeneration,
 		})
 		if markErr != nil {
 			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", args.RecordingID, err),
@@ -173,7 +175,13 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 	return nil
 }
 
-func (w *CMDetectWorker) detect(ctx context.Context, recordingID int64, item sqlcgen.GetCMDetectionWorkItemRow, attemptCount int32) error {
+func (w *CMDetectWorker) detect(
+	ctx context.Context,
+	recordingID int64,
+	item sqlcgen.GetCMDetectionWorkItemRow,
+	attemptCount int32,
+	policyGeneration int64,
+) error {
 	if item.RelPath == nil {
 		return cmFailure("setup", fmt.Errorf("active original is missing"))
 	}
@@ -273,7 +281,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, recordingID int64, item sql
 		return cmFailure("match", fmt.Errorf("station logo match %.2f%% is below %.2f%%", matchPercent, cmDetectMinLogoMatchPercent))
 	}
 	if !hadLogo {
-		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry, attemptCount); err != nil {
+		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry, attemptCount, policyGeneration); err != nil {
 			return cmFailure("logo", err)
 		}
 	}
@@ -300,7 +308,7 @@ func (w *CMDetectWorker) detect(ctx context.Context, recordingID int64, item sql
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
 	multirange := encodeInt8Multirange(ranges, totalMs)
-	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange, attemptCount)
+	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange, attemptCount, policyGeneration)
 }
 
 func (w *CMDetectWorker) saveCMDetectionResult(
@@ -310,6 +318,7 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 	startedLogoLearnedAt *time.Time,
 	multirange string,
 	attemptCount int32,
+	policyGeneration int64,
 ) error {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
@@ -332,7 +341,9 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 		}
 		return cmFailure("save", fmt.Errorf("locking recording for CM result: %w", err))
 	}
-	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, item.ID)
+	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
+		RecordingID: item.ID, PolicyGeneration: policyGeneration,
+	})
 	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
 		return nil
 	}
@@ -399,6 +410,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	observedAreaUpdatedAt *time.Time,
 	geometry videoGeometry,
 	attemptCount int32,
+	policyGeneration int64,
 ) error {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
@@ -419,7 +431,9 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
 		return fmt.Errorf("locking station logo state: %w", err)
 	}
-	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, item.ID)
+	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
+		RecordingID: item.ID, PolicyGeneration: policyGeneration,
+	})
 	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
 		return nil
 	}

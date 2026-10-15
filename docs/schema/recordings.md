@@ -324,6 +324,7 @@ CREATE TABLE recording_encode_policy (
     keep_original   text   NOT NULL CHECK (keep_original IN ('always', 'until_encoded')),
     encode_profiles text[] NOT NULL,
     cm_detect       boolean NOT NULL DEFAULT false,
+    cm_detect_generation bigint NOT NULL DEFAULT 0, -- 切り替えごとに +1
     CHECK (keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0),
     created_at      timestamptz NOT NULL DEFAULT now(),
     updated_at      timestamptz NOT NULL DEFAULT now()
@@ -363,7 +364,9 @@ CM 検出の結果は、検出処理全体の完了を 1 行で表し、処理�
 
 失敗工程は、worker が観測した工程である。検出前の準備から結果の保存までの工程に加え、停止・映像サイズの不一致・ロゴの不一致・採用待ちがある。採用待ちは、枠があり、候補の採用を待つため検出しなかったことを表す。
 
-CM worker は実尺に基づくタイムアウトを返し、停止・異常終了後の実行中のジョブは River の JobRescuer が回収する。次の worker 開始時に処理中の行が残っていれば、前のプロセス死を数え、上限に達した行を失敗にする。試行回数は、結果保存時のフェンシング値でもある。結果と試行行の削除は、同一トランザクションで確定する。
+CM worker は実尺に基づくタイムアウトを返し、停止・異常終了後の実行中のジョブは River の JobRescuer が回収する。次の worker 開始時に処理中の行が残っていれば、前のプロセス死を数え、上限に達した行を失敗にする。試行回数と `policy_generation` は、結果保存時のフェンシング値でもある。結果と試行行の削除は、同一トランザクションで確定する。
+
+`policy_generation` は、試行行を作った（または作り直した）時点の方針の `cm_detect_generation` である。方針が有効でこの世代が一致する行だけが現在の試行で、読み手は `current_cm_attempts` 越しに読む。理由は [data/jobs.md](../data/jobs.md) の「CM 検出の試行回数」にある。
 
 <details><summary>根拠</summary>
 
@@ -372,7 +375,8 @@ CM worker は実尺に基づくタイムアウトを返し、停止・異常終�
 - 試行の 3 状態: `running`（処理中）、`retrying`（再投入待ち）、`failed`（失敗）
 - 失敗工程の列と値: `stage`、`setup` / `probe` / `area` / `logo` / `chapter` / `join` / `parse` / `save`、ほかに `stopped` / `resolution` / `match` / `adopt`
 - 実尺に基づくタイムアウト: `Timeout()`
-- フェンシング値: `attempt_count`
+- フェンシング値: `attempt_count`、`policy_generation`
+- 現在の試行: `current_cm_attempts`、`recording_encode_policy.cm_detect_generation`
 
 </details>
 

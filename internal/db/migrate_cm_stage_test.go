@@ -30,8 +30,8 @@ func TestMigrateDown_CMStageResolutionMatch(t *testing.T) {
 	if _, err := conn.Exec(ctx, "SET session_replication_role = replica"); err != nil {
 		t.Fatalf("disable fk checks: %v", err)
 	}
-	if _, err := conn.Exec(ctx, `INSERT INTO recording_cm_attempts (recording_id, state, stage)
-		VALUES (1, 'failed', 'resolution'), (2, 'failed', 'match'), (3, 'failed', 'logo')`); err != nil {
+	if _, err := conn.Exec(ctx, `INSERT INTO recording_cm_attempts (recording_id, state, stage, policy_generation)
+		VALUES (1, 'failed', 'resolution', 0), (2, 'failed', 'match', 0), (3, 'failed', 'logo', 0)`); err != nil {
 		t.Fatalf("insert attempts: %v", err)
 	}
 

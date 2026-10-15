@@ -24,7 +24,7 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 		if attemptCount != step.count {
 			t.Fatalf("attempt count = %d, want %d", attemptCount, step.count)
 		}
-		markCMDetectionTestFailure(t, ctx, q, id, attemptCount, step.state, nil, nil)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, step.state, nil, nil)
 	}
 	if _, err := pool.Exec(ctx, `UPDATE recording_cm_attempts SET attempted_at = now() - interval '1 hour' WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 		t.Fatalf("BeginCMDetectionAttempt after failed = %#v, %v; want running attempt 1", attempt, err)
 	}
 	// Work は attemptCount < cmDetectMaxTries の失敗を retrying にする（cm_detect.go）。
-	markCMDetectionTestFailure(t, ctx, q, id, attempt.AttemptCount, "retrying", nil, nil)
+	markCMDetectionTestFailure(t, ctx, pool, q, id, attempt.AttemptCount, "retrying", nil, nil)
 	var state string
 	var count int32
 	if err := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &count); err != nil {

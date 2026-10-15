@@ -312,9 +312,9 @@ const (
         CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
         WHERE d.recording_id = r.id
     ) AS cm_ranges,
-    (SELECT ca.state FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_state,
-    (SELECT ca.stage FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_stage,
-    (SELECT ca.error FROM recording_cm_attempts ca WHERE ca.recording_id = r.id) AS cm_attempt_error,
+    ca.state AS cm_attempt_state,
+    ca.stage AS cm_attempt_stage,
+    ca.error AS cm_attempt_error,
     -- チャプターの所有とユーザー層（encodedAssets[].cutStale の判定材料）。
     -- **導出（chapters.Derive）は Go 側のまま**で、ここは素の事実だけを射影する
     -- （state そのものを SQL で CASE に潰さない既存の規律と同じ。SQL に
@@ -416,6 +416,9 @@ FROM recordings r
 LEFT JOIN media_assets a
     ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
 LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
+-- 方針変更より前の試行は reconcile が削除するまで残ることがある。
+-- 現在の世代の試行だけを view 越しに射影する。
+LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
 LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
 -- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、

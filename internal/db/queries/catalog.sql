@@ -41,7 +41,9 @@ SELECT * FROM recordings ORDER BY id;
 -- 正しい --- rescue 側もこのリストに現れなかった recordings.id には何も書かない
 -- ので、「凍結済み」と「未凍結」の区別がそのまま往復する。
 -- name: CatalogListRecordingEncodePolicies :many
-SELECT * FROM recording_encode_policy ORDER BY recording_id;
+SELECT recording_id, keep_original, encode_profiles, created_at, updated_at, cm_detect
+FROM recording_encode_policy
+ORDER BY recording_id;
 
 -- recording_purge_requests 衛星表（旧 recordings.purge_after）。行が無い録画は
 -- 「即時削除を要求していない」で正しい --- rescue 側もこのリストに現れなかった

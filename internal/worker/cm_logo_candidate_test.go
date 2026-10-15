@@ -388,6 +388,80 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	assertDuration(reconcileRecording)
 }
 
+func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+	enqueuer := newRecordingEnqueuer()
+
+	newFailedRecording := func(eventID int32) int64 {
+		t.Helper()
+		id := seedCMRecording(t, pool, t.TempDir(), eventID)
+		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
+		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", nil, nil)
+		return id
+	}
+	attemptRows := func(recordingID int64) int {
+		t.Helper()
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_attempts WHERE recording_id = $1`, recordingID).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+
+	disabled := newFailedRecording(953)
+	if err := q.ClearRecordingCMDetection(ctx, disabled); err != nil {
+		t.Fatal(err)
+	}
+
+	quicklyReenabled := newFailedRecording(954)
+	if err := q.ClearRecordingCMDetection(ctx, quicklyReenabled); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, quicklyReenabled); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", quicklyReenabled, rows, err)
+	}
+	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
+		t.Fatalf("desired before reconcile for quick toggle = %v, %v; want true (the old failed row is not a current attempt)", desired, err)
+	}
+
+	// 再有効化の後に始めた試行は現在の世代で、同値の再送では消えない。
+	newAttemptAfterReenable := seedCMRecording(t, pool, t.TempDir(), 955)
+	if err := q.ClearRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
+	}
+	attemptCount := startCMDetectionTestAttempt(t, ctx, q, newAttemptAfterReenable)
+	markCMDetectionTestFailure(t, ctx, pool, q, newAttemptAfterReenable, attemptCount, "failed", nil, nil)
+	if rows, err := q.SetRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil || rows != 1 {
+		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
+	}
+
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}
+	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := attemptRows(disabled); got != 0 {
+		t.Errorf("disabled policy attempt rows = %d, want 0", got)
+	}
+	if got := attemptRows(quicklyReenabled); got != 0 {
+		t.Errorf("pre-disable attempt rows after quick re-enable = %d, want 0", got)
+	}
+	if got := attemptRows(newAttemptAfterReenable); got != 1 {
+		t.Errorf("post-disable attempt rows = %d, want 1", got)
+	}
+	if desired, err := q.IsCMDetectionDesired(ctx, quicklyReenabled); err != nil || !desired {
+		t.Errorf("desired after stale attempt cleanup = %v, %v; want true", desired, err)
+	}
+	enqueuedJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
+	if len(enqueuedJobs) != 1 || enqueuedJobs[0].RecordingID != quicklyReenabled {
+		t.Errorf("reconciled CM jobs = %#v, want only recording %d", enqueuedJobs, quicklyReenabled)
+	}
+}
+
 // 定期パスは、枠があって候補の無い局に解析ジョブを積む。失敗した候補がある局には積まない。
 func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
