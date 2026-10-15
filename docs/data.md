@@ -14,7 +14,7 @@ flowchart LR
 
 ### 分割先の一覧
 
-データ層の本文は 5 つのファイルに分かれていて、節番号は分割前のままである。節からファイルは、次の表で引ける。
+データ層の本文は複数のファイルに分かれていて、節番号は分割前のままである。節からファイルは、次の表で引ける。
 
 | 節 | 内容 | ファイル |
 |---|---|---|
@@ -23,6 +23,7 @@ flowchart LR
 | §5 | 検索とルール評価の統一（POSIX ARE / pg_trgm / 全角半角正規化 / 録画検索と rulequery の境界） | [data/search.md](data/search.md) |
 | §6.5 | チューナー射影と容量超過の判定（Hall 条件 / twin vertices / 累積和 / 下界に限る原則） | [data/capacity.md](data/capacity.md) |
 | §8 | シリーズ同一性（タイトル導出が比較の基準 / 分類ルール → 自動キー / 評価結果はキャッシュで宛先にしない / ハブの起点は録画 id） | [data/series.md](data/series.md) |
+| §9 | ドメインごとの永続化契約（契約の単位 / tx の所有者 / 方言差） | [data/store-contracts.md](data/store-contracts.md) |
 
 ### 読む順の目安
 
@@ -35,6 +36,7 @@ flowchart LR
 | EPG 射影・スキーマの分離原則 | §4 §6 |
 | 容量判定・チューナー射影 | §6.5（前提として §6 の非正規化スナップショット） |
 | シリーズ棚・番組ハブ・分類ルール | §8 |
+| 永続化契約・トランザクション境界 | §9（store-contracts.md） |
 | DB 輻輳・プール設定 | §7 と [operations.md](operations.md) §3 |
 
 <details><summary>根拠</summary>

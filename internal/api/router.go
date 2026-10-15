@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // RouterConfig は NewRouter の設定。
@@ -27,6 +28,9 @@ type RouterConfig struct {
 
 	// Pool は REST ハンドラが使う DB プール。
 	Pool *pgxpool.Pool
+
+	// ChapterStore はチャプター編集の永続化契約。
+	ChapterStore store.ChapterEdits
 
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
 	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
@@ -144,7 +148,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

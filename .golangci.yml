@@ -52,6 +52,19 @@ linters:
               desc: api role must not execute external processes
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
+            - pkg: github.com/fetburner/rokuban/internal/store/pgstore
+              desc: api persistence uses store contracts, not PostgreSQL implementations
+        store-contract-database-boundary:
+          # Application contracts remain independent of pgx and generated SQL.
+          list-mode: lax
+          files:
+            - "${config-path}/internal/store/**"
+            - "!${config-path}/internal/store/pgstore/**"
+          deny:
+            - pkg: github.com/jackc/pgx/v5
+              desc: store contracts do not depend on pgx
+            - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
+              desc: store contracts do not depend on generated database queries
         river-adapter-only:
           # River の型はテストも含め runtime adapter の境界に閉じ込める。
           # KEDA の SQL テストだけは YAML の状態名を River のスキーマと照合する。
