@@ -144,7 +144,7 @@ api ロールを含むプロセスのプール全体に適用される。monolit
 
 ### transaction pooling は通さない
 
-transaction pooling は通さない。接続が要求ごとに入れ替わると、LISTEN と advisory lock を使うロールが壊れるためである。
+transaction pooling は通さない。接続が要求ごとに入れ替わると、LISTEN と advisory lock を使うロールが正しく動かなくなるためである。
 
 worker は River の LISTEN を使い、1 個の Listener を elector と job-available 通知で共有する（River 0.47.0 で確認済み）。watcher は advisory lock、notifier は SSE 用の LISTEN を使う（[data.md](../data.md) §2 / §3）。将来ハイブリッド構成を実装するときは、必要な pooler 対応の形をその PR で改めて決める。
 

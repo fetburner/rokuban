@@ -28,9 +28,9 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:programs-grid-hour-boundary
 ```
 
-### 参照バッジの導線（`badge-links.mjs`）
+### 参照バッジのリンク（`badge-links.mjs`）
 
-容量不足バッジ（予約一覧）から番組表への導線（issue #233 M6-5、`view` の URL 化は issue #437）。見るのは主に 2 点 --- ①バッジが行本体の詳細リンクの中に入れ子の `<a>` として置かれておらず、クリックすると番組表（`/programs?view=grid&at=...`）へ飛ぶこと。②`lg` 以上ではリンクが積んだ `view=grid` どおりグリッド表示になり、不足区間の帯がスクロール後に可視範囲へ入っていること（②' として「今日」ボタンを押した後 `at` の位置ではなく現在時刻へスクロールし直すことも見る）。加えて③として `lg` 未満（グリッドが出ずリスト表示のまま）でもクリックが機能しエラーにならないことまで見る --- ①②は 1280px でしか開かないため、この経路を通さないと隠れたバグに気付けない。
+容量不足バッジ（予約一覧）から番組表へのリンク（issue #233 M6-5、`view` の URL 化は issue #437）。見るのは主に 2 点 --- ①バッジが行本体の詳細リンクの中に入れ子の `<a>` として置かれておらず、クリックすると番組表（`/programs?view=grid&at=...`）へ飛ぶこと。②`lg` 以上ではリンクが積んだ `view=grid` どおりグリッド表示になり、不足区間の帯がスクロール後に可視範囲へ入っていること（②' として「今日」ボタンを押した後 `at` の位置ではなく現在時刻へスクロールし直すことも見る）。加えて③として `lg` 未満（グリッドが出ずリスト表示のまま）でもクリックが機能しエラーにならないことまで見る --- ①②は 1280px でしか開かないため、この経路を通さないと隠れたバグに気付けない。
 
 ②・②' はスクロール位置そのものの判定なので、jsdom（`pnpm test`）では原理的に確認できない。
 
@@ -41,7 +41,7 @@ pnpm build && pnpm preview --port 4173 --strictPort &
 E2E_URL=http://localhost:4173 pnpm e2e:badge-links
 ```
 
-**配っている bundle が `dist/` の現物と一致するかは、スクリプト自身が毎回 ⓪ として自動で確認する**（`verifyBundleMatches`）。不一致なら他の判定をせず即 exit 1 するので、`curl`/`ls` で手動照合する必要はない。これは実際に踏んだ事故の再発を、人の確認忘れに頼らず機械で止めるための仕組みである。その事故は `--strictPort` を付けていても起きた --- 複数の worktree を並行して触っていると、別の worktree の preview が同じポートに先に居座る。すると自分の起動が黙って失敗し、`E2E_URL` が無関係な古いビルドを指したまま判定が進んでしまう。ポート自体は空いているものを選ぶこと（`--strictPort` が起動を失敗させるので、選び間違えればここで気付ける）。
+**配っている bundle が `dist/` の現物と一致するかは、スクリプト自身が毎回 ⓪ として自動で確認する**（`verifyBundleMatches`）。不一致なら他の判定をせず即 exit 1 するので、`curl`/`ls` で手動照合する必要はない。これは実際に起きたトラブルの再発を、人の確認忘れに頼らず機械で止めるための仕組みである。そのトラブルは `--strictPort` を付けていても起きた --- 複数の worktree を並行して触っていると、別の worktree の preview が同じポートに先に居座る。すると自分の起動が何も出さずに失敗し、`E2E_URL` が無関係な古いビルドを指したまま判定が進んでしまう。ポート自体は空いているものを選ぶこと（`--strictPort` が起動を失敗させるので、選び間違えればここで気付ける）。
 
 ### シリーズ一覧の分割（`shelves-split.mjs`）
 
@@ -103,7 +103,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:grid-reserved
 - ⑤ Escape で閉じ、クリック元セルへフォーカスが戻る
 - ⑥ overlay と「閉じる」ボタンでも閉じ、クリック元セルへフォーカスが戻る
 
-**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の「trigger or previously focused element」）に任せている**。controlled Dialog（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、このページ側で `finalFocus` を自作する必要は無い。自作すると、ボタンのクリックで focus を移さない macOS/iOS Safari で `document.body` を掴んでしまい、既定より悪化する。
+**フォーカス復帰は base-ui の `Dialog.Popup` の既定（`finalFocus` 省略時の「trigger or previously focused element」）に任せている**。controlled Dialog（`Dialog.Trigger` が無い）でも既定はクリック直前のフォーカス要素へ戻るため、このページ側で `finalFocus` を自作する必要は無い。自作すると、ボタンのクリックで focus を移さない macOS/iOS Safari で `document.body` を対象にしてしまい、既定より悪化する。
 
 API は `page.route` で丸ごと差し替えるので mirakc・実チューナー・DB は要らない。⓪（配っている bundle と `dist/` の一致）とフィクスチャの zod 契約検証も行う。
 
@@ -114,7 +114,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-dialog
 
 ### 番組リストの空時間窓（`programs-empty-window.mjs`）
 
-番組 API が最初または途中の 6 時間窓を空で返しても、後続窓へ進む導線が消えないことを 390px 幅の Chromium で見る。空窓を 2 回進め、後続取得の失敗後に同じ窓を手動再試行して番組へ到達すること、番組表示後の空窓で自動取得が連鎖しないこと、最終窓ではボタンと追加要求が消えることを判定する。通常の番組あり窓の日付移動と自動読み込みは `checks.mjs` が引き続き判定する。
+番組 API が最初または途中の 6 時間窓を空で返しても、後続窓へ進む入口が消えないことを 390px 幅の Chromium で見る。空窓を 2 回進め、後続取得の失敗後に同じ窓を手動再試行して番組へ到達すること、番組表示後の空窓で自動取得が連鎖しないこと、最終窓ではボタンと追加要求が消えることを判定する。通常の番組あり窓の日付移動と自動読み込みは `checks.mjs` が引き続き判定する。
 
 ```sh
 pnpm build && pnpm preview --port 4173 --strictPort &
@@ -123,7 +123,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:programs-empty-window
 
 ### 予約一覧取得失敗時の番組表レイアウト（`programs-reservation-error.mjs`）
 
-`pages/programs.tsx` のグリッドの高さ予算は次の式で決まる。`height: calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))` である。`reservations.isPending` / `isError` のバナーを `PageHeader` の**外**（通常フローの兄弟）に置くと、バナーの高さがどちらの CSS 変数にも入らない。すると 100dvh で組んだ画面なのに文書がビューポートを超え、ページ全体がスクロールする（実測: 外に置くと 1440x900 で 949px / 900px、`PageHeader` の中なら 900px / 900px）。この壊れ方はレイアウトそのものなので jsdom（`pnpm test`）では原理的に検出できない。
+`pages/programs.tsx` のグリッドの高さ予算は次の式で決まる。`height: calc(100dvh - var(--page-header-height, 0px) - var(--sticky-banners-height, 0px))` である。`reservations.isPending` / `isError` のバナーを `PageHeader` の**外**（通常フローの兄弟）に置くと、バナーの高さがどちらの CSS 変数にも入らない。すると 100dvh で組んだ画面なのに文書がビューポートを超え、ページ全体がスクロールする（実測: 外に置くと 1440x900 で 949px / 900px、`PageHeader` の中なら 900px / 900px）。この失敗はレイアウトそのものなので jsdom（`pnpm test`）では原理的に検出できない。
 
 `pages/programs.tsx` のコメントが挙げる「グリッドの sticky ヘッダが画面外へ出る」という症状そのものは、**この構造では再現しなかった**。外に置いた状態で文書を最後までスクロールしても、グリッド内の `GenreLegend`（見出し行の上にある帯）が緩衝になって 39px の余裕が残るためだ。下の判定 B はその症状の再現ではなく、緩衝が無くなったときに気付くための網である。
 

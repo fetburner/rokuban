@@ -51,7 +51,7 @@
       ]
     },
     {
-      "heading": "mirakc の版を上げる手順",
+      "heading": "mirakc のバージョンを上げる手順",
       "question": "mirakc のバージョンを上げるとは何をすることか。番号付きリリースへ戻す判断はあるか。",
       "points": [
         "より新しい digest に pin を差し替えること",

@@ -132,7 +132,7 @@ var beforeSweepProcessRecords func()
 // 公開メソッドとして切り出した。processRecord は M2-16 で record_sync の
 // (site, record_id) 行ロックにより冪等化されているため、SSE 由来の handleEvent と
 // このメソッドが同一 record を並行処理しても recordings は重複しない
-// （docs/recording.md §3.3「record 処理は並行実行しても壊れない」）。
+// （docs/recording.md §3.3「record 処理は並行実行しても問題が起きない」）。
 func (w *Watcher) Sweep(ctx context.Context) error {
 	slog.Info("watcher sweep started")
 

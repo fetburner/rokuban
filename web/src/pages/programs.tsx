@@ -226,7 +226,7 @@ export function ProgramsPage() {
   }, [atDayOffset, atSelectedDay])
 
   // グリッドは `lg` 以上でのみ出す。モバイルは常にリストのまま
-  // （docs/frontend.md「リストを第一級に置く。グリッドはその上に足す」）。
+  // （docs/frontend.md「リストを基本のビューにする。グリッドはその上に足す」）。
   // view は画面幅で捨てないので、幅が戻ればグリッドに戻る。
   const wideScreen = useMediaQuery(lgMediaQuery)
   const showGrid = wideScreen && view === 'grid'
