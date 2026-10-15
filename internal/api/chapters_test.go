@@ -205,8 +205,8 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 
 func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
-	defer srv.Close()
+	// このテストは方針世代から導く API 応答を固定する。HTTP のルート結線は他の章 API テストで確認する。
+	handler := NewServer(pool, nil, nil, nil, nil, nil, Capabilities{CmDetect: true})
 	ctx := context.Background()
 
 	id := seedRecording(t, pool, "再有効化後の検出待ち", time.Now().Truncate(time.Second), "finished", 987)
@@ -216,8 +216,15 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 	message := "previous policy generation failed"
 	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, nil, &message)
 
-	url := chaptersURL(srv.URL, id)
-	before := getChapters(t, url)
+	beforeResult, err := handler.GetRecordingChapters(ctx, GetRecordingChaptersRequestObject{Id: id})
+	if err != nil {
+		t.Fatalf("GET before re-enable: %v", err)
+	}
+	beforeResponse, ok := beforeResult.(GetRecordingChapters200JSONResponse)
+	if !ok {
+		t.Fatalf("GET before re-enable response = %T, want 200", beforeResult)
+	}
+	before := RecordingChapters(beforeResponse)
 	if before.DetectionPending {
 		t.Fatal("final failure was reported as pending before the policy changed")
 	}
@@ -235,7 +242,15 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 		WHERE recording_id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	after := getChapters(t, url)
+	afterResult, err := handler.GetRecordingChapters(ctx, GetRecordingChaptersRequestObject{Id: id})
+	if err != nil {
+		t.Fatalf("GET after quick re-enable: %v", err)
+	}
+	afterResponse, ok := afterResult.(GetRecordingChapters200JSONResponse)
+	if !ok {
+		t.Fatalf("GET after quick re-enable response = %T, want 200", afterResult)
+	}
+	after := RecordingChapters(afterResponse)
 	if !after.DetectionPending {
 		t.Fatal("chapter GET did not report detection pending after quick re-enable")
 	}
@@ -243,13 +258,22 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 		t.Fatalf("chapter version after re-enable = %q, unchanged from previous failure", after.Version)
 	}
 
-	resp := putChapters(t, url, []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
-	if resp.StatusCode != http.StatusConflict {
-		body := decodeErrorResponse(t, resp)
-		t.Fatalf("PUT after quick re-enable status = %d (%s), want 409 while detection is pending", resp.StatusCode, body.Error)
+	putResult, err := handler.PutRecordingChapterEdits(ctx, PutRecordingChapterEditsRequestObject{
+		Id: id,
+		Body: &ChapterEditsInput{
+			Version: after.Version,
+			Spans:   []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("PUT after quick re-enable: %v", err)
 	}
-	if body := decodeErrorResponse(t, resp); body.Error != chapterDetectionPendingMessage {
-		t.Fatalf("PUT error = %q, want %q", body.Error, chapterDetectionPendingMessage)
+	conflict, ok := putResult.(PutRecordingChapterEdits409JSONResponse)
+	if !ok {
+		t.Fatalf("PUT after quick re-enable response = %T, want 409", putResult)
+	}
+	if conflict.Error != chapterDetectionPendingMessage {
+		t.Fatalf("PUT error = %q, want %q", conflict.Error, chapterDetectionPendingMessage)
 	}
 	var owned bool
 	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM recording_chapter_ownership WHERE recording_id = $1)`, id).Scan(&owned); err != nil {
