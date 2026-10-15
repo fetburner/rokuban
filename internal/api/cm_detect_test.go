@@ -337,6 +337,84 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	}
 }
 
+func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "方針変更前の CM 失敗", time.Now().Truncate(time.Second), "finished", 984)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_changed_at)
+		VALUES ($1, 'always', '{}', true, clock_timestamp() - interval '1 second')`, id); err != nil {
+		t.Fatal(err)
+	}
+	q := sqlcgen.New(pool)
+	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
+	stage, message := "logo", "previous policy generation failed"
+	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, &stage, &message)
+
+	type recordingPair struct {
+		list   Recording
+		detail Recording
+	}
+	readBoth := func() recordingPair {
+		t.Helper()
+		var list []Recording
+		if resp := getJSON(t, srv.URL+"/api/recordings", &list); resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/recordings status = %d, want 200", resp.StatusCode)
+		}
+		var listed *Recording
+		for i := range list {
+			if list[i].Id == id {
+				listed = &list[i]
+				break
+			}
+		}
+		if listed == nil {
+			t.Fatalf("recording %d missing from GET /api/recordings", id)
+		}
+		var detail Recording
+		if resp := getJSON(t, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id), &detail); resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET /api/recordings/%d status = %d, want 200", id, resp.StatusCode)
+		}
+		return recordingPair{list: *listed, detail: detail}
+	}
+	assertDetection := func(pair recordingPair, wantState CMDetectionState, wantFailure bool) {
+		t.Helper()
+		for _, recording := range []Recording{pair.list, pair.detail} {
+			detection := recording.CmDetection
+			if detection.State != wantState {
+				t.Errorf("recording %d CM state = %q, want %q", recording.Id, detection.State, wantState)
+			}
+			if wantFailure {
+				if detection.Stage == nil || *detection.Stage != CMDetectionStage(stage) || detection.Error == nil || *detection.Error != message {
+					t.Errorf("recording %d CM failure details = (%v, %v), want (%q, %q)", recording.Id, detection.Stage, detection.Error, stage, message)
+				}
+			} else if detection.Stage != nil || detection.Error != nil {
+				t.Errorf("recording %d exposed stale CM failure details = (%v, %v)", recording.Id, detection.Stage, detection.Error)
+			}
+		}
+	}
+
+	assertDetection(readBoth(), CMDetectionStateFailed, true)
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = false,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = true,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	assertDetection(readBoth(), CMDetectionStateDetecting, false)
+}
+
 // 枠を教えると、学習済みロゴを残したまま候補解析を依頼する。
 // 一覧は教えた枠と候補の無い待ち状態を返す（このテストは River 無し）。
 func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
