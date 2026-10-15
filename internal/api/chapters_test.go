@@ -198,6 +198,63 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 	}
 }
 
+func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	id := seedRecording(t, pool, "再有効化後の検出待ち", time.Now().Truncate(time.Second), "finished", 987)
+	enableCMDetect(t, pool, id)
+	q := sqlcgen.New(pool)
+	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
+	message := "previous policy generation failed"
+	markCMDetectionFailureForTest(t, ctx, q, id, attemptCount, nil, &message)
+
+	url := chaptersURL(srv.URL, id)
+	before := getChapters(t, url)
+	if before.DetectionPending {
+		t.Fatal("final failure was reported as pending before the policy changed")
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = false,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = true,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	after := getChapters(t, url)
+	if !after.DetectionPending {
+		t.Fatal("chapter GET did not report detection pending after quick re-enable")
+	}
+	if after.Version == before.Version {
+		t.Fatalf("chapter version after re-enable = %q, unchanged from previous failure", after.Version)
+	}
+
+	resp := putChapters(t, url, []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
+	if resp.StatusCode != http.StatusConflict {
+		body := decodeErrorResponse(t, resp)
+		t.Fatalf("PUT after quick re-enable status = %d (%s), want 409 while detection is pending", resp.StatusCode, body.Error)
+	}
+	if body := decodeErrorResponse(t, resp); body.Error != chapterDetectionPendingMessage {
+		t.Fatalf("PUT error = %q, want %q", body.Error, chapterDetectionPendingMessage)
+	}
+	var owned bool
+	if err := pool.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM recording_chapter_ownership WHERE recording_id = $1)`, id).Scan(&owned); err != nil {
+		t.Fatal(err)
+	}
+	if owned {
+		t.Fatal("quick re-enable adopted the empty automatic chapter layer")
+	}
+}
+
 func TestPutRecordingChapterEdits_AllowsEditWhenDeploymentHasNoCMDetection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	// cm_detect.enabled=false のデプロイ。誰も検出ジョブを積まないので、終端に

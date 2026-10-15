@@ -477,6 +477,23 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	if got := count(); got != 1 {
 		t.Fatalf("eligible originals after final failure = %d, want 1", got)
 	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = false,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE recording_encode_policy
+		SET cm_detect = true,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != 0 {
+		t.Fatalf("eligible originals after quick re-enable with an old failure = %d, want 0", got)
+	}
 	if err := q.DeleteCMDetectionAttempt(ctx, id); err != nil {
 		t.Fatal(err)
 	}
