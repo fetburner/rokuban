@@ -12,9 +12,29 @@ import (
 
 const beginCMDetectionAttempt = `-- name: BeginCMDetectionAttempt :one
 INSERT INTO recording_cm_attempts (recording_id, state, error, attempted_at, attempt_count)
-VALUES ($1, 'running', NULL, now(), 1)
+VALUES (
+    $1, 'running', NULL,
+    GREATEST(
+        clock_timestamp(),
+        COALESCE((
+            SELECT cm_detect_changed_at + interval '1 microsecond'
+            FROM recording_encode_policy
+            WHERE recording_id = $1
+        ), '-infinity'::timestamptz)
+    ),
+    1
+)
 ON CONFLICT (recording_id) DO UPDATE
 SET state = CASE
+        -- A retry queued before disable/re-enable belongs to the old desired state.
+        -- Start a fresh budget even if it runs before periodic reconcile deletes the row.
+        WHEN EXISTS (
+            SELECT 1 FROM recording_encode_policy p
+            WHERE p.recording_id = recording_cm_attempts.recording_id
+              AND p.cm_detect
+              AND p.cm_detect_changed_at IS NOT NULL
+              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        ) THEN 'running'
         -- Work calls this only after cm_detection_desired says a failed attempt
         -- has a newer logo or area to analyze.
         WHEN recording_cm_attempts.state = 'failed' THEN 'running'
@@ -25,6 +45,13 @@ SET state = CASE
         ELSE 'running'
     END,
     attempt_count = CASE
+        WHEN EXISTS (
+            SELECT 1 FROM recording_encode_policy p
+            WHERE p.recording_id = recording_cm_attempts.recording_id
+              AND p.cm_detect
+              AND p.cm_detect_changed_at IS NOT NULL
+              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        ) THEN 1
         -- A new desire after failed starts a new budget, like the API retry
         -- (which deletes the row and restarts at 1).
         WHEN recording_cm_attempts.state = 'failed' THEN 1
@@ -33,24 +60,54 @@ SET state = CASE
         ELSE recording_cm_attempts.attempt_count + 1
     END,
     stage = CASE
+        WHEN EXISTS (
+            SELECT 1 FROM recording_encode_policy p
+            WHERE p.recording_id = recording_cm_attempts.recording_id
+              AND p.cm_detect
+              AND p.cm_detect_changed_at IS NOT NULL
+              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        ) THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= $2::integer THEN 'stopped'
         ELSE NULL
     END,
     error = CASE
+        WHEN EXISTS (
+            SELECT 1 FROM recording_encode_policy p
+            WHERE p.recording_id = recording_cm_attempts.recording_id
+              AND p.cm_detect
+              AND p.cm_detect_changed_at IS NOT NULL
+              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        ) THEN NULL
         WHEN recording_cm_attempts.state = 'failed' THEN NULL
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= $2::integer THEN 'CM detection process stopped while job was running'
         ELSE NULL
     END,
     attempted_at = CASE
+        WHEN EXISTS (
+            SELECT 1 FROM recording_encode_policy p
+            WHERE p.recording_id = recording_cm_attempts.recording_id
+              AND p.cm_detect
+              AND p.cm_detect_changed_at IS NOT NULL
+              AND recording_cm_attempts.attempted_at <= p.cm_detect_changed_at
+        ) THEN GREATEST(
+            clock_timestamp(),
+            COALESCE((
+                SELECT p.cm_detect_changed_at + interval '1 microsecond'
+                FROM recording_encode_policy p
+                WHERE p.recording_id = recording_cm_attempts.recording_id
+            ), '-infinity'::timestamptz)
+        )
         WHEN recording_cm_attempts.state = 'failed' THEN now()
         WHEN recording_cm_attempts.state = 'running'
              AND recording_cm_attempts.attempt_count >= $2::integer THEN recording_cm_attempts.attempted_at
         ELSE now()
     END
-RETURNING attempt_count, state, (state = 'running')::boolean AS should_run
+RETURNING attempt_count, state, (state = 'running')::boolean AS should_run,
+          (SELECT p.cm_detect_changed_at FROM recording_encode_policy p
+           WHERE p.recording_id = recording_cm_attempts.recording_id) AS cm_detect_changed_at
 `
 
 type BeginCMDetectionAttemptParams struct {
@@ -59,15 +116,21 @@ type BeginCMDetectionAttemptParams struct {
 }
 
 type BeginCMDetectionAttemptRow struct {
-	AttemptCount int32
-	State        string
-	ShouldRun    bool
+	AttemptCount      int32
+	State             string
+	ShouldRun         bool
+	CmDetectChangedAt *time.Time
 }
 
 func (q *Queries) BeginCMDetectionAttempt(ctx context.Context, arg BeginCMDetectionAttemptParams) (BeginCMDetectionAttemptRow, error) {
 	row := q.db.QueryRow(ctx, beginCMDetectionAttempt, arg.RecordingID, arg.MaxAttempts)
 	var i BeginCMDetectionAttemptRow
-	err := row.Scan(&i.AttemptCount, &i.State, &i.ShouldRun)
+	err := row.Scan(
+		&i.AttemptCount,
+		&i.State,
+		&i.ShouldRun,
+		&i.CmDetectChangedAt,
+	)
 	return i, err
 }
 
@@ -755,12 +818,16 @@ SELECT r.network_id, r.service_id,
            WHERE ca.state = 'failed'
              AND ca.stage IS DISTINCT FROM 'adopt'
              AND desired.recording_id IS NULL
+             AND COALESCE(p.cm_detect, true)
+             AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
        )::bigint AS failed_count,
        count(DISTINCT desired.recording_id)::bigint AS pending_count,
        COALESCE(((array_agg(ca.stage ORDER BY ca.attempted_at DESC) FILTER (
            WHERE ca.state = 'failed'
              AND ca.stage IS DISTINCT FROM 'adopt'
              AND desired.recording_id IS NULL
+             AND COALESCE(p.cm_detect, true)
+             AND (p.cm_detect_changed_at IS NULL OR ca.attempted_at > p.cm_detect_changed_at)
        ))[1])::text, '')::text AS last_failure_stage,
        count(DISTINCT d.recording_id)::bigint AS detected_count,
        count(DISTINCT d.recording_id) FILTER (
@@ -808,6 +875,7 @@ FROM recordings r
 LEFT JOIN cm_logos l ON l.network_id = r.network_id AND l.service_id = r.service_id
 LEFT JOIN cm_logo_areas a ON a.network_id = r.network_id AND a.service_id = r.service_id
 LEFT JOIN cm_logo_candidates c ON c.network_id = r.network_id AND c.service_id = r.service_id
+LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
 LEFT JOIN recording_cm_attempts ca ON ca.recording_id = r.id
 LEFT JOIN recording_cm_detections d ON d.recording_id = r.id
 LEFT JOIN cm_detection_desired desired ON desired.recording_id = r.id
@@ -1069,6 +1137,25 @@ func (q *Queries) LockCMDetectionAttempt(ctx context.Context, recordingID int64)
 	var attempt_count int32
 	err := row.Scan(&attempt_count)
 	return attempt_count, err
+}
+
+const lockCMDetectionPolicy = `-- name: LockCMDetectionPolicy :one
+SELECT cm_detect, cm_detect_changed_at
+FROM recording_encode_policy
+WHERE recording_id = $1
+FOR UPDATE
+`
+
+type LockCMDetectionPolicyRow struct {
+	CmDetect          bool
+	CmDetectChangedAt *time.Time
+}
+
+func (q *Queries) LockCMDetectionPolicy(ctx context.Context, recordingID int64) (LockCMDetectionPolicyRow, error) {
+	row := q.db.QueryRow(ctx, lockCMDetectionPolicy, recordingID)
+	var i LockCMDetectionPolicyRow
+	err := row.Scan(&i.CmDetect, &i.CmDetectChangedAt)
+	return i, err
 }
 
 const lockCMStation = `-- name: LockCMStation :exec

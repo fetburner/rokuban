@@ -260,6 +260,11 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "ロゴ管理", time.Now().Truncate(time.Second), "finished", 983)
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect, cm_detect_changed_at)
+		VALUES ($1, 'always', '{}', true, clock_timestamp() - interval '1 second')`, id); err != nil {
+		t.Fatal(err)
+	}
 	q := sqlcgen.New(pool)
 	if err := q.UpsertCMLogo(context.Background(), sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32678, ServiceID: 5168, Lgd: []byte("learned logo"),
@@ -291,6 +296,28 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	}
 	if logos[0].LastFailureStage == nil || *logos[0].LastFailureStage != stage {
 		t.Fatalf("lastFailureStage = %v, want %q", logos[0].LastFailureStage, stage)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE recording_encode_policy
+		SET cm_detect = false,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	logos = fetchCMLogos(t, srv.URL)
+	if len(logos) != 1 || logos[0].State != CMLogoStateStateLearned || logos[0].FailedCount != 0 || logos[0].LastFailureStage != nil {
+		t.Fatalf("disabled logo state = %#v, want learned without a failure", logos)
+	}
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE recording_encode_policy
+		SET cm_detect = true,
+		    cm_detect_changed_at = GREATEST(clock_timestamp(), COALESCE(cm_detect_changed_at + interval '1 microsecond', '-infinity'::timestamptz))
+		WHERE recording_id = $1`, id); err != nil {
+		t.Fatal(err)
+	}
+	logos = fetchCMLogos(t, srv.URL)
+	if len(logos) != 1 || logos[0].State != CMLogoStateStateLearned || logos[0].FailedCount != 0 || logos[0].LastFailureStage != nil {
+		t.Fatalf("quickly re-enabled logo state = %#v, want old failure hidden until a new attempt", logos)
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168", nil)

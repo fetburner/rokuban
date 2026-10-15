@@ -819,7 +819,7 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount); err != nil {
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount, first.CmDetectChangedAt); err != nil {
 		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
 	var detections int
@@ -834,6 +834,111 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	}
 	if state != "running" || attemptCount != 2 {
 		t.Errorf("current attempt after stale result = %q/%d, want running/2", state, attemptCount)
+	}
+}
+
+func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedCMRecording(t, pool, mediaDir, 922)
+	q := sqlcgen.New(pool)
+
+	oldAttempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: id, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !oldAttempt.ShouldRun || oldAttempt.AttemptCount != 1 {
+		t.Fatalf("old attempt = %#v, %v; want running/1", oldAttempt, err)
+	}
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
+	}
+
+	newAttempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: id, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !newAttempt.ShouldRun || newAttempt.AttemptCount != 1 {
+		t.Fatalf("new attempt after toggle = %#v, %v; want a fresh running/1 attempt", newAttempt, err)
+	}
+	if newAttempt.CmDetectChangedAt == nil || (oldAttempt.CmDetectChangedAt != nil &&
+		!newAttempt.CmDetectChangedAt.After(*oldAttempt.CmDetectChangedAt)) {
+		t.Fatalf("policy markers old=%v new=%v; want a strictly newer marker", oldAttempt.CmDetectChangedAt, newAttempt.CmDetectChangedAt)
+	}
+
+	item, err := q.GetCMDetectionWorkItem(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := newCMDetectTestWorker(pool, mediaDir, cmToolset{})
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", oldAttempt.AttemptCount, oldAttempt.CmDetectChangedAt); err != nil {
+		t.Fatalf("saving result from pre-toggle worker: %v", err)
+	}
+	var detections int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections); err != nil {
+		t.Fatal(err)
+	}
+	if detections != 0 {
+		t.Errorf("pre-toggle worker wrote %d CM detection rows, want 0", detections)
+	}
+	var state string
+	var attemptCount int32
+	if err := pool.QueryRow(ctx, `SELECT state, attempt_count FROM recording_cm_attempts WHERE recording_id = $1`, id).Scan(&state, &attemptCount); err != nil {
+		t.Fatal(err)
+	}
+	if state != "running" || attemptCount != 1 {
+		t.Fatalf("current attempt after stale worker result = %q/%d, want running/1", state, attemptCount)
+	}
+	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", newAttempt.AttemptCount, newAttempt.CmDetectChangedAt); err != nil {
+		t.Fatalf("saving result from current worker: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections); err != nil {
+		t.Fatal(err)
+	}
+	if detections != 1 {
+		t.Errorf("current worker wrote %d CM detection rows, want 1", detections)
+	}
+}
+
+func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	id := seedCMRecording(t, pool, t.TempDir(), 923)
+	q := sqlcgen.New(pool)
+
+	first := startCMDetectionTestAttempt(t, ctx, q, id)
+	markCMDetectionTestFailure(t, ctx, q, id, first, "retrying", nil, nil)
+	second := startCMDetectionTestAttempt(t, ctx, q, id)
+	if second != 2 {
+		t.Fatalf("second queued retry attempt count = %d, want 2", second)
+	}
+	markCMDetectionTestFailure(t, ctx, q, id, second, "retrying", nil, nil)
+	if err := q.ClearRecordingCMDetection(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err := q.SetRecordingCMDetection(ctx, id); err != nil || rows != 1 {
+		t.Fatalf("SetRecordingCMDetection(%d) = %d, %v; want 1 row", id, rows, err)
+	}
+
+	// A retry already in the queue can run before the next periodic cleanup.
+	restarted, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
+		RecordingID: id, MaxAttempts: cmDetectMaxTries,
+	})
+	if err != nil || !restarted.ShouldRun || restarted.AttemptCount != 1 {
+		t.Fatalf("queued retry after toggle = %#v, %v; want running/1", restarted, err)
+	}
+	var attemptedAt, changedAt time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT ca.attempted_at, p.cm_detect_changed_at
+		FROM recording_cm_attempts ca
+		JOIN recording_encode_policy p ON p.recording_id = ca.recording_id
+		WHERE ca.recording_id = $1`, id).Scan(&attemptedAt, &changedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !attemptedAt.After(changedAt) {
+		t.Fatalf("new attempt timestamp %s is not after policy marker %s", attemptedAt, changedAt)
 	}
 }
 
