@@ -184,13 +184,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
 	})
-	// 展開中に River へ残った encode_rebuild ジョブを永続要求へ変換するため、旧 kind を
-	// 登録したままにする（EncodeRebuildWorker の doc コメントに削除条件がある）。
-	riveradapter.Register(workers, &EncodeRebuildWorker{
-		Enqueuer: deps.Enqueuer,
-		Pool:     deps.Pool,
-		Profiles: deps.Encode,
-	})
 	riveradapter.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,

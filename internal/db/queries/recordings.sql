@@ -338,20 +338,6 @@ ON CONFLICT (recording_id, profile) DO UPDATE SET
     request_generation = nextval('encoded_asset_rebuild_request_generation_seq'),
     requested_at = now();
 
--- 旧 encode_rebuild ジョブの互換変換用。新しい利用者要求がすでにある場合は
--- その keep と世代を保つ。互換ジョブは新しい要求の書き手ではない。
--- name: InsertEncodedAssetRebuildRequestIfAbsent :execrows
-INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
-VALUES (
-    sqlc.arg('recording_id'),
-    sqlc.arg('profile'),
-    (
-        SELECT range_agg(int8range((item.range ->> 'startMs')::bigint, (item.range ->> 'endMs')::bigint))
-        FROM jsonb_array_elements(sqlc.arg('requested_keep')::jsonb) AS item(range)
-    )::int8multirange
-)
-ON CONFLICT (recording_id, profile) DO NOTHING;
-
 -- 作り直し前に版を外す。同じ tx でユーザー命令を消す。
 -- name: DeleteEncodedAssetRebuildRequest :exec
 DELETE FROM encoded_asset_rebuild_requests

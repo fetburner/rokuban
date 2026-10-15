@@ -36,7 +36,6 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"cm_logo_candidate", CMLogoCandidateJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_logo_candidate", CMDetectQueue, "cm_detect", 40 * time.Minute, 1, true, 1},
 		{"label_rule_reconcile", LabelRuleReconcileArgs{}, "label_rule_reconcile", CleanupQueue, "cleanup", time.Minute, 0, false, 1},
 		{"encode_reconcile", EncodeReconcileArgs{}, "encode_reconcile", EncodeQueue, "encode", 5 * time.Minute, 0, true, 1},
-		{"encode_rebuild", EncodeRebuildArgs{RecordingID: 1, Profile: "cut"}, "encode_rebuild", EncodeQueue, "encode", time.Minute, 0, true, 1},
 		{"delete_reconcile", DeleteReconcileArgs{}, "delete_reconcile", CleanupQueue, "cleanup", 10 * time.Minute, 0, true, 1},
 		{"catalog_export", CatalogExportArgs{Keep: 3}, "catalog_export", CleanupQueue, "cleanup", 5 * time.Minute, 0, true, 1},
 		{"storage_sync", StorageSyncArgs{}, "storage_sync", StorageQueue, "storage", time.Minute, 0, true, 1},
