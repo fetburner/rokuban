@@ -1,0 +1,30 @@
+{
+  "file": "docs/configuration/sites.md",
+  "questions": [
+    {
+      "heading": "mirakc レジストリ: `mirakcs:`",
+      "question": "mirakc のエンドポイントはどう登録するか。各要素に書けるものと、site 名の制約は何か。",
+      "points": [
+        "mirakc ごとの要素を配列で書く。単一でも 1 要素の配列で、要素は site と url だけである",
+        "site は必須で省略できず、文字種と長さに制約があり、重複できない",
+        "プロセスが束縛する site は設定ではなく起動時のフラグで表す"
+      ]
+    },
+    {
+      "heading": "site の規則",
+      "question": "site 名にはどんな規則があり、site を持たない例外は何か。",
+      "points": [
+        "省略も重複もできず、文字種と長さに制約がある",
+        "削除の突き合わせのブレーカーだけは site を持たない"
+      ]
+    },
+    {
+      "heading": "プロセスの site 束縛",
+      "question": "プロセスの site 束縛はどう指定し、worker はどこまで束縛できるか。",
+      "points": [
+        "起動時のフラグで表す",
+        "watcher と worker は複数の site を束縛でき、中央プロセスの worker は site 非依存のキューに絞る"
+      ]
+    }
+  ]
+}
