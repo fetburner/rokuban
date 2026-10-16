@@ -414,7 +414,11 @@ func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {
 		{"--roles", "worker", "--sites=", "--queues=encode"},
 		{"--roles", "api", "--sites", "home"},
 	} {
-		err := runServerCmdForTest(t, flipped, args...)
+		// 検査を通ってしまうと api も worker も待ち続けるので、時間で畳んで
+		// 「拒まなかった」として落とす。
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		err := runServerCmdWithContext(t, runCtx, flipped, args...)
+		cancel()
 		if err == nil || !strings.Contains(err.Error(), "validating encode profile meaning") ||
 			!strings.Contains(err.Error(), `"cutp"`) || !strings.Contains(err.Error(), "new name") {
 			t.Errorf("%v: err = %v, want the encode profile meaning error naming cutp", args, err)
