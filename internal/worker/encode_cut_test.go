@@ -602,7 +602,7 @@ func seedEncodedAssetRebuildRequest(t *testing.T, pool *pgxpool.Pool, recordingI
 // rebuildRequestExists は録画の "cut" プロファイルの作り直し要求行があるかを返す。
 func rebuildRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	t.Helper()
-	_, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequestForUpdate(context.Background(), sqlcgen.GetEncodedAssetRebuildRequestForUpdateParams{
+	_, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequestForShare(context.Background(), sqlcgen.GetEncodedAssetRebuildRequestForShareParams{
 		RecordingID: recordingID,
 		Profile:     "cut",
 	})
@@ -615,7 +615,9 @@ func rebuildRequestExists(t *testing.T, pool *pgxpool.Pool, recordingID int64) b
 	return true
 }
 
-func TestEncodeWorker_ClearsSatisfiedRebuildRequestWithoutRunningFFmpeg(t *testing.T) {
+// TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow は、既に
+// 要求の keep を凍結した版があるとき、ffmpeg を起動せず、要求行も消さないことを固定する。
+func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRow(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -652,12 +654,11 @@ func TestEncodeWorker_ClearsSatisfiedRebuildRequestWithoutRunningFFmpeg(t *testi
 	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
 		t.Fatalf("Work: %v", err)
 	}
-	var requests int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, recordingID).Scan(&requests); err != nil {
-		t.Fatal(err)
+	if !rebuildRequestExists(t, pool, recordingID) {
+		t.Fatal("satisfied rebuild request is missing; want it kept (only api removes it)")
 	}
-	if requests != 0 {
-		t.Fatalf("satisfied rebuild requests = %d, want 0", requests)
+	if got := unsatisfiedRebuildCount(t, pool, recordingID); got != 0 {
+		t.Fatalf("unsatisfied rebuilds = %d, want 0", got)
 	}
 	asset, err := sqlcgen.New(pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
@@ -670,7 +671,7 @@ func TestEncodeWorker_ClearsSatisfiedRebuildRequestWithoutRunningFFmpeg(t *testi
 
 // TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone は、要求に束縛されたジョブが、
 // 開始前に要求行が消えていれば（公開・外す操作で消費済み）ffmpeg を起動せずに終わる
-// ことを固定する。要求行の読み取りは公開 tx と同じ GetEncodedAssetRebuildRequestForUpdate
+// ことを固定する。要求行の読み取りは公開 tx と同じ GetEncodedAssetRebuildRequestForShare
 // を tx の外から使う。
 func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	pool := setupTestPool(t)
@@ -715,14 +716,16 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 }
 
-func TestEncodeWorker_SkipsObsoleteRequestedKeepAfterChapterEdit(t *testing.T) {
+// TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit は、要求に束縛された
+// ジョブが、押した後にチャプターが編集されていても取り消されず、押した時点の keep で
+// 描くことを固定する（loadRequestedEncodeCut が現在のチャプターと照合しない）。
+func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	ctx := context.Background()
-	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -740,35 +743,17 @@ func TestEncodeWorker_SkipsObsoleteRequestedKeepAfterChapterEdit(t *testing.T) {
 	}
 	currentKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
-		t.Fatalf("edited currentCutKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
+		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
 	}
-	assetID := seedEncodedAsset(t, pool, recordingID, "cut", "rebuild/edited_cut.mp4")
-	if err := setFrozenCuts(t, pool, assetID, currentKeep); err != nil {
-		t.Fatal(err)
-	}
-	profile := cutFFmpegProfile()
-	w := &EncodeWorker{
-		Pool:       pool,
-		MediaDir:   mediaDir,
-		ScratchDir: scratchDir,
-		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
-		Profiles:   config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
-	}
+	w := &EncodeWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
-	if err := runWorkerViaJobQFake(ctx, w, job); err != nil {
-		t.Fatalf("Work: %v", err)
+	cut, _, hasExpected, skip, err := w.loadRequestedEncodeCut(ctx, job)
+	if err != nil || !hasExpected || skip || cut == nil {
+		t.Fatalf("loadRequestedEncodeCut = cut %v, hasExpected %v, skip %v, err %v; want a job that proceeds", cut, hasExpected, skip, err)
 	}
-	if !rebuildRequestExists(t, pool, recordingID) {
-		t.Fatal("obsolete request before reconcile is missing; want row retained for CAS cleanup")
-	}
-	reconcile := &EncodeReconcileWorker{
-		Pool:     pool,
-		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{profile}},
-	}
-	runEncodeReconcilePass(t, reconcile)
-	if rebuildRequestExists(t, pool, recordingID) {
-		t.Fatal("obsolete request after reconcile still exists; want deleted")
+	if !chapters.SameRanges(cut.keep, requestedKeep) {
+		t.Fatalf("cut keep = %v, want the requested %v (not the edited %v)", cut.keep, requestedKeep, currentKeep)
 	}
 }
 

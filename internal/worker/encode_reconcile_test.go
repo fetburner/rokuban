@@ -105,14 +105,19 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 	}
 }
 
-func TestEncodeReconcile_RecoversRebuildRequestsAndClearsStaleOnes(t *testing.T) {
+// TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow は、reconcile が
+// 満たされていない作り直しだけに押した時点の keep のジョブを投入し、どの要求行も
+// 消さないことを固定する。チャプターの編集・所有の欠落・満たされた状態のどれでも
+// 行は残る（消すのは api だけ）。
+func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	seedCut := func(name string) (int64, []chapters.Range) {
+	staleFrozen := []chapters.Range{{StartMs: 0, EndMs: 1800000}}
+	seedCut := func(name string, frozen []chapters.Range) (int64, []chapters.Range, int64) {
 		t.Helper()
 		id := seedRecordingWithOriginal(t, pool, mediaDir, name, []string{"cut"}, []byte("original"))
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
@@ -127,97 +132,66 @@ func TestEncodeReconcile_RecoversRebuildRequestsAndClearsStaleOnes(t *testing.T)
 			t.Fatalf("currentCutKeep(%d) = %v, owned %v, err %v", id, keep, owned, err)
 		}
 		assetID := seedEncodedAsset(t, pool, id, "cut", name+"_cut.mp4")
-		if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
-			t.Fatalf("seeding stale frozen cut for %d: %v", id, err)
+		if err := setFrozenCuts(t, pool, assetID, frozen); err != nil {
+			t.Fatalf("seeding frozen cut for %d: %v", id, err)
 		}
-		return id, keep
+		return id, keep, assetID
 	}
-	matching, matchingKeep := seedCut("rebuild/matching.m2ts")
-	seedEncodedAssetRebuildRequest(t, pool, matching, matchingKeep)
+	unsatisfied, unsatisfiedKeep, _ := seedCut("rebuild/unsatisfied.m2ts", staleFrozen)
+	seedEncodedAssetRebuildRequest(t, pool, unsatisfied, unsatisfiedKeep)
 
-	stale, _ := seedCut("rebuild/stale.m2ts")
-	seedEncodedAssetRebuildRequest(t, pool, stale, []chapters.Range{{StartMs: 0, EndMs: 1000}})
+	// 押した後にチャプターを編集した（requested_keep は今のチャプターと違う）。
+	edited, _, _ := seedCut("rebuild/edited.m2ts", staleFrozen)
+	editedRequested := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	seedEncodedAssetRebuildRequest(t, pool, edited, editedRequested)
 
-	unowned, unownedKeep := seedCut("rebuild/unowned.m2ts")
+	// 所有の行が無い。押した時点の keep が確認なので、所有は投入の条件にしない。
+	unowned, unownedKeep, _ := seedCut("rebuild/unowned.m2ts", staleFrozen)
 	seedEncodedAssetRebuildRequest(t, pool, unowned, unownedKeep)
 	if _, err := pool.Exec(ctx, `DELETE FROM recording_chapter_ownership WHERE recording_id = $1`, unowned); err != nil {
 		t.Fatalf("resetting chapter ownership: %v", err)
 	}
 
-	aba, _ := seedCut("rebuild/same-keep-aba.m2ts")
-	abaKeep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
-	seedEncodedAssetRebuildRequest(t, pool, aba, abaKeep)
-	var abaInitialGeneration int64
-	if err := pool.QueryRow(ctx, `SELECT request_generation FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, aba).Scan(&abaInitialGeneration); err != nil {
-		t.Fatalf("reading initial ABA request generation: %v", err)
+	// 凍結区間が requested_keep と等しい = 満たされている。
+	satisfied, satisfiedKeep, assetID := seedCut("rebuild/satisfied.m2ts", staleFrozen)
+	if err := setFrozenCuts(t, pool, assetID, satisfiedKeep); err != nil {
+		t.Fatalf("freezing satisfied cut: %v", err)
 	}
+	seedEncodedAssetRebuildRequest(t, pool, satisfied, satisfiedKeep)
 
 	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
 	w := &EncodeReconcileWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}}
-	w.beforeDeleteStaleRebuildRequest = func(ctx context.Context, request sqlcgen.ListEncodedAssetRebuildRequestsRow) {
-		if request.RecordingID != aba {
-			return
-		}
-		q := sqlcgen.New(pool)
-		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-			RecordingID:   aba,
-			Profile:       "cut",
-			RequestedKeep: mustKeepRanges(t, []chapters.Range{{StartMs: 0, EndMs: 2000}}),
-		}); err != nil {
-			t.Errorf("changing stale request keep before restoring it: %v", err)
-			return
-		}
-		if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-			RecordingID:   aba,
-			Profile:       "cut",
-			RequestedKeep: mustKeepRanges(t, abaKeep),
-		}); err != nil {
-			t.Errorf("renewing same-keep stale request: %v", err)
-		}
-	}
 	enqueuer := runEncodeReconcilePass(t, w)
-	if got := countEncodeJobs(t, enqueuer, matching, "cut"); got != 1 {
-		t.Fatalf("encode jobs for matching persisted request = %d, want 1", got)
-	}
-	var matchingArgs *jobs.EncodeJobArgs
-	for _, call := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
-		if call.RecordingID == matching && call.Profile == "cut" {
-			matchingArgs = &call
+
+	wantKeep := map[int64][]chapters.Range{unsatisfied: unsatisfiedKeep, edited: editedRequested, unowned: unownedKeep}
+	for id, want := range wantKeep {
+		if got := countEncodeJobs(t, enqueuer, id, "cut"); got != 1 {
+			t.Fatalf("encode jobs for recording %d = %d, want 1", id, got)
+		}
+		for _, call := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
+			if call.RecordingID != id {
+				continue
+			}
+			var queued []chapters.Range
+			if err := json.Unmarshal(call.RequestedCutKeep, &queued); err != nil {
+				t.Fatalf("decoding queued requested keep for %d: %v", id, err)
+			}
+			if !chapters.SameRanges(queued, want) {
+				t.Errorf("recording %d queued keep = %v, want the requested %v", id, queued, want)
+			}
 		}
 	}
-	if matchingArgs == nil {
-		t.Fatal("missing encode args for matching rebuild request")
+	if got := countEncodeJobs(t, enqueuer, satisfied, "cut"); got != 0 {
+		t.Errorf("encode jobs for satisfied request = %d, want 0", got)
 	}
-	var queuedKeep []chapters.Range
-	if err := json.Unmarshal(matchingArgs.RequestedCutKeep, &queuedKeep); err != nil {
-		t.Fatalf("decoding queued requested keep: %v", err)
-	}
-	if !chapters.SameRanges(queuedKeep, matchingKeep) {
-		t.Errorf("queued requested keep = %v, want %v", queuedKeep, matchingKeep)
-	}
-	for _, id := range []int64{stale, unowned} {
+	for _, id := range []int64{unsatisfied, edited, unowned, satisfied} {
 		var count int
 		if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, id).Scan(&count); err != nil {
-			t.Fatalf("counting stale rebuild requests for %d: %v", id, err)
+			t.Fatalf("counting rebuild requests for %d: %v", id, err)
 		}
-		if count != 0 {
-			t.Errorf("stale rebuild requests for recording %d = %d, want 0", id, count)
+		if count != 1 {
+			t.Errorf("rebuild request rows for recording %d = %d, want 1 (only api removes them)", id, count)
 		}
-	}
-	var abaCount int
-	var abaGeneration int64
-	if err := pool.QueryRow(ctx, `SELECT count(*), COALESCE(max(request_generation), 0) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, aba).Scan(&abaCount, &abaGeneration); err != nil {
-		t.Fatalf("checking renewed stale request: %v", err)
-	}
-	if abaCount != 1 || abaGeneration <= abaInitialGeneration {
-		t.Errorf("same-keep request after stale cleanup = count %d generation %d, want count 1 and generation greater than %d", abaCount, abaGeneration, abaInitialGeneration)
-	}
-	var keptCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, matching).Scan(&keptCount); err != nil {
-		t.Fatal(err)
-	}
-	if keptCount != 1 {
-		t.Errorf("matching request rows after enqueue = %d, want 1 until publish", keptCount)
 	}
 }
 
@@ -273,64 +247,31 @@ func mustKeepRanges(t *testing.T, keep []chapters.Range) db.KeepRanges {
 	return ranges
 }
 
-func TestDeleteEncodedAssetRebuildRequestIfKeepDoesNotDeleteNewerRequest(t *testing.T) {
+// TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly は、満たされた判定が
+// 同じプロファイルの active な encoded だけを見ることを固定する。別の cut プロファイルの
+// 版の凍結区間が requested_keep と同じでも、未充足のままである（満たされた扱いにすると
+// until_encoded の原本が不可逆に消える）。
+func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
-	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/cas.m2ts", []string{"cut"}, []byte("original"))
-	oldKeep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
-	newKeep := []chapters.Range{{StartMs: 0, EndMs: 2000}}
-	seedEncodedAssetRebuildRequest(t, pool, recordingID, oldKeep)
-	oldParam := mustKeepRanges(t, oldKeep)
-	var oldGeneration int64
-	if err := pool.QueryRow(ctx, `SELECT request_generation FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, recordingID).Scan(&oldGeneration); err != nil {
-		t.Fatalf("reading original request generation: %v", err)
-	}
-	seedEncodedAssetRebuildRequest(t, pool, recordingID, newKeep)
-
-	deleted, err := sqlcgen.New(pool).DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
-		RecordingID:       recordingID,
-		Profile:           "cut",
-		RequestGeneration: oldGeneration,
-		RequestedKeep:     oldParam,
-	})
-	if err != nil {
-		t.Fatalf("deleting stale request snapshot: %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("deleted rows = %d, want 0 after newer request replaced old keep", deleted)
-	}
-	current, err := sqlcgen.New(pool).GetEncodedAssetRebuildRequestForUpdate(ctx, sqlcgen.GetEncodedAssetRebuildRequestForUpdateParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	})
-	if err != nil {
+	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/other-profile.m2ts", []string{"cut", "cut2"}, []byte("original"))
+	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	seedEncodedAssetRebuildRequest(t, pool, id, keep)
+	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
+	if err := setFrozenCuts(t, pool, other, keep); err != nil {
 		t.Fatal(err)
 	}
-	gotKeep, err := db.KeepRangesFromMultirange(current.RequestedKeep)
-	if err != nil || !chapters.SameRanges(gotKeep, newKeep) {
-		t.Fatalf("new request after stale CAS = %v, err %v; want %v", gotKeep, err, newKeep)
+	if got := unsatisfiedRebuildCount(t, pool, id); got != 1 {
+		t.Fatalf("unsatisfied rebuilds with only another profile's matching asset = %d, want 1", got)
 	}
-	if err := sqlcgen.New(pool).DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
-		RecordingID: recordingID,
-		Profile:     "cut",
-	}); err != nil {
-		t.Fatalf("removing request before re-creation: %v", err)
+	same := seedEncodedAsset(t, pool, id, "cut", "rebuild/other-profile_cut.mp4")
+	if err := setFrozenCuts(t, pool, same, keep); err != nil {
+		t.Fatal(err)
 	}
-	seedEncodedAssetRebuildRequest(t, pool, recordingID, oldKeep)
-	deleted, err = sqlcgen.New(pool).DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams{
-		RecordingID:       recordingID,
-		Profile:           "cut",
-		RequestGeneration: oldGeneration,
-		RequestedKeep:     oldParam,
-	})
-	if err != nil {
-		t.Fatalf("deleting re-created request with an old generation: %v", err)
-	}
-	if deleted != 0 {
-		t.Fatalf("deleted rows = %d, want 0 after the same keep was re-created", deleted)
+	if got := unsatisfiedRebuildCount(t, pool, id); got != 0 {
+		t.Fatalf("unsatisfied rebuilds with the same profile's matching asset = %d, want 0", got)
 	}
 }
 

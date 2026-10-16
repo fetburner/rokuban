@@ -3,15 +3,12 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -101,10 +98,6 @@ const (
 type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
-
-	// beforeDeleteStaleRebuildRequest は、無効な要求の比較交換削除のテストが読み取りと
-	// 削除の間に割り込むためのフック。本番の worker では nil のまま。
-	beforeDeleteStaleRebuildRequest func(context.Context, sqlcgen.ListEncodedAssetRebuildRequestsRow)
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
@@ -275,7 +268,14 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	return nil
 }
 
-// reconcileRebuildRequests は永続化済みの cut 再構築要求を検証して encode queue へ戻す。
+// reconcileRebuildRequests は満たされていない作り直し（ListEncodedAssetRebuildRequests）
+// に、押した時点の keep を束縛した encode ジョブを投入する。
+//
+// 要求行はここでは消さない（消すのは api だけ）。チャプターが後から変わっても、押した
+// 時点の keep で描く。設定から外れた profile と cut でない profile は投入せず、
+// 設定が戻るまで行を保持する。cut でない設定は C-1 の起動時検査
+// （CheckEncodeProfileMeaning）が拒むので、ここに来るのは、検査より後に設定を変えた
+// 場合だけである。
 func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 	ctx context.Context,
 	q *sqlcgen.Queries,
@@ -293,35 +293,7 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
 			continue
 		}
-
-		keep, owned, err := currentCutKeep(ctx, q, request.RecordingID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			owned = false
-		} else if err != nil {
-			failed++
-			slog.Error("encode_reconcile: loading requested cut keep",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
-			continue
-		}
-		profile, configured := w.Profiles.Profile(request.Profile)
-		stale := !owned || len(keep) == 0 || !chapters.SameRanges(requestedKeep, keep)
-		if configured && !profile.Cut {
-			stale = true
-		}
-		if stale {
-			if w.beforeDeleteStaleRebuildRequest != nil {
-				w.beforeDeleteStaleRebuildRequest(ctx, request)
-			}
-			if _, err := q.DeleteEncodedAssetRebuildRequestIfKeep(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestIfKeepParams(request)); err != nil {
-				failed++
-				slog.Error("encode_reconcile: clearing stale rebuild request",
-					"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
-			}
-			continue
-		}
-		if !configured {
-			// 設定から外れた profile は EncodeWorker が開始できないので、設定が戻るまで
-			// 要求行を保持する。再び有効になれば次の全件パスが拾う。
+		if profile, configured := w.Profiles.Profile(request.Profile); !configured || !profile.Cut {
 			continue
 		}
 		encodeArgs, err := newEncodeJobArgs(ctx, q, request.RecordingID, request.Profile, w.Profiles)

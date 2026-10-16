@@ -110,13 +110,12 @@ type EncodableRecording struct {
 	RecordingID int64
 }
 
-// 利用者が明示したカット版の再作成要求。requested_keep は操作時点の量子化済み区間。catalog には含めない。
+// 利用者が押した時点の keep 区間（量子化済み）。満たされても残る desired で、消すのは api だけ。満たされたかは unsatisfied_encode_rebuilds が導出する。catalog には含めない。
 type EncodedAssetRebuildRequest struct {
-	RecordingID       int64
-	Profile           string
-	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-	RequestGeneration int64
-	RequestedAt       time.Time
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	RequestedAt   time.Time
 }
 
 type EncodedAssetRemovalRequest struct {
@@ -513,6 +512,13 @@ type UnencodedDesiredProfile struct {
 	RecordingID int64
 	Profile     string
 	Ordinality  int64
+}
+
+// unsatisfied_encode_rebuilds は、requested_keep と一致する凍結区間の active な encoded がまだ無い作り直し要求を表す。ごみ箱・原本が active でない録画は含まない。
+type UnsatisfiedEncodeRebuild struct {
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 }
 
 type UntilEncodedDeletableOriginal struct {
