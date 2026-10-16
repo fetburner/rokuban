@@ -1435,7 +1435,10 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 // ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
 // 生きている行の rel_path 部分一意索引とも衝突する）。
 //
-// profile 名はパス成分としてサニタイズする（contentpath）。階層は原本の dir のみ。
+// profile 名は、そのまま 1 つのパス成分として入れる。入らない名前は、設定と同じ規則
+// （config.ValidateEncodeProfileName）でエラーにする。サニタイズして入れると、
+// 別の名前と同じパスになったり、rel_path から cut の世代を読めなくなったりする。
+// 階層は原本の dir のみ。
 func EncodedRelPath(originalRel, profileName, container string, generation int) (string, error) {
 	if originalRel == "" {
 		return "", fmt.Errorf("empty original rel_path")
@@ -1443,9 +1446,8 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 	if container != "mp4" && container != "mkv" {
 		return "", fmt.Errorf("unsupported container %q", container)
 	}
-	safeProfile, err := sanitizeProfileForPath(profileName)
-	if err != nil {
-		return "", err
+	if err := config.ValidateEncodeProfileName(profileName); err != nil {
+		return "", fmt.Errorf("encode profile %w", err)
 	}
 	suffix := ""
 	if generation > 0 {
@@ -1460,7 +1462,7 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 	if stem == "" {
 		stem = "encoded"
 	}
-	name := stem + "_" + safeProfile + suffix + "." + container
+	name := stem + "_" + profileName + suffix + "." + container
 	if dir == "" || dir == "." {
 		return contentpath.SanitizeContentPath(name), nil
 	}
@@ -1471,19 +1473,16 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 // `…_{profile}.g{n}.{ext}` なら (n, true) を返す。EncodedRelPath が書く形
 // （`_` の境界、`%d` の正規の整数）以外は false にする。世代番号の読み手は
 // nextCutGeneration と起動時の意味の検査（CheckEncodeProfileMeaning）で、
-// 両方がここを通る。
+// 両方がここを通る。どちらも設定にあるプロファイル名（EncodedRelPath が書ける名前）
+// だけを渡す。
 //
 // 拡張子は見ない（container の読み取りは呼び出し側が path.Ext で行う）。
 // プロファイル名まで含めて照合するので、名前に `.g<数字>` を含む cut でない
 // プロファイルを取り違えない。
 func cutGeneration(relPath, profileName string) (int, bool) {
-	safe, err := sanitizeProfileForPath(profileName)
-	if err != nil {
-		return 0, false
-	}
 	base := pathBaseSlash(filepath.ToSlash(relPath))
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	marker := "_" + safe + ".g"
+	marker := "_" + profileName + ".g"
 	i := strings.LastIndex(stem, marker)
 	if i < 0 {
 		return 0, false
@@ -1494,19 +1493,6 @@ func cutGeneration(relPath, profileName string) (int, bool) {
 		return 0, false
 	}
 	return n, true
-}
-
-func sanitizeProfileForPath(name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("empty profile name")
-	}
-	// SanitizeContentPath は '/' を階層に保つので、プロファイル名内の区切りは潰す。
-	s := contentpath.SanitizeContentPath(strings.ReplaceAll(name, "/", "_"))
-	s = strings.ReplaceAll(s, "/", "_")
-	if s == "" || s == "." || s == "_" {
-		return "", fmt.Errorf("profile name %q sanitizes to empty", name)
-	}
-	return s, nil
 }
 
 func pathDirSlash(p string) string {

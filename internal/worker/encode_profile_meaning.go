@@ -26,7 +26,8 @@ import (
 // 呼び出すのは、cut の設定を読むロール（api と worker）の起動時で、HTTP の待ち受けと
 // ジョブの購読より前である。api は自分の設定で cut かを判定して作り直し要求を書き、
 // desired を凍結する。worker は ingest の凍結・encode_reconcile・encode で読む。
-// 片方だけで拒むと、起動したもう片方が食い違った設定で要求行を書く。その行は cut の
+// 片方だけで拒むと、起動したもう片方が食い違った設定で書く。api なら作り直し要求の
+// 行を、worker なら食い違った意味の encoded を書く。api が書いた要求行は cut の
 // 証拠なので、設定を戻しても証拠が混ざって worker は起動できず、掃除の
 // encode_reconcile も走らない。要求行がある間は until_encoded の原本を消さない
 // （until_encoded_deletable_originals）。config.Load は DB を読めないので、DB に

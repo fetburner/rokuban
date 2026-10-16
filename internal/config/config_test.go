@@ -1097,7 +1097,7 @@ encode:
 				t.Errorf("name %s: error = %v, want the profile name rejected", name, err)
 			}
 		}
-		for _, name := range []string{"h264", "h264_vaapi", "e2e-slow", "x.g2", "日本語 720p"} {
+		for _, name := range []string{"h264", "h264_vaapi", "e2e-slow", "x.g2", "_", "日本語 720p"} {
 			path := writeConfig(t, base+`
     - name: "`+name+`"
       container: mp4

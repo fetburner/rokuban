@@ -35,6 +35,9 @@ const RescueEncodedProfilePrefix = "rescue-"
 // 別の名前と同じ rel_path になる（`a:b` と `a_b`）。名前を rel_path にそのまま
 // 入れることで、名前と rel_path の形を 1 対 1 にする。
 //
+// 書き手（worker.EncodedRelPath）も、この関数で名前を検査する。設定が通す名前と
+// 書き手が書ける名前を、同じ規則から引くためである。
+//
 // `rescue-` で始まる名前は、rescue が拾った encoded（EncodedRelPath の形を持たない）を
 // そのプロファイルの成果物と取り違えるので拒む。
 func ValidateEncodeProfileName(name string) error {

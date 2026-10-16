@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/contentpath"
 )
 
 func meaningCfg(name string, cut bool, container string) config.EncodeConfig {
@@ -92,9 +93,9 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 // 過去の意味の証拠にするので、読み戻せない名前を設定が受け入れると、設定を変えていない
 // のに起動を拒む。
 //
-// 設定が拒む名前は、拒む理由（往復が壊れる、rescue の名前と取り違える）も確かめる。
+// 設定が拒む名前は、書き手もエラーにすることと、拒む理由も確かめる。
 func TestCutGeneration_RoundTripsEncodedRelPath(t *testing.T) {
-	accepted := []string{"h264", "h264_vaapi", "cut", "e2e-slow", "x.g2", "x.g1.g1", "g", "1", "a_b", "_x", "x_", ".hidden", "日本語 720p"}
+	accepted := []string{"h264", "h264_vaapi", "cut", "e2e-slow", "x.g2", "x.g1.g1", "g", "1", "a_b", "_", "__", "_x", "x_", ".hidden", "日本語 720p"}
 	originals := []string{
 		"sites/home/20240101/120000_title_1024.m2ts",
 		"sites/home/a.b/c_x.g1.m2ts", // ディレクトリと原本の名前に紛らわしい形を含む
@@ -124,28 +125,40 @@ func TestCutGeneration_RoundTripsEncodedRelPath(t *testing.T) {
 		}
 	}
 
-	// `.` で終わる名前は、続く `.` と合わさった `..` がサニタイズで潰され、往復が壊れる。
+	// 設定が拒む名前は、書き手も書かない（同じ規則を引く）。拒む理由は、名前を
+	// サニタイズして入れたときに起きることで示す。
 	const orig = "sites/home/a.m2ts"
-	for _, name := range []string{"x.", "x. "} {
-		if config.ValidateEncodeProfileName(name) == nil {
-			t.Errorf("config accepts %q", name)
-		}
-		if _, ok := cutGeneration(mustEncodedRelPath(t, orig, name, "mp4", 1), name); ok {
-			t.Errorf("%q round-trips; the rejection would be unnecessary", name)
+	sanitized := func(name string) string { return contentpath.SanitizeContentPath(strings.ReplaceAll(name, "/", "_")) }
+	// サニタイズで変わる名前は、受け入れる別の名前と同じ rel_path になる。
+	collide := map[string]string{"a:b": "a_b", "a/b": "a_b", " a": "a", "a..b": "a_b"}
+	for name, same := range collide {
+		if sanitized(name) != same {
+			t.Errorf("%q sanitizes to %q, not %q; the rejection would be unnecessary", name, sanitized(name), same)
 		}
 	}
-	// サニタイズで変わる名前は、受け入れる別の名前と同じ rel_path になる。
-	for name, same := range map[string]string{"a:b": "a_b", "a/b": "a_b", " a": "a", "a..b": "a_b"} {
+	// `.` で終わる名前は、続く `.` と合わさった `..` が潰され、世代を読めない。
+	dotted := []string{"x.", "x. "}
+	for _, name := range dotted {
+		component := "a_" + sanitized(name) + ".g1.mp4"
+		if contentpath.SanitizeContentPath(component) == component {
+			t.Errorf("%q survives sanitizing as %q; the rejection would be unnecessary", name, component)
+		}
+	}
+	for _, name := range append(dotted, "a:b", "a/b", " a", "a..b") {
 		if config.ValidateEncodeProfileName(name) == nil {
 			t.Errorf("config accepts %q", name)
 		}
-		if a, b := mustEncodedRelPath(t, orig, name, "mp4", 1), mustEncodedRelPath(t, orig, same, "mp4", 1); a != b {
-			t.Errorf("%q gives %q, not the same path as %q (%q); the rejection would be unnecessary", name, a, same, b)
+		if got, err := EncodedRelPath(orig, name, "mp4", 1); err == nil {
+			t.Errorf("EncodedRelPath(%q) = %q, want an error", name, got)
 		}
 	}
 	// rescue が拾った encoded の名前（catalog の rescue_scan）。
-	if config.ValidateEncodeProfileName(config.RescueEncodedProfilePrefix+"mp4") == nil {
+	rescue := config.RescueEncodedProfilePrefix + "mp4"
+	if config.ValidateEncodeProfileName(rescue) == nil {
 		t.Errorf("config accepts the rescue profile name")
+	}
+	if _, err := EncodedRelPath(orig, rescue, "mp4", 1); err == nil {
+		t.Errorf("EncodedRelPath accepts the rescue profile name")
 	}
 }
 
