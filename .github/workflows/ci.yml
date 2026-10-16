@@ -503,8 +503,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run docs:lint
-      # 許容の合計が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
-      - name: Check allow totals
+      # 許容が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
+      - name: Check allow counts
         if: github.event_name == 'pull_request'
         env:
           BASE_REF: ${{ github.base_ref }}
