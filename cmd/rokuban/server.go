@@ -337,6 +337,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 			return fmt.Errorf("validating media asset rel_path namespace: %w", err)
 		}
 	}
+	if slices.Contains(roles, "api") || slices.Contains(roles, "worker") {
+		// cut の設定を読む両ロールで、待ち受けとジョブの購読より前に拒む
+		// （CheckEncodeProfileMeaning のコメント参照）。DB を読むだけなので、
+		// api が mirakc にもファイルシステムにも依存しないことは変わらない。
+		if err := worker.CheckEncodeProfileMeaning(ctx, pool, cfg.Encode); err != nil {
+			return fmt.Errorf("validating encode profile meaning: %w", err)
+		}
+	}
 
 	slog.Info("starting server", "roles", roles)
 

@@ -15,7 +15,7 @@
 | スキーマ構造: 関心事別にセクションを切る、リファレンス、必須キー、db の運用ノブ（max_conns / api_statement_timeout）、ingest.stall_timeout | キーの一覧と運用ノブ | [configuration/keys.md](configuration/keys.md) |
 | スキーマ構造: サーキットブレーカーと検出器の閾値、worker.periodic_jobs と worker.queues、ffmpeg の存在検査、CM 区間の検出 | 閾値、ジョブ、検出 | [configuration/keys.md](configuration/keys.md) |
 | スキーマ構造: live、encode/live の HW エンコード | ライブ視聴とエンコードの引数 | [configuration/live.md](configuration/live.md) |
-| スキーマ構造: カット版（`encode.profiles[].cut`）、追加引数の許可リスト | カット版の argv と切る時刻 | [configuration/cut.md](configuration/cut.md) |
+| スキーマ構造: カット版（`encode.profiles[].cut`）、同じ名前で意味を変えない、追加引数の許可リスト | カット版の argv と切る時刻 | [configuration/cut.md](configuration/cut.md) |
 | スキーマ構造: mirakc レジストリ: `mirakcs:` | site の規則とプロセスの site 束縛 | [configuration/sites.md](configuration/sites.md) |
 | スキーマ構造: server.allowed_hosts と server.trust_forwarded_host（X-Forwarded-Host は opt-in）、db は構造化フィールド、webhook のイベントとペイロード | ホスト検査と webhook | [configuration/http.md](configuration/http.md) |
 

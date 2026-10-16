@@ -1,0 +1,20 @@
+-- ListEncodedMeaningEvidence は、プロファイル名が過去に持った「成果物の意味」の
+-- 証拠を返す。起動時の検査（internal/worker の CheckEncodeProfileMeaning）が、
+-- 今の設定の同名プロファイルと突き合わせる。
+--
+--   * active な encoded: rel_path。cut と container は rel_path から読む。
+--     EncodedRelPath が cut のときだけ `_{profile}.g{n}`（n >= 1）を付け、
+--     必ず `.{container}` で終えるので、catalog の rescue（media_asset_cuts を
+--     持たない）を通っても残る
+--   * 作り直し要求の行: rel_path は空文字。api は、押された時点の設定で cut の
+--     プロファイルにだけ要求を書く。container は分からない
+--
+-- 証拠が無い名前は返らない（過去の意味が存在しない）。
+-- name: ListEncodedMeaningEvidence :many
+SELECT a.profile::text AS profile, a.rel_path::text AS rel_path
+FROM media_assets a
+WHERE a.kind = 'encoded'
+  AND a.state = 'active'
+UNION ALL
+SELECT q.profile::text, ''::text
+FROM encoded_asset_rebuild_requests q;

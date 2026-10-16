@@ -219,7 +219,7 @@ func TestNextCutGeneration(t *testing.T) {
 		}
 	}
 	// プロファイル名に `.g<数字>` が含まれても、末尾の `.g<数字>` だけを読む。
-	if got := nextCutGeneration("a_x.g9.g3.mp4", "x.g9"); got != 4 {
+	if got := nextCutGeneration("a_x.g9.hd.g3.mp4", "x.g9.hd"); got != 4 {
 		t.Errorf("nextCutGeneration with a dotted profile name = %d, want 4", got)
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 func writeServerTestConfig(t *testing.T, content string) string {
@@ -359,6 +360,190 @@ func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=100ms"); err != nil {
 		t.Fatalf("worker with site-prefixed media asset rel_paths: %v", err)
 	}
+}
+
+// seedCutEncodedAsset は、プロファイル cutp のカット版（世代 1）の encoded を 1 件置く。
+// media_asset_cuts の行は作らない（rescue 後の状態）。
+func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              "home",
+		NetworkID:         1,
+		ServiceID:         1,
+		EventID:           1,
+		ServiceName:       "test",
+		ChannelType:       "GR",
+		Channel:           "1",
+		Title:             "cut version",
+		ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 60_000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1)
+	if err != nil {
+		t.Fatalf("EncodedRelPath: %v", err)
+	}
+	profile := "cutp"
+	if _, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+		RelPath:     relPath,
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
+	}
+}
+
+// writeCutProfileConfig は、プロファイル cutp を持つ worker テスト用の config を書く。
+// listen は空きポートにする（待ち受けを始めたかを dial で確かめるため）。ffmpeg /
+// ffprobe は存在検査（LookPath）だけを通す実在の実行ファイルにする。
+func writeCutProfileConfig(t *testing.T, cut bool) (path, addr string) {
+	t.Helper()
+	path = writeWorkerTestConfig(t, "http://127.0.0.1:1", fmt.Sprintf(`encode:
+  ffmpeg: /bin/sh
+  ffprobe: /bin/sh
+  profiles:
+    - name: cutp
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      cut: %t`, cut))
+	addr = fmt.Sprintf("127.0.0.1:%d", freePort(t))
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.Replace(string(content), `listen: "127.0.0.1:0"`, fmt.Sprintf("listen: %q", addr), 1)
+	if replaced == string(content) {
+		t.Fatal("test setup: server.listen not found in the worker test config")
+	}
+	if err := os.WriteFile(path, []byte(replaced), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path, addr
+}
+
+// cut の設定を読む api と worker は、同じ名前のまま cut を反転させた設定を、DB に
+// 繋いだ直後に拒む（worker.CheckEncodeProfileMeaning）。片方だけが拒むと、起動した
+// もう片方が食い違った設定で書く。api なら作り直し要求の行を、worker なら食い違った
+// 意味の encoded を書く。合う設定では、api も encode worker も同じ検査を通って起動する。
+func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	seedCutEncodedAsset(t, pool)
+
+	flipped, _ := writeCutProfileConfig(t, false)
+	for _, args := range [][]string{
+		{"--roles", "worker", "--sites=", "--queues=encode"},
+		{"--roles", "api", "--sites", "home"},
+	} {
+		// 検査を通ってしまうと api も worker も待ち続けるので、時間で畳んで
+		// 「拒まなかった」として落とす。
+		runCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := runServerCmdWithContext(t, runCtx, flipped, args...)
+		cancel()
+		if err == nil || !strings.Contains(err.Error(), "validating encode profile meaning") ||
+			!strings.Contains(err.Error(), `"cutp"`) || !strings.Contains(err.Error(), "new name") {
+			t.Errorf("%v: err = %v, want the encode profile meaning error naming cutp", args, err)
+		}
+	}
+
+	kept, addr := writeCutProfileConfig(t, true)
+	if _, err := runServerCmdBounded(t, 10*time.Second, kept,
+		"--roles", "worker", "--sites=", "--queues=encode", "--once", "--once-idle-timeout=100ms"); err != nil {
+		t.Fatalf("encode worker with a matching cut profile: %v", err)
+	}
+
+	// api は、待ち受けを始めたことを dial で確かめてから畳む。
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- runServerCmdWithContext(t, ctx, kept, "--roles", "api", "--sites", "home") }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			break
+		}
+		select {
+		case err := <-errCh:
+			cancel()
+			t.Fatalf("api with a matching cut profile exited before listening: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			cancel()
+			<-errCh
+			t.Fatal("api with a matching cut profile did not start listening within 10s")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	if err := <-errCh; err != nil {
+		t.Errorf("api shutdown: %v", err)
+	}
+}
+
+// **検査は待ち受けより前に走る。** 後ろに置くと、検査が終わるまでの間に api が
+// 要求を受け付け、食い違った設定で作り直し要求の行を書ける。
+//
+// 検査が読む表をテスト側の tx で ACCESS EXCLUSIVE に握り、検査をその場で止める。
+// 止まっていることを pg_locks で確かめてから（検査に到達していない空虚な成功を
+// 防ぐ）、その間に待ち受けのポートへ繋がらないことを見る。
+func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	path, addr := writeCutProfileConfig(t, true)
+
+	bg := context.Background()
+	tx, err := pool.Begin(bg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(bg) }()
+	if _, err := tx.Exec(bg, `LOCK TABLE encoded_asset_rebuild_requests IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("locking the evidence table: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- runServerCmdWithContext(t, ctx, path, "--roles", "api", "--sites", "home") }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := pool.QueryRow(bg, `SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
+			WHERE c.relname = 'encoded_asset_rebuild_requests' AND NOT l.granted
+			  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiting); err != nil {
+			t.Fatalf("reading pg_locks: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the api never reached the encode profile meaning check")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	listenDeadline := time.Now().Add(time.Second)
+	for time.Now().Before(listenDeadline) {
+		if conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond); err == nil {
+			_ = conn.Close()
+			t.Fatal("the api accepted a connection while the encode profile meaning check was still running")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if err := tx.Rollback(bg); err != nil {
+		t.Fatalf("releasing the lock: %v", err)
+	}
+	cancel()
+	<-errCh
 }
 
 // **--soft-stop-timeout の検査が RunE の配線に載っていること**（ロール検査が

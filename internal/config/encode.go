@@ -8,13 +8,75 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/ffargs"
 )
 
 // DefaultEncodeProfileRate is the default multiplier used to bound encode job runtime.
 const DefaultEncodeProfileRate = 4.0
+
+// RescueEncodedProfilePrefix は、catalog を使わない rescue（internal/catalog の
+// rescue_scan）が拾った encoded に付けるプロファイル名の前置（`rescue-mp4` など）。
+// そのファイルは EncodedRelPath の形を持たないので、設定のプロファイル名には
+// 使わせない（ValidateEncodeProfileName）。
+const RescueEncodedProfilePrefix = "rescue-"
+
+// SplitCutGeneration は、s が cut の世代の接尾辞 `.g{n}`（n は 1 以上で、`%d` の
+// 正規の表記）で終わるなら、接尾辞の前の部分と n を返す。EncodedRelPath が書く
+// 世代の接尾辞の定義で、読み手（worker.cutGeneration）と名前の規則
+// （ValidateEncodeProfileName）がこれを引く。
+func SplitCutGeneration(s string) (head string, n int, ok bool) {
+	i := strings.LastIndex(s, ".g")
+	if i < 0 {
+		return "", 0, false
+	}
+	digits := s[i+len(".g"):]
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 1 || digits != strconv.Itoa(n) {
+		return "", 0, false
+	}
+	return s[:i], n, true
+}
+
+// ValidateEncodeProfileName は、プロファイル名が派生物の rel_path に変形されずに入り、
+// rel_path から読み戻せるかを検査する。
+//
+// EncodedRelPath は名前を `…_{name}.{container}`（cut なら `…_{name}.g{n}.{container}`）
+// の 1 成分に入れて SanitizeContentPath を通す。`.` で終わる名前は、続く `.` と
+// 合わさった `..` が潰され、書いた rel_path から cut の世代も container も読めない。
+// 起動時の意味の検査（worker.CheckEncodeProfileMeaning）は rel_path を過去の意味の
+// 証拠にするので、読めない名前は、設定を変えていなくても起動を拒む誤検知になる。
+//
+// 次の名前は、同じ原本から、別の名前と同じ rel_path を作る。
+//   - サニタイズで変わる名前（`/` や `:` を含む、前後に空白がある、`..` を含む）。
+//     `a:b` と `a_b` が同じになる。
+//   - 世代の接尾辞（SplitCutGeneration）で終わる名前。cut でない `x.g1` と、cut の
+//     `x` の世代 1 が同じになる。
+//
+// これらを拒むと、同じ原本から作る rel_path は、名前と世代ごとに異なる。別の原本
+// どうしでは同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。
+//
+// 書き手（worker.EncodedRelPath）も、この関数で名前を検査する。設定が通す名前と
+// 書き手が書ける名前を、同じ規則から引くためである。
+//
+// `rescue-` で始まる名前は、rescue が拾った encoded（EncodedRelPath の形を持たない）を
+// そのプロファイルの成果物と取り違えるので拒む。
+func ValidateEncodeProfileName(name string) error {
+	if strings.Contains(name, "/") || contentpath.SanitizeContentPath(name) != name || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("name %q must be usable unchanged as a file name component "+
+			`(no "/", "\", ":", "*", "?", quotes, "<", ">", "|", control characters, "..", surrounding spaces, or a trailing ".")`, name)
+	}
+	if _, _, ok := SplitCutGeneration(name); ok {
+		return fmt.Errorf(`name %q must not end with a cut generation suffix such as ".g1" (it would share a path with another profile's cut version)`, name)
+	}
+	if strings.HasPrefix(name, RescueEncodedProfilePrefix) {
+		return fmt.Errorf("name %q: the %q prefix is reserved for encoded files recovered by rescue", name, RescueEncodedProfilePrefix)
+	}
+	return nil
+}
 
 // EncodeConfig はエンコード設定。
 //
@@ -308,6 +370,9 @@ func (c EncodeConfig) validate() error {
 	for i, p := range c.Profiles {
 		if p.Name == "" {
 			return fmt.Errorf("encode.profiles[%d].name is required", i)
+		}
+		if err := ValidateEncodeProfileName(p.Name); err != nil {
+			return fmt.Errorf("encode.profiles[%d]: %w", i, err)
 		}
 		if _, dup := seen[p.Name]; dup {
 			return fmt.Errorf("encode.profiles: duplicate name %q", p.Name)

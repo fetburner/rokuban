@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -173,7 +174,7 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 	case ".ts", ".m2ts":
 		return db.AssetKindOriginal, nil, true
 	case ".mp4", ".mkv", ".webm":
-		p := "rescue-" + strings.TrimPrefix(ext, ".")
+		p := config.RescueEncodedProfilePrefix + strings.TrimPrefix(ext, ".")
 		return db.AssetKindEncoded, &p, true
 	default:
 		return "", nil, false

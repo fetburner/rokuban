@@ -1247,26 +1247,11 @@ func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int6
 //
 // **1 世代目から `.g1` を付ける。** 「世代番号の無いパス」という例外を作ると、
 // 置き換えのたびに「旧パスに世代が付いているか」を分岐で扱うことになる。
-// 番号が読めないパス（手で置かれた行など）は 1 に戻す --- 衝突したら部分一意索引が
+// 番号が読めないパス（EncodedRelPath が書かない形）は 1 に戻す --- 衝突したら部分一意索引が
 // 弾くので、黙って他人のファイルを上書きすることはない。
 func nextCutGeneration(prevRelPath, profileName string) int {
-	if prevRelPath == "" {
-		return 1
-	}
-	stem := strings.TrimSuffix(prevRelPath, filepath.Ext(prevRelPath))
-	// `..._{profile}.g{n}` の n を読む。プロファイル名に `.g<数字>` が含まれても
-	// 末尾だけを見るので取り違えない。
-	safeProfile, err := sanitizeProfileForPath(profileName)
-	if err != nil {
-		return 1
-	}
-	prefix := safeProfile + ".g"
-	i := strings.LastIndex(stem, prefix)
-	if i < 0 {
-		return 1
-	}
-	n, err := strconv.Atoi(stem[i+len(prefix):])
-	if err != nil || n < 1 {
+	n, ok := cutGeneration(prevRelPath, profileName)
+	if !ok {
 		return 1
 	}
 	return n + 1
@@ -1450,7 +1435,10 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 // ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
 // 生きている行の rel_path 部分一意索引とも衝突する）。
 //
-// profile 名はパス成分としてサニタイズする（contentpath）。階層は原本の dir のみ。
+// profile 名は、そのまま 1 つのパス成分として入れる。入らない名前は、設定と同じ規則
+// （config.ValidateEncodeProfileName）でエラーにする。サニタイズして入れると、
+// 別の名前と同じパスになったり、rel_path から cut の世代を読めなくなったりする。
+// 階層は原本の dir のみ。
 func EncodedRelPath(originalRel, profileName, container string, generation int) (string, error) {
 	if originalRel == "" {
 		return "", fmt.Errorf("empty original rel_path")
@@ -1458,9 +1446,8 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 	if container != "mp4" && container != "mkv" {
 		return "", fmt.Errorf("unsupported container %q", container)
 	}
-	safeProfile, err := sanitizeProfileForPath(profileName)
-	if err != nil {
-		return "", err
+	if err := config.ValidateEncodeProfileName(profileName); err != nil {
+		return "", fmt.Errorf("encode profile %w", err)
 	}
 	suffix := ""
 	if generation > 0 {
@@ -1475,24 +1462,30 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 	if stem == "" {
 		stem = "encoded"
 	}
-	name := stem + "_" + safeProfile + suffix + "." + container
+	name := stem + "_" + profileName + suffix + "." + container
 	if dir == "" || dir == "." {
 		return contentpath.SanitizeContentPath(name), nil
 	}
 	return contentpath.SanitizeContentPath(dir + "/" + name), nil
 }
 
-func sanitizeProfileForPath(name string) (string, error) {
-	if name == "" {
-		return "", fmt.Errorf("empty profile name")
+// cutGeneration は EncodedRelPath の逆で、rel_path が cut の世代 n（n >= 1）の
+// `…_{profile}.g{n}.{ext}` なら (n, true) を返す。EncodedRelPath が書く形
+// （`_` の境界、`%d` の正規の整数）以外は false にする。世代番号の読み手は
+// nextCutGeneration と起動時の意味の検査（CheckEncodeProfileMeaning）で、
+// 両方がここを通る。どちらも設定にあるプロファイル名（EncodedRelPath が書ける名前）
+// だけを渡す。
+//
+// 拡張子は見ない（container の読み取りは呼び出し側が path.Ext で行う）。
+// プロファイル名まで含めて照合するので、名前に `.g<数字>` を含む cut でない
+// プロファイルを取り違えない。
+func cutGeneration(relPath, profileName string) (int, bool) {
+	base := pathBaseSlash(filepath.ToSlash(relPath))
+	head, n, ok := config.SplitCutGeneration(strings.TrimSuffix(base, filepath.Ext(base)))
+	if !ok || !strings.HasSuffix(head, "_"+profileName) {
+		return 0, false
 	}
-	// SanitizeContentPath は '/' を階層に保つので、プロファイル名内の区切りは潰す。
-	s := contentpath.SanitizeContentPath(strings.ReplaceAll(name, "/", "_"))
-	s = strings.ReplaceAll(s, "/", "_")
-	if s == "" || s == "." || s == "_" {
-		return "", fmt.Errorf("profile name %q sanitizes to empty", name)
-	}
-	return s, nil
+	return n, true
 }
 
 func pathDirSlash(p string) string {

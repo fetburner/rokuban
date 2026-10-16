@@ -341,16 +341,10 @@ func TestEncodedRelPath(t *testing.T) {
 		t.Errorf("EncodedRelPath (site-prefixed original) = %q, want %q", got, want)
 	}
 
-	// プロファイル名の ".." や "/" はパスに持ち込まない。
-	got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(got, "..") {
-		t.Errorf("path contains ..: %q", got)
-	}
-	if strings.Count(got, "/") != 0 {
-		t.Errorf("profile must not introduce hierarchy: %q", got)
+	// プロファイル名の ".." や "/" はパスに持ち込まない。サニタイズせずにエラーにする
+	// （config.ValidateEncodeProfileName と同じ規則）。
+	if got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv", 0); err == nil {
+		t.Errorf("EncodedRelPath with a profile name containing / and .. = %q, want an error", got)
 	}
 }
 
