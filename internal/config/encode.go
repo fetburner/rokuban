@@ -10,11 +10,41 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/ffargs"
 )
 
 // DefaultEncodeProfileRate is the default multiplier used to bound encode job runtime.
 const DefaultEncodeProfileRate = 4.0
+
+// RescueEncodedProfilePrefix は、catalog を使わない rescue（internal/catalog の
+// rescue_scan）が拾った encoded に付けるプロファイル名の前置（`rescue-mp4` など）。
+// そのファイルは EncodedRelPath の形を持たないので、設定のプロファイル名には
+// 使わせない（ValidateEncodeProfileName）。
+const RescueEncodedProfilePrefix = "rescue-"
+
+// ValidateEncodeProfileName は、プロファイル名が派生物の rel_path に変形されずに入り、
+// rel_path から読み戻せるかを検査する。
+//
+// EncodedRelPath は名前を `…_{name}.{container}`（cut なら `…_{name}.g{n}.{container}`）
+// の 1 成分に入れて SanitizeContentPath を通す。サニタイズで変わる名前（`/` や `:` を
+// 含む、前後に空白がある、`..` を含む）と、`.` で終わる名前（続く `.` と合わさって
+// `..` になり潰される）は、書いた rel_path から cut の世代も container も読めない。
+// 起動時の意味の検査（worker.CheckEncodeProfileMeaning）は rel_path を過去の意味の
+// 証拠にするので、読めない名前は、設定を変えていなくても起動を拒む誤検知になる。
+//
+// `rescue-` で始まる名前は、rescue が拾った encoded（EncodedRelPath の形を持たない）を
+// そのプロファイルの成果物と取り違えるので拒む。
+func ValidateEncodeProfileName(name string) error {
+	if strings.Contains(name, "/") || contentpath.SanitizeContentPath(name) != name || strings.HasSuffix(name, ".") {
+		return fmt.Errorf("name %q must be usable unchanged as a file name component "+
+			`(no "/", "\", ":", "*", "?", quotes, "<", ">", "|", control characters, "..", surrounding spaces, or a trailing ".")`, name)
+	}
+	if strings.HasPrefix(name, RescueEncodedProfilePrefix) {
+		return fmt.Errorf("name %q: the %q prefix is reserved for encoded files recovered by rescue", name, RescueEncodedProfilePrefix)
+	}
+	return nil
+}
 
 // EncodeConfig はエンコード設定。
 //
@@ -308,6 +338,9 @@ func (c EncodeConfig) validate() error {
 	for i, p := range c.Profiles {
 		if p.Name == "" {
 			return fmt.Errorf("encode.profiles[%d].name is required", i)
+		}
+		if err := ValidateEncodeProfileName(p.Name); err != nil {
+			return fmt.Errorf("encode.profiles[%d]: %w", i, err)
 		}
 		if _, dup := seen[p.Name]; dup {
 			return fmt.Errorf("encode.profiles: duplicate name %q", p.Name)

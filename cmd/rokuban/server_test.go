@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/role"
 	"github.com/fetburner/rokuban/internal/testutil"
+	"github.com/fetburner/rokuban/internal/worker"
 )
 
 func writeServerTestConfig(t *testing.T, content string) string {
@@ -358,6 +359,72 @@ func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.
 	if _, err := runServerCmdBounded(t, 10*time.Second, path,
 		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=100ms"); err != nil {
 		t.Fatalf("worker with site-prefixed media asset rel_paths: %v", err)
+	}
+}
+
+// cut の設定を読む api と worker は、同じ名前のまま cut を反転させた設定を、DB に
+// 繋いだ直後に拒む（worker.CheckEncodeProfileMeaning）。片方だけが拒むと、起動した
+// もう片方が食い違った設定で作り直し要求を書き、要求行が原本を握る。合う設定では
+// 同じ検査を通って起動する。
+func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              "home",
+		NetworkID:         1,
+		ServiceID:         1,
+		EventID:           1,
+		ServiceName:       "test",
+		ChannelType:       "GR",
+		Channel:           "1",
+		Title:             "cut version",
+		ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
+		ProgramDurationMs: 60_000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("CreateRecording: %v", err)
+	}
+	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1)
+	if err != nil {
+		t.Fatalf("EncodedRelPath: %v", err)
+	}
+	profile := "cutp"
+	if _, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+		RelPath:     relPath,
+		SizeBytes:   1,
+	}); err != nil {
+		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
+	}
+	profileCfg := func(cut bool) string {
+		return fmt.Sprintf(`encode:
+  profiles:
+    - name: cutp
+      container: mp4
+      video_codec: libx264
+      audio_codec: aac
+      cut: %t`, cut)
+	}
+
+	flipped := writeWorkerTestConfig(t, "http://127.0.0.1:1", profileCfg(false))
+	for _, args := range [][]string{
+		{"--roles", "worker", "--sites=", "--queues=encode"},
+		{"--roles", "api", "--sites", "home"},
+	} {
+		err := runServerCmdForTest(t, flipped, args...)
+		if err == nil || !strings.Contains(err.Error(), "validating encode profile meaning") ||
+			!strings.Contains(err.Error(), `"cutp"`) || !strings.Contains(err.Error(), "new name") {
+			t.Errorf("%v: err = %v, want the encode profile meaning error naming cutp", args, err)
+		}
+	}
+
+	kept := writeWorkerTestConfig(t, "http://127.0.0.1:1", profileCfg(true))
+	if _, err := runServerCmdBounded(t, 10*time.Second, kept,
+		"--roles", "worker", "--sites=", "--queues=cleanup", "--once", "--once-idle-timeout=100ms"); err != nil {
+		t.Fatalf("worker with a matching cut profile: %v", err)
 	}
 }
 

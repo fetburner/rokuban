@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"path"
-	"strconv"
 	"strings"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -15,18 +14,25 @@ import (
 // 要求の行）を持つ名前のプロファイルが、今の設定で同じ意味（cut と container）かを
 // 検査し、食い違えばエラーを返す。
 //
-// 録画の desired はプロファイル名の集合として凍結され、encode は実行時に名前から
-// 今の定義を引く。名前が成果物の意味の契約なので、同じ名前のまま意味を変えると
-// 既存の証拠と食い違い、作り直し要求が満たされないまま原本を握り続ける。
+// 録画の desired はプロファイル名の集合として凍結され、encode は実行時に、凍結した
+// 名前から今の定義を引く。同じ名前のまま中身を変えると、既存の成果物と食い違う。
+// 作り直し要求は満たされるまで原本を握るので（until_encoded_deletable_originals）、
+// cut でなくなった名前の要求は原本を握り続ける。
 // 設定から消すことは許す（満たせない desired は見え、原本は守られる）。
 // 証拠が 1 つも無い名前は過去の意味が無いので対象外。
 //
-// cut は rel_path の世代番号から読む（media_asset_cuts は rescue で戻らない）。
-// 作り直し要求の行は cut の証拠で、container は比べない。
+// cut は rel_path の世代番号から読む（cutGeneration。media_asset_cuts は rescue で
+// 戻らない）。作り直し要求の行は cut の証拠で、container は比べない。
 //
-// encode を実行するロール（RequiresEncodeTools が真の worker）の起動時に呼ぶ。
-// config.Load は DB を読めず、api ロールは encode を実行しない。実行する側が
-// 拒めば、食い違った設定で encode が走る経路が無い。
+// 呼び出すのは、cut の設定を読むロール（api と worker）の起動時で、HTTP の待ち受けと
+// ジョブの購読より前である。api は自分の設定で cut かを判定して作り直し要求を書き、
+// desired を凍結する。worker は ingest の凍結・encode_reconcile・encode で読む。
+// 片方だけで拒むと、起動したもう片方が食い違った設定で要求行を書き、原本を握る。
+// config.Load は DB を読めないので、DB に繋いだ直後に置く。
+//
+// コスト: 起動のたびに active な encoded と要求行を全件読む。1 件消化モード
+// （ScaledJob の --once）ではジョブ 1 件ごとに 1 回になる。件数に対する所要時間は
+// 未計測。
 func CheckEncodeProfileMeaning(ctx context.Context, db sqlcgen.DBTX, enc config.EncodeConfig) error {
 	rows, err := sqlcgen.New(db).ListEncodedMeaningEvidence(ctx)
 	if err != nil {
@@ -39,7 +45,7 @@ func CheckEncodeProfileMeaning(ctx context.Context, db sqlcgen.DBTX, enc config.
 		}
 		pastCut, container := true, ""
 		if r.RelPath != "" {
-			pastCut = isCutRelPath(r.RelPath, r.Profile)
+			_, pastCut = cutGeneration(r.RelPath, r.Profile)
 			container = strings.TrimPrefix(path.Ext(r.RelPath), ".")
 		}
 		if p.Cut != pastCut {
@@ -52,23 +58,4 @@ func CheckEncodeProfileMeaning(ctx context.Context, db sqlcgen.DBTX, enc config.
 		}
 	}
 	return nil
-}
-
-// isCutRelPath は rel_path が `..._{profile}.g{n}.{container}`（n >= 1）の形か
-// を返す。EncodedRelPath が世代番号を付けるのは cut のときだけである。
-// プロファイル名まで含めて照合するので、名前に `.g<数字>` を含む cut でない
-// プロファイルを取り違えない。
-func isCutRelPath(relPath, profile string) bool {
-	safe, err := sanitizeProfileForPath(profile)
-	if err != nil {
-		return false
-	}
-	stem := strings.TrimSuffix(path.Base(relPath), path.Ext(relPath))
-	i := strings.LastIndex(stem, "_"+safe+".g")
-	if i < 0 {
-		return false
-	}
-	rest := stem[i+len("_"+safe+".g"):]
-	n, err := strconv.Atoi(rest)
-	return err == nil && n >= 1 && rest == strconv.Itoa(n)
 }
