@@ -1,11 +1,13 @@
 // scripts/*.allow.json の許容が、ベースより増えていないことを検査する。
 //
-// 許容は既存違反の猶予で、減らすだけのものである。許容ファイルごとに次の 2 つを見る。
+// 許容は既存違反の猶予で、減らすだけのものである。許容ファイルごとに次を見る。
 // - base の木に実在するファイルのキーは、キーごとに増加を禁じる。
 // - base に無いファイルのキー（doc を割って生まれたファイル）は、合計で見る。予算は、base の木に
 //   実在するファイルのキーごとの減少分の和である。減少分は base の件数から HEAD の件数（HEAD に
 //   ファイルが無ければ 0）を引いたもので、負なら 0 とする。元のパスに索引を残して割っても、
 //   元のパスを消して割っても、割った分が移るだけなら通る。
+// - HEAD にファイルが無いキーは、何も許さない行なので落とす（規則の新設も同じ）。doc を消したら
+//   キーも消す。
 // 許容ファイルが base に無く、対応する scripts/textlint-rules/<名前>.js も base に無い場合は、規則の
 // 新設として対象外にする。ただし base の scripts/textlint-rules/*.js か scripts/*.allow.json が HEAD
 // で 1 つでも消えている PR では、改名と区別できないので対象外にせず、base を 0 件として比べる。
@@ -50,11 +52,13 @@ const renamed = [...lsBase('scripts'), ...lsBase('scripts/textlint-rules')]
   .some((p) => !existsSync(p))
 
 const errors = []
+const missing = []
 const names = readdirSync('scripts').filter((n) => n.endsWith('.allow.json'))
 for (const name of names) {
   const path = `scripts/${name}`
   const rule = `scripts/textlint-rules/${name.replace(/\.allow\.json$/, '.js')}`
   const after = JSON.parse(readFileSync(path, 'utf8'))
+  for (const key of Object.keys(after)) if (!existsSync(key)) missing.push(`${path}: "${key}" はファイルが無い。行ごと消す`)
   let before = {}
   if (existsAt(base, path)) {
     before = JSON.parse(git('show', `${base}:${path}`))
@@ -67,14 +71,16 @@ for (const name of names) {
   }
   const added = {}
   for (const [key, n] of Object.entries(after)) {
+    if (!existsSync(key)) continue
     if (existsAt(base, key)) {
       if (n > (before[key] ?? 0)) errors.push(`${path}: "${key}" が ${before[key] ?? 0} から ${n} に増えた`)
-    } else if (existsSync(key)) added[key] = n // HEAD に無いファイルのキーは何も許さない
+    } else added[key] = n
   }
   if (sum(added) > budget) {
     errors.push(`${path}: base に無いファイルの許容 ${sum(added)} 件が、base のファイルで減った ${budget} 件を超えた`)
   }
 }
 for (const e of errors) console.error(`${e}。許容は減らすだけ。直すか、doc なら割る`)
+for (const e of missing) console.error(e)
 console.log(`base ${base.slice(0, 12)} と比べた、${names.length} ファイル`)
-process.exit(errors.length ? 1 : 0)
+process.exit(errors.length || missing.length ? 1 : 0)
