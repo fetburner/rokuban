@@ -184,7 +184,7 @@ jsonb を許すのは、そのテーブル自身のロジックが中身を一�
 
 不透明なペイロードには、内容を検査する CHECK も置かない。「クエリはしないが制約はする」という中途半端な状態を作らない。同じ理由で、マージは SQL で行わず、Go 側で型付きに行う。
 
-まだやりがちな違反は、録画の品質イベント（jsonb）の中身への EXISTS を、core ロジックの WHERE 軸にすることである。欠測の判定軸は専用表の行の存在にし、録画の表は観測された試行だけを持つ（[recordings.md](recordings.md)「never_scheduled_events」）。
+まだやりがちな違反は、録画の品質イベント（jsonb）の中身への EXISTS を、core ロジックの WHERE 軸にすることである。欠測の判定軸は専用表の行の存在にし、録画の表は観測された試行だけを持つ（[recordings/history.md](recordings/history.md)「never_scheduled_events」）。
 
 <details><summary>根拠</summary>
 

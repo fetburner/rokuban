@@ -503,6 +503,14 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run docs:lint
+      # 許容の合計が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
+      - name: Check allow totals
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          npm run docs:allow-total -- "origin/$BASE_REF"
 
   # deploy/k8s/ のマニフェスト検査（不変条件 8 はマニフェストにも適用する）。
   #

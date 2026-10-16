@@ -282,7 +282,7 @@ flowchart TD
 <details><summary>根拠</summary>
 
 - 「録画されず」の状態と保持期間: `reservations.state = orphaned`、`reservations`、`orphaned`、`epg.retention_grace`、`program_snapshots`、CASCADE
-- 成功保証を一覧の不在から導かない判断: `docs/schema/recordings.md`
+- 成功保証を一覧の不在から導かない判断: `docs/schema/recordings/history.md`
 
 </details>
 
@@ -449,7 +449,7 @@ CM 検出失敗の行は、直す操作の単位に合わせる。局のロゴ�
 
 - API 側の絞り込み: `superseded_at IS NULL`、`internal/api/recordings_query.go`
 - 判定: `TestListRecordings_FailedFilterExcludesSuperseded`
-- 無条件一覧とごみ箱には履歴を残す: `docs/schema/recordings.md`
+- 無条件一覧とごみ箱には履歴を残す: `docs/schema/recordings/history.md`
 
 </details>
 

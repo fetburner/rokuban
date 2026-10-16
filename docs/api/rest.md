@@ -391,7 +391,7 @@ flowchart TD
 
 `queued` は「来る根拠」があるものにしか付けない。api ロールは worker にも mirakc にも問い合わせない（不変条件 1）ので、「来る」と言えるかどうかは DB と自分の設定だけで決める必要がある。ごみ箱の録画は、reconciler が削除されていない行に絞るので、ジョブが二度と投入されない。`config.encode.profiles` から消えたプロファイルは、reconciler の対象プロファイル絞り込みが投入対象から外す。これは進捗の無いプログレスバーを出さないのと同じ判断である（[frontend/recordings.md](../frontend/recordings.md)）。**「設定を読む」判定を api に置いたのはここだけで、mirakc への問い合わせは足していない。**
 
-状態の値の一覧と、`running` / `failed` の各値の意味と、失敗が固定される条件は `openapi.yaml` の `EncodeJobStatus` にある。表そのものの判断は [schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節である。
+状態の値の一覧と、`running` / `failed` の各値の意味と、失敗が固定される条件は `openapi.yaml` の `EncodeJobStatus` にある。表そのものの判断は [schema/recordings/satellites.md](../schema/recordings/satellites.md) の `recording_encode_attempts` 節である。
 
 <details><summary>根拠</summary>
 
