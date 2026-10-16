@@ -45,8 +45,9 @@ const DefaultSoftStopTimeout = 5 * time.Second
 
 // QueueFunc は args が投入される物理キュー名を返す。命名規則は製品の規則で、
 // 起動形態では変わらないので Config ではなくコンストラクタの引数で受ける。
-// 投入側（api / watcher / CLI）と worker の購読側が同じ関数を通ることで、
-// 投入先と購読先が食い違う「黙って動かない」を作らない。
+// 購読側の物理名は Config.Spec が持ち、QueueFunc は通らない。両者の一致は
+// 型では保証されないので、NewAdapter が Spec.CheckQueueFor で
+// 定期ジョブの投入先が購読する物理名に入ることを起動時に検査する。
 type QueueFunc func(args jobq.Args) (string, error)
 
 // Config は River クライアントの設定。

@@ -234,3 +234,17 @@ func TestNewWorkerClientConfig_StartupShape(t *testing.T) {
 		}
 	}
 }
+
+// 投入側（jobs.PhysicalQueueFor）と購読側（Spec.Physical）は、定期ジョブの投入先で一致する。
+// 論理名をそのまま返す関数とは一致しない --- 両方向。
+func TestNewWorkerSpec_PeriodicJobsAreInsertedIntoSubscribedQueues(t *testing.T) {
+	cfg := workerSpecTestConfig(t)
+	spec := newWorkerSpec(cfg, cfg.Registry())
+	if err := spec.CheckQueueFor(jobs.PhysicalQueueFor); err != nil {
+		t.Fatalf("CheckQueueFor(jobs.PhysicalQueueFor): %v", err)
+	}
+	logical := func(args jobq.Args) (string, error) { return args.Spec().Queue, nil }
+	if err := spec.CheckQueueFor(logical); err == nil {
+		t.Error("CheckQueueFor accepted a queueFor that returns logical names for site-bound jobs")
+	}
+}

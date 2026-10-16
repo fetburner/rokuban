@@ -1,6 +1,7 @@
 package jobq
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -99,5 +100,41 @@ func TestWorkerSpecCheckKinds(t *testing.T) {
 	}
 	if err := (WorkerSpec{}).CheckKinds(NewRegistry()); err != nil {
 		t.Errorf("CheckKinds(no periodic jobs) = %v, want nil", err)
+	}
+}
+
+func TestWorkerSpecSelectFoldsDuplicateNames(t *testing.T) {
+	got, err := validSpec().Select([]string{"q", "q", "r", "q"})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if len(got.Queues) != 2 || got.Queues[0].Logical != "q" || got.Queues[1].Logical != "r" {
+		t.Errorf("Select([q q r q]).Queues = %+v, want [q r]", got.Queues)
+	}
+	if err := got.Validate(); err != nil {
+		t.Errorf("selected spec must stay valid: %v", err)
+	}
+}
+
+func TestWorkerSpecCheckQueueFor(t *testing.T) {
+	spec := validSpec()
+	spec.Queues[0].Physical = []string{"q_tokyo", "q_takamatsu"}
+	to := func(name string) func(Args) (string, error) {
+		return func(Args) (string, error) { return name, nil }
+	}
+	if err := spec.CheckQueueFor(to("q_tokyo")); err != nil {
+		t.Errorf("matching physical name: %v", err)
+	}
+	err := spec.CheckQueueFor(to("q"))
+	if err == nil || !strings.Contains(err.Error(), `inserted into queue "q"`) {
+		t.Errorf("bare logical name: error = %v, want a mismatch error", err)
+	}
+	spec.Queues[0].Physical = nil
+	if err := spec.CheckQueueFor(to("q")); err != nil {
+		t.Errorf("no physical names (0 sites) must pass: %v", err)
+	}
+	failing := func(Args) (string, error) { return "", errors.New("boom") }
+	if err := validSpec().CheckQueueFor(failing); err == nil {
+		t.Error("queueFor error was swallowed")
 	}
 }

@@ -593,7 +593,9 @@ func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues
 }
 
 // newInsertOnlyEnqueuer は api / watcher / enqueue CLI が使う投入専用の adapter を作る。
-// 投入先の物理キューは worker の購読側と同じ jobs.PhysicalQueueFor で決める。
+// 投入先の物理キューは jobs.PhysicalQueueFor で決める。worker の購読側の物理名は
+// newWorkerSpec が jobs.PhysicalQueueName で展開していて、別の経路である。
+// 両者の食い違いは、NewAdapter が定期ジョブについて起動時に検査する。
 func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 	return riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
 }

@@ -117,6 +117,9 @@ func buildRegistryConfig(registry *jobq.Registry, queueFor QueueFunc, cfg Config
 	if err := cfg.Spec.CheckKinds(registry); err != nil {
 		return nil, fmt.Errorf("riveradapter: %w", err)
 	}
+	if err := cfg.Spec.CheckQueueFor(queueFor); err != nil {
+		return nil, fmt.Errorf("riveradapter: %w", err)
+	}
 	workers := river.NewWorkers()
 	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, &workerTarget{workers: workers, queueFor: queueFor}); err != nil {
 		return nil, fmt.Errorf("riveradapter: building workers: %w", err)

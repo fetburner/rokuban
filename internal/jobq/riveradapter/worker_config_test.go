@@ -231,3 +231,16 @@ func TestWorkerBuildConfigPeriodicJobsIgnoreQueueSelection(t *testing.T) {
 		t.Errorf("Queues = %d, want 1 (ts_scan only)", got)
 	}
 }
+
+// 定期ジョブの投入先（queueFor）が、仕様の購読する物理名に入らなければ起動を拒む。
+// 通る queueFor なら起動できる --- 両方向。
+func TestWorkerBuildConfigRejectsQueueForDisagreeingWithSpec(t *testing.T) {
+	spec := periodicTestSpec("tokyo")
+	if _, err := buildRegistryConfig(periodicTestRegistry(), testQueueFor, Config{Spec: spec}); err != nil {
+		t.Fatalf("agreeing queueFor: %v", err)
+	}
+	_, err := buildRegistryConfig(periodicTestRegistry(), logicalQueueFor, Config{Spec: spec})
+	if err == nil || !strings.Contains(err.Error(), "nobody would pull it") {
+		t.Fatalf("logical-name queueFor: error = %v, want a mismatch error", err)
+	}
+}

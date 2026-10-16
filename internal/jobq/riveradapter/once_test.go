@@ -441,3 +441,19 @@ func TestBuildRiverConfig_OnceModeRejectsPeriodicJobs(t *testing.T) {
 		t.Errorf("err = %v, want to mention worker.periodic_jobs", err)
 	}
 }
+
+// config の worker.queues は重複を畳まずに届く。同じ名前を重ねても 1 キューとして
+// 数え、--once が起動する（重複なしでも同じ）。2 キューは引き続き拒む。
+func TestBuildRiverConfig_OnceModeFoldsDuplicateQueueNames(t *testing.T) {
+	for _, queues := range [][]string{{jobs.RulerQueue}, {jobs.RulerQueue, jobs.RulerQueue}} {
+		riverCfg, err := buildConfig(river.NewWorkers(), testQueueFor, Config{
+			Spec: siteSpec(1, "tokyo"), Queues: queues, Once: NewOnceGate(),
+		})
+		if err != nil {
+			t.Fatalf("queues %v: %v", queues, err)
+		}
+		if len(riverCfg.Queues) != 1 {
+			t.Errorf("queues %v: River queues = %d, want 1", queues, len(riverCfg.Queues))
+		}
+	}
+}

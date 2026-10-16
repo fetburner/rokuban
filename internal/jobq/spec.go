@@ -72,6 +72,8 @@ func (spec WorkerSpec) Validate() error {
 }
 
 // Select は論理名 names のキューだけを残した仕様を返す。names が空なら全キューを残す。
+// 同じ名前の重複は 1 つに畳む（config の worker.queues は重複を畳まずに届く。
+// 畳まないと Validate が拒む Logical の重複を Select が作る）。
 // 未知の名前は、有効な名前の一覧を添えて拒む。定期ジョブは絞り込まない
 // （誰が投入するかは起動形態が決める）。Queues は複製して返すので、呼び出し元は書き換えてよい。
 func (spec WorkerSpec) Select(names []string) (WorkerSpec, error) {
@@ -82,6 +84,9 @@ func (spec WorkerSpec) Select(names []string) (WorkerSpec, error) {
 	}
 	selected.Queues = make([]QueueSpec, 0, len(names))
 	for _, name := range names {
+		if slices.ContainsFunc(selected.Queues, func(queue QueueSpec) bool { return queue.Logical == name }) {
+			continue
+		}
 		i := slices.IndexFunc(spec.Queues, func(queue QueueSpec) bool { return queue.Logical == name })
 		if i < 0 {
 			valid := make([]string, 0, len(spec.Queues))
@@ -112,6 +117,37 @@ func (spec WorkerSpec) CheckKinds(registry *Registry) error {
 		}
 		if _, err := registry.Decode(kind, payload); err != nil {
 			return fmt.Errorf("jobq: periodic job %q is not resolvable by the registry: %w", kind, err)
+		}
+	}
+	return nil
+}
+
+// CheckQueueFor は、定期ジョブの投入先（queueFor の結果）が、そのキューの購読する
+// 物理名のどれかであることを検査する。投入側の命名規則と購読側の物理名の展開が
+// 食い違うと、投入したジョブを誰も引かない「黙って動かない」になる。
+//
+// 検査できるのは、起動時に Args の実体が分かる定期ジョブだけである。
+// 登録済み worker の Args（site が実行時に決まる）の投入先は、この関数では見ない。
+// 購読する物理名が空のキュー（site が 0 件）は、投入先と比べるものが無いので通す。
+func (spec WorkerSpec) CheckQueueFor(queueFor func(Args) (string, error)) error {
+	for _, periodic := range spec.PeriodicJobs {
+		if periodic.Args == nil {
+			return errors.New("jobq: periodic job has nil args")
+		}
+		kind := periodic.Args.Kind()
+		target, err := queueFor(periodic.Args)
+		if err != nil {
+			return fmt.Errorf("jobq: resolving the queue of periodic job %q: %w", kind, err)
+		}
+		logical := periodic.Args.Spec().Queue
+		i := slices.IndexFunc(spec.Queues, func(queue QueueSpec) bool { return queue.Logical == logical })
+		if i < 0 || len(spec.Queues[i].Physical) == 0 {
+			continue
+		}
+		if !slices.Contains(spec.Queues[i].Physical, target) {
+			return fmt.Errorf("jobq: periodic job %q is inserted into queue %q, "+
+				"but the worker subscribes to %v for logical queue %q: nobody would pull it",
+				kind, target, spec.Queues[i].Physical, logical)
 		}
 	}
 	return nil
