@@ -294,21 +294,23 @@ VOD の順序は次の通り。
 
 #### 同じ名前で意味を変えない
 
-**同じ名前のまま、カット版かどうかと出力コンテナを変える設定は、worker の起動時に拒む。** 名前が成果物の意味の契約だからである。
+**同じ名前のまま、カット版かどうか、または出力コンテナを変える設定は、worker の起動時に拒む。** 名前が成果物の意味の契約だからである。
 
-録画の desired はプロファイル名の集合として凍結され、encode は実行時に名前から今の定義を引く。意味を変えると、既存の encoded と設定が食い違う。作り直し要求は満たされないまま残り、`until_encoded` の原本を握り続ける。
+録画の desired はプロファイル名の集合として凍結され、encode は実行時に名前から今の定義を引く。意味を変えると、既存の encoded と設定が食い違う。作り直し要求を満たされるまで残す形にすると、その要求は永久に満たされず、`until_encoded` の原本を握り続ける。
 
-変えてはならない属性は `cut` と `container` である。判定基準は、既存の active な encoded から過去の値を読めるかどうかである。`cut` は `media_asset_cuts` の行の有無、`container` は相対パスの拡張子で読める。`crf` や `hwaccel` など品質と機材の設定は、ファイルから読めず、機材の交換で変わるのが普通なので含めない。
+変えてはならない属性は `cut` と `container` である。判定基準は、既存の証拠から過去の値を読めるかどうかである。active な encoded の相対パスから、`cut` は世代番号 `_{profile}.g{n}` の有無、`container` は拡張子を読む。`media_asset_cuts` の行は、catalog の rescue が戻さないので証拠にしない。作り直し要求の行は、カット版でしか作れないので `cut` の証拠になる（`container` は分からないので比べない）。`crf` や `hwaccel` など品質と機材の設定は、ファイルから読めず、機材の交換で変わるのが普通なので含めない。
 
 検査は encode を実行する worker が起動時に行い、食い違えば名前を変えるよう促すエラーで起動を拒む。`config.Load` は DB を読めず、api は encode を実行しないので、実行する側に置く。次は拒まない。
 
 - プロファイルを設定から消す。満たせない desired は `rokuban_encode_reconcile_unsatisfiable` に見え、原本は守られる。
-- active な encoded がまだ 1 本も無い名前。過去の意味が存在しない。
+- active な encoded も作り直し要求の行も無い名前。過去の意味が存在しない。
+
+以前に名前を変えずに `cut` を反転させた環境では、同じ名前の active な encoded に、カット版とそうでないものが混ざる。どちらの設定でも起動できず、出口はその名前を改名することだけである。
 
 <details><summary>根拠</summary>
 
 - 検査: `worker.CheckEncodeProfileMeaning`（呼び出しは `buildWorkerAdapter`）
-- 過去の意味を引くクエリ: `ListActiveEncodedMeanings`
+- 過去の意味を引くクエリ: `ListEncodedMeaningEvidence`
 - 確認済みを示す行: `recording_chapter_ownership`
 - 相対パスの列: `rel_path`
 - 世代番号を含むファイル名の形: `…_{profile}.g{n}.{container}`

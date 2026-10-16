@@ -1,18 +1,20 @@
--- ListActiveEncodedMeanings は、active な encoded が持つ「成果物の意味」を
--- (profile, cut, container) の重複なしで返す。起動時の検査（internal/worker の
--- CheckEncodeProfileMeaning）が、今の設定の同名プロファイルと突き合わせる。
+-- ListEncodedMeaningEvidence は、プロファイル名が過去に持った「成果物の意味」の
+-- 証拠を返す。起動時の検査（internal/worker の CheckEncodeProfileMeaning）が、
+-- 今の設定の同名プロファイルと突き合わせる。
 --
---   * cut = media_asset_cuts の行の有無（カット版だけが凍結区間を持つ）
---   * container = rel_path の拡張子（EncodedRelPath が必ず `.{container}` で終える）
+--   * active な encoded: rel_path。cut と container は rel_path から読む。
+--     EncodedRelPath が cut のときだけ `_{profile}.g{n}`（n >= 1）を付け、
+--     必ず `.{container}` で終えるので、catalog の rescue（media_asset_cuts を
+--     持たない）を通っても残る
+--   * 作り直し要求の行: rel_path は空文字。要求は cut でしか作れず、container は
+--     分からない
 --
--- active な encoded が無い名前は返らない（過去の意味が存在しない）。
--- name: ListActiveEncodedMeanings :many
-SELECT DISTINCT
-  a.profile::text AS profile,
-  (c.media_asset_id IS NOT NULL)::boolean AS cut,
-  COALESCE(substring(a.rel_path FROM '\.([^./]+)$'), '')::text AS container
+-- 証拠が無い名前は返らない（過去の意味が存在しない）。
+-- name: ListEncodedMeaningEvidence :many
+SELECT a.profile::text AS profile, a.rel_path::text AS rel_path
 FROM media_assets a
-LEFT JOIN media_asset_cuts c ON c.media_asset_id = a.id
 WHERE a.kind = 'encoded'
   AND a.state = 'active'
-ORDER BY 1, 2, 3;
+UNION ALL
+SELECT q.profile::text, ''::text
+FROM encoded_asset_rebuild_requests q;
