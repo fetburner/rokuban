@@ -28,10 +28,18 @@ import (
 // desired を凍結する。worker は ingest の凍結・encode_reconcile・encode で読む。
 // 片方だけで拒むと、起動したもう片方が食い違った設定で書く。api なら作り直し要求の
 // 行を、worker なら食い違った意味の encoded を書く。api が書いた要求行は cut の
-// 証拠なので、設定を戻しても証拠が混ざって worker は起動できず、掃除の
-// encode_reconcile も走らない。要求行がある間は until_encoded の原本を消さない
+// 証拠なので、設定を cut: false のままにすると、次に起動するプロセスは（api も
+// worker も）ここで拒む。要求行は満たされても残る（消すのは api だけ）ので、証拠は
+// 消えない。未充足の要求がある間は until_encoded の原本を消さない
 // （until_encoded_deletable_originals）。config.Load は DB を読めないので、DB に
 // 繋いだ直後に置く。
+//
+// 書き込み時には照合しない。ローリング更新の間、cut: true の api が、証拠の無い名前に
+// 要求行を書き、cut: false の worker と並走する穴は、残った要求行が次の起動で拒まれる
+// ことで扱う。書き込み時に照合しようにも、凍結済み desired（recording_encode_policy.
+// encode_profiles）は名前だけで cut を持たないので、証拠の無い名前には照合先が無い。
+// 「cut: false の設定で、要求行だけが残っている名前は検査がエラーを返す」は
+// TestCheckEncodeProfileMeaning の "request only, cut flipped" が固定する。
 //
 // コスト: 起動のたびに active な encoded と要求行を全件読む。1 件消化モード
 // （ScaledJob の --once）ではジョブ 1 件ごとに 1 回になる。返す行の大半を読むので、

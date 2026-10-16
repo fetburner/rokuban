@@ -369,6 +369,7 @@ type DeleteEncodedAssetRebuildRequestParams struct {
 	Profile     string
 }
 
+// 作り直し要求の行を消す書き手は api だけ（版を外す）。満たされても消さない。
 // 作り直し前に版を外す。同じ tx でユーザー命令を消す。
 func (q *Queries) DeleteEncodedAssetRebuildRequest(ctx context.Context, arg DeleteEncodedAssetRebuildRequestParams) error {
 	_, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile)
@@ -872,7 +873,6 @@ VALUES (
 )
 ON CONFLICT (recording_id, profile) DO UPDATE SET
     requested_keep = EXCLUDED.requested_keep,
-    request_generation = nextval('encoded_asset_rebuild_request_generation_seq'),
     requested_at = now()
 `
 

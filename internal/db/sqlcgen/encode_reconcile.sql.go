@@ -11,66 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteEncodedAssetRebuildRequestIfKeep = `-- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
-DELETE FROM encoded_asset_rebuild_requests q
-WHERE q.recording_id = $1
-  AND q.profile = $2
-  AND q.request_generation = $3
-  AND q.requested_keep = $4::int8multirange
-`
-
-type DeleteEncodedAssetRebuildRequestIfKeepParams struct {
-	RecordingID       int64
-	Profile           string
-	RequestGeneration int64
-	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-}
-
-// stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
-// されても、その行は消さない。generation は同じ keep の再要求による ABA も区別する。
-// requested_keep には読んだ multirange をそのまま渡す。
-func (q *Queries) DeleteEncodedAssetRebuildRequestIfKeep(ctx context.Context, arg DeleteEncodedAssetRebuildRequestIfKeepParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEncodedAssetRebuildRequestIfKeep,
-		arg.RecordingID,
-		arg.Profile,
-		arg.RequestGeneration,
-		arg.RequestedKeep,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const getEncodedAssetRebuildRequestForUpdate = `-- name: GetEncodedAssetRebuildRequestForUpdate :one
-SELECT q.requested_keep,
-       q.request_generation
+const getEncodedAssetRebuildRequestForShare = `-- name: GetEncodedAssetRebuildRequestForShare :one
+SELECT q.requested_keep
 FROM encoded_asset_rebuild_requests q
 WHERE q.recording_id = $1
   AND q.profile = $2
-FOR UPDATE
+FOR SHARE
 `
 
-type GetEncodedAssetRebuildRequestForUpdateParams struct {
+type GetEncodedAssetRebuildRequestForShareParams struct {
 	RecordingID int64
 	Profile     string
 }
 
-type GetEncodedAssetRebuildRequestForUpdateRow struct {
-	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-	RequestGeneration int64
-}
-
-// GetEncodedAssetRebuildRequestForUpdate は要求行を行ロックして読む。行が無ければ
-// pgx.ErrNoRows。公開 tx では、ロックしてから現在の keep と照合し、公開と同じ tx で
-// 消す。エンコード前の確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から
-// 呼ぶ。その場合ロックは文の終わりで外れ、読み取りとしてだけ働く（他の tx が行を
-// ロックしていれば、その commit / rollback を待ってから最新の行を読む）。
-func (q *Queries) GetEncodedAssetRebuildRequestForUpdate(ctx context.Context, arg GetEncodedAssetRebuildRequestForUpdateParams) (GetEncodedAssetRebuildRequestForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequestForUpdate, arg.RecordingID, arg.Profile)
-	var i GetEncodedAssetRebuildRequestForUpdateRow
-	err := row.Scan(&i.RequestedKeep, &i.RequestGeneration)
-	return i, err
+// GetEncodedAssetRebuildRequestForShare は要求行を FOR SHARE で読む。行が無ければ
+// pgx.ErrNoRows。公開 tx では、読んでから公開するまで api の upsert（押し直し）を
+// 待たせ、ジョブの keep と requested_keep が等しいときだけ公開する。エンコード前の
+// 確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から呼ぶので、ロックは文の
+// 終わりで外れ、読み取りとしてだけ働く。
+func (q *Queries) GetEncodedAssetRebuildRequestForShare(ctx context.Context, arg GetEncodedAssetRebuildRequestForShareParams) (pgtype.Multirange[pgtype.Range[pgtype.Int8]], error) {
+	row := q.db.QueryRow(ctx, getEncodedAssetRebuildRequestForShare, arg.RecordingID, arg.Profile)
+	var requested_keep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	err := row.Scan(&requested_keep)
+	return requested_keep, err
 }
 
 const listCutAwaitingReview = `-- name: ListCutAwaitingReview :many
@@ -129,10 +92,13 @@ WITH pending_profiles AS (
   SELECT u.recording_id, u.profile
   FROM unencoded_desired_profiles u
 
+  WHERE encodable_profile(u.recording_id, u.profile, $2::text[], $3::text[])
+
   UNION
 
   SELECT q.recording_id, q.profile
-  FROM encoded_asset_rebuild_requests q
+  FROM unsatisfied_encode_rebuilds q
+  WHERE q.profile = ANY($3::text[])
 )
 SELECT
   m.recording_id,
@@ -145,21 +111,20 @@ SELECT
   )::boolean AS running
 FROM pending_profiles m
 JOIN encodable_recordings er ON er.recording_id = m.recording_id
-WHERE encodable_profile(m.recording_id, m.profile, $1::text[], $2::text[])
-  AND NOT EXISTS (
+WHERE NOT EXISTS (
     SELECT 1 FROM recording_encode_attempts a
     WHERE a.recording_id = m.recording_id
       AND a.profile = m.profile
       AND a.state = 'failed'
-      AND GREATEST(a.attempt_count, 1) >= $3::int
+      AND GREATEST(a.attempt_count, 1) >= $1::int
   )
 ORDER BY m.recording_id, m.profile
 `
 
 type ListEncodeQueueParams struct {
+	AttemptLimit  int32
 	KnownProfiles []string
 	CutProfiles   []string
-	AttemptLimit  int32
 }
 
 type ListEncodeQueueRow struct {
@@ -170,11 +135,14 @@ type ListEncodeQueueRow struct {
 
 // ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語は
 // ListMissingEncodeProfiles と同じ unencoded_desired_profiles / encodable_recordings /
-// encodable_profile で、
-// 直書きしない（ファイル冒頭「共有する述語」）。desired の不足と作り直し要求を先に
-// 合わせ、述語は合わせた後に 1 回だけ掛ける。作り直し要求は、active な encoded が
-// 残っていても待機列に入る。再作成要求もユーザーが待っている仕事であり、active な
-// asset の存在だけでは完了を意味しない。row_limit や after_recording_id は適用しない。
+// encodable_profile / unsatisfied_encode_rebuilds で、直書きしない（ファイル冒頭
+// 「共有する述語」）。満たされていない作り直しは、active な encoded が残っていても
+// 待機列に入る（active な asset の存在だけでは、押された keep で作られたことを意味しない）。
+// 満たされた要求は入らない。row_limit や after_recording_id は適用しない。
+//
+// 作り直しの側には encodable_profile の cut の確認条件（recording_chapter_ownership）を
+// 掛けず、設定にある cut プロファイルかだけを見る。押した時点の keep が利用者の確認
+// そのものだからである（encodable_profile の定義の近くのコメントと同じ判断）。
 //
 // 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 // ある印（行は queued と running の分割になる）。active な encoded が既にある、
@@ -184,7 +152,7 @@ type ListEncodeQueueRow struct {
 // 旧 worker の attempt_count = 0 は 1 回と数える）。reconcile はこの行も投入する
 // （worker が開始時に捨てる）ので、ここだけが ListMissingEncodeProfiles と食い違う。
 func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams) ([]ListEncodeQueueRow, error) {
-	rows, err := q.db.Query(ctx, listEncodeQueue, arg.KnownProfiles, arg.CutProfiles, arg.AttemptLimit)
+	rows, err := q.db.Query(ctx, listEncodeQueue, arg.AttemptLimit, arg.KnownProfiles, arg.CutProfiles)
 	if err != nil {
 		return nil, err
 	}
@@ -206,45 +174,28 @@ func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams
 const listEncodedAssetRebuildRequests = `-- name: ListEncodedAssetRebuildRequests :many
 SELECT q.recording_id,
        q.profile,
-       q.request_generation,
        q.requested_keep
-FROM encoded_asset_rebuild_requests q
-JOIN encodable_recordings er ON er.recording_id = q.recording_id
+FROM unsatisfied_encode_rebuilds q
 WHERE $1::bigint IS NULL
    OR q.recording_id = $1::bigint
 ORDER BY q.recording_id, q.profile
 `
 
-type ListEncodedAssetRebuildRequestsRow struct {
-	RecordingID       int64
-	Profile           string
-	RequestGeneration int64
-	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-}
-
-// ListEncodedAssetRebuildRequests は reconcile が投入し直す作り直し要求を返す。
-// エンコードしてよくない録画（encodable_recordings に無い = ごみ箱・原本が active で
-// ない）の要求は返さない。投入してもごみ箱の録画を作る / EncodeWorker が作れない。
-// 要求行は消さず、復元されたら再び拾う。プロファイル単位の encodable_profile では
-// 絞らない。確認が外れた要求を古い要求として比較交換で消すには、読む必要がある。
+// ListEncodedAssetRebuildRequests は reconcile が投入し直す、満たされていない作り直しを
+// 返す。ごみ箱の録画・原本が active でない録画は view（unsatisfied_encode_rebuilds）が
+// 落とす。投入してもごみ箱の録画を作る / EncodeWorker が作れない。要求行は消さず、
+// 復元されたら再び拾う。満たされた要求は返さない。
 // keep は int8multirange のまま返し、Go 側は db.KeepRangesFromMultirange で戻す。
-// 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
-// DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
-func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]ListEncodedAssetRebuildRequestsRow, error) {
+func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]UnsatisfiedEncodeRebuild, error) {
 	rows, err := q.db.Query(ctx, listEncodedAssetRebuildRequests, recordingID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ListEncodedAssetRebuildRequestsRow
+	var items []UnsatisfiedEncodeRebuild
 	for rows.Next() {
-		var i ListEncodedAssetRebuildRequestsRow
-		if err := rows.Scan(
-			&i.RecordingID,
-			&i.Profile,
-			&i.RequestGeneration,
-			&i.RequestedKeep,
-		); err != nil {
+		var i UnsatisfiedEncodeRebuild
+		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.RequestedKeep); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -265,7 +216,7 @@ WITH missing AS (
     AND ($2::bigint IS NULL OR u.recording_id = $2::bigint)
     AND encodable_profile(u.recording_id, u.profile, $3::text[], $4::text[])
     AND NOT EXISTS (
-      SELECT 1 FROM encoded_asset_rebuild_requests rebuild
+      SELECT 1 FROM unsatisfied_encode_rebuilds rebuild
       WHERE rebuild.recording_id = u.recording_id
         AND rebuild.profile = u.profile
     )
@@ -311,6 +262,9 @@ type ListMissingEncodeProfilesRow struct {
 //   - 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
 //   - プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
 //     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
+//   - 作り直し: view `unsatisfied_encode_rebuilds`（要求行のうち、押した時点の keep と
+//     一致する凍結区間の active な encoded がまだ無いもの。ごみ箱・原本が active でない
+//     録画を含まない）。cut の確認済み条件は掛けない
 //
 // 不足の補完（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ述語を
 // 持たなければならない。片方にだけ条件を書き足すと、待機列に出るのに投入されない
@@ -328,8 +282,9 @@ type ListMissingEncodeProfilesRow struct {
 // TestUnknownDesiredProfile_PredicateAsymmetry が両側から固定する）。
 // ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
 // 不足（unencoded_desired_profiles）のうち、エンコードしてよいプロファイル
-// （encodable_profile）で、作り直し要求も無い」(recording_id, profile) を返す。作り直し要求は
-// 固定 keep を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
+// （encodable_profile）で、満たされていない作り直し（unsatisfied_encode_rebuilds）も
+// 無い」(recording_id, profile) を返す。作り直しは固定 keep を持つ別経路
+// （ListEncodedAssetRebuildRequests）で投入する。
 // recording_id が after_recording_id より大きい録画を recording_id 昇順で
 // row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
 // 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。

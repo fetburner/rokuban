@@ -96,7 +96,20 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuild)
 
-	return []string{"待機と実行", "削除中の encoded", "失敗 count 0", "失敗 count 24", "確認済み cut", "明示的な作り直し"},
+	// 確認（所有）が無くても、押した時点の keep が確認なので作り直しは待機列に入る。
+	unowned := mk("未確認の作り直し", "cut")
+	seedEncodedAsset(t, pool, unowned, "cut", 1000)
+	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, unowned)
+	// 凍結区間が requested_keep と等しい要求は満たされていて、待機列に入らない。
+	satisfied := mk("満たされた作り直し", "cut")
+	seedEncodedAsset(t, pool, satisfied, "cut", 1000)
+	exec(`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
+		 SELECT id, '{[0,1000)}'::int8multirange FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`, satisfied)
+	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, satisfied)
+
+	return []string{"待機と実行", "削除中の encoded", "失敗 count 0", "失敗 count 24", "確認済み cut", "明示的な作り直し", "未確認の作り直し"},
 		[]string{"待機と実行"}
 }
 
@@ -124,8 +137,8 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /api/encode-queue status = %d, want 200", resp.StatusCode)
 	}
-	if got.Queued != 6 || got.Running != 1 {
-		t.Errorf("encode queue summary = queued %d, running %d; want queued 6, running 1", got.Queued, got.Running)
+	if got.Queued != 7 || got.Running != 1 {
+		t.Errorf("encode queue summary = queued %d, running %d; want queued 7, running 1", got.Queued, got.Running)
 	}
 	if got.Queued != int64(len(queuedTitles)) || got.Running != int64(len(runningTitles)) {
 		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
@@ -141,9 +154,10 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
 	const exhausted = 1
-	if got.Queued+got.Running != int64(len(missing)-exhausted+1) {
-		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows, %d exhausted, and one explicit rebuild; want %d",
-			got.Queued+got.Running, len(missing), exhausted, len(missing)-exhausted+1)
+	const rebuilds = 2
+	if got.Queued+got.Running != int64(len(missing)-exhausted+rebuilds) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows, %d exhausted, and %d unsatisfied rebuilds; want %d",
+			got.Queued+got.Running, len(missing), exhausted, rebuilds, len(missing)-exhausted+rebuilds)
 	}
 }
 

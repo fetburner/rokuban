@@ -929,6 +929,49 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	}
 }
 
+// TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied は、active な encoded の
+// 凍結区間が requested_keep と等しくなれば、要求行が残っていても until_encoded の
+// 原本が削除対象になることを固定する（満たされた要求は原本を握らない）。
+func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	ctx := context.Background()
+	recordingID := insertTestRecording(t, pool)
+	originalRelPath := "orig/satisfied-rebuild.m2ts"
+	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
+	profile := "cut"
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/satisfied-rebuild.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/satisfied-rebuild.jpg", []byte("thumbnail"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/satisfied-rebuild-tiles.jpg")
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
+		VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
+		t.Fatalf("seeding rebuild request: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, '{[0,500)}'::int8multirange)`, encodedID); err != nil {
+		t.Fatalf("freezing a different keep: %v", err)
+	}
+	assertUntilEncodedQualifies(t, pool, originalID, false)
+
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_cuts SET keep_ranges = '{[0,1000)}'::int8multirange WHERE media_asset_id = $1`, encodedID); err != nil {
+		t.Fatalf("freezing the requested keep: %v", err)
+	}
+	assertUntilEncodedQualifies(t, pool, originalID, true)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, originalID); got != "deleted" {
+		t.Errorf("original state with satisfied rebuild = %q, want deleted", got)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, recordingID).Scan(&rows); err != nil || rows != 1 {
+		t.Errorf("rebuild request rows = %d, err %v; want 1 kept", rows, err)
+	}
+}
+
 func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCollection(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()

@@ -15,7 +15,7 @@ type KeepRanges = pgtype.Multirange[pgtype.Range[pgtype.Int8]]
 // KeepRangesParam は ms の半開区間列を int8multirange の param へ写す。
 // 空の区間は捨てる。並び替えと隣接区間の結合は PostgreSQL の multirange が値として
 // 正規化する（値どうしの一致比較ができる）。カット版の凍結区間（media_asset_cuts）と
-// 作り直し要求（encoded_asset_rebuild_requests）の書き込みが共有する。
+// 作り直し要求（encoded_asset_rebuild_requests。書き込むのは api だけ）の書き込みが共有する。
 // 残る区間が無ければエラーを返す（どちらの表も CHECK で空を拒否するので先に落とす）。
 func KeepRangesParam(keep []chapters.Range) (KeepRanges, error) {
 	out := make(KeepRanges, 0, len(keep))

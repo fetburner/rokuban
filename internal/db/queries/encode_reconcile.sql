@@ -14,6 +14,9 @@
 --   * 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
 --   * プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
 --     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
+--   * 作り直し: view `unsatisfied_encode_rebuilds`（要求行のうち、押した時点の keep と
+--     一致する凍結区間の active な encoded がまだ無いもの。ごみ箱・原本が active でない
+--     録画を含まない）。cut の確認済み条件は掛けない
 --
 -- 不足の補完（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ述語を
 -- 持たなければならない。片方にだけ条件を書き足すと、待機列に出るのに投入されない
@@ -32,8 +35,9 @@
 
 -- ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
 -- 不足（unencoded_desired_profiles）のうち、エンコードしてよいプロファイル
--- （encodable_profile）で、作り直し要求も無い」(recording_id, profile) を返す。作り直し要求は
--- 固定 keep を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
+-- （encodable_profile）で、満たされていない作り直し（unsatisfied_encode_rebuilds）も
+-- 無い」(recording_id, profile) を返す。作り直しは固定 keep を持つ別経路
+-- （ListEncodedAssetRebuildRequests）で投入する。
 -- recording_id が after_recording_id より大きい録画を recording_id 昇順で
 -- row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
 -- 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
@@ -81,7 +85,7 @@ WITH missing AS (
     AND (sqlc.narg('recording_id')::bigint IS NULL OR u.recording_id = sqlc.narg('recording_id')::bigint)
     AND encodable_profile(u.recording_id, u.profile, sqlc.arg('known_profiles')::text[], sqlc.arg('cut_profiles')::text[])
     AND NOT EXISTS (
-      SELECT 1 FROM encoded_asset_rebuild_requests rebuild
+      SELECT 1 FROM unsatisfied_encode_rebuilds rebuild
       WHERE rebuild.recording_id = u.recording_id
         AND rebuild.profile = u.profile
     )
@@ -99,11 +103,14 @@ ORDER BY m.recording_id, min(m.ordinality);
 
 -- ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語は
 -- ListMissingEncodeProfiles と同じ unencoded_desired_profiles / encodable_recordings /
--- encodable_profile で、
--- 直書きしない（ファイル冒頭「共有する述語」）。desired の不足と作り直し要求を先に
--- 合わせ、述語は合わせた後に 1 回だけ掛ける。作り直し要求は、active な encoded が
--- 残っていても待機列に入る。再作成要求もユーザーが待っている仕事であり、active な
--- asset の存在だけでは完了を意味しない。row_limit や after_recording_id は適用しない。
+-- encodable_profile / unsatisfied_encode_rebuilds で、直書きしない（ファイル冒頭
+-- 「共有する述語」）。満たされていない作り直しは、active な encoded が残っていても
+-- 待機列に入る（active な asset の存在だけでは、押された keep で作られたことを意味しない）。
+-- 満たされた要求は入らない。row_limit や after_recording_id は適用しない。
+--
+-- 作り直しの側には encodable_profile の cut の確認条件（recording_chapter_ownership）を
+-- 掛けず、設定にある cut プロファイルかだけを見る。押した時点の keep が利用者の確認
+-- そのものだからである（encodable_profile の定義の近くのコメントと同じ判断）。
 --
 -- 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 -- ある印（行は queued と running の分割になる）。active な encoded が既にある、
@@ -118,10 +125,13 @@ WITH pending_profiles AS (
   SELECT u.recording_id, u.profile
   FROM unencoded_desired_profiles u
 
+  WHERE encodable_profile(u.recording_id, u.profile, sqlc.arg('known_profiles')::text[], sqlc.arg('cut_profiles')::text[])
+
   UNION
 
   SELECT q.recording_id, q.profile
-  FROM encoded_asset_rebuild_requests q
+  FROM unsatisfied_encode_rebuilds q
+  WHERE q.profile = ANY(sqlc.arg('cut_profiles')::text[])
 )
 SELECT
   m.recording_id,
@@ -134,8 +144,7 @@ SELECT
   )::boolean AS running
 FROM pending_profiles m
 JOIN encodable_recordings er ON er.recording_id = m.recording_id
-WHERE encodable_profile(m.recording_id, m.profile, sqlc.arg('known_profiles')::text[], sqlc.arg('cut_profiles')::text[])
-  AND NOT EXISTS (
+WHERE NOT EXISTS (
     SELECT 1 FROM recording_encode_attempts a
     WHERE a.recording_id = m.recording_id
       AND a.profile = m.profile
@@ -144,47 +153,31 @@ WHERE encodable_profile(m.recording_id, m.profile, sqlc.arg('known_profiles')::t
   )
 ORDER BY m.recording_id, m.profile;
 
--- ListEncodedAssetRebuildRequests は reconcile が投入し直す作り直し要求を返す。
--- エンコードしてよくない録画（encodable_recordings に無い = ごみ箱・原本が active で
--- ない）の要求は返さない。投入してもごみ箱の録画を作る / EncodeWorker が作れない。
--- 要求行は消さず、復元されたら再び拾う。プロファイル単位の encodable_profile では
--- 絞らない。確認が外れた要求を古い要求として比較交換で消すには、読む必要がある。
+-- ListEncodedAssetRebuildRequests は reconcile が投入し直す、満たされていない作り直しを
+-- 返す。ごみ箱の録画・原本が active でない録画は view（unsatisfied_encode_rebuilds）が
+-- 落とす。投入してもごみ箱の録画を作る / EncodeWorker が作れない。要求行は消さず、
+-- 復元されたら再び拾う。満たされた要求は返さない。
 -- keep は int8multirange のまま返し、Go 側は db.KeepRangesFromMultirange で戻す。
--- 要求世代も返す。同じ keep の要求が stale 判定中に再送された ABA でも、古い世代の
--- DeleteEncodedAssetRebuildRequestIfKeep は新しい命令を消さない。
 -- name: ListEncodedAssetRebuildRequests :many
 SELECT q.recording_id,
        q.profile,
-       q.request_generation,
        q.requested_keep
-FROM encoded_asset_rebuild_requests q
-JOIN encodable_recordings er ON er.recording_id = q.recording_id
+FROM unsatisfied_encode_rebuilds q
 WHERE sqlc.narg('recording_id')::bigint IS NULL
    OR q.recording_id = sqlc.narg('recording_id')::bigint
 ORDER BY q.recording_id, q.profile;
 
--- GetEncodedAssetRebuildRequestForUpdate は要求行を行ロックして読む。行が無ければ
--- pgx.ErrNoRows。公開 tx では、ロックしてから現在の keep と照合し、公開と同じ tx で
--- 消す。エンコード前の確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から
--- 呼ぶ。その場合ロックは文の終わりで外れ、読み取りとしてだけ働く（他の tx が行を
--- ロックしていれば、その commit / rollback を待ってから最新の行を読む）。
--- name: GetEncodedAssetRebuildRequestForUpdate :one
-SELECT q.requested_keep,
-       q.request_generation
+-- GetEncodedAssetRebuildRequestForShare は要求行を FOR SHARE で読む。行が無ければ
+-- pgx.ErrNoRows。公開 tx では、読んでから公開するまで api の upsert（押し直し）を
+-- 待たせ、ジョブの keep と requested_keep が等しいときだけ公開する。エンコード前の
+-- 確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から呼ぶので、ロックは文の
+-- 終わりで外れ、読み取りとしてだけ働く。
+-- name: GetEncodedAssetRebuildRequestForShare :one
+SELECT q.requested_keep
 FROM encoded_asset_rebuild_requests q
 WHERE q.recording_id = sqlc.arg('recording_id')
   AND q.profile = sqlc.arg('profile')
-FOR UPDATE;
-
--- stale 要求の削除は比較交換にする。古い keep を読んだ後に新しい要求へ upsert
--- されても、その行は消さない。generation は同じ keep の再要求による ABA も区別する。
--- requested_keep には読んだ multirange をそのまま渡す。
--- name: DeleteEncodedAssetRebuildRequestIfKeep :execrows
-DELETE FROM encoded_asset_rebuild_requests q
-WHERE q.recording_id = sqlc.arg('recording_id')
-  AND q.profile = sqlc.arg('profile')
-  AND q.request_generation = sqlc.arg('request_generation')
-  AND q.requested_keep = sqlc.arg('requested_keep')::int8multirange;
+FOR SHARE;
 
 -- ListCutAwaitingReview は「cut プロファイルを凍結しているのに、まだチャプターを
 -- 確認していない」録画数をプロファイル名別に返す（メトリクス
