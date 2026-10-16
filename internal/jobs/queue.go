@@ -85,8 +85,9 @@ func qualifyQueueName(base, site string) string {
 // PhysicalQueueName は論理キュー名から、adapter が Insert / 購読する物理キュー名を
 // 返す。site 単位のキューだけ site 修飾し、それ以外は論理名をそのまま返す。
 //
-// adapter の投入と購読の両方がこの関数を通ることで、site 単位の判定を 2 箇所に
-// 分けて食い違う経路を作らない。
+// adapter の投入（PhysicalQueueFor 経由で adapter へ注入する）と、cmd/rokuban が
+// 組む worker 仕様の購読側の物理名の展開の両方がこの関数を通ることで、site 単位の
+// 判定を 2 箇所に分けて食い違う経路を作らない。adapter 自身は命名規則を持たない。
 func PhysicalQueueName(logical, boundSite string) string {
 	if !slices.Contains(siteBoundQueueNames, logical) {
 		return logical

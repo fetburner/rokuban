@@ -13,7 +13,7 @@ import (
 func TestIngestDuplicateEnqueuesCoalesceInAdapter(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	enqueuer, err := NewInsertOnlyEnqueuer(pool)
+	enqueuer, err := NewInsertOnlyEnqueuer(pool, testQueueFor)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyEnqueuer: %v", err)
 	}

@@ -105,7 +105,7 @@ func registryNames(registry []config.MirakcSite) []string {
 // **watcher** と **worker** はどちらも 1 プロセスが N site を束縛できる
 // （issue #532。watcher は site ごとに goroutine + advisory lock を持ち
 // （server.go、watcherLockName）、worker は Deps.MirakcClients /
-// riveradapter.Config.BoundSites が site → 値の map / 集合になったため）。
+// jobq.WorkerSpec の物理キューと定期ジョブが site ごとの展開になったため）。
 // そのため、束縛サイト数そのものに対する上限・下限の検査はここには無い ---
 // 残るのは次の 1 つだけ:
 //
@@ -115,9 +115,9 @@ func registryNames(registry []config.MirakcSite) []string {
 // site 単位のジョブは Deps.MirakcClients が空 map のため verifySite が必ず
 // 拒み、全滅して再試行し続けるだけの構成になる。0 サイトの worker を許すのは
 // `worker.queues` を ruler/encode/thumbnail/cleanup/storage 等の site 非依存
-// キューに絞ったときだけ（BoundSites が空のままでも、これらのキューの
-// ジョブは site 単位の照合を必要としない。riveradapter.Config の
-// フィールドコメント参照）。
+// キューに絞ったときだけ（site が 0 件でも、これらのキューの
+// ジョブは site 単位の照合を必要としない。site 単位のキューの物理名は
+// 0 サイトで空になり、adapter はそのキューが選ばれたら起動を拒む）。
 func validateSiteBinding(roles []string, bound []config.MirakcSite, queues []string) error {
 	if slices.Contains(roles, "worker") && len(bound) == 0 && jobs.RequiresSiteBinding(queues) {
 		return fmt.Errorf("--sites: worker role is unbound (central process) but worker.queues %v "+

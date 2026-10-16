@@ -15,7 +15,7 @@ metadata:
     app.kubernetes.io/component: enqueue
     rokuban.fetburner.net/site-scoped: "true"
 spec:
-  # in-process の既定は 10 分（internal/worker の defaultEpgSyncInterval）。
+  # in-process の既定は 10 分（設定キー epg.sync_interval の既定。internal/config）。
   schedule: "*/10 * * * *"
   startingDeadlineSeconds: 300
   concurrencyPolicy: Forbid
@@ -75,7 +75,7 @@ metadata:
     app.kubernetes.io/component: enqueue
     rokuban.fetburner.net/site-scoped: "true"
 spec:
-  # in-process の既定は 10 分（internal/worker の defaultTunerSyncInterval）。
+  # in-process の既定は 10 分（cmd/rokuban/workerspec.go の newWorkerSpec）。
   # チューナー構成の変更には mirakc の再起動が要るので更新頻度は低くてよい。
   schedule: "*/10 * * * *"
   startingDeadlineSeconds: 300
@@ -136,7 +136,7 @@ metadata:
     app.kubernetes.io/component: enqueue
     rokuban.fetburner.net/site-scoped: "true"
 spec:
-  # in-process の既定は 10 分（internal/worker の defaultRulerPassInterval）。
+  # in-process の既定は 10 分（cmd/rokuban/workerspec.go の newWorkerSpec）。
   #
   # **`ruler` キューは site 修飾されない**（`RulerPassArgs.Site` はクエリの
   # 絞り込みで、キュー名には出ない。docs/operations.md §5 のキュー表）。
@@ -270,7 +270,7 @@ metadata:
     app.kubernetes.io/component: enqueue
     rokuban.fetburner.net/site-scoped: "true"
 spec:
-  # in-process の既定は 5 分（internal/worker の defaultRecordSweepInterval）。
+  # in-process の既定は 5 分（cmd/rokuban/workerspec.go の newWorkerSpec）。
   schedule: "*/5 * * * *"
   startingDeadlineSeconds: 240
   concurrencyPolicy: Forbid

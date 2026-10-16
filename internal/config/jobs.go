@@ -13,8 +13,7 @@ const defaultRescueStuckJobsAfter = 6 * time.Minute
 type IngestConfig struct {
 	// Concurrency は mirakc サイトあたりの ingest 同時実行数（ingest キューの
 	// MaxWorkers）。**既定値の権威はここ（defaults() の 3）である**
-	// （internal/worker.defaultIngestConcurrency は config.Load を経由しない
-	// 呼び出し元のための二重既定）。
+	// （cmd/rokuban の worker 仕様がこの値をそのまま MaxWorkers にする）。
 	//
 	// 3 は docs/recording/ingest.md §5.4 の式（`チューナー数 + 全速 pull の
 	// 許容本数（1〜2）`）の下端で、2 チューナー機の「2 本同時録画 + 全速 pull 1 本」

@@ -34,10 +34,13 @@ func TestTSScanReconcilePeriodicUsesScanQueueAndCoalesces(t *testing.T) {
 	release := make(chan struct{})
 	Register(registry, blockingTSScanReconcileWorker{started: started, release: release})
 
-	adapter, err := NewAdapter(pool, registry, Config{
-		Queues:          []string{jobs.TSScanQueue},
-		TSScanReconcile: true,
-		PeriodicJobs:    true,
+	adapter, err := NewAdapter(pool, registry, testQueueFor, Config{
+		Spec: jobq.WorkerSpec{
+			Queues:       []jobq.QueueSpec{plainQueue(jobs.TSScanQueue, 1)},
+			PeriodicJobs: []jobq.PeriodicJobSpec{{Interval: oneHour, Args: tsscan.ReconcileArgs{}}},
+		},
+		Queues:               []string{jobs.TSScanQueue},
+		SchedulePeriodicJobs: true,
 	})
 	if err != nil {
 		t.Fatalf("NewAdapter: %v", err)

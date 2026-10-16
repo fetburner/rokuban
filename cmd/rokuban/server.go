@@ -401,7 +401,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		if workerAdapter != nil {
 			watcherEnqueuer = workerAdapter
 		} else {
-			watcherEnqueuer, err = riveradapter.NewInsertOnlyEnqueuer(pool)
+			watcherEnqueuer, err = newInsertOnlyEnqueuer(pool)
 			if err != nil {
 				return err
 			}
@@ -523,7 +523,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			return nil, fmt.Errorf("embedded dist/ not found: %w", err)
 		}
 		routerCfg.DistFS = distFS
-		apiEnqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
+		apiEnqueuer, err := newInsertOnlyEnqueuer(pool)
 		if err != nil {
 			return nil, err
 		}
@@ -581,30 +581,21 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 // 組み立て自体は無害。
 func newWorkerClientConfig(cfg *config.Config, bound []config.MirakcSite, queues []string, onceGate *riveradapter.OnceGate, softStopTimeout time.Duration) riveradapter.Config {
 	return riveradapter.Config{
-		// BoundSites は site 単位のキュー（ingest/epg/reconciler/watcher）を
-		// 物理名（`<base>_<site>`）に展開するのに使う。空スライス（0 サイト
-		// 束縛）では jobs.PhysicalQueueName が db.DefaultSite に解決する ---
-		// 0 サイト束縛の worker がこれらのキューを要求しないことは
-		// validateSiteBinding が起動時に強制している。
-		BoundSites:           registryNames(bound),
-		IngestConcurrency:    cfg.Ingest.Concurrency,
-		EncodeConcurrency:    cfg.Encode.Concurrency,
-		ThumbnailConcurrency: cfg.Encode.ThumbnailConcurrency,
-		EpgSyncInterval:      cfg.Epg.SyncInterval,
-		PeriodicJobs:         cfg.Worker.PeriodicJobs,
+		// 何を購読し何を定期投入するかは製品の仕様（workerspec.go）。
+		// 以下は起動形態だけである。
+		Spec:                 newWorkerSpec(cfg, bound),
+		SchedulePeriodicJobs: cfg.Worker.PeriodicJobs,
 		Queues:               queues,
 		Once:                 onceGate,
 		SoftStopTimeout:      softStopTimeout,
 		RescueStuckJobsAfter: cfg.Worker.RescueStuckJobsAfter,
-		CatalogExport:        true,
-		DeleteReconcile:      true,
-		LabelRuleReconcile:   true,
-		EncodeReconcile:      true,
-		ThumbnailReconcile:   true,
-		TSScanReconcile:      true,
-		CMDetectReconcile:    cfg.CMDetect.Enabled,
-		StorageSync:          true,
 	}
+}
+
+// newInsertOnlyEnqueuer は api / watcher / enqueue CLI が使う投入専用の adapter を作る。
+// 投入先の物理キューは worker の購読側と同じ jobs.PhysicalQueueFor で決める。
+func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
+	return riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
 }
 
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
@@ -656,7 +647,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		Webhook:                  webhookClient,
 		Cleanup:                  cfg.Cleanup,
 	})
-	adapter, err := riveradapter.NewAdapter(pool, workers, clientCfg)
+	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, clientCfg)
 	if err != nil {
 		return nil, err
 	}

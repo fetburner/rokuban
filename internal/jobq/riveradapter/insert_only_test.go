@@ -13,7 +13,7 @@ import (
 
 func TestNewInsertOnlyEnqueuerDoesNotStartWorkers(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	adapter, err := NewInsertOnlyEnqueuer(pool)
+	adapter, err := NewInsertOnlyEnqueuer(pool, testQueueFor)
 	if err != nil {
 		t.Fatalf("NewInsertOnlyEnqueuer: %v", err)
 	}

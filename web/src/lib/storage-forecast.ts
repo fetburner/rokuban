@@ -93,12 +93,8 @@ export const recentRecordingSampleLimit = 20
  * observationStaleAfterMs は `observedAt` をこれより古いと「古い観測」として扱う
  * しきい値（1 時間）。
  *
- * worker のストレージ観測ループの間隔は現在 **5 分固定**（`internal/worker/storage.go`
- * の `defaultStorageSyncInterval`）。`worker.Config.StorageSyncInterval` という
- * フィールドは存在するが、`cmd/rokuban/server.go` がこれを設定ファイルのどのキーからも
- * 埋めていない（`grep -rn StorageSyncInterval` が返すのは宣言・既定値へのフォール
- * バック・doc コメントだけで、代入は無い）。つまり**今は実質ハードコードの 5 分**で、
- * 「設定で変更可能」という以前の記述は誤り（実在しないキーへの参照だった）。
+ * worker のストレージ観測ループの間隔は現在 **5 分固定**（`cmd/rokuban/workerspec.go`
+ * の `newWorkerSpec` がリテラルで組む）。設定ファイルのどのキーからも変えられない。
  *
  * それでも間隔の値をここへ輸入して「5 分の N 倍」と定義しないのは、この値が
  * worker 側の実装詳細であり `GET /api/storage` の契約に含まれていないため ---
@@ -107,7 +103,7 @@ export const recentRecordingSampleLimit = 20
  * その代わりに置いた**独立した固定の安全マージン**: 現在の 5 分間隔に対しては
  * 12 倍の余裕があり、1 回の失敗パス・再起動直後の遅延程度では誤って「古い」と
  * 出ない一方、観測ループが本当に止まっていれば 1 時間以内に検知できる。
- * 将来 `StorageSyncInterval` が実際に設定可能になり、かつ既定より大きく延ばす
+ * 将来この間隔が実際に設定可能になり、かつ既定より大きく延ばす
  * 運用が出てきた場合はこの余裕が相対的に薄くなるため、そのときはしきい値を
  * 見直す（現時点ではそのような運用要求が無いので固定値のままにする）。
  */

@@ -71,15 +71,27 @@ func TestPeriodicSiteJobsRunOnStartWithBoundArgs(t *testing.T) {
 	riveradapter.Register(registry, reconcilePassSiteRecorder{deliveries})
 	riveradapter.Register(registry, recordSweepSiteRecorder{deliveries})
 
-	adapter, err := riveradapter.NewAdapter(pool, registry, riveradapter.Config{
-		PeriodicJobs:          true,
-		BoundSites:            sites,
-		EpgSyncInterval:       time.Hour,
-		TunerSyncInterval:     time.Hour,
-		RulerPassInterval:     time.Hour,
-		ReconcilePassInterval: time.Hour,
-		RecordSweepInterval:   time.Hour,
-		TestOnly:              true,
+	spec := jobq.WorkerSpec{Queues: []jobq.QueueSpec{{Logical: jobs.RulerQueue, Physical: []string{jobs.RulerQueue}, MaxWorkers: 1}}}
+	for _, logical := range []string{jobs.EpgQueue, jobs.ReconcilerQueue, jobs.RecordSweepQueue} {
+		queue := jobq.QueueSpec{Logical: logical, MaxWorkers: 1}
+		for _, site := range sites {
+			queue.Physical = append(queue.Physical, jobs.PhysicalQueueName(logical, site))
+		}
+		spec.Queues = append(spec.Queues, queue)
+	}
+	for _, site := range sites {
+		spec.PeriodicJobs = append(spec.PeriodicJobs,
+			jobq.PeriodicJobSpec{Interval: time.Hour, Args: jobs.EpgSyncArgs{Site: site}},
+			jobq.PeriodicJobSpec{Interval: time.Hour, Args: jobs.TunerSyncArgs{Site: site}},
+			jobq.PeriodicJobSpec{Interval: time.Hour, Args: jobs.RulerPassArgs{Site: site}},
+			jobq.PeriodicJobSpec{Interval: time.Hour, Args: jobs.ReconcilePassArgs{Site: site}},
+			jobq.PeriodicJobSpec{Interval: time.Hour, Args: jobs.RecordSweepArgs{Site: site}},
+		)
+	}
+	adapter, err := riveradapter.NewAdapter(pool, registry, jobs.PhysicalQueueFor, riveradapter.Config{
+		Spec:                 spec,
+		SchedulePeriodicJobs: true,
+		TestOnly:             true,
 	})
 	if err != nil {
 		t.Fatalf("NewAdapter: %v", err)

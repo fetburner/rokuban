@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
-	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
 	"github.com/fetburner/rokuban/internal/db"
@@ -195,7 +194,9 @@ func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.
 		registry:  registry,
 		queueName: queueName,
 		cfg: Config{
-			Queues:               []string{"default"},
+			// 契約は論理キューに限らない物理名を渡すので、そのキューも仕様に入れて
+			// 常に NewAdapter を通す。
+			Spec:                 contractSpec(queueName),
 			JobTimeout:           time.Millisecond,
 			RescueStuckJobsAfter: riverContractRescueAfter,
 			TestOnly:             true,
@@ -208,31 +209,21 @@ func newRiverContractFixture(t *testing.T, registry *jobq.Registry, worker jobq.
 
 func (fixture *riverContractFixture) newClient() *Adapter {
 	fixture.t.Helper()
-	riverCfg, err := buildRegistryConfig(fixture.registry, fixture.cfg)
+	client, err := NewAdapter(fixture.pool, fixture.registry, logicalQueueFor, fixture.cfg)
 	if err != nil {
-		fixture.t.Fatalf("buildRegistryConfig() error = %v", err)
+		fixture.t.Fatalf("NewAdapter() error = %v", err)
 	}
-	if _, exists := riverCfg.Queues[fixture.queueName]; exists {
-		// Use the production constructor whenever it already processes the queue under test,
-		// so contract cases notice changes to NewAdapter.
-		client, err := NewAdapter(fixture.pool, fixture.registry, fixture.cfg)
-		if err != nil {
-			fixture.t.Fatalf("NewAdapter() error = %v", err)
-		}
-		fixture.clients = append(fixture.clients, client)
-		return client
+	fixture.clients = append(fixture.clients, client)
+	return client
+}
+
+// contractSpec は default キューと、契約が渡すキュー名の 1 本ずつを購読する仕様。
+func contractSpec(queueName string) jobq.WorkerSpec {
+	queues := []jobq.QueueSpec{plainQueue("default", 100)}
+	if queueName != "default" {
+		queues = append(queues, plainQueue(queueName, 1))
 	}
-	// The contract passes a physical queue name that is not an application logical queue, which
-	// NewAdapter never processes. Inject it through River's public config so the fixture
-	// actually delivers jobs from that name.
-	riverCfg.Queues[fixture.queueName] = river.QueueConfig{MaxWorkers: 1}
-	client, err := river.NewClient(riverpgxv5.New(fixture.pool), riverCfg)
-	if err != nil {
-		fixture.t.Fatalf("river.NewClient() error = %v", err)
-	}
-	adapter := &Adapter{pool: fixture.pool, registry: fixture.registry, config: fixture.cfg, client: client}
-	fixture.clients = append(fixture.clients, adapter)
-	return adapter
+	return jobq.WorkerSpec{Queues: queues}
 }
 
 func (fixture *riverContractFixture) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
@@ -360,8 +351,8 @@ func newLifecycleTestAdapter(t *testing.T, worker jobq.Worker[contracttest.Args]
 	t.Helper()
 	registry := jobq.NewRegistry()
 	Register(registry, worker)
-	adapter, err := NewAdapter(testutil.SetupDB(t), registry, Config{
-		Queues:               []string{"default"},
+	adapter, err := NewAdapter(testutil.SetupDB(t), registry, logicalQueueFor, Config{
+		Spec:                 contractSpec("default"),
 		JobTimeout:           time.Millisecond,
 		RescueStuckJobsAfter: riverContractRescueAfter,
 		SoftStopTimeout:      softStopTimeout,
