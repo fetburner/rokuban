@@ -48,13 +48,13 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 
 逆向きの境界も持つ。adapter の本番コードは、契約とエンジンだけに依存する。禁止リストで製品パッケージを塞ぐと、リストに無い別の製品パッケージへの依存が通る。そのため許可リストで判定し、テストは対象外にする。
 
-契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle と、worker の仕様の型である。仕様の型が持つのは、キューごとの並列数・定期ジョブの一覧と周期・定期投入の起動直後の 1 回である。排他、一覧、job ID / 試行番号、`--once`、購読の仕組みは adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
+契約は River と asynq の共通部分に絞る。扱うのは queue・timeout・retry・enqueue・work・runner lifecycle と、worker の仕様の型である。仕様の型は、キューごとの並列数と購読する物理キュー名、定期ジョブの一覧と周期を表す。定期投入の runner は、起動直後に 1 回、その後は周期ごとに投入する。この点は型の doc に書いた契約である。排他、一覧、job ID / 試行番号、`--once`、購読の仕組みは adapter 固有のまま外に置く。adapter の内部状態へ依存しない境界を先に作るためである。
 
-定期投入は 3 つに書き分ける。一覧と周期は製品の方針なので、jobq の仕様が持つ。誰が投入の契機を持つかは起動形態が決める（[定期実行の契機](#定期実行の契機はデプロイ形態に委ねる)）。投入の仕組みは adapter 固有である。`worker.periodic_jobs` を false にしても、仕様の定期ジョブの一覧は空にしない。
+定期投入の責務は 3 つに分かれ、変わる理由が違う。一覧と周期は製品の方針で、jobq の仕様が持つ。誰が投入の契機を持つかはデプロイ形態が決める（[定期実行の契機](#定期実行の契機はデプロイ形態に委ねる)）。投入の仕組みは adapter 固有である。`worker.periodic_jobs` を false にしても、仕様の定期ジョブの一覧は空にならない。契機の有無と一覧は別の軸だからである。
 
 設定キーを持たない周期と並列数は、上書きできない製品の仕様として組み立て関数のリテラルで書く。config に既定値を置くのは、設定キーのある値だけである。adapter は既定値を持たず、0 の並列数や周期を起動時に拒む。adapter が「0 なら既定値」を持つと、config の既定値との二重既定になり、片方だけが直る。
 
-物理キュー名の命名規則は製品の規則で、起動形態ではない。投入用の解決関数は adapter のコンストラクタが引数で受ける。購読側の物理名は仕様が持つので、投入側と購読側が同じ規則を通る。nil の解決関数は拒む。論理名にそのまま倒すと、api が `ingest` へ入れ、worker が `ingest_tokyo` を引く「黙って動かない」になるからである。登録した worker の投入先が決まるかと、定期ジョブの kind が登録済みかは、adapter の構築時に検査する。
+物理キュー名の命名規則は製品の規則で、起動形態ではない。投入側の規則は adapter のコンストラクタが解決関数として受け取る。購読側の物理名は、組み立て関数が同じ規則の部品で展開して仕様に入れる。この 2 つは別の経路なので、型は一致を保証しない。食い違うと、api が `ingest` へ入れ、worker が `ingest_tokyo` を引く「黙って動かない」になる。そのため adapter は構築時に、定期ジョブの投入先が購読する物理名に入ることを検査する。解決関数が nil のときも、論理名に倒さず構築を拒む。登録した worker の投入先が決まることと、定期ジョブの kind が登録済みであることも、構築時に検査する。site が実行時に決まる Args の投入先は、起動時には検査できない。
 
 <details><summary>根拠</summary>
 
@@ -63,9 +63,9 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 - トランザクション内の投入と CLI の単発投入: `EnqueueTx` / `Enqueue`、合流の表示は `Result.Coalesced`
 - River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
 - 中立なレジストリ: `jobq.Registry`
-- 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds`
+- 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`
 - 仕様の組み立て: `cmd/rokuban` の `newWorkerSpec`（`tsscan` が `internal/jobs` を import するので jobs には置けない）
-- import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは許可リスト（標準ライブラリ・`internal/db`・`internal/jobq`・pgx・river）
+- import 境界の判定: `.golangci.yml` の depguard。adapter の本番コードは `riveradapter-allowlist`（許可リスト）
 - import の例外: `internal/` の本番コードでは `internal/worker/worker.go` と `internal/testutil`
 - 対象外にする起動コード: `cmd/`
 

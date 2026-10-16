@@ -347,7 +347,7 @@ SSE 再接続をヒントにする案は採らない。mirakc クライアント
 
 <details><summary>根拠</summary>
 
-- `record_sweep` の既定間隔と継承元: `worker.RecordSweepInterval` / `ReconcileInterval`
+- `record_sweep` の間隔: `cmd/rokuban/workerspec.go` の `newWorkerSpec`
 - SSE 再接続を呼び出し側へ通知できない: `internal/mirakc.Client.Subscribe`
 
 </details>

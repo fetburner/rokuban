@@ -581,7 +581,7 @@ spec:
   pollingInterval: 30
   # delete_reconcile と catalog_export はそれぞれ UniqueOpts で自分自身の重複を
   # 防ぐので、「両方が同時に 1 本ずつ走れる」ぶんだけあればよい
-  # （internal/worker の defaultCleanupConcurrency と同じ根拠）。
+  # （cmd/rokuban/workerspec.go の cleanup キューの並列数と同じ根拠）。
   maxReplicaCount: 2
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
