@@ -9,11 +9,13 @@
 -- ローリング更新の間の書き込み失敗になる。「要求」は利用者の要求そのもので、満たされた
 -- 後も「利用者が確認した keep」の記録として残る。
 --
--- request_generation 列とシーケンスは、この版では落とさない。新しい版はどちらも
--- 参照しないが、置き換え前の Pod の upsert（nextval）と比較交換削除は参照する。
--- 同じマイグレーションで落とすと、ローリング更新の間、その Pod の再エンコード API と
--- encode の公開が失敗する。次の版で落とす。
---
+-- request_generation 列とシーケンスは落とす。満たされた要求を消す書き手が無くなり、
+-- 消費と削除の競合を防ぐ比較交換が要らなくなった。シーケンスは列の OWNED BY なので
+-- 列と一緒に落ちる。ローリング更新の間、置き換え前の Pod の upsert（nextval）と
+-- 比較交換削除、ListEncodedAssetRebuildRequests（列を読む）は失敗する。
+-- 新しい Pod に置き換われば解消する。
+ALTER TABLE encoded_asset_rebuild_requests DROP COLUMN request_generation;
+
 -- unsatisfied_encode_rebuilds は「満たされていない作り直し」の述語である。
 -- ごみ箱の録画と原本が active でない録画は含まない（encodable_recordings）。
 -- 満たされている = 同じプロファイルの active な encoded の凍結区間が requested_keep と
@@ -154,6 +156,12 @@ WHERE a.kind = 'original'
   );
 
 DROP VIEW unsatisfied_encode_rebuilds;
+
+CREATE SEQUENCE encoded_asset_rebuild_request_generation_seq AS bigint;
+ALTER TABLE encoded_asset_rebuild_requests
+    ADD COLUMN request_generation bigint NOT NULL DEFAULT nextval('encoded_asset_rebuild_request_generation_seq') CHECK (request_generation > 0);
+ALTER SEQUENCE encoded_asset_rebuild_request_generation_seq
+    OWNED BY encoded_asset_rebuild_requests.request_generation;
 
 COMMENT ON TABLE encoded_asset_rebuild_requests IS
     '利用者が明示したカット版の再作成要求。requested_keep は操作時点の量子化済み区間。catalog には含めない。';

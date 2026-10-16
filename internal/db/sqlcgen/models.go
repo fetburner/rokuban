@@ -112,11 +112,10 @@ type EncodableRecording struct {
 
 // 利用者が押した時点の keep 区間（量子化済み）。満たされても残る desired で、消すのは api だけ。満たされたかは unsatisfied_encode_rebuilds が導出する。catalog には含めない。
 type EncodedAssetRebuildRequest struct {
-	RecordingID       int64
-	Profile           string
-	RequestedKeep     pgtype.Multirange[pgtype.Range[pgtype.Int8]]
-	RequestGeneration int64
-	RequestedAt       time.Time
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	RequestedAt   time.Time
 }
 
 type EncodedAssetRemovalRequest struct {

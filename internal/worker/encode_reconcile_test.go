@@ -247,6 +247,34 @@ func mustKeepRanges(t *testing.T, keep []chapters.Range) db.KeepRanges {
 	return ranges
 }
 
+// TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly は、満たされた判定が
+// 同じプロファイルの active な encoded だけを見ることを固定する。別の cut プロファイルの
+// 版の凍結区間が requested_keep と同じでも、未充足のままである（満たされた扱いにすると
+// until_encoded の原本が不可逆に消える）。
+func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/other-profile.m2ts", []string{"cut", "cut2"}, []byte("original"))
+	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	seedEncodedAssetRebuildRequest(t, pool, id, keep)
+	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
+	if err := setFrozenCuts(t, pool, other, keep); err != nil {
+		t.Fatal(err)
+	}
+	if got := unsatisfiedRebuildCount(t, pool, id); got != 1 {
+		t.Fatalf("unsatisfied rebuilds with only another profile's matching asset = %d, want 1", got)
+	}
+	same := seedEncodedAsset(t, pool, id, "cut", "rebuild/other-profile_cut.mp4")
+	if err := setFrozenCuts(t, pool, same, keep); err != nil {
+		t.Fatal(err)
+	}
+	if got := unsatisfiedRebuildCount(t, pool, id); got != 0 {
+		t.Fatalf("unsatisfied rebuilds with the same profile's matching asset = %d, want 0", got)
+	}
+}
+
 // TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass は、対象パスが
 // ごみ箱の録画を除外し、復元後の全件パスが不足分を投入することを固定する。
 func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testing.T) {
