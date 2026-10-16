@@ -91,6 +91,21 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/jobq/riveradapter
               desc: use the neutral jobq contracts; only cmd/ wires the River adapter
+        riveradapter-allowlist:
+          # adapter は契約（jobq）とエンジン（river / pgx）だけに依存する。製品の方針
+          # （どのジョブを何分で）は jobq.WorkerSpec として cmd/rokuban から渡される。
+          # 禁止リストで jobs / tsscan / config を塞ぐと他の製品パッケージへの依存が
+          # 通るので、許可リストにする。テストは jobs の Args を fixture に使ってよい。
+          list-mode: strict
+          files:
+            - "${config-path}/internal/jobq/riveradapter/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/fetburner/rokuban/internal/db
+            - github.com/fetburner/rokuban/internal/jobq
+            - github.com/jackc/pgx
+            - github.com/riverqueue/river
         notifier-db-source:
           # notifier の EventHub と SSE 配信は DB を知らない。DB への接続は Source の
           # 実装のサブパッケージに閉じ込める。テストは実 DB を使う統合テストを含むので対象外。

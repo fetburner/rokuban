@@ -22,7 +22,6 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/role"
@@ -828,7 +827,7 @@ func TestServerCmd_OnceModeExitsOnUnhandledJobKind(t *testing.T) {
 	// **max_attempts はハーネスの 1 ではなく 25 にする** ---
 	// 1 だと最初の失敗で discarded になり、壊れた実装でも掴み直せないので
 	// 下の attempt の主張が何も検出しなくなる。
-	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
+	enqueuer, err := newInsertOnlyEnqueuer(pool)
 	if err != nil {
 		t.Fatalf("creating insert-only enqueuer: %v", err)
 	}

@@ -18,7 +18,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 const adapterWorkerKey = "river"
@@ -42,6 +41,7 @@ type Adapter struct {
 	mu       sync.Mutex
 	pool     *pgxpool.Pool
 	registry *jobq.Registry
+	queueFor QueueFunc
 	config   Config
 	client   *river.Client[pgx.Tx]
 	stopped  bool
@@ -53,40 +53,59 @@ type Adapter struct {
 // NewInsertOnlyEnqueuer creates an Adapter with an empty worker registry and does not start
 // delivery. With no registered workers River refuses to Start, so the adapter cannot deliver;
 // TestNewInsertOnlyEnqueuerDoesNotStartWorkers fixes that Start fails.
-func NewInsertOnlyEnqueuer(pool *pgxpool.Pool) (*Adapter, error) {
+//
+// queueFor は投入先の物理キューを決める。nil は拒む（名前をそのまま使う扱いに倒すと、
+// 投入側が論理名へ入れ、worker が site 付きの物理名を引く「黙って動かない」になる）。
+func NewInsertOnlyEnqueuer(pool *pgxpool.Pool, queueFor QueueFunc) (*Adapter, error) {
+	if queueFor == nil {
+		return nil, errors.New("riveradapter: queueFor is required")
+	}
 	client, err := river.NewClient(riverpgxv5.New(pool), &river.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("creating insert-only River client: %w", err)
 	}
-	return &Adapter{pool: pool, registry: jobq.NewRegistry(), client: client}, nil
+	return &Adapter{pool: pool, registry: jobq.NewRegistry(), queueFor: queueFor, client: client}, nil
 }
 
 // NewAdapter builds River workers from registry and creates a PostgreSQL-backed adapter.
-func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*Adapter, error) {
+// It rejects an invalid cfg.Spec, a periodic job kind the registry cannot resolve, and a
+// registered kind whose queueFor fails (for example a site-bound Args without a site).
+func NewAdapter(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*Adapter, error) {
 	if registry == nil {
 		return nil, errors.New("riveradapter: registry is required")
 	}
-	client, err := newRegistryClient(pool, registry, cfg)
+	if queueFor == nil {
+		return nil, errors.New("riveradapter: queueFor is required")
+	}
+	client, err := newRegistryClient(pool, registry, queueFor, cfg)
 	if err != nil {
 		return nil, err
 	}
-	return &Adapter{pool: pool, registry: registry, config: cfg, client: client}, nil
+	return &Adapter{pool: pool, registry: registry, queueFor: queueFor, config: cfg, client: client}, nil
+}
+
+// workerTarget は Register が預けた builder に渡す、River の登録先と投入先の解決関数。
+type workerTarget struct {
+	workers  *river.Workers
+	queueFor QueueFunc
 }
 
 // Register adds a jobq worker to registry and records how River should register it.
 func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 	args := zeroArgs[T]()
 	kind := args.Kind()
-	if _, err := jobs.PhysicalQueueFor(args); err != nil {
-		panic(fmt.Sprintf("riveradapter: registering %q: %v", kind, err))
-	}
 	jobq.Register(registry, worker)
 	err := registry.AddAdapterWorker(adapterWorkerKey, kind, func(dst any) error {
-		workers, ok := dst.(*river.Workers)
-		if !ok || workers == nil {
-			return fmt.Errorf("expected *river.Workers, got %T", dst)
+		target, ok := dst.(*workerTarget)
+		if !ok || target == nil || target.workers == nil {
+			return fmt.Errorf("expected *workerTarget, got %T", dst)
 		}
-		river.AddWorker(workers, &riverWorker[T]{registry: registry})
+		// 投入先が決まらない Args（site 単位のキューなのに site を持たない等）は、
+		// NewAdapter の時点で、注入された queueFor によって拒む。
+		if _, err := target.queueFor(args); err != nil {
+			return err
+		}
+		river.AddWorker(target.workers, &riverWorker[T]{registry: registry})
 		return nil
 	})
 	if err != nil {
@@ -94,16 +113,22 @@ func Register[T jobq.Args](registry *jobq.Registry, worker jobq.Worker[T]) {
 	}
 }
 
-func buildRegistryConfig(registry *jobq.Registry, cfg Config) (*river.Config, error) {
+func buildRegistryConfig(registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*river.Config, error) {
+	if err := cfg.Spec.CheckKinds(registry); err != nil {
+		return nil, fmt.Errorf("riveradapter: %w", err)
+	}
+	if err := cfg.Spec.CheckQueueFor(queueFor); err != nil {
+		return nil, fmt.Errorf("riveradapter: %w", err)
+	}
 	workers := river.NewWorkers()
-	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, workers); err != nil {
+	if err := registry.RegisterAdapterWorkers(adapterWorkerKey, &workerTarget{workers: workers, queueFor: queueFor}); err != nil {
 		return nil, fmt.Errorf("riveradapter: building workers: %w", err)
 	}
-	return buildConfig(workers, cfg)
+	return buildConfig(workers, queueFor, cfg)
 }
 
-func newRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, cfg Config) (*river.Client[pgx.Tx], error) {
-	riverCfg, err := buildRegistryConfig(registry, cfg)
+func newRegistryClient(pool *pgxpool.Pool, registry *jobq.Registry, queueFor QueueFunc, cfg Config) (*river.Client[pgx.Tx], error) {
+	riverCfg, err := buildRegistryConfig(registry, queueFor, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +145,7 @@ func (adapter *Adapter) Enqueue(ctx context.Context, args jobq.Args, opts ...job
 	if client == nil {
 		return jobq.Result{}, errors.New("riveradapter: client is nil")
 	}
-	insertOpts, err := makeInsertOpts(args, opts...)
+	insertOpts, err := makeInsertOpts(adapter.queueFor, args, opts...)
 	if err != nil {
 		return jobq.Result{}, err
 	}
@@ -140,7 +165,7 @@ func (adapter *Adapter) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args,
 	if tx == nil {
 		return jobq.Result{}, errors.New("riveradapter: transaction is nil")
 	}
-	insertOpts, err := makeInsertOpts(args, opts...)
+	insertOpts, err := makeInsertOpts(adapter.queueFor, args, opts...)
 	if err != nil {
 		return jobq.Result{}, err
 	}
@@ -172,7 +197,7 @@ func (adapter *Adapter) Start(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		newClient, err := newRegistryClient(adapter.pool, adapter.registry, adapter.config)
+		newClient, err := newRegistryClient(adapter.pool, adapter.registry, adapter.queueFor, adapter.config)
 		if err != nil {
 			return err
 		}
@@ -305,7 +330,7 @@ func zeroArgs[T jobq.Args]() T {
 	return args
 }
 
-func makeInsertOpts(args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpts, error) {
+func makeInsertOpts(queueFor QueueFunc, args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpts, error) {
 	if args == nil {
 		return river.InsertOpts{}, errors.New("riveradapter: args are nil")
 	}
@@ -327,7 +352,7 @@ func makeInsertOpts(args jobq.Args, options ...jobq.EnqueueOpt) (river.InsertOpt
 	if spec.MaxAttempts < 0 {
 		return river.InsertOpts{}, fmt.Errorf("riveradapter: %s max attempts must not be negative", kind)
 	}
-	physicalQueue, err := jobs.PhysicalQueueFor(args)
+	physicalQueue, err := queueFor(args)
 	if err != nil {
 		return river.InsertOpts{}, err
 	}

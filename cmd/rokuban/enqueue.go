@@ -13,7 +13,6 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
@@ -208,7 +207,7 @@ func runEnqueue(ctx context.Context, pool *pgxpool.Pool, job, site string, out i
 		return fmt.Errorf("unknown job: %q (valid: %s)", job, strings.Join(sortedJobNames(), ", "))
 	}
 
-	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
+	enqueuer, err := newInsertOnlyEnqueuer(pool)
 	if err != nil {
 		return err
 	}

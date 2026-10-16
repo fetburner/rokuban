@@ -46,7 +46,7 @@ import (
 //     振る舞う、または常に qualifyQueueName を呼ぶ） --- 自分の site の
 //     ジョブが期待したキュー名にならず、Insert 直後のリテラル比較か、
 //     「自分の site のジョブは処理される」チェックが落ちる。
-//  4. buildConfig が cfg.BoundSites を渡さない/無視する --- 自分の
+//  4. adapter が Spec の Physical を購読しない/無視する --- 自分の
 //     site のジョブが二度と処理されなくなり、「自分の site のジョブは
 //     処理される」チェックが（誤検出防止の canary として）落ちる。
 //
@@ -73,7 +73,14 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 			"tokyo": mirakc.NewClient(srv.URL, nil),
 		},
 	})
-	adapter, err := riveradapter.NewAdapter(pool, workers, riveradapter.Config{BoundSites: []string{"tokyo"}})
+	// tokyo に束縛された仕様: site 単位の 4 キューを tokyo の物理名だけで購読する。
+	var spec jobq.WorkerSpec
+	for _, logical := range []string{jobs.IngestQueue, jobs.EpgQueue, jobs.ReconcilerQueue, jobs.RecordSweepQueue} {
+		spec.Queues = append(spec.Queues, jobq.QueueSpec{
+			Logical: logical, Physical: []string{jobs.PhysicalQueueName(logical, "tokyo")}, MaxWorkers: 1,
+		})
+	}
+	adapter, err := riveradapter.NewAdapter(pool, workers, jobs.PhysicalQueueFor, riveradapter.Config{Spec: spec})
 	if err != nil {
 		t.Fatalf("creating adapter: %v", err)
 	}
@@ -255,7 +262,7 @@ func TestIngestQueueRename_ByQueuePreventsStaleQueueFromBlockingNewInsert(t *tes
 	ctx := context.Background()
 
 	client := riveradaptertest.NewRiverClient(t, pool)
-	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool)
+	enqueuer, err := riveradapter.NewInsertOnlyEnqueuer(pool, jobs.PhysicalQueueFor)
 	if err != nil {
 		t.Fatalf("creating insert-only enqueuer: %v", err)
 	}
