@@ -34,9 +34,10 @@ import (
 // （until_encoded_deletable_originals）。config.Load は DB を読めないので、DB に
 // 繋いだ直後に置く。
 //
-// 書き込み時には照合しない。ローリング更新の間、cut: true の api が、証拠の無い名前に
+// 要求行を書くとき、api は自分の設定で cut かを確かめるだけで、DB にある過去の証拠
+// とは照合しない。ローリング更新の間、cut: true の api が、証拠の無い名前に
 // 要求行を書き、cut: false の worker と並走する穴は、残った要求行が次の起動で拒まれる
-// ことで扱う。書き込み時に照合しようにも、凍結済み desired（recording_encode_policy.
+// ことで扱う。DB と照合しようにも、凍結済み desired（recording_encode_policy.
 // encode_profiles）は名前だけで cut を持たないので、証拠の無い名前には照合先が無い。
 // 「cut: false の設定で、要求行だけが残っている名前は検査がエラーを返す」は
 // TestCheckEncodeProfileMeaning の "request only, cut flipped" が固定する。
