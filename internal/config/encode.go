@@ -27,11 +27,13 @@ const RescueEncodedProfilePrefix = "rescue-"
 // rel_path から読み戻せるかを検査する。
 //
 // EncodedRelPath は名前を `…_{name}.{container}`（cut なら `…_{name}.g{n}.{container}`）
-// の 1 成分に入れて SanitizeContentPath を通す。サニタイズで変わる名前（`/` や `:` を
-// 含む、前後に空白がある、`..` を含む）と、`.` で終わる名前（続く `.` と合わさって
-// `..` になり潰される）は、書いた rel_path から cut の世代も container も読めない。
+// の 1 成分に入れて SanitizeContentPath を通す。`.` で終わる名前は、続く `.` と
+// 合わさった `..` が潰され、書いた rel_path から cut の世代も container も読めない。
 // 起動時の意味の検査（worker.CheckEncodeProfileMeaning）は rel_path を過去の意味の
 // 証拠にするので、読めない名前は、設定を変えていなくても起動を拒む誤検知になる。
+// サニタイズで変わる名前（`/` や `:` を含む、前後に空白がある、`..` を含む）は、
+// 別の名前と同じ rel_path になる（`a:b` と `a_b`）。名前を rel_path にそのまま
+// 入れることで、名前と rel_path の形を 1 対 1 にする。
 //
 // `rescue-` で始まる名前は、rescue が拾った encoded（EncodedRelPath の形を持たない）を
 // そのプロファイルの成果物と取り違えるので拒む。

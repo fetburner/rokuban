@@ -33,8 +33,10 @@ import (
 // 繋いだ直後に置く。
 //
 // コスト: 起動のたびに active な encoded と要求行を全件読む。1 件消化モード
-// （ScaledJob の --once）ではジョブ 1 件ごとに 1 回になる。件数に対する所要時間は
-// 未計測。
+// （ScaledJob の --once）ではジョブ 1 件ごとに 1 回になる。返す行の大半を読むので、
+// 索引ではなく seq scan になり、件数に比例する。実測は 1 回だけで、active な encoded
+// 10 万件・同じ機械の Postgres で、クエリが 26 ms（EXPLAIN ANALYZE）、api の起動の
+// 待ちが DB 接続を含めて 87 ms だった。
 func CheckEncodeProfileMeaning(ctx context.Context, db sqlcgen.DBTX, enc config.EncodeConfig) error {
 	rows, err := sqlcgen.New(db).ListEncodedMeaningEvidence(ctx)
 	if err != nil {
