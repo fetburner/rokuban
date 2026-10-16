@@ -79,7 +79,7 @@ pnpm exec orval  # openapi.yaml → web/src/api/generated.ts
 | [docs/api.md](docs/api.md) | API 設計（REST の判断/SSE/メディア配信/認証/プロキシ） | **索引** → `docs/api/` |
 | [docs/storage.md](docs/storage.md) | ストレージ契約（2 階層/削除エンジン/catalog・rescue） | **索引** → `docs/storage/` |
 | [docs/frontend.md](docs/frontend.md) | フロントエンド | **索引** → `docs/frontend/` |
-| [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | 単一 |
+| [docs/configuration.md](docs/configuration.md) | 設定の判断（キーの網羅は `config.example.yml`） | **索引** → `docs/configuration/` |
 | [docs/operations.md](docs/operations.md) | 運用（監視/アラート/DB/ストレージ/k8s・ロール分割） | **索引** → `docs/operations/` |
 | [docs/runbook.md](docs/runbook.md) | 導入・移行・運用手順 | **索引** → `docs/runbook/` |
 | [docs/invariants.md](docs/invariants.md) | 不変条件 9〜14 の失敗の形（いま先に浮かぶ案が引き起こす失敗）。ルールの根拠を辿るときだけ | 単一 |
