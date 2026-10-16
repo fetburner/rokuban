@@ -6,7 +6,7 @@
 
 `cut: true` のプロファイルは、確認済み（`recording_chapter_ownership` の行がある）でなければ投入されない。この条件は関数 `encodable_profile` が持ち、削除側の view `until_encoded_deletable_originals` は持たない。確認前にカット版を作ると、誤検出のまま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる（原本は `until_encoded` で猶予なしに消える）。
 
-確認していない録画は desired が満たされないので、`until_encoded_deletable_originals` の `unencoded_desired_profiles` の腕が原状を残す方向に自然に機能する。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
+確認していない録画では、カット版のプロファイルが view `unencoded_desired_profiles` に残る。`until_encoded_deletable_originals` はこの view に行がある録画を除くので、原本は消えない。確認待ちの件数は `rokuban_cut_awaiting_review` で見る（失敗ではないのでアラート対象ではない）。
 
 **チャプターを直した後、古くなったカット版は自動では作り直さない。** 作り直すと、ユーザーが確認していない区間が気づかないうちに本編から消える。API は現在のタイムラインから導出した keep 区間と凍結した区間を比べて「編集前の内容です」を出す。ユーザーが `POST /api/recordings/{id}/encoded/{profile}/reencode` を明示的に呼んだときだけ作り直す。
 
@@ -16,7 +16,7 @@
 
 通常の不足補完は、満たされていない作り直しがある profile を候補から外す。active なカット版を置き換えるのは要求に由来するジョブだけで、新しい世代のパスへ置き換える（[contract.md](contract.md) §3「カット版の置き換え」）。要求の commit 後の `encode_reconcile` はヒントにすぎず、失われても定期パスが拾う。
 
-初回のカット版（要求に由来しないジョブ）は、エンコード中に編集されたら公開時に現在の keep と照合して公開をやめ、描き直す。照合を外すと、編集前の版が desired を満たして原本が消え、編集した内容を二度と描けなくなる。
+初回のカット版（要求に由来しないジョブ）は、公開時に worker が現在の keep と照合する。エンコード中に編集されて一致しなければ、公開をやめて描き直す。照合を外すと、編集前の版が desired を満たして原本が消え、編集した内容を二度と描けなくなる。
 
 `keepOriginal: until_encoded` の録画は、満たされていない作り直しがある間、原本を削除対象にしない。要求行はカタログに含めない。
 
