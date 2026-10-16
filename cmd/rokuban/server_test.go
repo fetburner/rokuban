@@ -517,7 +517,8 @@ func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
 	for {
 		var waiting int
 		if err := pool.QueryRow(bg, `SELECT count(*) FROM pg_locks l JOIN pg_class c ON c.oid = l.relation
-			WHERE c.relname = 'encoded_asset_rebuild_requests' AND NOT l.granted`).Scan(&waiting); err != nil {
+			WHERE c.relname = 'encoded_asset_rebuild_requests' AND NOT l.granted
+			  AND l.database = (SELECT oid FROM pg_database WHERE datname = current_database())`).Scan(&waiting); err != nil {
 			t.Fatalf("reading pg_locks: %v", err)
 		}
 		if waiting > 0 {

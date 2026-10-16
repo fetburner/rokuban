@@ -1481,15 +1481,8 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 // プロファイルを取り違えない。
 func cutGeneration(relPath, profileName string) (int, bool) {
 	base := pathBaseSlash(filepath.ToSlash(relPath))
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	marker := "_" + profileName + ".g"
-	i := strings.LastIndex(stem, marker)
-	if i < 0 {
-		return 0, false
-	}
-	digits := stem[i+len(marker):]
-	n, err := strconv.Atoi(digits)
-	if err != nil || n < 1 || digits != strconv.Itoa(n) {
+	head, n, ok := config.SplitCutGeneration(strings.TrimSuffix(base, filepath.Ext(base)))
+	if !ok || !strings.HasSuffix(head, "_"+profileName) {
 		return 0, false
 	}
 	return n, true

@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"path"
 	"strings"
 	"testing"
@@ -41,7 +42,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	// （catalog の rescue は encoded を active で戻すが cuts は戻さない）。
 	seedEncodedAsset(t, pool, recID, "cutp", mustEncodedRelPath(t, orig, "cutp", "mkv", 1))
 	// 名前に `.g2` を含む cut でないプロファイルは、世代番号と取り違えない。
-	seedEncodedAsset(t, pool, recID, "x.g2", mustEncodedRelPath(t, orig, "x.g2", "mp4", 0))
+	seedEncodedAsset(t, pool, recID, "x.g2.hd", mustEncodedRelPath(t, orig, "x.g2.hd", "mp4", 0))
 	// deleted の encoded は過去の意味に数えない。
 	delID := seedEncodedAsset(t, pool, recID, "gone", mustEncodedRelPath(t, orig, "gone", "mp4", 0))
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, delID); err != nil {
@@ -63,8 +64,8 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 		{"cut true to false", meaningCfg("cutp", false, "mkv"), "cut=false"},
 		{"cut false to true", meaningCfg("plain", true, "mp4"), "cut=true"},
 		{"container changed", meaningCfg("plain", false, "mkv"), "container"},
-		{"dotted name stays non-cut", meaningCfg("x.g2", false, "mp4"), ""},
-		{"dotted name flipped to cut", meaningCfg("x.g2", true, "mp4"), "cut=true"},
+		{"dotted name stays non-cut", meaningCfg("x.g2.hd", false, "mp4"), ""},
+		{"dotted name flipped to cut", meaningCfg("x.g2.hd", true, "mp4"), "cut=true"},
 		{"request only, cut kept", meaningCfg("reqonly", true, "mp4"), ""},
 		{"request only, cut flipped", meaningCfg("reqonly", false, "mp4"), "cut=false"},
 		{"profile removed", config.EncodeConfig{Profiles: []config.EncodeProfile{{Name: "other", Container: "mp4"}}}, ""},
@@ -95,12 +96,14 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 //
 // 設定が拒む名前は、書き手もエラーにすることと、拒む理由も確かめる。
 func TestCutGeneration_RoundTripsEncodedRelPath(t *testing.T) {
-	accepted := []string{"h264", "h264_vaapi", "cut", "e2e-slow", "x.g2", "x.g1.g1", "g", "1", "a_b", "_", "__", "_x", "x_", ".hidden", "日本語 720p"}
+	accepted := []string{"h264", "h264_vaapi", "cut", "e2e-slow", "x", "x.g2.hd", "x.g", "x.g0", "x.g01", "x.gz", "g", "1", "a_b", "_", "__", "_x", "x_", ".hidden", "日本語 720p"}
 	originals := []string{
 		"sites/home/20240101/120000_title_1024.m2ts",
 		"sites/home/a.b/c_x.g1.m2ts", // ディレクトリと原本の名前に紛らわしい形を含む
 		"sites/home/noext",
 	}
+	// 同じ原本からは、受け入れる名前と世代ごとに異なる rel_path になる（上書きしない）。
+	seen := map[string]string{}
 	for _, name := range accepted {
 		if err := config.ValidateEncodeProfileName(name); err != nil {
 			t.Errorf("config rejects %q: %v", name, err)
@@ -110,6 +113,11 @@ func TestCutGeneration_RoundTripsEncodedRelPath(t *testing.T) {
 			for _, container := range []string{"mp4", "mkv"} {
 				for gen := 0; gen <= 12; gen++ {
 					rel := mustEncodedRelPath(t, orig, name, container, gen)
+					who := fmt.Sprintf("%q gen %d", name, gen)
+					if prev, dup := seen[rel]; dup {
+						t.Errorf("%s and %s share the rel_path %q", prev, who, rel)
+					}
+					seen[rel] = who
 					n, ok := cutGeneration(rel, name)
 					if ok != (gen > 0) || (ok && n != gen) {
 						t.Errorf("cutGeneration(%q, %q) = (%d, %t), want (%d, %t)", rel, name, n, ok, gen, gen > 0)
@@ -144,7 +152,18 @@ func TestCutGeneration_RoundTripsEncodedRelPath(t *testing.T) {
 			t.Errorf("%q survives sanitizing as %q; the rejection would be unnecessary", name, component)
 		}
 	}
-	for _, name := range append(dotted, "a:b", "a/b", " a", "a..b") {
+	// 世代の接尾辞で終わる名前は、cut でない版が、接尾辞を除いた名前の cut 版と同じ
+	// rel_path になる。
+	generationSuffixed := map[string]struct {
+		head string
+		gen  int
+	}{"x.g1": {"x", 1}, "x.g2.hd.g3": {"x.g2.hd", 3}, "h264.g10": {"h264", 10}}
+	for name, cut := range generationSuffixed {
+		if got, want := mustEncodedRelPath(t, orig, cut.head, "mp4", cut.gen), "sites/home/a_"+name+".mp4"; got != want {
+			t.Errorf("cut %q gen %d = %q, not %q; the rejection of %q would be unnecessary", cut.head, cut.gen, got, want, name)
+		}
+	}
+	for _, name := range append(dotted, "a:b", "a/b", " a", "a..b", "x.g1", "x.g2.hd.g3", "h264.g10") {
 		if config.ValidateEncodeProfileName(name) == nil {
 			t.Errorf("config accepts %q", name)
 		}
