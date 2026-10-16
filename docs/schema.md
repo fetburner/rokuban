@@ -7,7 +7,11 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 | §1 | 設計原則（desired/observed 分離・mirakc 固有概念の隔離・tombstone・サイトスコープ・導出値と事実の分離・行の寿命・型の規律） | [schema/principles.md](schema/principles.md) |
 | §3 §3.5 §3.6 §3.7 | desired: `reservations` / `program_intents`・`program_overrides` / `circuit_breakers` / `program_snapshots` | [schema/reservations.md](schema/reservations.md) |
 | §4 | observed: `schedule_sync` / `schedule_sync_snapshots` / `ruler_pass_snapshots` / `record_sweep_snapshots` | [schema/schedule-sync.md](schema/schedule-sync.md) |
-| §5 §6 | 永続資産: `recordings` / `media_assets` と、その衛星表 | [schema/recordings.md](schema/recordings.md) |
+| §5 | 永続資産: `recordings`（行の作られ方・status・ごみ箱・重複防止）/ `never_scheduled_events` / `recording_purge_requests` / `encoded_asset_removal_requests` | [schema/recordings/history.md](schema/recordings/history.md) |
+| §5 | 永続資産（衛星表）: `recording_encode_policy` / `recording_ingest_progress` / `recording_encode_attempts` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
+| §5 | 永続資産（衛星表）: `recording_cm_detections` / `recording_cm_attempts` / `cm_logos` / `cm_logo_areas` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
+| §5 | 永続資産（衛星表）: `recording_chapter_ownership` / `recording_chapter_spans` / `recording_playback_positions` / `recording_watched` | [schema/recordings/satellites.md](schema/recordings/satellites.md) |
+| §6 | 永続資産: `media_assets` / `media_asset_cuts` / `media_asset_thumbnail_seeks` | [schema/recordings/media-assets.md](schema/recordings/media-assets.md) |
 | §7 | observed: `record_sync` / `drop_stats` / `drop_positions` | [schema/record-sync.md](schema/record-sync.md) |
 | §8 | jsonb ドキュメント形式（base / overrides / quality_events の形） | [schema/jsonb.md](schema/jsonb.md) |
 | §9 §9.5 | 使い捨てキャッシュ: `epg_services` / `epg_programs` / `tuner_sync` | [schema/projections.md](schema/projections.md) |
@@ -20,7 +24,7 @@ PostgreSQL のテーブル構成と、スキーマ設計の判断をまとめる
 
 <details><summary>根拠</summary>
 
-- 本文の分割先: `docs/schema/`
+- 本文の分割先: `docs/schema/`。§5 / §6 はさらに `docs/schema/recordings/` に割ってある
 
 </details>
 

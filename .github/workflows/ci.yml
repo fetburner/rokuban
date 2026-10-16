@@ -503,6 +503,21 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run docs:lint
+      # 許容が base より増えていないこと（scripts/check-allow-total.mjs）。PR だけ見る。
+      - name: Check allow counts
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          # base 側にスクリプトがあればそれを実行する（同じ PR でスクリプトを弱めても捕まる）。
+          # 無い初回だけ PR 側を使う。
+          if git cat-file -e "origin/$BASE_REF:scripts/check-allow-total.mjs"; then
+            git show "origin/$BASE_REF:scripts/check-allow-total.mjs" > "$RUNNER_TEMP/check-allow-total.mjs"
+            node "$RUNNER_TEMP/check-allow-total.mjs" "origin/$BASE_REF"
+          else
+            npm run docs:allow-total -- "origin/$BASE_REF"
+          fi
 
   # deploy/k8s/ のマニフェスト検査（不変条件 8 はマニフェストにも適用する）。
   #

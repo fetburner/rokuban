@@ -38,7 +38,7 @@ type GetRecordSyncIngestTargetRow struct {
 }
 
 // ingest 転送の途中経過（issue #212）。書き手は IngestWorker だけ。
-// 表そのものの設計判断は docs/schema/recordings.md
+// 表そのものの設計判断は docs/schema/recordings/satellites.md
 // 「recording_ingest_progress --- 転送の途中経過（衛星表）」を参照。
 // ingest ジョブが転送を始める前に読む、(site, record_id) の観測。
 // recording_id は転送結果のコミット先、content_length は進捗の分母。
@@ -74,7 +74,7 @@ type UpsertRecordingIngestProgressParams struct {
 // written_bytes は GREATEST を取らない --- ジョブ再試行（層 2）は temp replay 後の
 // 実ファイル末尾から続くため、通常は戻らない。サイズ / ハッシュ不一致や record の
 // cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
-// 保証しない。docs/schema/recordings.md「recording_ingest_progress」参照）。
+// 保証しない。docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
 func (q *Queries) UpsertRecordingIngestProgress(ctx context.Context, arg UpsertRecordingIngestProgressParams) error {
 	_, err := q.db.Exec(ctx, upsertRecordingIngestProgress, arg.RecordingID, arg.WrittenBytes, arg.ExpectedBytes)
 	return err

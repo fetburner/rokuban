@@ -510,7 +510,7 @@ finished は mirakc の録画完了を指す。取り込みの完了は原本の
 <details><summary>根拠</summary>
 
 - 完了の状態: `recordings.status = finished`
-- 進捗の衛星表: `recording_ingest_progress`（[schema/recordings.md](../schema/recordings.md) §5）
+- 進捗の衛星表: `recording_ingest_progress`（[schema/recordings/satellites.md](../schema/recordings/satellites.md) §5）
 - API の返し先: `Recording.ingest`
 
 </details>

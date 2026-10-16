@@ -109,7 +109,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 - `error` は ffmpeg の失敗メッセージを含む先頭 2000 バイトである。全文は worker のログにある
 - `state='running'` のまま `attempted_at` が古い行は、worker が実行中に落ちた可能性がある。encode の回収処理は、enqueue 時に保存した締切の後で同じ job を再試行する。締切は `max(1 時間, 実尺 × profile rate)` で、実尺が不明な場合と締切のない旧 args は 12 時間になる。試行回数の列は、次の worker 起動時に死亡した試行を数える。締切を越えても状態が変わらない場合は、notifier の常駐 River client と worker のログを確認する
-- `error` に `unknown encode profile` が出る。設定から消えたプロファイルなので、`config.encode.profiles` に戻すか、その録画のエンコード方針から外す（[schema/recordings.md](../schema/recordings.md) の `recording_encode_attempts` 節）
+- `error` に `unknown encode profile` が出る。設定から消えたプロファイルである。`config.encode.profiles` に戻すか、その録画のエンコード方針から外す。表の判断は [schema/recordings/satellites.md](../schema/recordings/satellites.md) の `recording_encode_attempts` 節にある
 
 <details>
 <summary>根拠</summary>

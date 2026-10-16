@@ -11,26 +11,25 @@
 // 選んだ集合に入り、文字数（wc -m）では後の 2 つが 60,000 字を下回る。`wc -c` / `ls -l` で
 // そのまま確かめられる値でもある。
 //
-// 許容件数: 既存の超過は scripts/file-size.allow.json に 1 件として置き、実測と一致させる。
-// 分割して上限以下になったら、許容を下げる（キーを消す）指示で落ちる。方式と理由は
-// scripts/textlint-allow.js の冒頭にある。
+// 許容ファイルは持たない。持たせると、割る代わりに許容へ 1 件足して通せてしまうからである。
+// 超えたら割る。
 'use strict';
 
 const fs = require('node:fs');
-const ratchet = require('../textlint-allow.js');
 
 const MAX_BYTES = 60 * 1024;
-const check = ratchet('scripts/file-size.allow.json', ` ${MAX_BYTES} バイト超過`);
 
 module.exports = function (context) {
   return {
     [context.Syntax.Document](node) {
       const bytes = fs.statSync(context.getFilePath()).size;
-      const found =
-        bytes > MAX_BYTES
-          ? [{ node, message: `ファイルが ${bytes} バイト（上限 ${MAX_BYTES} バイト）。索引 + 分割本文に割る` }]
-          : [];
-      check(context, node, found);
+      if (bytes > MAX_BYTES) {
+        const { RuleError, report } = context;
+        report(
+          node,
+          new RuleError(`ファイルが ${bytes} バイト（上限 ${MAX_BYTES} バイト）。索引 + 分割本文に割る`),
+        );
+      }
     },
   };
 };
