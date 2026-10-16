@@ -423,7 +423,7 @@ KonomiTV はシリーズを FK と非正規化列に焼いて宛先にし、stua
 
 一覧 API の行の同一性（1 行 = 1 録画）は、シリーズで絞っても変えない。N 予約で同じ放送が 2 拠点から録れていれば、ハブに 2 行並ぶ。ドロップ統計で選び分ける運用では、それが正しい。
 
-同じ放送をまとめるのは、「次のエピソード」の UI だけである。再生できる行に限り、起点と同じ site を優先する。開始時刻がずれて supersede されない failed 行（[schema/recordings.md](../schema/recordings.md)「`superseded_at`: failed 行が後続 record に枠を譲る」）を「次」に入れないためである。
+同じ放送をまとめるのは、「次のエピソード」の UI だけである。再生できる行に限り、起点と同じ site を優先する。開始時刻がずれて supersede されない failed 行（[schema/recordings/history.md](../schema/recordings/history.md)「`superseded_at`: failed 行が後続 record に枠を譲る」）を「次」に入れないためである。
 
 <details><summary>根拠</summary>
 
