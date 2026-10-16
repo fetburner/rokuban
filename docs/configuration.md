@@ -292,8 +292,23 @@ VOD の順序は次の通り。
 
 ルール保存・予約 overrides・事後追加 API・ingest の凍結の 4 経路が同じ判定を共有し、マージ結果が `cut: true` だけになった場合は凍結時に `cut` を落とす。意図は overrides に残るので、`cut` でないプロファイルを足せば戻る。
 
+#### 同じ名前で意味を変えない
+
+**同じ名前のまま、カット版かどうかと出力コンテナを変える設定は、worker の起動時に拒む。** 名前が成果物の意味の契約だからである。
+
+録画の desired はプロファイル名の集合として凍結され、encode は実行時に名前から今の定義を引く。意味を変えると、既存の encoded と設定が食い違う。作り直し要求は満たされないまま残り、`until_encoded` の原本を握り続ける。
+
+変えてはならない属性は `cut` と `container` である。判定基準は、既存の active な encoded から過去の値を読めるかどうかである。`cut` は `media_asset_cuts` の行の有無、`container` は相対パスの拡張子で読める。`crf` や `hwaccel` など品質と機材の設定は、ファイルから読めず、機材の交換で変わるのが普通なので含めない。
+
+検査は encode を実行する worker が起動時に行い、食い違えば名前を変えるよう促すエラーで起動を拒む。`config.Load` は DB を読めず、api は encode を実行しないので、実行する側に置く。次は拒まない。
+
+- プロファイルを設定から消す。満たせない desired は `rokuban_encode_reconcile_unsatisfiable` に見え、原本は守られる。
+- active な encoded がまだ 1 本も無い名前。過去の意味が存在しない。
+
 <details><summary>根拠</summary>
 
+- 検査: `worker.CheckEncodeProfileMeaning`（呼び出しは `buildWorkerAdapter`）
+- 過去の意味を引くクエリ: `ListActiveEncodedMeanings`
 - 確認済みを示す行: `recording_chapter_ownership`
 - 相対パスの列: `rel_path`
 - 世代番号を含むファイル名の形: `…_{profile}.g{n}.{container}`

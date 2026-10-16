@@ -607,6 +607,10 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
 		}
+		// mirakc クライアントを作る前に、成果物の意味が食い違う設定を拒む。
+		if err := worker.CheckEncodeProfileMeaning(context.Background(), pool, cfg.Encode); err != nil {
+			return nil, err
+		}
 	}
 	if cfg.CMDetect.Enabled && jobs.RequiresCMDetectTools(clientCfg.Queues) {
 		if err := cfg.CMDetect.ValidateTools(cfg.Encode.FFprobe); err != nil {
