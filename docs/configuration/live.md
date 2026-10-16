@@ -6,7 +6,7 @@
 
 無効（既定）なら、ffmpeg の無い公式イメージで streamer を起動する構成（録画配信とサムネイルのみ）を壊さない（不変条件 4）。
 
-`live.enabled` だけは `GET /api/capabilities` の `live` にも出る。フロントは config を読めず、これが無いと無効な機能への入口を出し続けるためである。ロール分割構成でも config ファイルは共有する（上記「関心事別にセクションを切る」）ので、値はそのまま公開面に写し、streamer には問い合わせない（不変条件 1）。
+`live.enabled` だけは `GET /api/capabilities` の `live` にも出る。フロントは config を読めず、これが無いと無効な機能への入口を出し続けるためである。ロール分割構成でも config ファイルは共有する（[keys.md](keys.md)「関心事別にセクションを切る」）ので、値はそのまま公開面に写し、streamer には問い合わせない（不変条件 1）。
 
 この値を返すのは api ロールのプロセスに限らない。REST の生成ルートはロールで絞られないので、HTTP を持つどのプロセスに聞いても同じ答えになる。そうしないとロールごとに答えが割れる（[api/rest.md](../api/rest.md)「機能の有効/無効は能力 API で観測する」）。答えが表すのは常に「この config が有効か」であり、**「api の config では有効だが streamer を動かしていない」構成では入口が出る**（押した先はプレイリストの 404）。
 
@@ -32,7 +32,7 @@
 
 この猶予は `idle_timeout` ではクリップしない。クリップすると `segment_seconds: 6` + `idle_timeout: 2s` のような設定で猶予がセグメント長を下回り、leave が「他人の視聴を切る道具」になってしまう。猶予が `idle_timeout` 以上になる設定では、ヒントは詰める先が「いま」より後ろにならないので no-op になる（起動を止めるより運用者の意思を尊重する）。
 
-猶予は「生きている視聴者の次の要求が来るまでの間隔」より長くなければならない。その間隔を決めているのはセグメント長そのものなので、独立したキーにすると 2 つの値が矛盾する組み合わせを運用者が書けてしまう（[api.md](../api.md) §ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」）。config と DB の境界と同じく、別の値から必ず導けるものはキーにしない。
+猶予は「生きている視聴者の次の要求が来るまでの間隔」より長くなければならない。その間隔を決めているのはセグメント長そのものなので、独立したキーにすると 2 つの値が矛盾する組み合わせを運用者が書けてしまう（[api.md](../api.md) §ライブ視聴の HLS「離脱は『ヒント』であって停止命令ではない」）。[basics.md](basics.md)「config と DB の境界」と同じく、別の値から必ず導けるものはキーにしない。
 
 `live.tuner_priority` は mirakc への X-Mirakurun-Priority である。チューナーが足りないときに録画を勝たせるため、ruler が生成する schedule の既定 priority（10）より低くする（[recording.md](../recording.md) §2「チューナー調停」）。**Rokuban はこの不等式を強制しない。** ルールの priority は DB 側（`rules.priority`、既定 10）でユーザーが自由に変えられ、ライブ側は config 側なので、両者を跨いで比較検証する権威がどちらにも無い。ユーザーがルールの priority を 0 や 1 まで下げると、この既定値のままではライブが録画に勝ってしまう。運用者が両方の値を意識して選ぶ前提とする。
 
@@ -54,7 +54,7 @@
 | `encode.profiles[].input_extra_args` / `live.input_extra_args` | `-i` 直前の追加引数 |
 | `encode.profiles[].extra_args` / `live.profiles[].extra_args` | 既存キー（改名なし） |
 | `encode.profiles[].subtitles` | `webvtt` のみ |
-| `encode.profiles[].cut` | カット版を出力するか（下記「カット版」） |
+| `encode.profiles[].cut` | カット版を出力するか（[cut.md](cut.md)「カット版」） |
 | `live.captions` | WebVTT 字幕 rendition 付きの master にするか |
 
 字幕は、VOD では `encode.profiles[].subtitles` が原本の ARIB 字幕を encoded ファイル隣の `.vtt` サイドカーに出力する。ライブでは `live.captions` を `true` にすると、全プロファイルを 1 つの master playlist にまとめ、WebVTT 字幕 rendition を出力する。字幕なし番組では映像・音声のみの master を出力する。どちらも libaribcaption 入りの ffmpeg が必要で、ライブは無ければ起動エラーになる。複数プロファイルの `segment_seconds` / `playlist_size` は同一値が必要である。
@@ -103,5 +103,5 @@ VOD の順序は次の通り。
 
 その後ろに `[-vf]`（captions 有効時は `-filter:v:N`）→ `[-crf|-qp]` → `[-preset]` が続く。さらに `-force_key_frames` → `profile.extra_args` → `-var_stream_map` / `-master_pl_name` → `-f hls ...` と並ぶ。filter は `deinterlace` が true なら解除を先頭に置き、height があれば scale をその後ろに 1 個だけ連結する。音声 3 本の意味は [api/media.md](../api/media.md) §音声にある。
 
-**`extra_args` の位置が 1 点だけ動いた。** VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った。「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするためである。`-f` は下記「追加引数の許可リスト」に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
+**`extra_args` の位置が 1 点だけ動いた。** VOD 側は以前 `-f`（コンテナ）の後ろだったが、今は前に移った。「ユーザーのオプションはコーデック/品質/スケール指定の後・アプリ所有の末尾の前」という規則を VOD と live で 1 つにするためである。`-f` は[cut.md](cut.md)「追加引数の許可リスト」に含まれないので、この移動でユーザーが相対順序に依存していた挙動が変わることはない。
 

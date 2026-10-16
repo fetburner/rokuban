@@ -17,7 +17,7 @@ site は省略も重複もできず、文字種と長さを制約する。削除
 - `mirakcs:` は非空が必須である。空（未指定含む）は起動エラーになる
 - 各要素の `site` は省略できない。`mirakc:`（単一形式）の時代のような "default" への既定値フォールバックは無い。`site` を書かない要素は空文字列のまま下記の構文制約に落ちて起動エラーになる
 - 要素は `site` と `url` の 2 つだけである。`storage` / `worker` / `ingest` 等のチューニング値は要素に入れない。アーカイブは単一（`media_assets` に site 列が無い）であり、`worker.queues` 等はデプロイ時のパラメータで、site の属性ではない。site ごとのチューニング値は、それを読むコードができたときに足す（不変条件 11）
-- レジストリ内の site 名の重複も不可である。違反はすべて起動エラーとして全件列挙される（規約 4）
+- レジストリ内の site 名の重複も不可である。違反はすべて起動エラーとして全件列挙される（[basics.md](basics.md) §規約 4）
 - 削除 reconcile のサーキットブレーカー（`breaker.DeleteReconcile`）は site 列を持たず、値は空文字列である。他の 2 種のブレーカー名のように実際の束縛 site をキーにしない。再開は site を含まない `POST /api/breakers/delete_reconcile/resume` を使う。
 
 構文は `^[a-z0-9]([_-]?[a-z0-9])*$` で、53 文字以内である。文字種は River のキュー名の制約と同じにし、緩めない。キュー名を site で修飾するため、緩めると site 名がキュー名として弾かれる。上限の 53 は、River のキュー名上限 64 から、site 修飾される論理キューのうち最長の prefix（`reconciler_`、11 文字）を引いた値である（64 − 11 = 53）。この検査は設定のロード時に行うので、`--sites` で束縛していないレジストリ上の site 名も対象になる。
@@ -37,7 +37,7 @@ site は省略も重複もできず、文字種と長さを制約する。削除
 
 `server` サブコマンドの `--sites` フラグで表す。多サイトでどのロールがどのプロセスに乗るかは [docs/overview.md](../overview.md) の役割分類に決定済みである。site に縛られるのは「mirakc に到達する必要がある仕事」（watcher / ingest / reconciler / epg / record_sweep / ライブ streamer）だけである。DB もアーカイブも単一なので、api / notifier / 録画配信 streamer / ruler / encode / thumbnail / 削除 reconcile は site 非依存の中央プロセスになる。
 
-`--sites` は `--all` / ロール選択と同じ「起動形態」の軸で、下記「やらないこと」の CLI フラグ方針に沿う。
+`--sites` は `--all` / ロール選択と同じ「起動形態」の軸で、[basics.md](basics.md)「やらないこと」の CLI フラグ方針に沿う。
 
 ```mermaid
 flowchart TD

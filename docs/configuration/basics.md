@@ -37,7 +37,7 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
 
 **設定はホストやクラスタを建て直すと変わるデプロイ環境の性質、DB は運用中に UI から変えたい意思（ルール・予約・視聴履歴）を持つ。** エンコードプロファイルは設定側に置き、ルールからは名前で参照する。自由形式のコマンド文字列とフィルタグラフの直接指定は許さない。
 
-エンコードプロファイルは config 側に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性である。DB のルールからは名前参照とし、ルール保存時に存在検証する（なければ 400）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（上記「encode/live の HW エンコード」）。`-vf`（filtergraph）を直接書けるキーも作らない。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになるためである。
+エンコードプロファイルは config 側に落ちる。プロファイルの実体は「その環境の ffmpeg ビルドと HW (VAAPI/QSV/NVENC) で何ができるか」であり、`ffmpeg` パスと同じデプロイ属性である。DB のルールからは名前参照とし、ルール保存時に存在検証する（なければ 400）。自由形式の cmd 文字列は採らない（構造化フィールドから worker が引数を組み立てる）。HW エンコードも同じ構造化フィールドで表す（[live.md](live.md)「encode/live の HW エンコード」）。`-vf`（filtergraph）を直接書けるキーも作らない。filtergraph は第 2 のコマンド言語であり、`scale_vaapi=...,drawtext=...` のような式が書けた時点で cmd を別名で解禁したのと同じになるためである。
 
 `encode.profiles[].rate` は録画実尺に対する締切の倍率で、既定は 4.0 である。encode ジョブ投入時に録画の終了時刻と開始時刻の差と rate から締切を解決して args に保存する。これにより、JobRescuer を動かす leader と投入元の設定が異なっても、実行ジョブに対して同じ締切を使える。
 
@@ -68,5 +68,5 @@ YAML ライブラリは goccy/go-yaml を使う。yaml.v3 は事実上メンテ�
   - `--queues` は config キー `worker.queues` と同じ値を取るが、その値自体がデプロイ時のパラメータであって環境の設定ではない。**両方指定は起動エラー**にして、値の出所が 2 つに分かれないようにしている。
   - `--once` とその `--once-idle-timeout` も argv 側に置く。前者は起動形態そのもので、後者はその形態にしか意味を持たない値なので、config キーにすると常駐プロセスにも見える場所に置くことになる。
   - `--soft-stop-timeout`（SIGTERM 後に実行中のジョブを打ち切るまでの猶予）も同じ扱いである。対になるのは k8s の `terminationGracePeriodSeconds` で、config には置かない。プラットフォーム側の SIGKILL が真の上限になる。その値はワークロードごとに桁で違う（数時間の encode と数秒の ruler）。共有 ConfigMap 1 個ではその違いを表現できず、同じ Pod spec に 2 つの数値を並べて書けることが対応関係を保つ唯一の手段になる。
-  - k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せるため、これらは argv 側に無いと ConfigMap が Pod セットの数だけ増える（[operations](../operations.md) §5）
+  - k8s のロール分割では ConfigMap 1 個を全 Pod で共有し、Pod ごとの差分を argv に寄せる（[operations.md](../operations.md) §5）。これらが argv 側に無いと、ConfigMap が Pod セットの数だけ増える
 - SIGHUP 等のホットリロードは採らない。設定変更は再起動で反映する。crash-only + level-triggered 設計なら再起動は無害で、リロードは「どの値がいつから有効か」という追跡困難性を別の形で持ち込むだけである

@@ -16,7 +16,7 @@
 
 #### サーバーから CM 検出までのキー
 
-キーと既定値の表である。判断は下記の該当する節にある。
+キーと既定値の表である。判断は [live.md](live.md)・[cut.md](cut.md)・[sites.md](sites.md)・[http.md](http.md) の該当する節と、このファイルの各節にある。
 
 | キー | 既定値 | 説明 |
 |---|---|---|
@@ -83,7 +83,7 @@
 | `log.level` | `info` | debug / info / warn / error |
 | `log.format` | `json` | json / text |
 
-`live.captions` には `libaribcaption` 入りの FFmpeg が必要である。`live.profiles` の形（`scaler` / `crf` / `qp` を含む）はサンプル設定ファイルにあり、`segment_seconds` の既定は 2、`playlist_size` の既定は 6 である。判断は下記「live」と「encode/live の HW エンコード」にある。
+`live.captions` には `libaribcaption` 入りの FFmpeg が必要である。`live.profiles` の形（`scaler` / `crf` / `qp` を含む）はサンプル設定ファイルにあり、`segment_seconds` の既定は 2、`playlist_size` の既定は 6 である。判断は[live.md](live.md)「live」と「encode/live の HW エンコード」にある。
 
 `cleanup.trash_retention` はごみ箱の猶予である（[storage.md](../storage.md) §7）。`cleanup.max_deletes_per_pass` はソースを問わず 1 パス全体の合計に対して働く（ruler と同じラッチ式）。`cleanup.missing_asset_age` は、「active なのに実体ファイルが無い」候補の報告までの期間である。自動削除はしない（[storage.md](../storage.md) §7「孤児回収の逆」）。
 
@@ -93,7 +93,7 @@
 
 最小構成で書くのは 3 つだけで、残りは全部既定値を持つ。最小構成は 10 行程度に収まる。
 
-3 つは `db`（資格情報）、`mirakcs`（下記「mirakc レジストリ」参照）、`storage.media_dir` である。
+3 つは `db`（資格情報）、`mirakcs`（[sites.md](sites.md)「mirakc レジストリ」参照）、`storage.media_dir` である。
 
 ### db の運用ノブ（max_conns / api_statement_timeout）
 
