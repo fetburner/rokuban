@@ -147,8 +147,10 @@ func (LabelRuleReconcileArgs) Kind() string { return "label_rule_reconcile" }
 
 // EncodeReconcileArgs は encode の desired−observed reconcile ジョブの引数。
 // RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
+// AfterRecordingID は全件パスの継続位置で、RecordingID と同時には指定しない。
 type EncodeReconcileArgs struct {
-	RecordingID int64 `json:"recording_id,omitempty"`
+	RecordingID      int64 `json:"recording_id,omitempty"`
+	AfterRecordingID int64 `json:"after_recording_id,omitempty"`
 }
 
 // Kind はジョブ種別名を返す。

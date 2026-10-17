@@ -494,27 +494,19 @@ var (
 		Help: "Unix time of the last completed encode-reconcile pass. Use with time() to detect a stalled pass.",
 	})
 
-	// EncodeReconcileCandidates は直近のパスが見た候補件数（desired なのに
-	// active な encoded が無い録画）。
+	// EncodeReconcileCandidates は直近の encode reconcile ページが見た候補件数
+	// （desired なのに active な encoded が無い録画）。
 	//
-	// **上限（encodeReconcileRowLimit）に張り付いている = バックログが上限以上
-	// ある**ことを意味する（候補は recording_id 昇順で切られるため）。窓は
-	// パスをまたいで回る（EncodeReconcileWorker.resumeAfter。doc コメント
-	// 「窓を回す」参照）ので、張り付いていても到達性は失われない --- 次パスは
-	// 続きから見る。
-	//
-	// 窓が埋まっているバックログのある系では、末尾を越えたパスでこのゲージが
-	// 上限を下回る（候補数 |S| ・上限 L に対して `|S| mod L`）。**0 まで落ちるのは
-	// |S| が L のちょうど倍数のときだけ**（例: |S|=3, L=2 なら 6 パスの値は
-	// [2 1 2 1 2 1] で 0 には一度もならない。TestEncodeReconcileWorker_
-	// WindowRotatesPastStuckCandidates は L=1 で回しているため `|S| mod L` が
-	// 恒等的に 0 になる特殊ケースしか観測していない）。窓が継続して埋まって
-	// いるかを見たいなら `max_over_time` で瞬間的な下振れを均す
+	// 値が上限（encodeReconcileRowLimit）なら、そのページは最後の recording_id を
+	// 持つ継続ジョブを投入している（TestEncodeReconcileWorker_RowLimitCapsWorkPerPass）。
+	// 参照構成の `--once` worker はジョブごとに終了するため、このゲージは
+	// Prometheus から scrape できないことがある。継続を確認するときは
+	// `encode_reconcile: candidate window is full; continuation enqueued` ログを使う
 	// （docs/operations/monitoring.md）。エンコード実行中の録画も候補に数えるので、
 	// 0 でないこと自体は異常ではない。
 	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_encode_reconcile_candidates",
-		Help: "Recordings seen by the last encode-reconcile pass that still lack an active encoded asset. Sitting at the pass row limit means the backlog is at least that large, not that recordings beyond it are unreachable (the window resumes from where the previous pass stopped). For a stable backlog, this gauge periodically dips below the row limit as the window wraps around (to backlog size mod row limit, which is 0 only when the backlog is an exact multiple); use max_over_time to see whether the window remains full.",
+		Help: "Recordings seen by the last encode-reconcile page that still lack an active encoded asset. A full page enqueues a continuation job after the last recording ID. In --once mode, use the page-full log to observe continuation because Prometheus may not scrape this gauge.",
 	})
 
 	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の

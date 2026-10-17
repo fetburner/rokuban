@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobs"
 )
 
 // removedEncodedFixture は「原本 + h264 + h265」の録画で、h264 を外した状態の材料。
@@ -155,6 +156,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265"},
 		CutProfiles:   []string{},
+		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      100,
 	})
 	if err != nil {

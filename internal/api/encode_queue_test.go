@@ -148,16 +148,16 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265", "cut"},
 		CutProfiles:   []string{"cut"},
+		AttemptLimit:  jobs.EncodeAttemptLimit,
 		RowLimit:      100,
 	})
 	if err != nil {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
-	const exhausted = 1
 	const rebuilds = 2
-	if got.Queued+got.Running != int64(len(missing)-exhausted+rebuilds) {
-		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows, %d exhausted, and %d unsatisfied rebuilds; want %d",
-			got.Queued+got.Running, len(missing), exhausted, rebuilds, len(missing)-exhausted+rebuilds)
+	if got.Queued+got.Running != int64(len(missing)+rebuilds) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows and %d unsatisfied rebuilds; want %d",
+			got.Queued+got.Running, len(missing), rebuilds, len(missing)+rebuilds)
 	}
 }
 
@@ -219,15 +219,11 @@ func TestListRecordingsRejectsUnknownEncodeState(t *testing.T) {
 // （queued + running の件数で確かめる）。
 //
 // フィクスチャは除外の軸を 1 つずつ持つ録画を並べ、期待する集合もリテラルで書く
-// （両経路が同じ向きにずれても落とす）。既知の非対称が 2 つあり、別扱いにする:
-//
-//   - 試行上限に達した (recording, profile): reconcile は試行表を見ずに投入し、
-//     EncodeWorker が開始時に cancel する。待機列は、数えると何も起きないのに
-//     「待機中」と出続けるので除く。
-//   - 全区間カットで keep が空の cut プロファイル: reconcile は Go の keep の導出
-//     （chapters.Derive）で空と分かったものを投入しない（投入しても loadCutContext が
-//     必ず失敗する）。待機列は SQL だけで数えるので、keep の導出を持てず数え続ける。
-//     導出を SQL に複製すると Go と SQL の 2 か所になるので、揃えずに残す。
+// （両経路が同じ向きにずれても落とす）。残る非対称は全区間カットで keep が空の
+// cut プロファイルだけである。reconcile は Go の keep の導出（chapters.Derive）で
+// 空と分かったものを投入しない（投入しても loadCutContext が必ず失敗する）。待機列は
+// SQL だけで数えるので、keep の導出を持てず数え続ける。導出を SQL に複製すると Go と
+// SQL の 2 か所になるので、揃えずに残す。
 func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -342,11 +338,9 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		t.Errorf("encode queue rows = %d, recordings in the queue = %d; want one pending profile per recording", got, len(queued))
 	}
 
-	// 既知の非対称（関数 doc コメント参照）は、向きを確かめてから比較から外す。
-	if !reconciled["試行上限"] || queued["試行上限"] {
-		t.Errorf("exhausted attempts: reconciled %v, queued %v; want reconciled only", reconciled["試行上限"], queued["試行上限"])
+	if reconciled["試行上限"] || queued["試行上限"] {
+		t.Errorf("exhausted attempts: reconciled %v, queued %v; want neither", reconciled["試行上限"], queued["試行上限"])
 	}
-	delete(reconciled, "試行上限")
 	if reconciled["全区間カット"] || !queued["全区間カット"] {
 		t.Errorf("all-cut keep: reconciled %v, queued %v; want queued only", reconciled["全区間カット"], queued["全区間カット"])
 	}

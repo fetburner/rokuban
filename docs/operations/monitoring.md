@@ -466,9 +466,9 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 
 候補数のゲージが非ゼロでも、異常ではない。エンコード実行中の録画も数えるためである。
 
-対象は `rokuban_encode_reconcile_candidates` である。窓はパスをまたいで回る。候補上限（1000）に張り付いても、それより後ろの録画への到達性は失われない（次パスが続きから見る）。
+対象は `rokuban_encode_reconcile_candidates` である。このゲージは 1 ページが見た候補数を表す。上限（1000）まで埋まると、最後の `recording_id` を持つ継続ジョブが投入され、次の worker が後ろの候補を調べる。連鎖が完走すれば、その周期に始まった候補集合をすべて調べる。上限未満のページでは連鎖を止め、次の定期パスが先頭から始める。
 
-バックログが窓を埋めている系では、末尾を越えたパスで、このゲージが上限を下回る。値はバックログ件数 mod 1000 で、ちょうど倍数のときだけ 0 になる。0 まで落ちることは一般には期待できない。窓が継続して埋まっているかを見たいなら、`max_over_time(rokuban_encode_reconcile_candidates[1h])` を使う（[ingest](../recording/ingest.md) §5.5）。
+参照構成の `--once` worker はジョブごとに終了するため、Prometheus がゲージを scrape できない。`max_over_time(rokuban_encode_reconcile_candidates[1h])` は継続状況の確認に使えない。上限に達したページは `encode_reconcile: candidate window is full; continuation enqueued` のログで確認する（[ingest](../recording/ingest.md) §5.5）。
 
 ### TS scan
 
