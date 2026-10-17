@@ -17,20 +17,10 @@ type LivePlayerTestProps =
   | (Partial<Omit<ChaseProps, 'mode'>> & { mode: 'chase' })
   | (Partial<Omit<OriginalVODProps, 'mode'>> & { mode: 'original-vod' })
 
-/** LivePlayerTest は各モードの必須 props を fixture の既定値で補う。 */
+/** LivePlayer は各モードの必須 props を fixture の既定値で補う。 */
 function LivePlayer(props: LivePlayerTestProps) {
   const site = props.site ?? 'default'
-  if (props.mode === undefined) {
-    const completeProps = {
-      ...props,
-      mode: 'live' as const,
-      site,
-      networkId: props.networkId ?? 0,
-      serviceId: props.serviceId ?? 1024,
-    } satisfies ComponentProps<typeof LivePlayerComponent>
-    return <LivePlayerComponent {...completeProps} />
-  }
-  if (props.mode === 'live') {
+  if (props.mode === undefined || props.mode === 'live') {
     const completeProps = {
       ...props,
       mode: 'live' as const,

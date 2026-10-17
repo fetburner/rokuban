@@ -263,7 +263,7 @@ type LivePlayerCommonProps = {
 type RecordingPlaybackProps = {
   /** recordings.id。追っかけまたは原本 VOD の録画。 */
   recordingId: number
-  /** チャプター編集中の再生速度を使う（追っかけでは編集 UI を開かず速度設定に使う）。 */
+  /** true のあいだ、チャプター編集用の再生速度で再生する。追っかけでは編集 UI を開かない。 */
   chapterEditing?: boolean
   /** 録画 HLS セッションの開始意図。offset の変化後は LivePlayer 内で張り直す。 */
   offsetSessionStart?: OffsetSessionStart
@@ -289,6 +289,7 @@ type OriginalVODProps = {
   /**
    * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
    * 固定タイムラインと視聴済み閾値に使う。映像より長いときの末尾は 416 の丸めが受ける。
+   * `endedAt` が無い録画だけは呼び出し側が予定尺で代用する（0 だとシークバーが効かない）。
    */
   recordingDurationMs: number
   /** 原本の時間軸で保存されたチャプター（目盛り・一覧・自動スキップ・編集）。 */
@@ -363,7 +364,10 @@ type LivePlayerProps =
       liveProgram?: never
       onLiveProgramSeek?: never
       onStartOver?: never
-      /** 追っかけ中に番組のライブ端へ戻る操作。 */
+      /**
+       * 追っかけをやめてライブ配信へ戻す操作。渡さないと、ライブ端の操作は追っかけのまま
+       * 録画済みの端へシークする。
+       */
       onReturnLive?: () => void
       liveDiagnostics?: never
       liveNotice?: never
@@ -590,7 +594,7 @@ export function LivePlayer({
       : 0
   const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
   // 追っかけの軸（先頭・録画済み終端・予定終端・先端・最大）はここで 1 回だけ作り、描画もシークもここを読む。
-  const chaseAxis = isChase && chaseTimeline ? chasePlaybackTimeline(chaseTimeline, chaseHoverSeconds) : undefined
+  const chaseAxis = mode === 'chase' ? chasePlaybackTimeline(chaseTimeline, chaseHoverSeconds) : undefined
   const chaseHeadOffsetSeconds = chaseAxis?.headSeconds ?? 0
   const [originalCurrentSeconds, setOriginalCurrentSeconds] = useState(0)
   const [originalPreviewSeconds, setOriginalPreviewSeconds] = useState<number | null>(null)
@@ -1564,12 +1568,8 @@ export function LivePlayer({
   //     続いていれば、その要求が期限を戻す。`lib/live.ts` の
   //     `sendLiveLeaveHint` 参照）
   useEffect(() => {
-    if (isRecordingPlayback) return
-    const leave = () => {
-      if (site !== undefined && networkId !== undefined && serviceId !== undefined) {
-        sendLiveLeaveHint(site, networkId, serviceId)
-      }
-    }
+    if (mode !== 'live') return
+    const leave = () => sendLiveLeaveHint(site, networkId, serviceId)
     const onVisibilityChange = () => {
       if (document.visibilityState === 'hidden') leave()
     }
@@ -1580,7 +1580,7 @@ export function LivePlayer({
       document.removeEventListener('visibilitychange', onVisibilityChange)
       leave()
     }
-  }, [isRecordingPlayback, site, networkId, serviceId])
+  }, [mode, site, networkId, serviceId])
 
   const visibleOriginalSeconds = originalPreviewSeconds ?? originalCurrentSeconds
   const originalPlayedFraction = originalDurationSeconds > 0
