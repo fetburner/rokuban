@@ -309,6 +309,12 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
 
+原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。実行計画も変わらない。どちらの形も JOIN に展開され、PostgreSQL 16 の合成 2 万件では、入れ子ループを無効にした全件 count が今の形で 48 ms、まとめた形で 45 ms だった。
+
+ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
+
+`cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_encode_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
+
 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる。
 
 #### カット版と CM 検出の扱い
