@@ -897,6 +897,39 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+// 派生アセットの行が残っていても、deleted のサムネイルは完備として数えない。
+func TestDeleteReconcileWorker_UntilEncoded_DeletedThumbnail_NotDeleted(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := insertTestRecording(t, pool)
+	originalRelPath := "orig/deleted-thumbnail.m2ts"
+	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
+	profile := "h264"
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/deleted-thumbnail.mp4", []byte("mp4"))
+	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/deleted-thumbnail.jpg", []byte("jpg"))
+	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/deleted-thumbnail-tiles.jpg")
+	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+	assertUntilEncodedQualifies(t, pool, assetID, true)
+
+	if _, err := pool.Exec(ctx,
+		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", thumbnailID); err != nil {
+		t.Fatalf("marking thumbnail deleted: %v", err)
+	}
+	assertUntilEncodedQualifies(t, pool, assetID, false)
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if got := assetState(t, pool, assetID); got != "active" {
+		t.Fatalf("original state = %q, want active (thumbnail is deleted)", got)
+	}
+	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
+		t.Errorf("original file was removed while its thumbnail was deleted: %v", err)
+	}
+}
+
 func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
