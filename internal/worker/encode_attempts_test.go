@@ -813,7 +813,8 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
 	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
-	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせつつ、`<-progressDone` を Wait の前に置く順序では
+	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせつつ、
+	// `<-progressDone` を Wait の前に置く順序では
 	// sleep が自然終了する前に失敗させる。
 	workReturnTimeout := 5 * workerExecWaitDelay
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
@@ -982,7 +983,8 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for the first progress callback")
 	}
-	// progress=end はすでに stdout に書かれており、この待ちでは、Wait が子プロセスを reap したことを ESRCH で確かめる。
+	// progress=end はすでに stdout に書かれている。この待ちでは
+	// Wait が子プロセスを reap したことを ESRCH で確かめる。
 	// parser は先頭の callback で止まっているため、ここから resume するまで最終行は読めない。
 	waitFor(t, 3*time.Second, func() bool {
 		data, err := os.ReadFile(pidMarker)
@@ -1053,6 +1055,8 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 		"ROKUBAN_LONG_PROGRESS_INPUT="+inputPath,
 		"ROKUBAN_LONG_PROGRESS_OUTPUT="+filepath.Join(tmp, "output.mp4"),
 	)
+	var helperOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &helperOut, &helperOut
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start test helper: %v", err)
@@ -1062,7 +1066,7 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 	select {
 	case err := <-helperDone:
 		if err != nil {
-			t.Fatalf("test helper: %v", err)
+			t.Fatalf("test helper: %v\n%s", err, helperOut.String())
 		}
 	case <-time.After(3 * time.Second):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
@@ -1070,7 +1074,7 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 		case <-helperDone:
 		case <-time.After(time.Second):
 		}
-		t.Fatal("runEncodeCommand did not return after the progress parser stopped on an overlong line")
+		t.Fatalf("runEncodeCommand did not return after the progress parser stopped on an overlong line\n%s", helperOut.String())
 	}
 }
 
