@@ -63,7 +63,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | シリーズ一覧の分割（`shelves-split.mjs`） | [checks/programs.md](checks/programs.md) |
 | ライブ視聴（`live.mjs`） | [checks/live.md](checks/live.md) |
 | 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
-| LivePlayer の時刻と離脱ヒント（`live-player-modes.mjs`） | [checks/live.md](checks/live.md)、[checks/playback.md](checks/playback.md) |
+| LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
@@ -130,15 +130,13 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト）
 - `/api/**` を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
-- Chromium だけで軽く終わる。`live-player-modes.mjs` は FFmpeg で短い実メディアを作り、離脱ヒントと追っかけの時刻を測る
+- webkit と DB への直接書き込みを要らず、Chromium だけで軽く終わる。ffmpeg は短い fixture の生成に限って使ってよい
 
 それ以外の判定（`lib.mjs` と `validate-fixtures.mjs` は共有部品）は**ローカルでの受け入れ確認**の位置づけである。[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。回さない理由は 3 類型ある。
 
-- 実メディアが要る: FFmpeg でフィクスチャを作る。CI では `live-player-modes` を実行する
-- ローカルで回すもの: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio`
-- `home-resume-frame` / `live` / `live-audio` は WebKit も要る
+- webkit が要る: webkit でしか測れない判定を持つ。対象は `live`（ネイティブ HLS の字幕など）と `live-audio`（ネイティブ HLS の `audioTracks`）。`E2E_BROWSER=webkit` を任意で受けるだけのスクリプトは、Chromium で回るのでここに入れない
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。`live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
-- 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は 63 枚のショットを撮るぶん重い
+- API スタブで載せられるが所要時間を測っていない: 全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。番組表・予約・検索などの画面別判定がこれに入る。ffmpeg で fixture を作るだけで Chromium で回る次のものも同じである。`chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`。`chase` / `chase-audio` / `recording-original-vod` / `recording-playback-timeline` も同じである。`recording-playback-timeline` は fixture を Go のテストで作るので Go も要る。`design.mjs` は 63 枚のショットを撮るぶん重い
 
 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは `.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

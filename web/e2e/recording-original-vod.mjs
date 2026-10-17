@@ -979,23 +979,6 @@ if (!offsetSeekbarBox) {
     if (firstOffsetSegment?.name !== '0_seg00007.ts') {
       ng.push(`④ offset/14 の先頭 video segment が 14 秒位置のものではない (${firstOffsetSegment?.name ?? 'none'})`)
     }
-    const leaveCountBeforeOffsetExit = originalVODLeaveRequests.length
-    const offsetLeaveWaiter = page.waitForResponse((response) => {
-      const request = response.request()
-      return request.method() === 'POST' && new URL(request.url()).pathname ===
-        `/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod/offset/14/leave`
-    }, { timeout: 5000 }).catch(() => null)
-    await page.evaluate(() => window.dispatchEvent(new Event('pagehide')))
-    const offsetLeaveResponse = await offsetLeaveWaiter
-    if (
-      !offsetLeaveResponse ||
-      offsetLeaveResponse.status() !== 204 ||
-      originalVODLeaveRequests.length !== leaveCountBeforeOffsetExit + 1 ||
-      originalVODLeaveRequests.at(-1) !==
-        `/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod/offset/14/leave`
-    ) {
-      ng.push('④ 原本 VOD offset/14 の pagehide leave を収集しない')
-    }
   }
 }
 

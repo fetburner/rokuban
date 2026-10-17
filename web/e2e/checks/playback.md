@@ -33,6 +33,24 @@ E2E_URL=http://localhost:4173 pnpm e2e:chase
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 ```
 
+### LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`）
+
+ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、離脱ヒントの送信と追っかけの表示時刻を測る。mirakc も DB も要らない。
+
+`/api/**` と HLS は `page.route` で差し替える。fixture は ffmpeg が作った 20 秒の HLS で、Chromium の hls.js が再生する。jsdom には `navigator.sendBeacon` が無く fetch に落ちるため、離脱ヒントの実送信は実ブラウザでしか測れない。
+
+- 各モードで `visibilityState` を `visible` にした `visibilitychange` は、leave を 1 件も増やさない。hidden の判定を外す変異（visible でも送る）を落とす
+- `visibilityState` を `hidden` にした `visibilitychange` と `pagehide` は、そのモードの宛先へ POST を 1 件ずつ送る。宛先はライブが `/live/leave`、追っかけが `/chase/leave`、原本 VOD が続き位置の `/original-vod/offset/12/leave` である
+- 原本 VOD は続き位置 12 秒の offset playlist を要求する
+- 追っかけの表示時刻は、録画先頭（番組開始から録画開始までの秒）に実メディアの `currentTime` を足した値と 2 秒以内で一致する。`aria-valuenow` は映像が進む前は props から導いた値で、実装と同じ式を読むので使わない
+
+```sh
+E2E_URL=http://localhost:4173 pnpm e2e:live-player-modes
+E2E_VALIDATE_FIXTURES_ONLY=1 node e2e/live-player-modes.mjs
+```
+
+`E2E_VALIDATE_FIXTURES_ONLY=1` は録画 fixture を Zod 契約で検査するだけでブラウザを起動しない。CI の `browser-e2e` ジョブが実ブラウザ判定を回す。
+
 ### 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`）
 
 Go テストで放送 TS に似せた MPEG-2 29.97 fps の fixture を作る。HLS は製品の `BuildOriginalVODFFmpegArgs`（offset 0 / 10 秒）で生成する。MP4 は製品の `BuildFFmpegArgs` と `config.example.yml` の h264 例で生成する。入力は先頭 PTS が 0 でない。音声を映像より約 700 ms 先に置く。不規則な間隔の9フレームに白い目印を入れ、位置で各フレームの ID を表す。期待時刻は、チャプターの軸である非カット MP4 を ffprobe して得た目印フレームの PTS とする。原本 TS の「目印 PTS - 最早 `start_time`」との差は参考値としてログにだけ出す。

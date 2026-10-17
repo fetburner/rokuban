@@ -260,6 +260,19 @@ async function openMode(mode) {
   return { page, leaveRequests, mediaRequests }
 }
 
+// visible への切替は離脱ではない。hidden の判定が無い実装（visible でも送る）を落とす。
+async function checkNoLeaveOnVisible(page, leaveRequests, expectedPath, label) {
+  const before = leaveRequests.length
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+    document.dispatchEvent(new Event('visibilitychange'))
+  })
+  await page.waitForTimeout(500)
+  if (leaveRequests.length !== before) {
+    ng.push(`${label}: visibilityState=visible の visibilitychange で leave を送った（${before} → ${leaveRequests.length}、${expectedPath}）`)
+  }
+}
+
 async function triggerAndCheck(page, leaveRequests, expectedPath, eventType, label) {
   const before = leaveRequests.filter((pathname) => pathname === expectedPath).length
   const responseWaiter = page.waitForResponse((response) => {
@@ -302,7 +315,7 @@ for (const scenario of [
   if (scenario.mode === 'chase') {
     await page.waitForFunction(() => (document.querySelector('video')?.currentTime ?? 0) > 5.5, undefined, {
       timeout: 10_000,
-    }).catch(() => ng.push('chase: 保存位置から実メディアが 5.5 秒より先へ進まない'))
+    }).catch(() => ng.push('chase: 実メディアの currentTime が 5.5 秒に達しない'))
     const originCheck = await page.evaluate(() => {
       const video = document.querySelector('video')
       const output = document.querySelector('[data-testid="playback-time"]')
@@ -318,7 +331,7 @@ for (const scenario of [
       Math.abs(originCheck.displayedSeconds - expectedSeconds) > 2 || originCheck.mediaSeconds < 1) {
       ng.push(
         `chase: 録画先頭 ${headSeconds}s + 実 media time ${originCheck.mediaSeconds.toFixed(2)}s と表示時刻が対応しない ` +
-          `(表示=${originCheck.displayedSeconds}, 続き位置=${expectedSeconds})`,
+          `(表示=${originCheck.displayedSeconds}, 期待=${expectedSeconds})`,
       )
     }
   }
@@ -328,6 +341,7 @@ for (const scenario of [
     const requested = mediaRequests.filter((pathname) => pathname.includes('/original-vod/'))
     ng.push(`original-vod: 続き位置 12 秒の offset playlist を要求しない（${JSON.stringify(requested)}）`)
   }
+  await checkNoLeaveOnVisible(page, leaveRequests, scenario.expectedPath, scenario.mode)
   await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'visibilitychange', scenario.mode)
   await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'pagehide', scenario.mode)
   await page.close()
