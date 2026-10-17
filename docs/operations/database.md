@@ -191,6 +191,24 @@ PostgreSQL 標準の拡張 btree_gist は trusted extension なので、対象 D
 
 本番相当の managed 環境での実測は未実施である。確認の手順は [runbook/managed-postgres.md](../runbook/managed-postgres.md)。
 
+### pg_trgm の `LC_CTYPE`
+
+重複排除を正しく行うには、DB が日本語を語の文字として扱う必要がある。
+
+重複排除は pg_trgm の `similarity()` を使う。DB の `LC_CTYPE` は日本語を語の文字として扱う必要があり、`C` では日本語タイトルの類似度が 0 になって再放送を抑制できない。
+
+`migrate up` は拡張適用後に `similarity('録画', '録画') = 1` を検査し、プール作成時にも同じ挙動を確かめる。libc / ICU やホストで名前が異なるため、ロケール名では判定しない。
+
+検査に失敗した DB は起動できない。`LC_CTYPE` は DB 作成後に変更できないため、対応するロケールを指定して DB を作り直す。利用できるロケール名は PostgreSQL ホストごとに異なる。
+
+<details><summary>根拠</summary>
+
+- migrate 後の検査: `MigrateUp`
+- 全ロールのプール作成時の検査: `NewPool`
+- 既定 DB で成功し C ロケール DB で失敗すること: `TestNewPool` / `TestNewPoolRejectsUnsupportedPgTrgmLocale`
+
+</details>
+
 ### EPG churn / autovacuum
 
 検索は世帯スケールでは遅くならない。EPG テーブルは 1 日に何度も大量に upsert されるので、遅くなるとしたら書き込みと autovacuum の追従である。対策はバッチ upsert、GIN fastupdate、**テーブル別 autovacuum チューニング**の 3 つである。

@@ -217,7 +217,9 @@ active の導出は変わらない（[reservations.md](../schema/reservations.md
 
 ##### 類似度で判定する理由
 
-EPGStation#704 の教訓として、囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。記号除去 + 完全一致は採らない。pg_trgm の類似度ベースで設計し、閾値はルール単位で調整可能にする。
+タイトルの類似度を使うため、DB の文字分類も重複判定を左右する。
+
+EPGStation#704 の教訓として、囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。記号除去 + 完全一致は採らない。pg_trgm の類似度ベースで設計し、閾値はルール単位で調整可能にする。pg_trgm は `LC_CTYPE` の文字分類に依存し、日本語を語の文字として扱わない DB では類似度が 0 になるため、起動時に実挙動を検査する（要件は [DB 運用](../operations/database.md) §3「pg_trgm の `LC_CTYPE`」）。
 
 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする。
 

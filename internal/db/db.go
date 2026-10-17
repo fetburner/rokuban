@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -111,6 +112,9 @@ func KnownRoles() []string {
 // roles から決めることを指す（issue #90）。cfg.MaxConns が明示されていればそれを
 // 優先する。roles が空（rescue/enqueue 等の単発 CLI コマンド）なら
 // pgxpool の既定値（max(4, NumCPU)）をそのまま使う。
+// 新しい migrate が無い既存 DB でも検出できるよう、プール作成時は全ロールで
+// pg_trgm の日本語類似度を検査する。重複排除自体は worker が行うが、DB の
+// ロケール要件を worker の有無やプロセス分割に隠さない。
 //
 // numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
 // から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
@@ -134,8 +138,30 @@ func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites 
 		pool.Close()
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
+	if err := checkPgTrgmJapaneseSupport(ctx, pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("validating database locale: %w", err)
+	}
 
 	return pool, nil
+}
+
+type pgxQueryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// checkPgTrgmJapaneseSupport は pg_trgm が日本語を語の文字として扱うかを検査する。
+// ロケール名ではなく similarity() の結果を見ることで、libc / ICU の違いを含めて
+// 重複排除が実際に使う挙動を確認する。
+func checkPgTrgmJapaneseSupport(ctx context.Context, db pgxQueryRower) error {
+	var supported bool
+	if err := db.QueryRow(ctx, `SELECT similarity('録画', '録画') = 1`).Scan(&supported); err != nil {
+		return fmt.Errorf("checking pg_trgm Japanese title support: %w", err)
+	}
+	if !supported {
+		return fmt.Errorf("PostgreSQL LC_CTYPE must classify Japanese characters as word characters for pg_trgm title similarity; recreate the database with a compatible LC_CTYPE (available locale names depend on the PostgreSQL host)")
+	}
+	return nil
 }
 
 // buildPoolConfig は NewPool のロジック本体（MaxConns の算出と
