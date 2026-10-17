@@ -93,14 +93,16 @@ func createTestDatabase(ctx context.Context, base string) (string, error) {
 	return dbURL.String(), nil
 }
 
-func createCLocaleTestDatabase(t *testing.T, base string) string {
+// createScratchDatabase は base と同じサーバーに空の使い捨て DB を作り、cleanup で DROP する。
+// opts は CREATE DATABASE の末尾へそのまま付ける（テスト内の固定文字列だけを渡す）。
+func createScratchDatabase(t *testing.T, base, suffix, opts string) string {
 	t.Helper()
 
 	baseURL, err := url.Parse(base)
 	if err != nil {
 		t.Fatalf("parsing base database url: %v", err)
 	}
-	name := "rokuban_ctype_c_" + strconv.Itoa(os.Getpid())
+	name := "rokuban_" + suffix + "_" + strconv.Itoa(os.Getpid())
 	quoted := pgx.Identifier{name}.Sanitize()
 
 	ctx := context.Background()
@@ -112,9 +114,9 @@ func createCLocaleTestDatabase(t *testing.T, base string) string {
 		_ = conn.Close(ctx)
 		t.Fatalf("dropping test database: %v", err)
 	}
-	if _, err := conn.Exec(ctx, "CREATE DATABASE "+quoted+" TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'"); err != nil {
+	if _, err := conn.Exec(ctx, "CREATE DATABASE "+quoted+" "+opts); err != nil {
 		_ = conn.Close(ctx)
-		t.Fatalf("creating C-locale test database: %v", err)
+		t.Fatalf("creating scratch database: %v", err)
 	}
 	if err := conn.Close(ctx); err != nil {
 		t.Fatalf("closing base database connection: %v", err)
@@ -125,12 +127,12 @@ func createCLocaleTestDatabase(t *testing.T, base string) string {
 	t.Cleanup(func() {
 		cleanupConn, err := pgx.Connect(context.Background(), base)
 		if err != nil {
-			t.Errorf("connecting to drop C-locale test database: %v", err)
+			t.Errorf("connecting to drop scratch database: %v", err)
 			return
 		}
 		defer func() { _ = cleanupConn.Close(context.Background()) }()
 		if _, err := cleanupConn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+quoted); err != nil {
-			t.Errorf("dropping C-locale test database: %v", err)
+			t.Errorf("dropping scratch database: %v", err)
 		}
 	})
 	return dbURL.String()
@@ -219,18 +221,52 @@ func TestNewPool(t *testing.T) {
 	}
 }
 
-func TestNewPoolRejectsUnsupportedPgTrgmLocale(t *testing.T) {
+func TestNewPoolRejectsUnsupportedLocale(t *testing.T) {
 	baseURL := testDatabaseURL(t)
-	dbURL := createCLocaleTestDatabase(t, baseURL)
+	dbURL := createScratchDatabase(t, baseURL, "ctype_c", "TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'")
 	ctx := context.Background()
 
-	if err := MigrateUp(ctx, dbURL); err == nil || !strings.Contains(err.Error(), "LC_CTYPE") {
-		t.Fatalf("MigrateUp error = %v, want an LC_CTYPE diagnostic", err)
+	wants := []string{
+		"pg_trgm similarity(",
+		`regex '録画' ~ '^\w+$'`,
+		"case-insensitive regex",
+		`datctype="C"`,
+		"datlocprovider=",
+	}
+	assertLocaleError := func(name string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("%s: want a locale error, got nil", name)
+		}
+		for _, w := range wants {
+			if !strings.Contains(err.Error(), w) {
+				t.Errorf("%s error = %v, want it to contain %q", name, err, w)
+			}
+		}
 	}
 
-	cfg := dbConfigFromURL(t, dbURL)
-	if _, err := NewPool(ctx, cfg, nil, 0); err == nil || !strings.Contains(err.Error(), "LC_CTYPE") {
-		t.Fatalf("NewPool error = %v, want an LC_CTYPE diagnostic", err)
+	assertLocaleError("MigrateUp", MigrateUp(ctx, dbURL))
+
+	pool, err := NewPool(ctx, dbConfigFromURL(t, dbURL), nil, 0)
+	if pool != nil {
+		pool.Close() // 誤って成功しても cleanup の DROP を妨げない
+	}
+	assertLocaleError("NewPool", err)
+}
+
+func TestNewPoolRejectsUnmigratedDatabase(t *testing.T) {
+	baseURL := testDatabaseURL(t)
+	dbURL := createScratchDatabase(t, baseURL, "empty", "TEMPLATE template0")
+
+	pool, err := NewPool(context.Background(), dbConfigFromURL(t, dbURL), nil, 0)
+	if pool != nil {
+		pool.Close()
+	}
+	if err == nil || !strings.Contains(err.Error(), "migrate up") {
+		t.Fatalf("NewPool error = %v, want a `migrate up` hint", err)
+	}
+	if strings.Contains(err.Error(), "LC_CTYPE") {
+		t.Fatalf("NewPool error = %v, must not look like a locale problem", err)
 	}
 }
 

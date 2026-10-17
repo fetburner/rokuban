@@ -15,8 +15,9 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// MigrateUp はアプリの goose マイグレーションを適用し、pg_trgm の日本語類似度を検査する。
-// 新規 DB では migrate が最初に触る経路なので、worker の起動より前にロケール不適合を検出する。
+// MigrateUp はアプリの goose マイグレーションを適用し、全 migration の適用後に
+// DB の文字分類を検査する。新規 DB で migrate が最初に触る経路なので、
+// 誤ったロケールのままアプリを起動させない。
 func MigrateUp(ctx context.Context, dbURL string) error {
 	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
 		_, err := p.Up(ctx)
@@ -25,15 +26,13 @@ func MigrateUp(ctx context.Context, dbURL string) error {
 		return err
 	}
 
-	// migrate は新しいデータベースへ最初に接続する経路なので、拡張を作った直後に
-	// 実際の pg_trgm の挙動を検査し、誤ったロケールのままアプリを起動させない。
 	conn, err := pgx.Connect(ctx, dbURL)
 	if err != nil {
 		return fmt.Errorf("connecting to validate database locale after migration: %w", err)
 	}
 	defer func() { _ = conn.Close(ctx) }()
-	if err := checkPgTrgmJapaneseSupport(ctx, conn); err != nil {
-		return fmt.Errorf("validating database locale after migration: %w", err)
+	if err := checkLocaleSupport(ctx, conn); err != nil {
+		return fmt.Errorf("validating database after migration: %w", err)
 	}
 	return nil
 }

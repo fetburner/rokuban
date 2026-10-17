@@ -191,21 +191,26 @@ PostgreSQL 標準の拡張 btree_gist は trusted extension なので、対象 D
 
 本番相当の managed 環境での実測は未実施である。確認の手順は [runbook/managed-postgres.md](../runbook/managed-postgres.md)。
 
-### pg_trgm の `LC_CTYPE`
+### DB の文字分類（`LC_CTYPE`）
 
-重複排除を正しく行うには、DB が日本語を語の文字として扱う必要がある。
+DB の文字分類が日本語を語の文字として扱わないと、日本語の番組では正規表現ルールと重複排除が効かない。rokuban は起動時にこれを検査し、満たさない DB では起動しない。
 
-重複排除は pg_trgm の `similarity()` を使う。DB の `LC_CTYPE` は日本語を語の文字として扱う必要があり、`C` では日本語タイトルの類似度が 0 になって再放送を抑制できない。
+正規表現ルールの `\w` と大文字小文字の無視、および重複排除に使う pg_trgm の `similarity()` は、どちらも DB の `LC_CTYPE` の文字分類に従う。`LC_CTYPE` が `C` だと、日本語や全角英字を含む正規表現ルールが当たらず、日本語タイトルの類似度は 0 になる。
 
-`migrate up` は拡張適用後に `similarity('録画', '録画') = 1` を検査し、プール作成時にも同じ挙動を確かめる。libc / ICU やホストで名前が異なるため、ロケール名では判定しない。
+`migrate up` は migration の適用後に、各ロールは起動時（DB の接続プールを作るとき）に、これらの挙動を確かめる。日本語を扱えるロケールは `en_US.utf8`・`C.UTF-8`・`ja_JP.UTF-8`・ICU と複数あり、ICU でも ctype が `C` なら満たさない。そのためロケール名では判定しない。
 
-検査に失敗した DB は起動できない。`LC_CTYPE` は DB 作成後に変更できないため、対応するロケールを指定して DB を作り直す。利用できるロケール名は PostgreSQL ホストごとに異なる。
+公式の `postgres:17` イメージの既定（`en_US.utf8`）はそのまま使える。自分でロケールを選ぶ場合は、libc の `C.UTF-8` を推奨する。公式イメージに含まれ、照合順序が言語に依存しない。
+
+検査に失敗すると rokuban は起動しない。`LC_CTYPE` は DB 作成後に変更できないため、条件を満たすロケールを指定して DB を作り直す。未 migrate の DB（pg_trgm が無い）では、ロケールではなく `migrate up` を先に実行するよう案内する。
 
 <details><summary>根拠</summary>
 
 - migrate 後の検査: `MigrateUp`
-- 全ロールのプール作成時の検査: `NewPool`
-- 既定 DB で成功し C ロケール DB で失敗すること: `TestNewPool` / `TestNewPoolRejectsUnsupportedPgTrgmLocale`
+- 全ロールのプール作成時の検査: `NewPool`（どちらも `checkLocaleSupport` を呼ぶ）
+- 既定 DB で成功すること: `TestNewPool`
+- C ロケール DB で 3 つの検査がすべて落ち、エラーに名前と `datctype` が載ること: `TestNewPoolRejectsUnsupportedLocale`
+- 未 migrate の DB で `migrate up` の案内になること: `TestNewPoolRejectsUnmigratedDatabase`
+- `C.UTF-8` の推奨: `postgres:17` で `CREATE DATABASE … TEMPLATE template0 LOCALE 'C.UTF-8'` の DB は 3 つの検査がすべて真（2026-10-18 実測）。テストでは固定していない
 
 </details>
 
