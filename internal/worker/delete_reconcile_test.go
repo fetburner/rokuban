@@ -79,9 +79,9 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 // seedSeekTilesAsset は seek_tiles の active media_assets 行 + ファイルを用意する。
 // 原本の until_encoded 削除は thumbnail と同じく seek_tiles の完備も要求するので、
 // 「派生物が揃っている」ことを作るテストはこれを必ず呼ぶ。
-func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) {
+func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) int64 {
 	t.Helper()
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
+	return seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
 }
 
 // webhookRecorder は webhook 先の httptest サーバが受け取ったイベントを記録する。
@@ -897,36 +897,44 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
-// 派生アセットの行が残っていても、deleted のサムネイルは完備として数えない。
-func TestDeleteReconcileWorker_UntilEncoded_DeletedThumbnail_NotDeleted(t *testing.T) {
-	pool := setupTestPool(t)
-	ctx := context.Background()
-	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	originalRelPath := "orig/deleted-thumbnail.m2ts"
-	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
-	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/deleted-thumbnail.mp4", []byte("mp4"))
-	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/deleted-thumbnail.jpg", []byte("jpg"))
-	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/deleted-thumbnail-tiles.jpg")
-	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
-	assertUntilEncodedQualifies(t, pool, assetID, true)
+// 派生アセットの行が残っていても、deleted のサムネイル・シークタイルは完備として数えない。
+func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *testing.T) {
+	for _, kind := range []string{db.AssetKindThumbnail, db.AssetKindSeekTiles} {
+		t.Run(kind, func(t *testing.T) {
+			pool := setupTestPool(t)
+			ctx := context.Background()
+			mediaDir := t.TempDir()
+			recordingID := insertTestRecording(t, pool)
+			originalRelPath := "orig/deleted-" + kind + ".m2ts"
+			assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
+			profile := "h264"
+			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/deleted-"+kind+".mp4", []byte("mp4"))
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/deleted-"+kind+".jpg", []byte("jpg"))
+			tilesID := seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/deleted-"+kind+"-tiles.jpg")
+			markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+			assertUntilEncodedQualifies(t, pool, assetID, true)
 
-	if _, err := pool.Exec(ctx,
-		"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", thumbnailID); err != nil {
-		t.Fatalf("marking thumbnail deleted: %v", err)
-	}
-	assertUntilEncodedQualifies(t, pool, assetID, false)
+			target := thumbnailID
+			if kind == db.AssetKindSeekTiles {
+				target = tilesID
+			}
+			if _, err := pool.Exec(ctx,
+				"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", target); err != nil {
+				t.Fatalf("marking %s deleted: %v", kind, err)
+			}
+			assertUntilEncodedQualifies(t, pool, assetID, false)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
-	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
-		t.Fatalf("Work() error: %v", err)
-	}
-	if got := assetState(t, pool, assetID); got != "active" {
-		t.Fatalf("original state = %q, want active (thumbnail is deleted)", got)
-	}
-	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
-		t.Errorf("original file was removed while its thumbnail was deleted: %v", err)
+			w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+			if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+				t.Fatalf("Work() error: %v", err)
+			}
+			if got := assetState(t, pool, assetID); got != "active" {
+				t.Fatalf("original state = %q, want active (%s is deleted)", got, kind)
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
+				t.Errorf("original file was removed while its %s was deleted: %v", kind, err)
+			}
+		})
 	}
 }
 

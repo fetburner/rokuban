@@ -304,18 +304,16 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕の 3 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口（腕ごとに 1 つ）・前パスの拾い直し・否定形 2 つである。以前は 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる。
 
-原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に置く。解析を足すときに変更する箇所はこの view の 1 か所である。集約 view を作っても消費者は削除 view だけなので、変更箇所は減らない。
-
-PostgreSQL 16 の合成 2 万件で比較すると、どちらの view も JOIN に展開された。`ListUntilEncodedOriginalsToDelete` の実行時間は 1,840 ms と 115 ms だったが、差は view の形ではなく、既存の見積もり誤りによって入れ子ループが選ばれたことによる。入れ子ループを無効にした全件 count は 48 ms と 45 ms だった。
-
-「終端」は削除側が待つのをやめる条件であり、処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で削除側の待ちを終えるが、ロゴ学習で再び desired になる場合がある。`stage = 'adopt'` は候補の採用待ちなので終端に含めない。
-
-`cardinality(encode_profiles) > 0` は削除述語に残す。`cm_detect = false` なら CM 検出を待たない一方、空の `encode_profiles` ではエンコード出力の指定が無いまま原本を消さない。この非対称な安全条件は、`recording_encode_policy` の CHECK 制約と重ねている。
-
 - until_encoded 腕: パラメータを取らないので view `until_encoded_deletable_originals` にする。条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて対処してある。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
 - TS の計測済み判定: view `current_ts_scanned_originals` にする。計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
+
+原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。実行計画も変わらない。どちらの形も JOIN に展開され、PostgreSQL 16 の合成 2 万件では、入れ子ループを無効にした全件 count が今の形で 48 ms、まとめた形で 45 ms だった。
+
+ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
+
+`cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_encode_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
 
 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる。
 
