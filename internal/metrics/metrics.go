@@ -499,8 +499,7 @@ var (
 	//
 	// 値が上限（encodeReconcileRowLimit）なら、そのページは最後の recording_id を
 	// 持つ継続ジョブの投入を試みる（TestEncodeReconcileWorker_RowLimitCapsWorkPerPass）。
-	// 参照構成の `--once` worker はジョブごとに終了するため、参照構成は `--once` の
-	// ジョブ Pod を scrape しないので、このゲージでは継続を追えない。継続を確認するときは
+	// 参照構成は `--once` のジョブ Pod を scrape しないので、このゲージでは継続を追えない。継続を確認するときは
 	// `encode_reconcile: candidate window is full; continuation enqueued` ログを使う
 	// （docs/operations/monitoring.md）。エンコード実行中の録画も候補に数えるので、
 	// 0 でないこと自体は異常ではない。

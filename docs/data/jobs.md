@@ -331,7 +331,7 @@ flowchart LR
 
 DB が必要なのは、開始時の同期行の参照、進捗の書き込み、公開点である原本アセットのコミットである。
 
-有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失った場合の詳細は [ingest](../recording/ingest.md) §5.3 を参照。
+有限 slice の区切りでは checkpoint を保存し、同じ River job を snooze する。プロセス死では JobRescuer が retry を予約し、temp の flock と checkpoint を使って再開する。DB 障害で接続やコミットを失った場合の詳細は [ingest](../recording/ingest-retry.md) §5.3 を参照。
 
 <details><summary>根拠</summary>
 

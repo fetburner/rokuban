@@ -48,7 +48,7 @@ type ListActiveMediaAssetsRow struct {
 // このファイルの他のソースと違って row_limit を持たない。判定が差集合なので
 // 入力を切ると答えが変わる（窓の外の行が「もう候補でない」と見なされて
 // first_seen が毎パス消え、エイジングが永久に完了しない）。理由の全文は
-// internal/worker/delete_reconcile.go の reconcileMissingAssets の
+// internal/worker/storage_audit.go の reconcileMissingAssets の
 // doc コメント。
 func (q *Queries) ListActiveMediaAssets(ctx context.Context) ([]ListActiveMediaAssetsRow, error) {
 	rows, err := q.db.Query(ctx, listActiveMediaAssets)
@@ -494,11 +494,9 @@ type ListUntilEncodedOriginalsToDeleteRow struct {
 	Kind        string
 }
 
-// keep_original='until_encoded' で、desired な派生物（全 encode_profiles +
-// thumbnail）がすべて active でコミット済みの原本（名前付き述語
-// until_encoded_deletable_originals への参照。issue #160）。ごみ箱経由の
-// 録画は ListTrashMediaAssetsToDelete 側で扱うのでここでは除外する
-// （view 自身が r.deleted_at IS NULL を要求している）。
+// keep_original='until_encoded' の原本削除候補。削除可否の条件は
+// until_encoded_deletable_originals の定義を参照する。ごみ箱経由の録画は
+// ListTrashMediaAssetsToDelete 側で扱う。
 func (q *Queries) ListUntilEncodedOriginalsToDelete(ctx context.Context, rowLimit int32) ([]ListUntilEncodedOriginalsToDeleteRow, error) {
 	rows, err := q.db.Query(ctx, listUntilEncodedOriginalsToDelete, rowLimit)
 	if err != nil {

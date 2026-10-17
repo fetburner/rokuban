@@ -134,7 +134,7 @@ type Deps struct {
 	// IngestStallTimeout は ingest の無進捗検知タイムアウト
 	// （ingest.stall_timeout。config.defaults() が既定値 30 秒を埋める）。
 	// bounded slice / snooze の区切りとは別に、接続断を判定する
-	// （docs/recording/ingest.md §5.3「層 1」）。
+	// （docs/recording/ingest-retry.md §5.3「層 1」）。
 	IngestStallTimeout time.Duration
 
 	// RecoveryGrace はジョブエンジン adapter が申告する回復猶予（jobq.Spec.Timeout の契約）。

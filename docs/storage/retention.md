@@ -134,7 +134,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、根拠欄の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 
-事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
+事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest-followup.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
 
 <details><summary>根拠</summary>
 
@@ -286,6 +286,10 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 一括削除サーキットブレーカーの閾値は、件数 / ライブラリ比率 / 総バイト数である（例: 5% or 100 GB）。孤児回収を含む物理削除が閾値を超えたら停止してアラートを出す。報告だけの canonical orphan は削除数に含めない。
 
+ループのコードは、変わる理由ごとに 3 つのファイルへ分ける。候補の選定は保持ポリシーで、削除の実行はストレージの方式で、ストレージの監査はファイル配置の規則で変わる。監査は選定より先に呼ぶ。公開前と分かる孤児の候補は、監査が走査結果から出すためである。
+
+孤児と実体無しの監査は、1 パスに 1 回の走査結果を共有する。監査ごとに走査すると、片方だけが見た窓で誤判定する。各責務が読み書きする表とファイル操作は、各ファイルの冒頭のコメントに書く。
+
 #### ingest の temp と公開前ファイル
 
 ingest の temp は、record ごとに固有の名前を持つ。孤児候補になるのは、プロセス死や rename 後の DB 失敗で残った temp と canonical file である。予約名の temp は mtime 猶予と aging の後に回収し、canonical 名は aging 後に報告する。
@@ -308,6 +312,12 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 - TS の計測済み判定: view `current_ts_scanned_originals` にする。計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
+
+原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。実行計画も変わらない。どちらの形も JOIN に展開され、PostgreSQL 16 の合成 2 万件では、入れ子ループを無効にした全件 count が今の形で 48 ms、まとめた形で 45 ms だった。
+
+ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
+
+`cardinality(encode_profiles) > 0` は削除述語に残す。削除述語は、`cm_detect = false` なら CM 検出を待たないが、`encode_profiles` が空なら原本を消さない。`until_encoded` と空の `encode_profiles` の組は `recording_encode_policy` の CHECK 制約が禁じており、述語のガードはこれを二重に防ぐ。
 
 否定形（`ListUnqualifiedDeletingAssets` / `RevertMediaAssetToActive`）は、これらの述語への `NOT EXISTS` で書く。手で「同条件を再掲」するコメントを揃える義務が無くなる。
 

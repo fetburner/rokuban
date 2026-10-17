@@ -80,7 +80,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 
 `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。thumbnail reconcile の最終完走時刻は、投入停止を `time() -` で検出するために使う。不足録画数が数えるのは poster のぶんだけである。シークタイルは別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。不足録画数が行上限に張り付くときは、バックログが上限以上ある。
 
-encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest.md) §5.5）。
+encode reconcile のパスは、ヒントを落とした録画を拾うバックストップである。止まっても症状が目立たないので、最終完走時刻を見る（[ingest](../recording/ingest-followup.md) §5.5）。
 
 凍結済みの desired が現在の `encode.profiles` に無い録画が非ゼロなら、プロファイルの改名や削除で、その名前の過去録画が永久にエンコードされない。投入しても `unknown encode profile` で弾かれるので、パスは投入せず数えるだけにしている。
 
@@ -329,7 +329,7 @@ site 非依存にする理由は、単一の資源（アーカイブ・プロフ
 
 `storage-sync` の CronJob を忘れると、`storage_sync` が一度も投入されない。`GET /api/storage` が永遠に空配列を返す。
 
-`encode-reconcile` と `thumbnail-reconcile` を忘れた場合の症状は、目立たない。ヒントを落とした録画だけが、派生物を持たないまま残る（[ingest](../recording/ingest.md) §5.5）。検出は、`rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。thumbnail とシークプレビュー用タイルは同じパスが埋めるので、`rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
+`encode-reconcile` と `thumbnail-reconcile` を忘れた場合の症状は、目立たない。ヒントを落とした録画だけが、派生物を持たないまま残る（[ingest](../recording/ingest-followup.md) §5.5）。検出は、`rokuban_encode_reconcile_last_pass_timestamp_seconds` の鮮度で行う。thumbnail とシークプレビュー用タイルは同じパスが埋めるので、`rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` を見る。投入を忘れれば値が進まない。
 
 `ts-scan-reconcile` を忘れた場合は、scan 記録のない原本が残る。検出は、`rokuban_ts_scan_reconcile_last_pass_timestamp_seconds` の鮮度で行う。投入を忘れれば値が進まない。`rokuban_ts_scan_jobs_total` は ingest のヒントでも増えるので、投入停止の検出には使わない。
 
@@ -466,7 +466,7 @@ SHA-256 待ちは、同じ River job を snooze し、結果の 3 値と duratio
 
 候補数のゲージが非ゼロでも、異常ではない。エンコード実行中の録画も数えるためである。
 
-対象は `rokuban_encode_reconcile_candidates` である。このゲージは 1 ページが見た候補数を表す。ページと継続の仕組みは [ingest](../recording/ingest.md) §5.5 に従う。
+対象は `rokuban_encode_reconcile_candidates` である。このゲージは 1 ページが見た候補数を表す。ページと継続の仕組みは [ingest](../recording/ingest-followup.md) §5.5 にある。
 
 参照構成は `--once` のジョブ Pod を scrape しないので、ゲージでは継続状況を追えない。`max_over_time(rokuban_encode_reconcile_candidates[1h])` も使えない。上限に達したページは `encode_reconcile: candidate window is full; continuation enqueued` のログで確認する。
 

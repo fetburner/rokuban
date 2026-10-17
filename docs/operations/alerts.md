@@ -30,7 +30,7 @@ ingest が詰まって未 ingest の record が溜まり続けるシナリオへ
 
 #### 数えない record
 
-中途終了した record（取消・失敗）の滞留も数えない。これらは取り込まれず、エッジから回収もされない（[ingest](../recording/ingest.md) §5.3 層 3）。後継の無い途中終了の中身はエッジのディスクに残り続けるが、このアラートには現れない。
+中途終了した record（取消・失敗）の滞留も数えない。これらは取り込まれず、エッジから回収もされない（[ingest](../recording/ingest-retry.md) §5.3 層 3）。後継の無い途中終了の中身はエッジのディスクに残り続けるが、このアラートには現れない。
 
 <details><summary>根拠</summary>
 
@@ -101,7 +101,7 @@ DB 接続と `reservations` の中身を確認する。このブレーカーの�
 
 <details><summary>根拠</summary>
 
-- delete_reconcile が呼び出し側から受け取る値は総数だけ: `breaker.Sample{Total: total}`、`internal/worker/delete_reconcile.go`
+- delete_reconcile が呼び出し側から受け取る値は総数だけ: `breaker.Sample{Total: total}`、`internal/worker/delete_execute.go`
 - ファイルを表す欄が無い型: `breaker.Sample` / `SampleProgram`
 
 </details>
