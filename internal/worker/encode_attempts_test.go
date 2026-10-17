@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -811,8 +813,13 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
 	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
+	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせる。`<-progressDone` を Wait の
+	// 前に置く順序では、sleep が自然終了する前に失敗させる。
+	workReturnTimeout := 5 * workerExecWaitDelay
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()
+	workDone := make(chan error, 1)
+	workFinished := false
 	defer func() {
 		if time.Since(sleepStartedAt) > time.Duration(sleepSeconds)*time.Second {
 			return
@@ -827,6 +834,13 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 		}
 		if process, err := os.FindProcess(pid); err == nil {
 			_ = process.Kill()
+		}
+		if !workFinished {
+			select {
+			case <-workDone:
+			case <-time.After(2 * workerExecWaitDelay):
+				t.Error("Work did not stop after killing the leaky child")
+			}
 		}
 	}()
 
@@ -857,8 +871,16 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
 
 	start := time.Now()
-	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
-		t.Fatalf("Work(): %v (log: %s)", err, logBuf.String())
+	go func() { workDone <- runWorkerViaJobQFake(context.Background(), w, job) }()
+	var workErr error
+	select {
+	case workErr = <-workDone:
+		workFinished = true
+	case <-time.After(workReturnTimeout):
+		t.Fatalf("Work did not return within %s; a progress-reader wait before Wait would bypass WaitDelay", workReturnTimeout)
+	}
+	if workErr != nil {
+		t.Fatalf("Work(): %v (log: %s)", workErr, logBuf.String())
 	}
 	// WaitDelay の経路を実際に踏んだことの裏付け --- 踏んでいなければ ffmpeg が
 	// 即座に完了して Work() もすぐ返り、この分岐は何も検証していないことになる。
@@ -886,6 +908,172 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	}
 	if encodedCount != 1 {
 		t.Errorf("active encoded media_assets = %d, want 1 (WaitDelay-on-success must still commit)", encodedCount)
+	}
+}
+
+// TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning は、ffmpeg が
+// progress=end を書いて exit した後も、その行が reportProgress に届くことを固定する。
+// 最初の progress callback を止めている間に偽 ffmpeg が progress=end を書き終えて
+// exit するため、StdoutPipe と Wait を併用して Wait が先に pipe を閉じる形では
+// 最終値が失われる。
+func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *testing.T) {
+	tmp := t.TempDir()
+	ffmpegPath := filepath.Join(tmp, "ffmpeg")
+	releaseMarker := filepath.Join(tmp, "release")
+	pidMarker := filepath.Join(tmp, "pid")
+	ffmpegScript := "#!/bin/sh\n" +
+		"set -e\n" +
+		"dir=\"${0%/*}\"\n" +
+		"input=\"\"\n" +
+		"output=\"\"\n" +
+		"prev=\"\"\n" +
+		"for a in \"$@\"; do\n" +
+		"  if [ \"$prev\" = \"-i\" ]; then input=\"$a\"; fi\n" +
+		"  prev=\"$a\"\n" +
+		"  output=\"$a\"\n" +
+		"done\n" +
+		"printf 'out_time_ms=1000000\\nprogress=continue\\n'\n" +
+		"while [ ! -e \"$dir/release\" ]; do sleep 0.01; done\n" +
+		"cp \"$input\" \"$output\"\n" +
+		"printf '%s\\n' \"$$\" > \"$dir/pid\"\n" +
+		"printf 'out_time_ms=2000000\\nprogress=end\\n'\n"
+	if err := os.WriteFile(ffmpegPath, []byte(ffmpegScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inputPath := filepath.Join(tmp, "input.ts")
+	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(tmp, "output.mp4")
+
+	firstProgress := make(chan struct{})
+	resumeProgress := make(chan struct{})
+	var resumeOnce sync.Once
+	resume := func() { resumeOnce.Do(func() { close(resumeProgress) }) }
+	t.Cleanup(func() {
+		resume()
+		_ = os.WriteFile(releaseMarker, nil, 0o600)
+	})
+
+	var sawFinalProgress bool
+	commandDone := make(chan error, 1)
+	go func() {
+		worker := &EncodeWorker{FFmpeg: ffmpegPath}
+		commandDone <- worker.runEncodeCommand(context.Background(), encodeCommandInput{
+			profile: config.EncodeProfile{
+				Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+			},
+			inputPath:  inputPath,
+			scratchOut: outputPath,
+		}, func(progress time.Duration) {
+			if progress == time.Second {
+				_ = os.WriteFile(releaseMarker, nil, 0o600)
+				close(firstProgress)
+				<-resumeProgress
+			}
+			if progress == 2*time.Second {
+				sawFinalProgress = true
+			}
+		}, slog.Default())
+	}()
+
+	select {
+	case <-firstProgress:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for the first progress callback")
+	}
+	// progress=end はすでに stdout に書かれている。この待ちでは
+	// Wait が子プロセスを reap したことを ESRCH で確かめる。
+	// parser は先頭の callback で止まっているため、ここから resume するまで最終行は読めない。
+	waitFor(t, 3*time.Second, func() bool {
+		data, err := os.ReadFile(pidMarker)
+		if err != nil {
+			return false
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		return err == nil && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
+	}, func() string { return "fake ffmpeg did not exit while progress parsing was blocked" })
+	resume()
+
+	select {
+	case err := <-commandDone:
+		if err != nil {
+			t.Fatalf("runEncodeCommand: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("runEncodeCommand did not return after ffmpeg exited")
+	}
+	if !sawFinalProgress {
+		t.Fatal("final progress=end value was not reported")
+	}
+}
+
+// TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine は、Scanner の上限を
+// 超える進捗行で parser が終了しても、残りの進捗を読み捨てて ffmpeg を塞がず、成功する
+// ffmpeg なら runEncodeCommand も成功することを確認する。進捗は揮発テレメトリなので、
+// その異常で encode を落とさない。子プロセス内で実行し、回帰時に Wait が止まっても
+// 親テストからプロセスグループごと終了できるようにする。
+func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.T) {
+	const helperEnv = "ROKUBAN_LONG_PROGRESS_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		worker := &EncodeWorker{FFmpeg: os.Getenv("ROKUBAN_LONG_PROGRESS_FFMPEG")}
+		err := worker.runEncodeCommand(context.Background(), encodeCommandInput{
+			profile: config.EncodeProfile{
+				Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+			},
+			inputPath:  os.Getenv("ROKUBAN_LONG_PROGRESS_INPUT"),
+			scratchOut: os.Getenv("ROKUBAN_LONG_PROGRESS_OUTPUT"),
+		}, nil, slog.Default())
+		if err != nil {
+			t.Fatalf("runEncodeCommand: %v", err)
+		}
+		return
+	}
+
+	tmp := t.TempDir()
+	ffmpegPath := filepath.Join(tmp, "ffmpeg")
+	// 1 MiB 超の改行なし行の後も進捗を書き続け、出力を作って exit 0 する。
+	const longLineFFmpegScript = "#!/bin/sh\n" +
+		"for a in \"$@\"; do output=\"$a\"; done\n" +
+		"head -c 1048577 /dev/zero\n" +
+		"i=0; while [ $i -lt 200 ]; do printf '\\nout_time_ms=1000000\\nprogress=continue\\n'; i=$((i+1)); done\n" +
+		"echo out > \"$output\"\n"
+	if err := os.WriteFile(ffmpegPath, []byte(longLineFFmpegScript), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inputPath := filepath.Join(tmp, "input.ts")
+	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const testName = "^TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine$"
+	cmd := exec.Command(os.Args[0], "-test.run="+testName)
+	cmd.Env = append(os.Environ(),
+		helperEnv+"=1",
+		"ROKUBAN_LONG_PROGRESS_FFMPEG="+ffmpegPath,
+		"ROKUBAN_LONG_PROGRESS_INPUT="+inputPath,
+		"ROKUBAN_LONG_PROGRESS_OUTPUT="+filepath.Join(tmp, "output.mp4"),
+	)
+	var helperOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &helperOut, &helperOut
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start test helper: %v", err)
+	}
+	helperDone := make(chan error, 1)
+	go func() { helperDone <- cmd.Wait() }()
+	select {
+	case err := <-helperDone:
+		if err != nil {
+			t.Fatalf("test helper: %v\n%s", err, helperOut.String())
+		}
+	case <-time.After(3 * time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-helperDone:
+		case <-time.After(time.Second):
+		}
+		t.Fatalf("runEncodeCommand did not return after the progress parser stopped on an overlong line\n%s", helperOut.String())
 	}
 }
 
