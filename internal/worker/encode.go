@@ -679,7 +679,8 @@ type encodeCommandInput struct {
 // stdout は io.PipeWriter を Cmd.Stdout に渡し、os/exec のコピー完了を Wait に待たせる。
 // WaitDelay は孫プロセスが stdout を保持する場合の待ち時間を制限する。Wait の後に
 // writer を閉じて parser に EOF を送り、コピー済みの末尾の進捗行まで処理させる
-// （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。
+// （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。parser が早期終了
+// した場合は reader も閉じ、コピー goroutine の Write が Wait を塞がないようにする。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
@@ -699,6 +700,7 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInp
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
+		defer func() { _ = stdout.Close() }()
 		parseFFmpegProgress(stdout, log, reportProgress)
 	}()
 	waitErr := cmd.Wait()

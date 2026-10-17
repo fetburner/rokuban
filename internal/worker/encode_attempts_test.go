@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -979,6 +980,66 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 	}
 	if !sawFinalProgress {
 		t.Fatal("final progress=end value was not reported")
+	}
+}
+
+// TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine は、Scanner の上限を
+// 超える進捗行で parser が終了したとき、io.PipeReader を閉じて exec の stdout copier
+// を解放することを確認する。子プロセス内で実行し、回帰時に Wait が止まっても親テスト
+// からプロセスグループごと終了できるようにする。
+func TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine(t *testing.T) {
+	const helperEnv = "ROKUBAN_LONG_PROGRESS_HELPER"
+	if os.Getenv(helperEnv) == "1" {
+		worker := &EncodeWorker{FFmpeg: os.Getenv("ROKUBAN_LONG_PROGRESS_FFMPEG")}
+		err := worker.runEncodeCommand(context.Background(), encodeCommandInput{
+			profile: config.EncodeProfile{
+				Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+			},
+			inputPath:  os.Getenv("ROKUBAN_LONG_PROGRESS_INPUT"),
+			scratchOut: os.Getenv("ROKUBAN_LONG_PROGRESS_OUTPUT"),
+		}, nil, slog.Default())
+		if err == nil {
+			t.Fatal("runEncodeCommand succeeded with an overlong progress line")
+		}
+		return
+	}
+
+	tmp := t.TempDir()
+	ffmpegPath := filepath.Join(tmp, "ffmpeg")
+	if err := os.WriteFile(ffmpegPath, []byte("#!/bin/sh\nexec head -c 1048577 /dev/zero\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	inputPath := filepath.Join(tmp, "input.ts")
+	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const testName = "^TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine$"
+	cmd := exec.Command(os.Args[0], "-test.run="+testName)
+	cmd.Env = append(os.Environ(),
+		helperEnv+"=1",
+		"ROKUBAN_LONG_PROGRESS_FFMPEG="+ffmpegPath,
+		"ROKUBAN_LONG_PROGRESS_INPUT="+inputPath,
+		"ROKUBAN_LONG_PROGRESS_OUTPUT="+filepath.Join(tmp, "output.mp4"),
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start test helper: %v", err)
+	}
+	helperDone := make(chan error, 1)
+	go func() { helperDone <- cmd.Wait() }()
+	select {
+	case err := <-helperDone:
+		if err != nil {
+			t.Fatalf("test helper: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		select {
+		case <-helperDone:
+		case <-time.After(time.Second):
+		}
+		t.Fatal("runEncodeCommand did not return after the progress parser rejected an overlong line")
 	}
 }
 
