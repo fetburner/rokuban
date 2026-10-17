@@ -578,46 +578,14 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		return err == nil
 	}, func() string { return "fake ffmpeg did not start before the deadline" })
 	deadline, _ := ctx.Deadline()
-	var result *workResult
-	// The started marker can precede the context deadline. Wait for ctx.Done
-	// before starting the return budget so startup time does not consume it.
+	// started の検出は deadline より前に起きうる。起動にかかった時間で猶予を使い切らない
+	// よう、待ちは deadline から数える。上限を超えてもすぐには落とさず、WaitDelay と余裕の
+	// 分まで待つ。こうすると、WaitDelay で遅れて戻った場合と戻らない場合を区別できる。
+	var result workResult
 	select {
-	case got := <-workDone:
-		if got.returnedAt.Before(deadline) {
-			t.Fatalf("Work returned before its context deadline: %v", got.err)
-		}
-		result = &got
-	case <-ctx.Done():
-	}
-	<-ctx.Done()
-	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		t.Fatalf("context ended with %v, want deadline exceeded", ctx.Err())
-	}
-	if result == nil {
-		select {
-		case got := <-workDone:
-			result = &got
-		case <-time.After(workReturnTimeout):
-			// Keep observing through WaitDelay plus a margin. This distinguishes
-			// a late WaitDelay return from a process that remains blocked.
-			select {
-			case got := <-workDone:
-				result = &got
-			default:
-				waitDelayBound := workerExecWaitDelay + waitDelayMargin
-				remaining := time.Until(deadline.Add(waitDelayBound))
-				if remaining > 0 {
-					select {
-					case got := <-workDone:
-						result = &got
-					case <-time.After(remaining):
-					}
-				}
-				if result == nil {
-					t.Fatalf("Work did not return within %s after its context deadline, including WaitDelay=%s plus %s", waitDelayBound, workerExecWaitDelay, waitDelayMargin)
-				}
-			}
-		}
+	case result = <-workDone:
+	case <-time.After(time.Until(deadline.Add(workerExecWaitDelay + waitDelayMargin))):
+		t.Fatalf("Work did not return within WaitDelay=%s plus %s after its context deadline", workerExecWaitDelay, waitDelayMargin)
 	}
 	if result.returnedAt.Before(deadline) {
 		t.Fatalf("Work returned before its context deadline: %v", result.err)
@@ -921,8 +889,10 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	}
 }
 
-// setWorkerExecWaitDelayForTest はテスト内だけ workerExecWaitDelay を変更し、t.Cleanup で
-// 戻す。WaitDelay を実際に経過させるテストで、各テストに必要な長さを設定する。
+// setWorkerExecWaitDelayForTest は workerExecWaitDelay を delay に差し替え、t.Cleanup で戻す。
+// WaitDelay の経過を待つテストは、本番既定の 5 秒を毎回払わないよう短くする（sleep や
+// timeout は workerExecWaitDelay の倍数で導出しているので比率は変わらない）。WaitDelay に
+// 救われていないことを確かめるテストは長くする。
 func setWorkerExecWaitDelayForTest(t *testing.T, delay time.Duration) {
 	t.Helper()
 	prev := workerExecWaitDelay
