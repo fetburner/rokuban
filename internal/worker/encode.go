@@ -676,20 +676,24 @@ type encodeCommandInput struct {
 }
 
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
+// stdout は io.PipeWriter を Cmd.Stdout に渡し、os/exec のコピー完了を Wait に待たせる。
+// WaitDelay は孫プロセスが stdout を保持する場合の待ち時間を制限する。Wait の後に
+// writer を閉じて parser に EOF を送り、コピー済みの末尾の進捗行まで処理させる
+// （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
 	cmd := exec.CommandContext(ctx, ffmpeg, BuildFFmpegArgs(profile, inputPath, scratchOut, withSubtitles, in.filter)...)
 	setWorkerExecWaitDelay(cmd)
 	// 進捗は stdout（-progress pipe:1）。stderr はエラー診断のみ（進捗に使わない）。
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("ffmpeg stdout pipe: %w", err)
-	}
+	stdout, stdoutWriter := io.Pipe()
+	cmd.Stdout = stdoutWriter
 	var stderrBuf strings.Builder
 	cmd.Stderr = &stderrBuf
 	log.Info("encode: starting ffmpeg", "input", inputPath, "scratch", scratchOut)
 	if err := cmd.Start(); err != nil {
+		_ = stdoutWriter.Close()
+		_ = stdout.Close()
 		return fmt.Errorf("starting ffmpeg: %w", err)
 	}
 	progressDone := make(chan struct{})
@@ -698,9 +702,13 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInp
 		parseFFmpegProgress(stdout, log, reportProgress)
 	}()
 	waitErr := cmd.Wait()
+	closeErr := stdoutWriter.Close()
 	<-progressDone
 	if err := encodeCommandError(ctx, cmd, waitErr, stderrBuf.String(), log); err != nil {
 		return err
+	}
+	if closeErr != nil {
+		return fmt.Errorf("closing ffmpeg progress pipe: %w", closeErr)
 	}
 	info, err := os.Stat(scratchOut)
 	if err != nil {
