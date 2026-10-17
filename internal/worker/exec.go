@@ -16,7 +16,7 @@ import (
 // には影響せず、プロセスを kill した後の後始末だけを制限する値なので、ジョブの
 // 寿命がライブ配信より長くてもこの上限でよい。
 //
-// テストが短縮できるよう var にしてある（setShortWorkerExecWaitDelay）。本番で
+// テスト内で変更できるよう var にしてある（setWorkerExecWaitDelayForTest）。本番で
 // 書き換える箇所は無い。
 var workerExecWaitDelay = 5 * time.Second
 

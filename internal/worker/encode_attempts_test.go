@@ -243,7 +243,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	// 無言の後退が起こり得る）。sleep は秒単位の整数しか取れないので、切り捨て
 	// ではなく切り上げる --- 切り捨てると d が秒の整数倍でないとき（例: 1500ms
 	// なら sleep 3s / workReturnTimeout 3s）に上の不等式が等号に潰れる。
-	setShortWorkerExecWaitDelay(t)
+	setWorkerExecWaitDelayForTest(t, time.Second)
 	slowFFmpegSleepSeconds := int((workerExecWaitDelay*3 + time.Second - 1) / time.Second)
 	workReturnTimeout := 2 * workerExecWaitDelay
 	slowFFmpeg, ffmpegStarted, childPIDMarker := installSlowFakeFFmpeg(t, slowFFmpegSleepSeconds)
@@ -534,6 +534,12 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	if pool == nil {
 		return
 	}
+	const (
+		encodeDeadline    = 5 * time.Second
+		workReturnTimeout = 10 * time.Second
+		waitDelayMargin   = 5 * time.Second
+	)
+	setWorkerExecWaitDelayForTest(t, 30*time.Second)
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/deadline.m2ts", []string{"h264"}, []byte("data"))
 	installFakeFFprobe(t, "60.0", true)
@@ -555,22 +561,72 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), encodeDeadline)
 	defer cancel()
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "h264"}
-	workDone := make(chan error, 1)
-	go func() { workDone <- runWorkerViaJobQFake(ctx, w, job) }()
+	type workResult struct {
+		err        error
+		returnedAt time.Time
+	}
+	workDone := make(chan workResult, 1)
+	go func() {
+		err := runWorkerViaJobQFake(ctx, w, job)
+		workDone <- workResult{err: err, returnedAt: time.Now()}
+	}()
 	waitFor(t, 6*time.Second, func() bool {
 		_, err := os.Stat(startedPath)
 		return err == nil
 	}, func() string { return "fake ffmpeg did not start before the deadline" })
+	deadline, _ := ctx.Deadline()
+	var result *workResult
+	// The started marker can precede the context deadline. Wait for ctx.Done
+	// before starting the return budget so startup time does not consume it.
 	select {
-	case err := <-workDone:
-		if err == nil {
-			t.Fatal("Work succeeded after its deadline")
+	case got := <-workDone:
+		if got.returnedAt.Before(deadline) {
+			t.Fatalf("Work returned before its context deadline: %v", got.err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Work did not return after the deadline canceled ffmpeg")
+		result = &got
+	case <-ctx.Done():
+	}
+	<-ctx.Done()
+	if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("context ended with %v, want deadline exceeded", ctx.Err())
+	}
+	if result == nil {
+		select {
+		case got := <-workDone:
+			result = &got
+		case <-time.After(workReturnTimeout):
+			// Keep observing through WaitDelay plus a margin. This distinguishes
+			// a late WaitDelay return from a process that remains blocked.
+			select {
+			case got := <-workDone:
+				result = &got
+			default:
+				waitDelayBound := workerExecWaitDelay + waitDelayMargin
+				remaining := time.Until(deadline.Add(waitDelayBound))
+				if remaining > 0 {
+					select {
+					case got := <-workDone:
+						result = &got
+					case <-time.After(remaining):
+					}
+				}
+				if result == nil {
+					t.Fatalf("Work did not return within %s after its context deadline, including WaitDelay=%s plus %s", waitDelayBound, workerExecWaitDelay, waitDelayMargin)
+				}
+			}
+		}
+	}
+	if result.returnedAt.Before(deadline) {
+		t.Fatalf("Work returned before its context deadline: %v", result.err)
+	}
+	if elapsed := result.returnedAt.Sub(deadline); elapsed > workReturnTimeout {
+		t.Fatalf("Work returned %s after its context deadline; want <= %s (WaitDelay=%s), so WaitDelay may have released it", elapsed, workReturnTimeout, workerExecWaitDelay)
+	}
+	if !errors.Is(result.err, context.DeadlineExceeded) {
+		t.Fatalf("Work returned %v after its deadline, want context.DeadlineExceeded", result.err)
 	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "failed" {
 		t.Fatalf("state after deadline = %q, ok=%v, want failed", state, ok)
@@ -785,7 +841,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// sleep は WaitDelay より十分長く保つ（この shell 自体は即座に exit するので、
 	// installSlowFakeFFmpeg のような cancel との競合はない。PID 再利用を避ける
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
-	setShortWorkerExecWaitDelay(t)
+	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()
@@ -865,13 +921,11 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	}
 }
 
-// setShortWorkerExecWaitDelay は workerExecWaitDelay を 1 秒に差し替え、t.Cleanup で
-// 戻す。WaitDelay が実際に経過するのを待つテストが、本番既定の 5 秒を毎回払わない
-// ための差し替え。sleep や timeout は呼び出し側が workerExecWaitDelay の倍数で導出
-// しているので、比率（sleep > WaitDelay、Work の復帰上限 = 2 倍）は変わらない。
-func setShortWorkerExecWaitDelay(t *testing.T) {
+// setWorkerExecWaitDelayForTest はテスト内だけ workerExecWaitDelay を変更し、t.Cleanup で
+// 戻す。WaitDelay を実際に経過させるテストで、各テストに必要な長さを設定する。
+func setWorkerExecWaitDelayForTest(t *testing.T, delay time.Duration) {
 	t.Helper()
 	prev := workerExecWaitDelay
-	workerExecWaitDelay = time.Second
+	workerExecWaitDelay = delay
 	t.Cleanup(func() { workerExecWaitDelay = prev })
 }

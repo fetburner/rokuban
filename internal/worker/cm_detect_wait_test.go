@@ -12,7 +12,7 @@ import (
 // 孫プロセスが stdout を握ったまま残っても、ctx キャンセル後に runCMTool が戻る
 // （WaitDelay が無いと CombinedOutput は孫の終了まで返らず、Work の復帰が遅れる）。
 func TestRunCMToolReturnsAfterCancelWhenGrandchildHoldsStdout(t *testing.T) {
-	setShortWorkerExecWaitDelay(t)
+	setWorkerExecWaitDelayForTest(t, time.Second)
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "fake-tool.sh")
 	if err := os.WriteFile(tool, []byte("#!/bin/sh\nsleep 10 &\nsleep 10\n"), 0o755); err != nil {
