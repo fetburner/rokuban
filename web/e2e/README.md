@@ -63,6 +63,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | シリーズ一覧の分割（`shelves-split.mjs`） | [checks/programs.md](checks/programs.md) |
 | ライブ視聴（`live.mjs`） | [checks/live.md](checks/live.md) |
 | 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
+| LivePlayer の時刻と離脱ヒント（`live-player-modes.mjs`） | [checks/live.md](checks/live.md)、[checks/playback.md](checks/playback.md) |
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
@@ -129,11 +130,13 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 - jsdom が原理的に測れない（レイアウトシフト・幅の溢れ・スクロール余白・viewport への収まり・実画素コントラスト）
 - `/api/**` を Playwright 内でスタブし、mirakc・チューナー・実データに依存しない
-- ffmpeg・webkit・DB への直接書き込みを要らず、Chromium だけで軽く終わる
+- Chromium だけで軽く終わる。`live-player-modes.mjs` は FFmpeg で短い実メディアを作り、離脱ヒントと追っかけの時刻を測る
 
 それ以外の判定（`lib.mjs` と `validate-fixtures.mjs` は共有部品）は**ローカルでの受け入れ確認**の位置づけである。[docs/frontend.md](../../docs/frontend.md) の「受け入れは実機で行う」に実行可能な形を与えるものだ。回さない理由は 3 類型ある。
 
-- 実メディアが要る: ffmpeg でフィクスチャを作る。対象は `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio`。`home-resume-frame` / `live` / `live-audio` は webkit も要る
+- 実メディアが要る: FFmpeg でフィクスチャを作る。CI では `live-player-modes` を実行する
+- ローカルで回すもの: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode` / `chase` / `live` / `live-audio`
+- `home-resume-frame` / `live` / `live-audio` は WebKit も要る
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。`live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
 - 残りの画面別判定（番組表・予約・検索など）は API スタブで技術的には載せられる。ただし全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。`design.mjs` は 63 枚のショットを撮るぶん重い
 
