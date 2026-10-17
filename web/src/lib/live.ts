@@ -378,12 +378,12 @@ export function originalVODLeaveURL(site: string, recordingId: number, offsetSec
 }
 
 /**
- * sendLiveLeaveHint は離脱のヒントを 1 回送る（失敗は無視する）。
+ * sendPlaybackLeaveHint は離脱のヒントを 1 回送る（失敗は無視する）。
  *
  * **これは停止命令ではない。** サーバー側はこれを受けてもセッションを止めず、
- * idle 期限を短い猶予まで詰めるだけ --- 同じチャンネルを見ている別の視聴者が
- * いれば、その人の次のセグメント要求が期限を元に戻す（`internal/streamer/live.go`
- * の `Leave`）。したがって「送れなかった」も「余計に送った」も壊れない：前者は
+ * idle 期限を短い猶予まで詰めるだけ --- 同じセッションを見ている別の視聴者が
+ * いれば、その人の次のセグメント要求が期限を元に戻す。したがって「送れなかった」
+ * も「余計に送った」も壊れない：前者は
  * 従来どおり `live.idle_timeout` で回収され、後者は自分の次の要求が期限を戻す。
  *
  * **`navigator.sendBeacon` を優先する。** ページ離脱の瞬間（`pagehide` /
@@ -392,8 +392,8 @@ export function originalVODLeaveURL(site: string, recordingId: number, offsetSec
  * （POST しか出せないので、サーバー側もこの口を POST にしてある）。無い環境
  * （jsdom・古いブラウザ）では `keepalive: true` の `fetch` に落とす。
  */
-export function sendLiveLeaveHint(site: string, networkId: number, serviceId: number): void {
-  const url = liveLeaveURL(site, networkId, serviceId)
+/** sendPlaybackLeaveHint は離脱先 URL へ一度だけ fire-and-forget の POST を送る。 */
+export function sendPlaybackLeaveHint(url: string): void {
   if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
     // 本文は無い（宛先の URL が全ての情報を持つ）。戻り値の false（キュー拒否）は
     // 無視する --- 送れなくても idle GC が従来どおり回収する
@@ -405,28 +405,19 @@ export function sendLiveLeaveHint(site: string, networkId: number, serviceId: nu
   })
 }
 
+/** sendLiveLeaveHint はライブ視聴の離脱ヒントを送る。 */
+export function sendLiveLeaveHint(site: string, networkId: number, serviceId: number): void {
+  sendPlaybackLeaveHint(liveLeaveURL(site, networkId, serviceId))
+}
+
 /** sendChaseLeaveHint は sendLiveLeaveHint と同じ fire-and-forget 契約で追っかけを離れる。 */
 export function sendChaseLeaveHint(site: string, recordingId: number, offsetSeconds?: number): void {
-  const url = chaseLeaveURL(site, recordingId, offsetSeconds)
-  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-    navigator.sendBeacon(url)
-    return
-  }
-  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
-    // 離脱時の失敗は idle GC に任せる
-  })
+  sendPlaybackLeaveHint(chaseLeaveURL(site, recordingId, offsetSeconds))
 }
 
 /** sendOriginalVODLeaveHint は原本 VOD の共有セッションに離脱を知らせる。 */
 export function sendOriginalVODLeaveHint(site: string, recordingId: number, offsetSeconds?: number): void {
-  const url = originalVODLeaveURL(site, recordingId, offsetSeconds)
-  if (typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
-    navigator.sendBeacon(url)
-    return
-  }
-  void fetch(url, { method: 'POST', keepalive: true }).catch(() => {
-    // 離脱時の失敗は idle GC に任せる
-  })
+  sendPlaybackLeaveHint(originalVODLeaveURL(site, recordingId, offsetSeconds))
 }
 
 /**

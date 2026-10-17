@@ -90,7 +90,7 @@ describe('useOffsetSession', () => {
     expect(result.current.startPositionSeconds).toBeCloseTo(0.75)
     expect(result.current.resumePlaybackPendingRef.current).toBe(true)
     expect(onRecordingPositionChange).toHaveBeenCalledWith(20.75)
-    expect(onLeave).toHaveBeenCalledWith(5)
+    expect(onLeave).not.toHaveBeenCalled()
   })
 
   it('保存位置を秒に切り下げた offset で始め、端数をセッション起点から渡す', () => {
@@ -126,7 +126,21 @@ describe('useOffsetSession', () => {
     expect(result.current.startPositionSeconds).toBe(0)
     expect(result.current.sessionKey).not.toBe(previousSession)
     expect(result.current.resumePlaybackPendingRef.current).toBe(true)
-    expect(onLeave).toHaveBeenCalledWith(62)
+    expect(onLeave).not.toHaveBeenCalled()
+  })
+
+  it('同じ offset の再試行だけは URL キーが変わらないため離脱を直接知らせる', () => {
+    const onLeave = vi.fn()
+    const initial = options(
+      { type: 'offset', offsetSeconds: 62 },
+      fakeVideo(false, 10),
+      { identity: 'original-vod', originSeconds: originalVODSessionOriginSeconds, onLeave },
+    )
+    const { result } = renderHook((value: Options) => useOffsetSession(value), { initialProps: initial })
+
+    act(() => result.current.restartAtOffset(62))
+
+    expect(onLeave).toHaveBeenCalledExactlyOnceWith(62)
   })
 
   it('開始意図の変更は同じ hook instance でも現在 offset を置き換える', () => {
