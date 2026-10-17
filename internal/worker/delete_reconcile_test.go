@@ -79,9 +79,9 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 // seedSeekTilesAsset は seek_tiles の active media_assets 行 + ファイルを用意する。
 // 原本の until_encoded 削除は thumbnail と同じく seek_tiles の完備も要求するので、
 // 「派生物が揃っている」ことを作るテストはこれを必ず呼ぶ。
-func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) {
+func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) int64 {
 	t.Helper()
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
+	return seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
 }
 
 // webhookRecorder は webhook 先の httptest サーバが受け取ったイベントを記録する。
@@ -897,6 +897,47 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	}
 }
 
+// 派生アセットの行が残っていても、deleted のサムネイル・シークタイルは完備として数えない。
+func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *testing.T) {
+	for _, kind := range []string{db.AssetKindThumbnail, db.AssetKindSeekTiles} {
+		t.Run(kind, func(t *testing.T) {
+			pool := setupTestPool(t)
+			ctx := context.Background()
+			mediaDir := t.TempDir()
+			recordingID := insertTestRecording(t, pool)
+			originalRelPath := "orig/deleted-" + kind + ".m2ts"
+			assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
+			profile := "h264"
+			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/deleted-"+kind+".mp4", []byte("mp4"))
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/deleted-"+kind+".jpg", []byte("jpg"))
+			tilesID := seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/deleted-"+kind+"-tiles.jpg")
+			markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
+			assertUntilEncodedQualifies(t, pool, assetID, true)
+
+			target := thumbnailID
+			if kind == db.AssetKindSeekTiles {
+				target = tilesID
+			}
+			if _, err := pool.Exec(ctx,
+				"UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1", target); err != nil {
+				t.Fatalf("marking %s deleted: %v", kind, err)
+			}
+			assertUntilEncodedQualifies(t, pool, assetID, false)
+
+			w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+			if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
+				t.Fatalf("Work() error: %v", err)
+			}
+			if got := assetState(t, pool, assetID); got != "active" {
+				t.Fatalf("original state = %q, want active (%s is deleted)", got, kind)
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(originalRelPath))); err != nil {
+				t.Errorf("original file was removed while its %s was deleted: %v", kind, err)
+			}
+		})
+	}
+}
+
 func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
@@ -1580,7 +1621,7 @@ func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID in
 // M4-14 は新規 ingest 分だけ rel_path に "sites/{site}/" を前置し、既存行は
 // 移行しない（マイグレーションを書かない）ため、本番のメディアディレクトリは
 // 前置あり ("sites/tokyo/...") と前置なし ("legacy/...") が混在するツリーに
-// なる。walkMediaFiles（internal/worker/delete_reconcile.go）は catalog.Subdir
+// なる。walkMediaFiles（internal/worker/storage_audit.go）は catalog.Subdir
 // の完全一致だけを SkipDir する汎用的な Walk で、site 由来の階層を特別扱いして
 // いないので理屈上は無関係のはずだが、将来 catalog.Subdir の判定が
 // strings.HasPrefix 等に緩められた場合に "sites/" を誤って引っ掛ける退行を防ぐ
@@ -1832,6 +1873,68 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: regularFile}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("Work() error = nil, want error for a non-directory media dir")
+	}
+}
+
+// 1 パスの孤児監査と実体無し監査は、同じ walk 結果を共有する。
+// 壊し方: reconcileMissingAssets に独自の walkMediaFiles 呼び出しを足すと、2 回で失敗する。
+func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	visibleRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, visibleRecordingID, "present/original.m2ts", []byte("present"))
+
+	missingRecordingID := insertTestRecordingWithEventID(t, pool, 2)
+	missingAssetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: missingRecordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "missing/original.m2ts",
+		SizeBytes:   int64(len("missing")),
+	})
+	if err != nil {
+		t.Fatalf("seeding missing original media_asset: %v", err)
+	}
+
+	orphanRelPath := "orphan/original.m2ts"
+	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(orphanRelPath))
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
+		t.Fatalf("creating orphan directory: %v", err)
+	}
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
+		t.Fatalf("writing orphan file: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatalf("aging orphan file: %v", err)
+	}
+
+	var walks int
+	originalHook := beforeWalkMediaFiles
+	beforeWalkMediaFiles = func() { walks++ }
+	t.Cleanup(func() { beforeWalkMediaFiles = originalHook })
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: time.Hour}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if walks != 1 {
+		t.Fatalf("walkMediaFiles calls = %d, want 1", walks)
+	}
+	var missingCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", missingAssetID).Scan(&missingCount); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if missingCount != 1 {
+		t.Errorf("missing_media_assets count = %d, want 1 (missing audit must inspect the shared walk)", missingCount)
+	}
+	var orphanCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", orphanRelPath).Scan(&orphanCount); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if orphanCount != 1 {
+		t.Errorf("orphan_files count = %d, want 1 (orphan audit must inspect the shared walk)", orphanCount)
 	}
 }
 

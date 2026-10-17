@@ -52,7 +52,7 @@ const MirakcSiteNameMaxLen = 53
 // reservedSiteNames は実在する予約ディレクトリと衝突する site 名。
 //
 // `catalog/`（internal/catalog.Subdir）は削除 reconcile の孤児回収
-// （internal/worker/delete_reconcile.go の walkMediaFiles）と rescue スキャン
+// （internal/worker/storage_audit.go の walkMediaFiles）と rescue スキャン
 // （internal/catalog/rescue_scan.go）が SkipDir する対象で、`thumbnails/` は
 // サムネイルの名前空間（internal/worker/thumbnail.go）。M4-14 が `rel_path` に
 // `{site}/` を前置するようになると、この 2 つと衝突する site 名はそのサイトの

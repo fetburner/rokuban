@@ -862,7 +862,7 @@ func bytesEqual(a, b []byte) bool {
 //
 // workerExecWaitDelay が実際に経過するのを待つ必要があるため数秒かかる。
 func TestCommandOutput_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
-	setShortWorkerExecWaitDelay(t)
+	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()

@@ -26,7 +26,7 @@ DB が輻輳しても止まらない処理と、DB に依存し続ける処理�
 
 実行中の ingest は、転送中のバイト I/O だけを見れば DB の外側にある。ジョブ全体は DB に依存する。開始時の参照、進捗の書き込み、公開点であるコミットが必要になる。
 
-4 分の slice ごとに temp と SHA-256 checkpoint を保存し、同じ River job を snooze して再開する。プロセス死では JobRescuer が同じ job を回収する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest.md) §5.3）。
+4 分の slice ごとに temp と SHA-256 checkpoint を保存し、同じ River job を snooze して再開する。プロセス死では JobRescuer が同じ job を回収する。DB 障害で接続やコミットを失えば、録画バッファに record が残り、再試行できる範囲では収束する（詳細は [ingest](../recording/ingest-retry.md) §5.3）。
 
 <details><summary>根拠</summary>
 

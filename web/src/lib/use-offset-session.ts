@@ -32,6 +32,7 @@ type UseOffsetSessionOptions = {
   videoRef: RefObject<HTMLVideoElement | null>
   /** 録画秒からセッション offset への起点写像。配信元ごとの規則は呼び出し元が渡す。 */
   originSeconds: (offsetSeconds: number) => number
+  /** URL が変わらない同 offset の再試行で離脱を知らせる。offset 変更時は URL key 側が送る。 */
   onLeave: (offsetSeconds: number) => void
   onSourceRangeExit?: (recordingSeconds: number, wasPlaying: boolean) => boolean
   onRecordingPositionChange?: (recordingSeconds: number) => void
@@ -273,23 +274,6 @@ export function useOffsetSession({
     const origin = originSecondsRef.current(current.offsetSeconds)
     return Math.max(0, current.startRecordingSeconds - origin)
   }, [])
-
-  // 再生元の切替・offset の変更・開始意図の変更で古い HLS セッションを離れる。
-  // pagehide / hidden でも同じ offset の離脱ヒントを送る。
-  useEffect(() => {
-    if (!active || recordingId === undefined) return
-    const leave = () => onLeaveRef.current(currentState.offsetSeconds)
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') leave()
-    }
-    window.addEventListener('pagehide', leave)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      window.removeEventListener('pagehide', leave)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      leave()
-    }
-  }, [active, currentState.identity, currentState.offsetSeconds, recordingId])
 
   const sessionStartSeconds = originSeconds(currentState.offsetSeconds)
   const startPositionSeconds = currentState.startRecordingSeconds === null

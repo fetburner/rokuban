@@ -13,7 +13,7 @@
 - 切り替えの検知: `LivePlayer` が `serviceId` prop の変化を effect の cleanup で見る
 - probe の中断: in-flight の `fetch` を `AbortController` で中断する
 - 再生部品の破棄: hls.js の `destroy()` と `<video>` の `src` 解除
-- ヒントの送信: `POST .../live/leave`、`sendLiveLeaveHint`
+- ヒントの送信: `POST .../live/leave`、`sendPlaybackLeaveHint`
 
 </details>
 

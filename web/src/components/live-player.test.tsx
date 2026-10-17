@@ -1,12 +1,117 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { ComponentProps } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LivePlayer } from '@/components/live-player'
+import { LivePlayer as LivePlayerComponent } from '@/components/live-player'
 import { FRAME_SECONDS } from '@/lib/chapters'
 import { liveStallTimeoutMs, originalVODSessionOriginSeconds } from '@/lib/live'
 import type { LiveDiagnostics, StallHandling } from '@/lib/live'
 import { saveChapterEditPlaybackRate, savePlaybackRate } from '@/lib/playback-position'
+
+type LiveProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'live' }>
+type ChaseProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'chase' }>
+type OriginalVODProps = Extract<ComponentProps<typeof LivePlayerComponent>, { mode: 'original-vod' }>
+type LivePlayerTestProps =
+  | (Partial<Omit<LiveProps, 'mode'>> & { mode?: 'live' })
+  | (Partial<Omit<ChaseProps, 'mode'>> & { mode: 'chase' })
+  | (Partial<Omit<OriginalVODProps, 'mode'>> & { mode: 'original-vod' })
+
+/** LivePlayer は各モードの必須 props を fixture の既定値で補う。 */
+function LivePlayer(props: LivePlayerTestProps) {
+  const site = props.site ?? 'default'
+  if (props.mode === undefined || props.mode === 'live') {
+    const completeProps = {
+      ...props,
+      mode: 'live' as const,
+      site,
+      networkId: props.networkId ?? 0,
+      serviceId: props.serviceId ?? 1024,
+    } satisfies ComponentProps<typeof LivePlayerComponent>
+    return <LivePlayerComponent {...completeProps} />
+  }
+  if (props.mode === 'chase') {
+    const completeProps = {
+      ...props,
+      mode: 'chase' as const,
+      site,
+      recordingId: props.recordingId ?? 42,
+      chaseTimeline: props.chaseTimeline ?? {
+        chaseHeadOffsetSeconds: 0,
+        plannedSeconds: 60,
+        recordedSeconds: 60,
+      },
+    } satisfies ComponentProps<typeof LivePlayerComponent>
+    return <LivePlayerComponent {...completeProps} />
+  }
+
+  if (props.mode === 'original-vod') {
+    const completeProps = {
+      ...props,
+      mode: 'original-vod' as const,
+      site,
+      recordingId: props.recordingId ?? 42,
+      recordingDurationMs: props.recordingDurationMs ?? 60_000,
+    } satisfies ComponentProps<typeof LivePlayerComponent>
+    return <LivePlayerComponent {...completeProps} />
+  }
+  throw new Error(`Unknown LivePlayer test mode: ${String(props.mode)}`)
+}
+
+describe('LivePlayer のモード別 props', () => {
+  it('各モードに必要な資源キーと時間情報を要求する', () => {
+    const modeLessChaseProps = { recordingId: 42 } as const
+    // @ts-expect-error mode を省略できる helper props は live のみ
+    const invalidModeLessHelperProps: LivePlayerTestProps = modeLessChaseProps
+
+    const missingChaseTimeline = { mode: 'chase', site: 'default', recordingId: 42 } as const
+    // @ts-expect-error chase は時間軸が必須
+    const invalidChase: ComponentProps<typeof LivePlayerComponent> = missingChaseTimeline
+
+    const missingChaseRecordingId = {
+      mode: 'chase',
+      site: 'default',
+      chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 60 },
+    } as const
+    // @ts-expect-error chase は録画 ID が必須
+    const invalidChaseIdentity: ComponentProps<typeof LivePlayerComponent> = missingChaseRecordingId
+
+    const missingLiveSite = { mode: 'live', networkId: 1, serviceId: 2 } as const
+    // @ts-expect-error site は全モードで必須
+    const invalidLiveSite: ComponentProps<typeof LivePlayerComponent> = missingLiveSite
+
+    const missingLiveService = { mode: 'live', site: 'default', networkId: 1 } as const
+    // @ts-expect-error live は serviceId が必須
+    const invalidLiveIdentity: ComponentProps<typeof LivePlayerComponent> = missingLiveService
+
+    const liveWithRecordingKey = {
+      mode: 'live',
+      site: 'default',
+      networkId: 1,
+      serviceId: 2,
+      recordingId: 42,
+    } as const
+    // @ts-expect-error live に recordingId は渡せない
+    const invalidLive: ComponentProps<typeof LivePlayerComponent> = liveWithRecordingKey
+
+    const missingOriginalDuration = { mode: 'original-vod', site: 'default', recordingId: 42 } as const
+    // @ts-expect-error original-vod は原本の実尺が必須
+    const invalidOriginalVOD: ComponentProps<typeof LivePlayerComponent> = missingOriginalDuration
+
+    const missingOriginalRecordingId = { mode: 'original-vod', site: 'default', recordingDurationMs: 60_000 } as const
+    // @ts-expect-error original-vod は録画 ID が必須
+    const invalidOriginalIdentity: ComponentProps<typeof LivePlayerComponent> = missingOriginalRecordingId
+
+    expect(invalidModeLessHelperProps).toEqual(modeLessChaseProps)
+    expect(invalidChase.mode).toBe('chase')
+    expect(invalidChaseIdentity.mode).toBe('chase')
+    expect(invalidLiveSite.mode).toBe('live')
+    expect(invalidLiveIdentity.mode).toBe('live')
+    expect(invalidLive.mode).toBe('live')
+    expect(invalidOriginalVOD.mode).toBe('original-vod')
+    expect(invalidOriginalIdentity.mode).toBe('original-vod')
+  })
+})
 
 function openPlaybackSettingsSubmenu(label: '画質' | '音声') {
   if (!screen.queryByRole('menu', { name: '再生設定' })) {
@@ -152,6 +257,18 @@ afterEach(() => {
   hlsMockState.constructorArgs.length = 0
   hlsMockState.supported = true
 })
+
+/** stubBeacon は `navigator.sendBeacon` を差し替え、送信先 URL を記録する。 */
+function stubBeacon(): string[] {
+  const sent: string[] = []
+  vi.stubGlobal('navigator', {
+    sendBeacon: (url: string) => {
+      sent.push(url)
+      return true
+    },
+  })
+  return sent
+}
 
 describe('LivePlayer の状態遷移', () => {
   it('読み込み中は "読み込み中…" を出し、video は invisible', async () => {
@@ -1188,6 +1305,34 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBe(0)
     })
 
+    it.each([
+      // offset 付きは hls の startPosition へ戻すので、onLoadedMetadata では何も報告しない。
+      ['offset 付き', 9101, { type: 'offset' as const, offsetSeconds: 30 }, [] as number[]],
+      // 保存位置へ戻すときは、戻した後の 1 回だけ報告する（戻す前の 7 は出ない）。
+      ['保存位置へ戻す', 9102, undefined, [0]],
+    ])('追っかけは保存位置へ戻す前の位置を報告しない（%s）', async (_name, recordingId, start, expected) => {
+      // 戻す前の位置を報告すると、親の再試行回数の数え直しが誤って走る。
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
+      const reported: number[] = []
+      render(
+        <LivePlayer
+          mode="chase"
+          site="default"
+          recordingId={recordingId}
+          offsetSessionStart={start}
+          onRecordingPositionChange={(seconds) => reported.push(seconds)}
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 7, writable: true, configurable: true })
+      reported.length = 0
+
+      fireEvent.loadedMetadata(video)
+
+      expect(reported).toEqual(expected)
+    })
+
     it('画質を切り替えても追っかけの再生位置を持ち越す（offset 付き）', async () => {
       // offset 付きで見るのは、**復元 effect が profile で立ち直る変異が
       // 決定的に落ちる**ようにするためである。offset 付きの追っかけは先頭が
@@ -1304,7 +1449,7 @@ describe('LivePlayer の状態遷移', () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       const props = { mode: 'chase', site: 'default', recordingId: 84 } as const
       const { rerender } = render(
-        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-720p" />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 40_000 }} profile="live-720p" />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
       const video = document.querySelector('video')!
@@ -1314,9 +1459,9 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBe(0)
       video.currentTime = 12
 
-      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 30_000 }} profile="live-720p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 30_000 }} profile="live-720p" />)
       expect(hlsMockState.instances).toHaveLength(1)
-      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 30_000 }} profile="live-480p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 30_000 }} profile="live-480p" />)
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(hlsMockState.constructorArgs[1]).toEqual([{ startPosition: 12 }])
       // 最終値だけでなく、途中で更新後のサーバー位置（30）へ seek しないことも見る
@@ -1343,11 +1488,11 @@ describe('LivePlayer の状態遷移', () => {
       const { resolve } = deferredFetch()
       const props = { mode: 'chase', site: 'default', recordingId: 85 } as const
       const { rerender } = render(
-        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-720p" />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 40_000 }} profile="live-720p" />,
       )
       const video = document.querySelector('video')!
       Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
-      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 40_000 }} profile="live-480p" />)
+      rerender(<LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 40_000 }} profile="live-480p" />)
       resolve(new Response('', { status: 200 }))
 
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -1467,7 +1612,7 @@ describe('LivePlayer の状態遷移', () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       const props = { mode: 'original-vod' as const, site: 'default', recordingId: 72, profile: 'hd' }
       const { rerender } = render(
-        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 23_500 }} />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 23_500 }} />,
       )
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
 
@@ -1483,7 +1628,7 @@ describe('LivePlayer の状態遷移', () => {
 
       // 同じ録画の保存位置更新は既存セッションを動かさないが、明示 retry には使う。
       rerender(
-        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position', positionMs: 31_500 }} />,
+        <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 31_500 }} />,
       )
       expect(hlsMockState.instances).toHaveLength(1)
       const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
@@ -1865,18 +2010,6 @@ describe('LivePlayer の状態遷移', () => {
    * ⑧が実ブラウザで見る）。
    */
   describe('離脱ヒント（issue #191）', () => {
-    /** stubBeacon は `navigator.sendBeacon` を差し替え、送信先 URL を記録する。 */
-    function stubBeacon(): string[] {
-      const sent: string[] = []
-      vi.stubGlobal('navigator', {
-        sendBeacon: (url: string) => {
-          sent.push(url)
-          return true
-        },
-      })
-      return sent
-    }
-
     /** playing は probe が通ってプレイヤーが立ち上がるまで待つ（空虚な成功を防ぐ）。 */
     async function waitForPlaying() {
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
@@ -2173,7 +2306,7 @@ describe('LivePlayer / 画質（プロファイル）切替（issue #869）', ()
     if (playing) video.dispatchEvent(new Event('playing'))
 
     rerender(
-      <LivePlayer mode="chase" site="default" networkId={0} serviceId={1024} recordingId={501} offsetSessionStart={{ type: 'offset', offsetSeconds: 180 }} />,
+      <LivePlayer mode="chase" site="default" recordingId={501} offsetSessionStart={{ type: 'offset', offsetSeconds: 180 }} />,
     )
     await waitFor(() => expect(probeURLs()).toHaveLength(2))
     expect(probeURLs()[1]).toContain('/recordings/501/chase/offset/180/')
@@ -2419,6 +2552,34 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
 
+  it('live から同じ chase に戻ると軸位置とキーシークを先頭から始める', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const chaseProps = {
+      mode: 'chase' as const,
+      site: 'default',
+      recordingId: 510,
+      chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 60 },
+      offsetSessionStart: { type: 'beginning' as const },
+    }
+    const { rerender } = render(<LivePlayer {...chaseProps} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuenow', '25')
+
+    rerender(<LivePlayer mode="live" site="default" networkId={1} serviceId={9001} />)
+    rerender(<LivePlayer {...chaseProps} />)
+
+    const returnedSlider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(returnedSlider).toHaveAttribute('aria-valuenow', '0')
+    fireEvent.keyDown(returnedSlider, { key: 'ArrowRight' })
+    expect(returnedSlider).toHaveAttribute('aria-valuenow', '10')
+  })
+
   it('video のページキーは追っかけ軸を動かし、0〜9 は割合 seek に使わない', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)
@@ -2533,7 +2694,7 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
         recordingId: 511,
         chaseTimeline,
       }
-      render(<LivePlayer {...props} offsetSessionStart={{ type: 'offset', offsetSeconds: 5 }} />)
+      render(<LivePlayer {...props} offsetSessionStart={{ type: 'offset' as const, offsetSeconds: 5 }} />)
     await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
     expect(playlistRequests(fetchMock)[0]).toContain('/chase/offset/5/playlist.m3u8')
 
@@ -2553,6 +2714,33 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
       fireEvent.pointerUp(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
       expect(playlistRequests(fetchMock)[1]).toContain('/chase/offset/3/playlist.m3u8')
+    })
+
+    it('範囲外へシークして張り直したら、旧 offset の leave URL へ POST する', async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
+      vi.stubGlobal('fetch', fetchMock)
+      const sent = stubBeacon()
+      render(
+        <LivePlayer mode="chase" site="default" recordingId={511} chaseTimeline={chaseTimeline}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 5 }} />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      expect(sent).toEqual([])
+
+      const slider = screen.getByRole('slider', { name: 'シークバー' })
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'seekable', {
+        value: { length: 1, start: () => 0, end: () => 10 },
+        configurable: true,
+      })
+      Object.defineProperty(slider, 'getBoundingClientRect', {
+        value: () => ({ x: 0, y: 0, left: 0, top: 0, right: 600, bottom: 24, width: 600, height: 24, toJSON: () => ({}) }),
+      })
+      fireEvent.pointerDown(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+      fireEvent.pointerUp(slider, { pointerId: 2, pointerType: 'mouse', clientX: 30, clientY: 12 })
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+
+      expect(sent).toEqual(['/api/sites/default/recordings/511/chase/offset/5/leave'])
     })
 
     it('変換済みの端より先で録画済み範囲内なら、内部で選んだ秒へ張り直す', async () => {

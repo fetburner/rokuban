@@ -43,7 +43,7 @@ import (
 //
 // 部分ファイルは資産として commit せず、エッジの record も消さない（purge すると
 // content path を共有する後継録画のファイルまで消える）。理由は
-// docs/recording/ingest.md §5.3 層 3。
+// docs/recording/ingest-retry.md §5.3 層 3。
 var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally")
 
 // errIngestSHA256Pending は、転送済みの temp を残して SHA-256 の再確認を snooze する内部制御エラー。
@@ -887,7 +887,7 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // unlink 前後の中間状態）はまだ 'deleted' ではない --- unlink 前・unlink
 // 失敗中は実ファイルが残っており、かつ resolveUnqualifiedDeletingAsset が
 // ファイルの現存を確認した上でその行を active に戻しうる
-// （delete_reconcile.go）ため、'deleting' の rel_path を ingest が上書きすると
+// （delete_execute.go）ため、'deleting' の rel_path を ingest が上書きすると
 // 「DB は active、実体は別番組」が再生産される。したがって 'deleting' も
 // 'active' と同じく衝突として扱う。
 func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string) (int64, error) {

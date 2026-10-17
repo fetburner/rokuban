@@ -364,7 +364,7 @@ function chasePlaylistURLs(): string[] {
 /**
  * leaveHintURLs は離脱ヒント（issue #191）が飛んだ宛先の一覧。
  *
- * jsdom には `navigator.sendBeacon` が無いので、`sendLiveLeaveHint` は
+ * jsdom には `navigator.sendBeacon` が無いので、`sendPlaybackLeaveHint` は
  * `keepalive` つきの POST にフォールバックする --- つまりこの fetch モックに
  * 現れる（beacon 経路そのものは `components/live-player.test.tsx` が
  * 差し替えた `sendBeacon` で、実ブラウザでの到達は `web/e2e/live.mjs` ⑧が見る）。

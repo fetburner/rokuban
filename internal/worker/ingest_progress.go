@@ -16,7 +16,7 @@ import (
 //
 // 秒オーダーにしているのは、この観測の用途が「止まっているのか進んでいるのか」
 // の判別だけだから。ingest の同時実行数は mirakc サイト単位で 1〜2 にキャップ
-// されている（docs/recording/ingest.md §5.4）ので、この頻度でも DB への書き込みは
+// されている（docs/recording/ingest-followup.md §5.4）ので、この頻度でも DB への書き込みは
 // 録画 1 本あたり間引きの秒 0.5 行に、接続断ごとの flush 1 行を足した量にしかならない。
 //
 // 上限は既定のストール検知（config.ingest.stall_timeout の既定値 30 秒）より
@@ -118,7 +118,7 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 // written は**このジョブが扱う temp の先頭からの累計**で、ジョブ内リトライ
 // （層 1、Range 再開）だけでなくプロセス死後の replay（層 2）も跨いで積み上がる。
 // 中身が悪いと確定して temp を消した次の試行だけは 0 から始まる
-// （docs/recording/ingest.md §5.3）。
+// （docs/recording/ingest-retry.md §5.3）。
 type progressWriter struct {
 	w       io.Writer
 	written int64

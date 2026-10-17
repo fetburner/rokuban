@@ -14,6 +14,8 @@
 --   * 録画単位: view `encodable_recordings`（ごみ箱でない・原本が active）
 --   * プロファイル単位: 関数 `encodable_profile(rec_id, profile, known_profiles,
 --     cut_profiles)`（空でない・現在の設定にある・cut なら確認済み）
+--   * 試行上限: 関数 `encode_attempts_exhausted(rec_id, profile, attempt_limit)`
+--     （failed かつ domain attempt 数が上限以上）
 --   * 作り直し: view `unsatisfied_encode_rebuilds`（要求行のうち、押した時点の keep と
 --     一致する凍結区間の active な encoded がまだ無いもの。ごみ箱・原本が active でない
 --     録画を含まない）。cut の確認済み条件は掛けない
@@ -35,9 +37,9 @@
 
 -- ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
 -- 不足（unencoded_desired_profiles）のうち、エンコードしてよいプロファイル
--- （encodable_profile）で、満たされていない作り直し（unsatisfied_encode_rebuilds）も
--- 無い」(recording_id, profile) を返す。作り直しは固定 keep を持つ別経路
--- （ListEncodedAssetRebuildRequests）で投入する。
+-- （encodable_profile）で、満たされていない作り直し（unsatisfied_encode_rebuilds）が
+-- 無く、試行上限に達していない」(recording_id, profile) を返す。作り直しは固定 keep
+-- を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
 -- recording_id が after_recording_id より大きい録画を recording_id 昇順で
 -- row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
 -- 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
@@ -57,15 +59,13 @@
 --     原本がごみ箱を経由せずに消えて取り返せなくなる。確認 UI は cut でない
 --     プロファイルの encoded で再生するので、原本 TS をブラウザで再生できないという
 --     循環もここで断つ
---   * recording_id > after_recording_id = 呼び出し側（EncodeReconcileWorker）が
---     持つ、プロセスローカルな再開位置。前パスが LIMIT ちょうどまで埋まったなら
---     続きから、そうでなければ 0（先頭）から見る。窓が「毎パス先頭から」ではなく
---     「前回止まった位置の続きから」開くことで、候補が一度も減らない最悪条件
---     （録画単位の恒久失敗が LIMIT 件を超える）でも有限パス数で全候補に到達する
---     （EncodeReconcileWorker の doc コメント「窓を回す」）。
+--   * recording_id > after_recording_id = 継続ジョブの引数に保存したページ位置。
+--     LIMIT まで埋まったページは最後の id を次のジョブに渡し、`--once` が worker を
+--     作り直しても続きから見る。短いページでは継続ジョブを投入せず、次の定期パスが
+--     0（先頭）から始まる（EncodeReconcileWorker の doc コメント「候補窓の継続」）。
 --   * recording_id が NULL でなければ、その録画だけに候補を絞る（ingest 完了後や
---     encode_profiles の事後追加で投入する即時パス）。このとき呼び出し側は
---     after_recording_id を 0 にし、全件パスの再開窓とは独立させる
+--     encode_profiles の事後追加で投入する即時パス）。対象パスは after_recording_id
+--     を 0 にし、全件パスの継続カーソルとは独立させる
 --
 -- **known_profiles は non-NULL でなければならない**（encodable_profile の注意。
 -- NULL を渡すと候補が全滅する）。しかも下の ListUnsatisfiableEncodeProfiles の
@@ -89,6 +89,9 @@ WITH missing AS (
       WHERE rebuild.recording_id = u.recording_id
         AND rebuild.profile = u.profile
     )
+    AND NOT encode_attempts_exhausted(
+      u.recording_id, u.profile, sqlc.arg('attempt_limit')::integer
+    )
 ), candidate_recordings AS (
   SELECT DISTINCT recording_id
   FROM missing
@@ -103,10 +106,10 @@ ORDER BY m.recording_id, min(m.ordinality);
 
 -- ListEncodeQueue は encode 待機列を (recording_id, profile) 単位で返す。候補の述語は
 -- ListMissingEncodeProfiles と同じ unencoded_desired_profiles / encodable_recordings /
--- encodable_profile / unsatisfied_encode_rebuilds で、直書きしない（ファイル冒頭
--- 「共有する述語」）。満たされていない作り直しは、active な encoded が残っていても
--- 待機列に入る（active な asset の存在だけでは、押された keep で作られたことを意味しない）。
--- 満たされた要求は入らない。row_limit や after_recording_id は適用しない。
+-- encodable_profile / unsatisfied_encode_rebuilds / encode_attempts_exhausted を使う
+-- （ファイル冒頭「共有する述語」）。満たされていない作り直しは、active な encoded が
+-- 残っていても待機列に入る（active な asset の存在だけでは、押された keep で作られた
+-- ことを意味しない）。満たされた要求は入らない。row_limit や after_recording_id は適用しない。
 --
 -- 作り直しの側には encodable_profile の cut の確認条件（recording_chapter_ownership）を
 -- 掛けず、設定にある cut プロファイルかだけを見る。押した時点の keep が利用者の確認
@@ -115,10 +118,9 @@ ORDER BY m.recording_id, min(m.ordinality);
 -- 各行は「現在の desired で未観測」のプロファイルで、running は試行表に running 行が
 -- ある印（行は queued と running の分割になる）。active な encoded が既にある、
 -- ごみ箱、設定から消えた profile の running 行は pending_profiles か述語で落ちるので
--- 数えない。state = 'failed' で GREATEST(attempt_count, 1) >= attempt_limit の行は
--- worker が開始時に cancel して作られないため除く（beginEncodeAttempt と同じ判定。
--- 旧 worker の attempt_count = 0 は 1 回と数える）。reconcile はこの行も投入する
--- （worker が開始時に捨てる）ので、ここだけが ListMissingEncodeProfiles と食い違う。
+-- 数えない。`encode_attempts_exhausted` は ListMissingEncodeProfiles と同じ判定を
+-- 共有し、上限に達した failed 行だけを両方から落とす。旧 worker の attempt_count = 0
+-- は 1 回と数える。再要求で failed 行が消えると両方の集合に戻る。
 --
 -- name: ListEncodeQueue :many
 WITH pending_profiles AS (
@@ -144,13 +146,9 @@ SELECT
   )::boolean AS running
 FROM pending_profiles m
 JOIN encodable_recordings er ON er.recording_id = m.recording_id
-WHERE NOT EXISTS (
-    SELECT 1 FROM recording_encode_attempts a
-    WHERE a.recording_id = m.recording_id
-      AND a.profile = m.profile
-      AND a.state = 'failed'
-      AND GREATEST(a.attempt_count, 1) >= sqlc.arg('attempt_limit')::int
-  )
+WHERE NOT encode_attempts_exhausted(
+  m.recording_id, m.profile, sqlc.arg('attempt_limit')::integer
+)
 ORDER BY m.recording_id, m.profile;
 
 -- ListEncodedAssetRebuildRequests は reconcile が投入し直す、満たされていない作り直しを

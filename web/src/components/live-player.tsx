@@ -43,13 +43,10 @@ import {
   livePlaylistURL,
   liveStallTimeoutMs,
   originalVODPlaylistURL,
-  originalVODSessionOriginSeconds,
   observeStall,
   probeLivePlaylist,
   readSubtitleVisibility,
-  sendChaseLeaveHint,
-  sendLiveLeaveHint,
-  sendOriginalVODLeaveHint,
+  sendPlaybackLeaveHint,
   supportsNativeHls,
 } from '@/lib/live'
 import {
@@ -68,13 +65,16 @@ import { useDisplayedFrameSeconds } from '@/lib/use-displayed-frame'
 import { useOffsetSession } from '@/lib/use-offset-session'
 import type { OffsetSessionStart } from '@/lib/use-offset-session'
 import { usePlayerFrame } from '@/lib/use-player-frame'
+import { usePlaybackLeave } from '@/lib/use-playback-leave'
 import { cn } from '@/lib/utils'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 import {
-  chasePlaybackTimeline,
-  fixedPlaybackTimeline,
-  liveProgramPlaybackTimeline,
-} from '@/lib/playback-timeline'
+  playbackLeaveURL,
+  playbackModeAxis,
+  playbackSeekTarget,
+  playbackSessionOriginSeconds,
+} from '@/lib/playback-mode'
+import type { PlaybackMode } from '@/lib/playback-mode'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
@@ -84,6 +84,41 @@ const playbackAudioOptions: readonly PlaybackAudioOption[] = [
   { value: 'main', label: '主音声' },
   { value: 'sub', label: '副音声' },
 ]
+
+type PlaybackAxisState = {
+  identity: string
+  positionSeconds: number
+  previewSeconds: number | null
+  hoverSeconds: number | null
+}
+
+function patchPlaybackAxisState(
+  current: PlaybackAxisState,
+  identity: string,
+  initialPositionSeconds: number,
+  patch: Partial<Omit<PlaybackAxisState, 'identity'>>,
+): PlaybackAxisState {
+  const base = current.identity === identity
+    ? current
+    : {
+        identity,
+        positionSeconds: initialPositionSeconds,
+        previewSeconds: null,
+        hoverSeconds: null,
+      }
+  return { ...base, ...patch, identity }
+}
+
+function createPlaybackAxisIdentity(
+  mode: PlaybackMode,
+  site: string,
+  networkId: number | undefined,
+  serviceId: number | undefined,
+  recordingId: number | undefined,
+  offsetSessionKey: string,
+): string {
+  return JSON.stringify([mode, site, networkId, serviceId, recordingId, offsetSessionKey])
+}
 
 /** HlsLike は hls.js の型を静的 import せずに使うための最小限の形。 */
 type HlsLike = {
@@ -195,49 +230,8 @@ function applyNativeAudioTrack(media: HTMLVideoElement, index: number): void {
   }
 }
 
-type LivePlayerProps = {
-  /** live は site/network/service、録画再生は site/recordingId を使う。 */
-  mode?: 'live' | 'chase' | 'original-vod'
-  liveProgram?: {
-    startAt: string
-    endAt: string
-    nowMs: number
-    recordingId?: number
-    recordingStartedAt?: string
-  }
-  onLiveProgramSeek?: (programSeconds: number) => void
-  onStartOver?: () => void
-  onReturnLive?: () => void
-  liveDiagnostics?: string
-  liveNotice?: string
-  site?: string
-  /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
-  networkId?: number
-  /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
-  serviceId?: number
-  /** recordings.id。mode="chase" / "original-vod" のとき必須。 */
-  recordingId?: number
-  /**
-   * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
-   * original-vod の固定タイムラインと視聴済み閾値に使う。`endedAt` が無い録画だけは呼び出し側が
-   * 予定尺で代用する（0 だとシークバーが効かない）。映像より長いときの末尾は 416 の丸めが受ける。
-   */
-  recordingDurationMs?: number
-  /** 原本の時間軸で保存されたチャプター（目盛り・一覧・自動スキップ・編集）。 */
-  chapters?: ChapterSpan[]
-  /** original-vod の確認状態と編集操作。 */
-  chapterSource?: RecordingChaptersSource
-  chapterVersion?: string
-  chapterDetectionPending?: boolean
-  chapterEditing?: boolean
-  onEnterChapterEditing?: () => void
-  chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
-  onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
-  onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
-  onResetChapters?: () => Promise<unknown> | void
-  chapterSavePending?: boolean
-  /** 番組開始と録画ファイル先頭を基準に追っかけバーを描くための時間情報。 */
-  chaseTimeline?: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
+type LivePlayerCommonProps = {
+  site: string
   /**
    * chase playlist / live playlist の画質（`live.profiles` の名前）。省略時は
    * streamer の先頭プロファイル（既定）。
@@ -257,17 +251,10 @@ type LivePlayerProps = {
    * トラックを替えるだけで、playlist の取り直しもセッションの作り直しも起きない。
    */
   audio?: LiveAudioChoice
-  /** original-vod の画質メニュー。1 件以下ならセレクタを隠す。 */
+  /** 各モードの画質メニュー。1 件以下ならセレクタを隠す。 */
   availableProfiles?: readonly { name: string; height?: number; label?: string }[]
   onProfileChange?: (profile: string) => void
   onAudioChange?: (audio: LiveAudioChoice | undefined) => void
-  watched?: boolean
-  watchedPending?: boolean
-  onPutWatched?: () => void
-  onDeleteWatched?: () => void
-  onWatched?: () => void
-  /** 録画 HLS セッションの開始意図。offset の変化後は LivePlayer 内で張り直す。 */
-  offsetSessionStart?: OffsetSessionStart
   /**
    * 最初の読み込みが終わったら再生を始める（ポスターの ▶ や `#chase` で開いた、再生元を替えて続きを
    * 見る、など利用者が再生を求めた後に作られるプレイヤー用）。最初のセッションにだけ効き、
@@ -276,22 +263,6 @@ type LivePlayerProps = {
   autoPlay?: boolean
   /** 詳細ページで再生元の種類が変わっても残る、共有の全画面コンテナ。 */
   fullscreenContainerRef?: RefObject<HTMLElement | null>
-  /** 録画先頭からの現在位置（秒）。再生元を選び直すとき親が持ち越す。 */
-  onRecordingPositionChange?: (seconds: number) => void
-  /**
-   * 今の再生元の範囲の外へのシークを親に委ねる。true なら親が再生元を替えた（このプレイヤーは
-   * 何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。
-   */
-  onSourceRangeExit?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
-  /**
-   * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
-   * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
-   */
-  onRecordingPlaybackError?: (
-    recordingPositionSeconds: number | undefined,
-    wasPlaying: boolean,
-    allowSameSourceRetry?: boolean,
-  ) => boolean | Promise<boolean>
   className?: string
   /**
    * onDiagnostics は遅延・バッファの計器（issue #476）の値を 1 秒ごとに
@@ -323,6 +294,146 @@ type LivePlayerProps = {
    */
   onStalled?: () => StallHandling
 }
+
+type RecordingPlaybackProps = {
+  /** recordings.id。追っかけまたは原本 VOD の録画。 */
+  recordingId: number
+  /** true のあいだ、チャプター編集用の再生速度で再生する。追っかけでは編集 UI を開かない。 */
+  chapterEditing?: boolean
+  /** 録画 HLS セッションの開始意図。offset の変化後は LivePlayer 内で張り直す。 */
+  offsetSessionStart?: OffsetSessionStart
+  /** 録画先頭からの現在位置（秒）。再生元を選び直すとき親が持ち越す。 */
+  onRecordingPositionChange?: (seconds: number) => void
+  /**
+   * 今の再生元の範囲の外へのシークを親に委ねる。true なら親が再生元を替えた（このプレイヤーは
+   * 何もしない）。false なら、このプレイヤーが同じ再生元のまま張り直す。
+   */
+  onSourceRangeExit?: (recordingPositionSeconds: number, wasPlaying: boolean) => boolean
+  /**
+   * 再生元がエラーを返した。位置は一度も再生していないセッションでは undefined（0 秒を
+   * 「明示の位置」として渡さない）。true なら親が再生元を選び直した（エラー表示に落ちない）。
+   */
+  onRecordingPlaybackError?: (
+    recordingPositionSeconds: number | undefined,
+    wasPlaying: boolean,
+    allowSameSourceRetry?: boolean,
+  ) => boolean | Promise<boolean>
+}
+
+type OriginalVODProps = {
+  /**
+   * 原本ファイルの実尺（呼び出し側で求めたファイル先頭から `endedAt` まで）。予定尺 `durationMs` ではない。
+   * 固定タイムラインと視聴済み閾値に使う。映像より長いときの末尾は 416 の丸めが受ける。
+   * `endedAt` が無い録画だけは呼び出し側が予定尺で代用する（0 だとシークバーが効かない）。
+   */
+  recordingDurationMs: number
+  /** 原本の時間軸で保存されたチャプター（目盛り・一覧・自動スキップ・編集）。 */
+  chapters?: ChapterSpan[]
+  /** 原本 VOD の確認状態と編集操作。 */
+  chapterSource?: RecordingChaptersSource
+  chapterVersion?: string
+  chapterDetectionPending?: boolean
+  onEnterChapterEditing?: () => void
+  chapterEditorCommandsRef?: MutableRefObject<ChapterEditorCommands | null>
+  onChapterEditorStatusChange?: (status: ChapterEditorStatus) => void
+  onSaveChapters?: (spans: ChapterSpan[], version: string) => Promise<unknown>
+  onResetChapters?: () => Promise<unknown> | void
+  chapterSavePending?: boolean
+  watched?: boolean
+  watchedPending?: boolean
+  onPutWatched?: () => void
+  onDeleteWatched?: () => void
+  onWatched?: () => void
+}
+
+type LivePlayerProps =
+  | (LivePlayerCommonProps & {
+      mode: 'live'
+      /** SI の networkId。mirakc 合成 service id の組み立てに使う（issue #208）。 */
+      networkId: number
+      /** SI の serviceId。パスに載る前に networkId と合成する（issue #208）。 */
+      serviceId: number
+      liveProgram?: {
+        startAt: string
+        endAt: string
+        nowMs: number
+        recordingId?: number
+        recordingStartedAt?: string
+      }
+      onLiveProgramSeek?: (programSeconds: number) => void
+      onStartOver?: () => void
+      onReturnLive?: never
+      liveDiagnostics?: string
+      liveNotice?: string
+      recordingId?: never
+      recordingDurationMs?: never
+      chaseTimeline?: never
+      offsetSessionStart?: never
+      onRecordingPositionChange?: never
+      onSourceRangeExit?: never
+      onRecordingPlaybackError?: never
+      chapterEditing?: never
+      chapters?: never
+      chapterSource?: never
+      chapterVersion?: never
+      chapterDetectionPending?: never
+      onEnterChapterEditing?: never
+      chapterEditorCommandsRef?: never
+      onChapterEditorStatusChange?: never
+      onSaveChapters?: never
+      onResetChapters?: never
+      chapterSavePending?: never
+      watched?: never
+      watchedPending?: never
+      onPutWatched?: never
+      onDeleteWatched?: never
+      onWatched?: never
+    })
+  | (LivePlayerCommonProps & RecordingPlaybackProps & {
+      mode: 'chase'
+      networkId?: never
+      serviceId?: never
+      /** 番組開始と録画ファイル先頭を基準に追っかけバーを描く時間情報。 */
+      chaseTimeline: Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
+      recordingDurationMs?: never
+      liveProgram?: never
+      onLiveProgramSeek?: never
+      onStartOver?: never
+      /**
+       * 追っかけをやめてライブ配信へ戻す操作。渡さないと、ライブ端の操作は追っかけのまま
+       * 録画済みの端へシークする。
+       */
+      onReturnLive?: () => void
+      liveDiagnostics?: never
+      liveNotice?: never
+      chapters?: never
+      chapterSource?: never
+      chapterVersion?: never
+      chapterDetectionPending?: never
+      onEnterChapterEditing?: never
+      chapterEditorCommandsRef?: never
+      onChapterEditorStatusChange?: never
+      onSaveChapters?: never
+      onResetChapters?: never
+      chapterSavePending?: never
+      watched?: never
+      watchedPending?: never
+      onPutWatched?: never
+      onDeleteWatched?: never
+      onWatched?: never
+    })
+  | (LivePlayerCommonProps & RecordingPlaybackProps & OriginalVODProps & {
+      mode: 'original-vod'
+      networkId?: never
+      serviceId?: never
+      chaseTimeline?: never
+      liveProgram?: never
+      onLiveProgramSeek?: never
+      onStartOver?: never
+      onReturnLive?: never
+      liveDiagnostics?: never
+      liveNotice?: never
+    })
 
 /**
  * observeMediaStall は `lib/live.ts` の `observeStall` に **DOM の観測を渡す**
@@ -362,10 +473,10 @@ function observeMediaStall(
  * 前提にしない --- effect の cleanup で確実に破棄する）。破棄すると即座にセグメント
  * 要求が止まり、あわせて**離脱のヒント**を送る（下の effect）。ヒントはセッションを
  * 止めるのではなく idle 期限を短い猶予まで詰めるだけなので、同じチャンネルを見て
- * いる別の視聴者がいれば何も起きない（`lib/live.ts` の `sendLiveLeaveHint`）。
+ * いる別の視聴者がいれば何も起きない（`lib/live.ts` の `sendPlaybackLeaveHint`）。
  */
 export function LivePlayer({
-  mode = 'live',
+  mode,
   liveProgram,
   onLiveProgramSeek,
   onStartOver,
@@ -417,15 +528,16 @@ export function LivePlayer({
   const frameRef = useRef<HTMLDivElement>(null)
   const hlsRef = useRef<HlsLike | null>(null)
   const isOriginalScrubbingRef = useRef(false)
+  const playbackLeaveIdentity = mode === 'live'
+    ? { mode, site, networkId, serviceId }
+    : { mode, site, recordingId }
   const offsetOriginSeconds = useCallback(
-    (offsetSeconds: number) => isOriginalVOD ? originalVODSessionOriginSeconds(offsetSeconds) : offsetSeconds,
-    [isOriginalVOD],
+    (offsetSeconds: number) => playbackSessionOriginSeconds(mode, offsetSeconds),
+    [mode],
   )
-  const leaveOffsetSession = useCallback((offsetSeconds: number) => {
-    if (site === undefined || recordingId === undefined) return
-    if (isChase) sendChaseLeaveHint(site, recordingId, offsetSeconds)
-    else if (isOriginalVOD) sendOriginalVODLeaveHint(site, recordingId, offsetSeconds)
-  }, [isChase, isOriginalVOD, recordingId, site])
+  const leaveOffsetSession = (offsetSeconds: number) => {
+    sendPlaybackLeaveHint(playbackLeaveURL(playbackLeaveIdentity, offsetSeconds))
+  }
   const {
     offsetSeconds: offsetSessionSeconds,
     sessionStartSeconds,
@@ -442,7 +554,7 @@ export function LivePlayer({
     retry: retryOffsetSession,
   } = useOffsetSession({
     active: isRecordingPlayback,
-    identity: isChase ? 'chase' : isOriginalVOD ? 'original-vod' : 'live',
+    identity: mode,
     recordingId,
     start: offsetSessionStart ?? { type: 'saved-position' },
     videoRef,
@@ -451,6 +563,7 @@ export function LivePlayer({
     onSourceRangeExit,
     onRecordingPositionChange,
   })
+  usePlaybackLeave(playbackLeaveURL(playbackLeaveIdentity, offsetSessionSeconds))
   const hasExplicitChaseStart = isChase && hasExplicitSessionStart
   // 原本 VOD で最後に playlist が取れた offset（録画ごと）。終端付近の 416 を丸める下限。
   const lastGoodOffsetRef = useRef<{ recordingId: number | undefined; offset: number }>({ recordingId, offset: 0 })
@@ -517,23 +630,50 @@ export function LivePlayer({
     recordingDurationMs !== undefined && Number.isFinite(recordingDurationMs) && recordingDurationMs > 0
       ? recordingDurationMs / 1000
       : 0
-  const [chaseHoverSeconds, setChaseHoverSeconds] = useState<number | null>(null)
-  // 追っかけの軸（先頭・録画済み終端・予定終端・先端・最大）はここで 1 回だけ作り、描画もシークもここを読む。
-  const chaseAxis = isChase && chaseTimeline ? chasePlaybackTimeline(chaseTimeline, chaseHoverSeconds) : undefined
-  const chaseHeadOffsetSeconds = chaseAxis?.headSeconds ?? 0
-  const [originalCurrentSeconds, setOriginalCurrentSeconds] = useState(0)
-  const [originalPreviewSeconds, setOriginalPreviewSeconds] = useState<number | null>(null)
-  const [chasePositionState, setChasePositionState] = useState<{
-    recordingId: number | undefined
-    offset: number
-    seconds: number
-  }>({
-    recordingId,
-    offset: offsetSessionSeconds,
-    seconds: chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0),
+  const [playbackAxisState, setPlaybackAxisState] = useState<PlaybackAxisState>({
+    identity: '',
+    positionSeconds: 0,
+    previewSeconds: null,
+    hoverSeconds: null,
   })
-  const [chasePreviewSeconds, setChasePreviewSeconds] = useState<number | null>(null)
-  const [liveHoverSeconds, setLiveHoverSeconds] = useState<number | null>(null)
+  const playbackAxisIdentity = createPlaybackAxisIdentity(
+    mode,
+    site,
+    networkId,
+    serviceId,
+    recordingId,
+    offsetSessionKey,
+  )
+  const hasCurrentPlaybackAxisState = playbackAxisState.identity === playbackAxisIdentity
+  const playbackHoverSeconds = hasCurrentPlaybackAxisState ? playbackAxisState.hoverSeconds : null
+  const playbackAxis = mode === 'live'
+    ? playbackModeAxis({ mode, program: liveProgram, hoverSeconds: playbackHoverSeconds })
+    : mode === 'chase'
+      ? playbackModeAxis({ mode, timeline: chaseTimeline, hoverSeconds: playbackHoverSeconds })
+      : playbackModeAxis({ mode, durationSeconds: originalDurationSeconds })
+  const chaseAxis = playbackAxis?.kind === 'chase' ? playbackAxis : undefined
+  const liveTimelineBar = playbackAxis?.kind === 'live-program' ? playbackAxis : undefined
+  const chaseHeadOffsetSeconds = chaseAxis?.headSeconds ?? 0
+  // 軸上の位置は全モードで head + sessionStartSeconds + media。chase の sessionStartSeconds は offset と
+  // 同じ値、live は 3 項とも 0。
+  const initialAxisPositionSeconds = chaseHeadOffsetSeconds + sessionStartSeconds + (sessionStartPositionSeconds ?? 0)
+  const playbackAxisForRender: PlaybackAxisState = hasCurrentPlaybackAxisState
+    ? playbackAxisState
+    : {
+        identity: playbackAxisIdentity,
+        positionSeconds: initialAxisPositionSeconds,
+        previewSeconds: null,
+        hoverSeconds: null,
+      }
+  if (!hasCurrentPlaybackAxisState) setPlaybackAxisState(playbackAxisForRender)
+  const updatePlaybackAxisState = (patch: Partial<Omit<PlaybackAxisState, 'identity'>>) => {
+    setPlaybackAxisState((current) => patchPlaybackAxisState(
+      current,
+      playbackAxisIdentity,
+      initialAxisPositionSeconds,
+      patch,
+    ))
+  }
   const [originalTilesAvailable, setOriginalTilesAvailable] = useState(false)
   const playAroundStopRef = useRef<number | null>(null)
   const playAroundStopBoundaryMsRef = useRef<number | null>(null)
@@ -609,7 +749,7 @@ export function LivePlayer({
    */
   const originalVODFinalized = useRef(false)
   const saveCurrentPosition = useCallback((video: HTMLVideoElement, keepalive = false) => {
-    if (!isRecordingPlayback || recordingId === undefined || chaseResumePending.current !== null) return
+    if (mode === 'live' || chaseResumePending.current !== null) return
     const globalPosition = video.currentTime + sessionStartSeconds
     const knownFinalDuration = originalVODFinalized.current
       ? originalDurationSeconds || (video.duration + sessionStartSeconds)
@@ -629,25 +769,21 @@ export function LivePlayer({
       return
     }
     void persistPlaybackPosition(recordingId, write, keepalive)
-  }, [isOriginalVOD, isRecordingPlayback, originalDurationSeconds, recordingId, sessionStartSeconds])
+  }, [isOriginalVOD, mode, originalDurationSeconds, recordingId, sessionStartSeconds])
 
   // Shared frame behavior lives here. The playback source supplies its own seek semantics and
   // HLS subtitle-track classification; live has no seek callbacks and chase has no ratio seek.
   const frame = usePlayerFrame(videoRef, frameRef, undefined, {
     fullscreenContainerRef,
-    // commitChaseSeek / commitOriginalSeek は後方の const。usePlayerFrame がコールバックを ref に入れ直し、
+    // commitRecordingSeek は後方の const。usePlayerFrame がコールバックを ref に入れ直し、
     // キー押下（render 後）にだけ呼ぶので、宣言前でも TDZ にならない。
-    onSeekBy: isRecordingPlayback
-      ? (seconds) => {
+    onSeekBy: mode === 'live'
+      ? undefined
+      : (seconds) => {
           const video = videoRef.current
           if (!video) return
-          if (isChase) {
-            commitChaseSeek(chaseHeadOffsetSeconds + offsetSessionSeconds + video.currentTime + seconds)
-          } else if (isOriginalVOD) {
-            commitOriginalSeek(sessionStartSeconds + video.currentTime + seconds)
-          }
-        }
-      : undefined,
+          commitRecordingSeek(chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime + seconds)
+        },
     onSeekToFraction: isOriginalVOD && originalDurationSeconds > 0
       ? (fraction) => {
           commitOriginalSeek(originalDurationSeconds * fraction)
@@ -810,11 +946,11 @@ export function LivePlayer({
     setError(null)
     onDiagnosticsRef.current?.(null)
 
-    const url = isChase
-      ? chasePlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, offsetSessionSeconds)
-      : isOriginalVOD
-        ? originalVODPlaylistURL(site ?? '', recordingId ?? 0, playbackProfile, offsetSessionSeconds)
-        : livePlaylistURL(site ?? '', networkId ?? 0, serviceId ?? 0, playbackProfile)
+    const url = mode === 'chase'
+      ? chasePlaylistURL(site, recordingId, playbackProfile, offsetSessionSeconds)
+      : mode === 'original-vod'
+        ? originalVODPlaylistURL(site, recordingId, playbackProfile, offsetSessionSeconds)
+        : livePlaylistURL(site, networkId, serviceId, playbackProfile)
 
     /**
      * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
@@ -830,7 +966,7 @@ export function LivePlayer({
     ): boolean | Promise<boolean> => {
       if (!isRecordingPlayback) return false
       const position = playedRef.current && media
-        ? (isChase ? offsetSessionSeconds : sessionStartSeconds) + media.currentTime
+        ? sessionStartSeconds + media.currentTime
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
       return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
@@ -874,7 +1010,9 @@ export function LivePlayer({
         chaseResumePending.current = null
         clearStartPosition()
         if (isOriginalVOD) {
-          setOriginalCurrentSeconds(sessionStartSeconds + startAt)
+          // cancelled を見たあとなので、state の identity はこの effect のもの。
+          const positionSeconds = sessionStartSeconds + startAt
+          setPlaybackAxisState((current) => ({ ...current, positionSeconds }))
         }
       }
       if (isOriginalVOD || isChase) {
@@ -1308,11 +1446,7 @@ export function LivePlayer({
         // playback must begin at the first segment of the selected session;
         // the streamer has already applied any recording-relative offset.
         const hls = new Hls(
-          isChase
-            ? { startPosition: startAt ?? 0 }
-            : isOriginalVOD
-              ? { startPosition: startAt ?? 0 }
-              : undefined,
+          isRecordingPlayback ? { startPosition: startAt ?? 0 } : undefined,
         ) as unknown as HlsLike
         hls.subtitleDisplay = true
         // 字幕の表示状態を持ち越す（issue #869）。**hls.js は新しいマニフェストを
@@ -1471,74 +1605,19 @@ export function LivePlayer({
     setMediaPlaying,
   ])
 
-  // 離脱のヒント（issue #191）。**再生を担っているのはこのコンポーネントだけ**
-  // なので、その生存（= このチャンネルを見ている間）にヒントの送信を紐づける。
-  //
-  // **probe の effect とは分ける。** あちらは `offsetSessionKey` にも依存しており、
-  // 同居させると「再読み込み」ボタンのたびに離脱ヒントが飛ぶ（直後の probe が
-  // 期限を戻すので実害は無いが、`rokuban_live_leave_hints_total` が離脱以外の
-  // 数を数えることになり、idle GC 回収数と対で読めなくなる）。
-  //
-  // 発火点は 2 系統:
-  //
-  //   - **cleanup**: チャンネル切り替え・再生停止・画面遷移（アンマウント）。
-  //     `pages/live.tsx` は切り替え時に `playingKey` を落として
-  //     `LivePlayer` を外すので、切り替えはここを必ず通る
-  //   - **`pagehide` / `visibilitychange`（hidden）**: タブ・ウィンドウを閉じる、
-  //     別アプリへ切り替える等。**`unload` は使わない** --- モバイル Safari では
-  //     発火せず（bfcache のため）、`pagehide` が唯一届く終端イベントである。
-  //     `visibilitychange` も併せて聴くのは、モバイルではタブが破棄されずに
-  //     hidden のまま放置される経路があり、そこでは `pagehide` すら来ないため。
-  //     **hidden で送っても壊れない**（音声だけ聴き続けている等でセグメント要求が
-  //     続いていれば、その要求が期限を戻す。`lib/live.ts` の
-  //     `sendLiveLeaveHint` 参照）
-  useEffect(() => {
-    if (isRecordingPlayback) return
-    const leave = () => {
-      if (site !== undefined && networkId !== undefined && serviceId !== undefined) {
-        sendLiveLeaveHint(site, networkId, serviceId)
-      }
-    }
-    const onVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') leave()
-    }
-    window.addEventListener('pagehide', leave)
-    document.addEventListener('visibilitychange', onVisibilityChange)
-    return () => {
-      window.removeEventListener('pagehide', leave)
-      document.removeEventListener('visibilitychange', onVisibilityChange)
-      leave()
-    }
-  }, [isRecordingPlayback, site, networkId, serviceId])
-
-  const visibleOriginalSeconds = originalPreviewSeconds ?? originalCurrentSeconds
+  const currentAxisSeconds = liveTimelineBar?.liveEdgeSeconds ??
+    playbackAxisForRender.previewSeconds ?? playbackAxisForRender.positionSeconds
   const originalPlayedFraction = originalDurationSeconds > 0
-    ? Math.max(0, Math.min(1, originalCurrentSeconds / originalDurationSeconds))
+    ? Math.max(0, Math.min(1, playbackAxisForRender.positionSeconds / originalDurationSeconds))
     : 0
-  const chaseCurrentSeconds =
-    chasePositionState.recordingId === recordingId && chasePositionState.offset === offsetSessionSeconds
-      ? chasePositionState.seconds
-      : chaseHeadOffsetSeconds + offsetSessionSeconds + (sessionStartPositionSeconds ?? 0)
   // ドラッグ中・キー操作中だけ位置のプレビューでつまみと時刻を動かす。マウスのホバーは吹き出しだけ。
-  const visibleChaseSeconds = chasePreviewSeconds ?? chaseCurrentSeconds
-  const liveTimelineBar = isLive && liveProgram
-    ? liveProgramPlaybackTimeline({ ...liveProgram, hoverSeconds: liveHoverSeconds }) ?? undefined
-    : undefined
-  const liveProgramDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? 0
-  const liveProgramEdgeSeconds = liveTimelineBar?.liveEdgeSeconds ?? 0
-  const updateOriginalPosition = (video: HTMLVideoElement) => {
-    const seconds = sessionStartSeconds + video.currentTime
-    originalPreviousSecondsRef.current = seconds
-    setOriginalCurrentSeconds(seconds)
+  const playbackDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? playbackAxis?.maxSeconds ?? 0
+  const updateRecordingPosition = (video: HTMLVideoElement) => {
+    if (mode === 'live') return
+    const seconds = chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime
+    if (mode === 'original-vod') originalPreviousSecondsRef.current = seconds
+    updatePlaybackAxisState({ positionSeconds: seconds })
     reportPosition(video.currentTime)
-  }
-  const updateChasePosition = (video: HTMLVideoElement) => {
-    reportPosition(video.currentTime)
-    setChasePositionState({
-      recordingId,
-      offset: offsetSessionSeconds,
-      seconds: chaseHeadOffsetSeconds + offsetSessionSeconds + video.currentTime,
-    })
   }
   /**
    * commitChaseSeek はシークバーの位置（番組開始からの秒）へ移る。録画の先端より後ろは先端で止め、
@@ -1548,18 +1627,17 @@ export function LivePlayer({
    */
   const commitChaseSeek = (timelineSeconds: number) => {
     if (!chaseAxis) return
-    setChasePreviewSeconds(null)
+    updatePlaybackAxisState({ previewSeconds: null })
     startReassertPendingRef.current = false
-    const target = Math.round(
-      Math.max(0, Math.min(chaseAxis.liveEdgeSeconds, timelineSeconds) - chaseHeadOffsetSeconds),
-    )
+    const target = playbackSeekTarget({
+      mode: 'chase',
+      axisSeconds: timelineSeconds,
+      headSeconds: chaseHeadOffsetSeconds,
+      liveEdgeSeconds: chaseAxis.liveEdgeSeconds,
+    })
     const result = seekOffsetSession(target)
     if (result.type === 'source-changed' || result.type === 'unavailable') return
-    setChasePositionState({
-      recordingId,
-      offset: result.offsetSeconds,
-      seconds: chaseHeadOffsetSeconds + target,
-    })
+    updatePlaybackAxisState({ positionSeconds: chaseHeadOffsetSeconds + target })
   }
   const isSelectableLiveProgramPoint = (seconds: number | null): seconds is number => {
     const range = liveTimelineBar?.selectableRange
@@ -1568,14 +1646,14 @@ export function LivePlayer({
   }
   const commitLiveProgramSeek = (seconds: number) => {
     if (!isSelectableLiveProgramPoint(seconds)) return
-    setLiveHoverSeconds(null)
+    updatePlaybackAxisState({ hoverSeconds: null })
     onLiveProgramSeek?.(seconds)
   }
   const commitOriginalSeek = (seconds: number) => {
     if (!videoRef.current || originalDurationSeconds <= 0) return
     pendingBoundarySeekMsRef.current = null
     startReassertPendingRef.current = false
-    const target = Math.max(0, Math.min(originalDurationSeconds, seconds))
+    const target = playbackSeekTarget({ mode: 'original-vod', axisSeconds: seconds, durationSeconds: originalDurationSeconds })
     originalPreviousSecondsRef.current = target
     // 範囲はバッファ済みではなく seekable で判定する。WebKit のネイティブ HLS は ENDLIST の無い
     // playlist の seekable を先端の 3 target duration 手前で止め（④ の状態で time 7.8 / seekable 2）、
@@ -1583,7 +1661,15 @@ export function LivePlayer({
     // バッファは 7.73 まであった。Playwright WebKit で 1 回測定）。だから seekable の外は張り直す。
     const result = seekOffsetSession(target)
     if (result.type === 'source-changed' || result.type === 'unavailable') return
-    setOriginalCurrentSeconds(target)
+    updatePlaybackAxisState({ positionSeconds: target })
+  }
+  const commitRecordingSeek = (seconds: number) => {
+    if (mode === 'chase') {
+      commitChaseSeek(seconds)
+    } else if (mode === 'original-vod') {
+      updatePlaybackAxisState({ previewSeconds: null })
+      commitOriginalSeek(seconds)
+    }
   }
   const seekToOriginalBoundary = (boundaryMs: number) => {
     const media = videoRef.current
@@ -1649,7 +1735,7 @@ export function LivePlayer({
     void media.play().catch(() => {})
   }
   const jumpOriginalChapter = (direction: 'next' | 'prev') => {
-    const target = chapterJumpTarget(chapters ?? [], originalCurrentSeconds, direction)
+    const target = chapterJumpTarget(chapters ?? [], playbackAxisForRender.positionSeconds, direction)
     if (target !== undefined) commitOriginalSeek(chapterBoundaryMsToSeekSeconds(Math.round(target * 1000)))
   }
   // 再開位置は原本時間軸で API に保存する。`profile` は映像品質の選択だけに使う。
@@ -1665,17 +1751,17 @@ export function LivePlayer({
         (loading || error) && 'invisible',
       )}
       onLoadedMetadata={(event) => {
-        if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
         frame.onVolumeChange(event.currentTarget)
-        if (!isRecordingPlayback || recordingId === undefined || !restorePending.current) return
+        // 追っかけは保存位置へ戻す前の位置を報告しない（再試行の上限が効かなくなる）。
+        if (isOriginalVOD) updateRecordingPosition(event.currentTarget)
+        if (mode === 'live' || !restorePending.current) return
         restorePending.current = false
         event.currentTarget.currentTime = sessionStartPositionSeconds ?? 0
-        if (isChase) updateChasePosition(event.currentTarget)
+        updateRecordingPosition(event.currentTarget)
       }}
       onSeeked={(event) => {
-        if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
-        if (isOriginalVOD) updateOriginalPosition(event.currentTarget)
-        if (isChase) updateChasePosition(event.currentTarget)
+        saveCurrentPosition(event.currentTarget)
+        updateRecordingPosition(event.currentTarget)
         const pendingBoundaryMs = pendingBoundarySeekMsRef.current
         if (pendingBoundaryMs !== null) seekToOriginalBoundary(pendingBoundaryMs)
       }}
@@ -1687,15 +1773,11 @@ export function LivePlayer({
         originalPreviousSecondsRef.current = sessionStartSeconds + event.currentTarget.currentTime
       }}
       onTimeUpdate={(event) => {
-        if (isChase) {
-          if (chaseResumePending.current !== null) return
-          updateChasePosition(event.currentTarget)
-          return
-        }
-        if (!isOriginalVOD || recordingId === undefined || chaseResumePending.current !== null) return
+        if (mode === 'live' || chaseResumePending.current !== null) return
         const media = event.currentTarget
         const previousSeconds = originalPreviousSecondsRef.current
-        updateOriginalPosition(media)
+        updateRecordingPosition(media)
+        if (mode !== 'original-vod') return
         const playAroundStop = playAroundStopRef.current
         if (playAroundStop !== null) {
           if (sessionStartSeconds + media.currentTime >= playAroundStop) {
@@ -1731,14 +1813,14 @@ export function LivePlayer({
       }}
       onPlay={() => frame.onPlay()}
       onPause={(event) => {
-        if (isRecordingPlayback) saveCurrentPosition(event.currentTarget)
+        saveCurrentPosition(event.currentTarget)
         frame.onPause()
       }}
       onVolumeChange={(event) => frame.onVolumeChange(event.currentTarget)}
       onEnded={(event) => {
-        if (isOriginalVOD && playAroundStopRef.current !== null) finishPlayAround(event.currentTarget)
+        if (mode !== 'original-vod') return
+        if (playAroundStopRef.current !== null) finishPlayAround(event.currentTarget)
         // ended は ENDLIST 済みの終端でだけ発火する前提で位置を消す。
-        if (!isOriginalVOD || recordingId === undefined) return
         originalVODFinalized.current = true
         saveCurrentPosition(event.currentTarget)
       }}
@@ -1790,221 +1872,208 @@ export function LivePlayer({
     </>
   )
 
-  if (isLive || ((isOriginalVOD || isChase) && recordingId !== undefined)) {
-    const menuProfile = playbackProfile ?? availableProfiles?.[0]?.name ?? ''
-    const profileOptions = availableProfiles?.map(({ name, height, label }) => ({
-      name,
-      label: label ?? (height !== undefined && height > 0 ? `${name}（${height}p）` : name),
-    }))
-    const toolbarSlot = isLive ? (
-      <>
+  const menuProfile = playbackProfile ?? availableProfiles?.[0]?.name ?? ''
+  const profileOptions = availableProfiles?.map(({ name, height, label }) => ({
+    name,
+    label: label ?? (height !== undefined && height > 0 ? `${name}（${height}p）` : name),
+  }))
+  const toolbarSlot = isLive ? (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="size-8 shrink-0 text-white hover:bg-white/15 hover:text-white"
+        aria-label={frame.controls.isPlaying ? '一時停止' : '再生'}
+        onClick={frame.controls.onTogglePlay}
+      >
+        {frame.controls.isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+      </Button>
+      {liveTimelineBar?.canStartOver && (
         <Button
           type="button"
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0 text-white hover:bg-white/15 hover:text-white"
-          aria-label={frame.controls.isPlaying ? '一時停止' : '再生'}
-          onClick={frame.controls.onTogglePlay}
+          data-testid="live-start-over"
+          aria-label="最初から"
+          className="size-10 shrink-0 rounded-full bg-white/15 p-0 text-white hover:bg-white/20 md:h-8 md:w-auto md:px-3"
+          onClick={onStartOver}
         >
-          {frame.controls.isPlaying ? <Pause className="size-4" /> : <Play className="size-4" />}
+          <SkipBack className="size-4" aria-hidden />
+          <span className="hidden md:inline">最初から</span>
         </Button>
-        {liveTimelineBar?.canStartOver && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            data-testid="live-start-over"
-            aria-label="最初から"
-            className="size-10 shrink-0 rounded-full bg-white/15 p-0 text-white hover:bg-white/20 md:h-8 md:w-auto md:px-3"
-            onClick={onStartOver}
-          >
-            <SkipBack className="size-4" aria-hidden />
-            <span className="hidden md:inline">最初から</span>
-          </Button>
-        )}
-        <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-medium text-white">
-          ● ライブ
-        </span>
-        {liveDiagnostics && (
-          <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-xs text-white/80 md:inline">
-            {liveDiagnostics}
-          </span>
-        )}
-      </>
-    ) : isChase && onReturnLive ? (
-      <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
-        ● 録画から再生中
+      )}
+      <span data-testid="live-source-label" className="shrink-0 rounded bg-red-600 px-2 py-1 text-xs font-medium text-white">
+        ● ライブ
       </span>
-    ) : undefined
-    const playbackControls = (
-      <RecordingPlaybackControls
-        recordingId={recordingId}
-        profile={menuProfile}
-        encodedAssets={[]}
-        timeline={chaseAxis ?? liveTimelineBar ?? (isOriginalVOD ? fixedPlaybackTimeline(originalDurationSeconds) : undefined)}
-        className={className}
-        liveNotice={isLive ? liveNotice : undefined}
-        liveEdgeAction={chaseAxis && onReturnLive ? {
-          label: 'ライブへ戻る',
-          title: `ライブ ${formatPlaybackTime(chaseAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
-        } : undefined}
-        toolbarSlot={toolbarSlot}
-        showCenterControls={!isLive}
-        mobileActionsPlacement={isLive ? 'row' : 'overlay'}
-        settingsLabel={isLive ? 'ライブ設定' : '再生設定'}
-        canChangePlaybackRate={!isLive}
-        profileOptions={profileOptions}
-        audioOptions={playbackAudioOptions}
-        audioChoice={playbackAudio}
-        onSelectAudio={(choice) => {
-          if (onAudioChange) onAudioChange(choice)
-          else if (isLive) setLiveAudioOverrideState({ set: true, value: choice })
-          else if (isOriginalVOD) setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
-        }}
-        {...frame.controls}
-        video={<>{video}{playerOverlay}</>}
-        currentSeconds={isLive ? liveProgramEdgeSeconds : isChase ? visibleChaseSeconds : visibleOriginalSeconds}
-        durationSeconds={isLive ? liveProgramDurationSeconds : isChase
-          ? (chaseAxis?.maxSeconds ?? 0)
-          : originalDurationSeconds}
-        playedFraction={originalPlayedFraction}
-        chapters={chapterEditing ? [] : (chapters ?? [])}
-        playingCut={false}
-        chapterEditing={chapterEditing}
-        canEditChapters={
-          isOriginalVOD && !chapterEditing && !chapterDetectionPending && chapterVersion !== undefined &&
-          onSaveChapters !== undefined && onResetChapters !== undefined
+      {liveDiagnostics && (
+        <span data-testid="live-diagnostics" className="hidden shrink-0 whitespace-nowrap text-xs text-white/80 md:inline">
+          {liveDiagnostics}
+        </span>
+      )}
+    </>
+  ) : isChase && onReturnLive ? (
+    <span data-testid="chase-source-label" className="shrink-0 rounded bg-white/15 px-2 py-1 text-xs font-medium text-white">
+      ● 録画から再生中
+    </span>
+  ) : undefined
+  const playbackControls = (
+    <RecordingPlaybackControls
+      recordingId={recordingId}
+      profile={menuProfile}
+      encodedAssets={[]}
+      timeline={playbackAxis}
+      className={className}
+      liveNotice={isLive ? liveNotice : undefined}
+      liveEdgeAction={chaseAxis && onReturnLive ? {
+        label: 'ライブへ戻る',
+        title: `ライブ ${formatPlaybackTime(chaseAxis.recordedEndSeconds, false)}（押すとライブへ戻る）`,
+      } : undefined}
+      toolbarSlot={toolbarSlot}
+      showCenterControls={!isLive}
+      mobileActionsPlacement={isLive ? 'row' : 'overlay'}
+      settingsLabel={isLive ? 'ライブ設定' : '再生設定'}
+      canChangePlaybackRate={!isLive}
+      profileOptions={profileOptions}
+      audioOptions={playbackAudioOptions}
+      audioChoice={playbackAudio}
+      onSelectAudio={(choice) => {
+        if (onAudioChange) onAudioChange(choice)
+        else if (isLive) setLiveAudioOverrideState({ set: true, value: choice })
+        else if (isOriginalVOD) setOriginalVODAudioOverrideState({ recordingId, set: true, value: choice })
+      }}
+      {...frame.controls}
+      video={<>{video}{playerOverlay}</>}
+      currentSeconds={currentAxisSeconds}
+      durationSeconds={playbackDurationSeconds}
+      playedFraction={originalPlayedFraction}
+      chapters={chapterEditing ? [] : (chapters ?? [])}
+      playingCut={false}
+      chapterEditing={chapterEditing}
+      canEditChapters={
+        isOriginalVOD && !chapterEditing && !chapterDetectionPending && chapterVersion !== undefined &&
+        onSaveChapters !== undefined && onResetChapters !== undefined
+      }
+      onEnterChapterEditing={onEnterChapterEditing}
+      onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
+      onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
+      onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
+      seekTilesEnabled={isOriginalVOD}
+      requestSeekTilesOnMount={chapterEditing && isOriginalVOD}
+      onTileImageLoad={() => setOriginalTilesAvailable(true)}
+      onTileImageError={() => {
+        setOriginalTilesAvailable(false)
+      }}
+      commitLastDisplayedPreview={isChase}
+      onScrubPreview={(seconds) => {
+        updatePlaybackAxisState({ previewSeconds: seconds })
+      }}
+      onTimelineHoverChange={(seconds) => {
+        updatePlaybackAxisState({ hoverSeconds: seconds })
+      }}
+      onScrubbingChange={(scrubbing) => {
+        if (isOriginalVOD) isOriginalScrubbingRef.current = scrubbing
+      }}
+      onSeek={(seconds) => {
+        if (isLive) {
+          commitLiveProgramSeek(seconds)
+        } else {
+          commitRecordingSeek(seconds)
         }
-        onEnterChapterEditing={onEnterChapterEditing}
-        onPlayAround={editorSelected === null ? undefined : () => playAround(editorSelected)}
-        onPlayToBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'to')}
-        onPlayFromBoundary={editorSelected === null ? undefined : () => playAround(editorSelected, 'from')}
-        seekTilesEnabled={isOriginalVOD}
-        requestSeekTilesOnMount={chapterEditing && isOriginalVOD}
-        onTileImageLoad={() => setOriginalTilesAvailable(true)}
-        onTileImageError={() => {
-          setOriginalTilesAvailable(false)
-        }}
-        commitLastDisplayedPreview={isChase}
-        onScrubPreview={(seconds) => {
-          if (isChase) setChasePreviewSeconds(seconds)
-          else if (isOriginalVOD) setOriginalPreviewSeconds(seconds)
-        }}
-        onTimelineHoverChange={(seconds) => {
-          if (isChase) setChaseHoverSeconds(seconds)
-          else if (isLive) setLiveHoverSeconds(seconds)
-        }}
-        onScrubbingChange={(scrubbing) => {
-          if (isOriginalVOD) isOriginalScrubbingRef.current = scrubbing
-        }}
-        onSeek={(seconds) => {
-          if (isLive) {
-            commitLiveProgramSeek(seconds)
-          } else if (isChase) {
-            commitChaseSeek(seconds)
-          } else {
-            setOriginalPreviewSeconds(null)
-            commitOriginalSeek(seconds)
-          }
-        }}
-        onLiveEdgeSeek={chaseAxis ? onReturnLive ?? (() => commitChaseSeek(chaseAxis.liveEdgeSeconds)) : undefined}
-        deferKeyboardSeek
-        onSeekPreview={(seconds) => {
-          if (isLive) {
-            setLiveHoverSeconds(isSelectableLiveProgramPoint(seconds) ? seconds : null)
-          } else if (isChase) setChasePreviewSeconds(seconds)
-          else {
-            setOriginalPreviewSeconds(seconds)
-          }
-        }}
-        onSelectProfile={(nextProfile) => {
-          if (onProfileChange) onProfileChange(nextProfile)
-          else if (isOriginalVOD) setOriginalVODProfileOverrideState({ recordingId, value: nextProfile })
-        }}
-        onPreviousChapter={() => jumpOriginalChapter('prev')}
-        onNextChapter={() => jumpOriginalChapter('next')}
-        playbackRate={nativeHlsEventPlaylist ? 1 : activePlaybackRate}
-        playbackRateLocked={nativeHlsEventPlaylist}
-        subtitlesEnabled={originalSubtitlesEnabled}
-        skipEnabled={chapterSkipEnabled}
-        showWatched={isOriginalVOD}
-        watched={watched}
-        watchedPending={watchedPending}
-        onPutWatched={onPutWatched}
-        onDeleteWatched={onDeleteWatched}
-        onRateChange={(rate) => {
-          const media = videoRef.current
-          if (!media || nativeHlsEventRef.current) return
-          const applied = applyPlaybackRate(media, rate, saveActivePlaybackRate)
-          playbackRateRef.current = applied
-          setActivePlaybackRate(applied)
-          saveActivePlaybackRate(applied)
-        }}
-        onToggleSubtitles={() => {
-          const enabled = !originalSubtitlesEnabled
-          if (hlsRef.current) hlsRef.current.subtitleDisplay = enabled
-          const media = videoRef.current
-          if (media) applySubtitleVisibility(media, enabled)
-          setOriginalSubtitlesEnabled(enabled)
-        }}
-        onToggleSkip={(enabled) => {
-          setChapterSkipEnabled(enabled)
-          saveChapterSkip(enabled)
-        }}
-      />
-    )
-    const editorOpen =
-      isOriginalVOD && chapterEditing && chapterVersion !== undefined &&
-      onSaveChapters !== undefined && onResetChapters !== undefined
+      }}
+      onLiveEdgeSeek={chaseAxis ? onReturnLive ?? (() => commitChaseSeek(chaseAxis.liveEdgeSeconds)) : undefined}
+      deferKeyboardSeek
+      onSeekPreview={(seconds) => {
+        if (isLive) {
+          updatePlaybackAxisState({ hoverSeconds: isSelectableLiveProgramPoint(seconds) ? seconds : null })
+        } else updatePlaybackAxisState({ previewSeconds: seconds })
+      }}
+      onSelectProfile={(nextProfile) => {
+        if (onProfileChange) onProfileChange(nextProfile)
+        else if (isOriginalVOD) setOriginalVODProfileOverrideState({ recordingId, value: nextProfile })
+      }}
+      onPreviousChapter={() => jumpOriginalChapter('prev')}
+      onNextChapter={() => jumpOriginalChapter('next')}
+      playbackRate={nativeHlsEventPlaylist ? 1 : activePlaybackRate}
+      playbackRateLocked={nativeHlsEventPlaylist}
+      subtitlesEnabled={originalSubtitlesEnabled}
+      skipEnabled={chapterSkipEnabled}
+      showWatched={isOriginalVOD}
+      watched={watched}
+      watchedPending={watchedPending}
+      onPutWatched={onPutWatched}
+      onDeleteWatched={onDeleteWatched}
+      onRateChange={(rate) => {
+        const media = videoRef.current
+        if (!media || nativeHlsEventRef.current) return
+        const applied = applyPlaybackRate(media, rate, saveActivePlaybackRate)
+        playbackRateRef.current = applied
+        setActivePlaybackRate(applied)
+        saveActivePlaybackRate(applied)
+      }}
+      onToggleSubtitles={() => {
+        const enabled = !originalSubtitlesEnabled
+        if (hlsRef.current) hlsRef.current.subtitleDisplay = enabled
+        const media = videoRef.current
+        if (media) applySubtitleVisibility(media, enabled)
+        setOriginalSubtitlesEnabled(enabled)
+      }}
+      onToggleSkip={(enabled) => {
+        setChapterSkipEnabled(enabled)
+        saveChapterSkip(enabled)
+      }}
+    />
+  )
+  const editorOpen =
+    isOriginalVOD && chapterEditing && chapterVersion !== undefined &&
+    onSaveChapters !== undefined && onResetChapters !== undefined
 
-    // 元 HLS の編集では保存時刻は録画先頭からの ms、編集画面の終端も recordingDurationMs
-    // に固定する。変換中に <video>.duration が伸びても、既存境界や編集可能範囲は動かない。
-    // controls と video は常に同じ木の位置に置き、編集開始で HLS セッションを張り直さない。
-    return (
-      <section
-        className={editorOpen ? 'min-w-0' : 'contents'}
-        aria-label={editorOpen ? 'チャプターを直す' : '再生'}
+  // 元 HLS の編集では保存時刻は録画先頭からの ms、編集画面の終端も recordingDurationMs
+  // に固定する。変換中に <video>.duration が伸びても、既存境界や編集可能範囲は動かない。
+  // controls と video は常に同じ木の位置に置き、編集開始で HLS セッションを張り直さない。
+  return (
+    <section
+      className={editorOpen ? 'min-w-0' : 'contents'}
+      aria-label={editorOpen ? 'チャプターを直す' : '再生'}
+    >
+      <div
+        data-testid={editorOpen ? 'chapter-edit-layout' : undefined}
+        className={editorOpen
+          ? 'grid h-[calc(100dvh-var(--page-header-height,72px)-var(--sticky-banners-height,0px)-var(--bottom-nav-height,0px)-1rem)] min-h-0 grid-cols-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden md:h-auto md:grid-cols-[minmax(0,1.65fr)_minmax(20rem,0.9fr)] md:grid-rows-[auto_auto] md:overflow-visible'
+          : 'contents'}
       >
         <div
-          data-testid={editorOpen ? 'chapter-edit-layout' : undefined}
-          className={editorOpen
-            ? 'grid h-[calc(100dvh-var(--page-header-height,72px)-var(--sticky-banners-height,0px)-var(--bottom-nav-height,0px)-1rem)] min-h-0 grid-cols-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3 overflow-hidden md:h-auto md:grid-cols-[minmax(0,1.65fr)_minmax(20rem,0.9fr)] md:grid-rows-[auto_auto] md:overflow-visible'
-            : 'contents'}
+          data-testid={editorOpen ? 'chapter-edit-player' : undefined}
+          className={editorOpen ? 'min-w-0 md:col-start-1 md:row-start-1' : 'contents'}
         >
-          <div
-            data-testid={editorOpen ? 'chapter-edit-player' : undefined}
-            className={editorOpen ? 'min-w-0 md:col-start-1 md:row-start-1' : 'contents'}
-          >
-            {playbackControls}
-          </div>
-          {editorOpen && (
-            <RecordingChapterEditor
-              key={recordingId}
-              spans={chapters ?? []}
-              version={chapterVersion}
-              detectionPending={false}
-              source={chapterSource}
-              recordingId={recordingId ?? 0}
-              currentSeconds={visibleOriginalSeconds}
-              getDisplayedFrameSeconds={getDisplayedFrameSeconds}
-              isPlaying={frame.mediaPlaying}
-              durationSeconds={originalDurationSeconds}
-              tilesAvailable={originalTilesAvailable}
-              jumpTo={commitOriginalSeek}
-              onBoundaryAction={selectChapterBoundary}
-              onSelectedBoundaryChange={setEditorSelected}
-              onSave={onSaveChapters}
-              onReset={async () => await onResetChapters()}
-              pending={chapterSavePending}
-              commandsRef={resolvedChapterEditorCommandsRef}
-              onStatusChange={chapterEditorStatusChange}
-            />
-          )}
+          {playbackControls}
         </div>
-      </section>
-    )
-  }
-  return null
+        {mode === 'original-vod' && editorOpen && (
+          <RecordingChapterEditor
+            key={recordingId}
+            spans={chapters ?? []}
+            version={chapterVersion}
+            detectionPending={false}
+            source={chapterSource}
+            recordingId={recordingId}
+            currentSeconds={currentAxisSeconds}
+            getDisplayedFrameSeconds={getDisplayedFrameSeconds}
+            isPlaying={frame.mediaPlaying}
+            durationSeconds={originalDurationSeconds}
+            tilesAvailable={originalTilesAvailable}
+            jumpTo={commitOriginalSeek}
+            onBoundaryAction={selectChapterBoundary}
+            onSelectedBoundaryChange={setEditorSelected}
+            onSave={onSaveChapters}
+            onReset={async () => await onResetChapters()}
+            pending={chapterSavePending}
+            commandsRef={resolvedChapterEditorCommandsRef}
+            onStatusChange={chapterEditorStatusChange}
+          />
+        )}
+      </div>
+    </section>
+  )
 }
 
 /**
