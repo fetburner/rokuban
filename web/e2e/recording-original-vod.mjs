@@ -956,6 +956,11 @@ if (!offsetSeekbarBox) {
   ng.push('④ offset seek のシークバーが見つからない')
 } else {
   const offsetSeekbarY = offsetSeekbarBox.y + offsetSeekbarBox.height / 2
+  // 張り直す直前のセッションは、これまでに要求した最後の playlist の offset で決まる（無ければ offset 無し）。
+  const sessionBeforeRestart = /^offset\/(\d+)\//.exec(playlistRequests.at(-1) ?? '')?.[1]
+  const leavePathBeforeRestart = `/api/sites/${SITE}/recordings/${RECORDING_ID}/original-vod` +
+    `${sessionBeforeRestart === undefined ? '' : `/offset/${sessionBeforeRestart}`}/leave`
+  const leaveCountBeforeRestart = originalVODLeaveRequests.length
   await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.7, offsetSeekbarY)
   await page.mouse.down()
   await page.mouse.move(offsetSeekbarBox.x + offsetSeekbarBox.width * 0.875, offsetSeekbarY)
@@ -978,6 +983,16 @@ if (!offsetSeekbarBox) {
     const firstOffsetSegment = offsetVideoSegmentRequests.find((request) => request.offsetSeconds === 14)
     if (firstOffsetSegment?.name !== '0_seg00007.ts') {
       ng.push(`④ offset/14 の先頭 video segment が 14 秒位置のものではない (${firstOffsetSegment?.name ?? 'none'})`)
+    }
+    // 張り直しは直前のセッションへ leave を 1 件送る。増分で、締め切り付きで待つ（0 件のまま通らない）。
+    const leaveDeadline = Date.now() + 5000
+    while (originalVODLeaveRequests.length === leaveCountBeforeRestart && Date.now() < leaveDeadline) {
+      await page.waitForTimeout(50)
+    }
+    await page.waitForTimeout(500)
+    const restartLeaves = originalVODLeaveRequests.slice(leaveCountBeforeRestart)
+    if (restartLeaves.length !== 1 || restartLeaves[0] !== leavePathBeforeRestart) {
+      ng.push(`④ offset/14 への張り直しで直前のセッション（${leavePathBeforeRestart}）へ leave を 1 件送らない（${restartLeaves.join(', ') || 'none'}）`)
     }
   }
 }
