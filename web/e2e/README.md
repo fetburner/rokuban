@@ -136,7 +136,13 @@ CI の `browser-e2e` ジョブは、実バイナリが `go:embed` した `dist/`
 
 - webkit が要る: webkit でしか測れない判定を持つ。対象は `live`（ネイティブ HLS の字幕など）と `live-audio`（ネイティブ HLS の `audioTracks`）。`E2E_BROWSER=webkit` を任意で受けるだけのスクリプトは、Chromium で回るのでここに入れない
 - 実 DB の状態が要る: `checks`（既定の `pnpm e2e`）は API をスタブせず実 EPG の番組行の描画を待つ。`live` は `epg_services` に実サービスの行が要り、`shelves-split` は `E2E_DATABASE_URL` の DB を TRUNCATE する
-- API スタブで載せられるが所要時間を測っていない: 全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない。番組表・予約・検索などの画面別判定がこれに入る。ffmpeg で fixture を作るだけで Chromium で回る次のものも同じである。`chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`。`chase` / `chase-audio` / `recording-original-vod` / `recording-playback-timeline` も同じである。`recording-playback-timeline` は fixture を Go のテストで作るので Go も要る。`design.mjs` は 63 枚のショットを撮るぶん重い
+- API スタブで載せられるが所要時間を測っていない: 全体の所要時間を測っておらず、毎 PR に払う価値をまだ判断していない
+  - 画面別判定（番組表・予約・検索など）
+  - ffmpeg で fixture を作るもの
+    - 追っかけと原本の再生: `chase` / `chase-audio` / `recording-original-vod` / `recording-playback-timeline`
+    - `recording-playback-timeline` は fixture を Go のテストで作るので Go も要る
+    - そのほか: `chapters` / `home-resume-frame` / `seek-tiles` / `subtitles` / `recording-next-episode`
+  - `design.mjs`: 63 枚のショットを撮るぶん重い
 
 判定スクリプト全部を回す定期ジョブは作らない。回す主体と失敗の受け手が決まっておらず、誰も見ない赤い定期ジョブは PR ごとに回す一部より信号として弱いためである。対象を増やすときは `.github/workflows/ci.yml` のコメントとこの節の類型を同じ PR で直す。実ブラウザ不要の `pnpm check:colors` は lint job に入っている。
 

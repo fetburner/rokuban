@@ -48,10 +48,12 @@ jobs:
   #     E2E_BROWSER=webkit を任意で受けるだけのスクリプトは Chromium で回るのでここに入れない
   #   - 実 DB の状態が要る: checks（既定の pnpm e2e）は API をスタブせず実 EPG の番組行を待ち、
   #     live は epg_services に実サービスの行が要り、shelves-split は E2E_DATABASE_URL の DB を TRUNCATE する
-  #   - API スタブで載せられるが所要時間を測っていない: 番組表・予約・検索などの画面別判定と、
-  #     ffmpeg で fixture を作るだけで Chromium で回る chapters / home-resume-frame / seek-tiles / subtitles /
-  #     recording-next-episode / chase / chase-audio / recording-original-vod / recording-playback-timeline。
-  #     PR ごとに払う価値をまだ判断していない
+  #   - API スタブで載せられるが所要時間を測っていない（PR ごとに払う価値をまだ判断していない）
+  #       - 画面別判定（番組表・予約・検索など）
+  #       - ffmpeg で fixture を作るもの
+  #           - 追っかけと原本の再生: chase / chase-audio / recording-original-vod / recording-playback-timeline（recording-playback-timeline は Go も要る）
+  #           - そのほか: chapters / home-resume-frame / seek-tiles / subtitles / recording-next-episode
+  #       - design: 63 枚のショットを撮るぶん重い
   # safe-area-inline は CDP で非ゼロの左右 inset を与え、横向き 844px のサイドバーと 700px のボトムタブが inset の内側に入る寸法を測る。
   # home-timeline-keyboard は 1280×800 の時間軸にフォーカスしたときの左右矢印スクロールを測る。
   # font-scale は 390 / 767 / 768 / 1280px のフォーム文字サイズと、画面内の例外文字サイズを測る。

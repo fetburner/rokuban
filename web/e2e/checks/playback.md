@@ -35,7 +35,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 
 ### LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`）
 
-ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、離脱ヒントの送信と追っかけの表示時刻を測る。mirakc も DB も要らない。
+ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、離脱ヒントの送信と追っかけの表示時刻を測る。mirakc と実録画は要らない。
 
 `/api/**` と HLS は `page.route` で差し替える。fixture は ffmpeg が作った 20 秒の HLS で、Chromium の hls.js が再生する。jsdom には `navigator.sendBeacon` が無く fetch に落ちるため、離脱ヒントの実送信は実ブラウザでしか測れない。
 
