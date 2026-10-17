@@ -1840,17 +1840,60 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
+	visibleRecordingID := insertTestRecording(t, pool)
+	seedOriginalAsset(t, pool, mediaDir, visibleRecordingID, "present/original.m2ts", []byte("present"))
+
+	missingRecordingID := insertTestRecordingWithEventID(t, pool, 2)
+	missingAssetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+		RecordingID: missingRecordingID,
+		Kind:        db.AssetKindOriginal,
+		RelPath:     "missing/original.m2ts",
+		SizeBytes:   int64(len("missing")),
+	})
+	if err != nil {
+		t.Fatalf("seeding missing original media_asset: %v", err)
+	}
+
+	orphanRelPath := "orphan/original.m2ts"
+	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(orphanRelPath))
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o755); err != nil {
+		t.Fatalf("creating orphan directory: %v", err)
+	}
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o644); err != nil {
+		t.Fatalf("writing orphan file: %v", err)
+	}
+	old := time.Now().Add(-30 * 24 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatalf("aging orphan file: %v", err)
+	}
+
 	var walks int
 	originalHook := beforeWalkMediaFiles
 	beforeWalkMediaFiles = func() { walks++ }
 	t.Cleanup(func() { beforeWalkMediaFiles = originalHook })
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: time.Hour}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
 	if walks != 1 {
 		t.Fatalf("walkMediaFiles calls = %d, want 1", walks)
+	}
+	var missingCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1", missingAssetID).Scan(&missingCount); err != nil {
+		t.Fatalf("querying missing_media_assets: %v", err)
+	}
+	if missingCount != 1 {
+		t.Errorf("missing_media_assets count = %d, want 1 (missing audit must inspect the shared walk)", missingCount)
+	}
+	var orphanCount int
+	if err := pool.QueryRow(context.Background(),
+		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", orphanRelPath).Scan(&orphanCount); err != nil {
+		t.Fatalf("querying orphan_files: %v", err)
+	}
+	if orphanCount != 1 {
+		t.Errorf("orphan_files count = %d, want 1 (orphan audit must inspect the shared walk)", orphanCount)
 	}
 }
 
