@@ -678,11 +678,11 @@ type encodeCommandInput struct {
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
 //
 // ffmpeg の stdout は、io.PipeWriter を Cmd.Stdout に渡して os/exec にコピーさせる。
-// これで Wait はコピーの完了まで戻らず、終了直前の進捗行も取りこぼさない
+// これで Wait はコピーの完了まで戻らない。writer は Wait の後に閉じて parser に EOF を
+// 送るので、終了直前の進捗行も取りこぼさない
 // （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。StdoutPipe では
 // 読み終わる前に Wait を呼ぶことになり、os/exec の契約外になる。Wait が pipe を閉じるので
 // 末尾の行を落とす。
-// writer は Wait の後に閉じ、parser に EOF を送る。
 //
 // <-progressDone を Wait の前に置いてはならない。孫プロセスが stdout を握ると EOF が来ず、
 // WaitDelay で待ちを切る唯一の場所である Wait に届かないまま塞がる
@@ -691,9 +691,9 @@ type encodeCommandInput struct {
 // os/exec は「WaitDelay に関わらず、Wait は Stdout への Write の完了まで塞がりうる」と
 // 定めている。io.PipeWriter は読み手がいなければ塞がるので、parser が早期終了しても
 // 残りを読み捨て、writer が閉じるまで読み続ける
-// （TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine）。reportProgress は
-// 塞がない前提で、塞ぐと、WaitDelay でも
-// ctx のキャンセルでも Wait は戻らない（上の契約からの帰結で、未測定）。
+// （TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine）。reportProgress も
+// 塞がない前提である。塞ぐと WaitDelay でも ctx のキャンセルでも Wait は戻らない
+// （上の契約からの帰結で、未測定）。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)

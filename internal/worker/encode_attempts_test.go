@@ -813,9 +813,8 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
 	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
-	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせつつ、
-	// `<-progressDone` を Wait の前に置く順序では
-	// sleep が自然終了する前に失敗させる。
+	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせる。`<-progressDone` を Wait の
+	// 前に置く順序では、sleep が自然終了する前に失敗させる。
 	workReturnTimeout := 5 * workerExecWaitDelay
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
 	sleepStartedAt := time.Now()
