@@ -88,7 +88,7 @@ docker compose exec postgres psql -U rokuban -d rokuban -c \
 
 `observed_at` が現在時刻から離れていくなら、転送は止まっている。進捗の書き直しは最短 2 秒間隔である。バイトが流れたときにしか書かないので、極端に遅い回線ではこれより粗くなる。
 
-`written_bytes` は temp replay で再開した試行なら末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る（[recording/ingest.md](../recording/ingest-retry.md) §5.3）。
+`written_bytes` は temp replay で再開した試行なら末尾から続く。サイズ / ハッシュ不一致や record の cancel / fail で temp を捨てた次の試行だけは 0 に戻る（[recording/ingest-retry.md](../recording/ingest-retry.md) §5.3）。
 
 #### rename 後の失敗
 
