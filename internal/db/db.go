@@ -157,7 +157,7 @@ type pgxQueryRower interface {
 // datctype と datlocprovider はエラー文の診断表示だけに使い、判定には使わない。
 func checkLocaleSupport(ctx context.Context, db pgxQueryRower) error {
 	// similarity() が無い DB を 42883 のエラー文として返すと、ロケールの問題に見える。
-	// SQLSTATE を読む分岐は関数ごとに分かれるので、to_regprocedure で有無を先に見る。
+	// to_regprocedure は関数が無いと NULL を返すので、エラーを分類せずに有無を判定できる。
 	var hasTrgm bool
 	if err := db.QueryRow(ctx, `SELECT to_regprocedure('similarity(text,text)') IS NOT NULL`).Scan(&hasTrgm); err != nil {
 		return fmt.Errorf("checking pg_trgm availability: %w", err)
@@ -189,7 +189,7 @@ func checkLocaleSupport(ctx context.Context, db pgxQueryRower) error {
 		failed = append(failed, "case-insensitive regex 'ＡＢＣ' ~* 'ａｂｃ'")
 	}
 	if len(failed) > 0 {
-		return fmt.Errorf("PostgreSQL LC_CTYPE must classify Japanese characters as word characters for regex rules, search and deduplication; failed checks: %s; current datctype=%q datlocprovider=%q; recreate the database with a compatible LC_CTYPE (available locale names depend on the PostgreSQL host)", strings.Join(failed, ", "), ctype, provider)
+		return fmt.Errorf("PostgreSQL LC_CTYPE does not classify Japanese and full-width characters as regex search/rules and deduplication require; failed checks: %s; current datctype=%q datlocprovider=%q; recreate the database with a compatible LC_CTYPE (C.UTF-8 is recommended; available locale names depend on the PostgreSQL host)", strings.Join(failed, ", "), ctype, provider)
 	}
 	return nil
 }
