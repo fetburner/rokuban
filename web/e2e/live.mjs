@@ -419,7 +419,7 @@ async function mockLiveRoutes(page, mode) {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
-      body: JSON.stringify(E2E_LIVE_PROFILES),
+      body: JSON.stringify(mode.profiles ?? E2E_LIVE_PROFILES),
     })
   })
 
@@ -2115,16 +2115,58 @@ if (hasFixture) {
   // なので降格は高々 1 回。3 件以上ある実運用では、段が尽きるまで降格を試すので
   // この待ち時間はプロファイル数に比例して伸びる）
   log('\n=== ⑦ ネイティブ経路のメディア失敗（WebKit） ===')
-  for (const [label, segments, timeout] of [
+  for (const [label, segments, timeout, injectStationaryTimeupdate, profiles] of [
     ['セグメントが 404', '404', 20000],
     ['セグメントが応答しない', 'hang', 40000],
+    ['停滞後の固定 timeupdate', 'hang', 25000, true, [E2E_LIVE_PROFILES[0]]],
   ]) {
     const browser = await launchBrowser('webkit')
     try {
       const page = await browser.newPage({ viewport: { width: 960, height: 640 } })
-      await mockLiveRoutes(page, { playlist: 'ok', segments })
+      await mockLiveRoutes(page, { playlist: 'ok', segments, profiles })
       await page.goto(`${BASE_URL}/live?service=${SERVICE_ID_A}`, { waitUntil: 'domcontentloaded' })
       await clickPlay(page)
+      if (injectStationaryTimeupdate) {
+        // The native HLS request below hangs, so WebKit emits a real `stalled` event.
+        // After the app's listener starts the timer, move the observed position by 252 ms,
+        // then deliver `waiting` followed by a stationary `timeupdate` at that position.
+        // This reproduces the buffered-end ordering that cleared the only failure timer.
+        await page.waitForFunction(nativeSrcAssigned, undefined, { timeout: 15000 })
+        await page.evaluate(() => {
+          const video = document.querySelector('video')
+          if (!video) throw new Error('native HLS video is missing')
+          let allowInjectedMediaEvents = false
+          let suppressLaterMediaEvents = false
+          for (const type of ['stalled', 'waiting', 'timeupdate']) {
+            video.addEventListener(
+              type,
+              (event) => {
+                if (suppressLaterMediaEvents && !allowInjectedMediaEvents) event.stopImmediatePropagation()
+              },
+              true,
+            )
+          }
+          video.addEventListener(
+            'stalled',
+            () => {
+              const stalledAt = video.currentTime
+              const waitingAt = (Number.isFinite(stalledAt) ? stalledAt : 0) + 0.252
+              Object.defineProperty(video, 'currentTime', {
+                configurable: true,
+                writable: true,
+                value: waitingAt,
+              })
+              suppressLaterMediaEvents = true
+              allowInjectedMediaEvents = true
+              video.dispatchEvent(new Event('waiting'))
+              video.dispatchEvent(new Event('timeupdate'))
+              allowInjectedMediaEvents = false
+              window.__liveStallTimeupdateTrace = { stalledAt, waitingAt }
+            },
+            { once: true },
+          )
+        })
+      }
 
       let shown = false
       const shownStartedAt = Date.now()
@@ -2142,10 +2184,18 @@ if (hasFixture) {
           text: document.body.innerText.replace(/\s+/g, ' ').slice(0, 160),
           readyState: v?.readyState ?? -1,
           err: v?.error ? v.error.code : null,
+          stallTimeupdate: window.__liveStallTimeupdateTrace ?? null,
         }
       })
       log(`  ${label}: エラー表示 + 再読み込み = ${shown ? 'YES' : 'NO'}（${shownAfterMs} ms）`)
       log(`    readyState=${detail.readyState} video.error=${detail.err}`)
+      if (injectStationaryTimeupdate) {
+        log(`    stalled → waiting → stationary timeupdate: ${JSON.stringify(detail.stallTimeupdate)}`)
+        const trace = detail.stallTimeupdate
+        if (trace === null || trace.waitingAt - trace.stalledAt < 0.05) {
+          ng.push('⑦ 停滞後の固定 timeupdate 判定で再現イベント順序を作れない')
+        }
+      }
       if (!shown) {
         ng.push(
           `⑦ ${label}のとき、エラー表示も再読み込みボタンも出ない` +
