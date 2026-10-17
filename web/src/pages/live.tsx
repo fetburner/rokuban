@@ -507,29 +507,33 @@ export function LivePage() {
   })
   const selectedRecording = unwrap(selectedRecordingQuery.data)
 
-  const [playbackSource, setPlaybackSource] = useState<'live' | 'chase'>('live')
-  const [chaseOffset, setChaseOffset] = useState<number | undefined>(undefined)
-  const chaseStart: OffsetSessionStart = chaseOffset === undefined
-    ? { type: 'beginning' }
-    : { type: 'offset', offsetSeconds: chaseOffset }
-  const [chaseTarget, setChaseTarget] = useState<{
-    site: string
-    recordingId: number
-    recording: Recording
-    programmeStartAt: string
-    programmeEndAt: string
-  } | null>(null)
+  const [playback, setPlayback] = useState<
+    | { source: 'live' }
+    | {
+        source: 'chase'
+        target: {
+          site: string
+          recordingId: number
+          recording: Recording
+          programmeStartAt: string
+          programmeEndAt: string
+        }
+        offset: OffsetSessionStart
+      }
+  >({ source: 'live' })
   const onStartOver = () => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
-    setChaseTarget({
-      site: selectedService?.site ?? 'default',
-      recordingId: selectedRecordingId,
-      recording: selectedRecording,
-      programmeStartAt: nowPlaying.startAt,
-      programmeEndAt: nowPlaying.endAt,
+    setPlayback({
+      source: 'chase',
+      target: {
+        site: selectedService?.site ?? 'default',
+        recordingId: selectedRecordingId,
+        recording: selectedRecording,
+        programmeStartAt: nowPlaying.startAt,
+        programmeEndAt: nowPlaying.endAt,
+      },
+      offset: { type: 'offset', offsetSeconds: 0 },
     })
-    setChaseOffset(0)
-    setPlaybackSource('chase')
   }
   const onLiveProgramSeek = (programSeconds: number) => {
     if (!nowPlaying || selectedRecordingId === undefined || !selectedRecording?.startedAt) return
@@ -543,23 +547,50 @@ export function LivePage() {
     if (!isRecordedProgramOffset(programSeconds, timeline.recordingHeadSeconds, liveEdgeSeconds)) return
     const offset = timeline.programRecordingOffsetSeconds
     if (offset === null) return
-    setChaseTarget({
-      site: selectedService?.site ?? 'default',
-      recordingId: selectedRecordingId,
-      recording: selectedRecording,
-      programmeStartAt: nowPlaying.startAt,
-      programmeEndAt: nowPlaying.endAt,
+    setPlayback({
+      source: 'chase',
+      target: {
+        site: selectedService?.site ?? 'default',
+        recordingId: selectedRecordingId,
+        recording: selectedRecording,
+        programmeStartAt: nowPlaying.startAt,
+        programmeEndAt: nowPlaying.endAt,
+      },
+      offset: { type: 'offset', offsetSeconds: offset },
     })
-    setChaseOffset(offset)
-    setPlaybackSource('chase')
   }
-  const chaseTimeline = playbackSource === 'chase' && chaseTarget
-    ? recordingTimeline(chaseTarget.recording, {
-        nowMs,
-        programmeStartAt: chaseTarget.programmeStartAt,
-        programmeEndAt: chaseTarget.programmeEndAt,
-      })
-    : undefined
+  const livePlayerModeProps = playback.source === 'chase'
+    ? {
+        mode: 'chase' as const,
+        site: playback.target.site,
+        recordingId: playback.target.recordingId,
+        chaseTimeline: recordingTimeline(playback.target.recording, {
+          nowMs,
+          programmeStartAt: playback.target.programmeStartAt,
+          programmeEndAt: playback.target.programmeEndAt,
+        }),
+        offsetSessionStart: playback.offset,
+        onReturnLive: () => setPlayback({ source: 'live' }),
+      }
+    : selectedService === undefined ? null : {
+        mode: 'live' as const,
+        site: selectedService.site,
+        networkId: selectedService.networkId,
+        serviceId: selectedService.serviceId,
+        liveProgram: nowPlaying ? {
+          startAt: nowPlaying.startAt,
+          endAt: nowPlaying.endAt,
+          nowMs,
+          recordingId: selectedRecordingId,
+          recordingStartedAt: selectedRecording?.startedAt,
+        } : undefined,
+        onLiveProgramSeek,
+        onStartOver,
+        liveDiagnostics: diagnostics ? formatLiveDiagnostics(diagnostics) : undefined,
+        liveNotice: visibleDowngradeNotice === autoDowngradedProfile?.name && autoDowngradedProfile
+          ? `映像が止まったため、画質を ${liveProfileLabel(autoDowngradedProfile)}に下げました`
+          : undefined,
+      }
 
   // 録画予約による中断予測（M7-2, issue #235）。
   //
@@ -636,15 +667,9 @@ export function LivePage() {
               top: 'calc(var(--sticky-banners-height, 0px) + var(--page-header-height, 0px))',
             }}
           >
-            {isPlaying ? (
+            {isPlaying && livePlayerModeProps !== null ? (
               <LivePlayer
-                mode={playbackSource}
-                site={playbackSource === 'chase' ? chaseTarget?.site ?? selectedService.site : selectedService.site}
-                networkId={selectedService.networkId}
-                serviceId={selectedService.serviceId}
-                recordingId={playbackSource === 'chase' ? chaseTarget?.recordingId : undefined}
-                chaseTimeline={chaseTimeline}
-                offsetSessionStart={playbackSource === 'chase' ? chaseStart : undefined}
+                {...livePlayerModeProps}
                 profile={effectiveProfile}
                 audio={routeSearch.audio}
                 availableProfiles={liveProfiles.map((profile) => ({
@@ -653,24 +678,6 @@ export function LivePage() {
                 }))}
                 onProfileChange={selectProfile}
                 onAudioChange={selectAudio}
-                liveProgram={playbackSource === 'live' && nowPlaying ? {
-                  startAt: nowPlaying.startAt,
-                  endAt: nowPlaying.endAt,
-                  nowMs,
-                  recordingId: selectedRecordingId,
-                  recordingStartedAt: selectedRecording?.startedAt,
-                } : undefined}
-                onLiveProgramSeek={onLiveProgramSeek}
-                onStartOver={onStartOver}
-                liveDiagnostics={diagnostics ? formatLiveDiagnostics(diagnostics) : undefined}
-                liveNotice={visibleDowngradeNotice === autoDowngradedProfile?.name && autoDowngradedProfile
-                  ? `映像が止まったため、画質を ${liveProfileLabel(autoDowngradedProfile)}に下げました`
-                  : undefined}
-                onReturnLive={() => {
-                  setPlaybackSource('live')
-                  setChaseOffset(undefined)
-                  setChaseTarget(null)
-                }}
                 onStalled={handleStalled}
                 onDiagnostics={setDiagnostics}
               />
@@ -679,9 +686,7 @@ export function LivePage() {
                 serviceName={selectedService.name}
                 onPlay={() => {
                   setVisibleDowngradeNotice(null)
-                  setPlaybackSource('live')
-                  setChaseOffset(undefined)
-                  setChaseTarget(null)
+                  setPlayback({ source: 'live' })
                   setPlayingKey(selectedKey ?? null)
                 }}
               />
