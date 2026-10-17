@@ -4079,7 +4079,7 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 // `state = 'active'` に狭める変異（'deleting' を見逃す）は worker パッケージ
 // 全緑のまま通ってしまう穴だった（PR #267 のレビューで指摘・実測）。
 // 'deleting' 行のファイルは delete_reconcile の 3 段階
-// （active → deleting → unlink → deleted、delete_reconcile.go の
+// （active → deleting → unlink → deleted、delete_execute.go の
 // deleteMediaAsset）のうち unlink 前・unlink 失敗中はまだ実在し、かつ
 // resolveUnqualifiedDeletingAsset がファイルの現存を確認した上でその行を
 // active に戻しうる（issue #105）。したがって 'deleting' 行のファイルを
@@ -4134,7 +4134,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		t.Fatalf("creating existing media_asset: %v", err)
 	}
 	if existingState != "active" {
-		// MarkMediaAssetDeleting（delete_reconcile.go）は deleted_at を
+		// MarkMediaAssetDeleting（delete_execute.go）は deleted_at を
 		// 立てない --- 'deleting' は unlink 前後の中間状態であり、不可逆な
 		// 削除確定（deleted_at）はまだ起きていない。ここでもその形を模す。
 		if _, err := pool.Exec(ctx,

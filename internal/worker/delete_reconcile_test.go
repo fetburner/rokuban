@@ -1580,7 +1580,7 @@ func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID in
 // M4-14 は新規 ingest 分だけ rel_path に "sites/{site}/" を前置し、既存行は
 // 移行しない（マイグレーションを書かない）ため、本番のメディアディレクトリは
 // 前置あり ("sites/tokyo/...") と前置なし ("legacy/...") が混在するツリーに
-// なる。walkMediaFiles（internal/worker/delete_reconcile.go）は catalog.Subdir
+// なる。walkMediaFiles（internal/worker/storage_audit.go）は catalog.Subdir
 // の完全一致だけを SkipDir する汎用的な Walk で、site 由来の階層を特別扱いして
 // いないので理屈上は無関係のはずだが、将来 catalog.Subdir の判定が
 // strings.HasPrefix 等に緩められた場合に "sites/" を誤って引っ掛ける退行を防ぐ
@@ -1832,6 +1832,25 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 	w := &DeleteReconcileWorker{Pool: pool, MediaDir: regularFile}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("Work() error = nil, want error for a non-directory media dir")
+	}
+}
+
+// 1 パスの孤児監査と実体無し監査は、同じ walk 結果を共有する。
+// 壊し方: reconcileMissingAssets に独自の walkMediaFiles 呼び出しを足すと、2 回で失敗する。
+func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
+	pool := setupTestPool(t)
+	mediaDir := t.TempDir()
+	var walks int
+	originalHook := beforeWalkMediaFiles
+	beforeWalkMediaFiles = func() { walks++ }
+	t.Cleanup(func() { beforeWalkMediaFiles = originalHook })
+
+	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
+		t.Fatalf("Work() error: %v", err)
+	}
+	if walks != 1 {
+		t.Fatalf("walkMediaFiles calls = %d, want 1", walks)
 	}
 }
 
