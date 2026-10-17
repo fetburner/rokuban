@@ -330,7 +330,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 
 - `.rokuban-locks/` を `rel_path` に使わない検査: `mediapath.Resolve`
 - `sites/{site}/` の前置と空 path の拒否: `internal/worker/ingest.go` の `determineRelPath`
-- 孤児回収の file walk と root symlink の解決: `internal/worker/delete_reconcile.go` の `walkMediaFiles`
+- 孤児回収の file walk と root symlink の解決: `internal/worker/storage_audit.go` の `walkMediaFiles`
 - rescue が root symlink を解決し、in-place 登録時に symlink を拒否すること: `rescueStorage`、`inplace.Register`
 - `catalog/` の除外と相対パスの基準に同じ root を使うこと: `filepath.Rel`
 - 派生物の `rel_path` を作る関数: `EncodedRelPath`

@@ -101,7 +101,7 @@ DB 接続と `reservations` の中身を確認する。このブレーカーの�
 
 <details><summary>根拠</summary>
 
-- delete_reconcile が呼び出し側から受け取る値は総数だけ: `breaker.Sample{Total: total}`、`internal/worker/delete_reconcile.go`
+- delete_reconcile が呼び出し側から受け取る値は総数だけ: `breaker.Sample{Total: total}`、`internal/worker/delete_execute.go`
 - ファイルを表す欄が無い型: `breaker.Sample` / `SampleProgram`
 
 </details>
