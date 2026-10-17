@@ -134,7 +134,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 `unattributed` の録画で凍結の JOIN に失敗したログは `slog.Info` になる。一方、録画作成時に `action = 'record'` があった録画は、後から予約と意図が GC されても永続した `source = 'manual'` を見て `slog.Warn` になる。この 2 段（GC → `unattributed` → Info）は、根拠欄の 2 テストの合成である（パッケージ境界を跨ぐので通しでは測っていない）。
 
-事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
+事後回復は `POST /api/recordings/{id}/encode-profiles`（下記「凍結の例外: 事後追加」。追加のみ）だけである。`encode_reconcile`（desired−observed の定期パス。[ingest](../recording/ingest-followup.md) §5.5）はこのケースを回復しない。理由は `ListMissingEncodeProfiles` が desired を展開して不足を探すからである。そのため既定値（`encode_profiles = '{}'`）で凍結された録画は、そもそも候補に入らない。desired が空である以上「欠けている派生物」も無く、バックストップとしては正しい振る舞いだが、失われた意図は誰も取り戻さない。
 
 <details><summary>根拠</summary>
 

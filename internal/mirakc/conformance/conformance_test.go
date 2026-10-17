@@ -137,7 +137,7 @@ func TestConformance(t *testing.T) {
 		}
 
 		if rec.Content.Length == nil {
-			t.Fatalf("録画中なのに GetRecord の Content.Length が nil。ingest の進捗分母として非 nil のはず（docs/recording/ingest.md §5.6）")
+			t.Fatalf("録画中なのに GetRecord の Content.Length が nil。ingest の進捗分母として非 nil のはず（docs/recording/ingest-followup.md §5.6）")
 		}
 		firstLen := *rec.Content.Length
 
@@ -189,7 +189,7 @@ func TestConformance(t *testing.T) {
 		}
 
 		// 受け入れ項目 4 の前半（divergence a）: `GetRecord` の `content.length` は
-		// 録画中も非 nil で、時間とともに増える（`docs/recording/ingest.md` §5.6 の
+		// 録画中も非 nil で、時間とともに増える（`docs/recording/ingest-followup.md` §5.6 の
 		// 進捗分母 `record_sync.content_length` がこれに依存する）。
 		//
 		// 実測: mirakc はこの値を 32768 バイト刻み・約 2.28 秒周期でしか進めない。固定

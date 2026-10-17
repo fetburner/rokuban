@@ -38,7 +38,10 @@ flowchart LR
 | §3.2 | 番組終了後の GC（ruler の 1 パス内 `runGC`） | [recording/ruler.md](recording/ruler.md) |
 | §3.3 | watcher（SSE 購読・状態反映） | [recording/watcher.md](recording/watcher.md) |
 | §4 | 予約モデル（`program_intents` と `program_overrides`） | [recording/reservation-model.md](recording/reservation-model.md) |
-| §5 §6 | ingest パイプラインと B-CAS 復号の責務境界 | [recording/ingest.md](recording/ingest.md) |
+| §5（冒頭）§5.1 §5.2 | ingest パイプライン: 転送方式と TS 統計の解析ジョブ | [recording/ingest.md](recording/ingest.md) |
+| §5.3 | ingest のリトライ設計（3 層） | [recording/ingest-retry.md](recording/ingest-retry.md) |
+| §5.4 §5.5 §5.6 | ingest の負荷分担・完了後のフロー・進捗表示 | [recording/ingest-followup.md](recording/ingest-followup.md) |
+| §6 | B-CAS 復号の責務境界 | [recording/bcas.md](recording/bcas.md) |
 | §7 §8 §9 | schedule options、録画品質の実測、落とした機能 | [recording/reference.md](recording/reference.md) |
 
 節ごとの主な話題は次の通り。

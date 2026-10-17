@@ -18,7 +18,7 @@
 
 取り込みの状態は、行のバッジに待ちと取り込み中を、詳細の欄に転送量を出す。録画中は割合を出さずバイト数だけにする。取り込みが来ない録画には、来ない未来を断定しないよう何も出さない。進捗は REST の再取得で収束させる。
 
-録画の完了（`status = finished`）は mirakc 側の録画完了であって、取り込み完了ではない。原本がコミットされるまで再生も事後エンコードもできないのに、それを表すものが `sizeBytes` の省略しか無かった。そこで `Recording.ingest` を 2 段に分けて出す。`Recording.ingest` は、サーバーが DB 行から毎回導出する（[recording/ingest.md](../../recording/ingest.md) §5.6）。
+録画の完了（`status = finished`）は mirakc 側の録画完了であって、取り込み完了ではない。原本がコミットされるまで再生も事後エンコードもできないのに、それを表すものが `sizeBytes` の省略しか無かった。そこで `Recording.ingest` を 2 段に分けて出す。`Recording.ingest` は、サーバーが DB 行から毎回導出する（[recording/ingest-followup.md](../../recording/ingest-followup.md) §5.6）。
 
 ### 行のバッジと詳細の欄
 
@@ -60,7 +60,7 @@
 
 録画中の行にも取り込みを出す。watcher が録画開始の時点で取り込みを投入し、worker が録画に追従するため、開始直後の数秒は「取り込み待ち」、その後は「取り込み中」になる。
 
-以前は「録画中に取り込みの数字は動かない」前提で、ここを伏せていた。追従では数字が動く。停滞を出さないことの根拠も変わった。追い付いている状態は正常なので、worker が観測時刻を進める（[recording/ingest.md](../../recording/ingest.md) §5.6）。
+以前は「録画中に取り込みの数字は動かない」前提で、ここを伏せていた。追従では数字が動く。停滞を出さないことの根拠も変わった。追い付いている状態は正常なので、worker が観測時刻を進める（[recording/ingest-followup.md](../../recording/ingest-followup.md) §5.6）。
 
 <details><summary>根拠</summary>
 
