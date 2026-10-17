@@ -1,0 +1,13 @@
+{
+  "file": "docs/recording/bcas.md",
+  "questions": [
+    {
+      "heading": "6.1 復号はエッジ（mirakc パイプライン）の責務",
+      "question": "B-CAS の復号は誰がどこで行い、Rokuban 側に暗号化された TS は現れるか。",
+      "points": [
+        "復号は mirakc が編成する外部ツールがエッジで行う",
+        "mirakc から出る TS は復号済みなので、Rokuban 内に暗号化された TS は現れない"
+      ]
+    }
+  ]
+}

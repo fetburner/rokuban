@@ -633,7 +633,7 @@ export interface EncodedAsset {
  * **サーバー側で recording_encode_attempts（衛星表）から毎回導出する**
  * （列に焼いた値ではない）。River の river_job は直接露出しない
  * （docs/schema.md の recording_encode_attempts の節を参照。
- * docs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」
+ * docs/recording/ingest-followup.md §5.6 と共通なのは「river_job を露出しない」
  * ことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に
  * この表は区別する）。
  *
@@ -678,7 +678,7 @@ export interface EncodeJobStatus {
      * **サーバー側で recording_encode_attempts（衛星表）から毎回導出する**
      * （列に焼いた値ではない）。River の river_job は直接露出しない
      * （docs/schema.md の recording_encode_attempts の節を参照。
-     * docs/recording/ingest.md §5.6 と共通なのは「river_job を露出しない」
+     * docs/recording/ingest-followup.md §5.6 と共通なのは「river_job を露出しない」
      * ことだけで、§5.6 の「リトライ中と待ちを区別しない」判断とは逆に
      * この表は区別する）。
      *

@@ -66,7 +66,7 @@ func TestLoad_Minimal(t *testing.T) {
 	if cfg.Storage.AccelLocation != "" {
 		t.Errorf("storage.accel_location = %q, want empty", cfg.Storage.AccelLocation)
 	}
-	// 2 チューナー機の「2 本同時録画 + 全速 pull 1 本」（docs/recording/ingest.md §5.4
+	// 2 チューナー機の「2 本同時録画 + 全速 pull 1 本」（docs/recording/ingest-followup.md §5.4
 	// の式の下端）。IngestConfig.Concurrency の doc コメント参照。
 	if cfg.Ingest.Concurrency != 3 {
 		t.Errorf("ingest.concurrency = %d, want %d", cfg.Ingest.Concurrency, 3)

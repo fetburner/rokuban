@@ -239,7 +239,7 @@ type encodeAttemptRow struct {
 //   - `recording_encode_attempts` に行があれば、その `state`（running/failed）
 //     をそのまま使う
 //   - 行が無ければ `queued`（試行がまだ始まっていない） --- ただし「来る根拠」が
-//     無いものは queued と名乗らせない（下記 2 点。docs/recording/ingest.md
+//     無いものは queued と名乗らせない（下記 2 点。docs/recording/ingest-followup.md
 //     §5.6 が `pending` に課した規律と同じ）
 //
 // 「来る根拠」が無いので queued を出さない 2 パターン:

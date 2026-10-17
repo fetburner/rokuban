@@ -15,14 +15,14 @@ type IngestConfig struct {
 	// MaxWorkers）。**既定値の権威はここ（defaults() の 3）である**
 	// （cmd/rokuban の worker 仕様がこの値をそのまま MaxWorkers にする）。
 	//
-	// 3 は docs/recording/ingest.md §5.4 の式（`チューナー数 + 全速 pull の
+	// 3 は docs/recording/ingest-followup.md §5.4 の式（`チューナー数 + 全速 pull の
 	// 許容本数（1〜2）`）の下端で、2 チューナー機の「2 本同時録画 + 全速 pull 1 本」
 	// にあたる。§5.4 の窓（録画数ちょうどだと全速 pull が詰まる / 広げすぎると
 	// 復旧中の全速 pull がエッジの録画書き込みと競合する）の中に収まっている。
 	//
 	// **足りないと追従が枠待ちになる。** 枠が録画数を下回ると、録画中の追従が
 	// MaxWorkers の待ち行列に入り、UI には `pending`（取り込み待ち）が続く。
-	// 4 チューナー機では 5〜6 に上げる（docs/recording/ingest.md §5.4 の式のまま）。
+	// 4 チューナー機では 5〜6 に上げる（docs/recording/ingest-followup.md §5.4 の式のまま）。
 	// ingest は bounded slice と snooze で再開するため、長時間保持する接続を持たない。
 	//
 	// 枠待ちの間に録画が終わったジョブは、録画終了後に始まる pull（finished を観測したら

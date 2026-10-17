@@ -318,7 +318,7 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 取り込みの進捗の権威は worker が DB に残した観測だけで、状態はその観測と資産・同期行の有無からリクエストのたびに導出する。列には焼かない。
 
-api ロールは mirakc に問い合わせない（不変条件 1）ので、進捗の観測以外に頼れるものが無い。状態の値の意味と、なぜ「リトライ中」を持たないかは `openapi.yaml` の `IngestProgress` と [recording/ingest.md](../recording/ingest.md) §5.6 にある。
+api ロールは mirakc に問い合わせない（不変条件 1）ので、進捗の観測以外に頼れるものが無い。状態の値の意味と、なぜ「リトライ中」を持たないかは `openapi.yaml` の `IngestProgress` と [recording/ingest.md](../recording/ingest-followup.md) §5.6 にある。
 
 <details><summary>根拠</summary>
 
