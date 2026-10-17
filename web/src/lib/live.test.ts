@@ -30,8 +30,7 @@ import {
   isRecordedProgramOffset,
   nextProgramBoundaryMs,
   nextProgramRefreshMs,
-  sendLiveLeaveHint,
-  sendOriginalVODLeaveHint,
+  sendPlaybackLeaveHint,
   stalledForMs,
   supportsNativeHls,
   validLiveAudio,
@@ -204,14 +203,14 @@ describe('liveLeaveURL', () => {
   })
 })
 
-describe('sendLiveLeaveHint', () => {
+describe('sendPlaybackLeaveHint', () => {
   it('sendBeacon があれば sendBeacon で送る（fetch は使わない）', () => {
     const beacon = vi.fn(() => true)
     vi.stubGlobal('navigator', { sendBeacon: beacon })
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
 
-    sendLiveLeaveHint('default', 32736, 1024)
+    sendPlaybackLeaveHint('/api/sites/default/networks/32736/services/1024/live/leave')
 
     expect(beacon).toHaveBeenCalledWith('/api/sites/default/networks/32736/services/1024/live/leave')
     // ページ離脱の瞬間に投げるので、ドキュメント破棄で中断されうる fetch は使わない
@@ -223,7 +222,7 @@ describe('sendLiveLeaveHint', () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(null, { status: 204 })))
     vi.stubGlobal('fetch', fetchMock)
 
-    sendLiveLeaveHint('default', 32736, 1024)
+    sendPlaybackLeaveHint('/api/sites/default/networks/32736/services/1024/live/leave')
 
     expect(fetchMock).toHaveBeenCalledWith('/api/sites/default/networks/32736/services/1024/live/leave', {
       method: 'POST',
@@ -238,20 +237,9 @@ describe('sendLiveLeaveHint', () => {
       vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))),
     )
 
-    expect(() => sendLiveLeaveHint('default', 1, 2)).not.toThrow()
+    expect(() => sendPlaybackLeaveHint('/api/sites/default/networks/1/services/2/live/leave')).not.toThrow()
     // 未処理の rejection にもしない（catch が付いていること）
     await new Promise((resolve) => setTimeout(resolve, 0))
-  })
-})
-
-describe('sendOriginalVODLeaveHint', () => {
-  it('原本 VOD の離脱ヒントを beacon で送る', () => {
-    const beacon = vi.fn(() => true)
-    vi.stubGlobal('navigator', { sendBeacon: beacon })
-
-    sendOriginalVODLeaveHint('default', 42, 90)
-
-    expect(beacon).toHaveBeenCalledWith('/api/sites/default/recordings/42/original-vod/offset/90/leave')
   })
 })
 

@@ -5,8 +5,6 @@ import {
   playbackModeAxis,
   playbackSeekTarget,
   playbackSessionOriginSeconds,
-  recordingPlaybackPosition,
-  recordingSeekByTarget,
 } from '@/lib/playback-mode'
 
 describe('playbackModeAxis', () => {
@@ -17,7 +15,7 @@ describe('playbackModeAxis', () => {
       hoverSeconds: 2800,
     })
 
-    expect(axis.timeline).toMatchObject({
+    expect(axis).toMatchObject({
       kind: 'chase',
       minSeconds: 0,
       maxSeconds: 3600,
@@ -28,7 +26,6 @@ describe('playbackModeAxis', () => {
       hoverSeconds: 2800,
       hoverLabel: 'まだ録画されていません',
     })
-    expect(axis.chase).toBe(axis.timeline)
   })
 
   it('live は番組予定・録画可能範囲・hover 印を作る', () => {
@@ -44,7 +41,7 @@ describe('playbackModeAxis', () => {
       hoverSeconds: 900,
     })
 
-    expect(axis.timeline).toMatchObject({
+    expect(axis).toMatchObject({
       kind: 'live-program',
       maxSeconds: 3600,
       plannedEndSeconds: 3600,
@@ -53,11 +50,10 @@ describe('playbackModeAxis', () => {
       hoverSeconds: 900,
       hoverLabel: 'ここから見る（録画中）',
     })
-    expect(axis.liveProgram).toBe(axis.timeline)
   })
 
   it('original-vod は実尺を固定軸にする', () => {
-    expect(playbackModeAxis({ mode: 'original-vod', durationSeconds: 4321 }).timeline).toEqual({
+    expect(playbackModeAxis({ mode: 'original-vod', durationSeconds: 4321 })).toEqual({
       kind: 'fixed',
       minSeconds: 0,
       maxSeconds: 4321,
@@ -72,39 +68,6 @@ describe('playback mode calculations', () => {
     expect(playbackSessionOriginSeconds('chase', 10)).toBe(10)
     expect(playbackSessionOriginSeconds('original-vod', 10)).toBeCloseTo(9.976633333, 9)
     expect(playbackSessionOriginSeconds('live', 10)).toBe(10)
-  })
-
-  it('メディア時刻と相対シークを各録画モードの軸へ写す', () => {
-    expect(recordingPlaybackPosition({
-      mode: 'chase',
-      mediaSeconds: 5,
-      headSeconds: 1200,
-      offsetSeconds: 30,
-      sessionStartSeconds: 0,
-    })).toBe(1235)
-    expect(recordingPlaybackPosition({
-      mode: 'original-vod',
-      mediaSeconds: 5,
-      headSeconds: 0,
-      offsetSeconds: 0,
-      sessionStartSeconds: 22.98963,
-    })).toBeCloseTo(27.98963, 5)
-    expect(recordingSeekByTarget({
-      mode: 'chase',
-      mediaSeconds: 5,
-      headSeconds: 1200,
-      offsetSeconds: 30,
-      sessionStartSeconds: 0,
-      deltaSeconds: 10,
-    })).toBe(1245)
-    expect(recordingSeekByTarget({
-      mode: 'original-vod',
-      mediaSeconds: 5,
-      headSeconds: 0,
-      offsetSeconds: 0,
-      sessionStartSeconds: 22.98963,
-      deltaSeconds: 10,
-    })).toBeCloseTo(37.98963, 5)
   })
 
   it('chase seek は録画先端で止めて整数秒へ丸める', () => {

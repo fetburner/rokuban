@@ -14,7 +14,6 @@ import type { RecordingTimeline } from '@/lib/recording-timeline'
 
 /** PlaybackMode は LivePlayer が切り替える再生経路を表す。 */
 export type PlaybackMode = 'live' | 'chase' | 'original-vod'
-type RecordingPlaybackMode = Exclude<PlaybackMode, 'live'>
 
 type LiveProgramInput = Omit<Parameters<typeof liveProgramPlaybackTimeline>[0], 'hoverSeconds'>
 type ChaseTimelineInput = Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
@@ -24,32 +23,17 @@ type PlaybackAxisInput =
   | { mode: 'chase'; timeline: ChaseTimelineInput; hoverSeconds: number | null }
   | { mode: 'original-vod'; durationSeconds: number }
 
-type ChaseAxis = Extract<PlaybackTimeline, { kind: 'chase' }>
-type LiveProgramAxis = Extract<PlaybackTimeline, { kind: 'live-program' }>
-
-/** PlaybackModeAxis は操作バー用の軸と、モード固有の軸情報をまとめる。 */
-export type PlaybackModeAxis = {
-  timeline?: PlaybackTimeline
-  chase?: ChaseAxis
-  liveProgram?: LiveProgramAxis
-}
-
 /** playbackModeAxis はモードに応じて軸の範囲・印・操作可能範囲を導出する。 */
-export function playbackModeAxis(input: PlaybackAxisInput): PlaybackModeAxis {
+export function playbackModeAxis(input: PlaybackAxisInput): PlaybackTimeline | undefined {
   switch (input.mode) {
-    case 'live': {
-      const liveProgram = input.program
+    case 'live':
+      return input.program
         ? liveProgramPlaybackTimeline({ ...input.program, hoverSeconds: input.hoverSeconds }) ?? undefined
         : undefined
-      return { timeline: liveProgram, liveProgram }
-    }
-    case 'chase': {
-      const chase = chasePlaybackTimeline(input.timeline, input.hoverSeconds)
-      return { timeline: chase, chase }
-    }
-    case 'original-vod': {
-      return { timeline: fixedPlaybackTimeline(input.durationSeconds) }
-    }
+    case 'chase':
+      return chasePlaybackTimeline(input.timeline, input.hoverSeconds)
+    case 'original-vod':
+      return fixedPlaybackTimeline(input.durationSeconds)
   }
 }
 
@@ -58,28 +42,6 @@ export function playbackSessionOriginSeconds(mode: PlaybackMode, offsetSeconds: 
   return mode === 'original-vod'
     ? originalVODSessionOriginSeconds(offsetSeconds)
     : offsetSeconds
-}
-
-type RecordingPlaybackPositionInput = {
-  mode: RecordingPlaybackMode
-  mediaSeconds: number
-  headSeconds: number
-  offsetSeconds: number
-  sessionStartSeconds: number
-}
-
-/** recordingPlaybackPosition はメディア時刻を chase/original-vod の録画軸へ写す。 */
-export function recordingPlaybackPosition(input: RecordingPlaybackPositionInput): number {
-  return input.mode === 'chase'
-    ? input.headSeconds + input.offsetSeconds + input.mediaSeconds
-    : input.sessionStartSeconds + input.mediaSeconds
-}
-
-type RecordingSeekByInput = RecordingPlaybackPositionInput & { deltaSeconds: number }
-
-/** recordingSeekByTarget は相対シークの移動先を録画軸上の秒へ写す。 */
-export function recordingSeekByTarget(input: RecordingSeekByInput): number {
-  return recordingPlaybackPosition({ ...input, mediaSeconds: input.mediaSeconds + input.deltaSeconds })
 }
 
 type PlaybackSeekTargetInput =
