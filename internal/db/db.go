@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
@@ -111,6 +113,9 @@ func KnownRoles() []string {
 // roles から決めることを指す（issue #90）。cfg.MaxConns が明示されていればそれを
 // 優先する。roles が空（rescue/enqueue 等の単発 CLI コマンド）なら
 // pgxpool の既定値（max(4, NumCPU)）をそのまま使う。
+// `migrate up` を実行せずに起動する既存 DB でも検出するため、プール作成時は全ロールで
+// DB の文字分類（正規表現・pg_trgm の日本語対応）を検査する。要件を worker の有無や
+// プロセス分割に隠さない。
 //
 // numSites はこのプロセスが束縛している mirakc サイト数（cmd/rokuban が --sites
 // から解決した `bound` の長さ。issue #532）。watcher は site ごとに advisory lock
@@ -134,8 +139,59 @@ func NewPool(ctx context.Context, cfg config.DBConfig, roles []string, numSites 
 		pool.Close()
 		return nil, fmt.Errorf("connecting to database: %w", err)
 	}
+	if err := checkLocaleSupport(ctx, pool); err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("validating database: %w", err)
+	}
 
 	return pool, nil
+}
+
+type pgxQueryRower interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// checkLocaleSupport は DB の文字分類が日本語を語の文字として扱うかを検査する。
+// 正規表現ルール（\w・大文字小文字の無視）・検索・重複排除（pg_trgm の similarity()）が
+// 実際に使う挙動を見るので、ロケール名では判定しない（libc / ICU の違いを含めて確かめる）。
+// datctype と datlocprovider はエラー文の診断表示だけに使い、判定には使わない。
+func checkLocaleSupport(ctx context.Context, db pgxQueryRower) error {
+	// similarity() が無い DB を 42883 のエラー文として返すと、ロケールの問題に見える。
+	// to_regprocedure は関数が無いと NULL を返すので、エラーを分類せずに有無を判定できる。
+	var hasTrgm bool
+	if err := db.QueryRow(ctx, `SELECT to_regprocedure('similarity(text,text)') IS NOT NULL`).Scan(&hasTrgm); err != nil {
+		return fmt.Errorf("checking pg_trgm availability: %w", err)
+	}
+	if !hasTrgm {
+		return fmt.Errorf("pg_trgm is not installed in this database; run `rokuban migrate up` first")
+	}
+
+	var similarity, word, caseless bool
+	var ctype, provider string
+	// datlocprovider は "char" 型なので ::text で受ける。
+	if err := db.QueryRow(ctx, `SELECT
+		similarity('録画', '録画') = 1,
+		'録画' ~ '^\w+$',
+		'ＡＢＣ' ~* 'ａｂｃ',
+		(SELECT datctype FROM pg_database WHERE datname = current_database()),
+		(SELECT datlocprovider::text FROM pg_database WHERE datname = current_database())`).
+		Scan(&similarity, &word, &caseless, &ctype, &provider); err != nil {
+		return fmt.Errorf("checking database locale behavior: %w", err)
+	}
+	var failed []string
+	if !similarity {
+		failed = append(failed, "pg_trgm similarity('録画', '録画') = 1")
+	}
+	if !word {
+		failed = append(failed, `regex '録画' ~ '^\w+$'`)
+	}
+	if !caseless {
+		failed = append(failed, "case-insensitive regex 'ＡＢＣ' ~* 'ａｂｃ'")
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("PostgreSQL LC_CTYPE does not classify Japanese and full-width characters as regex search/rules and deduplication require; failed checks: %s; current datctype=%q datlocprovider=%q; recreate the database with a compatible LC_CTYPE (C.UTF-8 is recommended; available locale names depend on the PostgreSQL host)", strings.Join(failed, ", "), ctype, provider)
+	}
+	return nil
 }
 
 // buildPoolConfig は NewPool のロジック本体（MaxConns の算出と

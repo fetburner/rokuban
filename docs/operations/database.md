@@ -191,6 +191,29 @@ PostgreSQL 標準の拡張 btree_gist は trusted extension なので、対象 D
 
 本番相当の managed 環境での実測は未実施である。確認の手順は [runbook/managed-postgres.md](../runbook/managed-postgres.md)。
 
+### DB の文字分類（`LC_CTYPE`）
+
+DB の文字分類が日本語を語の文字として扱わないと、日本語の番組では正規表現の検索・ルールと重複排除が効かない。rokuban は起動時にこれを検査し、満たさない DB では起動しない。
+
+正規表現の検索・ルールの `\w` と大文字小文字の無視、および重複排除に使う pg_trgm の `similarity()` は、どちらも DB の `LC_CTYPE` の文字分類に従う。`LC_CTYPE` が `C` だと、日本語や全角英字を含む正規表現の検索・ルールが当たらず、日本語タイトルの類似度は 0 になる。
+
+`migrate up` は migration の適用後に、各ロールは起動時（DB の接続プールを作るとき）に、これらの挙動を確かめる。日本語を扱えるロケールは `en_US.utf8`・`C.UTF-8`・`ja_JP.UTF-8`・ICU と複数あり、ICU でも ctype が `C` なら満たさない。そのためロケール名では判定しない。
+
+公式の `postgres:17` イメージの既定（`en_US.utf8`）はそのまま使える。自分でロケールを選ぶ場合は、libc の `C.UTF-8` を推奨する。公式イメージに含まれ、照合順序が言語に依存しない。
+
+検査に失敗すると rokuban は起動しない。`LC_CTYPE` は DB 作成後に変更できないため、条件を満たすロケールを指定して DB を作り直す。未 migrate の DB（pg_trgm が無い）では、ロケールではなく `migrate up` を先に実行するよう案内する。
+
+<details><summary>根拠</summary>
+
+- migrate 後の検査: `MigrateUp`
+- 全ロールのプール作成時の検査: `NewPool`（どちらも `checkLocaleSupport` を呼ぶ）
+- 既定 DB で成功すること: `TestNewPool`
+- C ロケール DB で 3 つの検査がすべて落ち、エラーに名前と `datctype` が載ること: `TestNewPoolRejectsUnsupportedLocale`
+- 未 migrate の DB で `migrate up` の案内になること: `TestNewPoolRejectsUnmigratedDatabase`
+- `C.UTF-8` の推奨: `postgres:17` で `CREATE DATABASE … TEMPLATE template0 LOCALE 'C.UTF-8'` の DB は 3 つの検査がすべて真（2026-10-18 実測）。テストでは固定していない
+
+</details>
+
 ### EPG churn / autovacuum
 
 検索は世帯スケールでは遅くならない。EPG テーブルは 1 日に何度も大量に upsert されるので、遅くなるとしたら書き込みと autovacuum の追従である。対策はバッチ upsert、GIN fastupdate、**テーブル別 autovacuum チューニング**の 3 つである。

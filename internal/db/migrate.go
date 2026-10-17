@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 
+	"github.com/jackc/pgx/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
 )
@@ -14,12 +15,26 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// MigrateUp はアプリの goose マイグレーションを適用する。
+// MigrateUp はアプリの goose マイグレーションを適用し、全 migration の適用後に
+// DB の文字分類を検査する。新規 DB で migrate が最初に触る経路なので、
+// 誤ったロケールのままアプリを起動させない。
 func MigrateUp(ctx context.Context, dbURL string) error {
-	return runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
+	if err := runGooseMigration(ctx, dbURL, func(ctx context.Context, p *goose.Provider) error {
 		_, err := p.Up(ctx)
 		return err
-	})
+	}); err != nil {
+		return err
+	}
+
+	conn, err := pgx.Connect(ctx, dbURL)
+	if err != nil {
+		return fmt.Errorf("connecting to validate database locale after migration: %w", err)
+	}
+	defer func() { _ = conn.Close(ctx) }()
+	if err := checkLocaleSupport(ctx, conn); err != nil {
+		return fmt.Errorf("validating database after migration: %w", err)
+	}
+	return nil
 }
 
 // MigrateDown はアプリ (goose) のマイグレーションを 1 ステップ戻す。
