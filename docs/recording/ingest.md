@@ -422,12 +422,6 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 落としたヒントは、定期パスが埋める。ヒント投入の失敗とエッジ record の削除成功（上記「層 3」）が両方起きると、そのヒントは二度と飛ばない。エッジに record が残っていないので、record_sweep も ingest ジョブを再投入しない。ヒントだけに頼ると、コミット済みの録画が誰にも再投入されず、気づかないうちにエンコードされないまま残る。
 
-<details><summary>根拠</summary>
-
-- 補完ジョブ: `internal/worker/encode_reconcile.go`（既定 15 分周期）
-
-</details>
-
 #### エンコードの定期パス
 
 定期パスは、期待するエンコード結果から実際にある結果を引いた不足分だけを投入する。対象は原本がコミット済みで、ごみ箱に入っていない録画に限る。
@@ -447,7 +441,6 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 <details><summary>根拠</summary>
 
 - 設定から消えたプロファイルの失敗: `unknown encode profile`
-- 落とした録画の数: `rokuban_encode_reconcile_unsatisfiable`
 
 </details>
 
@@ -455,25 +448,21 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 上限内の失敗は再投入し、試行上限後は利用者の再要求を待つ。
 
-結果が無ければ15分ごとに再投入する。`recording_encode_attempts` の上限到達した `failed` 行は候補から外れ、再要求によって行が消えると候補に戻る。`running` 行は次の reconcile が古い試行を終端化できるよう残す。権威はジョブ履歴でなく `media_assets` の有無である。
+active な encoded が無ければ 15 分ごとに再投入する。試行上限に達した `failed` 行は候補から外れ、再要求によって行が消えると候補に戻る。`running` 行は次の reconcile が古い試行を終端化できるよう残す。
 
-#### 候補の窓の回し方
+River の一意制約は pending 系の状態にしか効かず、discarded 済みの引数には合流しないので、discarded になっても定期パスは再投入する。意図どおりなのは、権威がジョブ履歴でなく `media_assets` の有無だからである。試行上限の除外は River でなくドメインの試行表で行う。
 
-候補窓は上限ごとにページを分け、プロセス再起動を越えて後続へ進む。
+#### 候補窓の継続
 
-録画 ID 昇順の 1000 件でページを作り、満杯なら最後の ID を引数に継続ジョブを投入する。次の `--once` worker はその後ろから続ける。ちょうど上限のページは末尾か分からないので空ページを 1 回実行し、短いページは連鎖を止める。次の定期パスは先頭から始める。
+全件パスは候補をページに分け、続きの位置をジョブ引数で引き継ぐ。
 
-連鎖が完走すれば、開始時の候補集合を 1 周期で調べる。途中で加わった ID のうち、カーソルより前にあるものは次周期で拾う。各ページは最大1000録画を調べる。作り直し要求の列挙は上限に含まれない。
+録画 ID 昇順の 1000 件でページを作り、満杯なら最後の ID を引数に継続ジョブを投入する。次のジョブを拾った worker は、`--once` で作り直されても後ろから続ける。ちょうど上限のページは、追加の問い合わせなしには末尾か分からないので、空ページを 1 回実行する。短いページは連鎖を止め、次の定期パスが先頭から始める。
 
-`--once` のゲージは scrape できないため、継続状況はページ満了ログ `encode_reconcile: candidate window is full; continuation enqueued` で見る。定期パス `{}` は同じ引数の running ジョブとも一意になる。5 分の締切は River の 1 時間の回収より短い。カーソル付きの継続ジョブは別引数なので定期パスと並走しうる。encode ジョブは `(recording_id, profile)` で合流する。
+連鎖が末尾まで進めば、定期パスの開始時にあった候補をすべて調べる。途中でカーソルより前に加わった ID は次の定期パスで拾う。作り直し要求の列挙は 1000 件の上限に含まれない。
 
-<details><summary>根拠</summary>
+継続状況は、ページ満了ログ `encode_reconcile: candidate window is full; continuation enqueued` で見る。参照構成は `--once` のジョブ Pod を scrape しない。
 
-- 窓: ID 昇順
-- 上限: `encodeReconcileRowLimit`（1000）
-- 継続テスト: `TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker`
-
-</details>
+定期パス `{}` は、実行中の同じ引数のジョブに合流し、二重に積まれない。rescuer は worker の Timeout（encode_reconcile は 5 分）が過ぎるまで running の行を回収しないので、二重に走ることもない。継続ジョブは別引数なので定期パスと並走しうるが、encode ジョブは `(recording_id, profile)` で合流するので二重エンコードにはならない。
 
 #### thumbnail の定期パス
 
@@ -481,7 +470,7 @@ ingest のコミット後は、エンコードなどのジョブをヒントと�
 
 ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると、edge record からは再投入できない。`thumbnail_reconcile` がこの穴を埋める。候補からは、ごみ箱と `missing_media_assets` の原本を除外する。`worker.periodic_jobs: false` の構成では `rokuban enqueue thumbnail-reconcile` を CronJob から叩く。
 
-対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
+対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させる。
 
 #### TS scan の定期パス
 

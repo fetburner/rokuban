@@ -498,15 +498,15 @@ var (
 	// （desired なのに active な encoded が無い録画）。
 	//
 	// 値が上限（encodeReconcileRowLimit）なら、そのページは最後の recording_id を
-	// 持つ継続ジョブを投入している（TestEncodeReconcileWorker_RowLimitCapsWorkPerPass）。
-	// 参照構成の `--once` worker はジョブごとに終了するため、このゲージは
-	// Prometheus から scrape できないことがある。継続を確認するときは
+	// 持つ継続ジョブの投入を試みる（TestEncodeReconcileWorker_RowLimitCapsWorkPerPass）。
+	// 参照構成の `--once` worker はジョブごとに終了するため、参照構成は `--once` の
+	// ジョブ Pod を scrape しないので、このゲージでは継続を追えない。継続を確認するときは
 	// `encode_reconcile: candidate window is full; continuation enqueued` ログを使う
 	// （docs/operations/monitoring.md）。エンコード実行中の録画も候補に数えるので、
 	// 0 でないこと自体は異常ではない。
 	EncodeReconcileCandidates = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: "rokuban_encode_reconcile_candidates",
-		Help: "Recordings seen by the last encode-reconcile page that still lack an active encoded asset. A full page enqueues a continuation job after the last recording ID. In --once mode, use the page-full log to observe continuation because Prometheus may not scrape this gauge.",
+		Help: "Recordings seen by the last encode-reconcile page that still lack an active encoded asset. A full page attempts to enqueue a continuation job after the last recording ID. The reference setup does not scrape --once job Pods, so observe continuation with the page-full log instead.",
 	})
 
 	// EncodeReconcileUnsatisfiable は「凍結済みの desired が現在の

@@ -64,9 +64,9 @@ const (
 // 判定基準（RowLimit の値 L に依存しない形で書く。L = 1 パスの行上限、
 // S = 定期パスが開始した時点の候補集合）:
 //
-//   - C1（被覆）: 継続ジョブの連鎖が終わるまで続けば、1 周期内に S の全要素を
+//   - C1（被覆）: 継続ジョブの連鎖が末尾まで進めば、S の全要素を
 //     examine する。連鎖の途中で S に入った録画のうちカーソルより前にあるものは
-//     次の周期で拾う。TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker が固定する。
+//     次の定期パスで拾う。TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker が固定する。
 //   - C2（コスト）: 1 パスが examine する候補録画は L 件まで。作り直し要求の
 //     全件列挙はこの上限の外にある。
 //     TestEncodeReconcileWorker_RowLimitCapsWorkPerPass が固定する。
@@ -74,8 +74,9 @@ const (
 //
 // 定期パスの引数 `{}` は、River の一意性が running を含む状態で同じ引数の重複を
 // 合流させる（`internal/jobq/riveradapter/insertopts_test.go` の
-// TestMakeInsertOptsQueueAndUnique）。encode_reconcile の締切は 5 分、stuck job の
-// 既定回収猶予は 1 時間なので、回収されていない定期パスとの重複投入も起きない。
+// TestMakeInsertOptsQueueAndUnique）。rescuer は worker の Timeout
+// （encode_reconcile は 5 分）が過ぎるまで running の行を回収しないので、実行中の
+// 定期パスが回収されて二重に走ることはない。
 // 継続ジョブはカーソルが異なる別の引数なので定期パスと並走しうるが、encode の
 // 投入は (recording_id, profile) の同じ引数で合流する。
 //
@@ -131,7 +132,7 @@ func enqueueEncodeReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordi
 func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconcileArgs) error {
 	recordingID := args.RecordingID
 	if recordingID != 0 && args.AfterRecordingID != 0 {
-		return fmt.Errorf("encode reconcile: recording_id and after_recording_id cannot both be set")
+		return fmt.Errorf("encode reconcile: recording_id and after_recording_id cannot both be set: %w", jobq.ErrDiscard)
 	}
 	if w.Enqueuer == nil {
 		// このジョブの主目的が「encode ジョブを実際に投入すること」なので、client が取れないことを

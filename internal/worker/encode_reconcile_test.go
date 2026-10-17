@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -886,8 +887,8 @@ func TestEncodeReconcileWorker_ContinuationEnqueueFailureReturnsSuccess(t *testi
 func TestEncodeReconcileWorker_RejectsTargetAndContinuationTogether(t *testing.T) {
 	w := &EncodeReconcileWorker{Enqueuer: newRecordingEnqueuer()}
 	err := w.Work(context.Background(), EncodeReconcileArgs{RecordingID: 10, AfterRecordingID: 20})
-	if err == nil || err.Error() != "encode reconcile: recording_id and after_recording_id cannot both be set" {
-		t.Fatalf("Work error = %v, want rejection of mixed target and continuation arguments", err)
+	if !errors.Is(err, jobq.ErrDiscard) {
+		t.Fatalf("Work error = %v, want jobq.ErrDiscard for mixed target and continuation arguments", err)
 	}
 }
 
