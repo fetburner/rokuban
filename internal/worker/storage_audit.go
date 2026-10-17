@@ -1,7 +1,20 @@
 // storage_audit.go はストレージ配置を監査し、孤児と実体無しの観測を記録する。
 // 読む表は media_assets、orphan_files、missing_media_assets。書く表は orphan_files と
-// missing_media_assets。1 パスに MediaDir を 1 回走査し、走査中にファイル情報を読み、
-// エイジング済み公開前孤児は削除候補にする前に stat する。
+// missing_media_assets。
+//
+// 走査の入口は walkMediaFiles だけである。孤児と実体無しの監査は、1 パスに 1 回の走査結果
+// （seenOnDisk）を共有する。監査ごとに走査すると、片方だけが見た窓で誤判定する。
+// 走査の回数は、TestDeleteReconcileWorker_WalksMediaDirOncePerPass が walkMediaFiles の
+// 呼び出し回数で検査する。walkMediaFiles を通らない走査はこのテストでは検出できない。
+// だから入口を walkMediaFiles に限る約束がある。
+//
+// 候補は監査が orphan_files に書く。unlink の後に行を消すのは delete_execute.go である。
+// エイジング済みの公開前孤児は、名前の分類と mtime の再確認を経て、削除候補として
+// 選定に差し出す。
+//
+// ファイル操作は MediaDir の走査（読み取りのみ）と、公開前孤児の候補に対する stat だけで、
+// flock・unlink はしない。ファイル操作の全体表は delete_execute.go の冒頭にある。
+
 package worker
 
 import (
@@ -390,7 +403,8 @@ func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, q *sq
 	return nil
 }
 
-// beforeWalkMediaFiles is a test hook that counts scan entry points. Production does nothing.
+// beforeWalkMediaFiles は walkMediaFiles の先頭に置くテスト用の同期点で、走査の入口の呼び出し回数を数える。
+// 本番では何もしない。
 var beforeWalkMediaFiles = func() {}
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir

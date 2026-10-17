@@ -1,8 +1,30 @@
 // delete_execute.go は削除条件の再評価、ブレーカー、削除中行の再開と物理削除を担当する。
 // 読む表は circuit_breakers、recordings、media_assets と名前付き削除述語の参照先。
 // 書く表は circuit_breakers、media_assets、encoded_asset_removal_requests、orphan_files。
-// ファイル操作はパス解決、stat、ロック取得、原本・派生物・字幕・ingest temp・checkpoint・
-// staging file の unlink。
+//
+// 実行は until_encoded の述語を、実行の直前に再評価する（LockRecording と
+// MarkUntilEncodedOriginalDeleting）。flock を deleting 遷移より前に取るので、
+// この遷移は選定へ移せない。
+//
+// orphan_files の書き手は 2 者いる。候補は storage_audit.go が書き、実行が unlink の後に
+// 行を消す。実行が消すのは、ctx が取り消された後も削除の事実を記録するためである。
+//
+// ファイル操作は次の表のとおり。字幕 sidecar は encoded 本体と同じ段階で消すので派生物、
+// staging（encode / 生成アセットの予約名の一時出力）は派生物の公開前ファイル、
+// checkpoint は base temp と同じ flock の下で消すので ingest temp に入れる。
+//
+//	操作      原本                         派生物                          ingest temp
+//	解決      mediapath.Resolve            同左（字幕・staging も）         同左（checkpoint も）
+//	flock     media root の rel_path lock  同左（字幕は本体の lock に含む。  temp 自身の flock
+//	                                       staging は取らない）             （checkpoint は base temp の）
+//	stat      巻き戻し時の現存確認         同左。staging は mtime も再確認  mtime・サイズの再確認と、
+//	                                                                        flock との inode 照合
+//	unlink    する                         する（encoded は字幕も）         する（checkpoint も同時）
+//
+// ストレージ port（#1283）の候補になるのは派生物の列だけで、原本と ingest temp の
+// flock・inode 照合は常にファイルシステムに残る。asset の flock は種類を問わず同じ
+// 関数（lockMediaRelPathFile）で取るので、派生物側の flock を port に出すかは #1283 で決める。
+
 package worker
 
 import (

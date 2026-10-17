@@ -2,6 +2,13 @@
 // 読む表は media_assets と、trash_deletable_recordings、
 // until_encoded_deletable_originals、removed_encoded_assets が参照する表。
 // 表への書き込みとファイルシステム操作は行わない。
+//
+// 選定は mediaDir を受け取らない自由関数なので、ファイルシステムに触れないことが
+// コンパイル時に保証される。選定が返すのは候補だけで、until_encoded の述語は
+// 実行の直前に delete_execute.go が再評価する。公開前孤児の候補は、ファイル配置の
+// 規則（名前の分類と mtime の再確認）に依存するため、選定ではなく storage_audit.go が
+// 出して deleteCandidateSet に詰める。
+
 package worker
 
 import (
