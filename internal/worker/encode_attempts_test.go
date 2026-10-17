@@ -813,7 +813,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	// ため、テスト終了時の cleanup 猶予も込みで長めに取る）。
 	setWorkerExecWaitDelayForTest(t, time.Second)
 	sleepSeconds := int(workerExecWaitDelay/time.Second*3) + 5
-	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせつつ、誤った順序では
+	// 正常経路は WaitDelay（1 秒）で戻る余裕を持たせつつ、`<-progressDone` を Wait の前に置く順序では
 	// sleep が自然終了する前に失敗させる。
 	workReturnTimeout := 5 * workerExecWaitDelay
 	leakyFFmpeg, childPIDMarker := installLeakyExitZeroFakeFFmpeg(t, sleepSeconds)
@@ -982,7 +982,7 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 	case <-time.After(3 * time.Second):
 		t.Fatal("timed out waiting for the first progress callback")
 	}
-	// progress=end はすでに stdout に書かれており、この待ちで子プロセスも reap される。
+	// progress=end はすでに stdout に書かれており、この待ちでは、Wait が子プロセスを reap したことを ESRCH で確かめる。
 	// parser は先頭の callback で止まっているため、ここから resume するまで最終行は読めない。
 	waitFor(t, 3*time.Second, func() bool {
 		data, err := os.ReadFile(pidMarker)
@@ -1007,11 +1007,12 @@ func TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning(t *test
 	}
 }
 
-// TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine は、Scanner の上限を
-// 超える進捗行で parser が終了したとき、io.PipeReader を閉じて exec の stdout copier
-// を解放することを確認する。子プロセス内で実行し、回帰時に Wait が止まっても親テスト
-// からプロセスグループごと終了できるようにする。
-func TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine(t *testing.T) {
+// TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine は、Scanner の上限を
+// 超える進捗行で parser が終了しても、残りの進捗を読み捨てて ffmpeg を塞がず、成功する
+// ffmpeg なら runEncodeCommand も成功することを確認する。進捗は揮発テレメトリなので、
+// その異常で encode を落とさない。子プロセス内で実行し、回帰時に Wait が止まっても
+// 親テストからプロセスグループごと終了できるようにする。
+func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.T) {
 	const helperEnv = "ROKUBAN_LONG_PROGRESS_HELPER"
 	if os.Getenv(helperEnv) == "1" {
 		worker := &EncodeWorker{FFmpeg: os.Getenv("ROKUBAN_LONG_PROGRESS_FFMPEG")}
@@ -1022,15 +1023,21 @@ func TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine(t *testing.T
 			inputPath:  os.Getenv("ROKUBAN_LONG_PROGRESS_INPUT"),
 			scratchOut: os.Getenv("ROKUBAN_LONG_PROGRESS_OUTPUT"),
 		}, nil, slog.Default())
-		if err == nil {
-			t.Fatal("runEncodeCommand succeeded with an overlong progress line")
+		if err != nil {
+			t.Fatalf("runEncodeCommand: %v", err)
 		}
 		return
 	}
 
 	tmp := t.TempDir()
 	ffmpegPath := filepath.Join(tmp, "ffmpeg")
-	if err := os.WriteFile(ffmpegPath, []byte("#!/bin/sh\nexec head -c 1048577 /dev/zero\n"), 0o755); err != nil {
+	// 1 MiB 超の改行なし行の後も進捗を書き続け、出力を作って exit 0 する。
+	const longLineFFmpegScript = "#!/bin/sh\n" +
+		"for a in \"$@\"; do output=\"$a\"; done\n" +
+		"head -c 1048577 /dev/zero\n" +
+		"i=0; while [ $i -lt 200 ]; do printf '\\nout_time_ms=1000000\\nprogress=continue\\n'; i=$((i+1)); done\n" +
+		"echo out > \"$output\"\n"
+	if err := os.WriteFile(ffmpegPath, []byte(longLineFFmpegScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	inputPath := filepath.Join(tmp, "input.ts")
@@ -1038,7 +1045,7 @@ func TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine(t *testing.T
 		t.Fatal(err)
 	}
 
-	const testName = "^TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine$"
+	const testName = "^TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine$"
 	cmd := exec.Command(os.Args[0], "-test.run="+testName)
 	cmd.Env = append(os.Environ(),
 		helperEnv+"=1",
@@ -1063,7 +1070,7 @@ func TestEncodeWorker_RunEncodeCommand_ClosesProgressPipeOnLongLine(t *testing.T
 		case <-helperDone:
 		case <-time.After(time.Second):
 		}
-		t.Fatal("runEncodeCommand did not return after the progress parser rejected an overlong line")
+		t.Fatal("runEncodeCommand did not return after the progress parser stopped on an overlong line")
 	}
 }
 

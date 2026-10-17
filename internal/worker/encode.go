@@ -676,11 +676,22 @@ type encodeCommandInput struct {
 }
 
 // runEncodeCommand は ffmpeg を実行し、進捗を読み取り、scratch 出力を検証する。
-// stdout は io.PipeWriter を Cmd.Stdout に渡し、os/exec のコピー完了を Wait に待たせる。
-// WaitDelay は孫プロセスが stdout を保持する場合の待ち時間を制限する。Wait の後に
-// writer を閉じて parser に EOF を送り、コピー済みの末尾の進捗行まで処理させる
-// （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。parser が早期終了
-// した場合は reader も閉じ、コピー goroutine の Write が Wait を塞がないようにする。
+//
+// ffmpeg の stdout は、io.PipeWriter を Cmd.Stdout に渡して os/exec にコピーさせる。
+// これで Wait はコピーの完了まで戻らず、終了直前の進捗行も取りこぼさない
+// （TestEncodeWorker_RunEncodeCommand_ReadsFinalProgressBeforeReturning）。StdoutPipe は
+// 読み終わる前の Wait が os/exec の契約外で、Wait が pipe を閉じて末尾の行を落とす。
+// writer は Wait の後に閉じ、parser に EOF を送る。
+//
+// <-progressDone を Wait の前に置いてはならない。孫プロセスが stdout を握ると EOF が来ず、
+// WaitDelay で待ちを切る唯一の場所である Wait に届かないまま塞がる
+// （TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess）。
+//
+// os/exec は「WaitDelay に関わらず、Wait は Stdout への Write の完了まで塞がりうる」と
+// 定めている。io.PipeWriter は読み手がいなければ塞がるので、parser が早期終了しても
+// 残りを読み捨て、writer が閉じるまで読み続ける
+// （TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine）。reportProgress は
+// 塞がない前提で、塞ぐと WaitDelay も ctx のキャンセルも Wait に届かない。
 func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInput, reportProgress func(time.Duration), log *slog.Logger) error {
 	profile, inputPath, scratchOut, subtitleOut, withSubtitles := in.profile, in.inputPath, in.scratchOut, in.subtitleOut, in.withSubtitles
 	ffmpeg := ffargs.FFmpegPath(w.FFmpeg)
@@ -693,24 +704,20 @@ func (w *EncodeWorker) runEncodeCommand(ctx context.Context, in encodeCommandInp
 	cmd.Stderr = &stderrBuf
 	log.Info("encode: starting ffmpeg", "input", inputPath, "scratch", scratchOut)
 	if err := cmd.Start(); err != nil {
-		_ = stdoutWriter.Close()
-		_ = stdout.Close()
 		return fmt.Errorf("starting ffmpeg: %w", err)
 	}
 	progressDone := make(chan struct{})
 	go func() {
 		defer close(progressDone)
-		defer func() { _ = stdout.Close() }()
 		parseFFmpegProgress(stdout, log, reportProgress)
+		// parser が早期終了しても読み続ける（塞がった Write が Wait を止めないように）。
+		_, _ = io.Copy(io.Discard, stdout)
 	}()
 	waitErr := cmd.Wait()
-	closeErr := stdoutWriter.Close()
+	_ = stdoutWriter.Close() // CloseWithError(nil) と同じで、常に nil を返す。
 	<-progressDone
 	if err := encodeCommandError(ctx, cmd, waitErr, stderrBuf.String(), log); err != nil {
 		return err
-	}
-	if closeErr != nil {
-		return fmt.Errorf("closing ffmpeg progress pipe: %w", closeErr)
 	}
 	info, err := os.Stat(scratchOut)
 	if err != nil {
@@ -1413,6 +1420,9 @@ func parseFFmpegProgress(r io.Reader, log *slog.Logger, onProgress func(time.Dur
 				lastLog = now
 			}
 		}
+	}
+	if err := sc.Err(); err != nil {
+		log.Warn("encode: progress parser stopped", "error", err)
 	}
 }
 
