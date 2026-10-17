@@ -2524,6 +2524,34 @@ describe('LivePlayer / 追っかけ共通シークバー（issue #1015）', () =
   const playlistRequests = (fetchMock: ReturnType<typeof vi.fn>) =>
     fetchMock.mock.calls.map(([url]) => String(url)).filter((url) => url.includes('playlist.m3u8'))
 
+  it('live から同じ chase に戻ると軸位置とキーシークを先頭から始める', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+    const chaseProps = {
+      mode: 'chase' as const,
+      site: 'default',
+      recordingId: 510,
+      chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 60, recordedSeconds: 60 },
+      offsetSessionStart: { type: 'beginning' as const },
+    }
+    const { rerender } = render(<LivePlayer {...chaseProps} />)
+    await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+
+    const video = document.querySelector('video')!
+    fireEvent.canPlay(video)
+    Object.defineProperty(video, 'currentTime', { value: 25, writable: true, configurable: true })
+    fireEvent.timeUpdate(video)
+    const slider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(slider).toHaveAttribute('aria-valuenow', '25')
+
+    rerender(<LivePlayer mode="live" site="default" networkId={1} serviceId={9001} />)
+    rerender(<LivePlayer {...chaseProps} />)
+
+    const returnedSlider = screen.getByRole('slider', { name: 'シークバー' })
+    expect(returnedSlider).toHaveAttribute('aria-valuenow', '0')
+    fireEvent.keyDown(returnedSlider, { key: 'ArrowRight' })
+    expect(returnedSlider).toHaveAttribute('aria-valuenow', '10')
+  })
+
   it('video のページキーは追っかけ軸を動かし、0〜9 は割合 seek に使わない', async () => {
     const fetchMock = vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 })))
     vi.stubGlobal('fetch', fetchMock)

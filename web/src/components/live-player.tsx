@@ -673,6 +673,7 @@ export function LivePlayer({
         previewSeconds: null,
         hoverSeconds: null,
       }
+  if (!hasCurrentPlaybackAxisState) setPlaybackAxisState(playbackAxisForRender)
   const updatePlaybackAxisState = (patch: Partial<Omit<PlaybackAxisState, 'identity'>>) => {
     setPlaybackAxisState((current) => patchPlaybackAxisState(
       current,
