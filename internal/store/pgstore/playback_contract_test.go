@@ -26,10 +26,42 @@ func TestPlaybackStateContract(t *testing.T) {
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &playbackContractEventID)
 			},
-			Position: func(t *testing.T, recordingID int64) (int64, bool) { return readContractPosition(t, pool, recordingID) },
-			Watched:  func(t *testing.T, recordingID int64) bool { return readContractWatched(t, pool, recordingID) },
+			Position:           func(t *testing.T, recordingID int64) (int64, bool) { return readContractPosition(t, pool, recordingID) },
+			Watched:            func(t *testing.T, recordingID int64) bool { return readContractWatched(t, pool, recordingID) },
+			FailPositionDelete: failContractPositionDelete(pool),
 		}
 	})
+}
+
+func failContractPositionDelete(pool *pgxpool.Pool) func(t *testing.T) func() {
+	return func(t *testing.T) func() {
+		t.Helper()
+		ctx := context.Background()
+		if _, err := pool.Exec(ctx, `
+CREATE FUNCTION playback_contract_reject_position_delete() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+	RAISE EXCEPTION 'injected playback position delete failure';
+END;
+$$`); err != nil {
+			t.Fatalf("creating position delete failure function: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `
+CREATE TRIGGER playback_contract_reject_position_delete
+BEFORE DELETE ON recording_playback_positions
+FOR EACH ROW EXECUTE FUNCTION playback_contract_reject_position_delete()`); err != nil {
+			_, _ = pool.Exec(ctx, `DROP FUNCTION playback_contract_reject_position_delete()`)
+			t.Fatalf("creating position delete failure trigger: %v", err)
+		}
+		return func() {
+			if _, err := pool.Exec(context.Background(), `DROP TRIGGER playback_contract_reject_position_delete ON recording_playback_positions`); err != nil {
+				t.Errorf("dropping position delete failure trigger: %v", err)
+			}
+			if _, err := pool.Exec(context.Background(), `DROP FUNCTION playback_contract_reject_position_delete()`); err != nil {
+				t.Errorf("dropping position delete failure function: %v", err)
+			}
+		}
+	}
 }
 
 func newContractRecording(t *testing.T, pool *pgxpool.Pool, options contracttest.RecordingOptions, eventIDs *atomic.Int32) int64 {

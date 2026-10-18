@@ -11,10 +11,11 @@ import (
 
 // PlaybackFixture は視聴状態契約の実装と、保存状態を読む検査口をまとめる。
 type PlaybackFixture struct {
-	Store        store.PlaybackState
-	NewRecording NewRecording
-	Position     func(t *testing.T, recordingID int64) (int64, bool)
-	Watched      func(t *testing.T, recordingID int64) bool
+	Store              store.PlaybackState
+	NewRecording       NewRecording
+	Position           func(t *testing.T, recordingID int64) (int64, bool)
+	Watched            func(t *testing.T, recordingID int64) bool
+	FailPositionDelete func(t *testing.T) (cleanup func())
 }
 
 // NewPlaybackStore は視聴状態契約の実装とフィクスチャを作る。
@@ -60,6 +61,30 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 		}
 		if _, ok := f.Position(t, id); ok {
 			t.Fatal("position remains after MarkWatched()")
+		}
+	})
+
+	t.Run("mark watched rolls back when clearing position fails", func(t *testing.T) {
+		f := newStore(t)
+		id := f.NewRecording(t, RecordingOptions{})
+		ctx := context.Background()
+		if err := f.Store.SavePosition(ctx, id, 12_000); err != nil {
+			t.Fatalf("seeding position: %v", err)
+		}
+		if f.FailPositionDelete == nil {
+			t.Fatal("test fixture does not support position delete failure injection")
+		}
+		cleanup := f.FailPositionDelete(t)
+		defer cleanup()
+
+		if err := f.Store.MarkWatched(ctx, id); err == nil {
+			t.Fatal("MarkWatched() succeeded with failing position delete, want error")
+		}
+		if f.Watched(t, id) {
+			t.Fatal("watched marker remained after position delete failure")
+		}
+		if position, ok := f.Position(t, id); !ok || position != 12_000 {
+			t.Fatalf("position after rollback = %d, present = %t, want 12000 and present", position, ok)
 		}
 	})
 
