@@ -100,7 +100,7 @@ WHERE id = sqlc.arg('id');
 -- ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 -- 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 -- （superseded 済みの過去の failed 行ではない）になる。
--- name: CreateFailedRecording :exec
+-- name: CreateFailedRecording :one
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
@@ -124,7 +124,8 @@ ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
     WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
-    updated_at     = now();
+    updated_at     = now()
+RETURNING id;
 
 -- records API や schedules API から再構成した failed を保存する。SSE の
 -- recording.failed は同じ通知を履歴として複数追記する CreateFailedRecording を

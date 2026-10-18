@@ -158,7 +158,7 @@ DB commit が成立して応答だけ失われた場合は、次の冪等性チ�
 
 長時間の転送失敗が続くと、エッジのリングバッファに未取り込みの record が溜まり続ける。ジョブが捨てられても、mirakc 側の record は DB commit 後にしか削除されないので、データは失われない。
 
-取り込みジョブ自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も、5 分周期の定期全量突き合わせが同じ finished record を見つける（[watcher.md](watcher.md) §3.3 の (c)）。そして同一トランザクションで ingest ジョブを再投入し続ける。
+取り込みジョブ自体は River の既定の試行上限のままで、上限に達すると discard（dead-letter）されうる。それでも record が宙に浮かないのは、mirakc 側の record が DB commit 成功後にしか削除されないためである。discard された後も、5 分周期の定期全量突き合わせが同じ finished record を見つける（[watcher.md](watcher.md) §3.3 の (c)）。record の観測を commit した後に ingest ジョブをヒントとして再投入するため、ヒントを失っても次の sweep が再び投入する。
 
 運用上の主なリスクはこのディスクの滞留なので、「未 ingest の record 総量」をメトリクス化してエッジのディスク残量と突き合わせ、アラートする（[storage.md](../storage.md) のサイジング指針参照）。
 

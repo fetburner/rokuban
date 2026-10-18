@@ -703,7 +703,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pool, enqueuer, webhookClient)
+				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool), enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

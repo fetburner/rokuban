@@ -13,7 +13,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Recordings は録画のごみ箱と完全削除の永続化を PostgreSQL で実装する。
+// Recordings は録画ドメインの永続化を PostgreSQL で実装する。
+// 1 つの pool を持ち、ごみ箱・完全削除・record の観測・取り込み先・滞留量の各契約をまとめて実装する。
 type Recordings struct {
 	pool *pgxpool.Pool
 }

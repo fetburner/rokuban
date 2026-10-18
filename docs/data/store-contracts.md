@@ -109,6 +109,26 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 </details>
 
+### 録画の観測
+
+録画の観測は、永続状態を一貫させてから後続処理へ進む。
+
+watcher の録画観測は、`record_sync`、`recordings`、品質イベントを一つの commit で反映する。`(site, record_id)` の観測は直列化し、record 同期行の既存キーを使う。録画の由来は、その tx で読んだ予約と意図から導出する。契約テストは既存の record 同期行を置いた状態で競合させる。
+
+録画の title を作成・更新する操作は、分類ルールの当たりも保つ。PostgreSQL の title trigger が `label_rule_hits` を更新するため、これは録画ドメインの契約である。
+
+ingest 投入は録画観測の commit 後に行うヒントである。投入に失敗しても、mirakc の record は ingest の DB commit 後まで残り、5 分ごとの record sweep が全 record を再処理して ingest を再投入する。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordObservations`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 観測と再投入: `TestRecordObservationsContract/same record observations serialize`、`TestProcessRecord_Idempotent`
+- title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
+- commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

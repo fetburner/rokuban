@@ -3,23 +3,18 @@ package watcher
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/ptr"
-	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -30,7 +25,7 @@ const DefaultSite = db.DefaultSite
 type Watcher struct {
 	site     string
 	mirakc   *mirakc.Client
-	pool     *pgxpool.Pool
+	records  store.RecordObservations
 	enqueuer jobq.Enqueuer
 	webhook  *webhook.Client
 	services []mirakc.Service
@@ -38,11 +33,11 @@ type Watcher struct {
 
 // New は Watcher を生成する。enqueuer は ingest 投入に使う。webhook は任意（nil 可）で、
 // 録画 finished / failed の通知に使う（M3-11）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
+func New(site string, mc *mirakc.Client, records store.RecordObservations, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
 	return &Watcher{
 		site:     site,
 		mirakc:   mc,
-		pool:     pool,
+		records:  records,
 		enqueuer: enqueuer,
 		webhook:  wh,
 	}
@@ -167,10 +162,7 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	}
 	// stale 削除は snapshot の processRecord より前に実行する。後に置くと、
 	// ListRecords 後に SSE が作った行をこの削除が巻き込む。
-	stale, err := sqlcgen.New(w.pool).DeleteStaleRecordSyncs(ctx, sqlcgen.DeleteStaleRecordSyncsParams{
-		Site:      w.site,
-		RecordIds: recordIDs,
-	})
+	stale, err := w.records.DeleteStaleRecordSyncs(ctx, w.site, recordIDs)
 	if err != nil {
 		return fmt.Errorf("deleting stale record_syncs: %w", err)
 	}
@@ -182,7 +174,7 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
 		}
 	}
-	if err := sqlcgen.New(w.pool).UpsertRecordSweepSnapshot(ctx, w.site); err != nil {
+	if err := w.records.MarkSweepComplete(ctx, w.site); err != nil {
 		return fmt.Errorf("marking record sweep success: %w", err)
 	}
 	slog.Info("watcher sweep complete", "records", len(records), "stale", stale)
@@ -191,173 +183,39 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 }
 
 func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error {
-	// tag は programId しか運ばない（#53）。「自分が予約した record か」は
-	// IsOurs（rokuban のタグ）で判定し、reservation の特定は record 自身が
-	// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
-	ours := mirakc.IsOurs(record.Tags)
-
-	tx, err := w.pool.Begin(ctx)
+	observation, err := recordObservation(w.site, record)
 	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
+		return err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-
-	// record_sync の (site, record_id) 行を先に確保して行ロックを取る（M2-16）。
-	// これにより同一 record を並行処理しても、後発は先発のコミットまで待たされ、
-	// 待った後は recording_id が埋まった状態を見るので recordings の二重作成が起きない。
-	// AcquireRecordSync は行がなければ recording_id = NULL で新規作成するだけで、
-	// 既存行があってもその内容を書き換えない。
-	existingRecordingID, err := q.AcquireRecordSync(ctx, sqlcgen.AcquireRecordSyncParams{
-		Site:      w.site,
-		RecordID:  record.ID,
-		ProgramID: record.Program.ID,
-		Status:    record.Recording.Status,
-	})
+	result, err := w.records.ProcessRecord(ctx, observation)
 	if err != nil {
-		return fmt.Errorf("acquiring record_sync: %w", err)
+		return fmt.Errorf("processing record observation: %w", err)
 	}
-
-	var recordingID *int64
-	// prevStatus は webhook を「finished への遷移」だけに絞るために取る。
-	// record_sweep が同じ finished record を何度も processRecord しても再通知しない。
-	var prevStatus string
-	var title string
-	var failedReasonLabel string
-	var failedEventAdded bool
-
-	if existingRecordingID != nil {
-		recordingID = existingRecordingID
-		existing, getErr := q.GetRecordingByID(ctx, *recordingID)
-		if getErr != nil {
-			return fmt.Errorf("loading recording %d: %w", *recordingID, getErr)
-		}
-		prevStatus = existing.Status
-		title = existing.Title
-		if err := w.updateRecordingStatus(ctx, q, *recordingID, record); err != nil {
-			return fmt.Errorf("updating recording status: %w", err)
-		}
-	} else if ours {
-		var id int64
-		var createErr error
-		if record.Recording.Status == db.RecordingStatusFailed {
-			// failed record は recordless failed（SSE / schedules sweep）が先に
-			// 作った同一 active-event 行と競合し得る。ON CONFLICT で既存行を
-			// 再利用する専用クエリを使い、watcher の復帰順序に依存しないようにする。
-			id, createErr = w.createOrGetFailedRecording(ctx, q, record)
-		} else {
-			id, createErr = w.createRecording(ctx, q, record)
-		}
-		switch {
-		case record.Recording.Status == db.RecordingStatusFailed && errors.Is(createErr, pgx5.ErrNoRows):
-			// 同一 active-event に生きている non-failed 行（本物の success record が
-			// 既に枠を得た状態）がある。この failed record をその行へ帰属させず、
-			// recordings は作らない（recordings_unique_active_event の枠は success が
-			// 占有する）。record_sync には recording_id = NULL の観測として残すだけで、
-			// ingest も起きない。
-		case createErr != nil:
-			return fmt.Errorf("creating recording: %w", createErr)
-		default:
-			recordingID = &id
-			title = ptr.Deref(record.Program.Name)
-			if record.Recording.Status == db.RecordingStatusFailed {
-				// CreateOrGetFailedRecording は既存の active-event 行を再利用する
-				// ことがある。その場合も records API の status / startTime を反映し、
-				// recording 中の行を failed のまま残さない。
-				if err := w.updateRecordingStatus(ctx, q, id, record); err != nil {
-					return fmt.Errorf("updating failed recording status: %w", err)
-				}
-			}
-		}
+	if result.FailedQualityEventAdded && record.Recording.FailedReason != nil {
+		metrics.RecordingsFailed.WithLabelValues(failureReason(*record.Recording.FailedReason)).Inc()
 	}
-
-	// records API に残った failed record は recording.failed の SSE を失った後
-	// でも失敗理由を持つ。event + reason の組で重複を判定するので、同じ record
-	// を sweep するたびに quality_events やメトリクスが増殖しない。
-	if recordingID != nil && record.Recording.FailedReason != nil {
-		added, err := appendFailedQualityEvent(ctx, q, *recordingID, *record.Recording.FailedReason)
-		if err != nil {
-			return fmt.Errorf("appending failed quality event: %w", err)
+	if result.EnqueueIngest {
+		var opts []jobq.EnqueueOpt
+		if result.IngestPriority != 0 {
+			opts = append(opts, jobq.Priority(result.IngestPriority))
 		}
-		if added {
-			failedEventAdded = true
-			failedReasonLabel = failureReason(*record.Recording.FailedReason)
+		if _, err := w.enqueuer.Enqueue(ctx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, opts...); err != nil {
+			slog.Error("enqueuing ingest job after record commit", "site", w.site, "record_id", record.ID, "err", err)
 		}
-	}
-
-	if err := w.upsertRecordSync(ctx, q, record, recordingID); err != nil {
-		return fmt.Errorf("upserting record_sync: %w", err)
-	}
-
-	if recordingID != nil && (record.Recording.Status == db.RecordingStatusRecording || record.Recording.Status == db.RecordingStatusFinished) {
-		var enqueueOpts []jobq.EnqueueOpt
-		if record.Recording.Status == db.RecordingStatusFinished {
-			// 録画中に始める ingest は番組長のあいだ worker 枠を保持する。
-			// finished 後に初めて取り込む記録は priority を下げて投入する。
-			// recording は IngestJobArgs の既定 priority をそのまま使う。
-			enqueueOpts = append(enqueueOpts, jobq.Priority(2))
-		}
-		if _, err := w.enqueuer.EnqueueTx(ctx, tx, jobs.IngestJobArgs{Site: w.site, RecordID: record.ID}, enqueueOpts...); err != nil {
-			return fmt.Errorf("enqueuing ingest job: %w", err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-	if failedEventAdded {
-		metrics.RecordingsFailed.WithLabelValues(failedReasonLabel).Inc()
 	}
 
 	// DB が永続化した後に通知。失敗しても本処理は成功扱い（M3-11）。
-	if recordingID != nil && record.Recording.Status == "finished" && prevStatus != "finished" {
+	if result.RecordingID != nil && record.Recording.Status == db.RecordingStatusFinished && result.PreviousStatus != db.RecordingStatusFinished {
 		w.notify(ctx, webhook.Event{
 			Type:        webhook.EventRecordingFinished,
-			RecordingID: *recordingID,
+			RecordingID: *result.RecordingID,
 			Site:        w.site,
-			Title:       title,
-			Status:      "finished",
+			Title:       result.Title,
+			Status:      db.RecordingStatusFinished,
 		})
 	}
 
 	return nil
-}
-
-// createOrGetFailedRecording は records API に残った failed record のための
-// recordings 行を作る。同じ active-event の行が recordless failed や SSE 経路で
-// 先に作られていても、その行を返す。成功 record 用の createRecording と違い、
-// failed 行を supersede しない（本物の成功 record が来た時だけ supersede する）。
-func (w *Watcher) createOrGetFailedRecording(ctx context.Context, q *sqlcgen.Queries, record mirakc.Record) (int64, error) {
-	hasReservation := false
-	var ruleID *int64
-
-	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
-		Site:      w.site,
-		ProgramID: record.Program.ID,
-	})
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return 0, fmt.Errorf("looking up reservation for program %d: %w", record.Program.ID, err)
-	}
-	if err == nil {
-		hasReservation = true
-		ruleID = res.RuleID
-	}
-
-	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
-	if err != nil {
-		return 0, err
-	}
-
-	snapshot := snapshotFromRecord(record)
-	return q.CreateOrGetFailedRecording(ctx, snapshot.withCreateOrGetFailedRecordingParams(sqlcgen.CreateOrGetFailedRecordingParams{
-		RuleID:    ruleID,
-		Source:    source,
-		Site:      w.site,
-		NetworkID: int32(record.Program.NetworkID),
-		ServiceID: int32(record.Program.ServiceID),
-		EventID:   int32(record.Program.EventID),
-	}))
 }
 
 // processFailedSchedule は schedules API に残っている recordless failed を
@@ -368,258 +226,43 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		return nil
 	}
 
-	// schedules API には mirakc 全体の schedule が返る。Rokuban が観測すべき
-	// スケジュールかは、recording.failed の SSE 経路と同じく reservation の存在で
-	// 境界を引く。古い mirakc が tags を返さない場合も回収できる。
-	res, err := sqlcgen.New(w.pool).GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
-		Site:      w.site,
-		ProgramID: schedule.Program.ID,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return nil
-	}
+	// 失敗 schedule は mirakc 全体から返る。予約の無い番組は従来どおり無視し、
+	// サービス詳細の問い合わせも行わない。store は書き込み tx 内で予約を再確認する。
+	hasReservation, err := w.records.HasReservation(ctx, w.site, schedule.Program.ID)
 	if err != nil {
-		return fmt.Errorf("looking up reservation: %w", err)
+		return fmt.Errorf("checking reservation for failed schedule: %w", err)
+	}
+	if !hasReservation {
+		return nil
 	}
 
 	service, err := w.findService(ctx, schedule.Program.NetworkID, schedule.Program.ServiceID)
 	if err != nil {
 		return fmt.Errorf("finding service: %w", err)
 	}
-
-	reasonJSON, err := marshalQualityEvents("recording.failed", *schedule.FailedReason)
+	reasonJSON, err := json.Marshal(schedule.FailedReason)
 	if err != nil {
-		return fmt.Errorf("marshalling quality events: %w", err)
+		return fmt.Errorf("marshalling failed schedule reason: %w", err)
 	}
-
-	tx, err := w.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning failed schedule transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, schedule.Program.ID, true)
-	if err != nil {
-		return err
-	}
-
 	snapshot := snapshotFromSchedule(schedule, *service)
-	recordingID, err := q.CreateOrGetFailedRecording(ctx, snapshot.withCreateOrGetFailedRecordingParams(sqlcgen.CreateOrGetFailedRecordingParams{
-		RuleID:    res.RuleID,
-		Source:    source,
-		Site:      w.site,
-		NetworkID: int32(schedule.Program.NetworkID),
-		ServiceID: int32(schedule.Program.ServiceID),
-		EventID:   int32(schedule.Program.EventID),
-	}))
-	if errors.Is(err, pgx5.ErrNoRows) {
-		// 同一 active-event に生きている non-failed 行がある。本物の record が
-		// 既に枠を得たあとに failed schedule が残っていても、成功した行へ
-		// recording.failed を追記しない。
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("creating failed recording from schedule: %w", err)
-	}
-
-	added, err := q.AppendQualityEventsIfMissing(ctx, sqlcgen.AppendQualityEventsIfMissingParams{
-		Events: reasonJSON,
-		ID:     recordingID,
+	result, err := w.records.ProcessFailedSchedule(ctx, store.FailedScheduleObservation{
+		Site: w.site, ProgramID: schedule.Program.ID,
+		Snapshot: snapshot.recordingSnapshot(schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID),
+		Reason:   reasonJSON,
 	})
 	if err != nil {
-		return fmt.Errorf("appending failed schedule quality event: %w", err)
+		return fmt.Errorf("processing failed schedule: %w", err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing failed schedule transaction: %w", err)
-	}
-	if added == 0 {
-		return nil
-	}
-
-	metrics.RecordingsFailed.WithLabelValues(failureReason(*schedule.FailedReason)).Inc()
-	w.notify(ctx, webhook.Event{
-		Type:        webhook.EventRecordingFailed,
-		RecordingID: recordingID,
-		Site:        w.site,
-		Title:       snapshot.title,
-		Status:      db.RecordingStatusFailed,
-	})
-	return nil
-}
-
-func appendFailedQualityEvent(ctx context.Context, q *sqlcgen.Queries, recordingID int64, reason mirakc.FailedReason) (bool, error) {
-	events, err := marshalQualityEvents("recording.failed", reason)
-	if err != nil {
-		return false, err
-	}
-	rows, err := q.AppendQualityEventsIfMissing(ctx, sqlcgen.AppendQualityEventsIfMissingParams{
-		Events: events,
-		ID:     recordingID,
-	})
-	return rows > 0, err
-}
-
-func marshalQualityEvents(event string, reason any) (json.RawMessage, error) {
-	reasonJSON, err := json.Marshal(reason)
-	if err != nil {
-		return nil, err
-	}
-	qe := db.QualityEvent{
-		At:     time.Now(),
-		Event:  event,
-		Reason: reasonJSON,
-	}
-	return json.Marshal([]db.QualityEvent{qe})
-}
-
-func (w *Watcher) createRecording(ctx context.Context, q *sqlcgen.Queries, record mirakc.Record) (int64, error) {
-	hasReservation := false
-	var ruleID *int64
-
-	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
-		Site:      w.site,
-		ProgramID: record.Program.ID,
-	})
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return 0, fmt.Errorf("looking up reservation for program %d: %w", record.Program.ID, err)
-	}
-	if err == nil {
-		hasReservation = true
-		ruleID = res.RuleID
-	}
-
-	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, record.Program.ID, hasReservation)
-	if err != nil {
-		return 0, err
-	}
-
-	networkID := int32(record.Program.NetworkID)
-	serviceID := int32(record.Program.ServiceID)
-	eventID := int32(record.Program.EventID)
-	snapshot := snapshotFromRecord(record)
-
-	// 「本物の record が推論に必ず勝つ」（issue #98 の決定、issue #129 症状 2）:
-	// 同一 active-event（program_start_at を含む）に status='failed' の行が
-	// 生きたまま残っていれば、続く
-	// CreateRecording の INSERT より前に superseded にして枠を明け渡させる。
-	// SupersedeFailedRecording / CreateRecording の doc コメント参照（1 つの
-	// クエリに詰め込まず 2 つの文に分けている理由も同所）。
-	if _, err := q.SupersedeFailedRecording(ctx, sqlcgen.SupersedeFailedRecordingParams{
-		Site:           w.site,
-		NetworkID:      networkID,
-		ServiceID:      serviceID,
-		EventID:        eventID,
-		ProgramStartAt: snapshot.programStartAt,
-	}); err != nil {
-		return 0, fmt.Errorf("superseding failed recording for program %d: %w", record.Program.ID, err)
-	}
-
-	id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		RuleID:            ruleID,
-		Source:            source,
-		Site:              w.site,
-		NetworkID:         networkID,
-		ServiceID:         serviceID,
-		EventID:           eventID,
-		ServiceName:       snapshot.serviceName,
-		ChannelType:       snapshot.channelType,
-		Channel:           snapshot.channel,
-		Title:             snapshot.title,
-		Description:       snapshot.description,
-		Extended:          snapshot.extended,
-		Genres:            snapshot.genres,
-		IsFree:            snapshot.isFree,
-		ProgramStartAt:    snapshot.programStartAt,
-		ProgramDurationMs: snapshot.programDurationMs,
-		Status:            normalizeRecordingStatus(record.ID, record.Recording.Status),
-		StartedAt:         millisToTimeNonNil(record.Recording.StartTime),
-		EndedAt:           millisToTimePtr(record.Recording.EndTime),
-	})
-	return id, err
-}
-
-// knownRecordingStatuses は CHECK 制約 recordings_status_check が許す値集合と
-// 一致する。db パッケージの
-// 定数を直接 switch に書かず集合として持つのは normalizeRecordingStatus の
-// メンテナ向けに「ここが CHECK と同期している唯一の場所」を明示するため。
-var knownRecordingStatuses = map[string]bool{
-	db.RecordingStatusRecording: true,
-	db.RecordingStatusFinished:  true,
-	db.RecordingStatusCanceled:  true,
-	db.RecordingStatusFailed:    true,
-}
-
-// normalizeRecordingStatus は mirakc の RecordInfo.Status（internal/mirakc/types.go。
-// 値域を制限する型を持たない素の string）を recordings.status の閉じた値域に
-// 正規化する（issue #130）。
-//
-// mirakc の RecordingStatus は 4 バリアントの網羅的 enum で、ワイヤに出る値は
-// recording/finished/canceled/failed の 4 つで閉じていることをソースで確認済み
-// （issue #130）。だが RecordInfo.Status 自体は素の string なので、mirakc が
-// 将来 5 つ目の値を追加すると Rokuban はコンパイル時に気付けない。未知の値を
-// そのまま CreateRecording / UpdateRecordingStatus に渡すと recordings_status_check
-// 違反で processRecord のトランザクション全体がロールバックし、record_sync にも
-// 観測が残らないまま同じ record を毎パス再試行し続ける
-// （実際に canceled だけがこの壊れ方をしていたのが #130 本体）。
-//
-// 未知の値は 'failed' に丸める。'canceled' を 'failed' に丸めると「録画一覧が
-// 嘘をつく」という #130 が避けた問題と混同しないこと —— あちらは**分かっている
-// 2つの異なる事実**（取消と失敗）を同じ値に潰すから嘘になる。ここは逆に
-// **何が起きたか分からない**という状態そのものが事実であり、その生の値は
-// record_sync.status（CHECK 無し。docs/schema/record-sync.md「mirakc の
-// recordingStatus そのまま」）に手を加えず残る。recordings.status 側は「正常に
-// 完了しなかった」という粗い事実だけを表現する。5 値目を CHECK / openapi.yaml の
-// enum に足さない選択（issue #130 の「決めること」）に伴う代償として、この粗さは
-// 許容する。
-//
-// 未知の値を観測したら必ず slog.Error でログに残す。次に mirakc が値を足したら、
-// このログを見た人間が本関数と recordings_status_check / openapi.yaml の enum を
-// 更新すること。
-func normalizeRecordingStatus(recordID, raw string) string {
-	if knownRecordingStatuses[raw] {
-		return raw
-	}
-	slog.Error("unknown mirakc recording status; storing as failed",
-		"record_id", recordID, "raw_status", raw)
-	return db.RecordingStatusFailed
-}
-
-func (w *Watcher) updateRecordingStatus(ctx context.Context, q *sqlcgen.Queries, recordingID int64, record mirakc.Record) error {
-	return q.UpdateRecordingStatus(ctx, sqlcgen.UpdateRecordingStatusParams{
-		ID:        recordingID,
-		NewStatus: normalizeRecordingStatus(record.ID, record.Recording.Status),
-		StartedAt: millisToTimeNonNil(record.Recording.StartTime),
-		EndedAt:   millisToTimePtr(record.Recording.EndTime),
-	})
-}
-
-func (w *Watcher) upsertRecordSync(ctx context.Context, q *sqlcgen.Queries, record mirakc.Record, recordingID *int64) error {
-	tags := record.Tags
-	if tags == nil {
-		tags = []string{}
-	}
-
-	var failedReasonJSON json.RawMessage
-	if record.Recording.FailedReason != nil {
-		data, err := json.Marshal(record.Recording.FailedReason)
-		if err != nil {
-			return fmt.Errorf("marshalling failed_reason: %w", err)
+	if result.FailedQualityEventAdded {
+		metrics.RecordingsFailed.WithLabelValues(failureReason(*schedule.FailedReason)).Inc()
+		if result.RecordingID != nil {
+			w.notify(ctx, webhook.Event{
+				Type: webhook.EventRecordingFailed, RecordingID: *result.RecordingID,
+				Site: w.site, Title: result.Title, Status: db.RecordingStatusFailed,
+			})
 		}
-		failedReasonJSON = data
 	}
-
-	return q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
-		Site:          w.site,
-		RecordID:      record.ID,
-		RecordingID:   recordingID,
-		ProgramID:     record.Program.ID,
-		Status:        record.Recording.Status,
-		ContentPath:   contentPathPtr(record.Content.Path),
-		ContentLength: contentLengthPtr(record.Content.Length),
-		Tags:          tags,
-		FailedReason:  failedReasonJSON,
-	})
+	return nil
 }
 
 func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.RecordingFailedData) error {
@@ -627,107 +270,42 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	// それらが失敗したときに取りこぼす（物事がうまくいっていないときこそ数えたい）。
 	metrics.RecordingsFailed.WithLabelValues(failureReason(data.Reason)).Inc()
 
-	q := sqlcgen.New(w.pool)
-
-	res, err := q.GetReservationBySiteAndProgramID(ctx, sqlcgen.GetReservationBySiteAndProgramIDParams{
-		Site:      w.site,
-		ProgramID: data.ProgramID,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		slog.Debug("no reservation for failed recording", "program_id", data.ProgramID)
-		return nil
-	}
+	hasReservation, err := w.records.HasReservation(ctx, w.site, data.ProgramID)
 	if err != nil {
 		return fmt.Errorf("looking up reservation: %w", err)
+	}
+	if !hasReservation {
+		slog.Debug("no reservation for failed recording", "program_id", data.ProgramID)
+		return nil
 	}
 
 	schedule, err := w.mirakc.GetSchedule(ctx, data.ProgramID)
 	if err != nil {
 		return fmt.Errorf("getting schedule: %w", err)
 	}
-
 	service, err := w.findService(ctx, schedule.Program.NetworkID, schedule.Program.ServiceID)
 	if err != nil {
 		return fmt.Errorf("finding service: %w", err)
 	}
-
 	reasonJSON, err := json.Marshal(data.Reason)
 	if err != nil {
 		return fmt.Errorf("marshalling failed reason: %w", err)
 	}
-	qe := db.QualityEvent{
-		At:     time.Now(),
-		Event:  "recording.failed",
-		Reason: reasonJSON,
-	}
-	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
-	if err != nil {
-		return fmt.Errorf("marshalling quality events: %w", err)
-	}
-
-	// handleRecordingFailed は予約が無ければ上で早期 return しているので、
-	// ここに到達した時点で予約は必ず存在する。
-	source, err := reservation.DeriveRecordingSource(ctx, q, w.site, data.ProgramID, true)
-	if err != nil {
-		return err
-	}
-
 	snapshot := snapshotFromSchedule(*schedule, *service)
-	networkID := int32(schedule.Program.NetworkID)
-	serviceID := int32(schedule.Program.ServiceID)
-	eventID := int32(schedule.Program.EventID)
-
-	if err := q.CreateFailedRecording(ctx, sqlcgen.CreateFailedRecordingParams{
-		RuleID:            res.RuleID,
-		Source:            source,
-		Site:              w.site,
-		NetworkID:         networkID,
-		ServiceID:         serviceID,
-		EventID:           eventID,
-		ServiceName:       snapshot.serviceName,
-		ChannelType:       snapshot.channelType,
-		Channel:           snapshot.channel,
-		Title:             snapshot.title,
-		Description:       snapshot.description,
-		Extended:          snapshot.extended,
-		Genres:            snapshot.genres,
-		IsFree:            snapshot.isFree,
-		ProgramStartAt:    snapshot.programStartAt,
-		ProgramDurationMs: snapshot.programDurationMs,
-		QualityEvents:     qeJSON,
-	}); err != nil {
-		return err
+	recordingID, err := w.records.RecordFailedRecording(ctx, store.FailedRecordingObservation{
+		Site: w.site, ProgramID: data.ProgramID,
+		Snapshot: snapshot.recordingSnapshot(schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID),
+		Reason:   reasonJSON,
+	})
+	if err != nil {
+		return fmt.Errorf("recording failed event: %w", err)
 	}
-
-	// CreateFailedRecording は :exec（ON CONFLICT 更新もあり）なので id は別途引く。
-	// 引けなくても本処理は成功済み。webhook だけ諦める。
-	//
-	// superseded_at IS NULL も条件に入れる（issue #129 症状 2）。CreateRecording が
-	// 同一 active-event の failed 行を superseded にした後も、その行は deleted_at が
-	// NULL のまま履歴として残るため、deleted_at だけで絞ると superseded 済みの
-	// 過去の failed 行と、いま CreateFailedRecording が更新した「生きている」行の
-	// 2 行がヒットしうる（ORDER BY が無いと QueryRow はどちらを返すか不定）。
-	// program_start_at も条件に入れる。event_id は同一サービス内で永続的な一意性を
-	// 持たない（ARIB TR-B14 第四編 8.2.1 が保証するのはイベント終了から 24 時間）ため、
-	// これが無いと event_id が再利用された過去の行までヒットしうる。
-	// ON CONFLICT の対象（生きている行）と同じ述語に揃えることで一意に定まる。
-	var recordingID int64
-	if err := w.pool.QueryRow(ctx, `
-		SELECT id FROM recordings
-		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
-		  AND program_start_at = $5
-		  AND deleted_at IS NULL AND superseded_at IS NULL
-	`, w.site, networkID, serviceID, eventID, snapshot.programStartAt).Scan(&recordingID); err != nil {
-		slog.Warn("webhook: looking up failed recording id",
-			"program_id", data.ProgramID, "err", err)
+	if recordingID == 0 {
 		return nil
 	}
 	w.notify(ctx, webhook.Event{
-		Type:        webhook.EventRecordingFailed,
-		RecordingID: recordingID,
-		Site:        w.site,
-		Title:       snapshot.title,
-		Status:      "failed",
+		Type: webhook.EventRecordingFailed, RecordingID: recordingID,
+		Site: w.site, Title: snapshot.title, Status: db.RecordingStatusFailed,
 	})
 	return nil
 }
@@ -745,43 +323,14 @@ func (w *Watcher) notify(ctx context.Context, ev webhook.Event) {
 
 func (w *Watcher) handleRecordBroken(ctx context.Context, data mirakc.RecordBrokenData) error {
 	metrics.RecordsBroken.WithLabelValues(brokenReason(data.Reason)).Inc()
-
-	q := sqlcgen.New(w.pool)
-
-	recordingID, err := q.GetRecordSyncRecordingID(ctx, sqlcgen.GetRecordSyncRecordingIDParams{
-		Site:     w.site,
-		RecordID: data.RecordID,
-	})
+	appended, err := w.records.AppendRecordBrokenEvent(ctx, w.site, data.RecordID, data.Reason)
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			slog.Debug("no record_sync entry for record-broken", "record_id", data.RecordID)
-			return nil
-		}
-		return fmt.Errorf("looking up record_sync: %w", err)
+		return fmt.Errorf("appending record-broken event: %w", err)
 	}
-	if recordingID == nil {
-		slog.Debug("untracked record for record-broken", "record_id", data.RecordID)
-		return nil
+	if !appended {
+		slog.Debug("record-broken event has no linked recording", "record_id", data.RecordID)
 	}
-
-	reasonJSON, err := json.Marshal(map[string]string{"reason": data.Reason})
-	if err != nil {
-		return fmt.Errorf("marshalling broken reason: %w", err)
-	}
-	qe := db.QualityEvent{
-		At:     time.Now(),
-		Event:  "recording.record-broken",
-		Reason: reasonJSON,
-	}
-	qeJSON, err := json.Marshal([]db.QualityEvent{qe})
-	if err != nil {
-		return fmt.Errorf("marshalling quality events: %w", err)
-	}
-
-	return q.AppendQualityEvents(ctx, sqlcgen.AppendQualityEventsParams{
-		ID:     *recordingID,
-		Events: qeJSON,
-	})
+	return nil
 }
 
 func (w *Watcher) findService(ctx context.Context, networkID, serviceID int) (*mirakc.Service, error) {

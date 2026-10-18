@@ -129,7 +129,7 @@ func (q *Queries) ClearRecordingCMDetection(ctx context.Context, recordingID int
 	return err
 }
 
-const createFailedRecording = `-- name: CreateFailedRecording :exec
+const createFailedRecording = `-- name: CreateFailedRecording :one
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
@@ -150,6 +150,7 @@ ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at     = now()
+RETURNING id
 `
 
 type CreateFailedRecordingParams struct {
@@ -182,8 +183,8 @@ type CreateFailedRecordingParams struct {
 // active-event の failed 行で、mirakc からの繰り返し通知に同じ理由を積み増す。
 // 欠測は recordings に行を作らなくなった（never_scheduled_events 表に移設）ので、
 // ここで欠測行と衝突することはもう無い。
-func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
-	_, err := q.db.Exec(ctx, createFailedRecording,
+func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createFailedRecording,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -202,7 +203,9 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 		arg.ProgramDurationMs,
 		arg.QualityEvents,
 	)
-	return err
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createOrGetFailedRecording = `-- name: CreateOrGetFailedRecording :one

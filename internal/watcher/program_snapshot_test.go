@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 func TestSnapshotFromRecord(t *testing.T) {
@@ -94,10 +94,9 @@ func TestSnapshotFromSchedule(t *testing.T) {
 	assertProgramSnapshotEqual(t, snapshotFromSchedule(input, service), want)
 }
 
-func TestProgramSnapshotParamsAdapter(t *testing.T) {
+func TestProgramSnapshotStoreAdapter(t *testing.T) {
 	startAt := time.Date(2026, time.March, 4, 5, 6, 7, 0, time.UTC)
 	description := "description"
-	ruleID := int64(81)
 	snapshot := programSnapshot{
 		serviceName:       "service",
 		channelType:       "GR",
@@ -111,22 +110,15 @@ func TestProgramSnapshotParamsAdapter(t *testing.T) {
 		programDurationMs: 300_000,
 	}
 
-	base := sqlcgen.CreateOrGetFailedRecordingParams{
-		RuleID: &ruleID, Source: "rule", Site: "site", NetworkID: 1, ServiceID: 2, EventID: 3,
+	want := store.RecordingSnapshot{
+		NetworkID: 1, ServiceID: 2, EventID: 3,
+		ServiceName: "service", ChannelType: "GR", Channel: "27", Title: "title",
+		Description: &description, Extended: json.RawMessage(`{"key":"value"}`),
+		Genres: json.RawMessage(`[{"lv1":1}]`), IsFree: true,
+		ProgramStartAt: startAt, ProgramDurationMs: 300_000,
 	}
-	wantCreateOrGet := base
-	wantCreateOrGet.ServiceName = "service"
-	wantCreateOrGet.ChannelType = "GR"
-	wantCreateOrGet.Channel = "27"
-	wantCreateOrGet.Title = "title"
-	wantCreateOrGet.Description = &description
-	wantCreateOrGet.Extended = json.RawMessage(`{"key":"value"}`)
-	wantCreateOrGet.Genres = json.RawMessage(`[{"lv1":1}]`)
-	wantCreateOrGet.IsFree = true
-	wantCreateOrGet.ProgramStartAt = startAt
-	wantCreateOrGet.ProgramDurationMs = 300_000
-	if got := snapshot.withCreateOrGetFailedRecordingParams(base); !reflect.DeepEqual(got, wantCreateOrGet) {
-		t.Errorf("withCreateOrGetFailedRecordingParams() = %#v, want %#v", got, wantCreateOrGet)
+	if got := snapshot.recordingSnapshot(1, 2, 3); !reflect.DeepEqual(got, want) {
+		t.Errorf("recordingSnapshot() = %#v, want %#v", got, want)
 	}
 }
 
