@@ -54,18 +54,20 @@
 - `.g` と、先頭が 0 でない数字で終わる名前（`x.g1`、`foo.g12`）。カット版でない `x.g1` は、`x` のカット版の世代 1 と同じ相対パスになる。`x.g0` や `x.g01` は書き手が書かない世代なので、拒まない。
 - `rescue-` で始まる名前。catalog を使わない rescue が、拾った encoded に付ける名前である。そのパスは世代番号の形を持たない。
 
-これらを拒むと、同じ原本から作る相対パスは、名前と世代ごとに異なる。別の原本どうしでは、同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。公開 tx は rename より前に `media_assets` の行で `rel_path` を予約するため、別の active 行がそのパスを持っていれば一意制約で失敗し、既存ファイルは変わらない。エンコード試行には失敗が記録される。
+これらを拒むと、同じ原本から作る相対パスは、名前と世代ごとに異なる。別の原本どうしでは、同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。そのパスを削除済みでない別の行が持っているとき、後から公開する側のエンコード試行は失敗し、既存のファイルは変わらない（[storage/contract.md](../storage/contract.md) §派生物の公開（encode））。
 
 この規則は設定の読み込みで検査するので、全ロールに効く。規則に当たる名前が設定にあると、更新しただけで全ロールが起動を拒む。意味の検査の対象でない watcher・streamer・notifier も止まる。
 
 規則に当たる名前は改名する。改名すると、旧名で凍結した録画のうち旧名の encoded がまだ無いものは、満たせなくなる（`rokuban_encode_reconcile_unsatisfiable` に出る）。その `until_encoded` の原本は消えずに残る。旧名は設定に戻せないので、対処はその録画のエンコード方針から旧名を外すことである（[runbook/troubleshooting.md](../runbook/troubleshooting.md) §エンコードが失敗している（理由を知りたい））。
 
-新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。改名前の encoded と新しいプロファイルの出力は同じ相対パスになり、出力は既存ファイルを上書きせず失敗する。旧名の証拠と新名の成果物は別々に扱う必要がある。
+新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。旧名の encoded が削除済みでない録画では、新名のエンコードが同じ相対パスを予約できず、毎回失敗するからである。失敗は `recording_encode_attempts` の `state='failed'` 行と `error` に残る。試行が 25 回に達すると worker はそのジョブを打ち切り、reconcile も同じ録画・プロファイルを積み直さない（[runbook/troubleshooting.md](../runbook/troubleshooting.md) §encode が上限に達して止まった）。
 
 <details><summary>根拠</summary>
 
-- `rel_path` の予約を rename より先に行うこと: `publishEncoded`
-- active な別行とパスが衝突したときファイルを保護し、試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
+- 公開が `rel_path` の予約を rename より先に行うこと: `publishEncoded`
+- 削除済みでない別行とパスが衝突したとき、ファイルを保護して試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
+- 25 回で打ち切ること: `EncodeWorker.Work`（`errEncodeAttemptLimit`）
+- 上限に達した行を reconcile が積み直さないこと: `encode_attempts_exhausted`（`ListMissingEncodeProfiles`）
 
 </details>
 

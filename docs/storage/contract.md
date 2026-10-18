@@ -106,9 +106,7 @@ k8s の `worker-scaledjobs.yaml` は全 ScaledJob が `rollout.strategy: gradual
 
 ### 派生物の公開（encode）
 
-エンコードの公開では、データベースでパスを予約してからファイルを置く。
-
-出力先は `media_assets` の `rel_path` で管理する。同じディレクトリの staging file にコピーし、公開は lock の中で判定、Upsert によるパス予約、rename、親ディレクトリの fsync、commit の順に行う。古い試行は、試行回数の照合と行の再確認で公開できない。
+エンコード出力は既にある行のパスへ公開する。そのため canonical を直接開かず、同じディレクトリの staging file へ書く。パスは、ファイルを置く前に DB で予約する。古い試行は、試行回数の照合と行の再確認で公開できない。
 
 encode の出力は原本と違って既にある行の `rel_path` を指す（プロファイルごとに 1 つ。カット版は世代番号で新しいパスになる）。締切後に River が同じ job ID を再試行した時、古い Work が ctx cancellation に従わなければ、同じ `(recording, profile)` の試行が一時的に並走しうる。そのため次の対策を置く。
 
@@ -119,8 +117,7 @@ encode の出力は原本と違って既にある行の `rel_path` を指す（�
 - 各試行は開始時に増えた attempt count を fencing token として公開時に照合する。古い token の試行は canonical を公開できない。
 - ctx cancellation に従わない古い ffmpeg は CPU を使い続けうるため、k8s liveness がプロセスごと停止させる。
 - staging は canonical と同じディレクトリの staging file（`.rokuban-encode-`）へ、rel_path lock の外でストリームコピー + `fsync` する。
-- 公開は lock（filesystem lock → tx）の中で、**判定 → Upsert で `rel_path` を予約 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → commit** の順に行う。active な別行が同じパスを持つと、Upsert の一意制約が rename 前に失敗する。既存ファイルを保ち、エンコード試行に失敗を記録する。
-- canonical を `O_TRUNC` で直接開くと、読者が途中の内容を観測しうる。通常削除も同じ filesystem lock を取る。公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
+- 公開は lock（filesystem lock → tx）の中で、**判定 → Upsert で `rel_path` を予約 → rename（サイドカー → 本体）→ 親ディレクトリ `fsync` → commit** の順に行う。削除済みでない別行が同じパスを持つと、Upsert の一意制約で rename 前に失敗し、既存ファイルは変わらず、試行は失敗として記録される。canonical を `O_TRUNC` で直接開くと、読者が切り詰められた内容を観測しうる。通常削除も同じ filesystem lock を取る。そのため公開と commit の間で lock を離すと、commit 前の行と消えた実体が組み合わせになりうる（ルール 3 と同じ理由）。canonical orphan は報告だけを行う。
 - 通常削除は同じ filesystem lock を取る。RWX 越しに `flock` が効くかは未検証（ルール 4 と同じ前提）。
 - 置き忘れた staging file は孤児候補になる。`.rokuban-locks/` と catalog directory と旧形式 lock filename は走査から除外する。
 - mtime 猶予（既定 7 日）と孤児エイジング（既定 14 日）の後、canonical 名でない孤児を lock なしで消す。mtime は unlink 直前に再確認する。canonical 名の orphan は削除せず、確認を促す Warn と `rokuban_orphan_files_unresolved` に出す。

@@ -268,10 +268,9 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 
-// A different recording/profile can derive the same rel_path (for example,
-// `r_a` + `b` and `r` + `a_b`). The active row must reject the second publish
-// before rename, and the normal Work path must record that rejection as a
-// failed attempt.
+// 別の録画・プロファイルが同じ rel_path を導くことがある（`r_a` + `b` と `r` + `a_b`）。
+// 削除済みでない別行がそのパスを持つなら、2 つ目の公開は rename の前に Upsert で拒まれる。
+// 通常の Work の経路は、この拒否を失敗した試行として記録する。
 func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

@@ -897,7 +897,7 @@ func (w *EncodeWorker) prepareEncodePublish(
 // fsync → commit** と進む。順序を逆にしない --- DB commit を先にすると、
 // 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
 // rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
-// active な別行が同じ rel_path を持つ場合、Upsert の一意制約で rename 前に失敗する。
+// 削除済みでない別行が同じ rel_path を持つ場合、Upsert の一意制約で rename 前に失敗する。
 //
 // lock を commit まで保持するのは、通常削除が同じ lock の下で DB 状態と canonical
 // file を更新し、他の公開がその間へ割り込まないようにするためである。
