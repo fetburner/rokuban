@@ -17,8 +17,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Analysis は録画の解析のドメイン（チャプター編集。後に CM 検出が載る）を
-// PostgreSQL で実装する。pool を持ち、このドメインの interface をまとめて満たす。
+// Analysis は録画の解析のドメイン（チャプター編集など）を PostgreSQL で実装する。
+// pool を持ち、このドメインの interface をまとめて満たす。
 type Analysis struct {
 	pool *pgxpool.Pool
 }
