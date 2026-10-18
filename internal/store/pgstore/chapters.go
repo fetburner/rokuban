@@ -17,19 +17,20 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Store は PostgreSQL によるアプリケーションの永続化契約の実装。
-type Store struct {
+// Analysis は録画の解析のドメイン（チャプター編集。後に CM 検出が載る）を
+// PostgreSQL で実装する。pool を持ち、このドメインの interface をまとめて満たす。
+type Analysis struct {
 	pool *pgxpool.Pool
 }
 
-// New は PostgreSQL を使う Store を作る。
-func New(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool}
+// NewAnalysis は PostgreSQL を使う Analysis を作る。
+func NewAnalysis(pool *pgxpool.Pool) *Analysis {
+	return &Analysis{pool: pool}
 }
 
 // Read は現在のチャプター層と、楽観的並行制御用の不透明な版を返す。
 // 読み取り専用の RepeatableRead tx で、状態と区間を同じスナップショットから読む。
-func (s *Store) Read(ctx context.Context, recordingID int64) (store.ChapterSnapshot, error) {
+func (s *Analysis) Read(ctx context.Context, recordingID int64) (store.ChapterSnapshot, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
 		return store.ChapterSnapshot{}, fmt.Errorf("beginning chapter read for recording %d: %w", recordingID, err)
@@ -73,7 +74,7 @@ func (s *Store) Read(ctx context.Context, recordingID int64) (store.ChapterSnaps
 }
 
 // Replace はユーザー層の全体を 1 つの tx で引き取る、または置き換える。
-func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error {
+func (s *Analysis) Replace(ctx context.Context, recordingID int64, expectedVersion string, spans []chapters.Span, requireDetectionComplete bool) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning chapter edit for recording %d: %w", recordingID, err)
@@ -130,7 +131,7 @@ func (s *Store) Replace(ctx context.Context, recordingID int64, expectedVersion 
 }
 
 // Reset はユーザー層を消し、録画を自動層に戻す。
-func (s *Store) Reset(ctx context.Context, recordingID int64) error {
+func (s *Analysis) Reset(ctx context.Context, recordingID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning chapter reset for recording %d: %w", recordingID, err)

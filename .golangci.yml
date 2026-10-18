@@ -66,8 +66,9 @@ linters:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: store contracts do not depend on generated database queries
 
-        pgx-import-boundary:
-          # pgx は DB 基盤と構成の根だけに置く。テストは統合 DB の状態作りに使うため除外する。
+        db-import-boundary:
+          # pgx と生成 SQL は pgstore と DB 基盤に閉じ込める。テストは統合 DB の状態作りに使うため除外する。
+          # pgx の恒久の例外（riveradapter など）は sqlcgen-composition-roots が sqlcgen だけを禁止する。
           list-mode: lax
           files:
             - "${config-path}/**"
@@ -160,94 +161,19 @@ linters:
             - "!${config-path}/internal/worker/worker.go"
           deny:
             - pkg: github.com/jackc/pgx
-              desc: pgx imports are limited to the database foundation and composition roots
-        sqlcgen-import-boundary:
-          # 生成 SQL は pgstore と DB 基盤に閉じ込める。テストは状態作りに使うため除外する。
+              desc: pgx imports are limited to pgstore, the database foundation and composition roots
+            - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
+              desc: generated database queries are limited to pgstore and the database foundation
+        sqlcgen-composition-roots:
+          # pgx の恒久の例外でも、生成 SQL は使わせない。
           list-mode: lax
           files:
-            - "${config-path}/**"
+            - "${config-path}/internal/jobq/riveradapter/**"
+            - "${config-path}/internal/notifier/pgsource/**"
+            - "${config-path}/internal/role/leader.go"
+            - "${config-path}/internal/testutil/**"
+            - "${config-path}/cmd/rokuban/**"
             - "!$test"
-            - "!${config-path}/internal/store/pgstore/**"
-            - "!${config-path}/internal/db/**"
-            # 移設待ち。移したタスクが行を消す。増やさない。
-            - "!${config-path}/internal/api/breakers.go"
-            - "!${config-path}/internal/api/capacity.go"
-            - "!${config-path}/internal/api/capacity_preview.go"
-            - "!${config-path}/internal/api/cm_detect.go"
-            - "!${config-path}/internal/api/encode_queue.go"
-            - "!${config-path}/internal/api/epg.go"
-            - "!${config-path}/internal/api/handler.go"
-            - "!${config-path}/internal/api/label_rules.go"
-            - "!${config-path}/internal/api/playback_state.go"
-            - "!${config-path}/internal/api/program_intent.go"
-            - "!${config-path}/internal/api/program_overrides.go"
-            - "!${config-path}/internal/api/program_reservation.go"
-            - "!${config-path}/internal/api/recordings.go"
-            - "!${config-path}/internal/api/recordings_query.go"
-            - "!${config-path}/internal/api/reservations_overlaps.go"
-            - "!${config-path}/internal/api/router.go"
-            - "!${config-path}/internal/api/rules.go"
-            - "!${config-path}/internal/api/search.go"
-            - "!${config-path}/internal/api/storage.go"
-            - "!${config-path}/internal/api/tuners.go"
-            - "!${config-path}/internal/breaker/breaker.go"
-            - "!${config-path}/internal/capacity/load.go"
-            - "!${config-path}/internal/capacity/preview.go"
-            - "!${config-path}/internal/catalog/export.go"
-            - "!${config-path}/internal/catalog/rescue.go"
-            - "!${config-path}/internal/catalog/rescue_scan.go"
-            - "!${config-path}/internal/epgimport/library.go"
-            - "!${config-path}/internal/epgimport/rule.go"
-            - "!${config-path}/internal/epgimport/util.go"
-            - "!${config-path}/internal/inplace/register.go"
-            - "!${config-path}/internal/jobq/jobqfake/fake.go"
-            - "!${config-path}/internal/metrics/backlog.go"
-            - "!${config-path}/internal/metrics/loop_pass.go"
-            - "!${config-path}/internal/metrics/presync.go"
-            - "!${config-path}/internal/reconciler/reconciler.go"
-            - "!${config-path}/internal/reservation/source.go"
-            - "!${config-path}/internal/reservation/sync.go"
-            - "!${config-path}/internal/rulequery/load.go"
-            - "!${config-path}/internal/rulequery/query.go"
-            - "!${config-path}/internal/ruler/dedupe.go"
-            - "!${config-path}/internal/ruler/ruler.go"
-            - "!${config-path}/internal/ruler/sql.go"
-            - "!${config-path}/internal/streamer/chase.go"
-            - "!${config-path}/internal/streamer/frame.go"
-            - "!${config-path}/internal/streamer/live.go"
-            - "!${config-path}/internal/streamer/original_vod.go"
-            - "!${config-path}/internal/streamer/streamer.go"
-            - "!${config-path}/internal/tsscan/worker.go"
-            - "!${config-path}/internal/watcher/program_snapshot.go"
-            - "!${config-path}/internal/watcher/watcher.go"
-            - "!${config-path}/internal/worker/catalog_export.go"
-            - "!${config-path}/internal/worker/cm_detect.go"
-            - "!${config-path}/internal/worker/cm_detect_reconcile.go"
-            - "!${config-path}/internal/worker/cm_logo_candidate.go"
-            - "!${config-path}/internal/worker/delete_execute.go"
-            - "!${config-path}/internal/worker/delete_reconcile.go"
-            - "!${config-path}/internal/worker/delete_select.go"
-            - "!${config-path}/internal/worker/encode.go"
-            - "!${config-path}/internal/worker/encode_attempts.go"
-            - "!${config-path}/internal/worker/encode_profile_meaning.go"
-            - "!${config-path}/internal/worker/encode_reconcile.go"
-            - "!${config-path}/internal/worker/epg.go"
-            - "!${config-path}/internal/worker/ingest.go"
-            - "!${config-path}/internal/worker/ingest_progress.go"
-            - "!${config-path}/internal/worker/label_rule_reconcile.go"
-            - "!${config-path}/internal/worker/media_asset_namespace.go"
-            - "!${config-path}/internal/worker/media_asset_publish.go"
-            - "!${config-path}/internal/worker/reconcile_pass.go"
-            - "!${config-path}/internal/worker/record_sweep.go"
-            - "!${config-path}/internal/worker/ruler_pass.go"
-            - "!${config-path}/internal/worker/seek_tiles.go"
-            - "!${config-path}/internal/worker/storage.go"
-            - "!${config-path}/internal/worker/storage_audit.go"
-            - "!${config-path}/internal/worker/thumbnail.go"
-            - "!${config-path}/internal/worker/thumbnail_reconcile.go"
-            - "!${config-path}/internal/worker/thumbnail_selection.go"
-            - "!${config-path}/internal/worker/tuner.go"
-            - "!${config-path}/internal/worker/worker.go"
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: generated database queries are limited to pgstore and the database foundation
