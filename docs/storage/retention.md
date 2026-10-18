@@ -313,7 +313,7 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
 
-TS の計測済み判定は、主キー `media_asset_id` で引くスカラー副問い合わせで書く。JOIN して `s.scanned_size_bytes = a.size_bytes` と書くと、PostgreSQL は異なる表の列どうしの等号を独立と見なし、1 行に絞られると見積もる。計測済みの集合が入れ子ループの内側で Materialize され、候補 × 計測済みで二乗になる。副問い合わせなら候補ごとに索引を 1 回引くだけで済む。相関 `EXISTS` の中に等号を入れる形では直らず、今でも先に浮かぶ案である。集合は JOIN と同じで、計測記録の無い原本は NULL との比較で不一致になる。
+TS の計測済み判定は、主キー `media_asset_id` で引くスカラー副問い合わせで書く。JOIN して `s.scanned_size_bytes = a.size_bytes` と書くと、PostgreSQL は異なる表の列どうしの等号を独立と見なし、1 行に絞られると見積もる。計測済みの集合が入れ子ループの内側で Materialize され、候補 × 計測済みで二乗になる。副問い合わせなら候補ごとに索引を 1 回引くだけで済む。相関 `EXISTS` の中に等号を移しても直らない（50% で約 2,900 ms）。集合は JOIN と同じで、計測記録の無い原本は NULL との比較で不一致になる。
 
 PostgreSQL 16 の合成データは、原本 2 万、現行サイズの計測済み 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万とした。`until_encoded` の割合を変え、prepared statement の 6 回目（generic plan）を `LIMIT 5000` で測った。
 
@@ -322,9 +322,9 @@ PostgreSQL 16 の合成データは、原本 2 万、現行サイズの計測済
 | `ListUntilEncodedOriginalsToDelete` | 83 → 64 | 2,939 → 44 | 24 → 22 |
 | `ListMediaAssetsPendingDelete` | 101 → 104 | 4,242 → 63 | 33 → 28 |
 
-50% の JOIN は `Rows Removed by Join Filter` が最大 1 億 469 万行に達した。これは planner の見積りの挙動であり、契約ではない。集合は形に依存しない。本番データでの計画と時間は未測定である。
+50% の JOIN は `Rows Removed by Join Filter` が最大 1 億 469 万行に達した。副問い合わせの形で二乗を避けられるのは PostgreSQL 16 の planner での実測であり、契約ではない。本番データでの計画と時間は未測定である。
 
-原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。実行計画も変わらない。どちらの形も JOIN に展開され、PostgreSQL 16 の合成 2 万件では、入れ子ループを無効にした全件 count が今の形で 48 ms、まとめた形で 45 ms だった。
+原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。
 
 ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
 
