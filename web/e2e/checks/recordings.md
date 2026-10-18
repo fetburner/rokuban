@@ -29,9 +29,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:recording-next-episode
 
 ### CM 検出のロゴ位置（`cm-logo-area.mjs`）
 
-CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源として開く。旧い query 形式は画面側のリダイレクト契約であり、この判定は新しい局ルートを使う。API はブラウザ側で差し替え、1x1 PNG と `X-Coded-Width: 1440`、`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を返す。画像の画素数ではなく coded size と SAR を使えていることを測る。ロゴ候補のプレビューは幅 100px 超の実寸（今のロゴ 240×120、候補 200×100）にする。1x1 では狭い列での縮みと見切れが測れない。枠の PUT は実バックエンドと同じく候補を作らない（`running` 行は worker が後から作る）。
+CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源として開く。旧い query 形式は画面側のリダイレクト契約であり、この判定は新しい局ルートを使う。API はブラウザ側で差し替え、1x1 PNG と `X-Coded-Width: 1440`、`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を返す。画像の画素数ではなく coded size と SAR を使えていることを測る。⑩ の右上のケースだけは、拡大後も枠内の映像が見えることを実画素で判定するため、枠の位置（1311, 18, 92, 49）だけをマゼンタで塗った 1440×1080 の SVG を返す。
 
-⑩ の右上のケースだけは、拡大後も枠内の映像が見えることを実画素で判定するため、枠の位置（1311, 18, 92, 49）だけをマゼンタで塗った 1440×1080 の SVG を返す。
+ロゴ候補のプレビューは幅 100px 超の実寸（今のロゴ 240×120、候補 200×100）にする。1x1 では狭い列での縮みと見切れが測れない。枠の PUT は実バックエンドと同じく候補を作らない（`running` 行は worker が後から作る）。
 
 `data-testid` と `aria-label` は画面の契約である。
 
