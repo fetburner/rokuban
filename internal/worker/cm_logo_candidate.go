@@ -49,7 +49,7 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandid
 	}
 	item, err := w.Store.GetCandidateRecording(ctx, args.RecordingID)
 	if err != nil {
-		return w.fail(ctx, args, attemptedAt, err)
+		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
 	}
 	if item.NetworkID != args.NetworkID || item.ServiceID != args.ServiceID {
 		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))

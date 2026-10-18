@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -62,6 +63,37 @@ func candidateRowForService(t *testing.T, pool *pgxpool.Pool, serviceID int32) (
 		stage = *c.Stage
 	}
 	return c.State, stage, true
+}
+
+type candidateRecordingLookupFailureStore struct {
+	store.CMStation
+	err error
+}
+
+func (s candidateRecordingLookupFailureStore) GetCandidateRecording(context.Context, int64) (store.CMLogoCandidateRecording, error) {
+	return store.CMLogoCandidateRecording{}, s.err
+}
+
+func TestCMLogoCandidateWorkerRecordingLookupFailureUsesSetupStage(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := t.TempDir()
+	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
+	id := seedCMRecording(t, pool, mediaDir, 939)
+	areaAt := seedTaughtArea(t, pool, 1180)
+	worker := newCandidateTestWorker(pool, mediaDir, tools)
+	worker.Store = candidateRecordingLookupFailureStore{
+		CMStation: worker.Store,
+		err:       errors.New("injected recording lookup failure"),
+	}
+
+	err := runWorkerViaJobQFake(context.Background(), worker, cmLogoCandidateJob(id, areaAt))
+	if err == nil {
+		t.Fatal("Work succeeded, want the recording lookup failure")
+	}
+	state, stage, ok := candidateRow(t, pool)
+	if !ok || state != "failed" || stage != "setup" {
+		t.Fatalf("candidate = %q/%q (exists %v), want failed/setup", state, stage, ok)
+	}
 }
 
 // candidateWorkHeld は logoframe のダミーが止まっている間に during を実行してから Work を終わらせる。
