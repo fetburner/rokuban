@@ -141,7 +141,7 @@ hls.js 経路には、この watcher を張らない。hls.js のエラーイベ
 - 猶予の長さ: `liveStallTimeoutMs`（12 秒）
 - 回復として捨てるイベント: `playing` / `canplay` / `pause`、および 50 ms 以上進んだ `timeupdate`
 - WebKit が終端で出す、動かない `timeupdate` の実測: stalled@5.202 → 残りを再生 → waiting@7.790 → timeupdate@7.790
-- 50 ms の根拠: 正常再生中の `timeupdate` 間の進み幅は 0.148 〜 0.252 秒（WebKit の ⑮ で隣り合う 23 組）。50 ms はその下に置いた値で、下限そのものは未検証
+- 50 ms の根拠: 正常再生中の `timeupdate` 間の進み幅は 0.148 〜 0.252 秒（WebKit の ⑮ で隣り合う 23 組）で、終端の `timeupdate` は 0 しか動かない。50 ms はこの 2 つの間に置いた値である。ほかの環境でも両者がこの間に収まるかは未検証
 - 判定の所在: `live-player.test.tsx` の「currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）」、`chase.mjs` ⑮（WebKit）
 - hls.js 経路の代わりに使うイベント: `Hls.Events.ERROR`
 - 即時に失敗とするイベントと猶予つきのイベント: `error`、`stalled` / `waiting`
