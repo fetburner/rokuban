@@ -6,9 +6,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // ProgramRef は rulequery.MatchPrograms の結果 1 行を指す。同じ放送が 2 つの site に射影されると
@@ -26,56 +24,58 @@ type PreviewCandidate struct {
 	Demand
 }
 
+// PreviewRule は、容量プレビューに必要な対象ルールの状態を表す。
+type PreviewRule struct {
+	Enabled       bool
+	DedupeEnabled bool
+}
+
+// PreviewCandidatesResult は対象ルールと、容量需要になりうる検索一致をまとめる。
+type PreviewCandidatesResult struct {
+	Rule       *PreviewRule
+	Candidates []PreviewCandidate
+}
+
 // PreviewCandidates は、ルール保存で新たな予約になりうる検索一致を返す。既存の予約は除くが、
 // 編集中のルール（ruleID）が今持つ予約は仮想的に外して再計算するので残す。skip 意図・取り込み
 // 済みの番組・never-scheduled・放送済み（終了 <= now()）は ruler / reconciler と同様に除く。
 // record 意図は dedupe の skip を覆せるので残す。チャンネル識別はルールコンパイラの service
 // JOIN と同じく epg_services から引く。
-func PreviewCandidates(ctx context.Context, pool *pgxpool.Pool, refs []ProgramRef, ruleID *int64) ([]PreviewCandidate, error) {
-	if len(refs) == 0 {
-		return nil, nil
-	}
-	sites := make([]string, len(refs))
-	programIDs := make([]int64, len(refs))
+func PreviewCandidates(ctx context.Context, storage store.Capacity, refs []ProgramRef, ruleID *int64) (PreviewCandidatesResult, error) {
+	storeRefs := make([]store.CapacityProgramRef, len(refs))
 	for i, ref := range refs {
-		sites[i] = ref.Site
-		programIDs[i] = ref.ProgramID
+		storeRefs[i] = store.CapacityProgramRef{Site: ref.Site, ProgramID: ref.ProgramID}
 	}
-	rows, err := sqlcgen.New(pool).ListCapacityPreviewCandidates(ctx, sqlcgen.ListCapacityPreviewCandidatesParams{
-		Sites: sites, ProgramIds: programIDs, RuleID: ruleID,
-	})
+	preview, err := storage.PreviewCandidates(ctx, storeRefs, ruleID)
 	if err != nil {
-		return nil, fmt.Errorf("listing capacity preview candidates: %w", err)
+		return PreviewCandidatesResult{}, fmt.Errorf("listing capacity preview candidates: %w", err)
 	}
-	candidates := make([]PreviewCandidate, len(rows))
-	for i, r := range rows {
-		candidates[i] = PreviewCandidate{
-			ProgramID:    r.ProgramID,
-			IntentAction: r.IntentAction,
-			Demand: Demand{Site: r.Site, ChannelType: r.ChannelType, Channel: r.Channel,
-				StartAt: r.StartAt, EndAt: r.EndAt},
+	result := PreviewCandidatesResult{Candidates: make([]PreviewCandidate, len(preview.Candidates))}
+	if preview.Rule != nil {
+		result.Rule = &PreviewRule{Enabled: preview.Rule.Enabled, DedupeEnabled: preview.Rule.DedupeEnabled}
+	}
+	for i, candidate := range preview.Candidates {
+		result.Candidates[i] = PreviewCandidate{
+			ProgramID: candidate.ProgramID, IntentAction: candidate.IntentAction,
+			Demand: Demand{Site: candidate.Site, ChannelType: candidate.ChannelType, Channel: candidate.Channel,
+				StartAt: candidate.StartAt, EndAt: candidate.EndAt},
 		}
 	}
-	return candidates, nil
+	return result, nil
 }
 
 // Preview は LoadAllSites と同じ現在の需要とチューナー射影を読み、適格な候補を足したときに
 // 新たに容量超過になる区間を計算する。編集中のルールでは、その現行予約を先に仮想需要から外す。
-func Preview(ctx context.Context, q *sqlcgen.Queries, ruleID *int64, candidates []Demand) ([]Overage, error) {
-	rows, err := q.ListCapacityDemandAllSites(ctx)
+func Preview(ctx context.Context, storage store.Capacity, ruleID *int64, candidates []Demand) ([]Overage, error) {
+	input, err := storage.ReadAllSites(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing capacity preview baseline: %w", err)
+		return nil, fmt.Errorf("reading capacity preview baseline: %w", err)
 	}
-	current, withoutRule, err := demandsFromAllSiteRows(rows, ruleID)
+	current, withoutRule, err := demandsFromRows(input.Demands, ruleID)
 	if err != nil {
 		return nil, fmt.Errorf("resolving capacity preview baseline: %w", err)
 	}
-
-	tunerRows, err := q.ListTunerSyncAllSites(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("listing tuner projection for capacity preview: %w", err)
-	}
-	tuners := tunersFromRows(tunerRows)
+	tuners := tunersFromStore(input.Tuners)
 	currentOverages := Compute(current, tuners)
 
 	after := make([]Demand, 0, len(withoutRule)+len(candidates))

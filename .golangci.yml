@@ -82,8 +82,6 @@ linters:
             - "!${config-path}/cmd/rokuban/**"
             # 移設待ち。移したタスクが行を消す。増やさない。
             - "!${config-path}/internal/api/breakers.go"
-            - "!${config-path}/internal/api/capacity.go"
-            - "!${config-path}/internal/api/capacity_preview.go"
             - "!${config-path}/internal/api/cm_detect.go"
             - "!${config-path}/internal/api/encode_queue.go"
             - "!${config-path}/internal/api/epg.go"
@@ -100,10 +98,7 @@ linters:
             - "!${config-path}/internal/api/rules.go"
             - "!${config-path}/internal/api/search.go"
             - "!${config-path}/internal/api/storage.go"
-            - "!${config-path}/internal/api/tuners.go"
             - "!${config-path}/internal/breaker/breaker.go"
-            - "!${config-path}/internal/capacity/load.go"
-            - "!${config-path}/internal/capacity/preview.go"
             - "!${config-path}/internal/catalog/export.go"
             - "!${config-path}/internal/catalog/rescue.go"
             - "!${config-path}/internal/catalog/rescue_scan.go"
@@ -157,7 +152,6 @@ linters:
             - "!${config-path}/internal/worker/thumbnail.go"
             - "!${config-path}/internal/worker/thumbnail_reconcile.go"
             - "!${config-path}/internal/worker/thumbnail_selection.go"
-            - "!${config-path}/internal/worker/tuner.go"
             - "!${config-path}/internal/worker/worker.go"
           deny:
             - pkg: github.com/jackc/pgx

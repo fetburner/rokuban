@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -21,7 +22,10 @@ const rfc3339 = time.RFC3339
 
 func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	tunerStore := pgstore.NewTuners(pool)
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool: pool, TunerReader: tunerStore, CapacityStore: tunerStore,
+	}))
 	t.Cleanup(srv.Close)
 	return srv
 }

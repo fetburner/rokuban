@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -96,6 +97,10 @@ type Deps struct {
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
+	// TunerStore はチューナー同期の永続化契約。
+	TunerStore store.TunerSync
+	// CapacityStore はチューナー worker の容量判定読み取り契約。
+	CapacityStore store.Capacity
 	MediaDir      string
 	ScratchDir    string
 
@@ -192,7 +197,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
+		TunerStore:    deps.TunerStore,
+		CapacityStore: deps.CapacityStore,
 	})
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,

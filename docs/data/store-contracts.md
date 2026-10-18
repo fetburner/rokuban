@@ -52,6 +52,24 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### チューナーと容量
+
+チューナー同期は sweep mark、全量 upsert、古い行の削除を別々の store メソッドで行う。各段階が独立して失敗・再試行できる境界を保ち、同期全体を一つの tx にまとめない。mark は upsert より前に取得し、DB の時刻を削除の基準に渡す。
+
+容量の読み取りは需要と tuner_sync を同じ DB スナップショットで返す。DB の列や JSON を容量判定へ漏らさず、effective options の解決と Hall 条件は `internal/capacity` に残す。
+
+保存前プレビューの読み取りは、対象ルールの有効・重複排除状態と候補を一つの契約で返す。対象ルールが無ければ `ErrNotFound` とし、API が DB 固有の no rows を判断しない。
+
+<details><summary>根拠</summary>
+
+- チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
+- 容量読み取り: `internal/store.Capacity`
+- PostgreSQL 実装: `internal/store/pgstore.Tuners`
+- 時刻区間の終了端: `TestTunersContract`
+- 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

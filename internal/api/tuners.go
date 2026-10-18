@@ -2,8 +2,6 @@ package api
 
 import (
 	"context"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // ListTuners は tuner_sync の行をそのまま返す（GET /api/sites/{site}/tuners）。
@@ -20,7 +18,7 @@ func (h *Server) ListTuners(ctx context.Context, req ListTunersRequestObject) (L
 	if !h.knownSite(req.Site) {
 		return ListTuners404JSONResponse{Error: "unknown site"}, nil
 	}
-	rows, err := sqlcgen.New(h.pool).ListTunerSync(ctx, req.Site)
+	rows, err := h.tunerReader.List(ctx, req.Site)
 	if err != nil {
 		return nil, err
 	}
@@ -32,7 +30,7 @@ func (h *Server) ListTuners(ctx context.Context, req ListTunersRequestObject) (L
 			types = append(types, TunerTypes(t))
 		}
 		result = append(result, Tuner{
-			Index:       int(r.TunerIndex),
+			Index:       int(r.Index),
 			Name:        r.Name,
 			Types:       types,
 			IsAvailable: r.IsAvailable,

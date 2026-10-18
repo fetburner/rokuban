@@ -482,11 +482,14 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
+	tunerStore := pgstore.NewTuners(pool)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:       cfg.Server.AllowedHosts,
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
 		Pool:               pool,
 		ChapterStore:       pgstore.NewAnalysis(pool),
+		TunerReader:        tunerStore,
+		CapacityStore:      tunerStore,
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
@@ -630,10 +633,13 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		rulerRetractGrace = *cfg.Ruler.RetractGrace
 	}
 	deferred := &jobq.Deferred{}
+	tunerStore := pgstore.NewTuners(pool)
 	workers := worker.NewWorkers(&worker.Deps{
 		Enqueuer:                 deferred,
 		MirakcClients:            mirakcClients,
 		Pool:                     pool,
+		TunerStore:               tunerStore,
+		CapacityStore:            tunerStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
