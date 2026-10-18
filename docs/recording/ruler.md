@@ -219,6 +219,8 @@ active の導出は変わらない（[reservations.md](../schema/reservations.md
 
 EPGStation#704 の教訓として、囲み文字（:heavy_multiplication_x::heavy_multiplication_x:等）を一律除去する正規化は「前編/後編」の区別まで消して誤判定する。記号除去 + 完全一致は採らない。pg_trgm の類似度ベースで設計し、閾値はルール単位で調整可能にする。
 
+pg_trgm の類似度は DB の `LC_CTYPE` に依存する。日本語を語の文字として扱わない DB では日本語タイトルの類似度が 0 になるため、起動時に実際の挙動を検査する（要件は [DB 運用](../operations/database.md) §3「DB の文字分類（`LC_CTYPE`）」）。
+
 判定に使った根拠（マッチした履歴、類似度）を予約に記録し、UI で「なぜスキップされたか」を説明可能にする。
 
 ##### 誤抑制の上書き
