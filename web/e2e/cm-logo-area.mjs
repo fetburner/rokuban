@@ -49,7 +49,6 @@ const FRAME_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="
   <rect width="1440" height="1080" fill="#10a040" />
   <rect x="1311" y="18" width="92" height="49" fill="#ff00ff" />
 </svg>`
-let frameSvgMode = false
 
 // ロゴのプレビュー用。幅 100px 超の実寸（今のロゴ 240x120、候補 200x100）にして、
 // 狭い列での縮み（SAR が掛からない）と見切れを実ブラウザで測れるようにする。
@@ -121,9 +120,9 @@ async function apiHandler({ path, url, json, route }) {
     frameRequests.push(url.searchParams.get('at'))
     return route.fulfill({
       status: 200,
-      contentType: frameSvgMode ? 'image/svg+xml' : 'image/png',
+      contentType: 'image/png',
       headers: frameHeaders[frameMatch[1]],
-      body: frameSvgMode ? FRAME_SVG : FRAME_PNG,
+      body: FRAME_PNG,
     })
   }
   if (path === '/api/cm-logos/32678/5168/candidate/adopt' && method === 'POST') {
@@ -470,9 +469,19 @@ await check('⑩', async () => {
   // 目立つ色の実画像を使い、拡大後も枠内に絵が残り、その場所を掴んで動かせるか測る。
   const edgePage = await context.newPage()
   await edgePage.setViewportSize({ width: 1280, height: 900 })
-  frameSvgMode = true
   try {
     await installApiStubs(edgePage, apiHandler)
+    // 後から登録した route が先に評価される。SVG はこのページにだけ返す。
+    await edgePage.route(/\/api\/media\/recordings\/(\d+)\/frame(\?.*)?$/, (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      const id = route.request().url().match(/recordings\/(\d+)\/frame/)[1]
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/svg+xml',
+        headers: frameHeaders[id],
+        body: FRAME_SVG,
+      })
+    })
     await edgePage.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
     const image = edgePage.getByTestId('cm-logo-frame-image')
     await image.waitFor({ state: 'visible', timeout: 15000 })
@@ -529,7 +538,6 @@ await check('⑩', async () => {
     }
     log(`  右上の枠: 拡大後 RGB=${color.join(',')}、ドラッグ 20px → ${(after.x - before.x).toFixed(1)}px`)
   } finally {
-    frameSvgMode = false
     await edgePage.close()
   }
 })
