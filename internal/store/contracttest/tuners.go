@@ -19,7 +19,7 @@ type TunerFixture struct {
 	SeedTuner  func(t *testing.T, site string, tuner store.TunerInput, observedAt time.Time)
 	SeedDemand func(t *testing.T, site string, programID int64, channelType, channel string,
 		startAt time.Time, durationMs int64)
-	SeedRule           func(t *testing.T, ruleID int64, enabled, dedupeEnabled bool)
+	SeedRule           func(t *testing.T, enabled, dedupeEnabled bool) int64
 	SeedPreviewProgram func(t *testing.T, ref store.CapacityProgramRef, channelType, channel string,
 		startAt time.Time, durationMs int64)
 }
@@ -127,8 +127,7 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 func runCapacityPreview(t *testing.T, newStore NewTunerStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	ruleID := int64(7003)
-	f.SeedRule(t, ruleID, false, true)
+	ruleID := f.SeedRule(t, false, true)
 	start := time.Now().UTC().Add(3 * time.Hour).Truncate(time.Millisecond)
 	ref := store.CapacityProgramRef{Site: "site-a", ProgramID: 7004}
 	f.SeedPreviewProgram(t, ref, "GR", "27", start, 30*60*1000)

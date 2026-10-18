@@ -28,9 +28,9 @@ func TestTunersContract(t *testing.T) {
 				t.Helper()
 				seedContractDemand(t, pool, site, programID, channelType, channel, startAt, durationMs)
 			},
-			SeedRule: func(t *testing.T, ruleID int64, enabled, dedupeEnabled bool) {
+			SeedRule: func(t *testing.T, enabled, dedupeEnabled bool) int64 {
 				t.Helper()
-				seedContractRule(t, pool, ruleID, enabled, dedupeEnabled)
+				return seedContractRule(t, pool, enabled, dedupeEnabled)
 			},
 			SeedPreviewProgram: func(t *testing.T, ref store.CapacityProgramRef, channelType, channel string, startAt time.Time, durationMs int64) {
 				t.Helper()
@@ -68,14 +68,16 @@ VALUES ($1, $2, '{}'::jsonb)`, site, programID); err != nil {
 	}
 }
 
-func seedContractRule(t *testing.T, pool *pgxpool.Pool, ruleID int64, enabled, dedupeEnabled bool) {
+func seedContractRule(t *testing.T, pool *pgxpool.Pool, enabled, dedupeEnabled bool) int64 {
 	t.Helper()
-	if _, err := pool.Exec(context.Background(), `
-INSERT INTO rules (id, name, enabled, dedupe_enabled, dedupe_threshold)
-VALUES ($1, 'store capacity preview', $2, $3, CASE WHEN $3 THEN 0.7 ELSE NULL END)`,
-		ruleID, enabled, dedupeEnabled); err != nil {
+	var ruleID int64
+	if err := pool.QueryRow(context.Background(), `
+INSERT INTO rules (name, enabled, dedupe_enabled, dedupe_threshold)
+VALUES ('store capacity preview', $1, $2, CASE WHEN $2 THEN 0.7 ELSE NULL END)
+RETURNING id`, enabled, dedupeEnabled).Scan(&ruleID); err != nil {
 		t.Fatalf("seeding rule: %v", err)
 	}
+	return ruleID
 }
 
 func seedContractPreviewProgram(t *testing.T, pool *pgxpool.Pool, ref store.CapacityProgramRef, channelType, channel string, startAt time.Time, durationMs int64) {
