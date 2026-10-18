@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -87,7 +88,8 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+			w := &DeleteReconcileWorker{Pool: pool,
+				RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 			target := deleteTarget{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
 			deletionCtx, deletionCancel := context.WithTimeout(ctx, 150*time.Millisecond)
 			w.deleteMediaAsset(deletionCtx, sqlcgen.New(pool), target, "trash")

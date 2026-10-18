@@ -52,6 +52,41 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### 視聴状態
+
+再生位置は録画単位に保存し、視聴済みの印は放送イベント単位に扱う。
+
+`PlaybackState` は再生位置と視聴済み印の書き込みを持つ。再生位置は録画ごとに保存し、視聴済み印は押した録画の行にだけ置く。読み取り側は同じ放送イベントの印を束ねるため、`ClearWatchedForEvent` はそのイベントの全行から印を消す。
+
+`MarkWatched` は印の upsert と同じ録画の再生位置の削除を一つのメソッドで行う。どちらか片方だけが残る状態を作らない。存在しない録画または完全削除済みの録画を受け取ったときは `ErrNotFound` を返す。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.PlaybackState`
+- PostgreSQL 実装: `internal/store/pgstore.Playback`
+- 視聴済みの書き込みと位置の削除: `internal/store/contracttest.RunPlayback`
+
+</details>
+
+### ごみ箱と完全削除
+
+ごみ箱操作と完全削除の確定は、録画の状態変更を一つの契約経由で行う。
+
+`RecordingTrash` は論理削除、復元、即時削除要求を持つ。`SoftDelete` は `deleted_at` を立てるだけでファイル操作をしない。`Restore` はごみ箱状態を解除し、即時削除要求も取り下げる。同じ放送イベントに生きた録画があれば `ErrConflict` を返す。
+
+復元と即時削除要求は、同じ録画の更新を直列化する保証を持つ。復元は状態解除と要求取り下げを同じトランザクションで行う。要求を書き込む側は録画行を先に更新するため、復元が要求の取り下げを終える前に要求だけが後から残る状態を作らない。
+
+`RecordingPurge.MarkPurged` は呼び出し側が渡す cutoff を使い、猶予を過ぎて削除対象アセットが残っていない録画の `purged_at` を確定する。返すのは今回初めて完全削除を確定した行だけである。呼び出し側はこの結果を削除通知に使い、別の判定で発火対象を作り直さない。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 復元と purge 要求の直列化、完了記録の冪等性: `internal/store/contracttest.RunTrash`
+- 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

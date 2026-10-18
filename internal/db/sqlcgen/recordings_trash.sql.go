@@ -7,137 +7,8 @@ package sqlcgen
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 )
-
-const listTrashRecordings = `-- name: ListTrashRecordings :many
-SELECT
-    r.id, r.rule_id, r.source, r.site, r.network_id, r.service_id, r.event_id, r.service_name, r.channel_type, r.channel, r.title, r.description, r.extended, r.genres, r.is_free, r.program_start_at, r.program_duration_ms, r.status, r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at, r.updated_at, r.superseded_at, r.purged_at, r.genre_lv1, r.series_key,
-    a.size_bytes                        AS original_size_bytes,
-    COALESCE(p.keep_original, 'always')::text AS keep_original,
-    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles
-FROM recordings r
-LEFT JOIN media_assets a
-    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
-WHERE r.site = $1 AND r.deleted_at IS NOT NULL AND r.purged_at IS NULL
-ORDER BY r.deleted_at DESC, r.id DESC
-`
-
-type ListTrashRecordingsRow struct {
-	ID                int64
-	RuleID            *int64
-	Source            string
-	Site              string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	Title             string
-	Description       *string
-	Extended          json.RawMessage
-	Genres            json.RawMessage
-	IsFree            bool
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Status            string
-	StartedAt         *time.Time
-	EndedAt           *time.Time
-	QualityEvents     json.RawMessage
-	DeletedAt         *time.Time
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
-	SupersededAt      *time.Time
-	PurgedAt          *time.Time
-	GenreLv1          []int16
-	SeriesKey         *string
-	OriginalSizeBytes *int64
-	KeepOriginal      string
-	EncodeProfiles    []string
-}
-
-// ごみ箱一覧。原本サイズは載せるが、
-// available_encoded_profiles（再生可能な encoded プロファイル名）は意図的に
-// 射影しない。ごみ箱の録画は配信 3 クエリ（GetOriginalMediaAssetForServing /
-// GetThumbnailMediaAssetForServing / GetEncodedMediaAssetForServing）が
-// deleted_at IS NOT NULL を理由に必ず 404 にするため、フロントはごみ箱では
-// サムネイル・RecordingPlayer・原本リンクを一切出さない（M3-18）。出さない
-// 値をここで揃えても使われないので揃えていない。
-// deleted_at IS NOT NULL のものだけ。deleted_at 降順（最近捨てたものが上）。
-//
-// purged_at IS NULL を条件に足す（issue #135）。完全削除が完了した録画
-// （delete_reconcile の MarkPurgedRecordings が purged_at を立てた録画）は
-// tombstone として recordings に残り続けるが、ユーザーに見せるものではない
-// （docs/storage.md §7・§8）。除外の根拠は「アセットが無い」ではなく「purge が
-// 完了した」であることに注意 —— 除外条件を「残っているアセットがある録画
-// だけ」にすると、status='failed' でアセットが 0 行の録画が purge 前から
-// ごみ箱に出なくなってしまう。
-// encode_profiles は issue #159 で recording_encode_policy 衛星表に切り出された
-// ため r.* には含まれない（表示上「未凍結」と「空として凍結」は区別しない）。
-//
-// 罠（PR #187 レビュー M4）: GET /api/recordings?trash=true は M3-24（issue
-// #136）以降このクエリを使わない --- internal/api/recordings_query.go の動的
-// WHERE ビルダが同じ WHERE 述語（deleted_at IS NOT NULL AND purged_at IS NULL）
-// を再現しつつ、ORDER BY は他の絞り込み軸と 1 つのキーセット契約に統一するため
-// `program_start_at DESC, id DESC` を使う（このクエリの `deleted_at DESC, id
-// DESC` とは異なる並び順。docs/api.md「録画一覧: 絞り込み + キーセットページ
-// ング」参照）。HTTP API はこの sqlc クエリを使わず、録画一覧と同じ動的クエリ
-// （recordings_query.go）でごみ箱一覧も返す。このクエリは worker の DB テストが
-// 直接使うため残している。
-func (q *Queries) ListTrashRecordings(ctx context.Context, site string) ([]ListTrashRecordingsRow, error) {
-	rows, err := q.db.Query(ctx, listTrashRecordings, site)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []ListTrashRecordingsRow
-	for rows.Next() {
-		var i ListTrashRecordingsRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.RuleID,
-			&i.Source,
-			&i.Site,
-			&i.NetworkID,
-			&i.ServiceID,
-			&i.EventID,
-			&i.ServiceName,
-			&i.ChannelType,
-			&i.Channel,
-			&i.Title,
-			&i.Description,
-			&i.Extended,
-			&i.Genres,
-			&i.IsFree,
-			&i.ProgramStartAt,
-			&i.ProgramDurationMs,
-			&i.Status,
-			&i.StartedAt,
-			&i.EndedAt,
-			&i.QualityEvents,
-			&i.DeletedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.SupersededAt,
-			&i.PurgedAt,
-			&i.GenreLv1,
-			&i.SeriesKey,
-			&i.OriginalSizeBytes,
-			&i.KeepOriginal,
-			&i.EncodeProfiles,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
 
 const markRecordingPurgeRequested = `-- name: MarkRecordingPurgeRequested :one
 WITH trashed AS (
@@ -189,14 +60,14 @@ WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id
 `
 
-// 復元の 2 文（api の RestoreRecording ハンドラが 1 トランザクションで順に流す）。
+// 復元の 2 文（store の Restore が 1 トランザクションで順に流す）。
 //
 // 2 表を 1 文のデータ変更 CTE で書くのは**やめた**。CTE の全アームは文全体で
 // 1 つのスナップショットを共有するので、`recordings` の行ロックで UPDATE アームが
 // 待たされて成功しても、DELETE アームは待っている間に別トランザクションが
 // commit した要求行を見られない。**1 文にしても「復元は成功したのに即時要求だけ
-// 残る」は観測される**（`TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn` を
-// 旧 CTE 実装に戻すとこのアサーションで落ちる、を確認済み）。残った要求行は
+// 残る」は観測される**（store のごみ箱契約テストを旧 CTE 実装に戻すと、
+// 残存要求のアサーションで落ちる）。残った要求行は
 // trash_deletable_recordings が `deleted_at IS NOT NULL` を要求するのでその場では
 // 何も起こさないが、次の普通の soft-delete で 30 日の猶予をバイパスして即時 purge
 // の対象になる —— ユーザーは即時削除を要求していないのに。
@@ -211,14 +82,13 @@ RETURNING id
 // 「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。それを
 // 塞いでいるのは**要求行を入れる経路が対象の recordings 行を先にロックすること**
 // で、下の MarkRecordingPurgeRequested は CTE の UPDATE アームがそれを兼ねている
-// （restore が行ロックを持っている間 purge が待たされることは
-// TestPurgeRecording_SerializedBehindRestoreRowLock で見ている）。
+// （restore が行ロックを持っている間 purge が待たされることは store のごみ箱契約テストで見る）。
 // **要件: この表に INSERT する経路を足すときは recordings 行を先にロックする。**
 // 一括 purge を `INSERT INTO recording_purge_requests SELECT id FROM recordings
 // WHERE deleted_at IS NOT NULL ON CONFLICT DO NOTHING` と素直に書くと recordings
 // 行をロックしないので、上の窓が黙って開き直る（そして
-// TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn は blocker 側が
-// `UPDATE recordings` してからロックを握る形なので、この回帰を検出しない）。
+// restore 側のテストは blocker 側が `UPDATE recordings` してからロックを握る形なので、
+// この回帰は「purge request serializes behind restore」のテストで検出する）。
 //
 // 復元側に `SELECT ... FOR UPDATE` を足す形は採らない。上の UPDATE 自身が同じ行の
 // 行ロックを取るので、その手前に FOR UPDATE を置いても掴むロックは増えない

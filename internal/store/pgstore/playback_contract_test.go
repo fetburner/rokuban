@@ -1,0 +1,102 @@
+package pgstore
+
+import (
+	"context"
+	"errors"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/contracttest"
+	"github.com/fetburner/rokuban/internal/testutil"
+)
+
+var playbackContractEventID atomic.Int32
+
+func TestPlaybackStateContract(t *testing.T) {
+	contracttest.RunPlayback(t, func(t *testing.T) contracttest.PlaybackFixture {
+		pool := testutil.SetupDB(t)
+		return contracttest.PlaybackFixture{
+			Store: NewPlayback(pool),
+			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
+				return newContractRecording(t, pool, options, &playbackContractEventID)
+			},
+			Position: func(t *testing.T, recordingID int64) (int64, bool) { return readContractPosition(t, pool, recordingID) },
+			Watched:  func(t *testing.T, recordingID int64) bool { return readContractWatched(t, pool, recordingID) },
+		}
+	})
+}
+
+func newContractRecording(t *testing.T, pool *pgxpool.Pool, options contracttest.RecordingOptions, eventIDs *atomic.Int32) int64 {
+	t.Helper()
+	start := options.ProgramStartAt
+	if start.IsZero() {
+		start = time.Now().UTC().Truncate(time.Second)
+	}
+	eventID := options.EventID
+	if eventID == 0 {
+		eventID = eventIDs.Add(1)
+	}
+	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              db.DefaultSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           eventID,
+		ServiceName:       "ＯＨＫ",
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             "store contract fixture",
+		ProgramStartAt:    start,
+		ProgramDurationMs: 30 * time.Minute.Milliseconds(),
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("seeding recording: %v", err)
+	}
+	if options.CMDetectionEnabled {
+		if _, err := pool.Exec(context.Background(), `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', '{}', true)`, id); err != nil {
+			t.Fatalf("enabling CM detection: %v", err)
+		}
+	}
+	if options.Trashed || options.Purged {
+		if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
+			t.Fatalf("trashing recording: %v", err)
+		}
+	}
+	if options.Purged {
+		if _, err := pool.Exec(context.Background(), `UPDATE recordings SET purged_at = now() WHERE id = $1`, id); err != nil {
+			t.Fatalf("purging recording: %v", err)
+		}
+	}
+	return id
+}
+
+func readContractPosition(t *testing.T, pool *pgxpool.Pool, recordingID int64) (int64, bool) {
+	t.Helper()
+	var position int64
+	err := pool.QueryRow(context.Background(), `SELECT position_ms FROM recording_playback_positions WHERE recording_id = $1`, recordingID).Scan(&position)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatalf("reading playback position: %v", err)
+	}
+	return position, true
+}
+
+func readContractWatched(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
+	t.Helper()
+	var watched bool
+	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM recording_watched WHERE recording_id = $1)`, recordingID).Scan(&watched); err != nil {
+		t.Fatalf("reading watched marker: %v", err)
+	}
+	return watched
+}

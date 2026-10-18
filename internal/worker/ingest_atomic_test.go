@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // TestIngestWorker_ConcurrentSameRelPathUsesTempFiles は同じ rel_path に対する 2 本の
@@ -393,7 +394,8 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	// The DB session is already gone, but rename has not started. Canonical names
 	// are report-only, so cleanup leaves the orphan record untouched.
 	q := sqlcgen.New(pool)
-	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{Pool: pool,
+		RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(q, relPath, 0)
 	var orphanCount int
 	if err := pool.QueryRow(ctx,
