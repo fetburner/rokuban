@@ -81,7 +81,8 @@ type CapacityPreview struct {
 type TunerSync interface {
 	// SweepMark は stale 判定の基準となる DB 時刻を返す。
 	SweepMark(ctx context.Context) (time.Time, error)
-	// Upsert は site のチューナー一覧をバッチで反映する。空の一覧は何もしない。
+	// Upsert は site のチューナー一覧を 1 バッチで原子的に反映する。
+	// 1 件でも失敗したら全件を反映せず、空の一覧は何もしない。
 	Upsert(ctx context.Context, site string, tuners []TunerInput) error
 	// DeleteStale は observedBefore より古い site の行を削除し、削除件数を返す。
 	DeleteStale(ctx context.Context, site string, observedBefore time.Time) (int64, error)

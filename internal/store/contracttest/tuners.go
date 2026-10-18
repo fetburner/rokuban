@@ -31,6 +31,7 @@ type NewTunerStore func(t *testing.T) TunerFixture
 func RunTuners(t *testing.T, newStore NewTunerStore) {
 	t.Helper()
 	t.Run("sync steps and reader", func(t *testing.T) { runTunerSync(t, newStore) })
+	t.Run("upsert batch is atomic", func(t *testing.T) { runTunerUpsertAtomicity(t, newStore) })
 	t.Run("capacity reads preserve interval endpoints", func(t *testing.T) { runCapacityReads(t, newStore) })
 	t.Run("preview returns rule state and candidates", func(t *testing.T) { runCapacityPreview(t, newStore) })
 }
@@ -56,6 +57,10 @@ func runTunerSync(t *testing.T, newStore NewTunerStore) {
 	if err := f.Sync.Upsert(ctx, "site-a", []store.TunerInput{fresh}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
+	updated := store.TunerInput{Index: fresh.Index, Name: "updated", Types: []string{"BS"}, IsAvailable: false}
+	if err := f.Sync.Upsert(ctx, "site-a", []store.TunerInput{updated}); err != nil {
+		t.Fatalf("Upsert update: %v", err)
+	}
 	deleted, err := f.Sync.DeleteStale(ctx, "site-a", mark)
 	if err != nil {
 		t.Fatalf("DeleteStale: %v", err)
@@ -74,9 +79,9 @@ func runTunerSync(t *testing.T, newStore NewTunerStore) {
 	if !rows[0].ObservedAt.Equal(mark) {
 		t.Errorf("boundary ObservedAt = %v, want exact cutoff %v to remain", rows[0].ObservedAt, mark)
 	}
-	if rows[1].Name != fresh.Name || !reflect.DeepEqual(rows[1].Types, fresh.Types) ||
-		rows[1].IsAvailable != fresh.IsAvailable || rows[1].IsFault != fresh.IsFault || rows[1].ObservedAt.Before(mark) {
-		t.Errorf("fresh tuner = %+v, want projected values and an observation at or after %v", rows[1], mark)
+	if rows[1].Name != updated.Name || !reflect.DeepEqual(rows[1].Types, updated.Types) ||
+		rows[1].IsAvailable != updated.IsAvailable || rows[1].IsFault != updated.IsFault || rows[1].ObservedAt.Before(mark) {
+		t.Errorf("updated tuner = %+v, want latest projected values and an observation at or after %v", rows[1], mark)
 	}
 	otherSite, err := f.Reader.List(ctx, "site-b")
 	if err != nil {
@@ -84,6 +89,25 @@ func runTunerSync(t *testing.T, newStore NewTunerStore) {
 	}
 	if len(otherSite) != 1 || otherSite[0].Name != old.Name {
 		t.Errorf("List(site-b) = %+v, want its stale row untouched", otherSite)
+	}
+}
+
+func runTunerUpsertAtomicity(t *testing.T, newStore NewTunerStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	rows := []store.TunerInput{
+		{Index: 0, Name: "valid", Types: []string{"GR"}, IsAvailable: true},
+		{Index: 1, Name: "invalid", Types: []string{"INVALID"}, IsAvailable: true},
+	}
+	if err := f.Sync.Upsert(ctx, "site-a", rows); err == nil {
+		t.Fatal("Upsert returned nil for a batch with an invalid tuner type")
+	}
+	got, err := f.Reader.List(ctx, "site-a")
+	if err != nil {
+		t.Fatalf("List after failed Upsert: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("List after failed Upsert = %+v, want no partially applied rows", got)
 	}
 }
 
