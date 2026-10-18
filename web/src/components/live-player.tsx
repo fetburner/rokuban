@@ -1077,6 +1077,7 @@ export function LivePlayer({
       isResumePending: () => boolean,
     ) {
       let stallTimer: ReturnType<typeof setTimeout> | null = null
+      let lastProgressTime = media.currentTime
       const clearStallTimer = () => {
         if (stallTimer !== null) {
           clearTimeout(stallTimer)
@@ -1115,8 +1116,12 @@ export function LivePlayer({
         // `isResumePending()` の間は抑止しない（上の `resumePending` の説明）。
         // これが無いと、降格先も死んでいる場合に `stalled` を無視し続けて
         // **黒いまま永久に何も出ない**
-        if (cancelled || (startedOnceRef.current && media.paused && !isResumePending()) || stallTimer !== null)
+        if (cancelled || (startedOnceRef.current && media.paused && !isResumePending()))
           return
+        // `waiting` が出た位置を基準にする。直前の timeupdate から waiting までに
+        // 進んだ分を、buffer 終端で出る同じ位置の timeupdate が回復と誤認しないようにする。
+        if (Number.isFinite(media.currentTime)) lastProgressTime = media.currentTime
+        if (stallTimer !== null) return
         stallTimer = setTimeout(() => {
           stallTimer = null
           // **まず画質を下げることを試す（issue #871）。** 下げられたなら
@@ -1139,9 +1144,24 @@ export function LivePlayer({
       // 本当に死んでいれば `waiting` が再び出て、そこで張り直される --- 実 WebKit で
       // 測った（再生中に stall → pause@6.05s → play@12.05s → waiting@12.05s）。
       // 「張り直す」側は `再開後に配信が復帰していなければ再びエラーになる` が守る
-      const onProgress = () => clearStallTimer()
+      const onProgress = () => {
+        lastProgressTime = media.currentTime
+        clearStallTimer()
+      }
+      // WebKit はバッファの終端で、currentTime の動かない timeupdate を出す
+      // （chase.mjs ⑮ の実測: waiting@7.790 → timeupdate@7.790）。これを回復とみなすと、
+      // 唯一の失敗タイマーが消えて、エラー表示も降格も二度と起きない。
+      const onTimeUpdate = () => {
+        const currentTime = media.currentTime
+        if (!Number.isFinite(currentTime)) return
+        const progressed = Math.abs(currentTime - lastProgressTime) >= 0.05
+        if (!progressed) return
+        lastProgressTime = currentTime
+        clearStallTimer()
+      }
       const onPlaying = () => {
         startedOnceRef.current = true
+        lastProgressTime = media.currentTime
         clearStallTimer()
       }
 
@@ -1150,7 +1170,7 @@ export function LivePlayer({
       media.addEventListener('waiting', onStall)
       media.addEventListener('playing', onPlaying)
       media.addEventListener('canplay', onProgress)
-      media.addEventListener('timeupdate', onProgress)
+      media.addEventListener('timeupdate', onTimeUpdate)
       media.addEventListener('pause', onProgress)
       teardown.push(() => {
         clearStallTimer()
@@ -1159,7 +1179,7 @@ export function LivePlayer({
         media.removeEventListener('waiting', onStall)
         media.removeEventListener('playing', onPlaying)
         media.removeEventListener('canplay', onProgress)
-        media.removeEventListener('timeupdate', onProgress)
+        media.removeEventListener('timeupdate', onTimeUpdate)
         media.removeEventListener('pause', onProgress)
       })
     }

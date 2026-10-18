@@ -485,6 +485,65 @@ describe('LivePlayer の状態遷移', () => {
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
     })
 
+    it('currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+      Object.defineProperty(video, 'currentTime', { value: 7.6, writable: true, configurable: true })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('playing'))
+        video.dispatchEvent(new Event('timeupdate'))
+        video.dispatchEvent(new Event('stalled'))
+        // stalled で監視を始めた後、残ったバッファを消費して waiting が出る。
+        // その後の終端 timeupdate を stalled 時点からの差分で回復扱いしてはならない。
+        video.currentTime = 7.852
+        video.dispatchEvent(new Event('waiting'))
+        video.dispatchEvent(new Event('timeupdate'))
+        vi.advanceTimersByTime(liveStallTimeoutMs)
+      })
+
+      expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+    })
+
+    it('timeupdate で再生位置が進めば停滞の猶予を解除する', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+      Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('playing'))
+        video.dispatchEvent(new Event('waiting'))
+        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
+        video.currentTime = 5.25
+        video.dispatchEvent(new Event('timeupdate'))
+        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    })
+
+    it('閾値未満の timeupdate が続いても進行量を累積して停滞の猶予を解除する', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const video = await renderNativePath()
+      Object.defineProperty(video, 'currentTime', { value: 5, writable: true, configurable: true })
+
+      await act(async () => {
+        video.dispatchEvent(new Event('playing'))
+        video.dispatchEvent(new Event('waiting'))
+        video.currentTime = 5.03
+        video.dispatchEvent(new Event('timeupdate'))
+        vi.advanceTimersByTime(liveStallTimeoutMs / 2)
+        video.currentTime = 5.06
+        video.dispatchEvent(new Event('timeupdate'))
+        vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+      })
+
+      expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: '再読み込み' })).not.toBeInTheDocument()
+    })
+
     it('一時停止中の stalled はエラーにしない（WebKit は pause した瞬間に stalled を出す）', async () => {
       // WebKit は一時停止するとフェッチを止めるため `stalled` を出すが、配信は
       // 正常なまま。解除イベント（playing / canplay / timeupdate）も来ないので、
