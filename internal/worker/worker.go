@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -96,8 +97,10 @@ type Deps struct {
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
-	MediaDir      string
-	ScratchDir    string
+	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
+	LabelRuleReevaluation store.LabelRuleReevaluation
+	MediaDir              string
+	ScratchDir            string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -201,7 +204,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,
 	})
-	riveradapter.Register(workers, &LabelRuleReconcileWorker{Pool: deps.Pool})
+	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
 	riveradapter.Register(workers, &ReconcilePassWorker{
 		MirakcClients:   deps.MirakcClients,
 		Pool:            deps.Pool,

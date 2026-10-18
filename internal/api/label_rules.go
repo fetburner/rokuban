@@ -4,43 +4,43 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5" //nolint:depguard // ListRecordingShelves remains in this file until its store migration.
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const defaultLabelRulePriority = 0
 
 // ListLabelRules はシリーズ分類ルールを勝者順に返す。
 func (h *Server) ListLabelRules(ctx context.Context, _ ListLabelRulesRequestObject) (ListLabelRulesResponseObject, error) {
-	rows, err := sqlcgen.New(h.pool).ListLabelRules(ctx)
+	rows, err := h.labelRules.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing label rules: %w", err)
 	}
 	out := make([]LabelRule, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, labelRuleFromRow(row))
+		out = append(out, labelRuleFromStore(row))
 	}
 	return ListLabelRules200JSONResponse(out), nil
 }
 
 // GetLabelRule はシリーズ分類ルールを 1 件返す。
 func (h *Server) GetLabelRule(ctx context.Context, req GetLabelRuleRequestObject) (GetLabelRuleResponseObject, error) {
-	row, err := sqlcgen.New(h.pool).GetLabelRule(ctx, req.Id)
+	row, err := h.labelRules.Get(ctx, req.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetLabelRule404JSONResponse{Error: "label rule not found"}, nil
 		}
 		return nil, fmt.Errorf("getting label rule %d: %w", req.Id, err)
 	}
-	return GetLabelRule200JSONResponse(labelRuleFromRow(row)), nil
+	return GetLabelRule200JSONResponse(labelRuleFromStore(row)), nil
 }
 
-// CreateLabelRule はシリーズ分類ルールを作成し、同じ tx で録画全件再評価を投入する。
+// CreateLabelRule はシリーズ分類ルールを作成し、commit 後に録画全件再評価を依頼する。
 func (h *Server) CreateLabelRule(ctx context.Context, req CreateLabelRuleRequestObject) (CreateLabelRuleResponseObject, error) {
 	if req.Body == nil {
 		return CreateLabelRule400JSONResponse{Error: "request body is required"}, nil
@@ -57,14 +57,15 @@ func (h *Server) CreateLabelRule(ctx context.Context, req CreateLabelRuleRequest
 	if valueMessage != "" {
 		return CreateLabelRule400JSONResponse{Error: valueMessage}, nil
 	}
-	row, err := h.insertLabelRule(ctx, input)
+	row, err := h.labelRules.Create(ctx, input.key, input.value, input.keyword, input.priority)
 	if err != nil {
 		return nil, err
 	}
-	return CreateLabelRule201JSONResponse(labelRuleFromRow(row)), nil
+	h.enqueueLabelRuleReconcile(ctx)
+	return CreateLabelRule201JSONResponse(labelRuleFromStore(row)), nil
 }
 
-// UpdateLabelRule はシリーズ分類ルールを上書きし、同じ tx で録画全件再評価を投入する。
+// UpdateLabelRule はシリーズ分類ルールを上書きし、commit 後に録画全件再評価を依頼する。
 func (h *Server) UpdateLabelRule(ctx context.Context, req UpdateLabelRuleRequestObject) (UpdateLabelRuleResponseObject, error) {
 	if req.Body == nil {
 		return UpdateLabelRule400JSONResponse{Error: "request body is required"}, nil
@@ -81,59 +82,35 @@ func (h *Server) UpdateLabelRule(ctx context.Context, req UpdateLabelRuleRequest
 	if valueMessage != "" {
 		return UpdateLabelRule400JSONResponse{Error: valueMessage}, nil
 	}
-	tx, err := h.pool.Begin(ctx)
+	row, err := h.labelRules.Update(ctx, req.Id, input.value, input.keyword, input.priority)
 	if err != nil {
-		return nil, fmt.Errorf("beginning label rule update: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	row, err := q.UpdateLabelRule(ctx, sqlcgen.UpdateLabelRuleParams{
-		ID: req.Id, Value: input.value, Keyword: input.keyword, Priority: input.priority,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return UpdateLabelRule404JSONResponse{Error: "label rule not found"}, nil
 		}
 		return nil, fmt.Errorf("updating label rule %d: %w", req.Id, err)
 	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing label rule update: %w", err)
-	}
-	return UpdateLabelRule200JSONResponse(labelRuleFromRow(row)), nil
+	h.enqueueLabelRuleReconcile(ctx)
+	return UpdateLabelRule200JSONResponse(labelRuleFromStore(row)), nil
 }
 
-// DeleteLabelRule はシリーズ分類ルールを削除し、同じ tx で録画全件再評価を投入する。
+// DeleteLabelRule はシリーズ分類ルールを削除し、commit 後に録画全件再評価を依頼する。
 func (h *Server) DeleteLabelRule(ctx context.Context, req DeleteLabelRuleRequestObject) (DeleteLabelRuleResponseObject, error) {
-	tx, err := h.pool.Begin(ctx)
+	err := h.labelRules.Delete(ctx, req.Id)
 	if err != nil {
-		return nil, fmt.Errorf("beginning label rule deletion: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	deleted, err := q.DeleteLabelRule(ctx, req.Id)
-	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return DeleteLabelRule404JSONResponse{Error: "label rule not found"}, nil
+		}
 		return nil, fmt.Errorf("deleting label rule %d: %w", req.Id, err)
 	}
-	if deleted == 0 {
-		return DeleteLabelRule404JSONResponse{Error: "label rule not found"}, nil
-	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing label rule deletion: %w", err)
-	}
+	h.enqueueLabelRuleReconcile(ctx)
 	return DeleteLabelRule204Response{}, nil
 }
 
 // GetLabelRuleValueKey は入力中の値が棚のキーとして何になるかを返す。
 // 正規化は SQL 関数 series_key の 1 箇所にあり、UI に複製させない。
 func (h *Server) GetLabelRuleValueKey(ctx context.Context, req GetLabelRuleValueKeyRequestObject) (GetLabelRuleValueKeyResponseObject, error) {
-	var key *string
-	if err := h.pool.QueryRow(ctx, "SELECT public.series_key($1)", req.Params.Value).Scan(&key); err != nil {
+	key, err := h.labelRules.SeriesKey(ctx, req.Params.Value)
+	if err != nil {
 		return nil, fmt.Errorf("normalizing label rule value %q: %w", req.Params.Value, err)
 	}
 	if key == nil {
@@ -363,8 +340,8 @@ func labelRuleInput(in LabelRuleInput) (labelRuleInputValues, error) {
 // 制約違反（500）になるので、利用者の入力ミスを 400 として返すにはここで
 // 見る必要がある。CHECK はそのまま残す（表現不可能にしておく方が強い。不変条件 10）。
 func (h *Server) labelRuleValueMessage(ctx context.Context, value string) (string, error) {
-	var key *string
-	if err := h.pool.QueryRow(ctx, "SELECT public.series_key($1)", value).Scan(&key); err != nil {
+	key, err := h.labelRules.SeriesKey(ctx, value)
+	if err != nil {
 		return "", fmt.Errorf("normalizing label rule value %q: %w", value, err)
 	}
 	if key == nil {
@@ -373,48 +350,19 @@ func (h *Server) labelRuleValueMessage(ctx context.Context, value string) (strin
 	return "", nil
 }
 
-func (h *Server) insertLabelRule(ctx context.Context, in labelRuleInputValues) (sqlcgen.LabelRule, error) {
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		return sqlcgen.LabelRule{}, fmt.Errorf("beginning label rule creation: %w", err)
+func (h *Server) enqueueLabelRuleReconcile(ctx context.Context) {
+	if h.enqueuer == nil {
+		return
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	row, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
-		Key: in.key, Value: in.value, Keyword: in.keyword, Priority: in.priority,
-	})
-	if err != nil {
-		return sqlcgen.LabelRule{}, fmt.Errorf("creating label rule: %w", err)
+	if _, err := h.enqueuer.Enqueue(ctx, jobs.LabelRuleReconcileArgs{}); err != nil {
+		slog.Warn("failed to enqueue label rule re-evaluation", "err", err)
 	}
-	if err := insertLabelRuleReconcile(ctx, tx, h.enqueuer); err != nil {
-		return sqlcgen.LabelRule{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return sqlcgen.LabelRule{}, fmt.Errorf("committing label rule creation: %w", err)
-	}
-	return row, nil
 }
 
-func insertLabelRuleReconcile(ctx context.Context, tx pgx.Tx, enqueuer jobq.Enqueuer) error {
-	if enqueuer == nil {
-		return nil
-	}
-	if _, err := enqueuer.EnqueueTx(ctx, tx, jobs.LabelRuleReconcileArgs{}); err != nil {
-		return fmt.Errorf("enqueuing label rule re-evaluation: %w", err)
-	}
-	return nil
-}
-
-func labelRuleFromRow(row sqlcgen.LabelRule) LabelRule {
+func labelRuleFromStore(row store.LabelRule) LabelRule {
 	priority := row.Priority
-	// value_key は CHECK (value_key IS NOT NULL) で非 null（生成列なので sqlc は
-	// ポインタにする）。
-	valueKey := ""
-	if row.ValueKey != nil {
-		valueKey = *row.ValueKey
-	}
 	return LabelRule{
-		Id: row.ID, Key: LabelRuleKey(row.Key), Value: row.Value, ValueKey: valueKey, Keyword: row.Keyword,
+		Id: row.ID, Key: LabelRuleKey(row.Key), Value: row.Value, ValueKey: row.ValueKey, Keyword: row.Keyword,
 		Priority: &priority, CreatedAt: row.CreatedAt.UTC(), UpdatedAt: row.UpdatedAt.UTC(),
 	}
 }

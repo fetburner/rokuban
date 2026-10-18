@@ -22,6 +22,7 @@ var version = "dev"
 type Server struct {
 	pool         *pgxpool.Pool
 	chapterStore store.ChapterEdits
+	labelRules   store.LabelRules
 	enqueuer     jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
@@ -70,7 +71,8 @@ type Server struct {
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
 // chapterStore はチャプター編集の永続化契約。nil はチャプター操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+// labelRules は分類ルールの永続化契約。nil は分類ルール API を呼ばない部分テストでのみ許容する。
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, labelRules store.LabelRules, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -99,7 +101,7 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, enqueuer job
 		}
 	}
 	return &Server{
-		pool: pool, chapterStore: chapterStore, enqueuer: enqueuer,
+		pool: pool, chapterStore: chapterStore, labelRules: labelRules, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,

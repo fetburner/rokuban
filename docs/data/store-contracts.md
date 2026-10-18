@@ -103,3 +103,23 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 - ライブラリの公開契約: 不変条件 14
 
 </details>
+
+### 分類ルール
+
+分類ルールと当たりの再評価は、用途ごとの契約に分ける。
+
+分類ルールの API と全件再評価は、用途ごとに分けた `LabelRules` と `LabelRuleReevaluation` の契約を使う。再評価は 1 tx で差分を適用し、当たりが変わったときだけ録画のトピックへ通知する。同時に動く再評価は 1 本で、後から始まったものは先に commit されたルールの集合で評価する。
+
+録画の書き込みが分類の当たりを維持する責任は、録画ドメインが持つ。PostgreSQL では録画の INSERT とタイトル変更のトリガーが行う。分類ルールを変更した後の全件再評価は、ルール編集をまたいで commit した録画を追いつかせる。
+
+ルール値のキーは `SeriesKey` で取得する。`label_rules.value_key` と同じ DB 関数を使い、正規化の規則を Go に複製して片方だけ変わるのを防ぐ。
+
+<details><summary>根拠</summary>
+
+- API の CRUD と値キー: `internal/store.LabelRules`
+- 全件再評価と直列化: `internal/store.LabelRuleReevaluation`
+- PostgreSQL 実装: `internal/store/pgstore.LabelRules`
+- 録画の書き込みによる当たりの維持: `recordings_label_rule_sync_insert` / `recordings_label_rule_sync_update` トリガー
+- 値キーの生成列: `label_rules.value_key`
+
+</details>

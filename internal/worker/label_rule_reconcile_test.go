@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // waitTopic は 'rokuban' チャネルの次の通知ペイロードを返す。
@@ -73,7 +74,7 @@ func TestLabelRuleReconcileWorker_NotifiesOnlyOnChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w := &LabelRuleReconcileWorker{Pool: pool}
+	w := &LabelRuleReconcileWorker{Store: pgstore.NewLabelRules(pool)}
 	job := jobs.LabelRuleReconcileArgs{}
 
 	// **ルールを先に入れる。** 録画の INSERT に付けたトリガーが当たりを張るので、

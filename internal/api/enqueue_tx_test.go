@@ -25,9 +25,6 @@ func TestInsertHelpers_UseCallerTransaction(t *testing.T) {
 		kind   string
 		insert func(ctx context.Context, tx pgx.Tx) error
 	}{
-		{"label_rule_reconcile", jobs.LabelRuleReconcileArgs{}.Kind(), func(ctx context.Context, tx pgx.Tx) error {
-			return insertLabelRuleReconcile(ctx, tx, enqueuer)
-		}},
 		{"cm_detect_reconcile", jobs.CMDetectReconcileArgs{}.Kind(), func(ctx context.Context, tx pgx.Tx) error {
 			return insertCMDetectReconcile(ctx, tx, enqueuer)
 		}},

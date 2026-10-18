@@ -18,6 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -381,13 +383,18 @@ func TestListRecordingShelves_RejectsUnknownKey(t *testing.T) {
 	}
 }
 
-// 分類ルールを作ると、同じトランザクションで全件再評価のジョブが入る。
+// 分類ルールを作った後、commit 済みの状態で全件再評価のジョブを依頼する。
 //
 // **これが無いと、作成の直後に既にコミット済みの録画が古い棚のまま残る**
 // （トリガーは自分の行しか見ない）。docs/data/series.md §8「評価結果の持ち方」。
-func TestCreateLabelRule_EnqueuesReconcileInSameTransaction(t *testing.T) {
+func TestCreateLabelRule_EnqueuesReconcileAfterCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	baseEnqueuer := newRecordingEnqueuer()
+	enqueuer := &labelRuleCommitCheckingEnqueuer{recordingEnqueuer: baseEnqueuer, pool: pool}
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool: pool, LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+	}))
+	t.Cleanup(srv.Close)
 
 	resp, created := postLabelRule(t, srv.URL, map[string]any{
 		"value": "作品X", "keyword": "作品X", "priority": 10,
@@ -402,8 +409,50 @@ func TestCreateLabelRule_EnqueuesReconcileInSameTransaction(t *testing.T) {
 		t.Errorf("priority = %v, want 10", created.Priority)
 	}
 
-	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 1 {
-		t.Errorf("label_rule_reconcile enqueue count = %d, want 1", got)
+	calls := enqueuer.CallsOfKind("label_rule_reconcile")
+	if len(calls) != 1 {
+		t.Fatalf("label_rule_reconcile enqueue count = %d, want 1", len(calls))
+	}
+	if calls[0].Transactional {
+		t.Errorf("label_rule_reconcile enqueue used the write transaction, want Enqueue after commit")
+	}
+}
+
+type labelRuleCommitCheckingEnqueuer struct {
+	*recordingEnqueuer
+	pool *pgxpool.Pool
+}
+
+func (e *labelRuleCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	var visible int64
+	if err := e.pool.QueryRow(ctx, `SELECT count(*) FROM label_rules WHERE value = '作品X'`).Scan(&visible); err != nil {
+		return jobq.Result{}, fmt.Errorf("checking committed label rule: %w", err)
+	}
+	if visible != 1 {
+		return jobq.Result{}, fmt.Errorf("label rule count visible during enqueue = %d, want 1 committed row", visible)
+	}
+	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
+}
+
+func TestCreateLabelRule_StoreFailureDoesNotEnqueue(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv, enqueuer := newAPIServerWithRecordingEnqueuer(t, pool)
+	const constraint = "label_rules_test_reject_keyword"
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE label_rules ADD CONSTRAINT `+constraint+` CHECK (keyword <> 'db-failure')`); err != nil {
+		t.Fatalf("adding rejecting constraint: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), `ALTER TABLE label_rules DROP CONSTRAINT IF EXISTS `+constraint); err != nil {
+			t.Errorf("dropping rejecting constraint: %v", err)
+		}
+	})
+
+	resp, _ := postLabelRule(t, srv.URL, map[string]any{"value": "作品X", "keyword": "db-failure"})
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("create status = %d, want 500 for failed store write", resp.StatusCode)
+	}
+	if got := len(enqueuer.CallsOfKind("label_rule_reconcile")); got != 0 {
+		t.Errorf("label_rule_reconcile enqueue count after store failure = %d, want 0", got)
 	}
 }
 
@@ -621,7 +670,9 @@ func getRecordingsSeries(t *testing.T, srvURL string) []Recording {
 func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httptest.Server, *recordingEnqueuer) {
 	t.Helper()
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool: pool, LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+	}))
 	t.Cleanup(srv.Close)
 	return srv, enqueuer
 }
