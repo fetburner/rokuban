@@ -97,7 +97,9 @@ INSERT INTO epg_services (
 INSERT INTO epg_programs (
   site, program_id, network_id, service_id, event_id,
   start_at, duration_ms, end_at, is_free, name, description, genres
-) VALUES ($1, $2, 32736, $3, $4, $5, $6, $5 + ($6 * interval '1 millisecond'), true, 'store preview program', '', '[]'::jsonb)`,
+ ) VALUES ($1, $2, 32736, $3, $4, $5::timestamptz, $6::bigint,
+           ($5::timestamptz + ($6::bigint * interval '1 millisecond')),
+           true, 'store preview program', '', '[]'::jsonb)`,
 		ref.Site, ref.ProgramID, serviceID, eventID, startAt, durationMs); err != nil {
 		t.Fatalf("seeding EPG program: %v", err)
 	}
