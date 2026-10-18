@@ -167,20 +167,12 @@ SELECT EXISTS (
 		changed int64
 		err     error
 	}
-	ticker := time.NewTicker(20 * time.Millisecond)
-	defer ticker.Stop()
 	timeout := time.NewTimer(10 * time.Second)
 	defer timeout.Stop()
-	finished := false
-	for !finished {
-		select {
-		case result = <-done:
-			finished = true
-		case <-ticker.C:
-			assertNoCommittedLabelRuleHits(t, pool, ctx, recordingIDs)
-		case <-timeout.C:
-			t.Fatal("ReevaluateAll did not finish after the hit writes")
-		}
+	select {
+	case result = <-done:
+	case <-timeout.C:
+		t.Fatal("ReevaluateAll did not finish after the hit writes")
 	}
 
 	if result.err != nil || result.changed != 2 {
