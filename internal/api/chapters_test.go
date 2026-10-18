@@ -28,7 +28,7 @@ func strPtr(s string) *string { return &s }
 func chapterRouter(pool *pgxpool.Pool, cmDetectEnabled bool) http.Handler {
 	return NewRouter(RouterConfig{
 		Pool:            pool,
-		ChapterStore:    pgstore.New(pool),
+		ChapterStore:    pgstore.NewAnalysis(pool),
 		CMDetectEnabled: cmDetectEnabled,
 	})
 }
