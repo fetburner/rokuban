@@ -7,10 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // maxProgramWindow は GET /api/programs で受け付ける時間窓の最大幅。
@@ -23,7 +21,10 @@ func (h *Server) ListServices(ctx context.Context, req ListServicesRequestObject
 	if !h.knownSite(req.Site) {
 		return ListServices404JSONResponse{Error: "unknown site"}, nil
 	}
-	rows, err := sqlcgen.New(h.pool).ListEpgServices(ctx, req.Site)
+	if h.epgReader == nil {
+		return nil, fmt.Errorf("EPG reader is required")
+	}
+	rows, err := h.epgReader.ListServices(ctx, req.Site)
 	if err != nil {
 		return nil, err
 	}
@@ -55,21 +56,27 @@ func (h *Server) ListPrograms(ctx context.Context, req ListProgramsRequestObject
 	}
 	// `?service=` は Service.id。DB は network_id / service_id を別々に持つので
 	// 分解してから述語に渡す（splitServiceIDs のコメント参照）。
-	var exactNetworkIDs, exactServiceIDs []int32
+	var exactServices []store.EPGServiceRef
 	if req.Params.Service != nil {
 		var msg string
-		exactNetworkIDs, exactServiceIDs, msg = splitServiceIDs(*req.Params.Service)
+		networkIDs, serviceIDs, msg := splitServiceIDs(*req.Params.Service)
 		if msg != "" {
 			return ListPrograms400JSONResponse{Error: msg}, nil
 		}
+		exactServices = make([]store.EPGServiceRef, len(networkIDs))
+		for i := range networkIDs {
+			exactServices[i] = store.EPGServiceRef{NetworkID: networkIDs[i], ServiceID: serviceIDs[i]}
+		}
 	}
 
-	rows, err := sqlcgen.New(h.pool).ListEpgProgramsForList(ctx, sqlcgen.ListEpgProgramsForListParams{
-		Site:            req.Site,
-		WindowStart:     req.Params.Start,
-		WindowEnd:       req.Params.End,
-		ExactNetworkIds: exactNetworkIDs,
-		ExactServiceIds: exactServiceIDs,
+	if h.epgReader == nil {
+		return nil, fmt.Errorf("EPG reader is required")
+	}
+	rows, err := h.epgReader.ListPrograms(ctx, store.EPGProgramListQuery{
+		Site:        req.Site,
+		WindowStart: req.Params.Start,
+		WindowEnd:   req.Params.End,
+		Services:    exactServices,
 	})
 	if err != nil {
 		return nil, err
@@ -101,18 +108,18 @@ func (h *Server) GetProgram(ctx context.Context, req GetProgramRequestObject) (G
 	if !h.knownSite(req.Site) {
 		return GetProgram404JSONResponse{Error: "unknown site"}, nil
 	}
-	row, err := sqlcgen.New(h.pool).GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
-		Site:      req.Site,
-		ProgramID: req.ProgramId,
-	})
+	if h.epgReader == nil {
+		return nil, fmt.Errorf("EPG reader is required")
+	}
+	row, err := h.epgReader.GetProgram(ctx, req.Site, req.ProgramId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetProgram404JSONResponse{Error: "program not found"}, nil
 		}
 		return nil, err
 	}
 
-	epg := row.EpgProgram
+	epg := row.Program
 	p := Program{
 		ProgramId:   epg.ProgramID,
 		NetworkId:   int(epg.NetworkID),

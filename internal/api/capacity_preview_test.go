@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -146,7 +147,7 @@ VALUES ($1, 'original', $2, 1024, 'active')`, recordingID, fmt.Sprintf("preview/
 
 func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Sites: []string{"default"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"default"}}))
 	t.Cleanup(srv.Close)
 	return srv
 }

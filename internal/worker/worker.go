@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -82,6 +83,12 @@ type Deps struct {
 	// Enqueuer は後続ジョブの投入に使う。worker と queue adapter の構築順の循環は
 	// jobq.Deferred を渡して切る。
 	Enqueuer jobq.Enqueuer
+
+	// EPGSync は EPG 同期の永続化契約。
+	EPGSync store.EPGSync
+
+	// ProgramSearch は番組検索・ルール評価の永続化契約。
+	ProgramSearch store.ProgramSearch
 
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
@@ -187,7 +194,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,
-		Pool:           deps.Pool,
+		Store:          deps.EPGSync,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
@@ -197,6 +204,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,
 		Pool:              deps.Pool,
+		ProgramSearch:     deps.ProgramSearch,
 		RetentionGrace:    deps.RulerRetentionGrace,
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,

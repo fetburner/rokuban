@@ -11,7 +11,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/capacity"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/rulequery"
 	"github.com/fetburner/rokuban/internal/ruler"
 )
 
@@ -32,7 +31,11 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 	if len(conditions.Sites) == 0 {
 		conditions.Sites = h.siteNames
 	}
-	if message := searchRegexError(ctx, h, conditions); message != "" {
+	message, err := searchRegexError(ctx, h, conditions)
+	if err != nil {
+		return nil, err
+	}
+	if message != "" {
 		return PreviewCapacityOverages400JSONResponse{Error: message}, nil
 	}
 
@@ -52,7 +55,10 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 		editingRule = &row
 	}
 
-	matches, err := rulequery.MatchPrograms(ctx, h.pool, conditions)
+	if h.programSearch == nil {
+		return nil, fmt.Errorf("program search store is required")
+	}
+	matches, err := h.programSearch.SearchPrograms(ctx, conditions)
 	if err != nil {
 		return nil, fmt.Errorf("matching programs for capacity preview: %w", err)
 	}

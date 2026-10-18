@@ -275,7 +275,7 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 - q 検索の式 GIN index: `recordings_title_trgm`、`recordings_description_trgm`
 - 棚と一覧で共有する条件部分: `recordingsFilterWhere`
 - 静的な形との速度差を測った数値を doc コメントに持つ: `buildRecordingShelvesQuery`
-- 同じ `arg` クロージャ方式の WHERE builder: `internal/rulequery.Compile`、`arg`
+- 同じ `arg` クロージャ方式の WHERE builder: `internal/store/pgstore/rulesql.go`、`arg`
 
 </details>
 

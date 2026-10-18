@@ -1,4 +1,4 @@
-package rulequery
+package pgstore
 
 import (
 	"context"
@@ -6,88 +6,89 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/rulequery"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func TestCompile_KeywordAndGenre(t *testing.T) {
-	c := Conditions{
+	c := rulequery.Conditions{
 		Sites: []string{"default"},
-		TextMatches: []TextMatch{
+		TextMatches: []rulequery.TextMatch{
 			{Target: "name", Mode: "keyword", Value: "ニュース"},
 		},
 		Genres: []int16{0, 1},
 	}
-	out, err := Compile(c)
+	out, err := compileRuleQuery(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "p.site = ANY($1)") {
-		t.Errorf("where = %s", out.Where)
+	if !strings.Contains(out.where, "p.site = ANY($1)") {
+		t.Errorf("where = %s", out.where)
 	}
-	if !strings.Contains(out.Where, "normalize_search_text") {
-		t.Errorf("expected normalize_search_text for keyword: %s", out.Where)
+	if !strings.Contains(out.where, "normalize_search_text") {
+		t.Errorf("expected normalize_search_text for keyword: %s", out.where)
 	}
-	if !strings.Contains(out.Where, "genre_lv1") {
-		t.Errorf("expected genre: %s", out.Where)
+	if !strings.Contains(out.where, "genre_lv1") {
+		t.Errorf("expected genre: %s", out.where)
 	}
-	if out.NeedsServiceJoin {
+	if out.needsServiceJoin {
 		t.Error("should not need service join")
 	}
-	if len(out.Args) < 2 {
-		t.Fatalf("args = %#v", out.Args)
+	if len(out.args) < 2 {
+		t.Fatalf("args = %#v", out.args)
 	}
 }
 
 func TestCompile_ChannelTypeNeedsJoin(t *testing.T) {
-	out, err := Compile(Conditions{Sites: []string{"default"}, ChannelTypes: []string{"BS"}})
+	out, err := compileRuleQuery(rulequery.Conditions{Sites: []string{"default"}, ChannelTypes: []string{"BS"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.NeedsServiceJoin {
+	if !out.needsServiceJoin {
 		t.Error("expected service join")
 	}
-	if !strings.Contains(out.Where, "s.channel_type") {
-		t.Errorf("where = %s", out.Where)
+	if !strings.Contains(out.where, "s.channel_type") {
+		t.Errorf("where = %s", out.where)
 	}
 }
 
 func TestCompile_NegateRegex(t *testing.T) {
-	out, err := Compile(Conditions{
+	out, err := compileRuleQuery(rulequery.Conditions{
 		Sites: []string{"default"},
-		TextMatches: []TextMatch{
+		TextMatches: []rulequery.TextMatch{
 			{Target: "name", Mode: "regex", Value: "再放送", Negate: true, CaseSensitive: true},
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "NOT (") || !strings.Contains(out.Where, " ~ ") {
-		t.Errorf("where = %s", out.Where)
+	if !strings.Contains(out.where, "NOT (") || !strings.Contains(out.where, " ~ ") {
+		t.Errorf("where = %s", out.where)
 	}
 }
 
 func TestCompile_TimeWindowOvernight(t *testing.T) {
-	out, err := Compile(Conditions{
+	out, err := compileRuleQuery(rulequery.Conditions{
 		Sites: []string{"default"},
-		Times: []TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}},
+		Times: []rulequery.TimeWindow{{Weekdays: 0b1111111, StartSec: 23 * 3600, EndSec: 1 * 3600}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "OR") {
-		t.Errorf("expected overnight OR: %s", out.Where)
+	if !strings.Contains(out.where, "OR") {
+		t.Errorf("expected overnight OR: %s", out.where)
 	}
 }
 
 func TestCompile_Period(t *testing.T) {
 	start := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	end := start.Add(24 * time.Hour)
-	out, err := Compile(Conditions{Sites: []string{"home"}, PeriodStartAt: &start, PeriodEndAt: &end})
+	out, err := compileRuleQuery(rulequery.Conditions{Sites: []string{"home"}, PeriodStartAt: &start, PeriodEndAt: &end})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.Where, "p.start_at >=") || !strings.Contains(out.Where, "p.start_at <") {
-		t.Errorf("where = %s", out.Where)
+	if !strings.Contains(out.where, "p.start_at >=") || !strings.Contains(out.where, "p.start_at <") {
+		t.Errorf("where = %s", out.where)
 	}
 }
 
@@ -109,7 +110,7 @@ func TestCompile_SitesFilter(t *testing.T) {
 		insertProgramFixture(t, pool, ctx, site, programID, start)
 	}
 
-	matches, err := MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}})
+	matches, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +119,7 @@ func TestCompile_SitesFilter(t *testing.T) {
 	}
 
 	// 逆方向も見る（両方向で確認する。テスト規律）: Sites に両方を指定すれば両方返る。
-	both, err := MatchPrograms(ctx, pool, Conditions{Sites: []string{"default", "cabin"}})
+	both, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default", "cabin"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +129,7 @@ func TestCompile_SitesFilter(t *testing.T) {
 }
 
 func TestCompile_EmptySites(t *testing.T) {
-	_, err := Compile(Conditions{})
+	_, err := compileRuleQuery(rulequery.Conditions{})
 	if err == nil {
 		t.Fatal("expected error")
 	}

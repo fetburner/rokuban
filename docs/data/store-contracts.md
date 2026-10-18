@@ -58,6 +58,23 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 方言ごとのクエリで書けば足りるので、発行側に interface を作る利益がない。
 
+### EPG 同期・検索
+
+EPG 同期の各段階は、それぞれ独立した store メソッドにする。同期は現在も複数段階の commit で進むため、サービス・番組の upsert、sweep、刈り込みを一つの tx にまとめない。大きな番組 upsert を長い tx に包むと commit の境界と実行時の挙動が変わる。
+
+正規表現の構文は store の実装に任せる。DB ごとに受け付ける構文が異なるため、構文まで共通化すると同じ条件を実装できない。契約で揃えるのはキーワードの全角・半角正規化と、大文字小文字を区別する指定である。不正なパターンは `ErrInvalidPattern` に写す。
+
+<details><summary>根拠</summary>
+
+- 同期の契約: `internal/store.EPGSync`
+- 番組表・詳細の契約: `internal/store.EPGReader`
+- 検索とルール評価の契約: `internal/store.ProgramSearch`
+- 番組表の条件検索テスト: `RunEPG` の `keyword search normalizes width and respects case sensitivity`
+- ルールの子表検索テスト: `RunEPG` の `rule matching applies every child-table condition`
+- 正規表現検証テスト: `RunEPG` の `regex validation distinguishes syntax errors`
+
+</details>
+
 ### ロック後の判断
 
 ロック後の状態で再評価する判断を純粋な関数として契約の引数に渡すのは、判断が呼び出し側の状態（設定など）に依存するときだけである。

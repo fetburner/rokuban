@@ -11,7 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-// ProgramRef は rulequery.MatchPrograms の結果 1 行を指す。同じ放送が 2 つの site に射影されると
+// ProgramRef は番組検索結果の 1 行を指す。同じ放送が 2 つの site に射影されると
 // 独立した 2 つの予約が生まれるので、site も同一性の一部である。
 type ProgramRef struct {
 	Site      string

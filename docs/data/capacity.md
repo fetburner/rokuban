@@ -290,7 +290,7 @@ flowchart TD
 
 <details><summary>根拠</summary>
 
-- 番組検索と共有する条件コンパイラ: `rulequery.MatchPrograms`
+- 番組検索と同じ条件を検索する契約: `store.ProgramSearch`
 - 候補をチャンネル情報から需要へ変換する元: `epg_services`
 - 重複排除で除く意図: `skip`
 - 編集中ルールの指定: `ruleId`

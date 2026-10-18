@@ -8,23 +8,17 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
-	// epgBatchSize は 1 回の pgx.Batch に詰める行数。全量で数万〜十万行になるため
-	// 分割してメモリと 1 バッチあたりの所要を抑える。
+	// epgBatchSize は EPG store に一度に渡す行数。全量をまとめて渡さない。
 	epgBatchSize = 1000
-
-	// epgNotifyTopic は SSE クライアントへ配る番組表更新のトピック名。
-	epgNotifyTopic = "epg"
 )
 
 // validChannelTypes は epg_services.channel_type の CHECK 制約に対応する。
@@ -43,7 +37,7 @@ type EpgSyncWorker struct {
 	// verifySite で args.Site に対応するクライアントを取り出してから使う
 	// （issue #139）。
 	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
+	Store         store.EPGSync
 
 	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を
@@ -59,6 +53,9 @@ type EpgSyncWorker struct {
 func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	site := args.Site
 	log := slog.With("site", site)
+	if w.Store == nil {
+		return fmt.Errorf("EPG store is required")
+	}
 
 	started := time.Now()
 	defer func() { metrics.EpgSyncDuration.Observe(time.Since(started).Seconds()) }()
@@ -71,11 +68,9 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 		return err
 	}
 
-	q := sqlcgen.New(w.Pool)
-
 	// スイープ基準は upsert より前の DB 時刻。これより古い observed_at が
 	// 「今回観測されなかった行」になる。
-	mark, err := q.EpgSweepMark(ctx)
+	mark, err := w.Store.SweepMark(ctx)
 	if err != nil {
 		return fmt.Errorf("getting sweep mark: %w", err)
 	}
@@ -84,7 +79,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	if err != nil {
 		return fmt.Errorf("listing services: %w", err)
 	}
-	syncedServices, err := w.syncServices(ctx, q, site, services)
+	syncedServices, err := w.syncServices(ctx, site, services)
 	if err != nil {
 		return fmt.Errorf("syncing services: %w", err)
 	}
@@ -94,7 +89,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 		return fmt.Errorf("listing programs: %w", err)
 	}
 	serviceChannels := serviceChannelIndex(services)
-	syncedPrograms, observedChannels, err := w.syncPrograms(ctx, q, site, programs, serviceChannels)
+	syncedPrograms, observedChannels, err := w.syncPrograms(ctx, site, programs, serviceChannels)
 	if err != nil {
 		return fmt.Errorf("syncing programs: %w", err)
 	}
@@ -107,10 +102,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	var staleServices int64
 	if syncedServices == 0 {
 		log.Warn("epg sync: mirakc returned no services, skipping service sweep")
-	} else if staleServices, err = q.DeleteStaleEpgServices(ctx, sqlcgen.DeleteStaleEpgServicesParams{
-		Site:       site,
-		ObservedAt: mark,
-	}); err != nil {
+	} else if staleServices, err = w.Store.DeleteStaleServices(ctx, site, mark); err != nil {
 		return fmt.Errorf("deleting stale services: %w", err)
 	}
 
@@ -118,7 +110,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	// チューニングして collect-eits を回すため、1 チャンネルの収集失敗
 	// （録画とのチューナー競合・timeout）で番組が返らないことがある。
 	// サイト単位でスイープすると、そのチャンネルの番組表だけが消える。
-	stalePrograms, err := w.sweepPrograms(ctx, q, site, mark, services, serviceChannels, observedChannels)
+	stalePrograms, err := w.sweepPrograms(ctx, site, mark, services, serviceChannels, observedChannels)
 	if err != nil {
 		return fmt.Errorf("deleting stale programs: %w", err)
 	}
@@ -130,10 +122,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	}
 
 	// ローリングウィンドウ: mirakc が過去番組を保持し続けても、こちらは刈り取る。
-	pruned, err := q.PruneEpgPrograms(ctx, sqlcgen.PruneEpgProgramsParams{
-		Site:  site,
-		EndAt: mark.Add(-w.RetentionGrace),
-	})
+	pruned, err := w.Store.PrunePrograms(ctx, site, mark.Add(-w.RetentionGrace))
 	if err != nil {
 		return fmt.Errorf("pruning aired programs: %w", err)
 	}
@@ -141,7 +130,7 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	// 番組表が更新されたことをクライアントに知らせる。epg_programs は 1 パスで
 	// 数千行を upsert するためトリガーでは通知が細かすぎるので、
 	// パス完了時に 1 回だけ明示的に送る（internal/db/queries/notify.sql のコメント参照）。
-	if err := q.NotifyTopic(ctx, epgNotifyTopic); err != nil {
+	if err := w.Store.NotifyProgramsUpdated(ctx); err != nil {
 		// ヒントの配送失敗は同期の失敗ではない。次のパスか
 		// クライアントの staleTime 経過後の再取得で収束する。
 		log.Warn("epg sync: notifying clients failed", "err", err)
@@ -177,17 +166,17 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 }
 
 // syncServices はサービスを upsert し、投影した件数を返す。
-func (w *EpgSyncWorker) syncServices(ctx context.Context, q *sqlcgen.Queries, site string, services []mirakc.Service) (int, error) {
+func (w *EpgSyncWorker) syncServices(ctx context.Context, site string, services []mirakc.Service) (int, error) {
 	var projected int
 	for chunk := range chunks(services, epgBatchSize) {
-		params := make([]sqlcgen.UpsertEpgServiceParams, 0, len(chunk))
+		params := make([]store.EPGServiceUpsert, 0, len(chunk))
 		for _, s := range chunk {
 			if !validChannelTypes[s.Channel.Type] {
 				slog.Warn("epg sync: skipping service with unknown channel type",
 					"site", site, "service_id", s.ServiceID, "channel_type", s.Channel.Type)
 				continue
 			}
-			params = append(params, sqlcgen.UpsertEpgServiceParams{
+			params = append(params, store.EPGServiceUpsert{
 				Site:               site,
 				NetworkID:          int32(s.NetworkID),
 				ServiceID:          int32(s.ServiceID),
@@ -203,7 +192,7 @@ func (w *EpgSyncWorker) syncServices(ctx context.Context, q *sqlcgen.Queries, si
 		if len(params) == 0 {
 			continue
 		}
-		if err := execBatch(q.UpsertEpgService(ctx, params)); err != nil {
+		if err := w.Store.UpsertServices(ctx, params); err != nil {
 			return projected, err
 		}
 		projected += len(params)
@@ -281,7 +270,6 @@ func countChannels(idx map[serviceKey]channelKey) int {
 // SQL に渡す必要がなくなる。
 func (w *EpgSyncWorker) sweepPrograms(
 	ctx context.Context,
-	q *sqlcgen.Queries,
 	site string,
 	mark time.Time,
 	services []mirakc.Service,
@@ -309,12 +297,7 @@ func (w *EpgSyncWorker) sweepPrograms(
 
 	var deleted int64
 	for _, nid := range networks {
-		n, err := q.DeleteStaleEpgProgramsForServices(ctx, sqlcgen.DeleteStaleEpgProgramsForServicesParams{
-			Site:       site,
-			ObservedAt: mark,
-			NetworkID:  nid,
-			ServiceIds: byNetwork[nid],
-		})
+		n, err := w.Store.DeleteStalePrograms(ctx, site, mark, nid, byNetwork[nid])
 		if err != nil {
 			return deleted, fmt.Errorf("network %d: %w", nid, err)
 		}
@@ -330,7 +313,6 @@ func (w *EpgSyncWorker) sweepPrograms(
 // 全サービス 8 日分（数万〜十万件 × 数 KB）ではピークメモリが跳ねる。
 func (w *EpgSyncWorker) syncPrograms(
 	ctx context.Context,
-	q *sqlcgen.Queries,
 	site string,
 	programs []mirakc.Program,
 	serviceChannels map[serviceKey]channelKey,
@@ -338,7 +320,7 @@ func (w *EpgSyncWorker) syncPrograms(
 	var projected int
 	observed := make(map[channelKey]struct{})
 	for chunk := range chunks(programs, epgBatchSize) {
-		params := make([]sqlcgen.UpsertEpgProgramParams, 0, len(chunk))
+		params := make([]store.EPGProgramUpsert, 0, len(chunk))
 		chunkChannels := make(map[channelKey]struct{})
 		for _, p := range chunk {
 			if !projectable(p) {
@@ -356,7 +338,7 @@ func (w *EpgSyncWorker) syncPrograms(
 				durationMs = *p.Duration
 			}
 
-			params = append(params, sqlcgen.UpsertEpgProgramParams{
+			params = append(params, store.EPGProgramUpsert{
 				Site:        site,
 				ProgramID:   p.ID,
 				NetworkID:   int32(p.NetworkID),
@@ -377,7 +359,7 @@ func (w *EpgSyncWorker) syncPrograms(
 		if len(params) == 0 {
 			continue
 		}
-		if err := execBatch(q.UpsertEpgProgram(ctx, params)); err != nil {
+		if err := w.Store.UpsertPrograms(ctx, params); err != nil {
 			return projected, observed, err
 		}
 		projected += len(params)
@@ -388,26 +370,6 @@ func (w *EpgSyncWorker) syncPrograms(
 		}
 	}
 	return projected, observed, nil
-}
-
-// batchResults は sqlc が :batchexec 用に生成する型が満たすインターフェース。
-type batchResults interface {
-	Exec(f func(int, error))
-	Close() error
-}
-
-// execBatch はバッチを実行し、最初のエラーを返す。Close は常に呼ぶ。
-func execBatch(br batchResults) error {
-	var firstErr error
-	br.Exec(func(i int, err error) {
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("batch item %d: %w", i, err)
-		}
-	})
-	if closeErr := br.Close(); closeErr != nil && firstErr == nil {
-		firstErr = fmt.Errorf("closing batch: %w", closeErr)
-	}
-	return firstErr
 }
 
 // chunks は s を size 件ずつに分割して yield する。

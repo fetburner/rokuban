@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // GetProgramOverlaps は指定番組の放送時間帯と重なる既存予約の件数と内訳を返す
@@ -27,26 +26,25 @@ func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsR
 	if !h.knownSite(req.Site) {
 		return GetProgramOverlaps404JSONResponse{Error: "unknown site"}, nil
 	}
-	q := sqlcgen.New(h.pool)
-
 	// 番組の放送時間は EPG プロジェクションから引く。射影に無ければ判定材料が
 	// 無いので 404。
-	program, err := q.GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
-		Site:      req.Site,
-		ProgramID: req.ProgramId,
-	})
+	if h.epgReader == nil {
+		return nil, fmt.Errorf("EPG reader is required")
+	}
+	program, err := h.epgReader.GetProgram(ctx, req.Site, req.ProgramId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetProgramOverlaps404JSONResponse{Error: "program not found in EPG projection"}, nil
 		}
 		return nil, fmt.Errorf("getting program broadcast window: %w", err)
 	}
 
+	q := sqlcgen.New(h.pool)
 	rows, err := q.ListOverlappingReservations(ctx, sqlcgen.ListOverlappingReservationsParams{
 		Site:            req.Site,
 		TargetProgramID: req.ProgramId,
-		WindowStart:     program.EpgProgram.StartAt,
-		WindowEnd:       program.EpgProgram.EndAt,
+		WindowStart:     program.Program.StartAt,
+		WindowEnd:       program.Program.EndAt,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing overlapping reservations: %w", err)

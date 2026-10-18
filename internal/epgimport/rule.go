@@ -118,7 +118,7 @@ func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgst
 	fields, warnings := buildRuleFields(r)
 
 	// ARE 非互換の正規表現は「警告して、その text match だけ落とす」。
-	// そのまま insert すると、以降このルールの評価（rulequery が組む
+	// そのまま insert すると、以降このルールの評価（pgstore が組む
 	// `col ~ pattern` 節）が毎パス失敗し続ける恒久的な壊れ方になるため、
 	// 「警告に出す」（受け入れ基準）は満たしつつ実害（評価不能なルール）は
 	// 避ける。
@@ -147,7 +147,7 @@ func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgst
 	fields.textMatches = kept
 
 	// 変換の結果、絞り込み条件が 1 つも残らなかったルールを enabled のまま
-	// 作らない。rulequery.Compile は条件が空ならサイト一致のみに縮退するため、
+	// 作らない。条件が空ならサイト一致のみに縮退するため、
 	// 有効なままだと EPG 全番組を録画する巨大ルールになる
 	// （ARE 非互換で唯一の text match が落ちた場合や、EPGStation 側の
 	// ルールがもともと無条件だった場合の両方で起こりうる）。
@@ -441,7 +441,7 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 //
 // EPGStation は「1 つのキーワードを name/description/extended のうち選んだ
 // 複数フィールドに OR で照合する」という形だが、rokuban の rule_text_matches
-// は行を単純 AND で結合する（internal/rulequery/compile.go）ので OR は
+// は行を単純 AND で結合する（internal/store/pgstore/rulesql.go）ので OR は
 // 表現できない。
 //
 //   - ignoreKeyword（除外）は De Morgan の法則で救える: 「いずれかの

@@ -40,7 +40,7 @@ $$;
 -- +goose StatementEnd
 
 -- like_escape は LIKE の特殊文字（\ % _）を文字どおりに照合するための前置。
--- KeywordClause（internal/rulequery）と同じ規則で、4 経路（ruler・EPG 検索・
+-- pgstore.KeywordClause と同じ規則で、4 経路（ruler・EPG 検索・
 -- 録画一覧・分類ルール）が同じ関数を通る。**トリガーと全件再評価のジョブは Go を
 -- 通らない**ので、分類ルールの当たりは SQL 側でエスケープできることが前提になる。
 --

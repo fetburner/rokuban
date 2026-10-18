@@ -487,6 +487,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		TrustForwardedHost: cfg.Server.TrustForwardedHost,
 		Pool:               pool,
 		ChapterStore:       pgstore.NewAnalysis(pool),
+		EPGReader:          pgstore.NewEPG(pool),
+		ProgramSearch:      pgstore.NewEPG(pool),
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
@@ -632,6 +634,8 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 	deferred := &jobq.Deferred{}
 	workers := worker.NewWorkers(&worker.Deps{
 		Enqueuer:                 deferred,
+		EPGSync:                  pgstore.NewEPG(pool),
+		ProgramSearch:            pgstore.NewEPG(pool),
 		MirakcClients:            mirakcClients,
 		Pool:                     pool,
 		MediaDir:                 cfg.Storage.MediaDir,

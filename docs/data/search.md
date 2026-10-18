@@ -50,7 +50,7 @@ ARE は、先読みも後読みも使える（PostgreSQL 16.2 で測定・確認
 
 検索基盤は、標準 contrib で運用コストがゼロの pg_trgm で始める。形態素解析ベースの検索が欲しくなったら、段階的に PGroonga に伸ばす。正規化列を自前で維持する検索基盤は作らない。
 
-### 録画検索は rulequery を共有しない
+### 録画検索は番組条件コンパイラを共有しない
 
 録画一覧の絞り込みは、EPG 検索やルール評価と同じクエリ組み立てに相乗りしない。録画を共有コンパイラの第 2 のターゲットにはせず、共有するのはキーワードの正規化方言だけである。
 
@@ -58,8 +58,8 @@ ARE は、先読みも後読みも使える（PostgreSQL 16.2 で測定・確認
 
 <details><summary>根拠</summary>
 
-- 共有しないクエリ組み立て: `internal/rulequery`
-- 第 2 のターゲットにしない対象: `recordings`。`internal/rulequery.Compile` の対象にしない
+- 共有しないクエリ組み立て: `internal/store/pgstore/rulesql.go`
+- 第 2 のターゲットにしない対象: `recordings`。`EPG.SearchPrograms` の対象にしない
 
 </details>
 
@@ -90,7 +90,7 @@ EPG は消えるが録画は残るので、EPG に JOIN すると古い録画の
 <details><summary>根拠</summary>
 
 - EPG 検索のパス: `/search`
-- 共有する関数: `internal/rulequery.KeywordClause`。`compileTextMatch` と録画検索の両方が呼ぶ
+- 共有する SQL 句の実装: `internal/searchsql.KeywordClause`。番組検索と録画検索が同じ関数を使う
 - 正規化関数: `normalize_search_text`
 - 文字として照合する文字: `\` / `%` / `_`
 - 列名の例: `p.name` / `r.title`

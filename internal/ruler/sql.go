@@ -44,8 +44,8 @@ type upsertResult struct {
 //
 // sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）が
 // jsonb_to_recordset の動的レコード型を解決できず generate に失敗するため
-// （internal/db/queries/ruler.sql のコメント参照）、rulequery パッケージの流儀に
-// 倣ってここに生 SQL として置き、pgx 経由で直接実行する。
+// （internal/db/queries/ruler.sql のコメント参照）、番組検索の WHERE コンパイラ
+// （internal/store/pgstore/rulesql.go）と同じく、生 SQL として置いて pgx で実行する。
 //
 // resolved CTE が base / rule_id / 重複排除の根拠を「新しい値」として解決し、
 // ON CONFLICT ... DO UPDATE ... WHERE の IS DISTINCT FROM で実際に値が変わる行

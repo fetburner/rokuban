@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -43,7 +44,8 @@ func getJSONForTest(t *testing.T, url string, out any) *http.Response {
 // GET /api/sites はレジストリを定義順のまま返す。
 func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Sites: []string{"tokyo", "osaka"}})
+	epgStore := pgstore.NewEPG(pool)
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: epgStore, ProgramSearch: epgStore, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -139,7 +141,10 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Sites: []string{"tokyo", "osaka"}})
+	epgStore := pgstore.NewEPG(pool)
+	router := api.NewRouter(api.RouterConfig{
+		Pool: pool, EPGReader: epgStore, ProgramSearch: epgStore, Sites: []string{"tokyo", "osaka"},
+	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

@@ -207,7 +207,7 @@ func TestRunPass_DoesNotWriteProgramIntents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestRunPass_DoesNotWriteProgramOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestRunPass_OverridesAloneKeepReservationDetached(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestRunPass_SkipIntentPreventsReservation(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestRunPass_SkipIntentWithOverrideSurvivesViaOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestRunPass_SecondPassIsNoOp(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "anime", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "アニメ")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -452,7 +452,7 @@ func TestRunPass_WinnerByPriorityThenID(t *testing.T) {
 	highID := insertRule(t, pool, ctx, "high", 20)
 	insertRuleKeyword(t, pool, ctx, highID, "対象番組")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestRunPass_FillsChannelColumns(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "ch", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "チャンネルテスト")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestRunPass_SnapshotFollowsProjectionThenFreezes(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "ext", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "延長番組")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -592,7 +592,7 @@ func TestRunPass_SkipIntentSnapshotFollowsDelayedProgramAndSurvivesGC(t *testing
 	ruleID := insertRule(t, pool, ctx, "issue-560", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "後ろ倒し番組")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (initial): %v", err)
 	}
@@ -672,7 +672,7 @@ func TestRunPass_ObservesProgramIDReuse(t *testing.T) {
 	}
 
 	before := programIDReuseCount(t)
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -702,7 +702,7 @@ func TestRunPass_ProgramIDReuseIgnoresUnendedSnapshot(t *testing.T) {
 	insertProgram(t, pool, ctx, programID, "新番組", time.Now().Add(8*24*time.Hour).Truncate(time.Second))
 
 	before := programIDReuseCount(t)
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -725,7 +725,7 @@ func TestRunPass_ProgramIDReuseIgnoresSmallStartShift(t *testing.T) {
 	insertProgram(t, pool, ctx, programID, "繰り下げ後", oldStart.Add(time.Hour))
 
 	before := programIDReuseCount(t)
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -762,7 +762,7 @@ func TestRunPass_RuleUnmatch_DeleteVsDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -912,7 +912,7 @@ func TestRunPass_CircuitBreakerBlocksBulkDelete(t *testing.T) {
 		insertProgram(t, pool, ctx, int64(8000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1006,7 +1006,7 @@ func TestRunPass_DisablingRuleDetachesReservationWithInvestment(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1051,7 +1051,7 @@ func TestRunPass_FulfilledReservationIsRemovedWithoutGrace(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "fulfilled", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1093,7 +1093,7 @@ func TestRunPass_FulfilledReservationTombstonedOriginalStillRemoved(t *testing.T
 	ruleID := insertRule(t, pool, ctx, "fulfilled-tombstone", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1121,7 +1121,7 @@ func TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted(t *testing.
 	ruleID := insertRule(t, pool, ctx, "unfulfilled", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "録画済み番組")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1161,7 +1161,7 @@ func TestRunPass_FulfilledWithInvestmentStillRemoved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1194,7 +1194,7 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 		insertProgram(t, pool, ctx, int64(41010+i), "録画済み番組", start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1391,7 +1391,7 @@ func TestRunPass_DoesNotMarkWhenGCFails(t *testing.T) {
 	}
 
 	insertProgramSnapshotDirect(t, pool, ctx, 10000, "GC エラー", time.Now().Add(-2*time.Hour))
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
 	if err := r.RunPass(ctx); err == nil {
 		t.Fatal("RunPass() error = nil, want GC failure")
 	}
@@ -1431,7 +1431,7 @@ func TestRunPass_GC_DeletesEndedPastGrace(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1458,7 +1458,7 @@ func TestRunPass_GC_KeepsWithinGrace(t *testing.T) {
 	start := time.Now().Add(-40 * time.Minute).Truncate(time.Second)
 	insertReservationDirect(t, pool, ctx, 10002, "終了直後", start)
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1476,7 +1476,7 @@ func TestRunPass_GC_KeepsUnended(t *testing.T) {
 	start := time.Now().Add(24 * time.Hour).Truncate(time.Second)
 	insertReservationDirect(t, pool, ctx, 10003, "未来番組", start)
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: 1 * time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: 1 * time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1500,7 +1500,7 @@ func TestRunPass_GC_DeletesStaleNeverScheduledEvents(t *testing.T) {
 	insertNeverScheduledEvent(t, pool, ctx, 20001, time.Now().Add(-31*24*time.Hour))
 	insertNeverScheduledEvent(t, pool, ctx, 20002, time.Now().Add(-29*24*time.Hour))
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1542,7 +1542,7 @@ func TestRunPass_GC_NeverScheduledHorizonFollowsRetentionGraceInDays(t *testing.
 	insertNeverScheduledEvent(t, pool, ctx, 40001, time.Now().Add(-31*24*time.Hour))
 	insertNeverScheduledEvent(t, pool, ctx, 40002, time.Now().Add(-34*24*time.Hour))
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1589,7 +1589,7 @@ func TestRunPass_GC_AllowsStaleNeverScheduledReservationBackIntoSyncEvaluation(t
 		t.Fatalf("reservation should be excluded while its never-scheduled event exists, got %d candidates", len(before))
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1620,7 +1620,7 @@ func TestRunPass_GC_IgnoresCircuitBreaker(t *testing.T) {
 		insertReservationDirect(t, pool, ctx, int64(11000+i), fmt.Sprintf("終了%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace, MaxDeletesPerPass: 1})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetentionGrace: grace, MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1650,7 +1650,7 @@ func TestRunPass_CircuitBreakerLatchBlocksDeleteEvenBelowThreshold(t *testing.T)
 		insertProgram(t, pool, ctx, int64(20000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1711,7 +1711,7 @@ func TestRunPass_CircuitBreakerLatch_SnapshotFollowsLiveWhileWithheld(t *testing
 		insertProgram(t, pool, ctx, int64(23000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1782,7 +1782,7 @@ func TestRunPass_TrippedCircuitBreakerStillCreatesAndUpdatesReservations(t *test
 		t.Fatal(err)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1859,7 +1859,7 @@ func TestRunPass_GC_RunsWhileCircuitBreakerLatched(t *testing.T) {
 		insertProgram(t, pool, ctx, int64(22000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1, RetentionGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1, RetentionGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1915,7 +1915,7 @@ func TestRunPass_ResumeCircuitBreakerConverges(t *testing.T) {
 		insertProgram(t, pool, ctx, int64(23000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -1998,7 +1998,7 @@ func TestRunPass_CircuitBreakerTrippedAtNotUpdatedOnRepeatedTrip(t *testing.T) {
 		insertProgram(t, pool, ctx, int64(24000+i), fmt.Sprintf("対象%d", i), start)
 	}
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2061,7 +2061,7 @@ func TestRunPass_FullEpgOutageFreezeStopsDeletesWithoutTrippingBreaker(t *testin
 
 	// 閾値をわざと小さくしておく: 理屈上はブレーカーが発動しうる状況でも、
 	// 凍結が先に効いて toDelete が空になるので発動しないことを示すため。
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2128,7 +2128,7 @@ func TestRunPass_ManualReservationSurvivesRuleMatchWithoutSourceColumn(t *testin
 	ruleID := insertRule(t, pool, ctx, "manual-survivor", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "手動予約サバイバル")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2220,7 +2220,7 @@ func TestRunPass_LatchDoesNotWithholdIntentClearDelete(t *testing.T) {
 	const manualProgramID = 31900
 	insertManualReservation(t, pool, ctx, manualProgramID, "手動で録りたい番組", start)
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2287,7 +2287,7 @@ func TestRunPass_IntentClearDeletesDoNotCountTowardBreaker(t *testing.T) {
 	}
 
 	// 閾値 2 < 3 件。混同していれば発動する。
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2346,7 +2346,7 @@ func TestRunPass_LatchDoesNotWithholdSkipIntentDelete(t *testing.T) {
 	const skippedProgramID = 33900
 	insertProgram(t, pool, ctx, skippedProgramID, "定期番組", start)
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{MaxDeletesPerPass: 2})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2461,7 +2461,7 @@ func TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "epg-nulls-rule-id", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2543,7 +2543,7 @@ func TestRunPass_ReleasedDeleteGuard_RuleBackedRowIsNotReleased(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "rule-backed", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "ルール由来")
 
-	r := ruler.New([]string{testSite}, pool, nil)
+	r := newTestRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2606,7 +2606,7 @@ func TestRunPass_RetractGrace_KeepsImminentUnmatch(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-imminent", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2651,7 +2651,7 @@ func TestRunPass_RetractGrace_DoesNotProtectFarFutureUnmatch(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-far-future", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組2")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2684,7 +2684,7 @@ func TestRunPass_RetractGrace_DisabledRuleIsNotProtected(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-disabled-rule", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組3")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2720,9 +2720,9 @@ func TestRunPass_RetractGrace_ZeroDisablesProtection(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組4")
 
 	// RetractGrace を明示的に指定しない（ゼロ値 = 無効。ruler.Config.RetractGrace の
-	// フィールドコメント参照）。ruler.New(sites, pool, nil) と等価だが、意図を明示
+	// フィールドコメント参照）。newTestRuler(sites, pool, nil) と等価だが、意図を明示
 	// するため &ruler.Config{} を渡す。
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2760,7 +2760,7 @@ func TestRunPass_RetractGrace_ProtectedRowsDoNotCountTowardBreaker(t *testing.T)
 	}
 
 	// 閾値 1: 猶予が無ければ n=3 > 1 で確実に発動する。
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour, MaxDeletesPerPass: 1})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour, MaxDeletesPerPass: 1})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2805,7 +2805,7 @@ func TestRunPass_RetractGrace_DoesNotProtectPastStart(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-past-start", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組6")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2844,7 +2844,7 @@ func TestRunPass_RetractGrace_SkipIntentStillReleases(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-skip-intent", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組7")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -2900,7 +2900,7 @@ func TestRunPass_RetractGrace_UsesLiveStartAtNotFrozenSnapshot(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-live-start-forward", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組8")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}
@@ -3010,7 +3010,7 @@ func TestRunPass_RetractGrace_LiveStartAtWinsOverStaleSnapshotWhenDelayed(t *tes
 	ruleID := insertRule(t, pool, ctx, "grace-live-start-delay", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "対象番組9")
 
-	r := ruler.New([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
+	r := newTestRuler([]string{testSite}, pool, &ruler.Config{RetractGrace: time.Hour})
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}

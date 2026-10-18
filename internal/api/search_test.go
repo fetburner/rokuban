@@ -14,11 +14,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// 受け入れ: 同一条件で検索 API と rulequery.MatchPrograms（ruler 経路が呼ぶのと同じ
-// クエリ関数）の集合が一致する。site はレジストリを明示した RouterConfig から取り、
+// 受け入れ: 同一条件で検索 API と ProgramSearch の集合が一致する。site はレジストリを明示した RouterConfig から取り、
 // レジストリ既定値の "default" に頼らない（含むもの 6）。
 func TestSearchPrograms_MatchesRulerPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -55,7 +55,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -72,7 +72,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		apiIDs[i] = m.ProgramId
 	}
 
-	rulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+	rulerMatches, err := pgstore.NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
 	})
@@ -109,7 +109,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 		fwAPI[i] = m.ProgramId
 	}
-	fwRulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+	fwRulerMatches, err := pgstore.NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
 	})
@@ -199,7 +199,7 @@ func TestSearchPrograms_IncludesDisplayFields(t *testing.T) {
 	)
 	insertSearchProgramFixture(t, pool, ctx, site, programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -237,7 +237,7 @@ func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA", "siteB"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -266,7 +266,7 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA", "siteB"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -284,7 +284,7 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 // なることを確認する（validateRuleSites と同じ規律。#530 含むもの 2）。
 func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -312,7 +312,7 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 // SearchMatchRow の一覧が返ってこない）。
 func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

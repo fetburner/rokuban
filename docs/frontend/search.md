@@ -384,8 +384,8 @@ GB 換算はやらない。ビットレートの実測の出所が未決で、�
 <details><summary>根拠</summary>
 
 - 検索 API: `POST /api/programs/search`
-- 結果をそのまま返す関数: `rulequery.MatchPrograms`
-- 件数の上限が無いことの確認: `LIMIT`、`internal/rulequery/query.go`
+- 結果をそのまま返す関数: `store.ProgramSearch.SearchPrograms`
+- 件数の上限が無いことの確認: `LIMIT`、`internal/store/pgstore/rulesql.go`
 - 件数: `totalCount`
 - 畳まない: `programId`
 

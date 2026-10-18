@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/searchsql"
 )
 
 // serviceRef は Service.id を DB の 2 列に分解した組。
@@ -435,7 +435,7 @@ LEFT JOIN LATERAL (
 )
 
 // buildRecordingsQuery は GET /api/recordings の絞り込み + キーセットページングを
-// 動的 WHERE として組む（internal/rulequery.Compile の arg クロージャ方式に倣う。
+// 動的 WHERE として組む。
 // sqlc の静的クエリにしない理由は queryRecordings のコメント参照）。
 //
 // 列名を明示する（r.* ではなく列名を書くのは、この SELECT リストが
@@ -564,10 +564,10 @@ func recordingsFilterWhere(f recordingsFilter, and func(string), arg func(any) s
 	if f.Q != "" {
 		switch f.QTarget {
 		case ListRecordingsParamsQTargetTitle:
-			and(rulequery.KeywordClause("r.title", f.Q, false, arg))
+			and(searchsql.KeywordClause("r.title", f.Q, false, arg))
 		default: // "" または ListRecordingsParamsQTargetTitleDescription
-			and("(" + rulequery.KeywordClause("r.title", f.Q, false, arg) +
-				" OR " + rulequery.KeywordClause("r.description", f.Q, false, arg) + ")")
+			and("(" + searchsql.KeywordClause("r.title", f.Q, false, arg) +
+				" OR " + searchsql.KeywordClause("r.description", f.Q, false, arg) + ")")
 		}
 	}
 	if len(f.Genres) > 0 {
