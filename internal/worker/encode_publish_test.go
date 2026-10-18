@@ -268,6 +268,73 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
 
+// 別の録画・プロファイルが同じ rel_path を導くことがある（`r_a` + `b` と `r` + `a_b`）。
+// 削除済みでない別行がそのパスを持つなら、2 つ目の公開は rename の前に Upsert で拒まれる。
+// 通常の Work の経路は、この拒否を失敗した試行として記録する。
+func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	ffmpegPath := installCountingFFmpeg(t)
+	mediaDir, scratchDir := t.TempDir(), t.TempDir()
+	ownerID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r_a.m2ts", []string{"b"}, []byte("owner original"))
+	candidateID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r.m2ts", []string{"a_b"}, []byte("candidate original"))
+	const sharedRelPath = "20240101/r_a_b.mp4"
+	if got, err := EncodedRelPath("20240101/r.m2ts", "a_b", "mp4", 0); err != nil || got != sharedRelPath {
+		t.Fatalf("candidate EncodedRelPath = %q, err %v; want %q", got, err, sharedRelPath)
+	}
+	const previous = "owner encoded bytes"
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(sharedRelPath))
+	if err := os.WriteFile(finalPath, []byte(previous), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ownerAssetID := seedEncodedAsset(t, pool, ownerID, "b", sharedRelPath)
+
+	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)
+	w.Profiles.Profiles[0].Name = "a_b"
+	err := runWorkerViaJobQFake(ctx, w, EncodeJobArgs{RecordingID: candidateID, Profile: "a_b"})
+	if err == nil {
+		t.Fatal("Work succeeded with another active asset owning the rel_path")
+	}
+
+	got, readErr := os.ReadFile(finalPath)
+	if readErr != nil || string(got) != previous {
+		t.Errorf("existing canonical = %q, err %v; want %q untouched", got, readErr, previous)
+	}
+	var ownerIDAfter int64
+	var ownerProfile, ownerState string
+	if err := pool.QueryRow(ctx, `SELECT recording_id, profile, state FROM media_assets WHERE id = $1`, ownerAssetID).
+		Scan(&ownerIDAfter, &ownerProfile, &ownerState); err != nil {
+		t.Fatal(err)
+	}
+	if ownerIDAfter != ownerID || ownerProfile != "b" || ownerState != "active" {
+		t.Errorf("existing asset = (%d, %q, %q), want (%d, %q, active)", ownerIDAfter, ownerProfile, ownerState, ownerID, "b")
+	}
+	var candidateAssetCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_assets WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'a_b'`, candidateID).
+		Scan(&candidateAssetCount); err != nil {
+		t.Fatal(err)
+	}
+	if candidateAssetCount != 0 {
+		t.Errorf("candidate encoded assets = %d, want 0 after failed publication", candidateAssetCount)
+	}
+	state, ok := encodeAttemptState(t, pool, candidateID, "a_b")
+	if !ok || state != "failed" {
+		t.Errorf("candidate attempt state = %q, exists %v; want failed", state, ok)
+	}
+	var attemptError *string
+	if err := pool.QueryRow(ctx, `SELECT error FROM recording_encode_attempts WHERE recording_id = $1 AND profile = 'a_b'`, candidateID).
+		Scan(&attemptError); err != nil {
+		t.Fatal(err)
+	}
+	if attemptError == nil || !strings.Contains(*attemptError, "committing encoded asset: upserting media_asset") {
+		t.Errorf("candidate attempt error = %v, want the rel_path reservation failure", attemptError)
+	}
+	assertNoEncodeTemp(t, filepath.Dir(finalPath))
+}
+
 // T3: cut。古い計画（g1 → g2）の X が止まっている間に、行が active のまま g3 へ進み、
 // 区間も X と違う。X は公開せず「計画が古い」で戻る（Work では snooze になる。
 // 成功で skip すると X の新しい keep が消える）。(a) が無いと、区間が違うので (b) では

@@ -39,7 +39,8 @@ import (
 //  1. 原本は mediapath.Resolve で読む
 //  2. ffmpeg 出力は scratch に書く（media_dir へ直接書かない）
 //  3. 進捗は ffmpeg -progress pipe:1（stderr スクレイピング禁止）
-//  4. 成功時のみ scratch → media へストリームコピー + fsync → media_assets INSERT
+//  4. 成功時のみ scratch → media へストリームコピー + fsync → tx 内で media_assets の
+//     rel_path を予約 → canonical へ rename → commit
 //  5. 失敗時はコミット行を残さず、scratch は best-effort で掃除
 //
 // # 並走する 2 本の encode から canonical を守る
@@ -55,8 +56,8 @@ import (
 //     cancel を無視する古い試行が新しい試行とともに ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
-//     → tx）の中で判定 → rename（サイドカー → 本体）→ 親 dir
-//     fsync → Upsert → commit する。判定（planEncodePublish）は rename の前に、tx 内で
+//     → tx）の中で判定 → Upsert で rel_path を予約 → rename（サイドカー → 本体）→ 親 dir
+//     fsync → commit する。判定（planEncodePublish）は rename の前に、tx 内で
 //     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
@@ -892,10 +893,11 @@ func (w *EncodeWorker) prepareEncodePublish(
 }
 
 // publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
-// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock → tx → 判定 → rename（サイドカー → 本体）→ 親 dir
-// fsync → Upsert → commit** と進む。順序を逆にしない --- DB commit を先にすると、
+// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock → tx → 判定 → Upsert（rel_path を予約）→ rename（サイドカー → 本体）→ 親 dir
+// fsync → commit** と進む。順序を逆にしない --- DB commit を先にすると、
 // 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
 // rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
+// 削除済みでない別行が同じ rel_path を持つ場合、Upsert の一意制約で rename 前に失敗する。
 //
 // lock を commit まで保持するのは、通常削除が同じ lock の下で DB 状態と canonical
 // file を更新し、他の公開がその間へ割り込まないようにするためである。
@@ -964,15 +966,6 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("preparing encoded file publication: %w", err)
 	}
 
-	if in.withSubtitles {
-		if err := stagedSubtitle.publish(); err != nil {
-			return 0, false, err
-		}
-	}
-	if err := staged.publish(); err != nil {
-		return 0, false, err
-	}
-
 	profileName := in.profile
 	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
 		RecordingID: in.recordingID,
@@ -983,6 +976,16 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	if err != nil {
 		return 0, false, fmt.Errorf("committing encoded asset: upserting media_asset: %w", err)
 	}
+
+	if in.withSubtitles {
+		if err := stagedSubtitle.publish(); err != nil {
+			return 0, false, err
+		}
+	}
+	if err := staged.publish(); err != nil {
+		return 0, false, err
+	}
+
 	if in.cut != nil {
 		if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
 			return 0, false, fmt.Errorf("committing encoded asset: %w", err)
