@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"testing"
 	"time"
 
@@ -193,7 +192,15 @@ func runReservationReads(t *testing.T, newStore NewReservationsStore) {
 		t.Fatalf("ListOverlaps() = %v", err)
 	}
 	if len(overlaps) != 1 || overlaps[0].ProgramID != reservationID ||
-		!reflect.DeepEqual(overlaps[0].Overrides, json.RawMessage(`{"priority":3}`)) {
+		!hasPriorityOverride(overlaps[0].Overrides, 3) {
 		t.Fatalf("ListOverlaps() = %+v, want one overlapping reservation with its override", overlaps)
 	}
+}
+
+func hasPriorityOverride(raw json.RawMessage, want int) bool {
+	var options reservation.Options
+	if err := json.Unmarshal(raw, &options); err != nil || options.Priority == nil {
+		return false
+	}
+	return *options.Priority == want
 }

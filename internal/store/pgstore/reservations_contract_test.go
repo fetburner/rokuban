@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
@@ -33,6 +34,11 @@ func TestReservationsContract(t *testing.T) {
 func TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
+	monitor, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
+	if err != nil {
+		t.Fatalf("connecting lock monitor: %v", err)
+	}
+	t.Cleanup(func() { _ = monitor.Close(ctx) })
 	site, programID := seedReservationProgram(t, pool, contracttest.ReservationProgramOptions{
 		Projection: true, Snapshot: true, Reservation: true, Overrides: json.RawMessage(`{"priority":7}`),
 	})
@@ -65,11 +71,11 @@ func TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides(t *testing.T)
 		patch := patch
 		go func() { results <- s.PatchOverrides(ctx, site, programID, patch) }()
 	}
-	waitForSnapshotPatchWaiters(t, pool, len(patches))
+	waitForSnapshotPatchWaiters(t, monitor, len(patches))
 	if err := snapshotBlocker.Commit(ctx); err != nil {
 		t.Fatalf("releasing program snapshot lock: %v", err)
 	}
-	waitForPatchWaiters(t, pool, 1, 1)
+	waitForPatchWaiters(t, monitor, 1, 1)
 	if err := overridesBlocker.Commit(ctx); err != nil {
 		t.Fatalf("releasing existing overrides lock: %v", err)
 	}
@@ -92,11 +98,11 @@ func TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides(t *testing.T)
 	}
 }
 
-func waitForSnapshotPatchWaiters(t *testing.T, pool *pgxpool.Pool, want int) {
+func waitForSnapshotPatchWaiters(t *testing.T, monitor *pgx.Conn, want int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		snapshotWaiters, _, err := countPatchWaiters(pool)
+		snapshotWaiters, _, err := countPatchWaiters(monitor)
 		if err == nil && snapshotWaiters >= want {
 			return
 		}
@@ -105,13 +111,13 @@ func waitForSnapshotPatchWaiters(t *testing.T, pool *pgxpool.Pool, want int) {
 	t.Fatalf("timed out waiting for %d patches blocked on the program snapshot", want)
 }
 
-func waitForPatchWaiters(t *testing.T, pool *pgxpool.Pool, wantSnapshots, wantOverrides int) {
+func waitForPatchWaiters(t *testing.T, monitor *pgx.Conn, wantSnapshots, wantOverrides int) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	var snapshotWaiters, overridesWaiters int
 	for time.Now().Before(deadline) {
 		var err error
-		snapshotWaiters, overridesWaiters, err = countPatchWaiters(pool)
+		snapshotWaiters, overridesWaiters, err = countPatchWaiters(monitor)
 		if err == nil && snapshotWaiters == wantSnapshots && overridesWaiters == wantOverrides {
 			return
 		}
@@ -121,9 +127,9 @@ func waitForPatchWaiters(t *testing.T, pool *pgxpool.Pool, wantSnapshots, wantOv
 		wantSnapshots, wantOverrides, snapshotWaiters, overridesWaiters)
 }
 
-func countPatchWaiters(pool *pgxpool.Pool) (int, int, error) {
+func countPatchWaiters(monitor *pgx.Conn) (int, int, error) {
 	var snapshotWaiters, overridesWaiters int
-	err := pool.QueryRow(context.Background(), `
+	err := monitor.QueryRow(context.Background(), `
 SELECT count(*) FILTER (WHERE query ILIKE '%program_snapshots%'),
        count(*) FILTER (WHERE query ILIKE '%program_overrides%')
 FROM pg_stat_activity
