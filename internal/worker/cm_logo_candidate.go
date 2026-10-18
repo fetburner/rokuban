@@ -9,20 +9,17 @@ import (
 	"path/filepath"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // CMLogoCandidateWorker creates one station-level candidate from the taught area.
 // It deliberately has no retry budget: saving the area again is the user-visible
 // retry operation and leaves the previous candidate available for inspection.
 type CMLogoCandidateWorker struct {
-	Pool       *pgxpool.Pool
+	Store      store.CMStation
 	MediaDir   string
 	ScratchDir string
 	CMDetect   config.CMDetectConfig
@@ -32,12 +29,9 @@ type CMLogoCandidateWorker struct {
 // Work persists running before touching the original. Every analysis failure after
 // that point becomes a failed candidate row, so the desired view cannot hot-loop.
 func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandidateJobArgs) error {
-	q := sqlcgen.New(w.Pool)
-	area, err := q.GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
-		NetworkID: args.NetworkID,
-		ServiceID: args.ServiceID,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
+	station := store.CMStationRef{NetworkID: args.NetworkID, ServiceID: args.ServiceID}
+	area, err := w.Store.GetLogoArea(ctx, station)
+	if errors.Is(err, store.ErrNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -46,51 +40,16 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandid
 	if !area.UpdatedAt.Equal(args.AreaUpdatedAt) {
 		return nil
 	}
-
-	tx, err := w.Pool.Begin(ctx)
+	attemptedAt, started, err := w.Store.BeginLogoCandidate(ctx, station, args.RecordingID, args.AreaUpdatedAt)
 	if err != nil {
-		return fmt.Errorf("CM logo candidate: beginning running transaction: %w", err)
+		return err
 	}
-	qtx := sqlcgen.New(tx)
-	if err := qtx.LockCMStation(ctx, sqlcgen.LockCMStationParams{
-		NetworkID: args.NetworkID,
-		ServiceID: args.ServiceID,
-	}); err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("CM logo candidate: locking station: %w", err)
-	}
-	desired, err := qtx.IsCMLogoCandidateDesired(ctx, sqlcgen.IsCMLogoCandidateDesiredParams{
-		NetworkID:     args.NetworkID,
-		ServiceID:     args.ServiceID,
-		AreaUpdatedAt: args.AreaUpdatedAt,
-	})
-	if err != nil {
-		_ = tx.Rollback(ctx)
-		return fmt.Errorf("CM logo candidate: checking desired state: %w", err)
-	}
-	if !desired {
-		_ = tx.Rollback(ctx)
+	if !started {
 		return nil
 	}
-	attemptedAt, err := qtx.InsertCMLogoCandidateRunning(ctx, sqlcgen.InsertCMLogoCandidateRunningParams{
-		NetworkID:     args.NetworkID,
-		ServiceID:     args.ServiceID,
-		RecordingID:   args.RecordingID,
-		AreaUpdatedAt: args.AreaUpdatedAt,
-	})
+	item, err := w.Store.GetCandidateRecording(ctx, args.RecordingID)
 	if err != nil {
-		_ = tx.Rollback(ctx)
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("CM logo candidate: creating running row: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("CM logo candidate: committing running row: %w", err)
-	}
-	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
-	if err != nil {
-		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("loading analysis recording: %w", err)))
+		return w.fail(ctx, args, attemptedAt, err)
 	}
 	if item.NetworkID != args.NetworkID || item.ServiceID != args.ServiceID {
 		return w.fail(ctx, args, attemptedAt, cmFailure("setup", fmt.Errorf("analysis recording belongs to another station")))
@@ -108,25 +67,14 @@ func (w *CMLogoCandidateWorker) Work(ctx context.Context, args jobs.CMLogoCandid
 func (w *CMLogoCandidateWorker) fail(ctx context.Context, args jobs.CMLogoCandidateJobArgs, attemptedAt time.Time, err error) error {
 	failureCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	station := store.CMStationRef{NetworkID: args.NetworkID, ServiceID: args.ServiceID}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		if _, markErr := sqlcgen.New(w.Pool).DeleteCMLogoCandidateRunningAttempt(failureCtx, sqlcgen.DeleteCMLogoCandidateRunningAttemptParams{
-			NetworkID: args.NetworkID, ServiceID: args.ServiceID,
-			AreaUpdatedAt: args.AreaUpdatedAt, AttemptedAt: attemptedAt,
-		}); markErr != nil {
+		if markErr := w.Store.DiscardLogoCandidate(failureCtx, station, args.AreaUpdatedAt, attemptedAt); markErr != nil {
 			return errors.Join(err, fmt.Errorf("clearing canceled CM logo candidate: %w", markErr))
 		}
 		return err
 	}
-	message := err.Error()
-	stage := cmFailureStage(err)
-	if _, markErr := sqlcgen.New(w.Pool).MarkCMLogoCandidateFailure(failureCtx, sqlcgen.MarkCMLogoCandidateFailureParams{
-		NetworkID:     args.NetworkID,
-		ServiceID:     args.ServiceID,
-		AreaUpdatedAt: args.AreaUpdatedAt,
-		AttemptedAt:   attemptedAt,
-		Stage:         stage,
-		Error:         &message,
-	}); markErr != nil {
+	if _, markErr := w.Store.MarkLogoCandidateFailed(failureCtx, station, args.AreaUpdatedAt, attemptedAt, cmFailureStage(err), err.Error()); markErr != nil {
 		return errors.Join(err, fmt.Errorf("marking CM logo candidate failed: %w", markErr))
 	}
 	return err
@@ -134,8 +82,8 @@ func (w *CMLogoCandidateWorker) fail(ctx context.Context, args jobs.CMLogoCandid
 
 func (w *CMLogoCandidateWorker) analyze(
 	ctx context.Context,
-	item sqlcgen.GetCMDetectionWorkItemRow,
-	area sqlcgen.GetCMLogoAreaRow,
+	item store.CMLogoCandidateRecording,
+	area store.CMLogoArea,
 	args jobs.CMLogoCandidateJobArgs,
 	attemptedAt time.Time,
 ) error {
@@ -203,25 +151,16 @@ func (w *CMLogoCandidateWorker) analyze(
 		slog.Warn("cm_logo_candidate: failed to render logo preview", "recording_id", item.ID, "err", previewErr)
 		preview = nil
 	}
-	ready, err := sqlcgen.New(w.Pool).MarkCMLogoCandidateReady(ctx, sqlcgen.MarkCMLogoCandidateReadyParams{
-		NetworkID:     args.NetworkID,
-		ServiceID:     args.ServiceID,
-		AreaUpdatedAt: args.AreaUpdatedAt,
-		AttemptedAt:   attemptedAt,
-		Lgd:           logo,
-		PreviewPng:    preview,
-	})
+	station := store.CMStationRef{NetworkID: args.NetworkID, ServiceID: args.ServiceID}
+	ready, err := w.Store.MarkLogoCandidateReady(ctx, station, args.AreaUpdatedAt, attemptedAt, logo, preview)
 	if err != nil {
 		return cmFailure("save", fmt.Errorf("saving CM logo candidate: %w", err))
 	}
-	if ready == 0 {
+	if !ready {
 		// An area save deletes the old candidate and queues a new version. If a
 		// caller changed the area outside that transaction, remove only this old
 		// version so a new candidate cannot be touched by a late worker.
-		if _, err := sqlcgen.New(w.Pool).DeleteCMLogoCandidateForAreaVersion(ctx, sqlcgen.DeleteCMLogoCandidateForAreaVersionParams{
-			NetworkID: args.NetworkID, ServiceID: args.ServiceID,
-			AreaUpdatedAt: args.AreaUpdatedAt, AttemptedAt: attemptedAt,
-		}); err != nil {
+		if err := w.Store.DiscardLogoCandidate(ctx, station, args.AreaUpdatedAt, attemptedAt); err != nil {
 			return cmFailure("save", fmt.Errorf("discarding stale CM logo candidate: %w", err))
 		}
 	}

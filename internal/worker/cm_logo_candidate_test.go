@@ -14,12 +14,13 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func newCandidateTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMLogoCandidateWorker {
 	return &CMLogoCandidateWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		Store: pgstore.NewAnalysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
 }

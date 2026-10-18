@@ -17,7 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// Analysis は録画の解析のドメイン（チャプター編集など）を PostgreSQL で実装する。
+// Analysis は録画の解析と局単位 CM ロゴ状態の store 契約を PostgreSQL で実装する。
 // pool を持ち、このドメインの interface をまとめて満たす。
 type Analysis struct {
 	pool *pgxpool.Pool

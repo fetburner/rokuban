@@ -52,6 +52,25 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### CM 検出（局単位の状態）
+
+ロゴ、枠、候補は局を単位にして扱い、枠の保存 API と候補 worker の試行開始は、同じ局の状態変更と直列化する。
+
+局の状態は別々の表にあり、初回の書き込み前には行ロックの対象がない。そのため局キーを直列化の単位にする。PostgreSQL は advisory lock を使うが、契約が要求するのは同じ局の操作が互いに直列化される保証である。
+
+候補の ready 保存は `attempted_at` と候補が読んだ枠の `updated_at` を照合し、現在の枠が変わっていれば書かない。失敗と破棄は同じ二つの値で現在の running 候補を特定する。候補採用はロゴの更新、候補の削除、要求された場合の検出結果の削除を一つの tx に束ねる。枠の保存と候補の削除、枠の削除と採用待ちの解除もそれぞれ原子的に行う。
+
+候補解析と CM reconcile の投入は commit 後のヒントである。失っても定期 reconcile が永続状態から仕事を見つけ直す。
+
+<details><summary>根拠</summary>
+
+- ドメイン契約: `internal/store.CMStation`
+- PostgreSQL 実装: `internal/store/pgstore.Analysis`
+- 局単位の advisory lock: `LockCMStation`
+- 候補結果の版照合: `MarkCMLogoCandidateReady` / `MarkCMLogoCandidateFailure`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

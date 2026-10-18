@@ -32,6 +32,9 @@ type RouterConfig struct {
 	// ChapterStore はチャプター編集の永続化契約。
 	ChapterStore store.ChapterEdits
 
+	// CMStationStore は局単位の CM ロゴ状態と候補解析の永続化契約。
+	CMStationStore store.CMStation
+
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
 	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
 	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
@@ -148,7 +151,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
