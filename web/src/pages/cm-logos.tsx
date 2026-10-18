@@ -558,7 +558,7 @@ function CMLogoFrameEditor({
                 alt={`${logo.serviceName} の ${committedTime} のコマ`}
                 draggable={false}
                 data-testid="cm-logo-frame-image"
-                className="pointer-events-none absolute select-none"
+                className="pointer-events-none absolute max-w-none select-none"
                 style={{ left: imageOffset.x, top: imageOffset.y, width: imageBox.width, height: imageBox.height }}
               />
             )}

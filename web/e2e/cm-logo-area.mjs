@@ -45,6 +45,10 @@ const FRAME_PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64',
 )
+const FRAME_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1080" preserveAspectRatio="none">
+  <rect width="1440" height="1080" fill="#10a040" />
+  <rect x="1311" y="18" width="92" height="49" fill="#ff00ff" />
+</svg>`
 
 // ロゴのプレビュー用。幅 100px 超の実寸（今のロゴ 240x120、候補 200x100）にして、
 // 狭い列での縮み（SAR が掛からない）と見切れを実ブラウザで測れるようにする。
@@ -171,6 +175,31 @@ async function centerOf(locator, name) {
   const box = await locator.boundingBox()
   if (!box) throw new Error(`${name} の寸法が取れない`)
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 }
+}
+
+async function screenshotPixel(page, point) {
+  const x = Math.floor(point.x) - 1
+  const y = Math.floor(point.y) - 1
+  const screenshot = await page.screenshot({ clip: { x, y, width: 3, height: 3 } })
+  return page.evaluate(async (source) => {
+    const image = new Image()
+    image.src = source
+    await image.decode()
+    const canvas = document.createElement('canvas')
+    canvas.width = image.naturalWidth
+    canvas.height = image.naturalHeight
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('画素を読む canvas を作れない')
+    context.drawImage(image, 0, 0)
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+    const total = [0, 0, 0]
+    for (let index = 0; index < pixels.length; index += 4) {
+      total[0] += pixels[index]
+      total[1] += pixels[index + 1]
+      total[2] += pixels[index + 2]
+    }
+    return total.map((channel) => Math.round(channel / (pixels.length / 4)))
+  }, `data:image/png;base64,${screenshot.toString('base64')}`)
 }
 
 log(`URL: ${URL_BASE}`)
@@ -435,6 +464,82 @@ await check('⑩', async () => {
   }
   log(`  ポインタ 20px → 枠 ${(after.x - before.x).toFixed(1)}px`)
   await page.getByRole('button', { name: '全体' }).click()
+
+  // 再現位置は映像の右上にあり、画像のパンが端で制限される。
+  // 目立つ色の実画像を使い、拡大後も枠内に絵が残り、その場所を掴んで動かせるか測る。
+  const edgePage = await context.newPage()
+  await edgePage.setViewportSize({ width: 1280, height: 900 })
+  try {
+    await installApiStubs(edgePage, apiHandler)
+    // 後から登録した route が先に評価される。SVG はこのページにだけ返す。
+    await edgePage.route(/\/api\/media\/recordings\/(\d+)\/frame(\?.*)?$/, (route) => {
+      if (route.request().method() !== 'GET') return route.fallback()
+      const id = route.request().url().match(/recordings\/(\d+)\/frame/)[1]
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/svg+xml',
+        headers: frameHeaders[id],
+        body: FRAME_SVG,
+      })
+    })
+    await edgePage.goto(`${URL_BASE}/cm-logos/32678/5168?recording=7`, { waitUntil: 'domcontentloaded' })
+    const image = edgePage.getByTestId('cm-logo-frame-image')
+    await image.waitFor({ state: 'visible', timeout: 15000 })
+    await edgePage.waitForFunction(
+      () => (document.querySelector('[data-testid="cm-logo-frame-image"]')?.naturalWidth ?? 0) > 0,
+      undefined,
+      { timeout: 15000 },
+    )
+    for (const [label, value] of Object.entries({ X: 1311, Y: 18, 幅: 92, 高さ: 49 })) {
+      const input = numberInput(edgePage, label)
+      await input.fill(String(value))
+      await input.press('Tab')
+    }
+    for (const [label, value] of Object.entries({ X: '1311', Y: '18', 幅: '92', 高さ: '49' })) {
+      const got = await numberInput(edgePage, label).inputValue()
+      if (got !== value) throw new Error(`右上の再現ケースで ${label} が ${got}（期待 ${value}）`)
+    }
+
+    const frame = edgePage.getByTestId('cm-logo-frame')
+    await edgePage.getByRole('button', { name: '枠に寄る' }).click()
+    const outer = await frame.boundingBox()
+    const imageBox = await image.boundingBox()
+    const rect = edgePage.getByTestId('cm-logo-rect')
+    const before = await rect.boundingBox()
+    if (!outer || !imageBox || !before) throw new Error('拡大後の枠・画像・操作枠の寸法が取れない')
+    const scale = { x: imageBox.width / outer.width, y: imageBox.height / outer.height }
+    if (Math.abs(scale.x - 2.5) > 0.02 || Math.abs(scale.y - 2.5) > 0.02) {
+      throw new Error(`画像の拡大率が X/Y とも 2.5 倍でない（${scale.x.toFixed(3)}x${scale.y.toFixed(3)}）`)
+    }
+    if (
+      before.x < outer.x - 1 || before.y < outer.y - 1 ||
+      before.x + before.width > outer.x + outer.width + 1 ||
+      before.y + before.height > outer.y + outer.height + 1
+    ) {
+      throw new Error(`右上の操作枠が表示範囲外に出る（枠 ${JSON.stringify(before)} / コマ ${JSON.stringify(outer)}）`)
+    }
+    const color = await screenshotPixel(edgePage, {
+      x: before.x + before.width / 2,
+      y: before.y + before.height / 2,
+    })
+    if (color[0] < 120 || color[2] < 120 || color[1] > 100) {
+      throw new Error(`拡大後の枠の中に映像の色が見えない（画素 RGB=${color.join(',')}）`)
+    }
+
+    const cx = before.x + before.width / 2
+    const cy = before.y + before.height / 2
+    await edgePage.mouse.move(cx, cy)
+    await edgePage.mouse.down()
+    await edgePage.mouse.move(cx + 20, cy, { steps: 2 })
+    await edgePage.mouse.up()
+    const after = await rect.boundingBox()
+    if (!after || Math.abs(after.x - before.x - 20) > 2) {
+      throw new Error(`右上の操作枠を 20px ドラッグすると ${after ? after.x - before.x : NaN}px 動く`)
+    }
+    log(`  右上の枠: 拡大後 RGB=${color.join(',')}、ドラッグ 20px → ${(after.x - before.x).toFixed(1)}px`)
+  } finally {
+    await edgePage.close()
+  }
 })
 
 log('\n=== ⑪ 整数に丸めて保存する ===')
