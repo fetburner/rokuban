@@ -29,7 +29,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:recording-next-episode
 
 ### CM 検出のロゴ位置（`cm-logo-area.mjs`）
 
-CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源として開く。旧い query 形式は画面側のリダイレクト契約であり、この判定は新しい局ルートを使う。API はブラウザ側で差し替え、1x1 PNG と `X-Coded-Width: 1440`、`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を返す。画像の画素数ではなく coded size と SAR を使えていることを測る。ロゴ候補のプレビューは幅 100px 超の実寸（今のロゴ 240×120、候補 200×100）にする。1x1 では狭い列での縮みと見切れが測れない。枠の PUT は実バックエンドと同じく候補を作らない（`running` 行は worker が後から作る）。
+CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源として開く。旧い query 形式は画面側のリダイレクト契約であり、この判定は新しい局ルートを使う。API はブラウザ側で差し替え、通常の座標判定には 1x1 PNG と `X-Coded-Width: 1440`、`X-Coded-Height: 1080`、`X-Sample-Aspect-Ratio: 4:3` を返す。画像の画素数ではなく coded size と SAR を使えていることを測る。
+
+右上の拡大だけは、枠内の映像が残ることを実画素で判定するため、座標付きの色画像を使う。ロゴ候補のプレビューは幅 100px 超の実寸（今のロゴ 240×120、候補 200×100）にする。1x1 では狭い列での縮みと見切れが測れない。枠の PUT は実バックエンドと同じく候補を作らない（`running` 行は worker が後から作る）。
 
 `data-testid` と `aria-label` は画面の契約である。
 
@@ -49,7 +51,7 @@ CM 検出のロゴ画面は `/cm-logos/{networkId}/{serviceId}` を局の資源�
 - ⑦ 旧形式 `/cm-logos?network=&service=&recording=` が局のルートへ `recording` を保ったまま飛ぶ
 - ⑧ 数値入力へ `keyboard.type` で打てる（幅に 400 が 400 のまま、X の Backspace が 50）
 - ⑨ 角より約 18px 外側でも、`elementFromPoint` が右下ハンドルで、掴むと X / Y を変えず幅が増える
-- ⑩ 枠に寄った状態で枠を 20px ドラッグすると、枠が 20px（±2）動く
+- ⑩ 枠に寄った状態で中央の枠を 20px ドラッグすると、枠が 20px（±2）動く。右上の座標（1311, 18, 92, 49）でも画像の X/Y がともに 2.5 倍になり、枠内の色画像が見え、枠を 20px ドラッグすると 20px（±2）動く
 - ⑪ ドラッグ後の X / Y / 幅 / 高さが整数である
 - ⑫ 720x480 SAR 8:9 の枠箱が 4:3 で、画像が枠箱を埋める（①の 1440x1080 でも画像 = 枠箱）
 - ⑬ 400x860 で横スクロールが無く、`keyboard.type` で X / Y / 幅 / 高さを入れ、Tab も Enter も押さず「ロゴを解析」を押すと、PUT body が入力値どおりになる。③ と ⑬ は `recordingId` が表示中の録画（7）で `atMs` を含まないことも見る。⑫ は録画 8 を表示して解析し、`recordingId` が 8 になる
