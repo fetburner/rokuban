@@ -313,9 +313,9 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
 
-TS の計測済み判定は、主キー `media_asset_id` で引くスカラー副問い合わせで書く。JOIN して `s.scanned_size_bytes = a.size_bytes` と書くと、PostgreSQL は異なる表の列どうしの等号を独立と見なし、1 行に絞られると見積もる。計測済みの集合が入れ子ループの内側で Materialize され、候補 × 計測済みで二乗になる。副問い合わせなら候補ごとに索引を 1 回引くだけで済む。相関 `EXISTS` の中に等号を移しても直らない（50% で約 2,900 ms）。集合は JOIN と同じで、計測記録の無い原本は NULL との比較で不一致になる。
+TS の計測済み判定は、主キー `media_asset_id` で引くスカラー副問い合わせで書く。JOIN して `s.scanned_size_bytes = a.size_bytes` と書くと、PostgreSQL は異なる表の列どうしの等号を独立と見なし、1 行に絞られると見積もる。計測済みの集合が入れ子ループの内側で Materialize され、候補 × 計測済みで二乗になる。副問い合わせなら候補ごとに索引を 1 回引くだけで済む。相関 `EXISTS` の中に等号を移しても直らない（`until_encoded` が 50% の合成データで約 2,900 ms）。集合は JOIN と同じで、計測記録の無い原本は NULL との比較で不一致になる。
 
-PostgreSQL 16 の合成データは、原本 2 万、現行サイズの計測済み 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万とした。`until_encoded` の割合を変え、prepared statement の 6 回目（generic plan）を `LIMIT 5000` で測った。
+PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万の合成データを測った。`until_encoded` の割合ごとに、prepared statement の 6 回目（generic plan）を `LIMIT 5000` で実行した。
 
 | クエリ（JOIN → 副問い合わせ、ms） | 100% | 50% | 20% |
 |---|---:|---:|---:|
