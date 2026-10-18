@@ -26,6 +26,14 @@ type Options struct {
 	KeepOriginal     *string   `json:"keepOriginal,omitempty"`
 }
 
+// InvalidEffectiveOptionsError reports an invalid combination of merged reservation options.
+type InvalidEffectiveOptionsError struct {
+	Message string
+}
+
+// Error returns the validation message for invalid effective reservation options.
+func (e *InvalidEffectiveOptionsError) Error() string { return e.Message }
+
 // IsSkipped は実効の skip 判定（`opts.Skip != nil && *opts.Skip`）に名前を付けたもの。
 //
 // 「skip か」という共通の判定に名前を付け、呼び出し側で条件を重複させない。
@@ -112,6 +120,24 @@ func EffectiveOptions(base, overrides []byte, intentAction *string) (Options, er
 		eff.Skip = &skip
 	}
 	return eff, nil
+}
+
+// ValidateEffectiveKeepOriginal rejects an until_encoded policy without any encode profiles.
+// The typed error lets the API preserve its 400 response while storage owns validation timing.
+func ValidateEffectiveKeepOriginal(eff Options) error {
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != KeepOriginalUntilEncoded {
+		return nil
+	}
+	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) == 0 {
+		return &InvalidEffectiveOptionsError{
+			Message: fmt.Sprintf(
+				"effective keepOriginal is %q but effective encodeProfiles is empty "+
+					"(after merging with existing overrides and the rule's base); "+
+					"specify encodeProfiles or keep keepOriginal as %q",
+				KeepOriginalUntilEncoded, KeepOriginalAlways),
+		}
+	}
+	return nil
 }
 
 // IntentRecord は「録れ」。手動予約、およびルール由来予約への上書き。

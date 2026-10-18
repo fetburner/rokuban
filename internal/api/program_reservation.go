@@ -4,35 +4,24 @@ import (
 	"context"
 	"errors"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // GetProgramReservation は指定番組の予約を (site, programId) を宛先に返す
-// (GET /api/sites/{site}/programs/{programId}/reservation、issue #99)。
-//
-// 書き込み側（program_intents / program_overrides）は M3-1（issue #29）で既に
-// (site, programId) に寄せていた。reservations もこの複合キーを主キーに持つので、
-// 予約行が再実体化されてもこのエンドポイントの URL は変わらない（CLAUDE.md
-// 不変条件 9「導出器が作るキーを宛先にしない」）。
+// (GET /api/sites/{site}/programs/{programId}/reservation)。導出行の ID を宛先にしない。
 func (h *Server) GetProgramReservation(ctx context.Context, req GetProgramReservationRequestObject) (GetProgramReservationResponseObject, error) {
 	if !h.knownSite(req.Site) {
 		return GetProgramReservation404JSONResponse{Error: "unknown site"}, nil
 	}
 
-	q := sqlcgen.New(h.pool)
-	row, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
-		Site:      req.Site,
-		ProgramID: req.ProgramId,
-	})
+	row, err := h.reservationStore.GetReservation(ctx, req.Site, req.ProgramId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetProgramReservation404JSONResponse{Error: "no reservation for this program"}, nil
 		}
 		return nil, err
 	}
-	res, err := reservationFromRow(row.Reservation, row.ProgramSnapshot, row.Overrides, row.IntentAction, row.NeverRecorded, row.Series)
+	res, err := reservationFromRow(row)
 	if err != nil {
 		return nil, err
 	}

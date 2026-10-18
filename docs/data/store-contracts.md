@@ -52,6 +52,29 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### 予約の意図・上書き
+
+意図とオプション上書きは独立した store 契約が確定する。予約の表示値は読み取り時に導出する。
+
+更新と番組スナップショットは同じトランザクションで確定する。`PutIntent` は EPG 射影か既存の凍結スナップショットを必要とし、どちらも無ければ `ErrNotFound` を返す。
+
+同じ番組への上書き PATCH は直列化する。後続の PATCH は先行更新後の値を読んでからマージする。
+
+マージ後の実効オプションを検証する。結果が空なら上書き行を削除する。
+
+予約の詳細・一覧・重なりに必要な結合結果は store が返す。レスポンスの `source` / `state` と実効オプションは api が導出する。
+
+<details><summary>根拠</summary>
+
+- ドメイン契約: `internal/store.Reservations`
+- 射影・凍結スナップショット・欠損の意図書き込み: `TestReservationsContract/intent_snapshots_projection_and_rejects_missing_program`
+- PATCH の並行更新とマージ: `TestReservationsContract`
+- 読み取り前の PATCH 直列化: `TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides`
+- 空の上書き行の削除: `TestReservationsContract/empty_overrides_delete_their_row`
+- 一覧・詳細・重なりの読み取り: `TestReservationsContract/reservation_reads_return_details_and_overlaps`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

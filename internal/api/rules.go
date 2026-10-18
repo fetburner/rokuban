@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strings"
@@ -248,6 +249,17 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string
 		return fmt.Errorf("enqueuing ruler_pass hint for site %s: %w", site, err)
 	}
 	return nil
+}
+
+// enqueueRulerPassHint schedules a ruler pass after a reservation input has committed.
+// The durable user input is authoritative, so queue failure is logged for periodic recovery.
+func (h *Server) enqueueRulerPassHint(ctx context.Context, site string) {
+	if h.enqueuer == nil {
+		return
+	}
+	if _, err := h.enqueuer.Enqueue(ctx, jobs.RulerPassArgs{Site: site}); err != nil {
+		slog.ErrorContext(ctx, "api: failed to enqueue ruler_pass hint", "site", site, "err", err)
+	}
 }
 
 // ruleTargetSites は rule_sites から対象サイト名の一覧を読む。空（指定なし）は

@@ -115,7 +115,13 @@ encodeProfiles と keepOriginal は、ingest が原本をコミットするト�
 
 skip は PATCH では扱わない（`action` 列が担う）。取消は `PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` で行う（§4.4「取消」参照）。
 
-マージは、Go 側で `reservation.Options` の型付きフィールドとして行う。SQL で `overrides || $1::jsonb` や `overrides - $1::text[]` とやらないのは、下記「jsonb を許す条件」のためである。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）。そのため、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先は `(site, programId)` なので、`reservations` 行の存在に依存しない。
+マージは、Go 側で `reservation.Options` の型付きフィールドとして行う。SQL で `overrides || $1::jsonb` や `overrides - $1::text[]` とやらないのは、下記「jsonb を許す条件」のためである。同じ番組への PATCH は `program_snapshots` の行を先にロックし、ロック後に既存上書きを読み直して直列化する。読み取りより後でロックすると、別フィールドへの同時 PATCH が互いの更新を上書きしうる。宛先は `(site, programId)` なので、`reservations` 行の存在に依存しない。
+
+<details><summary>根拠</summary>
+
+- 同時 PATCH の直列化: `TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides`
+
+</details>
 
 #### overrides は `program_intents` とは別の表に置く
 
