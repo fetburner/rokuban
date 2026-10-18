@@ -60,14 +60,13 @@
 
 規則に当たる名前は改名する。改名すると、旧名で凍結した録画のうち旧名の encoded がまだ無いものは、満たせなくなる（`rokuban_encode_reconcile_unsatisfiable` に出る）。その `until_encoded` の原本は消えずに残る。旧名は設定に戻せないので、対処はその録画のエンコード方針から旧名を外すことである（[runbook/troubleshooting.md](../runbook/troubleshooting.md) §エンコードが失敗している（理由を知りたい））。
 
-新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。旧名の encoded が削除済みでない録画では、新名のエンコードが同じ相対パスを予約できず、毎回失敗するからである。失敗は `recording_encode_attempts` の `state='failed'` 行と `error` に残る。試行が 25 回に達すると worker はそのジョブを打ち切り、reconcile も同じ録画・プロファイルを積み直さない（[runbook/troubleshooting.md](../runbook/troubleshooting.md) §encode が上限に達して止まった）。
+新名は、旧名をサニタイズした名前（`a:b` なら `a_b`）と同じにしない。旧名の encoded が削除済みでない録画では、新名のエンコードが同じ相対パスを予約できず、毎回失敗して試行の上限で止まるからである。止まった後の扱いは [runbook/troubleshooting.md](../runbook/troubleshooting.md) §encode が上限に達して止まった にある。
 
 <details><summary>根拠</summary>
 
 - 公開が `rel_path` の予約を rename より先に行うこと: `publishEncoded`
-- 削除済みでない別行とパスが衝突したとき、ファイルを保護して試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
-- 25 回で打ち切ること: `EncodeWorker.Work`（`errEncodeAttemptLimit`）
-- 上限に達した行を reconcile が積み直さないこと: `encode_attempts_exhausted`（`ListMissingEncodeProfiles`）
+- 削除済みでない行がパスを予約し続けること: 一意索引 `media_assets_rel_path_idx`（`WHERE state <> 'deleted'`）
+- active の行とパスが衝突したとき、ファイルを保護して試行を失敗として記録すること: `TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite`
 
 </details>
 
