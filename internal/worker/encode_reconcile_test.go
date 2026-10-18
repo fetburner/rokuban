@@ -47,6 +47,9 @@ func runEncodeReconcilePass(t *testing.T, w *EncodeReconcileWorker) *recordingEn
 
 func runEncodeReconcilePassArgs(t *testing.T, w *EncodeReconcileWorker, args EncodeReconcileArgs) *recordingEnqueuer {
 	t.Helper()
+	if w.Media == nil {
+		w.Media = newTestMediaStore(w.Pool)
+	}
 	enqueuer, ok := w.Enqueuer.(*recordingEnqueuer)
 	if !ok {
 		enqueuer = newRecordingEnqueuer()
@@ -652,7 +655,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// 方向 B: 削除エンジンを 1 パス回しても、この録画の原本は消えない
 	// （until_encoded_deletable_originals は known_profiles で絞らないので、
 	// 「desired が揃っている」という判定に永久に到達しない）。
-	dw := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	dw := &DeleteReconcileWorker{Pool: pool, Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}
@@ -786,7 +789,7 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 
 	enqueuer := newRecordingEnqueuer()
 	profiles := encodeConfigWith("h265")
-	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles, RowLimit: 1}
+	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile page: %v", err)
 	}
@@ -816,7 +819,7 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 
 	// --once は各ジョブの後にプロセスを終了させる。次ページは新しい worker が引き継ぐ。
-	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles, RowLimit: 1}
+	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, nextPage); err != nil {
 		t.Fatalf("second reconcile page: %v", err)
 	}
@@ -829,7 +832,7 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 
 	// 末尾を越えたページはもう投入せず、継続の連鎖を止める。
-	lastWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles, RowLimit: 1}
+	lastWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, lastWorker, continuations[1]); err != nil {
 		t.Fatalf("page after the last candidate: %v", err)
 	}
@@ -874,7 +877,7 @@ func TestEncodeReconcileWorker_ContinuationEnqueueFailureReturnsSuccess(t *testi
 	mediaDir := t.TempDir()
 	id := seedRecordingWithOriginal(t, pool, mediaDir, "continuation-error/1.m2ts", []string{"h265"}, []byte("x"))
 	enqueuer := &continuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
-	w := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: encodeConfigWith("h265"), RowLimit: 1}
+	w := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: encodeConfigWith("h265"), RowLimit: 1}
 	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
 	}
@@ -909,7 +912,7 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 	}
 	enqueuer := newRecordingEnqueuer()
 	profiles := encodeConfigWith("h265")
-	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles, RowLimit: 1}
+	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("reconcile with an exhausted attempt: %v", err)
 	}
@@ -928,7 +931,7 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 		t.Fatalf("failed encode attempts deleted = %d, want 1", deleted)
 	}
 	enqueuer.Reset()
-	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles, RowLimit: 1}
+	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("reconcile after retry request: %v", err)
 	}
@@ -968,7 +971,7 @@ func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
 		t.Fatalf("continuations after first recording = %+v, want cursor %d", continuations, first)
 	}
 	// 1 profile ではなく 1 録画が RowLimit を消費する。次ページを新しい worker で処理する。
-	secondWorker := &EncodeReconcileWorker{Enqueuer: w.Enqueuer, Pool: pool, Profiles: w.Profiles, RowLimit: 1}
+	secondWorker := &EncodeReconcileWorker{Enqueuer: w.Enqueuer, Pool: pool, Media: newTestMediaStore(pool), Profiles: w.Profiles, RowLimit: 1}
 	if err := runWorkerViaJobQFake(context.Background(), secondWorker, continuations[0]); err != nil {
 		t.Fatalf("second reconcile page: %v", err)
 	}

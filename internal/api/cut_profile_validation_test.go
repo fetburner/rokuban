@@ -30,6 +30,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
 		ReservationStore:   pgstore.NewReservations(pool),
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        false,
@@ -125,6 +126,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
 		ReservationStore:   pgstore.NewReservations(pool),
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        true,
@@ -200,6 +202,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -255,6 +258,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -294,6 +298,7 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -383,6 +388,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -437,6 +443,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -481,6 +488,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -540,6 +548,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},
 	}))

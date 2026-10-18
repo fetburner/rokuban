@@ -7,6 +7,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // thumbnailSource is one usable file from which a chapter-aware thumbnail can be cut.
@@ -32,12 +33,12 @@ type thumbnailPlan struct {
 
 // thumbnailTimeline decodes the chapter timeline of a candidate row. The bool is
 // false when the recording has neither a CM detection nor user-owned chapters.
-func thumbnailTimeline(p sqlcgen.ListThumbnailReselectCandidatesRow) (chapters.Timeline, bool, error) {
+func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool, error) {
 	if !p.Detected && !p.Owned {
 		return nil, false, nil
 	}
 	var cmRanges []chapters.Range
-	if err := json.Unmarshal(p.CmRanges, &cmRanges); err != nil {
+	if err := json.Unmarshal(p.CMRanges, &cmRanges); err != nil {
 		return nil, true, err
 	}
 	var userSpans []chapters.Span
@@ -49,7 +50,7 @@ func thumbnailTimeline(p sqlcgen.ListThumbnailReselectCandidatesRow) (chapters.T
 }
 
 // thumbnailInputsOf decodes the usable input files of a candidate row.
-func thumbnailInputsOf(p sqlcgen.ListThumbnailReselectCandidatesRow) (thumbnailInputs, error) {
+func thumbnailInputsOf(p store.ThumbnailReselectCandidate) (thumbnailInputs, error) {
 	var inputs thumbnailInputs
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
@@ -61,6 +62,24 @@ func thumbnailInputsOf(p sqlcgen.ListThumbnailReselectCandidatesRow) (thumbnailI
 		return thumbnailInputs{}, err
 	}
 	return inputs, nil
+}
+
+func thumbnailCandidateFromSQL(p sqlcgen.ListThumbnailReselectCandidatesRow) store.ThumbnailReselectCandidate {
+	return store.ThumbnailReselectCandidate{
+		RecordingID:           p.RecordingID,
+		Trashed:               p.Trashed,
+		ProgramDurationMs:     p.ProgramDurationMs,
+		Detected:              p.Detected,
+		Owned:                 p.Owned,
+		CMRanges:              p.CmRanges,
+		UserSpans:             p.UserSpans,
+		OriginalMediaAssetID:  p.OriginalMediaAssetID,
+		OriginalRelPath:       p.OriginalRelPath,
+		EncodedAssets:         p.EncodedAssets,
+		ThumbnailMediaAssetID: p.ThumbnailMediaAssetID,
+		ThumbnailRelPath:      p.ThumbnailRelPath,
+		SeekMs:                p.SeekMs,
+	}
 }
 
 // thumbnailPlanForInputs selects the preferred available input and maps the policy

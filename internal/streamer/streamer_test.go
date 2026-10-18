@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -66,7 +67,7 @@ func newFixture(t *testing.T, relPath string, writeFile bool) *fixture {
 	seedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -158,7 +159,7 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	}
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -185,7 +186,7 @@ func TestRecordingThumbnail_NotFoundWithoutAsset(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID := seedRecording(t, pool)
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: t.TempDir()}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: t.TempDir()}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -321,7 +322,7 @@ func TestRecordingFile_NoAsset(t *testing.T) {
 	recordingID := seedRecording(t, pool)
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: t.TempDir()}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: t.TempDir()}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -370,7 +371,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 			tt.mark(t, pool, recordingID)
 
 			r := chi.NewRouter()
-			New(pool, Config{MediaDir: mediaDir}).Mount(r)
+			New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 			srv := httptest.NewServer(r)
 			defer srv.Close()
 
@@ -399,7 +400,7 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	seedAsset(t, pool, recordingID, "../secret.txt", 10)
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -462,7 +463,7 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 	seedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir, AccelLocation: "/_media/"}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, AccelLocation: "/_media/"}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -498,7 +499,7 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	seedAsset(t, pool, recordingID, "../secret.txt", 10)
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: t.TempDir(), AccelLocation: "/_media/"}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: t.TempDir(), AccelLocation: "/_media/"}).Mount(r)
 	srv := httptest.NewServer(r)
 	defer srv.Close()
 
@@ -547,7 +548,7 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -598,7 +599,7 @@ func TestRecordingFile_Subtitles_Served(t *testing.T) {
 	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -640,7 +641,7 @@ func TestRecordingFile_Subtitles_MissingSidecar_NoWarnLog(t *testing.T) {
 	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -675,7 +676,7 @@ func TestRecordingFile_Subtitles_ExtensionlessEncodedRelPath_NotFound(t *testing
 	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -699,7 +700,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 	seedEncodedAsset(t, pool, recordingID, relPath, int64(len(content)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -739,7 +740,7 @@ func TestRecordingFile_EncodedDeletedRecording(t *testing.T) {
 	}
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -761,7 +762,7 @@ func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
 	seedEncodedAsset(t, pool, recordingID, "e.mp4", int64(len(mp4)))
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -790,8 +791,9 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 	seedAsset(t, pool, recordingID, "r.m2ts", int64(len(content)))
 
 	router := api.NewRouter(api.RouterConfig{
-		Pool:    pool,
-		Mounter: New(pool, Config{MediaDir: mediaDir}),
+		Pool:        pool,
+		MediaReader: pgstore.NewMedia(pool),
+		Mounter:     New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}),
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -832,7 +834,7 @@ func TestRecordingSeekTiles_ServesJPEG(t *testing.T) {
 	}
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 
@@ -907,7 +909,7 @@ func TestRecordingSeekTiles_NotFound(t *testing.T) {
 	}
 
 	r := chi.NewRouter()
-	New(pool, Config{MediaDir: mediaDir}).Mount(r)
+	New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}).Mount(r)
 	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 

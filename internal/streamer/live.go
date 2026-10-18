@@ -10,7 +10,9 @@
 //   - 同時セッション上限はプロセスローカル（グローバルな天井はチューナー数で、
 //     裁定者は mirakc）
 //
-// **DB を引かない**（issue #91 の決定 3）。パスの (networkId, serviceId) は
+// **サービスライブの資源同定では DB を引かない**（issue #91 の決定 3）。追っかけ再生と
+// 原本 VOD は別の handler で store を読み、サービスライブはパスの値だけで資源を定める。
+// パスの (networkId, serviceId) は
 // SI の値そのもの（`GET /api/sites/{site}/services` が返すのと同じ id 空間）で、
 // mirakc が要求する合成 id への変換は programid.ServiceID による純関数（issue #217）。
 // セッションはインメモリの使い捨て --- crash-only の唯一の例外
@@ -33,12 +35,12 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // LiveConfig はライブ視聴の設定。streamer.Config が config.StorageConfig を
@@ -205,7 +207,7 @@ type LiveStreamer struct {
 	mirakc mirakcLiveClient
 	site   string
 	cfg    LiveConfig
-	pool   *pgxpool.Pool
+	media  store.MediaServing
 
 	mu            sync.Mutex
 	sessions      map[int64]*liveSession
@@ -251,21 +253,21 @@ type LiveStreamer struct {
 // 1 回でよい仕事。site 数が増えて無視できないコストになったら
 // newLiveStreamersBySite 側で 1 回だけ呼ぶ形に上げる。
 func NewLive(mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithPool(nil, mirakcClient, site, cfg)
+	return newLiveStreamerWithMedia(nil, mirakcClient, site, cfg)
 }
 
 func newLiveStreamer(client mirakcLiveClient, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithPool(nil, client, "default", cfg)
+	return newLiveStreamerWithMedia(nil, client, "default", cfg)
 }
 
-// NewLiveWithPool is the production constructor. Live and chase sessions share
+// NewLiveWithMedia is the production constructor. Live and chase sessions share
 // the same LiveStreamer so their process-local cap, idle GC, leave semantics,
 // and active-session gauge describe one resource pool.
-func NewLiveWithPool(pool *pgxpool.Pool, mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
-	return newLiveStreamerWithPool(pool, mirakcClient, site, cfg)
+func NewLiveWithMedia(media store.MediaServing, mirakcClient *mirakc.Client, site string, cfg LiveConfig) *LiveStreamer {
+	return newLiveStreamerWithMedia(media, mirakcClient, site, cfg)
 }
 
-func newLiveStreamerWithPool(pool *pgxpool.Pool, client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
+func newLiveStreamerWithMedia(media store.MediaServing, client mirakcLiveClient, site string, cfg LiveConfig) *LiveStreamer {
 	if cfg.Enabled && cfg.SegmentDir != "" {
 		sweepStaleLiveSegments(cfg.SegmentDir)
 	}
@@ -273,7 +275,7 @@ func newLiveStreamerWithPool(pool *pgxpool.Pool, client mirakcLiveClient, site s
 		mirakc:            client,
 		site:              site,
 		cfg:               cfg,
-		pool:              pool,
+		media:             media,
 		sessions:          make(map[int64]*liveSession),
 		chaseSessions:     make(map[sessionKey]*liveSession),
 		failedChaseInputs: make(map[int64]time.Time),

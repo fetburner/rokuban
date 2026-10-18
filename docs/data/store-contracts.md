@@ -163,6 +163,33 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 </details>
 
+### メディア読み取りとストレージ監査
+
+メディアとストレージの永続化も利用側ごとの契約で読み書きし、DB の型を利用側へ広げない。
+
+メディアの永続化は、利用側に応じた `MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation` に分ける。`pgstore.Media` はこれらを実装し、各利用側は必要な interface だけを受け取る。API と streamer が SQL の行型を知ると、読み取り条件と配信可否の判断が利用側に分散する。
+
+`MediaServing` は配信可能な active アセットを返し、対象が無い場合は `ErrNotFound` を返す。`deleting` と `deleted` の原本・encoded は配信対象にしない。
+
+`MediaReconcile` は worker が再計算する候補と、起動時に確認する profile / `rel_path` の証拠を読む。名前空間の検査は原本と encoded だけに適用し、`sites/{site}/` の有効なパスを通し、空の site 成分を拒む。
+
+`StorageObservation` は worker の `storage_sync` と孤児・実体無し候補を記録し、API 向けに観測値を読む。孤児判定の既知パス一覧には `media_assets` の状態に関係なく全ての `rel_path` を含め、`sites/{site}/` を含む値をそのまま返す。削除途中のファイルを孤児として別経路へ流さず、サイト接頭辞を落として別パスと誤認しないためである。
+
+候補の経過時間は、候補を記録した DB の時計で比較する。契約は時刻ではなく `time.Duration` を受け取るため、worker の時計ずれで孤児や実体無しの報告時期が変わらない。
+
+<details><summary>根拠</summary>
+
+- インターフェース: `internal/store.MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- 配信時の状態条件: `internal/db/queries/media_assets.sql` の serving query
+- 配信可能な状態: `TestMediaStoreContract` の `serving returns only active assets`
+- サイト名前空間: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
+- 監査パス: `TestMediaStoreContract` の `audit keeps the full site-prefixed asset path`
+- 孤児と実体無しの逆方向の差集合: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」「孤児回収の逆」
+- サイト名前空間: [storage contract](../storage/contract.md) §5「rel_path の名前空間」
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

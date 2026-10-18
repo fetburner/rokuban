@@ -13,11 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // frameTimeout は 1 コマの切り出しの上限（ffprobe 2 回 + ffmpeg 1 回）。
@@ -51,9 +49,9 @@ func (s *Streamer) RecordingFrame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := sqlcgen.New(s.pool).GetOriginalMediaAssetForServing(r.Context(), id)
+	row, err := s.media.GetOriginalMediaAssetForServing(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}

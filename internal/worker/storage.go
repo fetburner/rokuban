@@ -6,11 +6,9 @@ import (
 	"log/slog"
 	"slices"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // storageRoot は 1 つの観測対象（config キーと statfs するパスの対応）。
@@ -36,7 +34,7 @@ type storageRoot struct {
 // 観測ループを止めて再起動しても、次のパスが全量を書き直すので収束する
 // （crash-only。TestStorageSyncWorker_RestartConverges で固定）。
 type StorageSyncWorker struct {
-	Pool *pgxpool.Pool
+	Storage store.StorageObservation
 
 	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
 	// の validate:"required" を信頼しきらず、テストの部分構成でも安全に失敗する）。
@@ -65,6 +63,9 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
 	}
+	if w.Storage == nil {
+		return fmt.Errorf("storage sync: storage observation store is unavailable")
+	}
 
 	// allRoots は Rokuban が観測しうる root の全体集合（config キーと statfs
 	// するパスの対応）。storage_sync.root 列の CHECK (root IN ('media',
@@ -91,13 +92,11 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 		desired = append(desired, r.name)
 	}
 
-	q := sqlcgen.New(w.Pool)
-
 	// config が要求しなくなった root だけを消す。今回 statfs に失敗した root は
 	// この集合に含まれる（desired から外れない）ので、ここでは消えない ---
 	// 消すかどうかは config が決め、「今回観測できたか」では決めない
 	// （storage_sync.sql のコメント参照）。
-	if err := q.DeleteStorageSyncExcept(ctx, desired); err != nil {
+	if err := w.Storage.DeleteStorageSyncExcept(ctx, desired); err != nil {
 		return fmt.Errorf("storage sync: deleting stale roots: %w", err)
 	}
 
@@ -137,7 +136,7 @@ func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) er
 				"root", r.name, "path", r.path, "err", err)
 			continue
 		}
-		if err := q.UpsertStorageSync(ctx, sqlcgen.UpsertStorageSyncParams{
+		if err := w.Storage.UpsertStorageSync(ctx, store.StorageObservationInput{
 			Root:           r.name,
 			Path:           r.path,
 			TotalBytes:     u.totalBytes,

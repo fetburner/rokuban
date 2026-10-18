@@ -6,8 +6,8 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // encodeQueueRow は待機列の 1 行（録画 × プロファイル）。running でなければ queued。
@@ -21,7 +21,7 @@ type encodeQueueRow struct {
 // （TestGetEncodeQueueSummaryFromDomainState / TestListRecordingsEncodeStateMatchesQueueCounts）。
 func (h *Server) loadEncodeQueueRows(ctx context.Context) ([]encodeQueueRow, error) {
 	// SQL の ANY は NULL 配列を空配列と異なる意味にするため、nil は空にする。
-	rows, err := sqlcgen.New(h.pool).ListEncodeQueue(ctx, sqlcgen.ListEncodeQueueParams{
+	rows, err := h.mediaReader.ListEncodeQueue(ctx, store.EncodeQueueParams{
 		KnownProfiles: append([]string{}, h.encodeProfileNames...),
 		CutProfiles:   slices.AppendSeq([]string{}, maps.Keys(h.cutProfiles)),
 		AttemptLimit:  jobs.EncodeAttemptLimit,

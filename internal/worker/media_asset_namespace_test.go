@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -122,7 +123,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 				}
 			}
 
-			err = ValidateMediaAssetRelPathNamespace(ctx, pool)
+			err = ValidateMediaAssetRelPathNamespace(ctx, pgstore.NewMedia(pool))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("ValidateMediaAssetRelPathNamespace returned nil")

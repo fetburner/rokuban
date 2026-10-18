@@ -452,7 +452,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
-	w := &worker.DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	w := &worker.DeleteReconcileWorker{Pool: pool, Storage: pgstore.NewMedia(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Errorf("keep_original = %q, want always", got)
 	}
 
-	w := &worker.DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	w := &worker.DeleteReconcileWorker{Pool: pool, Storage: pgstore.NewMedia(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
@@ -956,7 +956,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
-	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles}
+	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: pgstore.NewMedia(pool), Profiles: profiles}
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
@@ -1065,6 +1065,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	encodeReconcileWorker := &worker.EncodeReconcileWorker{
 		Enqueuer: enqueuer,
 		Pool:     pool,
+		Media:    pgstore.NewMedia(pool),
 		Profiles: profiles,
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, encodeReconcileWorker, jobs.EncodeReconcileArgs{RecordingID: id}); err != nil {

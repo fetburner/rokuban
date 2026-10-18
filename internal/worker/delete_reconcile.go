@@ -132,6 +132,7 @@ type deleteTarget struct {
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
 	Pool           *pgxpool.Pool
+	Storage        store.StorageObservation
 	RecordingPurge store.RecordingPurge
 	Breakers       store.Breakers
 	MediaDir       string
@@ -148,6 +149,9 @@ type DeleteReconcileWorker struct {
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
+	if w.Storage == nil {
+		return fmt.Errorf("delete reconcile: storage observation store is unavailable")
+	}
 	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
 	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。
@@ -204,14 +208,14 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		}, "pending")
 	}
 
-	if err := w.reconcileDeleteObservations(ctx, q, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
+	if err := w.reconcileDeleteObservations(ctx, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
 		return err
 	}
 	candidates, err := collectDeleteCandidates(ctx, q, trashCutoff)
 	if err != nil {
 		return err
 	}
-	candidates.agedOrphans, err = w.agedUnpublishedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
+	candidates.agedOrphans, err = w.agedUnpublishedOrphans(ctx, orphanAge, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("verifying aged unpublished files: %w", err)
 	}
