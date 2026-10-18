@@ -118,6 +118,10 @@ probe は HTTP 層しか見ないので、メディア層の失敗は動画要�
 
 猶予の根拠は、停滞のイベントが途絶から 3 秒後に出ることと、セグメント長が 2 秒であることである。正常なら 3 セグメント以上落ちないと、猶予に到達しない。猶予中に、再生が進む・再生できる状態になる・一時停止するのいずれかが起きたら、回復として捨てる。
 
+「再生が進む」は、再生位置が基準から 50 ms 以上動いたかで判定する。基準は、直近の停滞か待機のイベントが出た時点の再生位置である。`timeupdate` が出ただけでは回復としない。WebKit はバッファの終端で、再生位置の動かない `timeupdate` を出す。
+
+停滞のイベントで猶予を張った後も、残りのバッファは再生され、尽きた位置で待機のイベントが出る。このとき基準を停滞の時点に置いたままにすると、終端の `timeupdate` を「進んだ」と読んで猶予を捨てる。猶予を張り直すイベントはその後来ないので、黒いまま何も出なくなる。そのため、猶予が張られている間の待機のイベントでも基準を取り直す。
+
 ```mermaid
 flowchart TD
   E[エラーのイベント] --> F[即時にエラー表示]
@@ -135,7 +139,10 @@ hls.js 経路には、この watcher を張らない。hls.js のエラーイベ
 <details><summary>根拠</summary>
 
 - 猶予の長さ: `liveStallTimeoutMs`（12 秒）
-- 回復として捨てるイベント: `playing` / `canplay` / `timeupdate` / `pause`
+- 回復として捨てるイベント: `playing` / `canplay` / `pause`、および 50 ms 以上進んだ `timeupdate`
+- WebKit が終端で出す、動かない `timeupdate` の実測: stalled@5.202 → 残りを再生 → waiting@7.790 → timeupdate@7.790
+- 50 ms の根拠: 正常再生中の `timeupdate` 間の進み幅は 0.148 〜 0.252 秒（WebKit の ⑮ で隣り合う 23 組）。50 ms はその下に置いた値で、下限そのものは未検証
+- 判定の所在: `live-player.test.tsx` の「currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）」、`chase.mjs` ⑮（WebKit）
 - hls.js 経路の代わりに使うイベント: `Hls.Events.ERROR`
 - 即時に失敗とするイベントと猶予つきのイベント: `error`、`stalled` / `waiting`
 - hls.js 経路では `stalled` を拾わない: `live-player.test.tsx`

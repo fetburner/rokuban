@@ -1148,8 +1148,9 @@ export function LivePlayer({
         lastProgressTime = media.currentTime
         clearStallTimer()
       }
-      // WebKit can emit timeupdate at the buffered end without advancing currentTime.
-      // Treating that event as recovery clears the only failure timer forever (chase.mjs ⑮).
+      // WebKit はバッファの終端で、currentTime の動かない timeupdate を出す
+      // （chase.mjs ⑮ の実測: waiting@7.790 → timeupdate@7.790）。これを回復とみなすと、
+      // 唯一の失敗タイマーが消えて、エラー表示も降格も二度と起きない。
       const onTimeUpdate = () => {
         const currentTime = media.currentTime
         if (!Number.isFinite(currentTime)) return
