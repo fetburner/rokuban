@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 func TestServiceIDExtraction(t *testing.T) {
@@ -34,7 +34,7 @@ func TestServiceIDExtraction(t *testing.T) {
 func TestBuildContentPath_EmptyTemplateUsesDefaultTemplate(t *testing.T) {
 	startAt := time.Date(2026, 7, 24, 21, 0, 0, 0, time.FixedZone("JST", 9*3600))
 	serviceID := int32(5136)
-	snap := sqlcgen.ProgramSnapshot{Title: "NHKニュース7", StartAt: startAt, ServiceID: serviceID}
+	snap := reservation.SyncProgramSnapshot{Title: "NHKニュース7", StartAt: startAt, ServiceID: serviceID}
 
 	got, err := buildContentPath(snap, "")
 	if err != nil {
@@ -61,7 +61,7 @@ func TestBuildContentPath_EmptyTemplateUsesDefaultTemplate(t *testing.T) {
 func TestBuildContentPath_TextTemplateExpansion(t *testing.T) {
 	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	serviceID := int32(1)
-	snap := sqlcgen.ProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: serviceID}
+	snap := reservation.SyncProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: serviceID}
 
 	got, err := buildContentPath(snap, "{{.Year}}{{.Month}}{{.Day}}_{{.Title}}")
 	if err != nil {
@@ -90,7 +90,7 @@ func TestBuildContentPath_TitleNoTraversal(t *testing.T) {
 	serviceID := int32(1)
 
 	for _, title := range malicious {
-		snap := sqlcgen.ProgramSnapshot{Title: title, StartAt: startAt, ServiceID: serviceID}
+		snap := reservation.SyncProgramSnapshot{Title: title, StartAt: startAt, ServiceID: serviceID}
 		path, err := buildContentPath(snap, "{{.Title}}")
 		if err != nil {
 			t.Fatalf("buildContentPath(%q): %v", title, err)
@@ -114,7 +114,7 @@ func TestBuildContentPath_TitleNoTraversal(t *testing.T) {
 func TestBuildContentPath_ErrorPropagation(t *testing.T) {
 	startAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	serviceID := int32(1)
-	snap := sqlcgen.ProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: serviceID}
+	snap := reservation.SyncProgramSnapshot{Title: "t", StartAt: startAt, ServiceID: serviceID}
 
 	if _, err := buildContentPath(snap, "{{.NoSuchField}}"); err == nil {
 		t.Error("expected error for unknown template field, got nil")

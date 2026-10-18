@@ -28,6 +28,7 @@ type Server struct {
 	capacityStore    store.Capacity
 	reservationStore store.Reservations
 	labelRules       store.LabelRules
+	breakerAdmin     store.BreakerAdmin
 	enqueuer         jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
@@ -76,9 +77,9 @@ type Server struct {
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
 // cmStationStore は局の CM ロゴ状態の永続化契約。chapterStore / playbackStore / recordingTrash / tunerReader / capacityStore / reservationStore はそれぞれの永続化契約。
-// labelRules は分類ルールの永続化契約。
+// labelRules は分類ルールの永続化契約。breakerAdmin はサーキットブレーカー一覧と手動再開の永続化契約。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, labelRules store.LabelRules, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -108,7 +109,7 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationSto
 	}
 	return &Server{
 		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, playbackStore: playbackStore, recordingTrash: recordingTrash,
-		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, labelRules: labelRules, enqueuer: enqueuer,
+		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, labelRules: labelRules, breakerAdmin: breakerAdmin, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,

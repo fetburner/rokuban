@@ -260,3 +260,68 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 - 値キーの生成列: `label_rules.value_key`
 
 </details>
+
+### schedule 同期
+
+観測行の置き換えと snapshot marker の更新は、1 つのトランザクションで確定する。
+
+reconciler は、観測全量の置き換え、同期評価の候補、開始済みイベントの読み取りを `ScheduleSync` から使う。presync collector は、marker・観測一覧・同期評価の候補を `ScheduleSyncReader` から読む。実装は `pgstore.ScheduleSync` が両方を持つ。
+
+置き換えは、観測行の upsert、古い観測行の削除、marker の更新を 1 つの tx で行う。marker を先に確定すると、collector が不完全な観測を新鮮と誤認する。
+
+古い観測行を判定する時刻（sweep の印）は DB の時計で付け、呼び出し側は時刻を渡さない。
+
+marker が無いときは、store がエラーと区別して返す。collector は、そのときだけ時刻を 0 として出す。
+
+<details><summary>根拠</summary>
+
+- reconciler の契約: `internal/store.ScheduleSync`
+- presync の読み取り契約: `internal/store.ScheduleSyncReader`
+- PostgreSQL 実装: `internal/store/pgstore.ScheduleSync`
+- 全量置き換えの原子性: `TestScheduleSyncContract/failed_replacement_preserves_prior_observations_and_marker`
+- marker の失敗による巻き戻し: `TestScheduleSyncContract/marker_failure_rolls_back_observations`
+
+</details>
+
+### never-scheduled 観測
+
+欠測の記録は reconciler のドメインに置く。書き手が reconciler（mirakc の観測）だからである。
+
+古い行の削除は、ruler の GC が同じ契約 `NeverScheduledEvents` を呼んで行う。実装は `pgstore.NeverScheduledEvents` が持つ。
+
+記録は放送イベントキーで冪等に行い、新しい行を作ったときだけ true を返す。
+
+削除は幅（horizon）だけを受け取る。`observed_at` を、DB の時計の now() から horizon を引いた時刻と比べる。`observed_at` が DB の時計で記録されているからである。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.NeverScheduledEvents`
+- PostgreSQL 実装: `internal/store/pgstore.NeverScheduledEvents`
+- 冪等記録と horizon による削除: `TestNeverScheduledEventsContract`
+- 削除の呼び出し元: `internal/ruler/ruler.go` の GC
+
+</details>
+
+### サーキットブレーカー
+
+発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
+
+reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。`Breakers` は `Trip` と `IsTripped` だけを持つ。`Trip` は発動時刻を返し、すでに発動中なら件数と抜粋だけを更新する。`Resume` は、対象の行が無ければ `ErrNotFound` を返す。
+
+reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。
+
+未解決: ruler だけは、発動の記録を tx の中で書く。「このパスでは削除しない」と同じ tx で確定するためで、store の契約を通っていない。
+
+ゲージとログは、store ではなく `breaker.ObserveState` と `breaker.Trip` が出す。出し方を 1 か所にするためである。ruler の tx 内の発動も、同じ出し方を共有する。
+
+<details><summary>根拠</summary>
+
+- worker の発動・状態契約: `internal/store.Breakers`
+- API の一覧・再開契約: `internal/store.BreakerAdmin`
+- PostgreSQL 実装: `internal/store/pgstore.Breakers`
+- ゲージとログ: `internal/breaker.ObserveState` / `internal/breaker.Trip`
+- 発動時刻と再開後の状態: `TestBreakersContract`
+- ruler の tx 内の発動: `internal/breaker/ruler_trip.go`
+- ruler の発動ゲージ: `TestRunPass_TripInTxRaisesCircuitBreakerGauge`
+
+</details>

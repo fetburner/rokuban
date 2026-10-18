@@ -88,7 +88,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
+			w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 			target := deleteTarget{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
 			deletionCtx, deletionCancel := context.WithTimeout(ctx, 150*time.Millisecond)
 			w.deleteMediaAsset(deletionCtx, sqlcgen.New(pool), target, "trash")

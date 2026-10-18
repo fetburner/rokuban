@@ -42,14 +42,15 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // observeDeleteReconcile は削除 reconcile のブレーカー状態を DB の真実から観測する。
 //
 // パスの先頭でブレーカーの発動状態を DB の真実に合わせ直す（ObserveState の
 // コメント参照。プロセス再起動でゲージが失われるため）。
-func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, q *sqlcgen.Queries, site string) (bool, error) {
-	tripped, err := breaker.ObserveState(ctx, q, site, breaker.DeleteReconcile)
+func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, breakers store.Breakers, site string) (bool, error) {
+	tripped, err := breaker.ObserveState(ctx, breakers, site, breaker.DeleteReconcile)
 	if err != nil {
 		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.DeleteReconcile, err)
 	}
@@ -99,9 +100,9 @@ func listPendingDeleteAssets(ctx context.Context, q *sqlcgen.Queries, trashCutof
 }
 
 // applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
-func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, q *sqlcgen.Queries, site string, tripped bool, total, maxPerPass int) (bool, error) {
+func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, breakers store.Breakers, site string, tripped bool, total, maxPerPass int) (bool, error) {
 	if total > maxPerPass {
-		if err := breaker.Trip(ctx, q, site, breaker.DeleteReconcile, maxPerPass, breaker.Sample{Total: total}); err != nil {
+		if err := breaker.Trip(ctx, breakers, site, breaker.DeleteReconcile, maxPerPass, breaker.Sample{Total: total}); err != nil {
 			return false, fmt.Errorf("tripping circuit breaker: %w", err)
 		}
 		return true, nil

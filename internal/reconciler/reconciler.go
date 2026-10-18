@@ -19,25 +19,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/schedulesync"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // broadcastEventIDUniquenessWindow は ARIB TR-B14 第四編 8.2.1 が同一サービスの
 // event_id に保証する一意性の期間。運用で変更する値ではないため設定にはしない。
 const broadcastEventIDUniquenessWindow = 24 * time.Hour
-
-// scheduleSyncBatchSize は 1 回の pgx.Batch に詰める行数。internal/worker/epg.go の
-// epgBatchSize と同じ理由（メモリと 1 バッチあたりの所要を抑える）で揃える。
-// schedule_sync の行数は EPG 窓のルール生成予約に比例するので数千件は現実的。
-const scheduleSyncBatchSize = 1000
 
 // Config は Reconciler の設定。
 type Config struct {
@@ -74,17 +67,19 @@ func defaultConfig() Config {
 // Reconciler は予約の desired state と mirakc の observed state を突き合わせる
 // 1 パス評価を行う。
 type Reconciler struct {
-	site   string
-	mirakc *mirakc.Client
-	pool   *pgxpool.Pool
-	cfg    Config
+	site           string
+	mirakc         *mirakc.Client
+	scheduleSync   store.ScheduleSync
+	breakers       store.Breakers
+	neverScheduled store.NeverScheduledEvents
+	cfg            Config
 }
 
 // New は Reconciler を生成する。cfg が nil の場合はデフォルト設定を使う。
 //
 // 呼び出し元の internal/worker.ReconcilePassWorker はジョブ引数のサイト 1 つに
 // 対して 1 個の Reconciler を作る（ジョブの排他がサイト単位のため）。
-func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Reconciler {
+func New(site string, mc *mirakc.Client, scheduleSync store.ScheduleSync, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config) *Reconciler {
 	c := defaultConfig()
 	if cfg != nil {
 		if cfg.MaxRecreatesPerPass > 0 {
@@ -98,10 +93,12 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 		}
 	}
 	return &Reconciler{
-		site:   site,
-		mirakc: mc,
-		pool:   pool,
-		cfg:    c,
+		site:           site,
+		mirakc:         mc,
+		scheduleSync:   scheduleSync,
+		breakers:       breakers,
+		neverScheduled: neverScheduled,
+		cfg:            c,
 	}
 }
 
@@ -118,9 +115,7 @@ func New(site string, mc *mirakc.Client, pool *pgxpool.Pool, cfg *Config) *Recon
 func (r *Reconciler) RunPass(ctx context.Context) error {
 	slog.Debug("reconciler: starting pass")
 
-	q := sqlcgen.New(r.pool)
-
-	tripped := r.observeDeleteBreaker(ctx, q)
+	tripped := r.observeDeleteBreaker(ctx)
 
 	schedules, err := r.mirakc.ListSchedules(ctx)
 	if err != nil {
@@ -144,7 +139,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 	now := time.Now()
 	created, missing, endGuarded := r.createMissingSchedules(ctx, reservations, observedByProgram, now)
 	toDelete, deleteDeferred := collectDeleteCandidates(reservations, schedules)
-	totalLoss, tripped := r.observeTotalLoss(ctx, q, reservations, toDelete, tripped)
+	totalLoss, tripped := r.observeTotalLoss(ctx, reservations, toDelete, tripped)
 	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
 	recreated, updateDiff, stateGuarded, limitCarriedOver := r.recreateChanged(ctx, reservations, observedByProgram)
@@ -174,8 +169,8 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 // observeDeleteBreaker は発動状態を DB の真実に合わせ直す。判定できない場合も安全側に
 // 倒して発動中とみなし削除を止める（記録・確認ができないまま削除を続けるのが最悪の
 // 組み合わせという breaker.Trip のコメントと同じ理由）。
-func (r *Reconciler) observeDeleteBreaker(ctx context.Context, q *sqlcgen.Queries) bool {
-	tripped, err := breaker.ObserveState(ctx, q, r.site, breaker.ReconcileTotalLoss)
+func (r *Reconciler) observeDeleteBreaker(ctx context.Context) bool {
+	tripped, err := breaker.ObserveState(ctx, r.breakers, r.site, breaker.ReconcileTotalLoss)
 	if err != nil {
 		slog.Error("reconciler: observing circuit breaker state; withholding deletes to be safe", "breaker", breaker.ReconcileTotalLoss, "err", err)
 		return true
@@ -247,12 +242,12 @@ func collectDeleteCandidates(reservations []desiredReservation, schedules []mira
 // （形で検知する）が、「desired が空のときに許される削除数」はまさに 0 なので、
 // pending = N と threshold = 0 の組は「0 件しか許されない状況で N 件消そうとした」と
 // 読めて正確である。記録が失敗した場合も含め、このパスでは削除を実行しない。
-func (r *Reconciler) observeTotalLoss(ctx context.Context, q *sqlcgen.Queries, reservations []desiredReservation, toDelete []mirakc.Schedule, tripped bool) (bool, bool) {
+func (r *Reconciler) observeTotalLoss(ctx context.Context, reservations []desiredReservation, toDelete []mirakc.Schedule, tripped bool) (bool, bool) {
 	totalLoss := len(reservations) == 0 && len(toDelete) > 0
 	if !totalLoss {
 		return false, tripped
 	}
-	if err := breaker.Trip(ctx, q, r.site, breaker.ReconcileTotalLoss, 0, totalLossSample(toDelete)); err != nil {
+	if err := breaker.Trip(ctx, r.breakers, r.site, breaker.ReconcileTotalLoss, 0, totalLossSample(toDelete)); err != nil {
 		slog.Error("reconciler: recording circuit breaker trip", "breaker", breaker.ReconcileTotalLoss, "err", err)
 	}
 	metrics.ReconcileCircuitBreakerTrips.Inc()
@@ -369,114 +364,33 @@ func totalLossSample(toDelete []mirakc.Schedule) breaker.Sample {
 }
 
 func (r *Reconciler) observeSchedules(ctx context.Context, schedules []mirakc.Schedule) error {
-	// schedule_sync の全量 upsert、stale 削除、snapshot marker の更新は 1 つの
-	// トランザクションに束ねる。途中で stale 削除だけ失敗したのに marker が
-	// 新しくなると、collector が不完全な observed を「新鮮」と誤認するため。
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning schedule snapshot transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	sweepTime, err := q.ScheduleSyncSweepMark(ctx)
-	if err != nil {
-		return fmt.Errorf("getting schedule snapshot mark: %w", err)
-	}
-
-	// params はチャンクごとに組み立てる（internal/worker/epg.go の syncPrograms と
-	// 同じ理由）。schedules 全件分を一度に組み立てると、1 パス分の
-	// []mirakc.Schedule と再マーシャルした jsonb ペイロードを同時に抱えることになる。
-	//
-	// 空の全量 snapshot ではこのループ自体が回らないので空 batch は送らない。
-	// stale 削除と snapshot marker の更新は、schedule が 0 件でも従来どおり
-	// このトランザクションで実行する。
-	for chunk := range chunks(schedules, scheduleSyncBatchSize) {
-		params := make([]sqlcgen.UpsertScheduleSyncParams, 0, len(chunk))
-		for _, s := range chunk {
-			optionsJSON, err := json.Marshal(s.Options)
+	// 契約がスライスを受けるため全件分の JSON を一度に組み立てる。メモリ量は未計測。
+	observed := make([]store.ObservedSchedule, 0, len(schedules))
+	for _, schedule := range schedules {
+		optionsJSON, err := json.Marshal(schedule.Options)
+		if err != nil {
+			return fmt.Errorf("marshalling options: %w", err)
+		}
+		tags := schedule.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		var failedReasonJSON json.RawMessage
+		if schedule.FailedReason != nil {
+			failedReasonJSON, err = json.Marshal(schedule.FailedReason)
 			if err != nil {
-				return fmt.Errorf("marshalling options: %w", err)
-			}
-
-			tags := s.Tags
-			if tags == nil {
-				tags = []string{}
-			}
-
-			var failedReasonJSON json.RawMessage
-			if s.FailedReason != nil {
-				data, mErr := json.Marshal(s.FailedReason)
-				if mErr != nil {
-					return fmt.Errorf("marshalling failed_reason: %w", mErr)
-				}
-				failedReasonJSON = data
-			}
-
-			params = append(params, sqlcgen.UpsertScheduleSyncParams{
-				Site:         r.site,
-				ProgramID:    s.Program.ID,
-				State:        s.State,
-				Options:      optionsJSON,
-				Tags:         tags,
-				FailedReason: failedReasonJSON,
-			})
-		}
-
-		if err := execScheduleSyncBatch(ctx, q, params); err != nil {
-			return err
-		}
-	}
-
-	if err := q.DeleteStaleScheduleSyncs(ctx, sqlcgen.DeleteStaleScheduleSyncsParams{
-		Site:       r.site,
-		ObservedAt: sweepTime,
-	}); err != nil {
-		return fmt.Errorf("cleaning stale schedule_syncs: %w", err)
-	}
-	if err := q.UpsertScheduleSyncSnapshot(ctx, r.site); err != nil {
-		return fmt.Errorf("updating schedule snapshot marker: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing schedule snapshot: %w", err)
-	}
-	return nil
-}
-
-// execScheduleSyncBatch は 1 チャンク分の schedule_sync pgx.Batch を実行し、
-// 最初のエラーを program ID 付きで返す。Close は成功・失敗どちらの経路でも
-// 呼び出し元の defer tx.Rollback より前に完了する。
-//
-// sqlc 生成の :batchexec Exec は t ∈ [0, len(params)) でしか
-// f(t, err) を呼ばないため、範囲外 i の防御分岐は置かない。
-func execScheduleSyncBatch(ctx context.Context, q *sqlcgen.Queries, params []sqlcgen.UpsertScheduleSyncParams) error {
-	batch := q.UpsertScheduleSync(ctx, params)
-	var batchErr error
-	batch.Exec(func(i int, err error) {
-		if err == nil || batchErr != nil {
-			return
-		}
-		batchErr = fmt.Errorf("upserting schedule_sync for program %d: %w", params[i].ProgramID, err)
-	})
-	if closeErr := batch.Close(); closeErr != nil && batchErr == nil {
-		batchErr = fmt.Errorf("closing schedule_sync batch: %w", closeErr)
-	}
-	return batchErr
-}
-
-// chunks は s を size 件ずつに分割して yield する。
-// internal/worker/epg.go の同名関数と同じ形（パッケージ間 import は
-// internal/worker が internal/reconciler に依存しているため import cycle になり
-// 共有できない）。
-func chunks[T any](s []T, size int) func(func([]T) bool) {
-	return func(yield func([]T) bool) {
-		for start := 0; start < len(s); start += size {
-			end := min(start+size, len(s))
-			if !yield(s[start:end]) {
-				return
+				return fmt.Errorf("marshalling failed_reason: %w", err)
 			}
 		}
+		observed = append(observed, store.ObservedSchedule{
+			ProgramID:    schedule.Program.ID,
+			State:        schedule.State,
+			Options:      optionsJSON,
+			Tags:         tags,
+			FailedReason: failedReasonJSON,
+		})
 	}
+	return r.scheduleSync.ReplaceObserved(ctx, r.site, observed)
 }
 
 // desiredReservation は予約行・番組スナップショットと、そこから解決済みの
@@ -486,11 +400,11 @@ func chunks[T any](s []T, size int) func(func([]T) bool) {
 //
 // snap（program_snapshots）を分けて持つのは #27 で番組の事実のスナップショット
 // （title / 開始時刻 / 尺 / チャンネル識別）が reservations から抽出された
-// ため。res（sqlcgen.Reservation）はもう ruler の 1 パスの導出出力だけを持つ
+// ため。res（reservation.SyncReservation）は同期評価に使う予約列だけを持つ
 // （CLAUDE.md 不変条件 12）。
 type desiredReservation struct {
-	res  sqlcgen.Reservation
-	snap sqlcgen.ProgramSnapshot
+	res  reservation.SyncReservation
+	snap reservation.SyncProgramSnapshot
 	opts reservation.Options
 }
 
@@ -513,7 +427,7 @@ type desiredReservation struct {
 // effective.skip の絞り込みは reservation.EvaluateSyncCandidates に通す
 // （internal/reservation/sync.go）。呼び出し側で判定を重複させない。
 func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
-	rows, err := sqlcgen.New(r.pool).ListReservationsForSyncEvaluation(ctx, r.site)
+	rows, err := r.scheduleSync.ListForSyncEvaluation(ctx, r.site)
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +468,7 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 // 予約する経路が黙って壊れる。
 //
 // 境界の式そのものは schedulesync.ProgramEnded が持つ（collector と共有するため）。
-func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
+func programEnded(snap reservation.SyncProgramSnapshot, now time.Time) bool {
 	return schedulesync.ProgramEnded(snap.StartAt, snap.DurationMs, now)
 }
 
@@ -573,7 +487,7 @@ func programEnded(snap sqlcgen.ProgramSnapshot, now time.Time) bool {
 //
 // テンプレートは実行時にもエラーになりうる（未知フィールドの参照等。ありえ
 // ないはずだが）。推測せずそのままエラーを返す。
-func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, error) {
+func buildContentPath(snap reservation.SyncProgramSnapshot, template string) (string, error) {
 	if template == "" {
 		template = contentpath.DefaultTemplate
 	}
@@ -602,7 +516,7 @@ func buildContentPath(snap sqlcgen.ProgramSnapshot, template string) (string, er
 // issue #101 で program_snapshots のチャンネル・イベント識別 6 列が
 // NOT NULL 化され、service_id が NULL になる状態自体が表現不可能になった
 // （起きない状態のための分岐を残さない）。
-func resolveContentPath(res sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, opts reservation.Options) (string, error) {
+func resolveContentPath(res reservation.SyncReservation, snap reservation.SyncProgramSnapshot, opts reservation.Options) (string, error) {
 	// contentPath は filenameTemplate（ruler が base に載せたテンプレート、または
 	// ユーザーの明示的な上書き）があればそれを展開し、なければ従来の固定形式
 	// （buildContentPath 参照）。ContentPath（フルパスの直接指定）が別途あれば
@@ -867,7 +781,6 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 		scheduledPrograms[s.Program.ID] = struct{}{}
 	}
 
-	q := sqlcgen.New(r.pool)
 	for _, d := range reservations {
 		res, snap := d.res, d.snap
 		if !programEnded(snap, now) {
@@ -877,8 +790,7 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 			continue
 		}
 
-		rows, err := q.CreateNeverScheduledEvent(ctx, sqlcgen.CreateNeverScheduledEventParams{
-			Site:      r.site,
+		recorded, err := r.neverScheduled.RecordNeverScheduled(ctx, r.site, store.BroadcastEventKey{
 			NetworkID: snap.NetworkID,
 			ServiceID: snap.ServiceID,
 			EventID:   snap.EventID,
@@ -889,7 +801,7 @@ func (r *Reconciler) recordNeverScheduled(ctx context.Context, reservations []de
 		// :execrows なので実際に INSERT できたか（1）か、ON CONFLICT で
 		// 何もしなかったか（0）が分かる。0 行なら（他パスとの競合で既に
 		// 記録済み）ログを出さない —— 出すと実態と食い違う。
-		if rows == 0 {
+		if !recorded {
 			continue
 		}
 		slog.Info("reconciler: recorded never-scheduled outcome (program ended without an observed schedule)",
@@ -987,38 +899,23 @@ func (r *Reconciler) detectStartDelays(ctx context.Context, reservations []desir
 	// （internal/db/queries/start_delay.sql 参照）。widen 側の誤検知を消す方を
 	// 優先し、この天井は許容する。
 
-	networkIDs := make([]int32, len(candidates))
-	serviceIDs := make([]int32, len(candidates))
-	eventIDs := make([]int32, len(candidates))
+	keys := make([]store.BroadcastEventKey, len(candidates))
 	for i, d := range candidates {
-		networkIDs[i] = d.snap.NetworkID
-		serviceIDs[i] = d.snap.ServiceID
-		eventIDs[i] = d.snap.EventID
+		keys[i] = store.BroadcastEventKey{NetworkID: d.snap.NetworkID, ServiceID: d.snap.ServiceID, EventID: d.snap.EventID}
 	}
 
-	started, err := sqlcgen.New(r.pool).ListStartedBroadcastEventKeys(ctx, sqlcgen.ListStartedBroadcastEventKeysParams{
-		Site:         r.site,
-		NetworkIds:   networkIDs,
-		ServiceIds:   serviceIDs,
-		EventIds:     eventIDs,
-		StartedAfter: startedAfter,
-	})
+	started, err := r.scheduleSync.ListStartedBroadcastEventKeys(ctx, r.site, keys, startedAfter)
 	if err != nil {
 		return nil, fmt.Errorf("listing started broadcast event keys: %w", err)
 	}
-	type broadcastEventKey struct {
-		networkID int32
-		serviceID int32
-		eventID   int32
-	}
-	startedSet := make(map[broadcastEventKey]struct{}, len(started))
-	for _, k := range started {
-		startedSet[broadcastEventKey{networkID: k.NetworkID, serviceID: k.ServiceID, eventID: k.EventID}] = struct{}{}
+	startedSet := make(map[store.BroadcastEventKey]struct{}, len(started))
+	for _, key := range started {
+		startedSet[key] = struct{}{}
 	}
 
 	var delayed []startDelayed
 	for _, d := range candidates {
-		key := broadcastEventKey{networkID: d.snap.NetworkID, serviceID: d.snap.ServiceID, eventID: d.snap.EventID}
+		key := store.BroadcastEventKey{NetworkID: d.snap.NetworkID, ServiceID: d.snap.ServiceID, EventID: d.snap.EventID}
 		if _, ok := startedSet[key]; ok {
 			continue
 		}

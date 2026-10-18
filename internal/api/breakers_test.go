@@ -12,8 +12,17 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
+	return newBreakerRouterWithSites(pool, nil)
+}
+
+func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
+	return api.NewRouter(api.RouterConfig{Pool: pool, BreakerAdmin: pgstore.NewBreakers(pool), Sites: sites})
+}
 
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /
 // reconciler の発動ロジックを経由しない）。行の存在そのものが「発動中」を表す
@@ -89,7 +98,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -131,7 +140,7 @@ func TestListCircuitBreakers_ReturnsTrippedBreakerWithDetail(t *testing.T) {
 func TestListCircuitBreakers_EmptyWhenNoneTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -167,7 +176,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -194,7 +203,7 @@ func TestResumeCircuitBreaker_DeletesRowAnd204(t *testing.T) {
 func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -216,7 +225,7 @@ func TestResumeCircuitBreaker_404WhenNotTripped(t *testing.T) {
 func TestResumeCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -239,7 +248,7 @@ func TestResumeCircuitBreaker_OnlyDeletesTargetedBreaker(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -283,7 +292,7 @@ func TestResumeCircuitBreaker_400WhenSiteMismatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -339,7 +348,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 
-			router := api.NewRouter(api.RouterConfig{Pool: pool})
+			router := newBreakerRouter(pool)
 			srv := httptest.NewServer(router)
 			defer srv.Close()
 
@@ -420,7 +429,7 @@ func TestListCircuitBreakers_PassesThroughNameNotInEnumInsteadOfFailingWholeList
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

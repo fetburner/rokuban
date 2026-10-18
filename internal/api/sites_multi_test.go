@@ -141,7 +141,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Pool: pool, BreakerAdmin: pgstore.NewBreakers(pool),
 		ReservationStore: pgstore.NewReservations(pool), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

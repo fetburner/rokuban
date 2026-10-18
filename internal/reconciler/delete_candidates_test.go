@@ -3,13 +3,13 @@ package reconciler
 import (
 	"testing"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 func TestCollectDeleteCandidatesDoesNotDeferDesiredOrForeignSchedules(t *testing.T) {
 	const desiredProgramID = int64(998)
-	reservations := []desiredReservation{{res: sqlcgen.Reservation{ProgramID: desiredProgramID}}}
+	reservations := []desiredReservation{{res: reservation.SyncReservation{ProgramID: desiredProgramID}}}
 	schedules := []mirakc.Schedule{
 		{
 			State:   mirakc.ScheduleStateRecording,

@@ -130,7 +130,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	f := seedRemovedEncodedRecording(t, pool, mediaDir, 9201, []string{"h265"})
 	requestEncodedRemoval(t, pool, f.recordingID, "h264")
 
-	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), q, "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}); err != nil {
+	if err := breaker.Trip(context.Background(), pgstore.NewBreakers(pool), "", breaker.DeleteReconcile, 1, breaker.Sample{Total: 2}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 
@@ -198,7 +198,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	requestEncodedRemoval(t, pool, stuck.recordingID, "h264")
 	setAssetState(t, pool, stuck.h264ID, "deleting")
 
-	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -236,6 +236,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	w := &DeleteReconcileWorker{
 		Pool:              pool,
 		RecordingPurge:    pgstore.NewRecordings(pool),
+		Breakers:          pgstore.NewBreakers(pool),
 		MediaDir:          mediaDir,
 		MaxDeletesPerPass: 2,
 	}
