@@ -33,6 +33,11 @@ type EPGFixture struct {
 	Reader store.EPGReader
 	Search store.ProgramSearch
 
+	// ValidRegexPattern is accepted by this implementation's regex syntax.
+	ValidRegexPattern string
+	// InvalidRegexPattern is rejected by this implementation's regex syntax.
+	InvalidRegexPattern string
+
 	CreateRule func(t *testing.T, options EPGRuleOptions) int64
 	MarkStale  func(t *testing.T, site string, serviceIDs []int32, programIDs []int64)
 }
@@ -277,10 +282,10 @@ func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
 
 func runEPGRegexValidation(t *testing.T, newFixture NewEPGFixture) {
 	f := newFixture(t)
-	if err := f.Search.ValidateRegex(context.Background(), "^(NHK|ニュース)$"); err != nil {
+	if err := f.Search.ValidateRegex(context.Background(), f.ValidRegexPattern); err != nil {
 		t.Fatalf("ValidateRegex(valid) = %v", err)
 	}
-	if err := f.Search.ValidateRegex(context.Background(), "(?<name>news)"); !errors.Is(err, store.ErrInvalidPattern) {
+	if err := f.Search.ValidateRegex(context.Background(), f.InvalidRegexPattern); !errors.Is(err, store.ErrInvalidPattern) {
 		t.Fatalf("ValidateRegex(invalid) = %v, want ErrInvalidPattern", err)
 	}
 }

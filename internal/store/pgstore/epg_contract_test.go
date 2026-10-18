@@ -14,9 +14,11 @@ func TestEPGContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		epg := NewEPG(pool)
 		return contracttest.EPGFixture{
-			Sync:   epg,
-			Reader: epg,
-			Search: epg,
+			Sync:                epg,
+			Reader:              epg,
+			Search:              epg,
+			ValidRegexPattern:   "^(NHK|ニュース)$",
+			InvalidRegexPattern: "(?<name>news)",
 			CreateRule: func(t *testing.T, options contracttest.EPGRuleOptions) int64 {
 				t.Helper()
 				var isFree, durationMin, durationMax any
