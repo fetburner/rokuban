@@ -22,6 +22,8 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -75,7 +77,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pool, enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
 	return w, pool
 }
 
@@ -1096,7 +1098,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1195,7 +1197,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1295,7 +1297,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1394,7 +1396,7 @@ func TestSweep_RecoversFailedSchedule(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1486,7 +1488,7 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1585,7 +1587,7 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1674,8 +1676,8 @@ func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
-	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, baseWatcher.enqueuer, nil)
+	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
+	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
 	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
 	// を発生させない。
 	sweepWatcher.services = services
@@ -1834,7 +1836,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pool, enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -1908,7 +1910,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pool, enqueuer, nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1987,7 +1989,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -2176,7 +2178,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pool, enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -2415,89 +2417,77 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 	}
 }
 
-// failAfterEnqueueTx は内側の投入要求を記録した直後にエラーを返す。
-// verifyTx は EnqueueTx が受け取った tx の状態を検証する。
-type failAfterEnqueueTx struct {
-	jobq.Enqueuer
-	verifyTx func(context.Context, db.Tx, jobq.Args) error
+// commitCheckingEnqueuer はヒント投入時点で録画が別接続から見えることを確かめる。
+type commitCheckingEnqueuer struct {
+	pool               *pgxpool.Pool
+	calls              int
+	transactionalCalls int
+	recordingVisible   bool
+	priority           int
+	err                error
 }
 
-var errAfterEnqueueTx = errors.New("injected failure after enqueue")
-
-func (f failAfterEnqueueTx) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if _, err := f.Enqueuer.Enqueue(ctx, args, opts...); err != nil {
-		return jobq.Result{}, err
+func (e *commitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	e.calls++
+	ingestArgs, ok := args.(jobs.IngestJobArgs)
+	if !ok {
+		return jobq.Result{}, fmt.Errorf("enqueue args = %T, want jobs.IngestJobArgs", args)
 	}
-	return jobq.Result{}, errAfterEnqueueTx
+	e.priority = jobq.EffectivePriority(args.Spec(), opts...)
+	if err := e.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM record_sync rs JOIN recordings r ON r.id = rs.recording_id
+			WHERE rs.site = $1 AND rs.record_id = $2
+		)
+	`, ingestArgs.Site, ingestArgs.RecordID).Scan(&e.recordingVisible); err != nil {
+		return jobq.Result{}, fmt.Errorf("checking committed recording during enqueue: %w", err)
+	}
+	return jobq.Result{}, e.err
 }
 
-func (f failAfterEnqueueTx) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if _, err := f.Enqueuer.EnqueueTx(ctx, tx, args, opts...); err != nil {
-		return jobq.Result{}, err
-	}
-	if f.verifyTx != nil {
-		if err := f.verifyTx(ctx, tx, args); err != nil {
-			return jobq.Result{}, err
-		}
-	}
-	return jobq.Result{}, errAfterEnqueueTx
+func (e *commitCheckingEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
+	e.transactionalCalls++
+	return jobq.Result{}, errors.New("unexpected EnqueueTx call")
 }
 
-// TestProcessRecord_IngestEnqueueFollowsTransaction は ingest 投入要求が recordings 行と
-// 同じ tx に渡ることを確かめる。River adapter の契約テストが、実ジョブの rollback を検証する。
-func TestProcessRecord_IngestEnqueueFollowsTransaction(t *testing.T) {
+// TestProcessRecord_EnqueueFollowsCommit は commit 後の投入と、store が失敗した場合に
+// ingest のヒントを出さないことを検証する。
+func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	w, pool := setupTest(t)
 	ctx := context.Background()
-	enqueuer := w.enqueuer.(*jobqtestutil.RecordingEnqueuer)
-	var recordingVisibleInEnqueueTx bool
-	w.enqueuer = failAfterEnqueueTx{
-		Enqueuer: enqueuer,
-		verifyTx: func(ctx context.Context, tx db.Tx, args jobq.Args) error {
-			ingestArgs, ok := args.(jobs.IngestJobArgs)
-			if !ok {
-				return fmt.Errorf("enqueue args = %T, want jobs.IngestJobArgs", args)
-			}
-			var visible bool
-			err := tx.QueryRow(ctx, `
-				SELECT EXISTS (
-					SELECT 1
-					FROM record_sync AS rs
-					JOIN recordings AS r ON r.id = rs.recording_id
-					WHERE rs.site = $1 AND rs.record_id = $2
-				)
-			`, ingestArgs.Site, ingestArgs.RecordID).Scan(&visible)
-			if err != nil {
-				return fmt.Errorf("querying recording through enqueue tx: %w", err)
-			}
-			if !visible {
-				return fmt.Errorf("enqueue tx cannot see recording for site %q record %q", ingestArgs.Site, ingestArgs.RecordID)
-			}
-			recordingVisibleInEnqueueTx = true
-			return nil
-		},
+	const programID int64 = 327360102415397
+	createTestReservation(t, pool, programID)
+	enqueueErr := errors.New("injected post-commit enqueue error")
+	enqueuer := &commitCheckingEnqueuer{pool: pool, err: enqueueErr}
+	w.enqueuer = enqueuer
+
+	record := testRecord("commit-hint-1", programID, "finished")
+	if err := w.processRecord(ctx, record); err != nil {
+		t.Fatalf("processRecord = %v, want commit to succeed despite enqueue error", err)
+	}
+	if enqueuer.calls != 1 || enqueuer.transactionalCalls != 0 {
+		t.Fatalf("enqueue calls = (%d normal, %d transactional), want (1, 0)", enqueuer.calls, enqueuer.transactionalCalls)
+	}
+	if !enqueuer.recordingVisible {
+		t.Fatal("recording was not visible from another connection when Enqueue ran")
+	}
+	if enqueuer.priority != 2 {
+		t.Errorf("finished ingest priority = %d, want 2", enqueuer.priority)
+	}
+	var recordings int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordings); err != nil {
+		t.Fatalf("counting committed recordings: %v", err)
+	}
+	if recordings != 1 {
+		t.Fatalf("recordings after enqueue error = %d, want committed row count 1", recordings)
 	}
 
-	createTestReservation(t, pool, 327360102415397)
-	record := testRecord("rollback123", 327360102415397, "finished")
-
-	if err := w.processRecord(ctx, record); !errors.Is(err, errAfterEnqueueTx) {
-		t.Fatalf("processRecord error = %v, want errAfterEnqueueTx", err)
+	duplicate := testRecord("commit-hint-conflict", programID, "finished")
+	duplicate.Program.StartAt = record.Program.StartAt
+	if err := w.processRecord(ctx, duplicate); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("processRecord(duplicate event) error = %v, want store.ErrConflict", err)
 	}
-	if !recordingVisibleInEnqueueTx {
-		t.Fatal("enqueue tx did not verify the uncommitted recording row")
-	}
-	calls := enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
-	if len(calls) != 1 {
-		t.Fatalf("ingest enqueue calls = %d, want 1", len(calls))
-	}
-	if !calls[0].Transactional || calls[0].Tx == nil {
-		t.Errorf("ingest enqueue call = %#v, want EnqueueTx with a transaction", calls[0])
-	}
-	var rows int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&rows); err != nil {
-		t.Fatalf("counting recordings: %v", err)
-	}
-	if rows != 0 {
-		t.Errorf("recordings after rollback = %d, want 0", rows)
+	if enqueuer.calls != 1 {
+		t.Errorf("enqueue calls after store failure = %d, want still 1", enqueuer.calls)
 	}
 }

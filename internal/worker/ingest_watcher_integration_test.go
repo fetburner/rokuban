@@ -26,6 +26,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -48,6 +49,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	ingestWorker := &worker.IngestWorker{
 		MirakcClients: map[string]*mirakc.Client{watcher.DefaultSite: mc},
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
@@ -58,7 +60,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pool, watcherEnqueuer, nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pgstore.NewRecordings(pool), watcherEnqueuer, nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -337,10 +339,9 @@ func waitForIngestLifecycleEnqueues(t *testing.T, enqueuer *ingestLifecycleEnque
 	t.Fatalf("watcher ingest enqueue requests = %d, want at least %d after record-saved", len(enqueuer.IngestJobs()), want)
 }
 
-// waitForIngestLifecycleRecordSync waits for the watcher transaction that issued the ingest hint to commit.
-// ingestLifecycleEnqueuer records EnqueueTx before that commit, unlike the jobq contract, so delivering the
-// hint earlier lets the worker miss record_sync. The second hint needs no wait: between the hints the fixture
-// changes only sha256, which the worker reads from mirakc, and UpsertRecordSync keeps the committed recording_id.
+// waitForIngestLifecycleRecordSync waits until the post-commit watcher hint can be delivered to the queue.
+// The second hint needs no wait for new recording data: between the hints the fixture changes only sha256,
+// which the worker reads from mirakc, and UpsertRecordSync keeps the committed recording_id.
 func waitForIngestLifecycleRecordSync(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	t.Helper()
 	deadline := time.Now().Add(20 * time.Second)

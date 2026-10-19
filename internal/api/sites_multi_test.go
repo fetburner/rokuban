@@ -481,7 +481,8 @@ VALUES ($1, $2, '{}'::jsonb)`, site, programID); err != nil {
 func TestListCapacityOverages_ReturnsOveragesFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	tunerStore := pgstore.NewTuners(pool)
+	router := api.NewRouter(api.RouterConfig{Pool: pool, TunerReader: tunerStore, CapacityStore: tunerStore, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

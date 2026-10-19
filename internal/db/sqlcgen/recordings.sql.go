@@ -15,7 +15,10 @@ import (
 
 const appendQualityEvents = `-- name: AppendQualityEvents :exec
 UPDATE recordings
-SET quality_events = quality_events || $1::jsonb,
+SET quality_events = quality_events || COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb),
     updated_at = now()
 WHERE id = $2
 `
@@ -25,6 +28,7 @@ type AppendQualityEventsParams struct {
 	ID     int64
 }
 
+// `at` は CreateFailedRecording と同じく常に DB の時計で付ける。
 func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEventsParams) error {
 	_, err := q.db.Exec(ctx, appendQualityEvents, arg.Events, arg.ID)
 	return err
@@ -32,7 +36,10 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 
 const appendQualityEventsIfMissing = `-- name: AppendQualityEventsIfMissing :execrows
 UPDATE recordings AS r
-SET quality_events = r.quality_events || $1::jsonb,
+SET quality_events = r.quality_events || COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb),
     updated_at = now()
 WHERE r.id = $2
   AND NOT EXISTS (
@@ -129,7 +136,7 @@ func (q *Queries) ClearRecordingCMDetection(ctx context.Context, recordingID int
 	return err
 }
 
-const createFailedRecording = `-- name: CreateFailedRecording :exec
+const createFailedRecording = `-- name: CreateFailedRecording :one
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
@@ -143,13 +150,17 @@ INSERT INTO recordings (
     $8, $9, $10, $11,
     $12, $13, $14,
     $15, $16,
-    'failed', $17
+    'failed', COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements($17::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb)
 )
 ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
     WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
     updated_at     = now()
+RETURNING id
 `
 
 type CreateFailedRecordingParams struct {
@@ -178,12 +189,15 @@ type CreateFailedRecordingParams struct {
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 // 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 // （superseded 済みの過去の failed 行ではない）になる。
+// quality_events の `at` は DB の時計（now()）で付ける。呼び出し側が `at` を渡しても
+// 上書きする。docs/data/store-contracts.md §9「時刻」の規則（store が記録する時刻は
+// DB の時計で付ける）に従う。
 // ON CONFLICT の相手は生きている（deleted_at / superseded_at が NULL）同一
 // active-event の failed 行で、mirakc からの繰り返し通知に同じ理由を積み増す。
 // 欠測は recordings に行を作らなくなった（never_scheduled_events 表に移設）ので、
 // ここで欠測行と衝突することはもう無い。
-func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) error {
-	_, err := q.db.Exec(ctx, createFailedRecording,
+func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRecordingParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createFailedRecording,
 		arg.RuleID,
 		arg.Source,
 		arg.Site,
@@ -202,7 +216,9 @@ func (q *Queries) CreateFailedRecording(ctx context.Context, arg CreateFailedRec
 		arg.ProgramDurationMs,
 		arg.QualityEvents,
 	)
-	return err
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const createOrGetFailedRecording = `-- name: CreateOrGetFailedRecording :one

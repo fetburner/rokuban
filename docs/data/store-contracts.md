@@ -52,6 +52,93 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### 視聴状態
+
+視聴状態の書き込みは 1 つの契約にまとめる。再生位置は録画ごとに保存する。視聴済みの印は、押した録画の行にだけ置く。
+
+読み取り側は同じ放送イベントの印を束ねるので、`ClearWatchedForEvent` はそのイベントの全行から印を消す。
+
+`MarkWatched` は印の upsert と再生位置の削除を 1 メソッドにする。2 つは「視聴済みにする」という同じ業務操作であり、呼び出し側が 2 回に分けて呼ぶと、印だけ付いて再生位置が残った状態で止まりうる。契約テストは、再生位置の削除が失敗したときに印の書き込みも巻き戻ることを固定している。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.PlaybackState`
+- PostgreSQL 実装: `internal/store/pgstore.Playback`
+- 視聴済みの書き込みと位置の削除: `internal/store/contracttest.RunPlayback`
+
+</details>
+
+### ごみ箱と完全削除
+
+ごみ箱の操作は、利用側ごとに 2 つの契約に分ける。api が使う操作と、削除 reconcile が使う操作が違うからである。
+
+api が使うのは論理削除・復元・即時削除要求をまとめた `RecordingTrash` で、削除 reconcile が使うのは完全削除の確定だけの `RecordingPurge` である。実装は録画のドメインの `pgstore.Recordings` が両方を持つ。
+
+同じ録画の復元と即時削除要求は直列化される。要求が先に確定すれば、復元がそれを取り下げる。復元が先に確定すれば、後から来た要求は録画をごみ箱に戻して残る。どちらの順でも、復元された録画に要求だけが残ることはない。要求だけが残ると、次の普通の論理削除でごみ箱の猶予を飛ばして即時削除の対象になるが、ユーザーは即時削除を要求していないからである。
+
+仕組みは [削除エンジン](../storage/retention.md) §7「復元と即時削除要求の競合」にある。
+
+`RecordingPurge.MarkPurged` は呼び出し側が渡す cutoff を使い、猶予を過ぎて削除対象アセットが残っていない録画の `purged_at` を確定する。返すのは今回初めて完全削除を確定した行だけである。呼び出し側はこの結果を削除通知に使い、別の判定で発火対象を作り直さない。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 復元と即時削除要求の直列化、完了記録の冪等性: `internal/store/contracttest.RunTrash`
+- 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
+
+</details>
+
+### チューナーと容量
+
+チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。upsert の全行は 1 つのメソッドの中で原子的に反映する。
+
+削除の基準には、upsert より前に `SweepMark` が返した DB の時刻を渡す。呼び出し側の時計を使うと、時計のずれで射影全体を消しうる。
+
+容量の読み取りは、予約の base・overrides と意図を解決せずに渡す。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
+
+保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。ルールの読み取りは、対象が無ければ `ErrNotFound` を返す。
+
+<details><summary>根拠</summary>
+
+- チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
+- 容量読み取り: `internal/store.Capacity`
+- PostgreSQL 実装: `internal/store/pgstore.Tuners`
+- バッチの原子性・需要の区間の終了端: `TestTunersContract`
+- 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
+
+</details>
+
+### 録画の観測
+
+watcher は mirakc の record を観測するたびに、record の同期行・録画・品質イベントを 1 つのメソッドで原子的に書く。ingest の投入は、その commit の後に送るヒントにする。
+
+契約は利用側ごとに 3 つに割る。観測を書く `RecordObservations`、ingest worker が転送先を読む `IngestTarget`、metrics が未取り込みの滞留を読む `RecordBacklog` である。実装は録画のドメインの `pgstore.Recordings` が全部持つ。
+
+同じ `(site, record_id)` の観測は直列化される。直列化しないと、並行した観測が同じ record に録画を作ろうとし、後発が一意違反で失敗する。録画の由来は、同じ tx で読んだ予約と意図から導出する。
+
+録画の title を書く操作は、分類ルールの当たりも保つ。これは録画ドメインの約束であり、PostgreSQL 実装ではトリガーが満たす。
+
+品質イベントの時刻は DB の時計で付ける。呼び出し側は時刻を渡さない。
+
+ingest をヒントにできるのは、取りこぼしを sweep が拾い直すからである。mirakc の record は ingest の DB commit 後にしか消えず、定期の record sweep は録画中・完了の record を再処理するたびに ingest を投入し直す。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 同じ record の直列化: `TestRecordObservationsContract/same record observations serialize`
+- 契約テストは既存の同期行を置いて競合させる。行が無いと INSERT の一意制約だけで直列化されてしまい、ロックの有無を検出できないからである。確保の直後に同期点を差し込み、後発が先発と同時に先へ進めるかを見る
+- 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
+- 失敗の観測の収束と成功による置き換え: `TestRecordObservationsContract` の failed 系のケース
+- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
+- ingest の投入の判定: `TestRecordObservationsContract/ingest hint follows the recording status`
+- 品質イベントの時刻: `TestRecordObservationsContract/quality events carry a readable time`
+- title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
+- commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
+
+</details>
+
 ### 予約の意図・上書き
 
 意図とオプション上書きは独立した store 契約が確定する。予約の表示値は読み取り時に導出する。
