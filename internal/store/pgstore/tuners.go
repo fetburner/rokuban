@@ -136,56 +136,44 @@ func (s *Tuners) ReadAllSites(ctx context.Context) (store.CapacityInput, error) 
 	}, nil
 }
 
-// PreviewCandidates は対象ルールの状態と、容量需要になりうる候補を返す。
-func (s *Tuners) PreviewCandidates(ctx context.Context, refs []store.CapacityProgramRef, ruleID *int64) (store.CapacityPreview, error) {
-	if len(refs) == 0 && ruleID == nil {
-		return store.CapacityPreview{}, nil
-	}
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+// PreviewRule は保存前プレビューの対象ルールの状態を返す。
+func (s *Tuners) PreviewRule(ctx context.Context, ruleID int64) (store.CapacityPreviewRule, error) {
+	rule, err := sqlcgen.New(s.pool).GetRule(ctx, ruleID)
 	if err != nil {
-		return store.CapacityPreview{}, fmt.Errorf("beginning capacity preview read: %w", err)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.CapacityPreviewRule{}, fmt.Errorf("rule %d: %w", ruleID, store.ErrNotFound)
+		}
+		return store.CapacityPreviewRule{}, fmt.Errorf("loading rule %d for capacity preview: %w", ruleID, err)
 	}
-	defer rollback(tx)
-	q := sqlcgen.New(tx)
+	return store.CapacityPreviewRule{Enabled: rule.Enabled, DedupeEnabled: rule.DedupeEnabled}, nil
+}
 
-	var preview store.CapacityPreview
-	if ruleID != nil {
-		rule, err := q.GetRule(ctx, *ruleID)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return store.CapacityPreview{}, fmt.Errorf("rule %d: %w", *ruleID, store.ErrNotFound)
-			}
-			return store.CapacityPreview{}, fmt.Errorf("loading rule %d for capacity preview: %w", *ruleID, err)
-		}
-		preview.Rule = &store.CapacityPreviewRule{Enabled: rule.Enabled, DedupeEnabled: rule.DedupeEnabled}
+// PreviewCandidates は refs のうち、容量需要になりうる候補を返す。
+func (s *Tuners) PreviewCandidates(ctx context.Context, refs []store.CapacityProgramRef, ruleID *int64) ([]store.CapacityPreviewCandidate, error) {
+	if len(refs) == 0 {
+		return nil, nil
 	}
-
-	if len(refs) > 0 {
-		sites := make([]string, len(refs))
-		programIDs := make([]int64, len(refs))
-		for i, ref := range refs {
-			sites[i] = ref.Site
-			programIDs[i] = ref.ProgramID
-		}
-		rows, err := q.ListCapacityPreviewCandidates(ctx, sqlcgen.ListCapacityPreviewCandidatesParams{
-			Sites: sites, ProgramIds: programIDs, RuleID: ruleID,
-		})
-		if err != nil {
-			return store.CapacityPreview{}, fmt.Errorf("listing capacity preview candidates: %w", err)
-		}
-		preview.Candidates = make([]store.CapacityPreviewCandidate, len(rows))
-		for i, row := range rows {
-			preview.Candidates[i] = store.CapacityPreviewCandidate{
-				Site: row.Site, ProgramID: row.ProgramID, IntentAction: row.IntentAction,
-				ChannelType: row.ChannelType, Channel: row.Channel,
-				StartAt: row.StartAt, EndAt: row.EndAt,
-			}
+	sites := make([]string, len(refs))
+	programIDs := make([]int64, len(refs))
+	for i, ref := range refs {
+		sites[i] = ref.Site
+		programIDs[i] = ref.ProgramID
+	}
+	rows, err := sqlcgen.New(s.pool).ListCapacityPreviewCandidates(ctx, sqlcgen.ListCapacityPreviewCandidatesParams{
+		Sites: sites, ProgramIds: programIDs, RuleID: ruleID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing capacity preview candidates: %w", err)
+	}
+	candidates := make([]store.CapacityPreviewCandidate, len(rows))
+	for i, row := range rows {
+		candidates[i] = store.CapacityPreviewCandidate{
+			Site: row.Site, ProgramID: row.ProgramID, IntentAction: row.IntentAction,
+			ChannelType: row.ChannelType, Channel: row.Channel,
+			StartAt: row.StartAt, EndAt: row.EndAt,
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.CapacityPreview{}, fmt.Errorf("committing capacity preview read: %w", err)
-	}
-	return preview, nil
+	return candidates, nil
 }
 
 func tunersFromRows(rows []sqlcgen.TunerSync) []store.Tuner {

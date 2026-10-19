@@ -33,7 +33,8 @@ func RunTuners(t *testing.T, newStore NewTunerStore) {
 	t.Run("sync steps and reader", func(t *testing.T) { runTunerSync(t, newStore) })
 	t.Run("upsert batch is atomic", func(t *testing.T) { runTunerUpsertAtomicity(t, newStore) })
 	t.Run("capacity reads preserve interval endpoints", func(t *testing.T) { runCapacityReads(t, newStore) })
-	t.Run("preview returns rule state and candidates", func(t *testing.T) { runCapacityPreview(t, newStore) })
+	t.Run("preview rule", func(t *testing.T) { runCapacityPreviewRule(t, newStore) })
+	t.Run("preview candidates", func(t *testing.T) { runCapacityPreviewCandidates(t, newStore) })
 }
 
 func runTunerSync(t *testing.T, newStore NewTunerStore) {
@@ -148,7 +149,24 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	}
 }
 
-func runCapacityPreview(t *testing.T, newStore NewTunerStore) {
+func runCapacityPreviewRule(t *testing.T, newStore NewTunerStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	ruleID := f.SeedRule(t, false, true)
+
+	got, err := f.Capacity.PreviewRule(ctx, ruleID)
+	if err != nil {
+		t.Fatalf("PreviewRule: %v", err)
+	}
+	if got.Enabled || !got.DedupeEnabled {
+		t.Errorf("PreviewRule = %+v, want disabled and dedupe enabled", got)
+	}
+	if _, err := f.Capacity.PreviewRule(ctx, ruleID+1); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("PreviewRule(missing rule) error = %v, want ErrNotFound", err)
+	}
+}
+
+func runCapacityPreviewCandidates(t *testing.T, newStore NewTunerStore) {
 	f := newStore(t)
 	ctx := context.Background()
 	ruleID := f.SeedRule(t, false, true)
@@ -160,20 +178,22 @@ func runCapacityPreview(t *testing.T, newStore NewTunerStore) {
 	if err != nil {
 		t.Fatalf("PreviewCandidates: %v", err)
 	}
-	if got.Rule == nil || got.Rule.Enabled || !got.Rule.DedupeEnabled {
-		t.Errorf("PreviewCandidates rule = %+v, want disabled and dedupe enabled", got.Rule)
+	if len(got) != 1 {
+		t.Fatalf("PreviewCandidates = %+v, want one", got)
 	}
-	if len(got.Candidates) != 1 {
-		t.Fatalf("PreviewCandidates candidates = %+v, want one", got.Candidates)
-	}
-	candidate := got.Candidates[0]
+	candidate := got[0]
 	if candidate.Site != ref.Site || candidate.ProgramID != ref.ProgramID || candidate.ChannelType != "GR" ||
 		candidate.Channel != "27" || !candidate.StartAt.Equal(start) || !candidate.EndAt.Equal(start.Add(30*time.Minute)) {
 		t.Errorf("PreviewCandidates candidate = %+v, want seeded program", candidate)
 	}
 
+	empty, err := f.Capacity.PreviewCandidates(ctx, nil, &ruleID)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("PreviewCandidates(no refs) = (%+v, %v), want empty and no error", empty, err)
+	}
+	// ルールの存在確認は PreviewRule の責務で、候補の読み取りは存在しない ruleID でも失敗しない。
 	missingID := ruleID + 1
-	if _, err := f.Capacity.PreviewCandidates(ctx, nil, &missingID); !errors.Is(err, store.ErrNotFound) {
-		t.Errorf("PreviewCandidates(missing rule) error = %v, want ErrNotFound", err)
+	if _, err := f.Capacity.PreviewCandidates(ctx, []store.CapacityProgramRef{ref}, &missingID); err != nil {
+		t.Errorf("PreviewCandidates(missing rule) error = %v, want nil", err)
 	}
 }

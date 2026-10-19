@@ -24,35 +24,29 @@ type PreviewCandidate struct {
 	Demand
 }
 
-// PreviewCandidatesResult は対象ルールと、容量需要になりうる検索一致をまとめる。
-type PreviewCandidatesResult struct {
-	Rule       *store.CapacityPreviewRule
-	Candidates []PreviewCandidate
-}
-
 // PreviewCandidates は、ルール保存で新たな予約になりうる検索一致を返す。既存の予約は除くが、
 // 編集中のルール（ruleID）が今持つ予約は仮想的に外して再計算するので残す。skip 意図・取り込み
 // 済みの番組・never-scheduled・放送済み（終了 <= now()）は ruler / reconciler と同様に除く。
 // record 意図は dedupe の skip を覆せるので残す。チャンネル識別はルールコンパイラの service
 // JOIN と同じく epg_services から引く。
-func PreviewCandidates(ctx context.Context, storage store.Capacity, refs []ProgramRef, ruleID *int64) (PreviewCandidatesResult, error) {
+func PreviewCandidates(ctx context.Context, storage store.Capacity, refs []ProgramRef, ruleID *int64) ([]PreviewCandidate, error) {
 	storeRefs := make([]store.CapacityProgramRef, len(refs))
 	for i, ref := range refs {
 		storeRefs[i] = store.CapacityProgramRef{Site: ref.Site, ProgramID: ref.ProgramID}
 	}
-	preview, err := storage.PreviewCandidates(ctx, storeRefs, ruleID)
+	rows, err := storage.PreviewCandidates(ctx, storeRefs, ruleID)
 	if err != nil {
-		return PreviewCandidatesResult{}, fmt.Errorf("listing capacity preview candidates: %w", err)
+		return nil, fmt.Errorf("listing capacity preview candidates: %w", err)
 	}
-	result := PreviewCandidatesResult{Rule: preview.Rule, Candidates: make([]PreviewCandidate, len(preview.Candidates))}
-	for i, candidate := range preview.Candidates {
-		result.Candidates[i] = PreviewCandidate{
+	candidates := make([]PreviewCandidate, len(rows))
+	for i, candidate := range rows {
+		candidates[i] = PreviewCandidate{
 			ProgramID: candidate.ProgramID, IntentAction: candidate.IntentAction,
 			Demand: Demand{Site: candidate.Site, ChannelType: candidate.ChannelType, Channel: candidate.Channel,
 				StartAt: candidate.StartAt, EndAt: candidate.EndAt},
 		}
 	}
-	return result, nil
+	return candidates, nil
 }
 
 // Preview は LoadAllSites と同じ現在の需要とチューナー射影を読み、適格な候補を足したときに

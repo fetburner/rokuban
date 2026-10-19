@@ -33,10 +33,19 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 		return PreviewCapacityOverages400JSONResponse{Error: message}, nil
 	}
 
+	var editingRule *store.CapacityPreviewRule
 	if req.Body.RuleId != nil {
 		if *req.Body.RuleId <= 0 {
 			return PreviewCapacityOverages400JSONResponse{Error: "ruleId must be greater than zero"}, nil
 		}
+		row, err := h.capacityStore.PreviewRule(ctx, *req.Body.RuleId)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				return PreviewCapacityOverages404JSONResponse{Error: "rule not found"}, nil
+			}
+			return nil, fmt.Errorf("loading rule for capacity preview: %w", err)
+		}
+		editingRule = &row
 	}
 
 	matches, err := rulequery.MatchPrograms(ctx, h.pool, conditions)
@@ -47,20 +56,16 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 	for i, match := range matches {
 		refs[i] = capacity.ProgramRef{Site: match.Site, ProgramID: match.ProgramID}
 	}
-	preview, err := capacity.PreviewCandidates(ctx, h.capacityStore, refs, req.Body.RuleId)
+	candidates, err := capacity.PreviewCandidates(ctx, h.capacityStore, refs, req.Body.RuleId)
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			return PreviewCapacityOverages404JSONResponse{Error: "rule not found"}, nil
-		}
 		return nil, err
 	}
-	candidates := preview.Candidates
 
 	// 無効なルールは予約を作らない。新規ルールは有効として数える（フォームの enabled は
 	// 送られない）。編集中のルールは保存済みの enabled を使う。
-	if preview.Rule != nil && !preview.Rule.Enabled {
+	if editingRule != nil && !editingRule.Enabled {
 		candidates = nil
-	} else if preview.Rule != nil && preview.Rule.DedupeEnabled {
+	} else if editingRule != nil && editingRule.DedupeEnabled {
 		candidates, err = h.removeDedupeSkips(ctx, *req.Body.RuleId, candidates)
 		if err != nil {
 			return nil, fmt.Errorf("evaluating dedupe for capacity preview: %w", err)

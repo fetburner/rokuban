@@ -68,12 +68,6 @@ type CapacityPreviewCandidate struct {
 	EndAt        time.Time
 }
 
-// CapacityPreview は対象ルールと、その保存前プレビュー候補をまとめる。
-type CapacityPreview struct {
-	Rule       *CapacityPreviewRule
-	Candidates []CapacityPreviewCandidate
-}
-
 // TunerSync は mirakc の tuner 一覧を tuner_sync へ投影する。
 //
 // 各メソッドは個別に完了する。SweepMark と Upsert の間に mirakc への問い合わせが
@@ -102,7 +96,11 @@ type Capacity interface {
 	ReadSite(ctx context.Context, site string) (CapacityInput, error)
 	// ReadAllSites は全 site の需要とチューナーを同じ DB スナップショットから返す。
 	ReadAllSites(ctx context.Context) (CapacityInput, error)
-	// PreviewCandidates は対象ルールの状態と、容量需要になりうる候補を返す。
-	// ruleID が指定されていて対象が無ければ ErrNotFound を返す。
-	PreviewCandidates(ctx context.Context, refs []CapacityProgramRef, ruleID *int64) (CapacityPreview, error)
+	// PreviewRule は保存前プレビューの対象ルールの状態を返す。
+	// 対象が無ければ ErrNotFound を返す。
+	PreviewRule(ctx context.Context, ruleID int64) (CapacityPreviewRule, error)
+	// PreviewCandidates は refs のうち、容量需要になりうる候補を返す。
+	// ruleID は編集中のルールで、そのルールが今持つ予約は除外の対象に数えない。
+	// ルールの存在は確かめない。
+	PreviewCandidates(ctx context.Context, refs []CapacityProgramRef, ruleID *int64) ([]CapacityPreviewCandidate, error)
 }
