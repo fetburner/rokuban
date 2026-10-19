@@ -2,6 +2,8 @@ package reservation
 
 import (
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +52,31 @@ func TestMergeOverrides_ResetClearsEachField(t *testing.T) {
 		if cleared != 1 {
 			t.Errorf("reset %s cleared %d fields, want exactly 1 (got %+v)", field, cleared, got)
 		}
+	}
+}
+
+// TestOverrideFieldsMatchOptions は、OverrideFields が Options の上書き対象フィールドの集合と
+// 一致することを固定する。Options に足して OverrideFields に足し忘れた場合と、
+// OverrideFields から落とした場合の両方で落ちる。
+func TestOverrideFieldsMatchOptions(t *testing.T) {
+	var want []string
+	typ := reflect.TypeOf(Options{})
+	for i := range typ.NumField() {
+		name, _, _ := strings.Cut(typ.Field(i).Tag.Get("json"), ",")
+		// skip は overrides のキーではなく program_intents.action が担うので、上書きの対象に含めない。
+		if name == "skip" {
+			continue
+		}
+		want = append(want, name)
+	}
+	var got []string
+	for _, f := range OverrideFields() {
+		got = append(got, string(f))
+	}
+	slices.Sort(want)
+	slices.Sort(got)
+	if !slices.Equal(got, want) {
+		t.Fatalf("OverrideFields() = %v, want the Options fields except skip: %v", got, want)
 	}
 }
 

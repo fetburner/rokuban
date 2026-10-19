@@ -158,7 +158,8 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 - 凍結スナップショットだけの番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/frozen_snapshot`
 - 空の上書き行の削除: `TestReservationsContract/empty_overrides_delete_their_row`
 - 一覧・詳細・重なりの読み取り: `TestReservationsContract/reservation_reads_return_details_and_overlaps`
-- マージ関数: `internal/reservation.MergeOverrides` の単体テスト
+- マージの設定と reset: `TestMergeOverrides_SetsOnlyGivenFields` / `TestMergeOverrides_ResetClearsEachField`
+- reset の対象が Options と一致すること: `TestOverrideFieldsMatchOptions`
 
 </details>
 

@@ -19,8 +19,9 @@ const (
 	OverrideEncodeProfiles OverrideField = "encodeProfiles"
 )
 
-// OverrideFields は reset で許容する全フィールド名を返す。MergeOverrides の reset が
-// 扱う集合と一致する（一致は単体テストが固定する）。
+// OverrideFields は reset で許容する全フィールド名を返す。上書きの対象である Options の
+// フィールド（skip を除く全部）と一致することを TestOverrideFieldsMatchOptions が固定し、
+// 各名前が reset で 1 フィールドを消すことを TestMergeOverrides_ResetClearsEachField が固定する。
 func OverrideFields() []OverrideField {
 	return []OverrideField{
 		OverridePriority, OverrideContentPath, OverrideFilenameTemplate, OverrideKeepOriginal, OverrideEncodeProfiles,
