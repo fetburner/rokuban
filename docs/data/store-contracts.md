@@ -95,17 +95,16 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 削除の基準には、upsert より前に `SweepMark` が返した DB の時刻を渡す。呼び出し側の時計を使うと、時計のずれで射影全体を消しうる。
 
-容量の読み取りは、需要と tuner_sync を同じ DB スナップショットから返す。予約の base・overrides と意図は解決せずに渡し、effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
+容量の読み取りは、予約の base・overrides と意図を解決せずに渡す。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
 
-保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。対象ルールが無ければ `ErrNotFound` を返す。
+保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。ルールの読み取りは、対象が無ければ `ErrNotFound` を返す。
 
 <details><summary>根拠</summary>
 
 - チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
 - 容量読み取り: `internal/store.Capacity`
 - PostgreSQL 実装: `internal/store/pgstore.Tuners`
-- チューナー同期のバッチ原子性・時刻区間の終了端: `TestTunersContract`
-- 需要と tuner_sync のスナップショット: `TestCapacityReadsUseSingleSnapshot`
+- バッチの原子性・需要の区間の終了端: `TestTunersContract`
 - 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
 
 </details>

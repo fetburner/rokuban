@@ -17,7 +17,7 @@ type TunerFixture struct {
 	Capacity store.Capacity
 
 	SeedTuner  func(t *testing.T, site string, tuner store.TunerInput, observedAt time.Time)
-	SeedDemand func(t *testing.T, site string, programID int64, channelType, channel string,
+	SeedDemand func(t *testing.T, site string, programID int64, ruleID *int64, channelType, channel string,
 		startAt time.Time, durationMs int64)
 	SeedRule           func(t *testing.T, enabled, dedupeEnabled bool) int64
 	SeedPreviewProgram func(t *testing.T, ref store.CapacityProgramRef, channelType, channel string,
@@ -117,8 +117,9 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	ctx := context.Background()
 	start := time.Date(2026, time.January, 2, 3, 4, 5, 678000000, time.UTC)
 	durationMs := int64(90_001)
-	f.SeedDemand(t, "site-a", 7001, "GR", "27", start, durationMs)
-	f.SeedDemand(t, "site-b", 7002, "BS", "BS1", start.Add(time.Hour), 60_000)
+	ruleID := f.SeedRule(t, true, false)
+	f.SeedDemand(t, "site-a", 7001, &ruleID, "GR", "27", start, durationMs)
+	f.SeedDemand(t, "site-b", 7002, nil, "BS", "BS1", start.Add(time.Hour), 60_000)
 	f.SeedTuner(t, "site-a", store.TunerInput{Index: 0, Name: "site-a tuner", Types: []string{"GR"}, IsAvailable: false}, start)
 	f.SeedTuner(t, "site-b", store.TunerInput{Index: 0, Name: "site-b tuner", Types: []string{"BS"}, IsFault: true}, start)
 
@@ -133,6 +134,9 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 		!demand.StartAt.Equal(start) || !demand.EndAt.Equal(start.Add(time.Duration(durationMs)*time.Millisecond)) {
 		t.Errorf("ReadSite demand = %+v, want exact half-open interval ending at start + %dms", demand, durationMs)
 	}
+	if got.Demands[0].RuleID == nil || *got.Demands[0].RuleID != ruleID {
+		t.Errorf("ReadSite rule id = %v, want %d", got.Demands[0].RuleID, ruleID)
+	}
 	if len(got.Tuners) != 1 || got.Tuners[0].Site != "site-a" || got.Tuners[0].IsAvailable {
 		t.Errorf("ReadSite tuners = %+v, want the unavailable site-a row retained", got.Tuners)
 	}
@@ -144,8 +148,11 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	if len(all.Demands) != 2 || len(all.Tuners) != 2 {
 		t.Fatalf("ReadAllSites = %+v, want both site inputs", all)
 	}
-	if all.Demands[0].RuleID != nil || all.Demands[1].RuleID != nil {
-		t.Errorf("ReadAllSites rule ids = (%v, %v), want nil for unruled reservations", all.Demands[0].RuleID, all.Demands[1].RuleID)
+	if all.Demands[0].RuleID == nil || *all.Demands[0].RuleID != ruleID {
+		t.Errorf("ReadAllSites site-a rule id = %v, want %d", all.Demands[0].RuleID, ruleID)
+	}
+	if all.Demands[1].RuleID != nil {
+		t.Errorf("ReadAllSites site-b rule id = %v, want nil for an unruled reservation", all.Demands[1].RuleID)
 	}
 }
 

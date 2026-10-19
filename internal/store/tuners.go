@@ -17,7 +17,7 @@ type Tuner struct {
 	ObservedAt  time.Time
 }
 
-// TunerInput は mirakc から観測したチューナーの静的情報を表す。
+// TunerInput は mirakc から観測したチューナーの状態を表す。
 type TunerInput struct {
 	Index       int32
 	Name        string
@@ -28,7 +28,8 @@ type TunerInput struct {
 
 // CapacityDemand は予約と番組スナップショットから読んだ容量需要を表す。
 type CapacityDemand struct {
-	Site         string
+	Site string
+	// RuleID は予約を作ったルール。ルールの無い予約は nil。
 	RuleID       *int64
 	ChannelType  string
 	Channel      string
@@ -39,7 +40,7 @@ type CapacityDemand struct {
 	Overrides    json.RawMessage
 }
 
-// CapacityInput は同じ読み取りスナップショットから得た需要とチューナーを表す。
+// CapacityInput は容量判定に渡す需要とチューナーを表す。
 type CapacityInput struct {
 	Demands []CapacityDemand
 	Tuners  []Tuner
@@ -92,9 +93,9 @@ type TunerReader interface {
 
 // Capacity は容量判定に必要な予約・番組・意図・チューナーの読み取りを提供する。
 type Capacity interface {
-	// ReadSite は site の需要とチューナーを同じ DB スナップショットから返す。
+	// ReadSite は site の需要とチューナーを返す。
 	ReadSite(ctx context.Context, site string) (CapacityInput, error)
-	// ReadAllSites は全 site の需要とチューナーを同じ DB スナップショットから返す。
+	// ReadAllSites は全 site の需要とチューナーを返す。
 	ReadAllSites(ctx context.Context) (CapacityInput, error)
 	// PreviewRule は保存前プレビューの対象ルールの状態を返す。
 	// 対象が無ければ ErrNotFound を返す。

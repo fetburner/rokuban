@@ -54,7 +54,7 @@ func (s *Tuners) Upsert(ctx context.Context, site string, tuners []store.TunerIn
 			IsFault:     tuner.IsFault,
 		})
 	}
-	if err := execTunerBatch(sqlcgen.New(tx).UpsertTunerSync(ctx, params)); err != nil {
+	if err := execBatch(sqlcgen.New(tx).UpsertTunerSync(ctx, params)); err != nil {
 		return fmt.Errorf("upserting tuners for site %s: %w", site, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -84,14 +84,9 @@ func (s *Tuners) List(ctx context.Context, site string) ([]store.Tuner, error) {
 	return tunersFromRows(rows), nil
 }
 
-// ReadSite は site の需要とチューナーを同じ DB スナップショットから返す。
+// ReadSite は site の需要とチューナーを返す。
 func (s *Tuners) ReadSite(ctx context.Context, site string) (store.CapacityInput, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return store.CapacityInput{}, fmt.Errorf("beginning capacity read for site %s: %w", site, err)
-	}
-	defer rollback(tx)
-	q := sqlcgen.New(tx)
+	q := sqlcgen.New(s.pool)
 
 	demandRows, err := q.ListCapacityDemand(ctx, site)
 	if err != nil {
@@ -101,23 +96,15 @@ func (s *Tuners) ReadSite(ctx context.Context, site string) (store.CapacityInput
 	if err != nil {
 		return store.CapacityInput{}, fmt.Errorf("listing tuner projection for site %s: %w", site, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.CapacityInput{}, fmt.Errorf("committing capacity read for site %s: %w", site, err)
-	}
 	return store.CapacityInput{
 		Demands: capacityDemandsFromSiteRows(demandRows),
 		Tuners:  tunersFromRows(tunerRows),
 	}, nil
 }
 
-// ReadAllSites は全 site の需要とチューナーを同じ DB スナップショットから返す。
+// ReadAllSites は全 site の需要とチューナーを返す。
 func (s *Tuners) ReadAllSites(ctx context.Context) (store.CapacityInput, error) {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
-	if err != nil {
-		return store.CapacityInput{}, fmt.Errorf("beginning all-site capacity read: %w", err)
-	}
-	defer rollback(tx)
-	q := sqlcgen.New(tx)
+	q := sqlcgen.New(s.pool)
 
 	demandRows, err := q.ListCapacityDemandAllSites(ctx)
 	if err != nil {
@@ -126,9 +113,6 @@ func (s *Tuners) ReadAllSites(ctx context.Context) (store.CapacityInput, error) 
 	tunerRows, err := q.ListTunerSyncAllSites(ctx)
 	if err != nil {
 		return store.CapacityInput{}, fmt.Errorf("listing tuner projection for all sites: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.CapacityInput{}, fmt.Errorf("committing all-site capacity read: %w", err)
 	}
 	return store.CapacityInput{
 		Demands: capacityDemandsFromAllSiteRows(demandRows),
@@ -191,7 +175,7 @@ func capacityDemandsFromSiteRows(rows []sqlcgen.ListCapacityDemandRow) []store.C
 	demands := make([]store.CapacityDemand, 0, len(rows))
 	for _, row := range rows {
 		demands = append(demands, store.CapacityDemand{
-			Site: row.Site, ChannelType: row.ChannelType, Channel: row.Channel,
+			Site: row.Site, RuleID: row.RuleID, ChannelType: row.ChannelType, Channel: row.Channel,
 			StartAt: row.ProgramStartAt, EndAt: row.ProgramEndAt,
 			Base: row.Base, IntentAction: row.IntentAction, Overrides: row.Overrides,
 		})
@@ -211,12 +195,12 @@ func capacityDemandsFromAllSiteRows(rows []sqlcgen.ListCapacityDemandAllSitesRow
 	return demands
 }
 
-type tunerBatchResults interface {
+type batchResults interface {
 	Exec(func(int, error))
 	Close() error
 }
 
-func execTunerBatch(results tunerBatchResults) error {
+func execBatch(results batchResults) error {
 	var firstErr error
 	results.Exec(func(index int, err error) {
 		if err != nil && firstErr == nil {

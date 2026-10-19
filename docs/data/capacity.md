@@ -240,7 +240,7 @@ flowchart TD
 
 「0 行」の扱いは、docs に無かった case で、実装時に決めた。射影からは「チューナーが 0 本」と「まだ同期していない」を区別できず、後者を容量ゼロとして扱うと、全区間が超過になって警告が洪水になる。上に書いた「既知の盲点はすべて警告を見逃す方向に偏っている」という性質を、我々自身の無知で損なわないための規律である。全台故障は射影された事実であり、無知には当たらない。
 
-判定は `internal/capacity` に置き、DB の読み取りは `store.Capacity` が受け持つ。mirakc からの同期ジョブは worker に置く。
+判定は `internal/capacity` に置き、DB の読み取りは `store.Capacity` が受け持つ。射影ジョブは worker に置く。
 
 <details><summary>根拠</summary>
 
