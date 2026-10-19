@@ -226,7 +226,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	w.deleteCandidates(ctx, q, candidates, orphanMTimeGrace)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
-	// （issue #135、pgstore.Recordings.MarkPurged のコメント参照）。ここより前の
+	// （issue #135、internal/db/queries/delete_reconcile.sql の MarkPurgedRecordings のコメント参照）。ここより前の
 	// pending ループと deleteCandidates（trash / until_encoded / 孤児）が
 	// すべて物理 unlink を終えた後でなければならない —— 先頭で押すと
 	// 同じパスで消したアセットが反映されず、判定が 1 パス遅れる。
@@ -251,7 +251,7 @@ var afterDeleteCandidatesCollected = func() {}
 // 発火対象は purged（引数の purged）そのものであり、ここで改めて「録画が
 // 消えたか」を計算し直すことはしない --- 通知の一瞬だけ計算して結果を
 // 捨てる形だと、アセットを 1 行も持たない録画で「消した」と「元から無い」を
-// 区別できず発火し損なう。その計算は pgstore.Recordings.MarkPurged の WHERE で
+// 区別できず発火し損なう。その計算は MarkPurgedRecordings（internal/db/queries/delete_reconcile.sql）の WHERE で
 // 1 回だけ行われ、結果は purged_at として永続化済みである。
 //
 // purged は MarkPurged が purged_at IS NULL で選んだ集合

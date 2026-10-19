@@ -896,8 +896,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		return nil
 	}
 
-	cleanup := &DeleteReconcileWorker{Pool: pool,
-		RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 	deleteDone := make(chan struct{})
 	go func() {
 		cleanup.deleteMediaAsset(ctx, sqlcgen.New(pool), deleteTarget{

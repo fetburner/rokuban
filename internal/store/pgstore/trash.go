@@ -30,11 +30,12 @@ func (s *Recordings) SoftDelete(ctx context.Context, recordingID int64) error {
 		return fmt.Errorf("beginning soft delete for recording %d: %w", recordingID, err)
 	}
 	defer rollback(tx)
+	q := sqlcgen.New(tx)
 
-	if _, err := sqlcgen.New(tx).SoftDeleteRecording(ctx, recordingID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
-		}
+	if _, err := lockRecordingState(ctx, q, recordingID); err != nil {
+		return err
+	}
+	if _, err := q.SoftDeleteRecording(ctx, recordingID); err != nil {
 		return fmt.Errorf("soft-deleting recording %d: %w", recordingID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -44,6 +45,7 @@ func (s *Recordings) SoftDelete(ctx context.Context, recordingID int64) error {
 }
 
 // Restore は録画を復元し、同じ録画の即時削除要求を取り下げる。
+// 要求行を入れる経路は録画行を先にロックする。理由は internal/db/queries/recordings_trash.sql の復元のコメントにある。
 func (s *Recordings) Restore(ctx context.Context, recordingID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -52,6 +54,13 @@ func (s *Recordings) Restore(ctx context.Context, recordingID int64) error {
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
+	lock, err := lockRecordingState(ctx, q, recordingID)
+	if err != nil {
+		return err
+	}
+	if !lock.IsTrashed || lock.IsPurged {
+		return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
+	}
 	if _, err := q.RestoreRecording(ctx, recordingID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
@@ -68,18 +77,23 @@ func (s *Recordings) Restore(ctx context.Context, recordingID int64) error {
 }
 
 // RequestPurge は即時削除を要求し、まだごみ箱に無ければ論理削除も行う。
+// 要求行を入れる経路を足すときは録画行を先にロックする。理由は internal/db/queries/recordings_trash.sql の復元のコメントにある。
 func (s *Recordings) RequestPurge(ctx context.Context, recordingID int64) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("beginning purge request for recording %d: %w", recordingID, err)
 	}
 	defer rollback(tx)
+	q := sqlcgen.New(tx)
 
-	if _, err := sqlcgen.New(tx).MarkRecordingPurgeRequested(ctx, recordingID); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
-		}
-		return fmt.Errorf("marking recording %d for purge: %w", recordingID, err)
+	if _, err := lockRecordingState(ctx, q, recordingID); err != nil {
+		return err
+	}
+	if _, err := q.SoftDeleteRecording(ctx, recordingID); err != nil {
+		return fmt.Errorf("soft-deleting recording %d for purge: %w", recordingID, err)
+	}
+	if err := q.InsertRecordingPurgeRequest(ctx, recordingID); err != nil {
+		return fmt.Errorf("requesting purge for recording %d: %w", recordingID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing purge request for recording %d: %w", recordingID, err)

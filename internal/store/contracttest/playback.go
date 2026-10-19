@@ -93,8 +93,9 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 		start := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
 		one := f.NewRecording(t, RecordingOptions{ProgramStartAt: start, EventID: 31})
 		two := f.NewRecording(t, RecordingOptions{ProgramStartAt: start, EventID: 32})
+		other := f.NewRecording(t, RecordingOptions{ProgramStartAt: start.Add(time.Hour), EventID: 33})
 		ctx := context.Background()
-		for _, id := range []int64{one, two} {
+		for _, id := range []int64{one, two, other} {
 			if err := f.Store.MarkWatched(ctx, id); err != nil {
 				t.Fatalf("MarkWatched(%d): %v", id, err)
 			}
@@ -106,6 +107,9 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 			if f.Watched(t, id) {
 				t.Errorf("watched marker remains on event sibling %d", id)
 			}
+		}
+		if !f.Watched(t, other) {
+			t.Error("watched marker of a different broadcast event was cleared")
 		}
 	})
 

@@ -10,45 +10,26 @@ import (
 	"time"
 )
 
-const markRecordingPurgeRequested = `-- name: MarkRecordingPurgeRequested :one
-WITH trashed AS (
-    UPDATE recordings
-    SET deleted_at = COALESCE(deleted_at, now()),
-        updated_at = now()
-    WHERE id = $1
-    RETURNING id, deleted_at
-), requested AS (
-    INSERT INTO recording_purge_requests (recording_id)
-    SELECT id FROM trashed
-    ON CONFLICT (recording_id) DO NOTHING
-    RETURNING recording_id
-)
-SELECT id, deleted_at FROM trashed
+const insertRecordingPurgeRequest = `-- name: InsertRecordingPurgeRequest :exec
+INSERT INTO recording_purge_requests (recording_id)
+VALUES ($1)
+ON CONFLICT (recording_id) DO NOTHING
 `
 
-type MarkRecordingPurgeRequestedRow struct {
-	ID        int64
-	DeletedAt *time.Time
-}
-
-// 即時物理削除の要求。ファイルは消さない。
-// purge は soft-delete も兼ねる（まだごみ箱に入っていなければ deleted_at を立てる）。
+// 即時物理削除の要求行。ファイルは消さない。
 // 既に要求の行があれば何もしない（DO NOTHING）。冪等に再要求できるが、
 // requested_at は最初の要求のまま据え置く（「いつ要求されたか」を後の再要求で
 // 上書きしない）。
 //
-// 存在しない録画には 0 行（recordings 側の UPDATE が 0 行 → 主クエリも 0 行 →
-// :one が pgx.ErrNoRows → API が 404）。
-//
-// **CTE の `trashed`（recordings の UPDATE）は soft-delete を兼ねるだけでなく、
-// 「要求行を入れる前に対象の recordings 行をロックする」という要件も兼ねている**
-// （上の WithdrawRecordingPurgeRequest 前のブロックのコメント参照）。
-// INSERT だけの経路に単純化すると、復元の窓が開き直る。
-func (q *Queries) MarkRecordingPurgeRequested(ctx context.Context, id int64) (MarkRecordingPurgeRequestedRow, error) {
-	row := q.db.QueryRow(ctx, markRecordingPurgeRequested, id)
-	var i MarkRecordingPurgeRequestedRow
-	err := row.Scan(&i.ID, &i.DeletedAt)
-	return i, err
+// store の RequestPurge は、recordings 行のロック → SoftDeleteRecording（まだ
+// ごみ箱に無ければ deleted_at を立てる）→ この INSERT の 3 文を 1 トランザクション
+// で流す。**この INSERT は必ずロックの後に置く**（上の復元のコメント参照）。
+// 要求行を入れる前に対象の recordings 行をロックしないと、復元の窓が開き直る。
+// データ変更 CTE に畳まない理由も上のとおり（スナップショット共有）で、MySQL が
+// データ変更 CTE を書けないので両方言で同じ複数文の形にしてある。
+func (q *Queries) InsertRecordingPurgeRequest(ctx context.Context, recordingID int64) error {
+	_, err := q.db.Exec(ctx, insertRecordingPurgeRequest, recordingID)
+	return err
 }
 
 const restoreRecording = `-- name: RestoreRecording :one
@@ -60,7 +41,8 @@ WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
 RETURNING id
 `
 
-// 復元の 2 文（store の Restore が 1 トランザクションで順に流す）。
+// 復元（store の Restore が、recordings 行のロック → RestoreRecording →
+// 要求の取り下げ、の順に 1 トランザクションで流す）。
 //
 // 2 表を 1 文のデータ変更 CTE で書くのは**やめた**。CTE の全アームは文全体で
 // 1 つのスナップショットを共有するので、`recordings` の行ロックで UPDATE アームが
@@ -81,7 +63,7 @@ RETURNING id
 // 無い）ときロックは何も残らない（READ COMMITTED に述語ロックは無い）ので、
 // 「DELETE の後・COMMIT の前」に要求行が commit されれば同じ害が出る。それを
 // 塞いでいるのは**要求行を入れる経路が対象の recordings 行を先にロックすること**
-// で、下の MarkRecordingPurgeRequested は CTE の UPDATE アームがそれを兼ねている
+// で、下の InsertRecordingPurgeRequest の前に store が行ロックを取る
 // （restore が行ロックを持っている間 purge が待たされることは store のごみ箱契約テストで見る）。
 // **要件: この表に INSERT する経路を足すときは recordings 行を先にロックする。**
 // 一括 purge を `INSERT INTO recording_purge_requests SELECT id FROM recordings
@@ -90,9 +72,8 @@ RETURNING id
 // restore 側のテストは blocker 側が `UPDATE recordings` してからロックを握る形なので、
 // この回帰は「purge request serializes behind restore」のテストで検出する）。
 //
-// 復元側に `SELECT ... FOR UPDATE` を足す形は採らない。上の UPDATE 自身が同じ行の
-// 行ロックを取るので、その手前に FOR UPDATE を置いても掴むロックは増えない
-// （冗長）。
+// 行ロックは store の共通ヘルパ（LockRecording の FOR UPDATE）が、録画の行に触れる
+// 最初の文として取る。
 // ごみ箱に入っている行だけを対象に deleted_at を消す。
 // 同一イベントに生きている録画がある場合は unique partial index で 23505。
 // purged_at が立っている行（完全削除が完了した tombstone、issue #135）は

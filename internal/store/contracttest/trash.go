@@ -33,7 +33,7 @@ type TrashFixture struct {
 // NewTrashStore はごみ箱契約の実装とフィクスチャを作る。
 type NewTrashStore func(t *testing.T) TrashFixture
 
-// RunTrash は論理削除・復元・purge 要求・完了記録の契約を実装に対して実行する。
+// RunTrash は論理削除・復元・即時削除要求・完了記録の契約を実装に対して実行する。
 func RunTrash(t *testing.T, newStore NewTrashStore) {
 	t.Helper()
 

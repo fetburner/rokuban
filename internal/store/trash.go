@@ -14,12 +14,15 @@ type RecordingTrash interface {
 	// Restore は録画を復元し、同じ録画の即時削除要求を取り下げる。
 	// 同一放送イベントの生きた録画と衝突する場合は ErrConflict、
 	// ごみ箱に無い場合または完全削除済みの場合は ErrNotFound を返す。
-	// 復元と即時削除要求は、同じ録画について直列化される。
+	// 同じ録画の復元と即時削除要求は直列化される。
+	// 要求が先に確定すれば、復元がそれを取り下げる。
+	// 復元が先に確定すれば、後から来た要求は録画をごみ箱に戻して残る。
+	// どちらの順でも、復元された録画に要求だけが残ることはない。
 	Restore(ctx context.Context, recordingID int64) error
 
 	// RequestPurge は即時削除を要求し、まだごみ箱に無ければ論理削除も行う。
 	// 対象が無ければ ErrNotFound を返す。
-	// 復元と即時削除要求は、同じ録画について直列化される。
+	// 同じ録画の復元と即時削除要求は直列化される（保証の内容は Restore を参照）。
 	RequestPurge(ctx context.Context, recordingID int64) error
 }
 

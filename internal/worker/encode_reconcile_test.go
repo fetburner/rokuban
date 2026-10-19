@@ -651,8 +651,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// 方向 B: 削除エンジンを 1 パス回しても、この録画の原本は消えない
 	// （until_encoded_deletable_originals は known_profiles で絞らないので、
 	// 「desired が揃っている」という判定に永久に到達しない）。
-	dw := &DeleteReconcileWorker{Pool: pool,
-		RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
+	dw := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}
