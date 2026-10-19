@@ -52,20 +52,60 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 </details>
 
+### 視聴状態
+
+視聴状態の書き込みは 1 つの契約にまとめる。再生位置は録画ごとに保存する。視聴済みの印は、押した録画の行にだけ置く。
+
+読み取り側は同じ放送イベントの印を束ねるので、`ClearWatchedForEvent` はそのイベントの全行から印を消す。
+
+`MarkWatched` は印の upsert と再生位置の削除を 1 メソッドにする。2 つは「視聴済みにする」という同じ業務操作であり、呼び出し側が 2 回に分けて呼ぶと、印だけ付いて再生位置が残った状態で止まりうる。契約テストは、再生位置の削除が失敗したときに印の書き込みも巻き戻ることを固定している。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.PlaybackState`
+- PostgreSQL 実装: `internal/store/pgstore.Playback`
+- 視聴済みの書き込みと位置の削除: `internal/store/contracttest.RunPlayback`
+
+</details>
+
+### ごみ箱と完全削除
+
+ごみ箱の操作は、利用側ごとに 2 つの契約に分ける。api が使う操作と、削除 reconcile が使う操作が違うからである。
+
+api が使うのは論理削除・復元・即時削除要求をまとめた `RecordingTrash` で、削除 reconcile が使うのは完全削除の確定だけの `RecordingPurge` である。実装は録画のドメインの `pgstore.Recordings` が両方を持つ。
+
+同じ録画の復元と即時削除要求は直列化される。要求が先に確定すれば、復元がそれを取り下げる。復元が先に確定すれば、後から来た要求は録画をごみ箱に戻して残る。どちらの順でも、復元された録画に要求だけが残ることはない。要求だけが残ると、次の普通の論理削除でごみ箱の猶予を飛ばして即時削除の対象になるが、ユーザーは即時削除を要求していないからである。
+
+仕組みは [削除エンジン](../storage/retention.md) §7「復元と即時削除要求の競合」にある。
+
+`RecordingPurge.MarkPurged` は呼び出し側が渡す cutoff を使い、猶予を過ぎて削除対象アセットが残っていない録画の `purged_at` を確定する。返すのは今回初めて完全削除を確定した行だけである。呼び出し側はこの結果を削除通知に使い、別の判定で発火対象を作り直さない。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordingTrash` / `internal/store.RecordingPurge`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 復元と即時削除要求の直列化、完了記録の冪等性: `internal/store/contracttest.RunTrash`
+- 削除述語と `purged_at` の意味: [削除エンジン](../storage/retention.md) §7
+
+</details>
+
 ### チューナーと容量
 
-チューナー同期は sweep mark、全量 upsert、古い行の削除を別々の store メソッドで行う。各段階が独立して失敗・再試行できる境界を保ち、同期全体を一つの tx にまとめない。upsert の全行は一つのメソッド内で原子的に反映する。mark は upsert より前に取得し、DB の時刻を削除の基準に渡す。
+チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。upsert の全行は 1 つのメソッドの中で原子的に反映する。
 
-容量の読み取りは需要と tuner_sync を同じ DB スナップショットで返す。DB の列や JSON を容量判定へ漏らさず、effective options の解決と Hall 条件は `internal/capacity` に残す。
+削除の基準には、upsert より前に `SweepMark` が返した DB の時刻を渡す。呼び出し側の時計を使うと、時計のずれで射影全体を消しうる。
 
-保存前プレビューの読み取りは、対象ルールの有効・重複排除状態と候補を一つの契約で返す。対象ルールが無ければ `ErrNotFound` とし、API が DB 固有の no rows を判断しない。
+容量の読み取りは、需要と tuner_sync を同じ DB スナップショットから返す。予約の base・overrides と意図は解決せずに渡し、effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
+
+保存前プレビューの読み取りは、対象ルールの有効・重複排除の状態と候補を 1 つのメソッドで返す。対象ルールが無ければ `ErrNotFound` を返す。
 
 <details><summary>根拠</summary>
 
 - チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
 - 容量読み取り: `internal/store.Capacity`
 - PostgreSQL 実装: `internal/store/pgstore.Tuners`
-- チューナー同期とバッチ原子性・時刻区間の終了端: `TestTunersContract`
+- チューナー同期のバッチ原子性・時刻区間の終了端: `TestTunersContract`
+- 需要と tuner_sync のスナップショット: `TestCapacityReadsUseSingleSnapshot`
 - 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
 
 </details>

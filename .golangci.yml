@@ -87,7 +87,6 @@ linters:
             - "!${config-path}/internal/api/epg.go"
             - "!${config-path}/internal/api/handler.go"
             - "!${config-path}/internal/api/label_rules.go"
-            - "!${config-path}/internal/api/playback_state.go"
             - "!${config-path}/internal/api/program_intent.go"
             - "!${config-path}/internal/api/program_overrides.go"
             - "!${config-path}/internal/api/program_reservation.go"

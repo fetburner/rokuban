@@ -340,3 +340,29 @@ func TestPreviewCapacityOverages_RuleIdReservationCanBeReevaluatedAsCandidate(t 
 		t.Fatalf("preview = %+v, want one worsened interval with shortfall 2", got)
 	}
 }
+
+// 存在しないルールの編集プレビューは 404 になる（契約の ErrNotFound を API が写す）。
+func TestPreviewCapacityOverages_UnknownRuleIsNotFound(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := newCapacityPreviewServer(t, pool)
+
+	raw, err := json.Marshal(map[string]any{"genres": []int{searchFixtureGenre}, "ruleId": 999999})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/capacity/preview", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (body=%s)", resp.StatusCode, body)
+	}
+	var got struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil || got.Error != "rule not found" {
+		t.Errorf("body = %s, want error \"rule not found\"", body)
+	}
+}

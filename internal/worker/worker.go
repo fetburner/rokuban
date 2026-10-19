@@ -101,8 +101,10 @@ type Deps struct {
 	TunerStore store.TunerSync
 	// CapacityStore はチューナー worker の容量判定読み取り契約。
 	CapacityStore store.Capacity
-	MediaDir      string
-	ScratchDir    string
+	// RecordingPurge は録画の物理削除の永続化契約。
+	RecordingPurge store.RecordingPurge
+	MediaDir       string
+	ScratchDir     string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -262,6 +264,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
+		RecordingPurge:    deps.RecordingPurge,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,

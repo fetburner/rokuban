@@ -24,15 +24,9 @@ type PreviewCandidate struct {
 	Demand
 }
 
-// PreviewRule は、容量プレビューに必要な対象ルールの状態を表す。
-type PreviewRule struct {
-	Enabled       bool
-	DedupeEnabled bool
-}
-
 // PreviewCandidatesResult は対象ルールと、容量需要になりうる検索一致をまとめる。
 type PreviewCandidatesResult struct {
-	Rule       *PreviewRule
+	Rule       *store.CapacityPreviewRule
 	Candidates []PreviewCandidate
 }
 
@@ -50,10 +44,7 @@ func PreviewCandidates(ctx context.Context, storage store.Capacity, refs []Progr
 	if err != nil {
 		return PreviewCandidatesResult{}, fmt.Errorf("listing capacity preview candidates: %w", err)
 	}
-	result := PreviewCandidatesResult{Candidates: make([]PreviewCandidate, len(preview.Candidates))}
-	if preview.Rule != nil {
-		result.Rule = &PreviewRule{Enabled: preview.Rule.Enabled, DedupeEnabled: preview.Rule.DedupeEnabled}
-	}
+	result := PreviewCandidatesResult{Rule: preview.Rule, Candidates: make([]PreviewCandidate, len(preview.Candidates))}
 	for i, candidate := range preview.Candidates {
 		result.Candidates[i] = PreviewCandidate{
 			ProgramID: candidate.ProgramID, IntentAction: candidate.IntentAction,

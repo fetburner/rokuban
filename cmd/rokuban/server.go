@@ -484,12 +484,14 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
 	routerCfg := api.RouterConfig{
-		AllowedHosts:       cfg.Server.AllowedHosts,
-		TrustForwardedHost: cfg.Server.TrustForwardedHost,
-		Pool:               pool,
-		ChapterStore:       pgstore.NewAnalysis(pool),
-		TunerReader:        tunerStore,
-		CapacityStore:      tunerStore,
+		AllowedHosts:        cfg.Server.AllowedHosts,
+		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
+		Pool:                pool,
+		ChapterStore:        pgstore.NewAnalysis(pool),
+		PlaybackStateStore:  pgstore.NewPlayback(pool),
+		RecordingTrashStore: pgstore.NewRecordings(pool),
+		TunerReader:         tunerStore,
+		CapacityStore:       tunerStore,
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
@@ -640,6 +642,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		Pool:                     pool,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
+		RecordingPurge:           pgstore.NewRecordings(pool),
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

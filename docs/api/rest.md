@@ -256,7 +256,6 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 - カーソル軸: `program_start_at` 降順
 - 採らなかった軸: `deleted_at` 降順
-- 旧ごみ箱一覧のクエリ（worker の DB テスト用で HTTP 一覧には使わない）: `ListTrashRecordings`
 
 </details>
 

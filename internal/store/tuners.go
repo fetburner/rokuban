@@ -76,8 +76,8 @@ type CapacityPreview struct {
 
 // TunerSync は mirakc の tuner 一覧を tuner_sync へ投影する。
 //
-// 各メソッドは個別に完了する。SweepMark、Upsert、DeleteStale を 1 つの tx に
-// 束ねず、既存の全量同期の境界を保つ。
+// 各メソッドは個別に完了する。SweepMark と Upsert の間に mirakc への問い合わせが
+// 入るので、同期全体を 1 つの tx に束ねない。
 type TunerSync interface {
 	// SweepMark は stale 判定の基準となる DB 時刻を返す。
 	SweepMark(ctx context.Context) (time.Time, error)
@@ -85,6 +85,8 @@ type TunerSync interface {
 	// 1 件でも失敗したら全件を反映せず、空の一覧は何もしない。
 	Upsert(ctx context.Context, site string, tuners []TunerInput) error
 	// DeleteStale は observedBefore より古い site の行を削除し、削除件数を返す。
+	// observedBefore には、Upsert より前に SweepMark が返した値を渡す。呼び出し側の
+	// 時計を使うと、時計のずれで射影全体を消しうる。
 	DeleteStale(ctx context.Context, site string, observedBefore time.Time) (int64, error)
 }
 
