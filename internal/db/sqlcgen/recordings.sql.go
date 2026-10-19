@@ -16,7 +16,7 @@ import (
 const appendQualityEvents = `-- name: AppendQualityEvents :exec
 UPDATE recordings
 SET quality_events = quality_events || COALESCE((
-        SELECT jsonb_agg(jsonb_build_object('at', now()) || e.value ORDER BY e.ordinality)
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
         FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS e(value, ordinality)
     ), '[]'::jsonb),
     updated_at = now()
@@ -28,7 +28,7 @@ type AppendQualityEventsParams struct {
 	ID     int64
 }
 
-// `at` は CreateFailedRecording と同じく DB の時計で付ける（渡された `at` があればそれを優先する）。
+// `at` は CreateFailedRecording と同じく常に DB の時計で付ける。
 func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEventsParams) error {
 	_, err := q.db.Exec(ctx, appendQualityEvents, arg.Events, arg.ID)
 	return err
@@ -37,7 +37,7 @@ func (q *Queries) AppendQualityEvents(ctx context.Context, arg AppendQualityEven
 const appendQualityEventsIfMissing = `-- name: AppendQualityEventsIfMissing :execrows
 UPDATE recordings AS r
 SET quality_events = r.quality_events || COALESCE((
-        SELECT jsonb_agg(jsonb_build_object('at', now()) || e.value ORDER BY e.ordinality)
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
         FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS e(value, ordinality)
     ), '[]'::jsonb),
     updated_at = now()
@@ -151,7 +151,7 @@ INSERT INTO recordings (
     $12, $13, $14,
     $15, $16,
     'failed', COALESCE((
-        SELECT jsonb_agg(jsonb_build_object('at', now()) || e.value ORDER BY e.ordinality)
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
         FROM jsonb_array_elements($17::jsonb) WITH ORDINALITY AS e(value, ordinality)
     ), '[]'::jsonb)
 )
@@ -189,9 +189,9 @@ type CreateFailedRecordingParams struct {
 // ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 // 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 // （superseded 済みの過去の failed 行ではない）になる。
-// quality_events の `at` は DB の時計（now()）で付ける。呼び出し側は `at` を渡さない
-// （渡された `at` があればそれを優先する）。api と worker は別ホストで、呼び出し側の
-// 時計だと書き手をまたぐ時刻の比較が反転しうるため。
+// quality_events の `at` は DB の時計（now()）で付ける。呼び出し側が `at` を渡しても
+// 上書きする。docs/data/store-contracts.md §9「時刻」の規則（store が記録する時刻は
+// DB の時計で付ける）に従う。
 // ON CONFLICT の相手は生きている（deleted_at / superseded_at が NULL）同一
 // active-event の failed 行で、mirakc からの繰り返し通知に同じ理由を積み増す。
 // 欠測は recordings に行を作らなくなった（never_scheduled_events 表に移設）ので、

@@ -570,10 +570,9 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}
-	if err := sqlcgen.New(pool).AppendQualityEvents(context.Background(), sqlcgen.AppendQualityEventsParams{
-		ID:     id,
-		Events: events,
-	}); err != nil {
+	// `at` を固定した fixture を作るため、store の書き込みを通さず直接書く。
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, id, events); err != nil {
 		t.Fatalf("appending quality events: %v", err)
 	}
 
@@ -1336,10 +1335,9 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshalling events: %v", err)
 	}
-	if err := sqlcgen.New(pool).AppendQualityEvents(context.Background(), sqlcgen.AppendQualityEventsParams{
-		ID:     id,
-		Events: events,
-	}); err != nil {
+	// `at` を固定した fixture を作るため、store の書き込みを通さず直接書く。
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, id, events); err != nil {
 		t.Fatalf("appending quality events: %v", err)
 	}
 
