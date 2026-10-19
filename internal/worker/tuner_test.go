@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // tunerFixture は mirakc の /api/tuners のレスポンスを差し替え可能に保持する。
@@ -46,7 +47,11 @@ func newTunerServer(t *testing.T, fx *tunerFixture) *httptest.Server {
 func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *TunerSyncWorker {
 	t.Helper()
 	srv := newTunerServer(t, fx)
-	return &TunerSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)), Pool: pool}
+	tunerStore := pgstore.NewTuners(pool)
+	return &TunerSyncWorker{
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		TunerStore:    tunerStore, CapacityStore: tunerStore,
+	}
 }
 
 func runTunerSync(t *testing.T, w *TunerSyncWorker) {
@@ -288,7 +293,11 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	defer countingSrv.Close()
 
 	// このワーカープロセスは site-a の mirakc を向いている。
-	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)), Pool: pool}
+	tunerStore := pgstore.NewTuners(pool)
+	w := &TunerSyncWorker{
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		TunerStore:    tunerStore, CapacityStore: tunerStore,
+	}
 
 	job := TunerSyncArgs{Site: "site-b"}
 	err := runWorkerViaJobQFake(context.Background(), w, job)
@@ -311,7 +320,11 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	}}
 	srv := newTunerServer(t, fx)
 
-	w := &TunerSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)), Pool: pool}
+	tunerStore := pgstore.NewTuners(pool)
+	w := &TunerSyncWorker{
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		TunerStore:    tunerStore, CapacityStore: tunerStore,
+	}
 
 	job := TunerSyncArgs{Site: "site-a"}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {

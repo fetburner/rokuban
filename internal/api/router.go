@@ -31,6 +31,10 @@ type RouterConfig struct {
 
 	// ChapterStore はチャプター編集の永続化契約。
 	ChapterStore store.ChapterEdits
+	// TunerReader は tuner_sync の一覧を読む契約。
+	TunerReader store.TunerReader
+	// CapacityStore は容量判定用の読み取り契約。
+	CapacityStore store.Capacity
 
 	// PlaybackStateStore は再生位置と視聴済み印の永続化契約。
 	PlaybackStateStore store.PlaybackState
@@ -154,7 +158,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
+		cfg.TunerReader, cfg.CapacityStore,
+		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

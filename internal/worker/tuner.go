@@ -5,13 +5,11 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/capacity"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TunerSyncWorker は mirakc の /api/tuners を tuner_sync に全量投影する queue worker。
@@ -29,7 +27,10 @@ type TunerSyncWorker struct {
 	// キューを使う「使い捨てプロジェクションの全量同期」で、mirakc への
 	// アクセスを伴うため EpgSyncWorker と同じ理由でガードが要る）。
 	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
+	// TunerStore は tuner_sync への全量投影を行う。
+	TunerStore store.TunerSync
+	// CapacityStore は投影後の容量判定に必要な読み取りを行う。
+	CapacityStore store.Capacity
 }
 
 // Work はチューナーの全量同期を 1 パス実行する。
@@ -46,11 +47,9 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 		return err
 	}
 
-	q := sqlcgen.New(w.Pool)
-
 	// スイープ基準は upsert より前の DB 時刻（EpgSweepMark と同じ理由。
 	// クロックスキューで射影全体を消す事故を防ぐ）。
-	mark, err := q.TunerSweepMark(ctx)
+	mark, err := w.TunerStore.SweepMark(ctx)
 	if err != nil {
 		return fmt.Errorf("getting sweep mark: %w", err)
 	}
@@ -60,7 +59,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 		return fmt.Errorf("listing tuners: %w", err)
 	}
 
-	params := make([]sqlcgen.UpsertTunerSyncParams, 0, len(tuners))
+	params := make([]store.TunerInput, 0, len(tuners))
 	for _, t := range tuners {
 		types, ok := projectableTunerTypes(t)
 		if !ok {
@@ -75,9 +74,8 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 				"tuner_index", t.Index, "name", t.Name, "types", t.Types)
 			continue
 		}
-		params = append(params, sqlcgen.UpsertTunerSyncParams{
-			Site:        site,
-			TunerIndex:  int32(t.Index),
+		params = append(params, store.TunerInput{
+			Index:       int32(t.Index),
 			Name:        t.Name,
 			Types:       types,
 			IsAvailable: t.IsAvailable,
@@ -86,7 +84,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 	}
 
 	if len(params) > 0 {
-		if err := execBatch(q.UpsertTunerSync(ctx, params)); err != nil {
+		if err := w.TunerStore.Upsert(ctx, site, params); err != nil {
 			return fmt.Errorf("upserting tuners: %w", err)
 		}
 	}
@@ -99,10 +97,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 	if len(params) == 0 {
 		log.Warn("tuner sync: mirakc returned no projectable tuners, skipping sweep",
 			"tuners_fetched", len(tuners))
-	} else if stale, err = q.DeleteStaleTunerSync(ctx, sqlcgen.DeleteStaleTunerSyncParams{
-		Site:       site,
-		ObservedAt: mark,
-	}); err != nil {
+	} else if stale, err = w.TunerStore.DeleteStale(ctx, site, mark); err != nil {
 		return fmt.Errorf("deleting stale tuners: %w", err)
 	}
 
@@ -114,7 +109,7 @@ func (w *TunerSyncWorker) Work(ctx context.Context, args jobs.TunerSyncArgs) err
 	// 一次情報ではない。metrics.CapacityOverages のコメント参照）なので、
 	// 同期間隔の鮮度で足りる。UI が読むのは常に API 側の再計算結果。
 	overages := -1
-	if list, err := capacity.Load(ctx, q, site); err != nil {
+	if list, err := capacity.Load(ctx, w.CapacityStore, site); err != nil {
 		// 射影の同期そのものは成功しているので、ここでジョブを失敗させて
 		// リトライさせる意味はない（次のパスが入れ直す）。ゲージも更新しない
 		// （0 を入れると「超過なし」と区別できず、判定を黙って無効化してしまう。

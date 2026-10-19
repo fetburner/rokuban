@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -478,7 +479,8 @@ VALUES ($1, $2, '{}'::jsonb)`, site, programID); err != nil {
 func TestListCapacityOverages_ReturnsOveragesFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	tunerStore := pgstore.NewTuners(pool)
+	router := api.NewRouter(api.RouterConfig{Pool: pool, TunerReader: tunerStore, CapacityStore: tunerStore})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

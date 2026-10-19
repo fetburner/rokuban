@@ -95,8 +95,13 @@ type Deps struct {
 	// site 単位のキューを実際に購読していれば、届いたジョブは verifySite が
 	// 必ず拒む（起動時には validateSiteBinding が
 	// この組み合わせ自体を防ぐ）。
-	MirakcClients  map[string]*mirakc.Client
-	Pool           *pgxpool.Pool
+	MirakcClients map[string]*mirakc.Client
+	Pool          *pgxpool.Pool
+	// TunerStore はチューナー同期の永続化契約。
+	TunerStore store.TunerSync
+	// CapacityStore はチューナー worker の容量判定読み取り契約。
+	CapacityStore store.Capacity
+	// RecordingPurge は録画の物理削除の永続化契約。
 	RecordingPurge store.RecordingPurge
 	MediaDir       string
 	ScratchDir     string
@@ -194,7 +199,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
+		TunerStore:    deps.TunerStore,
+		CapacityStore: deps.CapacityStore,
 	})
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,

@@ -89,6 +89,26 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 </details>
 
+### チューナーと容量
+
+チューナー同期は、sweep の印の取得、全量 upsert、古い行の削除を別々の store メソッドで行い、同期全体を 1 つの tx にまとめない。印の取得と upsert の間に mirakc への問い合わせが入るためである。upsert の全行は 1 つのメソッドの中で原子的に反映する。
+
+削除の基準には、upsert より前に `SweepMark` が返した DB の時刻を渡す。呼び出し側の時計を使うと、時計のずれで射影全体を消しうる。
+
+容量の読み取りは、予約の base・overrides と意図を解決せずに渡す。effective options の解決と Hall 条件の判定は `internal/capacity` が行う。
+
+保存前プレビューは、対象ルールの状態の読み取りと候補の読み取りを別のメソッドにする。ルールはリクエストの時点で引けるが、候補は番組検索の後でしか引けないためである。1 つにまとめると、存在しないルールの 404 が検索の後ろへずれる。ルールの読み取りは、対象が無ければ `ErrNotFound` を返す。
+
+<details><summary>根拠</summary>
+
+- チューナー同期と一覧: `internal/store.TunerSync` / `TunerReader`
+- 容量読み取り: `internal/store.Capacity`
+- PostgreSQL 実装: `internal/store/pgstore.Tuners`
+- バッチの原子性・需要の区間の終了端: `TestTunersContract`
+- 容量需要と候補の抽出: `ListCapacityDemand` / `ListCapacityDemandAllSites` / `ListCapacityPreviewCandidates`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。
