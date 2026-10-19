@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -94,10 +95,11 @@ type Deps struct {
 	// site 単位のキューを実際に購読していれば、届いたジョブは verifySite が
 	// 必ず拒む（起動時には validateSiteBinding が
 	// この組み合わせ自体を防ぐ）。
-	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
-	MediaDir      string
-	ScratchDir    string
+	MirakcClients  map[string]*mirakc.Client
+	Pool           *pgxpool.Pool
+	RecordingPurge store.RecordingPurge
+	MediaDir       string
+	ScratchDir     string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -256,6 +258,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
+		RecordingPurge:    deps.RecordingPurge,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,

@@ -17,6 +17,8 @@ type RecordingOptions struct {
 	CMDetectionEnabled bool
 	Trashed            bool
 	Purged             bool
+	EventID            int32
+	ProgramStartAt     time.Time
 }
 
 // NewRecording は契約のケース用に永続化済みの録画を作る。
