@@ -120,7 +120,9 @@ func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int3
 
 func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
 	return &EncodeWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     ffmpegPath,
@@ -139,7 +141,7 @@ func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordin
 
 func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Pool: pool}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	start, err := (&EncodeWorker{Pool: pool, Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -82,6 +84,62 @@ func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original media asset for recording %d", recordingID))
 	}
 	return store.MediaAsset{ID: row.ID, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+}
+
+// HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
+func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
+	_, err := sqlcgen.New(s.pool).GetActiveThumbnailMediaAssetID(ctx, recordingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking active thumbnail media asset for recording %d: %w", recordingID, err)
+	}
+	return true, nil
+}
+
+// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を state を問わず返す。
+func (s *Media) GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (store.EncodedAssetObservation, error) {
+	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+		RecordingID: recordingID,
+		Profile:     &profile,
+	})
+	if err != nil {
+		return store.EncodedAssetObservation{}, mediaQueryError(err, fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile))
+	}
+	return store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}, nil
+}
+
+// GetMediaAssetKeepRanges は encoded アセットに凍結された keep 区間を返す。未凍結なら空を返す。
+func (s *Media) GetMediaAssetKeepRanges(ctx context.Context, mediaAssetID int64) ([]chapters.Range, error) {
+	raw, err := sqlcgen.New(s.pool).GetMediaAssetKeepRangesJSON(ctx, mediaAssetID)
+	if err != nil {
+		return nil, fmt.Errorf("loading frozen cut ranges for media asset %d: %w", mediaAssetID, err)
+	}
+	var keep []chapters.Range
+	if err := json.Unmarshal(raw, &keep); err != nil {
+		return nil, fmt.Errorf("decoding frozen cut ranges for media asset %d: %w", mediaAssetID, err)
+	}
+	return keep, nil
+}
+
+// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
+func (s *Media) EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error) {
+	requested, err := sqlcgen.New(s.pool).GetEncodedAssetRebuildRequestForShare(ctx, sqlcgen.GetEncodedAssetRebuildRequestForShareParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	requestedKeep, err := db.KeepRangesFromMultirange(requested)
+	if err != nil {
+		return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+	return chapters.SameRanges(requestedKeep, keep), nil
 }
 
 // GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。

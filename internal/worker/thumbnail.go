@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // サムネイルの代表フレーム位置ポリシー（固定。設定キーは設けない）:
@@ -49,6 +50,7 @@ const (
 // の doc コメント参照。
 type ThumbnailWorker struct {
 	Pool       *pgxpool.Pool
+	Media      store.MediaReconcile
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -84,9 +86,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		metrics.ThumbnailJobs.WithLabelValues(result).Inc()
 	}()
 
-	q := sqlcgen.New(w.Pool)
-
-	plan, ready, err := w.buildThumbnailPlan(ctx, q, recordingID, log)
+	plan, ready, err := w.buildThumbnailPlan(ctx, recordingID, log)
 	if err != nil {
 		return err
 	}
@@ -161,20 +161,22 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 
 func (w *ThumbnailWorker) buildThumbnailPlan(
 	ctx context.Context,
-	q *sqlcgen.Queries,
 	recordingID int64,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	_, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
-		// ごみ箱は commit 時の skipThumbnailPlanPublish が LockRecording で弾く。
-		return w.initialThumbnailPlan(ctx, q, recordingID, log)
+	if w.Media == nil {
+		return thumbnailWorkPlan{}, false, fmt.Errorf("thumbnail: media store is unavailable")
 	}
+	activeThumbnail, err := w.Media.HasActiveThumbnailMediaAsset(ctx, recordingID)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("checking thumbnail: %w", err)
 	}
+	if !activeThumbnail {
+		// ごみ箱は commit 時の skipThumbnailPlanPublish が LockRecording で弾く。
+		return w.initialThumbnailPlan(ctx, recordingID, log)
+	}
 	// 候補クエリは reconcile と同じ 1 本。ごみ箱・チャプター無し・purged は除外済み。
-	rows, err := q.ListThumbnailReselectCandidates(ctx, sqlcgen.ListThumbnailReselectCandidatesParams{
+	rows, err := w.Media.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{
 		AfterRecordingID: recordingID - 1,
 		RowLimit:         1,
 	})
@@ -190,13 +192,12 @@ func (w *ThumbnailWorker) buildThumbnailPlan(
 
 func (w *ThumbnailWorker) initialThumbnailPlan(
 	ctx context.Context,
-	q *sqlcgen.Queries,
 	recordingID int64,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
 	// 初回の仮サムネイルは従来どおり原本だけを使い、CM 検出を待たずに作る。
-	orig, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
+	orig, err := w.Media.GetActiveOriginalMediaAsset(ctx, recordingID)
+	if errors.Is(err, store.ErrNotFound) {
 		log.Info("thumbnail: no active original, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}
@@ -223,11 +224,10 @@ func (w *ThumbnailWorker) initialThumbnailPlan(
 }
 
 func (w *ThumbnailWorker) reselectionThumbnailPlan(
-	state sqlcgen.ListThumbnailReselectCandidatesRow,
+	state store.ThumbnailReselectCandidate,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	candidate := thumbnailCandidateFromSQL(state)
-	timeline, hasTimeline, err := thumbnailTimeline(candidate)
+	timeline, hasTimeline, err := thumbnailTimeline(state)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding chapter timeline: %w", err)
 	}
@@ -235,11 +235,11 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 		log.Info("thumbnail: no chapter timeline, keeping current thumbnail")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	inputs, err := thumbnailInputsOf(candidate)
+	inputs, err := thumbnailInputsOf(state)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding thumbnail inputs: %w", err)
 	}
-	if !thumbnailNeedsReselect(candidate.SeekMs, inputs, timeline) {
+	if !thumbnailNeedsReselect(state.SeekMs, inputs, timeline) {
 		log.Info("thumbnail: no reselection needed or no usable input, skipping")
 		return thumbnailWorkPlan{}, false, nil
 	}

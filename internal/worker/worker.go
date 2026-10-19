@@ -192,6 +192,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &EncodeWorker{
 		Pool:       deps.Pool,
+		Media:      deps.MediaReconcile,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
@@ -244,6 +245,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
 		Pool:       deps.Pool,
+		Media:      deps.MediaReconcile,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,

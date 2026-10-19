@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -62,24 +61,6 @@ func thumbnailInputsOf(p store.ThumbnailReselectCandidate) (thumbnailInputs, err
 		return thumbnailInputs{}, err
 	}
 	return inputs, nil
-}
-
-func thumbnailCandidateFromSQL(p sqlcgen.ListThumbnailReselectCandidatesRow) store.ThumbnailReselectCandidate {
-	return store.ThumbnailReselectCandidate{
-		RecordingID:           p.RecordingID,
-		Trashed:               p.Trashed,
-		ProgramDurationMs:     p.ProgramDurationMs,
-		Detected:              p.Detected,
-		Owned:                 p.Owned,
-		CMRanges:              p.CmRanges,
-		UserSpans:             p.UserSpans,
-		OriginalMediaAssetID:  p.OriginalMediaAssetID,
-		OriginalRelPath:       p.OriginalRelPath,
-		EncodedAssets:         p.EncodedAssets,
-		ThumbnailMediaAssetID: p.ThumbnailMediaAssetID,
-		ThumbnailRelPath:      p.ThumbnailRelPath,
-		SeekMs:                p.SeekMs,
-	}
 }
 
 // thumbnailPlanForInputs selects the preferred available input and maps the policy

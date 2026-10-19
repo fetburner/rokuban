@@ -171,7 +171,7 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 `MediaServing` は配信可能な active アセットを返し、対象が無い場合は `ErrNotFound` を返す。`deleting` と `deleted` の原本・encoded は配信対象にしない。
 
-`MediaReconcile` は worker が再計算する候補と、起動時に確認する profile / `rel_path` の証拠を読む。名前空間の検査は原本と encoded だけに適用し、`sites/{site}/` の有効なパスを通し、空の site 成分を拒む。
+`MediaReconcile` は worker がメディア処理に使う入力と encode 計画の比較材料、再計算する候補、起動時に確認する profile / `rel_path` の証拠を読む。名前空間の検査は原本と encoded だけに適用し、`sites/{site}/` の有効なパスを通し、空の site 成分を拒む。
 
 `StorageObservation` は worker の `storage_sync` と孤児・実体無し候補を記録し、API 向けに観測値を読む。孤児判定の既知パス一覧には `media_assets` の状態に関係なく全ての `rel_path` を含め、`sites/{site}/` を含む値をそのまま返す。削除途中のファイルを孤児として別経路へ流さず、サイト接頭辞を落として別パスと誤認しないためである。
 

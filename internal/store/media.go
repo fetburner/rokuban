@@ -94,6 +94,13 @@ type EncodedMeaningEvidence struct {
 	RelPath string
 }
 
+// EncodedAssetObservation はエンコード計画が観測した encoded アセットを表す。
+type EncodedAssetObservation struct {
+	ID      int64
+	RelPath string
+	State   string
+}
+
 // MediaReconcilePage は録画 ID で巡回するメディア reconcile のページ条件を表す。
 type MediaReconcilePage struct {
 	AfterRecordingID int64
@@ -125,8 +132,18 @@ type MediaAssetRelPathViolation struct {
 	RelPath string
 }
 
-// MediaReconcile は media_assets の配信・reconcile と profile 検証の読み取り契約である。
+// MediaReconcile は worker のメディア処理入力、media_assets の reconcile と profile 検証の読み取り契約である。
 type MediaReconcile interface {
+	// GetActiveOriginalMediaAsset はメディア処理の入力に使う active な原本を返す。
+	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
+	// HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
+	HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error)
+	// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を state を問わず返す。
+	GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (EncodedAssetObservation, error)
+	// GetMediaAssetKeepRanges は encoded アセットに凍結された keep 区間を返す。未凍結なら空を返す。
+	GetMediaAssetKeepRanges(ctx context.Context, mediaAssetID int64) ([]chapters.Range, error)
+	// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
+	EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error)
 	// ListMissingEncodeProfiles は未生成 encoded の候補をページ単位で返す。
 	ListMissingEncodeProfiles(ctx context.Context, params MissingEncodeProfilesParams) ([]MissingEncodeProfile, error)
 	// ListEncodedAssetRebuildRequests は満たされていない作り直し要求を返す。

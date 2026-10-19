@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -67,6 +68,33 @@ func TestMediaStoreContract(t *testing.T) {
 				t.Helper()
 				if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, assetID); err != nil {
 					t.Fatalf("setting media asset state to %s: %v", state, err)
+				}
+			},
+			SetMediaAssetKeepRanges: func(t *testing.T, assetID int64, keep []chapters.Range) {
+				t.Helper()
+				param, err := db.KeepRangesParam(keep)
+				if err != nil {
+					t.Fatalf("encoding frozen keep ranges: %v", err)
+				}
+				if err := sqlcgen.New(pool).InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
+					MediaAssetID: assetID,
+					KeepRanges:   param,
+				}); err != nil {
+					t.Fatalf("seeding frozen keep ranges: %v", err)
+				}
+			},
+			SetEncodedAssetRebuildRequest: func(t *testing.T, recordingID int64, profile string, keep []chapters.Range) {
+				t.Helper()
+				param, err := db.KeepRangesParam(keep)
+				if err != nil {
+					t.Fatalf("encoding rebuild request keep ranges: %v", err)
+				}
+				if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+					RecordingID:   recordingID,
+					Profile:       profile,
+					RequestedKeep: param,
+				}); err != nil {
+					t.Fatalf("seeding encoded asset rebuild request: %v", err)
 				}
 			},
 		}
