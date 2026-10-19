@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -165,10 +166,12 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
+	recordings := pgstore.NewRecordings(deps.Pool)
 	riveradapter.Register(workers, &IngestWorker{
 		Enqueuer:      deps.Enqueuer,
 		MirakcClients: deps.MirakcClients,
 		Pool:          deps.Pool,
+		RecordTarget:  recordings,
 		MediaDir:      deps.MediaDir,
 		StallTimeout:  deps.IngestStallTimeout,
 		CMDetect:      deps.CMDetect,

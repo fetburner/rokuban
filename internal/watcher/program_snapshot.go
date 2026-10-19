@@ -2,11 +2,12 @@ package watcher
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/ptr"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // programSnapshot は recordings に保存する番組・サービスの観測値をまとめる。
@@ -55,17 +56,36 @@ func snapshotFromSchedule(schedule mirakc.Schedule, service mirakc.Service) prog
 	}
 }
 
-// withCreateOrGetFailedRecordingParams は番組スナップショットを Params に写す。
-func (s programSnapshot) withCreateOrGetFailedRecordingParams(params sqlcgen.CreateOrGetFailedRecordingParams) sqlcgen.CreateOrGetFailedRecordingParams {
-	params.ServiceName = s.serviceName
-	params.ChannelType = s.channelType
-	params.Channel = s.channel
-	params.Title = s.title
-	params.Description = s.description
-	params.Extended = s.extended
-	params.Genres = s.genres
-	params.IsFree = s.isFree
-	params.ProgramStartAt = s.programStartAt
-	params.ProgramDurationMs = s.programDurationMs
-	return params
+// recordingSnapshot は mirakc の識別値と番組スナップショットを store の契約型に写す。
+func (s programSnapshot) recordingSnapshot(networkID, serviceID, eventID int) store.RecordingSnapshot {
+	return store.RecordingSnapshot{
+		NetworkID: int32(networkID), ServiceID: int32(serviceID), EventID: int32(eventID),
+		ServiceName: s.serviceName, ChannelType: s.channelType, Channel: s.channel,
+		Title: s.title, Description: s.description, Extended: s.extended, Genres: s.genres,
+		IsFree: s.isFree, ProgramStartAt: s.programStartAt, ProgramDurationMs: s.programDurationMs,
+	}
+}
+
+func recordObservation(site string, record mirakc.Record) (store.RecordObservation, error) {
+	var failedReason json.RawMessage
+	if record.Recording.FailedReason != nil {
+		data, err := json.Marshal(record.Recording.FailedReason)
+		if err != nil {
+			return store.RecordObservation{}, fmt.Errorf("marshalling failed reason: %w", err)
+		}
+		failedReason = data
+	}
+	snapshot := snapshotFromRecord(record)
+	// tag は programId しか運ばない（#53）。「自分が予約した record か」は
+	// IsOurs（rokuban のタグ）で判定し、reservation の特定は record 自身が
+	// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
+	return store.RecordObservation{
+		Site: site, RecordID: record.ID, ProgramID: record.Program.ID,
+		Snapshot: snapshot.recordingSnapshot(record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID),
+		Managed:  mirakc.IsOurs(record.Tags), Tags: record.Tags,
+		Status: record.Recording.Status, StartedAt: millisToTimeNonNil(record.Recording.StartTime),
+		EndedAt:     millisToTimePtr(record.Recording.EndTime),
+		ContentPath: contentPathPtr(record.Content.Path), ContentLength: contentLengthPtr(record.Content.Length),
+		FailedReason: failedReason,
+	}, nil
 }

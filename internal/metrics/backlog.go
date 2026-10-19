@@ -5,10 +5,9 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // backlogQueryTimeout は scrape 中の DB クエリの上限。
@@ -24,8 +23,8 @@ const backlogQueryTimeout = 5 * time.Second
 // エッジの録画バッファのサイジングはこの値とディスク残量アラートを対で使う
 // （issue #4 のサイジングコメント）。
 type BacklogCollector struct {
-	pool *pgxpool.Pool
-	site string
+	backlog store.RecordBacklog
+	site    string
 
 	records *prometheus.Desc
 	bytes   *prometheus.Desc
@@ -33,11 +32,11 @@ type BacklogCollector struct {
 }
 
 // NewBacklogCollector は BacklogCollector を生成する。
-func NewBacklogCollector(pool *pgxpool.Pool, site string) *BacklogCollector {
+func NewBacklogCollector(backlog store.RecordBacklog, site string) *BacklogCollector {
 	labels := prometheus.Labels{"site": site}
 	return &BacklogCollector{
-		pool: pool,
-		site: site,
+		backlog: backlog,
+		site:    site,
 		records: prometheus.NewDesc(
 			"rokuban_uningested_records",
 			"Finished mirakc records not yet committed to Rokuban (ingest backlog).",
@@ -71,7 +70,7 @@ func (c *BacklogCollector) Collect(ch chan<- prometheus.Metric) {
 	ctx, cancel := context.WithTimeout(context.Background(), backlogQueryTimeout)
 	defer cancel()
 
-	row, err := sqlcgen.New(c.pool).GetUningestedRecordBacklog(ctx, c.site)
+	row, err := c.backlog.GetUningestedRecordBacklog(ctx, c.site)
 	if err != nil {
 		slog.Error("metrics: querying ingest backlog", "site", c.site, "err", err)
 		c.errors.Inc()

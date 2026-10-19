@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // このファイルは IngestWorker.Work の結果分類を固定する。実行コンテキストの
@@ -91,6 +92,7 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient("http://127.0.0.1:1", nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
@@ -133,6 +135,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 	}
 	jobq.Register(registry, snoozeResultCapturingIngestWorker{worker: w, result: workResult})
 	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
@@ -232,6 +235,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			Pool:          pool,
+			RecordTarget:  pgstore.NewRecordings(pool),
 		}
 		recordingID := insertTestRecording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-err")
@@ -272,6 +276,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			Pool:          pool,
+			RecordTarget:  pgstore.NewRecordings(pool),
 		}
 		recordingID := insertTestRecording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-nil")
@@ -311,6 +316,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			Pool:          pool,
+			RecordTarget:  pgstore.NewRecordings(pool),
 		}
 		recordingID := insertTestRecording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-cause")
@@ -349,6 +355,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		Enqueuer:      &jobq.Deferred{},
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      t.TempDir(),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), worker,

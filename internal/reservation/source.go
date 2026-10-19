@@ -1,15 +1,5 @@
 package reservation
 
-import (
-	"context"
-	"errors"
-	"fmt"
-
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-)
-
 // SourceRule はルール予約から作られた録画の provenance。
 const SourceRule = "rule"
 
@@ -41,20 +31,15 @@ const SourceUnattributed = "unattributed"
 // 矛盾した組になってしまう。かといってユーザーの意図が残っていないものを
 // 'manual' と断定する材料も無いので、'unattributed' にする。
 //
-// internal/watcher の recordings 行を作る 2 経路（createRecording /
-// handleRecordingFailed）から呼ばれる。同じ式を 2 箇所に書き下すと片方だけ
-// 直してもう片方を直し忘れるため、ここに抽出してある。
-func DeriveRecordingSource(ctx context.Context, q *sqlcgen.Queries, site string, programID int64, hasReservation bool) (string, error) {
-	intent, err := q.GetProgramIntent(ctx, sqlcgen.GetProgramIntentParams{Site: site, ProgramID: programID})
-	switch {
-	case err == nil && intent.Action == IntentRecord:
+// DeriveRecordingSource は DB に触れない判定で、store が同じ tx 内で読んだ
+// 意図と予約の有無を受け取る。
+func DeriveRecordingSource(intentAction *string, hasReservation bool) string {
+	if intentAction != nil && *intentAction == IntentRecord {
 		// ユーザーが「録れ」と言った。ルールもマッチしていても変わらない。
-		return SourceManual, nil
-	case err != nil && !errors.Is(err, pgx.ErrNoRows):
-		return "", fmt.Errorf("looking up program intent for program %d: %w", programID, err)
+		return SourceManual
 	}
 	if !hasReservation {
-		return SourceUnattributed, nil
+		return SourceUnattributed
 	}
-	return SourceRule, nil
+	return SourceRule
 }

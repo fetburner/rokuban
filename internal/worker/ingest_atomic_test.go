@@ -50,12 +50,14 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wA := &IngestWorker{
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
 	wB := &IngestWorker{
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
@@ -499,6 +501,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
 				Pool:          pool,
+				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}
