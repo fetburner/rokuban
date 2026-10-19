@@ -141,24 +141,24 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 ### 予約の意図・上書き
 
-意図とオプション上書きは独立した store 契約が確定する。予約の表示値は読み取り時に導出する。
+利用者の録画意図（record / skip）とオプションの上書きは、ruler が作る予約とは別に、この契約が commit する。予約そのものはこの契約が書かない。
 
-更新と番組スナップショットは同じトランザクションで確定する。`PutIntent` は EPG 射影か既存の凍結スナップショットを必要とし、どちらも無ければ `ErrNotFound` を返す。
+意図・上書きの書き込みは、番組スナップショットの確保と同じトランザクションで確定する。`PutIntent` は EPG 射影か既存の凍結スナップショットを必要とし、どちらも無ければ `ErrNotFound` を返す。`PatchOverrides` も同じ条件で `ErrNotFound` を返す。
 
-同じ番組への上書き PATCH は直列化する。後続の PATCH は先行更新後の値を読んでからマージする。
+同じ番組の書き込みは、射影にある番組でも凍結スナップショットだけの番組でも直列化する。`PatchOverrides` は、store が直列化した後の既存の上書きと予約の base にパッチをマージし、その実効値を検証する。違反は型付きエラーで返る。直列化の後に評価するのは、先に読むと別フィールドの同時 PATCH が互いの値を消すからである。マージ結果が空なら上書きの行を削除する。
 
-マージ後の実効オプションを検証する。結果が空なら上書き行を削除する。
-
-予約の詳細・一覧・重なりに必要な結合結果は store が返す。レスポンスの `source` / `state` と実効オプションは api が導出する。
+予約の詳細・一覧・重なりに必要な結合結果は store が返す。`source` / `state` と実効オプションは、読み取り時に api が導出する。
 
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.Reservations`
 - 射影・凍結スナップショット・欠損の意図書き込み: `TestReservationsContract/intent_snapshots_projection_and_rejects_missing_program`
-- PATCH の並行更新とマージ: `TestReservationsContract`
-- 読み取り前の PATCH 直列化: `TestPatchOverridesLocksSnapshotBeforeReadingExistingOverrides`
+- 欠損番組への PATCH: `TestReservationsContract/patch_rejects_a_missing_program`
+- 射影にある番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/projected_program`
+- 凍結スナップショットだけの番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/frozen_snapshot`
 - 空の上書き行の削除: `TestReservationsContract/empty_overrides_delete_their_row`
 - 一覧・詳細・重なりの読み取り: `TestReservationsContract/reservation_reads_return_details_and_overlaps`
+- マージ関数: `internal/reservation.MergeOverrides` の単体テスト
 
 </details>
 
