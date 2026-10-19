@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // ingestProgressRow は recording_ingest_progress の 1 行（無ければ ok=false）。
@@ -181,6 +182,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
 		ProgressInterval: time.Hour,
 		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
 	}
 
 	recordingID := insertTestRecording(t, pool)
@@ -313,6 +315,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
 		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
 	}
 
 	recordingID = insertTestRecording(t, pool)
@@ -403,6 +406,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Millisecond,
 		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
 	}
 
 	recordingID := insertTestRecording(t, pool)
@@ -480,6 +484,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
 		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")

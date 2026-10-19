@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -98,11 +99,14 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 					t.Fatalf("scanning event recording: %v", err)
 				}
 				row.Superseded = supersededAt != nil
-				var events []json.RawMessage
+				var events []db.QualityEvent
 				if err := json.Unmarshal(qualityEvents, &events); err != nil {
 					t.Fatalf("decoding quality events: %v", err)
 				}
 				row.QualityEventCount = len(events)
+				for _, event := range events {
+					row.QualityEventTimes = append(row.QualityEventTimes, event.At)
+				}
 				got = append(got, row)
 			}
 			if err := rows.Err(); err != nil {
@@ -110,10 +114,23 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			}
 			return got
 		}
+		setObservedAt := func(t *testing.T, site, recordID string, observedAt time.Time) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(),
+				`UPDATE record_sync SET observed_at = $3 WHERE site = $1 AND record_id = $2`, site, recordID, observedAt); err != nil {
+				t.Fatalf("setting record_sync observed_at: %v", err)
+			}
+		}
+		setAfterAcquired := func(t *testing.T, hook func()) {
+			t.Helper()
+			afterRecordAcquired = hook
+			t.Cleanup(func() { afterRecordAcquired = nil })
+		}
 		return contracttest.RecordObservationFixture{
 			Store: NewRecordings(pool), NewObservation: newObservation,
 			SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,
 			InspectRecordSync: inspectRecordSync, InspectRecordings: inspectRecordings,
+			SetRecordSyncObservedAt: setObservedAt, SetAfterRecordAcquired: setAfterAcquired,
 		}
 	})
 }

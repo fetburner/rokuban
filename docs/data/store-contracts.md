@@ -111,19 +111,29 @@ api が使うのは論理削除・復元・即時削除要求をまとめた `Re
 
 ### 録画の観測
 
-録画の観測は、永続状態を一貫させてから後続処理へ進む。
+watcher は mirakc の record を観測するたびに、record の同期行・録画・品質イベントを 1 つのメソッドで原子的に書く。ingest の投入は、その commit の後に送るヒントにする。
 
-watcher の録画観測は、`record_sync`、`recordings`、品質イベントを一つの commit で反映する。`(site, record_id)` の観測は直列化し、record 同期行の既存キーを使う。録画の由来は、その tx で読んだ予約と意図から導出する。契約テストは既存の record 同期行を置いた状態で競合させる。
+契約は利用側ごとに 3 つに割る。観測を書く `RecordObservations`、ingest worker が転送先を読む `IngestTarget`、metrics が未取り込みの滞留を読む `RecordBacklog` である。実装は録画のドメインの `pgstore.Recordings` が全部持つ。
 
-録画の title を作成・更新する操作は、分類ルールの当たりも保つ。PostgreSQL の title trigger が `label_rule_hits` を更新するため、これは録画ドメインの契約である。
+同じ `(site, record_id)` の観測は直列化される。直列化しないと、並行した観測が同じ record に録画を作ろうとし、後発が一意違反で失敗する。録画の由来は、同じ tx で読んだ予約と意図から導出する。
 
-ingest 投入は録画観測の commit 後に行うヒントである。投入に失敗しても、mirakc の record は ingest の DB commit 後まで残り、5 分ごとの record sweep が全 record を再処理して ingest を再投入する。
+録画の title を書く操作は、分類ルールの当たりも保つ。これは録画ドメインの約束であり、PostgreSQL 実装ではトリガーが満たす。
+
+品質イベントの時刻は DB の時計で付ける。呼び出し側は時刻を渡さない。
+
+ingest をヒントにできるのは、取りこぼしを sweep が拾い直すからである。mirakc の record は ingest の DB commit 後にしか消えず、定期の record sweep は録画中・完了の record を再処理するたびに ingest を投入し直す。
 
 <details><summary>根拠</summary>
 
-- 契約: `internal/store.RecordObservations`
+- 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 観測と再投入: `TestRecordObservationsContract/same record observations serialize`、`TestProcessRecord_Idempotent`
+- 同じ record の直列化: `TestRecordObservationsContract/same record observations serialize`
+- 契約テストは既存の同期行を置いて競合させる。行が無いと INSERT の一意制約だけで直列化されてしまい、ロックの有無を検出できないからである。確保の直後に同期点を差し込み、後発が先発と同時に先へ進めるかを見る
+- 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
+- 失敗の観測の収束と成功による置き換え: `TestRecordObservationsContract` の failed 系のケース
+- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
+- ingest の投入の判定: `TestRecordObservationsContract/ingest hint follows the recording status`
+- 品質イベントの時刻: `TestRecordObservationsContract/quality events carry a readable time`
 - title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
 - commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
 

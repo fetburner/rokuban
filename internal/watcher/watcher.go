@@ -226,8 +226,10 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		return nil
 	}
 
-	// 失敗 schedule は mirakc 全体から返る。予約の無い番組は従来どおり無視し、
-	// サービス詳細の問い合わせも行わない。store は書き込み tx 内で予約を再確認する。
+	// schedules API には mirakc 全体の schedule が返る。Rokuban が観測すべき
+	// スケジュールかは、recording.failed の SSE 経路と同じく reservation の存在で
+	// 境界を引く。古い mirakc が tags を返さない場合も回収できる。
+	// 予約の無い番組はサービス詳細の問い合わせも行わない。store は書き込み tx 内で予約を再確認する。
 	hasReservation, err := w.records.HasReservation(ctx, w.site, schedule.Program.ID)
 	if err != nil {
 		return fmt.Errorf("checking reservation for failed schedule: %w", err)
@@ -292,7 +294,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 		return fmt.Errorf("marshalling failed reason: %w", err)
 	}
 	snapshot := snapshotFromSchedule(*schedule, *service)
-	recordingID, err := w.records.RecordFailedRecording(ctx, store.FailedRecordingObservation{
+	recordingID, recorded, err := w.records.RecordFailedRecording(ctx, store.FailedRecordingObservation{
 		Site: w.site, ProgramID: data.ProgramID,
 		Snapshot: snapshot.recordingSnapshot(schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID),
 		Reason:   reasonJSON,
@@ -300,7 +302,8 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	if err != nil {
 		return fmt.Errorf("recording failed event: %w", err)
 	}
-	if recordingID == 0 {
+	if !recorded {
+		// 予約が照会の後に消えていた。
 		return nil
 	}
 	w.notify(ctx, webhook.Event{

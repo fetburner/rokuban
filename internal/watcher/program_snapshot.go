@@ -76,6 +76,9 @@ func recordObservation(site string, record mirakc.Record) (store.RecordObservati
 		failedReason = data
 	}
 	snapshot := snapshotFromRecord(record)
+	// tag は programId しか運ばない（#53）。「自分が予約した record か」は
+	// IsOurs（rokuban のタグ）で判定し、reservation の特定は record 自身が
+	// 持つ Program.ID（tag のパースを経由しない、常に正確な値）で行う。
 	return store.RecordObservation{
 		Site: site, RecordID: record.ID, ProgramID: record.Program.ID,
 		Snapshot: snapshot.recordingSnapshot(record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID),
