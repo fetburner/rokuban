@@ -119,6 +119,7 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	durationMs := int64(90_001)
 	ruleID := f.SeedRule(t, true, false)
 	f.SeedDemand(t, "site-a", 7001, &ruleID, "GR", "27", start, durationMs)
+	f.SeedDemand(t, "site-a", 7003, nil, "GR", "27", start.Add(2*time.Hour), 60_000)
 	f.SeedDemand(t, "site-b", 7002, nil, "BS", "BS1", start.Add(time.Hour), 60_000)
 	f.SeedTuner(t, "site-a", store.TunerInput{Index: 0, Name: "site-a tuner", Types: []string{"GR"}, IsAvailable: false}, start)
 	f.SeedTuner(t, "site-b", store.TunerInput{Index: 0, Name: "site-b tuner", Types: []string{"BS"}, IsFault: true}, start)
@@ -127,8 +128,8 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	if err != nil {
 		t.Fatalf("ReadSite: %v", err)
 	}
-	if len(got.Demands) != 1 {
-		t.Fatalf("ReadSite demands = %+v, want only site-a demand", got.Demands)
+	if len(got.Demands) != 2 {
+		t.Fatalf("ReadSite demands = %+v, want only the two site-a demands", got.Demands)
 	}
 	if demand := got.Demands[0]; demand.Site != "site-a" || demand.ChannelType != "GR" || demand.Channel != "27" ||
 		!demand.StartAt.Equal(start) || !demand.EndAt.Equal(start.Add(time.Duration(durationMs)*time.Millisecond)) {
@@ -136,6 +137,9 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	}
 	if got.Demands[0].RuleID == nil || *got.Demands[0].RuleID != ruleID {
 		t.Errorf("ReadSite rule id = %v, want %d", got.Demands[0].RuleID, ruleID)
+	}
+	if got.Demands[1].RuleID != nil {
+		t.Errorf("ReadSite unruled rule id = %v, want nil", got.Demands[1].RuleID)
 	}
 	if len(got.Tuners) != 1 || got.Tuners[0].Site != "site-a" || got.Tuners[0].IsAvailable {
 		t.Errorf("ReadSite tuners = %+v, want the unavailable site-a row retained", got.Tuners)
@@ -145,14 +149,14 @@ func runCapacityReads(t *testing.T, newStore NewTunerStore) {
 	if err != nil {
 		t.Fatalf("ReadAllSites: %v", err)
 	}
-	if len(all.Demands) != 2 || len(all.Tuners) != 2 {
+	if len(all.Demands) != 3 || len(all.Tuners) != 2 {
 		t.Fatalf("ReadAllSites = %+v, want both site inputs", all)
 	}
 	if all.Demands[0].RuleID == nil || *all.Demands[0].RuleID != ruleID {
 		t.Errorf("ReadAllSites site-a rule id = %v, want %d", all.Demands[0].RuleID, ruleID)
 	}
-	if all.Demands[1].RuleID != nil {
-		t.Errorf("ReadAllSites site-b rule id = %v, want nil for an unruled reservation", all.Demands[1].RuleID)
+	if all.Demands[1].RuleID != nil || all.Demands[2].RuleID != nil {
+		t.Errorf("ReadAllSites unruled rule ids = (%v, %v), want nil", all.Demands[1].RuleID, all.Demands[2].RuleID)
 	}
 }
 
