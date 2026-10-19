@@ -77,7 +77,7 @@ SELECT recording_id, status FROM record_sync WHERE site = $1 AND record_id = $2`
 			got.Found = true
 			return got
 		}
-		inspectRecordings := func(t *testing.T, observation store.RecordObservation) []contracttest.RecordingState {
+		inspectRecordings := func(t *testing.T, observation store.RecordObservation) []contracttest.ObservedRecording {
 			t.Helper()
 			rows, err := pool.Query(context.Background(), `
 SELECT id, status, superseded_at, quality_events
@@ -89,9 +89,9 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 				t.Fatalf("querying event recordings: %v", err)
 			}
 			defer rows.Close()
-			var got []contracttest.RecordingState
+			var got []contracttest.ObservedRecording
 			for rows.Next() {
-				var row contracttest.RecordingState
+				var row contracttest.ObservedRecording
 				var supersededAt *time.Time
 				var qualityEvents json.RawMessage
 				if err := rows.Scan(&row.ID, &row.Status, &supersededAt, &qualityEvents); err != nil {
@@ -117,5 +117,3 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 		}
 	})
 }
-
-var _ store.RecordObservations = (*Recordings)(nil)

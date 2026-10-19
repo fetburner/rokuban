@@ -9,8 +9,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RecordingState は契約テストが検査する録画行の状態を表す。
-type RecordingState struct {
+// ObservedRecording は契約テストが検査する録画行の状態を表す。
+type ObservedRecording struct {
 	ID                int64
 	Status            string
 	Superseded        bool
@@ -31,7 +31,7 @@ type RecordObservationFixture struct {
 	SeedRecordSync    func(t *testing.T, observation store.RecordObservation)
 	SeedReservation   func(t *testing.T, observation store.RecordObservation)
 	InspectRecordSync func(t *testing.T, site, recordID string) RecordSyncState
-	InspectRecordings func(t *testing.T, observation store.RecordObservation) []RecordingState
+	InspectRecordings func(t *testing.T, observation store.RecordObservation) []ObservedRecording
 }
 
 // NewRecordObservationStore は実在する契約実装と DB フィクスチャを作る。
