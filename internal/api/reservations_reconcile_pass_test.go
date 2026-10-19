@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -196,7 +196,7 @@ func TestDeleteProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 	insertProgramFixture(t, pool, ctx, programID, 50000, 7000)
 	reservations := pgstore.NewReservations(pool)
 	priority := 3
-	if err := reservations.PatchOverrides(ctx, "default", programID, store.OverridesPatch{Priority: &priority}); err != nil {
+	if err := reservations.PatchOverrides(ctx, "default", programID, reservation.OverridesPatch{Priority: &priority}); err != nil {
 		t.Fatalf("seeding program overrides: %v", err)
 	}
 

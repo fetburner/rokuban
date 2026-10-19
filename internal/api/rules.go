@@ -251,8 +251,8 @@ func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string
 	return nil
 }
 
-// enqueueRulerPassHint schedules a ruler pass after a reservation input has committed.
-// The durable user input is authoritative, so queue failure is logged for periodic recovery.
+// enqueueRulerPassHint は、予約の入力（意図・上書き）の commit 後に ruler_pass をヒントとして投入する。
+// 永続化した利用者の入力が正であり、投入に失敗してもログだけにする（定期の ruler パスが拾う）。
 func (h *Server) enqueueRulerPassHint(ctx context.Context, site string) {
 	if h.enqueuer == nil {
 		return

@@ -11,7 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// ReservationProgramOptions describes persistent state needed by a reservation contract case.
+// ReservationProgramOptions は、予約の契約テストの 1 ケースが必要とする永続状態を表す。
 type ReservationProgramOptions struct {
 	Projection  bool
 	Snapshot    bool
@@ -20,26 +20,36 @@ type ReservationProgramOptions struct {
 	StartAt     time.Time
 }
 
-// NewReservationProgram seeds a program and returns its site and stable program ID.
+// NewReservationProgram は番組を仕込み、その site と安定した番組 ID を返す。
 type NewReservationProgram func(t *testing.T, options ReservationProgramOptions) (string, int64)
 
-// ReservationsFixture contains a store and the implementation-specific state seeder.
+// ReservationsFixture は予約契約の実装と、実装側が与える状態の仕込み・同期のフックをまとめる。
 type ReservationsFixture struct {
 	Store      store.Reservations
 	NewProgram NewReservationProgram
+	// HoldProgram は、その番組への PutIntent / PatchOverrides の直列化点を外から握り、
+	// release で放す。握っている間、同じ番組への書き込みは直列化点で待つ。
+	// テストが失敗で終わっても放されるよう、実装は t.Cleanup でも release する。
+	HoldProgram func(t *testing.T, site string, programID int64) (release func())
+	// WaitBlocked は、n 本の書き込みが HoldProgram の握る直列化点で待ち始めるまで待つ。
+	// n 本に達しなければ t を失敗させる。
+	WaitBlocked func(t *testing.T, n int)
 }
 
-// NewReservationsStore creates the store and fixture for a reservation contract case.
+// NewReservationsStore は予約契約の実装とフィクスチャを作る。
 type NewReservationsStore func(t *testing.T) ReservationsFixture
 
-// RunReservationsContract checks the reservation store contract against a real implementation.
-func RunReservationsContract(t *testing.T, newStore NewReservationsStore) {
+// RunReservations は予約の契約を実装に対して実行する。
+func RunReservations(t *testing.T, newStore NewReservationsStore) {
 	t.Helper()
 	t.Run("intent snapshots projection and rejects missing program", func(t *testing.T) {
 		runIntentProjection(t, newStore)
 	})
 	t.Run("empty overrides delete their row", func(t *testing.T) {
 		runEmptyOverrides(t, newStore)
+	})
+	t.Run("patch rejects a missing program", func(t *testing.T) {
+		runPatchMissingProgram(t, newStore)
 	})
 	t.Run("concurrent field patches preserve both values", func(t *testing.T) {
 		runConcurrentOverrides(t, newStore)
@@ -95,8 +105,8 @@ func runEmptyOverrides(t *testing.T, newStore NewReservationsStore) {
 	site, programID := f.NewProgram(t, ReservationProgramOptions{
 		Projection: true, Snapshot: true, Reservation: true, Overrides: json.RawMessage(`{"priority":7}`),
 	})
-	if err := f.Store.PatchOverrides(ctx, site, programID, store.OverridesPatch{
-		Reset: []store.OverrideField{store.OverridePriority},
+	if err := f.Store.PatchOverrides(ctx, site, programID, reservation.OverridesPatch{
+		Reset: []reservation.OverrideField{reservation.OverridePriority},
 	}); err != nil {
 		t.Fatalf("PatchOverrides(reset last field) = %v, want success", err)
 	}
@@ -109,39 +119,64 @@ func runEmptyOverrides(t *testing.T, newStore NewReservationsStore) {
 	}
 }
 
-func runConcurrentOverrides(t *testing.T, newStore NewReservationsStore) {
-	for range 20 {
-		runConcurrentOverridesRound(t, newStore)
+func runPatchMissingProgram(t *testing.T, newStore NewReservationsStore) {
+	f := newStore(t)
+	site, programID := f.NewProgram(t, ReservationProgramOptions{})
+	priority := 1
+	if err := f.Store.PatchOverrides(context.Background(), site, programID, reservation.OverridesPatch{Priority: &priority}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("PatchOverrides(missing program) = %v, want ErrNotFound", err)
 	}
 }
 
-func runConcurrentOverridesRound(t *testing.T, newStore NewReservationsStore) {
+// runConcurrentOverrides は、既存の上書きがある番組に別々のフィールドを同時に PATCH しても、
+// 両方の値と既存の値が残ることを確かめる。直列化点を握った状態で 2 本を待たせ、放してから
+// 結果を見るので、既存の上書きを直列化の前に読む実装は決定的に値を失う。
+// 射影にある番組と、射影から外れて凍結スナップショットだけが残る番組の両方で行う。
+func runConcurrentOverrides(t *testing.T, newStore NewReservationsStore) {
+	for _, c := range []struct {
+		name       string
+		projection bool
+	}{
+		{"projected program", true},
+		{"frozen snapshot", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runConcurrentOverridesCase(t, newStore, c.projection)
+		})
+	}
+}
+
+func runConcurrentOverridesCase(t *testing.T, newStore NewReservationsStore, projection bool) {
 	f := newStore(t)
 	ctx := context.Background()
 	site, programID := f.NewProgram(t, ReservationProgramOptions{
-		Projection: true, Snapshot: true, Reservation: true, Overrides: json.RawMessage(`{"priority":7}`),
+		Projection: projection, Snapshot: true, Reservation: true, Overrides: json.RawMessage(`{"priority":7}`),
 	})
 	contentPath := "recordings/concurrent.ts"
 	filenameTemplate := "{{.Title}}"
-	patches := []store.OverridesPatch{
+	patches := []reservation.OverridesPatch{
 		{ContentPath: &contentPath},
 		{FilenameTemplate: &filenameTemplate},
 	}
-	start := make(chan struct{})
+
+	release := f.HoldProgram(t, site, programID)
 	results := make(chan error, len(patches))
 	for _, patch := range patches {
-		patch := patch
-		go func() {
-			<-start
-			results <- f.Store.PatchOverrides(ctx, site, programID, patch)
-		}()
+		go func() { results <- f.Store.PatchOverrides(ctx, site, programID, patch) }()
 	}
-	close(start)
+	f.WaitBlocked(t, len(patches))
+	release()
 	for range patches {
-		if err := <-results; err != nil {
-			t.Fatalf("concurrent PatchOverrides() = %v, want success", err)
+		select {
+		case err := <-results:
+			if err != nil {
+				t.Fatalf("concurrent PatchOverrides() = %v, want success", err)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("concurrent PatchOverrides() did not finish after the serialization point was released")
 		}
 	}
+
 	row, err := f.Store.GetReservation(ctx, site, programID)
 	if err != nil {
 		t.Fatalf("GetReservation after concurrent patches: %v", err)

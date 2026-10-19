@@ -62,6 +62,25 @@ func (q *Queries) GetProgramSnapshot(ctx context.Context, arg GetProgramSnapshot
 	return i, err
 }
 
+const lockProgramSnapshot = `-- name: LockProgramSnapshot :one
+SELECT true AS locked FROM program_snapshots WHERE site = $1 AND program_id = $2 FOR UPDATE
+`
+
+type LockProgramSnapshotParams struct {
+	Site      string
+	ProgramID int64
+}
+
+// 同じ番組の意図・上書きの書き込みを直列化する行ロック。行が無ければ pgx.ErrNoRows。
+// 上書きの PATCH は、このロックを取ってから既存の上書きを読む（先に読むと、別フィールドの
+// 同時 PATCH が互いの値を消す）。
+func (q *Queries) LockProgramSnapshot(ctx context.Context, arg LockProgramSnapshotParams) (bool, error) {
+	row := q.db.QueryRow(ctx, lockProgramSnapshot, arg.Site, arg.ProgramID)
+	var locked bool
+	err := row.Scan(&locked)
+	return locked, err
+}
+
 const upsertProgramSnapshot = `-- name: UpsertProgramSnapshot :exec
 
 INSERT INTO program_snapshots (
