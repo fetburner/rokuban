@@ -73,8 +73,7 @@ type Server struct {
 // （すべて無効）は config の既定と一致する。
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
-// chapterStore / playbackStore / recordingTrash はそれぞれの永続化契約。
-// tunerReader と capacityStore はチューナー一覧または容量 API を呼ぶテストで必要になる。
+// chapterStore / playbackStore / recordingTrash / tunerReader / capacityStore はそれぞれの永続化契約。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
 func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
