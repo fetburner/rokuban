@@ -202,9 +202,9 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 
 ### メディア削除
 
-削除の判断と状態遷移は DB の側に集め、worker はファイルの削除だけを持つ。
+削除の候補選びと状態遷移は store に集め、worker はファイル操作だけを持つ。
 
-削除の候補選びと状態遷移は `MediaDelete` に集め、worker はファイル操作だけを持つ。worker は候補を読み、unlink の後に遷移を確定する。削除可否の述語（ごみ箱・until_encoded・外した encoded）は名前のまま実装の中に閉じ、契約はメソッド名と doc コメントで意味だけを示す。
+worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定する。削除可否の述語（ごみ箱・until_encoded・外した encoded）は名前のまま実装の中に閉じ、契約はメソッド名と doc コメントで意味だけを示す。
 
 遷移の時点で削除条件を再確認するのは 2 つのメソッドだけである。`MarkUntilEncodedDeleting` は、同じ録画への削除方針と作り直し要求の書き込みと直列化してから再確認する。候補を列挙した後に作り直し要求が commit されうるからである。`RevertToActive` も適用時に再確認し、`deleted` の行は戻さない。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
