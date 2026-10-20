@@ -55,6 +55,7 @@ func RunRecordingQuery(t *testing.T, newStore NewRecordingQueryStore) {
 	t.Run("list applies every filter axis", func(t *testing.T) { runRecordingQueryFilterAxes(t, newStore) })
 	t.Run("keyword target and LIKE characters", func(t *testing.T) { runRecordingQueryKeyword(t, newStore) })
 	t.Run("series and trash scope", func(t *testing.T) { runRecordingQuerySeriesAndTrash(t, newStore) })
+	t.Run("seriesOf without a series is empty", func(t *testing.T) { runRecordingQuerySeriesOfWithoutSeries(t, newStore) })
 	t.Run("keyset order and cursor", func(t *testing.T) { runRecordingQueryCursor(t, newStore) })
 	t.Run("continue watching uses playback and watched facts", func(t *testing.T) { runRecordingQueryContinueWatching(t, newStore) })
 	t.Run("shelves share filtered population with list", func(t *testing.T) { runRecordingQueryShelves(t, newStore) })
@@ -213,6 +214,26 @@ func runRecordingQuerySeriesAndTrash(t *testing.T, newStore NewRecordingQuerySto
 		t.Fatalf("List(live) error = %v", err)
 	}
 	assertRecordingIDs(t, rows, []int64{superseded, differentSeries, second, first})
+}
+
+// 起点の実効シリーズが NULL（自動キーを導出できず、どのルールも当たらない録画）なら
+// seriesOf は 0 件。NULL 同士を等しいと見なすと、棚の無い録画を全部集めたハブが返る。
+// 存在しない id も 0 件。
+func runRecordingQuerySeriesOfWithoutSeries(t *testing.T, newStore NewRecordingQueryStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	nullSeries := f.NewRecording(t, queryRecording("【特集】", base, RecordingQueryRecording{}))
+	f.NewRecording(t, queryRecording("【再】", base.Add(time.Hour), RecordingQueryRecording{}))
+	f.NewRecording(t, queryRecording("アニメ　作品X　第1話", base.Add(2*time.Hour), RecordingQueryRecording{}))
+
+	for name, id := range map[string]int64{"no series": nullSeries, "unknown id": 999999} {
+		rows, err := f.Store.List(ctx, store.RecordingFilter{SeriesOf: &id, SortDesc: true, Limit: 20})
+		if err != nil {
+			t.Fatalf("List(seriesOf, %s) error = %v", name, err)
+		}
+		assertRecordingIDs(t, rows, []int64{})
+	}
 }
 
 func runRecordingQueryCursor(t *testing.T, newStore NewRecordingQueryStore) {

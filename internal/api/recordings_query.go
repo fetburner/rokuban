@@ -6,9 +6,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// recordingsFilter は HTTP パラメータ検証後に store へ渡す条件。
-type recordingsFilter = store.RecordingFilter
-
 // defaultRecordingsLimit / maxRecordingsLimit は GET /api/recordings の
 // limit の既定値・上限（openapi.yaml のパラメータ定義と一致させる）。
 const (
@@ -26,8 +23,8 @@ const (
 
 // recordingsFilterFromParams は ListRecordingsParams（OpenAPI の生成型）を
 // store の型付きフィルタへ変換する。不正な入力はエラーメッセージを返す。
-func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, string) {
-	f := recordingsFilter{
+func recordingsFilterFromParams(p ListRecordingsParams) (store.RecordingFilter, string) {
+	f := store.RecordingFilter{
 		Trash:    p.Trash != nil && *p.Trash,
 		SortDesc: true,
 		Limit:    defaultRecordingsLimit,
@@ -40,7 +37,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.Order != nil {
 		if !p.Order.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid order %q (want asc or desc)", *p.Order)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid order %q (want asc or desc)", *p.Order)
 		}
 		f.SortDesc = *p.Order != Asc
 	}
@@ -49,14 +46,14 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.QTarget != nil {
 		if !p.QTarget.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid qTarget %q (want title or titleDescription)", *p.QTarget)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid qTarget %q (want title or titleDescription)", *p.QTarget)
 		}
 		f.QTarget = string(*p.QTarget)
 	}
 	if p.Genre != nil {
 		for _, g := range *p.Genre {
 			if g < genreLv1Min || g > genreLv1Max {
-				return recordingsFilter{}, fmt.Sprintf("genre must be between %d and %d, got %d", genreLv1Min, genreLv1Max, g)
+				return store.RecordingFilter{}, fmt.Sprintf("genre must be between %d and %d, got %d", genreLv1Min, genreLv1Max, g)
 			}
 		}
 		f.Genres = int16SliceFromInts(*p.Genre)
@@ -64,7 +61,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	if p.ChannelType != nil {
 		for _, ct := range *p.ChannelType {
 			if !ct.Valid() {
-				return recordingsFilter{}, fmt.Sprintf("invalid channelType %q (want GR, BS, CS or SKY)", ct)
+				return store.RecordingFilter{}, fmt.Sprintf("invalid channelType %q (want GR, BS, CS or SKY)", ct)
 			}
 		}
 		f.ChannelTypes = channelTypeStrings(*p.ChannelType)
@@ -75,7 +72,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	if p.Service != nil {
 		networkIDs, serviceIDs, msg := splitServiceIDs(*p.Service)
 		if msg != "" {
-			return recordingsFilter{}, msg
+			return store.RecordingFilter{}, msg
 		}
 		for i := range networkIDs {
 			f.Services = append(f.Services, store.RecordingServiceRef{
@@ -85,16 +82,16 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.Status != nil {
 		if !p.Status.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
 		}
 		f.Status = string(*p.Status)
 	}
 	if p.EncodeState != nil && !p.EncodeState.Valid() {
-		return recordingsFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
+		return store.RecordingFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
 	}
 	if p.Source != nil {
 		if !p.Source.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid source %q (want rule, manual or unattributed)", *p.Source)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid source %q (want rule, manual or unattributed)", *p.Source)
 		}
 		f.Source = string(*p.Source)
 	}
@@ -103,10 +100,10 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 
 	if (f.Before == nil) != (f.BeforeID == nil) {
-		return recordingsFilter{}, "before and beforeId must be given together"
+		return store.RecordingFilter{}, "before and beforeId must be given together"
 	}
 	if f.Limit < 1 || f.Limit > maxRecordingsLimit {
-		return recordingsFilter{}, fmt.Sprintf("limit must be between 1 and %d", maxRecordingsLimit)
+		return store.RecordingFilter{}, fmt.Sprintf("limit must be between 1 and %d", maxRecordingsLimit)
 	}
 	return f, ""
 }

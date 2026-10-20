@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -109,7 +110,7 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 
 	shapes := []shelfShape{
 		{name: "(a) production buildRecordingShelvesQuery", run: func() (map[string]shelfResult, error) {
-			return queryProductionShelves(ctx, pool, recordingsFilter{})
+			return queryProductionShelves(ctx, pool, store.RecordingFilter{})
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
 			return queryShelves(ctx, pool, previousShelfQuery)
@@ -870,8 +871,8 @@ var reservationSeriesShapes = []struct {
 var (
 	benchPeriodFrom        = time.Date(2020, 1, 15, 0, 0, 0, 0, time.UTC)
 	benchPeriodTo          = time.Date(2020, 2, 1, 0, 0, 0, 0, time.UTC)
-	benchGenrePeriodFilter = recordingsFilter{Genres: []int16{7}, From: &benchPeriodFrom, To: &benchPeriodTo}
-	benchKeywordFilter     = recordingsFilter{Q: "シリーズ001"}
+	benchGenrePeriodFilter = store.RecordingFilter{Genres: []int16{7}, From: &benchPeriodFrom, To: &benchPeriodTo}
+	benchKeywordFilter     = store.RecordingFilter{Q: "シリーズ001"}
 )
 
 // benchGenrePeriodPredicate / benchKeywordPredicate は上の条件を、測る SQL とは別に書いた述語である。
@@ -882,7 +883,7 @@ const (
 )
 
 // queryProductionShelves は本番の棚クエリを、ハンドラと同じ組み立てと実行モードで実行する。
-func queryProductionShelves(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) (map[string]shelfResult, error) {
+func queryProductionShelves(ctx context.Context, pool *pgxpool.Pool, f store.RecordingFilter) (map[string]shelfResult, error) {
 	rows, err := pgstore.NewRecordings(pool).Shelves(ctx, f)
 	if err != nil {
 		return nil, err
@@ -956,7 +957,7 @@ ORDER BY recording_count DESC, l.value ASC NULLS LAST
 `
 
 // staticShelfArgs は staticFilteredShelfQuery の引数を作る。未指定の条件は NULL を渡す。
-func staticShelfArgs(f recordingsFilter) []any {
+func staticShelfArgs(f store.RecordingFilter) []any {
 	args := make([]any, 9)
 	if f.Q != "" {
 		args[0] = f.Q

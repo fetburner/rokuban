@@ -15,7 +15,7 @@ func (h *Server) ListContinueWatching(ctx context.Context, _ ListContinueWatchin
 	if h.recordingQuery == nil {
 		return nil, fmt.Errorf("recording query is required")
 	}
-	rows, err := h.recordingQuery.List(ctx, recordingsFilter{
+	rows, err := h.recordingQuery.List(ctx, store.RecordingFilter{
 		SortDesc:         true,
 		ContinueWatching: true,
 		Limit:            continueWatchingLimit,

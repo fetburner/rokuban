@@ -280,7 +280,7 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 ##### プリペアド文キャッシュと再計画
 
-録画一覧のクエリは、ドライバの既定のプリペアド文キャッシュを使わず、毎回再計画する実行方式を指定する。既定のままだと、6 回目以降に一般計画へ切り替わって極端に遅くなることがあり、動的 WHERE だけではこの劣化経路が残るためである。
+録画一覧と棚のクエリは、ドライバの既定のプリペアド文キャッシュを使わず、毎回再計画する実行方式を指定する。既定のままだと、6 回目以降に一般計画へ切り替わって極端に遅くなることがあり、動的 WHERE だけではこの劣化経路が残るためである。
 
 ドライバは SQL テキストごとに名前付きのプリペアド文をキャッシュし、PostgreSQL PREPARE の規則により、6 回目以降に custom plan から generic plan へ切り替わることがある。generic plan は bind 値を見ず、trgm 式の索引が選ばれない可能性がある。実測では 6 回目の実行が 0.7ms から 290ms になった。
 
@@ -288,7 +288,7 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 <details><summary>根拠</summary>
 
-- この経路だけ unnamed 再計画を指定する箇所: `Recordings.List`、`pgx.QueryExecModeExec`
+- unnamed 再計画を指定する箇所（一覧と棚の両方）: `Recordings.List` / `Recordings.Shelves`、`pgx.QueryExecModeExec`
 - named statement の既定: `QueryExecModeCacheStatement`
 - 汎用述語による劣化: `($n IS NULL OR ...)`
 

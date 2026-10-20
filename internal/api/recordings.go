@@ -18,9 +18,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// recordingListFields は store の素の録画行を API 導出に渡す別名。
-type recordingListFields = store.RecordingQueryRow
-
 func recordingQueryRowsToAPI(rows []store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) ([]Recording, error) {
 	result := make([]Recording, 0, len(rows))
 	for _, row := range rows {
@@ -89,7 +86,7 @@ func utcTimePtr(t *time.Time) *time.Time {
 //
 // 「リトライ中」を pending と区別する値は返さない（openapi.yaml の
 // IngestProgress.state の説明参照）。
-func ingestProgressFromFields(r recordingListFields) IngestProgress {
+func ingestProgressFromFields(r store.RecordingQueryRow) IngestProgress {
 	switch {
 	case r.HasOriginalAsset:
 		return IngestProgress{State: Committed}
@@ -192,7 +189,7 @@ type encodeAttemptRow struct {
 // 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
 // 試行行の map を回して組み立てると順序が非決定になるので、EncodeProfiles を
 // 回す実装であることをテストが押さえている）。
-func encodeJobStatusesFromFields(r recordingListFields, done []string, profiles profileSets) ([]EncodeJobStatus, error) {
+func encodeJobStatusesFromFields(r store.RecordingQueryRow, done []string, profiles profileSets) ([]EncodeJobStatus, error) {
 	if len(r.EncodeProfiles) == 0 {
 		return nil, nil
 	}
@@ -258,7 +255,7 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, profiles 
 // 所有済みの行だけが対象（呼び出し側が ChaptersOwned を見る）。所有の行が無ければ
 // 有効なタイムラインは自動層だが、cut 版は所有を前提にしか作られないので、
 // そのときの比較相手は存在しない。
-func currentKeepRanges(r recordingListFields) ([]chapters.Range, error) {
+func currentKeepRanges(r store.RecordingQueryRow) ([]chapters.Range, error) {
 	var spans []chapters.Span
 	if err := json.Unmarshal(r.ChapterSpans, &spans); err != nil {
 		return nil, err
@@ -271,7 +268,7 @@ func currentKeepRanges(r recordingListFields) ([]chapters.Range, error) {
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
-func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profiles profileSets) (Recording, error) {
+func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) (Recording, error) {
 	rec := Recording{
 		Id:           r.ID,
 		Site:         r.Site,
@@ -414,7 +411,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	return rec, nil
 }
 
-func cmDetectionFromListFields(r recordingListFields) (CMDetection, error) {
+func cmDetectionFromListFields(r store.RecordingQueryRow) (CMDetection, error) {
 	state := CMDetectionStateDisabled
 	if r.CMDetect {
 		state = CMDetectionStateDetecting
@@ -861,7 +858,7 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if err != nil {
 		return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
 	}
-	keep, err := currentKeepRanges(recordingListFields{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
+	keep, err := currentKeepRanges(store.RecordingQueryRow{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
 	if err != nil {
 		return nil, fmt.Errorf("deriving current chapter timeline for recording %d: %w", req.Id, err)
 	}

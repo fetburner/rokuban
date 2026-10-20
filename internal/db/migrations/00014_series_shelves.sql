@@ -40,9 +40,9 @@ $$;
 -- +goose StatementEnd
 
 -- like_escape は LIKE の特殊文字（\ % _）を文字どおりに照合するための前置。
--- pgstore の keywordClause と分類ルールは同じエスケープ・正規化規則を使う。
--- ruler・EPG 検索・録画一覧・分類ルールでキーワードの当たり方を揃える。
--- **トリガーと全件再評価のジョブは Go を通らない**ので、DB 側でもエスケープする。
+-- pgstore の keywordClause と同じ規則で、4 経路（ruler・EPG 検索・
+-- 録画一覧・分類ルール）が同じ関数を通る。**トリガーと全件再評価のジョブは Go を
+-- 通らない**ので、分類ルールの当たりは SQL 側でエスケープできることが前提になる。
 --
 -- +goose StatementBegin
 CREATE FUNCTION public.like_escape(s text) RETURNS text

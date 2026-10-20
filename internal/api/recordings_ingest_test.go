@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -269,17 +270,17 @@ func TestIngestProgressFromFields(t *testing.T) {
 
 	for _, tc := range []struct {
 		name      string
-		fields    recordingListFields
+		fields    store.RecordingQueryRow
 		wantState IngestProgressState
 	}{
 		{
 			name:      "原本行がある",
-			fields:    recordingListFields{HasOriginalAsset: true, HasIngestableRecord: true},
+			fields:    store.RecordingQueryRow{HasOriginalAsset: true, HasIngestableRecord: true},
 			wantState: "committed",
 		},
 		{
 			name: "原本行と進捗行が同時にある（取り残された進捗行）",
-			fields: recordingListFields{
+			fields: store.RecordingQueryRow{
 				HasOriginalAsset:   true,
 				IngestWrittenBytes: &written,
 				IngestObservedAt:   &observed,
@@ -288,7 +289,7 @@ func TestIngestProgressFromFields(t *testing.T) {
 		},
 		{
 			name: "進捗行だけ",
-			fields: recordingListFields{
+			fields: store.RecordingQueryRow{
 				HasIngestableRecord: true,
 				IngestWrittenBytes:  &written,
 				IngestObservedAt:    &observed,
@@ -301,7 +302,7 @@ func TestIngestProgressFromFields(t *testing.T) {
 			// ので行が残りうる。残骸を transferring と読むと、二度と取り込まれない
 			// 録画が恒久的に「取り込み中（停滞）」を名乗る。
 			name: "取り消した record に進捗行が残っている",
-			fields: recordingListFields{
+			fields: store.RecordingQueryRow{
 				HasAbnormallyEndedRecord: true,
 				IngestWrittenBytes:       &written,
 				IngestObservedAt:         &observed,
@@ -310,7 +311,7 @@ func TestIngestProgressFromFields(t *testing.T) {
 		},
 		{
 			name: "failed の record に進捗行が残っている",
-			fields: recordingListFields{
+			fields: store.RecordingQueryRow{
 				HasAbnormallyEndedRecord: true,
 				IngestWrittenBytes:       &written,
 				IngestObservedAt:         &observed,
@@ -321,7 +322,7 @@ func TestIngestProgressFromFields(t *testing.T) {
 			// 原本行があるならそちらが優先する（コミット済みの録画を取り消した
 			// 場合に「取り込み済み」を失わない）。
 			name: "取り消した record でも原本行があれば committed",
-			fields: recordingListFields{
+			fields: store.RecordingQueryRow{
 				HasOriginalAsset:         true,
 				HasAbnormallyEndedRecord: true,
 				IngestWrittenBytes:       &written,
@@ -331,12 +332,12 @@ func TestIngestProgressFromFields(t *testing.T) {
 		},
 		{
 			name:      "ingest が来るはずの record 観測だけ",
-			fields:    recordingListFields{HasIngestableRecord: true},
+			fields:    store.RecordingQueryRow{HasIngestableRecord: true},
 			wantState: "pending",
 		},
 		{
 			name:      "何も無い",
-			fields:    recordingListFields{},
+			fields:    store.RecordingQueryRow{},
 			wantState: "unknown",
 		},
 	} {
