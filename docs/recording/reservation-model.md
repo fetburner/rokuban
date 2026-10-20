@@ -115,7 +115,14 @@ encodeProfiles と keepOriginal は、ingest が原本をコミットするト�
 
 skip は PATCH では扱わない（`action` 列が担う）。取消は `PUT /api/sites/{site}/programs/{programId}/intent {action: skip}` で行う（§4.4「取消」参照）。
 
-マージは、Go 側で `reservation.Options` の型付きフィールドとして行う。SQL で `overrides || $1::jsonb` や `overrides - $1::text[]` とやらないのは、下記「jsonb を許す条件」のためである。同時 PATCH の心配は要らない（Rokuban は構造的に単一世帯用アプリで認証機構を持たない。[overview.md](../overview.md) §認証）。そのため、`program_snapshots` 行（PATCH の前段で必ず upsert する。FK の前提）を UPSERT の行ロックで直列化する。宛先は `(site, programId)` なので、`reservations` 行の存在に依存しない。
+マージは、Go 側で `reservation.Options` の型付きフィールドとして行う。SQL で `overrides || $1::jsonb` や `overrides - $1::text[]` とやらないのは、下記「jsonb を許す条件」のためである。同じ番組の PATCH は `program_snapshots` の行を先にロックして直列化し、既存の上書きはロックを取った後に読む。先に読むと、別フィールドへの同時 PATCH が互いの値を消す。ロックは、射影にある番組にも、射影から外れて凍結スナップショットだけが残る番組にも取る。宛先は `(site, programId)` なので、`reservations` 行の存在に依存しない。
+
+<details><summary>根拠</summary>
+
+- 射影にある番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/projected_program`
+- 凍結スナップショットだけの番組の同時 PATCH: `TestReservationsContract/concurrent_field_patches_preserve_both_values/frozen_snapshot`
+
+</details>
 
 #### overrides は `program_intents` とは別の表に置く
 

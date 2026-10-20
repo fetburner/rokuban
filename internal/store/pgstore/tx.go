@@ -44,6 +44,20 @@ func lockRecording(ctx context.Context, q *sqlcgen.Queries, recordingID int64) e
 	return nil
 }
 
+// lockProgramSnapshot は番組のスナップショットの行をロックする。同じ番組の意図・上書きの書き込みを
+// 直列化する点で、既存の上書きを読むより先に呼ぶ。行が無ければ ErrNotFound を返す。
+// 射影にある番組では upsert の後に、凍結スナップショットだけの番組では存在確認の代わりに呼ぶ。
+// upsert（ON CONFLICT DO UPDATE）の暗黙の行ロックには頼らない。
+func lockProgramSnapshot(ctx context.Context, q *sqlcgen.Queries, site string, programID int64) error {
+	if _, err := q.LockProgramSnapshot(ctx, sqlcgen.LockProgramSnapshotParams{Site: site, ProgramID: programID}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("program %d at site %s: %w", programID, site, store.ErrNotFound)
+		}
+		return fmt.Errorf("locking program snapshot %d at site %s: %w", programID, site, err)
+	}
+	return nil
+}
+
 // mapDatabaseError は一意違反と排他制約違反を store.ErrConflict に写す。
 func mapDatabaseError(err error) error {
 	var pgErr *pgconn.PgError

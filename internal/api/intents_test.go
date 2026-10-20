@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -26,7 +27,7 @@ func TestPutProgramIntent_SkipDoesNotTouchOverrides(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

@@ -42,6 +42,9 @@ type RouterConfig struct {
 	// RecordingTrashStore は論理削除、復元、即時削除要求の永続化契約。
 	RecordingTrashStore store.RecordingTrash
 
+	// ReservationStore はユーザー予約入力と予約読み取りの永続化契約。
+	ReservationStore store.Reservations
+
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
 	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
 	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
@@ -159,7 +162,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
-		cfg.TunerReader, cfg.CapacityStore,
+		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore,
 		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})

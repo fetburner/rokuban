@@ -83,6 +83,12 @@ WHERE program_snapshots.title        IS DISTINCT FROM EXCLUDED.title
 -- name: GetProgramSnapshot :one
 SELECT * FROM program_snapshots WHERE site = $1 AND program_id = $2;
 
+-- name: LockProgramSnapshot :one
+-- 同じ番組の意図・上書きの書き込みを直列化する行ロック。行が無ければ pgx.ErrNoRows。
+-- 上書きの PATCH は、このロックを取ってから既存の上書きを読む（先に読むと、別フィールドの
+-- 同時 PATCH が互いの値を消す）。
+SELECT true AS locked FROM program_snapshots WHERE site = $1 AND program_id = $2 FOR UPDATE;
+
 -- name: DeleteEndedProgramSnapshots :execrows
 -- **番組終了後の GC はこの 1 本だけになる。** FK の ON DELETE CASCADE で
 -- reservations / program_intents / program_overrides が一緒に落ちる
