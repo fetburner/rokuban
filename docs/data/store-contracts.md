@@ -544,7 +544,7 @@ catalog export と rescue は全保護対象を一つの契約で扱う。別々
 
 rescue は asset の相対パスをロックしてからファイルを確認し、そのロックを `Restore` の完了まで保持する。確認時に無かった asset ID を渡し、store はその行を履歴ごと `deleted` として復元する。欠損時刻は DB の時計で記録する。
 
-restore は分類ルールの再評価と同じロックを最初の書き込みより前に取り、末尾の全件再評価まで保持する。ストレージ走査は `MediaPublish.RegisterInPlace` を呼び、ファイルの再確認から録画・asset の commit まで相対パスをロックする。
+restore は分類ルールの再評価と同じロックを最初の書き込みより前に取り、末尾の全件再評価まで保持する。ストレージ走査は `internal/inplace.Register` にファイル検証とパスロックを任せ、`MediaPublish.RegisterInPlace` で録画・asset を登録する。ファイルの再確認から commit まで相対パスのロックを保持する。
 
 <details><summary>根拠</summary>
 
