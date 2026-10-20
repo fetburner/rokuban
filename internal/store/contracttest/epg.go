@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strconv"
 	"testing"
 	"time"
@@ -216,6 +217,31 @@ func runEPGKeywordSearch(t *testing.T, newFixture NewEPGFixture) {
 	if len(caseSensitiveMiss) != 0 {
 		t.Fatalf("lower-case case-sensitive matches = %v, want none", programMatchIDs(caseSensitiveMiss))
 	}
+
+	// 正規表現の構文は実装依存だが、先頭一致と英字の大文字小文字の指定は揃える。
+	// 正規表現はキーワードと違い全角を正規化しないので、全角の 1101 は当たらない。
+	searchRegex := func(value string, caseSensitive bool) []int64 {
+		t.Helper()
+		matches, err := f.Search.SearchPrograms(ctx, rulequery.Conditions{
+			Sites: []string{"default"},
+			TextMatches: []rulequery.TextMatch{{
+				Target: "name", Mode: "regex", Value: value, CaseSensitive: caseSensitive,
+			}},
+		})
+		if err != nil {
+			t.Fatalf("searching regex %q (caseSensitive=%t): %v", value, caseSensitive, err)
+		}
+		return programMatchIDs(matches)
+	}
+	if got := searchRegex("^nhk", false); !reflect.DeepEqual(got, []int64{1102}) {
+		t.Fatalf("case-insensitive regex ^nhk matches = %v, want [1102]", got)
+	}
+	if got := searchRegex("^NHK", true); !reflect.DeepEqual(got, []int64{1102}) {
+		t.Fatalf("case-sensitive regex ^NHK matches = %v, want [1102]", got)
+	}
+	if got := searchRegex("^nhk", true); len(got) != 0 {
+		t.Fatalf("case-sensitive regex ^nhk matches = %v, want none", got)
+	}
 }
 
 func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
@@ -242,6 +268,14 @@ func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
 		epgProgram("default", 2008, 1, "needle", "special", start, 1_800_000, 7),
 		epgProgram("default", 2009, 1, "needle", "special", start, 3_000_000, 7),
 		epgProgram("other", 2010, 1, "needle", "special", start, 1_800_000, 7),
+		// 時刻帯の外（同じ月曜の 11:30）。曜日だけで判定すると当たってしまう。
+		epgProgram("default", 2011, 1, "needle", "special", start.Add(2*time.Hour), 1_800_000, 7),
+		// 最短未満の番組長。DurationMinMs を無視すると当たってしまう。
+		epgProgram("default", 2012, 1, "needle", "special", start, 500_000, 7),
+		// 日跨ぎの窓（月曜 23:00〜翌 1:00）用。月曜 23:30 と月曜 0:30 は窓の内、月曜 12:00 は外。
+		epgProgram("default", 2013, 1, "overnight", "", start.Add(14*time.Hour), 1_800_000, 7),
+		epgProgram("default", 2014, 1, "overnight", "", start.Add(-9*time.Hour), 1_800_000, 7),
+		epgProgram("default", 2015, 1, "overnight", "", start.Add(2*time.Hour+30*time.Minute), 1_800_000, 7),
 	}
 	programs[7].IsFree = false
 	if err := f.Sync.UpsertPrograms(ctx, programs); err != nil {
@@ -270,6 +304,19 @@ func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
 	}
 	if !reflect.DeepEqual(ids, []int64{2001}) {
 		t.Fatalf("matching program IDs = %v, want [2001] after applying every child condition", ids)
+	}
+	overnightID := f.CreateRule(t, EPGRuleOptions{
+		Name:  "overnight window",
+		Times: []rulequery.TimeWindow{{Weekdays: 1, StartSec: 23 * 3600, EndSec: 1 * 3600}},
+		Sites: []string{"default"},
+	})
+	overnight, err := f.Search.MatchProgramIDsForRule(ctx, "default", overnightID)
+	if err != nil {
+		t.Fatalf("matching overnight rule: %v", err)
+	}
+	slices.Sort(overnight)
+	if !reflect.DeepEqual(overnight, []int64{2013, 2014}) {
+		t.Fatalf("overnight window program IDs = %v, want [2013 2014] (Mon 23:30 and Mon 00:30, not Mon 12:00)", overnight)
 	}
 	outOfScope, err := f.Search.MatchProgramIDsForRule(ctx, "other", ruleID)
 	if err != nil {

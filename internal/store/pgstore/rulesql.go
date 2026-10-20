@@ -12,7 +12,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/rulequery"
-	"github.com/fetburner/rokuban/internal/searchsql"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -22,6 +21,8 @@ type compiledRuleQuery struct {
 	needsServiceJoin bool
 }
 
+// compileRuleQuery は条件を epg_programs（エイリアス p）に対する WHERE 句に落とす。
+// 空の Sites はフェイルセーフとして rulequery.Validate が拒む（理由はそこに書いた）。
 func compileRuleQuery(conditions rulequery.Conditions) (compiledRuleQuery, error) {
 	if err := rulequery.Validate(conditions); err != nil {
 		return compiledRuleQuery{}, err
@@ -58,6 +59,7 @@ func compileRuleQuery(conditions rulequery.Conditions) (compiledRuleQuery, error
 		and("p.start_at < " + arg(*conditions.PeriodEndAt))
 	}
 	if len(conditions.Genres) > 0 {
+		// genre_lv1 は smallint[]。重なりがあればマッチ。
 		and("p.genre_lv1 && " + arg(conditions.Genres) + "::smallint[]")
 	}
 	if len(conditions.Services) > 0 {
@@ -80,17 +82,20 @@ func compileRuleQuery(conditions rulequery.Conditions) (compiledRuleQuery, error
 		for _, window := range conditions.Times {
 			parts = append(parts, "("+compileTimeWindow(window, arg)+")")
 		}
+		// 複数時間帯は OR（いずれかの窓に入ればよい）
 		and("(" + strings.Join(parts, " OR ") + ")")
 	}
+	// b は常に非空（先頭の p.site 述語が必ず and() を通るため）。
 	return compiledRuleQuery{where: b.String(), args: args, needsServiceJoin: needsServiceJoin}, nil
 }
 
 func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
+	// 正規表現はユーザーが書いたパターンの意味を壊さないよう、列は生のまま。
 	column := textTargetColumn(match.Target)
 	var clause string
 	switch match.Mode {
 	case "keyword":
-		clause = KeywordClause(column, match.Value, match.CaseSensitive, arg)
+		clause = rulequery.KeywordClause(column, match.Value, match.CaseSensitive, arg)
 	case "regex":
 		if match.CaseSensitive {
 			clause = column + " ~ " + arg(match.Value)
@@ -104,11 +109,6 @@ func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
 	return clause
 }
 
-// KeywordClause は共有の PostgreSQL キーワード検索述語を組み立てる。
-func KeywordClause(column, value string, caseSensitive bool, arg func(any) string) string {
-	return searchsql.KeywordClause(column, value, caseSensitive, arg)
-}
-
 func textTargetColumn(target string) string {
 	switch target {
 	case "name":
@@ -116,28 +116,37 @@ func textTargetColumn(target string) string {
 	case "description":
 		return "p.description"
 	case "extended":
+		// jsonb をテキスト化して検索する。
 		return "coalesce(p.extended::text, '')"
 	default:
 		return ""
 	}
 }
 
+// startAtJST は番組開始時刻を JST の壁時計（timestamp）に落とす式。
+// 曜日と時刻の両方で使うため 1 箇所で定義する（同じ式を複数箇所に書き下すと
+// 連結ミスが混入し、生成 SQL を実行しないテストではすり抜ける）。
 const startAtJST = "(p.start_at AT TIME ZONE 'Asia/Tokyo')"
 
 func compileTimeWindow(window rulequery.TimeWindow, arg func(any) string) string {
+	// Postgres isodow: 1=月 … 7=日。我々のビットは bit0=月 … bit6=日 なので常に isodow-1。
 	dowExpr := "(1 << (EXTRACT(ISODOW FROM " + startAtJST + ")::int - 1))"
 	weekdayClause := "(" + dowExpr + " & " + arg(window.Weekdays) + ") <> 0"
+	// 時刻は JST の壁時計での「その日の 0 時からの秒」。
 	secExpr := "EXTRACT(EPOCH FROM " + startAtJST + "::time)::int"
 	var timeClause string
 	if window.EndSec >= window.StartSec {
 		timeClause = secExpr + " >= " + arg(window.StartSec) + " AND " + secExpr + " < " + arg(window.EndSec)
 	} else {
+		// 翌日跨ぎ: start..86400 or 0..end
 		timeClause = "(" + secExpr + " >= " + arg(window.StartSec) + " OR " + secExpr + " < " + arg(window.EndSec) + ")"
 	}
 	return weekdayClause + " AND " + timeClause
 }
 
-// SearchPrograms は条件に一致する番組を表示用の射影で返す。
+// SearchPrograms は条件にマッチした番組の検索結果行を返す。conditions.Sites が絞り込み対象を
+// 指定している場合はそのサイトだけを対象とする。API 検索（internal/api/search.go）が使う。
+// site は番組の identity の一部なので、同一放送が複数 site でマッチしても行を畳まない。
 func (s *EPG) SearchPrograms(ctx context.Context, conditions rulequery.Conditions) ([]store.ProgramMatch, error) {
 	compiled, err := compileRuleQuery(conditions)
 	if err != nil {
@@ -183,7 +192,15 @@ FROM epg_programs p
 	return matches, nil
 }
 
-// MatchProgramIDsForRule は ruleID のすべての条件を 1 site の番組射影に適用する。
+// MatchProgramIDsForRule は ruleID の条件で、site 1 つ分のマッチする program_id を返す。
+// ruler がサイトごとに、rule × site × 定期パスで呼ぶ（1 パスは site のループで
+// 全ルールを評価する。docs/recording/ruler.md「サイトの扱い」）。呼び出し頻度が
+// 高いホットパスなので、SearchPrograms が返す表示用の 6 列（name は trgm 索引
+// 付きの text）は引かず、programID だけの狭い射影で問い合わせる。
+//
+// rule_sites（conditions.Sites）が非空かつ site を含まなければ、そのルールは site の対象外
+// なのでクエリを投げずに空を返す。対象内なら site 1 件に絞って compileRuleQuery の
+// WHERE 句だけを共有し、SELECT リストは別に持つ。
 func (s *EPG) MatchProgramIDsForRule(ctx context.Context, site string, ruleID int64) ([]int64, error) {
 	conditions, err := loadRuleConditions(ctx, sqlcgen.New(s.pool), ruleID)
 	if err != nil {
@@ -224,12 +241,21 @@ func (s *EPG) MatchProgramIDsForRule(ctx context.Context, site string, ruleID in
 	return ids, nil
 }
 
+// invalidPatternError は Postgres の構文エラーを store.ErrInvalidPattern として返す。
+// Error は Postgres の文面だけを返す。API は不正パターンの 400 本文にこの文面をそのまま
+// 載せるので、errors.Join の 2 行形式にしない。
+type invalidPatternError struct{ err error }
+
+func (e invalidPatternError) Error() string        { return e.err.Error() }
+func (e invalidPatternError) Unwrap() error        { return e.err }
+func (e invalidPatternError) Is(target error) bool { return target == store.ErrInvalidPattern }
+
 // ValidateRegex は正規表現を独立した Postgres 文で検証する。
 func (s *EPG) ValidateRegex(ctx context.Context, pattern string) error {
 	if err := sqlcgen.New(s.pool).ValidateRegexPattern(ctx, pattern); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "2201B" {
-			return errors.Join(store.ErrInvalidPattern, err)
+			return invalidPatternError{err}
 		}
 		return fmt.Errorf("validating POSIX regular expression: %w", err)
 	}

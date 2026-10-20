@@ -129,7 +129,7 @@ func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) (s
 		}
 		if err := h.programSearch.ValidateRegex(ctx, m.Value); err != nil {
 			if errors.Is(err, store.ErrInvalidPattern) {
-				return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported)", m.Value), nil
+				return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", m.Value, err), nil
 			}
 			return "", fmt.Errorf("validating search regex %q: %w", m.Value, err)
 		}

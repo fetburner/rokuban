@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	// epgBatchSize は EPG store に一度に渡す行数。全量をまとめて渡さない。
+	// epgBatchSize は EPG store に一度に渡す行数。全量で数万〜十万行になるため
+	// 分割してメモリと 1 バッチあたりの所要を抑える。
 	epgBatchSize = 1000
 )
 

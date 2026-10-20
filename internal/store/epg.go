@@ -112,7 +112,10 @@ type EPGProgramListItem struct {
 	RecordingID  *int64
 }
 
-// ProgramMatch は検索またはシリーズから返る番組の表示用射影である。
+// ProgramMatch は検索またはシリーズから返る 1 件のマッチ（どの site のどの番組か）である。
+// API 検索は表示に使う番組情報も同じクエリから返すため、検索結果の行として必要な
+// 最小限の射影を持つ。site は番組の identity の一部なので、同一放送が複数 site で
+// マッチしても行を畳まない。
 type ProgramMatch struct {
 	Site       string
 	ProgramID  int64
@@ -161,6 +164,9 @@ type ProgramSearch interface {
 	// SearchPrograms は conditions に一致した番組を返す。
 	SearchPrograms(ctx context.Context, conditions rulequery.Conditions) ([]ProgramMatch, error)
 	// MatchProgramIDsForRule は 1 つの site で ruleID に一致する programID を返す。
+	// ruler が rule × site × 定期パスで呼ぶホットパスなので、表示用の列は引かず
+	// programID だけを返す。rule_sites が非空で site を含まなければ、そのルールは
+	// site の対象外なので問い合わせずに空を返す。
 	MatchProgramIDsForRule(ctx context.Context, site string, ruleID int64) ([]int64, error)
 	// ValidateRegex はこの実装が受け付ける正規表現として pattern を検証する。
 	ValidateRegex(ctx context.Context, pattern string) error

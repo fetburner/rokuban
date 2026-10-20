@@ -169,23 +169,6 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 方言ごとのクエリで書けば足りるので、発行側に interface を作る利益がない。
 
-### EPG 同期・検索
-
-EPG 同期の各段階は、それぞれ独立した store メソッドにする。同期は現在も複数段階の commit で進むため、サービス・番組の upsert、sweep、刈り込みを一つの tx にまとめない。大きな番組 upsert を長い tx に包むと commit の境界と実行時の挙動が変わる。
-
-正規表現の構文は store の実装に任せる。DB ごとに受け付ける構文が異なるため、構文まで共通化すると同じ条件を実装できない。契約で揃えるのはキーワードの全角・半角正規化と、大文字小文字を区別する指定である。不正なパターンは `ErrInvalidPattern` に写す。
-
-<details><summary>根拠</summary>
-
-- 同期の契約: `internal/store.EPGSync`
-- 番組表・詳細の契約: `internal/store.EPGReader`
-- 検索とルール評価の契約: `internal/store.ProgramSearch`
-- 番組表の条件検索テスト: `RunEPG` の `keyword search normalizes width and respects case sensitivity`
-- ルールの子表検索テスト: `RunEPG` の `rule matching applies every child-table condition`
-- 正規表現検証テスト: `RunEPG` の `regex validation distinguishes syntax errors`
-
-</details>
-
 ### ロック後の判断
 
 ロック後の状態で再評価する判断を純粋な関数として契約の引数に渡すのは、判断が呼び出し側の状態（設定など）に依存するときだけである。
@@ -229,6 +212,31 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 - 意味のある行: 不変条件 10
 - 行の寿命: 不変条件 12
 - ライブラリの公開契約: 不変条件 14
+
+</details>
+
+### EPG 同期の tx の境界
+
+EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。
+
+段階は、サービスの upsert、番組の upsert、sweep の印、古い行の削除、放送済みの刈り込みである。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
+
+空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。store は渡された集合を印に写すだけにする。
+
+### 正規表現の構文
+
+正規表現の構文は実装に任せ、契約で揃えない。正規表現エンジンごとに、受け付ける構文が違う。構文まで契約に含めると、別のエンジンを使う 2 つ目の実装が同じ契約を満たせなくなる。
+
+契約で揃えるのは、キーワードの全角・半角の正規化と、大文字小文字を区別するかどうかの指定である。不正なパターンは `ErrInvalidPattern` に写す。
+
+<details><summary>根拠</summary>
+
+- 同期の契約: `internal/store.EPGSync`
+- 番組表・詳細の契約: `internal/store.EPGReader`
+- 検索とルール評価の契約: `internal/store.ProgramSearch`
+- 番組検索のキーワードのテスト: `RunEPG` の `keyword search normalizes width and respects case sensitivity`
+- ルールの子表検索テスト: `RunEPG` の `rule matching applies every child-table condition`
+- 正規表現検証テスト: `RunEPG` の `regex validation distinguishes syntax errors`
 
 </details>
 

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,6 +300,37 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// TestSearchPrograms_InvalidRegexKeepsPostgresDetail は不正な正規表現の 400 本文に
+// Postgres のエラー詳細が付くことを確認する（store 契約の移設前と同じ本文）。
+func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"default"}}))
+	defer srv.Close()
+
+	raw, err := json.Marshal(map[string]any{"textMatches": []map[string]any{{"target": "name", "mode": "regex", "value": "(unclosed"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/programs/search", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	const prefix = `invalid regex "(unclosed" (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): ERROR: invalid regular expression`
+	if !strings.HasPrefix(body.Error, prefix) || !strings.HasSuffix(body.Error, "(SQLSTATE 2201B)") || strings.Contains(body.Error, "\n") {
+		t.Errorf("error body = %q, want prefix %q ending with (SQLSTATE 2201B) on one line", body.Error, prefix)
 	}
 }
 
