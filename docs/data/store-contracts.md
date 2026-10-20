@@ -253,8 +253,8 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 <details><summary>根拠</summary>
 
-- API の CRUD と値キー（`LabelRules` の契約）: `internal/store.LabelRules`
-- 全件の再評価と直列化（`LabelRuleReevaluation` の契約）: `internal/store.LabelRuleReevaluation`
+- API の CRUD と値キー: `internal/store.LabelRules`
+- 全件の再評価と直列化: `internal/store.LabelRuleReevaluation`
 - PostgreSQL 実装: `internal/store/pgstore.LabelRules`
 - 録画の書き込みによる当たりの維持: `recordings_label_rule_sync_insert` / `recordings_label_rule_sync_update` トリガー
 - 値キーの生成列: `label_rules.value_key`
