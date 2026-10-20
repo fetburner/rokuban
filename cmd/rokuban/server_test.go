@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -544,8 +545,8 @@ func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
 		t.Fatalf("releasing the lock: %v", err)
 	}
 	cancel()
-	if err := <-errCh; err != nil {
-		t.Errorf("api shutdown after releasing the lock: %v", err)
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Errorf("api shutdown after releasing the lock = %v, want context.Canceled", err)
 	}
 }
 
