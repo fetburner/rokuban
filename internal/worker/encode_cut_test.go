@@ -919,6 +919,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"}
 	w.Enqueuer = newRecordingEnqueuer()
@@ -983,6 +984,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		CutProfiles:   map[string]struct{}{"cut": {}},
 		LiveEnabled:   true,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}
 	w.Enqueuer = newRecordingEnqueuer()

@@ -47,7 +47,7 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 <details><summary>根拠</summary>
 
 - DB の時計で比べる前例（GC）: `internal/ruler.runGC` の `observed_at < now() - horizon` と `postgresInterval`
-- DB の時計で比べる前例（孤児候補）: `internal/worker.failOrphanCMLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
+- DB の時計で比べる前例（孤児候補）: `internal/store/pgstore.Analysis.FailOrphanLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
 - 例外: `internal/worker/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
 
 </details>
@@ -226,7 +226,7 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 メソッドの doc コメントには、何と何を直列化するかを書き、機構（`FOR UPDATE`・advisory lock）は書かない。機構を書くと、別の実装が同じ保証を別の手段で満たせなくなる。
 
-録画の行ロックは pgstore の共通ヘルパ `lockRecording` だけで取り、録画の行に触れる最初の文にする。ロックを取る前に読んだ古い値で判断すると、書き手どうしが互いの書き込みを観測できなくなるからである。
+録画の行ロックは pgstore の共通ヘルパ（`lockRecordingState`、またはその上で消去済み・ごみ箱を弾く `lockRecording`）だけで取り、録画の行に触れる最初の文にする。ロックを取る前に読んだ古い値で判断すると、書き手どうしが互いの書き込みを観測できなくなるからである。
 
 それより先に取るロック（局の advisory lock など）があれば、その順序をメソッドの doc コメントに書く。書き手ごとに取る順序が違うと、デッドロックしうるからである。
 
@@ -242,7 +242,7 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 - ドメイン契約: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
-- 録画単位の直列化: `LockRecording` / `internal/worker/cm_detect.go`
+- 録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
 - 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
 - 範囲制約: `recording_chapter_spans` の排他制約
 - 導出値と事実: 不変条件 9
@@ -302,6 +302,24 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 - 契約テスト: `internal/store/contracttest.RunCMStation`
 - 局単位の advisory lock: `LockCMStation`
 - 候補結果の版照合: `MarkCMLogoCandidateReady` / `MarkCMLogoCandidateFailure`
+
+</details>
+
+### CM 検出（試行と結果）
+
+結果の保存は、保存の時点で現在の試行・desired・局ロゴの版を確かめ直す。ロゴの版を照合するのは、解析をロゴありで始めた場合だけである。
+
+結果の保存は、同じ局のロゴ・枠の操作と、同じ録画のチャプター編集の両方と直列化される。ロックは局、録画、試行の順に取る。録画単位の直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
+
+再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
+
+<details><summary>根拠</summary>
+
+- ドメイン契約: `internal/store.CMDetection`
+- PostgreSQL 実装: `internal/store/pgstore.Analysis`
+- 契約テスト: `internal/store/contracttest.RunCMDetection`
+- チャプター編集との録画単位の直列化: `lockRecordingState`
+- レベル駆動の回復: 不変条件 5
 
 </details>
 

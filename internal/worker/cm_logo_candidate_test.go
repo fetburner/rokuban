@@ -328,7 +328,7 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := failOrphanCMLogoCandidates(ctx, pool, grace); err != nil {
+	if err := pgstore.NewAnalysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
 		t.Fatal(err)
 	}
 	for serviceID, want := range map[int32][2]string{
@@ -365,7 +365,7 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 			t.Fatal(err)
 		}
 	}
-	if err := failOrphanCMLogoCandidates(ctx, pool, grace); err != nil {
+	if err := pgstore.NewAnalysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
 		t.Fatal(err)
 	}
 	for serviceID, want := range map[int32][2]string{1024: {"failed", "stopped"}, 1025: {"running", ""}} {
@@ -393,7 +393,8 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	hintRecording := seedCMRecording(t, pool, t.TempDir(), 951)
 	setRecordingDuration(hintRecording)
-	if err := EnqueueCMDetectionIfNeeded(ctx, pool, enqueuer, hintRecording); err != nil {
+	analysis := pgstore.NewAnalysis(pool)
+	if err := EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration := func(recordingID int64) {
@@ -412,7 +413,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	reconcileRecording := seedCMRecording(t, pool, t.TempDir(), 952)
 	setRecordingDuration(reconcileRecording)
-	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}), jobs.CMDetectReconcileArgs{}); err != nil {
+	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
 	assertDuration(reconcileRecording)
@@ -470,7 +471,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
 	}
 
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +509,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	count := func() int {
 		return len(enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind()))
 	}
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, Pool: pool}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}

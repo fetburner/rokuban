@@ -358,6 +358,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      t.TempDir(),
 	}
+	worker.CMDetectionStore = pgstore.NewAnalysis(pool)
 	if err := runWorkerViaJobQFake(context.Background(), worker,
 		IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
 		t.Fatalf("Work() = %v, want best-effort enqueue failures to be ignored", err)

@@ -184,6 +184,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-progress")

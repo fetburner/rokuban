@@ -230,7 +230,8 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true, Enqueuer: enqueuer}))
+	analysisStore := pgstore.NewAnalysis(pool)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: analysisStore, CMDetectionStore: analysisStore, CMDetectEnabled: true, Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)

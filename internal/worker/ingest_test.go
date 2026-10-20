@@ -173,6 +173,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-001")
@@ -317,6 +318,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "site-a", 20240102)
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
@@ -503,6 +505,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-partial")
@@ -613,6 +616,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-follow")
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-follow"}); err != nil {
@@ -809,6 +813,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-catchup")
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-catchup"}); err != nil {
@@ -1011,6 +1016,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-notready")
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-notready"}); err != nil {
@@ -1199,6 +1205,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
 	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: "rec-unknown"}); err != nil {
@@ -1563,6 +1570,7 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 	}
+	worker.CMDetectionStore = pgstore.NewAnalysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	firstErr := runWorkerViaJobQFake(context.Background(), worker, job)
@@ -1658,6 +1666,7 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 		MediaDir:      run.mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	run.worker.CMDetectionStore = pgstore.NewAnalysis(run.pool)
 	originalLogger := slog.Default()
 	run.logOutput = &bytes.Buffer{}
 	slog.SetDefault(slog.New(slog.NewTextHandler(run.logOutput, nil)))
@@ -1850,6 +1859,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				MediaDir:      t.TempDir(),
 				StallTimeout:  5 * time.Second,
 			}
+			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			err := runWorkerViaJobQFake(context.Background(), w, job)
@@ -1930,6 +1940,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	originalLogger := slog.Default()
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
@@ -2001,6 +2012,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	originalLogger := slog.Default()
 	var logOutput bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
@@ -2114,6 +2126,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: "rec-durable-order"}
 
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
@@ -2190,6 +2203,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}
+			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"}
 
 			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
@@ -2311,6 +2325,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-stall")
@@ -2636,6 +2651,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-reexec"}
 
@@ -2725,6 +2741,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-reingest")
@@ -3152,6 +3169,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-base"}
 
@@ -3229,6 +3247,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-override"}
 
@@ -3313,6 +3332,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"}
 
@@ -3361,6 +3381,7 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-none"}
 
@@ -3470,6 +3491,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
 
@@ -3553,6 +3575,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"}
 
@@ -3619,6 +3642,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"}
 
@@ -3693,6 +3717,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"}
 
@@ -3786,6 +3811,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"}
 
 	var logBuf bytes.Buffer
@@ -3868,6 +3894,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 101)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo", 327361024000101)
@@ -3916,6 +3943,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 102)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-fallback", 327361024000102)
@@ -4049,6 +4077,7 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
 	wB := &IngestWorker{
 		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(srvB.URL, nil)),
 		Pool:          pool,
@@ -4056,6 +4085,7 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	jobA := IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"}
 	jobB := IngestJobArgs{Site: "site-b", RecordID: "rec-collide-b"}
@@ -4335,6 +4365,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}
 

@@ -379,6 +379,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 	}
+	iw.CMDetectionStore = pgstore.NewAnalysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}
 
 	// Enqueuer を注入しない状態 = ヒントが飛ばない。

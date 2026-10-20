@@ -501,6 +501,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
 	if err := runWorkerViaJobQFake(ctx, w, args); err == nil {
 		t.Fatal("first Work() error = nil, want cancellation after partial transfer")

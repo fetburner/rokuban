@@ -110,8 +110,9 @@ func TestCMRangesFromCutAVSInvertsMainIntervals(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("CM frame ranges = %#v, want %#v", got, want)
 	}
-	if got := encodeInt8Multirange(got, 10010); got != "{[0,1001),[3003,5005),[9009,10010)}" {
-		t.Errorf("encoded ranges = %s", got)
+	wantMs := []chapters.Range{{StartMs: 0, EndMs: 1001}, {StartMs: 3003, EndMs: 5005}, {StartMs: 9009, EndMs: 10010}}
+	if gotMs := chapterRangesFromFrames(got, 10010); !reflect.DeepEqual(gotMs, wantMs) {
+		t.Errorf("millisecond ranges = %#v, want %#v", gotMs, wantMs)
 	}
 }
 
@@ -120,7 +121,7 @@ func TestCMRangesFromCutAVSNoCommercialsAndInvalidOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 0 || encodeInt8Multirange(got, 10010) != "{}" {
+	if len(got) != 0 || len(chapterRangesFromFrames(got, 10010)) != 0 {
 		t.Fatalf("full-program Trim produced CM ranges %#v", got)
 	}
 	if _, err := cmRangesFromCutAVS("# no Trim calls", 10010); err == nil {

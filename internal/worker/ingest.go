@@ -326,11 +326,12 @@ type IngestWorker struct {
 	// N site を束縛できるため、この 1 インスタンスが複数 site の ingest_<site>
 	// キューを同時に購読しうる）。Work は verifySite で args.Site に対応する
 	// クライアントを取り出してから使う。
-	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
-	RecordTarget  store.IngestTarget
-	MediaDir      string
-	CMDetect      config.CMDetectConfig
+	MirakcClients    map[string]*mirakc.Client
+	Pool             *pgxpool.Pool
+	RecordTarget     store.IngestTarget
+	CMDetectionStore store.CMDetection
+	MediaDir         string
+	CMDetect         config.CMDetectConfig
 
 	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
 	// クランプ（resolveAndSnapshotEncodePolicy）に使う。
@@ -843,7 +844,7 @@ func recordIngestMetrics(offset int64) {
 // すべて best-effort で、投入失敗はログに残して ingest の成否には影響させない。
 func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, log *slog.Logger) {
 	enqueueEncodeReconcile(ctx, w.Enqueuer, recordingID)
-	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.Pool, w.Enqueuer, recordingID); enqueueErr != nil {
+	if enqueueErr := EnqueueCMDetectionIfNeeded(ctx, w.CMDetectionStore, w.Enqueuer, recordingID); enqueueErr != nil {
 		log.Error("ingest: failed to enqueue CM detection job", "recording_id", recordingID, "err", enqueueErr)
 	}
 	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailReconcileArgs{RecordingID: recordingID}); enqueueErr != nil {

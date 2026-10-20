@@ -106,6 +106,8 @@ type Deps struct {
 	Pool          *pgxpool.Pool
 	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
 	CMStationStore store.CMStation
+	// CMDetectionStore は CM 検出 worker・reconcile の永続化契約。
+	CMDetectionStore store.CMDetection
 	// TunerStore はチューナー同期の永続化契約。
 	TunerStore store.TunerSync
 	// CapacityStore はチューナー worker の容量判定読み取り契約。
@@ -180,15 +182,16 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	recordings := pgstore.NewRecordings(deps.Pool)
 	riveradapter.Register(workers, &IngestWorker{
-		Enqueuer:      deps.Enqueuer,
-		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
-		RecordTarget:  recordings,
-		MediaDir:      deps.MediaDir,
-		StallTimeout:  deps.IngestStallTimeout,
-		CMDetect:      deps.CMDetect,
-		CutProfiles:   deps.Encode.CutProfileSet(),
-		LiveEnabled:   deps.LiveEnabled,
+		Enqueuer:         deps.Enqueuer,
+		MirakcClients:    deps.MirakcClients,
+		Pool:             deps.Pool,
+		RecordTarget:     recordings,
+		CMDetectionStore: deps.CMDetectionStore,
+		MediaDir:         deps.MediaDir,
+		StallTimeout:     deps.IngestStallTimeout,
+		CMDetect:         deps.CMDetect,
+		CutProfiles:      deps.Encode.CutProfileSet(),
+		LiveEnabled:      deps.LiveEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
 		Pool:       deps.Pool,
@@ -263,12 +266,12 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Media:    deps.MediaReconcile,
 	})
 	riveradapter.Register(workers, &CMDetectWorker{
-		Enqueuer:   deps.Enqueuer,
-		Pool:       deps.Pool,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-		CMDetect:   deps.CMDetect,
-		FFprobe:    deps.Encode.FFprobe,
+		Enqueuer:       deps.Enqueuer,
+		DetectionStore: deps.CMDetectionStore,
+		MediaDir:       deps.MediaDir,
+		ScratchDir:     deps.ScratchDir,
+		CMDetect:       deps.CMDetect,
+		FFprobe:        deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &CMLogoCandidateWorker{
 		Store:      deps.CMStationStore,
@@ -278,8 +281,9 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		FFprobe:    deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &CMDetectReconcileWorker{
-		Enqueuer: deps.Enqueuer,
-		Pool:     deps.Pool, RecoveryGrace: deps.RecoveryGrace,
+		Enqueuer:       deps.Enqueuer,
+		DetectionStore: deps.CMDetectionStore,
+		RecoveryGrace:  deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,

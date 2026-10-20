@@ -485,6 +485,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
+	analysisStore := pgstore.NewAnalysis(pool)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:        cfg.Server.AllowedHosts,
 		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
@@ -495,7 +496,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
 		ReservationStore:    pgstore.NewReservations(pool),
-		CMStationStore:      pgstore.NewAnalysis(pool),
+		CMStationStore:      analysisStore,
+		CMDetectionStore:    analysisStore,
 		LabelRules:          pgstore.NewLabelRules(pool),
 		BreakerAdmin:        pgstore.NewBreakers(pool),
 		EPGReader:           pgstore.NewEPG(pool),
@@ -647,13 +649,15 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 	}
 	deferred := &jobq.Deferred{}
 	tunerStore := pgstore.NewTuners(pool)
+	analysisStore := pgstore.NewAnalysis(pool)
 	workers := worker.NewWorkers(&worker.Deps{
 		Enqueuer:                 deferred,
 		EPGSync:                  pgstore.NewEPG(pool),
 		ProgramSearch:            pgstore.NewEPG(pool),
 		MirakcClients:            mirakcClients,
 		Pool:                     pool,
-		CMStationStore:           pgstore.NewAnalysis(pool),
+		CMStationStore:           analysisStore,
+		CMDetectionStore:         analysisStore,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
 		RecordingPurge:           pgstore.NewRecordings(pool),

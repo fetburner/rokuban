@@ -164,7 +164,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	defer srv.Close()
 
 	enqueuer := newRecordingEnqueuer()
-	w := &IngestWorker{Enqueuer: enqueuer, Pool: pool, MediaDir: mediaDir}
+	w := &IngestWorker{Enqueuer: enqueuer, Pool: pool, MediaDir: mediaDir, CMDetectionStore: pgstore.NewAnalysis(pool)}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if got := countTSScanJobs(t, enqueuer, recordingID); got != 1 {

@@ -53,6 +53,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	ingestWorker.CMDetectionStore = pgstore.NewAnalysis(pool)
 	workResults := make(chan error, 2)
 	queue := newIngestLifecycleQueue(t, ingestWorker, workResults)
 	watcherEnqueuer := &ingestLifecycleEnqueuer{}

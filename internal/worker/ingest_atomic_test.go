@@ -61,6 +61,8 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
+	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
+	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
 	jobA := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
 	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
@@ -505,6 +507,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}
+			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			originalRename := renameIngestFile

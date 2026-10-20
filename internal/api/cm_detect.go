@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -21,53 +18,22 @@ func (h *Server) RetryRecordingCMDetection(ctx context.Context, req RetryRecordi
 	if !h.capabilities.CmDetect {
 		return RetryRecordingCMDetection409JSONResponse{Error: cmDetectDisabledMessage}, nil
 	}
-	tx, err := h.pool.Begin(ctx)
+	retry, err := h.cmDetectionStore.RetryDetection(ctx, req.Id)
 	if err != nil {
-		return nil, fmt.Errorf("beginning CM detection retry for recording %d: %w", req.Id, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	recording, err := q.GetRecordingByID(ctx, req.Id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return RetryRecordingCMDetection404JSONResponse{Error: "recording not found"}, nil
 		}
-		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
+		return nil, fmt.Errorf("retrying CM detection for recording %d: %w", req.Id, err)
 	}
-	if recording.PurgedAt != nil {
-		return RetryRecordingCMDetection404JSONResponse{Error: "recording not found"}, nil
-	}
-	active, err := q.GetCMRetryOriginal(ctx, req.Id)
-	if err != nil {
-		return nil, fmt.Errorf("checking active original for recording %d: %w", req.Id, err)
-	}
-	if !active {
+	if !retry.ActiveOriginal {
 		return RetryRecordingCMDetection409JSONResponse{Error: "active original media asset required to retry CM detection"}, nil
 	}
-	if err := q.DeleteCMDetection(ctx, req.Id); err != nil {
-		return nil, fmt.Errorf("clearing CM detection result for recording %d: %w", req.Id, err)
-	}
-	if err := q.DeleteCMDetectionAttempt(ctx, req.Id); err != nil {
-		return nil, fmt.Errorf("clearing CM detection attempt for recording %d: %w", req.Id, err)
-	}
-	desired, err := q.IsCMDetectionDesired(ctx, req.Id)
-	if err != nil {
-		return nil, fmt.Errorf("checking CM detection policy for recording %d: %w", req.Id, err)
-	}
-	if desired && h.enqueuer != nil {
-		durationMs, err := q.GetCMRecordingDuration(ctx, req.Id)
-		if err != nil {
-			return nil, fmt.Errorf("getting recording %d duration for CM detection: %w", req.Id, err)
-		}
-		if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.CMDetectJobArgs{
-			RecordingID: req.Id, RecordingDurationMs: durationMs,
+	if retry.Desired && h.enqueuer != nil {
+		if _, err := h.enqueuer.Enqueue(ctx, jobs.CMDetectJobArgs{
+			RecordingID: req.Id, RecordingDurationMs: retry.RecordingDurationMs,
 		}); err != nil {
-			return nil, fmt.Errorf("enqueuing CM detection retry for recording %d: %w", req.Id, err)
+			slog.ErrorContext(ctx, "api: failed to enqueue CM detection retry hint", "recording_id", req.Id, "err", err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing CM detection retry for recording %d: %w", req.Id, err)
 	}
 	return RetryRecordingCMDetection204Response{}, nil
 }
