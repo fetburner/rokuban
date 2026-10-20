@@ -253,7 +253,7 @@ EPGStation#473 の要望（この番組を重複扱いにする / しないを�
 | 時間窓 | 未指定なら無制限 |
 | 勝者 | 類似度最大の 1 件 |
 
-実装は `internal/ruler/dedupe.go` にあり、候補の集合を jsonb で渡す集合演算 1 文である。比較対象は同じ `rule_id` の `recordings` だけにする。「同じルールが同じ番組シリーズを指している」前提に乗り、グローバルな突き合わせはしない。ルールを削除すると履歴は比較対象から外れる（下記「ルールの削除は履歴のスコープを消す」）。
+実装は `internal/store/pgstore/rulerpass.go` にあり、候補の集合を jsonb で渡す集合演算 1 文である。比較対象は同じ `rule_id` の `recordings` だけにする。「同じルールが同じ番組シリーズを指している」前提に乗り、グローバルな突き合わせはしない。ルールを削除すると履歴は比較対象から外れる（下記「ルールの削除は履歴のスコープを消す」）。
 
 状態は `status = 'finished'` のみとする。`recording`（進行中）も `failed` も「録れた」とはみなさない。
 
@@ -299,7 +299,7 @@ tie-break を決定的にするのは必須である。同じ類似度の録画�
 
 類似度検索に pg_trgm の GIN 索引は効かない。家庭用の履歴規模では素の走査で足りるので、隠れたセッション状態を持ち込む前に実測する。
 
-`gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値を GUC `pg_trgm.similarity_threshold` から読み、ルール単位の閾値は読まない。そのため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/ruler/dedupe.go` のコメントに残してある）。
+`gin_trgm_ops` が加速するのは `%` / `<%` / LIKE / 正規表現で、`similarity()` の関数呼び出しはインデックスに乗らない。`%` は閾値を GUC `pg_trgm.similarity_threshold` から読み、ルール単位の閾値は読まない。そのため `rules.dedupe_threshold` と直接は噛み合わない（前段フィルタにする手順は `internal/store/pgstore/rulerpass.go` のコメントに残してある）。
 
 ##### ルールの削除は履歴のスコープを消す
 

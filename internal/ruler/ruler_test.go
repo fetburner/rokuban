@@ -26,7 +26,8 @@ import (
 const testSite = db.DefaultSite
 
 func newRuler(sites []string, pool *pgxpool.Pool, cfg *ruler.Config) *ruler.Ruler {
-	return ruler.New(sites, pool, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg, pgstore.NewEPG(pool))
+	reservations := pgstore.NewReservations(pool)
+	return ruler.New(sites, reservations, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), reservations, cfg, pgstore.NewEPG(pool))
 }
 
 // テスト全体で使い回す単一のチャンネル。複数チャンネルを区別する必要のある
@@ -2041,9 +2042,9 @@ func TestRunPass_CircuitBreakerTrippedAtNotUpdatedOnRepeatedTrip(t *testing.T) {
 	}
 }
 
-// ruler が tx 内で発動したとき、breaker.TripInTx が発動ゲージを 1 にする。
+// ApplyPass が発動を commit した後、ruler が発動ゲージを 1 にする。
 // パスの先頭の ObserveState は 0 に合わせるので、1 になっていれば発動経路が立てている。
-func TestRunPass_TripInTxRaisesCircuitBreakerGauge(t *testing.T) {
+func TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -2473,7 +2474,7 @@ func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T)
 // 実測で固定する事実（PR #273 のレビューで最初の論証が偽と判明した箇所）:
 // **`reservations.rule_id` は EPG の変化だけでも NULL になる。** 投資
 // （`program_overrides` / `intent{record}`）を持つ行はルールが外れても desired に
-// 残るのでそのパスで upsert され、`internal/ruler/sql.go` の resolved CTE が凍結
+// 残るのでそのパスで upsert され、`internal/store/pgstore/rulerpass.go` の resolved CTE が凍結
 // するのは `base` と dedup 根拠 2 列だけで、`rule_id = EXCLUDED.rule_id` が
 // そのまま NULL を書くため。
 //

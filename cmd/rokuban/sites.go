@@ -191,8 +191,9 @@ func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.Mirakc
 // プロセスの --sites 束縛とは独立して常駐プロセスから全 site を観測できる。
 func newConfiguredLoopPassCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(registry))
+	markers := pgstore.NewReservations(pool)
 	for _, s := range registry {
-		collectors = append(collectors, metrics.NewLoopPassCollector(pool, s.Site))
+		collectors = append(collectors, metrics.NewLoopPassCollector(markers, s.Site))
 	}
 	return collectors
 }

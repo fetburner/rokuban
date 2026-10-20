@@ -17,12 +17,12 @@ desired は「(ルール勝者 − intent skip) ∪ investment（record 意図 �
 - `reservations.rule_id IS NULL`: いまルールが base を供給していない行
 - `program_intents.action='skip'`: ユーザーが「録るな」と書いた
 
-`rule_id IS NULL` だけでは、ユーザー由来の証明にならない。この列は EPG の変化だけでも NULL になる。投資を持つ行はルールが外れても desired に残るので、そのパスで upsert される。`internal/ruler/sql.go` の `resolved` CTE が凍結するのは `base` と dedup 根拠 2 列だけで、`rule_id = EXCLUDED.rule_id` がそのまま NULL を書く。
+`rule_id IS NULL` だけでは、ユーザー由来の証明にならない。この列は EPG の変化だけでも NULL になる。投資を持つ行はルールが外れても desired に残り、そのパスで upsert される。ルールから外れたパスでは `EXCLUDED.rule_id` も NULL になる。`rulerpass.go` はこれを `rule_id` に書き、`base` と dedup 根拠だけを凍結する。
 
 <details><summary>根拠</summary>
 
 - 明示操作の判定が削除文の `WHERE` にあること: `internal/db/queries/ruler.sql` の `DeleteReleasedReservationsBySiteAndProgramIDs`
-- EPG unmatch で凍結されるのは `base` と dedup 根拠 2 列だけであること: `internal/ruler/sql.go` の `resolved` CTE
+- EPG unmatch で凍結されるのは `base` と dedup 根拠 2 列だけであること: `internal/store/pgstore/rulerpass.go` の `resolved` CTE
 - EPG unmatch で `rule_id` に NULL が書かれること: `rule_id = EXCLUDED.rule_id`
 
 </details>

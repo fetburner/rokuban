@@ -26,6 +26,7 @@ type Watcher struct {
 	site     string
 	mirakc   *mirakc.Client
 	records  store.RecordObservations
+	markers  store.LoopMarkers
 	enqueuer jobq.Enqueuer
 	webhook  *webhook.Client
 	services []mirakc.Service
@@ -33,11 +34,12 @@ type Watcher struct {
 
 // New は Watcher を生成する。enqueuer は ingest 投入に使う。webhook は任意（nil 可）で、
 // 録画 finished / failed の通知に使う（M3-11）。
-func New(site string, mc *mirakc.Client, records store.RecordObservations, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
+func New(site string, mc *mirakc.Client, records store.RecordObservations, markers store.LoopMarkers, enqueuer jobq.Enqueuer, wh *webhook.Client) *Watcher {
 	return &Watcher{
 		site:     site,
 		mirakc:   mc,
 		records:  records,
+		markers:  markers,
 		enqueuer: enqueuer,
 		webhook:  wh,
 	}
@@ -174,7 +176,7 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
 		}
 	}
-	if err := w.records.MarkSweepComplete(ctx, w.site); err != nil {
+	if err := w.markers.MarkRecordSweep(ctx, w.site); err != nil {
 		return fmt.Errorf("marking record sweep success: %w", err)
 	}
 	slog.Info("watcher sweep complete", "records", len(records), "stale", stale)

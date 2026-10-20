@@ -492,17 +492,36 @@ marker が無いときは、store がエラーと区別して返す。collector 
 
 </details>
 
+### ruler パス
+
+ルールから予約を導出する処理は、読み取りと適用の境界を store が持つ。削除判断に必要な状態を適用時に確かめ、ブレーカー発動と同じ tx で確定する。
+
+ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。スナップショットの追従、予約の差分 upsert、fulfilled / released / 導出削除を 1 つの tx で確定する。
+
+削除候補は読み取り後に意図や投資が追加されることがある。導出削除と released 削除の `DELETE` は適用時に投資を再評価するため、古い入力で新しい予約意図の行を消さない。契約テストは入力を読んだ後に意図を書き、同じ予約が残ることを固定する。
+
+大量削除ブレーカーの Trip も `ApplyPass` に含める。Trip が止める削除と発動行を別 tx にすると、発動を記録できないまま予約を消しうるためである。発動記録に失敗した tx は削除も巻き戻す。メトリクスとログは commit 後に反映する。番組終了後の GC は導出削除とは別の保守操作で、ブレーカーの対象にしない。
+
+重複排除は pgstore が `similarity()` を評価し、勝者ルールと番組の組ごとに決定的な最良一致を返す。比較には呼び出し側の現在時刻を渡す。番組 ID 再利用の検出と snapshot GC も、それぞれ比較に使う時刻を呼び出し側から受け取る。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RulerPass`
+- PostgreSQL 実装: `internal/store/pgstore.Reservations`
+- 削除時の意図再評価、ブレーカーとの原子性、重複排除の類似度: `TestRulerPassContract`
+- ruler の成功 marker と record_sweep marker: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
+
+</details>
+
 ### サーキットブレーカー
 
 発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
 
 reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。`Breakers` は `Trip` と `IsTripped` だけを持つ。`Trip` は発動時刻を返し、すでに発動中なら件数と抜粋だけを更新する。`Resume` は、対象の行が無ければ `ErrNotFound` を返す。
 
-reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。
+reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler だけは、発動の記録と「このパスでは削除しない」を同じ tx で確定する必要があるので `RulerPass.ApplyPass` に Trip を含める。発動を記録できなければ同じ tx の削除も rollback される。
 
-未解決: ruler だけは、発動の記録を tx の中で書く。「このパスでは削除しない」と同じ tx で確定するためで、store の契約を通っていない。
-
-ゲージとログは、store ではなく `breaker.ObserveState` と `breaker.Trip` が出す。出し方を 1 か所にするためである。ruler の tx 内の発動も、同じ出し方を共有する。
+ゲージとログは store の外で出す。ruler は `ApplyPass` の commit 後に反映し、他の書き手は `breaker.Trip` を使う。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
 
 <details><summary>根拠</summary>
 
@@ -511,7 +530,7 @@ reconciler と削除 reconcile は、もともと tx の外で発動する。そ
 - PostgreSQL 実装: `internal/store/pgstore.Breakers`
 - ゲージとログ: `internal/breaker.ObserveState` / `internal/breaker.Trip`
 - 発動時刻と再開後の状態: `TestBreakersContract`
-- ruler の tx 内の発動: `internal/breaker/ruler_trip.go`
-- ruler の発動ゲージ: `TestRunPass_TripInTxRaisesCircuitBreakerGauge`
+- ruler の tx 内の発動: `internal/store/pgstore.Reservations.ApplyPass`
+- ruler の発動ゲージ: `TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge`
 
 </details>

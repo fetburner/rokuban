@@ -113,8 +113,6 @@ type RecordObservations interface {
 	// 観測時刻ではなく、呼び出し側が渡した生きている record の ID の集合で判定する。
 	// 渡した ID の行は観測時刻によらず残し、渡していない行だけを消す。
 	DeleteStaleRecordSyncs(ctx context.Context, site string, liveRecordIDs []string) (int64, error)
-	// MarkSweepComplete は record 全量突き合わせの成功時刻を更新する。
-	MarkSweepComplete(ctx context.Context, site string) error
 }
 
 // RecordIngestTarget は取り込み先と進捗の分母に使う観測値を表す。

@@ -66,6 +66,8 @@ type RouterConfig struct {
 
 	// ProgramSearch は番組検索 API が使う永続化契約。
 	ProgramSearch store.ProgramSearch
+	// Dedupe は容量プレビューが録画重複を評価する永続化契約。
+	Dedupe store.RulerDedupe
 
 	// MediaReader はメディア関連 API の読み取り契約。
 	MediaReader store.MediaReader
@@ -193,7 +195,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.RecordingQuery,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.RuleStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
-		cfg.EncodePolicyStore, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+		cfg.EncodePolicyStore, cfg.Dedupe, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

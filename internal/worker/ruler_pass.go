@@ -16,9 +16,8 @@ import (
 
 // RulerPassWorker は ruler の 1 パス評価を実行する queue worker。
 //
-// ロジックは internal/ruler にそのまま置いてあり、ここでは呼び出すだけ
-// （ロジックの移植はしない）。ruler は mirakc に触れない（不変条件 1）ので、
-// このワーカーが持つ依存は Pool と RetentionGrace だけで足りる。
+// 評価ロジックは internal/ruler に置き、永続化は store 契約を使う。ruler は
+// mirakc に触れない（不変条件 1）ので、Pool から store を構成して渡す。
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
@@ -53,7 +52,8 @@ type RulerPassWorker struct {
 // （ruler.New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
 func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
-	r := ruler.New([]string{args.Site}, w.Pool, pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), &ruler.Config{
+	reservations := pgstore.NewReservations(w.Pool)
+	r := ruler.New([]string{args.Site}, reservations, pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), reservations, &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
 		RetractGrace:      w.RetractGrace,

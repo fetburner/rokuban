@@ -38,7 +38,7 @@ func getReservationStateJSON(t *testing.T, srv *httptest.Server, programID int64
 //
 // state 列は #28/#30 で reservations から撤去され、(rule_id, base, orphaned_at)
 // から reservationState（internal/api/handler.go）が読むたびに導出するように
-// なった。旧実装（撤去済み）は internal/ruler/sql.go の CASE 式が「前パスの
+// なった。旧実装（撤去済み）は internal/store/pgstore/rulerpass.go の CASE 式が「前パスの
 // rule_id」（r.rule_id）を条件にしていた:
 //
 //	WHEN d.rule_id IS NOT NULL THEN 'active'
