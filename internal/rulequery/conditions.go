@@ -3,7 +3,6 @@
 //
 // SQL への変換は internal/store/pgstore が持つ。UI 検索と ruler 評価が同じ変換を通ることで、
 // 「検索では出るのにルールにマッチしない」を構造的に防ぐ（docs/data/search.md §5）。
-// 正規表現方言は Postgres POSIX ARE（~ / ~*）。
 package rulequery
 
 import (

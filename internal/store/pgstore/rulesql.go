@@ -90,13 +90,14 @@ func compileRuleQuery(conditions rulequery.Conditions) (compiledRuleQuery, error
 }
 
 func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
-	// 正規表現はユーザーが書いたパターンの意味を壊さないよう、列は生のまま。
 	column := textTargetColumn(match.Target)
 	var clause string
 	switch match.Mode {
 	case "keyword":
 		clause = rulequery.KeywordClause(column, match.Value, match.CaseSensitive, arg)
 	case "regex":
+		// 正規表現方言は Postgres POSIX ARE（~ / ~*）。ユーザーが書いたパターンの意味を
+		// 壊さないよう、列は生のまま使う。
 		if match.CaseSensitive {
 			clause = column + " ~ " + arg(match.Value)
 		} else {

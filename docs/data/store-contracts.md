@@ -221,7 +221,13 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 段階は、サービスの upsert、番組の upsert、sweep の印、古い行の削除、放送済みの刈り込みである。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
 
-空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。store は渡された集合を印に写すだけにする。
+空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。store は、印（sweep mark）より古い行を、渡された site・サービスの範囲で消すだけにする。
+
+<details><summary>根拠</summary>
+
+- 同期の契約: `internal/store.EPGSync`
+
+</details>
 
 ### 正規表現の構文
 
@@ -231,8 +237,6 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 <details><summary>根拠</summary>
 
-- 同期の契約: `internal/store.EPGSync`
-- 番組表・詳細の契約: `internal/store.EPGReader`
 - 検索とルール評価の契約: `internal/store.ProgramSearch`
 - 番組検索のキーワードのテスト: `RunEPG` の `keyword search normalizes width and respects case sensitivity`
 - ルールの子表検索テスト: `RunEPG` の `rule matching applies every child-table condition`
