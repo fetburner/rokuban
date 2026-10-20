@@ -54,7 +54,7 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	// API の形 / UI の形を決める判断なので、実装せず issue に提起している
 	// （docs/schema/rules.md の rule_sites 節）。
 	//nolint:nilerr // 検証エラーは HTTP 400 のレスポンスとして返す。
-	if err := h.validateRuleInput(ctx, *req.Body, nil); err != nil {
+	if err := h.validateRuleInput(*req.Body, nil); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
 	if msg, err := h.ruleRegexError(ctx, *req.Body); err != nil {
@@ -98,7 +98,7 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 		savedSites = siteSet(sites)
 	}
 	//nolint:nilerr // 検証エラーは HTTP 400 のレスポンスとして返す。
-	if err := h.validateRuleInput(ctx, *req.Body, savedSites); err != nil {
+	if err := h.validateRuleInput(*req.Body, savedSites); err != nil {
 		return UpdateRule400JSONResponse{Error: err.Error()}, nil
 	}
 	if msg, err := h.ruleRegexError(ctx, *req.Body); err != nil {
@@ -227,7 +227,7 @@ func siteSet(sites []string) map[string]struct{} {
 // 集合が nil のときは名前検証をスキップする（テストの部分構成）。
 // savedSites は sites のレジストリ照合を免除する保存済みの site 名（create では nil。
 // validateRuleSites 参照）。
-func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites map[string]struct{}) error {
+func (h *Server) validateRuleInput(in RuleInput, savedSites map[string]struct{}) error {
 	if strings.TrimSpace(in.Name) == "" {
 		return errors.New("name is required")
 	}

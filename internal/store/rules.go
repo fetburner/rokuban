@@ -116,10 +116,11 @@ type Rules interface {
 // RuleImport は EPGStation の識別子でルールを冪等に取り込む。
 //
 // 既存のルールを更新するとき、Description・Priority・DedupeEnabled・DedupeThreshold・
-// DedupeWindowSeconds・KeepOriginal・EncodeProfiles は既存の値を残す。これらは取り込み後に
-// rokuban 側で編集される値だからである。Metadata は EPGStation の識別子で上書きする。
-// そのため RuleInput のこれらのフィールドは更新では使わない（nil の意味が Create の既定値とは
-// 違う）。名前・有効・条件・FilenameTemplate・子条件は入力で置き換える。
+// DedupeWindowSeconds・KeepOriginal・EncodeProfiles は既存の値を残し、RuleInput の
+// 同じフィールドは使わない。EPGStation のルールからの変換はこれらの値を作らないので、
+// 入力の値で置き換えると、再取り込みのたびに既定値へ戻ってしまう。Metadata は
+// EPGStation の識別子で上書きする。Name・Enabled・IsFree・DurationMinMs・DurationMaxMs・
+// PeriodStartAt・PeriodEndAt・FilenameTemplate と子条件は入力で置き換える。
 type RuleImport interface {
 	// ImportEPGStationRule は EPGStation rule ID のルールを作成または更新し、子条件を全置換する。
 	// 作成または更新と子条件は 1 つのトランザクションで確定する。
