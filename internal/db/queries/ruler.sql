@@ -125,7 +125,7 @@ WHERE r.site = $1 AND r.program_id = ANY(sqlc.arg(program_ids)::bigint[])
 -- per-program の api 3 本（DELETE .../intent / DELETE .../overrides /
 -- PUT .../intent{skip}。openapi.yaml のパスはどちらも {programId} を含み
 -- バルクが無い）、運用者が明示的に走らせる catalog rescue の復元
--- （internal/catalog/rescue.go。program_intents を upsert するので record を
+-- （internal/store/pgstore/catalog_restore.go。program_intents を upsert するので record を
 -- skip で上書きしうる。バルクだが EPG に駆動されない運用者の操作で、復元して
 -- いるのは記録済みのユーザー意図そのもの）、program_snapshots の GC CASCADE
 -- （このとき reservations 行も一緒に落ちるので toDelete に現れない）。

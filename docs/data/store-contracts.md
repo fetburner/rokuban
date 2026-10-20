@@ -535,3 +535,24 @@ reconciler と削除 reconcile は、もともと tx の外で発動する。そ
 - ruler の発動ゲージ: `TestRunPass_TripInTxRaisesCircuitBreakerGauge`
 
 </details>
+
+### catalog の export / restore
+
+catalog export と rescue は全保護対象を一つの契約で扱う。別々の store 操作にすると、export のスナップショットと restore の原子性が失われる。
+
+`Catalog.Export` は全表を同じスナップショットから読み、`Catalog.Restore` は全表の upsert・分類ルールの再評価・ID シーケンスの復元を一つの tx で確定する。このため、契約を全表にまたがる例外とする。
+
+rescue は asset の相対パスをロックしてからファイルを確認し、そのロックを `Restore` の完了まで保持する。確認時に無かった asset ID を渡し、store はその行を履歴ごと `deleted` として復元する。欠損時刻は DB の時計で記録する。
+
+restore は分類ルールの再評価と同じロックを最初の書き込みより前に取り、末尾の全件再評価まで保持する。ストレージ走査は `MediaPublish.RegisterInPlace` を呼び、ファイルの再確認から録画・asset の commit まで相対パスをロックする。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.Catalog`
+- PostgreSQL 実装: `internal/store/pgstore.Catalog`
+- 同一スナップショット・往復・ロック順序: `TestCatalogContract`
+- 既存の export 中の取り込み競合: `TestExport_ConcurrentIngestStaysConsistent`
+- rescue の再評価ロック位置: `TestRescue_WaitsForLabelRuleReevaluationLock`
+- ストレージ走査の登録: `internal/store.MediaPublish.RegisterInPlace`
+
+</details>

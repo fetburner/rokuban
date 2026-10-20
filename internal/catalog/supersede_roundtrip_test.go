@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -48,7 +49,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	}
 	okID := newRec(200, "finished") // 枠が空いたので入る
 
-	doc, err := Export(ctx, pool)
+	doc, err := pgstore.NewCatalog(pool).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pool, mediaDir, path); err != nil {
+	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool), mediaDir, path); err != nil {
 		t.Fatalf("RescueFile: %v （superseded_at が往復で失われると一意索引に衝突して復旧が落ちる）", err)
 	}
 

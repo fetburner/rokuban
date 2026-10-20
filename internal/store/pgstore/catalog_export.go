@@ -1,4 +1,4 @@
-package catalog
+package pgstore
 
 import (
 	"context"
@@ -6,27 +6,24 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
-// Export は DB からコアメタデータを集めて Document を組み立てる。常に全サイト
+// Export は DB からコアメタデータを集めて catalogdoc.Document を組み立てる。常に全サイト
 // （catalog は災害復旧用のアーカイブ全体を対象にする。site 絞り込みは書き手も
 // 呼び手も持たなかったため issue #441 で落とした）。
 //
 // これは単一スナップショットからの読み取りである。recordings を読んだ後に
 // media_assets / drop_stats / drop_positions / media_asset_ts_scans を読むため、トランザクション無しで発行すると
 // その間に作られた録画のアセットだけが media_assets 側に写り、
-// RescueFile（internal/catalog/rescue.go）が recordings → media_assets の順で
+// RescueFile（internal/store/pgstore/catalog_restore.go）が recordings → media_assets の順で
 // 1 トランザクション書き込むときに FK 違反でその世代がまるごと復元不能になる
-// （issue #106）。これを防ぐため、Export は *pgxpool.Pool を受けて内部で
-// REPEATABLE READ / READ ONLY のトランザクションを張る形に固定してある。
-// 呼び出し側が任意の *sqlcgen.Queries を渡せる形にすると tx なしで呼べてしまう
-// ので、シグネチャは緩めない。
-func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
-	tx, err := pool.BeginTx(ctx, pgx.TxOptions{
+// （issue #106）。Export は内部で REPEATABLE READ / READ ONLY のトランザクションを
+// 開き、常に同じスナップショットから読み取る。
+func (s *Catalog) Export(ctx context.Context) (*catalogdoc.Document, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
 	})
@@ -37,8 +34,8 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 
 	q := sqlcgen.New(tx)
 
-	doc := &Document{
-		Version:    Version,
+	doc := &catalogdoc.Document{
+		Version:    catalogdoc.Version,
 		ExportedAt: time.Now().UTC(),
 	}
 
@@ -95,14 +92,14 @@ func Export(ctx context.Context, pool *pgxpool.Pool) (*Document, error) {
 }
 
 // exportLabelRules は label_rules を文書の型付き行に変換する。
-func exportLabelRules(ctx context.Context, q *sqlcgen.Queries) ([]LabelRule, error) {
+func exportLabelRules(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.LabelRule, error) {
 	rows, err := q.CatalogListLabelRules(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing label_rules: %w", err)
 	}
-	out := make([]LabelRule, 0, len(rows))
+	out := make([]catalogdoc.LabelRule, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, LabelRule{
+		out = append(out, catalogdoc.LabelRule{
 			ID: r.ID, Key: r.Key, Value: r.Value, Keyword: r.Keyword,
 			Priority: r.Priority, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 		})
@@ -110,8 +107,8 @@ func exportLabelRules(ctx context.Context, q *sqlcgen.Queries) ([]LabelRule, err
 	return out, nil
 }
 
-// exportRules は rules とその従属表を読み取り、文書の Rule に組み立てる。
-func exportRules(ctx context.Context, q *sqlcgen.Queries) ([]Rule, error) {
+// exportRules は rules とその従属表を読み取り、文書の catalogdoc.Rule に組み立てる。
+func exportRules(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.Rule, error) {
 	rules, err := q.CatalogListRules(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing rules: %w", err)
@@ -144,14 +141,14 @@ func exportRules(ctx context.Context, q *sqlcgen.Queries) ([]Rule, error) {
 }
 
 // exportProgramSnapshots は program_snapshots を文書の型付き行に変換する。
-func exportProgramSnapshots(ctx context.Context, q *sqlcgen.Queries) ([]ProgramSnapshot, error) {
+func exportProgramSnapshots(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.ProgramSnapshot, error) {
 	rows, err := q.CatalogListProgramSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_snapshots: %w", err)
 	}
-	out := make([]ProgramSnapshot, 0, len(rows))
+	out := make([]catalogdoc.ProgramSnapshot, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, ProgramSnapshot{
+		out = append(out, catalogdoc.ProgramSnapshot{
 			Site:        s.Site,
 			ProgramID:   s.ProgramID,
 			Title:       s.Title,
@@ -170,14 +167,14 @@ func exportProgramSnapshots(ctx context.Context, q *sqlcgen.Queries) ([]ProgramS
 }
 
 // exportProgramIntents は program_intents を文書の型付き行に変換する。
-func exportProgramIntents(ctx context.Context, q *sqlcgen.Queries) ([]ProgramIntent, error) {
+func exportProgramIntents(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.ProgramIntent, error) {
 	rows, err := q.CatalogListProgramIntents(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_intents: %w", err)
 	}
-	out := make([]ProgramIntent, 0, len(rows))
+	out := make([]catalogdoc.ProgramIntent, 0, len(rows))
 	for _, i := range rows {
-		out = append(out, ProgramIntent{
+		out = append(out, catalogdoc.ProgramIntent{
 			Site:      i.Site,
 			ProgramID: i.ProgramID,
 			Action:    i.Action,
@@ -189,14 +186,14 @@ func exportProgramIntents(ctx context.Context, q *sqlcgen.Queries) ([]ProgramInt
 }
 
 // exportProgramOverrides は program_overrides を文書の型付き行に変換する。
-func exportProgramOverrides(ctx context.Context, q *sqlcgen.Queries) ([]ProgramOverride, error) {
+func exportProgramOverrides(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.ProgramOverride, error) {
 	rows, err := q.CatalogListProgramOverrides(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing program_overrides: %w", err)
 	}
-	out := make([]ProgramOverride, 0, len(rows))
+	out := make([]catalogdoc.ProgramOverride, 0, len(rows))
 	for _, o := range rows {
-		out = append(out, ProgramOverride{
+		out = append(out, catalogdoc.ProgramOverride{
 			Site:      o.Site,
 			ProgramID: o.ProgramID,
 			Overrides: o.Overrides,
@@ -208,12 +205,12 @@ func exportProgramOverrides(ctx context.Context, q *sqlcgen.Queries) ([]ProgramO
 }
 
 // exportRecordings は recordings を文書の型付き行に変換する。
-func exportRecordings(ctx context.Context, q *sqlcgen.Queries) ([]Recording, error) {
+func exportRecordings(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.Recording, error) {
 	rows, err := q.CatalogListRecordings(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
-	out := make([]Recording, 0, len(rows))
+	out := make([]catalogdoc.Recording, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, recordingFromRow(r))
 	}
@@ -221,14 +218,14 @@ func exportRecordings(ctx context.Context, q *sqlcgen.Queries) ([]Recording, err
 }
 
 // exportRecordingPurgeRequests は recording_purge_requests を文書の型付き行に変換する。
-func exportRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries) ([]RecordingPurgeRequest, error) {
+func exportRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingPurgeRequest, error) {
 	rows, err := q.CatalogListRecordingPurgeRequests(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_purge_requests: %w", err)
 	}
-	out := make([]RecordingPurgeRequest, 0, len(rows))
+	out := make([]catalogdoc.RecordingPurgeRequest, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, RecordingPurgeRequest{
+		out = append(out, catalogdoc.RecordingPurgeRequest{
 			RecordingID: p.RecordingID,
 			RequestedAt: p.RequestedAt,
 		})
@@ -236,27 +233,27 @@ func exportRecordingPurgeRequests(ctx context.Context, q *sqlcgen.Queries) ([]Re
 	return out, nil
 }
 
-func exportRecordingWatched(ctx context.Context, q *sqlcgen.Queries) ([]RecordingWatched, error) {
+func exportRecordingWatched(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingWatched, error) {
 	rows, err := q.CatalogListRecordingWatched(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_watched: %w", err)
 	}
-	out := make([]RecordingWatched, 0, len(rows))
+	out := make([]catalogdoc.RecordingWatched, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, RecordingWatched{RecordingID: row.RecordingID, WatchedAt: row.WatchedAt})
+		out = append(out, catalogdoc.RecordingWatched{RecordingID: row.RecordingID, WatchedAt: row.WatchedAt})
 	}
 	return out, nil
 }
 
 // exportRecordingEncodePolicies は recording_encode_policy を文書の型付き行に変換する。
-func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]RecordingEncodePolicy, error) {
+func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingEncodePolicy, error) {
 	rows, err := q.CatalogListRecordingEncodePolicies(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_encode_policy: %w", err)
 	}
-	out := make([]RecordingEncodePolicy, 0, len(rows))
+	out := make([]catalogdoc.RecordingEncodePolicy, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, RecordingEncodePolicy{
+		out = append(out, catalogdoc.RecordingEncodePolicy{
 			RecordingID:    p.RecordingID,
 			KeepOriginal:   p.KeepOriginal,
 			EncodeProfiles: nonNilStrings(p.EncodeProfiles),
@@ -269,12 +266,12 @@ func exportRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries) ([]R
 }
 
 // exportMediaAssets は media_assets を文書の型付き行に変換する。
-func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries) ([]MediaAsset, error) {
+func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.MediaAsset, error) {
 	rows, err := q.CatalogListMediaAssets(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_assets: %w", err)
 	}
-	out := make([]MediaAsset, 0, len(rows))
+	out := make([]catalogdoc.MediaAsset, 0, len(rows))
 	for _, a := range rows {
 		out = append(out, mediaAssetFromRow(a))
 	}
@@ -282,14 +279,14 @@ func exportMediaAssets(ctx context.Context, q *sqlcgen.Queries) ([]MediaAsset, e
 }
 
 // exportDropStats は drop_stats を文書の型付き行に変換する。
-func exportDropStats(ctx context.Context, q *sqlcgen.Queries) ([]DropStat, error) {
+func exportDropStats(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.DropStat, error) {
 	rows, err := q.CatalogListDropStats(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing drop_stats: %w", err)
 	}
-	out := make([]DropStat, 0, len(rows))
+	out := make([]catalogdoc.DropStat, 0, len(rows))
 	for _, d := range rows {
-		out = append(out, DropStat{
+		out = append(out, catalogdoc.DropStat{
 			MediaAssetID: d.MediaAssetID,
 			Pid:          d.Pid,
 			Packets:      d.Packets,
@@ -303,14 +300,14 @@ func exportDropStats(ctx context.Context, q *sqlcgen.Queries) ([]DropStat, error
 }
 
 // exportDropPositions は drop_positions を文書の型付き行に変換する。
-func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPosition, error) {
+func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.DropPosition, error) {
 	rows, err := q.CatalogListDropPositions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing drop_positions: %w", err)
 	}
-	out := make([]DropPosition, 0, len(rows))
+	out := make([]catalogdoc.DropPosition, 0, len(rows))
 	for _, p := range rows {
-		out = append(out, DropPosition{
+		out = append(out, catalogdoc.DropPosition{
 			MediaAssetID: p.MediaAssetID,
 			ByteOffset:   p.ByteOffset,
 			Pid:          p.Pid,
@@ -321,14 +318,14 @@ func exportDropPositions(ctx context.Context, q *sqlcgen.Queries) ([]DropPositio
 }
 
 // exportMediaAssetTSScans は media_asset_ts_scans を文書の型付き行に変換する。
-func exportMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries) ([]MediaAssetTSScan, error) {
+func exportMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.MediaAssetTSScan, error) {
 	rows, err := q.CatalogListMediaAssetTSScans(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing media_asset_ts_scans: %w", err)
 	}
-	out := make([]MediaAssetTSScan, 0, len(rows))
+	out := make([]catalogdoc.MediaAssetTSScan, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, MediaAssetTSScan{
+		out = append(out, catalogdoc.MediaAssetTSScan{
 			MediaAssetID:     s.MediaAssetID,
 			ScannedSizeBytes: s.ScannedSizeBytes,
 		})
@@ -337,14 +334,14 @@ func exportMediaAssetTSScans(ctx context.Context, q *sqlcgen.Queries) ([]MediaAs
 }
 
 // exportRecordingChapterOwnerships は recording_chapter_ownership を文書の型付き行に変換する。
-func exportRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries) ([]RecordingChapterOwnership, error) {
+func exportRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingChapterOwnership, error) {
 	rows, err := q.CatalogListRecordingChapterOwnerships(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_chapter_ownership: %w", err)
 	}
-	out := make([]RecordingChapterOwnership, 0, len(rows))
+	out := make([]catalogdoc.RecordingChapterOwnership, 0, len(rows))
 	for _, o := range rows {
-		out = append(out, RecordingChapterOwnership{
+		out = append(out, catalogdoc.RecordingChapterOwnership{
 			RecordingID: o.RecordingID,
 			AdoptedAt:   o.AdoptedAt,
 		})
@@ -353,14 +350,14 @@ func exportRecordingChapterOwnerships(ctx context.Context, q *sqlcgen.Queries) (
 }
 
 // exportRecordingChapterSpans は recording_chapter_spans を文書の型付き行に変換する。
-func exportRecordingChapterSpans(ctx context.Context, q *sqlcgen.Queries) ([]RecordingChapterSpan, error) {
+func exportRecordingChapterSpans(ctx context.Context, q *sqlcgen.Queries) ([]catalogdoc.RecordingChapterSpan, error) {
 	rows, err := q.CatalogListRecordingChapterSpans(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing recording_chapter_spans: %w", err)
 	}
-	out := make([]RecordingChapterSpan, 0, len(rows))
+	out := make([]catalogdoc.RecordingChapterSpan, 0, len(rows))
 	for _, s := range rows {
-		out = append(out, RecordingChapterSpan{
+		out = append(out, catalogdoc.RecordingChapterSpan{
 			RecordingID: s.RecordingID,
 			StartMs:     s.StartMs,
 			EndMs:       s.EndMs,
@@ -379,9 +376,9 @@ func assembleRules(
 	genres []sqlcgen.RuleGenre,
 	times []sqlcgen.RuleTime,
 	ruleSites []sqlcgen.RuleSite,
-) []Rule {
-	out := make([]Rule, 0, len(rules))
-	byID := make(map[int64]*Rule, len(rules))
+) []catalogdoc.Rule {
+	out := make([]catalogdoc.Rule, 0, len(rules))
+	byID := make(map[int64]*catalogdoc.Rule, len(rules))
 	for _, r := range rules {
 		rule := ruleFromRow(r)
 		out = append(out, rule)
@@ -390,7 +387,7 @@ func assembleRules(
 
 	for _, m := range textMatches {
 		if rule, ok := byID[m.RuleID]; ok {
-			rule.TextMatches = append(rule.TextMatches, RuleTextMatch{
+			rule.TextMatches = append(rule.TextMatches, catalogdoc.RuleTextMatch{
 				Seq:           m.Seq,
 				Target:        m.Target,
 				Mode:          m.Mode,
@@ -402,7 +399,7 @@ func assembleRules(
 	}
 	for _, s := range services {
 		if rule, ok := byID[s.RuleID]; ok {
-			rule.Services = append(rule.Services, RuleService{
+			rule.Services = append(rule.Services, catalogdoc.RuleService{
 				NetworkID: s.NetworkID,
 				ServiceID: s.ServiceID,
 			})
@@ -420,7 +417,7 @@ func assembleRules(
 	}
 	for _, t := range times {
 		if rule, ok := byID[t.RuleID]; ok {
-			rule.Times = append(rule.Times, RuleTime{
+			rule.Times = append(rule.Times, catalogdoc.RuleTime{
 				Seq:      t.Seq,
 				Weekdays: t.Weekdays,
 				StartSec: t.StartSec,
@@ -436,8 +433,8 @@ func assembleRules(
 	return out
 }
 
-func ruleFromRow(r sqlcgen.Rule) Rule {
-	rule := Rule{
+func ruleFromRow(r sqlcgen.Rule) catalogdoc.Rule {
+	rule := catalogdoc.Rule{
 		ID:               r.ID,
 		Name:             r.Name,
 		Description:      r.Description,
@@ -469,8 +466,8 @@ func ruleFromRow(r sqlcgen.Rule) Rule {
 	return rule
 }
 
-func recordingFromRow(r sqlcgen.Recording) Recording {
-	return Recording{
+func recordingFromRow(r sqlcgen.Recording) catalogdoc.Recording {
+	return catalogdoc.Recording{
 		ID:                r.ID,
 		RuleID:            r.RuleID,
 		Source:            r.Source,
@@ -500,8 +497,8 @@ func recordingFromRow(r sqlcgen.Recording) Recording {
 	}
 }
 
-func mediaAssetFromRow(a sqlcgen.MediaAsset) MediaAsset {
-	return MediaAsset{
+func mediaAssetFromRow(a sqlcgen.MediaAsset) catalogdoc.MediaAsset {
+	return catalogdoc.MediaAsset{
 		ID:          a.ID,
 		RecordingID: a.RecordingID,
 		Kind:        a.Kind,
@@ -513,25 +510,4 @@ func mediaAssetFromRow(a sqlcgen.MediaAsset) MediaAsset {
 		CreatedAt:   a.CreatedAt,
 		UpdatedAt:   a.UpdatedAt,
 	}
-}
-
-func nonNilStrings(s []string) []string {
-	if s == nil {
-		return []string{}
-	}
-	return s
-}
-
-func secondsToInterval(sec int64) pgtype.Interval {
-	return pgtype.Interval{
-		Microseconds: sec * 1_000_000,
-		Valid:        true,
-	}
-}
-
-func intervalToSeconds(iv pgtype.Interval) (int64, bool) {
-	if !iv.Valid {
-		return 0, false
-	}
-	return iv.Microseconds / 1_000_000, true
 }

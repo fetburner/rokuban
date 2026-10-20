@@ -22,23 +22,12 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// statRescueCandidate allows tests to pause between walk observation and registration.
+// statRescueCandidate lets tests remove a candidate after the walk observes it.
 var statRescueCandidate = os.Lstat
 
-// rescueStorage は catalog が 1 世代も残っていないときに、認識可能な動画ファイルをスキャンする。
-// 各ファイルは 1 件の recording になり、既知の事実は意図的に相対パス・ファイル名・サイズ・mtime
-// のみに絞られる。`catalog/` は決してスキャンしない: catalog の世代はメタデータであり、
-// media asset ではないため。`sites/` は SkipDir にしない（walk 対象。原本の名前空間で、
-// site 付きで走査する対象そのもの。docs/storage/contract.md §「原本の sites/{site}/ 前置」）。
-//
-// `sites/{site}/` 前置を持つファイルだけを復元する。前置の site は
-// classifySiteForRescuedFile が決め、registrySites は `mirakcs:` レジストリの
-// site 名一覧（typo/ゴミディレクトリの検出用）である。
-//
-// 前置の無いファイルは site を決められないため登録せず、ファイルごとに Warn を
-// 1 回出す。レジストリに無い site を持つ前置は復元を続け、site ごとに 1 回だけ
-// Warn する。
-func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
+// rescueStorage は catalog が 1 世代も残っていないときに動画ファイルをスキャンする。
+// ファイル確認から RegisterInPlace の commit まで相対パスのロックを保持する。
+func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
 	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving media_dir symlinks for rescue: %w", err)
@@ -58,23 +47,9 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 			}
 			return nil
 		}
-		if entry.Type()&fs.ModeSymlink != 0 {
-			return nil
-		}
-		// ingest のプロセス死で残った record 固有 temp は孤児回収の対象であり、
-		// catalog 無し rescue では original に昇格させない。拡張子だけで判定
-		// すると、将来の命名変更や basename に複数のドットがある場合に
-		// 一時ファイルが救済される余地が残る。
-		if mediapath.IsIngestTempFile(entry.Name()) {
-			return nil
-		}
-		if mediapath.IsMediaRelPathLockFile(entry.Name()) {
-			return nil
-		}
-		if mediapath.IsEncodeTempFile(entry.Name()) {
-			return nil
-		}
-		if mediapath.IsGeneratedAssetTempFile(entry.Name()) {
+		if entry.Type()&fs.ModeSymlink != 0 || mediapath.IsIngestTempFile(entry.Name()) ||
+			mediapath.IsMediaRelPathLockFile(entry.Name()) || mediapath.IsEncodeTempFile(entry.Name()) ||
+			mediapath.IsGeneratedAssetTempFile(entry.Name()) {
 			return nil
 		}
 
@@ -97,12 +72,6 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 			return fmt.Errorf("making rescue path relative for %q: %w", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
-		networkID, serviceID, eventID := syntheticBroadcastIdentity(relPath)
-		at := info.ModTime().UTC()
-		title := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
-		if title == "" {
-			title = relPath
-		}
 
 		fileSite, unknownSite := classifySiteForRescuedFile(relPath, registrySites)
 		if fileSite == "" {
@@ -112,30 +81,25 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 			return nil
 		}
 
-		_, err = inplace.Register(ctx, publisher, realMediaDir, inplace.Input{
-			Recording: inplace.Recording{
-				// ストレージ再スキャンには予約も program_intents も残っていない。
-				// ユーザーの明示的な意図を示す材料が無いので manual ではなく
-				// unattributed として永続化する。
-				Source:    reservation.SourceUnattributed,
-				Site:      fileSite,
-				NetworkID: networkID, ServiceID: serviceID, EventID: eventID,
+		networkID, serviceID, eventID := syntheticBroadcastIdentity(relPath)
+		at := info.ModTime().UTC()
+		title := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+		if title == "" {
+			title = relPath
+		}
+		_, err = inplace.Register(ctx, mediaPublish, realMediaDir, inplace.Input{
+			Recording: store.InPlaceRecording{
+				// 再走査には予約も program_intents も残っていない。ユーザーの明示的な
+				// 意図を示す材料が無いので manual ではなく unattributed とする。
+				Source: reservation.SourceUnattributed,
+				Site:   fileSite, NetworkID: networkID, ServiceID: serviceID, EventID: eventID,
 				ServiceName: "Recovered file (metadata unavailable)",
-				// recordings.channel_type には現状 unknown 値が無い。負の synthetic identity と
-				// 明示的な service/channel ラベルにより、このプレースホルダーが実際の EPG
-				// メタデータと誤認されることを防いでいる。
-				ChannelType:    "GR",
-				Channel:        "unknown",
-				Title:          title,
-				ProgramStartAt: at,
-				Status:         db.RecordingStatusFinished,
-				StartedAt:      &at,
-				EndedAt:        &at,
+				ChannelType: "GR", Channel: "unknown", Title: title, ProgramStartAt: at,
+				Status: db.RecordingStatusFinished, StartedAt: &at, EndedAt: &at,
 			},
 			Assets: []inplace.Asset{{Kind: kind, Profile: profile, RelPath: relPath}},
 		})
 		if errors.Is(err, os.ErrNotExist) {
-			// The walk observation is a hint; Register checks again under the path lock.
 			result.MissingMediaFiles++
 			return nil
 		}
@@ -144,23 +108,16 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 		}
 		result.Recordings++
 		result.MediaAssets++
-		// 登録が成功した後でだけ数える --- 途中で失敗したファイルまで
-		// summary の count に含めると、実際に復元できた件数と log の
-		// count が食い違う。
 		if unknownSite {
 			unknownSiteCounts[fileSite]++
 		}
 		return nil
 	})
 
-	// site の内訳は walk が最後まで終わらなかった run でこそ運用者が読みたい
-	// （何が起きて途中で止まったかの手がかりになる）ので、エラーで return する
-	// 前に必ず出す。
-	for _, s := range slices.Sorted(maps.Keys(unknownSiteCounts)) {
+	for _, site := range slices.Sorted(maps.Keys(unknownSiteCounts)) {
 		slog.Warn("rescue: recovered files under a sites/ prefix that is not in the mirakc registry; using it anyway",
-			"site", s, "count", unknownSiteCounts[s])
+			"site", site, "count", unknownSiteCounts[site])
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("scanning media_dir for rescue: %w", err)
 	}
@@ -180,13 +137,10 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 	}
 }
 
-// SiteRelPathPrefix は原本 rel_path の site 名前空間の固定 1 段目
-// （docs/storage/contract.md §「原本の sites/{site}/ 前置」）。書き手の
-// SiteRelPath と読み手の classifySiteForRescuedFile がこの定数を共有する。
+// SiteRelPathPrefix は原本 rel_path の site 名前空間の固定 1 段目。
 const SiteRelPathPrefix = "sites/"
 
 // SiteRelPath は原本の rel_path に site 名前空間を前置する。
-// rel_path がファイルを指さない場合や予約名ならエラーにする。
 func SiteRelPath(site, relPath string) (string, error) {
 	if relPath == "" || relPath == "." || relPath == "/" || strings.HasSuffix(relPath, "/") {
 		return "", fmt.Errorf("rel_path %q does not name a file", relPath)
@@ -203,11 +157,6 @@ func SiteRelPath(site, relPath string) (string, error) {
 }
 
 // classifySiteForRescuedFile は走査で見つかったファイルの site を決める。
-// 戻り値の site が空なら、ファイルは有効な `sites/{site}/` 前置を持たず、
-// rescue では登録できない。unknownSite は site が registrySites に無いことを表す。
-//
-// prefix の site が registrySites に無ければ typo やゴミディレクトリの疑いがある
-// （正規の site は必ずレジストリに載っている）。それでも録画としては復元する。
 func classifySiteForRescuedFile(relPath string, registrySites []string) (site string, unknownSite bool) {
 	rest, ok := strings.CutPrefix(relPath, SiteRelPathPrefix)
 	if !ok {
@@ -220,9 +169,7 @@ func classifySiteForRescuedFile(relPath string, registrySites []string) (site st
 	return prefixSite, !slices.Contains(registrySites, prefixSite)
 }
 
-// syntheticBroadcastIdentity は相対パスを安定した負の identity タプルへ写像する。実際の
-// 放送 ID は非負であり、93 ビットのハッシュを使うことで、このフォールバック専用の第 2 の
-// identity テーブルを追加せずに rescue されたパス同士を分離できる。
+// syntheticBroadcastIdentity は相対パスを安定した負の放送 identity に写像する。
 func syntheticBroadcastIdentity(relPath string) (networkID, serviceID, eventID int32) {
 	sum := sha256.Sum256([]byte(relPath))
 	part := func(offset int) int32 {

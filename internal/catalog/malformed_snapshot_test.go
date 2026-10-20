@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -81,7 +82,7 @@ func TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := RescueFile(context.Background(), pool, dir, path)
+	res, err := RescueFile(context.Background(), pgstore.NewCatalog(pool), dir, path)
 	if err != nil {
 		t.Fatalf("RescueFile: %v（壊れた 1 行で rescue 全体を止めてはならない）", err)
 	}
