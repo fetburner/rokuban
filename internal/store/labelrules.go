@@ -39,6 +39,8 @@ type LabelRules interface {
 // LabelRuleReevaluation は、録画ごとの分類ルールの当たりを全件再評価する。
 type LabelRuleReevaluation interface {
 	// ReevaluateAll は全録画の当たりを差分適用し、変更した行数を返す。
+	// 差分は原子的に適用され、読み手は適用前か適用後の当たりしか見ない。
+	// 当たりが変わったときだけ、録画の購読者へ通知する。
 	// 同時に実行できる再評価は 1 本だけである。後から始まった再評価は、先に
 	// commit されたルールの集合で評価する。
 	ReevaluateAll(ctx context.Context) (changed int64, err error)

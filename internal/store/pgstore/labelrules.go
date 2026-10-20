@@ -144,7 +144,7 @@ func (s *LabelRules) ReevaluateAll(ctx context.Context) (int64, error) {
 	return changed, nil
 }
 
-// reevaluateLabelRulesTx 差分適用と変更時の通知を tx 内で行う。
+// reevaluateLabelRulesTx は差分適用と変更時の通知を tx 内で行う。
 // 呼び出し側が tx を所有し、評価前に再評価ロックを取る。
 func reevaluateLabelRulesTx(ctx context.Context, tx pgx.Tx) (int64, error) {
 	q := sqlcgen.New(tx)

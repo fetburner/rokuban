@@ -62,8 +62,13 @@ func TestLabelRulesContract(t *testing.T) {
 					var waiting bool
 					if err := pool.QueryRow(context.Background(), `
 SELECT EXISTS (
-    SELECT 1 FROM pg_locks
-    WHERE locktype = 'advisory' AND NOT granted
+    SELECT 1
+    FROM pg_stat_activity a
+    JOIN pg_locks l ON l.pid = a.pid
+    WHERE a.datname = current_database()
+      AND a.pid <> pg_backend_pid()
+      AND l.locktype = 'advisory'
+      AND NOT l.granted
 )`).Scan(&waiting); err != nil {
 						t.Fatalf("checking for a waiting re-evaluation: %v", err)
 					}
@@ -162,6 +167,8 @@ SELECT EXISTS (
 		t.Fatal("the hit write did not hold the re-evaluation lock in its transaction")
 	}
 	assertNoCommittedLabelRuleHits(t, pool, ctx, recordingIDs)
+	// 当たりの書き込みが tx の途中にある間は、まだ通知が届かない。
+	assertNoNotification(t, listenConn)
 
 	var result struct {
 		changed int64

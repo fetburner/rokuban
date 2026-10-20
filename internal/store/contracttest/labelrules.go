@@ -65,7 +65,7 @@ func runLabelRuleCRUD(t *testing.T, newStore NewLabelRuleStore) {
 	if err != nil {
 		t.Fatalf("Create(second) error = %v", err)
 	}
-	if first.ValueKey != *keyOrValue(t, f.Store, ctx, first.Value) {
+	if first.ValueKey != *mustSeriesKey(t, f.Store, ctx, first.Value) {
 		t.Errorf("created value key = %q, want series_key(%q)", first.ValueKey, first.Value)
 	}
 	got, err := f.Store.Get(ctx, first.ID)
@@ -180,7 +180,7 @@ func runLabelRuleReevaluationSerialization(t *testing.T, newStore NewLabelRuleSt
 	}
 }
 
-func keyOrValue(t *testing.T, s store.LabelRules, ctx context.Context, value string) *string {
+func mustSeriesKey(t *testing.T, s store.LabelRules, ctx context.Context, value string) *string {
 	t.Helper()
 	key, err := s.SeriesKey(ctx, value)
 	if err != nil || key == nil {
