@@ -113,8 +113,8 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 
 // runPassForSite は 1 サイト分の評価と差分書き込みを行う。
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
-	now := time.Now()
-	observeProgramIDReuses(ctx, r.passes, site, now)
+	evaluationNow := time.Now()
+	observeProgramIDReuses(ctx, r.passes, site, evaluationNow)
 
 	tripped, err := r.observeDeleteBreaker(ctx, site)
 	if err != nil {
@@ -142,7 +142,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	}
 	toDelete = subtract(toDelete, fulfilled)
 
-	dedupeMatches, err := r.applyDedupe(ctx, site, now, desiredIDs, winner, ruleByID)
+	dedupeMatches, err := r.applyDedupe(ctx, site, evaluationNow, desiredIDs, winner, ruleByID)
 	if err != nil {
 		return err
 	}
@@ -151,13 +151,14 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		return err
 	}
 
+	applyNow := time.Now()
 	result, err := r.passes.ApplyPass(ctx, site, store.RulerPassPlan{
 		SnapshotProgramIDs:  snapshotProgramIDs(desiredIDs, skipIntent, existingSet),
 		ExistingProgramIDs:  keys(existingSet),
 		Reservations:        inputs,
 		FulfilledProgramIDs: fulfilled,
 		DeleteProgramIDs:    toDelete,
-		Now:                 now,
+		Now:                 applyNow,
 		RetractGrace:        r.cfg.RetractGrace,
 		MaxDeletesPerPass:   r.cfg.MaxDeletesPerPass,
 		BreakerName:         breaker.RulerDeletes,

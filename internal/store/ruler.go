@@ -55,9 +55,10 @@ type RulerPassPlan struct {
 	Reservations        []RulerReservationInput
 	FulfilledProgramIDs []int64
 	DeleteProgramIDs    []int64
-	Now                 time.Time
-	RetractGrace        time.Duration
-	MaxDeletesPerPass   int
+	// Now は撤回猶予窓の判定に使う適用時刻である。
+	Now               time.Time
+	RetractGrace      time.Duration
+	MaxDeletesPerPass int
 	// BreakerName は削除閾値を超えたとき発動するブレーカー識別子である。
 	BreakerName    string
 	BreakerTripped bool
