@@ -16,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -317,18 +316,18 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 	}
 }
 
-// TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect は、DB セッションが
-// canonical の rename 前に失われても、失敗後の canonical を孤児回収が消さず、
-// orphan_files の追跡記録も保持することを確認する。
-func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
+// TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure は、rename 後に
+// publish callback が失敗しても canonical を孤児回収が消さず、orphan_files の
+// 追跡記録も保持することを確認する。
+func TestIngestWorker_CanonicalOrphanSurvivesPublishCallbackFailure(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	mediaDir := t.TempDir()
 	ctx := context.Background()
-	const relPath = "sites/default/lock/db-disconnect.m2ts"
-	const content = "canonical bytes after the lost database session"
+	const relPath = "sites/default/lock/callback-failure.m2ts"
+	const content = "canonical bytes after callback failure"
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-db-disconnect")
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
@@ -350,23 +349,18 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	releasePublication := make(chan struct{})
 	var releasePublicationOnce sync.Once
 	release := func() { releasePublicationOnce.Do(func() { close(releasePublication) }) }
-	originalPublication := beforeIngestFilePublication
+	originalPublication := afterIngestFilePublication
 	t.Cleanup(func() {
 		release()
-		beforeIngestFilePublication = originalPublication
+		afterIngestFilePublication = originalPublication
 	})
-	beforeIngestFilePublication = func(_ context.Context, tx pgx5.Tx) error {
-		// Close the actual transaction connection before rename. The commit will
-		// fail after the hook is released and leave a canonical orphan.
-		if err := tx.Conn().Close(context.Background()); err != nil {
-			return fmt.Errorf("closing transaction connection in test: %w", err)
-		}
+	afterIngestFilePublication = func() error {
 		close(publicationStarted)
 		<-releasePublication
-		return nil
+		return errors.New("injected publication callback failure")
 	}
 
-	w := &IngestWorker{Pool: pool, MediaDir: mediaDir}
+	w := &IngestWorker{Pool: pool, Publisher: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
@@ -394,8 +388,8 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 		t.Fatalf("commit did not reach the publication hook (result: %v)", err)
 	}
 
-	// The DB session is already gone, but rename has not started. Canonical names
-	// are report-only, so cleanup leaves the orphan record untouched.
+	// The canonical rename completed but the transaction is open. The path lock
+	// prevents cleanup from deleting the file before the failed callback rolls back.
 	cleanup := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(relPath, 0)
 	var orphanCount int
@@ -406,8 +400,8 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	if orphanCount != 1 {
 		t.Fatalf("orphan record count while commit is paused = %d, want 1", orphanCount)
 	}
-	if _, err := os.Stat(fullPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("canonical file before publication: stat error = %v, want not exist", err)
+	if got, err := os.ReadFile(fullPath); err != nil || string(got) != content {
+		t.Fatalf("canonical file while publication is paused = %q, err %v; want %q", got, err, content)
 	}
 	select {
 	case err := <-commitDone:
@@ -418,7 +412,7 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 
 	release()
 	if err := waitCommit(); err == nil {
-		t.Fatal("commit succeeded after its database session was closed")
+		t.Fatal("commit succeeded after the publication callback failed")
 	}
 	got, err := os.ReadFile(fullPath)
 	if err != nil {
@@ -445,7 +439,7 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 
 // TestIngestWorker_CommitStopPointsKeepMirakcRecord は、公開プロトコルの 3 つの
 // 停止点を検証する。rename 前の失敗では temp を残し、rename 後の fsync/DB
-// commit 失敗では canonical が孤児として残る。どの場合も DB 行と mirakc の
+// callback / fsync 失敗では canonical が孤児として残る。どの場合も DB 行と mirakc の
 // 削除は公開点（DB commit）まで発生せず、同じジョブを再試行できる。
 func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 	setFastIngestFollow(t)
@@ -476,11 +470,15 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			},
 		},
 		{
-			name:             "database commit after rename",
+			name:             "publication callback after rename",
 			canonicalOnError: true,
 			installFailure: func(t *testing.T) {
-				commitIngestTransaction = func(context.Context, pgx5.Tx) error {
-					return errors.New("injected database commit failure")
+				original := afterIngestFilePublication
+				afterIngestFilePublication = func() error {
+					if err := original(); err != nil {
+						return err
+					}
+					return errors.New("injected publication callback failure")
 				}
 			},
 		},
@@ -501,6 +499,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
 				Pool:          pool,
+				Publisher:     pgstore.NewMedia(pool),
 				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
@@ -510,11 +509,11 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 
 			originalRename := renameIngestFile
 			originalSync := syncIngestParentDir
-			originalCommit := commitIngestTransaction
+			originalAfter := afterIngestFilePublication
 			restoreHooks := func() {
 				renameIngestFile = originalRename
 				syncIngestParentDir = originalSync
-				commitIngestTransaction = originalCommit
+				afterIngestFilePublication = originalAfter
 			}
 			t.Cleanup(restoreHooks)
 			tt.installFailure(t)

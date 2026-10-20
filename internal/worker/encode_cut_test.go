@@ -19,11 +19,11 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -522,11 +522,18 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 // うち、行の upsert を除いた部分。テストが前状態を作るために使う）。
 func setFrozenCuts(t *testing.T, pool *pgxpool.Pool, assetID int64, keep []chapters.Range) error {
 	t.Helper()
-	ranges, err := db.KeepRangesParam(keep)
+	ranges, err := pgstore.KeepRangesParam(keep)
 	if err != nil {
 		return err
 	}
-	return replaceMediaAssetCuts(context.Background(), sqlcgen.New(pool), assetID, ranges)
+	q := sqlcgen.New(pool)
+	if err := q.DeleteMediaAssetCuts(context.Background(), assetID); err != nil {
+		return err
+	}
+	return q.InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
+		MediaAssetID: assetID,
+		KeepRanges:   ranges,
+	})
 }
 
 func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T) {
@@ -558,7 +565,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		t.Fatalf("seeding running encode attempt: %v", err)
 	}
 
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", &cutContext{keep: currentKeep}, nil)
+	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", &cutContext{keep: currentKeep})
 	if err != nil {
 		t.Fatalf("observing stale encoded asset: %v", err)
 	}
@@ -566,24 +573,22 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		t.Fatalf("observed plan = %+v, want an active stale cut that an ordinary job might replace", observed)
 	}
 
-	tx, err := pool.Begin(ctx)
+	publishedCalls := 0
+	published, err := pgstore.NewMedia(pool).PublishEncoded(ctx, store.EncodedPublishInput{
+		RecordingID:     recordingID,
+		Profile:         "cut",
+		Attempt:         1,
+		RelPath:         "rebuild/stale_cut.g2.mp4",
+		SizeBytes:       1,
+		ObservedRelPath: observed.observedRelPath,
+		Cut:             true,
+		KeepRanges:      currentKeep,
+	}, func() error { publishedCalls++; return nil })
 	if err != nil {
-		t.Fatalf("beginning publish check: %v", err)
+		t.Fatalf("publishing ordinary cut encode: %v", err)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
-	decision, err := w.prepareEncodePublish(ctx, sqlcgen.New(tx), encodePublishInput{
-		recordingID: recordingID,
-		profile:     "cut",
-		attempt:     1,
-		observed:    observed,
-		cut:         &cutContext{keep: currentKeep},
-	})
-	if err != nil {
-		t.Fatalf("preparing ordinary publish: %v", err)
-	}
-	if !decision.skip {
-		t.Fatal("ordinary job was allowed to replace an active cut asset without a matching rebuild request")
+	if published || publishedCalls != 0 {
+		t.Fatalf("publish = %v callback calls = %d; active cut must not be replaced without a rebuild request", published, publishedCalls)
 	}
 }
 

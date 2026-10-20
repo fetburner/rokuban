@@ -17,11 +17,18 @@ type MediaFixture struct {
 	Serving   store.MediaServing
 	Reconcile store.MediaReconcile
 	Storage   store.StorageObservation
+	Publisher store.MediaPublish
 
 	// Site は NewRecording が作る録画の site。
 	Site string
 
 	NewRecording                  func(t *testing.T) int64
+	SetEncodeProfiles             func(t *testing.T, recordingID int64, profiles []string)
+	BeginEncodeAttempt            func(t *testing.T, recordingID int64, profile string) int32
+	HasEncodePolicy               func(t *testing.T, recordingID int64) (store.EncodePolicySnapshot, bool)
+	SetIngestProgress             func(t *testing.T, recordingID int64, written int64, expected *int64)
+	HasIngestProgress             func(t *testing.T, recordingID int64) bool
+	NewInPlaceInput               func(t *testing.T, relPath string) store.InPlaceInput
 	NewAsset                      func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64
 	SetAssetState                 func(t *testing.T, assetID int64, state string)
 	SetMediaAssetKeepRanges       func(t *testing.T, assetID int64, keep []chapters.Range)
@@ -59,6 +66,225 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("thumbnail reselection candidates carry typed timeline and inputs", func(t *testing.T) { runMediaThumbnailCandidates(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
+}
+
+// RunMediaPublish verifies the atomic publication and in-place registration contract.
+func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
+	t.Helper()
+	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
+	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
+	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
+	t.Run("encoded callback failure rolls back asset", func(t *testing.T) { runEncodedPublicationRollback(t, newFixture) })
+	t.Run("thumbnail and seek tiles publish through one callback", func(t *testing.T) { runDerivedPublication(t, newFixture) })
+	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
+	t.Run("in-place registration is idempotent and prefers published rows", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+}
+
+func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	expected := int64(2000)
+	f.SetIngestProgress(t, id, 1000, &expected)
+	resolverCalls, publishCalls := 0, 0
+	if _, ok := f.HasEncodePolicy(t, id); ok {
+		t.Fatal("encode policy exists before original commit")
+	}
+	err := f.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
+		RecordingID: id, RelPath: fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), SizeBytes: 1000,
+	}, func(in store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
+		resolverCalls++
+		if in.RecordingID != id || in.Site != f.Site || in.Reservation != nil {
+			t.Fatalf("policy inputs = %+v; want recording %d/site %q without reservation", in, id, f.Site)
+		}
+		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{"h264"}, CMDetect: true}, nil
+	}, func() error { publishCalls++; return nil })
+	if err != nil {
+		t.Fatalf("CommitOriginal: %v", err)
+	}
+	if resolverCalls != 1 || publishCalls != 1 {
+		t.Fatalf("resolver calls = %d, publisher calls = %d; want one each", resolverCalls, publishCalls)
+	}
+	if _, err := f.Serving.GetOriginalMediaAssetForServing(ctx, id); err != nil {
+		t.Fatalf("committed original is not visible: %v", err)
+	}
+	policy, ok := f.HasEncodePolicy(t, id)
+	if !ok || policy.KeepOriginal != "always" || len(policy.EncodeProfiles) != 1 || policy.EncodeProfiles[0] != "h264" || !policy.CMDetect {
+		t.Fatalf("frozen policy = %+v (found=%v), want always/[h264]/cmDetect", policy, ok)
+	}
+	if f.HasIngestProgress(t, id) {
+		t.Fatal("ingest progress remains after original commit")
+	}
+}
+
+func runOriginalPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	expected := int64(2000)
+	f.SetIngestProgress(t, id, 1000, &expected)
+	wantErr := errors.New("publish failed")
+	publishCalls := 0
+	err := f.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
+		RecordingID: id, RelPath: fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), SizeBytes: 1,
+	}, func(store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
+		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{}}, nil
+	}, func() error { publishCalls++; return wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("CommitOriginal error = %v, want publish failure", err)
+	}
+	if publishCalls != 1 {
+		t.Fatalf("publisher calls = %d, want 1", publishCalls)
+	}
+	if _, err := f.Serving.GetOriginalMediaAssetForServing(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("original after rollback error = %v, want ErrNotFound", err)
+	}
+	if _, ok := f.HasEncodePolicy(t, id); ok {
+		t.Fatal("encode policy row survived callback rollback")
+	}
+	if !f.HasIngestProgress(t, id) {
+		t.Fatal("ingest progress deletion survived callback rollback")
+	}
+}
+
+func runEncodedPublicationRechecks(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.SetEncodeProfiles(t, id, []string{"h264"})
+	attempt := f.BeginEncodeAttempt(t, id, "h264")
+	input := store.EncodedPublishInput{
+		RecordingID: id, Profile: "h264", Attempt: attempt + 1,
+		RelPath: fmt.Sprintf("sites/%s/%d/encoded.mp4", f.Site, id), SizeBytes: 1,
+	}
+	publishCalls := 0
+	published, err := f.Publisher.PublishEncoded(ctx, input, func() error { publishCalls++; return nil })
+	if err != nil || published || publishCalls != 0 {
+		t.Fatalf("stale attempt publish = (%v, %v), callback calls %d; want skip without callback", published, err, publishCalls)
+	}
+	input.Attempt = attempt
+	f.SetEncodeProfiles(t, id, nil)
+	published, err = f.Publisher.PublishEncoded(ctx, input, func() error { publishCalls++; return nil })
+	if err != nil || published || publishCalls != 0 {
+		t.Fatalf("removed desired profile publish = (%v, %v), callback calls %d; want skip without callback", published, err, publishCalls)
+	}
+	f.SetEncodeProfiles(t, id, []string{"h264"})
+	published, err = f.Publisher.PublishEncoded(ctx, input, func() error { publishCalls++; return nil })
+	if err != nil || !published || publishCalls != 1 {
+		t.Fatalf("current encoded publish = (%v, %v), callback calls %d; want one committed callback", published, err, publishCalls)
+	}
+	if _, err := f.Serving.GetEncodedMediaAssetForServing(ctx, id, "h264"); err != nil {
+		t.Fatalf("published encoded asset is not visible: %v", err)
+	}
+}
+
+func runEncodedPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.SetEncodeProfiles(t, id, []string{"h264"})
+	attempt := f.BeginEncodeAttempt(t, id, "h264")
+	wantErr := errors.New("publish failed")
+	publishCalls := 0
+	published, err := f.Publisher.PublishEncoded(ctx, store.EncodedPublishInput{
+		RecordingID: id, Profile: "h264", Attempt: attempt,
+		RelPath: fmt.Sprintf("sites/%s/%d/encoded.mp4", f.Site, id), SizeBytes: 1,
+	}, func() error { publishCalls++; return wantErr })
+	if published || !errors.Is(err, wantErr) || publishCalls != 1 {
+		t.Fatalf("encoded publish with callback failure = (%v, %v), callback calls %d; want rollback after one callback", published, err, publishCalls)
+	}
+	if _, err := f.Serving.GetEncodedMediaAssetForServing(ctx, id, "h264"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("encoded asset after callback rollback = %v, want ErrNotFound", err)
+	}
+}
+
+func runDerivedPublication(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	originalID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "active")
+	thumbnailCalls := 0
+	thumbnailPath := fmt.Sprintf("thumbnails/%d.jpg", id)
+	published, err := f.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: thumbnailPath, SizeBytes: 10, InputAssetID: originalID,
+	}, func() error { thumbnailCalls++; return nil })
+	if err != nil || !published || thumbnailCalls != 1 {
+		t.Fatalf("thumbnail publish = (%v, %v), callback calls %d; want one committed callback", published, err, thumbnailCalls)
+	}
+	if _, err := f.Serving.GetThumbnailMediaAssetForServing(ctx, id); err != nil {
+		t.Fatalf("published thumbnail is not visible: %v", err)
+	}
+
+	seekCalls := 0
+	published, err = f.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+		RecordingID: id, RelPath: fmt.Sprintf("thumbnails/%d_tiles.jpg", id), SizeBytes: 20,
+	}, func() error { seekCalls++; return nil })
+	if err != nil || !published || seekCalls != 1 {
+		t.Fatalf("seek tiles publish = (%v, %v), callback calls %d; want one committed callback", published, err, seekCalls)
+	}
+	if _, err := f.Serving.GetSeekTilesMediaAssetForServing(ctx, id); err != nil {
+		t.Fatalf("published seek tiles are not visible: %v", err)
+	}
+}
+
+func runDerivedPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	originalID := f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "active")
+	wantErr := errors.New("publish failed")
+	thumbnailCalls := 0
+	published, err := f.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: fmt.Sprintf("thumbnails/%d.jpg", id), SizeBytes: 10, InputAssetID: originalID,
+	}, func() error { thumbnailCalls++; return wantErr })
+	if published || !errors.Is(err, wantErr) || thumbnailCalls != 1 {
+		t.Fatalf("thumbnail publish with callback failure = (%v, %v), callback calls %d; want rollback after one callback", published, err, thumbnailCalls)
+	}
+	if _, err := f.Serving.GetThumbnailMediaAssetForServing(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("thumbnail asset after callback rollback = %v, want ErrNotFound", err)
+	}
+
+	seekCalls := 0
+	published, err = f.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+		RecordingID: id, RelPath: fmt.Sprintf("thumbnails/%d_tiles.jpg", id), SizeBytes: 20,
+	}, func() error { seekCalls++; return wantErr })
+	if published || !errors.Is(err, wantErr) || seekCalls != 1 {
+		t.Fatalf("seek tiles publish with callback failure = (%v, %v), callback calls %d; want rollback after one callback", published, err, seekCalls)
+	}
+	if _, err := f.Serving.GetSeekTilesMediaAssetForServing(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("seek tiles asset after callback rollback = %v, want ErrNotFound", err)
+	}
+}
+
+func runInPlacePublication(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	input := f.NewInPlaceInput(t, fmt.Sprintf("sites/%s/imported/%d.m2ts", f.Site, time.Now().UnixNano()))
+	first, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("first RegisterInPlace: %v", err)
+	}
+	second, err := f.Publisher.RegisterInPlace(ctx, input)
+	if err != nil {
+		t.Fatalf("second RegisterInPlace: %v", err)
+	}
+	if first.RecordingID != second.RecordingID || len(first.AssetIDs) != 1 || len(second.AssetIDs) != 1 || first.AssetIDs[0] != second.AssetIDs[0] {
+		t.Fatalf("idempotent results = %+v then %+v", first, second)
+	}
+
+	path := fmt.Sprintf("sites/%s/imported/preferred-%d.m2ts", f.Site, time.Now().UnixNano())
+	staleRecording := f.NewRecording(t)
+	liveRecording := f.NewRecording(t)
+	staleAsset := f.NewAsset(t, staleRecording, "original", nil, path, "deleted")
+	liveAsset := f.NewAsset(t, liveRecording, "original", nil, path, "active")
+	preferred := f.NewInPlaceInput(t, path)
+	got, err := f.Publisher.RegisterInPlace(ctx, preferred)
+	if err != nil {
+		t.Fatalf("RegisterInPlace with deleted and active rows: %v", err)
+	}
+	if got.RecordingID != liveRecording || len(got.AssetIDs) != 1 || got.AssetIDs[0] != liveAsset || got.AssetIDs[0] == staleAsset {
+		t.Fatalf("in-place preferred result = %+v, want active row recording %d/asset %d (deleted asset %d)", got, liveRecording, liveAsset, staleAsset)
+	}
 }
 
 func runMediaJobInputs(t *testing.T, newFixture NewMediaFixture) {

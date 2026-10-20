@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -179,7 +178,7 @@ func (s *Media) RequestCutRebuild(ctx context.Context, recordingID int64, profil
 	if !slices.Contains(desired, profile) {
 		return fmt.Errorf("recording %d profile %q: %w", recordingID, profile, store.ErrProfileNotDesired)
 	}
-	requestedKeep, err := db.KeepRangesParam(keep)
+	requestedKeep, err := KeepRangesParam(keep)
 	if err != nil {
 		return fmt.Errorf("encoding requested keep ranges for recording %d: %w", recordingID, err)
 	}

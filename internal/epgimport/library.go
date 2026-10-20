@@ -6,13 +6,12 @@ import (
 	"hash/fnv"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // LibraryItem は 1 件の EPGStation Recorded を表す import 入力。
@@ -96,7 +95,7 @@ type LibraryImportResult struct {
 // 入っていることを worker 起動時に検査する（internal/worker/media_asset_namespace.go）
 // ので、import 経路もこれに合わせないと import 済みの録画で worker が
 // crash-loop する。
-func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site string, items []LibraryItem) (LibraryImportResult, error) {
+func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, site string, items []LibraryItem) (LibraryImportResult, error) {
 	var res LibraryImportResult
 	for _, item := range items {
 		var assets []inplace.Asset
@@ -186,7 +185,7 @@ func ImportLibrary(ctx context.Context, pool *pgxpool.Pool, mediaDir, site strin
 			},
 			Assets: assets,
 		}
-		if _, err := inplace.Register(ctx, pool, mediaDir, in); err != nil {
+		if _, err := inplace.Register(ctx, publisher, mediaDir, in); err != nil {
 			return res, fmt.Errorf("registering recorded %q: %w", item.Name, err)
 		}
 		res.Registered++

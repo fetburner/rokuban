@@ -14,7 +14,14 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/serverevent"
+	"github.com/fetburner/rokuban/internal/store"
 )
+
+type encodeProgressReporterFunc func(context.Context, store.EncodeProgress) error
+
+func (f encodeProgressReporterFunc) ReportEncodeProgress(ctx context.Context, progress store.EncodeProgress) error {
+	return f(ctx, progress)
+}
 
 func TestProbeEncodeDuration_TimesOutWithoutDelayingEncode(t *testing.T) {
 	run := func(ctx context.Context, _ string, _ ...string) ([]byte, error) {
@@ -48,14 +55,10 @@ func TestEncodeProgressReporter_FlushesFinalValueOnStop(t *testing.T) {
 		profile:     "mobile",
 		duration:    4 * time.Second,
 		interval:    time.Hour,
-		notify: func(_ context.Context, payload string) error {
-			var event serverevent.EncodeProgressEvent
-			if err := json.Unmarshal([]byte(payload), &event); err != nil {
-				t.Errorf("unmarshal progress: %v", err)
-			}
-			sent <- event
+		reporter: encodeProgressReporterFunc(func(_ context.Context, progress store.EncodeProgress) error {
+			sent <- serverevent.EncodeProgressEvent{Type: serverevent.EncodeProgressEventType, RecordingID: progress.RecordingID, Profile: progress.Profile, Progress: progress.Progress}
 			return nil
-		},
+		}),
 		log: slog.Default(),
 	}
 
@@ -80,14 +83,10 @@ func TestEncodeProgressReporter_PublishesLatestValue(t *testing.T) {
 		profile:     "mobile",
 		duration:    4 * time.Second,
 		interval:    20 * time.Millisecond,
-		notify: func(_ context.Context, payload string) error {
-			var event serverevent.EncodeProgressEvent
-			if err := json.Unmarshal([]byte(payload), &event); err != nil {
-				t.Errorf("unmarshal progress: %v", err)
-			}
-			sent <- event
+		reporter: encodeProgressReporterFunc(func(_ context.Context, progress store.EncodeProgress) error {
+			sent <- serverevent.EncodeProgressEvent{Type: serverevent.EncodeProgressEventType, RecordingID: progress.RecordingID, Profile: progress.Profile, Progress: progress.Progress}
 			return nil
-		},
+		}),
 		log: slog.Default(),
 	}
 
@@ -121,7 +120,7 @@ func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
 		profile:     "mobile",
 		duration:    4 * time.Second,
 		interval:    time.Millisecond,
-		notify: func(_ context.Context, _ string) error {
+		reporter: encodeProgressReporterFunc(func(_ context.Context, _ store.EncodeProgress) error {
 			// stop() は最後に report() された値が変わっていれば flush し直す
 			// （TestEncodeProgressReporter_FlushesFinalValueOnStop）ので、この
 			// テストの終盤（report が 10,000 回呼ばれた後の stop()）でも
@@ -130,7 +129,7 @@ func TestEncodeProgressReporter_DoesNotBlockFFmpegReader(t *testing.T) {
 			notifyStartedOnce.Do(func() { close(notifyStarted) })
 			<-releaseNotify
 			return nil
-		},
+		}),
 		log: slog.Default(),
 	}
 

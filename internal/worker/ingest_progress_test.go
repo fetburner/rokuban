@@ -65,7 +65,7 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 
 	recordingID := insertTestRecording(t, pool)
 	reporter := &ingestProgressReporter{
-		pool:        pool,
+		publisher:   newTestMediaStore(pool),
 		recordingID: recordingID,
 		interval:    time.Hour,
 		log:         slog.Default(),

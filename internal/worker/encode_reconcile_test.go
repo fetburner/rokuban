@@ -243,9 +243,9 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 	}
 }
 
-func mustKeepRanges(t *testing.T, keep []chapters.Range) db.KeepRanges {
+func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
 	t.Helper()
-	ranges, err := db.KeepRangesParam(keep)
+	ranges, err := pgstore.KeepRangesParam(keep)
 	if err != nil {
 		t.Fatalf("encoding requested keep ranges: %v", err)
 	}

@@ -155,7 +155,7 @@ ORDER BY m.recording_id, m.profile;
 -- 返す。ごみ箱の録画・原本が active でない録画は view（unsatisfied_encode_rebuilds）が
 -- 落とす。投入してもごみ箱の録画を作る / EncodeWorker が作れない。要求行は消さず、
 -- 復元されたら再び拾う。満たされた要求は返さない。
--- keep は int8multirange のまま返し、Go 側は db.KeepRangesFromMultirange で戻す。
+-- keep は int8multirange のまま返し、Go 側は pgstore.KeepRangesFromMultirange で戻す。
 -- name: ListEncodedAssetRebuildRequests :many
 SELECT q.recording_id,
        q.profile,

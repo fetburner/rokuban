@@ -117,6 +117,8 @@ type Deps struct {
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaReconcile        store.MediaReconcile
+	MediaPublish          store.MediaPublish
+	EncodeProgress        store.EncodeProgressReporter
 	MediaDelete           store.MediaDelete
 	TSScan                store.TSScan
 	EncodeAttempts        store.EncodeAttempts
@@ -188,6 +190,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Enqueuer:         deps.Enqueuer,
 		MirakcClients:    deps.MirakcClients,
 		Pool:             deps.Pool,
+		Publisher:        deps.MediaPublish,
 		RecordTarget:     recordings,
 		CMDetectionStore: deps.CMDetectionStore,
 		MediaDir:         deps.MediaDir,
@@ -200,6 +203,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Pool:       deps.Pool,
 		Media:      deps.MediaReconcile,
 		Attempts:   deps.EncodeAttempts,
+		Publisher:  deps.MediaPublish,
+		Progress:   deps.EncodeProgress,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
@@ -251,15 +256,16 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MediaDir: deps.MediaDir,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
-		Pool:       deps.Pool,
 		Media:      deps.MediaReconcile,
+		Publisher:  deps.MediaPublish,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
 		FFprobe:    deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
-		Pool:       deps.Pool,
+		Media:      deps.MediaReconcile,
+		Publisher:  deps.MediaPublish,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,

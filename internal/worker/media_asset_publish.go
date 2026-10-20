@@ -10,16 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/mediapath"
 )
-
-type skipMediaAssetPublish func(context.Context, *sqlcgen.Queries) (bool, error)
-type mediaAssetUpsert func(context.Context, *sqlcgen.Queries, int64) error
 
 // newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
 func newWorkerScratchDir(scratchRoot, kind, prefix string) (string, error) {
@@ -225,83 +216,4 @@ func (s stagedMediaFile) discard() {
 	if s.tempPath != "" {
 		_ = os.Remove(s.tempPath)
 	}
-}
-
-// publishGeneratedMediaAsset makes a completed thumbnail or seek-tile sheet
-// visible using the same rel_path protocol as ingest and encode. The row is
-// upserted inside an uncommitted transaction first to reserve its path; the
-// staged file is then renamed and its parent synced before commit.
-func publishGeneratedMediaAsset(
-	ctx context.Context,
-	pool *pgxpool.Pool,
-	mediaDir, relPath, scratchPath string,
-	shouldSkip skipMediaAssetPublish,
-	upsert mediaAssetUpsert,
-) (size int64, published bool, err error) {
-	finalPath, err := mediapath.Resolve(mediaDir, relPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("resolving generated media asset: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return 0, false, fmt.Errorf("creating media asset directory: %w", err)
-	}
-	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
-	if err != nil {
-		return 0, false, err
-	}
-	defer staged.discard()
-
-	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
-	if err != nil {
-		return 0, false, fmt.Errorf("locking generated media asset: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
-
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return 0, false, fmt.Errorf("beginning generated media asset commit: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	skip, err := shouldSkip(ctx, q)
-	if err != nil {
-		return 0, false, fmt.Errorf("rechecking generated media asset publication: %w", err)
-	}
-	if skip {
-		return 0, false, nil
-	}
-	if err := upsert(ctx, q, staged.size); err != nil {
-		return 0, false, fmt.Errorf("upserting generated media asset: %w", err)
-	}
-	if err := staged.publish(); err != nil {
-		return 0, false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("committing generated media asset: %w", err)
-	}
-	return staged.size, true, nil
-}
-
-// skipSeekTilesPublish は commit tx 内で、seek tiles の公開を飛ばすべきかを返す。
-// active な seek tiles が既にあるか、原本が active でなくなったときに true。
-// thumbnail は skipThumbnailPlanPublish が担う。
-func skipSeekTilesPublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (bool, error) {
-	return skipGeneratedPublish(ctx, q, recordingID, q.GetActiveSeekTilesMediaAssetID)
-}
-
-func skipGeneratedPublish(
-	ctx context.Context, q *sqlcgen.Queries, recordingID int64,
-	activeDerived func(context.Context, int64) (int64, error),
-) (bool, error) {
-	if _, err := activeDerived(ctx, recordingID); err == nil {
-		return true, nil
-	} else if !errors.Is(err, pgx5.ErrNoRows) {
-		return false, err
-	}
-	if _, err := q.GetActiveOriginalMediaAsset(ctx, recordingID); errors.Is(err, pgx5.ErrNoRows) {
-		return true, nil
-	} else if err != nil {
-		return false, err
-	}
-	return false, nil
 }

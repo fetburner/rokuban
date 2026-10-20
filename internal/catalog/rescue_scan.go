@@ -14,13 +14,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // statRescueCandidate allows tests to pause between walk observation and registration.
@@ -39,7 +38,7 @@ var statRescueCandidate = os.Lstat
 // 前置の無いファイルは site を決められないため登録せず、ファイルごとに Warn を
 // 1 回出す。レジストリに無い site を持つ前置は復元を続け、site ごとに 1 回だけ
 // Warn する。
-func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registrySites []string) (*RescueResult, error) {
+func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
 	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving media_dir symlinks for rescue: %w", err)
@@ -113,7 +112,7 @@ func rescueStorage(ctx context.Context, pool *pgxpool.Pool, mediaDir string, reg
 			return nil
 		}
 
-		_, err = inplace.Register(ctx, pool, realMediaDir, inplace.Input{
+		_, err = inplace.Register(ctx, publisher, realMediaDir, inplace.Input{
 			Recording: inplace.Recording{
 				// ストレージ再スキャンには予約も program_intents も残っていない。
 				// ユーザーの明示的な意図を示す材料が無いので manual ではなく

@@ -13,11 +13,7 @@ import (
 	"strings"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -49,9 +45,9 @@ const (
 // mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
 // の doc コメント参照。
 type ThumbnailWorker struct {
-	Pool *pgxpool.Pool
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
+	Publisher  store.MediaPublish
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -115,33 +111,36 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		return fmt.Errorf("scratch thumbnail is empty")
 	}
 
-	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, plan.relPath, scratchPath,
-		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return skipThumbnailPlanPublish(ctx, q, recordingID, plan.expected, plan.inputID)
-		},
-		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
-			var assetID int64
-			if plan.expected == nil {
-				var err error
-				assetID, err = q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-					RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
-				})
-				if err != nil {
-					return err
-				}
-			} else {
-				assetID = plan.expected.ID
-				if err := q.UpdateThumbnailMediaAssetPath(ctx, sqlcgen.UpdateThumbnailMediaAssetPathParams{
-					RelPath: plan.relPath, SizeBytes: size, ID: assetID,
-				}); err != nil {
-					return err
-				}
-			}
-			return q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
-				MediaAssetID: assetID,
-				SeekMs:       plan.seekMs,
-			})
-		})
+	finalPath, err := mediapath.Resolve(w.MediaDir, plan.relPath)
+	if err != nil {
+		return fmt.Errorf("resolving generated thumbnail path: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		return fmt.Errorf("creating thumbnail directory: %w", err)
+	}
+	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
+	if err != nil {
+		return fmt.Errorf("staging thumbnail: %w", err)
+	}
+	defer staged.discard()
+	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, plan.relPath)
+	if err != nil {
+		return fmt.Errorf("locking generated media asset: %w", err)
+	}
+	defer func() { _ = fileLock.Close() }()
+	publisher := w.mediaPublisher()
+	if publisher == nil {
+		return fmt.Errorf("publishing thumbnail: media publisher is nil")
+	}
+	expected := (*store.ThumbnailObservation)(nil)
+	if plan.expected != nil {
+		expected = &store.ThumbnailObservation{ID: plan.expected.ID, RelPath: plan.expected.RelPath, SeekMs: plan.expected.SeekMs}
+	}
+	size := staged.size
+	published, err := publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+		RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: staged.size,
+		SeekMs: plan.seekMs, InputAssetID: plan.inputID, Expected: expected,
+	}, staged.publish)
 	if err != nil {
 		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
@@ -170,7 +169,7 @@ func (w *ThumbnailWorker) buildThumbnailPlan(
 		return thumbnailWorkPlan{}, false, fmt.Errorf("checking thumbnail: %w", err)
 	}
 	if !activeThumbnail {
-		// ごみ箱は commit 時の skipThumbnailPlanPublish が LockRecording で弾く。
+		// ごみ箱は公開時に MediaPublish.PublishThumbnail が録画行をロックして弾く。
 		return w.initialThumbnailPlan(ctx, recordingID, log)
 	}
 	// 候補クエリは reconcile と同じ 1 本。ごみ箱・チャプター無し・purged は除外済み。
@@ -321,65 +320,16 @@ type thumbnailObserved struct {
 	SeekMs  *int64
 }
 
-// skipThumbnailPlanPublish rechecks the observed row under the same transaction
-// that publishes the new file. For replacements it locks the existing media row so
-// two workers cannot publish over the same generation.
-func skipThumbnailPlanPublish(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	recordingID int64,
-	expected *thumbnailObserved,
-	inputAssetID int64,
-) (bool, error) {
-	recording, err := q.LockRecording(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return true, nil
+// mediaPublisher はサムネイル公開の store 契約を返す。
+// 部分テストや既存の構成では Media が読み書き両方を満たす実装を使える。
+func (w *ThumbnailWorker) mediaPublisher() store.MediaPublish {
+	if w.Publisher != nil {
+		return w.Publisher
 	}
-	if err != nil {
-		return false, err
+	if publisher, ok := w.Media.(store.MediaPublish); ok {
+		return publisher
 	}
-	if recording.IsTrashed || recording.IsPurged {
-		return true, nil
-	}
-
-	if expected == nil {
-		if _, err := q.GetActiveThumbnailMediaAssetID(ctx, recordingID); err == nil {
-			return true, nil
-		} else if !errors.Is(err, pgx5.ErrNoRows) {
-			return false, err
-		}
-		original, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return original.ID != inputAssetID, nil
-	}
-
-	current, err := q.LockActiveThumbnailMediaAsset(ctx, recordingID)
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return true, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	if current.ID != expected.ID || current.RelPath != expected.RelPath || !sameThumbnailSeek(current.SeekMs, expected.SeekMs) {
-		return true, nil
-	}
-	active, err := q.IsActiveThumbnailInput(ctx, inputAssetID)
-	if err != nil {
-		return false, err
-	}
-	return !active, nil
-}
-
-func sameThumbnailSeek(a, b *int64) bool {
-	if a == nil || b == nil {
-		return a == nil && b == nil
-	}
-	return *a == *b
+	return nil
 }
 
 func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {
@@ -434,7 +384,7 @@ func (w *ThumbnailWorker) commandOutput(ctx context.Context, name string, args .
 }
 
 // copyScratchFileFsync は scratch 上の src を scratch 上の dst へコピーし、dst を fsync する。
-// 公開アセットへのコピーは publishGeneratedMediaAsset の stage + rename 経路を使う。
+// 公開アセットは stageMediaFile で同じディレクトリへ置き、MediaPublish の callback で rename する。
 func copyScratchFileFsync(src, dst string) (int64, error) {
 	in, err := os.Open(src)
 	if err != nil {

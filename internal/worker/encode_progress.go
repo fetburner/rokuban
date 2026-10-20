@@ -2,12 +2,11 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/serverevent"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -22,7 +21,7 @@ type encodeProgressReporter struct {
 	profile     string
 	duration    time.Duration
 	interval    time.Duration
-	notify      func(context.Context, string) error
+	reporter    store.EncodeProgressReporter
 	log         *slog.Logger
 }
 
@@ -85,13 +84,14 @@ func (r *encodeProgressReporter) run(notifyCtx, stopCtx context.Context, latest 
 
 		progress := float64(v) / float64(r.duration)
 		progress = max(0, min(progress, 1))
-		payload, _ := json.Marshal(serverevent.EncodeProgressEvent{
-			Type:        serverevent.EncodeProgressEventType,
+		if r.reporter == nil {
+			return
+		}
+		if err := r.reporter.ReportEncodeProgress(notifyCtx, store.EncodeProgress{
 			RecordingID: r.recordingID,
 			Profile:     r.profile,
 			Progress:    progress,
-		})
-		if err := r.notify(notifyCtx, string(payload)); err != nil && notifyCtx.Err() == nil {
+		}); err != nil && notifyCtx.Err() == nil {
 			r.log.Warn("encode: progress notify failed",
 				"recording_id", r.recordingID, "profile", r.profile, "err", err)
 		}

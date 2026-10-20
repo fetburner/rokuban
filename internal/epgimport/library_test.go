@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -33,7 +34,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
 	}}
 
-	first, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
+	first, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "default", items)
 	if err != nil {
 		t.Fatalf("first ImportLibrary: %v", err)
 	}
@@ -41,7 +42,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 		t.Fatalf("first.Registered = %d, want 1", first.Registered)
 	}
 
-	second, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
+	second, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "default", items)
 	if err != nil {
 		t.Fatalf("second ImportLibrary: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
 	}}
 
-	if _, err := ImportLibrary(context.Background(), pool, mediaDir, "tokyo", items); err != nil {
+	if _, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "tokyo", items); err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}
 
@@ -135,7 +136,7 @@ func TestImportLibrary_RejectsReservedOriginalFilename(t *testing.T) {
 				VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: reservedPath}},
 			}}
 
-			if _, err := ImportLibrary(context.Background(), pool, mediaDir, "tokyo", items); err == nil {
+			if _, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "tokyo", items); err == nil {
 				t.Fatal("ImportLibrary accepted a reserved original filename")
 			} else if !strings.Contains(err.Error(), "reserved storage filename") {
 				t.Fatalf("ImportLibrary error = %v, want reserved storage filename", err)
@@ -170,7 +171,7 @@ func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "encoded", RelPath: "show.mp4"}},
 	}}
 
-	result, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
+	result, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "default", items)
 	if err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
 		},
 	}}
 
-	result, err := ImportLibrary(context.Background(), pool, mediaDir, "default", items)
+	result, err := ImportLibrary(context.Background(), pgstore.NewMedia(pool), mediaDir, "default", items)
 	if err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}

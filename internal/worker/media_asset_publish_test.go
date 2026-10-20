@@ -19,6 +19,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 type cancelDuringCopyReader struct {
@@ -161,7 +163,7 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
-	w := &ThumbnailWorker{Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+	w := &ThumbnailWorker{Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", thumbnailRelPath(id),
 		func() error {
@@ -180,7 +182,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &ThumbnailWorker{
-		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
 				return []byte("100\n"), nil
@@ -248,28 +250,39 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 	mediaDir := t.TempDir()
 	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
-	w := &SeekTilesWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id),
 		func() error { return runSeekTilesJob(t, w, id) }, tinyJPEG)
 }
 
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
 	relPath := thumbnailRelPath(id)
+	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		return 0, false, err
+	}
+	staged, err := stageMediaFile(context.Background(), scratch, finalPath, ".rokuban-media-asset-")
+	if err != nil {
+		return 0, false, err
+	}
+	defer staged.discard()
+	fileLock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
+	if err != nil {
+		return 0, false, err
+	}
+	defer func() { _ = fileLock.Close() }()
 	// 呼び出し時点の active original を入力として計画した初回生成を模す。
 	var inputID int64
-	if orig, err := sqlcgen.New(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
+	if orig, err := pgstore.NewMedia(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
 		inputID = orig.ID
 	}
-	return publishGeneratedMediaAsset(context.Background(), pool, mediaDir, relPath, scratch,
-		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return skipThumbnailPlanPublish(ctx, q, id, nil, inputID)
-		},
-		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
-			_, err := q.UpsertThumbnailMediaAsset(ctx, sqlcgen.UpsertThumbnailMediaAssetParams{
-				RecordingID: id, RelPath: relPath, SizeBytes: size,
-			})
-			return err
-		})
+	published, err := pgstore.NewMedia(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
+		RecordingID: id, RelPath: relPath, SizeBytes: staged.size, InputAssetID: inputID,
+	}, staged.publish)
+	if err != nil || !published {
+		return 0, published, err
+	}
+	return staged.size, true, nil
 }
 
 func writeScratchForTest(t *testing.T, b []byte) string {

@@ -12,18 +12,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -57,9 +54,9 @@ import (
 //     cancel を無視する古い試行が新しい試行とともに ffmpeg を完走することはある。
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
-//     → tx）の中で判定 → Upsert で rel_path を予約 → rename（サイドカー → 本体）→ 親 dir
-//     fsync → commit する。判定（planEncodePublish）は rename の前に、tx 内で
-//     行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
+//     → store transaction）の中で判定 → Upsert で rel_path を予約 → rename（サイドカー → 本体）→ 親 dir
+//     fsync → commit する。判定（MediaPublish.PublishEncoded）は rename の前に、
+//     tx 内で行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
 //     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
@@ -96,6 +93,8 @@ type EncodeWorker struct {
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
 	Attempts   store.EncodeAttempts
+	Publisher  store.MediaPublish
+	Progress   store.EncodeProgressReporter
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -208,10 +207,8 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 			profile:     args.Profile,
 			duration:    duration,
 			interval:    encodeProgressInterval,
-			notify: func(ctx context.Context, payload string) error {
-				return sqlcgen.New(w.Pool).NotifyTopic(ctx, payload)
-			},
-			log: log,
+			reporter:    w.encodeProgressStore(),
+			log:         log,
 		}
 		var stopProgress context.CancelFunc
 		reportProgress, stopProgress = reporter.start(ctx)
@@ -415,27 +412,6 @@ func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.Enc
 	return &cutContext{keep: expectedKeep}, expectedKeep, true, false, nil
 }
 
-// rebuildRequestMatches は、要求行が残っていて requested_keep が keep と等しいかを返す。
-// 行は FOR SHARE で読むので、tx の中なら api の押し直し（upsert）が commit までここで
-// 待つ。
-func rebuildRequestMatches(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, keep []chapters.Range) (bool, error) {
-	requestedMulti, err := q.GetEncodedAssetRebuildRequestForShare(ctx, sqlcgen.GetEncodedAssetRebuildRequestForShareParams{
-		RecordingID: recordingID,
-		Profile:     profile,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", recordingID, profile, err)
-	}
-	requested, err := db.KeepRangesFromMultirange(requestedMulti)
-	if err != nil {
-		return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
-	}
-	return chapters.SameRanges(requested, keep), nil
-}
-
 // cutContext は cut プロファイルの encode に要る、録画側の事実から導出した
 // keep 区間。cut でないプロファイルでは nil。
 type cutContext struct {
@@ -514,20 +490,6 @@ func decodeRequestedCutKeep(raw json.RawMessage) ([]chapters.Range, bool, error)
 		return nil, false, errors.New("requested keep ranges are empty")
 	}
 	return keep, true, nil
-}
-
-// assetKeepRanges は media_asset に凍結された keep 区間を読む。凍結していない
-// （cut でない版）なら空。
-func assetKeepRanges(ctx context.Context, q *sqlcgen.Queries, assetID int64) ([]chapters.Range, error) {
-	raw, err := q.GetMediaAssetKeepRangesJSON(ctx, assetID)
-	if err != nil {
-		return nil, fmt.Errorf("loading frozen cut ranges: %w", err)
-	}
-	var ranges []chapters.Range
-	if err := json.Unmarshal(raw, &ranges); err != nil {
-		return nil, fmt.Errorf("decoding frozen cut ranges: %w", err)
-	}
-	return ranges, nil
 }
 
 // buildCutFilter は入力のストリームを選び、keep 区間で切る filtergraph を組む。
@@ -801,8 +763,8 @@ var (
 	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
 	beforeEncodeLock = func(scratchOut string) {}
 	// beforeEncodeFilePublication は DB の fencing と計画判定の後、rename の前に呼ぶ。
-	// テストはここでセッションを切断し、古い goroutine が新しい公開を上書きしないことを確かめる。
-	beforeEncodeFilePublication = func(string, context.Context, pgx5.Tx) error { return nil }
+	// テストはここで公開を止め、古い試行の rename が後の公開を上書きしないことを確かめる。
+	beforeEncodeFilePublication = func(string) error { return nil }
 	// beforeEncodeCommit は rename 済み・Upsert 済みの tx.Commit の直前に呼ぶ。
 	// エラーを返すと commit せずに失敗させる。
 	beforeEncodeCommit = func(scratchOut string) error { return nil }
@@ -828,93 +790,9 @@ type encodePublishInput struct {
 	expectedKeep []chapters.Range
 }
 
-// encodePublishDecision は prepareEncodePublish の判定結果。skip のとき公開しない。
-type encodePublishDecision struct {
-	plan encodePlan
-	skip bool
-}
-
-// prepareEncodePublish は DB の fencing・カット要求・公開計画を tx 内で再確認する。
-func (w *EncodeWorker) prepareEncodePublish(
-	ctx context.Context,
-	q *sqlcgen.Queries,
-	in encodePublishInput,
-) (encodePublishDecision, error) {
-	if in.cut != nil {
-		locked, err := q.LockRecording(ctx, in.recordingID)
-		if errors.Is(err, pgx5.ErrNoRows) || (err == nil && locked.IsPurged) {
-			return encodePublishDecision{skip: true}, nil
-		}
-		if err != nil {
-			return encodePublishDecision{}, fmt.Errorf("locking recording %d before encoded publish: %w", in.recordingID, err)
-		}
-	}
-
-	activeAttempt, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
-		RecordingID: in.recordingID,
-		Profile:     in.profile,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && (activeAttempt.State != "running" || activeAttempt.AttemptCount != in.attempt)) {
-		return encodePublishDecision{skip: true}, nil
-	}
-	if err != nil {
-		return encodePublishDecision{}, fmt.Errorf("loading current encode attempt: %w", err)
-	}
-
-	// 判定 (c): desired に無い profile は公開しない。FOR SHARE で版を外す tx と直列化する。
-	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.recordingID)
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return encodePublishDecision{}, fmt.Errorf("loading desired encode profiles: %w", err)
-	}
-	if !slices.Contains(desired, in.profile) {
-		return encodePublishDecision{skip: true}, nil
-	}
-
-	decision := encodePublishDecision{}
-	if in.cut != nil {
-		if in.expectedKeep != nil {
-			// 作り直し要求に由来するジョブは、押した時点の keep を認可した要求行より
-			// 長く生きてはならない。押し直しで上書きされていれば公開しない。チャプターの
-			// 現在値とは照合しない（押した時点の keep が利用者の確認である）。
-			matches, err := rebuildRequestMatches(ctx, q, in.recordingID, in.profile, in.expectedKeep)
-			if err != nil {
-				return encodePublishDecision{}, err
-			}
-			if !matches {
-				return encodePublishDecision{skip: true}, nil
-			}
-		} else {
-			// 要求に由来しない初回のカット版は、エンコード中にチャプターが編集されたら
-			// 公開しない。編集前の区間で desired を満たすと until_encoded の原本が消え、
-			// 編集した内容を二度と描けなくなる。
-			currentKeep, owned, err := currentCutKeep(ctx, q, in.recordingID)
-			if err != nil {
-				return encodePublishDecision{}, fmt.Errorf("rechecking chapter keep before publish for recording %d: %w", in.recordingID, err)
-			}
-			if !owned || !chapters.SameRanges(currentKeep, in.cut.keep) {
-				return encodePublishDecision{skip: true}, nil
-			}
-		}
-	}
-
-	decision.plan, err = planEncodePublish(ctx, q, in.recordingID, in.profile, in.cut, &in.observed)
-	if err != nil {
-		return encodePublishDecision{}, err
-	}
-	if decision.plan.stale {
-		return encodePublishDecision{}, jobq.Snooze(encodeReplanDelay)
-	}
-	if in.cut != nil && in.expectedKeep == nil && decision.plan.replaced != "" && !decision.plan.skip {
-		// 要求に由来しないジョブは、active なカット版を置き換えない。置き換えてよいのは
-		// 利用者が押した作り直しだけである。
-		return encodePublishDecision{skip: true}, nil
-	}
-	decision.skip = decision.plan.skip
-	return decision, nil
-}
-
 // publishEncoded は検証済みの scratch 出力を canonical へ公開し、media_assets を
-// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock → tx → 判定 → Upsert（rel_path を予約）→ rename（サイドカー → 本体）→ 親 dir
+// commit する。ingest の確定手順と同じ順序で、**lock の外で stage → filesystem lock →
+// store transaction → 判定 → Upsert（rel_path を予約）→ rename（サイドカー → 本体）→ 親 dir
 // fsync → commit** と進む。順序を逆にしない --- DB commit を先にすると、
 // 行が指す実体の欠落を作る。サイドカーを先に置くのは、本体を置いた後にサイドカーの
 // rename が失敗して、既存の active 行とファイルが食い違うのを避けるため。
@@ -964,61 +842,72 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	defer func() { _ = fileLock.Close() }()
 
-	var ranges db.KeepRanges
-	if in.cut != nil {
-		if ranges, err = db.KeepRangesParam(in.cut.keep); err != nil {
-			return 0, false, err
+	publisher := w.mediaPublisher()
+	if publisher == nil {
+		return 0, false, errors.New("publishing encoded asset: media publisher is nil")
+	}
+	cut := in.cut != nil
+	keep := []chapters.Range(nil)
+	if cut {
+		keep = in.cut.keep
+	}
+	input := store.EncodedPublishInput{
+		RecordingID:       in.recordingID,
+		Profile:           in.profile,
+		Attempt:           in.attempt,
+		RelPath:           in.relPath,
+		SizeBytes:         staged.size,
+		ObservedRelPath:   in.observed.observedRelPath,
+		Cut:               cut,
+		KeepRanges:        keep,
+		HasRebuildRequest: in.expectedKeep != nil,
+		RequestedKeep:     in.expectedKeep,
+	}
+	publish := func() error {
+		if err := beforeEncodeFilePublication(in.scratchOut); err != nil {
+			return fmt.Errorf("preparing encoded file publication: %w", err)
 		}
+		if in.withSubtitles {
+			if err := stagedSubtitle.publish(); err != nil {
+				return err
+			}
+		}
+		if err := staged.publish(); err != nil {
+			return err
+		}
+		if err := beforeEncodeCommit(in.scratchOut); err != nil {
+			return fmt.Errorf("committing encoded asset: %w", err)
+		}
+		return nil
 	}
-	tx, err := w.Pool.Begin(ctx)
-	if err != nil {
-		return 0, false, fmt.Errorf("beginning encoded asset commit: %w", err)
+	published, err = publisher.PublishEncoded(ctx, input, publish)
+	if errors.Is(err, store.ErrStalePublishPlan) {
+		return 0, false, jobq.Snooze(encodeReplanDelay)
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-	decision, err := w.prepareEncodePublish(ctx, q, in)
 	if err != nil {
 		return 0, false, err
 	}
-	if decision.skip {
-		return 0, false, nil
-	}
-	if err := beforeEncodeFilePublication(in.scratchOut, ctx, tx); err != nil {
-		return 0, false, fmt.Errorf("preparing encoded file publication: %w", err)
-	}
+	return staged.size, published, nil
+}
 
-	profileName := in.profile
-	assetID, err := q.UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
-		RecordingID: in.recordingID,
-		Profile:     &profileName,
-		RelPath:     in.relPath,
-		SizeBytes:   staged.size,
-	})
-	if err != nil {
-		return 0, false, fmt.Errorf("committing encoded asset: upserting media_asset: %w", err)
+func (w *EncodeWorker) mediaPublisher() store.MediaPublish {
+	if w.Publisher != nil {
+		return w.Publisher
 	}
+	if publisher, ok := w.Media.(store.MediaPublish); ok {
+		return publisher
+	}
+	return nil
+}
 
-	if in.withSubtitles {
-		if err := stagedSubtitle.publish(); err != nil {
-			return 0, false, err
-		}
+func (w *EncodeWorker) encodeProgressStore() store.EncodeProgressReporter {
+	if w.Progress != nil {
+		return w.Progress
 	}
-	if err := staged.publish(); err != nil {
-		return 0, false, err
+	if reporter, ok := w.Media.(store.EncodeProgressReporter); ok {
+		return reporter
 	}
-
-	if in.cut != nil {
-		if err := replaceMediaAssetCuts(ctx, q, assetID, ranges); err != nil {
-			return 0, false, fmt.Errorf("committing encoded asset: %w", err)
-		}
-	}
-	if err := beforeEncodeCommit(in.scratchOut); err != nil {
-		return 0, false, fmt.Errorf("committing encoded asset: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("committing encoded asset: %w", err)
-	}
-	return staged.size, true, nil
+	return nil
 }
 
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
@@ -1099,40 +988,6 @@ type encodePlan struct {
 	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
 	// 成功扱いで飛ばすと新しい keep が黙って消えるので、公開せずに計画をやり直す。
 	stale bool
-}
-
-// planEncodePublish は公開 tx 内の encoded 行を読み、公開状態を判定する。
-// tx 外の初回観測は EncodeWorker.planEncodeAsset が store 契約から読み、両方とも
-// planEncodePublishFromObservation で同じ判定を行う。
-//
-// skip（成功扱いで飛ばす）になるのは次のどちらか（encode の doc コメント参照）。
-// (a) だけが立ち、行が active なら skip でなく stale（計画のやり直し）になる:
-//   - (a) observed が非 nil で、行の rel_path が観測時と違う（rel_path の
-//     compare-and-swap）
-//   - (b) 行が active で、cut なら凍結区間が keep と一致する
-//
-// 区間の比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で
-// 量子化済み、凍結側は書き込み時に量子化して入れてある（media_asset_cuts の
-// コメント参照）。
-func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, cut *cutContext, observed *encodePlan) (encodePlan, error) {
-	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
-		RecordingID: recordingID,
-		Profile:     &profile,
-	})
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return encodePlan{}, fmt.Errorf("loading existing encoded asset: %w", err)
-	}
-	var asset *store.EncodedAssetObservation
-	if err == nil {
-		asset = &store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}
-		if cut != nil {
-			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
-			if err != nil {
-				return encodePlan{}, err
-			}
-		}
-	}
-	return planEncodePublishFromObservation(asset, profile, cut, observed), nil
 }
 
 func planEncodePublishFromObservation(
@@ -1223,21 +1078,6 @@ func probeHasSubtitlesWithTimeout(ctx context.Context, ffprobe, input string, ru
 	probeCtx, cancel := context.WithTimeout(ctx, subtitleProbeTimeout)
 	defer cancel()
 	return probeHasSubtitles(probeCtx, ffprobe, input, run)
-}
-
-// replaceMediaAssetCuts は 1 つの media_asset の凍結区間を差し替える
-// （DELETE → INSERT）。呼び出し側の tx の中で使う。
-func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int64, ranges db.KeepRanges) error {
-	if err := q.DeleteMediaAssetCuts(ctx, assetID); err != nil {
-		return fmt.Errorf("clearing media_asset_cuts: %w", err)
-	}
-	if err := q.InsertMediaAssetCuts(ctx, sqlcgen.InsertMediaAssetCutsParams{
-		MediaAssetID: assetID,
-		KeepRanges:   ranges,
-	}); err != nil {
-		return fmt.Errorf("writing media_asset_cuts: %w", err)
-	}
-	return nil
 }
 
 // BuildFFmpegArgs は構造化 EncodeProfile から ffmpeg 引数を組み立てる。

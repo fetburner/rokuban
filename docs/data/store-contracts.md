@@ -267,6 +267,26 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 </details>
 
+### メディア公開
+
+メディアの公開状態と DB 行は、ファイルの rename と同じトランザクション境界で確定する。
+
+原本・encoded・thumbnail・seek tiles の公開は `MediaPublish` がトランザクションを持つ。worker は `rel_path` のファイルロックを保持し、DB の再確認と行の書き込みが済んだ後、commit 前に一度だけ呼ぶファイル公開 callback を渡す。callback が失敗すれば DB の行はロールバックする。rename 後に失敗したファイルは DB 行を持たないため、孤児として観測される。
+
+原本の commit では進捗行の削除と encode 方針の凍結も同じ tx に入れる。方針 resolver は store が読み出した録画と予約の値だけを受け取る純粋関数にする。encoded の公開は、試行番号・現在の desired・作り直し要求・cut 区間を tx 内で読み直してから callback を呼ぶ。cut 版は録画行を先にロックし、チャプター編集と作り直し要求の更新に直列化する。
+
+in-place 登録ではファイルの存在・symlink 検査とパスロックを `internal/inplace` に残し、検証済みの録画・アセット値を `MediaPublish.RegisterInPlace` が一つの tx で登録する。同じパスに deleted 行と公開済みの行がある場合は公開済みの所有者を使う。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.MediaPublish`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- callback の一度だけの実行・失敗時 rollback・公開前の再確認: `TestMediaStoreContract` の `RunMediaPublish` ケース
+- worker の `rel_path` ロックと callback の統合: `internal/worker` の公開 worker
+- in-place のファイル検証とパスロック: `internal/inplace.Register`
+
+</details>
+
 ### TS scan
 
 TS の計測結果は、対象の状態を再確認した上で一括して保存する。
