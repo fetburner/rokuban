@@ -61,7 +61,7 @@ func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64
 		return false, fmt.Errorf("deleting drop_positions for media asset %d: %w", assetID, err)
 	}
 	if err := replaceTSScanRows(ctx, q, assetID, stats, positions); err != nil {
-		return false, fmt.Errorf("replacing TS scan rows for media asset %d: %w", assetID, err)
+		return false, fmt.Errorf("replacing TS scan rows for media asset %d: %w", assetID, mapDatabaseError(err))
 	}
 	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
 		MediaAssetID: assetID, ScannedSizeBytes: scannedSizeBytes,

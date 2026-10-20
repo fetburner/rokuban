@@ -244,6 +244,9 @@ func runTSScanReplacementRollback(t *testing.T, newStore NewTSScanStore) {
 	if err == nil {
 		t.Fatal("ReplaceScan() succeeded with a failing drop_positions insert, want error")
 	}
+	if !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("ReplaceScan() error = %v, want store.ErrConflict", err)
+	}
 	if got := f.ReadSnapshot(t, assetID); !reflect.DeepEqual(got, before) {
 		t.Fatalf("snapshot after failed ReplaceScan = %+v, want prior rows and marker %+v", got, before)
 	}
