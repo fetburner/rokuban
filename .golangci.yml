@@ -120,7 +120,6 @@ linters:
             - "!${config-path}/internal/worker/catalog_export.go"
             - "!${config-path}/internal/worker/cm_detect.go"
             - "!${config-path}/internal/worker/cm_detect_reconcile.go"
-            - "!${config-path}/internal/worker/cm_logo_candidate.go"
             - "!${config-path}/internal/worker/delete_execute.go"
             - "!${config-path}/internal/worker/delete_reconcile.go"
             - "!${config-path}/internal/worker/delete_select.go"

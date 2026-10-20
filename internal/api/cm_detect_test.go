@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -100,7 +101,7 @@ func patchCMDetection(t *testing.T, url string, enabled bool) *http.Response {
 
 func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	activeID := seedRecording(t, pool, "復旧原本", time.Now().Truncate(time.Second), "finished", 980)
@@ -158,7 +159,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	cases := []struct {
@@ -229,7 +230,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true, Enqueuer: enqueuer}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true, Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "再試行", time.Now().Truncate(time.Second), "finished", 982)
@@ -296,7 +297,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 
 func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "ロゴ管理", time.Now().Truncate(time.Second), "finished", 983)
@@ -368,7 +369,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 
 func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 	ctx := context.Background()
 
@@ -437,7 +438,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 // 一覧は教えた枠と候補の無い待ち状態を返す（このテストは River 無し）。
 func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
@@ -664,7 +665,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 		}
 	}
 	insertCandidate([]byte("candidate-one"))
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
 	request := func(body string) *http.Response {
@@ -743,7 +744,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer, CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), Enqueuer: enqueuer, CMDetectEnabled: true}))
 	defer srv.Close()
 
 	queued := func(want int) {
@@ -792,6 +793,9 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	candidateQueued(1)
 	candidateCalls := enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind())
+	if candidateCalls[0].Transactional {
+		t.Errorf("candidate enqueue = %#v, want a post-commit hint", candidateCalls[0])
+	}
 	candidateArgs, ok := candidateCalls[0].Args.(jobs.CMLogoCandidateJobArgs)
 	if !ok {
 		t.Fatalf("candidate args = %T, want jobs.CMLogoCandidateJobArgs", candidateCalls[0].Args)
@@ -827,12 +831,17 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		t.Fatalf("DELETE logo status = %d, want 204", deleteLogoResp.StatusCode)
 	}
 	queued(2)
+	for _, call := range enqueuer.CallsOfKind(jobs.CMDetectReconcileArgs{}.Kind()) {
+		if call.Transactional {
+			t.Errorf("reconcile enqueue = %#v, want a post-commit hint", call)
+		}
+	}
 }
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)
@@ -902,7 +911,7 @@ func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 	insert := func(state string, observed time.Time) {
 		t.Helper()
@@ -969,7 +978,7 @@ func TestCMLogoCandidateDiscardKeepsAreaAndLogo(t *testing.T) {
 		) VALUES (32678, 5168, 'ready', 1180, 24, 240, 96, 1440, 1080, $1, $2, 'new')`, id, area.UpdatedAt); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
 	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/candidate", "")
@@ -1008,7 +1017,7 @@ func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
 	resp := cmLogoRequest(t, http.MethodDelete, srv.URL+"/api/cm-logos/32678/5168/area", "")

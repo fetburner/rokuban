@@ -98,6 +98,8 @@ type Deps struct {
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
+	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
+	CMStationStore store.CMStation
 	// TunerStore はチューナー同期の永続化契約。
 	TunerStore store.TunerSync
 	// CapacityStore はチューナー worker の容量判定読み取り契約。
@@ -255,7 +257,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		FFprobe:    deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &CMLogoCandidateWorker{
-		Pool:       deps.Pool,
+		Store:      deps.CMStationStore,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		CMDetect:   deps.CMDetect,

@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -18,7 +17,6 @@ func TestInsertHelpers_UseCallerTransaction(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	recordingID := seedRecording(t, pool, "cm", time.Now(), "finished", 1)
 
 	cases := []struct {
 		name   string
@@ -27,12 +25,6 @@ func TestInsertHelpers_UseCallerTransaction(t *testing.T) {
 	}{
 		{"label_rule_reconcile", jobs.LabelRuleReconcileArgs{}.Kind(), func(ctx context.Context, tx pgx.Tx) error {
 			return insertLabelRuleReconcile(ctx, tx, enqueuer)
-		}},
-		{"cm_detect_reconcile", jobs.CMDetectReconcileArgs{}.Kind(), func(ctx context.Context, tx pgx.Tx) error {
-			return insertCMDetectReconcile(ctx, tx, enqueuer)
-		}},
-		{"cm_logo_candidate", jobs.CMLogoCandidateJobArgs{}.Kind(), func(ctx context.Context, tx pgx.Tx) error {
-			return insertCMLogoCandidate(ctx, tx, enqueuer, jobs.CMLogoCandidateJobArgs{RecordingID: recordingID})
 		}},
 	}
 	for _, tc := range cases {

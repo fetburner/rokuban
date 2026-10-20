@@ -326,6 +326,7 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
+	// store.CMStation と同じ局の直列化に参加する（同じ局ロックを取る）。
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
 		return cmFailure("save", fmt.Errorf("locking station logo state for CM result: %w", err))
 	}
@@ -428,6 +429,7 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	q := sqlcgen.New(tx)
+	// store.CMStation と同じ局の直列化に参加する（同じ局ロックを取る）。
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
 		return fmt.Errorf("locking station logo state: %w", err)
 	}
