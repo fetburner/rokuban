@@ -40,7 +40,7 @@
 | 仕様の型の意味と不変条件 | エンジンに依らない約束の変更 | 契約（`internal/jobq`） |
 | エンジンでどう実現するか | エンジンの差し替え | adapter（`internal/jobq/riveradapter`） |
 
-API は、ドメインの書き込みと同じトランザクションへジョブを投入する。watcher は、観測の commit の後にヒントとして投入する。CLI は単発で投入し、合流の有無を結果から表示する。
+API は、ドメインの書き込みと同じトランザクションへジョブを投入する経路と、store の commit 後にヒントを投入する経路を持つ。後者は投入失敗をログに残し、定期 reconcile に委ねる。watcher も観測の commit 後にヒントを投入する。CLI は単発で投入し、合流の有無を結果から表示する。
 
 River クライアントと投入オプションへの変換は、adapter に閉じ込める。worker の登録だけは River の公開 API が具体型を要求するので、River adapter を通す。他の adapter は中立なレジストリを使う。
 

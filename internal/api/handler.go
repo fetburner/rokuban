@@ -34,6 +34,7 @@ type Server struct {
 	breakerAdmin       store.BreakerAdmin
 	epgReader          store.EPGReader
 	programSearch      store.ProgramSearch
+	encodePolicy       store.EncodePolicy
 	mediaReader        store.MediaReader
 	storageObservation store.StorageObservation
 	enqueuer           jobq.Enqueuer
@@ -87,9 +88,10 @@ type Server struct {
 // chapterStore / playbackStore / recordingTrash / recordingQuery / tunerReader / capacityStore / reservationStore / ruleStore はそれぞれの永続化契約。
 // labelRules は分類ルールの永続化契約。breakerAdmin はサーキットブレーカー一覧と手動再開の永続化契約。
 // epgReader は番組表・番組詳細・シリーズ照会の読み取り契約、programSearch は番組検索の契約。
+// encodePolicy はエンコード方針とカット版作り直し要求のトランザクション契約。
 // mediaReader はエンコード待ち行列とドロップ統計の読み取り契約、storageObservation はストレージ残量の観測契約。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, encodePolicy store.EncodePolicy, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -120,7 +122,7 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationSto
 	return &Server{
 		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, cmDetectionStore: cmDetectionStore, playbackStore: playbackStore, recordingTrash: recordingTrash, recordingQuery: recordingQuery,
 		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, ruleStore: ruleStore, labelRules: labelRules, breakerAdmin: breakerAdmin, epgReader: epgReader, programSearch: programSearch,
-		mediaReader: mediaReader, storageObservation: storageObservation, enqueuer: enqueuer,
+		encodePolicy: encodePolicy, mediaReader: mediaReader, storageObservation: storageObservation, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,

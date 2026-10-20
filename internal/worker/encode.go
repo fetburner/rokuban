@@ -95,6 +95,7 @@ type EncodeWorker struct {
 	Pool *pgxpool.Pool
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
+	Attempts   store.EncodeAttempts
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string

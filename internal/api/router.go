@@ -69,6 +69,8 @@ type RouterConfig struct {
 
 	// MediaReader はメディア関連 API の読み取り契約。
 	MediaReader store.MediaReader
+	// EncodePolicyStore は録画のエンコード方針と作り直し要求の契約。
+	EncodePolicyStore store.EncodePolicy
 
 	// StorageObservation はストレージ観測 API の読み取り契約。
 	StorageObservation store.StorageObservation
@@ -191,7 +193,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.RecordingQuery,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.RuleStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
-		cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+		cfg.EncodePolicyStore, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

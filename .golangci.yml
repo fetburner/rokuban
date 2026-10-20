@@ -82,7 +82,6 @@ linters:
             - "!${config-path}/cmd/rokuban/**"
             # 移設待ち。移したタスクが行を消す。増やさない。
             - "!${config-path}/internal/api/handler.go"
-            - "!${config-path}/internal/api/recordings.go"
             - "!${config-path}/internal/api/router.go"
             - "!${config-path}/internal/breaker/ruler_trip.go"
             - "!${config-path}/internal/catalog/export.go"
@@ -97,7 +96,6 @@ linters:
             - "!${config-path}/internal/ruler/sql.go"
             - "!${config-path}/internal/worker/catalog_export.go"
             - "!${config-path}/internal/worker/encode.go"
-            - "!${config-path}/internal/worker/encode_attempts.go"
             - "!${config-path}/internal/worker/encode_reconcile.go"
             - "!${config-path}/internal/worker/ingest.go"
             - "!${config-path}/internal/worker/ingest_progress.go"

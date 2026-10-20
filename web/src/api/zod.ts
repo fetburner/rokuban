@@ -1687,9 +1687,10 @@ export const PurgeRecordingResponse = zod.void()
  * またはそもそも ingest が完了しておらず original 行自体が無い。
  * api 層で明示的に検査してサイレントな失敗にしない。
  *
- * プロファイル追加と同じトランザクションで対象録画の `encode_reconcile` を
- * 投入し、worker が定期パスと同じ候補 query で不足分を判定する。ごみ箱の
- * 録画も desired は更新できるが候補から除外され、復元後の定期パスが拾う。
+ * store がプロファイル追加を commit した後、対象録画の `encode_reconcile` を
+ * ヒントとして投入する。投入に失敗しても成功応答は変えず、worker の定期パスが
+ * DB の desired から不足分を拾う。対象限定パスと定期パスは同じ候補 query を使う。
+ * ごみ箱の録画も desired は更新できるが候補から除外され、復元後の定期パスが拾う。
  * 既に完了済み/pending のプロファイル名を再指定してもエラーにはならず、
  * 冪等に 204 を返す。
  * @summary Request additional encode profiles for an already-ingested recording
@@ -1709,7 +1710,8 @@ export const AddRecordingEncodeProfilesResponse = zod.void()
 
 
 /**
- * エンコード版を 1 本だけ外す（容量を空けるための操作。ごみ箱は経由しない）。
+ * エンコード版を 1 本だけ外す（容量を空けるための操作。録画全体をごみ箱へ移す操作ではなく、
+ * ごみ箱状態でも消去前なら利用できる）。
  * `encode_profiles` から profile を外し、「この版を外した」という要求を記録する。
  * **ファイルは消さない**。削除 reconcile の次のパス（既定 15 分）が unlink する。
  * 外した版は応答の直後から `encodedAssets` に出ない。
@@ -1751,7 +1753,8 @@ export const RemoveRecordingEncodedAssetResponse = zod.void()
  * 指定プロファイルが録画の desired（`encodeProfiles`）に無いときも 409 を返す。
  * どちらも、204 を返すと作り直しが起きないことにユーザーが気付けないためである。
  * 204 は、操作時点の keep 区間を作り直し要求として DB に記録したことを示す。
- * commit 後に投入する reconcile のヒントが失われても、定期 reconcile が要求を拾う。
+ * ごみ箱状態でも要求を記録できる。ごみ箱の間は候補から除外され、復元後の定期
+ * reconcile が拾う。commit 後に投入するヒントが失われても、定期 reconcile が要求を拾う。
  * @summary Rebuild the cut version of a recording with the current chapters
  */
 export const ReencodeRecordingProfileParams = zod.object({

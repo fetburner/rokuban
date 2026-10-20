@@ -7,11 +7,9 @@ import (
 	"log/slog"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -39,147 +37,43 @@ type encodeAttemptStart struct {
 
 // beginEncodeAttempt creates the next domain attempt and returns its fencing token.
 func (w *EncodeWorker) beginEncodeAttempt(ctx context.Context, recordingID int64, profile string) (encodeAttemptStart, error) {
-	for race := 0; race < 3; race++ {
-		tx, err := w.Pool.Begin(ctx)
-		if err != nil {
-			return encodeAttemptStart{}, fmt.Errorf("beginning encode attempt: %w", err)
-		}
-		q := sqlcgen.New(tx)
-		inserted, err := q.CreateRecordingEncodeAttemptRunning(ctx, sqlcgen.CreateRecordingEncodeAttemptRunningParams{
-			RecordingID: recordingID,
-			Profile:     profile,
-		})
-		if err != nil {
-			_ = tx.Rollback(context.Background())
-			return encodeAttemptStart{}, fmt.Errorf("creating encode attempt: %w", err)
-		}
-		if inserted == 1 {
-			if err := tx.Commit(ctx); err != nil {
-				return encodeAttemptStart{}, fmt.Errorf("committing encode attempt: %w", err)
-			}
-			return encodeAttemptStart{count: 1}, nil
-		}
-
-		prior, err := q.GetRecordingEncodeAttemptForUpdate(ctx, sqlcgen.GetRecordingEncodeAttemptForUpdateParams{
-			RecordingID: recordingID,
-			Profile:     profile,
-		})
-		if errors.Is(err, pgx5.ErrNoRows) {
-			_ = tx.Rollback(context.Background())
-			continue
-		}
-		if err != nil {
-			_ = tx.Rollback(context.Background())
-			return encodeAttemptStart{}, fmt.Errorf("loading prior encode attempt: %w", err)
-		}
-
-		priorCount := prior.AttemptCount
-		if priorCount == 0 {
-			// Rows written by a pre-migration worker have no count. Such a row
-			// still proves that at least one attempt started.
-			priorCount = 1
-		}
-		start := encodeAttemptStart{}
-		if prior.State == "running" {
-			start.deadAttempt = priorCount
-			deadReason := encodeProcessDeathReason
-			start.restoreState = "failed"
-			start.restoreError = &deadReason
-			start.restoreAttemptedAt = time.Now().UTC()
-			start.restoreAttemptCount = priorCount
-		} else {
-			start.restoreState = prior.State
-			start.restoreError = prior.Error
-			start.restoreAttemptedAt = prior.AttemptedAt
-			start.restoreAttemptCount = priorCount
-		}
-
-		if priorCount >= encodeAttemptLimit {
-			start.count = priorCount
-			start.terminal = true
-			if prior.State == "running" {
-				deadReason := encodeProcessDeathReason
-				rows, err := q.UpdateRecordingEncodeAttemptFailed(ctx, sqlcgen.UpdateRecordingEncodeAttemptFailedParams{
-					RecordingID:  recordingID,
-					Profile:      profile,
-					Error:        &deadReason,
-					AttemptCount: prior.AttemptCount,
-				})
-				if err != nil || rows != 1 {
-					_ = tx.Rollback(context.Background())
-					if err != nil {
-						return encodeAttemptStart{}, fmt.Errorf("marking dead encode attempt failed: %w", err)
-					}
-					return encodeAttemptStart{}, fmt.Errorf("marking dead encode attempt failed: updated %d rows", rows)
-				}
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return encodeAttemptStart{}, fmt.Errorf("committing terminal encode attempt: %w", err)
-			}
-			return start, nil
-		}
-
-		start.count = priorCount + 1
-		rows, err := q.UpdateRecordingEncodeAttemptRunning(ctx, sqlcgen.UpdateRecordingEncodeAttemptRunningParams{
-			RecordingID: recordingID,
-			Profile:     profile,
-			NextCount:   start.count,
-		})
-		if err != nil || rows != 1 {
-			_ = tx.Rollback(context.Background())
-			if err != nil {
-				return encodeAttemptStart{}, fmt.Errorf("starting encode attempt: %w", err)
-			}
-			return encodeAttemptStart{}, fmt.Errorf("starting encode attempt: updated %d rows", rows)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return encodeAttemptStart{}, fmt.Errorf("committing encode attempt: %w", err)
-		}
-		return start, nil
+	start, err := w.Attempts.Begin(ctx, recordingID, profile, encodeAttemptLimit)
+	if err != nil {
+		return encodeAttemptStart{}, err
 	}
-	return encodeAttemptStart{}, fmt.Errorf("starting encode attempt: row changed repeatedly")
+	return encodeAttemptStart{
+		count:               start.Count,
+		deadAttempt:         start.DeadAttempt,
+		terminal:            start.Terminal,
+		restoreState:        start.RestoreState,
+		restoreError:        start.RestoreError,
+		restoreAttemptedAt:  start.RestoreAttemptedAt,
+		restoreAttemptCount: start.RestoreAttemptCount,
+	}, nil
 }
 
 func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID int64, profile string, attempt int32, encodeErr error) (bool, error) {
 	msg := truncateEncodeAttemptError(encodeErr.Error())
 	writeCtx, cancel := attemptWriteContext(ctx)
 	defer cancel()
-	rows, err := sqlcgen.New(w.Pool).UpdateRecordingEncodeAttemptFailed(writeCtx, sqlcgen.UpdateRecordingEncodeAttemptFailedParams{
-		RecordingID:  recordingID,
-		Profile:      profile,
-		Error:        &msg,
-		AttemptCount: attempt,
-	})
+	updated, err := w.Attempts.Fail(writeCtx, recordingID, profile, attempt, msg)
 	if err != nil {
 		return false, fmt.Errorf("marking encode attempt failed: %w", err)
 	}
-	return rows == 1, nil
+	return updated, nil
 }
 
 func (w *EncodeWorker) restoreEncodeAttempt(ctx context.Context, recordingID int64, profile string, start encodeAttemptStart) error {
 	writeCtx, cancel := attemptWriteContext(ctx)
 	defer cancel()
-	q := sqlcgen.New(w.Pool)
-	if start.restoreState == "" {
-		if _, err := q.DeleteRecordingEncodeAttemptForAttempt(writeCtx, sqlcgen.DeleteRecordingEncodeAttemptForAttemptParams{
-			RecordingID:  recordingID,
-			Profile:      profile,
-			AttemptCount: start.count,
-		}); err != nil {
-			return fmt.Errorf("removing canceled encode attempt: %w", err)
-		}
-		return nil
-	}
-	if _, err := q.RestoreRecordingEncodeAttempt(writeCtx, sqlcgen.RestoreRecordingEncodeAttemptParams{
-		RecordingID:  recordingID,
-		Profile:      profile,
-		State:        start.restoreState,
-		AttemptedAt:  start.restoreAttemptedAt,
-		RestoreCount: start.restoreAttemptCount,
-		CurrentCount: start.count,
-		Error:        start.restoreError,
+	if err := w.Attempts.Restore(writeCtx, recordingID, profile, store.EncodeAttemptStart{
+		Count:               start.count,
+		RestoreState:        start.restoreState,
+		RestoreError:        start.restoreError,
+		RestoreAttemptedAt:  start.restoreAttemptedAt,
+		RestoreAttemptCount: start.restoreAttemptCount,
 	}); err != nil {
-		return fmt.Errorf("restoring prior encode attempt: %w", err)
+		return fmt.Errorf("restoring encode attempt: %w", err)
 	}
 	return nil
 }
@@ -187,11 +81,7 @@ func (w *EncodeWorker) restoreEncodeAttempt(ctx context.Context, recordingID int
 func (w *EncodeWorker) clearEncodeAttempt(ctx context.Context, recordingID int64, profile string, attempt int32) error {
 	writeCtx, cancel := attemptWriteContext(ctx)
 	defer cancel()
-	if _, err := sqlcgen.New(w.Pool).DeleteRecordingEncodeAttemptForAttempt(writeCtx, sqlcgen.DeleteRecordingEncodeAttemptForAttemptParams{
-		RecordingID:  recordingID,
-		Profile:      profile,
-		AttemptCount: attempt,
-	}); err != nil {
+	if err := w.Attempts.Clear(writeCtx, recordingID, profile, attempt); err != nil {
 		return fmt.Errorf("clearing encode attempt: %w", err)
 	}
 	return nil
