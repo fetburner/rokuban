@@ -279,7 +279,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	}
 }
 
-// 一覧の射影（recordingsFromJoins、internal/api/recordings_query.go）は
+// 一覧の射影（recordingsFromJoins、internal/store/pgstore/recordingquery.go）は
 // `a.state <> 'deleted'` で結合するため、`state = 'deleting'`（unlink 待ち）の
 // 原本でも sizeBytes が付き「原本あり」に見える --- 一方サーバーの 409 判定
 // （GetActiveOriginalMediaAsset）は `state = 'active'` だけを見るので、この
@@ -430,7 +430,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	}
 }
 
-// ごみ箱 API は動的 SQL の queryRecordings/buildRecordingsQuery を通り、原本の
+// ごみ箱 API は動的 SQL の RecordingQuery.List/buildRecordingsQuery を通り、原本の
 // media_asset が deleted になった後も dropSummary を保つ（issue #737）。
 func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -1281,7 +1281,7 @@ func TestGetRecording_Purged(t *testing.T) {
 }
 
 // TestGetRecording_MatchesListElement は issue #232 レビューの nit 4: 単体取得
-// （queryRecordingByID）と一覧（queryRecordings）が同じ SELECT リスト定数
+// （RecordingQuery.Get）と一覧（RecordingQuery.List）が同じ SELECT リスト定数
 // （recordingsSelectColumns 等）を共有していることは構造的な保証だが、
 // それ自体は「Scan の並びが定数と対応しているか」までは見ない。ここでは
 // 同じ録画を GET /api/recordings（一覧から該当行を探す）と

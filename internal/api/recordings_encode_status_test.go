@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -221,7 +223,8 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 // そのまま出す --- それは断定ではなく観測なので規律の対象外。
 func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool,
+		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 	base := time.Now().Truncate(time.Second)
 
@@ -273,7 +276,7 @@ func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testi
 // （encodeJobStatusesFromFields、issue #316）。
 //
 // 「来る根拠」が無い queued を出さない 2 パターン（ごみ箱 / 設定から消えた
-// プロファイル）も、DB を経由せず直接 recordingListFields を組み立てて
+// プロファイル）も、DB を経由せず直接 store.RecordingQueryRow を組み立てて
 // 固定する（trash / unknownProfiles ケース参照）。
 func TestEncodeJobStatusesFromFields(t *testing.T) {
 	for _, tc := range []struct {
@@ -394,7 +397,7 @@ func TestEncodeJobStatusesFromFields(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fields := recordingListFields{ID: 1, EncodeProfiles: tc.desired, ChaptersOwned: tc.chaptersOwned}
+			fields := store.RecordingQueryRow{ID: 1, EncodeProfiles: tc.desired, ChaptersOwned: tc.chaptersOwned}
 			if tc.deleted {
 				now := time.Now()
 				fields.DeletedAt = &now
@@ -455,7 +458,7 @@ func TestEncodeJobStatusesFromFields_PreservesDesiredOrder(t *testing.T) {
 	}
 
 	got, err := encodeJobStatusesFromFields(
-		recordingListFields{ID: 1, EncodeProfiles: desired, EncodeAttempts: b},
+		store.RecordingQueryRow{ID: 1, EncodeProfiles: desired, EncodeAttempts: b},
 		[]string{"done"}, profileSets{})
 	if err != nil {
 		t.Fatalf("encodeJobStatusesFromFields: %v", err)

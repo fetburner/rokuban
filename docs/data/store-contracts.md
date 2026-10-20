@@ -139,6 +139,31 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 </details>
 
+### 録画の検索
+
+録画一覧とシリーズ棚では検索条件を共有し、API の状態は取得した事実から導出する。
+
+録画一覧・単体取得・棚は `RecordingQuery` に置く。フィルタは OpenAPI の生成型を使わない `RecordingFilter` とし、HTTP パラメータの検証と変換は api が行う。
+
+SQL の組み立ては pgstore に置く。ジャンルの配列の重なり、行値の比較（カーソルと service の組）、キーワードの述語は方言の機能なので、契約は意味だけを持ち、方言は実装に置く。
+
+一覧と棚は、共通する検索条件の WHERE を同じ関数で組み立てる。複製すると片方だけ条件が増え、絞り込み結果がずれる。
+
+録画の検索は EPG に結合しない。理由は [検索](search.md) §5「録画検索は rulequery を共有しない」にある。共有するのはキーワードの正規化方言だけである。述語 `keywordClause` は pgstore の番組検索と録画検索が呼び、条件のコンパイラと列名の対応は共有しない。
+
+契約は、SQL の列を写した行を返す。API のレスポンス状態は `recordingFromListFields` で毎回導出する。導出済みの状態を SQL に焼くと、導出規則を API と DB の両方に持つことになる。
+
+一覧と棚は、汎用プランへの切り替えを避ける実行方式で毎回計画させる。これは pgstore の実装上の制約で、契約には現れない。理由と測定値は [REST の判断](../api/rest.md) の「プリペアド文キャッシュと再計画」にある。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RecordingQuery` / `RecordingFilter`
+- PostgreSQL 実装: `internal/store/pgstore.Recordings`
+- 一覧と棚の共通条件: `recordingsFilterWhere`
+- キーワードの述語: `keywordClause`
+
+</details>
+
 ### 予約の意図・上書き
 
 利用者の録画意図（record / skip）とオプションの上書きは、ruler が作る予約とは別に、この契約が commit する。予約そのものはこの契約が書かない。

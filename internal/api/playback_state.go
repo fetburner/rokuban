@@ -12,11 +12,18 @@ const continueWatchingLimit = 6
 
 // ListContinueWatching は再生位置が残る録画を、最後に見た位置の更新順で返す。
 func (h *Server) ListContinueWatching(ctx context.Context, _ ListContinueWatchingRequestObject) (ListContinueWatchingResponseObject, error) {
-	recordings, err := queryRecordings(ctx, h.pool, recordingsFilter{
+	if h.recordingQuery == nil {
+		return nil, fmt.Errorf("recording query is required")
+	}
+	rows, err := h.recordingQuery.List(ctx, store.RecordingFilter{
 		SortDesc:         true,
 		ContinueWatching: true,
 		Limit:            continueWatchingLimit,
-	}, h.profileSets())
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings to resume: %w", err)
+	}
+	recordings, err := recordingQueryRowsToAPI(rows, false, h.profileSets())
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings to resume: %w", err)
 	}

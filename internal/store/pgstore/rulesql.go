@@ -94,7 +94,7 @@ func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
 	var clause string
 	switch match.Mode {
 	case "keyword":
-		clause = rulequery.KeywordClause(column, match.Value, match.CaseSensitive, arg)
+		clause = keywordClause(column, match.Value, match.CaseSensitive, arg)
 	case "regex":
 		// 正規表現方言は Postgres POSIX ARE（~ / ~*）。ユーザーが書いたパターンの意味を
 		// 壊さないよう、列は生のまま使う。
@@ -108,6 +108,29 @@ func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
 		return "NOT (" + clause + ")"
 	}
 	return clause
+}
+
+// keywordClause は列 col への部分一致（LIKE '%value%'）を組む。
+// キーワード中の LIKE 特殊文字（\、%、_）は文字どおり検索する。
+//
+// 番組検索の compileTextMatch と録画検索が呼ぶ。共有するのはこの正規化方言だけで、
+// テーブルや列名マップは持たない。呼び出し側が列名（epg_programs なら "p.name"、
+// recordings なら "r.title" 等）を渡す（docs/data/search.md §5「録画検索は rulequery を共有しない」）。
+//
+// caseSensitive が false なら normalize_search_text（全角→半角 + lower）を
+// 両辺にかけて全角/半角の揺れを吸収する。pg_trgm の式 GIN が
+// normalize_search_text(col) に乗っていれば、この形のまま加速される。
+//
+// エスケープは SQL 側の like_escape に一本化する。分類ルールの当たりは DB の
+// トリガーと全件再評価のジョブが評価するので、Go 側でエスケープする経路を通らない。
+// 4 経路（ruler・EPG 検索・録画一覧・分類ルール）が同じ関数を通ることで、
+// 「検索では出るのに分類ルールが当たらない」を構造的に防ぐ（docs/data/series.md §8）。
+func keywordClause(col string, value string, caseSensitive bool, arg func(any) string) string {
+	if caseSensitive {
+		return col + " LIKE ('%' || like_escape(" + arg(value) + ") || '%') ESCAPE '\\'"
+	}
+	normCol := "normalize_search_text(" + col + ")"
+	return normCol + " LIKE ('%' || normalize_search_text(like_escape(" + arg(value) + ")) || '%') ESCAPE '\\'"
 }
 
 func textTargetColumn(target string) string {

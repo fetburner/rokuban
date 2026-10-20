@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -209,7 +210,9 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			close(release)
-			<-done
+			if err := <-done; err != nil {
+				t.Logf("ingest worker stopped after releasing fixture: %v", err)
+			}
 			t.Fatalf("no ingest progress observed during transfer (row=%+v ok=%v)", row, ok)
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -498,7 +501,12 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 			IngestJobArgs{Site: "default", RecordID: "rec-clean-ranges"},
 		)
 	}()
-	defer func() { cancel(); <-done }()
+	defer func() {
+		cancel()
+		if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+			t.Errorf("ingest worker shutdown: %v", err)
+		}
+	}()
 
 	select {
 	case <-reachedTail:

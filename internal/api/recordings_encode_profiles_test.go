@@ -203,6 +203,7 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
@@ -350,7 +351,7 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 // purge 済み（purged_at が立った tombstone）の録画への PATCH は 404 で、
 // recording_encode_policy を書かないこと（issue #697 レビュー: GetRecordingByID
 // は述語なしで ingest worker と共有するため緩められないが、GET
-// /api/recordings/{id}（queryRecordingByID、purged_at IS NULL）との非対称を
+// /api/recordings/{id}（RecordingQuery.Get（purged_at IS NULL））との非対称を
 // このハンドラで埋める）。
 func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -525,6 +526,7 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
@@ -577,6 +579,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -662,6 +665,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -714,6 +718,7 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265", "av1"},
 	})
@@ -794,6 +799,7 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -824,6 +830,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -865,6 +872,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -898,7 +906,8 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 // 存在しない録画 ID には 404。
 func TestAddRecordingEncodeProfiles_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Pool: pool,
+		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -911,7 +920,8 @@ func TestAddRecordingEncodeProfiles_NotFound(t *testing.T) {
 // 空配列は 400（追加する意味が無い依頼を弾く）。
 func TestAddRecordingEncodeProfiles_Empty_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Pool: pool,
+		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -931,7 +941,8 @@ func TestAddRecordingEncodeProfiles_Empty_Returns400(t *testing.T) {
 // ルール/overrides と共有していることの固定。issue #64 と同じ検査）。
 func TestAddRecordingEncodeProfiles_UnknownProfile_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Pool: pool,
+		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -960,6 +971,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -1020,6 +1032,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}}
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: profiles.ProfileNames(),
 		CutProfileNames:    profiles.CutProfileNames(),

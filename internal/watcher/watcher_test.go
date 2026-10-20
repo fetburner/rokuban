@@ -2007,7 +2007,9 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	}
 
 	runCancel()
-	<-done
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Watcher.Run() after cancellation = %v, want context.Canceled", err)
+	}
 
 	if got := atomic.LoadInt32(&recordsCalls); got != 0 {
 		t.Errorf("GET /api/recording/records call count = %d, want 0 "+

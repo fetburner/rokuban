@@ -18,109 +18,23 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// recordingListFields は録画一覧と詳細取得が共有する射影。
-// 一覧・詳細のクエリ結果をここで共通化してマッピングする。
-type recordingListFields struct {
-	ID                int64
-	Site              string
-	RuleID            *int64
-	Source            string
-	ServiceName       string
-	ChannelType       string
-	Channel           string
-	NetworkID         int32
-	ServiceID         int32
-	EventID           int32
-	Title             string
-	Description       *string
-	ProgramStartAt    time.Time
-	ProgramDurationMs int64
-	Status            string
-	StartedAt         *time.Time
-	EndedAt           *time.Time
-	QualityEvents     json.RawMessage
-	DeletedAt         *time.Time
-	CreatedAt         time.Time
-	OriginalSizeBytes *int64
-	DropPackets       int64
-	DropDrops         int64
-	DropErrors        int64
-	DropScrambled     int64
-	// HasMeasuredDropSummary は、TS 計測記録が保存済み原本サイズと一致するか。
-	HasMeasuredDropSummary bool
-	// KeepOriginal は recording_encode_policy に凍結された原本保持ポリシー。
-	// policy 行が無い復旧録画は SQL 側で安全側の既定値 always に落とす。
-	KeepOriginal string
-	// AvailableEncodedAssets は recordingsAvailableEncodedAssetsSelect
-	// （jsonb_agg({profile, sizeBytes})）を Scan した生 JSON。プロファイル名の
-	// 配列とサイズの配列を並行に持つ形にしなかった理由は recordings_query.go の
-	// コメント参照。nil（trash など SELECT に含めなかった行）と `[]`（active な
-	// encoded が無い行）は区別しない --- どちらも recordingFromListFields で
-	// EncodedAssets を省略する結果になる。
-	AvailableEncodedAssets  json.RawMessage
-	ResumePositionMs        *int64
-	ResumePositionUpdatedAt *time.Time
-	WatchedAt               *time.Time
-	// EncodeProfiles は凍結された desired 一覧（recording_encode_policy.encode_profiles）。
-	// AvailableEncodedAssets（observed、active のみ）とは異なり、pending な
-	// ジョブのプロファイルも含む。事後追加（issue #133）で増える唯一の経路。
-	EncodeProfiles []string
-	// EncodeAttempts は recording_encode_attempts（衛星表）の行を jsonb_agg
-	// した生 JSON（issue #316）。`[]`（試行中/失敗中のプロファイルが無い）と
-	// nil を区別しない --- どちらも encodeJobStatusesFromFields で「完了して
-	// いないプロファイルはすべて queued」という結果になる。
-	EncodeAttempts json.RawMessage
-	// ChaptersOwned は recording_chapter_ownership に行があるか（= ユーザーが
-	// 確認済み。不変条件 10）。ChapterSpans はユーザー層の jsonb_agg
-	// （label は null を保つ）。
-	ChaptersOwned bool
-	ChapterSpans  json.RawMessage
-	// Series は実効シリーズ（recording_series.value）。分類ルールが当たればその
-	// 値、当たらなければ自動キー。**導出値であって録画の属性ではない**ので、
-	// recording_series ビューから読む（recordings_query.go の SELECT 参照）。
-	Series *string
-	// SeriesKey はタイトルから導出した自動キー（recordings.series_key）。
-	// 分類ルールが当たっても変わらない補助情報で、URL や絞り込みには使わない。
-	SeriesKey *string
-
-	// HasOriginalAsset は kind='original' の media_assets 行が **state を問わず**
-	// 存在するか（issue #212）。OriginalSizeBytes（state <> 'deleted' の行だけを
-	// 見る）とはわざと述語が違う --- この差が「まだ取り込めていない」と
-	// 「取り込んだ後に削除した」を分ける（issue #211）。
-	HasOriginalAsset bool
-	// HasIngestableRecord は **ingest ジョブが投入される（された）はずの**
-	// mirakc record の観測がこの録画に紐付いているか。原本も進捗も無いときに
-	// 「取り込み待ち」と「そもそも取り込みが来ない」を分ける。
-	//
-	// 単なる record_sync 行の存在ではなく `status IN ('recording', 'finished')`
-	// で絞る（recordings_query.go の SQL コメント参照）。watcher が ingest を
-	// 投入する条件と同じものを見ていないと、failed / canceled の録画が永久に
-	// pending を名乗る。
-	HasIngestableRecord bool
-	// HasAbnormallyEndedRecord は mirakc の record が canceled / failed で終わった
-	// 観測があるか（`record_sync.status`）。**HasIngestableRecord の否定ではない** ---
-	// 未知の status では worker が追従を続けるので、その間の進捗行は生きた観測で
-	// ある。この列は「二度と ingest されない record に進捗行が残っている」ときだけ
-	// 真になり、その残骸を transferring として読ませないために使う。
-	HasAbnormallyEndedRecord bool
-	// IngestWrittenBytes / IngestExpectedBytes / IngestObservedAt は
-	// recording_ingest_progress の 1 行（無ければすべて nil）。
-	IngestWrittenBytes  *int64
-	IngestExpectedBytes *int64
-	IngestObservedAt    *time.Time
-	CMDetect            bool
-	CMDetected          bool
-	CMRanges            json.RawMessage
-	CMAttemptState      *string
-	CMAttemptStage      *string
-	CMAttemptError      *string
+func recordingQueryRowsToAPI(rows []store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) ([]Recording, error) {
+	result := make([]Recording, 0, len(rows))
+	for _, row := range rows {
+		recording, err := recordingFromListFields(row, includeDeletedAt, profiles)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, recording)
+	}
+	return result, nil
 }
 
 // utcTimePtr は timestamptz の scan 結果を UTC の Location に正規化する。
 //
-// queryRecordings（一覧、pgx.QueryExecModeExec で text protocol）は timestamptz を
+// RecordingQuery.List（pgx.QueryExecModeExec で text protocol）は timestamptz を
 // セッションの TimeZone（Postgres の TimeZone GUC。ローカル環境で既定が UTC
-// でないことがある）で Location 付きに decode するが、queryRecordingByID
+// でないことがある）で Location 付きに decode するが、RecordingQuery.Get
 // （単体、既定の prepared/binary protocol）は time.Unix 経由で decode し
 // プロセスの time.Local を Location に使う。同じ instant でも Location が
 // 違うと `encoding/json` の RFC3339 出力（オフセット部分）が一致しない
@@ -172,7 +86,7 @@ func utcTimePtr(t *time.Time) *time.Time {
 //
 // 「リトライ中」を pending と区別する値は返さない（openapi.yaml の
 // IngestProgress.state の説明参照）。
-func ingestProgressFromFields(r recordingListFields) IngestProgress {
+func ingestProgressFromFields(r store.RecordingQueryRow) IngestProgress {
 	switch {
 	case r.HasOriginalAsset:
 		return IngestProgress{State: Committed}
@@ -275,7 +189,7 @@ type encodeAttemptRow struct {
 // 戻り値は desired の並び順を保つ（TestEncodeJobStatusesFromFields_PreservesDesiredOrder。
 // 試行行の map を回して組み立てると順序が非決定になるので、EncodeProfiles を
 // 回す実装であることをテストが押さえている）。
-func encodeJobStatusesFromFields(r recordingListFields, done []string, profiles profileSets) ([]EncodeJobStatus, error) {
+func encodeJobStatusesFromFields(r store.RecordingQueryRow, done []string, profiles profileSets) ([]EncodeJobStatus, error) {
 	if len(r.EncodeProfiles) == 0 {
 		return nil, nil
 	}
@@ -341,7 +255,7 @@ func encodeJobStatusesFromFields(r recordingListFields, done []string, profiles 
 // 所有済みの行だけが対象（呼び出し側が ChaptersOwned を見る）。所有の行が無ければ
 // 有効なタイムラインは自動層だが、cut 版は所有を前提にしか作られないので、
 // そのときの比較相手は存在しない。
-func currentKeepRanges(r recordingListFields) ([]chapters.Range, error) {
+func currentKeepRanges(r store.RecordingQueryRow) ([]chapters.Range, error) {
 	var spans []chapters.Span
 	if err := json.Unmarshal(r.ChapterSpans, &spans); err != nil {
 		return nil, err
@@ -354,7 +268,7 @@ func currentKeepRanges(r recordingListFields) ([]chapters.Range, error) {
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
-func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profiles profileSets) (Recording, error) {
+func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) (Recording, error) {
 	rec := Recording{
 		Id:           r.ID,
 		Site:         r.Site,
@@ -406,8 +320,8 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	rec.Ingest = &ingest
 	// ごみ箱の録画（r.DeletedAt が非 nil）では available_encoded_assets を
 	// 出さない --- ごみ箱ではプレイヤーを出さないので値を揃えても使われない
-	// （3d56f92 の理由。性能実測は無い）。一覧（queryRecordings）・単体
-	// （queryRecordingByID）のどちらも常に SQL でこの列を連結し、この関数を
+	// （3d56f92 の理由。性能実測は無い）。一覧（RecordingQuery.List）・単体
+	// （RecordingQuery.Get）のどちらも常に SQL でこの列を連結し、この関数を
 	// 経由するので、判定はここ 1 か所だけで足りる。
 	if r.DeletedAt != nil {
 		r.AvailableEncodedAssets = nil
@@ -497,7 +411,7 @@ func recordingFromListFields(r recordingListFields, includeDeletedAt bool, profi
 	return rec, nil
 }
 
-func cmDetectionFromListFields(r recordingListFields) (CMDetection, error) {
+func cmDetectionFromListFields(r store.RecordingQueryRow) (CMDetection, error) {
 	state := CMDetectionStateDisabled
 	if r.CMDetect {
 		state = CMDetectionStateDetecting
@@ -531,9 +445,9 @@ func cmDetectionFromListFields(r recordingListFields) (CMDetection, error) {
 // program_start_at 降順。issue #136）。trash=true のときごみ箱
 // （deleted_at IS NOT NULL）を返す。trash と各絞り込み条件は直交する。
 //
-// 動的 WHERE ビルダ（buildRecordingsQuery / queryRecordings、recordings_query.go）
-// を使う。sqlc の静的クエリにしない理由はそちらのコメント参照（trgm 式 GIN が
-// 汎用プランで使われなくなることを避けるため）。
+// 動的 WHERE ビルダ（pgstore の RecordingQuery.List）を使う。sqlc の静的クエリに
+// しない理由は pgstore の実装コメントを参照（trgm 式 GIN が汎用プランで使われなく
+// なることを避けるため）。
 //
 // api は site に束縛されない（不変条件 1）ため、全サイトの録画を返す
 // （issue #184 M4-12）。各要素の Site で区別する。
@@ -543,16 +457,23 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 		return ListRecordings400JSONResponse{Error: errMsg}, nil
 	}
 
-	if f.EncodeState != "" {
+	if req.Params.EncodeState != nil {
 		rows, err := h.loadEncodeQueueRows(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("loading encode queue: %w", err)
 		}
-		recordingIDs := encodeQueueRecordingIDs(rows, f.EncodeState == ListRecordingsParamsEncodeStateRunning)
+		recordingIDs := encodeQueueRecordingIDs(rows, *req.Params.EncodeState == ListRecordingsParamsEncodeStateRunning)
 		f.EncodeRecordingIDs = &recordingIDs
 	}
 
-	result, err := queryRecordings(ctx, h.pool, f, h.profileSets())
+	if h.recordingQuery == nil {
+		return nil, fmt.Errorf("recording query is required")
+	}
+	rows, err := h.recordingQuery.List(ctx, f)
+	if err != nil {
+		return nil, fmt.Errorf("listing recordings: %w", err)
+	}
+	result, err := recordingQueryRowsToAPI(rows, f.Trash, h.profileSets())
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -565,14 +486,21 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 // 既にメタデータを 200 で返しているため単体 GET だけ厳しくする理由が無い
 // （メディア配信の 404 契約とは別の判断。openapi.yaml の getRecording
 // description 参照）。purged_at が立った tombstone（issue #135）は 404
-// （queryRecordingByID 参照）。
+// （RecordingQuery.Get 参照）。
 func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject) (GetRecordingResponseObject, error) {
-	rec, ok, err := queryRecordingByID(ctx, h.pool, req.Id, h.profileSets())
+	if h.recordingQuery == nil {
+		return nil, fmt.Errorf("recording query is required")
+	}
+	fields, err := h.recordingQuery.Get(ctx, req.Id)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return GetRecording404JSONResponse{Error: "recording not found"}, nil
+		}
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}
-	if !ok {
-		return GetRecording404JSONResponse{Error: "recording not found"}, nil
+	rec, err := recordingFromListFields(fields, true, h.profileSets())
+	if err != nil {
+		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}
 	return GetRecording200JSONResponse(rec), nil
 }
@@ -930,7 +858,7 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	if err != nil {
 		return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
 	}
-	keep, err := currentKeepRanges(recordingListFields{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
+	keep, err := currentKeepRanges(store.RecordingQueryRow{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
 	if err != nil {
 		return nil, fmt.Errorf("deriving current chapter timeline for recording %d: %w", req.Id, err)
 	}
@@ -1025,7 +953,7 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
 	}
 	// GetRecordingByID は述語なし（ingest worker と共有するクエリなので緩めない）。
-	// purged_at が立った tombstone は GET /api/recordings/{id}（queryRecordingByID、
+	// purged_at が立った tombstone は GET /api/recordings/{id}（RecordingQuery.Get、
 	// purged_at IS NULL）と同じく 404 にする --- deleted_at（ごみ箱）は復元すれば
 	// 効くので inert ではなく、ここでは見ない。
 	if rec.PurgedAt != nil {

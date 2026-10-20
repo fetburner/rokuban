@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -44,7 +45,7 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 	nonUTC := time.Date(2026, 8, 20, 21, 0, 0, 0, jst)
 
 	written := int64(1234)
-	fields := recordingListFields{
+	fields := store.RecordingQueryRow{
 		ID:                  1,
 		Site:                db.DefaultSite,
 		Source:              "manual",
@@ -104,7 +105,7 @@ func TestRecordingFromListFields_PreservesCMDetectionAttemptDetails(t *testing.T
 	stage := "area"
 	errorMessage := "the taught logo area is for 1440x1080 but this recording is 1920x1080"
 	state := "failed"
-	rec, err := recordingFromListFields(recordingListFields{
+	rec, err := recordingFromListFields(store.RecordingQueryRow{
 		ID:             2,
 		Site:           db.DefaultSite,
 		Source:         "manual",
@@ -177,8 +178,8 @@ func nonLocalPostgresTimeZone() string {
 // ここでは pool の全接続に `SET TIME ZONE` で非 UTC のセッション TimeZone を
 // 人工的に与え、CI・developer 環境のどちらでも決定的に食い違いを再現する。
 //
-// queryRecordings は pgx.QueryExecModeExec を明示していて text protocol
-// （セッション TimeZone で decode）を使い、queryRecordingByID は既定の
+// RecordingQuery.List は pgx.QueryExecModeExec を明示していて text protocol
+// （セッション TimeZone で decode）を使い、RecordingQuery.Get は既定の
 // binary protocol（プロセスの time.Local で decode）を使う（recordings.go の
 // utcTimePtr の doc コメント）。同じ pool でもクエリ単位でこの差が出るので、
 // セッション TimeZone を 1 箇所変えるだけで両経路の Location が食い違う

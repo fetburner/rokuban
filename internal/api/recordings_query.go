@@ -1,67 +1,10 @@
 package api
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"strings"
-	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store"
 )
-
-// serviceRef は Service.id を DB の 2 列に分解した組。
-type serviceRef struct {
-	NetworkID int32
-	ServiceID int32
-}
-
-// recordingsFilter は GET /api/recordings の絞り込み + キーセットページング軸
-// （issue #136）。ゼロ値のフィールドは「絞り込みなし」を表す。
-type recordingsFilter struct {
-	Trash bool
-
-	Q       string
-	QTarget ListRecordingsParamsQTarget // "" は既定 (titleDescription) と同じ扱い
-
-	Genres       []int16
-	ChannelTypes []string
-	// Sites はサイト絞り込み（軸内 OR）。空なら全サイト。
-	Sites []string
-	// Services はチャンネル絞り込み（軸内 OR）。`Service.id` を
-	// (networkId, serviceId) に分解した組で持つ。**site は含まない** ---
-	// site は別軸で、軸間は AND（openapi.yaml の `service` の description）。
-	Services []serviceRef
-
-	Status             ListRecordingsParamsStatus
-	EncodeState        ListRecordingsParamsEncodeState
-	EncodeRecordingIDs *[]int64
-	Source             ListRecordingsParamsSource
-	RuleID             *int64
-	// SeriesOf は番組ハブの起点になった録画の id。指定すると、その録画の実効
-	// シリーズと同じ実効シリーズの録画だけに絞る（buildRecordingsQuery 参照）。
-	SeriesOf *int64
-
-	From *time.Time
-	To   *time.Time
-
-	// SortDesc は program_start_at の並び順。true = DESC（既定）, false = ASC。
-	// 生成された ListRecordingsParamsOrder の定数（Asc / Desc）は "order" を
-	// パースする側（ListRecordings ハンドラ）でだけ扱い、このフィルタ自体は
-	// bool に落として持つ（フィールド名 Desc が同名パッケージ定数と紛れるのを
-	// 避けるため）。
-	SortDesc bool
-	// ContinueWatching は再開位置の更新時刻で並べるホーム用コレクション。
-	ContinueWatching bool
-
-	Before   *time.Time
-	BeforeID *int64
-
-	Limit int
-}
 
 // defaultRecordingsLimit / maxRecordingsLimit は GET /api/recordings の
 // limit の既定値・上限（openapi.yaml のパラメータ定義と一致させる）。
@@ -72,26 +15,18 @@ const (
 
 // genreLv1Min / genreLv1Max は genre_lv1 のドメイン（rule_genres.genre_lv1 の
 // CHECK と同じ、recordings.genre_lv1 を作る生成列関数 genre_lv1_of の
-// 範囲チェック参照）。範囲外の genre クエリパラメータは黙って 0 件に落とさず 400 にする
-// （PR #187 レビュー O4）。
+// 範囲チェック参照）。範囲外の genre クエリパラメータは黙って 0 件に落とさず 400 にする。
 const (
 	genreLv1Min = 0
 	genreLv1Max = 15
 )
 
-// recordingsFilterFromParams は ListRecordingsParams（openapi_gen.go の生成型）を
-// recordingsFilter に変換する。不正な入力（before/beforeId が片方だけ、limit が
-// 範囲外、enum に一致しない qTarget/channelType/status/encodeState/source/order、
-// ドメイン外の genre）はエラーメッセージを返す（空文字なら妥当）。
-//
-// enum は無視して黙って既定値や 0 件に落とさない（issue #136 の罠「黙って 0 件
-// にしない」・400 の本文を捨てない規約、CLAUDE.md）。生成型が持つ Valid() を
-// 使う（oapi-codegen が enum ごとに生成する）。ListRecordings ハンドラがこの
-// 戻り値をそのまま ListRecordings400JSONResponse.Error に載せる。
-func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, string) {
-	f := recordingsFilter{
+// recordingsFilterFromParams は ListRecordingsParams（OpenAPI の生成型）を
+// store の型付きフィルタへ変換する。不正な入力はエラーメッセージを返す。
+func recordingsFilterFromParams(p ListRecordingsParams) (store.RecordingFilter, string) {
+	f := store.RecordingFilter{
 		Trash:    p.Trash != nil && *p.Trash,
-		SortDesc: true, // 既定 desc。p.Order を検証した後に確定する
+		SortDesc: true,
 		Limit:    defaultRecordingsLimit,
 		RuleID:   p.RuleId,
 		SeriesOf: p.SeriesOf,
@@ -102,7 +37,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.Order != nil {
 		if !p.Order.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid order %q (want asc or desc)", *p.Order)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid order %q (want asc or desc)", *p.Order)
 		}
 		f.SortDesc = *p.Order != Asc
 	}
@@ -111,14 +46,14 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	}
 	if p.QTarget != nil {
 		if !p.QTarget.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid qTarget %q (want title or titleDescription)", *p.QTarget)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid qTarget %q (want title or titleDescription)", *p.QTarget)
 		}
-		f.QTarget = *p.QTarget
+		f.QTarget = string(*p.QTarget)
 	}
 	if p.Genre != nil {
 		for _, g := range *p.Genre {
 			if g < genreLv1Min || g > genreLv1Max {
-				return recordingsFilter{}, fmt.Sprintf("genre must be between %d and %d, got %d", genreLv1Min, genreLv1Max, g)
+				return store.RecordingFilter{}, fmt.Sprintf("genre must be between %d and %d, got %d", genreLv1Min, genreLv1Max, g)
 			}
 		}
 		f.Genres = int16SliceFromInts(*p.Genre)
@@ -126,7 +61,7 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	if p.ChannelType != nil {
 		for _, ct := range *p.ChannelType {
 			if !ct.Valid() {
-				return recordingsFilter{}, fmt.Sprintf("invalid channelType %q (want GR, BS, CS or SKY)", ct)
+				return store.RecordingFilter{}, fmt.Sprintf("invalid channelType %q (want GR, BS, CS or SKY)", ct)
 			}
 		}
 		f.ChannelTypes = channelTypeStrings(*p.ChannelType)
@@ -137,48 +72,44 @@ func recordingsFilterFromParams(p ListRecordingsParams) (recordingsFilter, strin
 	if p.Service != nil {
 		networkIDs, serviceIDs, msg := splitServiceIDs(*p.Service)
 		if msg != "" {
-			return recordingsFilter{}, msg
+			return store.RecordingFilter{}, msg
 		}
 		for i := range networkIDs {
-			f.Services = append(f.Services, serviceRef{
+			f.Services = append(f.Services, store.RecordingServiceRef{
 				NetworkID: networkIDs[i], ServiceID: serviceIDs[i],
 			})
 		}
 	}
 	if p.Status != nil {
 		if !p.Status.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid status %q", *p.Status)
 		}
-		f.Status = *p.Status
+		f.Status = string(*p.Status)
 	}
-	if p.EncodeState != nil {
-		if !p.EncodeState.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
-		}
-		f.EncodeState = *p.EncodeState
+	if p.EncodeState != nil && !p.EncodeState.Valid() {
+		return store.RecordingFilter{}, fmt.Sprintf("invalid encodeState %q (want queued or running)", *p.EncodeState)
 	}
 	if p.Source != nil {
 		if !p.Source.Valid() {
-			return recordingsFilter{}, fmt.Sprintf("invalid source %q (want rule, manual or unattributed)", *p.Source)
+			return store.RecordingFilter{}, fmt.Sprintf("invalid source %q (want rule, manual or unattributed)", *p.Source)
 		}
-		f.Source = *p.Source
+		f.Source = string(*p.Source)
 	}
 	if p.Limit != nil {
 		f.Limit = *p.Limit
 	}
 
 	if (f.Before == nil) != (f.BeforeID == nil) {
-		return recordingsFilter{}, "before and beforeId must be given together"
+		return store.RecordingFilter{}, "before and beforeId must be given together"
 	}
 	if f.Limit < 1 || f.Limit > maxRecordingsLimit {
-		return recordingsFilter{}, fmt.Sprintf("limit must be between 1 and %d", maxRecordingsLimit)
+		return store.RecordingFilter{}, fmt.Sprintf("limit must be between 1 and %d", maxRecordingsLimit)
 	}
 	return f, ""
 }
 
 // int16SliceFromInts は openapi の genre（[]int）を genre_lv1 の smallint[] 引数に
-// 変換する。呼び出し側（recordingsFilterFromParams）が範囲を検証済みであること
-// が前提。
+// 変換する。呼び出し側が範囲を検証済みであることが前提。
 func int16SliceFromInts(vs []int) []int16 {
 	out := make([]int16, len(vs))
 	for i, v := range vs {
@@ -194,561 +125,4 @@ func channelTypeStrings(vs []ListRecordingsParamsChannelType) []string {
 		out[i] = string(v)
 	}
 	return out
-}
-
-// recordingsSelectColumns / recordingsAvailableEncodedAssetsSelect /
-// recordingsFromJoins は `GET /api/recordings`（buildRecordingsQuery）と
-// `GET /api/recordings/{id}`（queryRecordingByID）が共有する SELECT リストと
-// FROM/JOIN 節。openapi.yaml は単体 GET を「一覧要素と同形」とコミットしている
-// ため、この 2 つのクエリの射影は常に一致していなければならない。両方が
-// 手書きの文字列で別々に SQL を組んでいた最初の実装では、一方に列を足しても
-// もう一方は静かに古い形のまま残り続けても `Scan` 呼び出し自体は（列数が
-// 揃っている限り）コンパイルも実行も通ってしまう --- `encode_profiles`
-// （issue #159）や `available_encoded_profiles`（issue #133。現在は
-// `available_encoded_assets` に改名。issue #236）のように過去に
-// 列が増えた表なので、次に一覧側だけ列を足したときに同じ drift が再発しうる
-// （issue #232 のレビュー指摘）。共有の定数に切り出すことで、列を足す変更は
-// 両方のクエリに自動的に効く。
-const (
-	// recordingsSelectColumns は両クエリ共通の SELECT リスト（末尾カンマ無し）。
-	recordingsSelectColumns = `
-    r.id, r.site, r.rule_id, r.source, r.service_name, r.channel_type, r.channel,
-    r.network_id, r.service_id, r.event_id, r.title, r.description,
-    r.program_start_at, r.program_duration_ms, r.status,
-    r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
-    a.size_bytes                        AS original_size_bytes,
-    -- 計測済みでも drop_stats 行が無ければ 0 を返す。未計測を 0 と混同しない判定は
-    -- has_measured_drop_summary で行い、集計値の COALESCE を存在判定に使わない。
-    COALESCE(d.packets, 0)::bigint      AS drop_packets,
-    COALESCE(d.drops, 0)::bigint        AS drop_drops,
-    COALESCE(d.errors, 0)::bigint       AS drop_errors,
-    COALESCE(d.scrambled, 0)::bigint    AS drop_scrambled,
-    COALESCE(p.keep_original, 'always')::text AS keep_original,
-    COALESCE(p.encode_profiles, '{}')::text[] AS encode_profiles,
-    -- 完了していないエンコードプロファイルの試行状態（issue #316）。
-    -- state そのものを SQL で CASE に潰さず recording_encode_attempts の生の
-    -- 行を jsonb_agg で出すのは、ingest の has_original_asset 等と同じ理由
-    -- --- 導出（encodeJobStatusesFromFields）を DB なしで単体テストできる
-    -- 形に保つため。行が無いプロファイル（queued）は Go 側で
-    -- encode_profiles − encoded_profiles − ここの行、として導出する。
-    (
-        SELECT coalesce(
-            jsonb_agg(
-                jsonb_build_object('profile', ea.profile, 'state', ea.state)
-                ORDER BY ea.profile
-            ),
-            '[]'::jsonb
-        )
-        FROM recording_encode_attempts ea
-        WHERE ea.recording_id = r.id
-    ) AS encode_attempts,
-    -- ingest（原本の取り込み）の状態を導出するための素の事実（issue #212）。
-    -- state そのものを SQL で CASE に潰さず 3 つの事実として出すのは、
-    -- 導出（ingestProgressFromFields）を DB なしで単体テストできる形に
-    -- 保つため。
-    --
-    -- has_original_asset は上の LEFT JOIN a とは述語が違う（a は
-    -- state <> 'deleted' で絞るが、こちらは state を問わない）。**この違いが
-    -- 「まだ取り込めていない」と「取り込んだ後に削除した」を分ける唯一の材料**
-    -- なので、a.id IS NOT NULL で代用してはならない（issue #211）。
-    EXISTS (
-        SELECT 1 FROM media_assets o
-        WHERE o.recording_id = r.id AND o.kind = 'original'
-    ) AS has_original_asset,
-    -- dropSummary は原本の現在の保存サイズを実際に計測した結果だけを返す。
-    -- state を問わず照合するので、計測後に tombstone になった原本の要約は残る。
-    -- in-place 更新後に古いサイズの計測記録が残っても、それは一致せず未計測扱い。
-    EXISTS (
-        SELECT 1
-        FROM current_ts_scanned_originals ts_scan
-        JOIN media_assets scanned_original
-          ON scanned_original.id = ts_scan.media_asset_id
-        WHERE scanned_original.recording_id = r.id
-    ) AS has_measured_drop_summary,
-    -- has_ingestable_record の述語は **watcher が ingest ジョブを投入する条件と
-    -- 同じもの**を見る（internal/watcher/watcher.go の
-    -- record.Recording.Status == "recording" または "finished"）。record_sync.status は mirakc の
-    -- recordingStatus そのまま（CHECK 無し。docs/schema/record-sync.md）。
-    --
-    -- **status で絞らずに行の存在だけを見てはならない。** record_sync 行は
-    -- failed / canceled の record にも作られ、Rokuban はこの行を消さない
-    -- （本番に DELETE FROM record_sync の経路は無い）ので、絞らないと
-    -- 「ingest ジョブが永久に来ない録画」が永久に pending を名乗る
-    -- （= UI が来ない未来を断定する。issue #211 と同じ形の誤り）。
-    EXISTS (
-        SELECT 1 FROM record_sync rs
-        WHERE rs.recording_id = r.id AND rs.status IN ('recording', 'finished')
-    ) AS has_ingestable_record,
-    -- has_abnormally_ended_record は「record が canceled / failed で終わった」。
-    -- **述語は worker の終端条件と一致させる**（internal/worker/ingest.go の
-    -- RecordFollowReader の status hook が errIngestRecordEndedAbnormally を返す status の集合）。
-    --
-    -- この列が要るのは、取り消した録画の recording_ingest_progress 行が
-    -- 残りうるからである。worker は cancel / fail を観測したとき進捗行を消して
-    -- からジョブを終端するが、その DELETE が失敗してもログだけで続行する
-    -- （成功したジョブの後始末を失敗で巻き戻さない既存の判断に揃えている）。
-    -- 行が残ると ingest_written_bytes が非 NULL になり、ingestProgressFromFields
-    -- は has_ingestable_record より進捗行を先に見るので、二度と取り込まれない
-    -- 録画が恒久的に「取り込み中（停滞）」を名乗る。
-    --
-    -- **has_ingestable_record の否定にしてはならない。** 未知の status では
-    -- worker は追従を続ける（RecordFollowReader が未知の status を再試行する）ので、
-    -- その間の進捗行は生きた観測である。
-    EXISTS (
-        SELECT 1 FROM record_sync rs
-        WHERE rs.recording_id = r.id AND rs.status IN ('canceled', 'failed')
-    ) AS has_abnormally_ended_record,
-    ip.written_bytes  AS ingest_written_bytes,
-    ip.expected_bytes AS ingest_expected_bytes,
-    ip.observed_at    AS ingest_observed_at,
-    COALESCE(p.cm_detect, false)::boolean AS cm_detect,
-    EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id) AS cm_detected,
-    (
-        SELECT COALESCE(
-            jsonb_agg(jsonb_build_object('startMs', lower(cr.cm_range), 'endMs', upper(cr.cm_range)) ORDER BY lower(cr.cm_range)),
-            '[]'::jsonb
-        )
-        FROM recording_cm_detections d
-        CROSS JOIN LATERAL unnest(d.cm_ranges) AS cr(cm_range)
-        WHERE d.recording_id = r.id
-    ) AS cm_ranges,
-    ca.state AS cm_attempt_state,
-    ca.stage AS cm_attempt_stage,
-    ca.error AS cm_attempt_error,
-    -- チャプターの所有とユーザー層（encodedAssets[].cutStale の判定材料）。
-    -- **導出（chapters.Derive）は Go 側のまま**で、ここは素の事実だけを射影する
-    -- （state そのものを SQL で CASE に潰さない既存の規律と同じ。SQL に
-    -- タイムラインの導出を複製すると、チャプターの規則が 2 か所に分かれる）。
-    EXISTS (
-        SELECT 1 FROM recording_chapter_ownership o WHERE o.recording_id = r.id
-    ) AS chapters_owned,
-    COALESCE(
-        (
-            SELECT jsonb_agg(
-                jsonb_build_object(
-                    'startMs', lower(s.span), 'endMs', upper(s.span),
-                    'label', s.label, 'cut', s.cut
-                )
-                ORDER BY lower(s.span)
-            )
-            FROM recording_chapter_spans s
-            WHERE s.recording_id = r.id
-        ),
-        '[]'::jsonb
-    ) AS chapter_spans,
-    -- 実効シリーズ（recordings.series の材料）。**recording_series ビューを唯一の
-    -- 定義にする** --- ここで COALESCE(label_rule_hits の値, r.series_key) を
-    -- 書き下すと、棚（ListRecordingShelves）と一覧で実効シリーズの規則が 2 箇所に
-    -- 分かれる。相関サブクエリなのは、ビューを JOIN すると行が増えうる形
-    -- （label_rule_hits は PK なので実際には増えないが、読み手がそれを確かめる
-    -- 必要がある）を避けるため。一覧は LIMIT 50 なので 1 行 1 回の PK 引き。
-	    (SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) AS series,
-	    r.series_key AS series_key,
-	    pp.position_ms AS resume_position_ms,
-	    pp.updated_at AS resume_position_updated_at,
-	    (
-	        SELECT max(w.watched_at)
-	        FROM recording_watched w
-	        JOIN recordings event_recording ON event_recording.id = w.recording_id
-	        WHERE event_recording.network_id = r.network_id
-	          AND event_recording.service_id = r.service_id
-	          AND event_recording.program_start_at = r.program_start_at
-	    ) AS watched_at`
-
-	// recordingsAvailableEncodedAssetsSelect はブラウザ再生用の観測列（active な
-	// encoded のみ）。先頭にカンマを持つので recordingsSelectColumns の直後に
-	// そのまま連結できる。
-	//
-	// buildRecordingsQuery / queryRecordingByID のどちらも常にこれを連結する。
-	// 「ごみ箱では出さない」（プレイヤーを出さないので値を揃えても使われない。
-	// 3d56f92 の理由。性能実測は無い）は Go 側 1 か所（recordingFromListFields が
-	// r.DeletedAt != nil だけを見て AvailableEncodedAssets を落とす）だけで決める。
-	//
-	// keepRanges は media_asset_cuts.keep_ranges を配列にしたもの（null = cut で
-	// ない版）。**`cut` の真偽を別に持たない** --- 凍結した区間の有無がそのまま
-	// 「カット版か」であり、2 つの主張を並べると片方だけ古くなる（不変条件 9）。
-	// Go 側は api.cutStale の判定にも同じ値を使う（現在のタイムラインから
-	// chapters.Derive で導出した keep と突き合わせる）。
-	//
-	// ユーザーが外した版（removed_encoded_assets）は、削除 reconcile が unlink する
-	// までの最大 15 分も active のまま残るが、ここでは出さない。出すと外した直後の
-	// 再取得でも版が残って見え、再生中の版から再生元が選び直されない。削除を
-	// 確定する述語と同じ view を引くので、最後の版として消されずに残った版は再び出る。
-	//
-	// jsonb_agg で profile と size_bytes を同じ行に載せる（issue #236 M7-3。
-	// プロファイル名の配列 + サイズの並行配列という 2 本の index 揺れやすい
-	// 配列にしなかった理由 --- 片方だけ ORDER BY を書き忘れると添字が
-	// ずれるが、jsonb_agg は 1 要素が 1 行の全情報を持つのでその種の drift が
-	// 構造的に起きない）。size_bytes は media_assets の NOT NULL 列なので
-	// active な行がある限り必ず入る。
-	recordingsAvailableEncodedAssetsSelect = `,
-    (
-        SELECT coalesce(
-            jsonb_agg(
-                jsonb_build_object(
-                    'profile', e.profile,
-                    'sizeBytes', e.size_bytes,
-                    'keepRanges', (
-                        SELECT jsonb_agg(
-                            jsonb_build_object('startMs', lower(k), 'endMs', upper(k))
-                            ORDER BY lower(k)
-                        )
-                        FROM media_asset_cuts c
-                        CROSS JOIN LATERAL unnest(c.keep_ranges) AS k
-                        WHERE c.media_asset_id = e.id
-                    )
-                )
-                ORDER BY e.profile
-            ),
-            '[]'::jsonb
-        )
-        FROM media_assets e
-        WHERE e.recording_id = r.id
-          AND e.kind = 'encoded'
-          AND e.state = 'active'
-          AND e.profile IS NOT NULL
-          AND NOT EXISTS (SELECT 1 FROM removed_encoded_assets x WHERE x.asset_id = e.id)
-    ) AS available_encoded_assets`
-
-	// recordingsFromJoins は両クエリ共通の FROM + JOIN 節。
-	recordingsFromJoins = `
-FROM recordings r
-LEFT JOIN media_assets a
-    ON a.recording_id = r.id AND a.kind = 'original' AND a.state <> 'deleted'
-LEFT JOIN recording_encode_policy p ON p.recording_id = r.id
--- 方針変更より前の試行は reconcile が削除するまで残ることがある。
--- 現在の世代の試行だけを view 越しに射影する。
-LEFT JOIN current_cm_attempts ca ON ca.recording_id = r.id
-LEFT JOIN recording_ingest_progress ip ON ip.recording_id = r.id
-LEFT JOIN recording_playback_positions pp ON pp.recording_id = r.id
--- state を絞らず kind = 'original' の media_assets 行を JOIN しても二重計上しないのは、
--- media_assets_recording_id_kind_profile_key（UNIQUE NULLS NOT DISTINCT
--- (recording_id, kind, profile)）が recording_id ごとに original を高々 1 行に
--- 制約しているため。
-LEFT JOIN LATERAL (
-    SELECT sum(ds.packets) AS packets, sum(ds.drops) AS drops,
-           sum(ds.errors) AS errors, sum(ds.scrambled) AS scrambled
-    FROM drop_stats ds
-    JOIN media_assets da ON da.id = ds.media_asset_id
-    WHERE da.recording_id = r.id AND da.kind = 'original'
-) d ON true`
-)
-
-// buildRecordingsQuery は GET /api/recordings の絞り込み + キーセットページングを
-// 動的 WHERE として組む（pgstore の compileRuleQuery と同じ arg クロージャ方式に倣う。
-// sqlc の静的クエリにしない理由は queryRecordings のコメント参照）。
-//
-// 列名を明示する（r.* ではなく列名を書くのは、この SELECT リストが
-// queryRecordings の Scan 呼び出しの順序をそのまま決めるため）。
-// available_encoded_assets は trash かどうかによらず常に射影する ---
-// 「ごみ箱では出さない」という規則は recordingFromListFields（Go 側 1 か所）が
-// r.DeletedAt で判定する（recordingsAvailableEncodedAssetsSelect のコメント参照）。
-//
-// **既定は全サイト**（api は不変条件 1 により site に束縛されない）。`?site=`
-// はその上の絞り込みで、「束縛」ではない --- 束縛はプロセスがどの mirakc に
-// 触れるかの話で、絞り込みは読み出しの述語にすぎない。site 軸を service の
-// 識別子に混ぜないのは、混ぜると「あるサイトの録画を全部」がチャンネルの
-// 列挙でしか表せず、service だけが他の軸と違う意味論（組の選言）になるため。
-func buildRecordingsQuery(f recordingsFilter) (string, []any, error) {
-	if (f.Before == nil) != (f.BeforeID == nil) {
-		return "", nil, fmt.Errorf("before and beforeId must be given together")
-	}
-
-	args := make([]any, 0, 16)
-	arg := func(v any) string {
-		args = append(args, v)
-		return fmt.Sprintf("$%d", len(args))
-	}
-
-	var where strings.Builder
-	and := func(clause string) {
-		if where.Len() == 0 {
-			where.WriteString(clause)
-			return
-		}
-		where.WriteString(" AND ")
-		where.WriteString(clause)
-	}
-
-	// trash の有無で基底述語を切り替える。通常一覧では deleted_at だけを絞り、
-	// superseded_at は履歴を保つため絞らない。
-	if f.Trash {
-		and("r.deleted_at IS NOT NULL")
-		and("r.purged_at IS NULL")
-	} else {
-		and("r.deleted_at IS NULL")
-	}
-
-	recordingsFilterWhere(f, and, arg)
-	if f.EncodeRecordingIDs != nil {
-		and("r.id = ANY(" + arg(*f.EncodeRecordingIDs) + "::bigint[])")
-	}
-	// 番組ハブ（`?seriesOf=`）。述語は 1 文で
-	// `E(r) = (SELECT E(o) FROM recordings o WHERE o.id = $n)`。起点の E を先に
-	// 読んでからその値で絞る 2 文にしない --- 間に分類ルールの commit が挟まると、
-	// 起点が自分のハブから消える（docs/data/series.md §8「資源同定: 起点は録画 id」）。
-	//
-	// **`IS NOT DISTINCT FROM` にしない。** 起点の実効シリーズが NULL（自動キーを
-	// 導出できず、どのルールも当たらない録画）のとき、NULL 同士を等しいと見なすと
-	// 「棚の無い録画を全部集めたハブ」が返る。openapi.yaml が約束しているのは
-	// 0 件である。
-	//
-	// 射影は recording_series ビューを唯一の定義として読む（書き下すと棚・一覧・
-	// ハブで実効シリーズの規則が 3 箇所に分かれる）。
-	if f.SeriesOf != nil {
-		and("(SELECT s.value FROM recording_series s WHERE s.recording_id = r.id) = " +
-			"(SELECT s.value FROM recording_series s WHERE s.recording_id = " + arg(*f.SeriesOf) + ")")
-		and("r.superseded_at IS NULL")
-	}
-	if f.ContinueWatching {
-		and("pp.recording_id IS NOT NULL")
-		and("r.deleted_at IS NULL")
-		and("r.purged_at IS NULL")
-		and("r.superseded_at IS NULL")
-		and("r.status IN ('recording', 'finished')")
-		and(`NOT EXISTS (
-            SELECT 1
-            FROM recordings event_recording
-            JOIN recording_watched w ON w.recording_id = event_recording.id
-            WHERE event_recording.network_id = r.network_id
-              AND event_recording.service_id = r.service_id
-              AND event_recording.program_start_at = r.program_start_at
-        )`)
-	}
-
-	// キーセットは (program_start_at, id) の複合で割る（同一 program_start_at
-	// の録画は同時刻開始の別チャンネルで普通に発生するため、単独では
-	// ページ跨ぎで重複・欠落が出る。issue #136 の「罠」）。order=asc では
-	// 不等号を反転する。
-	if f.Before != nil {
-		if f.SortDesc {
-			and("(r.program_start_at, r.id) < (" + arg(*f.Before) + ", " + arg(*f.BeforeID) + ")")
-		} else {
-			and("(r.program_start_at, r.id) > (" + arg(*f.Before) + ", " + arg(*f.BeforeID) + ")")
-		}
-	}
-
-	orderDir := "ASC"
-	if f.SortDesc {
-		orderDir = "DESC"
-	}
-
-	limitPlaceholder := arg(f.Limit)
-
-	orderBy := "r.program_start_at " + orderDir + ", r.id " + orderDir
-	if f.ContinueWatching {
-		orderBy = "pp.updated_at DESC, r.id DESC"
-	}
-
-	sql := `
-SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
-WHERE ` + where.String() + `
-ORDER BY ` + orderBy + `
-LIMIT ` + limitPlaceholder
-
-	return sql, args, nil
-}
-
-// recordingsFilterWhere は録画一覧（buildRecordingsQuery）と棚
-// （buildRecordingShelvesQuery）が共有する絞り込みの述語を、録画 1 件
-// （別名 r）に対して組む。片方だけ直る形にしないため、条件 → WHERE と引数の
-// 変換はここ 1 箇所に置く。ページング・並び順・番組ハブ・エンコード状況・
-// 続きから見る、は録画一覧だけの軸なので buildRecordingsQuery に残す。
-func recordingsFilterWhere(f recordingsFilter, and func(string), arg func(any) string) {
-	// q は条件が実際にあるときだけ節を足す（"$n IS NULL OR ..." 形にしない）。
-	// 判断・pgx の既定 QueryExecModeCacheStatement が SQL テキストを named
-	// prepared statement にするため Postgres が 6 回目以降 generic plan に
-	// 切り替えうること（実測 0.7ms → 290ms）・queryRecordings が
-	// QueryExecModeExec を強制する理由は docs/api/rest.md §動的 WHERE ビルダ
-	// （sqlc の静的クエリにしない）にある。
-	if f.Q != "" {
-		switch f.QTarget {
-		case ListRecordingsParamsQTargetTitle:
-			and(rulequery.KeywordClause("r.title", f.Q, false, arg))
-		default: // "" または ListRecordingsParamsQTargetTitleDescription
-			and("(" + rulequery.KeywordClause("r.title", f.Q, false, arg) +
-				" OR " + rulequery.KeywordClause("r.description", f.Q, false, arg) + ")")
-		}
-	}
-	if len(f.Genres) > 0 {
-		and("r.genre_lv1 && " + arg(f.Genres) + "::smallint[]")
-	}
-	if len(f.ChannelTypes) > 0 {
-		and("r.channel_type = ANY(" + arg(f.ChannelTypes) + ")")
-	}
-	if len(f.Sites) > 0 {
-		and("r.site = ANY(" + arg(f.Sites) + ")")
-	}
-	if len(f.Services) > 0 {
-		// 行値の IN。(network_id, service_id) の組で OR する形なので、
-		// network_id と service_id を別々に ANY で絞る（＝直積になる）形とは違う。
-		pairs := make([]string, len(f.Services))
-		for i, service := range f.Services {
-			pairs[i] = "(" + arg(service.NetworkID) + ", " + arg(service.ServiceID) + ")"
-		}
-		and("(r.network_id, r.service_id) IN (" + strings.Join(pairs, ", ") + ")")
-	}
-	if f.Status != "" {
-		and("r.status = " + arg(string(f.Status)))
-		// 通常一覧の status=failed だけは、本物の record に置き換わった擬似
-		// failed 行によるホーム警告の偽陽性を防ぐ。無条件一覧・trash 一覧は
-		// 履歴を維持するため絞らない（docs/frontend/home.md）。
-		if !f.Trash && f.Status == ListRecordingsParamsStatusFailed {
-			and("r.superseded_at IS NULL")
-		}
-	}
-	if f.Source != "" {
-		and("r.source = " + arg(string(f.Source)))
-	}
-	if f.RuleID != nil {
-		and("r.rule_id = " + arg(*f.RuleID))
-	}
-	if f.From != nil {
-		and("r.program_start_at >= " + arg(*f.From))
-	}
-	if f.To != nil {
-		and("r.program_start_at < " + arg(*f.To))
-	}
-}
-
-// queryRecordings は buildRecordingsQuery が組んだ SQL を実行し、
-// recordingFromListFields で Recording に写す。
-//
-// sqlc の静的クエリにしないのは、絞り込み軸ごとに
-// `($n IS NULL OR ...)` 形で条件を足すと汎用プランになり、trgm 式 GIN
-// （recordings_title_trgm 等）を使わないことがあるため（issue #136 の
-// 「罠」）。buildRecordingsQuery は条件が実際にあるときだけ節を足すので、そもそも
-// 1 つの静的クエリ文字列に収まらない。
-//
-// pgx.QueryExecModeExec を明示するのは、pgx の既定 QueryExecModeCacheStatement
-// が SQL テキストごとに named prepared statement を作ってキャッシュし、
-// Postgres 自身がその named statement を 6 回目以降 custom plan（実際の bind
-// 値に基づく見積り）から generic plan（bind 値を見ない既定選択率での見積り）に
-// 切り替えるため（PostgreSQL の PREPARE のプラン選択規則）。generic plan では
-// bind 値が分からず trgm 式 GIN を選べないため、既定選択率のまま非選択的な
-// インデックス（recordings_program_start_at_id_idx 等）を全走査するプランに
-// 倒れる。加えて、この経路は絞り込みの組み合わせごとに SQL テキスト自体が
-// 変わるので、そもそも named statement のキャッシュが効く場面が少ない
-// （キャッシュを維持するコストに対して利益が薄い）。QueryExecModeExec は
-// unnamed statement で毎回明示的に再計画させるので、この切り替えが原理的に
-// 起こらない（PR #187 レビュー O1）。
-//
-// 80,001 行・同一接続で 12 回実行して実測した結果、6 回目で崖が来ることを
-// 確認済み（named statement 数はログの `named stmts` 列。0 のままなら
-// QueryExecModeExec が効いている）:
-//
-//	QueryExecModeExec   per-exec: [1.8ms 0.7 0.7 0.7 0.7 0.6 0.7 0.6 0.7 0.7 0.7 0.7]   named stmts=0
-//	default(cache_stmt) per-exec: [5.0ms 3.8 3.8 3.3 3.2 | 323.9ms 286.8 295.6 288.1 289.7 285.9 287.6]  named stmts=1
-//
-// 0.7ms → 290ms（約 400 倍）の崖。この保護を「保険」として外すと、絞り込みの
-// 組み合わせが少ない環境（同じ SQL テキストが 6 回を超えて再利用される）で
-// この崖に落ちる。
-
-// queryRecordingByID は GET /api/recordings/{id} の単体取得。
-// 一覧（queryRecordings）と同じ射影（recordingsSelectColumns /
-// recordingsAvailableEncodedAssetsSelect / recordingsFromJoins、この 2 つの
-// クエリの共有元）を使うが、絞り込み軸が id 固定のためキーセットカーソルも
-// 動的 WHERE ビルダも要らない --- trgm 式 GIN が問題になる可変な組み合わせが
-// 存在しない（queryRecordings のコメント参照）ので、単純な静的クエリで十分。
-//
-// **trash（`deleted_at IS NOT NULL`）の行も返す。** 一覧の `trash=true` が
-// メタデータを 200 で返すのと揃える（メディア配信の 404 契約とは別の判断。
-// openapi.yaml の getRecording description 参照）。**purged_at が立った
-// tombstone（issue #135）だけは除く** --- ファイルが既に無く、通常一覧・
-// ごみ箱一覧のどちらにも現れない行なので、単体 GET だけ見える形にしない。
-//
-// 見つからなければ (Recording{}, false, nil) を返す。
-func queryRecordingByID(ctx context.Context, pool *pgxpool.Pool, id int64, profiles profileSets) (Recording, bool, error) {
-	const sql = `
-SELECT` + recordingsSelectColumns + recordingsAvailableEncodedAssetsSelect + recordingsFromJoins + `
-WHERE r.id = $1 AND r.purged_at IS NULL`
-
-	var fields recordingListFields
-	err := pool.QueryRow(ctx, sql, id).Scan(
-		&fields.ID, &fields.Site, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
-		&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
-		&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
-		&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
-		&fields.OriginalSizeBytes,
-		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
-		&fields.KeepOriginal,
-		&fields.EncodeProfiles,
-		&fields.EncodeAttempts,
-		&fields.HasOriginalAsset, &fields.HasMeasuredDropSummary,
-		&fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
-		&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
-		&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
-		&fields.CMAttemptStage, &fields.CMAttemptError,
-		&fields.ChaptersOwned, &fields.ChapterSpans,
-		&fields.Series,
-		&fields.SeriesKey,
-		&fields.ResumePositionMs,
-		&fields.ResumePositionUpdatedAt,
-		&fields.WatchedAt,
-		&fields.AvailableEncodedAssets,
-	)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return Recording{}, false, nil
-		}
-		return Recording{}, false, fmt.Errorf("querying recording %d: %w", id, err)
-	}
-
-	rec, err := recordingFromListFields(fields, true, profiles)
-	if err != nil {
-		return Recording{}, false, err
-	}
-	return rec, true, nil
-}
-
-func queryRecordings(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter, profiles profileSets) ([]Recording, error) {
-	sql, args, err := buildRecordingsQuery(f)
-	if err != nil {
-		return nil, err
-	}
-
-	rows, err := pool.Query(ctx, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
-	if err != nil {
-		return nil, fmt.Errorf("querying recordings: %w", err)
-	}
-	defer rows.Close()
-
-	result := make([]Recording, 0, f.Limit)
-	for rows.Next() {
-		var fields recordingListFields
-		if err := rows.Scan(
-			&fields.ID, &fields.Site, &fields.RuleID, &fields.Source, &fields.ServiceName, &fields.ChannelType, &fields.Channel,
-			&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
-			&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
-			&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
-			&fields.OriginalSizeBytes,
-			&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
-			&fields.KeepOriginal,
-			&fields.EncodeProfiles,
-			&fields.EncodeAttempts,
-			&fields.HasOriginalAsset, &fields.HasMeasuredDropSummary,
-			&fields.HasIngestableRecord, &fields.HasAbnormallyEndedRecord,
-			&fields.IngestWrittenBytes, &fields.IngestExpectedBytes, &fields.IngestObservedAt,
-			&fields.CMDetect, &fields.CMDetected, &fields.CMRanges, &fields.CMAttemptState,
-			&fields.CMAttemptStage, &fields.CMAttemptError,
-			&fields.ChaptersOwned, &fields.ChapterSpans,
-			&fields.Series,
-			&fields.SeriesKey,
-			&fields.ResumePositionMs,
-			&fields.ResumePositionUpdatedAt,
-			&fields.WatchedAt,
-			&fields.AvailableEncodedAssets,
-		); err != nil {
-			return nil, fmt.Errorf("scanning recording row: %w", err)
-		}
-		rec, err := recordingFromListFields(fields, f.Trash, profiles)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, rec)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterating recordings: %w", err)
-	}
-	return result, nil
 }

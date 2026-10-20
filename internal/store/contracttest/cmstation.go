@@ -189,7 +189,9 @@ func runCMStationSerialization(t *testing.T, newStore NewCMStationStore, station
 			default:
 			}
 			commit()
-			<-result // 待ち解除後の成否は問わない。待ったことだけを主張する。
+			if err := <-result; err != nil {
+				t.Logf("%s completed after station-write release: %v", tc.name, err)
+			}
 		})
 	}
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -120,7 +121,11 @@ func listedEncodedProfiles(t *testing.T, base string, id int64) []string {
 // h264 が消える。もう一度外しても 204（冪等）。足し直すと要求行も消える。
 func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264", "h265"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
+		EncodeProfileNames: []string{"h264", "h265"},
+	}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "版を外す", time.Now().Truncate(time.Second), "finished", 701)
@@ -501,7 +506,11 @@ func policyRowCount(t *testing.T, pool *pgxpool.Pool, id int64) int {
 // あれば凍結済みとみなし、always / 空 desired で行を作ってから外す。
 func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264", "h265"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
+		EncodeProfileNames: []string{"h264", "h265"},
+	}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "policy 無し", time.Now().Truncate(time.Second), "finished", 707)

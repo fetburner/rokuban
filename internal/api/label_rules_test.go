@@ -392,7 +392,8 @@ func TestCreateLabelRule_EnqueuesReconcileAfterCommit(t *testing.T) {
 	baseEnqueuer := newRecordingEnqueuer()
 	enqueuer := &labelRuleCommitCheckingEnqueuer{recordingEnqueuer: baseEnqueuer, pool: pool}
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool: pool, LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+		Pool:           pool,
+		RecordingQuery: pgstore.NewRecordings(pool), LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
 	}))
 	t.Cleanup(srv.Close)
 
@@ -671,7 +672,8 @@ func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httpt
 	t.Helper()
 	enqueuer := newRecordingEnqueuer()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool: pool, LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+		Pool:           pool,
+		RecordingQuery: pgstore.NewRecordings(pool), LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
 	}))
 	t.Cleanup(srv.Close)
 	return srv, enqueuer

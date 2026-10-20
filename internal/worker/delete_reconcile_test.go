@@ -2391,7 +2391,10 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	}
 	release()
 	select {
-	case <-workDone: // Work may fail after its pool is closed; only the file and row matter.
+	case err := <-workDone: // Work may fail after its pool is closed; only the file and row matter.
+		if err != nil {
+			t.Logf("Work completed after publication with error: %v", err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Work did not finish after release")
 	}
@@ -2603,7 +2606,9 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 		}
 	case <-time.After(2 * time.Second):
 		_ = fileLock.Close()
-		<-done
+		if err := <-done; err != nil {
+			t.Logf("Work returned after releasing the file lock: %v", err)
+		}
 		t.Fatal("staging cleanup waited for a canonical rel_path lock")
 	}
 	if err := fileLock.Close(); err != nil {

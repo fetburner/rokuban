@@ -447,7 +447,7 @@ CM 検出失敗の行は、直す操作の単位に合わせる。局のロゴ�
 
 <details><summary>根拠</summary>
 
-- API 側の絞り込み: `superseded_at IS NULL`、`internal/api/recordings_query.go`
+- API 側の絞り込み: `superseded_at IS NULL`、`internal/store/pgstore/recordingquery.go`
 - 判定: `TestListRecordings_FailedFilterExcludesSuperseded`
 - 無条件一覧とごみ箱には履歴を残す: `docs/schema/recordings/history.md`
 

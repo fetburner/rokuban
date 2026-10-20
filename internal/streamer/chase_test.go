@@ -706,7 +706,10 @@ func TestChaseRecordNotFoundLookupIsCanceledByReaderClose(t *testing.T) {
 		t.Fatal("reader Close did not cancel the committed-size lookup")
 	}
 	select {
-	case <-readDone:
+	case err := <-readDone:
+		if !errors.Is(err, io.ErrClosedPipe) {
+			t.Fatalf("read error after Close = %v, want io.ErrClosedPipe", err)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("reader did not finish after Close canceled the committed-size lookup")
 	}
