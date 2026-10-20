@@ -16,7 +16,8 @@ type RecordingServiceRef struct {
 // ゼロ値のフィールドは「絞り込みなし」を表す。軸どうしは AND で結ぶ。
 type RecordingFilter struct {
 	// Trash は true のときごみ箱（削除済みで purged でない録画）を返す。
-	// false のときは生きている録画を返す。
+	// false のときは削除されていない録画を返す（置き換わった superseded の行も
+	// 履歴として含む）。
 	Trash bool
 
 	// Q はキーワードの部分一致。全角半角と大小を正規化して比べ、
