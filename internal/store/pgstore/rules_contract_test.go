@@ -54,6 +54,25 @@ func TestRulesContract(t *testing.T) {
 				t.Cleanup(release)
 				return release
 			},
+			FailRuleDeletion: func(t *testing.T) func() {
+				t.Helper()
+				ctx := context.Background()
+				if _, err := pool.Exec(ctx, `
+CREATE FUNCTION fail_rule_delete() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'forced rule deletion failure'; END $$;
+CREATE TRIGGER fail_rule_delete BEFORE DELETE ON rules FOR EACH ROW EXECUTE FUNCTION fail_rule_delete()`); err != nil {
+					t.Fatalf("installing rule deletion failure trigger: %v", err)
+				}
+				var once sync.Once
+				restore := func() {
+					once.Do(func() {
+						if _, err := pool.Exec(ctx, `DROP TRIGGER fail_rule_delete ON rules; DROP FUNCTION fail_rule_delete()`); err != nil {
+							t.Errorf("removing rule deletion failure trigger: %v", err)
+						}
+					})
+				}
+				t.Cleanup(restore)
+				return restore
+			},
 			WaitForRuleWriters: func(t *testing.T, n int) {
 				t.Helper()
 				waitForRuleWriters(t, pool, n)
@@ -76,8 +95,8 @@ func waitForRuleWriters(t *testing.T, pool *pgxpool.Pool, want int) {
 		err := monitor.QueryRow(ctx, `
 SELECT count(*) FROM pg_stat_activity
 WHERE datname = current_database()
-  AND wait_event_type = 'Lock'
-  AND query ILIKE '%UPDATE rules SET%'`).Scan(&got)
+  AND pid <> pg_backend_pid()
+  AND wait_event_type = 'Lock'`).Scan(&got)
 		if err == nil && got >= want {
 			return
 		}

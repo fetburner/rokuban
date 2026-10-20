@@ -4,13 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -219,11 +220,81 @@ func (e *ruleCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args
 	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
 }
 
-func (e *ruleCommitCheckingEnqueuer) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if e.check != nil {
-		if err := e.check(ctx); err != nil {
-			return jobq.Result{}, err
+// store が失敗した書き込み（子条件の主キー違反で 500）では、ヒントを投入しない。
+func TestRuleWriteFailure_DoesNotEnqueueRulerPassHint(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	enqueuer := newRecordingEnqueuer()
+	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"dup"}, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	send := func(method, path, body string) int {
+		t.Helper()
+		req, err := http.NewRequest(method, srv.URL+path, bytes.NewReader([]byte(body)))
+		if err != nil {
+			t.Fatal(err)
 		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
 	}
-	return e.recordingEnqueuer.EnqueueTx(ctx, tx, args, opts...)
+
+	if got := send(http.MethodPost, "/api/rules", `{"name":"dup create","sites":["dup","dup"]}`); got != http.StatusInternalServerError {
+		t.Fatalf("create with duplicate sites status = %d, want 500", got)
+	}
+	if n := countRulerPassEnqueues(enqueuer); n != 0 {
+		t.Fatalf("ruler_pass enqueue calls after failed create = %d, want 0", n)
+	}
+
+	var id int64
+	if err := pool.QueryRow(context.Background(), `INSERT INTO rules (name) VALUES ('existing') RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if got := send(http.MethodPatch, fmt.Sprintf("/api/rules/%d", id), `{"name":"dup update","sites":["dup","dup"]}`); got != http.StatusInternalServerError {
+		t.Fatalf("update with duplicate sites status = %d, want 500", got)
+	}
+	if n := countRulerPassEnqueues(enqueuer); n != 0 {
+		t.Fatalf("ruler_pass enqueue calls after failed update = %d, want 0", n)
+	}
+}
+
+// failingRegexSearch は ValidateRegex だけを差し替えた ProgramSearch。
+type failingRegexSearch struct {
+	store.ProgramSearch
+	err error
+}
+
+func (f failingRegexSearch) ValidateRegex(context.Context, string) error { return f.err }
+
+// ルールの正規表現検査は、不正なパターンだけを 400 にし、それ以外の失敗は 500 にする。
+func TestRuleRegexValidation_ClassifiesErrors(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	body := `{"name":"re","textMatches":[{"target":"name","mode":"regex","value":"x"}]}`
+	for _, tc := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"invalid pattern", fmt.Errorf("bad: %w", store.ErrInvalidPattern), http.StatusBadRequest},
+		{"other failure", errors.New("connection reset"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool),
+				ProgramSearch: failingRegexSearch{ProgramSearch: pgstore.NewEPG(pool), err: tc.err}})
+			srv := httptest.NewServer(router)
+			defer srv.Close()
+			resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader([]byte(body)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode != tc.want {
+				t.Fatalf("create status = %d, want %d", resp.StatusCode, tc.want)
+			}
+		})
+	}
 }

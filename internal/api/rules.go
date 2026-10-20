@@ -57,6 +57,11 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	if err := h.validateRuleInput(ctx, *req.Body, nil); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
+	if msg, err := h.ruleRegexError(ctx, *req.Body); err != nil {
+		return nil, err
+	} else if msg != "" {
+		return CreateRule400JSONResponse{Error: msg}, nil
+	}
 
 	row, err := h.ruleStore.Create(ctx, ruleInputFromAPI(*req.Body))
 	if err != nil {
@@ -95,6 +100,11 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	//nolint:nilerr // 検証エラーは HTTP 400 のレスポンスとして返す。
 	if err := h.validateRuleInput(ctx, *req.Body, savedSites); err != nil {
 		return UpdateRule400JSONResponse{Error: err.Error()}, nil
+	}
+	if msg, err := h.ruleRegexError(ctx, *req.Body); err != nil {
+		return nil, err
+	} else if msg != "" {
+		return UpdateRule400JSONResponse{Error: msg}, nil
 	}
 
 	row, err := h.ruleStore.Update(ctx, req.Id, ruleInputFromAPI(*req.Body))
@@ -260,18 +270,6 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites
 		return fmt.Errorf("dedupeWindowSeconds must be > 0 (0 is not \"no window\" — omit the field for that; "+
 			"0 makes the window condition always false and silently disables dedupe), got %d", *in.DedupeWindowSeconds)
 	}
-	if in.TextMatches != nil {
-		if h.programSearch == nil {
-			return errors.New("program search store is not configured")
-		}
-		for _, m := range *in.TextMatches {
-			if m.Mode == Regex && m.Value != "" {
-				if err := h.programSearch.ValidateRegex(ctx, m.Value); err != nil {
-					return fmt.Errorf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %w", m.Value, err)
-				}
-			}
-		}
-	}
 	if in.Sites != nil {
 		if err := h.validateRuleSites(*in.Sites, savedSites); err != nil {
 			return err
@@ -284,6 +282,23 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites
 		}
 	}
 	return nil
+}
+
+// ruleRegexError は入力の正規表現を検査し、不正なら 400 の本文を返す。
+// 検査自体の失敗は err で返す（500）。
+func (h *Server) ruleRegexError(ctx context.Context, in RuleInput) (string, error) {
+	if in.TextMatches == nil {
+		return "", nil
+	}
+	for _, m := range *in.TextMatches {
+		if m.Mode != Regex {
+			continue
+		}
+		if msg, err := regexPatternError(ctx, h, m.Value); msg != "" || err != nil {
+			return msg, err
+		}
+	}
+	return "", nil
 }
 
 func ruleInputFromAPI(in RuleInput) store.RuleInput {

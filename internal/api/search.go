@@ -24,9 +24,6 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 	siteErr := h.validateRuleSites(c.Sites, nil)
 	if siteErr != nil {
 		//nolint:nilerr // 400 の本文にするだけで呼び出し側に伝播する失敗ではない。
-		// rules.go の CreateRule/UpdateRule が同じ変換で nilerr に引っかからないのは
-		// defer tx.Rollback があり nilerr が歩く SSA のブロック形が変わるためで、
-		// エラーハンドリングの規律の違いではない（defer を外すと同様に検出される）。
 		return SearchPrograms400JSONResponse{Error: siteErr.Error()}, nil
 	}
 	if len(c.Sites) == 0 {
@@ -120,19 +117,32 @@ func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {
 
 // searchRegexError は不正な正規表現のメッセージまたは検証処理の失敗を返す。
 func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) (string, error) {
+	for _, m := range c.TextMatches {
+		if m.Mode != "regex" {
+			continue
+		}
+		if msg, err := regexPatternError(ctx, h, m.Value); msg != "" || err != nil {
+			return msg, err
+		}
+	}
+	return "", nil
+}
+
+// regexPatternError は 1 つのパターンを検査し、不正なら 400 の本文になるメッセージを返す。
+// store.ErrInvalidPattern 以外の失敗と設定不備は 500 にするため err で返す。
+// 検索とルールの API が同じ分類を使う。
+func regexPatternError(ctx context.Context, h *Server, pattern string) (string, error) {
+	if pattern == "" {
+		return "", nil
+	}
 	if h.programSearch == nil {
 		return "", fmt.Errorf("program search store is required")
 	}
-	for _, m := range c.TextMatches {
-		if m.Mode != "regex" || m.Value == "" {
-			continue
+	if err := h.programSearch.ValidateRegex(ctx, pattern); err != nil {
+		if errors.Is(err, store.ErrInvalidPattern) {
+			return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", pattern, err), nil
 		}
-		if err := h.programSearch.ValidateRegex(ctx, m.Value); err != nil {
-			if errors.Is(err, store.ErrInvalidPattern) {
-				return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", m.Value, err), nil
-			}
-			return "", fmt.Errorf("validating search regex %q: %w", m.Value, err)
-		}
+		return "", fmt.Errorf("validating regex %q: %w", pattern, err)
 	}
 	return "", nil
 }

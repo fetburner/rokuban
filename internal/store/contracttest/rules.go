@@ -21,6 +21,9 @@ type RulesFixture struct {
 	SeedReservation func(t *testing.T, ruleID int64, withIntent bool) (site string, programID int64)
 	// HoldRule はルールへの書き込みを直列化する点を別 tx で握り、release で解放する。
 	HoldRule func(t *testing.T, ruleID int64) (release func())
+	// FailRuleDeletion は、以後のルール本体の削除を失敗させる。restore で元に戻す。
+	// 意図の無い予約の削除がルールの削除と同じ tx かを測るために使う。
+	FailRuleDeletion func(t *testing.T) (restore func())
 	// WaitForRuleWriters は同一ルールへの書き込みが n 本待つまで待つ。
 	WaitForRuleWriters func(t *testing.T, n int)
 }
@@ -35,6 +38,7 @@ func RunRules(t *testing.T, newFixture NewRulesFixture) {
 	t.Run("create child failure rolls back", func(t *testing.T) { runRuleCreateRollback(t, newFixture) })
 	t.Run("update replaces all children atomically", func(t *testing.T) { runRuleUpdateChildren(t, newFixture) })
 	t.Run("delete preserves reservations with intent", func(t *testing.T) { runRuleDeleteIntent(t, newFixture) })
+	t.Run("delete failure keeps reservations without intent", func(t *testing.T) { runRuleDeleteFailure(t, newFixture) })
 	t.Run("same-rule updates serialize", func(t *testing.T) { runRuleUpdateSerialization(t, newFixture) })
 	t.Run("EPGStation import uses stable identity atomically", func(t *testing.T) { runRuleImport(t, newFixture) })
 }
@@ -170,6 +174,28 @@ func runRuleDeleteIntent(t *testing.T, newFixture NewRulesFixture) {
 	}
 	if _, err := f.Store.Get(ctx, rule.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Get(deleted rule) error = %v, want ErrNotFound", err)
+	}
+}
+
+func runRuleDeleteFailure(t *testing.T, newFixture NewRulesFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	rule, err := f.Store.Create(ctx, store.RuleInput{Name: "undeletable", Sites: []string{"target-site"}})
+	if err != nil {
+		t.Fatalf("Create(rule) error = %v", err)
+	}
+	plainSite, plainProgramID := f.SeedReservation(t, rule.ID, false)
+	restore := f.FailRuleDeletion(t)
+	_, err = f.Store.Delete(ctx, rule.ID)
+	restore()
+	if err == nil {
+		t.Fatal("Delete(with failing rule deletion) error = nil, want failure")
+	}
+	if _, err := f.Reservations.GetReservation(ctx, plainSite, plainProgramID); err != nil {
+		t.Fatalf("GetReservation(plain) after failed Delete error = %v, want the reservation kept", err)
+	}
+	if _, err := f.Store.Get(ctx, rule.ID); err != nil {
+		t.Fatalf("Get(rule) after failed Delete error = %v, want the rule kept", err)
 	}
 }
 

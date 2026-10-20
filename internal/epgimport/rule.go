@@ -64,7 +64,7 @@ func (f ruleFields) hasNarrowingCondition() bool {
 //
 // store.RuleImport が EPGStation rule ID で既存行を引き、作成または更新するため、
 // 再実行しても行は増えない。ルール本体と子条件は store が 1 つの tx で確定し、
-// 子条件の挿入が失敗した場合は本体も残らない（TestRulesContract/create child failure rolls back）。
+// 子条件の挿入が失敗した場合は本体も残らない（TestRulesContract/EPGStation import uses stable identity atomically）。
 //
 // site は rule_sites に 1 行だけ入れる対象サイト（EPGStation は単一の
 // mirakc/チューナー源を前提にした単一サイト運用なので、全サイトではなく
@@ -114,9 +114,6 @@ func importOneRule(ctx context.Context, ruleStore store.RuleImport, programSearc
 		if m.Mode != "regex" {
 			kept = append(kept, m)
 			continue
-		}
-		if programSearch == nil {
-			return false, warnings, errors.New("program search store is not configured")
 		}
 		if err := programSearch.ValidateRegex(ctx, m.Value); err != nil {
 			if !errors.Is(err, store.ErrInvalidPattern) {
