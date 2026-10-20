@@ -2,22 +2,10 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/fetburner/rokuban/internal/store"
 )
-
-const invalidMediaAssetRelPathQuery = `
-SELECT id, kind, rel_path
-FROM media_assets
-WHERE state <> 'deleted'
-  AND kind IN ('original', 'encoded')
-  AND rel_path !~ '^sites/[^/]+/'
-ORDER BY id
-LIMIT 1
-`
 
 // ValidateMediaAssetRelPathNamespace は worker が起動する前に、原本と encoded の
 // 生きた media_assets 行が `sites/{site}/` 名前空間に入っていることを検査する。
@@ -35,18 +23,17 @@ LIMIT 1
 // 仕事を始める前に拒否して、移行漏れをその場で発見できるようにする（streamer は
 // `media_assets.rel_path` を読んで配信するが、書きはしない）。thumbnail と seek_tiles は
 // `thumbnails/` 配下の別の名前空間なので検査対象にしない。
-func ValidateMediaAssetRelPathNamespace(ctx context.Context, pool *pgxpool.Pool) error {
-	var id int64
-	var kind, relPath string
-	if err := pool.QueryRow(ctx, invalidMediaAssetRelPathQuery).Scan(&id, &kind, &relPath); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
+func ValidateMediaAssetRelPathNamespace(ctx context.Context, media store.MediaReconcile) error {
+	violation, err := media.FindInvalidMediaAssetRelPath(ctx)
+	if err != nil {
 		return fmt.Errorf("checking media_assets rel_path namespace: %w", err)
+	}
+	if violation == nil {
+		return nil
 	}
 
 	return fmt.Errorf(
 		"media_assets row %d (%s) has rel_path %q without the required sites/{site}/ prefix; migrate media_assets before starting the worker",
-		id, kind, relPath,
+		violation.ID, violation.Kind, violation.RelPath,
 	)
 }

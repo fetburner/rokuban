@@ -6,12 +6,10 @@ import (
 	"log/slog"
 	"sync/atomic"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -42,7 +40,8 @@ const (
 // 候補を飛ばさないためである。
 type ThumbnailReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
-	Pool     *pgxpool.Pool
+	// Media はサムネイル・シークタイルの列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
+	Media    store.MediaReconcile
 	RowLimit int32
 
 	// 3 つの resume 位置は次のパスが候補を探し始める位置（この recording_id より
@@ -79,8 +78,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	} else {
 		targetID = &recordingID
 	}
-	q := sqlcgen.New(w.Pool)
-	rows, err := q.ListMissingThumbnailRecordings(ctx, sqlcgen.ListMissingThumbnailRecordingsParams{
+	rows, err := w.Media.ListMissingThumbnailRecordings(ctx, store.MediaReconcilePage{
 		AfterRecordingID: after,
 		RecordingID:      targetID,
 		RowLimit:         rowLimit,
@@ -90,7 +88,7 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		return fmt.Errorf("listing missing thumbnail recordings: %w", err)
 	}
 
-	reselectRows, err := q.ListThumbnailReselectCandidates(ctx, sqlcgen.ListThumbnailReselectCandidatesParams{
+	reselectRows, err := w.Media.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{
 		AfterRecordingID: reselectAfter,
 		RecordingID:      targetID,
 		RowLimit:         rowLimit,
@@ -108,23 +106,11 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		}
 	}
 	for _, row := range reselectRows {
-		timeline, hasTimeline, err := thumbnailTimeline(row)
-		if err != nil {
-			failed++
-			slog.Error("thumbnail_reconcile: could not derive candidate timeline",
-				"recording_id", row.RecordingID, "err", err)
-			continue
-		}
+		timeline, hasTimeline := thumbnailTimeline(row)
 		if !hasTimeline {
 			continue
 		}
-		inputs, err := thumbnailInputsOf(row)
-		if err != nil {
-			failed++
-			slog.Error("thumbnail_reconcile: could not decode candidate inputs",
-				"recording_id", row.RecordingID, "err", err)
-			continue
-		}
+		inputs := thumbnailInputsOf(row)
 		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue
 		}
@@ -180,7 +166,7 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(ctx context.Context, 
 	if targetID == nil {
 		after = w.seekTilesResumeAfter.Load()
 	}
-	rows, err := sqlcgen.New(w.Pool).ListMissingSeekTilesRecordings(ctx, sqlcgen.ListMissingSeekTilesRecordingsParams{
+	rows, err := w.Media.ListMissingSeekTilesRecordings(ctx, store.MediaReconcilePage{
 		AfterRecordingID: after,
 		RecordingID:      targetID,
 		RowLimit:         rowLimit,

@@ -161,7 +161,7 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
-	w := &ThumbnailWorker{Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+	w := &ThumbnailWorker{Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", thumbnailRelPath(id),
 		func() error {
@@ -180,7 +180,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &ThumbnailWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
 				return []byte("100\n"), nil

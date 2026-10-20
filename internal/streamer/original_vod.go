@@ -19,25 +19,21 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // lookupOriginalVODTarget returns an active original for a completed recording
 // owned by this site. The recording id is the durable resource key; no session
 // identifier is exposed in the URL or persisted in the database.
-func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID int64) (sqlcgen.GetOriginalVODTargetRow, error) {
-	if ls.pool == nil {
-		return sqlcgen.GetOriginalVODTargetRow{}, errors.New("original VOD database is unavailable")
+func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID int64) (store.OriginalVODTarget, error) {
+	if ls.media == nil {
+		return store.OriginalVODTarget{}, errors.New("original VOD database is unavailable")
 	}
-	return sqlcgen.New(ls.pool).GetOriginalVODTarget(ctx, sqlcgen.GetOriginalVODTargetParams{
-		RecordingID: recordingID,
-		Site:        ls.site,
-	})
+	return ls.media.GetOriginalVODTarget(ctx, recordingID, ls.site)
 }
 
 // originalVODSource opens the original read-only and only then rechecks the DB
@@ -49,9 +45,9 @@ func (ls *LiveStreamer) lookupOriginalVODTarget(ctx context.Context, recordingID
 // MarkMediaAssetDeleting has committed (deleteMediaAsset). media_assets_rel_path_idx
 // forbids another live row at the same rel_path, so nobody else publishes there
 // while target is live. If the row is still active after open, the path cannot have
-// been unlinked before the open; if it is not, we return pgx.ErrNoRows. A later
+// been unlinked before the open; if it is not, we return store.ErrNotFound. A later
 // unlink cannot change the descriptor FFmpeg already holds.
-func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, target sqlcgen.GetOriginalVODTargetRow) sessionSource {
+func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, target store.OriginalVODTarget) sessionSource {
 	return func(ctx context.Context) (io.ReadCloser, error) {
 		if ls.cfg.MediaDir == "" {
 			return nil, errors.New("original VOD media directory is unavailable")
@@ -63,7 +59,7 @@ func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, targ
 		file, err := os.Open(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				return nil, pgx.ErrNoRows
+				return nil, store.ErrNotFound
 			}
 			return nil, fmt.Errorf("opening original media: %w", err)
 		}
@@ -73,7 +69,7 @@ func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, targ
 			if err != nil {
 				return nil, fmt.Errorf("stating original media: %w", err)
 			}
-			return nil, pgx.ErrNoRows
+			return nil, store.ErrNotFound
 		}
 		if ls.afterOriginalVODOpen != nil {
 			ls.afterOriginalVODOpen()
@@ -85,7 +81,7 @@ func (ls *LiveStreamer) originalVODSource(recordingID, offsetSeconds int64, targ
 		}
 		if current.ID != target.ID || current.RelPath != target.RelPath {
 			_ = file.Close()
-			return nil, pgx.ErrNoRows
+			return nil, store.ErrNotFound
 		}
 		if offsetSeconds > 0 {
 			duration, err := probeOriginalVODDuration(ctx, ls.cfg.FFprobe, file)
@@ -187,11 +183,11 @@ func probeOriginalVODDuration(ctx context.Context, ffprobe string, file *os.File
 // became deleted (for example until_encoded) must not stop a playback in
 // progress. A DB error other than ErrNoRows keeps serving the files.
 func (ls *LiveStreamer) originalVODRecordingRemoved(ctx context.Context, recordingID int64) bool {
-	if ls.pool == nil {
+	if ls.media == nil {
 		return false
 	}
-	rec, err := sqlcgen.New(ls.pool).GetRecordingByID(ctx, recordingID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	rec, err := ls.media.GetRecordingRemovalState(ctx, recordingID)
+	if errors.Is(err, store.ErrNotFound) {
 		return true
 	}
 	if err != nil {
@@ -227,7 +223,7 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	}
 	target, err := ls.lookupOriginalVODTarget(r.Context(), recordingID)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			ls.invalidateOriginalVODSession(recordingID)
 		}
 		writeOriginalVODError(w, r, err)
@@ -416,7 +412,7 @@ func (ls *LiveStreamer) OriginalVODLeave(w http.ResponseWriter, r *http.Request)
 }
 
 func writeOriginalVODError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, store.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 		http.NotFound(w, r)
 		return
 	}

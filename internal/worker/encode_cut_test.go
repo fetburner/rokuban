@@ -410,7 +410,9 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     ffmpeg,
@@ -568,7 +570,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		t.Fatalf("beginning publish check: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	w := &EncodeWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	w := &EncodeWorker{Pool: pool, Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	decision, err := w.prepareEncodePublish(ctx, sqlcgen.New(tx), encodePublishInput{
 		recordingID: recordingID,
 		profile:     "cut",
@@ -644,7 +646,9 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
@@ -698,7 +702,9 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
@@ -746,7 +752,7 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
 		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
 	}
-	w := &EncodeWorker{Pool: pool, Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	w := &EncodeWorker{Pool: pool, Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
 	cut, _, hasExpected, skip, err := w.loadRequestedEncodeCut(ctx, job)

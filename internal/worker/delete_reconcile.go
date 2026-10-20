@@ -131,7 +131,9 @@ type deleteTarget struct {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	Pool           *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
+	Storage        store.StorageObservation
 	RecordingPurge store.RecordingPurge
 	Breakers       store.Breakers
 	MediaDir       string
@@ -204,14 +206,14 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		}, "pending")
 	}
 
-	if err := w.reconcileDeleteObservations(ctx, q, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
+	if err := w.reconcileDeleteObservations(ctx, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
 		return err
 	}
 	candidates, err := collectDeleteCandidates(ctx, q, trashCutoff)
 	if err != nil {
 		return err
 	}
-	candidates.agedOrphans, err = w.agedUnpublishedOrphans(ctx, q, orphanAge, orphanMTimeGrace)
+	candidates.agedOrphans, err = w.agedUnpublishedOrphans(ctx, orphanAge, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("verifying aged unpublished files: %w", err)
 	}

@@ -60,6 +60,12 @@ type RouterConfig struct {
 	// ProgramSearch は番組検索 API が使う永続化契約。
 	ProgramSearch store.ProgramSearch
 
+	// MediaReader はメディア関連 API の読み取り契約。
+	MediaReader store.MediaReader
+
+	// StorageObservation はストレージ観測 API の読み取り契約。
+	StorageObservation store.StorageObservation
+
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
 	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
 	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
@@ -178,7 +184,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 
 	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
-		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+		cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

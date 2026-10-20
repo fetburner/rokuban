@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -51,7 +52,7 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &tsscan.ScanWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &tsscan.ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	job := tsscan.ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(context.Background(), worker, job); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)

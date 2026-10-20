@@ -18,11 +18,10 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // chaseInputFailureCooldown は追っかけ入力の失敗後、同じ録画の全 offset で新しい
@@ -54,15 +53,12 @@ type ChaseTarget struct {
 // that playlist after the recording status changes. ChasePlaylistForTarget
 // decides whether a missing session may be started from the returned statuses.
 func (ls *LiveStreamer) LookupChaseTarget(ctx context.Context, recordingID int64) (ChaseTarget, error) {
-	if ls.pool == nil {
+	if ls.media == nil {
 		return ChaseTarget{}, errors.New("chase target database is unavailable")
 	}
-	row, err := sqlcgen.New(ls.pool).GetChaseTarget(ctx, recordingID)
+	row, err := ls.media.GetChaseTarget(ctx, recordingID)
 	if err != nil {
 		return ChaseTarget{}, err
-	}
-	if row.DeletedAt != nil || row.Site == "" || row.RecordID == "" {
-		return ChaseTarget{}, pgx.ErrNoRows
 	}
 	return ChaseTarget{
 		RecordingID:      recordingID,
@@ -344,7 +340,7 @@ func (ls *LiveStreamer) ChaseLeave(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeChaseTargetError(w http.ResponseWriter, r *http.Request, err error) {
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, store.ErrNotFound) {
 		http.NotFound(w, r)
 		return
 	}
@@ -720,12 +716,12 @@ func (ls *LiveStreamer) recordFailedChaseInputLocked(recordingID int64) {
 // committedOriginalSize は録画のコミット済み原本（active）のバイト数を返す関数を作る。
 // DB が無い構成（テスト）では nil で、404 は常にエラーになる。
 func (ls *LiveStreamer) committedOriginalSize(recordingID int64) chaseCommittedSize {
-	if ls.pool == nil {
+	if ls.media == nil {
 		return nil
 	}
 	return func(ctx context.Context) (int64, bool, error) {
-		row, err := sqlcgen.New(ls.pool).GetActiveOriginalMediaAsset(ctx, recordingID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		row, err := ls.media.GetActiveOriginalMediaAsset(ctx, recordingID)
+		if errors.Is(err, store.ErrNotFound) {
 			return 0, false, nil
 		}
 		if err != nil {

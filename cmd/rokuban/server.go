@@ -327,13 +327,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	// River の defer が先に実行される。
 	defer pool.Close()
 
+	mediaStore := pgstore.NewMedia(pool)
 	if slices.Contains(roles, "worker") {
 		// ProbeIngestStorage は media_dir の FS 操作列を DB 接続前に検査する。
 		// こちらは DB にしかない rel_path の名前空間を検査する対応する guard で、
 		// 前置導入前の行や移行前バックアップから復元した行を worker が読む前に
 		// 拒否する。api はファイルシステムに依存しないため、この検査は worker
 		// にだけ置く。
-		if err := worker.ValidateMediaAssetRelPathNamespace(ctx, pool); err != nil {
+		if err := worker.ValidateMediaAssetRelPathNamespace(ctx, mediaStore); err != nil {
 			return fmt.Errorf("validating media asset rel_path namespace: %w", err)
 		}
 	}
@@ -341,7 +342,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		// cut の設定を読む両ロールで、待ち受けとジョブの購読より前に拒む
 		// （CheckEncodeProfileMeaning のコメント参照）。DB を読むだけなので、
 		// api が mirakc にもファイルシステムにも依存しないことは変わらない。
-		if err := worker.CheckEncodeProfileMeaning(ctx, pool, cfg.Encode); err != nil {
+		if err := worker.CheckEncodeProfileMeaning(ctx, mediaStore, cfg.Encode); err != nil {
 			return fmt.Errorf("validating encode profile meaning: %w", err)
 		}
 	}
@@ -479,6 +480,7 @@ func liveProfileSummaries(profiles []config.LiveProfile) []api.LiveProfileSummar
 // `defer pool.Close()` が閉じた pool を使い続けることになる。現在の実装は
 // error return がすべて `eg.Go` より前にあるのでこの形にはならない。
 func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, bound []config.MirakcSite, pool *pgxpool.Pool, eg *errgroup.Group) (*http.Server, error) {
+	mediaStore := pgstore.NewMedia(pool)
 	metricCollectors := newBoundBacklogCollectors(pool, bound)
 	metricCollectors = append(metricCollectors, newConfiguredPresyncCollectors(pool, cfg.Registry())...)
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
@@ -498,6 +500,8 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		BreakerAdmin:        pgstore.NewBreakers(pool),
 		EPGReader:           pgstore.NewEPG(pool),
 		ProgramSearch:       pgstore.NewEPG(pool),
+		MediaReader:         mediaStore,
+		StorageObservation:  mediaStore,
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
@@ -545,7 +549,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 
 	var mounters api.Mounters
 	if slices.Contains(roles, "streamer") {
-		mounters = append(mounters, streamer.New(pool, streamer.Config{
+		mounters = append(mounters, streamer.New(mediaStore, streamer.Config{
 			MediaDir:      cfg.Storage.MediaDir,
 			AccelLocation: cfg.Storage.AccelLocation,
 			// コマの切り出し（/frame）は encode と同じ ffmpeg を使う。ライブを
@@ -562,7 +566,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 			}
 			liveConfig := convertLiveConfig(cfg.Live)
 			liveConfig.MediaDir = cfg.Storage.MediaDir
-			liveStreamers := newLiveStreamersBySiteWithPool(pool, bound, liveConfig)
+			liveStreamers := newLiveStreamersBySiteWithMedia(mediaStore, bound, liveConfig)
 			mounters = append(mounters, liveStreamers)
 			// idle GC ループ。egCtx が終わったら全セッションを止めて mirakc の
 			// 接続を閉じる（チューナー解放。crash-only の唯一の例外の後始末）。
@@ -615,6 +619,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*riveradapter.Adapter, error) {
+	mediaStore := pgstore.NewMedia(pool)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -653,6 +658,8 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		CapacityStore:            tunerStore,
 		RecordingPurge:           pgstore.NewRecordings(pool),
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
+		MediaReconcile:           mediaStore,
+		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

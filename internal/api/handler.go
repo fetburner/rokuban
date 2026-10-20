@@ -19,19 +19,21 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool             *pgxpool.Pool
-	chapterStore     store.ChapterEdits
-	cmStationStore   store.CMStation
-	playbackStore    store.PlaybackState
-	recordingTrash   store.RecordingTrash
-	tunerReader      store.TunerReader
-	capacityStore    store.Capacity
-	reservationStore store.Reservations
-	labelRules       store.LabelRules
-	breakerAdmin     store.BreakerAdmin
-	epgReader        store.EPGReader
-	programSearch    store.ProgramSearch
-	enqueuer         jobq.Enqueuer
+	pool               *pgxpool.Pool
+	chapterStore       store.ChapterEdits
+	cmStationStore     store.CMStation
+	playbackStore      store.PlaybackState
+	recordingTrash     store.RecordingTrash
+	tunerReader        store.TunerReader
+	capacityStore      store.Capacity
+	reservationStore   store.Reservations
+	labelRules         store.LabelRules
+	breakerAdmin       store.BreakerAdmin
+	epgReader          store.EPGReader
+	programSearch      store.ProgramSearch
+	mediaReader        store.MediaReader
+	storageObservation store.StorageObservation
+	enqueuer           jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
@@ -81,8 +83,9 @@ type Server struct {
 // cmStationStore は局の CM ロゴ状態の永続化契約。chapterStore / playbackStore / recordingTrash / tunerReader / capacityStore / reservationStore はそれぞれの永続化契約。
 // labelRules は分類ルールの永続化契約。breakerAdmin はサーキットブレーカー一覧と手動再開の永続化契約。
 // epgReader は番組表・番組詳細・シリーズ照会の読み取り契約、programSearch は番組検索の契約。
+// mediaReader はエンコード待ち行列とドロップ統計の読み取り契約、storageObservation はストレージ残量の観測契約。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -112,7 +115,8 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationSto
 	}
 	return &Server{
 		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, playbackStore: playbackStore, recordingTrash: recordingTrash,
-		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, labelRules: labelRules, breakerAdmin: breakerAdmin, epgReader: epgReader, programSearch: programSearch, enqueuer: enqueuer,
+		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, labelRules: labelRules, breakerAdmin: breakerAdmin, epgReader: epgReader, programSearch: programSearch,
+		mediaReader: mediaReader, storageObservation: storageObservation, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,

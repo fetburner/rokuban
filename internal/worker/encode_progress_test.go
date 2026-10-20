@@ -180,7 +180,9 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		FFmpeg:     ffmpegPath,
@@ -237,7 +239,7 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpegPath,
+		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), FFmpeg: ffmpegPath,
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{{
 			Name: "mobile", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},

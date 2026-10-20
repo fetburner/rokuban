@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -80,7 +81,9 @@ func installCompletedOriginalVODFFmpeg(t *testing.T) string {
 func installFailedOriginalVODFFmpeg(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg-original-vod-fail")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+	// Let playlistStartupTimeout win before the process exits. Without the delay,
+	// scheduler timing chooses between the intended 504 and an immediate 503.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 1\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("writing fake ffmpeg: %v", err)
 	}
 	return path
@@ -128,7 +131,7 @@ func originalVODConfig(t *testing.T, mediaDir, ffmpeg string) LiveConfig {
 
 func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
 	t.Helper()
-	ls := newLiveStreamerWithPool(pool, chaseTestLiveClient{}, testSite, cfg)
+	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool), chaseTestLiveClient{}, testSite, cfg)
 	t.Cleanup(ls.shutdown)
 	router := chi.NewRouter()
 	ls.Mount(router)
@@ -760,7 +763,7 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 		t.Fatalf("creating unreachable pool: %v", err)
 	}
 	t.Cleanup(broken.Close)
-	ls.pool = broken
+	ls.media = pgstore.NewMedia(broken)
 	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)
 	if resp.StatusCode != http.StatusOK || string(body) != "fake-ts-hd" {
 		t.Fatalf("segment during DB outage = %d %q, want 200", resp.StatusCode, body)

@@ -114,6 +114,8 @@ type Deps struct {
 	RecordingPurge store.RecordingPurge
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
+	MediaReconcile        store.MediaReconcile
+	StorageObservation    store.StorageObservation
 	MediaDir              string
 	ScratchDir            string
 
@@ -190,6 +192,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &EncodeWorker{
 		Pool:       deps.Pool,
+		Media:      deps.MediaReconcile,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
@@ -200,6 +203,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
 		Pool:     deps.Pool,
+		Media:    deps.MediaReconcile,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。
 		Profiles: deps.Encode,
@@ -241,6 +245,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
 		Pool:       deps.Pool,
+		Media:      deps.MediaReconcile,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
@@ -255,7 +260,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Pool:     deps.Pool,
+		Media:    deps.MediaReconcile,
 	})
 	riveradapter.Register(workers, &CMDetectWorker{
 		Enqueuer:   deps.Enqueuer,
@@ -280,6 +285,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Pool:              deps.Pool,
 		RecordingPurge:    deps.RecordingPurge,
 		Breakers:          pgstore.NewBreakers(deps.Pool),
+		Storage:           deps.StorageObservation,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
@@ -289,11 +295,11 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Webhook:           deps.Webhook,
 	})
 	riveradapter.Register(workers, &StorageSyncWorker{
-		Pool:       deps.Pool,
+		Storage:    deps.StorageObservation,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ScanWorker{Pool: deps.Pool, MediaDir: deps.MediaDir})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Pool: deps.Pool})
+	riveradapter.Register(workers, &tsscan.ScanWorker{Pool: deps.Pool, Media: deps.MediaReconcile, MediaDir: deps.MediaDir})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.MediaReconcile})
 	return workers
 }

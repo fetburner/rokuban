@@ -80,7 +80,7 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 		metrics.ThumbnailReconcileCandidates.Set(0)
 		metrics.ThumbnailReconcileLastPass.Set(0)
 	})
-	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 100}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 100}
 	w.resumeAfter.Store(9_000_000_000_000_000_000)
 	w.reselectResumeAfter.Store(9_000_000_000_000_000_000)
 	w.seekTilesResumeAfter.Store(9_000_000_000_000_000_000)
@@ -149,7 +149,7 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 	scratchDir := t.TempDir()
 	recordingID := insertTestRecording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "lost-hint/original.m2ts", []byte("fake-ts"))
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 0 {
 		t.Fatalf("thumbnail jobs before the periodic pass = %d, want 0", got)
@@ -161,7 +161,9 @@ func TestThumbnailReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testi
 	}
 
 	thumbnailWorker := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		runCmd:     fakeThumbnailTools(t, 60),
@@ -209,7 +211,7 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 		}
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, w)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), inCM); got != 1 {
 		t.Errorf("thumbnail jobs for CM frame = %d, want 1", got)
@@ -261,7 +263,7 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 		}
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 2}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 2}
 	runThumbnailReconcilePass(t, w)
 	runThumbnailReconcilePass(t, w)
 
@@ -323,7 +325,7 @@ func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) 
 		t.Fatalf("seeding cut-only thumbnail seek: %v", err)
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool)}
 	runThumbnailReconcilePass(t, w)
 	runThumbnailReconcilePass(t, w)
 	for _, recordingID := range []int64{allCutID, cutOnlyID} {
@@ -353,7 +355,7 @@ func TestThumbnailReconcile_SkipsKnownMissingOriginalUntilRestored(t *testing.T)
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, w)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 0 {
 		t.Fatalf("thumbnail jobs for known-missing original = %d, want 0", got)
@@ -386,7 +388,7 @@ func TestThumbnailReconcile_TargetedPassSkipsKnownMissingOriginalUntilRestored(t
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool)}
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: recordingID})
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 0 {
 		t.Fatalf("thumbnail jobs for targeted known-missing original = %d, want 0", got)
@@ -429,7 +431,7 @@ func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
 		t.Fatalf("soft deleting recording: %v", err)
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, w)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 0 {
 		t.Errorf("thumbnail jobs for trashed recording = %d, want 0", got)
@@ -450,7 +452,7 @@ func TestThumbnailReconcile_WindowRotatesPastStuckCandidates(t *testing.T) {
 	seedOriginalAsset(t, pool, mediaDir, firstID, "window/first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "window/second.m2ts", []byte("second"))
 
-	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 1}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 1}
 	runThumbnailReconcilePass(t, w)
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), firstID); got != 1 {
 		t.Fatalf("first recording jobs after first pass = %d, want 1", got)
@@ -471,7 +473,7 @@ func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 		return
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool)}
 	job := ThumbnailReconcileArgs{}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 		t.Fatal("expected error when no Enqueuer is configured, got nil")
@@ -500,7 +502,7 @@ func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
 	pool := setupTestPool(t)
 	recordingID := insertTestRecording(t, pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "seek-tiles/original.m2ts", []byte("fake-ts"))
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 
 	runThumbnailReconcilePass(t, w)
 
@@ -527,7 +529,7 @@ func TestThumbnailReconcile_SeekTilesSkipsKnownMissingOriginal(t *testing.T) {
 		t.Fatalf("marking original missing: %v", err)
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, w)
 	if got := countSeekTilesJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 0 {
 		t.Errorf("seek_tiles jobs for known-missing original = %d, want 0", got)
@@ -564,7 +566,7 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindSeekTiles, nil, fmt.Sprintf("cursor/s%d.jpg", id), []byte("jpg"))
 	}
 
-	w := &ThumbnailReconcileWorker{Pool: pool, RowLimit: 2}
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 2}
 	runThumbnailReconcilePass(t, w)
 	runThumbnailReconcilePass(t, w)
 
@@ -606,7 +608,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 		t.Fatal(err)
 	}
 
-	reconcileWorker := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	reconcileWorker := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, reconcileWorker)
 	if got := countThumbnailJobs(t, reconcileWorker.Enqueuer.(*recordingEnqueuer), noChapters); got != 0 {
 		t.Errorf("thumbnail jobs without chapters = %d, want 0", got)
@@ -616,7 +618,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	}
 
 	w := &ThumbnailWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("recording without chapters must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")
@@ -664,7 +666,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("no usable input must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")
@@ -681,7 +683,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	if cur.RelPath != thumbnailRelPath(id) || cur.SeekMs == nil || *cur.SeekMs != 30000 {
 		t.Errorf("thumbnail = %q seek %v, want unchanged %q / 30000", cur.RelPath, cur.SeekMs, thumbnailRelPath(id))
 	}
-	reconcileWorker := &ThumbnailReconcileWorker{Pool: pool, Enqueuer: newRecordingEnqueuer()}
+	reconcileWorker := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), Enqueuer: newRecordingEnqueuer()}
 	runThumbnailReconcilePass(t, reconcileWorker)
 	if got := countThumbnailJobs(t, reconcileWorker.Enqueuer.(*recordingEnqueuer), id); got != 0 {
 		t.Errorf("thumbnail jobs = %d, want 0", got)

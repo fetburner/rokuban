@@ -29,7 +29,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
@@ -47,20 +46,20 @@ import (
 // 毎パス出し続けてしまい、metrics.go / docs/operations/monitoring.md が
 // 約束する「凍結する」が実装のどこにも実在しない記述になる
 // （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
-func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context, q *sqlcgen.Queries, orphanMTimeGrace, orphanAge, missingAssetAge time.Duration) error {
-	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, q, orphanMTimeGrace)
+func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context, orphanMTimeGrace, orphanAge, missingAssetAge time.Duration) error {
+	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
 	}
-	suspected, err := w.reconcileMissingAssets(ctx, q, seenOnDisk)
+	suspected, err := w.reconcileMissingAssets(ctx, seenOnDisk)
 	if err != nil {
 		return fmt.Errorf("reconciling missing assets: %w", err)
 	}
 	if !suspected {
-		if err := w.reportAgedOrphanFiles(ctx, q, orphanAge); err != nil {
+		if err := w.reportAgedOrphanFiles(ctx, orphanAge); err != nil {
 			return fmt.Errorf("reporting aged canonical orphan files: %w", err)
 		}
-		if err := w.reportAgedMissingAssets(ctx, q, missingAssetAge); err != nil {
+		if err := w.reportAgedMissingAssets(ctx, missingAssetAge); err != nil {
 			return fmt.Errorf("reporting aged missing assets: %w", err)
 		}
 	}
@@ -84,8 +83,8 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 // 前提から短くすると、録画中の書きかけ temp が孤児として aging され、生きて
 // いる転送の足元からファイルが消える（unlink 済み inode への書き込みは成功
 // し続けるので、失敗は commit の rename で初めて現れる）。
-func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q *sqlcgen.Queries, mtimeGrace time.Duration) (map[string]struct{}, error) {
-	known, err := q.ListAllMediaAssetRelPaths(ctx)
+func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, mtimeGrace time.Duration) (map[string]struct{}, error) {
+	known, err := w.Storage.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing known rel paths: %w", err)
 	}
@@ -121,12 +120,12 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 	}
 
 	for relPath := range candidates {
-		if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
+		if err := w.Storage.UpsertOrphanFile(ctx, relPath); err != nil {
 			return nil, fmt.Errorf("recording orphan candidate %q: %w", relPath, err)
 		}
 	}
 
-	existing, err := q.ListAllOrphanFiles(ctx)
+	existing, err := w.Storage.ListAllOrphanFiles(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing orphan files: %w", err)
 	}
@@ -136,7 +135,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 		}
 		// もう孤児候補でない（media_assets に登録された、mtime が新しくなった
 		// はずはないが再走査で見えなくなった＝ファイルが消えた等）。掃除する。
-		if err := q.DeleteOrphanFile(ctx, o.RelPath); err != nil {
+		if err := w.Storage.DeleteOrphanFile(ctx, o.RelPath); err != nil {
 			return nil, fmt.Errorf("clearing stale orphan record %q: %w", o.RelPath, err)
 		}
 	}
@@ -197,8 +196,8 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, q
 // 障害（walkMediaFiles の doc コメント）では候補が active 全件近くまで伸び、
 // 15 分ごとに同じ件数の UPSERT が削除本体と同じジョブの中で走る。それが
 // 問題になるなら直し方は入力を切ることではなく UPSERT を 1 文にまとめること。
-func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *sqlcgen.Queries, seenOnDisk map[string]struct{}) (bool, error) {
-	active, err := q.ListActiveMediaAssets(ctx)
+func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seenOnDisk map[string]struct{}) (bool, error) {
+	active, err := w.Storage.ListActiveMediaAssets(ctx)
 	if err != nil {
 		return false, fmt.Errorf("listing active media assets: %w", err)
 	}
@@ -222,12 +221,12 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 			continue
 		}
 		candidates[a.ID] = struct{}{}
-		if err := q.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
+		if err := w.Storage.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
 			return false, fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
 		}
 	}
 
-	existingIDs, err := q.ListAllMissingMediaAssetIDs(ctx)
+	existingIDs, err := w.Storage.ListAllMissingMediaAssetIDs(ctx)
 	if err != nil {
 		return false, fmt.Errorf("listing missing-asset candidates: %w", err)
 	}
@@ -237,7 +236,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 		}
 		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
 		// もう active でなくなった等）。掃除する。
-		if err := q.DeleteMissingMediaAsset(ctx, id); err != nil {
+		if err := w.Storage.DeleteMissingMediaAsset(ctx, id); err != nil {
 			return false, fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
 		}
 	}
@@ -256,8 +255,8 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, q *s
 // delete_reconcile の定期パスごとに同じ全件が再送され続けるため
 // （件数自体は Reset 後の MediaAssetsMissing ゲージが持つので、ログは同定
 // だけを担えばよい）。
-func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
-	aged, err := q.ListAgedMissingMediaAssets(ctx, time.Now().Add(-age))
+func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, age time.Duration) error {
+	aged, err := w.Storage.ListAgedMissingMediaAssets(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged missing-asset candidates: %w", err)
 	}
@@ -313,8 +312,8 @@ func classifyOrphanCleanup(relPath string) orphanCleanupKind {
 
 // agedUnpublishedOrphans はエイジング済み孤児のうち、名前が公開前を示すものだけを
 // 自動削除候補として返す。canonical 名は報告側に残す。
-func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *sqlcgen.Queries, age, mtimeGrace time.Duration) ([]string, error) {
-	agedPaths, err := q.ListAgedOrphanFiles(ctx, time.Now().Add(-age))
+func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age, mtimeGrace time.Duration) ([]string, error) {
+	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return nil, fmt.Errorf("listing aged orphan files: %w", err)
 	}
@@ -322,7 +321,7 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 		return nil, nil
 	}
 
-	known, err := q.ListAllMediaAssetRelPaths(ctx)
+	known, err := w.Storage.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing known rel paths: %w", err)
 	}
@@ -340,14 +339,14 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 		}
 		if _, ok := knownSet[relPath]; ok {
 			// 登録され直っていた。孤児ではなくなったので記録から外す。
-			if err := q.DeleteOrphanFile(ctx, relPath); err != nil {
+			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing reclaimed orphan record %q: %w", relPath, err)
 			}
 			continue
 		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)
 		if err != nil {
-			if err := q.DeleteOrphanFile(ctx, relPath); err != nil {
+			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing invalid orphan record %q: %w", relPath, err)
 			}
 			continue
@@ -355,7 +354,7 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
-				if err := q.DeleteOrphanFile(ctx, relPath); err != nil {
+				if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 					return nil, fmt.Errorf("clearing vanished orphan record %q: %w", relPath, err)
 				}
 				continue
@@ -375,8 +374,8 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, q *s
 // orphan_files は reconcile が観測した候補を持つ。公開前を示す予約名は自動回収対象なので
 // 報告から除き、canonical 名は人が調査・削除するまで記録を保持する。
 // 登録済み rel_path の行は、同じ reconcile パスで先に走る reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
-func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, q *sqlcgen.Queries, age time.Duration) error {
-	agedPaths, err := q.ListAgedOrphanFiles(ctx, time.Now().Add(-age))
+func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, age time.Duration) error {
+	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged orphan files: %w", err)
 	}

@@ -23,7 +23,7 @@ flowchart LR
 | §5 | 検索とルール評価の統一（POSIX ARE / pg_trgm / 全角半角正規化 / 録画検索と rulequery の境界） | [data/search.md](data/search.md) |
 | §6.5 | チューナー射影と容量超過の判定（Hall 条件 / twin vertices / 累積和 / 下界に限る原則） | [data/capacity.md](data/capacity.md) |
 | §8 | シリーズ同一性（タイトル導出が比較の基準 / 分類ルール → 自動キー / 評価結果はキャッシュで宛先にしない / ハブの起点は録画 id） | [data/series.md](data/series.md) |
-| §9 | ドメインごとの store 契約（契約の置き場 / メソッドの単位 / ジョブ投入はヒント / 方言差 / 時刻 / 視聴状態 / ごみ箱と完全削除 / チューナーと容量 / 録画の観測 / 更新通知 / ロック後の判断 / 直列化 / チャプター編集） | [data/store-contracts.md](data/store-contracts.md) |
+| §9 | ドメインごとの store 契約（契約の置き場 / メソッドの単位 / ジョブ投入はヒント / 方言差 / 時刻 / 視聴状態 / ごみ箱と完全削除 / チューナーと容量 / 録画の観測 / 更新通知 / ロック後の判断 / 直列化 / チャプター編集 / メディア読み取りとストレージ観測） | [data/store-contracts.md](data/store-contracts.md) |
 
 ### 読む順の目安
 

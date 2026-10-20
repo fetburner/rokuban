@@ -9,11 +9,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -93,6 +93,8 @@ const (
 type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
+	// Media は encode reconcile の列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
+	Media store.MediaReconcile
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
@@ -160,7 +162,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	if err != nil {
 		return fmt.Errorf("reconciling encoded asset rebuild requests: %w", err)
 	}
-	missing, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
+	missing, err := w.Media.ListMissingEncodeProfiles(ctx, store.MissingEncodeProfilesParams{
 		AfterRecordingID: after,
 		RecordingID:      targetID,
 		KnownProfiles:    known,
@@ -230,8 +232,8 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			}
 		}
 
-		w.reportUnsatisfiable(ctx, q, known)
-		w.reportAwaitingReview(ctx, q)
+		w.reportUnsatisfiable(ctx, known)
+		w.reportAwaitingReview(ctx)
 
 		if len(candidates) > 0 || rebuildQueued > 0 || failed > 0 {
 			slog.Info("encode_reconcile: pass complete",
@@ -260,16 +262,15 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 	q *sqlcgen.Queries,
 	targetID *int64,
 ) (queued, failed int, err error) {
-	requests, err := q.ListEncodedAssetRebuildRequests(ctx, targetID)
+	requests, err := w.Media.ListEncodedAssetRebuildRequests(ctx, targetID)
 	if err != nil {
 		return 0, 0, fmt.Errorf("listing encoded asset rebuild requests: %w", err)
 	}
 	for _, request := range requests {
-		requestedKeep, err := db.KeepRangesFromMultirange(request.RequestedKeep)
-		if err != nil {
+		if request.DecodeErr != nil {
 			failed++
 			slog.Error("encode_reconcile: decoding requested keep ranges",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
+				"recording_id", request.RecordingID, "profile", request.Profile, "err", request.DecodeErr)
 			continue
 		}
 		if profile, configured := w.Profiles.Profile(request.Profile); !configured || !profile.Cut {
@@ -282,7 +283,7 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
 			continue
 		}
-		encodeArgs.RequestedCutKeep, err = json.Marshal(requestedKeep)
+		encodeArgs.RequestedCutKeep, err = json.Marshal(request.RequestedKeep)
 		if err != nil {
 			failed++
 			slog.Error("encode_reconcile: encoding requested keep ranges",
@@ -305,8 +306,8 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 //
 // パスの本体（投入）とは独立した観測なので、失敗してもパスは成功のまま終える
 // （ここで error を返すと、投入は済んでいるのにジョブが再試行される）。
-func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlcgen.Queries, known []string) {
-	rows, err := q.ListUnsatisfiableEncodeProfiles(ctx, known)
+func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, known []string) {
+	rows, err := w.Media.ListUnsatisfiableEncodeProfiles(ctx, known)
 	if err != nil {
 		slog.Error("encode_reconcile: listing unsatisfiable encode profiles", "err", err)
 		return
@@ -328,13 +329,13 @@ func (w *EncodeReconcileWorker) reportUnsatisfiable(ctx context.Context, q *sqlc
 // 正常な待ち状態）。ログは出すが、数が減らないこと自体は異常ではない。
 // EncodeReconcileUnsatisfiable と同じく、解消したプロファイルの系列が
 // 張り付かないよう毎回作り直す。
-func (w *EncodeReconcileWorker) reportAwaitingReview(ctx context.Context, q *sqlcgen.Queries) {
+func (w *EncodeReconcileWorker) reportAwaitingReview(ctx context.Context) {
 	cut := w.Profiles.CutProfileNames()
 	if len(cut) == 0 {
 		metrics.CutAwaitingReview.Reset()
 		return
 	}
-	rows, err := q.ListCutAwaitingReview(ctx, cut)
+	rows, err := w.Media.ListCutAwaitingReview(ctx, cut)
 	if err != nil {
 		slog.Error("encode_reconcile: listing cut profiles awaiting review", "err", err)
 		return

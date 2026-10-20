@@ -396,7 +396,7 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	// The DB session is already gone, but rename has not started. Canonical names
 	// are report-only, so cleanup leaves the orphan record untouched.
 	q := sqlcgen.New(pool)
-	cleanup := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{Pool: pool, Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(q, relPath, 0)
 	var orphanCount int
 	if err := pool.QueryRow(ctx,

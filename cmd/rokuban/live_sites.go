@@ -5,11 +5,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/streamer"
 )
 
@@ -18,14 +18,14 @@ import (
 // {site} で選ぶ）。それぞれ自分の site の mirakc.Client を持つ。bound が空
 // （0 サイト束縛）なら空の liveSites を返し、Mount/Run は何もしない。
 func newLiveStreamersBySite(bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
-	return newLiveStreamersBySiteWithPool(nil, bound, cfg)
+	return newLiveStreamersBySiteWithMedia(nil, bound, cfg)
 }
 
-func newLiveStreamersBySiteWithPool(pool *pgxpool.Pool, bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
+func newLiveStreamersBySiteWithMedia(media store.MediaServing, bound []config.MirakcSite, cfg streamer.LiveConfig) liveSites {
 	sites := make(liveSites, len(bound))
 	for _, s := range bound {
 		mc := mirakc.NewClient(s.URL, nil)
-		sites[s.Site] = streamer.NewLiveWithPool(pool, mc, s.Site, cfg)
+		sites[s.Site] = streamer.NewLiveWithMedia(media, mc, s.Site, cfg)
 	}
 	return sites
 }

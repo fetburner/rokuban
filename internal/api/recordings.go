@@ -1095,12 +1095,11 @@ func (h *Server) enqueueEncodeReconcileHint(ctx context.Context, recordingID int
 
 // ListRecordingDropStats は録画の PID 別ドロップ統計を返す。
 func (h *Server) ListRecordingDropStats(ctx context.Context, req ListRecordingDropStatsRequestObject) (ListRecordingDropStatsResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	rows, err := q.ListRecordingDropStats(ctx, req.Id)
+	rows, err := h.mediaReader.ListRecordingDropStats(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
-	positionRows, err := q.ListRecordingDropPositions(ctx, req.Id)
+	positionRows, err := h.mediaReader.ListRecordingDropPositions(ctx, req.Id)
 	if err != nil {
 		return nil, err
 	}
