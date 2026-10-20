@@ -126,5 +126,5 @@ WHERE datname = current_database()
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("%s did not wait for a recordings row lock", operation)
+	t.Fatalf("%s did not wait for a row lock", operation)
 }

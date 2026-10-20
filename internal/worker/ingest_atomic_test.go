@@ -19,7 +19,6 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -397,9 +396,8 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 
 	// The DB session is already gone, but rename has not started. Canonical names
 	// are report-only, so cleanup leaves the orphan record untouched.
-	q := sqlcgen.New(pool)
-	cleanup := &DeleteReconcileWorker{Pool: pool, Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
-	cleanup.deleteOrphanFile(q, relPath, 0)
+	cleanup := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	cleanup.deleteOrphanFile(relPath, 0)
 	var orphanCount int
 	if err := pool.QueryRow(ctx,
 		"SELECT count(*) FROM orphan_files WHERE rel_path = $1", relPath).Scan(&orphanCount); err != nil {
@@ -432,7 +430,7 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 
 	// A later cleanup pass still cannot infer publication state from this canonical
 	// name, so it must preserve both the file and its orphan record.
-	cleanup.deleteOrphanFile(q, relPath, 0)
+	cleanup.deleteOrphanFile(relPath, 0)
 	if _, err := os.Stat(fullPath); err != nil {
 		t.Errorf("canonical file after report-only cleanup: %v", err)
 	}

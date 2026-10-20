@@ -14,7 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -88,10 +88,10 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			w := &DeleteReconcileWorker{Pool: pool, Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
-			target := deleteTarget{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
+			w := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+			target := store.MediaDeleteAsset{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
 			deletionCtx, deletionCancel := context.WithTimeout(ctx, 150*time.Millisecond)
-			w.deleteMediaAsset(deletionCtx, sqlcgen.New(pool), target, "trash")
+			w.deleteMediaAsset(deletionCtx, target, "trash")
 			deletionCancel()
 			path := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 			if _, err := os.Stat(path); err != nil {
@@ -108,7 +108,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			if state != "active" {
 				t.Fatalf("state after rescue = %q", state)
 			}
-			w.deleteMediaAsset(ctx, sqlcgen.New(pool), target, "trash")
+			w.deleteMediaAsset(ctx, target, "trash")
 			if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("file after deletion = %v", err)
 			}

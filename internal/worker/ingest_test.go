@@ -4208,7 +4208,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		t.Fatalf("creating existing media_asset: %v", err)
 	}
 	if existingState != "active" {
-		// MarkMediaAssetDeleting（delete_execute.go）は deleted_at を
+		// MediaDelete.MarkDeleting（delete_execute.go）は deleted_at を
 		// 立てない --- 'deleting' は unlink 前後の中間状態であり、不可逆な
 		// 削除確定（deleted_at）はまだ起きていない。ここでもその形を模す。
 		if _, err := pool.Exec(ctx,

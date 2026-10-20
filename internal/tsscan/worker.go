@@ -10,10 +10,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -23,13 +19,11 @@ import (
 
 const (
 	reconcileRowLimit = 1000
-	scanBatchSize     = 500
 )
 
 // ScanWorker reads an active original and replaces its TS statistics atomically.
 type ScanWorker struct {
-	Pool     *pgxpool.Pool
-	Media    store.MediaReconcile
+	Media    store.TSScan
 	MediaDir string
 }
 
@@ -63,44 +57,9 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 	metrics.TSScanErrorPackets.Add(float64(counter.TotalErrors()))
 	metrics.TSScanScrambledPackets.Add(float64(counter.TotalScrambled()))
 
-	tx, err := w.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning TS scan transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	txq := sqlcgen.New(tx)
-	currentSize, err := txq.LockActiveOriginalForTSScan(ctx, asset.ID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		result = "success"
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("checking original media asset %d before replacing statistics: %w", asset.ID, err)
-	}
-	if currentSize != size {
-		// In-place registration may have replaced the file while it was read. Leave
-		// old observations alone; the current size still differs from the scan marker.
-		result = "success"
-		return nil
-	}
-
-	if err := txq.DeleteDropStatsForTSScan(ctx, asset.ID); err != nil {
-		return fmt.Errorf("deleting old drop_stats for media asset %d: %w", asset.ID, err)
-	}
-	if err := txq.DeleteDropPositionsForTSScan(ctx, asset.ID); err != nil {
-		return fmt.Errorf("deleting old drop_positions for media asset %d: %w", asset.ID, err)
-	}
-	if err := replaceStats(ctx, txq, asset.ID, counter); err != nil {
-		return fmt.Errorf("writing TS statistics for media asset %d: %w", asset.ID, err)
-	}
-	if err := txq.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
-		MediaAssetID:     asset.ID,
-		ScannedSizeBytes: size,
-	}); err != nil {
-		return fmt.Errorf("upserting TS scan record for media asset %d: %w", asset.ID, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing TS scan for media asset %d: %w", asset.ID, err)
+	stats, positions := scanResults(counter)
+	if _, err := w.Media.ReplaceScan(ctx, asset.ID, size, stats, positions); err != nil {
+		return fmt.Errorf("replacing TS scan for media asset %d: %w", asset.ID, err)
 	}
 	result = "success"
 	return nil
@@ -109,7 +68,7 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 // ReconcileWorker enqueues missing or stale scans from the current database state.
 type ReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
-	Media    store.MediaReconcile
+	Media    store.TSScan
 	RowLimit int32
 }
 
@@ -195,7 +154,7 @@ func (r contextReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-func replaceStats(ctx context.Context, q *sqlcgen.Queries, assetID int64, counter *tsstat.Counter) error {
+func scanResults(counter *tsstat.Counter) ([]store.RecordingDropStat, []store.RecordingDropPosition) {
 	stats := counter.Stats()
 	pids := make([]int, 0, len(stats))
 	for pid := range stats {
@@ -203,8 +162,8 @@ func replaceStats(ctx context.Context, q *sqlcgen.Queries, assetID int64, counte
 	}
 	slices.Sort(pids)
 
-	statRows := make([]sqlcgen.InsertDropStatParams, 0, len(pids))
-	positionRows := make([]sqlcgen.InsertDropPositionParams, 0)
+	statRows := make([]store.RecordingDropStat, 0, len(pids))
+	positionRows := make([]store.RecordingDropPosition, 0)
 	for _, pid := range pids {
 		stat := stats[pid]
 		var pidType *string
@@ -212,51 +171,15 @@ func replaceStats(ctx context.Context, q *sqlcgen.Queries, assetID int64, counte
 			t := stat.Type
 			pidType = &t
 		}
-		statRows = append(statRows, sqlcgen.InsertDropStatParams{
-			MediaAssetID: assetID,
-			Pid:          int32(pid),
-			Packets:      stat.Packets,
-			Drops:        stat.Drops,
-			Errors:       stat.Errors,
-			Scrambled:    stat.Scrambled,
-			PidType:      pidType,
+		statRows = append(statRows, store.RecordingDropStat{
+			Pid: int32(pid), Packets: stat.Packets, Drops: stat.Drops,
+			Errors: stat.Errors, Scrambled: stat.Scrambled, PidType: pidType,
 		})
 		for _, position := range stat.Positions {
-			positionRows = append(positionRows, sqlcgen.InsertDropPositionParams{
-				MediaAssetID: assetID,
-				ByteOffset:   position.ByteOffset,
-				Pid:          int32(pid),
-				ElapsedMs:    position.ElapsedMs,
+			positionRows = append(positionRows, store.RecordingDropPosition{
+				ByteOffset: position.ByteOffset, Pid: int32(pid), ElapsedMs: position.ElapsedMs,
 			})
 		}
 	}
-	for start := 0; start < len(statRows); start += scanBatchSize {
-		if err := execBatch(q.InsertDropStat(ctx, statRows[start:min(start+scanBatchSize, len(statRows))])); err != nil {
-			return fmt.Errorf("inserting drop_stats batch: %w", err)
-		}
-	}
-	for start := 0; start < len(positionRows); start += scanBatchSize {
-		if err := execBatch(q.InsertDropPosition(ctx, positionRows[start:min(start+scanBatchSize, len(positionRows))])); err != nil {
-			return fmt.Errorf("inserting drop_positions batch: %w", err)
-		}
-	}
-	return nil
-}
-
-type batchResults interface {
-	Exec(func(int, error))
-	Close() error
-}
-
-func execBatch(batch batchResults) error {
-	var firstErr error
-	batch.Exec(func(i int, err error) {
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("batch item %d: %w", i, err)
-		}
-	})
-	if err := batch.Close(); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("closing batch: %w", err)
-	}
-	return firstErr
+	return statRows, positionRows
 }

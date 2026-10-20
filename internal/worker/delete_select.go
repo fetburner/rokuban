@@ -16,15 +16,15 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // deleteCandidateSet は 1 パスの新規物理削除対象。canonical 孤児は報告のみで含めない。
 // ブレーカーはソースを問わず削除対象だけを合計する。
 type deleteCandidateSet struct {
-	trash          []sqlcgen.ListTrashMediaAssetsToDeleteRow
-	untilEncoded   []sqlcgen.ListUntilEncodedOriginalsToDeleteRow
-	removedEncoded []sqlcgen.ListRemovedEncodedAssetsToDeleteRow
+	trash          []store.MediaDeleteAsset
+	untilEncoded   []store.MediaDeleteAsset
+	removedEncoded []store.MediaDeleteAsset
 	agedOrphans    []string
 }
 
@@ -43,20 +43,18 @@ func (c deleteCandidateSet) total() int {
 // ジョブは既に条件 2 が止め、出力コミット済みのジョブは各ワーカーの冒頭の
 // 冪等チェックが原本を開かずに skip する（順序そのものは未検証。
 // docs/storage/retention.md 同箇所参照）。
-func collectDeleteCandidates(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time) (deleteCandidateSet, error) {
+func collectDeleteCandidates(ctx context.Context, media store.MediaDelete, trashCutoff time.Time) (deleteCandidateSet, error) {
 	var c deleteCandidateSet
 	var err error
-	c.trash, err = q.ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
-		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
-	})
+	c.trash, err = media.ListTrashAssetsToDelete(ctx, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing trash assets past retention: %w", err)
 	}
-	c.untilEncoded, err = q.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
+	c.untilEncoded, err = media.ListUntilEncodedOriginalsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing until_encoded originals: %w", err)
 	}
-	c.removedEncoded, err = q.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit)
+	c.removedEncoded, err = media.ListRemovedEncodedAssetsToDelete(ctx, deleteReconcileRowLimit)
 	if err != nil {
 		return c, fmt.Errorf("listing removed encoded assets: %w", err)
 	}

@@ -1,0 +1,145 @@
+package pgstore
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
+)
+
+// ListPendingDeleteAssets は削除条件を満たす deleting アセットを返す。
+func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
+	rows, err := sqlcgen.New(s.pool).ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
+		GraceCutoff: graceCutoff, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing pending media asset deletes: %w", err)
+	}
+	out := make([]store.MediaDeleteAsset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaDeleteAsset{
+			ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
+		})
+	}
+	return out, nil
+}
+
+// ListUnqualifiedDeletingAssets は現在どの削除条件も満たさない deleting アセットを返す。
+func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
+	rows, err := sqlcgen.New(s.pool).ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
+		GraceCutoff: graceCutoff, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing unqualified deleting media assets: %w", err)
+	}
+	out := make([]store.MediaDeleteRevertCandidate, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaDeleteRevertCandidate{ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath})
+	}
+	return out, nil
+}
+
+// ListTrashAssetsToDelete はごみ箱の猶予を過ぎたか即時削除を要求されたアセットを返す。
+func (s *Media) ListTrashAssetsToDelete(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
+	rows, err := sqlcgen.New(s.pool).ListTrashMediaAssetsToDelete(ctx, sqlcgen.ListTrashMediaAssetsToDeleteParams{
+		GraceCutoff: graceCutoff, RowLimit: limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing trash media assets to delete: %w", err)
+	}
+	out := make([]store.MediaDeleteAsset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaDeleteAsset{
+			ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
+		})
+	}
+	return out, nil
+}
+
+// ListUntilEncodedOriginalsToDelete は派生物が揃った until_encoded 原本を返す。
+func (s *Media) ListUntilEncodedOriginalsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
+	rows, err := sqlcgen.New(s.pool).ListUntilEncodedOriginalsToDelete(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing until_encoded originals to delete: %w", err)
+	}
+	out := make([]store.MediaDeleteAsset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaDeleteAsset{
+			ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
+		})
+	}
+	return out, nil
+}
+
+// ListRemovedEncodedAssetsToDelete は利用者が外した encoded アセットを返す。
+func (s *Media) ListRemovedEncodedAssetsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
+	rows, err := sqlcgen.New(s.pool).ListRemovedEncodedAssetsToDelete(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("listing removed encoded assets to delete: %w", err)
+	}
+	out := make([]store.MediaDeleteAsset, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, store.MediaDeleteAsset{
+			ID: row.ID, RecordingID: row.RecordingID, RelPath: row.RelPath, SizeBytes: row.SizeBytes, Kind: row.Kind,
+		})
+	}
+	return out, nil
+}
+
+// MarkDeleting は active アセットを deleting にする。
+func (s *Media) MarkDeleting(ctx context.Context, assetID int64) error {
+	if _, err := sqlcgen.New(s.pool).MarkMediaAssetDeleting(ctx, assetID); err != nil {
+		return fmt.Errorf("marking media asset %d deleting: %w", assetID, mapDatabaseError(err))
+	}
+	return nil
+}
+
+// MarkUntilEncodedDeleting は録画の削除方針と作り直し要求に直列化して削除条件を再確認する。
+func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, assetID int64) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("beginning until_encoded media asset delete for recording %d: %w", recordingID, err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+
+	if err := lockRecording(ctx, q, recordingID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("locking recording %d before until_encoded delete: %w", recordingID, err)
+	}
+	marked, err := q.MarkUntilEncodedOriginalDeleting(ctx, assetID)
+	if err != nil {
+		return false, fmt.Errorf("marking until_encoded original %d deleting: %w", assetID, mapDatabaseError(err))
+	}
+	if marked == 0 {
+		return false, nil
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("committing until_encoded delete for media asset %d: %w", assetID, mapDatabaseError(err))
+	}
+	return true, nil
+}
+
+// MarkDeleted は deleting アセットを deleted にし、外した encoded の削除要求も同時に消す。
+func (s *Media) MarkDeleted(ctx context.Context, assetID int64) error {
+	if _, err := sqlcgen.New(s.pool).MarkMediaAssetDeleted(ctx, assetID); err != nil {
+		return fmt.Errorf("marking media asset %d deleted: %w", assetID, mapDatabaseError(err))
+	}
+	return nil
+}
+
+// RevertToActive は削除条件から外れた deleting アセットを active に戻す。
+func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff time.Time) (bool, error) {
+	updated, err := sqlcgen.New(s.pool).RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
+		ID: assetID, GraceCutoff: graceCutoff,
+	})
+	if err != nil {
+		return false, fmt.Errorf("reverting media asset %d to active: %w", assetID, mapDatabaseError(err))
+	}
+	return updated > 0, nil
+}
