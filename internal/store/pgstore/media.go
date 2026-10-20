@@ -98,29 +98,36 @@ func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID in
 	return true, nil
 }
 
-// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を state を問わず返す。
+// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
+// 行と区間は読み取り専用の RepeatableRead tx で同じスナップショットから読む。
 func (s *Media) GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (store.EncodedAssetObservation, error) {
-	row, err := sqlcgen.New(s.pool).GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
+	desc := fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return store.EncodedAssetObservation{}, fmt.Errorf("beginning %s: %w", desc, err)
+	}
+	defer rollback(tx)
+	q := sqlcgen.New(tx)
+
+	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
 	})
 	if err != nil {
-		return store.EncodedAssetObservation{}, mediaQueryError(err, fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile))
+		return store.EncodedAssetObservation{}, mediaQueryError(err, desc)
 	}
-	return store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}, nil
-}
-
-// GetMediaAssetKeepRanges は encoded アセットに凍結された keep 区間を返す。未凍結なら空を返す。
-func (s *Media) GetMediaAssetKeepRanges(ctx context.Context, mediaAssetID int64) ([]chapters.Range, error) {
-	raw, err := sqlcgen.New(s.pool).GetMediaAssetKeepRangesJSON(ctx, mediaAssetID)
+	raw, err := q.GetMediaAssetKeepRangesJSON(ctx, row.ID)
 	if err != nil {
-		return nil, fmt.Errorf("loading frozen cut ranges for media asset %d: %w", mediaAssetID, err)
+		return store.EncodedAssetObservation{}, fmt.Errorf("loading frozen cut ranges for media asset %d: %w", row.ID, err)
 	}
 	var keep []chapters.Range
 	if err := json.Unmarshal(raw, &keep); err != nil {
-		return nil, fmt.Errorf("decoding frozen cut ranges for media asset %d: %w", mediaAssetID, err)
+		return store.EncodedAssetObservation{}, fmt.Errorf("decoding frozen cut ranges for media asset %d: %w", row.ID, err)
 	}
-	return keep, nil
+	if err := tx.Commit(ctx); err != nil {
+		return store.EncodedAssetObservation{}, fmt.Errorf("committing %s: %w", desc, err)
+	}
+	return store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State, KeepRanges: keep}, nil
 }
 
 // EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
@@ -185,7 +192,6 @@ func (s *Media) GetChaseTarget(ctx context.Context, recordingID int64) (store.Ch
 		Status:           row.Status,
 		RecordingStatus:  row.RecordingStatus,
 		HasOriginalAsset: row.HasOriginalAsset,
-		DeletedAt:        row.DeletedAt,
 	}, nil
 }
 
@@ -300,21 +306,56 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 	}
 	out := make([]store.ThumbnailReselectCandidate, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.ThumbnailReselectCandidate{
+		c := store.ThumbnailReselectCandidate{
 			RecordingID:           row.RecordingID,
 			Trashed:               row.Trashed,
 			ProgramDurationMs:     row.ProgramDurationMs,
 			Detected:              row.Detected,
 			Owned:                 row.Owned,
-			CMRanges:              row.CmRanges,
-			UserSpans:             row.UserSpans,
 			OriginalMediaAssetID:  row.OriginalMediaAssetID,
 			OriginalRelPath:       row.OriginalRelPath,
-			EncodedAssets:         row.EncodedAssets,
 			ThumbnailMediaAssetID: row.ThumbnailMediaAssetID,
 			ThumbnailRelPath:      row.ThumbnailRelPath,
 			SeekMs:                row.SeekMs,
-		})
+		}
+		// タイムラインの無い録画は、利用側が JSON を読まずに飛ばす。同じ行で読まない。
+		if row.Detected || row.Owned {
+			c.CMRanges, c.UserSpans, c.TimelineDecodeErr = decodeThumbnailTimeline(row.CmRanges, row.UserSpans)
+			if c.TimelineDecodeErr == nil {
+				c.EncodedAssets, c.InputsDecodeErr = decodeThumbnailEncodedAssets(row.EncodedAssets)
+			}
+		}
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func decodeThumbnailTimeline(cmRanges, userSpans []byte) ([]chapters.Range, []chapters.Span, error) {
+	var cm []chapters.Range
+	if err := json.Unmarshal(cmRanges, &cm); err != nil {
+		return nil, nil, err
+	}
+	var spans []chapters.Span
+	if err := json.Unmarshal(userSpans, &spans); err != nil {
+		return nil, nil, err
+	}
+	return cm, spans, nil
+}
+
+func decodeThumbnailEncodedAssets(raw []byte) ([]store.ThumbnailEncodedAsset, error) {
+	var rows []struct {
+		MediaAssetID int64            `json:"mediaAssetId"`
+		Profile      string           `json:"profile"`
+		RelPath      string           `json:"relPath"`
+		Cut          bool             `json:"cut"`
+		KeepRanges   []chapters.Range `json:"keepRanges"`
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		return nil, err
+	}
+	out := make([]store.ThumbnailEncodedAsset, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, store.ThumbnailEncodedAsset{MediaAssetID: r.MediaAssetID, Profile: r.Profile, RelPath: r.RelPath, Cut: r.Cut, KeepRanges: r.KeepRanges})
 	}
 	return out, nil
 }

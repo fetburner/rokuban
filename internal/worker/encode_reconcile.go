@@ -93,7 +93,8 @@ const (
 type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	Pool     *pgxpool.Pool
-	Media    store.MediaReconcile
+	// Media は encode reconcile の列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
+	Media store.MediaReconcile
 
 	// Profiles は現在の encode.profiles（config.EncodeConfig）。desired の
 	// 絞り込みに名前だけを使う（ffmpeg は起動しない）。
@@ -134,9 +135,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	recordingID := args.RecordingID
 	if recordingID != 0 && args.AfterRecordingID != 0 {
 		return fmt.Errorf("encode reconcile: recording_id and after_recording_id cannot both be set: %w", jobq.ErrDiscard)
-	}
-	if w.Media == nil {
-		return fmt.Errorf("encode reconcile: media store is unavailable")
 	}
 	if w.Enqueuer == nil {
 		// このジョブの主目的が「encode ジョブを実際に投入すること」なので、client が取れないことを

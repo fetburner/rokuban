@@ -1,7 +1,6 @@
 package worker
 
 import (
-	"encoding/json"
 	"math"
 	"time"
 
@@ -12,11 +11,11 @@ import (
 // thumbnailSource is one usable file from which a chapter-aware thumbnail can be cut.
 // Cut sources carry the keep ranges frozen when that encoded asset was made.
 type thumbnailSource struct {
-	MediaAssetID int64            `json:"mediaAssetId"`
-	Profile      string           `json:"profile"`
-	RelPath      string           `json:"relPath"`
-	Cut          bool             `json:"cut"`
-	KeepRanges   []chapters.Range `json:"keepRanges"`
+	MediaAssetID int64
+	Profile      string
+	RelPath      string
+	Cut          bool
+	KeepRanges   []chapters.Range
 }
 
 type thumbnailInputs struct {
@@ -30,26 +29,24 @@ type thumbnailPlan struct {
 	RecordedSeek int64
 }
 
-// thumbnailTimeline decodes the chapter timeline of a candidate row. The bool is
+// thumbnailTimeline derives the chapter timeline of a candidate row. The bool is
 // false when the recording has neither a CM detection nor user-owned chapters.
 func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool, error) {
 	if !p.Detected && !p.Owned {
 		return nil, false, nil
 	}
-	var cmRanges []chapters.Range
-	if err := json.Unmarshal(p.CMRanges, &cmRanges); err != nil {
-		return nil, true, err
+	if p.TimelineDecodeErr != nil {
+		return nil, true, p.TimelineDecodeErr
 	}
-	var userSpans []chapters.Span
-	if err := json.Unmarshal(p.UserSpans, &userSpans); err != nil {
-		return nil, true, err
-	}
-	auto := chapters.AutoSpans(cmRanges, p.ProgramDurationMs)
-	return chapters.Derive(p.Owned, userSpans, auto, p.ProgramDurationMs), true, nil
+	auto := chapters.AutoSpans(p.CMRanges, p.ProgramDurationMs)
+	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs), true, nil
 }
 
-// thumbnailInputsOf decodes the usable input files of a candidate row.
+// thumbnailInputsOf returns the usable input files of a candidate row.
 func thumbnailInputsOf(p store.ThumbnailReselectCandidate) (thumbnailInputs, error) {
+	if p.InputsDecodeErr != nil {
+		return thumbnailInputs{}, p.InputsDecodeErr
+	}
 	var inputs thumbnailInputs
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
@@ -57,8 +54,10 @@ func thumbnailInputsOf(p store.ThumbnailReselectCandidate) (thumbnailInputs, err
 			RelPath:      p.OriginalRelPath,
 		}
 	}
-	if err := json.Unmarshal(p.EncodedAssets, &inputs.Encoded); err != nil {
-		return thumbnailInputs{}, err
+	for _, e := range p.EncodedAssets {
+		inputs.Encoded = append(inputs.Encoded, thumbnailSource{
+			MediaAssetID: e.MediaAssetID, Profile: e.Profile, RelPath: e.RelPath, Cut: e.Cut, KeepRanges: e.KeepRanges,
+		})
 	}
 	return inputs, nil
 }

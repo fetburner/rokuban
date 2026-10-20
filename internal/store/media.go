@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -35,7 +34,6 @@ type ChaseTarget struct {
 	Status           string
 	RecordingStatus  string
 	HasOriginalAsset bool
-	DeletedAt        *time.Time
 }
 
 // MediaServing は streamer が使うメディアと録画状態の読み取り契約である。
@@ -95,10 +93,12 @@ type EncodedMeaningEvidence struct {
 }
 
 // EncodedAssetObservation はエンコード計画が観測した encoded アセットを表す。
+// KeepRanges は cut プロファイルの要求で凍結された区間で、凍結されていなければ空である。
 type EncodedAssetObservation struct {
-	ID      int64
-	RelPath string
-	State   string
+	ID         int64
+	RelPath    string
+	State      string
+	KeepRanges []chapters.Range
 }
 
 // MediaReconcilePage は録画 ID で巡回するメディア reconcile のページ条件を表す。
@@ -108,18 +108,35 @@ type MediaReconcilePage struct {
 	RowLimit         int32
 }
 
+// ThumbnailEncodedAsset はサムネイルを切り出せる encoded 1 件を表す。
+// Cut の行は、その encoded を作った時点で凍結した keep 区間を持つ。
+type ThumbnailEncodedAsset struct {
+	MediaAssetID int64
+	Profile      string
+	RelPath      string
+	Cut          bool
+	KeepRanges   []chapters.Range
+}
+
 // ThumbnailReselectCandidate はサムネイル位置を再評価する入力を表す。
+//
+// CMRanges / UserSpans / EncodedAssets は DB の JSON を実装が型へ戻した値で、
+// 録画に CM 検出もユーザーのチャプターも無い行（Detected も Owned も false）では読まず、空のままにする。
+// 戻せなかった行は、その段階の TimelineDecodeErr / InputsDecodeErr に原因を持つ。
+// 1 行の不整合でページ全体を失敗させず、利用側が行ごとに扱えるようにするためである。
 type ThumbnailReselectCandidate struct {
 	RecordingID           int64
 	Trashed               bool
 	ProgramDurationMs     int64
 	Detected              bool
 	Owned                 bool
-	CMRanges              json.RawMessage
-	UserSpans             json.RawMessage
+	CMRanges              []chapters.Range
+	UserSpans             []chapters.Span
+	TimelineDecodeErr     error
 	OriginalMediaAssetID  int64
 	OriginalRelPath       string
-	EncodedAssets         json.RawMessage
+	EncodedAssets         []ThumbnailEncodedAsset
+	InputsDecodeErr       error
 	ThumbnailMediaAssetID *int64
 	ThumbnailRelPath      *string
 	SeekMs                *int64
@@ -138,10 +155,9 @@ type MediaReconcile interface {
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
 	HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error)
-	// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を state を問わず返す。
+	// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
+	// 行と区間は 1 つの読み取りで同じ時点の値を返す。無ければ ErrNotFound を返す。
 	GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (EncodedAssetObservation, error)
-	// GetMediaAssetKeepRanges は encoded アセットに凍結された keep 区間を返す。未凍結なら空を返す。
-	GetMediaAssetKeepRanges(ctx context.Context, mediaAssetID int64) ([]chapters.Range, error)
 	// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
 	EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error)
 	// ListMissingEncodeProfiles は未生成 encoded の候補をページ単位で返す。

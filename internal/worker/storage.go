@@ -34,6 +34,7 @@ type storageRoot struct {
 // 観測ループを止めて再起動しても、次のパスが全量を書き直すので収束する
 // （crash-only。TestStorageSyncWorker_RestartConverges で固定）。
 type StorageSyncWorker struct {
+	// Storage は storage_sync の永続化契約。nil は同期を呼ばない部分テストでのみ許容する。
 	Storage store.StorageObservation
 
 	// MediaDir は storage.media_dir（必須。空なら Work がエラーを返す --- config
@@ -62,9 +63,6 @@ func (w *StorageSyncWorker) statFunc() func(string) (diskUsage, error) {
 func (w *StorageSyncWorker) Work(ctx context.Context, _ jobs.StorageSyncArgs) error {
 	if w.MediaDir == "" {
 		return fmt.Errorf("storage sync: media dir is empty")
-	}
-	if w.Storage == nil {
-		return fmt.Errorf("storage sync: storage observation store is unavailable")
 	}
 
 	// allRoots は Rokuban が観測しうる root の全体集合（config キーと statfs

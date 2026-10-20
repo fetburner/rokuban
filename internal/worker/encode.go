@@ -92,7 +92,8 @@ import (
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
-	Pool       *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
 	MediaDir   string
 	ScratchDir string
@@ -367,9 +368,6 @@ func (w *EncodeWorker) planEncodeAsset(
 	cut *cutContext,
 	previous *encodePlan,
 ) (encodePlan, error) {
-	if w.Media == nil {
-		return encodePlan{}, fmt.Errorf("media store is unavailable")
-	}
 	asset, err := w.Media.GetEncodedAssetForPlan(ctx, recordingID, profile)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return encodePlan{}, err
@@ -379,14 +377,7 @@ func (w *EncodeWorker) planEncodeAsset(
 		observed = &asset
 	}
 
-	var frozen []chapters.Range
-	if cut != nil && observed != nil {
-		frozen, err = w.Media.GetMediaAssetKeepRanges(ctx, observed.ID)
-		if err != nil {
-			return encodePlan{}, err
-		}
-	}
-	return planEncodePublishFromObservation(observed, frozen, profile, cut, previous), nil
+	return planEncodePublishFromObservation(observed, profile, cut, previous), nil
 }
 
 // loadRequestedEncodeCut は rebuild 要求に束縛された keep 区間を検証する。
@@ -408,9 +399,6 @@ func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.Enc
 		return nil, nil, false, false, nil
 	}
 
-	if w.Media == nil {
-		return nil, nil, false, false, fmt.Errorf("media store is unavailable")
-	}
 	// 公開 tx は同じ状態を改めて照合し、押し直しと公開を直列化する。
 	matches, err := w.Media.EncodedAssetRebuildRequestMatches(ctx, args.RecordingID, args.Profile, expectedKeep)
 	if err != nil {
@@ -1134,22 +1122,20 @@ func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int6
 		return encodePlan{}, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 	var asset *store.EncodedAssetObservation
-	var frozen []chapters.Range
 	if err == nil {
 		asset = &store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}
 		if cut != nil {
-			frozen, err = assetKeepRanges(ctx, q, row.ID)
+			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
 			if err != nil {
 				return encodePlan{}, err
 			}
 		}
 	}
-	return planEncodePublishFromObservation(asset, frozen, profile, cut, observed), nil
+	return planEncodePublishFromObservation(asset, profile, cut, observed), nil
 }
 
 func planEncodePublishFromObservation(
 	asset *store.EncodedAssetObservation,
-	frozen []chapters.Range,
 	profile string,
 	cut *cutContext,
 	previous *encodePlan,
@@ -1167,7 +1153,7 @@ func planEncodePublishFromObservation(
 	}
 	committed := exists && asset.State == "active"
 	if committed && cut != nil {
-		committed = chapters.SameRanges(frozen, cut.keep)
+		committed = chapters.SameRanges(asset.KeepRanges, cut.keep)
 	}
 	moved := previous != nil && previous.observedRelPath != p.observedRelPath
 	p.stale = moved && !committed && exists && asset.State == "active"
@@ -1214,9 +1200,6 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 }
 
 func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
-	if w.Media == nil {
-		return store.MediaAsset{}, fmt.Errorf("media store is unavailable")
-	}
 	row, err := w.Media.GetActiveOriginalMediaAsset(ctx, recordingID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {

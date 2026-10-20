@@ -131,7 +131,8 @@ type deleteTarget struct {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	Pool           *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage        store.StorageObservation
 	RecordingPurge store.RecordingPurge
 	Breakers       store.Breakers
@@ -149,9 +150,6 @@ type DeleteReconcileWorker struct {
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
-	if w.Storage == nil {
-		return fmt.Errorf("delete reconcile: storage observation store is unavailable")
-	}
 	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
 	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。

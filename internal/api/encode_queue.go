@@ -20,10 +20,9 @@ type encodeQueueRow struct {
 // 件数（GET /api/encode-queue）と録画一覧の encodeState 絞り込みは同じ行から作る
 // （TestGetEncodeQueueSummaryFromDomainState / TestListRecordingsEncodeStateMatchesQueueCounts）。
 func (h *Server) loadEncodeQueueRows(ctx context.Context) ([]encodeQueueRow, error) {
-	// SQL の ANY は NULL 配列を空配列と異なる意味にするため、nil は空にする。
 	rows, err := h.mediaReader.ListEncodeQueue(ctx, store.EncodeQueueParams{
-		KnownProfiles: append([]string{}, h.encodeProfileNames...),
-		CutProfiles:   slices.AppendSeq([]string{}, maps.Keys(h.cutProfiles)),
+		KnownProfiles: h.encodeProfileNames,
+		CutProfiles:   slices.Collect(maps.Keys(h.cutProfiles)),
 		AttemptLimit:  jobs.EncodeAttemptLimit,
 	})
 	if err != nil {

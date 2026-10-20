@@ -62,8 +62,44 @@ func TestMediaStoreContract(t *testing.T) {
 			Serving:      NewMedia(pool),
 			Reconcile:    NewMedia(pool),
 			Storage:      NewMedia(pool),
+			Site:         db.DefaultSite,
 			NewRecording: newRecording,
 			NewAsset:     newAsset,
+			SetRecordingTrashed: func(t *testing.T, recordingID int64) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
+					t.Fatalf("trashing recording %d: %v", recordingID, err)
+				}
+			},
+			NewRecordSync: func(t *testing.T, recordingID int64, site, recordID, status string) {
+				t.Helper()
+				if err := sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+					Site:        site,
+					RecordID:    recordID,
+					RecordingID: &recordingID,
+					ProgramID:   recordingID,
+					Status:      status,
+					Tags:        []string{},
+				}); err != nil {
+					t.Fatalf("seeding record_sync: %v", err)
+				}
+			},
+			SetOrphanFirstSeenAgo: func(t *testing.T, relPath string, ago time.Duration) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(),
+					"UPDATE orphan_files SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE rel_path = $1",
+					relPath, ago.Microseconds()); err != nil {
+					t.Fatalf("aging orphan %q: %v", relPath, err)
+				}
+			},
+			SetMissingFirstSeenAgo: func(t *testing.T, assetID int64, ago time.Duration) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(),
+					"UPDATE missing_media_assets SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE media_asset_id = $1",
+					assetID, ago.Microseconds()); err != nil {
+					t.Fatalf("aging missing asset %d: %v", assetID, err)
+				}
+			},
 			SetAssetState: func(t *testing.T, assetID int64, state string) {
 				t.Helper()
 				if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, assetID); err != nil {

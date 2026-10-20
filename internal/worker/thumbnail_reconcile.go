@@ -40,6 +40,7 @@ const (
 // 候補を飛ばさないためである。
 type ThumbnailReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
+	// Media はサムネイル・シークタイルの列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
 	Media    store.MediaReconcile
 	RowLimit int32
 

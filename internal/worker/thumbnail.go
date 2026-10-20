@@ -49,7 +49,8 @@ const (
 // mediapath.Resolve 経由の単一 MediaDir、mirakc には触れない）。EncodeWorker
 // の doc コメント参照。
 type ThumbnailWorker struct {
-	Pool       *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
 	MediaDir   string
 	ScratchDir string
@@ -164,9 +165,6 @@ func (w *ThumbnailWorker) buildThumbnailPlan(
 	recordingID int64,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	if w.Media == nil {
-		return thumbnailWorkPlan{}, false, fmt.Errorf("thumbnail: media store is unavailable")
-	}
 	activeThumbnail, err := w.Media.HasActiveThumbnailMediaAsset(ctx, recordingID)
 	if err != nil {
 		return thumbnailWorkPlan{}, false, fmt.Errorf("checking thumbnail: %w", err)
