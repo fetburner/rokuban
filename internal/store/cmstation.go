@@ -162,10 +162,16 @@ func (e *CMLogoAdoptionError) Error() string {
 }
 
 // CMStation は CM ロゴの局単位状態と候補解析を永続化する。
-// 同じ局について、ロゴ・枠・候補を書くメソッドは、互いに直列化される。
-// CM 検出の結果やロゴの学習結果を保存する操作とも直列化される。
-// ready の保存は、候補行の試行時刻と、保存を決めた時点の枠版が現在の枠版と同じかを照合し、違えば書かない。
-// 失敗と破棄は、候補行の枠版・試行時刻だけを照合する。
+// 同じ局について、ロゴ・枠・候補を書くメソッド（SaveLogoArea・DeleteLogoArea・DeleteLogo・
+// DeleteLogoCandidate・AdoptLogoCandidate・BeginLogoCandidate）は、互いに直列化される。
+// CM 検出の結果を保存する操作とロゴの学習を保存する操作とも直列化される。
+// 例外は MarkLogoCandidateReady・MarkLogoCandidateFailed・DiscardLogoCandidate で、
+// 直列化されず、版の照合で守る。
+// 結果を保存する操作は、前提にした状態が書き込み時点でも同じかを検査し、違えば書かない。
+// ロゴの学習の保存は枠の版（updated_at）を、CM 検出の結果の保存はロゴの版（learned_at）を照合する。
+// MarkLogoCandidateReady は、候補行の試行時刻と、候補が読んだ枠の版が現在の枠の版と同じかを照合する。
+// MarkLogoCandidateFailed と DiscardLogoCandidate は、現在の枠を見ず、
+// 候補行の枠の版と試行時刻が渡された値と一致する running 候補だけを対象にする。
 // 各メソッドは自身のトランザクションを完了してから返す。
 type CMStation interface {
 	// ListCMLogoStates はロゴ、枠、候補および CM 検出の局別状態を返す。
