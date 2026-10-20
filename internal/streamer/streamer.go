@@ -18,11 +18,9 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // contentTypeOriginal は録画原本の Content-Type。mirakc の record stream と揃える。
@@ -56,16 +54,16 @@ type Config struct {
 
 // Streamer は録画ファイルを配信する。
 type Streamer struct {
-	pool *pgxpool.Pool
-	cfg  Config
+	media store.MediaServing
+	cfg   Config
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	runCmd func(ctx context.Context, name string, args ...string) ([]byte, error)
 }
 
 // New は Streamer を生成する。
-func New(pool *pgxpool.Pool, cfg Config) *Streamer {
-	return &Streamer{pool: pool, cfg: cfg}
+func New(media store.MediaServing, cfg Config) *Streamer {
+	return &Streamer{media: media, cfg: cfg}
 }
 
 // Mount はルーターに配信エンドポイントを登録する。
@@ -129,7 +127,7 @@ func (s *Streamer) RecordingFile(w http.ResponseWriter, r *http.Request) {
 	}
 	asset, err := s.lookupAsset(r, id, profile)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -164,9 +162,9 @@ func (s *Streamer) RecordingThumbnail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := sqlcgen.New(s.pool).GetThumbnailMediaAssetForServing(r.Context(), id)
+	row, err := s.media.GetThumbnailMediaAssetForServing(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -194,9 +192,9 @@ func (s *Streamer) RecordingSeekTiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	row, err := sqlcgen.New(s.pool).GetSeekTilesMediaAssetForServing(r.Context(), id)
+	row, err := s.media.GetSeekTilesMediaAssetForServing(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			http.NotFound(w, r)
 			return
 		}
@@ -297,9 +295,8 @@ func (s *Streamer) serveAsset(w http.ResponseWriter, r *http.Request, recordingI
 
 // lookupAsset は profile の有無で original / encoded を解決する。
 func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile string) (serveAsset, error) {
-	q := sqlcgen.New(s.pool)
 	if profile == "" {
-		row, err := q.GetOriginalMediaAssetForServing(r.Context(), recordingID)
+		row, err := s.media.GetOriginalMediaAssetForServing(r.Context(), recordingID)
 		if err != nil {
 			return serveAsset{}, err
 		}
@@ -310,10 +307,7 @@ func (s *Streamer) lookupAsset(r *http.Request, recordingID int64, profile strin
 		}, nil
 	}
 
-	row, err := q.GetEncodedMediaAssetForServing(r.Context(), sqlcgen.GetEncodedMediaAssetForServingParams{
-		RecordingID: recordingID,
-		Profile:     &profile,
-	})
+	row, err := s.media.GetEncodedMediaAssetForServing(r.Context(), recordingID, profile)
 	if err != nil {
 		return serveAsset{}, err
 	}

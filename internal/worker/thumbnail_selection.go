@@ -1,23 +1,16 @@
 package worker
 
 import (
-	"encoding/json"
 	"math"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // thumbnailSource is one usable file from which a chapter-aware thumbnail can be cut.
 // Cut sources carry the keep ranges frozen when that encoded asset was made.
-type thumbnailSource struct {
-	MediaAssetID int64            `json:"mediaAssetId"`
-	Profile      string           `json:"profile"`
-	RelPath      string           `json:"relPath"`
-	Cut          bool             `json:"cut"`
-	KeepRanges   []chapters.Range `json:"keepRanges"`
-}
+type thumbnailSource = store.ThumbnailEncodedAsset
 
 type thumbnailInputs struct {
 	Original *thumbnailSource
@@ -30,37 +23,26 @@ type thumbnailPlan struct {
 	RecordedSeek int64
 }
 
-// thumbnailTimeline decodes the chapter timeline of a candidate row. The bool is
+// thumbnailTimeline derives the chapter timeline of a candidate row. The bool is
 // false when the recording has neither a CM detection nor user-owned chapters.
-func thumbnailTimeline(p sqlcgen.ListThumbnailReselectCandidatesRow) (chapters.Timeline, bool, error) {
+func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool) {
 	if !p.Detected && !p.Owned {
-		return nil, false, nil
+		return nil, false
 	}
-	var cmRanges []chapters.Range
-	if err := json.Unmarshal(p.CmRanges, &cmRanges); err != nil {
-		return nil, true, err
-	}
-	var userSpans []chapters.Span
-	if err := json.Unmarshal(p.UserSpans, &userSpans); err != nil {
-		return nil, true, err
-	}
-	auto := chapters.AutoSpans(cmRanges, p.ProgramDurationMs)
-	return chapters.Derive(p.Owned, userSpans, auto, p.ProgramDurationMs), true, nil
+	auto := chapters.AutoSpans(p.CMRanges, p.ProgramDurationMs)
+	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs), true
 }
 
-// thumbnailInputsOf decodes the usable input files of a candidate row.
-func thumbnailInputsOf(p sqlcgen.ListThumbnailReselectCandidatesRow) (thumbnailInputs, error) {
-	var inputs thumbnailInputs
+// thumbnailInputsOf returns the usable input files of a candidate row.
+func thumbnailInputsOf(p store.ThumbnailReselectCandidate) thumbnailInputs {
+	inputs := thumbnailInputs{Encoded: p.EncodedAssets}
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
 			MediaAssetID: p.OriginalMediaAssetID,
 			RelPath:      p.OriginalRelPath,
 		}
 	}
-	if err := json.Unmarshal(p.EncodedAssets, &inputs.Encoded); err != nil {
-		return thumbnailInputs{}, err
-	}
-	return inputs, nil
+	return inputs
 }
 
 // thumbnailPlanForInputs selects the preferred available input and maps the policy

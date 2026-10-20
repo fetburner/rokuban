@@ -30,6 +30,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -91,7 +92,9 @@ import (
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
-	Pool       *pgxpool.Pool
+	Pool *pgxpool.Pool
+	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
+	Media      store.MediaReconcile
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -347,7 +350,7 @@ func (w *EncodeWorker) observeEncodePlan(
 			return encodePlan{}, nil, nil, false, err
 		}
 	}
-	observed, err = planEncodePublish(ctx, sqlcgen.New(w.Pool), args.RecordingID, args.Profile, cut, nil)
+	observed, err = w.planEncodeAsset(ctx, args.RecordingID, args.Profile, cut, nil)
 	if err != nil {
 		return encodePlan{}, nil, nil, false, fmt.Errorf("checking existing encoded asset: %w", err)
 	}
@@ -356,6 +359,25 @@ func (w *EncodeWorker) observeEncodePlan(
 		return observed, cut, expectedKeep, true, nil
 	}
 	return observed, cut, expectedKeep, false, nil
+}
+
+func (w *EncodeWorker) planEncodeAsset(
+	ctx context.Context,
+	recordingID int64,
+	profile string,
+	cut *cutContext,
+	previous *encodePlan,
+) (encodePlan, error) {
+	asset, err := w.Media.GetEncodedAssetForPlan(ctx, recordingID, profile)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return encodePlan{}, err
+	}
+	var observed *store.EncodedAssetObservation
+	if err == nil {
+		observed = &asset
+	}
+
+	return planEncodePublishFromObservation(observed, profile, cut, previous), nil
 }
 
 // loadRequestedEncodeCut は rebuild 要求に束縛された keep 区間を検証する。
@@ -377,10 +399,8 @@ func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.Enc
 		return nil, nil, false, false, nil
 	}
 
-	q := sqlcgen.New(w.Pool)
-	// tx の外なので行ロックは文の終わりで外れ、読み取りとしてだけ働く。公開 tx が
-	// 同じクエリで改めてロックして照合する。
-	matches, err := rebuildRequestMatches(ctx, q, args.RecordingID, args.Profile, expectedKeep)
+	// 公開 tx は同じ状態を改めて照合し、押し直しと公開を直列化する。
+	matches, err := w.Media.EncodedAssetRebuildRequestMatches(ctx, args.RecordingID, args.Profile, expectedKeep)
 	if err != nil {
 		return nil, nil, false, false, err
 	}
@@ -1080,9 +1100,9 @@ type encodePlan struct {
 	stale bool
 }
 
-// planEncodePublish は公開の判定をまとめた唯一の関数で、runEncode の冒頭
-// （observed == nil）と publishEncoded の tx 内（q は tx、observed は冒頭の値）の
-// 両方から呼ぶ。行（cut なら凍結区間も）を 1 回だけ読んで導く。
+// planEncodePublish は公開 tx 内の encoded 行を読み、公開状態を判定する。
+// tx 外の初回観測は EncodeWorker.planEncodeAsset が store 契約から読み、両方とも
+// planEncodePublishFromObservation で同じ判定を行う。
 //
 // skip（成功扱いで飛ばす）になるのは次のどちらか（encode の doc コメント参照）。
 // (a) だけが立ち、行が active なら skip でなく stale（計画のやり直し）になる:
@@ -1094,36 +1114,51 @@ type encodePlan struct {
 // 量子化済み、凍結側は書き込み時に量子化して入れてある（media_asset_cuts の
 // コメント参照）。
 func planEncodePublish(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, cut *cutContext, observed *encodePlan) (encodePlan, error) {
-	var p encodePlan
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
 	})
 	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
-		return p, fmt.Errorf("loading existing encoded asset: %w", err)
+		return encodePlan{}, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
-	exists := err == nil
+	var asset *store.EncodedAssetObservation
+	if err == nil {
+		asset = &store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}
+		if cut != nil {
+			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
+			if err != nil {
+				return encodePlan{}, err
+			}
+		}
+	}
+	return planEncodePublishFromObservation(asset, profile, cut, observed), nil
+}
+
+func planEncodePublishFromObservation(
+	asset *store.EncodedAssetObservation,
+	profile string,
+	cut *cutContext,
+	previous *encodePlan,
+) encodePlan {
+	var p encodePlan
+	exists := asset != nil
 	if exists {
-		p.observedRelPath = row.RelPath
+		p.observedRelPath = asset.RelPath
 	}
 	if cut != nil {
 		p.generation = nextCutGeneration(p.observedRelPath, profile)
-		if exists && row.State == "active" {
-			p.replaced = row.RelPath
+		if exists && asset.State == "active" {
+			p.replaced = asset.RelPath
 		}
 	}
-	committed := exists && row.State == "active"
+	committed := exists && asset.State == "active"
 	if committed && cut != nil {
-		frozen, err := assetKeepRanges(ctx, q, row.ID)
-		if err != nil {
-			return p, err
-		}
-		committed = chapters.SameRanges(frozen, cut.keep)
+		committed = chapters.SameRanges(asset.KeepRanges, cut.keep)
 	}
-	moved := observed != nil && observed.observedRelPath != p.observedRelPath
-	p.stale = moved && !committed && exists && row.State == "active"
+	moved := previous != nil && previous.observedRelPath != p.observedRelPath
+	p.stale = moved && !committed && exists && asset.State == "active"
 	p.skip = committed || (moved && !p.stale)
-	return p, nil
+	return p
 }
 
 // nextCutGeneration は旧 rel_path の世代番号 +1 を返す（無ければ 1）。
@@ -1164,12 +1199,11 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 	}
 }
 
-func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (sqlcgen.GetActiveOriginalMediaAssetRow, error) {
-	q := sqlcgen.New(w.Pool)
-	row, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
+func (w *EncodeWorker) loadOriginal(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
+	row, err := w.Media.GetActiveOriginalMediaAsset(ctx, recordingID)
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return row, fmt.Errorf("no active original media_asset for recording %d", recordingID)
+		if errors.Is(err, store.ErrNotFound) {
+			return row, fmt.Errorf("no active original media_asset for recording %d: %w", recordingID, err)
 		}
 		return row, fmt.Errorf("loading original media_asset: %w", err)
 	}

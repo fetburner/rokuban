@@ -12,6 +12,7 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -158,10 +159,11 @@ func TestVerifySite(t *testing.T) {
 func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	srv := newEpgServer(t, &epgFixture{})
 	enqueuer := newRecordingEnqueuer()
+	pool := testutil.SetupDB(t)
 	w := &EpgSyncWorker{
 		Enqueuer:      enqueuer,
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          testutil.SetupDB(t),
+		Store:         pgstore.NewEPG(pool),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, EpgSyncArgs{Site: testSite}); err != nil {
 		t.Fatalf("EpgSyncWorker.Work: %v", err)
@@ -245,7 +247,7 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		t.Fatalf("inserting rule_text_matches fixture: %v", err)
 	}
 
-	if err := runWorkerViaJobQFake(ctx, &RulerPassWorker{Pool: pool}, RulerPassArgs{Site: site}); err != nil {
+	if err := runWorkerViaJobQFake(ctx, &RulerPassWorker{Pool: pool, ProgramSearch: pgstore.NewEPG(pool)}, RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("RulerPassWorker.Work: %v", err)
 	}
 
@@ -276,7 +278,7 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	w := &RulerPassWorker{Pool: pool}
+	w := &RulerPassWorker{Pool: pool, ProgramSearch: pgstore.NewEPG(pool)}
 	job := RulerPassArgs{Site: "default"}
 	if err := runWorkerViaJobQFake(ctx, w, job); err == nil {
 		t.Fatal("Work() error = nil, want canceled ruler pass to fail")

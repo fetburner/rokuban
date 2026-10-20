@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -137,7 +138,7 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()
-	w := &RulerPassWorker{Pool: pool, Enqueuer: enqueuer}
+	w := &RulerPassWorker{Pool: pool, Enqueuer: enqueuer, ProgramSearch: pgstore.NewEPG(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: testSite}); err != nil {
 		t.Fatalf("RulerPassWorker.Work: %v", err)
 	}

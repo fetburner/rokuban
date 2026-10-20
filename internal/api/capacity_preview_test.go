@@ -149,7 +149,7 @@ func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server
 	t.Helper()
 	tunerStore := pgstore.NewTuners(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool: pool, TunerReader: tunerStore, CapacityStore: tunerStore, Sites: []string{"default"},
+		Pool: pool, ProgramSearch: pgstore.NewEPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, Sites: []string{"default"},
 	}))
 	t.Cleanup(srv.Close)
 	return srv

@@ -1,0 +1,167 @@
+package pgstore
+
+import (
+	"context"
+	"fmt"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/contracttest"
+	"github.com/fetburner/rokuban/internal/testutil"
+)
+
+var mediaContractEventID atomic.Int32
+
+func TestMediaStoreContract(t *testing.T) {
+	contracttest.RunMedia(t, func(t *testing.T) contracttest.MediaFixture {
+		pool := testutil.SetupDB(t)
+		newRecording := func(t *testing.T) int64 {
+			t.Helper()
+			id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+				Source:            "manual",
+				Site:              db.DefaultSite,
+				NetworkID:         32678,
+				ServiceID:         5168,
+				EventID:           mediaContractEventID.Add(1),
+				ServiceName:       "store contract fixture",
+				ChannelType:       "GR",
+				Channel:           "27",
+				Title:             "store media contract fixture",
+				ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
+				ProgramDurationMs: 60_000,
+				Status:            "finished",
+			})
+			if err != nil {
+				t.Fatalf("seeding recording: %v", err)
+			}
+			return id
+		}
+		newAsset := func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
+			t.Helper()
+			id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+				RecordingID: recordingID,
+				Kind:        kind,
+				Profile:     profile,
+				RelPath:     relPath,
+				SizeBytes:   1,
+			})
+			if err != nil {
+				t.Fatalf("seeding %s media asset: %v", kind, err)
+			}
+			if state != "active" {
+				if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, id); err != nil {
+					t.Fatalf("setting media asset state to %s: %v", state, err)
+				}
+			}
+			return id
+		}
+		return contracttest.MediaFixture{
+			Serving:      NewMedia(pool),
+			Reconcile:    NewMedia(pool),
+			Storage:      NewMedia(pool),
+			Site:         db.DefaultSite,
+			NewRecording: newRecording,
+			NewAsset:     newAsset,
+			SetRecordingTrashed: func(t *testing.T, recordingID int64) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "UPDATE recordings SET deleted_at = now() WHERE id = $1", recordingID); err != nil {
+					t.Fatalf("trashing recording %d: %v", recordingID, err)
+				}
+			},
+			NewRecordSync: func(t *testing.T, recordingID int64, site, recordID, status string) {
+				t.Helper()
+				if err := sqlcgen.New(pool).UpsertRecordSync(context.Background(), sqlcgen.UpsertRecordSyncParams{
+					Site:        site,
+					RecordID:    recordID,
+					RecordingID: &recordingID,
+					ProgramID:   recordingID,
+					Status:      status,
+					Tags:        []string{},
+				}); err != nil {
+					t.Fatalf("seeding record_sync: %v", err)
+				}
+			},
+			SetCMRanges: func(t *testing.T, recordingID int64, ranges []chapters.Range) {
+				t.Helper()
+				lit := "{"
+				for i, r := range ranges {
+					if i > 0 {
+						lit += ","
+					}
+					lit += fmt.Sprintf("[%d,%d)", r.StartMs, r.EndMs)
+				}
+				lit += "}"
+				if _, err := pool.Exec(context.Background(),
+					"INSERT INTO recording_cm_detections (recording_id, cm_ranges) VALUES ($1, $2::text::int8multirange)", recordingID, lit); err != nil {
+					t.Fatalf("seeding CM ranges: %v", err)
+				}
+			},
+			SetChapterSpans: func(t *testing.T, recordingID int64, spans []chapters.Span) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)", recordingID); err != nil {
+					t.Fatalf("adopting chapters: %v", err)
+				}
+				for _, sp := range spans {
+					if _, err := pool.Exec(context.Background(),
+						"INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, $5)",
+						recordingID, sp.StartMs, sp.EndMs, sp.Label, sp.Cut); err != nil {
+						t.Fatalf("seeding chapter span: %v", err)
+					}
+				}
+			},
+			SetOrphanFirstSeenAgo: func(t *testing.T, relPath string, ago time.Duration) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(),
+					"UPDATE orphan_files SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE rel_path = $1",
+					relPath, ago.Microseconds()); err != nil {
+					t.Fatalf("aging orphan %q: %v", relPath, err)
+				}
+			},
+			SetMissingFirstSeenAgo: func(t *testing.T, assetID int64, ago time.Duration) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(),
+					"UPDATE missing_media_assets SET first_seen = now() - ($2::bigint * interval '1 microsecond') WHERE media_asset_id = $1",
+					assetID, ago.Microseconds()); err != nil {
+					t.Fatalf("aging missing asset %d: %v", assetID, err)
+				}
+			},
+			SetAssetState: func(t *testing.T, assetID int64, state string) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, assetID); err != nil {
+					t.Fatalf("setting media asset state to %s: %v", state, err)
+				}
+			},
+			SetMediaAssetKeepRanges: func(t *testing.T, assetID int64, keep []chapters.Range) {
+				t.Helper()
+				param, err := db.KeepRangesParam(keep)
+				if err != nil {
+					t.Fatalf("encoding frozen keep ranges: %v", err)
+				}
+				if err := sqlcgen.New(pool).InsertMediaAssetCuts(context.Background(), sqlcgen.InsertMediaAssetCutsParams{
+					MediaAssetID: assetID,
+					KeepRanges:   param,
+				}); err != nil {
+					t.Fatalf("seeding frozen keep ranges: %v", err)
+				}
+			},
+			SetEncodedAssetRebuildRequest: func(t *testing.T, recordingID int64, profile string, keep []chapters.Range) {
+				t.Helper()
+				param, err := db.KeepRangesParam(keep)
+				if err != nil {
+					t.Fatalf("encoding rebuild request keep ranges: %v", err)
+				}
+				if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+					RecordingID:   recordingID,
+					Profile:       profile,
+					RequestedKeep: param,
+				}); err != nil {
+					t.Fatalf("seeding encoded asset rebuild request: %v", err)
+				}
+			},
+		}
+	})
+}

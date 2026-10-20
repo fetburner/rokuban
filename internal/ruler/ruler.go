@@ -28,7 +28,6 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/rulequery"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -89,6 +88,7 @@ type Ruler struct {
 	pool           *pgxpool.Pool
 	breakers       store.Breakers
 	neverScheduled store.NeverScheduledEvents
+	programSearch  store.ProgramSearch
 	cfg            Config
 }
 
@@ -101,7 +101,7 @@ type Ruler struct {
 // 構成に備えて引数はスライスにしてある。呼び出し元の
 // internal/worker.RulerPassWorker はジョブ引数のサイト 1 つだけを渡す
 // （ジョブの排他がサイト単位のため）。
-func New(sites []string, pool *pgxpool.Pool, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config) *Ruler {
+func New(sites []string, pool *pgxpool.Pool, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config, programSearch store.ProgramSearch) *Ruler {
 	c := defaultConfig()
 	if cfg != nil {
 		if cfg.MaxDeletesPerPass > 0 {
@@ -114,7 +114,7 @@ func New(sites []string, pool *pgxpool.Pool, breakers store.Breakers, neverSched
 		// ">0 のときだけ上書き" にしない。cfg が渡された時点でその値をそのまま使う。
 		c.RetractGrace = cfg.RetractGrace
 	}
-	return &Ruler{sites: sites, pool: pool, breakers: breakers, neverScheduled: neverScheduled, cfg: c}
+	return &Ruler{sites: sites, pool: pool, breakers: breakers, neverScheduled: neverScheduled, programSearch: programSearch, cfg: c}
 }
 
 // RunPass は全サイトに対して全量評価パスを 1 回実行し、続けて番組終了後の GC
@@ -129,6 +129,9 @@ func New(sites []string, pool *pgxpool.Pool, breakers store.Breakers, neverSched
 // 最初のエラーだけを返す（呼び出し側でログ済みのエラーは握り潰さない）。
 // GC は site に従属しない全体操作なので、サイトのループの外で 1 回だけ行う。
 func (r *Ruler) RunPass(ctx context.Context) error {
+	if r.programSearch == nil {
+		return fmt.Errorf("program search store is required")
+	}
 	start := time.Now()
 
 	var firstErr error
@@ -361,13 +364,13 @@ func (r *Ruler) observeDeleteBreaker(ctx context.Context, site string) (bool, er
 // 来るので、最初に書き込んだルールが常に勝者になる
 // （docs/recording.md §3.1「複数ルール解決」）。負けたルールは reservations のどの列にも
 // 供給しないので保持しない --- 必要になれば enabled ルールを
-// rulequery.MatchProgramIDsForRule で回せば同じ集合が作り直せる。
+// ProgramSearch.MatchProgramIDsForRule で回せば同じ集合が作り直せる。
 func (r *Ruler) resolveWinners(ctx context.Context, site string, rules []sqlcgen.Rule) (map[int64]sqlcgen.Rule, map[int64]int64, error) {
 	ruleByID := make(map[int64]sqlcgen.Rule, len(rules))
 	winner := make(map[int64]int64)
 	for _, rule := range rules {
 		ruleByID[rule.ID] = rule
-		matched, err := rulequery.MatchProgramIDsForRule(ctx, r.pool, site, rule.ID)
+		matched, err := r.programSearch.MatchProgramIDsForRule(ctx, site, rule.ID)
 		if err != nil {
 			return nil, nil, fmt.Errorf("matching rule %d: %w", rule.ID, err)
 		}

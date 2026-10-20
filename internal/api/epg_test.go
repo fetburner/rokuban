@@ -23,8 +23,13 @@ const rfc3339 = time.RFC3339
 func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	tunerStore := pgstore.NewTuners(pool)
+	media := pgstore.NewMedia(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:                pool,
+		EPGReader:           pgstore.NewEPG(pool),
+		ProgramSearch:       pgstore.NewEPG(pool),
+		MediaReader:         media,
+		StorageObservation:  media,
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
 		PlaybackStateStore:  pgstore.NewPlayback(pool),

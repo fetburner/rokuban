@@ -8,17 +8,18 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// 受け入れ: 同一条件で検索 API と rulequery.MatchPrograms（ruler 経路が呼ぶのと同じ
-// クエリ関数）の集合が一致する。site はレジストリを明示した RouterConfig から取り、
+// 受け入れ: 同一条件で検索 API と ProgramSearch の集合が一致する。site はレジストリを明示した RouterConfig から取り、
 // レジストリ既定値の "default" に頼らない（含むもの 6）。
 func TestSearchPrograms_MatchesRulerPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
@@ -55,7 +56,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 	}
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -72,7 +73,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		apiIDs[i] = m.ProgramId
 	}
 
-	rulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+	rulerMatches, err := pgstore.NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
 	})
@@ -109,7 +110,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 		}
 		fwAPI[i] = m.ProgramId
 	}
-	fwRulerMatches, err := rulequery.MatchPrograms(ctx, pool, rulequery.Conditions{
+	fwRulerMatches, err := pgstore.NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{site},
 		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
 	})
@@ -199,7 +200,7 @@ func TestSearchPrograms_IncludesDisplayFields(t *testing.T) {
 	)
 	insertSearchProgramFixture(t, pool, ctx, site, programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{site}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{site}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -237,7 +238,7 @@ func TestSearchPrograms_SitesOmittedDefaultsToAllRegisteredSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA", "siteB"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -266,7 +267,7 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 	insertSearchProgramFixture(t, pool, ctx, "siteA", programID)
 	insertSearchProgramFixture(t, pool, ctx, "siteB", programID)
 
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA", "siteB"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA", "siteB"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -284,7 +285,7 @@ func TestSearchPrograms_SitesFilterExcludesOtherSites(t *testing.T) {
 // なることを確認する（validateRuleSites と同じ規律。#530 含むもの 2）。
 func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -302,6 +303,37 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 	}
 }
 
+// TestSearchPrograms_InvalidRegexKeepsPostgresDetail は不正な正規表現の 400 本文に
+// Postgres のエラー詳細が付くことを確認する（store 契約の移設前と同じ本文）。
+func TestSearchPrograms_InvalidRegexKeepsPostgresDetail(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"default"}}))
+	defer srv.Close()
+
+	raw, err := json.Marshal(map[string]any{"textMatches": []map[string]any{{"target": "name", "mode": "regex", "value": "(unclosed"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(srv.URL+"/api/programs/search", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body struct {
+		Error string `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	const prefix = `invalid regex "(unclosed" (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): ERROR: invalid regular expression`
+	if !strings.HasPrefix(body.Error, prefix) || !strings.HasSuffix(body.Error, "(SQLSTATE 2201B)") || strings.Contains(body.Error, "\n") {
+		t.Errorf("error body = %q, want prefix %q ending with (SQLSTATE 2201B) on one line", body.Error, prefix)
+	}
+}
+
 // TestSearchPrograms_LegacySitePathIsGone は、site をパスに残す旧ルートを
 // 互換目的で生やさないことを確認する（破壊的変更。issue #558）。
 //
@@ -312,7 +344,7 @@ func TestSearchPrograms_UnknownSiteReturns400(t *testing.T) {
 // SearchMatchRow の一覧が返ってこない）。
 func TestSearchPrograms_LegacySitePathIsGone(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool, Sites: []string{"siteA"}})
+	router := NewRouter(RouterConfig{Pool: pool, ProgramSearch: pgstore.NewEPG(pool), Sites: []string{"siteA"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

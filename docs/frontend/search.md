@@ -18,7 +18,7 @@
 
 <details><summary>根拠</summary>
 
-- ruler と同じ条件コンパイラ: `internal/rulequery`
+- ruler と同じ条件コンパイラ: `internal/store/pgstore/rulesql.go`
 - 検索結果から番組表のグリッドへ移る URL と往復: `cond`
 
 </details>
@@ -272,7 +272,7 @@ mirakc-arib のサービス scanner は、音声映像サービスでない種�
 <details><summary>根拠</summary>
 
 - 同形の型: `ProgramSearchRequest`、`RuleInput`
-- 同じ条件コンパイラ: `internal/rulequery`
+- 同じ条件コンパイラ: `internal/store/pgstore/rulesql.go`
 - 条件入力の部品: `components/condition-fields.tsx`、`<ConditionFields>`
 - 下書き: `SearchDraft`
 - 相互変換: `lib/program-search.ts`、`buildRuleInput`、`conditionsToDraft`
@@ -384,8 +384,8 @@ GB 換算はやらない。ビットレートの実測の出所が未決で、�
 <details><summary>根拠</summary>
 
 - 検索 API: `POST /api/programs/search`
-- 結果をそのまま返す関数: `rulequery.MatchPrograms`
-- 件数の上限が無いことの確認: `LIMIT`、`internal/rulequery/query.go`
+- 結果をそのまま返す関数: `store.ProgramSearch.SearchPrograms`
+- 件数の上限が無いことの確認: `LIMIT`、`internal/store/pgstore/rulesql.go`
 - 件数: `totalCount`
 - 畳まない: `programId`
 

@@ -26,7 +26,7 @@
  * （`internal/worker/epg.go` の `defaultEpgRetentionGrace`。設定キー
  * `epg.retention_grace`（`config.example.yml`）で変更可能、フロントからは見えない）。
  * つまり**放送済みの番組が最大で `retention_grace` ぶん残る**。加えて
- * `internal/rulequery/compile.go` には `now()` を基準に未来だけへ絞る述語は無く
+ * `internal/store/pgstore/rulesql.go` には `now()` を基準に未来だけへ絞る述語は無く
  * （`start_at` を暦上の範囲で絞るのは `PeriodStartAt` / `PeriodEndAt` の 2 箇所だけ
  * --- 時間帯条件が使う `startAtJST` も `start_at` を読むが、曜日と JST の壁時計の
  * 時刻に落とす式で暦上の範囲は絞らない。どちらも検索条件で明示しない限り効かない）、

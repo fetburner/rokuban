@@ -1,4 +1,4 @@
-package rulequery
+package pgstore
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -36,7 +38,7 @@ ON CONFLICT (site, program_id) DO NOTHING`, site, programID, start, start.Add(30
 
 // idsOf は ProgramMatch のスライスから programId だけを取り出す
 // （site を無視して集合比較したいテスト向けの小さなヘルパー）。
-func idsOf(matches []ProgramMatch) []int64 {
+func idsOf(matches []store.ProgramMatch) []int64 {
 	ids := make([]int64, len(matches))
 	for i, m := range matches {
 		ids[i] = m.ProgramID
@@ -85,9 +87,9 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// keyword ニュース
-	matches, err := MatchPrograms(ctx, pool, Conditions{
+	matches, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{"default"},
-		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
+		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ニュース"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +104,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// genre 7
-	matches, err = MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}, Genres: []int16{7}})
+	matches, err = NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default"}, Genres: []int16{7}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +115,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 
 	// is_free false
 	f := false
-	matches, err = MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}, IsFree: &f})
+	matches, err = NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default"}, IsFree: &f})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +125,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// channel type GR via join
-	matches, err = MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}, ChannelTypes: []string{"GR"}})
+	matches, err = NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default"}, ChannelTypes: []string{"GR"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +135,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// BS → none
-	matches, err = MatchPrograms(ctx, pool, Conditions{Sites: []string{"default"}, ChannelTypes: []string{"BS"}})
+	matches, err = NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{Sites: []string{"default"}, ChannelTypes: []string{"BS"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,16 +145,16 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 	}
 
 	// same conditions twice → identical sets (検索と ruler の一致の核)
-	c := Conditions{
+	c := rulequery.Conditions{
 		Sites:       []string{"default"},
-		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "アニメ"}},
+		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "アニメ"}},
 		Genres:      []int16{7},
 	}
-	a, err := MatchPrograms(ctx, pool, c)
+	a, err := NewEPG(pool).SearchPrograms(ctx, c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := MatchPrograms(ctx, pool, c)
+	b, err := NewEPG(pool).SearchPrograms(ctx, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,9 +172,9 @@ ON CONFLICT (site, program_id) DO NOTHING`, start.Add(3*time.Hour), start.Add(3*
 	if err != nil {
 		t.Fatal(err)
 	}
-	matches, err = MatchPrograms(ctx, pool, Conditions{
+	matches, err = NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{"default"},
-		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
+		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -222,9 +224,9 @@ func TestMatchPrograms_KeywordLikeSpecialCharactersAreLiteral(t *testing.T) {
 
 	for _, tc := range cases {
 		for _, caseSensitive := range []bool{false, true} {
-			matches, err := MatchPrograms(ctx, pool, Conditions{
+			matches, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 				Sites: []string{"default"},
-				TextMatches: []TextMatch{{
+				TextMatches: []rulequery.TextMatch{{
 					Target: "name", Mode: "keyword", Value: tc.value, CaseSensitive: caseSensitive,
 				}},
 			})
@@ -240,9 +242,9 @@ func TestMatchPrograms_KeywordLikeSpecialCharactersAreLiteral(t *testing.T) {
 	}
 
 	// 正規化と LIKE エスケープを組み合わせても、全角英字と記号は意図した文字列に一致する。
-	normalized, err := MatchPrograms(ctx, pool, Conditions{
+	normalized, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{"default"},
-		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ_200%"}},
+		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: "ＮＨＫ_200%"}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -252,9 +254,9 @@ func TestMatchPrograms_KeywordLikeSpecialCharactersAreLiteral(t *testing.T) {
 	}
 
 	// Negate はエスケープ後の述語を反転し、対象だけを除外する。
-	negated, err := MatchPrograms(ctx, pool, Conditions{
+	negated, err := NewEPG(pool).SearchPrograms(ctx, rulequery.Conditions{
 		Sites:       []string{"default"},
-		TextMatches: []TextMatch{{Target: "name", Mode: "keyword", Value: `A\B`, Negate: true}},
+		TextMatches: []rulequery.TextMatch{{Target: "name", Mode: "keyword", Value: `A\B`, Negate: true}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -303,7 +305,7 @@ func TestMatchProgramIDsForRule_RuleSitesGatesEvaluationSite(t *testing.T) {
 	}
 
 	// rule_sites = {tokyo} なので osaka は対象外 --- 空を返す。
-	ids, err := MatchProgramIDsForRule(ctx, pool, "osaka", ruleID)
+	ids, err := NewEPG(pool).MatchProgramIDsForRule(ctx, "osaka", ruleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +314,7 @@ func TestMatchProgramIDsForRule_RuleSitesGatesEvaluationSite(t *testing.T) {
 	}
 
 	// tokyo は対象内 --- 通常どおりマッチする。
-	ids, err = MatchProgramIDsForRule(ctx, pool, "tokyo", ruleID)
+	ids, err = NewEPG(pool).MatchProgramIDsForRule(ctx, "tokyo", ruleID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +388,7 @@ func TestMatchProgramIDsForRule_NarrowProjection(t *testing.T) {
 			}
 
 			tracer.sqls = nil
-			ids, err := MatchProgramIDsForRule(ctx, traced, "default", ruleID)
+			ids, err := NewEPG(traced).MatchProgramIDsForRule(ctx, "default", ruleID)
 			if err != nil {
 				t.Fatal(err)
 			}

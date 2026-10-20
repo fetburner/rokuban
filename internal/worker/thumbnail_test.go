@@ -217,7 +217,9 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     "ffmpeg",
@@ -296,7 +298,9 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -384,7 +388,9 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -447,7 +453,9 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 
 	var gotInputSeek, gotInputPath string
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		runCmd: func(_ context.Context, _ string, args ...string) ([]byte, error) {
@@ -512,7 +520,9 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 
 	var ffmpegCalls int
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -563,7 +573,9 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 
 	recordingID := insertTestRecording(t, pool)
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   t.TempDir(),
 		ScratchDir: t.TempDir(),
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
@@ -692,7 +704,9 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Pool:       pool,
+		Pool: pool,
+
+		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		runCmd:     fakeThumbnailTools(t, 100.0),
@@ -958,7 +972,7 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	seed("candidate", "{[0,60000)}")
 
 	w := &ThumbnailWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("non-candidate recording must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")

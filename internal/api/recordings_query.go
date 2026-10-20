@@ -435,7 +435,7 @@ LEFT JOIN LATERAL (
 )
 
 // buildRecordingsQuery は GET /api/recordings の絞り込み + キーセットページングを
-// 動的 WHERE として組む（internal/rulequery.Compile の arg クロージャ方式に倣う。
+// 動的 WHERE として組む（pgstore の compileRuleQuery と同じ arg クロージャ方式に倣う。
 // sqlc の静的クエリにしない理由は queryRecordings のコメント参照）。
 //
 // 列名を明示する（r.* ではなく列名を書くのは、この SELECT リストが

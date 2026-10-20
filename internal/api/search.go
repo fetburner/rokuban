@@ -2,17 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ptr"
 	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
-// SearchPrograms はルール条件と同じコンパイラで EPG を検索する（M2-2）。
-// ruler 評価（rulequery.Compile/MatchProgramIDsForRule）と WHERE 句のコンパイラを
-// 共有するが、1 クエリで複数 site を横断できる rulequery.MatchPrograms を使う点が
-// ruler（1 site ずつ評価する）と異なる（#530）。
+// SearchPrograms は ProgramSearch store を使ってルール条件と同じ条件で EPG を検索する。
+// 複数 site を 1 回の検索で横断し、マッチした site ごとに結果を返す。
 func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestObject) (SearchProgramsResponseObject, error) {
 	if req.Body == nil {
 		return SearchPrograms400JSONResponse{Error: "request body is required"}, nil
@@ -31,15 +30,22 @@ func (h *Server) SearchPrograms(ctx context.Context, req SearchProgramsRequestOb
 		return SearchPrograms400JSONResponse{Error: siteErr.Error()}, nil
 	}
 	if len(c.Sites) == 0 {
-		c.Sites = h.siteNames // Compile は空の Sites を許さないので埋めてから渡す
+		c.Sites = h.siteNames // 条件検証で Sites が必須なので、登録済みの site を入れる
 	}
 
 	// 検索 API でも ARE の不正パターンを 400 にする（ルール作成時と同規約）
-	if msg := searchRegexError(ctx, h, c); msg != "" {
+	msg, err := searchRegexError(ctx, h, c)
+	if err != nil {
+		return nil, err
+	}
+	if msg != "" {
 		return SearchPrograms400JSONResponse{Error: msg}, nil
 	}
 
-	rows, err := rulequery.MatchPrograms(ctx, h.pool, c)
+	if h.programSearch == nil {
+		return nil, fmt.Errorf("program search store is required")
+	}
+	rows, err := h.programSearch.SearchPrograms(ctx, c)
 	if err != nil {
 		return nil, err
 	}
@@ -112,18 +118,21 @@ func conditionsFromSearch(in ProgramSearchRequest) rulequery.Conditions {
 	return c
 }
 
-// searchRegexError は不正な正規表現があればユーザー向けメッセージを返す（なければ空文字）。
-// error ではなくメッセージを返すのは、これが 400 のレスポンス本文になるだけで
-// 呼び出し側に伝播する失敗ではないため（epg.go の windowError と同じ規約）。
-func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) string {
-	q := sqlcgen.New(h.pool)
+// searchRegexError は不正な正規表現のメッセージまたは検証処理の失敗を返す。
+func searchRegexError(ctx context.Context, h *Server, c rulequery.Conditions) (string, error) {
+	if h.programSearch == nil {
+		return "", fmt.Errorf("program search store is required")
+	}
 	for _, m := range c.TextMatches {
 		if m.Mode != "regex" || m.Value == "" {
 			continue
 		}
-		if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
-			return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", m.Value, err)
+		if err := h.programSearch.ValidateRegex(ctx, m.Value); err != nil {
+			if errors.Is(err, store.ErrInvalidPattern) {
+				return fmt.Sprintf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %v", m.Value, err), nil
+			}
+			return "", fmt.Errorf("validating search regex %q: %w", m.Value, err)
 		}
 	}
-	return ""
+	return "", nil
 }

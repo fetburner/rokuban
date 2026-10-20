@@ -18,6 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -117,6 +118,7 @@ func newEncodeQueueServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "h265", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -167,7 +169,7 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	id := seedRecording(t, pool, "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951)
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264"})
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, MediaReader: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 
 	var got struct {
@@ -299,7 +301,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}}
 
 	enqueuer := newRecordingEnqueuer()
-	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: pgstore.NewMedia(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	reconciled := map[string]bool{}
@@ -317,6 +319,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:               pool,
+		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: profiles.ProfileNames(),
 		CutProfileNames:    profiles.CutProfileNames(),
 	}))

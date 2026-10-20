@@ -44,7 +44,7 @@ func getJSONForTest(t *testing.T, url string, out any) *http.Response {
 // GET /api/sites はレジストリを定義順のまま返す。
 func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -71,7 +71,7 @@ func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 // （既存の「site が空なら db.DefaultSite」規約を集合に持ち上げただけ）。
 func TestListSites_DefaultsToDefaultSiteWhenUnconfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -141,7 +141,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, BreakerAdmin: pgstore.NewBreakers(pool),
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), BreakerAdmin: pgstore.NewBreakers(pool),
 		ReservationStore: pgstore.NewReservations(pool), Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -383,7 +383,7 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -428,7 +428,7 @@ INSERT INTO recordings (
 func TestListReservations_ReturnsRowsFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -482,7 +482,7 @@ func TestListCapacityOverages_ReturnsOveragesFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	tunerStore := pgstore.NewTuners(pool)
-	router := api.NewRouter(api.RouterConfig{Pool: pool, TunerReader: tunerStore, CapacityStore: tunerStore, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -551,7 +551,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -576,7 +576,7 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -603,7 +603,7 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Pool: pool, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

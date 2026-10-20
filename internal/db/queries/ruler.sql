@@ -59,7 +59,7 @@ WHERE site = $1 AND program_id = ANY(sqlc.arg(program_ids)::bigint[]);
 -- UpsertReservationsFromRulerPass は jsonb_to_recordset を使う集合演算 1 文で、
 -- sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）がこの動的レコード型を
 -- 解決できないため（`column "program_id" does not exist` で generate が失敗する）、
--- rulequery パッケージの流儀に倣って internal/ruler/sql.go に生 SQL として置き、
+-- 番組検索の WHERE コンパイラと同じく internal/ruler/sql.go に生 SQL として置き、
 -- pgxpool 経由で直接実行する。
 
 -- name: DeleteReservationsBySiteAndProgramIDs :execrows

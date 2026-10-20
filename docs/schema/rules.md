@@ -266,7 +266,7 @@ CREATE TABLE rule_sites (
 
 - 勝者ルールを持つ列: `reservations.rule_id`
 - 2 つのクエリ（`internal/db/queries/rules.sql`）: `DeleteReservationsByRuleWithoutIntent` / `CountReservationsByRuleWithIntent`
-- 逆引き: enabled ルールを `rulequery.MatchProgramIDsForRule` で回す
+- 逆引き: enabled ルールを `store.ProgramSearch.MatchProgramIDsForRule` で回す
 
 </details>
 

@@ -8,17 +8,12 @@ import (
 )
 
 var (
-	// ErrNotFound は対象が存在しない、または消去済みであることを表す。
-	// 対象の文脈は返す側が wrap で足す。
-	ErrNotFound = errors.New("not found")
 	// ErrTrashed は対象がごみ箱にあり、編集できないことを表す。
 	ErrTrashed = errors.New("in the trash")
 	// ErrStaleVersion は渡された版が現在の状態を指していないことを表す。
 	ErrStaleVersion = errors.New("stale version")
 	// ErrDetectionPending は必要な検出が終端に達していないことを表す。
 	ErrDetectionPending = errors.New("detection is pending")
-	// ErrConflict は永続化済みのデータが DB の制約と衝突することを表す。
-	ErrConflict = errors.New("conflict")
 )
 
 // ChapterSnapshot は録画で選ばれているチャプター層と、CM 検出が未完かを

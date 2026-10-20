@@ -79,7 +79,7 @@ const listAgedMissingMediaAssets = `-- name: ListAgedMissingMediaAssets :many
 SELECT m.media_asset_id AS id, a.recording_id, a.rel_path, a.kind, m.first_seen
 FROM missing_media_assets m
 JOIN media_assets a ON a.id = m.media_asset_id
-WHERE m.first_seen <= $1::timestamptz
+WHERE m.first_seen <= now() - ($1::bigint * interval '1 microsecond')
   AND a.state = 'active'
 ORDER BY m.media_asset_id
 `
@@ -92,14 +92,15 @@ type ListAgedMissingMediaAssetsRow struct {
 	FirstSeen   time.Time
 }
 
-// エイジング済み（first_seen が age_cutoff 以前）で、なお active な行。
+// エイジング済み（first_seen が指定期間以上前）で、なお active な行。経過時間は
+// 候補を記録した DB の時計で比べる。
 // rel_path / recording_id / kind は missing_media_assets に複製せず
 // media_assets との JOIN で引く（不変条件 9）。JOIN で state = 'active' を
 // 再確認するのは、対象行がその後 deleting/deleted に遷移した、または
 // resolveUnqualifiedDeletingAsset 等で active に戻った場合に、報告の瞬間の
 // 状態を見るため（適用の瞬間の再評価。不変条件 9）。
-func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, ageCutoff time.Time) ([]ListAgedMissingMediaAssetsRow, error) {
-	rows, err := q.db.Query(ctx, listAgedMissingMediaAssets, ageCutoff)
+func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, age int64) ([]ListAgedMissingMediaAssetsRow, error) {
+	rows, err := q.db.Query(ctx, listAgedMissingMediaAssets, age)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +126,14 @@ func (q *Queries) ListAgedMissingMediaAssets(ctx context.Context, ageCutoff time
 }
 
 const listAgedOrphanFiles = `-- name: ListAgedOrphanFiles :many
-SELECT rel_path FROM orphan_files WHERE first_seen <= $1::timestamptz
+SELECT rel_path FROM orphan_files
+WHERE first_seen <= now() - ($1::bigint * interval '1 microsecond')
 `
 
-// エイジング済みの孤児（first_seen が age_cutoff 以前）。
-func (q *Queries) ListAgedOrphanFiles(ctx context.Context, ageCutoff time.Time) ([]string, error) {
-	rows, err := q.db.Query(ctx, listAgedOrphanFiles, ageCutoff)
+// エイジング済みの孤児（first_seen が指定期間以上前）。DB が記録した first_seen と
+// 同じ DB の時計で比較し、呼び出し側ホストの時計差を持ち込まない。
+func (q *Queries) ListAgedOrphanFiles(ctx context.Context, age int64) ([]string, error) {
+	rows, err := q.db.Query(ctx, listAgedOrphanFiles, age)
 	if err != nil {
 		return nil, err
 	}

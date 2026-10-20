@@ -126,7 +126,7 @@ EPG 更新完了で全手動予約と全ルールを評価する。ルール編�
 <details><summary>根拠</summary>
 
 - 勝者だけを記録する列: `reservations.rule_id`
-- 負けたルールの集合を再現する関数: `rulequery.MatchProgramIDsForRule`
+- 負けたルールの集合を再現する関数: `store.ProgramSearch.MatchProgramIDsForRule`
 - 負けたルールが何も供給しない対象: `base`
 - 勝者の順序: `ORDER BY priority DESC, id ASC`（同率なら先に作られたルールが勝つ）
 

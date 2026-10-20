@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
 
@@ -28,6 +29,7 @@ const (
 // ScanWorker reads an active original and replaces its TS statistics atomically.
 type ScanWorker struct {
 	Pool     *pgxpool.Pool
+	Media    store.MediaReconcile
 	MediaDir string
 }
 
@@ -43,9 +45,8 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 		metrics.TSScanJobs.WithLabelValues(result).Inc()
 	}()
 
-	q := sqlcgen.New(w.Pool)
-	asset, err := q.GetActiveOriginalForTSScan(ctx, args.RecordingID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	asset, err := w.Media.GetActiveOriginalForTSScan(ctx, args.RecordingID)
+	if errors.Is(err, store.ErrNotFound) {
 		result = "success"
 		return nil
 	}
@@ -108,7 +109,7 @@ func (w *ScanWorker) Work(ctx context.Context, args ScanArgs) error {
 // ReconcileWorker enqueues missing or stale scans from the current database state.
 type ReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
-	Pool     *pgxpool.Pool
+	Media    store.MediaReconcile
 	RowLimit int32
 }
 
@@ -121,10 +122,7 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	if rowLimit <= 0 {
 		rowLimit = reconcileRowLimit
 	}
-	rows, err := sqlcgen.New(w.Pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
-		AfterRecordingID: args.AfterRecordingID,
-		RowLimit:         rowLimit,
-	})
+	rows, err := w.Media.ListMissingTSScanRecordings(ctx, args.AfterRecordingID, rowLimit)
 	if err != nil {
 		return fmt.Errorf("listing originals that need TS scans: %w", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // CheckEncodeProfileMeaning は、過去の成果物の証拠（active な encoded と作り直し
@@ -47,8 +47,8 @@ import (
 // 索引ではなく seq scan になり、件数に比例する。実測は 1 回だけで、active な encoded
 // 10 万件・同じ機械の Postgres で、クエリが 26 ms（EXPLAIN ANALYZE）、api の起動の
 // 待ちが DB 接続を含めて 87 ms だった。
-func CheckEncodeProfileMeaning(ctx context.Context, db sqlcgen.DBTX, enc config.EncodeConfig) error {
-	rows, err := sqlcgen.New(db).ListEncodedMeaningEvidence(ctx)
+func CheckEncodeProfileMeaning(ctx context.Context, media store.MediaReconcile, enc config.EncodeConfig) error {
+	rows, err := media.ListEncodedMeaningEvidence(ctx)
 	if err != nil {
 		return fmt.Errorf("listing encoded meaning evidence: %w", err)
 	}

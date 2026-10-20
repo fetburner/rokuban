@@ -72,7 +72,7 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 // ARE-incompatible regex surfaces as a warning, and the offending text match
 // is not inserted (so the rule stays evaluable). It also covers blocking
 // finding 1 from review: dropping the rule's only condition must not leave
-// it enabled (rulequery.Compile degenerates to a bare site filter, which
+// it enabled (the store query then degenerates to a bare site filter, which
 // would record the entire EPG).
 //
 // Pattern choice note: this uses JS-style named capture groups,

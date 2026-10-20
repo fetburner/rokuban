@@ -19,6 +19,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -98,7 +99,7 @@ func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 		t.Fatalf("changing DB size: %v", err)
 	}
 	args := ScanArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), (&ScanWorker{Pool: pool, MediaDir: mediaDir}), args); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), (&ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}), args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with DB size != file size, want error")
 	}
 	stats, positions := readTSScanRows(t, pool, assetID)
@@ -119,7 +120,7 @@ func TestReconcileWorker_RecordsLastPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	metrics.TSScanReconcileLastPass.Set(0)
 	args := ReconcileArgs{}
-	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Pool: pool, Enqueuer: &recordingEnqueuer{}}), args); err != nil {
+	if err := runWorkerViaJobQFake(context.Background(), (&ReconcileWorker{Enqueuer: &recordingEnqueuer{}, Media: pgstore.NewMedia(pool)}), args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
 	}
 	if got := promtestutil.ToFloat64(metrics.TSScanReconcileLastPass); got < float64(time.Now().Add(-time.Minute).Unix()) {
@@ -144,7 +145,7 @@ type tsScanPositionRow struct {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &ScanWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	args := ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(context.Background(), worker, args); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
@@ -287,7 +288,7 @@ func TestTSScan_ReplacementRollsBackStatisticsAndMarkerTogether(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS fail_ts_scan_position_insert()`)
 	})
 
-	worker := &ScanWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	args := ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(ctx, worker, args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with failing drop_positions trigger, want error")
@@ -350,7 +351,7 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	}
 
 	enqueuer := &recordingEnqueuer{}
-	w := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer}
+	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool)}
 	args := ReconcileArgs{}
 	if err := runWorkerViaJobQFake(context.Background(), w, args); err != nil {
 		t.Fatalf("ReconcileWorker.Work: %v", err)
@@ -381,7 +382,7 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	seedOriginalAsset(t, pool, mediaDir, firstID, "ts-scan/window-first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "ts-scan/window-second.m2ts", []byte("second"))
 	enqueuer := &recordingEnqueuer{}
-	firstWorker := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer, RowLimit: 1}
+	firstWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), RowLimit: 1}
 	ctx := context.Background()
 	if err := runWorkerViaJobQFake(ctx, firstWorker, ReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile pass: %v", err)
@@ -404,7 +405,7 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 
 	// KEDA starts a fresh --once process for each queue item. The next page must
 	// come from the continuation args, not state held by the previous worker.
-	secondWorker := &ReconcileWorker{Pool: pool, Enqueuer: enqueuer, RowLimit: 1}
+	secondWorker := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), RowLimit: 1}
 	if err := runWorkerViaJobQFake(ctx, secondWorker, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
 		t.Fatalf("second reconcile page: %v", err)
 	}

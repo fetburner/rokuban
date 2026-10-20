@@ -10,6 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ruler"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -27,8 +28,9 @@ import (
 // 起きないので、verifySite は導入していない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
 type RulerPassWorker struct {
-	Enqueuer jobq.Enqueuer
-	Pool     *pgxpool.Pool
+	Enqueuer      jobq.Enqueuer
+	Pool          *pgxpool.Pool
+	ProgramSearch store.ProgramSearch
 
 	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
 	// 猶予。0 なら ruler 側の既定値を使う（epg.retention_grace をそのまま流用する
@@ -55,7 +57,7 @@ func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) err
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
 		RetractGrace:      w.RetractGrace,
-	})
+	}, w.ProgramSearch)
 	if err := r.RunPass(ctx); err != nil {
 		return err
 	}
