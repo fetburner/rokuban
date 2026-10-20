@@ -239,6 +239,24 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 </details>
 
+### CM 検出（試行と結果）
+
+CM 検出 worker・reconcile・再試行 API の永続化は store 契約に置き、結果保存時に現在の試行・desired・局ロゴの版を再確認する。ロゴが無い状態で始めた処理も、保存前にロゴ不在を照合する。
+
+結果の保存は局、録画、試行の順で直列化する。局ロゴの更新と同じ局ロックに参加し、録画行ロックでチャプター編集とも直列化する。これにより、検出結果の書き込みと編集側の自動チャプター引き取りが互いの commit を見落とさない。
+
+再試行 API は結果と試行を消して commit した後にジョブを投入する。ingest と reconcile の投入も状態変更の後のヒントであり、投入に失敗しても定期 reconcile が desired な集合を再取得する。
+
+<details><summary>根拠</summary>
+
+- ドメイン契約: `internal/store.CMDetection`
+- PostgreSQL 実装: `internal/store/pgstore.Analysis`
+- 契約テスト: `internal/store/contracttest.RunCMDetection`
+- チャプター編集との録画単位の直列化: `lockRecording`
+- レベル駆動の回復: 不変条件 5
+
+</details>
+
 ### 分類ルール
 
 分類ルールの API と全件の再評価は、別々の契約に分けて使う。

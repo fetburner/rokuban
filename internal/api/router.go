@@ -47,6 +47,8 @@ type RouterConfig struct {
 
 	// CMStationStore は局単位の CM ロゴ状態と候補解析の永続化契約。
 	CMStationStore store.CMStation
+	// CMDetectionStore は CM 検出の再試行永続化契約。
+	CMDetectionStore store.CMDetection
 
 	// LabelRules は分類ルール管理の永続化契約。
 	LabelRules store.LabelRules
@@ -170,7 +172,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules, cfg.BreakerAdmin,
 		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,

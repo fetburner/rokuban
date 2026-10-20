@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -202,9 +203,11 @@ func ffprobeSizeJSON(size string) string {
 
 func newCMDetectTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMDetectWorker {
 	return &CMDetectWorker{
-		Pool: pool, MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
-		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir},
-		FFprobe:  tools.ffprobe,
+		DetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:       mediaDir,
+		ScratchDir:     filepath.Join(mediaDir, "scratch"),
+		CMDetect:       config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir},
+		FFprobe:        tools.ffprobe,
 	}
 }
 
@@ -820,7 +823,11 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", first.AttemptCount, first.PolicyGeneration); err != nil {
+	lateAttempt := store.CMDetectionAttempt{
+		RecordingID: late, Station: store.CMStationRef{NetworkID: item.NetworkID, ServiceID: item.ServiceID},
+		AttemptCount: first.AttemptCount, PolicyGeneration: first.PolicyGeneration,
+	}
+	if _, err := w.DetectionStore.SaveDetection(ctx, lateAttempt, nil); err != nil {
 		t.Fatalf("persisting late first-attempt result: %v", err)
 	}
 	var detections int
@@ -929,7 +936,11 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := newCMDetectTestWorker(pool, mediaDir, cmToolset{})
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", oldAttempt.AttemptCount, oldAttempt.PolicyGeneration); err != nil {
+	oldDetectionAttempt := store.CMDetectionAttempt{
+		RecordingID: id, Station: store.CMStationRef{NetworkID: item.NetworkID, ServiceID: item.ServiceID},
+		AttemptCount: oldAttempt.AttemptCount, PolicyGeneration: oldAttempt.PolicyGeneration,
+	}
+	if _, err := w.DetectionStore.SaveDetection(ctx, oldDetectionAttempt, nil); err != nil {
 		t.Fatalf("saving result from pre-toggle worker: %v", err)
 	}
 	var detections int
@@ -947,7 +958,10 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	if state != "running" || attemptCount != 1 {
 		t.Fatalf("current attempt after stale worker result = %q/%d, want running/1", state, attemptCount)
 	}
-	if err := w.saveCMDetectionResult(ctx, item, false, nil, "{}", newAttempt.AttemptCount, newAttempt.PolicyGeneration); err != nil {
+	newDetectionAttempt := oldDetectionAttempt
+	newDetectionAttempt.AttemptCount = newAttempt.AttemptCount
+	newDetectionAttempt.PolicyGeneration = newAttempt.PolicyGeneration
+	if _, err := w.DetectionStore.SaveDetection(ctx, newDetectionAttempt, nil); err != nil {
 		t.Fatalf("saving result from current worker: %v", err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM recording_cm_detections WHERE recording_id = $1`, id).Scan(&detections); err != nil {

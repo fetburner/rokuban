@@ -14,17 +14,14 @@ import (
 	"strings"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -76,11 +73,11 @@ func cmFailureStage(err error) *string {
 
 // CMDetectWorker analyzes a committed original and stores its commercial ranges.
 type CMDetectWorker struct {
-	Enqueuer   jobq.Enqueuer
-	Pool       *pgxpool.Pool
-	MediaDir   string
-	ScratchDir string
-	CMDetect   config.CMDetectConfig
+	Enqueuer       jobq.Enqueuer
+	DetectionStore store.CMDetection
+	MediaDir       string
+	ScratchDir     string
+	CMDetect       config.CMDetectConfig
 	// FFprobe は原本の実尺を読む ffprobe のパス（空なら PATH の ffprobe）。
 	FFprobe string
 }
@@ -90,47 +87,37 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 	started := time.Now()
 	defer func() { metrics.CMDetectDuration.Observe(time.Since(started).Seconds()) }()
 
-	q := sqlcgen.New(w.Pool)
-	item, err := q.GetCMDetectionWorkItem(ctx, args.RecordingID)
+	item, err := w.DetectionStore.GetWorkItem(ctx, args.RecordingID)
 	if err != nil {
 		return fmt.Errorf("CM detection: loading recording %d: %w", args.RecordingID, err)
 	}
-	if !item.CmDetect || item.IsTrashed || item.OriginalMissing || item.Detected || item.RelPath == nil {
+	if !item.Enabled || item.IsTrashed || item.OriginalMissing || item.Detected || item.RelPath == nil {
 		return nil
 	}
-	desired, err := q.IsCMDetectionDesired(ctx, args.RecordingID)
+	desired, err := w.DetectionStore.IsDetectionDesired(ctx, args.RecordingID)
 	if err != nil {
 		return fmt.Errorf("CM detection: checking desired state for recording %d: %w", args.RecordingID, err)
 	}
 	if !desired {
 		return nil
 	}
-	attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
-		RecordingID: args.RecordingID,
-		MaxAttempts: cmDetectMaxTries,
-	})
+	attempt, shouldRun, err := w.DetectionStore.BeginAttempt(ctx, args.RecordingID, cmDetectMaxTries)
 	if err != nil {
 		return fmt.Errorf("CM detection: beginning attempt for recording %d: %w", args.RecordingID, err)
 	}
-	if !attempt.ShouldRun {
+	if !shouldRun {
 		return nil
 	}
-	attemptCount := attempt.AttemptCount
-	policyGeneration := attempt.PolicyGeneration
-	if err := w.detect(ctx, args.RecordingID, item, attemptCount, policyGeneration); err != nil {
+	if err := w.detect(ctx, item, attempt); err != nil {
 		if errors.Is(ctx.Err(), context.Canceled) {
 			failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer failureCancel()
 			// 世代は試行行自身の識別子。方針表をロックせず、世代の違う行には何も書かない。
 			var cleanupErr error
-			if attemptCount == 1 {
-				_, cleanupErr = q.DeleteCMDetectionRunningAttempt(failureCtx, sqlcgen.DeleteCMDetectionRunningAttemptParams{
-					RecordingID: args.RecordingID, AttemptCount: attemptCount, PolicyGeneration: policyGeneration,
-				})
+			if attempt.AttemptCount == 1 {
+				cleanupErr = w.DetectionStore.AbortAttempt(failureCtx, attempt)
 			} else {
-				_, cleanupErr = q.CancelCMDetectionRunningAttempt(failureCtx, sqlcgen.CancelCMDetectionRunningAttemptParams{
-					RecordingID: args.RecordingID, AttemptCount: attemptCount, PolicyGeneration: policyGeneration,
-				})
+				cleanupErr = w.DetectionStore.CancelAttempt(failureCtx, attempt)
 			}
 			if cleanupErr != nil {
 				return errors.Join(err, fmt.Errorf("clearing CM detection running state: %w", cleanupErr))
@@ -138,7 +125,7 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 			return err
 		}
 		state := "retrying"
-		if attemptCount >= cmDetectMaxTries {
+		if attempt.AttemptCount >= cmDetectMaxTries {
 			state = "failed"
 		}
 		message := err.Error()
@@ -152,19 +139,12 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 		}
 		failureCtx, failureCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer failureCancel()
-		marked, markErr := q.MarkCMDetectionFailure(failureCtx, sqlcgen.MarkCMDetectionFailureParams{
-			State:            state,
-			Stage:            stage,
-			Error:            &message,
-			RecordingID:      args.RecordingID,
-			AttemptCount:     attemptCount,
-			PolicyGeneration: policyGeneration,
-		})
+		marked, markErr := w.DetectionStore.FailAttempt(failureCtx, attempt, state, stage, message)
 		if markErr != nil {
 			return errors.Join(fmt.Errorf("CM detection for recording %d: %w", args.RecordingID, err),
 				fmt.Errorf("marking CM detection %s: %w", state, markErr))
 		}
-		if marked == 0 {
+		if !marked {
 			return nil
 		}
 		if terminalAdoptionWait {
@@ -177,11 +157,10 @@ func (w *CMDetectWorker) Work(ctx context.Context, args jobs.CMDetectJobArgs) er
 
 func (w *CMDetectWorker) detect(
 	ctx context.Context,
-	recordingID int64,
-	item sqlcgen.GetCMDetectionWorkItemRow,
-	attemptCount int32,
-	policyGeneration int64,
+	item store.CMDetectionWorkItem,
+	attempt store.CMDetectionAttempt,
 ) error {
+	recordingID := item.ID
 	if item.RelPath == nil {
 		return cmFailure("setup", fmt.Errorf("active original is missing"))
 	}
@@ -189,7 +168,7 @@ func (w *CMDetectWorker) detect(
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("resolving original path: %w", err))
 	}
-	jobDir, err := newDomainScratchDir(w.ScratchDir, "cm-detect", fmt.Sprintf("%d-%d", recordingID, attemptCount))
+	jobDir, err := newDomainScratchDir(w.ScratchDir, "cm-detect", fmt.Sprintf("%d-%d", recordingID, attempt.AttemptCount))
 	if err != nil {
 		return cmFailure("setup", fmt.Errorf("creating scratch directory: %w", err))
 	}
@@ -203,34 +182,29 @@ func (w *CMDetectWorker) detect(
 	if err := os.Symlink(original, inputPath); err != nil {
 		return cmFailure("setup", fmt.Errorf("linking original into scratch: %w", err))
 	}
-	channel := fmt.Sprintf("n%d-s%d", item.NetworkID, item.ServiceID)
+	channel := fmt.Sprintf("n%d-s%d", item.Station.NetworkID, item.Station.ServiceID)
 	// 枠は「次のロゴを作る」意図であり、既存ロゴの検出には使わない。
 	// 先に両方の資産を読むことで、枠あり・ロゴなしの録画を logoframe に
 	// 渡さず、採用待ちの attempt として明示できる。
-	area, err := sqlcgen.New(w.Pool).GetCMLogoArea(ctx, sqlcgen.GetCMLogoAreaParams{
-		NetworkID: item.NetworkID, ServiceID: item.ServiceID,
-	})
+	area, err := w.DetectionStore.GetLogoArea(ctx, item.Station)
 	areaExists := err == nil
-	if err != nil && !errors.Is(err, pgx5.ErrNoRows) {
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return cmFailure("setup", fmt.Errorf("loading taught logo area: %w", err))
 	}
-	var areaPtr *sqlcgen.GetCMLogoAreaRow
+	var areaVersion *time.Time
 	if areaExists {
-		areaPtr = &area
+		updatedAt := area.UpdatedAt
+		areaVersion = &updatedAt
 	}
 	hadLogo := false
-	var startedLogoLearnedAt *time.Time
-	if logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-		NetworkID: item.NetworkID,
-		ServiceID: item.ServiceID,
-	}); err == nil {
+	if logo, err := w.DetectionStore.GetLogo(ctx, item.Station); err == nil {
 		hadLogo = true
 		learnedAt := logo.LearnedAt
-		startedLogoLearnedAt = &learnedAt
-	} else if !errors.Is(err, pgx5.ErrNoRows) {
+		attempt.LogoLearnedAt = &learnedAt
+	} else if !errors.Is(err, store.ErrNotFound) {
 		return cmFailure("logo", fmt.Errorf("loading station logo: %w", err))
 	}
-	if areaPtr != nil && !hadLogo {
+	if areaExists && !hadLogo {
 		return cmFailure("adopt", fmt.Errorf("the station has a taught logo area but no adopted logo"))
 	}
 	// 人が教えた枠は記録上の解像度の座標なので、まず原本の実際の大きさを取る。
@@ -244,9 +218,7 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("setup", fmt.Errorf("creating temporary logo directory: %w", err))
 	}
 	if hadLogo {
-		logo, err := sqlcgen.New(w.Pool).GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-			NetworkID: item.NetworkID, ServiceID: item.ServiceID,
-		})
+		logo, err := w.DetectionStore.GetLogo(ctx, item.Station)
 		if err != nil {
 			return cmFailure("logo", fmt.Errorf("reloading station logo: %w", err))
 		}
@@ -254,15 +226,10 @@ func (w *CMDetectWorker) detect(
 			return cmFailure("resolution", fmt.Errorf("the station logo is for %dx%d but this recording is %dx%d",
 				logo.CodedWidth, logo.CodedHeight, geometry.width, geometry.height))
 		}
-		if err := writeStationLogo(logoDir, channel, logo.Lgd); err != nil {
+		if err := writeStationLogo(logoDir, channel, logo.LGD); err != nil {
 			return cmFailure("logo", fmt.Errorf("writing learned station logo: %w", err))
 		}
 	}
-	var observedAreaUpdatedAt *time.Time
-	if areaPtr != nil {
-		observedAreaUpdatedAt = &areaPtr.UpdatedAt
-	}
-
 	logoFrames := filepath.Join(jobDir, "logoframe.txt")
 	chapters := filepath.Join(jobDir, "chapter_exe.txt")
 	cutAvs := filepath.Join(jobDir, "obs_cut.avs")
@@ -281,8 +248,12 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("match", fmt.Errorf("station logo match %.2f%% is below %.2f%%", matchPercent, cmDetectMinLogoMatchPercent))
 	}
 	if !hadLogo {
-		if err := w.persistNewStationLogo(ctx, item, channel, logoDir, observedAreaUpdatedAt, geometry, attemptCount, policyGeneration); err != nil {
+		learnedAt, err := w.persistNewStationLogo(ctx, attempt, channel, logoDir, areaVersion, geometry)
+		if err != nil {
 			return cmFailure("logo", err)
+		}
+		if learnedAt != nil {
+			attempt.LogoLearnedAt = learnedAt
 		}
 	}
 	if _, err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
@@ -303,99 +274,22 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("probe", fmt.Errorf("probing original duration: %w", err))
 	}
 	totalMs := videoDuration.Milliseconds()
-	ranges, err := cmRangesFromCutAVS(string(cutText), totalMs)
+	frameRanges, err := cmRangesFromCutAVS(string(cutText), totalMs)
 	if err != nil {
 		return cmFailure("parse", fmt.Errorf("parsing obs_cut.avs: %w", err))
 	}
-	multirange := encodeInt8Multirange(ranges, totalMs)
-	return w.saveCMDetectionResult(ctx, item, hadLogo, startedLogoLearnedAt, multirange, attemptCount, policyGeneration)
-}
-
-func (w *CMDetectWorker) saveCMDetectionResult(
-	ctx context.Context,
-	item sqlcgen.GetCMDetectionWorkItemRow,
-	hadLogo bool,
-	startedLogoLearnedAt *time.Time,
-	multirange string,
-	attemptCount int32,
-	policyGeneration int64,
-) error {
-	tx, err := w.Pool.Begin(ctx)
+	ranges := chapterRangesFromFrames(frameRanges, totalMs)
+	saved, err := w.DetectionStore.SaveDetection(ctx, attempt, ranges)
 	if err != nil {
-		return cmFailure("save", fmt.Errorf("beginning CM result transaction: %w", err))
+		return cmFailure("save", err)
 	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	q := sqlcgen.New(tx)
-	// store.CMStation と同じ局の直列化に参加する（同じ局ロックを取る）。
-	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
-		return cmFailure("save", fmt.Errorf("locking station logo state for CM result: %w", err))
-	}
-	// **結果を書く前に recordings の行をロックする。** チャプターの引き取り
-	// （PUT /api/recordings/{id}/chapter-edits）も同じ行を先頭でロックしてから
-	// 「検出が終端に達しているか」を評価するので、両者は直列化される。ロックが
-	// 無いと READ COMMITTED で条件が文の開始時点のスナップショットから評価され、
-	// この commit が見えないまま空の自動層で引き取られる窓が開く
-	// （docs/storage/retention.md §7「復元と即時削除要求の競合」と同じ形）。
-	if _, err := q.LockRecording(ctx, item.ID); err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
-			return nil
+	if saved {
+		// CM ranges make an existing thumbnail eligible for reselection. This is only
+		// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
+		if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID}); enqueueErr != nil {
+			slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
+				"recording_id", item.ID, "err", enqueueErr)
 		}
-		return cmFailure("save", fmt.Errorf("locking recording for CM result: %w", err))
-	}
-	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
-		RecordingID: item.ID, PolicyGeneration: policyGeneration,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
-		return nil
-	}
-	if err != nil {
-		return cmFailure("save", fmt.Errorf("checking CM detection attempt fence: %w", err))
-	}
-	desired, err := q.IsCMDetectionDesired(ctx, item.ID)
-	if err != nil {
-		return cmFailure("save", fmt.Errorf("rechecking CM detection policy: %w", err))
-	}
-	if !desired {
-		if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
-			return cmFailure("save", fmt.Errorf("clearing disabled CM detection attempt: %w", err))
-		}
-		if err := tx.Commit(ctx); err != nil {
-			return cmFailure("save", fmt.Errorf("committing disabled CM detection state: %w", err))
-		}
-		return nil
-	}
-	if hadLogo {
-		currentLogo, logoErr := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-			NetworkID: item.NetworkID, ServiceID: item.ServiceID,
-		})
-		if errors.Is(logoErr, pgx5.ErrNoRows) ||
-			(logoErr == nil && startedLogoLearnedAt != nil && !currentLogo.LearnedAt.Equal(*startedLogoLearnedAt)) {
-			if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
-				return cmFailure("save", fmt.Errorf("discarding stale CM result attempt: %w", err))
-			}
-			if err := tx.Commit(ctx); err != nil {
-				return cmFailure("save", fmt.Errorf("committing stale CM result discard: %w", err))
-			}
-			return nil
-		}
-		if logoErr != nil {
-			return cmFailure("save", fmt.Errorf("checking station logo version: %w", logoErr))
-		}
-	}
-	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: item.ID, CmRanges: multirange}); err != nil {
-		return cmFailure("save", fmt.Errorf("saving CM ranges: %w", err))
-	}
-	if err := q.DeleteCMDetectionAttempt(ctx, item.ID); err != nil {
-		return cmFailure("save", fmt.Errorf("clearing CM attempt state: %w", err))
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return cmFailure("save", fmt.Errorf("committing CM result: %w", err))
-	}
-	// CM ranges make an existing thumbnail eligible for reselection. This is only
-	// a hint; thumbnail_reconcile remains the durable backstop if enqueueing fails.
-	if enqueueErr := enqueueJob(ctx, w.Enqueuer, jobs.ThumbnailJobArgs{RecordingID: item.ID}); enqueueErr != nil {
-		slog.Warn("cm_detect: failed to enqueue thumbnail reselection hint",
-			"recording_id", item.ID, "err", enqueueErr)
 	}
 	return nil
 }
@@ -406,58 +300,33 @@ func (w *CMDetectWorker) saveCMDetectionResult(
 // いれば、このロゴは古い枠で学習されたものなので捨てる（次の検出が新しい枠で学習する）。
 func (w *CMDetectWorker) persistNewStationLogo(
 	ctx context.Context,
-	item sqlcgen.GetCMDetectionWorkItemRow,
+	attempt store.CMDetectionAttempt,
 	channel, dir string,
 	observedAreaUpdatedAt *time.Time,
 	geometry videoGeometry,
-	attemptCount int32,
-	policyGeneration int64,
-) error {
+) (*time.Time, error) {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
-		return fmt.Errorf("reading newly learned station logo: %w", err)
+		return nil, fmt.Errorf("reading newly learned station logo: %w", err)
 	}
 	// プレビューは見た目の確認用。作れなくてもロゴ自体は保存する（preview_png は nullable）。
 	preview, previewErr := lgdPreviewPNG(logo)
 	if previewErr != nil {
-		slog.Warn("cm_detect: failed to render logo preview", "recording_id", item.ID, "err", previewErr)
+		slog.Warn("cm_detect: failed to render logo preview", "recording_id", attempt.RecordingID, "err", previewErr)
 		preview = nil
 	}
-	tx, err := w.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning learned station logo save: %w", err)
-	}
-	defer func() { _ = tx.Rollback(context.Background()) }()
-	q := sqlcgen.New(tx)
-	// store.CMStation と同じ局の直列化に参加する（同じ局ロックを取る）。
-	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{NetworkID: item.NetworkID, ServiceID: item.ServiceID}); err != nil {
-		return fmt.Errorf("locking station logo state: %w", err)
-	}
-	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
-		RecordingID: item.ID, PolicyGeneration: policyGeneration,
-	})
-	if errors.Is(err, pgx5.ErrNoRows) || (err == nil && currentAttemptCount != attemptCount) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("checking CM detection attempt fence: %w", err)
-	}
-	n, err := q.InsertLearnedCMLogo(ctx, sqlcgen.InsertLearnedCMLogoParams{
-		NetworkID: item.NetworkID, ServiceID: item.ServiceID, Lgd: logo,
-		PreviewPng: preview, LearnedFrom: item.ID, ObservedAreaUpdatedAt: observedAreaUpdatedAt,
+	learnedAt, saved, err := w.DetectionStore.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
+		LGD: logo, PreviewPNG: preview,
 		CodedWidth: int32(geometry.width), CodedHeight: int32(geometry.height),
-	})
+	}, observedAreaUpdatedAt)
 	if err != nil {
-		return fmt.Errorf("saving learned station logo: %w", err)
+		return nil, fmt.Errorf("saving learned station logo: %w", err)
 	}
-	if n == 0 {
+	if !saved {
 		slog.Info("cm_detect: discarded a learned logo because the station logo state changed during the job",
-			"recording_id", item.ID, "network_id", item.NetworkID, "service_id", item.ServiceID)
+			"recording_id", attempt.RecordingID, "network_id", attempt.Station.NetworkID, "service_id", attempt.Station.ServiceID)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing learned station logo: %w", err)
-	}
-	return nil
+	return learnedAt, nil
 }
 
 // videoGeometry は映像ストリームの記録上の大きさ（SAR を掛ける前の画素数）。
@@ -648,18 +517,14 @@ func mergeFrameRanges(ranges []frameRange) []frameRange {
 	return merged
 }
 
-func encodeInt8Multirange(ranges []frameRange, durationMs int64) string {
-	if len(ranges) == 0 {
-		return "{}"
-	}
-	parts := make([]string, 0, len(ranges))
+func chapterRangesFromFrames(ranges []frameRange, durationMs int64) []chapters.Range {
+	result := make([]chapters.Range, 0, len(ranges))
 	for _, r := range ranges {
 		start := min(chapters.FrameToMs(r.start), durationMs)
 		end := min(chapters.FrameToMs(r.end), durationMs)
-		if end <= start {
-			continue
+		if end > start {
+			result = append(result, chapters.Range{StartMs: start, EndMs: end})
 		}
-		parts = append(parts, fmt.Sprintf("[%d,%d)", start, end))
 	}
-	return "{" + strings.Join(parts, ",") + "}"
+	return result
 }

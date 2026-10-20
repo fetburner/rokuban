@@ -2,24 +2,20 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
 type CMDetectReconcileWorker struct {
 	Enqueuer              jobq.Enqueuer
-	Pool                  *pgxpool.Pool
+	DetectionStore        store.CMDetection
 	RowLimit              int32
 	RecoveryGrace         time.Duration
 	resumeAfter           atomic.Int64
@@ -37,20 +33,17 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if w.Enqueuer == nil {
 		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
 	}
-	if err := sqlcgen.New(w.Pool).DeleteStaleCMDetectionAttempts(ctx); err != nil {
+	if err := w.DetectionStore.DeleteStaleAttempts(ctx); err != nil {
 		return fmt.Errorf("CM detection reconcile: clearing disabled attempts: %w", err)
 	}
-	if err := failOrphanCMLogoCandidates(ctx, w.Pool, w.RecoveryGrace); err != nil {
+	if err := w.DetectionStore.FailOrphanLogoCandidates(ctx, w.RecoveryGrace, cmDetectionTimeout); err != nil {
 		slog.Warn("cm_detect_reconcile: orphan-candidate recovery had errors", "err", err)
 	}
 	limit := w.RowLimit
 	if limit <= 0 {
 		limit = cmDetectRowLimit
 	}
-	rows, err := sqlcgen.New(w.Pool).ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{
-		AfterRecordingID: w.resumeAfter.Load(),
-		RowLimit:         limit,
-	})
+	rows, err := w.DetectionStore.ListMissingDetections(ctx, w.resumeAfter.Load(), limit)
 	if err != nil {
 		return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
 	}
@@ -72,31 +65,29 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if len(rows) > 0 || failed > 0 {
 		slog.Info("cm_detect_reconcile: pass complete", "candidates", len(rows), "enqueue_failures", failed, "resume_after", next)
 	}
-	candidateRows, err := sqlcgen.New(w.Pool).ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{
-		AfterNetworkID: w.candidateAfterNetwork.Load(),
-		AfterServiceID: w.candidateAfterService.Load(),
-		RowLimit:       limit,
-	})
+	candidateRows, err := w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{
+		NetworkID: w.candidateAfterNetwork.Load(), ServiceID: w.candidateAfterService.Load(),
+	}, limit)
 	if err != nil {
 		return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
 	}
 	candidateFailures := 0
 	for _, candidate := range candidateRows {
 		err := enqueueJob(ctx, w.Enqueuer, jobs.CMLogoCandidateJobArgs{
-			NetworkID: candidate.NetworkID, ServiceID: candidate.ServiceID,
+			NetworkID: candidate.Station.NetworkID, ServiceID: candidate.Station.ServiceID,
 			RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.AreaUpdatedAt,
 			RecordingDurationMs: candidate.RecordingDurationMs,
 		})
 		if err != nil {
 			candidateFailures++
 			slog.Error("cm_detect_reconcile: failed to enqueue logo candidate",
-				"network_id", candidate.NetworkID, "service_id", candidate.ServiceID, "err", err)
+				"network_id", candidate.Station.NetworkID, "service_id", candidate.Station.ServiceID, "err", err)
 		}
 	}
 	var nextCandidateNetwork, nextCandidateService int32
 	if int32(len(candidateRows)) >= limit {
 		last := candidateRows[len(candidateRows)-1]
-		nextCandidateNetwork, nextCandidateService = last.NetworkID, last.ServiceID
+		nextCandidateNetwork, nextCandidateService = last.Station.NetworkID, last.Station.ServiceID
 		slog.Warn("cm_detect_reconcile: logo candidate window is full", "row_limit", limit,
 			"resume_network_id", nextCandidateNetwork, "resume_service_id", nextCandidateService)
 	}
@@ -110,50 +101,16 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	return nil
 }
 
-// failOrphanCMLogoCandidates marks running candidates whose worker deadline and the adapter's
-// recovery grace (jobq.Spec.Timeout contract) elapsed. MaxAttempts is 1, so no retry delay can
-// leave a candidate running; changing it requires revisiting this recovery rule.
-func failOrphanCMLogoCandidates(ctx context.Context, pool *pgxpool.Pool, recoveryGrace time.Duration) error {
-	candidates, err := sqlcgen.New(pool).ListRunningCMLogoCandidates(ctx)
-	if err != nil {
-		return fmt.Errorf("listing running CM logo candidates: %w", err)
-	}
-
-	q := sqlcgen.New(pool)
-	for _, candidate := range candidates {
-		durationMs, err := q.GetCMRecordingDuration(ctx, candidate.RecordingID)
-		if errors.Is(err, pgx5.ErrNoRows) {
-			// 録画行が消えた候補は実行側の Timeout を引けない。結果に意味が無く、遅い書き込みは attempted_at 照合で拒否されるので最小締切で回収する。
-			durationMs = 0
-		} else if err != nil {
-			return fmt.Errorf("getting recording %d duration for orphan CM logo candidate: %w", candidate.RecordingID, err)
-		}
-		deadline := candidate.AttemptedAt.Add(cmDetectionTimeout(durationMs)).Add(recoveryGrace)
-		if !candidate.CurrentTime.After(deadline) {
-			continue
-		}
-		if _, err := q.FailOrphanCMLogoCandidate(ctx, sqlcgen.FailOrphanCMLogoCandidateParams{
-			NetworkID: candidate.NetworkID, ServiceID: candidate.ServiceID,
-			RecordingID: candidate.RecordingID, AreaUpdatedAt: candidate.ObservedAreaUpdatedAt,
-			AttemptedAt: candidate.AttemptedAt,
-		}); err != nil {
-			return fmt.Errorf("failing orphan CM logo candidate for network %d service %d: %w",
-				candidate.NetworkID, candidate.ServiceID, err)
-		}
-	}
-	return nil
-}
-
 // EnqueueCMDetectionIfNeeded shares the periodic pass predicate for ingest's immediate hint.
-func EnqueueCMDetectionIfNeeded(ctx context.Context, pool *pgxpool.Pool, enqueuer jobq.Enqueuer, recordingID int64) error {
-	desired, err := sqlcgen.New(pool).IsCMDetectionDesired(ctx, recordingID)
+func EnqueueCMDetectionIfNeeded(ctx context.Context, detectionStore store.CMDetection, enqueuer jobq.Enqueuer, recordingID int64) error {
+	desired, err := detectionStore.IsDetectionDesired(ctx, recordingID)
 	if err != nil {
 		return fmt.Errorf("checking desired CM detection for recording %d: %w", recordingID, err)
 	}
 	if !desired {
 		return nil
 	}
-	durationMs, err := sqlcgen.New(pool).GetCMRecordingDuration(ctx, recordingID)
+	durationMs, err := detectionStore.GetRecordingDuration(ctx, recordingID)
 	if err != nil {
 		return fmt.Errorf("getting recording %d duration for CM detection: %w", recordingID, err)
 	}

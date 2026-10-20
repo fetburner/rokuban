@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -18,7 +18,11 @@ func TestCMDetectLoadingAreaDBErrorIsSetupStage(t *testing.T) {
 	rel := "cm/area-db-error.ts"
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	err := w.detect(ctx, 1, sqlcgen.GetCMDetectionWorkItemRow{RelPath: &rel, NetworkID: 32736, ServiceID: 1024}, 1, 0)
+	item := store.CMDetectionWorkItem{
+		ID: 1, Station: store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, RelPath: &rel,
+	}
+	attempt := store.CMDetectionAttempt{RecordingID: 1, Station: item.Station, AttemptCount: 1}
+	err := w.detect(ctx, item, attempt)
 	stage := cmFailureStage(err)
 	// 先行する手順も setup を返すので、枠の読み込みで落ちたことを文言で固定する。
 	if err == nil || !strings.Contains(err.Error(), "loading taught logo area") {
