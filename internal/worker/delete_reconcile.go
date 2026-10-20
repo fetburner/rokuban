@@ -65,9 +65,6 @@ const (
 	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 
-// deleteTarget は物理削除 1 件分の対象。削除元によらず共通の store 値を使う。
-type deleteTarget = store.MediaDeleteAsset
-
 // DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
 // ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する queue worker（docs/storage.md §7）。
 //
@@ -173,8 +170,13 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff); err != nil {
 		return err
 	}
-	// pending の再開はブレーカー対象外（listPendingDeleteAssets のコメント
-	// 参照。既に決めた削除の再実行であり新規の判断ではない）。
+	// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
+	// いずれかの判定に該当するものを最優先で再開する。pending の再開は
+	// 「既に決めた削除」の再実行であり新規の判断ではないため、サーキット
+	// ブレーカーの対象外（docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。
+	// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
+	// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
+	// ものだけ。
 	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return err

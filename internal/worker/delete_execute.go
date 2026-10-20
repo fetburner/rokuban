@@ -75,15 +75,6 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Con
 	return nil
 }
 
-// listPendingDeleteAssets は前回のパスで deleting のまま残ったアセットを取得する。
-//
-// 前パスで deleting のまま止まった行のうち、まだ trash / until_encoded の
-// いずれかの判定に該当するものを最優先で再開する。これは「既に決めた
-// 削除」の再実行であり新規の判断ではないため、サーキットブレーカーの対象外
-// （docs/storage.md §7「どこで落ちても reconcile が拾い直す」）。
-// restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
-// deleted に決着しているので、ここに現れるのは常に判定を再確認できた
-// ものだけ。
 // applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
 func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, breakers store.Breakers, site string, tripped bool, total, maxPerPass int) (bool, error) {
 	if total > maxPerPass {

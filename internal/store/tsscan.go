@@ -9,7 +9,7 @@ type TSScan interface {
 	// ListMissingTSScanRecordings は計測記録の無い、またはサイズが古い原本をページ単位で返す。
 	ListMissingTSScanRecordings(ctx context.Context, afterRecordingID int64, limit int32) ([]int64, error)
 	// ReplaceScan は計測値と計測サイズを 1 tx で置き換える。
-	// active な原本の行をロックしてからサイズと計測可否を再確認し、削除やサイズ変更と直列化する。
+	// 原本の削除・サイズ変更と直列化し、確定後の状態でサイズと計測可否を再確認する。
 	// 対象が既に無効かサイズが変わっていれば false, nil を返し、何も書かない。
 	ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64, stats []RecordingDropStat, positions []RecordingDropPosition) (bool, error)
 }

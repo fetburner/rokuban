@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -88,7 +89,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 			w := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
-			target := deleteTarget{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
+			target := store.MediaDeleteAsset{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
 			deletionCtx, deletionCancel := context.WithTimeout(ctx, 150*time.Millisecond)
 			w.deleteMediaAsset(deletionCtx, target, "trash")
 			deletionCancel()

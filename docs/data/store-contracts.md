@@ -202,17 +202,19 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 
 ### メディア削除
 
-削除の候補選びと状態遷移は永続化契約に集め、worker はファイル操作に徹する。
+削除の判断と状態遷移は DB の側に集め、worker はファイルの削除だけを持つ。
 
-worker は `MediaDelete` から候補を読み、ファイル I/O の後に状態遷移を確定する。候補の列挙と DB 行の更新は store が担い、削除判断の再評価は遷移時にも行う。
+削除の候補選びと状態遷移は `MediaDelete` に集め、worker はファイル操作だけを持つ。worker は候補を読み、unlink の後に遷移を確定する。削除可否の述語（ごみ箱・until_encoded・外した encoded）は名前のまま実装の中に閉じ、契約はメソッド名と doc コメントで意味だけを示す。
 
-`MarkUntilEncodedDeleting` は録画単位の書き込みと直列化し、ロック後に削除条件を再確認する。`RevertToActive` も適用時に削除条件を再確認し、すでに `deleted` の行を復活させない。ごみ箱の猶予 cutoff は既存の例外として呼び出し側から受け取る。
+遷移の時点で削除条件を再確認するのは 2 つのメソッドだけである。`MarkUntilEncodedDeleting` は、同じ録画への削除方針と作り直し要求の書き込みと直列化してから再確認する。候補を列挙した後に作り直し要求が commit されうるからである。`RevertToActive` も適用時に再確認し、`deleted` の行は戻さない。ごみ箱の猶予の cutoff は呼び出し側から受け取る（[時刻](#時刻) の例外）。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaDelete`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 録画ロック後の再評価と、deleted 行の復元防止: `TestMediaDeleteStoreContract`
+- 作り直し要求との直列化と再確認: `TestMediaDeleteStoreContract` の `until-encoded transition waits for and rechecks recording writes`
+- deleted の行を戻さないこと: `TestMediaDeleteStoreContract` の `revert does not restore a deleted asset`
+- 外した encoded の削除要求が deleted 確定と同時に消えること: `TestMediaDeleteStoreContract` の `mark deleted clears the removal request`
 
 </details>
 
@@ -220,13 +222,15 @@ worker は `MediaDelete` から候補を読み、ファイル I/O の後に状�
 
 TS の計測結果は、対象の状態を再確認した上で一括して保存する。
 
-`TSScan` は計測対象の読み取りと計測結果の保存を担う。`ReplaceScan` は原本の状態とサイズを再確認し、drop 統計・位置・計測サイズを 1 tx で置き換える。途中の書き込みが失敗した場合は、以前の計測結果と marker を残す。
+`TSScan` は計測対象の読み取りと計測結果の保存を担う。`ReplaceScan` は、原本がまだ active でサイズが計測時と同じかを再確認する。そのうえで、ドロップ統計・ドロップ位置・計測済みサイズ（marker）を 1 tx で置き換える。サイズが違えば何も書かない。読んでいる間に in-place 登録がファイルを差し替えうるからで、古い計測結果が残っても marker のサイズがずれたままなので、次の reconcile が計測をやり直す。途中の書き込みが失敗したときも、以前の計測結果と marker が残る。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.TSScan`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 置き換えの原子性、サイズ再確認、失敗時の復元: `TestTSScanStoreContract`
+- 置き換えの原子性: `TestTSScanStoreContract` の `replaces statistics and marker together`
+- 状態変化を待ってからの再確認: `TestTSScanStoreContract` の `rechecks active state after waiting for the asset lock`
+- 失敗時に以前の結果が残ること: `TestTSScanStoreContract` の `rolls back statistics and marker after a failed replacement`
 
 </details>
 

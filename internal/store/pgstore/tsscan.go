@@ -51,6 +51,9 @@ func (s *Media) ReplaceScan(ctx context.Context, assetID, scannedSizeBytes int64
 		return false, fmt.Errorf("checking media asset %d before replacing TS scan: %w", assetID, err)
 	}
 	if currentSize != scannedSizeBytes {
+		// 読んでいる間に in-place 登録がファイルを差し替えうる。書かずに成功扱いにする。
+		// 古い観測を残しても marker のサイズが現在のサイズとずれたままなので、
+		// 次の reconcile が拾い直す。
 		return false, nil
 	}
 

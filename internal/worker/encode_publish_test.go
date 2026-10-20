@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -901,7 +902,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	cleanup := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	deleteDone := make(chan struct{})
 	go func() {
-		cleanup.deleteMediaAsset(ctx, deleteTarget{
+		cleanup.deleteMediaAsset(ctx, store.MediaDeleteAsset{
 			ID: assetID, RecordingID: recordingID, RelPath: relPath,
 			SizeBytes: int64(len(previous)), Kind: "encoded",
 		}, "test")

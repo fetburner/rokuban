@@ -16,6 +16,8 @@ type MediaDeleteFixture struct {
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
 	NewDeletedAsset               func(t *testing.T) int64
 	ReadAssetState                func(t *testing.T, assetID int64) string
+	NewDeletingRemovedEncoded     func(t *testing.T) int64
+	RemovalRequestExists          func(t *testing.T, assetID int64) bool
 	WaitForLockWaiter             func(t *testing.T, operation string)
 }
 
@@ -31,6 +33,26 @@ func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 	t.Run("revert does not restore a deleted asset", func(t *testing.T) {
 		runDeletedAssetIsNotReverted(t, newStore)
 	})
+	t.Run("mark deleted clears the removal request", func(t *testing.T) {
+		runMarkDeletedClearsRemovalRequest(t, newStore)
+	})
+}
+
+func runMarkDeletedClearsRemovalRequest(t *testing.T, newStore NewMediaDeleteStore) {
+	f := newStore(t)
+	assetID := f.NewDeletingRemovedEncoded(t)
+	if !f.RemovalRequestExists(t, assetID) {
+		t.Fatal("removal request missing before MarkDeleted")
+	}
+	if err := f.Store.MarkDeleted(context.Background(), assetID); err != nil {
+		t.Fatalf("MarkDeleted: %v", err)
+	}
+	if state := f.ReadAssetState(t, assetID); state != "deleted" {
+		t.Fatalf("asset state = %q, want deleted", state)
+	}
+	if f.RemovalRequestExists(t, assetID) {
+		t.Fatal("removal request still exists after MarkDeleted, want it cleared")
+	}
 }
 
 func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {

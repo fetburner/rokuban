@@ -114,6 +114,32 @@ UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, as
 				}
 				return state
 			},
+			NewDeletingRemovedEncoded: func(t *testing.T) int64 {
+				t.Helper()
+				recordingID := newRecording(t)
+				profile := "h264"
+				assetID := newAsset(t, recordingID, db.AssetKindEncoded, &profile)
+				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
+					t.Fatalf("marking media asset deleting: %v", err)
+				}
+				if err := sqlcgen.New(pool).InsertEncodedAssetRemovalRequest(context.Background(), sqlcgen.InsertEncodedAssetRemovalRequestParams{
+					RecordingID: recordingID, Profile: profile,
+				}); err != nil {
+					t.Fatalf("inserting removal request: %v", err)
+				}
+				return assetID
+			},
+			RemovalRequestExists: func(t *testing.T, assetID int64) bool {
+				t.Helper()
+				var exists bool
+				if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests r
+  JOIN media_assets a ON a.recording_id = r.recording_id AND a.profile = r.profile
+  WHERE a.id = $1)`, assetID).Scan(&exists); err != nil {
+					t.Fatalf("querying removal request: %v", err)
+				}
+				return exists
+			},
 			WaitForLockWaiter: func(t *testing.T, operation string) {
 				t.Helper()
 				waitForContractLockWaiter(t, pool, operation)
