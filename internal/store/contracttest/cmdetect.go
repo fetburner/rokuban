@@ -16,6 +16,7 @@ type CMDetectionFixture struct {
 	Store          store.CMDetection
 	ChapterStore   store.ChapterEdits
 	CMStationStore store.CMStation
+	TrashStore     store.RecordingTrash
 	NewRecording   func(t *testing.T) int64
 	// SeedLogo は検出結果の版照合を検証するため、局に学習済みロゴを作る。
 	SeedLogo func(t *testing.T, station store.CMStationRef, recordingID int64)
@@ -49,6 +50,9 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 	t.Run("old generation cannot commit after a current attempt starts", func(t *testing.T) {
 		testCMDetectionGenerationFence(t, newStore)
 	})
+	t.Run("trash during analysis clears the attempt budget", func(t *testing.T) {
+		testCMDetectionTrashClearsAttempt(t, newStore)
+	})
 	t.Run("result rejects a logo learned after an attempt started without one", func(t *testing.T) {
 		testCMDetectionRejectsNewLogo(t, newStore, station)
 	})
@@ -61,6 +65,41 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 
 	runDetectionWaitsForChapterWrite(t, newStore)
 	runLearnedLogoWaitsForAreaWrite(t, newStore, station)
+}
+
+func testCMDetectionTrashClearsAttempt(t *testing.T, newStore NewCMDetectionStore) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	var third store.CMDetectionAttempt
+	for want := int32(1); want <= 3; want++ {
+		attempt, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+		if err != nil || !shouldRun || attempt.AttemptCount != want {
+			t.Fatalf("BeginAttempt() = %+v, %v, %v; want running attempt %d", attempt, shouldRun, err, want)
+		}
+		third = attempt
+		if want < 3 {
+			marked, err := f.Store.FailAttempt(ctx, attempt, "retrying", nil, "temporary failure")
+			if err != nil || !marked {
+				t.Fatalf("FailAttempt(attempt %d) = %v, %v; want one updated row", want, marked, err)
+			}
+		}
+	}
+
+	if err := f.TrashStore.SoftDelete(ctx, id); err != nil {
+		t.Fatalf("SoftDelete() error = %v", err)
+	}
+	if saved, err := f.Store.SaveDetection(ctx, third, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+		t.Fatalf("SaveDetection(trashed recording) = %v, %v; want discarded", saved, err)
+	}
+	if err := f.TrashStore.Restore(ctx, id); err != nil {
+		t.Fatalf("Restore() error = %v", err)
+	}
+	first, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun || first.AttemptCount != 1 {
+		t.Fatalf("BeginAttempt() after restore = %+v, %v, %v; want a fresh running attempt 1", first, shouldRun, err)
+	}
 }
 
 func testMissingCMDetectionWorkItem(t *testing.T, newStore NewCMDetectionStore) {

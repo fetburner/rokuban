@@ -30,6 +30,7 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 		Store:          analysis,
 		ChapterStore:   analysis,
 		CMStationStore: analysis,
+		TrashStore:     NewRecordings(pool),
 		NewRecording: func(t *testing.T) int64 {
 			return seedCMDetectionContractRecording(t, pool)
 		},

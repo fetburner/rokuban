@@ -142,12 +142,17 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 	}); err != nil {
 		return false, fmt.Errorf("locking station logo state for CM result: %w", err)
 	}
-	if err := lockRecording(ctx, q, attempt.RecordingID); err != nil {
-		if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTrashed) {
+	recording, err := lockRecordingState(ctx, q, attempt.RecordingID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("locking recording %d for CM result: %w", attempt.RecordingID, err)
 	}
+	if recording.IsPurged {
+		return false, nil
+	}
+	recordingTrashed := recording.IsTrashed
 	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
 		RecordingID: attempt.RecordingID, PolicyGeneration: attempt.PolicyGeneration,
 	})
@@ -161,7 +166,7 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 	if err != nil {
 		return false, fmt.Errorf("rechecking CM detection policy for recording %d: %w", attempt.RecordingID, err)
 	}
-	if !desired {
+	if recordingTrashed || !desired {
 		if err := q.DeleteCMDetectionAttempt(ctx, attempt.RecordingID); err != nil {
 			return false, fmt.Errorf("clearing disabled CM detection attempt for recording %d: %w", attempt.RecordingID, err)
 		}
