@@ -172,10 +172,6 @@ type MediaReconcile interface {
 	ListThumbnailReselectCandidates(ctx context.Context, page MediaReconcilePage) ([]ThumbnailReselectCandidate, error)
 	// ListMissingSeekTilesRecordings はシークタイルが無い録画をページ単位で返す。
 	ListMissingSeekTilesRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
-	// GetActiveOriginalForTSScan は TS scan の対象になる active 原本を返す。
-	GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (MediaAsset, error)
-	// ListMissingTSScanRecordings は TS scan が必要な録画をページ単位で返す。
-	ListMissingTSScanRecordings(ctx context.Context, afterRecordingID int64, rowLimit int32) ([]int64, error)
 	// FindInvalidMediaAssetRelPath は予約されたサイト名空間の外にある原本または encoded を返す。
 	// 違反が無ければ nil, nil を返す。
 	FindInvalidMediaAssetRelPath(ctx context.Context) (*MediaAssetRelPathViolation, error)

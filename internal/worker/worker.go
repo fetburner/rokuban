@@ -117,6 +117,8 @@ type Deps struct {
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaReconcile        store.MediaReconcile
+	MediaDelete           store.MediaDelete
+	TSScan                store.TSScan
 	StorageObservation    store.StorageObservation
 	MediaDir              string
 	ScratchDir            string
@@ -286,7 +288,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RecoveryGrace:  deps.RecoveryGrace,
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
-		Pool:              deps.Pool,
+		MediaDelete:       deps.MediaDelete,
 		RecordingPurge:    deps.RecordingPurge,
 		Breakers:          pgstore.NewBreakers(deps.Pool),
 		Storage:           deps.StorageObservation,
@@ -303,7 +305,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 	})
-	riveradapter.Register(workers, &tsscan.ScanWorker{Pool: deps.Pool, Media: deps.MediaReconcile, MediaDir: deps.MediaDir})
-	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.MediaReconcile})
+	riveradapter.Register(workers, &tsscan.ScanWorker{Media: deps.TSScan, MediaDir: deps.MediaDir})
+	riveradapter.Register(workers, &tsscan.ReconcileWorker{Enqueuer: deps.Enqueuer, Media: deps.TSScan})
 	return workers
 }
