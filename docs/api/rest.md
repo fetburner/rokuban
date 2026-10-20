@@ -269,11 +269,11 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 <details><summary>根拠</summary>
 
-- WHERE の組み立てと通常 / ごみ箱一覧の実行経路: `internal/api/recordings_query.go`、`buildRecordingsQuery`、`queryRecordings`
+- WHERE の組み立てと通常 / ごみ箱一覧の実行経路: `internal/store/pgstore/recordingquery.go`、`buildRecordingsQuery`、`Recordings.List`
 - 全軸分の汎用述語が `q` のような選択条件でも残る: `($n IS NULL OR ...)`、`$n IS NULL OR ...`
 - q 検索の式 GIN index: `recordings_title_trgm`、`recordings_description_trgm`
-- 棚と一覧で共有する条件部分: `recordingsFilterWhere`
-- 静的な形との速度差を測った数値を doc コメントに持つ: `buildRecordingShelvesQuery`
+- 棚と一覧で共有する条件部分: `internal/store/pgstore/recordingquery.go` の `recordingsFilterWhere`
+- 静的な形との速度差を測った数値を doc コメントに持つ: `internal/store/pgstore/recordingquery.go` の `buildRecordingShelvesQuery`
 - 同じ `arg` クロージャ方式の WHERE builder: `internal/store/pgstore/rulesql.go`、`arg`
 
 </details>
@@ -288,7 +288,7 @@ api は不変条件 1 により site に束縛されず、1 プロセスがレ�
 
 <details><summary>根拠</summary>
 
-- この経路だけ unnamed 再計画を指定する箇所: `queryRecordings`、`pgx.QueryExecModeExec`
+- この経路だけ unnamed 再計画を指定する箇所: `Recordings.List`、`pgx.QueryExecModeExec`
 - named statement の既定: `QueryExecModeCacheStatement`
 - 汎用述語による劣化: `($n IS NULL OR ...)`
 

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
@@ -103,39 +104,39 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquiring benchmark connection: %v", err)
 	}
-	defer conn.Release()
 	seedShelfBenchmark(t, conn.Conn())
+	conn.Release()
 
 	shapes := []shelfShape{
 		{name: "(a) production buildRecordingShelvesQuery", run: func() (map[string]shelfResult, error) {
-			return queryProductionShelves(ctx, conn.Conn(), recordingsFilter{})
+			return queryProductionShelves(ctx, pool, recordingsFilter{})
 		}},
 		{name: "(o) previous playable-only shape", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousShelfQuery)
+			return queryShelves(ctx, pool, previousShelfQuery)
 		}},
 		{name: "(o') previous shape without playable MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousUnmaterializedShelfQuery)
+			return queryShelves(ctx, pool, previousUnmaterializedShelfQuery)
 		}},
 		{name: "(b') production shape with live MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryFullShelves(ctx, conn.Conn(), liveMaterializedShelfQuery)
+			return queryFullShelves(ctx, pool, liveMaterializedShelfQuery)
 		}},
 		{name: "(c) production shape with playable_assets MATERIALIZED", run: func() (map[string]shelfResult, error) {
-			return queryFullShelves(ctx, conn.Conn(), materializedAssetsShelfQuery)
+			return queryFullShelves(ctx, pool, materializedAssetsShelfQuery)
 		}},
 		{name: "(o_inline) previous shape with the effective series written inline", run: func() (map[string]shelfResult, error) {
-			return queryShelves(ctx, conn.Conn(), previousInlineShelfQuery)
+			return queryShelves(ctx, pool, previousInlineShelfQuery)
 		}},
 		{name: "(f) production filtered by genre and period", run: func() (map[string]shelfResult, error) {
-			return queryProductionShelves(ctx, conn.Conn(), benchGenrePeriodFilter)
+			return queryProductionShelves(ctx, pool, benchGenrePeriodFilter)
 		}},
 		{name: "(f_static) static sqlc.narg shape filtered by genre and period", run: func() (map[string]shelfResult, error) {
-			return queryFullShelves(ctx, conn.Conn(), staticFilteredShelfQuery, staticShelfArgs(benchGenrePeriodFilter)...)
+			return queryFullShelves(ctx, pool, staticFilteredShelfQuery, staticShelfArgs(benchGenrePeriodFilter)...)
 		}},
 		{name: "(q) production filtered by keyword", run: func() (map[string]shelfResult, error) {
-			return queryProductionShelves(ctx, conn.Conn(), benchKeywordFilter)
+			return queryProductionShelves(ctx, pool, benchKeywordFilter)
 		}},
 		{name: "(q_static) static sqlc.narg shape filtered by keyword", run: func() (map[string]shelfResult, error) {
-			return queryFullShelves(ctx, conn.Conn(), staticFilteredShelfQuery, staticShelfArgs(benchKeywordFilter)...)
+			return queryFullShelves(ctx, pool, staticFilteredShelfQuery, staticShelfArgs(benchKeywordFilter)...)
 		}},
 	}
 
@@ -167,13 +168,13 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 	}
 
 	production, previous, previousUnmaterialized, liveMaterialized, withMaterializedAssets, previousInline := results[0], results[1], results[2], results[3], results[4], results[5]
-	checkFilteredShelves(t, ctx, conn.Conn(), "(f)", results[6], results[7], benchGenrePeriodPredicate)
-	checkFilteredShelves(t, ctx, conn.Conn(), "(q)", results[8], results[9], benchKeywordPredicate)
-	wantLatest, err := queryExpectedLatest(ctx, conn.Conn())
+	checkFilteredShelves(t, ctx, pool, "(f)", results[6], results[7], benchGenrePeriodPredicate)
+	checkFilteredShelves(t, ctx, pool, "(q)", results[8], results[9], benchKeywordPredicate)
+	wantLatest, err := queryExpectedLatest(ctx, pool)
 	if err != nil {
 		t.Fatalf("computing expected latest_start_at: %v", err)
 	}
-	wantUnwatched, err := queryExpectedUnwatched(ctx, conn.Conn())
+	wantUnwatched, err := queryExpectedUnwatched(ctx, pool)
 	if err != nil {
 		t.Fatalf("computing expected unwatched event counts: %v", err)
 	}
@@ -224,6 +225,11 @@ func TestListRecordingShelves_PlanBenchmark(t *testing.T) {
 		float64(medians[6])/float64(medians[5]), float64(medians[7])/float64(medians[5]),
 		float64(medians[8])/float64(medians[5]), float64(medians[9])/float64(medians[5]), 200.0/141.0)
 
+	conn, err = pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquiring reservation benchmark connection: %v", err)
+	}
+	defer conn.Release()
 	benchmarkReservationsWithSeries(t, ctx, conn.Conn())
 }
 
@@ -285,8 +291,8 @@ type shelfResult struct {
 
 // queryExpectedLatest は棚ごとの latest_start_at の期待値を、測る SQL とは別のクエリで求める。
 // 生きている録画（deleted_at / superseded_at が NULL）の program_start_at の最大値である。
-func queryExpectedLatest(ctx context.Context, conn *pgx.Conn) (map[string]time.Time, error) {
-	rows, err := conn.Query(ctx, `
+func queryExpectedLatest(ctx context.Context, pool *pgxpool.Pool) (map[string]time.Time, error) {
+	rows, err := pool.Query(ctx, `
 SELECT rs.value, max(r.program_start_at)
 FROM recordings r
 JOIN recording_series rs ON rs.recording_id = r.id
@@ -308,8 +314,8 @@ GROUP BY rs.value`)
 	return out, rows.Err()
 }
 
-func queryExpectedUnwatched(ctx context.Context, conn *pgx.Conn) (map[string]int64, error) {
-	rows, err := conn.Query(ctx, `
+func queryExpectedUnwatched(ctx context.Context, pool *pgxpool.Pool) (map[string]int64, error) {
+	rows, err := pool.Query(ctx, `
 WITH playable_events AS (
     SELECT DISTINCT rs.value, r.network_id, r.service_id, r.program_start_at
     FROM recordings r
@@ -368,8 +374,8 @@ func median(samples []time.Duration) time.Duration {
 }
 
 // queryShelves は旧形の棚クエリを実行して棚ごとの結果を返す。
-func queryShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string]shelfResult, error) {
-	rows, err := conn.Query(ctx, query)
+func queryShelves(ctx context.Context, pool *pgxpool.Pool, query string) (map[string]shelfResult, error) {
+	rows, err := pool.Query(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -391,8 +397,8 @@ func queryShelves(ctx context.Context, conn *pgx.Conn, query string) (map[string
 }
 
 // queryFullShelves は本番と同じ列順の 7 列を返す棚クエリを実行する。
-func queryFullShelves(ctx context.Context, conn *pgx.Conn, query string, args ...any) (map[string]shelfResult, error) {
-	rows, err := conn.Query(ctx, query, args...)
+func queryFullShelves(ctx context.Context, pool *pgxpool.Pool, query string, args ...any) (map[string]shelfResult, error) {
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -876,9 +882,20 @@ const (
 )
 
 // queryProductionShelves は本番の棚クエリを、ハンドラと同じ組み立てと実行モードで実行する。
-func queryProductionShelves(ctx context.Context, conn *pgx.Conn, f recordingsFilter) (map[string]shelfResult, error) {
-	sql, args := buildRecordingShelvesQuery(f)
-	return queryFullShelves(ctx, conn, sql, append([]any{pgx.QueryExecModeExec}, args...)...)
+func queryProductionShelves(ctx context.Context, pool *pgxpool.Pool, f recordingsFilter) (map[string]shelfResult, error) {
+	rows, err := pgstore.NewRecordings(pool).Shelves(ctx, f)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]shelfResult, len(rows))
+	for _, row := range rows {
+		out[shelfKey(row.Value)] = shelfResult{
+			title: row.Title, recording: row.Count, playable: row.PlayableCount,
+			unwatched: row.UnwatchedCount, latest: row.LatestStartAt,
+			representative: row.RepresentativeID,
+		}
+	}
+	return out, nil
 }
 
 // staticFilteredShelfQuery は棚を sqlc の静的クエリのまま `sqlc.narg` で全条件を受けた形である。
@@ -954,10 +971,10 @@ func staticShelfArgs(f recordingsFilter) []any {
 		args[3] = f.Sites
 	}
 	if f.Status != "" {
-		args[4] = string(f.Status)
+		args[4] = f.Status
 	}
 	if f.Source != "" {
-		args[5] = string(f.Source)
+		args[5] = f.Source
 	}
 	if f.RuleID != nil {
 		args[6] = *f.RuleID
@@ -974,9 +991,9 @@ func staticShelfArgs(f recordingsFilter) []any {
 // checkFilteredShelves は絞り込みありの形の結果を、測る SQL とは別に Go で集計した期待値と比べる。
 // 母集団の録画に predicate を当て、棚ごとの件数・再生可能数・最新・代表・未視聴を数える。
 // 視聴済み印は predicate を当てない全録画から読む。静的な形も同じ結果になることを確かめる。
-func checkFilteredShelves(t *testing.T, ctx context.Context, conn *pgx.Conn, label string, got, static map[string]shelfResult, predicate string) {
+func checkFilteredShelves(t *testing.T, ctx context.Context, pool *pgxpool.Pool, label string, got, static map[string]shelfResult, predicate string) {
 	t.Helper()
-	rows, err := conn.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 SELECT rs.value, r.id, r.title, r.program_start_at, r.network_id, r.service_id,
        EXISTS (
            SELECT 1 FROM media_assets ma

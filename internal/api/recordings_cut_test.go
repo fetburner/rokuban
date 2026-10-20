@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -28,6 +29,7 @@ func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:               pool,
+		RecordingQuery:     pgstore.NewRecordings(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))

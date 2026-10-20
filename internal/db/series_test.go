@@ -262,7 +262,7 @@ func TestLabelRuleWinner_PriorityThenIDOrder(t *testing.T) {
 // キーワード中の LIKE 特殊文字は文字として照合する。`100%` がメタ文字として
 // 効くと、棚が壊れる（実データで 54 件に当たった）。
 //
-// **これは KeywordClause と同じ dialect であることの検査でもある**: Go 側だけ
+// **これは pgstore の keywordClause と同じ dialect であることの検査でもある**: Go 側だけ
 // エスケープして SQL 側の like_escape を壊すと、ここが落ちる。
 func TestLabelRuleWinner_KeywordMetacharactersAreLiteral(t *testing.T) {
 	pool := setupTestDB(t)

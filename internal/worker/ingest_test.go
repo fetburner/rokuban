@@ -1093,7 +1093,12 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 	go func() {
 		done <- runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: "rec-fresh"})
 	}()
-	t.Cleanup(func() { cancel(); <-done })
+	t.Cleanup(func() {
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Errorf("worker cleanup: got %v, want context.Canceled", err)
+		}
+	})
 
 	// 進捗行ができ、いくつかポーリングが回るまで待つ。
 	var firstObservedAt time.Time

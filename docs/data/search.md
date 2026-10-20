@@ -90,7 +90,7 @@ EPG は消えるが録画は残るので、EPG に JOIN すると古い録画の
 <details><summary>根拠</summary>
 
 - EPG 検索のパス: `/search`
-- 共有する関数: `internal/rulequery.KeywordClause`。`compileTextMatch` と録画検索の両方が呼ぶ
+- 共有する SQL 述語: `internal/store/pgstore` の `keywordClause`。`compileTextMatch` と録画検索が呼ぶ。`rulequery` は条件と検証だけを持ち、api から pgstore を参照しない
 - 正規化関数: `normalize_search_text`
 - 文字として照合する文字: `\` / `%` / `_`
 - 列名の例: `p.name` / `r.title`

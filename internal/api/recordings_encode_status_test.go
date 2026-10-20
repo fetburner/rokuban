@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -221,7 +222,8 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 // そのまま出す --- それは断定ではなく観測なので規律の対象外。
 func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodeProfileNames: []string{"h264"}}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool,
+		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 	base := time.Now().Truncate(time.Second)
 

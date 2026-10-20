@@ -177,8 +177,8 @@ func nonLocalPostgresTimeZone() string {
 // ここでは pool の全接続に `SET TIME ZONE` で非 UTC のセッション TimeZone を
 // 人工的に与え、CI・developer 環境のどちらでも決定的に食い違いを再現する。
 //
-// queryRecordings は pgx.QueryExecModeExec を明示していて text protocol
-// （セッション TimeZone で decode）を使い、queryRecordingByID は既定の
+// RecordingQuery.List は pgx.QueryExecModeExec を明示していて text protocol
+// （セッション TimeZone で decode）を使い、RecordingQuery.Get は既定の
 // binary protocol（プロセスの time.Local で decode）を使う（recordings.go の
 // utcTimePtr の doc コメント）。同じ pool でもクエリ単位でこの差が出るので、
 // セッション TimeZone を 1 箇所変えるだけで両経路の Location が食い違う

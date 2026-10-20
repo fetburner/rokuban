@@ -476,7 +476,9 @@ func TestServerCmd_RejectsEncodeProfileWithChangedMeaning(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			cancel()
-			<-errCh
+			if err := <-errCh; err != nil {
+				t.Logf("api shutdown after startup timeout: %v", err)
+			}
 			t.Fatal("api with a matching cut profile did not start listening within 10s")
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -542,7 +544,9 @@ func TestServerCmd_EncodeProfileMeaningCheckRunsBeforeListening(t *testing.T) {
 		t.Fatalf("releasing the lock: %v", err)
 	}
 	cancel()
-	<-errCh
+	if err := <-errCh; err != nil {
+		t.Errorf("api shutdown after releasing the lock: %v", err)
+	}
 }
 
 // **--soft-stop-timeout の検査が RunE の配線に載っていること**（ロール検査が
@@ -725,7 +729,10 @@ func runServerCmdBounded(t *testing.T, limit time.Duration, configPath string, a
 	case <-time.After(limit):
 		cancel()
 		select {
-		case <-errCh:
+		case err := <-errCh:
+			if err != nil {
+				t.Logf("server returned after timeout cancellation: %v", err)
+			}
 		case <-time.After(30 * time.Second):
 			t.Error("cancel してもサーバーが畳まれない（River クライアントが残る）")
 		}
@@ -933,10 +940,15 @@ worker:
 		if !serverExited {
 			_ = server.Process.Signal(os.Interrupt)
 			select {
-			case <-serverDone:
+			case err := <-serverDone:
+				if err != nil {
+					t.Logf("server exited during cleanup with %v", err)
+				}
 			case <-time.After(15 * time.Second):
 				_ = server.Process.Kill()
-				<-serverDone
+				if err := <-serverDone; err != nil {
+					t.Logf("server exited after kill with %v", err)
+				}
 				t.Errorf("rokuban server did not stop after interrupt")
 			}
 		}

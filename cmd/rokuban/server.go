@@ -486,13 +486,15 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	metricCollectors = append(metricCollectors, newConfiguredLoopPassCollectors(pool, cfg.Registry())...)
 	tunerStore := pgstore.NewTuners(pool)
 	analysisStore := pgstore.NewAnalysis(pool)
+	recordingStore := pgstore.NewRecordings(pool)
 	routerCfg := api.RouterConfig{
 		AllowedHosts:        cfg.Server.AllowedHosts,
 		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
 		Pool:                pool,
 		ChapterStore:        pgstore.NewAnalysis(pool),
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
-		RecordingTrashStore: pgstore.NewRecordings(pool),
+		RecordingTrashStore: recordingStore,
+		RecordingQuery:      recordingStore,
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
 		ReservationStore:    pgstore.NewReservations(pool),

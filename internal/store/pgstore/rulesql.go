@@ -94,7 +94,7 @@ func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
 	var clause string
 	switch match.Mode {
 	case "keyword":
-		clause = rulequery.KeywordClause(column, match.Value, match.CaseSensitive, arg)
+		clause = keywordClause(column, match.Value, match.CaseSensitive, arg)
 	case "regex":
 		// 正規表現方言は Postgres POSIX ARE（~ / ~*）。ユーザーが書いたパターンの意味を
 		// 壊さないよう、列は生のまま使う。
@@ -108,6 +108,16 @@ func compileTextMatch(match rulequery.TextMatch, arg func(any) string) string {
 		return "NOT (" + clause + ")"
 	}
 	return clause
+}
+
+// keywordClause は列 col への部分一致を組む。
+// 検索と分類ルールで全角・半角の正規化と LIKE 特殊文字の扱いを揃える。
+func keywordClause(col string, value string, caseSensitive bool, arg func(any) string) string {
+	if caseSensitive {
+		return col + " LIKE ('%' || like_escape(" + arg(value) + ") || '%') ESCAPE '\\'"
+	}
+	normCol := "normalize_search_text(" + col + ")"
+	return normCol + " LIKE ('%' || normalize_search_text(like_escape(" + arg(value) + ")) || '%') ESCAPE '\\'"
 }
 
 func textTargetColumn(target string) string {

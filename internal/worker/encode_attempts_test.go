@@ -845,7 +845,10 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 		}
 		if !workFinished {
 			select {
-			case <-workDone:
+			case err := <-workDone:
+				if err != nil {
+					t.Logf("Work stopped after killing the leaky child: %v", err)
+				}
 			case <-time.After(2 * workerExecWaitDelay):
 				t.Error("Work did not stop after killing the leaky child")
 			}
@@ -1080,7 +1083,10 @@ func TestEncodeWorker_RunEncodeCommand_DiscardsProgressAfterLongLine(t *testing.
 	case <-time.After(3 * time.Second):
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		select {
-		case <-helperDone:
+		case err := <-helperDone:
+			if err != nil {
+				t.Logf("helper exited after kill: %v", err)
+			}
 		case <-time.After(time.Second):
 		}
 		t.Fatalf("runEncodeCommand did not return after the progress parser stopped on an overlong line\n%s", helperOut.String())

@@ -370,7 +370,12 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 
 func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{
+		Pool:            pool,
+		RecordingQuery:  pgstore.NewRecordings(pool),
+		CMStationStore:  pgstore.NewAnalysis(pool),
+		CMDetectEnabled: true,
+	}))
 	defer srv.Close()
 	ctx := context.Background()
 

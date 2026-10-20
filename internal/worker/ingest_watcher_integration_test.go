@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -66,7 +67,10 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	t.Cleanup(func() {
 		cancel()
 		select {
-		case <-watcherDone:
+		case err := <-watcherDone:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("watcher stopped after cancellation with %v, want context.Canceled", err)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("watcher did not stop after context cancellation")
 		}

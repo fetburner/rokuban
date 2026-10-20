@@ -40,9 +40,9 @@ $$;
 -- +goose StatementEnd
 
 -- like_escape は LIKE の特殊文字（\ % _）を文字どおりに照合するための前置。
--- KeywordClause（internal/rulequery）と同じ規則で、4 経路（ruler・EPG 検索・
--- 録画一覧・分類ルール）が同じ関数を通る。**トリガーと全件再評価のジョブは Go を
--- 通らない**ので、分類ルールの当たりは SQL 側でエスケープできることが前提になる。
+-- pgstore の keywordClause と分類ルールは同じエスケープ・正規化規則を使う。
+-- ruler・EPG 検索・録画一覧・分類ルールでキーワードの当たり方を揃える。
+-- **トリガーと全件再評価のジョブは Go を通らない**ので、DB 側でもエスケープする。
 --
 -- +goose StatementBegin
 CREATE FUNCTION public.like_escape(s text) RETURNS text
@@ -69,7 +69,7 @@ CREATE TABLE public.label_rules (
     priority integer DEFAULT 0 NOT NULL,
     value_key text GENERATED ALWAYS AS (public.series_key(value)) STORED,
     -- keyword_key はキーワード側の正規化（normalize_search_text(like_escape(...))、
-    -- KeywordClause と同じ方言）。label_rule_winner は録画 1 行ごとに呼ばれるので、
+    -- pgstore の keywordClause と同じ方言）。label_rule_winner は録画 1 行ごとに呼ばれるので、
     -- ここで持たないと (録画行 × ルール本) 回の正規化が走る（73,000 行 × 50 本の
     -- 実測で 16.0 s → 0.95 s）。
     keyword_key text GENERATED ALWAYS AS (public.normalize_search_text(public.like_escape(keyword))) STORED,

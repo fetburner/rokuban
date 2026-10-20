@@ -493,12 +493,11 @@ jobs:
       # モバイルのルールカードの縦積みと補助導線の判定（`E2E_RULE_CARD_ONLY`）は browser-e2e job で実行する。
       - run: pnpm check:colors
         working-directory: web
-      # go.mod より古い Go でビルドされた golangci-lint は起動を拒む。v2.12.2 は
-      # go1.26 ビルドなので go.mod の go 1.27.1 では動かない。v2.13.2 は go1.27.0
-      # ビルド（比較は major.minor なので 1.27.1 を通す）。
+      # Go 1.27.3 の export data v5 を読むため v2.15.0 を使う。
+      # v2.13.2 は `internal/goarch` の export data version 5 error で停止した。
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13.2
+          version: v2.15.0
 
   # 保守対象の Markdown 全体（README.md / CLAUDE.md / deploy/**/*.md / docs/**/*.md /
   # web/e2e/**/*.md）を textlint で検査する。プロファイルは 1 本で、違反 0 件が gate。

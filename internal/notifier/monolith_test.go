@@ -45,7 +45,8 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	runHub(t, hub, pool)
 
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool,
+		Pool:           pool,
+		RecordingQuery: pgstore.NewRecordings(pool),
 		Mounter: api.Mounters{
 			streamer.New(pgstore.NewMedia(pool), streamer.Config{MediaDir: mediaDir}),
 			hub,

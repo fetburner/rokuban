@@ -41,6 +41,8 @@ type RouterConfig struct {
 
 	// RecordingTrashStore は論理削除、復元、即時削除要求の永続化契約。
 	RecordingTrashStore store.RecordingTrash
+	// RecordingQuery は録画一覧・単体取得・棚の読み取り契約。
+	RecordingQuery store.RecordingQuery
 
 	// ReservationStore はユーザー予約入力と予約読み取りの永続化契約。
 	ReservationStore store.Reservations
@@ -184,7 +186,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.RecordingQuery,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
 		cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,

@@ -92,7 +92,7 @@ LIKE のエスケープは、SQL 関数に一本化する。分類ルールは D
 
 <details><summary>根拠</summary>
 
-- 共有する方言: `KeywordClause`
+- 共有する方言: キーワードの LIKE エスケープと正規化。SQL の述語は pgstore で組み立てる
 
 </details>
 
