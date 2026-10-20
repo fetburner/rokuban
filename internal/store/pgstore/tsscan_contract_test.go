@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -32,23 +33,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 		NewOriginal: func(t *testing.T, sizeBytes int64, trashed bool) (int64, int64) {
 			t.Helper()
 			ctx := context.Background()
-			recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				Source:            "manual",
-				Site:              db.DefaultSite,
-				NetworkID:         32678,
-				ServiceID:         5168,
-				EventID:           tsScanContractEventID.Add(1),
-				ServiceName:       "TS scan store contract fixture",
-				ChannelType:       "GR",
-				Channel:           "27",
-				Title:             "TS scan store contract fixture",
-				ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-				ProgramDurationMs: 60_000,
-				Status:            "finished",
-			})
-			if err != nil {
-				t.Fatalf("seeding recording: %v", err)
-			}
+			recordingID := newTSScanContractRecording(t, pool, "TS scan store contract fixture")
 			assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 				RecordingID: recordingID,
 				Kind:        db.AssetKindOriginal,
@@ -68,23 +53,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 		NewEncodedOnlyRecording: func(t *testing.T) (int64, int64) {
 			t.Helper()
 			ctx := context.Background()
-			recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				Source:            "manual",
-				Site:              db.DefaultSite,
-				NetworkID:         32678,
-				ServiceID:         5168,
-				EventID:           tsScanContractEventID.Add(1),
-				ServiceName:       "TS scan store contract encoded-only fixture",
-				ChannelType:       "GR",
-				Channel:           "27",
-				Title:             "TS scan store contract encoded-only fixture",
-				ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-				ProgramDurationMs: 60_000,
-				Status:            "finished",
-			})
-			if err != nil {
-				t.Fatalf("seeding encoded-only recording: %v", err)
-			}
+			recordingID := newTSScanContractRecording(t, pool, "TS scan store contract encoded-only fixture")
 			profile := "h264"
 			assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 				RecordingID: recordingID,
@@ -193,28 +162,54 @@ FROM drop_positions WHERE media_asset_id = $1 ORDER BY byte_offset`, assetID)
 			return snapshot
 		},
 		BeginAssetStateChange: func(t *testing.T, assetID int64, state string) func() {
-			t.Helper()
-			ctx := context.Background()
-			tx, err := pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("beginning media asset state change: %v", err)
-			}
-			t.Cleanup(func() { _ = tx.Rollback(ctx) })
-			if _, err := tx.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, state); err != nil {
-				t.Fatalf("changing media asset state in blocker transaction: %v", err)
-			}
-			var commitOnce sync.Once
-			return func() {
-				commitOnce.Do(func() {
-					if err := tx.Commit(ctx); err != nil {
-						t.Errorf("committing media asset state change: %v", err)
-					}
-				})
-			}
+			return beginTSScanContractAssetStateChange(t, pool, assetID, state)
 		},
 		WaitForLockWaiter: func(t *testing.T, operation string) {
 			t.Helper()
 			waitForContractLockWaiter(t, pool, operation)
 		},
+	}
+}
+
+func newTSScanContractRecording(t *testing.T, pool *pgxpool.Pool, serviceName string) int64 {
+	t.Helper()
+	recordingID, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
+		Source:            "manual",
+		Site:              db.DefaultSite,
+		NetworkID:         32678,
+		ServiceID:         5168,
+		EventID:           tsScanContractEventID.Add(1),
+		ServiceName:       serviceName,
+		ChannelType:       "GR",
+		Channel:           "27",
+		Title:             serviceName,
+		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
+		ProgramDurationMs: 60_000,
+		Status:            "finished",
+	})
+	if err != nil {
+		t.Fatalf("seeding TS scan contract recording: %v", err)
+	}
+	return recordingID
+}
+
+func beginTSScanContractAssetStateChange(t *testing.T, pool *pgxpool.Pool, assetID int64, state string) func() {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("beginning media asset state change: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err := tx.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, state); err != nil {
+		t.Fatalf("changing media asset state in blocker transaction: %v", err)
+	}
+	var commitOnce sync.Once
+	return func() {
+		commitOnce.Do(func() {
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("committing media asset state change: %v", err)
+			}
+		})
 	}
 }
