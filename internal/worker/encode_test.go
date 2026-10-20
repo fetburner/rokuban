@@ -717,7 +717,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "missing", start.count, errors.New("previous failure"))
+		updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "missing", start.Count, errors.New("previous failure"))
 		if err != nil || !updated {
 			t.Fatalf("recording prior failure %d: updated=%v err=%v", i+1, updated, err)
 		}

@@ -302,7 +302,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", prior.count, errors.New("previous failure"))
+	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", prior.Count, errors.New("previous failure"))
 	if err != nil || !updated {
 		t.Fatalf("setting previous attempt: updated=%v err=%v", updated, err)
 	}
@@ -409,21 +409,21 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if start.count != attempt {
-			t.Fatalf("started attempt count = %d, want %d", start.count, attempt)
+		if start.Count != attempt {
+			t.Fatalf("started attempt count = %d, want %d", start.Count, attempt)
 		}
-		if attempt == 1 && start.deadAttempt != 0 {
-			t.Fatalf("first attempt marked dead attempt %d, want 0", start.deadAttempt)
+		if attempt == 1 && start.DeadAttempt != 0 {
+			t.Fatalf("first attempt marked dead attempt %d, want 0", start.DeadAttempt)
 		}
-		if attempt > 1 && start.deadAttempt != attempt-1 {
-			t.Fatalf("started attempt %d reported dead attempt %d, want %d", attempt, start.deadAttempt, attempt-1)
+		if attempt > 1 && start.DeadAttempt != attempt-1 {
+			t.Fatalf("started attempt %d reported dead attempt %d, want %d", attempt, start.DeadAttempt, attempt-1)
 		}
 	}
 	terminal, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !terminal.terminal || terminal.count != 25 || terminal.deadAttempt != 25 {
+	if !terminal.Terminal || terminal.Count != 25 || terminal.DeadAttempt != 25 {
 		t.Fatalf("terminal start = %+v, want terminal count/dead attempt 25", terminal)
 	}
 	if state, ok := encodeAttemptState(t, pool, recordingID, "h264"); !ok || state != "failed" {
@@ -535,7 +535,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if start.terminal || start.count != 1 {
+	if start.Terminal || start.Count != 1 {
 		t.Fatalf("start after reset = %+v, want count 1 and not terminal", start)
 	}
 }
@@ -691,7 +691,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", start.count, errors.New(longMsg))
+	updated, err := w.markEncodeAttemptFailed(context.Background(), recordingID, "h264", start.Count, errors.New(longMsg))
 	if err != nil || !updated {
 		t.Fatalf("markEncodeAttemptFailed() = (%v, %v), want updated", updated, err)
 	}
@@ -752,7 +752,7 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := w.clearEncodeAttempt(ctx, recordingID, "h264", start.count); err != nil {
+	if err := w.clearEncodeAttempt(ctx, recordingID, "h264", start.Count); err != nil {
 		t.Fatal(err)
 	}
 

@@ -1581,8 +1581,8 @@ paths:
       operationId: removeRecordingEncodedAsset
       summary: Remove one encoded version of a recording
       description: |
-        エンコード版を 1 本だけ外す（容量を空けるための操作。録画全体をごみ箱へ移す操作ではなく、
-        ごみ箱状態でも消去前なら利用できる）。
+        エンコード版を 1 本だけ外す（容量を空けるための操作。ごみ箱は経由しない）。
+        ごみ箱にある録画でも、消去前なら利用できる。
         `encode_profiles` から profile を外し、「この版を外した」という要求を記録する。
         **ファイルは消さない**。削除 reconcile の次のパス（既定 15 分）が unlink する。
         外した版は応答の直後から `encodedAssets` に出ない。

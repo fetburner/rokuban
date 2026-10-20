@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -13,43 +12,14 @@ import (
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
-const (
-	encodeAttemptLimit       int32 = jobs.EncodeAttemptLimit
-	encodeProcessDeathReason       = "encode process died before completing"
-)
+const encodeAttemptLimit int32 = jobs.EncodeAttemptLimit
 
 // errEncodeAttemptLimit は jobq.ErrDiscard に包んで返す、ドメイン上限到達の理由。
 var errEncodeAttemptLimit = fmt.Errorf("encode attempt limit (%d) reached; fix the cause and re-request with POST /api/recordings/{id}/encode-profiles or cut /reencode", encodeAttemptLimit)
 
-type encodeAttemptStart struct {
-	count int32
-
-	// deadAttempt is non-zero when the previous row was still running. The next
-	// start counts that attempt as failed before it starts count+1.
-	deadAttempt int32
-	terminal    bool
-
-	restoreState        string
-	restoreError        *string
-	restoreAttemptedAt  time.Time
-	restoreAttemptCount int32
-}
-
 // beginEncodeAttempt creates the next domain attempt and returns its fencing token.
-func (w *EncodeWorker) beginEncodeAttempt(ctx context.Context, recordingID int64, profile string) (encodeAttemptStart, error) {
-	start, err := w.Attempts.Begin(ctx, recordingID, profile, encodeAttemptLimit)
-	if err != nil {
-		return encodeAttemptStart{}, err
-	}
-	return encodeAttemptStart{
-		count:               start.Count,
-		deadAttempt:         start.DeadAttempt,
-		terminal:            start.Terminal,
-		restoreState:        start.RestoreState,
-		restoreError:        start.RestoreError,
-		restoreAttemptedAt:  start.RestoreAttemptedAt,
-		restoreAttemptCount: start.RestoreAttemptCount,
-	}, nil
+func (w *EncodeWorker) beginEncodeAttempt(ctx context.Context, recordingID int64, profile string) (store.EncodeAttemptStart, error) {
+	return w.Attempts.Begin(ctx, recordingID, profile, encodeAttemptLimit)
 }
 
 func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID int64, profile string, attempt int32, encodeErr error) (bool, error) {
@@ -63,16 +33,10 @@ func (w *EncodeWorker) markEncodeAttemptFailed(ctx context.Context, recordingID 
 	return updated, nil
 }
 
-func (w *EncodeWorker) restoreEncodeAttempt(ctx context.Context, recordingID int64, profile string, start encodeAttemptStart) error {
+func (w *EncodeWorker) restoreEncodeAttempt(ctx context.Context, recordingID int64, profile string, start store.EncodeAttemptStart) error {
 	writeCtx, cancel := attemptWriteContext(ctx)
 	defer cancel()
-	if err := w.Attempts.Restore(writeCtx, recordingID, profile, store.EncodeAttemptStart{
-		Count:               start.count,
-		RestoreState:        start.restoreState,
-		RestoreError:        start.restoreError,
-		RestoreAttemptedAt:  start.restoreAttemptedAt,
-		RestoreAttemptCount: start.restoreAttemptCount,
-	}); err != nil {
+	if err := w.Attempts.Restore(writeCtx, recordingID, profile, start); err != nil {
 		return fmt.Errorf("restoring encode attempt: %w", err)
 	}
 	return nil

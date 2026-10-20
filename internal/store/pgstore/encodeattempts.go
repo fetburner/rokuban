@@ -111,13 +111,12 @@ func (s *Media) Begin(ctx context.Context, recordingID int64, profile string, li
 
 // Fail は現在の fencing token が一致する実行中試行を失敗にし、更新できたかを返す。
 func (s *Media) Fail(ctx context.Context, recordingID int64, profile string, attempt int32, message string) (bool, error) {
-	attemptedAt, err := sqlcgen.New(s.pool).UpdateRecordingEncodeAttemptFailed(ctx, sqlcgen.UpdateRecordingEncodeAttemptFailedParams{
+	_, err := sqlcgen.New(s.pool).UpdateRecordingEncodeAttemptFailed(ctx, sqlcgen.UpdateRecordingEncodeAttemptFailedParams{
 		RecordingID:  recordingID,
 		Profile:      profile,
 		Error:        &message,
 		AttemptCount: attempt,
 	})
-	_ = attemptedAt
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}

@@ -617,9 +617,6 @@ type encodeProfileSelectionError struct{ err error }
 
 func (e encodeProfileSelectionError) Error() string { return e.err.Error() }
 func (e encodeProfileSelectionError) Unwrap() error { return e.err }
-func (e encodeProfileSelectionError) Is(target error) bool {
-	return target == store.ErrEncodeProfileSelectionInvalid
-}
 
 func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error) {
 	if req.Body == nil || len(req.Body.Profiles) == 0 {
@@ -639,7 +636,8 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 			Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles",
 		}, nil
 	}
-	if errors.Is(err, store.ErrEncodeProfileSelectionInvalid) {
+	var sel encodeProfileSelectionError
+	if errors.As(err, &sel) {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
 	}
 	if err != nil {
@@ -660,13 +658,14 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 // （不変条件 9「適用の瞬間」）。検査は削除 reconcile と同じ view に任せる。
 func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveRecordingEncodedAssetRequestObject) (RemoveRecordingEncodedAssetResponseObject, error) {
 	err := h.encodePolicy.RemoveEncodedAsset(ctx, req.Id, req.Profile, h.validateEncodeSelection)
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTrashed) {
+	if errors.Is(err, store.ErrNotFound) {
 		return RemoveRecordingEncodedAsset404JSONResponse{Error: "recording not found"}, nil
 	}
 	if errors.Is(err, store.ErrEncodedAssetNotFound) {
 		return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
 	}
-	if errors.Is(err, store.ErrEncodeProfileSelectionInvalid) {
+	var sel encodeProfileSelectionError
+	if errors.As(err, &sel) {
 		return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
 	}
 	if errors.Is(err, store.ErrLastViewableCopy) {
@@ -705,7 +704,7 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	}
 
 	err := h.encodePolicy.RequestCutRebuild(ctx, req.Id, req.Profile)
-	if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrTrashed) {
+	if errors.Is(err, store.ErrNotFound) {
 		return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
 	}
 	if errors.Is(err, store.ErrOriginalUnavailable) {

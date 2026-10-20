@@ -59,6 +59,9 @@ func RunEncodePolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	t.Run("removal validates desired after taking the policy lock", func(t *testing.T) {
 		runRemovalValidatesLockedDesired(t, newFixture)
 	})
+	t.Run("removal skips validation for a profile outside desired", func(t *testing.T) {
+		runRemovalSkipsValidateWhenNotDesired(t, newFixture)
+	})
 	t.Run("removal remains available for trashed recordings", func(t *testing.T) {
 		runRemovalOnTrashedRecording(t, newFixture)
 	})
@@ -158,21 +161,24 @@ func runAppendAfterRemoval(t *testing.T, newFixture NewEncodePolicyFixture) {
 	commitRemoval := f.BeginRemoval(t, id, profile)
 
 	finished := make(chan error, 1)
+	errRejected := errors.New("selection rejected")
+	var calls int
 	var validated []string
 	go func() {
 		finished <- f.Policy.AppendProfiles(ctx, id, []string{"cut"}, func(desired []string) error {
+			calls++
 			validated = append([]string(nil), desired...)
-			return store.ErrEncodeProfileSelectionInvalid
+			return errRejected
 		})
 	}()
 	f.WaitPolicyLock(t)
 	commitRemoval()
 	err := <-finished
-	if !errors.Is(err, store.ErrEncodeProfileSelectionInvalid) {
-		t.Fatalf("AppendProfiles error = %v, want the validation result after removal", err)
+	if err == nil || err.Error() != errRejected.Error() {
+		t.Fatalf("AppendProfiles error = %v, want the validate result returned as is", err)
 	}
-	if !reflect.DeepEqual(validated, []string{"cut"}) {
-		t.Fatalf("validation saw desired = %v, want [cut] after removal", validated)
+	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
+		t.Fatalf("validation calls/desired = %d/%v, want 1/[cut] after removal", calls, validated)
 	}
 	if got := f.GetDesired(t, id); len(got) != 0 {
 		t.Fatalf("desired after rejected append = %v, want empty", got)
@@ -236,6 +242,7 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 	commitPolicyUpdate := f.BeginPolicyUpdate(t, id, []string{profile, "cut"})
 
 	finished := make(chan error, 1)
+	errRejected := errors.New("selection rejected")
 	var calls int
 	var validated []string
 	go func() {
@@ -243,15 +250,15 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 			calls++
 			validated = append([]string(nil), desired...)
 			if len(desired) == 1 && desired[0] == "cut" {
-				return store.ErrEncodeProfileSelectionInvalid
+				return errRejected
 			}
 			return nil
 		})
 	}()
 	f.WaitPolicyLock(t)
 	commitPolicyUpdate()
-	if err := <-finished; !errors.Is(err, store.ErrEncodeProfileSelectionInvalid) {
-		t.Fatalf("RemoveEncodedAsset error = %v, want validation against committed desired", err)
+	if err := <-finished; err == nil || err.Error() != errRejected.Error() {
+		t.Fatalf("RemoveEncodedAsset error = %v, want the validate result returned as is", err)
 	}
 	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
 		t.Fatalf("validation calls/desired = %d/%v, want 1/[cut]", calls, validated)
@@ -261,6 +268,31 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 	}
 	if f.HasRemovalRequest(t, id, profile) {
 		t.Fatal("rejected removal left a removal request")
+	}
+}
+
+func runRemovalSkipsValidateWhenNotDesired(t *testing.T, newFixture NewEncodePolicyFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.NewAsset(t, id, "original", nil)
+	profile := "h264"
+	f.NewAsset(t, id, "encoded", &profile)
+	f.SetDesired(t, id, []string{"cut"})
+
+	var calls int
+	err := f.Policy.RemoveEncodedAsset(ctx, id, profile, func([]string) error {
+		calls++
+		return errors.New("selection rejected")
+	})
+	if err != nil || calls != 0 {
+		t.Fatalf("RemoveEncodedAsset error/validate calls = %v/%d, want nil/0 for a profile outside desired", err, calls)
+	}
+	if got := f.GetDesired(t, id); !sameStrings(got, []string{"cut"}) {
+		t.Fatalf("desired after removing an undesired profile = %v, want [cut]", got)
+	}
+	if !f.HasRemovalRequest(t, id, profile) {
+		t.Fatal("removal request missing for the undesired profile")
 	}
 }
 
