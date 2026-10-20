@@ -174,7 +174,7 @@ func runAppendAfterRemoval(t *testing.T, newFixture NewEncodePolicyFixture) {
 	f.WaitPolicyLock(t)
 	commitRemoval()
 	err := <-finished
-	if err == nil || err.Error() != errRejected.Error() {
+	if !errors.Is(err, errRejected) {
 		t.Fatalf("AppendProfiles error = %v, want the validate result returned as is", err)
 	}
 	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
@@ -257,7 +257,7 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 	}()
 	f.WaitPolicyLock(t)
 	commitPolicyUpdate()
-	if err := <-finished; err == nil || err.Error() != errRejected.Error() {
+	if err := <-finished; !errors.Is(err, errRejected) {
 		t.Fatalf("RemoveEncodedAsset error = %v, want the validate result returned as is", err)
 	}
 	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
