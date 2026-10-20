@@ -200,6 +200,36 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 
 </details>
 
+### メディア削除
+
+削除の候補選びと状態遷移は永続化契約に集め、worker はファイル操作に徹する。
+
+worker は `MediaDelete` から候補を読み、ファイル I/O の後に状態遷移を確定する。候補の列挙と DB 行の更新は store が担い、削除判断の再評価は遷移時にも行う。
+
+`MarkUntilEncodedDeleting` は録画単位の書き込みと直列化し、ロック後に削除条件を再確認する。`RevertToActive` も適用時に削除条件を再確認し、すでに `deleted` の行を復活させない。ごみ箱の猶予 cutoff は既存の例外として呼び出し側から受け取る。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.MediaDelete`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- 録画ロック後の再評価と、deleted 行の復元防止: `TestMediaDeleteStoreContract`
+
+</details>
+
+### TS scan
+
+TS の計測結果は、対象の状態を再確認した上で一括して保存する。
+
+`TSScan` は計測対象の読み取りと計測結果の保存を担う。`ReplaceScan` は原本の状態とサイズを再確認し、drop 統計・位置・計測サイズを 1 tx で置き換える。途中の書き込みが失敗した場合は、以前の計測結果と marker を残す。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.TSScan`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- 置き換えの原子性、サイズ再確認、失敗時の復元: `TestTSScanStoreContract`
+
+</details>
+
 ### 更新通知
 
 更新通知（NOTIFY）は、データを変えたドメインのメソッドの中で送る。汎用の発行 interface は作らず、payload の文字列も契約に出さない。

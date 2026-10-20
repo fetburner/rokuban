@@ -99,7 +99,7 @@ func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 		t.Fatalf("changing DB size: %v", err)
 	}
 	args := ScanArgs{RecordingID: recordingID}
-	if err := runWorkerViaJobQFake(context.Background(), (&ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}), args); err == nil {
+	if err := runWorkerViaJobQFake(context.Background(), (&ScanWorker{Media: pgstore.NewMedia(pool), MediaDir: mediaDir}), args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with DB size != file size, want error")
 	}
 	stats, positions := readTSScanRows(t, pool, assetID)
@@ -145,7 +145,7 @@ type tsScanPositionRow struct {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
+	worker := &ScanWorker{Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	args := ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(context.Background(), worker, args); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
@@ -288,7 +288,7 @@ func TestTSScan_ReplacementRollsBackStatisticsAndMarkerTogether(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS fail_ts_scan_position_insert()`)
 	})
 
-	worker := &ScanWorker{Pool: pool, Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
+	worker := &ScanWorker{Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
 	args := ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(ctx, worker, args); err == nil {
 		t.Fatal("ScanWorker.Work() succeeded with failing drop_positions trigger, want error")

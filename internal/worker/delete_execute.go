@@ -2,8 +2,8 @@
 // 読む表は circuit_breakers、recordings、media_assets と名前付き削除述語の参照先。
 // 書く表は circuit_breakers、media_assets、encoded_asset_removal_requests、orphan_files。
 //
-// 実行は until_encoded の述語を、実行の直前に再評価する（LockRecording と
-// MarkUntilEncodedOriginalDeleting）。flock を deleting 遷移より前に取るので、
+// 実行は until_encoded の述語を、実行の直前に再評価する
+// （MediaDelete.MarkUntilEncodedDeleting）。flock を deleting 遷移より前に取るので、
 // この遷移は選定へ移せない。
 //
 // orphan_files の書き手は 2 者いる。候補は storage_audit.go が書き、実行が unlink の後に
@@ -35,11 +35,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -67,15 +64,13 @@ func (w *DeleteReconcileWorker) observeDeleteReconcile(ctx context.Context, brea
 // active に戻すと「active なのにファイルが無い行」を作ってしまう。これは
 // 案 B [復元時に deleting を同期的に active へ戻す] を却下した理由と同じ
 // 罠で、revert 経路自身がこの窓を作らないようにする）。
-func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time) error {
-	rows, err := q.ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
-		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
-	})
+func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Context, trashCutoff time.Time) error {
+	rows, err := w.MediaDelete.ListUnqualifiedDeletingAssets(ctx, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return fmt.Errorf("listing unqualified deleting assets: %w", err)
 	}
 	for _, a := range rows {
-		w.resolveUnqualifiedDeletingAsset(ctx, q, a, trashCutoff)
+		w.resolveUnqualifiedDeletingAsset(ctx, a, trashCutoff)
 	}
 	return nil
 }
@@ -89,16 +84,6 @@ func (w *DeleteReconcileWorker) restoreUnqualifiedDeletingAssets(ctx context.Con
 // restoreUnqualifiedDeletingAssets で該当しなくなった行は既に active か
 // deleted に決着しているので、ここに現れるのは常に判定を再確認できた
 // ものだけ。
-func listPendingDeleteAssets(ctx context.Context, q *sqlcgen.Queries, trashCutoff time.Time) ([]sqlcgen.ListMediaAssetsPendingDeleteRow, error) {
-	rows, err := q.ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
-		GraceCutoff: trashCutoff, RowLimit: deleteReconcileRowLimit,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing pending deletes: %w", err)
-	}
-	return rows, nil
-}
-
 // applyDeleteCircuitBreaker は新規削除の上限を超えたとき、または発動中に削除を止める。
 func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, breakers store.Breakers, site string, tripped bool, total, maxPerPass int) (bool, error) {
 	if total > maxPerPass {
@@ -118,15 +103,15 @@ func (w *DeleteReconcileWorker) applyDeleteCircuitBreaker(ctx context.Context, b
 }
 
 // deleteCandidates はごみ箱・until_encoded・外した版と公開前の孤児候補を物理削除する。
-func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen.Queries, c deleteCandidateSet, orphanMTimeGrace time.Duration) {
+func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, c deleteCandidateSet, orphanMTimeGrace time.Duration) {
 	for _, a := range c.trash {
-		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "trash")
+		w.deleteMediaAsset(ctx, a, "trash")
 	}
 	for _, a := range c.untilEncoded {
-		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "until_encoded")
+		w.deleteMediaAsset(ctx, a, "until_encoded")
 	}
 	for _, a := range c.removedEncoded {
-		w.deleteMediaAsset(ctx, q, deleteTarget{ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind}, "removed_encoded")
+		w.deleteMediaAsset(ctx, a, "removed_encoded")
 	}
 	for _, relPath := range c.agedOrphans {
 		// ctx 死亡後は残りを打ち切る（DeleteOrphanFile 1 件ごとに
@@ -136,7 +121,7 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 		if ctx.Err() != nil {
 			return
 		}
-		w.deleteOrphanFile(q, relPath, orphanMTimeGrace)
+		w.deleteOrphanFile(relPath, orphanMTimeGrace)
 	}
 }
 
@@ -144,12 +129,12 @@ func (w *DeleteReconcileWorker) deleteCandidates(ctx context.Context, q *sqlcgen
 // deleted）で物理削除する。各段階のエラーはログに残すだけで呼び出し元には
 // 伝播しない — 1 件の失敗でパス全体を止めると、後続の正常な削除まで巻き込む
 // ため（record_sweep の processRecord と同じ設計判断）。deleting のまま
-// 終わった行は次パスの ListMediaAssetsPendingDelete が拾い直す。
+// 終わった行は次パスの MediaDelete.ListPendingDeleteAssets が拾い直す。
 //
 // 「録画そのものが消えたか」の判定は呼び出し元ではなく MarkPurgedRecordings
 // が録画単位・パス末尾で行う（issue #135）ため、ここでは deleted まで到達
 // したかどうかを戻さない。
-func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen.Queries, t deleteTarget, source string) {
+func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.MediaDeleteAsset, source string) {
 	log := slog.With("media_asset_id", t.ID, "rel_path", t.RelPath, "source", source)
 
 	path, err := mediapath.Resolve(w.MediaDir, t.RelPath)
@@ -176,35 +161,18 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
 	// 名前付き述語で再確認してから deleting にする。
 	if source == "until_encoded" {
-		tx, err := w.Pool.Begin(ctx)
-		if err != nil {
-			log.Error("delete_reconcile: beginning until_encoded delete", "err", err)
-			return
-		}
-		defer func() { _ = tx.Rollback(ctx) }()
-		txq := sqlcgen.New(tx)
-		if _, err := txq.LockRecording(ctx, t.RecordingID); err != nil {
-			if !errors.Is(err, pgx.ErrNoRows) {
-				log.Error("delete_reconcile: locking recording before until_encoded delete", "err", err)
-			}
-			return
-		}
-		marked, err := txq.MarkUntilEncodedOriginalDeleting(ctx, t.ID)
+		marked, err := w.MediaDelete.MarkUntilEncodedDeleting(ctx, t.RecordingID, t.ID)
 		if err != nil {
 			log.Error("delete_reconcile: rechecking until_encoded eligibility", "err", err)
 			return
 		}
-		if marked == 0 {
-			return
-		}
-		if err := tx.Commit(ctx); err != nil {
-			log.Error("delete_reconcile: committing until_encoded delete", "err", err)
+		if !marked {
 			return
 		}
 	} else {
 		// 既に deleting なら 0 行更新（それでよい。pending 経路はこの UPDATE を
 		// スキップしても問題ない冪等な no-op）。active からの遷移だけを記録する。
-		if _, err := q.MarkMediaAssetDeleting(ctx, t.ID); err != nil {
+		if err := w.MediaDelete.MarkDeleting(ctx, t.ID); err != nil {
 			log.Error("delete_reconcile: marking asset deleting", "err", err)
 			return
 		}
@@ -236,7 +204,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 		}
 	}
 
-	if _, err := q.MarkMediaAssetDeleted(ctx, t.ID); err != nil {
+	if err := w.MediaDelete.MarkDeleted(ctx, t.ID); err != nil {
 		log.Error("delete_reconcile: marking asset deleted", "err", err)
 		return
 	}
@@ -250,22 +218,22 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, q *sqlcgen
 // Production work proceeds immediately.
 var beforeMediaAssetUnlink = func(string) {}
 
-// resolveUnqualifiedDeletingAsset は ListUnqualifiedDeletingAssets が挙げた
+// resolveUnqualifiedDeletingAsset は MediaDelete.ListUnqualifiedDeletingAssets が挙げた
 // 1 行（trash / until_encoded のどちらの判定にも該当しなくなった deleting
 // 行）を、ファイルの現存を確認してから active か deleted のどちらかに
 // 決着させる（issue #105）。
 //
-// ファイルがまだ存在すれば、判定条件を RevertMediaAssetToActive の WHERE で
+// ファイルがまだ存在すれば、判定条件を MediaDelete.RevertToActive で
 // 再評価しつつ active に戻す（不変条件 9「適用の瞬間」。ここまでの SELECT →
 // stat の間に別の書き手が recordings 側を書き換えて再度条件を満たすように
 // なっていれば、0 行のまま deleting が保たれ、pending 経路が続行する）。
 //
-// ファイルが既に無ければ（unlink 成功後 MarkMediaAssetDeleted がコミットされる
+// ファイルが既に無ければ（unlink 成功後 MediaDelete.MarkDeleted がコミットされる
 // 前にプロセスが落ち、その間に復元された）、active には戻さず deleted を
 // 確定する。ここで無条件に active へ戻すと、案 B（復元時に deleting を
 // 同期的に active へ戻す）を却下した理由そのもの ——「active なのにファイルが
 // 無い行」を作ってしまう。
-func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, q *sqlcgen.Queries, a sqlcgen.ListUnqualifiedDeletingAssetsRow, graceCutoff time.Time) {
+func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff time.Time) {
 	log := slog.With("media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
 
 	path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
@@ -276,7 +244,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 
 	if _, statErr := os.Stat(path); statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
-			if _, err := q.MarkMediaAssetDeleted(ctx, a.ID); err != nil {
+			if err := w.MediaDelete.MarkDeleted(ctx, a.ID); err != nil {
 				log.Error("delete_reconcile: finalizing already-unlinked asset as deleted", "err", err)
 				return
 			}
@@ -289,15 +257,12 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		return
 	}
 
-	n, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
-		ID:          a.ID,
-		GraceCutoff: graceCutoff,
-	})
+	updated, err := w.MediaDelete.RevertToActive(ctx, a.ID, graceCutoff)
 	if err != nil {
 		log.Error("delete_reconcile: reverting asset to active", "err", err)
 		return
 	}
-	if n > 0 {
+	if updated {
 		log.Info("delete_reconcile: reverted deleting asset to active (no longer qualifies for deletion)")
 	}
 }
@@ -305,7 +270,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 // deleteOrphanFile は公開前と判定できる孤児だけを物理削除し orphan_files 行を消す。
 // canonical 名はここへ来ても削除しない。ingest temp/checkpoint は同じ flock を取り、
 // staging は一意な予約名なので lock を取らず、mtime を再確認してから unlink する。
-func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath string, mtimeGrace time.Duration) {
+func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time.Duration) {
 	log := slog.With("rel_path", relPath, "source", "orphan")
 	kind := classifyOrphanCleanup(relPath)
 	if kind == orphanCleanupCanonical {
@@ -320,7 +285,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		return
 	}
 	if kind == orphanCleanupIngestCheckpoint {
-		w.deleteOrphanIngestCheckpoint(q, path, relPath, mtimeGrace, log)
+		w.deleteOrphanIngestCheckpoint(path, relPath, mtimeGrace, log)
 		return
 	}
 
@@ -328,7 +293,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 	var tempLock *os.File
 	if isTemp {
 		var ok bool
-		tempLock, ok = w.lockOrphanIngestTemp(q, path, relPath, log)
+		tempLock, ok = w.lockOrphanIngestTemp(path, relPath, log)
 		if !ok {
 			return
 		}
@@ -353,11 +318,11 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		if isTemp {
 			// ロック取得後にパスが消えた場合も、ここから os.Remove へ進むと
 			// 同名で再作成された新しい temp をロックなしで消しうる。
-			w.clearOrphanFileRecord(q, relPath, 0, false, log)
+			w.clearOrphanFileRecord(relPath, 0, false, log)
 			return
 		}
 		// ingest temp / staging が消えていれば候補記録だけを整理する。
-		w.clearOrphanFileRecord(q, relPath, 0, false, log)
+		w.clearOrphanFileRecord(relPath, 0, false, log)
 		return
 	}
 
@@ -372,18 +337,18 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(q *sqlcgen.Queries, relPath str
 		checkpointRelPath := relPath + ingestCheckpointSuffix
 		if err := os.Remove(ingestCheckpointPath(path)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Warn("delete_reconcile: removing ingest checkpoint with aged temp failed", "err", err)
-		} else if err := q.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
+		} else if err := w.Storage.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
 			log.Warn("delete_reconcile: clearing ingest checkpoint orphan row", "err", err)
 		}
-		w.clearOrphanFileRecord(q, relPath, size, physicallyDeleted, log)
+		w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
 		return
 	}
-	w.clearOrphanFileRecord(q, relPath, size, physicallyDeleted, log)
+	w.clearOrphanFileRecord(relPath, size, physicallyDeleted, log)
 }
 
 // deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。
 // checkpoint の削除だけでも次回 replay の量が増えるだけだが、temp と同じ寿命で扱う。
-func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(q *sqlcgen.Queries, path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
+func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
 	tempPath := ingestTempPathForCheckpoint(path)
 	tempLock, err := lockExistingIngestTempFile(tempPath)
 	if err == nil {
@@ -399,7 +364,7 @@ func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(q *sqlcgen.Queries,
 
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		w.clearOrphanFileRecord(q, relPath, 0, false, log)
+		w.clearOrphanFileRecord(relPath, 0, false, log)
 		return
 	}
 	if err != nil {
@@ -413,20 +378,20 @@ func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(q *sqlcgen.Queries,
 		log.Warn("delete_reconcile: removing ingest checkpoint", "err", err)
 		return
 	}
-	w.clearOrphanFileRecord(q, relPath, info.Size(), true, log)
+	w.clearOrphanFileRecord(relPath, info.Size(), true, log)
 }
 
 // lockOrphanIngestTemp は ingest と同じ flock を temp ファイルに取得する。
 // パスが消えた場合は再作成された別 inode を無 lock で消さないため、DB 行だけ
 // を整理して呼び出し元に false を返す。busy やその他の lock エラーも安全側で
 // 削除を延期する。
-func (w *DeleteReconcileWorker) lockOrphanIngestTemp(q *sqlcgen.Queries, path, relPath string, log *slog.Logger) (*os.File, bool) {
+func (w *DeleteReconcileWorker) lockOrphanIngestTemp(path, relPath string, log *slog.Logger) (*os.File, bool) {
 	tempLock, err := lockExistingIngestTempFile(path)
 	if err == nil {
 		return tempLock, true
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		w.clearOrphanFileRecord(q, relPath, 0, false, log)
+		w.clearOrphanFileRecord(relPath, 0, false, log)
 		return nil, false
 	}
 	if ingestTempLockBusy(err) {
@@ -488,11 +453,11 @@ func removeOrphanFile(path string, log *slog.Logger) (physicallyDeleted, ok bool
 // clearOrphanFileRecord は orphan_files の物理削除後（または対象が既に消えて
 // いた場合）に DB の記録を整理する。ctx 取消後も削除の事実を記録するため
 // Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
-func (w *DeleteReconcileWorker) clearOrphanFileRecord(q *sqlcgen.Queries, relPath string, size int64, physicallyDeleted bool, log *slog.Logger) {
+func (w *DeleteReconcileWorker) clearOrphanFileRecord(relPath string, size int64, physicallyDeleted bool, log *slog.Logger) {
 	// ctx 取消後も削除の事実を記録するため Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
 	defer cancel()
-	if err := q.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
+	if err := w.Storage.DeleteOrphanFile(cleanupCtx, relPath); err != nil {
 		log.Error("delete_reconcile: clearing orphan record after delete", "err", err)
 		return
 	}

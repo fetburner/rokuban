@@ -30,7 +30,9 @@ func NewMedia(pool *pgxpool.Pool) *Media {
 var (
 	_ store.MediaServing       = (*Media)(nil)
 	_ store.MediaReconcile     = (*Media)(nil)
+	_ store.MediaDelete        = (*Media)(nil)
 	_ store.MediaReader        = (*Media)(nil)
+	_ store.TSScan             = (*Media)(nil)
 	_ store.StorageObservation = (*Media)(nil)
 )
 
@@ -369,27 +371,6 @@ func (s *Media) ListMissingSeekTilesRecordings(ctx context.Context, page store.M
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing missing seek tiles recordings: %w", err)
-	}
-	return rows, nil
-}
-
-// GetActiveOriginalForTSScan は TS scan の対象になる active 原本を返す。
-func (s *Media) GetActiveOriginalForTSScan(ctx context.Context, recordingID int64) (store.MediaAsset, error) {
-	row, err := sqlcgen.New(s.pool).GetActiveOriginalForTSScan(ctx, recordingID)
-	if err != nil {
-		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original for TS scan on recording %d", recordingID))
-	}
-	return store.MediaAsset{ID: row.ID, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
-}
-
-// ListMissingTSScanRecordings は TS scan が必要な録画をページ単位で返す。
-func (s *Media) ListMissingTSScanRecordings(ctx context.Context, afterRecordingID int64, rowLimit int32) ([]int64, error) {
-	rows, err := sqlcgen.New(s.pool).ListMissingTSScanRecordings(ctx, sqlcgen.ListMissingTSScanRecordingsParams{
-		AfterRecordingID: afterRecordingID,
-		RowLimit:         rowLimit,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listing missing TS scan recordings: %w", err)
 	}
 	return rows, nil
 }

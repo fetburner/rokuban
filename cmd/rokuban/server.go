@@ -663,6 +663,8 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		RecordingPurge:           pgstore.NewRecordings(pool),
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaReconcile:           mediaStore,
+		MediaDelete:              mediaStore,
+		TSScan:                   mediaStore,
 		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,

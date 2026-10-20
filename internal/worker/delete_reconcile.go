@@ -6,9 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -68,22 +65,14 @@ const (
 	deleteOrphanCleanupTimeout = 10 * time.Second
 )
 
-// deleteTarget は物理削除 1 件分の対象。pending / trash / until_encoded /
-// removed_encoded の sqlc 行型は同じ列を返すので、ここで 1 つに寄せる（引数を平たく
-// 並べると同型のスカラが増えて取り違えがコンパイルで検出できない）。
-type deleteTarget struct {
-	ID          int64
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
-	Kind        string
-}
+// deleteTarget は物理削除 1 件分の対象。削除元によらず共通の store 値を使う。
+type deleteTarget = store.MediaDeleteAsset
 
 // DeleteReconcileWorker は物理 unlink に至る 4 ソース（ごみ箱 / until_encoded /
 // ユーザーが外したエンコード版 / 孤児）を 1 本の reconcile ループに統一する queue worker（docs/storage.md §7）。
 //
 // 削除プロトコルは冪等: media_assets.state を active → deleting → deleted と
-// 遷移させる。deleting のまま落ちても次パスの ListMediaAssetsPendingDelete が
+// 遷移させる。deleting のまま落ちても次パスの MediaDelete.ListPendingDeleteAssets が
 // 拾い直すので、途中失敗しても残骸は蓄積しない。
 //
 // mirakc の basedir には一切触れない（不変条件。ここで扱うのは Rokuban 自身の
@@ -131,9 +120,9 @@ type deleteTarget struct {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	Pool *pgxpool.Pool
 	// Storage は孤児・実体無しの監査の永続化契約。nil は監査を呼ばない部分テストでのみ許容する。
 	Storage        store.StorageObservation
+	MediaDelete    store.MediaDelete
 	RecordingPurge store.RecordingPurge
 	Breakers       store.Breakers
 	MediaDir       string
@@ -174,7 +163,6 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if missingAssetAge <= 0 {
 		missingAssetAge = defaultMissingAssetAge
 	}
-	q := sqlcgen.New(w.Pool)
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
 	if err != nil {
 		return err
@@ -182,12 +170,12 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	// trash / until_encoded 双方の判定に使う grace_cutoff を先に確定する。
 	// pending 経路の再評価（後述）もこの値を使う。
 	trashCutoff := time.Now().Add(-trashRetention)
-	if err := w.restoreUnqualifiedDeletingAssets(ctx, q, trashCutoff); err != nil {
+	if err := w.restoreUnqualifiedDeletingAssets(ctx, trashCutoff); err != nil {
 		return err
 	}
 	// pending の再開はブレーカー対象外（listPendingDeleteAssets のコメント
 	// 参照。既に決めた削除の再実行であり新規の判断ではない）。
-	pending, err := listPendingDeleteAssets(ctx, q, trashCutoff)
+	pending, err := w.MediaDelete.ListPendingDeleteAssets(ctx, trashCutoff, deleteReconcileRowLimit)
 	if err != nil {
 		return err
 	}
@@ -201,15 +189,13 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	var purgedRecordings []store.PurgedRecording
 	defer func() { w.notifyPurgedRecordings(ctx, purgedRecordings, deleteReconcileNotifyBudget) }()
 	for _, a := range pending {
-		w.deleteMediaAsset(ctx, q, deleteTarget{
-			ID: a.ID, RecordingID: a.RecordingID, RelPath: a.RelPath, SizeBytes: a.SizeBytes, Kind: a.Kind,
-		}, "pending")
+		w.deleteMediaAsset(ctx, a, "pending")
 	}
 
 	if err := w.reconcileDeleteObservations(ctx, orphanMTimeGrace, orphanAge, missingAssetAge); err != nil {
 		return err
 	}
-	candidates, err := collectDeleteCandidates(ctx, q, trashCutoff)
+	candidates, err := collectDeleteCandidates(ctx, w.MediaDelete, trashCutoff)
 	if err != nil {
 		return err
 	}
@@ -226,7 +212,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		metrics.DeleteReconcileLastPass.SetToCurrentTime()
 		return nil
 	}
-	w.deleteCandidates(ctx, q, candidates, orphanMTimeGrace)
+	w.deleteCandidates(ctx, candidates, orphanMTimeGrace)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
 	// （issue #135、internal/db/queries/delete_reconcile.sql の MarkPurgedRecordings のコメント参照）。ここより前の
