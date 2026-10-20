@@ -4,22 +4,22 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// ルール作成/更新/削除は同一トランザクションで RulerPassArgs を投入する
-// （ヒント経路。docs/recording/ruler.md §3.1「api がルール書き込みと同一
-// トランザクションで EnqueueTx する」）。dual-write を避けるためのものなので、
-// ここでは各操作が ruler_pass の投入を依頼することを確認する。
+// ルールの commit 後に ruler_pass をヒントとして投入する。
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -45,6 +45,9 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after create = %d, want 1", n)
 	}
+	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
+		t.Fatalf("create enqueue calls = %#v, want a post-commit Enqueue call", calls)
+	}
 
 	// 記録をクリアし、次の操作が行った投入要求だけを見る。
 	enqueuer.Reset()
@@ -68,6 +71,9 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after update = %d, want 1", n)
 	}
+	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
+		t.Fatalf("update enqueue calls = %#v, want a post-commit Enqueue call", calls)
+	}
 	enqueuer.Reset()
 
 	// Delete
@@ -86,13 +92,16 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after delete = %d, want 1", n)
 	}
+	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
+		t.Fatalf("delete enqueue calls = %#v, want a post-commit Enqueue call", calls)
+	}
 }
 
 // ルール書き込みが失敗（存在しない ID の削除で 404）すると、投入要求も行われない。
 func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	router := NewRouter(RouterConfig{Pool: pool, Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -115,35 +124,68 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	}
 }
 
-func TestInsertRulerPassHint_FollowsTransaction(t *testing.T) {
+func TestRuleHintEnqueueFollowsStoreCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	enqueuer := newRecordingEnqueuer()
-	h := &Server{enqueuer: enqueuer}
+	enqueuer := &ruleCommitCheckingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
+	router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
 
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("beginning transaction: %v", err)
+	enqueuer.check = func(ctx context.Context) error {
+		var count int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM rules WHERE name = 'committed before hint'`).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return fmt.Errorf("visible committed rules = %d, want 1 when Enqueue ran", count)
+		}
+		return nil
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if err := h.insertRulerPassHint(ctx, tx, db.DefaultSite); err != nil {
-		t.Fatalf("insertRulerPassHint: %v", err)
+	body := map[string]any{"name": "committed before hint"}
+	raw, _ := json.Marshal(body)
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
 	calls := enqueuer.CallsOfKind("ruler_pass")
-	if len(calls) != 1 {
-		t.Fatalf("ruler_pass enqueue count = %d, want 1", len(calls))
-	}
-	if !calls[0].Transactional || calls[0].Tx != tx {
-		t.Errorf("enqueue call = %#v, want EnqueueTx with caller transaction", calls[0])
+	if len(calls) != 1 || calls[0].Transactional {
+		t.Fatalf("ruler_pass calls = %#v, want one post-commit Enqueue", calls)
 	}
 }
 
-// Enqueuer が nil でもルール CRUD 自体は動くこと（h.insertRulerPassHint の
-// nil チェックの回帰。既存の TestRulesCRUD が RouterConfig{Pool: pool} だけで
-// 動いていることの裏付けでもある）。
+func TestRuleHintEnqueueFailureDoesNotUndoCommit(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	enqueuer := &ruleCommitCheckingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
+	enqueuer.check = func(context.Context) error { return fmt.Errorf("forced enqueue failure") }
+	router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	srv := httptest.NewServer(router)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader([]byte(`{"name":"committed despite hint failure"}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("create status = %d, want 201 despite enqueue failure", resp.StatusCode)
+	}
+	var count int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM rules WHERE name = 'committed despite hint failure'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("committed rules = %d, want 1 after enqueue failure", count)
+	}
+}
+
+// Enqueuer が nil の部分構成でもルールを保存できる。
 func TestCreateRule_WithoutEnqueuer_StillSucceeds(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Pool: pool})
+	router := NewRouter(RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ProgramSearch: pgstore.NewEPG(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -161,4 +203,27 @@ func TestCreateRule_WithoutEnqueuer_StillSucceeds(t *testing.T) {
 
 func countRulerPassEnqueues(enqueuer *recordingEnqueuer) int {
 	return len(enqueuer.CallsOfKind("ruler_pass"))
+}
+
+type ruleCommitCheckingEnqueuer struct {
+	*recordingEnqueuer
+	check func(context.Context) error
+}
+
+func (e *ruleCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if e.check != nil {
+		if err := e.check(ctx); err != nil {
+			return jobq.Result{}, err
+		}
+	}
+	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
+}
+
+func (e *ruleCommitCheckingEnqueuer) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if e.check != nil {
+		if err := e.check(ctx); err != nil {
+			return jobq.Result{}, err
+		}
+	}
+	return e.recordingEnqueuer.EnqueueTx(ctx, tx, args, opts...)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/epgimport"
 	"github.com/fetburner/rokuban/internal/epgstation"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // newImportCmd は `rokuban import` サブコマンドを作る（issue #72 / M3-10）。
@@ -137,7 +138,7 @@ func runImportRules(ctx context.Context, pool *pgxpool.Pool, client *epgstation.
 	if err != nil {
 		return epgimport.RuleImportResult{}, fmt.Errorf("listing EPGStation rules: %w", err)
 	}
-	return epgimport.ImportRules(ctx, pool, site, rules)
+	return epgimport.ImportRules(ctx, pgstore.NewRules(pool), pgstore.NewEPG(pool), site, rules)
 }
 
 // readJSONFile はトップレベルが配列の JSON ファイルを読む小さなヘルパー。

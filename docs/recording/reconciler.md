@@ -37,7 +37,7 @@ reconciler は ruler と同じ形の River ジョブで、シングルトンに�
 
 ruler パスの完了は、パス完了時に ruler_pass ワーカーが投入する。base が変われば mirakc に反映すべき差分が増えるためである。ヒントは `UniqueOpts{ByArgs, ByState}` で合流する。
 
-api は reconcile を直接投入しない。ルールの書き込みでは `ruler_pass` を同一トランザクションで `EnqueueTx` する。意図・上書きの書き込みでは、store の commit 後に `ruler_pass` を投入し、失敗はログに残す。どちらも ruler パスの完了が reconcile へのヒントになるので、予約の変更が mirakc へ反映されるまでの待ちは ruler パス 1 回ぶんの秒オーダーで済み、定期の最大 30 秒を待たない。
+api は reconcile を直接投入しない。ルール、意図、上書きの書き込みでは、store の commit 後に `ruler_pass` を投入し、失敗はログに残す。ruler パスの完了が reconcile へのヒントになるので、予約の変更が mirakc へ反映されるまでの待ちは ruler パス 1 回ぶんの秒オーダーで済み、定期の最大 30 秒を待たない。
 
 意図・上書きのヒントを失っても、定期の ruler パスが永続状態から予約を再計算する。投入に成功すれば、次の定期パスを待たずに ruler が起動する。
 

@@ -163,6 +163,27 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 </details>
 
+### 録画ルール
+
+ルールの保存・削除と EPGStation の取り込みは、利用側の操作単位で原子的に確定する。
+
+`Rules` は API が使うルールの読み書き契約である。各 create / update は本体と全ての子条件を 1 つの tx で置き換え、delete はルールと、そのルール由来で投資の無い予約の削除を 1 つの tx で行う。`program_investments` に含まれる予約は残り、ルール削除後に参照が外れる。削除結果は、予約の内訳と、削除前に保存されていた対象 site を返す。
+
+`RuleImport` は EPGStation のルール ID を既存ルールとの対応に使うインポート契約である。識別子の保存方法は store の内部に閉じ、ルール本体と子条件の作成・置換を 1 つの tx で確定する。API の一般的な `Rules` 契約と用途が異なるため、呼び出し側が import 専用の識別情報や書き込み経路を持ち回らない。
+
+正規表現の構文検査は `ProgramSearch.ValidateRegex` を使う。API と EPGStation の importer は DB 方言や SQL 生成型を参照しない。
+
+<details><summary>根拠</summary>
+
+- ドメイン契約: `internal/store.Rules` / `internal/store.RuleImport`
+- PostgreSQL 実装: `internal/store/pgstore.Rules`
+- 子条件の挿入失敗で create が巻き戻る: `TestRulesContract/create child failure rolls back`
+- 子条件の全置換と失敗時の復元: `TestRulesContract/update replaces all children atomically`
+- 削除と予約の保持: `TestRulesContract/delete preserves reservations with intent`
+- EPGStation import の冪等性と原子性: `TestRulesContract/EPGStation import uses stable identity atomically`
+
+</details>
+
 ### メディア読み取りとストレージ観測
 
 メディアとストレージの読み取りは、利用側ごとの契約に分ける。DB の行型を利用側へ広げないためである。

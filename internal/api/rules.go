@@ -2,57 +2,40 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
-	"sort"
 	"strings"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ptr"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // ListRules はルール一覧を返す。
 func (h *Server) ListRules(ctx context.Context, _ ListRulesRequestObject) (ListRulesResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	rows, err := q.ListRules(ctx)
+	rows, err := h.ruleStore.List(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Rule, 0, len(rows))
 	for _, row := range rows {
-		full, err := loadRule(ctx, q, row)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, full)
+		out = append(out, ruleFromStore(row))
 	}
 	return ListRules200JSONResponse(out), nil
 }
 
 // GetRule は指定 ID のルールを返す。
 func (h *Server) GetRule(ctx context.Context, req GetRuleRequestObject) (GetRuleResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	row, err := q.GetRule(ctx, req.Id)
+	row, err := h.ruleStore.Get(ctx, req.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetRule404JSONResponse{Error: "rule not found"}, nil
 		}
 		return nil, err
 	}
-	full, err := loadRule(ctx, q, row)
-	if err != nil {
-		return nil, err
-	}
-	return GetRule200JSONResponse(full), nil
+	return GetRule200JSONResponse(ruleFromStore(row)), nil
 }
 
 // CreateRule はルールを作成する。
@@ -70,40 +53,17 @@ func (h *Server) CreateRule(ctx context.Context, req CreateRuleRequestObject) (C
 	// 「クライアントが GET で読んで載せ直した名前」に寄せるか web 側で明示的に外させるかは
 	// API の形 / UI の形を決める判断なので、実装せず issue に提起している
 	// （docs/schema/rules.md の rule_sites 節）。
+	//nolint:nilerr // 検証エラーは HTTP 400 のレスポンスとして返す。
 	if err := h.validateRuleInput(ctx, *req.Body, nil); err != nil {
 		return CreateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	row, err := h.ruleStore.Create(ctx, ruleInputFromAPI(*req.Body))
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	row, err := insertRule(ctx, q, *req.Body)
-	if err != nil {
-		return nil, err
-	}
-	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
-		return nil, err
-	}
-	sites, err := ruleTargetSites(ctx, q, row.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	full, err := loadRule(ctx, sqlcgen.New(h.pool), row)
-	if err != nil {
-		return nil, err
-	}
-	return CreateRule201JSONResponse(full), nil
+	h.enqueueRulerPassHintsForRuleSites(ctx, row.Sites)
+	return CreateRule201JSONResponse(ruleFromStore(row)), nil
 }
 
 // UpdateRule はルールを上書き更新する（子テーブルは全置換）。
@@ -125,177 +85,45 @@ func (h *Server) UpdateRule(ctx context.Context, req UpdateRuleRequestObject) (U
 	var savedSites map[string]struct{}
 	if req.Body.Sites != nil {
 		var err error
-		savedSites, err = savedRuleSites(ctx, sqlcgen.New(h.pool), req.Id)
+		var sites []string
+		sites, err = h.ruleStore.Sites(ctx, req.Id)
 		if err != nil {
 			return nil, err
 		}
+		savedSites = siteSet(sites)
 	}
+	//nolint:nilerr // 検証エラーは HTTP 400 のレスポンスとして返す。
 	if err := h.validateRuleInput(ctx, *req.Body, savedSites); err != nil {
 		return UpdateRule400JSONResponse{Error: err.Error()}, nil
 	}
 
-	tx, err := h.pool.Begin(ctx)
+	row, err := h.ruleStore.Update(ctx, req.Id, ruleInputFromAPI(*req.Body))
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	if _, err := q.GetRule(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return UpdateRule404JSONResponse{Error: "rule not found"}, nil
 		}
 		return nil, err
 	}
-
-	params, err := ruleUpdateParams(req.Id, *req.Body)
-	if err != nil {
-		return UpdateRule400JSONResponse{Error: err.Error()}, nil
-	}
-	row, err := q.UpdateRule(ctx, params)
-	if err != nil {
-		return nil, err
-	}
-	if err := replaceRuleChildren(ctx, q, row.ID, *req.Body); err != nil {
-		return nil, err
-	}
-	sites, err := ruleTargetSites(ctx, q, row.ID)
-	if err != nil {
-		return nil, err
-	}
-	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-
-	full, err := loadRule(ctx, sqlcgen.New(h.pool), row)
-	if err != nil {
-		return nil, err
-	}
-	return UpdateRule200JSONResponse(full), nil
+	h.enqueueRulerPassHintsForRuleSites(ctx, row.Sites)
+	return UpdateRule200JSONResponse(ruleFromStore(row)), nil
 }
 
 // DeleteRule はルールを削除する。overrides なし予約は削除、ありは detached 化。
 func (h *Server) DeleteRule(ctx context.Context, req DeleteRuleRequestObject) (DeleteRuleResponseObject, error) {
-	tx, err := h.pool.Begin(ctx)
+	deleted, err := h.ruleStore.Delete(ctx, req.Id)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	if _, err := q.GetRule(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return DeleteRule404JSONResponse{Error: "rule not found"}, nil
 		}
 		return nil, err
 	}
-
-	// 対象サイトも先に読む（rule_sites は rules への ON DELETE CASCADE。
-	// DeleteRule の後では読めない）。
-	sites, err := ruleTargetSites(ctx, q, req.Id)
-	if err != nil {
-		return nil, err
-	}
-
-	// 内訳は先に数える（削除後には数えられない）。
-	// record 意図または上書きのある予約は残り、FK の ON DELETE SET NULL で
-	// rule_id が外れて実質 manual として動く。意図自体は program_intents に
-	// あるので消えない。
-	id := req.Id
-	detached, err := q.CountReservationsByRuleWithIntent(ctx, &id)
-	if err != nil {
-		return nil, fmt.Errorf("counting reservations with intent: %w", err)
-	}
-	deleted, err := q.DeleteReservationsByRuleWithoutIntent(ctx, &id)
-	if err != nil {
-		return nil, fmt.Errorf("deleting pure rule reservations: %w", err)
-	}
-	n, err := q.DeleteRule(ctx, req.Id)
-	if err != nil {
-		return nil, err
-	}
-	if n == 0 {
-		return DeleteRule404JSONResponse{Error: "rule not found"}, nil
-	}
-	if err := h.insertRulerPassHintsForRuleSites(ctx, tx, sites); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
+	h.enqueueRulerPassHintsForRuleSites(ctx, deleted.Sites)
 
 	return DeleteRule200JSONResponse{
 		Id:                   req.Id,
-		DeletedReservations:  int(deleted),
-		DetachedReservations: int(detached),
+		DeletedReservations:  int(deleted.DeletedReservations),
+		DetachedReservations: int(deleted.DetachedReservations),
 	}, nil
-}
-
-// insertRulerPassHint は指定した site の RulerPassArgs を同一トランザクションで
-// EnqueueTx する（ヒント経路。docs/recording.md §3.1「ルールの作成 / 更新 / 削除」）。
-// dual-write を避けるため、書き込みが失敗すればこのジョブも一緒にロールバックされる。
-//
-// h.enqueuer が nil の場合は何もしない（テストや、将来ジョブキューを持たない api 構成を許容する
-// ため。RouterConfig.Enqueuer のコメント参照）。RulerPassArgs.Spec() の
-// Coalesce（合流ヒント）により、同一サイトのヒントは定期実行に合流する。
-func (h *Server) insertRulerPassHint(ctx context.Context, tx pgx.Tx, site string) error {
-	if h.enqueuer == nil {
-		return nil
-	}
-	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.RulerPassArgs{Site: site}); err != nil {
-		return fmt.Errorf("enqueuing ruler_pass hint for site %s: %w", site, err)
-	}
-	return nil
-}
-
-// enqueueRulerPassHint は、予約の入力（意図・上書き）の commit 後に ruler_pass をヒントとして投入する。
-// 永続化した利用者の入力が正であり、投入に失敗してもログだけにする（定期の ruler パスが拾う）。
-func (h *Server) enqueueRulerPassHint(ctx context.Context, site string) {
-	if h.enqueuer == nil {
-		return
-	}
-	if _, err := h.enqueuer.Enqueue(ctx, jobs.RulerPassArgs{Site: site}); err != nil {
-		slog.ErrorContext(ctx, "api: failed to enqueue ruler_pass hint", "site", site, "err", err)
-	}
-}
-
-// ruleTargetSites は rule_sites から対象サイト名の一覧を読む。空（指定なし）は
-// そのまま空スライスで返す --- 「全サイト」への展開は呼び出し元
-// （insertRulerPassHintsForRuleSites）の責務にする。
-func ruleTargetSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) ([]string, error) {
-	rows, err := q.ListRuleSites(ctx, ruleID)
-	if err != nil {
-		return nil, fmt.Errorf("listing rule sites for rule %d: %w", ruleID, err)
-	}
-	sites := make([]string, 0, len(rows))
-	for _, r := range rows {
-		sites = append(sites, r.Site)
-	}
-	return sites, nil
-}
-
-// insertRulerPassHintsForRuleSites はルールが対象とする各サイトに ruler_pass ヒントを
-// 投入する（issue #184 M4-12「含むもの」3）。sites は rule_sites から読んだ対象一覧で、
-// 空（指定なし = 全サイト）なら h.siteNames（レジストリの全 site）に展開する
-// （docs/schema/rules.md「rule_sites 未指定 = 全サイト」と同じ規約）。
-//
-// api は site に束縛されない（不変条件 1）ため、1 プロセスがレジストリの全サイトに
-// ヒントを投入できる。呼び出し元（CreateRule/UpdateRule）はルールの子表書き込みと
-// 同一トランザクションで呼ぶこと。DeleteRule は rule_sites が ON DELETE CASCADE で
-// 消える前に対象サイトを読んでおく必要がある。
-func (h *Server) insertRulerPassHintsForRuleSites(ctx context.Context, tx pgx.Tx, sites []string) error {
-	if len(sites) == 0 {
-		sites = h.siteNames
-	}
-	for _, site := range sites {
-		if err := h.insertRulerPassHint(ctx, tx, site); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // validateEncodeProfiles は encodeProfiles の各名前が config 定義に存在すること、
@@ -375,18 +203,13 @@ func (h *Server) validateRuleSites(sitesIn []string, savedSites map[string]struc
 	return nil
 }
 
-// savedRuleSites は ruleID に保存済みの rule_sites を集合で返す。
-// 存在しないルールでは空集合になる（404 判定は呼び出し側の GetRule が担う）。
-func savedRuleSites(ctx context.Context, q *sqlcgen.Queries, ruleID int64) (map[string]struct{}, error) {
-	rows, err := q.ListRuleSites(ctx, ruleID)
-	if err != nil {
-		return nil, fmt.Errorf("listing saved rule sites: %w", err)
+// siteSet は保存済み site の一覧を membership 判定用の集合へ変換する。
+func siteSet(sites []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(sites))
+	for _, site := range sites {
+		set[site] = struct{}{}
 	}
-	set := make(map[string]struct{}, len(rows))
-	for _, r := range rows {
-		set[r.Site] = struct{}{}
-	}
-	return set, nil
+	return set
 }
 
 // validateRuleInput はルール create/update の入力を検査する。
@@ -438,10 +261,12 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites
 			"0 makes the window condition always false and silently disables dedupe), got %d", *in.DedupeWindowSeconds)
 	}
 	if in.TextMatches != nil {
-		q := sqlcgen.New(h.pool)
+		if h.programSearch == nil {
+			return errors.New("program search store is not configured")
+		}
 		for _, m := range *in.TextMatches {
 			if m.Mode == Regex && m.Value != "" {
-				if err := q.ValidateRegexPattern(ctx, m.Value); err != nil {
+				if err := h.programSearch.ValidateRegex(ctx, m.Value); err != nil {
 					return fmt.Errorf("invalid regex %q (must be POSIX ARE compatible, not full PCRE/JavaScript regex — e.g. named capture groups like (?<name>...) are rejected; lookahead and lookbehind are supported): %w", m.Value, err)
 				}
 			}
@@ -461,357 +286,135 @@ func (h *Server) validateRuleInput(ctx context.Context, in RuleInput, savedSites
 	return nil
 }
 
-func insertRule(ctx context.Context, q *sqlcgen.Queries, in RuleInput) (sqlcgen.Rule, error) {
-	params, err := ruleCreateParams(in)
-	if err != nil {
-		return sqlcgen.Rule{}, err
-	}
-	return q.CreateRule(ctx, params)
-}
-
-func ruleCreateParams(in RuleInput) (sqlcgen.CreateRuleParams, error) {
-	p := sqlcgen.CreateRuleParams{
-		Name:             strings.TrimSpace(in.Name),
-		Description:      ptr.Deref(in.Description),
-		Enabled:          true,
-		Priority:         10,
-		KeepOriginal:     "always",
-		EncodeProfiles:   []string{},
-		FilenameTemplate: "",
-		Metadata:         json.RawMessage("{}"),
-	}
-	if in.Enabled != nil {
-		p.Enabled = *in.Enabled
+func ruleInputFromAPI(in RuleInput) store.RuleInput {
+	out := store.RuleInput{
+		Name: strings.TrimSpace(in.Name), Description: in.Description, Enabled: in.Enabled,
+		IsFree: in.IsFree, DurationMinMs: in.DurationMinMs, DurationMaxMs: in.DurationMaxMs,
+		PeriodStartAt: in.PeriodStartAt, PeriodEndAt: in.PeriodEndAt,
+		DedupeEnabled: in.DedupeEnabled, DedupeThreshold: in.DedupeThreshold,
+		DedupeWindowSeconds: in.DedupeWindowSeconds, FilenameTemplate: in.FilenameTemplate,
+		Metadata: in.Metadata,
 	}
 	if in.Priority != nil {
-		p.Priority = int32(*in.Priority)
-	}
-	if in.IsFree != nil {
-		p.IsFree = pgtype.Bool{Bool: *in.IsFree, Valid: true}
-	}
-	p.DurationMinMs = in.DurationMinMs
-	p.DurationMaxMs = in.DurationMaxMs
-	if in.PeriodStartAt != nil {
-		t := *in.PeriodStartAt
-		p.PeriodStartAt = &t
-	}
-	if in.PeriodEndAt != nil {
-		t := *in.PeriodEndAt
-		p.PeriodEndAt = &t
-	}
-	if in.DedupeEnabled != nil {
-		p.DedupeEnabled = *in.DedupeEnabled
-	}
-	if in.DedupeThreshold != nil {
-		p.DedupeThreshold = pgtype.Float4{Float32: *in.DedupeThreshold, Valid: true}
-	}
-	if in.DedupeWindowSeconds != nil {
-		p.DedupeWindow = secondsToInterval(*in.DedupeWindowSeconds)
+		priority := int32(*in.Priority)
+		out.Priority = &priority
 	}
 	if in.KeepOriginal != nil {
-		p.KeepOriginal = string(*in.KeepOriginal)
+		value := string(*in.KeepOriginal)
+		out.KeepOriginal = &value
 	}
 	if in.EncodeProfiles != nil {
-		p.EncodeProfiles = canonicalizeStrings(*in.EncodeProfiles)
+		values := append([]string(nil), (*in.EncodeProfiles)...)
+		out.EncodeProfiles = &values
 	}
-	if in.FilenameTemplate != nil {
-		p.FilenameTemplate = *in.FilenameTemplate
-	}
-	if in.Metadata != nil {
-		b, err := json.Marshal(in.Metadata)
-		if err != nil {
-			return p, fmt.Errorf("marshalling metadata: %w", err)
-		}
-		p.Metadata = b
-	}
-	return p, nil
-}
-
-func ruleUpdateParams(id int64, in RuleInput) (sqlcgen.UpdateRuleParams, error) {
-	c, err := ruleCreateParams(in)
-	if err != nil {
-		return sqlcgen.UpdateRuleParams{}, err
-	}
-	return sqlcgen.UpdateRuleParams{
-		Name:             c.Name,
-		Description:      c.Description,
-		Enabled:          c.Enabled,
-		Priority:         c.Priority,
-		IsFree:           c.IsFree,
-		DurationMinMs:    c.DurationMinMs,
-		DurationMaxMs:    c.DurationMaxMs,
-		PeriodStartAt:    c.PeriodStartAt,
-		PeriodEndAt:      c.PeriodEndAt,
-		DedupeEnabled:    c.DedupeEnabled,
-		DedupeThreshold:  c.DedupeThreshold,
-		DedupeWindow:     c.DedupeWindow,
-		KeepOriginal:     c.KeepOriginal,
-		EncodeProfiles:   c.EncodeProfiles,
-		FilenameTemplate: c.FilenameTemplate,
-		Metadata:         c.Metadata,
-		ID:               id,
-	}, nil
-}
-
-func replaceRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, in RuleInput) error {
-	if err := q.DeleteRuleTextMatches(ctx, ruleID); err != nil {
-		return err
-	}
-	if err := q.DeleteRuleServices(ctx, ruleID); err != nil {
-		return err
-	}
-	if err := q.DeleteRuleChannelTypes(ctx, ruleID); err != nil {
-		return err
-	}
-	if err := q.DeleteRuleGenres(ctx, ruleID); err != nil {
-		return err
-	}
-	if err := q.DeleteRuleTimes(ctx, ruleID); err != nil {
-		return err
-	}
-	if err := q.DeleteRuleSites(ctx, ruleID); err != nil {
-		return err
-	}
-
 	if in.TextMatches != nil {
-		for i, m := range *in.TextMatches {
-			if err := q.InsertRuleTextMatch(ctx, sqlcgen.InsertRuleTextMatchParams{
-				RuleID:        ruleID,
-				Seq:           int32(i),
-				Target:        string(m.Target),
-				Mode:          string(m.Mode),
-				Value:         m.Value,
-				CaseSensitive: ptr.Deref(m.CaseSensitive),
-				Negate:        ptr.Deref(m.Negate),
-			}); err != nil {
-				return fmt.Errorf("inserting text match %d: %w", i, err)
-			}
+		out.TextMatches = make([]store.RuleTextMatch, 0, len(*in.TextMatches))
+		for _, match := range *in.TextMatches {
+			out.TextMatches = append(out.TextMatches, store.RuleTextMatch{
+				Target: string(match.Target), Mode: string(match.Mode), Value: match.Value,
+				CaseSensitive: ptr.Deref(match.CaseSensitive), Negate: ptr.Deref(match.Negate),
+			})
 		}
 	}
 	if in.Services != nil {
-		for _, s := range *in.Services {
-			if err := q.InsertRuleService(ctx, sqlcgen.InsertRuleServiceParams{
-				RuleID:    ruleID,
-				NetworkID: int32(s.NetworkId),
-				ServiceID: int32(s.ServiceId),
-			}); err != nil {
-				return fmt.Errorf("inserting service: %w", err)
-			}
+		out.Services = make([]store.RuleService, 0, len(*in.Services))
+		for _, service := range *in.Services {
+			out.Services = append(out.Services, store.RuleService{
+				NetworkID: int32(service.NetworkId), ServiceID: int32(service.ServiceId),
+			})
 		}
 	}
 	if in.ChannelTypes != nil {
-		for _, ct := range *in.ChannelTypes {
-			if err := q.InsertRuleChannelType(ctx, sqlcgen.InsertRuleChannelTypeParams{
-				RuleID:      ruleID,
-				ChannelType: string(ct),
-			}); err != nil {
-				return fmt.Errorf("inserting channel type: %w", err)
-			}
+		out.ChannelTypes = make([]string, 0, len(*in.ChannelTypes))
+		for _, channelType := range *in.ChannelTypes {
+			out.ChannelTypes = append(out.ChannelTypes, string(channelType))
 		}
 	}
 	if in.Genres != nil {
-		for _, g := range *in.Genres {
-			if err := q.InsertRuleGenre(ctx, sqlcgen.InsertRuleGenreParams{
-				RuleID:   ruleID,
-				GenreLv1: int16(g),
-			}); err != nil {
-				return fmt.Errorf("inserting genre: %w", err)
-			}
+		out.Genres = make([]int16, 0, len(*in.Genres))
+		for _, genre := range *in.Genres {
+			out.Genres = append(out.Genres, int16(genre))
 		}
 	}
 	if in.Times != nil {
-		for i, tw := range *in.Times {
-			if err := q.InsertRuleTime(ctx, sqlcgen.InsertRuleTimeParams{
-				RuleID:   ruleID,
-				Seq:      int32(i),
-				Weekdays: int32(tw.Weekdays),
-				StartSec: int32(tw.StartSec),
-				EndSec:   int32(tw.EndSec),
-			}); err != nil {
-				return fmt.Errorf("inserting time window %d: %w", i, err)
-			}
+		out.Times = make([]store.RuleTimeWindow, 0, len(*in.Times))
+		for _, tw := range *in.Times {
+			out.Times = append(out.Times, store.RuleTimeWindow{
+				Weekdays: int32(tw.Weekdays), StartSec: int32(tw.StartSec), EndSec: int32(tw.EndSec),
+			})
 		}
 	}
 	if in.Sites != nil {
-		for _, site := range *in.Sites {
-			// validateRuleSites がすでに空文字列を 400 で拒否しているので、
-			// CreateRule/UpdateRule 経由では到達しない。将来この関数に検証を通らない
-			// 経路が増えたときは黙って落とさずエラーにする（黙って落とすと
-			// 「保存は成功したが絞り込み条件が消えている」になる）。
-			if site == "" {
-				return errors.New("rule site must not be empty")
-			}
-			if err := q.InsertRuleSite(ctx, sqlcgen.InsertRuleSiteParams{
-				RuleID: ruleID,
-				Site:   site,
-			}); err != nil {
-				return fmt.Errorf("inserting site: %w", err)
-			}
-		}
+		out.Sites = append([]string(nil), (*in.Sites)...)
 	}
-	return nil
+	return out
 }
 
-func loadRule(ctx context.Context, q *sqlcgen.Queries, row sqlcgen.Rule) (Rule, error) {
-	r := ruleFromRow(row)
-
-	texts, err := q.ListRuleTextMatches(ctx, row.ID)
-	if err != nil {
-		return r, err
+func ruleFromStore(rule store.Rule) Rule {
+	description := rule.Description
+	filenameTemplate := rule.FilenameTemplate
+	dedupeEnabled := rule.DedupeEnabled
+	out := Rule{
+		Id: rule.ID, Name: rule.Name, Description: &description, Enabled: rule.Enabled,
+		Priority: int(rule.Priority), KeepOriginal: RuleKeepOriginal(rule.KeepOriginal),
+		FilenameTemplate: &filenameTemplate, CreatedAt: rule.CreatedAt, UpdatedAt: rule.UpdatedAt,
+		IsFree: rule.IsFree, DurationMinMs: rule.DurationMinMs, DurationMaxMs: rule.DurationMaxMs,
+		PeriodStartAt: rule.PeriodStartAt, PeriodEndAt: rule.PeriodEndAt,
+		DedupeEnabled: &dedupeEnabled, DedupeThreshold: rule.DedupeThreshold,
+		DedupeWindowSeconds: rule.DedupeWindowSeconds,
 	}
-	if len(texts) > 0 {
-		ms := make([]RuleTextMatch, 0, len(texts))
-		for _, t := range texts {
-			cs, neg := t.CaseSensitive, t.Negate
-			ms = append(ms, RuleTextMatch{
-				Target:        RuleTextMatchTarget(t.Target),
-				Mode:          RuleTextMatchMode(t.Mode),
-				Value:         t.Value,
-				CaseSensitive: &cs,
-				Negate:        &neg,
+	if len(rule.EncodeProfiles) > 0 {
+		values := slices.Clone(rule.EncodeProfiles)
+		out.EncodeProfiles = &values
+	}
+	if len(rule.Metadata) > 0 {
+		metadata := rule.Metadata
+		out.Metadata = &metadata
+	}
+	if len(rule.TextMatches) > 0 {
+		matches := make([]RuleTextMatch, 0, len(rule.TextMatches))
+		for _, match := range rule.TextMatches {
+			caseSensitive, negate := match.CaseSensitive, match.Negate
+			matches = append(matches, RuleTextMatch{
+				Target: RuleTextMatchTarget(match.Target), Mode: RuleTextMatchMode(match.Mode),
+				Value: match.Value, CaseSensitive: &caseSensitive, Negate: &negate,
 			})
 		}
-		r.TextMatches = &ms
+		out.TextMatches = &matches
 	}
-
-	services, err := q.ListRuleServices(ctx, row.ID)
-	if err != nil {
-		return r, err
-	}
-	if len(services) > 0 {
-		ss := make([]RuleService, 0, len(services))
-		for _, s := range services {
-			ss = append(ss, RuleService{NetworkId: int(s.NetworkID), ServiceId: int(s.ServiceID)})
+	if len(rule.Services) > 0 {
+		services := make([]RuleService, 0, len(rule.Services))
+		for _, service := range rule.Services {
+			services = append(services, RuleService{NetworkId: int(service.NetworkID), ServiceId: int(service.ServiceID)})
 		}
-		r.Services = &ss
+		out.Services = &services
 	}
-
-	cts, err := q.ListRuleChannelTypes(ctx, row.ID)
-	if err != nil {
-		return r, err
-	}
-	if len(cts) > 0 {
-		out := make([]RuleChannelTypes, 0, len(cts))
-		for _, c := range cts {
-			out = append(out, RuleChannelTypes(c.ChannelType))
+	if len(rule.ChannelTypes) > 0 {
+		channelTypes := make([]RuleChannelTypes, 0, len(rule.ChannelTypes))
+		for _, channelType := range rule.ChannelTypes {
+			channelTypes = append(channelTypes, RuleChannelTypes(channelType))
 		}
-		r.ChannelTypes = &out
+		out.ChannelTypes = &channelTypes
 	}
-
-	genres, err := q.ListRuleGenres(ctx, row.ID)
-	if err != nil {
-		return r, err
-	}
-	if len(genres) > 0 {
-		gs := make([]int, 0, len(genres))
-		for _, g := range genres {
-			gs = append(gs, int(g.GenreLv1))
+	if len(rule.Genres) > 0 {
+		genres := make([]int, 0, len(rule.Genres))
+		for _, genre := range rule.Genres {
+			genres = append(genres, int(genre))
 		}
-		r.Genres = &gs
+		out.Genres = &genres
 	}
-
-	times, err := q.ListRuleTimes(ctx, row.ID)
-	if err != nil {
-		return r, err
-	}
-	if len(times) > 0 {
-		ts := make([]RuleTimeWindow, 0, len(times))
-		for _, t := range times {
-			ts = append(ts, RuleTimeWindow{
-				Weekdays: int(t.Weekdays),
-				StartSec: int(t.StartSec),
-				EndSec:   int(t.EndSec),
+	if len(rule.Times) > 0 {
+		times := make([]RuleTimeWindow, 0, len(rule.Times))
+		for _, tw := range rule.Times {
+			times = append(times, RuleTimeWindow{
+				Weekdays: int(tw.Weekdays), StartSec: int(tw.StartSec), EndSec: int(tw.EndSec),
 			})
 		}
-		r.Times = &ts
+		out.Times = &times
 	}
-
-	sites, err := q.ListRuleSites(ctx, row.ID)
-	if err != nil {
-		return r, err
+	if len(rule.Sites) > 0 {
+		sites := slices.Clone(rule.Sites)
+		out.Sites = &sites
 	}
-	if len(sites) > 0 {
-		ss := make([]string, 0, len(sites))
-		for _, s := range sites {
-			ss = append(ss, s.Site)
-		}
-		r.Sites = &ss
-	}
-
-	return r, nil
-}
-
-func ruleFromRow(row sqlcgen.Rule) Rule {
-	desc := row.Description
-	ft := row.FilenameTemplate
-	r := Rule{
-		Id:               row.ID,
-		Name:             row.Name,
-		Description:      &desc,
-		Enabled:          row.Enabled,
-		Priority:         int(row.Priority),
-		KeepOriginal:     RuleKeepOriginal(row.KeepOriginal),
-		FilenameTemplate: &ft,
-		CreatedAt:        row.CreatedAt,
-		UpdatedAt:        row.UpdatedAt,
-	}
-	if row.IsFree.Valid {
-		v := row.IsFree.Bool
-		r.IsFree = &v
-	}
-	r.DurationMinMs = row.DurationMinMs
-	r.DurationMaxMs = row.DurationMaxMs
-	r.PeriodStartAt = row.PeriodStartAt
-	r.PeriodEndAt = row.PeriodEndAt
-	de := row.DedupeEnabled
-	r.DedupeEnabled = &de
-	if row.DedupeThreshold.Valid {
-		v := row.DedupeThreshold.Float32
-		r.DedupeThreshold = &v
-	}
-	if secs, ok := intervalToSeconds(row.DedupeWindow); ok {
-		r.DedupeWindowSeconds = &secs
-	}
-	if len(row.EncodeProfiles) > 0 {
-		ep := slices.Clone(row.EncodeProfiles)
-		r.EncodeProfiles = &ep
-	}
-	if len(row.Metadata) > 0 && string(row.Metadata) != "{}" && string(row.Metadata) != "null" {
-		var m map[string]interface{}
-		if json.Unmarshal(row.Metadata, &m) == nil {
-			r.Metadata = &m
-		}
-	}
-	return r
-}
-
-func secondsToInterval(sec int64) pgtype.Interval {
-	return pgtype.Interval{
-		Microseconds: sec * 1_000_000,
-		Valid:        true,
-	}
-}
-
-func intervalToSeconds(iv pgtype.Interval) (int64, bool) {
-	if !iv.Valid {
-		return 0, false
-	}
-	return iv.Microseconds / 1_000_000, true
-}
-
-func canonicalizeStrings(in []string) []string {
-	seen := make(map[string]struct{}, len(in))
-	out := make([]string, 0, len(in))
-	for _, s := range in {
-		if s == "" {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	sort.Strings(out)
 	return out
 }
