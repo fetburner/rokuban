@@ -15,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -294,7 +295,7 @@ func TestBacklogCollector(t *testing.T) {
 	seedFinishedRecord(t, pool, "rec-b", 200, false)
 	seedFinishedRecord(t, pool, "rec-c", 999, true)
 
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 2 {
 		t.Errorf("rokuban_uningested_records = %v, want 2", got)
@@ -330,7 +331,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 		t.Fatalf("upserting external record_sync: %v", err)
 	}
 
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
 	}
@@ -342,7 +343,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 // 滞留 0 のときも 0 として報告されること（メトリクスが消えない）。
 func TestBacklogCollector_Empty(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
@@ -353,7 +354,7 @@ func TestBacklogCollector_Empty(t *testing.T) {
 // 0 を報告すると「滞留なし」と区別できず、滞留アラートを黙って無効化してしまう。
 func TestBacklogCollector_QueryFailure(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 	pool.Close() // クエリを失敗させる
 
 	text := gatherText(t, c)

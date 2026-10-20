@@ -31,6 +31,28 @@ func deleteEncoded(t *testing.T, base string, id int64, profile string) *http.Re
 	return resp
 }
 
+// waitForLockWaiter は current_database() 内で行ロックを待っているセッションが
+// 現れるまでポーリングする。
+func waitForLockWaiter(t *testing.T, pool *pgxpool.Pool, operation string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		if err := pool.QueryRow(context.Background(), `
+SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database()
+  AND wait_event_type = 'Lock'
+  AND pid <> pg_backend_pid()`).Scan(&n); err != nil {
+			t.Fatalf("polling pg_stat_activity: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("row lock waiter did not appear (%s)", operation)
+}
+
 // seedEncodedVersions は seedIngested 済みの録画に active な encoded を置き、desired も揃える。
 func seedEncodedVersions(t *testing.T, pool *pgxpool.Pool, id int64, profiles ...string) {
 	t.Helper()

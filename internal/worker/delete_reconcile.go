@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -130,8 +131,9 @@ type deleteTarget struct {
 // どちらの resume エンドポイントからも解除できない
 // （site スコープは IsSiteless で 400、site 無しは対象行が無く 404）。
 type DeleteReconcileWorker struct {
-	Pool     *pgxpool.Pool
-	MediaDir string
+	Pool           *pgxpool.Pool
+	RecordingPurge store.RecordingPurge
+	MediaDir       string
 
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -186,14 +188,14 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	if err != nil {
 		return err
 	}
-	// purgedRecordings は、このパスの末尾で MarkPurgedRecordings が purged_at を
+	// purgedRecordings は、このパスの末尾で RecordingPurge.MarkPurged が purged_at を
 	// 押した録画の集合（notifyPurgedRecordings が読む。issue #135）。発火は
 	// 削除がすべて終わってから行うので、ブレーカー発動や途中の error で
 	// 早期 return する経路も取りこぼさないよう defer で締める --- ただし
 	// early return する経路では purgedRecordings は空のままで、それでよい
 	// （新しく完全削除が完了した録画が無いということなので、発火対象も無く、
 	// 次パスに委ねる）。
-	var purgedRecordings []sqlcgen.MarkPurgedRecordingsRow
+	var purgedRecordings []store.PurgedRecording
 	defer func() { w.notifyPurgedRecordings(ctx, purgedRecordings, deleteReconcileNotifyBudget) }()
 	for _, a := range pending {
 		w.deleteMediaAsset(ctx, q, deleteTarget{
@@ -224,11 +226,11 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	w.deleteCandidates(ctx, q, candidates, orphanMTimeGrace)
 
 	// パスの末尾で「完全削除が完了した」という不可逆な事実を確定する
-	// （issue #135、MarkPurgedRecordings のコメント参照）。ここより前の
+	// （issue #135、internal/db/queries/delete_reconcile.sql の MarkPurgedRecordings のコメント参照）。ここより前の
 	// pending ループと deleteCandidates（trash / until_encoded / 孤児）が
 	// すべて物理 unlink を終えた後でなければならない —— 先頭で押すと
 	// 同じパスで消したアセットが反映されず、判定が 1 パス遅れる。
-	purged, err := q.MarkPurgedRecordings(ctx, trashCutoff)
+	purged, err := w.RecordingPurge.MarkPurged(ctx, trashCutoff)
 	if err != nil {
 		return fmt.Errorf("marking purged recordings: %w", err)
 	}
@@ -249,13 +251,13 @@ var afterDeleteCandidatesCollected = func() {}
 // 発火対象は purged（引数の purged）そのものであり、ここで改めて「録画が
 // 消えたか」を計算し直すことはしない --- 通知の一瞬だけ計算して結果を
 // 捨てる形だと、アセットを 1 行も持たない録画で「消した」と「元から無い」を
-// 区別できず発火し損なう。その計算は MarkPurgedRecordings の WHERE で
+// 区別できず発火し損なう。その計算は MarkPurgedRecordings（internal/db/queries/delete_reconcile.sql）の WHERE で
 // 1 回だけ行われ、結果は purged_at として永続化済みである。
 //
-// purged は MarkPurgedRecordings が WHERE purged_at IS NULL で選んだ集合
+// purged は MarkPurged が purged_at IS NULL で選んだ集合
 // なので、同じ録画で二度発火することはない（次パスでは同じ行が候補に
 // 上がらない）。
-func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purged []sqlcgen.MarkPurgedRecordingsRow, budget time.Duration) {
+func (w *DeleteReconcileWorker) notifyPurgedRecordings(ctx context.Context, purged []store.PurgedRecording, budget time.Duration) {
 	if w.Webhook == nil || len(purged) == 0 {
 		return
 	}

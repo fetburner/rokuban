@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/fetburner/rokuban/internal/capacity"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // ListCapacityOverages はチューナーが不足している区間を結合済みで返す
@@ -34,7 +33,7 @@ func (h *Server) ListCapacityOverages(ctx context.Context, req ListCapacityOvera
 		return ListCapacityOverages400JSONResponse{Error: "end must be after start"}, nil
 	}
 
-	overages, err := capacity.LoadAllSites(ctx, sqlcgen.New(h.pool))
+	overages, err := capacity.LoadAllSites(ctx, h.capacityStore)
 	if err != nil {
 		return nil, fmt.Errorf("computing capacity overages: %w", err)
 	}

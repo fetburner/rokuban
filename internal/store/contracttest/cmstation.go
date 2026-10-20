@@ -15,8 +15,8 @@ type CMStationFixture struct {
 	NewRecording func(t *testing.T) int64
 	// BeginStationWrite は同じ局の書き込みロックを保持した tx を作り、commit 関数を返す。
 	BeginStationWrite func(t *testing.T, station store.CMStationRef) (commit func())
-	// WaitForStationWriteWait は store の書き込みがその局ロックで待っていることを確認する。
-	WaitForStationWriteWait func(t *testing.T, station store.CMStationRef)
+	// WaitForStationWriteWait は name のメソッドがその局ロックで待っていることを確認する。
+	WaitForStationWriteWait func(t *testing.T, station store.CMStationRef, name string)
 	// SeedCandidate は指定した枠版・試行時刻の候補行を作る。
 	SeedCandidate func(t *testing.T, station store.CMStationRef, recordingID int64, areaUpdatedAt, attemptedAt time.Time, state string)
 	// FailCandidateDelete は候補の削除を失敗させ、返す関数で故障注入を解除する。
@@ -30,28 +30,55 @@ type NewCMStationStore func(t *testing.T) CMStationFixture
 func RunCMStation(t *testing.T, newStore NewCMStationStore) {
 	t.Helper()
 	station := store.CMStationRef{NetworkID: 32678, ServiceID: 5168}
-	t.Run("station writes serialize with an open station write", func(t *testing.T) {
-		f := newStore(t)
-		ctx := context.Background()
-		recordingID := f.NewRecording(t)
-		commit := f.BeginStationWrite(t, station)
-		result := make(chan error, 1)
-		go func() {
-			_, err := f.Store.SaveLogoArea(ctx, station, testAreaInput(recordingID, 10))
-			result <- err
-		}()
-		f.WaitForStationWriteWait(t, station)
-		select {
-		case err := <-result:
+	serialized := []struct {
+		name string
+		call func(ctx context.Context, s store.CMStation, recordingID int64, areaUpdatedAt time.Time) error
+	}{
+		{"SaveLogoArea", func(ctx context.Context, s store.CMStation, id int64, _ time.Time) error {
+			_, err := s.SaveLogoArea(ctx, station, testAreaInput(id, 20))
+			return err
+		}},
+		{"DeleteLogoArea", func(ctx context.Context, s store.CMStation, _ int64, _ time.Time) error {
+			return s.DeleteLogoArea(ctx, station)
+		}},
+		{"DeleteLogo", func(ctx context.Context, s store.CMStation, _ int64, _ time.Time) error {
+			_, err := s.DeleteLogo(ctx, station)
+			return err
+		}},
+		{"DeleteLogoCandidate", func(ctx context.Context, s store.CMStation, _ int64, _ time.Time) error {
+			return s.DeleteLogoCandidate(ctx, station)
+		}},
+		{"AdoptLogoCandidate", func(ctx context.Context, s store.CMStation, _ int64, _ time.Time) error {
+			return s.AdoptLogoCandidate(ctx, station, false)
+		}},
+		{"BeginLogoCandidate", func(ctx context.Context, s store.CMStation, id int64, at time.Time) error {
+			_, _, err := s.BeginLogoCandidate(ctx, station, id, at)
+			return err
+		}},
+	}
+	for _, tc := range serialized {
+		t.Run("station writes serialize with an open station write/"+tc.name, func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			recordingID := f.NewRecording(t)
+			saved, err := f.Store.SaveLogoArea(ctx, station, testAreaInput(recordingID, 10))
+			if err != nil {
+				t.Fatalf("saving initial area: %v", err)
+			}
+			commit := f.BeginStationWrite(t, station)
+			result := make(chan error, 1)
+			go func() { result <- tc.call(ctx, f.Store, recordingID, saved.AreaUpdatedAt) }()
+			f.WaitForStationWriteWait(t, station, tc.name)
+			select {
+			case err := <-result:
+				commit()
+				t.Fatalf("%s returned %v while the station write was open, want it to wait", tc.name, err)
+			default:
+			}
 			commit()
-			t.Fatalf("SaveLogoArea returned %v while the station write was open, want it to wait", err)
-		default:
-		}
-		commit()
-		if err := <-result; err != nil {
-			t.Fatalf("SaveLogoArea after station write commit = %v", err)
-		}
-	})
+			<-result // 待ち解除後の成否は問わない。待ったことだけを主張する。
+		})
+	}
 
 	t.Run("candidate results reject an old area version", func(t *testing.T) {
 		f := newStore(t)

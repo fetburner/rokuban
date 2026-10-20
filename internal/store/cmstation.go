@@ -162,8 +162,10 @@ func (e *CMLogoAdoptionError) Error() string {
 }
 
 // CMStation は CM ロゴの局単位状態と候補解析を永続化する。
-// API によるロゴ・枠・候補の変更と候補解析の開始は、同じ局で互いに直列化される。
-// ready の保存は現在の枠版と試行時刻を照合する。失敗と破棄は候補行の枠版・試行時刻を照合する。
+// 同じ局について、ロゴ・枠・候補を書くメソッドは、互いに直列化される。
+// CM 検出の結果やロゴの学習結果を保存する操作とも直列化される。
+// ready の保存は、候補行の試行時刻と、保存を決めた時点の枠版が現在の枠版と同じかを照合し、違えば書かない。
+// 失敗と破棄は、候補行の枠版・試行時刻だけを照合する。
 // 各メソッドは自身のトランザクションを完了してから返す。
 type CMStation interface {
 	// ListCMLogoStates はロゴ、枠、候補および CM 検出の局別状態を返す。
@@ -177,23 +179,24 @@ type CMStation interface {
 	// GetCandidateRecording は候補解析用の録画と原本状態を返す。
 	GetCandidateRecording(ctx context.Context, recordingID int64) (CMLogoCandidateRecording, error)
 	// SaveLogoArea は枠を保存し既存候補を消して、候補解析用ヒントの宛先を返す。
-	// 同じ局の候補開始とロゴ状態の変更に直列化される。
+	// 同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	SaveLogoArea(ctx context.Context, station CMStationRef, input CMLogoAreaInput) (CMLogoCandidateJob, error)
 	// DeleteLogoArea は採用待ちの試行とロゴ枠を原子的に消す。
-	// 同じ局の候補開始とロゴ状態の変更に直列化される。
+	// 同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	DeleteLogoArea(ctx context.Context, station CMStationRef) error
 	// DeleteLogo はロゴを消し、次に投入する候補解析の宛先を返す。
-	// 同じ局の候補開始とロゴ状態の変更に直列化される。
+	// 同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	DeleteLogo(ctx context.Context, station CMStationRef) (CMLogoDeleteResult, error)
-	// DeleteLogoCandidate は局の現在の候補を消す。同じ局の他の状態変更に直列化される。
+	// DeleteLogoCandidate は局の現在の候補を消す。同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	DeleteLogoCandidate(ctx context.Context, station CMStationRef) error
 	// AdoptLogoCandidate は ready な候補を採用し、redetect が真なら有効な録画の結果も消す。
-	// 同じ局の候補開始とロゴ状態の変更に直列化される。
+	// 同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	AdoptLogoCandidate(ctx context.Context, station CMStationRef, redetect bool) error
 	// BeginLogoCandidate は現在の枠が desired の場合に候補の running 試行を作る。
-	// 同じ局のロゴ状態の変更と候補開始に直列化される。
+	// 同じ局の他の書き込みと、CM 検出の結果・ロゴの学習結果の保存に直列化される。
 	BeginLogoCandidate(ctx context.Context, station CMStationRef, recordingID int64, areaUpdatedAt time.Time) (attemptedAt time.Time, started bool, err error)
 	// MarkLogoCandidateReady は枠版と試行時刻が一致する running 候補だけを ready にする。
+	// 現在の枠版が areaUpdatedAt と違えば書かない。
 	MarkLogoCandidateReady(ctx context.Context, station CMStationRef, areaUpdatedAt, attemptedAt time.Time, lgd, previewPNG []byte) (bool, error)
 	// MarkLogoCandidateFailed は候補行の枠版と試行時刻が一致する running 候補だけを failed にする。
 	MarkLogoCandidateFailed(ctx context.Context, station CMStationRef, areaUpdatedAt, attemptedAt time.Time, stage *string, message string) (bool, error)

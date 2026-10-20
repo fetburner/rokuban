@@ -254,35 +254,6 @@ func (q *Queries) DeleteCMLogoCandidate(ctx context.Context, arg DeleteCMLogoCan
 	return result.RowsAffected(), nil
 }
 
-const deleteCMLogoCandidateForAreaVersion = `-- name: DeleteCMLogoCandidateForAreaVersion :execrows
-DELETE FROM cm_logo_candidates
-WHERE network_id = $1
-  AND service_id = $2
-  AND state = 'running'
-  AND observed_area_updated_at = $3::timestamptz
-  AND attempted_at = $4::timestamptz
-`
-
-type DeleteCMLogoCandidateForAreaVersionParams struct {
-	NetworkID     int32
-	ServiceID     int32
-	AreaUpdatedAt time.Time
-	AttemptedAt   time.Time
-}
-
-func (q *Queries) DeleteCMLogoCandidateForAreaVersion(ctx context.Context, arg DeleteCMLogoCandidateForAreaVersionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteCMLogoCandidateForAreaVersion,
-		arg.NetworkID,
-		arg.ServiceID,
-		arg.AreaUpdatedAt,
-		arg.AttemptedAt,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteCMLogoCandidateRunningAttempt = `-- name: DeleteCMLogoCandidateRunningAttempt :execrows
 DELETE FROM cm_logo_candidates
 WHERE network_id = $1

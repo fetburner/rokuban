@@ -100,7 +100,10 @@ WHERE id = sqlc.arg('id');
 -- ずれると「there is no unique or exclusion constraint matching」で落ちる）。
 -- 一致させておくことで、この INSERT が狙う相手は常に「生きている」行
 -- （superseded 済みの過去の failed 行ではない）になる。
--- name: CreateFailedRecording :exec
+-- quality_events の `at` は DB の時計（now()）で付ける。呼び出し側が `at` を渡しても
+-- 上書きする。docs/data/store-contracts.md §9「時刻」の規則（store が記録する時刻は
+-- DB の時計で付ける）に従う。
+-- name: CreateFailedRecording :one
 INSERT INTO recordings (
     rule_id, source, site,
     network_id, service_id, event_id, service_name,
@@ -114,7 +117,10 @@ INSERT INTO recordings (
     $8, $9, $10, $11,
     $12, $13, $14,
     $15, $16,
-    'failed', $17
+    'failed', COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements(sqlc.arg('quality_events')::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb)
 )
 -- ON CONFLICT の相手は生きている（deleted_at / superseded_at が NULL）同一
 -- active-event の failed 行で、mirakc からの繰り返し通知に同じ理由を積み増す。
@@ -124,7 +130,8 @@ ON CONFLICT (site, network_id, service_id, event_id, program_start_at)
     WHERE deleted_at IS NULL AND superseded_at IS NULL
 DO UPDATE SET
     quality_events = recordings.quality_events || EXCLUDED.quality_events,
-    updated_at     = now();
+    updated_at     = now()
+RETURNING id;
 
 -- records API や schedules API から再構成した failed を保存する。SSE の
 -- recording.failed は同じ通知を履歴として複数追記する CreateFailedRecording を
@@ -169,7 +176,10 @@ RETURNING id;
 -- 追記するので、mirakc から同じイベントが複数回届いた事実は失わない。
 -- name: AppendQualityEventsIfMissing :execrows
 UPDATE recordings AS r
-SET quality_events = r.quality_events || sqlc.arg('events')::jsonb,
+SET quality_events = r.quality_events || COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements(sqlc.arg('events')::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb),
     updated_at = now()
 WHERE r.id = sqlc.arg('id')
   AND NOT EXISTS (
@@ -199,9 +209,13 @@ JOIN media_assets a ON a.id = p.media_asset_id
 WHERE a.recording_id = $1 AND a.kind = 'original'
 ORDER BY p.pid, p.byte_offset;
 
+-- `at` は CreateFailedRecording と同じく常に DB の時計で付ける。
 -- name: AppendQualityEvents :exec
 UPDATE recordings
-SET quality_events = quality_events || sqlc.arg('events')::jsonb,
+SET quality_events = quality_events || COALESCE((
+        SELECT jsonb_agg(e.value || jsonb_build_object('at', now()) ORDER BY e.ordinality)
+        FROM jsonb_array_elements(sqlc.arg('events')::jsonb) WITH ORDINALITY AS e(value, ordinality)
+    ), '[]'::jsonb),
     updated_at = now()
 WHERE id = sqlc.arg('id');
 

@@ -75,7 +75,7 @@ func TestCMStationContract(t *testing.T) {
 					committed = true
 				}
 			},
-			WaitForStationWriteWait: func(t *testing.T, station store.CMStationRef) {
+			WaitForStationWriteWait: func(t *testing.T, station store.CMStationRef, name string) {
 				t.Helper()
 				deadline := time.Now().Add(5 * time.Second)
 				for time.Now().Before(deadline) {
@@ -103,7 +103,7 @@ SELECT EXISTS (
 					}
 					time.Sleep(10 * time.Millisecond)
 				}
-				t.Fatal("SaveLogoArea did not wait on the held station lock")
+				t.Fatalf("%s did not wait on the held station lock", name)
 			},
 			SeedCandidate: func(t *testing.T, station store.CMStationRef, recordingID int64, areaUpdatedAt, attemptedAt time.Time, state string) {
 				t.Helper()

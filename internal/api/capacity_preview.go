@@ -6,13 +6,10 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/capacity"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/rulequery"
 	"github.com/fetburner/rokuban/internal/ruler"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // PreviewCapacityOverages は、検索条件をルールとして保存したときに新たに増える容量超過の
@@ -36,15 +33,14 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 		return PreviewCapacityOverages400JSONResponse{Error: message}, nil
 	}
 
-	q := sqlcgen.New(h.pool)
-	var editingRule *sqlcgen.Rule
+	var editingRule *store.CapacityPreviewRule
 	if req.Body.RuleId != nil {
 		if *req.Body.RuleId <= 0 {
 			return PreviewCapacityOverages400JSONResponse{Error: "ruleId must be greater than zero"}, nil
 		}
-		row, err := q.GetRule(ctx, *req.Body.RuleId)
+		row, err := h.capacityStore.PreviewRule(ctx, *req.Body.RuleId)
 		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
+			if errors.Is(err, store.ErrNotFound) {
 				return PreviewCapacityOverages404JSONResponse{Error: "rule not found"}, nil
 			}
 			return nil, fmt.Errorf("loading rule for capacity preview: %w", err)
@@ -60,7 +56,7 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 	for i, match := range matches {
 		refs[i] = capacity.ProgramRef{Site: match.Site, ProgramID: match.ProgramID}
 	}
-	candidates, err := capacity.PreviewCandidates(ctx, h.pool, refs, req.Body.RuleId)
+	candidates, err := capacity.PreviewCandidates(ctx, h.capacityStore, refs, req.Body.RuleId)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +66,7 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 	if editingRule != nil && !editingRule.Enabled {
 		candidates = nil
 	} else if editingRule != nil && editingRule.DedupeEnabled {
-		candidates, err = removeDedupeSkips(ctx, h.pool, *req.Body.RuleId, candidates)
+		candidates, err = h.removeDedupeSkips(ctx, *req.Body.RuleId, candidates)
 		if err != nil {
 			return nil, fmt.Errorf("evaluating dedupe for capacity preview: %w", err)
 		}
@@ -80,7 +76,7 @@ func (h *Server) PreviewCapacityOverages(ctx context.Context, req PreviewCapacit
 	for i, candidate := range candidates {
 		demands[i] = candidate.Demand
 	}
-	added, err := capacity.Preview(ctx, q, req.Body.RuleId, demands)
+	added, err := capacity.Preview(ctx, h.capacityStore, req.Body.RuleId, demands)
 	if err != nil {
 		return nil, fmt.Errorf("computing capacity preview: %w", err)
 	}
@@ -130,7 +126,7 @@ type previewProgramKey struct {
 	programID int64
 }
 
-func removeDedupeSkips(ctx context.Context, pool *pgxpool.Pool, ruleID int64, candidates []capacity.PreviewCandidate) ([]capacity.PreviewCandidate, error) {
+func (h *Server) removeDedupeSkips(ctx context.Context, ruleID int64, candidates []capacity.PreviewCandidate) ([]capacity.PreviewCandidate, error) {
 	bySite := make(map[string][]ruler.DedupeCandidate)
 	for _, candidate := range candidates {
 		bySite[candidate.Site] = append(bySite[candidate.Site], ruler.DedupeCandidate{
@@ -140,7 +136,7 @@ func removeDedupeSkips(ctx context.Context, pool *pgxpool.Pool, ruleID int64, ca
 	}
 	skipped := make(map[previewProgramKey]struct{})
 	for _, site := range sortedPreviewSites(bySite) {
-		matches, err := ruler.EvaluateDedupe(ctx, pool, site, bySite[site])
+		matches, err := ruler.EvaluateDedupe(ctx, h.pool, site, bySite[site])
 		if err != nil {
 			return nil, err
 		}

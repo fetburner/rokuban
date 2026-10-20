@@ -282,11 +282,8 @@ func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) 
 	if err != nil || failed != 0 {
 		t.Fatalf("old failure update = %d, %v; want no row", failed, err)
 	}
-	deleted, err := q.DeleteCMLogoCandidateForAreaVersion(ctx, sqlcgen.DeleteCMLogoCandidateForAreaVersionParams{
-		NetworkID: 32736, ServiceID: 1024, AreaUpdatedAt: areaAt, AttemptedAt: oldAttempt,
-	})
-	if err != nil || deleted != 0 {
-		t.Fatalf("old cleanup = %d, %v; want no row", deleted, err)
+	if err := pgstore.NewAnalysis(pool).DiscardLogoCandidate(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, oldAttempt); err != nil {
+		t.Fatalf("old discard = %v; want no-op", err)
 	}
 	candidate, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
 	if err != nil {

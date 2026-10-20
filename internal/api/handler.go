@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -20,10 +19,15 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool           *pgxpool.Pool
-	chapterStore   store.ChapterEdits
-	cmStationStore store.CMStation
-	enqueuer       jobq.Enqueuer
+	pool             *pgxpool.Pool
+	chapterStore     store.ChapterEdits
+	cmStationStore   store.CMStation
+	playbackStore    store.PlaybackState
+	recordingTrash   store.RecordingTrash
+	tunerReader      store.TunerReader
+	capacityStore    store.Capacity
+	reservationStore store.Reservations
+	enqueuer         jobq.Enqueuer
 
 	// sites はこのプロセスが応答してよい mirakc サイト名の集合（メンバーシップ判定用。
 	// knownSite 参照）。api は不変条件 1（mirakc にもファイルシステムにも依存しない）
@@ -70,9 +74,9 @@ type Server struct {
 // （すべて無効）は config の既定と一致する。
 // cutProfileNames は config.encode.profiles のうち `cut: true` の名前一覧。
 // encodeProfileNames と同じく nil なら cut の規則を検査しない（テストの部分構成）。
-// chapterStore はチャプター編集の永続化契約。cmStationStore は局の CM ロゴ状態の永続化契約。
-// いずれも nil はその操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+// cmStationStore は局の CM ロゴ状態の永続化契約。chapterStore / playbackStore / recordingTrash / tunerReader / capacityStore / reservationStore はそれぞれの永続化契約。
+// nil は該当操作を呼ばない部分テストでのみ許容する。
+func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -101,7 +105,8 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationSto
 		}
 	}
 	return &Server{
-		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, enqueuer: enqueuer,
+		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, playbackStore: playbackStore, recordingTrash: recordingTrash,
+		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
 		encodeProfiles: profiles, encodeProfileNames: names,
 		cutProfiles:  cut,
@@ -183,15 +188,14 @@ func (h *Server) GetVersion(_ context.Context, _ GetVersionRequestObject) (GetVe
 // ListReservations は予約一覧を返す。導出行の読み取り専用ビュー（issue #29）。
 // 全サイトの予約を返す（issue #184 M4-12）。各要素の Site で区別する。
 func (h *Server) ListReservations(ctx context.Context, _ ListReservationsRequestObject) (ListReservationsResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	rows, err := q.ListReservationsFull(ctx)
+	rows, err := h.reservationStore.ListReservations(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	result := make([]Reservation, 0, len(rows))
-	for _, r := range rows {
-		res, err := reservationFromRow(r.Reservation, r.ProgramSnapshot, r.Overrides, r.IntentAction, r.NeverRecorded, r.Series)
+	for _, row := range rows {
+		res, err := reservationFromRow(row)
 		if err != nil {
 			return nil, err
 		}
@@ -252,12 +256,13 @@ func reservationState(ruleID *int64, base json.RawMessage, neverRecorded bool) R
 // neverRecorded は呼び出し元のクエリ（GetReservationFullBySiteAndProgramID /
 // ListReservationsFull）が EXISTS で計算した「この予約に status='failed' の
 // recordings 行があるか」（issue #98。reservationState のコメント参照）。
-func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, overrides []byte, intentAction *string, neverRecorded bool, series *string) (Reservation, error) {
+func reservationFromRow(row store.ReservationDetails) (Reservation, error) {
+	r, snap := row.Reservation, row.Snapshot
 	source := ReservationSourceRule
-	if intentAction != nil && *intentAction == reservation.IntentRecord {
+	if row.IntentAction != nil && *row.IntentAction == reservation.IntentRecord {
 		source = ReservationSourceManual
 	}
-	opts, err := reservation.EffectiveOptions(r.Base, overrides, intentAction)
+	opts, err := reservation.EffectiveOptions(r.Base, row.Overrides, row.IntentAction)
 	if err != nil {
 		return Reservation{}, fmt.Errorf("resolving effective options for program %d: %w", r.ProgramID, err)
 	}
@@ -265,8 +270,8 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 		Site:      r.Site,
 		ProgramId: r.ProgramID,
 		Source:    source,
-		State:     reservationState(r.RuleID, r.Base, neverRecorded),
-		Series:    series,
+		State:     reservationState(r.RuleID, r.Base, row.NeverRecorded),
+		Series:    row.Series,
 		// site を返すのは容量超過の判定がサイトごとに独立しているため
 		// （docs/data.md §6.5）。クライアントに単一サイト前提の定数を持たせると、
 		// 多サイト化のときに「他サイトの不足を自分の不足として出す」形で静かに壊れる。
@@ -290,13 +295,12 @@ func reservationFromRow(r sqlcgen.Reservation, snap sqlcgen.ProgramSnapshot, ove
 	if r.DedupMatchRecordingID != nil {
 		res.DedupMatchRecordingId = r.DedupMatchRecordingID
 	}
-	if r.DedupSimilarity.Valid {
-		similarity := r.DedupSimilarity.Float32
-		res.DedupSimilarity = &similarity
+	if r.DedupSimilarity != nil {
+		res.DedupSimilarity = r.DedupSimilarity
 	}
-	if len(overrides) > 0 && string(overrides) != "{}" {
+	if len(row.Overrides) > 0 && string(row.Overrides) != "{}" {
 		var m map[string]interface{}
-		if json.Unmarshal(overrides, &m) == nil && len(m) > 0 {
+		if json.Unmarshal(row.Overrides, &m) == nil && len(m) > 0 {
 			res.Overrides = &m
 		}
 	}
