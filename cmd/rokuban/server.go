@@ -494,6 +494,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		CapacityStore:       tunerStore,
 		ReservationStore:    pgstore.NewReservations(pool),
 		CMStationStore:      pgstore.NewAnalysis(pool),
+		LabelRules:          pgstore.NewLabelRules(pool),
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
 		// site に束縛されない。bound ではなくレジストリ全体を渡すことで、
 		// 1 プロセスがレジストリの全 site を処理できる。
@@ -646,6 +647,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
 		RecordingPurge:           pgstore.NewRecordings(pool),
+		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaDir:                 cfg.Storage.MediaDir,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,

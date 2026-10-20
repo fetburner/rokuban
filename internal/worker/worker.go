@@ -106,8 +106,10 @@ type Deps struct {
 	CapacityStore store.Capacity
 	// RecordingPurge は録画の物理削除の永続化契約。
 	RecordingPurge store.RecordingPurge
-	MediaDir       string
-	ScratchDir     string
+	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
+	LabelRuleReevaluation store.LabelRuleReevaluation
+	MediaDir              string
+	ScratchDir            string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -214,7 +216,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,
 	})
-	riveradapter.Register(workers, &LabelRuleReconcileWorker{Pool: deps.Pool})
+	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
 	riveradapter.Register(workers, &ReconcilePassWorker{
 		MirakcClients:   deps.MirakcClients,
 		Pool:            deps.Pool,

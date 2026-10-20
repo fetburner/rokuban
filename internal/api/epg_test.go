@@ -30,6 +30,7 @@ func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: pgstore.NewRecordings(pool),
 		ReservationStore:    pgstore.NewReservations(pool),
+		LabelRules:          pgstore.NewLabelRules(pool),
 	}))
 	t.Cleanup(srv.Close)
 	return srv

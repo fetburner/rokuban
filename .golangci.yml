@@ -130,7 +130,6 @@ linters:
             - "!${config-path}/internal/worker/epg.go"
             - "!${config-path}/internal/worker/ingest.go"
             - "!${config-path}/internal/worker/ingest_progress.go"
-            - "!${config-path}/internal/worker/label_rule_reconcile.go"
             - "!${config-path}/internal/worker/media_asset_namespace.go"
             - "!${config-path}/internal/worker/media_asset_publish.go"
             - "!${config-path}/internal/worker/reconcile_pass.go"
