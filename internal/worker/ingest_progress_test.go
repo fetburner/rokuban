@@ -183,8 +183,8 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		ProgressInterval: time.Hour,
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-progress")
@@ -317,7 +317,6 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		ProgressInterval: time.Hour,
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 
 	recordingID = insertTestRecording(t, pool)
@@ -409,7 +408,6 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		ProgressInterval: time.Millisecond,
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 
 	recordingID := insertTestRecording(t, pool)
@@ -488,7 +486,6 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		ProgressInterval: time.Hour,
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")

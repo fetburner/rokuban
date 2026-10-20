@@ -48,21 +48,21 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	srvB := newConcurrentIngestServer(t, tsDataB, contentPath, started, release, &deleteCalls)
 
 	wA := &IngestWorker{
-		MirakcClients:    singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
-		MediaDir:         mediaDir,
-		StallTimeout:     5 * time.Second,
+		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
+		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
 	wB := &IngestWorker{
-		MirakcClients:    singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
-		MediaDir:         mediaDir,
-		StallTimeout:     5 * time.Second,
+		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
+		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
+	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
+	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
 	jobA := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
 	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
@@ -501,13 +501,13 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			var deleteCalls atomic.Int32
 			srv := newInstrumentedIngestServer(t, tsData, contentPath, func() { deleteCalls.Add(1) })
 			w := &IngestWorker{
-				MirakcClients:    singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
-				Pool:             pool,
-				RecordTarget:     pgstore.NewRecordings(pool),
-				CMDetectionStore: pgstore.NewAnalysis(pool),
-				MediaDir:         mediaDir,
-				StallTimeout:     5 * time.Second,
+				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
+				Pool:          pool,
+				RecordTarget:  pgstore.NewRecordings(pool),
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
 			}
+			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			originalRename := renameIngestFile

@@ -495,13 +495,13 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
-		CMDetectionStore: pgstore.NewAnalysis(pool),
-		MediaDir:         mediaDir,
-		StallTimeout:     5 * time.Second,
+		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
+		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
 	}
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
 	if err := runWorkerViaJobQFake(ctx, w, args); err == nil {
 		t.Fatal("first Work() error = nil, want cancellation after partial transfer")
