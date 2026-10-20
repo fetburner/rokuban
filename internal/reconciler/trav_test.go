@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/reservation"
 )
 
 // テンプレートと番組名はどちらもユーザー入力なので、両方から
@@ -14,7 +14,7 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 	sid := int32(1024)
 	ch := "27"
 	ct := "GR"
-	base := sqlcgen.ProgramSnapshot{
+	base := reservation.SyncProgramSnapshot{
 		StartAt:     time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
 		ServiceID:   sid,
 		Channel:     ch,
@@ -69,7 +69,7 @@ func TestBuildContentPath_AdversarialTraversal(t *testing.T) {
 // 意図した階層を作れるという規約）。
 func TestBuildContentPath_ExplicitSlashInTemplateCreatesHierarchy(t *testing.T) {
 	sid := int32(1024)
-	snap := sqlcgen.ProgramSnapshot{
+	snap := reservation.SyncProgramSnapshot{
 		Title:     "番組",
 		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
 		ServiceID: sid,
@@ -93,7 +93,7 @@ func TestBuildContentPath_ExplicitSlashInTemplateCreatesHierarchy(t *testing.T) 
 // 確認する。
 func TestBuildContentPath_TitleSlashDoesNotCreateHierarchy(t *testing.T) {
 	sid := int32(1024)
-	snap := sqlcgen.ProgramSnapshot{
+	snap := reservation.SyncProgramSnapshot{
 		Title:     "前編/後編",
 		StartAt:   time.Date(2026, 8, 1, 21, 0, 0, 0, time.FixedZone("JST", 9*3600)),
 		ServiceID: sid,

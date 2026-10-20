@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -30,6 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/rulequery"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // Config は Ruler の設定。
@@ -68,7 +68,7 @@ type Config struct {
 	// New はこれを 0 より大きい値に読み替えない。本番の既定 1h は呼び出し側
 	// （internal/config.RulerConfig.RetractGrace）が埋める。ここで package 既定値
 	// （例: 1h）を持たせると、この値を一切気にしない既存の全テスト・呼び出し元
-	// （ruler.New(sites, pool, nil) や cfg.RetractGrace を設定しない Config{}）が
+	// （ruler.New(sites, pool, stores..., nil) や cfg.RetractGrace を設定しない Config{}）が
 	// 黙って猶予ありの挙動に変わり、削除を確認するテストが不安定にサイレント破壊
 	// される。0 を「無効」の後方互換な既定にすることで、猶予は明示的に opt-in する
 	// 機能になる。
@@ -85,12 +85,14 @@ func defaultConfig() Config {
 
 // Ruler はルール評価 → reservations.base 生成の 1 パス評価を行う。
 type Ruler struct {
-	sites []string
-	pool  *pgxpool.Pool
-	cfg   Config
+	sites          []string
+	pool           *pgxpool.Pool
+	breakers       store.Breakers
+	neverScheduled store.NeverScheduledEvents
+	cfg            Config
 }
 
-// New は Ruler を生成する。cfg が nil の場合はデフォルト設定を使う。
+// New は Ruler を生成する。store は永続化契約、cfg が nil ならデフォルト設定を使う。
 //
 // sites はルールを評価する対象サイトの一覧。ルールはサイトに従属しないグローバルな
 // 資産で（docs/recording.md §3.1「サイトの扱い」）、rule_sites が空なら全サイト、
@@ -99,7 +101,7 @@ type Ruler struct {
 // 構成に備えて引数はスライスにしてある。呼び出し元の
 // internal/worker.RulerPassWorker はジョブ引数のサイト 1 つだけを渡す
 // （ジョブの排他がサイト単位のため）。
-func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
+func New(sites []string, pool *pgxpool.Pool, breakers store.Breakers, neverScheduled store.NeverScheduledEvents, cfg *Config) *Ruler {
 	c := defaultConfig()
 	if cfg != nil {
 		if cfg.MaxDeletesPerPass > 0 {
@@ -112,7 +114,7 @@ func New(sites []string, pool *pgxpool.Pool, cfg *Config) *Ruler {
 		// ">0 のときだけ上書き" にしない。cfg が渡された時点でその値をそのまま使う。
 		c.RetractGrace = cfg.RetractGrace
 	}
-	return &Ruler{sites: sites, pool: pool, cfg: c}
+	return &Ruler{sites: sites, pool: pool, breakers: breakers, neverScheduled: neverScheduled, cfg: c}
 }
 
 // RunPass は全サイトに対して全量評価パスを 1 回実行し、続けて番組終了後の GC
@@ -200,7 +202,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	// 読み取り専用の観測機能の失敗なので、このパスの評価・適用は止めない。
 	observeProgramIDReuses(ctx, q, site)
 
-	tripped, err := r.observeDeleteBreaker(ctx, q, site)
+	tripped, err := r.observeDeleteBreaker(ctx, site)
 	if err != nil {
 		return err
 	}
@@ -346,8 +348,8 @@ func observeProgramIDReuses(ctx context.Context, q *sqlcgen.Queries, site string
 // （ゲージはプロセス再起動で失われるため。breaker.ObserveState のコメント参照）。true
 // ならこのパスでは導出削除を一切実行しない。作成・更新・base の再計算・GC は止めない
 // — 止めたいのは削除だけ。
-func (r *Ruler) observeDeleteBreaker(ctx context.Context, q *sqlcgen.Queries, site string) (bool, error) {
-	tripped, err := breaker.ObserveState(ctx, q, site, breaker.RulerDeletes)
+func (r *Ruler) observeDeleteBreaker(ctx context.Context, site string) (bool, error) {
+	tripped, err := breaker.ObserveState(ctx, r.breakers, site, breaker.RulerDeletes)
 	if err != nil {
 		return false, fmt.Errorf("observing %s circuit breaker: %w", breaker.RulerDeletes, err)
 	}
@@ -665,14 +667,14 @@ func (r *Ruler) applyRetractGrace(ctx context.Context, tq *sqlcgen.Queries, site
 // metrics.RulerCircuitBreakerTrips.Inc() は tx.Commit の成否がまだ分からないこの時点では
 // 呼ばない — ここで呼ぶと後段の Commit が失敗した場合にカウンタだけ進んでしまう（DB には
 // 発動が記録されていないのにメトリクスだけ発動したことになる）。フラグに持ち越し、Commit
-// 成功後にのみ Inc する。breaker.Trip 内のゲージ設定は次パスの ObserveState が DB の真実に
+// 成功後にのみ Inc する。breaker.TripInTx 内のゲージ設定は次パスの ObserveState が DB の真実に
 // 合わせ直すので、ここでは触らなくてよい。
 //
 // 閾値超過。tripped が既に true でも Trip を呼び直す — 既に発動中なら tripped_at は据え置か
 // れたまま pending/detail だけが最新の値に更新される（TripCircuitBreaker の ON CONFLICT。
 // 「いつから止まっているか」を保つ一方、手動確認の材料は最新に保つ）。どちらの場合もこの
 // 分岐では削除しない。Trip がエラーを返した場合もこの分岐からは削除を実行しない（記録でき
-// ないまま削除を続けるのが最悪の組み合わせ。breaker.Trip のコメント）。tx 内で呼ぶことで、
+// ないまま削除を続けるのが最悪の組み合わせ。breaker.TripInTx のコメント）。tx 内で呼ぶことで、
 // 発動の記録と「このパスでは削除しない」を一体に保つ。
 //
 // ラッチ中: 今回の候補数は閾値以下に戻っているが、自動では解除しない（breaker パッケージの
@@ -687,7 +689,7 @@ func (r *Ruler) observeTrip(ctx context.Context, tq *sqlcgen.Queries, site strin
 		if err != nil {
 			return 0, false, fmt.Errorf("building circuit breaker sample: %w", err)
 		}
-		if err := breaker.Trip(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); err != nil {
+		if err := breaker.TripInTx(ctx, tq, site, breaker.RulerDeletes, r.cfg.MaxDeletesPerPass, sample); err != nil {
 			return 0, false, fmt.Errorf("tripping circuit breaker: %w", err)
 		}
 		newlyTripped = !tripped
@@ -758,8 +760,10 @@ func (r *Ruler) runGC(ctx context.Context) error {
 	// ローリング窓 + retention_grace）を確実に超える固定余裕として 30 日を足す。
 	// これは時刻比較だけで決まる GC なので、DeleteEndedProgramSnapshots と同様に
 	// 大量削除サーキットブレーカーの対象にせず、derivedDeletes の勘定にも混ぜない。
+	// DeleteEndedProgramSnapshots はアプリの時計の cutoff で比べるが、こちらは DB の時計で
+	// 比べる（observed_at が DB の時計で書かれているため。理由は pgstore の doc）。
 	horizon := r.cfg.RetentionGrace + 30*24*time.Hour
-	deletedNeverScheduledEvents, err := q.DeleteStaleNeverScheduledEvents(ctx, postgresInterval(horizon))
+	deletedNeverScheduledEvents, err := r.neverScheduled.PruneNeverScheduled(ctx, horizon)
 	if err != nil {
 		return fmt.Errorf("deleting stale never-scheduled events: %w", err)
 	}
@@ -775,19 +779,6 @@ func (r *Ruler) runGC(ctx context.Context) error {
 		)
 	}
 	return nil
-}
-
-// postgresInterval は time.Duration を PostgreSQL の interval 型に変換する。
-//
-// runGC の 2 本の DELETE は時計が違う: DeleteEndedProgramSnapshots へは
-// time.Now() から計算したアプリ側の cutoff（タイムスタンプ）を渡すのに対し、
-// DeleteStaleNeverScheduledEvents へはこの interval をそのまま渡し、しきい値の
-// 時刻はクエリ側の now() - interval で計算する（起点は DB の時計）。同じ関数の
-// 中で時計が 2 つ混在すること自体はここで解消しない --- 後者を前者と揃えて
-// cutoff 渡しに統一しないのは、issue #636 が SQL の形を
-// `observed_at < now() - horizon` と指定しているため。
-func postgresInterval(d time.Duration) pgtype.Interval {
-	return pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 }
 
 // buildDeleteSample は発動時に breaker.Trip へ渡す breaker.Sample を組む。

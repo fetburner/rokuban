@@ -24,8 +24,13 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func newReconciler(mc *mirakc.Client, pool *pgxpool.Pool, cfg *reconciler.Config) *reconciler.Reconciler {
+	return reconciler.New("default", mc, pgstore.NewScheduleSync(pool), pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg)
+}
 
 type mockMirakc struct {
 	mu        sync.Mutex
@@ -295,7 +300,7 @@ func TestReconciler_CreatesSchedule(t *testing.T) {
 	// 算術には頼らない）。
 	res := createReservation(t, ctx, q, 100000500011234, "テスト番組", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -353,7 +358,7 @@ func TestReconciler_CommitsScheduleSnapshotMarkerWithStaleSweep(t *testing.T) {
 		t.Fatalf("aging schedule_sync row: %v", err)
 	}
 
-	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -417,7 +422,7 @@ func TestReconciler_UsesSingleBatchForScheduleSnapshot(t *testing.T) {
 	}
 	t.Cleanup(tracedPool.Close)
 
-	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), tracedPool, nil)
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), tracedPool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -466,7 +471,7 @@ func TestReconciler_SplitsScheduleSnapshotBatchAtLimit(t *testing.T) {
 	}
 	t.Cleanup(tracedPool.Close)
 
-	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), tracedPool, nil)
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), tracedPool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -523,7 +528,7 @@ func TestReconciler_EmptyScheduleSnapshotSweepsAndMarks(t *testing.T) {
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
 
-	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -589,7 +594,7 @@ func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
 
-	rec := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	err := rec.RunPass(ctx)
 	if err == nil {
 		t.Fatal("RunPass unexpectedly succeeded for a failed schedule snapshot batch")
@@ -632,7 +637,7 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019700, "生存中の予約", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -684,7 +689,7 @@ func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -747,7 +752,7 @@ func TestReconciler_TotalLossBreakerCountsOnlyAllowedDeleteStates(t *testing.T) 
 
 	tripsBefore := promtestutil.ToFloat64(metrics.ReconcileCircuitBreakerTrips)
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -815,7 +820,7 @@ func TestReconciler_DeletesStaleSchedulesInAllowedDeleteStates(t *testing.T) {
 	createReservation(t, ctx, q, 100000500019702, "desired", time.Now().Add(time.Hour))
 
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -860,7 +865,7 @@ func TestReconciler_DeletesDeferredScheduleAfterItFinishes(t *testing.T) {
 	createReservation(t, ctx, q, 100000500019703, "desired", time.Now().Add(time.Hour))
 
 	deletesBefore := promtestutil.ToFloat64(metrics.ReconcileSchedules.WithLabelValues("deleted"))
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("first RunPass: %v", err)
 	}
@@ -914,7 +919,7 @@ func TestReconciler_IgnoresNonRokubanSchedules(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 	q := sqlcgen.New(pool)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -978,7 +983,7 @@ func TestReconciler_SkippedReservationNotScheduled(t *testing.T) {
 		t.Fatalf("recording skip intent: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -1021,7 +1026,7 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019001, "優先度変更", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1084,7 +1089,7 @@ func TestReconciler_RecordingStateNotRecreated(t *testing.T) {
 		Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1148,7 +1153,7 @@ func TestReconciler_TrackingAndReschedulingStatesNotRecreated(t *testing.T) {
 				Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
 			}
 
-			rec := reconciler.New("default", mc, pool, nil)
+			rec := newReconciler(mc, pool, nil)
 			if err := rec.RunPass(ctx); err != nil {
 				t.Fatalf("RunPass: %v", err)
 			}
@@ -1178,7 +1183,7 @@ func TestReconciler_NoRecreateWhenPriorityMatches(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019004, "churnなし", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1210,7 +1215,7 @@ func TestReconciler_RecreateKeepsObservedContentPath(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019005, "パス引き継ぎ", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1275,7 +1280,7 @@ func TestReconciler_RecreatesOnExplicitContentPathOverride(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019300, "明示パス反映", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1323,7 +1328,7 @@ func TestReconciler_ExplicitContentPathConvergesInOnePass(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019301, "サニタイズで収束", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1368,7 +1373,7 @@ func TestReconciler_TemplateContentPathDoesNotChurnOnTitleChange(t *testing.T) {
 	newTitle := "新番組名"
 	res := createReservation(t, ctx, q, 100000500019302, oldTitle, startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1438,7 +1443,7 @@ func TestReconciler_ExplicitContentPathDeferredWhileRecording(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019303, "録画中に明示パス", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1484,7 +1489,7 @@ func TestReconciler_ResetContentPathOverrideKeepsRegisteredPath(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019304, "reset非反映", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1554,7 +1559,7 @@ func TestReconciler_ContentPathRecreateDoesNotTripBreaker(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019305, "breaker非計上", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
@@ -1604,7 +1609,7 @@ func TestReconciler_RecreateOnTagMismatch(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019006, "tag不一致", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -1655,7 +1660,7 @@ func TestReconciler_ExternalScheduleNotRecreated(t *testing.T) {
 		Tags:    []string{"epgstation:rule=1"},
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1687,7 +1692,7 @@ func TestReconciler_MaxRecreatesPerPassCarriesOver(t *testing.T) {
 	res1 := createReservation(t, ctx, q, 100000500019008, "1件目", startAt)
 	res2 := createReservation(t, ctx, q, 100000500019108, "2件目", startAt)
 
-	rec := reconciler.New("default", mc, pool, &reconciler.Config{MaxRecreatesPerPass: 1})
+	rec := newReconciler(mc, pool, &reconciler.Config{MaxRecreatesPerPass: 1})
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
@@ -1735,7 +1740,7 @@ func TestReconciler_RecreateDeleteNotCountedByCircuitBreaker(t *testing.T) {
 	res1 := createReservation(t, ctx, q, 100000500019009, "breaker1", startAt)
 	res2 := createReservation(t, ctx, q, 100000500019209, "breaker2", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
@@ -1779,7 +1784,7 @@ func TestReconciler_ScheduleLostOnRecreatePostFailure(t *testing.T) {
 	startAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019010, "post失敗", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (create): %v", err)
 	}
@@ -1911,7 +1916,7 @@ func TestReconciler_DetachedReservationGetsScheduled(t *testing.T) {
 	res := createReservation(t, ctx, q, 100000500019200, "detached予約", startAt)
 	setReservationDetached(t, ctx, pool, res.ProgramID)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1940,7 +1945,7 @@ func TestReconciler_ReservationWithNeverScheduledRecordingNotRescheduled(t *test
 	res := createReservation(t, ctx, q, 100000500019201, "never-scheduled予約", startAt)
 	seedNeverScheduledEvent(t, ctx, pool, res)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -1973,7 +1978,7 @@ func TestReconciler_DetachedSkipReservationNotScheduled(t *testing.T) {
 		t.Fatalf("recording skip intent: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2013,7 +2018,7 @@ func TestReconciler_RecordsNeverScheduledForBothActiveAndDetachedReservations(t 
 	detachedRes := createReservation(t, ctx, q, 100000500019211, "終了済みdetached予約", endedStartAt)
 	setReservationDetached(t, ctx, pool, detachedRes.ProgramID)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2059,7 +2064,7 @@ func TestReconciler_EndedProgramNotScheduled(t *testing.T) {
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019220, "終了済み番組", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2100,7 +2105,7 @@ func TestReconciler_BroadcastingProgramStillScheduled(t *testing.T) {
 	broadcastingStartAt := time.Now().Add(-6 * time.Minute)
 	res := createReservation(t, ctx, q, 100000500019221, "放送中番組", broadcastingStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2133,7 +2138,7 @@ func TestReconciler_FutureProgramStillScheduled(t *testing.T) {
 	futureStartAt := time.Now().Add(1 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019222, "未来の番組", futureStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2165,7 +2170,7 @@ func TestReconciler_NeverScheduledEventIsIdempotentAcrossPasses(t *testing.T) {
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019230, "終了済み番組（冪等性）", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -2257,7 +2262,7 @@ RETURNING id`,
 		t.Fatalf("seeding successful recording: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2300,7 +2305,7 @@ func TestReconciler_NeverScheduledEventSurvivesReservationDeletion(t *testing.T)
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019232, "ルール削除で消える予約", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2343,7 +2348,7 @@ func TestReconciler_NeverScheduledEventSurvivesProgramSnapshotGC(t *testing.T) {
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019233, "GC で消える予約", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2391,7 +2396,7 @@ func TestReconciler_EndedReservationNotReAddedToDesiredOnNextPass(t *testing.T) 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 100000500019234, "2 パス目でも desired に戻らない番組", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -2423,7 +2428,7 @@ func TestReconciler_LogsEndedProgramSkipCount(t *testing.T) {
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	createReservation(t, ctx, q, 100000500019223, "終了済み番組（ログ確認）", endedStartAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	var logBuf bytes.Buffer
 	prevLogger := slog.Default()
@@ -2470,7 +2475,7 @@ func TestReconciler_TotalLossSignatureTripsAndWithholdsDeletes(t *testing.T) {
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -2541,7 +2546,7 @@ func TestReconciler_BulkDeleteWithRemainingReservationDoesNotTripBreaker(t *test
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -2586,7 +2591,7 @@ func TestReconciler_TotalLossBreakerLatchesAcrossPasses(t *testing.T) {
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st, trips the breaker): %v", err)
@@ -2630,7 +2635,7 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 	defer srv.Close()
 
 	mc := mirakc.NewClient(srv.URL, nil)
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (trip): %v", err)
@@ -2728,7 +2733,7 @@ func TestReconciler_DetectsStartDelay(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2769,7 +2774,7 @@ func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
 	createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
 	createStartedRecording(t, ctx, q, 30002, startAt, startAt.Add(1*time.Minute))
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2801,7 +2806,7 @@ func TestReconciler_DetectsStartDelayWhenOnlyHistoricalRecordingHasStarted(t *te
 	oldStartAt := time.Now().Add(-365 * 24 * time.Hour)
 	createStartedRecording(t, ctx, q, int32(programID%100000), oldStartAt, oldStartAt.Add(time.Minute))
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2829,7 +2834,7 @@ func TestReconciler_NoStartDelayWhenRecordingProgramStartDiffers(t *testing.T) {
 	recordingProgramStartAt := startAt.Add(5 * time.Minute)
 	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), recordingProgramStartAt, startAt.Add(6*time.Minute))
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2867,7 +2872,7 @@ WHERE site = $2 AND program_id = $3
 	// そのまま入る（実測 -00:00:14.99、docs/recording/delegation.md §2）。
 	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), startAt, startAt.Add(-15*time.Second))
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2895,7 +2900,7 @@ func TestReconciler_NoStartDelayWithinGrace(t *testing.T) {
 	startAt := time.Now().Add(-1 * time.Minute)
 	createReservation(t, ctx, q, 100000500030003, "開始直後番組", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2923,7 +2928,7 @@ func TestReconciler_NoStartDelayAfterProgramEnded(t *testing.T) {
 	startAt := time.Now().Add(-40 * time.Minute)
 	createReservation(t, ctx, q, 100000500030004, "終了済み番組", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2952,7 +2957,7 @@ func TestReconciler_NoStartDelayForNeverScheduledReservation(t *testing.T) {
 	res := createReservation(t, ctx, q, 100000500030005, "never-scheduled開始遅延", startAt)
 	seedNeverScheduledEvent(t, ctx, pool, res)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -2984,7 +2989,7 @@ func TestReconciler_NoStartDelayForSkippedReservation(t *testing.T) {
 		t.Fatalf("recording skip intent: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -3010,7 +3015,7 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 	startAt := time.Now().Add(-10 * time.Minute)
 	createReservation(t, ctx, q, 100000500030007, "収束確認番組", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -3068,7 +3073,7 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 		t.Fatalf("re-materializing reservation: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -3106,7 +3111,7 @@ func TestReconciler_StartDelayStillDetectedAfterReservationRematerializationWith
 		t.Fatalf("re-materializing reservation: %v", err)
 	}
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -3149,7 +3154,7 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	programIDUnstarted := int64(100000500030011)
 	resUnstarted := createReservation(t, ctx, q, programIDUnstarted, "未観測番組", startAt)
 
-	rec := reconciler.New("default", mc, pool, nil)
+	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}

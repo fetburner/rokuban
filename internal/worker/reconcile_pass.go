@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する queue worker。
@@ -49,7 +50,7 @@ func (w *ReconcilePassWorker) Work(ctx context.Context, args jobs.ReconcilePassA
 		return err
 	}
 
-	rec := reconciler.New(args.Site, client, w.Pool, &reconciler.Config{
+	rec := reconciler.New(args.Site, client, pgstore.NewScheduleSync(w.Pool), pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), &reconciler.Config{
 		StartDelayGrace: w.StartDelayGrace,
 	})
 	return rec.RunPass(ctx)

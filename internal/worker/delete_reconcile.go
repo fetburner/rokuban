@@ -133,6 +133,7 @@ type deleteTarget struct {
 type DeleteReconcileWorker struct {
 	Pool           *pgxpool.Pool
 	RecordingPurge store.RecordingPurge
+	Breakers       store.Breakers
 	MediaDir       string
 
 	TrashRetention    time.Duration
@@ -172,7 +173,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		missingAssetAge = defaultMissingAssetAge
 	}
 	q := sqlcgen.New(w.Pool)
-	tripped, err := w.observeDeleteReconcile(ctx, q, site)
+	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
 	if err != nil {
 		return err
 	}
@@ -215,7 +216,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 		return fmt.Errorf("verifying aged unpublished files: %w", err)
 	}
 	afterDeleteCandidatesCollected()
-	stop, err := w.applyDeleteCircuitBreaker(ctx, q, site, tripped, candidates.total(), maxPerPass)
+	stop, err := w.applyDeleteCircuitBreaker(ctx, w.Breakers, site, tripped, candidates.total(), maxPerPass)
 	if err != nil {
 		return err
 	}

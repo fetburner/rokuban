@@ -23,6 +23,10 @@ const testSite = "default"
 
 // M1-9 が最低限として挙げているメトリクスが registry に載っていること。
 // 名前は運用側（scrape 設定・アラートルール）が依存するので固定する。
+func newPresyncCollector(pool *pgxpool.Pool) *PresyncCollector {
+	return NewPresyncCollector(pgstore.NewScheduleSync(pool), testSite)
+}
+
 func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	reg := NewRegistry(nil)
 
@@ -378,7 +382,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	const programID int64 = 6800001
 	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
 	seedPresyncReservation(t, pool, programID, startAt)
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
 		t.Errorf("without snapshot marker, missing = %v, want 1", got)
@@ -471,7 +475,7 @@ func TestPresyncCollector_EarliestStart(t *testing.T) {
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 
 	// ① 十分先の予約 1 件だけ: missing=1 かつ earliest - now > 7 日。
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
@@ -517,7 +521,7 @@ func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 		t.Fatalf("aging schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	got := time.Unix(0, int64(labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil)*float64(time.Second)))
 	if !got.Before(time.Now().Add(-30 * time.Minute)) {
 		t.Errorf("snapshot timestamp = %v, want a stale timestamp", got)
@@ -551,7 +555,7 @@ func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
 		t.Errorf("content path mismatch options = %v, want 1", got)
 	}
@@ -568,7 +572,7 @@ func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
 		t.Fatalf("initial options mismatch = %v, want 0", got)
 	}
@@ -611,7 +615,7 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
 		t.Errorf("scheduled options = %v, want 0", got)
 	}
@@ -654,7 +658,7 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 // エラーカウンタだけを出す。既存 BacklogCollector と同じ沈黙しない契約。
 func TestPresyncCollector_QueryFailure(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	pool.Close()
 
 	text := gatherText(t, c)

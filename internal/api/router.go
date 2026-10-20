@@ -51,6 +51,9 @@ type RouterConfig struct {
 	// LabelRules は分類ルール管理の永続化契約。
 	LabelRules store.LabelRules
 
+	// BreakerAdmin はサーキットブレーカー一覧と手動再開の永続化契約。
+	BreakerAdmin store.BreakerAdmin
+
 	// Sites はこのプロセスが応答してよい mirakc サイト名の一覧
 	// （config.mirakcs レジストリが権威）。空なら db.DefaultSite の
 	// 1 要素とみなす（テストの部分構成を許す）。api は不変条件 1 によりどの
@@ -168,7 +171,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 
 	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
-		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules,
+		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules, cfg.BreakerAdmin,
 		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})

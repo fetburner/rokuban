@@ -272,6 +272,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
 		RecordingPurge:    deps.RecordingPurge,
+		Breakers:          pgstore.NewBreakers(deps.Pool),
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,

@@ -2,20 +2,18 @@ package reservation
 
 import (
 	"testing"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // TestEvaluateSyncCandidates_FiltersBaseSkip は skip 済み候補にも正しい判定が付くことを確認する。
 func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
-	rows := []sqlcgen.ListReservationsForSyncEvaluationRow{
+	rows := []SyncEvaluationRow{
 		{
 			// M2-6 の重複排除が base.skip = true を立てた想定の行。
-			Reservation: sqlcgen.Reservation{ProgramID: 100, Base: []byte(`{"skip":true}`)},
+			Reservation: SyncReservation{ProgramID: 100, Base: []byte(`{"skip":true}`)},
 		},
 		{
 			// 通常の（skip されていない）予約行。
-			Reservation: sqlcgen.Reservation{ProgramID: 200},
+			Reservation: SyncReservation{ProgramID: 200},
 		},
 	}
 
@@ -60,9 +58,9 @@ func TestEvaluateSyncCandidates_FiltersBaseSkip(t *testing.T) {
 // 全体を失敗させる）はこの関数の責務ではないため、Err に載せて返すところまでを
 // 検証する。
 func TestEvaluateSyncCandidates_BrokenJSONReturnsErr(t *testing.T) {
-	rows := []sqlcgen.ListReservationsForSyncEvaluationRow{
+	rows := []SyncEvaluationRow{
 		{
-			Reservation: sqlcgen.Reservation{ProgramID: 300, Base: []byte(`not json`)},
+			Reservation: SyncReservation{ProgramID: 300, Base: []byte(`not json`)},
 		},
 	}
 

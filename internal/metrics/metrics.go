@@ -151,7 +151,7 @@ var (
 	// 1 になったら（時間ではなく即座に）通知する対象。
 	//
 	// プロセス再起動でゲージは失われるので、各パスの先頭で DB の真実に
-	// 合わせ直す（breaker.ObserveState）。
+	// 合わせ直す（各呼び出し側が breaker.ObserveState を使う）。
 	CircuitBreakerTripped = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_circuit_breaker_tripped",
 		Help: "1 while a bulk-delete circuit breaker is latched and withholding deletes until manually resumed.",

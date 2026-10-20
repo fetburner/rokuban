@@ -3,10 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // knownCircuitBreakerNames はブレーカー識別子の既知集合。値の権威は
@@ -31,8 +32,7 @@ var knownCircuitBreakerNames = func() map[string]bool {
 // detail は発動時に「何が消されようとしていたか」を説明する抜粋
 // （internal/breaker.Sample と同じ JSON 形）で、手動確認の材料になる。
 func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersRequestObject) (ListCircuitBreakersResponseObject, error) {
-	q := sqlcgen.New(h.pool)
-	rows, err := q.ListCircuitBreakers(ctx)
+	rows, err := h.breakerAdmin.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing circuit breakers: %w", err)
 	}
@@ -66,8 +66,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 			Site:      r.Site,
 			Name:      CircuitBreakerName(r.Name),
 			TrippedAt: r.TrippedAt,
-			Pending:   int(r.Pending),
-			Threshold: int(r.Threshold),
+			Pending:   r.Pending,
+			Threshold: r.Threshold,
 			Detail:    sample,
 		})
 	}
@@ -82,10 +82,8 @@ func (h *Server) ListCircuitBreakers(ctx context.Context, _ ListCircuitBreakersR
 // サブリソースにしているのは、運用者から見た操作が「行を削除する」ではなく
 // 「確認したので再開する」であるため（openapi.yaml の description 参照）。
 //
-// ResumeCircuitBreaker は :execrows なので、削除された行数で「そもそも発動して
-// いなかった」を区別できる。0 行なら 404 にする —
-// 「再開したつもりが実は別のブレーカーだった／既に再開済みだった」を
-// 黙って成功にしないため。
+// 対象行が無ければ store.ErrNotFound を 404 に変換する。
+// 「再開したつもりが実は別のブレーカーだった／既に再開済みだった」を黙って成功にしない。
 //
 // site はパスに含める。circuit_breakers の PK は (site, name) であり、
 // site 固定だと GET /api/breakers（サイト横断で一覧できる）で見えている
@@ -118,16 +116,12 @@ func (h *Server) ResumeCircuitBreaker(ctx context.Context, req ResumeCircuitBrea
 		return ResumeCircuitBreaker400JSONResponse{Error: fmt.Sprintf("unknown circuit breaker %q", req.Name)}, nil
 	}
 
-	q := sqlcgen.New(h.pool)
-	n, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Site: req.Site,
-		Name: req.Name,
-	})
+	err := h.breakerAdmin.Resume(ctx, req.Site, req.Name)
+	if errors.Is(err, store.ErrNotFound) {
+		return ResumeCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
-	}
-	if n == 0 {
-		return ResumeCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}
 	return ResumeCircuitBreaker204Response{}, nil
 }
@@ -155,16 +149,12 @@ func (h *Server) ResumeSitelessCircuitBreaker(ctx context.Context, req ResumeSit
 		}, nil
 	}
 
-	q := sqlcgen.New(h.pool)
-	n, err := q.ResumeCircuitBreaker(ctx, sqlcgen.ResumeCircuitBreakerParams{
-		Site: "", // breaker.IsSiteless のコメント参照（named const にしていない理由も同所）。
-		Name: req.Name,
-	})
+	err := h.breakerAdmin.Resume(ctx, "", req.Name)
+	if errors.Is(err, store.ErrNotFound) {
+		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resuming circuit breaker %q: %w", req.Name, err)
-	}
-	if n == 0 {
-		return ResumeSitelessCircuitBreaker404JSONResponse{Error: fmt.Sprintf("circuit breaker %q is not tripped", req.Name)}, nil
 	}
 	return ResumeSitelessCircuitBreaker204Response{}, nil
 }

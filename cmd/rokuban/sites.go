@@ -181,7 +181,7 @@ func newBoundBacklogCollectors(pool *pgxpool.Pool, bound []config.MirakcSite) []
 func newConfiguredPresyncCollectors(pool *pgxpool.Pool, registry []config.MirakcSite) []prometheus.Collector {
 	collectors := make([]prometheus.Collector, 0, len(registry))
 	for _, s := range registry {
-		collectors = append(collectors, metrics.NewPresyncCollector(pool, s.Site))
+		collectors = append(collectors, metrics.NewPresyncCollector(pgstore.NewScheduleSync(pool), s.Site))
 	}
 	return collectors
 }
