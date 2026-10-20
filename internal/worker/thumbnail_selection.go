@@ -10,13 +10,7 @@ import (
 
 // thumbnailSource is one usable file from which a chapter-aware thumbnail can be cut.
 // Cut sources carry the keep ranges frozen when that encoded asset was made.
-type thumbnailSource struct {
-	MediaAssetID int64
-	Profile      string
-	RelPath      string
-	Cut          bool
-	KeepRanges   []chapters.Range
-}
+type thumbnailSource = store.ThumbnailEncodedAsset
 
 type thumbnailInputs struct {
 	Original *thumbnailSource
@@ -31,35 +25,24 @@ type thumbnailPlan struct {
 
 // thumbnailTimeline derives the chapter timeline of a candidate row. The bool is
 // false when the recording has neither a CM detection nor user-owned chapters.
-func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool, error) {
+func thumbnailTimeline(p store.ThumbnailReselectCandidate) (chapters.Timeline, bool) {
 	if !p.Detected && !p.Owned {
-		return nil, false, nil
-	}
-	if p.TimelineDecodeErr != nil {
-		return nil, true, p.TimelineDecodeErr
+		return nil, false
 	}
 	auto := chapters.AutoSpans(p.CMRanges, p.ProgramDurationMs)
-	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs), true, nil
+	return chapters.Derive(p.Owned, p.UserSpans, auto, p.ProgramDurationMs), true
 }
 
 // thumbnailInputsOf returns the usable input files of a candidate row.
-func thumbnailInputsOf(p store.ThumbnailReselectCandidate) (thumbnailInputs, error) {
-	if p.InputsDecodeErr != nil {
-		return thumbnailInputs{}, p.InputsDecodeErr
-	}
-	var inputs thumbnailInputs
+func thumbnailInputsOf(p store.ThumbnailReselectCandidate) thumbnailInputs {
+	inputs := thumbnailInputs{Encoded: p.EncodedAssets}
 	if p.OriginalMediaAssetID > 0 && p.OriginalRelPath != "" {
 		inputs.Original = &thumbnailSource{
 			MediaAssetID: p.OriginalMediaAssetID,
 			RelPath:      p.OriginalRelPath,
 		}
 	}
-	for _, e := range p.EncodedAssets {
-		inputs.Encoded = append(inputs.Encoded, thumbnailSource{
-			MediaAssetID: e.MediaAssetID, Profile: e.Profile, RelPath: e.RelPath, Cut: e.Cut, KeepRanges: e.KeepRanges,
-		})
-	}
-	return inputs, nil
+	return inputs
 }
 
 // thumbnailPlanForInputs selects the preferred available input and maps the policy

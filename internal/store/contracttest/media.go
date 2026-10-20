@@ -30,6 +30,10 @@ type MediaFixture struct {
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
 	NewRecordSync func(t *testing.T, recordingID int64, site, recordID, status string)
+	// SetCMRanges は録画に CM 検出の結果（CM の区間）を書く。
+	SetCMRanges func(t *testing.T, recordingID int64, ranges []chapters.Range)
+	// SetChapterSpans は録画のチャプターをユーザー所有にし、区間を書く。
+	SetChapterSpans func(t *testing.T, recordingID int64, spans []chapters.Span)
 	// SetOrphanFirstSeenAgo は孤児候補の first_seen を DB の now() から ago 前へずらす。
 	SetOrphanFirstSeenAgo func(t *testing.T, relPath string, ago time.Duration)
 	// SetMissingFirstSeenAgo は実体無し候補の first_seen を DB の now() から ago 前へずらす。
@@ -52,6 +56,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
+	t.Run("thumbnail reselection candidates carry typed timeline and inputs", func(t *testing.T) { runMediaThumbnailCandidates(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
 	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
 }
@@ -396,5 +401,58 @@ func runMediaEncodePlanningContract(t *testing.T, f MediaFixture) {
 	changedKeep := []chapters.Range{{StartMs: 0, EndMs: 900}}
 	if matches, err := f.Reconcile.EncodedAssetRebuildRequestMatches(ctx, id, profile, changedKeep); err != nil || matches {
 		t.Fatalf("EncodedAssetRebuildRequestMatches changed keep = (%v, %v), want (false, nil)", matches, err)
+	}
+}
+
+func runMediaThumbnailCandidates(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	originalPath := fmt.Sprintf("sites/home/%d/original.m2ts", id)
+	originalID := f.NewAsset(t, id, "original", nil, originalPath, "active")
+	f.NewAsset(t, id, "thumbnail", nil, fmt.Sprintf("thumbnails/%d.jpg", id), "active")
+	cutProfile, plainProfile := "cut", "h264"
+	cutPath := fmt.Sprintf("sites/home/%d/cut.mp4", id)
+	plainPath := fmt.Sprintf("sites/home/%d/h264.mp4", id)
+	cutID := f.NewAsset(t, id, "encoded", &cutProfile, cutPath, "active")
+	plainID := f.NewAsset(t, id, "encoded", &plainProfile, plainPath, "active")
+	frozen := []chapters.Range{{StartMs: 0, EndMs: 1000}, {StartMs: 2000, EndMs: 3000}}
+	f.SetMediaAssetKeepRanges(t, cutID, frozen)
+	cm := []chapters.Range{{StartMs: 1000, EndMs: 2000}, {StartMs: 4000, EndMs: 5000}}
+	f.SetCMRanges(t, id, cm)
+	spans := []chapters.Span{{StartMs: 0, EndMs: 1500, Label: "main", Cut: false}, {StartMs: 1500, EndMs: 2500, Label: "CM", Cut: true}}
+	f.SetChapterSpans(t, id, spans)
+
+	rows, err := f.Reconcile.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{AfterRecordingID: id - 1, RowLimit: 1})
+	if err != nil {
+		t.Fatalf("ListThumbnailReselectCandidates: %v", err)
+	}
+	if len(rows) != 1 || rows[0].RecordingID != id {
+		t.Fatalf("candidates = %+v, want only recording %d", rows, id)
+	}
+	row := rows[0]
+	if !row.Detected || !row.Owned || row.OriginalMediaAssetID != originalID || row.OriginalRelPath != originalPath {
+		t.Fatalf("candidate = %+v, want detected and owned with original %d at %q", row, originalID, originalPath)
+	}
+	if !chapters.SameRanges(row.CMRanges, cm) {
+		t.Fatalf("CMRanges = %v, want %v", row.CMRanges, cm)
+	}
+	if len(row.UserSpans) != len(spans) {
+		t.Fatalf("UserSpans = %+v, want %+v", row.UserSpans, spans)
+	}
+	for i := range spans {
+		if row.UserSpans[i] != spans[i] {
+			t.Fatalf("UserSpans[%d] = %+v, want %+v", i, row.UserSpans[i], spans[i])
+		}
+	}
+	if len(row.EncodedAssets) != 2 {
+		t.Fatalf("EncodedAssets = %+v, want cut and h264 ordered by profile", row.EncodedAssets)
+	}
+	gotCut, gotPlain := row.EncodedAssets[0], row.EncodedAssets[1]
+	if gotCut.MediaAssetID != cutID || gotCut.Profile != cutProfile || gotCut.RelPath != cutPath || !gotCut.Cut || !chapters.SameRanges(gotCut.KeepRanges, frozen) {
+		t.Fatalf("cut input = %+v, want asset %d %q at %q with frozen %v", gotCut, cutID, cutProfile, cutPath, frozen)
+	}
+	if gotPlain.MediaAssetID != plainID || gotPlain.Profile != plainProfile || gotPlain.RelPath != plainPath || gotPlain.Cut || len(gotPlain.KeepRanges) != 0 {
+		t.Fatalf("uncut input = %+v, want asset %d %q at %q without keep ranges", gotPlain, plainID, plainProfile, plainPath)
 	}
 }

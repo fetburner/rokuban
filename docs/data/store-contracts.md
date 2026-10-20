@@ -167,17 +167,17 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 メディアとストレージの読み取りは、利用側ごとの契約に分ける。DB の行型を利用側へ広げないためである。
 
-streamer は `MediaServing`、worker は `MediaReconcile` と `StorageObservation`、API は `MediaReader` と `StorageObservation` を受け取る。実装はどれも `pgstore.Media` が持つ。streamer が SQL の行型を知ると、配信してよい行の条件が streamer の中に散らばる。API が行型を知ると、読み取り条件が API の中に散らばる。
+streamer のハンドラは `MediaServing` を受け取る。worker のジョブは `MediaReconcile` と `StorageObservation` を、API のハンドラは `MediaReader` と `StorageObservation` を受け取る。api ロールと worker ロールの起動時の検査も `MediaReconcile` を使う。実装はどれも `pgstore.Media` が持つ。streamer が SQL の行型を知ると、配信してよい行の条件が streamer の中に散らばる。API が行型を知ると、読み取り条件が API の中に散らばる。
 
-streamer は `MediaServing` から、配信元のアセットと、追っかけの対象と、原本 VOD の録画状態を読む。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は、アセットも追っかけの対象も返さない。
+`MediaServing` は、配信元のアセットと、追っかけの対象と、原本 VOD の録画状態を返す。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は、アセットも追っかけの対象も返さない。
 
-worker は `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料と、起動時に確認する profile と `rel_path` の証拠を読む。エンコード計画の比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
+worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
-起動時の名前空間の検査は、原本と encoded のうち `deleted` でない行を見る。`rel_path` が `sites/{site}/` で始まらない行があれば、worker は起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
+起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。原本と encoded のうち `deleted` でない行を見て、`rel_path` が `sites/{site}/` で始まらない行があれば、起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
-worker は `StorageObservation` に `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`media_assets` の状態に関係なく全ての `rel_path` を返す。`thumbnails/` のように `sites/` の外にある予約名前空間の行も含める。含めないと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補として記録され、報告の対象になる。
+worker は `StorageObservation` に `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`media_assets` の状態に関係なく全ての `rel_path` を、`sites/{site}/` を含めたまま返す。走査で得るパスは `sites/{site}/` を含むので、接頭辞を落とすと一致せず、全ての原本が孤児候補になる。`thumbnails/` のように `sites/` の外にある予約名前空間の行も含める。含めないと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補として記録され、報告の対象になる。
 
-候補の経過時間は、候補を書いた DB の時計で比べる。契約は時刻ではなく `time.Duration` を受け取る。効くのは、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期である。一般則は [時刻](#時刻) にある。
+候補の経過時間は DB の時計で比べる。契約は時刻ではなく `time.Duration` を受け取るので、worker の時計がずれても、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期は変わらない。一般則は [時刻](#時刻) にある。
 
 <details><summary>根拠</summary>
 
@@ -188,6 +188,7 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 - 原本 VOD の site の絞り込み: `TestMediaStoreContract` の `original VOD target is scoped to the recording's site`
 - 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
+- サムネイル再選択の候補の型付き値: `TestMediaStoreContract` の `thumbnail reselection candidates carry typed timeline and inputs`
 - 名前空間の検査の受理と空の site 成分: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
 - 接頭辞の無い原本と encoded: `TestMediaStoreContract` の `namespace guard rejects unprefixed originals and encoded files`
 - サムネイルとシークタイルの除外: `TestMediaStoreContract` の `namespace guard leaves thumbnails and seek tiles to their own namespace`

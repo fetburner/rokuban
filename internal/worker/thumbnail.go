@@ -225,18 +225,12 @@ func (w *ThumbnailWorker) reselectionThumbnailPlan(
 	state store.ThumbnailReselectCandidate,
 	log *slog.Logger,
 ) (thumbnailWorkPlan, bool, error) {
-	timeline, hasTimeline, err := thumbnailTimeline(state)
-	if err != nil {
-		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding chapter timeline: %w", err)
-	}
+	timeline, hasTimeline := thumbnailTimeline(state)
 	if !hasTimeline {
 		log.Info("thumbnail: no chapter timeline, keeping current thumbnail")
 		return thumbnailWorkPlan{}, false, nil
 	}
-	inputs, err := thumbnailInputsOf(state)
-	if err != nil {
-		return thumbnailWorkPlan{}, false, fmt.Errorf("decoding thumbnail inputs: %w", err)
-	}
+	inputs := thumbnailInputsOf(state)
 	if !thumbnailNeedsReselect(state.SeekMs, inputs, timeline) {
 		log.Info("thumbnail: no reselection needed or no usable input, skipping")
 		return thumbnailWorkPlan{}, false, nil

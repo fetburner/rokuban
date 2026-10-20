@@ -318,12 +318,12 @@ func (s *Media) ListThumbnailReselectCandidates(ctx context.Context, page store.
 			ThumbnailRelPath:      row.ThumbnailRelPath,
 			SeekMs:                row.SeekMs,
 		}
-		// タイムラインの無い録画は、利用側が JSON を読まずに飛ばす。同じ行で読まない。
-		if row.Detected || row.Owned {
-			c.CMRanges, c.UserSpans, c.TimelineDecodeErr = decodeThumbnailTimeline(row.CmRanges, row.UserSpans)
-			if c.TimelineDecodeErr == nil {
-				c.EncodedAssets, c.InputsDecodeErr = decodeThumbnailEncodedAssets(row.EncodedAssets)
-			}
+		var err error
+		if c.CMRanges, c.UserSpans, err = decodeThumbnailTimeline(row.CmRanges, row.UserSpans); err != nil {
+			return nil, fmt.Errorf("decoding thumbnail candidate for recording %d: %w", row.RecordingID, err)
+		}
+		if c.EncodedAssets, err = decodeThumbnailEncodedAssets(row.EncodedAssets); err != nil {
+			return nil, fmt.Errorf("decoding thumbnail candidate for recording %d: %w", row.RecordingID, err)
 		}
 		out = append(out, c)
 	}

@@ -120,10 +120,8 @@ type ThumbnailEncodedAsset struct {
 
 // ThumbnailReselectCandidate はサムネイル位置を再評価する入力を表す。
 //
-// CMRanges / UserSpans / EncodedAssets は DB の JSON を実装が型へ戻した値で、
-// 録画に CM 検出もユーザーのチャプターも無い行（Detected も Owned も false）では読まず、空のままにする。
-// 戻せなかった行は、その段階の TimelineDecodeErr / InputsDecodeErr に原因を持つ。
-// 1 行の不整合でページ全体を失敗させず、利用側が行ごとに扱えるようにするためである。
+// CMRanges / UserSpans / EncodedAssets は、実装が DB の集約結果を型へ戻した値である。
+// 戻せない行があれば、ListThumbnailReselectCandidates がその呼び出し全体を失敗させる。
 type ThumbnailReselectCandidate struct {
 	RecordingID           int64
 	Trashed               bool
@@ -132,11 +130,9 @@ type ThumbnailReselectCandidate struct {
 	Owned                 bool
 	CMRanges              []chapters.Range
 	UserSpans             []chapters.Span
-	TimelineDecodeErr     error
 	OriginalMediaAssetID  int64
 	OriginalRelPath       string
 	EncodedAssets         []ThumbnailEncodedAsset
-	InputsDecodeErr       error
 	ThumbnailMediaAssetID *int64
 	ThumbnailRelPath      *string
 	SeekMs                *int64

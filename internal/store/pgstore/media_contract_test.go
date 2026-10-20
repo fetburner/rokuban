@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,34 @@ func TestMediaStoreContract(t *testing.T) {
 					Tags:        []string{},
 				}); err != nil {
 					t.Fatalf("seeding record_sync: %v", err)
+				}
+			},
+			SetCMRanges: func(t *testing.T, recordingID int64, ranges []chapters.Range) {
+				t.Helper()
+				lit := "{"
+				for i, r := range ranges {
+					if i > 0 {
+						lit += ","
+					}
+					lit += fmt.Sprintf("[%d,%d)", r.StartMs, r.EndMs)
+				}
+				lit += "}"
+				if _, err := pool.Exec(context.Background(),
+					"INSERT INTO recording_cm_detections (recording_id, cm_ranges) VALUES ($1, $2::text::int8multirange)", recordingID, lit); err != nil {
+					t.Fatalf("seeding CM ranges: %v", err)
+				}
+			},
+			SetChapterSpans: func(t *testing.T, recordingID int64, spans []chapters.Span) {
+				t.Helper()
+				if _, err := pool.Exec(context.Background(), "INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)", recordingID); err != nil {
+					t.Fatalf("adopting chapters: %v", err)
+				}
+				for _, sp := range spans {
+					if _, err := pool.Exec(context.Background(),
+						"INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, $5)",
+						recordingID, sp.StartMs, sp.EndMs, sp.Label, sp.Cut); err != nil {
+						t.Fatalf("seeding chapter span: %v", err)
+					}
 				}
 			},
 			SetOrphanFirstSeenAgo: func(t *testing.T, relPath string, ago time.Duration) {

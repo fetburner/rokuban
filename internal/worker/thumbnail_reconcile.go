@@ -106,23 +106,11 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		}
 	}
 	for _, row := range reselectRows {
-		timeline, hasTimeline, err := thumbnailTimeline(row)
-		if err != nil {
-			failed++
-			slog.Error("thumbnail_reconcile: could not derive candidate timeline",
-				"recording_id", row.RecordingID, "err", err)
-			continue
-		}
+		timeline, hasTimeline := thumbnailTimeline(row)
 		if !hasTimeline {
 			continue
 		}
-		inputs, err := thumbnailInputsOf(row)
-		if err != nil {
-			failed++
-			slog.Error("thumbnail_reconcile: could not decode candidate inputs",
-				"recording_id", row.RecordingID, "err", err)
-			continue
-		}
+		inputs := thumbnailInputsOf(row)
 		if !thumbnailNeedsReselect(row.SeekMs, inputs, timeline) {
 			continue
 		}
