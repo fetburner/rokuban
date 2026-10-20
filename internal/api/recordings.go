@@ -9,11 +9,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -608,98 +604,46 @@ func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestOb
 // 無い、のいずれか）なら 409 を返す。対象 reconcile が候補なしで終わっても
 // HTTP は成功扱いになるため、ここで明示的に検査する。
 //
-// encode_profiles の更新と対象 encode_reconcile の投入は同じトランザクションで行う。
-// そのため、更新に失敗したとき reconcile だけが残らない。
+// 方針の更新は store のトランザクションで確定し、その後に reconcile をヒント投入する。
+// 投入に失敗しても定期 reconcile が desired から不足分を拾う。
+func (h *Server) validateEncodeSelection(desired []string) error {
+	if err := h.validateCutSelection(desired); err != nil {
+		return encodeProfileSelectionError{err: err}
+	}
+	return nil
+}
+
+type encodeProfileSelectionError struct{ err error }
+
+func (e encodeProfileSelectionError) Error() string { return e.err.Error() }
+func (e encodeProfileSelectionError) Unwrap() error { return e.err }
+
 func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordingEncodeProfilesRequestObject) (AddRecordingEncodeProfilesResponseObject, error) {
 	if req.Body == nil || len(req.Body.Profiles) == 0 {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: "profiles must not be empty"}, nil
 	}
 	// 名前は追加分だけ、cut の選択規則はマージ後（下、tx 内）に当てる。
 	if err := h.validateEncodeProfileNames(req.Body.Profiles); err != nil {
+		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil //nolint:nilerr // Invalid input is an HTTP 400 response, not a handler failure.
+	}
+
+	err := h.encodePolicy.AppendProfiles(ctx, req.Id, req.Body.Profiles, h.validateEncodeSelection)
+	if errors.Is(err, store.ErrNotFound) {
+		return AddRecordingEncodeProfiles404JSONResponse{Error: "recording not found"}, nil
+	}
+	if errors.Is(err, store.ErrOriginalUnavailable) {
+		return AddRecordingEncodeProfiles409JSONResponse{
+			Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles",
+		}, nil
+	}
+	var sel encodeProfileSelectionError
+	if errors.As(err, &sel) {
 		return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
 	}
-
-	tx, err := h.pool.Begin(ctx)
 	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return AddRecordingEncodeProfiles404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
-	}
-
-	// 原本が active でないなら 409（対象 reconcile が候補なしで終了しても
-	// HTTP は成功扱いになるため、api 層で先に検査する）。
-	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// ここに落ちる原因は「削除済み」に限らない --- state = 'deleting'
-			// （unlink 待ち。一覧の射影は state <> 'deleted' なので UI 側は
-			// 「原本あり」と見てボタンを出しうる。issue #105 の経路で active に
-			// 戻ることもある）、あるいはそもそも ingest が完了しておらず
-			// original 行自体が無い、のいずれもここに来る。3 パターンを区別する
-			// 追加クエリのコストに見合わないため区別はしないが、文言は
-			// 「削除済みとは限らない」ことが伝わる形にする。
-			return AddRecordingEncodeProfiles409JSONResponse{
-				Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot add encode profiles",
-			}, nil
-		}
-		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
-	}
-
-	// 外す tx（RemoveRecordingEncodedAsset）が要求行を書いて commit する前に
-	// Append の文が走ると、CTE の DELETE は未 commit の要求行を見られず、足し直した
-	// profile の要求行が残る。先にロックを取れば、次の文は外す側の commit 後の
-	// スナップショットで走る。行が無ければ外す側も外せないので競合しない。
-	// cut の判定もロック後の desired で行うため、判定より前に取る。
-	if _, err := q.LockRecordingEncodePolicy(ctx, req.Id); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
-	}
-
-	// cut の規則は「既存 ∪ 追加分」に当てる（[h264] に cut だけを足すのは
-	// 結果が [h264, cut] なので正当）。原本 HLS が使える live.enabled 構成では
-	// cut のみも正当。policy 行が無ければ追加分のみ。
-	if h.cutProfiles != nil {
-		merged := req.Body.Profiles
-		if policy, err := q.GetRecordingEncodePolicy(ctx, req.Id); err == nil {
-			merged = append(slices.Clone(policy.EncodeProfiles), merged...)
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, fmt.Errorf("loading encode policy for recording %d: %w", req.Id, err)
-		}
-		if err := h.validateCutSelection(merged); err != nil {
-			return AddRecordingEncodeProfiles400JSONResponse{Error: err.Error()}, nil
-		}
-	}
-
-	// recording_encode_policy（issue #159）に行が無い（未凍結）録画への事後
-	// 追加は、AppendRecordingEncodeProfiles 自体が「原本が active = 凍結済みと
-	// みなす」既定値 'always' で行を作る（internal/inplace.Register 経由の原本は
-	// resolveAndSnapshotEncodePolicy を通らないため行が無いことがある）。
-	if err := q.AppendRecordingEncodeProfiles(ctx, sqlcgen.AppendRecordingEncodeProfilesParams{
-		ID:       req.Id,
-		Profiles: req.Body.Profiles,
-	}); err != nil {
 		return nil, fmt.Errorf("appending encode profiles for recording %d: %w", req.Id, err)
 	}
-	// 利用者の明示的な再要求なので、failed の試行行を消して試行予算を戻す
-	// （上限到達で止まった encode の解除手段）。running は生きた試行の
-	// fencing token なので消さない。既に desired にある profile の再 POST も同じ。
-	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
-		RecordingID: req.Id,
-		Profiles:    req.Body.Profiles,
-	}); err != nil {
-		return nil, fmt.Errorf("resetting failed encode attempts for recording %d: %w", req.Id, err)
-	}
-	if err := h.insertEncodeReconcile(ctx, tx, req.Id); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
+	h.enqueueEncodeReconcileHint(ctx, req.Id)
 	return AddRecordingEncodeProfiles204Response{}, nil
 }
 
@@ -713,80 +657,24 @@ func (h *Server) AddRecordingEncodeProfiles(ctx context.Context, req AddRecordin
 // 2 本の tx が 0 コピーを作らないよう、0 コピー検査は書いた後の状態で行う
 // （不変条件 9「適用の瞬間」）。検査は削除 reconcile と同じ view に任せる。
 func (h *Server) RemoveRecordingEncodedAsset(ctx context.Context, req RemoveRecordingEncodedAssetRequestObject) (RemoveRecordingEncodedAssetResponseObject, error) {
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("beginning transaction to remove recording %d encoded %q: %w", req.Id, req.Profile, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	locked, err := q.LockRecording(ctx, req.Id)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && locked.IsPurged) {
+	err := h.encodePolicy.RemoveEncodedAsset(ctx, req.Id, req.Profile, h.validateEncodeSelection)
+	if errors.Is(err, store.ErrNotFound) {
 		return RemoveRecordingEncodedAsset404JSONResponse{Error: "recording not found"}, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("locking recording %d before removing encoded asset: %w", req.Id, err)
+	if errors.Is(err, store.ErrEncodedAssetNotFound) {
+		return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
 	}
-	profile := req.Profile
-	assetID, err := q.GetActiveEncodedMediaAssetID(ctx, sqlcgen.GetActiveEncodedMediaAssetIDParams{
-		RecordingID: req.Id,
-		Profile:     &profile,
-	})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return RemoveRecordingEncodedAsset404JSONResponse{Error: "encoded version not found"}, nil
-		}
-		return nil, fmt.Errorf("loading encoded asset %q for recording %d: %w", req.Profile, req.Id, err)
+	var sel encodeProfileSelectionError
+	if errors.As(err, &sel) {
+		return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
 	}
-	// active な encoded がある = 凍結済みとみなす。catalog 無しの rescue
-	// （internal/inplace.Register）は encoded の media_assets を作るが policy 行を
-	// 作らないので、行が無いことがある。直列化の点として先に作る。409 では tx ごと
-	// ロールバックするので、意味を持たない行は残らない。
-	if err := q.FreezeRecordingEncodePolicyIfMissing(ctx, req.Id); err != nil {
-		return nil, fmt.Errorf("freezing encode policy for recording %d: %w", req.Id, err)
-	}
-	policy, err := q.LockRecordingEncodePolicy(ctx, req.Id)
-	if err != nil {
-		return nil, fmt.Errorf("locking encode policy for recording %d: %w", req.Id, err)
-	}
-	// 外した後の desired にも事後追加と同じ cut の選択規則を当てる。書く前に判定する
-	// ので、違反ならロールバックするだけで何も残らない。desired に無い版を外しても
-	// desired は変わらないので判定しない（前からカット版だけの desired で拒否しない）。
-	if h.cutProfiles != nil && slices.Contains(policy.EncodeProfiles, req.Profile) {
-		remaining := slices.DeleteFunc(slices.Clone(policy.EncodeProfiles), func(p string) bool { return p == req.Profile })
-		if err := h.validateCutSelection(remaining); err != nil {
-			return RemoveRecordingEncodedAsset400JSONResponse{Error: err.Error()}, nil
-		}
-	}
-	if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{
-		RecordingID: req.Id,
-		Profile:     req.Profile,
-	}); err != nil {
-		return nil, fmt.Errorf("removing encode profile %q from recording %d: %w", req.Profile, req.Id, err)
-	}
-	if err := q.DeleteEncodedAssetRebuildRequest(ctx, sqlcgen.DeleteEncodedAssetRebuildRequestParams{
-		RecordingID: req.Id,
-		Profile:     req.Profile,
-	}); err != nil {
-		return nil, fmt.Errorf("clearing rebuild request for recording %d encoded %q: %w", req.Id, req.Profile, err)
-	}
-	if err := q.InsertEncodedAssetRemovalRequest(ctx, sqlcgen.InsertEncodedAssetRemovalRequestParams{
-		RecordingID: req.Id,
-		Profile:     req.Profile,
-	}); err != nil {
-		return nil, fmt.Errorf("recording removal request for recording %d encoded %q: %w", req.Id, req.Profile, err)
-	}
-	removable, err := q.IsRemovedEncodedAsset(ctx, assetID)
-	if err != nil {
-		return nil, fmt.Errorf("checking remaining copies of recording %d: %w", req.Id, err)
-	}
-	if !removable {
+	if errors.Is(err, store.ErrLastViewableCopy) {
 		return RemoveRecordingEncodedAsset409JSONResponse{
 			Error: "this is the last viewable copy (no active original and no other encoded version); move the recording to trash instead",
 		}, nil
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing removal of recording %d encoded %q: %w", req.Id, req.Profile, err)
+	if err != nil {
+		return nil, fmt.Errorf("removing encoded asset %q for recording %d: %w", req.Profile, req.Id, err)
 	}
 	return RemoveRecordingEncodedAsset204Response{}, nil
 }
@@ -807,7 +695,7 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 	// cut 専用の作り直し。cut の選択規則（cut だけの選択の拒否）は選択の集合に
 	// 対する規則でここには当てはまらないので、名前と「cut か」だけを見る。
 	if err := h.validateEncodeProfileNames([]string{req.Profile}); err != nil {
-		return ReencodeRecordingProfile400JSONResponse{Error: err.Error()}, nil
+		return ReencodeRecordingProfile400JSONResponse{Error: err.Error()}, nil //nolint:nilerr // Invalid input is an HTTP 400 response, not a handler failure.
 	}
 	if h.cutProfiles != nil {
 		if _, ok := h.cutProfiles[req.Profile]; !ok {
@@ -815,87 +703,26 @@ func (h *Server) ReencodeRecordingProfile(ctx context.Context, req ReencodeRecor
 		}
 	}
 
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		return nil, err
+	err := h.encodePolicy.RequestCutRebuild(ctx, req.Id, req.Profile)
+	if errors.Is(err, store.ErrNotFound) {
+		return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	// チャプター編集も recordings 行を先にロックする。操作時点の keep を一貫して
-	// 記録できるよう、同じ行で直列化する。
-	if _, err := q.LockRecording(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("locking recording %d: %w", req.Id, err)
+	if errors.Is(err, store.ErrOriginalUnavailable) {
+		return ReencodeRecordingProfile409JSONResponse{
+			Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot rebuild the cut version",
+		}, nil
 	}
-	if _, err := q.GetRecordingByID(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ReencodeRecordingProfile404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
-	}
-	if _, err := q.GetActiveOriginalMediaAsset(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ReencodeRecordingProfile409JSONResponse{
-				Error: "original media asset not active (deleted, deleting, or not yet ingested); cannot rebuild the cut version",
-			}, nil
-		}
-		return nil, fmt.Errorf("loading original media asset for recording %d: %w", req.Id, err)
-	}
-	// 投入側（worker）は未確認・keep 空の cut を投入しない。ここで 204 を返すと
-	// ボタンが黙って効かず cutStale も残るので、同じ導出（currentKeepRanges =
-	// cutStale と同じ chapters.Derive）で先に 409 にする。
-	state, err := q.GetRecordingChapterState(ctx, req.Id)
-	if err != nil {
-		return nil, fmt.Errorf("loading chapter state for recording %d: %w", req.Id, err)
-	}
-	if !state.Owned {
+	if errors.Is(err, store.ErrChaptersNotOwned) {
 		return ReencodeRecordingProfile409JSONResponse{Error: "chapters not yet confirmed; nothing to encode"}, nil
 	}
-	spans, err := q.GetRecordingChapterSpansJSON(ctx, req.Id)
-	if err != nil {
-		return nil, fmt.Errorf("loading chapter spans for recording %d: %w", req.Id, err)
-	}
-	keep, err := currentKeepRanges(store.RecordingQueryRow{ChapterSpans: spans, ProgramDurationMs: state.ProgramDurationMs})
-	if err != nil {
-		return nil, fmt.Errorf("deriving current chapter timeline for recording %d: %w", req.Id, err)
-	}
-	if len(keep) == 0 {
+	if errors.Is(err, store.ErrKeepRangesEmpty) {
 		return ReencodeRecordingProfile409JSONResponse{Error: "timeline has no keep ranges; nothing to encode"}, nil
 	}
-	// desired に無い profile は worker が公開直前の判定 (c) で捨てる。
-	// ffmpeg を回した後に黙って捨てるより、同じ tx で desired を読んでここで 409 にする。
-	// 行が無い（未凍結）録画は desired が空として扱う。
-	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, req.Id)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("loading desired encode profiles for recording %d: %w", req.Id, err)
-	}
-	if !slices.Contains(desired, req.Profile) {
+	if errors.Is(err, store.ErrProfileNotDesired) {
 		return ReencodeRecordingProfile409JSONResponse{Error: fmt.Sprintf("profile %q is not in the desired encode profiles of this recording; nothing to encode", req.Profile)}, nil
 	}
-	// 明示的な再要求で失敗済みの試行予算を戻す。running は別の実行の fencing
-	// token なので消さず、同じトランザクションで request を保存する。
-	if _, err := q.DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
-		RecordingID: req.Id,
-		Profiles:    []string{req.Profile},
-	}); err != nil {
-		return nil, fmt.Errorf("resetting failed encode attempt for recording %d profile %q: %w", req.Id, req.Profile, err)
-	}
-	requestedKeep, err := db.KeepRangesParam(keep)
 	if err != nil {
-		return nil, fmt.Errorf("encoding requested keep ranges for recording %d: %w", req.Id, err)
-	}
-	if err := q.UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
-		RecordingID:   req.Id,
-		Profile:       req.Profile,
-		RequestedKeep: requestedKeep,
-	}); err != nil {
-		return nil, fmt.Errorf("recording rebuild request for recording %d profile %q: %w", req.Id, req.Profile, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing rebuild request for recording %d profile %q: %w", req.Id, req.Profile, err)
+		return nil, fmt.Errorf("recording cut rebuild request for %d profile %q: %w", req.Id, req.Profile, err)
 	}
 	h.enqueueEncodeReconcileHint(ctx, req.Id)
 	return ReencodeRecordingProfile204Response{}, nil
@@ -938,75 +765,26 @@ func (h *Server) SetRecordingEncodePolicy(ctx context.Context, req SetRecordingE
 		return SetRecordingEncodePolicy409JSONResponse{Error: cmDetectDisabledMessage}, nil
 	}
 
-	tx, err := h.pool.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("beginning transaction to set recording %d encode policy: %w", req.Id, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	rec, err := q.GetRecordingByID(ctx, req.Id)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
-		}
-		return nil, fmt.Errorf("loading recording %d: %w", req.Id, err)
-	}
-	// GetRecordingByID は述語なし（ingest worker と共有するクエリなので緩めない）。
-	// purged_at が立った tombstone は GET /api/recordings/{id}（RecordingQuery.Get、
-	// purged_at IS NULL）と同じく 404 にする --- deleted_at（ごみ箱）は復元すれば
-	// 効くので inert ではなく、ここでは見ない。
-	if rec.PurgedAt != nil {
-		return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
-	}
-
+	update := store.EncodePolicyUpdate{}
 	if req.Body.KeepOriginal != nil {
 		keepOriginal := string(*req.Body.KeepOriginal)
-		rows, err := q.SetRecordingKeepOriginal(ctx, sqlcgen.SetRecordingKeepOriginalParams{
-			RecordingID:  req.Id,
-			KeepOriginal: keepOriginal,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("setting recording %d keep_original: %w", req.Id, err)
-		}
-		if rows == 0 && *req.Body.KeepOriginal == SetRecordingEncodePolicyInputKeepOriginalUntilEncoded {
-			return SetRecordingEncodePolicy409JSONResponse{Error: wantKeepOriginalUntilEncodedMessage}, nil
-		}
+		update.KeepOriginal = &keepOriginal
 	}
-	if req.Body.CmDetect != nil {
-		if *req.Body.CmDetect {
-			rows, err := q.SetRecordingCMDetection(ctx, req.Id)
-			if err != nil {
-				return nil, fmt.Errorf("enabling CM detection for recording %d: %w", req.Id, err)
-			}
-			if rows == 0 {
-				return SetRecordingEncodePolicy409JSONResponse{Error: "active original media asset required to enable CM detection"}, nil
-			}
-		} else {
-			if err := q.ClearRecordingCMDetection(ctx, req.Id); err != nil {
-				return nil, fmt.Errorf("disabling CM detection for recording %d: %w", req.Id, err)
-			}
-		}
+	update.CMDetect = req.Body.CmDetect
+	err := h.encodePolicy.SetPolicy(ctx, req.Id, update)
+	if errors.Is(err, store.ErrNotFound) {
+		return SetRecordingEncodePolicy404JSONResponse{Error: "recording not found"}, nil
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing recording %d encode policy: %w", req.Id, err)
+	if errors.Is(err, store.ErrEncodeProfilesRequired) {
+		return SetRecordingEncodePolicy409JSONResponse{Error: wantKeepOriginalUntilEncodedMessage}, nil
+	}
+	if errors.Is(err, store.ErrOriginalUnavailable) {
+		return SetRecordingEncodePolicy409JSONResponse{Error: "active original media asset required to enable CM detection"}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("setting recording %d encode policy: %w", req.Id, err)
 	}
 	return SetRecordingEncodePolicy204Response{}, nil
-}
-
-// insertEncodeReconcile は encode_profiles の更新と同じトランザクションで、
-// 対象録画を指定した EncodeReconcileArgs を EnqueueTx する。
-//
-// h.enqueuer が nil の場合は何もしない（テストや、将来キューを持たない api 構成を
-// 許容するため）。
-func (h *Server) insertEncodeReconcile(ctx context.Context, tx pgx.Tx, recordingID int64) error {
-	if h.enqueuer == nil {
-		return nil
-	}
-	if _, err := h.enqueuer.EnqueueTx(ctx, tx, jobs.EncodeReconcileArgs{RecordingID: recordingID}); err != nil {
-		return fmt.Errorf("enqueuing encode_reconcile for recording %d: %w", recordingID, err)
-	}
-	return nil
 }
 
 // enqueueEncodeReconcileHint は DB commit 後に対象録画の reconcile を best effort で

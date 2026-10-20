@@ -234,7 +234,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 `AppendRecordingEncodeProfiles` は `INSERT ... ON CONFLICT (recording_id) DO UPDATE` で書く。行が無ければ「原本が active = 凍結済みとみなす」を適用して、`keep_original = 'always'`（安全側の既定値）で新規に凍結する。行があれば `encode_profiles` だけ追記する。行の有無をここで判定してエラーにする経路は持たない。原本が active でなければ、手前の `GetActiveOriginalMediaAsset` の 409 検査で既に止まっていて、この INSERT に到達する時点で「原本 active」は保証されている。
 
-実行経路について。api は `encode_profiles` の更新と同じトランザクションで、対象録画を指定した `encode_reconcile` を積む。対象限定パスと定期パスは同じ候補 query を使い、不足分の判定を二重に持たない。ごみ箱の録画も desired は更新できるが、候補 query が除外する。復元すれば定期パスが反映する。
+実行経路について。store が `encode_profiles` の更新を commit した後、api は対象録画を指定した `encode_reconcile` をヒントとして投入する。投入に失敗しても成功応答は変えず、定期 reconcile が DB の desired から不足分を拾う。対象限定パスと定期パスは同じ候補 query を使い、不足分の判定を二重に持たない。ごみ箱の録画も desired は更新できるが、候補 query が除外する。復元すれば定期パスが反映する。
 
 #### 保持ポリシーの上書き
 

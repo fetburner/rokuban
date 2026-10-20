@@ -101,7 +101,7 @@ func patchCMDetection(t *testing.T, url string, enabled bool) *http.Response {
 
 func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodePolicyStore: pgstore.NewMedia(pool), CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	activeID := seedRecording(t, pool, "復旧原本", time.Now().Truncate(time.Second), "finished", 980)
@@ -159,7 +159,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodePolicyStore: pgstore.NewMedia(pool), CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 
 	cases := []struct {
@@ -847,7 +847,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool), Enqueuer: enqueuer}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, EncodePolicyStore: pgstore.NewMedia(pool), CMStationStore: pgstore.NewAnalysis(pool), Enqueuer: enqueuer}))
 	defer srv.Close()
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)

@@ -95,6 +95,7 @@ type EncodeWorker struct {
 	Pool *pgxpool.Pool
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
+	Attempts   store.EncodeAttempts
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -133,28 +134,28 @@ func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error 
 	if err != nil {
 		return err
 	}
-	if start.deadAttempt > 0 {
-		w.notifyEncodeFailure(ctx, args, start.deadAttempt)
+	if start.DeadAttempt > 0 {
+		w.notifyEncodeFailure(ctx, args, start.DeadAttempt)
 	}
-	if start.terminal {
+	if start.Terminal {
 		return errors.Join(jobq.ErrDiscard, errEncodeAttemptLimit)
 	}
 
-	err = w.runEncode(ctx, args, start.count)
+	err = w.runEncode(ctx, args, start.Count)
 	if err == nil {
-		if clearErr := w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile, start.count); clearErr != nil {
+		if clearErr := w.clearEncodeAttempt(ctx, args.RecordingID, args.Profile, start.Count); clearErr != nil {
 			logEncodeAttemptWriteFailure("clear success", args.RecordingID, args.Profile, clearErr)
 		}
 		return nil
 	}
 	if shouldCountEncodeFailure(err, ctx.Err()) {
-		updated, updateErr := w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, start.count, err)
+		updated, updateErr := w.markEncodeAttemptFailed(ctx, args.RecordingID, args.Profile, start.Count, err)
 		if updateErr != nil {
 			return errors.Join(err, updateErr)
 		}
 		if updated {
-			w.notifyEncodeFailure(ctx, args, start.count)
-			if start.count >= encodeAttemptLimit {
+			w.notifyEncodeFailure(ctx, args, start.Count)
+			if start.Count >= encodeAttemptLimit {
 				return errors.Join(jobq.ErrDiscard, errEncodeAttemptLimit, err)
 			}
 		}

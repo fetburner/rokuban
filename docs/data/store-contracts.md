@@ -335,6 +335,29 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 </details>
 
+### エンコード方針と試行
+
+エンコード方針の契約は、追加・削除・作り直し要求・保持と CM 検出の更新をそれぞれ自身の tx で確定する。プロファイル名の検証と cut の選択規則は API が所有し、評価は store がロック後の desired に対して行う。
+
+cut の選択規則は設定の `live.enabled` に依存し、store は設定を知らない。そのため所有者は API で、規則を検証関数として store へ渡す。評価を store に置くのは、方針の行をロックした後の desired に当てるためである。ロック前に desired を読むと、版の削除が commit した後の集合を見落とす。
+
+版の削除は録画の行から方針の行の順に直列化する。残りのコピーの検査は要求を書いた後の状態で行うので、同じ録画の削除が競合しても最後のコピーを失わない。削除と作り直し要求は、ごみ箱にある録画にも適用できる。keep は、録画の行をロックしてから確認済みチャプターを読んで導出する。ロックの前に読むと、チャプター編集が commit した後の区間を見落とす。
+
+保持と CM 検出の方針は同じ tx で更新する。適用条件は UPDATE の条件が判定する。`until_encoded` には空でない desired が必要で、CM 検出の有効化には active な原本が必要である。どちらかが拒否されたら両方の変更を rollback する。
+
+試行の `Begin` は、行が無ければ作り、あれば先に作った行をロックする。上限に達したかを判定し、停止した `running` の試行を失敗として数えてから、次の fencing token を記録する。ここまでを一つの tx で行う。`attempted_at` は DB の時計で付ける。取り消し時は、開始前の状態に戻す。上限は `EncodeAttempts` の契約引数で判定する。
+
+追加と作り直し要求のジョブ投入は store の commit 後のヒントである。投入に失敗しても API の 204 応答を変えず、定期 reconcile が DB の desired から不足分を拾う。
+
+<details><summary>根拠</summary>
+
+- 方針と作り直し要求: `internal/store.EncodePolicy`
+- 試行: `internal/store.EncodeAttempts`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- 契約テスト: `TestEncodePolicyContract`
+
+</details>
+
 ### EPG 同期の tx の境界
 
 EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。

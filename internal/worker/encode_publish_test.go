@@ -121,7 +121,8 @@ func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int3
 
 func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
 	return &EncodeWorker{
-		Pool: pool,
+		Pool:     pool,
+		Attempts: newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -142,11 +143,11 @@ func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordin
 
 func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Pool: pool, Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	start, err := (&EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return start.count
+	return start.Count
 }
 
 func assertNoEncodeTemp(t *testing.T, dir string) {
@@ -679,8 +680,8 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if oldAttempt.count != 1 || newAttempt.count != 2 {
-		t.Fatalf("attempt counts = %d then %d, want 1 then 2", oldAttempt.count, newAttempt.count)
+	if oldAttempt.Count != 1 || newAttempt.Count != 2 {
+		t.Fatalf("attempt counts = %d then %d, want 1 then 2", oldAttempt.Count, newAttempt.Count)
 	}
 
 	relPath := "20240101/late-attempt_h264.mp4"
@@ -696,7 +697,7 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	if _, published, err := w.publishEncoded(ctx, encodePublishInput{
 		recordingID: recordingID,
 		profile:     "h264",
-		attempt:     oldAttempt.count,
+		attempt:     oldAttempt.Count,
 		relPath:     relPath,
 		finalPath:   finalPath,
 		scratchOut:  scratchOut,
@@ -707,8 +708,8 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	if _, err := os.Stat(finalPath); !os.IsNotExist(err) {
 		t.Errorf("old attempt published a canonical file (stat err = %v)", err)
 	}
-	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != newAttempt.count {
-		t.Errorf("attempt_count after stale publish = %d, ok=%v, want %d", count, ok, newAttempt.count)
+	if count, ok := encodeAttemptCount(t, pool, recordingID, "h264"); !ok || count != newAttempt.Count {
+		t.Errorf("attempt_count after stale publish = %d, ok=%v, want %d", count, ok, newAttempt.Count)
 	}
 }
 

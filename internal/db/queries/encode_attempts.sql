@@ -20,11 +20,12 @@ SET state = 'running', error = NULL, attempted_at = now(),
     attempt_count = sqlc.arg('next_count')
 WHERE recording_id = $1 AND profile = $2;
 
--- name: UpdateRecordingEncodeAttemptFailed :execrows
+-- name: UpdateRecordingEncodeAttemptFailed :one
 UPDATE recording_encode_attempts
 SET state = 'failed', error = $3, attempted_at = now()
 WHERE recording_id = $1 AND profile = $2
-  AND state = 'running' AND attempt_count = sqlc.arg('attempt_count');
+  AND state = 'running' AND attempt_count = sqlc.arg('attempt_count')
+RETURNING attempted_at;
 
 -- name: RestoreRecordingEncodeAttempt :execrows
 UPDATE recording_encode_attempts

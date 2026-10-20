@@ -141,11 +141,12 @@ func (q *Queries) RestoreRecordingEncodeAttempt(ctx context.Context, arg Restore
 	return result.RowsAffected(), nil
 }
 
-const updateRecordingEncodeAttemptFailed = `-- name: UpdateRecordingEncodeAttemptFailed :execrows
+const updateRecordingEncodeAttemptFailed = `-- name: UpdateRecordingEncodeAttemptFailed :one
 UPDATE recording_encode_attempts
 SET state = 'failed', error = $3, attempted_at = now()
 WHERE recording_id = $1 AND profile = $2
   AND state = 'running' AND attempt_count = $4
+RETURNING attempted_at
 `
 
 type UpdateRecordingEncodeAttemptFailedParams struct {
@@ -155,17 +156,16 @@ type UpdateRecordingEncodeAttemptFailedParams struct {
 	AttemptCount int32
 }
 
-func (q *Queries) UpdateRecordingEncodeAttemptFailed(ctx context.Context, arg UpdateRecordingEncodeAttemptFailedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, updateRecordingEncodeAttemptFailed,
+func (q *Queries) UpdateRecordingEncodeAttemptFailed(ctx context.Context, arg UpdateRecordingEncodeAttemptFailedParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, updateRecordingEncodeAttemptFailed,
 		arg.RecordingID,
 		arg.Profile,
 		arg.Error,
 		arg.AttemptCount,
 	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
+	var attempted_at time.Time
+	err := row.Scan(&attempted_at)
+	return attempted_at, err
 }
 
 const updateRecordingEncodeAttemptRunning = `-- name: UpdateRecordingEncodeAttemptRunning :execrows

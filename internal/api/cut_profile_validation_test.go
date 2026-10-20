@@ -31,6 +31,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 		Pool:               pool,
 		RuleStore:          pgstore.NewRules(pool),
 		ProgramSearch:      pgstore.NewEPG(pool),
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		ReservationStore:   pgstore.NewReservations(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -129,6 +130,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 		Pool:               pool,
 		RuleStore:          pgstore.NewRules(pool),
 		ProgramSearch:      pgstore.NewEPG(pool),
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		ReservationStore:   pgstore.NewReservations(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -206,6 +208,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -262,6 +265,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -296,12 +300,55 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	}
 }
 
+func TestReencodeRecordingProfile_AllowsTrashedRecording(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
+		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
+		MediaReader:        pgstore.NewMedia(pool),
+		EncodeProfileNames: []string{"h264", "cut"},
+		CutProfileNames:    []string{"cut"},
+	}))
+	t.Cleanup(srv.Close)
+
+	id := insertIngestedRecordingFixture(t, pool, ctx)
+	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
+		t.Fatalf("trashing recording: %v", err)
+	}
+
+	resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encoded/cut/reencode", "application/json", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("reencode status for trashed recording = %d, want 204", resp.StatusCode)
+	}
+	var requests int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = 'cut'`, id).Scan(&requests); err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("rebuild requests for trashed recording = %d, want 1", requests)
+	}
+}
+
 func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -392,6 +439,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -447,6 +495,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -492,6 +541,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},
@@ -552,6 +602,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},

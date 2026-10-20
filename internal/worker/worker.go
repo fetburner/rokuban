@@ -119,6 +119,7 @@ type Deps struct {
 	MediaReconcile        store.MediaReconcile
 	MediaDelete           store.MediaDelete
 	TSScan                store.TSScan
+	EncodeAttempts        store.EncodeAttempts
 	StorageObservation    store.StorageObservation
 	MediaDir              string
 	ScratchDir            string
@@ -198,6 +199,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EncodeWorker{
 		Pool:       deps.Pool,
 		Media:      deps.MediaReconcile,
+		Attempts:   deps.EncodeAttempts,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		FFmpeg:     deps.Encode.FFmpeg,
