@@ -463,26 +463,13 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("insert drop_stats: %v", err)
 	}
 
-	recordingRows, err := q.CatalogListRecordings(ctx)
+	doc, err := pgstore.NewCatalog(pool).Export(ctx)
 	if err != nil {
-		t.Fatalf("CatalogListRecordings: %v", err)
+		t.Fatalf("Catalog.Export: %v", err)
 	}
-	if len(recordingRows) != 1 {
-		t.Fatalf("recording rows = %d, want 1", len(recordingRows))
-	}
-	assetRows, err := q.CatalogListMediaAssets(ctx)
-	if err != nil {
-		t.Fatalf("CatalogListMediaAssets: %v", err)
-	}
-	if len(assetRows) != 1 {
-		t.Fatalf("media asset rows = %d, want 1", len(assetRows))
-	}
-	doc := &Document{
-		Version:     Version,
-		ExportedAt:  time.Now().UTC(),
-		Recordings:  []Recording{recordingFromRow(recordingRows[0])},
-		MediaAssets: []MediaAsset{mediaAssetFromRow(assetRows[0])},
-		DropStats:   []DropStat{{MediaAssetID: assetID, Pid: 256, Packets: 20, Drops: 2}},
+	if len(doc.Recordings) != 1 || len(doc.MediaAssets) != 1 || len(doc.DropStats) != 1 {
+		t.Fatalf("exported rows = %d recordings / %d assets / %d drop stats, want 1/1/1",
+			len(doc.Recordings), len(doc.MediaAssets), len(doc.DropStats))
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
