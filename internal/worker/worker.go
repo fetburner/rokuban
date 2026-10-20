@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -97,6 +98,14 @@ type Deps struct {
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
+	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
+	CMStationStore store.CMStation
+	// TunerStore はチューナー同期の永続化契約。
+	TunerStore store.TunerSync
+	// CapacityStore はチューナー worker の容量判定読み取り契約。
+	CapacityStore store.Capacity
+	// RecordingPurge は録画の物理削除の永続化契約。
+	RecordingPurge store.RecordingPurge
 	// LabelRuleReevaluation は分類ルールの全件再評価を永続化する。
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaDir              string
@@ -161,10 +170,12 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
+	recordings := pgstore.NewRecordings(deps.Pool)
 	riveradapter.Register(workers, &IngestWorker{
 		Enqueuer:      deps.Enqueuer,
 		MirakcClients: deps.MirakcClients,
 		Pool:          deps.Pool,
+		RecordTarget:  recordings,
 		MediaDir:      deps.MediaDir,
 		StallTimeout:  deps.IngestStallTimeout,
 		CMDetect:      deps.CMDetect,
@@ -195,7 +206,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
 		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
+		TunerStore:    deps.TunerStore,
+		CapacityStore: deps.CapacityStore,
 	})
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,
@@ -247,7 +259,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		FFprobe:    deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &CMLogoCandidateWorker{
-		Pool:       deps.Pool,
+		Store:      deps.CMStationStore,
 		MediaDir:   deps.MediaDir,
 		ScratchDir: deps.ScratchDir,
 		CMDetect:   deps.CMDetect,
@@ -259,6 +271,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		Pool:              deps.Pool,
+		RecordingPurge:    deps.RecordingPurge,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,

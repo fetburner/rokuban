@@ -26,6 +26,15 @@ type Options struct {
 	KeepOriginal     *string   `json:"keepOriginal,omitempty"`
 }
 
+// InvalidEffectiveOptionsError は、マージ後の予約オプションの組み合わせが不正なことを表す。
+// 型付きにしてあるので、呼び出し側は API の 400 に写せる。
+type InvalidEffectiveOptionsError struct {
+	Message string
+}
+
+// Error は不正な組み合わせの説明を返す。
+func (e *InvalidEffectiveOptionsError) Error() string { return e.Message }
+
 // IsSkipped は実効の skip 判定（`opts.Skip != nil && *opts.Skip`）に名前を付けたもの。
 //
 // 「skip か」という共通の判定に名前を付け、呼び出し側で条件を重複させない。
@@ -112,6 +121,33 @@ func EffectiveOptions(base, overrides []byte, intentAction *string) (Options, er
 		eff.Skip = &skip
 	}
 	return eff, nil
+}
+
+// ValidateEffectiveKeepOriginal は実効値（base + overrides をマージした結果）の
+// keepOriginal / encodeProfiles の組み合わせを検証する。違反は *InvalidEffectiveOptionsError。
+//
+// keepOriginal='until_encoded' なのに encodeProfiles が空（未指定、または明示的な空配列）だと、
+// 削除 reconcile の派生物完備判定（ListUntilEncodedOriginalsToDelete）が空配列で恒真になり、
+// サムネイルが 1 枚あるだけで唯一のコピーである原本が物理削除される
+// （docs/storage.md §6「唯一のコピーを消すパスがない」への違反、issue #104）。
+// rules の validateRuleInput と rules テーブルの CHECK
+// （keep_original <> 'until_encoded' OR cardinality(encode_profiles) > 0）と同じ規律を上書きにも揃える。
+// リクエスト単体では組み合わせが見えない（keepOriginal だけを送る、encodeProfiles だけを reset する等）
+// ので、必ずマージ後の実効値に対して呼ぶ。
+func ValidateEffectiveKeepOriginal(eff Options) error {
+	if eff.KeepOriginal == nil || *eff.KeepOriginal != KeepOriginalUntilEncoded {
+		return nil
+	}
+	if eff.EncodeProfiles == nil || len(*eff.EncodeProfiles) == 0 {
+		return &InvalidEffectiveOptionsError{
+			Message: fmt.Sprintf(
+				"effective keepOriginal is %q but effective encodeProfiles is empty "+
+					"(after merging with existing overrides and the rule's base); "+
+					"specify encodeProfiles or keep keepOriginal as %q",
+				KeepOriginalUntilEncoded, KeepOriginalAlways),
+		}
+	}
+	return nil
 }
 
 // IntentRecord は「録れ」。手動予約、およびルール由来予約への上書き。

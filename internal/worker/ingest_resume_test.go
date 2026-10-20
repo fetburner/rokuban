@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // cancelAfterBytesTransport は response body の読み出し側で cutoff バイトを
@@ -496,6 +497,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}

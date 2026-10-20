@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/jackc/pgx/v5" //nolint:depguard // ListRecordingShelves remains in this file until its store migration.
+	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -355,7 +355,7 @@ func (h *Server) enqueueLabelRuleReconcile(ctx context.Context) {
 		return
 	}
 	if _, err := h.enqueuer.Enqueue(ctx, jobs.LabelRuleReconcileArgs{}); err != nil {
-		slog.Warn("failed to enqueue label rule re-evaluation", "err", err)
+		slog.ErrorContext(ctx, "api: failed to enqueue label rule re-evaluation hint", "err", err)
 	}
 }
 

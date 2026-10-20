@@ -5,76 +5,48 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // GetProgramOverlaps は指定番組の放送時間帯と重なる既存予約の件数と内訳を返す
 // (GET /api/programs/{programId}/overlaps)。
 //
-// issue #21 の「案 C」: チューナー射影（tuner_sync、docs/data.md §6.5）は使わず、
-// 自分の予約だけを数えた**事実**を返す。件数が 0 より大きくても「録画できない」
-// とは限らず（同一物理チャンネルは 1 本のチューナーで賄える）、0 でも他サイト・
-// 見えない消費者（並走 EPGStation・ライブ視聴・EPG 収集）は考慮されていない。
-// 勝敗・容量超過の判定は M2-10 の領分であり、ここでは一切行わない。
+// issue #21 の「案 C」: チューナー射影（tuner_sync）は使わず、自分の予約だけを数えた**事実**を返す。
+// 件数が 0 より大きくても「録画できない」とは限らず（同一物理チャンネルは 1 本のチューナーで
+// 賄える）、0 でも他サイト・見えない消費者（並走 EPGStation・ライブ視聴・EPG 収集）は考慮されていない。
+// 勝敗・容量超過の判定は容量判定の領分であり、ここでは行わない。
 //
-// 重なりの判定は半開区間（`a.start < b.end AND b.start < a.end`）で行う。番組表は
-// 連続しているため、閉区間で判定すると前後の番組がすべて重なりとして数えられて
-// しまう。
+// 重なりの判定は半開区間（`a.start < b.end AND b.start < a.end`）で行う。番組表は連続しているため、
+// 閉区間で判定すると前後の番組がすべて重なりとして数えられてしまう。
 func (h *Server) GetProgramOverlaps(ctx context.Context, req GetProgramOverlapsRequestObject) (GetProgramOverlapsResponseObject, error) {
 	if !h.knownSite(req.Site) {
 		return GetProgramOverlaps404JSONResponse{Error: "unknown site"}, nil
 	}
-	q := sqlcgen.New(h.pool)
-
-	// 番組の放送時間は EPG プロジェクションから引く。射影に無ければ判定材料が
-	// 無いので 404。
-	program, err := q.GetEpgProgram(ctx, sqlcgen.GetEpgProgramParams{
-		Site:      req.Site,
-		ProgramID: req.ProgramId,
-	})
+	rows, err := h.reservationStore.ListOverlaps(ctx, req.Site, req.ProgramId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return GetProgramOverlaps404JSONResponse{Error: "program not found in EPG projection"}, nil
 		}
-		return nil, fmt.Errorf("getting program broadcast window: %w", err)
-	}
-
-	rows, err := q.ListOverlappingReservations(ctx, sqlcgen.ListOverlappingReservationsParams{
-		Site:            req.Site,
-		TargetProgramID: req.ProgramId,
-		WindowStart:     program.EpgProgram.StartAt,
-		WindowEnd:       program.EpgProgram.EndAt,
-	})
-	if err != nil {
 		return nil, fmt.Errorf("listing overlapping reservations: %w", err)
 	}
 
 	overlaps := make([]OverlappingReservation, 0, len(rows))
 	for _, row := range rows {
-		// never-scheduled 除外（issue #98）と自分自身の除外は SQL 側で済ませてあるが、
-		// effective.skip（program_overrides / program_intents.action='skip' の
-		// 反映）は jsonb のマージが要るため Go 側で reservation.EffectiveOptions を通す
-		// （不透明な overrides を SQL で読まない、という既存の規律に合わせる）。
-		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		// 欠測除外（issue #98）と自分自身の除外は store が済ませてある。effective.skip
+		// （program_overrides / program_intents.action='skip' の反映）は jsonb のマージが要るので、
+		// Go 側で reservation.EffectiveOptions を通す（不透明な overrides を SQL で読まない規律）。
+		effective, err := reservation.EffectiveOptions(row.Base, row.Overrides, row.IntentAction)
 		if err != nil {
-			return nil, fmt.Errorf("resolving effective options for program %d: %w", row.Reservation.ProgramID, err)
+			return nil, fmt.Errorf("resolving effective options for program %d: %w", row.ProgramID, err)
 		}
-		if eff.IsSkipped() {
+		if effective.IsSkipped() {
 			continue
 		}
 		overlaps = append(overlaps, OverlappingReservation{
-			ProgramId:  row.Reservation.ProgramID,
-			Title:      row.ProgramSnapshot.Title,
-			StartAt:    row.ProgramSnapshot.StartAt,
-			DurationMs: row.ProgramSnapshot.DurationMs,
+			ProgramId: row.ProgramID, Title: row.Title, StartAt: row.StartAt, DurationMs: row.DurationMs,
 		})
 	}
 
-	return GetProgramOverlaps200JSONResponse{
-		Count:        len(overlaps),
-		Reservations: overlaps,
-	}, nil
+	return GetProgramOverlaps200JSONResponse{Count: len(overlaps), Reservations: overlaps}, nil
 }

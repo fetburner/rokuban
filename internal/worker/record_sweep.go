@@ -9,6 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -37,7 +38,7 @@ type RecordSweepWorker struct {
 // Work は watcher の定期全量突き合わせを実行する。対象サイトはジョブ引数の 1 サイトのみ
 // （ジョブの排他がサイト単位のため）。
 //
-// Watcher は ingest ジョブを同一トランザクションで enqueue するため、Enqueuer を渡す。
+// Watcher は観測を commit した後に ingest ジョブをヒントとして enqueue する。
 func (w *RecordSweepWorker) Work(ctx context.Context, args jobs.RecordSweepArgs) error {
 	// mirakc インスタンスはサイトスコープ。他サイトのジョブをこのプロセスの
 	// mirakc に投げると、`GET /api/recording/records` の全量取得から他インスタンスの
@@ -52,6 +53,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, args jobs.RecordSweepArgs)
 		return fmt.Errorf("record sweep: job enqueuer is nil")
 	}
 
-	wt := watcher.New(args.Site, client, w.Pool, w.Enqueuer, w.Webhook)
+	wt := watcher.New(args.Site, client, pgstore.NewRecordings(w.Pool), w.Enqueuer, w.Webhook)
 	return wt.Sweep(ctx)
 }

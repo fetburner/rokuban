@@ -240,11 +240,12 @@ flowchart TD
 
 「0 行」の扱いは、docs に無かった case で、実装時に決めた。射影からは「チューナーが 0 本」と「まだ同期していない」を区別できず、後者を容量ゼロとして扱うと、全区間が超過になって警告が洪水になる。上に書いた「既知の盲点はすべて警告を見逃す方向に偏っている」という性質を、我々自身の無知で損なわないための規律である。全台故障は射影された事実であり、無知には当たらない。
 
-実装は、純関数の判定部と DB 読みの部分に分け、射影ジョブは worker に置く。
+判定は `internal/capacity` に置き、DB の読み取りは `store.Capacity` が受け持つ。射影ジョブは worker に置く。
 
 <details><summary>根拠</summary>
 
-- 判定と DB 読み: `internal/capacity`（判定が `Compute`、DB 読みが `Load`）
+- 容量の判定: `internal/capacity.Compute`
+- 容量の読み取り契約と PostgreSQL 実装: `internal/store.Capacity` / `internal/store/pgstore.Tuners`
 - 射影ジョブ: `internal/worker/tuner.go`
 - 射影の表: `tuner_sync`
 

@@ -13,6 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -120,7 +121,7 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -162,7 +163,7 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -197,7 +198,7 @@ func TestGetReservation_NoDedupeEvidenceOmitsFields(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -225,7 +226,7 @@ func TestGetReservation_SkipIntentSetsSkip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -252,7 +253,7 @@ func TestGetReservation_BrokenBaseJSONFails(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // removedEncodedFixture は「原本 + h264 + h265」の録画で、h264 を外した状態の材料。
@@ -129,7 +130,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	f := seedRemovedEncodedRecording(t, pool, mediaDir, 9201, []string{"h265"})
 	requestEncodedRemoval(t, pool, f.recordingID, "h264")
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	requestEncodedRemoval(t, pool, stuck.recordingID, "h264")
 	setAssetState(t, pool, stuck.h264ID, "deleting")
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -232,7 +233,12 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	b := seedRemovedEncodedRecording(t, pool, mediaDir, 9403, []string{"h265"})
 	requestEncodedRemoval(t, pool, b.recordingID, "h264")
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MaxDeletesPerPass: 2}
+	w := &DeleteReconcileWorker{
+		Pool:              pool,
+		RecordingPurge:    pgstore.NewRecordings(pool),
+		MediaDir:          mediaDir,
+		MaxDeletesPerPass: 2,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
