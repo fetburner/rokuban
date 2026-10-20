@@ -29,6 +29,8 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		RuleStore:          pgstore.NewRules(pool),
+		ProgramSearch:      pgstore.NewEPG(pool),
 		ReservationStore:   pgstore.NewReservations(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -125,6 +127,8 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		RuleStore:          pgstore.NewRules(pool),
+		ProgramSearch:      pgstore.NewEPG(pool),
 		ReservationStore:   pgstore.NewReservations(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},

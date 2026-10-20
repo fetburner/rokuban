@@ -5,7 +5,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/epgstation"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -23,6 +26,10 @@ func basicRule(id int64, keyword string) epgstation.Rule {
 	}
 }
 
+func importRulesForTest(ctx context.Context, pool *pgxpool.Pool, rules []epgstation.Rule) (RuleImportResult, error) {
+	return ImportRules(ctx, pgstore.NewRules(pool), pgstore.NewEPG(pool), "default", rules)
+}
+
 // TestImportRules_IdempotentRerun is the acceptance criterion: re-running the
 // same import (same EPGStation rule id) must not add rows.
 func TestImportRules_IdempotentRerun(t *testing.T) {
@@ -31,7 +38,7 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 
 	rules := []epgstation.Rule{basicRule(1, "ニュース")}
 
-	first, err := ImportRules(ctx, pool, "default", rules)
+	first, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("first ImportRules: %v", err)
 	}
@@ -39,7 +46,7 @@ func TestImportRules_IdempotentRerun(t *testing.T) {
 		t.Fatalf("first result = %+v, want Created=1 Updated=0", first)
 	}
 
-	second, err := ImportRules(ctx, pool, "default", rules)
+	second, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("second ImportRules: %v", err)
 	}
@@ -95,7 +102,7 @@ func TestImportRules_AREIncompatibleRegexWarns(t *testing.T) {
 		ReserveOption: epgstation.RuleReserveOption{Enable: true, AllowEndLack: true},
 	}}
 
-	result, err := ImportRules(ctx, pool, "default", rules)
+	result, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
@@ -141,7 +148,7 @@ func TestImportRules_NoConditionsFromEPGStation_ImportsDisabled(t *testing.T) {
 		ReserveOption: epgstation.RuleReserveOption{Enable: true},
 	}}
 
-	result, err := ImportRules(ctx, pool, "default", rules)
+	result, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
@@ -155,35 +162,6 @@ func TestImportRules_NoConditionsFromEPGStation_ImportsDisabled(t *testing.T) {
 	}
 	if enabled {
 		t.Error("enabled = true, want false (rule has no narrowing conditions at all)")
-	}
-}
-
-// TestImportRules_ChildInsertFailureRollsBack is the acceptance criterion
-// behind blocking finding 2: writing the rule row and its child tables must
-// be all-or-nothing. A blank site fails rule_sites' non-empty-site CHECK
-// on the very last insert in writeRuleChildren, after the rule row and every
-// other child table already succeeded — without a transaction, those earlier
-// writes would stick around as a "some conditions, but not all" rule.
-func TestImportRules_ChildInsertFailureRollsBack(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	rules := []epgstation.Rule{basicRule(6, "keyword")}
-
-	if _, err := ImportRules(ctx, pool, "", rules); err == nil {
-		t.Fatal("want an error from the empty site (rule_sites CHECK violation), got nil")
-	}
-
-	var ruleCount, textMatchCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rules`).Scan(&ruleCount); err != nil {
-		t.Fatal(err)
-	}
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM rule_text_matches`).Scan(&textMatchCount); err != nil {
-		t.Fatal(err)
-	}
-	if ruleCount != 0 || textMatchCount != 0 {
-		t.Fatalf("rules=%d rule_text_matches=%d after a failed import, want 0/0 (partial writes must roll back)",
-			ruleCount, textMatchCount)
 	}
 }
 
@@ -206,7 +184,7 @@ func TestImportRules_IsFreeFalseIsNotAFilter(t *testing.T) {
 		ReserveOption: epgstation.RuleReserveOption{Enable: true},
 	}}
 
-	if _, err := ImportRules(ctx, pool, "default", rules); err != nil {
+	if _, err := importRulesForTest(ctx, pool, rules); err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
 
@@ -234,7 +212,7 @@ func TestImportRules_UnsupportedTemplateVariableWarns(t *testing.T) {
 		SaveOption:    &epgstation.ReserveSaveOption{RecordedFormat: "%CHNAME%_%TITLE%"},
 	}}
 
-	result, err := ImportRules(ctx, pool, "default", rules)
+	result, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}
@@ -265,7 +243,7 @@ func TestImportRules_TimeSpecifiedSkipped(t *testing.T) {
 		ReserveOption:       epgstation.RuleReserveOption{Enable: true},
 	}}
 
-	result, err := ImportRules(ctx, pool, "default", rules)
+	result, err := importRulesForTest(ctx, pool, rules)
 	if err != nil {
 		t.Fatalf("ImportRules: %v", err)
 	}

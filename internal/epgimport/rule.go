@@ -2,16 +2,13 @@ package epgimport
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/epgstation"
 	"github.com/fetburner/rokuban/internal/programid"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // RuleWarning は 1 ルールの変換で生じた警告 1 件。
@@ -38,11 +35,11 @@ type ruleFields struct {
 	periodStartAt    *int64 // UnixtimeMS
 	periodEndAt      *int64
 	filenameTemplate string
-	textMatches      []sqlcgen.InsertRuleTextMatchParams
-	services         []sqlcgen.InsertRuleServiceParams
+	textMatches      []store.RuleTextMatch
+	services         []store.RuleService
 	channelTypes     []string
 	genres           []int16
-	times            []sqlcgen.InsertRuleTimeParams
+	times            []store.RuleTimeWindow
 }
 
 // hasNarrowingCondition は、このルールが EPG を絞り込む条件を 1 つでも
@@ -65,22 +62,14 @@ func (f ruleFields) hasNarrowingCondition() bool {
 // ImportRules は EPGStation のルールを rokuban の rules（+ 子テーブル）へ
 // 冪等に取り込む。
 //
-// 冪等キーは rules.metadata の jsonb containment
-// {"epgstation":{"ruleId": <EPGStation の rule id>}}。再実行では
-// FindRuleByMetadata で既存行を引き、子テーブルは一度消してから入れ直す
-// （internal/catalog/rescue.go の upsertRule と同じ流儀）ので行は増えない。
-//
-// 1 ルールにつき 1 トランザクション（pool.Begin）で「ルール本体 + 子
-// テーブル全部」をまとめてコミットする。子テーブルの 1 つの INSERT だけが
-// 失敗する状況（例: rule_sites の CHECK 違反）で、ルール本体と他の子
-// テーブルだけ書き込まれた「一部だけ narrow なルール」が残る事故を防ぐ
-// （途中失敗すれば丸ごと消える。TestImportRules_ChildInsertFailureRollsBack
-// が実測で固定している）。
+// store.RuleImport が EPGStation rule ID で既存行を引き、作成または更新するため、
+// 再実行しても行は増えない。ルール本体と子条件は store が 1 つの tx で確定し、
+// 子条件の挿入が失敗した場合は本体も残らない（TestRulesContract/EPGStation import uses stable identity atomically）。
 //
 // site は rule_sites に 1 行だけ入れる対象サイト（EPGStation は単一の
 // mirakc/チューナー源を前提にした単一サイト運用なので、全サイトではなく
 // このサイトへスコープする）。
-func ImportRules(ctx context.Context, pool *pgxpool.Pool, site string, rules []epgstation.Rule) (RuleImportResult, error) {
+func ImportRules(ctx context.Context, ruleStore store.RuleImport, programSearch store.ProgramSearch, site string, rules []epgstation.Rule) (RuleImportResult, error) {
 	var res RuleImportResult
 	for _, r := range rules {
 		if r.IsTimeSpecification {
@@ -90,7 +79,7 @@ func ImportRules(ctx context.Context, pool *pgxpool.Pool, site string, rules []e
 			continue
 		}
 
-		created, warnings, err := importOneRule(ctx, pool, site, r)
+		created, warnings, err := importOneRule(ctx, ruleStore, programSearch, site, r)
 		// warnings が集まった後にエラーで落ちることもある（例: ARE 警告を
 		// 出した直後に子テーブルの INSERT が失敗）。エラーだからといって
 		// 警告を捨てると、操作者はエラーメッセージしか見えず、同じ warning
@@ -110,11 +99,8 @@ func ImportRules(ctx context.Context, pool *pgxpool.Pool, site string, rules []e
 	return res, nil
 }
 
-// importOneRule は 1 ルール分の変換 + DB 書き込みを行う。ARE 検証は
-// トランザクション開始前に pool へ直接投げ（読み取り専用の判定であり、かつ
-// Postgres 側のエラーで tx を abort させないため）、ルール本体 + 子テーブル
-// の書き込みだけを 1 トランザクションにまとめる。
-func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgstation.Rule) (created bool, warnings []string, err error) {
+// importOneRule は 1 ルール分を変換し、regex を検証してから store へ渡す。
+func importOneRule(ctx context.Context, ruleStore store.RuleImport, programSearch store.ProgramSearch, site string, r epgstation.Rule) (created bool, warnings []string, err error) {
 	fields, warnings := buildRuleFields(r)
 
 	// ARE 非互換の正規表現は「警告して、その text match だけ落とす」。
@@ -123,21 +109,16 @@ func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgst
 	// 「警告に出す」（受け入れ基準）は満たしつつ実害（評価不能なルール）は
 	// 避ける。
 	//
-	// 検証は pool 直付けの Queries（トランザクション開始前）で行う。
-	// 不正な正規表現は Postgres 側で SQL エラーになる制御フローの一部
-	// （珍しくもバグでもない）なので、下で開くトランザクションの中で
-	// 呼ぶとそのままトランザクションを abort 状態にしてしまい、以降の
-	// FindRuleByMetadata 等がすべて「current transaction is aborted」で
-	// 落ちる（実測して見つけた）。読み取り専用の検証なのでトランザクション
-	// に含める理由もない。
-	validateQ := sqlcgen.New(pool)
 	kept := fields.textMatches[:0]
 	for _, m := range fields.textMatches {
 		if m.Mode != "regex" {
 			kept = append(kept, m)
 			continue
 		}
-		if err := validateQ.ValidateRegexPattern(ctx, m.Value); err != nil {
+		if err := programSearch.ValidateRegex(ctx, m.Value); err != nil {
+			if !errors.Is(err, store.ErrInvalidPattern) {
+				return false, warnings, fmt.Errorf("validating regex %q: %w", m.Value, err)
+			}
 			warnings = append(warnings, fmt.Sprintf(
 				"regex %q is not POSIX ARE compatible (%v) — text match skipped, fix and add it back manually", m.Value, err))
 			continue
@@ -157,144 +138,21 @@ func importOneRule(ctx context.Context, pool *pgxpool.Pool, site string, r epgst
 			"rule has no narrowing conditions after conversion (would match every program in the EPG) — imported disabled; review conditions and enable manually")
 	}
 
-	metadata, err := json.Marshal(map[string]any{"epgstation": map[string]any{"ruleId": r.ID}})
+	enabled := fields.enabled
+	filenameTemplate := fields.filenameTemplate
+	in := store.RuleInput{
+		Name: fields.name, Enabled: &enabled, IsFree: fields.isFree,
+		DurationMinMs: fields.durationMinMs, DurationMaxMs: fields.durationMaxMs,
+		PeriodStartAt: msToTimePtr(fields.periodStartAt), PeriodEndAt: msToTimePtr(fields.periodEndAt),
+		FilenameTemplate: &filenameTemplate,
+		TextMatches:      fields.textMatches, Services: fields.services, ChannelTypes: fields.channelTypes,
+		Genres: fields.genres, Times: fields.times, Sites: []string{site},
+	}
+	created, err = ruleStore.ImportEPGStationRule(ctx, r.ID, in)
 	if err != nil {
-		return false, warnings, fmt.Errorf("marshalling metadata for epgstation rule %d: %w", r.ID, err)
-	}
-
-	// ルール本体 + 子テーブル全部を 1 トランザクションにまとめる。途中の
-	// INSERT が 1 つでも失敗すれば丸ごとロールバックされ、「一部の条件だけ
-	// 反映されたルール」を残さない（TestImportRules_ChildInsertFailureRollsBack）。
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return false, warnings, fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := sqlcgen.New(tx)
-
-	existing, err := q.FindRuleByMetadata(ctx, metadata)
-	var ruleID int64
-	switch {
-	case err == nil:
-		ruleID = existing.ID
-		if _, err := q.UpdateRule(ctx, sqlcgen.UpdateRuleParams{
-			ID:               ruleID,
-			Name:             fields.name,
-			Description:      existing.Description,
-			Enabled:          fields.enabled,
-			Priority:         existing.Priority,
-			IsFree:           boolToPg(fields.isFree),
-			DurationMinMs:    fields.durationMinMs,
-			DurationMaxMs:    fields.durationMaxMs,
-			PeriodStartAt:    msToTimePtr(fields.periodStartAt),
-			PeriodEndAt:      msToTimePtr(fields.periodEndAt),
-			DedupeEnabled:    existing.DedupeEnabled,
-			DedupeThreshold:  existing.DedupeThreshold,
-			DedupeWindow:     existing.DedupeWindow,
-			KeepOriginal:     existing.KeepOriginal,
-			EncodeProfiles:   existing.EncodeProfiles,
-			FilenameTemplate: fields.filenameTemplate,
-			Metadata:         metadata,
-		}); err != nil {
-			return false, warnings, fmt.Errorf("updating rule: %w", err)
-		}
-	case isNoRows(err):
-		created = true
-		row, err := q.CreateRule(ctx, sqlcgen.CreateRuleParams{
-			Name:             fields.name,
-			Description:      "",
-			Enabled:          fields.enabled,
-			Priority:         10,
-			IsFree:           boolToPg(fields.isFree),
-			DurationMinMs:    fields.durationMinMs,
-			DurationMaxMs:    fields.durationMaxMs,
-			PeriodStartAt:    msToTimePtr(fields.periodStartAt),
-			PeriodEndAt:      msToTimePtr(fields.periodEndAt),
-			DedupeEnabled:    false,
-			KeepOriginal:     "always",
-			EncodeProfiles:   []string{},
-			FilenameTemplate: fields.filenameTemplate,
-			Metadata:         metadata,
-		})
-		if err != nil {
-			return false, warnings, fmt.Errorf("creating rule: %w", err)
-		}
-		ruleID = row.ID
-	default:
-		return false, warnings, fmt.Errorf("looking up rule: %w", err)
-	}
-
-	if err := writeRuleChildren(ctx, q, ruleID, site, fields); err != nil {
-		return false, warnings, fmt.Errorf("writing children: %w", err)
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return false, warnings, fmt.Errorf("committing: %w", err)
+		return false, warnings, err
 	}
 	return created, warnings, nil
-}
-
-// writeRuleChildren は子テーブルを「一度消してから入れ直す」で冪等に反映する
-// （internal/catalog/rescue.go の upsertRule と同じ流儀）。呼び出し側
-// （importOneRule）がトランザクションに包む。
-func writeRuleChildren(ctx context.Context, q *sqlcgen.Queries, ruleID int64, site string, f ruleFields) error {
-	if err := q.DeleteRuleTextMatches(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting text matches: %w", err)
-	}
-	if err := q.DeleteRuleServices(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting services: %w", err)
-	}
-	if err := q.DeleteRuleChannelTypes(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting channel types: %w", err)
-	}
-	if err := q.DeleteRuleGenres(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting genres: %w", err)
-	}
-	if err := q.DeleteRuleTimes(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting times: %w", err)
-	}
-	if err := q.DeleteRuleSites(ctx, ruleID); err != nil {
-		return fmt.Errorf("deleting sites: %w", err)
-	}
-
-	for i, m := range f.textMatches {
-		m.RuleID = ruleID
-		m.Seq = int32(i)
-		if err := q.InsertRuleTextMatch(ctx, m); err != nil {
-			return fmt.Errorf("inserting text match seq=%d: %w", i, err)
-		}
-	}
-	for _, s := range f.services {
-		s.RuleID = ruleID
-		if err := q.InsertRuleService(ctx, s); err != nil {
-			return fmt.Errorf("inserting service: %w", err)
-		}
-	}
-	for _, ct := range f.channelTypes {
-		if err := q.InsertRuleChannelType(ctx, sqlcgen.InsertRuleChannelTypeParams{RuleID: ruleID, ChannelType: ct}); err != nil {
-			return fmt.Errorf("inserting channel type %s: %w", ct, err)
-		}
-	}
-	for _, g := range f.genres {
-		if err := q.InsertRuleGenre(ctx, sqlcgen.InsertRuleGenreParams{RuleID: ruleID, GenreLv1: g}); err != nil {
-			return fmt.Errorf("inserting genre %d: %w", g, err)
-		}
-	}
-	for i, t := range f.times {
-		t.RuleID = ruleID
-		t.Seq = int32(i)
-		if err := q.InsertRuleTime(ctx, t); err != nil {
-			return fmt.Errorf("inserting time seq=%d: %w", i, err)
-		}
-	}
-	// site は EPGStation に無い次元なので必ず 1 件（対象サイトそのもの）。
-	// CHECK (site <> '') に違反すると呼び出し側のトランザクションが
-	// ロールバックされ、ここまでの INSERT も含めて丸ごと消える
-	// （TestImportRules_ChildInsertFailureRollsBack）。
-	if err := q.InsertRuleSite(ctx, sqlcgen.InsertRuleSiteParams{RuleID: ruleID, Site: site}); err != nil {
-		return fmt.Errorf("inserting site: %w", err)
-	}
-	return nil
 }
 
 // buildRuleFields は 1 つの EPGStation ルールを rokuban の形へ変換する。
@@ -383,7 +241,7 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 
 	for _, id := range r.SearchOption.ChannelIDs {
 		networkID, serviceID := programid.SplitServiceID(id)
-		f.services = append(f.services, sqlcgen.InsertRuleServiceParams{
+		f.services = append(f.services, store.RuleService{
 			NetworkID: int32(networkID),
 			ServiceID: int32(serviceID),
 		})
@@ -402,7 +260,7 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 		startSec := (*t.Start % 24) * 3600
 		endHour := *t.Start + *t.Range
 		endSec := (endHour % 24) * 3600
-		f.times = append(f.times, sqlcgen.InsertRuleTimeParams{
+		f.times = append(f.times, store.RuleTimeWindow{
 			Weekdays: int32(weekdays),
 			StartSec: int32(startSec),
 			EndSec:   int32(endSec),
@@ -452,8 +310,8 @@ func buildRuleFields(r epgstation.Rule) (ruleFields, []string) {
 //     name > description > extended の優先順で 1 フィールドだけ残す
 //     （選ばれなかったフィールドはこのルールの絞り込みから消える —— 一致
 //     条件が緩む側に倒れるので録り逃しにはならないが、意図と異なりうる）。
-func buildTextMatches(opt epgstation.RuleSearchOption, warnings *[]string) []sqlcgen.InsertRuleTextMatchParams {
-	var out []sqlcgen.InsertRuleTextMatchParams
+func buildTextMatches(opt epgstation.RuleSearchOption, warnings *[]string) []store.RuleTextMatch {
+	var out []store.RuleTextMatch
 
 	if opt.Keyword != "" {
 		targets := selectedTargets(opt.Name, opt.Description, opt.Extended)
@@ -470,7 +328,7 @@ func buildTextMatches(opt epgstation.RuleSearchOption, warnings *[]string) []sql
 		if opt.KeyRegExp {
 			mode = "regex"
 		}
-		out = append(out, sqlcgen.InsertRuleTextMatchParams{
+		out = append(out, store.RuleTextMatch{
 			Target: targets[0], Mode: mode, Value: opt.Keyword, CaseSensitive: opt.KeyCS,
 		})
 	}
@@ -485,7 +343,7 @@ func buildTextMatches(opt epgstation.RuleSearchOption, warnings *[]string) []sql
 			mode = "regex"
 		}
 		for _, target := range targets {
-			out = append(out, sqlcgen.InsertRuleTextMatchParams{
+			out = append(out, store.RuleTextMatch{
 				Target: target, Mode: mode, Value: opt.IgnoreKeyword, CaseSensitive: opt.IgnoreKeyCS, Negate: true,
 			})
 		}
@@ -524,11 +382,4 @@ func epgWeekdayToRokuban(epg int) int {
 		out |= 1 << rb
 	}
 	return out
-}
-
-func boolToPg(b *bool) pgtype.Bool {
-	if b == nil {
-		return pgtype.Bool{}
-	}
-	return pgtype.Bool{Bool: *b, Valid: true}
 }

@@ -71,13 +71,13 @@ ruler は EPG の番組をルールと突き合わせ、あるべき予約（des
 | ルールの作成 / 更新 / 削除 | ヒント |
 | EPG 同期の完了 | ヒント |
 
-定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルールの書き込みでは、api がルール書き込みと同一トランザクションで投入するので dual-write にならない。EPG 同期の完了では、epg_sync ワーカーがパス完了時に投入する。
+定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルールの書き込みでは、api が store の commit 後に `ruler_pass` を投入する。ヒントが失われても、定期パスが永続状態から再計算する。EPG 同期の完了では、epg_sync ワーカーがパス完了時に投入する。
 
 ヒントは合流する。ルールを連続で編集しても、パスは 1 回で足りる。
 
 <details><summary>根拠</summary>
 
-- ルール書き込みと同一トランザクションの投入: `EnqueueTx`
+- ルール書き込み後のヒント投入: `Enqueue`
 - ヒントの合流: `UniqueOpts{ByArgs, ByState}`
 
 </details>
