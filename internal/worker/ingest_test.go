@@ -173,6 +173,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-001")
@@ -253,6 +254,7 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	// site-b 側では実在する record_sync / recordings（site-b の watcher が
 	// 実際に作った行という想定）。
@@ -317,6 +319,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "site-a", 20240102)
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
@@ -503,6 +506,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-partial")
@@ -607,11 +611,12 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-follow")
@@ -686,11 +691,12 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-rate")
@@ -803,11 +809,12 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-catchup")
@@ -886,11 +893,12 @@ func TestIngestWorker_CanceledOrFailedRecordCancelsJobWithoutRetry(t *testing.T)
 				return
 			}
 			w := &IngestWorker{
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-				MediaDir:      t.TempDir(),
-				StallTimeout:  time.Second,
-				Pool:          pool,
-				RecordTarget:  pgstore.NewRecordings(pool),
+				MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				MediaDir:         t.TempDir(),
+				StallTimeout:     time.Second,
+				Pool:             pool,
+				RecordTarget:     pgstore.NewRecordings(pool),
+				CMDetectionStore: pgstore.NewAnalysis(pool),
 			}
 			recordingID := insertTestRecording(t, pool)
 			insertTestRecordSync(t, pool, recordingID, tt.recordID)
@@ -1005,11 +1013,12 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-notready")
@@ -1076,6 +1085,7 @@ func TestIngestWorker_FollowingCaughtUpKeepsProgressFresh(t *testing.T) {
 		StallTimeout:     time.Second,
 		Pool:             pool,
 		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 		ProgressInterval: 10 * time.Millisecond,
 	}
 	recordingID := insertTestRecording(t, pool)
@@ -1193,11 +1203,12 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-unknown")
@@ -1251,11 +1262,12 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		MediaDir:      t.TempDir(),
-		StallTimeout:  time.Second,
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MediaDir:         t.TempDir(),
+		StallTimeout:     time.Second,
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-forever-unknown")
@@ -1319,6 +1331,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-mismatch")
@@ -1362,11 +1375,12 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 
 	mediaDir := t.TempDir()
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	job := IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"}
 
@@ -1557,11 +1571,12 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	worker := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     time.Second,
 	}
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
@@ -1652,11 +1667,12 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 		return &ingestTestFile{file: file, onSync: func() { run.tempSyncs.Add(1) }}, nil
 	}
 	run.worker = &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          run.pool,
-		RecordTarget:  pgstore.NewRecordings(run.pool),
-		MediaDir:      run.mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             run.pool,
+		RecordTarget:     pgstore.NewRecordings(run.pool),
+		CMDetectionStore: pgstore.NewAnalysis(run.pool),
+		MediaDir:         run.mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	originalLogger := slog.Default()
 	run.logOutput = &bytes.Buffer{}
@@ -1844,11 +1860,12 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			insertTestRecordSync(t, pool, recordingID, recordID)
 
 			w := &IngestWorker{
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-				Pool:          pool,
-				RecordTarget:  pgstore.NewRecordings(pool),
-				MediaDir:      t.TempDir(),
-				StallTimeout:  5 * time.Second,
+				MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:             pool,
+				RecordTarget:     pgstore.NewRecordings(pool),
+				CMDetectionStore: pgstore.NewAnalysis(pool),
+				MediaDir:         t.TempDir(),
+				StallTimeout:     5 * time.Second,
 			}
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
@@ -1924,11 +1941,12 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 		}}, nil
 	}
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	originalLogger := slog.Default()
 	var logOutput bytes.Buffer
@@ -1995,11 +2013,12 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	insertTestRecordSync(t, pool, recordingID, "rec-unknown-head-length")
 	mediaDir := t.TempDir()
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	originalLogger := slog.Default()
 	var logOutput bytes.Buffer
@@ -2108,11 +2127,12 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	job := IngestJobArgs{Site: "default", RecordID: "rec-durable-order"}
 
@@ -2184,11 +2204,12 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			}
 
 			w := &IngestWorker{
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-				Pool:          pool,
-				RecordTarget:  pgstore.NewRecordings(pool),
-				MediaDir:      mediaDir,
-				StallTimeout:  5 * time.Second,
+				MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				Pool:             pool,
+				RecordTarget:     pgstore.NewRecordings(pool),
+				CMDetectionStore: pgstore.NewAnalysis(pool),
+				MediaDir:         mediaDir,
+				StallTimeout:     5 * time.Second,
 			}
 			job := IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"}
 
@@ -2311,6 +2332,7 @@ func TestIngestWorker_StallDetection(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-stall")
@@ -2630,11 +2652,12 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-reexec"}
@@ -2725,6 +2748,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-reingest")
@@ -3146,11 +3170,12 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-base"}
@@ -3223,11 +3248,12 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-override"}
@@ -3307,11 +3333,12 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-drift"}
@@ -3355,11 +3382,12 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-none"}
@@ -3464,11 +3492,12 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-gced"}
@@ -3547,11 +3576,12 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rematerialized"}
@@ -3613,11 +3643,12 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-rule-gone"}
@@ -3687,11 +3718,12 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-unresolved"}
@@ -3780,11 +3812,12 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	srv := newFullTransferServer(t, tsData, "test/policy-manual-gced.m2ts")
 	mc := mirakc.NewClient(srv.URL, nil)
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 	}
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-manual-gced"}
 
@@ -3868,6 +3901,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 101)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo", 327361024000101)
@@ -3916,6 +3950,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 102)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-fallback", 327361024000102)
@@ -3965,6 +4000,7 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	}
 	w.Pool = pool
 	w.RecordTarget = pgstore.NewRecordings(pool)
+	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 103)
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-degenerate", 327361024000103)
@@ -4043,18 +4079,20 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingIDB, "rec-collide-b", 327361024000202)
 
 	wA := &IngestWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srvA.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("site-a", mirakc.NewClient(srvA.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 	wB := &IngestWorker{
-		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(srvB.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("site-b", mirakc.NewClient(srvB.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 
 	jobA := IngestJobArgs{Site: "site-a", RecordID: "rec-collide-a"}
@@ -4229,11 +4267,12 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	defer srv.Close()
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"}
@@ -4329,11 +4368,12 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	srv := mirakcRecordServer(t, tsData, strPtr("shared/reused.m2ts"), "/recording/shared/reused.m2ts")
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		MediaDir:         mediaDir,
+		StallTimeout:     5 * time.Second,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-reuse-new"}

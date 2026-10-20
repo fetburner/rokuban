@@ -13,7 +13,7 @@ import (
 )
 
 // lockRecordingState は録画の行をロックし、ごみ箱・消去済みかどうかを問わず状態を返す。
-// ごみ箱の録画も扱うメソッド（SoftDelete / Restore / RequestPurge）の最初の文に使う。
+// ごみ箱の録画も扱うメソッド（SoftDelete / Restore / RequestPurge / SaveDetection）の最初の文に使う。
 // 録画が無ければ ErrNotFound を返す。
 func lockRecordingState(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (sqlcgen.LockRecordingRow, error) {
 	// 録画の行に触れる最初の文として呼ぶ。
@@ -28,7 +28,7 @@ func lockRecordingState(ctx context.Context, q *sqlcgen.Queries, recordingID int
 }
 
 // lockRecording は録画の行をロックし、消去済み・ごみ箱の録画を弾く。
-// チャプター編集が使う。CM 検出 worker の recordings ロックと同じ行を取り、
+// チャプター編集が使う。SaveDetection の recordings ロックと同じ行を取り、
 // 両方の書き込みが互いを観測できるようにする。
 func lockRecording(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
 	lock, err := lockRecordingState(ctx, q, recordingID)

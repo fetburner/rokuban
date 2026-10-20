@@ -248,12 +248,8 @@ func (w *CMDetectWorker) detect(
 		return cmFailure("match", fmt.Errorf("station logo match %.2f%% is below %.2f%%", matchPercent, cmDetectMinLogoMatchPercent))
 	}
 	if !hadLogo {
-		learnedAt, err := w.persistNewStationLogo(ctx, attempt, channel, logoDir, areaVersion, geometry)
-		if err != nil {
+		if err := w.persistNewStationLogo(ctx, attempt, channel, logoDir, areaVersion, geometry); err != nil {
 			return cmFailure("logo", err)
-		}
-		if learnedAt != nil {
-			attempt.LogoLearnedAt = learnedAt
 		}
 	}
 	if _, err := runCMTool(ctx, jobDir, tools("chapter_exe"), "-v", inputPath, "-s", "8", "-e", "4", "-o", chapters); err != nil {
@@ -304,10 +300,10 @@ func (w *CMDetectWorker) persistNewStationLogo(
 	channel, dir string,
 	observedAreaUpdatedAt *time.Time,
 	geometry videoGeometry,
-) (*time.Time, error) {
+) error {
 	logo, err := readStationLogo(dir, channel)
 	if err != nil {
-		return nil, fmt.Errorf("reading newly learned station logo: %w", err)
+		return fmt.Errorf("reading newly learned station logo: %w", err)
 	}
 	// プレビューは見た目の確認用。作れなくてもロゴ自体は保存する（preview_png は nullable）。
 	preview, previewErr := lgdPreviewPNG(logo)
@@ -315,18 +311,18 @@ func (w *CMDetectWorker) persistNewStationLogo(
 		slog.Warn("cm_detect: failed to render logo preview", "recording_id", attempt.RecordingID, "err", previewErr)
 		preview = nil
 	}
-	learnedAt, saved, err := w.DetectionStore.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
+	saved, err := w.DetectionStore.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
 		LGD: logo, PreviewPNG: preview,
 		CodedWidth: int32(geometry.width), CodedHeight: int32(geometry.height),
 	}, observedAreaUpdatedAt)
 	if err != nil {
-		return nil, fmt.Errorf("saving learned station logo: %w", err)
+		return fmt.Errorf("saving learned station logo: %w", err)
 	}
 	if !saved {
 		slog.Info("cm_detect: discarded a learned logo because the station logo state changed during the job",
 			"recording_id", attempt.RecordingID, "network_id", attempt.Station.NetworkID, "service_id", attempt.Station.ServiceID)
 	}
-	return learnedAt, nil
+	return nil
 }
 
 // videoGeometry は映像ストリームの記録上の大きさ（SAR を掛ける前の画素数）。

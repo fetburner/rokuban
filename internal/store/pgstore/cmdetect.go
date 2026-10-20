@@ -128,7 +128,9 @@ func (s *Analysis) AbortAttempt(ctx context.Context, attempt store.CMDetectionAt
 }
 
 // SaveDetection は一致する現在世代の試行について、正規化した CM 区間を保存する。
-// 局、録画、試行の順で書き手を直列化する。
+// 局、録画、試行の順で書き手を直列化する。ごみ箱の録画でも desired でなければ試行を消すので、
+// lockRecording ではなく lockRecordingState を使う。
+// 局ロゴの版は、解析をロゴありで始めた試行（LogoLearnedAt が非 nil）だけ照合する。
 func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionAttempt, ranges []chapters.Range) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -142,17 +144,12 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 	}); err != nil {
 		return false, fmt.Errorf("locking station logo state for CM result: %w", err)
 	}
-	recording, err := lockRecordingState(ctx, q, attempt.RecordingID)
-	if err != nil {
+	if _, err := lockRecordingState(ctx, q, attempt.RecordingID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("locking recording %d for CM result: %w", attempt.RecordingID, err)
 	}
-	if recording.IsPurged {
-		return false, nil
-	}
-	recordingTrashed := recording.IsTrashed
 	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
 		RecordingID: attempt.RecordingID, PolicyGeneration: attempt.PolicyGeneration,
 	})
@@ -166,7 +163,7 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 	if err != nil {
 		return false, fmt.Errorf("rechecking CM detection policy for recording %d: %w", attempt.RecordingID, err)
 	}
-	if recordingTrashed || !desired {
+	if !desired {
 		if err := q.DeleteCMDetectionAttempt(ctx, attempt.RecordingID); err != nil {
 			return false, fmt.Errorf("clearing disabled CM detection attempt for recording %d: %w", attempt.RecordingID, err)
 		}
@@ -175,25 +172,22 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 		}
 		return false, nil
 	}
-	currentLogo, logoErr := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-		NetworkID: attempt.Station.NetworkID, ServiceID: attempt.Station.ServiceID,
-	})
-	logoChanged := false
-	if errors.Is(logoErr, pgx.ErrNoRows) {
-		logoChanged = attempt.LogoLearnedAt != nil
-	} else if logoErr != nil {
-		return false, fmt.Errorf("checking station logo version for recording %d: %w", attempt.RecordingID, logoErr)
-	} else {
-		logoChanged = attempt.LogoLearnedAt == nil || !currentLogo.LearnedAt.Equal(*attempt.LogoLearnedAt)
-	}
-	if logoChanged {
-		if err := q.DeleteCMDetectionAttempt(ctx, attempt.RecordingID); err != nil {
-			return false, fmt.Errorf("discarding stale CM result attempt for recording %d: %w", attempt.RecordingID, err)
+	if attempt.LogoLearnedAt != nil {
+		currentLogo, logoErr := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
+			NetworkID: attempt.Station.NetworkID, ServiceID: attempt.Station.ServiceID,
+		})
+		if logoErr != nil && !errors.Is(logoErr, pgx.ErrNoRows) {
+			return false, fmt.Errorf("checking station logo version for recording %d: %w", attempt.RecordingID, logoErr)
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return false, fmt.Errorf("committing stale CM result discard for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
+		if errors.Is(logoErr, pgx.ErrNoRows) || !currentLogo.LearnedAt.Equal(*attempt.LogoLearnedAt) {
+			if err := q.DeleteCMDetectionAttempt(ctx, attempt.RecordingID); err != nil {
+				return false, fmt.Errorf("discarding stale CM result attempt for recording %d: %w", attempt.RecordingID, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return false, fmt.Errorf("committing stale CM result discard for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
+			}
+			return false, nil
 		}
-		return false, nil
 	}
 	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: attempt.RecordingID, CmRanges: encodeInt8Multirange(ranges),
@@ -211,26 +205,26 @@ func (s *Analysis) SaveDetection(ctx context.Context, attempt store.CMDetectionA
 
 // SaveLearnedLogo は局の枠版と試行が一致する場合にロゴを保存する。
 // 局、試行の順で書き手を直列化する。
-func (s *Analysis) SaveLearnedLogo(ctx context.Context, attempt store.CMDetectionAttempt, logo store.CMDetectionLogo, observedAreaVersion *time.Time) (*time.Time, bool, error) {
+func (s *Analysis) SaveLearnedLogo(ctx context.Context, attempt store.CMDetectionAttempt, logo store.CMDetectionLogo, observedAreaVersion *time.Time) (bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("beginning learned station logo save for recording %d: %w", attempt.RecordingID, err)
+		return false, fmt.Errorf("beginning learned station logo save for recording %d: %w", attempt.RecordingID, err)
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 	if err := q.LockCMStation(ctx, sqlcgen.LockCMStationParams{
 		NetworkID: attempt.Station.NetworkID, ServiceID: attempt.Station.ServiceID,
 	}); err != nil {
-		return nil, false, fmt.Errorf("locking station logo state for recording %d: %w", attempt.RecordingID, err)
+		return false, fmt.Errorf("locking station logo state for recording %d: %w", attempt.RecordingID, err)
 	}
 	currentAttemptCount, err := q.LockCMDetectionAttempt(ctx, sqlcgen.LockCMDetectionAttemptParams{
 		RecordingID: attempt.RecordingID, PolicyGeneration: attempt.PolicyGeneration,
 	})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && currentAttemptCount != attempt.AttemptCount) {
-		return nil, false, nil
+		return false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("checking CM detection attempt fence for recording %d: %w", attempt.RecordingID, err)
+		return false, fmt.Errorf("checking CM detection attempt fence for recording %d: %w", attempt.RecordingID, err)
 	}
 	rows, err := q.InsertLearnedCMLogo(ctx, sqlcgen.InsertLearnedCMLogoParams{
 		NetworkID: attempt.Station.NetworkID, ServiceID: attempt.Station.ServiceID,
@@ -239,22 +233,12 @@ func (s *Analysis) SaveLearnedLogo(ctx context.Context, attempt store.CMDetectio
 		CodedWidth:            logo.CodedWidth, CodedHeight: logo.CodedHeight,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("saving learned station logo for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
-	}
-	var learnedAt *time.Time
-	if rows > 0 {
-		currentLogo, err := q.GetCMLogo(ctx, sqlcgen.GetCMLogoParams{
-			NetworkID: attempt.Station.NetworkID, ServiceID: attempt.Station.ServiceID,
-		})
-		if err != nil {
-			return nil, false, fmt.Errorf("reading saved station logo version for recording %d: %w", attempt.RecordingID, err)
-		}
-		learnedAt = &currentLogo.LearnedAt
+		return false, fmt.Errorf("saving learned station logo for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, false, fmt.Errorf("committing learned station logo for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
+		return false, fmt.Errorf("committing learned station logo for recording %d: %w", attempt.RecordingID, mapDatabaseError(err))
 	}
-	return learnedAt, rows > 0, nil
+	return rows > 0, nil
 }
 
 // RetryDetection は結果と試行を消し、原本がある場合に再試行情報を返す。

@@ -911,11 +911,12 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
 	}
@@ -975,13 +976,14 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	srv := newFullTransferServer(t, makeTSData(20), "test/policy-cut-only-live.m2ts")
 	mc := mirakc.NewClient(srv.URL, nil)
 	w := &IngestWorker{
-		MirakcClients: singleSiteClients("", mc),
-		MediaDir:      t.TempDir(),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		StallTimeout:  5 * time.Second,
-		CutProfiles:   map[string]struct{}{"cut": {}},
-		LiveEnabled:   true,
+		MirakcClients:    singleSiteClients("", mc),
+		MediaDir:         t.TempDir(),
+		Pool:             pool,
+		RecordTarget:     pgstore.NewRecordings(pool),
+		CMDetectionStore: pgstore.NewAnalysis(pool),
+		StallTimeout:     5 * time.Second,
+		CutProfiles:      map[string]struct{}{"cut": {}},
+		LiveEnabled:      true,
 	}
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}

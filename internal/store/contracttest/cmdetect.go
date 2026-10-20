@@ -28,6 +28,8 @@ type CMDetectionFixture struct {
 	WaitForRecordingWriteWait func(t *testing.T, recordingID int64, name string)
 	// WaitForStationWriteWait は name の操作が局ロックで待っていることを確認する。
 	WaitForStationWriteWait func(t *testing.T, station store.CMStationRef, name string)
+	// MarkOriginalMissing は録画の有効な原本を missing として記録する。
+	MarkOriginalMissing func(t *testing.T, recordingID int64)
 	// AdvancePolicyGeneration は現在の CM 検出世代を進める。
 	AdvancePolicyGeneration func(t *testing.T, recordingID int64)
 }
@@ -53,14 +55,23 @@ func RunCMDetection(t *testing.T, newStore NewCMDetectionStore) {
 	t.Run("trash during analysis clears the attempt budget", func(t *testing.T) {
 		testCMDetectionTrashClearsAttempt(t, newStore)
 	})
-	t.Run("result rejects a logo learned after an attempt started without one", func(t *testing.T) {
-		testCMDetectionRejectsNewLogo(t, newStore, station)
+	t.Run("result started without a logo is saved even if a logo appears later", func(t *testing.T) {
+		testCMDetectionSavesAfterLogoAppears(t, newStore, station)
+	})
+	t.Run("result discards the attempt when the original became missing", func(t *testing.T) {
+		testCMDetectionDiscardsMissingOriginal(t, newStore)
+	})
+	t.Run("result rejects a deleted logo the attempt started with", func(t *testing.T) {
+		testCMDetectionRejectsDeletedLogo(t, newStore, station)
+	})
+	t.Run("orphan logo candidates fail by the worker deadline", func(t *testing.T) {
+		testFailOrphanLogoCandidates(t, newStore, station)
 	})
 	t.Run("result rejects a changed learned logo version", func(t *testing.T) {
 		testCMDetectionRejectsChangedLogo(t, newStore, station)
 	})
-	t.Run("learned logo save returns the version used by the result", func(t *testing.T) {
-		testCMDetectionLearnedLogoVersion(t, newStore, station)
+	t.Run("learned logo save stores the logo", func(t *testing.T) {
+		testCMDetectionLearnedLogoSaved(t, newStore, station)
 	})
 
 	runDetectionWaitsForChapterWrite(t, newStore)
@@ -217,7 +228,26 @@ func testCMDetectionGenerationFence(t *testing.T, newStore NewCMDetectionStore) 
 	}
 }
 
-func testCMDetectionRejectsNewLogo(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
+func testCMDetectionSavesAfterLogoAppears(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	attempt, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun || attempt.LogoLearnedAt != nil {
+		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running without a logo version", attempt, shouldRun, err)
+	}
+	f.SeedLogo(t, station, id)
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || !saved {
+		t.Fatalf("SaveDetection(logo appeared later) = %v, %v; want saved", saved, err)
+	}
+	snapshot, err := f.ChapterStore.Read(ctx, id)
+	if err != nil || !snapshot.Detected || !reflect.DeepEqual(snapshot.CMRanges, []chapters.Range{{StartMs: 1000, EndMs: 2000}}) {
+		t.Fatalf("saved result = %+v, %v; want the 1000-2000 range", snapshot, err)
+	}
+}
+
+func testCMDetectionDiscardsMissingOriginal(t *testing.T, newStore NewCMDetectionStore) {
 	t.Helper()
 	f := newStore(t)
 	ctx := context.Background()
@@ -226,11 +256,73 @@ func testCMDetectionRejectsNewLogo(t *testing.T, newStore NewCMDetectionStore, s
 	if err != nil || !shouldRun {
 		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
 	}
-	f.SeedLogo(t, station, id)
+	f.MarkOriginalMissing(t, id)
 	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
-		t.Fatalf("SaveDetection(after logo appeared) = %v, %v; want discarded", saved, err)
+		t.Fatalf("SaveDetection(original missing) = %v, %v; want discarded", saved, err)
 	}
-	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result using the old logo")
+	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result for a missing original")
+	fresh, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun || fresh.AttemptCount != 1 {
+		t.Fatalf("BeginAttempt() after discard = %+v, %v, %v; want a fresh attempt 1", fresh, shouldRun, err)
+	}
+}
+
+func testCMDetectionRejectsDeletedLogo(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.SeedLogo(t, station, id)
+	logo, err := f.Store.GetLogo(ctx, station)
+	if err != nil {
+		t.Fatalf("reading initial logo: %v", err)
+	}
+	attempt, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
+	if err != nil || !shouldRun {
+		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
+	}
+	attempt.LogoLearnedAt = &logo.LearnedAt
+	if _, err := f.CMStationStore.DeleteLogo(ctx, station); err != nil {
+		t.Fatalf("DeleteLogo() error = %v", err)
+	}
+	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
+		t.Fatalf("SaveDetection(logo deleted) = %v, %v; want discarded", saved, err)
+	}
+	assertNoCMDetectionResult(t, f.ChapterStore, ctx, id, "result using a deleted logo")
+}
+
+func testFailOrphanLogoCandidates(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
+	t.Helper()
+	f := newStore(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	job, err := f.CMStationStore.SaveLogoArea(ctx, station, store.CMLogoAreaInput{
+		RecordingID: id, X: 10, Y: 24, W: 240, H: 96, CodedWidth: 1440, CodedHeight: 1080,
+	})
+	if err != nil {
+		t.Fatalf("SaveLogoArea() error = %v", err)
+	}
+	if _, started, err := f.CMStationStore.BeginLogoCandidate(ctx, station, id, job.AreaUpdatedAt); err != nil || !started {
+		t.Fatalf("BeginLogoCandidate() = %v, %v; want started", started, err)
+	}
+	var durations []int64
+	err = f.Store.FailOrphanLogoCandidates(ctx, 0, func(durationMs int64) time.Duration {
+		durations = append(durations, durationMs)
+		return time.Hour
+	})
+	if err != nil || !reflect.DeepEqual(durations, []int64{1800000}) {
+		t.Fatalf("FailOrphanLogoCandidates(long deadline) = %v with durations %v; want nil and [1800000]", err, durations)
+	}
+	if c, err := f.CMStationStore.GetLogoCandidate(ctx, station); err != nil || c.State != "running" {
+		t.Fatalf("candidate before its deadline = %+v, %v; want running", c, err)
+	}
+	err = f.Store.FailOrphanLogoCandidates(ctx, 0, func(int64) time.Duration { return -time.Hour })
+	if err != nil {
+		t.Fatalf("FailOrphanLogoCandidates(past deadline) error = %v", err)
+	}
+	if c, err := f.CMStationStore.GetLogoCandidate(ctx, station); err != nil || c.State != "failed" {
+		t.Fatalf("candidate after its deadline = %+v, %v; want failed", c, err)
+	}
 }
 
 func testCMDetectionRejectsChangedLogo(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
@@ -267,7 +359,7 @@ func assertNoCMDetectionResult(t *testing.T, chapterStore store.ChapterEdits, ct
 	}
 }
 
-func testCMDetectionLearnedLogoVersion(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
+func testCMDetectionLearnedLogoSaved(t *testing.T, newStore NewCMDetectionStore, station store.CMStationRef) {
 	t.Helper()
 	f := newStore(t)
 	ctx := context.Background()
@@ -281,15 +373,14 @@ func testCMDetectionLearnedLogoVersion(t *testing.T, newStore NewCMDetectionStor
 	if err != nil || !shouldRun {
 		t.Fatalf("BeginAttempt() = %+v, %v, %v; want running", attempt, shouldRun, err)
 	}
-	learnedAt, saved, err := f.Store.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
+	saved, err := f.Store.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
 		LGD: []byte("learned logo"), CodedWidth: 1440, CodedHeight: 1080,
 	}, &area.AreaUpdatedAt)
-	if err != nil || !saved || learnedAt == nil {
-		t.Fatalf("SaveLearnedLogo() = %v, %v, %v; want a saved logo version", learnedAt, saved, err)
+	if err != nil || !saved {
+		t.Fatalf("SaveLearnedLogo() = %v, %v; want saved", saved, err)
 	}
-	attempt.LogoLearnedAt = learnedAt
-	if saved, err := f.Store.SaveDetection(ctx, attempt, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || !saved {
-		t.Fatalf("SaveDetection(after learned logo save) = %v, %v; want saved", saved, err)
+	if logo, err := f.Store.GetLogo(ctx, station); err != nil || string(logo.LGD) != "learned logo" {
+		t.Fatalf("GetLogo() = %+v, %v; want the learned logo", logo, err)
 	}
 }
 
@@ -359,25 +450,23 @@ func runLearnedLogoWaitsForAreaWrite(t *testing.T, newStore NewCMDetectionStore,
 			}
 		}()
 		result := make(chan struct {
-			saved     bool
-			learnedAt *time.Time
-			err       error
+			saved bool
+			err   error
 		}, 1)
 		go func() {
-			learnedAt, saved, err := f.Store.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
+			saved, err := f.Store.SaveLearnedLogo(ctx, attempt, store.CMDetectionLogo{
 				LGD: []byte("learned logo"), CodedWidth: 1440, CodedHeight: 1080,
 			}, &oldArea.UpdatedAt)
 			result <- struct {
-				saved     bool
-				learnedAt *time.Time
-				err       error
-			}{saved: saved, learnedAt: learnedAt, err: err}
+				saved bool
+				err   error
+			}{saved: saved, err: err}
 		}()
 		f.WaitForStationWriteWait(t, station, "SaveLearnedLogo")
 		commit()
 		committed = true
 		got := <-result
-		if got.err != nil || got.saved || got.learnedAt != nil {
+		if got.err != nil || got.saved {
 			t.Fatalf("SaveLearnedLogo(old area version) = %v, %v; want discarded", got.saved, got.err)
 		}
 		if _, err := f.Store.GetLogo(ctx, station); !errors.Is(err, store.ErrNotFound) {

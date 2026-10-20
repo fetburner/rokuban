@@ -81,7 +81,6 @@ linters:
             - "!${config-path}/internal/testutil/**"
             - "!${config-path}/cmd/rokuban/**"
             # 移設待ち。移したタスクが行を消す。増やさない。
-            - "!${config-path}/internal/api/cm_detect.go"
             - "!${config-path}/internal/api/handler.go"
             - "!${config-path}/internal/api/label_rules.go"
             - "!${config-path}/internal/api/recordings.go"
@@ -103,8 +102,6 @@ linters:
             - "!${config-path}/internal/ruler/sql.go"
             - "!${config-path}/internal/tsscan/worker.go"
             - "!${config-path}/internal/worker/catalog_export.go"
-            - "!${config-path}/internal/worker/cm_detect.go"
-            - "!${config-path}/internal/worker/cm_detect_reconcile.go"
             - "!${config-path}/internal/worker/delete_execute.go"
             - "!${config-path}/internal/worker/delete_reconcile.go"
             - "!${config-path}/internal/worker/delete_select.go"

@@ -47,7 +47,7 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 <details><summary>根拠</summary>
 
 - DB の時計で比べる前例（GC）: `internal/ruler.runGC` の `observed_at < now() - horizon` と `postgresInterval`
-- DB の時計で比べる前例（孤児候補）: `internal/worker.failOrphanCMLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
+- DB の時計で比べる前例（孤児候補）: `internal/store/pgstore.Analysis.FailOrphanLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
 - 例外: `internal/worker/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
 
 </details>
@@ -242,7 +242,7 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 - ドメイン契約: `internal/store.ChapterEdits`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
-- 録画単位の直列化: `LockRecording` / `internal/worker/cm_detect.go`
+- 録画単位の直列化: `lockRecording` / `lockRecordingState` / `internal/store/pgstore.Analysis.SaveDetection`
 - 作り直し要求とカット版の公開の直列化: `ReencodeRecordingProfile` / `prepareEncodePublish`
 - 範囲制約: `recording_chapter_spans` の排他制約
 - 導出値と事実: 不変条件 9
@@ -307,18 +307,18 @@ EPG 同期の各段階は、独立した store メソッドにして、それぞ
 
 ### CM 検出（試行と結果）
 
-CM 検出 worker・reconcile・再試行 API の永続化は store 契約に置き、結果保存時に現在の試行・desired・局ロゴの版を再確認する。ロゴが無い状態で始めた処理も、保存前にロゴ不在を照合する。
+結果の保存は、保存の時点で現在の試行・desired・局ロゴの版を確かめ直す。ロゴの版を照合するのは、解析をロゴありで始めた場合だけである。
 
-結果の保存は局、録画、試行の順で直列化する。局ロゴの更新と同じ局ロックに参加し、録画行ロックでチャプター編集とも直列化する。これにより、検出結果の書き込みと編集側の自動チャプター引き取りが互いの commit を見落とさない。
+結果の保存は、同じ局のロゴ・枠の操作と、同じ録画のチャプター編集の両方と直列化される。ロックは局、録画、試行の順に取る。録画単位の直列化により、検出結果の書き込みとチャプター編集の自動チャプター引き取りは、互いの commit を見落とさない。
 
-再試行 API は結果と試行を消して commit した後にジョブを投入する。ingest と reconcile の投入も状態変更の後のヒントであり、投入に失敗しても定期 reconcile が desired な集合を再取得する。
+再試行 API は結果と試行を消し、commit してからジョブを投入する。ingest と reconcile の投入も含め、どれも commit 後のヒントである。投入に失敗しても、定期 reconcile が desired な集合を取り直して投入する。
 
 <details><summary>根拠</summary>
 
 - ドメイン契約: `internal/store.CMDetection`
 - PostgreSQL 実装: `internal/store/pgstore.Analysis`
 - 契約テスト: `internal/store/contracttest.RunCMDetection`
-- チャプター編集との録画単位の直列化: `lockRecording`
+- チャプター編集との録画単位の直列化: `lockRecordingState`
 - レベル駆動の回復: 不変条件 5
 
 </details>

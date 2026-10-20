@@ -75,9 +75,9 @@ type CMDetection interface {
 	// SaveDetection は一致する現在世代の試行について、正規化した CM 区間を保存する。
 	// 保存は同じ局のロゴ操作と、同じ録画のチャプター編集に直列化される。
 	SaveDetection(ctx context.Context, attempt CMDetectionAttempt, ranges []chapters.Range) (bool, error)
-	// SaveLearnedLogo は局の枠版と試行が一致する場合にロゴを保存し、保存した版を返す。
-	// 保存は同じ局の枠操作と直列化される。saved が false なら learnedAt は nil である。
-	SaveLearnedLogo(ctx context.Context, attempt CMDetectionAttempt, logo CMDetectionLogo, observedAreaVersion *time.Time) (learnedAt *time.Time, saved bool, err error)
+	// SaveLearnedLogo は局の枠版と試行が一致する場合にロゴを保存し、保存したかを返す。
+	// 保存は同じ局の枠操作と直列化される。
+	SaveLearnedLogo(ctx context.Context, attempt CMDetectionAttempt, logo CMDetectionLogo, observedAreaVersion *time.Time) (saved bool, err error)
 	// RetryDetection は結果と試行を消し、原本がある場合に再試行情報を返す。
 	RetryDetection(ctx context.Context, recordingID int64) (CMDetectionRetry, error)
 	// DeleteStaleAttempts は現在の方針世代でない試行を削除する。

@@ -49,6 +49,9 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 		WaitForStationWriteWait: func(t *testing.T, station store.CMStationRef, name string) {
 			waitForCMDetectionStationLock(t, pool, station, name)
 		},
+		MarkOriginalMissing: func(t *testing.T, recordingID int64) {
+			markCMDetectionOriginalMissing(t, pool, recordingID)
+		},
 		AdvancePolicyGeneration: func(t *testing.T, recordingID int64) {
 			advanceCMDetectionPolicyGeneration(t, pool, recordingID)
 		},
@@ -229,5 +232,18 @@ func advanceCMDetectionPolicyGeneration(t *testing.T, pool *pgxpool.Pool, record
 UPDATE recording_encode_policy SET cm_detect_generation = cm_detect_generation + 1
 WHERE recording_id = $1`, recordingID); err != nil {
 		t.Fatalf("advancing CM detection generation: %v", err)
+	}
+}
+
+func markCMDetectionOriginalMissing(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
+	t.Helper()
+	ctx := context.Background()
+	var assetID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = $2`,
+		recordingID, db.AssetKindOriginal).Scan(&assetID); err != nil {
+		t.Fatalf("finding original media asset: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, assetID); err != nil {
+		t.Fatalf("marking original missing: %v", err)
 	}
 }
