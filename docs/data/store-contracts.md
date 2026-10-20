@@ -163,30 +163,39 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 </details>
 
-### メディア読み取りとストレージ監査
+### メディア読み取りとストレージ観測
 
-メディアとストレージの永続化も利用側ごとの契約で読み書きし、DB の型を利用側へ広げない。
+メディアとストレージの読み取りは、利用側ごとの契約に分ける。DB の行型を利用側へ広げないためである。
 
-メディアの永続化は、利用側に応じた `MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation` に分ける。`pgstore.Media` はこれらを実装し、各利用側は必要な interface だけを受け取る。API と streamer が SQL の行型を知ると、読み取り条件と配信可否の判断が利用側に分散する。
+streamer は `MediaServing`、worker は `MediaReconcile` と `StorageObservation`、API は `MediaReader` と `StorageObservation` を受け取る。実装はどれも `pgstore.Media` が持つ。streamer が SQL の行型を知ると、配信してよい行の条件が streamer の中に散らばる。API が行型を知ると、読み取り条件が API の中に散らばる。
 
-`MediaServing` は配信可能な active アセットを返し、対象が無い場合は `ErrNotFound` を返す。`deleting` と `deleted` の原本・encoded は配信対象にしない。
+streamer は `MediaServing` から、配信元のアセットと、追っかけの対象と、原本 VOD の録画状態を読む。対象が無ければ `ErrNotFound` を返す。`deleting` と `deleted` のアセットは配信元にしない。ごみ箱の録画は、アセットも追っかけの対象も返さない。
 
-`MediaReconcile` は worker がメディア処理に使う入力と encode 計画の比較材料、再計算する候補、起動時に確認する profile / `rel_path` の証拠を読む。名前空間の検査は原本と encoded だけに適用し、`sites/{site}/` の有効なパスを通し、空の site 成分を拒む。
+worker は `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料と、起動時に確認する profile と `rel_path` の証拠を読む。エンコード計画の比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
-`StorageObservation` は worker の `storage_sync` と孤児・実体無し候補を記録し、API 向けに観測値を読む。孤児判定の既知パス一覧には `media_assets` の状態に関係なく全ての `rel_path` を含め、`sites/{site}/` を含む値をそのまま返す。削除途中のファイルを孤児として別経路へ流さず、サイト接頭辞を落として別パスと誤認しないためである。
+起動時の名前空間の検査は、原本と encoded のうち `deleted` でない行を見る。`rel_path` が `sites/{site}/` で始まらない行があれば、worker は起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
-候補の経過時間は、候補を記録した DB の時計で比較する。契約は時刻ではなく `time.Duration` を受け取るため、worker の時計ずれで孤児や実体無しの報告時期が変わらない。
+worker は `StorageObservation` に `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`media_assets` の状態に関係なく全ての `rel_path` を返す。`thumbnails/` のように `sites/` の外にある予約名前空間の行も含める。含めないと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補として記録され、報告の対象になる。
+
+候補の経過時間は、候補を書いた DB の時計で比べる。契約は時刻ではなく `time.Duration` を受け取る。効くのは、公開前の名前の孤児を自動削除する時期（`agedUnpublishedOrphans`）と、孤児・実体無しを報告する時期である。一般則は [時刻](#時刻) にある。
 
 <details><summary>根拠</summary>
 
-- インターフェース: `internal/store.MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation`
+- 契約: `internal/store.MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- 配信時の状態条件: `internal/db/queries/media_assets.sql` の serving query
-- 配信可能な状態: `TestMediaStoreContract` の `serving returns only active assets`
-- サイト名前空間: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
-- 監査パス: `TestMediaStoreContract` の `audit keeps the full site-prefixed asset path`
-- 孤児と実体無しの逆方向の差集合: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」「孤児回収の逆」
-- サイト名前空間: [storage contract](../storage/contract.md) §5「rel_path の名前空間」
+- 原本・encoded の配信元が active だけであること: `TestMediaStoreContract` の `serving returns only active assets`
+- サムネイル・シークタイルとごみ箱の録画: `TestMediaStoreContract` の `serving covers thumbnails and seek tiles`
+- 原本 VOD の site の絞り込み: `TestMediaStoreContract` の `original VOD target is scoped to the recording's site`
+- 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
+- エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
+- 名前空間の検査の受理と空の site 成分: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
+- 接頭辞の無い原本と encoded: `TestMediaStoreContract` の `namespace guard rejects unprefixed originals and encoded files`
+- サムネイルとシークタイルの除外: `TestMediaStoreContract` の `namespace guard leaves thumbnails and seek tiles to their own namespace`
+- 既知パス一覧: `TestMediaStoreContract` の `audit lists every media asset path including reserved namespaces`
+- 孤児候補の経過時間: `TestMediaStoreContract` の `orphan ageing compares against the database clock`
+- 実体無し候補の経過時間と active でない行の除外: `TestMediaStoreContract` の `missing asset ageing compares against the database clock`
+- 孤児を報告し回収する仕組みと、実体無しを検出する仕組み: [storage contract](../storage/contract.md) §5「残量の観測」 / [retention contract](../storage/retention.md) §7「孤児の報告と回収」「孤児回収の逆」
+- `rel_path` の名前空間: [storage contract](../storage/contract.md) §5「rel_path の名前空間」
 
 </details>
 

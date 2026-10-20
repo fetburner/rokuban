@@ -2429,6 +2429,7 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 	t.Cleanup(closeCleanupPool)
 	worker := &DeleteReconcileWorker{
 		Pool:           cleanupPool,
+		Storage:        newTestMediaStore(cleanupPool),
 		RecordingPurge: pgstore.NewRecordings(cleanupPool),
 		Breakers:       pgstore.NewBreakers(cleanupPool),
 		MediaDir:       mediaDir,

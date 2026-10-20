@@ -53,7 +53,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("namespace guard leaves thumbnails and seek tiles to their own namespace", func(t *testing.T) { runMediaNamespaceDerived(t, newFixture) })
 	t.Run("audit lists every media asset path including reserved namespaces", func(t *testing.T) { runMediaAuditPaths(t, newFixture) })
 	t.Run("orphan ageing compares against the database clock", func(t *testing.T) { runMediaOrphanAgeing(t, newFixture) })
-	t.Run("missing asset ageing compares against the database clock and skips inactive rows", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
+	t.Run("missing asset ageing compares against the database clock", func(t *testing.T) { runMediaMissingAgeing(t, newFixture) })
 }
 
 func runMediaJobInputs(t *testing.T, newFixture NewMediaFixture) {
