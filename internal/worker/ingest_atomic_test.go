@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // TestIngestWorker_ConcurrentSameRelPathUsesTempFiles は同じ rel_path に対する 2 本の
@@ -49,12 +50,14 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wA := &IngestWorker{
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
 	wB := &IngestWorker{
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 	}
@@ -393,7 +396,7 @@ func TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect(t *testing.T) {
 	// The DB session is already gone, but rename has not started. Canonical names
 	// are report-only, so cleanup leaves the orphan record untouched.
 	q := sqlcgen.New(pool)
-	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(q, relPath, 0)
 	var orphanCount int
 	if err := pool.QueryRow(ctx,
@@ -498,6 +501,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
 				Pool:          pool,
+				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 			}

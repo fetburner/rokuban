@@ -21,6 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // installCountingFFmpeg は「入力のコピーに、試行ごとに違うバイト列（長さも違う）を
@@ -895,7 +896,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		return nil
 	}
 
-	cleanup := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	deleteDone := make(chan struct{})
 	go func() {
 		cleanup.deleteMediaAsset(ctx, sqlcgen.New(pool), deleteTarget{

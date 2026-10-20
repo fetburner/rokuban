@@ -14,6 +14,7 @@ import (
 const listCapacityDemand = `-- name: ListCapacityDemand :many
 SELECT
     r.site,
+    r.rule_id,
     s.channel_type,
     s.channel,
     s.start_at AS program_start_at,
@@ -48,6 +49,7 @@ ORDER BY s.start_at
 
 type ListCapacityDemandRow struct {
 	Site           string
+	RuleID         *int64
 	ChannelType    string
 	Channel        string
 	ProgramStartAt time.Time
@@ -98,6 +100,7 @@ func (q *Queries) ListCapacityDemand(ctx context.Context, site string) ([]ListCa
 		var i ListCapacityDemandRow
 		if err := rows.Scan(
 			&i.Site,
+			&i.RuleID,
 			&i.ChannelType,
 			&i.Channel,
 			&i.ProgramStartAt,

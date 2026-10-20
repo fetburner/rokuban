@@ -15,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -22,6 +23,10 @@ const testSite = "default"
 
 // M1-9 が最低限として挙げているメトリクスが registry に載っていること。
 // 名前は運用側（scrape 設定・アラートルール）が依存するので固定する。
+func newPresyncCollector(pool *pgxpool.Pool) *PresyncCollector {
+	return NewPresyncCollector(pgstore.NewScheduleSync(pool), testSite)
+}
+
 func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	reg := NewRegistry(nil)
 
@@ -294,7 +299,7 @@ func TestBacklogCollector(t *testing.T) {
 	seedFinishedRecord(t, pool, "rec-b", 200, false)
 	seedFinishedRecord(t, pool, "rec-c", 999, true)
 
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 2 {
 		t.Errorf("rokuban_uningested_records = %v, want 2", got)
@@ -330,7 +335,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 		t.Fatalf("upserting external record_sync: %v", err)
 	}
 
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
 	}
@@ -342,7 +347,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 // 滞留 0 のときも 0 として報告されること（メトリクスが消えない）。
 func TestBacklogCollector_Empty(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
@@ -353,7 +358,7 @@ func TestBacklogCollector_Empty(t *testing.T) {
 // 0 を報告すると「滞留なし」と区別できず、滞留アラートを黙って無効化してしまう。
 func TestBacklogCollector_QueryFailure(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pool, testSite)
+	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
 	pool.Close() // クエリを失敗させる
 
 	text := gatherText(t, c)
@@ -377,7 +382,7 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	const programID int64 = 6800001
 	startAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
 	seedPresyncReservation(t, pool, programID, startAt)
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
 		t.Errorf("without snapshot marker, missing = %v, want 1", got)
@@ -470,7 +475,7 @@ func TestPresyncCollector_EarliestStart(t *testing.T) {
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 
 	// ① 十分先の予約 1 件だけ: missing=1 かつ earliest - now > 7 日。
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
@@ -516,7 +521,7 @@ func TestPresyncCollector_StaleSnapshotRemainsObservable(t *testing.T) {
 		t.Fatalf("aging schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	got := time.Unix(0, int64(labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil)*float64(time.Second)))
 	if !got.Before(time.Now().Add(-30 * time.Minute)) {
 		t.Errorf("snapshot timestamp = %v, want a stale timestamp", got)
@@ -550,7 +555,7 @@ func TestPresyncCollector_ExplicitContentPathMismatch(t *testing.T) {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 1 {
 		t.Errorf("content path mismatch options = %v, want 1", got)
 	}
@@ -567,7 +572,7 @@ func TestPresyncCollector_ReMaterializationReevaluatesCurrentOptions(t *testing.
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "options"}); got != 0 {
 		t.Fatalf("initial options mismatch = %v, want 0", got)
 	}
@@ -610,7 +615,7 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 		t.Fatalf("marking schedule snapshot: %v", err)
 	}
 
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": reasonOptions}); got != 0 {
 		t.Errorf("scheduled options = %v, want 0", got)
 	}
@@ -653,7 +658,7 @@ func TestPresyncCollector_DeferredOptionsDisappearAfterProgramEnds(t *testing.T)
 // エラーカウンタだけを出す。既存 BacklogCollector と同じ沈黙しない契約。
 func TestPresyncCollector_QueryFailure(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewPresyncCollector(pool, testSite)
+	c := newPresyncCollector(pool)
 	pool.Close()
 
 	text := gatherText(t, c)

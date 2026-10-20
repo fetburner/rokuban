@@ -28,6 +28,8 @@ import (
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -207,21 +209,18 @@ func purgedAt(t *testing.T, pool *pgxpool.Pool, recordingID int64) *time.Time {
 	return v
 }
 
-// inTrash は ListTrashRecordings クエリに指定した録画 id が含まれるかを返す。
-// worker の DB テストから sqlc クエリを直接呼び、完全削除後にごみ箱から消えることを
-// 検証する（issue #135）。HTTP API のごみ箱一覧は recordings_query.go を通る。
+// inTrash は、未 purge の論理削除済み録画かを返す。
 func inTrash(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListTrashRecordings(context.Background(), db.DefaultSite)
-	if err != nil {
-		t.Fatalf("ListTrashRecordings: %v", err)
+	var exists bool
+	if err := pool.QueryRow(context.Background(), `
+SELECT EXISTS (
+    SELECT 1 FROM recordings
+    WHERE id = $1 AND deleted_at IS NOT NULL AND purged_at IS NULL
+)`, recordingID).Scan(&exists); err != nil {
+		t.Fatalf("checking trash state: %v", err)
 	}
-	for _, r := range rows {
-		if r.ID == recordingID {
-			return true
-		}
-	}
-	return false
+	return exists
 }
 
 // ごみ箱の猶予を過ぎた録画の原本は物理削除され、行は deleted に遷移する。
@@ -246,7 +245,13 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 		t.Fatalf("marking recording deleted: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -265,7 +270,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 		t.Error("purged_at not set after the last asset was deleted")
 	}
 	if inTrash(t, pool, recordingID) {
-		t.Error("recording still present in ListTrashRecordings, want absent (purge complete)")
+		t.Error("recording is still in the trash after purge completed")
 	}
 }
 
@@ -304,7 +309,13 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 		t.Fatalf("marking recording deleted: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -341,7 +352,13 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 		t.Fatalf("marking recording deleted: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -369,7 +386,13 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 		t.Fatalf("marking recording deleted: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -386,7 +409,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 		t.Errorf("purged_at = %v, want nil (asset not yet deleted)", got)
 	}
 	if !inTrash(t, pool, recordingID) {
-		t.Error("recording missing from ListTrashRecordings, want present (purge not complete)")
+		t.Error("recording is missing from the trash before purge completed")
 	}
 }
 
@@ -411,7 +434,13 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 		t.Fatalf("requesting immediate purge: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -451,7 +480,13 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 	}
 
 	rec, client := newWebhookRecorder(t)
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		Webhook:        client,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -460,7 +495,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 		t.Fatal("purged_at not set for a recording with zero media_assets")
 	}
 	if inTrash(t, pool, recordingID) {
-		t.Error("zero-asset recording still present in ListTrashRecordings after purge")
+		t.Error("zero-asset recording is still in the trash after purge")
 	}
 	events := rec.received()
 	if len(events) != 1 {
@@ -509,7 +544,13 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	}
 	markRecordingTrashed(t, pool, recordingID)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -521,7 +562,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 		t.Errorf("purged_at = %v, want nil (an asset is still stuck in deleting)", got)
 	}
 	if !inTrash(t, pool, recordingID) {
-		t.Error("recording missing from ListTrashRecordings while an asset is still deleting")
+		t.Error("recording is missing from the trash while an asset is still deleting")
 	}
 }
 
@@ -540,8 +581,12 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
-		Webhook: client,
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+		Webhook:        client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -596,8 +641,12 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
-		Webhook: client,
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+		Webhook:        client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -630,7 +679,13 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
 	rec, client := newWebhookRecorder(t)
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		Webhook:        client,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -674,8 +729,12 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
-		Webhook: client,
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+		Webhook:        client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -736,7 +795,13 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 		t.Fatalf("restoring recording: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -774,8 +839,12 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 
 	rec, client := newWebhookRecorder(t)
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
-		Webhook: client,
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+		Webhook:        client,
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -830,8 +899,12 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 	defer srv.Close()
 
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour,
-		Webhook: webhook.New(config.WebhookConfig{URL: srv.URL, Timeout: 50 * time.Millisecond}),
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+		Webhook:        webhook.New(config.WebhookConfig{URL: srv.URL, Timeout: 50 * time.Millisecond}),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v (webhook の失敗で削除パスを落としてはいけない)", err)
@@ -855,12 +928,18 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 	}
 
 	rec, client := newWebhookRecorder(t)
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, Webhook: client}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		Webhook:        client,
+	}
 	// notifyPurgedRecordings はもう「発火してよいか」を計算し直さない
-	// （issue #135 —— それを MarkPurgedRecordings に一本化したのがこの issue の
+	// （issue #135 —— それを RecordingPurge.MarkPurged に一本化したのがこの issue の
 	// 主旨）。ここでは渡した集合がそのまま発火対象になることを前提に、予算
 	// だけを検証する。
-	purged := []sqlcgen.MarkPurgedRecordingsRow{{ID: recordingID, Site: "default", Title: "テスト番組"}}
+	purged := []store.PurgedRecording{{ID: recordingID, Site: "default", Title: "テスト番組"}}
 	// 予算 0 = 1 件目から捨てる。
 	w.notifyPurgedRecordings(context.Background(), purged, 0)
 	if events := rec.received(); len(events) != 0 {
@@ -887,7 +966,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -924,7 +1003,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 			}
 			assertUntilEncodedQualifies(t, pool, assetID, false)
 
-			w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+			w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 			if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 				t.Fatalf("Work() error: %v", err)
 			}
@@ -958,7 +1037,7 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	}
 	assertUntilEncodedQualifies(t, pool, originalID, false)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1000,7 +1079,7 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 	}
 	assertUntilEncodedQualifies(t, pool, originalID, true)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1054,7 +1133,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 		}
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1105,7 +1184,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 		t.Fatalf("eligible originals = %d, want only the matching scanned size", eligible)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1178,7 +1257,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 		t.Fatalf("setting keep_original with empty encode_profiles: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1224,7 +1303,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1246,7 +1325,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1271,7 +1350,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1324,7 +1403,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	seedSeekTilesAsset(t, pool, mediaDir, recordingC, "thumb/partial-c-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1380,7 +1459,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 		t.Fatalf("creating blocker file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1398,8 +1477,7 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	// pending 経路（ブレーカー対象外）だけがこの行を削除できる状態にする。
 	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
 	// （breaker.IsSiteless のコメント参照）。
-	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), q, "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+	if err := breaker.Trip(context.Background(), pgstore.NewBreakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 
@@ -1467,7 +1545,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 
 	assertUntilEncodedQualifies(t, pool, assetID, false)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1516,7 +1594,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 
 	assertUntilEncodedQualifies(t, pool, assetID, false)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1675,7 +1753,13 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 		}
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1741,7 +1825,13 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 		t.Fatalf("making orphan mtime old: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1796,7 +1886,13 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_SkipsCatalog(t *testing.T) {
 		t.Fatalf("making catalog mtime old: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1870,7 +1966,7 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 		t.Fatalf("writing regular file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: regularFile}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: regularFile}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err == nil {
 		t.Fatal("Work() error = nil, want error for a non-directory media dir")
 	}
@@ -1913,7 +2009,13 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	beforeWalkMediaFiles = func() { walks++ }
 	t.Cleanup(func() { beforeWalkMediaFiles = originalHook })
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1963,7 +2065,13 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -1991,7 +2099,13 @@ func TestDeleteReconcileWorker_Orphan_RecentMTime_NotRegistered(t *testing.T) {
 		t.Fatalf("writing orphan file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2037,7 +2151,10 @@ func TestDeleteReconcileWorker_Orphan_IngestTempIsAgedAndDeleted(t *testing.T) {
 	}
 
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir,
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        14 * 24 * time.Hour,
 	}
@@ -2125,7 +2242,7 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 		t.Fatalf("locking rel_path file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	w.deleteOrphanFile(q, relPath, time.Hour)
 	if !fileExists(orphanPath) {
 		t.Fatal("canonical orphan was removed while rel_path lock was held")
@@ -2161,7 +2278,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
 	q := sqlcgen.New(pool)
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	for _, relPath := range paths {
 		if classifyOrphanCleanup(relPath) != orphanCleanupCanonical {
 			t.Errorf("classifyOrphanCleanup(%q) = %v, want canonical", relPath, classifyOrphanCleanup(relPath))
@@ -2295,7 +2412,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 func TestDeleteReconcileWorker_CanonicalPublicationAfterOrphanScanIsRetained(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	worker := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	worker := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/recording.m2ts", func() {})
 }
 
@@ -2310,7 +2427,12 @@ func TestDeleteReconcileWorker_CanonicalPublicationSurvivesCleanupDBDisconnect(t
 	var closeOnce sync.Once
 	closeCleanupPool := func() { closeOnce.Do(cleanupPool.Close) }
 	t.Cleanup(closeCleanupPool)
-	worker := &DeleteReconcileWorker{Pool: cleanupPool, MediaDir: mediaDir}
+	worker := &DeleteReconcileWorker{
+		Pool:           cleanupPool,
+		RecordingPurge: pgstore.NewRecordings(cleanupPool),
+		Breakers:       pgstore.NewBreakers(cleanupPool),
+		MediaDir:       mediaDir,
+	}
 	canonicalPublishWhileWorkPaused(t, pool, worker, mediaDir, "sites/default/recovered/db-disconnect.m2ts", closeCleanupPool)
 }
 
@@ -2340,7 +2462,10 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 	}
 
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir,
+		Pool:              pool,
+		RecordingPurge:    pgstore.NewRecordings(pool),
+		Breakers:          pgstore.NewBreakers(pool),
+		MediaDir:          mediaDir,
 		MaxDeletesPerPass: 1,
 		OrphanMTimeGrace:  7 * 24 * time.Hour,
 		OrphanAge:         14 * 24 * time.Hour,
@@ -2409,7 +2534,10 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir,
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
 		OrphanMTimeGrace: 7 * 24 * time.Hour,
 		OrphanAge:        24 * time.Hour,
 	}
@@ -2457,7 +2585,14 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 	if err != nil {
 		t.Fatalf("locking staging rel_path for test: %v", err)
 	}
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        14 * 24 * time.Hour,
+	}
 	done := make(chan error, 1)
 	go func() { done <- runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}) }()
 	select {
@@ -2504,7 +2639,7 @@ func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	aged, err := w.agedUnpublishedOrphans(ctx, sqlcgen.New(pool), time.Hour, time.Hour)
 	if err != nil {
 		t.Fatalf("agedUnpublishedOrphans(): %v", err)
@@ -2548,7 +2683,14 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        14 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() before rescue: %v", err)
 	}
@@ -2608,7 +2750,14 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		t.Fatalf("inserting uncommitted media_asset: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, OrphanMTimeGrace: 7 * 24 * time.Hour, OrphanAge: 14 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:             pool,
+		RecordingPurge:   pgstore.NewRecordings(pool),
+		Breakers:         pgstore.NewBreakers(pool),
+		MediaDir:         mediaDir,
+		OrphanMTimeGrace: 7 * 24 * time.Hour,
+		OrphanAge:        14 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() while asset insert is uncommitted: %v", err)
 	}
@@ -2647,7 +2796,7 @@ func TestDeleteReconcileWorker_DeleteCandidates_CanceledCtx_SkipsOrphans(t *test
 		t.Fatalf("writing orphan file: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	q := sqlcgen.New(pool)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2679,7 +2828,10 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 	}
 
 	w := &DeleteReconcileWorker{
-		Pool: pool, MediaDir: mediaDir,
+		Pool:              pool,
+		RecordingPurge:    pgstore.NewRecordings(pool),
+		Breakers:          pgstore.NewBreakers(pool),
+		MediaDir:          mediaDir,
 		TrashRetention:    30 * 24 * time.Hour,
 		MaxDeletesPerPass: 2, // 候補は 3 件 > 2 なので発動するはず
 	}
@@ -2741,12 +2893,17 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
 	// delete_reconcile は site を持たないブレーカーなので site 列は空文字列
 	// （breaker.IsSiteless のコメント参照）。
-	q := sqlcgen.New(pool)
-	if err := breaker.Trip(context.Background(), q, "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
+	if err := breaker.Trip(context.Background(), pgstore.NewBreakers(pool), "", breaker.DeleteReconcile, 0, breaker.Sample{Total: 1}); err != nil {
 		t.Fatalf("tripping breaker: %v", err)
 	}
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, TrashRetention: 30 * 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:           pool,
+		RecordingPurge: pgstore.NewRecordings(pool),
+		Breakers:       pgstore.NewBreakers(pool),
+		MediaDir:       mediaDir,
+		TrashRetention: 30 * 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2771,7 +2928,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	recordingID := insertTestRecording(t, pool)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "present/original.m2ts", []byte("data"))
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2818,7 +2975,13 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	// （他のテストと順序非依存にする）。
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2871,7 +3034,13 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2926,7 +3095,13 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 1 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 1 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -2978,7 +3153,13 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() (pass 1) error: %v", err)
 	}
@@ -3034,7 +3215,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3064,7 +3245,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDirNoActiveAssets_DoesNotT
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3100,7 +3281,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 
 	// mediaDir は空のまま(この資産の実ファイルも他の資産も一切無い) ---
 	// このパスはゼロ件観測になり全損シグネチャでスキップされるはず。
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{Pool: pool, RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3160,7 +3341,13 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	metrics.MediaAssetsMissing.WithLabelValues("original").Set(sentinel)
 	suspectedBefore := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3214,7 +3401,13 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3274,7 +3467,13 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3329,7 +3528,13 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 
 	t.Cleanup(metrics.MediaAssetsMissing.Reset)
 
-	w := &DeleteReconcileWorker{Pool: pool, MediaDir: mediaDir, MissingAssetAge: 24 * time.Hour}
+	w := &DeleteReconcileWorker{
+		Pool:            pool,
+		RecordingPurge:  pgstore.NewRecordings(pool),
+		Breakers:        pgstore.NewBreakers(pool),
+		MediaDir:        mediaDir,
+		MissingAssetAge: 24 * time.Hour,
+	}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}

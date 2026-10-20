@@ -14,6 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -28,6 +29,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		ReservationStore:   pgstore.NewReservations(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        false,
@@ -122,6 +124,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Pool:               pool,
+		ReservationStore:   pgstore.NewReservations(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        true,

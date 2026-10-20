@@ -24,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
@@ -907,6 +908,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
@@ -970,6 +972,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,
+		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 		CutProfiles:   map[string]struct{}{"cut": {}},
 		LiveEnabled:   true,

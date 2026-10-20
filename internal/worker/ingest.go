@@ -29,6 +29,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -327,6 +328,7 @@ type IngestWorker struct {
 	// クライアントを取り出してから使う。
 	MirakcClients map[string]*mirakc.Client
 	Pool          *pgxpool.Pool
+	RecordTarget  store.IngestTarget
 	MediaDir      string
 	CMDetect      config.CMDetectConfig
 
@@ -911,11 +913,7 @@ func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string)
 // おらず、ファイル stat は api ロールが読めない（不変条件 1）。nil のときは
 // 進捗をバイト数だけで出し、% は出さない（issue #212）。
 func (w *IngestWorker) lookupIngestTarget(ctx context.Context, args jobs.IngestJobArgs) (recordingID int64, expectedBytes *int64, err error) {
-	q := sqlcgen.New(w.Pool)
-	row, err := q.GetRecordSyncIngestTarget(ctx, sqlcgen.GetRecordSyncIngestTargetParams{
-		Site:     args.Site,
-		RecordID: args.RecordID,
-	})
+	row, err := w.RecordTarget.GetRecordSyncIngestTarget(ctx, args.Site, args.RecordID)
 	if err != nil {
 		return 0, nil, fmt.Errorf("querying record_sync: %w", err)
 	}

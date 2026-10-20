@@ -410,14 +410,6 @@ WHERE c.network_id = sqlc.arg('network_id')
 DELETE FROM cm_logo_candidates
 WHERE network_id = sqlc.arg('network_id') AND service_id = sqlc.arg('service_id');
 
--- name: DeleteCMLogoCandidateForAreaVersion :execrows
-DELETE FROM cm_logo_candidates
-WHERE network_id = sqlc.arg('network_id')
-  AND service_id = sqlc.arg('service_id')
-  AND state = 'running'
-  AND observed_area_updated_at = sqlc.arg('area_updated_at')::timestamptz
-  AND attempted_at = sqlc.arg('attempted_at')::timestamptz;
-
 -- name: GetCMLogoCandidate :one
 SELECT state, stage, error, x, y, w, h, coded_width, coded_height,
        recording_id, observed_area_updated_at, lgd, preview_png, attempted_at

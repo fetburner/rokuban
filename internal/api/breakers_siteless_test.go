@@ -35,7 +35,7 @@ import (
 func TestResumeCircuitBreaker_DefaultSiteRegistryHole(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Sites: []string{"tokyo", "takamatsu"}})
+	router := newBreakerRouterWithSites(pool, []string{"tokyo", "takamatsu"})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -141,7 +141,7 @@ VALUES ('', 'delete_reconcile', 150, 100, '{"total":150}'::jsonb)`); err != nil 
 // 無いので 404 になる（400 を期待するこのテストが落ちる）。
 func TestResumeSitelessCircuitBreaker_400WhenNameHasSite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -167,7 +167,7 @@ func TestResumeSitelessCircuitBreaker_400WhenNameHasSite(t *testing.T) {
 // を見るので、検査を削るとメッセージが分類チェックの文言に変わり落ちる。
 func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -196,7 +196,7 @@ func TestResumeSitelessCircuitBreaker_400WhenUnknownName(t *testing.T) {
 // 落ちる（204 != 404）。
 func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -222,7 +222,7 @@ func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 // このテストが落ちる）。
 func TestResumeCircuitBreaker_400WhenNameIsSiteless(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool})
+	router := newBreakerRouter(pool)
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

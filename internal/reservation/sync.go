@@ -1,57 +1,63 @@
 package reservation
 
 import (
+	"encoding/json"
 	"fmt"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"time"
 )
 
-// SyncCandidate は ListReservationsForSyncEvaluation の 1 行を、そこから解決した
-// 実効オプションと skip 判定に組み合わせたもの。
+// SyncReservation は同期評価に使う予約の列を持つ。
+type SyncReservation struct {
+	ProgramID int64
+	Base      json.RawMessage
+}
+
+// SyncProgramSnapshot は同期評価に使う番組スナップショットの列を持つ。
+type SyncProgramSnapshot struct {
+	Title       string
+	StartAt     time.Time
+	DurationMs  int64
+	ChannelType string
+	Channel     string
+	NetworkID   int32
+	ServiceID   int32
+	EventID     int32
+}
+
+// SyncEvaluationRow は同期候補クエリの 1 行を表す。
+type SyncEvaluationRow struct {
+	Reservation     SyncReservation
+	ProgramSnapshot SyncProgramSnapshot
+	IntentAction    *string
+	Overrides       json.RawMessage
+}
+
+// SyncCandidate は同期評価クエリの 1 行を、解決した実効オプションと skip 判定に組み合わせたもの。
 //
 // クエリは同期判定前の候補を返す。effective.skip を含む実効オプションの判定を
 // 呼び出し側が個別に書くと適用漏れが起きるため、この型と EvaluateSyncCandidates に
 // 判定を集約する。
-//
-// Reservation と Snapshot を分けて持つのは #27 で番組の事実のスナップショット
-// （title / 開始時刻 / 尺 / チャンネル識別）が reservations から program_snapshots
-// に抽出されたため。sqlcgen.Reservation はもう ruler の 1 パスの導出出力
-// （site / program_id / rule_id / base / dedup 根拠 / timestamps）だけを
-// 持つ（CLAUDE.md 不変条件 12）。「番組終了後に schedule が観測されなかった」
-// という観測は一時 orphaned_at 列を経たが、issue #98 で recordings の
-// 試行行に移設され orphaned_at 自体も廃止された。この型はもともと
-// orphaned_at を読んでいなかったので影響を受けない。
 type SyncCandidate struct {
-	// Reservation は予約行そのもの。
-	Reservation sqlcgen.Reservation
-	// Snapshot は番組の事実のスナップショット（program_snapshots）。FK により
-	// Reservation が存在すれば必ず対応する行がある。
-	Snapshot sqlcgen.ProgramSnapshot
-	// Options は base / overrides / program_intents.action を合成した実効
-	// オプション。Err != nil のときは意味を持たない（ゼロ値）。
+	// Reservation は同期判定に使う予約行の列。
+	Reservation SyncReservation
+	// Snapshot は番組の事実のスナップショット。Reservation が存在すれば必ず対応する行がある。
+	Snapshot SyncProgramSnapshot
+	// Options は base / overrides / program_intents.action を合成した実効オプション。
+	// Err != nil のときは意味を持たない（ゼロ値）。
 	Options Options
 	// Skipped は Options.IsSkipped() の結果。Err != nil のときは意味を持たない。
 	Skipped bool
-	// Err は base / overrides の jsonb が壊れていて EffectiveOptions が失敗した
-	// 場合のエラー。握り潰さず、対象行を除外して続けるか処理全体を失敗させるかを
-	// 呼び出し元が決める。
+	// Err は base / overrides の jsonb が壊れていて EffectiveOptions が失敗した場合のエラー。
+	// 握り潰さず、対象行を除外して続けるか処理全体を失敗させるかを呼び出し元が決める。
 	Err error
 }
 
-// EvaluateSyncCandidates は ListReservationsForSyncEvaluation の結果行それぞれを
-// EffectiveOptions に通し、(予約行, スナップショット, 実効オプション, skip 判定)
-// の組にして返す。
+// EvaluateSyncCandidates は候補行を EffectiveOptions に通して、同期対象を判定する。
+// SQL 側は候補までしか絞らないため、呼び出し側は Skipped を適用して最終判断する。
+// 呼び出し元が候補だけを見て絞り込みを自前で再実装すると、絞り込みの半分を書き忘れる見逃しが再発する。
 //
-// SQL 側は「候補」までしか絞っていない（issue #98 で never-scheduled
-// 除外に置き換わった。internal/db/queries/reservations.sql のコメント参照）。
-// 「同期対象か」を最終的に決める effective.skip の絞り込みは、呼び出し元が
-// この関数の結果の Skipped で行う。呼び出し元が素の
-// ListReservationsForSyncEvaluation の結果だけを見て自前で絞り込みを再実装すると、
-// 今回と同じ形の見逃し（絞り込みの半分を書き忘れる）が再発する。
-//
-// 行ごとの unmarshal エラーは SyncCandidate.Err に載せて返す（握り潰さない）。
-// どう扱うか（該当行だけ除外するか、全体を失敗させるか）は呼び出し元に委ねる。
-func EvaluateSyncCandidates(rows []sqlcgen.ListReservationsForSyncEvaluationRow) []SyncCandidate {
+// 行ごとの unmarshal エラーは Err に載せて返す（握り潰さない）。
+func EvaluateSyncCandidates(rows []SyncEvaluationRow) []SyncCandidate {
 	candidates := make([]SyncCandidate, 0, len(rows))
 	for _, row := range rows {
 		opts, err := EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)

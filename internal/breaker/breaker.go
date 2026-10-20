@@ -23,15 +23,11 @@ package breaker
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"fmt"
 	"log/slog"
+	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // ブレーカーの識別子。値の権威は DB の CHECK ではなくここ
@@ -62,136 +58,54 @@ const (
 // internal/api の 2 つの resume ハンドラ（ResumeCircuitBreaker /
 // ResumeSitelessCircuitBreaker）と internal/worker/delete_reconcile.go の
 // 書き込みはこの分類を共有する（判定を 2 箇所に書かない。issue #450）。
-var siteless = map[string]bool{
-	DeleteReconcile: true,
-}
+var siteless = map[string]bool{DeleteReconcile: true}
 
 // IsSiteless は name が site を持たないブレーカーかを返す。true のとき、
-// circuit_breakers 行の site 列は実サイト名ではなく空文字列を持つ。
+// 行の site 列は実サイト名ではなく空文字列を持つ。
 //
-// 空文字列を `const SitelessSite = ""` のようなエクスポート済み文字列定数に
-// していないのはあえて: `all_test.go` の TestAll_MatchesDeclaredConstants は
-// このパッケージの exported string const を「All に足し忘れたブレーカー名の
-// 候補」とみなす AST スキャナで、`""` はブレーカー名ではないのに All に無い
-// 文字列として誤検出されてしまう。呼び出し側（internal/api/breakers.go・
-// internal/worker/delete_reconcile.go）はリテラルの `""` をそのまま書く。
+// 空文字列を exported な文字列定数にしないのは、all_test.go の AST スキャナが
+// ブレーカー名ではない `""` を All に無い文字列定数として誤検出するため。
+// 呼び出し側はリテラルの `""` を書く。
 func IsSiteless(name string) bool {
 	return siteless[name]
 }
 
 // All はここで定義している全ブレーカー識別子の一覧。internal/api はここから
-// resume の妥当性検証に使う既知集合を導出する（internal/api/breakers.go の
-// knownCircuitBreakerNames）。API 側に識別子を手で複製すると、片方だけ更新
-// して他方が古いまま残る事故が起きる（issue #199: DeleteReconcile が
-// knownCircuitBreakerNames から漏れ、発動中なのに resume が 400 を返し
-// 続けた）。
+// resume の妥当性検証に使う既知集合を導出する。
 //
-// この一覧自体は手書きなので、新しい定数を上に足してここへの追加を
-// 忘れる余地はまだ残る。この漏れは internal/api/breakers_test.go の
-// 回帰テスト（All の各名前についてループする）では検出できない
-// ——そちらは All の中身をそのままテストケースにするので、All に無い
-// 定数はループの視界にすら入らない（PR #199 で最初にこの形で書いて、
-// レビューで「保険になっていない」と実測で指摘された）。
-//
-// 代わりに TestAll_MatchesDeclaredConstants（all_test.go）が go/parser で
-// このパッケージディレクトリ（_test.go を除く全 .go ファイル。新しい定数を
-// 別ファイルに置いても見逃さない）のエクスポート済み文字列定数を直接読み、
-// All を突き合わせる。「Go の定数はリフレクションで列挙できない」は事実
-// だが、リフレクションを使わない静的解析（go/parser・go/ast）なら宣言済みの
-// 定数を列挙できるので、「機械的には捕まえられない」は誤りだった。新しい
-// 定数をここへ足すのを忘れると all_test.go が落ちる。
-//
-// openapi.yaml の CircuitBreakerName enum との一致は、このテストではなく
-// internal/api/breakers_test.go の
-// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers（純ユニット
-// テスト）が見る。GET /api/breakers の runtime チェックにしていない理由は
-// internal/api/breakers.go の ListCircuitBreakers のコメント参照
-// （消費者が isError を見ておらず、runtime で 500 にすると
-// 一覧全体が消えて発動中の他のブレーカーまで隠れる）。
+// この一覧は手書きなので、定数を足して All への追加を忘れる余地がある。
+// 足し忘れは all_test.go の TestAll_MatchesDeclaredConstants が検出する。
+// openapi.yaml の enum との一致は internal/api/breakers_test.go の
+// TestBreakerAllNamesAreValidCircuitBreakerNameEnumMembers が見る。
 var All = []string{RulerDeletes, ReconcileTotalLoss, DeleteReconcile}
 
-// Sample は発動時に「何が消されようとしていたか」を説明するためのペイロード。
+// Sample は発動時に「何が消されようとしていたか」を説明するペイロード。
 // 手動確認の材料であり、ブレーカー自身のロジックは中身を使わない。
-type Sample struct {
-	// Total は止めた削除の総数。
-	Total int `json:"total"`
-	// Programs は先頭いくつかの抜粋（全部は入れない。件数が多いときこそ発動する）。
-	Programs []SampleProgram `json:"programs,omitempty"`
-}
+type Sample = store.BreakerSample
 
-// SampleProgram は抜粋 1 件。
-type SampleProgram struct {
-	ProgramID int64  `json:"programId"`
-	Title     string `json:"title,omitempty"`
-}
+// SampleProgram は確認用抜粋の 1 件。
+type SampleProgram = store.BreakerSampleProgram
 
 // MaxSampleSize は detail に載せる抜粋の上限。
 const MaxSampleSize = 20
 
-// Querier は breaker が必要とする DB 操作。sqlcgen.Queries が満たす。
-// トランザクション内でも外でも使えるようにインタフェースで受ける。
-type Querier interface {
-	TripCircuitBreaker(ctx context.Context, arg sqlcgen.TripCircuitBreakerParams) (sqlcgen.CircuitBreaker, error)
-	GetCircuitBreaker(ctx context.Context, arg sqlcgen.GetCircuitBreakerParams) (sqlcgen.CircuitBreaker, error)
-}
-
-// IsTripped は指定のブレーカーが発動中かを返す。
-//
-// 各パスの先頭で呼ぶ。発動中なら削除を実行してはならない（作成・更新は続けてよい
-// --- 止めたいのは削除だけで、レベルトリガーで収束させたい他の差分は止めない）。
-func IsTripped(ctx context.Context, q Querier, site, name string) (bool, error) {
-	_, err := q.GetCircuitBreaker(ctx, sqlcgen.GetCircuitBreakerParams{Site: site, Name: name})
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, fmt.Errorf("getting circuit breaker %q: %w", name, err)
-	}
-	return true, nil
-}
-
-// Trip はブレーカーを発動させる（既に発動中なら件数と抜粋を更新する）。
-//
-// 呼び出し側は Trip の後、その削除を実行してはならない。戻り値のエラーは
-// 「発動の記録に失敗した」であり、その場合も削除は実行しない（記録できないまま
-// 削除を続けるのが最悪の組み合わせ）。
-func Trip(ctx context.Context, q Querier, site, name string, threshold int, sample Sample) error {
+// TruncateSample は detail に保存するサンプルを上限件数に整える。
+func TruncateSample(sample Sample) Sample {
 	if len(sample.Programs) > MaxSampleSize {
 		sample.Programs = sample.Programs[:MaxSampleSize]
 	}
-	detail, err := json.Marshal(sample)
-	if err != nil {
-		return fmt.Errorf("marshalling circuit breaker sample: %w", err)
-	}
-
-	row, err := q.TripCircuitBreaker(ctx, sqlcgen.TripCircuitBreakerParams{
-		Site:      site,
-		Name:      name,
-		Pending:   int32(sample.Total),
-		Threshold: int32(threshold),
-		Detail:    detail,
-	})
-	if err != nil {
-		return fmt.Errorf("tripping circuit breaker %q: %w", name, err)
-	}
-
-	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(1)
-	slog.Error("circuit breaker tripped — deletes withheld until manually resumed",
-		"site", site,
-		"breaker", name,
-		"pending_deletes", sample.Total,
-		"threshold", threshold,
-		"tripped_at", row.TrippedAt,
-	)
-	return nil
+	return sample
 }
 
-// ObserveState はブレーカーの現在状態をメトリクスに反映する。
+// ObserveState はブレーカーの現在の発動状態を返し、メトリクスのゲージを合わせる。
+//
+// 各パスの先頭で呼ぶ。発動中なら削除を実行してはならない（作成・更新は続けてよい
+// --- 止めたいのは削除だけで、レベルトリガーで収束させたい他の差分は止めない）。
 //
 // ゲージはプロセスの再起動で失われるので、各パスの先頭で呼んで DB の真実に
 // 合わせ直す（レベルトリガー: メトリクスも導出値として毎回作り直す）。
-func ObserveState(ctx context.Context, q Querier, site, name string) (bool, error) {
-	tripped, err := IsTripped(ctx, q, site, name)
+func ObserveState(ctx context.Context, b store.Breakers, site, name string) (bool, error) {
+	tripped, err := b.IsTripped(ctx, site, name)
 	if err != nil {
 		return false, err
 	}
@@ -201,4 +115,30 @@ func ObserveState(ctx context.Context, q Querier, site, name string) (bool, erro
 	}
 	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(v)
 	return tripped, nil
+}
+
+// Trip はブレーカーを発動させる（既に発動中なら件数と抜粋を更新する）。
+//
+// 呼び出し側は Trip の後、その削除を実行してはならない。戻り値のエラーは
+// 「発動の記録に失敗した」であり、その場合も削除は実行しない（記録できないまま
+// 削除を続けるのが最悪の組み合わせ）。
+func Trip(ctx context.Context, b store.Breakers, site, name string, threshold int, sample Sample) error {
+	trippedAt, err := b.Trip(ctx, site, name, threshold, TruncateSample(sample))
+	if err != nil {
+		return err
+	}
+	announceTrip(site, name, threshold, sample, trippedAt)
+	return nil
+}
+
+// announceTrip は発動をゲージとログに出す。Trip と TripInTx が共有する。
+func announceTrip(site, name string, threshold int, sample Sample, trippedAt time.Time) {
+	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(1)
+	slog.Error("circuit breaker tripped — deletes withheld until manually resumed",
+		"site", site,
+		"breaker", name,
+		"pending_deletes", sample.Total,
+		"threshold", threshold,
+		"tripped_at", trippedAt,
+	)
 }

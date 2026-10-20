@@ -10,12 +10,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // recordingListFields は録画一覧と詳細取得が共有する射影。
@@ -620,9 +620,9 @@ func (h *Server) ListRecordingUpcoming(ctx context.Context, req ListRecordingUpc
 // DeleteRecording は録画を論理削除する（ごみ箱へ）。
 // deleted_at を立てるだけでファイルには触れない。既に削除済みでも冪等に 204。
 func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequestObject) (DeleteRecordingResponseObject, error) {
-	_, err := sqlcgen.New(h.pool).SoftDeleteRecording(ctx, req.Id)
+	err := h.recordingTrash.SoftDelete(ctx, req.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return DeleteRecording404JSONResponse{Error: "recording not found"}, nil
 		}
 		return nil, fmt.Errorf("soft-deleting recording %d: %w", req.Id, err)
@@ -631,50 +631,20 @@ func (h *Server) DeleteRecording(ctx context.Context, req DeleteRecordingRequest
 }
 
 // RestoreRecording はごみ箱から録画を復元する。
-// deleted_at を消し、即時 purge 要求の行を消すだけ（ファイル操作ゼロ）。
-// 同一イベントに生きている録画があると 409。
-//
-// 2 表の更新を 1 文のデータ変更 CTE ではなく**トランザクション内の 2 文**で流す。
-// CTE ではアーム全体が 1 つのスナップショットを共有するため、UPDATE アームが
-// 行ロックで待たされている間に commit された即時要求の行が DELETE アームから
-// 見えず、「復元は 204 なのに要求行だけ残る」が観測された
-// （TestRestoreRecording_ConcurrentPurgeRequest_Withdrawn）。
-//
-// ただし窓を閉じているのは 2 文に割ったことではない。DELETE が 0 行だったとき
-// ロックは何も残らないので（READ COMMITTED に述語ロックは無い）、実際に閉じて
-// いるのは**要求行を入れる経路が先に対象の recordings 行をロックすること** ——
-// MarkRecordingPurgeRequested の CTE の UPDATE アームがそれを兼ねている
-// （TestPurgeRecording_SerializedBehindRestoreRowLock）。ロックしない INSERT
-// 経路を足すと猶予バイパスが再発する。詳細は
-// internal/db/queries/recordings_trash.sql のコメント。
+// 即時 purge 要求も取り下げ、同一イベントに生きた録画があれば 409 を返す。
+// 書き込みと直列化の保証は store の契約が持つ。
 func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingRequestObject) (RestoreRecordingResponseObject, error) {
-	tx, err := h.pool.Begin(ctx)
+	err := h.recordingTrash.Restore(ctx, req.Id)
 	if err != nil {
-		return nil, fmt.Errorf("beginning transaction to restore recording %d: %w", req.Id, err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	q := sqlcgen.New(tx)
-	if _, err := q.RestoreRecording(ctx, req.Id); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return RestoreRecording404JSONResponse{Error: "recording not in trash"}, nil
 		}
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		if errors.Is(err, store.ErrConflict) {
 			return RestoreRecording409JSONResponse{
 				Error: "active recording already exists for the same event",
 			}, nil
 		}
 		return nil, fmt.Errorf("restoring recording %d: %w", req.Id, err)
-	}
-	// ここまで来たのは UPDATE が 1 行返したとき（= 実際にごみ箱から出したとき）
-	// だけ。0 行なら上で 404 して return しているので、要求だけ黙って取り消す
-	// ことはない。
-	if err := q.WithdrawRecordingPurgeRequest(ctx, req.Id); err != nil {
-		return nil, fmt.Errorf("withdrawing purge request for recording %d: %w", req.Id, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing restore of recording %d: %w", req.Id, err)
 	}
 	return RestoreRecording204Response{}, nil
 }
@@ -683,9 +653,9 @@ func (h *Server) RestoreRecording(ctx context.Context, req RestoreRecordingReque
 // recording_purge_requests に行を入れ、未 soft-delete なら deleted_at も立てる。
 // ファイルは消さない（M3-8 の削除 reconcile が拾う）。
 func (h *Server) PurgeRecording(ctx context.Context, req PurgeRecordingRequestObject) (PurgeRecordingResponseObject, error) {
-	_, err := sqlcgen.New(h.pool).MarkRecordingPurgeRequested(ctx, req.Id)
+	err := h.recordingTrash.RequestPurge(ctx, req.Id)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return PurgeRecording404JSONResponse{Error: "recording not found"}, nil
 		}
 		return nil, fmt.Errorf("marking recording %d for purge: %w", req.Id, err)

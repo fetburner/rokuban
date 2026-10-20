@@ -31,6 +31,28 @@ type RouterConfig struct {
 
 	// ChapterStore はチャプター編集の永続化契約。
 	ChapterStore store.ChapterEdits
+	// TunerReader は tuner_sync の一覧を読む契約。
+	TunerReader store.TunerReader
+	// CapacityStore は容量判定用の読み取り契約。
+	CapacityStore store.Capacity
+
+	// PlaybackStateStore は再生位置と視聴済み印の永続化契約。
+	PlaybackStateStore store.PlaybackState
+
+	// RecordingTrashStore は論理削除、復元、即時削除要求の永続化契約。
+	RecordingTrashStore store.RecordingTrash
+
+	// ReservationStore はユーザー予約入力と予約読み取りの永続化契約。
+	ReservationStore store.Reservations
+
+	// CMStationStore は局単位の CM ロゴ状態と候補解析の永続化契約。
+	CMStationStore store.CMStation
+
+	// LabelRules は分類ルール管理の永続化契約。
+	LabelRules store.LabelRules
+
+	// BreakerAdmin はサーキットブレーカー一覧と手動再開の永続化契約。
+	BreakerAdmin store.BreakerAdmin
 
 	// EPGReader は番組表 API とシリーズ照会が読む永続化契約。
 	EPGReader store.EPGReader
@@ -154,7 +176,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.EPGReader, cfg.ProgramSearch, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
+	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore,
+		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
+		cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{

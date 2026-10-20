@@ -11,6 +11,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // RulerPassWorker は ruler の 1 パス評価を実行する queue worker。
@@ -52,7 +53,7 @@ type RulerPassWorker struct {
 // （ruler.New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
 func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
-	r := ruler.New([]string{args.Site}, w.Pool, &ruler.Config{
+	r := ruler.New([]string{args.Site}, w.Pool, pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
 		RetractGrace:      w.RetractGrace,

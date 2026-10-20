@@ -3,19 +3,16 @@ package metrics
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/schedulesync"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // presyncQueryTimeout は presync collector が scrape を占有する上限。
@@ -38,8 +35,8 @@ const (
 // 観測できる。snapshot marker は schedule_sync の全量 upsert / stale 削除が
 // 同一トランザクションでコミットされたときだけ更新される。
 type PresyncCollector struct {
-	pool *pgxpool.Pool
-	site string
+	store store.ScheduleSyncReader
+	site  string
 
 	pending  *prometheus.Desc
 	earliest *prometheus.Desc
@@ -48,11 +45,11 @@ type PresyncCollector struct {
 }
 
 // NewPresyncCollector はサイト単位の presync collector を作る。
-func NewPresyncCollector(pool *pgxpool.Pool, site string) *PresyncCollector {
+func NewPresyncCollector(reader store.ScheduleSyncReader, site string) *PresyncCollector {
 	labels := prometheus.Labels{"site": site}
 	return &PresyncCollector{
-		pool: pool,
-		site: site,
+		store: reader,
+		site:  site,
 		pending: prometheus.NewDesc(
 			"rokuban_presync_pending",
 			"Desired reservations not observed with the expected schedule state, by reason.",
@@ -133,22 +130,19 @@ func (r *presyncResult) add(reason string, startAt time.Time) {
 }
 
 func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
-	q := sqlcgen.New(c.pool)
-
 	result := presyncResult{
 		pending:  make(map[string]int, 3),
 		earliest: make(map[string]time.Time, 3),
 	}
-	snapshotAt, err := q.GetScheduleSyncSnapshot(ctx, c.site)
+	snapshotAt, found, err := c.store.SnapshotAt(ctx, c.site)
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return presyncResult{}, fmt.Errorf("reading schedule snapshot marker: %w", err)
-		}
-	} else {
+		return presyncResult{}, fmt.Errorf("reading schedule snapshot marker: %w", err)
+	}
+	if found {
 		result.snapshotAt = float64(snapshotAt.UnixNano()) / float64(time.Second)
 	}
 
-	observedRows, err := q.ListScheduleSyncsBySite(ctx, c.site)
+	observedRows, err := c.store.ListObserved(ctx, c.site)
 	if err != nil {
 		return presyncResult{}, fmt.Errorf("listing schedule observations: %w", err)
 	}
@@ -170,7 +164,7 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		}
 	}
 
-	rows, err := q.ListReservationsForSyncEvaluation(ctx, c.site)
+	rows, err := c.store.ListForSyncEvaluation(ctx, c.site)
 	if err != nil {
 		return presyncResult{}, fmt.Errorf("listing desired reservations: %w", err)
 	}

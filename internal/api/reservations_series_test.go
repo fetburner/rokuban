@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -121,7 +122,8 @@ func assertReservationSeries(t *testing.T, got *string, want string) {
 func TestReservationSeries_FollowsEPGEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Sites: []string{"default", "osaka"}})
+	router := api.NewRouter(api.RouterConfig{Pool: pool,
+		ReservationStore: pgstore.NewReservations(pool), Sites: []string{"default", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

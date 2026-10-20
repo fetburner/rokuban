@@ -153,7 +153,7 @@ func TestRunPass_MultiSiteMatchCreatesReservationPerSite(t *testing.T) {
 	insertServiceRule(t, pool, ctx, "n-reservation-all-sites")
 	// rule_sites には何も入れない = 全サイト（不変条件 10: 空集合を表す行を作らない）。
 
-	r := newTestRuler([]string{nresSiteAName, nresSiteBName}, pool, nil)
+	r := newRuler([]string{nresSiteAName, nresSiteBName}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRunPass_RuleSitesRestrictsToListedSiteOnly(t *testing.T) {
 		t.Fatalf("inserting rule_sites fixture: %v", err)
 	}
 
-	r := newTestRuler([]string{nresSiteAName, nresSiteBName}, pool, nil)
+	r := newRuler([]string{nresSiteAName, nresSiteBName}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}

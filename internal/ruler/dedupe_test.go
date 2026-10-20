@@ -187,7 +187,7 @@ func TestRunPass_DedupeSkipsRerunWithEvidence(t *testing.T) {
 	ctx := context.Background()
 	f := setupDedupeFixture(t, pool, ctx)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -216,7 +216,7 @@ func TestRunPass_DedupeNoMatchLeavesEvidenceNull(t *testing.T) {
 	insertRecording(t, pool, ctx, &ruleID, "ニュース天気予報", db.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -244,7 +244,7 @@ func TestRunPass_DedupeDisabledIsNoOp(t *testing.T) {
 	insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話", db.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestRunPass_DedupeIgnoresOtherRulesRecordings(t *testing.T) {
 	insertRecording(t, pool, ctx, nil, "再放送テスト 第1話", db.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestRunPass_DedupeIgnoresUnfinishedRecordings(t *testing.T) {
 			insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話", status,
 				time.Now().Add(-7*24*time.Hour), false)
 
-			if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+			if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 				t.Fatalf("RunPass: %v", err)
 			}
 
@@ -343,7 +343,7 @@ func TestRunPass_DedupeCountsDeletedRecordings(t *testing.T) {
 	recordingID := insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話",
 		db.RecordingStatusFinished, time.Now().Add(-7*24*time.Hour), true /* deleted_at */)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -383,7 +383,7 @@ func TestRunPass_DedupeWindowExcludesOldRecordings(t *testing.T) {
 				db.RecordingStatusFinished,
 				time.Now().Add(-time.Duration(tt.recordedDaysAgo)*24*time.Hour), false)
 
-			if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+			if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 				t.Fatalf("RunPass: %v", err)
 			}
 
@@ -422,7 +422,7 @@ func TestRunPass_DedupePicksBestMatch(t *testing.T) {
 	exact := insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話",
 		db.RecordingStatusFinished, time.Now().Add(-6*24*time.Hour), false)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -441,7 +441,7 @@ func TestRunPass_DedupeEvidenceClearedWhenMatchDisappears(t *testing.T) {
 	ctx := context.Background()
 	f := setupDedupeFixture(t, pool, ctx)
 
-	r := newTestRuler([]string{testSite}, pool, nil)
+	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -481,7 +481,7 @@ func TestRunPass_DedupeSecondPassIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	f := setupDedupeFixture(t, pool, ctx)
 
-	r := newTestRuler([]string{testSite}, pool, nil)
+	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -521,7 +521,7 @@ VALUES ($1, $2, '{"priority":7}'::jsonb)`,
 		t.Fatalf("inserting program_overrides fixture: %v", err)
 	}
 
-	r := newTestRuler([]string{testSite}, pool, nil)
+	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestRunPass_DedupeRecordIntentWins(t *testing.T) {
 	ctx := context.Background()
 	f := setupDedupeFixture(t, pool, ctx)
 
-	r := newTestRuler([]string{testSite}, pool, nil)
+	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestRunPass_DedupeIgnoresOwnRecording(t *testing.T) {
 	// この番組自身の録画（同じ network_id / service_id / event_id）。
 	insertRecordingForEvent(t, pool, ctx, &ruleID, "再放送テスト 第1話", start, eventID)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -669,7 +669,7 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 	other := insertRecordingForEvent(t, pool, ctx, &ruleID, "再放送テスト 第1話",
 		time.Now().Add(-7*24*time.Hour), eventID+1)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 
@@ -705,7 +705,7 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 	ctx := context.Background()
 	f := setupDedupeFixture(t, pool, ctx)
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
 	res, ok := getReservation(t, pool, ctx, f.programID)
@@ -742,7 +742,7 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 		t.Fatalf("recreated rule reused id %d; rules.id must be GENERATED ALWAYS AS IDENTITY", newRuleID)
 	}
 
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after recreating the rule: %v", err)
 	}
 
@@ -764,7 +764,7 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 	// このテスト名を根拠に「1 本録れれば以降はまた弾かれる」と書いている。
 	newRec := insertRecording(t, pool, ctx, &newRuleID,
 		"再放送テスト 第1話", db.RecordingStatusFinished, time.Now().Add(-2*time.Hour), false)
-	if err := newTestRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
+	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after one recording under the new rule: %v", err)
 	}
 	res3, ok := getReservation(t, pool, ctx, f.programID)
@@ -830,7 +830,7 @@ func TestRunPass_DedupeRecordIntentThenNewRecordingSuppressesAgain(t *testing.T)
 			"so that R2 becomes the unique winner later", r1Similarity, dedupeFixtureThreshold)
 	}
 
-	r := newTestRuler([]string{testSite}, pool, nil)
+	r := newRuler([]string{testSite}, pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}

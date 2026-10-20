@@ -52,7 +52,7 @@ func (s *EPG) UpsertServices(ctx context.Context, services []store.EPGServiceUps
 			HasLogoData:        service.HasLogoData,
 		})
 	}
-	if err := execBatch(sqlcgen.New(s.pool).UpsertEpgService(ctx, params)); err != nil {
+	if err := execMappedBatch(sqlcgen.New(s.pool).UpsertEpgService(ctx, params)); err != nil {
 		return fmt.Errorf("upserting EPG services: %w", err)
 	}
 	return nil
@@ -95,7 +95,7 @@ func (s *EPG) UpsertPrograms(ctx context.Context, programs []store.EPGProgramUps
 			Audios:      program.Audios,
 		})
 	}
-	if err := execBatch(sqlcgen.New(s.pool).UpsertEpgProgram(ctx, params)); err != nil {
+	if err := execMappedBatch(sqlcgen.New(s.pool).UpsertEpgProgram(ctx, params)); err != nil {
 		return fmt.Errorf("upserting EPG programs: %w", err)
 	}
 	return nil
@@ -256,22 +256,11 @@ func epgProgram(program sqlcgen.EpgProgram) store.EPGProgram {
 	}
 }
 
-type batchResults interface {
-	Exec(func(int, error))
-	Close() error
-}
-
-func execBatch(results batchResults) error {
-	var firstErr error
-	results.Exec(func(i int, err error) {
-		if err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("batch item %d: %w", i, mapDatabaseError(err))
-		}
-	})
-	if closeErr := results.Close(); closeErr != nil && firstErr == nil {
-		firstErr = fmt.Errorf("closing batch: %w", mapDatabaseError(closeErr))
-	}
-	return firstErr
+// execMappedBatch は既存の execBatch の結果に mapDatabaseError を通す。
+// EPG の upsert が一意違反を起こしたとき store.ErrConflict を返す（バッチ内の失敗は
+// execBatch が %w で包むので errors.As で PgError が取れる）。
+func execMappedBatch(results batchResults) error {
+	return mapDatabaseError(execBatch(results))
 }
 
 var _ store.EPGSync = (*EPG)(nil)

@@ -8,7 +8,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/reconciler"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -35,7 +34,7 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 	startAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 700001, "終了済み番組", startAt)
 
-	r := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -151,7 +150,7 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	q := sqlcgen.New(pool)
 	res := createReservation(t, ctx, q, 700003, "後から録れた番組", time.Now().Add(-2*time.Hour))
 
-	r := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -232,7 +231,7 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	q := sqlcgen.New(pool)
 	res := createReservation(t, ctx, q, 700004, "録れた後ごみ箱に入れた番組", time.Now().Add(-2*time.Hour))
 
-	r := reconciler.New("default", mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
