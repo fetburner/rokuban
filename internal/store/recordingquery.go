@@ -116,6 +116,7 @@ type RecordingQuery interface {
 	// Get は purged されていない録画行を返し、対象が無ければ ErrNotFound を返す。
 	Get(ctx context.Context, recordingID int64) (RecordingQueryRow, error)
 	// Shelves は生きている録画を実効シリーズごとに集計する。
-	// フィルタは一覧と共有する検索軸に適用し、ページング・状態・続きから見る軸は使わない。
+	// フィルタは一覧と共有する検索軸（status を含む）に適用する。
+	// trash・seriesOf・encodeState・ページング・続きから見る条件は使わない。
 	Shelves(ctx context.Context, filter RecordingFilter) ([]RecordingShelf, error)
 }

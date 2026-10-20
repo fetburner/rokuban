@@ -288,10 +288,13 @@ func runRecordingQueryShelves(t *testing.T, newStore NewRecordingQueryStore) {
 	matchGenre := []int16{7}
 	first := f.NewRecording(t, queryRecording("作品A", base, RecordingQueryRecording{Genres: matchGenre, Playable: true, NetworkID: 100, ServiceID: 200, Site: "tokyo"}))
 	latest := f.NewRecording(t, queryRecording("作品A", base.Add(time.Hour), RecordingQueryRecording{Genres: matchGenre, Playable: true, NetworkID: 100, ServiceID: 200, Site: "tokyo"}))
+	f.NewRecording(t, queryRecording("作品A", base.Add(30*time.Minute), RecordingQueryRecording{
+		Genres: matchGenre, Status: "failed", Playable: true, NetworkID: 100, ServiceID: 200, Site: "tokyo",
+	}))
 	// A watched row outside the filter still marks the same broadcast event watched.
 	f.NewRecording(t, queryRecording("作品A", base, RecordingQueryRecording{Genres: []int16{3}, Watched: true, NetworkID: 100, ServiceID: 200, Site: "osaka"}))
 
-	filter := store.RecordingFilter{Genres: matchGenre, SortDesc: true, Limit: 10}
+	filter := store.RecordingFilter{Genres: matchGenre, Status: "finished", SortDesc: true, Limit: 10}
 	list, err := f.Store.List(ctx, filter)
 	if err != nil {
 		t.Fatalf("List(shelf filter) error = %v", err)
