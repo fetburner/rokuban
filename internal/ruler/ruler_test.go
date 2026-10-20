@@ -26,7 +26,7 @@ import (
 const testSite = db.DefaultSite
 
 func newRuler(sites []string, pool *pgxpool.Pool, cfg *ruler.Config) *ruler.Ruler {
-	return ruler.New(sites, pool, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg)
+	return ruler.New(sites, pool, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg, pgstore.NewEPG(pool))
 }
 
 // テスト全体で使い回す単一のチャンネル。複数チャンネルを区別する必要のある

@@ -594,7 +594,10 @@ func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject
 // epg_program_series）が持つ。Go 側に正規化を複製しない
 // （internal/db/queries/epg_series.sql）。
 func (h *Server) ListRecordingUpcoming(ctx context.Context, req ListRecordingUpcomingRequestObject) (ListRecordingUpcomingResponseObject, error) {
-	rows, err := sqlcgen.New(h.pool).ListUpcomingProgramsBySeries(ctx, req.Id)
+	if h.epgReader == nil {
+		return nil, fmt.Errorf("EPG reader is required")
+	}
+	rows, err := h.epgReader.ListUpcomingProgramsBySeries(ctx, req.Id)
 	if err != nil {
 		return nil, fmt.Errorf("listing upcoming programs for recording %d: %w", req.Id, err)
 	}

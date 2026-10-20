@@ -858,7 +858,7 @@ function TimeWindowFields({ draft, onChange, disabled }: FieldsProps) {
                   <X />
                 </Button>
               </div>
-              {/* 終了 < 開始 は翌日跨ぎ（internal/rulequery）。00:00 を終了に指定すれば
+              {/* 終了 < 開始 は翌日跨ぎ（internal/store/pgstore/rulesql.go）。00:00 を終了に指定すれば
                   「開始から深夜 0 時まで」になるので、その説明を出す */}
               {time.endSec < time.startSec && (
                 <p className="text-xs text-muted-foreground">翌日にまたがる時間帯として扱います</p>

@@ -58,8 +58,8 @@ ARE は、先読みも後読みも使える（PostgreSQL 16.2 で測定・確認
 
 <details><summary>根拠</summary>
 
-- 共有しないクエリ組み立て: `internal/rulequery`
-- 第 2 のターゲットにしない対象: `recordings`。`internal/rulequery.Compile` の対象にしない
+- 共有しないクエリ組み立て: `internal/store/pgstore/rulesql.go`
+- 第 2 のターゲットにしない対象: `recordings`。`EPG.SearchPrograms` の対象にしない
 
 </details>
 

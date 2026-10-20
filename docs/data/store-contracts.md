@@ -215,6 +215,35 @@ Dex の updater 関数（`UpdateClient(id, func(old) (new, error))`）も同じ�
 
 </details>
 
+### EPG 同期の tx の境界
+
+EPG 同期の各段階は、独立した store メソッドにして、それぞれ自分で commit する。1 つの tx にまとめると、数千行の upsert が長い tx になる。途中の段階が失敗すると、すでに書いた段階まで巻き戻る。
+
+段階は、サービスの upsert、番組の upsert、sweep の印、古い行の削除、放送済みの刈り込みである。各段階が確定していれば、次の同期が残りを書き直すだけで済む。
+
+空のレスポンスのときに sweep しない判定は、mirakc の応答を知っている worker に残す。store は、印（sweep mark）より古い行を、渡された site・サービスの範囲で消すだけにする。
+
+<details><summary>根拠</summary>
+
+- 同期の契約: `internal/store.EPGSync`
+
+</details>
+
+### 正規表現の構文
+
+正規表現の構文は実装に任せ、契約で揃えない。正規表現エンジンごとに、受け付ける構文が違う。構文まで契約に含めると、別のエンジンを使う 2 つ目の実装が同じ契約を満たせなくなる。
+
+契約で揃えるのは、キーワードの全角・半角の正規化と、大文字小文字を区別するかどうかの指定である。不正なパターンは `ErrInvalidPattern` に写す。
+
+<details><summary>根拠</summary>
+
+- 検索とルール評価の契約: `internal/store.ProgramSearch`
+- 番組検索のキーワードのテスト: `RunEPG` の `keyword search normalizes width and respects case sensitivity`
+- ルールの子表検索テスト: `RunEPG` の `rule matching applies every child-table condition`
+- 正規表現検証テスト: `RunEPG` の `regex validation distinguishes syntax errors`
+
+</details>
+
 ### CM 検出（局単位の状態）
 
 ロゴ・枠・候補は局を単位とする状態である。同じ局について、これらを書くメソッド（枠の保存・削除、ロゴの削除、候補の削除・採用・開始）は、互いに直列化される。CM 検出の結果の保存とロゴの学習の保存も、同じ局の操作と直列化される。例外は候補の ready・失敗・破棄の 3 つで、直列化されず、版の照合で守る。

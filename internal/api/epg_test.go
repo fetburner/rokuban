@@ -25,6 +25,8 @@ func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	tunerStore := pgstore.NewTuners(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Pool:                pool,
+		EPGReader:           pgstore.NewEPG(pool),
+		ProgramSearch:       pgstore.NewEPG(pool),
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
 		PlaybackStateStore:  pgstore.NewPlayback(pool),

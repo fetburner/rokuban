@@ -74,7 +74,7 @@ ON CONFLICT (site, program_id) DO NOTHING`,
 
 // insertServiceRule はサービス条件（rule_services、(network_id, service_id) の
 // 一致）だけを持つ有効なルールを作る。テキスト条件ではなくサービス条件を使うのは、
-// internal/rulequery のサービス述語（compile.go の `(p.network_id, p.service_id)
+// pgstore のサービス述語（rulesql.go の `(p.network_id, p.service_id)
 // IN (...)`）を直接経由させるため --- ここに `p.site` を混ぜる変異が実際に踏む
 // 経路でなければ検証にならない。
 func insertServiceRule(t *testing.T, pool *pgxpool.Pool, ctx context.Context, name string) int64 {
@@ -126,7 +126,7 @@ func reservationSitesForProgram(t *testing.T, pool *pgxpool.Pool, ctx context.Co
 //   - ruler.go の RunPass のサイトループ（`for _, site := range r.sites`）を
 //     先頭 1 件で打ち切ると、siteB の予約が作られず本テストが失敗する。
 //
-//   - internal/rulequery/compile.go のサービス述語
+//   - internal/store/pgstore/rulesql.go のサービス述語
 //     `(p.network_id, p.service_id) IN (...)` を
 //     `(p.network_id, p.service_id, p.site) IN ((nid, sid, 'site-a'))` に変える
 //     （固定した実在サイトを混ぜる）と、siteA は変わらずマッチし続けるが siteB

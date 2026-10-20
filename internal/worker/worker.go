@@ -85,6 +85,12 @@ type Deps struct {
 	// jobq.Deferred を渡して切る。
 	Enqueuer jobq.Enqueuer
 
+	// EPGSync は EPG 同期の永続化契約。
+	EPGSync store.EPGSync
+
+	// ProgramSearch は番組検索・ルール評価の永続化契約。
+	ProgramSearch store.ProgramSearch
+
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
 	// 単一の MirakcClient / Site string の対を置き換えた）。mirakc/FS に触る
@@ -201,7 +207,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &EpgSyncWorker{
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,
-		Pool:           deps.Pool,
+		Store:          deps.EPGSync,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{
@@ -212,6 +218,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,
 		Pool:              deps.Pool,
+		ProgramSearch:     deps.ProgramSearch,
 		RetentionGrace:    deps.RulerRetentionGrace,
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
 		RetractGrace:      deps.RulerRetractGrace,
