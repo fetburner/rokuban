@@ -109,13 +109,13 @@ ruler と reconciler をジョブにするのは、定期・冪等・パスを�
 
 #### 重複抑止と並走の限界
 
-現行 River runtime では、一意性の指定が通常運用の重複抑止にも使われる。ただし抑えるのは行の重複だけで、rescue 後に旧 Work が止まらなければ 2 実行が並走する。並走すると古い評価結果による上書きなどが起きうるが、これはコード読解による推定で、並走を起こしての確認はしていない。
+現行 River runtime では、一意性の指定が通常運用の重複抑止にも使われる。ただし抑えるのは行の重複だけで、rescue 後に旧 Work が止まらなければ 2 実行が並走する。並走時の正しさを adapter の一意性には依存させない。
 
 worker の最大並列数はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。
 
-並走するとおかしくなるものは次の通りである。これはコード読解による推定で、並走を起こしての確認はしていない。
+並走時に書き込みを守る方法は次の通りである。
 
-1. ruler: パスの前半の読みと後半の書きが別トランザクションなので、古いルール集合で評価したパスが後からコミットすると、新しいパスの結果を上書きする。ラベルルールの reconcile がアドバイザリのトランザクションロックで止めている形と同じである。これで投資の無い予約が消えて直前の番組を録り逃すかは未検証である。
+1. ruler: パス開始時に入力の版を読む。書き込み tx の最後に同じ site の版をロックして照合する。版が違えばロールバックして読み直す。3 回続けて負けるとエラーを返す。
 2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う。
 
 <details><summary>根拠</summary>
@@ -124,6 +124,9 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 - プロセスごとの並列数: `MaxWorkers: 1`
 - ruler のパスの読みと書き: `runPassForSite`
 - 同じ形で止めているラベルルールの reconcile: `label_rule_reconcile`
+- 編集を反映するテスト: `TestRunPass_RuleEditDuringPassReevaluates`
+- 新旧パスの競合テスト: `TestRunPass_StalePassCannotOverwriteNewerPass`
+- 照合上限のテスト: `TestRunPass_InputRevisionMismatchLimit`
 
 </details>
 

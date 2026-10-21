@@ -53,6 +53,8 @@ type RulerReservationInput struct {
 
 // RulerPassPlan は ruler が 1 サイトについて評価した書き込み計画である。
 type RulerPassPlan struct {
+	// InputRevision は読み取り開始時に観測した入力の版。nil のときは版照合を省略する。
+	InputRevision *int64
 	// SnapshotProgramIDs は射影の最新値へ追従させる予約・意図の番組 ID である。
 	SnapshotProgramIDs []int64
 	// ExistingProgramIDs は計画を作る前に読んだ既存予約の番組 ID である。
@@ -71,6 +73,8 @@ type RulerPassPlan struct {
 
 // RulerPassResult は ApplyPass が commit した書き込みの結果である。
 type RulerPassResult struct {
+	// InputRevisionChanged は書き込み直前の照合で入力の版が変わっていたことを表す。
+	InputRevisionChanged     bool
 	Created                  int
 	Updated                  int
 	UnmaterializedProgramIDs []int64
@@ -88,6 +92,8 @@ type RulerPassResult struct {
 // RulerPass は ruler が予約の導出と適用に使う永続化契約である。
 type RulerPass interface {
 	RulerDedupe
+	// GetRulerInputRevision は site の入力版を返す。未作成の site は 0 とする。
+	GetRulerInputRevision(ctx context.Context, site string) (int64, error)
 	// ListEnabled は有効なルール本体を優先度降順、ID 昇順で返す。子条件は含まない。
 	ListEnabled(ctx context.Context) ([]Rule, error)
 	// ListProgramIDReuses は指定時刻に終了済みスナップショットと射影を比べ、再利用が疑われる番組を返す。

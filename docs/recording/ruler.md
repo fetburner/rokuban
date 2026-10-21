@@ -71,14 +71,17 @@ ruler は EPG の番組をルールと突き合わせ、あるべき予約（des
 | ルールの作成 / 更新 / 削除 | ヒント |
 | EPG 同期の完了 | ヒント |
 
-定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルールの書き込みでは、api が store の commit 後に `ruler_pass` を投入する。ヒントが失われても、定期パスが永続状態から再計算する。EPG 同期の完了では、epg_sync ワーカーがパス完了時に投入する。
+定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルール・意図・上書きの書き込みと同じ tx で入力の版を進め、api は commit 後に `ruler_pass` を投入する。EPG 同期も完了時に入力の版を進めてからヒントを投入する。ヒントが失われても、定期パスが永続状態から再計算する。
 
-ヒントは合流する。ルールを連続で編集しても、パスは 1 回で足りる。
+ヒントは合流する。実行中のパスに編集のヒントが合流しても、書き込み tx の版照合に負けたパスが読み直して反映する。照合に 3 回続けて負けるとジョブへエラーを返し、再試行に任せる。
 
 <details><summary>根拠</summary>
 
 - ルール書き込み後のヒント投入: `Enqueue`
 - ヒントの合流: `UniqueOpts{ByArgs, ByState}`
+- 編集を反映するテスト: `TestRunPass_RuleEditDuringPassReevaluates`
+- 新旧パスの競合テスト: `TestRunPass_StalePassCannotOverwriteNewerPass`
+- 照合上限のテスト: `TestRunPass_InputRevisionMismatchLimit`
 
 </details>
 

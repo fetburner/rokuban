@@ -222,6 +222,13 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	if len(hints) != 1 || hints[0].Site != testSite {
 		t.Fatalf("enqueued ruler_pass hints = %+v, want one hint for site %q", hints, testSite)
 	}
+	var revision int64
+	if err := pool.QueryRow(context.Background(), `SELECT revision FROM ruler_input_revisions WHERE site = $1`, testSite).Scan(&revision); err != nil {
+		t.Fatalf("reading ruler input revision: %v", err)
+	}
+	if revision != 1 {
+		t.Fatalf("ruler input revision = %d, want 1 after EPG sync", revision)
+	}
 }
 
 // 区切り + 処理余白の上限は River の既定 JobTimeout より長く、rescue 待ちより短い。

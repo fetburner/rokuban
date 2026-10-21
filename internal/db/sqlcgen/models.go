@@ -468,6 +468,11 @@ type RuleTime struct {
 	EndSec   int32
 }
 
+type RulerInputRevision struct {
+	Site     string
+	Revision int64
+}
+
 type RulerPassSnapshot struct {
 	Site          string
 	LastSuccessAt time.Time

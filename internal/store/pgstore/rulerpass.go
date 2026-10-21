@@ -12,6 +12,15 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
+// GetRulerInputRevision は site の ruler 入力版を返す。未作成なら 0 を返す。
+func (s *Reservations) GetRulerInputRevision(ctx context.Context, site string) (int64, error) {
+	revision, err := sqlcgen.New(s.pool).GetRulerInputRevision(ctx, site)
+	if err != nil {
+		return 0, fmt.Errorf("getting ruler input revision for site %q: %w", site, err)
+	}
+	return revision, nil
+}
+
 // ListEnabled は有効なルールを優先度降順、ID 昇順で返す。
 func (s *Reservations) ListEnabled(ctx context.Context) ([]store.Rule, error) {
 	rows, err := sqlcgen.New(s.pool).ListEnabledRules(ctx)
@@ -259,6 +268,15 @@ func (s *Reservations) ApplyPass(ctx context.Context, site string, plan store.Ru
 	result.NewlyTripped = deleteResult.NewlyTripped
 	result.BreakerTrippedAt = deleteResult.BreakerTrippedAt
 	result.BreakerSample = deleteResult.BreakerSample
+	if plan.InputRevision != nil {
+		lockedRevision, err := q.LockRulerInputRevision(ctx, site)
+		if err != nil {
+			return store.RulerPassResult{}, fmt.Errorf("locking ruler input revision for site %q: %w", site, err)
+		}
+		if lockedRevision != *plan.InputRevision {
+			return store.RulerPassResult{InputRevisionChanged: true}, nil
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return store.RulerPassResult{}, fmt.Errorf("committing ruler pass for site %q: %w", site, mapDatabaseError(err))
