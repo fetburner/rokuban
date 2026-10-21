@@ -129,8 +129,9 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	q := sqlcgen.New(tx)
 
 	if in.Cut {
-		locked, err := q.LockRecording(ctx, in.RecordingID)
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && locked.IsPurged) {
+		// cut の公開はごみ箱の録画にも許す。消去済みと行なしだけ公開しない。
+		locked, err := lockRecordingState(ctx, q, in.RecordingID)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && locked.IsPurged) {
 			return false, nil
 		}
 		if err != nil {
@@ -293,7 +294,7 @@ func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int6
 
 // PublishThumbnail は録画とサムネイルの状態を再確認して公開する。
 // 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
-// 置き換えは、同じ世代の別のサムネイル公開とも直列化する。
+// 置き換えは、同じ録画への別のサムネイル公開とも直列化する。
 func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishInput, publish func() error) (bool, error) {
 	if publish == nil {
 		return false, errors.New("publishing thumbnail: publisher is nil")

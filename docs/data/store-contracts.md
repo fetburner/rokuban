@@ -269,7 +269,7 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 ### メディア公開
 
-原本・encoded・thumbnail・seek tiles の公開は、DB の判定、ファイルの公開、commit をこの順に 1 つの tx で行う。tx は公開のメソッドごとに store が持つ。
+原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
 
 ファイルの公開は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。`publish` は rename と fsync を行う。検査で公開しないと決めたときは呼ばない。
 
@@ -285,9 +285,9 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 encoded の公開は、試行番号・desired・作り直し要求・cut の区間を tx の中で読み直してから `publish` を呼ぶ。版の削除・事後追加と直列化し、cut はさらにチャプター編集・作り直し要求と直列化する。古い計画なら `ErrStalePublishPlan` を返す。
 
-thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。active な行が既にあれば公開しない。
+thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
 
-in-place 登録は、録画と原本の行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。
+in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。
 
 <details><summary>根拠</summary>
 
@@ -308,7 +308,7 @@ in-place 登録は、録画と原本の行を 1 つの tx で書く。ファイ�
 - encode のファイルロックと store の統合: `TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit`
 - thumbnail のファイルロックと store の統合: `TestThumbnailWorkerPublishesUnderRelPathLock`
 - seek tiles のファイルロックと store の統合: `TestSeekTilesWorkerPublishesUnderRelPathLock`
-- in-place のファイル検証とパスロック: `internal/inplace.Register`
+- in-place のファイル検証とファイルロック: `internal/inplace.Register`
 
 </details>
 
