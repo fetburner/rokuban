@@ -488,8 +488,12 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	analysisStore := pgstore.NewAnalysis(pool)
 	recordingStore := pgstore.NewRecordings(pool)
 	routerCfg := api.RouterConfig{
-		AllowedHosts:        cfg.Server.AllowedHosts,
-		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
+		AllowedHosts:       cfg.Server.AllowedHosts,
+		TrustForwardedHost: cfg.Server.TrustForwardedHost,
+		// pgxpool.Pool.Ping はプールからコネクションを 1 本取るため、プールが飽和している
+		// （全コネクションが長いクエリで埋まっている）間は /readyz の期限（api.readyzTimeout）
+		// まで待って 503 になりうる（未測定。Acquire が待つことからの帰結）。DB 断と輻輳を
+		// この応答で区別することはできない。
 		Ready:               pool.Ping,
 		ChapterStore:        pgstore.NewAnalysis(pool),
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
@@ -678,7 +682,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		CMDetectionStore:         analysisStore,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
-		RecordingPurge:           pgstore.NewRecordings(pool),
+		RecordingPurge:           recordingStore,
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaReconcile:           mediaStore,
 		MediaPublish:             mediaStore,

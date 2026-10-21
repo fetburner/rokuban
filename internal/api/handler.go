@@ -89,8 +89,8 @@ type Server struct {
 // epgReader は番組表・番組詳細・シリーズ照会の読み取り契約、programSearch は番組検索、dedupe は重複排除の契約。
 // encodePolicy はエンコード方針とカット版作り直し要求のトランザクション契約。
 // mediaReader はエンコード待ち行列とドロップ統計の読み取り契約、storageObservation はストレージ残量の観測契約。
+// ready は /readyz が呼ぶ DB の確認関数で、nil なら /readyz は 503 を返す。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
-// NewServer は API ハンドラを構成する。ready は /readyz が DB の応答を確かめる関数である。
 func NewServer(ready func(context.Context) error, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, encodePolicy store.EncodePolicy, dedupe store.RulerDedupe, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
@@ -154,6 +154,7 @@ func (h *Server) Healthz(_ context.Context, _ HealthzRequestObject) (HealthzResp
 // **probe の `timeoutSeconds` に依存せず、ハンドラ側で 503 として答えるための上限。**
 // probe 側の設定（長い `timeoutSeconds`）や probe 以外の呼び手に対しても、
 // 「DB がハングしても有限時間で readiness の失敗を返す」を実装側で保証する。
+// ただし ready が ctx の期限で返ることが前提である（RouterConfig.Ready 参照）。
 // マニフェスト側は `timeoutSeconds` をこの値より長くしてある
 // （`deploy/k8s/base/api.yaml`。同値以下だとこの経路が一度も通らない）。
 // 判定は TestReadyz_HangingDBTimesOut。
@@ -162,8 +163,10 @@ const readyzTimeout = 2 * time.Second
 // Readyz は readiness probe（ロードバランサ向け）。DB の確認が成功すれば 200、
 // 失敗すれば 503 を返す。
 //
-// **確認関数が未設定（nil）なら 503**（fail-closed）。DB の確認を一度もしていない Pod が
-// Service の後ろに入ることを防ぐ。
+// **確認関数が未設定（nil）なら 503**（fail-closed）。nil を 200 にすると、DB を一度も
+// 見ていない Pod が Service の後ろに入る。実バイナリでは cmd/rokuban が Ready に
+// pool.Ping を必ず渡すので nil にならず、nil はルータの組み立てを誤ったとき
+// （テストの部分構成を含む）だけである。
 //
 // **`/healthz`（liveness）には依存チェックを入れない**方針は変えない。liveness で
 // DB を見ると DB の瞬断で全 Pod が同時に再起動する（docs/operations.md §5
@@ -171,7 +174,8 @@ const readyzTimeout = 2 * time.Second
 //
 // 見るのは DB の応答だけで、mirakc への到達性は見ない（不変条件 1）。
 //
-// 確認処理が readyzTimeout までに返らなければ 503 になる。
+// ready が ctx の期限で返るなら、readyzTimeout を過ぎると 503 になる
+// （判定は TestReadyz_HangingDBTimesOut）。
 func (h *Server) Readyz(ctx context.Context, _ ReadyzRequestObject) (ReadyzResponseObject, error) {
 	if h.ready == nil {
 		return Readyz503JSONResponse{Status: "database check unavailable"}, nil

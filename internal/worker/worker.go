@@ -93,9 +93,9 @@ type Deps struct {
 	LoopMarkers store.LoopMarkers
 	// Breakers は worker がサーキットブレーカーを発動・観測する契約。
 	Breakers store.Breakers
-	// NeverScheduled は欠測 schedule の観測を記録する契約。
+	// NeverScheduled は、番組終了後に schedule が観測されなかった事実を記録・削除する契約。
 	NeverScheduled store.NeverScheduledEvents
-	// ScheduleSync は reconciler が schedule の観測と予約との差分を記録・読む契約。
+	// ScheduleSync は reconciler が schedule の観測と予約との差分を記録し、読み取る契約。
 	ScheduleSync store.ScheduleSync
 	// RecordObservations は mirakc の record 観測を永続化する契約。
 	RecordObservations store.RecordObservations

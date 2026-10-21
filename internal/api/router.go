@@ -27,6 +27,8 @@ type RouterConfig struct {
 	TrustForwardedHost bool
 
 	// Ready は DB の応答を確認する関数。nil なら /readyz は 503 を返す。
+	// ctx の期限で返る関数を渡すこと。ハンドラは同期で呼ぶので、期限を守らない
+	// 関数ではハンドラも返らない。
 	Ready func(context.Context) error
 
 	// ChapterStore はチャプター編集の永続化契約。

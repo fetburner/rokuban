@@ -53,7 +53,7 @@ linters:
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
         pgstore-composition-root:
-          # PostgreSQL 実装の組み立ては cmd/rokuban に置く。テストと実装自身は除く。
+          # PostgreSQL 実装の組み立ては cmd/rokuban に置く。この規則はテストと pgstore 自身を検査しない。
           list-mode: lax
           files:
             - "${config-path}/**"
