@@ -339,7 +339,11 @@ thumbnail reconcile の候補から除外される既知の原本欠落は、`ro
 
 record_sweep の起動契機は、定期投入だけである。既定間隔は 5 分で、ruler / reconciler と違って前倒し投入のヒント経路はない。
 
-`rokuban_sweep_last_success_timestamp_seconds{site}` を監視する。record_sweep は schedules / records の取得と failed schedule / record の突き合わせがすべて成功したときだけ DB marker を更新する。1 件でも失敗したら更新しない。サービス一覧の取得失敗は含めない。
+`rokuban_sweep_last_success_timestamp_seconds{site}` を監視する。
+
+record_sweep が DB marker を更新するのは、schedules と records の一覧取得に成功し、failed schedule と record の突き合わせも全件成功したときだけである。サービス一覧の取得失敗はこの条件に含めない。前回のキャッシュで続行し、キャッシュに無いサービスは failed schedule の突き合わせの失敗として現れるからである。
+
+そのため、決定的に失敗する record が 1 件あるだけで marker は止まり、このアラートが鳴る。原因の record は `sweep: processing record` ログの `record_id` で特定する。失敗したパスは再試行せず、次の定期投入が再試行である。
 
 前倒し投入のヒント経路がないことは、[録画エンジン](../recording.md) §3.3「record_sweep の起動契機」にある。取りこぼしの大半は SSE の (a)(b) が吸収する。record_sweep は定期パスとして収束させる保険という位置づけで、5 分間隔で十分と判断している。
 

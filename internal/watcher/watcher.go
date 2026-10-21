@@ -127,14 +127,17 @@ var beforeSweepProcessRecords func()
 // レベルトリガーの真実で、SSE のヒント（(a)(b)）を取りこぼしても収束させる。
 //
 // 成功 marker を進める条件は、ListSchedules の成功、全 failed schedule の処理成功、
-// ListRecords の成功、全 record の処理成功である。recordless な失敗は schedules API
-// からしか復元できないため、ListSchedules の失敗も成功に数えない。ListServices による
+// ListRecords の成功、全 record の処理成功である。failed schedule 側を条件に含めるのは、
+// recordless な失敗が schedules API からしか復元できないからである。ListServices による
 // キャッシュ更新の失敗は条件に含めず、前回のキャッシュを使う。サービスが見つからない
-// failed schedule は processFailedSchedule の失敗として報告される。
+// failed schedule は processFailedSchedule の失敗として報告されるので、別に数えると
+// 二重になる。
 //
 // 失敗があっても残りの処理を続け、最後に errors.Join で返す。決定的に失敗する record
 // があれば marker は進まないが、取りこぼしを成功扱いするよりアラートで検知できる方を
-// 選ぶ。record ID を含む既存ログから原因を特定できる。部分失敗後の継続と marker 非更新は
+// 選ぶ。原因の record は `sweep: processing record` ログの `record_id` で特定できる。
+// 失敗したパスは再試行しない。次の定期投入（5 分後）が再試行である（Spec の
+// MaxAttempts は 1）。部分失敗後の継続と marker 非更新は
 // TestSweep_PartialRecordFailureDoesNotAdvanceMarker、
 // TestSweep_ListSchedulesFailureDoesNotAdvanceMarker、
 // TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker が検証する。
