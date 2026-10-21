@@ -32,6 +32,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -2792,10 +2793,27 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Fatalf("file size after first Work() = %d, want %d", len(firstData), len(tsData))
 	}
 
+	// 別経路で残った stale progress を再投入前に作り、既にコミット済みの場合も
+	// 再実行時に掃除されることを検証する。最初の commit 自身が progress を消すため、
+	// ここで作らないと handleAlreadyCommittedIngest の ClearIngestProgress を通らない。
+	media := newTestMediaStore(pool)
+	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
+		RecordingID:  recordingID,
+		WrittenBytes: 10,
+	}); err != nil {
+		t.Fatalf("seeding stale ingest progress: %v", err)
+	}
+	if _, ok := readIngestProgress(t, pool, recordingID); !ok {
+		t.Fatal("stale ingest progress row was not seeded")
+	}
+
 	// record_sweep が「まだ mirakc に record がある」ことを検知して同じジョブ引数を
 	// 再投入したのと同じ状況を、同じ job で Work をもう一度呼ぶことで再現する。
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("second Work() error: %v", err) // (a)
+	}
+	if _, ok := readIngestProgress(t, pool, recordingID); ok {
+		t.Error("stale ingest progress row remains after already-committed retry")
 	}
 
 	secondData, err := os.ReadFile(fullPath)

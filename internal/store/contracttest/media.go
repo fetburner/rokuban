@@ -317,6 +317,7 @@ func runCurrentCutKeep(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
 	id := f.NewRecording(t)
+	f.SetCMRanges(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
 	if keep, owned, err := f.Reconcile.GetCurrentCutKeep(ctx, id); err != nil || owned || len(keep) != 0 {
 		t.Fatalf("GetCurrentCutKeep(%d) without ownership = (%v, %v, %v), want (nil, false, nil)", id, keep, owned, err)
 	}
@@ -367,6 +368,11 @@ func runRecordingEncodeTimes(t *testing.T, newFixture NewMediaFixture) {
 	if err != nil || times.StartedAt != nil || times.EndedAt == nil || !times.EndedAt.Equal(endedAt) {
 		t.Fatalf("GetRecordingEncodeTimes(%d) with one NULL timestamp = (%+v, %v), want NULL/%s", id, times, err, endedAt)
 	}
+	f.SetRecordingEncodeTimes(t, id, &startedAt, nil)
+	times, err = f.Reconcile.GetRecordingEncodeTimes(ctx, id)
+	if err != nil || times.StartedAt == nil || !times.StartedAt.Equal(startedAt) || times.EndedAt != nil {
+		t.Fatalf("GetRecordingEncodeTimes(%d) with inverse NULL timestamp = (%+v, %v), want %s/NULL", id, times, err, startedAt)
+	}
 	if _, err := f.Reconcile.GetRecordingEncodeTimes(ctx, int64(1<<63-1)); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetRecordingEncodeTimes for missing recording error = %v, want ErrNotFound", err)
 	}
@@ -393,6 +399,10 @@ func runHasOriginalMediaAsset(t *testing.T, newFixture NewMediaFixture) {
 	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || has {
 		t.Fatalf("HasOriginalMediaAsset(%d) without row = (%v, %v), want (false, nil)", id, has, err)
 	}
+	f.NewAsset(t, id, "thumbnail", nil, fmt.Sprintf("sites/%s/%d/thumbnail.jpg", f.Site, id), "active")
+	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || has {
+		t.Fatalf("HasOriginalMediaAsset(%d) with only a thumbnail = (%v, %v), want (false, nil)", id, has, err)
+	}
 	f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "deleted")
 	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || !has {
 		t.Fatalf("HasOriginalMediaAsset(%d) with deleted row = (%v, %v), want (true, nil)", id, has, err)
@@ -412,6 +422,13 @@ func runLiveMediaAssetRecordingID(t *testing.T, newFixture NewMediaFixture) {
 		}
 	}
 
+	thumbnailID := f.NewRecording(t)
+	thumbnailPath := fmt.Sprintf("sites/%s/%d/thumbnail.jpg", f.Site, thumbnailID)
+	f.NewAsset(t, thumbnailID, "thumbnail", nil, thumbnailPath, "active")
+	if got, err := f.Precheck.GetLiveMediaAssetRecordingID(ctx, thumbnailPath); err != nil || got != thumbnailID {
+		t.Fatalf("GetLiveMediaAssetRecordingID(%q) for non-original row = (%d, %v), want (%d, nil)", thumbnailPath, got, err, thumbnailID)
+	}
+
 	deletedID := f.NewRecording(t)
 	deletedPath := fmt.Sprintf("sites/%s/%d/deleted.m2ts", f.Site, deletedID)
 	f.NewAsset(t, deletedID, "original", nil, deletedPath, "deleted")
@@ -424,7 +441,9 @@ func runClearIngestProgress(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	ctx := context.Background()
 	id := f.NewRecording(t)
+	otherID := f.NewRecording(t)
 	f.SetIngestProgress(t, id, 100, nil)
+	f.SetIngestProgress(t, otherID, 200, nil)
 	if !f.HasIngestProgress(t, id) {
 		t.Fatal("ingest progress row was not seeded")
 	}
@@ -433,6 +452,9 @@ func runClearIngestProgress(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if f.HasIngestProgress(t, id) {
 		t.Fatal("ingest progress row remains after clear")
+	}
+	if !f.HasIngestProgress(t, otherID) {
+		t.Fatal("clearing one recording removed another recording's progress row")
 	}
 	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
 		t.Fatalf("ClearIngestProgress(%d) without row: %v", id, err)

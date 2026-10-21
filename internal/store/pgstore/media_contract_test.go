@@ -45,7 +45,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		},
 		SetRecordingPurged: func(t *testing.T, recordingID int64) {
 			t.Helper()
-			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET purged_at = now() WHERE id = $1`, recordingID); err != nil {
+			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = COALESCE(deleted_at, now()), purged_at = now() WHERE id = $1`, recordingID); err != nil {
 				t.Fatalf("purging recording %d: %v", recordingID, err)
 			}
 		},

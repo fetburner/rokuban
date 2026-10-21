@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -12,12 +14,79 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T], args T) error {
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
+}
+
+// injectedIngestPrecheck tracks the dependency supplied to NewWorkers.
+type injectedIngestPrecheck struct {
+	calls       int
+	recordingID int64
+}
+
+func (p *injectedIngestPrecheck) HasOriginalMediaAsset(_ context.Context, recordingID int64) (bool, error) {
+	p.calls++
+	p.recordingID = recordingID
+	return true, nil
+}
+
+func (*injectedIngestPrecheck) GetLiveMediaAssetRecordingID(context.Context, string) (int64, error) {
+	return 0, store.ErrNotFound
+}
+
+// TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
+// It fails if NewWorkers omits the injected precheck: Work must observe the committed original,
+// skip transfer, and clear stale progress for that recording.
+func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	const recordID = "rec-new-workers-precheck"
+	recordingID := insertTestRecording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	media := newTestMediaStore(pool)
+	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
+		RecordingID:  recordingID,
+		WrittenBytes: 32,
+	}); err != nil {
+		t.Fatalf("seeding ingest progress: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodDelete {
+			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"recordRemoved":true,"contentRemoved":true}`))
+	}))
+	defer server.Close()
+
+	precheck := &injectedIngestPrecheck{}
+	registry := NewWorkers(&Deps{
+		Pool:               pool,
+		MirakcClients:      singleSiteClients(db.DefaultSite, mirakc.NewClient(server.URL, nil)),
+		MediaPublish:       media,
+		IngestPrecheck:     precheck,
+		Enqueuer:           newRecordingEnqueuer(),
+		IngestStallTimeout: time.Second,
+	})
+	if err := registry.Work(context.Background(), jobs.IngestJobArgs{Site: db.DefaultSite, RecordID: recordID}); err != nil {
+		t.Fatalf("registered ingest worker Work(): %v", err)
+	}
+	if precheck.calls != 1 || precheck.recordingID != recordingID {
+		t.Errorf("injected precheck calls/recording = %d/%d, want 1/%d", precheck.calls, precheck.recordingID, recordingID)
+	}
+	if _, ok := readIngestProgress(t, pool, recordingID); ok {
+		t.Error("registered ingest worker did not clear stale progress")
+	}
 }
 
 // singleSiteClients は 1 site だけを束縛するテスト用の Deps.MirakcClients /
