@@ -235,7 +235,7 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 - 契約: `internal/store.MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
 - 原本・encoded の配信元が active だけであること: `TestMediaStoreContract` の `serving returns only active assets`
-- encode queue の profile と試行: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
+- encode queue の生成済み profile と試行上限: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
 - ドロップ統計の録画スコープ: `TestMediaStoreContract` の `drop stats are scoped to the target recording`
 - ドロップ位置の録画スコープ: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
 - encode-progress 通知の受信: `TestMediaStoreContract` の `encode progress reaches the listener`

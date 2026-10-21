@@ -19,59 +19,81 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	requireMediaReaderFixture(t, f)
 	ctx := context.Background()
-	newDesiredRecording := func(profiles []string, runningProfile string, failed bool) int64 {
+	newDesiredRecording := func(profiles []string, runningProfile string, failedAttemptCount int32) int64 {
 		t.Helper()
 		id := f.NewRecording(t)
 		f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d-original.m2ts", f.Site, id), "active")
 		f.SetEncodeProfiles(t, id, profiles)
-		if runningProfile != "" || failed {
+		if runningProfile != "" || failedAttemptCount > 0 {
 			profile := runningProfile
-			if failed {
+			if failedAttemptCount > 0 {
 				profile = profiles[0]
 			}
 			f.BeginEncodeAttempt(t, id, profile)
 		}
-		if failed {
-			f.FailEncodeAttempt(t, id, profiles[0], 2)
+		if failedAttemptCount > 0 {
+			f.FailEncodeAttempt(t, id, profiles[0], failedAttemptCount)
 		}
 		return id
 	}
 
-	queuedID := newDesiredRecording([]string{"h264", "hevc"}, "", false)
-	runningID := newDesiredRecording([]string{"h264"}, "h264", false)
-	exhaustedID := newDesiredRecording([]string{"h264"}, "", true)
-	unknownID := newDesiredRecording([]string{"not-configured"}, "", false)
+	queuedID := newDesiredRecording([]string{"h264", "hevc"}, "", 0)
+	runningID := newDesiredRecording([]string{"h264"}, "h264", 0)
+	retryableID := newDesiredRecording([]string{"hevc"}, "", 2)
+	exhaustedID := newDesiredRecording([]string{"h264"}, "", 3)
+	unknownID := newDesiredRecording([]string{"not-configured"}, "", 0)
+	generatedID := newDesiredRecording([]string{"h264"}, "", 0)
+	generatedProfile := "h264"
+	f.NewAsset(t, generatedID, "encoded", &generatedProfile, fmt.Sprintf("sites/%s/%d-h264.mp4", f.Site, generatedID), "active")
 
-	got, err := f.Reader.ListEncodeQueue(ctx, store.EncodeQueueParams{
-		KnownProfiles: []string{"h264", "hevc"}, AttemptLimit: 2,
-	})
-	if err != nil {
-		t.Fatalf("ListEncodeQueue: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("encode queue = %+v; want two queued profiles and one running profile", got)
-	}
-	counts := make(map[int64]int, len(got))
-	running := make(map[int64]int, len(got))
-	for _, entry := range got {
-		counts[entry.RecordingID]++
-		switch entry.RecordingID {
-		case queuedID:
-			if entry.Running {
-				t.Fatalf("queued profile entry = %+v; want Running=false", entry)
+	assertQueue := func(attemptLimit int32, wantRetryable bool) {
+		t.Helper()
+		got, err := f.Reader.ListEncodeQueue(ctx, store.EncodeQueueParams{
+			KnownProfiles: []string{"h264", "hevc"}, AttemptLimit: attemptLimit,
+		})
+		if err != nil {
+			t.Fatalf("ListEncodeQueue(attempt limit %d): %v", attemptLimit, err)
+		}
+		wantLength := 3
+		if wantRetryable {
+			wantLength++
+		}
+		if len(got) != wantLength {
+			t.Fatalf("encode queue at attempt limit %d = %+v; want %d entries", attemptLimit, got, wantLength)
+		}
+		counts := make(map[int64]int, len(got))
+		running := make(map[int64]int, len(got))
+		for _, entry := range got {
+			counts[entry.RecordingID]++
+			switch entry.RecordingID {
+			case queuedID:
+				if entry.Running {
+					t.Fatalf("queued profile entry = %+v; want Running=false", entry)
+				}
+			case runningID:
+				if !entry.Running {
+					t.Fatalf("running entry = %+v; want Running=true", entry)
+				}
+				running[entry.RecordingID]++
+			case retryableID:
+				if !wantRetryable || entry.Running {
+					t.Fatalf("retryable entry = %+v; want Running=false when attempt count is below limit", entry)
+				}
+			default:
+				t.Fatalf("unexpected encode queue entry %+v; exhausted=%d unknown=%d generated=%d", entry, exhaustedID, unknownID, generatedID)
 			}
-		case runningID:
-			if !entry.Running {
-				t.Fatalf("running entry = %+v; want Running=true", entry)
-			}
-			running[entry.RecordingID]++
-		default:
-			t.Fatalf("unexpected encode queue entry %+v; exhausted=%d unknown=%d", entry, exhaustedID, unknownID)
+		}
+		wantRetryableCount := 0
+		if wantRetryable {
+			wantRetryableCount = 1
+		}
+		if counts[queuedID] != 2 || counts[runningID] != 1 || running[runningID] != 1 || counts[retryableID] != wantRetryableCount {
+			t.Fatalf("encode queue at attempt limit %d = %+v; want two queued profiles for %d, one running profile for %d, and retryable count %d for %d", attemptLimit, got, queuedID, runningID, wantRetryableCount, retryableID)
 		}
 	}
-	if counts[queuedID] != 2 || counts[runningID] != 1 || running[runningID] != 1 {
-		t.Fatalf("encode queue = %+v; want two queued profiles for %d and one running profile for %d", got, queuedID, runningID)
-	}
+
+	assertQueue(2, false)
+	assertQueue(3, true)
 }
 
 func seedRecordingDropReads(t *testing.T, newFixture NewMediaFixture) (MediaFixture, int64, string, int64) {
