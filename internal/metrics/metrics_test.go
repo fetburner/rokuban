@@ -460,6 +460,43 @@ func TestPresyncCollector_ClassifiesPendingState(t *testing.T) {
 	}
 }
 
+func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const (
+		scheduledProgramID int64 = 6800121
+		missingProgramID   int64 = 6800122
+	)
+	scheduledStartAt := time.Now().Add(time.Hour).Truncate(time.Millisecond)
+	missingStartAt := time.Now().Add(2 * time.Hour).Truncate(time.Millisecond)
+	seedPresyncReservation(t, pool, scheduledProgramID, scheduledStartAt)
+	seedPresyncReservation(t, pool, missingProgramID, missingStartAt)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO program_overrides (site, program_id, overrides)
+		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, testSite, missingProgramID); err != nil {
+		t.Fatalf("inserting invalid option override: %v", err)
+	}
+	seedObservedSchedule(t, pool, scheduledProgramID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(scheduledProgramID)})
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	c := newPresyncCollector(pool)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 1 {
+		t.Errorf("missing = %v, want 1", got)
+	}
+	if got := labeledGaugeValue(t, c, "rokuban_schedule_snapshot_last_success_timestamp_seconds", nil); got <= 0 {
+		t.Errorf("snapshot timestamp = %v, want a successful snapshot", got)
+	}
+	earliest := labeledGaugeValue(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"})
+	earliestAt := time.Unix(0, int64(earliest*float64(time.Second)))
+	if delta := earliestAt.Sub(missingStartAt); delta < -time.Millisecond || delta > time.Millisecond {
+		t.Errorf("missing earliest start = %v, want %v", earliestAt, missingStartAt)
+	}
+}
+
 // presync_pending_earliest_start_timestamp_seconds は「開始が近い」を PromQL 側で
 // 判定するための最小 start_at。件数 gauge だけでは 8 日先の 1 件と 2 分後開始の
 // 1 件が同値になり、区別できない（issue #680）。

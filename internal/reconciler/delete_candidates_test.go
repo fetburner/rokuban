@@ -23,7 +23,7 @@ func TestCollectDeleteCandidatesDoesNotDeferDesiredOrForeignSchedules(t *testing
 		},
 	}
 
-	candidates, deferred := collectDeleteCandidates(reservations, schedules)
+	candidates, deferred := collectDeleteCandidates(reservations, nil, schedules)
 	if len(candidates) != 0 {
 		t.Errorf("delete candidates = %v, want none", candidates)
 	}

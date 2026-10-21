@@ -655,6 +655,53 @@ func TestReconciler_DeletesOrphanedSchedule(t *testing.T) {
 	}
 }
 
+func TestReconciler_DefersScheduleForReservationWithInvalidOptions(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const (
+		desiredProgramID int64 = 100000500019710
+		invalidProgramID int64 = 100000500019711
+	)
+	createReservation(t, ctx, q, desiredProgramID, "正常な予約", time.Now().Add(time.Hour))
+	createReservation(t, ctx, q, invalidProgramID, "壊れた予約", time.Now().Add(2*time.Hour))
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO program_overrides (site, program_id, overrides)
+		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, "default", invalidProgramID); err != nil {
+		t.Fatalf("inserting invalid option override: %v", err)
+	}
+
+	mock := newMockMirakc()
+	for _, programID := range []int64{desiredProgramID, invalidProgramID} {
+		mock.schedules[programID] = mirakc.Schedule{
+			State:   mirakc.ScheduleStateScheduled,
+			Program: mirakc.Program{ID: programID},
+			Options: mirakc.Options{Priority: 10},
+			Tags:    []string{mirakc.ProgramTag(programID)},
+		}
+	}
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	rec := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); len(calls) != 0 {
+		t.Errorf("schedules for desired and invalid-option reservations should not be deleted, got %v", calls)
+	}
+	if calls := mock.getPostCalls(); len(calls) != 0 {
+		t.Errorf("existing schedules should not be recreated, got POST calls for %v", calls)
+	}
+	for _, programID := range []int64{desiredProgramID, invalidProgramID} {
+		if _, exists := mock.getSchedules()[programID]; !exists {
+			t.Errorf("schedule %d should remain present", programID)
+		}
+	}
+}
+
 func TestReconciler_DefersDeletingSchedulesInRecordingOrUnknownStates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()

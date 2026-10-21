@@ -170,8 +170,16 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 	}
 	now := time.Now()
 	for _, candidate := range reservation.EvaluateSyncCandidates(rows) {
+		programID := candidate.Reservation.ProgramID
 		if candidate.Err != nil {
-			return presyncResult{}, candidate.Err
+			if _, exists := observed[programID]; !exists && !schedulesync.ProgramEnded(
+				candidate.Snapshot.StartAt,
+				candidate.Snapshot.DurationMs,
+				now,
+			) {
+				result.add(reasonMissing, candidate.Snapshot.StartAt)
+			}
+			continue
 		}
 		if candidate.Skipped || schedulesync.ProgramEnded(
 			candidate.Snapshot.StartAt,
@@ -181,7 +189,6 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 			continue
 		}
 
-		programID := candidate.Reservation.ProgramID
 		obs, ok := observed[programID]
 		if !ok {
 			result.add(reasonMissing, candidate.Snapshot.StartAt)

@@ -132,7 +132,7 @@ aging を超えて未登録の canonical file が残っているときは、候�
 
 | 系列 | 意味 |
 |---|---|
-| `rokuban_presync_pending{site,reason="missing"}` | desired に対する schedule が観測されない予約の数 |
+| `rokuban_presync_pending{site,reason="missing"}` | 番組終了前に schedule が観測されない予約の数（options の解決不能を含む） |
 | `rokuban_presync_pending{site,reason="options"}` | schedule が `scheduled` 状態で、設定が desired と食い違う予約の数 |
 | `rokuban_presync_pending{site,reason="options_deferred"}` | 設定が食い違うが、再作成を見送っている予約の数 |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | 同じ reason の pending のうち最も近い開始時刻 |
