@@ -7,6 +7,7 @@ package ruler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -204,6 +205,15 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 		BreakerTripped:      tripped,
 	})
 	if err != nil {
+		// 入力削除による外部キー違反などで ApplyPass が版照合まで進めない場合も、
+		// ロールバック後に版を確認して、変更済みなら新しい入力で再試行する。
+		currentRevision, revisionErr := r.passes.GetRulerInputRevision(ctx, site)
+		if revisionErr != nil {
+			return false, errors.Join(err, fmt.Errorf("getting ruler input revision after failed apply: %w", revisionErr))
+		}
+		if currentRevision != inputRevision {
+			return true, nil
+		}
 		return false, err
 	}
 	if result.InputRevisionChanged {

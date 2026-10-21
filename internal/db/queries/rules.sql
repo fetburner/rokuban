@@ -5,6 +5,9 @@ ORDER BY priority DESC, id ASC;
 -- name: GetRule :one
 SELECT * FROM rules WHERE id = $1;
 
+-- name: LockRuleForUpdate :one
+SELECT id FROM rules WHERE id = $1 FOR UPDATE;
+
 -- name: CreateRule :one
 INSERT INTO rules (
     name, description, enabled, priority,

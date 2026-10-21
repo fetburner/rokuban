@@ -43,6 +43,38 @@ func TestRunPass_RuleEditDuringPassReevaluates(t *testing.T) {
 	assertRevisionTestReservations(t, pool, ctx, 2)
 }
 
+func TestRunPass_RuleDeleteDuringPassReevaluates(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	insertRevisionTestPrograms(t, pool, ctx)
+	rules := pgstore.NewRules(pool, db.DefaultSite)
+	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
+	if err != nil {
+		t.Fatalf("creating rule: %v", err)
+	}
+	r := newRevisionTestRuler(pool)
+
+	deleted := false
+	beforeRulerWriteTx = func() {
+		if deleted {
+			return
+		}
+		deleted = true
+		if _, err := rules.Delete(ctx, rule.ID); err != nil {
+			t.Fatalf("deleting rule during pass: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeRulerWriteTx = nil })
+
+	if err := r.runPassForSite(ctx, db.DefaultSite); err != nil {
+		t.Fatalf("runPassForSite: %v", err)
+	}
+	ids := readRevisionTestReservations(t, pool, ctx)
+	if len(ids) != 0 {
+		t.Fatalf("reservation program IDs = %v, want none after rule deletion", ids)
+	}
+}
+
 func TestRunPass_StalePassCannotOverwriteNewerPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -111,8 +143,8 @@ func TestRunPass_InputRevisionMismatchLimit(t *testing.T) {
 	if err == nil {
 		t.Fatal("runPassForSite() error = nil, want error after repeated revision changes")
 	}
-	if mismatches != maxRulerInputRevisionMismatches {
-		t.Fatalf("revision mismatches = %d, want %d", mismatches, maxRulerInputRevisionMismatches)
+	if mismatches != 3 {
+		t.Fatalf("revision mismatches = %d, want 3", mismatches)
 	}
 	ids := readRevisionTestReservations(t, pool, ctx)
 	if len(ids) != 0 {

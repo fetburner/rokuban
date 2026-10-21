@@ -157,11 +157,11 @@ func (s *Rules) Delete(ctx context.Context, id int64) (store.RuleDeleteResult, e
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	if _, err := q.GetRule(ctx, id); err != nil {
+	if _, err := q.LockRuleForUpdate(ctx, id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RuleDeleteResult{}, fmt.Errorf("rule %d: %w", id, store.ErrNotFound)
 		}
-		return store.RuleDeleteResult{}, fmt.Errorf("getting rule %d before deletion: %w", id, err)
+		return store.RuleDeleteResult{}, fmt.Errorf("locking rule %d before deletion: %w", id, err)
 	}
 	sites, err := ruleSites(ctx, q, id)
 	if err != nil {
