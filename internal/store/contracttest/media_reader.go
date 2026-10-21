@@ -123,7 +123,15 @@ func runRecordingDropStats(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatalf("ListRecordingDropStats(first): %v", err)
 	}
 	if len(stats) != 1 || stats[0].Pid != 256 || stats[0].Packets != 10_000 || stats[0].Drops != 4 || stats[0].Errors != 2 || stats[0].Scrambled != 1 || stats[0].PidType == nil || *stats[0].PidType != pidType {
-		t.Fatalf("drop stats = %+v; want only the first recording's written PID stats", stats)
+		var got []string
+		for _, stat := range stats {
+			pidType := "nil"
+			if stat.PidType != nil {
+				pidType = *stat.PidType
+			}
+			got = append(got, fmt.Sprintf("{Pid:%d Packets:%d Drops:%d Errors:%d Scrambled:%d PidType:%s}", stat.Pid, stat.Packets, stat.Drops, stat.Errors, stat.Scrambled, pidType))
+		}
+		t.Fatalf("drop stats = %v; want only the first recording's written PID stats", got)
 	}
 }
 
@@ -135,7 +143,11 @@ func runRecordingDropPositions(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatalf("ListRecordingDropPositions(first): %v", err)
 	}
 	if len(positions) != 2 || positions[0].Pid != 256 || positions[0].ByteOffset != 1024 || positions[0].ElapsedMs == nil || *positions[0].ElapsedMs != elapsed || positions[1].Pid != 256 || positions[1].ByteOffset != 4096 || positions[1].ElapsedMs != nil {
-		t.Fatalf("drop positions = %+v; want the first recording's two written positions", positions)
+		var got []string
+		for _, position := range positions {
+			got = append(got, fmt.Sprintf("{Pid:%d ByteOffset:%d ElapsedMs:%s}", position.Pid, position.ByteOffset, int64Text(position.ElapsedMs)))
+		}
+		t.Fatalf("drop positions = %v; want the first recording's two written positions", got)
 	}
 }
 
