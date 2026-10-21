@@ -97,6 +97,7 @@ encode reconcile のパスは、ヒントを落とした録画を拾うバック
 | `rokuban_circuit_breaker_tripped{site,breaker}` | Gauge | いま止まっているか（1 = 発動中） |
 | `rokuban_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走したパスの時刻 |
 | `rokuban_reconcile_start_delayed{site}` | Gauge | 開始時刻を過ぎたのに録画が始まっていない予約数 |
+| `rokuban_reconcile_start_delay_errors_total{site}` | Counter | 開始遅延の検出に失敗した回数 |
 | `rokuban_presync_pending{site,reason}` | Gauge（DB） | 開始前から録画中の、未収束の予約数 |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | Gauge（DB） | pending のうち最も開始が近い番組の開始時刻 |
 | `rokuban_schedule_snapshot_last_success_timestamp_seconds{site}` | Gauge（DB） | 予約状況の全量取り込みが最後に成功した時刻 |

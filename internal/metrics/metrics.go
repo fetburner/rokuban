@@ -241,7 +241,7 @@ var (
 	})
 
 	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
-	// §3.3「開始遅延検出器」）が直近のパスで検出した件数 --- 「開始時刻 + 猶予
+	// §3.3「開始遅延検出器」）が直近の成功した検出パスで検出した件数 --- 「開始時刻 + 猶予
 	// （StartDelayGrace）を過ぎたのに recordings.started_at が観測されていない
 	// 予約」の数。録画開始は mirakc に全面委譲済みで Rokuban 側から防ぐ手段は
 	// ないが、EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）の
@@ -256,7 +256,14 @@ var (
 	// 並行してパスを走らせうるため（CircuitBreakerTripped と同じ理由）。
 	ReconcileStartDelayed = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "rokuban_reconcile_start_delayed",
-		Help: "Reservations whose start time plus grace has passed without an observed recording.started. Converges to zero when healthy.",
+		Help: "Reservations whose start time plus grace has passed without an observed recording.started, from the latest successful detection pass. Converges to zero when healthy.",
+	}, []string{"site"})
+
+	// ReconcileStartDelayErrors は開始遅延の検出に失敗した回数。
+	// ゲージを更新しなかった失敗パスをサイトごとに数える。
+	ReconcileStartDelayErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "rokuban_reconcile_start_delay_errors_total",
+		Help: "Times detection of delayed recording starts failed.",
 	}, []string{"site"})
 )
 
@@ -756,6 +763,7 @@ func NewRegistry(dbCollectors ...prometheus.Collector) *prometheus.Registry {
 		ReconcileScheduleLost,
 		ReconcileLastPass,
 		ReconcileStartDelayed,
+		ReconcileStartDelayErrors,
 
 		RulerPassDuration,
 		RulerReservations,
