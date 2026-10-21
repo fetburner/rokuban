@@ -18,7 +18,7 @@ import (
 // これは単一スナップショットからの読み取りである。recordings を読んだ後に
 // media_assets / drop_stats / drop_positions / media_asset_ts_scans を読むため、トランザクション無しで発行すると
 // その間に作られた録画のアセットだけが media_assets 側に写り、
-// RescueFile（internal/store/pgstore/catalog_restore.go）が recordings → media_assets の順で
+// Catalog.Restore（internal/store/pgstore/catalog_restore.go）が recordings → media_assets の順で
 // 1 トランザクション書き込むときに FK 違反でその世代がまるごと復元不能になる
 // （issue #106）。Export は内部で REPEATABLE READ / READ ONLY のトランザクションを
 // 開き、常に同じスナップショットから読み取る。

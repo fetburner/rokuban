@@ -45,9 +45,44 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore rolls back earlier writes after a later failure", func(t *testing.T) {
 		runCatalogRestoreRollback(t, newStore)
 	})
+	t.Run("restore marks missing assets deleted and keeps their statistics", func(t *testing.T) {
+		runCatalogRestoreMissingAssets(t, newStore)
+	})
 	t.Run("restore waits before writing for label rule reevaluation", func(t *testing.T) {
 		runCatalogRestoreSerialization(t, newStore)
 	})
+}
+
+func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	result, err := f.Store.Restore(ctx, roundTripCatalogDocument(), store.RestoreOptions{
+		MissingAssetIDs: map[int64]struct{}{40: {}},
+	})
+	if err != nil {
+		t.Fatalf("Restore with a missing asset: %v", err)
+	}
+	if result.MissingMediaFiles != 1 {
+		t.Fatalf("MissingMediaFiles = %d, want 1", result.MissingMediaFiles)
+	}
+	exported, err := f.Store.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export after restore: %v", err)
+	}
+	states := map[int64]catalogdoc.MediaAsset{}
+	for _, asset := range exported.MediaAssets {
+		states[asset.ID] = asset
+	}
+	if got := states[40]; got.State != "deleted" || got.DeletedAt == nil {
+		t.Fatalf("missing asset 40 = state %q, deleted_at %v; want deleted with a deletion time", got.State, got.DeletedAt)
+	}
+	if got := states[41]; got.State != "active" || got.DeletedAt != nil {
+		t.Fatalf("asset 41 not listed as missing = state %q, deleted_at %v; want active without a deletion time", got.State, got.DeletedAt)
+	}
+	if len(exported.DropStats) != 1 || len(exported.DropPositions) != 1 || len(exported.MediaAssetTSScans) != 1 {
+		t.Fatalf("statistics of the deleted asset = drop_stats %d, drop_positions %d, ts_scans %d; want 1/1/1",
+			len(exported.DropStats), len(exported.DropPositions), len(exported.MediaAssetTSScans))
+	}
 }
 
 func runCatalogRestoreRollback(t *testing.T, newStore NewCatalogStore) {

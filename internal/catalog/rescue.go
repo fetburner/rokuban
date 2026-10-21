@@ -12,22 +12,40 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RescueResult は復元件数と、選択した catalog 世代の情報をまとめる。
+// RescueResult は rescue で復元した件数のサマリ。復元件数は store.RestoreResult が持つ。
+// store.RestoreResult.MissingMediaFiles は、ストレージ走査では観測後に消えた
+// 登録前の候補も数える。
 type RescueResult struct {
 	store.RestoreResult
-	// CatalogPath は復元に使った文書のパス。
 	CatalogPath string
-	// Generation は復元に使った世代ディレクトリ名。
+	// Generation は復元に使った世代ディレクトリ名（docs/storage.md §8）。
 	Generation string
-	// RejectedSnapshots は完成判定に落ちて飛ばした世代（新しい順）。
+	// RejectedSnapshots は完成判定に落ちて飛ばした世代（新しい順）。空でなければ
+	// 「最新に見えた世代を飛ばして古い世代へ落ちた」ということなので、黙って
+	// 成功させずに呼び出し側が報告する。
 	RejectedSnapshots []RejectedSnapshot
-	// SkippedFilesWithoutSitePrefix は site を決められず登録しなかった走査対象の件数。
+
+	// SkippedFilesWithoutSitePrefix はストレージ走査（catalog が 1 世代も
+	// 無いときの rescueStorage）で見つかったが `sites/{site}/` 前置が無く
+	// site を決められないため登録しなかったファイルの件数。DB を喪失した後の
+	// rescue で唯一この件数だけが復元漏れを示す（slog の Warn は運用者の目に
+	// 触れるとは限らない）ので、呼び出し側のサマリ表示に必ず出す。
 	SkippedFilesWithoutSitePrefix int
 }
 
-// RescueLatest は media_dir/catalog/ の最新の完成世代を復元する。
-// 完成世代がなければ media_dir を走査して、認識可能な動画ファイルを登録する。
+// RescueLatest は media_dir/catalog/ の**最新の完成世代**を読んで DB に冪等
+// upsert する（完成判定は SelectLatest / VerifyGeneration。docs/storage.md §8）。
 // Catalog の DB 操作は Catalog が、ストレージ走査からの登録は MediaPublish が行う。
+//
+// 最新世代が不完全・checksum 不一致なら 1 つ前の完成世代へ落ちる。完成世代が
+// 1 つも無ければ media_dir を走査して `sites/{site}/` 前置を持つ認識可能な動画
+// ファイルを素の asset として in-place 登録する。前置の無いファイルは登録しない。
+// どの経路もファイル本体はコピー・変更しない。
+//
+// registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
+// `sites/{site}/` 前置から site を読んだとき、その site がレジストリに
+// 無ければ typo/ゴミディレクトリの疑いがあるとして Warn で目立たせる
+// （classifySiteForRescuedFile 参照）。catalog JSON からの復元では使わない。
 func RescueLatest(
 	ctx context.Context,
 	catalogStore store.Catalog,
@@ -44,6 +62,8 @@ func RescueLatest(
 	}
 	if err != nil {
 		if os.IsNotExist(err) {
+			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
+			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
 			result, scanErr := rescueStorage(ctx, mediaPublish, mediaDir, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
@@ -66,12 +86,18 @@ func RescueLatest(
 
 // RescueFile は path の catalog JSON を読み、mediaDir のファイルをロックしたまま
 // store に渡して冪等 upsert する。存在しないファイルの行は deleted として復元する。
+//
+// 書き込み順は store.Catalog.Restore の実装（pgstore.Catalog.Restore）にあり、
+// 全部 1 トランザクションで、途中失敗なら何も残さない。
 func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, path string) (*RescueResult, error) {
 	doc, err := Load(path)
 	if err != nil {
 		return nil, err
 	}
 
+	// Acquire file locks before DB row locks and retain them through commit.
+	// deleted の行は active 行を作らない（ファイルも見ない）ので、ロック対象から外す。
+	// 墓石は運用とともに増えるため、ロック数を live な行に抑える。
 	paths := make([]string, 0, len(doc.MediaAssets))
 	for _, asset := range doc.MediaAssets {
 		if asset.State != "deleted" {

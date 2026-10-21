@@ -18,6 +18,10 @@ import (
 // Restore は catalog の全表を 1 tx で upsert し、分類ルールを再評価する。
 // 分類ルールの再評価と catalog restore は互いに直列化され、再評価の判断は最初の
 // 書き込みより前に確定する。呼び出し側は media asset のファイルロックを先に取る。
+//
+// 書き込み順: rules（+ 子）→ program_snapshots → program_intents /
+// program_overrides → recordings → media_assets → drop_stats → drop_positions → media_asset_ts_scans。
+// 全部 1 トランザクションで、途中失敗なら何も残さない。
 func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options store.RestoreOptions) (*store.RestoreResult, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("catalog document is nil")
@@ -405,6 +409,8 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 					return fmt.Errorf("reading database time for missing catalog assets: %w", err)
 				}
 			}
+			// Keep the historical row and its dependent statistics, but never publish
+			// a snapshot's active state for a file removed since export.
 			a.State = "deleted"
 			a.DeletedAt = &missingAt
 			res.MissingMediaFiles++
