@@ -412,7 +412,6 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-		Pool:      pool,
 		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
@@ -551,7 +550,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(400000, 800000), 'CM', true)`, recordingID); err != nil {
 		t.Fatalf("seeding current chapter span: %v", err)
 	}
-	currentKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	currentKeep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(currentKeep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", currentKeep, owned, err)
 	}
@@ -643,7 +642,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	keep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
@@ -656,7 +655,6 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-		Pool:      pool,
 		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
@@ -700,7 +698,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	keep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}
@@ -715,7 +713,6 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-		Pool:      pool,
 		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
@@ -754,7 +751,7 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	requestedKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	requestedKeep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(requestedKeep) == 0 {
 		t.Fatalf("initial currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
 	}
@@ -762,11 +759,11 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	if _, err := pool.Exec(ctx, `UPDATE recording_chapter_spans SET span = int8range(500000, 900000) WHERE recording_id = $1`, recordingID); err != nil {
 		t.Fatalf("editing chapters after request: %v", err)
 	}
-	currentKeep, owned, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	currentKeep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
 		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
 	}
-	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
 	cut, _, hasExpected, skip, err := w.loadRequestedEncodeCut(ctx, job)
@@ -802,7 +799,7 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
 		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
-	w := &EncodeReconcileWorker{Pool: pool, Profiles: cfg}
+	w := &EncodeReconcileWorker{Profiles: cfg, Media: newTestMediaStore(pool)}
 
 	// 未確認: cut は投入されず、h264 だけが投入される。
 	enqueuer := runEncodeReconcilePass(t, w)
@@ -841,7 +838,7 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 		t.Fatalf("inserting initial chapter span: %v", err)
 	}
 	cutAssetID := seedEncodedAsset(t, pool, recordingID, "cut", "cut/add-profile_stale_cut.g1.mp4")
-	frozen, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	frozen, _, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil {
 		t.Fatalf("deriving initial keep ranges: %v", err)
 	}
@@ -852,7 +849,7 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(1200000, 1300000), 'CM2', true)`, recordingID); err != nil {
 		t.Fatalf("editing chapter spans: %v", err)
 	}
-	current, _, err := currentCutKeep(ctx, sqlcgen.New(pool), recordingID)
+	current, _, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil {
 		t.Fatalf("deriving edited keep ranges: %v", err)
 	}
@@ -862,7 +859,7 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
 		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
-	enqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Pool: pool, Profiles: cfg},
+	enqueuer := runEncodeReconcilePassArgs(t, &EncodeReconcileWorker{Profiles: cfg, Media: newTestMediaStore(pool)},
 		EncodeReconcileArgs{RecordingID: recordingID})
 	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles after adding h264 = %v, want [h264] (stale cut requires an explicit rebuild command)", got)
@@ -928,11 +925,11 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
+		Precheck:    newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
@@ -994,11 +991,11 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
 		CutProfiles:   map[string]struct{}{"cut": {}},
 		LiveEnabled:   true,
+		Precheck:      newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
@@ -1046,7 +1043,7 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	partial := seed("cut/partial.m2ts", chapters.Span{StartMs: 500, EndMs: 1000})
 
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}
-	enqueuer := runEncodeReconcilePass(t, &EncodeReconcileWorker{Pool: pool, Profiles: cfg})
+	enqueuer := runEncodeReconcilePass(t, &EncodeReconcileWorker{Profiles: cfg, Media: newTestMediaStore(pool)})
 	if got := pendingEncodeProfiles(t, enqueuer, allCut); len(got) != 0 {
 		t.Errorf("reconcile path: all-cut recording pending = %v, want none", got)
 	}

@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -92,7 +89,6 @@ const (
 // 束縛された worker が拾っても結果は同じ。
 type EncodeReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
-	Pool     *pgxpool.Pool
 	// Media は encode reconcile の列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
 	Media store.MediaReconcile
 
@@ -157,8 +153,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	if recordingID != 0 {
 		targetID = &recordingID
 	}
-	q := sqlcgen.New(w.Pool)
-	rebuildQueued, failed, err := w.reconcileRebuildRequests(ctx, q, targetID)
+	rebuildQueued, failed, err := w.reconcileRebuildRequests(ctx, targetID)
 	if err != nil {
 		return fmt.Errorf("reconciling encoded asset rebuild requests: %w", err)
 	}
@@ -188,7 +183,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		// keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
 		// 窓の回転は candidates（落とす前）で数えるので進み続ける。
 		if _, isCut := cutSet[row.Profile]; isCut {
-			keep, _, err := currentCutKeep(ctx, q, row.RecordingID)
+			keep, _, err := w.Media.GetCurrentCutKeep(ctx, row.RecordingID)
 			if err != nil {
 				failed++
 				slog.Error("encode_reconcile: loading cut keep", "recording_id", row.RecordingID, "err", err)
@@ -198,7 +193,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				continue
 			}
 		}
-		args, err := newEncodeJobArgs(ctx, q, row.RecordingID, row.Profile, w.Profiles)
+		args, err := newEncodeJobArgs(ctx, w.Media, row.RecordingID, row.Profile, w.Profiles)
 		if err != nil {
 			failed++
 			slog.Error("encode_reconcile: building encode job args",
@@ -259,7 +254,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 // 場合だけである。
 func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 	ctx context.Context,
-	q *sqlcgen.Queries,
 	targetID *int64,
 ) (queued, failed int, err error) {
 	requests, err := w.Media.ListEncodedAssetRebuildRequests(ctx, targetID)
@@ -276,7 +270,7 @@ func (w *EncodeReconcileWorker) reconcileRebuildRequests(
 		if profile, configured := w.Profiles.Profile(request.Profile); !configured || !profile.Cut {
 			continue
 		}
-		encodeArgs, err := newEncodeJobArgs(ctx, q, request.RecordingID, request.Profile, w.Profiles)
+		encodeArgs, err := newEncodeJobArgs(ctx, w.Media, request.RecordingID, request.Profile, w.Profiles)
 		if err != nil {
 			failed++
 			slog.Error("encode_reconcile: building encode args for rebuild request",

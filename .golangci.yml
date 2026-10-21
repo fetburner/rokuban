@@ -84,13 +84,9 @@ linters:
             - "!${config-path}/internal/api/handler.go"
             - "!${config-path}/internal/api/router.go"
             - "!${config-path}/internal/jobq/jobqfake/fake.go"
-            - "!${config-path}/internal/worker/encode.go"
-            - "!${config-path}/internal/worker/encode_reconcile.go"
-            - "!${config-path}/internal/worker/ingest.go"
             - "!${config-path}/internal/worker/reconcile_pass.go"
             - "!${config-path}/internal/worker/record_sweep.go"
             - "!${config-path}/internal/worker/ruler_pass.go"
-            - "!${config-path}/internal/worker/thumbnail_selection.go"
             - "!${config-path}/internal/worker/worker.go"
           deny:
             - pkg: github.com/jackc/pgx

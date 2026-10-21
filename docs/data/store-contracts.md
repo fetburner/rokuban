@@ -224,6 +224,12 @@ streamer のハンドラは `MediaServing` を受け取る。worker のジョブ
 
 worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
+エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。現在の keep を読むとき、store は所有状態と区間を同じ時点の 1 回の読み取りで返す。通知対象の読み取りは、purged 後の録画も返す。エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
+
+チャプターから keep を作る導出は、store に 1 つだけ置く。エンコード計画、公開時の再確認、作り直し要求（`RequestCutRebuild`）が同じ導出を使う。写しが複数あると、一部だけ直ったときに 3 つの判定がずれる。
+
+ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。`rel_path` の衝突確認はヒントにすぎず、一意性の最終判定は原本を公開する `CommitOriginal` が行う。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
+
 起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。原本と encoded のうち `deleted` でない行を見て、`rel_path` が `sites/{site}/` で始まらない行があれば、起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
 worker は `StorageObservation` に `storage_sync` と、孤児・実体無しの候補を記録する。API は同じ interface から観測値を読む。孤児の判定に使う既知パスの一覧は、`media_assets` の状態に関係なく全ての `rel_path` を、`sites/{site}/` を含めたまま返す。走査で得るパスは `sites/{site}/` を含むので、接頭辞を落とすと一致せず、全ての原本が孤児候補になる。`thumbnails/` のように `sites/` の外にある予約名前空間の行も含める。含めないと、サムネイルが孤児として記録される。削除途中のファイルも一覧に残す。外すと、削除エンジンが消している途中のファイルが孤児候補として記録され、報告の対象になる。
@@ -232,7 +238,7 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 
 <details><summary>根拠</summary>
 
-- 契約: `internal/store.MediaServing` / `MediaReconcile` / `MediaReader` / `StorageObservation`
+- 契約: `internal/store.MediaServing` / `MediaReconcile` / `IngestPrecheck` / `MediaReader` / `StorageObservation`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
 - 原本・encoded の配信元が active だけであること: `TestMediaStoreContract` の `serving returns only active assets`
 - encode queue の生成済み profile と試行上限: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
@@ -243,6 +249,12 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 - 原本 VOD の site の絞り込み: `TestMediaStoreContract` の `original VOD target is scoped to the recording's site`
 - 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
+- keep 区間の導出・所有・purged の扱い: `TestMediaStoreContract` の `current cut keep is derived from owned chapters`
+- 所有状態と区間が同じ時点の読み取りであること: `pgstore` の `TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot`
+- encode 締切用の nullable 時刻: `TestMediaStoreContract` の `recording encode times preserve nullable timestamps`
+- purged 録画の通知対象: `TestMediaStoreContract` の `encode notify subject includes purged recordings`
+- state を問わない原本の有無: `TestMediaStoreContract` の `ingest precheck recognizes committed originals in every state`
+- 転送前の `rel_path` 確認: `TestMediaStoreContract` の `live rel_path precheck matches the partial unique index`
 - サムネイル再選択の候補の型付き値: `TestMediaStoreContract` の `thumbnail reselection candidates carry typed timeline and inputs`
 - 名前空間の検査の受理と空の site 成分: `TestMediaStoreContract` の `namespace guard accepts site paths and rejects malformed ones`
 - 接頭辞の無い原本と encoded: `TestMediaStoreContract` の `namespace guard rejects unprefixed originals and encoded files`
@@ -303,6 +315,7 @@ in-place 登録は、録画とアセットの行を 1 つの tx で書く。フ�
 - publish の失敗で行が残らないこと: `TestMediaStoreContract` の `original callback failure rolls back rows` ほか
 - publish が成功した後の commit 失敗: `TestMediaStoreContract` の `commit failure after publish returns an error and leaves no rows`
 - rel_path の衝突: `TestMediaStoreContract` の `original publication rejects an occupied rel_path without publishing`
+- 進捗行の冪等な削除: `TestMediaStoreContract` の `clearing ingest progress is idempotent`
 - ごみ箱と既存の行: `TestMediaStoreContract` の `thumbnail and seek tiles skip trashed recordings and existing assets`
 - 公開がチャプター編集を待たせること: `TestMediaStoreContract` の `cut publication serializes with chapter edits`
 - 公開がチャプター編集を待つこと: `TestMediaStoreContract` の `cut publication waits for an open chapter edit and rechecks`

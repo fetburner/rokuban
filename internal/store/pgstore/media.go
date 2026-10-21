@@ -29,6 +29,7 @@ func NewMedia(pool *pgxpool.Pool) *Media {
 var (
 	_ store.MediaServing       = (*Media)(nil)
 	_ store.MediaReconcile     = (*Media)(nil)
+	_ store.IngestPrecheck     = (*Media)(nil)
 	_ store.MediaDelete        = (*Media)(nil)
 	_ store.MediaReader        = (*Media)(nil)
 	_ store.TSScan             = (*Media)(nil)
@@ -85,6 +86,50 @@ func (s *Media) GetActiveOriginalMediaAsset(ctx context.Context, recordingID int
 		return store.MediaAsset{}, mediaQueryError(err, fmt.Sprintf("loading active original media asset for recording %d", recordingID))
 	}
 	return store.MediaAsset{ID: row.ID, RelPath: row.RelPath, SizeBytes: row.SizeBytes}, nil
+}
+
+// GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。
+func (s *Media) GetRecordingEncodeTimes(ctx context.Context, recordingID int64) (store.RecordingEncodeTimes, error) {
+	row, err := sqlcgen.New(s.pool).GetRecordingEncodeTimes(ctx, recordingID)
+	if err != nil {
+		return store.RecordingEncodeTimes{}, mediaQueryError(err, fmt.Sprintf("loading recording times for recording %d", recordingID))
+	}
+	return store.RecordingEncodeTimes{
+		StartedAt:         row.StartedAt,
+		EndedAt:           row.EndedAt,
+		ProgramDurationMs: row.ProgramDurationMs,
+	}, nil
+}
+
+// GetRecordingNotifySubject はエンコード通知に載せる局と番組名を返す。
+// GetRecordingByID と同じく purged の録画も返す。
+func (s *Media) GetRecordingNotifySubject(ctx context.Context, recordingID int64) (store.RecordingNotifySubject, error) {
+	row, err := sqlcgen.New(s.pool).GetRecordingByID(ctx, recordingID)
+	if err != nil {
+		return store.RecordingNotifySubject{}, mediaQueryError(err, fmt.Sprintf("loading recording notify subject for recording %d", recordingID))
+	}
+	return store.RecordingNotifySubject{Site: row.Site, Title: row.Title}, nil
+}
+
+// HasOriginalMediaAsset は state を問わず原本アセット行の有無を返す。
+func (s *Media) HasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
+	_, err := sqlcgen.New(s.pool).GetOriginalMediaAssetID(ctx, recordingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking original media asset for recording %d: %w", recordingID, err)
+	}
+	return true, nil
+}
+
+// GetLiveMediaAssetRecordingID は state <> 'deleted' の rel_path 所有者を返す。
+func (s *Media) GetLiveMediaAssetRecordingID(ctx context.Context, relPath string) (int64, error) {
+	recordingID, err := sqlcgen.New(s.pool).GetLiveMediaAssetByRelPath(ctx, relPath)
+	if err != nil {
+		return 0, mediaQueryError(err, fmt.Sprintf("loading live media asset for rel_path %q", relPath))
+	}
+	return recordingID, nil
 }
 
 // HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。

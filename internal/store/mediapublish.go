@@ -157,6 +157,8 @@ type InPlaceResult struct {
 // publish が成功した後に commit が失敗したら、store はエラーを返し、ファイルは行を持たない孤児として残る。
 // 呼び出し側はそのファイルを消さず、孤児の監査に任せる。
 type MediaPublish interface {
+	// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
+	ClearIngestProgress(ctx context.Context, recordingID int64) error
 	// CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
 	// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
 	// resolvePolicy は同じ tx で読んだ予約・上書き・意図に対して 1 回だけ呼ぶ。
