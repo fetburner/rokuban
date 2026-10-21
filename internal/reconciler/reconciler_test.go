@@ -681,6 +681,10 @@ func TestReconciler_DefersScheduleForReservationWithInvalidOptions(t *testing.T)
 			Tags:    []string{mirakc.ProgramTag(programID)},
 		}
 	}
+	// 壊れた予約を誤って desired に流すと、既定 priority との差分で必ず再作成される。
+	brokenSchedule := mock.schedules[invalidProgramID]
+	brokenSchedule.Options.Priority = 11
+	mock.schedules[invalidProgramID] = brokenSchedule
 	srv := httptest.NewServer(mock)
 	defer srv.Close()
 

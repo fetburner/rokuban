@@ -473,11 +473,7 @@ func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) 
 	missingStartAt := time.Now().Add(2 * time.Hour).Truncate(time.Millisecond)
 	seedPresyncReservation(t, pool, scheduledProgramID, scheduledStartAt)
 	seedPresyncReservation(t, pool, missingProgramID, missingStartAt)
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_overrides (site, program_id, overrides)
-		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, testSite, missingProgramID); err != nil {
-		t.Fatalf("inserting invalid option override: %v", err)
-	}
+	seedInvalidPresyncOptions(t, pool, missingProgramID)
 	seedObservedSchedule(t, pool, scheduledProgramID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(scheduledProgramID)})
 	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
 		t.Fatalf("marking schedule snapshot: %v", err)
@@ -494,6 +490,49 @@ func TestPresyncCollector_ContinuesAfterInvalidReservationOptions(t *testing.T) 
 	earliestAt := time.Unix(0, int64(earliest*float64(time.Second)))
 	if delta := earliestAt.Sub(missingStartAt); delta < -time.Millisecond || delta > time.Millisecond {
 		t.Errorf("missing earliest start = %v, want %v", earliestAt, missingStartAt)
+	}
+}
+
+func TestPresyncCollector_InvalidOptionsWithObservedScheduleAreNotMissing(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800125
+	seedPresyncReservation(t, pool, programID, time.Now().Add(time.Hour))
+	seedInvalidPresyncOptions(t, pool, programID)
+	seedObservedSchedule(t, pool, programID, mirakc.Options{Priority: 10}, []string{mirakc.ProgramTag(programID)})
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	c := newPresyncCollector(pool)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
+		t.Errorf("observed invalid-options reservation missing = %v, want 0", got)
+	}
+	if _, ok := labeledGaugeValueOk(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"}); ok {
+		t.Error("missing earliest series must not be reported for an observed invalid-options reservation")
+	}
+}
+
+func TestPresyncCollector_EndedInvalidOptionsWithoutScheduleAreNotMissing(t *testing.T) {
+	pool := rokutest.SetupDB(t)
+	ctx := context.Background()
+	q := sqlcgen.New(pool)
+
+	const programID int64 = 6800126
+	seedPresyncReservation(t, pool, programID, time.Now().Add(-2*time.Hour))
+	seedInvalidPresyncOptions(t, pool, programID)
+	if err := q.UpsertScheduleSyncSnapshot(ctx, testSite); err != nil {
+		t.Fatalf("marking schedule snapshot: %v", err)
+	}
+
+	c := newPresyncCollector(pool)
+	if got := labeledGaugeValue(t, c, "rokuban_presync_pending", map[string]string{"reason": "missing"}); got != 0 {
+		t.Errorf("ended invalid-options reservation missing = %v, want 0", got)
+	}
+	if _, ok := labeledGaugeValueOk(t, c, "rokuban_presync_pending_earliest_start_timestamp_seconds", map[string]string{"reason": "missing"}); ok {
+		t.Error("missing earliest series must not be reported for an ended invalid-options reservation")
 	}
 }
 
@@ -706,6 +745,15 @@ func TestPresyncCollector_QueryFailure(t *testing.T) {
 	}
 	if !strings.Contains(text, "rokuban_presync_scrape_errors_total") {
 		t.Error("presync scrape error counter was not reported")
+	}
+}
+
+func seedInvalidPresyncOptions(t *testing.T, pool *pgxpool.Pool, programID int64) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO program_overrides (site, program_id, overrides)
+		VALUES ($1, $2, '{"priority":"high"}'::jsonb)`, testSite, programID); err != nil {
+		t.Fatalf("inserting invalid option override: %v", err)
 	}
 }
 
