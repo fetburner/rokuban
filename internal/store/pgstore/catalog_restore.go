@@ -16,12 +16,14 @@ import (
 )
 
 // Restore は catalog の全表を 1 tx で upsert し、分類ルールを再評価する。
-// 分類ルールの再評価と catalog restore は互いに直列化され、再評価の判断は最初の
-// 書き込みより前に確定する。呼び出し側は media asset のファイルロックを先に取る。
+// この tx は分類ルールの再評価と直列化する。直列化は最初の書き込みより前から始まる。
+// 呼び出し側は media asset のファイルロックを先に取る。
 //
-// 書き込み順: rules（+ 子）→ program_snapshots → program_intents /
-// program_overrides → recordings → media_assets → drop_stats → drop_positions → media_asset_ts_scans。
-// 全部 1 トランザクションで、途中失敗なら何も残さない。
+// 順序: 再評価ロック → rules（+ 子）→ label_rules → program_snapshots →
+// program_intents / program_overrides → recordings → recording_purge_requests →
+// recording_watched → recording_encode_policy → media_assets → チャプター所有 2 表 →
+// drop_stats → drop_positions → media_asset_ts_scans → 分類ルールの全件再評価 →
+// ID シーケンスのリセット。全部 1 トランザクションで、途中失敗なら何も残さない。
 func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options store.RestoreOptions) (*store.RestoreResult, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("catalog document is nil")

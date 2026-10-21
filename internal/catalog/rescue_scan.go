@@ -39,7 +39,8 @@ var statRescueCandidate = os.Lstat
 // 1 回出す。レジストリに無い site を持つ前置は復元を続け、site ごとに 1 回だけ
 // Warn する。
 //
-// ファイル確認から RegisterInPlace の commit まで相対パスのロックを保持する。
+// 相対パスのロックは inplace.Register が取り、ファイルの再確認から
+// RegisterInPlace の commit まで保持する。
 func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
 	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {

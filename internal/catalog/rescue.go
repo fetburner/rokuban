@@ -17,6 +17,7 @@ import (
 // 登録前の候補も数える。
 type RescueResult struct {
 	store.RestoreResult
+	// CatalogPath は復元に使った文書のパス。
 	CatalogPath string
 	// Generation は復元に使った世代ディレクトリ名（docs/storage.md §8）。
 	Generation string
