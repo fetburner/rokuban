@@ -496,7 +496,9 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	thumbnail := mk(fmt.Sprintf("thumbnail/%d-abc", recordingID))
 
 	w := &EncodeWorker{
-		Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
 		Profiles: config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
@@ -529,8 +531,10 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -630,8 +634,10 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -702,8 +708,10 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,
@@ -785,8 +793,10 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,

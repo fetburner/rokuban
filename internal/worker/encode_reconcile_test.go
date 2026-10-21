@@ -243,9 +243,9 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 	}
 }
 
-func mustKeepRanges(t *testing.T, keep []chapters.Range) db.KeepRanges {
+func mustKeepRanges(t *testing.T, keep []chapters.Range) pgstore.KeepRanges {
 	t.Helper()
-	ranges, err := db.KeepRangesParam(keep)
+	ranges, err := pgstore.KeepRangesParam(keep)
 	if err != nil {
 		t.Fatalf("encoding requested keep ranges: %v", err)
 	}
@@ -373,6 +373,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	defer srv.Close()
 
 	iw := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,

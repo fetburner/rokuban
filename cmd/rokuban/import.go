@@ -113,7 +113,7 @@ ARE（Postgres 正規表現）非互換の正規表現、%CHNAME% 等の未対�
 				if err != nil {
 					return fmt.Errorf("reading --library-json: %w", err)
 				}
-				result, err := epgimport.ImportLibrary(ctx, pool, cfg.Storage.MediaDir, site.Site, items)
+				result, err := epgimport.ImportLibrary(ctx, pgstore.NewMedia(pool), cfg.Storage.MediaDir, site.Site, items)
 				if err != nil {
 					return fmt.Errorf("importing library: %w", err)
 				}

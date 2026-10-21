@@ -2376,7 +2376,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 
 	commitDone := make(chan error, 1)
 	go func() {
-		commitDone <- (&IngestWorker{Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
+		commitDone <- (&IngestWorker{Publisher: newTestMediaStore(pool), Pool: pool, MediaDir: mediaDir}).commit(ctx, recordingID,
 			relPath, tempPath, fullPath, int64(len(content)))
 	}()
 	select {
@@ -2700,7 +2700,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 	if err := runWorkerViaJobQFake(ctx, w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() before rescue: %v", err)
 	}
-	if _, err := inplace.Register(ctx, pool, mediaDir, inplace.Input{
+	if _, err := inplace.Register(ctx, pgstore.NewMedia(pool), mediaDir, inplace.Input{
 		Recording: inplace.Recording{
 			Source: "manual", Site: "default", NetworkID: 1, ServiceID: 2,
 			EventID: int32(time.Now().UnixNano() % 1_000_000_000), ServiceName: "Recovered",

@@ -184,7 +184,7 @@ func TestTSScan_InPlaceOriginalAndSizeChangeReplaceStatistics(t *testing.T) {
 		},
 		Assets: []inplace.Asset{{Kind: db.AssetKindOriginal, RelPath: relPath}},
 	}
-	first, err := inplace.Register(ctx, pool, mediaDir, input)
+	first, err := inplace.Register(ctx, pgstore.NewMedia(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("first inplace.Register: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestTSScan_InPlaceOriginalAndSizeChangeReplaceStatistics(t *testing.T) {
 	); err != nil {
 		t.Fatalf("marking original as removed before rescue: %v", err)
 	}
-	second, err := inplace.Register(ctx, pool, mediaDir, input)
+	second, err := inplace.Register(ctx, pgstore.NewMedia(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("second inplace.Register: %v", err)
 	}

@@ -336,7 +336,7 @@ VALUES (sqlc.arg('recording_id'), sqlc.arg('profile'))
 ON CONFLICT (recording_id, profile) DO NOTHING;
 
 -- Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
--- keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
+-- keep は pgstore.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
 -- name: UpsertEncodedAssetRebuildRequest :exec
 INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 VALUES (

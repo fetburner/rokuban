@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -100,6 +99,18 @@ func (s *Media) HasActiveThumbnailMediaAsset(ctx context.Context, recordingID in
 	return true, nil
 }
 
+// HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
+func (s *Media) HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
+	_, err := sqlcgen.New(s.pool).GetActiveSeekTilesMediaAssetID(ctx, recordingID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("checking active seek tiles for recording %d: %w", recordingID, err)
+	}
+	return true, nil
+}
+
 // GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
 // 行と区間は読み取り専用の RepeatableRead tx で同じスナップショットから読む。
 func (s *Media) GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (store.EncodedAssetObservation, error) {
@@ -144,7 +155,7 @@ func (s *Media) EncodedAssetRebuildRequestMatches(ctx context.Context, recording
 	if err != nil {
 		return false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", recordingID, profile, err)
 	}
-	requestedKeep, err := db.KeepRangesFromMultirange(requested)
+	requestedKeep, err := KeepRangesFromMultirange(requested)
 	if err != nil {
 		return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
 	}
@@ -225,7 +236,7 @@ func (s *Media) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID
 	}
 	out := make([]store.EncodeAssetRebuildRequest, 0, len(rows))
 	for _, row := range rows {
-		keep, err := db.KeepRangesFromMultirange(row.RequestedKeep)
+		keep, err := KeepRangesFromMultirange(row.RequestedKeep)
 		out = append(out, store.EncodeAssetRebuildRequest{
 			RecordingID:   row.RecordingID,
 			Profile:       row.Profile,

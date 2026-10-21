@@ -50,6 +50,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	ingestWorker := &worker.IngestWorker{
 		MirakcClients: map[string]*mirakc.Client{watcher.DefaultSite: mc},
 		Pool:          pool,
+		Publisher:     pgstore.NewMedia(pool),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,

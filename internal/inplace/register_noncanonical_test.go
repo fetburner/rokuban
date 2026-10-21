@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -23,7 +24,7 @@ func TestRegister_AcceptsNonCanonicalRelPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile := "rescue-mp4"
-	res, err := Register(context.Background(), pool, mediaDir, Input{
+	res, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, Input{
 		Recording: Recording{
 			Source: "manual", Site: "default", NetworkID: -1, ServiceID: -2, EventID: -3,
 			ServiceName: "x", ChannelType: "GR", Channel: "unknown", Title: "show",

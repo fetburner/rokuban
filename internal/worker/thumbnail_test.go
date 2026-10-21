@@ -217,8 +217,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
@@ -298,8 +297,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
@@ -388,8 +386,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 
 	var gotInputSeek string
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
@@ -453,8 +450,7 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 
 	var gotInputSeek, gotInputPath string
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
@@ -520,8 +516,7 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 
 	var ffmpegCalls int
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
@@ -573,8 +568,7 @@ func TestThumbnailWorker_SkipsWithoutOriginal(t *testing.T) {
 
 	recordingID := insertTestRecording(t, pool)
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   t.TempDir(),
 		ScratchDir: t.TempDir(),
@@ -704,8 +698,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 
 	w := &ThumbnailWorker{
-		Pool: pool,
-
+		Publisher:  newTestMediaStore(pool),
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
@@ -972,7 +965,8 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 	seed("candidate", "{[0,60000)}")
 
 	w := &ThumbnailWorker{
-		Pool: pool, Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+		Publisher: newTestMediaStore(pool),
+		Media:     newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		runCmd: func(context.Context, string, ...string) ([]byte, error) {
 			t.Error("non-candidate recording must not run ffmpeg/ffprobe")
 			return nil, fmt.Errorf("unexpected command")

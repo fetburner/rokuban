@@ -151,6 +151,8 @@ type MediaReconcile interface {
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
 	HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error)
+	// HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
+	HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error)
 	// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
 	// 行と区間は 1 つの読み取りで同じ時点の値を返す。無ければ ErrNotFound を返す。
 	GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (EncodedAssetObservation, error)

@@ -87,8 +87,10 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -127,8 +129,10 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-fail.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,
@@ -279,8 +283,10 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	}()
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -373,7 +379,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir}
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		err := runWorkerViaJobQFake(context.Background(), w, job)
@@ -403,7 +409,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/dead-domain-attempts.m2ts", nil, []byte("data"))
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 		if err != nil {
@@ -525,7 +531,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir}
 	if _, err := sqlcgen.New(pool).DeleteFailedRecordingEncodeAttempts(context.Background(), sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
 		RecordingID: recordingID, Profiles: []string{"missing"},
 	}); err != nil {
@@ -563,8 +569,10 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -685,7 +693,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-fail-multibyte.m2ts", nil, []byte("data"))
 
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	longMsg := strings.Repeat("日", 1000)
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 	if err != nil {
@@ -741,7 +749,7 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
 
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
 	if err != nil {
 		t.Fatal(err)
@@ -865,8 +873,10 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(origLogger) })
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,

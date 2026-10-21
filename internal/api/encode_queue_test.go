@@ -14,7 +14,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -261,7 +260,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		exec(`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
 			 SELECT id, '{[0,1800000)}'::int8multirange FROM media_assets
 			 WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'cut'`, id)
-		keep, err := db.KeepRangesParam(chapters.KeepRanges(chapters.Derive(true, cmSpan, nil, (30 * time.Minute).Milliseconds())))
+		keep, err := pgstore.KeepRangesParam(chapters.KeepRanges(chapters.Derive(true, cmSpan, nil, (30 * time.Minute).Milliseconds())))
 		if err != nil {
 			t.Fatal(err)
 		}

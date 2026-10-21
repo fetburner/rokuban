@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -23,7 +22,26 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+// planEncodePublish は store 契約の読み取りと共通の判定から、テストの前状態の公開計画を導出する。
+func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string, cut *cutContext) (encodePlan, error) {
+	asset, err := pgstore.NewMedia(pool).GetEncodedAssetForPlan(ctx, recordingID, profile)
+	if errors.Is(err, store.ErrNotFound) {
+		return planEncodePublishFromObservation(nil, profile, cut, nil), nil
+	}
+	if err != nil {
+		return encodePlan{}, err
+	}
+	return planEncodePublishFromObservation(&asset, profile, cut, nil), nil
+}
+
+// frozenKeepRanges は media_asset に凍結された keep 区間を store 契約から読む。
+func frozenKeepRanges(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string) ([]chapters.Range, error) {
+	asset, err := pgstore.NewMedia(pool).GetEncodedAssetForPlan(ctx, recordingID, profile)
+	return asset.KeepRanges, err
+}
 
 // installCountingFFmpeg は「入力のコピーに、試行ごとに違うバイト列（長さも違う）を
 // 足して出力する」偽 ffmpeg を PATH に置く。installFakeFFmpeg の cp だと 2 本の
@@ -121,8 +139,10 @@ func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int3
 
 func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
 	return &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -143,7 +163,7 @@ func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordin
 
 func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	start, err := (&EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,8 +354,11 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 		Scan(&attemptError); err != nil {
 		t.Fatal(err)
 	}
-	if attemptError == nil || !strings.Contains(*attemptError, "committing encoded asset: upserting media_asset") {
-		t.Errorf("candidate attempt error = %v, want the rel_path reservation failure", attemptError)
+	if attemptError == nil {
+		t.Fatal("candidate attempt error is NULL, want the rel_path reservation failure")
+	}
+	if !strings.Contains(*attemptError, "upserting encoded media asset: conflict") {
+		t.Errorf("candidate attempt error = %s, want the rel_path reservation failure", *attemptError)
 	}
 	assertNoEncodeTemp(t, filepath.Dir(finalPath))
 }
@@ -382,7 +405,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	}
 
 	cut := &cutContext{keep: cutKeep}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +511,7 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 		t.Fatal(err)
 	}
 	cut := &cutContext{keep: requestedKeep}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
 	if err != nil || observed.skip {
 		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
 	}
@@ -556,7 +579,7 @@ func TestEncodeWorker_PublishKeepsRebuildRequestAndItIsSatisfied(t *testing.T) {
 	if err != nil || asset.ID != sc.assetID || asset.RelPath != sc.finalRel {
 		t.Fatalf("encoded asset after publish = %+v, err %v; want id %d at %s", asset, err, sc.assetID, sc.finalRel)
 	}
-	frozen, err := assetKeepRanges(ctx, sqlcgen.New(pool), sc.assetID)
+	frozen, err := frozenKeepRanges(ctx, pool, sc.recordingID, "cut")
 	if err != nil || !chapters.SameRanges(frozen, sc.requestedKeep) {
 		t.Fatalf("frozen keep after publish = %v, err %v; want %v", frozen, err, sc.requestedKeep)
 	}
@@ -580,7 +603,7 @@ func TestEncodeWorker_PublishUsesRequestedKeepWhenChaptersChangeAfterRebuildRequ
 	if _, published, err := sc.w.publishEncoded(ctx, sc.in); err != nil || !published {
 		t.Fatalf("publish = %v, err %v; want the requested keep published despite the edit", published, err)
 	}
-	frozen, err := assetKeepRanges(ctx, sqlcgen.New(pool), sc.assetID)
+	frozen, err := frozenKeepRanges(ctx, pool, sc.recordingID, "cut")
 	if err != nil || !chapters.SameRanges(frozen, sc.requestedKeep) {
 		t.Fatalf("frozen keep = %v, err %v; want the requested %v", frozen, err, sc.requestedKeep)
 	}
@@ -644,7 +667,7 @@ func TestEncodeWorker_InitialCutPublishChecksCurrentChapters(t *testing.T) {
 			if _, err := pool.Exec(ctx, `DELETE FROM encoded_asset_rebuild_requests WHERE recording_id = $1`, sc.recordingID); err != nil {
 				t.Fatal(err)
 			}
-			observed, err := planEncodePublish(ctx, sqlcgen.New(pool), sc.recordingID, "cut", sc.in.cut, nil)
+			observed, err := planEncodePublish(ctx, pool, sc.recordingID, "cut", sc.in.cut)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -690,7 +713,7 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	if err := os.WriteFile(scratchOut, []byte("old attempt output"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "h264", nil, nil)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "h264", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -893,7 +916,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		}
 	}
 	publicationReached := make(chan struct{}, 1)
-	beforeEncodeFilePublication = func(path string, _ context.Context, _ pgx5.Tx) error {
+	beforeEncodeFilePublication = func(path string) error {
 		if path == scratchOut {
 			publicationReached <- struct{}{}
 		}
@@ -978,9 +1001,21 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	}
 }
 
-// R5: A は fencing 後に DB セッションを失い、rename 前で停止する。B が同じ canonical
-// を公開できるのは A の filesystem lock 解放後であり、A の遅い rename は B を上書きしない。
+// R5: A は fencing 後に DB セッションを失う。B が同じ canonical を公開できるのは
+// A の filesystem lock 解放後であり、A の遅い公開は B を上書きしない。
+// publish が成功した後の commit だけが失敗する経路である。
 func TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication(t *testing.T) {
+	runAttemptCannotOverwriteLaterPublication(t, true)
+}
+
+// R5 の別経路: A の publish 関数がエラーを返し、store が rollback する。
+func TestEncodeWorker_FailedPublishCallbackCannotOverwriteLaterPublication(t *testing.T) {
+	runAttemptCannotOverwriteLaterPublication(t, false)
+}
+
+// runAttemptCannotOverwriteLaterPublication は A の失敗のしかたを sessionLost で切り替える。
+// true なら A の DB セッションを落として commit を失敗させ、false なら publish 関数がエラーを返す。
+func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
@@ -1008,26 +1043,37 @@ func TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication(t *test
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseA) }) }
 	originalEncodeLockHook := beforeEncodeLock
+	originalCommitHook := beforeEncodeCommit
 	originalPublicationHook := beforeEncodeFilePublication
 	t.Cleanup(func() {
 		release()
 		beforeEncodeLock = originalEncodeLockHook
+		beforeEncodeCommit = originalCommitHook
 		beforeEncodeFilePublication = originalPublicationHook
 	})
+	if sessionLost {
+		beforeEncodeFilePublication = func(path string) error {
+			if path == scratchA {
+				testutil.TerminateOpenTransactions(t, pool)
+			}
+			return nil
+		}
+	}
 	stagedB := make(chan string, 1)
 	beforeEncodeLock = func(path string) {
 		if path == scratchB {
 			stagedB <- path
 		}
 	}
-	beforeEncodeFilePublication = func(path string, _ context.Context, tx pgx5.Tx) error {
+	beforeEncodeCommit = func(path string) error {
 		switch path {
 		case scratchA:
-			if err := tx.Conn().Close(context.Background()); err != nil {
-				return fmt.Errorf("closing attempt A transaction connection: %w", err)
-			}
 			close(aAtPublication)
 			<-releaseA
+			if sessionLost {
+				return nil
+			}
+			return errors.New("injected attempt A commit failure")
 		case scratchB:
 			bAtPublication <- struct{}{}
 		}
@@ -1127,7 +1173,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	cut := &cutContext{keep: keep}
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", cut, nil)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
 	if err != nil || observed.skip {
 		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
 	}

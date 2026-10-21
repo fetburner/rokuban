@@ -6,9 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // ingestProgressInterval は転送中に recording_ingest_progress を書き直す最短
@@ -37,7 +35,7 @@ const ingestProgressInterval = 2 * time.Second
 // progressWriter 経由で継続的に report する。行の存在そのものが「転送中」の
 // 主張なので（不変条件 10）、0 バイトの start にも意味がある。
 type ingestProgressReporter struct {
-	pool        *pgxpool.Pool
+	publisher   store.MediaPublish
 	recordingID int64
 	// expectedBytes は進捗の分母。Work 開始時は record_sync.content_length
 	// （watcher の観測）で初期化し、追従中は observeProgress が GetRecord の
@@ -101,10 +99,8 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 	if ctx.Err() != nil {
 		return
 	}
-	if err := sqlcgen.New(r.pool).UpsertRecordingIngestProgress(ctx, sqlcgen.UpsertRecordingIngestProgressParams{
-		RecordingID:   r.recordingID,
-		WrittenBytes:  written,
-		ExpectedBytes: r.expectedBytes,
+	if err := r.publisher.UpsertIngestProgress(ctx, store.IngestProgress{
+		RecordingID: r.recordingID, WrittenBytes: written, ExpectedBytes: r.expectedBytes,
 	}); err != nil {
 		// 進捗が書けないこと自体は転送の失敗ではない。ログだけ残して続ける。
 		r.log.Warn("ingest: failed to record transfer progress",

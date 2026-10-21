@@ -899,7 +899,7 @@ type UpsertEncodedAssetRebuildRequestParams struct {
 }
 
 // Re-encode は利用者の命令なので、操作時点の keep 区間を要求として固定する。
-// keep は db.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
+// keep は pgstore.KeepRangesParam で作った multirange を受け取る（カット版の凍結区間と同じ変換）。
 func (q *Queries) UpsertEncodedAssetRebuildRequest(ctx context.Context, arg UpsertEncodedAssetRebuildRequestParams) error {
 	_, err := q.db.Exec(ctx, upsertEncodedAssetRebuildRequest, arg.RecordingID, arg.Profile, arg.RequestedKeep)
 	return err

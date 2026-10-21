@@ -284,24 +284,10 @@ func replayIngestTempFile(ctx context.Context, path string, hasher hash.Hash) (i
 var renameIngestFile = os.Rename
 var syncIngestParentDir = syncIngestDirectory
 
-// beforeIngestFilePublication は DB の予約を終え、canonical file の公開を
-// 始める直前に呼ぶテスト用フック。通常実行時は何もしない。DB セッションが
-// 失われても、この直後の rename / fsync を rel_path filesystem lock が守る
-// ことを、実際の transaction を使って検証するために置いている。
-var beforeIngestFilePublication = func(context.Context, pgx5.Tx) error { return nil }
-var commitIngestTransaction = func(ctx context.Context, tx pgx5.Tx) error {
-	return tx.Commit(ctx)
-}
-
-// newIngestCommitQueries builds the sqlc Queries commit() issues its statements
-// through. Tests override this to wrap tx in a sqlcgen.DBTX that counts SendBatch
-// calls directly, because pgx v5.10's Conn.SendBatch returns emptyBatchResults for a
-// zero-length batch before ever invoking a pgx.QueryTracer's TraceBatchStart
-// (conn.go:943) — a tracer-based oracle cannot observe whether an empty batch was
-// sent at all.
-var newIngestCommitQueries = func(tx pgx5.Tx) *sqlcgen.Queries {
-	return sqlcgen.New(tx)
-}
+// beforeIngestFilePublication / afterIngestFilePublication はファイル公開 callback を
+// テストから止めるためのフック。tx は store の内側に置き、フックへ渡さない。
+var beforeIngestFilePublication = func() error { return nil }
+var afterIngestFilePublication = func() error { return nil }
 
 func syncIngestDirectory(path string) error {
 	dir, err := os.Open(filepath.Dir(path))
@@ -328,6 +314,7 @@ type IngestWorker struct {
 	// クライアントを取り出してから使う。
 	MirakcClients    map[string]*mirakc.Client
 	Pool             *pgxpool.Pool
+	Publisher        store.MediaPublish
 	RecordTarget     store.IngestTarget
 	CMDetectionStore store.CMDetection
 	MediaDir         string
@@ -518,7 +505,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
 	progress := &ingestProgressReporter{
-		pool:          w.Pool,
+		publisher:     w.Publisher,
 		recordingID:   recordingID,
 		expectedBytes: expectedBytes,
 		interval:      w.resolveProgressInterval(),
@@ -973,14 +960,12 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 
 // commit は原本の公開プロトコルを 1 回実行する。
 //
-// DB transaction 内で media_assets の INSERT を先に行うことで、rel_path の unique
-// index が同じ宛先への競合を予約する。さらに media root の専用 lock directory にある
-// rel_path 固有 filesystem lock を DB transaction より先に取得する。これを先に
-// 持って rename / fsync / commit の区間を囲み、別の公開や通常削除との競合を防ぐ。
-// DB 接続が失われても goroutine のファイル操作は続きうるため、transaction が終わるまで
-// filesystem lock を保持する。INSERT はまだ他セッションから見えないため、その transaction と filesystem lock
-// を保持したまま temp -> canonical の atomic rename と親ディレクトリ fsync を行い、
-// 最後にだけ transaction を commit する。
+// rel_path 固有 filesystem lock を保持し、media_assets の行予約・rename・親ディレクトリ
+// fsync・commit を store の 1 transaction に渡す。store は DB transaction を先に開始し、
+// 行を作った後に callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、
+// この関数が返るまで filesystem lock を保持する。
+// 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
+// 「原本があるのに取り込み中」という中間状態が読み手から見えない。
 //
 // rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
 // は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
@@ -992,115 +977,59 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		return fmt.Errorf("locking canonical file protocol: %w", err)
 	}
 	defer func() { _ = fileLock.Close() }()
-
-	tx, err := w.Pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	q := newIngestCommitQueries(tx)
-
-	_, err = q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
-		RelPath:     relPath,
-		SizeBytes:   size,
+	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
+		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+	}, w.resolveEncodePolicy, func() error {
+		if err := beforeIngestFilePublication(); err != nil {
+			return fmt.Errorf("preparing canonical file publication: %w", err)
+		}
+		if err := renameIngestFile(tempPath, fullPath); err != nil {
+			return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
+		}
+		if err := syncIngestParentDir(fullPath); err != nil {
+			return fmt.Errorf("syncing canonical parent directory: %w", err)
+		}
+		if err := afterIngestFilePublication(); err != nil {
+			return fmt.Errorf("finishing canonical file publication: %w", err)
+		}
+		return nil
 	})
-	if err != nil {
-		return fmt.Errorf("inserting media_asset: %w", err)
-	}
-
-	// 進捗行（issue #212）は原本の INSERT と同じ tx で消す。コミット = DB 行
-	// （不変条件 3）なので、原本行が生まれる瞬間に進捗行が消えることで
-	// 「原本があるのに取り込み中」という中間状態が読者から見えない。
-	if err := q.DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
-		return fmt.Errorf("clearing ingest progress: %w", err)
-	}
-
-	// 原本のコミットと同じ tx で「この録画の望ましい最終状態」を焼く
-	// （issue #103。resolveAndSnapshotEncodePolicy の doc コメント参照）。
-	if err := w.resolveAndSnapshotEncodePolicy(ctx, q, recordingID); err != nil {
-		return fmt.Errorf("snapshotting encode policy: %w", err)
-	}
-
-	// INSERT は一意性の予約であり、公開点ではない。canonical path を作るのは
-	// ここからで、失敗時に DB transaction を rollback できる順序を保つ。
-	if err := beforeIngestFilePublication(ctx, tx); err != nil {
-		return fmt.Errorf("preparing canonical file publication: %w", err)
-	}
-	if err := renameIngestFile(tempPath, fullPath); err != nil {
-		return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
-	}
-	if err := syncIngestParentDir(fullPath); err != nil {
-		return fmt.Errorf("syncing canonical parent directory: %w", err)
-	}
-
-	if err := commitIngestTransaction(ctx, tx); err != nil {
-		return fmt.Errorf("committing transaction: %w", err)
-	}
-
-	return nil
 }
 
-// resolveAndSnapshotEncodePolicy は「この録画の望ましい最終状態」を
-// recording_encode_policy へ凍結する（行の存在そのものが「凍結済み」を
-// 意味する。不変条件 3「コミット = DB 行」・不変条件 10「意味を持たない行を
-// 作らない」）。呼び出し元の commit が原本 media_asset の INSERT と同じ tx で、
-// かつ targeted encode reconcile の投入より必ず先に呼ぶ（順序が
-// 逆だと初回パスで desired が空のまま enqueue される）。
-//
-// 凍結か毎パス再導出か・凍結する瞬間・予約を放送イベントキーで引く理由・
-// 解決に失敗しても凍結する理由・source 別のログレベル・凍結が依存する寿命と
-// エッジの滞留の交点・冪等性・EncodeProfiles の nil の扱い・until_encoded
-// クランプの判断は docs/storage/retention.md §6「原本 TS の保持ポリシー」に
-// ある。
-func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sqlcgen.Queries, recordingID int64) error {
-	rec, err := q.GetRecordingByID(ctx, recordingID)
-	if err != nil {
-		return fmt.Errorf("loading recording %d: %w", recordingID, err)
-	}
-
-	row, err := q.GetReservationEncodePolicyByEvent(ctx, sqlcgen.GetReservationEncodePolicyByEventParams{
-		Site:      rec.Site,
-		NetworkID: rec.NetworkID,
-		ServiceID: rec.ServiceID,
-		EventID:   rec.EventID,
-	})
-	// 解決に失敗しても凍結自体はスキップしない（issue #159。doc コメント
-	// 「解決失敗時も凍結する」参照）。既定値（'always' / '{}'）で凍結する ---
-	// 何も INSERT しないと、原本 media_asset の有無で「凍結済みか」を判定する
-	// 不変条件が破れ、かつ issue #133
-	// の事後追加（AppendRecordingEncodeProfiles）が「行が既にある」ことを前提に
-	// できなくなる。
+// resolveEncodePolicy は store が読み取った予約・上書き・意図から、この録画の凍結方針を導出する純粋関数である。
+// DB の読み取りと凍結の保存は CommitOriginal の tx が担い、この関数は DB に触れない。
+// 方針の行は原本の行と同じ tx で書かれるので、ここで返す値が CHECK に反すると原本ごとロールバックして録画が消える。
+// 書く前に、反する組み合わせを安全側へ倒す。
+// 凍結する瞬間・予約を放送イベントキーで引く理由・解決に失敗しても凍結する理由・
+// source 別のログレベル・クランプの判断は docs/storage/retention.md §6 にある。
+func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
+	recordingID := in.RecordingID
 	keepOriginal := "always"
 	encodeProfiles := []string{}
-	if err != nil {
-		if !errors.Is(err, pgx5.ErrNoRows) {
-			return fmt.Errorf("loading reservation encode policy for recording %d (site=%s network_id=%d service_id=%d event_id=%d): %w",
-				recordingID, rec.Site, rec.NetworkID, rec.ServiceID, rec.EventID, err)
-		}
-		// source='rule' は常に「予約はあったのに引けなくなった」（doc コメント
-		// 「予約をどのキーで引くか」の 3 原因を参照。issue #214 の交点を含む）
-		// なので Warn。source='manual' も「意図があった」ことを示す snapshot なので
-		// Warn にする。source='unattributed' は予約も意図も特定できない録画で、
-		// 予約が最初から無い日常的なケースを表すため Info に落とす。どの source
-		// でも黙って return しない —— 判別できないことをログの欠落で埋め合わせない。
+	if in.Reservation == nil {
+		// 予約が引けなくても凍結自体はスキップせず、既定値（'always' / 空）で凍結する。
+		// 行の存在が「凍結済み」を意味するので、何も書かないと後続の reconcile が「未凍結」と誤認し、
+		// 事後追加も「行が既にある」ことを前提にできなくなる。
+		// source='rule' は予約があったのに引けなくなった場合、source='manual' は意図があったことを示す
+		// snapshot なので Warn にする。source='unattributed' は予約も意図も特定できない録画で、
+		// 予約が最初から無い日常的なケースなので Info に落とす。どの source でも黙って戻らない。
+		// 判別できないことを、ログの欠落で埋め合わせない。
 		logArgs := []any{
 			"recording_id", recordingID,
-			"site", rec.Site,
-			"network_id", rec.NetworkID,
-			"service_id", rec.ServiceID,
-			"event_id", rec.EventID,
+			"site", in.Site,
+			"network_id", in.NetworkID,
+			"service_id", in.ServiceID,
+			"event_id", in.EventID,
 		}
-		if rec.Source == reservation.SourceUnattributed {
+		if in.Source == reservation.SourceUnattributed {
 			slog.Info("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		} else {
 			slog.Warn("encode policy: reservation not found via broadcast event key; freezing defaults", logArgs...)
 		}
 	} else {
-		eff, err := reservation.EffectiveOptions(row.Reservation.Base, row.Overrides, row.IntentAction)
+		eff, err := reservation.EffectiveOptions(in.Reservation.Base, in.Reservation.Overrides, in.Reservation.IntentAction)
 		if err != nil {
-			return fmt.Errorf("computing effective options for program %d: %w", row.Reservation.ProgramID, err)
+			return store.EncodePolicySnapshot{}, fmt.Errorf("computing effective options for program %d: %w", in.Reservation.ProgramID, err)
 		}
 		if eff.KeepOriginal != nil {
 			keepOriginal = *eff.KeepOriginal
@@ -1110,23 +1039,14 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		}
 	}
 
-	// クランプ（doc コメント「keepOriginal='until_encoded' × encodeProfiles=[] の
-	// クランプ」参照）。ルール単独・override 単独ではそれぞれ禁則を満たしていても、
-	// マージ結果としてこの組み合わせが生成されうる。cardinality(encode_profiles) > 0
-	// を要求する CHECK（issue #104）とここで矛盾すると、このメソッドを呼ぶ tx
-	// （原本 media_asset の INSERT と同一）ごとロールバックし録画が消える
-	// （不変条件 3）ため、書く前に安全側へ倒す。
-	// cut だけになったときのクランプ。ルール単独・override 単独ではそれぞれ
-	// live 無効時の規則を満たしていても、マージ結果として cut だけが生成されうる。
-	// 原本 HLS を使えない live 無効構成では確認に再生が要り、再生に encode が要り、
-	// encode に確認が要る循環になるので、**cut のプロファイルを落とす**
-	// （意図は overrides に残るので、ユーザーが cut でないプロファイルを足せば
-	// 戻る）。下のクランプと同じ向き（書く前に安全側へ倒す）。
+	// cut だけになったときのクランプ。ルール単独・上書き単独ではそれぞれ live 無効時の規則を満たしていても、
+	// マージ結果として cut だけが生成されうる。原本 HLS を使えない live 無効構成では、確認に再生が要り、
+	// 再生に encode が要り、encode に確認が要る循環になるので、cut のプロファイルを落とす。
+	// 意図は上書きに残るので、利用者が cut でないプロファイルを足せば戻る。
 	//
-	// **このクランプを下の until_encoded クランプより先に置く。** 落とした結果
-	// desired が空になった場合（cut だけのルール）は、下のクランプが同じ
-	// tx の中で keepOriginal を安全側へ倒す --- ここで別の分岐を書くと、
-	// 「cut を落とした後だけ効く規則」がもう 1 つ増える。
+	// このクランプを下の until_encoded クランプより先に置く。落とした結果 desired が空になった場合
+	// （cut だけのルール）は、下のクランプが keepOriginal を安全側へ倒す。
+	// ここで別の分岐を書くと、「cut を落とした後だけ効く規則」がもう 1 つ増える。
 	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles, w.LiveEnabled); err != nil {
 		slog.Warn("encode policy: frozen profile selection is cut-only; dropping cut profiles",
 			"recording_id", recordingID, "encode_profiles", encodeProfiles)
@@ -1138,15 +1058,14 @@ func (w *IngestWorker) resolveAndSnapshotEncodePolicy(ctx context.Context, q *sq
 		}
 		encodeProfiles = kept
 	}
-
+	// until_encoded は desired が 1 つ以上あることを CHECK が要求する。
+	// ルール単独・上書き単独では禁則を満たしていても、マージ結果としてこの組み合わせが生成されうる。
 	if keepOriginal == "until_encoded" && len(encodeProfiles) == 0 {
 		keepOriginal = "always"
 	}
-
-	return q.FreezeRecordingEncodePolicy(ctx, sqlcgen.FreezeRecordingEncodePolicyParams{
-		RecordingID:    recordingID,
+	return store.EncodePolicySnapshot{
 		KeepOriginal:   keepOriginal,
 		EncodeProfiles: encodeProfiles,
-		CmDetect:       w.CMDetect.Enabled,
-	})
+		CMDetect:       w.CMDetect.Enabled,
+	}, nil
 }

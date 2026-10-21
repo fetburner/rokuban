@@ -267,6 +267,51 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 </details>
 
+### メディア公開
+
+原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
+
+ファイルの公開は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。`publish` は rename と fsync を行う。検査で公開しないと決めたときは呼ばない。
+
+`publish` がエラーを返したら、store は rollback してそのエラーを返す。`publish` が成功した後に commit が失敗したら、store はエラーを返す。このときファイルは行を持たない孤児として残る。呼び出し側はそのファイルを消さず、孤児の監査に回収を任せる。
+
+呼び出し側は、rel_path のファイルロックを持って store を呼ぶ。store はファイルシステムを知らない。
+
+`publish` は副作用を持つので、[ロック後の判断](#ロック後の判断)の「関数は DB に触れず状態を変えない」規則の例外である。DB の判定とファイルの公開の順序を固定するために、store が `publish` を呼ぶ。
+
+先に浮かぶ案は、commit してから rename する順序である。この順序は、rename の失敗が行だけを残し、コミット = DB 行なのに実体が無い状態を作る。今の順序なら、commit の失敗は孤児ファイルを残すだけである。
+
+原本の commit は、行の作成・進捗の削除・保持ポリシーの凍結を 1 つの tx で行う。同じ rel_path の原本が既にあれば `ErrConflict` を返し、`publish` は呼ばない。凍結する方針は、store が同じ tx で読んだ予約・上書き・意図を、呼び出し側の純粋な関数に渡して導く。設定に依存するクランプは、この関数の中にある。
+
+encoded の公開は、試行番号・desired・作り直し要求・cut の区間を tx の中で読み直してから `publish` を呼ぶ。版の削除・事後追加と直列化し、cut はさらにチャプター編集・作り直し要求と直列化する。古い計画なら `ErrStalePublishPlan` を返す。
+
+thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
+
+in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.MediaPublish`
+- PostgreSQL 実装: `internal/store/pgstore.Media`
+- 古い試行・外した desired・publish の回数: `TestMediaStoreContract` の `encoded publication rechecks attempt and desired profiles`
+- publish の失敗で行が残らないこと: `TestMediaStoreContract` の `original callback failure rolls back rows` ほか
+- publish が成功した後の commit 失敗: `TestMediaStoreContract` の `commit failure after publish returns an error and leaves no rows`
+- rel_path の衝突: `TestMediaStoreContract` の `original publication rejects an occupied rel_path without publishing`
+- ごみ箱と既存の行: `TestMediaStoreContract` の `thumbnail and seek tiles skip trashed recordings and existing assets`
+- 公開がチャプター編集を待たせること: `TestMediaStoreContract` の `cut publication serializes with chapter edits`
+- 公開がチャプター編集を待つこと: `TestMediaStoreContract` の `cut publication waits for an open chapter edit and rechecks`
+- 版の削除との直列化: `TestMediaStoreContract` の `encoded publication waits for an open removal and rechecks`
+- in-place の冪等性と active な行の優先: `TestMediaStoreContract` の `in-place registration is idempotent and prefers published rows`
+- ingest の commit 失敗で canonical が孤児として残ること: `TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect`
+- encode の commit 失敗で古い試行が後の公開を上書きしないこと: `TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication`
+- ingest のファイルロックと store の統合: `TestIngestWorker_CommitHoldsRelPathFileLockThroughRename`
+- encode のファイルロックと store の統合: `TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit`
+- thumbnail のファイルロックと store の統合: `TestThumbnailWorkerPublishesUnderRelPathLock`
+- seek tiles のファイルロックと store の統合: `TestSeekTilesWorkerPublishesUnderRelPathLock`
+- in-place のファイル検証とファイルロック: `internal/inplace.Register`
+
+</details>
+
 ### TS scan
 
 TS の計測結果は、対象の状態を再確認した上で一括して保存する。

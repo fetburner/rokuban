@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/medialock"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // RescueResult は rescue で復元した件数のサマリ。
@@ -88,7 +89,7 @@ func RescueLatest(ctx context.Context, pool *pgxpool.Pool, mediaDir string, regi
 		if os.IsNotExist(err) {
 			// 「catalog が 1 つも無い」と「あったが全部不完全だった」を
 			// 混同させない: 飛ばした世代は結果に載せて呼び出し側に報告させる。
-			result, scanErr := rescueStorage(ctx, pool, mediaDir, registrySites)
+			result, scanErr := rescueStorage(ctx, pgstore.NewMedia(pool), mediaDir, registrySites)
 			if scanErr != nil {
 				return nil, scanErr
 			}

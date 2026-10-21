@@ -9,14 +9,11 @@ import (
 	"path/filepath"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // シークプレビュー用タイルの形（固定。設定キーは設けない。poster と同じ流儀）:
@@ -59,7 +56,8 @@ const (
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
-	Pool       *pgxpool.Pool
+	Media      store.MediaReconcile
+	Publisher  store.MediaPublish
 	MediaDir   string
 	ScratchDir string
 	FFmpeg     string
@@ -85,19 +83,19 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		metrics.SeekTilesJobs.WithLabelValues(result).Inc()
 	}()
 
-	q := sqlcgen.New(w.Pool)
-
-	if _, err := q.GetActiveSeekTilesMediaAssetID(ctx, recordingID); err == nil {
+	hasTiles, err := w.Media.HasActiveSeekTilesMediaAsset(ctx, recordingID)
+	if err != nil {
+		return fmt.Errorf("checking existing seek tiles: %w", err)
+	}
+	if hasTiles {
 		log.Info("seek_tiles: already committed, skipping")
 		result = "success"
 		return nil
-	} else if !errors.Is(err, pgx5.ErrNoRows) {
-		return fmt.Errorf("checking existing seek tiles: %w", err)
 	}
 
-	orig, err := q.GetActiveOriginalMediaAsset(ctx, recordingID)
+	orig, err := w.Media.GetActiveOriginalMediaAsset(ctx, recordingID)
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			// original が無い（ingest 前・削除済み）なら desired が空。
 			// ThumbnailWorker と同じ扱い（再試行しても埋まらない）。
 			log.Info("seek_tiles: no active original, skipping")
@@ -172,15 +170,11 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	}
 
 	relPath := seekTilesRelPath(recordingID)
-	size, published, err := publishGeneratedMediaAsset(ctx, w.Pool, w.MediaDir, relPath, sheetPath,
-		func(ctx context.Context, q *sqlcgen.Queries) (bool, error) {
-			return skipSeekTilesPublish(ctx, q, recordingID)
-		},
-		func(ctx context.Context, q *sqlcgen.Queries, size int64) error {
-			_, err := q.UpsertSeekTilesMediaAsset(ctx, sqlcgen.UpsertSeekTilesMediaAssetParams{
+	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, relPath, sheetPath,
+		func(size int64, publish func() error) (bool, error) {
+			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-			})
-			return err
+			}, publish)
 		})
 	if err != nil {
 		return fmt.Errorf("publishing seek tiles: %w", err)
