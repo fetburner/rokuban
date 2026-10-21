@@ -21,7 +21,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -264,17 +263,13 @@ type ingestLifecycleEnqueue struct {
 	opts []jobq.EnqueueOpt
 }
 
-// ingestLifecycleEnqueuer records the watcher request; EnqueueTx behavior is covered by the queue contract tests.
+// ingestLifecycleEnqueuer records the watcher request.
 type ingestLifecycleEnqueuer struct {
 	mu   sync.Mutex
 	jobs []ingestLifecycleEnqueue
 }
 
 func (enqueuer *ingestLifecycleEnqueuer) Enqueue(_ context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return enqueuer.record(args, opts...), nil
-}
-
-func (enqueuer *ingestLifecycleEnqueuer) EnqueueTx(_ context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
 	return enqueuer.record(args, opts...), nil
 }
 

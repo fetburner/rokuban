@@ -799,9 +799,6 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 	}
 	candidateQueued(1)
 	candidateCalls := enqueuer.CallsOfKind(jobs.CMLogoCandidateJobArgs{}.Kind())
-	if candidateCalls[0].Transactional {
-		t.Errorf("candidate enqueue = %#v, want a post-commit hint", candidateCalls[0])
-	}
 	candidateArgs, ok := candidateCalls[0].Args.(jobs.CMLogoCandidateJobArgs)
 	if !ok {
 		t.Fatalf("candidate args = %T, want jobs.CMLogoCandidateJobArgs", candidateCalls[0].Args)
@@ -837,11 +834,6 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		t.Fatalf("DELETE logo status = %d, want 204", deleteLogoResp.StatusCode)
 	}
 	queued(2)
-	for _, call := range enqueuer.CallsOfKind(jobs.CMDetectReconcileArgs{}.Kind()) {
-		if call.Transactional {
-			t.Errorf("reconcile enqueue = %#v, want a post-commit hint", call)
-		}
-	}
 }
 
 func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {

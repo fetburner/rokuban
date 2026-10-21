@@ -46,10 +46,6 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after create = %d, want 1", n)
 	}
-	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
-		t.Fatalf("create enqueue calls = %#v, want a post-commit Enqueue call", calls)
-	}
-
 	// 記録をクリアし、次の操作が行った投入要求だけを見る。
 	enqueuer.Reset()
 
@@ -72,9 +68,6 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after update = %d, want 1", n)
 	}
-	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
-		t.Fatalf("update enqueue calls = %#v, want a post-commit Enqueue call", calls)
-	}
 	enqueuer.Reset()
 
 	// Delete
@@ -92,9 +85,6 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	}
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after delete = %d, want 1", n)
-	}
-	if calls := enqueuer.CallsOfKind("ruler_pass"); len(calls) != 1 || calls[0].Transactional {
-		t.Fatalf("delete enqueue calls = %#v, want a post-commit Enqueue call", calls)
 	}
 }
 
@@ -153,8 +143,8 @@ func TestRuleHintEnqueueFollowsStoreCommit(t *testing.T) {
 		t.Fatalf("create status = %d, want 201", resp.StatusCode)
 	}
 	calls := enqueuer.CallsOfKind("ruler_pass")
-	if len(calls) != 1 || calls[0].Transactional {
-		t.Fatalf("ruler_pass calls = %#v, want one post-commit Enqueue", calls)
+	if len(calls) != 1 {
+		t.Fatalf("ruler_pass calls = %d, want 1", len(calls))
 	}
 }
 

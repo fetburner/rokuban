@@ -16,7 +16,6 @@ import (
 	"github.com/riverqueue/river/riverdriver/riverpgxv5"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
@@ -152,26 +151,6 @@ func (adapter *Adapter) Enqueue(ctx context.Context, args jobq.Args, opts ...job
 	result, err := client.Insert(ctx, riverEnvelope{args: args}, &insertOpts)
 	if err != nil {
 		return jobq.Result{}, fmt.Errorf("riveradapter: inserting %q: %w", args.Kind(), err)
-	}
-	return jobq.Result{Coalesced: result.UniqueSkippedAsDuplicate}, nil
-}
-
-// EnqueueTx inserts args in tx so delivery follows the transaction commit.
-func (adapter *Adapter) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	client := adapter.clientSnapshot()
-	if client == nil {
-		return jobq.Result{}, errors.New("riveradapter: client is nil")
-	}
-	if tx == nil {
-		return jobq.Result{}, errors.New("riveradapter: transaction is nil")
-	}
-	insertOpts, err := makeInsertOpts(adapter.queueFor, args, opts...)
-	if err != nil {
-		return jobq.Result{}, err
-	}
-	result, err := client.InsertTx(ctx, tx, riverEnvelope{args: args}, &insertOpts)
-	if err != nil {
-		return jobq.Result{}, fmt.Errorf("riveradapter: inserting %q in transaction: %w", args.Kind(), err)
 	}
 	return jobq.Result{Coalesced: result.UniqueSkippedAsDuplicate}, nil
 }

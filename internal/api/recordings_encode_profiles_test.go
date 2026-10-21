@@ -206,9 +206,6 @@ func TestAddRecordingEncodeProfiles_EnqueuesAfterCommit(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("encode_reconcile enqueue calls = %d, want 1", len(calls))
 	}
-	if calls[0].Transactional {
-		t.Errorf("encode_reconcile enqueue call = %#v, want commit-following Enqueue", calls[0])
-	}
 	if got := getRecordingEncodeProfiles(t, pool, id); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("encode profiles after handler = %v, want [h264]", got)
 	}

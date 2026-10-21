@@ -98,10 +98,6 @@ func (enqueuer *recordingEnqueuer) Enqueue(_ context.Context, args jobq.Args, _ 
 	return jobq.Result{}, nil
 }
 
-func (enqueuer *recordingEnqueuer) EnqueueTx(ctx context.Context, _ db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return enqueuer.Enqueue(ctx, args, opts...)
-}
-
 func (enqueuer *recordingEnqueuer) Enqueued(kind string) []jobq.Args {
 	enqueuer.mu.Lock()
 	defer enqueuer.mu.Unlock()

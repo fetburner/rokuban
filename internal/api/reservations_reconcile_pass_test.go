@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -46,10 +45,6 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 	if n := countRulerPassEnqueues(enqueuer); n != 1 {
 		t.Fatalf("ruler_pass enqueue calls after put intent{record} = %d, want 1", n)
 	}
-	if calls := enqueuer.CallsOfKind("ruler_pass"); calls[0].Transactional {
-		t.Fatalf("intent hint = %#v, want a post-commit Enqueue call", calls[0])
-	}
-
 	enqueuer.Reset()
 
 	resp2 := putIntentRequest(t, srv, programID, "skip")
@@ -85,9 +80,6 @@ func TestPutProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 	if enqueuer.calls != 1 || !enqueuer.visibleAtEnqueue || !enqueuer.rulerPassArgsCorrect {
 		t.Fatalf("program intent enqueue state = %+v, want committed intent and ruler_pass args", enqueuer)
 	}
-	if enqueuer.transactional {
-		t.Fatal("intent hint used EnqueueTx, want Enqueue after store commit")
-	}
 }
 
 func TestPatchProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
@@ -113,9 +105,6 @@ func TestPatchProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 	_ = resp.Body.Close()
 	if enqueuer.calls != 1 || !enqueuer.visibleAtEnqueue || !enqueuer.rulerPassArgsCorrect {
 		t.Fatalf("program overrides enqueue state = %+v, want committed overrides and ruler_pass args", enqueuer)
-	}
-	if enqueuer.transactional {
-		t.Fatal("overrides hint used EnqueueTx, want Enqueue after store commit")
 	}
 }
 
@@ -184,8 +173,8 @@ func TestDeleteProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete intent status = %d, want 204", resp.StatusCode)
 	}
-	if enqueuer.calls != 1 || !enqueuer.called || enqueuer.visibleAtEnqueue || enqueuer.transactional || !enqueuer.rulerPassArgsCorrect {
-		t.Fatalf("delete intent enqueue state = %+v, want committed deletion and ruler_pass args before Enqueue", enqueuer)
+	if enqueuer.calls != 1 || !enqueuer.called || enqueuer.visibleAtEnqueue || !enqueuer.rulerPassArgsCorrect {
+		t.Fatalf("delete intent enqueue state = %+v, want committed deletion and ruler_pass args at Enqueue", enqueuer)
 	}
 }
 
@@ -214,8 +203,8 @@ func TestDeleteProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete overrides status = %d, want 204", resp.StatusCode)
 	}
-	if enqueuer.calls != 1 || !enqueuer.called || enqueuer.visibleAtEnqueue || enqueuer.transactional || !enqueuer.rulerPassArgsCorrect {
-		t.Fatalf("delete overrides enqueue state = %+v, want committed deletion and ruler_pass args before Enqueue", enqueuer)
+	if enqueuer.calls != 1 || !enqueuer.called || enqueuer.visibleAtEnqueue || !enqueuer.rulerPassArgsCorrect {
+		t.Fatalf("delete overrides enqueue state = %+v, want committed deletion and ruler_pass args at Enqueue", enqueuer)
 	}
 }
 
@@ -240,8 +229,8 @@ func TestPutProgramIntent_EnqueueFailureDoesNotFailCommittedWrite(t *testing.T) 
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("put intent after enqueue failure status = %d, want 204", resp.StatusCode)
 	}
-	if enqueuer.calls != 1 || !enqueuer.called || !enqueuer.visibleAtEnqueue || enqueuer.transactional || !enqueuer.rulerPassArgsCorrect {
-		t.Fatalf("enqueue state = %+v, want committed write, ruler_pass args, and no EnqueueTx", enqueuer)
+	if enqueuer.calls != 1 || !enqueuer.called || !enqueuer.visibleAtEnqueue || !enqueuer.rulerPassArgsCorrect {
+		t.Fatalf("enqueue state = %+v, want committed write and ruler_pass args", enqueuer)
 	}
 }
 
@@ -275,7 +264,6 @@ type committedRowEnqueuer struct {
 	calls                int
 	called               bool
 	rulerPassArgsCorrect bool
-	transactional        bool
 	enqueueErr           error
 }
 
@@ -300,9 +288,4 @@ func (e *committedRowEnqueuer) Enqueue(ctx context.Context, args jobq.Args, _ ..
 		return jobq.Result{}, errors.New("row visibility does not match expected committed state")
 	}
 	return jobq.Result{}, e.enqueueErr
-}
-
-func (e *committedRowEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
-	e.transactional = true
-	return jobq.Result{}, errors.New("unexpected transactional enqueue")
 }

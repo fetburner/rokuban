@@ -4,16 +4,13 @@ import (
 	"context"
 	"sync"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
 // EnqueueCall records one invocation of a RecordingEnqueuer.
 type EnqueueCall struct {
-	Args          jobq.Args
-	Options       []jobq.EnqueueOpt
-	Transactional bool
-	Tx            db.Tx
+	Args    jobq.Args
+	Options []jobq.EnqueueOpt
 }
 
 // RecordingEnqueuer records enqueue requests for tests of jobq callers.
@@ -33,17 +30,6 @@ func (enqueuer *RecordingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, 
 		return jobq.Result{}, err
 	}
 	enqueuer.record(EnqueueCall{Args: args, Options: append([]jobq.EnqueueOpt(nil), opts...)})
-	return jobq.Result{}, nil
-}
-
-// EnqueueTx records a transactional enqueue request and returns the adapter's neutral result.
-func (enqueuer *RecordingEnqueuer) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if err := ctx.Err(); err != nil {
-		return jobq.Result{}, err
-	}
-	enqueuer.record(EnqueueCall{
-		Args: args, Options: append([]jobq.EnqueueOpt(nil), opts...), Transactional: true, Tx: tx,
-	})
 	return jobq.Result{}, nil
 }
 

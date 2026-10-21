@@ -60,7 +60,7 @@ import 境界の linter は、本番コードによる River adapter の直接 i
 
 - ジョブ引数の型の置き場: `internal/jobs`
 - 投入側と実行側が共有する契約: `internal/jobq` の `Kind` / `Spec`
-- トランザクション内の投入と CLI の単発投入: `EnqueueTx` / `Enqueue`、合流の表示は `Result.Coalesced`
+- commit 後のヒントと CLI の単発投入: `Enqueue`、合流の表示は `Result.Coalesced`
 - River への変換の閉じ込め先: `internal/jobq/riveradapter`、投入オプションは `InsertOpts`
 - 中立なレジストリ: `jobq.Registry`
 - 仕様の型と検査: `jobq.WorkerSpec` の `Validate` / `Select` / `CheckKinds` / `CheckQueueFor`

@@ -89,8 +89,6 @@ linters:
             - "!${config-path}/internal/role/leader.go"
             - "!${config-path}/internal/testutil/**"
             - "!${config-path}/cmd/rokuban/**"
-            # 移設待ち。移したタスクが行を消す。増やさない。
-            - "!${config-path}/internal/jobq/jobqfake/fake.go"
           deny:
             - pkg: github.com/jackc/pgx
               desc: pgx imports are limited to pgstore, the database foundation and composition roots
@@ -146,7 +144,6 @@ linters:
             - "!$test"
           allow:
             - $gostd
-            - github.com/fetburner/rokuban/internal/db
             - github.com/fetburner/rokuban/internal/jobq
             - github.com/jackc/pgx
             - github.com/riverqueue/river
