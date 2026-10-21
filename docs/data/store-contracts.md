@@ -222,7 +222,7 @@ streamer のハンドラは `MediaServing` を受け取る。worker のジョブ
 
 worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
-エンコード worker が使う現在の keep 区間・録画時刻・通知対象も `MediaReconcile` から読む。チャプターから keep を作る処理は store に一つだけ置き、エンコード計画と公開時の再確認で同じ導出を使う。通知対象は通常の録画読み取りと同じく purged 後も返すため、終端通知の局・番組名を保てる。
+エンコード worker が使う現在の keep 区間・録画時刻・通知対象も `MediaReconcile` から読む。現在の keep は所有状態と区間を同じ読み取り専用 RepeatableRead snapshot から読み、チャプターから keep を作る処理は store に一つだけ置く。エンコード計画と公開時の再確認は同じ導出を使う。通知対象は通常の録画読み取りと同じく purged 後も返すため、終端通知の局・番組名を保てる。
 
 ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にし、`rel_path` の衝突確認は削除途中の行も含む安価なヒントとして使う。一意性の最終判断は原本を公開する `MediaPublish` の tx に任せるため、転送前の確認を公開契約の代わりにしてはならない。
 

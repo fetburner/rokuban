@@ -280,7 +280,20 @@ func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) 
 
 // GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
 func (s *Media) GetCurrentCutKeep(ctx context.Context, recordingID int64) ([]chapters.Range, bool, error) {
-	return currentCutKeep(ctx, sqlcgen.New(s.pool), recordingID)
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, false, fmt.Errorf("beginning current cut keep read for recording %d: %w", recordingID, err)
+	}
+	defer rollback(tx)
+
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(tx), recordingID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("committing current cut keep read for recording %d: %w", recordingID, err)
+	}
+	return keep, owned, nil
 }
 
 func assetKeepRanges(ctx context.Context, q *sqlcgen.Queries, assetID int64) ([]chapters.Range, error) {
