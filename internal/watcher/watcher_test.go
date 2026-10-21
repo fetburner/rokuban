@@ -8,18 +8,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -79,6 +82,80 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	mc := mirakc.NewClient("http://unused:40772", nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 	return w, pool
+}
+
+func seedRecordSweepMarker(t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	ctx := context.Background()
+	markerAt := time.Date(2000, time.January, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO record_sweep_snapshots (site, last_success_at)
+		VALUES ($1, $2)`, DefaultSite, markerAt,
+	); err != nil {
+		t.Fatalf("seeding record sweep marker: %v", err)
+	}
+	return markerAt
+}
+
+func requireRecordSweepMarker(t *testing.T, pool *pgxpool.Pool, want time.Time) {
+	t.Helper()
+	var got time.Time
+	if err := pool.QueryRow(context.Background(), `
+		SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite,
+	).Scan(&got); err != nil {
+		t.Fatalf("reading record sweep marker: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Errorf("record sweep marker = %s, want unchanged %s", got, want)
+	}
+}
+
+func seedSweepLastPassMetric(t *testing.T) float64 {
+	t.Helper()
+	previous := promtestutil.ToFloat64(metrics.SweepLastPass)
+	const sentinel = 12345
+	metrics.SweepLastPass.Set(sentinel)
+	t.Cleanup(func() { metrics.SweepLastPass.Set(previous) })
+	return sentinel
+}
+
+func requireSweepLastPassMetric(t *testing.T, want float64) {
+	t.Helper()
+	if got := promtestutil.ToFloat64(metrics.SweepLastPass); got != want {
+		t.Errorf("SweepLastPass = %v, want unchanged %v", got, want)
+	}
+}
+
+func installSweepFailureTrigger(t *testing.T, pool *pgxpool.Pool, triggerName, tableName, condition string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		CREATE FUNCTION rokuban_test_fail_sweep_insert() RETURNS trigger
+		LANGUAGE plpgsql AS $$
+		BEGIN
+			RAISE EXCEPTION 'injected sweep failure';
+		END;
+		$$`); err != nil {
+		t.Fatalf("creating sweep failure trigger function: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(), fmt.Sprintf(
+			"DROP TRIGGER IF EXISTS %s ON %s", triggerName, tableName,
+		)); err != nil {
+			t.Errorf("dropping sweep failure trigger: %v", err)
+		}
+		if _, err := pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS rokuban_test_fail_sweep_insert()`); err != nil {
+			t.Errorf("dropping sweep failure trigger function: %v", err)
+		}
+	})
+	query := fmt.Sprintf(`
+		CREATE TRIGGER %s
+		BEFORE INSERT ON %s
+		FOR EACH ROW WHEN (%s)
+		EXECUTE FUNCTION rokuban_test_fail_sweep_insert()`, triggerName, tableName, condition)
+	if _, err := pool.Exec(ctx, query); err != nil {
+		t.Fatalf("creating sweep failure trigger: %v", err)
+	}
 }
 
 // insertTestProgramSnapshot は program_snapshots 行を作る。#27 で番組の事実の
@@ -1289,6 +1366,10 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode(records)
@@ -1298,9 +1379,19 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+	markerBefore := seedRecordSweepMarker(t, pool)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
+	}
+	var markerAt time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite,
+	).Scan(&markerAt); err != nil {
+		t.Fatalf("reading successful record sweep marker: %v", err)
+	}
+	if !markerAt.After(markerBefore) {
+		t.Errorf("record sweep marker = %s, want a time after previous marker %s", markerAt, markerBefore)
 	}
 
 	var syncCount int
@@ -1342,6 +1433,199 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	if got := len(calls); got != 4 {
 		t.Errorf("ingest enqueue calls after 2nd sweep = %d, want 4", got)
 	}
+}
+
+func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+
+	const failingRecordID = "sweep-fail-record"
+	createTestReservation(t, pool, 200010)
+	createTestReservation(t, pool, 200011)
+	createTestReservation(t, pool, 200012)
+	installSweepFailureTrigger(t, pool, "fail_sweep_record_sync_insert", "record_sync",
+		"NEW.record_id = 'sweep-fail-record'")
+
+	records := []mirakc.Record{
+		testRecord("sweep-good-before-failure", 200010, db.RecordingStatusFinished),
+		testRecord(failingRecordID, 200011, db.RecordingStatusFinished),
+		testRecord("sweep-good-after-failure", 200012, db.RecordingStatusFinished),
+	}
+	for i := range records {
+		records[i].Program.EventID = i + 10
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(records)
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	markerAt := seedRecordSweepMarker(t, pool)
+	lastPass := seedSweepLastPassMetric(t)
+
+	err := w.Sweep(ctx)
+	if err == nil {
+		t.Fatal("Sweep returned nil after a record failed")
+	}
+	if !strings.Contains(err.Error(), failingRecordID) {
+		t.Errorf("Sweep error %q does not identify failing record %q", err, failingRecordID)
+	}
+
+	var recordingCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
+		t.Fatalf("counting recordings: %v", err)
+	}
+	if recordingCount != 2 {
+		t.Errorf("recordings count = %d, want 2 successful records", recordingCount)
+	}
+
+	rows, err := pool.Query(ctx, "SELECT record_id FROM record_sync WHERE site = $1 ORDER BY record_id", DefaultSite)
+	if err != nil {
+		t.Fatalf("querying record_sync rows: %v", err)
+	}
+	defer rows.Close()
+	var gotRecordIDs []string
+	for rows.Next() {
+		var recordID string
+		if err := rows.Scan(&recordID); err != nil {
+			t.Fatalf("scanning record_sync row: %v", err)
+		}
+		gotRecordIDs = append(gotRecordIDs, recordID)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterating record_sync rows: %v", err)
+	}
+	wantRecordIDs := []string{"sweep-good-after-failure", "sweep-good-before-failure"}
+	if !reflect.DeepEqual(gotRecordIDs, wantRecordIDs) {
+		t.Errorf("record_sync record IDs = %v, want %v", gotRecordIDs, wantRecordIDs)
+	}
+	requireRecordSweepMarker(t, pool, markerAt)
+	requireSweepLastPassMetric(t, lastPass)
+}
+
+func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+	createTestReservation(t, pool, 200013)
+	record := testRecord("sweep-after-schedule-list-failure", 200013, db.RecordingStatusFinished)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		http.Error(rw, "injected schedules failure", http.StatusInternalServerError)
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	markerAt := seedRecordSweepMarker(t, pool)
+	lastPass := seedSweepLastPassMetric(t)
+
+	err := w.Sweep(ctx)
+	if err == nil {
+		t.Fatal("Sweep returned nil after ListSchedules failed")
+	}
+	if !strings.Contains(err.Error(), "listing schedules") {
+		t.Errorf("Sweep error %q does not identify ListSchedules failure", err)
+	}
+
+	var recordingCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
+		t.Fatalf("counting recordings: %v", err)
+	}
+	if recordingCount != 1 {
+		t.Errorf("recordings count = %d, want 1 record processed despite ListSchedules failure", recordingCount)
+	}
+	requireRecordSweepMarker(t, pool, markerAt)
+	requireSweepLastPassMetric(t, lastPass)
+}
+
+func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
+	baseWatcher, pool := setupTest(t)
+	ctx := context.Background()
+	const failedProgramID = int64(200014)
+	createTestReservation(t, pool, failedProgramID)
+	createTestReservation(t, pool, 200015)
+	installSweepFailureTrigger(t, pool, "fail_sweep_failed_recording_insert", "recordings", "NEW.event_id = 42")
+
+	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
+	duration := int64(3600000)
+	name := "Failed schedule"
+	reason := mirakc.FailedReason{Type: "start-recording-failed"}
+	schedule := mirakc.Schedule{
+		State:        db.RecordingStatusFailed,
+		FailedReason: &reason,
+		Program: mirakc.Program{
+			ID:        failedProgramID,
+			EventID:   42,
+			ServiceID: 1024,
+			NetworkID: 32736,
+			StartAt:   &startAt,
+			Duration:  &duration,
+			IsFree:    true,
+			Name:      &name,
+		},
+	}
+	record := testRecord("sweep-record-after-failed-schedule", 200015, db.RecordingStatusFinished)
+	record.Program.EventID = 43
+	services := []mirakc.Service{{
+		ServiceID: 1024,
+		NetworkID: 32736,
+		Name:      "NHK総合",
+		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
+	}}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode(services)
+	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
+	})
+	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	markerAt := seedRecordSweepMarker(t, pool)
+	lastPass := seedSweepLastPassMetric(t)
+
+	err := w.Sweep(ctx)
+	if err == nil {
+		t.Fatal("Sweep returned nil after failed schedule processing failed")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("program_id %d", failedProgramID)) {
+		t.Errorf("Sweep error %q does not identify failed schedule program %d", err, failedProgramID)
+	}
+
+	var recordingCount int
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
+		t.Fatalf("counting recordings: %v", err)
+	}
+	if recordingCount != 1 {
+		t.Errorf("recordings count = %d, want 1 record processed despite failed schedule", recordingCount)
+	}
+	requireRecordSweepMarker(t, pool, markerAt)
+	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_RecoversFailedSchedule(t *testing.T) {
@@ -1763,6 +2047,10 @@ func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
 	current := testRecord("current-external", 903, "finished")
 	current.Tags = nil
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode([]mirakc.Record{current})
@@ -1825,6 +2113,10 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	anchor.Tags = nil
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode([]mirakc.Record{anchor})
@@ -1893,6 +2185,10 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 
 		mux := http.NewServeMux()
 		// (c) Sweep が使う全量取得エンドポイント。
+		mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+			rw.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+		})
 		mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 			rw.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})

@@ -131,6 +131,10 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "forced record list failure", http.StatusServiceUnavailable)
 	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -155,14 +159,18 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	}
 }
 
-// newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/records と
-// /api/services への最小スタブを返す。records が nil なら空リストを返す。
+// newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/schedules、
+// /api/recording/records、/api/services への最小スタブを返す。records が nil なら空リストを返す。
 func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server {
 	t.Helper()
 	if records == nil {
 		records = []mirakc.Record{}
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode(records)
