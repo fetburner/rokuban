@@ -328,10 +328,10 @@ func buildReservationInputs(desiredIDs []int64, winner map[int64]int64, ruleByID
 	for _, programID := range desiredIDs {
 		var input store.RulerReservationInput
 		input.ProgramID = programID
-		// マッチしなければ dedup 根拠 2 列は nil のまま（前パスの根拠を残さない。不変条件 9）。
 		if ruleID, ok := winner[programID]; ok {
 			ruleIDCopy := ruleID
 			input.RuleID = &ruleIDCopy
+			// マッチしなければ dedup 根拠 2 列は nil のまま（前パスの根拠を残さない。不変条件 9）。
 			match, matched := dedupeMatches[programID]
 			if matched {
 				recordingID, similarity := match.RecordingID, match.Similarity
