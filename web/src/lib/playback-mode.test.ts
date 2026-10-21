@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { playbackStrategy } from '@/lib/playback-mode'
 
 describe('playbackStrategy', () => {
-  it('live は番組軸・ライブ離脱先・同じ秒の起点を持ち、録画シークを持たない', () => {
+  it('live は番組の時間軸・ライブ離脱先・同じ秒の起点を持ち、録画シークを持たない', () => {
     const strategy = playbackStrategy({
       mode: 'live',
       site: 'a b',
@@ -32,7 +32,7 @@ describe('playbackStrategy', () => {
     expect(strategy.originSeconds(10)).toBe(10)
   })
 
-  it('chase は伸びる番組軸・録画先頭基準の seek・offset 離脱先を持つ', () => {
+  it('chase は伸びる番組の時間軸・録画先頭基準の seek・offset 離脱先を持つ', () => {
     const strategy = playbackStrategy({
       mode: 'chase',
       site: 'default',

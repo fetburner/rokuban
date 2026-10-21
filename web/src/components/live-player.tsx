@@ -1631,7 +1631,7 @@ export function LivePlayer(props: LivePlayerProps) {
     onLiveProgramSeek?.(seconds)
   }
   /**
-   * seekRecording は録画軸の秒（追っかけは番組開始から、原本は録画先頭から）へ移る。範囲は方略が丸める。
+   * seekRecording は時間軸上の秒（追っかけは番組開始から、原本は録画先頭から）へ移る。範囲は strategy が丸める。
    * 今のセッションの seekable の中ならセッション内をシークし、外なら、その秒を offset にして
    * セッションを張り直す（古いセッションへの leave ヒントは offset が変わったときの effect の
    * cleanup が送る）。範囲はバッファ済みではなく seekable で判定する（`seekOffsetSession`。追っかけも同じ）。

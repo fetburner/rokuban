@@ -19,7 +19,7 @@ type LiveProgramInput = Omit<Parameters<typeof liveProgramPlaybackTimeline>[0], 
 type ChaseTimelineInput = Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
 
 /**
- * PlaybackStrategyInput は LivePlayer の props のうち時間軸が読む欄を、mode で判別できる形のまま持つ。
+ * PlaybackStrategyInput は LivePlayer の props のうち strategy が読む欄を、mode で判別できる形のまま持つ。
  * 欄の取り違えはコンパイル時に落ちる。
  */
 export type PlaybackStrategyInput =
@@ -51,7 +51,7 @@ export function recordingDurationSeconds(durationMs: number | undefined): number
 /** PlaybackStrategy はモードごとの時間軸・録画シーク・離脱先・セッション起点をまとめる。 */
 export type PlaybackStrategy = {
   axis: (hoverSeconds: number | null) => PlaybackTimeline | undefined
-  /** 録画再生の方略だけが持つ。seekTarget はシークできないとき undefined を返す。 */
+  /** 録画再生の strategy だけが持つ。seekTarget はシークできないとき undefined を返す。 */
   recording?: {
     seekTarget: (axisSeconds: number) => number | undefined
   }
@@ -61,7 +61,7 @@ export type PlaybackStrategy = {
 
 const identityOriginSeconds = (offsetSeconds: number): number => offsetSeconds
 
-/** playbackStrategy はモードごとの時間軸方略を作る。 */
+/** playbackStrategy はモードごとの時間軸の strategy を作る。 */
 export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy {
   switch (input.mode) {
     case 'live': {
