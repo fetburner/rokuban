@@ -1634,7 +1634,8 @@ export function LivePlayer(props: LivePlayerProps) {
    * seekRecording は録画軸の秒（追っかけは番組開始から、原本は録画先頭から）へ移る。範囲は方略が丸める。
    * 今のセッションの seekable の中ならセッション内をシークし、外なら、その秒を offset にして
    * セッションを張り直す（古いセッションへの leave ヒントは offset が変わったときの effect の
-   * cleanup が送る）。原本は範囲を seekable で判定する。WebKit のネイティブ HLS は ENDLIST の無い
+   * cleanup が送る）。範囲はバッファ済みではなく seekable で判定する（`seekOffsetSession`。追っかけも同じ）。
+   * 原本の事情として、WebKit のネイティブ HLS は ENDLIST の無い
    * playlist の seekable を先端の 3 target duration 手前で止め（④ の状態で time 7.8 / seekable 2）、
    * その先への代入は seekable の終端に丸める（同じ状態で currentTime = 5 が 2 になった。
    * バッファは 7.73 まであった。Playwright WebKit で 1 回測定）。だから seekable の外は張り直す。
