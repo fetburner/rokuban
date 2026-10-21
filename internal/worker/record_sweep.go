@@ -53,6 +53,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, args jobs.RecordSweepArgs)
 		return fmt.Errorf("record sweep: job enqueuer is nil")
 	}
 
-	wt := watcher.New(args.Site, client, pgstore.NewRecordings(w.Pool), w.Enqueuer, w.Webhook)
+	wt := watcher.New(args.Site, client, pgstore.NewRecordings(w.Pool), pgstore.NewReservations(w.Pool), w.Enqueuer, w.Webhook)
 	return wt.Sweep(ctx)
 }

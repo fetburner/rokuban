@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/fetburner/rokuban/internal/capacity"
-	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -133,16 +133,23 @@ type previewProgramKey struct {
 }
 
 func (h *Server) removeDedupeSkips(ctx context.Context, ruleID int64, candidates []capacity.PreviewCandidate) ([]capacity.PreviewCandidate, error) {
-	bySite := make(map[string][]ruler.DedupeCandidate)
+	if len(candidates) == 0 {
+		return candidates, nil
+	}
+	if h.dedupe == nil {
+		return nil, fmt.Errorf("ruler dedupe store is required")
+	}
+	bySite := make(map[string][]store.RulerDedupeCandidate)
 	for _, candidate := range candidates {
-		bySite[candidate.Site] = append(bySite[candidate.Site], ruler.DedupeCandidate{
+		bySite[candidate.Site] = append(bySite[candidate.Site], store.RulerDedupeCandidate{
 			ProgramID: candidate.ProgramID,
 			RuleID:    ruleID,
 		})
 	}
 	skipped := make(map[previewProgramKey]struct{})
+	now := time.Now().UTC()
 	for _, site := range sortedPreviewSites(bySite) {
-		matches, err := ruler.EvaluateDedupe(ctx, h.pool, site, bySite[site])
+		matches, err := h.dedupe.EvaluateDedupe(ctx, site, bySite[site], now)
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +172,7 @@ func (h *Server) removeDedupeSkips(ctx context.Context, ruleID int64, candidates
 	return filtered, nil
 }
 
-func sortedPreviewSites(groups map[string][]ruler.DedupeCandidate) []string {
+func sortedPreviewSites(groups map[string][]store.RulerDedupeCandidate) []string {
 	sites := make([]string, 0, len(groups))
 	for site := range groups {
 		sites = append(sites, site)

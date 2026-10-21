@@ -20,6 +20,17 @@ type BreakerSampleProgram struct {
 	Title     string `json:"title,omitempty"`
 }
 
+// BreakerSampleLimit はブレーカー detail に保存する抜粋件数の上限である。
+const BreakerSampleLimit = 20
+
+// TruncateBreakerSample は detail に保存するサンプルを上限件数に整える。
+func TruncateBreakerSample(sample BreakerSample) BreakerSample {
+	if len(sample.Programs) > BreakerSampleLimit {
+		sample.Programs = sample.Programs[:BreakerSampleLimit]
+	}
+	return sample
+}
+
 // CircuitBreaker は発動中のサーキットブレーカーを表す。
 type CircuitBreaker struct {
 	Site      string

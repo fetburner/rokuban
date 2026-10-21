@@ -2,16 +2,13 @@ package metrics
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // loopPassQueryTimeout は loop pass marker collector が scrape を占有する上限。
@@ -26,8 +23,8 @@ const loopPassQueryTimeout = 5 * time.Second
 // それらを DB-backed の値で置き換えず、ScaledJob の停止検出にはこの collector が
 // 出す site ラベル付きメトリクスを使う。
 type LoopPassCollector struct {
-	pool *pgxpool.Pool
-	site string
+	markers store.LoopMarkers
+	site    string
 
 	ruler  *prometheus.Desc
 	sweep  *prometheus.Desc
@@ -35,11 +32,11 @@ type LoopPassCollector struct {
 }
 
 // NewLoopPassCollector は 1 サイト分の ruler / record_sweep collector を作る。
-func NewLoopPassCollector(pool *pgxpool.Pool, site string) *LoopPassCollector {
+func NewLoopPassCollector(markers store.LoopMarkers, site string) *LoopPassCollector {
 	labels := prometheus.Labels{"site": site}
 	return &LoopPassCollector{
-		pool: pool,
-		site: site,
+		markers: markers,
+		site:    site,
 		ruler: prometheus.NewDesc(
 			"rokuban_ruler_last_success_timestamp_seconds",
 			"Unix time of the last successful ruler pass for this site. Zero means no pass has completed.",
@@ -91,28 +88,20 @@ type loopPassResult struct {
 }
 
 func (c *LoopPassCollector) read(ctx context.Context) (loopPassResult, error) {
-	q := sqlcgen.New(c.pool)
-
-	rulerAt, rulerErr := q.GetRulerPassSnapshot(ctx, c.site)
-	if rulerErr != nil && !errors.Is(rulerErr, pgx.ErrNoRows) {
-		return loopPassResult{}, fmt.Errorf("reading ruler pass marker: %w", rulerErr)
-	}
-
-	sweepAt, sweepErr := q.GetRecordSweepSnapshot(ctx, c.site)
-	if sweepErr != nil && !errors.Is(sweepErr, pgx.ErrNoRows) {
-		return loopPassResult{}, fmt.Errorf("reading record sweep marker: %w", sweepErr)
+	markers, err := c.markers.ReadLoopMarkers(ctx, c.site)
+	if err != nil {
+		return loopPassResult{}, fmt.Errorf("reading loop pass markers: %w", err)
 	}
 
 	return loopPassResult{
-		rulerAt: timestampSeconds(rulerAt, rulerErr),
-		sweepAt: timestampSeconds(sweepAt, sweepErr),
+		rulerAt: timestampSeconds(markers.RulerLastSuccessAt),
+		sweepAt: timestampSeconds(markers.RecordSweepLastSuccessAt),
 	}, nil
 }
 
-// timestampSeconds は marker の ErrNoRows を 0 に変換する。ruler と sweep の
-// 個別エラーを保持するため、呼び出し側で取得した err をそのまま渡す。
-func timestampSeconds(at time.Time, err error) float64 {
-	if errors.Is(err, pgx.ErrNoRows) {
+// timestampSeconds は未作成の marker を 0 に変換する。
+func timestampSeconds(at *time.Time) float64 {
+	if at == nil {
 		return 0
 	}
 	return float64(at.UnixNano()) / float64(time.Second)

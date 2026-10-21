@@ -19,14 +19,30 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 const testSite = db.DefaultSite
 
+type gatedProgramSearch struct {
+	store.ProgramSearch
+	entered chan struct{}
+	resume  chan struct{}
+}
+
+func (s *gatedProgramSearch) MatchProgramIDsForRule(ctx context.Context, site string, ruleID int64) ([]int64, error) {
+	if s.resume != nil {
+		close(s.entered)
+		<-s.resume
+	}
+	return s.ProgramSearch.MatchProgramIDsForRule(ctx, site, ruleID)
+}
+
 func newRuler(sites []string, pool *pgxpool.Pool, cfg *ruler.Config) *ruler.Ruler {
-	return ruler.New(sites, pool, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg, pgstore.NewEPG(pool))
+	reservations := pgstore.NewReservations(pool)
+	return ruler.New(sites, reservations, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), reservations, cfg, pgstore.NewEPG(pool))
 }
 
 // テスト全体で使い回す単一のチャンネル。複数チャンネルを区別する必要のある
@@ -2041,9 +2057,9 @@ func TestRunPass_CircuitBreakerTrippedAtNotUpdatedOnRepeatedTrip(t *testing.T) {
 	}
 }
 
-// ruler が tx 内で発動したとき、breaker.TripInTx が発動ゲージを 1 にする。
+// ApplyPass が発動を commit した後、ruler が発動ゲージを 1 にする。
 // パスの先頭の ObserveState は 0 に合わせるので、1 になっていれば発動経路が立てている。
-func TestRunPass_TripInTxRaisesCircuitBreakerGauge(t *testing.T) {
+func TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
@@ -2473,7 +2489,7 @@ func TestRunPass_ReleasedDeleteGuard_RecordIntentBlocksStaleDelete(t *testing.T)
 // 実測で固定する事実（PR #273 のレビューで最初の論証が偽と判明した箇所）:
 // **`reservations.rule_id` は EPG の変化だけでも NULL になる。** 投資
 // （`program_overrides` / `intent{record}`）を持つ行はルールが外れても desired に
-// 残るのでそのパスで upsert され、`internal/ruler/sql.go` の resolved CTE が凍結
+// 残るのでそのパスで upsert され、`internal/store/pgstore/rulerpass.go` の resolved CTE が凍結
 // するのは `base` と dedup 根拠 2 列だけで、`rule_id = EXCLUDED.rule_id` が
 // そのまま NULL を書くため。
 //
@@ -2675,6 +2691,70 @@ func TestRunPass_RetractGrace_KeepsImminentUnmatch(t *testing.T) {
 	if !after.CreatedAt.Equal(before.CreatedAt) {
 		t.Errorf("created_at changed from %v to %v: grace should freeze the row, not recreate it",
 			before.CreatedAt, after.CreatedAt)
+	}
+}
+
+func TestRunPass_RetractGrace_UsesTimeAtApplyAfterSlowEvaluation(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	insertService(t, pool, ctx)
+	initialStart := time.Now().Add(24 * time.Hour).Truncate(time.Second)
+	const programID = 40012
+	insertProgram(t, pool, ctx, programID, "遅延評価対象", initialStart)
+	ruleID := insertRule(t, pool, ctx, "grace-slow-evaluation", 10)
+	insertRuleKeyword(t, pool, ctx, ruleID, "遅延評価対象")
+
+	reservations := pgstore.NewReservations(pool)
+	search := &gatedProgramSearch{ProgramSearch: pgstore.NewEPG(pool)}
+	r := ruler.New([]string{testSite}, reservations, pgstore.NewBreakers(pool),
+		pgstore.NewNeverScheduledEvents(pool), reservations, &ruler.Config{RetractGrace: time.Second}, search)
+	if err := r.RunPass(ctx); err != nil {
+		t.Fatalf("initial RunPass: %v", err)
+	}
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Fatal("reservation should be created before the delayed pass")
+	}
+
+	start := time.Now().Add(1500 * time.Millisecond)
+	retractGraceUnmatch(t, pool, ctx, programID, "遅延評価で非マッチ", start)
+	search.entered = make(chan struct{})
+	search.resume = make(chan struct{})
+	defer func() {
+		select {
+		case <-search.resume:
+		default:
+			close(search.resume)
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() { done <- r.RunPass(ctx) }()
+	select {
+	case <-search.entered:
+	case err := <-done:
+		t.Fatalf("RunPass returned before matching was delayed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for rule matching to start")
+	}
+
+	// ルール評価を止めたまま、番組開始まで 800ms になってから適用を進める。
+	// 評価開始時の時刻では猶予外だが、適用時刻では猶予内になる。
+	if wait := time.Until(start.Add(-800 * time.Millisecond)); wait > 0 {
+		time.Sleep(wait)
+	}
+	close(search.resume)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunPass after delayed matching: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for delayed RunPass to finish")
+	}
+
+	if !reservationExists(t, pool, ctx, programID) {
+		t.Error("reservation was deleted using the stale evaluation time, despite entering the retract grace window before apply")
 	}
 }
 

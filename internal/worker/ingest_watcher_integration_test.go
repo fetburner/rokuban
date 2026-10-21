@@ -62,7 +62,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pgstore.NewRecordings(pool), watcherEnqueuer, nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), watcherEnqueuer, nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()

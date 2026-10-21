@@ -293,22 +293,6 @@ func (s *Recordings) DeleteStaleRecordSyncs(ctx context.Context, site string, li
 	return deleted, nil
 }
 
-// MarkSweepComplete は record 全量突き合わせの成功時刻を更新する。
-func (s *Recordings) MarkSweepComplete(ctx context.Context, site string) error {
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("beginning record sweep snapshot transaction: %w", err)
-	}
-	defer rollback(tx)
-	if err := sqlcgen.New(tx).UpsertRecordSweepSnapshot(ctx, site); err != nil {
-		return fmt.Errorf("upserting record sweep snapshot: %w", mapDatabaseError(err))
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("committing record sweep snapshot: %w", mapDatabaseError(err))
-	}
-	return nil
-}
-
 // GetRecordSyncIngestTarget は取り込み先と進捗の分母に使う観測値を返す。
 func (s *Recordings) GetRecordSyncIngestTarget(ctx context.Context, site, recordID string) (store.RecordIngestTarget, error) {
 	row, err := sqlcgen.New(s.pool).GetRecordSyncIngestTarget(ctx, sqlcgen.GetRecordSyncIngestTargetParams{

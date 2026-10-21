@@ -235,7 +235,7 @@ Rokuban の重複排除は、ルール id が一致する行だけを比較対�
 
 <details><summary>根拠</summary>
 
-- 重複排除の実装: `internal/ruler/dedupe.go`
+- 重複排除の実装: `internal/store/pgstore/rulerpass.go`
 - 比較対象を決める列: `recordings.rule_id`
 - ライブラリ import が使う登録: `internal/inplace.Register`
 - EPGStation の履歴: `RecordedHistory`
