@@ -9,7 +9,7 @@ describe('playbackStrategy', () => {
       site: 'a b',
       networkId: 1,
       serviceId: 2,
-      program: {
+      liveProgram: {
         startAt: '2026-10-17T10:00:00.000Z',
         endAt: '2026-10-17T11:00:00.000Z',
         nowMs: Date.parse('2026-10-17T10:30:00.000Z'),
@@ -37,7 +37,7 @@ describe('playbackStrategy', () => {
       mode: 'chase',
       site: 'default',
       recordingId: 42,
-      timeline: { chaseHeadOffsetSeconds: 1200, plannedSeconds: 3600, recordedSeconds: 1500 },
+      chaseTimeline: { chaseHeadOffsetSeconds: 1200, plannedSeconds: 3600, recordedSeconds: 1500 },
     })
 
     expect(strategy.axis(2800)).toMatchObject({
@@ -63,7 +63,7 @@ describe('playbackStrategy', () => {
       mode: 'original-vod',
       site: 'default',
       recordingId: 42,
-      durationSeconds: 4321,
+      recordingDurationMs: 4_321_000,
     })
 
     expect(strategy.axis(900)).toEqual({
@@ -76,6 +76,7 @@ describe('playbackStrategy', () => {
     expect(strategy.recording?.seekTarget(23.5)).toBe(23.5)
     expect(strategy.recording?.seekTarget(5000)).toBe(4321)
     expect(strategy.recording?.seekTarget(-1)).toBe(0)
+    expect(playbackStrategy({ mode: 'original-vod', site: 'default', recordingId: 42, recordingDurationMs: 0 }).recording?.seekTarget(10)).toBeUndefined()
     expect(strategy.leaveURL(90)).toBe('/api/sites/default/recordings/42/original-vod/offset/90/leave')
     expect(strategy.originSeconds(10)).toBeCloseTo(9.976633333, 9)
   })

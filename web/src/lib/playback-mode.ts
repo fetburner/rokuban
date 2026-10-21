@@ -18,22 +18,42 @@ export type PlaybackMode = 'live' | 'chase' | 'original-vod'
 type LiveProgramInput = Omit<Parameters<typeof liveProgramPlaybackTimeline>[0], 'hoverSeconds'>
 type ChaseTimelineInput = Pick<RecordingTimeline, 'chaseHeadOffsetSeconds' | 'plannedSeconds' | 'recordedSeconds'>
 
-type PlaybackStrategyInput = {
-  mode: PlaybackMode
-  site: string
-  networkId?: number
-  serviceId?: number
-  recordingId?: number
-  program?: LiveProgramInput
-  timeline?: ChaseTimelineInput
-  durationSeconds?: number
+/**
+ * PlaybackStrategyInput は LivePlayer の props のうち時間軸が読む欄を、mode で判別できる形のまま持つ。
+ * 欄の取り違えはコンパイル時に落ちる。
+ */
+export type PlaybackStrategyInput =
+  | {
+      mode: 'live'
+      site: string
+      networkId: number
+      serviceId: number
+      liveProgram?: LiveProgramInput
+    }
+  | {
+      mode: 'chase'
+      site: string
+      recordingId: number
+      chaseTimeline: ChaseTimelineInput
+    }
+  | {
+      mode: 'original-vod'
+      site: string
+      recordingId: number
+      recordingDurationMs: number
+    }
+
+/** recordingDurationSeconds は原本の実尺（ミリ秒）を秒へ直す。不正な値は 0（シーク不可）にする。 */
+export function recordingDurationSeconds(durationMs: number | undefined): number {
+  return durationMs !== undefined && Number.isFinite(durationMs) && durationMs > 0 ? durationMs / 1000 : 0
 }
 
 /** PlaybackStrategy はモードごとの時間軸・録画シーク・離脱先・セッション起点をまとめる。 */
 export type PlaybackStrategy = {
   axis: (hoverSeconds: number | null) => PlaybackTimeline | undefined
+  /** 録画再生の方略だけが持つ。seekTarget はシークできないとき undefined を返す。 */
   recording?: {
-    seekTarget: (axisSeconds: number) => number
+    seekTarget: (axisSeconds: number) => number | undefined
   }
   leaveURL: (offsetSeconds: number) => string
   originSeconds: (offsetSeconds: number) => number
@@ -41,49 +61,43 @@ export type PlaybackStrategy = {
 
 const identityOriginSeconds = (offsetSeconds: number): number => offsetSeconds
 
-function required<T>(value: T | undefined, name: string): T {
-  if (value === undefined) throw new Error(`playbackStrategy requires ${name}`)
-  return value
-}
-
 /** playbackStrategy はモードごとの時間軸方略を作る。 */
 export function playbackStrategy(input: PlaybackStrategyInput): PlaybackStrategy {
   switch (input.mode) {
     case 'live': {
-      const networkId = required(input.networkId, 'networkId for live')
-      const serviceId = required(input.serviceId, 'serviceId for live')
+      const { site, networkId, serviceId, liveProgram } = input
       return {
-        axis: (hoverSeconds) => input.program
-          ? liveProgramPlaybackTimeline({ ...input.program, hoverSeconds }) ?? undefined
+        axis: (hoverSeconds) => liveProgram
+          ? liveProgramPlaybackTimeline({ ...liveProgram, hoverSeconds }) ?? undefined
           : undefined,
-        leaveURL: () => liveLeaveURL(input.site, networkId, serviceId),
+        leaveURL: () => liveLeaveURL(site, networkId, serviceId),
         originSeconds: identityOriginSeconds,
       }
     }
     case 'chase': {
-      const recordingId = required(input.recordingId, 'recordingId for chase')
-      const timeline = required(input.timeline, 'timeline for chase')
+      const { site, recordingId, chaseTimeline } = input
       return {
-        axis: (hoverSeconds) => chasePlaybackTimeline(timeline, hoverSeconds),
+        axis: (hoverSeconds) => chasePlaybackTimeline(chaseTimeline, hoverSeconds),
         recording: {
           seekTarget: (axisSeconds) => {
-            const { headSeconds, liveEdgeSeconds } = chasePlaybackTimeline(timeline, null)
+            const { headSeconds, liveEdgeSeconds } = chasePlaybackTimeline(chaseTimeline, null)
             return Math.round(Math.max(0, Math.min(liveEdgeSeconds, axisSeconds) - headSeconds))
           },
         },
-        leaveURL: (offsetSeconds) => chaseLeaveURL(input.site, recordingId, offsetSeconds),
+        leaveURL: (offsetSeconds) => chaseLeaveURL(site, recordingId, offsetSeconds),
         originSeconds: identityOriginSeconds,
       }
     }
     case 'original-vod': {
-      const recordingId = required(input.recordingId, 'recordingId for original-vod')
-      const durationSeconds = required(input.durationSeconds, 'durationSeconds for original-vod')
+      const { site, recordingId } = input
+      const durationSeconds = recordingDurationSeconds(input.recordingDurationMs)
       return {
         axis: () => fixedPlaybackTimeline(durationSeconds),
         recording: {
-          seekTarget: (axisSeconds) => Math.max(0, Math.min(durationSeconds, axisSeconds)),
+          seekTarget: (axisSeconds) =>
+            durationSeconds > 0 ? Math.max(0, Math.min(durationSeconds, axisSeconds)) : undefined,
         },
-        leaveURL: (offsetSeconds) => originalVODLeaveURL(input.site, recordingId, offsetSeconds),
+        leaveURL: (offsetSeconds) => originalVODLeaveURL(site, recordingId, offsetSeconds),
         originSeconds: originalVODSessionOriginSeconds,
       }
     }
