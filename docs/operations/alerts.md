@@ -132,7 +132,7 @@ aging を超えて未登録の canonical file が残っているときは、候�
 
 | 系列 | 意味 |
 |---|---|
-| `rokuban_presync_pending{site,reason="missing"}` | 番組終了前に schedule が観測されない予約の数（options の解決不能を含む） |
+| `rokuban_presync_pending{site,reason="missing"}` | 終了前の予約のうち schedule が観測されないものの数（skip は除き、options を解決できない予約は含む） |
 | `rokuban_presync_pending{site,reason="options"}` | schedule が `scheduled` 状態で、設定が desired と食い違う予約の数 |
 | `rokuban_presync_pending{site,reason="options_deferred"}` | 設定が食い違うが、再作成を見送っている予約の数 |
 | `rokuban_presync_pending_earliest_start_timestamp_seconds{site,reason}` | 同じ reason の pending のうち最も近い開始時刻 |
@@ -195,6 +195,8 @@ and on (site)
 アラートは Alertmanager へ送り、サイトと reason をルーティングに残す。
 
 通知は Prometheus の alert rule から Alertmanager へ送り、`site` と `reason` をルーティングに残す。`missing` / `options` は、開始前に reconciler・mirakc・DB を確認する通常の未同期ルートにする。
+
+reconciler・mirakc・DB を見ても `missing` の原因が見つからないときは、reconciler の Error ログ `reconciler: resolving effective options` を探す。options を解決できない予約はこのログに `program_id` 付きで出る。
 
 観測不能は、同期状態の断定より優先する。担当者が reconciler の投入元・worker / ScaledJob の起動状態・DB 接続を確認する入口にする。
 

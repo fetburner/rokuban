@@ -540,7 +540,7 @@ flowchart TD
 
 | reason | 意味 | 相当する action |
 |---|---|---|
-| `missing` | schedule 不在 | DB 版の `rokuban_reconcile_pending_diff{action="create"}` |
+| `missing` | schedule 不在 | DB 版の `rokuban_reconcile_pending_diff{action="create"}`（ただし options を解決できない予約は `missing` にだけ入り、`create` には入らない） |
 | `options` | `scheduled` state で直せる priority / program tag / 明示 `contentPath` の不一致 | `{action="update"}` |
 | `options_deferred` | state allowlist により今は再作成できない同じ不一致 | `{action="update_deferred"}` |
 

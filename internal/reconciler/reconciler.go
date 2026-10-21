@@ -207,9 +207,12 @@ func (r *Reconciler) createMissingSchedules(ctx context.Context, reservations []
 }
 
 // collectDeleteCandidates は自分が作った schedule のうち desired にも解決不能な予約にも
-// 属さないものを削除候補に集める。解決不能な予約の schedule は同期を保留して消さず、
-// delete_deferred にも数えない。mirakc が所有しない schedule は対象にせず、削除 allowlist 外の
-// schedule は削除を見送った件数として返す。
+// 属さないものを削除候補に集める。mirakc が所有しない schedule は対象にせず、
+// 削除 allowlist 外の schedule は削除を見送った件数として返す。
+//
+// 解決不能な予約の schedule は消さず、delete_deferred にも数えない。解決できないことは
+// 「録るな」（effective.skip）でも予約の消滅でもないので、削除する根拠にならない。
+// delete_deferred は state の allowlist で見送った数という意味なので、混ぜると意味が崩れる。
 func collectDeleteCandidates(
 	reservations []desiredReservation,
 	unresolvedProgramIDs map[int64]struct{},

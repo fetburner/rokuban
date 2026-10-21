@@ -171,17 +171,8 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 	now := time.Now()
 	for _, candidate := range reservation.EvaluateSyncCandidates(rows) {
 		programID := candidate.Reservation.ProgramID
-		if candidate.Err != nil {
-			if _, exists := observed[programID]; !exists && !schedulesync.ProgramEnded(
-				candidate.Snapshot.StartAt,
-				candidate.Snapshot.DurationMs,
-				now,
-			) {
-				result.add(reasonMissing, candidate.Snapshot.StartAt)
-			}
-			continue
-		}
-		if candidate.Skipped || schedulesync.ProgramEnded(
+		// Skipped は Err != nil のとき意味を持たない（internal/reservation/sync.go）。
+		if (candidate.Err == nil && candidate.Skipped) || schedulesync.ProgramEnded(
 			candidate.Snapshot.StartAt,
 			candidate.Snapshot.DurationMs,
 			now,
@@ -193,6 +184,9 @@ func (c *PresyncCollector) read(ctx context.Context) (presyncResult, error) {
 		if !ok {
 			result.add(reasonMissing, candidate.Snapshot.StartAt)
 			continue
+		}
+		if candidate.Err != nil {
+			continue // options を解決できない予約は observed と比較できない
 		}
 
 		diff, owned := schedulesync.CompareOptions(
