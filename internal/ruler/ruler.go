@@ -24,6 +24,8 @@ type Config struct {
 	// RetentionGrace は番組終了後、予約と意図を GC するまでの猶予。
 	RetentionGrace time.Duration
 	// RetractGrace は放送開始直前にルールから外れた予約を削除しない猶予。0 は無効。
+	// このパッケージは既定値を持たない。持たせると Config{} で動く既存のテストと
+	// 呼び出し元が黙って猶予ありに変わる。本番の既定（1h）は internal/config が埋める。
 	RetractGrace time.Duration
 }
 
@@ -60,6 +62,7 @@ func New(
 		if cfg.RetentionGrace > 0 {
 			c.RetentionGrace = cfg.RetentionGrace
 		}
+		// RetractGrace は 0 も意味のある値（無効）なので、>0 のときだけ上書きにしない。
 		c.RetractGrace = cfg.RetractGrace
 	}
 	return &Ruler{
@@ -114,6 +117,8 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 // runPassForSite は 1 サイト分の評価と差分書き込みを行う。
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	evaluationNow := time.Now()
+	// snapshot 追従（ApplyPass）より前に観測する。後だと追従が旧値を上書きして
+	// 検出材料が消える。検出の失敗はパスを止めない。
 	observeProgramIDReuses(ctx, r.passes, site, evaluationNow)
 
 	tripped, err := r.observeDeleteBreaker(ctx, site)
@@ -140,6 +145,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	if err != nil {
 		return err
 	}
+	// fulfilled は専用経路でブレーカーの外から消すので、導出削除に数えない。
 	toDelete = subtract(toDelete, fulfilled)
 
 	dedupeMatches, err := r.applyDedupe(ctx, site, evaluationNow, desiredIDs, winner, ruleByID)
@@ -322,6 +328,7 @@ func buildReservationInputs(desiredIDs []int64, winner map[int64]int64, ruleByID
 	for _, programID := range desiredIDs {
 		var input store.RulerReservationInput
 		input.ProgramID = programID
+		// マッチしなければ dedup 根拠 2 列は nil のまま（前パスの根拠を残さない。不変条件 9）。
 		if ruleID, ok := winner[programID]; ok {
 			ruleIDCopy := ruleID
 			input.RuleID = &ruleIDCopy

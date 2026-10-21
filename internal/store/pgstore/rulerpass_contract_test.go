@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,7 +186,7 @@ UPDATE recordings SET program_start_at = $2::timestamptz WHERE id = $1`, recordi
 	}
 }
 
-func installRulerPassBreakerFailure(t *testing.T, pool *pgxpool.Pool, _ string) {
+func installRulerPassBreakerFailure(t *testing.T, pool *pgxpool.Pool, name string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_ruler_pass_breaker ON circuit_breakers`); err != nil {
@@ -195,7 +196,10 @@ func installRulerPassBreakerFailure(t *testing.T, pool *pgxpool.Pool, _ string) 
 CREATE OR REPLACE FUNCTION reject_ruler_pass_breaker_write() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  RAISE EXCEPTION 'ruler pass breaker write rejected';
+  IF NEW.name = TG_ARGV[0] THEN
+    RAISE EXCEPTION 'ruler pass breaker write rejected for %', NEW.name;
+  END IF;
+  RETURN NEW;
 END;
 $$`); err != nil {
 		t.Fatalf("creating ruler pass breaker trigger function: %v", err)
@@ -203,7 +207,7 @@ $$`); err != nil {
 	if _, err := pool.Exec(ctx, `
 CREATE TRIGGER reject_ruler_pass_breaker
 BEFORE INSERT OR UPDATE ON circuit_breakers
-FOR EACH ROW EXECUTE FUNCTION reject_ruler_pass_breaker_write()`); err != nil {
+FOR EACH ROW EXECUTE FUNCTION reject_ruler_pass_breaker_write(`+sqlLiteral(name)+`)`); err != nil {
 		t.Fatalf("creating ruler pass breaker trigger: %v", err)
 	}
 	t.Cleanup(func() {
@@ -216,7 +220,7 @@ FOR EACH ROW EXECUTE FUNCTION reject_ruler_pass_breaker_write()`); err != nil {
 	})
 }
 
-func installRulerMarkerFailure(t *testing.T, pool *pgxpool.Pool, _ string) {
+func installRulerMarkerFailure(t *testing.T, pool *pgxpool.Pool, site string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `DROP TRIGGER IF EXISTS reject_ruler_marker_site ON ruler_pass_snapshots`); err != nil {
@@ -226,7 +230,7 @@ func installRulerMarkerFailure(t *testing.T, pool *pgxpool.Pool, _ string) {
 CREATE OR REPLACE FUNCTION reject_ruler_marker_site_write() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  IF NEW.site = 'contract-loop-markers-other' THEN
+  IF NEW.site = TG_ARGV[0] THEN
     RAISE EXCEPTION 'ruler marker write rejected for site %', NEW.site;
   END IF;
   RETURN NEW;
@@ -237,7 +241,7 @@ $$`); err != nil {
 	if _, err := pool.Exec(ctx, `
 CREATE TRIGGER reject_ruler_marker_site
 BEFORE INSERT OR UPDATE ON ruler_pass_snapshots
-FOR EACH ROW EXECUTE FUNCTION reject_ruler_marker_site_write()`); err != nil {
+FOR EACH ROW EXECUTE FUNCTION reject_ruler_marker_site_write(`+sqlLiteral(site)+`)`); err != nil {
 		t.Fatalf("creating ruler marker trigger: %v", err)
 	}
 	t.Cleanup(func() {
@@ -248,4 +252,10 @@ FOR EACH ROW EXECUTE FUNCTION reject_ruler_marker_site_write()`); err != nil {
 			t.Errorf("dropping ruler marker trigger function: %v", err)
 		}
 	})
+}
+
+// sqlLiteral は DDL（CREATE TRIGGER の引数）に埋める文字列リテラルを返す。
+// DDL はバインド変数を取れないので、単引用符を二重にして囲む。
+func sqlLiteral(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "''") + "'"
 }

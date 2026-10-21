@@ -259,10 +259,10 @@ func (h *Server) validateRuleInput(in RuleInput, savedSites map[string]struct{})
 		}
 	}
 	// dedupeWindowSeconds は interval に変換され、internal/store/pgstore/rulerpass.go の
-	// "rec.program_start_at >= now() - c.dedupe_window" の右辺に使われる。
+	// "rec.program_start_at >= $3 - c.dedupe_window"（$3 は ruler が渡す評価時刻）の右辺に使われる。
 	//
 	// **0 も弾く。** 0 は「時間窓なし」ではない —— 窓なしは NULL（列を省略する）であり、
-	// 0 を入れると条件が "program_start_at >= now()" になって、比較対象が必ず過去の
+	// 0 を入れると条件が "program_start_at >= 評価時刻" になって、比較対象が必ず過去の
 	// 放送である以上つねに偽になる。重複排除が黙って無効化されるという、負値とまったく
 	// 同じ失敗モードである（dedupeThreshold の 0 を弾くのと対称）。窓を設けたくない
 	// なら値を送らない。

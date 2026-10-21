@@ -46,7 +46,7 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 <details><summary>根拠</summary>
 
-- DB の時計で比べる前例（GC）: `internal/ruler.runGC` の `observed_at < now() - horizon` と `postgresInterval`
+- DB の時計で比べる前例（GC）: `internal/db/queries/reservations.sql` の `DeleteStaleNeverScheduledEvents`。`observed_at < now() - horizon` で比べ、`PruneNeverScheduled` が呼ぶ
 - DB の時計で比べる前例（孤児候補）: `internal/store/pgstore.Analysis.FailOrphanLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
 - 例外: `internal/worker/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
 
@@ -494,15 +494,15 @@ marker が無いときは、store がエラーと区別して返す。collector 
 
 ### ruler パス
 
-ルールから予約を導出する処理は、読み取りと適用の境界を store が持つ。削除判断に必要な状態を適用時に確かめ、ブレーカー発動と同じ tx で確定する。
+ルールから予約を導出する処理は、読み取りを tx の外で行い、書き込みを 1 tx にまとめる。削除判断に必要な状態は適用時に確かめ直し、ブレーカー発動と同じ tx で確定する。
 
-ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。スナップショットの追従、予約の差分 upsert、fulfilled / released / 導出削除を 1 つの tx で確定する。
+ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。`ApplyPass` は、スナップショットの追従、予約の差分 upsert、fulfilled / released / 導出削除を 1 つの tx で確定する。
 
-削除候補は読み取り後に意図や投資が追加されることがある。導出削除と released 削除の `DELETE` は適用時に投資を再評価するため、古い入力で新しい予約意図の行を消さない。契約テストは入力を読んだ後に意図を書き、同じ予約が残ることを固定する。
+読み取りの後に、削除候補の番組へ意図や投資が追加されることがある。導出削除と released 削除の `DELETE` は適用時に投資を再評価するため、古い入力で新しい予約意図の行を消さない。契約テストは入力を読んだ後に意図を書き、同じ予約が残ることを固定する。
 
-大量削除ブレーカーの Trip も `ApplyPass` に含める。Trip が止める削除と発動行を別 tx にすると、発動を記録できないまま予約を消しうるためである。発動記録に失敗した tx は削除も巻き戻す。メトリクスとログは commit 後に反映する。番組終了後の GC は導出削除とは別の保守操作で、ブレーカーの対象にしない。
+大量削除ブレーカーの Trip も `ApplyPass` に含める。Trip が止める削除と発動行を別 tx にすると、発動を記録できないまま予約を消しうるためである。発動記録に失敗した tx は削除も巻き戻す。メトリクスとログは commit 後に反映する。
 
-重複排除は pgstore が `similarity()` を評価し、勝者ルールと番組の組ごとに決定的な最良一致を返す。比較には呼び出し側の現在時刻を渡す。番組 ID 再利用の検出と snapshot GC も、それぞれ比較に使う時刻を呼び出し側から受け取る。
+重複排除の類似度は pg_trgm の `similarity()` と同じ値で判定する。これは実装依存ではなく契約である。候補ごとに最良一致を 1 件返し、同率は録画 ID 昇順で決める。マッチの無い候補はマップに現れない。時間窓は録画の `program_start_at` と比べる。比べる時刻は外から来た値なので、呼び出し側の時計を使う（「時刻」節の規則）。番組 ID 再利用の検出と snapshot GC も、それぞれ比較に使う時刻を呼び出し側から受け取る。
 
 <details><summary>根拠</summary>
 
@@ -519,9 +519,9 @@ ruler は `RulerPass` から評価に必要なルール・意図・投資・予�
 
 reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。`Breakers` は `Trip` と `IsTripped` だけを持つ。`Trip` は発動時刻を返し、すでに発動中なら件数と抜粋だけを更新する。`Resume` は、対象の行が無ければ `ErrNotFound` を返す。
 
-reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler だけは、発動の記録と「このパスでは削除しない」を同じ tx で確定する必要があるので `RulerPass.ApplyPass` に Trip を含める。発動を記録できなければ同じ tx の削除も rollback される。
+reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
 
-ゲージとログは store の外で出す。ruler は `ApplyPass` の commit 後に反映し、他の書き手は `breaker.Trip` を使う。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
+ゲージとログは store の外で出す。`breaker.Trip` と、ruler が commit 後に呼ぶ `breaker.AnnounceTrip` が同じ `announceTrip` を共有しているので、出し方は 1 か所にある。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
 
 <details><summary>根拠</summary>
 

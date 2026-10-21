@@ -99,6 +99,17 @@ type rulerDedupeInput struct {
 	RuleID    int64 `json:"rule_id"`
 }
 
+// evaluateRulerDedupeSQL は候補番組ごとに、同じルールで録画済みの番組を 1 文で探す。
+// 判定条件・自己除外・tie-break は docs/recording/ruler.md §3.1「重複排除」にある。
+// **`deleted_at IS NULL` を足すのは契約違反**（tombstone も重複排除の根拠に残す）。
+//
+// similarity() は索引に乗らない。必要になったら次の手順で前段フィルタを足す。
+//
+//  1. 有効な dedupe ルールの最小閾値を Go 側で求め、
+//     set_config('pg_trgm.similarity_threshold', $n, true) で tx ローカルに設定する
+//  2. JOIN に rec.title % c.title を前段フィルタとして足す（最小閾値なので
+//     全ルールの条件の上位集合になり、取りこぼさない）
+//  3. 本判定は similarity() >= c.dedupe_threshold のまま残す
 const evaluateRulerDedupeSQL = `
 WITH input AS (
     SELECT *

@@ -33,7 +33,12 @@ type RulerDedupeMatch struct {
 
 // RulerDedupe は録画候補に対する重複排除の読み取り契約である。
 type RulerDedupe interface {
-	// EvaluateDedupe は候補ごとの重複排除結果を返す。now は録画開始時刻との比較に使う。
+	// EvaluateDedupe は候補ごとの重複排除結果を返す。now は録画の program_start_at と
+	// 比べる時刻（時間窓の起点）で、呼び出し側が渡す。
+	//
+	// 類似度は pg_trgm の similarity() と同じ値で判定する。これは実装依存ではなく契約で、
+	// 実装が別の方式に替わっても同じ入力は同じ判定になる。返り値は候補ごとに最良一致
+	// 1 件（同率は録画 ID 昇順）で、マッチ無しの候補はマップに現れない。
 	EvaluateDedupe(ctx context.Context, site string, candidates []RulerDedupeCandidate, now time.Time) (map[int64]RulerDedupeMatch, error)
 }
 
