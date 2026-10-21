@@ -38,7 +38,7 @@ func readyzStatus(t *testing.T, router http.Handler) (int, string) {
 func TestReadyz_DBReachable(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	code, status := readyzStatus(t, NewRouter(RouterConfig{Pool: pool}))
+	code, status := readyzStatus(t, NewRouter(RouterConfig{Ready: pool.Ping}))
 	if code != http.StatusOK {
 		t.Errorf("status = %d, want 200", code)
 	}
@@ -70,7 +70,7 @@ func TestReadyz_DBUnreachable(t *testing.T) {
 	}
 	defer pool.Close()
 
-	code, status := readyzStatus(t, NewRouter(RouterConfig{Pool: pool}))
+	code, status := readyzStatus(t, NewRouter(RouterConfig{Ready: pool.Ping}))
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", code)
 	}
@@ -130,7 +130,7 @@ func TestReadyz_HangingDBTimesOut(t *testing.T) {
 	}
 	defer pool.Close()
 
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping}))
 	defer srv.Close()
 
 	// クライアント側の上限はハンドラ側の上限（readyzTimeout = 2s）より十分長く
@@ -169,15 +169,15 @@ func TestReadyz_HangingDBTimesOut(t *testing.T) {
 	}
 }
 
-// プール未設定は fail-closed（503）。DB を持たないプロセスを Service の後ろに
-// 入れないため。
-func TestReadyz_NoPool(t *testing.T) {
+// 確認関数が未設定なら fail-closed（503）。DB の応答を確かめていないプロセスを
+// Service の後ろに入れないため。
+func TestReadyz_NoReadyFunc(t *testing.T) {
 	code, status := readyzStatus(t, NewRouter(RouterConfig{}))
 	if code != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", code)
 	}
-	if status != "no database pool" {
-		t.Errorf("body status = %q, want %q", status, "no database pool")
+	if status != "database check unavailable" {
+		t.Errorf("body status = %q, want %q", status, "database check unavailable")
 	}
 }
 
@@ -201,7 +201,7 @@ func TestReadyz_HostAllowlistExempt(t *testing.T) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// Pool を渡していないので 503 が正しい応答。ここで見たいのは
+	// Ready を渡していないので 503 が正しい応答。ここで見たいのは
 	// 「Host 検証で 400 にならないこと」なので、503 であることまで主張する
 	// （400 と 503 を取り違えないため）。
 	if resp.StatusCode != http.StatusServiceUnavailable {

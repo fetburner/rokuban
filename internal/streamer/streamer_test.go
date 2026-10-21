@@ -791,7 +791,7 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 	seedAsset(t, pool, recordingID, "r.m2ts", int64(len(content)))
 
 	router := api.NewRouter(api.RouterConfig{
-		Pool:           pool,
+		Ready:          pool.Ping,
 		RecordingQuery: pgstore.NewRecordings(pool),
 		MediaReader:    pgstore.NewMedia(pool),
 		Mounter:        New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir}),

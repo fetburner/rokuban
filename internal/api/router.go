@@ -1,11 +1,11 @@
 package api
 
 import (
+	"context"
 	"io/fs"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -26,8 +26,10 @@ type RouterConfig struct {
 	// issue #216）。
 	TrustForwardedHost bool
 
-	// Pool は REST ハンドラが使う DB プール。
-	Pool *pgxpool.Pool
+	// Ready は DB の応答を確認する関数。nil なら /readyz は 503 を返す。
+	// ctx の期限で返る関数を渡すこと。ハンドラは同期で呼ぶので、期限を守らない
+	// 関数ではハンドラも返らない。
+	Ready func(context.Context) error
 
 	// ChapterStore はチャプター編集の永続化契約。
 	ChapterStore store.ChapterEdits
@@ -193,7 +195,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}))
 	}
 
-	handler := NewServer(cfg.Pool, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.RecordingQuery,
+	handler := NewServer(cfg.Ready, cfg.ChapterStore, cfg.CMStationStore, cfg.CMDetectionStore, cfg.PlaybackStateStore, cfg.RecordingTrashStore, cfg.RecordingQuery,
 		cfg.TunerReader, cfg.CapacityStore, cfg.ReservationStore, cfg.RuleStore, cfg.LabelRules, cfg.BreakerAdmin, cfg.EPGReader, cfg.ProgramSearch,
 		cfg.EncodePolicyStore, cfg.Dedupe, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,

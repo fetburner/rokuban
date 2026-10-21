@@ -488,9 +488,13 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	analysisStore := pgstore.NewAnalysis(pool)
 	recordingStore := pgstore.NewRecordings(pool)
 	routerCfg := api.RouterConfig{
-		AllowedHosts:        cfg.Server.AllowedHosts,
-		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
-		Pool:                pool,
+		AllowedHosts:       cfg.Server.AllowedHosts,
+		TrustForwardedHost: cfg.Server.TrustForwardedHost,
+		// pgxpool.Pool.Ping はプールからコネクションを 1 本取るため、プールが飽和している
+		// （全コネクションが長いクエリで埋まっている）間は /readyz の期限（api.readyzTimeout）
+		// まで待って 503 になりうる（未測定。Acquire が待つことからの帰結）。DB 断と輻輳を
+		// この応答で区別することはできない。
+		Ready:               pool.Ping,
 		ChapterStore:        pgstore.NewAnalysis(pool),
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: recordingStore,
@@ -627,6 +631,12 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*riveradapter.Adapter, error) {
 	mediaStore := pgstore.NewMedia(pool)
+	recordingStore := pgstore.NewRecordings(pool)
+	reservationStore := pgstore.NewReservations(pool)
+	breakersStore := pgstore.NewBreakers(pool)
+	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
+	scheduleSyncStore := pgstore.NewScheduleSync(pool)
+	catalogStore := pgstore.NewCatalog(pool)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -660,12 +670,19 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		EPGSync:                  pgstore.NewEPG(pool),
 		ProgramSearch:            pgstore.NewEPG(pool),
 		MirakcClients:            mirakcClients,
-		Pool:                     pool,
+		RulerPass:                reservationStore,
+		LoopMarkers:              reservationStore,
+		Breakers:                 breakersStore,
+		NeverScheduled:           neverScheduledStore,
+		ScheduleSync:             scheduleSyncStore,
+		RecordObservations:       recordingStore,
+		IngestTarget:             recordingStore,
+		Catalog:                  catalogStore,
 		CMStationStore:           analysisStore,
 		CMDetectionStore:         analysisStore,
 		TunerStore:               tunerStore,
 		CapacityStore:            tunerStore,
-		RecordingPurge:           pgstore.NewRecordings(pool),
+		RecordingPurge:           recordingStore,
 		LabelRuleReevaluation:    pgstore.NewLabelRules(pool),
 		MediaReconcile:           mediaStore,
 		MediaPublish:             mediaStore,

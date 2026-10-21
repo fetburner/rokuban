@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -82,9 +83,10 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 	enqueuer := newRecordingEnqueuer()
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		Enqueuer:      enqueuer,
+		MirakcClients:      singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
+		Enqueuer:           enqueuer,
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: testSite}); err != nil {
 		t.Fatalf("RecordSweepWorker.Work: %v", err)
@@ -133,8 +135,9 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	defer srv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
 	}
 	job := jobs.RecordSweepArgs{Site: testSite}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
@@ -189,8 +192,9 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	defer countingSrv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
 	}
 
 	job := RecordSweepArgs{Site: "site-b"}
@@ -213,9 +217,10 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	defer srv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
-		Enqueuer:      newRecordingEnqueuer(),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
+		Enqueuer:           newRecordingEnqueuer(),
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: "site-a"}); err != nil {
 		t.Fatalf("RecordSweepWorker.Work: %v", err)

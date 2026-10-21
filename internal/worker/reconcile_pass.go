@@ -4,12 +4,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reconciler"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // ReconcilePassWorker は reconciler の 1 パス突き合わせを実行する queue worker。
@@ -23,8 +21,10 @@ type ReconcilePassWorker struct {
 	// 1 インスタンスが複数 site の reconciler_<site> キューを同時に購読しうる。
 	// Work は verifySite で args.Site に対応するクライアントを取り出してから
 	// reconciler.New に渡す（issue #139）。
-	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
+	MirakcClients  map[string]*mirakc.Client
+	ScheduleSync   store.ScheduleSync
+	Breakers       store.Breakers
+	NeverScheduled store.NeverScheduledEvents
 
 	// StartDelayGrace は開始遅延検出器の猶予（reconciler.Config.StartDelayGrace）。
 	// 0 なら reconciler 側の既定値を使う（config.yml の
@@ -50,7 +50,7 @@ func (w *ReconcilePassWorker) Work(ctx context.Context, args jobs.ReconcilePassA
 		return err
 	}
 
-	rec := reconciler.New(args.Site, client, pgstore.NewScheduleSync(w.Pool), pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), &reconciler.Config{
+	rec := reconciler.New(args.Site, client, w.ScheduleSync, w.Breakers, w.NeverScheduled, &reconciler.Config{
 		StartDelayGrace: w.StartDelayGrace,
 	})
 	return rec.RunPass(ctx)

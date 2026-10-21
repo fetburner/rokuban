@@ -980,6 +980,7 @@ worker:
 	if !ready {
 		t.Fatalf("rokuban server did not become ready\n%s", readServerLog())
 	}
+	assertReadyzOK(t, client, baseURL, readServerLog)
 
 	request, err := http.NewRequest(http.MethodPost, baseURL+"/api/rules", strings.NewReader(`{"name":"api-enqueue","sites":["home"]}`))
 	if err != nil {
@@ -1007,6 +1008,18 @@ worker:
 	}
 
 	waitForCompletedRulerPassJobs(t, pool, []string{"home", "other"}, readServerLog)
+}
+
+func assertReadyzOK(t *testing.T, client *http.Client, baseURL string, readServerLog func() string) {
+	t.Helper()
+	response, err := client.Get(baseURL + "/readyz")
+	if err != nil {
+		t.Fatalf("GET /readyz: %v\n%s", err, readServerLog())
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /readyz status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
 }
 
 func waitForCompletedRulerPassJobs(t *testing.T, pool *pgxpool.Pool, wantSites []string, readServerLog func() string) {
