@@ -3,6 +3,7 @@ package contracttest
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -74,6 +75,14 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("quality events carry a readable time", func(t *testing.T) { runQualityEventTime(t, checkedStore) })
 }
 
+// int64Text は失敗メッセージ用に *int64 を数値で、nil を "nil" で表す。
+func int64Text(p *int64) string {
+	if p == nil {
+		return "nil"
+	}
+	return strconv.FormatInt(*p, 10)
+}
+
 func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
 	f := newStore(t)
 	ctx := context.Background()
@@ -104,7 +113,7 @@ func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("GetRecordSyncIngestTarget(target-sized): %v", err)
 	}
 	if got.RecordingID == nil || *got.RecordingID != *wantID || got.ContentLength == nil || *got.ContentLength != wantLength {
-		t.Fatalf("target-sized = %+v; want recording %d and content length %d", got, *wantID, wantLength)
+		t.Fatalf("target-sized = recording %s, content length %s; want recording %d and content length %d", int64Text(got.RecordingID), int64Text(got.ContentLength), *wantID, wantLength)
 	}
 
 	gotID := addRecord("contract-site", "target-unknown-length", true, nil)
@@ -116,7 +125,7 @@ func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("GetRecordSyncIngestTarget(target-unknown-length): %v", err)
 	}
 	if got.RecordingID == nil || *got.RecordingID != *gotID || got.ContentLength != nil {
-		t.Fatalf("target-unknown-length = %+v; want recording %d and nil content length", got, *gotID)
+		t.Fatalf("target-unknown-length = recording %s, content length %s; want recording %d and nil content length", int64Text(got.RecordingID), int64Text(got.ContentLength), *gotID)
 	}
 
 	firstSiteLength := int64(111)
@@ -136,7 +145,7 @@ func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
 			t.Fatalf("GetRecordSyncIngestTarget(%q, same-record-id): %v", tc.site, err)
 		}
 		if got.RecordingID == nil || tc.wantID == nil || *got.RecordingID != *tc.wantID || got.ContentLength == nil || *got.ContentLength != tc.wantLength {
-			t.Fatalf("target for site %q = %+v; want recording %v and content length %d", tc.site, got, tc.wantID, tc.wantLength)
+			t.Fatalf("target for site %q = recording %s, content length %s; want recording %s and content length %d", tc.site, int64Text(got.RecordingID), int64Text(got.ContentLength), int64Text(tc.wantID), tc.wantLength)
 		}
 	}
 
@@ -149,7 +158,7 @@ func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("GetRecordSyncIngestTarget(target-unlinked): %v", err)
 	}
 	if got.RecordingID != nil || got.ContentLength == nil || *got.ContentLength != lengthWithoutRecording {
-		t.Fatalf("target-unlinked = %+v; want nil recording ID and content length %d", got, lengthWithoutRecording)
+		t.Fatalf("target-unlinked = recording %s, content length %s; want nil recording ID and content length %d", int64Text(got.RecordingID), int64Text(got.ContentLength), lengthWithoutRecording)
 	}
 
 	if _, err := f.IngestTarget.GetRecordSyncIngestTarget(ctx, "contract-site", "missing"); !errors.Is(err, store.ErrNotFound) {
