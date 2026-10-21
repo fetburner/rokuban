@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -126,9 +127,27 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			afterRecordAcquired = hook
 			t.Cleanup(func() { afterRecordAcquired = nil })
 		}
+		newOriginalAsset := func(t *testing.T, recordingID int64, state string) {
+			t.Helper()
+			assetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
+				RecordingID: recordingID,
+				Kind:        db.AssetKindOriginal,
+				RelPath:     fmt.Sprintf("sites/contract-site/%d/original.m2ts", recordingID),
+				SizeBytes:   1,
+			})
+			if err != nil {
+				t.Fatalf("seeding original asset for recording %d: %v", recordingID, err)
+			}
+			if state != "active" {
+				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = $1 WHERE id = $2`, state, assetID); err != nil {
+					t.Fatalf("setting original asset state to %q: %v", state, err)
+				}
+			}
+		}
 		return contracttest.RecordObservationFixture{
-			Store: NewRecordings(pool), NewObservation: newObservation,
+			Store: NewRecordings(pool), IngestTarget: NewRecordings(pool), Backlog: NewRecordings(pool), NewObservation: newObservation,
 			SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,
+			NewOriginalAsset:  newOriginalAsset,
 			InspectRecordSync: inspectRecordSync, InspectRecordings: inspectRecordings,
 			SetRecordSyncObservedAt: setObservedAt, SetAfterRecordAcquired: setAfterAcquired,
 		}

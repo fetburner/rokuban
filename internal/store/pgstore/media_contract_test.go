@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -33,7 +35,9 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		Reconcile:    NewMedia(pool),
 		Precheck:     NewMedia(pool),
 		Storage:      NewMedia(pool),
+		Reader:       NewMedia(pool),
 		Publisher:    NewMedia(pool),
+		Progress:     NewMedia(pool),
 		Chapters:     NewAnalysis(pool),
 		Site:         db.DefaultSite,
 		NewRecording: func(t *testing.T) int64 { return newMediaContractRecording(t, pool) },
@@ -54,6 +58,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		},
 	}
 	configureMediaPublishFixture(t, pool, &fixture)
+	configureMediaReaderFixture(t, pool, &fixture)
 	configureMediaObservationFixture(t, pool, &fixture)
 	configureMediaStorageFixture(t, pool, &fixture)
 	return fixture
@@ -234,6 +239,83 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 				ProgramStartAt: time.Now().UTC().Truncate(time.Second), ProgramDurationMs: 60_000, Status: "finished",
 			},
 			Assets: []store.InPlaceAsset{{Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
+		}
+	}
+}
+
+func configureMediaReaderFixture(t *testing.T, pool *pgxpool.Pool, fixture *contracttest.MediaFixture) {
+	t.Helper()
+	fixture.FailEncodeAttempt = func(t *testing.T, recordingID int64, profile string, attemptCount int32) {
+		t.Helper()
+		tag, err := pool.Exec(context.Background(), `
+UPDATE recording_encode_attempts
+SET state = 'failed', attempt_count = $3
+WHERE recording_id = $1 AND profile = $2`, recordingID, profile, attemptCount)
+		if err != nil {
+			t.Fatalf("failing encode attempt for recording %d profile %q: %v", recordingID, profile, err)
+		}
+		if tag.RowsAffected() != 1 {
+			t.Fatalf("failing encode attempt for recording %d profile %q changed %d rows; want 1", recordingID, profile, tag.RowsAffected())
+		}
+	}
+	fixture.SetRecordingDropStats = func(t *testing.T, assetID int64, stats []store.RecordingDropStat) {
+		t.Helper()
+		ctx := context.Background()
+		var sizeBytes int64
+		if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets WHERE id = $1`, assetID).Scan(&sizeBytes); err != nil {
+			t.Fatalf("reading size of media asset %d: %v", assetID, err)
+		}
+		if err := sqlcgen.New(pool).UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
+			MediaAssetID: assetID, ScannedSizeBytes: sizeBytes,
+		}); err != nil {
+			t.Fatalf("marking media asset %d as scanned: %v", assetID, err)
+		}
+		for _, stat := range stats {
+			if _, err := pool.Exec(ctx, `
+INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
+VALUES ($1, $2, $3, $4, $5, $6, $7)`, assetID, stat.Pid, stat.Packets, stat.Drops, stat.Errors, stat.Scrambled, stat.PidType); err != nil {
+				t.Fatalf("seeding drop stats for media asset %d PID %d: %v", assetID, stat.Pid, err)
+			}
+		}
+	}
+	fixture.SetRecordingDropPositions = func(t *testing.T, assetID int64, positions []store.RecordingDropPosition) {
+		t.Helper()
+		for _, position := range positions {
+			if _, err := pool.Exec(context.Background(), `
+INSERT INTO drop_positions (media_asset_id, byte_offset, pid, elapsed_ms)
+VALUES ($1, $2, $3, $4)`, assetID, position.ByteOffset, position.Pid, position.ElapsedMs); err != nil {
+				t.Fatalf("seeding drop position for media asset %d at byte %d: %v", assetID, position.ByteOffset, err)
+			}
+		}
+	}
+	fixture.StartEncodeProgressListener = func(t *testing.T) func() store.EncodeProgress {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn, err := pool.Acquire(ctx)
+		if err != nil {
+			cancel()
+			t.Fatalf("acquiring encode progress listener connection: %v", err)
+		}
+		t.Cleanup(func() {
+			cancel()
+			conn.Release()
+		})
+		if _, err := conn.Exec(ctx, "LISTEN rokuban"); err != nil {
+			t.Fatalf("listening for encode progress: %v", err)
+		}
+		return func() store.EncodeProgress {
+			notification, err := conn.Conn().WaitForNotification(ctx)
+			if err != nil {
+				t.Fatalf("waiting for encode progress: %v", err)
+			}
+			var event serverevent.EncodeProgressEvent
+			if err := json.Unmarshal([]byte(notification.Payload), &event); err != nil {
+				t.Fatalf("decoding encode progress notification: %v", err)
+			}
+			if event.Type != serverevent.EncodeProgressEventType {
+				t.Fatalf("encode progress notification type = %q; want %q", event.Type, serverevent.EncodeProgressEventType)
+			}
+			return store.EncodeProgress{RecordingID: event.RecordingID, Profile: event.Profile, Progress: event.Progress}
 		}
 	}
 }
