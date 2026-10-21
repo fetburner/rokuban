@@ -30,7 +30,6 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -350,16 +349,6 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 	return w.ProgressInterval
 }
 
-func (w *IngestWorker) mediaPublisher() store.MediaPublish {
-	if w.Publisher != nil {
-		return w.Publisher
-	}
-	if w.Pool != nil {
-		return pgstore.NewMedia(w.Pool)
-	}
-	return nil
-}
-
 // Work は ingest ジョブを実行する。ストリーム取得・DB コミット・エッジ削除を行う。
 // jobs.IngestJobArgs.Spec().Timeout が 1 試行を 5 分に制限する。4 分の replay / 転送区切りで
 // temp と SHA-256 状態を保存して snooze するため、録画全体の長さでは締切が決まらない。
@@ -515,12 +504,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	// Args Spec の Timeout はこの区切りより 1 分長く、checkpoint の fsync と commit に使う。
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
-	progressPublisher := w.mediaPublisher()
-	if progressPublisher == nil {
-		return fmt.Errorf("recording ingest progress: media publisher is nil")
-	}
 	progress := &ingestProgressReporter{
-		publisher:     progressPublisher,
+		publisher:     w.Publisher,
 		recordingID:   recordingID,
 		expectedBytes: expectedBytes,
 		interval:      w.resolveProgressInterval(),
@@ -979,6 +964,8 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 // fsync・commit を store の 1 transaction に渡す。store は DB transaction を先に開始し、
 // 行を作った後に callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、
 // この関数が返るまで filesystem lock を保持する。
+// 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
+// 「原本があるのに取り込み中」という中間状態が読み手から見えない。
 //
 // rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
 // は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
@@ -990,11 +977,7 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		return fmt.Errorf("locking canonical file protocol: %w", err)
 	}
 	defer func() { _ = fileLock.Close() }()
-	publisher := w.mediaPublisher()
-	if publisher == nil {
-		return fmt.Errorf("committing original media: media publisher is nil")
-	}
-	return publisher.CommitOriginal(ctx, store.CommitOriginalInput{
+	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
 		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
 	}, w.resolveEncodePolicy, func() error {
 		if err := beforeIngestFilePublication(); err != nil {
@@ -1013,8 +996,10 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	})
 }
 
-// resolveEncodePolicy は store が読み取った予約の値から凍結方針を導出する。
-// DB lookup と snapshot の保存は CommitOriginal の tx が担う。
+// resolveEncodePolicy は store が読み取った予約・上書き・意図から、この録画の凍結方針を導出する純粋関数である。
+// DB の読み取りと凍結の保存は CommitOriginal の tx が担い、この関数は DB に触れない。
+// 方針の行は原本の行と同じ tx で書かれるので、ここで返す値が CHECK に反すると原本ごとロールバックして録画が消える。
+// 書く前に、反する組み合わせを安全側へ倒す。
 // 凍結する瞬間・予約を放送イベントキーで引く理由・解決に失敗しても凍結する理由・
 // source 別のログレベル・クランプの判断は docs/storage/retention.md §6 にある。
 func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
@@ -1022,8 +1007,13 @@ func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.E
 	keepOriginal := "always"
 	encodeProfiles := []string{}
 	if in.Reservation == nil {
-		// 予約が無くても既定値を凍結する。行を作らないと、後続の reconcile が
-		// 「未凍結」と誤認してしまう。source によって通常の欠落か意図の欠落かを区別する。
+		// 予約が引けなくても凍結自体はスキップせず、既定値（'always' / 空）で凍結する。
+		// 行の存在が「凍結済み」を意味するので、何も書かないと後続の reconcile が「未凍結」と誤認し、
+		// 事後追加も「行が既にある」ことを前提にできなくなる。
+		// source='rule' は予約があったのに引けなくなった場合、source='manual' は意図があったことを示す
+		// snapshot なので Warn にする。source='unattributed' は予約も意図も特定できない録画で、
+		// 予約が最初から無い日常的なケースなので Info に落とす。どの source でも黙って戻らない。
+		// 判別できないことを、ログの欠落で埋め合わせない。
 		logArgs := []any{
 			"recording_id", recordingID,
 			"site", in.Site,
@@ -1049,9 +1039,14 @@ func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.E
 		}
 	}
 
-	// マージ結果が cut profile だけなら、live 無効構成での確認循環を避けるため
-	// cut profile を落とす。さらに desired が空になった場合は until_encoded を
-	// always に戻して、原本保持の CHECK と矛盾する組み合わせを作らない。
+	// cut だけになったときのクランプ。ルール単独・上書き単独ではそれぞれ live 無効時の規則を満たしていても、
+	// マージ結果として cut だけが生成されうる。原本 HLS を使えない live 無効構成では、確認に再生が要り、
+	// 再生に encode が要り、encode に確認が要る循環になるので、cut のプロファイルを落とす。
+	// 意図は上書きに残るので、利用者が cut でないプロファイルを足せば戻る。
+	//
+	// このクランプを下の until_encoded クランプより先に置く。落とした結果 desired が空になった場合
+	// （cut だけのルール）は、下のクランプが keepOriginal を安全側へ倒す。
+	// ここで別の分岐を書くと、「cut を落とした後だけ効く規則」がもう 1 つ増える。
 	if err := config.ValidateCutSelection(encodeProfiles, w.CutProfiles, w.LiveEnabled); err != nil {
 		slog.Warn("encode policy: frozen profile selection is cut-only; dropping cut profiles",
 			"recording_id", recordingID, "encode_profiles", encodeProfiles)
@@ -1063,6 +1058,8 @@ func (w *IngestWorker) resolveEncodePolicy(in store.EncodePolicyInputs) (store.E
 		}
 		encodeProfiles = kept
 	}
+	// until_encoded は desired が 1 つ以上あることを CHECK が要求する。
+	// ルール単独・上書き単独では禁則を満たしていても、マージ結果としてこの組み合わせが生成されうる。
 	if keepOriginal == "until_encoded" && len(encodeProfiles) == 0 {
 		keepOriginal = "always"
 	}

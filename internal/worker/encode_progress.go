@@ -84,9 +84,6 @@ func (r *encodeProgressReporter) run(notifyCtx, stopCtx context.Context, latest 
 
 		progress := float64(v) / float64(r.duration)
 		progress = max(0, min(progress, 1))
-		if r.reporter == nil {
-			return
-		}
 		if err := r.reporter.ReportEncodeProgress(notifyCtx, store.EncodeProgress{
 			RecordingID: r.recordingID,
 			Profile:     r.profile,

@@ -207,7 +207,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 			profile:     args.Profile,
 			duration:    duration,
 			interval:    encodeProgressInterval,
-			reporter:    w.encodeProgressStore(),
+			reporter:    w.Progress,
 			log:         log,
 		}
 		var stopProgress context.CancelFunc
@@ -842,10 +842,6 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 	}
 	defer func() { _ = fileLock.Close() }()
 
-	publisher := w.mediaPublisher()
-	if publisher == nil {
-		return 0, false, errors.New("publishing encoded asset: media publisher is nil")
-	}
 	cut := in.cut != nil
 	keep := []chapters.Range(nil)
 	if cut {
@@ -880,7 +876,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		}
 		return nil
 	}
-	published, err = publisher.PublishEncoded(ctx, input, publish)
+	published, err = w.Publisher.PublishEncoded(ctx, input, publish)
 	if errors.Is(err, store.ErrStalePublishPlan) {
 		return 0, false, jobq.Snooze(encodeReplanDelay)
 	}
@@ -888,26 +884,6 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	return staged.size, published, nil
-}
-
-func (w *EncodeWorker) mediaPublisher() store.MediaPublish {
-	if w.Publisher != nil {
-		return w.Publisher
-	}
-	if publisher, ok := w.Media.(store.MediaPublish); ok {
-		return publisher
-	}
-	return nil
-}
-
-func (w *EncodeWorker) encodeProgressStore() store.EncodeProgressReporter {
-	if w.Progress != nil {
-		return w.Progress
-	}
-	if reporter, ok := w.Media.(store.EncodeProgressReporter); ok {
-		return reporter
-	}
-	return nil
 }
 
 // notify は ev に録画のスナップショット（site / title）を足して webhook を送る。
@@ -990,30 +966,30 @@ type encodePlan struct {
 	stale bool
 }
 
+// planEncodePublishFromObservation は encoded 行の観測から、冒頭の判断材料を導く。
+// skip / stale の判定は store.PlanEncodedPublish と共通で、ここは cut の世代と置き換え先だけを足す。
 func planEncodePublishFromObservation(
 	asset *store.EncodedAssetObservation,
 	profile string,
 	cut *cutContext,
 	previous *encodePlan,
 ) encodePlan {
-	var p encodePlan
-	exists := asset != nil
-	if exists {
-		p.observedRelPath = asset.RelPath
+	var keep []chapters.Range
+	if cut != nil {
+		keep = cut.keep
 	}
+	var previousRelPath *string
+	if previous != nil {
+		previousRelPath = &previous.observedRelPath
+	}
+	plan := store.PlanEncodedPublish(asset, cut != nil, keep, previousRelPath)
+	p := encodePlan{observedRelPath: plan.ObservedRelPath, skip: plan.Skip, stale: plan.Stale}
 	if cut != nil {
 		p.generation = nextCutGeneration(p.observedRelPath, profile)
-		if exists && asset.State == "active" {
+		if plan.Replaces {
 			p.replaced = asset.RelPath
 		}
 	}
-	committed := exists && asset.State == "active"
-	if committed && cut != nil {
-		committed = chapters.SameRanges(asset.KeepRanges, cut.keep)
-	}
-	moved := previous != nil && previous.observedRelPath != p.observedRelPath
-	p.stale = moved && !committed && exists && asset.State == "active"
-	p.skip = committed || (moved && !p.stale)
 	return p
 }
 

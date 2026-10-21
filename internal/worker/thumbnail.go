@@ -111,36 +111,17 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		return fmt.Errorf("scratch thumbnail is empty")
 	}
 
-	finalPath, err := mediapath.Resolve(w.MediaDir, plan.relPath)
-	if err != nil {
-		return fmt.Errorf("resolving generated thumbnail path: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return fmt.Errorf("creating thumbnail directory: %w", err)
-	}
-	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
-	if err != nil {
-		return fmt.Errorf("staging thumbnail: %w", err)
-	}
-	defer staged.discard()
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, plan.relPath)
-	if err != nil {
-		return fmt.Errorf("locking generated media asset: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
-	publisher := w.mediaPublisher()
-	if publisher == nil {
-		return fmt.Errorf("publishing thumbnail: media publisher is nil")
-	}
 	expected := (*store.ThumbnailObservation)(nil)
 	if plan.expected != nil {
 		expected = &store.ThumbnailObservation{ID: plan.expected.ID, RelPath: plan.expected.RelPath, SeekMs: plan.expected.SeekMs}
 	}
-	size := staged.size
-	published, err := publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
-		RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: staged.size,
-		SeekMs: plan.seekMs, InputAssetID: plan.inputID, Expected: expected,
-	}, staged.publish)
+	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, plan.relPath, scratchPath,
+		func(size int64, publish func() error) (bool, error) {
+			return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
+				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
+				SeekMs: plan.seekMs, InputAssetID: plan.inputID, Expected: expected,
+			}, publish)
+		})
 	if err != nil {
 		return fmt.Errorf("publishing thumbnail: %w", err)
 	}
@@ -318,18 +299,6 @@ type thumbnailObserved struct {
 	ID      int64
 	RelPath string
 	SeekMs  *int64
-}
-
-// mediaPublisher はサムネイル公開の store 契約を返す。
-// 部分テストや既存の構成では Media が読み書き両方を満たす実装を使える。
-func (w *ThumbnailWorker) mediaPublisher() store.MediaPublish {
-	if w.Publisher != nil {
-		return w.Publisher
-	}
-	if publisher, ok := w.Media.(store.MediaPublish); ok {
-		return publisher
-	}
-	return nil
 }
 
 func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {

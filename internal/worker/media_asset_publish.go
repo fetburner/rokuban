@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 // newWorkerScratchDir は指定されたキーに乱数接尾辞を付けた scratch directory を作る。
@@ -216,4 +218,38 @@ func (s stagedMediaFile) discard() {
 	if s.tempPath != "" {
 		_ = os.Remove(s.tempPath)
 	}
+}
+
+// publishGeneratedMediaAsset は完成した thumbnail / seek tiles を ingest・encode と同じ rel_path の手順で公開する。
+// scratchPath を media_dir の同じディレクトリへ stage し、rel_path のファイルロックを取ってから、
+// commit に size とファイル公開関数 publish を渡す。commit は store の公開メソッドを呼ぶ。
+// store が検査を通せば publish を commit 前に 1 回呼ぶ。公開しないと決めたら呼ばず、published は false になる。
+// ファイルロックは commit が返るまで保持する。公開しなかったとき size は 0 を返す。
+func publishGeneratedMediaAsset(
+	ctx context.Context,
+	mediaDir, relPath, scratchPath string,
+	commit func(size int64, publish func() error) (bool, error),
+) (size int64, published bool, err error) {
+	finalPath, err := mediapath.Resolve(mediaDir, relPath)
+	if err != nil {
+		return 0, false, fmt.Errorf("resolving generated media asset: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
+		return 0, false, fmt.Errorf("creating media asset directory: %w", err)
+	}
+	staged, err := stageMediaFile(ctx, scratchPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
+	if err != nil {
+		return 0, false, fmt.Errorf("staging generated media asset: %w", err)
+	}
+	defer staged.discard()
+	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
+	if err != nil {
+		return 0, false, fmt.Errorf("locking generated media asset: %w", err)
+	}
+	defer func() { _ = fileLock.Close() }()
+	published, err = commit(staged.size, staged.publish)
+	if err != nil || !published {
+		return 0, false, err
+	}
+	return staged.size, true, nil
 }

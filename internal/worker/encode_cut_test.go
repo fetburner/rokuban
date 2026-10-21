@@ -410,8 +410,10 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -478,9 +480,9 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		t.Errorf("the replaced file %s still exists (err=%v)", oldAbs, err)
 	}
 	// 凍結した区間も差し替わる。
-	current, err := assetKeepRanges(ctx, sqlcgen.New(pool), assetID)
+	current, err := frozenKeepRanges(ctx, pool, recordingID, "cut")
 	if err != nil {
-		t.Fatalf("assetKeepRanges: %v", err)
+		t.Fatalf("frozenKeepRanges: %v", err)
 	}
 	if !slices.Equal(current, keep) {
 		t.Errorf("media_asset_cuts ranges = %v, want %v", current, keep)
@@ -565,7 +567,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		t.Fatalf("seeding running encode attempt: %v", err)
 	}
 
-	observed, err := planEncodePublish(ctx, sqlcgen.New(pool), recordingID, "cut", &cutContext{keep: currentKeep})
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", &cutContext{keep: currentKeep})
 	if err != nil {
 		t.Fatalf("observing stale encoded asset: %v", err)
 	}
@@ -652,8 +654,10 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	requestedKeep := seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -709,8 +713,10 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	profile := cutFFmpegProfile()
 	w := &EncodeWorker{
-		Pool:     pool,
-		Attempts: newTestMediaStore(pool),
+		Publisher: newTestMediaStore(pool),
+		Progress:  newTestMediaStore(pool),
+		Pool:      pool,
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -760,7 +766,7 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	if err != nil || !owned || chapters.SameRanges(currentKeep, requestedKeep) {
 		t.Fatalf("edited currentKeep = %v, owned %v, err %v; want different keep", currentKeep, owned, err)
 	}
-	w := &EncodeWorker{Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
+	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Pool: pool, Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
 	cut, _, hasExpected, skip, err := w.loadRequestedEncodeCut(ctx, job)
@@ -919,6 +925,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	mc := mirakc.NewClient(srv.URL, nil)
 
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,
@@ -984,6 +991,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	srv := newFullTransferServer(t, makeTSData(20), "test/policy-cut-only-live.m2ts")
 	mc := mirakc.NewClient(srv.URL, nil)
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,

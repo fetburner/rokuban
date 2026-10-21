@@ -90,6 +90,7 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient("http://127.0.0.1:1", nil)),
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
@@ -131,6 +132,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	workResult := make(chan error, 1)
 	registry := jobq.NewRegistry()
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
@@ -231,6 +233,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		w := &IngestWorker{
+			Publisher:     newTestMediaStore(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
@@ -272,6 +275,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		w := &IngestWorker{
+			Publisher:     newTestMediaStore(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
@@ -312,6 +316,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		w := &IngestWorker{
+			Publisher:     newTestMediaStore(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
@@ -352,6 +357,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	worker := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		Enqueuer:      &jobq.Deferred{},
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		Pool:          pool,

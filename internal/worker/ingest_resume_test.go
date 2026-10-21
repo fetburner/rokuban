@@ -495,6 +495,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	}
 
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
 		Pool:          pool,
 		RecordTarget:  pgstore.NewRecordings(pool),
