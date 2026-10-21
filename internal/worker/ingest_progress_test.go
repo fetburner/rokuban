@@ -183,8 +183,8 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		// 観測期限より長くし、最初の burst が転送開始直後の間引き期間内に
 		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
 		ProgressInterval: time.Hour,
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
+
+		RecordTarget: pgstore.NewRecordings(pool), Precheck: newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
@@ -320,8 +320,8 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
+
+		RecordTarget: pgstore.NewRecordings(pool), Precheck: newTestMediaStore(pool),
 	}
 
 	recordingID = insertTestRecording(t, pool)
@@ -412,8 +412,8 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Millisecond,
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
+
+		RecordTarget: pgstore.NewRecordings(pool), Precheck: newTestMediaStore(pool),
 	}
 
 	recordingID := insertTestRecording(t, pool)
@@ -491,8 +491,8 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
-		Pool:             pool,
-		RecordTarget:     pgstore.NewRecordings(pool),
+
+		RecordTarget: pgstore.NewRecordings(pool), Precheck: newTestMediaStore(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")

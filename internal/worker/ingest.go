@@ -15,14 +15,11 @@ import (
 	"syscall"
 	"time"
 
-	pgx5 "github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sys/unix"
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -313,8 +310,8 @@ type IngestWorker struct {
 	// キューを同時に購読しうる）。Work は verifySite で args.Site に対応する
 	// クライアントを取り出してから使う。
 	MirakcClients    map[string]*mirakc.Client
-	Pool             *pgxpool.Pool
 	Publisher        store.MediaPublish
+	Precheck         store.IngestPrecheck
 	RecordTarget     store.IngestTarget
 	CMDetectionStore store.CMDetection
 	MediaDir         string
@@ -554,7 +551,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// 再試行に戻さない（errIngestRecordEndedAbnormally の doc コメント
 			// 参照）。進捗行は他の削除経路（commit /
 			// handleAlreadyCommittedIngest）と揃え、失敗してもジョブは落とさない。
-			if delErr := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); delErr != nil {
+			if delErr := w.Publisher.ClearIngestProgress(ctx, recordingID); delErr != nil {
 				log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", delErr)
 			}
 			// 取り消し・失敗は「転送が壊れた」ではないので、失敗として数えない。
@@ -702,7 +699,7 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if !now.Before(deadline) {
 		return nil, false, nil
 	}
-	if err := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+	if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
 		return nil, false, fmt.Errorf("clearing ingest progress before SHA-256 wait: %w", err)
 	}
 	log.Info("ingest: content sha256 is pending; snoozing until recheck",
@@ -725,7 +722,7 @@ func (w *IngestWorker) handleAlreadyCommittedIngest(ctx context.Context, client 
 	// など）で原本がコミットされた場合、進捗行だけが取り残される。原本行が
 	// ある録画の進捗表示は API 側が無視する（原本の有無が真実。不変条件 5）
 	// ので害は無いが、掃除できる場所で掃除しておく。
-	if err := sqlcgen.New(w.Pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+	if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
 		log.Warn("ingest: failed to clear stale transfer progress", "recording_id", recordingID, "err", err)
 	}
 	// 原本があるなら対象を絞った reconcile をヒントとして投入する。
@@ -848,15 +845,11 @@ func (w *IngestWorker) enqueueIngestFollowups(ctx context.Context, client *mirak
 // hasOriginalMediaAsset は recordingID に対する kind='original' の media_asset
 // 行が既に存在するかを返す。ingest の冪等性チェックに使う（Work 参照）。
 func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error) {
-	q := sqlcgen.New(w.Pool)
-	_, err := q.GetOriginalMediaAssetID(ctx, recordingID)
-	if err == nil {
-		return true, nil
+	has, err := w.Precheck.HasOriginalMediaAsset(ctx, recordingID)
+	if err != nil {
+		return false, fmt.Errorf("querying media_assets: %w", err)
 	}
-	if errors.Is(err, pgx5.ErrNoRows) {
-		return false, nil
-	}
-	return false, fmt.Errorf("querying media_assets: %w", err)
+	return has, nil
 }
 
 // checkRelPathConflict は relPath を既に使っている、まだ削除されていない
@@ -881,10 +874,9 @@ func (w *IngestWorker) hasOriginalMediaAsset(ctx context.Context, recordingID in
 // 「DB は active、実体は別番組」が再生産される。したがって 'deleting' も
 // 'active' と同じく衝突として扱う。
 func (w *IngestWorker) checkRelPathConflict(ctx context.Context, relPath string) (int64, error) {
-	q := sqlcgen.New(w.Pool)
-	conflictRecordingID, err := q.GetLiveMediaAssetByRelPath(ctx, relPath)
+	conflictRecordingID, err := w.Precheck.GetLiveMediaAssetRecordingID(ctx, relPath)
 	if err != nil {
-		if errors.Is(err, pgx5.ErrNoRows) {
+		if errors.Is(err, store.ErrNotFound) {
 			return 0, nil
 		}
 		return 0, fmt.Errorf("querying media_assets: %w", err)

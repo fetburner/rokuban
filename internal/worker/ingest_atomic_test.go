@@ -49,18 +49,18 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wA := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+
+		RecordTarget: pgstore.NewRecordings(pool),
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
 	}
 	wB := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-		Pool:          pool,
-		RecordTarget:  pgstore.NewRecordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  5 * time.Second,
+
+		RecordTarget: pgstore.NewRecordings(pool),
+		MediaDir:     mediaDir,
+		StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
 	}
 	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
 	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
@@ -229,7 +229,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 		return originalRename(src, dst)
 	}
 
-	w := &IngestWorker{Publisher: newTestMediaStore(pool), Pool: pool, MediaDir: mediaDir}
+	w := &IngestWorker{Publisher: newTestMediaStore(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
@@ -283,7 +283,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	w := &IngestWorker{Publisher: newTestMediaStore(pool), Pool: pool, MediaDir: mediaDir}
+	w := &IngestWorker{Publisher: newTestMediaStore(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
 	const commits = 5
 	for i := 0; i < commits; i++ {
 		recordingID := insertTestRecording(t, pool)
@@ -392,7 +392,7 @@ func runCanonicalOrphanSurvives(
 	t.Cleanup(release)
 	install(t, pool, func() { close(publicationStarted) }, releasePublication)
 
-	w := &IngestWorker{Pool: pool, Publisher: pgstore.NewMedia(pool), MediaDir: mediaDir}
+	w := &IngestWorker{Publisher: pgstore.NewMedia(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
@@ -547,11 +547,11 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			srv := newInstrumentedIngestServer(t, tsData, contentPath, func() { deleteCalls.Add(1) })
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
-				Pool:          pool,
-				Publisher:     pgstore.NewMedia(pool),
-				RecordTarget:  pgstore.NewRecordings(pool),
-				MediaDir:      mediaDir,
-				StallTimeout:  5 * time.Second,
+
+				Publisher:    pgstore.NewMedia(pool),
+				RecordTarget: pgstore.NewRecordings(pool),
+				MediaDir:     mediaDir,
+				StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
 			}
 			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}

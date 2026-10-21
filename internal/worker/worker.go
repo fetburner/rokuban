@@ -118,6 +118,7 @@ type Deps struct {
 	LabelRuleReevaluation store.LabelRuleReevaluation
 	MediaReconcile        store.MediaReconcile
 	MediaPublish          store.MediaPublish
+	IngestPrecheck        store.IngestPrecheck
 	EncodeProgress        store.EncodeProgressReporter
 	MediaDelete           store.MediaDelete
 	TSScan                store.TSScan
@@ -189,8 +190,8 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &IngestWorker{
 		Enqueuer:         deps.Enqueuer,
 		MirakcClients:    deps.MirakcClients,
-		Pool:             deps.Pool,
 		Publisher:        deps.MediaPublish,
+		Precheck:         deps.IngestPrecheck,
 		RecordTarget:     recordings,
 		CMDetectionStore: deps.CMDetectionStore,
 		MediaDir:         deps.MediaDir,
@@ -200,7 +201,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		LiveEnabled:      deps.LiveEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
-		Pool:       deps.Pool,
 		Media:      deps.MediaReconcile,
 		Attempts:   deps.EncodeAttempts,
 		Publisher:  deps.MediaPublish,
@@ -214,7 +214,6 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
-		Pool:     deps.Pool,
 		Media:    deps.MediaReconcile,
 		// desired の絞り込みにプロファイル名だけを使う（EncodeWorker と同じ
 		// 設定を読む。EncodeReconcileArgs.Spec のコメント参照）。

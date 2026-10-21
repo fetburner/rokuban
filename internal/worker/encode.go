@@ -16,12 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -89,7 +86,6 @@ import (
 // 他サイトの worker が拾っても mediapath.Resolve が解決する先は変わらず、
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
-	Pool *pgxpool.Pool
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
 	Media      store.MediaReconcile
 	Attempts   store.EncodeAttempts
@@ -439,8 +435,7 @@ func (w *EncodeWorker) loadCutContext(ctx context.Context, recordingID int64, pr
 	if !profile.Cut {
 		return nil, nil
 	}
-	q := sqlcgen.New(w.Pool)
-	keep, owned, err := currentCutKeep(ctx, q, recordingID)
+	keep, owned, err := w.Media.GetCurrentCutKeep(ctx, recordingID)
 	if err != nil {
 		return nil, err
 	}
@@ -451,31 +446,6 @@ func (w *EncodeWorker) loadCutContext(ctx context.Context, recordingID int64, pr
 		return nil, fmt.Errorf("recording %d has no keep ranges (every span is cut)", recordingID)
 	}
 	return &cutContext{keep: keep}, nil
-}
-
-// currentCutKeep は録画の有効なタイムラインから keep 区間を導出する。owned は
-// ユーザーが確認済みか（所有の行の有無）。
-//
-// **導出は chapters.Derive 1 か所を通る**（api の GET chapters・カット版の
-// encode・「編集前の内容です」の判定が同じ関数を使う）。所有済みなので自動層は
-// 読まない。
-func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) (keep []chapters.Range, owned bool, err error) {
-	state, err := q.GetRecordingChapterState(ctx, recordingID)
-	if err != nil {
-		return nil, false, fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
-	}
-	if !state.Owned {
-		return nil, false, nil
-	}
-	raw, err := q.GetRecordingChapterSpansJSON(ctx, recordingID)
-	if err != nil {
-		return nil, false, fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
-	}
-	var spans []chapters.Span
-	if err := json.Unmarshal(raw, &spans); err != nil {
-		return nil, false, fmt.Errorf("decoding chapter spans for recording %d: %w", recordingID, err)
-	}
-	return chapters.KeepRanges(chapters.Derive(true, spans, nil, state.ProgramDurationMs)), true, nil
 }
 
 func decodeRequestedCutKeep(raw json.RawMessage) ([]chapters.Range, bool, error) {
@@ -892,8 +862,7 @@ func (w *EncodeWorker) notify(ctx context.Context, ev webhook.Event) {
 	if w.Webhook == nil {
 		return
 	}
-	q := sqlcgen.New(w.Pool)
-	rec, err := q.GetRecordingByID(ctx, ev.RecordingID)
+	rec, err := w.Media.GetRecordingNotifySubject(ctx, ev.RecordingID)
 	if err != nil {
 		slog.Warn("webhook: loading recording for encode notify",
 			"recording_id", ev.RecordingID, "err", err)
@@ -1348,8 +1317,8 @@ func copyWithContext(ctx context.Context, dst io.Writer, src io.Reader) (int64, 
 	return io.Copy(dst, contextReader{ctx: ctx, r: src})
 }
 
-func newEncodeJobArgs(ctx context.Context, q *sqlcgen.Queries, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
-	times, err := q.GetRecordingEncodeTimes(ctx, recordingID)
+func newEncodeJobArgs(ctx context.Context, media store.MediaReconcile, recordingID int64, profile string, profiles config.EncodeConfig) (jobs.EncodeJobArgs, error) {
+	times, err := media.GetRecordingEncodeTimes(ctx, recordingID)
 	if err != nil {
 		return jobs.EncodeJobArgs{}, fmt.Errorf("loading recording times: %w", err)
 	}
