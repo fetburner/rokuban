@@ -31,9 +31,12 @@ type RecordSyncState struct {
 // RecordObservationFixture は record 観測契約の実装と DB 状態の操作をまとめる。
 type RecordObservationFixture struct {
 	Store             store.RecordObservations
+	IngestTarget      store.IngestTarget
+	Backlog           store.RecordBacklog
 	NewObservation    func(recordID, status string) store.RecordObservation
 	SeedRecordSync    func(t *testing.T, observation store.RecordObservation)
 	SeedReservation   func(t *testing.T, observation store.RecordObservation)
+	NewOriginalAsset  func(t *testing.T, recordingID int64, state string)
 	InspectRecordSync func(t *testing.T, site, recordID string) RecordSyncState
 	InspectRecordings func(t *testing.T, observation store.RecordObservation) []ObservedRecording
 	// SetRecordSyncObservedAt は record 同期行の観測時刻を書き換える。
@@ -65,8 +68,143 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("failed schedule and failed event converge on one live recording", func(t *testing.T) { runFailedConvergence(t, checkedStore) })
 	t.Run("stale record syncs are decided by the live id set", func(t *testing.T) { runStaleRecordSyncs(t, checkedStore) })
 	t.Run("ingest hint follows the recording status", func(t *testing.T) { runIngestHint(t, checkedStore) })
+	t.Run("ingest target preserves nullable fields", func(t *testing.T) { runIngestTarget(t, checkedStore) })
+	t.Run("ingest backlog filters records and bytes", func(t *testing.T) { runRecordBacklog(t, checkedStore) })
 	t.Run("failed record skipped by a live success keeps no recording", func(t *testing.T) { runFailedRecordSkipped(t, checkedStore) })
 	t.Run("quality events carry a readable time", func(t *testing.T) { runQualityEventTime(t, checkedStore) })
+}
+
+func runIngestTarget(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	var eventID int32
+	addRecord := func(site, recordID string, managed bool, contentLength *int64) *int64 {
+		t.Helper()
+		eventID++
+		observation := f.NewObservation(recordID, "finished")
+		observation.Site = site
+		observation.ProgramID = int64(eventID) + 900_000
+		observation.Snapshot.EventID = eventID
+		observation.Managed = managed
+		observation.ContentLength = contentLength
+		result, err := f.Store.ProcessRecord(ctx, observation)
+		if err != nil {
+			t.Fatalf("ProcessRecord(%q): %v", recordID, err)
+		}
+		return result.RecordingID
+	}
+
+	wantLength := int64(1234)
+	wantID := addRecord("contract-site", "target-sized", true, &wantLength)
+	if wantID == nil {
+		t.Fatal("ProcessRecord(target-sized) returned no recording ID")
+	}
+	got, err := f.IngestTarget.GetRecordSyncIngestTarget(ctx, "contract-site", "target-sized")
+	if err != nil {
+		t.Fatalf("GetRecordSyncIngestTarget(target-sized): %v", err)
+	}
+	if got.RecordingID == nil || *got.RecordingID != *wantID || got.ContentLength == nil || *got.ContentLength != wantLength {
+		t.Fatalf("target-sized = %+v; want recording %d and content length %d", got, *wantID, wantLength)
+	}
+
+	gotID := addRecord("contract-site", "target-unknown-length", true, nil)
+	if gotID == nil {
+		t.Fatal("ProcessRecord(target-unknown-length) returned no recording ID")
+	}
+	got, err = f.IngestTarget.GetRecordSyncIngestTarget(ctx, "contract-site", "target-unknown-length")
+	if err != nil {
+		t.Fatalf("GetRecordSyncIngestTarget(target-unknown-length): %v", err)
+	}
+	if got.RecordingID == nil || *got.RecordingID != *gotID || got.ContentLength != nil {
+		t.Fatalf("target-unknown-length = %+v; want recording %d and nil content length", got, *gotID)
+	}
+
+	firstSiteLength := int64(111)
+	secondSiteLength := int64(222)
+	firstSiteID := addRecord("contract-site", "same-record-id", true, &firstSiteLength)
+	secondSiteID := addRecord("another-site", "same-record-id", true, &secondSiteLength)
+	for _, tc := range []struct {
+		site       string
+		wantID     *int64
+		wantLength int64
+	}{
+		{site: "contract-site", wantID: firstSiteID, wantLength: firstSiteLength},
+		{site: "another-site", wantID: secondSiteID, wantLength: secondSiteLength},
+	} {
+		got, err := f.IngestTarget.GetRecordSyncIngestTarget(ctx, tc.site, "same-record-id")
+		if err != nil {
+			t.Fatalf("GetRecordSyncIngestTarget(%q, same-record-id): %v", tc.site, err)
+		}
+		if got.RecordingID == nil || tc.wantID == nil || *got.RecordingID != *tc.wantID || got.ContentLength == nil || *got.ContentLength != tc.wantLength {
+			t.Fatalf("target for site %q = %+v; want recording %v and content length %d", tc.site, got, tc.wantID, tc.wantLength)
+		}
+	}
+
+	lengthWithoutRecording := int64(5678)
+	if gotID := addRecord("contract-site", "target-unlinked", false, &lengthWithoutRecording); gotID != nil {
+		t.Fatalf("ProcessRecord(target-unlinked) recording ID = %d; want nil", *gotID)
+	}
+	got, err = f.IngestTarget.GetRecordSyncIngestTarget(ctx, "contract-site", "target-unlinked")
+	if err != nil {
+		t.Fatalf("GetRecordSyncIngestTarget(target-unlinked): %v", err)
+	}
+	if got.RecordingID != nil || got.ContentLength == nil || *got.ContentLength != lengthWithoutRecording {
+		t.Fatalf("target-unlinked = %+v; want nil recording ID and content length %d", got, lengthWithoutRecording)
+	}
+
+	if _, err := f.IngestTarget.GetRecordSyncIngestTarget(ctx, "contract-site", "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordSyncIngestTarget(missing) error = %v; want ErrNotFound", err)
+	}
+}
+
+func runRecordBacklog(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	var eventID int32
+	addRecord := func(site, recordID, status string, managed bool, contentLength *int64, originalState string) {
+		t.Helper()
+		eventID++
+		observation := f.NewObservation(recordID, status)
+		observation.Site = site
+		observation.ProgramID = int64(eventID) + 910_000
+		observation.Snapshot.EventID = eventID
+		observation.Managed = managed
+		observation.ContentLength = contentLength
+		result, err := f.Store.ProcessRecord(ctx, observation)
+		if err != nil {
+			t.Fatalf("ProcessRecord(%q): %v", recordID, err)
+		}
+		if originalState != "" {
+			if result.RecordingID == nil {
+				t.Fatalf("ProcessRecord(%q) returned no recording ID for original asset", recordID)
+			}
+			f.NewOriginalAsset(t, *result.RecordingID, originalState)
+		}
+	}
+
+	lengthWithoutAsset := int64(100)
+	lengthWithDeletedAsset := int64(200)
+	lengthWithActiveAsset := int64(300)
+	lengthWithDeletingAsset := int64(400)
+	lengthOtherSite := int64(500)
+	lengthUnfinished := int64(600)
+	lengthUnlinked := int64(700)
+	addRecord("contract-site", "backlog-no-asset", "finished", true, &lengthWithoutAsset, "")
+	addRecord("contract-site", "backlog-deleted-original", "finished", true, &lengthWithDeletedAsset, "deleted")
+	addRecord("contract-site", "backlog-active-original", "finished", true, &lengthWithActiveAsset, "active")
+	addRecord("contract-site", "backlog-deleting-original", "finished", true, &lengthWithDeletingAsset, "deleting")
+	addRecord("another-site", "backlog-other-site", "finished", true, &lengthOtherSite, "")
+	addRecord("contract-site", "backlog-recording", "recording", true, &lengthUnfinished, "")
+	addRecord("contract-site", "backlog-unlinked", "finished", false, &lengthUnlinked, "")
+	addRecord("contract-site", "backlog-null-length", "finished", true, nil, "")
+
+	got, err := f.Backlog.GetUningestedRecordBacklog(ctx, "contract-site")
+	if err != nil {
+		t.Fatalf("GetUningestedRecordBacklog: %v", err)
+	}
+	if got.Records != 3 || got.Bytes != lengthWithoutAsset+lengthWithDeletedAsset {
+		t.Fatalf("backlog = %+v; want 3 records and %d bytes", got, lengthWithoutAsset+lengthWithDeletedAsset)
+	}
 }
 
 // runRecordSerialization は、先発が排他の確保を通過した後、後発が先へ進む機会を与える。
@@ -474,7 +612,7 @@ func requireRecentTimes(t *testing.T, times []time.Time) {
 
 func requireStore(t *testing.T, f RecordObservationFixture) {
 	t.Helper()
-	if f.Store == nil || f.NewObservation == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
+	if f.Store == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
 		t.Fatalf("incomplete record observation fixture: %+v", f)
 	}
 }
