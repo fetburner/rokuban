@@ -2,14 +2,12 @@ package pgstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -150,22 +148,13 @@ func (s *Media) RequestCutRebuild(ctx context.Context, recordingID int64, profil
 		}
 		return fmt.Errorf("loading active original for recording %d: %w", recordingID, err)
 	}
-	state, err := q.GetRecordingChapterState(ctx, recordingID)
+	keep, owned, err := currentCutKeep(ctx, q, recordingID)
 	if err != nil {
-		return fmt.Errorf("loading chapter state for recording %d: %w", recordingID, err)
+		return fmt.Errorf("loading current keep ranges for recording %d: %w", recordingID, err)
 	}
-	if !state.Owned {
+	if !owned {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrChaptersNotOwned)
 	}
-	spansJSON, err := q.GetRecordingChapterSpansJSON(ctx, recordingID)
-	if err != nil {
-		return fmt.Errorf("loading chapter spans for recording %d: %w", recordingID, err)
-	}
-	var spans []chapters.Span
-	if err := json.Unmarshal(spansJSON, &spans); err != nil {
-		return fmt.Errorf("decoding chapter spans for recording %d: %w", recordingID, err)
-	}
-	keep := chapters.KeepRanges(chapters.Derive(true, spans, nil, state.ProgramDurationMs))
 	if len(keep) == 0 {
 		return fmt.Errorf("recording %d: %w", recordingID, store.ErrKeepRangesEmpty)
 	}

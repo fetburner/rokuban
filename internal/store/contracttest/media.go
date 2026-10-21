@@ -16,6 +16,7 @@ import (
 type MediaFixture struct {
 	Serving   store.MediaServing
 	Reconcile store.MediaReconcile
+	Precheck  store.IngestPrecheck
 	Storage   store.StorageObservation
 	Publisher store.MediaPublish
 	// Chapters は、公開と直列化する書き手として使う。
@@ -25,6 +26,8 @@ type MediaFixture struct {
 	Site string
 
 	NewRecording                  func(t *testing.T) int64
+	SetRecordingEncodeTimes       func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time)
+	SetRecordingPurged            func(t *testing.T, recordingID int64)
 	SetEncodeProfiles             func(t *testing.T, recordingID int64, profiles []string)
 	BeginEncodeAttempt            func(t *testing.T, recordingID int64, profile string) int32
 	HasEncodePolicy               func(t *testing.T, recordingID int64) (store.EncodePolicySnapshot, bool)
@@ -64,6 +67,11 @@ type NewMediaFixture func(t *testing.T) MediaFixture
 // RunMedia は実在のメディア store 実装に対して配信・名前空間・監査の契約を実行する。
 func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
+	t.Run("current cut keep is derived from owned chapters", func(t *testing.T) { runCurrentCutKeep(t, newFixture) })
+	t.Run("recording encode times preserve nullable timestamps", func(t *testing.T) { runRecordingEncodeTimes(t, newFixture) })
+	t.Run("encode notify subject includes purged recordings", func(t *testing.T) { runRecordingNotifySubject(t, newFixture) })
+	t.Run("ingest precheck recognizes committed originals in every state", func(t *testing.T) { runHasOriginalMediaAsset(t, newFixture) })
+	t.Run("live rel_path precheck matches the partial unique index", func(t *testing.T) { runLiveMediaAssetRecordingID(t, newFixture) })
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
@@ -82,6 +90,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 // RunMediaPublish verifies the atomic publication and in-place registration contract.
 func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
+	t.Run("clearing ingest progress is idempotent", func(t *testing.T) { runClearIngestProgress(t, newFixture) })
 	t.Run("original publication freezes policy and clears progress atomically", func(t *testing.T) { runOriginalPublication(t, newFixture) })
 	t.Run("original callback failure rolls back rows", func(t *testing.T) { runOriginalPublicationRollback(t, newFixture) })
 	t.Run("encoded publication rechecks attempt and desired profiles", func(t *testing.T) { runEncodedPublicationRechecks(t, newFixture) })
@@ -301,6 +310,154 @@ func runInPlacePublication(t *testing.T, newFixture NewMediaFixture) {
 	}
 	if got.RecordingID != liveRecording || len(got.AssetIDs) != 1 || got.AssetIDs[0] != liveAsset || got.AssetIDs[0] == staleAsset {
 		t.Fatalf("in-place preferred result = %+v, want active row recording %d/asset %d (deleted asset %d)", got, liveRecording, liveAsset, staleAsset)
+	}
+}
+
+func runCurrentCutKeep(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.SetCMRanges(t, id, []chapters.Range{{StartMs: 1000, EndMs: 2000}})
+	if keep, owned, err := f.Reconcile.GetCurrentCutKeep(ctx, id); err != nil || owned || len(keep) != 0 {
+		t.Fatalf("GetCurrentCutKeep(%d) without ownership = (%v, %v, %v), want (nil, false, nil)", id, keep, owned, err)
+	}
+
+	f.SetChapterSpans(t, id, []chapters.Span{
+		{StartMs: 0, EndMs: 30030, Label: "main"},
+		{StartMs: 30030, EndMs: 45045, Label: "CM", Cut: true},
+		{StartMs: 45045, EndMs: 60060, Label: "end"},
+	})
+	want := []chapters.Range{{StartMs: 0, EndMs: 30030}, {StartMs: 45045, EndMs: 60060}}
+	keep, owned, err := f.Reconcile.GetCurrentCutKeep(ctx, id)
+	if err != nil || !owned || !chapters.SameRanges(keep, want) {
+		t.Fatalf("GetCurrentCutKeep(%d) = (%v, %v, %v), want (%v, true, nil)", id, keep, owned, err, want)
+	}
+
+	allCutID := f.NewRecording(t)
+	f.SetChapterSpans(t, allCutID, []chapters.Span{{StartMs: 0, EndMs: 60060, Label: "CM", Cut: true}})
+	keep, owned, err = f.Reconcile.GetCurrentCutKeep(ctx, allCutID)
+	if err != nil || !owned || len(keep) != 0 {
+		t.Fatalf("GetCurrentCutKeep(%d) for all-cut timeline = (%v, %v, %v), want (nil, true, nil)", allCutID, keep, owned, err)
+	}
+
+	f.SetRecordingPurged(t, id)
+	if _, _, err := f.Reconcile.GetCurrentCutKeep(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetCurrentCutKeep(%d) after purge error = %v, want ErrNotFound", id, err)
+	}
+}
+
+func runRecordingEncodeTimes(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	times, err := f.Reconcile.GetRecordingEncodeTimes(ctx, id)
+	if err != nil || times.StartedAt != nil || times.EndedAt != nil || times.ProgramDurationMs != 60_000 {
+		t.Fatalf("GetRecordingEncodeTimes(%d) with NULL timestamps = (%+v, %v), want NULL/NULL/60000", id, times, err)
+	}
+
+	startedAt := time.Date(2026, 4, 5, 6, 7, 8, 0, time.UTC)
+	endedAt := startedAt.Add(90 * time.Minute)
+	f.SetRecordingEncodeTimes(t, id, &startedAt, &endedAt)
+	times, err = f.Reconcile.GetRecordingEncodeTimes(ctx, id)
+	if err != nil || times.StartedAt == nil || !times.StartedAt.Equal(startedAt) || times.EndedAt == nil || !times.EndedAt.Equal(endedAt) {
+		t.Fatalf("GetRecordingEncodeTimes(%d) with timestamps = (%+v, %v), want %s..%s", id, times, err, startedAt, endedAt)
+	}
+
+	f.SetRecordingEncodeTimes(t, id, nil, &endedAt)
+	times, err = f.Reconcile.GetRecordingEncodeTimes(ctx, id)
+	if err != nil || times.StartedAt != nil || times.EndedAt == nil || !times.EndedAt.Equal(endedAt) {
+		t.Fatalf("GetRecordingEncodeTimes(%d) with one NULL timestamp = (%+v, %v), want NULL/%s", id, times, err, endedAt)
+	}
+	f.SetRecordingEncodeTimes(t, id, &startedAt, nil)
+	times, err = f.Reconcile.GetRecordingEncodeTimes(ctx, id)
+	if err != nil || times.StartedAt == nil || !times.StartedAt.Equal(startedAt) || times.EndedAt != nil {
+		t.Fatalf("GetRecordingEncodeTimes(%d) with inverse NULL timestamp = (%+v, %v), want %s/NULL", id, times, err, startedAt)
+	}
+	if _, err := f.Reconcile.GetRecordingEncodeTimes(ctx, int64(1<<63-1)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingEncodeTimes for missing recording error = %v, want ErrNotFound", err)
+	}
+}
+
+func runRecordingNotifySubject(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	f.SetRecordingPurged(t, id)
+	subject, err := f.Reconcile.GetRecordingNotifySubject(ctx, id)
+	if err != nil || subject.Site != f.Site || subject.Title != "store media contract fixture" {
+		t.Fatalf("GetRecordingNotifySubject(%d) after purge = (%+v, %v), want site %q and fixture title", id, subject, err, f.Site)
+	}
+	if _, err := f.Reconcile.GetRecordingNotifySubject(ctx, int64(1<<63-1)); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingNotifySubject for missing recording error = %v, want ErrNotFound", err)
+	}
+}
+
+func runHasOriginalMediaAsset(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || has {
+		t.Fatalf("HasOriginalMediaAsset(%d) without row = (%v, %v), want (false, nil)", id, has, err)
+	}
+	f.NewAsset(t, id, "thumbnail", nil, fmt.Sprintf("sites/%s/%d/thumbnail.jpg", f.Site, id), "active")
+	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || has {
+		t.Fatalf("HasOriginalMediaAsset(%d) with only a thumbnail = (%v, %v), want (false, nil)", id, has, err)
+	}
+	f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d/original.m2ts", f.Site, id), "deleted")
+	if has, err := f.Precheck.HasOriginalMediaAsset(ctx, id); err != nil || !has {
+		t.Fatalf("HasOriginalMediaAsset(%d) with deleted row = (%v, %v), want (true, nil)", id, has, err)
+	}
+}
+
+func runLiveMediaAssetRecordingID(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	for _, state := range []string{"active", "deleting"} {
+		id := f.NewRecording(t)
+		relPath := fmt.Sprintf("sites/%s/%d/%s.m2ts", f.Site, id, state)
+		f.NewAsset(t, id, "original", nil, relPath, state)
+		got, err := f.Precheck.GetLiveMediaAssetRecordingID(ctx, relPath)
+		if err != nil || got != id {
+			t.Fatalf("GetLiveMediaAssetRecordingID(%q) for %s row = (%d, %v), want (%d, nil)", relPath, state, got, err, id)
+		}
+	}
+
+	thumbnailID := f.NewRecording(t)
+	thumbnailPath := fmt.Sprintf("sites/%s/%d/thumbnail.jpg", f.Site, thumbnailID)
+	f.NewAsset(t, thumbnailID, "thumbnail", nil, thumbnailPath, "active")
+	if got, err := f.Precheck.GetLiveMediaAssetRecordingID(ctx, thumbnailPath); err != nil || got != thumbnailID {
+		t.Fatalf("GetLiveMediaAssetRecordingID(%q) for non-original row = (%d, %v), want (%d, nil)", thumbnailPath, got, err, thumbnailID)
+	}
+
+	deletedID := f.NewRecording(t)
+	deletedPath := fmt.Sprintf("sites/%s/%d/deleted.m2ts", f.Site, deletedID)
+	f.NewAsset(t, deletedID, "original", nil, deletedPath, "deleted")
+	if _, err := f.Precheck.GetLiveMediaAssetRecordingID(ctx, deletedPath); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetLiveMediaAssetRecordingID(%q) for deleted-only row error = %v, want ErrNotFound", deletedPath, err)
+	}
+}
+
+func runClearIngestProgress(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	id := f.NewRecording(t)
+	otherID := f.NewRecording(t)
+	f.SetIngestProgress(t, id, 100, nil)
+	f.SetIngestProgress(t, otherID, 200, nil)
+	if !f.HasIngestProgress(t, id) {
+		t.Fatal("ingest progress row was not seeded")
+	}
+	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
+		t.Fatalf("ClearIngestProgress(%d): %v", id, err)
+	}
+	if f.HasIngestProgress(t, id) {
+		t.Fatal("ingest progress row remains after clear")
+	}
+	if !f.HasIngestProgress(t, otherID) {
+		t.Fatal("clearing one recording removed another recording's progress row")
+	}
+	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
+		t.Fatalf("ClearIngestProgress(%d) without row: %v", id, err)
 	}
 }
 

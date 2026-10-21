@@ -104,6 +104,14 @@ func (s *Media) CommitOriginal(
 	return nil
 }
 
+// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
+func (s *Media) ClearIngestProgress(ctx context.Context, recordingID int64) error {
+	if err := sqlcgen.New(s.pool).DeleteRecordingIngestProgress(ctx, recordingID); err != nil {
+		return fmt.Errorf("clearing ingest progress for recording %d: %w", recordingID, err)
+	}
+	return nil
+}
+
 // PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認して encoded を公開する。
 // 版の削除・事後追加と直列化する（cut でない版も）。cut はさらにチャプター編集・作り直し要求とも直列化する。
 // cut は録画を先にロックし、試行・desired・要求の順に読む。
@@ -251,6 +259,9 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) ([]chapters.Range, bool, error) {
 	state, err := q.GetRecordingChapterState(ctx, recordingID)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, fmt.Errorf("recording %d: %w", recordingID, store.ErrNotFound)
+		}
 		return nil, false, fmt.Errorf("loading chapter state: %w", err)
 	}
 	if !state.Owned {
@@ -265,6 +276,24 @@ func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) 
 		return nil, false, fmt.Errorf("decoding chapter spans: %w", err)
 	}
 	return chapters.KeepRanges(chapters.Derive(true, spans, nil, state.ProgramDurationMs)), true, nil
+}
+
+// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
+func (s *Media) GetCurrentCutKeep(ctx context.Context, recordingID int64) ([]chapters.Range, bool, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, false, fmt.Errorf("beginning current cut keep read for recording %d: %w", recordingID, err)
+	}
+	defer rollback(tx)
+
+	keep, owned, err := currentCutKeep(ctx, sqlcgen.New(tx), recordingID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("committing current cut keep read for recording %d: %w", recordingID, err)
+	}
+	return keep, owned, nil
 }
 
 func assetKeepRanges(ctx context.Context, q *sqlcgen.Queries, assetID int64) ([]chapters.Range, error) {

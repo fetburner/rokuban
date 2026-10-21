@@ -31,11 +31,24 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	fixture := contracttest.MediaFixture{
 		Serving:      NewMedia(pool),
 		Reconcile:    NewMedia(pool),
+		Precheck:     NewMedia(pool),
 		Storage:      NewMedia(pool),
 		Publisher:    NewMedia(pool),
 		Chapters:     NewAnalysis(pool),
 		Site:         db.DefaultSite,
 		NewRecording: func(t *testing.T) int64 { return newMediaContractRecording(t, pool) },
+		SetRecordingEncodeTimes: func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt); err != nil {
+				t.Fatalf("setting encode times for recording %d: %v", recordingID, err)
+			}
+		},
+		SetRecordingPurged: func(t *testing.T, recordingID int64) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = COALESCE(deleted_at, now()), purged_at = now() WHERE id = $1`, recordingID); err != nil {
+				t.Fatalf("purging recording %d: %v", recordingID, err)
+			}
+		},
 		NewAsset: func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 			return newMediaContractAsset(t, pool, recordingID, kind, profile, relPath, state)
 		},

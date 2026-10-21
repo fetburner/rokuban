@@ -1061,7 +1061,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
-	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: pgstore.NewMedia(pool), Profiles: profiles}
+	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), Profiles: profiles}
 
 	router := NewRouter(RouterConfig{
 		Pool:               pool,
@@ -1173,7 +1173,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 
 	encodeReconcileWorker := &worker.EncodeReconcileWorker{
 		Enqueuer: enqueuer,
-		Pool:     pool,
+
 		Media:    pgstore.NewMedia(pool),
 		Profiles: profiles,
 	}

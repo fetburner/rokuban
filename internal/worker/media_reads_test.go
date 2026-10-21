@@ -46,7 +46,7 @@ func TestEncodeWorkerPlansFromStoreObservation(t *testing.T) {
 			KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 900}},
 		},
 	}
-	w := &EncodeWorker{Pool: pool, Media: media}
+	w := &EncodeWorker{Media: media}
 	observed, err := w.planEncodeAsset(context.Background(), recordingID, profile, &cutContext{keep: keep}, nil)
 	if err != nil {
 		t.Fatalf("planEncodeAsset() error = %v", err)

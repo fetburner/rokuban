@@ -89,7 +89,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		t.Fatalf("writing ingest temporary file: %v", err)
 	}
-	if err := (&IngestWorker{Publisher: newTestMediaStore(pool), Pool: pool, MediaDir: mediaDir}).commit(
+	if err := (&IngestWorker{Publisher: newTestMediaStore(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)),
 	); err != nil {
 		t.Fatalf("IngestWorker.commit: %v", err)
@@ -164,7 +164,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	defer srv.Close()
 
 	enqueuer := newRecordingEnqueuer()
-	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, Pool: pool, MediaDir: mediaDir, CMDetectionStore: pgstore.NewAnalysis(pool)}
+	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstore.NewAnalysis(pool), Precheck: newTestMediaStore(pool)}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if got := countTSScanJobs(t, enqueuer, recordingID); got != 1 {

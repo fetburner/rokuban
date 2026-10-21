@@ -302,7 +302,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}}
 
 	enqueuer := newRecordingEnqueuer()
-	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Pool: pool, Media: pgstore.NewMedia(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	reconciled := map[string]bool{}

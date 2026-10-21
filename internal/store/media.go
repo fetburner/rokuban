@@ -145,8 +145,31 @@ type MediaAssetRelPathViolation struct {
 	RelPath string
 }
 
+// RecordingEncodeTimes はエンコード締切の計算に使う録画時刻を表す。
+type RecordingEncodeTimes struct {
+	StartedAt         *time.Time
+	EndedAt           *time.Time
+	ProgramDurationMs int64
+}
+
+// RecordingNotifySubject はエンコード通知に載せる録画の識別情報を表す。
+type RecordingNotifySubject struct {
+	Site  string
+	Title string
+}
+
 // MediaReconcile は worker のメディア処理入力、media_assets の reconcile と profile 検証の読み取り契約である。
 type MediaReconcile interface {
+	// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
+	// 所有状態と区間は同じ時点の 1 回の読み取りで返す。
+	// 確認されていなければ owned=false、purged の録画なら ErrNotFound を返す。
+	GetCurrentCutKeep(ctx context.Context, recordingID int64) (keep []chapters.Range, owned bool, err error)
+	// GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。
+	// 録画が無ければ ErrNotFound を返す。
+	GetRecordingEncodeTimes(ctx context.Context, recordingID int64) (RecordingEncodeTimes, error)
+	// GetRecordingNotifySubject はエンコード通知に載せる局と番組名を返す。
+	// purged の録画も返し、録画が無ければ ErrNotFound を返す。
+	GetRecordingNotifySubject(ctx context.Context, recordingID int64) (RecordingNotifySubject, error)
 	// GetActiveOriginalMediaAsset はメディア処理の入力に使う active な原本を返す。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// HasActiveThumbnailMediaAsset は active なサムネイルがあれば true を返す。
@@ -177,6 +200,17 @@ type MediaReconcile interface {
 	// FindInvalidMediaAssetRelPath は予約されたサイト名空間の外にある原本または encoded を返す。
 	// 違反が無ければ nil, nil を返す。
 	FindInvalidMediaAssetRelPath(ctx context.Context) (*MediaAssetRelPathViolation, error)
+}
+
+// IngestPrecheck は転送前の冪等性・衝突確認に使う読み取り契約である。
+type IngestPrecheck interface {
+	// HasOriginalMediaAsset は kind='original' の media_asset 行があれば true を返す。
+	// state は問わない。行の存在が原本のコミットを表す。
+	HasOriginalMediaAsset(ctx context.Context, recordingID int64) (bool, error)
+	// GetLiveMediaAssetRecordingID は削除済みでない行の recording_id を返す。
+	// 転送前のヒントであり、一意性の最終判定ではない。述語は部分一意索引と同じで、
+	// state='deleting' の行も衝突に数える。
+	GetLiveMediaAssetRecordingID(ctx context.Context, relPath string) (int64, error)
 }
 
 // EncodeQueueParams は API が encode 待機列を作る条件を表す。
