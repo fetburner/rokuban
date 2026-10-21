@@ -33,6 +33,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		Reconcile:    NewMedia(pool),
 		Storage:      NewMedia(pool),
 		Publisher:    NewMedia(pool),
+		Chapters:     NewAnalysis(pool),
 		Site:         db.DefaultSite,
 		NewRecording: func(t *testing.T) int64 { return newMediaContractRecording(t, pool) },
 		NewAsset: func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
@@ -131,6 +132,67 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 			t.Fatalf("reading encode policy for recording %d: %v", recordingID, err)
 		}
 		return policy, true
+	}
+	fixture.BeginChapterEdit = func(t *testing.T, id int64, spans []chapters.Span) func() {
+		t.Helper()
+		ctx := context.Background()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("beginning chapter edit tx: %v", err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(ctx) })
+		// チャプター編集と同じ順序（行ロック、区間の書き込み）。
+		q := sqlcgen.New(tx)
+		if _, err := q.LockRecording(ctx, id); err != nil {
+			t.Fatalf("locking recording: %v", err)
+		}
+		if err := q.UpsertRecordingChapterOwnership(ctx, id); err != nil {
+			t.Fatalf("adopting chapters: %v", err)
+		}
+		if _, err := tx.Exec(ctx, "DELETE FROM recording_chapter_spans WHERE recording_id = $1", id); err != nil {
+			t.Fatalf("clearing chapter spans: %v", err)
+		}
+		for _, sp := range spans {
+			if _, err := tx.Exec(ctx,
+				"INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range($2, $3), $4, $5)",
+				id, sp.StartMs, sp.EndMs, sp.Label, sp.Cut); err != nil {
+				t.Fatalf("writing chapter span: %v", err)
+			}
+		}
+		return func() {
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("committing chapter edit tx: %v", err)
+			}
+		}
+	}
+	fixture.BeginEncodedRemoval = func(t *testing.T, id int64, profile string) func() {
+		t.Helper()
+		ctx := context.Background()
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("beginning encoded removal tx: %v", err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(ctx) })
+		// 版の削除と同じ順序（録画の行、方針の行、desired から外す）。
+		q := sqlcgen.New(tx)
+		if _, err := q.LockRecording(ctx, id); err != nil {
+			t.Fatalf("locking recording: %v", err)
+		}
+		if _, err := q.LockRecordingEncodePolicy(ctx, id); err != nil {
+			t.Fatalf("locking encode policy: %v", err)
+		}
+		if err := q.RemoveRecordingEncodeProfile(ctx, sqlcgen.RemoveRecordingEncodeProfileParams{RecordingID: id, Profile: profile}); err != nil {
+			t.Fatalf("removing encode profile: %v", err)
+		}
+		return func() {
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("committing encoded removal tx: %v", err)
+			}
+		}
+	}
+	fixture.LoseTransactionDuringPublish = func(t *testing.T) {
+		t.Helper()
+		testutil.TerminateOpenTransactions(t, pool)
 	}
 	fixture.SetIngestProgress = func(t *testing.T, recordingID int64, written int64, expected *int64) {
 		t.Helper()

@@ -95,7 +95,7 @@ type DeleteReleasedReservationsBySiteAndProgramIDsParams struct {
 //	  いまルールが base を供給していない行。**この列は EPG の変化だけでも NULL に
 //	  なる**ので、これ単体では「ユーザー由来」の証明にならない: 投資（record 意図
 //	  ∪ overrides）を持つ行はルールが外れても desired に残るためそのパスで
-//	  upsert され、internal/ruler/sql.go の resolved CTE が凍結するのは base と
+//	  upsert され、internal/store/pgstore/rulerpass.go の resolved CTE が凍結するのは base と
 //	  dedup 根拠 2 列だけで、rule_id = EXCLUDED.rule_id がそのまま NULL を書く
 //	  （TestRunPass_EpgUnmatchNullsRuleIDButInvestmentBlocksRelease が実測で固定）。
 //	  効いているのは NOT EXISTS program_investments のほうである ---
@@ -171,16 +171,14 @@ type DeleteReservationsBySiteAndProgramIDsParams struct {
 // UpsertReservationsFromRulerPass は jsonb_to_recordset を使う集合演算 1 文で、
 // sqlc の組み込みアナライザ（実 DB 接続なしのカタログ解析）がこの動的レコード型を
 // 解決できないため（`column "program_id" does not exist` で generate が失敗する）、
-// 番組検索の WHERE コンパイラと同じく internal/ruler/sql.go に生 SQL として置き、
-// pgxpool 経由で直接実行する。
+// internal/store/pgstore/rulerpass.go に生 SQL として置き、pgx 経由で実行する。
 // ルール・program_intents のどちらからも desired でなくなった予約のうち、
 // 「ルール x EPG」由来と区別できないものを削除する（導出削除。呼び出し側で
 // サーキットブレーカーの閾値判定を先に行うこと）。ユーザーが投資を手放す書き込みを
 // しない限り起きない削除は先に DeleteReleasedReservationsBySiteAndProgramIDs が
 // 処理済みで、ブレーカーの数にも入らない。
 //
-// toDelete は runPassForSite の先頭（トランザクション外）で ListProgramIntentActionsBySite /
-// ListProgramInvestmentProgramIDsBySite / ListReservationProgramIDsBySite を読んでから
+// toDelete は ruler の評価段階（トランザクション外）で意図・投資・既存予約を読んでから
 // 計算した集合で、この DELETE 文自体は別のトランザクション（tx）内で後から実行される。
 // その間に api の PutProgramIntent（program_intents.action='record' をコミットする
 // だけで、reservations には一切触れない）が同じ program_id に意図を立てると、
@@ -336,9 +334,14 @@ FROM program_snapshots s
 JOIN epg_programs p
   ON p.site = s.site AND p.program_id = s.program_id
 WHERE s.site = $1
-  AND s.start_at + (s.duration_ms * interval '1 millisecond') < now()
+  AND s.start_at + (s.duration_ms * interval '1 millisecond') < $2::timestamptz
   AND p.start_at > s.start_at + interval '24 hours'
 `
+
+type ListProgramIDReusesBySiteParams struct {
+	Site string
+	Now  time.Time
+}
 
 type ListProgramIDReusesBySiteRow struct {
 	ProgramID         int64
@@ -351,8 +354,8 @@ type ListProgramIDReusesBySiteRow struct {
 // 既に終了していて、射影側の同じ programId が開始時刻を 24 時間超後ろへ動かした
 // 場合だけを拾う。放送中の番組の先行 EIT や通常の繰り下げは対象にしない。
 // これは読み取り専用の検出器であり、検出結果によって snapshot や予約を変更しない。
-func (q *Queries) ListProgramIDReusesBySite(ctx context.Context, site string) ([]ListProgramIDReusesBySiteRow, error) {
-	rows, err := q.db.Query(ctx, listProgramIDReusesBySite, site)
+func (q *Queries) ListProgramIDReusesBySite(ctx context.Context, arg ListProgramIDReusesBySiteParams) ([]ListProgramIDReusesBySiteRow, error) {
+	rows, err := q.db.Query(ctx, listProgramIDReusesBySite, arg.Site, arg.Now)
 	if err != nil {
 		return nil, err
 	}
@@ -579,7 +582,7 @@ type ListRetractGraceProtectedProgramIDsBySiteAndProgramIDsParams struct {
 // のコメント参照）。
 //
 // r.rule_id は呼び出し時点でまだ「前パス」の値である --- derivedDeletes の
-// programId はどれも今パスの desired に無いため、internal/ruler/sql.go の
+// programId はどれも今パスの desired に無いため、internal/store/pgstore/rulerpass.go の
 // upsertReservationsFromPass の入力行（rows）にも
 // DeleteReleasedReservationsBySiteAndProgramIDs の対象にも含まれず、この SELECT
 // が呼ばれる時点ではまだ何にも書き換えられていない。**この列を「今パスの評価結

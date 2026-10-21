@@ -373,6 +373,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	defer srv.Close()
 
 	iw := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
 		Pool:          pool,

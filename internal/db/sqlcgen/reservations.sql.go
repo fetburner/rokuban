@@ -24,7 +24,7 @@ type CreateManualReservationParams struct {
 }
 
 // テスト用の直接 INSERT ヘルパー。reservations の実運用上の書き手は
-// ruler の一括 INSERT（internal/ruler/sql.go）で、api はこの表に INSERT を
+// ruler の一括 INSERT（internal/store/pgstore/rulerpass.go）で、api はこの表に INSERT を
 // 一切書かない（M3-1、issue #29「導出器が作るキーを宛先にしない」の帰結）。
 // 例外は DELETE のみ: DeleteRule がルール削除と同一 tx で
 // DeleteReservationsByRuleWithoutIntent（rules.sql）を実行する。明示操作は

@@ -170,30 +170,12 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	}
 
 	relPath := seekTilesRelPath(recordingID)
-	finalPath, err := mediapath.Resolve(w.MediaDir, relPath)
-	if err != nil {
-		return fmt.Errorf("resolving generated media asset: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return fmt.Errorf("creating media asset directory: %w", err)
-	}
-	staged, err := stageMediaFile(ctx, sheetPath, finalPath, mediapath.GeneratedAssetTempFilePrefix)
-	if err != nil {
-		return fmt.Errorf("staging seek tiles: %w", err)
-	}
-	defer staged.discard()
-	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
-	if err != nil {
-		return fmt.Errorf("locking generated media asset: %w", err)
-	}
-	defer func() { _ = fileLock.Close() }()
-	if w.Publisher == nil {
-		return fmt.Errorf("publishing seek tiles: media publisher is nil")
-	}
-	size := staged.size
-	published, err := w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
-		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
-	}, staged.publish)
+	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, relPath, sheetPath,
+		func(size int64, publish func() error) (bool, error) {
+			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
+				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+			}, publish)
+		})
 	if err != nil {
 		return fmt.Errorf("publishing seek tiles: %w", err)
 	}

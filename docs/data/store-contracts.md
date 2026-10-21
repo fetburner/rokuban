@@ -46,7 +46,7 @@ store が記録する時刻は DB の時計で付け、呼び出し側の時計�
 
 <details><summary>根拠</summary>
 
-- DB の時計で比べる前例（GC）: `internal/ruler.runGC` の `observed_at < now() - horizon` と `postgresInterval`
+- DB の時計で比べる前例（GC）: `internal/db/queries/reservations.sql` の `DeleteStaleNeverScheduledEvents`。`observed_at < now() - horizon` で比べ、`PruneNeverScheduled` が呼ぶ
 - DB の時計で比べる前例（孤児候補）: `internal/store/pgstore.Analysis.FailOrphanLogoCandidates`。`ListRunningCMLogoCandidates` が返す DB の `now()` を使う
 - 例外: `internal/worker/delete_reconcile.go` の `trashCutoff` と `recordings_trash.sql` の `deleted_at = now()`
 
@@ -269,21 +269,46 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 
 ### メディア公開
 
-メディアの公開状態と DB 行は、ファイルの rename と同じトランザクション境界で確定する。
+原本・encoded・thumbnail・seek tiles の公開は、1 つの tx を開いたまま、DB の判定、ファイルの公開、commit をこの順に行う。tx は公開のメソッドごとに store が持つ。
 
-原本・encoded・thumbnail・seek tiles の公開は `MediaPublish` がトランザクションを持つ。worker は `rel_path` のファイルロックを保持し、DB の再確認と行の書き込みが済んだ後、commit 前に一度だけ呼ぶファイル公開 callback を渡す。callback が失敗すれば DB の行はロールバックする。rename 後に失敗したファイルは DB 行を持たないため、孤児として観測される。
+ファイルの公開は、呼び出し側が関数 `publish` として store に渡す。store は検査と行の書き込みをすべて終えた後、commit の前に `publish` を 1 回だけ呼ぶ。`publish` は rename と fsync を行う。検査で公開しないと決めたときは呼ばない。
 
-原本の commit では進捗行の削除と encode 方針の凍結も同じ tx に入れる。方針 resolver は store が読み出した録画と予約の値だけを受け取る純粋関数にする。encoded の公開は、試行番号・現在の desired・作り直し要求・cut 区間を tx 内で読み直してから callback を呼ぶ。cut 版は録画行を先にロックし、チャプター編集と作り直し要求の更新に直列化する。
+`publish` がエラーを返したら、store は rollback してそのエラーを返す。`publish` が成功した後に commit が失敗したら、store はエラーを返す。このときファイルは行を持たない孤児として残る。呼び出し側はそのファイルを消さず、孤児の監査に回収を任せる。
 
-in-place 登録ではファイルの存在・symlink 検査とパスロックを `internal/inplace` に残し、検証済みの録画・アセット値を `MediaPublish.RegisterInPlace` が一つの tx で登録する。同じパスに deleted 行と公開済みの行がある場合は公開済みの所有者を使う。
+呼び出し側は、rel_path のファイルロックを持って store を呼ぶ。store はファイルシステムを知らない。
+
+`publish` は副作用を持つので、[ロック後の判断](#ロック後の判断)の「関数は DB に触れず状態を変えない」規則の例外である。DB の判定とファイルの公開の順序を固定するために、store が `publish` を呼ぶ。
+
+先に浮かぶ案は、commit してから rename する順序である。この順序は、rename の失敗が行だけを残し、コミット = DB 行なのに実体が無い状態を作る。今の順序なら、commit の失敗は孤児ファイルを残すだけである。
+
+原本の commit は、行の作成・進捗の削除・保持ポリシーの凍結を 1 つの tx で行う。同じ rel_path の原本が既にあれば `ErrConflict` を返し、`publish` は呼ばない。凍結する方針は、store が同じ tx で読んだ予約・上書き・意図を、呼び出し側の純粋な関数に渡して導く。設定に依存するクランプは、この関数の中にある。
+
+encoded の公開は、試行番号・desired・作り直し要求・cut の区間を tx の中で読み直してから `publish` を呼ぶ。版の削除・事後追加と直列化し、cut はさらにチャプター編集・作り直し要求と直列化する。古い計画なら `ErrStalePublishPlan` を返す。
+
+thumbnail と seek tiles の公開は、同じ録画のごみ箱移動・完全削除と直列化する。ごみ箱か削除済みの録画には公開しない。初回の公開は、active な行が既にあれば公開しない。thumbnail の置き換えは、観測した行（id・rel_path・seek）が変わっておらず、入力の原本が active なときだけ行う。
+
+in-place 登録は、録画とアセットの行を 1 つの tx で書く。ファイルの検査とファイルロックは、呼び出し側の `internal/inplace` が持つ。同じ rel_path の行が既にあれば、その録画を再利用する。同じパスに deleted の行と active な行が並ぶときは、active な行を優先する。
 
 <details><summary>根拠</summary>
 
 - 契約: `internal/store.MediaPublish`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
-- callback の一度だけの実行・失敗時 rollback・公開前の再確認: `TestMediaStoreContract` の `RunMediaPublish` ケース
-- worker の `rel_path` ロックと callback の統合: `internal/worker` の公開 worker
-- in-place のファイル検証とパスロック: `internal/inplace.Register`
+- 古い試行・外した desired・publish の回数: `TestMediaStoreContract` の `encoded publication rechecks attempt and desired profiles`
+- publish の失敗で行が残らないこと: `TestMediaStoreContract` の `original callback failure rolls back rows` ほか
+- publish が成功した後の commit 失敗: `TestMediaStoreContract` の `commit failure after publish returns an error and leaves no rows`
+- rel_path の衝突: `TestMediaStoreContract` の `original publication rejects an occupied rel_path without publishing`
+- ごみ箱と既存の行: `TestMediaStoreContract` の `thumbnail and seek tiles skip trashed recordings and existing assets`
+- 公開がチャプター編集を待たせること: `TestMediaStoreContract` の `cut publication serializes with chapter edits`
+- 公開がチャプター編集を待つこと: `TestMediaStoreContract` の `cut publication waits for an open chapter edit and rechecks`
+- 版の削除との直列化: `TestMediaStoreContract` の `encoded publication waits for an open removal and rechecks`
+- in-place の冪等性と active な行の優先: `TestMediaStoreContract` の `in-place registration is idempotent and prefers published rows`
+- ingest の commit 失敗で canonical が孤児として残ること: `TestIngestWorker_CanonicalOrphanSurvivesDBDisconnect`
+- encode の commit 失敗で古い試行が後の公開を上書きしないこと: `TestEncodeWorker_DisconnectedAttemptCannotOverwriteLaterPublication`
+- ingest のファイルロックと store の統合: `TestIngestWorker_CommitHoldsRelPathFileLockThroughRename`
+- encode のファイルロックと store の統合: `TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit`
+- thumbnail のファイルロックと store の統合: `TestThumbnailWorkerPublishesUnderRelPathLock`
+- seek tiles のファイルロックと store の統合: `TestSeekTilesWorkerPublishesUnderRelPathLock`
+- in-place のファイル検証とファイルロック: `internal/inplace.Register`
 
 </details>
 
@@ -512,17 +537,36 @@ marker が無いときは、store がエラーと区別して返す。collector 
 
 </details>
 
+### ruler パス
+
+ルールから予約を導出する処理は、読み取りを tx の外で行い、書き込みを 1 tx にまとめる。削除判断に必要な状態は適用時に確かめ直し、ブレーカー発動と同じ tx で確定する。
+
+ruler は `RulerPass` から評価に必要なルール・意図・投資・予約・射影・履歴を読み、1 サイト分の書き込みを `ApplyPass` に渡す。`ApplyPass` は、スナップショットの追従、予約の差分 upsert、fulfilled / released / 導出削除を 1 つの tx で確定する。
+
+読み取りの後に、削除候補の番組へ意図や投資が追加されることがある。導出削除と released 削除の `DELETE` は適用時に投資を再評価するため、古い入力で新しい予約意図の行を消さない。契約テストは入力を読んだ後に意図を書き、同じ予約が残ることを固定する。
+
+大量削除ブレーカーの Trip も `ApplyPass` に含める。Trip が止める削除と発動行を別 tx にすると、発動を記録できないまま予約を消しうるためである。発動記録に失敗した tx は削除も巻き戻す。メトリクスとログは commit 後に反映する。
+
+重複排除の類似度は pg_trgm の `similarity()` と同じ値で判定する。これは実装依存ではなく契約である。候補ごとに最良一致を 1 件返し、同率は録画 ID 昇順で決める。マッチの無い候補はマップに現れない。時間窓は録画の `program_start_at`（放送時刻）と比べる。比べる相手が store の記録した時刻ではないので、呼び出し側の時刻を受け取る（「時刻」節の規則）。番組 ID 再利用の検出と snapshot GC も、それぞれ比較に使う時刻を呼び出し側から受け取る。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.RulerPass`
+- PostgreSQL 実装: `internal/store/pgstore.Reservations`
+- 削除時の意図再評価、ブレーカーとの原子性、重複排除の類似度: `TestRulerPassContract`
+- ruler の成功 marker と record_sweep marker: `internal/store.LoopMarkers` / `TestLoopMarkersContract`
+
+</details>
+
 ### サーキットブレーカー
 
 発動は行の存在で表し、再開は行の削除で表す。発動していない状態を表す行は作らない。
 
 reconciler と削除 reconcile は `Breakers`、API は `BreakerAdmin` を使う。`Breakers` は `Trip` と `IsTripped` だけを持つ。`Trip` は発動時刻を返し、すでに発動中なら件数と抜粋だけを更新する。`Resume` は、対象の行が無ければ `ErrNotFound` を返す。
 
-reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。
+reconciler と削除 reconcile は、もともと tx の外で発動する。そのため、`Breakers.Trip` を単独で呼ぶ。ruler は `RulerPass.ApplyPass` の中で発動する（理由は「ruler パス」節）。
 
-未解決: ruler だけは、発動の記録を tx の中で書く。「このパスでは削除しない」と同じ tx で確定するためで、store の契約を通っていない。
-
-ゲージとログは、store ではなく `breaker.ObserveState` と `breaker.Trip` が出す。出し方を 1 か所にするためである。ruler の tx 内の発動も、同じ出し方を共有する。
+ゲージとログは store の外で出す。`breaker.Trip` と、ruler が commit 後に呼ぶ `breaker.AnnounceTrip` が同じ `announceTrip` を共有しているので、出し方は 1 か所にある。パスの先頭の `breaker.ObserveState` は、プロセス再起動後も DB の発動状態をゲージへ戻す。
 
 <details><summary>根拠</summary>
 
@@ -531,8 +575,8 @@ reconciler と削除 reconcile は、もともと tx の外で発動する。そ
 - PostgreSQL 実装: `internal/store/pgstore.Breakers`
 - ゲージとログ: `internal/breaker.ObserveState` / `internal/breaker.Trip`
 - 発動時刻と再開後の状態: `TestBreakersContract`
-- ruler の tx 内の発動: `internal/breaker/ruler_trip.go`
-- ruler の発動ゲージ: `TestRunPass_TripInTxRaisesCircuitBreakerGauge`
+- ruler の tx 内の発動: `internal/store/pgstore.Reservations.ApplyPass`
+- ruler の発動ゲージ: `TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge`
 
 </details>
 

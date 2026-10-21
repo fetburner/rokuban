@@ -163,7 +163,8 @@ func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
-	w := &ThumbnailWorker{Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
+	w := &ThumbnailWorker{
+		Publisher: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "thumbnail", thumbnailRelPath(id),
 		func() error {
@@ -182,7 +183,8 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &ThumbnailWorker{
-		Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
+		Publisher: newTestMediaStore(pool),
+		Media:     newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: "ffmpeg", FFprobe: "ffprobe",
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "format=duration") {
 				return []byte("100\n"), nil
@@ -256,33 +258,18 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 }
 
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
-	relPath := thumbnailRelPath(id)
-	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
-	if err := os.MkdirAll(filepath.Dir(finalPath), 0o755); err != nil {
-		return 0, false, err
-	}
-	staged, err := stageMediaFile(context.Background(), scratch, finalPath, ".rokuban-media-asset-")
-	if err != nil {
-		return 0, false, err
-	}
-	defer staged.discard()
-	fileLock, err := lockMediaRelPathFile(context.Background(), mediaDir, relPath)
-	if err != nil {
-		return 0, false, err
-	}
-	defer func() { _ = fileLock.Close() }()
 	// 呼び出し時点の active original を入力として計画した初回生成を模す。
 	var inputID int64
 	if orig, err := pgstore.NewMedia(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
 		inputID = orig.ID
 	}
-	published, err := pgstore.NewMedia(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
-		RecordingID: id, RelPath: relPath, SizeBytes: staged.size, InputAssetID: inputID,
-	}, staged.publish)
-	if err != nil || !published {
-		return 0, published, err
-	}
-	return staged.size, true, nil
+	relPath := thumbnailRelPath(id)
+	return publishGeneratedMediaAsset(context.Background(), mediaDir, relPath, scratch,
+		func(size int64, publish func() error) (bool, error) {
+			return pgstore.NewMedia(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
+				RecordingID: id, RelPath: relPath, SizeBytes: size, InputAssetID: inputID,
+			}, publish)
+		})
 }
 
 func writeScratchForTest(t *testing.T, b []byte) string {

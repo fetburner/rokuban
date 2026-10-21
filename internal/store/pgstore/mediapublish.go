@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 
@@ -20,8 +21,9 @@ var (
 	_ store.EncodeProgressReporter = (*Media)(nil)
 )
 
-// CommitOriginal は原本、進捗の削除、凍結方針を一つの tx で確定する。
-// 呼び出し側が rel_path のファイルロックを保持する。publish は DB の検査と行作成後、commit 前に一度だけ呼ぶ。
+// CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
+// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
+// 衝突は行の挿入時の一意違反で判定するので、並行する別の ingest とも直列化される。
 func (s *Media) CommitOriginal(
 	ctx context.Context,
 	in store.CommitOriginalInput,
@@ -103,7 +105,18 @@ func (s *Media) CommitOriginal(
 }
 
 // PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認して encoded を公開する。
-// cut の場合は録画の行を先にロックし、チャプター編集および要求の置き換えと直列化する。
+// 版の削除・事後追加と直列化する（cut でない版も）。cut はさらにチャプター編集・作り直し要求とも直列化する。
+// cut は録画を先にロックし、試行・desired・要求の順に読む。
+// 古い計画なら ErrStalePublishPlan を返す。
+//
+// 再確認の判定は次のとおりである。
+//   - desired に無い profile は公開しない。版を外す tx と直列化して読む。
+//   - 作り直し要求に由来するジョブは、押した時点の keep が利用者の確認なので、
+//     要求行の keep と一致する限り公開する。チャプターの現在値とは照合しない。
+//     押し直しで要求が上書きされていれば公開しない。
+//   - 要求に由来しない初回の cut は、エンコード中にチャプターが編集されたら公開しない。
+//     編集前の区間で desired を満たすと until_encoded の原本が消え、編集した内容を描けなくなる。
+//   - 要求に由来しないジョブは active な cut 版を置き換えない。
 func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput, publish func() error) (bool, error) {
 	if publish == nil {
 		return false, errors.New("publishing encoded media: publisher is nil")
@@ -116,8 +129,9 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	q := sqlcgen.New(tx)
 
 	if in.Cut {
-		locked, err := q.LockRecording(ctx, in.RecordingID)
-		if errors.Is(err, pgx.ErrNoRows) || (err == nil && locked.IsPurged) {
+		// cut の公開はごみ箱の録画にも許す。消去済みと行なしだけ公開しない。
+		locked, err := lockRecordingState(ctx, q, in.RecordingID)
+		if errors.Is(err, store.ErrNotFound) || (err == nil && locked.IsPurged) {
 			return false, nil
 		}
 		if err != nil {
@@ -143,7 +157,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	if err != nil {
 		return false, fmt.Errorf("loading desired encode profiles: %w", err)
 	}
-	if !containsString(desired, in.Profile) {
+	if !slices.Contains(desired, in.Profile) {
 		return false, nil
 	}
 
@@ -194,14 +208,16 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 
-	if publishPlanSkips(existing, in) {
-		return false, nil
-	}
-	if publishPlanIsStale(existing, in) {
+	plan := store.PlanEncodedPublish(existing, in.Cut, in.KeepRanges, &in.ObservedRelPath)
+	if plan.Stale {
 		return false, store.ErrStalePublishPlan
 	}
-	if in.Cut && !in.HasRebuildRequest && existing != nil && existing.State == "active" {
-		// 初回 cut ジョブは既存 active 版を置き換えない。置き換えは明示要求だけが行う。
+	if plan.Skip {
+		return false, nil
+	}
+	// 作り直し要求に由来しない cut ジョブは、active な cut 版を置き換えない。
+	// 置き換えてよいのは利用者が押した作り直しだけである。
+	if in.Cut && !in.HasRebuildRequest && plan.Replaces {
 		return false, nil
 	}
 
@@ -230,29 +246,6 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("committing encoded asset for recording %d profile %q: %w", in.RecordingID, in.Profile, mapDatabaseError(err))
 	}
 	return true, nil
-}
-
-func publishPlanSkips(existing *store.EncodedAssetObservation, in store.EncodedPublishInput) bool {
-	if existing == nil {
-		return in.ObservedRelPath != ""
-	}
-	committed := existing.State == "active"
-	if committed && in.Cut {
-		committed = chapters.SameRanges(existing.KeepRanges, in.KeepRanges)
-	}
-	if committed {
-		return true
-	}
-	moved := in.ObservedRelPath != existing.RelPath
-	return moved && existing.State != "active"
-}
-
-func publishPlanIsStale(existing *store.EncodedAssetObservation, in store.EncodedPublishInput) bool {
-	if existing == nil || existing.State != "active" || !in.Cut {
-		return false
-	}
-	committed := chapters.SameRanges(existing.KeepRanges, in.KeepRanges)
-	return in.ObservedRelPath != existing.RelPath && !committed
 }
 
 func currentCutKeep(ctx context.Context, q *sqlcgen.Queries, recordingID int64) ([]chapters.Range, bool, error) {
@@ -300,6 +293,8 @@ func replaceMediaAssetCuts(ctx context.Context, q *sqlcgen.Queries, assetID int6
 }
 
 // PublishThumbnail は録画とサムネイルの状態を再確認して公開する。
+// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
+// 置き換えは、同じ録画への別のサムネイル公開とも直列化する。
 func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishInput, publish func() error) (bool, error) {
 	if publish == nil {
 		return false, errors.New("publishing thumbnail: publisher is nil")
@@ -391,6 +386,7 @@ func sameOptionalInt64(a, b *int64) bool {
 }
 
 // PublishSeekTiles は録画とシークタイルの状態を再確認して公開する。
+// 同じ録画のごみ箱移動・完全削除と直列化し、ごみ箱か削除済みの録画は公開しない。
 func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishInput, publish func() error) (bool, error) {
 	if publish == nil {
 		return false, errors.New("publishing seek tiles: publisher is nil")
@@ -436,6 +432,9 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 }
 
 // RegisterInPlace は既存ファイルを指す録画とアセットの行を一つの tx で登録する。
+// rel_path が最も強い identity なので、行の state を問わず既存の recording_id を再利用する。
+// deleted の行は所有権だけを渡す。パスが再利用されて kind や profile が違いうるので、
+// 同じ組を active に戻すか新しく作るかは UpsertInPlaceMediaAsset が決める。
 func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (store.InPlaceResult, error) {
 	if len(in.Assets) == 0 {
 		return store.InPlaceResult{}, errors.New("in-place registration requires at least one asset")
@@ -466,8 +465,8 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 		if row.Kind != asset.Kind || !sameStringPointer(row.Profile, asset.Profile) {
 			return store.InPlaceResult{}, fmt.Errorf("published asset %q is %s/%v, requested %s/%v: %w", asset.RelPath, row.Kind, row.Profile, asset.Kind, asset.Profile, store.ErrConflict)
 		}
-		copy := row
-		assets[i] = &copy
+		published := row
+		assets[i] = &published
 	}
 
 	r := in.Recording
@@ -506,6 +505,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	return result, nil
 }
 
+// UpsertIngestProgress は転送中の進捗を tx なしで記録する。失敗は呼び出し側が警告にとどめる。
 func (s *Media) UpsertIngestProgress(ctx context.Context, progress store.IngestProgress) error {
 	if err := sqlcgen.New(s.pool).UpsertRecordingIngestProgress(ctx, sqlcgen.UpsertRecordingIngestProgressParams{
 		RecordingID: progress.RecordingID, WrittenBytes: progress.WrittenBytes, ExpectedBytes: progress.ExpectedBytes,
@@ -530,15 +530,6 @@ func (s *Media) ReportEncodeProgress(ctx context.Context, progress store.EncodeP
 		return fmt.Errorf("notifying encode progress for recording %d profile %q: %w", progress.RecordingID, progress.Profile, err)
 	}
 	return nil
-}
-
-func containsString(values []string, value string) bool {
-	for _, candidate := range values {
-		if candidate == value {
-			return true
-		}
-	}
-	return false
 }
 
 func sameStringPointer(a, b *string) bool {

@@ -74,7 +74,7 @@ record id を取り違えると、別の録画を指してしまう。programId 
 <details><summary>根拠</summary>
 
 - programId と同型の値: `Service.id`
-- 重複排除の実装: `internal/ruler/dedupe.go`
+- 重複排除の実装: `internal/store/pgstore/rulerpass.go`
 
 </details>
 

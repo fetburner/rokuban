@@ -246,7 +246,7 @@ func (h *Server) validateRuleInput(in RuleInput, savedSites map[string]struct{})
 			return errors.New("dedupeThreshold is required when dedupeEnabled is true")
 		}
 	}
-	// dedupeThreshold は pg_trgm の similarity() と比較される（internal/ruler/dedupe.go の
+	// dedupeThreshold は pg_trgm の similarity() と比較される（internal/store/pgstore/rulerpass.go の
 	// similarity(rec.title, c.title) >= c.dedupe_threshold）。similarity() の値域は (0, 1] の
 	// 半開区間として扱う: 0 を許すと "similarity() >= 0" が恒真になり、そのルールに finished の
 	// 録画が 1 本でもあれば以降マッチする全番組に base.skip が立って録画が黙って止まる
@@ -258,11 +258,11 @@ func (h *Server) validateRuleInput(in RuleInput, savedSites map[string]struct{})
 			return fmt.Errorf("dedupeThreshold must be > 0 and <= 1 (similarity() ranges over [0,1]; 0 would match every program and silently stop recording), got %v", v)
 		}
 	}
-	// dedupeWindowSeconds は interval に変換され、internal/ruler/dedupe.go の
-	// "rec.program_start_at >= now() - c.dedupe_window" の右辺に使われる。
+	// dedupeWindowSeconds は interval に変換され、internal/store/pgstore/rulerpass.go の
+	// "rec.program_start_at >= $3 - c.dedupe_window"（$3 は呼び出し側（ruler / 容量プレビュー）が渡す評価時刻）の右辺に使われる。
 	//
 	// **0 も弾く。** 0 は「時間窓なし」ではない —— 窓なしは NULL（列を省略する）であり、
-	// 0 を入れると条件が "program_start_at >= now()" になって、比較対象が必ず過去の
+	// 0 を入れると条件が "program_start_at >= 評価時刻" になって、比較対象が必ず過去の
 	// 放送である以上つねに偽になる。重複排除が黙って無効化されるという、負値とまったく
 	// 同じ失敗モードである（dedupeThreshold の 0 を弾くのと対称）。窓を設けたくない
 	// なら値を送らない。

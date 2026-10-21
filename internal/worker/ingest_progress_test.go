@@ -176,6 +176,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}
 
 	w := &IngestWorker{
+		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
 		StallTimeout:  30 * time.Second,
@@ -314,6 +315,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}
 
 	w := &IngestWorker{
+		Publisher:        newTestMediaStore(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
@@ -405,6 +407,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	}
 
 	w := &IngestWorker{
+		Publisher:        newTestMediaStore(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
@@ -483,6 +486,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
+		Publisher:        newTestMediaStore(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,

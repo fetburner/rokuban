@@ -18,6 +18,8 @@ type MediaFixture struct {
 	Reconcile store.MediaReconcile
 	Storage   store.StorageObservation
 	Publisher store.MediaPublish
+	// Chapters は、公開と直列化する書き手として使う。
+	Chapters store.ChapterEdits
 
 	// Site は NewRecording が作る録画の site。
 	Site string
@@ -33,6 +35,15 @@ type MediaFixture struct {
 	SetAssetState                 func(t *testing.T, assetID int64, state string)
 	SetMediaAssetKeepRanges       func(t *testing.T, assetID int64, keep []chapters.Range)
 	SetEncodedAssetRebuildRequest func(t *testing.T, recordingID int64, profile string, keep []chapters.Range)
+	// BeginChapterEdit はチャプター編集 worker と同じく録画の行をロックして区間を書く tx を開き、
+	// commit する関数を返す。commit までロックを保持する。
+	BeginChapterEdit func(t *testing.T, recordingID int64, spans []chapters.Span) (commit func())
+	// BeginEncodedRemoval は版の削除と同じく録画の行と方針の行をロックして profile を desired から外す tx を開き、
+	// commit する関数を返す。commit までロックを保持する。
+	BeginEncodedRemoval func(t *testing.T, recordingID int64, profile string) (commit func())
+	// LoseTransactionDuringPublish は publish 関数の中から呼ばれ、store が開いている tx の接続を落とす。
+	// 呼んだ後に publish が成功を返すと、publish の成功の後に commit だけが失敗する。
+	LoseTransactionDuringPublish func(t *testing.T)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
@@ -78,6 +89,12 @@ func RunMediaPublish(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("thumbnail and seek tiles publish through one callback", func(t *testing.T) { runDerivedPublication(t, newFixture) })
 	t.Run("thumbnail and seek tile callback failures roll back assets", func(t *testing.T) { runDerivedPublicationRollback(t, newFixture) })
 	t.Run("in-place registration is idempotent and prefers published rows", func(t *testing.T) { runInPlacePublication(t, newFixture) })
+	t.Run("commit failure after publish returns an error and leaves no rows", func(t *testing.T) { runPublishCommitFailure(t, newFixture) })
+	t.Run("original publication rejects an occupied rel_path without publishing", func(t *testing.T) { runOriginalRelPathConflict(t, newFixture) })
+	t.Run("thumbnail and seek tiles skip trashed recordings and existing assets", func(t *testing.T) { runDerivedPublicationSkips(t, newFixture) })
+	t.Run("cut publication serializes with chapter edits", func(t *testing.T) { runEncodedCutSerializesWithChapterEdits(t, newFixture) })
+	t.Run("cut publication waits for an open chapter edit and rechecks", func(t *testing.T) { runEncodedCutWaitsForChapterEdit(t, newFixture) })
+	t.Run("encoded publication waits for an open removal and rechecks", func(t *testing.T) { runEncodedWaitsForOpenRemoval(t, newFixture) })
 }
 
 func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
@@ -315,6 +332,17 @@ func runMediaJobInputs(t *testing.T, newFixture NewMediaFixture) {
 	f.SetAssetState(t, thumbnailID, "deleted")
 	if has, err := f.Reconcile.HasActiveThumbnailMediaAsset(ctx, id); err != nil || has {
 		t.Fatalf("HasActiveThumbnailMediaAsset(%d) after deletion = (%v, %v), want (false, nil)", id, has, err)
+	}
+	if has, err := f.Reconcile.HasActiveSeekTilesMediaAsset(ctx, id); err != nil || has {
+		t.Fatalf("HasActiveSeekTilesMediaAsset(%d) = (%v, %v), want (false, nil)", id, has, err)
+	}
+	seekTilesID := f.NewAsset(t, id, "seek_tiles", nil, fmt.Sprintf("thumbnails/%d_tiles.jpg", id), "active")
+	if has, err := f.Reconcile.HasActiveSeekTilesMediaAsset(ctx, id); err != nil || !has {
+		t.Fatalf("HasActiveSeekTilesMediaAsset(%d) = (%v, %v), want (true, nil)", id, has, err)
+	}
+	f.SetAssetState(t, seekTilesID, "deleted")
+	if has, err := f.Reconcile.HasActiveSeekTilesMediaAsset(ctx, id); err != nil || has {
+		t.Fatalf("HasActiveSeekTilesMediaAsset(%d) after deletion = (%v, %v), want (false, nil)", id, has, err)
 	}
 	f.SetAssetState(t, originalID, "deleted")
 	if _, err := f.Reconcile.GetActiveOriginalMediaAsset(ctx, id); !errors.Is(err, store.ErrNotFound) {

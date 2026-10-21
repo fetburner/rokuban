@@ -87,14 +87,11 @@ type Sample = store.BreakerSample
 type SampleProgram = store.BreakerSampleProgram
 
 // MaxSampleSize は detail に載せる抜粋の上限。
-const MaxSampleSize = 20
+const MaxSampleSize = store.BreakerSampleLimit
 
 // TruncateSample は detail に保存するサンプルを上限件数に整える。
 func TruncateSample(sample Sample) Sample {
-	if len(sample.Programs) > MaxSampleSize {
-		sample.Programs = sample.Programs[:MaxSampleSize]
-	}
-	return sample
+	return store.TruncateBreakerSample(sample)
 }
 
 // ObserveState はブレーカーの現在の発動状態を返し、メトリクスのゲージを合わせる。
@@ -131,7 +128,13 @@ func Trip(ctx context.Context, b store.Breakers, site, name string, threshold in
 	return nil
 }
 
-// announceTrip は発動をゲージとログに出す。Trip と TripInTx が共有する。
+// AnnounceTrip は記録済みの発動をゲージとログへ反映する。
+// 呼び出し側は永続化が成功した後に呼ぶ。
+func AnnounceTrip(site, name string, threshold int, sample Sample, trippedAt time.Time) {
+	announceTrip(site, name, threshold, sample, trippedAt)
+}
+
+// announceTrip は発動をゲージとログに出す。Trip と、commit 後に呼ぶ AnnounceTrip が共有する。
 func announceTrip(site, name string, threshold int, sample Sample, trippedAt time.Time) {
 	metrics.CircuitBreakerTripped.WithLabelValues(site, name).Set(1)
 	slog.Error("circuit breaker tripped — deletes withheld until manually resumed",

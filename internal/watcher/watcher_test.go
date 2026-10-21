@@ -77,7 +77,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 	return w, pool
 }
 
@@ -1098,7 +1098,7 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
@@ -1197,7 +1197,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1297,7 +1297,7 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -1396,7 +1396,7 @@ func TestSweep_RecoversFailedSchedule(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1488,7 +1488,7 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1587,7 +1587,7 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1676,8 +1676,8 @@ func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
 	mockServer := httptest.NewServer(mux)
 	defer mockServer.Close()
 
-	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
-	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), baseWatcher.enqueuer, nil)
+	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
 	// を発生させない。
 	sweepWatcher.services = services
@@ -1836,7 +1836,7 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -1910,7 +1910,7 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		})
 		mockServer := httptest.NewServer(mux)
 
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), enqueuer, nil)
+		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -1989,7 +1989,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -2036,7 +2036,7 @@ func getRecordingSource(t *testing.T, pool *pgxpool.Pool) string {
 // ルールがマッチして rule_id が埋まっていても、録画の recordings.source は
 // 'manual' のままでなければならない。
 //
-// 修正前の internal/ruler/sql.go は reservations.source を
+// 修正前の internal/store/pgstore/rulerpass.go は reservations.source を
 // `CASE WHEN d.rule_id IS NOT NULL THEN 'rule' ELSE ... END` で不可逆に
 // 'rule' へ書き換えており、それを watcher がそのまま recordings.source に
 // コピーしていた。修正後は reservations に source 列自体が無く、watcher は
@@ -2180,7 +2180,7 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 	defer mockServer.Close()
 
 	mc := mirakc.NewClient(mockServer.URL, nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,

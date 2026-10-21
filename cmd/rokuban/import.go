@@ -36,7 +36,7 @@ func newImportCmd() *cobra.Command {
 // 両方同時も可能。冪等・途中再開可能（各インポート関数の doc コメント参照）。
 //
 // RecordedHistory（EPGStation 側の再放送重複排除の種）の取り込みは
-// このコマンドに含まない: rokuban の重複排除（internal/ruler/dedupe.go）は
+// このコマンドに含まない: rokuban の重複排除（internal/store/pgstore/rulerpass.go）は
 // recordings.rule_id が一致する行だけを比較対象にするが、in-place 登録
 // （internal/inplace.Register）は rule_id を書く列を持たず、
 // RecordedHistory 自体にも ruleId が無いため、取り込んでも重複排除には

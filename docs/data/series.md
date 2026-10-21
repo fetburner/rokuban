@@ -16,7 +16,7 @@ mirakc の番組 API はシリーズ情報を契約に持つ。しかし付与�
 
 - mirakc の番組 API の契約: `series`
 - 載っていない記述子: series_descriptor
-- 流用しない類似度: `internal/ruler/dedupe.go`
+- 流用しない類似度: `internal/store/pgstore/rulerpass.go`
 
 </details>
 

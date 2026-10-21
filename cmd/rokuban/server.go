@@ -506,6 +506,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		EPGReader:           pgstore.NewEPG(pool),
 		ProgramSearch:       pgstore.NewEPG(pool),
 		EncodePolicyStore:   mediaStore,
+		Dedupe:              pgstore.NewReservations(pool),
 		MediaReader:         mediaStore,
 		StorageObservation:  mediaStore,
 		// api は不変条件 1（mirakc にもファイルシステムにも依存しない）により
@@ -733,7 +734,7 @@ func superviseSingletons(egCtx context.Context, roles []string, bound []config.M
 			site := site
 			eg.Go(func() error {
 				mc := mirakc.NewClient(site.URL, nil)
-				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool), enqueuer, webhookClient)
+				w := watcher.New(site.Site, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, webhookClient)
 				return role.RunSingleton(egCtx, pool, watcherLockName(site.Site), w.Run, nil)
 			})
 		}

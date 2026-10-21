@@ -211,16 +211,15 @@ func TestNewRegistry_Twice(t *testing.T) {
 func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 	pool := rokutest.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
-
-	if err := q.UpsertRulerPassSnapshot(ctx, testSite); err != nil {
+	markers := pgstore.NewReservations(pool)
+	if err := markers.MarkRulerPasses(ctx, []string{testSite}); err != nil {
 		t.Fatalf("upserting ruler marker: %v", err)
 	}
-	if err := q.UpsertRecordSweepSnapshot(ctx, testSite); err != nil {
+	if err := markers.MarkRecordSweep(ctx, testSite); err != nil {
 		t.Fatalf("upserting record sweep marker: %v", err)
 	}
 
-	c := NewLoopPassCollector(pool, testSite)
+	c := NewLoopPassCollector(markers, testSite)
 	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got <= 0 {
 		t.Errorf("ruler last success = %v, want a positive DB timestamp", got)
 	}
@@ -233,7 +232,7 @@ func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 // 初回実行前と collector の登録漏れを区別できない。
 func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewLoopPassCollector(pool, testSite)
+	c := NewLoopPassCollector(pgstore.NewReservations(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got != 0 {
 		t.Errorf("ruler last success before first pass = %v, want 0", got)

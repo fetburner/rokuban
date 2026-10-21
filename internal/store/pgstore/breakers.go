@@ -26,11 +26,23 @@ func NewBreakers(pool *pgxpool.Pool) *Breakers {
 
 // Trip は発動を記録し、既に発動中なら pending と detail を更新する。発動時刻を返す。
 func (s *Breakers) Trip(ctx context.Context, site, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
-	detail, err := json.Marshal(sample)
+	trippedAt, err := tripCircuitBreaker(ctx, sqlcgen.New(s.pool), site, name, threshold, sample)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return trippedAt, nil
+}
+
+type circuitBreakerTripQuerier interface {
+	TripCircuitBreaker(context.Context, sqlcgen.TripCircuitBreakerParams) (sqlcgen.CircuitBreaker, error)
+}
+
+func tripCircuitBreaker(ctx context.Context, q circuitBreakerTripQuerier, site, name string, threshold int, sample store.BreakerSample) (time.Time, error) {
+	detail, err := json.Marshal(store.TruncateBreakerSample(sample))
 	if err != nil {
 		return time.Time{}, fmt.Errorf("marshalling circuit breaker sample: %w", err)
 	}
-	row, err := sqlcgen.New(s.pool).TripCircuitBreaker(ctx, sqlcgen.TripCircuitBreakerParams{
+	row, err := q.TripCircuitBreaker(ctx, sqlcgen.TripCircuitBreakerParams{
 		Site: site, Name: name, Pending: int32(sample.Total), Threshold: int32(threshold), Detail: detail,
 	})
 	if err != nil {
