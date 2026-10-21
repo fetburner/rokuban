@@ -19,30 +19,25 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 	f := newFixture(t)
 	requireMediaReaderFixture(t, f)
 	ctx := context.Background()
-	newDesiredRecording := func(profiles []string, runningProfile string, failedAttemptCount int32) int64 {
+	newDesiredRecording := func(profiles []string) int64 {
 		t.Helper()
 		id := f.NewRecording(t)
 		f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d-original.m2ts", f.Site, id), "active")
 		f.SetEncodeProfiles(t, id, profiles)
-		if runningProfile != "" || failedAttemptCount > 0 {
-			profile := runningProfile
-			if failedAttemptCount > 0 {
-				profile = profiles[0]
-			}
-			f.BeginEncodeAttempt(t, id, profile)
-		}
-		if failedAttemptCount > 0 {
-			f.FailEncodeAttempt(t, id, profiles[0], failedAttemptCount)
-		}
 		return id
 	}
 
-	queuedID := newDesiredRecording([]string{"h264", "hevc"}, "", 0)
-	runningID := newDesiredRecording([]string{"h264"}, "h264", 0)
-	retryableID := newDesiredRecording([]string{"hevc"}, "", 2)
-	exhaustedID := newDesiredRecording([]string{"h264"}, "", 3)
-	unknownID := newDesiredRecording([]string{"not-configured"}, "", 0)
-	generatedID := newDesiredRecording([]string{"h264"}, "", 0)
+	queuedID := newDesiredRecording([]string{"h264", "hevc"})
+	runningID := newDesiredRecording([]string{"h264"})
+	f.BeginEncodeAttempt(t, runningID, "h264")
+	retryableID := newDesiredRecording([]string{"hevc"})
+	f.BeginEncodeAttempt(t, retryableID, "hevc")
+	f.FailEncodeAttempt(t, retryableID, "hevc", 2)
+	exhaustedID := newDesiredRecording([]string{"h264"})
+	f.BeginEncodeAttempt(t, exhaustedID, "h264")
+	f.FailEncodeAttempt(t, exhaustedID, "h264", 3)
+	unknownID := newDesiredRecording([]string{"not-configured"})
+	generatedID := newDesiredRecording([]string{"h264"})
 	generatedProfile := "h264"
 	f.NewAsset(t, generatedID, "encoded", &generatedProfile, fmt.Sprintf("sites/%s/%d-h264.mp4", f.Site, generatedID), "active")
 
@@ -62,7 +57,6 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 			t.Fatalf("encode queue at attempt limit %d = %+v; want %d entries", attemptLimit, got, wantLength)
 		}
 		counts := make(map[int64]int, len(got))
-		running := make(map[int64]int, len(got))
 		for _, entry := range got {
 			counts[entry.RecordingID]++
 			switch entry.RecordingID {
@@ -74,7 +68,6 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 				if !entry.Running {
 					t.Fatalf("running entry = %+v; want Running=true", entry)
 				}
-				running[entry.RecordingID]++
 			case retryableID:
 				if !wantRetryable || entry.Running {
 					t.Fatalf("retryable entry = %+v; want Running=false when attempt count is below limit", entry)
@@ -87,7 +80,7 @@ func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
 		if wantRetryable {
 			wantRetryableCount = 1
 		}
-		if counts[queuedID] != 2 || counts[runningID] != 1 || running[runningID] != 1 || counts[retryableID] != wantRetryableCount {
+		if counts[queuedID] != 2 || counts[runningID] != 1 || counts[retryableID] != wantRetryableCount {
 			t.Fatalf("encode queue at attempt limit %d = %+v; want two queued profiles for %d, one running profile for %d, and retryable count %d for %d", attemptLimit, got, queuedID, runningID, wantRetryableCount, retryableID)
 		}
 	}

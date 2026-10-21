@@ -261,8 +261,12 @@ WHERE recording_id = $1 AND profile = $2`, recordingID, profile, attemptCount)
 	fixture.SetRecordingDropStats = func(t *testing.T, assetID int64, stats []store.RecordingDropStat) {
 		t.Helper()
 		ctx := context.Background()
+		var sizeBytes int64
+		if err := pool.QueryRow(ctx, `SELECT size_bytes FROM media_assets WHERE id = $1`, assetID).Scan(&sizeBytes); err != nil {
+			t.Fatalf("reading size of media asset %d: %v", assetID, err)
+		}
 		if err := sqlcgen.New(pool).UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
-			MediaAssetID: assetID, ScannedSizeBytes: 1,
+			MediaAssetID: assetID, ScannedSizeBytes: sizeBytes,
 		}); err != nil {
 			t.Fatalf("marking media asset %d as scanned: %v", assetID, err)
 		}

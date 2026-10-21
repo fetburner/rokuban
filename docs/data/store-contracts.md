@@ -133,8 +133,8 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 - 失敗の観測の収束と成功による置き換え: `TestRecordObservationsContract` の failed 系のケース
 - 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
 - ingest の投入の判定: `TestRecordObservationsContract/ingest hint follows the recording status`
-- ingest 先の site と NULL 値: `TestRecordObservationsContract/ingest target preserves nullable fields`
-- backlog の絞り込みと NULL サイズ: `TestRecordObservationsContract/ingest backlog filters records and bytes`
+- 転送先の site の絞り込み・NULL の保持・行が無いときの `ErrNotFound`: `TestRecordObservationsContract/ingest target preserves nullable fields`
+- 滞留に数える record の条件と、`content_length` が NULL の record の扱い: `TestRecordObservationsContract/ingest backlog filters records and bytes`
 - 品質イベントの時刻: `TestRecordObservationsContract/quality events carry a readable time`
 - title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
 - commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
@@ -238,13 +238,13 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 
 <details><summary>根拠</summary>
 
-- 契約: `internal/store.MediaServing` / `MediaReconcile` / `IngestPrecheck` / `MediaReader` / `StorageObservation`
+- 契約: `internal/store.MediaServing` / `MediaReconcile` / `IngestPrecheck` / `MediaReader` / `EncodeProgressReporter` / `StorageObservation`
 - PostgreSQL 実装: `internal/store/pgstore.Media`
 - 原本・encoded の配信元が active だけであること: `TestMediaStoreContract` の `serving returns only active assets`
-- encode queue の生成済み profile と試行上限: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
-- ドロップ統計の録画スコープ: `TestMediaStoreContract` の `drop stats are scoped to the target recording`
-- ドロップ位置の録画スコープ: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
-- encode-progress 通知の受信: `TestMediaStoreContract` の `encode progress reaches the listener`
+- encode queue が除く profile（生成済み・設定に無い・試行上限に達した）と、実行中を示す `Running`: `TestMediaStoreContract` の `encode queue filters desired profiles and attempts`
+- ドロップ統計の録画での絞り込み: `TestMediaStoreContract` の `drop stats are scoped to the target recording`
+- ドロップ位置の録画での絞り込み: `TestMediaStoreContract` の `drop positions are scoped to the target recording`
+- 送ったエンコード進捗が、同じ値のまま通知で届くこと: `TestMediaStoreContract` の `encode progress reaches the listener`
 - サムネイル・シークタイルとごみ箱の録画: `TestMediaStoreContract` の `serving covers thumbnails and seek tiles`
 - 原本 VOD の site の絞り込み: `TestMediaStoreContract` の `original VOD target is scoped to the recording's site`
 - 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
