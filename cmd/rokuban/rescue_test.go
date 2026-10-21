@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -36,7 +37,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runRescue(context.Background(), pool, mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(context.Background(), pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"}, &out); err != nil {
 		t.Fatalf("runRescue: %v", err)
 	}
 	got := out.String()
@@ -55,7 +56,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 
 	t.Run("no catalog at all", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, t.TempDir(), []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstore.NewCatalog(pool), pgstore.NewMedia(pool), t.TempDir(), []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "catalog not found") {
@@ -71,7 +72,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 		}
 
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pool, mediaDir, []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "no complete catalog generation") {
@@ -157,7 +158,7 @@ func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runRescue(ctx, pool, mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "warning: 1 media file(s) missing; not restored as active") {

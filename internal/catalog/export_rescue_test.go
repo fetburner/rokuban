@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -170,7 +171,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- export ---
-	doc, err := Export(ctx, pool)
+	doc, err := pgstore.NewCatalog(pool).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -252,7 +253,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// --- rescue ---
 	// 実際の入口（RescueLatest）を通す: 世代の完成判定 → 選択 → 復元まで。
-	result, err := RescueLatest(ctx, pool, mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -399,7 +400,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- idempotent second pass ---
-	result2, err := RescueLatest(ctx, pool, mediaDir, []string{"default"})
+	result2, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
@@ -462,26 +463,13 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("insert drop_stats: %v", err)
 	}
 
-	recordingRows, err := q.CatalogListRecordings(ctx)
+	doc, err := pgstore.NewCatalog(pool).Export(ctx)
 	if err != nil {
-		t.Fatalf("CatalogListRecordings: %v", err)
+		t.Fatalf("Catalog.Export: %v", err)
 	}
-	if len(recordingRows) != 1 {
-		t.Fatalf("recording rows = %d, want 1", len(recordingRows))
-	}
-	assetRows, err := q.CatalogListMediaAssets(ctx)
-	if err != nil {
-		t.Fatalf("CatalogListMediaAssets: %v", err)
-	}
-	if len(assetRows) != 1 {
-		t.Fatalf("media asset rows = %d, want 1", len(assetRows))
-	}
-	doc := &Document{
-		Version:     Version,
-		ExportedAt:  time.Now().UTC(),
-		Recordings:  []Recording{recordingFromRow(recordingRows[0])},
-		MediaAssets: []MediaAsset{mediaAssetFromRow(assetRows[0])},
-		DropStats:   []DropStat{{MediaAssetID: assetID, Pid: 256, Packets: 20, Drops: 2}},
+	if len(doc.Recordings) != 1 || len(doc.MediaAssets) != 1 || len(doc.DropStats) != 1 {
+		t.Fatalf("exported rows = %d recordings / %d assets / %d drop stats, want 1/1/1",
+			len(doc.Recordings), len(doc.MediaAssets), len(doc.DropStats))
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
@@ -510,7 +498,7 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("write legacy catalog: %v", err)
 	}
 
-	result, err := RescueFile(ctx, pool, mediaDir, legacyPath)
+	result, err := RescueFile(ctx, pgstore.NewCatalog(pool), mediaDir, legacyPath)
 	if err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
@@ -538,12 +526,12 @@ func ptrTime(t time.Time) *time.Time { return &t }
 // Export が単一トランザクション（REPEATABLE READ, READ ONLY）から読まないと、
 // recordings を読んだ「後」に作られた録画の media_assets だけを後続クエリが拾って
 // しまい、Document 内で「recordings に居ない録画を指す media_asset」が発生しうる。
-// RescueFile（internal/catalog/rescue.go）はこの Document を rules → recordings →
-// media_assets の順に 1 トランザクションで書くので、そのケースは
+// Catalog.Restore（internal/store/pgstore/catalog_restore.go）はこの Document を
+// rules → recordings → media_assets の順に 1 トランザクションで書くので、そのケースは
 // media_assets.recording_id の FK 制約違反でまるごと復元不能になる。
 //
-// 手動確認（issue #106 の受け入れ基準）: internal/catalog/export.go の Export から
-// トランザクションを外し、pool.BeginTx を通さず sqlcgen.New(pool) を直接使う旧実装
+// 手動確認（issue #106 の受け入れ基準）: Catalog.Export からトランザクションを外し、
+// pool.BeginTx を通さず sqlcgen.New(pool) を直接使う旧実装
 // に戻してこのテストを `-count=5` で実行すると 5/5 決定的に失敗し、実際に
 // "media_asset ... references recording ... not present in exported recordings"
 // が観測できることを確認済み。トランザクションを戻すと `-count=10` で決定的に通る。
@@ -614,7 +602,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 		if i >= iterations && insertErr.Load() != nil {
 			break
 		}
-		doc, err := Export(ctx, pool)
+		doc, err := pgstore.NewCatalog(pool).Export(ctx)
 		if err != nil {
 			close(stop)
 			wg.Wait()
@@ -653,7 +641,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	if _, err := Write(mediaDir, lastDoc, 7); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueLatest(ctx, pool, mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }

@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // CatalogExportWorker はコアメタデータを media_dir/catalog/ に JSON で書き出す
@@ -20,7 +19,7 @@ import (
 // 起きない。物理ストレージも DeleteReconcileWorker と同じく site に従属しない
 // 単一の MediaDir。
 type CatalogExportWorker struct {
-	Pool     *pgxpool.Pool
+	Store    store.Catalog
 	MediaDir string
 }
 
@@ -30,7 +29,7 @@ func (w *CatalogExportWorker) Work(ctx context.Context, args jobs.CatalogExportA
 		return fmt.Errorf("media dir is empty")
 	}
 
-	doc, err := catalog.Export(ctx, w.Pool)
+	doc, err := w.Store.Export(ctx)
 	if err != nil {
 		return err
 	}

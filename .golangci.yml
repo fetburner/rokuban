@@ -83,10 +83,7 @@ linters:
             # 移設待ち。移したタスクが行を消す。増やさない。
             - "!${config-path}/internal/api/handler.go"
             - "!${config-path}/internal/api/router.go"
-            - "!${config-path}/internal/catalog/export.go"
-            - "!${config-path}/internal/catalog/rescue.go"
             - "!${config-path}/internal/jobq/jobqfake/fake.go"
-            - "!${config-path}/internal/worker/catalog_export.go"
             - "!${config-path}/internal/worker/encode.go"
             - "!${config-path}/internal/worker/encode_reconcile.go"
             - "!${config-path}/internal/worker/ingest.go"

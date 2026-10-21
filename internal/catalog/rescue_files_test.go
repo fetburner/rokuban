@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/medialock"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -38,7 +39,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		result, err := RescueLatest(context.Background(), pool, mediaDir, nil)
+		result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -90,7 +91,7 @@ func TestRescueScanCandidateRemoved(t *testing.T) {
 		}
 		return info, nil
 	}
-	result, err := RescueLatest(context.Background(), pool, mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatal(err)
 	}

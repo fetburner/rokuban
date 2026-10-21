@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // newRescueCmd は `rokuban rescue` サブコマンドを作る（M3-9 / issue #71）。
@@ -44,7 +45,7 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pool, cfg.Storage.MediaDir, registryNames(cfg.Registry()), cmd.OutOrStdout())
+			return runRescue(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), cfg.Storage.MediaDir, registryNames(cfg.Registry()), cmd.OutOrStdout())
 		},
 	}
 	return cmd
@@ -56,8 +57,8 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 // registrySites は `mirakcs:` レジストリの site 名一覧
 // （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の
 // site がタイポかどうかの判定に使う）。
-func runRescue(ctx context.Context, pool *pgxpool.Pool, mediaDir string, registrySites []string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, pool, mediaDir, registrySites)
+func runRescue(ctx context.Context, catalogStore store.Catalog, mediaPublish store.MediaPublish, mediaDir string, registrySites []string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, catalogStore, mediaPublish, mediaDir, registrySites)
 	if err != nil {
 		return err
 	}

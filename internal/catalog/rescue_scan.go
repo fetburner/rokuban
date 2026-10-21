@@ -38,7 +38,10 @@ var statRescueCandidate = os.Lstat
 // 前置の無いファイルは site を決められないため登録せず、ファイルごとに Warn を
 // 1 回出す。レジストリに無い site を持つ前置は復元を続け、site ごとに 1 回だけ
 // Warn する。
-func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
+//
+// 相対パスのロックは inplace.Register が取り、ファイルの再確認から
+// RegisterInPlace の commit まで保持する。
+func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDir string, registrySites []string) (*RescueResult, error) {
 	realMediaDir, err := filepath.EvalSymlinks(mediaDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolving media_dir symlinks for rescue: %w", err)
@@ -97,12 +100,6 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 			return fmt.Errorf("making rescue path relative for %q: %w", path, err)
 		}
 		relPath = filepath.ToSlash(relPath)
-		networkID, serviceID, eventID := syntheticBroadcastIdentity(relPath)
-		at := info.ModTime().UTC()
-		title := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
-		if title == "" {
-			title = relPath
-		}
 
 		fileSite, unknownSite := classifySiteForRescuedFile(relPath, registrySites)
 		if fileSite == "" {
@@ -112,8 +109,14 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 			return nil
 		}
 
-		_, err = inplace.Register(ctx, publisher, realMediaDir, inplace.Input{
-			Recording: inplace.Recording{
+		networkID, serviceID, eventID := syntheticBroadcastIdentity(relPath)
+		at := info.ModTime().UTC()
+		title := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+		if title == "" {
+			title = relPath
+		}
+		_, err = inplace.Register(ctx, mediaPublish, realMediaDir, inplace.Input{
+			Recording: store.InPlaceRecording{
 				// ストレージ再スキャンには予約も program_intents も残っていない。
 				// ユーザーの明示的な意図を示す材料が無いので manual ではなく
 				// unattributed として永続化する。
@@ -156,11 +159,10 @@ func rescueStorage(ctx context.Context, publisher store.MediaPublish, mediaDir s
 	// site の内訳は walk が最後まで終わらなかった run でこそ運用者が読みたい
 	// （何が起きて途中で止まったかの手がかりになる）ので、エラーで return する
 	// 前に必ず出す。
-	for _, s := range slices.Sorted(maps.Keys(unknownSiteCounts)) {
+	for _, site := range slices.Sorted(maps.Keys(unknownSiteCounts)) {
 		slog.Warn("rescue: recovered files under a sites/ prefix that is not in the mirakc registry; using it anyway",
-			"site", s, "count", unknownSiteCounts[s])
+			"site", site, "count", unknownSiteCounts[site])
 	}
-
 	if err != nil {
 		return nil, fmt.Errorf("scanning media_dir for rescue: %w", err)
 	}

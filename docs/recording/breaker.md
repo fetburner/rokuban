@@ -55,14 +55,14 @@ ruler の upsert が NULL を書くのは「勝者なしで desired」、つま�
 したがってブレーカーの外に出るには、投資を消す書き込みが別途必要になる。それができる経路は次の 3 つだけである。
 
 - per-program の api 3 本（`DELETE .../intent` / `DELETE .../overrides` / `PUT .../intent{skip}`）。`openapi.yaml` のパスは `{programId}` を含み、バルクは無い
-- 運用者が明示的に走らせる catalog rescue の復元（`internal/catalog/rescue.go`）。`program_intents` を upsert するので record を skip で上書きしうる。バルクだが EPG に駆動されない
+- 運用者が明示的に走らせる catalog rescue の復元（`internal/store/pgstore/catalog_restore.go`）。`program_intents` を upsert するので record を skip で上書きしうる。バルクだが EPG に駆動されない
 - `program_snapshots` の GC CASCADE。予約行も一緒に落ちるので `toDelete` に現れない
 
 EPG 同期・ruler・reconciler はこの 2 表（`program_intents` / `program_overrides`。`program_investments` はこの 2 表から作る view）に一切書かない。そのため EPG がおかしくなっても、ブレーカー外の削除件数は人が書いた回数で頭打ちになる。
 
 <details><summary>根拠</summary>
 
-- catalog rescue が intent を upsert すること: `internal/catalog/rescue.go`
+- catalog rescue が intent を upsert すること: `internal/store/pgstore/catalog_restore.go`
 
 </details>
 

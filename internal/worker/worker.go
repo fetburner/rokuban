@@ -252,7 +252,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Webhook:       deps.Webhook,
 	})
 	riveradapter.Register(workers, &CatalogExportWorker{
-		Pool:     deps.Pool,
+		Store:    pgstore.NewCatalog(deps.Pool),
 		MediaDir: deps.MediaDir,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{

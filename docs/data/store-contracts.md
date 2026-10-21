@@ -579,3 +579,26 @@ reconciler と削除 reconcile は、もともと tx の外で発動する。そ
 - ruler の発動ゲージ: `TestRunPass_TripInApplyPassRaisesCircuitBreakerGauge`
 
 </details>
+
+### catalog の export / restore
+
+catalog の export と rescue の復元は、全保護対象の表を相手にする。ドメインごとの store を組み合わせると、export は表ごとに別の時点を読み、restore は途中まで書いた状態で失敗しうる。そのため、この 2 つだけはドメインをまたぐメソッドにする。
+
+`Catalog.Export` は全表を 1 つのスナップショットから読む。`Catalog.Restore` は全表の upsert・分類ルールの全件再評価・ID シーケンスの合わせ込みを 1 つの tx で確定する。
+
+rescue は、文書にある active な asset の相対パスをロックしてからファイルの有無を確かめ、ロックを `Restore` が返るまで保持する。ファイルが無かった asset の ID は `RestoreOptions.MissingAssetIDs` で渡し、store はその行を従属する統計ごと残したまま `deleted` として復元する。欠損時刻は DB の時計で記録する。
+
+restore は分類ルールの再評価と同じロックを、最初の書き込みより前に取る。途中で取ると、recordings の upsert のトリガーが当たりの表の行を持ったままロックを待ち、ロックを持ってその行を待つ再評価ジョブとデッドロックする。
+
+ストレージ走査からの登録は、§メディア公開の in-place 登録を使う。
+
+<details><summary>根拠</summary>
+
+- 契約: `internal/store.Catalog`
+- PostgreSQL 実装: `internal/store/pgstore.Catalog`
+- 同一スナップショット・往復・rollback・ロック順序・欠損ファイル: `TestCatalogContract`
+- export 中の取り込み競合: `TestExport_ConcurrentIngestStaysConsistent`
+- 欠損ファイルの deleted 復元（rescue 経由）: `TestRescueCatalogMissingFiles`
+- rescue の再評価ロック位置: `TestRescue_WaitsForLabelRuleReevaluationLock`
+
+</details>
