@@ -161,6 +161,7 @@ type RecordingNotifySubject struct {
 // MediaReconcile は worker のメディア処理入力、media_assets の reconcile と profile 検証の読み取り契約である。
 type MediaReconcile interface {
 	// GetCurrentCutKeep は確認済みチャプターから現在の keep 区間を導出する。
+	// 所有状態と区間は同じ時点の 1 回の読み取りで返す。
 	// 確認されていなければ owned=false、purged の録画なら ErrNotFound を返す。
 	GetCurrentCutKeep(ctx context.Context, recordingID int64) (keep []chapters.Range, owned bool, err error)
 	// GetRecordingEncodeTimes はエンコード締切の計算に使う録画時刻を返す。

@@ -412,8 +412,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -656,8 +655,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -715,8 +713,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -802,11 +799,9 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
 		cutFFmpegProfile(), {Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 	}}
-	w := &EncodeReconcileWorker{Profiles: cfg, Media:
+	w := &EncodeReconcileWorker{Profiles: cfg, Media: newTestMediaStore(pool)}
 
 	// 未確認: cut は投入されず、h264 だけが投入される。
-	newTestMediaStore(pool)}
-
 	enqueuer := runEncodeReconcilePass(t, w)
 	if got := pendingEncodeProfiles(t, enqueuer, recordingID); !slices.Equal(got, []string{"h264"}) {
 		t.Fatalf("pending profiles before review = %v, want [h264] (cut must wait)", got)
@@ -930,11 +925,11 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-
-		RecordTarget: pgstore.NewRecordings(pool),
-		StallTimeout: 5 * time.Second,
+		RecordTarget:  pgstore.NewRecordings(pool),
+		StallTimeout:  5 * time.Second,
 		// cut: true のプロファイル名（本番では config から注入される）。
-		CutProfiles: map[string]struct{}{"cut": {}}, Precheck: newTestMediaStore(pool),
+		CutProfiles: map[string]struct{}{"cut": {}},
+		Precheck:    newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
@@ -996,11 +991,11 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-
-		RecordTarget: pgstore.NewRecordings(pool),
-		StallTimeout: 5 * time.Second,
-		CutProfiles:  map[string]struct{}{"cut": {}},
-		LiveEnabled:  true, Precheck: newTestMediaStore(pool),
+		RecordTarget:  pgstore.NewRecordings(pool),
+		StallTimeout:  5 * time.Second,
+		CutProfiles:   map[string]struct{}{"cut": {}},
+		LiveEnabled:   true,
+		Precheck:      newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 

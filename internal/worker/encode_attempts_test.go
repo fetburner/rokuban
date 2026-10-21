@@ -89,8 +89,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -131,8 +130,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,
@@ -285,8 +283,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -571,8 +568,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -875,8 +871,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,

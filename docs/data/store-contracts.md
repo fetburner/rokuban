@@ -222,9 +222,11 @@ streamer のハンドラは `MediaServing` を受け取る。worker のジョブ
 
 worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
-エンコード worker が使う現在の keep 区間・録画時刻・通知対象も `MediaReconcile` から読む。現在の keep は所有状態と区間を同じ読み取り専用 RepeatableRead snapshot から読み、チャプターから keep を作る処理は store に一つだけ置く。エンコード計画と公開時の再確認は同じ導出を使う。通知対象は通常の録画読み取りと同じく purged 後も返すため、終端通知の局・番組名を保てる。
+エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。現在の keep は、所有状態と区間を同じ時点の 1 回の読み取りで返す。通知対象は、purged 後の録画も返す。エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
 
-ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にし、`rel_path` の衝突確認は削除途中の行も含む安価なヒントとして使う。一意性の最終判断は原本を公開する `MediaPublish` の tx に任せるため、転送前の確認を公開契約の代わりにしてはならない。
+チャプターから keep を作る導出は、store に 1 つだけ置く。エンコード計画、公開時の再確認、作り直し要求（`RequestCutRebuild`）が同じ導出を使う。写しが複数あると、片方だけ直ったときに、3 つの判定がずれる。
+
+ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。この確認はヒントにすぎない。一意性の最終判定は、原本を公開する `CommitOriginal` が返す `ErrConflict` である。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
 
 起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。原本と encoded のうち `deleted` でない行を見て、`rel_path` が `sites/{site}/` で始まらない行があれば、起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
@@ -242,6 +244,7 @@ worker は `StorageObservation` に `storage_sync` と、孤児・実体無し�
 - 追っかけの対象: `TestMediaStoreContract` の `chase target requires a record and a recording outside the trash`
 - エンコード計画の観測と作り直し要求の照合: `TestMediaStoreContract` の `encode planning reads asset and request state through its contract`
 - keep 区間の導出・所有・purged の扱い: `TestMediaStoreContract` の `current cut keep is derived from owned chapters`
+- 所有状態と区間が同じ時点の読み取りであること: `pgstore` の `TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot`
 - encode 締切用の nullable 時刻: `TestMediaStoreContract` の `recording encode times preserve nullable timestamps`
 - purged 録画の通知対象: `TestMediaStoreContract` の `encode notify subject includes purged recordings`
 - state を問わない原本の有無: `TestMediaStoreContract` の `ingest precheck recognizes committed originals in every state`
@@ -291,8 +294,6 @@ worker は `MediaDelete` から候補を読み、unlink の後に遷移を確定
 先に浮かぶ案は、commit してから rename する順序である。この順序は、rename の失敗が行だけを残し、コミット = DB 行なのに実体が無い状態を作る。今の順序なら、commit の失敗は孤児ファイルを残すだけである。
 
 原本の commit は、行の作成・進捗の削除・保持ポリシーの凍結を 1 つの tx で行う。同じ rel_path の原本が既にあれば `ErrConflict` を返し、`publish` は呼ばない。凍結する方針は、store が同じ tx で読んだ予約・上書き・意図を、呼び出し側の純粋な関数に渡して導く。設定に依存するクランプは、この関数の中にある。
-
-ingest worker が途中状態を掃除するときは、`ClearIngestProgress` で進捗行を削除する。行が無い場合も成功にするので、再配送後の後始末は冪等である。
 
 encoded の公開は、試行番号・desired・作り直し要求・cut の区間を tx の中で読み直してから `publish` を呼ぶ。版の削除・事後追加と直列化し、cut はさらにチャプター編集・作り直し要求と直列化する。古い計画なら `ErrStalePublishPlan` を返す。
 

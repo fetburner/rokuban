@@ -49,18 +49,18 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wA := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-
-		RecordTarget: pgstore.NewRecordings(pool),
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
+		RecordTarget:  pgstore.NewRecordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+		Precheck:      newTestMediaStore(pool),
 	}
 	wB := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-
-		RecordTarget: pgstore.NewRecordings(pool),
-		MediaDir:     mediaDir,
-		StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
+		RecordTarget:  pgstore.NewRecordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+		Precheck:      newTestMediaStore(pool),
 	}
 	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
 	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
@@ -547,11 +547,11 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			srv := newInstrumentedIngestServer(t, tsData, contentPath, func() { deleteCalls.Add(1) })
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
-
-				Publisher:    pgstore.NewMedia(pool),
-				RecordTarget: pgstore.NewRecordings(pool),
-				MediaDir:     mediaDir,
-				StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
+				Publisher:     pgstore.NewMedia(pool),
+				RecordTarget:  pgstore.NewRecordings(pool),
+				MediaDir:      mediaDir,
+				StallTimeout:  5 * time.Second,
+				Precheck:      newTestMediaStore(pool),
 			}
 			w.CMDetectionStore = pgstore.NewAnalysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}

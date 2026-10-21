@@ -141,8 +141,7 @@ func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) 
 	return &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,

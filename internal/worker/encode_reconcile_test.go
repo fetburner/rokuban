@@ -223,8 +223,8 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 	cutProfile := config.EncodeProfile{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"}
 	w := &EncodeReconcileWorker{
 		Enqueuer: enqueuer,
-
-		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}}, Media: newTestMediaStore(pool),
+		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutProfile}},
+		Media:    newTestMediaStore(pool),
 	}
 	runEncodeReconcilePassArgs(t, w, EncodeReconcileArgs{RecordingID: recordingID})
 
@@ -376,9 +376,9 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
-
-		RecordTarget: pgstore.NewRecordings(pool),
-		StallTimeout: 5 * time.Second, Precheck: newTestMediaStore(pool),
+		RecordTarget:  pgstore.NewRecordings(pool),
+		StallTimeout:  5 * time.Second,
+		Precheck:      newTestMediaStore(pool),
 	}
 	iw.CMDetectionStore = pgstore.NewAnalysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}
@@ -398,12 +398,11 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	}
 	// 定期パスが差分を埋める。
 	w := &EncodeReconcileWorker{
-		Enqueuer: newRecordingEnqueuer(), Profiles: encodeConfigWith("h265"), Media:
-
-		// 前提 3: ヒントは落ちた（encode ジョブが 1 件も入っていない）。
-		newTestMediaStore(pool),
+		Enqueuer: newRecordingEnqueuer(),
+		Profiles: encodeConfigWith("h265"),
+		Media:    newTestMediaStore(pool),
 	}
-
+	// 前提 3: ヒントは落ちた（encode ジョブが 1 件も入っていない）。
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID, "h265"); got != 0 {
 		t.Fatalf("encode jobs before the periodic pass = %d, want 0 (the hint must be lost for this regression to mean anything)", got)
 	}

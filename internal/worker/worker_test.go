@@ -23,24 +23,8 @@ func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
 }
 
-// injectedIngestPrecheck tracks the dependency supplied to NewWorkers.
-type injectedIngestPrecheck struct {
-	calls       int
-	recordingID int64
-}
-
-func (p *injectedIngestPrecheck) HasOriginalMediaAsset(_ context.Context, recordingID int64) (bool, error) {
-	p.calls++
-	p.recordingID = recordingID
-	return true, nil
-}
-
-func (*injectedIngestPrecheck) GetLiveMediaAssetRecordingID(context.Context, string) (int64, error) {
-	return 0, store.ErrNotFound
-}
-
 // TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
-// It fails if NewWorkers omits the injected precheck: Work must observe the committed original,
+// The original row exists only in the DB: Work must find it through the injected precheck,
 // skip transfer, and clear stale progress for that recording.
 func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	pool := setupTestPool(t)
@@ -52,6 +36,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	media := newTestMediaStore(pool)
+	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))
 	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
 		RecordingID:  recordingID,
 		WrittenBytes: 32,
@@ -69,20 +54,16 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	}))
 	defer server.Close()
 
-	precheck := &injectedIngestPrecheck{}
 	registry := NewWorkers(&Deps{
 		Pool:               pool,
 		MirakcClients:      singleSiteClients(db.DefaultSite, mirakc.NewClient(server.URL, nil)),
 		MediaPublish:       media,
-		IngestPrecheck:     precheck,
+		IngestPrecheck:     media,
 		Enqueuer:           newRecordingEnqueuer(),
 		IngestStallTimeout: time.Second,
 	})
 	if err := registry.Work(context.Background(), jobs.IngestJobArgs{Site: db.DefaultSite, RecordID: recordID}); err != nil {
 		t.Fatalf("registered ingest worker Work(): %v", err)
-	}
-	if precheck.calls != 1 || precheck.recordingID != recordingID {
-		t.Errorf("injected precheck calls/recording = %d/%d, want 1/%d", precheck.calls, precheck.recordingID, recordingID)
 	}
 	if _, ok := readIngestProgress(t, pool, recordingID); ok {
 		t.Error("registered ingest worker did not clear stale progress")

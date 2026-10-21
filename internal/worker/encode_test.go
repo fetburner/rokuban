@@ -496,9 +496,13 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	thumbnail := mk(fmt.Sprintf("thumbnail/%d-abc", recordingID))
 
 	w := &EncodeWorker{
-		Publisher: newTestMediaStore(pool),
-		Progress:  newTestMediaStore(pool),
-		Attempts:  newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, FFmpeg: ffmpegPath,
+		Publisher:  newTestMediaStore(pool),
+		Progress:   newTestMediaStore(pool),
+		Attempts:   newTestMediaStore(pool),
+		Media:      newTestMediaStore(pool),
+		MediaDir:   mediaDir,
+		ScratchDir: scratchDir,
+		FFmpeg:     ffmpegPath,
 		Profiles: config.EncodeConfig{FFmpeg: ffmpegPath, Profiles: []config.EncodeProfile{{
 			Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 		}}},
@@ -533,8 +537,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -636,8 +639,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:      newTestMediaStore(pool),
 		MediaDir:   mediaDir,
@@ -710,8 +712,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,
@@ -795,8 +796,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
 		Progress:  newTestMediaStore(pool),
-
-		Attempts: newTestMediaStore(pool),
+		Attempts:  newTestMediaStore(pool),
 
 		Media:    newTestMediaStore(pool),
 		MediaDir: mediaDir,
