@@ -26,7 +26,7 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -72,7 +72,7 @@ func TestPutProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_intents", site: "default", programID: programID, wantPresent: true,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -100,7 +100,7 @@ func TestPatchProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_overrides", site: "default", programID: programID, wantPresent: true,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -123,7 +123,7 @@ func TestPatchProgramOverrides_StoreFailureDoesNotEnqueue(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -144,7 +144,7 @@ func TestPatchProgramOverrides_StoreFailureDoesNotEnqueue(t *testing.T) {
 func TestPutProgramIntent_ProgramNotInProjection_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -174,7 +174,7 @@ func TestDeleteProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_intents", site: "default", programID: programID, wantPresent: false,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: reservations, Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: reservations, Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -204,7 +204,7 @@ func TestDeleteProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_overrides", site: "default", programID: programID, wantPresent: false,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: reservations, Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: reservations, Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -230,7 +230,7 @@ func TestPutProgramIntent_EnqueueFailureDoesNotFailCommittedWrite(t *testing.T) 
 		wantPresent: true, enqueueErr: errors.New("queue unavailable"),
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Pool: pool, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

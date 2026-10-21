@@ -55,9 +55,9 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	defer server.Close()
 
 	registry := NewWorkers(&Deps{
-		Pool:               pool,
 		MirakcClients:      singleSiteClients(db.DefaultSite, mirakc.NewClient(server.URL, nil)),
 		MediaPublish:       media,
+		IngestTarget:       pgstore.NewRecordings(pool),
 		IngestPrecheck:     media,
 		Enqueuer:           newRecordingEnqueuer(),
 		IngestStallTimeout: time.Second,
@@ -297,7 +297,15 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		t.Fatalf("inserting rule_text_matches fixture: %v", err)
 	}
 
-	if err := runWorkerViaJobQFake(ctx, &RulerPassWorker{Pool: pool, ProgramSearch: pgstore.NewEPG(pool)}, RulerPassArgs{Site: site}); err != nil {
+	reservations := pgstore.NewReservations(pool)
+	w := &RulerPassWorker{
+		RulerPass:      reservations,
+		Breakers:       pgstore.NewBreakers(pool),
+		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		LoopMarkers:    reservations,
+		ProgramSearch:  pgstore.NewEPG(pool),
+	}
+	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("RulerPassWorker.Work: %v", err)
 	}
 
@@ -328,7 +336,14 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	w := &RulerPassWorker{Pool: pool, ProgramSearch: pgstore.NewEPG(pool)}
+	reservations := pgstore.NewReservations(pool)
+	w := &RulerPassWorker{
+		RulerPass:      reservations,
+		Breakers:       pgstore.NewBreakers(pool),
+		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		LoopMarkers:    reservations,
+		ProgramSearch:  pgstore.NewEPG(pool),
+	}
 	job := RulerPassArgs{Site: "default"}
 	if err := runWorkerViaJobQFake(ctx, w, job); err == nil {
 		t.Fatal("Work() error = nil, want canceled ruler pass to fail")

@@ -5,19 +5,16 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // RulerPassWorker は ruler の 1 パス評価を実行する queue worker。
 //
 // 評価ロジックは internal/ruler に置き、永続化は store 契約を使う。ruler は
-// mirakc に触れない（不変条件 1）ので、Pool から store を構成して渡す。
+// mirakc に触れない（不変条件 1）。
 //
 // # site 照合ガード（issue #139）は不要と判断
 //
@@ -27,9 +24,12 @@ import (
 // 起きないので、verifySite は導入していない（「まだ書いていないだけ」ではなく
 // 不要と判断した結果）。
 type RulerPassWorker struct {
-	Enqueuer      jobq.Enqueuer
-	Pool          *pgxpool.Pool
-	ProgramSearch store.ProgramSearch
+	Enqueuer       jobq.Enqueuer
+	RulerPass      store.RulerPass
+	Breakers       store.Breakers
+	NeverScheduled store.NeverScheduledEvents
+	LoopMarkers    store.LoopMarkers
+	ProgramSearch  store.ProgramSearch
 
 	// RetentionGrace は番組終了後、reservations / program_intents を GC するまでの
 	// 猶予。0 なら ruler 側の既定値を使う（epg.retention_grace をそのまま流用する
@@ -52,8 +52,7 @@ type RulerPassWorker struct {
 // （ruler.New はサイトのスライスを受け取れるが、ジョブの排他がサイト単位のため
 // ここでは常に長さ 1 で渡す）。
 func (w *RulerPassWorker) Work(ctx context.Context, args jobs.RulerPassArgs) error {
-	reservations := pgstore.NewReservations(w.Pool)
-	r := ruler.New([]string{args.Site}, reservations, pgstore.NewBreakers(w.Pool), pgstore.NewNeverScheduledEvents(w.Pool), reservations, &ruler.Config{
+	r := ruler.New([]string{args.Site}, w.RulerPass, w.Breakers, w.NeverScheduled, w.LoopMarkers, &ruler.Config{
 		RetentionGrace:    w.RetentionGrace,
 		MaxDeletesPerPass: w.MaxDeletesPerPass,
 		RetractGrace:      w.RetractGrace,

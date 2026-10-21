@@ -28,7 +28,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		RuleStore:          pgstore.NewRules(pool),
 		ProgramSearch:      pgstore.NewEPG(pool),
 		EncodePolicyStore:  pgstore.NewMedia(pool),
@@ -127,7 +127,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		RuleStore:          pgstore.NewRules(pool),
 		ProgramSearch:      pgstore.NewEPG(pool),
 		EncodePolicyStore:  pgstore.NewMedia(pool),
@@ -207,7 +207,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -264,7 +264,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -304,7 +304,7 @@ func TestReencodeRecordingProfile_AllowsTrashedRecording(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -347,7 +347,7 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
@@ -438,7 +438,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
@@ -494,7 +494,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		Enqueuer:           enqueuer,
@@ -540,7 +540,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},
@@ -601,7 +601,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		EncodePolicyStore:  pgstore.NewMedia(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"cut"},

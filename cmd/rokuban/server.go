@@ -490,7 +490,7 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 	routerCfg := api.RouterConfig{
 		AllowedHosts:        cfg.Server.AllowedHosts,
 		TrustForwardedHost:  cfg.Server.TrustForwardedHost,
-		Pool:                pool,
+		Ready:               pool.Ping,
 		ChapterStore:        pgstore.NewAnalysis(pool),
 		PlaybackStateStore:  pgstore.NewPlayback(pool),
 		RecordingTrashStore: recordingStore,
@@ -627,6 +627,12 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*riveradapter.Adapter, error) {
 	mediaStore := pgstore.NewMedia(pool)
+	recordingStore := pgstore.NewRecordings(pool)
+	reservationStore := pgstore.NewReservations(pool)
+	breakersStore := pgstore.NewBreakers(pool)
+	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
+	scheduleSyncStore := pgstore.NewScheduleSync(pool)
+	catalogStore := pgstore.NewCatalog(pool)
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err
@@ -660,7 +666,14 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		EPGSync:                  pgstore.NewEPG(pool),
 		ProgramSearch:            pgstore.NewEPG(pool),
 		MirakcClients:            mirakcClients,
-		Pool:                     pool,
+		RulerPass:                reservationStore,
+		LoopMarkers:              reservationStore,
+		Breakers:                 breakersStore,
+		NeverScheduled:           neverScheduledStore,
+		ScheduleSync:             scheduleSyncStore,
+		RecordObservations:       recordingStore,
+		IngestTarget:             recordingStore,
+		Catalog:                  catalogStore,
 		CMStationStore:           analysisStore,
 		CMDetectionStore:         analysisStore,
 		TunerStore:               tunerStore,

@@ -4,12 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -29,8 +27,9 @@ type RecordSweepWorker struct {
 	// 1 インスタンスが複数 site の watcher_<site> キューを同時に購読しうる。Work は
 	// verifySite で args.Site に対応するクライアントを取り出してから
 	// watcher.New に渡す（issue #139）。
-	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
+	MirakcClients      map[string]*mirakc.Client
+	RecordObservations store.RecordObservations
+	LoopMarkers        store.LoopMarkers
 	// Webhook は processRecord 経由の finished 遷移通知に使う（M3-11）。nil 可。
 	Webhook *webhook.Client
 }
@@ -53,6 +52,6 @@ func (w *RecordSweepWorker) Work(ctx context.Context, args jobs.RecordSweepArgs)
 		return fmt.Errorf("record sweep: job enqueuer is nil")
 	}
 
-	wt := watcher.New(args.Site, client, pgstore.NewRecordings(w.Pool), pgstore.NewReservations(w.Pool), w.Enqueuer, w.Webhook)
+	wt := watcher.New(args.Site, client, w.RecordObservations, w.LoopMarkers, w.Enqueuer, w.Webhook)
 	return wt.Sweep(ctx)
 }

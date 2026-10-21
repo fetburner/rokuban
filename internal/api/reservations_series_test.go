@@ -122,7 +122,7 @@ func assertReservationSeries(t *testing.T, got *string, want string) {
 func TestReservationSeries_FollowsEPGEffectiveSeries(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	router := api.NewRouter(api.RouterConfig{Pool: pool,
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
 		ReservationStore: pgstore.NewReservations(pool), Sites: []string{"default", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

@@ -26,7 +26,7 @@ func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	media := pgstore.NewMedia(pool)
 	recordingStore := pgstore.NewRecordings(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool:                pool,
+		Ready:               pool.Ping,
 		EPGReader:           pgstore.NewEPG(pool),
 		ProgramSearch:       pgstore.NewEPG(pool),
 		MediaReader:         media,

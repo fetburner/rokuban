@@ -5,14 +5,11 @@ import (
 	"sort"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/riveradapter"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
@@ -90,6 +87,22 @@ type Deps struct {
 
 	// ProgramSearch は番組検索・ルール評価の永続化契約。
 	ProgramSearch store.ProgramSearch
+	// RulerPass は ruler が予約の導出と適用に使う永続化契約。
+	RulerPass store.RulerPass
+	// LoopMarkers は ruler と record_sweep の成功時刻を記録する契約。
+	LoopMarkers store.LoopMarkers
+	// Breakers は worker がサーキットブレーカーを発動・観測する契約。
+	Breakers store.Breakers
+	// NeverScheduled は欠測 schedule の観測を記録する契約。
+	NeverScheduled store.NeverScheduledEvents
+	// ScheduleSync は reconciler が schedule の観測と予約との差分を記録・読む契約。
+	ScheduleSync store.ScheduleSync
+	// RecordObservations は mirakc の record 観測を永続化する契約。
+	RecordObservations store.RecordObservations
+	// IngestTarget は ingest が record_sync から転送先を読む契約。
+	IngestTarget store.IngestTarget
+	// Catalog は catalog の export と restore を行う契約。
+	Catalog store.Catalog
 
 	// MirakcClients は `--sites` で束縛された site 名から mirakc クライアントへの
 	// map（issue #532。1 プロセスが N site を束縛できるようになったため、
@@ -103,7 +116,6 @@ type Deps struct {
 	// 必ず拒む（起動時には validateSiteBinding が
 	// この組み合わせ自体を防ぐ）。
 	MirakcClients map[string]*mirakc.Client
-	Pool          *pgxpool.Pool
 	// CMStationStore は局単位のロゴ状態と候補解析の永続化契約。
 	CMStationStore store.CMStation
 	// CMDetectionStore は CM 検出 worker・reconcile の永続化契約。
@@ -186,13 +198,12 @@ type Deps struct {
 // River 以外の adapter は中立な jobq.Registry をそのまま使える。
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
-	recordings := pgstore.NewRecordings(deps.Pool)
 	riveradapter.Register(workers, &IngestWorker{
 		Enqueuer:         deps.Enqueuer,
 		MirakcClients:    deps.MirakcClients,
 		Publisher:        deps.MediaPublish,
 		Precheck:         deps.IngestPrecheck,
-		RecordTarget:     recordings,
+		RecordTarget:     deps.IngestTarget,
 		CMDetectionStore: deps.CMDetectionStore,
 		MediaDir:         deps.MediaDir,
 		StallTimeout:     deps.IngestStallTimeout,
@@ -232,7 +243,10 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	})
 	riveradapter.Register(workers, &RulerPassWorker{
 		Enqueuer:          deps.Enqueuer,
-		Pool:              deps.Pool,
+		RulerPass:         deps.RulerPass,
+		Breakers:          deps.Breakers,
+		NeverScheduled:    deps.NeverScheduled,
+		LoopMarkers:       deps.LoopMarkers,
 		ProgramSearch:     deps.ProgramSearch,
 		RetentionGrace:    deps.RulerRetentionGrace,
 		MaxDeletesPerPass: deps.RulerMaxDeletesPerPass,
@@ -241,17 +255,20 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &LabelRuleReconcileWorker{Store: deps.LabelRuleReevaluation})
 	riveradapter.Register(workers, &ReconcilePassWorker{
 		MirakcClients:   deps.MirakcClients,
-		Pool:            deps.Pool,
+		ScheduleSync:    deps.ScheduleSync,
+		Breakers:        deps.Breakers,
+		NeverScheduled:  deps.NeverScheduled,
 		StartDelayGrace: deps.ReconcileStartDelayGrace,
 	})
 	riveradapter.Register(workers, &RecordSweepWorker{
-		Enqueuer:      deps.Enqueuer,
-		MirakcClients: deps.MirakcClients,
-		Pool:          deps.Pool,
-		Webhook:       deps.Webhook,
+		Enqueuer:           deps.Enqueuer,
+		MirakcClients:      deps.MirakcClients,
+		RecordObservations: deps.RecordObservations,
+		LoopMarkers:        deps.LoopMarkers,
+		Webhook:            deps.Webhook,
 	})
 	riveradapter.Register(workers, &CatalogExportWorker{
-		Store:    pgstore.NewCatalog(deps.Pool),
+		Store:    deps.Catalog,
 		MediaDir: deps.MediaDir,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
@@ -297,7 +314,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 	riveradapter.Register(workers, &DeleteReconcileWorker{
 		MediaDelete:       deps.MediaDelete,
 		RecordingPurge:    deps.RecordingPurge,
-		Breakers:          pgstore.NewBreakers(deps.Pool),
+		Breakers:          deps.Breakers,
 		Storage:           deps.StorageObservation,
 		MediaDir:          deps.MediaDir,
 		TrashRetention:    deps.Cleanup.TrashRetention,

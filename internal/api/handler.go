@@ -7,8 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -19,7 +17,7 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
-	pool               *pgxpool.Pool
+	ready              func(context.Context) error
 	chapterStore       store.ChapterEdits
 	cmStationStore     store.CMStation
 	cmDetectionStore   store.CMDetection
@@ -92,7 +90,8 @@ type Server struct {
 // encodePolicy はエンコード方針とカット版作り直し要求のトランザクション契約。
 // mediaReader はエンコード待ち行列とドロップ統計の読み取り契約、storageObservation はストレージ残量の観測契約。
 // nil は該当操作を呼ばない部分テストでのみ許容する。
-func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, encodePolicy store.EncodePolicy, dedupe store.RulerDedupe, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
+// NewServer は API ハンドラを構成する。ready は /readyz が DB の応答を確かめる関数である。
+func NewServer(ready func(context.Context) error, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, encodePolicy store.EncodePolicy, dedupe store.RulerDedupe, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
 		siteNames = []string{db.DefaultSite}
@@ -121,7 +120,7 @@ func NewServer(pool *pgxpool.Pool, chapterStore store.ChapterEdits, cmStationSto
 		}
 	}
 	return &Server{
-		pool: pool, chapterStore: chapterStore, cmStationStore: cmStationStore, cmDetectionStore: cmDetectionStore, playbackStore: playbackStore, recordingTrash: recordingTrash, recordingQuery: recordingQuery,
+		ready: ready, chapterStore: chapterStore, cmStationStore: cmStationStore, cmDetectionStore: cmDetectionStore, playbackStore: playbackStore, recordingTrash: recordingTrash, recordingQuery: recordingQuery,
 		tunerReader: tunerReader, capacityStore: capacityStore, reservationStore: reservationStore, ruleStore: ruleStore, labelRules: labelRules, breakerAdmin: breakerAdmin, epgReader: epgReader, programSearch: programSearch,
 		encodePolicy: encodePolicy, dedupe: dedupe, mediaReader: mediaReader, storageObservation: storageObservation, enqueuer: enqueuer,
 		sites: siteSet, siteNames: siteNames,
@@ -150,48 +149,39 @@ func (h *Server) Healthz(_ context.Context, _ HealthzRequestObject) (HealthzResp
 	return Healthz200JSONResponse{Status: "ok"}, nil
 }
 
-// readyzTimeout は /readyz が DB の応答を待つ上限。
+// readyzTimeout は /readyz の DB 確認関数に渡す期限。
 //
 // **probe の `timeoutSeconds` に依存せず、ハンドラ側で 503 として答えるための上限。**
 // probe 側の設定（長い `timeoutSeconds`）や probe 以外の呼び手に対しても、
 // 「DB がハングしても有限時間で readiness の失敗を返す」を実装側で保証する。
-// 生成ハンドラは `r.Context()` を渡す（`openapi_gen.go` の `strictHandler.Readyz`）
-// ので、クライアントが先に切ればそのキャンセルでも `Ping` は返る（`net/http` の
-// 挙動。ここでは未測定）。
 // マニフェスト側は `timeoutSeconds` をこの値より長くしてある
 // （`deploy/k8s/base/api.yaml`。同値以下だとこの経路が一度も通らない）。
 // 判定は TestReadyz_HangingDBTimesOut。
 const readyzTimeout = 2 * time.Second
 
-// Readyz は readiness probe（ロードバランサ向け）。DB への ping が通れば 200、
-// 通らなければ 503 を返す。
+// Readyz は readiness probe（ロードバランサ向け）。DB の確認が成功すれば 200、
+// 失敗すれば 503 を返す。
 //
-// **プールが未設定（nil）なら 503**（fail-closed）。実バイナリでは
-// `cmd/rokuban/server.go` が `db.NewPool` の失敗で起動を止めてから
-// `RouterConfig.Pool` に無条件で代入するので、ロール構成に関わらず nil にはならない。
-// nil はルータの組み立てを誤ったとき（テストの部分構成を含む）だけで、そこを 200 に
-// すると「DB を一度も見ていない Pod」が Service の後ろに入ってしまう。
+// **確認関数が未設定（nil）なら 503**（fail-closed）。DB の確認を一度もしていない Pod が
+// Service の後ろに入ることを防ぐ。
 //
 // **`/healthz`（liveness）には依存チェックを入れない**方針は変えない。liveness で
 // DB を見ると DB の瞬断で全 Pod が同時に再起動する（docs/operations.md §5
 // 「healthz」）。readiness は「今トラフィックを受けられるか」なので逆に DB を見る。
 //
-// 見るのは DB への ping だけで、mirakc への到達性は見ない（不変条件 1）。
+// 見るのは DB の応答だけで、mirakc への到達性は見ない（不変条件 1）。
 //
-// なお `pgxpool.Pool.Ping` はプールからコネクションを 1 本取るため、プールが
-// 飽和している（全コネクションが長いクエリで埋まっている）間は readyzTimeout まで
-// 待って 503 になりうる（未測定。`Acquire` が待つことからの帰結）。DB 断と輻輳を
-// この応答で区別することはできない。
+// 確認処理が readyzTimeout までに返らなければ 503 になる。
 func (h *Server) Readyz(ctx context.Context, _ ReadyzRequestObject) (ReadyzResponseObject, error) {
-	if h.pool == nil {
-		return Readyz503JSONResponse{Status: "no database pool"}, nil
+	if h.ready == nil {
+		return Readyz503JSONResponse{Status: "database check unavailable"}, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, readyzTimeout)
 	defer cancel()
-	if err := h.pool.Ping(ctx); err != nil {
-		// 詳細（DSN やホスト名を含みうる pgx のエラー文）は応答に載せず、
+	if err := h.ready(ctx); err != nil {
+		// 詳細（接続先などを含みうる DB driver のエラー文）は応答に載せず、
 		// ログにだけ出す。probe の応答は誰でも引けるため。
-		slog.WarnContext(ctx, "readyz: database ping failed", "error", err)
+		slog.WarnContext(ctx, "readyz: database check failed", "error", err)
 		return Readyz503JSONResponse{Status: "database unavailable"}, nil
 	}
 	return Readyz200JSONResponse{Status: "ok"}, nil
