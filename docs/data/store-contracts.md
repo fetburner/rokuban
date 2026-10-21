@@ -222,11 +222,11 @@ streamer のハンドラは `MediaServing` を受け取る。worker のジョブ
 
 worker のジョブは `MediaReconcile` から、再計算する候補と、エンコード計画の比較材料を読む。比較材料は、encoded の行と凍結された keep 区間を同じ時点の 1 回の読み取りで返す。
 
-エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。現在の keep は、所有状態と区間を同じ時点の 1 回の読み取りで返す。通知対象は、purged 後の録画も返す。エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
+エンコード worker は、現在の keep 区間・録画時刻・通知対象を `MediaReconcile` から読む。現在の keep を読むとき、store は所有状態と区間を同じ時点の 1 回の読み取りで返す。通知対象の読み取りは、purged 後の録画も返す。エンコードの完了・失敗を webhook で通知するとき、purged 後でも局名と番組名を載せるためである。
 
-チャプターから keep を作る導出は、store に 1 つだけ置く。エンコード計画、公開時の再確認、作り直し要求（`RequestCutRebuild`）が同じ導出を使う。写しが複数あると、片方だけ直ったときに、3 つの判定がずれる。
+チャプターから keep を作る導出は、store に 1 つだけ置く。エンコード計画、公開時の再確認、作り直し要求（`RequestCutRebuild`）が同じ導出を使う。写しが複数あると、一部だけ直ったときに 3 つの判定がずれる。
 
-ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。この確認はヒントにすぎない。一意性の最終判定は、原本を公開する `CommitOriginal` が返す `ErrConflict` である。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
+ingest の転送前確認は `IngestPrecheck` に分ける。原本行の有無は state を問わずコミットの証拠にする。`rel_path` の衝突確認は 'deleting' の行も衝突に数える。`state = 'active'` に絞ると、'deleting' の行が使っている `rel_path` を ingest が上書きし、「DB は active、実体は別番組」の状態が再び生まれるためである。`rel_path` の衝突確認はヒントにすぎず、一意性の最終判定は原本を公開する `CommitOriginal` が行う。転送前に衝突を見落としても、`CommitOriginal` が `ErrConflict` で拒む。
 
 起動時の検査は 2 つある。1 つは profile の意味の検査で、過去の encoded と作り直し要求を証拠として読む。api ロールと worker ロールの両方が走らせる。もう 1 つは `rel_path` の名前空間の検査で、worker ロールだけが走らせる。原本と encoded のうち `deleted` でない行を見て、`rel_path` が `sites/{site}/` で始まらない行があれば、起動を拒む。site の成分が空の `sites//` も拒む。サムネイルとシークタイルは `thumbnails/` の名前空間にあるので、この検査の対象にしない。
 
