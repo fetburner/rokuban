@@ -1421,9 +1421,9 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       if (engine === 'webkit') skipped.push('#1143 /live の追っかけの再読み込み（WebKit の native HLS で失敗を起こせない）')
       else {
         // #1143 /live の追っかけで再生を進めた後、offset playlist が失敗すると、再読み込みは最後の位置を保つ。
-        // 位置は軸のシークバー（aria-valuenow）、要求した offset は playlist の URL から読む。
-        const scrubValue = async () => Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
-        // 軸のシークで開いた新しい offset セッションを再生し、セッション内の 15.75 秒へ動かして止めてから fatal にする。
+        // 位置は映像で測る（⑪-b / ⑭-b と同じ）。追っかけの録画秒は、要求した offset（セッションの起点）+ video.currentTime。
+        const lastRequestedOffset = (cursor) => chaseOffsetFixture.requests.slice(cursor).findLast(() => true)?.offset
+        // 軸のシークで新しい offset セッションを再生し、セッション内の 15.75 秒へ動かして止めてから fatal にする。
         // 軸のシークの目標は整数秒なので、端数のある位置は seeked の報告からしか出ない。3 本目以降の segment は
         // 位置を動かすまで返さず、動かしたら 500 にする。
         chaseOffsetFixture.failSegments = true
@@ -1432,36 +1432,42 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
         await show()
         const retryAxis = await page.getByTestId('seek-scrub').boundingBox()
         await page.mouse.click(retryAxis.x + retryAxis.width * 0.3, retryAxis.y + retryAxis.height / 2)
-        await page.waitForFunction(() => document.querySelector('video').currentTime > 2, undefined, { timeout: 30000 }).catch(() => {})
+        const playedBeforeFail = await page.waitForFunction(() => document.querySelector('video').currentTime > 2, undefined, { timeout: 30000 })
+          .then(() => true, () => false)
+        if (!playedBeforeFail) ng.push('#1143 前提: 軸のシークで開いた追っかけが 2 秒まで再生されない')
         await page.locator('video').evaluate((v) => { v.pause(); v.currentTime = 15.75 })
-        await page.waitForFunction(() => !document.querySelector('video').seeking, undefined, { timeout: 5000 }).catch(() => {})
-        // 位置は fatal の後に軸が先頭へ戻るので、止めた時点で読む。
-        const selectedPosition = await scrubValue().catch(() => Number.NaN)
+        const settledBeforeFail = await page.waitForFunction(() => !document.querySelector('video').seeking, undefined, { timeout: 5000 })
+          .then(() => true, () => false)
+        if (!settledBeforeFail) ng.push('#1143 前提: セッション内の 15.75 秒への seek が終わらない')
+        const failedOffset = lastRequestedOffset(failedCursor)
+        const selectedPosition = failedOffset + await page.locator('video').evaluate((v) => v.currentTime)
         chaseOffsetFixture.releaseSegments()
-        await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 120000 }).catch(() => {})
-        const failedOffsets = chaseOffsetFixture.requests.slice(failedCursor).map((r) => r.offset)
-        log(`  #1143 chase 再読み込み: fatal までの要求 offset=${JSON.stringify(failedOffsets)}, selected=${selectedPosition}`)
-        if (!(selectedPosition > 815)) {
-          ng.push(`#1143 前提: セッション内の seek 後の位置が seek 先 810 秒より先でない (${selectedPosition})`)
+        const errorShown = await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 120000 }).then(() => true, () => false)
+        if (!errorShown) ng.push('#1143 前提: segment の失敗後に「再読み込み」が出ない')
+        log(`  #1143 chase 再読み込み: 失敗前の offset=${failedOffset}, selected=${selectedPosition}`)
+        if (!(selectedPosition > failedOffset + 15)) {
+          ng.push(`#1143 前提: セッション内の seek 後の位置が offset+15 秒より先でない (${selectedPosition})`)
         }
         chaseOffsetFixture.failSegments = false
         const reloadCursor = chaseOffsetFixture.requests.length
-        await page.getByRole('button', { name: '再読み込み' }).click()
-        await page.waitForFunction(() => {
-          const v = document.querySelector('video')
-          return v !== null && v.readyState >= 2 && !v.seeking
-        }, undefined, { timeout: 15000 }).catch(() => {})
-        await page.getByTestId('seek-scrub').waitFor({ timeout: 15000 }).catch(() => {})
-        await page.locator('video').evaluate((v) => v.pause())
-        const reloadRequests = chaseOffsetFixture.requests.slice(reloadCursor)
-        const reloadOffset = reloadRequests.findLast((r) => r.status === 200)?.offset
-        const landing = await scrubValue().catch(() => Number.NaN)
-        log(`  #1143 chase 再読み込み後: requests=${JSON.stringify(reloadRequests)}, landing=${landing}`)
-        if (reloadOffset !== Math.floor(selectedPosition)) {
-          ng.push(`#1143 /live の追っかけの再読み込みが floor(最後の位置)=${Math.floor(selectedPosition)} の offset を要求しない (${JSON.stringify(reloadRequests)})`)
-        }
-        if (!(Math.abs(landing - selectedPosition) <= 0.5)) {
-          ng.push(`#1143 /live の追っかけの再読み込みの着地が最後の位置の 0.5 秒以内でない (${landing} / ${selectedPosition})`)
+        if (errorShown) {
+          await page.getByRole('button', { name: '再読み込み' }).click()
+          const reloaded = await page.waitForFunction(() => {
+            const v = document.querySelector('video')
+            return v !== null && v.readyState >= 2 && !v.seeking
+          }, undefined, { timeout: 15000 }).then(() => true, () => false)
+          if (!reloaded) ng.push('#1143 再読み込み後に映像が読み込めない（readyState >= 2 にならない）')
+          await page.locator('video').evaluate((v) => v.pause())
+          const reloadRequests = chaseOffsetFixture.requests.slice(reloadCursor)
+          const reloadOffset = reloadRequests.findLast((r) => r.status === 200)?.offset
+          const landing = reloadOffset + await page.locator('video').evaluate((v) => v.currentTime)
+          log(`  #1143 chase 再読み込み後: requests=${JSON.stringify(reloadRequests)}, landing=${landing}`)
+          if (reloadOffset !== Math.floor(selectedPosition)) {
+            ng.push(`#1143 /live の追っかけの再読み込みが floor(最後の位置)=${Math.floor(selectedPosition)} の offset を要求しない (${JSON.stringify(reloadRequests)})`)
+          }
+          if (!(Math.abs(landing - selectedPosition) <= 0.5)) {
+            ng.push(`#1143 /live の追っかけの再読み込みの着地が最後の位置の 0.5 秒以内でない (${landing} / ${selectedPosition})`)
+          }
         }
       }
       await context.close()
