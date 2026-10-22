@@ -2305,7 +2305,7 @@ type RuleTextMatchTarget string
 
 // RuleTimeWindow defines model for RuleTimeWindow.
 type RuleTimeWindow struct {
-	// EndSec start より小さい場合は翌日跨ぎ
+	// EndSec start より小さい場合は、同じ曜日の [0, endSec) と [startSec, 86400) の 2 区間として扱う。曜日は番組開始時刻（JST）の曜日で判定する
 	EndSec   int `json:"endSec"`
 	StartSec int `json:"startSec"`
 

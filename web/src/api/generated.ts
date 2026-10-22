@@ -1216,7 +1216,7 @@ export interface RuleTimeWindow {
      */
   startSec: number;
   /**
-     * start より小さい場合は翌日跨ぎ
+     * start より小さい場合は、同じ曜日の [0, endSec) と [startSec, 86400) の 2 区間として扱う。曜日は番組開始時刻（JST）の曜日で判定する
      * @minimum 0
      * @maximum 86400
      */

@@ -858,10 +858,14 @@ function TimeWindowFields({ draft, onChange, disabled }: FieldsProps) {
                   <X />
                 </Button>
               </div>
-              {/* 終了 < 開始 は翌日跨ぎ（internal/store/pgstore/rulesql.go）。00:00 を終了に指定すれば
-                  「開始から深夜 0 時まで」になるので、その説明を出す */}
+              {/* 終了 < 開始なら、曜日は番組開始日（JST）で判定し、同じ曜日の
+                  [0:00, 終了) と [開始, 24:00) を対象にする。終了が 00:00 なら前半は空なので表示しない */}
               {time.endSec < time.startSec && (
-                <p className="text-xs text-muted-foreground">翌日にまたがる時間帯として扱います</p>
+                <p className="text-xs text-muted-foreground">
+                  {time.endSec === 0
+                    ? `同じ曜日の ${secToTimeValue(time.startSec)}〜24:00 の時間帯として扱います（曜日は番組の開始日で判定します）`
+                    : `同じ曜日の 0:00〜${secToTimeValue(time.endSec)} と ${secToTimeValue(time.startSec)}〜24:00 の 2 つの時間帯として扱います（曜日は番組の開始日で判定します）`}
+                </p>
               )}
             </li>
           ))}
