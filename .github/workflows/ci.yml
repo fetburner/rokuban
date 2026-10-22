@@ -68,7 +68,8 @@ jobs:
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Chromium と依存パッケージの導入に 14 分を使った run があった。E2E と後処理の時間を残す。
+    timeout-minutes: 35
     services:
       postgres:
         image: postgres:17
