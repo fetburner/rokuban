@@ -91,8 +91,8 @@ type RulerPassResult struct {
 
 // RulerInputBumper は ruler の入力が変わったことを記録する。
 //
-// ルール・意図・上書きの書き込みは、各メソッドの tx の中で版を進める。EPG 同期は
-// 予約ドメインの書き込みを持たないので、同期の完了時にこの契約で進める。
+// ルール・意図・上書きの書き込みと catalog の Restore は、各メソッドの tx の中で版を
+// 進める。EPG 同期は予約ドメインの書き込みを持たないので、同期の完了時にこの契約で進める。
 type RulerInputBumper interface {
 	// BumpRulerInputRevision は site の ruler 入力の版を 1 進める。
 	BumpRulerInputRevision(ctx context.Context, site string) error

@@ -636,7 +636,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 	breakersStore := pgstore.NewBreakers(pool)
 	neverScheduledStore := pgstore.NewNeverScheduledEvents(pool)
 	scheduleSyncStore := pgstore.NewScheduleSync(pool)
-	catalogStore := pgstore.NewCatalog(pool)
+	catalogStore := pgstore.NewCatalog(pool, registryNames(cfg.Registry()))
 	if jobs.RequiresEncodeTools(clientCfg.Queues) {
 		if err := cfg.Encode.ValidateTools(); err != nil {
 			return nil, err

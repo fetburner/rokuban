@@ -45,7 +45,8 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			}
 			defer pool.Close()
 
-			return runRescue(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), cfg.Storage.MediaDir, registryNames(cfg.Registry()), cmd.OutOrStdout())
+			siteNames := registryNames(cfg.Registry())
+			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames), pgstore.NewMedia(pool), cfg.Storage.MediaDir, siteNames, cmd.OutOrStdout())
 		},
 	}
 	return cmd

@@ -34,7 +34,7 @@ func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options
 	}
 	defer rollback(tx)
 
-	result, err := applyDocument(ctx, tx, doc, options)
+	result, err := applyDocument(ctx, tx, doc, options, s.siteNames)
 	if err != nil {
 		return nil, fmt.Errorf("restoring catalog: %w", mapDatabaseError(err))
 	}
@@ -73,7 +73,7 @@ func insertableSnapshot(s catalogdoc.ProgramSnapshot) bool {
 }
 
 // applyDocument は 1 つのトランザクション内で catalogdoc.Document の各表を FK 順に復元する。
-func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions) (*store.RestoreResult, error) {
+func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions, siteNames []string) (*store.RestoreResult, error) {
 	q := sqlcgen.New(tx)
 	res := &store.RestoreResult{}
 
@@ -184,7 +184,9 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 	if err := q.CatalogResetMediaAssetsIDSeq(ctx); err != nil {
 		return nil, fmt.Errorf("resetting media_assets id seq: %w", err)
 	}
-
+	if err := bumpRulerInputRevisions(ctx, q, siteNames); err != nil {
+		return nil, fmt.Errorf("bumping ruler input revisions after catalog restore: %w", err)
+	}
 	return res, nil
 }
 

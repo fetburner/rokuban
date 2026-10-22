@@ -51,7 +51,8 @@ type RestoreResult struct {
 type Catalog interface {
 	// Export は全保護対象を単一のスナップショットから読む。
 	Export(ctx context.Context) (*catalogdoc.Document, error)
-	// Restore は文書内の全テーブルを 1 tx で復元する。分類ルールの再評価も同じ tx に含む。
+	// Restore は文書内の全テーブルを 1 tx で復元し、分類ルールの再評価と構成の全 site の
+	// ruler 入力の版を 1 進める処理も同じ tx に含む。
 	// 呼び出し側は先に media asset のファイルロックを取得し、Restore の完了まで保持する。
 	// Restore は分類ルールの再評価と直列化する。直列化は最初の書き込みより前から始まる。
 	Restore(ctx context.Context, document *catalogdoc.Document, options RestoreOptions) (*RestoreResult, error)

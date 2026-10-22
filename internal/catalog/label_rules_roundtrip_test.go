@@ -54,7 +54,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("CreateLabelRule high: %v", err)
 	}
 
-	doc, err := pgstore.NewCatalog(pool).Export(ctx)
+	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("hits after losing the rules = %d (err %v), want 0", hits, err)
 	}
 
-	result, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, createRule); err != nil {
 		t.Fatalf("CreateLabelRule: %v", err)
 	}
-	doc, err := pgstore.NewCatalog(pool).Export(ctx)
+	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+		_, err := RescueLatest(ctx, pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 		done <- err
 	}()
 	select {

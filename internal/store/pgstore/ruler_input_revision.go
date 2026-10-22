@@ -12,6 +12,10 @@ func (s *Rules) bumpRulerInputRevisions(ctx context.Context, q *sqlcgen.Queries,
 	if all {
 		sites = s.siteNames
 	}
+	return bumpRulerInputRevisions(ctx, q, sites)
+}
+
+func bumpRulerInputRevisions(ctx context.Context, q *sqlcgen.Queries, sites []string) error {
 	sites = append([]string(nil), sites...)
 	sort.Strings(sites)
 	previous := ""

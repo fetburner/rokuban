@@ -36,7 +36,7 @@ func TestRescueLegacyQualityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool), mediaDir, filepath.Join(genDir, DocumentFilename)); err != nil {
+	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool, []string{"default"}), mediaDir, filepath.Join(genDir, DocumentFilename)); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestRescueNullQualityEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool), mediaDir, filepath.Join(genDir, DocumentFilename)); err != nil {
+	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool, []string{"default"}), mediaDir, filepath.Join(genDir, DocumentFilename)); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 
