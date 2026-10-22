@@ -4,8 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
@@ -154,19 +153,22 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	recordingID := insertTestRecordingWithEventID(t, pool, 12920)
 	mediaDir := t.TempDir()
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ingest-hint/original.m2ts", []byte("committed"))
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete || r.URL.Path != "/api/recording/records/edge-1290" || r.URL.Query().Get("purge") != "true" {
-			t.Errorf("DeleteRecord request = %s %s, want DELETE record with purge=true", r.Method, r.URL.String())
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{}`)
-	}))
-	defer srv.Close()
+	fake := mirakctest.New(t)
+	fake.SetRecords([]mirakc.Record{{ID: "edge-1290"}})
 
 	enqueuer := newRecordingEnqueuer()
 	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstore.NewAnalysis(pool), Precheck: newTestMediaStore(pool)}
-	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(srv.URL, nil), "edge-1290", recordingID,
+	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(fake.URL(), nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	var deleteFound bool
+	for _, call := range fake.Calls() {
+		if call.Method == "DELETE" && call.Path == "/api/recording/records/edge-1290" && call.Query == "purge=true" {
+			deleteFound = true
+		}
+	}
+	if !deleteFound {
+		t.Errorf("DeleteRecord calls = %#v, want DELETE record with purge=true", fake.Calls())
+	}
 	if got := countTSScanJobs(t, enqueuer, recordingID); got != 1 {
 		t.Fatalf("TS scan jobs after ingest followup = %d, want 1", got)
 	}

@@ -2,12 +2,12 @@ package reconciler_test
 
 import (
 	"context"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -25,16 +25,14 @@ func TestReconciler_NeverScheduledExclusionSurvivesRematerialization(t *testing.
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	mock := newMockMirakc()
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
+	mock := mirakctest.New(t)
 
 	q := sqlcgen.New(pool)
 	// 終了済みの番組（30 分尺なので 2 時間前開始なら終了済み）。
 	startAt := time.Now().Add(-2 * time.Hour)
 	res := createReservation(t, ctx, q, 700001, "終了済み番組", startAt)
 
-	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(mock.URL(), nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (1st): %v", err)
 	}
@@ -143,14 +141,12 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	mock := newMockMirakc()
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
+	mock := mirakctest.New(t)
 
 	q := sqlcgen.New(pool)
 	res := createReservation(t, ctx, q, 700003, "後から録れた番組", time.Now().Add(-2*time.Hour))
 
-	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(mock.URL(), nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}
@@ -224,14 +220,12 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	mock := newMockMirakc()
-	srv := httptest.NewServer(mock)
-	defer srv.Close()
+	mock := mirakctest.New(t)
 
 	q := sqlcgen.New(pool)
 	res := createReservation(t, ctx, q, 700004, "録れた後ごみ箱に入れた番組", time.Now().Add(-2*time.Hour))
 
-	r := newReconciler(mirakc.NewClient(srv.URL, nil), pool, nil)
+	r := newReconciler(mirakc.NewClient(mock.URL(), nil), pool, nil)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
 	}

@@ -24,11 +24,21 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
+
+func newWatcherMirakcFake(t *testing.T, services []mirakc.Service, schedules []mirakc.Schedule, records []mirakc.Record) *mirakctest.Fake {
+	t.Helper()
+	fake := mirakctest.New(t)
+	fake.SetServices(services)
+	fake.SetSchedules(schedules)
+	fake.SetRecords(records)
+	return fake
+}
 
 func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCall {
 	t.Helper()
@@ -1162,19 +1172,8 @@ func TestHandleRecordingFailed_Idempotent(t *testing.T) {
 		},
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(schedule)
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	mc := mirakc.NewClient(mockServer.URL, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{
@@ -1262,19 +1261,8 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 		},
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(schedule)
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 	failedData := mirakc.RecordingFailedData{
 		ProgramID: programID,
 		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
@@ -1286,6 +1274,7 @@ func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
 
 	secondStart := mirakc.Milliseconds(time.Now().Add(-30 * time.Minute))
 	schedule.Program.StartAt = &secondStart
+	fake.SetSchedule(schedule)
 	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
 		t.Fatalf("handleRecordingFailed (2nd): %v", err)
 	}
@@ -1365,19 +1354,8 @@ func TestSweep_CatchesMissedRecords(t *testing.T) {
 		},
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(records)
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	mc := mirakc.NewClient(mockServer.URL, nil)
+	fake := newWatcherMirakcFake(t, nil, nil, records)
+	mc := mirakc.NewClient(fake.URL(), nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 	markerBefore := seedRecordSweepMarker(t, pool)
 
@@ -1454,22 +1432,8 @@ func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 	for i := range records {
 		records[i].Program.EventID = i + 10
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(records)
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, records)
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
@@ -1519,21 +1483,9 @@ func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
 	createTestReservation(t, pool, 200013)
 	record := testRecord("sweep-after-schedule-list-failure", 200013, store.RecordingStatusFinished)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "injected schedules failure", http.StatusInternalServerError)
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{record})
+	fake.FailNext(http.MethodGet, "/api/recording/schedules", 1, http.StatusInternalServerError)
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
@@ -1590,22 +1542,8 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 		Name:      "NHK総合",
 		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 	}}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, []mirakc.Record{record})
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
@@ -1664,23 +1602,8 @@ func TestSweep_RecoversFailedSchedule(t *testing.T) {
 		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 	}}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1756,23 +1679,8 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 		Name:      "NHK総合",
 		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 	}}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, nil, []mirakc.Record{record})
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1855,23 +1763,8 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 		Name:      "NHK総合",
 		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 	}}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
@@ -1940,28 +1833,9 @@ func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
 		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
 	}}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{schedule})
-	})
-	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(schedule)
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	sweepWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
-	eventWatcher := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	sweepWatcher := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
+	eventWatcher := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), baseWatcher.enqueuer, nil)
 	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
 	// を発生させない。
 	sweepWatcher.services = services
@@ -2046,22 +1920,8 @@ func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
 
 	current := testRecord("current-external", 903, "finished")
 	current.Tags = nil
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{current})
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-	w.mirakc = mirakc.NewClient(server.URL, nil)
+	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{current})
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -2112,23 +1972,8 @@ func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
 	anchor := testRecord("anchor", 700002, "finished")
 	anchor.Tags = nil
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{anchor})
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	w := New(DefaultSite, mirakc.NewClient(server.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{anchor})
+	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
@@ -2183,30 +2028,8 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 		// は #158 で列自体を落とした）。
 		record.Program.EventID = 900 + round
 
-		mux := http.NewServeMux()
-		// (c) Sweep が使う全量取得エンドポイント。
-		mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-			rw.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-		})
-		mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-			rw.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(rw).Encode([]mirakc.Record{record})
-		})
-		// (a) handleEvent が record-saved を受けて GetRecord で個別取得するエンドポイント。
-		mux.HandleFunc("/api/recording/records/"+recordID, func(rw http.ResponseWriter, r *http.Request) {
-			rw.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(rw).Encode(record)
-		})
-		// Sweep が呼ぶ ListServices 用のスタブ（未登録だと 404 がログに出るだけで
-		// テスト結果には影響しないが、ノイズを消しておく）。
-		mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-			rw.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-		})
-		mockServer := httptest.NewServer(mux)
-
-		w := New(DefaultSite, mirakc.NewClient(mockServer.URL, nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+		fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{record})
+		w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 		savedData, err := json.Marshal(mirakc.RecordSavedData{
 			RecordID:        recordID,
@@ -2232,7 +2055,6 @@ func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
 			}
 		}()
 		wg.Wait()
-		mockServer.Close()
 
 		var recCount int
 		if err := pool.QueryRow(ctx,
@@ -2264,13 +2086,9 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 
-	var recordsCalls, eventsCalls int32
+	var eventsCalls int32
+	fake := mirakctest.New(t)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&recordsCalls, 1)
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Record{})
-	})
 	mux.HandleFunc("/events", func(rw http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&eventsCalls, 1)
 		rw.Header().Set("Content-Type", "text/event-stream")
@@ -2281,10 +2099,16 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 		flusher.Flush()
 		<-r.Context().Done()
 	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/events" {
+			mux.ServeHTTP(rw, r)
+			return
+		}
+		fake.ServeHTTP(rw, r)
+	}))
+	t.Cleanup(server.Close)
 
-	mc := mirakc.NewClient(mockServer.URL, nil)
+	mc := mirakc.NewClient(server.URL, nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
@@ -2307,9 +2131,15 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 		t.Fatalf("Watcher.Run() after cancellation = %v, want context.Canceled", err)
 	}
 
-	if got := atomic.LoadInt32(&recordsCalls); got != 0 {
+	var recordsCalls int
+	for _, call := range fake.Calls() {
+		if call.Method == http.MethodGet && call.Path == "/api/recording/records" {
+			recordsCalls++
+		}
+	}
+	if recordsCalls != 0 {
 		t.Errorf("GET /api/recording/records call count = %d, want 0 "+
-			"(Watcher.Run は SSE 購読だけの常駐になり、全量突き合わせは record_sweep ジョブの仕事のはず)", got)
+			"(Watcher.Run は SSE 購読だけの常駐になり、全量突き合わせは record_sweep ジョブの仕事のはず)", recordsCalls)
 	}
 }
 
@@ -2463,19 +2293,8 @@ func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
 		{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules/", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(schedule)
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(services)
-	})
-	mockServer := httptest.NewServer(mux)
-	defer mockServer.Close()
-
-	mc := mirakc.NewClient(mockServer.URL, nil)
+	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
 
 	failedData := mirakc.RecordingFailedData{

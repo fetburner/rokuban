@@ -3,8 +3,6 @@ package worker
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +11,7 @@ import (
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -20,6 +19,16 @@ import (
 
 func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T], args T) error {
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
+}
+
+func countMirakcCalls(fake *mirakctest.Fake, method, path string) int {
+	count := 0
+	for _, call := range fake.Calls() {
+		if call.Method == method && call.Path == path {
+			count++
+		}
+	}
+	return count
 }
 
 // TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
@@ -43,18 +52,11 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 		t.Fatalf("seeding ingest progress: %v", err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.Error(w, "unexpected method", http.StatusMethodNotAllowed)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"recordRemoved":true,"contentRemoved":true}`))
-	}))
-	defer server.Close()
+	fake := mirakctest.New(t)
+	fake.SetRecords([]mirakc.Record{{ID: recordID}})
 
 	registry := NewWorkers(&Deps{
-		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(server.URL, nil)),
+		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
 		MediaPublish:       media,
 		IngestTarget:       pgstore.NewRecordings(pool),
 		IngestPrecheck:     media,
@@ -202,12 +204,12 @@ func TestVerifySite(t *testing.T) {
 // epg_sync のパス完了はヒント経路の 1 つ: RulerPassArgs を投入して評価を早める
 // （docs/recording.md §3.1「EPG 同期の完了」）。
 func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
-	srv := newEpgServer(t, &epgFixture{})
+	fake := newEpgFake(t, &epgFixture{})
 	enqueuer := newRecordingEnqueuer()
 	pool := testutil.SetupDB(t)
 	w := &EpgSyncWorker{
 		Enqueuer:      enqueuer,
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		Store:         pgstore.NewEPG(pool),
 		RulerInput:    pgstore.NewReservations(pool),
 	}

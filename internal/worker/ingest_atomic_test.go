@@ -543,10 +543,9 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			recordID := fmt.Sprintf("rec-stop-point-%d", i)
 			insertTestRecordSyncForSite(t, pool, "default", recordingID, recordID, int64(327361024000731200+i))
 
-			var deleteCalls atomic.Int32
-			srv := newInstrumentedIngestServer(t, tsData, contentPath, func() { deleteCalls.Add(1) })
+			fake := newFullTransferFake(t, recordID, tsData, contentPath)
 			w := &IngestWorker{
-				MirakcClients: singleSiteClients("default", mirakc.NewClient(srv.URL, nil)),
+				MirakcClients: singleSiteClients("default", mirakc.NewClient(fake.URL(), nil)),
 				Publisher:     pgstore.NewMedia(pool),
 				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      mediaDir,
@@ -571,7 +570,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				t.Fatal("first Work() returned nil despite the injected stop point")
 			}
 			assertIngestAssetCount(t, pool, recordingID, 0)
-			if got := deleteCalls.Load(); got != 0 {
+			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 				t.Errorf("DeleteRecord calls after failed publication = %d, want 0", got)
 			}
 			fullPath := filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
@@ -604,7 +603,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 			assertIngestAssetCount(t, pool, recordingID, 1)
-			if got := deleteCalls.Load(); got != 1 {
+			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord calls after retry = %d, want 1", got)
 			}
 			got, err := os.ReadFile(fullPath)

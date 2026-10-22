@@ -4,6 +4,8 @@
 
 開発時のテストには、docker compose で立てた postgres を使える。渡した URL が指す DB は直接使われず、そこからパッケージごとに別の DB を導出して使う。
 
+mirakc API の状態を固定するテストでは `internal/mirakc/mirakctest` を使い、時間経過や SSE を検査するテストでは専用の応答を使う。
+
 `docker compose up -d postgres` で立てた postgres をテストに使える（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
 
 ```sh

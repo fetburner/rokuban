@@ -2,11 +2,7 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"reflect"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,40 +12,43 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
 // tunerFixture は mirakc の /api/tuners のレスポンスを差し替え可能に保持する。
 type tunerFixture struct {
+	fake   *mirakctest.Fake
 	tuners []mirakc.Tuner
 	// raw が非 nil ならそれをそのまま返す（レスポンスの生 JSON を検証したいとき用）。
 	raw []byte
 }
 
-func newTunerServer(t *testing.T, fx *tunerFixture) *httptest.Server {
+func (fx *tunerFixture) setTuners(tuners []mirakc.Tuner) {
+	fx.tuners = tuners
+	if fx.fake != nil {
+		fx.fake.SetTuners(tuners)
+	}
+}
+
+func newTunerFake(t *testing.T, fx *tunerFixture) *mirakctest.Fake {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/tuners" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if fx.raw != nil {
-			_, _ = w.Write(fx.raw)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(fx.tuners)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+	fake := mirakctest.New(t)
+	fx.fake = fake
+	if fx.raw != nil {
+		fake.SetTunersJSON(fx.raw)
+	} else {
+		fake.SetTuners(fx.tuners)
+	}
+	return fake
 }
 
 func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *TunerSyncWorker {
 	t.Helper()
-	srv := newTunerServer(t, fx)
+	fake := newTunerFake(t, fx)
 	tunerStore := pgstore.NewTuners(pool)
 	return &TunerSyncWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,
 	}
 }
@@ -97,9 +96,9 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 	}
 
 	// 2 パス目で更新が反映され、消えたチューナーがスイープされること。
-	fx.tuners = []mirakc.Tuner{
+	fx.setTuners([]mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true, IsFault: true},
-	}
+	})
 	runTunerSync(t, w)
 
 	rows = allTuners(t, pool)
@@ -199,7 +198,7 @@ func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
 		t.Fatalf("precondition failed: want 1 projected tuner")
 	}
 
-	fx.tuners = []mirakc.Tuner{}
+	fx.setTuners([]mirakc.Tuner{})
 	runTunerSync(t, w)
 
 	if rows := allTuners(t, pool); len(rows) != 1 {
@@ -207,9 +206,9 @@ func TestTunerSyncWorker_SkipsSweepOnEmptyResponse(t *testing.T) {
 	}
 
 	// 反対方向: 非空のレスポンスならスイープする。
-	fx.tuners = []mirakc.Tuner{
+	fx.setTuners([]mirakc.Tuner{
 		{Index: 9, Name: "別のチューナー", Types: []string{"BS"}, IsAvailable: true},
-	}
+	})
 	runTunerSync(t, w)
 	rows := allTuners(t, pool)
 	if len(rows) != 1 || rows[0].TunerIndex != 9 {
@@ -260,7 +259,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 	}
 
 	// 反対方向: チューナーが 2 本になれば収まってゼロに戻る。
-	fx.tuners = append(fx.tuners, mirakc.Tuner{Index: 1, Name: "PX-S1UD_T2", Types: []string{"GR"}, IsAvailable: true})
+	fx.setTuners(append(fx.tuners, mirakc.Tuner{Index: 1, Name: "PX-S1UD_T2", Types: []string{"GR"}, IsAvailable: true}))
 	runTunerSync(t, w)
 
 	if got := promtestutil.ToFloat64(metrics.CapacityOverages.WithLabelValues(testSite)); got != 0 {
@@ -277,25 +276,15 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	pool := setupTestPool(t)
 
-	var requests atomic.Int32
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}}
-	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		if r.URL.Path != "/api/tuners" {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(fx.tuners)
-	}))
-	defer countingSrv.Close()
+	fake := newTunerFake(t, fx)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
 	tunerStore := pgstore.NewTuners(pool)
 	w := &TunerSyncWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,
 	}
 
@@ -304,8 +293,8 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", len(calls), err)
 	}
 }
 
@@ -318,11 +307,11 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
 		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
 	}}
-	srv := newTunerServer(t, fx)
+	fake := newTunerFake(t, fx)
 
 	tunerStore := pgstore.NewTuners(pool)
 	w := &TunerSyncWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,
 	}
 

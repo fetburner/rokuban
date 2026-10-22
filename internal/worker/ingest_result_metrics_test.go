@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -116,16 +115,13 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	tsData := makeTSData(20)
 	setIngestSHA256Rate(t, 47)
-	var deleteAttempts atomic.Int32
-	srv, _ := newLateHashIngestServer(t, tsData, "test/sha-wait.m2ts", nil, func() {
-		deleteAttempts.Add(1)
-	})
+	const recordID = "rec-sha256-river-complete"
+	fake, _ := newLateHashIngestFake(t, recordID, tsData, "test/sha-wait.m2ts")
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	recordingID := insertTestRecording(t, pool)
-	recordID := "rec-sha256-river-complete"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	delay := time.Duration(0)
@@ -133,7 +129,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	registry := jobq.NewRegistry()
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 		RecordTarget:  pgstore.NewRecordings(pool),
@@ -188,7 +184,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
-	if got := deleteAttempts.Load(); got != 0 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
@@ -346,11 +342,10 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		return
 	}
 	tsData := makeTSData(2)
-	var deletes atomic.Int32
-	srv := newInstrumentedIngestServer(t, tsData, "test/followup-enqueue-failure.m2ts", func() { deletes.Add(1) })
 	recordingID := insertTestRecording(t, pool)
 	const recordID = "rec-followup-enqueue-failure"
 	insertTestRecordSync(t, pool, recordingID, recordID)
+	fake := newFullTransferFake(t, recordID, tsData, "test/followup-enqueue-failure.m2ts")
 
 	var logs strings.Builder
 	previousLogger := slog.Default()
@@ -359,7 +354,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 	worker := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		Enqueuer:      &jobq.Deferred{},
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      t.TempDir(),
 		Precheck:      newTestMediaStore(pool),
@@ -378,7 +373,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 			t.Errorf("logs do not contain %q: %s", want, logs.String())
 		}
 	}
-	if got := deletes.Load(); got != 1 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 		t.Errorf("DeleteRecord calls = %d, want 1 after best-effort enqueue failures", got)
 	}
 }

@@ -31,6 +31,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -123,44 +124,10 @@ func (f *ingestTestFile) Close() error {
 
 func TestIngestWorker_FullTransfer(t *testing.T) {
 	tsData := makeTSData(100)
-
-	var deleteRequested atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					Options: mirakc.Options{ContentPath: strPtr("test/recording.m2ts")},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/recording.m2ts", Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			deleteRequested.Store(true)
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	fake := newFullTransferFake(t, "rec-001", tsData, "test/recording.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
@@ -197,7 +164,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
 
-	if !deleteRequested.Load() {
+	if countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
 	}
 }
@@ -212,36 +179,10 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 // （lookupRecordingID がここで成功してしまうと、ガードを外したときに
 // GetRecord まで進んで初めてモックへ到達する、という現実の壊れ方を再現できる）。
 func TestIngestWorker_SiteMismatch(t *testing.T) {
-	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(makeTSData(1))
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("mismatch/recording.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/mismatch/recording.m2ts"},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-		default:
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
-	defer srv.Close()
+	fake := newRecordPathFake(t, "rec-mismatch", makeTSData(1), strPtr("mismatch/recording.m2ts"), "/recording/mismatch/recording.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &IngestWorker{
@@ -269,8 +210,8 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", len(calls), err)
 	}
 }
 
@@ -279,35 +220,10 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 // 対になる、両方向の確認。CLAUDE.md テスト規律「分岐を直したら両方向で確認する」）。
 func TestIngestWorker_SiteMatch(t *testing.T) {
 	tsData := makeTSData(20)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("match/recording.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/match/recording.m2ts", Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	fake := newFullTransferFake(t, "rec-match", tsData, "match/recording.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("site-a", mc),
@@ -1372,30 +1288,27 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	tsData := makeTSData(50)
 	wrongData := bytes.Clone(tsData)
 	wrongData[len(wrongData)-1] ^= 0xff
-
-	var deleteAttempts atomic.Int32
+	const recordID = "rec-hash-mismatch"
 	expectedSHA256 := sha256Hex(wrongData)
-	srv := newIngestServerWithContentSHA256(t, tsData, "test/hash-mismatch.m2ts", &expectedSHA256, false, func() {
-		deleteAttempts.Add(1)
-	})
+	fake := newSHA256IngestFake(t, recordID, tsData, "test/hash-mismatch.m2ts", &expectedSHA256, false)
 
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	recordingID := insertTestRecording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, "rec-hash-mismatch")
+	insertTestRecordSync(t, pool, recordingID, recordID)
 
 	mediaDir := t.TempDir()
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 		Precheck:      newTestMediaStore(pool),
 	}
-	job := IngestJobArgs{Site: "default", RecordID: "rec-hash-mismatch"}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err == nil {
@@ -1414,7 +1327,7 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	if assetCount != 0 {
 		t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 	}
-	if got := deleteAttempts.Load(); got != 0 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
@@ -1439,21 +1352,19 @@ type lateSHA256IngestCase struct {
 }
 
 type lateSHA256IngestRun struct {
-	worker         *IngestWorker
-	pool           *pgxpool.Pool
-	recordingID    int64
-	deleteAttempts *atomic.Int32
-	mediaDir       string
-	recordID       string
-	tsData         []byte
-	contentPath    string
-	setHash        func(*string)
-	tempSyncs      *atomic.Int32
-	logOutput      *bytes.Buffer
-	tempModTime    time.Time
-	rangeMu        sync.Mutex
-	rangeOffsets   []int64
-	firstOffsets   []int64
+	worker       *IngestWorker
+	pool         *pgxpool.Pool
+	recordingID  int64
+	fake         *mirakctest.Fake
+	mediaDir     string
+	recordID     string
+	tsData       []byte
+	contentPath  string
+	setHash      func(*string)
+	tempSyncs    *atomic.Int32
+	logOutput    *bytes.Buffer
+	tempModTime  time.Time
+	firstOffsets []int64
 }
 
 func TestIngestWorker_CompletesUntilLateContentSHA256(t *testing.T) {
@@ -1655,21 +1566,15 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	setIngestSHA256Rate(t, 47) // 3760 バイト / 47 B/s = 80 秒
 	contentPath := "test/sha256-late.m2ts"
 	run := &lateSHA256IngestRun{tsData: tsData, contentPath: contentPath}
-	run.deleteAttempts = &atomic.Int32{}
-	srv, setHash := newLateHashIngestServer(t, tsData, contentPath, func(offset int64) {
-		run.rangeMu.Lock()
-		run.rangeOffsets = append(run.rangeOffsets, offset)
-		run.rangeMu.Unlock()
-	}, func() { run.deleteAttempts.Add(1) })
 	run.pool = setupTestPool(t)
 	if run.pool == nil {
 		return nil
 	}
 	run.recordingID = insertTestRecording(t, run.pool)
 	run.recordID = "rec-sha256-late-" + strings.ReplaceAll(tc.name, " ", "-")
+	run.fake, run.setHash = newLateHashIngestFake(t, run.recordID, tsData, contentPath)
 	insertTestRecordSync(t, run.pool, run.recordingID, run.recordID)
 	run.mediaDir = t.TempDir()
-	run.setHash = setHash
 	run.tempSyncs = &atomic.Int32{}
 	originalOpenFile := openIngestFile
 	t.Cleanup(func() { openIngestFile = originalOpenFile })
@@ -1682,7 +1587,7 @@ func newLateSHA256IngestRun(t *testing.T, tc lateSHA256IngestCase) *lateSHA256In
 	}
 	run.worker = &IngestWorker{
 		Publisher:     newTestMediaStore(run.pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(run.fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(run.pool),
 		MediaDir:      run.mediaDir,
 		StallTimeout:  5 * time.Second,
@@ -1701,9 +1606,26 @@ func (run *lateSHA256IngestRun) job() IngestJobArgs {
 }
 
 func (run *lateSHA256IngestRun) offsets() []int64 {
-	run.rangeMu.Lock()
-	defer run.rangeMu.Unlock()
-	return slices.Clone(run.rangeOffsets)
+	var offsets []int64
+	for _, call := range run.fake.Calls() {
+		if call.Method != http.MethodGet || !strings.HasSuffix(call.Path, "/stream") {
+			continue
+		}
+		offset := parseRangeOffset(call.Range)
+		offsets = append(offsets, offset)
+	}
+	return offsets
+}
+
+func parseRangeOffset(header string) int64 {
+	if header == "" {
+		return 0
+	}
+	var offset int64
+	if _, err := fmt.Sscanf(header, "bytes=%d-", &offset); err != nil {
+		return -1
+	}
+	return offset
 }
 
 func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResults map[string]float64, durationBefore uint64) {
@@ -1726,7 +1648,7 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 	if got := run.tempSyncs.Load(); got != wantSyncs {
 		t.Errorf("temp Sync calls while pending = %d, want %d", got, wantSyncs)
 	}
-	assertIngestSHA256WaitState(t, run.pool, run.recordingID, run.deleteAttempts, run.mediaDir, run.recordID, int64(len(run.tsData)))
+	assertIngestSHA256WaitState(t, run.pool, run.recordingID, run.fake, run.mediaDir, run.recordID, int64(len(run.tsData)))
 	tempPath := ingestTempFilePath(filepath.Join(run.mediaDir, "sites", "default", "test"), "default", run.recordID)
 	info, err := os.Stat(tempPath)
 	if err != nil {
@@ -1788,7 +1710,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	if assetCount != tc.wantAssets {
 		t.Errorf("media_assets rows after resume = %d, want %d", assetCount, tc.wantAssets)
 	}
-	if got := run.deleteAttempts.Load(); got != tc.wantDeleteAttempts {
+	if got := int32(countMirakcCalls(run.fake, http.MethodDelete, "/api/recording/records/"+run.recordID)); got != tc.wantDeleteAttempts {
 		t.Errorf("DeleteRecord attempts after resume = %d, want %d", got, tc.wantDeleteAttempts)
 	}
 	if want := []int64{0, int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData))}; !slices.Equal(run.offsets(), want) {
@@ -1809,7 +1731,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	}
 }
 
-func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, deleteAttempts *atomic.Int32, mediaDir, recordID string, wantTempSize int64) {
+func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, fake *mirakctest.Fake, mediaDir, recordID string, wantTempSize int64) {
 	t.Helper()
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
@@ -1818,7 +1740,7 @@ func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID i
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
-	if got := deleteAttempts.Load(); got != 0 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
@@ -1856,27 +1778,24 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			tsData := makeTSData(20)
-			var deleteAttempts atomic.Int32
+			recordID := "rec-optional-hash-" + tt.name
 			var contentSHA256 *string
 			if tt.shaValue != nil {
 				value := tt.shaValue(tsData)
 				contentSHA256 = &value
 			}
-			srv := newIngestServerWithContentSHA256(t, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256, tt.null, func() {
-				deleteAttempts.Add(1)
-			})
+			fake := newSHA256IngestFake(t, recordID, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256, tt.null)
 
 			pool := setupTestPool(t)
 			if pool == nil {
 				return
 			}
-			recordID := "rec-optional-hash-" + tt.name
 			recordingID := insertTestRecording(t, pool)
 			insertTestRecordSync(t, pool, recordingID, recordID)
 
 			w := &IngestWorker{
 				Publisher:     newTestMediaStore(pool),
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      t.TempDir(),
 				StallTimeout:  5 * time.Second,
@@ -1902,7 +1821,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				if assetCount != 0 {
 					t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 				}
-				if got := deleteAttempts.Load(); got != 0 {
+				if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 					t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
 				}
 				return
@@ -1919,7 +1838,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			if assetCount != 1 {
 				t.Errorf("media_assets rows = %d, want 1", assetCount)
 			}
-			if got := deleteAttempts.Load(); got != 1 {
+			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord attempts = %d, want 1", got)
 			}
 		})
@@ -1929,16 +1848,13 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	tsData := makeTSData(20)
 	setIngestSHA256Rate(t, 47)
-	var deleteAttempts atomic.Int32
-	srv, setHash := newLateHashIngestServer(t, tsData, "test/hash-during-sync.m2ts", nil, func() {
-		deleteAttempts.Add(1)
-	})
+	const recordID = "rec-hash-during-sync"
+	fake, setHash := newLateHashIngestFake(t, recordID, tsData, "test/hash-during-sync.m2ts")
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	recordingID := insertTestRecording(t, pool)
-	recordID := "rec-hash-during-sync"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	originalOpenFile := openIngestFile
@@ -1958,7 +1874,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	}
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
@@ -1986,7 +1902,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	if assetCount != 1 {
 		t.Errorf("media_assets rows = %d, want 1", assetCount)
 	}
-	if got := deleteAttempts.Load(); got != 1 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 		t.Errorf("DeleteRecord attempts = %d, want 1", got)
 	}
 }
@@ -2126,7 +2042,15 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 		}
 	}
 
-	srv := newInstrumentedIngestServer(t, tsData, "test/durable-order.m2ts", snapshot("delete-assets"))
+	const recordID = "rec-durable-order"
+	fake := newFullTransferFake(t, recordID, tsData, "test/durable-order.m2ts")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			snapshot("delete-assets")()
+		}
+		fake.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
 
 	mediaDir := t.TempDir()
 	originalOpenFile := openIngestFile
@@ -2153,7 +2077,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 		Precheck:      newTestMediaStore(pool),
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
-	job := IngestJobArgs{Site: "default", RecordID: "rec-durable-order"}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -2196,12 +2120,9 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 				return
 			}
 			recordingID := insertTestRecording(t, pool)
-			insertTestRecordSync(t, pool, recordingID, "rec-durable-failure")
-
-			var deleteAttempts atomic.Int32
-			srv := newInstrumentedIngestServer(t, tsData, "test/durable-failure.m2ts", func() {
-				deleteAttempts.Add(1)
-			})
+			const recordID = "rec-durable-failure"
+			insertTestRecordSync(t, pool, recordingID, recordID)
+			fake := newFullTransferFake(t, recordID, tsData, "test/durable-failure.m2ts")
 
 			mediaDir := t.TempDir()
 			originalOpenFile := openIngestFile
@@ -2224,14 +2145,14 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 
 			w := &IngestWorker{
 				Publisher:     newTestMediaStore(pool),
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+				MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 				RecordTarget:  pgstore.NewRecordings(pool),
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 				Precheck:      newTestMediaStore(pool),
 			}
 			w.CMDetectionStore = pgstore.NewAnalysis(pool)
-			job := IngestJobArgs{Site: "default", RecordID: "rec-durable-failure"}
+			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 				t.Fatal("first Work() error = nil, want injected durability failure")
@@ -2245,7 +2166,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			if assetCount != 0 {
 				t.Errorf("media_assets rows after failed Work() = %d, want 0", assetCount)
 			}
-			if got := deleteAttempts.Load(); got != 0 {
+			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
 			}
 
@@ -2272,7 +2193,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			if assetCount != 1 {
 				t.Errorf("media_assets rows after retry = %d, want 1", assetCount)
 			}
-			if got := deleteAttempts.Load(); got != 1 {
+			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord attempts after retry = %d, want 1", got)
 			}
 		})
@@ -2383,26 +2304,14 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// writeRecordStream は mirakc の records/{id}/stream を Range 前提で模す。
-// StreamRecord は offset 0 でも Range を送り 206 を要求する。200 で全量を
-// 返すと Client が契約違反として落とす。
+// writeRecordStream は時間依存ストリームを検査する個別テスト向けの Range 応答を書く。
 func writeRecordStream(w http.ResponseWriter, r *http.Request, data []byte) {
-	writeRecordStreamPrefix(w, r, data, len(data))
-}
-
-// writeRecordStreamPrefix は Range 先頭から最大 n バイトだけ返す。
-// 切断・途中打ち切りのテスト用。n が残りより大きければ残り全部。
-func writeRecordStreamPrefix(w http.ResponseWriter, r *http.Request, data []byte, n int) {
 	offset := parseStreamRangeOffset(r)
 	if offset >= int64(len(data)) {
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
-	end := offset + int64(n)
-	if end > int64(len(data)) {
-		end = int64(len(data))
-	}
-	body := data[offset:end]
+	body := data[offset:]
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
 	w.WriteHeader(http.StatusPartialContent)
 	_, _ = w.Write(body)
@@ -2617,42 +2526,11 @@ func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, 
 
 func TestIngestWorker_JobReexecution(t *testing.T) {
 	tsData := makeTSData(50)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					Options: mirakc.Options{ContentPath: strPtr("test/reexec.m2ts")},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/reexec.m2ts", Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	const recordID = "rec-reexec"
+	fake := newFullTransferFake(t, recordID, tsData, "test/reexec.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -2660,7 +2538,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 
 	recordingID := insertTestRecording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, "rec-reexec")
+	insertTestRecordSync(t, pool, recordingID, recordID)
 
 	// rel_path には args.Site（ここでは "default"）が前置される（issue #186 M4-14）。
 	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reexec.m2ts")
@@ -2682,7 +2560,7 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-reexec"}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
 	if err != nil {
@@ -2709,54 +2587,13 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 // 違反でエラーになっていた。
 func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	tsData := makeTSData(50)
-
-	var streamRequests atomic.Int32
-	var deleteAttempts atomic.Int32
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			streamRequests.Add(1)
-			writeRecordStream(w, r, tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					Options: mirakc.Options{ContentPath: strPtr("test/reingest.m2ts")},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/reingest.m2ts", Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			attempt := deleteAttempts.Add(1)
-			if attempt == 1 {
-				// エッジ record の削除が最初に失敗するのを再現する。
-				// ingest 自体はコミット済みなのでこの失敗はログのみで success 扱い
-				// （既存の意図的な挙動）だが、mirakc 側には record が残る。
-				http.Error(w, "internal error", http.StatusInternalServerError)
-				return
-			}
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	const recordID = "rec-reingest"
+	fake := newFullTransferFake(t, recordID, tsData, "test/reingest.m2ts")
+	// 1 回目の DELETE は失敗させ、mirakc 側に record が残る状況を再現する。
+	fake.FailNext(http.MethodDelete, "/api/recording/records/"+recordID, 1, http.StatusInternalServerError)
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("", mc),
@@ -2774,9 +2611,9 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, "rec-reingest")
+	insertTestRecordSync(t, pool, recordingID, recordID)
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-reingest"}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	// 1 回目: 転送・コミットは成功するが、DeleteRecord は失敗する。
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
@@ -2832,7 +2669,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	// 1 回目の Work は最初の Range、追い付き確認、finished 観測後の最終 Range で 3。2 回目は
 	// 原本コミット済みなので転送に入らない（この数が 3 のままであることが、
 	// 「転送をやり直していない」の判定になる）。
-	if got := streamRequests.Load(); got != 3 {
+	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 3 {
 		t.Errorf("stream requests = %d, want 3 (first Work reads initial, catch-up, and terminal ranges; second Work must skip the transfer)", got)
 	}
 
@@ -2847,7 +2684,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Errorf("media_assets rows = %d, want 1", mediaAssetCount)
 	}
 
-	if got := deleteAttempts.Load(); got != 2 {
+	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 2 {
 		// (d) 2 回目でも DeleteRecord が再試行されている
 		t.Errorf("delete attempts = %d, want 2 (edge record deletion must be retried)", got)
 	}
@@ -2857,127 +2694,118 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 // スナップショット。resolveAndSnapshotEncodePolicy（internal/worker/ingest.go）が
 // ingest コミット tx 内で recordings に焼くことをエンドツーエンドで確認する。
 
-// newFullTransferServer は一度で完了する ingest 用のテストサーバーを返す。
-// 多くのテストが使う onDelete フック無しの newInstrumentedIngestServer である。
-func newFullTransferServer(t *testing.T, tsData []byte, contentPath string) *httptest.Server {
+// newMirakcRecordFake は 1 件の record と固定 stream を mirakc.Client 経由で返す。
+func newMirakcRecordFake(t *testing.T, record mirakc.Record, stream []byte) *mirakctest.Fake {
 	t.Helper()
-	return newInstrumentedIngestServer(t, tsData, contentPath, nil)
+	fake := mirakctest.New(t)
+	fake.SetRecords([]mirakc.Record{record})
+	if stream != nil {
+		fake.SetRecordStream(record.ID, stream)
+	}
+	return fake
 }
 
-func newInstrumentedIngestServer(t *testing.T, tsData []byte, contentPath string, onDelete func()) *httptest.Server {
-	contentSHA256 := sha256Hex(tsData)
-	return newIngestServerWithContentSHA256(t, tsData, contentPath, &contentSHA256, false, onDelete)
+func newRecordPathFake(t *testing.T, recordID string, tsData []byte, contentPath *string, contentFilePath string) *mirakctest.Fake {
+	var contentSHA256 *string
+	if tsData != nil {
+		contentSHA256 = strPtr(sha256Hex(tsData))
+	}
+	return newMirakcRecordFake(t, mirakc.Record{
+		ID: recordID,
+		Recording: mirakc.RecordInfo{
+			Status: "finished", Options: mirakc.Options{ContentPath: contentPath},
+		},
+		Content: mirakc.ContentInfo{Path: contentFilePath, Sha256: contentSHA256},
+	}, tsData)
 }
 
-func newIngestServerWithContentSHA256(t *testing.T, tsData []byte, contentPath string, contentSHA256 *string, contentSHA256Null bool, onDelete func()) *httptest.Server {
+func newFullTransferFake(t *testing.T, recordID string, tsData []byte, contentPath string) *mirakctest.Fake {
 	t.Helper()
 	endTime := mirakc.Milliseconds(time.Now().Add(-time.Hour))
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			if contentSHA256Null {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprintf(w, `{"recording":{"status":"finished","endTime":%d,"options":{"contentPath":%q}},"content":{"path":%q,"sha256":null}}`, endTime.Time().UnixMilli(), contentPath, "/recording/"+contentPath)
-				return
-			}
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					EndTime: &endTime,
-					Options: mirakc.Options{ContentPath: strPtr(contentPath)},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: contentSHA256},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			if onDelete != nil {
-				onDelete()
-			}
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
+	contentSHA256 := sha256Hex(tsData)
+	contentPathPtr := strPtr(contentPath)
+	return newMirakcRecordFake(t, mirakc.Record{
+		ID: recordID,
+		Recording: mirakc.RecordInfo{
+			Status: "finished", EndTime: &endTime,
+			Options: mirakc.Options{ContentPath: contentPathPtr},
+		},
+		Content: mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: &contentSHA256},
+	}, tsData)
 }
 
-// newLateHashIngestServer は finished を返しながら最初は content.sha256=null を返し、
-// setHash で後から値を公開できる mirakc stub を作る。rangeOffset と onDelete は、
-// snoozed job の再開で temp を replay せず、commit まで edge record が保持されることを観測する。
-func newLateHashIngestServer(t *testing.T, tsData []byte, contentPath string, rangeOffset func(int64), onDelete func()) (*httptest.Server, func(*string)) {
+func newSHA256IngestFake(t *testing.T, recordID string, tsData []byte, contentPath string, contentSHA256 *string, explicitNull bool) *mirakctest.Fake {
 	t.Helper()
-	var hashMu sync.RWMutex
-	var currentHash *string
+	endTime := mirakc.Milliseconds(time.Now().Add(-time.Hour))
+	contentPathPtr := strPtr(contentPath)
+	record := mirakc.Record{
+		ID: recordID,
+		Recording: mirakc.RecordInfo{
+			Status: "finished", EndTime: &endTime,
+			Options: mirakc.Options{ContentPath: contentPathPtr},
+		},
+		Content: mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: contentSHA256},
+	}
+	fake := newMirakcRecordFake(t, record, tsData)
+	if explicitNull {
+		fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
+	}
+	return fake
+}
+
+func recordJSONWithNullSHA(t *testing.T, record mirakc.Record) []byte {
+	t.Helper()
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshalling record fixture: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decoding record fixture: %v", err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(fields["content"], &content); err != nil {
+		t.Fatalf("decoding content fixture: %v", err)
+	}
+	content["sha256"] = json.RawMessage("null")
+	fields["content"], err = json.Marshal(content)
+	if err != nil {
+		t.Fatalf("marshalling content fixture: %v", err)
+	}
+	raw, err = json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshalling record fixture with null sha256: %v", err)
+	}
+	return raw
+}
+
+func newLateHashIngestFake(t *testing.T, recordID string, tsData []byte, contentPath string) (*mirakctest.Fake, func(*string)) {
+	t.Helper()
+	record := mirakc.Record{
+		ID: recordID,
+		Recording: mirakc.RecordInfo{
+			Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)},
+		},
+		Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
+	}
+	fake := newMirakcRecordFake(t, record, tsData)
+	fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
+	var mu sync.Mutex
 	setHash := func(hash *string) {
+		mu.Lock()
+		defer mu.Unlock()
 		var copyHash *string
 		if hash != nil {
 			value := *hash
 			copyHash = &value
 		}
-		hashMu.Lock()
-		currentHash = copyHash
-		hashMu.Unlock()
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			if rangeOffset != nil {
-				rangeOffset(parseStreamRangeOffset(r))
-			}
-			writeRecordStream(w, r, tsData)
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			hashMu.RLock()
-			hash := currentHash
-			if hash != nil {
-				value := *hash
-				hash = &value
-			}
-			hashMu.RUnlock()
-			if hash == nil {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = fmt.Fprintf(w, `{"recording":{"status":"finished","options":{"contentPath":%q}},"content":{"path":%q,"sha256":null}}`, contentPath, "/recording/"+contentPath)
-				return
-			}
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr(contentPath)}},
-				Content:   mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: hash},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		case r.Method == http.MethodDelete:
-			if onDelete != nil {
-				onDelete()
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
-		default:
-			http.NotFound(w, r)
+		record.Content.Sha256 = copyHash
+		fake.SetRecords([]mirakc.Record{record})
+		if copyHash == nil {
+			fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
 		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv, setHash
+	}
+	return fake, setHash
 }
 
 // insertProgramSnapshotAndReservation は programID の program_snapshots 行と、
@@ -3106,20 +2934,14 @@ func TestAlreadyCommittedIngestDoesNotRebuildStaleCut(t *testing.T) {
 		t.Fatal("test setup did not make the active cut asset stale")
 	}
 
-	deleteServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodDelete {
-			http.NotFound(w, r)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
-	}))
-	defer deleteServer.Close()
+	const recordID = "already-committed"
+	fake := mirakctest.New(t)
+	fake.SetRecords([]mirakc.Record{{ID: recordID}})
 
 	enqueuer := newRecordingEnqueuer()
 	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, Precheck: newTestMediaStore(pool)}
-	w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(deleteServer.URL, nil),
-		jobs.IngestJobArgs{Site: "default", RecordID: "already-committed"}, recordingID, slog.Default())
+	w.handleAlreadyCommittedIngest(context.Background(), mirakc.NewClient(fake.URL(), nil),
+		jobs.IngestJobArgs{Site: "default", RecordID: recordID}, recordingID, slog.Default())
 	if got := countEncodeJobs(t, enqueuer, recordingID, "cut"); got != 0 {
 		t.Fatalf("cut encode jobs after already-committed ingest = %d, want 0", got)
 	}
@@ -3207,8 +3029,8 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-base", programID)
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-base.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-base", tsData, "test/policy-base.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3286,8 +3108,8 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-override", programID)
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-override.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-override", tsData, "test/policy-override.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3372,8 +3194,8 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-drift", programID)
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-drift.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-drift", tsData, "test/policy-drift.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3422,8 +3244,8 @@ func TestIngestWorker_NoReservation_LeavesEncodePolicyDefault(t *testing.T) {
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-none")
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-none.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-none", tsData, "test/policy-none.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3533,8 +3355,8 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	}
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-gced.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-gced", tsData, "test/policy-gced.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3618,8 +3440,8 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	setReservationBase(t, pool, res2.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-rematerialized.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-rematerialized", tsData, "test/policy-rematerialized.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3686,8 +3508,8 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 	}
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-rule-gone.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-rule-gone", tsData, "test/policy-rule-gone.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3762,8 +3584,8 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-manual-unresolved")
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-manual-unresolved.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-manual-unresolved", tsData, "test/policy-manual-unresolved.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -3858,8 +3680,8 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	}
 
 	tsData := makeTSData(20)
-	srv := newFullTransferServer(t, tsData, "test/policy-manual-gced.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-manual-gced", tsData, "test/policy-manual-gced.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
@@ -3892,39 +3714,6 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	}
 }
 
-// mirakcRecordServer は determineRelPath 系のテスト用に、固定の contentPath /
-// content.Path を返す mirakc モックを立てる。ストリーム・削除エンドポイントは
-// 常に成功する（このファイル内の他テストと同じ最小構成）。
-func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, contentFilePath string) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: contentPath}},
-				Content:   mirakc.ContentInfo{Path: contentFilePath, Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
 // TestIngestWorker_RelPathPrefixedWithSite は、issue #186 (M4-14) 受け入れの
 // 1 項目目を固定する: site "tokyo" の worker が ingest した原本の
 // media_assets.rel_path が "sites/tokyo/" で始まり、実ファイルがその下に置かれる
@@ -3934,10 +3723,11 @@ func mirakcRecordServer(t *testing.T, tsData []byte, contentPath *string, conten
 // "20240101/prog.m2ts" のままになり、このテストは失敗する。
 func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	tsData := makeTSData(10)
-	srv := mirakcRecordServer(t, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
+	const recordID = "rec-tokyo"
+	fake := newRecordPathFake(t, recordID, tsData, strPtr("20240101/prog.m2ts"), "/recording/20240101/prog.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("tokyo", mc),
@@ -3955,9 +3745,9 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 101)
-	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo", 327361024000101)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
 
-	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo"}
+	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -3984,10 +3774,11 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) {
 	tsData := makeTSData(10)
 	// ContentPath を nil にしてフォールバック経路を通す。
-	srv := mirakcRecordServer(t, tsData, nil, "/recording/fallback/plain.m2ts")
+	const recordID = "rec-tokyo-fallback"
+	fake := newRecordPathFake(t, recordID, tsData, nil, "/recording/fallback/plain.m2ts")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("tokyo", mc),
@@ -4005,9 +3796,9 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 102)
-	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-fallback", 327361024000102)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000102)
 
-	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-fallback"}
+	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -4035,10 +3826,11 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	tsData := makeTSData(10)
 	// ContentPath も Content.Path も空。
-	srv := mirakcRecordServer(t, tsData, nil, "")
+	const recordID = "rec-tokyo-degenerate"
+	fake := newRecordPathFake(t, recordID, tsData, nil, "")
 
 	mediaDir := t.TempDir()
-	mc := mirakc.NewClient(srv.URL, nil)
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		MirakcClients: singleSiteClients("tokyo", mc),
@@ -4055,9 +3847,9 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	w.RecordTarget = pgstore.NewRecordings(pool)
 
 	recordingID := insertTestRecordingForSite(t, pool, "tokyo", 103)
-	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, "rec-tokyo-degenerate", 327361024000103)
+	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000103)
 
-	job := IngestJobArgs{Site: "tokyo", RecordID: "rec-tokyo-degenerate"}
+	job := IngestJobArgs{Site: "tokyo", RecordID: recordID}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
 		t.Fatal("Work() error = nil, want non-nil for a record with no usable content path")
 	}
@@ -4084,9 +3876,9 @@ func TestIngestWorker_ReservedStorageBasenameRejected(t *testing.T) {
 		".rokuban-media-asset-user.m2ts",
 	} {
 		t.Run(contentPath, func(t *testing.T) {
-			srv := mirakcRecordServer(t, nil, strPtr(contentPath), "/recording/"+contentPath)
+			fake := newRecordPathFake(t, "reserved-basename", nil, strPtr(contentPath), "/recording/"+contentPath)
 			w := &IngestWorker{MediaDir: t.TempDir()}
-			client := mirakc.NewClient(srv.URL, nil)
+			client := mirakc.NewClient(fake.URL(), nil)
 			_, _, _, err := w.determineRelPath(context.Background(), IngestJobArgs{
 				Site: "default", RecordID: "reserved-basename",
 			}, client)
@@ -4115,8 +3907,8 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	tsDataB := makeTSData(20)
 	const sharedContentPath = "shared/recording.m2ts"
 
-	srvA := mirakcRecordServer(t, tsDataA, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
-	srvB := mirakcRecordServer(t, tsDataB, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
+	fakeA := newRecordPathFake(t, "rec-collide-a", tsDataA, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
+	fakeB := newRecordPathFake(t, "rec-collide-b", tsDataB, strPtr(sharedContentPath), "/recording/"+sharedContentPath)
 
 	mediaDir := t.TempDir()
 
@@ -4132,7 +3924,7 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 
 	wA := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srvA.URL, nil)),
+		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fakeA.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
@@ -4141,7 +3933,7 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
 	wB := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(srvB.URL, nil)),
+		MirakcClients: singleSiteClients("site-b", mirakc.NewClient(fakeB.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
@@ -4289,47 +4081,22 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 
 	// 新規: 同じ contentPath（→ 同じ site 前置後の rel_path）を持つ別の録画。
 	newRecordingID := insertTestRecordingForSite(t, pool, "default", 302)
-	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, "rec-conflict-new", 327361024000302)
+	const recordID = "rec-conflict-new"
+	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, recordID, 327361024000302)
 
 	tsDataNew := makeTSData(20)
-	var streamRequests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			streamRequests.Add(1)
-			writeRecordStream(w, r, tsDataNew)
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsDataNew)))
-			w.WriteHeader(http.StatusOK)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "finished", Options: mirakc.Options{ContentPath: strPtr("shared/conflict.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/shared/conflict.m2ts", Sha256: strPtr(sha256Hex(tsDataNew))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		case r.Method == http.MethodDelete:
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	fake := newFullTransferFake(t, recordID, tsDataNew, "shared/conflict.m2ts")
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 		Precheck:      newTestMediaStore(pool),
 	}
 
-	job := IngestJobArgs{Site: "default", RecordID: "rec-conflict-new"}
+	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	err = runWorkerViaJobQFake(ctx, w, job)
 	if err == nil {
@@ -4351,7 +4118,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 
 	// 転送そのものが始まっていないこと（「開始してから失敗」ではなく
 	// 「開始前に失敗」であることの確認）。
-	if got := streamRequests.Load(); got != 0 {
+	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 0 {
 		t.Errorf("stream requests = %d, want 0 (transfer must not start when rel_path already conflicts)", got)
 	}
 
@@ -4419,11 +4186,11 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, "rec-reuse-new", 327361024000312)
 
 	tsData := makeTSData(15)
-	srv := mirakcRecordServer(t, tsData, strPtr("shared/reused.m2ts"), "/recording/shared/reused.m2ts")
+	fake := newRecordPathFake(t, "rec-reuse-new", tsData, strPtr("shared/reused.m2ts"), "/recording/shared/reused.m2ts")
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
