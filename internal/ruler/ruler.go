@@ -18,8 +18,9 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// maxRulerInputRevisionMismatches は、到達後に合流したヒントが次の定期パス（最大 10 分後）で反映される照合上限。
-// 読み直しを続けて同じジョブ内の他 site を待たせないため、この上限を設ける。
+// maxRulerInputRevisionMismatches は、1 site の評価が入力の版の照合に続けて負けてよい回数。
+// 上限に達した site は予約を書き換えずに諦め、このジョブに合流したヒントの分は次の定期パスで反映される。
+// ruler キューは同時実行 1 なので、上限を外すと読み直しを続ける site が他 site の ruler_pass を待たせる。
 const maxRulerInputRevisionMismatches = 3
 
 // beforeRulerWriteTx は入力を読んだ後、予約の書き込み tx を始める前にテストが割り込むための hook。
