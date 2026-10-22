@@ -2,7 +2,6 @@ package tsscan
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,10 +33,6 @@ type recordingEnqueuer struct {
 func (enqueuer *recordingEnqueuer) Enqueue(_ context.Context, args jobq.Args, _ ...jobq.EnqueueOpt) (jobq.Result, error) {
 	enqueuer.args = append(enqueuer.args, args)
 	return jobq.Result{}, nil
-}
-
-func (*recordingEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return jobq.Result{}, errors.New("recordingEnqueuer does not support transactions")
 }
 
 func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {

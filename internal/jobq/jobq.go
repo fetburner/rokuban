@@ -12,8 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/fetburner/rokuban/internal/db"
 )
 
 // MaxQueueNameLen is the maximum length, in characters, of a physical queue name
@@ -95,13 +93,10 @@ type Result struct {
 }
 
 // Enqueuer inserts jobs. Enqueue must eventually deliver an accepted job at least once,
-// with Args equivalent after a JSON round trip. EnqueueTx must make insertion atomic with
-// tx: commit retains it, work cannot run before commit, and rollback removes it.
+// with Args equivalent after a JSON round trip.
 type Enqueuer interface {
 	// Enqueue schedules args for asynchronous execution.
 	Enqueue(ctx context.Context, args Args, opts ...EnqueueOpt) (Result, error)
-	// EnqueueTx schedules args in the transaction so delivery follows its commit.
-	EnqueueTx(ctx context.Context, tx db.Tx, args Args, opts ...EnqueueOpt) (Result, error)
 }
 
 // ErrDiscard marks a job result that must not be delivered again.
@@ -367,15 +362,6 @@ func (deferred *Deferred) Enqueue(ctx context.Context, args Args, opts ...Enqueu
 		return Result{}, err
 	}
 	return (*enqueuer).Enqueue(ctx, args, opts...)
-}
-
-// EnqueueTx forwards to the installed Enqueuer or reports that Set has not been called.
-func (deferred *Deferred) EnqueueTx(ctx context.Context, tx db.Tx, args Args, opts ...EnqueueOpt) (Result, error) {
-	enqueuer, err := deferred.target()
-	if err != nil {
-		return Result{}, err
-	}
-	return (*enqueuer).EnqueueTx(ctx, tx, args, opts...)
 }
 
 func (deferred *Deferred) target() (*Enqueuer, error) {

@@ -8,12 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/riverqueue/river"
 	"github.com/riverqueue/river/rivertype"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -230,10 +228,6 @@ func (fixture *riverContractFixture) Enqueue(ctx context.Context, args jobq.Args
 	return fixture.current.Enqueue(ctx, args, opts...)
 }
 
-func (fixture *riverContractFixture) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	return fixture.current.EnqueueTx(ctx, tx, args, opts...)
-}
-
 func (fixture *riverContractFixture) Start(ctx context.Context) error {
 	if fixture.current == nil {
 		fixture.current = fixture.newClient()
@@ -279,10 +273,6 @@ func (fixture *riverContractFixture) WaitIdle(ctx context.Context) error {
 		case <-ticker.C:
 		}
 	}
-}
-
-func (fixture *riverContractFixture) BeginTx(ctx context.Context) (db.Tx, error) {
-	return fixture.pool.BeginTx(ctx, pgx.TxOptions{})
 }
 
 func (fixture *riverContractFixture) Crash(ctx context.Context) error {

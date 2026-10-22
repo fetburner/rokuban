@@ -414,9 +414,6 @@ func TestCreateLabelRule_EnqueuesReconcileAfterCommit(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("label_rule_reconcile enqueue count = %d, want 1", len(calls))
 	}
-	if calls[0].Transactional {
-		t.Errorf("label_rule_reconcile enqueue used the write transaction, want Enqueue after commit")
-	}
 }
 
 type labelRuleCommitCheckingEnqueuer struct {

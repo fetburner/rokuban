@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/fetburner/rokuban/internal/db"
 )
 
 type testArgs struct {
@@ -57,17 +55,11 @@ func (secondTestWorker) Work(context.Context, secondTestArgs) error { return nil
 
 // recorder is an Enqueuer that remembers the last Args it saw.
 type recorder struct {
-	args   Args
-	txSeen db.Tx
+	args Args
 }
 
 func (r *recorder) Enqueue(_ context.Context, args Args, _ ...EnqueueOpt) (Result, error) {
 	r.args = args
-	return Result{Coalesced: true}, nil
-}
-
-func (r *recorder) EnqueueTx(_ context.Context, tx db.Tx, args Args, _ ...EnqueueOpt) (Result, error) {
-	r.args, r.txSeen = args, tx
 	return Result{Coalesced: true}, nil
 }
 
@@ -76,9 +68,6 @@ func TestDeferred(t *testing.T) {
 	ctx := context.Background()
 	if _, err := deferred.Enqueue(ctx, testArgs{}); err == nil {
 		t.Error("Enqueue before Set returned nil error")
-	}
-	if _, err := deferred.EnqueueTx(ctx, nil, testArgs{}); err == nil {
-		t.Error("EnqueueTx before Set returned nil error")
 	}
 
 	rec := &recorder{}
@@ -90,19 +79,9 @@ func TestDeferred(t *testing.T) {
 	if rec.args != (testArgs{N: 7}) {
 		t.Errorf("forwarded args = %#v, want testArgs{N: 7}", rec.args)
 	}
-	if _, err := deferred.EnqueueTx(ctx, nil, testArgs{N: 8}); err != nil {
-		t.Fatalf("EnqueueTx after Set error = %v", err)
-	}
-	if rec.args != (testArgs{N: 8}) {
-		t.Errorf("forwarded tx args = %#v, want testArgs{N: 8}", rec.args)
-	}
-
 	deferred.Set(nil)
 	if _, err := deferred.Enqueue(ctx, testArgs{}); err == nil {
 		t.Error("Enqueue after Set(nil) returned nil error")
-	}
-	if _, err := deferred.EnqueueTx(ctx, nil, testArgs{}); err == nil {
-		t.Error("EnqueueTx after Set(nil) returned nil error")
 	}
 }
 

@@ -10,9 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
@@ -112,27 +109,6 @@ func (queue *Queue) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.En
 		return jobq.Result{}, err
 	}
 	return queue.enqueue(payload, args.Kind(), spec, priority)
-}
-
-// EnqueueTx defers scheduling until the fake transaction commits.
-func (queue *Queue) EnqueueTx(ctx context.Context, tx db.Tx, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if err := ctxErr(ctx); err != nil {
-		return jobq.Result{}, err
-	}
-	transaction, ok := tx.(*Tx)
-	if !ok || transaction == nil {
-		return jobq.Result{}, errors.New("jobqfake: EnqueueTx requires a jobqfake transaction")
-	}
-	payload, spec, priority, err := prepare(args, opts...)
-	if err != nil {
-		return jobq.Result{}, err
-	}
-	if err := transaction.onCommit(func() {
-		_, _ = queue.enqueue(payload, args.Kind(), spec, priority)
-	}); err != nil {
-		return jobq.Result{}, err
-	}
-	return jobq.Result{}, nil
 }
 
 func prepare(args jobq.Args, opts ...jobq.EnqueueOpt) ([]byte, jobq.Spec, int, error) {
@@ -607,67 +583,4 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
-}
-
-// BeginTx creates a fake transaction whose commit or rollback controls EnqueueTx.
-func (queue *Queue) BeginTx(context.Context) (db.Tx, error) {
-	return &Tx{}, nil
-}
-
-// Tx captures EnqueueTx callbacks until Commit or Rollback.
-type Tx struct {
-	// The fake only needs transaction completion methods. Embedded pgx.Tx keeps this value
-	// compatible with db.Tx without duplicating pgx's unused query methods.
-	pgx.Tx
-	mu        sync.Mutex
-	callbacks []func()
-	finished  bool
-}
-
-func (tx *Tx) onCommit(callback func()) error {
-	if tx == nil {
-		return errors.New("jobqfake: transaction is nil")
-	}
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-	if tx.finished {
-		return errors.New("jobqfake: transaction is already finished")
-	}
-	tx.callbacks = append(tx.callbacks, callback)
-	return nil
-}
-
-// Commit runs callbacks registered by EnqueueTx.
-func (tx *Tx) Commit(context.Context) error {
-	if tx == nil {
-		return errors.New("jobqfake: transaction is nil")
-	}
-	tx.mu.Lock()
-	if tx.finished {
-		tx.mu.Unlock()
-		return errors.New("jobqfake: transaction is already finished")
-	}
-	tx.finished = true
-	callbacks := slices.Clone(tx.callbacks)
-	tx.callbacks = nil
-	tx.mu.Unlock()
-	for _, callback := range callbacks {
-		callback()
-	}
-	return nil
-}
-
-// Rollback discards callbacks registered by EnqueueTx.
-func (tx *Tx) Rollback(context.Context) error {
-	if tx == nil {
-		return errors.New("jobqfake: transaction is nil")
-	}
-	tx.mu.Lock()
-	defer tx.mu.Unlock()
-	if tx.finished {
-		return errors.New("jobqfake: transaction is already finished")
-	}
-	tx.finished = true
-	tx.callbacks = nil
-	return nil
 }

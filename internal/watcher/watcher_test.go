@@ -2717,12 +2717,11 @@ func TestProcessRecord_StatusValues(t *testing.T) {
 
 // commitCheckingEnqueuer はヒント投入時点で録画が別接続から見えることを確かめる。
 type commitCheckingEnqueuer struct {
-	pool               *pgxpool.Pool
-	calls              int
-	transactionalCalls int
-	recordingVisible   bool
-	priority           int
-	err                error
+	pool             *pgxpool.Pool
+	calls            int
+	recordingVisible bool
+	priority         int
+	err              error
 }
 
 func (e *commitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
@@ -2743,11 +2742,6 @@ func (e *commitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, op
 	return jobq.Result{}, e.err
 }
 
-func (e *commitCheckingEnqueuer) EnqueueTx(context.Context, db.Tx, jobq.Args, ...jobq.EnqueueOpt) (jobq.Result, error) {
-	e.transactionalCalls++
-	return jobq.Result{}, errors.New("unexpected EnqueueTx call")
-}
-
 // TestProcessRecord_EnqueueFollowsCommit は commit 後の投入と、store が失敗した場合に
 // ingest のヒントを出さないことを検証する。
 func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
@@ -2763,8 +2757,8 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord = %v, want commit to succeed despite enqueue error", err)
 	}
-	if enqueuer.calls != 1 || enqueuer.transactionalCalls != 0 {
-		t.Fatalf("enqueue calls = (%d normal, %d transactional), want (1, 0)", enqueuer.calls, enqueuer.transactionalCalls)
+	if enqueuer.calls != 1 {
+		t.Fatalf("enqueue calls = %d, want 1", enqueuer.calls)
 	}
 	if !enqueuer.recordingVisible {
 		t.Fatal("recording was not visible from another connection when Enqueue ran")

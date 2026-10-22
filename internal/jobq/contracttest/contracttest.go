@@ -10,16 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 )
 
-// Fixture combines an adapter with the test controls needed to observe delivery and transactions.
+// Fixture combines an adapter with the test controls needed to observe delivery and lifecycle behavior.
 type Fixture interface {
 	jobq.Enqueuer
 	jobq.Runner
 	WaitIdle(context.Context) error
-	BeginTx(context.Context) (db.Tx, error)
 	Crash(context.Context) error
 	// RecoveryGrace is the adapter's recovery grace in jobq.Spec.Timeout: how long after the
 	// timeout it may take to make a job whose process died eligible for redelivery.
@@ -41,7 +39,6 @@ func Run(t *testing.T, factory Factory) {
 	}{
 		{"enqueue decodes the JSON round trip", testEnqueueRoundTrip},
 		{"accepts a queue name at the contract maximum", testQueueNameMaxLen},
-		{"EnqueueTx waits for commit and disappears on rollback", testEnqueueTx},
 		{"MaxAttempts stops after the literal limit", testMaxAttempts},
 		{"ErrDiscard is not delivered again", testErrDiscard},
 		{"Snooze does not consume MaxAttempts", testSnoozeAttempts},
@@ -102,49 +99,6 @@ func testEnqueueRoundTrip(t *testing.T, factory Factory) {
 	if got := receive(t, calls); !reflect.DeepEqual(got, args) {
 		t.Errorf("decoded args = %#v, want %#v", got, args)
 	}
-}
-
-func testEnqueueTx(t *testing.T, factory Factory) {
-	calls := make(chan contractArgs, 4)
-	fixture := newFixture(t, factory, contractWorker{work: func(_ context.Context, args contractArgs) error {
-		calls <- args
-		return nil
-	}})
-	start(t, fixture)
-	args := contractArgs{Value: "transaction", TimeoutMS: 2000}
-
-	rolledBack, err := fixture.BeginTx(context.Background())
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
-	if _, err := fixture.EnqueueTx(context.Background(), rolledBack, args); err != nil {
-		t.Fatalf("EnqueueTx(rollback) error = %v", err)
-	}
-	waitIdle(t, fixture)
-	assertNoCall(t, calls)
-	if err := rolledBack.Rollback(context.Background()); err != nil {
-		t.Fatalf("Rollback() error = %v", err)
-	}
-	waitIdle(t, fixture)
-	assertNoCall(t, calls)
-
-	committed, err := fixture.BeginTx(context.Background())
-	if err != nil {
-		t.Fatalf("BeginTx() error = %v", err)
-	}
-	if _, err := fixture.EnqueueTx(context.Background(), committed, args); err != nil {
-		t.Fatalf("EnqueueTx(commit) error = %v", err)
-	}
-	waitIdle(t, fixture)
-	assertNoCall(t, calls)
-	if err := committed.Commit(context.Background()); err != nil {
-		t.Fatalf("Commit() error = %v", err)
-	}
-	waitIdle(t, fixture)
-	if got := receive(t, calls); got.Value != args.Value {
-		t.Errorf("committed args = %#v, want value %q", got, args.Value)
-	}
-	assertNoCall(t, calls)
 }
 
 func testMaxAttempts(t *testing.T, factory Factory) {
@@ -581,14 +535,5 @@ func receiveWithin[T any](t *testing.T, ch <-chan T, limit time.Duration) T {
 		t.Fatal("timed out waiting for worker")
 		var zero T
 		return zero
-	}
-}
-
-func assertNoCall(t *testing.T, calls <-chan contractArgs) {
-	t.Helper()
-	select {
-	case got := <-calls:
-		t.Errorf("unexpected Work call: %#v", got)
-	default:
 	}
 }
