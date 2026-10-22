@@ -32,6 +32,8 @@
 # client が JobScheduler を動かすため、`retryable` の昇格は one-shot Pod に依存しない。
 # retryable も数えるのはバックオフ中から KEDA の backlog に含めるためで、まだ
 # claim できない job のために起きた Pod は `--once-idle-timeout` で終了する。
+# この空振り起動は ingest / encode など定期パス以外の kind だけで起きる。定期パスは
+# MaxAttempts=1 で、失敗しても `retryable` にならず discarded になるので起きない。
 # **受け入れ判定ハーネスの「滞留」の定義（`deploy/k8s/e2e/lib/kube.sh` の
 # `riverBacklogStates`）と同じ集合にすること。**
 #
