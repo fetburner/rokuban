@@ -159,6 +159,6 @@ desired に無い自分の schedule は、許可した状態のときだけ DELE
 
 再作成するのは `scheduled` の schedule だけだが、`scheduled` は開始の約 15 秒前まで続く（mirakc がチューナーを開く時刻。実測では開始 14.2 秒前まで `scheduled` だった）。そのため、開始直前の変更でもこの窓は開く。
 
-観測には専用のカウンタメトリクスと `slog.Error` を使う。`quality_events` には書けない。それは `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないことがある。再作成の対象は `scheduled` だけである。
+観測には専用のカウンタメトリクスと `slog.Error` を使う。`quality_events` には書けない。それは `recordings` テーブルの列で、まだ開始していない番組には recordings 行が存在しないことがある。
 
 upstream への要望として、`priority` の部分更新 API があれば、再作成の窓ごと消える。`RecordingOptions` 全体を差し替える汎用 PUT より通りやすく、mirakc 側が触る内部状態（スケジューラのキュー）も小さい。priority は開始前の schedule に対して mirakc のスケジューラが素直に扱える性質のフィールドでもある（予約オプション一覧表のとおり、録画開始後は効かない可能性が高い・未測定）。
