@@ -48,7 +48,8 @@ type ServiceRef struct {
 
 // TimeWindow は曜日ビットマスクと時刻帯。
 // Weekdays: bit0=月 … bit6=日（1..127）。
-// StartSec/EndSec: 0..86400。End < Start なら翌日跨ぎ。
+// StartSec/EndSec: 0..86400。End < Start なら、番組開始日時（JST）の曜日に対して
+// [0, EndSec) と [StartSec, 86400) のどちらかで始まる番組を対象にする。
 type TimeWindow struct {
 	Weekdays int
 	StartSec int

@@ -44,7 +44,8 @@ export type ServiceRefDraft = { networkId: number; serviceId: number }
  *
  * `weekdays` は bit0=月 … bit6=日。`startSec` / `endSec` は JST の壁時計での
  * その日の 0 時からの秒（`docs/recording.md` §3.1 / internal/rulequery）。
- * `endSec < startSec` は翌日跨ぎとして解釈される。
+ * `endSec < startSec` は日跨ぎで、曜日は番組開始日（JST）で判定し、同じ曜日の
+ * `[0:00, endSec)` と `[startSec, 24:00)` のどちらかの区間で始まる番組が対象になる。
  */
 export type TimeWindowDraft = { weekdays: number; startSec: number; endSec: number }
 
