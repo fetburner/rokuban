@@ -46,7 +46,7 @@ func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int6
 	if cut != nil {
 		input.KeepRanges = cut.keep
 	}
-	return planEncodePublishFromState(input, state, nil), nil
+	return planEncodePublishFromState(input, state), nil
 }
 
 // frozenKeepRanges は media_asset に凍結された keep 区間を store 契約から読む。

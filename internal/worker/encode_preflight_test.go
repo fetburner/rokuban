@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
 
@@ -24,10 +25,8 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 	keepOld := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	keepNew := []chapters.Range{{StartMs: 0, EndMs: 2000}}
 	tests := []struct {
-		name     string
-		profiles []string // desired に入れる profile
-		// noRead が true なら、状態の読み取りが 1 回も無いことも確かめる。
-		noRead     bool
+		name       string
+		profiles   []string // desired に入れる profile
 		seed       func(t *testing.T, pool *pgxpool.Pool, recordingID int64) jobs.EncodeJobArgs
 		wantReason string
 	}{
@@ -70,10 +69,17 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			wantReason: "active_cut_protected",
 		},
 		{
+			// desired にも要求行にも h264 があり、判定を通れば全編を作り直してしまう組み合わせ。
 			name:     "rebuild request on a profile that is not cut",
-			profiles: []string{"cut"},
-			noRead:   true,
+			profiles: []string{"h264"},
 			seed: func(t *testing.T, pool *pgxpool.Pool, id int64) jobs.EncodeJobArgs {
+				if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(context.Background(), sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+					RecordingID:   id,
+					Profile:       "h264",
+					RequestedKeep: mustKeepRanges(t, keepOld),
+				}); err != nil {
+					t.Fatal(err)
+				}
 				job := rebuildJob(t, id, keepOld)
 				job.Profile = "h264"
 				return job
@@ -104,12 +110,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 					{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 				}},
 			}
-			spy := &planningSpy{}
-			if tt.noRead {
-				w.Media = spy
-			} else {
-				w.Media = newTestMediaStore(pool)
-			}
+			w.Media = newTestMediaStore(pool)
 			assetsBefore := countEncodedAssets(t, pool, recordingID)
 
 			var logBuf bytes.Buffer
@@ -122,9 +123,6 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			}
 			if !strings.Contains(logBuf.String(), "reason="+tt.wantReason) {
 				t.Errorf("log %q does not include reason=%s", logBuf.String(), tt.wantReason)
-			}
-			if spy.calls != 0 {
-				t.Errorf("GetEncodedPublishState calls = %d, want 0 (no DB read)", spy.calls)
 			}
 			if got := countEncodedAssets(t, pool, recordingID); got != assetsBefore {
 				t.Errorf("encoded assets = %d, want %d unchanged", got, assetsBefore)
@@ -139,7 +137,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 
 // TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails は、要求に由来しない cut ジョブが
 // 章を所有していない録画に来たら、黙って飛ばさずジョブの失敗にすることを固定する。
-// 確認前にカット版をコミットすると、誤検出のまま本編が削られて原本が消える。
+// 投入側が所有していない録画を除くので、来るのは想定外の状態である。失敗として見えるようにする。
 func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {

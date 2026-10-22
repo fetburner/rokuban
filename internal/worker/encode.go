@@ -62,9 +62,11 @@ import (
 //     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
 //     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
 //     カット版のときだけ）成功で飛ばさず、公開せずに jobq の snooze で戻して計画を
-//     やり直す（snooze 後は現在の keep を読み直し、一致すれば skip、違えば次の
-//     世代で作り直す。skip すると新しいチャプター編集が黙って消える）。行が active
-//     でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
+//     やり直す。snooze 後はエンコード前の判定からやり直し、ジョブの種類で結果が分かれる。
+//     作り直し要求に由来するジョブは、要求行の keep と照合して新しい世代で作り直す
+//     （成功で飛ばすと押した作り直しが黙って消える）。要求に由来しないジョブは、
+//     active なカット版を置き換えてはならないので active_cut_protected で飛ばす。
+//     行が active でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
 //     encode.failed も試行の failed 行も出さない。
 //     (b) 行が active で（カット版なら）凍結区間がこの試行の keep と一致する（誰かが
 //     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
@@ -383,7 +385,7 @@ func (w *EncodeWorker) observeEncodePlan(
 		input.KeepRanges = state.CurrentCutKeep
 	}
 
-	observed = planEncodePublishFromState(input, state, nil)
+	observed = planEncodePublishFromState(input, state)
 	if observed.skip {
 		log.Info("encode: skipped before encoding", "reason", string(observed.skipReason))
 		return observed, nil, expectedKeep, true, nil
@@ -884,7 +886,7 @@ type encodePlan struct {
 	skipReason store.EncodedPublishSkipReason
 	// stale は「自分の計画が古い」ことを表す: 行が active のまま rel_path だけが
 	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
-	// 成功扱いで飛ばすと新しい keep が黙って消えるので、公開せずに計画をやり直す。
+	// 成功扱いで飛ばさず、公開せずに計画をやり直す（結果はジョブの種類で分かれる。冒頭の (a)）。
 	stale bool
 }
 
@@ -892,13 +894,8 @@ type encodePlan struct {
 func planEncodePublishFromState(
 	in store.EncodedPublishInput,
 	state store.EncodedPublishState,
-	previous *encodePlan,
 ) encodePlan {
-	var previousRelPath *string
-	if previous != nil {
-		previousRelPath = &previous.observedRelPath
-	}
-	plan := store.PlanEncodedPublish(in, state, previousRelPath)
+	plan := store.PlanEncodedPublish(in, state, nil)
 	p := encodePlan{
 		observedRelPath: plan.ObservedRelPath,
 		skip:            plan.Skip,
