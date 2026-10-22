@@ -1296,7 +1296,7 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
     const service = { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true }
     const json = (body) => (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
     // 追っかけの offset playlist の要求記録と、失敗させる切替（#1143 の再読み込み判定が使う）。
-    const chaseOffsetFixture = { failing: false, requests: [] }
+    const chaseOffsetFixture = { failSegments: false, requests: [], releaseSegments: () => {}, segmentGate: Promise.resolve() }
     // recorded: いまの番組を録画中にする（録画は番組開始の 3 分前から）。追っかけの playlist も同じ実映像を返す。
     const open = async (contextOptions, { recorded = false } = {}) => {
       const context = await browser.newContext(contextOptions)
@@ -1312,17 +1312,19 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
           startedAt: new Date(Date.parse(program.startAt) - 180_000).toISOString(),
           durationMs: program.durationMs, status: 'recording',
         }))
-        await page.route('**/recordings/501/chase/**', (route) => {
+        await page.route('**/recordings/501/chase/**', async (route) => {
           const url = new URL(route.request().url())
           if (url.pathname.endsWith('/leave')) return route.fulfill({ status: 204, body: '' })
           if (url.pathname.endsWith('.m3u8')) {
             const offsetMatch = url.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
             if (offsetMatch !== null) {
-              const status = chaseOffsetFixture.failing ? 500 : 200
-              chaseOffsetFixture.requests.push({ offset: Number(offsetMatch[1]), status })
-              if (status === 500) return route.fulfill({ status, body: 'retry fixture failure' })
+              chaseOffsetFixture.requests.push({ offset: Number(offsetMatch[1]), status: 200 })
             }
             return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) })
+          }
+          if (chaseOffsetFixture.failSegments && /segment_00[23]\.ts$/.test(url.pathname)) {
+            await chaseOffsetFixture.segmentGate
+            return route.fulfill({ status: 500, body: 'retry fixture failure' })
           }
           const file = path.join(SEGMENTS_DIR, url.pathname.split('/').pop())
           return existsSync(file)
@@ -1417,19 +1419,28 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       // #1143 /live の追っかけで再生を進めた後、offset playlist が失敗すると、再読み込みは最後の位置を保つ。
       // 位置は軸のシークバー（aria-valuenow）、要求した offset は playlist の URL から読む。
       const scrubValue = async () => Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
-      chaseOffsetFixture.failing = true
+      // 軸のシークで開いた新しい offset セッションを再生し、セッション内の 15.75 秒へ動かして止めてから fatal にする。
+      // 軸のシークの目標は整数秒なので、端数のある位置は seeked の報告からしか出ない。3 本目以降の segment は
+      // 位置を動かすまで返さず、動かしたら 500 にする。
+      chaseOffsetFixture.failSegments = true
+      chaseOffsetFixture.segmentGate = new Promise((resolve) => { chaseOffsetFixture.releaseSegments = resolve })
       const failedCursor = chaseOffsetFixture.requests.length
       await show()
       const retryAxis = await page.getByTestId('seek-scrub').boundingBox()
-      await page.mouse.click(retryAxis.x + retryAxis.width * 0.3017, retryAxis.y + retryAxis.height / 2)
-      await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 30000 }).catch(() => {})
+      await page.mouse.click(retryAxis.x + retryAxis.width * 0.3, retryAxis.y + retryAxis.height / 2)
+      await page.waitForFunction(() => document.querySelector('video').currentTime > 2, undefined, { timeout: 30000 }).catch(() => {})
+      await page.locator('video').evaluate((v) => { v.pause(); v.currentTime = 15.75 })
+      await page.waitForFunction(() => !document.querySelector('video').seeking, undefined, { timeout: 5000 }).catch(() => {})
+      // 位置は fatal の後に軸が先頭へ戻るので、止めた時点で読む。
       const selectedPosition = await scrubValue().catch(() => Number.NaN)
-      const failedOffsets = chaseOffsetFixture.requests.slice(failedCursor).filter((r) => r.status === 500).map((r) => r.offset)
-      log(`  #1143 chase 再読み込み: 失敗した offset=${JSON.stringify(failedOffsets)}, selected=${selectedPosition}`)
-      if (!(selectedPosition > 810.2 && selectedPosition < 819.8)) {
-        ng.push(`#1143 前提: 軸の 30% シークが選んだ位置が小数つきの 814 秒付近でない (${selectedPosition})`)
+      chaseOffsetFixture.releaseSegments()
+      await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 120000 }).catch(() => {})
+      const failedOffsets = chaseOffsetFixture.requests.slice(failedCursor).map((r) => r.offset)
+      log(`  #1143 chase 再読み込み: fatal までの要求 offset=${JSON.stringify(failedOffsets)}, selected=${selectedPosition}`)
+      if (!(selectedPosition > 815)) {
+        ng.push(`#1143 前提: セッション内の seek 後の位置が seek 先 810 秒より先でない (${selectedPosition})`)
       }
-      chaseOffsetFixture.failing = false
+      chaseOffsetFixture.failSegments = false
       const reloadCursor = chaseOffsetFixture.requests.length
       await page.getByRole('button', { name: '再読み込み' }).click()
       await page.waitForFunction(() => {

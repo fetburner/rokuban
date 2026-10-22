@@ -1708,6 +1708,40 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBeCloseTo(retryStartPosition, 5)
     })
 
+    it('fatal で破棄した映像が出す currentTime 0 の timeupdate を、再読み込みの位置にしない', async () => {
+      const user = userEvent.setup()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={74}
+          offsetSessionStart={{ type: 'offset', offsetSeconds: 30 }}
+          profile="hd"
+        />,
+      )
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.canPlay(video)
+      fireEvent.playing(video)
+      video.currentTime = 5
+      fireEvent.timeUpdate(video)
+
+      const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => errorHandler('hlsError', { fatal: true }))
+      video.currentTime = 0
+      fireEvent.timeUpdate(video)
+
+      await user.click(await screen.findByRole('button', { name: '再読み込み' }))
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
+      expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
+        expect.stringContaining('/recordings/74/original-vod/offset/34/playlist.m3u8'),
+      )
+    })
+
     it('開始位置の適用中に fatal エラーが来ても currentTime 0 を再試行位置にしない', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
       const onRecordingPlaybackError = vi.fn(() => true)

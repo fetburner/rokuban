@@ -563,6 +563,9 @@ export function LivePlayer(props: LivePlayerProps) {
   const autoPlayPendingRef = useRef(autoPlay)
   // この要素が一度でも再生を始めたか。始めていないセッションのエラーは「位置」を持たない。
   const playedRef = useRef(false)
+  // fatal で hls を破棄した映像は currentTime 0 の timeupdate を出す。それを最後の位置にしない
+  // （`live.mjs` の #1143 再読み込み）。次の再生元を始めるときに解く。
+  const positionReportBlockedRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
@@ -865,6 +868,7 @@ export function LivePlayer(props: LivePlayerProps) {
 
   useEffect(() => {
     let cancelled = false
+    positionReportBlockedRef.current = false
     nativeHlsRef.current = false
     nativeHlsEventRef.current = false
     // oxlint-disable-next-line react/set-state-in-effect -- 前の配信の EVENT 判定を新しい source へ持ち越さない
@@ -1517,6 +1521,7 @@ export function LivePlayer(props: LivePlayerProps) {
           if (!data.fatal || cancelled) return
           const finishFatalError = (handled: boolean) => {
             if (cancelled) return
+            positionReportBlockedRef.current = true
             hls.destroy()
             hlsRef.current = null
             stopDiagnostics()
@@ -1619,6 +1624,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const playbackDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? playbackAxis?.maxSeconds ?? 0
   const updateRecordingPosition = (video: HTMLVideoElement) => {
     if (mode === 'live') return
+    if (positionReportBlockedRef.current) return
     const seconds = chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime
     if (mode === 'original-vod') originalPreviousSecondsRef.current = seconds
     updatePlaybackAxisState({ positionSeconds: seconds })
