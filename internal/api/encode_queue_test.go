@@ -338,7 +338,11 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		}
 		reconciled[title] = true
 	}
+	assertEncodeQueueMatchesReconcile(t, pool, profiles, reconciled)
+}
 
+func assertEncodeQueueMatchesReconcile(t *testing.T, pool *pgxpool.Pool, profiles config.EncodeConfig, reconciled map[string]bool) {
+	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:              pool.Ping,
 		RecordingQuery:     pgstore.NewRecordings(pool),

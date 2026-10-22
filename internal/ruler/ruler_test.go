@@ -1149,7 +1149,7 @@ func TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted(t *testing.
 		t.Fatalf("initial RunPass: %v", err)
 	}
 	// finished 録画だけ作り、原本 media_asset は作らない。
-	insertRecordingForTitle(t, pool, ctx, ruleID, start)
+	insertRecordingForTitle(t, pool, ruleID, start)
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass with finished recording but no original: %v", err)
@@ -1271,7 +1271,7 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 
 // insertRecordingForTitle は finished 録画だけを作り、原本 media_asset は作らない。
 // table-driven な fulfilled 判定の反対側（ingest 未コミット）を fixture する。
-func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ctx context.Context, ruleID int64, startAt time.Time) int64 {
+func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ruleID int64, startAt time.Time) int64 {
 	t.Helper()
 	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
 		p.RuleID = &ruleID

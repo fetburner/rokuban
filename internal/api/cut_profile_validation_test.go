@@ -89,7 +89,7 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 
 	// 3. 録画への事後追加（POST /api/recordings/{id}/encode-profiles）。
 	t.Run("append", func(t *testing.T) {
-		id := insertIngestedRecordingFixture(t, pool, ctx)
+		id := insertIngestedRecordingFixture(t, pool)
 		raw, _ := json.Marshal(map[string]any{"profiles": []string{"cut"}})
 		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encode-profiles",
 			"application/json", bytes.NewReader(raw))
@@ -168,7 +168,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	})
 
 	t.Run("append", func(t *testing.T) {
-		id := insertIngestedRecordingFixture(t, pool, ctx)
+		id := insertIngestedRecordingFixture(t, pool)
 		raw, _ := json.Marshal(map[string]any{"profiles": []string{"cut"}})
 		resp, err := http.Post(srv.URL+"/api/recordings/"+itoa(id)+"/encode-profiles",
 			"application/json", bytes.NewReader(raw))
@@ -184,7 +184,7 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 
 // insertIngestedRecordingFixture は原本 media_asset まで持つ録画を 1 件作る
 // （事後追加 API は原本が active でないと 409 になる）。
-func insertIngestedRecordingFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) int64 {
+func insertIngestedRecordingFixture(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
 		p.NetworkID = 21000
@@ -225,7 +225,7 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 		return resp.StatusCode
 	}
 	withPolicy := func(profiles string) int64 {
-		id := insertIngestedRecordingFixture(t, pool, ctx)
+		id := insertIngestedRecordingFixture(t, pool)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'always', $2::text[])`,
 			id, profiles); err != nil {
@@ -270,7 +270,7 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 		CutProfileNames:    []string{"cut"},
 	}))
 	t.Cleanup(srv.Close)
-	id := insertIngestedRecordingFixture(t, pool, ctx)
+	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 	// 確認済みで一部だけ切る録画（作り直せる状態）。
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
@@ -311,7 +311,7 @@ func TestReencodeRecordingProfile_AllowsTrashedRecording(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	id := insertIngestedRecordingFixture(t, pool, ctx)
+	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
@@ -354,7 +354,7 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 		CutProfileNames:    []string{"cut"},
 	}))
 	t.Cleanup(srv.Close)
-	id := insertIngestedRecordingFixture(t, pool, ctx)
+	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
@@ -446,7 +446,7 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	seed := func(owned bool, cutFrom, cutTo int64) int64 {
-		id := insertIngestedRecordingFixture(t, pool, ctx)
+		id := insertIngestedRecordingFixture(t, pool)
 		seedDesiredEncodeProfiles(t, pool, ctx, id, `{h264,cut}`)
 		if owned {
 			if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
@@ -503,7 +503,7 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	for name, desired := range map[string]string{"cut not desired": `{h264}`, "no policy row": ""} {
-		id := insertIngestedRecordingFixture(t, pool, ctx)
+		id := insertIngestedRecordingFixture(t, pool)
 		if desired != "" {
 			seedDesiredEncodeProfiles(t, pool, ctx, id, desired)
 		}
@@ -546,7 +546,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 		CutProfileNames:    []string{"cut"},
 	}))
 	t.Cleanup(srv.Close)
-	id := insertIngestedRecordingFixture(t, pool, ctx)
+	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
 	profile := "cut"
 	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
@@ -612,7 +612,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 		CutProfileNames:    []string{"cut"},
 	}))
 	t.Cleanup(srv.Close)
-	id := insertIngestedRecordingFixture(t, pool, ctx)
+	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
 	profile := "cut"
 	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {

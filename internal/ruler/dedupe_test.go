@@ -61,7 +61,7 @@ func insertRecording(
 
 // insertRecordingForEvent は event_id を明示して録画履歴を作る（自己一致のテスト用）。
 func insertRecordingForEvent(
-	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
+	t *testing.T, pool *pgxpool.Pool,
 	ruleID *int64, title string, startAt time.Time, eventID int32,
 ) int64 {
 	t.Helper()
@@ -635,7 +635,7 @@ func TestRunPass_DedupeIgnoresOwnRecording(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	// この番組自身の録画（同じ network_id / service_id / event_id）。
-	insertRecordingForEvent(t, pool, ctx, &ruleID, "再放送テスト 第1話", start, eventID)
+	insertRecordingForEvent(t, pool, &ruleID, "再放送テスト 第1話", start, eventID)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -667,7 +667,7 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	// 同じ局（network_id / service_id）だが event_id が違う = 別放送の録画。
-	other := insertRecordingForEvent(t, pool, ctx, &ruleID, "再放送テスト 第1話",
+	other := insertRecordingForEvent(t, pool, &ruleID, "再放送テスト 第1話",
 		time.Now().Add(-7*24*time.Hour), eventID+1)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -867,7 +867,7 @@ VALUES ($1, $2, 'record')`,
 	const eventID3 int32 = 9001
 	p3Start := f.start.Add(7 * 24 * time.Hour)
 	insertProgramWithEvent(t, pool, ctx, programID3, "再放送テスト 第1話", p3Start, eventID3)
-	newRec := insertRecordingForEvent(t, pool, ctx, &f.ruleID, "再放送テスト 第1話", f.start, 0)
+	newRec := insertRecordingForEvent(t, pool, &f.ruleID, "再放送テスト 第1話", f.start, 0)
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("second pass: %v", err)

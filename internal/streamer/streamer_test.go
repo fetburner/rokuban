@@ -474,17 +474,16 @@ func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 }
 
 // seedEncodedAsset は active な encoded 派生物（プロファイル h264）を 1 件コミットする。
-func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, relPath string, size int64) int64 {
+func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, relPath string, size int64) {
 	t.Helper()
 	profile := "h264"
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &profile
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = size
 	})
 
-	return id
 }
 
 // encoded 派生物が ?profile= で配信され、Content-Type が video/mp4 になること。

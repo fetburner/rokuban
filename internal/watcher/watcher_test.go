@@ -271,9 +271,8 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
-func watcherRecordingOptions(site string, networkID, serviceID, eventID int32, startAt time.Time, status string) func(*sqlcgen.CreateRecordingParams) {
+func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.Time, status string) func(*sqlcgen.CreateRecordingParams) {
 	return func(p *sqlcgen.CreateRecordingParams) {
-		p.Site = site
 		p.NetworkID = networkID
 		p.ServiceID = serviceID
 		p.EventID = eventID
@@ -589,7 +588,7 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		record.Program.StartAt.Time(), "failed"))
 
@@ -678,10 +677,10 @@ func TestProcessRecord_AllowsEventIDReuse(t *testing.T) {
 	createTestReservation(t, pool, programID)
 	record := testRecord("record-event-id-reuse-001", programID, "finished")
 	newStart := record.Program.StartAt.Time()
-	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		newStart.Add(-365*24*time.Hour), "finished"))
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		newStart.Add(-2*365*24*time.Hour), "failed"))
 
@@ -729,7 +728,7 @@ func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-media-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		record.Program.StartAt.Time(), "failed"))
 	assetID := dbtest.OriginalAsset(t, pool, failedID)
@@ -795,7 +794,7 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-idem-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		record.Program.StartAt.Time(), "failed"))
 
@@ -1704,7 +1703,7 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 		},
 	}
 	// 同一 active-event に生きている finished 行を先に作る。
-	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite,
+	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(schedule.Program.NetworkID), int32(schedule.Program.ServiceID),
 		int32(schedule.Program.EventID), time.UnixMilli(startAt.Time().UnixMilli()), "finished"))
 
@@ -1842,7 +1841,7 @@ func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
 	ctx := context.Background()
 
 	q := sqlcgen.New(pool)
-	oursRecordingID := dbtest.Recording(t, pool, watcherRecordingOptions(DefaultSite, 1, 1, 901,
+	oursRecordingID := dbtest.Recording(t, pool, watcherRecordingOptions(1, 1, 901,
 		time.Now().Add(-time.Hour), "finished"))
 	oursLength := int64(100)
 	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
