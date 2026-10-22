@@ -1984,8 +1984,9 @@ type Recording struct {
 	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 	// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-	// `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
-	// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+	// `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+	// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+	// それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
 	// 原本を削除しない。
 	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
 	NetworkId    int                   `json:"networkId"`
@@ -2050,8 +2051,9 @@ type RecordingChannelType string
 // RecordingKeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 // ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 // `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-// `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
-// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+// `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+// それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
 // 原本を削除しない。
 type RecordingKeepOriginal string
 
@@ -2354,15 +2356,17 @@ type SetRecordingEncodePolicyInput struct {
 	// 検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。
 	CmDetect *bool `json:"cmDetect,omitempty"`
 
-	// KeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
-	// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+	// KeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+	// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+	// それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
 	// 原本を削除可能にする。指定するには desired なエンコードプロファイルが
 	// 1 つ以上必要。
 	KeepOriginal *SetRecordingEncodePolicyInputKeepOriginal `json:"keepOriginal,omitempty"`
 }
 
-// SetRecordingEncodePolicyInputKeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
-// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+// SetRecordingEncodePolicyInputKeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+// それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
 // 原本を削除可能にする。指定するには desired なエンコードプロファイルが
 // 1 つ以上必要。
 type SetRecordingEncodePolicyInputKeepOriginal string

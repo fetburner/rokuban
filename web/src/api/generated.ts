@@ -101,8 +101,9 @@ export interface AddEncodeProfilesInput {
 }
 
 /**
- * `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
- * 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+ * `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+ * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+ * それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
  * 原本を削除可能にする。指定するには desired なエンコードプロファイルが
  * 1 つ以上必要。
  */
@@ -116,8 +117,9 @@ export const SetRecordingEncodePolicyInputKeepOriginal = {
 
 export interface SetRecordingEncodePolicyInput {
   /**
-     * `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
-     * 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+     * `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+     * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+     * それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
      * 原本を削除可能にする。指定するには desired なエンコードプロファイルが
      * 1 つ以上必要。
      */
@@ -568,8 +570,9 @@ export const RecordingStatus = {
  * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
  * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
  * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
- * `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
- * 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+ * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+ * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+ * それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
  * 原本を削除しない。
  */
 export type RecordingKeepOriginal = typeof RecordingKeepOriginal[keyof typeof RecordingKeepOriginal];
@@ -906,8 +909,9 @@ export interface Recording {
      * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
      * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
      * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-     * `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
-     * 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+     * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+     * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+     * それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
      * 原本を削除しない。
      */
   keepOriginal: RecordingKeepOriginal;

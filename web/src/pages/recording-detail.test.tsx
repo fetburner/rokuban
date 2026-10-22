@@ -1345,12 +1345,21 @@ describe('RecordingDetailPage 原本保持ポリシー (issue #697)', () => {
 
     const select = await expandKeepOriginalEditor()
     expect(select).toHaveValue('always')
+    expect(
+      screen.getByText(
+        '「エンコード後に削除」を選ぶと、原本を使う処理（エンコード・サムネイル・シークプレビュー・CM 検出など）と、要求した作り直しが済んだ後、最大 15 分で原本を削除します。原本削除後は再エンコードできません。',
+      ),
+    ).toBeInTheDocument()
     await user.selectOptions(select, 'until_encoded')
     const saveButton = screen.getByRole('button', { name: '保持ポリシーを保存' })
     await user.click(saveButton)
 
     const dialog = await screen.findByRole('alertdialog', { name: 'エンコード後に原本を削除しますか？' })
-    expect(dialog).toHaveTextContent(/原本の削除は\s+取り消せず、削除後は再エンコードできません。/)
+    expect(
+      within(dialog).getByText(
+        '原本を使う処理（エンコード・サムネイル・シークプレビュー・CM 検出など）と、要求した作り直しが済むと、最大 15 分後に原本を削除します。原本の削除は取り消せず、削除後は再エンコードできません。',
+      ),
+    ).toBeInTheDocument()
     expect(
       fetchMock.mock.calls.filter(
         (call) =>
