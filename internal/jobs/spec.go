@@ -104,25 +104,29 @@ func (a IngestJobArgs) Spec() jobq.Spec {
 }
 
 // Spec は EPG 同期の論理キュー、10 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a EpgSyncArgs) Spec() jobq.Spec {
-	return spec(EpgQueue, fixedTimeout(epgSyncJobTimeout), 0, true, 1)
+	return spec(EpgQueue, fixedTimeout(epgSyncJobTimeout), 1, true, 1)
 }
 
 // Spec はチューナー同期の論理キュー、1 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a TunerSyncArgs) Spec() jobq.Spec {
-	return spec(EpgQueue, fixedTimeout(tunerSyncJobTimeout), 0, true, 1)
+	return spec(EpgQueue, fixedTimeout(tunerSyncJobTimeout), 1, true, 1)
 }
 
 // Spec は ruler パスの論理キュー、5 分締切、合流ヒントを返す。
 // Coalesce は排他を保証しない。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a RulerPassArgs) Spec() jobq.Spec {
-	return spec(RulerQueue, fixedTimeout(rulerPassJobTimeout), 0, true, 1)
+	return spec(RulerQueue, fixedTimeout(rulerPassJobTimeout), 1, true, 1)
 }
 
 // Spec は reconciler パスの論理キュー、10 分締切、合流ヒントを返す。
 // Queue は論理名のままにし、adapter が site 束縛に応じて物理キュー名を導出する。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a ReconcilePassArgs) Spec() jobq.Spec {
-	return spec(ReconcilerQueue, fixedTimeout(reconcilePassJobTimeout), 0, true, 1)
+	return spec(ReconcilerQueue, fixedTimeout(reconcilePassJobTimeout), 1, true, 1)
 }
 
 // Spec は record sweep の論理キュー、10 分締切、合流ヒントを返す。
@@ -160,8 +164,9 @@ func (a SeekTilesJobArgs) Spec() jobq.Spec {
 }
 
 // Spec は thumbnail reconcile の論理キュー、5 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a ThumbnailReconcileArgs) Spec() jobq.Spec {
-	return spec(ThumbnailQueue, fixedTimeout(thumbnailReconcileJobTimeout), 0, true, 1)
+	return spec(ThumbnailQueue, fixedTimeout(thumbnailReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は CM 検出の論理キュー、録画尺に応じた締切、10 回の adapter 試行上限、
@@ -171,8 +176,9 @@ func (a CMDetectJobArgs) Spec() jobq.Spec {
 }
 
 // Spec は CM 検出 reconcile の論理キュー、5 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a CMDetectReconcileArgs) Spec() jobq.Spec {
-	return spec(CMDetectQueue, fixedTimeout(cmDetectReconcileJobTimeout), 0, true, 1)
+	return spec(CMDetectQueue, fixedTimeout(cmDetectReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は CM ロゴ候補の論理キュー、録画尺に応じた締切、1 回の adapter 試行上限、
@@ -182,27 +188,32 @@ func (a CMLogoCandidateJobArgs) Spec() jobq.Spec {
 }
 
 // Spec は分類ルール reconcile の論理キュー、1 分締切を返す。
-// Coalesce は無効にし、編集中に投入された各変更を残す。
+// Coalesce は無効にし、編集中に投入された各変更を残す。失敗したパスは再試行せず、
+// 次の定期投入が再試行になる。
 func (a LabelRuleReconcileArgs) Spec() jobq.Spec {
-	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 0, false, 1)
+	return spec(CleanupQueue, fixedTimeout(defaultJobTimeout), 1, false, 1)
 }
 
 // Spec は encode reconcile の論理キュー、5 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a EncodeReconcileArgs) Spec() jobq.Spec {
-	return spec(EncodeQueue, fixedTimeout(encodeReconcileJobTimeout), 0, true, 1)
+	return spec(EncodeQueue, fixedTimeout(encodeReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は delete reconcile の論理キュー、10 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a DeleteReconcileArgs) Spec() jobq.Spec {
-	return spec(CleanupQueue, fixedTimeout(deleteReconcileJobTimeout), 0, true, 1)
+	return spec(CleanupQueue, fixedTimeout(deleteReconcileJobTimeout), 1, true, 1)
 }
 
 // Spec は catalog export の論理キュー、5 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a CatalogExportArgs) Spec() jobq.Spec {
-	return spec(CleanupQueue, fixedTimeout(catalogExportJobTimeout), 0, true, 1)
+	return spec(CleanupQueue, fixedTimeout(catalogExportJobTimeout), 1, true, 1)
 }
 
 // Spec は storage sync の論理キュー、1 分締切、合流ヒントを返す。
+// 失敗したパスは再試行せず、次の定期投入が再試行になる。
 func (a StorageSyncArgs) Spec() jobq.Spec {
-	return spec(StorageQueue, fixedTimeout(storageSyncJobTimeout), 0, true, 1)
+	return spec(StorageQueue, fixedTimeout(storageSyncJobTimeout), 1, true, 1)
 }
