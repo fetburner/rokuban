@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TestRecordingChapterSpansConstraints は「あってはいけない組み合わせ」を DB が
@@ -20,7 +21,7 @@ func TestRecordingChapterSpansConstraints(t *testing.T) {
 
 	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           2111,
@@ -98,7 +99,7 @@ func TestRecordingChapterSpansRequireOwnership(t *testing.T) {
 
 	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           2112,

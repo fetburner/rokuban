@@ -17,13 +17,13 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -76,7 +76,7 @@ func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID 
 	t.Helper()
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "sites/default/test/already-committed.m2ts",
 		SizeBytes:   1,
 	}); err != nil {

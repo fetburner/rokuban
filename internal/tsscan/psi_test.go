@@ -8,8 +8,8 @@ import (
 
 	"github.com/Comcast/gots/v3"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
@@ -92,7 +92,7 @@ func TestScanWorker_PersistsPIDTypesFromPSI(t *testing.T) {
 		t.Fatalf("writing original: %v", err)
 	}
 	assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID, Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(data)),
+		RecordingID: recordingID, Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(data)),
 	})
 	if err != nil {
 		t.Fatalf("creating original media asset: %v", err)

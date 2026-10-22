@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -30,7 +29,7 @@ func TestChapterEditsContract(t *testing.T) {
 			eventID := contractEventID.Add(1)
 			id, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 				Source:            "manual",
-				Site:              db.DefaultSite,
+				Site:              store.DefaultSite,
 				NetworkID:         32678,
 				ServiceID:         5168,
 				EventID:           eventID,

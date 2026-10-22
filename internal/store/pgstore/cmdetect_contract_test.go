@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -63,7 +62,7 @@ func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	ctx := context.Background()
 	id, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           cmDetectionContractEventID.Add(1),
@@ -79,7 +78,7 @@ func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 		t.Fatalf("seeding recording: %v", err)
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindOriginal,
+		RecordingID: id, Kind: store.AssetKindOriginal,
 		RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 	}); err != nil {
 		t.Fatalf("seeding original media asset: %v", err)
@@ -240,7 +239,7 @@ func markCMDetectionOriginalMissing(t *testing.T, pool *pgxpool.Pool, recordingI
 	ctx := context.Background()
 	var assetID int64
 	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = $2`,
-		recordingID, db.AssetKindOriginal).Scan(&assetID); err != nil {
+		recordingID, store.AssetKindOriginal).Scan(&assetID); err != nil {
 		t.Fatalf("finding original media asset: %v", err)
 	}
 	if err := sqlcgen.New(pool).UpsertMissingMediaAsset(ctx, assetID); err != nil {

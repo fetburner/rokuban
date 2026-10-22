@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -61,7 +61,7 @@ func seedEncodedVersions(t *testing.T, pool *pgxpool.Pool, id int64, profiles ..
 		profile := p
 		_, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 			RecordingID: id,
-			Kind:        db.AssetKindEncoded,
+			Kind:        store.AssetKindEncoded,
 			Profile:     &profile,
 			RelPath:     fmt.Sprintf("encoded/%d_%s.mp4", id, p),
 			SizeBytes:   200,

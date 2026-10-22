@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -34,7 +34,7 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	recordingID := seedRecording(t, pool, "モノリスの録画", time.Now().Truncate(time.Second), "finished", 1)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "r.m2ts",
 		SizeBytes:   int64(len(content)),
 	}); err != nil {

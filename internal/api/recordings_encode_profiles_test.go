@@ -19,11 +19,11 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -113,14 +113,14 @@ func seedReservationForTest(t *testing.T, pool *pgxpool.Pool, programID int64) {
 		)
 		VALUES ($1, $2, now(), 1800000, 32736, 1024, 'GR', '27', $3, 'テスト局')
 		ON CONFLICT (site, program_id) DO NOTHING`,
-		db.DefaultSite, programID, int32(programID%100000),
+		store.DefaultSite, programID, int32(programID%100000),
 	); err != nil {
 		t.Fatalf("seeding program_snapshot: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO reservations (site, program_id)
 		VALUES ($1, $2)`,
-		db.DefaultSite, programID,
+		store.DefaultSite, programID,
 	); err != nil {
 		t.Fatalf("seeding reservation: %v", err)
 	}
@@ -370,7 +370,7 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	noPolicyID := seedRecording(t, pool, "未凍結", time.Now().Add(time.Second).Truncate(time.Second), "finished", 603)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: noPolicyID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     fmt.Sprintf("test/%d.m2ts", noPolicyID),
 		SizeBytes:   1000,
 	}); err != nil {
@@ -507,7 +507,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	q := sqlcgen.New(pool)
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &profile,
 		RelPath:     fmt.Sprintf("encoded/%d.mp4", id),
 		SizeBytes:   200,
@@ -516,7 +516,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	}
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindThumbnail,
+		Kind:        store.AssetKindThumbnail,
 		RelPath:     fmt.Sprintf("thumbnail/%d.jpg", id),
 		SizeBytes:   50,
 	}); err != nil {
@@ -525,7 +525,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	// シークプレビュー用タイルも「再生に必要な派生物」なので、無い間は原本が残る。
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindSeekTiles,
+		Kind:        store.AssetKindSeekTiles,
 		RelPath:     fmt.Sprintf("thumbnail/%d_tiles.jpg", id),
 		SizeBytes:   60,
 	}); err != nil {
@@ -685,7 +685,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	// 「予約がある録画」を再現できず、NoReservation 版と実質同一のケースになる。
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "rule",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32736,
 		ServiceID:         1024,
 		EventID:           5001,
@@ -769,7 +769,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	// 直接再現する。
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     fmt.Sprintf("test/%d.m2ts", id),
 		SizeBytes:   1000,
 	}); err != nil {
@@ -1142,7 +1142,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	insertChapterSpan(t, pool, id, chapters.Span{StartMs: 600000, EndMs: 900000, Label: "CM", Cut: true})
 	cutProfile := "cut"
 	cutAssetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindEncoded, Profile: &cutProfile, RelPath: "test/stale-cut.mp4", SizeBytes: 50,
+		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &cutProfile, RelPath: "test/stale-cut.mp4", SizeBytes: 50,
 	})
 	if err != nil {
 		t.Fatalf("seeding cut asset: %v", err)

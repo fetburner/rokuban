@@ -43,7 +43,7 @@ import (
 //
 // **jobSite は正規化しない。空文字列は無条件に拒む。** config のバリデーションが
 // site 名の非空を要求するため、clients のキーは常に実際の site 名であり、
-// 空文字列がキーになることはない。jobSite を db.DefaultSite へ読み替えてから
+// 空文字列がキーになることはない。jobSite を store.DefaultSite へ読み替えてから
 // 引くと、たまたま "default" という名前の site が束縛されているデプロイでは
 // `Site: ""` の（本来壊れている）ジョブが素通りしてしまう --- 二次防御としての
 // verifySite が拾いたいのはまさにこの「args.Site 自体が壊れている経路」

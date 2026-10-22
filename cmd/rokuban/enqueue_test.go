@@ -10,8 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -35,7 +35,7 @@ func TestRunEnqueue_InsertsJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
@@ -43,7 +43,7 @@ func TestRunEnqueue_InsertsJob(t *testing.T) {
 		t.Errorf("output = %q, want to contain %q", out.String(), "inserted job")
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "ruler-pass", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "ruler-pass", store.DefaultSite)
 }
 
 // 既に同じサイトのジョブが待機中なら投入せず、終了コード 0 相当（error が nil）
@@ -54,19 +54,19 @@ func TestRunEnqueue_AlreadyPending_SkipsWithoutError(t *testing.T) {
 	ctx := context.Background()
 
 	var first bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &first); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &first); err != nil {
 		t.Fatalf("runEnqueue (first): %v", err)
 	}
 
 	var second bytes.Buffer
-	if err := runEnqueue(ctx, pool, "ruler-pass", db.DefaultSite, &second); err != nil {
+	if err := runEnqueue(ctx, pool, "ruler-pass", store.DefaultSite, &second); err != nil {
 		t.Fatalf("runEnqueue (second) returned error, want nil (合流時も終了コード 0): %v", err)
 	}
 	if !strings.Contains(second.String(), "already pending") {
 		t.Errorf("output = %q, want to contain %q", second.String(), "already pending")
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "ruler-pass", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "ruler-pass", store.DefaultSite)
 }
 
 // epg-sync も同様に投入できること（epg_sync と ruler_pass の両方が対応していることの
@@ -76,11 +76,11 @@ func TestRunEnqueue_EpgSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "epg-sync", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "epg-sync", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "epg-sync", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "epg-sync", store.DefaultSite)
 }
 
 // reconcile-pass も投入できること（epg_sync / ruler_pass / reconcile_pass の
@@ -90,11 +90,11 @@ func TestRunEnqueue_ReconcilePass(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "reconcile-pass", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "reconcile-pass", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "reconcile-pass", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "reconcile-pass", store.DefaultSite)
 }
 
 // record-sweep も投入できること（watcher の 3 段構えのうち (c) 定期全量突き合わせを
@@ -104,11 +104,11 @@ func TestRunEnqueue_RecordSweep(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "record-sweep", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "record-sweep", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "record-sweep", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "record-sweep", store.DefaultSite)
 }
 
 // tuner-sync も投入できること（チューナー射影を CronJob から回せることの確認。
@@ -118,11 +118,11 @@ func TestRunEnqueue_TunerSync(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "tuner-sync", db.DefaultSite, &out); err != nil {
+	if err := runEnqueue(ctx, pool, "tuner-sync", store.DefaultSite, &out); err != nil {
 		t.Fatalf("runEnqueue: %v", err)
 	}
 
-	requireEnqueuedJob(t, ctx, pool, "tuner-sync", db.DefaultSite)
+	requireEnqueuedJob(t, ctx, pool, "tuner-sync", store.DefaultSite)
 }
 
 // catalog-export も投入できること（M3-9 / issue #71）。
@@ -309,7 +309,7 @@ func TestRunEnqueue_UnknownJob(t *testing.T) {
 	ctx := context.Background()
 
 	var out bytes.Buffer
-	if err := runEnqueue(ctx, pool, "no-such-job", db.DefaultSite, &out); err == nil {
+	if err := runEnqueue(ctx, pool, "no-such-job", store.DefaultSite, &out); err == nil {
 		t.Fatal("unknown job のとき error を期待したが nil だった")
 	}
 }

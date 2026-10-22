@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -20,7 +21,7 @@ func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Ti
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           eventID,
@@ -54,7 +55,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     fmt.Sprintf("test/%d.m2ts", recordingID),
 		SizeBytes:   size,
 	})
@@ -247,7 +248,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	const eventID = 700
 	seedRecording(t, pool, "擬似失敗（置換済み）", base.Add(-time.Hour), "failed", eventID)
 	n, err := sqlcgen.New(pool).SupersedeFailedRecording(context.Background(), sqlcgen.SupersedeFailedRecordingParams{
-		Site:           db.DefaultSite,
+		Site:           store.DefaultSite,
 		NetworkID:      32678,
 		ServiceID:      5168,
 		EventID:        eventID,
@@ -494,7 +495,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	q := sqlcgen.New(pool)
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &h264,
 		RelPath:     "a_h264.mp4",
 		SizeBytes:   100,
@@ -503,7 +504,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	}
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &h265,
 		RelPath:     "a_h265.mp4",
 		SizeBytes:   80,
@@ -513,7 +514,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	// deleted は載せない
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &legacy,
 		RelPath:     "a_legacy.mp4",
 		SizeBytes:   10,
@@ -1229,7 +1230,7 @@ func TestGetRecording_Trash(t *testing.T) {
 	h264 := "h264"
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &h264,
 		RelPath:     "trash_h264.mp4",
 		SizeBytes:   50,
@@ -1298,7 +1299,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 	desc := "一覧要素と単体取得が一致するかの確認用"
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           40,
@@ -1320,7 +1321,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 	h264 := "h264"
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &h264,
 		RelPath:     "match_h264.mp4",
 		SizeBytes:   50,

@@ -11,8 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -270,19 +270,19 @@ func TestGetProgramOverlaps_ExcludesSkippedIntent(t *testing.T) {
 	// program_intents / program_overrides / reservations はいずれも
 	// program_snapshots への FK（#27）を持つので、先に upsert しておく。
 	if err := q.UpsertProgramSnapshot(ctx, sqlcgen.UpsertProgramSnapshotParams{
-		Site: db.DefaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
+		Site: store.DefaultSite, ProgramID: skippedProgramID, Title: "skip された番組",
 		StartAt: skippedStart, DurationMs: testProgramDuration.Milliseconds(),
 		NetworkID: networkID, ServiceID: serviceID, ChannelType: channelType, Channel: channel,
 	}); err != nil {
 		t.Fatalf("upserting program snapshot: %v", err)
 	}
 	if _, err := q.UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: db.DefaultSite, ProgramID: skippedProgramID, Action: "skip",
+		Site: store.DefaultSite, ProgramID: skippedProgramID, Action: "skip",
 	}); err != nil {
 		t.Fatalf("upserting skip intent: %v", err)
 	}
 	if _, err := q.UpsertProgramOverrides(ctx, sqlcgen.UpsertProgramOverridesParams{
-		Site: db.DefaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
+		Site: store.DefaultSite, ProgramID: skippedProgramID, Overrides: json.RawMessage(`{"priority":9}`),
 	}); err != nil {
 		t.Fatalf("upserting program overrides: %v", err)
 	}

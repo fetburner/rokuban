@@ -131,7 +131,7 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			t.Helper()
 			assetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 				RecordingID: recordingID,
-				Kind:        db.AssetKindOriginal,
+				Kind:        store.AssetKindOriginal,
 				RelPath:     fmt.Sprintf("sites/contract-site/%d/original.m2ts", recordingID),
 				SizeBytes:   1,
 			})

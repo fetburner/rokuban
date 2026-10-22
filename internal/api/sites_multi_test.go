@@ -16,9 +16,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -67,8 +67,8 @@ func TestListSites_ReturnsConfiguredRegistry(t *testing.T) {
 	}
 }
 
-// Sites 未設定（テストの部分構成）は db.DefaultSite の 1 要素になる
-// （既存の「site が空なら db.DefaultSite」規約を集合に持ち上げただけ）。
+// Sites 未設定（テストの部分構成）は store.DefaultSite の 1 要素になる
+// （既存の「site が空なら store.DefaultSite」規約を集合に持ち上げただけ）。
 func TestListSites_DefaultsToDefaultSiteWhenUnconfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), ReservationStore: pgstore.NewReservations(pool)})
@@ -84,8 +84,8 @@ func TestListSites_DefaultsToDefaultSiteWhenUnconfigured(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0] != db.DefaultSite {
-		t.Errorf("sites = %v, want [%q]", got, db.DefaultSite)
+	if len(got) != 1 || got[0] != store.DefaultSite {
+		t.Errorf("sites = %v, want [%q]", got, store.DefaultSite)
 	}
 }
 

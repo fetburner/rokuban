@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -55,14 +54,14 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	defer server.Close()
 
 	registry := NewWorkers(&Deps{
-		MirakcClients:      singleSiteClients(db.DefaultSite, mirakc.NewClient(server.URL, nil)),
+		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(server.URL, nil)),
 		MediaPublish:       media,
 		IngestTarget:       pgstore.NewRecordings(pool),
 		IngestPrecheck:     media,
 		Enqueuer:           newRecordingEnqueuer(),
 		IngestStallTimeout: time.Second,
 	})
-	if err := registry.Work(context.Background(), jobs.IngestJobArgs{Site: db.DefaultSite, RecordID: recordID}); err != nil {
+	if err := registry.Work(context.Background(), jobs.IngestJobArgs{Site: store.DefaultSite, RecordID: recordID}); err != nil {
 		t.Fatalf("registered ingest worker Work(): %v", err)
 	}
 	if _, ok := readIngestProgress(t, pool, recordingID); ok {
@@ -73,11 +72,11 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 // singleSiteClients は 1 site だけを束縛するテスト用の Deps.MirakcClients /
 // *Worker.MirakcClients を組み立てる（issue #532 で単一の *mirakc.Client
 // フィールドが map になったことに伴うテストヘルパー）。site を省略（""）した
-// 呼び出しは db.DefaultSite を使う --- 大半のワーカーテストは複数 site を
+// 呼び出しは store.DefaultSite を使う --- 大半のワーカーテストは複数 site を
 // 気にしないので、単一サイトの map を毎回手で組み立てずに済ませる。
 func singleSiteClients(site string, client *mirakc.Client) map[string]*mirakc.Client {
 	if site == "" {
-		site = db.DefaultSite
+		site = store.DefaultSite
 	}
 	return map[string]*mirakc.Client{site: client}
 }

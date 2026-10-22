@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/medialock"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
@@ -83,11 +82,11 @@ func checkAsset(mediaDir, realMediaDir string, asset Asset) (store.InPlaceAsset,
 	}
 
 	switch asset.Kind {
-	case db.AssetKindEncoded:
+	case store.AssetKindEncoded:
 		if asset.Profile == nil || strings.TrimSpace(*asset.Profile) == "" {
 			return store.InPlaceAsset{}, fmt.Errorf("encoded asset %q requires a profile", relPath)
 		}
-	case db.AssetKindOriginal, db.AssetKindThumbnail, db.AssetKindSeekTiles:
+	case store.AssetKindOriginal, store.AssetKindThumbnail, store.AssetKindSeekTiles:
 		if asset.Profile != nil {
 			return store.InPlaceAsset{}, fmt.Errorf("%s asset %q must not have a profile", asset.Kind, relPath)
 		}

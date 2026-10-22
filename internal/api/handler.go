@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -74,8 +73,8 @@ type Server struct {
 
 // NewServer は Server を生成する。enqueuer はジョブ投入の契約で、実行エンジンを
 // api から隠す。nil ならジョブ投入が必要な操作は投入を省略する（RouterConfig.Enqueuer 参照）。
-// sites が空なら db.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
-// 「site が空なら db.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
+// sites が空なら store.DefaultSite の 1 要素とみなす（テストの部分構成を許す。既存の
+// 「site が空なら store.DefaultSite」規約を集合に持ち上げただけで新しい規約ではない）。
 // encodeProfileNames は config.encode.profiles の名前一覧（未知名の 400 判定用。
 // nil/空なら検証をスキップする）。一覧 API にも同じ順序で載せる。
 // liveProfiles は config.live.profiles の公開用一覧。設定順を保持する。
@@ -94,7 +93,7 @@ type Server struct {
 func NewServer(ready func(context.Context) error, chapterStore store.ChapterEdits, cmStationStore store.CMStation, cmDetectionStore store.CMDetection, playbackStore store.PlaybackState, recordingTrash store.RecordingTrash, recordingQuery store.RecordingQuery, tunerReader store.TunerReader, capacityStore store.Capacity, reservationStore store.Reservations, ruleStore store.Rules, labelRules store.LabelRules, breakerAdmin store.BreakerAdmin, epgReader store.EPGReader, programSearch store.ProgramSearch, encodePolicy store.EncodePolicy, dedupe store.RulerDedupe, mediaReader store.MediaReader, storageObservation store.StorageObservation, enqueuer jobq.Enqueuer, sites []string, encodeProfileNames []string, cutProfileNames []string, liveProfiles []LiveProfileSummary, caps Capabilities) *Server {
 	siteNames := sites
 	if len(siteNames) == 0 {
-		siteNames = []string{db.DefaultSite}
+		siteNames = []string{store.DefaultSite}
 	}
 	siteSet := make(map[string]struct{}, len(siteNames))
 	for _, s := range siteNames {

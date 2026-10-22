@@ -354,7 +354,7 @@ func TestCircuitBreaker_TripListResumeRoundTripForEveryKnownName(t *testing.T) {
 
 			// site を持たない名前（breaker.IsSiteless）は site 列が空文字列
 			// （internal/breaker.IsSiteless のコメント参照）、それ以外は
-			// db.DefaultSite（単一サイト構成の既定）。resume も対応する
+			// store.DefaultSite（単一サイト構成の既定）。resume も対応する
 			// エンドポイントを分ける（issue #450 --- 旧ルートは site を持たない
 			// 名前を、新ルートは site を持つ名前を 400 で拒否する）。
 			site := "default"

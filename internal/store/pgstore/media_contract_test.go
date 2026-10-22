@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
@@ -39,7 +38,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		Publisher:    NewMedia(pool),
 		Progress:     NewMedia(pool),
 		Chapters:     NewAnalysis(pool),
-		Site:         db.DefaultSite,
+		Site:         store.DefaultSite,
 		NewRecording: func(t *testing.T) int64 { return newMediaContractRecording(t, pool) },
 		SetRecordingEncodeTimes: func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time) {
 			t.Helper()
@@ -68,7 +67,7 @@ func newMediaContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           mediaContractEventID.Add(1),
@@ -233,12 +232,12 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		t.Helper()
 		return store.InPlaceInput{
 			Recording: store.InPlaceRecording{
-				Source: "manual", Site: db.DefaultSite, NetworkID: 32678, ServiceID: 5168,
+				Source: "manual", Site: store.DefaultSite, NetworkID: 32678, ServiceID: 5168,
 				EventID: mediaContractEventID.Add(1), ServiceName: "in-place contract fixture",
 				ChannelType: "GR", Channel: "27", Title: "in-place contract fixture",
 				ProgramStartAt: time.Now().UTC().Truncate(time.Second), ProgramDurationMs: 60_000, Status: "finished",
 			},
-			Assets: []store.InPlaceAsset{{Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
+			Assets: []store.InPlaceAsset{{Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: 1}},
 		}
 	}
 }

@@ -13,12 +13,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -59,7 +59,7 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 		t.Fatalf("write: %v", err)
 	}
 	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID, Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
+		RecordingID: recordingID, Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
 	})
 	if err != nil {
 		t.Fatalf("seeding original media_asset: %v", err)
@@ -178,7 +178,7 @@ func TestTSScan_InPlaceOriginalAndSizeChangeReplaceStatistics(t *testing.T) {
 			Title: "in-place scan", ProgramStartAt: time.Unix(1_700_000_000, 0),
 			ProgramDurationMs: 60000, Status: "finished",
 		},
-		Assets: []inplace.Asset{{Kind: db.AssetKindOriginal, RelPath: relPath}},
+		Assets: []inplace.Asset{{Kind: store.AssetKindOriginal, RelPath: relPath}},
 	}
 	first, err := inplace.Register(ctx, pgstore.NewMedia(pool), mediaDir, input)
 	if err != nil {

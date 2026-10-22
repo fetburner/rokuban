@@ -12,7 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -36,8 +35,8 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 			recordingID := newTSScanContractRecording(t, pool, "TS scan store contract fixture")
 			assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 				RecordingID: recordingID,
-				Kind:        db.AssetKindOriginal,
-				RelPath:     fmt.Sprintf("sites/%s/ts-scan-contract/%d.ts", db.DefaultSite, recordingID),
+				Kind:        store.AssetKindOriginal,
+				RelPath:     fmt.Sprintf("sites/%s/ts-scan-contract/%d.ts", store.DefaultSite, recordingID),
 				SizeBytes:   sizeBytes,
 			})
 			if err != nil {
@@ -57,9 +56,9 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 			profile := "h264"
 			assetID, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 				RecordingID: recordingID,
-				Kind:        db.AssetKindEncoded,
+				Kind:        store.AssetKindEncoded,
 				Profile:     &profile,
-				RelPath:     fmt.Sprintf("sites/%s/ts-scan-contract/%d.mp4", db.DefaultSite, recordingID),
+				RelPath:     fmt.Sprintf("sites/%s/ts-scan-contract/%d.mp4", store.DefaultSite, recordingID),
 				SizeBytes:   1,
 			})
 			if err != nil {
@@ -175,7 +174,7 @@ func newTSScanContractRecording(t *testing.T, pool *pgxpool.Pool, serviceName st
 	t.Helper()
 	recordingID, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           tsScanContractEventID.Add(1),

@@ -1447,9 +1447,9 @@ func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 		"NEW.record_id = 'sweep-fail-record'")
 
 	records := []mirakc.Record{
-		testRecord("sweep-good-before-failure", 200010, db.RecordingStatusFinished),
-		testRecord(failingRecordID, 200011, db.RecordingStatusFinished),
-		testRecord("sweep-good-after-failure", 200012, db.RecordingStatusFinished),
+		testRecord("sweep-good-before-failure", 200010, store.RecordingStatusFinished),
+		testRecord(failingRecordID, 200011, store.RecordingStatusFinished),
+		testRecord("sweep-good-after-failure", 200012, store.RecordingStatusFinished),
 	}
 	for i := range records {
 		records[i].Program.EventID = i + 10
@@ -1517,7 +1517,7 @@ func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
 	baseWatcher, pool := setupTest(t)
 	ctx := context.Background()
 	createTestReservation(t, pool, 200013)
-	record := testRecord("sweep-after-schedule-list-failure", 200013, db.RecordingStatusFinished)
+	record := testRecord("sweep-after-schedule-list-failure", 200013, store.RecordingStatusFinished)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
@@ -1569,7 +1569,7 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 	name := "Failed schedule"
 	reason := mirakc.FailedReason{Type: "start-recording-failed"}
 	schedule := mirakc.Schedule{
-		State:        db.RecordingStatusFailed,
+		State:        store.RecordingStatusFailed,
 		FailedReason: &reason,
 		Program: mirakc.Program{
 			ID:        failedProgramID,
@@ -1582,7 +1582,7 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 			Name:      &name,
 		},
 	}
-	record := testRecord("sweep-record-after-failed-schedule", 200015, db.RecordingStatusFinished)
+	record := testRecord("sweep-record-after-failed-schedule", 200015, store.RecordingStatusFinished)
 	record.Program.EventID = 43
 	services := []mirakc.Service{{
 		ServiceID: 1024,
@@ -1692,8 +1692,8 @@ func TestSweep_RecoversFailedSchedule(t *testing.T) {
 	).Scan(&status, &qeJSON); err != nil {
 		t.Fatalf("querying recovered recording: %v", err)
 	}
-	if status != db.RecordingStatusFailed {
-		t.Errorf("recovered recording status = %q, want %q", status, db.RecordingStatusFailed)
+	if status != store.RecordingStatusFailed {
+		t.Errorf("recovered recording status = %q, want %q", status, store.RecordingStatusFailed)
 	}
 	var events []db.QualityEvent
 	if err := json.Unmarshal(qeJSON, &events); err != nil {
@@ -1743,7 +1743,7 @@ func TestSweep_RecoversFailedRecord(t *testing.T) {
 
 	const programID = int64(200004)
 	createTestReservation(t, pool, programID)
-	record := testRecord("reconcile-failed-record-001", programID, db.RecordingStatusFailed)
+	record := testRecord("reconcile-failed-record-001", programID, store.RecordingStatusFailed)
 	message := "pipeline exited with an error"
 	record.Recording.FailedReason = &mirakc.FailedReason{
 		Type:    "pipeline-error",

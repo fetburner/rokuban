@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -56,7 +56,7 @@ func (f *encodePolicyContractDB) newRecording(t *testing.T) int64 {
 	t.Helper()
 	id, err := sqlcgen.New(f.pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              db.DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         32678,
 		ServiceID:         5168,
 		EventID:           encodePolicyContractEventID.Add(1),

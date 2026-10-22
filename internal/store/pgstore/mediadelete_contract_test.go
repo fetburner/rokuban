@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -22,7 +22,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			t.Helper()
 			id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 				Source:            "manual",
-				Site:              db.DefaultSite,
+				Site:              store.DefaultSite,
 				NetworkID:         32678,
 				ServiceID:         5168,
 				EventID:           mediaDeleteContractEventID.Add(1),
@@ -45,7 +45,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 				RecordingID: recordingID,
 				Kind:        kind,
 				Profile:     profile,
-				RelPath:     fmt.Sprintf("sites/%s/store-contract/%d/%s", db.DefaultSite, recordingID, kind),
+				RelPath:     fmt.Sprintf("sites/%s/store-contract/%d/%s", store.DefaultSite, recordingID, kind),
 				SizeBytes:   1,
 			})
 			if err != nil {
@@ -58,11 +58,11 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)
-				originalID := newAsset(t, recordingID, db.AssetKindOriginal, nil)
+				originalID := newAsset(t, recordingID, store.AssetKindOriginal, nil)
 				profile := "h264"
-				newAsset(t, recordingID, db.AssetKindEncoded, &profile)
-				newAsset(t, recordingID, db.AssetKindThumbnail, nil)
-				newAsset(t, recordingID, db.AssetKindSeekTiles, nil)
+				newAsset(t, recordingID, store.AssetKindEncoded, &profile)
+				newAsset(t, recordingID, store.AssetKindThumbnail, nil)
+				newAsset(t, recordingID, store.AssetKindSeekTiles, nil)
 				if _, err := pool.Exec(context.Background(), `
 INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes)
 SELECT id, size_bytes FROM media_assets WHERE id = $1`, originalID); err != nil {
@@ -99,7 +99,7 @@ VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
 			},
 			NewDeletedAsset: func(t *testing.T) int64 {
 				t.Helper()
-				assetID := newAsset(t, newRecording(t), db.AssetKindOriginal, nil)
+				assetID := newAsset(t, newRecording(t), store.AssetKindOriginal, nil)
 				if _, err := pool.Exec(context.Background(), `
 UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
 					t.Fatalf("marking media asset deleted: %v", err)
@@ -118,7 +118,7 @@ UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, as
 				t.Helper()
 				recordingID := newRecording(t)
 				profile := "h264"
-				assetID := newAsset(t, recordingID, db.AssetKindEncoded, &profile)
+				assetID := newAsset(t, recordingID, store.AssetKindEncoded, &profile)
 				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
 					t.Fatalf("marking media asset deleting: %v", err)
 				}

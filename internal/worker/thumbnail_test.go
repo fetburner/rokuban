@@ -16,8 +16,8 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // tinyJPEG は最小限の有効な JPEG（SOI + EOI）。fake ffmpeg が書き出す。
@@ -209,7 +209,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     origRel,
 		SizeBytes:   int64(len("fake-ts-content")),
 	}); err != nil {
@@ -280,7 +280,7 @@ func TestThumbnailWorker_ReplacesCMThumbnailWithNewGeneration(t *testing.T) {
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "reselect/original.ts", []byte("fake-ts"))
 	oldRelPath := thumbnailRelPath(recordingID)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		db.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
+		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	q := sqlcgen.New(pool)
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
@@ -361,7 +361,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	profile := "cut-profile"
 	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		db.AssetKindEncoded, &profile, "encoded/cut.mp4", []byte("fake-mp4"))
+		store.AssetKindEncoded, &profile, "encoded/cut.mp4", []byte("fake-mp4"))
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, $2::int8multirange)`,
 		cutAssetID, "{[60000,960000)}"); err != nil {
@@ -369,7 +369,7 @@ func TestThumbnailWorker_UsesCutOnlyInputAndFrozenKeep(t *testing.T) {
 	}
 	oldRelPath := thumbnailRelPath(recordingID)
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		db.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
+		store.AssetKindThumbnail, nil, oldRelPath, tinyJPEG)
 	q := sqlcgen.New(pool)
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
@@ -431,9 +431,9 @@ func TestThumbnailWorker_UsesUncutEncodedInputWhenOriginalIsMissing(t *testing.T
 	profile := "uncut-profile"
 	encodedRelPath := "encoded/uncut.mp4"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		db.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
+		store.AssetKindEncoded, &profile, encodedRelPath, []byte("fake-mp4"))
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-		db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), tinyJPEG)
+		store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), tinyJPEG)
 	q := sqlcgen.New(pool)
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbnailID,
@@ -507,7 +507,7 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     origRel,
 		SizeBytes:   2,
 	}); err != nil {
@@ -605,7 +605,7 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     origRel,
 		SizeBytes:   2,
 	}); err != nil {
@@ -616,7 +616,7 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	rel := thumbnailRelPath(recordingID)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
+		Kind:        store.AssetKindThumbnail,
 		RelPath:     rel,
 		SizeBytes:   int64(len(tinyJPEG)),
 	}); err != nil {
@@ -667,7 +667,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     origRel,
 		SizeBytes:   2,
 	}); err != nil {
@@ -679,7 +679,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	rel := thumbnailRelPath(recordingID)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
+		Kind:        store.AssetKindThumbnail,
 		RelPath:     rel,
 		SizeBytes:   1,
 	}); err != nil {
@@ -944,7 +944,7 @@ func TestThumbnailWorker_ReselectSkipsNonCandidatesEvenWhenLaterRecordingIsCandi
 		id := insertTestRecording(t, pool)
 		seedOriginalAsset(t, pool, mediaDir, id, name+"/original.ts", []byte("fake-ts"))
 		rel := thumbnailRelPath(id)
-		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, rel, tinyJPEG)
+		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, rel, tinyJPEG)
 		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 			MediaAssetID: thumbID, SeekMs: 30000,
 		}); err != nil {

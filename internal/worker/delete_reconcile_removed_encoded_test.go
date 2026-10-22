@@ -11,9 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -36,8 +36,8 @@ func seedRemovedEncodedRecording(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	f := removedEncodedFixture{recordingID: recordingID}
 	f.originalID = seedOriginalAsset(t, pool, mediaDir, recordingID, dir+"/orig.m2ts", []byte("original"))
 	h264, h265 := "h264", "h265"
-	f.h264ID = seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &h264, dir+"/h264.mp4", []byte("h264"))
-	f.h265ID = seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &h265, dir+"/h265.mp4", []byte("h265"))
+	f.h264ID = seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &h264, dir+"/h264.mp4", []byte("h264"))
+	f.h265ID = seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &h265, dir+"/h265.mp4", []byte("h265"))
 	f.h264Path = filepath.Join(mediaDir, dir, "h264.mp4")
 	f.h265Path = filepath.Join(mediaDir, dir, "h265.mp4")
 	if _, err := pool.Exec(context.Background(),

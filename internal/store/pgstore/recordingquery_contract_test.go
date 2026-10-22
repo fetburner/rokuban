@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -35,7 +35,7 @@ func TestRecordingQueryContract(t *testing.T) {
 				o.Title = "recording query fixture"
 			}
 			if o.Site == "" {
-				o.Site = db.DefaultSite
+				o.Site = store.DefaultSite
 			}
 			if o.ChannelType == "" {
 				o.ChannelType = "GR"

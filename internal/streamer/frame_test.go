@@ -15,8 +15,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -84,7 +84,7 @@ func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) 
 	// encoded を持たせても、コマは原本から取る（縮小済みの座標は使えない）。
 	profile := "h264"
 	if _, err := sqlcgen.New(f.pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindEncoded, Profile: &profile,
+		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &profile,
 		RelPath: "gr/frame-h264.mp4", SizeBytes: 3,
 	}); err != nil {
 		t.Fatal(err)
@@ -151,7 +151,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	encodedOnly := seedRecordingWithEvent(t, pool, 101)
 	profile := "h264"
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: encodedOnly, Kind: db.AssetKindEncoded, Profile: &profile,
+		RecordingID: encodedOnly, Kind: store.AssetKindEncoded, Profile: &profile,
 		RelPath: "gr/only-encoded.mp4", SizeBytes: 3,
 	}); err != nil {
 		t.Fatal(err)

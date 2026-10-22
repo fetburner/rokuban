@@ -14,9 +14,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -47,7 +47,7 @@ func cmAttemptGenerationForTest(t *testing.T, ctx context.Context, pool *pgxpool
 func seedActiveOriginalForTest(t *testing.T, ctx context.Context, q *sqlcgen.Queries, id int64) {
 	t.Helper()
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+		RecordingID: id, Kind: store.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 	activeID := seedRecording(t, pool, "復旧原本", time.Now().Truncate(time.Second), "finished", 980)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: activeID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     fmt.Sprintf("test/%d.ts", activeID),
 		SizeBytes:   1000,
 	}); err != nil {
@@ -175,7 +175,7 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 			id := seedRecording(t, pool, tc.name, time.Now().Add(time.Duration(i)*time.Second).Truncate(time.Second), "finished", int32(983+i))
 			if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 				RecordingID: id,
-				Kind:        db.AssetKindOriginal,
+				Kind:        store.AssetKindOriginal,
 				RelPath:     fmt.Sprintf("test/%d.ts", id),
 				SizeBytes:   1000,
 			}); err != nil {
@@ -242,7 +242,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     fmt.Sprintf("test/%d.ts", id),
 		SizeBytes:   1000,
 	}); err != nil {
@@ -451,7 +451,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 
 	id := seedRecording(t, pool, "枠を教える", time.Now().Truncate(time.Second), "finished", 984)
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindOriginal,
+		RecordingID: id, Kind: store.AssetKindOriginal,
 		RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 	}); err != nil {
 		t.Fatal(err)
@@ -610,7 +610,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	q := sqlcgen.New(pool)
 	for _, id := range []int64{id1, id2} {
 		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-			RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+			RecordingID: id, Kind: store.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -630,7 +630,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	}
 	for _, id := range []int64{missingOriginal, failedRecording} {
 		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-			RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+			RecordingID: id, Kind: store.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -775,7 +775,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+		RecordingID: id, Kind: store.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -844,7 +844,7 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 
 	id := seedRecording(t, pool, "無効構成", time.Now().Truncate(time.Second), "finished", 984)
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
+		RecordingID: id, Kind: store.AssetKindOriginal, RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 	}); err != nil {
 		t.Fatal(err)
 	}

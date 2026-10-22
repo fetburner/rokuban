@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // createEpgProgram は EPG 番組を 1 行作る。series_key は生成列なので渡さない。
@@ -18,7 +19,7 @@ func createEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, name st
 INSERT INTO epg_programs (site, program_id, network_id, service_id, event_id, start_at, duration_ms, end_at,
                           is_free, name, description)
 VALUES ($1, $2, 1, 1, 1, $3, 1000, $4, true, $5, '')`,
-		DefaultSite, programID, start, start.Add(time.Second), name); err != nil {
+		store.DefaultSite, programID, start, start.Add(time.Second), name); err != nil {
 		t.Fatalf("creating epg program %q: %v", name, err)
 	}
 }
@@ -29,7 +30,7 @@ func epgSeriesValue(t *testing.T, pool *pgxpool.Pool, programID int64) string {
 	var got *string
 	if err := pool.QueryRow(context.Background(),
 		"SELECT value FROM epg_program_series WHERE site = $1 AND program_id = $2",
-		DefaultSite, programID).Scan(&got); err != nil {
+		store.DefaultSite, programID).Scan(&got); err != nil {
 		t.Fatalf("reading epg_program_series for %d: %v", programID, err)
 	}
 	if got == nil {
@@ -117,7 +118,7 @@ func TestEpgProgramSeries_LikeCoversEveryMatchTheWinnerFunctionFinds(t *testing.
 SELECT COALESCE(lr.value_key, p.series_key)
 FROM epg_programs p
 LEFT JOIN label_rules lr ON lr.id = public.label_rule_winner(p.name)
-WHERE p.site = $1 AND p.program_id = $2`, DefaultSite, tc.programID).Scan(&want)
+WHERE p.site = $1 AND p.program_id = $2`, store.DefaultSite, tc.programID).Scan(&want)
 		if err != nil {
 			t.Fatalf("reading the winner's value for %q: %v", tc.name, err)
 		}

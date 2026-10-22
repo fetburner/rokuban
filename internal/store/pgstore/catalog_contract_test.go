@@ -8,8 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -22,7 +22,7 @@ func TestCatalogContract(t *testing.T) {
 			Store: catalogStore,
 			InsertRecordingAndAsset: func(ctx context.Context, eventID int32) error {
 				recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-					Source: "manual", Site: db.DefaultSite, NetworkID: 32678, ServiceID: 5168,
+					Source: "manual", Site: store.DefaultSite, NetworkID: 32678, ServiceID: 5168,
 					EventID: eventID, ServiceName: "ＯＨＫ", ChannelType: "GR", Channel: "27",
 					Title: "catalog contract", ProgramStartAt: time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 					ProgramDurationMs: 30 * time.Minute.Milliseconds(), Status: "finished",
@@ -31,7 +31,7 @@ func TestCatalogContract(t *testing.T) {
 					return err
 				}
 				_, err = sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-					RecordingID: recordingID, Kind: db.AssetKindOriginal,
+					RecordingID: recordingID, Kind: store.AssetKindOriginal,
 					RelPath:   "catalog-contract/" + time.Unix(int64(eventID), 0).UTC().Format("150405") + ".m2ts",
 					SizeBytes: 100,
 				})

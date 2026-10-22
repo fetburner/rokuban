@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -26,7 +26,7 @@ type seedRecordingOpts struct {
 	start       time.Time
 	status      string
 	eventID     int32
-	site        string // 既定 db.DefaultSite
+	site        string // 既定 store.DefaultSite
 	networkID   int32  // 既定 32678
 	serviceID   int32
 	channelType string
@@ -55,7 +55,7 @@ func seedRecordingFull(t *testing.T, pool *pgxpool.Pool, o seedRecordingOpts) in
 	}
 	site := o.site
 	if site == "" {
-		site = db.DefaultSite
+		site = store.DefaultSite
 	}
 	var description *string
 	if o.description != "" {
@@ -249,7 +249,7 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 
 	// 合成 id は network まで厳密に一致する。
 	titles := getRecordingsTitles(t, srv.URL,
-		url.Values{"site": {db.DefaultSite}, "service": {"400101"}})
+		url.Values{"site": {store.DefaultSite}, "service": {"400101"}})
 	if len(titles) != 1 || titles[0] != "BS 101" {
 		t.Fatalf("site=default&service=400101 got %v, want [BS 101]", titles)
 	}
@@ -261,7 +261,7 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	// 同じ serviceId でも network が違えば別チャンネル（BS 101 と CS 101 は
 	// 実在する衝突）。組を 2 つ渡せば OR で両方返る。
 	titles = getRecordingsTitles(t, srv.URL,
-		url.Values{"site": {db.DefaultSite}, "service": {"400101", "600101"}})
+		url.Values{"site": {store.DefaultSite}, "service": {"400101", "600101"}})
 	if len(titles) != 2 {
 		t.Fatalf("service=400101,600101 got %v, want BS 101 and CS 101", titles)
 	}
@@ -272,7 +272,7 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "BS 102", start: base.Add(3 * time.Minute), status: "finished", eventID: 4, networkID: 4, serviceID: 102})
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS 102", start: base.Add(4 * time.Minute), status: "finished", eventID: 5, networkID: 6, serviceID: 102})
 	titles = getRecordingsTitles(t, srv.URL,
-		url.Values{"site": {db.DefaultSite}, "service": {"400101", "600102"}})
+		url.Values{"site": {store.DefaultSite}, "service": {"400101", "600102"}})
 	if len(titles) != 2 {
 		t.Fatalf("service=400101,600102 got %v, want exactly BS 101 and CS 102 (直積なら 4 件になる)", titles)
 	}
@@ -289,7 +289,7 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	}
 	// site を足すとその site だけになる。
 	titles = getRecordingsTitles(t, srv.URL,
-		url.Values{"service": {"400101"}, "site": {db.DefaultSite}})
+		url.Values{"service": {"400101"}, "site": {store.DefaultSite}})
 	if len(titles) != 1 || titles[0] != "BS 101" {
 		t.Fatalf("site=default&service=400101 got %v, want [BS 101]", titles)
 	}
@@ -304,12 +304,12 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// 2 サイトが同じ service_id=100 を受けている。
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "default の 100", start: base, status: "finished", eventID: 1, site: db.DefaultSite, serviceID: 100})
+	seedRecordingFull(t, pool, seedRecordingOpts{title: "default の 100", start: base, status: "finished", eventID: 1, site: store.DefaultSite, serviceID: 100})
 	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 の 100", start: base.Add(time.Minute), status: "finished", eventID: 2, site: "site2", serviceID: 100})
 
 	// default:100 を選んだら default の録画だけ（site2 の 100 は混ざらない）。
 	titles := getRecordingsTitles(t, srv.URL,
-		url.Values{"site": {db.DefaultSite}, "service": {"3267800100"}})
+		url.Values{"site": {store.DefaultSite}, "service": {"3267800100"}})
 	if len(titles) != 1 || titles[0] != "default の 100" {
 		t.Fatalf("site=default&service=3267800100 got %v, want [default の 100]", titles)
 	}
@@ -323,7 +323,7 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 
 	// site 軸も複数指定は OR。
 	titles = getRecordingsTitles(t, srv.URL,
-		url.Values{"site": {db.DefaultSite, "site2"}, "service": {"3267800100"}})
+		url.Values{"site": {store.DefaultSite, "site2"}, "service": {"3267800100"}})
 	if len(titles) != 2 {
 		t.Fatalf("site=default,site2 got %v, want 2 件", titles)
 	}

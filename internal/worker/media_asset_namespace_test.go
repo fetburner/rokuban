@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -23,26 +23,26 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 	}{
 		{
 			name:    "site-prefixed original is accepted",
-			kind:    db.AssetKindOriginal,
+			kind:    store.AssetKindOriginal,
 			relPath: "sites/home/archive/show.m2ts",
 			state:   "active",
 		},
 		{
 			name:    "site-prefixed encoded is accepted",
-			kind:    db.AssetKindEncoded,
+			kind:    store.AssetKindEncoded,
 			profile: stringPtr("h264"),
 			relPath: "sites/home/archive/show_h264.mp4",
 			state:   "active",
 		},
 		{
 			name:    "deleted bare original is ignored",
-			kind:    db.AssetKindOriginal,
+			kind:    store.AssetKindOriginal,
 			relPath: "archive/deleted.m2ts",
 			state:   "deleted",
 		},
 		{
 			name:    "active bare original is rejected",
-			kind:    db.AssetKindOriginal,
+			kind:    store.AssetKindOriginal,
 			relPath: "archive/old.m2ts",
 			state:   "active",
 			wantErr: true,
@@ -54,7 +54,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 			// rescued, so the startup guard must reject it too even though it
 			// begins with "sites/%".
 			name:    "sites-prefixed original without a site segment is rejected",
-			kind:    db.AssetKindOriginal,
+			kind:    store.AssetKindOriginal,
 			relPath: "sites/show.m2ts",
 			state:   "active",
 			wantErr: true,
@@ -63,14 +63,14 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 			// Same reason, with the empty site segment followed by more path:
 			// LIKE 'sites/_%/%' lets this through because "_" also matches "/".
 			name:    "empty site segment is rejected",
-			kind:    db.AssetKindOriginal,
+			kind:    store.AssetKindOriginal,
 			relPath: "sites//archive/show.m2ts",
 			state:   "active",
 			wantErr: true,
 		},
 		{
 			name:    "deleting bare encoded is rejected",
-			kind:    db.AssetKindEncoded,
+			kind:    store.AssetKindEncoded,
 			profile: stringPtr("h264"),
 			relPath: "archive/old_h264.mp4",
 			state:   "deleting",
@@ -78,7 +78,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 		},
 		{
 			name:    "bare thumbnail is ignored",
-			kind:    db.AssetKindThumbnail,
+			kind:    store.AssetKindThumbnail,
 			relPath: "thumbnails/1.jpg",
 			state:   "active",
 		},
