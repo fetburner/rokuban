@@ -3,6 +3,7 @@ package watcher
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -125,6 +126,22 @@ var beforeSweepProcessRecords func()
 // recordings）と突き合わせる。3 段構えの (c)（docs/recording.md §3.3）にあたる
 // レベルトリガーの真実で、SSE のヒント（(a)(b)）を取りこぼしても収束させる。
 //
+// 成功 marker を進める条件は、ListSchedules の成功、全 failed schedule の処理成功、
+// ListRecords の成功、全 record の処理成功である。failed schedule 側を条件に含めるのは、
+// recordless な失敗が schedules API からしか復元できないからである。ListServices による
+// キャッシュ更新の失敗は条件に含めず、前回のキャッシュを使う。サービスが見つからない
+// failed schedule は processFailedSchedule の失敗として報告されるので、別に数えると
+// 二重になる。
+//
+// 失敗があっても残りの処理を続け、最後に errors.Join で返す。決定的に失敗する record
+// があれば marker は進まないが、取りこぼしを成功扱いするよりアラートで検知できる方を
+// 選ぶ。原因の record は `sweep: processing record` ログの `record_id` で特定できる。
+// 失敗したパスは再試行しない。次の定期投入（5 分後）が再試行である（Spec の
+// MaxAttempts は 1）。部分失敗後の継続と marker 非更新は
+// TestSweep_PartialRecordFailureDoesNotAdvanceMarker、
+// TestSweep_ListSchedulesFailureDoesNotAdvanceMarker、
+// TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker が検証する。
+//
 // M2-18 で record_sweep ジョブ（internal/worker.RecordSweepWorker）から呼ばれる形に
 // 公開メソッドとして切り出した。processRecord は M2-16 で record_sync の
 // (site, record_id) 行ロックにより冪等化されているため、SSE 由来の handleEvent と
@@ -132,6 +149,7 @@ var beforeSweepProcessRecords func()
 // （docs/recording.md §3.3「record 処理は並行実行しても問題が起きない」）。
 func (w *Watcher) Sweep(ctx context.Context) error {
 	slog.Info("watcher sweep started")
+	var errs []error
 
 	if services, err := w.mirakc.ListServices(ctx); err != nil {
 		slog.Error("refreshing service cache", "err", err)
@@ -145,11 +163,13 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	// 一時的な API 障害で、すでに保存済みの record まで取りこぼさないため。
 	if schedules, err := w.mirakc.ListSchedules(ctx); err != nil {
 		slog.Error("listing schedules for failed recordings", "err", err)
+		errs = append(errs, fmt.Errorf("listing schedules: %w", err))
 	} else {
 		for _, schedule := range schedules {
 			if err := w.processFailedSchedule(ctx, schedule); err != nil {
 				slog.Error("sweep: processing failed schedule",
 					"program_id", schedule.Program.ID, "err", err)
+				errs = append(errs, fmt.Errorf("processing failed schedule for program_id %d: %w", schedule.Program.ID, err))
 			}
 		}
 	}
@@ -174,7 +194,11 @@ func (w *Watcher) Sweep(ctx context.Context) error {
 	for _, record := range records {
 		if err := w.processRecord(ctx, record); err != nil {
 			slog.Error("sweep: processing record", "record_id", record.ID, "err", err)
+			errs = append(errs, fmt.Errorf("processing record %q: %w", record.ID, err))
 		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("sweep incomplete: %w", errors.Join(errs...))
 	}
 	if err := w.markers.MarkRecordSweep(ctx, w.site); err != nil {
 		return fmt.Errorf("marking record sweep success: %w", err)
