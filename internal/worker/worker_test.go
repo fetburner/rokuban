@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,10 @@ func countMirakcCalls(fake *mirakctest.Fake, method, path string) int {
 	}
 	return count
 }
+
+type mirakcRoundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f mirakcRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 // TestNewWorkersInjectsIngestPrecheck runs the registered ingest worker through the registry.
 // The original row exists only in the DB: Work must find it through the injected precheck,

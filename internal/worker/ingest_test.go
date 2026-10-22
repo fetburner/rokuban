@@ -2044,13 +2044,12 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 
 	const recordID = "rec-durable-order"
 	fake := newFullTransferFake(t, recordID, tsData, "test/durable-order.m2ts")
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodDelete {
+	client := &http.Client{Transport: mirakcRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodDelete {
 			snapshot("delete-assets")()
 		}
-		fake.ServeHTTP(w, r)
-	}))
-	t.Cleanup(srv.Close)
+		return http.DefaultTransport.RoundTrip(req)
+	})}
 
 	mediaDir := t.TempDir()
 	originalOpenFile := openIngestFile
@@ -2070,7 +2069,7 @@ func TestIngestWorker_PersistsBeforeCommitAndDelete(t *testing.T) {
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,

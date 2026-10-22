@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +31,10 @@ import (
 func newReconciler(mc *mirakc.Client, pool *pgxpool.Pool, cfg *reconciler.Config) *reconciler.Reconciler {
 	return reconciler.New("default", mc, pgstore.NewScheduleSync(pool), pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg)
 }
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
 func scheduleCallIDs(fake *mirakctest.Fake, method string) []int64 {
 	var ids []int64
@@ -2865,14 +2868,13 @@ func TestReconciler_StartDelayDetectionErrorKeepsGaugeAndCounts(t *testing.T) {
 
 	mock := mirakctest.New(t)
 	var closePoolOnPost atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && r.URL.Path == "/api/recording/schedules" && closePoolOnPost.Swap(false) {
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method == http.MethodPost && req.URL.Path == "/api/recording/schedules" && closePoolOnPost.Swap(false) {
 			pool.Close()
 		}
-		mock.ServeHTTP(w, r)
-	}))
-	t.Cleanup(srv.Close)
-	mc := mirakc.NewClient(srv.URL, nil)
+		return http.DefaultTransport.RoundTrip(req)
+	})}
+	mc := mirakc.NewClient(mock.URL(), client)
 	q := sqlcgen.New(pool)
 	startAt := time.Now().Add(-10 * time.Minute)
 	createReservation(t, ctx, q, 100000500030008, "検出失敗確認番組", startAt)
