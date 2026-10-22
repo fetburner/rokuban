@@ -778,9 +778,9 @@ function GenreFields({ draft, onChange, disabled }: FieldsProps) {
 /**
  * overnightNote は終了 < 開始の時間帯の説明文を返す。判定の権威は
  * internal/store/pgstore/rulesql.go の compileTimeWindow。曜日は番組開始日（JST）で
- * 判定し、同じ曜日の [0:00, 終了) と [開始, 24:00) の 2 区間になる。終了 00:00 や
- * 開始 24:00 では片方の区間が空になるので、空の区間は表示しない。終了 00:00 で前半が空に
- * なると、実質「開始から 24:00 まで」になる。
+ * 判定し、同じ曜日の [0:00, 終了) と [開始, 24:00) の 2 区間になる。終了 00:00 なら
+ * 前半が空になり、実質「開始から 24:00 まで」になる。開始 24:00 なら後半が空になる。
+ * 空の区間は表示しない。
  */
 function overnightNote({ startSec, endSec }: { startSec: number; endSec: number }): string {
   const ranges: string[] = []
