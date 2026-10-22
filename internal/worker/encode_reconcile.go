@@ -249,13 +249,13 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		w.reportUnsatisfiable(ctx, known)
 		w.reportAwaitingReview(ctx)
 
-		if len(candidates) > 0 || rebuildQueued > 0 || failed > 0 {
+		if len(candidates) > 0 || failed > 0 {
 			slog.Info("encode_reconcile: pass complete",
 				"candidates", len(candidates), "rebuild_requests", rebuildQueued,
 				"failed", failed, "row_limit", rowLimit,
 				"after_recording_id", after, "continuation_after_recording_id", continuationAfter)
 		}
-	} else if len(candidates) > 0 || rebuildQueued > 0 || failed > 0 {
+	} else if len(candidates) > 0 || failed > 0 {
 		slog.Info("encode_reconcile: targeted pass complete",
 			"recording_id", recordingID, "candidates", len(candidates),
 			"rebuild_requests", rebuildQueued, "failed", failed)

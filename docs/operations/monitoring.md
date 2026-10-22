@@ -75,7 +75,7 @@ PID 別のドロップ内訳はメトリクスにしない。PID × 録画数で
 | `rokuban_thumbnail_reconcile_last_pass_timestamp_seconds` | Gauge | thumbnail / シークタイルの reconcile の最終完走時刻 |
 | `rokuban_thumbnail_reconcile_candidates` | Gauge | 直近の thumbnail reconcile が見た不足録画数 |
 | `rokuban_encode_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に完走した encode reconcile パスの時刻 |
-| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、原本があり不足または未充足の作り直しがある録画数 |
+| `rokuban_encode_reconcile_candidates` | Gauge | 直近パスの候補窓に入った、不足プロファイルか満たされていない作り直しがある録画数 |
 | `rokuban_encode_reconcile_unsatisfiable{profile}` | Gauge | 凍結済みの desired が現在のプロファイルに無い録画数 |
 
 `replan` は、計画が古く snooze で再計画した件数であり、失敗ではない。thumbnail reconcile の最終完走時刻は、投入停止を `time() -` で検出するために使う。不足録画数が数えるのは poster のぶんだけである。シークタイルは別の窓で数えるが、同じパスが埋めるので、鮮度はこの 1 本で足りる。不足録画数が行上限に張り付くときは、バックログが上限以上ある。

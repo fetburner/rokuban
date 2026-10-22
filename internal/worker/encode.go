@@ -418,10 +418,11 @@ type cutContext struct {
 // 導出する。cut でなければ (nil, nil)。
 //
 // **所有の行があることを前提にする。** 確認前にカット版をコミットすると、誤検出の
-// まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。ジョブの投入側
-// （ListMissingEncodeProfiles と API の ReencodeRecordingProfile）が所有していない
-// 録画を除外しているので、ここに来る cut ジョブは所有済みのはずである。来なければジョブの
-// 失敗として現れる（黙って切らない）。
+// まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。ここが除外する
+// のは、要求（RequestedCutKeep）に由来しない cut 行である。投入側（ListMissingEncodeProfiles
+// と API の ReencodeRecordingProfile）が所有していない録画を除外するので、そうした
+// cut ジョブは所有済みのはずで、来なければジョブの失敗として現れる（黙って切らない）。
+// 要求に由来するジョブは RequestedCutKeep を持ち、observeEncodePlan がここを通らない。
 //
 // keep が空（全部カット）も同じく失敗させる。keep_ranges の CHECK が空を拒否する
 // ので、先に落とさないと tx ごとロールバックする。

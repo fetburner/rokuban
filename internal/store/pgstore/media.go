@@ -253,7 +253,7 @@ func (s *Media) GetChaseTarget(ctx context.Context, recordingID int64) (store.Ch
 	}, nil
 }
 
-// ListMissingEncodeProfiles は未生成 encoded の候補をページ単位で返す。
+// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 func (s *Media) ListMissingEncodeProfiles(ctx context.Context, params store.MissingEncodeProfilesParams) ([]store.MissingEncodeProfile, error) {
 	rows, err := sqlcgen.New(s.pool).ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: params.AfterRecordingID,
