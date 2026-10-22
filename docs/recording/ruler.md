@@ -71,7 +71,7 @@ ruler は EPG の番組をルールと突き合わせ、あるべき予約（des
 | ルール・意図・上書きの書き込み | ヒント |
 | EPG 同期の完了 | ヒント |
 
-定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルール・意図・上書きの書き込みでは、store が書き込みと同じ tx で入力の版を進め、api は commit 後に `ruler_pass` を投入する。EPG 同期では、epg_sync ワーカーが完了時に入力の版を進めてからヒントを投入する。ヒントが失われても、定期パスが永続状態から再計算する。
+定期の投入は、デプロイ形態に応じて River `PeriodicJobs` か k8s CronJob が行う（[データ層](../data.md) §2）。ルール・意図・上書きの書き込みでは、store が書き込みと同じ tx で入力の版を進め、api は commit 後に `ruler_pass` を投入する。EPG 同期では、epg_sync ワーカーが完了時に入力の版を進めてからヒントを投入する。catalog の Restore も、復元 tx の最後で構成の全 site の版を 1 ずつ進める。Restore はヒントを投入しない。版を進めるのは古い評価による上書きを防ぐためで、復元したルール・意図・上書きは次の定期パスが反映する。ヒントが失われても、定期パスが永続状態から再計算する。
 
 ヒントは合流する。実行中のパスに編集のヒントが合流しても、そのパスは書き込み tx の版照合で版の不一致を検出し、読み直して編集を反映する。照合が 3 回続けて一致しなければ、その site の予約を書き換えずにジョブへエラーを返す。`ruler_pass` は失敗しても River が実行し直さないので、このジョブに合流したヒントの分は次の定期パス（既定の周期なら最大 10 分後）で反映される。
 
@@ -81,7 +81,7 @@ ruler は EPG の番組をルールと突き合わせ、あるべき予約（des
 - ルール・意図・上書きの版更新: `bumpRulerInputRevision`
 - Restore の版更新: `applyDocument`（全 site）
 - EPG 同期の版更新: `EpgSyncWorker.Work`
-- 全 site を 1 回進める契約: `TestCatalogContract/restore bumps revisions once`
+- 全 site の版を 1 ずつ進める契約: `TestCatalogContract/restore bumps revisions once`
 - 失敗時に進めない契約: `TestCatalogContract/restore failure rolls back`
 - 版更新失敗時に全書き込みを戻す契約: `TestCatalogContract/restore rolls back on revision failure`
 - ヒントの合流: `UniqueOpts{ByArgs, ByState}`

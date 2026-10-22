@@ -14,10 +14,14 @@ import (
 
 // CatalogFixture は catalog 契約の実装と、競合状態を作るためのテスト用操作をまとめる。
 type CatalogFixture struct {
-	Store                  store.Catalog
-	RulerInputSites        []string
+	Store store.Catalog
+	// RulerInputSites は Store に構成した site の一覧（ソート・重複除去済み）。
+	// Restore の後、各 site の版が 1 進むことを確かめる。
+	RulerInputSites []string
+	// BumpRulerInputRevision は site の ruler 入力の版を 1 進める。版の初期値を作るために使う。
 	BumpRulerInputRevision func(ctx context.Context, site string) error
-	GetRulerInputRevision  func(ctx context.Context, site string) (int64, error)
+	// GetRulerInputRevision は site の ruler 入力の現在の版を返す。
+	GetRulerInputRevision func(ctx context.Context, site string) (int64, error)
 	// InsertRecordingAndAsset は録画と原本アセットを別 commit で作る。
 	InsertRecordingAndAsset func(ctx context.Context, eventID int32) error
 	// Reset は catalog が保護するテーブルを空にする。

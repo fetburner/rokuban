@@ -23,7 +23,7 @@ import (
 // program_intents / program_overrides → recordings → recording_purge_requests →
 // recording_watched → recording_encode_policy → media_assets → チャプター所有 2 表 →
 // drop_stats → drop_positions → media_asset_ts_scans → 分類ルールの全件再評価 →
-// ID シーケンスのリセット。全部 1 トランザクションで、途中失敗なら何も残さない。
+// ID シーケンスのリセット → ruler 入力の版。全部 1 トランザクションで、途中失敗なら何も残さない。
 func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options store.RestoreOptions) (*store.RestoreResult, error) {
 	if doc == nil {
 		return nil, fmt.Errorf("catalog document is nil")
@@ -184,6 +184,8 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 	if err := q.CatalogResetMediaAssetsIDSeq(ctx); err != nil {
 		return nil, fmt.Errorf("resetting media_assets id seq: %w", err)
 	}
+	// 版の更新は最後に置く。ruler の書き込み tx の版照合は版の行ロックを取るので、
+	// 先頭に置くと Restore の tx が終わるまで ruler のコミットが待たされる。
 	if err := bumpRulerInputRevisions(ctx, q, siteNames); err != nil {
 		return nil, fmt.Errorf("bumping ruler input revisions after catalog restore: %w", err)
 	}
