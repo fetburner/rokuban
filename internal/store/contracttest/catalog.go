@@ -110,22 +110,51 @@ func runCatalogRestoreRollback(t *testing.T, newStore NewCatalogStore) {
 }
 
 func runCatalogRestoreBumpsRulerInputRevisions(t *testing.T, newStore NewCatalogStore) {
-	f := newStore(t)
-	ctx := context.Background()
-	seedCatalogRulerInputRevisions(t, f, ctx)
-	revisionsBefore := catalogRulerInputRevisions(t, f, ctx)
-	if _, err := f.Store.Restore(ctx, roundTripCatalogDocument(), store.RestoreOptions{}); err != nil {
-		t.Fatalf("Restore: %v", err)
+	tests := []struct {
+		name     string
+		document func() *catalogdoc.Document
+	}{
+		{
+			name: "no rules",
+			document: func() *catalogdoc.Document {
+				doc := roundTripCatalogDocument()
+				doc.Rules = nil
+				doc.Recordings[0].RuleID = nil
+				return doc
+			},
+		},
+		{
+			name: "multiple rules",
+			document: func() *catalogdoc.Document {
+				doc := roundTripCatalogDocument()
+				second := doc.Rules[0]
+				second.ID = 11
+				second.Name = "catalog round trip second rule"
+				doc.Rules = append(doc.Rules, second)
+				return doc
+			},
+		},
 	}
-	revisionsAfter := catalogRulerInputRevisions(t, f, ctx)
-	for _, site := range f.RulerInputSites {
-		revisionAfter, ok := revisionsAfter[site]
-		if !ok {
-			t.Fatalf("ruler input revision for site %q was not read after restore", site)
-		}
-		if want := revisionsBefore[site] + 1; revisionAfter != want {
-			t.Errorf("%s ruler input revision after restore = %d, want %d", site, revisionAfter, want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			seedCatalogRulerInputRevisions(t, f, ctx)
+			revisionsBefore := catalogRulerInputRevisions(t, f, ctx)
+			if _, err := f.Store.Restore(ctx, tt.document(), store.RestoreOptions{}); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			revisionsAfter := catalogRulerInputRevisions(t, f, ctx)
+			for _, site := range f.RulerInputSites {
+				revisionAfter, ok := revisionsAfter[site]
+				if !ok {
+					t.Fatalf("ruler input revision for site %q was not read after restore", site)
+				}
+				if want := revisionsBefore[site] + 1; revisionAfter != want {
+					t.Errorf("%s ruler input revision after restore = %d, want %d", site, revisionAfter, want)
+				}
+			}
+		})
 	}
 }
 
