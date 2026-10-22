@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/catalog"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -50,7 +51,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			defer cancel()
 			mediaDir := t.TempDir()
 			const relPath = "sites/default/show.m2ts"
-			seedRecordingWithOriginal(t, pool, mediaDir, relPath, nil, []byte("original"))
+			prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, relPath, nil, []byte("original"))
 			var assetID int64
 			if err := pool.QueryRow(ctx, "SELECT id FROM media_assets WHERE rel_path = $1", relPath).Scan(&assetID); err != nil {
 				t.Fatal(err)

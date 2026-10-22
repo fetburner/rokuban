@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -54,38 +54,26 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 
 func (f *encodePolicyContractDB) newRecording(t *testing.T) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(f.pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           encodePolicyContractEventID.Add(1),
-		ServiceName:       "store encode policy contract fixture",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "store encode policy contract fixture",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: 20_000,
-		Status:            "finished",
+	id := dbtest.Recording(t, f.pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = encodePolicyContractEventID.Add(1)
+		fixtureParams.ServiceName = "store encode policy contract fixture"
+		fixtureParams.Title = "store encode policy contract fixture"
+		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
+		fixtureParams.ProgramDurationMs = 20_000
 	})
-	if err != nil {
-		t.Fatalf("seeding recording: %v", err)
-	}
+
 	return id
 }
 
 func (f *encodePolicyContractDB) newAsset(t *testing.T, recordingID int64, kind string, profile *string) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(f.pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        kind,
-		Profile:     profile,
-		RelPath:     fmt.Sprintf("sites/home/%d/%s-%v", recordingID, kind, profile),
-		SizeBytes:   1,
+	id := dbtest.OriginalAsset(t, f.pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.Kind = kind
+		fixtureParams.Profile = profile
+		fixtureParams.RelPath = fmt.Sprintf("sites/home/%d/%s-%v", recordingID, kind, profile)
+		fixtureParams.SizeBytes = 1
 	})
-	if err != nil {
-		t.Fatalf("seeding %s asset: %v", kind, err)
-	}
+
 	return id
 }
 

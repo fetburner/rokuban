@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -36,19 +37,6 @@ func (enqueuer *recordingEnqueuer) Enqueue(_ context.Context, args jobq.Args, _ 
 	return jobq.Result{}, nil
 }
 
-func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {
-	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: eventID,
-		ServiceName: "test", ChannelType: "GR", Channel: "27", Title: "test",
-		ProgramStartAt: time.Now(), ProgramDurationMs: 1800000, Status: "finished",
-	})
-	if err != nil {
-		t.Fatalf("inserting test recording: %v", err)
-	}
-	return id
-}
-
 func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string, content []byte) int64 {
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
@@ -58,12 +46,11 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID, Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
+	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = int64(len(content))
 	})
-	if err != nil {
-		t.Fatalf("seeding original media_asset: %v", err)
-	}
+
 	return id
 }
 
@@ -87,7 +74,7 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 // TestScanWorker_SizeMismatchFailsWithoutWriting: the DB size differs from the file.
 func TestScanWorker_SizeMismatchFailsWithoutWriting(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	recordingID := insertTestRecordingWithEventID(t, pool, 12930)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12930 })
 	mediaDir := t.TempDir()
 	data := append(pcrPacket(0x0100, 0, 900000), pcrPacket(0x0100, 2, 990000)...)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "mismatch/original.m2ts", data)
@@ -237,7 +224,7 @@ func TestTSScan_ReplacementRollsBackStatisticsAndMarkerTogether(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	recordingID := insertTestRecordingWithEventID(t, pool, 12940)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12940 })
 	mediaDir := t.TempDir()
 	relPath := "rollback/original.m2ts"
 	oldBytes := []byte("old")
@@ -310,11 +297,11 @@ func TestTSScanReconcile_EnqueuesOnlyUnmeasuredCurrentOriginals(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
-	missingScanID := insertTestRecordingWithEventID(t, pool, 12901)
-	staleScanID := insertTestRecordingWithEventID(t, pool, 12902)
-	equalScanID := insertTestRecordingWithEventID(t, pool, 12903)
-	trashedID := insertTestRecordingWithEventID(t, pool, 12904)
-	missingFileID := insertTestRecordingWithEventID(t, pool, 12905)
+	missingScanID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12901 })
+	staleScanID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12902 })
+	equalScanID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12903 })
+	trashedID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12904 })
+	missingFileID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12905 })
 
 	seedOriginalAsset(t, pool, mediaDir, missingScanID, "ts-scan/missing.m2ts", []byte("new"))
 	staleAsset := seedOriginalAsset(t, pool, mediaDir, staleScanID, "ts-scan/stale.m2ts", []byte("changed"))
@@ -373,8 +360,8 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	firstID := insertTestRecordingWithEventID(t, pool, 12911)
-	secondID := insertTestRecordingWithEventID(t, pool, 12912)
+	firstID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12911 })
+	secondID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12912 })
 	seedOriginalAsset(t, pool, mediaDir, firstID, "ts-scan/window-first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "ts-scan/window-second.m2ts", []byte("second"))
 	enqueuer := &recordingEnqueuer{}
@@ -430,7 +417,7 @@ func TestTSScanReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) 
 	}
 
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecordingWithEventID(t, pool, 12913)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12913 })
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ts-scan/continuation-error.m2ts", []byte("original"))
 	recorder := &recordingEnqueuer{}
 	enqueuer := &tsScanContinuationFailingEnqueuer{delegate: recorder}
@@ -458,7 +445,7 @@ func TestTSScanReconcile_ShortPageDoesNotContinue(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecordingWithEventID(t, pool, 12914)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12914 })
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ts-scan/short-page.m2ts", []byte("original"))
 	enqueuer := &recordingEnqueuer{}
 	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), RowLimit: 2}

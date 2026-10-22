@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -115,20 +117,20 @@ RETURNING id`, name, dedupeEnabled, threshold).Scan(&id); err != nil {
 
 func seedRulerPassRecording(t *testing.T, pool *pgxpool.Pool, ruleID int64, program contracttest.RulerProgram, title string) int64 {
 	t.Helper()
-	var id int64
 	startAt := program.StartAt.Add(-48 * time.Hour)
 	eventID := program.EventID + 10000
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', $2, 32736, 5168, $3,
-          'ruler pass contract', 'GR', '27', $4, $5, 1800000, 'finished')
-RETURNING id`, ruleID, program.Site, eventID, title, startAt).Scan(&id); err != nil {
-		t.Fatalf("seeding ruler pass recording: %v", err)
-	}
-	return id
+	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Status = "finished"
+		p.Site = program.Site
+		p.NetworkID = 32736
+		p.ServiceID = 5168
+		p.EventID = eventID
+		p.ServiceName = "ruler pass contract"
+		p.Title = title
+		p.ProgramStartAt = startAt
+	})
 }
 
 func setRulerPassProgramStarts(t *testing.T, pool *pgxpool.Pool, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {

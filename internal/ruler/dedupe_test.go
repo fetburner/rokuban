@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -36,23 +38,23 @@ func insertRecording(
 	t.Helper()
 	dedupeEventCounter++
 	eventID := dedupeEventCounter
-	var deletedAt *time.Time
+	recordingID = dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.RuleID = ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = eventID
+		p.ServiceName = "テスト局"
+		p.Title = title
+		p.ProgramStartAt = startAt
+		p.ProgramDurationMs = testDurationMs
+		p.Status = status
+	})
 	if deleted {
-		now := time.Now()
-		deletedAt = &now
-	}
-	err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status, deleted_at
-) VALUES ($1, 'rule', $2, $3, $4, $5, 'テスト局', 'GR', '27', $6, $7, $8, $9, $10)
-RETURNING id`,
-		ruleID, testSite, testNetworkID, testServiceID, eventID,
-		title, startAt, testDurationMs, status, deletedAt,
-	).Scan(&recordingID)
-	if err != nil {
-		t.Fatalf("inserting recordings fixture: %v", err)
+		if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, recordingID); err != nil {
+			t.Fatalf("deleting recordings fixture: %v", err)
+		}
 	}
 	return recordingID
 }
@@ -63,21 +65,19 @@ func insertRecordingForEvent(
 	ruleID *int64, title string, startAt time.Time, eventID int32,
 ) int64 {
 	t.Helper()
-	var id int64
-	err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', $2, $3, $4, $5, 'テスト局', 'GR', '27', $6, $7, $8, 'finished')
-RETURNING id`,
-		ruleID, testSite, testNetworkID, testServiceID, eventID,
-		title, startAt, testDurationMs,
-	).Scan(&id)
-	if err != nil {
-		t.Fatalf("inserting recordings fixture: %v", err)
-	}
-	return id
+	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.RuleID = ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = eventID
+		p.ServiceName = "テスト局"
+		p.Title = title
+		p.ProgramStartAt = startAt
+		p.ProgramDurationMs = testDurationMs
+		p.Status = "finished"
+	})
 }
 
 // enableDedupe はルールの重複排除を有効にする。windowSeconds が nil なら

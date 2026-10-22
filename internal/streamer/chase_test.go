@@ -22,6 +22,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -1088,8 +1090,10 @@ func TestChasePurgeEndUsesCommittedOriginal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recordingID := seedRecordingWithEvent(t, pool, tt.eventID)
-			seedAsset(t, pool, recordingID, fmt.Sprintf("recordings/chase-purge-%d.ts", recordingID), tt.committed)
+			recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) { p.EventID = tt.eventID })
+			dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+				p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-purge-%d.ts", recordingID), tt.committed
+			})
 			ffmpeg, marker := installEndlistMarkerFFmpeg(t)
 			// 追従配信が 8 バイト渡して閉じ、その後の Range はもう 404（ingest が purge した）。
 			client := &scriptedChaseRecord{
@@ -1365,7 +1369,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recordingID := seedRecordingWithEvent(t, pool, tt.eventID)
+			recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) { p.EventID = tt.eventID })
 			if _, err := pool.Exec(context.Background(), "UPDATE recordings SET status = $2 WHERE id = $1", recordingID, tt.recordingStatus); err != nil {
 				t.Fatalf("setting recording status: %v", err)
 			}
@@ -1376,7 +1380,9 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 				t.Fatalf("seeding record_sync: %v", err)
 			}
 			if tt.originalState != "" {
-				seedAsset(t, pool, recordingID, fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8)
+				dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+					p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8
+				})
 				if tt.originalState == "deleted" {
 					if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE recording_id = $1", recordingID); err != nil {
 						t.Fatalf("marking original deleted: %v", err)

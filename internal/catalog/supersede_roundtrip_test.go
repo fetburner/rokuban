@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -24,18 +25,17 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	start := time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
 
 	newRec := func(eventID int32, status string) int64 {
-		id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-			Source: "manual", Site: "default",
-			NetworkID: 32736, ServiceID: 1024, EventID: eventID,
-			ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
-			Title: "再録画された番組", IsFree: true,
-			ProgramStartAt:    start,
-			ProgramDurationMs: 180000,
-			Status:            status,
+		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			fixtureParams.NetworkID = 32736
+			fixtureParams.ServiceID = 1024
+			fixtureParams.EventID = eventID
+			fixtureParams.ServiceName = "NHK総合"
+			fixtureParams.Title = "再録画された番組"
+			fixtureParams.ProgramStartAt = start
+			fixtureParams.ProgramDurationMs = 180000
+			fixtureParams.Status = status
 		})
-		if err != nil {
-			t.Fatalf("CreateRecording(%s): %v", status, err)
-		}
+
 		return id
 	}
 

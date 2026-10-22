@@ -7,31 +7,25 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 // createSeriesRecording は棚のテスト用に録画行を 1 件作る。title だけが主張で、
 // 他は CreateRecording が要求する最小の値。
 func createSeriesRecording(t *testing.T, pool *pgxpool.Pool, title string, eventID int32, start time.Time) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         1,
-		ServiceID:         1,
-		EventID:           eventID,
-		ServiceName:       "test",
-		ChannelType:       "GR",
-		Channel:           "1",
-		Title:             title,
-		ProgramStartAt:    start,
-		ProgramDurationMs: 1000,
-		Status:            "finished",
+	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.NetworkID = 1
+		fixtureParams.ServiceID = 1
+		fixtureParams.EventID = eventID
+		fixtureParams.ServiceName = "test"
+		fixtureParams.Channel = "1"
+		fixtureParams.Title = title
+		fixtureParams.ProgramStartAt = start
+		fixtureParams.ProgramDurationMs = 1000
 	})
-	if err != nil {
-		t.Fatalf("creating recording %q: %v", title, err)
-	}
+
 	return id
 }
 

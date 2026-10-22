@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -44,14 +45,14 @@ func playbackRequest(t *testing.T, method, url string, body any) *http.Response 
 
 func createPlaybackRecording(t *testing.T, pool *pgxpool.Pool, start time.Time, eventID int32, title string) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: eventID,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: title,
-		ProgramStartAt: start, ProgramDurationMs: time.Hour.Milliseconds(), Status: "finished",
+	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = eventID
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = title
+		fixtureParams.ProgramStartAt = start
+		fixtureParams.ProgramDurationMs = time.Hour.Milliseconds()
 	})
-	if err != nil {
-		t.Fatalf("create playback recording: %v", err)
-	}
+
 	return id
 }
 

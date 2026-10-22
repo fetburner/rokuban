@@ -12,81 +12,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// seedRecordingOpts は seedRecordingFull の入力（issue #136 のテスト専用。
-// seedRecording は既存の最小フィクスチャなので変えず、こちらは絞り込み軸を
-// 網羅するために別に用意する）。
-type seedRecordingOpts struct {
-	title       string
-	description string
-	start       time.Time
-	status      string
-	eventID     int32
-	site        string // 既定 store.DefaultSite
-	networkID   int32  // 既定 32678
-	serviceID   int32
-	channelType string
-	genres      string // jsonb リテラル（空なら NULL）
-	source      string // 既定 "manual"
-	ruleID      *int64
-}
-
-func seedRecordingFull(t *testing.T, pool *pgxpool.Pool, o seedRecordingOpts) int64 {
-	t.Helper()
-	source := o.source
-	if source == "" {
-		source = "manual"
-	}
-	channelType := o.channelType
-	if channelType == "" {
-		channelType = "GR"
-	}
-	networkID := o.networkID
-	if networkID == 0 {
-		networkID = 32678
-	}
-	serviceID := o.serviceID
-	if serviceID == 0 {
-		serviceID = 5168
-	}
-	site := o.site
-	if site == "" {
-		site = store.DefaultSite
-	}
-	var description *string
-	if o.description != "" {
-		description = &o.description
-	}
-	var genres json.RawMessage
-	if o.genres != "" {
-		genres = json.RawMessage(o.genres)
-	}
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		RuleID:            o.ruleID,
-		Source:            source,
-		Site:              site,
-		NetworkID:         networkID,
-		ServiceID:         serviceID,
-		EventID:           o.eventID,
-		ServiceName:       "テスト局",
-		ChannelType:       channelType,
-		Channel:           "27",
-		Title:             o.title,
-		Description:       description,
-		Genres:            genres,
-		ProgramStartAt:    o.start,
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            o.status,
-	})
-	if err != nil {
-		t.Fatalf("seeding recording (full): %v", err)
-	}
-	return id
-}
 
 // seedRule は rules に最小行を作り id を返す（recordings.rule_id の FK 先）。
 func seedRule(t *testing.T, pool *pgxpool.Pool, name string) int64 {
@@ -130,9 +60,16 @@ func TestListRecordings_KeywordSearch(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "NHKニュース", start: base, status: "finished", eventID: 1})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "無関係の番組", description: "NHK特集について", start: base.Add(time.Minute), status: "finished", eventID: 2})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "全く関係ない", start: base.Add(2 * time.Minute), status: "finished", eventID: 3})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHKニュース", base, "finished", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無関係の番組", base.Add(time.Minute), "finished", 2
+		p.Description = strPtr("NHK特集について")
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "全く関係ない", base.Add(2*time.Minute), "finished", 3
+	})
 
 	// 全角「ＮＨＫ」で半角「NHK」を含む録画に当たる（title のみ検索）
 	params := url.Values{"q": {"ＮＨＫ"}, "qTarget": {"title"}}
@@ -160,8 +97,12 @@ func TestListRecordings_KeywordSearchTreatsLikeMetacharactersLiterally(t *testin
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "ニュース 100%", start: base, status: "finished", eventID: 1})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "ニュース 100x", start: base.Add(time.Minute), status: "finished", eventID: 2})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース 100%", base, "finished", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース 100x", base.Add(time.Minute), "finished", 2
+	})
 
 	titles := getRecordingsTitles(t, srv.URL, url.Values{"q": {"100%"}, "qTarget": {"title"}})
 	if len(titles) != 1 || titles[0] != "ニュース 100%" {
@@ -175,16 +116,16 @@ func TestListRecordings_GenreFilter(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "ニュース番組", start: base, status: "finished", eventID: 1,
-		genres: `[{"lv1":1,"lv2":0,"un1":0,"un2":0}]`,
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース番組", base, "finished", 1
+		p.Genres = json.RawMessage(`[{"lv1":1,"lv2":0,"un1":0,"un2":0}]`)
 	})
-	seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "スポーツ番組", start: base.Add(time.Minute), status: "finished", eventID: 2,
-		genres: `[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`,
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "スポーツ番組", base.Add(time.Minute), "finished", 2
+		p.Genres = json.RawMessage(`[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`)
 	})
-	seedRecordingFull(t, pool, seedRecordingOpts{
-		title: "ジャンル無し番組", start: base.Add(2 * time.Minute), status: "finished", eventID: 3,
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ジャンル無し番組", base.Add(2*time.Minute), "finished", 3
 	})
 
 	titles := getRecordingsTitles(t, srv.URL, url.Values{"genre": {"1"}})
@@ -212,9 +153,20 @@ func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "GR番組", start: base, status: "finished", eventID: 1, channelType: "GR", serviceID: 100})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "BS番組", start: base.Add(time.Minute), status: "finished", eventID: 2, channelType: "BS", serviceID: 200})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS番組", start: base.Add(2 * time.Minute), status: "finished", eventID: 3, channelType: "CS", serviceID: 300})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "GR番組", base, "finished", 1
+		p.ServiceID = 100
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS番組", base.Add(time.Minute), "finished", 2
+		p.ServiceID = 200
+		p.ChannelType = "BS"
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS番組", base.Add(2*time.Minute), "finished", 3
+		p.ServiceID = 300
+		p.ChannelType = "CS"
+	})
 
 	titles := getRecordingsTitles(t, srv.URL, url.Values{"channelType": {"BS"}})
 	if len(titles) != 1 || titles[0] != "BS番組" {
@@ -243,9 +195,22 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "BS 101", start: base, status: "finished", eventID: 1, networkID: 4, serviceID: 101})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS 101", start: base.Add(time.Minute), status: "finished", eventID: 2, networkID: 6, serviceID: 101})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 BS 101", start: base.Add(2 * time.Minute), status: "finished", eventID: 3, site: "site2", networkID: 4, serviceID: 101})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS 101", base, "finished", 1
+		p.NetworkID = 4
+		p.ServiceID = 101
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS 101", base.Add(time.Minute), "finished", 2
+		p.NetworkID = 6
+		p.ServiceID = 101
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "site2 BS 101", base.Add(2*time.Minute), "finished", 3
+		p.Site = "site2"
+		p.NetworkID = 4
+		p.ServiceID = 101
+	})
 
 	// 合成 id は network まで厳密に一致する。
 	titles := getRecordingsTitles(t, srv.URL,
@@ -269,8 +234,16 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	// **組の集合であって直積ではない。** network と service を別々に ANY で
 	// 絞る実装だと (4,102) と (6,101) まで一致してしまう。片方だけが共通の
 	// fixture では両者が同じ集合になるので、ここは両方ずらして固定する。
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "BS 102", start: base.Add(3 * time.Minute), status: "finished", eventID: 4, networkID: 4, serviceID: 102})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "CS 102", start: base.Add(4 * time.Minute), status: "finished", eventID: 5, networkID: 6, serviceID: 102})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS 102", base.Add(3*time.Minute), "finished", 4
+		p.NetworkID = 4
+		p.ServiceID = 102
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS 102", base.Add(4*time.Minute), "finished", 5
+		p.NetworkID = 6
+		p.ServiceID = 102
+	})
 	titles = getRecordingsTitles(t, srv.URL,
 		url.Values{"site": {store.DefaultSite}, "service": {"400101", "600102"}})
 	if len(titles) != 2 {
@@ -304,8 +277,15 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// 2 サイトが同じ service_id=100 を受けている。
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "default の 100", start: base, status: "finished", eventID: 1, site: store.DefaultSite, serviceID: 100})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "site2 の 100", start: base.Add(time.Minute), status: "finished", eventID: 2, site: "site2", serviceID: 100})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "default の 100", base, "finished", 1
+		p.ServiceID = 100
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "site2 の 100", base.Add(time.Minute), "finished", 2
+		p.Site = "site2"
+		p.ServiceID = 100
+	})
 
 	// default:100 を選んだら default の録画だけ（site2 の 100 は混ざらない）。
 	titles := getRecordingsTitles(t, srv.URL,
@@ -342,11 +322,24 @@ func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 	ruleID := seedRule(t, pool, "テストルール")
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "録画中", start: base, status: "recording", eventID: 1})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "失敗", start: base.Add(time.Minute), status: "failed", eventID: 2})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "手動完了", start: base.Add(2 * time.Minute), status: "finished", eventID: 3, source: "manual"})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "ルール完了", start: base.Add(3 * time.Minute), status: "finished", eventID: 4, source: "rule", ruleID: &ruleID})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "帰属なし", start: base.Add(4 * time.Minute), status: "finished", eventID: 5, source: "unattributed"})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画中", base, "recording", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗", base.Add(time.Minute), "failed", 2
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "手動完了", base.Add(2*time.Minute), "finished", 3
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ルール完了", base.Add(3*time.Minute), "finished", 4
+		p.RuleID = &ruleID
+		p.Source = "rule"
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "帰属なし", base.Add(4*time.Minute), "finished", 5
+		p.Source = "unattributed"
+	})
 
 	titles := getRecordingsTitles(t, srv.URL, url.Values{"status": {"failed"}})
 	if len(titles) != 1 || titles[0] != "失敗" {
@@ -375,10 +368,18 @@ func TestListRecordings_FromTo(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "1時間前", start: base.Add(-time.Hour), status: "finished", eventID: 1})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "30分前", start: base.Add(-30 * time.Minute), status: "finished", eventID: 2})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "現在", start: base, status: "finished", eventID: 3})
-	seedRecordingFull(t, pool, seedRecordingOpts{title: "30分後", start: base.Add(30 * time.Minute), status: "finished", eventID: 4})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "1時間前", base.Add(-time.Hour), "finished", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "30分前", base.Add(-30*time.Minute), "finished", 2
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "現在", base, "finished", 3
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "30分後", base.Add(30*time.Minute), "finished", 4
+	})
 
 	params := url.Values{
 		"from": {base.Add(-45 * time.Minute).Format(rfc3339)},
@@ -418,8 +419,12 @@ func TestListRecordings_TrashOrthogonal(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	live := seedRecordingFull(t, pool, seedRecordingOpts{title: "生きているNHK番組", start: base, status: "finished", eventID: 1})
-	trashed := seedRecordingFull(t, pool, seedRecordingOpts{title: "捨てたNHK番組", start: base.Add(time.Minute), status: "finished", eventID: 2})
+	live := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "生きているNHK番組", base, "finished", 1
+	})
+	trashed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "捨てたNHK番組", base.Add(time.Minute), "finished", 2
+	})
 	_ = live
 
 	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, trashed))
@@ -465,7 +470,9 @@ func TestListRecordings_KeysetPagination_DuplicateStartAt(t *testing.T) {
 	// wantAsc はここでの挿入順そのものになる。
 	var wantAsc []int64
 	seed := func(title string, start time.Time, eventID int32) {
-		id := seedRecordingFull(t, pool, seedRecordingOpts{title: title, start: start, status: "finished", eventID: eventID})
+		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, start, "finished", eventID
+		})
 		wantAsc = append(wantAsc, id)
 	}
 	seed("a", base, 1)                   // 単独

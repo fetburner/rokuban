@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 )
@@ -84,7 +85,7 @@ func TestEncodeWorker_AttemptRow_ClearedOnSuccess(t *testing.T) {
 	scratchDir := t.TempDir()
 	rel := "20240101/attempt-success.m2ts"
 	content := []byte("fake-ts-payload-for-attempt-success-test")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"h264"}, content)
 
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
@@ -125,7 +126,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-fail.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-fail.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
@@ -234,7 +235,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-cancel.m2ts", []string{"h264"}, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
 	// workReturnTimeout は WaitDelay より十分大きく、WaitDelay を外した場合の
 	// sleep 全長（slowFFmpegSleepSeconds）より短く保つ。WaitDelay が無いと
 	// cancel() から Work() が返るまで sleep の全長を待つため、このテストが
@@ -375,7 +376,7 @@ func TestEncodeWorker_AttemptLimitDoesNotReadRiverAttempt(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/domain-attempt-limit.m2ts", nil, []byte("data"))
 	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir}
 	job := EncodeJobArgs{RecordingID: recordingID, Profile: "missing"}
 	for attempt := int32(1); attempt <= 25; attempt++ {
@@ -405,7 +406,7 @@ func TestEncodeWorker_AttemptLimitCountsRunningRowAsDead(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/dead-domain-attempts.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/dead-domain-attempts.m2ts", nil, []byte("data"))
 	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	for attempt := int32(1); attempt <= 25; attempt++ {
 		start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
@@ -444,7 +445,7 @@ func TestEncodeJobTimeoutSnapshotsDurationAndRate(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/timeout-snapshot.m2ts", []string{"h264"}, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/timeout-snapshot.m2ts", []string{"h264"}, []byte("data"))
 	startedAt := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	endedAt := startedAt.Add(90 * time.Minute)
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt); err != nil {
@@ -522,7 +523,7 @@ func TestEncodeWorker_ResetAfterLimitRestartsFromOne(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/reset-after-limit.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/reset-after-limit.m2ts", nil, []byte("data"))
 	if _, err := pool.Exec(context.Background(),
 		`INSERT INTO recording_encode_attempts (recording_id, profile, state, error, attempted_at, attempt_count)
 		 VALUES ($1, 'missing', 'failed', 'x', now(), 25)`, recordingID); err != nil {
@@ -555,7 +556,7 @@ func TestEncodeWorker_DeadlineCountsFailureAndStopsFFmpeg(t *testing.T) {
 	)
 	setWorkerExecWaitDelayForTest(t, 30*time.Second)
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/deadline.m2ts", []string{"h264"}, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/deadline.m2ts", []string{"h264"}, []byte("data"))
 	installFakeFFprobe(t, "60.0", true)
 	ffmpegDir := t.TempDir()
 	ffmpegPath := filepath.Join(ffmpegDir, "ffmpeg")
@@ -687,7 +688,7 @@ func TestEncodeWorker_AttemptRow_FailedOnFailure_MultibyteTruncation(t *testing.
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-fail-multibyte.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-fail-multibyte.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	longMsg := strings.Repeat("日", 1000)
@@ -743,7 +744,7 @@ func TestEncodeWorker_ClearAttempt_SurvivesCanceledCtx(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-clear-canceled.m2ts", nil, []byte("data"))
 
 	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}
 	start, err := w.beginEncodeAttempt(context.Background(), recordingID, "h264")
@@ -822,7 +823,7 @@ func TestEncodeWorker_WaitDelayExpiredOnSuccess_TreatedAsSuccess(t *testing.T) {
 	scratchDir := t.TempDir()
 	rel := "20240101/waitdelay-success.m2ts"
 	content := []byte("fake-ts-payload-for-waitdelay-success-test")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"h264"}, content)
 
 	// sleep は WaitDelay より十分長く保つ（この shell 自体は即座に exit するので、
 	// installSlowFakeFFmpeg のような cancel との競合はない。PID 再利用を避ける

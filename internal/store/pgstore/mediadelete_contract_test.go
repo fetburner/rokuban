@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -20,37 +21,25 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		newRecording := func(t *testing.T) int64 {
 			t.Helper()
-			id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-				Source:            "manual",
-				Site:              store.DefaultSite,
-				NetworkID:         32678,
-				ServiceID:         5168,
-				EventID:           mediaDeleteContractEventID.Add(1),
-				ServiceName:       "store media delete contract fixture",
-				ChannelType:       "GR",
-				Channel:           "27",
-				Title:             "store media delete contract fixture",
-				ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-				ProgramDurationMs: 60_000,
-				Status:            "finished",
+			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				fixtureParams.EventID = mediaDeleteContractEventID.Add(1)
+				fixtureParams.ServiceName = "store media delete contract fixture"
+				fixtureParams.Title = "store media delete contract fixture"
+				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
+				fixtureParams.ProgramDurationMs = 60_000
 			})
-			if err != nil {
-				t.Fatalf("seeding recording: %v", err)
-			}
+
 			return id
 		}
 		newAsset := func(t *testing.T, recordingID int64, kind string, profile *string) int64 {
 			t.Helper()
-			id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-				RecordingID: recordingID,
-				Kind:        kind,
-				Profile:     profile,
-				RelPath:     fmt.Sprintf("sites/%s/store-contract/%d/%s", store.DefaultSite, recordingID, kind),
-				SizeBytes:   1,
+			id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+				fixtureParams.Kind = kind
+				fixtureParams.Profile = profile
+				fixtureParams.RelPath = fmt.Sprintf("sites/%s/store-contract/%d/%s", store.DefaultSite, recordingID, kind)
+				fixtureParams.SizeBytes = 1
 			})
-			if err != nil {
-				t.Fatalf("seeding %s media asset: %v", kind, err)
-			}
+
 			return id
 		}
 		return contracttest.MediaDeleteFixture{

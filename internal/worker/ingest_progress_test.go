@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -64,7 +65,7 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 		return
 	}
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	reporter := &ingestProgressReporter{
 		publisher:   newTestMediaStore(pool),
 		recordingID: recordingID,
@@ -189,7 +190,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-progress")
 	setRecordSyncContentLength(t, pool, "rec-progress", int64(len(tsData)))
 
@@ -325,7 +326,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		Precheck:         newTestMediaStore(pool),
 	}
 
-	recordingID = insertTestRecording(t, pool)
+	recordingID = dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-interrupted-progress")
 
 	err := runWorkerViaJobQFake(context.Background(), w,
@@ -417,7 +418,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		Precheck:         newTestMediaStore(pool),
 	}
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-failing")
 
 	err := runWorkerViaJobQFake(context.Background(), w,
@@ -495,7 +496,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		RecordTarget:     pgstore.NewRecordings(pool),
 		Precheck:         newTestMediaStore(pool),
 	}
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")
 
 	ctx, cancel := context.WithCancel(context.Background())

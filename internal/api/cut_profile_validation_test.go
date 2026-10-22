@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -182,22 +186,17 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 // （事後追加 API は原本が active でないと 409 になる）。
 func insertIngestedRecordingFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) int64 {
 	t.Helper()
-	var id int64
-	if err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ('manual', 'default', 21000, 2100, (SELECT COALESCE(max(event_id), 99) + 1 FROM recordings), 'テスト局', 'GR', '27',
-          'カット検証', now() - interval '1 day', 1800000, 'finished')
-RETURNING id`).Scan(&id); err != nil {
-		t.Fatalf("inserting recording fixture: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1::bigint, 'original', 'cut-validation/original-' || $1::bigint::text || '.m2ts', 1024)`, id); err != nil {
-		t.Fatalf("inserting original media_asset: %v", err)
-	}
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.NetworkID = 21000
+		p.ServiceID = 2100
+		p.ServiceName = "テスト局"
+		p.Title = "カット検証"
+		p.ProgramStartAt = time.Now().Add(-24 * time.Hour)
+	})
+	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+		p.RelPath = fmt.Sprintf("cut-validation/original-%d.m2ts", id)
+		p.SizeBytes = 1024
+	})
 	return id
 }
 
@@ -549,11 +548,16 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	t.Cleanup(srv.Close)
 	id := insertIngestedRecordingFixture(t, pool, ctx)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	profile := "cut"
+	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "queue-exhausted/cut.mp4"
+		p.SizeBytes = 1000
+	})
 	for _, sql := range []string{
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`,
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', 'cut', 'queue-exhausted/cut.mp4', 1000, 'active')`,
 		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,600000),[900000,1800000)}'::int8multirange)`,
 		`INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_at, attempt_count)
@@ -610,10 +614,15 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	t.Cleanup(srv.Close)
 	id := insertIngestedRecordingFixture(t, pool, ctx)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
+	profile := "cut"
+	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "queue-noorig/cut.mp4"
+		p.SizeBytes = 1000
+	})
 	for _, sql := range []string{
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`,
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', 'cut', 'queue-noorig/cut.mp4', 1000, 'active')`,
 		`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1800000)}'::int8multirange)`,
 		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`,

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -80,26 +81,22 @@ func TestRecordingQueryContract(t *testing.T) {
 				}
 				genres = encoded
 			}
-			id, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				RuleID:            o.RuleID,
-				Source:            o.Source,
-				Site:              o.Site,
-				NetworkID:         o.NetworkID,
-				ServiceID:         o.ServiceID,
-				EventID:           o.EventID,
-				ServiceName:       "契約テスト局",
-				ChannelType:       o.ChannelType,
-				Channel:           "27",
-				Title:             o.Title,
-				Description:       description,
-				Genres:            genres,
-				ProgramStartAt:    o.StartAt,
-				ProgramDurationMs: 30 * time.Minute.Milliseconds(),
-				Status:            o.Status,
+			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				fixtureParams.RuleID = o.RuleID
+				fixtureParams.Source = o.Source
+				fixtureParams.Site = o.Site
+				fixtureParams.NetworkID = o.NetworkID
+				fixtureParams.ServiceID = o.ServiceID
+				fixtureParams.EventID = o.EventID
+				fixtureParams.ServiceName = "契約テスト局"
+				fixtureParams.ChannelType = o.ChannelType
+				fixtureParams.Title = o.Title
+				fixtureParams.Description = description
+				fixtureParams.Genres = genres
+				fixtureParams.ProgramStartAt = o.StartAt
+				fixtureParams.Status = o.Status
 			})
-			if err != nil {
-				t.Fatalf("creating fixture recording: %v", err)
-			}
+
 			if o.Trashed || o.Purged {
 				if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
 					t.Fatalf("trashing fixture recording: %v", err)
@@ -121,11 +118,10 @@ func TestRecordingQueryContract(t *testing.T) {
 				}
 			}
 			if o.Playable {
-				if _, err := pool.Exec(ctx, `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'original', $2, 100)`, id, fmt.Sprintf("contract/%s/%d.ts", o.Site, id)); err != nil {
-					t.Fatalf("creating fixture original asset: %v", err)
-				}
+				dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+					p.RelPath = fmt.Sprintf("contract/%s/%d.ts", o.Site, id)
+					p.SizeBytes = 100
+				})
 			}
 			if o.PlaybackPositionMs != nil {
 				updatedAt := time.Now().UTC()

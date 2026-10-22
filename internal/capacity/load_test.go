@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -84,13 +85,18 @@ func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, networkID, servic
 	t.Helper()
 	ctx := context.Background()
 	qe := `[{"event":"recording.failed","reason":"need-rescheduling"}]`
-	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ('manual', $1, $2, $3, $4, 'テスト局', 'GR', '25', 'テスト番組', now(), 1800000, 'failed', $5::jsonb)`,
-		testSite, networkID, serviceID, eventID, qe); err != nil {
-		t.Fatalf("seeding mid-recording failure: %v", err)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Site = testSite
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+		p.EventID = eventID
+		p.ServiceName = "テスト局"
+		p.Channel = "25"
+		p.Title = "テスト番組"
+		p.Status = "failed"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, id, qe); err != nil {
+		t.Fatalf("setting mid-recording failure quality events: %v", err)
 	}
 }
 

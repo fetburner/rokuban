@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -82,7 +83,8 @@ esac
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			mediaDir := t.TempDir()
-			id := seedCMRecording(t, pool, mediaDir, int32(1000+i))
+			id := dbtest.Recording(t, pool, cmRecordingOptions(int32(1000+i)))
+			seedCMDetectionState(t, pool, mediaDir, id)
 			tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 			w := newCMDetectTestWorker(pool, mediaDir, tools)
 			if scratch := tt.tamper(t, tools, mediaDir, id); scratch != "" {
@@ -108,7 +110,7 @@ esac
 func TestBeginCMDetectionAttemptClearsStage(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 1100)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1100)))
 	q := sqlcgen.New(pool)
 	firstAttempt := startCMDetectionTestAttempt(t, ctx, q, id)
 	stage := "logo"

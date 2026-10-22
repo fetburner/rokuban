@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -197,11 +198,17 @@ func TestListPrograms_Window(t *testing.T) {
 	seedEpgProgram(t, pool, 1, 32678, 5168, 1, "A-1", base, true)
 	seedEpgProgram(t, pool, 2, 32678, 5168, 2, "A-2", base.Add(time.Hour), false)
 	seedEpgProgram(t, pool, 3, 32676, 5152, 1, "B-1", base.Add(30*time.Minute), false)
-	recordingID := seedRecording(t, pool, "A-1", base, "recording", 1)
+	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "A-1", base, "recording", 1
+	})
 	// event_id は site / service 内で再利用されるため、開始時刻が違う録画は
 	// 対応付けないことも確認する。
-	seedRecording(t, pool, "古いA-1", base.Add(-time.Hour), "recording", 1)
-	seedRecording(t, pool, "A-2", base.Add(time.Hour), "finished", 2)
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古いA-1", base.Add(-time.Hour), "recording", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "A-2", base.Add(time.Hour), "finished", 2
+	})
 	seedProgramIntent(t, pool, 2, base.Add(time.Hour), 32678, 5168, 2, "skip")
 
 	// 窓に一部でも重なる番組が入る（開区間）

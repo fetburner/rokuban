@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/breaker"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -31,7 +32,7 @@ type removedEncodedFixture struct {
 // 要求行は入れない（呼び出し側が requestEncodedRemoval で入れる）。
 func seedRemovedEncodedRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID int32, profiles []string) removedEncodedFixture {
 	t.Helper()
-	recordingID := insertTestRecordingWithEventID(t, pool, eventID)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID })
 	dir := fmt.Sprintf("removed/%d", recordingID)
 	f := removedEncodedFixture{recordingID: recordingID}
 	f.originalID = seedOriginalAsset(t, pool, mediaDir, recordingID, dir+"/orig.m2ts", []byte("original"))
@@ -222,7 +223,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	trashed := insertTestRecordingWithEventID(t, pool, 9401)
+	trashed := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 9401 })
 	trashAsset := seedOriginalAsset(t, pool, mediaDir, trashed, "trip/trash.m2ts", []byte("data"))
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET deleted_at = $1 WHERE id = $2", time.Now().Add(-40*24*time.Hour), trashed); err != nil {

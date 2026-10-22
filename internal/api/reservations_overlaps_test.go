@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -189,7 +190,9 @@ func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 233)
 	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
-	seedRecording(t, pool, "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2)
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2
+	})
 
 	var got ProgramOverlaps
 	resp := getJSON(t, overlapsURL(srv.URL, 232), &got)
@@ -216,14 +219,19 @@ func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 241)
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
-	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status, quality_events
-) VALUES ('manual', 'default', 32679, 5169, 4, 'テスト局', 'GR', '27', '放送中に失敗した番組', $1, $2, 'failed',
-    '[{"event":"recording.failed","reason":"need-rescheduling"}]'::jsonb)`,
-		base.Add(30*time.Minute), time.Hour.Milliseconds()); err != nil {
-		t.Fatalf("seeding mid-recording failure: %v", err)
+	failedID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.NetworkID = 32679
+		p.ServiceID = 5169
+		p.EventID = 4
+		p.ServiceName = "テスト局"
+		p.Title = "放送中に失敗した番組"
+		p.ProgramStartAt = base.Add(30 * time.Minute)
+		p.ProgramDurationMs = time.Hour.Milliseconds()
+		p.Status = "failed"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, failedID,
+		`[{"event":"recording.failed","reason":"need-rescheduling"}]`); err != nil {
+		t.Fatalf("setting mid-recording failure quality events: %v", err)
 	}
 
 	var got ProgramOverlaps

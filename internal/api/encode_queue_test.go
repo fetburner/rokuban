@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -41,7 +42,9 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	n := int64(900)
 	mk := func(title string, profiles ...string) int64 {
 		n++
-		id := seedRecording(t, pool, title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n))
+		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n)
+		})
 		seedIngested(t, pool, id, 1000, nil)
 		setEncodeProfiles(t, pool, id, profiles)
 		return id
@@ -60,8 +63,14 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	seedEncodedAsset(t, pool, b, "h265", 1000)
 
 	c := mk("削除中の encoded", "h264")
-	exec(`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', 'h264', 'test/inactive_observed.mp4', 1000, 'deleting')`, c)
+	profile := "h264"
+	cAsset := dbtest.OriginalAsset(t, pool, c, func(p *sqlcgen.CreateMediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "test/inactive_observed.mp4"
+		p.SizeBytes = 1000
+	})
+	exec(`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, cAsset)
 
 	d := mk("失敗 count 0", "h264")
 	seedEncodeAttempt(t, pool, d, "h264", "failed", nil)
@@ -165,7 +174,9 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 // cut プロファイルが 1 つも無い構成でも、cut 以外のプロファイルは待機列に数える。
 func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	id := seedRecording(t, pool, "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264"})
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
@@ -240,7 +251,9 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	seed := func(title, profile string) int64 {
 		t.Helper()
 		n++
-		id := seedRecording(t, pool, title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n))
+		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n)
+		})
 		seedIngested(t, pool, id, 1000, nil)
 		setEncodeProfiles(t, pool, id, []string{profile})
 		return id
@@ -277,8 +290,14 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 
 	seed("不足", "h264")
 	deleting := seed("削除中の版", "h264")
-	exec(`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', 'h264', 'test/agree_deleting.mp4', 1000, 'deleting')`, deleting)
+	profile := "h264"
+	deletingAsset := dbtest.OriginalAsset(t, pool, deleting, func(p *sqlcgen.CreateMediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "test/agree_deleting.mp4"
+		p.SizeBytes = 1000
+	})
+	exec(`UPDATE media_assets SET state = 'deleting' WHERE id = $1`, deletingAsset)
 	trash(seed("ごみ箱", "h264"))
 	dropOriginal(seed("原本なし", "h264"))
 	seed("設定に無い", "gone")

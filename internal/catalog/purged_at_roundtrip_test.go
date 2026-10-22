@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -19,21 +20,16 @@ import (
 func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	newRec := func(eventID int32) int64 {
-		id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-			Source: "manual", Site: "default",
-			NetworkID: 32736, ServiceID: 1024, EventID: eventID,
-			ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
-			Title: "完全削除済みの録画", IsFree: true,
-			ProgramStartAt:    time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC),
-			ProgramDurationMs: 180000,
-			Status:            "finished",
+		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			fixtureParams.EventID = eventID
+			fixtureParams.ServiceName = "NHK総合"
+			fixtureParams.Title = "完全削除済みの録画"
+			fixtureParams.ProgramStartAt = time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
+			fixtureParams.ProgramDurationMs = 180000
 		})
-		if err != nil {
-			t.Fatalf("CreateRecording: %v", err)
-		}
+
 		return id
 	}
 

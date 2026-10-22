@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -60,12 +62,20 @@ func TestListRecordings_SeriesOfReturnsTheSameSeries(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 	// 同じ棚（自動キー 作品X）の 3 件。
-	first := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-2*time.Hour), "finished", 1)
-	second := seedRecording(t, pool, "アニメ　作品X　第2話", base.Add(-time.Hour), "finished", 2)
+	first := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base.Add(-2*time.Hour), "finished", 1
+	})
+	second := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base.Add(-time.Hour), "finished", 2
+	})
 	// **failed も履歴として出る。**
-	failed := seedRecording(t, pool, "アニメ　作品X　第3話", base, "failed", 3)
+	failed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第3話", base, "failed", 3
+	})
 	// 別の棚。
-	seedRecording(t, pool, "アニメ　作品Y　第1話", base.Add(time.Hour), "finished", 4)
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品Y　第1話", base.Add(time.Hour), "finished", 4
+	})
 
 	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", first))
 	want := map[int64]bool{first: true, second: true, failed: true}
@@ -101,8 +111,12 @@ func TestListRecordings_SeriesOfExcludesSuperseded(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	first := seedRecording(t, pool, "アニメ　作品X　第1話", base, "finished", 1)
-	superseded := seedRecording(t, pool, "アニメ　作品X　第2話", base.Add(time.Hour), "failed", 2)
+	first := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base, "finished", 1
+	})
+	superseded := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base.Add(time.Hour), "failed", 2
+	})
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET superseded_at = now() WHERE id = $1", superseded); err != nil {
 		t.Fatalf("superseding: %v", err)
@@ -132,8 +146,12 @@ func TestListRecordings_SeriesOfFromPurgedTombstoneReturnsTheSeries(t *testing.T
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base, "finished", 1)
-	alive := seedRecording(t, pool, "アニメ　作品X　第2話", base.Add(time.Hour), "finished", 2)
+	origin := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base, "finished", 1
+	})
+	alive := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base.Add(time.Hour), "finished", 2
+	})
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1", origin); err != nil {
 		t.Fatalf("purging: %v", err)
@@ -153,9 +171,15 @@ func TestListRecordings_SeriesOfWithNoSeriesIsEmpty(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	nullSeries := seedRecording(t, pool, "【特集】", base, "finished", 1)
-	seedRecording(t, pool, "【再】", base.Add(time.Hour), "finished", 2)
-	seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(2*time.Hour), "finished", 3)
+	nullSeries := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "【特集】", base, "finished", 1
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "【再】", base.Add(time.Hour), "finished", 2
+	})
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base.Add(2*time.Hour), "finished", 3
+	})
 
 	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", nullSeries))
 	if len(got) != 0 {
@@ -180,9 +204,13 @@ func TestListRecordings_SeriesOfUsesTheLabelRuleValue(t *testing.T) {
 	createSeriesLabelRule(t, srv.URL, "数学I", "数学")
 
 	base := time.Now().Truncate(time.Second)
-	math := seedRecording(t, pool, "NHK高校講座　数学I　第1回", base, "finished", 1)
+	math := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHK高校講座　数学I　第1回", base, "finished", 1
+	})
 	// 自動キーは「NHK高校講座」で同じだが、ルールが数学Iを割る。
-	seedRecording(t, pool, "NHK高校講座　化学　第1回", base.Add(time.Hour), "finished", 2)
+	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHK高校講座　化学　第1回", base.Add(time.Hour), "finished", 2
+	})
 
 	got := listRecordingsForSeries(t, srv.URL, fmt.Sprintf("seriesOf=%d", math))
 	if len(got) != 1 || got[0] != math {
@@ -196,9 +224,15 @@ func TestListRecordings_SeriesOfKeepsKeysetPaging(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	first := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-2*time.Hour), "finished", 1)
-	second := seedRecording(t, pool, "アニメ　作品X　第2話", base.Add(-time.Hour), "finished", 2)
-	third := seedRecording(t, pool, "アニメ　作品X　第3話", base, "finished", 3)
+	first := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base.Add(-2*time.Hour), "finished", 1
+	})
+	second := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base.Add(-time.Hour), "finished", 2
+	})
+	third := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第3話", base, "finished", 3
+	})
 
 	var page []Recording
 	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings?seriesOf=%d&limit=2", first), &page)
@@ -238,7 +272,9 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1)
+	origin := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1
+	})
 
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
 	seedEpgProgramAt(t, pool, "other", 2, "アニメ　作品X　第2話", base.Add(24*time.Hour))
@@ -276,7 +312,9 @@ func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T)
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1)
+	origin := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1
+	})
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1", origin); err != nil {
@@ -299,7 +337,9 @@ func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	origin := seedRecording(t, pool, "【特集】", base, "finished", 1)
+	origin := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "【特集】", base, "finished", 1
+	})
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "【特集】", base.Add(time.Hour))
 
 	for _, id := range []int64{origin, 999999} {
@@ -322,7 +362,9 @@ func TestListRecordingUpcoming_UsesTheLabelRuleValue(t *testing.T) {
 
 	createSeriesLabelRule(t, srv.URL, "数学I", "数学")
 	base := time.Now().Truncate(time.Second)
-	origin := seedRecording(t, pool, "NHK高校講座　数学I　第1回", base.Add(-24*time.Hour), "finished", 1)
+	origin := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHK高校講座　数学I　第1回", base.Add(-24*time.Hour), "finished", 1
+	})
 
 	// 自動キーは「NHK高校講座」で起点と一致しない（ルールが割った先の値 数学I が一致する）。
 	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "NHK高校講座　数学I　第2回", base.Add(24*time.Hour))

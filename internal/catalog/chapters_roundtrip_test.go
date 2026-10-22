@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -20,26 +21,15 @@ import (
 func TestExportRescue_RoundTripsUserChapters(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 
-	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           400,
-		ServiceName:       "NHK総合",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "チャプター付き",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            "finished",
+	recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = 400
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "チャプター付き"
+		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
+
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recording_chapter_ownership (recording_id, adopted_at)
 VALUES ($1, '2026-01-02 03:04:05+00')`, recID); err != nil {

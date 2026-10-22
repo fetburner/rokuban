@@ -12,9 +12,9 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
@@ -249,23 +249,10 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	recordingID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              testSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           int32(len(recordID)*1000 + int(recordID[len(recordID)-1])),
-		ServiceName:       "テストチャンネル",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "テスト番組 " + recordID,
-		ProgramStartAt:    time.Now().Truncate(time.Second),
-		ProgramDurationMs: 1800000,
-		Status:            "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = int32(len(recordID)*1000 + int(recordID[len(recordID)-1]))
+		fixtureParams.Title = "テスト番組 " + recordID
 	})
-	if err != nil {
-		t.Fatalf("creating recording: %v", err)
-	}
 
 	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
 		Site:          testSite,
@@ -280,14 +267,10 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	}
 
 	if ingested {
-		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-			RecordingID: recordingID,
-			Kind:        store.AssetKindOriginal,
-			RelPath:     "test/" + recordID + ".m2ts",
-			SizeBytes:   contentLength,
-		}); err != nil {
-			t.Fatalf("creating media_asset: %v", err)
-		}
+		dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			fixtureParams.RelPath = "test/" + recordID + ".m2ts"
+			fixtureParams.SizeBytes = contentLength
+		})
 	}
 }
 
@@ -832,14 +815,10 @@ func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	if recordingID == nil {
 		t.Fatalf("record_sync %q has no recording_id", recordID)
 	}
-	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: *recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "test/" + recordID + ".m2ts",
-		SizeBytes:   1,
-	}); err != nil {
-		t.Fatalf("creating media_asset: %v", err)
-	}
+	dbtest.OriginalAsset(t, pool, *recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.RelPath = "test/" + recordID + ".m2ts"
+		fixtureParams.SizeBytes = 1
+	})
 }
 
 // gaugeValue は Collect の結果から指定名のゲージ値を取り出す。

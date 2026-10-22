@@ -564,6 +564,8 @@ func queryReservationSeries(ctx context.Context, conn *pgx.Conn, query string) (
 func seedShelfBenchmark(t *testing.T, conn *pgx.Conn) {
 	t.Helper()
 	ctx := context.Background()
+	// ベンチマーク母集団は 73,000 行のサイト・状態・イベント分布を generate_series で
+	// 一括生成する計測専用 fixture なので set-based SQL を使う。通常の録画 fixture は dbtest を使う。
 	if _, err := conn.Exec(ctx, `
 TRUNCATE recordings, media_assets, recording_watched, label_rules, label_rule_hits RESTART IDENTITY CASCADE;
 

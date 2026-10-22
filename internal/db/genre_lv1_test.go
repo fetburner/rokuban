@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TestGenreLv1_EdgeCasesDoNotFailInsert は recordings.genre_lv1
@@ -25,7 +25,6 @@ import (
 func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	cases := []struct {
 		name   string
@@ -56,24 +55,17 @@ func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 			if tc.genres != nil {
 				genres = json.RawMessage(tc.genres)
 			}
-			id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				Source:            "manual",
-				Site:              store.DefaultSite,
-				NetworkID:         1,
-				ServiceID:         1,
-				EventID:           int32(1000 + i),
-				ServiceName:       "test",
-				ChannelType:       "GR",
-				Channel:           "1",
-				Title:             tc.name,
-				Genres:            genres,
-				ProgramStartAt:    time.Now(),
-				ProgramDurationMs: 1000,
-				Status:            "finished",
+			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				fixtureParams.NetworkID = 1
+				fixtureParams.ServiceID = 1
+				fixtureParams.EventID = int32(1000 + i)
+				fixtureParams.ServiceName = "test"
+				fixtureParams.Channel = "1"
+				fixtureParams.Title = tc.name
+				fixtureParams.Genres = genres
+				fixtureParams.ProgramStartAt = time.Now()
+				fixtureParams.ProgramDurationMs = 1000
 			})
-			if err != nil {
-				t.Fatalf("CreateRecording with genres=%s must not fail, got: %v", tc.genres, err)
-			}
 
 			var got []int16
 			if err := pool.QueryRow(ctx,

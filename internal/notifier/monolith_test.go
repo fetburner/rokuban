@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -31,15 +31,13 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
-	recordingID := seedRecording(t, pool, "モノリスの録画", time.Now().Truncate(time.Second), "finished", 1)
-	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "r.m2ts",
-		SizeBytes:   int64(len(content)),
-	}); err != nil {
-		t.Fatalf("seeding media_asset: %v", err)
-	}
+	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "モノリスの録画", time.Now().Truncate(time.Second), "finished", 1
+	})
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.RelPath = "r.m2ts"
+		fixtureParams.SizeBytes = int64(len(content))
+	})
 
 	hub := NewEventHub()
 	runHub(t, hub, pool)

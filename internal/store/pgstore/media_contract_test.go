@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
@@ -65,38 +66,27 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 
 func newMediaContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           mediaContractEventID.Add(1),
-		ServiceName:       "store contract fixture",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "store media contract fixture",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: 60_000,
-		Status:            "finished",
+	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.Status = "finished"
+		fixtureParams.EventID = mediaContractEventID.Add(1)
+		fixtureParams.ServiceName = "store contract fixture"
+		fixtureParams.Title = "store media contract fixture"
+		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
+		fixtureParams.ProgramDurationMs = 60_000
 	})
-	if err != nil {
-		t.Fatalf("seeding recording: %v", err)
-	}
+
 	return id
 }
 
 func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 	t.Helper()
-	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        kind,
-		Profile:     profile,
-		RelPath:     relPath,
-		SizeBytes:   1,
+	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.Kind = kind
+		fixtureParams.Profile = profile
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = 1
 	})
-	if err != nil {
-		t.Fatalf("seeding %s media asset: %v", kind, err)
-	}
+
 	if state != "active" {
 		if _, err := pool.Exec(context.Background(), "UPDATE media_assets SET state = $1 WHERE id = $2", state, id); err != nil {
 			t.Fatalf("setting media asset state to %s: %v", state, err)

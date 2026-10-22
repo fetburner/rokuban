@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TestSeekTileCount は枚数の決定を実装の定数ではなくリテラルで固定する。
@@ -176,7 +176,7 @@ func (c *countingRunCmd) run(_ context.Context, name string, args ...string) ([]
 	return nil, os.WriteFile(out, tinyJPEG, 0o644)
 }
 
-func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir string, recordingID int64, rel string) {
+func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, recordingID int64, rel string) {
 	const content = "fake-ts"
 	t.Helper()
 	full := filepath.Join(mediaDir, filepath.FromSlash(rel))
@@ -186,14 +186,10 @@ func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir stri
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     rel,
-		SizeBytes:   int64(len(content)),
-	}); err != nil {
-		t.Fatalf("seeding original: %v", err)
-	}
+	dbtest.OriginalAsset(t, db, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.RelPath = rel
+		fixtureParams.SizeBytes = int64(len(content))
+	})
 }
 
 func runSeekTilesJob(t *testing.T, w *SeekTilesWorker, recordingID int64) error {
@@ -208,8 +204,8 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tiles-overlap.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles-overlap.m2ts")
 
 	paths := make(chan string, 64)
 	release := make(chan struct{})
@@ -283,8 +279,8 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tiles.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles.m2ts")
 
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{
@@ -328,8 +324,8 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/idem.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/idem.m2ts")
 
 	cmd := &countingRunCmd{duration: "30"}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -357,7 +353,7 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 // original が無ければ何もせず成功で終える（レベルトリガー。再試行しても埋まらない）。
 func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	pool := setupTestPool(t)
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	cmd := &countingRunCmd{duration: "30"}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: t.TempDir(), ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -375,8 +371,8 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/partial.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/partial.m2ts")
 
 	// 3 枚中 2 枚目（000001.jpg）の抽出で落とす。最後の 1 枚は直前のタイルで
 	// 埋めるので、途中の失敗で見る。
@@ -410,8 +406,8 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/noprobe.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/noprobe.m2ts")
 
 	cmd := &countingRunCmd{probeErr: true}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -432,8 +428,8 @@ func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/hole.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/hole.m2ts")
 
 	cmd := &countingRunCmd{
 		duration: "30",
@@ -473,8 +469,8 @@ func TestSeekTileAt(t *testing.T) {
 func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/tail.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tail.m2ts")
 
 	cmd := &countingRunCmd{duration: "30.02", videoEnd: 30.0}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -493,8 +489,8 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/zero.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/zero.m2ts")
 
 	cmd := &countingRunCmd{duration: "0.000000"}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
@@ -512,8 +508,8 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/longgop.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/longgop.m2ts")
 
 	// 40.007 秒 → 5 枚、最後は 39.007 秒。最後のキーフレームは 35 秒。
 	cmd := &countingRunCmd{duration: "40.007", lastKeyframe: 35}
@@ -534,8 +530,8 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/single.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/single.m2ts")
 
 	cmd := &countingRunCmd{
 		duration: "5",
@@ -556,8 +552,8 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
-	seedOriginalForSeekTiles(t, sqlcgen.New(pool), mediaDir, recordingID, "shows/shortvideo.m2ts")
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/shortvideo.m2ts")
 
 	cmd := &countingRunCmd{duration: "19.5", formatDuration: "22"}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}

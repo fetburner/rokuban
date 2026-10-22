@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -66,7 +68,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 		return
 	}
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	data := append(
 		pcrPacket(0x0100, 0, 900000),
 		pcrPacket(0x0100, 2, 990000)...,
@@ -150,7 +152,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 		return
 	}
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 12920)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12920 })
 	mediaDir := t.TempDir()
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "ingest-hint/original.m2ts", []byte("committed"))
 	fake := mirakctest.New(t)

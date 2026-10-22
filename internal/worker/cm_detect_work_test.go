@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -220,9 +221,16 @@ func cmArgumentValue(argsText, name string) (string, bool) {
 	return "", false
 }
 
-func seedCMRecording(t *testing.T, pool *pgxpool.Pool, mediaDir string, eventID int32) int64 {
+func cmRecordingOptions(eventID int32) func(*sqlcgen.CreateRecordingParams) {
+	return func(params *sqlcgen.CreateRecordingParams) {
+		params.NetworkID = 32736
+		params.ServiceID = 1024
+		params.EventID = eventID
+	}
+}
+
+func seedCMDetectionState(t *testing.T, pool *pgxpool.Pool, mediaDir string, id int64) int64 {
 	t.Helper()
-	id := insertTestRecordingWithEventID(t, pool, eventID)
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET program_duration_ms = 10010 WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +252,8 @@ func TestCMDetectWorkRejectsEmptyScratchInsteadOfUsingCurrentDirectory(t *testin
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 929)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(929))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 	workingDir := t.TempDir()
 	t.Chdir(workingDir)
@@ -276,7 +285,8 @@ func TestCMDetectWorkKeepsCommercialsBeyondProgramDurationAndStoresLogoPreview(t
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	// EPG の尺は 10.010 秒（300 フレーム）だが、録画は延長されて原本は 20.020 秒（600 フレーム）ある。
-	id := seedCMRecording(t, pool, mediaDir, 910)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(910))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "20.020000")
 
 	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
@@ -319,7 +329,8 @@ func TestCMDetectWorkSavesLogoWhenPreviewCannotBeRendered(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 911)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(911))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, []byte("not an lgd"), 0, "Trim(0,299)", "10.010000")
 
 	if err := runWorkerViaJobQFake(ctx, newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id)); err != nil {
@@ -339,7 +350,8 @@ func TestCMDetectWorkPassesTaughtLogoAreaToLogoframe(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 920)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(920))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
@@ -374,7 +386,8 @@ func TestCMDetectWorkRejectsTaughtAreaWithOtherResolution(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 921)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(921))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
@@ -418,7 +431,8 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 926)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(926))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
@@ -469,7 +483,8 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 927)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(927))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO cm_logo_areas (network_id, service_id, x, y, w, h, coded_width, coded_height)
@@ -503,7 +518,8 @@ func TestCMDetectWorkRejectsLearnedLogoWithOtherResolution(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 922)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(922))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1920x1080")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
@@ -538,7 +554,8 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 923)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(923))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080),
@@ -567,7 +584,8 @@ func TestCMDetectWorkRejectsLowMatchForExistingLogo(t *testing.T) {
 func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 924)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(924))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
 
 	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
@@ -590,7 +608,8 @@ func TestCMDetectWorkDoesNotPersistLowMatchForNewLogo(t *testing.T) {
 func TestCMDetectWorkRequiresLogoMatchOutput(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 925)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(925))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000", "1440x1080", "")
 
 	err := runWorkerViaJobQFake(context.Background(), newCMDetectTestWorker(pool, mediaDir, tools), cmJob(id))
@@ -613,7 +632,8 @@ func TestCMDetectWorkFailureWritesNoResultAndMarksAttempt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 912)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(912))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(2, 2, 1000, 4080), 3, "Trim(0,299)", "10.010000")
 	w := newCMDetectTestWorker(pool, mediaDir, tools)
 
@@ -677,7 +697,8 @@ func TestCMDetectDeadlineCountsAndCancellationDoesNotCount(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
 			mediaDir := t.TempDir()
-			id := seedCMRecording(t, pool, mediaDir, 926)
+			id := dbtest.Recording(t, pool, cmRecordingOptions(926))
+			seedCMDetectionState(t, pool, mediaDir, id)
 			q := sqlcgen.New(pool)
 			for range tc.priorFailures {
 				attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
@@ -749,7 +770,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := insertTestRecordingWithEventID(t, pool, 913)
+	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 913 })
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	profile := "h264"
@@ -776,7 +797,9 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
 
-	dead := seedCMRecording(t, pool, mediaDir, 920)
+	dead := dbtest.Recording(t, pool, cmRecordingOptions(920))
+
+	seedCMDetectionState(t, pool, mediaDir, dead)
 	for want := int32(1); want <= cmDetectMaxTries; want++ {
 		attempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
 			RecordingID: dead, MaxAttempts: cmDetectMaxTries,
@@ -804,7 +827,9 @@ func TestCMDetectCountsDeadAttemptsAndFencesLateResults(t *testing.T) {
 		t.Errorf("logoframe ran after the domain limit was reached (stat %v)", err)
 	}
 
-	late := seedCMRecording(t, pool, mediaDir, 921)
+	late := dbtest.Recording(t, pool, cmRecordingOptions(921))
+
+	seedCMDetectionState(t, pool, mediaDir, late)
 	first, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
 		RecordingID: late, MaxAttempts: cmDetectMaxTries,
 	})
@@ -857,7 +882,8 @@ func cmPolicyGeneration(t *testing.T, ctx context.Context, pool *pgxpool.Pool, i
 func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 921)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(921))
+	seedCMDetectionState(t, pool, t.TempDir(), id)
 	q := sqlcgen.New(pool)
 	enable := func() {
 		t.Helper()
@@ -890,7 +916,7 @@ func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
 	}
 
 	// 未凍結録画の初回凍結（cm_detect=true）も切り替えとして数える。
-	frozen := insertTestRecordingWithEventID(t, pool, 920)
+	frozen := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 920 })
 	seedOriginalAsset(t, pool, t.TempDir(), frozen, "cm/920.ts", []byte("ts"))
 	if rows, err := q.SetRecordingCMDetection(ctx, frozen); err != nil || rows != 1 {
 		t.Fatalf("first-freeze SetRecordingCMDetection(%d) = %d, %v; want 1 row", frozen, rows, err)
@@ -904,7 +930,8 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 922)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(922))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	q := sqlcgen.New(pool)
 
 	oldAttempt, err := q.BeginCMDetectionAttempt(ctx, sqlcgen.BeginCMDetectionAttemptParams{
@@ -976,7 +1003,8 @@ func TestCMDetectionPolicyToggleResetsBudgetAndFencesOldWork(t *testing.T) {
 func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 919)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(919))
+	seedCMDetectionState(t, pool, t.TempDir(), id)
 	q := sqlcgen.New(pool)
 
 	oldAttempt := startCMDetectionTestAttemptRow(t, ctx, q, id)
@@ -1024,7 +1052,8 @@ func TestCMDetectionOldGenerationWorkerCannotMarkOrCancelNewAttempt(t *testing.T
 func TestCMDetectionOldGenerationWorkerCannotCancelNewAttempt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 918)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(918))
+	seedCMDetectionState(t, pool, t.TempDir(), id)
 	q := sqlcgen.New(pool)
 
 	reachSecondAttempt := func() sqlcgen.BeginCMDetectionAttemptRow {
@@ -1070,7 +1099,8 @@ func TestCMDetectionOldGenerationWorkerCannotCancelNewAttempt(t *testing.T) {
 func TestCMDetectionQueuedRetryAfterToggleStartsFreshBudget(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 923)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(923))
+	seedCMDetectionState(t, pool, t.TempDir(), id)
 	q := sqlcgen.New(pool)
 
 	first := startCMDetectionTestAttempt(t, ctx, q, id)
@@ -1172,7 +1202,8 @@ func countLogos(t *testing.T, pool *pgxpool.Pool) int {
 func TestCMDetectWorkDiscardsLogoLearnedWhileAreaWasSaved(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 930)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(930))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 
 	if err := workHeld(t, pool, mediaDir, tools, id, func() { putAreaLikeAPI(t, pool) }); err != nil {
@@ -1189,7 +1220,8 @@ func TestCMDetectWorkDoesNotWriteBackAnOldLogoDeletedDuringTheJob(t *testing.T) 
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 931)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(931))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 	if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
 		NetworkID: 32736, ServiceID: 1024, Lgd: buildTestLGD(4, 3, 1000, 4080), LearnedFrom: &id,
@@ -1218,7 +1250,8 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 932)
+	id := dbtest.Recording(t, pool, cmRecordingOptions(932))
+	seedCMDetectionState(t, pool, mediaDir, id)
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 1, "Trim(0,149)", "10.010000") // chapter_exe が失敗
 	q := sqlcgen.New(pool)
 	for range 2 {

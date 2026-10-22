@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -60,29 +61,17 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
-	id, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           cmDetectionContractEventID.Add(1),
-		ServiceName:       "局単位 CM 検出契約 fixture",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "CM detection store contract fixture",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: 30 * time.Minute.Milliseconds(),
-		Status:            "finished",
+	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = cmDetectionContractEventID.Add(1)
+		fixtureParams.ServiceName = "局単位 CM 検出契約 fixture"
+		fixtureParams.Title = "CM detection store contract fixture"
+		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
-	if err != nil {
-		t.Fatalf("seeding recording: %v", err)
-	}
-	if _, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: store.AssetKindOriginal,
-		RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
-	}); err != nil {
-		t.Fatalf("seeding original media asset: %v", err)
-	}
+
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
+		fixtureParams.SizeBytes = 1000
+	})
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
 VALUES ($1, 'always', '{}', true)`, id); err != nil {

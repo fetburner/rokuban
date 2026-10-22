@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -129,15 +130,11 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 		}
 		newOriginalAsset := func(t *testing.T, recordingID int64, state string) {
 			t.Helper()
-			assetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-				RecordingID: recordingID,
-				Kind:        store.AssetKindOriginal,
-				RelPath:     fmt.Sprintf("sites/contract-site/%d/original.m2ts", recordingID),
-				SizeBytes:   1,
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+				fixtureParams.RelPath = fmt.Sprintf("sites/contract-site/%d/original.m2ts", recordingID)
+				fixtureParams.SizeBytes = 1
 			})
-			if err != nil {
-				t.Fatalf("seeding original asset for recording %d: %v", recordingID, err)
-			}
+
 			if state != "active" {
 				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = $1 WHERE id = $2`, state, assetID); err != nil {
 					t.Fatalf("setting original asset state to %q: %v", state, err)

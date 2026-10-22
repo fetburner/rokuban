@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -78,7 +79,7 @@ func TestCMLogoCandidateWorkerRecordingLookupFailureUsesSetupStage(t *testing.T)
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-	id := seedCMRecording(t, pool, mediaDir, 939)
+	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(939)))
 	areaAt := seedTaughtArea(t, pool, 1180)
 	worker := newCandidateTestWorker(pool, mediaDir, tools)
 	worker.Store = candidateRecordingLookupFailureStore{
@@ -134,17 +135,17 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 		{"logoframe fails", "logo", func(t *testing.T, pool *pgxpool.Pool, mediaDir string) (cmToolset, int64) {
 			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 			writeExecutable(t, filepath.Join(tools.binDir, "logoframe"), "exit 1\n")
-			return tools, seedCMRecording(t, pool, mediaDir, 940)
+			return tools, seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(940)))
 		}},
 		{"low match", "match", func(t *testing.T, pool *pgxpool.Pool, mediaDir string) (cmToolset, int64) {
 			tools := newFakeCMToolsWithSizeAndReport(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000",
 				"1440x1080", "managed logo: v0001 match=9.99% threshold=0%")
-			return tools, seedCMRecording(t, pool, mediaDir, 941)
+			return tools, seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(941)))
 		}},
 		{"original missing", "setup", func(t *testing.T, pool *pgxpool.Pool, mediaDir string) (cmToolset, int64) {
 			tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
-			seedCMRecording(t, pool, mediaDir, 942) // desired を真に保つ別の原本
-			gone := seedCMRecording(t, pool, mediaDir, 943)
+			seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(942))) // desired を真に保つ別の原本
+			gone := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(943)))
 			if _, err := pool.Exec(context.Background(), `
 				INSERT INTO missing_media_assets (media_asset_id)
 				SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, gone); err != nil {
@@ -185,7 +186,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 944)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(944)))
 	areaAt := seedTaughtArea(t, pool, 1180)
 	attemptedAt := insertRunningCandidate(t, pool, id, areaAt)
 	stage, message := "save", "saving failed"
@@ -204,7 +205,7 @@ func TestMarkCMLogoCandidateFailureAcceptsSaveStage(t *testing.T) {
 func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 945)
+	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(945)))
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	areaAt := seedTaughtArea(t, pool, 1180)
 	w := newCandidateTestWorker(pool, mediaDir, tools)
@@ -221,7 +222,7 @@ func TestCMLogoCandidateWorkerDoesNotWriteReadyAfterAreaChanged(t *testing.T) {
 func TestCMLogoCandidateWorkerCancellationClearsRunningRow(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 946)
+	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(946)))
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	areaAt := seedTaughtArea(t, pool, 1180)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -257,7 +258,7 @@ func insertRunningCandidateForService(t *testing.T, pool *pgxpool.Pool, serviceI
 func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 947)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(947)))
 	areaAt := seedTaughtArea(t, pool, 1180)
 	q := sqlcgen.New(pool)
 	oldAttempt := insertRunningCandidate(t, pool, id, areaAt)
@@ -297,7 +298,7 @@ func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) 
 func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 948)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(948)))
 	if _, err := pool.Exec(ctx, `
 		UPDATE recordings
 		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
@@ -345,7 +346,7 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 949)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
 	var dbNow time.Time
 	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&dbNow); err != nil {
 		t.Fatal(err)
@@ -391,7 +392,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 		}
 	}
 
-	hintRecording := seedCMRecording(t, pool, t.TempDir(), 951)
+	hintRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(951)))
 	setRecordingDuration(hintRecording)
 	analysis := pgstore.NewAnalysis(pool)
 	if err := EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording); err != nil {
@@ -411,7 +412,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 	}
 	assertDuration(hintRecording)
 
-	reconcileRecording := seedCMRecording(t, pool, t.TempDir(), 952)
+	reconcileRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(952)))
 	setRecordingDuration(reconcileRecording)
 	if err := runWorkerViaJobQFake(ctx, (&CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: analysis}), jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
@@ -427,7 +428,8 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 
 	newFailedRecording := func(eventID int32) int64 {
 		t.Helper()
-		id := seedCMRecording(t, pool, t.TempDir(), eventID)
+		id := dbtest.Recording(t, pool, cmRecordingOptions(eventID))
+		seedCMDetectionState(t, pool, t.TempDir(), id)
 		attemptCount := startCMDetectionTestAttempt(t, ctx, q, id)
 		markCMDetectionTestFailure(t, ctx, pool, q, id, attemptCount, "failed", nil, nil)
 		return id
@@ -458,7 +460,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 	}
 
 	// 再有効化の後に始めた試行は現在の世代で、同値の再送では消えない。
-	newAttemptAfterReenable := seedCMRecording(t, pool, t.TempDir(), 955)
+	newAttemptAfterReenable := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(955)))
 	if err := q.ClearRecordingCMDetection(ctx, newAttemptAfterReenable); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +500,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()
-	id := seedCMRecording(t, pool, t.TempDir(), 949)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(949)))
 	if _, err := pool.Exec(context.Background(), `
 		UPDATE recordings
 		SET started_at = '2025-01-01T00:00:00Z', ended_at = '2025-01-01T00:45:00Z'
@@ -546,7 +548,7 @@ func TestCMDetectWorkDiscardsResultWhenLogoAdoptedDuringJob(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 950)
+	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(950)))
 	tools := newFakeCMTools(t, buildTestLGD(4, 3, 1000, 4080), 0, "Trim(0,299)", "10.010000")
 	upsert := func() {
 		if err := sqlcgen.New(pool).UpsertCMLogo(ctx, sqlcgen.UpsertCMLogoParams{
@@ -579,7 +581,7 @@ func TestCMDetectWorkWritesAdoptAttemptWhileCandidateExists(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedCMRecording(t, pool, mediaDir, 951)
+	id := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(951)))
 	tools := newFakeCMToolsWithSize(t, buildTestLGD(4, 3, 1000, 4080), "1440x1080")
 	areaAt := seedTaughtArea(t, pool, 1180)
 	if _, err := pool.Exec(ctx, `

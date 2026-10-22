@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -16,15 +17,14 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	recordingID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 701,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "視聴状態の復元",
-		ProgramStartAt:    time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
-		ProgramDurationMs: time.Hour.Milliseconds(), Status: "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.EventID = 701
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "視聴状態の復元"
+		fixtureParams.ProgramStartAt = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+		fixtureParams.ProgramDurationMs = time.Hour.Milliseconds()
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
+
 	watchedAt := time.Date(2026, 8, 2, 3, 4, 5, 0, time.UTC)
 	if err := q.CatalogUpsertRecordingWatched(ctx, sqlcgen.CatalogUpsertRecordingWatchedParams{
 		RecordingID: recordingID, WatchedAt: watchedAt,

@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -126,7 +127,9 @@ func TestGetRecordingChapters_AutoLayerReturnsCMAsCutSpans(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "自動層", time.Now().Truncate(time.Second), "finished", 981)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "自動層", time.Now().Truncate(time.Second), "finished", 981
+	})
 	enableCMDetect(t, pool, id)
 	saveCMDetection(t, pool, id, "{[1000,2000)}")
 
@@ -147,7 +150,9 @@ func TestGetRecordingChapters_DropsImplausibleAutoLayer(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "壊れた検出", time.Now().Truncate(time.Second), "finished", 982)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "壊れた検出", time.Now().Truncate(time.Second), "finished", 982
+	})
 	enableCMDetect(t, pool, id)
 	// 30 分の録画の 29 分が CM という検出。壊れているので CM 無しとして返す。
 	saveCMDetection(t, pool, id, "{[1000,1740000)}")
@@ -166,7 +171,9 @@ func TestPutRecordingChapterEdits_AdoptsAndIgnoresRedetection(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "引き取り", time.Now().Truncate(time.Second), "finished", 983)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "引き取り", time.Now().Truncate(time.Second), "finished", 983
+	})
 	enableCMDetect(t, pool, id)
 	saveCMDetection(t, pool, id, "{[1000,2000)}")
 
@@ -194,7 +201,9 @@ func TestPutRecordingChapterEdits_RejectsWhileDetectionIsPending(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "検出中", time.Now().Truncate(time.Second), "finished", 984)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "検出中", time.Now().Truncate(time.Second), "finished", 984
+	})
 	enableCMDetect(t, pool, id)
 
 	resp := putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
@@ -218,10 +227,12 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := seedRecording(t, pool, "再有効化後の検出待ち", time.Now().Truncate(time.Second), "finished", 987)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再有効化後の検出待ち", time.Now().Truncate(time.Second), "finished", 987
+	})
 	enableCMDetect(t, pool, id)
 	q := sqlcgen.New(pool)
-	seedActiveOriginalForTest(t, ctx, q, id)
+	seedActiveOriginalForTest(t, pool, id)
 	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
 	message := "previous policy generation failed"
 	markCMDetectionFailureForTest(t, ctx, pool, q, id, attemptCount, nil, &message)
@@ -265,7 +276,9 @@ func TestPutRecordingChapterEdits_AllowsEditWhenDeploymentHasNoCMDetection(t *te
 	srv := httptest.NewServer(chapterRouter(pool, false))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "無効デプロイ", time.Now().Truncate(time.Second), "finished", 985)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無効デプロイ", time.Now().Truncate(time.Second), "finished", 985
+	})
 	enableCMDetect(t, pool, id)
 
 	resp := putChapters(t, chaptersURL(srv.URL, id), []ChapterSpan{{StartMs: 0, EndMs: 1001, Cut: true}})
@@ -286,7 +299,9 @@ func TestPutRecordingChapterEdits_WaitsForDetectionResultTransaction(t *testing.
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "直列化", time.Now().Truncate(time.Second), "finished", 986)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "直列化", time.Now().Truncate(time.Second), "finished", 986
+	})
 	enableCMDetect(t, pool, id)
 
 	ctx := context.Background()
@@ -410,7 +425,9 @@ func TestPutRecordingChapterEdits_RejectsVersionFromBeforeDetectionCommit(t *tes
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "古い版", time.Now().Truncate(time.Second), "finished", 990)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古い版", time.Now().Truncate(time.Second), "finished", 990
+	})
 	enableCMDetect(t, pool, id)
 	url := chaptersURL(srv.URL, id)
 
@@ -455,7 +472,9 @@ func TestPutRecordingChapterEdits_OwnedRecordingIgnoresRedetection(t *testing.T)
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "再検出中の所有", time.Now().Truncate(time.Second), "finished", 991)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再検出中の所有", time.Now().Truncate(time.Second), "finished", 991
+	})
 	enableCMDetect(t, pool, id)
 	saveCMDetection(t, pool, id, "{[1000,2000)}")
 	url := chaptersURL(srv.URL, id)
@@ -491,7 +510,9 @@ func TestChapterEdits_RejectTrashedRecording(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, false))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "ごみ箱", time.Now().Truncate(time.Second), "finished", 992)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ごみ箱", time.Now().Truncate(time.Second), "finished", 992
+	})
 	url := chaptersURL(srv.URL, id)
 	version := getChapters(t, url).Version
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
@@ -516,7 +537,9 @@ func TestDeleteRecordingChapterEdits_ReturnsToAutoLayer(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, true))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "自動に戻す", time.Now().Truncate(time.Second), "finished", 987)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "自動に戻す", time.Now().Truncate(time.Second), "finished", 987
+	})
 	enableCMDetect(t, pool, id)
 	saveCMDetection(t, pool, id, "{[1000,2000)}")
 
@@ -558,7 +581,9 @@ func TestPutRecordingChapterEdits_RejectsInvalidSpans(t *testing.T) {
 	srv := httptest.NewServer(chapterRouter(pool, false))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "不正な区間", time.Now().Truncate(time.Second), "finished", 988)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "不正な区間", time.Now().Truncate(time.Second), "finished", 988
+	})
 	url := chaptersURL(srv.URL, id)
 
 	cases := []struct {
@@ -594,7 +619,9 @@ func TestPutRecordingChapterEdits_OwnedVersionChangesWithEachEdit(t *testing.T) 
 	srv := httptest.NewServer(chapterRouter(pool, false))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "2タブ", time.Now().Truncate(time.Second), "finished", 993)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "2タブ", time.Now().Truncate(time.Second), "finished", 993
+	})
 	url := chaptersURL(srv.URL, id)
 	if resp := putChapters(t, url, []ChapterSpan{{StartMs: 1001, EndMs: 2002, Cut: true}}); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("adopting PUT status = %d, want 204", resp.StatusCode)

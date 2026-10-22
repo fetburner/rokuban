@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -48,12 +50,13 @@ func setEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64, prof
 func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, size int64) {
 	t.Helper()
 	relPath := fmt.Sprintf("test/%d_%s.mp4", recordingID, profile)
-	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		 VALUES ($1, 'encoded', $2, $3, $4, 'active')`,
-		recordingID, profile, relPath, size); err != nil {
-		t.Fatalf("seeding encoded media_asset: %v", err)
-	}
+	dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+		profileValue := profile
+		p.Kind = "encoded"
+		p.Profile = &profileValue
+		p.RelPath = relPath
+		p.SizeBytes = size
+	})
 }
 
 // TestListRecordingsEncodeStatus は完了していないエンコードプロファイルの
@@ -72,7 +75,9 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// h264: 完了済み（active な encoded） / h265: running / aac: 試行行なし（queued）
-	mixed := seedRecording(t, pool, "混在", base.Add(-time.Hour), "finished", 1)
+	mixed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "混在", base.Add(-time.Hour), "finished", 1
+	})
 	seedIngested(t, pool, mixed, 1000, nil)
 	setEncodeProfiles(t, pool, mixed, []string{"h264", "h265", "aac"})
 	seedEncodedAsset(t, pool, mixed, "h264", 500)
@@ -80,19 +85,25 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 
 	// vp9: 失敗（試行行 state=failed）
 	failMsg := "unknown encode profile \"vp9\""
-	failing := seedRecording(t, pool, "失敗", base.Add(-2*time.Hour), "finished", 2)
+	failing := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗", base.Add(-2*time.Hour), "finished", 2
+	})
 	seedIngested(t, pool, failing, 2000, nil)
 	setEncodeProfiles(t, pool, failing, []string{"vp9"})
 	seedEncodeAttempt(t, pool, failing, "vp9", "failed", &failMsg)
 
 	// 全プロファイル完了済み: encodeStatus は省略（空配列を返さない）
-	done := seedRecording(t, pool, "全完了", base.Add(-3*time.Hour), "finished", 3)
+	done := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "全完了", base.Add(-3*time.Hour), "finished", 3
+	})
 	seedIngested(t, pool, done, 3000, nil)
 	setEncodeProfiles(t, pool, done, []string{"h264"})
 	seedEncodedAsset(t, pool, done, "h264", 700)
 
 	// プロファイル未設定: encodeStatus は省略
-	none := seedRecording(t, pool, "未設定", base.Add(-4*time.Hour), "finished", 4)
+	none := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未設定", base.Add(-4*time.Hour), "finished", 4
+	})
 	seedIngested(t, pool, none, 4000, nil)
 
 	var got []Recording
@@ -172,7 +183,9 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	id := seedRecording(t, pool, "捨てる録画", base, "finished", 1)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "捨てる録画", base, "finished", 1
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264", "h265"})
 	seedEncodeAttempt(t, pool, id, "h265", "running", nil)
@@ -228,7 +241,9 @@ func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testi
 	t.Cleanup(srv.Close)
 	base := time.Now().Truncate(time.Second)
 
-	id := seedRecording(t, pool, "設定変更後", base, "finished", 1)
+	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "設定変更後", base, "finished", 1
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264", "vp9"})
 	seedEncodeAttempt(t, pool, id, "vp9", "failed", nil)

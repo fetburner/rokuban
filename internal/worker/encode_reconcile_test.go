@@ -18,6 +18,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -78,9 +79,9 @@ func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullSta
 		return
 	}
 	mediaDir := t.TempDir()
-	first := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/first.m2ts", []string{"h265"}, []byte("x"))
-	target := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/target.m2ts", []string{"h265"}, []byte("x"))
-	third := seedRecordingWithOriginal(t, pool, mediaDir, "targeted/third.m2ts", []string{"h265"}, []byte("x"))
+	first := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "targeted/first.m2ts", []string{"h265"}, []byte("x"))
+	target := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "targeted/target.m2ts", []string{"h265"}, []byte("x"))
+	third := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "targeted/third.m2ts", []string{"h265"}, []byte("x"))
 
 	metrics.EncodeReconcileCandidates.Set(17)
 	metrics.EncodeReconcileLastPass.Set(23)
@@ -135,7 +136,7 @@ func TestEncodeReconcile_QueuesUnsatisfiedRebuildsAndKeepsEveryRow(t *testing.T)
 	staleFrozen := []chapters.Range{{StartMs: 0, EndMs: 1800000}}
 	seedCut := func(name string, frozen []chapters.Range) (int64, []chapters.Range, int64) {
 		t.Helper()
-		id := seedRecordingWithOriginal(t, pool, mediaDir, name, []string{"cut"}, []byte("original"))
+		id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, name, []string{"cut"}, []byte("original"))
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("adopting chapters for %d: %v", id, err)
 		}
@@ -217,7 +218,7 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 		return
 	}
 	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/missing-asset.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/missing-asset.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestEncodeReconcile_RebuildsPrecedeMissingProfilesAndSortByProfile(t *testi
 		return
 	}
 	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/order.m2ts", []string{"h264", "cut-b", "cut-a"}, []byte("x"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/order.m2ts", []string{"h264", "cut-b", "cut-a"}, []byte("x"))
 	for profile, keep := range map[string][]chapters.Range{
 		"cut-b": {{StartMs: 2000, EndMs: 3000}},
 		"cut-a": {{StartMs: 1000, EndMs: 2000}},
@@ -310,7 +311,7 @@ func TestUnsatisfiedEncodeRebuilds_MatchesActiveAssetOfSameProfileOnly(t *testin
 	if pool == nil {
 		return
 	}
-	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/other-profile.m2ts", []string{"cut", "cut2"}, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/other-profile.m2ts", []string{"cut", "cut2"}, []byte("original"))
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
 	seedEncodedAssetRebuildRequest(t, pool, id, keep)
 	other := seedEncodedAsset(t, pool, id, "cut2", "rebuild/other-profile_cut2.mp4")
@@ -337,7 +338,7 @@ func TestEncodeReconcile_TargetedPassSkipsTrashedUntilRestoredFullPass(t *testin
 		return
 	}
 	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "targeted-trash/original.m2ts", []string{"h265"}, []byte("x"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "targeted-trash/original.m2ts", []string{"h265"}, []byte("x"))
 	if _, err := sqlcgen.New(pool).SoftDeleteRecording(ctx, recordingID); err != nil {
 		t.Fatalf("soft deleting recording: %v", err)
 	}
@@ -382,7 +383,9 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ヒントを落とす番組")
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
 
-	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
+	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-163-lost-hint", programID)
 
 	tsData := makeTSData(20)
@@ -456,29 +459,29 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	// (a) desired があり encoded が無い → 候補。
-	missing := seedRecordingWithOriginal(t, pool, mediaDir, "q/missing.m2ts", []string{"h265"}, []byte("x"))
+	missing := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/missing.m2ts", []string{"h265"}, []byte("x"))
 
 	// (b) desired が揃っている → 候補にしない。
-	complete := seedRecordingWithOriginal(t, pool, mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
+	complete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
 	h264 := "h264"
-	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: complete, Kind: store.AssetKindEncoded, Profile: &h264,
-		RelPath: "q/complete_h264.mp4", SizeBytes: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.OriginalAsset(t, pool, complete, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &h264
+		fixtureParams.RelPath = "q/complete_h264.mp4"
+		fixtureParams.SizeBytes = 1
+	})
 
 	// (c) desired が空 → 候補にしない。
-	noProfiles := seedRecordingWithOriginal(t, pool, mediaDir, "q/noprofiles.m2ts", nil, []byte("x"))
+	noProfiles := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/noprofiles.m2ts", nil, []byte("x"))
 
 	// (d) ingest 未完了（policy はあるが原本 media_asset が無い）→ 候補にしない。
-	incomplete := seedRecordingWithOriginal(t, pool, mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
+	incomplete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/incomplete.m2ts", []string{"h265"}, []byte("x"))
 	if _, err := pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, incomplete); err != nil {
 		t.Fatal(err)
 	}
 
 	// (e) 原本が物理削除済み（until_encoded の後始末）→ 候補にしない。
-	originalGone := seedRecordingWithOriginal(t, pool, mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
+	originalGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/gone.m2ts", []string{"h265"}, []byte("x"))
 	if _, err := pool.Exec(ctx,
 		`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'original'`,
 		originalGone); err != nil {
@@ -486,7 +489,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	}
 
 	// (f) ごみ箱の録画 → 候補にしない。
-	trashed := seedRecordingWithOriginal(t, pool, mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
+	trashed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/trashed.m2ts", []string{"h265"}, []byte("x"))
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
 		t.Fatal(err)
 	}
@@ -494,13 +497,13 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// (g) encoded の行はあるが state='deleted'（復元後など）→ 候補。
 	// ListMissingEncodeProfiles が見るのは active な encoded だけ
 	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
-	encodedGone := seedRecordingWithOriginal(t, pool, mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
-	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: encodedGone, Kind: store.AssetKindEncoded, Profile: &h264,
-		RelPath: "q/encgone_h264.mp4", SizeBytes: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	encodedGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
+	dbtest.OriginalAsset(t, pool, encodedGone, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &h264
+		fixtureParams.RelPath = "q/encgone_h264.mp4"
+		fixtureParams.SizeBytes = 1
+	})
 	if _, err := pool.Exec(ctx,
 		`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'encoded'`,
 		encodedGone); err != nil {
@@ -510,12 +513,12 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// (h) desired が現在の設定に無いプロファイル（改名 / 削除された）→ 候補に
 	// しない。投入しても EncodeWorker が `unknown encode profile` で弾くだけで
 	// 永久に満たされないため、定期パスの投入対象から外す。
-	renamed := seedRecordingWithOriginal(t, pool, mediaDir, "q/renamed.m2ts", []string{"gone"}, []byte("x"))
+	renamed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/renamed.m2ts", []string{"gone"}, []byte("x"))
 
 	// (i) 空文字列のプロファイル名 → 候補にしない。ListMissingEncodeProfiles が
 	// 空文字列をスキップするので、候補に挙げると (h) と同じ「永久に満たされない
 	// 候補」になる。クエリでも空文字列を明示的に落とす。
-	emptyProfile := seedRecordingWithOriginal(t, pool, mediaDir, "q/empty.m2ts", []string{""}, []byte("x"))
+	emptyProfile := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/empty.m2ts", []string{""}, []byte("x"))
 
 	got, err := q.ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265"},
@@ -592,8 +595,8 @@ func TestEncodeReconcileWorker_BatchesCandidateReads(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	seedRecordingWithOriginal(t, pool, mediaDir, "batch/1.m2ts", []string{"h264", "h265"}, []byte("x"))
-	seedRecordingWithOriginal(t, pool, mediaDir, "batch/2.m2ts", []string{"h264", "h265"}, []byte("x"))
+	prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "batch/1.m2ts", []string{"h264", "h265"}, []byte("x"))
+	prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "batch/2.m2ts", []string{"h264", "h265"}, []byte("x"))
 
 	counter := &encodeReconcileQueryCounter{}
 	tracedPool := poolWithQueryTracer(t, pool, counter)
@@ -669,7 +672,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "asym325/orig.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "asym325/thumb.jpg", []byte("jpg"))
@@ -714,7 +717,7 @@ func TestEncodeReconcileWorker_NoCandidates(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	seedRecordingWithOriginal(t, pool, t.TempDir(), "none/a.m2ts", nil, []byte("x"))
+	prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "none/a.m2ts", nil, []byte("x"))
 
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h264"), Media: newTestMediaStore(pool)}
 	runEncodeReconcilePass(t, w)
@@ -739,10 +742,10 @@ func TestEncodeReconcileWorker_SkipsProfilesMissingFromConfig(t *testing.T) {
 	mediaDir := t.TempDir()
 	// 同じ録画が「設定に残っている h265」と「設定から消えた gone」の両方を
 	// 凍結している。候補には挙がるが、投入されるのは h265 だけ。
-	mixed := seedRecordingWithOriginal(t, pool, mediaDir, "cfg/mixed.m2ts",
+	mixed := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cfg/mixed.m2ts",
 		[]string{"gone", "h265"}, []byte("x"))
 	// desired が消えたプロファイルだけの録画。候補にも挙がらない。
-	onlyGone := seedRecordingWithOriginal(t, pool, mediaDir, "cfg/gone.m2ts",
+	onlyGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cfg/gone.m2ts",
 		[]string{"gone"}, []byte("x"))
 
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), Media: newTestMediaStore(pool)}
@@ -773,9 +776,9 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	first := seedRecordingWithOriginal(t, pool, mediaDir, "cap/1.m2ts", []string{"h265"}, []byte("x"))
-	second := seedRecordingWithOriginal(t, pool, mediaDir, "cap/2.m2ts", []string{"cut"}, []byte("x"))
-	third := seedRecordingWithOriginal(t, pool, mediaDir, "cap/3.m2ts", []string{"cut"}, []byte("x"))
+	first := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cap/1.m2ts", []string{"h265"}, []byte("x"))
+	second := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cap/2.m2ts", []string{"cut"}, []byte("x"))
+	third := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cap/3.m2ts", []string{"cut"}, []byte("x"))
 	if first >= second || second >= third {
 		t.Fatalf("expected ascending recording ids, got first=%d second=%d third=%d", first, second, third)
 	}
@@ -842,7 +845,7 @@ func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "retry-exhausted-rebuild/1.m2ts", []string{"cut"}, []byte("x"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "retry-exhausted-rebuild/1.m2ts", []string{"cut"}, []byte("x"))
 	assetID := seedEncodedAsset(t, pool, id, "cut", "retry-exhausted-rebuild/cut.mp4")
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
 		t.Fatalf("seeding previous cut keep: %v", err)
@@ -899,8 +902,8 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	first := seedRecordingWithOriginal(t, pool, mediaDir, "continuation/1.m2ts", []string{"h265"}, []byte("x"))
-	second := seedRecordingWithOriginal(t, pool, mediaDir, "continuation/2.m2ts", []string{"h265"}, []byte("x"))
+	first := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "continuation/1.m2ts", []string{"h265"}, []byte("x"))
+	second := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "continuation/2.m2ts", []string{"h265"}, []byte("x"))
 	if first >= second {
 		t.Fatalf("expected ascending recording IDs, got first=%d second=%d", first, second)
 	}
@@ -981,7 +984,7 @@ func TestEncodeReconcileWorker_ShortPageDoesNotContinue(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "short-page/1.m2ts", []string{"h265"}, []byte("x"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "short-page/1.m2ts", []string{"h265"}, []byte("x"))
 	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), RowLimit: 2, Media: newTestMediaStore(pool)}
 	enqueuer := runEncodeReconcilePass(t, w)
 	if got := len(enqueuedArgs[EncodeReconcileArgs](enqueuer, "encode_reconcile")); got != 0 {
@@ -998,7 +1001,7 @@ func TestEncodeReconcileWorker_ContinuationEnqueueFailureReturnsSuccess(t *testi
 		return
 	}
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "continuation-error/1.m2ts", []string{"h265"}, []byte("x"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "continuation-error/1.m2ts", []string{"h265"}, []byte("x"))
 	enqueuer := &continuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
 	w := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), Profiles: encodeConfigWith("h265"), RowLimit: 1}
 	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
@@ -1027,7 +1030,7 @@ func TestEncodeReconcileWorker_ExhaustedAttemptReturnsAfterRetryRequest(t *testi
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "retry-exhausted/1.m2ts", []string{"h265"}, []byte("x"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "retry-exhausted/1.m2ts", []string{"h265"}, []byte("x"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_attempts
 		(recording_id, profile, state, attempted_at, attempt_count)
 		VALUES ($1, 'h265', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit); err != nil {
@@ -1071,8 +1074,8 @@ func TestEncodeReconcileWorker_RowLimitCountsRecordings(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	first := seedRecordingWithOriginal(t, pool, mediaDir, "row-limit/1.m2ts", []string{"h264", "h265"}, []byte("x"))
-	second := seedRecordingWithOriginal(t, pool, mediaDir, "row-limit/2.m2ts", []string{"h265"}, []byte("x"))
+	first := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "row-limit/1.m2ts", []string{"h264", "h265"}, []byte("x"))
+	second := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "row-limit/2.m2ts", []string{"h265"}, []byte("x"))
 	if first >= second {
 		t.Fatalf("expected ascending recording ids, got first=%d second=%d", first, second)
 	}
@@ -1117,7 +1120,7 @@ func TestEncodeReconcileWorker_EmptyProfileConfigIsVisibleNotSilent(t *testing.T
 	if pool == nil {
 		return
 	}
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "empty/a.m2ts",
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "empty/a.m2ts",
 		[]string{"h265"}, []byte("x"))
 
 	// プロファイルが 1 つも無い設定。
@@ -1173,7 +1176,7 @@ func TestEncodeReconcile_RebuildRequestOnTrashedRecordingIsNotQueued(t *testing.
 		return
 	}
 	ctx := context.Background()
-	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "review/trash.m2ts", []string{"cut"}, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/trash.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
 	}
@@ -1222,7 +1225,7 @@ func TestEncodeReconcile_RebuildRequestWithoutActiveOriginalIsNotQueued(t *testi
 		return
 	}
 	ctx := context.Background()
-	id := seedRecordingWithOriginal(t, pool, t.TempDir(), "review/noorig.m2ts", []string{"cut"}, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "review/noorig.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, id); err != nil {
 		t.Fatal(err)
 	}

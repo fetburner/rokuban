@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqfaketest "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -36,7 +37,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	}
 
 	const recordID = "rec-new-workers-precheck"
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	media := newTestMediaStore(pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))

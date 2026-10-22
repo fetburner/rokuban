@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -88,42 +89,32 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
-			q := sqlcgen.New(pool)
-			recordingID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				Source:            "manual",
-				Site:              "home",
-				NetworkID:         1,
-				ServiceID:         1,
-				EventID:           1,
-				ServiceName:       "test",
-				ChannelType:       "GR",
-				Channel:           "1",
-				Title:             "test",
-				IsFree:            true,
-				ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
-				ProgramDurationMs: 60_000,
-				Status:            "finished",
+			recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				fixtureParams.Site = "home"
+				fixtureParams.NetworkID = 1
+				fixtureParams.ServiceID = 1
+				fixtureParams.EventID = 1
+				fixtureParams.ServiceName = "test"
+				fixtureParams.Channel = "1"
+				fixtureParams.Title = "test"
+				fixtureParams.ProgramStartAt = time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+				fixtureParams.ProgramDurationMs = 60_000
 			})
-			if err != nil {
-				t.Fatalf("CreateRecording: %v", err)
-			}
-			assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-				RecordingID: recordingID,
-				Kind:        tt.kind,
-				Profile:     tt.profile,
-				RelPath:     tt.relPath,
-				SizeBytes:   1,
+
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+				fixtureParams.Kind = tt.kind
+				fixtureParams.Profile = tt.profile
+				fixtureParams.RelPath = tt.relPath
+				fixtureParams.SizeBytes = 1
 			})
-			if err != nil {
-				t.Fatalf("CreateMediaAsset: %v", err)
-			}
+
 			if tt.state != "active" {
 				if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $1 WHERE id = $2`, tt.state, assetID); err != nil {
 					t.Fatalf("updating media asset state: %v", err)
 				}
 			}
 
-			err = ValidateMediaAssetRelPathNamespace(ctx, pgstore.NewMedia(pool))
+			err := ValidateMediaAssetRelPathNamespace(ctx, pgstore.NewMedia(pool))
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("ValidateMediaAssetRelPathNamespace returned nil")

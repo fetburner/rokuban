@@ -13,6 +13,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -121,27 +123,23 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 
 func insertPreviewRecording(t *testing.T, pool *pgxpool.Pool, ruleID *int64, program capacityPreviewProgram, title string, start time.Time, withOriginal bool) {
 	t.Helper()
-	var ruleArg any
-	if ruleID != nil {
-		ruleArg = *ruleID
-	}
-	var recordingID int64
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', 'default', 32736, $2, $3,
-          'プレビュー局', 'GR', '25', $4, $5, 1800000, 'finished')
-RETURNING id`, ruleArg, program.ServiceID, program.EventID, title, start).Scan(&recordingID); err != nil {
-		t.Fatalf("inserting preview recording: %v", err)
-	}
+	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		p.RuleID = ruleID
+		p.Source = "rule"
+		p.Status = "finished"
+		p.NetworkID = 32736
+		p.ServiceID = program.ServiceID
+		p.EventID = program.EventID
+		p.ServiceName = "プレビュー局"
+		p.Channel = "25"
+		p.Title = title
+		p.ProgramStartAt = start
+	})
 	if withOriginal {
-		if _, err := pool.Exec(context.Background(), `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-VALUES ($1, 'original', $2, 1024, 'active')`, recordingID, fmt.Sprintf("preview/%d.m2ts", recordingID)); err != nil {
-			t.Fatalf("inserting fulfilled original: %v", err)
-		}
+		dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+			p.RelPath = fmt.Sprintf("preview/%d.m2ts", recordingID)
+			p.SizeBytes = 1024
+		})
 	}
 }
 
