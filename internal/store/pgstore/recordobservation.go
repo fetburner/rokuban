@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -78,7 +77,7 @@ func (s *Recordings) ProcessRecord(ctx context.Context, observation store.Record
 		}
 	} else if observation.Managed {
 		var id int64
-		if observation.Status == db.RecordingStatusFailed {
+		if observation.Status == store.RecordingStatusFailed {
 			// failed record は recordless failed（SSE / schedules sweep）が先に作った同一
 			// active-event 行と競合し得る。既存行を再利用する専用クエリを使い、
 			// watcher の復帰順序に依存しないようにする。
@@ -101,7 +100,7 @@ func (s *Recordings) ProcessRecord(ctx context.Context, observation store.Record
 		if !result.FailedRecordingSkipped {
 			recordingID = &id
 			result.Title = observation.Snapshot.Title
-			if observation.Status == db.RecordingStatusFailed {
+			if observation.Status == store.RecordingStatusFailed {
 				// CreateOrGetFailedRecording は既存の active-event 行を再利用することがある。
 				// その場合も records API の status / startTime を反映し、
 				// recording 中の行を failed のまま残さない。
@@ -126,9 +125,9 @@ func (s *Recordings) ProcessRecord(ctx context.Context, observation store.Record
 	if err := upsertRecordSync(ctx, q, observation, recordingID); err != nil {
 		return store.ProcessResult{}, fmt.Errorf("upserting record_sync: %w", mapDatabaseError(err))
 	}
-	if recordingID != nil && (observation.Status == db.RecordingStatusRecording || observation.Status == db.RecordingStatusFinished) {
+	if recordingID != nil && (observation.Status == store.RecordingStatusRecording || observation.Status == store.RecordingStatusFinished) {
 		result.EnqueueIngest = true
-		if observation.Status == db.RecordingStatusFinished {
+		if observation.Status == store.RecordingStatusFinished {
 			result.IngestPriority = store.IngestPriorityAfterFinish
 		}
 	}
@@ -494,11 +493,11 @@ func qualityEvents(event string, reason json.RawMessage) (json.RawMessage, error
 // 更新すること。switch の case は recordings_status_check が許す値集合と一致させる。
 func normalizeRecordingStatus(recordID, raw string) string {
 	switch raw {
-	case db.RecordingStatusRecording, db.RecordingStatusFinished, db.RecordingStatusCanceled, db.RecordingStatusFailed:
+	case store.RecordingStatusRecording, store.RecordingStatusFinished, store.RecordingStatusCanceled, store.RecordingStatusFailed:
 		return raw
 	default:
 		slog.Error("unknown mirakc recording status; storing as failed", "record_id", recordID, "raw_status", raw)
-		return db.RecordingStatusFailed
+		return store.RecordingStatusFailed
 	}
 }
 

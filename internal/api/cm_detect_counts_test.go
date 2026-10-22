@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -26,7 +26,7 @@ func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 	for i := range ids {
 		ids[i] = seedRecording(t, pool, "件数", time.Now().Truncate(time.Second), "finished", int32(990+i))
 		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-			RecordingID: ids[i], Kind: db.AssetKindOriginal,
+			RecordingID: ids[i], Kind: store.AssetKindOriginal,
 			RelPath: fmt.Sprintf("test/%d.ts", ids[i]), SizeBytes: 1000,
 		}); err != nil {
 			t.Fatal(err)

@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -51,8 +51,8 @@ func TestReservation_SiteExposed(t *testing.T) {
 		if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 			t.Fatalf("decoding response: %v", err)
 		}
-		if got.Site != db.DefaultSite {
-			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got.Site, db.DefaultSite)
+		if got.Site != store.DefaultSite {
+			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got.Site, store.DefaultSite)
 		}
 	})
 
@@ -69,8 +69,8 @@ func TestReservation_SiteExposed(t *testing.T) {
 		if len(got) != 1 {
 			t.Fatalf("len(reservations) = %d, want 1", len(got))
 		}
-		if got[0].Site != db.DefaultSite {
-			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got[0].Site, db.DefaultSite)
+		if got[0].Site != store.DefaultSite {
+			t.Errorf("site = %q, want %q（未設定なら空文字が返る）", got[0].Site, store.DefaultSite)
 		}
 	})
 }

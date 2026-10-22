@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -24,7 +23,7 @@ func TestCMStationContract(t *testing.T) {
 			ctx := context.Background()
 			id, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 				Source:            "manual",
-				Site:              db.DefaultSite,
+				Site:              store.DefaultSite,
 				NetworkID:         32678,
 				ServiceID:         5168,
 				EventID:           cmStationContractEventID.Add(1),
@@ -40,7 +39,7 @@ func TestCMStationContract(t *testing.T) {
 				t.Fatalf("seeding recording: %v", err)
 			}
 			if _, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-				RecordingID: id, Kind: db.AssetKindOriginal,
+				RecordingID: id, Kind: store.AssetKindOriginal,
 				RelPath: fmt.Sprintf("test/%d.ts", id), SizeBytes: 1000,
 			}); err != nil {
 				t.Fatalf("seeding original media asset: %v", err)

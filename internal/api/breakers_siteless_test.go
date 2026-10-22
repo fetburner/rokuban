@@ -213,7 +213,7 @@ func TestResumeSitelessCircuitBreaker_404WhenNotTripped(t *testing.T) {
 
 // TestResumeCircuitBreaker_400WhenNameIsSiteless は旧ルート（site スコープ）に
 // site を持たない名前（delete_reconcile）を渡すと 400 になることを確認する
-// （受け入れ 2）。単一サイト（レジストリ未指定 = db.DefaultSite の 1 要素）でも、
+// （受け入れ 2）。単一サイト（レジストリ未指定 = store.DefaultSite の 1 要素）でも、
 // site の存在チェックとは独立に分類だけで弾かれることを見る。
 //
 // 変異確認: ResumeCircuitBreaker から breaker.IsSiteless の検査を外すと、

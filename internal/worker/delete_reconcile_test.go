@@ -23,7 +23,6 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -45,7 +44,7 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 	}
 	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     relPath,
 		SizeBytes:   int64(len(content)),
 	})
@@ -83,7 +82,7 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 // 「派生物が揃っている」ことを作るテストはこれを必ず呼ぶ。
 func seedSeekTilesAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64, relPath string) int64 {
 	t.Helper()
-	return seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
+	return seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindSeekTiles, nil, relPath, []byte("tiles"))
 }
 
 // webhookRecorder は webhook 先の httptest サーバが受け取ったイベントを記録する。
@@ -232,7 +231,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "past/retention.m2ts", []byte("data"))
 	fullPath := filepath.Join(mediaDir, "past", "retention.m2ts")
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"past/retention_h264.mp4", []byte("encoded"))
 	subtitlePath := filepath.Join(mediaDir, "past", "retention_h264.vtt")
 	if err := os.WriteFile(subtitlePath, []byte("WEBVTT\n\n"), 0o644); err != nil {
@@ -293,7 +292,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "sidecarfail/retention.m2ts", []byte("data"))
 	profile := "h264"
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"sidecarfail/retention_h264.mp4", []byte("encoded"))
 	subtitlePath := filepath.Join(mediaDir, "sidecarfail", "retention_h264.vtt")
 	if err := os.MkdirAll(subtitlePath, 0o755); err != nil {
@@ -343,7 +342,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 	// 拡張子の無い rel_path。SubtitleRelPath は "encoded rel_path has no extension" で
 	// エラーを返す --- かつては deleteMediaAsset がここで return し、本体を
 	// 削除できなかった。
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"noext/retention_h264", []byte("encoded"))
 
 	past := time.Now().Add(-40 * 24 * time.Hour)
@@ -575,8 +574,8 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/original.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/thumb.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "webhook/thumb.jpg", []byte("jpg"))
 	markRecordingTrashed(t, pool, recordingID)
 
 	rec, client := newWebhookRecorder(t)
@@ -636,7 +635,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 	}
 
 	profile := "h264"
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "webhook/encoded.mp4", []byte("mp4"))
 	markRecordingTrashed(t, pool, recordingID)
 
 	rec, client := newWebhookRecorder(t)
@@ -673,8 +672,8 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/until-encoded.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/ue-encoded.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "webhook/ue-thumb.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "webhook/ue-encoded.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "webhook/ue-thumb.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "webhook/ue-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
@@ -823,7 +822,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 	// unlink を失敗させる: rel_path をファイルではなく、中身のあるディレクトリにする
 	// （os.Remove は空でないディレクトリを消せない）。
 	profile := "h264"
-	blockedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "webhook/last/blocked.mp4", []byte("mp4"))
+	blockedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "webhook/last/blocked.mp4", []byte("mp4"))
 	blockedPath := filepath.Join(mediaDir, "webhook", "last", "blocked.mp4")
 	if err := os.Remove(blockedPath); err != nil {
 		t.Fatalf("removing seeded file: %v", err)
@@ -960,8 +959,8 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/complete.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/complete.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/complete.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/complete.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/complete.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/complete-tiles.jpg")
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
@@ -978,7 +977,7 @@ func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 
 // 派生アセットの行が残っていても、deleted のサムネイル・シークタイルは完備として数えない。
 func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *testing.T) {
-	for _, kind := range []string{db.AssetKindThumbnail, db.AssetKindSeekTiles} {
+	for _, kind := range []string{store.AssetKindThumbnail, store.AssetKindSeekTiles} {
 		t.Run(kind, func(t *testing.T) {
 			pool := setupTestPool(t)
 			ctx := context.Background()
@@ -987,14 +986,14 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 			originalRelPath := "orig/deleted-" + kind + ".m2ts"
 			assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
 			profile := "h264"
-			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/deleted-"+kind+".mp4", []byte("mp4"))
-			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/deleted-"+kind+".jpg", []byte("jpg"))
+			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/deleted-"+kind+".mp4", []byte("mp4"))
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/deleted-"+kind+".jpg", []byte("jpg"))
 			tilesID := seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/deleted-"+kind+"-tiles.jpg")
 			markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 			assertUntilEncodedQualifies(t, pool, assetID, true)
 
 			target := thumbnailID
-			if kind == db.AssetKindSeekTiles {
+			if kind == store.AssetKindSeekTiles {
 				target = tilesID
 			}
 			if _, err := pool.Exec(ctx,
@@ -1024,8 +1023,8 @@ func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	originalRelPath := "orig/pending-rebuild.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/pending-rebuild.mp4", []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/pending-rebuild.jpg", []byte("thumbnail"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/pending-rebuild.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/pending-rebuild.jpg", []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/pending-rebuild-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 
@@ -1060,8 +1059,8 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 	originalRelPath := "orig/satisfied-rebuild.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
-	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/satisfied-rebuild.mp4", []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/satisfied-rebuild.jpg", []byte("thumbnail"))
+	encodedID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/satisfied-rebuild.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/satisfied-rebuild.jpg", []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/satisfied-rebuild-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 	if _, err := pool.Exec(ctx, `
@@ -1100,8 +1099,8 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 	originalRelPath := "orig/candidate-race.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/candidate-race.mp4", []byte("encoded"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/candidate-race.jpg", []byte("thumbnail"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/candidate-race.mp4", []byte("encoded"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/candidate-race.jpg", []byte("thumbnail"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/candidate-race-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 	assertUntilEncodedQualifies(t, pool, originalID, true)
@@ -1155,8 +1154,8 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 		t.Helper()
 		recordingID := insertTestRecordingWithEventID(t, pool, eventID)
 		assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/"+name+".m2ts", []byte("original"))
-		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/"+name+".mp4", []byte("mp4"))
-		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/"+name+".jpg", []byte("jpg"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/"+name+".mp4", []byte("mp4"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/"+name+".jpg", []byte("jpg"))
 		seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/"+name+"-tiles.jpg")
 		markRecordingUntilEncoded(t, pool, recordingID, []string{profile})
 		return assetID
@@ -1247,7 +1246,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 	recordingID := insertTestRecording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/empty-profiles.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
 	// encoded アセットは 1 つも無い。encode_profiles も空のまま。
 
 	dropUntilEncodedRequiresProfilesCheck(t, pool)
@@ -1298,7 +1297,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 	recordingID := insertTestRecording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-profile.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/missing-profile.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/missing-profile.jpg", []byte("jpg"))
 	// h264 プロファイルは望ましいが未生成のまま。
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
@@ -1321,7 +1320,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-thumb.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/missing-thumb.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/missing-thumb.mp4", []byte("mp4"))
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
 
@@ -1344,8 +1343,8 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testi
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-tiles.m2ts", []byte("data"))
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/missing-tiles.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/missing-tiles.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/missing-tiles.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/missing-tiles.jpg", []byte("jpg"))
 	// seek_tiles は未生成のまま。
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
@@ -1380,7 +1379,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	// 条件 2 を満たさないので原本は残る。
 	recordingA := insertTestRecording(t, pool)
 	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/partial-a.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, db.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, store.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
 	markRecordingUntilEncoded(t, pool, recordingA, []string{profile})
 
 	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
@@ -1391,15 +1390,15 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 	// insertTestRecording で作ろうとするとそのまま衝突する。
 	recordingB := insertTestRecordingWithEventID(t, pool, 2)
 	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/partial-b.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, db.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingB, "thumb/partial-b-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingB, []string{profile})
 
 	recordingC := insertTestRecordingWithEventID(t, pool, 3)
 	assetC := seedOriginalAsset(t, pool, mediaDir, recordingC, "orig/partial-c.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, db.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingC, "thumb/partial-c-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingC, []string{profile})
 
@@ -1441,8 +1440,8 @@ func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/interrupted.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "interrupted.m2ts")
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/interrupted.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/interrupted.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/interrupted-tiles.jpg")
 
 	markRecordingUntilEncoded(t, pool, recordingID, []string{"h264"})
@@ -1522,8 +1521,8 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
-	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
 
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
 
@@ -1570,8 +1569,8 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/unqualify.mp4", []byte("mp4"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/unqualify.jpg", []byte("jpg"))
 
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "thumb/unqualify-tiles.jpg")
 
@@ -1983,7 +1982,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	missingRecordingID := insertTestRecordingWithEventID(t, pool, 2)
 	missingAssetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: missingRecordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "missing/original.m2ts",
 		SizeBytes:   int64(len("missing")),
 	})
@@ -2052,7 +2051,7 @@ func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T)
 	recordingID := insertTestRecording(t, pool)
 
 	profile := "h264"
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindEncoded, &profile,
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
 		"subs/program_h264.mp4", []byte("encoded"))
 	subtitleRel := "subs/program_h264.vtt"
 	subtitlePath := filepath.Join(mediaDir, filepath.FromSlash(subtitleRel))
@@ -2707,7 +2706,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 			ChannelType: "GR", Channel: "27", Title: "Recovered", ProgramStartAt: time.Now(),
 			ProgramDurationMs: 60_000, Status: "finished",
 		},
-		Assets: []inplace.Asset{{Kind: db.AssetKindOriginal, RelPath: relPath}},
+		Assets: []inplace.Asset{{Kind: store.AssetKindOriginal, RelPath: relPath}},
 	}); err != nil {
 		t.Fatalf("rescuing aged canonical orphan: %v", err)
 	}
@@ -2751,7 +2750,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	if _, err := sqlcgen.New(tx).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID, Kind: db.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
+		RecordingID: recordingID, Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
 	}); err != nil {
 		t.Fatalf("inserting uncommitted media_asset: %v", err)
 	}
@@ -2967,7 +2966,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/original.m2ts",
 		SizeBytes:   4,
 	})
@@ -3020,7 +3019,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/aged.m2ts",
 		SizeBytes:   4,
 	})
@@ -3082,7 +3081,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/configured-age.m2ts",
 		SizeBytes:   4,
 	})
@@ -3141,7 +3140,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     relPath,
 		SizeBytes:   4,
 	})
@@ -3209,7 +3208,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "would-be/original.m2ts",
 		SizeBytes:   4,
 	})
@@ -3270,7 +3269,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/original.m2ts",
 		SizeBytes:   4,
 	})
@@ -3324,7 +3323,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/frozen.m2ts",
 		SizeBytes:   4,
 	})
@@ -3385,7 +3384,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 		recordingID := insertTestRecordingWithEventID(t, pool, int32(1000+i))
 		assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 			RecordingID: recordingID,
-			Kind:        db.AssetKindOriginal,
+			Kind:        store.AssetKindOriginal,
 			RelPath:     fmt.Sprintf("gone/budget-%d.m2ts", i),
 			SizeBytes:   4,
 		})
@@ -3449,7 +3448,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/stale.m2ts",
 		SizeBytes:   4,
 	})
@@ -3510,7 +3509,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "gone/stale.m2ts",
 		SizeBytes:   4,
 	})

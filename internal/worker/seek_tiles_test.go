@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TestSeekTileCount は枚数の決定を実装の定数ではなくリテラルで固定する。
@@ -188,7 +188,7 @@ func seedOriginalForSeekTiles(t *testing.T, pool *sqlcgen.Queries, mediaDir stri
 	}
 	if _, err := pool.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     rel,
 		SizeBytes:   int64(len(content)),
 	}); err != nil {

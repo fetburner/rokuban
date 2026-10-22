@@ -9,10 +9,10 @@ import (
 
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/metrics"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 func runThumbnailReconcilePass(t *testing.T, w *ThumbnailReconcileWorker) {
@@ -69,9 +69,9 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	// points inside a detected CM range, while its poster and seek-tile jobs already
 	// exist or are missing as separate observations.
 	thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, target,
-		db.AssetKindThumbnail, nil, thumbnailRelPath(target), []byte("old-thumbnail"))
+		store.AssetKindThumbnail, nil, thumbnailRelPath(target), []byte("old-thumbnail"))
 	thirdThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, third,
-		db.AssetKindThumbnail, nil, thumbnailRelPath(third), []byte("old-thumbnail"))
+		store.AssetKindThumbnail, nil, thumbnailRelPath(third), []byte("old-thumbnail"))
 	if err := sqlcgen.New(pool).SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 		RecordingID: target,
 		CmRanges:    "{[0,60000)}",
@@ -211,7 +211,7 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 		seedOriginalAsset(t, pool, mediaDir, recordingID,
 			fmt.Sprintf("reselect/%d.ts", recordingID), []byte("fake-ts"))
 		thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
 		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 			RecordingID: recordingID,
 			CmRanges:    "{[0,60000)}",
@@ -263,7 +263,7 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 			continue
 		}
 		thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
 		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 			RecordingID: recordingID,
 			CmRanges:    "{[0,60000)}",
@@ -309,13 +309,13 @@ func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) 
 	allCutID := insertTestRecordingWithEventID(t, pool, 61)
 	seedOriginalAsset(t, pool, mediaDir, allCutID, "reselect-noop/all-cut.ts", []byte("fake-ts"))
 	allCutThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, allCutID,
-		db.AssetKindThumbnail, nil, thumbnailRelPath(allCutID), []byte("old-thumbnail"))
+		store.AssetKindThumbnail, nil, thumbnailRelPath(allCutID), []byte("old-thumbnail"))
 	cutOnlyID := insertTestRecordingWithEventID(t, pool, 62)
 	cutProfile := "cut-only"
 	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, cutOnlyID,
-		db.AssetKindEncoded, &cutProfile, "reselect-noop/cut-only.mp4", []byte("fake-mp4"))
+		store.AssetKindEncoded, &cutProfile, "reselect-noop/cut-only.mp4", []byte("fake-mp4"))
 	cutThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, cutOnlyID,
-		db.AssetKindThumbnail, nil, thumbnailRelPath(cutOnlyID), []byte("old-thumbnail"))
+		store.AssetKindThumbnail, nil, thumbnailRelPath(cutOnlyID), []byte("old-thumbnail"))
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges) VALUES ($1, $2::int8multirange)`,
 		cutAssetID, "{[0,300000)}"); err != nil {
@@ -446,7 +446,7 @@ func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "trash/original.m2ts",
 		SizeBytes:   1,
 	}); err != nil {
@@ -892,11 +892,11 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 	}
 	// thumbnail があるのは録画 3・4・5 → thumbnail の候補は 1・2。
 	for _, id := range ids[2:] {
-		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil, fmt.Sprintf("cursor/t%d.jpg", id), []byte("jpg"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil, fmt.Sprintf("cursor/t%d.jpg", id), []byte("jpg"))
 	}
 	// seek_tiles があるのは録画 1・2 → seek_tiles の候補は 3・4・5。
 	for _, id := range ids[:2] {
-		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindSeekTiles, nil, fmt.Sprintf("cursor/s%d.jpg", id), []byte("jpg"))
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindSeekTiles, nil, fmt.Sprintf("cursor/s%d.jpg", id), []byte("jpg"))
 	}
 
 	enqueuer := newRecordingEnqueuer()
@@ -935,7 +935,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	seed := func(site int32) int64 {
 		id := insertTestRecordingForSite(t, pool, "default", site)
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("rowless/%d.ts", id), []byte("fake-ts"))
-		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil,
 			thumbnailRelPath(id), []byte("old-thumbnail"))
 		return id
 	}
@@ -989,7 +989,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	q := sqlcgen.New(pool)
 	id := insertTestRecordingForSite(t, pool, "default", 961)
 	originalID := seedOriginalAsset(t, pool, mediaDir, id, "noinput/original.ts", []byte("fake-ts"))
-	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindThumbnail, nil,
+	thumbID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, store.AssetKindThumbnail, nil,
 		thumbnailRelPath(id), []byte("old-thumbnail"))
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
 		MediaAssetID: thumbID, SeekMs: 30000,

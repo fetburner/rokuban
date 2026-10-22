@@ -19,12 +19,12 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -436,7 +436,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	complete := seedRecordingWithOriginal(t, pool, mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
 	h264 := "h264"
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: complete, Kind: db.AssetKindEncoded, Profile: &h264,
+		RecordingID: complete, Kind: store.AssetKindEncoded, Profile: &h264,
 		RelPath: "q/complete_h264.mp4", SizeBytes: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -470,7 +470,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
 	encodedGone := seedRecordingWithOriginal(t, pool, mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: encodedGone, Kind: db.AssetKindEncoded, Profile: &h264,
+		RecordingID: encodedGone, Kind: store.AssetKindEncoded, Profile: &h264,
 		RelPath: "q/encgone_h264.mp4", SizeBytes: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -633,7 +633,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	recordingID := insertTestRecording(t, pool)
 
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "asym325/orig.m2ts", []byte("data"))
-	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, db.AssetKindThumbnail, nil, "asym325/thumb.jpg", []byte("jpg"))
+	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "asym325/thumb.jpg", []byte("jpg"))
 	// 原本を残す理由を desired の不足 1 つに絞る（タイルが無いと別の理由で残り、
 	// 方向 B が空虚に通る）。
 	seedSeekTilesAsset(t, pool, mediaDir, recordingID, "asym325/tiles.jpg")

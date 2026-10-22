@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -82,7 +82,7 @@ WHERE datname = current_database() AND wait_event_type = 'Lock' AND query ILIKE 
 func seedReservationProgram(t *testing.T, pool *pgxpool.Pool, options contracttest.ReservationProgramOptions) (string, int64) {
 	t.Helper()
 	ctx := context.Background()
-	const site = db.DefaultSite
+	const site = store.DefaultSite
 	programID := int64(700000000000000) + reservationProgramID.Add(1)
 	eventID := int32(reservationProgramID.Load())
 	startAt := options.StartAt

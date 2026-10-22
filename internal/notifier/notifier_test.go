@@ -15,15 +15,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/serverevent"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// defaultSite は単一サイト構成でのサイト名。定義は db.DefaultSite（唯一の出所）。
-const defaultSite = db.DefaultSite
+// defaultSite は単一サイト構成でのサイト名。定義は store.DefaultSite（唯一の出所）。
+const defaultSite = store.DefaultSite
 
 // sseTimeout は SSE イベントを待つ上限。
 // 期限なしで読むと、通知を取りこぼしたときにパッケージ全体のタイムアウト
@@ -333,7 +333,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	q := sqlcgen.New(pool)
 	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "test/asset.m2ts",
 		SizeBytes:   size,
 	})

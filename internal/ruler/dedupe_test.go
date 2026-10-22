@@ -10,6 +10,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/reservation"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -177,7 +178,7 @@ func setupDedupeFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context) d
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, dedupeFixtureThreshold, nil)
 	recordingID := insertRecording(t, pool, ctx, &ruleID,
-		"再放送テスト 第1話", db.RecordingStatusFinished, time.Now().Add(-7*24*time.Hour), false)
+		"再放送テスト 第1話", store.RecordingStatusFinished, time.Now().Add(-7*24*time.Hour), false)
 	return dedupeFixture{ruleID: ruleID, recordingID: recordingID, programID: programID, start: start}
 }
 
@@ -213,7 +214,7 @@ func TestRunPass_DedupeNoMatchLeavesEvidenceNull(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	// 全く違う題名の録画。trgm の類似度が閾値に届かない。
-	insertRecording(t, pool, ctx, &ruleID, "ニュース天気予報", db.RecordingStatusFinished,
+	insertRecording(t, pool, ctx, &ruleID, "ニュース天気予報", store.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -241,7 +242,7 @@ func TestRunPass_DedupeDisabledIsNoOp(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "rerun", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	// enableDedupe を呼ばない（dedupe_enabled は DEFAULT false）。
-	insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話", db.RecordingStatusFinished,
+	insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話", store.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -274,10 +275,10 @@ func TestRunPass_DedupeIgnoresOtherRulesRecordings(t *testing.T) {
 
 	// 題名は完全に一致するが、別のルール由来の録画。
 	otherRuleID := insertRule(t, pool, ctx, "other", 1)
-	insertRecording(t, pool, ctx, &otherRuleID, "再放送テスト 第1話", db.RecordingStatusFinished,
+	insertRecording(t, pool, ctx, &otherRuleID, "再放送テスト 第1話", store.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 	// rule_id が NULL の録画（手動予約由来）も対象外。
-	insertRecording(t, pool, ctx, nil, "再放送テスト 第1話", db.RecordingStatusFinished,
+	insertRecording(t, pool, ctx, nil, "再放送テスト 第1話", store.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -296,7 +297,7 @@ func TestRunPass_DedupeIgnoresOtherRulesRecordings(t *testing.T) {
 
 // 5. status = 'finished' 以外は「録れた」とみなさない。
 func TestRunPass_DedupeIgnoresUnfinishedRecordings(t *testing.T) {
-	for _, status := range []string{db.RecordingStatusRecording, db.RecordingStatusFailed} {
+	for _, status := range []string{store.RecordingStatusRecording, store.RecordingStatusFailed} {
 		t.Run(status, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
@@ -341,7 +342,7 @@ func TestRunPass_DedupeCountsDeletedRecordings(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	recordingID := insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話",
-		db.RecordingStatusFinished, time.Now().Add(-7*24*time.Hour), true /* deleted_at */)
+		store.RecordingStatusFinished, time.Now().Add(-7*24*time.Hour), true /* deleted_at */)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -380,7 +381,7 @@ func TestRunPass_DedupeWindowExcludesOldRecordings(t *testing.T) {
 			window := int64(7 * 24 * 60 * 60) // 7 日
 			enableDedupe(t, pool, ctx, ruleID, 0.5, &window)
 			recordingID := insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話",
-				db.RecordingStatusFinished,
+				store.RecordingStatusFinished,
 				time.Now().Add(-time.Duration(tt.recordedDaysAgo)*24*time.Hour), false)
 
 			if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -417,10 +418,10 @@ func TestRunPass_DedupePicksBestMatch(t *testing.T) {
 
 	// 部分一致（低い類似度）を先に入れ、完全一致を後に入れる。id 順ではなく
 	// 類似度順で選ばれることを見る。
-	insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第2話", db.RecordingStatusFinished,
+	insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第2話", store.RecordingStatusFinished,
 		time.Now().Add(-7*24*time.Hour), false)
 	exact := insertRecording(t, pool, ctx, &ruleID, "再放送テスト 第1話",
-		db.RecordingStatusFinished, time.Now().Add(-6*24*time.Hour), false)
+		store.RecordingStatusFinished, time.Now().Add(-6*24*time.Hour), false)
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -763,7 +764,7 @@ func TestRunPass_DedupeHistoryLeavesScopeOnRuleDelete(t *testing.T) {
 	// 決定 (a)（仕様として受け入れる）の結論自体が変わる。docs は
 	// このテスト名を根拠に「1 本録れれば以降はまた弾かれる」と書いている。
 	newRec := insertRecording(t, pool, ctx, &newRuleID,
-		"再放送テスト 第1話", db.RecordingStatusFinished, time.Now().Add(-2*time.Hour), false)
+		"再放送テスト 第1話", store.RecordingStatusFinished, time.Now().Add(-2*time.Hour), false)
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass after one recording under the new rule: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -30,7 +30,7 @@ func TestRegister_AcceptsNonCanonicalRelPath(t *testing.T) {
 			ServiceName: "x", ChannelType: "GR", Channel: "unknown", Title: "show",
 			ProgramStartAt: time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC), Status: "finished",
 		},
-		Assets: []Asset{{Kind: db.AssetKindEncoded, Profile: &profile, RelPath: "./imported//show.mp4"}},
+		Assets: []Asset{{Kind: store.AssetKindEncoded, Profile: &profile, RelPath: "./imported//show.mp4"}},
 	})
 	if err != nil {
 		t.Fatal(err)

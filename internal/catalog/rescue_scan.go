@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -131,7 +130,7 @@ func rescueStorage(ctx context.Context, mediaPublish store.MediaPublish, mediaDi
 				Channel:        "unknown",
 				Title:          title,
 				ProgramStartAt: at,
-				Status:         db.RecordingStatusFinished,
+				Status:         store.RecordingStatusFinished,
 				StartedAt:      &at,
 				EndedAt:        &at,
 			},
@@ -173,10 +172,10 @@ func rescueAssetKind(name string) (kind string, profile *string, ok bool) {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
 	case ".ts", ".m2ts":
-		return db.AssetKindOriginal, nil, true
+		return store.AssetKindOriginal, nil, true
 	case ".mp4", ".mkv", ".webm":
 		p := config.RescueEncodedProfilePrefix + strings.TrimPrefix(ext, ".")
-		return db.AssetKindEncoded, &p, true
+		return store.AssetKindEncoded, &p, true
 	default:
 		return "", nil, false
 	}

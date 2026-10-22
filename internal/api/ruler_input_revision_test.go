@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -20,8 +20,8 @@ func TestAPIInputWritesBumpRulerInputRevisionWithoutEnqueuer(t *testing.T) {
 	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{
 		Ready:            pool.Ping,
-		Sites:            []string{db.DefaultSite},
-		RuleStore:        pgstore.NewRules(pool, []string{db.DefaultSite}),
+		Sites:            []string{store.DefaultSite},
+		RuleStore:        pgstore.NewRules(pool, []string{store.DefaultSite}),
 		ReservationStore: pgstore.NewReservations(pool),
 		ProgramSearch:    pgstore.NewEPG(pool),
 	})
@@ -34,7 +34,7 @@ func TestAPIInputWritesBumpRulerInputRevisionWithoutEnqueuer(t *testing.T) {
 		wantRevision++
 		var got int64
 		if err := pool.QueryRow(ctx, `
-SELECT COALESCE((SELECT revision FROM ruler_input_revisions WHERE site = $1), 0)::bigint`, db.DefaultSite).Scan(&got); err != nil {
+SELECT COALESCE((SELECT revision FROM ruler_input_revisions WHERE site = $1), 0)::bigint`, store.DefaultSite).Scan(&got); err != nil {
 			t.Fatalf("reading ruler input revision: %v", err)
 		}
 		if got != wantRevision {

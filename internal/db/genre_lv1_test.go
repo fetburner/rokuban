@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // TestGenreLv1_EdgeCasesDoNotFailInsert は recordings.genre_lv1
@@ -57,7 +58,7 @@ func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 			}
 			id, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 				Source:            "manual",
-				Site:              DefaultSite,
+				Site:              store.DefaultSite,
 				NetworkID:         1,
 				ServiceID:         1,
 				EventID:           int32(1000 + i),

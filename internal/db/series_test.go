@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 // createSeriesRecording は棚のテスト用に録画行を 1 件作る。title だけが主張で、
@@ -16,7 +17,7 @@ func createSeriesRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
 		Source:            "manual",
-		Site:              DefaultSite,
+		Site:              store.DefaultSite,
 		NetworkID:         1,
 		ServiceID:         1,
 		EventID:           eventID,

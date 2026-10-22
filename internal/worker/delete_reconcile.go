@@ -96,13 +96,13 @@ const (
 //
 // したがって `Deps.Site` を一切参照せず、site 列には空文字列
 // （breaker.IsSiteless のコメント参照。named const にしていない理由も同所）を
-// 書く。かつては db.DefaultSite（"default"）を書いていたが、`mirakcs:`
+// 書く。かつては store.DefaultSite（"default"）を書いていたが、`mirakcs:`
 // レジストリに `default` という名前の site が実在しない構成（東京・高松の
 // 2 site 化以降はこれが既定）では、site スコープの
 // `POST /api/sites/{site}/breakers/{name}/resume` から `default` を指定しても
 // レジストリに無いので 400、登録済みの site を指定してもその site には行が
 // 無いので 404 になり、`GET /api/breakers` に見えているのに一切解除できなかった
-// （issue #450）。db.DefaultSite は「site 未指定なら設定済みの唯一の site に
+// （issue #450）。store.DefaultSite は「site 未指定なら設定済みの唯一の site に
 // 解決する」という意味の値であり、「この資源は構造的に site を持たない」とは
 // 別の概念なので、混同しないよう使うのをやめた。site を持たないブレーカーは
 // site 無しの `POST /api/breakers/{name}/resume`

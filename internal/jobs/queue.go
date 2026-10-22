@@ -9,7 +9,7 @@ package jobs
 import (
 	"slices"
 
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 )
 
 const (
@@ -73,11 +73,11 @@ var siteBoundQueueNames = []string{
 // だけに通す**（判定が insert 側と subscribe 側に分かれると挿入先と購読先が
 // 食い違う。issue #185）。
 //
-// 区切り文字は `_`。site が空文字列なら db.DefaultSite に解決する。これは
+// 区切り文字は `_`。site が空文字列なら store.DefaultSite に解決する。これは
 // キュー名の規約上の解決であり、ジョブ引数の site を正規化するものではない。
 func qualifyQueueName(base, site string) string {
 	if site == "" {
-		site = db.DefaultSite
+		site = store.DefaultSite
 	}
 	return base + "_" + site
 }

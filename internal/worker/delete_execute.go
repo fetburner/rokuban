@@ -36,7 +36,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -185,7 +184,7 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 	// 失敗しても、それを理由に encoded 本体（映像そのもの）を永久に回収不能に
 	// してはならない。失敗は log のみで、サイドカーは canonical 孤児として残り、
 	// aging 後に報告される（TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly）。
-	if t.Kind == db.AssetKindEncoded {
+	if t.Kind == store.AssetKindEncoded {
 		if subtitleRelPath, pathErr := mediapath.SubtitleSibling(t.RelPath); pathErr != nil {
 			log.Warn("delete_reconcile: building subtitle sidecar path; continuing without removing it", "err", pathErr)
 		} else if subtitlePath, resolveErr := mediapath.Resolve(w.MediaDir, subtitleRelPath); resolveErr != nil {

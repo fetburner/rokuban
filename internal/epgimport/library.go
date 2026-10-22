@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -107,7 +106,7 @@ func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, 
 					return res, fmt.Errorf("building original rel_path for %q: %w", vf.RelPath, err)
 				}
 				assets = append(assets, inplace.Asset{
-					Kind:    db.AssetKindOriginal,
+					Kind:    store.AssetKindOriginal,
 					RelPath: relPath,
 				})
 			case "encoded":
@@ -128,7 +127,7 @@ func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, 
 		// registration, so only the first is kept and the rest are warned
 		// about instead of silently dropped.
 		if len(item.Thumbnails) > 0 {
-			assets = append(assets, inplace.Asset{Kind: db.AssetKindThumbnail, RelPath: item.Thumbnails[0].RelPath})
+			assets = append(assets, inplace.Asset{Kind: store.AssetKindThumbnail, RelPath: item.Thumbnails[0].RelPath})
 		}
 		if len(item.Thumbnails) > 1 {
 			res.Warnings = append(res.Warnings, fmt.Sprintf(
@@ -181,7 +180,7 @@ func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, 
 				Title:             item.Name,
 				ProgramStartAt:    time.UnixMilli(item.StartAt),
 				ProgramDurationMs: item.EndAt - item.StartAt,
-				Status:            db.RecordingStatusFinished,
+				Status:            store.RecordingStatusFinished,
 			},
 			Assets: assets,
 		}

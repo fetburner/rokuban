@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -240,12 +240,12 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1)
 
-	seedEpgProgramAt(t, pool, db.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
 	seedEpgProgramAt(t, pool, "other", 2, "アニメ　作品X　第2話", base.Add(24*time.Hour))
 	// 過去の回・別のシリーズ・自動キーの無い番組は出ない。
-	seedEpgProgramAt(t, pool, db.DefaultSite, 3, "アニメ　作品X　第1話", base.Add(-time.Hour))
-	seedEpgProgramAt(t, pool, db.DefaultSite, 4, "アニメ　作品Y　第1話", base.Add(24*time.Hour))
-	seedEpgProgramAt(t, pool, db.DefaultSite, 5, "【特集】", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 3, "アニメ　作品X　第1話", base.Add(-time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 4, "アニメ　作品Y　第1話", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 5, "【特集】", base.Add(24*time.Hour))
 
 	var got []ProgramSearchMatch
 	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)
@@ -256,8 +256,8 @@ func TestListRecordingUpcoming_ReturnsFutureProgramsOfTheSeries(t *testing.T) {
 		t.Fatalf("upcoming = %+v, want the 2 rows of the same broadcast on 2 sites", got)
 	}
 	sites := map[string]bool{got[0].Site: true, got[1].Site: true}
-	if !sites[db.DefaultSite] || !sites["other"] {
-		t.Errorf("upcoming sites = %v, want both %s and other (sites must not be folded)", sites, db.DefaultSite)
+	if !sites[store.DefaultSite] || !sites["other"] {
+		t.Errorf("upcoming sites = %v, want both %s and other (sites must not be folded)", sites, store.DefaultSite)
 	}
 	for _, m := range got {
 		if m.Name != "アニメ　作品X　第2話" || m.ProgramId != 1 && m.ProgramId != 2 {
@@ -277,7 +277,7 @@ func TestListRecordingUpcoming_FromPurgedTombstoneReturnsTheSeries(t *testing.T)
 
 	base := time.Now().Truncate(time.Second)
 	origin := seedRecording(t, pool, "アニメ　作品X　第1話", base.Add(-24*time.Hour), "finished", 1)
-	seedEpgProgramAt(t, pool, db.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "アニメ　作品X　第2話", base.Add(24*time.Hour))
 	if _, err := pool.Exec(context.Background(),
 		"UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1", origin); err != nil {
 		t.Fatalf("purging: %v", err)
@@ -300,7 +300,7 @@ func TestListRecordingUpcoming_EmptySeriesIsAnEmptyArray(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 	origin := seedRecording(t, pool, "【特集】", base, "finished", 1)
-	seedEpgProgramAt(t, pool, db.DefaultSite, 1, "【特集】", base.Add(time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "【特集】", base.Add(time.Hour))
 
 	for _, id := range []int64{origin, 999999} {
 		var raw json.RawMessage
@@ -325,8 +325,8 @@ func TestListRecordingUpcoming_UsesTheLabelRuleValue(t *testing.T) {
 	origin := seedRecording(t, pool, "NHK高校講座　数学I　第1回", base.Add(-24*time.Hour), "finished", 1)
 
 	// 自動キーは「NHK高校講座」で起点と一致しない（ルールが割った先の値 数学I が一致する）。
-	seedEpgProgramAt(t, pool, db.DefaultSite, 1, "NHK高校講座　数学I　第2回", base.Add(24*time.Hour))
-	seedEpgProgramAt(t, pool, db.DefaultSite, 2, "NHK高校講座　化学　第2回", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 1, "NHK高校講座　数学I　第2回", base.Add(24*time.Hour))
+	seedEpgProgramAt(t, pool, store.DefaultSite, 2, "NHK高校講座　化学　第2回", base.Add(24*time.Hour))
 
 	var got []ProgramSearchMatch
 	resp := getJSON(t, srv.URL+fmt.Sprintf("/api/recordings/%d/upcoming", origin), &got)

@@ -17,8 +17,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -104,7 +104,7 @@ func seedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, relPath stri
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     relPath,
 		SizeBytes:   size,
 	})
@@ -151,7 +151,7 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindThumbnail,
+		Kind:        store.AssetKindThumbnail,
 		RelPath:     rel,
 		SizeBytes:   int64(len(jpeg)),
 	}); err != nil {
@@ -518,7 +518,7 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, relPa
 	profile := "h264"
 	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindEncoded,
+		Kind:        store.AssetKindEncoded,
 		Profile:     &profile,
 		RelPath:     relPath,
 		SizeBytes:   size,
@@ -827,7 +827,7 @@ func TestRecordingSeekTiles_ServesJPEG(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
-		Kind:        db.AssetKindSeekTiles,
+		Kind:        store.AssetKindSeekTiles,
 		RelPath:     rel,
 		SizeBytes:   int64(len(jpeg)),
 	}); err != nil {
@@ -898,7 +898,7 @@ func TestRecordingSeekTiles_NotFound(t *testing.T) {
 	}
 	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: trashed,
-		Kind:        db.AssetKindSeekTiles,
+		Kind:        store.AssetKindSeekTiles,
 		RelPath:     trashRel,
 		SizeBytes:   int64(len(jpeg)),
 	}); err != nil {

@@ -19,7 +19,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -640,7 +639,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 // preflightIngestSHA256 は完成済み temp が既に揃っている場合、再生前に SHA-256 待ちを判定する。
 func (w *IngestWorker) preflightIngestSHA256(ctx context.Context, client *mirakc.Client, recordID string, recordingID int64, initialRecord *mirakc.Record, tempPath string, file ingestFile, log *slog.Logger) (*string, bool, error) {
-	if initialRecord.Recording.Status != db.RecordingStatusFinished || initialRecord.Content.Sha256 != nil {
+	if initialRecord.Recording.Status != store.RecordingStatusFinished || initialRecord.Content.Sha256 != nil {
 		return nil, false, nil
 	}
 	expectedLen, err := client.HeadRecordStream(ctx, recordID)
@@ -684,7 +683,7 @@ func (w *IngestWorker) maybeWaitForSHA256(ctx context.Context, client *mirakc.Cl
 	if err != nil {
 		return nil, false, fmt.Errorf("refreshing mirakc record after syncing temp: %w", err)
 	}
-	if record.Recording.Status != db.RecordingStatusFinished {
+	if record.Recording.Status != store.RecordingStatusFinished {
 		return nil, false, nil
 	}
 	if record.Content.Sha256 != nil {
@@ -747,10 +746,10 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 
 	onRecord := func(record *mirakc.Record, currentOffset int64) error {
 		status := record.Recording.Status
-		if status == db.RecordingStatusCanceled || status == db.RecordingStatusFailed {
+		if status == store.RecordingStatusCanceled || status == store.RecordingStatusFailed {
 			return fmt.Errorf("mirakc record ended with status %q: %w", status, errIngestRecordEndedAbnormally)
 		}
-		if status != db.RecordingStatusRecording && status != db.RecordingStatusFinished {
+		if status != store.RecordingStatusRecording && status != store.RecordingStatusFinished {
 			// The shared reader retries unknown statuses. Do not refresh progress
 			// from a status it has not accepted.
 			return nil
@@ -761,11 +760,11 @@ func (w *IngestWorker) transferIngestRecord(ctx context.Context, client *mirakc.
 			expected = &length
 		}
 		progress.observeProgress(ctx, currentOffset, expected)
-		if status == db.RecordingStatusFinished && record.Content.Sha256 != nil {
+		if status == store.RecordingStatusFinished && record.Content.Sha256 != nil {
 			sha256 := *record.Content.Sha256
 			expectedSHA256 = &sha256
 		}
-		if status == db.RecordingStatusFinished && record.Recording.EndTime != nil {
+		if status == store.RecordingStatusFinished && record.Recording.EndTime != nil {
 			endTime := *record.Recording.EndTime
 			observedEndTime = &endTime
 		}

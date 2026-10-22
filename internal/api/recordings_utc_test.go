@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -47,7 +46,7 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 	written := int64(1234)
 	fields := store.RecordingQueryRow{
 		ID:                  1,
-		Site:                db.DefaultSite,
+		Site:                store.DefaultSite,
 		Source:              "manual",
 		ServiceName:         "テスト局",
 		ChannelType:         "GR",
@@ -107,7 +106,7 @@ func TestRecordingFromListFields_PreservesCMDetectionAttemptDetails(t *testing.T
 	state := "failed"
 	rec, err := recordingFromListFields(store.RecordingQueryRow{
 		ID:             2,
-		Site:           db.DefaultSite,
+		Site:           store.DefaultSite,
 		Source:         "manual",
 		ServiceName:    "テスト局",
 		ChannelType:    "GR",

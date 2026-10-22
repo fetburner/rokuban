@@ -24,7 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-const testSite = db.DefaultSite
+const testSite = store.DefaultSite
 
 type gatedProgramSearch struct {
 	store.ProgramSearch

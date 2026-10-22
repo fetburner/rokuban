@@ -10,8 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -28,7 +28,7 @@ func TestLabelRulesContract(t *testing.T) {
 			NewRecording: func(t *testing.T, title string) int64 {
 				t.Helper()
 				id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-					Source: "manual", Site: db.DefaultSite, NetworkID: 32678, ServiceID: 5168,
+					Source: "manual", Site: store.DefaultSite, NetworkID: 32678, ServiceID: 5168,
 					EventID: labelRuleContractEventID.Add(1), ServiceName: "ＯＨＫ", ChannelType: "GR", Channel: "27",
 					Title: title, ProgramStartAt: time.Now().UTC().Truncate(time.Second),
 					ProgramDurationMs: 30 * time.Minute.Milliseconds(), Status: "finished",
@@ -207,7 +207,7 @@ SELECT EXISTS (
 func createLabelRuleTestRecording(t *testing.T, pool *pgxpool.Pool, eventID int32, title string) int64 {
 	t.Helper()
 	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: db.DefaultSite, NetworkID: 32678, ServiceID: 5168, EventID: eventID,
+		Source: "manual", Site: store.DefaultSite, NetworkID: 32678, ServiceID: 5168, EventID: eventID,
 		ServiceName: "ＯＨＫ", ChannelType: "GR", Channel: "27", Title: title,
 		ProgramStartAt: time.Now().UTC().Truncate(time.Second), ProgramDurationMs: 60000, Status: "finished",
 	})

@@ -124,7 +124,7 @@ func TestRequiresSiteBinding_LogicalQueueNamesStayUnqualified(t *testing.T) {
 	}
 }
 
-// qualifyQueueName は base_site の形にする。空文字列 site は db.DefaultSite に
+// qualifyQueueName は base_site の形にする。空文字列 site は store.DefaultSite に
 // 解決する（verifySite / DeleteReconcileWorker.Work と同じ規約。issue #185）。
 func TestQualifyQueueName(t *testing.T) {
 	tests := []struct {
@@ -134,7 +134,7 @@ func TestQualifyQueueName(t *testing.T) {
 		want string
 	}{
 		{"basic", IngestQueue, "tokyo", "ingest_tokyo"},
-		{"empty site resolves to db.DefaultSite", EpgQueue, "", "epg_default"},
+		{"empty site resolves to store.DefaultSite", EpgQueue, "", "epg_default"},
 		{"reconciler", ReconcilerQueue, "takamatsu", "reconciler_takamatsu"},
 	}
 	for _, tt := range tests {

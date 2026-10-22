@@ -12,9 +12,9 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/prometheus/common/expfmt"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
@@ -282,7 +282,7 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	if ingested {
 		if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 			RecordingID: recordingID,
-			Kind:        db.AssetKindOriginal,
+			Kind:        store.AssetKindOriginal,
 			RelPath:     "test/" + recordID + ".m2ts",
 			SizeBytes:   contentLength,
 		}); err != nil {
@@ -834,7 +834,7 @@ func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	}
 	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
 		RecordingID: *recordingID,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		RelPath:     "test/" + recordID + ".m2ts",
 		SizeBytes:   1,
 	}); err != nil {

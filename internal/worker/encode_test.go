@@ -18,10 +18,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -458,7 +458,7 @@ func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPa
 	profileNil := (*string)(nil)
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
 		RecordingID: id,
-		Kind:        db.AssetKindOriginal,
+		Kind:        store.AssetKindOriginal,
 		Profile:     profileNil,
 		RelPath:     relPath,
 		SizeBytes:   int64(len(content)),

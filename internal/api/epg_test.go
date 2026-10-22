@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -47,7 +47,7 @@ func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 func seedEpgService(t *testing.T, pool *pgxpool.Pool, networkID, serviceID, remoteKey int32, name, channel string) {
 	t.Helper()
 	err := sqlcgen.New(pool).UpsertEpgService(context.Background(), []sqlcgen.UpsertEpgServiceParams{{
-		Site:               db.DefaultSite,
+		Site:               store.DefaultSite,
 		NetworkID:          networkID,
 		ServiceID:          serviceID,
 		Type:               1,
@@ -72,7 +72,7 @@ func seedEpgProgram(t *testing.T, pool *pgxpool.Pool, programID int64, networkID
 ) {
 	t.Helper()
 	p := sqlcgen.UpsertEpgProgramParams{
-		Site:        db.DefaultSite,
+		Site:        store.DefaultSite,
 		ProgramID:   programID,
 		NetworkID:   networkID,
 		ServiceID:   serviceID,
@@ -439,7 +439,7 @@ func seedProgramIntent(
 	t.Helper()
 	q := sqlcgen.New(pool)
 	if err := q.UpsertProgramSnapshot(context.Background(), sqlcgen.UpsertProgramSnapshotParams{
-		Site:        db.DefaultSite,
+		Site:        store.DefaultSite,
 		ProgramID:   programID,
 		Title:       "テスト番組",
 		StartAt:     start,
@@ -454,7 +454,7 @@ func seedProgramIntent(
 		t.Fatalf("seeding program snapshot: %v", err)
 	}
 	if _, err := q.UpsertProgramIntent(context.Background(), sqlcgen.UpsertProgramIntentParams{
-		Site: db.DefaultSite, ProgramID: programID, Action: action,
+		Site: store.DefaultSite, ProgramID: programID, Action: action,
 	}); err != nil {
 		t.Fatalf("seeding program intent: %v", err)
 	}

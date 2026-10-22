@@ -10,7 +10,6 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
@@ -19,8 +18,8 @@ import (
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
-// DefaultSite はデフォルトの mirakc サイト名。定義は db.DefaultSite（唯一の出所）。
-const DefaultSite = db.DefaultSite
+// DefaultSite はデフォルトの mirakc サイト名。定義は store.DefaultSite（唯一の出所）。
+const DefaultSite = store.DefaultSite
 
 // Watcher は mirakc の SSE イベントを購読し、録画の状態変化を DB に反映する。
 type Watcher struct {
@@ -231,13 +230,13 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 	}
 
 	// DB が永続化した後に通知。失敗しても本処理は成功扱い（M3-11）。
-	if result.RecordingID != nil && record.Recording.Status == db.RecordingStatusFinished && result.PreviousStatus != db.RecordingStatusFinished {
+	if result.RecordingID != nil && record.Recording.Status == store.RecordingStatusFinished && result.PreviousStatus != store.RecordingStatusFinished {
 		w.notify(ctx, webhook.Event{
 			Type:        webhook.EventRecordingFinished,
 			RecordingID: *result.RecordingID,
 			Site:        w.site,
 			Title:       result.Title,
-			Status:      db.RecordingStatusFinished,
+			Status:      store.RecordingStatusFinished,
 		})
 	}
 
@@ -248,7 +247,7 @@ func (w *Watcher) processRecord(ctx context.Context, record mirakc.Record) error
 // recordings に再構成する。SSE の recording.failed と同じ active-event に収束させ、
 // 周期 sweep では同じ event + reason を一度だけ quality_events に追記する。
 func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Schedule) error {
-	if schedule.State != db.RecordingStatusFailed || schedule.FailedReason == nil {
+	if schedule.State != store.RecordingStatusFailed || schedule.FailedReason == nil {
 		return nil
 	}
 
@@ -286,7 +285,7 @@ func (w *Watcher) processFailedSchedule(ctx context.Context, schedule mirakc.Sch
 		if result.RecordingID != nil {
 			w.notify(ctx, webhook.Event{
 				Type: webhook.EventRecordingFailed, RecordingID: *result.RecordingID,
-				Site: w.site, Title: result.Title, Status: db.RecordingStatusFailed,
+				Site: w.site, Title: result.Title, Status: store.RecordingStatusFailed,
 			})
 		}
 	}
@@ -334,7 +333,7 @@ func (w *Watcher) handleRecordingFailed(ctx context.Context, data mirakc.Recordi
 	}
 	w.notify(ctx, webhook.Event{
 		Type: webhook.EventRecordingFailed, RecordingID: recordingID,
-		Site: w.site, Title: snapshot.title, Status: db.RecordingStatusFailed,
+		Site: w.site, Title: snapshot.title, Status: store.RecordingStatusFailed,
 	})
 	return nil
 }

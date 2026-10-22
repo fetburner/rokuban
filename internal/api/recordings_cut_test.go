@@ -12,8 +12,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -49,13 +49,13 @@ func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	// cut でない版（凍結区間なし）と cut 版（凍結区間あり）。
 	h264 := "h264"
 	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindEncoded, Profile: &h264, RelPath: "a_h264.mp4", SizeBytes: 50,
+		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &h264, RelPath: "a_h264.mp4", SizeBytes: 50,
 	}); err != nil {
 		t.Fatalf("seed h264: %v", err)
 	}
 	cut := "cut"
 	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: db.AssetKindEncoded, Profile: &cut, RelPath: "a_cut.g1.mp4", SizeBytes: 40,
+		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &cut, RelPath: "a_cut.g1.mp4", SizeBytes: 40,
 	})
 	if err != nil {
 		t.Fatalf("seed cut: %v", err)

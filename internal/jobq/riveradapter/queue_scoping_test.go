@@ -40,7 +40,7 @@ import (
 //     しまい見逃す（issue #185 のレビューで実際に record_sweep がこの形で
 //     見逃されていた）。
 //  2. qualifyQueueName の区切り文字や resolve 規則を変える（例: `_` → `-`、
-//     または db.DefaultSite への解決を外す） --- Insert 直後の
+//     または store.DefaultSite への解決を外す） --- Insert 直後の
 //     `res.Job.Queue` のリテラル比較が直接落ちる。
 //  3. physicalQueueName が boundSite を無視する（常に site 非依存のように
 //     振る舞う、または常に qualifyQueueName を呼ぶ） --- 自分の site の
