@@ -15,14 +15,21 @@ import (
 // CatalogFixture は catalog 契約の実装と、競合状態を作るためのテスト用操作をまとめる。
 type CatalogFixture struct {
 	Store store.Catalog
+	// RulerInputSites は Store に構成した全 site（重複なし）。契約テストは Restore の後、
+	// 各 site の版がちょうど 1 進むことを確かめる。
+	RulerInputSites []string
+	// BumpRulerInputRevision は site の ruler 入力の版を 1 進める。版の初期値を作るために使う。
+	BumpRulerInputRevision func(ctx context.Context, site string) error
+	// GetRulerInputRevision は site の ruler 入力の現在の版を返す。
+	GetRulerInputRevision func(ctx context.Context, site string) (int64, error)
 	// InsertRecordingAndAsset は録画と原本アセットを別 commit で作る。
 	InsertRecordingAndAsset func(ctx context.Context, eventID int32) error
 	// Reset は catalog が保護するテーブルを空にする。
 	Reset func(t *testing.T)
 	// FailAtMediaAssetWrite installs a failure after the restore has written earlier tables.
 	FailAtMediaAssetWrite func(t *testing.T)
-	// CatalogCounts は rules / recordings / media_assets の行数を返す。
-	CatalogCounts func(t *testing.T) (rules, recordings, mediaAssets int)
+	// FailAtRulerInputRevisionWrite fails after an earlier site's revision has advanced.
+	FailAtRulerInputRevisionWrite func(t *testing.T)
 	// BeginLabelRuleReevaluationLock は再評価と同じロックを保持し、解放関数を返す。
 	BeginLabelRuleReevaluationLock func(t *testing.T) (release func())
 	// WaitForRestoreLock は Restore が再評価ロックで待っており、その時点で保護対象表への
@@ -42,8 +49,14 @@ func RunCatalog(t *testing.T, newStore NewCatalogStore) {
 	t.Run("restore round trips an exported document", func(t *testing.T) {
 		runCatalogRoundTrip(t, newStore)
 	})
-	t.Run("restore rolls back earlier writes after a later failure", func(t *testing.T) {
+	t.Run("restore failure rolls back", func(t *testing.T) {
 		runCatalogRestoreRollback(t, newStore)
+	})
+	t.Run("restore bumps revisions once", func(t *testing.T) {
+		runCatalogRestoreBumpsRulerInputRevisions(t, newStore)
+	})
+	t.Run("restore rolls back on revision failure", func(t *testing.T) {
+		runCatalogRestoreRulerInputRevisionRollback(t, newStore)
 	})
 	t.Run("restore marks missing assets deleted and keeps their statistics", func(t *testing.T) {
 		runCatalogRestoreMissingAssets(t, newStore)
@@ -87,13 +100,136 @@ func runCatalogRestoreMissingAssets(t *testing.T, newStore NewCatalogStore) {
 
 func runCatalogRestoreRollback(t *testing.T, newStore NewCatalogStore) {
 	f := newStore(t)
+	ctx := context.Background()
+	seedCatalogRulerInputRevisions(t, f, ctx)
+	revisionsBefore := catalogRulerInputRevisions(t, f, ctx)
 	f.FailAtMediaAssetWrite(t)
-	if _, err := f.Store.Restore(context.Background(), roundTripCatalogDocument(), store.RestoreOptions{}); err == nil {
+	if _, err := f.Store.Restore(ctx, roundTripCatalogDocument(), store.RestoreOptions{}); err == nil {
 		t.Fatal("Restore succeeded despite the injected media asset write failure")
 	}
-	rules, recordings, assets := f.CatalogCounts(t)
-	if rules != 0 || recordings != 0 || assets != 0 {
-		t.Fatalf("rows after failed restore = rules %d, recordings %d, assets %d; want 0/0/0", rules, recordings, assets)
+	assertCatalogEmpty(t, f, ctx)
+	if revisionsAfter := catalogRulerInputRevisions(t, f, ctx); !reflect.DeepEqual(revisionsAfter, revisionsBefore) {
+		t.Fatalf("ruler input revisions after failed restore = %v, want unchanged %v", revisionsAfter, revisionsBefore)
+	}
+}
+
+func runCatalogRestoreBumpsRulerInputRevisions(t *testing.T, newStore NewCatalogStore) {
+	tests := []struct {
+		name     string
+		document func() *catalogdoc.Document
+	}{
+		{
+			name: "no rules",
+			document: func() *catalogdoc.Document {
+				doc := roundTripCatalogDocument()
+				doc.Rules = nil
+				doc.Recordings[0].RuleID = nil
+				return doc
+			},
+		},
+		{
+			name: "multiple rules",
+			document: func() *catalogdoc.Document {
+				doc := roundTripCatalogDocument()
+				second := doc.Rules[0]
+				second.ID = 11
+				second.Name = "catalog round trip second rule"
+				doc.Rules = append(doc.Rules, second)
+				return doc
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newStore(t)
+			ctx := context.Background()
+			seedCatalogRulerInputRevisions(t, f, ctx)
+			revisionsBefore := catalogRulerInputRevisions(t, f, ctx)
+			if _, err := f.Store.Restore(ctx, tt.document(), store.RestoreOptions{}); err != nil {
+				t.Fatalf("Restore: %v", err)
+			}
+			revisionsAfter := catalogRulerInputRevisions(t, f, ctx)
+			for _, site := range f.RulerInputSites {
+				revisionAfter, ok := revisionsAfter[site]
+				if !ok {
+					t.Fatalf("ruler input revision for site %q was not read after restore", site)
+				}
+				if want := revisionsBefore[site] + 1; revisionAfter != want {
+					t.Errorf("%s ruler input revision after restore = %d, want %d", site, revisionAfter, want)
+				}
+			}
+		})
+	}
+}
+
+func runCatalogRestoreRulerInputRevisionRollback(t *testing.T, newStore NewCatalogStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	seedCatalogRulerInputRevisions(t, f, ctx)
+	revisionsBefore := catalogRulerInputRevisions(t, f, ctx)
+	f.FailAtRulerInputRevisionWrite(t)
+	if _, err := f.Store.Restore(ctx, roundTripCatalogDocument(), store.RestoreOptions{}); err == nil {
+		t.Fatal("Restore succeeded despite the injected ruler input revision failure")
+	}
+	assertCatalogEmpty(t, f, ctx)
+	if revisionsAfter := catalogRulerInputRevisions(t, f, ctx); !reflect.DeepEqual(revisionsAfter, revisionsBefore) {
+		t.Fatalf("ruler input revisions after failed restore = %v, want unchanged %v", revisionsAfter, revisionsBefore)
+	}
+}
+
+func seedCatalogRulerInputRevisions(t *testing.T, f CatalogFixture, ctx context.Context) {
+	t.Helper()
+	for range 2 {
+		for _, site := range f.RulerInputSites {
+			if err := f.BumpRulerInputRevision(ctx, site); err != nil {
+				t.Fatalf("seeding ruler input revision for %q: %v", site, err)
+			}
+		}
+	}
+	for _, site := range f.RulerInputSites {
+		revision, err := f.GetRulerInputRevision(ctx, site)
+		if err != nil {
+			t.Fatalf("reading seeded ruler input revision for %q: %v", site, err)
+		}
+		if revision != 2 {
+			t.Fatalf("seeded ruler input revision for %q = %d, want 2", site, revision)
+		}
+	}
+}
+
+func catalogRulerInputRevisions(t *testing.T, f CatalogFixture, ctx context.Context) map[string]int64 {
+	t.Helper()
+	revisions := make(map[string]int64, len(f.RulerInputSites))
+	for _, site := range f.RulerInputSites {
+		revision, err := f.GetRulerInputRevision(ctx, site)
+		if err != nil {
+			t.Fatalf("GetRulerInputRevision(%q): %v", site, err)
+		}
+		revisions[site] = revision
+	}
+	return revisions
+}
+
+func assertCatalogEmpty(t *testing.T, f CatalogFixture, ctx context.Context) {
+	t.Helper()
+	doc, err := f.Store.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export after failed restore: %v", err)
+	}
+	value := reflect.ValueOf(doc).Elem()
+	type nonEmptyField struct {
+		name  string
+		count int
+	}
+	var nonEmpty []nonEmptyField
+	for i := range value.NumField() {
+		field := value.Field(i)
+		if field.Kind() == reflect.Slice && field.Len() != 0 {
+			nonEmpty = append(nonEmpty, nonEmptyField{name: value.Type().Field(i).Name, count: field.Len()})
+		}
+	}
+	if len(nonEmpty) != 0 {
+		t.Errorf("catalog rows after failed restore = %v; want all catalog tables empty", nonEmpty)
 	}
 }
 

@@ -50,7 +50,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("marking trashed: %v", err)
 	}
 
-	doc, err := pgstore.NewCatalog(pool).Export(ctx)
+	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool), mediaDir, path); err != nil {
+	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool, []string{"default"}), mediaDir, path); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 

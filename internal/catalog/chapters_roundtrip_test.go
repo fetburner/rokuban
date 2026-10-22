@@ -62,7 +62,7 @@ VALUES ($1, int8range($2, $3), $4, $5)`, recID, span.start, span.end, span.label
 		}
 	}
 
-	doc, err := pgstore.NewCatalog(pool).Export(ctx)
+	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -79,7 +79,7 @@ VALUES ($1, int8range($2, $3), $4, $5)`, recID, span.start, span.end, span.label
 		t.Fatalf("simulating DB loss: %v", err)
 	}
 
-	result, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -149,7 +149,7 @@ ORDER BY lower(span)`, recID)
 	}
 
 	// 2 回目の rescue で増殖せず、落ちもしない。
-	if _, err := RescueLatest(ctx, pgstore.NewCatalog(pool), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(ctx, pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
 	var spanCount int

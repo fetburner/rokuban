@@ -17,9 +17,14 @@ import (
 func TestCatalogContract(t *testing.T) {
 	contracttest.RunCatalog(t, func(t *testing.T) contracttest.CatalogFixture {
 		pool := testutil.SetupDB(t)
-		catalogStore := NewCatalog(pool)
+		siteNames := []string{"site-b", "default", "site-a", "site-b"}
+		catalogStore := NewCatalog(pool, siteNames)
+		revisionStore := NewReservations(pool)
 		return contracttest.CatalogFixture{
-			Store: catalogStore,
+			Store:                  catalogStore,
+			RulerInputSites:        []string{"default", "site-a", "site-b"},
+			BumpRulerInputRevision: revisionStore.BumpRulerInputRevision,
+			GetRulerInputRevision:  revisionStore.GetRulerInputRevision,
 			InsertRecordingAndAsset: func(ctx context.Context, eventID int32) error {
 				recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
 					Source: "manual", Site: store.DefaultSite, NetworkID: 32678, ServiceID: 5168,
@@ -70,15 +75,41 @@ FOR EACH ROW EXECUTE FUNCTION public.catalog_contract_fail_media_asset()`); err 
 					}
 				})
 			},
-			CatalogCounts: func(t *testing.T) (rules, recordings, assets int) {
+			FailAtRulerInputRevisionWrite: func(t *testing.T) {
 				t.Helper()
-				if err := pool.QueryRow(context.Background(), `
-SELECT (SELECT count(*) FROM rules),
-       (SELECT count(*) FROM recordings),
-       (SELECT count(*) FROM media_assets)`).Scan(&rules, &recordings, &assets); err != nil {
-					t.Fatalf("counting catalog rows after restore: %v", err)
+				ctx := context.Background()
+				if _, err := pool.Exec(ctx, `CREATE SEQUENCE public.catalog_contract_ruler_revision_write_count`); err != nil {
+					t.Fatalf("creating ruler input revision failure sequence: %v", err)
 				}
-				return rules, recordings, assets
+				t.Cleanup(func() {
+					if _, err := pool.Exec(context.Background(), `DROP TRIGGER IF EXISTS catalog_contract_fail_ruler_revision ON ruler_input_revisions`); err != nil {
+						t.Errorf("dropping ruler input revision failure trigger: %v", err)
+					}
+					if _, err := pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS public.catalog_contract_fail_ruler_revision()`); err != nil {
+						t.Errorf("dropping ruler input revision failure trigger function: %v", err)
+					}
+					if _, err := pool.Exec(context.Background(), `DROP SEQUENCE IF EXISTS public.catalog_contract_ruler_revision_write_count`); err != nil {
+						t.Errorf("dropping ruler input revision failure sequence: %v", err)
+					}
+				})
+				if _, err := pool.Exec(ctx, `
+CREATE FUNCTION public.catalog_contract_fail_ruler_revision() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF nextval('public.catalog_contract_ruler_revision_write_count') = 3 THEN
+        RAISE EXCEPTION 'injected ruler input revision failure';
+    END IF;
+    RETURN NEW;
+END
+$$`); err != nil {
+					t.Fatalf("creating ruler input revision failure trigger function: %v", err)
+				}
+				if _, err := pool.Exec(ctx, `
+CREATE TRIGGER catalog_contract_fail_ruler_revision
+BEFORE UPDATE ON ruler_input_revisions
+FOR EACH ROW EXECUTE FUNCTION public.catalog_contract_fail_ruler_revision()`); err != nil {
+					t.Fatalf("creating ruler input revision failure trigger: %v", err)
+				}
 			},
 			BeginLabelRuleReevaluationLock: func(t *testing.T) func() {
 				t.Helper()
@@ -130,4 +161,13 @@ WHERE pid = $1 AND locktype = 'relation' AND granted
 			},
 		}
 	})
+}
+
+func TestNewCatalogRequiresSiteNames(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewCatalog did not panic without site names")
+		}
+	}()
+	NewCatalog(nil, nil)
 }
