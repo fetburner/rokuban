@@ -22,7 +22,7 @@ func TestReservationsContract(t *testing.T) {
 	contracttest.RunReservations(t, func(t *testing.T) contracttest.ReservationsFixture {
 		pool := testutil.SetupDB(t)
 		return contracttest.ReservationsFixture{
-			Store: NewReservations(pool),
+			Store: NewReservations(pool), Pass: NewReservations(pool),
 			NewProgram: func(t *testing.T, options contracttest.ReservationProgramOptions) (string, int64) {
 				return seedReservationProgram(t, pool, options)
 			},

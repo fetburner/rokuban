@@ -26,9 +26,9 @@ contentPath 生成では、`recording.basedir` 相対パスを必須とする。
 
 #### 起動契機
 
-reconciler は ruler と同じ形の River ジョブで、シングルトンにはしない。起動契機は定期とヒントの 2 つで、定期パスが状態の権威、ヒントは投入を早めるだけである。排他はサイト単位の一意制約で保証し、advisory lock は使わない。
+reconciler は ruler と同じ形の River ジョブで、シングルトンにはしない。起動契機は定期とヒントの 2 つで、定期パスが状態の権威、ヒントは投入を早めるだけである。重複の抑止は River adapter の一意性に任せ、排他の保証とは扱わない。advisory lock は使わない。
 
-ジョブの実体は `internal/worker` の `ReconcilePassWorker` である。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。そのため排他は `UniqueOpts`（サイト単位）で保証し、advisory lock は使わない（[データ層](../data.md) §2）。ヒントを落としても定期パスが拾う。
+ジョブの実体は `internal/worker` の `ReconcilePassWorker` である。周期的・冪等・パスを跨ぐ状態を持たないという性質が ruler / epg_sync と同じである（サーキットブレーカーの閾値判定もパスごとに読み直す）。抑止には `UniqueOpts`（サイト単位）を使う（[データ層](../data.md) §2）。ヒントを落としても定期パスが拾う。
 
 | 契機 | 種別 | 投入するもの |
 |---|---|---|

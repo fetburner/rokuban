@@ -42,6 +42,9 @@ func (s *Reservations) PutIntent(ctx context.Context, site string, programID int
 	}); err != nil {
 		return fmt.Errorf("upserting intent for program %d at site %s: %w", programID, site, mapDatabaseError(err))
 	}
+	if err := bumpRulerInputRevision(ctx, q, site); err != nil {
+		return fmt.Errorf("bumping ruler input revision after intent write: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing intent for program %d at site %s: %w", programID, site, mapDatabaseError(err))
 	}
@@ -56,10 +59,14 @@ func (s *Reservations) DeleteIntent(ctx context.Context, site string, programID 
 		return fmt.Errorf("beginning intent delete for program %d at site %s: %w", programID, site, err)
 	}
 	defer rollback(tx)
-	if _, err := sqlcgen.New(tx).DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
+	q := sqlcgen.New(tx)
+	if _, err := q.DeleteProgramIntent(ctx, sqlcgen.DeleteProgramIntentParams{
 		Site: site, ProgramID: programID,
 	}); err != nil {
 		return fmt.Errorf("deleting intent for program %d at site %s: %w", programID, site, mapDatabaseError(err))
+	}
+	if err := bumpRulerInputRevision(ctx, q, site); err != nil {
+		return fmt.Errorf("bumping ruler input revision after intent delete: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing intent delete for program %d at site %s: %w", programID, site, mapDatabaseError(err))
@@ -127,6 +134,9 @@ func (s *Reservations) PatchOverrides(ctx context.Context, site string, programI
 	if err := persistOverrides(ctx, q, site, programID, mergedJSON); err != nil {
 		return fmt.Errorf("persisting overrides for program %d at site %s: %w", programID, site, err)
 	}
+	if err := bumpRulerInputRevision(ctx, q, site); err != nil {
+		return fmt.Errorf("bumping ruler input revision after overrides patch: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing overrides for program %d at site %s: %w", programID, site, mapDatabaseError(err))
 	}
@@ -141,10 +151,14 @@ func (s *Reservations) DeleteOverrides(ctx context.Context, site string, program
 		return fmt.Errorf("beginning overrides delete for program %d at site %s: %w", programID, site, err)
 	}
 	defer rollback(tx)
-	if _, err := sqlcgen.New(tx).DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
+	q := sqlcgen.New(tx)
+	if _, err := q.DeleteProgramOverrides(ctx, sqlcgen.DeleteProgramOverridesParams{
 		Site: site, ProgramID: programID,
 	}); err != nil {
 		return fmt.Errorf("deleting overrides for program %d at site %s: %w", programID, site, mapDatabaseError(err))
+	}
+	if err := bumpRulerInputRevision(ctx, q, site); err != nil {
+		return fmt.Errorf("bumping ruler input revision after overrides delete: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("committing overrides delete for program %d at site %s: %w", programID, site, mapDatabaseError(err))
@@ -282,3 +296,4 @@ func isEmptyOverridesJSON(raw json.RawMessage) bool {
 }
 
 var _ store.Reservations = (*Reservations)(nil)
+var _ store.RulerInputBumper = (*Reservations)(nil)

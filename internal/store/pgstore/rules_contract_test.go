@@ -17,10 +17,11 @@ import (
 func TestRulesContract(t *testing.T) {
 	contracttest.RunRules(t, func(t *testing.T) contracttest.RulesFixture {
 		pool := testutil.SetupDB(t)
-		rules := NewRules(pool)
+		allSites := []string{"rev-a", "rev-b", "rev-c"}
+		rules := NewRules(pool, allSites)
 		reservations := NewReservations(pool)
 		return contracttest.RulesFixture{
-			Store: rules, Import: rules, Reservations: reservations,
+			Store: rules, Import: rules, Reservations: reservations, Pass: reservations, AllSites: allSites,
 			SeedReservation: func(t *testing.T, ruleID int64, withIntent bool) (string, int64) {
 				t.Helper()
 				site, programID := seedReservationProgram(t, pool, contracttest.ReservationProgramOptions{

@@ -84,6 +84,8 @@ type Deps struct {
 
 	// EPGSync は EPG 同期の永続化契約。
 	EPGSync store.EPGSync
+	// RulerInputBumper は EPG 同期の完了時に ruler 入力の版を進める。
+	RulerInputBumper store.RulerInputBumper
 
 	// ProgramSearch は番組検索・ルール評価の永続化契約。
 	ProgramSearch store.ProgramSearch
@@ -234,6 +236,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Enqueuer:       deps.Enqueuer,
 		MirakcClients:  deps.MirakcClients,
 		Store:          deps.EPGSync,
+		RulerInput:     deps.RulerInputBumper,
 		RetentionGrace: deps.EpgRetentionGrace,
 	})
 	riveradapter.Register(workers, &TunerSyncWorker{

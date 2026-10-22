@@ -7,6 +7,7 @@ package ruler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -16,6 +17,11 @@ import (
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 )
+
+const maxRulerInputRevisionMismatches = 3
+
+// beforeRulerWriteTx は入力を読んだ後、予約の書き込み tx を始める前にテストが割り込むための hook。
+var beforeRulerWriteTx func()
 
 // Config は Ruler の設定。
 type Config struct {
@@ -116,26 +122,57 @@ func (r *Ruler) RunPass(ctx context.Context) error {
 
 // runPassForSite は 1 サイト分の評価と差分書き込みを行う。
 func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
+	for mismatches := 0; ; {
+		inputRevision, err := r.passes.GetRulerInputRevision(ctx, site)
+		if err != nil {
+			return fmt.Errorf("getting ruler input revision for site %q: %w", site, err)
+		}
+		if mismatches == 0 {
+			// snapshot 追従（ApplyPass）より前に観測する。後だと追従が旧値を上書きして
+			// 検出材料が消える。検出の失敗はパスを止めない。
+			observeProgramIDReuses(ctx, r.passes, site, time.Now())
+		}
+
+		changed, applyErr, err := r.runPassForSiteAttempt(ctx, site, inputRevision)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+		mismatches++
+		if mismatches >= maxRulerInputRevisionMismatches {
+			return fmt.Errorf("ruler input changed during %d consecutive passes for site %q", mismatches, site)
+		}
+		attrs := []any{"site", site, "retry", mismatches}
+		if applyErr != nil {
+			// 入力削除による外部キー違反などの元の失敗を捨てない。
+			attrs = append(attrs, "apply_err", applyErr)
+		}
+		slog.Info("ruler: inputs changed during pass; re-evaluating", attrs...)
+	}
+}
+
+// runPassForSiteAttempt は 1 回分の評価と書き込みを行う。入力の版が変わっていて読み直すべきときは
+// changed を返す。このとき applyErr は、ApplyPass が版の照合まで進めず失敗した場合の元のエラーである。
+func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRevision int64) (changed bool, applyErr error, err error) {
 	evaluationNow := time.Now()
-	// snapshot 追従（ApplyPass）より前に観測する。後だと追従が旧値を上書きして
-	// 検出材料が消える。検出の失敗はパスを止めない。
-	observeProgramIDReuses(ctx, r.passes, site, evaluationNow)
 
 	tripped, err := r.observeDeleteBreaker(ctx, site)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 	rules, err := r.passes.ListEnabled(ctx)
 	if err != nil {
-		return fmt.Errorf("listing enabled rules: %w", err)
+		return false, nil, fmt.Errorf("listing enabled rules: %w", err)
 	}
 	ruleByID, winner, err := r.resolveWinners(ctx, site, rules)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 	desired, skipIntent, fulfilled, err := r.collectDesired(ctx, site, winner)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 	desiredIDs := make([]int64, 0, len(desired))
 	for id := range desired {
@@ -143,22 +180,26 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 	}
 	existingSet, deleteCandidates, toDelete, err := r.collectDeleteCandidates(ctx, site, desired)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 	// fulfilled は専用経路でブレーカーの外から消すので、導出削除に数えない。
 	toDelete = subtract(toDelete, fulfilled)
 
 	dedupeMatches, err := r.applyDedupe(ctx, site, evaluationNow, desiredIDs, winner, ruleByID)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 	inputs, err := buildReservationInputs(desiredIDs, winner, ruleByID, dedupeMatches)
 	if err != nil {
-		return err
+		return false, nil, err
 	}
 
 	applyNow := time.Now()
+	if beforeRulerWriteTx != nil {
+		beforeRulerWriteTx()
+	}
 	result, err := r.passes.ApplyPass(ctx, site, store.RulerPassPlan{
+		InputRevision:       inputRevision,
 		SnapshotProgramIDs:  snapshotProgramIDs(desiredIDs, skipIntent, existingSet),
 		ExistingProgramIDs:  keys(existingSet),
 		Reservations:        inputs,
@@ -171,7 +212,19 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		BreakerTripped:      tripped,
 	})
 	if err != nil {
-		return err
+		// 入力削除による外部キー違反などで ApplyPass が版照合まで進めない場合も、
+		// ロールバック後に版を確認して、変更済みなら新しい入力で再試行する。
+		currentRevision, revisionErr := r.passes.GetRulerInputRevision(ctx, site)
+		if revisionErr != nil {
+			return false, nil, errors.Join(err, fmt.Errorf("getting ruler input revision after failed apply: %w", revisionErr))
+		}
+		if currentRevision != inputRevision {
+			return true, err, nil
+		}
+		return false, nil, err
+	}
+	if result.InputRevisionChanged {
+		return true, nil, nil
 	}
 	for _, id := range result.UnmaterializedProgramIDs {
 		slog.Warn("ruler: cannot materialize reservation without a program snapshot", "site", site, "program_id", id)
@@ -205,7 +258,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		"grace_protected", result.GraceProtected,
 		"delete_candidates", len(deleteCandidates),
 	)
-	return nil
+	return false, nil, nil
 }
 
 func observeProgramIDReuses(ctx context.Context, passes store.RulerPass, site string, now time.Time) {

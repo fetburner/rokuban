@@ -17,15 +17,22 @@ import (
 
 // Rules は録画ルールの永続化を PostgreSQL で実装する。
 type Rules struct {
-	pool *pgxpool.Pool
+	pool      *pgxpool.Pool
+	siteNames []string
 }
 
 var _ store.Rules = (*Rules)(nil)
 var _ store.RuleImport = (*Rules)(nil)
 
-// NewRules は PostgreSQL を使う Rules を作る。
-func NewRules(pool *pgxpool.Pool) *Rules {
-	return &Rules{pool: pool}
+// NewRules は PostgreSQL を使う Rules を作る。siteNames は構成の全 site で、
+// sites が空のルールの書き込みがこの全 site の版を進める。空の一覧は
+// 呼び出し側の配線の誤りなので panic する（黙って 1 site を仮定すると、
+// 他の site の版が進まず古い評価がコミットされる）。
+func NewRules(pool *pgxpool.Pool, siteNames []string) *Rules {
+	if len(siteNames) == 0 {
+		panic("pgstore.NewRules: siteNames must not be empty")
+	}
+	return &Rules{pool: pool, siteNames: append([]string(nil), siteNames...)}
 }
 
 // List は子条件を含むルールを優先度降順、ID 昇順で返す。
@@ -88,6 +95,9 @@ func (s *Rules) Create(ctx context.Context, in store.RuleInput) (store.Rule, err
 	if err := replaceRuleChildren(ctx, q, row.ID, in); err != nil {
 		return store.Rule{}, fmt.Errorf("replacing rule %d children: %w", row.ID, mapDatabaseError(err))
 	}
+	if err := s.bumpRulerInputRevisions(ctx, q, in.Sites, len(in.Sites) == 0); err != nil {
+		return store.Rule{}, fmt.Errorf("bumping ruler input revisions after rule creation: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return store.Rule{}, fmt.Errorf("committing rule creation: %w", mapDatabaseError(err))
 	}
@@ -118,8 +128,17 @@ func (s *Rules) Update(ctx context.Context, id int64, in store.RuleInput) (store
 		}
 		return store.Rule{}, fmt.Errorf("updating rule %d: %w", id, mapDatabaseError(err))
 	}
+	oldSites, err := ruleSites(ctx, q, id)
+	if err != nil {
+		return store.Rule{}, err
+	}
 	if err := replaceRuleChildren(ctx, q, row.ID, in); err != nil {
 		return store.Rule{}, fmt.Errorf("replacing rule %d children: %w", id, mapDatabaseError(err))
+	}
+	sites := append(append([]string(nil), oldSites...), in.Sites...)
+	global := len(oldSites) == 0 || len(in.Sites) == 0
+	if err := s.bumpRulerInputRevisions(ctx, q, sites, global); err != nil {
+		return store.Rule{}, fmt.Errorf("bumping ruler input revisions after rule update %d: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return store.Rule{}, fmt.Errorf("committing rule update %d: %w", id, mapDatabaseError(err))
@@ -140,11 +159,11 @@ func (s *Rules) Delete(ctx context.Context, id int64) (store.RuleDeleteResult, e
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	if _, err := q.GetRule(ctx, id); err != nil {
+	if _, err := q.LockRuleForUpdate(ctx, id); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.RuleDeleteResult{}, fmt.Errorf("rule %d: %w", id, store.ErrNotFound)
 		}
-		return store.RuleDeleteResult{}, fmt.Errorf("getting rule %d before deletion: %w", id, err)
+		return store.RuleDeleteResult{}, fmt.Errorf("locking rule %d before deletion: %w", id, err)
 	}
 	sites, err := ruleSites(ctx, q, id)
 	if err != nil {
@@ -165,6 +184,9 @@ func (s *Rules) Delete(ctx context.Context, id int64) (store.RuleDeleteResult, e
 	}
 	if rows == 0 {
 		return store.RuleDeleteResult{}, fmt.Errorf("rule %d: %w", id, store.ErrNotFound)
+	}
+	if err := s.bumpRulerInputRevisions(ctx, q, sites, len(sites) == 0); err != nil {
+		return store.RuleDeleteResult{}, fmt.Errorf("bumping ruler input revisions after rule deletion %d: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return store.RuleDeleteResult{}, fmt.Errorf("committing rule deletion %d: %w", id, mapDatabaseError(err))
@@ -188,6 +210,7 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 	existing, err := q.FindRuleByMetadata(ctx, metadata)
 	var row sqlcgen.Rule
 	created := false
+	var oldSites []string
 	switch {
 	case err == nil:
 		params, err := ruleUpdateParams(existing.ID, in)
@@ -206,6 +229,10 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 		if err != nil {
 			return false, fmt.Errorf("updating imported epgstation rule %d: %w", epgstationRuleID, mapDatabaseError(err))
 		}
+		oldSites, err = ruleSites(ctx, q, existing.ID)
+		if err != nil {
+			return false, err
+		}
 	case errors.Is(err, pgx.ErrNoRows):
 		created = true
 		params, err := ruleCreateParams(in)
@@ -222,6 +249,11 @@ func (s *Rules) ImportEPGStationRule(ctx context.Context, epgstationRuleID int64
 	}
 	if err := replaceRuleChildren(ctx, q, row.ID, in); err != nil {
 		return false, fmt.Errorf("writing imported epgstation rule %d children: %w", epgstationRuleID, mapDatabaseError(err))
+	}
+	sites := append(append([]string(nil), oldSites...), in.Sites...)
+	global := len(in.Sites) == 0 || (!created && len(oldSites) == 0)
+	if err := s.bumpRulerInputRevisions(ctx, q, sites, global); err != nil {
+		return false, fmt.Errorf("bumping ruler input revisions after imported rule %d: %w", epgstationRuleID, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("committing epgstation rule %d import: %w", epgstationRuleID, mapDatabaseError(err))

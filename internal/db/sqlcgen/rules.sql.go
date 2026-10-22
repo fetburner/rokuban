@@ -567,6 +567,17 @@ func (q *Queries) ListRules(ctx context.Context) ([]Rule, error) {
 	return items, nil
 }
 
+const lockRuleForUpdate = `-- name: LockRuleForUpdate :one
+SELECT id FROM rules WHERE id = $1 FOR UPDATE
+`
+
+func (q *Queries) LockRuleForUpdate(ctx context.Context, id int64) (int64, error) {
+	row := q.db.QueryRow(ctx, lockRuleForUpdate, id)
+	var id_2 int64
+	err := row.Scan(&id_2)
+	return id_2, err
+}
+
 const updateRule = `-- name: UpdateRule :one
 UPDATE rules SET
     name              = $1,

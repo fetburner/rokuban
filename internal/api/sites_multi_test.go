@@ -552,7 +552,7 @@ INSERT INTO reservations (site, program_id, base) VALUES ($1, $2, '{}')`,
 func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -577,7 +577,7 @@ func TestCreateRule_NoSitesSpecified_EnqueuesHintForEveryRegistrySite(t *testing
 func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -604,7 +604,7 @@ func TestCreateRule_SitesSpecified_EnqueuesHintOnlyForThoseSites(t *testing.T) {
 func TestDeleteRule_EnqueuesHintOnlyForRuleTargetSites_NotAllRegistrySites(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool),
 		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer, Sites: []string{"tokyo", "osaka"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

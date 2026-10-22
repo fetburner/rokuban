@@ -104,12 +104,16 @@ type Rules interface {
 	// Sites は保存済みの対象 site を返す。ルールが無い場合は空の一覧を返す。
 	Sites(ctx context.Context, id int64) ([]string, error)
 	// Create はルール本体と全ての子条件を原子的に作成する。
+	// 同じ tx で、対象 site の ruler 入力の版を 1 進める。sites が空のルールは構成の全 site を対象とする。
 	Create(ctx context.Context, in RuleInput) (Rule, error)
 	// Update はルール本体と全ての子条件を置き換える。同じルールへの更新は直列化する。
+	// 同じ tx で、更新前と更新後の対象 site の両方について ruler 入力の版を 1 進める。
+	// どちらかの sites が空なら構成の全 site を進める。
 	Update(ctx context.Context, id int64, in RuleInput) (Rule, error)
 	// Delete は、意図の無い予約の削除とルールの削除を原子的に行う。
 	// 意図のある予約は残し、ルールを削除すると録画と予約からルール参照が外れる。
 	// 結果には削除前の対象 site を含める。
+	// 同じ tx で、削除前の対象 site の ruler 入力の版を 1 進める（sites が空だったルールは構成の全 site）。
 	Delete(ctx context.Context, id int64) (RuleDeleteResult, error)
 }
 
@@ -124,5 +128,6 @@ type Rules interface {
 type RuleImport interface {
 	// ImportEPGStationRule は EPGStation rule ID のルールを作成または更新し、子条件を全置換する。
 	// 作成または更新と子条件は 1 つのトランザクションで確定する。
+	// 同じ tx で、Create / Update と同じ site の ruler 入力の版を 1 進める。
 	ImportEPGStationRule(ctx context.Context, epgstationRuleID int64, in RuleInput) (created bool, err error)
 }

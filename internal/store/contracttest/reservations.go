@@ -25,7 +25,9 @@ type NewReservationProgram func(t *testing.T, options ReservationProgramOptions)
 
 // ReservationsFixture は予約契約の実装と、実装側が与える状態の仕込み・同期のフックをまとめる。
 type ReservationsFixture struct {
-	Store      store.Reservations
+	Store store.Reservations
+	// Pass は GetRulerInputRevision で ruler 入力の版を読むために使う。
+	Pass       store.RulerPass
 	NewProgram NewReservationProgram
 	// HoldProgram は、その番組への PutIntent / PatchOverrides の直列化点を外から握り、
 	// release で放す。握っている間、同じ番組への書き込みは直列化点で待つ。
@@ -53,6 +55,9 @@ func RunReservations(t *testing.T, newStore NewReservationsStore) {
 	})
 	t.Run("concurrent field patches preserve both values", func(t *testing.T) {
 		runConcurrentOverrides(t, newStore)
+	})
+	t.Run("intent and override writes advance the ruler input revision", func(t *testing.T) {
+		runReservationRevisions(t, newStore)
 	})
 	t.Run("reservation reads return details and overlaps", func(t *testing.T) {
 		runReservationReads(t, newStore)
@@ -238,4 +243,34 @@ func hasPriorityOverride(raw json.RawMessage, want int) bool {
 		return false
 	}
 	return *options.Priority == want
+}
+
+// runReservationRevisions は、意図と上書きの 4 つの書き込みが、それぞれ対象 site の版を 1 進めることを確かめる。
+func runReservationRevisions(t *testing.T, newStore NewReservationsStore) {
+	f := newStore(t)
+	if f.Pass == nil {
+		t.Fatal("reservations fixture needs Pass")
+	}
+	ctx := context.Background()
+	site, programID := f.NewProgram(t, ReservationProgramOptions{Projection: true, Snapshot: true, Reservation: true})
+	priority := 3
+	for _, c := range []struct {
+		name string
+		do   func() error
+	}{
+		{"PutIntent", func() error { return f.Store.PutIntent(ctx, site, programID, reservation.IntentRecord) }},
+		{"PatchOverrides", func() error {
+			return f.Store.PatchOverrides(ctx, site, programID, reservation.OverridesPatch{Priority: &priority})
+		}},
+		{"DeleteOverrides", func() error { return f.Store.DeleteOverrides(ctx, site, programID) }},
+		{"DeleteIntent", func() error { return f.Store.DeleteIntent(ctx, site, programID) }},
+	} {
+		before := currentRulerInputRevision(t, f.Pass, site)
+		if err := c.do(); err != nil {
+			t.Fatalf("%s = %v", c.name, err)
+		}
+		if got := currentRulerInputRevision(t, f.Pass, site) - before; got != 1 {
+			t.Errorf("%s: ruler input revision delta = %d, want 1", c.name, got)
+		}
+	}
 }

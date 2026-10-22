@@ -53,6 +53,8 @@ type RulerReservationInput struct {
 
 // RulerPassPlan は ruler が 1 サイトについて評価した書き込み計画である。
 type RulerPassPlan struct {
+	// InputRevision は読み取り開始時に GetRulerInputRevision で観測した入力の版である。
+	InputRevision int64
 	// SnapshotProgramIDs は射影の最新値へ追従させる予約・意図の番組 ID である。
 	SnapshotProgramIDs []int64
 	// ExistingProgramIDs は計画を作る前に読んだ既存予約の番組 ID である。
@@ -71,6 +73,8 @@ type RulerPassPlan struct {
 
 // RulerPassResult は ApplyPass が commit した書き込みの結果である。
 type RulerPassResult struct {
+	// InputRevisionChanged は commit 時点の版が plan.InputRevision と違い、何も書かなかったことを表す。
+	InputRevisionChanged     bool
 	Created                  int
 	Updated                  int
 	UnmaterializedProgramIDs []int64
@@ -85,9 +89,20 @@ type RulerPassResult struct {
 	BreakerSample            BreakerSample
 }
 
+// RulerInputBumper は ruler の入力が変わったことを記録する。
+//
+// ルール・意図・上書きの書き込みは、各メソッドの tx の中で版を進める。EPG 同期は
+// 予約ドメインの書き込みを持たないので、同期の完了時にこの契約で進める。
+type RulerInputBumper interface {
+	// BumpRulerInputRevision は site の ruler 入力の版を 1 進める。
+	BumpRulerInputRevision(ctx context.Context, site string) error
+}
+
 // RulerPass は ruler が予約の導出と適用に使う永続化契約である。
 type RulerPass interface {
 	RulerDedupe
+	// GetRulerInputRevision は site の ruler 入力の版を返す。版を進めたことがない site は 0 とする。
+	GetRulerInputRevision(ctx context.Context, site string) (int64, error)
 	// ListEnabled は有効なルール本体を優先度降順、ID 昇順で返す。子条件は含まない。
 	ListEnabled(ctx context.Context) ([]Rule, error)
 	// ListProgramIDReuses は指定時刻に終了済みスナップショットと射影を比べ、再利用が疑われる番組を返す。
@@ -104,6 +119,8 @@ type RulerPass interface {
 	ListProjectedProgramIDs(ctx context.Context, site string, programIDs []int64) ([]int64, error)
 	// ApplyPass は予約の upsert、fulfilled・released・導出削除、snapshot 追従、必要なブレーカー発動を
 	// 1 つのトランザクションで確定する。削除時には現在の program investment を再評価する。
+	// commit 時点の site の版が plan.InputRevision と違えば、何も書かずに InputRevisionChanged を返す。
+	// 予約・スナップショット・ブレーカーのいずれも変わらない。
 	ApplyPass(ctx context.Context, site string, plan RulerPassPlan) (RulerPassResult, error)
 	// PruneEndedSnapshots は指定 cutoff より前に終了した番組スナップショットを削除する。
 	PruneEndedSnapshots(ctx context.Context, before time.Time) (int64, error)

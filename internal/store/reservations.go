@@ -60,15 +60,19 @@ type ReservationOverlap struct {
 type Reservations interface {
 	// PutIntent は番組のスナップショットを確保し、録画意図（record / skip）を書く。
 	// 2 つは同じ tx で確定する。射影にも凍結スナップショットにも番組が無ければ ErrNotFound を返す。
+	// 同じ tx で、site の ruler 入力の版を 1 進める。
 	PutIntent(ctx context.Context, site string, programID int64, action string) error
 	// DeleteIntent は番組の録画意図を消す。意図が無くても成功する。
+	// 同じ tx で、site の ruler 入力の版を 1 進める。
 	DeleteIntent(ctx context.Context, site string, programID int64) error
 	// PatchOverrides は、直列化した後の既存の上書きと予約の base にパッチをマージし、
 	// その実効値を検証して書く。マージ結果が空なら上書きの行を消す。
 	// 実効値が不正なら *reservation.InvalidEffectiveOptionsError を、射影にも凍結スナップショットにも
 	// 番組が無ければ ErrNotFound を返す。
+	// 成功したときは同じ tx で、site の ruler 入力の版を 1 進める。
 	PatchOverrides(ctx context.Context, site string, programID int64, patch reservation.OverridesPatch) error
 	// DeleteOverrides は番組の上書きをすべて消す。行が無くても成功する。
+	// 同じ tx で、site の ruler 入力の版を 1 進める。
 	DeleteOverrides(ctx context.Context, site string, programID int64) error
 	// GetReservation は (site, programID) で予約を詳細つきで返す。無ければ ErrNotFound を返す。
 	GetReservation(ctx context.Context, site string, programID int64) (ReservationDetails, error)

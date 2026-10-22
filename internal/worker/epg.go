@@ -39,6 +39,8 @@ type EpgSyncWorker struct {
 	// （issue #139）。
 	MirakcClients map[string]*mirakc.Client
 	Store         store.EPGSync
+	// RulerInput は同期完了時に ruler 入力の版を進める。
+	RulerInput store.RulerInputBumper
 
 	// RetentionGrace は end_at がこの時間より前の番組を刈り取る猶予
 	// （config.epg.retention_grace。config.defaults() が既定値 24 時間を
@@ -138,10 +140,13 @@ func (w *EpgSyncWorker) Work(ctx context.Context, args jobs.EpgSyncArgs) error {
 	}
 
 	// EPG 同期完了は ruler_pass 起動契機のヒントの 1 つ（docs/recording.md §3.1
-	// 「EPG 同期の完了」）。EPG が変わったら評価を早める。ここでの投入はルール
-	// 書き込みのようなトランザクション整合の要求（dual-write 回避）はなく、
-	// あくまで定期パスを前倒しするヒントなので、同一トランザクションである
-	// 必要はなく、投入できない場合も次の定期パスに委ねる。
+	// 「EPG 同期の完了」）。ruler が同期途中の射影で評価を確定しないよう入力版を進める。
+	// EPG 同期は複数ステップに分かれており、ここでの版更新とヒントは完了後の前倒し通知である。
+	if w.RulerInput != nil {
+		if err := w.RulerInput.BumpRulerInputRevision(ctx, site); err != nil {
+			log.Warn("epg sync: bumping ruler input revision failed", "err", err)
+		}
+	}
 	if w.Enqueuer != nil {
 		if insertErr := enqueueJob(ctx, w.Enqueuer, jobs.RulerPassArgs{Site: site}); insertErr != nil {
 			log.Warn("epg sync: inserting ruler_pass hint failed", "err", insertErr)
