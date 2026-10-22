@@ -18,18 +18,25 @@ type MediaFixture struct {
 	Reconcile store.MediaReconcile
 	Precheck  store.IngestPrecheck
 	Storage   store.StorageObservation
+	Reader    store.MediaReader
 	Publisher store.MediaPublish
+	Progress  store.EncodeProgressReporter
 	// Chapters は、公開と直列化する書き手として使う。
 	Chapters store.ChapterEdits
 
 	// Site は NewRecording が作る録画の site。
 	Site string
 
-	NewRecording                  func(t *testing.T) int64
-	SetRecordingEncodeTimes       func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time)
-	SetRecordingPurged            func(t *testing.T, recordingID int64)
-	SetEncodeProfiles             func(t *testing.T, recordingID int64, profiles []string)
-	BeginEncodeAttempt            func(t *testing.T, recordingID int64, profile string) int32
+	NewRecording              func(t *testing.T) int64
+	SetRecordingEncodeTimes   func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time)
+	SetRecordingPurged        func(t *testing.T, recordingID int64)
+	SetEncodeProfiles         func(t *testing.T, recordingID int64, profiles []string)
+	BeginEncodeAttempt        func(t *testing.T, recordingID int64, profile string) int32
+	FailEncodeAttempt         func(t *testing.T, recordingID int64, profile string, attemptCount int32)
+	SetRecordingDropStats     func(t *testing.T, assetID int64, stats []store.RecordingDropStat)
+	SetRecordingDropPositions func(t *testing.T, assetID int64, positions []store.RecordingDropPosition)
+	// StartEncodeProgressListener は LISTEN を確立し、通知を store.EncodeProgress として返す関数を返す。
+	StartEncodeProgressListener   func(t *testing.T) func() store.EncodeProgress
 	HasEncodePolicy               func(t *testing.T, recordingID int64) (store.EncodePolicySnapshot, bool)
 	SetIngestProgress             func(t *testing.T, recordingID int64, written int64, expected *int64)
 	HasIngestProgress             func(t *testing.T, recordingID int64) bool
@@ -64,7 +71,7 @@ type MediaFixture struct {
 // NewMediaFixture は実在の契約実装とフィクスチャを作る。
 type NewMediaFixture func(t *testing.T) MediaFixture
 
-// RunMedia は実在のメディア store 実装に対して配信・名前空間・監査の契約を実行する。
+// RunMedia は実在のメディア store 実装に対して読み取り・配信・名前空間・監査の契約を実行する。
 func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Helper()
 	t.Run("current cut keep is derived from owned chapters", func(t *testing.T) { runCurrentCutKeep(t, newFixture) })
@@ -74,6 +81,10 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("live rel_path precheck matches the partial unique index", func(t *testing.T) { runLiveMediaAssetRecordingID(t, newFixture) })
 	t.Run("media jobs read active inputs through their contract", func(t *testing.T) { runMediaJobInputs(t, newFixture) })
 	t.Run("encode planning reads asset and request state through its contract", func(t *testing.T) { runMediaEncodePlanning(t, newFixture) })
+	t.Run("encode queue filters desired profiles and attempts", func(t *testing.T) { runEncodeQueue(t, newFixture) })
+	t.Run("drop stats are scoped to the target recording", func(t *testing.T) { runRecordingDropStats(t, newFixture) })
+	t.Run("drop positions are scoped to the target recording", func(t *testing.T) { runRecordingDropPositions(t, newFixture) })
+	t.Run("encode progress reaches the listener", func(t *testing.T) { runEncodeProgressReport(t, newFixture) })
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })

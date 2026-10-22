@@ -67,7 +67,7 @@ func TestReservation_ServiceNameExposed(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -116,7 +116,7 @@ func TestReservation_ServiceNameDistinguishesSameTitle(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

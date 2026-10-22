@@ -1,0 +1,166 @@
+package contracttest
+
+import (
+	"context"
+	"fmt"
+	"testing"
+
+	"github.com/fetburner/rokuban/internal/store"
+)
+
+func requireMediaReaderFixture(t *testing.T, f MediaFixture) {
+	t.Helper()
+	if f.Reader == nil || f.Progress == nil || f.NewRecording == nil || f.SetEncodeProfiles == nil || f.BeginEncodeAttempt == nil || f.FailEncodeAttempt == nil || f.NewAsset == nil || f.SetRecordingDropStats == nil || f.SetRecordingDropPositions == nil || f.StartEncodeProgressListener == nil {
+		t.Fatalf("incomplete media reader fixture: %+v", f)
+	}
+}
+
+func runEncodeQueue(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	requireMediaReaderFixture(t, f)
+	ctx := context.Background()
+	newDesiredRecording := func(profiles []string) int64 {
+		t.Helper()
+		id := f.NewRecording(t)
+		f.NewAsset(t, id, "original", nil, fmt.Sprintf("sites/%s/%d-original.m2ts", f.Site, id), "active")
+		f.SetEncodeProfiles(t, id, profiles)
+		return id
+	}
+
+	queuedID := newDesiredRecording([]string{"h264", "hevc"})
+	runningID := newDesiredRecording([]string{"h264"})
+	f.BeginEncodeAttempt(t, runningID, "h264")
+	retryableID := newDesiredRecording([]string{"hevc"})
+	f.BeginEncodeAttempt(t, retryableID, "hevc")
+	f.FailEncodeAttempt(t, retryableID, "hevc", 2)
+	exhaustedID := newDesiredRecording([]string{"h264"})
+	f.BeginEncodeAttempt(t, exhaustedID, "h264")
+	f.FailEncodeAttempt(t, exhaustedID, "h264", 3)
+	unknownID := newDesiredRecording([]string{"not-configured"})
+	generatedID := newDesiredRecording([]string{"h264"})
+	generatedProfile := "h264"
+	f.NewAsset(t, generatedID, "encoded", &generatedProfile, fmt.Sprintf("sites/%s/%d-h264.mp4", f.Site, generatedID), "active")
+
+	assertQueue := func(attemptLimit int32, wantRetryable bool) {
+		t.Helper()
+		got, err := f.Reader.ListEncodeQueue(ctx, store.EncodeQueueParams{
+			KnownProfiles: []string{"h264", "hevc"}, AttemptLimit: attemptLimit,
+		})
+		if err != nil {
+			t.Fatalf("ListEncodeQueue(attempt limit %d): %v", attemptLimit, err)
+		}
+		wantLength := 3
+		if wantRetryable {
+			wantLength++
+		}
+		if len(got) != wantLength {
+			t.Fatalf("encode queue at attempt limit %d = %+v; want %d entries", attemptLimit, got, wantLength)
+		}
+		counts := make(map[int64]int, len(got))
+		for _, entry := range got {
+			counts[entry.RecordingID]++
+			switch entry.RecordingID {
+			case queuedID:
+				if entry.Running {
+					t.Fatalf("queued profile entry = %+v; want Running=false", entry)
+				}
+			case runningID:
+				if !entry.Running {
+					t.Fatalf("running entry = %+v; want Running=true", entry)
+				}
+			case retryableID:
+				if !wantRetryable || entry.Running {
+					t.Fatalf("retryable entry = %+v; want Running=false when attempt count is below limit", entry)
+				}
+			default:
+				t.Fatalf("unexpected encode queue entry %+v; exhausted=%d unknown=%d generated=%d", entry, exhaustedID, unknownID, generatedID)
+			}
+		}
+		wantRetryableCount := 0
+		if wantRetryable {
+			wantRetryableCount = 1
+		}
+		if counts[queuedID] != 2 || counts[runningID] != 1 || counts[retryableID] != wantRetryableCount {
+			t.Fatalf("encode queue at attempt limit %d = %+v; want two queued profiles for %d, one running profile for %d, and retryable count %d for %d", attemptLimit, got, queuedID, runningID, wantRetryableCount, retryableID)
+		}
+	}
+
+	assertQueue(2, false)
+	assertQueue(3, true)
+}
+
+func seedRecordingDropReads(t *testing.T, newFixture NewMediaFixture) (MediaFixture, int64, string, int64) {
+	t.Helper()
+	f := newFixture(t)
+	requireMediaReaderFixture(t, f)
+	firstRecording := f.NewRecording(t)
+	otherRecording := f.NewRecording(t)
+	firstAsset := f.NewAsset(t, firstRecording, "original", nil, "sites/contract/first-original.m2ts", "active")
+	otherAsset := f.NewAsset(t, otherRecording, "original", nil, "sites/contract/other-original.m2ts", "active")
+	pidType := "video"
+	f.SetRecordingDropStats(t, firstAsset, []store.RecordingDropStat{{
+		Pid: 256, Packets: 10_000, Drops: 4, Errors: 2, Scrambled: 1, PidType: &pidType,
+	}})
+	f.SetRecordingDropStats(t, otherAsset, []store.RecordingDropStat{{
+		Pid: 512, Packets: 20_000, Drops: 8, Errors: 3, Scrambled: 2,
+	}})
+	elapsed := int64(900)
+	f.SetRecordingDropPositions(t, firstAsset, []store.RecordingDropPosition{
+		{Pid: 256, ByteOffset: 1024, ElapsedMs: &elapsed},
+		{Pid: 256, ByteOffset: 4096},
+	})
+	f.SetRecordingDropPositions(t, otherAsset, []store.RecordingDropPosition{
+		{Pid: 512, ByteOffset: 2048},
+	})
+	return f, firstRecording, pidType, elapsed
+}
+
+func runRecordingDropStats(t *testing.T, newFixture NewMediaFixture) {
+	f, firstRecording, pidType, _ := seedRecordingDropReads(t, newFixture)
+	ctx := context.Background()
+	stats, err := f.Reader.ListRecordingDropStats(ctx, firstRecording)
+	if err != nil {
+		t.Fatalf("ListRecordingDropStats(first): %v", err)
+	}
+	if len(stats) != 1 || stats[0].Pid != 256 || stats[0].Packets != 10_000 || stats[0].Drops != 4 || stats[0].Errors != 2 || stats[0].Scrambled != 1 || stats[0].PidType == nil || *stats[0].PidType != pidType {
+		var got []string
+		for _, stat := range stats {
+			pidType := "nil"
+			if stat.PidType != nil {
+				pidType = *stat.PidType
+			}
+			got = append(got, fmt.Sprintf("{Pid:%d Packets:%d Drops:%d Errors:%d Scrambled:%d PidType:%s}", stat.Pid, stat.Packets, stat.Drops, stat.Errors, stat.Scrambled, pidType))
+		}
+		t.Fatalf("drop stats = %v; want only the first recording's written PID stats", got)
+	}
+}
+
+func runRecordingDropPositions(t *testing.T, newFixture NewMediaFixture) {
+	f, firstRecording, _, elapsed := seedRecordingDropReads(t, newFixture)
+	ctx := context.Background()
+	positions, err := f.Reader.ListRecordingDropPositions(ctx, firstRecording)
+	if err != nil {
+		t.Fatalf("ListRecordingDropPositions(first): %v", err)
+	}
+	if len(positions) != 2 || positions[0].Pid != 256 || positions[0].ByteOffset != 1024 || positions[0].ElapsedMs == nil || *positions[0].ElapsedMs != elapsed || positions[1].Pid != 256 || positions[1].ByteOffset != 4096 || positions[1].ElapsedMs != nil {
+		var got []string
+		for _, position := range positions {
+			got = append(got, fmt.Sprintf("{Pid:%d ByteOffset:%d ElapsedMs:%s}", position.Pid, position.ByteOffset, int64Text(position.ElapsedMs)))
+		}
+		t.Fatalf("drop positions = %v; want the first recording's two written positions", got)
+	}
+}
+
+func runEncodeProgressReport(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	requireMediaReaderFixture(t, f)
+	ctx := context.Background()
+	want := store.EncodeProgress{RecordingID: f.NewRecording(t), Profile: "h264", Progress: 0.375}
+	waitForProgress := f.StartEncodeProgressListener(t)
+	if err := f.Progress.ReportEncodeProgress(ctx, want); err != nil {
+		t.Fatalf("ReportEncodeProgress: %v", err)
+	}
+	if got := waitForProgress(); got != want {
+		t.Fatalf("received encode progress = %+v; want %+v", got, want)
+	}
+}

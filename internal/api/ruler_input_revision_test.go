@@ -19,7 +19,7 @@ func TestAPIInputWritesBumpRulerInputRevisionWithoutEnqueuer(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{
-		Pool:             pool,
+		Ready:            pool.Ping,
 		Sites:            []string{db.DefaultSite},
 		RuleStore:        pgstore.NewRules(pool, []string{db.DefaultSite}),
 		ReservationStore: pgstore.NewReservations(pool),

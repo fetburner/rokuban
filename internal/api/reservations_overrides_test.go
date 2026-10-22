@@ -110,7 +110,7 @@ func TestPatchProgramOverrides_CreatesOverrideForRuleReservation_NotIntent(t *te
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -161,7 +161,7 @@ func TestDeleteProgramOverrides_DoesNotTouchProgramIntents_ManualReservationSurv
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -219,7 +219,7 @@ func TestPatchProgramOverrides_EmptyPatch_DoesNotTouchProgramIntents(t *testing.
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -272,7 +272,7 @@ func TestPatchProgramOverrides_PartialUpdatePreservesOtherFields(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -315,7 +315,7 @@ func TestPatchProgramOverrides_ResetRemovesOnlyThatField(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -354,7 +354,7 @@ func TestPatchProgramOverrides_ResetLastField_DeletesOverridesRow(t *testing.T) 
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -394,7 +394,7 @@ func TestDeleteProgramOverrides_ClearsAll(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -425,7 +425,7 @@ func TestPatchProgramOverrides_ValueAndResetConflict_Returns400(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -448,7 +448,7 @@ func TestPatchProgramOverrides_UnknownResetField_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -477,7 +477,7 @@ func TestPatchProgramOverrides_UnknownEncodeProfile(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	router := api.NewRouter(api.RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		ReservationStore:   pgstore.NewReservations(pool),
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -532,7 +532,7 @@ func TestPatchProgramOverrides_InvalidFields_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -596,7 +596,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -632,7 +632,7 @@ func TestPatchProgramOverrides_ContentPathWithoutExistingSchedule_Succeeds(t *te
 func TestPatchProgramOverrides_ProgramNotInProjection_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -648,7 +648,7 @@ func TestPatchProgramOverrides_ProgramNotInProjection_Returns400(t *testing.T) {
 func TestDeleteProgramOverrides_NoRow_IsIdempotent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -667,7 +667,7 @@ func TestPatchProgramOverrides_EffectiveOptionsRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -719,7 +719,7 @@ func TestPatchProgramOverrides_UntilEncodedWithoutProfiles_Returns400(t *testing
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -752,7 +752,7 @@ func TestPatchProgramOverrides_UntilEncodedResetEncodeProfiles_Returns400(t *tes
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -795,7 +795,7 @@ func TestPatchProgramOverrides_UntilEncodedWithProfilesFromBase_Succeeds(t *test
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -843,7 +843,7 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -888,7 +888,7 @@ func TestDeleteRule_ReservationWithOnlySkipIntentIsDeleted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -936,7 +936,7 @@ func TestDeleteRule_ReservationWithOnlyRecordIntentSurvivesDetached(t *testing.T
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

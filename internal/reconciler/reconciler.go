@@ -126,7 +126,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 		return fmt.Errorf("observing schedules: %w", err)
 	}
 
-	reservations, err := r.listDesired(ctx)
+	reservations, unresolvedProgramIDs, err := r.listDesired(ctx)
 	if err != nil {
 		return fmt.Errorf("listing desired reservations: %w", err)
 	}
@@ -138,7 +138,7 @@ func (r *Reconciler) RunPass(ctx context.Context) error {
 
 	now := time.Now()
 	created, missing, endGuarded := r.createMissingSchedules(ctx, reservations, observedByProgram, now)
-	toDelete, deleteDeferred := collectDeleteCandidates(reservations, schedules)
+	toDelete, deleteDeferred := collectDeleteCandidates(reservations, unresolvedProgramIDs, schedules)
 	totalLoss, tripped := r.observeTotalLoss(ctx, reservations, toDelete, tripped)
 	deleted := r.deleteSchedules(ctx, toDelete, tripped, totalLoss)
 
@@ -206,10 +206,18 @@ func (r *Reconciler) createMissingSchedules(ctx context.Context, reservations []
 	return created, missing, endGuarded
 }
 
-// collectDeleteCandidates は自分が作った schedule のうち desired にないものを削除候補に
-// 集める。mirakc が所有しない schedule は対象にせず、削除 allowlist 外の schedule は
-// 削除を見送った件数として返す。
-func collectDeleteCandidates(reservations []desiredReservation, schedules []mirakc.Schedule) ([]mirakc.Schedule, int) {
+// collectDeleteCandidates は自分が作った schedule のうち desired にも解決不能な予約にも
+// 属さないものを削除候補に集める。mirakc が所有しない schedule は対象にせず、
+// 削除 allowlist 外の schedule は削除を見送った件数として返す。
+//
+// 解決不能な予約の schedule は消さず、delete_deferred にも数えない。解決できないことは
+// 「録るな」（effective.skip）でも予約の消滅でもないので、削除する根拠にならない。
+// delete_deferred は state の allowlist で見送った数という意味なので、混ぜると意味が崩れる。
+func collectDeleteCandidates(
+	reservations []desiredReservation,
+	unresolvedProgramIDs map[int64]struct{},
+	schedules []mirakc.Schedule,
+) ([]mirakc.Schedule, int) {
 	desiredPrograms := make(map[int64]struct{}, len(reservations))
 	for _, d := range reservations {
 		desiredPrograms[d.res.ProgramID] = struct{}{}
@@ -221,6 +229,9 @@ func collectDeleteCandidates(reservations []desiredReservation, schedules []mira
 			continue
 		}
 		if _, desired := desiredPrograms[s.Program.ID]; desired {
+			continue
+		}
+		if _, unresolved := unresolvedProgramIDs[s.Program.ID]; unresolved {
 			continue
 		}
 		if !schedulesync.IsDeleteAllowed(s.State) {
@@ -408,7 +419,7 @@ type desiredReservation struct {
 	opts reservation.Options
 }
 
-// listDesired は mirakc への同期対象を返す。
+// listDesired は mirakc への同期対象と、オプションを解決できなかった予約の program ID を返す。
 //
 // state（過去に存在した列。#28/#30 で orphaned_at に、issue #98 で recordings の
 // 存在に置き換わって現在は削除済みの導出値）ではなく effective.skip で絞る
@@ -426,18 +437,19 @@ type desiredReservation struct {
 //
 // effective.skip の絞り込みは reservation.EvaluateSyncCandidates に通す
 // （internal/reservation/sync.go）。呼び出し側で判定を重複させない。
-func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, error) {
+func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, map[int64]struct{}, error) {
 	rows, err := r.scheduleSync.ListForSyncEvaluation(ctx, r.site)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var desired []desiredReservation
+	unresolvedProgramIDs := make(map[int64]struct{})
 	for _, c := range reservation.EvaluateSyncCandidates(rows) {
 		if c.Err != nil {
-			// 壊れた jsonb で mirakc に既定値の schedule を作ってしまわないよう、
-			// この予約は同期対象から外してアラートする（握りつぶさない）。
-			slog.Error("reconciler: resolving effective options", "err", c.Err)
+			// 解決不能は「録らない」意図ではない。既存 schedule の削除も保留する。
+			unresolvedProgramIDs[c.Reservation.ProgramID] = struct{}{}
+			slog.Error("reconciler: resolving effective options", "program_id", c.Reservation.ProgramID, "err", c.Err)
 			continue
 		}
 		if c.Skipped {
@@ -445,7 +457,7 @@ func (r *Reconciler) listDesired(ctx context.Context) ([]desiredReservation, err
 		}
 		desired = append(desired, desiredReservation{res: c.Reservation, snap: c.Snapshot, opts: c.Options})
 	}
-	return desired, nil
+	return desired, unresolvedProgramIDs, nil
 }
 
 // programEnded は予約に対応する番組がもう終了しているかどうかを判定する

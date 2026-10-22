@@ -52,8 +52,17 @@ linters:
               desc: api role must not execute external processes
             - pkg: github.com/riverqueue/river
               desc: api role enqueues through jobq.Enqueuer, not River
+        pgstore-composition-root:
+          # PostgreSQL 実装の組み立ては cmd/rokuban に置く。この規則はテストと pgstore 自身を検査しない。
+          list-mode: lax
+          files:
+            - "${config-path}/**"
+            - "!$test"
+            - "!${config-path}/internal/store/pgstore/**"
+            - "!${config-path}/cmd/rokuban/**"
+          deny:
             - pkg: github.com/fetburner/rokuban/internal/store/pgstore
-              desc: api persistence uses store contracts, not PostgreSQL implementations
+              desc: PostgreSQL store implementations are constructed only in cmd/rokuban
         store-contract-database-boundary:
           # store の契約は pgx と生成 SQL に依存させない。
           list-mode: lax
@@ -81,13 +90,7 @@ linters:
             - "!${config-path}/internal/testutil/**"
             - "!${config-path}/cmd/rokuban/**"
             # 移設待ち。移したタスクが行を消す。増やさない。
-            - "!${config-path}/internal/api/handler.go"
-            - "!${config-path}/internal/api/router.go"
             - "!${config-path}/internal/jobq/jobqfake/fake.go"
-            - "!${config-path}/internal/worker/reconcile_pass.go"
-            - "!${config-path}/internal/worker/record_sweep.go"
-            - "!${config-path}/internal/worker/ruler_pass.go"
-            - "!${config-path}/internal/worker/worker.go"
           deny:
             - pkg: github.com/jackc/pgx
               desc: pgx imports are limited to pgstore, the database foundation and composition roots

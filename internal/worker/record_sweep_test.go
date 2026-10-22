@@ -12,6 +12,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -82,9 +83,10 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 
 	enqueuer := newRecordingEnqueuer()
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
-		Enqueuer:      enqueuer,
+		MirakcClients:      singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
+		Enqueuer:           enqueuer,
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: testSite}); err != nil {
 		t.Fatalf("RecordSweepWorker.Work: %v", err)
@@ -129,12 +131,17 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		http.Error(rw, "forced record list failure", http.StatusServiceUnavailable)
 	})
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
 	}
 	job := jobs.RecordSweepArgs{Site: testSite}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
@@ -152,14 +159,18 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	}
 }
 
-// newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/records と
-// /api/services への最小スタブを返す。records が nil なら空リストを返す。
+// newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/schedules、
+// /api/recording/records、/api/services への最小スタブを返す。records が nil なら空リストを返す。
 func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server {
 	t.Helper()
 	if records == nil {
 		records = []mirakc.Record{}
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
+		rw.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
+	})
 	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(rw).Encode(records)
@@ -189,8 +200,9 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	defer countingSrv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
 	}
 
 	job := RecordSweepArgs{Site: "site-b"}
@@ -213,9 +225,10 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	defer srv.Close()
 
 	w := &RecordSweepWorker{
-		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
-		Enqueuer:      newRecordingEnqueuer(),
-		Pool:          pool,
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		RecordObservations: pgstore.NewRecordings(pool),
+		LoopMarkers:        pgstore.NewReservations(pool),
+		Enqueuer:           newRecordingEnqueuer(),
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: "site-a"}); err != nil {
 		t.Fatalf("RecordSweepWorker.Work: %v", err)

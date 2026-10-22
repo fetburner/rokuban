@@ -26,7 +26,7 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"tuner_sync", TunerSyncArgs{Site: "tokyo"}, "tuner_sync", EpgQueue, "epg_tokyo", time.Minute, 0, true, 1},
 		{"ruler_pass", RulerPassArgs{Site: "tokyo"}, "ruler_pass", RulerQueue, "ruler", 5 * time.Minute, 0, true, 1},
 		{"reconcile_pass", ReconcilePassArgs{Site: "tokyo"}, "reconcile_pass", ReconcilerQueue, "reconciler_tokyo", 10 * time.Minute, 0, true, 1},
-		{"record_sweep", RecordSweepArgs{Site: "tokyo"}, "record_sweep", RecordSweepQueue, "watcher_tokyo", 10 * time.Minute, 0, true, 1},
+		{"record_sweep", RecordSweepArgs{Site: "tokyo"}, "record_sweep", RecordSweepQueue, "watcher_tokyo", 10 * time.Minute, 1, true, 1},
 		{"encode", EncodeJobArgs{RecordingID: 1, Profile: "mobile", Timeout: 2 * time.Hour}, "encode", EncodeQueue, "encode", 2 * time.Hour, 26, true, 1},
 		{"thumbnail", ThumbnailJobArgs{RecordingID: 1}, "thumbnail", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},
 		{"seek_tiles", SeekTilesJobArgs{RecordingID: 1}, "seek_tiles", ThumbnailQueue, "thumbnail", 15 * time.Minute, 0, true, 4},

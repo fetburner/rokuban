@@ -28,7 +28,7 @@ import (
 func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		RecordingQuery:     pgstore.NewRecordings(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},

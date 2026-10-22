@@ -18,7 +18,7 @@ import (
 func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool, CMStationStore: pgstore.NewAnalysis(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
 	q := sqlcgen.New(pool)

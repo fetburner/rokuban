@@ -243,7 +243,7 @@ func TestResumeCircuitBreaker_400WhenNameIsSiteless(t *testing.T) {
 // `{site}=default` を渡すと、これまでどおり 404 になる。
 func TestEPGEndpoint_UnregisteredDefaultSiteStill404(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := api.NewRouter(api.RouterConfig{Pool: pool, Sites: []string{"tokyo", "takamatsu"}})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, Sites: []string{"tokyo", "takamatsu"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

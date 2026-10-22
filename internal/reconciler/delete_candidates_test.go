@@ -23,11 +23,28 @@ func TestCollectDeleteCandidatesDoesNotDeferDesiredOrForeignSchedules(t *testing
 		},
 	}
 
-	candidates, deferred := collectDeleteCandidates(reservations, schedules)
+	candidates, deferred := collectDeleteCandidates(reservations, nil, schedules)
 	if len(candidates) != 0 {
 		t.Errorf("delete candidates = %v, want none", candidates)
 	}
 	if deferred != 0 {
 		t.Errorf("deferred deletes = %d, want 0 for desired and foreign schedules", deferred)
+	}
+}
+
+func TestCollectDeleteCandidatesIgnoresUnresolvedBeforeDeleteAllowlist(t *testing.T) {
+	const unresolvedProgramID = int64(997)
+	schedules := []mirakc.Schedule{{
+		State:   mirakc.ScheduleStateRecording,
+		Program: mirakc.Program{ID: unresolvedProgramID},
+		Tags:    []string{mirakc.ProgramTag(unresolvedProgramID)},
+	}}
+
+	candidates, deferred := collectDeleteCandidates(nil, map[int64]struct{}{unresolvedProgramID: {}}, schedules)
+	if len(candidates) != 0 {
+		t.Errorf("delete candidates = %v, want none", candidates)
+	}
+	if deferred != 0 {
+		t.Errorf("deferred deletes = %d, want 0 for unresolved schedule in recording state", deferred)
 	}
 }

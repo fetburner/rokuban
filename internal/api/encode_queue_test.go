@@ -116,7 +116,7 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 func newEncodeQueueServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		RecordingQuery:     pgstore.NewRecordings(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: []string{"h264", "h265", "cut"},
@@ -169,7 +169,7 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	id := seedRecording(t, pool, "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951)
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264"})
-	srv := httptest.NewServer(NewRouter(RouterConfig{Pool: pool,
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
 		RecordingQuery: pgstore.NewRecordings(pool), MediaReader: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 
@@ -319,7 +319,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}
 
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Pool:               pool,
+		Ready:              pool.Ping,
 		RecordingQuery:     pgstore.NewRecordings(pool),
 		MediaReader:        pgstore.NewMedia(pool),
 		EncodeProfileNames: profiles.ProfileNames(),

@@ -126,8 +126,10 @@ func (a ReconcilePassArgs) Spec() jobq.Spec {
 }
 
 // Spec は record sweep の論理キュー、10 分締切、合流ヒントを返す。
+// MaxAttempts は 1 で、失敗したパスは再試行せず次の定期投入が再試行になる。合流が
+// retryable を含むので、再試行待ちの行が定期投入を飲み込むからである。
 func (a RecordSweepArgs) Spec() jobq.Spec {
-	return spec(RecordSweepQueue, fixedTimeout(recordSweepJobTimeout), 0, true, 1)
+	return spec(RecordSweepQueue, fixedTimeout(recordSweepJobTimeout), 1, true, 1)
 }
 
 // Spec は encode の論理キュー、保存済み締切または既定の 12 時間締切、26 回の

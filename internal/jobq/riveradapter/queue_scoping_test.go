@@ -68,7 +68,6 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 
 	// このプロセスは tokyo に束縛されている。
 	workers := worker.NewWorkers(&worker.Deps{
-		Pool: pool,
 		MirakcClients: map[string]*mirakc.Client{
 			"tokyo": mirakc.NewClient(srv.URL, nil),
 		},
