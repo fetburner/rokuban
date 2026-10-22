@@ -52,8 +52,8 @@ func (ReconcileArgs) Spec() jobq.Spec {
 			return 5 * time.Minute
 		},
 		MaxAttempts: 1,
-		Coalesce: true,
-		Priority: 1,
+		Coalesce:    true,
+		Priority:    1,
 	}
 }
 
