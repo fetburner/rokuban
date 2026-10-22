@@ -27,7 +27,7 @@ func basicRule(id int64, keyword string) epgstation.Rule {
 }
 
 func importRulesForTest(ctx context.Context, pool *pgxpool.Pool, rules []epgstation.Rule) (RuleImportResult, error) {
-	return ImportRules(ctx, pgstore.NewRules(pool), pgstore.NewEPG(pool), "default", rules)
+	return ImportRules(ctx, pgstore.NewRules(pool, []string{"default"}), pgstore.NewEPG(pool), "default", rules)
 }
 
 // TestImportRules_IdempotentRerun is the acceptance criterion: re-running the

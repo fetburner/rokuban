@@ -3,6 +3,7 @@ package contracttest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ type RulerProgram struct {
 // RulerPassFixture は ruler pass と、実装が使う永続状態の仕込み口をまとめる。
 type RulerPassFixture struct {
 	Pass                    store.RulerPass
+	Bumper                  store.RulerInputBumper
 	Reservations            store.Reservations
 	Breakers                store.Breakers
 	NewProgram              func(t *testing.T, title string) RulerProgram
@@ -43,11 +45,14 @@ func RunRulerPass(t *testing.T, newStore NewRulerPassStore) {
 	t.Helper()
 	checkedStore := func(t *testing.T) RulerPassFixture {
 		f := newStore(t)
-		if f.Pass == nil || f.Reservations == nil || f.Breakers == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.HasProgramSnapshot == nil || f.GetProgramSnapshotStart == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil {
+		if f.Pass == nil || f.Bumper == nil || f.Reservations == nil || f.Breakers == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.HasProgramSnapshot == nil || f.GetProgramSnapshotStart == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil {
 			t.Fatal("incomplete ruler pass fixture")
 		}
 		return f
 	}
+	t.Run("matching input revision commits the pass", func(t *testing.T) { runRulerRevisionMatch(t, checkedStore) })
+	t.Run("stale input revision writes nothing", func(t *testing.T) { runRulerRevisionMismatch(t, checkedStore) })
+	t.Run("bump advances the input revision by one", func(t *testing.T) { runRulerBump(t, checkedStore) })
 	t.Run("delete rechecks investment after the read", func(t *testing.T) { runRulerDeleteRechecksInvestment(t, checkedStore) })
 	t.Run("delete threshold trips breaker and keeps reservations", func(t *testing.T) { runRulerDeleteThreshold(t, checkedStore) })
 	t.Run("breaker write failure rolls back the pass", func(t *testing.T) { runRulerBreakerRollback(t, checkedStore) })
@@ -74,6 +79,7 @@ func runRulerDeleteRechecksInvestment(t *testing.T, newStore NewRulerPassStore) 
 		t.Fatalf("PutIntent(after stale read): %v", err)
 	}
 	result, err := f.Pass.ApplyPass(ctx, program.Site, store.RulerPassPlan{
+		InputRevision:     currentRulerInputRevision(t, f.Pass, program.Site),
 		DeleteProgramIDs:  []int64{program.ProgramID},
 		Now:               time.Now().UTC(),
 		MaxDeletesPerPass: 10,
@@ -101,6 +107,7 @@ func runRulerDeleteThreshold(t *testing.T, newStore NewRulerPassStore) {
 		seedRulerReservation(t, f, program, ruleID, json.RawMessage(`{"priority":1}`))
 	}
 	result, err := f.Pass.ApplyPass(ctx, programs[0].Site, store.RulerPassPlan{
+		InputRevision:     currentRulerInputRevision(t, f.Pass, programs[0].Site),
 		DeleteProgramIDs:  ids,
 		Now:               time.Now().UTC(),
 		MaxDeletesPerPass: 1,
@@ -140,6 +147,7 @@ func runRulerBreakerRollback(t *testing.T, newStore NewRulerPassStore) {
 
 	newBase := json.RawMessage(`{"priority":2}`)
 	_, err := f.Pass.ApplyPass(ctx, desired.Site, store.RulerPassPlan{
+		InputRevision:      currentRulerInputRevision(t, f.Pass, desired.Site),
 		SnapshotProgramIDs: []int64{desired.ProgramID},
 		ExistingProgramIDs: []int64{desired.ProgramID},
 		Reservations: []store.RulerReservationInput{{
@@ -188,6 +196,7 @@ func runRulerUpsertCounts(t *testing.T, newStore NewRulerPassStore) {
 	}
 	newBase := json.RawMessage(`{"priority":2}`)
 	result, err := f.Pass.ApplyPass(ctx, updated.Site, store.RulerPassPlan{
+		InputRevision:      currentRulerInputRevision(t, f.Pass, updated.Site),
 		SnapshotProgramIDs: []int64{updated.ProgramID, unchanged.ProgramID, created.ProgramID},
 		ExistingProgramIDs: []int64{updated.ProgramID, unchanged.ProgramID},
 		Reservations: []store.RulerReservationInput{
@@ -316,6 +325,7 @@ func runRulerSnapshotPruneTime(t *testing.T, newStore NewRulerPassStore) {
 func seedRulerReservation(t *testing.T, f RulerPassFixture, program RulerProgram, ruleID int64, base json.RawMessage) {
 	t.Helper()
 	_, err := f.Pass.ApplyPass(context.Background(), program.Site, store.RulerPassPlan{
+		InputRevision:      currentRulerInputRevision(t, f.Pass, program.Site),
 		SnapshotProgramIDs: []int64{program.ProgramID},
 		Reservations: []store.RulerReservationInput{{
 			ProgramID: program.ProgramID, RuleID: &ruleID, Base: base,
@@ -326,5 +336,94 @@ func seedRulerReservation(t *testing.T, f RulerPassFixture, program RulerProgram
 	})
 	if err != nil {
 		t.Fatalf("seeding ruler reservation: %v", err)
+	}
+}
+
+func currentRulerInputRevision(t *testing.T, pass store.RulerPass, site string) int64 {
+	t.Helper()
+	revision, err := pass.GetRulerInputRevision(context.Background(), site)
+	if err != nil {
+		t.Fatalf("GetRulerInputRevision(%q): %v", site, err)
+	}
+	return revision
+}
+
+func runRulerRevisionMatch(t *testing.T, newStore NewRulerPassStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	program := f.NewProgram(t, "matching revision")
+	ruleID := f.NewRule(t, "matching revision", false, 0)
+	if err := f.Bumper.BumpRulerInputRevision(ctx, program.Site); err != nil {
+		t.Fatalf("BumpRulerInputRevision: %v", err)
+	}
+	result, err := f.Pass.ApplyPass(ctx, program.Site, store.RulerPassPlan{
+		InputRevision:      currentRulerInputRevision(t, f.Pass, program.Site),
+		SnapshotProgramIDs: []int64{program.ProgramID},
+		Reservations: []store.RulerReservationInput{{
+			ProgramID: program.ProgramID, RuleID: &ruleID, Base: json.RawMessage(`{"priority":1}`),
+		}},
+		Now:               time.Now().UTC(),
+		MaxDeletesPerPass: 10,
+		BreakerName:       breaker.RulerDeletes,
+	})
+	if err != nil || result.InputRevisionChanged || result.Created != 1 {
+		t.Fatalf("ApplyPass(matching revision) = %+v, %v, want one created reservation", result, err)
+	}
+	if _, err := f.Reservations.GetReservation(ctx, program.Site, program.ProgramID); err != nil {
+		t.Fatalf("GetReservation(after matching pass) = %v, want committed row", err)
+	}
+}
+
+func runRulerRevisionMismatch(t *testing.T, newStore NewRulerPassStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	ruleID := f.NewRule(t, "stale revision", false, 0)
+	existing := f.NewProgram(t, "existing row")
+	created := f.NewProgram(t, "would be created")
+	seedRulerReservation(t, f, existing, ruleID, json.RawMessage(`{"priority":1}`))
+	stale := currentRulerInputRevision(t, f.Pass, existing.Site)
+	if err := f.Bumper.BumpRulerInputRevision(ctx, existing.Site); err != nil {
+		t.Fatalf("BumpRulerInputRevision: %v", err)
+	}
+	snapshotBefore := f.HasProgramSnapshot(t, created)
+	result, err := f.Pass.ApplyPass(ctx, existing.Site, store.RulerPassPlan{
+		InputRevision:      stale,
+		SnapshotProgramIDs: []int64{created.ProgramID},
+		ExistingProgramIDs: []int64{existing.ProgramID},
+		Reservations: []store.RulerReservationInput{{
+			ProgramID: created.ProgramID, RuleID: &ruleID, Base: json.RawMessage(`{"priority":2}`),
+		}},
+		DeleteProgramIDs:  []int64{existing.ProgramID},
+		Now:               time.Now().UTC(),
+		MaxDeletesPerPass: 0,
+		BreakerName:       breaker.RulerDeletes,
+	})
+	if err != nil || !result.InputRevisionChanged {
+		t.Fatalf("ApplyPass(stale revision) = %+v, %v, want InputRevisionChanged", result, err)
+	}
+	if _, err := f.Reservations.GetReservation(ctx, created.Site, created.ProgramID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetReservation(created by stale pass) = %v, want ErrNotFound", err)
+	}
+	if _, err := f.Reservations.GetReservation(ctx, existing.Site, existing.ProgramID); err != nil {
+		t.Fatalf("GetReservation(existing after stale pass) = %v, want row preserved", err)
+	}
+	if got := f.HasProgramSnapshot(t, created); got != snapshotBefore {
+		t.Fatalf("program snapshot after stale pass = %t, want %t (unchanged)", got, snapshotBefore)
+	}
+	if tripped, err := f.Breakers.IsTripped(ctx, existing.Site, breaker.RulerDeletes); err != nil || tripped {
+		t.Fatalf("IsTripped(after stale pass) = (%t, %v), want false", tripped, err)
+	}
+}
+
+func runRulerBump(t *testing.T, newStore NewRulerPassStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	program := f.NewProgram(t, "bump")
+	before := currentRulerInputRevision(t, f.Pass, program.Site)
+	if err := f.Bumper.BumpRulerInputRevision(ctx, program.Site); err != nil {
+		t.Fatalf("BumpRulerInputRevision: %v", err)
+	}
+	if got := currentRulerInputRevision(t, f.Pass, program.Site) - before; got != 1 {
+		t.Fatalf("revision delta after one bump = %d, want 1", got)
 	}
 }

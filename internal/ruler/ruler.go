@@ -133,7 +133,7 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 			observeProgramIDReuses(ctx, r.passes, site, time.Now())
 		}
 
-		changed, err := r.runPassForSiteAttempt(ctx, site, inputRevision)
+		changed, applyErr, err := r.runPassForSiteAttempt(ctx, site, inputRevision)
 		if err != nil {
 			return err
 		}
@@ -144,28 +144,35 @@ func (r *Ruler) runPassForSite(ctx context.Context, site string) error {
 		if mismatches >= maxRulerInputRevisionMismatches {
 			return fmt.Errorf("ruler input changed during %d consecutive passes for site %q", mismatches, site)
 		}
-		slog.Info("ruler: inputs changed during pass; re-evaluating", "site", site, "retry", mismatches)
+		attrs := []any{"site", site, "retry", mismatches}
+		if applyErr != nil {
+			// 入力削除による外部キー違反などの元の失敗を捨てない。
+			attrs = append(attrs, "apply_err", applyErr)
+		}
+		slog.Info("ruler: inputs changed during pass; re-evaluating", attrs...)
 	}
 }
 
-func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRevision int64) (bool, error) {
+// runPassForSiteAttempt は 1 回分の評価と書き込みを行う。入力の版が変わっていて読み直すべきときは
+// changed を返す。このとき applyErr は、ApplyPass が版の照合まで進めず失敗した場合の元のエラーである。
+func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRevision int64) (changed bool, applyErr error, err error) {
 	evaluationNow := time.Now()
 
 	tripped, err := r.observeDeleteBreaker(ctx, site)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	rules, err := r.passes.ListEnabled(ctx)
 	if err != nil {
-		return false, fmt.Errorf("listing enabled rules: %w", err)
+		return false, nil, fmt.Errorf("listing enabled rules: %w", err)
 	}
 	ruleByID, winner, err := r.resolveWinners(ctx, site, rules)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	desired, skipIntent, fulfilled, err := r.collectDesired(ctx, site, winner)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	desiredIDs := make([]int64, 0, len(desired))
 	for id := range desired {
@@ -173,18 +180,18 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 	}
 	existingSet, deleteCandidates, toDelete, err := r.collectDeleteCandidates(ctx, site, desired)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	// fulfilled は専用経路でブレーカーの外から消すので、導出削除に数えない。
 	toDelete = subtract(toDelete, fulfilled)
 
 	dedupeMatches, err := r.applyDedupe(ctx, site, evaluationNow, desiredIDs, winner, ruleByID)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	inputs, err := buildReservationInputs(desiredIDs, winner, ruleByID, dedupeMatches)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	applyNow := time.Now()
@@ -192,7 +199,7 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 		beforeRulerWriteTx()
 	}
 	result, err := r.passes.ApplyPass(ctx, site, store.RulerPassPlan{
-		InputRevision:       &inputRevision,
+		InputRevision:       inputRevision,
 		SnapshotProgramIDs:  snapshotProgramIDs(desiredIDs, skipIntent, existingSet),
 		ExistingProgramIDs:  keys(existingSet),
 		Reservations:        inputs,
@@ -209,15 +216,15 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 		// ロールバック後に版を確認して、変更済みなら新しい入力で再試行する。
 		currentRevision, revisionErr := r.passes.GetRulerInputRevision(ctx, site)
 		if revisionErr != nil {
-			return false, errors.Join(err, fmt.Errorf("getting ruler input revision after failed apply: %w", revisionErr))
+			return false, nil, errors.Join(err, fmt.Errorf("getting ruler input revision after failed apply: %w", revisionErr))
 		}
 		if currentRevision != inputRevision {
-			return true, nil
+			return true, err, nil
 		}
-		return false, err
+		return false, nil, err
 	}
 	if result.InputRevisionChanged {
-		return true, nil
+		return true, nil, nil
 	}
 	for _, id := range result.UnmaterializedProgramIDs {
 		slog.Warn("ruler: cannot materialize reservation without a program snapshot", "site", site, "program_id", id)
@@ -251,7 +258,7 @@ func (r *Ruler) runPassForSiteAttempt(ctx context.Context, site string, inputRev
 		"grace_protected", result.GraceProtected,
 		"delete_candidates", len(deleteCandidates),
 	)
-	return false, nil
+	return false, nil, nil
 }
 
 func observeProgramIDReuses(ctx context.Context, passes store.RulerPass, site string, now time.Time) {

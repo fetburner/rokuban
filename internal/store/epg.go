@@ -131,8 +131,6 @@ type ProgramMatch struct {
 //
 // 各メソッドは 1 つの同期ステップだけを実行し、複数ステップをまとめた tx を作らない。
 type EPGSync interface {
-	// BumpRulerInputRevision は site の ruler 入力版を 1 進める。
-	BumpRulerInputRevision(ctx context.Context, site string) error
 	// SweepMark は同期開始時点の DB 時刻を返す。
 	SweepMark(ctx context.Context) (time.Time, error)
 	// UpsertServices は 1 バッチ分のサービス射影を書き込む。

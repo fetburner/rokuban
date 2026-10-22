@@ -843,7 +843,7 @@ func TestDeleteRule_ReservationWithOnlyOverridesSurvivesDetached(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -888,7 +888,7 @@ func TestDeleteRule_ReservationWithOnlySkipIntentIsDeleted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -936,7 +936,7 @@ func TestDeleteRule_ReservationWithOnlyRecordIntentSurvivesDetached(t *testing.T
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool), ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Pool: pool, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

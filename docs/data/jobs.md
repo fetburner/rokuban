@@ -98,7 +98,7 @@ at-least-once なので、ジョブは冪等に書く。出力は一時パスに
 
 **watcher のシングルトン性は正しさの要件ではない。** record 処理は行ロックで冪等化されており、複数の watcher が同一 record を並行処理しても録画行は重複しない。シングルトンなのは「mirakc に N 本の SSE を張らない」という接続数の配慮に過ぎない。詳細は [録画エンジン](../recording.md) §3.3 を参照。
 
-ruler と reconciler をジョブにするのは、定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じだからである。現行 River runtime は、一意性の指定で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は、現在の River runtime にはない。未解決: River 以外の adapter には、ruler の並走（古い評価結果による上書き）を止める機構が無い。
+ruler と reconciler をジョブにするのは、定期・冪等・パスを跨ぐ状態を持たないという性質が epg_sync と同じだからである。現行 River runtime は、一意性の指定で同じ site の未完了ジョブを抑止する。これは River adapter の機能で、共通契約の排他保証ではない。両方の timeout は有限で、プロセス死後の再配送は adapter が担う。セッションロックへ移す利益は、現在の River runtime にはない。
 
 <details><summary>根拠</summary>
 
@@ -109,21 +109,20 @@ ruler と reconciler をジョブにするのは、定期・冪等・パスを�
 
 #### 重複抑止と並走の限界
 
-現行 River runtime では、一意性の指定が通常運用の重複抑止にも使われる。ただし抑えるのは行の重複だけで、rescue 後に旧 Work が止まらなければ 2 実行が並走する。並走時の正しさを adapter の一意性には依存させない。
+現行 River runtime では、一意性の指定が通常運用の重複抑止にも使われる。ただし抑えるのは行の重複だけで、rescue 後に旧 Work が止まらなければ 2 実行が並走する。ruler は、並走時の正しさを adapter の一意性に依存させない。
 
 worker の最大並列数はプロセスごとの値で、k8s の ScaledJob では Pod が並列に立つ。定期実行とヒントの重なりを River 内で抑止しているが、この挙動を共通契約へ持ち込まない。
 
-並走時に書き込みを守る方法は次の通りである。
+並走や入力の変化で壊れうるものと、その扱いは次の通りである。reconciler の項目は、コード読解による推定で、並走を起こしての確認はしていない。
 
-1. ruler: パス開始時に入力の版を読む。書き込み tx の最後に同じ site の版をロックして照合する。版が違えばロールバックして読み直す。3 回続けて負けるとエラーを返す。
-2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違う。
+1. ruler: パス開始時に入力の版を読む。書き込み tx の最後に同じ site の版をロックして照合する。版が一致しなければロールバックして読み直す。3 回続けて一致しなければエラーを返す。
+2. reconciler: パス冒頭の一覧に基づく mirakc への DELETE / POST が、別のパスの適用と食い違いうる。まだ対策を持たない。
 
 <details><summary>根拠</summary>
 
 - 重複抑止に使う指定: `UniqueOpts`
 - プロセスごとの並列数: `MaxWorkers: 1`
 - ruler のパスの読みと書き: `runPassForSite`
-- 同じ形で止めているラベルルールの reconcile: `label_rule_reconcile`
 - 編集を反映するテスト: `TestRunPass_RuleEditDuringPassReevaluates`
 - 新旧パスの競合テスト: `TestRunPass_StalePassCannotOverwriteNewerPass`
 - 照合上限のテスト: `TestRunPass_InputRevisionMismatchLimit`

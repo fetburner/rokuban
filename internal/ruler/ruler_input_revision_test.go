@@ -18,7 +18,7 @@ func TestRunPass_RuleEditDuringPassReevaluates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, db.DefaultSite)
+	rules := pgstore.NewRules(pool, []string{db.DefaultSite})
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
@@ -47,7 +47,7 @@ func TestRunPass_RuleDeleteDuringPassReevaluates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, db.DefaultSite)
+	rules := pgstore.NewRules(pool, []string{db.DefaultSite})
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
@@ -79,24 +79,12 @@ func TestRunPass_StalePassCannotOverwriteNewerPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, db.DefaultSite)
+	rules := pgstore.NewRules(pool, []string{db.DefaultSite})
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
 	}
 	r := newRevisionTestRuler(pool)
-	passes := pgstore.NewReservations(pool)
-	ruleID := rule.ID
-	if _, err := passes.ApplyPass(ctx, db.DefaultSite, store.RulerPassPlan{
-		SnapshotProgramIDs: []int64{2},
-		Reservations:       []store.RulerReservationInput{{ProgramID: 2, RuleID: &ruleID, Base: []byte(`{}`)}},
-		Now:                time.Now(),
-		MaxDeletesPerPass:  50,
-		BreakerName:        "ruler_deletes",
-	}); err != nil {
-		t.Fatalf("seeding old reservation: %v", err)
-	}
-
 	newerPassRan := false
 	beforeRulerWriteTx = func() {
 		if newerPassRan {
@@ -126,7 +114,7 @@ func TestRunPass_InputRevisionMismatchLimit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	if _, err := pgstore.NewRules(pool, db.DefaultSite).Create(ctx, revisionTestRuleInput("P")); err != nil {
+	if _, err := pgstore.NewRules(pool, []string{db.DefaultSite}).Create(ctx, revisionTestRuleInput("P")); err != nil {
 		t.Fatalf("creating rule: %v", err)
 	}
 	r := newRevisionTestRuler(pool)

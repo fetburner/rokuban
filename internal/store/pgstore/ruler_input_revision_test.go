@@ -13,7 +13,7 @@ func TestRulesDeleteBumpsSiteAfterConcurrentScopeUpdate(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rules := NewRules(pool, "site-a", "site-b")
+	rules := NewRules(pool, []string{"site-a", "site-b"})
 	rule, err := rules.Create(ctx, revisionScopeRuleInput("site-a"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)

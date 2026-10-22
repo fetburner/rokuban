@@ -214,6 +214,7 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 		Enqueuer:      enqueuer,
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		Store:         pgstore.NewEPG(pool),
+		RulerInput:    pgstore.NewReservations(pool),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, EpgSyncArgs{Site: testSite}); err != nil {
 		t.Fatalf("EpgSyncWorker.Work: %v", err)

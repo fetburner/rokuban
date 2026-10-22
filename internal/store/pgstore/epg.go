@@ -23,14 +23,6 @@ func NewEPG(pool *pgxpool.Pool) *EPG {
 	return &EPG{pool: pool}
 }
 
-// BumpRulerInputRevision は site の ruler 入力版を 1 進める。
-func (s *EPG) BumpRulerInputRevision(ctx context.Context, site string) error {
-	if _, err := sqlcgen.New(s.pool).BumpRulerInputRevision(ctx, site); err != nil {
-		return fmt.Errorf("bumping ruler input revision for site %q: %w", site, err)
-	}
-	return nil
-}
-
 // SweepMark は EPG 同期の基準となる DB 時刻を返す。
 func (s *EPG) SweepMark(ctx context.Context) (time.Time, error) {
 	mark, err := sqlcgen.New(s.pool).EpgSweepMark(ctx)

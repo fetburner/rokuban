@@ -15,6 +15,10 @@ type RulesFixture struct {
 	Store        store.Rules
 	Import       store.RuleImport
 	Reservations store.Reservations
+	// Pass は GetRulerInputRevision で ruler 入力の版を読むために使う。
+	Pass store.RulerPass
+	// AllSites は、sites が空のルールが対象とする構成の全 site である。3 つ以上を与える。
+	AllSites []string
 
 	// SeedReservation は指定したルールに属する予約を作る。withIntent が true なら
 	// record 意図を作り、false なら意図も override も無い予約にする。
@@ -40,6 +44,7 @@ func RunRules(t *testing.T, newFixture NewRulesFixture) {
 	t.Run("delete preserves reservations with intent", func(t *testing.T) { runRuleDeleteIntent(t, newFixture) })
 	t.Run("delete failure keeps reservations without intent", func(t *testing.T) { runRuleDeleteFailure(t, newFixture) })
 	t.Run("same-rule updates serialize", func(t *testing.T) { runRuleUpdateSerialization(t, newFixture) })
+	t.Run("writes advance ruler input revisions", func(t *testing.T) { runRuleRevisions(t, newFixture) })
 	t.Run("EPGStation import uses stable identity atomically", func(t *testing.T) { runRuleImport(t, newFixture) })
 }
 
@@ -344,4 +349,103 @@ func ruleIDs(rules []store.Rule) []int64 {
 		ids[i] = rule.ID
 	}
 	return ids
+}
+
+// runRuleRevisions は、ルールの書き込みが影響する site の ruler 入力の版だけを 1 ずつ進めることを確かめる。
+func runRuleRevisions(t *testing.T, newFixture NewRulesFixture) {
+	f := newFixture(t)
+	if f.Pass == nil || len(f.AllSites) < 3 {
+		t.Fatal("rules fixture needs Pass and at least three AllSites")
+	}
+	ctx := context.Background()
+	a, b, c := f.AllSites[0], f.AllSites[1], f.AllSites[2]
+	// step は fn を実行し、want に挙げた site だけが 1 進み、残りの構成 site は変わらないことを確かめる。
+	step := func(name string, want []string, fn func()) {
+		t.Helper()
+		before := rulerRevisions(t, f.Pass, f.AllSites)
+		fn()
+		after := rulerRevisions(t, f.Pass, f.AllSites)
+		for _, site := range f.AllSites {
+			wantDelta := int64(0)
+			if slices.Contains(want, site) {
+				wantDelta = 1
+			}
+			if got := after[site] - before[site]; got != wantDelta {
+				t.Errorf("%s: revision delta of site %s = %d, want %d", name, site, got, wantDelta)
+			}
+		}
+	}
+	withSites := func(sites ...string) store.RuleInput {
+		in := ruleInput("revision rule", 1, "revision")
+		in.Sites = sites
+		return in
+	}
+
+	var scoped, global store.Rule
+	step("Create(scoped)", []string{a}, func() {
+		var err error
+		if scoped, err = f.Store.Create(ctx, withSites(a)); err != nil {
+			t.Fatalf("Create(scoped) = %v", err)
+		}
+	})
+	step("Create(no sites)", f.AllSites, func() {
+		var err error
+		if global, err = f.Store.Create(ctx, withSites()); err != nil {
+			t.Fatalf("Create(no sites) = %v", err)
+		}
+	})
+	step("Update(move a to b)", []string{a, b}, func() {
+		if _, err := f.Store.Update(ctx, scoped.ID, withSites(b)); err != nil {
+			t.Fatalf("Update(move) = %v", err)
+		}
+	})
+	step("Update(scoped to no sites)", f.AllSites, func() {
+		if _, err := f.Store.Update(ctx, scoped.ID, withSites()); err != nil {
+			t.Fatalf("Update(to no sites) = %v", err)
+		}
+	})
+	step("Update(no sites to scoped)", f.AllSites, func() {
+		if _, err := f.Store.Update(ctx, scoped.ID, withSites(c)); err != nil {
+			t.Fatalf("Update(to scoped) = %v", err)
+		}
+	})
+	step("Delete(scoped)", []string{c}, func() {
+		if _, err := f.Store.Delete(ctx, scoped.ID); err != nil {
+			t.Fatalf("Delete(scoped) = %v", err)
+		}
+	})
+	step("Delete(no sites)", f.AllSites, func() {
+		if _, err := f.Store.Delete(ctx, global.ID); err != nil {
+			t.Fatalf("Delete(no sites) = %v", err)
+		}
+	})
+	step("Import(create scoped)", []string{a}, func() {
+		if _, err := f.Import.ImportEPGStationRule(ctx, 777, withSites(a)); err != nil {
+			t.Fatalf("Import(create) = %v", err)
+		}
+	})
+	step("Import(update moves a to b)", []string{a, b}, func() {
+		if _, err := f.Import.ImportEPGStationRule(ctx, 777, withSites(b)); err != nil {
+			t.Fatalf("Import(update) = %v", err)
+		}
+	})
+	step("Import(update to no sites)", f.AllSites, func() {
+		if _, err := f.Import.ImportEPGStationRule(ctx, 777, withSites()); err != nil {
+			t.Fatalf("Import(update to no sites) = %v", err)
+		}
+	})
+	step("Import(create no sites)", f.AllSites, func() {
+		if _, err := f.Import.ImportEPGStationRule(ctx, 778, withSites()); err != nil {
+			t.Fatalf("Import(create no sites) = %v", err)
+		}
+	})
+}
+
+func rulerRevisions(t *testing.T, pass store.RulerPass, sites []string) map[string]int64 {
+	t.Helper()
+	out := make(map[string]int64, len(sites))
+	for _, site := range sites {
+		out[site] = currentRulerInputRevision(t, pass, site)
+	}
+	return out
 }

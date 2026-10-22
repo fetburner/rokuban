@@ -21,7 +21,7 @@ func TestRulerPassContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		reservations := NewReservations(pool)
 		return contracttest.RulerPassFixture{
-			Pass: reservations, Reservations: reservations, Breakers: NewBreakers(pool),
+			Pass: reservations, Bumper: reservations, Reservations: reservations, Breakers: NewBreakers(pool),
 			NewProgram: func(t *testing.T, title string) contracttest.RulerProgram {
 				return seedRulerPassProgram(t, pool, title)
 			},

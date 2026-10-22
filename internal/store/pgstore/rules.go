@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -25,10 +24,13 @@ type Rules struct {
 var _ store.Rules = (*Rules)(nil)
 var _ store.RuleImport = (*Rules)(nil)
 
-// NewRules は PostgreSQL を使う Rules を作る。siteNames を省略した場合は default site を使う。
-func NewRules(pool *pgxpool.Pool, siteNames ...string) *Rules {
+// NewRules は PostgreSQL を使う Rules を作る。siteNames は構成の全 site で、
+// sites が空のルールの書き込みがこの全 site の版を進める。空の一覧は
+// 呼び出し側の配線の誤りなので panic する（黙って 1 site を仮定すると、
+// 他の site の版が進まず古い評価がコミットされる）。
+func NewRules(pool *pgxpool.Pool, siteNames []string) *Rules {
 	if len(siteNames) == 0 {
-		siteNames = []string{db.DefaultSite}
+		panic("pgstore.NewRules: siteNames must not be empty")
 	}
 	return &Rules{pool: pool, siteNames: append([]string(nil), siteNames...)}
 }

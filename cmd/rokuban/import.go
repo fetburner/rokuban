@@ -138,7 +138,7 @@ func runImportRules(ctx context.Context, pool *pgxpool.Pool, client *epgstation.
 	if err != nil {
 		return epgimport.RuleImportResult{}, fmt.Errorf("listing EPGStation rules: %w", err)
 	}
-	return epgimport.ImportRules(ctx, pgstore.NewRules(pool, site), pgstore.NewEPG(pool), site, rules)
+	return epgimport.ImportRules(ctx, pgstore.NewRules(pool, []string{site}), pgstore.NewEPG(pool), site, rules)
 }
 
 // readJSONFile はトップレベルが配列の JSON ファイルを読む小さなヘルパー。

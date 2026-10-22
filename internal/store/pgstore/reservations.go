@@ -296,3 +296,4 @@ func isEmptyOverridesJSON(raw json.RawMessage) bool {
 }
 
 var _ store.Reservations = (*Reservations)(nil)
+var _ store.RulerInputBumper = (*Reservations)(nil)
