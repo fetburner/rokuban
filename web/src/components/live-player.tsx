@@ -537,6 +537,7 @@ export function LivePlayer(props: LivePlayerProps) {
     seek: seekOffsetSession,
     clearStartPosition,
     reportPosition,
+    getAppliedRecordingSeconds,
     getStartPositionSeconds,
     resumePlaybackPendingRef,
     startReassertPendingRef,
@@ -562,6 +563,9 @@ export function LivePlayer(props: LivePlayerProps) {
   const autoPlayPendingRef = useRef(autoPlay)
   // この要素が一度でも再生を始めたか。始めていないセッションのエラーは「位置」を持たない。
   const playedRef = useRef(false)
+  // fatal で hls を破棄した映像は currentTime 0 の timeupdate を出す。それを最後の位置にしない
+  // （`live.mjs` の #1143 再読み込み）。次の再生元を始めるときに解く。
+  const positionReportBlockedRef = useRef(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<LiveLoadError | null>(null)
   const [playbackRate, setPlaybackRate] = useState(loadPlaybackRate)
@@ -864,6 +868,7 @@ export function LivePlayer(props: LivePlayerProps) {
 
   useEffect(() => {
     let cancelled = false
+    positionReportBlockedRef.current = false
     nativeHlsRef.current = false
     nativeHlsEventRef.current = false
     // oxlint-disable-next-line react/set-state-in-effect -- 前の配信の EVENT 判定を新しい source へ持ち越さない
@@ -937,6 +942,8 @@ export function LivePlayer(props: LivePlayerProps) {
      * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
      * （このプレイヤーはエラー表示に落ちない）。一度も再生していないセッションのエラーは
      * 位置を渡さない --- 0 秒を「明示の位置」にすると、親が持つ保存位置・先頭からの意図を上書きする。
+     * 要求した開始位置が適用中の間も currentTime は位置として使わない。原本 HLS と追っかけの
+     * seek 失敗で誤った秒を作り直しへ渡さない（`recording-original-vod.mjs` ⑪-b、`chase.mjs` ⑭-b）。
      * 再生の意図は、始まる前なら再開待ち（▶ の autoPlay・張り直しの持ち越し）だけで決める。
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
@@ -947,7 +954,7 @@ export function LivePlayer(props: LivePlayerProps) {
     ): boolean | Promise<boolean> => {
       if (!isRecordingPlayback) return false
       const position = playedRef.current && media
-        ? sessionStartSeconds + media.currentTime
+        ? (getAppliedRecordingSeconds(media.currentTime) ?? undefined)
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
       return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
@@ -1514,6 +1521,7 @@ export function LivePlayer(props: LivePlayerProps) {
           if (!data.fatal || cancelled) return
           const finishFatalError = (handled: boolean) => {
             if (cancelled) return
+            positionReportBlockedRef.current = true
             hls.destroy()
             hlsRef.current = null
             stopDiagnostics()
@@ -1599,6 +1607,7 @@ export function LivePlayer(props: LivePlayerProps) {
     hasExplicitChaseStart,
     hasExplicitSessionStart,
     clearStartPosition,
+    getAppliedRecordingSeconds,
     getStartPositionSeconds,
     resumePlaybackPendingRef,
     startReassertPendingRef,
@@ -1615,6 +1624,7 @@ export function LivePlayer(props: LivePlayerProps) {
   const playbackDurationSeconds = liveTimelineBar?.plannedEndSeconds ?? playbackAxis?.maxSeconds ?? 0
   const updateRecordingPosition = (video: HTMLVideoElement) => {
     if (mode === 'live') return
+    if (positionReportBlockedRef.current) return
     const seconds = chaseHeadOffsetSeconds + sessionStartSeconds + video.currentTime
     if (mode === 'original-vod') originalPreviousSecondsRef.current = seconds
     updatePlaybackAxisState({ positionSeconds: seconds })
