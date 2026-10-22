@@ -1239,7 +1239,7 @@ export const ListRecordingsResponseItem = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1395,7 +1395,7 @@ export const ListContinueWatchingResponseItem = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1489,7 +1489,7 @@ export const GetRecordingResponse = zod.object({
   "startAt": zod.iso.datetime({"offset":true}).describe('番組の放送開始時刻。常に UTC（"Z" 終端の RFC3339）で返す。'),
   "durationMs": zod.int(),
   "status": zod.enum(['recording', 'finished', 'canceled', 'failed']),
-  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`until_encoded` でも、desired な全エンコードプロファイルとサムネイルが\n揃うまでは原本を削除しない。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).describe('`recording_encode_policy.keep_original` に凍結された、この録画の原本保持\nポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の\n`PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。\n`always` は原本を常に保持する。`until_encoded` でも、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、\n原本を削除しない。\n'),
   "cmDetection": zod.object({
   "state": zod.enum(['disabled', 'detecting', 'detected', 'failed']),
   "ranges": zod.array(zod.object({
@@ -1793,7 +1793,7 @@ export const SetRecordingEncodePolicyParams = zod.object({
 })
 
 export const SetRecordingEncodePolicyBody = zod.object({
-  "keepOriginal": zod.enum(['always', 'until_encoded']).optional().describe('原本を常に保持するか、desired なエンコードとサムネイルが揃った後に\n削除可能にするか。`until_encoded` を指定するには desired なエンコード\nプロファイルが 1 つ以上必要。\n'),
+  "keepOriginal": zod.enum(['always', 'until_encoded']).optional().describe('`always` は原本を常に保持する。`until_encoded` は、原本を入力にする\n処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が\nそれぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、\n原本を削除可能にする。指定するには desired なエンコードプロファイルが\n1 つ以上必要。\n'),
   "cmDetect": zod.boolean().optional().describe('この録画の CM 区間を検出するか。true にするには active な原本が必要。\n検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。\n')
 })
 

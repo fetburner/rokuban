@@ -101,9 +101,11 @@ export interface AddEncodeProfilesInput {
 }
 
 /**
- * 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
- * 削除可能にするか。`until_encoded` を指定するには desired なエンコード
- * プロファイルが 1 つ以上必要。
+ * `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+ * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+ * それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
+ * 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+ * 1 つ以上必要。
  */
 export type SetRecordingEncodePolicyInputKeepOriginal = typeof SetRecordingEncodePolicyInputKeepOriginal[keyof typeof SetRecordingEncodePolicyInputKeepOriginal];
 
@@ -115,9 +117,11 @@ export const SetRecordingEncodePolicyInputKeepOriginal = {
 
 export interface SetRecordingEncodePolicyInput {
   /**
-     * 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
-     * 削除可能にするか。`until_encoded` を指定するには desired なエンコード
-     * プロファイルが 1 つ以上必要。
+     * `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+     * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+     * それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
+     * 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+     * 1 つ以上必要。
      */
   keepOriginal?: SetRecordingEncodePolicyInputKeepOriginal;
   /**
@@ -566,8 +570,10 @@ export const RecordingStatus = {
  * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
  * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
  * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
- * `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
- * 揃うまでは原本を削除しない。
+ * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+ * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+ * それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
+ * 原本を削除しない。
  */
 export type RecordingKeepOriginal = typeof RecordingKeepOriginal[keyof typeof RecordingKeepOriginal];
 
@@ -903,8 +909,10 @@ export interface Recording {
      * `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
      * ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
      * `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-     * `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
-     * 揃うまでは原本を削除しない。
+     * `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+     * 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+     * それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
+     * 原本を削除しない。
      */
   keepOriginal: RecordingKeepOriginal;
   cmDetection: CMDetection;
