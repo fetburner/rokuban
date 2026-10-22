@@ -108,9 +108,9 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 
 上限未満のページを返した窓は末尾に達している。継続ジョブの Done フラグがそれを引き継ぎ、ほかの窓が続く間もその窓を照会しない。Done フラグが無いと、短い窓が次のページで先頭から読み直され、先頭の候補を毎ページ投入し直す。すべての窓が短ければ継続ジョブを積まない。ちょうど上限の窓は、次の空ページで末尾と分かる。
 
-継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。継続は取りこぼしを早く拾うためのヒントで、このパスの候補投入は済んでおり、次の定期パスが先頭から再確認する。
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。`--once` では、先頭に満杯の恒久候補がある間、後ろの候補へ進む手段は継続ジョブだけである。失敗するとその周期の残りのページを失い、次の定期パスが先頭から連鎖を作り直す。定期パスの kind は MaxAttempts 1 で再試行しないので、エラーにしても得るものは無い。
 
-継続ジョブは引数が違うので、定期パス `{}` と並走しうる。パスが投入する thumbnail ジョブと seek_tiles ジョブは `recording_id` で、実行待ちか実行中の同じ引数のジョブに合流する。ただし合流は排他を保証しない（`jobq.Spec` の doc コメント）。合流をすり抜けて二重に走ると、ffmpeg の抽出は 2 回走る。公開側は既存の行を見て後から来た側を捨てる分岐を持つ（`published` が false の経路）。同時に 2 本が走ったときの挙動を測るテストは無く、未検証である。
+継続ジョブは引数が違うので、定期パス `{}` と並走しうる。thumbnail ジョブと seek_tiles ジョブは `recording_id` で合流し、二重に走っても、後から公開する側は既存を見て捨てる。ffmpeg の抽出は 2 回走る。
 
 <details><summary>根拠</summary>
 
@@ -120,6 +120,9 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 - 窓が満杯になる条件（RowLimit 1）でも対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
 - 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
 - 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 公開済みなら後から来た thumbnail の公開を捨てること（`published` が false）: `TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive`
+- 公開済みなら後から来た thumbnail と seek_tiles の公開を捨てること: `runDerivedPublicationSkips`（`internal/store/contracttest/mediapublish.go`）
+- 公開が rel_path のロック下で直列になること: `TestThumbnailWorkerPublishesUnderRelPathLock`、`TestSeekTilesWorkerPublishesUnderRelPathLock`
 
 </details>
 
@@ -129,7 +132,7 @@ CM 検出と局ロゴ候補も定期パスで補完する。
 
 CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる理由と、短い窓の Done フラグは thumbnail と同じである。worker が `--once` で作り直されても、各窓は引数の位置から続ける。満杯の窓がなければ継続ジョブは積まない。
 
-継続ジョブは定期パス `{}` と並走しうる。パスが投入するジョブは、実行待ちか実行中の同じ引数に合流する。cm_detect の引数は `(recording_id, recording_duration_ms)` である。cm_logo_candidate の引数は、局の `(network_id, service_id)`、`recording_id`、`area_updated_at`、`recording_duration_ms` である。合流は排他を保証しないので二重に走りうる。そのとき、cm_detect は試行回数が一致しない側の保存を捨てる。cm_logo_candidate は `BeginLogoCandidate` が開始を拒む。これらは分岐がコードにあるだけで、同時 2 本の挙動を測るテストは無く、未検証である。
+継続ジョブは定期パス `{}` と並走しうる。cm_detect ジョブは `(recording_id, recording_duration_ms)`、cm_logo_candidate ジョブは局・録画・面積の版・録画尺で合流する。二重に走っても、遅れて来た試行の結果は捨てられる。
 
 継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
 
@@ -139,6 +142,8 @@ CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, ser
 - 短い窓が別窓の継続中に再走しないこと: `TestCMDetectReconcile_ExhaustedWindowNotRestarted`
 - 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
 - 継続投入の失敗を成功で終えること: `TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 遅れて来た cm_detect の試行結果が捨てられること（試行回数の不一致）: `TestCMDetectCountsDeadAttemptsAndFencesLateResults`
+- 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate`
 
 </details>
 

@@ -103,8 +103,9 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 		metrics.ThumbnailReconcileCandidates.Set(0)
 		metrics.ThumbnailReconcileLastPass.Set(0)
 	})
-	// RowLimit 1 で、対象の録画が各窓をちょうど満杯にする。対象パスが継続を積まない
-	// ことは、窓が満杯になる条件でなければ固定にならない。
+	// RowLimit 1 にすると、first の対象パスでは missing と seek_tiles、target の対象パスでは
+	// 再選択と seek_tiles の窓が満杯になる。窓が満杯になる条件でなければ、対象パスが
+	// 継続を積まないことは固定にならない。
 	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 1}
 
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: first})
@@ -749,7 +750,7 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 	if len(continuations) != 3 {
 		t.Fatalf("continuation count = %d, want 3 for 1/2/3 candidate windows", len(continuations))
 	}
-	if continuations[1].MissingDone != true || continuations[1].ReselectDone {
+	if !continuations[1].MissingDone || continuations[1].ReselectDone {
 		t.Errorf("second continuation done flags = missing:%v reselect:%v, want true:false",
 			continuations[1].MissingDone, continuations[1].ReselectDone)
 	}
