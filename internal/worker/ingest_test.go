@@ -1165,26 +1165,14 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 	setFastIngestFollow(t)
 
-	var recordGets atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			// 常に追い付いた状態。status の観測だけを見る。
-			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			recordGets.Add(1)
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{Status: "", Options: mirakc.Options{ContentPath: strPtr("test/forever-unknown.m2ts")}},
-				Content:   mirakc.ContentInfo{Path: "/recording/test/forever-unknown.m2ts"},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	const recordID = "rec-forever-unknown"
+	fake := newMirakcRecordFake(t, mirakc.Record{
+		ID: recordID,
+		Recording: mirakc.RecordInfo{
+			Status: "", Options: mirakc.Options{ContentPath: strPtr("test/forever-unknown.m2ts")},
+		},
+		Content: mirakc.ContentInfo{Path: "/recording/test/forever-unknown.m2ts"},
+	}, []byte{})
 
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -1192,24 +1180,24 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 	}
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
 		StallTimeout:  time.Second,
 		RecordTarget:  pgstore.NewRecordings(pool),
 		Precheck:      newTestMediaStore(pool),
 	}
 	recordingID := insertTestRecording(t, pool)
-	insertTestRecordSync(t, pool, recordingID, "rec-forever-unknown")
+	insertTestRecordSync(t, pool, recordingID, recordID)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	// 上限（mirakc.MaxConsecutiveRetries = 5）に達すれば数秒で error を返す。返らなければ
 	// カウンタがリセットされ続けている。
-	if err := runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: "rec-forever-unknown"}); err == nil {
+	if err := runWorkerViaJobQFake(ctx, w, IngestJobArgs{Site: "default", RecordID: recordID}); err == nil {
 		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")
 	}
 	// determineRelPath の 1 回 + 上限までの 6 回。余裕を見て 10 で切る。
-	if got := recordGets.Load(); got > 10 {
+	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID); got > 10 {
 		t.Errorf("status の観測回数 = %d, want <= 10（連続失敗カウンタがリセットされ続けている）", got)
 	}
 }

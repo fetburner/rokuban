@@ -22,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
@@ -223,14 +224,11 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		if pool == nil {
 			return
 		}
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
-		}))
-		t.Cleanup(srv.Close)
+		fake := mirakctest.New(t)
 
 		w := &IngestWorker{
 			Publisher:     newTestMediaStore(pool),
-			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstore.NewRecordings(pool),
@@ -261,31 +259,32 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 原本が既にあるので Work は転送せず handleAlreadyCommittedIngest へ入る。
-			// その最初の HTTP 要求（DeleteRecord）で取り消すと、削除の失敗はログだけ
-			// なので Work は nil を返す。
+		const recordID = "rec-remote-cancel-nil"
+		fake := mirakctest.New(t)
+		fake.SetRecords([]mirakc.Record{{ID: recordID}})
+		client := &http.Client{Transport: mirakcRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			// 原本が既にあるので Work は DeleteRecord を呼ぶ。要求を出す直前に
+			// context を取り消し、HTTP 呼び出しの失敗を再現する。
 			cancel()
-			http.NotFound(w, r)
-		}))
-		t.Cleanup(srv.Close)
+			return http.DefaultTransport.RoundTrip(req)
+		})}
 
 		w := &IngestWorker{
 			Publisher:     newTestMediaStore(pool),
-			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstore.NewRecordings(pool),
 			Precheck:      newTestMediaStore(pool),
 		}
 		recordingID := insertTestRecording(t, pool)
-		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-nil")
+		insertTestRecordSync(t, pool, recordingID, recordID)
 		insertTestOriginalMediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
 		err := runWorkerViaJobQFake(ctx, w,
 
-			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-nil"},
+			IngestJobArgs{Site: "default", RecordID: recordID},
 		)
 		if err != nil {
 			t.Fatalf("Work() = %v, want nil", err)
