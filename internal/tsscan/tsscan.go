@@ -43,15 +43,17 @@ type ReconcileArgs struct {
 // Kind returns the job kind for the scan reconciliation pass.
 func (ReconcileArgs) Kind() string { return "ts_scan_reconcile" }
 
-// Spec returns the scan queue, five-minute timeout, default retry limit, and coalescing hint.
+// Spec returns the scan queue, five-minute timeout, and coalescing hint.
+// Failed passes are not retried; the next periodic enqueue retries them.
 func (ReconcileArgs) Spec() jobq.Spec {
 	return jobq.Spec{
 		Queue: jobs.TSScanQueue,
 		Timeout: func(jobq.Args) time.Duration {
 			return 5 * time.Minute
 		},
-		Coalesce: true,
-		Priority: 1,
+		MaxAttempts: 1,
+		Coalesce:    true,
+		Priority:    1,
 	}
 }
 

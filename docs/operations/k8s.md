@@ -284,7 +284,7 @@ Work を抜けてから producer が止まるまでの間に次のジョブが f
 
 スケーラは待機中と再試行待ちのジョブを数え、回収は notifier の常駐 River client が担う。
 
-スケーラのクエリは `available` と `retryable` を数える。常駐 client の JobScheduler が retryable を昇格させるため、この集合は rescue の正しさを担わない。backoff 中から KEDA の backlog に含めるので、まだ claim できない job のために Pod が起きることがある。空振り Pod は `--once-idle-timeout` で終了する。
+常駐 client の JobScheduler が `retryable` を昇格させるため、この集合は rescue の正しさを担わない。定期パスは `retryable` にならないが、ingest / encode など定期パス以外の kind は backoff 中も数えられるので、claim できない job のために Pod が起きうる。空振り Pod は `--once-idle-timeout` で終了する。
 
 JobRescuer と JobScheduler を動かす常駐 River client は notifier Deployment に置く。notifier は常時起動し、api でなく、site にも束縛されない。全 kind の worker を登録し、Start に必要な実キューとして site 非依存で DB 完結の `ruler` だけを購読する。`ruler` の ScaledJob は残すため、両 client は同じ queue の job を claim する。`worker.periodic_jobs: false` は維持し、定期投入は CronJob が担う。rescue の判定は [故障注入 suite の F3](../../deploy/k8s/e2e/README.md) が固定する。
 

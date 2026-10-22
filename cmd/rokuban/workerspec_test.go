@@ -137,6 +137,17 @@ func TestNewWorkerSpec_PeriodicJobs(t *testing.T) {
 	}
 }
 
+func TestWorkerPeriodicJobSpecs_MaxAttempts(t *testing.T) {
+	cfg := workerSpecTestConfig(t)
+	cfg.CMDetect.Enabled = true
+
+	for _, periodic := range workerPeriodicJobSpecs(cfg, []string{"tokyo", "takamatsu"}) {
+		if got := periodic.Args.Spec().MaxAttempts; got != 1 {
+			t.Errorf("%s MaxAttempts = %d, want literal 1", periodic.Args.Kind(), got)
+		}
+	}
+}
+
 // cm_detect_reconcile は cm_detect.enabled のときだけ並ぶ（両方向）。
 func TestNewWorkerSpec_CMDetectReconcileFollowsCMDetectEnabled(t *testing.T) {
 	cfg := workerSpecTestConfig(t)
