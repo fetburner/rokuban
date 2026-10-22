@@ -95,7 +95,8 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	if int32(len(rows)) >= rowLimit {
 		continuationAfter = rows[len(rows)-1]
 		if _, err := w.Enqueuer.Enqueue(ctx, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
-			return fmt.Errorf("enqueuing TS scan reconcile continuation after recording %d: %w", continuationAfter, err)
+			slog.Error("ts_scan_reconcile: failed to enqueue continuation",
+				"after_recording_id", continuationAfter, "err", err)
 		}
 	}
 	metrics.TSScanReconcileLastPass.SetToCurrentTime()

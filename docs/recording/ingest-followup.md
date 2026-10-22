@@ -104,6 +104,35 @@ ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると
 
 対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
+missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、1 本の継続ジョブに 3 つの再開位置を載せる。各窓が同じパスで評価されるため、窓ごとにジョブを分けず、カーソルだけは独立させる。`--once` で worker が作り直されても、継続ジョブの引数から次のページを開く。対象録画の即時パスはカーソルを読まず、継続ジョブも積まない。
+
+継続の投入に失敗した場合はログに残してパスを成功として終える。エラーにすると River の再試行が定期ジョブと合流し、15 分の周期が backoff に置き換わるためである。次の定期パスは先頭から再確認する。短い窓はその窓のカーソルを先頭へ戻し、すべての窓が短ければ継続を積まない。ちょうど上限に達した窓は次の空ページで連鎖を止める。
+
+<details><summary>根拠</summary>
+
+- 3 つの独立カーソルが fresh worker をまたぐこと: `TestThumbnailReconcile_ContinuationSurvivesFreshWorker`
+- 対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
+- 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
+- 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
+
+</details>
+
+#### CM 検出とロゴ候補の定期パス
+
+CM 検出と局ロゴ候補も定期パスで補完する。候補窓は作業の種類ごとに独立して進める。
+
+CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる。worker が `--once` で作り直されても、各窓は引数の位置から続ける。候補数が上限未満の窓はカーソルを先頭へ戻す。満杯の窓がなければ継続ジョブは積まない。継続ジョブの引数は定期パス `{}` と異なり、両者は並走しうる。対象候補ジョブには同一引数の合流を要求するが、合流は排他を保証しない。
+
+継続の投入に失敗した場合はログに残して nil を返す。再試行にすると River の backoff が定期投入と合流し、周期を置き換える。次の定期パスは先頭から候補を再確認する。
+
+<details><summary>根拠</summary>
+
+- 両窓が複合キーを含む引数で fresh worker をまたぐこと: `TestCMDetectReconcile_ContinuationSurvivesFreshWorker`
+- 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
+- 継続投入の失敗を成功で終えること: `TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess`
+
+</details>
+
 #### TS scan の定期パス
 
 TS の統計も、コミット後のヒントと定期パスの二重で埋める。定期パスは未計測の原本を候補にする。読み出しに失敗した scan に終端記録は作らず、後続の reconcile が再投入する。
@@ -112,6 +141,8 @@ TS の統計も、コミット後のヒントと定期パスの二重で埋め�
 
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
+継続ジョブの投入に失敗した場合はログに残して nil を返す。River の再試行にすると、失敗した行へ定期 CronJob の `{}` が合流し、15 分周期が backoff に置き換わる。次の定期パスが先頭から再確認する。
+
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。scan は ingest の後に原本を全量読む。追加読み出しのコストは未検証である。
 
 読み出しに失敗した scan の再投入は、上記のとおり後続の reconcile が行う。削除条件が scan 完了を要求するようになった後は、恒久的な読み出し失敗がある原本は保持され続ける。
@@ -119,6 +150,7 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 <details><summary>根拠</summary>
 
 - TS scan の継続カーソルが新しい worker で再開すること: `TestTSScanReconcile_ContinuationSurvivesFreshWorker`
+- 継続投入の失敗を成功で終えること: `TestTSScanReconcile_ContinuationEnqueueFailureReturnsSuccess`
 - 計測済みの判定: view `current_ts_scanned_originals`
 - サムネイルの補完ジョブ: `thumbnail_reconcile`
 - TS scan の補完ジョブ: `ts-scan-reconcile`

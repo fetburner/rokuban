@@ -11,6 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/metrics"
 )
 
@@ -81,9 +82,6 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 		metrics.ThumbnailReconcileLastPass.Set(0)
 	})
 	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 100}
-	w.resumeAfter.Store(9_000_000_000_000_000_000)
-	w.reselectResumeAfter.Store(9_000_000_000_000_000_000)
-	w.seekTilesResumeAfter.Store(9_000_000_000_000_000_000)
 
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: first})
 	for _, tc := range []struct {
@@ -114,11 +112,8 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), third); got != 0 {
 		t.Errorf("thumbnail jobs for unrelated recording = %d, want 0", got)
 	}
-	if w.resumeAfter.Load() != 9_000_000_000_000_000_000 ||
-		w.reselectResumeAfter.Load() != 9_000_000_000_000_000_000 ||
-		w.seekTilesResumeAfter.Load() != 9_000_000_000_000_000_000 {
-		t.Errorf("targeted pass changed full-pass cursors: missing=%d reselect=%d seek_tiles=%d",
-			w.resumeAfter.Load(), w.reselectResumeAfter.Load(), w.seekTilesResumeAfter.Load())
+	if got := len(enqueuedArgs[ThumbnailReconcileArgs](w.Enqueuer.(*recordingEnqueuer), ThumbnailReconcileArgs{}.Kind())); got != 0 {
+		t.Errorf("targeted passes enqueued %d continuation jobs, want 0", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.ThumbnailReconcileCandidates); got != 19 {
 		t.Errorf("candidate gauge = %v, want unchanged 19", got)
@@ -262,11 +257,17 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 		}
 	}
 
-	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 2}
-	runThumbnailReconcilePass(t, w)
-	runThumbnailReconcilePass(t, w)
+	enqueuer := newRecordingEnqueuer()
+	firstWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 2}
+	runThumbnailReconcilePass(t, firstWorker)
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 1 || continuations[0].AfterReselectRecordingID != ids[3] {
+		t.Fatalf("first reselection continuation = %+v, want cursor after recording %d", continuations, ids[3])
+	}
+	secondWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 2}
+	runThumbnailReconcilePassArgs(t, secondWorker, continuations[0])
 
-	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), ids[4]); got != 1 {
+	if got := countThumbnailJobs(t, enqueuer, ids[4]); got != 1 {
 		t.Errorf("reselection jobs for recording %d = %d, want 1 after the second window", ids[4], got)
 	}
 }
@@ -451,18 +452,172 @@ func TestThumbnailReconcile_WindowRotatesPastStuckCandidates(t *testing.T) {
 	seedOriginalAsset(t, pool, mediaDir, firstID, "window/first.m2ts", []byte("first"))
 	seedOriginalAsset(t, pool, mediaDir, secondID, "window/second.m2ts", []byte("second"))
 
-	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 1}
-	runThumbnailReconcilePass(t, w)
-	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), firstID); got != 1 {
+	enqueuer := newRecordingEnqueuer()
+	firstWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	runThumbnailReconcilePass(t, firstWorker)
+	if got := countThumbnailJobs(t, enqueuer, firstID); got != 1 {
 		t.Fatalf("first recording jobs after first pass = %d, want 1", got)
 	}
-	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), secondID); got != 0 {
+	if got := countThumbnailJobs(t, enqueuer, secondID); got != 0 {
 		t.Fatalf("second recording jobs after first pass = %d, want 0", got)
 	}
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 1 || continuations[0].AfterRecordingID != firstID {
+		t.Fatalf("continuation = %+v, want cursor after recording %d", continuations, firstID)
+	}
 
-	runThumbnailReconcilePass(t, w)
-	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), secondID); got != 1 {
+	secondWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	runThumbnailReconcilePassArgs(t, secondWorker, continuations[0])
+	if got := countThumbnailJobs(t, enqueuer, secondID); got != 1 {
 		t.Fatalf("second recording jobs after rotated pass = %d, want 1", got)
+	}
+}
+
+// TestThumbnailReconcile_ContinuationSurvivesFreshWorker mirrors --once: each
+// continuation starts a new worker, and all three candidate windows advance from
+// the positions produced by the previous pass.
+func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	ids := make([]int64, 0, 6)
+	for eventID := int32(14101); eventID <= 14106; eventID++ {
+		ids = append(ids, insertTestRecordingWithEventID(t, pool, eventID))
+	}
+	q := sqlcgen.New(pool)
+	for i, recordingID := range ids {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("continuation/%d.ts", i+1), []byte("fake-ts"))
+		switch i {
+		case 0, 1:
+			// These are missing-thumbnail candidates, but not seek_tiles candidates.
+			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("continuation/%d-tiles.jpg", i+1))
+		case 2, 3:
+			// These are reselection candidates. Their seek positions are inside the CM range.
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("continuation/%d-tiles.jpg", i+1))
+			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+				RecordingID: recordingID,
+				CmRanges:    "{[0,60000)}",
+			}); err != nil {
+				t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+			}
+			if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+				MediaAssetID: thumbnailID,
+				SeekMs:       30000,
+			}); err != nil {
+				t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+			}
+		case 4, 5:
+			// These need seek_tiles only; an existing thumbnail keeps them out of the
+			// missing-poster window and the absent chapter/CM state keeps them out of reselection.
+			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
+		}
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	firstWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	runThumbnailReconcilePass(t, firstWorker)
+	for _, tc := range []struct {
+		kind string
+		id   int64
+	}{
+		{kind: "thumbnail", id: ids[0]},
+		{kind: "thumbnail", id: ids[2]},
+		{kind: "seek_tiles", id: ids[4]},
+	} {
+		if got := countQueuedJobsForRecording(t, enqueuer, tc.kind, tc.id); got != 1 {
+			t.Errorf("%s jobs for first window candidate %d = %d, want 1", tc.kind, tc.id, got)
+		}
+	}
+	for _, tc := range []struct {
+		kind string
+		id   int64
+	}{
+		{kind: "thumbnail", id: ids[1]},
+		{kind: "thumbnail", id: ids[3]},
+		{kind: "seek_tiles", id: ids[5]},
+	} {
+		if got := countQueuedJobsForRecording(t, enqueuer, tc.kind, tc.id); got != 0 {
+			t.Errorf("%s jobs for later window candidate %d after first page = %d, want 0", tc.kind, tc.id, got)
+		}
+	}
+
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 1 || continuations[0].AfterRecordingID != ids[0] ||
+		continuations[0].AfterReselectRecordingID != ids[2] ||
+		continuations[0].AfterSeekTilesRecordingID != ids[4] {
+		t.Fatalf("first continuation = %+v, want independent cursors after %d, %d, and %d",
+			continuations, ids[0], ids[2], ids[4])
+	}
+	secondWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	runThumbnailReconcilePassArgs(t, secondWorker, continuations[0])
+	for _, tc := range []struct {
+		kind string
+		id   int64
+	}{
+		{kind: "thumbnail", id: ids[1]},
+		{kind: "thumbnail", id: ids[3]},
+		{kind: "seek_tiles", id: ids[5]},
+	} {
+		if got := countQueuedJobsForRecording(t, enqueuer, tc.kind, tc.id); got != 1 {
+			t.Errorf("%s jobs for later window candidate %d after fresh worker = %d, want 1", tc.kind, tc.id, got)
+		}
+	}
+	continuations = enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 2 || continuations[1].AfterRecordingID != ids[1] ||
+		continuations[1].AfterReselectRecordingID != ids[3] ||
+		continuations[1].AfterSeekTilesRecordingID != ids[5] {
+		t.Fatalf("second continuation = %+v, want independent cursors after %d, %d, and %d",
+			continuations, ids[1], ids[3], ids[5])
+	}
+	thirdWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	runThumbnailReconcilePassArgs(t, thirdWorker, continuations[1])
+	if got := len(enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())); got != 2 {
+		t.Errorf("continuation jobs after all windows reached the end = %d, want 2", got)
+	}
+}
+
+type thumbnailContinuationFailingEnqueuer struct {
+	*recordingEnqueuer
+	continuationAttempts int
+}
+
+func (e *thumbnailContinuationFailingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
+	if args.Kind() == (ThumbnailReconcileArgs{}).Kind() {
+		e.continuationAttempts++
+		return jobq.Result{}, fmt.Errorf("continuation unavailable")
+	}
+	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
+}
+
+func TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	mediaDir := t.TempDir()
+	firstID := insertTestRecordingForSite(t, pool, "default", 14107)
+	secondID := insertTestRecordingForSite(t, pool, "default", 14108)
+	seedOriginalAsset(t, pool, mediaDir, firstID, "continuation-error/first.ts", []byte("first"))
+	seedOriginalAsset(t, pool, mediaDir, secondID, "continuation-error/second.ts", []byte("second"))
+	enqueuer := &thumbnailContinuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
+	w := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}); err != nil {
+		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
+	}
+	if got := countThumbnailJobs(t, enqueuer.recordingEnqueuer, firstID); got != 1 {
+		t.Errorf("thumbnail jobs after continuation enqueue failure = %d, want 1", got)
+	}
+	if enqueuer.continuationAttempts != 1 {
+		t.Errorf("continuation enqueue attempts = %d, want 1", enqueuer.continuationAttempts)
 	}
 }
 
@@ -511,6 +666,9 @@ func TestThumbnailReconcile_EnqueuesMissingSeekTiles(t *testing.T) {
 	// 同じパスが thumbnail も積む（どちらも desired − observed の差分）。
 	if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), recordingID); got != 1 {
 		t.Errorf("thumbnail jobs after the periodic pass = %d, want 1", got)
+	}
+	if got := len(enqueuedArgs[ThumbnailReconcileArgs](w.Enqueuer.(*recordingEnqueuer), ThumbnailReconcileArgs{}.Kind())); got != 0 {
+		t.Errorf("continuation jobs for short thumbnail and seek_tiles pages = %d, want 0", got)
 	}
 }
 
@@ -565,17 +723,23 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, id, db.AssetKindSeekTiles, nil, fmt.Sprintf("cursor/s%d.jpg", id), []byte("jpg"))
 	}
 
-	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 2}
-	runThumbnailReconcilePass(t, w)
-	runThumbnailReconcilePass(t, w)
+	enqueuer := newRecordingEnqueuer()
+	firstWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 2}
+	runThumbnailReconcilePass(t, firstWorker)
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 1 || continuations[0].AfterSeekTilesRecordingID != ids[3] {
+		t.Fatalf("first seek_tiles continuation = %+v, want cursor after recording %d", continuations, ids[3])
+	}
+	secondWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 2}
+	runThumbnailReconcilePassArgs(t, secondWorker, continuations[0])
 
 	for _, id := range ids[:2] {
-		if got := countThumbnailJobs(t, w.Enqueuer.(*recordingEnqueuer), id); got != 1 {
+		if got := countThumbnailJobs(t, enqueuer, id); got != 1 {
 			t.Errorf("thumbnail jobs for recording %d = %d, want 1", id, got)
 		}
 	}
 	for _, id := range ids[2:] {
-		if got := countSeekTilesJobs(t, w.Enqueuer.(*recordingEnqueuer), id); got != 1 {
+		if got := countSeekTilesJobs(t, enqueuer, id); got != 1 {
 			t.Errorf("seek_tiles jobs for recording %d = %d, want 1 "+
 				"(the seek_tiles cursor must not be dragged along by the thumbnail window)", id, got)
 		}

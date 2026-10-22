@@ -516,6 +516,9 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	if got := count(); got != 1 {
 		t.Fatalf("candidate jobs after the first pass = %d, want 1", got)
 	}
+	if got := len(enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())); got != 0 {
+		t.Errorf("continuation jobs for short detection and candidate pages = %d, want 0", got)
+	}
 	candidateArgs := enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind())[0]
 	if candidateArgs.RecordingID != id || candidateArgs.NetworkID != 32736 || candidateArgs.RecordingDurationMs != 45*60*1000 {
 		t.Errorf("candidate args = %#v, want station 32736, recording %d, and 2700000ms", candidateArgs, id)
