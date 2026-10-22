@@ -296,10 +296,11 @@ func (r *Reconciler) recordNeverScheduledOutcome(ctx context.Context, reservatio
 }
 
 // observeStartDelays は開始遅延をログに出す。DB に新しい状態は持たせない（不変条件 5:
-// レベルトリガー）。毎パス recordings.started_at から再計算する導出値なので、成功した
-// 検出パスだけゲージを更新する。失敗時は最後の成功値を保ち、専用カウンタを進める。
-// ゲージはプロセス内のため、最後の成功値を失敗中も scrape できるのは常駐構成だけである
-// （ScaledJob の --once 実行では Pod 終了後に scrape できない）。
+// レベルトリガー）。毎パス recordings.started_at から再計算する導出値なので、ゲージだけ
+// で表す。検出に失敗したパスではゲージを更新せず最後の成功値を保ち、専用カウンタを進める
+// （0 を書くと「遅延なし」と区別できず、アラートが消える）。
+// 最後の成功値を保つのは常駐構成でだけ効く。ScaledJob（--once）では Pod の終了後に
+// scrape できないからである。
 func (r *Reconciler) observeStartDelays(ctx context.Context, reservations []desiredReservation) []startDelayed {
 	startDelayed, err := r.detectStartDelays(ctx, reservations)
 	if err != nil {

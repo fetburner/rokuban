@@ -241,7 +241,7 @@ var (
 	})
 
 	// ReconcileStartDelayed は開始遅延検出器（issue #24 M2-7、docs/recording.md
-	// §3.3「開始遅延検出器」）が直近の成功した検出パスで検出した件数 --- 「開始時刻 + 猶予
+	// §3.3「開始遅延検出器」）が、検出に成功した直近のパスの件数 --- 「開始時刻 + 猶予
 	// （StartDelayGrace）を過ぎたのに recordings.started_at が観測されていない
 	// 予約」の数。録画開始は mirakc に全面委譲済みで Rokuban 側から防ぐ手段は
 	// ないが、EPGStation#724（チューナー再接続ハングで開始が 10 分遅延）の
