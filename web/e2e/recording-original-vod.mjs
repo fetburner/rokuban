@@ -1092,6 +1092,7 @@ let offsetChapters = {
   spans: [{ startMs: 40_000, endMs: 45_000, label: '気象情報', cut: false }],
 }
 let offsetFailAll = false
+let offsetReloadFailAll = false
 let resumePastEdge = false
 // サーバー側に変換済みのセッションが無い状態。どの offset も最初の要求から変換が始まったように、
 // 2 秒の segment を 1 本だけ見せ、実時間（2 秒ごとに 1 本）で伸ばす。
@@ -1135,6 +1136,10 @@ const offsetHandler = async ({ path: requestPath, json, route }) => {
     const match = relative.match(/^offset\/(\d+)\//)
     const offset = match ? Number(match[1]) : 0
     const resource = match ? relative.slice(match[0].length) : relative
+    if (offsetReloadFailAll) {
+      if (resource === 'playlist.m3u8') offsetRequests.push({ offset, status: 500 })
+      return route.fulfill({ status: 500, contentType: 'text/plain', body: 'retry fixture failure\n' })
+    }
     if (offsetFailAll) return route.fulfill({ status: 500, contentType: 'text/plain', body: 'stub failure\n' })
     if (offset > OFFSET_PLAYABLE_END - 0.5) {
       if (resource === 'playlist.m3u8') offsetRequests.push({ offset, status: 416 })
@@ -1946,6 +1951,64 @@ if (rewindAxis === null || !(rewindAxis >= 31.7 && rewindAxis < 34)) {
 }
 await rewindPage.close()
 delete offsetRecording.resumePositionMs
+
+log('\n=== ⑪-b セッション外 seek の失敗後、作り直しと再読み込みが選んだ位置を保つ ===')
+const retryPage = await context.newPage()
+await installApiStubs(retryPage, offsetHandler)
+await retryPage.goto(`${URL_BASE}/recordings/${OFFSET_ID}`, { waitUntil: 'domcontentloaded' })
+await retryPage.getByTestId('recording-playback-start').click()
+await retryPage.waitForFunction(() => {
+  const element = document.querySelector('video')
+  return element !== null && element.readyState >= 2
+}, undefined, { timeout: 15000 })
+offsetReloadFailAll = true
+const failedSeekCursor = offsetRequests.length
+await clickOffsetSeekbar(retryPage, 0.76)
+const selectedRetryPosition = Number(await retryPage.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
+if (Math.abs(selectedRetryPosition - 47.88) > 0.5) {
+  ng.push(`⑪-b 前提: 76% seek が録画軸 47.88 秒を選ばない（${selectedRetryPosition}）`)
+}
+await retryPage.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 30000 })
+const failedSeekRequests = offsetRequests.slice(failedSeekCursor)
+const failedSeekOffsets = failedSeekRequests.filter((request) => request.status === 500).map((request) => request.offset)
+log(`  失敗した張り直しの offset=${JSON.stringify(failedSeekOffsets)}, selected=${selectedRetryPosition}`)
+if (!failedSeekOffsets.includes(47)) {
+  ng.push(`⑪-b 前提: 失敗した最初の張り直しで offset 47 を要求しない（${JSON.stringify(failedSeekRequests)}）`)
+}
+if (failedSeekOffsets.some((offset) => offset !== 47)) {
+  ng.push(`⑪-b 親の作り直しが seek 位置から外れる offset を要求する（${JSON.stringify(failedSeekOffsets)}）`)
+}
+offsetReloadFailAll = false
+const explicitReloadCursor = offsetRequests.length
+await retryPage.getByRole('button', { name: '再読み込み' }).click()
+const explicitReloadRequestDeadline = Date.now() + 15000
+while (
+  !offsetRequests.slice(explicitReloadCursor).some((request) => request.status === 200) &&
+  Date.now() < explicitReloadRequestDeadline
+) {
+  await retryPage.waitForTimeout(50)
+}
+const explicitReloadOffset = offsetRequests.slice(explicitReloadCursor)
+  .findLast((request) => request.status === 200)?.offset
+const expectedReloadCurrentTime = 47.88 - streamerSeekSeconds(47)
+const explicitReloadStarted = await retryPage.waitForFunction((expectedTime) => {
+  const element = document.querySelector('video')
+  return element !== null && element.readyState >= 2 && !element.seeking &&
+    Math.abs(element.currentTime - expectedTime) < 0.3
+}, expectedReloadCurrentTime, { timeout: 15000 }).then(() => true).catch(() => false)
+const explicitReloadRequests = offsetRequests.slice(explicitReloadCursor)
+const explicitReloadTime = await retryPage.locator('video').evaluate((element) => element.currentTime).catch(() => Number.NaN)
+const explicitReloadAxis = explicitReloadOffset === undefined
+  ? null
+  : streamerSeekSeconds(explicitReloadOffset) + explicitReloadTime
+log(`  再読み込み: requests=${JSON.stringify(explicitReloadRequests)}, started=${explicitReloadStarted}, axis=${explicitReloadAxis}`)
+if (explicitReloadOffset !== 47) {
+  ng.push(`⑪-b 再読み込みで offset 47 を開かない（${JSON.stringify(explicitReloadRequests)}）`)
+}
+if (explicitReloadAxis === null || Math.abs(explicitReloadAxis - 47.88) > 0.5) {
+  ng.push(`⑪-b 再読み込みの着地が録画軸 47.88 秒の 0.5 秒以内でない（${explicitReloadAxis}）`)
+}
+await retryPage.close()
 
 // This runs after the established seek/offset checks so its explicit keyboard seeks and
 // pause events cannot change their saved-position fixtures or ⑤-f baseline.
