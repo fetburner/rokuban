@@ -1,60 +1,134 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// planningSpy は GetEncodedAssetForPlan の戻り値だけを差し替える。
+// planningSpy はエンコード前の判定が読む状態だけを差し替える。
 type planningSpy struct {
 	store.MediaReconcile
 
-	result store.EncodedAssetObservation
-	calls  int
+	result            store.EncodedPublishState
+	calls             int
+	cut               bool
+	includeCurrentCut bool
 }
 
-func (s *planningSpy) GetEncodedAssetForPlan(context.Context, int64, string) (store.EncodedAssetObservation, error) {
+func (s *planningSpy) GetEncodedPublishState(
+	_ context.Context,
+	_ int64,
+	_ string,
+	cut bool,
+	includeCurrentCut bool,
+) (store.EncodedPublishState, error) {
 	s.calls++
+	s.cut = cut
+	s.includeCurrentCut = includeCurrentCut
 	return s.result, nil
 }
 
-// TestEncodeWorkerPlansFromStoreObservation は tx 外の初回観測が store 契約の戻り値
-// （凍結区間を含む）だけで決まることを固定する。公開 tx 内の照合は別に DB を読む。
-// DB 側は keep と一致する区間を持つのに、store が違う区間を返したとき stale になるかを
-// 見る。この「観測は store、公開 tx は DB」の分離は、呼び出しを差し替える spy でしか確かめられないので、
-// 振る舞いの網羅は contracttest.RunMedia と既存の encode テストに任せ、これだけを残す。
-func TestEncodeWorkerPlansFromStoreObservation(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
+// TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons は、エンコード前の判定が 1 回の
+// 読み取りで得た状態を純関数に渡し、飛ばす理由を運用ログへ出すことを固定する。
+func TestEncodeWorkerPreflightUsesSnapshotAndLogsReasons(t *testing.T) {
+	keepA := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	keepB := []chapters.Range{{StartMs: 0, EndMs: 2000}}
+	requestedKeep, err := json.Marshal(keepA)
+	if err != nil {
+		t.Fatal(err)
 	}
-	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "media-reads/plan.m2ts", nil, []byte("original"))
-	profile := "cut"
-	assetID := seedEncodedAsset(t, pool, recordingID, profile, "media-reads/plan-cut.mp4")
-	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
-	if err := setFrozenCuts(t, pool, assetID, keep); err != nil {
-		t.Fatalf("seeding frozen keep ranges: %v", err)
-	}
-	media := &planningSpy{
-		MediaReconcile: newTestMediaStore(pool),
-		result: store.EncodedAssetObservation{
-			ID: assetID, RelPath: "media-reads/plan-cut.mp4", State: "active",
-			KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 900}},
+	tests := []struct {
+		name           string
+		profile        config.EncodeProfile
+		requested      json.RawMessage
+		state          store.EncodedPublishState
+		wantReason     store.EncodedPublishSkipReason
+		wantCut        bool
+		wantCurrentCut bool
+	}{
+		{
+			name:       "missing rebuild request",
+			profile:    config.EncodeProfile{Name: "cut", Cut: true},
+			requested:  requestedKeep,
+			state:      store.EncodedPublishState{Desired: true},
+			wantReason: store.EncodedPublishSkipRebuildRequestMissing,
+			wantCut:    true,
+		},
+		{
+			name:      "overwritten rebuild request",
+			profile:   config.EncodeProfile{Name: "cut", Cut: true},
+			requested: requestedKeep,
+			state: store.EncodedPublishState{
+				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keepB,
+			},
+			wantReason: store.EncodedPublishSkipRebuildRequestOverwritten,
+			wantCut:    true,
+		},
+		{
+			name:       "desired profile excluded",
+			profile:    config.EncodeProfile{Name: "h264"},
+			state:      store.EncodedPublishState{},
+			wantReason: store.EncodedPublishSkipDesiredProfileExcluded,
+		},
+		{
+			name:       "encoded asset already satisfies request",
+			profile:    config.EncodeProfile{Name: "h264"},
+			state:      store.EncodedPublishState{Desired: true, EncodedAsset: &store.EncodedAssetObservation{RelPath: "encoded.mp4", State: "active"}},
+			wantReason: store.EncodedPublishSkipAssetSatisfied,
+		},
+		{
+			name:    "ordinary cut does not replace active cut",
+			profile: config.EncodeProfile{Name: "cut", Cut: true},
+			state: store.EncodedPublishState{
+				Desired: true, ChapterOwned: true, CurrentCutKeep: keepA,
+				EncodedAsset: &store.EncodedAssetObservation{RelPath: "cut.mp4", State: "active", KeepRanges: keepB},
+			},
+			wantReason:     store.EncodedPublishSkipActiveCutProtected,
+			wantCut:        true,
+			wantCurrentCut: true,
 		},
 	}
-	w := &EncodeWorker{Media: media}
-	observed, err := w.planEncodeAsset(context.Background(), recordingID, profile, &cutContext{keep: keep}, nil)
-	if err != nil {
-		t.Fatalf("planEncodeAsset() error = %v", err)
-	}
-	if observed.skip {
-		t.Fatalf("planEncodeAsset() = %+v, want store-provided frozen ranges to keep asset stale", observed)
-	}
-	if media.calls != 1 {
-		t.Fatalf("GetEncodedAssetForPlan calls = %d, want 1", media.calls)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			media := &planningSpy{result: tt.state}
+			w := &EncodeWorker{
+				Media:    media,
+				Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{tt.profile}},
+			}
+			var logOutput bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logOutput, nil))
+			observed, _, _, skip, err := w.observeEncodePlan(context.Background(), jobs.EncodeJobArgs{
+				RecordingID:      17,
+				Profile:          tt.profile.Name,
+				RequestedCutKeep: tt.requested,
+			}, logger)
+			if err != nil {
+				t.Fatalf("observeEncodePlan() error = %v", err)
+			}
+			if !skip || !observed.skip {
+				t.Fatalf("observeEncodePlan() skip = %v, plan = %+v; want skip", skip, observed)
+			}
+			if observed.skipReason != tt.wantReason {
+				t.Errorf("skip reason = %q, want %q", observed.skipReason, tt.wantReason)
+			}
+			if !strings.Contains(logOutput.String(), string(tt.wantReason)) {
+				t.Errorf("log %q does not include reason %q", logOutput.String(), tt.wantReason)
+			}
+			if media.calls != 1 {
+				t.Errorf("GetEncodedPublishState calls = %d, want 1", media.calls)
+			}
+			if media.cut != tt.wantCut || media.includeCurrentCut != tt.wantCurrentCut {
+				t.Errorf("state read flags = (%v, %v), want (%v, %v)", media.cut, media.includeCurrentCut, tt.wantCut, tt.wantCurrentCut)
+			}
+		})
 	}
 }

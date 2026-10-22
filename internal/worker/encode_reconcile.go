@@ -182,7 +182,7 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", row.DecodeErr)
 			continue
 		}
-		// 全区間カットの通常候補は投入しても loadCutContext が必ず失敗する。
+		// 全区間カットの通常候補は投入しても observeEncodePlan が必ず失敗する。
 		// SQL は keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
 		// 作り直しの keep は API が空を拒み、チャプター未所有でも有効なので照合しない。
 		// 窓の回転は candidates（落とす前）で数えるので進み続ける。

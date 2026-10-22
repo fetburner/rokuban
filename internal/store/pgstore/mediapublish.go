@@ -157,15 +157,14 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 		return false, fmt.Errorf("loading current encode attempt: %w", err)
 	}
 
+	// 判定に要る状態を、上のロック順のまま全部読んでから PlanEncodedPublish を 1 回だけ呼ぶ。
+	// 途中で一部の状態だけで判定すると、純関数の分岐順とこの読み順が偶然一致していることに依存する。
+	var state store.EncodedPublishState
 	desired, err := q.GetRecordingEncodeProfilesForShare(ctx, in.RecordingID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
+	if err == nil {
+		state.Desired = slices.Contains(desired, in.Profile)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("loading desired encode profiles: %w", err)
-	}
-	if !slices.Contains(desired, in.Profile) {
-		return false, nil
 	}
 
 	if in.HasRebuildRequest {
@@ -173,30 +172,22 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 			RecordingID: in.RecordingID,
 			Profile:     in.Profile,
 		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		if err != nil {
+		if err == nil {
+			state.HasRebuildRequest = true
+			state.RebuildRequestKeep, err = KeepRangesFromMultirange(requested)
+			if err != nil {
+				return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", in.RecordingID, in.Profile, err)
+			}
+		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", in.RecordingID, in.Profile, err)
 		}
-		requestedKeep, err := KeepRangesFromMultirange(requested)
-		if err != nil {
-			return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", in.RecordingID, in.Profile, err)
-		}
-		if !chapters.SameRanges(requestedKeep, in.RequestedKeep) {
-			return false, nil
-		}
 	} else if in.Cut {
-		currentKeep, owned, err := currentCutKeep(ctx, q, in.RecordingID)
+		state.CurrentCutKeep, state.ChapterOwned, err = currentCutKeep(ctx, q, in.RecordingID)
 		if err != nil {
 			return false, fmt.Errorf("rechecking chapter keep before publish for recording %d: %w", in.RecordingID, err)
 		}
-		if !owned || !chapters.SameRanges(currentKeep, in.KeepRanges) {
-			return false, nil
-		}
 	}
 
-	var existing *store.EncodedAssetObservation
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: in.RecordingID,
 		Profile:     &in.Profile,
@@ -210,21 +201,16 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 			}
 			observation.KeepRanges = keep
 		}
-		existing = &observation
+		state.EncodedAsset = &observation
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, fmt.Errorf("loading existing encoded asset: %w", err)
 	}
 
-	plan := store.PlanEncodedPublish(existing, in.Cut, in.KeepRanges, &in.ObservedRelPath)
+	plan := store.PlanEncodedPublish(in, state, &in.ObservedRelPath)
 	if plan.Stale {
 		return false, store.ErrStalePublishPlan
 	}
 	if plan.Skip {
-		return false, nil
-	}
-	// 作り直し要求に由来しない cut ジョブは、active な cut 版を置き換えない。
-	// 置き換えてよいのは利用者が押した作り直しだけである。
-	if in.Cut && !in.HasRebuildRequest && plan.Replaces {
 		return false, nil
 	}
 

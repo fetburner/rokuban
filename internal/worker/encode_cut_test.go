@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -570,8 +571,8 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	if err != nil {
 		t.Fatalf("observing stale encoded asset: %v", err)
 	}
-	if observed.skip || observed.replaced == "" {
-		t.Fatalf("observed plan = %+v, want an active stale cut that an ordinary job might replace", observed)
+	if !observed.skip || observed.skipReason != store.EncodedPublishSkipActiveCutProtected {
+		t.Fatalf("observed plan = %+v, want an ordinary cut to skip an active asset", observed)
 	}
 
 	publishedCalls := 0
@@ -685,8 +686,8 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 
 // TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone は、要求に束縛されたジョブが、
 // 開始前に要求行が消えていれば（公開・外す操作で消費済み）ffmpeg を起動せずに終わる
-// ことを固定する。要求行の読み取りは公開 tx と同じ GetEncodedAssetRebuildRequestForShare
-// を tx の外から使う。
+// ことを固定する。worker はエンコード前に、ロックを取らない読み取りで行の不在を判断し、
+// 公開 tx では要求行をロック下で読み直す。
 func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -736,7 +737,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 
 // TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit は、要求に束縛された
 // ジョブが、押した後にチャプターが編集されていても取り消されず、押した時点の keep で
-// 描くことを固定する（loadRequestedEncodeCut が現在のチャプターと照合しない）。
+// 描くことを固定する（エンコード前の判定は要求行の keep と照合し、現在の章とは比べない）。
 func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -766,9 +767,9 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 	w := &EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool), Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}}}
 	job := newCutEncodeJob(recordingID)
 	job.RequestedCutKeep = requestJSON
-	cut, _, hasExpected, skip, err := w.loadRequestedEncodeCut(ctx, job)
-	if err != nil || !hasExpected || skip || cut == nil {
-		t.Fatalf("loadRequestedEncodeCut = cut %v, hasExpected %v, skip %v, err %v; want a job that proceeds", cut, hasExpected, skip, err)
+	_, cut, expected, skip, err := w.observeEncodePlan(ctx, job, slog.Default())
+	if err != nil || len(expected) == 0 || skip || cut == nil {
+		t.Fatalf("observeEncodePlan = cut %v, expected %v, skip %v, err %v; want a job that proceeds", cut, expected, skip, err)
 	}
 	if !chapters.SameRanges(cut.keep, requestedKeep) {
 		t.Fatalf("cut keep = %v, want the requested %v (not the edited %v)", cut.keep, requestedKeep, currentKeep)
@@ -1013,7 +1014,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 }
 
 // TestEncodeReconcile_AllCutRecordingEnqueuesNothing は「全区間カットの録画は、
-// 確認済みでも cut のジョブを投入しない」を固定する。投入しても loadCutContext が
+// 確認済みでも cut のジョブを投入しない」を固定する。投入しても observeEncodePlan が
 // "has no keep ranges" で失敗し続けるため、一部だけ切る録画だけを投入する。
 func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	pool := setupTestPool(t)

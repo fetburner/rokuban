@@ -181,7 +181,29 @@ type MediaPublish interface {
 	UpsertIngestProgress(ctx context.Context, progress IngestProgress) error
 }
 
-// EncodedPublishPlan は encoded 行の 1 回の観測から導いた、公開の判断である。
+// EncodedPublishSkipReason はエンコード公開を飛ばす理由を表す。
+type EncodedPublishSkipReason string
+
+const (
+	// EncodedPublishSkipDesiredProfileExcluded は profile が現在の desired から外れたことを表す。
+	EncodedPublishSkipDesiredProfileExcluded EncodedPublishSkipReason = "desired_profile_excluded"
+	// EncodedPublishSkipRebuildRequestMissing は要求に束縛されたジョブの要求行が無いことを表す。
+	EncodedPublishSkipRebuildRequestMissing EncodedPublishSkipReason = "rebuild_request_missing"
+	// EncodedPublishSkipRebuildRequestOverwritten は要求行の keep がジョブの keep から変わったことを表す。
+	EncodedPublishSkipRebuildRequestOverwritten EncodedPublishSkipReason = "rebuild_request_overwritten"
+	// EncodedPublishSkipCutOwnershipMissing は通常のカット版ジョブが章の所有を失ったことを表す。
+	EncodedPublishSkipCutOwnershipMissing EncodedPublishSkipReason = "cut_ownership_missing"
+	// EncodedPublishSkipCutKeepChanged は通常のカット版ジョブと現在の keep が異なることを表す。
+	EncodedPublishSkipCutKeepChanged EncodedPublishSkipReason = "cut_keep_changed"
+	// EncodedPublishSkipAssetSatisfied は active asset が現在の要求を満たすことを表す。
+	EncodedPublishSkipAssetSatisfied EncodedPublishSkipReason = "asset_satisfied"
+	// EncodedPublishSkipAssetAdvanced は前回観測後に行が進み、既に active ではないことを表す。
+	EncodedPublishSkipAssetAdvanced EncodedPublishSkipReason = "asset_advanced"
+	// EncodedPublishSkipActiveCutProtected は要求に由来しないジョブが active なカット版を置き換えないことを表す。
+	EncodedPublishSkipActiveCutProtected EncodedPublishSkipReason = "active_cut_protected"
+)
+
+// EncodedPublishPlan は encoded 公開前に観測した DB 状態から導いた判断である。
 type EncodedPublishPlan struct {
 	// ObservedRelPath は行の rel_path（state は問わない）。行が無ければ ""。
 	ObservedRelPath string
@@ -189,34 +211,78 @@ type EncodedPublishPlan struct {
 	// tombstone や deleting の行は自分のものではないので含めない。
 	Replaces bool
 	// Skip は公開を飛ばして成功扱いにする判定である。
-	// 行が active で（cut なら）凍結区間が keep と一致する、または
-	// 行が active でないまま rel_path が観測時から進んだときに立つ。
 	Skip bool
+	// SkipReason は公開を飛ばす理由で、Skip が false なら空である。
+	SkipReason EncodedPublishSkipReason
 	// Stale は計画が古いことを表す。行が active のまま rel_path だけが観測時から進み、
 	// 区間が自分の keep と違う（cut でだけ起きる）。
 	// 成功扱いで飛ばすと新しい keep が黙って消えるので、公開せずに計画をやり直す。
 	Stale bool
 }
 
-// PlanEncodedPublish は encoded 行の観測 asset（行なしは nil）から公開の判断を導く純粋関数である。
-// previous は前回観測した rel_path で、nil なら初回の観測として rel_path の進みを判定しない。
+// PlanEncodedPublish はエンコード公開の状態を判定する純粋関数である。
+// previous は worker が先に観測した rel_path で、nil なら初回観測として行の進みを判定しない。
 // 区間の比較は量子化後の値どうしで行う。keep は chapters.Derive を通った時点で量子化済みで、
-// 凍結側は書き込み時に量子化して入れてある。
-// worker の初回観測と、store の公開 tx 内の再確認が同じ判定を使う。
-func PlanEncodedPublish(asset *EncodedAssetObservation, cut bool, keep []chapters.Range, previous *string) EncodedPublishPlan {
+// 凍結側は書き込み時に量子化して入れてある。worker のエンコード前の判定と公開 tx が同じ判定を使う。
+func PlanEncodedPublish(in EncodedPublishInput, state EncodedPublishState, previous *string) EncodedPublishPlan {
 	var p EncodedPublishPlan
-	exists := asset != nil
-	active := exists && asset.State == "active"
-	if exists {
-		p.ObservedRelPath = asset.RelPath
+	active := state.EncodedAsset != nil && state.EncodedAsset.State == "active"
+	if state.EncodedAsset != nil {
+		p.ObservedRelPath = state.EncodedAsset.RelPath
 	}
-	p.Replaces = cut && active
+	p.Replaces = in.Cut && active
+
+	if !state.Desired {
+		p.Skip = true
+		p.SkipReason = EncodedPublishSkipDesiredProfileExcluded
+		return p
+	}
+	if in.HasRebuildRequest {
+		if !state.HasRebuildRequest {
+			p.Skip = true
+			p.SkipReason = EncodedPublishSkipRebuildRequestMissing
+			return p
+		}
+		if !chapters.SameRanges(state.RebuildRequestKeep, in.RequestedKeep) {
+			p.Skip = true
+			p.SkipReason = EncodedPublishSkipRebuildRequestOverwritten
+			return p
+		}
+	} else if in.Cut {
+		if !state.ChapterOwned {
+			p.Skip = true
+			p.SkipReason = EncodedPublishSkipCutOwnershipMissing
+			return p
+		}
+		if !chapters.SameRanges(state.CurrentCutKeep, in.KeepRanges) {
+			p.Skip = true
+			p.SkipReason = EncodedPublishSkipCutKeepChanged
+			return p
+		}
+	}
+
 	committed := active
-	if committed && cut {
-		committed = chapters.SameRanges(asset.KeepRanges, keep)
+	if committed && in.Cut {
+		committed = chapters.SameRanges(state.EncodedAsset.KeepRanges, in.KeepRanges)
 	}
 	moved := previous != nil && *previous != p.ObservedRelPath
 	p.Stale = moved && !committed && active
-	p.Skip = committed || (moved && !p.Stale)
+	if p.Stale {
+		return p
+	}
+	if committed {
+		p.Skip = true
+		p.SkipReason = EncodedPublishSkipAssetSatisfied
+		return p
+	}
+	if moved {
+		p.Skip = true
+		p.SkipReason = EncodedPublishSkipAssetAdvanced
+		return p
+	}
+	if in.Cut && !in.HasRebuildRequest && active {
+		p.Skip = true
+		p.SkipReason = EncodedPublishSkipActiveCutProtected
+	}
 	return p
 }

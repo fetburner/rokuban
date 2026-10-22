@@ -169,11 +169,18 @@ WHERE NOT encode_attempts_exhausted(
 )
 ORDER BY m.recording_id, m.profile;
 
+-- GetEncodedAssetRebuildRequest はエンコード worker の preflight が読む。
+-- ロックせず、desired・章・encoded 行と同じ RepeatableRead snapshot に置く。
+-- 行が無ければ pgx.ErrNoRows。
+-- name: GetEncodedAssetRebuildRequest :one
+SELECT q.requested_keep
+FROM encoded_asset_rebuild_requests q
+WHERE q.recording_id = sqlc.arg('recording_id')
+  AND q.profile = sqlc.arg('profile');
+
 -- GetEncodedAssetRebuildRequestForShare は要求行を FOR SHARE で読む。行が無ければ
 -- pgx.ErrNoRows。公開 tx では、読んでから公開するまで api の upsert（押し直し）を
--- 待たせ、ジョブの keep と requested_keep が等しいときだけ公開する。エンコード前の
--- 確認（EncodeWorker.loadRequestedEncodeCut）は tx の外から呼ぶので、ロックは文の
--- 終わりで外れ、読み取りとしてだけ働く。
+-- 待たせ、ジョブの keep と requested_keep が等しいときだけ公開する。
 -- name: GetEncodedAssetRebuildRequestForShare :one
 SELECT q.requested_keep
 FROM encoded_asset_rebuild_requests q

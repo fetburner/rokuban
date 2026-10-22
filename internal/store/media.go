@@ -96,6 +96,16 @@ type EncodedAssetObservation struct {
 	KeepRanges []chapters.Range
 }
 
+// EncodedPublishState はエンコード公開の判断に使う、同じ時点の DB 状態を表す。
+type EncodedPublishState struct {
+	Desired            bool
+	HasRebuildRequest  bool
+	RebuildRequestKeep []chapters.Range
+	ChapterOwned       bool
+	CurrentCutKeep     []chapters.Range
+	EncodedAsset       *EncodedAssetObservation
+}
+
 // MediaReconcilePage は録画 ID で巡回するメディア reconcile のページ条件を表す。
 type MediaReconcilePage struct {
 	AfterRecordingID int64
@@ -171,11 +181,11 @@ type MediaReconcile interface {
 	HasActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (bool, error)
 	// HasActiveSeekTilesMediaAsset は active なシークタイルがあれば true を返す。
 	HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID int64) (bool, error)
-	// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
-	// 行と区間は 1 つの読み取りで同じ時点の値を返す。無ければ ErrNotFound を返す。
-	GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (EncodedAssetObservation, error)
-	// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
-	EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error)
+	// GetEncodedPublishState は desired、作り直し要求、encoded 行と必要なカット版の状態を、
+	// ロックを取らずに同じ時点の値として返す（エンコード前の判定用）。
+	// cut=true なら encoded 行の凍結 keep も読む。includeCurrentCut=true かつ profile が
+	// desired のときだけ、現在の章所有と keep 区間も読む（要求に由来しないカット版ジョブ用）。
+	GetEncodedPublishState(ctx context.Context, recordingID int64, profile string, cut, includeCurrentCut bool) (EncodedPublishState, error)
 	// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 	ListMissingEncodeProfiles(ctx context.Context, params MissingEncodeProfilesParams) ([]MissingEncodeProfile, error)
 	// ListUnsatisfiableEncodeProfiles は現在の設定に無い desired profile と録画数を返す。
