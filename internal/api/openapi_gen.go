@@ -1984,8 +1984,9 @@ type Recording struct {
 	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 	// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-	// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
-	// 揃うまでは原本を削除しない。
+	// `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
+	// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+	// 原本を削除しない。
 	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
 	NetworkId    int                   `json:"networkId"`
 
@@ -2049,8 +2050,9 @@ type RecordingChannelType string
 // RecordingKeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 // ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 // `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
-// 揃うまでは原本を削除しない。
+// `always` は原本を常に保持する。`until_encoded` でも、原本を入力とする
+// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされるまでは
+// 原本を削除しない。
 type RecordingKeepOriginal string
 
 // RecordingSource 録画作成時に一度だけ焼かれる出自の snapshot。
@@ -2352,15 +2354,17 @@ type SetRecordingEncodePolicyInput struct {
 	// 検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。
 	CmDetect *bool `json:"cmDetect,omitempty"`
 
-	// KeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
-	// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
-	// プロファイルが 1 つ以上必要。
+	// KeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
+	// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+	// 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+	// 1 つ以上必要。
 	KeepOriginal *SetRecordingEncodePolicyInputKeepOriginal `json:"keepOriginal,omitempty"`
 }
 
-// SetRecordingEncodePolicyInputKeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
-// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
-// プロファイルが 1 つ以上必要。
+// SetRecordingEncodePolicyInputKeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力とする
+// 処理ごとの削除条件と、利用者が要求した作り直しがすべて満たされた後に
+// 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+// 1 つ以上必要。
 type SetRecordingEncodePolicyInputKeepOriginal string
 
 // StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の
