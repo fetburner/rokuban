@@ -23,8 +23,7 @@ func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*sqlcgen.CreateRecord
 	return id
 }
 
-// RecordingWithError は既定値で録画を 1 件作り、その id を返す。opts で既定値を上書きする。
-// 呼び出し元 goroutine からエラーを test goroutine へ返す必要がある場合に使う。
+// RecordingWithError は Recording と同じ録画を作り、エラーを返す。
 func RecordingWithError(db sqlcgen.DBTX, opts ...func(*sqlcgen.CreateRecordingParams)) (int64, error) {
 	params := sqlcgen.CreateRecordingParams{
 		Source:            "manual",
@@ -64,18 +63,12 @@ func OriginalAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...fun
 	return id
 }
 
-// OriginalAssetWithError は既定値で原本 media_asset を 1 件作り、その id を返す。
-// opts で既定値を上書きする。呼び出し元 goroutine からエラーを test goroutine へ返す
-// 必要がある場合に使う。
+// OriginalAssetWithError は OriginalAsset と同じ原本 media_asset を作り、エラーを返す。
 func OriginalAssetWithError(db sqlcgen.DBTX, recordingID int64, opts ...func(*sqlcgen.CreateMediaAssetParams)) (int64, error) {
-	asset, err := mediaAssetSite(db, recordingID)
-	if err != nil {
-		return 0, err
-	}
 	params := sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "original",
-		RelPath:     fmt.Sprintf("sites/%s/test/%d.ts", asset, assetPathID.Add(1)),
+		RelPath:     fmt.Sprintf("test-original/%d.ts", assetPathID.Add(1)),
 		SizeBytes:   1,
 	}
 	for _, opt := range opts {
@@ -87,12 +80,4 @@ func OriginalAssetWithError(db sqlcgen.DBTX, recordingID int64, opts ...func(*sq
 		return 0, fmt.Errorf("create test original media asset: %w", err)
 	}
 	return id, nil
-}
-
-func mediaAssetSite(db sqlcgen.DBTX, recordingID int64) (string, error) {
-	var site string
-	if err := db.QueryRow(context.Background(), `SELECT site FROM recordings WHERE id = $1`, recordingID).Scan(&site); err != nil {
-		return "", fmt.Errorf("get test recording site for media asset: %w", err)
-	}
-	return site, nil
 }
