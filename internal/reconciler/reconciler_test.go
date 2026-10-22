@@ -1116,6 +1116,53 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 	}
 }
 
+// 開始 20 秒前でも scheduled なら priority 差分を再作成する。
+// mirakc は開始約 15 秒前にチューナーを開くため、地上波 1 番組の実測では開始
+// 14.2 秒前まで scheduled だった。時刻ガードを入れると priority 変更を逃しうるので、
+// 時刻ではなく state の allowlist だけで判定する決定を固定する。
+func TestReconciler_RecreatesScheduledSchedule20SecondsBeforeStart(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(20 * time.Second)
+	res := createReservation(t, ctx, q, 100000500019011, "開始直前の優先度変更", startAt)
+	setPriorityOverride(t, ctx, q, res, 77)
+
+	observedStartAt := mirakc.Milliseconds(startAt)
+	mock.schedules[res.ProgramID] = mirakc.Schedule{
+		State: mirakc.ScheduleStateScheduled,
+		Program: mirakc.Program{
+			ID:       res.ProgramID,
+			StartAt:  &observedStartAt,
+			Duration: ptrInt64(1800000),
+		},
+		Options: mirakc.Options{Priority: 10},
+		Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
+	}
+
+	rec := newReconciler(mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("delete calls for program %d = %v, want exactly 1", res.ProgramID, calls)
+	}
+	if calls := mock.getPostCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("post calls for program %d = %v, want exactly 1", res.ProgramID, calls)
+	}
+	if got := mock.getSchedules()[res.ProgramID].Options.Priority; got != 77 {
+		t.Errorf("priority after recreate = %d, want 77", got)
+	}
+}
+
 // state=recording の schedule は priority が食い違っていても一切触らない
 // （受け入れ条件: 録画中の予約を破壊しないこと）。
 func TestReconciler_RecordingStateNotRecreated(t *testing.T) {
