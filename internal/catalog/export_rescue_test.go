@@ -536,7 +536,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			default:
 			}
-			recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			recID, err := dbtest.RecordingWithError(pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
 				fixtureParams.NetworkID = 1
 				fixtureParams.ServiceID = 1
 				fixtureParams.EventID = int32(10_000 + i)
@@ -546,11 +546,18 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				fixtureParams.ProgramStartAt = time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
 				fixtureParams.ProgramDurationMs = 60000
 			})
+			if err != nil {
+				insertErr.CompareAndSwap(nil, &err)
+				return
+			}
 
-			dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			if _, err := dbtest.OriginalAssetWithError(pool, recID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("race/%d.m2ts", i)
 				fixtureParams.SizeBytes = 1
-			})
+			}); err != nil {
+				insertErr.CompareAndSwap(nil, &err)
+				return
+			}
 			inserted.Add(1)
 		}
 	}()

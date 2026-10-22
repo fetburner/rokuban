@@ -16,6 +16,16 @@ var recordingEventID atomic.Int32
 // Recording は既定値で録画を 1 件作り、その id を返す。opts で既定値を上書きする。
 func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*sqlcgen.CreateRecordingParams)) int64 {
 	t.Helper()
+	id, err := RecordingWithError(db, opts...)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return id
+}
+
+// RecordingWithError は既定値で録画を 1 件作り、その id を返す。opts で既定値を上書きする。
+// 呼び出し元 goroutine からエラーを test goroutine へ返す必要がある場合に使う。
+func RecordingWithError(db sqlcgen.DBTX, opts ...func(*sqlcgen.CreateRecordingParams)) (int64, error) {
 	params := sqlcgen.CreateRecordingParams{
 		Source:            "manual",
 		Site:              "default",
@@ -37,9 +47,9 @@ func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*sqlcgen.CreateRecord
 
 	id, err := sqlcgen.New(db).CreateRecording(context.Background(), params)
 	if err != nil {
-		t.Fatalf("create test recording: %v", err)
+		return 0, fmt.Errorf("create test recording: %w", err)
 	}
-	return id
+	return id, nil
 }
 
 var assetPathID atomic.Int64
@@ -47,7 +57,21 @@ var assetPathID atomic.Int64
 // OriginalAsset は既定値で原本 media_asset を 1 件作り、その id を返す。opts で既定値を上書きする。
 func OriginalAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...func(*sqlcgen.CreateMediaAssetParams)) int64 {
 	t.Helper()
-	asset := mediaAssetParams(t, db, recordingID)
+	id, err := OriginalAssetWithError(db, recordingID, opts...)
+	if err != nil {
+		t.Fatalf("%v", err)
+	}
+	return id
+}
+
+// OriginalAssetWithError は既定値で原本 media_asset を 1 件作り、その id を返す。
+// opts で既定値を上書きする。呼び出し元 goroutine からエラーを test goroutine へ返す
+// 必要がある場合に使う。
+func OriginalAssetWithError(db sqlcgen.DBTX, recordingID int64, opts ...func(*sqlcgen.CreateMediaAssetParams)) (int64, error) {
+	asset, err := mediaAssetSite(db, recordingID)
+	if err != nil {
+		return 0, err
+	}
 	params := sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "original",
@@ -60,16 +84,15 @@ func OriginalAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...fun
 
 	id, err := sqlcgen.New(db).CreateMediaAsset(context.Background(), params)
 	if err != nil {
-		t.Fatalf("create test original media asset: %v", err)
+		return 0, fmt.Errorf("create test original media asset: %w", err)
 	}
-	return id
+	return id, nil
 }
 
-func mediaAssetParams(t testing.TB, db sqlcgen.DBTX, recordingID int64) string {
-	t.Helper()
+func mediaAssetSite(db sqlcgen.DBTX, recordingID int64) (string, error) {
 	var site string
 	if err := db.QueryRow(context.Background(), `SELECT site FROM recordings WHERE id = $1`, recordingID).Scan(&site); err != nil {
-		t.Fatalf("get test recording site for media asset: %v", err)
+		return "", fmt.Errorf("get test recording site for media asset: %w", err)
 	}
-	return site
+	return site, nil
 }

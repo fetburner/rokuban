@@ -53,6 +53,18 @@ func TestRecording_OptionsOverrideDefaults(t *testing.T) {
 	}
 }
 
+func TestFixtureWithError_ReturnsInsertAndLookupErrors(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	if _, err := dbtest.RecordingWithError(pool, func(params *sqlcgen.CreateRecordingParams) {
+		params.Status = "invalid"
+	}); err == nil {
+		t.Fatal("RecordingWithError() error = nil, want status constraint error")
+	}
+	if _, err := dbtest.OriginalAssetWithError(pool, -1); err == nil {
+		t.Fatal("OriginalAssetWithError() error = nil, want missing recording error")
+	}
+}
+
 func TestOriginalAsset_DefaultsAndOptions(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
