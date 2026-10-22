@@ -103,8 +103,16 @@ func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
 
 // ThumbnailReconcileArgs は thumbnail の desired−observed reconcile ジョブの引数。
 // RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
+// After* は全件パスの継続位置で、*Done は継続チェーンで短いページを返した窓を表す。
+// 対象録画の指定と継続状態を同時に載せる経路は無い。
 type ThumbnailReconcileArgs struct {
-	RecordingID int64 `json:"recording_id,omitempty"`
+	RecordingID               int64 `json:"recording_id,omitempty"`
+	AfterRecordingID          int64 `json:"after_recording_id,omitempty"`
+	AfterReselectRecordingID  int64 `json:"after_reselect_recording_id,omitempty"`
+	AfterSeekTilesRecordingID int64 `json:"after_seek_tiles_recording_id,omitempty"`
+	MissingDone               bool  `json:"missing_done,omitempty"`
+	ReselectDone              bool  `json:"reselect_done,omitempty"`
+	SeekTilesDone             bool  `json:"seek_tiles_done,omitempty"`
 }
 
 // Kind はジョブ種別名を返す。
@@ -120,7 +128,15 @@ type CMDetectJobArgs struct {
 func (CMDetectJobArgs) Kind() string { return "cm_detect" }
 
 // CMDetectReconcileArgs requests one desired-minus-observed CM detection pass.
-type CMDetectReconcileArgs struct{}
+// The recording and composite station windows advance independently. Done flags keep
+// exhausted windows out of the rest of the continuation chain.
+type CMDetectReconcileArgs struct {
+	AfterRecordingID        int64 `json:"after_recording_id,omitempty"`
+	CandidateAfterNetworkID int32 `json:"candidate_after_network_id,omitempty"`
+	CandidateAfterServiceID int32 `json:"candidate_after_service_id,omitempty"`
+	DetectionDone           bool  `json:"detection_done,omitempty"`
+	CandidateDone           bool  `json:"candidate_done,omitempty"`
+}
 
 // Kind はジョブ種別名を返す。
 func (CMDetectReconcileArgs) Kind() string { return "cm_detect_reconcile" }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
@@ -13,14 +12,16 @@ import (
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
+// The recording cursor and the (network_id, service_id) station cursor are independent
+// but ride in one continuation job, so one chain evaluates both windows each page
+// instead of one chain per window running side by side. The Done flags mark a window
+// already read to its end in this chain; without them the shorter window restarts from
+// cursor 0 on every later page and enqueues its first candidates again.
 type CMDetectReconcileWorker struct {
-	Enqueuer              jobq.Enqueuer
-	DetectionStore        store.CMDetection
-	RowLimit              int32
-	RecoveryGrace         time.Duration
-	resumeAfter           atomic.Int64
-	candidateAfterNetwork atomic.Int32
-	candidateAfterService atomic.Int32
+	Enqueuer       jobq.Enqueuer
+	DetectionStore store.CMDetection
+	RowLimit       int32
+	RecoveryGrace  time.Duration
 }
 
 func cmDetectionTimeout(durationMs int64) time.Duration {
@@ -29,7 +30,7 @@ func cmDetectionTimeout(durationMs int64) time.Duration {
 }
 
 // Work schedules the current desired set and fails candidates without active jobs.
-func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectReconcileArgs) error {
+func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectReconcileArgs) error {
 	if w.Enqueuer == nil {
 		return fmt.Errorf("CM detection reconcile: job enqueuer is nil")
 	}
@@ -43,9 +44,13 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if limit <= 0 {
 		limit = cmDetectRowLimit
 	}
-	rows, err := w.DetectionStore.ListMissingDetections(ctx, w.resumeAfter.Load(), limit)
-	if err != nil {
-		return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
+	var rows []store.CMDetectionJob
+	if !args.DetectionDone {
+		var err error
+		rows, err = w.DetectionStore.ListMissingDetections(ctx, args.AfterRecordingID, limit)
+		if err != nil {
+			return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
+		}
 	}
 	failed := 0
 	for _, recording := range rows {
@@ -56,20 +61,25 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 			slog.Error("cm_detect_reconcile: failed to enqueue detection", "recording_id", recording.RecordingID, "err", err)
 		}
 	}
-	next := int64(0)
-	if int32(len(rows)) >= limit {
-		next = rows[len(rows)-1].RecordingID
-		slog.Warn("cm_detect_reconcile: candidate window is full", "row_limit", limit, "resume_after", next)
+	var nextRecordingID int64
+	detectionWindowFull := !args.DetectionDone && int32(len(rows)) >= limit
+	detectionDone := args.DetectionDone || !detectionWindowFull
+	if detectionWindowFull {
+		nextRecordingID = rows[len(rows)-1].RecordingID
 	}
-	w.resumeAfter.Store(next)
 	if len(rows) > 0 || failed > 0 {
-		slog.Info("cm_detect_reconcile: pass complete", "candidates", len(rows), "enqueue_failures", failed, "resume_after", next)
+		slog.Info("cm_detect_reconcile: pass complete", "candidates", len(rows), "enqueue_failures", failed,
+			"after_recording_id", nextRecordingID)
 	}
-	candidateRows, err := w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{
-		NetworkID: w.candidateAfterNetwork.Load(), ServiceID: w.candidateAfterService.Load(),
-	}, limit)
-	if err != nil {
-		return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
+	var candidateRows []store.CMLogoCandidateJob
+	if !args.CandidateDone {
+		var err error
+		candidateRows, err = w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{
+			NetworkID: args.CandidateAfterNetworkID, ServiceID: args.CandidateAfterServiceID,
+		}, limit)
+		if err != nil {
+			return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
+		}
 	}
 	candidateFailures := 0
 	for _, candidate := range candidateRows {
@@ -84,19 +94,41 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 				"network_id", candidate.Station.NetworkID, "service_id", candidate.Station.ServiceID, "err", err)
 		}
 	}
-	var nextCandidateNetwork, nextCandidateService int32
-	if int32(len(candidateRows)) >= limit {
+	var nextCandidateNetworkID, nextCandidateServiceID int32
+	candidateWindowFull := !args.CandidateDone && int32(len(candidateRows)) >= limit
+	candidateDone := args.CandidateDone || !candidateWindowFull
+	if candidateWindowFull {
 		last := candidateRows[len(candidateRows)-1]
-		nextCandidateNetwork, nextCandidateService = last.Station.NetworkID, last.Station.ServiceID
-		slog.Warn("cm_detect_reconcile: logo candidate window is full", "row_limit", limit,
-			"resume_network_id", nextCandidateNetwork, "resume_service_id", nextCandidateService)
+		nextCandidateNetworkID, nextCandidateServiceID = last.Station.NetworkID, last.Station.ServiceID
 	}
-	w.candidateAfterNetwork.Store(nextCandidateNetwork)
-	w.candidateAfterService.Store(nextCandidateService)
 	if len(candidateRows) > 0 || candidateFailures > 0 {
 		slog.Info("cm_detect_reconcile: logo candidate pass complete",
 			"candidates", len(candidateRows), "enqueue_failures", candidateFailures,
-			"resume_network_id", nextCandidateNetwork, "resume_service_id", nextCandidateService)
+			"after_network_id", nextCandidateNetworkID, "after_service_id", nextCandidateServiceID)
+	}
+	if detectionWindowFull || candidateWindowFull {
+		continuation := jobs.CMDetectReconcileArgs{
+			AfterRecordingID:        nextRecordingID,
+			CandidateAfterNetworkID: nextCandidateNetworkID,
+			CandidateAfterServiceID: nextCandidateServiceID,
+			DetectionDone:           detectionDone,
+			CandidateDone:           candidateDone,
+		}
+		if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
+			slog.Error("cm_detect_reconcile: failed to enqueue continuation",
+				"after_recording_id", nextRecordingID,
+				"after_network_id", nextCandidateNetworkID,
+				"after_service_id", nextCandidateServiceID,
+				"err", err)
+		} else {
+			slog.Warn("cm_detect_reconcile: candidate windows are full; continuation enqueued",
+				"row_limit", limit,
+				"detection_window_full", detectionWindowFull,
+				"candidate_window_full", candidateWindowFull,
+				"after_recording_id", nextRecordingID,
+				"after_network_id", nextCandidateNetworkID,
+				"after_service_id", nextCandidateServiceID)
+		}
 	}
 	return nil
 }

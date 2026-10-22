@@ -30,9 +30,15 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"encode", EncodeJobArgs{RecordingID: 1, Profile: "mobile", Timeout: 2 * time.Hour}, "encode", EncodeQueue, "encode", 2 * time.Hour, 26, true, 1},
 		{"thumbnail", ThumbnailJobArgs{RecordingID: 1}, "thumbnail", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},
 		{"seek_tiles", SeekTilesJobArgs{RecordingID: 1}, "seek_tiles", ThumbnailQueue, "thumbnail", 15 * time.Minute, 0, true, 4},
-		{"thumbnail_reconcile", ThumbnailReconcileArgs{}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 1, true, 1},
+		{"thumbnail_reconcile", ThumbnailReconcileArgs{
+			AfterRecordingID: 101, AfterReselectRecordingID: 202, AfterSeekTilesRecordingID: 303,
+			MissingDone: true, SeekTilesDone: true,
+		}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 1, true, 1},
 		{"cm_detect", CMDetectJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_detect", CMDetectQueue, "cm_detect", 40 * time.Minute, 10, true, 1},
-		{"cm_detect_reconcile", CMDetectReconcileArgs{}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 1, true, 1},
+		{"cm_detect_reconcile", CMDetectReconcileArgs{
+			AfterRecordingID: 101, CandidateAfterNetworkID: 32736, CandidateAfterServiceID: 1024,
+			CandidateDone: true,
+		}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 1, true, 1},
 		{"cm_logo_candidate", CMLogoCandidateJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_logo_candidate", CMDetectQueue, "cm_detect", 40 * time.Minute, 1, true, 1},
 		{"label_rule_reconcile", LabelRuleReconcileArgs{}, "label_rule_reconcile", CleanupQueue, "cleanup", time.Minute, 1, false, 1},
 		{"encode_reconcile", EncodeReconcileArgs{}, "encode_reconcile", EncodeQueue, "encode", 5 * time.Minute, 1, true, 1},

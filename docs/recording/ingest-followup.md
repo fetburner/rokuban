@@ -104,6 +104,49 @@ ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると
 
 対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
+missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、3 つの再開位置を 1 本の継続ジョブに載せる。窓ごとに継続ジョブを分けると、満杯の窓の数だけ継続チェーンが並走し、どの窓を評価するかを選ぶ引数も要る。`--once` で worker が作り直されても、次のページは継続ジョブの引数から開く。対象録画の即時パスは継続位置を読まず、窓が満杯になっても継続ジョブを積まない。
+
+上限未満のページを返した窓は末尾に達している。継続ジョブの Done フラグがそれを引き継ぎ、ほかの窓が続く間もその窓を照会しない。Done フラグが無いと、短い窓が次のページで先頭から読み直され、先頭の候補を毎ページ投入し直す。すべての窓が短ければ継続ジョブを積まない。ちょうど上限の窓は、次の空ページで末尾と分かる。
+
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。`--once` では、先頭に満杯の恒久候補がある間、後ろの候補へ進む手段は継続ジョブだけである。失敗するとその周期の残りのページを失い、次の定期パスが先頭から連鎖を作り直す。定期パスの kind は MaxAttempts 1 で再試行しないので、エラーにしても得るものは無い。
+
+継続ジョブは引数が違うので、定期パス `{}` と並走しうる。thumbnail ジョブと seek_tiles ジョブは `recording_id` で合流し、二重に走っても、後から公開する側は既存を見て捨てる。ffmpeg の抽出は 2 回走る。
+
+<details><summary>根拠</summary>
+
+- 3 つの独立カーソルが fresh worker をまたぐこと: `TestThumbnailReconcile_ContinuationSurvivesFreshWorker`
+- 短い窓が別窓の継続中に再走しないこと（再選択・seek tiles が最短の場合）: `TestThumbnailReconcile_ExhaustedWindowNotRestarted`
+- 短い窓が別窓の継続中に再走しないこと（missing が最短の場合）: `TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues`
+- 窓が満杯になる条件（RowLimit 1）でも対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
+- 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
+- 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 公開済みなら後から来た thumbnail の公開を捨てること（`published` が false）: `TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive`
+- 公開済みなら後から来た thumbnail と seek_tiles の公開を捨てること: `runDerivedPublicationSkips`（`internal/store/contracttest/mediapublish.go`）
+- 公開が rel_path のロック下で直列になること: `TestThumbnailWorkerPublishesUnderRelPathLock`、`TestSeekTilesWorkerPublishesUnderRelPathLock`
+
+</details>
+
+#### CM 検出とロゴ候補の定期パス
+
+CM 検出と局ロゴ候補も定期パスで補完する。
+
+CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる理由と、短い窓の Done フラグは thumbnail と同じである。worker が `--once` で作り直されても、各窓は引数の位置から続ける。満杯の窓がなければ継続ジョブは積まない。
+
+継続ジョブは定期パス `{}` と並走しうる。cm_detect ジョブは `(recording_id, recording_duration_ms)`、cm_logo_candidate ジョブは局・録画・ロゴ領域の更新時刻・録画尺で合流する。二重に走っても、遅れて来た試行の結果は捨てられる。
+
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
+
+<details><summary>根拠</summary>
+
+- 両窓が複合キーを含む引数で fresh worker をまたぐこと: `TestCMDetectReconcile_ContinuationSurvivesFreshWorker`
+- 短い窓が別窓の継続中に再走しないこと: `TestCMDetectReconcile_ExhaustedWindowNotRestarted`
+- 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
+- 継続投入の失敗を成功で終えること: `TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 遅れて来た cm_detect の試行結果が捨てられること（試行回数の不一致）: `TestCMDetectCountsDeadAttemptsAndFencesLateResults`
+- 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate`
+
+</details>
+
 #### TS scan の定期パス
 
 TS の統計も、コミット後のヒントと定期パスの二重で埋める。定期パスは未計測の原本を候補にする。読み出しに失敗した scan に終端記録は作らず、後続の reconcile が再投入する。
@@ -112,6 +155,8 @@ TS の統計も、コミット後のヒントと定期パスの二重で埋め�
 
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
+
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。scan は ingest の後に原本を全量読む。追加読み出しのコストは未検証である。
 
 読み出しに失敗した scan の再投入は、上記のとおり後続の reconcile が行う。削除条件が scan 完了を要求するようになった後は、恒久的な読み出し失敗がある原本は保持され続ける。
@@ -119,6 +164,7 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 <details><summary>根拠</summary>
 
 - TS scan の継続カーソルが新しい worker で再開すること: `TestTSScanReconcile_ContinuationSurvivesFreshWorker`
+- 継続投入の失敗を成功で終えること: `TestTSScanReconcile_ContinuationEnqueueFailureReturnsSuccess`
 - 計測済みの判定: view `current_ts_scanned_originals`
 - サムネイルの補完ジョブ: `thumbnail_reconcile`
 - TS scan の補完ジョブ: `ts-scan-reconcile`
