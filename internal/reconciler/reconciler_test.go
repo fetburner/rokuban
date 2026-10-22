@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1113,6 +1114,55 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 	tagProgramID, found := mirakc.FindProgramTag(got.Tags)
 	if !found || tagProgramID != res.ProgramID {
 		t.Errorf("tag after recreate = %v, want program id %d", got.Tags, res.ProgramID)
+	}
+}
+
+// 開始 20 秒前でも scheduled なら priority 差分を再作成する。
+// mirakc は開始約 15 秒前にチューナーを開くため、地上波 1 番組の実測では開始
+// 14.2 秒前まで scheduled だった。時刻ガードで再作成を見送ると priority 変更が
+// mirakc に届かず番組をまるごと失いうるが、再作成の窓で失うのは最大で冒頭の
+// reconcile 1 周期分である。損の小さい方として、時刻ではなく state の allowlist
+// だけで判定する決定を固定する。
+func TestReconciler_RecreatesScheduledSchedule20SecondsBeforeStart(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	srv := httptest.NewServer(mock)
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+
+	startAt := time.Now().Add(20 * time.Second)
+	res := createReservation(t, ctx, q, 100000500019011, "開始直前の優先度変更", startAt)
+	setPriorityOverride(t, ctx, q, res, 77)
+
+	observedStartAt := mirakc.Milliseconds(startAt)
+	mock.schedules[res.ProgramID] = mirakc.Schedule{
+		State: mirakc.ScheduleStateScheduled,
+		Program: mirakc.Program{
+			ID:       res.ProgramID,
+			StartAt:  &observedStartAt,
+			Duration: ptrInt64(1800000),
+		},
+		Options: mirakc.Options{Priority: 10},
+		Tags:    []string{mirakc.ProgramTag(res.ProgramID)},
+	}
+
+	rec := newReconciler(mc, pool, nil)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass: %v", err)
+	}
+
+	if calls := mock.getDeleteCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("delete calls for program %d = %v, want exactly 1", res.ProgramID, calls)
+	}
+	if calls := mock.getPostCalls(); countInt64(calls, res.ProgramID) != 1 {
+		t.Errorf("post calls for program %d = %v, want exactly 1", res.ProgramID, calls)
+	}
+	if got := mock.getSchedules()[res.ProgramID].Options.Priority; got != 77 {
+		t.Errorf("priority after recreate = %d, want 77", got)
 	}
 }
 
@@ -2761,6 +2811,12 @@ func startDelayGauge(t *testing.T) float64 {
 	return promtestutil.ToFloat64(metrics.ReconcileStartDelayed.WithLabelValues("default"))
 }
 
+// startDelayErrorCounter は metrics.ReconcileStartDelayErrors の "default" サイトの現在値を読む。
+func startDelayErrorCounter(t *testing.T) float64 {
+	t.Helper()
+	return promtestutil.ToFloat64(metrics.ReconcileStartDelayErrors.WithLabelValues("default"))
+}
+
 // 受け入れ条件 1: 開始時刻 + 猶予を過ぎて recordings.started_at が無い予約が
 // 検出されること（観測欠落を注入して検出されること）。ゲージとエラーログの
 // 両方に、programId・題名・経過が出ることを確認する。
@@ -3082,6 +3138,52 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 	}
 	if got := startDelayGauge(t); got != 0 {
 		t.Errorf("rokuban_reconcile_start_delayed after pass 2 = %v, want 0 (converges once started_at is observed)", got)
+	}
+}
+
+// 受け入れ条件: 開始遅延の検出に失敗しても、常駐 reconciler のゲージは最後の成功値を保ち、
+// 専用カウンタが増える。POST 中に DB プールを閉じて検出クエリの失敗を注入する。
+func TestReconciler_StartDelayDetectionErrorKeepsGaugeAndCounts(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+
+	mock := newMockMirakc()
+	var closePoolOnPost atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/recording/schedules" && closePoolOnPost.Swap(false) {
+			pool.Close()
+		}
+		mock.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+
+	mc := mirakc.NewClient(srv.URL, nil)
+	q := sqlcgen.New(pool)
+	startAt := time.Now().Add(-10 * time.Minute)
+	createReservation(t, ctx, q, 100000500030008, "検出失敗確認番組", startAt)
+	rec := newReconciler(mc, pool, nil)
+	errorsBefore := startDelayErrorCounter(t)
+
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (successful detection): %v", err)
+	}
+	if got := startDelayGauge(t); got != 1 {
+		t.Fatalf("rokuban_reconcile_start_delayed after successful pass = %v, want 1", got)
+	}
+
+	// 2 回目のパスで新しい schedule を作る POST に到達した後なら、RunPass は
+	// 開始遅延の検出クエリまで進み、前半の DB 読み取りは成功したままにできる。
+	createReservation(t, ctx, q, 100000500030009, "追加予約", time.Now().Add(time.Hour))
+	closePoolOnPost.Store(true)
+	if err := rec.RunPass(ctx); err != nil {
+		t.Fatalf("RunPass (detection error): %v", err)
+	}
+
+	if got := startDelayGauge(t); got != 1 {
+		t.Errorf("rokuban_reconcile_start_delayed after detection error = %v, want last successful value 1", got)
+	}
+	if got := startDelayErrorCounter(t); got != errorsBefore+1 {
+		t.Errorf("rokuban_reconcile_start_delay_errors_total = %v, want %v", got, errorsBefore+1)
 	}
 }
 

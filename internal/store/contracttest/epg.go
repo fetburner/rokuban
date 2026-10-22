@@ -272,10 +272,11 @@ func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
 		epgProgram("default", 2011, 1, "needle", "special", start.Add(2*time.Hour), 1_800_000, 7),
 		// 最短未満の番組長。DurationMinMs を無視すると当たってしまう。
 		epgProgram("default", 2012, 1, "needle", "special", start, 500_000, 7),
-		// 日跨ぎの窓（End < Start）用。月曜 23:30 は窓の内、月曜 12:00 は外。
-		// 翌日側（月曜 0:30 など）は曜日の解釈が分かれるので契約に含めない。
+		// 日跨ぎの窓（End < Start）用。曜日は番組開始日の曜日で判定する。
 		epgProgram("default", 2013, 1, "overnight", "", start.Add(14*time.Hour), 1_800_000, 7),
 		epgProgram("default", 2015, 1, "overnight", "", start.Add(2*time.Hour+30*time.Minute), 1_800_000, 7),
+		epgProgram("default", 2016, 1, "overnight", "", start.Add(-9*time.Hour), 1_800_000, 7),
+		epgProgram("default", 2017, 1, "overnight", "", start.Add(15*time.Hour), 1_800_000, 7),
 	}
 	programs[7].IsFree = false
 	if err := f.Sync.UpsertPrograms(ctx, programs); err != nil {
@@ -315,8 +316,8 @@ func runEPGRuleConditions(t *testing.T, newFixture NewEPGFixture) {
 		t.Fatalf("matching overnight rule: %v", err)
 	}
 	slices.Sort(overnight)
-	if !reflect.DeepEqual(overnight, []int64{2013}) {
-		t.Fatalf("overnight window program IDs = %v, want [2013] (Mon 23:30 in, Mon 12:00 out)", overnight)
+	if !reflect.DeepEqual(overnight, []int64{2013, 2016}) {
+		t.Fatalf("overnight window program IDs = %v, want [2013 2016] (Mon 23:30 and Mon 00:30 in; Tue 00:30 and Mon 12:00 out)", overnight)
 	}
 	outOfScope, err := f.Search.MatchProgramIDsForRule(ctx, "other", ruleID)
 	if err != nil {

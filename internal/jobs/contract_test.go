@@ -22,10 +22,10 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		priority      int
 	}{
 		{"ingest", IngestJobArgs{Site: "tokyo", RecordID: "rec-1"}, "ingest", IngestQueue, "ingest_tokyo", 5 * time.Minute, 0, true, 1},
-		{"epg_sync", EpgSyncArgs{Site: "tokyo"}, "epg_sync", EpgQueue, "epg_tokyo", 10 * time.Minute, 0, true, 1},
-		{"tuner_sync", TunerSyncArgs{Site: "tokyo"}, "tuner_sync", EpgQueue, "epg_tokyo", time.Minute, 0, true, 1},
-		{"ruler_pass", RulerPassArgs{Site: "tokyo"}, "ruler_pass", RulerQueue, "ruler", 5 * time.Minute, 0, true, 1},
-		{"reconcile_pass", ReconcilePassArgs{Site: "tokyo"}, "reconcile_pass", ReconcilerQueue, "reconciler_tokyo", 10 * time.Minute, 0, true, 1},
+		{"epg_sync", EpgSyncArgs{Site: "tokyo"}, "epg_sync", EpgQueue, "epg_tokyo", 10 * time.Minute, 1, true, 1},
+		{"tuner_sync", TunerSyncArgs{Site: "tokyo"}, "tuner_sync", EpgQueue, "epg_tokyo", time.Minute, 1, true, 1},
+		{"ruler_pass", RulerPassArgs{Site: "tokyo"}, "ruler_pass", RulerQueue, "ruler", 5 * time.Minute, 1, true, 1},
+		{"reconcile_pass", ReconcilePassArgs{Site: "tokyo"}, "reconcile_pass", ReconcilerQueue, "reconciler_tokyo", 10 * time.Minute, 1, true, 1},
 		{"record_sweep", RecordSweepArgs{Site: "tokyo"}, "record_sweep", RecordSweepQueue, "watcher_tokyo", 10 * time.Minute, 1, true, 1},
 		{"encode", EncodeJobArgs{RecordingID: 1, Profile: "mobile", Timeout: 2 * time.Hour}, "encode", EncodeQueue, "encode", 2 * time.Hour, 26, true, 1},
 		{"thumbnail", ThumbnailJobArgs{RecordingID: 1}, "thumbnail", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},
@@ -33,18 +33,18 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 		{"thumbnail_reconcile", ThumbnailReconcileArgs{
 			AfterRecordingID: 101, AfterReselectRecordingID: 202, AfterSeekTilesRecordingID: 303,
 			MissingDone: true, SeekTilesDone: true,
-		}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 0, true, 1},
+		}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 1, true, 1},
 		{"cm_detect", CMDetectJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_detect", CMDetectQueue, "cm_detect", 40 * time.Minute, 10, true, 1},
 		{"cm_detect_reconcile", CMDetectReconcileArgs{
 			AfterRecordingID: 101, CandidateAfterNetworkID: 32736, CandidateAfterServiceID: 1024,
 			CandidateDone: true,
-		}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 0, true, 1},
+		}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 1, true, 1},
 		{"cm_logo_candidate", CMLogoCandidateJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_logo_candidate", CMDetectQueue, "cm_detect", 40 * time.Minute, 1, true, 1},
-		{"label_rule_reconcile", LabelRuleReconcileArgs{}, "label_rule_reconcile", CleanupQueue, "cleanup", time.Minute, 0, false, 1},
-		{"encode_reconcile", EncodeReconcileArgs{}, "encode_reconcile", EncodeQueue, "encode", 5 * time.Minute, 0, true, 1},
-		{"delete_reconcile", DeleteReconcileArgs{}, "delete_reconcile", CleanupQueue, "cleanup", 10 * time.Minute, 0, true, 1},
-		{"catalog_export", CatalogExportArgs{Keep: 3}, "catalog_export", CleanupQueue, "cleanup", 5 * time.Minute, 0, true, 1},
-		{"storage_sync", StorageSyncArgs{}, "storage_sync", StorageQueue, "storage", time.Minute, 0, true, 1},
+		{"label_rule_reconcile", LabelRuleReconcileArgs{}, "label_rule_reconcile", CleanupQueue, "cleanup", time.Minute, 1, false, 1},
+		{"encode_reconcile", EncodeReconcileArgs{}, "encode_reconcile", EncodeQueue, "encode", 5 * time.Minute, 1, true, 1},
+		{"delete_reconcile", DeleteReconcileArgs{}, "delete_reconcile", CleanupQueue, "cleanup", 10 * time.Minute, 1, true, 1},
+		{"catalog_export", CatalogExportArgs{Keep: 3}, "catalog_export", CleanupQueue, "cleanup", 5 * time.Minute, 1, true, 1},
+		{"storage_sync", StorageSyncArgs{}, "storage_sync", StorageQueue, "storage", time.Minute, 1, true, 1},
 	}
 
 	for _, tt := range tests {

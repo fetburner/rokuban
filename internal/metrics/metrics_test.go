@@ -53,6 +53,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 	ReconcileScheduleLost.Add(1)
 	ReconcileLastPass.SetToCurrentTime()
 	ReconcileStartDelayed.WithLabelValues(testSite).Set(0)
+	ReconcileStartDelayErrors.WithLabelValues(testSite).Inc()
 	RulerProgramIDReuses.Inc()
 	RecordingsFailed.WithLabelValues("need-rescheduling").Inc()
 	RecordsBroken.WithLabelValues("io-error").Inc()
@@ -109,6 +110,7 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_reconcile_schedule_lost_total",
 		"rokuban_reconcile_last_pass_timestamp_seconds",
 		"rokuban_reconcile_start_delayed",
+		"rokuban_reconcile_start_delay_errors_total",
 		"rokuban_recordings_failed_total",
 		"rokuban_records_broken_total",
 		"rokuban_sweep_last_pass_timestamp_seconds",

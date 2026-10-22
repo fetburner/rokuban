@@ -162,8 +162,12 @@ CREATE TABLE rule_genres (
     genre_lv1 smallint NOT NULL CHECK (genre_lv1 BETWEEN 0 AND 15),
     PRIMARY KEY (rule_id, genre_lv1)
 );
+```
 
--- weekdays: bit0=月 … bit6=日（1..127）。start_sec/end_sec は 0..86400（end は翌日跨ぎ可）
+時刻帯（`rule_times`）の曜日は、番組開始時刻（JST）の曜日で判定する。`end_sec < start_sec` なら、同じ曜日の `[0:00, end_sec)` と `[start_sec, 24:00)` のどちらかの区間で始まる番組が対象になる。この判定を EPGStation と同じにしているのは、取り込んだルールの意味を変えないためである。翌日の 0 時台だけを足したいときは、翌日の曜日で `[0:00, end_sec)` の行を別に足す。同じ行で翌日の曜日を選ぶと、翌日の `[start_sec, 24:00)` も対象になる。
+
+```sql
+-- weekdays: bit0=月 … bit6=日（1..127）。start_sec/end_sec は 0..86400
 CREATE TABLE rule_times (
     rule_id    bigint  NOT NULL REFERENCES rules (id) ON DELETE CASCADE,
     seq        integer NOT NULL CHECK (seq >= 0),

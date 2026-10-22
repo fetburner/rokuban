@@ -393,8 +393,9 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
             </Select>
           </Field>
           <p className="text-xs text-muted-foreground">
-            「エンコード後に削除」を選ぶと、エンコードとサムネイルが揃った後、最大 15 分で原本を
-            削除します。原本削除後は再エンコードできません。
+            {
+              '「エンコード後に削除」を選ぶと、原本を使う処理（エンコード・サムネイル・シークプレビュー・CM 検出など）と、要求した作り直しが済んだ後、最大 15 分で原本を削除します。原本削除後は再エンコードできません。'
+            }
           </p>
           {error !== undefined && (
             <p role="alert" className="text-xs text-destructive">
@@ -430,8 +431,9 @@ function KeepOriginalAction({ recording }: { recording: Recording }) {
           <AlertDialogHeader>
             <AlertDialogTitle>エンコード後に原本を削除しますか？</AlertDialogTitle>
             <AlertDialogDescription>
-              desired なエンコードとサムネイルが揃うと、最大 15 分後に原本を削除します。原本の削除は
-              取り消せず、削除後は再エンコードできません。
+              {
+                '原本を使う処理（エンコード・サムネイル・シークプレビュー・CM 検出など）と、要求した作り直しが済むと、最大 15 分後に原本を削除します。原本の削除は取り消せず、削除後は再エンコードできません。'
+              }
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

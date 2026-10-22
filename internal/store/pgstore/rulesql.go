@@ -156,13 +156,14 @@ func compileTimeWindow(window rulequery.TimeWindow, arg func(any) string) string
 	// Postgres isodow: 1=月 … 7=日。我々のビットは bit0=月 … bit6=日 なので常に isodow-1。
 	dowExpr := "(1 << (EXTRACT(ISODOW FROM " + startAtJST + ")::int - 1))"
 	weekdayClause := "(" + dowExpr + " & " + arg(window.Weekdays) + ") <> 0"
+	// 曜日は番組開始時刻（JST）の曜日で判定する。End < Start の 2 区間にも同じ曜日を使う。
 	// 時刻は JST の壁時計での「その日の 0 時からの秒」。
 	secExpr := "EXTRACT(EPOCH FROM " + startAtJST + "::time)::int"
 	var timeClause string
 	if window.EndSec >= window.StartSec {
 		timeClause = secExpr + " >= " + arg(window.StartSec) + " AND " + secExpr + " < " + arg(window.EndSec)
 	} else {
-		// 翌日跨ぎ: start..86400 or 0..end
+		// End < Start は、同じ曜日の [0, end) または [start, 86400) の 2 区間。
 		timeClause = "(" + secExpr + " >= " + arg(window.StartSec) + " OR " + secExpr + " < " + arg(window.EndSec) + ")"
 	}
 	return weekdayClause + " AND " + timeClause

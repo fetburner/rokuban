@@ -196,7 +196,7 @@ k8s の CronJob は、insert-only クライアントで 1 件投入して即終�
 
 現行の River 投影では `UniqueOpts.ByState` を必ず明示する。既定（`UniqueOptsByStateDefault`）は `completed` と `discarded` を含む。そのため既定のままだと、定期ジョブ（`epg_sync`）は実質ワンショットになり、破棄された ingest も再投入できない。Rokuban は `available / pending / retryable / running / scheduled` に限定している。同時実行を防ぐのが目的で、処理済みかどうかは DB の状態が権威だからである。
 
-合流が `retryable` を含むので、定期パスの再試行は周期と競合し、backoff が周期を上書きする。定期パスは River の再試行を使わず、次の定期投入を再試行とする（MaxAttempts は 1）。未解決: ruler_pass / reconcile_pass ほかの定期パスは、まだ River の既定の再試行を使っている。
+合流が `retryable` を含むので、定期パスの再試行は周期と競合し、backoff が周期を上書きする。定期パスは River の再試行を使わず、次の定期投入を再試行とする（MaxAttempts は 1）。
 
 #### 状態設定の変更と残骸
 

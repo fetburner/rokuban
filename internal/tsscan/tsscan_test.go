@@ -9,13 +9,14 @@ import (
 
 func TestArgsSpec(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    jobq.Args
-		kind    string
-		timeout time.Duration
+		name        string
+		args        jobq.Args
+		kind        string
+		timeout     time.Duration
+		maxAttempts int
 	}{
-		{"scan", ScanArgs{RecordingID: 1}, "ts_scan", 6 * time.Hour},
-		{"reconcile", ReconcileArgs{AfterRecordingID: 10}, "ts_scan_reconcile", 5 * time.Minute},
+		{"scan", ScanArgs{RecordingID: 1}, "ts_scan", 6 * time.Hour, 0},
+		{"reconcile", ReconcileArgs{AfterRecordingID: 10}, "ts_scan_reconcile", 5 * time.Minute, 1},
 	}
 
 	for _, tt := range tests {
@@ -30,9 +31,9 @@ func TestArgsSpec(t *testing.T) {
 			if got := spec.Timeout(tt.args); got != tt.timeout {
 				t.Errorf("Spec().Timeout(args) = %s, want literal %s", got, tt.timeout)
 			}
-			if spec.MaxAttempts != 0 || !spec.Coalesce || spec.Priority != 1 {
-				t.Errorf("Spec() attempts/coalesce/priority = %d/%v/%d, want 0/true/1",
-					spec.MaxAttempts, spec.Coalesce, spec.Priority)
+			if spec.MaxAttempts != tt.maxAttempts || !spec.Coalesce || spec.Priority != 1 {
+				t.Errorf("Spec() attempts/coalesce/priority = %d/%v/%d, want %d/true/1",
+					spec.MaxAttempts, spec.Coalesce, spec.Priority, tt.maxAttempts)
 			}
 		})
 	}

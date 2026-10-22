@@ -1984,8 +1984,10 @@ type Recording struct {
 	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 	// `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-	// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
-	// 揃うまでは原本を削除しない。
+	// `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+	// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+	// それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
+	// 原本を削除しない。
 	KeepOriginal RecordingKeepOriginal `json:"keepOriginal"`
 	NetworkId    int                   `json:"networkId"`
 
@@ -2049,8 +2051,10 @@ type RecordingChannelType string
 // RecordingKeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 // ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
 // `PATCH /api/recordings/{id}/encode-policy` で明示的に上書きできる。
-// `until_encoded` でも、desired な全エンコードプロファイルとサムネイルが
-// 揃うまでは原本を削除しない。
+// `always` は原本を常に保持する。`until_encoded` でも、原本を入力にする
+// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+// それぞれ削除を許す状態になり、利用者が要求した作り直しが済むまでは、
+// 原本を削除しない。
 type RecordingKeepOriginal string
 
 // RecordingSource 録画作成時に一度だけ焼かれる出自の snapshot。
@@ -2305,7 +2309,7 @@ type RuleTextMatchTarget string
 
 // RuleTimeWindow defines model for RuleTimeWindow.
 type RuleTimeWindow struct {
-	// EndSec start より小さい場合は翌日跨ぎ
+	// EndSec start より小さい場合は、同じ曜日の [0, endSec) と [startSec, 86400) の 2 区間として扱う。曜日は番組開始時刻（JST）の曜日で判定する
 	EndSec   int `json:"endSec"`
 	StartSec int `json:"startSec"`
 
@@ -2352,15 +2356,19 @@ type SetRecordingEncodePolicyInput struct {
 	// 検出結果か最終失敗が記録されるまで until_encoded の原本を保持する。
 	CmDetect *bool `json:"cmDetect,omitempty"`
 
-	// KeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
-	// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
-	// プロファイルが 1 つ以上必要。
+	// KeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+	// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+	// それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
+	// 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+	// 1 つ以上必要。
 	KeepOriginal *SetRecordingEncodePolicyInputKeepOriginal `json:"keepOriginal,omitempty"`
 }
 
-// SetRecordingEncodePolicyInputKeepOriginal 原本を常に保持するか、desired なエンコードとサムネイルが揃った後に
-// 削除可能にするか。`until_encoded` を指定するには desired なエンコード
-// プロファイルが 1 つ以上必要。
+// SetRecordingEncodePolicyInputKeepOriginal `always` は原本を常に保持する。`until_encoded` は、原本を入力にする
+// 処理（エンコード・サムネイル・シークプレビュー・CM 検出など）が
+// それぞれ削除を許す状態になり、利用者が要求した作り直しが済んだ後に、
+// 原本を削除可能にする。指定するには desired なエンコードプロファイルが
+// 1 つ以上必要。
 type SetRecordingEncodePolicyInputKeepOriginal string
 
 // StorageRoot 1 つのストレージ root（`storage.media_dir` または `storage.scratch_dir`）の

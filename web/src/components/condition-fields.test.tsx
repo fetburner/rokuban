@@ -193,6 +193,74 @@ describe('ConditionFields の詳細条件の折り畳み', () => {
   })
 })
 
+describe('ConditionFields の日跨ぎ時間帯', () => {
+  it('同じ曜日の 2 区間と曜日の判定基準を説明する', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      times: [{ weekdays: 1, startSec: 23 * 3600, endSec: 3600 }],
+    }
+
+    renderInRouter(<ConditionFields draft={draft} onChange={() => {}} />)
+
+    expect(
+      await screen.findByText(
+        '同じ曜日の 00:00〜01:00 と 23:00〜24:00 の 2 つの時間帯として扱います（曜日は番組の開始日で判定します）',
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('終了が 00:00 なら空の区間を表示しない', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      times: [{ weekdays: 1, startSec: 23 * 3600, endSec: 0 }],
+    }
+
+    renderInRouter(<ConditionFields draft={draft} onChange={() => {}} />)
+
+    expect(
+      await screen.findByText(
+        '同じ曜日の 23:00〜24:00 の時間帯として扱います（曜日は番組の開始日で判定します）',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/00:00〜00:00/)).not.toBeInTheDocument()
+  })
+
+  it('開始が 24:00 なら空の後半区間を表示しない', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      times: [{ weekdays: 1, startSec: 86400, endSec: 3600 }],
+    }
+
+    renderInRouter(<ConditionFields draft={draft} onChange={() => {}} />)
+
+    expect(
+      await screen.findByText(
+        '同じ曜日の 00:00〜01:00 の時間帯として扱います（曜日は番組の開始日で判定します）',
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/00:00〜24:00/)).not.toBeInTheDocument()
+  })
+
+  it('開始が 24:00 で終了が 00:00 なら対象時間帯なしと説明する', async () => {
+    stubServicesFetch()
+    const draft: SearchDraft = {
+      ...emptyDraft(),
+      times: [{ weekdays: 1, startSec: 86400, endSec: 0 }],
+    }
+
+    renderInRouter(<ConditionFields draft={draft} onChange={() => {}} />)
+
+    expect(
+      await screen.findByText(
+        '対象となる時間帯はありません（曜日は番組の開始日で判定します）',
+      ),
+    ).toBeInTheDocument()
+  })
+})
+
 describe('ConditionFields ジャンル候補', () => {
   it('選択済みの予備・拡張だけを表示し、条件欄から解除できる', async () => {
     stubServicesFetch()
