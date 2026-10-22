@@ -524,7 +524,7 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 		case 2, 3:
 			// These are reselection candidates. Their seek positions are inside the CM range.
 			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
 			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("continuation/%d-tiles.jpg", i+1))
 			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 				RecordingID: recordingID,
@@ -542,7 +542,7 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 			// These need seek_tiles only; an existing thumbnail keeps them out of the
 			// missing-poster window and the absent chapter/CM state keeps them out of reselection.
 			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
+				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
 		}
 	}
 
@@ -629,7 +629,7 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 			continue
 		}
 		thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
 		seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("unequal-windows/%d-tiles.jpg", index+1))
 		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 			RecordingID: recordingID,
@@ -711,7 +711,7 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 		case index <= 2:
 			// 再選択のみ。
 			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
 			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("short-first/%d-tiles.jpg", index+1))
 			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
 				RecordingID: recordingID, CmRanges: "{[0,60000)}",
@@ -726,7 +726,7 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 		default:
 			// seek_tiles のみ。
 			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
-				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
+				store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
 		}
 	}
 

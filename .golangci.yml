@@ -76,7 +76,7 @@ linters:
               desc: store contracts do not depend on generated database queries
 
         db-import-boundary:
-          # pgx と生成 SQL は pgstore と DB 基盤に閉じ込め、アプリから DB 基盤パッケージ自体も遮断する。テストは統合 DB の状態作りに使うため除外する。
+          # pgx と生成 SQL は pgstore と DB 基盤に閉じ込める。`internal/db` 自体も、下の除外以外のパッケージから import させない。テストは統合 DB の状態作りに使うため除外する。
           # pgx の恒久の例外（riveradapter など）は sqlcgen-composition-roots が sqlcgen だけを禁止する。
           list-mode: lax
           files:

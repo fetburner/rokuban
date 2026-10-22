@@ -11,25 +11,18 @@ package store
 const DefaultSite = "default"
 
 // 録画ステータス。mirakc の RecordInfo.Status と recordings の CHECK 制約で使う。
+// store の録画観測（RecordObservation.Status）が取る値でもある。
 const (
-	// RecordingStatusRecording は録画中を表すステータス。
 	RecordingStatusRecording = "recording"
-	// RecordingStatusFinished は録画終了を表すステータス。
-	RecordingStatusFinished = "finished"
-	// RecordingStatusCanceled は録画キャンセルを表すステータス。
-	RecordingStatusCanceled = "canceled"
-	// RecordingStatusFailed は録画失敗を表すステータス。
-	RecordingStatusFailed = "failed"
+	RecordingStatusFinished  = "finished"
+	RecordingStatusCanceled  = "canceled"
+	RecordingStatusFailed    = "failed"
 )
 
-// メディアアセット種別。
+// メディアアセット種別。store の契約でメディアアセットの Kind が取る値（InPlaceAsset.Kind、MediaDeleteAsset.Kind など）。
 const (
-	// AssetKindOriginal は原本メディアアセットの種別。
-	AssetKindOriginal = "original"
-	// AssetKindEncoded はエンコード済みメディアアセットの種別。
-	AssetKindEncoded = "encoded"
-	// AssetKindThumbnail はサムネイルメディアアセットの種別。
+	AssetKindOriginal  = "original"
+	AssetKindEncoded   = "encoded"
 	AssetKindThumbnail = "thumbnail"
-	// AssetKindSeekTiles はシークタイルメディアアセットの種別。
 	AssetKindSeekTiles = "seek_tiles"
 )
