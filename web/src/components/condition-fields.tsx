@@ -775,6 +775,22 @@ function GenreFields({ draft, onChange, disabled }: FieldsProps) {
   )
 }
 
+/**
+ * overnightNote は終了 < 開始の時間帯の説明文を返す。判定の権威は
+ * internal/store/pgstore/rulesql.go の compileTimeWindow。曜日は番組開始日（JST）で
+ * 判定し、同じ曜日の [0:00, 終了) と [開始, 24:00) の 2 区間になる。終了 00:00 や
+ * 開始 24:00 では片方の区間が空になるので、空の区間は表示しない。
+ */
+function overnightNote({ startSec, endSec }: { startSec: number; endSec: number }): string {
+  const ranges: string[] = []
+  if (endSec > 0) ranges.push(`00:00〜${secToTimeValue(endSec)}`)
+  if (startSec < 86400) ranges.push(`${secToTimeValue(startSec)}〜24:00`)
+  const basis = '（曜日は番組の開始日で判定します）'
+  if (ranges.length === 0) return `対象となる時間帯はありません${basis}`
+  if (ranges.length === 1) return `同じ曜日の ${ranges[0]} の時間帯として扱います${basis}`
+  return `同じ曜日の ${ranges[0]} と ${ranges[1]} の 2 つの時間帯として扱います${basis}`
+}
+
 function TimeWindowFields({ draft, onChange, disabled }: FieldsProps) {
   const update = (index: number, patch: Partial<TimeWindowDraft>) =>
     onChange((d) => ({
@@ -858,16 +874,11 @@ function TimeWindowFields({ draft, onChange, disabled }: FieldsProps) {
                   <X />
                 </Button>
               </div>
+              {/* 判定の権威は internal/store/pgstore/rulesql.go の compileTimeWindow。曜日は番組開始日（JST）で
+                  判定し、終了 < 開始は同じ曜日の [0:00, 終了) と [開始, 24:00) の 2 区間になる。終了 00:00 だと
+                  前半が空で実質「開始から 24:00 まで」になるので、空の区間は表示しない */}
               {time.endSec < time.startSec && (
-                <p className="text-xs text-muted-foreground">
-                  {time.startSec === 86400
-                    ? time.endSec === 0
-                      ? '対象となる時間帯はありません（曜日は番組の開始日で判定します）'
-                      : `同じ曜日の 0:00〜${secToTimeValue(time.endSec)} の時間帯として扱います（曜日は番組の開始日で判定します）`
-                    : time.endSec === 0
-                      ? `同じ曜日の ${secToTimeValue(time.startSec)}〜24:00 の時間帯として扱います（曜日は番組の開始日で判定します）`
-                      : `同じ曜日の 0:00〜${secToTimeValue(time.endSec)} と ${secToTimeValue(time.startSec)}〜24:00 の 2 つの時間帯として扱います（曜日は番組の開始日で判定します）`}
-                </p>
+                <p className="text-xs text-muted-foreground">{overnightNote(time)}</p>
               )}
             </li>
           ))}

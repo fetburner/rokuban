@@ -169,8 +169,8 @@ describe('draftError', () => {
     )
   })
 
-  it('翌日跨ぎの時間帯は止めない', () => {
-    // 終了 < 開始 は「翌日跨ぎ」として rulequery が解釈する正しい指定
+  it('日跨ぎ（終了 < 開始）の時間帯は止めない', () => {
+    // 終了 < 開始 は同じ曜日の 2 区間として rulequery が解釈する正しい指定
     expect(
       draftError(draft({ times: [{ weekdays: allWeekdays, startSec: 82_800, endSec: 3600 }] })),
     ).toBeUndefined()

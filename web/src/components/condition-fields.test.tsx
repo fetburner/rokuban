@@ -205,7 +205,7 @@ describe('ConditionFields の日跨ぎ時間帯', () => {
 
     expect(
       await screen.findByText(
-        '同じ曜日の 0:00〜01:00 と 23:00〜24:00 の 2 つの時間帯として扱います（曜日は番組の開始日で判定します）',
+        '同じ曜日の 00:00〜01:00 と 23:00〜24:00 の 2 つの時間帯として扱います（曜日は番組の開始日で判定します）',
       ),
     ).toBeInTheDocument()
   })
@@ -224,7 +224,7 @@ describe('ConditionFields の日跨ぎ時間帯', () => {
         '同じ曜日の 23:00〜24:00 の時間帯として扱います（曜日は番組の開始日で判定します）',
       ),
     ).toBeInTheDocument()
-    expect(screen.queryByText(/0:00〜00:00/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/00:00〜00:00/)).not.toBeInTheDocument()
   })
 
   it('開始が 24:00 なら空の後半区間を表示しない', async () => {
@@ -238,7 +238,7 @@ describe('ConditionFields の日跨ぎ時間帯', () => {
 
     expect(
       await screen.findByText(
-        '同じ曜日の 0:00〜01:00 の時間帯として扱います（曜日は番組の開始日で判定します）',
+        '同じ曜日の 00:00〜01:00 の時間帯として扱います（曜日は番組の開始日で判定します）',
       ),
     ).toBeInTheDocument()
     expect(screen.queryByText(/00:00〜24:00/)).not.toBeInTheDocument()
