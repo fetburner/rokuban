@@ -170,8 +170,8 @@ describe('useOffsetSession', () => {
       result.current.reportPosition(2.5)
       result.current.retry()
     })
-    expect(result.current.offsetSeconds).toBe(20)
-    expect(result.current.startPositionSeconds).toBeCloseTo(2.5)
+    expect(result.current.offsetSeconds).toBe(22)
+    expect(result.current.startPositionSeconds).toBeCloseTo(0.5)
   })
 
   it('同じ offset の再試行だけは URL キーが変わらないため離脱を直接知らせる', () => {
@@ -213,30 +213,42 @@ describe('useOffsetSession', () => {
     expect(result.current.startPositionSeconds).toBeCloseTo(0.5)
   })
 
-  it('保存位置からの retry は最新値を同じ offset 起点で再開し、保存位置の意図を保つ', () => {
+  it('保存位置からの retry は最新値を floor の offset で選び直し、保存位置の意図を保つ', () => {
     const initial = options(
       { type: 'saved-position', positionMs: 23_500 },
       fakeVideo(),
       { identity: 'original-vod', originSeconds: originalVODSessionOriginSeconds },
     )
     const { result, rerender } = renderHook((value: Options) => useOffsetSession(value), { initialProps: initial })
-    const origin = originalVODSessionOriginSeconds(23)
 
     act(() => result.current.clearStartPosition())
     rerender({ ...initial, start: { type: 'saved-position', positionMs: 31_500 } })
     act(() => result.current.retry())
 
-    expect(result.current.offsetSeconds).toBe(23)
-    expect(result.current.startPositionSeconds).toBeCloseTo(31.5 - origin, 5)
+    expect(result.current.offsetSeconds).toBe(31)
+    expect(result.current.startPositionSeconds).toBeCloseTo(31.5 - originalVODSessionOriginSeconds(31), 5)
     expect(result.current.hasExplicitStart).toBe(false)
 
     act(() => result.current.clearStartPosition())
     rerender({ ...initial, start: { type: 'saved-position', positionMs: 32_500 } })
     act(() => result.current.retry())
 
-    expect(result.current.offsetSeconds).toBe(23)
-    expect(result.current.startPositionSeconds).toBeCloseTo(32.5 - origin, 5)
+    expect(result.current.offsetSeconds).toBe(32)
+    expect(result.current.startPositionSeconds).toBeCloseTo(32.5 - originalVODSessionOriginSeconds(32), 5)
     expect(result.current.hasExplicitStart).toBe(false)
+  })
+
+  it('offset 0 のセッションで 1800.5 秒を報告してからの retry は offset 1800 で張り直す', () => {
+    const initial = options({ type: 'offset', offsetSeconds: 0 })
+    const { result } = renderHook((value: Options) => useOffsetSession(value), { initialProps: initial })
+
+    act(() => result.current.clearStartPosition())
+    act(() => result.current.reportPosition(1800.5))
+    act(() => result.current.retry())
+
+    expect(result.current.offsetSeconds).toBe(1800)
+    expect(result.current.startPositionSeconds).toBeCloseTo(0.5, 5)
+    expect(result.current.hasExplicitStart).toBe(true)
   })
 
   it('明示開始からの retry は開始位置の意図を持ち越す', () => {

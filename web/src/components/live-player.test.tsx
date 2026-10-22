@@ -1685,7 +1685,7 @@ describe('LivePlayer の状態遷移', () => {
       fireEvent.canPlay(video)
       expect(video.currentTime).toBeCloseTo(firstStartPosition, 5)
 
-      // 同じ録画の保存位置更新は既存セッションを動かさないが、明示 retry には使う。
+      // 同じ録画の保存位置更新は既存セッションを動かさないが、明示 retry には使い、offset も floor で選び直す。
       rerender(
         <LivePlayer {...props} offsetSessionStart={{ type: 'saved-position' as const, positionMs: 31_500 }} />,
       )
@@ -1696,9 +1696,9 @@ describe('LivePlayer の状態遷移', () => {
 
       await user.click(await screen.findByRole('button', { name: '再読み込み' }))
       await waitFor(() => expect(hlsMockState.instances).toHaveLength(2))
-      const retryStartPosition = 31.5 - origin
+      const retryStartPosition = 31.5 - originalVODSessionOriginSeconds(31)
       expect(hlsMockState.instances[1]!.loadSource).toHaveBeenCalledWith(
-        '/api/sites/default/recordings/72/original-vod/offset/23/playlist.m3u8?profile=hd',
+        '/api/sites/default/recordings/72/original-vod/offset/31/playlist.m3u8?profile=hd',
       )
       expect((hlsMockState.constructorArgs[1]![0] as { startPosition: number }).startPosition)
         .toBeCloseTo(retryStartPosition, 5)

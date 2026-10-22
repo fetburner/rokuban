@@ -150,7 +150,6 @@ export function useOffsetSession({
       ? null
       : { identity: currentState.identity, seconds: currentState.startRecordingSeconds },
   )
-  const lastRecordingPositionIdentityRef = useRef(currentState.identity)
   const startRef = useRef(start)
   const activeRef = useRef(active)
   const originSecondsRef = useRef(originSeconds)
@@ -165,13 +164,6 @@ export function useOffsetSession({
   if (storedState.identity !== identity) setStoredState(currentState)
   useEffect(() => {
     stateRef.current = currentState
-  }, [currentState])
-  useEffect(() => {
-    if (lastRecordingPositionIdentityRef.current === currentState.identity) return
-    lastRecordingPositionIdentityRef.current = currentState.identity
-    lastRecordingPositionRef.current = currentState.startRecordingSeconds === null
-      ? null
-      : { identity: currentState.identity, seconds: currentState.startRecordingSeconds }
   }, [currentState])
   useEffect(() => {
     startRef.current = start
@@ -190,7 +182,7 @@ export function useOffsetSession({
   const restartAtOffset = useCallback((
     offsetSeconds: number,
     startPositionSeconds = 0,
-    options: { leaveSameOffset?: boolean } = {},
+    options: { leaveSameOffset?: boolean; explicit?: boolean } = {},
   ) => {
     const current = stateRef.current
     const nextOffset = validOffset(offsetSeconds)
@@ -212,19 +204,26 @@ export function useOffsetSession({
       ...current,
       offsetSeconds: nextOffset,
       startRecordingSeconds: nextOrigin + Math.max(0, startPositionSeconds),
-      explicit: true,
+      explicit: options.explicit ?? true,
       generation: current.generation + 1,
     })
   }, [updateState, videoRef])
 
-  // Saved-position sessions retry from the latest server position, while other
-  // sessions retry from their last known recording position. If no report has
-  // arrived yet, an explicit session keeps its start intent (`明示開始からの retry は開始位置の意図を持ち越す` in
-  // `use-offset-session.test.tsx`).
+  // 録画位置から張り直す。offset は floor(位置) で選び直し、開始位置はその offset の起点からの差にする。
+  // seek のセッション外分岐と retry が同じ規則を使う。
+  const restartAtRecordingSeconds = useCallback((
+    recordingSeconds: number,
+    options: { leaveSameOffset?: boolean; explicit?: boolean } = {},
+  ) => {
+    const nextOffset = Math.floor(recordingSeconds)
+    restartAtOffset(nextOffset, recordingSeconds - originSecondsRef.current(nextOffset), options)
+  }, [restartAtOffset])
+
+  // 保存位置から始めたセッションはサーバーの最新位置、明示開始は最後に分かっている録画位置を
+  // seek と同じ規則（floor(位置) の offset）で張り直す。位置が無ければセッション先頭から。
   const retry = useCallback(() => {
     const current = stateRef.current
     const latestStart = startRef.current
-    const origin = originSecondsRef.current(current.offsetSeconds)
     const savedPositionSeconds = !current.explicit &&
       latestStart.type === 'saved-position' &&
       latestStart.positionMs !== undefined &&
@@ -235,23 +234,18 @@ export function useOffsetSession({
     const lastRecordingPosition = lastRecordingPositionRef.current?.identity === current.identity
       ? lastRecordingPositionRef.current.seconds
       : current.startRecordingSeconds
-    let retryStartRecordingSeconds: number | null = null
-    if (savedPositionSeconds !== null) {
-      retryStartRecordingSeconds = Math.max(origin, savedPositionSeconds)
-    } else if (current.explicit) {
-      retryStartRecordingSeconds = lastRecordingPosition
+    const target = savedPositionSeconds ?? (current.explicit ? lastRecordingPosition : null)
+    if (target !== null) {
+      restartAtRecordingSeconds(target, { leaveSameOffset: false, explicit: current.explicit })
+      return
     }
     const video = videoRef.current
     resumePlaybackPendingRef.current = Boolean(
       (video !== null && !video.paused) || resumePlaybackPendingRef.current,
     )
     startReassertPendingRef.current = false
-    updateState({
-      ...current,
-      startRecordingSeconds: retryStartRecordingSeconds,
-      generation: current.generation + 1,
-    })
-  }, [updateState, videoRef])
+    updateState({ ...current, startRecordingSeconds: null, generation: current.generation + 1 })
+  }, [restartAtRecordingSeconds, updateState, videoRef])
 
   const seek = useCallback((recordingSeconds: number): OffsetSessionSeekResult => {
     const video = videoRef.current
@@ -274,12 +268,10 @@ export function useOffsetSession({
       return { type: 'source-changed' }
     }
 
-    const nextOffset = Math.floor(target)
-    const nextOrigin = originSecondsRef.current(nextOffset)
-    restartAtOffset(nextOffset, Math.max(0, target - nextOrigin))
+    restartAtRecordingSeconds(target)
     onRecordingPositionChangeRef.current?.(target)
-    return { type: 'restarted', offsetSeconds: nextOffset }
-  }, [restartAtOffset, videoRef])
+    return { type: 'restarted', offsetSeconds: stateRef.current.offsetSeconds }
+  }, [restartAtRecordingSeconds, videoRef])
 
   const clearStartPosition = useCallback(() => {
     const current = stateRef.current
@@ -287,16 +279,18 @@ export function useOffsetSession({
     updateState({ ...current, startRecordingSeconds: null })
   }, [updateState])
 
-  const reportPosition = useCallback((mediaSeconds: number) => {
-    if (!Number.isFinite(mediaSeconds)) return
+  // 開始位置を適用する前の currentTime は既定値の 0 なので、位置として使えない。適用済みなら録画秒、未適用なら null。
+  const getAppliedRecordingSeconds = useCallback((mediaSeconds: number): number | null => {
     const current = stateRef.current
-    // Before the requested start is applied, currentTime is still a default value;
-    // reporting it can replace the requested position (`⑪-b` in recording-original-vod.mjs).
-    if (current.startRecordingSeconds !== null) return
-    const recordingSeconds = originSecondsRef.current(current.offsetSeconds) + Math.max(0, mediaSeconds)
-    lastRecordingPositionRef.current = { identity: current.identity, seconds: recordingSeconds }
-    onRecordingPositionChangeRef.current?.(recordingSeconds)
+    if (!Number.isFinite(mediaSeconds) || current.startRecordingSeconds !== null) return null
+    return originSecondsRef.current(current.offsetSeconds) + Math.max(0, mediaSeconds)
   }, [])
+  const reportPosition = useCallback((mediaSeconds: number) => {
+    const recordingSeconds = getAppliedRecordingSeconds(mediaSeconds)
+    if (recordingSeconds === null) return
+    lastRecordingPositionRef.current = { identity: stateRef.current.identity, seconds: recordingSeconds }
+    onRecordingPositionChangeRef.current?.(recordingSeconds)
+  }, [getAppliedRecordingSeconds])
   const getStartPositionSeconds = useCallback(() => {
     const current = stateRef.current
     if (current.startRecordingSeconds === null) return null
@@ -322,6 +316,7 @@ export function useOffsetSession({
     seek,
     clearStartPosition,
     reportPosition,
+    getAppliedRecordingSeconds,
     getStartPositionSeconds,
   }
 }

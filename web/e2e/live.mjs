@@ -1295,6 +1295,8 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
     }
     const service = { id: 109001, networkId: 1, serviceId: 9001, name: '放送局 A', channelType: 'GR', channel: '1', remoteControlKeyId: 1, hasLogoData: false, hasPrograms: true }
     const json = (body) => (route) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
+    // 追っかけの offset playlist の要求記録と、失敗させる切替（#1143 の再読み込み判定が使う）。
+    const chaseOffsetFixture = { failing: false, requests: [] }
     // recorded: いまの番組を録画中にする（録画は番組開始の 3 分前から）。追っかけの playlist も同じ実映像を返す。
     const open = async (contextOptions, { recorded = false } = {}) => {
       const context = await browser.newContext(contextOptions)
@@ -1314,6 +1316,12 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
           const url = new URL(route.request().url())
           if (url.pathname.endsWith('/leave')) return route.fulfill({ status: 204, body: '' })
           if (url.pathname.endsWith('.m3u8')) {
+            const offsetMatch = url.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
+            if (offsetMatch !== null) {
+              const status = chaseOffsetFixture.failing ? 500 : 200
+              chaseOffsetFixture.requests.push({ offset: Number(offsetMatch[1]), status })
+              if (status === 500) return route.fulfill({ status, body: 'retry fixture failure' })
+            }
             return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: readFileSync(PLAYLIST_PATH) })
           }
           const file = path.join(SEGMENTS_DIR, url.pathname.split('/').pop())
@@ -1405,6 +1413,41 @@ async function runIssue1022FrameChecks(engine = 'chromium') {
       await page.mouse.click(axis.x + axis.width * 0.25, axis.y + axis.height / 2)
       await page.getByTestId('chase-live-edge').waitFor({ timeout: 10000 })
       await expectPlaying('軸のシークで追っかけへ替えた後')
+
+      // #1143 /live の追っかけで再生を進めた後、offset playlist が失敗すると、再読み込みは最後の位置を保つ。
+      // 位置は軸のシークバー（aria-valuenow）、要求した offset は playlist の URL から読む。
+      const scrubValue = async () => Number(await page.getByTestId('seek-scrub').getAttribute('aria-valuenow'))
+      chaseOffsetFixture.failing = true
+      const failedCursor = chaseOffsetFixture.requests.length
+      await show()
+      const retryAxis = await page.getByTestId('seek-scrub').boundingBox()
+      await page.mouse.click(retryAxis.x + retryAxis.width * 0.3017, retryAxis.y + retryAxis.height / 2)
+      await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 30000 }).catch(() => {})
+      const selectedPosition = await scrubValue().catch(() => Number.NaN)
+      const failedOffsets = chaseOffsetFixture.requests.slice(failedCursor).filter((r) => r.status === 500).map((r) => r.offset)
+      log(`  #1143 chase 再読み込み: 失敗した offset=${JSON.stringify(failedOffsets)}, selected=${selectedPosition}`)
+      if (!(selectedPosition > 810.2 && selectedPosition < 819.8)) {
+        ng.push(`#1143 前提: 軸の 30% シークが選んだ位置が小数つきの 814 秒付近でない (${selectedPosition})`)
+      }
+      chaseOffsetFixture.failing = false
+      const reloadCursor = chaseOffsetFixture.requests.length
+      await page.getByRole('button', { name: '再読み込み' }).click()
+      await page.waitForFunction(() => {
+        const v = document.querySelector('video')
+        return v !== null && v.readyState >= 2 && !v.seeking
+      }, undefined, { timeout: 15000 }).catch(() => {})
+      await page.getByTestId('seek-scrub').waitFor({ timeout: 15000 }).catch(() => {})
+      await page.locator('video').evaluate((v) => v.pause())
+      const reloadRequests = chaseOffsetFixture.requests.slice(reloadCursor)
+      const reloadOffset = reloadRequests.findLast((r) => r.status === 200)?.offset
+      const landing = await scrubValue().catch(() => Number.NaN)
+      log(`  #1143 chase 再読み込み後: requests=${JSON.stringify(reloadRequests)}, landing=${landing}`)
+      if (reloadOffset !== Math.floor(selectedPosition)) {
+        ng.push(`#1143 /live の追っかけの再読み込みが floor(最後の位置)=${Math.floor(selectedPosition)} の offset を要求しない (${JSON.stringify(reloadRequests)})`)
+      }
+      if (!(Math.abs(landing - selectedPosition) <= 0.5)) {
+        ng.push(`#1143 /live の追っかけの再読み込みの着地が最後の位置の 0.5 秒以内でない (${landing} / ${selectedPosition})`)
+      }
       await context.close()
     }
 

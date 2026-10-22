@@ -537,6 +537,7 @@ export function LivePlayer(props: LivePlayerProps) {
     seek: seekOffsetSession,
     clearStartPosition,
     reportPosition,
+    getAppliedRecordingSeconds,
     getStartPositionSeconds,
     resumePlaybackPendingRef,
     startReassertPendingRef,
@@ -937,8 +938,8 @@ export function LivePlayer(props: LivePlayerProps) {
      * handOffError は録画再生のエラーを親に渡し、親が再生元を選び直したら true を返す
      * （このプレイヤーはエラー表示に落ちない）。一度も再生していないセッションのエラーは
      * 位置を渡さない --- 0 秒を「明示の位置」にすると、親が持つ保存位置・先頭からの意図を上書きする。
-     * 要求した開始位置が適用中の間も currentTime は位置として使わない。原本 HLS の seek 失敗で
-     * 誤った秒を作り直しへ渡さない（`recording-original-vod.mjs` ⑪-b）。
+     * 要求した開始位置が適用中の間も currentTime は位置として使わない。原本 HLS と追っかけの
+     * seek 失敗で誤った秒を作り直しへ渡さない（`recording-original-vod.mjs` ⑪-b、`chase.mjs` ⑭-b）。
      * 再生の意図は、始まる前なら再開待ち（▶ の autoPlay・張り直しの持ち越し）だけで決める。
      * 「再生していない」ことを再生の意図にすると、止めたまま移った先のエラーで勝手に再生が始まる
      * （両方向は `live-player.test.tsx` の「再生前のエラー」）。
@@ -948,8 +949,8 @@ export function LivePlayer(props: LivePlayerProps) {
       allowSameSourceRetry = true,
     ): boolean | Promise<boolean> => {
       if (!isRecordingPlayback) return false
-      const position = playedRef.current && media && getStartPositionSeconds() === null
-        ? sessionStartSeconds + media.currentTime
+      const position = playedRef.current && media
+        ? (getAppliedRecordingSeconds(media.currentTime) ?? undefined)
         : undefined
       const wasPlaying = media ? !media.paused || resumePlaybackPendingRef.current : true
       return onRecordingPlaybackErrorRef.current?.(position, wasPlaying, allowSameSourceRetry) ?? false
@@ -1601,6 +1602,7 @@ export function LivePlayer(props: LivePlayerProps) {
     hasExplicitChaseStart,
     hasExplicitSessionStart,
     clearStartPosition,
+    getAppliedRecordingSeconds,
     getStartPositionSeconds,
     resumePlaybackPendingRef,
     startReassertPendingRef,
