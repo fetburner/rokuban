@@ -122,6 +122,8 @@ aging を超えて未登録の canonical file が残っているときは、候�
 
 `rokuban_recordings_failed_total{reason}` が同時に増えているなら、mirakc が理由を返しているのでそちらが一次情報になる。**増えていないのにこのゲージが立つのが最も危険な状態である。** mirakc が失敗を報告せずに録画を始めていないことを意味する（EPGStation#724 のクラス）。
 
+検出に失敗したパスでは、ゲージは 0 にならず最後に成功したパスの値を保つ。失敗は `rokuban_reconcile_start_delay_errors_total{site}` の増加で見る。
+
 ### 開始前の未同期または観測不能
 
 予約の受付が DB に成功しても、mirakc に実効 schedule が反映されたとは限らない。開始が近い予約のうち反映されていないものを、観測不能と未同期に分けてアラートする。アラート式の閾値は、現時点ではリポジトリに固定せず、Prometheus 側の運用値にする。
