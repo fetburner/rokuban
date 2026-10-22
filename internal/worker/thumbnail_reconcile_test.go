@@ -29,6 +29,28 @@ func runThumbnailReconcilePassArgs(t *testing.T, w *ThumbnailReconcileWorker, ar
 	}
 }
 
+// runContinuationChain は first から始め、各パスが投入した継続を投入順に実行する。
+// 継続が止まらない（カーソルが進まない）変異でハングせず、maxPasses を超えたら
+// アサーションとして落とす。
+func runContinuationChain[A jobq.Args](t *testing.T, enqueuer *recordingEnqueuer, first A, maxPasses int, run func(A) error) {
+	t.Helper()
+	args := first
+	for pass, next := 1, 0; ; pass++ {
+		if pass > maxPasses {
+			t.Fatalf("reconcile chain still continuing after %d passes; cursor is not advancing", maxPasses)
+		}
+		if err := run(args); err != nil {
+			t.Fatalf("reconcile pass %d: %v", pass, err)
+		}
+		continuations := enqueuedArgs[A](enqueuer, args.Kind())
+		if next >= len(continuations) {
+			return
+		}
+		args = continuations[next]
+		next++
+	}
+}
+
 func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -81,7 +103,9 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 		metrics.ThumbnailReconcileCandidates.Set(0)
 		metrics.ThumbnailReconcileLastPass.Set(0)
 	})
-	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 100}
+	// RowLimit 1 で、対象の録画が各窓をちょうど満杯にする。対象パスが継続を積まない
+	// ことは、窓が満杯になる条件でなければ固定にならない。
+	w := &ThumbnailReconcileWorker{Media: newTestMediaStore(pool), RowLimit: 1}
 
 	runThumbnailReconcilePassArgs(t, w, ThumbnailReconcileArgs{RecordingID: first})
 	for _, tc := range []struct {
@@ -624,19 +648,10 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	}
 
 	enqueuer := newRecordingEnqueuer()
-	continuationIndex := 0
-	for continuationIndex == 0 || continuationIndex <= len(enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())) {
-		continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
-		args := ThumbnailReconcileArgs{}
-		if continuationIndex > 0 {
-			args = continuations[continuationIndex-1]
-		}
+	runContinuationChain(t, enqueuer, ThumbnailReconcileArgs{}, 10, func(args ThumbnailReconcileArgs) error {
 		worker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
-		if err := runWorkerViaJobQFake(ctx, worker, args); err != nil {
-			t.Fatalf("reconcile page %d: %v", continuationIndex+1, err)
-		}
-		continuationIndex++
-	}
+		return runWorkerViaJobQFake(ctx, worker, args)
+	})
 
 	for _, recordingID := range ids[:3] {
 		if got := countThumbnailJobs(t, enqueuer, recordingID); got != 1 {
@@ -665,6 +680,81 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	}
 	if continuations[2].MissingDone || !continuations[2].ReselectDone || !continuations[2].SeekTilesDone {
 		t.Errorf("third continuation done flags = missing:%v reselect:%v seek_tiles:%v, want false:true:true",
+			continuations[2].MissingDone, continuations[2].ReselectDone, continuations[2].SeekTilesDone)
+	}
+}
+
+// TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues は、窓の長さが
+// missing 1 / 再選択 2 / seek_tiles 3 のとき、先に末尾へ達した窓が後続ページで先頭から
+// 読み直されない（先頭の候補を投入し直さない）ことを固定する。
+func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	ids := make([]int64, 0, 6)
+	for eventID := int32(15131); eventID <= 15136; eventID++ {
+		ids = append(ids, insertTestRecordingWithEventID(t, pool, eventID))
+	}
+	q := sqlcgen.New(pool)
+	for index, recordingID := range ids {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("short-first/%d.ts", index+1), []byte("fake-ts"))
+		switch {
+		case index == 0:
+			// missing poster のみ（seek_tiles は揃っている）。
+			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("short-first/%d-tiles.jpg", index+1))
+		case index <= 2:
+			// 再選択のみ。
+			thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+			seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("short-first/%d-tiles.jpg", index+1))
+			if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+				RecordingID: recordingID, CmRanges: "{[0,60000)}",
+			}); err != nil {
+				t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+			}
+			if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+				MediaAssetID: thumbnailID, SeekMs: 30000,
+			}); err != nil {
+				t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+			}
+		default:
+			// seek_tiles のみ。
+			seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+				db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("thumbnail"))
+		}
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	runContinuationChain(t, enqueuer, ThumbnailReconcileArgs{}, 10, func(args ThumbnailReconcileArgs) error {
+		worker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+		return runWorkerViaJobQFake(ctx, worker, args)
+	})
+
+	for _, recordingID := range ids[:3] {
+		if got := countThumbnailJobs(t, enqueuer, recordingID); got != 1 {
+			t.Errorf("thumbnail jobs for %d = %d, want 1", recordingID, got)
+		}
+	}
+	for _, recordingID := range ids[3:] {
+		if got := countSeekTilesJobs(t, enqueuer, recordingID); got != 1 {
+			t.Errorf("seek_tiles jobs for %d = %d, want 1", recordingID, got)
+		}
+	}
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 3 {
+		t.Fatalf("continuation count = %d, want 3 for 1/2/3 candidate windows", len(continuations))
+	}
+	if continuations[1].MissingDone != true || continuations[1].ReselectDone {
+		t.Errorf("second continuation done flags = missing:%v reselect:%v, want true:false",
+			continuations[1].MissingDone, continuations[1].ReselectDone)
+	}
+	if !continuations[2].MissingDone || !continuations[2].ReselectDone || continuations[2].SeekTilesDone {
+		t.Errorf("third continuation done flags = missing:%v reselect:%v seek_tiles:%v, want true:true:false",
 			continuations[2].MissingDone, continuations[2].ReselectDone, continuations[2].SeekTilesDone)
 	}
 }

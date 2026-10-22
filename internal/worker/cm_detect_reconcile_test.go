@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -87,19 +88,10 @@ func TestCMDetectReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	detectionStore := pgstore.NewAnalysis(pool)
 
-	continuationIndex := 0
-	for continuationIndex == 0 || continuationIndex <= len(enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())) {
-		continuations := enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())
-		args := jobs.CMDetectReconcileArgs{}
-		if continuationIndex > 0 {
-			args = continuations[continuationIndex-1]
-		}
+	runContinuationChain(t, enqueuer, jobs.CMDetectReconcileArgs{}, 10, func(args jobs.CMDetectReconcileArgs) error {
 		worker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
-		if err := runWorkerViaJobQFake(context.Background(), worker, args); err != nil {
-			t.Fatalf("reconcile page %d: %v", continuationIndex+1, err)
-		}
-		continuationIndex++
-	}
+		return runWorkerViaJobQFake(context.Background(), worker, args)
+	})
 
 	detectionJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
 	if len(detectionJobs) != 2 || detectionJobs[0].RecordingID != firstID || detectionJobs[1].RecordingID != secondID {
@@ -119,6 +111,55 @@ func TestCMDetectReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	}
 	if continuations[1].DetectionDone || !continuations[1].CandidateDone {
 		t.Errorf("second continuation done flags = detection:%v candidate:%v, want false:true",
+			continuations[1].DetectionDone, continuations[1].CandidateDone)
+	}
+}
+
+// TestCMDetectReconcile_DetectionWindowStaysDoneWhileCandidatesContinue は、検出の窓が 1 件、
+// ロゴ候補の窓が 2 件のとき、先に末尾へ達した検出の窓が後続ページで先頭から読み直されない
+// ことを固定する。
+func TestCMDetectReconcile_DetectionWindowStaysDoneWhileCandidatesContinue(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	mediaDir := t.TempDir()
+	firstID := seedCMRecording(t, pool, mediaDir, 15141)
+	secondID := seedCMRecording(t, pool, mediaDir, 15142)
+	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET service_id = 1025 WHERE id = $1`, secondID); err != nil {
+		t.Fatalf("moving second recording to another service: %v", err)
+	}
+	seedTaughtAreaForService(t, pool, 1024, 1180)
+	seedTaughtAreaForService(t, pool, 1025, 1170)
+	// 2 本目は検出済みにして、検出の窓を 1 件にする（ロゴ候補は 2 局のまま）。
+	if err := sqlcgen.New(pool).SaveCMDetection(context.Background(), sqlcgen.SaveCMDetectionParams{
+		RecordingID: secondID, CmRanges: "{[0,60000)}",
+	}); err != nil {
+		t.Fatalf("marking second recording detected: %v", err)
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	detectionStore := pgstore.NewAnalysis(pool)
+	runContinuationChain(t, enqueuer, jobs.CMDetectReconcileArgs{}, 10, func(args jobs.CMDetectReconcileArgs) error {
+		worker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+		return runWorkerViaJobQFake(context.Background(), worker, args)
+	})
+
+	detectionJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
+	if len(detectionJobs) != 1 || detectionJobs[0].RecordingID != firstID {
+		t.Errorf("detection jobs = %+v, want recording %d once", detectionJobs, firstID)
+	}
+	candidateJobs := enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind())
+	if len(candidateJobs) != 2 {
+		t.Errorf("logo-candidate jobs = %+v, want services 1024 and 1025 once each", candidateJobs)
+	}
+	continuations := enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())
+	if len(continuations) != 2 {
+		t.Fatalf("continuation count = %d, want 2 for 1/2 candidate windows", len(continuations))
+	}
+	if !continuations[1].DetectionDone || continuations[1].CandidateDone {
+		t.Errorf("second continuation done flags = detection:%v candidate:%v, want true:false",
 			continuations[1].DetectionDone, continuations[1].CandidateDone)
 	}
 }

@@ -12,7 +12,11 @@ import (
 )
 
 // CMDetectReconcileWorker fills the desired CM detection and logo candidate sets.
-// Its recording and composite station cursors stay independent in one continuation job.
+// The recording cursor and the (network_id, service_id) station cursor are independent
+// but ride in one continuation job, so one chain evaluates both windows each page
+// instead of one chain per window running side by side. The Done flags mark a window
+// already read to its end in this chain; without them the shorter window restarts from
+// cursor 0 on every later page and enqueues its first candidates again.
 type CMDetectReconcileWorker struct {
 	Enqueuer       jobq.Enqueuer
 	DetectionStore store.CMDetection

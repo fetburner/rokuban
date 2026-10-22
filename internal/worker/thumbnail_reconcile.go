@@ -37,8 +37,13 @@ const (
 // **seek_tiles も同じパスが埋める**が、候補集合は別なので poster の窓と seek_tiles
 // の窓は独立に巡回する。どちらかだけが上限に張り付いたとき、共通カーソルで他方の
 // 候補を飛ばさないためである。
-// 3 つのカーソルは独立だが、全窓を毎回評価するため継続ジョブは 1 本にまとめる。
-// これにより、窓ごとに継続ジョブを並走させずに各候補集合の進捗を保つ。
+// 3 つの窓（missing poster / 再選択 / seek_tiles）は再開位置を独立に持つが、継続
+// ジョブは 1 本にまとめる。窓ごとに分けると、満杯の窓の数だけ継続チェーンが並走し、
+// どの窓を評価するかを引数で選ぶ分岐も要る。1 本なら毎ページ全窓を評価するだけで済む。
+//
+// 引数の Done フラグは、チェーンの中で一度末尾まで読んだ窓を以後のページで照会しない
+// ための印である。無いと、短い窓は次のページで再開位置 0 に戻って先頭から読み直し、
+// 先頭の候補を投入し直す（他の窓が満杯で継続が続く間、毎ページ繰り返す）。
 type ThumbnailReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	// Media はサムネイル・シークタイルの列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。
@@ -50,14 +55,10 @@ type ThumbnailReconcileWorker struct {
 //
 // missing thumbnail、thumbnail の再選択、seek_tiles は recording_id 単位で独立に
 // keyset pagination する。各窓が RowLimit 件以上を返したときは最後に見た ID を
-// 継続ジョブ引数へ載せ、短い窓はそのチェーン内で完了として後続ページでは照会しない。
-// 次の定期パスは先頭から始めるため、恒久的に失敗する録画が先頭に残っても後続候補へ進む。
+// 継続ジョブ引数へ載せる。次の定期パスは先頭から始めるため、恒久的に失敗する録画が
+// 先頭に残っても、継続ジョブが後続候補へ進む。
 func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.ThumbnailReconcileArgs) error {
 	recordingID := args.RecordingID
-	if recordingID != 0 && (args.AfterRecordingID != 0 || args.AfterReselectRecordingID != 0 || args.AfterSeekTilesRecordingID != 0 ||
-		args.MissingDone || args.ReselectDone || args.SeekTilesDone) {
-		return fmt.Errorf("thumbnail reconcile: recording_id and continuation cursors cannot be combined: %w", jobq.ErrDiscard)
-	}
 	if w.Enqueuer == nil {
 		return fmt.Errorf("thumbnail reconcile: job enqueuer is nil")
 	}

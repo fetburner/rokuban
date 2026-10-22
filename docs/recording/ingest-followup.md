@@ -104,15 +104,20 @@ ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると
 
 対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
-missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、1 本の継続ジョブに 3 つの再開位置を載せる。短いページを返した窓は継続チェーンの終わりまで完了状態を保ち、ほかの窓が続く間に先頭から再走しない。各窓が同じパスで評価されるため、窓ごとにジョブを分けず、カーソルだけは独立させる。`--once` で worker が作り直されても、継続ジョブの引数から次のページを開く。対象録画の即時パスはカーソルを読まず、継続ジョブも積まない。
+missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、3 つの再開位置を 1 本の継続ジョブに載せる。窓ごとに継続ジョブを分けると、満杯の窓の数だけ継続チェーンが並走し、どの窓を評価するかを選ぶ引数も要る。`--once` で worker が作り直されても、次のページは継続ジョブの引数から開く。対象録画の即時パスは継続位置を読まず、窓が満杯になっても継続ジョブを積まない。
 
-継続の投入に失敗した場合はログに残してパスを成功として終える。エラーにすると River の再試行が定期ジョブと合流し、15 分の周期が backoff に置き換わるためである。次の定期パスは先頭から再確認する。短い窓は継続チェーン内では完了としてスキップし、次の定期パスで先頭から再確認する。すべての窓が短ければ継続を積まない。ちょうど上限に達した窓は次の空ページで連鎖を止める。
+上限未満のページを返した窓は末尾に達している。継続ジョブの Done フラグがそれを引き継ぎ、ほかの窓が続く間もその窓を照会しない。Done フラグが無いと、短い窓が次のページで先頭から読み直され、先頭の候補を毎ページ投入し直す。すべての窓が短ければ継続ジョブを積まない。ちょうど上限の窓は、次の空ページで末尾と分かる。
+
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。継続は取りこぼしを早く拾うためのヒントで、このパスの候補投入は済んでおり、次の定期パスが先頭から再確認する。
+
+継続ジョブは引数が違うので、定期パス `{}` と並走しうる。パスが投入する thumbnail ジョブと seek_tiles ジョブは `recording_id` で、実行待ちか実行中の同じ引数のジョブに合流する。ただし合流は排他を保証しない（`jobq.Spec` の doc コメント）。合流をすり抜けて二重に走ると、ffmpeg の抽出は 2 回走る。公開側は既存の行を見て後から来た側を捨てる分岐を持つ（`published` が false の経路）。同時に 2 本が走ったときの挙動を測るテストは無く、未検証である。
 
 <details><summary>根拠</summary>
 
 - 3 つの独立カーソルが fresh worker をまたぐこと: `TestThumbnailReconcile_ContinuationSurvivesFreshWorker`
-- 短い窓が別窓の継続中に再走しないこと: `TestThumbnailReconcile_ExhaustedWindowNotRestarted`
-- 対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
+- 短い窓が別窓の継続中に再走しないこと（再選択・seek tiles が最短の場合）: `TestThumbnailReconcile_ExhaustedWindowNotRestarted`
+- 短い窓が別窓の継続中に再走しないこと（missing が最短の場合）: `TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues`
+- 窓が満杯になる条件（RowLimit 1）でも対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
 - 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
 - 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
 
@@ -120,11 +125,13 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 
 #### CM 検出とロゴ候補の定期パス
 
-CM 検出と局ロゴ候補も定期パスで補完する。候補窓は作業の種類ごとに独立して進める。
+CM 検出と局ロゴ候補も定期パスで補完する。
 
-CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる。worker が `--once` で作り直されても、各窓は引数の位置から続ける。短いページを返した窓は継続チェーンの終わりまで完了状態を保ち、ほかの窓が続く間に先頭から再走しない。満杯の窓がなければ継続ジョブは積まない。継続ジョブの引数は定期パス `{}` と異なり、両者は並走しうる。対象候補ジョブには同一引数の合流を要求するが、合流は排他を保証しない。
+CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる理由と、短い窓の Done フラグは thumbnail と同じである。worker が `--once` で作り直されても、各窓は引数の位置から続ける。満杯の窓がなければ継続ジョブは積まない。
 
-継続の投入に失敗した場合はログに残して nil を返す。再試行にすると River の backoff が定期投入と合流し、周期を置き換える。次の定期パスは先頭から候補を再確認する。
+継続ジョブは定期パス `{}` と並走しうる。パスが投入するジョブは、実行待ちか実行中の同じ引数に合流する。cm_detect の引数は `(recording_id, recording_duration_ms)` である。cm_logo_candidate の引数は、局の `(network_id, service_id)`、`recording_id`、`area_updated_at`、`recording_duration_ms` である。合流は排他を保証しないので二重に走りうる。そのとき、cm_detect は試行回数が一致しない側の保存を捨てる。cm_logo_candidate は `BeginLogoCandidate` が開始を拒む。これらは分岐がコードにあるだけで、同時 2 本の挙動を測るテストは無く、未検証である。
+
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
 
 <details><summary>根拠</summary>
 
@@ -143,7 +150,7 @@ TS の統計も、コミット後のヒントと定期パスの二重で埋め�
 
 候補は recording ID の keyset pagination で拾う。ページが上限に達したら、次のカーソルを持つ reconcile ジョブを投入する。KEDA の `--once` で reconcile ワーカーが再起動しても、先頭に未計測の失敗が残る候補集合から後続ページへ進める。scan の timeout は有限（6 時間。未検証）で、プロセスが死んだ `running` ジョブは River の rescuer が回収する。scan は冪等で再実行できるので、advisory lock は持たない。timeout が最長の原本より短いと、その原本の scan は timeout と再試行を繰り返す。
 
-継続ジョブの投入に失敗した場合はログに残して nil を返す。River の再試行にすると、失敗した行へ定期 CronJob の `{}` が合流し、15 分周期が backoff に置き換わる。次の定期パスが先頭から再確認する。
+継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
 
 ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile が取りこぼしを拾う。`worker.periodic_jobs: false` では `rokuban enqueue ts-scan-reconcile` を CronJob から実行する。scan は ingest の後に原本を全量読む。追加読み出しのコストは未検証である。
 

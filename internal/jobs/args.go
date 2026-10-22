@@ -104,7 +104,7 @@ func (SeekTilesJobArgs) Kind() string { return "seek_tiles" }
 // ThumbnailReconcileArgs は thumbnail の desired−observed reconcile ジョブの引数。
 // RecordingID が 0 なら全件パス、非 0 なら指定録画だけを確認する。
 // After* は全件パスの継続位置で、*Done は継続チェーンで短いページを返した窓を表す。
-// 対象録画の指定と継続状態は同時に使わない。
+// 対象録画の指定と継続状態を同時に載せる経路は無い。
 type ThumbnailReconcileArgs struct {
 	RecordingID               int64 `json:"recording_id,omitempty"`
 	AfterRecordingID          int64 `json:"after_recording_id,omitempty"`
