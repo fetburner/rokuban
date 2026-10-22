@@ -18,7 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// maxRulerInputRevisionMismatches は、1 site の評価が入力の版の照合に続けて負けてよい回数。
+// maxRulerInputRevisionMismatches は、1 site の評価が入力の版の照合にこの回数続けて負けたら諦める上限。
 // 上限に達した site は予約を書き換えずに諦め、このジョブに合流したヒントの分は次の定期パスで反映される。
 // ruler キューは同時実行 1 なので、上限を外すと読み直しを続ける site が他 site の ruler_pass を待たせる。
 const maxRulerInputRevisionMismatches = 3
