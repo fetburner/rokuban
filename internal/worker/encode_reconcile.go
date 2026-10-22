@@ -64,8 +64,8 @@ const (
 //   - C1（被覆）: 継続ジョブの連鎖が末尾まで進めば、S の全要素を
 //     examine する。連鎖の途中で S に入った録画のうちカーソルより前にあるものは
 //     次の定期パスで拾う。TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker が固定する。
-//   - C2（コスト）: 1 パスが examine する候補録画は L 件まで。作り直し要求の
-//     全件列挙はこの上限の外にある。
+//   - C2（コスト）: 1 パスが examine する候補録画は L 件まで。不足と作り直しは
+//     同じ一覧で録画単位の窓に入る。
 //     TestEncodeReconcileWorker_RowLimitCapsWorkPerPass が固定する。
 //   - C3（通常運転で不活性）: 候補数が L 件未満なら継続ジョブを投入しない。
 //
@@ -118,11 +118,11 @@ func enqueueEncodeReconcile(ctx context.Context, enqueuer jobq.Enqueuer, recordi
 
 // Work は encode reconcile を全件または指定録画について実行する。
 //
-// 候補の抽出と不足プロファイルの判定を ListMissingEncodeProfiles でまとめて行う。
-// これにより、候補ごとの原本・ポリシー・encoded の再取得を避ける。known_profiles
-// も SQL に渡して、設定から消えたプロファイルや空のプロファイル名を投入対象から
-// 外す。対象録画を指定したパスも同じクエリで判定し、全件パスの窓やメトリクスに
-// 触れない。
+// 候補の抽出を ListMissingEncodeProfiles でまとめて行い、不足と未充足の作り直しを
+// 同じ録画単位の窓で扱う。これにより、候補ごとの原本・ポリシー・encoded の再取得を
+// 避ける。known_profiles も SQL に渡して、設定から消えたプロファイルや空の
+// プロファイル名を投入対象から外す。対象録画を指定したパスも同じクエリで判定し、
+// 全件パスの窓やメトリクスに触れない。
 //
 // 1 件の失敗でパス全体を止めない（record_sweep の processRecord・
 // delete_reconcile の deleteMediaAsset と同じ判断）。次パスが同じ候補を
@@ -143,8 +143,8 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		rowLimit = encodeReconcileRowLimit
 	}
 	known := w.Profiles.ProfileNames()
-	// cut: true のプロファイルは所有（= ユーザーが確認済み）の行がある録画にしか
-	// 投入しない（SQL 側の同じ述語。encode_reconcile.sql のコメント参照）。
+	// 通常候補の cut: true は所有（= ユーザーが確認済み）の行がある録画に限る。
+	// 作り直しは要求時の keep が確認を表すので、SQL 側で別条件として絞る。
 	cut := w.Profiles.CutProfileNames()
 
 	// 対象録画のパスは継続カーソルを使わず、全件パスから独立させる。
@@ -152,10 +152,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	var targetID *int64
 	if recordingID != 0 {
 		targetID = &recordingID
-	}
-	rebuildQueued, failed, err := w.reconcileRebuildRequests(ctx, targetID)
-	if err != nil {
-		return fmt.Errorf("reconciling encoded asset rebuild requests: %w", err)
 	}
 	missing, err := w.Media.ListMissingEncodeProfiles(ctx, store.MissingEncodeProfilesParams{
 		AfterRecordingID: after,
@@ -174,23 +170,33 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 	// 昇順なので、ここで候補録画を一度だけ数える。RowLimit は profile 行数ではなく
 	// この録画数に適用され、window の再開位置も録画単位で進む。
 	candidates := make([]int64, 0, len(missing))
+	rebuildQueued, failed := 0, 0
 	cutSet := w.Profiles.CutProfileSet()
 	for _, row := range missing {
 		if len(candidates) == 0 || candidates[len(candidates)-1] != row.RecordingID {
 			candidates = append(candidates, row.RecordingID)
 		}
-		// 全区間カットの cut は投入しても loadCutContext が必ず失敗する。SQL は
-		// keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
+		if row.IsRebuild && row.DecodeErr != nil {
+			failed++
+			slog.Error("encode_reconcile: decoding requested keep ranges",
+				"recording_id", row.RecordingID, "profile", row.Profile, "err", row.DecodeErr)
+			continue
+		}
+		// 全区間カットの通常候補は投入しても loadCutContext が必ず失敗する。
+		// SQL は keep の導出（Derive）を持てないので候補は広めに出し、ここで落とす。
+		// 作り直しの keep は API が空を拒み、チャプター未所有でも有効なので照合しない。
 		// 窓の回転は candidates（落とす前）で数えるので進み続ける。
-		if _, isCut := cutSet[row.Profile]; isCut {
-			keep, _, err := w.Media.GetCurrentCutKeep(ctx, row.RecordingID)
-			if err != nil {
-				failed++
-				slog.Error("encode_reconcile: loading cut keep", "recording_id", row.RecordingID, "err", err)
-				continue
-			}
-			if len(keep) == 0 {
-				continue
+		if !row.IsRebuild {
+			if _, isCut := cutSet[row.Profile]; isCut {
+				keep, _, err := w.Media.GetCurrentCutKeep(ctx, row.RecordingID)
+				if err != nil {
+					failed++
+					slog.Error("encode_reconcile: loading cut keep", "recording_id", row.RecordingID, "err", err)
+					continue
+				}
+				if len(keep) == 0 {
+					continue
+				}
 			}
 		}
 		args, err := newEncodeJobArgs(ctx, w.Media, row.RecordingID, row.Profile, w.Profiles)
@@ -200,10 +206,23 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
 			continue
 		}
+		if row.IsRebuild {
+			args.RequestedCutKeep, err = json.Marshal(row.RequestedKeep)
+			if err != nil {
+				failed++
+				slog.Error("encode_reconcile: encoding requested keep ranges",
+					"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
+				continue
+			}
+		}
 		if err := enqueueJob(ctx, w.Enqueuer, args); err != nil {
 			failed++
-			slog.Error("encode_reconcile: failed to enqueue missing encodes",
+			slog.Error("encode_reconcile: failed to enqueue encode candidate",
 				"recording_id", row.RecordingID, "profile", row.Profile, "err", err)
+			continue
+		}
+		if row.IsRebuild {
+			rebuildQueued++
 		}
 	}
 
@@ -242,57 +261,6 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			"rebuild_requests", rebuildQueued, "failed", failed)
 	}
 	return nil
-}
-
-// reconcileRebuildRequests は満たされていない作り直し（ListEncodedAssetRebuildRequests）
-// に、押した時点の keep を束縛した encode ジョブを投入する。
-//
-// 要求行はここでは消さない（消すのは api だけ）。チャプターが後から変わっても、押した
-// 時点の keep で描く。設定から外れた profile と cut でない profile は投入せず、
-// 設定が戻るまで行を保持する。cut でない設定は C-1 の起動時検査
-// （CheckEncodeProfileMeaning）が拒むので、ここに来るのは、検査より後に設定を変えた
-// 場合だけである。
-func (w *EncodeReconcileWorker) reconcileRebuildRequests(
-	ctx context.Context,
-	targetID *int64,
-) (queued, failed int, err error) {
-	requests, err := w.Media.ListEncodedAssetRebuildRequests(ctx, targetID)
-	if err != nil {
-		return 0, 0, fmt.Errorf("listing encoded asset rebuild requests: %w", err)
-	}
-	for _, request := range requests {
-		if request.DecodeErr != nil {
-			failed++
-			slog.Error("encode_reconcile: decoding requested keep ranges",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", request.DecodeErr)
-			continue
-		}
-		if profile, configured := w.Profiles.Profile(request.Profile); !configured || !profile.Cut {
-			continue
-		}
-		encodeArgs, err := newEncodeJobArgs(ctx, w.Media, request.RecordingID, request.Profile, w.Profiles)
-		if err != nil {
-			failed++
-			slog.Error("encode_reconcile: building encode args for rebuild request",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
-			continue
-		}
-		encodeArgs.RequestedCutKeep, err = json.Marshal(request.RequestedKeep)
-		if err != nil {
-			failed++
-			slog.Error("encode_reconcile: encoding requested keep ranges",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
-			continue
-		}
-		if err := enqueueJob(ctx, w.Enqueuer, encodeArgs); err != nil {
-			failed++
-			slog.Error("encode_reconcile: failed to enqueue rebuild request",
-				"recording_id", request.RecordingID, "profile", request.Profile, "err", err)
-			continue
-		}
-		queued++
-	}
-	return queued, failed, nil
 }
 
 // reportUnsatisfiable は「凍結済みの desired が現在の encode.profiles に無い」

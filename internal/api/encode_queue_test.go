@@ -146,7 +146,7 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
 	}
 
-	// ListMissingEncodeProfiles は上限到達の失敗行も返す。待機列は queued + running = それ以外。
+	// ListMissingEncodeProfiles は投入候補（不足と作り直し）を合わせて返す。
 	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265", "cut"},
 		CutProfiles:   []string{"cut"},
@@ -156,10 +156,9 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
-	const rebuilds = 2
-	if got.Queued+got.Running != int64(len(missing)+rebuilds) {
-		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows and %d unsatisfied rebuilds; want %d",
-			got.Queued+got.Running, len(missing), rebuilds, len(missing)+rebuilds)
+	if got.Queued+got.Running != int64(len(missing)) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows; want equal counts",
+			got.Queued+got.Running, len(missing))
 	}
 }
 
@@ -294,6 +293,9 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	exhausted := seed("試行上限", "h264")
 	seedEncodeAttempt(t, pool, exhausted, "h264", "failed", nil)
 	setEncodeAttemptCount(t, pool, exhausted, int(jobs.EncodeAttemptLimit))
+	exhaustedRebuild := seedRebuild("試行上限の作り直し")
+	seedEncodeAttempt(t, pool, exhaustedRebuild, "cut", "failed", nil)
+	exec(`UPDATE recording_encode_attempts SET attempt_count = $2 WHERE recording_id = $1 AND profile = 'cut'`, exhaustedRebuild, jobs.EncodeAttemptLimit)
 	adopt(seed("全区間カット", "cut"), "[0,1800000)")
 
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{
@@ -345,6 +347,9 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 
 	if reconciled["試行上限"] || queued["試行上限"] {
 		t.Errorf("exhausted attempts: reconciled %v, queued %v; want neither", reconciled["試行上限"], queued["試行上限"])
+	}
+	if reconciled["試行上限の作り直し"] || queued["試行上限の作り直し"] {
+		t.Errorf("exhausted rebuild attempts: reconciled %v, queued %v; want neither", reconciled["試行上限の作り直し"], queued["試行上限の作り直し"])
 	}
 	if reconciled["全区間カット"] || !queued["全区間カット"] {
 		t.Errorf("all-cut keep: reconciled %v, queued %v; want queued only", reconciled["全区間カット"], queued["全区間カット"])

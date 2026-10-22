@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,17 @@ func runEncodeReconcilePassArgs(t *testing.T, w *EncodeReconcileWorker, args Enc
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	return enqueuer
+}
+
+func findEncodeJob(t *testing.T, enqueuer *recordingEnqueuer, recordingID int64, profile string) jobs.EncodeJobArgs {
+	t.Helper()
+	for _, args := range enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind()) {
+		if args.RecordingID == recordingID && args.Profile == profile {
+			return args
+		}
+	}
+	t.Fatalf("no encode job for recording %d profile %q", recordingID, profile)
+	return jobs.EncodeJobArgs{}
 }
 
 func TestEncodeReconcile_TargetedPassOnlyQueuesSelectedRecordingAndLeavesFullStateAlone(t *testing.T) {
@@ -240,6 +252,44 @@ func TestEncodeReconcile_PendingRebuildWithoutAssetQueuesOnlyBoundJob(t *testing
 	requestedKeep, present, err := decodeRequestedCutKeep(got[0].RequestedCutKeep)
 	if err != nil || !present || !chapters.SameRanges(requestedKeep, keep) {
 		t.Errorf("queued request keep = %v, present %v, err %v; want %v", requestedKeep, present, err, keep)
+	}
+}
+
+func TestEncodeReconcile_RebuildsPrecedeMissingProfilesAndSortByProfile(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/order.m2ts", []string{"h264", "cut-b", "cut-a"}, []byte("x"))
+	for profile, keep := range map[string][]chapters.Range{
+		"cut-b": {{StartMs: 2000, EndMs: 3000}},
+		"cut-a": {{StartMs: 1000, EndMs: 2000}},
+	} {
+		if err := sqlcgen.New(pool).UpsertEncodedAssetRebuildRequest(ctx, sqlcgen.UpsertEncodedAssetRebuildRequestParams{
+			RecordingID:   recordingID,
+			Profile:       profile,
+			RequestedKeep: mustKeepRanges(t, keep),
+		}); err != nil {
+			t.Fatalf("seeding %s rebuild request: %v", profile, err)
+		}
+	}
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{
+		{Name: "cut-b", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+		{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+		{Name: "cut-a", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+	}}
+	w := &EncodeReconcileWorker{Profiles: profiles, RowLimit: 1, Media: newTestMediaStore(pool)}
+	enqueuer := runEncodeReconcilePass(t, w)
+	got := enqueuedArgs[jobs.EncodeJobArgs](enqueuer, jobs.EncodeJobArgs{}.Kind())
+	want := []string{"cut-a", "cut-b", "h264"}
+	if len(got) != len(want) {
+		t.Fatalf("encode jobs = %+v, want profile order %v", got, want)
+	}
+	for i := range got {
+		if got[i].RecordingID != recordingID || got[i].Profile != want[i] {
+			t.Errorf("encode job %d = (%d, %q), want (%d, %q)", i, got[i].RecordingID, got[i].Profile, recordingID, want[i])
+		}
 	}
 }
 
@@ -504,7 +554,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 		{RecordingID: missing, Profile: "h265"},
 		{RecordingID: encodedGone, Profile: "h264"},
 	}
-	if !slices.Equal(got, want) {
+	if !equalMissingEncodeProfileRows(got, want) {
 		t.Errorf("missing encode profiles = %v, want %v (complete=%d noProfiles=%d incomplete=%d originalGone=%d trashed=%d renamed=%d emptyProfile=%d)",
 			got, want, complete, noProfiles, incomplete, originalGone, trashed, renamed, emptyProfile)
 	}
@@ -525,7 +575,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 		t.Fatalf("ListMissingEncodeProfiles with AfterRecordingID: %v", err)
 	}
 	wantAfter := []sqlcgen.ListMissingEncodeProfilesRow{{RecordingID: encodedGone, Profile: "h264"}}
-	if !slices.Equal(gotAfter, wantAfter) {
+	if !equalMissingEncodeProfileRows(gotAfter, wantAfter) {
 		t.Errorf("missing encode profiles with AfterRecordingID=%d = %v, want %v", missing, gotAfter, wantAfter)
 	}
 
@@ -542,6 +592,19 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	if len(gotUnsat) != 2 || gotUnsat["gone"] != 1 || gotUnsat[""] != 1 {
 		t.Errorf("unsatisfiable = %v, want {gone:1, \"\":1}", gotUnsat)
 	}
+}
+
+func equalMissingEncodeProfileRows(got, want []sqlcgen.ListMissingEncodeProfilesRow) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i].RecordingID != want[i].RecordingID || got[i].Profile != want[i].Profile ||
+			got[i].IsRebuild != want[i].IsRebuild || !slices.Equal(got[i].RequestedKeep, want[i].RequestedKeep) {
+			return false
+		}
+	}
+	return true
 }
 
 // TestEncodeReconcileWorker_BatchesCandidateReads は、reconcile パスが候補ごとの
@@ -735,23 +798,31 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	}
 	mediaDir := t.TempDir()
 	first := seedRecordingWithOriginal(t, pool, mediaDir, "cap/1.m2ts", []string{"h265"}, []byte("x"))
-	second := seedRecordingWithOriginal(t, pool, mediaDir, "cap/2.m2ts", []string{"h265"}, []byte("x"))
-	third := seedRecordingWithOriginal(t, pool, mediaDir, "cap/3.m2ts", []string{"h265"}, []byte("x"))
+	second := seedRecordingWithOriginal(t, pool, mediaDir, "cap/2.m2ts", []string{"cut"}, []byte("x"))
+	third := seedRecordingWithOriginal(t, pool, mediaDir, "cap/3.m2ts", []string{"cut"}, []byte("x"))
 	if first >= second || second >= third {
 		t.Fatalf("expected ascending recording ids, got first=%d second=%d third=%d", first, second, third)
 	}
+	secondKeep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	thirdKeep := []chapters.Range{{StartMs: 1000, EndMs: 2000}}
+	secondRequested := seedEncodedAssetRebuildRequest(t, pool, second, secondKeep)
+	thirdRequested := seedEncodedAssetRebuildRequest(t, pool, third, thirdKeep)
 
-	w := &EncodeReconcileWorker{Profiles: encodeConfigWith("h265"), RowLimit: 2, Media: newTestMediaStore(pool)}
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{
+		{Name: "h265", Container: "mp4", VideoCodec: "libx265", AudioCodec: "aac"},
+		{Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
+	}}
+	w := &EncodeReconcileWorker{Profiles: profiles, RowLimit: 2, Media: newTestMediaStore(pool)}
 	runEncodeReconcilePass(t, w)
 
 	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), first, "h265"); got != 1 {
 		t.Errorf("encode jobs for first = %d, want 1", got)
 	}
-	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "h265"); got != 1 {
-		t.Errorf("encode jobs for second = %d, want 1", got)
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), second, "cut"); got != 1 {
+		t.Errorf("encode jobs for second rebuild = %d, want 1", got)
 	}
 	// 3 件目は RowLimit=2 を超えるのでこのパスでは examine されない。
-	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "h265"); got != 0 {
+	if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "cut"); got != 0 {
 		t.Errorf("encode jobs for third = %d, want 0 (a single pass must not examine more than RowLimit candidates)", got)
 	}
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileCandidates); got != 2 {
@@ -761,6 +832,23 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	if len(continuations) != 1 || continuations[0].AfterRecordingID != second {
 		t.Errorf("continuations = %+v, want one cursor after recording %d", continuations, second)
 	}
+	secondJob := findEncodeJob(t, w.Enqueuer.(*recordingEnqueuer), second, "cut")
+	if !bytes.Equal(secondJob.RequestedCutKeep, secondRequested) {
+		t.Errorf("second rebuild keep = %s, want %s", secondJob.RequestedCutKeep, secondRequested)
+	}
+	if len(continuations) == 1 {
+		next := &EncodeReconcileWorker{Enqueuer: w.Enqueuer, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 2}
+		if err := runWorkerViaJobQFake(context.Background(), next, continuations[0]); err != nil {
+			t.Fatalf("continuation after rebuild candidate: %v", err)
+		}
+		if got := countEncodeJobs(t, w.Enqueuer.(*recordingEnqueuer), third, "cut"); got != 1 {
+			t.Errorf("encode jobs for rebuild behind cursor = %d, want 1", got)
+		}
+		thirdJob := findEncodeJob(t, w.Enqueuer.(*recordingEnqueuer), third, "cut")
+		if !bytes.Equal(thirdJob.RequestedCutKeep, thirdRequested) {
+			t.Errorf("third rebuild keep = %s, want %s", thirdJob.RequestedCutKeep, thirdRequested)
+		}
+	}
 	// 最後に完走したパスの時刻が更新されること（TestEncodeReconcileWorker_
 	// RowLimitLeavesLaterRecordingsUnreached が固定していたアサーションを移設。
 	// これが無いと EncodeReconcileLastPass.SetToCurrentTime の呼び出しを消しても
@@ -768,6 +856,61 @@ func TestEncodeReconcileWorker_RowLimitCapsWorkPerPass(t *testing.T) {
 	// 検出できなくなる）。
 	if got := promtestutil.ToFloat64(metrics.EncodeReconcileLastPass); got == 0 {
 		t.Error("last-pass gauge was not set; a stalled pass would be undetectable")
+	}
+}
+
+func TestEncodeReconcileWorker_ExhaustedRebuildRequestReturnsAfterRetryRequest(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	id := seedRecordingWithOriginal(t, pool, mediaDir, "retry-exhausted-rebuild/1.m2ts", []string{"cut"}, []byte("x"))
+	assetID := seedEncodedAsset(t, pool, id, "cut", "retry-exhausted-rebuild/cut.mp4")
+	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
+		t.Fatalf("seeding previous cut keep: %v", err)
+	}
+	requestedKeep := []chapters.Range{{StartMs: 0, EndMs: 1000}}
+	requestedJSON := seedEncodedAssetRebuildRequest(t, pool, id, requestedKeep)
+	if _, err := pool.Exec(ctx, `INSERT INTO recording_encode_attempts
+		(recording_id, profile, state, attempted_at, attempt_count)
+		VALUES ($1, 'cut', 'failed', now(), $2)`, id, jobs.EncodeAttemptLimit); err != nil {
+		t.Fatalf("seeding an exhausted rebuild attempt: %v", err)
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
+		Name: "cut", Cut: true, Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
+	}}}
+	firstWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
+	if err := runWorkerViaJobQFake(ctx, firstWorker, EncodeReconcileArgs{}); err != nil {
+		t.Fatalf("reconcile with an exhausted rebuild attempt: %v", err)
+	}
+	if got := countEncodeJobs(t, enqueuer, id, "cut"); got != 0 {
+		t.Fatalf("encode jobs for exhausted rebuild candidate = %d, want 0", got)
+	}
+
+	deleted, err := sqlcgen.New(pool).DeleteFailedRecordingEncodeAttempts(ctx, sqlcgen.DeleteFailedRecordingEncodeAttemptsParams{
+		RecordingID: id,
+		Profiles:    []string{"cut"},
+	})
+	if err != nil {
+		t.Fatalf("resetting failed rebuild attempt: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("failed rebuild attempts deleted = %d, want 1", deleted)
+	}
+	enqueuer.Reset()
+	secondWorker := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), Profiles: profiles, RowLimit: 1}
+	if err := runWorkerViaJobQFake(ctx, secondWorker, EncodeReconcileArgs{}); err != nil {
+		t.Fatalf("reconcile after retry request: %v", err)
+	}
+	if got := countEncodeJobs(t, enqueuer, id, "cut"); got != 1 {
+		t.Fatalf("encode jobs after rebuild retry request = %d, want 1", got)
+	}
+	if got := findEncodeJob(t, enqueuer, id, "cut").RequestedCutKeep; !bytes.Equal(got, requestedJSON) {
+		t.Errorf("requested keep after retry = %s, want %s", got, requestedJSON)
 	}
 }
 
