@@ -1118,8 +1118,10 @@ func TestReconciler_RecreatesOnPriorityChange(t *testing.T) {
 
 // 開始 20 秒前でも scheduled なら priority 差分を再作成する。
 // mirakc は開始約 15 秒前にチューナーを開くため、地上波 1 番組の実測では開始
-// 14.2 秒前まで scheduled だった。時刻ガードを入れると priority 変更を逃しうるので、
-// 時刻ではなく state の allowlist だけで判定する決定を固定する。
+// 14.2 秒前まで scheduled だった。時刻ガードで再作成を見送ると priority 変更が
+// mirakc に届かず番組をまるごと失いうるが、再作成の窓で失うのは冒頭の最大
+// reconcile 1 周期分である。損の小さい方として、時刻ではなく state の allowlist
+// だけで判定する決定を固定する。
 func TestReconciler_RecreatesScheduledSchedule20SecondsBeforeStart(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
