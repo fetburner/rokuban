@@ -104,13 +104,14 @@ ingest 後の投入が失敗し、その後に `DeleteRecord` が成功すると
 
 対象録画の即時パスは、poster、再選択、seek tiles の順に確認する。seek tiles も ingest 直後に候補になるため、15 分周期を待たない。全件パスは pending 中の thumbnail ジョブを River の一意制約で合流させ、候補窓を recording ID 順に回す。
 
-missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、1 本の継続ジョブに 3 つの再開位置を載せる。各窓が同じパスで評価されるため、窓ごとにジョブを分けず、カーソルだけは独立させる。`--once` で worker が作り直されても、継続ジョブの引数から次のページを開く。対象録画の即時パスはカーソルを読まず、継続ジョブも積まない。
+missing poster、再選択、seek tiles の窓は別々の recording ID カーソルを持つ。満杯の窓が 1 つでもあれば、1 本の継続ジョブに 3 つの再開位置を載せる。短いページを返した窓は継続チェーンの終わりまで完了状態を保ち、ほかの窓が続く間に先頭から再走しない。各窓が同じパスで評価されるため、窓ごとにジョブを分けず、カーソルだけは独立させる。`--once` で worker が作り直されても、継続ジョブの引数から次のページを開く。対象録画の即時パスはカーソルを読まず、継続ジョブも積まない。
 
-継続の投入に失敗した場合はログに残してパスを成功として終える。エラーにすると River の再試行が定期ジョブと合流し、15 分の周期が backoff に置き換わるためである。次の定期パスは先頭から再確認する。短い窓はその窓のカーソルを先頭へ戻し、すべての窓が短ければ継続を積まない。ちょうど上限に達した窓は次の空ページで連鎖を止める。
+継続の投入に失敗した場合はログに残してパスを成功として終える。エラーにすると River の再試行が定期ジョブと合流し、15 分の周期が backoff に置き換わるためである。次の定期パスは先頭から再確認する。短い窓は継続チェーン内では完了としてスキップし、次の定期パスで先頭から再確認する。すべての窓が短ければ継続を積まない。ちょうど上限に達した窓は次の空ページで連鎖を止める。
 
 <details><summary>根拠</summary>
 
 - 3 つの独立カーソルが fresh worker をまたぐこと: `TestThumbnailReconcile_ContinuationSurvivesFreshWorker`
+- 短い窓が別窓の継続中に再走しないこと: `TestThumbnailReconcile_ExhaustedWindowNotRestarted`
 - 対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
 - 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
 - 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
@@ -121,13 +122,14 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 
 CM 検出と局ロゴ候補も定期パスで補完する。候補窓は作業の種類ごとに独立して進める。
 
-CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる。worker が `--once` で作り直されても、各窓は引数の位置から続ける。候補数が上限未満の窓はカーソルを先頭へ戻す。満杯の窓がなければ継続ジョブは積まない。継続ジョブの引数は定期パス `{}` と異なり、両者は並走しうる。対象候補ジョブには同一引数の合流を要求するが、合流は排他を保証しない。
+CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる。worker が `--once` で作り直されても、各窓は引数の位置から続ける。短いページを返した窓は継続チェーンの終わりまで完了状態を保ち、ほかの窓が続く間に先頭から再走しない。満杯の窓がなければ継続ジョブは積まない。継続ジョブの引数は定期パス `{}` と異なり、両者は並走しうる。対象候補ジョブには同一引数の合流を要求するが、合流は排他を保証しない。
 
 継続の投入に失敗した場合はログに残して nil を返す。再試行にすると River の backoff が定期投入と合流し、周期を置き換える。次の定期パスは先頭から候補を再確認する。
 
 <details><summary>根拠</summary>
 
 - 両窓が複合キーを含む引数で fresh worker をまたぐこと: `TestCMDetectReconcile_ContinuationSurvivesFreshWorker`
+- 短い窓が別窓の継続中に再走しないこと: `TestCMDetectReconcile_ExhaustedWindowNotRestarted`
 - 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
 - 継続投入の失敗を成功で終えること: `TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess`
 

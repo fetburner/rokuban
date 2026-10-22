@@ -74,6 +74,55 @@ func TestCMDetectReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 }
 
+func TestCMDetectReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	mediaDir := t.TempDir()
+	firstID := seedCMRecording(t, pool, mediaDir, 15111)
+	secondID := seedCMRecording(t, pool, mediaDir, 15112)
+	seedTaughtAreaForService(t, pool, 1024, 1180)
+	enqueuer := newRecordingEnqueuer()
+	detectionStore := pgstore.NewAnalysis(pool)
+
+	continuationIndex := 0
+	for continuationIndex == 0 || continuationIndex <= len(enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())) {
+		continuations := enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())
+		args := jobs.CMDetectReconcileArgs{}
+		if continuationIndex > 0 {
+			args = continuations[continuationIndex-1]
+		}
+		worker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
+		if err := runWorkerViaJobQFake(context.Background(), worker, args); err != nil {
+			t.Fatalf("reconcile page %d: %v", continuationIndex+1, err)
+		}
+		continuationIndex++
+	}
+
+	detectionJobs := enqueuedArgs[jobs.CMDetectJobArgs](enqueuer, jobs.CMDetectJobArgs{}.Kind())
+	if len(detectionJobs) != 2 || detectionJobs[0].RecordingID != firstID || detectionJobs[1].RecordingID != secondID {
+		t.Errorf("detection jobs = %+v, want recordings %d and %d once each", detectionJobs, firstID, secondID)
+	}
+	candidateJobs := enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind())
+	if len(candidateJobs) != 1 || candidateJobs[0].ServiceID != 1024 {
+		t.Errorf("logo-candidate jobs = %+v, want service 1024 once", candidateJobs)
+	}
+	continuations := enqueuedArgs[jobs.CMDetectReconcileArgs](enqueuer, jobs.CMDetectReconcileArgs{}.Kind())
+	if len(continuations) != 2 {
+		t.Fatalf("continuation count = %d, want 2 for unequal windows", len(continuations))
+	}
+	if continuations[0].CandidateDone || continuations[0].DetectionDone {
+		t.Errorf("first continuation done flags = detection:%v candidate:%v, want false:false",
+			continuations[0].DetectionDone, continuations[0].CandidateDone)
+	}
+	if continuations[1].DetectionDone || !continuations[1].CandidateDone {
+		t.Errorf("second continuation done flags = detection:%v candidate:%v, want false:true",
+			continuations[1].DetectionDone, continuations[1].CandidateDone)
+	}
+}
+
 type cmDetectContinuationFailingEnqueuer struct {
 	*recordingEnqueuer
 	continuationAttempts int

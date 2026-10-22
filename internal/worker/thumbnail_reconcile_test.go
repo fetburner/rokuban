@@ -584,6 +584,91 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 }
 
+func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	ids := make([]int64, 0, 5)
+	for eventID := int32(15121); eventID <= 15125; eventID++ {
+		ids = append(ids, insertTestRecordingWithEventID(t, pool, eventID))
+	}
+	q := sqlcgen.New(pool)
+	for index, recordingID := range ids {
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("unequal-windows/%d.ts", index+1), []byte("fake-ts"))
+		if index < 3 {
+			continue
+		}
+		thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+			db.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+		seedSeekTilesAsset(t, pool, mediaDir, recordingID, fmt.Sprintf("unequal-windows/%d-tiles.jpg", index+1))
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID,
+			CmRanges:    "{[0,60000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+		}
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbnailID,
+			SeekMs:       30000,
+		}); err != nil {
+			t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+		}
+	}
+	for _, index := range []int{1, 2} {
+		seedSeekTilesAsset(t, pool, mediaDir, ids[index], fmt.Sprintf("unequal-windows/%d-tiles.jpg", index+1))
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	continuationIndex := 0
+	for continuationIndex == 0 || continuationIndex <= len(enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())) {
+		continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+		args := ThumbnailReconcileArgs{}
+		if continuationIndex > 0 {
+			args = continuations[continuationIndex-1]
+		}
+		worker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), RowLimit: 1}
+		if err := runWorkerViaJobQFake(ctx, worker, args); err != nil {
+			t.Fatalf("reconcile page %d: %v", continuationIndex+1, err)
+		}
+		continuationIndex++
+	}
+
+	for _, recordingID := range ids[:3] {
+		if got := countThumbnailJobs(t, enqueuer, recordingID); got != 1 {
+			t.Errorf("missing-thumbnail jobs for %d = %d, want 1", recordingID, got)
+		}
+	}
+	for _, recordingID := range ids[3:] {
+		if got := countThumbnailJobs(t, enqueuer, recordingID); got != 1 {
+			t.Errorf("reselection jobs for %d = %d, want 1", recordingID, got)
+		}
+	}
+	if got := countSeekTilesJobs(t, enqueuer, ids[0]); got != 1 {
+		t.Errorf("seek_tiles jobs for %d = %d, want 1", ids[0], got)
+	}
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 3 {
+		t.Fatalf("continuation count = %d, want 3 for 3/2/1 candidate windows", len(continuations))
+	}
+	if continuations[0].MissingDone || continuations[0].ReselectDone || continuations[0].SeekTilesDone {
+		t.Errorf("first continuation done flags = missing:%v reselect:%v seek_tiles:%v, want false:false:false",
+			continuations[0].MissingDone, continuations[0].ReselectDone, continuations[0].SeekTilesDone)
+	}
+	if continuations[1].MissingDone || continuations[1].ReselectDone || !continuations[1].SeekTilesDone {
+		t.Errorf("second continuation done flags = missing:%v reselect:%v seek_tiles:%v, want false:false:true",
+			continuations[1].MissingDone, continuations[1].ReselectDone, continuations[1].SeekTilesDone)
+	}
+	if continuations[2].MissingDone || !continuations[2].ReselectDone || !continuations[2].SeekTilesDone {
+		t.Errorf("third continuation done flags = missing:%v reselect:%v seek_tiles:%v, want false:true:true",
+			continuations[2].MissingDone, continuations[2].ReselectDone, continuations[2].SeekTilesDone)
+	}
+}
+
 type thumbnailContinuationFailingEnqueuer struct {
 	*recordingEnqueuer
 	continuationAttempts int

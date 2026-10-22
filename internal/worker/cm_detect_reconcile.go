@@ -40,9 +40,13 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 	if limit <= 0 {
 		limit = cmDetectRowLimit
 	}
-	rows, err := w.DetectionStore.ListMissingDetections(ctx, args.AfterRecordingID, limit)
-	if err != nil {
-		return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
+	var rows []store.CMDetectionJob
+	if !args.DetectionDone {
+		var err error
+		rows, err = w.DetectionStore.ListMissingDetections(ctx, args.AfterRecordingID, limit)
+		if err != nil {
+			return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
+		}
 	}
 	failed := 0
 	for _, recording := range rows {
@@ -54,7 +58,8 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 		}
 	}
 	var nextRecordingID int64
-	detectionWindowFull := int32(len(rows)) >= limit
+	detectionWindowFull := !args.DetectionDone && int32(len(rows)) >= limit
+	detectionDone := args.DetectionDone || !detectionWindowFull
 	if detectionWindowFull {
 		nextRecordingID = rows[len(rows)-1].RecordingID
 	}
@@ -62,11 +67,15 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 		slog.Info("cm_detect_reconcile: pass complete", "candidates", len(rows), "enqueue_failures", failed,
 			"after_recording_id", nextRecordingID)
 	}
-	candidateRows, err := w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{
-		NetworkID: args.CandidateAfterNetworkID, ServiceID: args.CandidateAfterServiceID,
-	}, limit)
-	if err != nil {
-		return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
+	var candidateRows []store.CMLogoCandidateJob
+	if !args.CandidateDone {
+		var err error
+		candidateRows, err = w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{
+			NetworkID: args.CandidateAfterNetworkID, ServiceID: args.CandidateAfterServiceID,
+		}, limit)
+		if err != nil {
+			return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
+		}
 	}
 	candidateFailures := 0
 	for _, candidate := range candidateRows {
@@ -82,7 +91,8 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 		}
 	}
 	var nextCandidateNetworkID, nextCandidateServiceID int32
-	candidateWindowFull := int32(len(candidateRows)) >= limit
+	candidateWindowFull := !args.CandidateDone && int32(len(candidateRows)) >= limit
+	candidateDone := args.CandidateDone || !candidateWindowFull
 	if candidateWindowFull {
 		last := candidateRows[len(candidateRows)-1]
 		nextCandidateNetworkID, nextCandidateServiceID = last.Station.NetworkID, last.Station.ServiceID
@@ -97,6 +107,8 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 			AfterRecordingID:        nextRecordingID,
 			CandidateAfterNetworkID: nextCandidateNetworkID,
 			CandidateAfterServiceID: nextCandidateServiceID,
+			DetectionDone:           detectionDone,
+			CandidateDone:           candidateDone,
 		}
 		if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
 			slog.Error("cm_detect_reconcile: failed to enqueue continuation",

@@ -50,11 +50,12 @@ type ThumbnailReconcileWorker struct {
 //
 // missing thumbnail、thumbnail の再選択、seek_tiles は recording_id 単位で独立に
 // keyset pagination する。各窓が RowLimit 件以上を返したときは最後に見た ID を
-// 継続ジョブ引数へ載せ、少ない窓は先頭へ戻す。恒久的に失敗する録画が先頭に
-// 残っても、プロセスを作り直した次のパスで後続候補へ進む。
+// 継続ジョブ引数へ載せ、短い窓はそのチェーン内で完了として後続ページでは照会しない。
+// 次の定期パスは先頭から始めるため、恒久的に失敗する録画が先頭に残っても後続候補へ進む。
 func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.ThumbnailReconcileArgs) error {
 	recordingID := args.RecordingID
-	if recordingID != 0 && (args.AfterRecordingID != 0 || args.AfterReselectRecordingID != 0 || args.AfterSeekTilesRecordingID != 0) {
+	if recordingID != 0 && (args.AfterRecordingID != 0 || args.AfterReselectRecordingID != 0 || args.AfterSeekTilesRecordingID != 0 ||
+		args.MissingDone || args.ReselectDone || args.SeekTilesDone) {
 		return fmt.Errorf("thumbnail reconcile: recording_id and continuation cursors cannot be combined: %w", jobq.ErrDiscard)
 	}
 	if w.Enqueuer == nil {
@@ -72,23 +73,31 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 	if recordingID != 0 {
 		targetID = &recordingID
 	}
-	rows, err := w.Media.ListMissingThumbnailRecordings(ctx, store.MediaReconcilePage{
-		AfterRecordingID: after,
-		RecordingID:      targetID,
-		RowLimit:         rowLimit,
-	})
-	if err != nil {
-		// DB 取得に失敗したパスは完走していないので、再開位置を変えない。
-		return fmt.Errorf("listing missing thumbnail recordings: %w", err)
+	var rows []int64
+	if !args.MissingDone {
+		var err error
+		rows, err = w.Media.ListMissingThumbnailRecordings(ctx, store.MediaReconcilePage{
+			AfterRecordingID: after,
+			RecordingID:      targetID,
+			RowLimit:         rowLimit,
+		})
+		if err != nil {
+			// DB 取得に失敗したパスは完走していないので、再開位置を変えない。
+			return fmt.Errorf("listing missing thumbnail recordings: %w", err)
+		}
 	}
 
-	reselectRows, err := w.Media.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{
-		AfterRecordingID: reselectAfter,
-		RecordingID:      targetID,
-		RowLimit:         rowLimit,
-	})
-	if err != nil {
-		return fmt.Errorf("listing thumbnail reselection candidates: %w", err)
+	var reselectRows []store.ThumbnailReselectCandidate
+	if !args.ReselectDone {
+		var err error
+		reselectRows, err = w.Media.ListThumbnailReselectCandidates(ctx, store.MediaReconcilePage{
+			AfterRecordingID: reselectAfter,
+			RecordingID:      targetID,
+			RowLimit:         rowLimit,
+		})
+		if err != nil {
+			return fmt.Errorf("listing thumbnail reselection candidates: %w", err)
+		}
 	}
 
 	failed := 0
@@ -115,8 +124,8 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		}
 	}
 
-	seekTilesFailed, seekTilesAfter, seekTilesWindowFull := w.enqueueMissingSeekTiles(
-		ctx, w.Enqueuer, rowLimit, args.AfterSeekTilesRecordingID, targetID,
+	seekTilesFailed, seekTilesAfter, seekTilesWindowFull, seekTilesDone := w.enqueueMissingSeekTiles(
+		ctx, w.Enqueuer, rowLimit, args.AfterSeekTilesRecordingID, args.SeekTilesDone, targetID,
 	)
 	failed += seekTilesFailed
 
@@ -125,13 +134,15 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 		metrics.ThumbnailReconcileLastPass.SetToCurrentTime()
 
 		var nextAfter int64
-		missingWindowFull := int32(len(rows)) >= rowLimit
+		missingWindowFull := !args.MissingDone && int32(len(rows)) >= rowLimit
+		missingDone := args.MissingDone || !missingWindowFull
 		if missingWindowFull {
 			nextAfter = rows[len(rows)-1]
 		}
 
 		var nextReselectAfter int64
-		reselectWindowFull := int32(len(reselectRows)) >= rowLimit
+		reselectWindowFull := !args.ReselectDone && int32(len(reselectRows)) >= rowLimit
+		reselectDone := args.ReselectDone || !reselectWindowFull
 		if reselectWindowFull {
 			nextReselectAfter = reselectRows[len(reselectRows)-1].RecordingID
 		}
@@ -140,6 +151,9 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 			AfterRecordingID:          nextAfter,
 			AfterReselectRecordingID:  nextReselectAfter,
 			AfterSeekTilesRecordingID: seekTilesAfter,
+			MissingDone:               missingDone,
+			ReselectDone:              reselectDone,
+			SeekTilesDone:             seekTilesDone,
 		}
 		if missingWindowFull || reselectWindowFull || seekTilesWindowFull {
 			if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
@@ -178,14 +192,18 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 
 // enqueueMissingSeekTiles は seek_tiles の desired−observed ギャップを埋める。
 // thumbnail と同じ窓の形（keyset pagination）だが、全件パスでは再開位置を独立に
-// 持つ。戻り値は投入に失敗した件数、次のカーソル、窓が満杯かどうか。
+// 持つ。戻り値は投入失敗数、次のカーソル、満杯かどうか、チェーン内で完了したか。
 func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	ctx context.Context,
 	enqueuer jobq.Enqueuer,
 	rowLimit int32,
 	after int64,
+	done bool,
 	targetID *int64,
-) (failed int, nextAfter int64, windowFull bool) {
+) (failed int, nextAfter int64, windowFull bool, nextDone bool) {
+	if done {
+		return 0, 0, false, true
+	}
 	rows, err := w.Media.ListMissingSeekTilesRecordings(ctx, store.MediaReconcilePage{
 		AfterRecordingID: after,
 		RecordingID:      targetID,
@@ -194,7 +212,7 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 	if err != nil {
 		// DB 取得に失敗したパスは完走していないので、再開位置を変えない。
 		slog.Error("thumbnail_reconcile: listing missing seek tiles failed", "err", err)
-		return 1, 0, false
+		return 1, after, false, false
 	}
 
 	for _, recordingID := range rows {
@@ -209,6 +227,8 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		if int32(len(rows)) >= rowLimit {
 			nextAfter = rows[len(rows)-1]
 			windowFull = true
+		} else {
+			nextDone = true
 		}
 		if len(rows) > 0 || failed > 0 {
 			slog.Info("thumbnail_reconcile: seek tiles pass complete",
@@ -218,5 +238,5 @@ func (w *ThumbnailReconcileWorker) enqueueMissingSeekTiles(
 		slog.Info("thumbnail_reconcile: targeted seek tiles pass complete",
 			"recording_id", *targetID, "candidates", len(rows), "failed", failed)
 	}
-	return failed, nextAfter, windowFull
+	return failed, nextAfter, windowFull, nextDone
 }
