@@ -22,12 +22,12 @@ import (
 	"github.com/fetburner/rokuban/internal/worker"
 )
 
-// setEncodeAttemptCount は seedEncodeAttempt が作った "h264" の行の attempt_count を上書きする。
-func setEncodeAttemptCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, count int) {
+// setEncodeAttemptCount は seedEncodeAttempt が作った profile の行の attempt_count を上書きする。
+func setEncodeAttemptCount(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, count int) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`UPDATE recording_encode_attempts SET attempt_count = $2 WHERE recording_id = $1 AND profile = 'h264'`,
-		recordingID, count); err != nil {
+		`UPDATE recording_encode_attempts SET attempt_count = $2 WHERE recording_id = $1 AND profile = $3`,
+		recordingID, count, profile); err != nil {
 		t.Fatalf("setting attempt_count: %v", err)
 	}
 }
@@ -67,10 +67,10 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	seedEncodeAttempt(t, pool, d, "h264", "failed", nil)
 	e := mk("失敗 count 24", "h264")
 	seedEncodeAttempt(t, pool, e, "h264", "failed", nil)
-	setEncodeAttemptCount(t, pool, e, int(jobs.EncodeAttemptLimit)-1)
+	setEncodeAttemptCount(t, pool, e, "h264", int(jobs.EncodeAttemptLimit)-1)
 	f := mk("失敗 count 25", "h264")
 	seedEncodeAttempt(t, pool, f, "h264", "failed", nil)
-	setEncodeAttemptCount(t, pool, f, int(jobs.EncodeAttemptLimit))
+	setEncodeAttemptCount(t, pool, f, "h264", int(jobs.EncodeAttemptLimit))
 
 	g := mk("観測済みなのに running 行", "h264")
 	seedEncodedAsset(t, pool, g, "h264", 1000)
@@ -146,7 +146,7 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 		t.Fatalf("fixture titles (%d queued, %d running) disagree with expected counts", len(queuedTitles), len(runningTitles))
 	}
 
-	// ListMissingEncodeProfiles は上限到達の失敗行も返す。待機列は queued + running = それ以外。
+	// ListMissingEncodeProfiles は投入候補（不足と作り直し）を合わせて返す。
 	missing, err := sqlcgen.New(pool).ListMissingEncodeProfiles(context.Background(), sqlcgen.ListMissingEncodeProfilesParams{
 		KnownProfiles: []string{"h264", "h265", "cut"},
 		CutProfiles:   []string{"cut"},
@@ -156,10 +156,9 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listing missing encode profiles: %v", err)
 	}
-	const rebuilds = 2
-	if got.Queued+got.Running != int64(len(missing)+rebuilds) {
-		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows and %d unsatisfied rebuilds; want %d",
-			got.Queued+got.Running, len(missing), rebuilds, len(missing)+rebuilds)
+	if got.Queued+got.Running != int64(len(missing)) {
+		t.Errorf("queued + running = %d, ListMissingEncodeProfiles has %d rows; want equal counts",
+			got.Queued+got.Running, len(missing))
 	}
 }
 
@@ -290,10 +289,13 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	dropOriginal(seedRebuild("原本なしの作り直し要求"))
 	below := seed("試行上限の手前", "h264")
 	seedEncodeAttempt(t, pool, below, "h264", "failed", nil)
-	setEncodeAttemptCount(t, pool, below, int(jobs.EncodeAttemptLimit)-1)
+	setEncodeAttemptCount(t, pool, below, "h264", int(jobs.EncodeAttemptLimit)-1)
 	exhausted := seed("試行上限", "h264")
 	seedEncodeAttempt(t, pool, exhausted, "h264", "failed", nil)
-	setEncodeAttemptCount(t, pool, exhausted, int(jobs.EncodeAttemptLimit))
+	setEncodeAttemptCount(t, pool, exhausted, "h264", int(jobs.EncodeAttemptLimit))
+	exhaustedRebuild := seedRebuild("試行上限の作り直し")
+	seedEncodeAttempt(t, pool, exhaustedRebuild, "cut", "failed", nil)
+	setEncodeAttemptCount(t, pool, exhaustedRebuild, "cut", int(jobs.EncodeAttemptLimit))
 	adopt(seed("全区間カット", "cut"), "[0,1800000)")
 
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{
@@ -345,6 +347,9 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 
 	if reconciled["試行上限"] || queued["試行上限"] {
 		t.Errorf("exhausted attempts: reconciled %v, queued %v; want neither", reconciled["試行上限"], queued["試行上限"])
+	}
+	if reconciled["試行上限の作り直し"] || queued["試行上限の作り直し"] {
+		t.Errorf("exhausted rebuild attempts: reconciled %v, queued %v; want neither", reconciled["試行上限の作り直し"], queued["試行上限の作り直し"])
 	}
 	if reconciled["全区間カット"] || !queued["全区間カット"] {
 		t.Errorf("all-cut keep: reconciled %v, queued %v; want queued only", reconciled["全区間カット"], queued["全区間カット"])

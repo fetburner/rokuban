@@ -166,83 +166,68 @@ func (q *Queries) ListEncodeQueue(ctx context.Context, arg ListEncodeQueueParams
 	return items, nil
 }
 
-const listEncodedAssetRebuildRequests = `-- name: ListEncodedAssetRebuildRequests :many
-SELECT q.recording_id,
-       q.profile,
-       q.requested_keep
-FROM unsatisfied_encode_rebuilds q
-WHERE $1::bigint IS NULL
-   OR q.recording_id = $1::bigint
-ORDER BY q.recording_id, q.profile
-`
-
-// ListEncodedAssetRebuildRequests は reconcile が投入し直す、満たされていない作り直しを
-// 返す。ごみ箱の録画・原本が active でない録画は view（unsatisfied_encode_rebuilds）が
-// 落とす。投入してもごみ箱の録画を作る / EncodeWorker が作れない。要求行は消さず、
-// 復元されたら再び拾う。満たされた要求は返さない。
-// keep は int8multirange のまま返し、Go 側は pgstore.KeepRangesFromMultirange で戻す。
-func (q *Queries) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]UnsatisfiedEncodeRebuild, error) {
-	rows, err := q.db.Query(ctx, listEncodedAssetRebuildRequests, recordingID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []UnsatisfiedEncodeRebuild
-	for rows.Next() {
-		var i UnsatisfiedEncodeRebuild
-		if err := rows.Scan(&i.RecordingID, &i.Profile, &i.RequestedKeep); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listMissingEncodeProfiles = `-- name: ListMissingEncodeProfiles :many
 
-WITH missing AS (
-  SELECT u.recording_id, u.profile, u.ordinality
+WITH rebuilds AS (
+  SELECT q.recording_id, q.profile, q.requested_keep,
+         true AS is_rebuild, NULL::bigint AS ordinality
+  FROM unsatisfied_encode_rebuilds q
+  JOIN encodable_recordings er ON er.recording_id = q.recording_id
+  WHERE q.profile = ANY($1::text[])
+    AND q.recording_id > $2::bigint
+    AND ($3::bigint IS NULL OR q.recording_id = $3::bigint)
+    AND NOT encode_attempts_exhausted(
+      q.recording_id, q.profile, $4::integer
+    )
+), missing AS (
+  SELECT u.recording_id, u.profile, NULL::int8multirange AS requested_keep,
+         false AS is_rebuild, min(u.ordinality) AS ordinality
   FROM unencoded_desired_profiles u
   JOIN encodable_recordings er ON er.recording_id = u.recording_id
-  WHERE u.recording_id > $1::bigint
-    AND ($2::bigint IS NULL OR u.recording_id = $2::bigint)
-    AND encodable_profile(u.recording_id, u.profile, $3::text[], $4::text[])
+  WHERE u.recording_id > $2::bigint
+    AND ($3::bigint IS NULL OR u.recording_id = $3::bigint)
+    AND encodable_profile(u.recording_id, u.profile, $5::text[], $1::text[])
     AND NOT EXISTS (
       SELECT 1 FROM unsatisfied_encode_rebuilds rebuild
       WHERE rebuild.recording_id = u.recording_id
         AND rebuild.profile = u.profile
     )
     AND NOT encode_attempts_exhausted(
-      u.recording_id, u.profile, $5::integer
+      u.recording_id, u.profile, $4::integer
     )
+  GROUP BY u.recording_id, u.profile
+), pending_profiles AS (
+  SELECT recording_id, profile, requested_keep, is_rebuild, ordinality FROM rebuilds
+  UNION ALL
+  SELECT recording_id, profile, requested_keep, is_rebuild, ordinality FROM missing
 ), candidate_recordings AS (
   SELECT DISTINCT recording_id
-  FROM missing
+  FROM pending_profiles
   ORDER BY recording_id
   LIMIT $6
 )
-SELECT m.recording_id, m.profile
-FROM missing m
-JOIN candidate_recordings c ON c.recording_id = m.recording_id
-GROUP BY m.recording_id, m.profile
-ORDER BY m.recording_id, min(m.ordinality)
+SELECT p.recording_id, p.profile, p.requested_keep, p.is_rebuild
+FROM pending_profiles p
+JOIN candidate_recordings c ON c.recording_id = p.recording_id
+ORDER BY p.recording_id, p.is_rebuild DESC,
+         CASE WHEN p.is_rebuild THEN p.profile END,
+         p.ordinality
 `
 
 type ListMissingEncodeProfilesParams struct {
+	CutProfiles      []string
 	AfterRecordingID int64
 	RecordingID      *int64
-	KnownProfiles    []string
-	CutProfiles      []string
 	AttemptLimit     int32
+	KnownProfiles    []string
 	RowLimit         int32
 }
 
 type ListMissingEncodeProfilesRow struct {
-	RecordingID int64
-	Profile     string
+	RecordingID   int64
+	Profile       string
+	RequestedKeep pgtype.Multirange[pgtype.Range[pgtype.Int8]]
+	IsRebuild     bool
 }
 
 // encode の desired−observed 定期 reconcile（internal/worker/encode_reconcile.go）と
@@ -267,10 +252,10 @@ type ListMissingEncodeProfilesRow struct {
 //     一致する凍結区間の active な encoded がまだ無いもの。ごみ箱・原本が active でない
 //     録画を含まない）。cut の確認済み条件は掛けない
 //
-// 不足の補完（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ述語を
-// 持たなければならない。片方にだけ条件を書き足すと、待機列に出るのに投入されない
-// （またはその逆の）録画ができる。条件を足すときは上の名前の定義を変える。両経路が
-// 同じ集合に合意することは、設定から引数を組み立てる api の配線も含めて
+// 投入一覧（ListMissingEncodeProfiles）と待機列（ListEncodeQueue）は同じ条件で
+// 不足と満たされていない作り直しを選ぶ。片方にだけ条件を書き足すと、待機列に出るのに
+// 投入されない（またはその逆の）録画ができる。条件を足すときは上の述語名の定義を変える。
+// 両経路が同じ集合に合意することは、設定から引数を組み立てる api の配線も含めて
 // internal/api の TestEncodeReconcileAndQueueAgreeOnPendingSet が固定する。
 //
 // # until_encoded_deletable_originals との関係
@@ -281,14 +266,14 @@ type ListMissingEncodeProfilesRow struct {
 // 設定からプロファイルを消す編集だけで、それを凍結した until_encoded 録画の原本が
 // 不可逆に消える（docs/storage/retention.md §保持ポリシー。internal/worker の
 // TestUnknownDesiredProfile_PredicateAsymmetry が両側から固定する）。
-// ListMissingEncodeProfiles は「エンコードしてよい録画（encodable_recordings）の
-// 不足（unencoded_desired_profiles）のうち、エンコードしてよいプロファイル
-// （encodable_profile）で、満たされていない作り直し（unsatisfied_encode_rebuilds）が
-// 無く、試行上限に達していない」(recording_id, profile) を返す。作り直しは固定 keep
-// を持つ別経路（ListEncodedAssetRebuildRequests）で投入する。
-// recording_id が after_recording_id より大きい録画を recording_id 昇順で
-// row_limit 件選んでから profile を展開するので、row_limit は profile 行数ではなく
-// 録画件数の上限になる。候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
+// ListMissingEncodeProfiles は、不足プロファイルと満たされていない作り直し要求の和を
+// (recording_id, profile) 単位で返す。requested_keep は作り直し要求の行だけ非 NULL。
+// 両方に同じ録画・試行上限・対象 ID・継続カーソルの条件を掛け、作り直しは設定済みの
+// cut profile に限る。不足側は encodable_profile で設定とチャプター所有を確認し、同じ
+// profile に未充足の作り直しがあれば除外する（作り直し要求が優先する）。
+// recording_id が after_recording_id より大きい録画を recording_id 昇順で row_limit 件
+// 選んでから profile を展開するので、row_limit は profile 行数ではなく録画件数の上限になる。
+// 候補の判定は LIMIT 前に行い、完全な録画を先に消費しない。
 //
 // 条件の意味:
 //   - recording_encode_policy に行がある = エンコードポリシーが凍結済み
@@ -323,11 +308,11 @@ type ListMissingEncodeProfilesRow struct {
 // が両側から固定している）。
 func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissingEncodeProfilesParams) ([]ListMissingEncodeProfilesRow, error) {
 	rows, err := q.db.Query(ctx, listMissingEncodeProfiles,
+		arg.CutProfiles,
 		arg.AfterRecordingID,
 		arg.RecordingID,
-		arg.KnownProfiles,
-		arg.CutProfiles,
 		arg.AttemptLimit,
+		arg.KnownProfiles,
 		arg.RowLimit,
 	)
 	if err != nil {
@@ -337,7 +322,12 @@ func (q *Queries) ListMissingEncodeProfiles(ctx context.Context, arg ListMissing
 	var items []ListMissingEncodeProfilesRow
 	for rows.Next() {
 		var i ListMissingEncodeProfilesRow
-		if err := rows.Scan(&i.RecordingID, &i.Profile); err != nil {
+		if err := rows.Scan(
+			&i.RecordingID,
+			&i.Profile,
+			&i.RequestedKeep,
+			&i.IsRebuild,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

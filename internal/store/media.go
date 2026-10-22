@@ -66,16 +66,11 @@ type MissingEncodeProfilesParams struct {
 	RowLimit         int32
 }
 
-// MissingEncodeProfile は desired だが active な成果物が無い録画とプロファイルを表す。
+// MissingEncodeProfile は不足または作り直しが必要な録画とプロファイルを表す。
 type MissingEncodeProfile struct {
-	RecordingID int64
-	Profile     string
-}
-
-// EncodeAssetRebuildRequest は押された時点で固定された cut 範囲の作り直し要求を表す。
-type EncodeAssetRebuildRequest struct {
 	RecordingID   int64
 	Profile       string
+	IsRebuild     bool
 	RequestedKeep []chapters.Range
 	DecodeErr     error
 }
@@ -181,10 +176,8 @@ type MediaReconcile interface {
 	GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (EncodedAssetObservation, error)
 	// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
 	EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error)
-	// ListMissingEncodeProfiles は未生成 encoded の候補をページ単位で返す。
+	// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 	ListMissingEncodeProfiles(ctx context.Context, params MissingEncodeProfilesParams) ([]MissingEncodeProfile, error)
-	// ListEncodedAssetRebuildRequests は満たされていない作り直し要求を返す。
-	ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]EncodeAssetRebuildRequest, error)
 	// ListUnsatisfiableEncodeProfiles は現在の設定に無い desired profile と録画数を返す。
 	ListUnsatisfiableEncodeProfiles(ctx context.Context, knownProfiles []string) ([]EncodeProfileCount, error)
 	// ListCutAwaitingReview は確認待ちの cut profile と録画数を返す。

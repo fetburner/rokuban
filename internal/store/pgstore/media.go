@@ -253,7 +253,7 @@ func (s *Media) GetChaseTarget(ctx context.Context, recordingID int64) (store.Ch
 	}, nil
 }
 
-// ListMissingEncodeProfiles は未生成 encoded の候補をページ単位で返す。
+// ListMissingEncodeProfiles は不足と満たされていない作り直しを合わせた候補をページ単位で返す。
 func (s *Media) ListMissingEncodeProfiles(ctx context.Context, params store.MissingEncodeProfilesParams) ([]store.MissingEncodeProfile, error) {
 	rows, err := sqlcgen.New(s.pool).ListMissingEncodeProfiles(ctx, sqlcgen.ListMissingEncodeProfilesParams{
 		AfterRecordingID: params.AfterRecordingID,
@@ -268,25 +268,17 @@ func (s *Media) ListMissingEncodeProfiles(ctx context.Context, params store.Miss
 	}
 	out := make([]store.MissingEncodeProfile, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, store.MissingEncodeProfile{RecordingID: row.RecordingID, Profile: row.Profile})
-	}
-	return out, nil
-}
-
-// ListEncodedAssetRebuildRequests は満たされていない作り直し要求を返す。
-func (s *Media) ListEncodedAssetRebuildRequests(ctx context.Context, recordingID *int64) ([]store.EncodeAssetRebuildRequest, error) {
-	rows, err := sqlcgen.New(s.pool).ListEncodedAssetRebuildRequests(ctx, recordingID)
-	if err != nil {
-		return nil, fmt.Errorf("listing encoded asset rebuild requests: %w", err)
-	}
-	out := make([]store.EncodeAssetRebuildRequest, 0, len(rows))
-	for _, row := range rows {
-		keep, err := KeepRangesFromMultirange(row.RequestedKeep)
-		out = append(out, store.EncodeAssetRebuildRequest{
+		var keep []chapters.Range
+		var decodeErr error
+		if row.IsRebuild {
+			keep, decodeErr = KeepRangesFromMultirange(row.RequestedKeep)
+		}
+		out = append(out, store.MissingEncodeProfile{
 			RecordingID:   row.RecordingID,
 			Profile:       row.Profile,
+			IsRebuild:     row.IsRebuild,
 			RequestedKeep: keep,
-			DecodeErr:     err,
+			DecodeErr:     decodeErr,
 		})
 	}
 	return out, nil

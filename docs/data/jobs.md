@@ -148,7 +148,7 @@ worker の最大並列数はプロセスごとの値で、k8s の ScaledJob で�
 
 不足プロファイルを、実行中の試行行の有無で実行中と待機中に分ける。待機列と encode の投入は、「エンコードしてよいか」の述語をスキーマ側の同じ名前から引く。片方にだけ条件を書き足すと、待機列に出るのに投入されない録画ができる。試行回数が上限に達した失敗行は worker が開始時に cancel して作られないので、どちらにも数えない。
 
-投入と待機列が食い違うのは 2 つだけである。試行回数が上限に達したものは、reconcile は投入するが待機列は数えない。全区間をカットして keep が空になった cut プロファイルは、reconcile は Go で keep を導出して投入しないが、待機列は SQL だけで数えるので数え続ける。keep の導出を SQL に写すと導出が 2 か所になるので、揃えない。
+投入と待機列が食い違うのは、全区間をカットして keep が空になった cut プロファイルだけである。reconcile は Go で keep を導出して投入しないが、待機列は SQL だけで数えるので数え続ける。keep の導出を SQL に写すと導出が 2 か所になるので、揃えない。
 
 満たされていない作り直し（凍結区間が `requested_keep` と等しい active な版がまだ無い要求）は、active な版があっても待機列に入る。active な版の存在は、ユーザーが押した keep で作られたことを意味しないためである。満たされた要求は入らない。ただし、ごみ箱の録画、原本が active でない録画、設定に無いプロファイルの要求は数えない。ごみ箱の録画は作ってはならず、残りの 2 つは投入しても worker が作れないからである。試行回数が上限に達した要求も数えない。worker が開始時に cancel するので、数えると何も起きないのに「待機中」と出続ける。作り直しを押し直すと失敗行が消えて試行の予算が戻るので、その時点から再び数える。
 
@@ -161,13 +161,11 @@ desired から外れた後も River に残るジョブは、待機列に数え�
 <details><summary>根拠</summary>
 
 - 待機列の導出: `internal/api/encode_queue.go`
-- 不足プロファイルと作り直し要求を合わせた導出: `ListEncodeQueue`
-- 不足プロファイルの列挙（reconcile 側）: `ListMissingEncodeProfiles`
+- 不足プロファイルと作り直し要求を合わせた導出: `ListEncodeQueue` / `ListMissingEncodeProfiles`
 - desired の不足（設定では絞らない）: view `unencoded_desired_profiles`
 - 録画単位の述語（ごみ箱でない・原本が active）: view `encodable_recordings`
 - プロファイル単位の述語（設定にある・cut なら確認済み）: 関数 `encodable_profile`
 - 待機列と投入の集合の一致: `TestEncodeReconcileAndQueueAgreeOnPendingSet`
-- 作り直し要求の列挙（reconcile 側）: `ListEncodedAssetRebuildRequests`
 - 実行中と待機中の区分: `running` と `queued`
 - 使わない River の API: `JobList`
 - 待機列の分割・上限・observed の除外・cut の所有条件: `TestGetEncodeQueueSummaryFromDomainState`
