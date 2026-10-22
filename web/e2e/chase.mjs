@@ -239,6 +239,7 @@ let recordingDetailRequests = 0
 let committedRecordingGetsAfterPurge = 0
 let rejectChasePlaylistsAfterPurge = false
 let simulateIngestCommitted = false
+let deferredChaseOffsetPlaylist = null
 const originalVODPlaylistRequests = []
 const originalOffsetPlaylistRequests = []
 
@@ -316,6 +317,8 @@ let playlistEnded = false
 let finalizeChasePlaylist = false
 let finalizedChasePlaylistRequests = 0
 let offsetPlaylistRequests = 0
+let rejectChaseOffsetPlaylistsForRetry = false
+const chaseOffsetPlaylistRequests = []
 // 最後に要求した追っかけ playlist の offset（offset 無しは 0）。今どのセッションを再生しているか。
 let lastChasePlaylistOffset = 0
 const HTMLMediaElementHaveMetadata = 1
@@ -371,9 +374,21 @@ await page.route(`**${chaseBase}/offset/*/playlist.m3u8*`, async (route) => {
   const match = requestedURL.pathname.match(/\/offset\/(\d+)\/playlist\.m3u8$/)
   const offsetSeconds = match === null ? Number.NaN : Number(match[1])
   lastChasePlaylistOffset = offsetSeconds
+  if (deferredChaseOffsetPlaylist !== null) {
+    const deferred = deferredChaseOffsetPlaylist
+    deferredChaseOffsetPlaylist = null
+    deferred.started()
+    await deferred.response
+  }
+  if (rejectChaseOffsetPlaylistsForRetry) {
+    chaseOffsetPlaylistRequests.push({ offset: offsetSeconds, status: 500 })
+    await route.fulfill({ status: 500, body: 'retry fixture failure' })
+    return
+  }
   const observation = observationForOffset(offsetSeconds)
   observation.playlistRequestedAt ??= Date.now()
   const sourceEntries = entries.slice(Math.floor(offsetSeconds / 2))
+  chaseOffsetPlaylistRequests.push({ offset: offsetSeconds, status: 200 })
   await route.fulfill({
     status: 200,
     contentType: 'application/vnd.apple.mpegurl',
@@ -2113,6 +2128,84 @@ if (Math.abs(originTarget - 12) > 0.1) {
 }
 if (chaseLeaveHints.length !== originLeavesBefore) {
   ng.push(`⑭ offset セッションの起点への seek で張り直し leave を送った (${chaseLeaveHints.slice(originLeavesBefore).join(', ')})`)
+}
+
+log('\n=== ⑭-b 追っかけの seek 失敗後、作り直しと再読み込みが選んだ位置を保つ ===')
+await page.goto('about:blank')
+recording.resumePositionMs = 47_880
+delete recording.watchedAt
+recording.status = 'recording'
+recording.startedAt = new Date(Date.now() - 70_000).toISOString()
+recording.startAt = recording.startedAt
+recording.durationMs = 60_000
+recording.encodedAssets = []
+growingSince = Date.now() - 20_000
+growthCapSegments = Infinity
+holdResumePositionSeed = false
+rejectChaseOffsetPlaylistsForRetry = true
+const failedChaseCursor = chaseOffsetPlaylistRequests.length
+let signalChaseOffsetRequestStarted = () => {}
+let releaseChaseOffsetResponse = () => {}
+const chaseOffsetRequestStarted = new Promise((resolve) => {
+  signalChaseOffsetRequestStarted = resolve
+})
+const heldChaseOffsetResponse = new Promise((resolve) => {
+  releaseChaseOffsetResponse = resolve
+})
+deferredChaseOffsetPlaylist = {
+  started: signalChaseOffsetRequestStarted,
+  response: heldChaseOffsetResponse,
+}
+await page.goto(URL_BASE + '/recordings/1#chase', { waitUntil: 'domcontentloaded' })
+await chaseOffsetRequestStarted
+await page.locator('video').evaluate((video) => {
+  // A seeked at currentTime 0 can arrive while the requested saved position is still pending.
+  video.dispatchEvent(new Event('seeked', { bubbles: true }))
+})
+releaseChaseOffsetResponse()
+await page.getByRole('button', { name: '再読み込み' }).waitFor({ timeout: 30000 })
+const failedChaseRequests = chaseOffsetPlaylistRequests.slice(failedChaseCursor)
+const failedChaseOffsets = failedChaseRequests
+  .filter((request) => request.status === 500)
+  .map((request) => request.offset)
+log('  失敗した追っかけ offset=' + JSON.stringify(failedChaseOffsets) + ', 保存位置=47.88')
+if (!failedChaseOffsets.includes(47)) {
+  ng.push('⑭-b 前提: 保存位置 47.88 秒の offset 47 が失敗しない (' + JSON.stringify(failedChaseRequests) + ')')
+}
+if (failedChaseOffsets.some((offset) => offset !== 47)) {
+  ng.push('⑭-b 追っかけの自動作り直しが保存位置から外れる offset を要求する (' + JSON.stringify(failedChaseOffsets) + ')')
+}
+rejectChaseOffsetPlaylistsForRetry = false
+const chaseExplicitReloadCursor = chaseOffsetPlaylistRequests.length
+await page.getByRole('button', { name: '再読み込み' }).click()
+const chaseExplicitReloadRequestDeadline = Date.now() + 15000
+while (
+  !chaseOffsetPlaylistRequests.slice(chaseExplicitReloadCursor).some((request) => request.status === 200) &&
+  Date.now() < chaseExplicitReloadRequestDeadline
+) {
+  await page.waitForTimeout(50)
+}
+const chaseExpectedReloadPosition = 47.88 - 47
+const chaseExplicitReloadStarted = await page.waitForFunction((expectedCurrentTime) => {
+  const video = document.querySelector('video')
+  return video !== null && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !video.seeking &&
+    Math.abs(video.currentTime - expectedCurrentTime) < 0.3
+}, chaseExpectedReloadPosition, { timeout: 15000 }).then(() => true).catch(() => false)
+await page.locator('video').evaluate((video) => video.pause())
+const chaseExplicitReloadRequests = chaseOffsetPlaylistRequests.slice(chaseExplicitReloadCursor)
+const chaseExplicitReloadOffset = chaseExplicitReloadRequests.findLast((request) => request.status === 200)?.offset
+const chaseExplicitReloadTime = Number(await page.locator('video').evaluate((video) => video.currentTime))
+const chaseExplicitReloadAxis = chaseExplicitReloadOffset + chaseExplicitReloadTime
+log('  追っかけ再読み込み: requests=' + JSON.stringify(chaseExplicitReloadRequests) +
+  ', started=' + chaseExplicitReloadStarted + ', axis=' + chaseExplicitReloadAxis +
+  ', currentTime=' + chaseExplicitReloadTime)
+if (chaseExplicitReloadOffset !== 47) {
+  ng.push('⑭-b 追っかけの再読み込みで offset 47 を開かない (' +
+    JSON.stringify(chaseExplicitReloadRequests) + ')')
+}
+if (!chaseExplicitReloadStarted || Math.abs(chaseExplicitReloadAxis - 47.88) > 0.5) {
+  ng.push('⑭-b 追っかけ再読み込みの録画軸が保存位置から 0.5 秒以内でない (' +
+    chaseExplicitReloadAxis + ' / 47.88)')
 }
 
 log('\n=== ⑮ finished・ingest 未 commit から追っかけ、commit purge 後は最新 REST 状態で原本 HLS へ移る ===')

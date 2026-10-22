@@ -1708,6 +1708,35 @@ describe('LivePlayer の状態遷移', () => {
       expect(video.currentTime).toBeCloseTo(retryStartPosition, 5)
     })
 
+    it('開始位置の適用中に fatal エラーが来ても currentTime 0 を再試行位置にしない', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(PROFILE_MASTER, { status: 200 }))))
+      const onRecordingPlaybackError = vi.fn(() => true)
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={73}
+          offsetSessionStart={{ type: 'saved-position', positionMs: 23_750 }}
+          profile="hd"
+          onRecordingPlaybackError={onRecordingPlaybackError}
+        />,
+      )
+
+      await waitFor(() => expect(hlsMockState.instances).toHaveLength(1))
+      const video = document.querySelector('video')!
+      Object.defineProperty(video, 'paused', { value: false, configurable: true })
+      Object.defineProperty(video, 'currentTime', { value: 0, writable: true, configurable: true })
+      fireEvent.loadedMetadata(video)
+      fireEvent.playing(video)
+      video.currentTime = 0
+
+      const errorCall = hlsMockState.instances[0]!.on.mock.calls.find(([event]) => event === 'hlsError')
+      const errorHandler = errorCall![1] as (event: string, data: { fatal: boolean }) => void
+      await act(async () => errorHandler('hlsError', { fatal: true }))
+
+      expect(onRecordingPlaybackError).toHaveBeenCalledWith(undefined, true, true)
+    })
+
     it('fatal エラーで hls インスタンスを破棄し、エラー文言を出す', async () => {
       vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('', { status: 200 }))))
       render(<LivePlayer site="default" networkId={0} serviceId={1024} />)
