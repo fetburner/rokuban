@@ -51,59 +51,16 @@ func postLabelRule(t *testing.T, srvURL string, body map[string]any) (*http.Resp
 	return resp, out
 }
 
-type seedRecordingOpts struct {
-	title       string
-	description string
-	start       time.Time
-	status      string
-	eventID     int32
-	site        string
-	networkID   int32
-	serviceID   int32
-	channelType string
-	genres      string
-	source      string
-	ruleID      *int64
-}
-
 // seedPlayableRecording は棚の母集団に入る録画（active な原本を持つ）を作る。
-func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, eventID int32, start time.Time) int64 {
+func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, eventID int32, start time.Time, opts ...func(*dbtest.RecordingParams)) int64 {
 	t.Helper()
-	return seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: title, start: start, status: "finished", eventID: eventID,
-	})
-}
-
-func seedPlayableOpts(t *testing.T, pool *pgxpool.Pool, opts seedRecordingOpts) int64 {
-	t.Helper()
-	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Title = opts.title
-		p.ProgramStartAt = opts.start
-		p.Status = opts.status
-		p.EventID = opts.eventID
-		if opts.description != "" {
-			p.Description = &opts.description
-		}
-		if opts.site != "" {
-			p.Site = opts.site
-		}
-		if opts.networkID != 0 {
-			p.NetworkID = opts.networkID
-		}
-		if opts.serviceID != 0 {
-			p.ServiceID = opts.serviceID
-		}
-		if opts.channelType != "" {
-			p.ChannelType = opts.channelType
-		}
-		if opts.genres != "" {
-			p.Genres = json.RawMessage(opts.genres)
-		}
-		if opts.source != "" {
-			p.Source = opts.source
-		}
-		p.RuleID = opts.ruleID
-	})
+	defaults := func(p *dbtest.RecordingParams) {
+		p.Title = title
+		p.ProgramStartAt = start
+		p.Status = "finished"
+		p.EventID = eventID
+	}
+	id := dbtest.Recording(t, pool, append([]func(*dbtest.RecordingParams){defaults}, opts...)...)
 	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = fmt.Sprintf("test/orig-%d", id)
 	})
@@ -270,26 +227,26 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// 同じ放送を 2 拠点で録り、片方に視聴済み印を付ける。
-	watched := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "tokyo",
+	watched := seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Site = "tokyo"
 	})
-	seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "osaka",
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Site = "osaka"
 	})
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, watched); err != nil {
 		t.Fatalf("marking broadcast watched: %v", err)
 	}
 
 	// もう 1 放送は 2 拠点で録るが印を付けない。2 行ではなく 1 件と数える。
-	secondEpisode := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo",
+	secondEpisode := seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "tokyo"
 	})
-	seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "osaka",
+	seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "osaka"
 	})
 	// 視聴済み印が supersede 済み録画にだけ残る場合も、別拠点の生きた録画を除外する。
-	supersededWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "tokyo",
+	supersededWatched := seedPlayableRecording(t, pool, "アニメ　作品X　第3話", 3, base.Add(2*time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "tokyo"
 	})
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, supersededWatched); err != nil {
 		t.Fatalf("marking superseded broadcast watched: %v", err)
@@ -297,25 +254,25 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET superseded_at = now() WHERE id = $1`, supersededWatched); err != nil {
 		t.Fatalf("superseding watched recording: %v", err)
 	}
-	thirdEpisode := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, site: "osaka",
+	thirdEpisode := seedPlayableRecording(t, pool, "アニメ　作品X　第3話", 3, base.Add(2*time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "osaka"
 	})
 
 	// 同時刻でも network_id / service_id が違えば別の放送イベント。
-	networkEvent := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第4話", start: base.Add(time.Hour), status: "finished", eventID: 2, networkID: 32679,
+	networkEvent := seedPlayableRecording(t, pool, "アニメ　作品X　第4話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.NetworkID = 32679
 	})
-	serviceEvent := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第5話", start: base.Add(time.Hour), status: "finished", eventID: 2, serviceID: 5169,
+	serviceEvent := seedPlayableRecording(t, pool, "アニメ　作品X　第5話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.ServiceID = 5169
 	})
 
 	// 視聴済みイベント（base）と同時刻でも network_id / service_id が違えば未視聴。
 	// 視聴済み印の JOIN 条件から network_id / service_id を外すと、ここが視聴済みに数えられる。
-	networkAtWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第8話", start: base, status: "finished", eventID: 8, networkID: 32679,
+	networkAtWatched := seedPlayableRecording(t, pool, "アニメ　作品X　第8話", 8, base, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 32679
 	})
-	serviceAtWatched := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第9話", start: base, status: "finished", eventID: 9, serviceID: 5169,
+	serviceAtWatched := seedPlayableRecording(t, pool, "アニメ　作品X　第9話", 9, base, func(p *dbtest.RecordingParams) {
+		p.ServiceID = 5169
 	})
 
 	// 再生できない生きた録画（録画中）は未視聴に数えない。
@@ -339,8 +296,8 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET deleted_at = now(), purged_at = now() WHERE id = $1`, purgedWatched); err != nil {
 		t.Fatalf("purging watched recording: %v", err)
 	}
-	purgedLive := seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第7話", start: base.Add(4 * time.Hour), status: "finished", eventID: 7, site: "osaka",
+	purgedLive := seedPlayableRecording(t, pool, "アニメ　作品X　第7話", 7, base.Add(4*time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "osaka"
 	})
 
 	shelves := getShelves(t, srv.URL, url.Values{})
@@ -392,8 +349,8 @@ func TestListRecordingShelves_WatchedOnEveryRowDoesNotInflateCounts(t *testing.T
 	base := time.Now().Truncate(time.Second)
 
 	for _, site := range []string{"tokyo", "osaka"} {
-		id := seedPlayableOpts(t, pool, seedRecordingOpts{
-			title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: site,
+		id := seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+			p.Site = site
 		})
 		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
 			t.Fatalf("marking %s row watched: %v", site, err)
@@ -853,11 +810,19 @@ func TestListRecordingShelves_FilterByGenreCountsOnlyMatchingEpisodes(t *testing
 	anime := `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`
 	drama := `[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`
 
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, genres: anime})
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, genres: anime})
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Genres = json.RawMessage(anime)
+	})
+	seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.Genres = json.RawMessage(anime)
+	})
 	// 同じシリーズでもジャンルの違う回（特番など）は絞り込みで外れる。
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第3話", start: base.Add(2 * time.Hour), status: "finished", eventID: 3, genres: drama})
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "ドラマ　作品Y　第1話", start: base, status: "finished", eventID: 4, genres: drama})
+	seedPlayableRecording(t, pool, "アニメ　作品X　第3話", 3, base.Add(2*time.Hour), func(p *dbtest.RecordingParams) {
+		p.Genres = json.RawMessage(drama)
+	})
+	seedPlayableRecording(t, pool, "ドラマ　作品Y　第1話", 4, base, func(p *dbtest.RecordingParams) {
+		p.Genres = json.RawMessage(drama)
+	})
 
 	shelves := getShelves(t, srv.URL, url.Values{"genre": {"7"}})
 	if len(shelves) != 1 {
@@ -911,9 +876,15 @@ func TestListRecordingShelves_FilterKeepsWatchedMarksFromOutsideTheFilter(t *tes
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "tokyo"})
-	watchedElsewhere := seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第1話", start: base, status: "finished", eventID: 1, site: "osaka"})
-	seedPlayableOpts(t, pool, seedRecordingOpts{title: "アニメ　作品X　第2話", start: base.Add(time.Hour), status: "finished", eventID: 2, site: "tokyo"})
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Site = "tokyo"
+	})
+	watchedElsewhere := seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Site = "osaka"
+	})
+	seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(time.Hour), func(p *dbtest.RecordingParams) {
+		p.Site = "tokyo"
+	})
 	if _, err := pool.Exec(context.Background(), `INSERT INTO recording_watched (recording_id) VALUES ($1)`, watchedElsewhere); err != nil {
 		t.Fatalf("marking watched: %v", err)
 	}
@@ -933,13 +904,19 @@ func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
 	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
 	ruleID := seedRule(t, pool, "作品Xを録る")
 
-	seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第1話", description: "宇宙", start: base, status: "finished", eventID: 1,
-		genres: `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`, source: "rule", ruleID: &ruleID, site: "tokyo",
+	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base, func(p *dbtest.RecordingParams) {
+		p.Description = strPtr("宇宙")
+		p.Genres = json.RawMessage(`[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`)
+		p.Source = "rule"
+		p.RuleID = &ruleID
+		p.Site = "tokyo"
 	})
-	seedPlayableOpts(t, pool, seedRecordingOpts{
-		title: "アニメ　作品X　第2話", start: base.Add(24 * time.Hour), status: "finished", eventID: 2,
-		genres: `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`, channelType: "BS", networkID: 4, serviceID: 101, site: "osaka",
+	seedPlayableRecording(t, pool, "アニメ　作品X　第2話", 2, base.Add(24*time.Hour), func(p *dbtest.RecordingParams) {
+		p.Genres = json.RawMessage(`[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`)
+		p.ChannelType = "BS"
+		p.NetworkID = 4
+		p.ServiceID = 101
+		p.Site = "osaka"
 	})
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ドラマ　作品Y　第1話", base.Add(48*time.Hour), "recording", 3
