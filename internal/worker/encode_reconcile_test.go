@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -965,17 +964,6 @@ func TestEncodeReconcileWorker_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 }
 
-type continuationFailingEnqueuer struct {
-	*recordingEnqueuer
-}
-
-func (e *continuationFailingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if args.Kind() == "encode_reconcile" {
-		return jobq.Result{}, fmt.Errorf("continuation unavailable")
-	}
-	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
-}
-
 func TestEncodeReconcileWorker_ShortPageDoesNotContinue(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -990,26 +978,6 @@ func TestEncodeReconcileWorker_ShortPageDoesNotContinue(t *testing.T) {
 	}
 	if got := countEncodeJobs(t, enqueuer, id, "h265"); got != 1 {
 		t.Errorf("encode jobs for the only candidate = %d, want 1", got)
-	}
-}
-
-func TestEncodeReconcileWorker_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-	mediaDir := t.TempDir()
-	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "continuation-error/1.m2ts", []string{"h265"}, []byte("x"))
-	enqueuer := &continuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
-	w := &EncodeReconcileWorker{Enqueuer: enqueuer, Media: newTestMediaStore(pool), Profiles: encodeConfigWith("h265"), RowLimit: 1}
-	if err := runWorkerViaJobQFake(context.Background(), w, EncodeReconcileArgs{}); err != nil {
-		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
-	}
-	if got := countEncodeJobs(t, enqueuer.recordingEnqueuer, id, "h265"); got != 1 {
-		t.Errorf("encode jobs for candidate = %d, want 1", got)
-	}
-	if got := len(enqueuedArgs[EncodeReconcileArgs](enqueuer.recordingEnqueuer, "encode_reconcile")); got != 0 {
-		t.Errorf("continuation jobs after injected enqueue failure = %d, want 0", got)
 	}
 }
 

@@ -114,21 +114,17 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 			DetectionDone:           detectionDone,
 			CandidateDone:           candidateDone,
 		}
-		if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
-			slog.Error("cm_detect_reconcile: failed to enqueue continuation",
-				"after_recording_id", nextRecordingID,
+		jobs.EnqueueContinuation(ctx, w.Enqueuer, continuation,
+			"cm_detect_reconcile", "candidate windows are full; continuation enqueued",
+			[]any{"after_recording_id", nextRecordingID,
 				"after_network_id", nextCandidateNetworkID,
-				"after_service_id", nextCandidateServiceID,
-				"err", err)
-		} else {
-			slog.Warn("cm_detect_reconcile: candidate windows are full; continuation enqueued",
-				"row_limit", limit,
+				"after_service_id", nextCandidateServiceID},
+			[]any{"row_limit", limit,
 				"detection_window_full", detectionWindowFull,
 				"candidate_window_full", candidateWindowFull,
 				"after_recording_id", nextRecordingID,
 				"after_network_id", nextCandidateNetworkID,
-				"after_service_id", nextCandidateServiceID)
-		}
+				"after_service_id", nextCandidateServiceID})
 	}
 	return nil
 }
