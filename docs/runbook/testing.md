@@ -1,5 +1,27 @@
 > [runbook.md](../runbook.md) の一部。索引から辿る。
 
+## テストの置き場
+
+振る舞いは、それを決めている層のテストで 1 回だけ確かめる。
+
+- **自前の DB はテストでも本物を使う。** ユニットはクラスではなく振る舞いで数える。クラスで数えると、協力者をすべてテストダブルにする書き方に流れる。テストダブルにするのは、mirakc や webhook の送り先のような外部のものだけにする。
+- store の振る舞いは契約テストが持つ。コントローラ（watcher・worker など）のテストは、自分の判断だけを確かめる。生 SQL や `sqlcgen` で store の値を読み直して確かめない。store の振る舞いを上の層から確かめ直すと、store を変えるたびに 2 か所を直すことになる。
+- ドメインのテストは Postgres でだけ回す。MySQL 構成では契約テストだけを回す。ドメインのテストが方言に触れないので、方言の差は契約テストの中で閉じる。そのため、契約テストに無い store の振る舞いは、MySQL ではどこでも確かめられない。
+- 振る舞いを持つテストダブルは、本物と同じ契約テストを通す。mirakc の fake は振る舞いを持たせず、置かれた状態を `mirakc` パッケージの型で返すだけにする。fake とクライアントは型を共有するので、実物とのワイヤ形式のずれは fake では分からない。実物との一致は conformance テストだけが判定する。
+- 契約テストは、状態の確認を契約の読み取りメソッドか、次の操作の結果で行う。どちらでも確かめられないものだけを、フィクスチャのフックで読む。テストのためだけに契約へ読み取りメソッドを足さない。足すと、別の方言の実装も同じメソッドを持つことになる。
+- 契約は通知の運搬を見ず、届いたことだけを見る。通知の受信と、並行性・故障注入のフックは、方言ごとに実装する。
+
+既存のテストには、この方針に沿っていないものが残っている。
+
+<details><summary>根拠</summary>
+
+- 振る舞いを持つテストダブルの例: `internal/jobq/jobqfake`（`internal/jobq/contracttest` を River 版と同じように通す）
+- 実物の mirakc との一致の判定: `internal/mirakc/conformance`（`-tags conformance`）
+- 契約テスト: `internal/store/contracttest`
+- テストからの sqlcgen の import: depguard の `test-sqlcgen-boundary`。移行の残りは、この規則の除外のうち「移行中」のもの
+
+</details>
+
 ## 開発時のテスト
 
 開発時のテストには、docker compose で立てた postgres を使える。渡した URL が指す DB は直接使われず、そこからパッケージごとに別の DB を導出して使う。
@@ -33,7 +55,6 @@ mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を�
 
 - テスト用 DB の導出と TRUNCATE: `testutil.SetupDB`
 - ロック待ちのタイムアウト: `lock_timeout`
-- テストからの sqlcgen の import: depguard の `test-sqlcgen-boundary`。移行の残りは、この規則の除外のうち「移行中」のもの
 
 </details>
 
