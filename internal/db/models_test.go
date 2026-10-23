@@ -165,6 +165,7 @@ func TestSchemaV1_RecordingInsert(t *testing.T) {
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = "home"
+		p.Status = "finished"
 		p.NetworkID = 32736
 		p.ServiceID = 1024
 		p.EventID = 15397

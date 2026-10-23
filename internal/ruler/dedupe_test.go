@@ -614,6 +614,7 @@ func TestRunPass_DedupeIgnoresOwnRecording(t *testing.T) {
 		p.Title = "再放送テスト 第1話"
 		p.ProgramStartAt = start
 		p.ProgramDurationMs = testDurationMs
+		p.Status = "finished"
 	})
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -656,6 +657,7 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 		p.Title = "再放送テスト 第1話"
 		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
 		p.ProgramDurationMs = testDurationMs
+		p.Status = "finished"
 	})
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
@@ -865,6 +867,7 @@ VALUES ($1, $2, 'record')`,
 		p.Title = "再放送テスト 第1話"
 		p.ProgramStartAt = f.start
 		p.ProgramDurationMs = testDurationMs
+		p.Status = "finished"
 	})
 
 	if err := r.RunPass(ctx); err != nil {

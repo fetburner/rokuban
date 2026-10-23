@@ -162,6 +162,7 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		ids[i] = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 			p.EventID = int32(200 + i)
 			p.Title = fmt.Sprintf("番組%d", i)
+			p.Status = "finished"
 			p.ProgramStartAt = start.Add(time.Duration(i) * time.Hour)
 			p.ProgramDurationMs = time.Hour.Milliseconds()
 		})

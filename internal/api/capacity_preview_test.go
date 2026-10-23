@@ -219,6 +219,7 @@ VALUES ('default', $1, 'skip')`, skipped.ID); err != nil {
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = nil
 		p.Source = "rule"
+		p.Status = "finished"
 		p.NetworkID = 32736
 		p.ServiceID = fulfilled.ServiceID
 		p.EventID = fulfilled.EventID
@@ -246,6 +247,7 @@ func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = &ruleID
 		p.Source = "rule"
+		p.Status = "finished"
 		p.NetworkID = 32736
 		p.ServiceID = priorRecording.ServiceID
 		p.EventID = priorRecording.EventID
@@ -283,6 +285,7 @@ VALUES ('default', $1, 'record')`, candidate.ID); err != nil {
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = &ruleID
 		p.Source = "rule"
+		p.Status = "finished"
 		p.NetworkID = 32736
 		p.ServiceID = priorRecording.ServiceID
 		p.EventID = priorRecording.EventID

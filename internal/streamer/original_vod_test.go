@@ -162,7 +162,7 @@ func originalVODTargetFixture(t *testing.T, pool *pgxpool.Pool) (int64, string, 
 	if err := os.WriteFile(fullPath, contents, 0o644); err != nil {
 		t.Fatalf("writing original: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(contents)) })
 	return recordingID, mediaDir, contents
 }

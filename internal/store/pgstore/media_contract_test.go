@@ -43,6 +43,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		NewRecording: func(t *testing.T) int64 {
 			return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 				p.Title = "store media contract fixture"
+				p.Status = "finished"
 				p.ProgramDurationMs = 60_000
 			})
 		},

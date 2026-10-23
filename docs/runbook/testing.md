@@ -4,7 +4,7 @@
 
 開発時のテストには、docker compose で立てた postgres を使える。渡した URL が指す DB は直接使われず、そこからパッケージごとに別の DB を導出して使う。
 
-テストで録画や原本 asset を作るときは、`internal/db/dbtest` の `Recording` と `MediaAsset` を使う。
+テストで録画や media_asset を作るときは、`internal/db/dbtest` の `Recording` と `MediaAsset` を使う。
 
 `docker compose up -d postgres` で立てた postgres をテストに使える（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
 

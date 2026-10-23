@@ -33,6 +33,7 @@ func TestRulerPassContract(t *testing.T) {
 				return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 					p.RuleID = &ruleID
 					p.Source = "rule"
+					p.Status = "finished"
 					p.Site = program.Site
 					p.NetworkID = 32736
 					p.EventID = program.EventID + 10000

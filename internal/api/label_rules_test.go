@@ -58,6 +58,7 @@ func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 		p.Title = title
 		p.ProgramStartAt = start
 		p.EventID = eventID
+		p.Status = "finished"
 	}
 	id := dbtest.Recording(t, pool, append([]func(*dbtest.RecordingParams){defaults}, opts...)...)
 	dbtest.MediaAsset(t, pool, id)

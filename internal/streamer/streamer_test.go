@@ -62,7 +62,7 @@ func newFixture(t *testing.T, relPath string, writeFile bool) *fixture {
 		}
 	}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(content)) })
 
 	r := chi.NewRouter()
@@ -103,7 +103,7 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 	mediaDir := t.TempDir()
 	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	rel := fmt.Sprintf("thumbnails/%d.jpg", recordingID)
 	full := filepath.Join(mediaDir, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -144,7 +144,7 @@ func TestRecordingThumbnail_ServesJPEG(t *testing.T) {
 
 func TestRecordingThumbnail_NotFoundWithoutAsset(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	r := chi.NewRouter()
 	New(pgstore.NewMedia(pool), Config{MediaDir: t.TempDir()}).Mount(r)
 	srv := httptest.NewServer(r)
@@ -279,7 +279,7 @@ func TestRecordingFile_MissingFile(t *testing.T) {
 // media_assets 行が無い録画（未 ingest）は配信しないこと。
 func TestRecordingFile_NoAsset(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 
 	r := chi.NewRouter()
 	New(pgstore.NewMedia(pool), Config{MediaDir: t.TempDir()}).Mount(r)
@@ -326,7 +326,7 @@ func TestRecordingFile_DeletedIsNotServed(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(mediaDir, "r.m2ts"), content, 0o644); err != nil {
 				t.Fatalf("writing fixture: %v", err)
 			}
-			recordingID := dbtest.Recording(t, pool)
+			recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 			dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "r.m2ts", int64(len(content)) })
 			tt.mark(t, pool, recordingID)
 
@@ -356,7 +356,7 @@ func TestRecordingFile_RejectsPathTraversal(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(secret) })
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "../secret.txt", 10 })
 
 	r := chi.NewRouter()
@@ -419,7 +419,7 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 		t.Fatalf("writing fixture: %v", err)
 	}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(content)) })
 
 	r := chi.NewRouter()
@@ -455,7 +455,7 @@ func TestRecordingFile_AccelRedirect(t *testing.T) {
 // ヘッダーを返さないこと（検証前にヘッダーを返すと任意ファイルを配らせられる）。
 func TestRecordingFile_AccelRedirectRejectsTraversal(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "../secret.txt", 10 })
 
 	r := chi.NewRouter()
@@ -486,7 +486,7 @@ func TestRecordingFile_EncodedProfile(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	// 原本は無くても encoded だけで再生できる（until_encoded 後を想定）
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
@@ -543,7 +543,7 @@ func TestRecordingFile_Subtitles_Served(t *testing.T) {
 		t.Fatalf("write vtt: %v", err)
 	}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -590,7 +590,7 @@ func TestRecordingFile_Subtitles_MissingSidecar_NoWarnLog(t *testing.T) {
 	}
 	// .vtt は意図的に書かない（字幕の無い番組を模す）。
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -630,7 +630,7 @@ func TestRecordingFile_Subtitles_ExtensionlessEncodedRelPath_NotFound(t *testing
 		t.Fatalf("write encoded: %v", err)
 	}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -659,7 +659,7 @@ func TestRecordingFile_EncodedNotFound(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, relPath), content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -700,7 +700,7 @@ func TestRecordingFile_EncodedDeletedRecording(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, "x.mp4"), content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -731,7 +731,7 @@ func TestRecordingFile_OriginalVsEncoded(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, "e.mp4"), mp4, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = store.AssetKindEncoded
 		p.Profile = new("h264")
@@ -765,7 +765,7 @@ func TestMount_CoexistsWithGeneratedRoutes(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, "r.m2ts"), content, 0o644); err != nil {
 		t.Fatalf("writing fixture: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "r.m2ts", int64(len(content)) })
 
 	router := api.NewRouter(api.RouterConfig{
@@ -794,7 +794,7 @@ func TestRecordingSeekTiles_ServesJPEG(t *testing.T) {
 	mediaDir := t.TempDir()
 	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
 
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 	rel := fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID)
 	full := filepath.Join(mediaDir, rel)
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
@@ -834,7 +834,7 @@ func TestRecordingSeekTiles_NotFound(t *testing.T) {
 	jpeg := []byte{0xFF, 0xD8, 0xFF, 0xD9}
 
 	// 未生成（アセット行が無い）。
-	bare := dbtest.Recording(t, pool)
+	bare := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
 
 	// ごみ箱に入れた録画（アセット行は active のまま）。
 	trashed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 2 })

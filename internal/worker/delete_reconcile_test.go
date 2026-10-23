@@ -564,7 +564,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = "テスト番組" })
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/original.m2ts", []byte("data"))
 	profile := "h264"

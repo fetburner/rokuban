@@ -855,6 +855,7 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 		p.EventID = int32(record.Program.EventID)
 		p.ServiceName = "NHK総合"
 		p.Title = "Already Finished"
+		p.Status = "finished"
 		p.ProgramStartAt = record.Program.StartAt.Time()
 		p.ProgramDurationMs = 180000
 	})

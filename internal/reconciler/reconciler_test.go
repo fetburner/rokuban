@@ -2132,6 +2132,7 @@ func TestReconciler_SuccessfulRecordingPreventsNeverScheduled(t *testing.T) {
 		p.EventID = int32(eventID)
 		p.ServiceName = "テスト局"
 		p.Title = "成功済み録画の予約"
+		p.Status = "finished"
 		p.ProgramStartAt = endedStartAt
 		p.StartedAt = &endedStartAt
 		p.EndedAt = &endedAt
