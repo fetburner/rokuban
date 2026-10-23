@@ -115,16 +115,13 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, args jobs.CMDetectRe
 			CandidateDone:           candidateDone,
 		}
 		jobs.EnqueueContinuation(ctx, w.Enqueuer, continuation,
-			"cm_detect_reconcile", "candidate windows are full; continuation enqueued",
+			"candidate windows are full; continuation enqueued",
 			[]any{"after_recording_id", nextRecordingID,
 				"after_network_id", nextCandidateNetworkID,
 				"after_service_id", nextCandidateServiceID},
 			[]any{"row_limit", limit,
 				"detection_window_full", detectionWindowFull,
-				"candidate_window_full", candidateWindowFull,
-				"after_recording_id", nextRecordingID,
-				"after_network_id", nextCandidateNetworkID,
-				"after_service_id", nextCandidateServiceID})
+				"candidate_window_full", candidateWindowFull})
 	}
 	return nil
 }

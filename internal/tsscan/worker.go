@@ -96,9 +96,9 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	if int32(len(rows)) >= rowLimit {
 		continuationAfter = rows[len(rows)-1]
 		jobs.EnqueueContinuation(ctx, w.Enqueuer, ReconcileArgs{AfterRecordingID: continuationAfter},
-			"ts_scan_reconcile", "candidate window is full; continuation enqueued",
+			"candidate window is full; continuation enqueued",
 			[]any{"after_recording_id", continuationAfter},
-			[]any{"row_limit", rowLimit, "after_recording_id", continuationAfter})
+			[]any{"row_limit", rowLimit})
 	}
 	metrics.TSScanReconcileLastPass.SetToCurrentTime()
 	if len(rows) > 0 {

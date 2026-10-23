@@ -238,9 +238,9 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 			continuationAfter = candidates[len(candidates)-1]
 			continuation := jobs.EncodeReconcileArgs{AfterRecordingID: continuationAfter}
 			jobs.EnqueueContinuation(ctx, w.Enqueuer, continuation,
-				"encode_reconcile", "candidate window is full; continuation enqueued",
+				"candidate window is full; continuation enqueued",
 				[]any{"after_recording_id", continuationAfter},
-				[]any{"row_limit", rowLimit, "after_recording_id", continuationAfter})
+				[]any{"row_limit", rowLimit})
 		}
 
 		w.reportUnsatisfiable(ctx, known)
