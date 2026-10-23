@@ -33,6 +33,7 @@ mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を�
 
 - テスト用 DB の導出と TRUNCATE: `testutil.SetupDB`
 - ロック待ちのタイムアウト: `lock_timeout`
+- テストからの sqlcgen の import: depguard の `test-sqlcgen-boundary`。移行の残りは、この規則の除外のうち「移行中」のもの
 
 </details>
 
