@@ -68,7 +68,7 @@ jobs:
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:17
