@@ -157,6 +157,15 @@ func requireRecordingSnapshotEqual(t *testing.T, got, want store.RecordingSnapsh
 	}
 }
 
+func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCall {
+	t.Helper()
+	enqueuer, ok := watcher.enqueuer.(*jobqtestutil.RecordingEnqueuer)
+	if !ok {
+		t.Fatalf("watcher enqueuer = %T, want *RecordingEnqueuer", watcher.enqueuer)
+	}
+	return enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
+}
+
 func seedSweepLastPassMetric(t *testing.T) float64 {
 	t.Helper()
 	previous := promtestutil.ToFloat64(metrics.SweepLastPass)
@@ -256,6 +265,39 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 	}
 	if len(observations[0].Tags) != 0 {
 		t.Errorf("record observation Tags = %v, want no tags", observations[0].Tags)
+	}
+	if enqueues := listIngestEnqueues(t, w); len(enqueues) != 0 {
+		t.Errorf("ingest enqueue calls for untagged record = %d, want 0", len(enqueues))
+	}
+}
+
+func TestProcessRecord_EnqueuesRecordingHintRepeatedly(t *testing.T) {
+	w, pool := setupTest(t)
+	const programID int64 = 100010
+	createTestReservation(t, pool, programID)
+	record := testRecord("recording-ingest-hint", programID, store.RecordingStatusRecording)
+
+	for i := range 2 {
+		if err := w.processRecord(context.Background(), record); err != nil {
+			t.Fatalf("processRecord (pass %d): %v", i, err)
+		}
+	}
+
+	enqueues := listIngestEnqueues(t, w)
+	if len(enqueues) != 2 {
+		t.Fatalf("ingest enqueue calls = %d, want one hint for each of two observations", len(enqueues))
+	}
+	for i, call := range enqueues {
+		args, ok := call.Args.(jobs.IngestJobArgs)
+		if !ok {
+			t.Fatalf("ingest args = %T, want jobs.IngestJobArgs", call.Args)
+		}
+		if args.Site != DefaultSite || args.RecordID != record.ID {
+			t.Errorf("ingest args = %+v, want site %q and record %q", args, DefaultSite, record.ID)
+		}
+		if priority := jobq.EffectivePriority(args.Spec(), call.Options...); priority != 1 {
+			t.Errorf("recording ingest priority for call %d = %d, want 1", i+1, priority)
+		}
 	}
 }
 func TestHandleRecordBroken(t *testing.T) {
@@ -698,6 +740,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 type commitCheckingEnqueuer struct {
 	pool             *pgxpool.Pool
 	calls            int
+	visibleCalls     int
 	recordingVisible bool
 	priority         int
 	err              error
@@ -718,6 +761,9 @@ func (e *commitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, op
 	`, ingestArgs.Site, ingestArgs.RecordID).Scan(&e.recordingVisible); err != nil {
 		return jobq.Result{}, fmt.Errorf("checking committed recording during enqueue: %w", err)
 	}
+	if e.recordingVisible {
+		e.visibleCalls++
+	}
 	return jobq.Result{}, e.err
 }
 
@@ -733,14 +779,16 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	w.enqueuer = enqueuer
 
 	record := testRecord("commit-hint-1", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord = %v, want commit to succeed despite enqueue error", err)
+	for i := range 3 {
+		if err := w.processRecord(ctx, record); err != nil {
+			t.Fatalf("processRecord (pass %d) = %v, want commit to succeed despite enqueue error", i, err)
+		}
 	}
-	if enqueuer.calls != 1 {
-		t.Fatalf("enqueue calls = %d, want 1", enqueuer.calls)
+	if enqueuer.calls != 3 {
+		t.Fatalf("enqueue calls after three observations = %d, want 3", enqueuer.calls)
 	}
-	if !enqueuer.recordingVisible {
-		t.Fatal("recording was not visible from another connection when Enqueue ran")
+	if enqueuer.visibleCalls != 3 || !enqueuer.recordingVisible {
+		t.Fatalf("committed recording visibility = (%d calls, last=%t), want visible on all three enqueue calls", enqueuer.visibleCalls, enqueuer.recordingVisible)
 	}
 	if enqueuer.priority != 2 {
 		t.Errorf("finished ingest priority = %d, want 2", enqueuer.priority)
@@ -750,7 +798,7 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	if err := w.processRecord(ctx, duplicate); err == nil {
 		t.Fatal("processRecord(duplicate event) returned nil, want store failure")
 	}
-	if enqueuer.calls != 1 {
-		t.Errorf("enqueue calls after store failure = %d, want still 1", enqueuer.calls)
+	if enqueuer.calls != 3 {
+		t.Errorf("enqueue calls after store failure = %d, want still 3", enqueuer.calls)
 	}
 }

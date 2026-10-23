@@ -136,6 +136,7 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 - event ID 再利用時は開始時刻で録画を分ける: `TestRecordObservationsContract/event ID reuse with a new start time creates a new recording`
 - 録画の由来は意図と予約から導出する: `TestRecordObservationsContract/record source` の各ケース
 - failed event の source: `TestRecordObservationsContract/failed event source follows intent`
+- failed event の録画 snapshot: `TestRecordObservationsContract/failed event snapshot is persisted`
 - failed schedule の source: `TestRecordObservationsContract/failed schedule source follows intent`
 - 成功再試行で失敗行を履歴に残し、media asset を旧録画の所有のまま保つ: `TestRecordObservationsContract/success supersedes failed recording`
 - 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`

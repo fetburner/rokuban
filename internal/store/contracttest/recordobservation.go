@@ -85,6 +85,7 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("failed quality observation is idempotent", func(t *testing.T) { runFailedQualityIdempotency(t, checkedStore) })
 	t.Run("failed schedule is deduplicated and typed skip is returned", func(t *testing.T) { runFailedSchedule(t, checkedStore) })
 	t.Run("failed event returns its recording id", func(t *testing.T) { runFailedEventRecordingID(t, checkedStore) })
+	t.Run("failed event snapshot is persisted", func(t *testing.T) { runFailedEventSnapshot(t, checkedStore) })
 	t.Run("failed event without reservation records nothing", func(t *testing.T) { runFailedEventWithoutReservation(t, checkedStore) })
 	t.Run("failed schedule and failed event converge on one live recording", func(t *testing.T) { runFailedConvergence(t, checkedStore) })
 	t.Run("stale record syncs are decided by the live id set", func(t *testing.T) { runStaleRecordSyncs(t, checkedStore) })
@@ -449,6 +450,33 @@ func runFailedEventSource(t *testing.T, newStore NewRecordObservationStore) {
 	if len(got) != 1 || got[0].ID != id || got[0].Source != reservation.SourceManual {
 		t.Fatalf("failed event recording = %+v, want source %q", got, reservation.SourceManual)
 	}
+}
+
+func runFailedEventSnapshot(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	observation := f.NewObservation("failed-event-snapshot", "failed")
+	description := "失敗イベントの番組説明"
+	observation.Snapshot = store.RecordingSnapshot{
+		NetworkID: 32736, ServiceID: 1024, EventID: 121,
+		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "失敗イベントの番組",
+		Description: &description, Extended: []byte(`{"出演者":"テスト花子"}`),
+		Genres: []byte(`[{"level1":4,"level2":5,"un1":6,"un2":7}]`), IsFree: true,
+		ProgramStartAt:    time.Date(2026, time.August, 9, 18, 20, 0, 0, time.UTC),
+		ProgramDurationMs: 5_400_000,
+	}
+	f.SeedReservation(t, observation)
+	id, recorded, err := f.Store.RecordFailedRecording(context.Background(), store.FailedRecordingObservation{
+		Site: observation.Site, ProgramID: observation.ProgramID, Snapshot: observation.Snapshot,
+		Reason: []byte(`{"type":"tuner-unavailable"}`),
+	})
+	if err != nil || !recorded || id == 0 {
+		t.Fatalf("RecordFailedRecording() = (%d, %t, %v), want recorded with an ID", id, recorded, err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].ID != id {
+		t.Fatalf("failed event recordings = %+v, want one recording with ID %d", got, id)
+	}
+	requireRecordingSnapshot(t, got[0].Snapshot, observation.Snapshot)
 }
 
 func runFailedScheduleSource(t *testing.T, newStore NewRecordObservationStore) {
