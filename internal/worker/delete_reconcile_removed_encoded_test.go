@@ -131,7 +131,7 @@ func TestDeleteReconcileWorker_RemovedEncoded_DeletesOnlyThatVersion(t *testing.
 	f := seedRemovedEncodedRecording(t, pool, mediaDir, 9201, []string{"h265"})
 	requestEncodedRemoval(t, pool, f.recordingID, "h264")
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -199,7 +199,7 @@ func TestDeleteReconcileWorker_RemovedEncodedDeleting_ReaddRevertsOtherwiseResum
 	requestEncodedRemoval(t, pool, stuck.recordingID, "h264")
 	setAssetState(t, pool, stuck.h264ID, "deleting")
 
-	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), w, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("Work() error: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_CountsRemovedEncoded(t *testing.T)
 	requestEncodedRemoval(t, pool, b.recordingID, "h264")
 
 	w := &DeleteReconcileWorker{
-		MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool),
+		MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool),
 		RecordingPurge:    pgstoretest.Recordings(pool),
 		Breakers:          pgstoretest.Breakers(pool),
 		MediaDir:          mediaDir,

@@ -158,11 +158,11 @@ func inEncodeScratchAttempt(recordingID int64, profile string, attemptCount int3
 
 func newH264Worker(pool *pgxpool.Pool, mediaDir, scratchDir, ffmpegPath string) *EncodeWorker {
 	return &EncodeWorker{
-		Publisher: newTestMediaStore(pool),
-		Progress:  newTestMediaStore(pool),
-		Attempts:  newTestMediaStore(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
-		Media:      newTestMediaStore(pool),
+		Media:      pgstoretest.Media(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: scratchDir,
 		FFmpeg:     ffmpegPath,
@@ -181,7 +181,7 @@ func beginEncodeAttemptForPublishTest(t *testing.T, pool *pgxpool.Pool, recordin
 
 func beginEncodeAttemptForProfilePublishTest(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string) int32 {
 	t.Helper()
-	start, err := (&EncodeWorker{Publisher: newTestMediaStore(pool), Progress: newTestMediaStore(pool), Attempts: newTestMediaStore(pool), Media: newTestMediaStore(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
+	start, err := (&EncodeWorker{Publisher: pgstoretest.Media(pool), Progress: pgstoretest.Media(pool), Attempts: pgstoretest.Media(pool), Media: pgstoretest.Media(pool)}).beginEncodeAttempt(context.Background(), recordingID, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	cutKeep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
+	cutKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(cutKeep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", cutKeep, owned, err)
 	}
@@ -521,7 +521,7 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	requestedKeep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
+	requestedKeep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(requestedKeep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", requestedKeep, owned, err)
 	}
@@ -942,7 +942,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		return nil
 	}
 
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	deleteDone := make(chan struct{})
 	go func() {
 		cleanup.deleteMediaAsset(ctx, store.MediaDeleteAsset{
@@ -1183,7 +1183,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 		`INSERT INTO recording_chapter_spans (recording_id, span, label, cut) VALUES ($1, int8range(600000, 900000), 'CM', true)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
-	keep, owned, err := newTestMediaStore(pool).GetCurrentCutKeep(ctx, recordingID)
+	keep, owned, err := pgstoretest.Media(pool).GetCurrentCutKeep(ctx, recordingID)
 	if err != nil || !owned || len(keep) == 0 {
 		t.Fatalf("currentCutKeep = %v, owned %v, err %v", keep, owned, err)
 	}

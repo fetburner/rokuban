@@ -11,7 +11,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
@@ -19,10 +18,6 @@ func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 	t.Helper()
 	job := StorageSyncArgs{}
 	return runWorkerViaJobQFake(context.Background(), w, job)
-}
-
-func newTestMediaStore(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstoretest.Media(pool)
 }
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
@@ -236,7 +231,7 @@ func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage:  newTestMediaStore(pool),
+		Storage:  pgstoretest.Media(pool),
 		MediaDir: mediaDir,
 		Stat: func(string) (diskUsage, error) {
 			return diskUsage{}, fmt.Errorf("simulated statfs failure")
@@ -281,7 +276,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 
 	// 部分成功（scratch だけ失敗）では進まない。
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(
 			map[string]diskUsage{mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90}},
 			map[string]bool{scratchDir: true},
@@ -318,7 +313,7 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
@@ -372,7 +367,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
@@ -419,7 +414,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 777, usedBytes: 77, availableBytes: 700},

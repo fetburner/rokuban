@@ -490,12 +490,12 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
 		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
-		Precheck:      newTestMediaStore(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}

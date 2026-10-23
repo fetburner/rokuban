@@ -92,7 +92,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
+			w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 			target := store.MediaDeleteAsset{ID: assetID, RelPath: relPath, Kind: "original", SizeBytes: 8}
 			deletionCtx, deletionCancel := context.WithTimeout(ctx, 150*time.Millisecond)
 			w.deleteMediaAsset(deletionCtx, target, "trash")

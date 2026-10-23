@@ -89,7 +89,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		t.Fatalf("writing ingest temporary file: %v", err)
 	}
-	if err := (&IngestWorker{Publisher: newTestMediaStore(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}).commit(
+	if err := (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)),
 	); err != nil {
 		t.Fatalf("IngestWorker.commit: %v", err)
@@ -158,7 +158,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	fake.SetRecords([]mirakc.Record{{ID: "edge-1290"}})
 
 	enqueuer := newRecordingEnqueuer()
-	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: newTestMediaStore(pool)}
+	w := &IngestWorker{Publisher: pgstoretest.Media(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: pgstoretest.Media(pool)}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(fake.URL(), nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var deleteFound bool

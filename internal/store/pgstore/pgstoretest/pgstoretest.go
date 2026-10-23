@@ -1,3 +1,4 @@
+// Package pgstoretest constructs pgstore implementations for tests outside the pgstore package.
 package pgstoretest
 
 import (

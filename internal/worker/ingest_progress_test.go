@@ -67,7 +67,7 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 
 	recordingID := dbtest.Recording(t, pool)
 	reporter := &ingestProgressReporter{
-		publisher:   newTestMediaStore(pool),
+		publisher:   pgstoretest.Media(pool),
 		recordingID: recordingID,
 		interval:    time.Hour,
 		log:         slog.Default(),
@@ -178,7 +178,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:      t.TempDir(),
 		StallTimeout:  30 * time.Second,
@@ -186,7 +186,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
 		ProgressInterval: time.Hour,
 		RecordTarget:     pgstoretest.Recordings(pool),
-		Precheck:         newTestMediaStore(pool),
+		Precheck:         pgstoretest.Media(pool),
 	}
 	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
@@ -317,13 +317,13 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		Publisher:        newTestMediaStore(pool),
+		Publisher:        pgstoretest.Media(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
 		RecordTarget:     pgstoretest.Recordings(pool),
-		Precheck:         newTestMediaStore(pool),
+		Precheck:         pgstoretest.Media(pool),
 	}
 
 	recordingID = dbtest.Recording(t, pool)
@@ -409,13 +409,13 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		Publisher:        newTestMediaStore(pool),
+		Publisher:        pgstoretest.Media(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Millisecond,
 		RecordTarget:     pgstoretest.Recordings(pool),
-		Precheck:         newTestMediaStore(pool),
+		Precheck:         pgstoretest.Media(pool),
 	}
 
 	recordingID := dbtest.Recording(t, pool)
@@ -488,13 +488,13 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		Publisher:        newTestMediaStore(pool),
+		Publisher:        pgstoretest.Media(pool),
 		MirakcClients:    singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
 		RecordTarget:     pgstoretest.Recordings(pool),
-		Precheck:         newTestMediaStore(pool),
+		Precheck:         pgstoretest.Media(pool),
 	}
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-clean-ranges")

@@ -73,10 +73,10 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 		return
 	}
 	w := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient("http://127.0.0.1:1", nil)),
 		RecordTarget:  pgstoretest.Recordings(pool),
-		Precheck:      newTestMediaStore(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
@@ -112,12 +112,12 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	workResult := make(chan error, 1)
 	registry := jobq.NewRegistry()
 	w := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 		RecordTarget:  pgstoretest.Recordings(pool),
-		Precheck:      newTestMediaStore(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
 	jobq.Register(registry, snoozeResultCapturingIngestWorker{worker: w, result: workResult})
 	queue := jobqfake.New(registry, jobqfake.Config{SnoozeDelay: &delay})
@@ -210,12 +210,12 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		fake := mirakctest.New(t)
 
 		w := &IngestWorker{
-			Publisher:     newTestMediaStore(pool),
+			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstoretest.Recordings(pool),
-			Precheck:      newTestMediaStore(pool),
+			Precheck:      pgstoretest.Media(pool),
 		}
 		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-err")
@@ -253,12 +253,12 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		})}
 
 		w := &IngestWorker{
-			Publisher:     newTestMediaStore(pool),
+			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstoretest.Recordings(pool),
-			Precheck:      newTestMediaStore(pool),
+			Precheck:      pgstoretest.Media(pool),
 		}
 		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, recordID)
@@ -294,12 +294,12 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		t.Cleanup(srv.Close)
 
 		w := &IngestWorker{
-			Publisher:     newTestMediaStore(pool),
+			Publisher:     pgstoretest.Media(pool),
 			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstoretest.Recordings(pool),
-			Precheck:      newTestMediaStore(pool),
+			Precheck:      pgstoretest.Media(pool),
 		}
 		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-cause")
@@ -334,12 +334,12 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 	worker := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		Enqueuer:      &jobq.Deferred{},
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      t.TempDir(),
-		Precheck:      newTestMediaStore(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
 	worker.CMDetectionStore = pgstoretest.Analysis(pool)
 	if err := runWorkerViaJobQFake(context.Background(), worker,

@@ -64,7 +64,8 @@ linters:
             - pkg: github.com/fetburner/rokuban/internal/store/pgstore
               desc: PostgreSQL store implementations are constructed only in cmd/rokuban
         pgstoretest-test-only:
-          # pgstoretest はテスト用。pgstore の本番構成ルート cmd/rokuban も検査する。
+          # pgstoretest はテスト用。pgstore-composition-root は cmd/rokuban を検査から外すので、
+          # pgstoretest の import はこの規則で cmd/rokuban も含めて止める。
           list-mode: lax
           files:
             - "${config-path}/**"
