@@ -431,10 +431,6 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 			if offset == int64(cutoff) {
 				resumedAt.Store(offset)
 			}
-			if offset >= int64(len(full)) {
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-				return
-			}
 			if offset == 0 && firstStream.CompareAndSwap(false, true) {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", cutoff))
 				w.WriteHeader(http.StatusPartialContent)
@@ -444,10 +440,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 				}
 				return
 			}
-			remaining := full[offset:]
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(remaining)))
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(remaining)
+			mirakctest.WriteRecordStream(w, r, full)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))

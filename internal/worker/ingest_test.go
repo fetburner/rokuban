@@ -566,15 +566,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 			rangeTimesMu.Unlock()
 			// 放送は進み続ける（毎ポーリングで差分が出る）。
 			cur := size.Add(packetsPerPoll * 188)
-			offset := mirakctest.RangeOffset(r)
-			if offset >= cur {
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-				return
-			}
-			body := data[offset:cur]
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(body)
+			mirakctest.WriteRecordStream(w, r, data[:cur])
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", size.Load()))
 			w.WriteHeader(http.StatusOK)
@@ -675,15 +667,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			rangeRequests.Add(1)
-			offset := mirakctest.RangeOffset(r)
-			if offset >= int64(lastSize()) {
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-				return
-			}
-			body := full[offset:lastSize()]
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(body)
+			mirakctest.WriteRecordStream(w, r, full[:lastSize()])
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
 			w.WriteHeader(http.StatusOK)
@@ -880,15 +864,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 				w.Header().Set("Content-Length", "0")
 				w.WriteHeader(http.StatusPartialContent)
 			default:
-				offset := mirakctest.RangeOffset(r)
-				if offset >= int64(len(full)) {
-					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-					return
-				}
-				body := full[offset:]
-				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-				w.WriteHeader(http.StatusPartialContent)
-				_, _ = w.Write(body)
+				mirakctest.WriteRecordStream(w, r, full)
 			}
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
@@ -1077,14 +1053,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 			if offset == 0 {
 				zeroOffsetRequests.Add(1)
 			}
-			if offset >= int64(len(full)) {
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-				return
-			}
-			body := full[offset:]
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(body)
+			mirakctest.WriteRecordStream(w, r, full)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))
 			w.WriteHeader(http.StatusOK)

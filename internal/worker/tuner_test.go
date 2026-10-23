@@ -107,7 +107,7 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 // 実行時状態（users / isFree / isUsing / command / pid）は mirakc.Tuner 型に載っておらず、
 // worker からは見えない。型の形は client_test の TestListTuners が固定する。
 // ここでは tuner_sync に実行時状態の列が無いことと、チューナーが容量に数えられることを見る。
-// 使用中かどうかは型で表せないので、使用中のチューナーを置く検査はしない（旧テストから弱めた点）。
+// 使用中かどうかは型で表せないので、worker 側で使用中のチューナーを置くことはできない。
 func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
 	pool := setupTestPool(t)
 	fx := &tunerFixture{tuners: []mirakc.Tuner{
