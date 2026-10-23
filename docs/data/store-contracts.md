@@ -127,29 +127,20 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 - 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 同じ record の直列化: `TestRecordObservationsContract/same record observations serialize`
+- 同じ record の直列化（並行した観測が一意違反にならない）: `TestRecordObservationsContract/same record observations serialize`
 - 契約テストは既存の同期行を置いて競合させる。行が無いと INSERT の一意制約だけで直列化されてしまい、ロックの有無を検出できないからである。確保の直後に同期点を差し込み、後発が先発と同時に先へ進めるかを見る
-- 録画状態の前進: `TestRecordObservationsContract/record status progresses`
-- 録画状態の後戻り防止: `TestRecordObservationsContract/record status does not downgrade`
-- mirakc の状態値と未知値の正規化: `TestRecordObservationsContract/record status values are normalized`
-- recordings に保存する番組スナップショット: `TestRecordObservationsContract/record snapshot is persisted`
-- event ID 再利用時は開始時刻で録画を分ける: `TestRecordObservationsContract/event ID reuse with a new start time creates a new recording`
-- 録画の由来は意図と予約から導出する: `TestRecordObservationsContract/record source` の各ケース
-- failed event の source: `TestRecordObservationsContract/failed event source follows intent`
-- failed event の録画 snapshot: `TestRecordObservationsContract/failed event snapshot is persisted`
-- failed schedule の source: `TestRecordObservationsContract/failed schedule source follows intent`
-- 成功再試行で失敗行を履歴に残し、media asset を旧録画の所有のまま保つ: `TestRecordObservationsContract/success supersedes failed recording`
+- 録画の由来（同じ tx の予約と意図から導出する）: `TestRecordObservationsContract/record source` の各ケース。ほかに `failed event source follows intent` と `failed schedule source follows intent`
 - 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
-- 失敗の観測の収束と成功による置き換え: `TestRecordObservationsContract` の failed 系のケース
-- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
-- ingest の投入の判定: `TestRecordObservationsContract/ingest hint follows the recording status`
+- 失敗の観測の収束（生きた録画は 1 つ）: `TestRecordObservationsContract/failed schedule and failed event converge on one live recording`
+- 成功による置き換え（失敗行と media asset は旧録画に残る）: `TestRecordObservationsContract/success supersedes failed recording`
+- 品質イベントの時刻（DB の時計で付く）: `TestRecordObservationsContract/quality events carry a readable time`
+- ingest の投入の判定（観測を重ねても同じ）: `TestRecordObservationsContract/ingest hint follows the recording status`
 - 転送先の site の絞り込み・NULL の保持・行が無いときの `ErrNotFound`: `TestRecordObservationsContract/ingest target preserves nullable fields`
 - 滞留の件数とバイト数に入る record: `TestRecordObservationsContract/ingest backlog filters records and bytes`
-- 品質イベントの時刻: `TestRecordObservationsContract/quality events carry a readable time`
-- mirakc の破損イベントの追記先と未リンク record の無視: `TestRecordObservationsContract/record broken event appends to its linked recording`
-- 管理対象外 record の同期行: `TestRecordObservationsContract/unmanaged record is synchronized without recording`
+- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
 - title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
-- commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
+- commit 後のヒント（投入の失敗で観測を失敗させない）: `TestProcessRecord_EnqueueFollowsCommit`
+- 上記以外の挙動（録画状態の前進と後戻り防止・未知の状態値の丸め・番組スナップショットの保存・開始時刻による録画の分割・破損イベントの追記・管理対象外 record）: `TestRecordObservationsContract` の各ケース
 
 </details>
 

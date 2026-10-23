@@ -2,16 +2,13 @@ package pgstore
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
@@ -89,9 +86,7 @@ SELECT recording_id, status FROM record_sync WHERE site = $1 AND record_id = $2`
 		inspectRecordings := func(t *testing.T, observation store.RecordObservation) []contracttest.ObservedRecording {
 			t.Helper()
 			rows, err := pool.Query(context.Background(), `
-SELECT id, status, source, deleted_at, superseded_at, quality_events,
-       network_id, service_id, event_id, service_name, channel_type, channel,
-       title, description, extended, genres, is_free, program_start_at, program_duration_ms
+SELECT id, superseded_at IS NOT NULL, extended, genres, is_free
 FROM recordings
 WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND program_start_at = $5`,
 				observation.Site, observation.Snapshot.NetworkID, observation.Snapshot.ServiceID,
@@ -103,27 +98,8 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			var got []contracttest.ObservedRecording
 			for rows.Next() {
 				var row contracttest.ObservedRecording
-				var deletedAt, supersededAt *time.Time
-				var qualityEvents json.RawMessage
-				if err := rows.Scan(
-					&row.ID, &row.Status, &row.Source, &deletedAt, &supersededAt, &qualityEvents,
-					&row.Snapshot.NetworkID, &row.Snapshot.ServiceID, &row.Snapshot.EventID,
-					&row.Snapshot.ServiceName, &row.Snapshot.ChannelType, &row.Snapshot.Channel,
-					&row.Snapshot.Title, &row.Snapshot.Description, &row.Snapshot.Extended, &row.Snapshot.Genres,
-					&row.Snapshot.IsFree, &row.Snapshot.ProgramStartAt, &row.Snapshot.ProgramDurationMs,
-				); err != nil {
+				if err := rows.Scan(&row.ID, &row.Superseded, &row.Extended, &row.Genres, &row.IsFree); err != nil {
 					t.Fatalf("scanning event recording: %v", err)
-				}
-				row.Deleted = deletedAt != nil
-				row.Superseded = supersededAt != nil
-				var events []db.QualityEvent
-				if err := json.Unmarshal(qualityEvents, &events); err != nil {
-					t.Fatalf("decoding quality events: %v", err)
-				}
-				row.QualityEventCount = len(events)
-				for _, event := range events {
-					row.QualityEventNames = append(row.QualityEventNames, event.Event)
-					row.QualityEventTimes = append(row.QualityEventTimes, event.At)
 				}
 				got = append(got, row)
 			}
@@ -162,36 +138,8 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			SeedProgramSnapshot: seedProgramSnapshot, SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,
 			NewOriginalAsset:  newOriginalAsset,
 			InspectRecordSync: inspectRecordSync, InspectRecordings: inspectRecordings,
-			InspectMediaAssets: func(t *testing.T, recordingID int64) []contracttest.ObservedMediaAsset {
-				return inspectContractMediaAssets(t, pool, recordingID)
-			},
+			RecordingQuery: NewRecordings(pool), MediaServing: NewMedia(pool),
 			SetRecordSyncObservedAt: setObservedAt, SetAfterRecordAcquired: setAfterAcquired,
 		}
 	})
-}
-
-func inspectContractMediaAssets(t *testing.T, pool *pgxpool.Pool, recordingID int64) []contracttest.ObservedMediaAsset {
-	t.Helper()
-	rows, err := pool.Query(context.Background(), `
-SELECT recording_id, state, deleted_at
-FROM media_assets
-WHERE recording_id = $1`, recordingID)
-	if err != nil {
-		t.Fatalf("querying recording media assets: %v", err)
-	}
-	defer rows.Close()
-	var got []contracttest.ObservedMediaAsset
-	for rows.Next() {
-		var asset contracttest.ObservedMediaAsset
-		var deletedAt *time.Time
-		if err := rows.Scan(&asset.RecordingID, &asset.State, &deletedAt); err != nil {
-			t.Fatalf("scanning recording media asset: %v", err)
-		}
-		asset.Deleted = deletedAt != nil
-		got = append(got, asset)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("reading recording media assets: %v", err)
-	}
-	return got
 }

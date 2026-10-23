@@ -16,25 +16,15 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// ObservedRecording は契約テストが検査する録画行の状態を表す。
+// ObservedRecording は、契約の読み取りメソッドでは確かめられない録画行の状態を表す。
+// 行の列挙と、superseded、番組スナップショットの extended / genres / is_free だけを持つ。
+// それ以外は ID を `RecordObservationFixture.RecordingQuery` に渡して読む。
 type ObservedRecording struct {
-	ID                int64
-	Status            string
-	Source            string
-	Superseded        bool
-	Deleted           bool
-	Snapshot          store.RecordingSnapshot
-	QualityEventCount int
-	QualityEventNames []string
-	// QualityEventTimes は品質イベントの `at` を、保存された JSON から読み戻した値である。
-	QualityEventTimes []time.Time
-}
-
-// ObservedMediaAsset は契約テストが検査する media asset の所有者と状態を表す。
-type ObservedMediaAsset struct {
-	RecordingID int64
-	State       string
-	Deleted     bool
+	ID         int64
+	Superseded bool
+	Extended   []byte
+	Genres     []byte
+	IsFree     bool
 }
 
 // RecordSyncState は契約テストが検査する record 同期行の状態を表す。
@@ -58,8 +48,12 @@ type RecordObservationFixture struct {
 	SeedReservation     func(t *testing.T, observation store.RecordObservation)
 	NewOriginalAsset    func(t *testing.T, recordingID int64, state string)
 	InspectRecordSync   func(t *testing.T, site, recordID string) RecordSyncState
-	InspectRecordings   func(t *testing.T, observation store.RecordObservation) []ObservedRecording
-	InspectMediaAssets  func(t *testing.T, recordingID int64) []ObservedMediaAsset
+	// InspectRecordings は観測の放送イベントに属する録画行を列挙する。ID を知らない行を探す用途と、
+	// 契約の読み取りでは取れない列だけを返す。値の確認は RecordingQuery で行う。
+	InspectRecordings func(t *testing.T, observation store.RecordObservation) []ObservedRecording
+	// RecordingQuery と MediaServing は、録画と media asset の状態を契約の読み取りで確かめる。
+	RecordingQuery store.RecordingQuery
+	MediaServing   store.MediaServing
 	// SetRecordSyncObservedAt は record 同期行の観測時刻を書き換える。
 	SetRecordSyncObservedAt func(t *testing.T, site, recordID string, observedAt time.Time)
 	// SetAfterRecordAcquired は、実装が同じ record の観測の排他を確保した直後、
@@ -121,8 +115,11 @@ func runRecordStatusProgression(t *testing.T, newStore NewRecordObservationStore
 		t.Fatalf("ProcessRecord(finished again): %v", err)
 	}
 	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].Status != "finished" {
-		t.Fatalf("recordings after status progression = %+v, want one finished recording", got)
+	if len(got) != 1 {
+		t.Fatalf("recordings after status progression = %+v, want one", got)
+	}
+	if status := f.recording(t, got[0].ID).Status; status != "finished" {
+		t.Fatalf("status after progression = %q, want finished", status)
 	}
 }
 
@@ -142,18 +139,19 @@ func runRecordBrokenEvent(t *testing.T, newStore NewRecordObservationStore) {
 	if err != nil || !appended {
 		t.Fatalf("AppendRecordBrokenEvent(linked record) = (%t, %v), want appended", appended, err)
 	}
-	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].ID != *result.RecordingID || got[0].QualityEventCount != 1 || !reflect.DeepEqual(got[0].QualityEventNames, []string{"recording.record-broken"}) {
-		t.Fatalf("record after broken event = %+v, want one linked recording with a record-broken event", got)
+	if names := qualityEventNames(t, f.recording(t, *result.RecordingID)); !reflect.DeepEqual(names, []string{"recording.record-broken"}) {
+		t.Fatalf("quality events after broken event = %v, want one record-broken event", names)
 	}
 
 	appended, err = f.Store.AppendRecordBrokenEvent(ctx, observation.Site, "missing-record", "io-error")
 	if err != nil || appended {
 		t.Fatalf("AppendRecordBrokenEvent(unlinked record) = (%t, %v), want no event and no error", appended, err)
 	}
-	got = f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].QualityEventCount != 1 {
-		t.Fatalf("record after broken event for missing record = %+v, want no additional event", got)
+	if names := qualityEventNames(t, f.recording(t, *result.RecordingID)); len(names) != 1 {
+		t.Fatalf("quality events after broken event for missing record = %v, want no additional event", names)
+	}
+	if got := f.InspectRecordings(t, observation); len(got) != 1 {
+		t.Fatalf("recordings after broken event for missing record = %+v, want the one linked recording", got)
 	}
 }
 
@@ -164,29 +162,12 @@ func runUnmanagedRecord(t *testing.T, newStore NewRecordObservationStore) {
 	observation.Managed = false
 	observation.Tags = nil
 
-	const contenders = 20
-	start := make(chan struct{})
-	errs := make(chan error, contenders)
-	var wg sync.WaitGroup
-	for range contenders {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			<-start
-			result, err := f.Store.ProcessRecord(ctx, observation)
-			if err == nil && result.RecordingID != nil {
-				err = errors.New("unmanaged record acquired a recording ID")
-			}
-			errs <- err
-		}()
+	result, err := f.Store.ProcessRecord(ctx, observation)
+	if err != nil {
+		t.Fatalf("ProcessRecord(unmanaged) = %v, want a synchronized observation without a recording", err)
 	}
-	close(start)
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("ProcessRecord(unmanaged) = %v, want a synchronized observation without a recording", err)
-		}
+	if result.RecordingID != nil || result.EnqueueIngest {
+		t.Fatalf("ProcessRecord(unmanaged) = %+v, want no recording ID and no ingest", result)
 	}
 	if got := f.InspectRecordSync(t, observation.Site, observation.RecordID); !got.Found || got.RecordingID != nil {
 		t.Fatalf("record_sync for unmanaged record = %+v, want a row without recording ID", got)
@@ -219,21 +200,23 @@ func runRecordSnapshot(t *testing.T, newStore NewRecordObservationStore) {
 	if len(got) != 1 || got[0].ID != *result.RecordingID {
 		t.Fatalf("recordings = %+v, want one recording with ID %d", got, *result.RecordingID)
 	}
-	requireRecordingSnapshot(t, got[0].Snapshot, observation.Snapshot)
+	requireRecordingSnapshot(t, f.recording(t, got[0].ID), got[0], observation.Snapshot)
 }
 
-func requireRecordingSnapshot(t *testing.T, got, want store.RecordingSnapshot) {
+// requireRecordingSnapshot は、契約の読み取りで取れる番組スナップショットの列と、
+// 行の列挙でしか取れない extended / genres / is_free を期待値と比べる。
+func requireRecordingSnapshot(t *testing.T, row store.RecordingQueryRow, observed ObservedRecording, want store.RecordingSnapshot) {
 	t.Helper()
-	if got.NetworkID != want.NetworkID || got.ServiceID != want.ServiceID || got.EventID != want.EventID ||
-		got.ServiceName != want.ServiceName || got.ChannelType != want.ChannelType || got.Channel != want.Channel ||
-		got.Title != want.Title || !reflect.DeepEqual(got.Description, want.Description) || got.IsFree != want.IsFree ||
-		!got.ProgramStartAt.Equal(want.ProgramStartAt) || got.ProgramDurationMs != want.ProgramDurationMs {
-		t.Errorf("recording snapshot = %+v, want %+v", got, want)
+	if row.NetworkID != want.NetworkID || row.ServiceID != want.ServiceID || row.EventID != want.EventID ||
+		row.ServiceName != want.ServiceName || row.ChannelType != want.ChannelType || row.Channel != want.Channel ||
+		row.Title != want.Title || !reflect.DeepEqual(row.Description, want.Description) || observed.IsFree != want.IsFree ||
+		!row.ProgramStartAt.Equal(want.ProgramStartAt) || row.ProgramDurationMs != want.ProgramDurationMs {
+		t.Errorf("recording snapshot = %+v (is_free %t), want %+v", row, observed.IsFree, want)
 	}
 	for _, field := range []struct {
 		name      string
 		got, want []byte
-	}{{"extended", got.Extended, want.Extended}, {"genres", got.Genres, want.Genres}} {
+	}{{"extended", observed.Extended, want.Extended}, {"genres", observed.Genres, want.Genres}} {
 		var gotJSON, wantJSON any
 		if err := json.Unmarshal(field.got, &gotJSON); err != nil {
 			t.Fatalf("unmarshalling stored snapshot %s %q: %v", field.name, field.got, err)
@@ -259,8 +242,11 @@ func runRecordStatusNoDowngrade(t *testing.T, newStore NewRecordObservationStore
 		t.Fatalf("ProcessRecord(recording): %v", err)
 	}
 	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].Status != "finished" {
-		t.Fatalf("recordings after older status = %+v, want one finished recording", got)
+	if len(got) != 1 {
+		t.Fatalf("recordings after older status = %+v, want one", got)
+	}
+	if status := f.recording(t, got[0].ID).Status; status != "finished" {
+		t.Fatalf("status after older observation = %q, want finished", status)
 	}
 }
 
@@ -288,9 +274,11 @@ func runRecordStatusValues(t *testing.T, newStore NewRecordObservationStore) {
 			if got := f.InspectRecordSync(t, observation.Site, observation.RecordID); !got.Found || got.Status != tc.status || got.RecordingID == nil {
 				t.Fatalf("record_sync = %+v, want raw status %q and a recording ID", got, tc.status)
 			}
-			got := f.InspectRecordings(t, observation)
-			if len(got) != 1 || got[0].Status != tc.want {
-				t.Fatalf("recordings = %+v, want one recording with normalized status %q", got, tc.want)
+			if got := f.recording(t, *result.RecordingID).Status; got != tc.want {
+				t.Fatalf("recording status = %q, want normalized status %q", got, tc.want)
+			}
+			if got := f.InspectRecordings(t, observation); len(got) != 1 {
+				t.Fatalf("recordings = %+v, want one", got)
 			}
 		})
 	}
@@ -316,8 +304,11 @@ func runEventIDReuse(t *testing.T, newStore NewRecordObservationStore) {
 	if firstResult.RecordingID == nil || secondResult.RecordingID == nil || *firstResult.RecordingID == *secondResult.RecordingID {
 		t.Fatalf("recording IDs for reused event = (%s, %s), want distinct recordings", int64Text(firstResult.RecordingID), int64Text(secondResult.RecordingID))
 	}
-	if got := f.InspectRecordings(t, first); len(got) != 1 || got[0].ID != *firstResult.RecordingID || got[0].Status != "failed" || got[0].Superseded {
-		t.Fatalf("old event recording = %+v, want live failed ID %d", got, *firstResult.RecordingID)
+	if got := f.InspectRecordings(t, first); len(got) != 1 || got[0].ID != *firstResult.RecordingID || got[0].Superseded {
+		t.Fatalf("old event recording = %+v, want live ID %d", got, *firstResult.RecordingID)
+	}
+	if status := f.recording(t, *firstResult.RecordingID).Status; status != "failed" {
+		t.Fatalf("old event recording status = %q, want failed", status)
 	}
 	if got := f.InspectRecordings(t, second); len(got) != 1 || got[0].ID != *secondResult.RecordingID {
 		t.Fatalf("reused event recording = %+v, want ID %d", got, *secondResult.RecordingID)
@@ -424,9 +415,14 @@ func runRecordSource(t *testing.T, newStore NewRecordObservationStore) {
 			if err != nil {
 				t.Fatalf("ProcessRecord: %v", err)
 			}
-			got := f.InspectRecordings(t, observation)
-			if result.RecordingID == nil || len(got) != 1 || got[0].Source != tc.want {
-				t.Fatalf("recording source = %+v, result = %+v; want %q", got, result, tc.want)
+			if result.RecordingID == nil {
+				t.Fatalf("ProcessRecord result = %+v, want a recording", result)
+			}
+			if got := f.recording(t, *result.RecordingID).Source; got != tc.want {
+				t.Fatalf("recording source = %q, want %q", got, tc.want)
+			}
+			if got := f.InspectRecordings(t, observation); len(got) != 1 {
+				t.Fatalf("recordings = %+v, want one", got)
 			}
 		})
 	}
@@ -446,9 +442,11 @@ func runFailedEventSource(t *testing.T, newStore NewRecordObservationStore) {
 	if err != nil || !recorded || id == 0 {
 		t.Fatalf("RecordFailedRecording() = (%d, %t, %v), want recorded with an ID", id, recorded, err)
 	}
-	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].ID != id || got[0].Source != reservation.SourceManual {
-		t.Fatalf("failed event recording = %+v, want source %q", got, reservation.SourceManual)
+	if got := f.recording(t, id).Source; got != reservation.SourceManual {
+		t.Fatalf("failed event recording source = %q, want %q", got, reservation.SourceManual)
+	}
+	if got := f.InspectRecordings(t, observation); len(got) != 1 || got[0].ID != id {
+		t.Fatalf("failed event recordings = %+v, want only ID %d", got, id)
 	}
 }
 
@@ -476,7 +474,7 @@ func runFailedEventSnapshot(t *testing.T, newStore NewRecordObservationStore) {
 	if len(got) != 1 || got[0].ID != id {
 		t.Fatalf("failed event recordings = %+v, want one recording with ID %d", got, id)
 	}
-	requireRecordingSnapshot(t, got[0].Snapshot, observation.Snapshot)
+	requireRecordingSnapshot(t, f.recording(t, id), got[0], observation.Snapshot)
 }
 
 func runFailedScheduleSource(t *testing.T, newStore NewRecordObservationStore) {
@@ -493,9 +491,11 @@ func runFailedScheduleSource(t *testing.T, newStore NewRecordObservationStore) {
 	if err != nil || result.RecordingID == nil {
 		t.Fatalf("ProcessFailedSchedule() = (%+v, %v), want a recording", result, err)
 	}
-	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].ID != *result.RecordingID || got[0].Source != reservation.SourceManual {
-		t.Fatalf("failed schedule recording = %+v, want source %q", got, reservation.SourceManual)
+	if got := f.recording(t, *result.RecordingID).Source; got != reservation.SourceManual {
+		t.Fatalf("failed schedule recording source = %q, want %q", got, reservation.SourceManual)
+	}
+	if got := f.InspectRecordings(t, observation); len(got) != 1 || got[0].ID != *result.RecordingID {
+		t.Fatalf("failed schedule recordings = %+v, want only ID %d", got, *result.RecordingID)
 	}
 }
 
@@ -768,26 +768,27 @@ func runSuccessSupersedesFailure(t *testing.T, newStore NewRecordObservationStor
 		t.Fatalf("recordings for retried event = %d, want failed history plus success", len(got))
 	}
 	var supersededFailed, liveFinished int
-	for _, row := range got {
-		if row.Status == "failed" && row.Superseded {
-			if row.Deleted {
+	for _, observed := range got {
+		row := f.recording(t, observed.ID)
+		if row.Status == "failed" && observed.Superseded {
+			if row.DeletedAt != nil {
 				t.Errorf("superseded failed recording %d is deleted, want the failed attempt retained", row.ID)
 			}
 			supersededFailed++
 		}
-		if row.Status == "finished" && !row.Superseded {
+		if row.Status == "finished" && !observed.Superseded {
 			liveFinished++
 		}
 	}
 	if supersededFailed != 1 || liveFinished != 1 {
 		t.Fatalf("recordings after retry = %+v, want one superseded failed row and one live finished row", got)
 	}
-	failedAssets := f.InspectMediaAssets(t, *failedResult.RecordingID)
-	if len(failedAssets) != 1 || failedAssets[0].RecordingID != *failedResult.RecordingID || failedAssets[0].State != "active" || failedAssets[0].Deleted {
-		t.Fatalf("media assets for superseded failed recording = %+v, want one active, undeleted asset still owned by the failed row", failedAssets)
+	// 旧録画は active な原本を持ち続け、新録画は持たない。
+	if _, err := f.MediaServing.GetActiveOriginalMediaAsset(ctx, *failedResult.RecordingID); err != nil {
+		t.Fatalf("GetActiveOriginalMediaAsset(superseded failed recording) = %v, want the active original it still owns", err)
 	}
-	if assets := f.InspectMediaAssets(t, successID); len(assets) != 0 {
-		t.Fatalf("media assets for successful retry = %+v, want none", assets)
+	if _, err := f.MediaServing.GetActiveOriginalMediaAsset(ctx, successID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetActiveOriginalMediaAsset(successful retry) = %v, want ErrNotFound", err)
 	}
 }
 
@@ -806,8 +807,11 @@ func runFailedQualityIdempotency(t *testing.T, newStore NewRecordObservationStor
 		}
 	}
 	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].QualityEventCount != 1 {
-		t.Fatalf("failed observation state = %+v, want one recording and one quality event", got)
+	if len(got) != 1 {
+		t.Fatalf("failed observation recordings = %+v, want one", got)
+	}
+	if events := qualityEvents(t, f.recording(t, got[0].ID)); len(events) != 1 {
+		t.Fatalf("quality events = %d, want one", len(events))
 	}
 }
 
@@ -829,8 +833,12 @@ func runFailedSchedule(t *testing.T, newStore NewRecordObservationStore) {
 			t.Fatalf("pass %d result = %+v, want id/event only on first observation", i, result)
 		}
 	}
-	if got := f.InspectRecordings(t, observation); len(got) != 1 || got[0].QualityEventCount != 1 {
-		t.Fatalf("failed schedule state = %+v, want one recording and one quality event", got)
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 {
+		t.Fatalf("failed schedule recordings = %+v, want one", got)
+	}
+	if events := qualityEvents(t, f.recording(t, got[0].ID)); len(events) != 1 {
+		t.Fatalf("failed schedule quality events = %d, want one", len(events))
 	}
 
 	success := f.NewObservation("failed-schedule-success", "finished")
@@ -851,9 +859,20 @@ func runFailedSchedule(t *testing.T, newStore NewRecordObservationStore) {
 	if !result.FailedRecordingSkipped || result.RecordingID != nil {
 		t.Fatalf("late failed schedule result = %+v, want typed skipped result without id", result)
 	}
-	got := f.InspectRecordings(t, success)
-	if len(got) != 1 || got[0].Status != "finished" || got[0].QualityEventCount != 0 {
-		t.Fatalf("success after late failed schedule = %+v, want untouched success", got)
+	requireUntouchedSuccess(t, f, success, "late failed schedule")
+}
+
+// requireUntouchedSuccess は、観測の放送イベントに finished の録画が 1 つだけあり、
+// 品質イベントが付いていないことを確かめる。
+func requireUntouchedSuccess(t *testing.T, f RecordObservationFixture, observation store.RecordObservation, after string) {
+	t.Helper()
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 {
+		t.Fatalf("recordings after %s = %+v, want the one success", after, got)
+	}
+	row := f.recording(t, got[0].ID)
+	if row.Status != "finished" || len(qualityEvents(t, row)) != 0 {
+		t.Fatalf("success after %s = status %q, quality events %s; want untouched success", after, row.Status, row.QualityEvents)
 	}
 }
 
@@ -877,9 +896,11 @@ func runFailedEventRecordingID(t *testing.T, newStore NewRecordObservationStore)
 		}
 		wantID = id
 	}
-	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].ID != wantID || got[0].QualityEventCount != 2 {
-		t.Fatalf("recording.failed event state = %+v, want one recording with two observed events", got)
+	if got := f.InspectRecordings(t, observation); len(got) != 1 || got[0].ID != wantID {
+		t.Fatalf("recordings = %+v, want only ID %d", got, wantID)
+	}
+	if events := qualityEvents(t, f.recording(t, wantID)); len(events) != 2 {
+		t.Fatalf("recording.failed quality events = %d, want two observed events", len(events))
 	}
 }
 
@@ -941,11 +962,15 @@ func runFailedConvergence(t *testing.T, newStore NewRecordObservationStore) {
 		}
 	}
 	got := f.InspectRecordings(t, observation)
-	if len(got) != 1 || got[0].Status != "failed" || got[0].Superseded {
-		t.Fatalf("recordings after concurrent failed observations = %+v, want one live failed recording", got)
+	if len(got) != 1 || got[0].Superseded {
+		t.Fatalf("recordings after concurrent failed observations = %+v, want one live recording", got)
 	}
-	if got[0].QualityEventCount < 1 {
-		t.Fatalf("quality events = %d, want at least 1", got[0].QualityEventCount)
+	row := f.recording(t, got[0].ID)
+	if row.Status != "failed" {
+		t.Fatalf("recording status after concurrent failed observations = %q, want failed", row.Status)
+	}
+	if events := qualityEvents(t, row); len(events) < 1 {
+		t.Fatalf("quality events = %d, want at least 1", len(events))
 	}
 }
 
@@ -1000,13 +1025,16 @@ func runIngestHint(t *testing.T, newStore NewRecordObservationStore) {
 		observation := f.NewObservation("ingest-"+tc.status+"-"+string(rune('a'+i)), tc.status)
 		observation.Managed = tc.managed
 		observation.Snapshot.EventID += int32(i) // 放送イベントを分け、録画の衝突を避ける
-		result, err := f.Store.ProcessRecord(ctx, observation)
-		if err != nil {
-			t.Fatalf("ProcessRecord(%s, managed=%t) = %v", tc.status, tc.managed, err)
-		}
-		if result.EnqueueIngest != tc.wantIngest || result.IngestPriority != tc.wantPriority {
-			t.Fatalf("ProcessRecord(%s, managed=%t) ingest = (%t, %d), want (%t, %d)",
-				tc.status, tc.managed, result.EnqueueIngest, result.IngestPriority, tc.wantIngest, tc.wantPriority)
+		// 同じ観測を重ねても、毎回同じ判定を返す（recording 中は継続して投入を求める）。
+		for pass := range 2 {
+			result, err := f.Store.ProcessRecord(ctx, observation)
+			if err != nil {
+				t.Fatalf("ProcessRecord(%s, managed=%t, pass %d) = %v", tc.status, tc.managed, pass, err)
+			}
+			if result.EnqueueIngest != tc.wantIngest || result.IngestPriority != tc.wantPriority {
+				t.Fatalf("ProcessRecord(%s, managed=%t, pass %d) ingest = (%t, %d), want (%t, %d)",
+					tc.status, tc.managed, pass, result.EnqueueIngest, result.IngestPriority, tc.wantIngest, tc.wantPriority)
+			}
 		}
 	}
 }
@@ -1032,10 +1060,7 @@ func runFailedRecordSkipped(t *testing.T, newStore NewRecordObservationStore) {
 	if state := f.InspectRecordSync(t, failed.Site, failed.RecordID); !state.Found || state.RecordingID != nil || state.Status != "failed" {
 		t.Fatalf("record_sync of skipped failed record = %+v, want an observation without recording", state)
 	}
-	got := f.InspectRecordings(t, success)
-	if len(got) != 1 || got[0].Status != "finished" || got[0].QualityEventCount != 0 {
-		t.Fatalf("recordings after skipped failed record = %+v, want the untouched success", got)
-	}
+	requireUntouchedSuccess(t, f, success, "skipped failed record")
 }
 
 func runQualityEventTime(t *testing.T, newStore NewRecordObservationStore) {
@@ -1056,10 +1081,14 @@ func runQualityEventTime(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("AppendRecordBrokenEvent() = %v", err)
 	}
 	got := f.InspectRecordings(t, failed)
-	if len(got) != 1 || len(got[0].QualityEventTimes) != 3 {
-		t.Fatalf("recordings = %+v, want one recording with 3 quality events", got)
+	if len(got) != 1 {
+		t.Fatalf("recordings = %+v, want one", got)
 	}
-	requireRecentTimes(t, got[0].QualityEventTimes)
+	events := qualityEvents(t, f.recording(t, got[0].ID))
+	if len(events) != 3 {
+		t.Fatalf("quality events = %d, want 3", len(events))
+	}
+	requireRecentTimes(t, events)
 
 	// 録画を新しく作る経路でも同じである。
 	fresh := f.NewObservation("quality-time-fresh", "failed")
@@ -1072,15 +1101,20 @@ func runQualityEventTime(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("RecordFailedRecording(fresh) = %v", err)
 	}
 	got = f.InspectRecordings(t, fresh)
-	if len(got) != 1 || len(got[0].QualityEventTimes) != 1 {
-		t.Fatalf("fresh recordings = %+v, want one recording with 1 quality event", got)
+	if len(got) != 1 {
+		t.Fatalf("fresh recordings = %+v, want one", got)
 	}
-	requireRecentTimes(t, got[0].QualityEventTimes)
+	events = qualityEvents(t, f.recording(t, got[0].ID))
+	if len(events) != 1 {
+		t.Fatalf("fresh quality events = %d, want 1", len(events))
+	}
+	requireRecentTimes(t, events)
 }
 
-func requireRecentTimes(t *testing.T, times []time.Time) {
+func requireRecentTimes(t *testing.T, events []observedQualityEvent) {
 	t.Helper()
-	for i, at := range times {
+	for i, event := range events {
+		at := event.At
 		if d := time.Since(at); at.IsZero() || d < -time.Minute || d > time.Minute {
 			t.Fatalf("quality event %d at = %v, want a time within a minute of now", i, at)
 		}
@@ -1089,7 +1123,42 @@ func requireRecentTimes(t *testing.T, times []time.Time) {
 
 func requireStore(t *testing.T, f RecordObservationFixture) {
 	t.Helper()
-	if f.Store == nil || f.Reservations == nil || f.RulerPass == nil || f.Rules == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedProgramSnapshot == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.InspectMediaAssets == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
+	if f.Store == nil || f.Reservations == nil || f.RulerPass == nil || f.Rules == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedProgramSnapshot == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.RecordingQuery == nil || f.MediaServing == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
 		t.Fatalf("incomplete record observation fixture: %+v", f)
 	}
+}
+
+// recording は ID の録画を契約の読み取りで返す。
+func (f RecordObservationFixture) recording(t *testing.T, id int64) store.RecordingQueryRow {
+	t.Helper()
+	row, err := f.RecordingQuery.Get(context.Background(), id)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d) = %v", id, err)
+	}
+	return row
+}
+
+// observedQualityEvent は録画行の quality_events の要素のうち、契約が見る部分である。
+type observedQualityEvent struct {
+	At    time.Time `json:"at"`
+	Event string    `json:"event"`
+}
+
+// qualityEvents は録画行の品質イベントを読み戻す。
+func qualityEvents(t *testing.T, row store.RecordingQueryRow) []observedQualityEvent {
+	t.Helper()
+	var events []observedQualityEvent
+	if err := json.Unmarshal(row.QualityEvents, &events); err != nil {
+		t.Fatalf("decoding quality events %q: %v", row.QualityEvents, err)
+	}
+	return events
+}
+
+func qualityEventNames(t *testing.T, row store.RecordingQueryRow) []string {
+	t.Helper()
+	var names []string
+	for _, event := range qualityEvents(t, row) {
+		names = append(names, event.Event)
+	}
+	return names
 }
