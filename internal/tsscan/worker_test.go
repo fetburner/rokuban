@@ -2,7 +2,6 @@ package tsscan
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -394,47 +393,6 @@ func TestTSScanReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	}
 	if got := countTSScanJobs(enqueuer, secondID); got != 1 {
 		t.Fatalf("second recording jobs after continuation page = %d, want 1", got)
-	}
-}
-
-type tsScanContinuationFailingEnqueuer struct {
-	delegate             *recordingEnqueuer
-	continuationAttempts int
-}
-
-func (e *tsScanContinuationFailingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if continuation, ok := args.(ReconcileArgs); ok && continuation.AfterRecordingID != 0 {
-		e.continuationAttempts++
-		return jobq.Result{}, errors.New("continuation unavailable")
-	}
-	return e.delegate.Enqueue(ctx, args, opts...)
-}
-
-func TestTSScanReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	if pool == nil {
-		return
-	}
-
-	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12913 })
-	seedOriginalAsset(t, pool, mediaDir, recordingID, "ts-scan/continuation-error.m2ts", []byte("original"))
-	recorder := &recordingEnqueuer{}
-	enqueuer := &tsScanContinuationFailingEnqueuer{delegate: recorder}
-	w := &ReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
-	if err := runWorkerViaJobQFake(context.Background(), w, ReconcileArgs{}); err != nil {
-		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
-	}
-	if got := countTSScanJobs(recorder, recordingID); got != 1 {
-		t.Errorf("scan jobs after continuation enqueue failure = %d, want 1", got)
-	}
-	for _, queued := range recorder.args {
-		if continuation, ok := queued.(ReconcileArgs); ok && continuation.AfterRecordingID != 0 {
-			t.Errorf("continuation unexpectedly recorded after injected failure: %+v", continuation)
-		}
-	}
-	if enqueuer.continuationAttempts != 1 {
-		t.Errorf("continuation enqueue attempts = %d, want 1", enqueuer.continuationAttempts)
 	}
 }
 

@@ -157,22 +157,15 @@ func (w *ThumbnailReconcileWorker) Work(ctx context.Context, args jobs.Thumbnail
 			SeekTilesDone:             seekTilesDone,
 		}
 		if missingWindowFull || reselectWindowFull || seekTilesWindowFull {
-			if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
-				slog.Error("thumbnail_reconcile: failed to enqueue continuation",
-					"after_recording_id", nextAfter,
+			jobs.EnqueueContinuation(ctx, w.Enqueuer, continuation,
+				"candidate windows are full; continuation enqueued",
+				[]any{"after_recording_id", nextAfter,
 					"after_reselect_recording_id", nextReselectAfter,
-					"after_seek_tiles_recording_id", seekTilesAfter,
-					"err", err)
-			} else {
-				slog.Warn("thumbnail_reconcile: candidate windows are full; continuation enqueued",
-					"row_limit", rowLimit,
+					"after_seek_tiles_recording_id", seekTilesAfter},
+				[]any{"row_limit", rowLimit,
 					"missing_window_full", missingWindowFull,
 					"reselection_window_full", reselectWindowFull,
-					"seek_tiles_window_full", seekTilesWindowFull,
-					"after_recording_id", nextAfter,
-					"after_reselect_recording_id", nextReselectAfter,
-					"after_seek_tiles_recording_id", seekTilesAfter)
-			}
+					"seek_tiles_window_full", seekTilesWindowFull})
 		}
 
 		if len(rows) > 0 || len(reselectRows) > 0 || failed > 0 {

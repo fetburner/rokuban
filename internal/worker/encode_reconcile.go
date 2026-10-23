@@ -237,13 +237,10 @@ func (w *EncodeReconcileWorker) Work(ctx context.Context, args jobs.EncodeReconc
 		if windowFull {
 			continuationAfter = candidates[len(candidates)-1]
 			continuation := jobs.EncodeReconcileArgs{AfterRecordingID: continuationAfter}
-			if err := enqueueJob(ctx, w.Enqueuer, continuation); err != nil {
-				slog.Error("encode_reconcile: failed to enqueue continuation",
-					"after_recording_id", continuationAfter, "err", err)
-			} else {
-				slog.Warn("encode_reconcile: candidate window is full; continuation enqueued",
-					"row_limit", rowLimit, "after_recording_id", continuationAfter)
-			}
+			jobs.EnqueueContinuation(ctx, w.Enqueuer, continuation,
+				"candidate window is full; continuation enqueued",
+				[]any{"after_recording_id", continuationAfter},
+				[]any{"row_limit", rowLimit})
 		}
 
 		w.reportUnsatisfiable(ctx, known)

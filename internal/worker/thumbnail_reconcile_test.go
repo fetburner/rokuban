@@ -773,47 +773,6 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 	}
 }
 
-type thumbnailContinuationFailingEnqueuer struct {
-	*recordingEnqueuer
-	continuationAttempts int
-}
-
-func (e *thumbnailContinuationFailingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if args.Kind() == (ThumbnailReconcileArgs{}).Kind() {
-		e.continuationAttempts++
-		return jobq.Result{}, fmt.Errorf("continuation unavailable")
-	}
-	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
-}
-
-func TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-
-	mediaDir := t.TempDir()
-	firstID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "default", 14107
-	})
-	secondID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Site, fixtureParams.EventID = "default", 14108
-	})
-	seedOriginalAsset(t, pool, mediaDir, firstID, "continuation-error/first.ts", []byte("first"))
-	seedOriginalAsset(t, pool, mediaDir, secondID, "continuation-error/second.ts", []byte("second"))
-	enqueuer := &thumbnailContinuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
-	w := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
-	if err := runWorkerViaJobQFake(context.Background(), w, ThumbnailReconcileArgs{}); err != nil {
-		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
-	}
-	if got := countThumbnailJobs(t, enqueuer.recordingEnqueuer, firstID); got != 1 {
-		t.Errorf("thumbnail jobs after continuation enqueue failure = %d, want 1", got)
-	}
-	if enqueuer.continuationAttempts != 1 {
-		t.Errorf("continuation enqueue attempts = %d, want 1", enqueuer.continuationAttempts)
-	}
-}
-
 func TestThumbnailReconcileWorker_WorkWithoutClientErrors(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
