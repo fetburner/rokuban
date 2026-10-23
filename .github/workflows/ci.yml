@@ -103,7 +103,7 @@ jobs:
         working-directory: web
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: web
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libx264-164 libvpx9
       - run: pnpm build
         working-directory: web
       # Build after web/dist exists: this is the actual static bundle embedded in the Go binary.
