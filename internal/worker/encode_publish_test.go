@@ -25,22 +25,40 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
-// planEncodePublish は store 契約の読み取りと共通の判定から、テストの前状態の公開計画を導出する。
-func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string, cut *cutContext) (encodePlan, error) {
-	asset, err := pgstore.NewMedia(pool).GetEncodedAssetForPlan(ctx, recordingID, profile)
-	if errors.Is(err, store.ErrNotFound) {
-		return planEncodePublishFromObservation(nil, profile, cut, nil), nil
+// planEncodePublish は store の読み取りと共通の判定から、テストの前状態の公開計画を導出する。
+func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string, cut *cutContext, rebuildKeep ...[]chapters.Range) (encodePlan, error) {
+	hasRebuildRequest := len(rebuildKeep) > 0
+	var requestedKeep []chapters.Range
+	if hasRebuildRequest {
+		requestedKeep = rebuildKeep[0]
 	}
+	state, err := pgstore.NewMedia(pool).GetEncodedPublishState(ctx, recordingID, profile, cut != nil, cut != nil && !hasRebuildRequest)
 	if err != nil {
 		return encodePlan{}, err
 	}
-	return planEncodePublishFromObservation(&asset, profile, cut, nil), nil
+	input := store.EncodedPublishInput{
+		RecordingID:       recordingID,
+		Profile:           profile,
+		Cut:               cut != nil,
+		HasRebuildRequest: hasRebuildRequest,
+		RequestedKeep:     requestedKeep,
+	}
+	if cut != nil {
+		input.KeepRanges = cut.keep
+	}
+	return planEncodePublishFromState(input, state), nil
 }
 
 // frozenKeepRanges は media_asset に凍結された keep 区間を store 契約から読む。
 func frozenKeepRanges(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string) ([]chapters.Range, error) {
-	asset, err := pgstore.NewMedia(pool).GetEncodedAssetForPlan(ctx, recordingID, profile)
-	return asset.KeepRanges, err
+	state, err := pgstore.NewMedia(pool).GetEncodedPublishState(ctx, recordingID, profile, true, false)
+	if err != nil {
+		return nil, err
+	}
+	if state.EncodedAsset == nil {
+		return nil, store.ErrNotFound
+	}
+	return state.EncodedAsset.KeepRanges, nil
 }
 
 // installCountingFFmpeg は「入力のコピーに、試行ごとに違うバイト列（長さも違う）を
@@ -402,9 +420,10 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1000}}); err != nil {
 		t.Fatal(err)
 	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, cutKeep)
 
 	cut := &cutContext{keep: cutKeep}
-	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut, cutKeep)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +446,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	go func() {
 		_, published, err := w.publishEncoded(ctx, encodePublishInput{
 			recordingID: recordingID, profile: "cut", attempt: attempt, relPath: g2, finalPath: abs(g2),
-			scratchOut: scratchOut, observed: observed, cut: cut,
+			scratchOut: scratchOut, observed: observed, cut: cut, expectedKeep: cutKeep,
 		})
 		res <- result{published, err}
 	}()
@@ -509,12 +528,12 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
 		t.Fatal(err)
 	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
 	cut := &cutContext{keep: requestedKeep}
-	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut, requestedKeep)
 	if err != nil || observed.skip {
 		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
 	}
-	seedEncodedAssetRebuildRequest(t, pool, recordingID, requestedKeep)
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	scratchOut := filepath.Join(scratchDir, "rebuild.mp4")
 	if err := os.WriteFile(scratchOut, []byte("rebuilt cut"), 0o644); err != nil {
@@ -1171,12 +1190,12 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	if err := setFrozenCuts(t, pool, assetID, []chapters.Range{{StartMs: 0, EndMs: 1800000}}); err != nil {
 		t.Fatal(err)
 	}
+	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	cut := &cutContext{keep: keep}
-	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut)
+	observed, err := planEncodePublish(ctx, pool, recordingID, "cut", cut, keep)
 	if err != nil || observed.skip {
 		t.Fatalf("observed plan = %+v, err %v; want a replacement", observed, err)
 	}
-	seedEncodedAssetRebuildRequest(t, pool, recordingID, keep)
 	attempt := beginEncodeAttemptForProfilePublishTest(t, pool, recordingID, "cut")
 	// 観測の後に、別の公開が要求どおりの版へ置き換えた状況を作る。
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'rebuild/txskip_cut.g2.mp4' WHERE id = $1`, assetID); err != nil {

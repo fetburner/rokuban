@@ -223,7 +223,7 @@ func TestListRecordingsRejectsUnknownEncodeState(t *testing.T) {
 // フィクスチャは除外の軸を 1 つずつ持つ録画を並べ、期待する集合もリテラルで書く
 // （両経路が同じ向きにずれても落とす）。残る非対称は全区間カットで keep が空の
 // cut プロファイルだけである。reconcile は Go の keep の導出（chapters.Derive）で
-// 空と分かったものを投入しない（投入しても loadCutContext が必ず失敗する）。待機列は
+// 空と分かったものを投入しない（投入しても observeEncodePlan が必ず失敗する）。待機列は
 // SQL だけで数えるので、keep の導出を持てず数え続ける。導出を SQL に複製すると Go と
 // SQL の 2 か所になるので、揃えずに残す。
 func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {

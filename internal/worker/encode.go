@@ -52,25 +52,32 @@ import (
 //   - **canonical の公開は ingest の確定手順に乗せる**（publishEncoded）。同じ
 //     ディレクトリの temp へ lock の外で stage し、lock（rel_path の filesystem lock
 //     → store transaction）の中で判定 → Upsert で rel_path を予約 → rename（サイドカー → 本体）→ 親 dir
-//     fsync → commit する。判定（MediaPublish.PublishEncoded）は rename の前に、
-//     tx 内で行を読み直して行う。次のどちらかなら公開を飛ばす（temp を消して戻り、
+//     fsync → commit する。tx 内では desired・要求行・通常のカット版ジョブの章の状態・
+//     encoded 行を読み直し、エンコード前の判定（observeEncodePlan）と同じ純関数
+//     （store.PlanEncodedPublish）で判定する。次のどれかなら公開を飛ばす（temp を消して戻り、
 //     旧ファイルの unlink も encode.finished も出さない）:
 //     (a) rel_path が冒頭で観測した値と違う（state は問わない。行なしも値の 1 つ）。
 //     encoded 行の rel_path を書くのは UpsertEncodedMediaAsset だけで、行は DELETE
 //     されず tombstone で残るので、rel_path は世代順に前へしか進まない。古い計画の
 //     実行が行を巻き戻すのをこれが止める。(a) は「誰かが済ませた」ではなく
 //     「自分の計画が古い」を意味する。(a) だけが立ち行が active なら（区間が違う
-//     cut のときだけ）成功で飛ばさず、公開せずに jobq の snooze で戻して計画を
-//     やり直す（現在の keep を読み直して、一致すれば冒頭の (b) で skip、違えば次の
-//     世代で作り直す。skip すると新しいチャプター編集が黙って消える）。行が active
-//     でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
+//     カット版のときだけ）成功で飛ばさず、公開せずに jobq の snooze で戻して計画を
+//     やり直す。snooze 後はエンコード前の判定からやり直し、ジョブの種類で結果が分かれる。
+//     作り直し要求に由来するジョブは、要求行の keep と照合して新しい世代で作り直す
+//     （成功で飛ばすと押した作り直しが黙って消える）。要求に由来しないジョブは、
+//     active なカット版を置き換えてはならないので active_cut_protected で飛ばす。
+//     行が active でない（ごみ箱など）ときは成功で飛ばす。snooze は attempt を消費せず、
 //     encode.failed も試行の failed 行も出さない。
-//     (b) 行が active で（cut なら）凍結区間がこの試行の keep と一致する（誰かが
+//     (b) 行が active で（カット版なら）凍結区間がこの試行の keep と一致する（誰かが
 //     既に commit した）。A が commit → B が rename で A のファイルを上書き → B の
 //     commit が失敗、と進むと、canonical は B の中身で行は A の size になる。
 //     これが止める。
 //     (c) profile が desired（recording_encode_policy.encode_profiles）に無い。
 //     ユーザーが外した版を、外す前に積まれたジョブが公開して復活させるのを止める。
+//     (d) 作り直し要求に由来するジョブで、要求行が無いか keep が上書き済み。または
+//     要求に由来しないカット版ジョブで、章を所有していないか現在の keep と違う。
+//     要求に由来しないジョブは active なカット版を置き換えない（置き換えてよいのは
+//     利用者が押した作り直しだけ）。
 //
 // **flock の前提は ingest と同じ**: RWX のメディア越しに効くかは未検証
 // （docs/storage/contract.md §3 ルール 4）。rel_path flock は通常削除
@@ -173,15 +180,10 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 		metrics.EncodeJobs.WithLabelValues(result).Inc()
 	}()
 
-	// 冪等: 既に active な encoded があれば何もしない。リークした古い試行行
-	// （不変条件 10: 完了しているのに failed/running を名乗る行を残さない）が
-	// あれば掃除する。
-	//
-	// cut プロファイルの冪等は「active で、かつ凍結した区間が現在の量子化 keep と
-	// 一致する」である。**区間がずれていれば active でも作り直す** ---
-	// ユーザーがチャプターを直した後に再エンコードのジョブが来たときに、
-	// 古いカット版を「完了済み」と読むと編集が反映されない。
-	//
+	// 冪等: カット版でないプロファイルは、active な encoded があれば飛ばす。
+	// カット版は、active な版の凍結区間がこのジョブの keep と一致するときだけ飛ばす。
+	// 区間が違う active なカット版を置き換えてよいのは、作り直し要求に由来するジョブだけである。
+	// 要求に由来しないジョブ（不足の補完）は、利用者が押していないので置き換えず、飛ばす。
 	observed, cut, expectedCutKeep, skip, err := w.observeEncodePlan(ctx, args, log)
 	if err != nil {
 		return err
@@ -322,132 +324,82 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	return nil
 }
 
-// observeEncodePlan は cut の状態を読み、既存の active な版が現在の要求を既に
-// 満たしているか（skip してよいか）を判定する。作り直し要求の行は消さない（満たされた
-// かは unsatisfied_encode_rebuilds が導出する）。
+// observeEncodePlan は、ffmpeg を起動する前に、公開 tx と同じ判定を読み取りだけで当てる。
+// 必要な DB 状態はロックを取らない 1 つのスナップショットで読む。作り直し要求の行は
+// 消さない（満たされたかは unsatisfied_encode_rebuilds が導出する）。
+//
+// この結果は古くなりうるが、エンコードが無駄になるか公開 tx に弾かれるかのどちらかにしかならない。
+// 公開 tx は同じ判定をロック下で評価し直す。
 func (w *EncodeWorker) observeEncodePlan(
 	ctx context.Context,
 	args jobs.EncodeJobArgs,
 	log *slog.Logger,
 ) (observed encodePlan, cut *cutContext, expectedKeep []chapters.Range, skip bool, err error) {
-	cut, expectedKeep, hasExpectedKeep, skip, err := w.loadRequestedEncodeCut(ctx, args)
+	expectedKeep, hasExpectedKeep, err := decodeRequestedCutKeep(args.RequestedCutKeep)
 	if err != nil {
-		return encodePlan{}, nil, nil, false, err
+		return encodePlan{}, nil, nil, false, fmt.Errorf("decoding requested cut keep for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
 	}
-	if skip {
-		log.Info("encode: rebuild request is no longer current; skipping")
+
+	profile, profileKnown := w.Profiles.Profile(args.Profile)
+	if !profileKnown && !hasExpectedKeep {
+		return encodePlan{}, nil, nil, false, fmt.Errorf("unknown encode profile %q", args.Profile)
+	}
+	profileIsCut := profileKnown && profile.Cut
+	// 作り直し要求に由来するのにカット版でないプロファイルは、ジョブの仕様と描画器の設定の
+	// 食い違い（ローリング更新の間に起きうる）である。DB を読まずに飛ばす。
+	if hasExpectedKeep && !profileIsCut {
+		log.Info("encode: skipped before encoding", "reason", "rebuild_request_on_non_cut_profile")
 		return encodePlan{}, nil, expectedKeep, true, nil
 	}
-	if !hasExpectedKeep {
-		cut, err = w.loadCutContext(ctx, args.RecordingID, args.Profile)
-		if err != nil {
-			return encodePlan{}, nil, nil, false, err
-		}
-	}
-	observed, err = w.planEncodeAsset(ctx, args.RecordingID, args.Profile, cut, nil)
+	state, err := w.Media.GetEncodedPublishState(ctx, args.RecordingID, args.Profile, profileIsCut, profileIsCut && !hasExpectedKeep)
 	if err != nil {
-		return encodePlan{}, nil, nil, false, fmt.Errorf("checking existing encoded asset: %w", err)
+		return encodePlan{}, nil, nil, false, fmt.Errorf("checking encoded publish state: %w", err)
 	}
+
+	input := store.EncodedPublishInput{
+		RecordingID:       args.RecordingID,
+		Profile:           args.Profile,
+		Cut:               profileIsCut,
+		HasRebuildRequest: hasExpectedKeep,
+		RequestedKeep:     expectedKeep,
+	}
+	if hasExpectedKeep {
+		input.KeepRanges = expectedKeep
+	} else if profileIsCut {
+		// **所有の行があることを前提にする。** 確認前にカット版をコミットすると、誤検出の
+		// まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。要求に由来しない
+		// カット版ジョブを投入するのは、encode reconcile が ListMissingEncodeProfiles の
+		// 不足側の行から作るものだけで、そこは所有していない録画を除外する。ここに来る
+		// ジョブは所有済みのはずなので、来なければジョブの失敗として現れる（黙って切らない）。
+		// desired から外れていれば状態を読んでいないので、下の判定が飛ばす。
+		if state.Desired {
+			if !state.ChapterOwned {
+				return encodePlan{}, nil, nil, false, fmt.Errorf("cut profile %q requires adopted chapters for recording %d", args.Profile, args.RecordingID)
+			}
+			// keep が空（全部カット）も失敗させる。keep_ranges の CHECK が空を拒否するので、
+			// 先に落とさないと tx ごとロールバックする。
+			if len(state.CurrentCutKeep) == 0 {
+				return encodePlan{}, nil, nil, false, fmt.Errorf("recording %d has no keep ranges (every span is cut)", args.RecordingID)
+			}
+		}
+		input.KeepRanges = state.CurrentCutKeep
+	}
+
+	observed = planEncodePublishFromState(input, state)
 	if observed.skip {
-		log.Info("encode: encoded asset already committed, skipping")
-		return observed, cut, expectedKeep, true, nil
+		log.Info("encode: skipped before encoding", "reason", string(observed.skipReason))
+		return observed, nil, expectedKeep, true, nil
+	}
+	if profileIsCut {
+		cut = &cutContext{keep: input.KeepRanges}
 	}
 	return observed, cut, expectedKeep, false, nil
-}
-
-func (w *EncodeWorker) planEncodeAsset(
-	ctx context.Context,
-	recordingID int64,
-	profile string,
-	cut *cutContext,
-	previous *encodePlan,
-) (encodePlan, error) {
-	asset, err := w.Media.GetEncodedAssetForPlan(ctx, recordingID, profile)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return encodePlan{}, err
-	}
-	var observed *store.EncodedAssetObservation
-	if err == nil {
-		observed = &asset
-	}
-
-	return planEncodePublishFromObservation(observed, profile, cut, previous), nil
-}
-
-// loadRequestedEncodeCut は rebuild 要求に束縛された keep 区間を検証する。
-// 要求行が無い（版を外された）・押し直しで keep が上書きされた・profile が cut でなく
-// なったなら skip を返す。cut の keep は押した時点の区間（ジョブの RequestedCutKeep）
-// で、現在のチャプターとは照合しない。後からチャプターを編集しても作り直しは取り消さない。
-func (w *EncodeWorker) loadRequestedEncodeCut(ctx context.Context, args jobs.EncodeJobArgs) (
-	cut *cutContext,
-	expectedKeep []chapters.Range,
-	hasExpectedKeep bool,
-	skip bool,
-	err error,
-) {
-	expectedKeep, hasExpectedKeep, err = decodeRequestedCutKeep(args.RequestedCutKeep)
-	if err != nil {
-		return nil, nil, false, false, fmt.Errorf("decoding requested cut keep for recording %d profile %q: %w", args.RecordingID, args.Profile, err)
-	}
-	if !hasExpectedKeep {
-		return nil, nil, false, false, nil
-	}
-
-	// 公開 tx は同じ状態を改めて照合し、押し直しと公開を直列化する。
-	matches, err := w.Media.EncodedAssetRebuildRequestMatches(ctx, args.RecordingID, args.Profile, expectedKeep)
-	if err != nil {
-		return nil, nil, false, false, err
-	}
-	if !matches {
-		return nil, expectedKeep, true, true, nil
-	}
-	profile, ok := w.Profiles.Profile(args.Profile)
-	if !ok || !profile.Cut {
-		return nil, expectedKeep, true, true, nil
-	}
-	return &cutContext{keep: expectedKeep}, expectedKeep, true, false, nil
 }
 
 // cutContext は cut プロファイルの encode に要る、録画側の事実から導出した
 // keep 区間。cut でないプロファイルでは nil。
 type cutContext struct {
 	keep []chapters.Range
-}
-
-// loadCutContext は profile が cut のとき、有効なタイムラインから keep 区間を
-// 導出する。cut でなければ (nil, nil)。
-//
-// **所有の行があることを前提にする。** 確認前にカット版をコミットすると、誤検出の
-// まま本編が削られ、原本がごみ箱を経由せずに消えて取り返せなくなる。要求に由来しない
-// cut ジョブを投入するのは、encode reconcile が ListMissingEncodeProfiles の不足側の
-// 行から作るものだけである。そこは encodable_profile で所有していない録画を除外する
-// ので、ここに来る cut ジョブは所有済みのはずである。来なければジョブの失敗として
-// 現れる（黙って切らない）。要求に由来するジョブ（RequestedCutKeep を持つ）では、
-// observeEncodePlan がここを呼ばない。
-//
-// keep が空（全部カット）も同じく失敗させる。keep_ranges の CHECK が空を拒否する
-// ので、先に落とさないと tx ごとロールバックする。
-func (w *EncodeWorker) loadCutContext(ctx context.Context, recordingID int64, profileName string) (*cutContext, error) {
-	profile, ok := w.Profiles.Profile(profileName)
-	if !ok {
-		// 未知のプロファイルは prepareEncodeInput が同じ文言で落とす（ここは
-		// cut かどうかだけを決められればよい）。
-		return nil, fmt.Errorf("unknown encode profile %q", profileName)
-	}
-	if !profile.Cut {
-		return nil, nil
-	}
-	keep, owned, err := w.Media.GetCurrentCutKeep(ctx, recordingID)
-	if err != nil {
-		return nil, err
-	}
-	if !owned {
-		return nil, fmt.Errorf("cut profile %q requires adopted chapters for recording %d", profileName, recordingID)
-	}
-	if len(keep) == 0 {
-		return nil, fmt.Errorf("recording %d has no keep ranges (every span is cut)", recordingID)
-	}
-	return &cutContext{keep: keep}, nil
 }
 
 func decodeRequestedCutKeep(raw json.RawMessage) ([]chapters.Range, bool, error) {
@@ -928,37 +880,32 @@ type encodePlan struct {
 	// replaced は commit の後に unlink する旧パス。cut で旧行が active のときだけ
 	// 非空（tombstone / deleting のファイルは自分のものではない）。
 	replaced string
-	// skip は公開を飛ばして成功扱いにする判定。冒頭では (b) だけ、tx 内では (b) か、
-	// 行が active でない (a)。
+	// skip は公開を飛ばして成功扱いにする判定。
 	skip bool
+	// skipReason は飛ばす理由。skip でないときは空。
+	skipReason store.EncodedPublishSkipReason
 	// stale は「自分の計画が古い」ことを表す: 行が active のまま rel_path だけが
 	// 観測時から進み、区間が自分の keep と違う ((a) だけが立つ。cut でだけ起きる)。
-	// 成功扱いで飛ばすと新しい keep が黙って消えるので、公開せずに計画をやり直す。
+	// 成功扱いで飛ばさず、公開せずに計画をやり直す（結果はジョブの種類で分かれる。冒頭の (a)）。
 	stale bool
 }
 
-// planEncodePublishFromObservation は encoded 行の観測から、冒頭の判断材料を導く。
-// skip / stale の判定は store.PlanEncodedPublish と共通で、ここは cut の世代と置き換え先だけを足す。
-func planEncodePublishFromObservation(
-	asset *store.EncodedAssetObservation,
-	profile string,
-	cut *cutContext,
-	previous *encodePlan,
+// planEncodePublishFromState は store.PlanEncodedPublish の判定に、カット版の世代と置き換え先を足す。
+func planEncodePublishFromState(
+	in store.EncodedPublishInput,
+	state store.EncodedPublishState,
 ) encodePlan {
-	var keep []chapters.Range
-	if cut != nil {
-		keep = cut.keep
+	plan := store.PlanEncodedPublish(in, state, nil)
+	p := encodePlan{
+		observedRelPath: plan.ObservedRelPath,
+		skip:            plan.Skip,
+		skipReason:      plan.SkipReason,
+		stale:           plan.Stale,
 	}
-	var previousRelPath *string
-	if previous != nil {
-		previousRelPath = &previous.observedRelPath
-	}
-	plan := store.PlanEncodedPublish(asset, cut != nil, keep, previousRelPath)
-	p := encodePlan{observedRelPath: plan.ObservedRelPath, skip: plan.Skip, stale: plan.Stale}
-	if cut != nil {
-		p.generation = nextCutGeneration(p.observedRelPath, profile)
-		if plan.Replaces {
-			p.replaced = asset.RelPath
+	if in.Cut {
+		p.generation = nextCutGeneration(p.observedRelPath, in.Profile)
+		if plan.Replaces && state.EncodedAsset != nil {
+			p.replaced = state.EncodedAsset.RelPath
 		}
 	}
 	return p

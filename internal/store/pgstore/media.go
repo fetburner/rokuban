@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -156,55 +157,72 @@ func (s *Media) HasActiveSeekTilesMediaAsset(ctx context.Context, recordingID in
 	return true, nil
 }
 
-// GetEncodedAssetForPlan はエンコード計画の比較に使う encoded 行を、凍結された keep 区間を含めて state を問わず返す。
-// 行と区間は読み取り専用の RepeatableRead tx で同じスナップショットから読む。
-func (s *Media) GetEncodedAssetForPlan(ctx context.Context, recordingID int64, profile string) (store.EncodedAssetObservation, error) {
-	desc := fmt.Sprintf("loading encoded media asset for recording %d profile %q", recordingID, profile)
+// GetEncodedPublishState は公開判断に必要な状態を、ロックを取らない読み取り専用 RepeatableRead tx で読む。
+func (s *Media) GetEncodedPublishState(
+	ctx context.Context,
+	recordingID int64,
+	profile string,
+	cut bool,
+	includeCurrentCut bool,
+) (store.EncodedPublishState, error) {
+	desc := fmt.Sprintf("loading encoded publish state for recording %d profile %q", recordingID, profile)
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		return store.EncodedAssetObservation{}, fmt.Errorf("beginning %s: %w", desc, err)
+		return store.EncodedPublishState{}, fmt.Errorf("beginning %s: %w", desc, err)
 	}
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
+
+	var state store.EncodedPublishState
+	policy, err := q.GetRecordingEncodePolicy(ctx, recordingID)
+	if err == nil {
+		state.Desired = slices.Contains(policy.EncodeProfiles, profile)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return store.EncodedPublishState{}, fmt.Errorf("loading desired encode profiles for recording %d: %w", recordingID, err)
+	}
+
+	requested, err := q.GetEncodedAssetRebuildRequest(ctx, sqlcgen.GetEncodedAssetRebuildRequestParams{
+		RecordingID: recordingID,
+		Profile:     profile,
+	})
+	if err == nil {
+		state.HasRebuildRequest = true
+		state.RebuildRequestKeep, err = KeepRangesFromMultirange(requested)
+		if err != nil {
+			return store.EncodedPublishState{}, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+		}
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return store.EncodedPublishState{}, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", recordingID, profile, err)
+	}
+
+	if includeCurrentCut && state.Desired {
+		state.CurrentCutKeep, state.ChapterOwned, err = currentCutKeep(ctx, q, recordingID)
+		if err != nil {
+			return store.EncodedPublishState{}, fmt.Errorf("loading current cut state for recording %d: %w", recordingID, err)
+		}
+	}
 
 	row, err := q.GetEncodedMediaAssetForProfile(ctx, sqlcgen.GetEncodedMediaAssetForProfileParams{
 		RecordingID: recordingID,
 		Profile:     &profile,
 	})
-	if err != nil {
-		return store.EncodedAssetObservation{}, mediaQueryError(err, desc)
+	if err == nil {
+		asset := store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State}
+		if cut {
+			asset.KeepRanges, err = assetKeepRanges(ctx, q, row.ID)
+			if err != nil {
+				return store.EncodedPublishState{}, err
+			}
+		}
+		state.EncodedAsset = &asset
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return store.EncodedPublishState{}, fmt.Errorf("loading existing encoded asset for recording %d profile %q: %w", recordingID, profile, err)
 	}
-	raw, err := q.GetMediaAssetKeepRangesJSON(ctx, row.ID)
-	if err != nil {
-		return store.EncodedAssetObservation{}, fmt.Errorf("loading frozen cut ranges for media asset %d: %w", row.ID, err)
-	}
-	var keep []chapters.Range
-	if err := json.Unmarshal(raw, &keep); err != nil {
-		return store.EncodedAssetObservation{}, fmt.Errorf("decoding frozen cut ranges for media asset %d: %w", row.ID, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return store.EncodedAssetObservation{}, fmt.Errorf("committing %s: %w", desc, err)
-	}
-	return store.EncodedAssetObservation{ID: row.ID, RelPath: row.RelPath, State: row.State, KeepRanges: keep}, nil
-}
 
-// EncodedAssetRebuildRequestMatches は要求が残り、要求時の keep 区間が一致するかを返す。
-func (s *Media) EncodedAssetRebuildRequestMatches(ctx context.Context, recordingID int64, profile string, keep []chapters.Range) (bool, error) {
-	requested, err := sqlcgen.New(s.pool).GetEncodedAssetRebuildRequestForShare(ctx, sqlcgen.GetEncodedAssetRebuildRequestForShareParams{
-		RecordingID: recordingID,
-		Profile:     profile,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+	if err := tx.Commit(ctx); err != nil {
+		return store.EncodedPublishState{}, fmt.Errorf("committing %s: %w", desc, err)
 	}
-	if err != nil {
-		return false, fmt.Errorf("loading rebuild request for recording %d profile %q: %w", recordingID, profile, err)
-	}
-	requestedKeep, err := KeepRangesFromMultirange(requested)
-	if err != nil {
-		return false, fmt.Errorf("decoding rebuild request for recording %d profile %q: %w", recordingID, profile, err)
-	}
-	return chapters.SameRanges(requestedKeep, keep), nil
+	return state, nil
 }
 
 // GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。

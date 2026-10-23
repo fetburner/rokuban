@@ -205,6 +205,16 @@ func runEncodedPublicationRechecks(t *testing.T, newFixture NewMediaFixture) {
 	if err != nil || published || publishCalls != 0 {
 		t.Fatalf("removed desired profile publish = (%v, %v), callback calls %d; want skip without callback", published, err, publishCalls)
 	}
+	// 方針の行が無い録画は、どの profile も desired に無いものとして公開しない。
+	noPolicyID := f.NewRecording(t)
+	noPolicyInput := input
+	noPolicyInput.RecordingID = noPolicyID
+	noPolicyInput.RelPath = fmt.Sprintf("sites/%s/%d/encoded.mp4", f.Site, noPolicyID)
+	noPolicyInput.Attempt = f.BeginEncodeAttempt(t, noPolicyID, "h264")
+	published, err = f.Publisher.PublishEncoded(ctx, noPolicyInput, func() error { publishCalls++; return nil })
+	if err != nil || published || publishCalls != 0 {
+		t.Fatalf("publish without a policy row = (%v, %v), callback calls %d; want skip without callback", published, err, publishCalls)
+	}
 	f.SetEncodeProfiles(t, id, []string{"h264"})
 	published, err = f.Publisher.PublishEncoded(ctx, input, func() error { publishCalls++; return nil })
 	if err != nil || !published || publishCalls != 1 {
@@ -786,43 +796,49 @@ func runMediaEncodePlanningContract(t *testing.T, f MediaFixture) {
 	ctx := context.Background()
 	id := f.NewRecording(t)
 	profile := "cut"
+	f.SetEncodeProfiles(t, id, []string{profile})
 	assetID := f.NewAsset(t, id, "encoded", &profile, fmt.Sprintf("sites/home/%d/cut.mp4", id), "deleted")
-	asset, err := f.Reconcile.GetEncodedAssetForPlan(ctx, id, profile)
+	asset, err := f.Reconcile.GetEncodedPublishState(ctx, id, profile, true, false)
 	if err != nil {
-		t.Fatalf("GetEncodedAssetForPlan(%d, %q): %v", id, profile, err)
+		t.Fatalf("GetEncodedPublishState(%d, %q): %v", id, profile, err)
 	}
-	if asset.ID != assetID || asset.State != "deleted" || asset.RelPath != fmt.Sprintf("sites/home/%d/cut.mp4", id) {
+	if asset.EncodedAsset == nil || asset.EncodedAsset.ID != assetID || asset.EncodedAsset.State != "deleted" || asset.EncodedAsset.RelPath != fmt.Sprintf("sites/home/%d/cut.mp4", id) {
 		t.Fatalf("encoded asset observation = %+v, want id %d with deleted state and its path", asset, assetID)
 	}
-	if len(asset.KeepRanges) != 0 {
-		t.Fatalf("keep ranges before freezing = %v, want none", asset.KeepRanges)
+	if len(asset.EncodedAsset.KeepRanges) != 0 {
+		t.Fatalf("keep ranges before freezing = %v, want none", asset.EncodedAsset.KeepRanges)
 	}
-	if _, err := f.Reconcile.GetEncodedAssetForPlan(ctx, id, "missing-profile"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("GetEncodedAssetForPlan(unknown profile) error = %v, want ErrNotFound", err)
+	if missing, err := f.Reconcile.GetEncodedPublishState(ctx, id, "missing-profile", false, false); err != nil || missing.EncodedAsset != nil {
+		t.Fatalf("GetEncodedPublishState(unknown profile) = %+v, %v; want no asset", missing, err)
 	}
 
 	f.SetAssetState(t, assetID, "active")
 	keep := []chapters.Range{{StartMs: 0, EndMs: 1000}, {StartMs: 2000, EndMs: 3000}}
 	f.SetMediaAssetKeepRanges(t, assetID, keep)
-	frozen, err := f.Reconcile.GetEncodedAssetForPlan(ctx, id, profile)
+	frozen, err := f.Reconcile.GetEncodedPublishState(ctx, id, profile, true, false)
 	if err != nil {
-		t.Fatalf("GetEncodedAssetForPlan(%d, %q) after freezing: %v", id, profile, err)
+		t.Fatalf("GetEncodedPublishState(%d, %q) after freezing: %v", id, profile, err)
 	}
-	if frozen.State != "active" || !chapters.SameRanges(frozen.KeepRanges, keep) {
+	if frozen.EncodedAsset == nil || frozen.EncodedAsset.State != "active" || !chapters.SameRanges(frozen.EncodedAsset.KeepRanges, keep) {
 		t.Fatalf("observation after freezing = %+v, want active with keep ranges %v in the same read", frozen, keep)
 	}
 
-	matches, err := f.Reconcile.EncodedAssetRebuildRequestMatches(ctx, id, profile, keep)
-	if err != nil || matches {
-		t.Fatalf("EncodedAssetRebuildRequestMatches without a request = (%v, %v), want (false, nil)", matches, err)
+	withoutRequest, err := f.Reconcile.GetEncodedPublishState(ctx, id, profile, true, false)
+	if err != nil {
+		t.Fatalf("GetEncodedPublishState without a request: %v", err)
+	}
+	if !withoutRequest.Desired || withoutRequest.HasRebuildRequest || withoutRequest.EncodedAsset == nil ||
+		withoutRequest.EncodedAsset.ID != assetID || !chapters.SameRanges(withoutRequest.EncodedAsset.KeepRanges, keep) {
+		t.Fatalf("GetEncodedPublishState before request = %+v, want desired cut asset without request", withoutRequest)
 	}
 	f.SetEncodedAssetRebuildRequest(t, id, profile, keep)
-	if matches, err := f.Reconcile.EncodedAssetRebuildRequestMatches(ctx, id, profile, keep); err != nil || !matches {
-		t.Fatalf("EncodedAssetRebuildRequestMatches matching keep = (%v, %v), want (true, nil)", matches, err)
+	withRequest, err := f.Reconcile.GetEncodedPublishState(ctx, id, profile, true, false)
+	if err != nil {
+		t.Fatalf("GetEncodedPublishState with a request: %v", err)
 	}
-	changedKeep := []chapters.Range{{StartMs: 0, EndMs: 900}}
-	if matches, err := f.Reconcile.EncodedAssetRebuildRequestMatches(ctx, id, profile, changedKeep); err != nil || matches {
-		t.Fatalf("EncodedAssetRebuildRequestMatches changed keep = (%v, %v), want (false, nil)", matches, err)
+	if !withRequest.Desired || !withRequest.HasRebuildRequest || !chapters.SameRanges(withRequest.RebuildRequestKeep, keep) ||
+		withRequest.EncodedAsset == nil || withRequest.EncodedAsset.ID != assetID {
+		t.Fatalf("rebuild request observation = %+v, want desired request keep %v and encoded asset %d", withRequest, keep, assetID)
 	}
 }
 
