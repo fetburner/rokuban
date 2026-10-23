@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -111,7 +113,7 @@ func TestRecordingQueryContract(t *testing.T) {
 					t.Fatalf("superseding fixture recording: %v", err)
 				}
 			}
-			if o.Watched {
+			if o.WatchedAt == nil && o.Watched {
 				if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id) VALUES ($1)`, id); err != nil {
 					t.Fatalf("marking fixture recording watched: %v", err)
 				}
@@ -133,6 +135,7 @@ VALUES ($1, $2, $3)`, id, *o.PlaybackPositionMs, updatedAt); err != nil {
 					t.Fatalf("creating fixture playback position: %v", err)
 				}
 			}
+			seedRecordingQueryReadbackFields(t, ctx, pool, id, o)
 			return id
 		}
 		return contracttest.RecordingQueryFixture{
@@ -142,4 +145,38 @@ VALUES ($1, $2, $3)`, id, *o.PlaybackPositionMs, updatedAt); err != nil {
 			OtherRuleID:  otherRuleID,
 		}
 	})
+}
+
+func seedRecordingQueryReadbackFields(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id int64, options contracttest.RecordingQueryRecording) {
+	t.Helper()
+	if options.WatchedAt != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO recording_watched (recording_id, watched_at) VALUES ($1, $2)`, id, *options.WatchedAt); err != nil {
+			t.Fatalf("marking fixture recording watched at a fixed time: %v", err)
+		}
+	}
+	if options.KeepOriginal != "" || options.EncodeProfiles != nil {
+		keepOriginal := options.KeepOriginal
+		if keepOriginal == "" {
+			keepOriginal = "always"
+		}
+		if _, err := pool.Exec(ctx, `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+VALUES ($1, $2, $3)`, id, keepOriginal, options.EncodeProfiles); err != nil {
+			t.Fatalf("creating fixture encode policy: %v", err)
+		}
+	}
+	for _, attempt := range options.EncodeAttempts {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO recording_encode_attempts (recording_id, profile, state, attempt_count)
+VALUES ($1, $2, $3, 1)`, id, attempt.Profile, attempt.State); err != nil {
+			t.Fatalf("creating fixture encode attempt for %q: %v", attempt.Profile, err)
+		}
+	}
+	if options.IngestWrittenBytes != nil {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO recording_ingest_progress (recording_id, written_bytes, expected_bytes)
+VALUES ($1, $2, $3)`, id, *options.IngestWrittenBytes, options.IngestExpectedBytes); err != nil {
+			t.Fatalf("creating fixture ingest progress: %v", err)
+		}
+	}
 }

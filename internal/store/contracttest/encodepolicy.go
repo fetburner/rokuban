@@ -2,6 +2,7 @@ package contracttest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"testing"
@@ -12,23 +13,21 @@ import (
 
 // EncodePolicyFixture はエンコード方針契約と DB 状態を作るためのフックをまとめる。
 type EncodePolicyFixture struct {
-	Policy   store.EncodePolicy
-	Attempts store.EncodeAttempts
+	Policy      store.EncodePolicy
+	Attempts    store.EncodeAttempts
+	Recordings  store.RecordingQuery
+	Reconcile   store.MediaReconcile
+	Removals    store.MediaDelete
+	CMDetection store.CMDetection
 
 	NewRecording        func(t *testing.T) int64
 	NewAsset            func(t *testing.T, recordingID int64, kind string, profile *string) int64
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	SetDesired          func(t *testing.T, recordingID int64, profiles []string)
-	GetDesired          func(t *testing.T, recordingID int64) []string
 
 	SetRemovalRequest  func(t *testing.T, recordingID int64, profile string)
-	HasRemovalRequest  func(t *testing.T, recordingID int64, profile string) bool
 	SetAttempt         func(t *testing.T, recordingID int64, profile, state string, count int32)
-	AttemptState       func(t *testing.T, recordingID int64, profile string) (string, bool)
-	AttemptCount       func(t *testing.T, recordingID int64, profile string) (int32, bool)
 	SetChapterSpans    func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span)
-	RequestedKeep      func(t *testing.T, recordingID int64, profile string) string
-	PolicyState        func(t *testing.T, recordingID int64) (keepOriginal string, profiles []string, cmDetect bool, generation int32, exists bool)
 	BeginChapterEdit   func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span) (commit func())
 	BeginPolicyUpdate  func(t *testing.T, recordingID int64, profiles []string) (commit func())
 	BeginRemoval       func(t *testing.T, recordingID int64, profile string) (commit func())
@@ -91,7 +90,12 @@ func runAppendProfiles(t *testing.T, newFixture NewEncodePolicyFixture) {
 	id := f.NewRecording(t)
 	f.NewAsset(t, id, "original", nil)
 	f.SetDesired(t, id, []string{"h264"})
+	cut := "cut"
+	cutAssetID := f.NewAsset(t, id, "encoded", &cut)
 	f.SetRemovalRequest(t, id, "cut")
+	if !removedEncodedAssetListed(t, f, cutAssetID) {
+		t.Fatal("seeded removal request is missing from ListRemovedEncodedAssetsToDelete")
+	}
 	f.SetAttempt(t, id, "cut", "failed", 25)
 	f.SetAttempt(t, id, "h265", "running", 2)
 
@@ -111,17 +115,17 @@ func runAppendProfiles(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if !reflect.DeepEqual(validated, []string{"h264", "cut"}) {
 		t.Fatalf("validated desired = %v, want current desired followed by requested names", validated)
 	}
-	if got := f.GetDesired(t, id); !sameStrings(got, []string{"cut", "h264"}) {
-		t.Fatalf("stored desired = %v, want [cut h264]", got)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; !sameStrings(got, []string{"cut", "h264"}) {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles = %v, want [cut h264]", id, got)
 	}
-	if f.HasRemovalRequest(t, id, "cut") {
+	if removedEncodedAssetListed(t, f, cutAssetID) {
 		t.Fatal("re-added profile still has a removal request")
 	}
-	if state, exists := f.AttemptState(t, id, "cut"); exists || state != "" {
-		t.Fatalf("failed attempt = (%q, %v), want removed", state, exists)
+	if state, exists := encodeAttemptState(t, f, id, "cut"); exists || state != "" {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeAttempts for cut = (%q, %v), want removed", id, state, exists)
 	}
-	if state, exists := f.AttemptState(t, id, "h265"); !exists || state != "running" {
-		t.Fatalf("running attempt = (%q, %v), want preserved", state, exists)
+	if state, exists := encodeAttemptState(t, f, id, "h265"); !exists || state != "running" {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeAttempts for h265 = (%q, %v), want running", id, state, exists)
 	}
 
 	noPolicyID := f.NewRecording(t)
@@ -137,8 +141,9 @@ func runAppendProfiles(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if len(unfreezedDesired) != 1 || unfreezedDesired[0] != "h265" {
 		t.Fatalf("validation for an unfrozen policy = %v, want [h265]", unfreezedDesired)
 	}
-	if keep, profiles, _, _, exists := f.PolicyState(t, noPolicyID); !exists || keep != "always" || !sameStrings(profiles, []string{"h265"}) {
-		t.Fatalf("policy after first append = (%q, %v, exists=%v), want always/[h265]", keep, profiles, exists)
+	row := encodePolicyRow(t, f, noPolicyID)
+	if row.KeepOriginal != "always" || !sameStrings(row.EncodeProfiles, []string{"h265"}) {
+		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal/EncodeProfiles = (%q, %v), want always/[h265]", noPolicyID, row.KeepOriginal, row.EncodeProfiles)
 	}
 
 	if err := f.Policy.AppendProfiles(ctx, -1, []string{"h264"}, nil); !errors.Is(err, store.ErrNotFound) {
@@ -156,7 +161,7 @@ func runAppendAfterRemoval(t *testing.T, newFixture NewEncodePolicyFixture) {
 	id := f.NewRecording(t)
 	f.NewAsset(t, id, "original", nil)
 	profile := "h264"
-	f.NewAsset(t, id, "encoded", &profile)
+	assetID := f.NewAsset(t, id, "encoded", &profile)
 	f.SetDesired(t, id, []string{profile})
 	commitRemoval := f.BeginRemoval(t, id, profile)
 
@@ -180,10 +185,10 @@ func runAppendAfterRemoval(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
 		t.Fatalf("validation calls/desired = %d/%v, want 1/[cut] after removal", calls, validated)
 	}
-	if got := f.GetDesired(t, id); len(got) != 0 {
-		t.Fatalf("desired after rejected append = %v, want empty", got)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; len(got) != 0 {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after rejected append = %v, want empty", id, got)
 	}
-	if !f.HasRemovalRequest(t, id, profile) {
+	if !removedEncodedAssetListed(t, f, assetID) {
 		t.Fatal("rejected append cleared the committed removal request")
 	}
 }
@@ -193,8 +198,10 @@ func runConcurrentRemovals(t *testing.T, newFixture NewEncodePolicyFixture) {
 	ctx := context.Background()
 	id := f.NewRecording(t)
 	first, second := "h264", "h265"
-	f.NewAsset(t, id, "encoded", &first)
-	f.NewAsset(t, id, "encoded", &second)
+	assetIDs := map[string]int64{
+		first:  f.NewAsset(t, id, "encoded", &first),
+		second: f.NewAsset(t, id, "encoded", &second),
+	}
 	f.SetDesired(t, id, []string{first, second})
 
 	start := make(chan struct{})
@@ -222,11 +229,11 @@ func runConcurrentRemovals(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if success != 1 || lastCopy != 1 {
 		t.Fatalf("remove outcomes = success %d, last-copy %d; want one of each", success, lastCopy)
 	}
-	desired := f.GetDesired(t, id)
+	desired := encodePolicyRow(t, f, id).EncodeProfiles
 	if len(desired) != 1 {
-		t.Fatalf("desired after concurrent removals = %v, want one remaining profile", desired)
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after concurrent removals = %v, want one remaining profile", id, desired)
 	}
-	if f.HasRemovalRequest(t, id, desired[0]) {
+	if removedEncodedAssetListed(t, f, assetIDs[desired[0]]) {
 		t.Fatalf("last-copy rejection left a removal request for remaining profile %q", desired[0])
 	}
 }
@@ -237,7 +244,7 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 	id := f.NewRecording(t)
 	f.NewAsset(t, id, "original", nil)
 	profile := "h264"
-	f.NewAsset(t, id, "encoded", &profile)
+	assetID := f.NewAsset(t, id, "encoded", &profile)
 	f.SetDesired(t, id, []string{profile})
 	commitPolicyUpdate := f.BeginPolicyUpdate(t, id, []string{profile, "cut"})
 
@@ -263,10 +270,10 @@ func runRemovalValidatesLockedDesired(t *testing.T, newFixture NewEncodePolicyFi
 	if calls != 1 || !reflect.DeepEqual(validated, []string{"cut"}) {
 		t.Fatalf("validation calls/desired = %d/%v, want 1/[cut]", calls, validated)
 	}
-	if got := f.GetDesired(t, id); !sameStrings(got, []string{profile, "cut"}) {
-		t.Fatalf("desired after rejected removal = %v, want [h264 cut]", got)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; !sameStrings(got, []string{profile, "cut"}) {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after rejected removal = %v, want [h264 cut]", id, got)
 	}
-	if f.HasRemovalRequest(t, id, profile) {
+	if removedEncodedAssetListed(t, f, assetID) {
 		t.Fatal("rejected removal left a removal request")
 	}
 }
@@ -277,7 +284,7 @@ func runRemovalSkipsValidateWhenNotDesired(t *testing.T, newFixture NewEncodePol
 	id := f.NewRecording(t)
 	f.NewAsset(t, id, "original", nil)
 	profile := "h264"
-	f.NewAsset(t, id, "encoded", &profile)
+	assetID := f.NewAsset(t, id, "encoded", &profile)
 	f.SetDesired(t, id, []string{"cut"})
 
 	var calls int
@@ -288,10 +295,10 @@ func runRemovalSkipsValidateWhenNotDesired(t *testing.T, newFixture NewEncodePol
 	if err != nil || calls != 0 {
 		t.Fatalf("RemoveEncodedAsset error/validate calls = %v/%d, want nil/0 for a profile outside desired", err, calls)
 	}
-	if got := f.GetDesired(t, id); !sameStrings(got, []string{"cut"}) {
-		t.Fatalf("desired after removing an undesired profile = %v, want [cut]", got)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; !sameStrings(got, []string{"cut"}) {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after removing an undesired profile = %v, want [cut]", id, got)
 	}
-	if !f.HasRemovalRequest(t, id, profile) {
+	if !removedEncodedAssetListed(t, f, assetID) {
 		t.Fatal("removal request missing for the undesired profile")
 	}
 }
@@ -301,7 +308,7 @@ func runRemovalLockOrder(t *testing.T, newFixture NewEncodePolicyFixture) {
 	ctx := context.Background()
 	id := f.NewRecording(t)
 	profile := "h264"
-	f.NewAsset(t, id, "encoded", &profile)
+	assetID := f.NewAsset(t, id, "encoded", &profile)
 	f.SetDesired(t, id, []string{profile})
 	commitRecordingLock := f.BeginRecordingLock(t, id)
 
@@ -313,10 +320,10 @@ func runRemovalLockOrder(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := <-finished; !errors.Is(err, store.ErrLastViewableCopy) {
 		t.Fatalf("RemoveEncodedAsset error = %v, want ErrLastViewableCopy after it acquires both locks", err)
 	}
-	if got := f.GetDesired(t, id); !sameStrings(got, []string{profile}) {
-		t.Fatalf("desired after rejected last-copy removal = %v, want [%s]", got, profile)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; !sameStrings(got, []string{profile}) {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after rejected last-copy removal = %v, want [%s]", id, got, profile)
 	}
-	if f.HasRemovalRequest(t, id, profile) {
+	if removedEncodedAssetListed(t, f, assetID) {
 		t.Fatal("rejected last-copy removal left a removal request")
 	}
 }
@@ -327,17 +334,17 @@ func runRemovalOnTrashedRecording(t *testing.T, newFixture NewEncodePolicyFixtur
 	id := f.NewRecording(t)
 	f.NewAsset(t, id, "original", nil)
 	profile := "h264"
-	f.NewAsset(t, id, "encoded", &profile)
+	assetID := f.NewAsset(t, id, "encoded", &profile)
 	f.SetDesired(t, id, []string{profile})
 	f.SetRecordingTrashed(t, id)
 
 	if err := f.Policy.RemoveEncodedAsset(ctx, id, profile, nil); err != nil {
 		t.Fatalf("RemoveEncodedAsset for trashed recording: %v", err)
 	}
-	if got := f.GetDesired(t, id); len(got) != 0 {
-		t.Fatalf("desired after removing from trashed recording = %v, want empty", got)
+	if got := encodePolicyRow(t, f, id).EncodeProfiles; len(got) != 0 {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after removing from trashed recording = %v, want empty", id, got)
 	}
-	if !f.HasRemovalRequest(t, id, profile) {
+	if !removedEncodedAssetListed(t, f, assetID) {
 		t.Fatal("removal request missing for trashed recording")
 	}
 }
@@ -356,8 +363,8 @@ func runCutRebuild(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Policy.RequestCutRebuild(ctx, id, "cut"); err != nil {
 		t.Fatalf("RequestCutRebuild: %v", err)
 	}
-	if got := f.RequestedKeep(t, id, "cut"); got != "{[0,10010),[15015,20000)}" {
-		t.Fatalf("requested keep = %q, want {[0,10010),[15015,20000)}", got)
+	if got := requestedKeep(t, f, id, "cut"); !reflect.DeepEqual(got, []chapters.Range{{StartMs: 0, EndMs: 10_010}, {StartMs: 15_015, EndMs: 20_000}}) {
+		t.Fatalf("requested keep = %v, want [[0,10010) [15015,20000)]", got)
 	}
 
 	unownedID := f.NewRecording(t)
@@ -383,8 +390,8 @@ func runCutRebuildOnTrashedRecording(t *testing.T, newFixture NewEncodePolicyFix
 	if err := f.Policy.RequestCutRebuild(ctx, id, "cut"); err != nil {
 		t.Fatalf("RequestCutRebuild for trashed recording: %v", err)
 	}
-	if got := f.RequestedKeep(t, id, "cut"); got != "{[0,10010),[15015,20000)}" {
-		t.Fatalf("requested keep for trashed recording = %q, want {[0,10010),[15015,20000)}", got)
+	if got := requestedKeep(t, f, id, "cut"); !reflect.DeepEqual(got, []chapters.Range{{StartMs: 0, EndMs: 10_010}, {StartMs: 15_015, EndMs: 20_000}}) {
+		t.Fatalf("requested keep for trashed recording = %v, want [[0,10010) [15015,20000)]", got)
 	}
 }
 
@@ -412,8 +419,8 @@ func runCutRebuildAfterChapterEdit(t *testing.T, newFixture NewEncodePolicyFixtu
 	if err := <-finished; err != nil {
 		t.Fatalf("RequestCutRebuild after chapter edit: %v", err)
 	}
-	if got := f.RequestedKeep(t, id, "cut"); got != "{[0,5005)}" {
-		t.Fatalf("requested keep = %q, want {[0,5005)} from committed chapter edit", got)
+	if got := requestedKeep(t, f, id, "cut"); !reflect.DeepEqual(got, []chapters.Range{{StartMs: 0, EndMs: 5_005}}) {
+		t.Fatalf("requested keep = %v, want [[0,5005)] from committed chapter edit", got)
 	}
 }
 
@@ -428,8 +435,17 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Policy.SetPolicy(ctx, id, store.EncodePolicyUpdate{KeepOriginal: &keep, CMDetect: &enabled}); err != nil {
 		t.Fatalf("SetPolicy: %v", err)
 	}
-	if gotKeep, gotProfiles, gotCM, generation, exists := f.PolicyState(t, id); !exists || gotKeep != keep || !sameStrings(gotProfiles, []string{"h264"}) || !gotCM || generation != 1 {
-		t.Fatalf("policy after SetPolicy = (%q, %v, %v, generation=%d, exists=%v)", gotKeep, gotProfiles, gotCM, generation, exists)
+	row := encodePolicyRow(t, f, id)
+	if row.KeepOriginal != keep || !sameStrings(row.EncodeProfiles, []string{"h264"}) {
+		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal/EncodeProfiles after SetPolicy = (%q, %v), want %q/[h264]", id, row.KeepOriginal, row.EncodeProfiles, keep)
+	}
+	desired, err := f.CMDetection.IsDetectionDesired(ctx, id)
+	if err != nil || !desired {
+		t.Fatalf("IsDetectionDesired after SetPolicy = (%t, %v), want true", desired, err)
+	}
+	attempt, shouldRun, err := f.CMDetection.BeginAttempt(ctx, id, 1)
+	if err != nil || !shouldRun || attempt.PolicyGeneration != 1 {
+		t.Fatalf("BeginAttempt after SetPolicy = (generation=%d, shouldRun=%t, err=%v), want generation 1 and run", attempt.PolicyGeneration, shouldRun, err)
 	}
 
 	withoutOriginalID := f.NewRecording(t)
@@ -437,8 +453,8 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Policy.SetPolicy(ctx, withoutOriginalID, store.EncodePolicyUpdate{KeepOriginal: &keep, CMDetect: &enabled}); !errors.Is(err, store.ErrOriginalUnavailable) {
 		t.Fatalf("SetPolicy(without original) error = %v, want ErrOriginalUnavailable", err)
 	}
-	if gotKeep, _, _, _, _ := f.PolicyState(t, withoutOriginalID); gotKeep != "always" {
-		t.Fatalf("keep policy after failed combined update = %q, want rollback to always", gotKeep)
+	if gotKeep := encodePolicyRow(t, f, withoutOriginalID).KeepOriginal; gotKeep != "always" {
+		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal after failed combined update = %q, want rollback to always", withoutOriginalID, gotKeep)
 	}
 	unfrozenID := f.NewRecording(t)
 	if err := f.Policy.SetPolicy(ctx, unfrozenID, store.EncodePolicyUpdate{KeepOriginal: &keep}); !errors.Is(err, store.ErrEncodeProfilesRequired) {
@@ -473,8 +489,8 @@ func runAttemptLimit(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if !terminal.Terminal || terminal.Count != 2 {
 		t.Fatalf("Begin after limit = %+v, want terminal count 2", terminal)
 	}
-	if state, exists := f.AttemptState(t, id, "h264"); !exists || state != "failed" {
-		t.Fatalf("attempt after limit = (%q, %v), want failed row", state, exists)
+	if state, exists := encodeAttemptState(t, f, id, "h264"); !exists || state != "failed" {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeAttempts for h264 after limit = (%q, %v), want failed", id, state, exists)
 	}
 }
 
@@ -499,11 +515,67 @@ func runAttemptFencing(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Attempts.Clear(ctx, id, "h264", first.Count); err != nil {
 		t.Fatalf("stale Clear: %v", err)
 	}
-	state, exists := f.AttemptState(t, id, "h264")
-	count, counted := f.AttemptCount(t, id, "h264")
-	if !exists || !counted || state != "running" || count != second.Count {
-		t.Fatalf("attempt after stale writes = (%q, %d, %v), want (running, %d, true)", state, count, exists, second.Count)
+	state, exists := encodeAttemptState(t, f, id, "h264")
+	if !exists || state != "running" {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeAttempts for h264 after stale writes = (%q, %v), want running", id, state, exists)
 	}
+	third, err := f.Attempts.Begin(ctx, id, "h264", 3)
+	if err != nil || third.Terminal || third.Count != 3 || third.DeadAttempt != 2 {
+		t.Fatalf("Begin after stale writes = %+v, %v; want count 3 after dead attempt 2", third, err)
+	}
+}
+
+func encodePolicyRow(t *testing.T, f EncodePolicyFixture, recordingID int64) store.RecordingQueryRow {
+	t.Helper()
+	row, err := f.Recordings.Get(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal/EncodeProfiles: %v", recordingID, err)
+	}
+	return row
+}
+
+func encodeAttemptState(t *testing.T, f EncodePolicyFixture, recordingID int64, profile string) (string, bool) {
+	t.Helper()
+	row := encodePolicyRow(t, f, recordingID)
+	var attempts []struct {
+		Profile string `json:"profile"`
+		State   string `json:"state"`
+	}
+	if err := json.Unmarshal(row.EncodeAttempts, &attempts); err != nil {
+		t.Fatalf("decoding RecordingQuery.Get(%d).EncodeAttempts: %v", recordingID, err)
+	}
+	for _, attempt := range attempts {
+		if attempt.Profile == profile {
+			return attempt.State, true
+		}
+	}
+	return "", false
+}
+
+func removedEncodedAssetListed(t *testing.T, f EncodePolicyFixture, assetID int64) bool {
+	t.Helper()
+	assets, err := f.Removals.ListRemovedEncodedAssetsToDelete(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("ListRemovedEncodedAssetsToDelete: %v", err)
+	}
+	for _, asset := range assets {
+		if asset.ID == assetID {
+			return true
+		}
+	}
+	return false
+}
+
+func requestedKeep(t *testing.T, f EncodePolicyFixture, recordingID int64, profile string) []chapters.Range {
+	t.Helper()
+	state, err := f.Reconcile.GetEncodedPublishState(context.Background(), recordingID, profile, true, false)
+	if err != nil {
+		t.Fatalf("GetEncodedPublishState(%d, %q): %v", recordingID, profile, err)
+	}
+	if !state.HasRebuildRequest {
+		t.Fatalf("GetEncodedPublishState(%d, %q).RebuildRequestKeep has no rebuild request", recordingID, profile)
+	}
+	return state.RebuildRequestKeep
 }
 
 func sameStrings(got, want []string) bool {

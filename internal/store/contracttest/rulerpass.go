@@ -22,19 +22,20 @@ type RulerProgram struct {
 
 // RulerPassFixture は ruler pass と、実装が使う永続状態の仕込み口をまとめる。
 type RulerPassFixture struct {
-	Pass                    store.RulerPass
-	Bumper                  store.RulerInputBumper
-	Reservations            store.Reservations
-	Breakers                store.Breakers
-	NewProgram              func(t *testing.T, title string) RulerProgram
-	NewRule                 func(t *testing.T, name string, dedupeEnabled bool, threshold float32) int64
-	NewFinishedRecording    func(t *testing.T, ruleID int64, program RulerProgram, title string) int64
-	SetProgramStarts        func(t *testing.T, program RulerProgram, snapshotStart, projectionStart time.Time)
-	HasProgramSnapshot      func(t *testing.T, program RulerProgram) bool
-	GetProgramSnapshotStart func(t *testing.T, program RulerProgram) time.Time
-	SetDedupeWindow         func(t *testing.T, ruleID int64, window time.Duration)
-	SetRecordingStartAt     func(t *testing.T, recordingID int64, start time.Time)
-	FailBreakerTrip         func(t *testing.T, name string)
+	Pass         store.RulerPass
+	Bumper       store.RulerInputBumper
+	Reservations store.Reservations
+	Breakers     store.Breakers
+	// ProgramSnapshotStart is retained because Catalog.Export intentionally omits snapshots
+	// that have no program intent or override, while these tests cover the ruler's unreferenced rows.
+	ProgramSnapshotStart func(t *testing.T, site string, programID int64) (time.Time, bool)
+	NewProgram           func(t *testing.T, title string) RulerProgram
+	NewRule              func(t *testing.T, name string, dedupeEnabled bool, threshold float32) int64
+	NewFinishedRecording func(t *testing.T, ruleID int64, program RulerProgram, title string) int64
+	SetProgramStarts     func(t *testing.T, program RulerProgram, snapshotStart, projectionStart time.Time)
+	SetDedupeWindow      func(t *testing.T, ruleID int64, window time.Duration)
+	SetRecordingStartAt  func(t *testing.T, recordingID int64, start time.Time)
+	FailBreakerTrip      func(t *testing.T, name string)
 }
 
 // NewRulerPassStore は ruler pass 契約の実装と fixture を作る。
@@ -45,7 +46,7 @@ func RunRulerPass(t *testing.T, newStore NewRulerPassStore) {
 	t.Helper()
 	checkedStore := func(t *testing.T) RulerPassFixture {
 		f := newStore(t)
-		if f.Pass == nil || f.Bumper == nil || f.Reservations == nil || f.Breakers == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.HasProgramSnapshot == nil || f.GetProgramSnapshotStart == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil {
+		if f.Pass == nil || f.Bumper == nil || f.Reservations == nil || f.Breakers == nil || f.ProgramSnapshotStart == nil || f.NewProgram == nil || f.NewRule == nil || f.NewFinishedRecording == nil || f.SetProgramStarts == nil || f.SetDedupeWindow == nil || f.SetRecordingStartAt == nil || f.FailBreakerTrip == nil {
 			t.Fatal("incomplete ruler pass fixture")
 		}
 		return f
@@ -172,7 +173,7 @@ func runRulerBreakerRollback(t *testing.T, newStore NewRulerPassStore) {
 	if gotBase["priority"] != 1 || len(gotBase) != 1 {
 		t.Fatalf("desired base after rollback = %s, want %s", got.Reservation.Base, oldBase)
 	}
-	if gotSnapshotStart := f.GetProgramSnapshotStart(t, desired); !gotSnapshotStart.Equal(snapshotStart) {
+	if gotSnapshotStart, ok := f.ProgramSnapshotStart(t, desired.Site, desired.ProgramID); !ok || !gotSnapshotStart.Equal(snapshotStart) {
 		t.Fatalf("program snapshot start after rollback = %v, want %v", gotSnapshotStart, snapshotStart)
 	}
 	if _, err := f.Reservations.GetReservation(ctx, stale.Site, stale.ProgramID); err != nil {
@@ -314,10 +315,10 @@ func runRulerSnapshotPruneTime(t *testing.T, newStore NewRulerPassStore) {
 	if deleted != 1 {
 		t.Fatalf("PruneEndedSnapshots(cutoff) = %d, want one snapshot before supplied cutoff", deleted)
 	}
-	if f.HasProgramSnapshot(t, oldProgram) {
+	if _, exists := f.ProgramSnapshotStart(t, oldProgram.Site, oldProgram.ProgramID); exists {
 		t.Fatalf("snapshot for program %d remains before supplied cutoff", oldProgram.ProgramID)
 	}
-	if !f.HasProgramSnapshot(t, newProgram) {
+	if _, exists := f.ProgramSnapshotStart(t, newProgram.Site, newProgram.ProgramID); !exists {
 		t.Fatalf("snapshot for program %d was pruned after supplied cutoff", newProgram.ProgramID)
 	}
 }
@@ -385,7 +386,7 @@ func runRulerRevisionMismatch(t *testing.T, newStore NewRulerPassStore) {
 	if err := f.Bumper.BumpRulerInputRevision(ctx, existing.Site); err != nil {
 		t.Fatalf("BumpRulerInputRevision: %v", err)
 	}
-	snapshotBefore := f.HasProgramSnapshot(t, created)
+	_, snapshotBefore := f.ProgramSnapshotStart(t, created.Site, created.ProgramID)
 	result, err := f.Pass.ApplyPass(ctx, existing.Site, store.RulerPassPlan{
 		InputRevision:      stale,
 		SnapshotProgramIDs: []int64{created.ProgramID},
@@ -407,7 +408,7 @@ func runRulerRevisionMismatch(t *testing.T, newStore NewRulerPassStore) {
 	if _, err := f.Reservations.GetReservation(ctx, existing.Site, existing.ProgramID); err != nil {
 		t.Fatalf("GetReservation(existing after stale pass) = %v, want row preserved", err)
 	}
-	if got := f.HasProgramSnapshot(t, created); got != snapshotBefore {
+	if _, got := f.ProgramSnapshotStart(t, created.Site, created.ProgramID); got != snapshotBefore {
 		t.Fatalf("program snapshot after stale pass = %t, want %t (unchanged)", got, snapshotBefore)
 	}
 	if tripped, err := f.Breakers.IsTripped(ctx, existing.Site, breaker.RulerDeletes); err != nil || tripped {

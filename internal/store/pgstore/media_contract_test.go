@@ -3,13 +3,11 @@ package pgstore
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -36,6 +34,8 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 		Precheck:  NewMedia(pool),
 		Storage:   NewMedia(pool),
 		Reader:    NewMedia(pool),
+		Query:     NewRecordings(pool),
+		Catalog:   NewCatalog(pool, []string{store.DefaultSite}),
 		Publisher: NewMedia(pool),
 		Progress:  NewMedia(pool),
 		Chapters:  NewAnalysis(pool),
@@ -116,21 +116,6 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		}
 		return attempt
 	}
-	fixture.HasEncodePolicy = func(t *testing.T, recordingID int64) (store.EncodePolicySnapshot, bool) {
-		t.Helper()
-		var policy store.EncodePolicySnapshot
-		if err := pool.QueryRow(context.Background(), `
-			SELECT keep_original, encode_profiles, cm_detect
-			FROM recording_encode_policy WHERE recording_id = $1`, recordingID).Scan(
-			&policy.KeepOriginal, &policy.EncodeProfiles, &policy.CMDetect,
-		); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return store.EncodePolicySnapshot{}, false
-			}
-			t.Fatalf("reading encode policy for recording %d: %v", recordingID, err)
-		}
-		return policy, true
-	}
 	fixture.BeginChapterEdit = func(t *testing.T, id int64, spans []chapters.Span) func() {
 		t.Helper()
 		ctx := context.Background()
@@ -199,15 +184,6 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		}); err != nil {
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}
-	}
-	fixture.HasIngestProgress = func(t *testing.T, recordingID int64) bool {
-		t.Helper()
-		var exists bool
-		if err := pool.QueryRow(context.Background(), `
-			SELECT EXISTS (SELECT 1 FROM recording_ingest_progress WHERE recording_id = $1)`, recordingID).Scan(&exists); err != nil {
-			t.Fatalf("checking ingest progress for recording %d: %v", recordingID, err)
-		}
-		return exists
 	}
 	fixture.NewInPlaceInput = func(t *testing.T, relPath string) store.InPlaceInput {
 		t.Helper()

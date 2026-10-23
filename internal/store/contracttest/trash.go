@@ -9,19 +9,13 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// RecordingState はごみ箱・完全削除の検査に必要な永続状態を表す。
-type RecordingState struct {
-	Deleted        bool
-	Purged         bool
-	PurgeRequested bool
-}
-
 // TrashFixture はごみ箱契約、完全削除契約と検査用 DB 操作をまとめる。
 type TrashFixture struct {
 	Trash        store.RecordingTrash
 	Purge        store.RecordingPurge
+	RemovalState store.MediaServing
+	Catalog      store.Catalog
 	NewRecording NewRecording
-	State        func(t *testing.T, recordingID int64) RecordingState
 	SetDeletedAt func(t *testing.T, recordingID int64, deletedAt time.Time)
 	// BeginPurgeBlocker は recordings 行をロックする tx を開き、要求行を挿入する操作と commit を返す。
 	BeginPurgeBlocker func(t *testing.T, recordingID int64) (insertRequest func(), commit func())
@@ -56,8 +50,8 @@ func runSoftDeleteContract(t *testing.T, newStore NewTrashStore) {
 			t.Fatalf("SoftDelete() error = %v", err)
 		}
 	}
-	if state := f.State(t, id); !state.Deleted {
-		t.Fatalf("state after SoftDelete() = %+v, want deleted", state)
+	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
+		t.Fatalf("GetRecordingRemovalState after SoftDelete() = %+v, want deleted", state)
 	}
 	if err := f.Trash.SoftDelete(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SoftDelete(missing) error = %v, want ErrNotFound", err)
@@ -74,8 +68,14 @@ func runPurgeRequestContract(t *testing.T, newStore NewTrashStore) {
 			t.Fatalf("RequestPurge() error = %v", err)
 		}
 	}
-	if state := f.State(t, id); !state.Deleted || !state.PurgeRequested {
-		t.Fatalf("state after RequestPurge() = %+v, want deleted and requested", state)
+	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
+		t.Fatalf("GetRecordingRemovalState after RequestPurge() = %+v, want deleted", state)
+	}
+	if !recordingPurgeRequested(t, f, id) {
+		t.Fatalf("Catalog.Export after RequestPurge() is missing recording %d's purge request", id)
+	}
+	if purged, err := f.Purge.MarkPurged(ctx, time.Now().Add(time.Hour)); err != nil || len(purged) != 1 || purged[0].ID != id {
+		t.Fatalf("MarkPurged after RequestPurge() = (%+v, %v), want recording %d", purged, err, id)
 	}
 	if err := f.Trash.RequestPurge(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("RequestPurge(missing) error = %v, want ErrNotFound", err)
@@ -92,8 +92,11 @@ func runRestoreContract(t *testing.T, newStore NewTrashStore) {
 	if err := f.Trash.Restore(context.Background(), id); err != nil {
 		t.Fatalf("Restore() error = %v", err)
 	}
-	if state := f.State(t, id); state.Deleted || state.PurgeRequested {
-		t.Fatalf("state after Restore() = %+v, want active and no purge request", state)
+	if state := recordingRemovalState(t, f, id); state.DeletedAt != nil {
+		t.Fatalf("GetRecordingRemovalState after Restore() = %+v, want active", state)
+	}
+	if recordingPurgeRequested(t, f, id) {
+		t.Fatalf("Catalog.Export after Restore() still contains recording %d's purge request", id)
 	}
 	if err := f.Trash.Restore(context.Background(), id); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("Restore(not in trash) error = %v, want ErrNotFound", err)
@@ -109,8 +112,8 @@ func runRestoreConflictContract(t *testing.T, newStore NewTrashStore) {
 	if err := f.Trash.Restore(context.Background(), trashedID); !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("Restore(conflict) error = %v, want ErrConflict", err)
 	}
-	if state := f.State(t, trashedID); !state.Deleted {
-		t.Fatalf("state after failed Restore() = %+v, want still deleted", state)
+	if state := recordingRemovalState(t, f, trashedID); state.DeletedAt == nil {
+		t.Fatalf("GetRecordingRemovalState after failed Restore() = %+v, want still deleted", state)
 	}
 	purgedID := f.NewRecording(t, RecordingOptions{Purged: true})
 	if err := f.Trash.Restore(context.Background(), purgedID); !errors.Is(err, store.ErrNotFound) {
@@ -134,8 +137,11 @@ func runRestoreConcurrentPurgeContract(t *testing.T, newStore NewTrashStore) {
 	if err := awaitTrashOperation(t, done, "Restore"); err != nil {
 		t.Fatalf("Restore() error = %v", err)
 	}
-	if state := f.State(t, id); state.Deleted || state.PurgeRequested {
-		t.Fatalf("state after concurrent restore = %+v, want active with no purge request", state)
+	if state := recordingRemovalState(t, f, id); state.DeletedAt != nil {
+		t.Fatalf("GetRecordingRemovalState after concurrent restore = %+v, want active", state)
+	}
+	if recordingPurgeRequested(t, f, id) {
+		t.Fatalf("Catalog.Export after concurrent restore still contains recording %d's purge request", id)
 	}
 }
 
@@ -150,15 +156,18 @@ func runPurgeAfterRestoreContract(t *testing.T, newStore NewTrashStore) {
 	done := make(chan error, 1)
 	go func() { done <- f.Trash.RequestPurge(ctx, id) }()
 	f.WaitForLockWaiter(t, "purge")
-	if state := f.State(t, id); state.PurgeRequested {
+	if recordingPurgeRequested(t, f, id) {
 		t.Fatal("purge request appeared while restore held the recording row")
 	}
 	commitRestore()
 	if err := awaitTrashOperation(t, done, "RequestPurge"); err != nil {
 		t.Fatalf("RequestPurge() error = %v", err)
 	}
-	if state := f.State(t, id); !state.Deleted || !state.PurgeRequested {
-		t.Fatalf("state after serialized purge request = %+v, want deleted and requested", state)
+	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
+		t.Fatalf("GetRecordingRemovalState after serialized purge request = %+v, want deleted", state)
+	}
+	if !recordingPurgeRequested(t, f, id) {
+		t.Fatalf("Catalog.Export after serialized RequestPurge() is missing recording %d's purge request", id)
 	}
 }
 
@@ -182,9 +191,32 @@ func runMarkPurgedContract(t *testing.T, newStore NewTrashStore) {
 	if len(second) != 0 {
 		t.Fatalf("second MarkPurged() = %+v, want no newly purged rows", second)
 	}
-	if state := f.State(t, id); !state.Purged {
-		t.Fatalf("state after MarkPurged() = %+v, want purged", state)
+	if state := recordingRemovalState(t, f, id); state.PurgedAt == nil {
+		t.Fatalf("GetRecordingRemovalState after MarkPurged() = %+v, want purged", state)
 	}
+}
+
+func recordingRemovalState(t *testing.T, f TrashFixture, recordingID int64) store.RecordingRemovalState {
+	t.Helper()
+	state, err := f.RemovalState.GetRecordingRemovalState(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingRemovalState(%d): %v", recordingID, err)
+	}
+	return state
+}
+
+func recordingPurgeRequested(t *testing.T, f TrashFixture, recordingID int64) bool {
+	t.Helper()
+	document, err := f.Catalog.Export(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog.Export for purge request %d: %v", recordingID, err)
+	}
+	for _, request := range document.RecordingPurgeRequests {
+		if request.RecordingID == recordingID {
+			return true
+		}
+	}
+	return false
 }
 
 func awaitTrashOperation(t *testing.T, done <-chan error, name string) error {

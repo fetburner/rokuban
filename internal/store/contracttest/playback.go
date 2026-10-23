@@ -12,9 +12,8 @@ import (
 // PlaybackFixture は視聴状態契約の実装と、保存状態を読む検査口をまとめる。
 type PlaybackFixture struct {
 	Store              store.PlaybackState
+	Recordings         store.RecordingQuery
 	NewRecording       NewRecording
-	Position           func(t *testing.T, recordingID int64) (int64, bool)
-	Watched            func(t *testing.T, recordingID int64) bool
 	FailPositionDelete func(t *testing.T) (cleanup func())
 }
 
@@ -32,14 +31,14 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 		if err := f.Store.SavePosition(ctx, id, 12_000); err != nil {
 			t.Fatalf("SavePosition() error = %v", err)
 		}
-		if got, ok := f.Position(t, id); !ok || got != 12_000 {
-			t.Fatalf("position = %d, present = %t, want 12000 and present", got, ok)
+		if got, ok := playbackPosition(t, f, id); !ok || got != 12_000 {
+			t.Fatalf("RecordingQuery.Get.ResumePositionMs = %d, present = %t, want 12000 and present", got, ok)
 		}
 		if err := f.Store.ClearPosition(ctx, id); err != nil {
 			t.Fatalf("ClearPosition() error = %v", err)
 		}
-		if _, ok := f.Position(t, id); ok {
-			t.Fatal("position remains after ClearPosition()")
+		if _, ok := playbackPosition(t, f, id); ok {
+			t.Fatal("RecordingQuery.Get.ResumePositionMs remains after ClearPosition()")
 		}
 		if err := f.Store.ClearPosition(ctx, id); err != nil {
 			t.Fatalf("second ClearPosition() error = %v, want idempotent success", err)
@@ -56,11 +55,11 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 		if err := f.Store.MarkWatched(ctx, id); err != nil {
 			t.Fatalf("MarkWatched() error = %v", err)
 		}
-		if !f.Watched(t, id) {
-			t.Fatal("watched marker was not saved")
+		if !playbackWatched(t, f, id) {
+			t.Fatal("RecordingQuery.Get.WatchedAt was not saved")
 		}
-		if _, ok := f.Position(t, id); ok {
-			t.Fatal("position remains after MarkWatched()")
+		if _, ok := playbackPosition(t, f, id); ok {
+			t.Fatal("RecordingQuery.Get.ResumePositionMs remains after MarkWatched()")
 		}
 	})
 
@@ -80,11 +79,11 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 		if err := f.Store.MarkWatched(ctx, id); err == nil {
 			t.Fatal("MarkWatched() succeeded with failing position delete, want error")
 		}
-		if f.Watched(t, id) {
-			t.Fatal("watched marker remained after position delete failure")
+		if playbackWatched(t, f, id) {
+			t.Fatal("RecordingQuery.Get.WatchedAt remained after position delete failure")
 		}
-		if position, ok := f.Position(t, id); !ok || position != 12_000 {
-			t.Fatalf("position after rollback = %d, present = %t, want 12000 and present", position, ok)
+		if position, ok := playbackPosition(t, f, id); !ok || position != 12_000 {
+			t.Fatalf("RecordingQuery.Get.ResumePositionMs after rollback = %d, present = %t, want 12000 and present", position, ok)
 		}
 	})
 
@@ -104,12 +103,12 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 			t.Fatalf("ClearWatchedForEvent() error = %v", err)
 		}
 		for _, id := range []int64{one, two} {
-			if f.Watched(t, id) {
-				t.Errorf("watched marker remains on event sibling %d", id)
+			if playbackWatched(t, f, id) {
+				t.Errorf("RecordingQuery.Get.WatchedAt remains on event sibling %d", id)
 			}
 		}
-		if !f.Watched(t, other) {
-			t.Error("watched marker of a different broadcast event was cleared")
+		if !playbackWatched(t, f, other) {
+			t.Error("RecordingQuery.Get.WatchedAt of a different broadcast event was cleared")
 		}
 	})
 
@@ -138,4 +137,25 @@ func RunPlayback(t *testing.T, newStore NewPlaybackStore) {
 			}
 		}
 	})
+}
+
+func playbackPosition(t *testing.T, f PlaybackFixture, recordingID int64) (int64, bool) {
+	t.Helper()
+	row, err := f.Recordings.Get(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d).ResumePositionMs: %v", recordingID, err)
+	}
+	if row.ResumePositionMs == nil {
+		return 0, false
+	}
+	return *row.ResumePositionMs, true
+}
+
+func playbackWatched(t *testing.T, f PlaybackFixture, recordingID int64) bool {
+	t.Helper()
+	row, err := f.Recordings.Get(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d).WatchedAt: %v", recordingID, err)
+	}
+	return row.WatchedAt != nil
 }

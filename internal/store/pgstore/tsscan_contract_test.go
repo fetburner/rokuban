@@ -2,12 +2,10 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -24,7 +22,8 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 	t.Helper()
 	pool := testutil.SetupDB(t)
 	return contracttest.TSScanFixture{
-		Store: NewMedia(pool),
+		Store:   NewMedia(pool),
+		Catalog: NewCatalog(pool, []string{store.DefaultSite}),
 		NewOriginal: func(t *testing.T, sizeBytes int64, trashed bool) (int64, int64) {
 			t.Helper()
 			ctx := context.Background()
@@ -103,55 +102,6 @@ INSERT INTO media_asset_ts_scans (media_asset_id, scanned_size_bytes) VALUES ($1
 					t.Fatalf("seeding TS scan marker: %v", err)
 				}
 			}
-		},
-		ReadSnapshot: func(t *testing.T, assetID int64) contracttest.TSScanSnapshot {
-			t.Helper()
-			ctx := context.Background()
-			snapshot := contracttest.TSScanSnapshot{Stats: make([]store.RecordingDropStat, 0), Positions: make([]store.RecordingDropPosition, 0), ScannedSizeBytes: -1}
-			rows, err := pool.Query(ctx, `
-SELECT pid, packets, drops, errors, scrambled, pid_type
-FROM drop_stats WHERE media_asset_id = $1 ORDER BY pid`, assetID)
-			if err != nil {
-				t.Fatalf("reading drop_stats: %v", err)
-			}
-			for rows.Next() {
-				var stat store.RecordingDropStat
-				if err := rows.Scan(&stat.Pid, &stat.Packets, &stat.Drops, &stat.Errors, &stat.Scrambled, &stat.PidType); err != nil {
-					rows.Close()
-					t.Fatalf("scanning drop_stats: %v", err)
-				}
-				snapshot.Stats = append(snapshot.Stats, stat)
-			}
-			if err := rows.Err(); err != nil {
-				rows.Close()
-				t.Fatalf("iterating drop_stats: %v", err)
-			}
-			rows.Close()
-
-			rows, err = pool.Query(ctx, `
-SELECT pid, byte_offset, elapsed_ms
-FROM drop_positions WHERE media_asset_id = $1 ORDER BY byte_offset`, assetID)
-			if err != nil {
-				t.Fatalf("reading drop_positions: %v", err)
-			}
-			for rows.Next() {
-				var position store.RecordingDropPosition
-				if err := rows.Scan(&position.Pid, &position.ByteOffset, &position.ElapsedMs); err != nil {
-					rows.Close()
-					t.Fatalf("scanning drop_positions: %v", err)
-				}
-				snapshot.Positions = append(snapshot.Positions, position)
-			}
-			if err := rows.Err(); err != nil {
-				rows.Close()
-				t.Fatalf("iterating drop_positions: %v", err)
-			}
-			rows.Close()
-
-			if err := pool.QueryRow(ctx, `SELECT scanned_size_bytes FROM media_asset_ts_scans WHERE media_asset_id = $1`, assetID).Scan(&snapshot.ScannedSizeBytes); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-				t.Fatalf("reading TS scan marker: %v", err)
-			}
-			return snapshot
 		},
 		BeginAssetStateChange: func(t *testing.T, assetID int64, state string) func() {
 			return beginTSScanContractAssetStateChange(t, pool, assetID, state)

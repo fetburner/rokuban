@@ -2,13 +2,11 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
@@ -34,6 +32,8 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 	media := NewMedia(db.pool)
 	return contracttest.EncodePolicyFixture{
 		Policy: media, Attempts: media,
+		Recordings: NewRecordings(db.pool), Reconcile: media, Removals: media,
+		CMDetection:  NewAnalysis(db.pool),
 		NewRecording: db.newRecording, NewAsset: db.newAsset,
 		SetRecordingTrashed: func(t *testing.T, recordingID int64) {
 			t.Helper()
@@ -41,11 +41,9 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 				t.Fatalf("trashing recording %d: %v", recordingID, err)
 			}
 		},
-		SetDesired: db.setDesired, GetDesired: db.getDesired,
-		SetRemovalRequest: db.setRemovalRequest, HasRemovalRequest: db.hasRemovalRequest,
-		SetAttempt: db.setAttempt, AttemptState: db.attemptState, AttemptCount: db.attemptCount,
-		SetChapterSpans: db.setChapterSpans, RequestedKeep: db.requestedKeep,
-		PolicyState: db.policyState, BeginChapterEdit: db.beginChapterEdit,
+		SetDesired: db.setDesired, SetRemovalRequest: db.setRemovalRequest,
+		SetAttempt: db.setAttempt, SetChapterSpans: db.setChapterSpans,
+		BeginChapterEdit:  db.beginChapterEdit,
 		BeginPolicyUpdate: db.beginPolicyUpdate, BeginRemoval: db.beginRemoval,
 		BeginRecordingLock: db.beginRecordingLock, TryPolicyLock: db.tryPolicyLock,
 		WaitRecordingLock: db.waitRecordingLock, WaitPolicyLock: db.waitPolicyLock,
@@ -86,18 +84,6 @@ ON CONFLICT (recording_id) DO UPDATE SET
 	}
 }
 
-func (f *encodePolicyContractDB) getDesired(t *testing.T, recordingID int64) []string {
-	t.Helper()
-	row, err := sqlcgen.New(f.pool).GetRecordingEncodePolicy(context.Background(), recordingID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		t.Fatalf("loading desired profiles: %v", err)
-	}
-	return row.EncodeProfiles
-}
-
 func (f *encodePolicyContractDB) setRemovalRequest(t *testing.T, recordingID int64, profile string) {
 	t.Helper()
 	if err := sqlcgen.New(f.pool).InsertEncodedAssetRemovalRequest(context.Background(), sqlcgen.InsertEncodedAssetRemovalRequestParams{
@@ -108,16 +94,6 @@ func (f *encodePolicyContractDB) setRemovalRequest(t *testing.T, recordingID int
 	}
 }
 
-func (f *encodePolicyContractDB) hasRemovalRequest(t *testing.T, recordingID int64, profile string) bool {
-	t.Helper()
-	var exists bool
-	if err := f.pool.QueryRow(context.Background(), `
-SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests WHERE recording_id = $1 AND profile = $2)`, recordingID, profile).Scan(&exists); err != nil {
-		t.Fatalf("checking removal request: %v", err)
-	}
-	return exists
-}
-
 func (f *encodePolicyContractDB) setAttempt(t *testing.T, recordingID int64, profile, state string, count int32) {
 	t.Helper()
 	if _, err := f.pool.Exec(context.Background(), `
@@ -125,34 +101,6 @@ INSERT INTO recording_encode_attempts (recording_id, profile, state, attempted_a
 VALUES ($1, $2, $3, now(), $4)`, recordingID, profile, state, count); err != nil {
 		t.Fatalf("seeding encode attempt: %v", err)
 	}
-}
-
-func (f *encodePolicyContractDB) attemptState(t *testing.T, recordingID int64, profile string) (string, bool) {
-	t.Helper()
-	var state string
-	err := f.pool.QueryRow(context.Background(), `
-SELECT state FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`, recordingID, profile).Scan(&state)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false
-	}
-	if err != nil {
-		t.Fatalf("loading encode attempt: %v", err)
-	}
-	return state, true
-}
-
-func (f *encodePolicyContractDB) attemptCount(t *testing.T, recordingID int64, profile string) (int32, bool) {
-	t.Helper()
-	var count int32
-	err := f.pool.QueryRow(context.Background(), `
-SELECT attempt_count FROM recording_encode_attempts WHERE recording_id = $1 AND profile = $2`, recordingID, profile).Scan(&count)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false
-	}
-	if err != nil {
-		t.Fatalf("loading encode attempt count: %v", err)
-	}
-	return count, true
 }
 
 func (f *encodePolicyContractDB) setChapterSpans(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span) {
@@ -171,34 +119,6 @@ VALUES ($1, int8range($2, $3), $4, $5)`, recordingID, span.StartMs, span.EndMs, 
 			t.Fatalf("seeding chapter span: %v", err)
 		}
 	}
-}
-
-func (f *encodePolicyContractDB) requestedKeep(t *testing.T, recordingID int64, profile string) string {
-	t.Helper()
-	var keep string
-	if err := f.pool.QueryRow(context.Background(), `
-SELECT requested_keep::text FROM encoded_asset_rebuild_requests WHERE recording_id = $1 AND profile = $2`, recordingID, profile).Scan(&keep); err != nil {
-		t.Fatalf("loading requested keep: %v", err)
-	}
-	return keep
-}
-
-func (f *encodePolicyContractDB) policyState(t *testing.T, recordingID int64) (string, []string, bool, int32, bool) {
-	t.Helper()
-	var keep string
-	var profiles []string
-	var cmDetect bool
-	var generation int32
-	err := f.pool.QueryRow(context.Background(), `
-SELECT keep_original, encode_profiles, cm_detect, cm_detect_generation
-FROM recording_encode_policy WHERE recording_id = $1`, recordingID).Scan(&keep, &profiles, &cmDetect, &generation)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil, false, 0, false
-	}
-	if err != nil {
-		t.Fatalf("loading encode policy: %v", err)
-	}
-	return keep, profiles, cmDetect, generation, true
 }
 
 func (f *encodePolicyContractDB) beginChapterEdit(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span) func() {

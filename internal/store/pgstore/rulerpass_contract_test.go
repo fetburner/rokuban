@@ -2,11 +2,13 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -21,8 +23,22 @@ func TestRulerPassContract(t *testing.T) {
 	contracttest.RunRulerPass(t, func(t *testing.T) contracttest.RulerPassFixture {
 		pool := testutil.SetupDB(t)
 		reservations := NewReservations(pool)
+		programSnapshotStart := func(t *testing.T, site string, programID int64) (time.Time, bool) {
+			t.Helper()
+			var start time.Time
+			err := pool.QueryRow(context.Background(), `
+SELECT start_at FROM program_snapshots WHERE site = $1 AND program_id = $2`, site, programID).Scan(&start)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return time.Time{}, false
+			}
+			if err != nil {
+				t.Fatalf("reading unreferenced program snapshot start: %v", err)
+			}
+			return start, true
+		}
 		return contracttest.RulerPassFixture{
 			Pass: reservations, Bumper: reservations, Reservations: reservations, Breakers: NewBreakers(pool),
+			ProgramSnapshotStart: programSnapshotStart,
 			NewProgram: func(t *testing.T, title string) contracttest.RulerProgram {
 				return seedRulerPassProgram(t, pool, title)
 			},
@@ -43,12 +59,6 @@ func TestRulerPassContract(t *testing.T) {
 			},
 			SetProgramStarts: func(t *testing.T, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {
 				setRulerPassProgramStarts(t, pool, program, snapshotStart, projectionStart)
-			},
-			HasProgramSnapshot: func(t *testing.T, program contracttest.RulerProgram) bool {
-				return rulerPassSnapshotExists(t, pool, program)
-			},
-			GetProgramSnapshotStart: func(t *testing.T, program contracttest.RulerProgram) time.Time {
-				return rulerPassSnapshotStart(t, pool, program)
 			},
 			SetDedupeWindow: func(t *testing.T, ruleID int64, window time.Duration) {
 				setRulerPassDedupeWindow(t, pool, ruleID, window)
@@ -137,28 +147,6 @@ SET start_at = $3::timestamptz, end_at = $3::timestamptz + interval '30 minutes'
 WHERE site = $1 AND program_id = $2`, program.Site, program.ProgramID, projectionStart); err != nil {
 		t.Fatalf("setting ruler pass projection start: %v", err)
 	}
-}
-
-func rulerPassSnapshotExists(t *testing.T, pool *pgxpool.Pool, program contracttest.RulerProgram) bool {
-	t.Helper()
-	var exists bool
-	if err := pool.QueryRow(context.Background(), `
-SELECT EXISTS (
-  SELECT 1 FROM program_snapshots WHERE site = $1 AND program_id = $2
-)`, program.Site, program.ProgramID).Scan(&exists); err != nil {
-		t.Fatalf("checking ruler pass snapshot: %v", err)
-	}
-	return exists
-}
-
-func rulerPassSnapshotStart(t *testing.T, pool *pgxpool.Pool, program contracttest.RulerProgram) time.Time {
-	t.Helper()
-	var startAt time.Time
-	if err := pool.QueryRow(context.Background(), `
-SELECT start_at FROM program_snapshots WHERE site = $1 AND program_id = $2`, program.Site, program.ProgramID).Scan(&startAt); err != nil {
-		t.Fatalf("reading ruler pass snapshot start: %v", err)
-	}
-	return startAt
 }
 
 func setRulerPassDedupeWindow(t *testing.T, pool *pgxpool.Pool, ruleID int64, window time.Duration) {
