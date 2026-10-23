@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/jobq"
+	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -94,10 +95,10 @@ func (w *ReconcileWorker) Work(ctx context.Context, args ReconcileArgs) error {
 	var continuationAfter int64
 	if int32(len(rows)) >= rowLimit {
 		continuationAfter = rows[len(rows)-1]
-		if _, err := w.Enqueuer.Enqueue(ctx, ReconcileArgs{AfterRecordingID: continuationAfter}); err != nil {
-			slog.Error("ts_scan_reconcile: failed to enqueue continuation",
-				"after_recording_id", continuationAfter, "err", err)
-		}
+		jobs.EnqueueContinuation(ctx, w.Enqueuer, ReconcileArgs{AfterRecordingID: continuationAfter},
+			"candidate window is full; continuation enqueued",
+			[]any{"after_recording_id", continuationAfter},
+			[]any{"row_limit", rowLimit})
 	}
 	metrics.TSScanReconcileLastPass.SetToCurrentTime()
 	if len(rows) > 0 {

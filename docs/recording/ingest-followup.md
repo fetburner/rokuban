@@ -119,7 +119,8 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 - 短い窓が別窓の継続中に再走しないこと（missing が最短の場合）: `TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues`
 - 窓が満杯になる条件（RowLimit 1）でも対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
 - 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
-- 継続投入の失敗を成功で終えること: `TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 継続投入の失敗でパスを失敗させないこと: `jobs.EnqueueContinuation` がエラーを返さない
+- 投入の失敗で Error、成功で Warn を出すこと: `TestEnqueueContinuation_LogsFailureAndSuccess`
 - 公開済みなら後から来た thumbnail の公開を捨てること（`published` が false）: `TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive`
 - 公開済みなら後から来た thumbnail と seek_tiles の公開を捨てること: `runDerivedPublicationSkips`（`internal/store/contracttest/mediapublish.go`）
 - 公開が rel_path のロック下で直列になること: `TestThumbnailWorkerPublishesUnderRelPathLock`、`TestSeekTilesWorkerPublishesUnderRelPathLock`
@@ -141,7 +142,8 @@ CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, ser
 - 両窓が複合キーを含む引数で fresh worker をまたぐこと: `TestCMDetectReconcile_ContinuationSurvivesFreshWorker`
 - 短い窓が別窓の継続中に再走しないこと: `TestCMDetectReconcile_ExhaustedWindowNotRestarted`
 - 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
-- 継続投入の失敗を成功で終えること: `TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 継続投入の失敗でパスを失敗させないこと: `jobs.EnqueueContinuation` がエラーを返さない
+- 投入の失敗で Error、成功で Warn を出すこと: `TestEnqueueContinuation_LogsFailureAndSuccess`
 - 遅れて来た cm_detect の試行結果が捨てられること（試行回数の不一致）: `TestCMDetectCountsDeadAttemptsAndFencesLateResults`
 - 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate`
 
@@ -164,7 +166,8 @@ ingest の commit 後に scan をヒント投入し、既定 15 分の reconcile
 <details><summary>根拠</summary>
 
 - TS scan の継続カーソルが新しい worker で再開すること: `TestTSScanReconcile_ContinuationSurvivesFreshWorker`
-- 継続投入の失敗を成功で終えること: `TestTSScanReconcile_ContinuationEnqueueFailureReturnsSuccess`
+- 継続投入の失敗でパスを失敗させないこと: `jobs.EnqueueContinuation` がエラーを返さない
+- 投入の失敗で Error、成功で Warn を出すこと: `TestEnqueueContinuation_LogsFailureAndSuccess`
 - 計測済みの判定: view `current_ts_scanned_originals`
 - サムネイルの補完ジョブ: `thumbnail_reconcile`
 - TS scan の補完ジョブ: `ts-scan-reconcile`

@@ -2,12 +2,10 @@ package worker
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
@@ -162,39 +160,5 @@ func TestCMDetectReconcile_DetectionWindowStaysDoneWhileCandidatesContinue(t *te
 	if !continuations[1].DetectionDone || continuations[1].CandidateDone {
 		t.Errorf("second continuation done flags = detection:%v candidate:%v, want true:false",
 			continuations[1].DetectionDone, continuations[1].CandidateDone)
-	}
-}
-
-type cmDetectContinuationFailingEnqueuer struct {
-	*recordingEnqueuer
-	continuationAttempts int
-}
-
-func (e *cmDetectContinuationFailingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, opts ...jobq.EnqueueOpt) (jobq.Result, error) {
-	if args.Kind() == (jobs.CMDetectReconcileArgs{}).Kind() {
-		e.continuationAttempts++
-		return jobq.Result{}, errors.New("continuation unavailable")
-	}
-	return e.recordingEnqueuer.Enqueue(ctx, args, opts...)
-}
-
-func TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T) {
-	pool := setupTestPool(t)
-	if pool == nil {
-		return
-	}
-
-	seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15103)))
-	seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15104)))
-	enqueuer := &cmDetectContinuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool), RowLimit: 1}
-	if err := runWorkerViaJobQFake(context.Background(), w, jobs.CMDetectReconcileArgs{}); err != nil {
-		t.Fatalf("Work after continuation enqueue failure = %v, want nil", err)
-	}
-	if got := len(enqueuedArgs[jobs.CMDetectJobArgs](enqueuer.recordingEnqueuer, jobs.CMDetectJobArgs{}.Kind())); got != 1 {
-		t.Errorf("detection jobs after continuation enqueue failure = %d, want 1", got)
-	}
-	if enqueuer.continuationAttempts != 1 {
-		t.Errorf("continuation enqueue attempts = %d, want 1", enqueuer.continuationAttempts)
 	}
 }
