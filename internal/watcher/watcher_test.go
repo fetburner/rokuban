@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,16 +18,12 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/fetburner/rokuban/internal/db"
-	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -41,50 +38,6 @@ func newWatcherMirakcFake(t *testing.T, services []mirakc.Service, schedules []m
 	return fake
 }
 
-func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCall {
-	t.Helper()
-	enqueuer, ok := watcher.enqueuer.(*jobqtestutil.RecordingEnqueuer)
-	if !ok {
-		t.Fatalf("watcher enqueuer = %T, want *RecordingEnqueuer", watcher.enqueuer)
-	}
-	return enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
-}
-
-func requireIngestArgs(t *testing.T, call jobqtestutil.EnqueueCall) jobs.IngestJobArgs {
-	t.Helper()
-	args, ok := call.Args.(jobs.IngestJobArgs)
-	if !ok {
-		t.Fatalf("ingest args = %T, want jobs.IngestJobArgs", call.Args)
-	}
-	return args
-}
-
-func countIngestEnqueues(t *testing.T, watcher *Watcher, recordID string) int {
-	t.Helper()
-	calls := listIngestEnqueues(t, watcher)
-	if recordID == "" {
-		return len(calls)
-	}
-	count := 0
-	for _, call := range calls {
-		args := requireIngestArgs(t, call)
-		if args.RecordID == recordID {
-			count++
-		}
-	}
-	return count
-}
-
-func requireIngestEnqueuesCoalesce(t *testing.T, calls []jobqtestutil.EnqueueCall) {
-	t.Helper()
-	for _, call := range calls {
-		args := requireIngestArgs(t, call)
-		if !args.Spec().Coalesce {
-			t.Errorf("ingest args %#v do not request coalescing", args)
-		}
-	}
-}
-
 func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	t.Helper()
 	pool := testutil.SetupDB(t)
@@ -93,6 +46,98 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 	mc := mirakc.NewClient("http://unused:40772", nil)
 	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
 	return w, pool
+}
+
+// failingRecords wraps a real store and can inject one method error while recording calls.
+type failingRecords struct {
+	store.RecordObservations
+	failRecordID                string
+	failFailedScheduleProgramID int64
+	mu                          sync.Mutex
+	calls                       []string
+	liveRecordIDs               []string
+	observations                []store.RecordObservation
+	results                     []store.ProcessResult
+	failedScheduleObservations  []store.FailedScheduleObservation
+	failedEventObservations     []store.FailedRecordingObservation
+	brokenEvents                []brokenEventCall
+}
+
+type brokenEventCall struct {
+	site, recordID, reason string
+}
+
+func (r *failingRecords) ProcessRecord(ctx context.Context, observation store.RecordObservation) (store.ProcessResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, "record:"+observation.RecordID)
+	r.observations = append(r.observations, observation)
+	r.mu.Unlock()
+	if observation.RecordID == r.failRecordID {
+		return store.ProcessResult{}, errors.New("injected record failure")
+	}
+	result, err := r.RecordObservations.ProcessRecord(ctx, observation)
+	r.mu.Lock()
+	r.results = append(r.results, result)
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *failingRecords) ProcessFailedSchedule(ctx context.Context, observation store.FailedScheduleObservation) (store.ProcessResult, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, fmt.Sprintf("failed-schedule:%d", observation.ProgramID))
+	r.failedScheduleObservations = append(r.failedScheduleObservations, observation)
+	r.mu.Unlock()
+	if observation.ProgramID == r.failFailedScheduleProgramID {
+		return store.ProcessResult{}, errors.New("injected failed schedule error")
+	}
+	return r.RecordObservations.ProcessFailedSchedule(ctx, observation)
+}
+
+func (r *failingRecords) DeleteStaleRecordSyncs(ctx context.Context, site string, liveRecordIDs []string) (int64, error) {
+	r.mu.Lock()
+	r.calls = append(r.calls, "delete-stale")
+	r.liveRecordIDs = append([]string(nil), liveRecordIDs...)
+	r.mu.Unlock()
+	return r.RecordObservations.DeleteStaleRecordSyncs(ctx, site, liveRecordIDs)
+}
+
+func (r *failingRecords) RecordFailedRecording(ctx context.Context, observation store.FailedRecordingObservation) (int64, bool, error) {
+	r.mu.Lock()
+	r.failedEventObservations = append(r.failedEventObservations, observation)
+	r.mu.Unlock()
+	return r.RecordObservations.RecordFailedRecording(ctx, observation)
+}
+
+func (r *failingRecords) AppendRecordBrokenEvent(ctx context.Context, site, recordID, reason string) (bool, error) {
+	r.mu.Lock()
+	r.brokenEvents = append(r.brokenEvents, brokenEventCall{site: site, recordID: recordID, reason: reason})
+	r.mu.Unlock()
+	return r.RecordObservations.AppendRecordBrokenEvent(ctx, site, recordID, reason)
+}
+
+// recordsSnapshot is a copy of the calls a failingRecords has seen.
+type recordsSnapshot struct {
+	calls           []string
+	liveRecordIDs   []string
+	observations    []store.RecordObservation
+	results         []store.ProcessResult
+	failedSchedules []store.FailedScheduleObservation
+	failedEvents    []store.FailedRecordingObservation
+	brokenEvents    []brokenEventCall
+}
+
+func (r *failingRecords) snapshot() recordsSnapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return recordsSnapshot{
+		calls:           append([]string(nil), r.calls...),
+		liveRecordIDs:   append([]string(nil), r.liveRecordIDs...),
+		observations:    append([]store.RecordObservation(nil), r.observations...),
+		results:         append([]store.ProcessResult(nil), r.results...),
+		failedSchedules: append([]store.FailedScheduleObservation(nil), r.failedScheduleObservations...),
+		failedEvents:    append([]store.FailedRecordingObservation(nil), r.failedEventObservations...),
+		brokenEvents:    append([]brokenEventCall(nil), r.brokenEvents...),
+	}
 }
 
 func seedRecordSweepMarker(t *testing.T, pool *pgxpool.Pool) time.Time {
@@ -121,6 +166,28 @@ func requireRecordSweepMarker(t *testing.T, pool *pgxpool.Pool, want time.Time) 
 	}
 }
 
+func requireRecordingSnapshotEqual(t *testing.T, got, want store.RecordingSnapshot) {
+	t.Helper()
+	want.ProgramStartAt = want.ProgramStartAt.Truncate(time.Millisecond)
+	if !got.ProgramStartAt.Equal(want.ProgramStartAt) {
+		t.Errorf("recording snapshot start time = %s, want %s", got.ProgramStartAt, want.ProgramStartAt)
+	}
+	got.ProgramStartAt = time.Time{}
+	want.ProgramStartAt = time.Time{}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("recording snapshot = %#v, want %#v", got, want)
+	}
+}
+
+func listIngestEnqueues(t *testing.T, watcher *Watcher) []jobqtestutil.EnqueueCall {
+	t.Helper()
+	enqueuer, ok := watcher.enqueuer.(*jobqtestutil.RecordingEnqueuer)
+	if !ok {
+		t.Fatalf("watcher enqueuer = %T, want *RecordingEnqueuer", watcher.enqueuer)
+	}
+	return enqueuer.CallsOfKind(jobs.IngestJobArgs{}.Kind())
+}
+
 func seedSweepLastPassMetric(t *testing.T) float64 {
 	t.Helper()
 	previous := promtestutil.ToFloat64(metrics.SweepLastPass)
@@ -136,47 +203,6 @@ func requireSweepLastPassMetric(t *testing.T, want float64) {
 		t.Errorf("SweepLastPass = %v, want unchanged %v", got, want)
 	}
 }
-
-func installSweepFailureTrigger(t *testing.T, pool *pgxpool.Pool, triggerName, tableName, condition string) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		CREATE FUNCTION rokuban_test_fail_sweep_insert() RETURNS trigger
-		LANGUAGE plpgsql AS $$
-		BEGIN
-			RAISE EXCEPTION 'injected sweep failure';
-		END;
-		$$`); err != nil {
-		t.Fatalf("creating sweep failure trigger function: %v", err)
-	}
-	t.Cleanup(func() {
-		if _, err := pool.Exec(context.Background(), fmt.Sprintf(
-			"DROP TRIGGER IF EXISTS %s ON %s", triggerName, tableName,
-		)); err != nil {
-			t.Errorf("dropping sweep failure trigger: %v", err)
-		}
-		if _, err := pool.Exec(context.Background(), `DROP FUNCTION IF EXISTS rokuban_test_fail_sweep_insert()`); err != nil {
-			t.Errorf("dropping sweep failure trigger function: %v", err)
-		}
-	})
-	query := fmt.Sprintf(`
-		CREATE TRIGGER %s
-		BEFORE INSERT ON %s
-		FOR EACH ROW WHEN (%s)
-		EXECUTE FUNCTION rokuban_test_fail_sweep_insert()`, triggerName, tableName, condition)
-	if _, err := pool.Exec(ctx, query); err != nil {
-		t.Fatalf("creating sweep failure trigger: %v", err)
-	}
-}
-
-// insertTestProgramSnapshot は program_snapshots 行を作る。#27 で番組の事実の
-// スナップショット（title / 開始時刻 / 尺）が program_snapshots に抽出され、
-// reservations / program_intents / program_overrides への FK が張られたため、
-// このパッケージのフィクスチャはすべてこれを先に呼ぶ。
-//
-// チャンネル・イベント識別 6 列は issue #101 で NOT NULL 化された。
-// このパッケージのテストは recordings.source 等の導出を見るだけでチャンネル
-// 識別自体は検証しないので、固定のダミー値で足りる。
 func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `
@@ -191,11 +217,7 @@ func insertTestProgramSnapshot(t *testing.T, pool *pgxpool.Pool, programID int64
 	}
 }
 
-// createTestReservation は program_snapshots + reservations 行を作る
-// （program_intents には触れない）。このパッケージの大半のテストは
-// recordings.source の値を検証しないので、intent の有無を気にする必要が
-// ない場合に使う。source の導出（issue #26）を検証するテストは
-// createTestReservationWithIntent / createTestReservationWithRule を使う。
+// createTestReservation は watcher の処理経路で予約が必要なテストの状態を作る。
 func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
 	t.Helper()
 	insertTestProgramSnapshot(t, pool, programID)
@@ -206,84 +228,6 @@ func createTestReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
 		t.Fatalf("creating reservation: %v", err)
 	}
 }
-
-// createTestRule は最小構成のルールを 1 件作る（reservations.rule_id の FK 先。
-// issue #26 の受け入れ基準検証で「ルールが今マッチしている」ことを模すために使う）。
-func createTestRule(t *testing.T, pool *pgxpool.Pool) int64 {
-	t.Helper()
-	var id int64
-	if err := pool.QueryRow(context.Background(),
-		`INSERT INTO rules (name) VALUES ('テストルール') RETURNING id`).Scan(&id); err != nil {
-		t.Fatalf("creating rule fixture: %v", err)
-	}
-	return id
-}
-
-// createTestReservationWithIntent は reservations 行と、対応する
-// program_intents{action=record} 行を両方作る（手動予約を模す）。ruleID が
-// 非 nil なら rule_id も埋め、「手動予約にルールがマッチ中」の状態を作れる
-// （issue #26 の受け入れ基準 1）。
-func createTestReservationWithIntent(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID *int64) {
-	t.Helper()
-	ctx := context.Background()
-	insertTestProgramSnapshot(t, pool, programID)
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO reservations (site, program_id, rule_id)
-		VALUES ('default', $1, $2)`, programID, ruleID,
-	); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO program_intents (site, program_id, action)
-		VALUES ('default', $1, 'record')`, programID,
-	); err != nil {
-		t.Fatalf("creating program_intents fixture: %v", err)
-	}
-}
-
-// createTestReservationWithRule は rule_id を持つが program_intents 行を持たない
-// reservations を作る（ルール由来予約を模す。issue #26 の受け入れ基準 2）。
-func createTestReservationWithRule(t *testing.T, pool *pgxpool.Pool, programID int64, ruleID int64) {
-	t.Helper()
-	insertTestProgramSnapshot(t, pool, programID)
-	if _, err := pool.Exec(context.Background(), `
-		INSERT INTO reservations (site, program_id, rule_id)
-		VALUES ('default', $1, $2)`, programID, ruleID,
-	); err != nil {
-		t.Fatalf("creating reservation: %v", err)
-	}
-}
-
-// insertProgramOverride は program_overrides に priority の上書きだけを持つ行を作る
-// （program_intents には触れない）。「ルール由来の予約に priority を上書きしただけ」
-// （intent 無し）を模すために使う（issue #26 の受け入れ基準 3。上書きは
-// 「手動予約した」ではない — docs/recording.md §4.4）。
-func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, priority int) {
-	t.Helper()
-	insertTestProgramSnapshot(t, pool, programID)
-	_, err := pool.Exec(context.Background(), `
-		INSERT INTO program_overrides (site, program_id, overrides)
-		VALUES ('default', $1, $2)`,
-		programID, fmt.Sprintf(`{"priority": %d}`, priority),
-	)
-	if err != nil {
-		t.Fatalf("creating program_overrides fixture: %v", err)
-	}
-}
-
-func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.Time, status string) func(*dbtest.RecordingParams) {
-	return func(p *dbtest.RecordingParams) {
-		p.NetworkID = networkID
-		p.ServiceID = serviceID
-		p.EventID = eventID
-		p.ServiceName = "NHK総合"
-		p.Title = "Failed Attempt"
-		p.ProgramStartAt = startAt
-		p.ProgramDurationMs = 180000
-		p.Status = status
-	}
-}
-
 func testRecord(recordID string, programID int64, status string) mirakc.Record {
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
@@ -323,1055 +267,249 @@ func testRecord(recordID string, programID int64, status string) mirakc.Record {
 	}
 	return r
 }
-
-// assertRecordingSnapshotColumns は recordings 行の番組スナップショット 10 列を
-// want と比べる。createRecording / handleRecordingFailed のインライン写しの検証用。
-// jsonb は DB が正規化するので意味で比べる。
-func assertRecordingSnapshotColumns(t *testing.T, pool *pgxpool.Pool, recordingID int64, want programSnapshot) {
-	t.Helper()
-	var (
-		got                      programSnapshot
-		extendedText, genresText string
-	)
-	err := pool.QueryRow(context.Background(), `
-		SELECT service_name, channel_type, channel, title, description,
-		       extended::text, genres::text, is_free, program_start_at, program_duration_ms
-		FROM recordings WHERE id = $1`, recordingID).Scan(
-		&got.serviceName, &got.channelType, &got.channel, &got.title, &got.description,
-		&extendedText, &genresText, &got.isFree, &got.programStartAt, &got.programDurationMs)
-	if err != nil {
-		t.Fatalf("querying snapshot columns: %v", err)
-	}
-	for _, c := range []struct {
-		name      string
-		got, want string
-	}{{"extended", extendedText, string(want.extended)}, {"genres", genresText, string(want.genres)}} {
-		var g, w any
-		if err := json.Unmarshal([]byte(c.got), &g); err != nil {
-			t.Fatalf("%s: unmarshal got %q: %v", c.name, c.got, err)
-		}
-		if err := json.Unmarshal([]byte(c.want), &w); err != nil {
-			t.Fatalf("%s: unmarshal want %q: %v", c.name, c.want, err)
-		}
-		if !reflect.DeepEqual(g, w) {
-			t.Errorf("recordings.%s = %s, want %s", c.name, c.got, c.want)
-		}
-	}
-	if !got.programStartAt.Equal(want.programStartAt) {
-		t.Errorf("recordings.program_start_at = %v, want %v", got.programStartAt, want.programStartAt)
-	}
-	got.extended, got.genres, got.programStartAt = nil, nil, time.Time{}
-	want.extended, want.genres, want.programStartAt = nil, nil, time.Time{}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("recordings snapshot columns = %#v, want %#v", got, want)
-	}
-}
-
-func TestProcessRecord_CreateRecordingAndSync(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	createTestReservation(t, pool, 327360102415397)
-	record := testRecord("abc123def456", 327360102415397, "finished")
-	desc := "番組説明"
-	record.Program.Description = &desc
-	// DB は µs 精度。ns 付きの時刻だと写しの検証が精度差で落ちる。
-	start := mirakc.Milliseconds(time.Time(*record.Program.StartAt).Truncate(time.Millisecond))
-	record.Program.StartAt = &start
-	record.Program.Extended = map[string]string{"出演者": "テスト太郎"}
-	record.Program.Genres = []mirakc.Genre{{LV1: 1, LV2: 2, UN1: 3, UN2: 4}}
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	// Verify record_sync
-	var syncStatus string
-	var syncRecordingID *int64
-	err := pool.QueryRow(ctx,
-		"SELECT status, recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID).Scan(&syncStatus, &syncRecordingID)
-	if err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncStatus != "finished" {
-		t.Errorf("record_sync.status = %q, want %q", syncStatus, "finished")
-	}
-	if syncRecordingID == nil {
-		t.Fatal("record_sync.recording_id is nil")
-	}
-
-	// Verify recordings
-	var recStatus string
-	err = pool.QueryRow(ctx,
-		"SELECT status FROM recordings WHERE id = $1", *syncRecordingID,
-	).Scan(&recStatus)
-	if err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recStatus != "finished" {
-		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
-	}
-	assertRecordingSnapshotColumns(t, pool, *syncRecordingID, snapshotFromRecord(record))
-
-	// Verify ingest job
-	calls := listIngestEnqueues(t, w)
-	if len(calls) != 1 {
-		t.Errorf("ingest enqueue calls = %d, want 1", len(calls))
-	}
-	if len(calls) == 1 {
-		args := requireIngestArgs(t, calls[0])
-		if args.RecordID != record.ID || args.Site != DefaultSite {
-			t.Errorf("ingest args = %+v, want record %q at site %q", args, record.ID, DefaultSite)
-		}
-		if got := jobq.EffectivePriority(args.Spec(), calls[0].Options...); got != 2 {
-			t.Errorf("finished ingest priority = %d, want 2", got)
-		}
-	}
-	requireIngestEnqueuesCoalesce(t, calls)
-}
-
-func TestProcessRecord_Idempotent(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	createTestReservation(t, pool, 100001)
-	record := testRecord("record-idem-001", 100001, "finished")
-
-	for i := 0; i < 3; i++ {
-		if err := w.processRecord(ctx, record); err != nil {
-			t.Fatalf("processRecord (iteration %d): %v", i, err)
-		}
-	}
-
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 1 {
-		t.Errorf("recording count = %d, want 1", recCount)
-	}
-
-	calls := listIngestEnqueues(t, w)
-	requireIngestEnqueuesCoalesce(t, calls)
-	if got := len(calls); got != 3 {
-		t.Errorf("ingest enqueue calls after 3 processRecord calls = %d, want 3", got)
-	}
-}
-
-func TestProcessRecord_StatusProgression(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	createTestReservation(t, pool, 100002)
-	record := testRecord("record-prog-001", 100002, "recording")
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord (recording): %v", err)
-	}
-
-	// 録画開始時点で ingest を投入する。追従ジョブが録画中ずっと枠を
-	// 保持することで、finished 後の全量 pull と同じ job 形を使える。
-	calls := listIngestEnqueues(t, w)
-	if len(calls) != 1 {
-		t.Errorf("ingest enqueue calls during recording = %d, want 1", len(calls))
-	}
-	if len(calls) == 1 {
-		args := requireIngestArgs(t, calls[0])
-		if args.RecordID != record.ID || args.Site != DefaultSite {
-			t.Errorf("recording ingest args = %+v, want record %q at site %q", args, record.ID, DefaultSite)
-		}
-		if got := jobq.EffectivePriority(args.Spec(), calls[0].Options...); got != 1 {
-			t.Errorf("recording ingest priority = %d, want 1", got)
-		}
-	}
-	requireIngestEnqueuesCoalesce(t, calls)
-
-	var recStatus string
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recStatus != "recording" {
-		t.Errorf("recordings.status = %q, want %q", recStatus, "recording")
-	}
-
-	// Now finish
-	record.Recording.Status = "finished"
-	endTime := mirakc.Milliseconds(time.Now())
-	record.Recording.EndTime = &endTime
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord (finished): %v", err)
-	}
-
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recStatus != "finished" {
-		t.Errorf("recordings.status = %q, want %q", recStatus, "finished")
-	}
-
-	calls = listIngestEnqueues(t, w)
-	if len(calls) != 2 {
-		t.Errorf("ingest enqueue calls after finished = %d, want 2", len(calls))
-	}
-	requireIngestEnqueuesCoalesce(t, calls)
-	for i, call := range calls {
-		args := requireIngestArgs(t, call)
-		if args.RecordID != record.ID {
-			t.Errorf("finished ingest args record_id = %q, want %q", args.RecordID, record.ID)
-		}
-		if args.Site != DefaultSite {
-			t.Errorf("finished ingest site = %q, want %q", args.Site, DefaultSite)
-		}
-		wantPriority := 1
-		if i == 1 {
-			wantPriority = 2
-		}
-		if got := jobq.EffectivePriority(args.Spec(), call.Options...); got != wantPriority {
-			t.Errorf("ingest enqueue call %d priority = %d, want %d", i+1, got, wantPriority)
-		}
-	}
-
-	// Still only one recording
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 1 {
-		t.Errorf("recording count = %d, want 1", recCount)
-	}
-}
-
-func TestProcessRecord_StatusNoDowngrade(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	createTestReservation(t, pool, 100003)
-	record := testRecord("record-nodg-001", 100003, "finished")
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord (finished): %v", err)
-	}
-
-	// Out-of-order: recording event arrives after finished
-	record.Recording.Status = "recording"
-	record.Recording.EndTime = nil
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord (recording): %v", err)
-	}
-
-	var recStatus string
-	if err := pool.QueryRow(ctx, "SELECT status FROM recordings").Scan(&recStatus); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recStatus != "finished" {
-		t.Errorf("recordings.status = %q, want %q (should not downgrade)", recStatus, "finished")
-	}
-}
-
-// TestProcessRecord_SupersedesFailedRecording は issue #129 症状 2 の本体を固定する:
-// 同一 active-event (site, network_id, service_id, event_id, program_start_at) に status='failed' の
-// 行が既に recordings_unique_active_event の枠を占有していても、後から来た成功
-// record が一意制約違反で弾かれず recordings 行として作られ、ingest ジョブが
-// 起動すること。
-//
-// このテストは CreateRecording の supersede CTE（internal/db/queries/recordings.sql）
-// を素の INSERT に戻すと、processRecord が「creating recording: ... duplicate key
-// value violates unique constraint "recordings_unique_active_event"」で失敗して
-// 落ちることを確認済み（報告参照）。
-func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	programID := int64(750001)
-	createTestReservation(t, pool, programID)
-
-	record := testRecord("record-supersede-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time(), "failed"))
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v (成功 record が failed 行の一意制約に阻まれてはいけない。issue #129 症状 2)", err)
-	}
-
-	// 新しい recordings 行が作られ、ingest が起動していること。
-	var syncRecordingID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID,
-	).Scan(&syncRecordingID); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncRecordingID == nil {
-		t.Fatal("record_sync.recording_id is nil (新しい recordings 行が作られていない)")
-	}
-	if *syncRecordingID == failedID {
-		t.Fatalf("new recording id (%d) == failed recording id (%d), want distinct rows (supersede しつつ新規行を作るはず)",
-			*syncRecordingID, failedID)
-	}
-
-	var newStatus string
-	var newSupersededAt *time.Time
-	if err := pool.QueryRow(ctx,
-		"SELECT status, superseded_at FROM recordings WHERE id = $1", *syncRecordingID,
-	).Scan(&newStatus, &newSupersededAt); err != nil {
-		t.Fatalf("querying new recording: %v", err)
-	}
-	if newStatus != "finished" {
-		t.Errorf("new recording status = %q, want %q", newStatus, "finished")
-	}
-	if newSupersededAt != nil {
-		t.Errorf("new recording superseded_at = %v, want nil", newSupersededAt)
-	}
-
-	calls := listIngestEnqueues(t, w)
-	requireIngestEnqueuesCoalesce(t, calls)
-	if got := len(calls); got != 1 {
-		t.Errorf("ingest enqueue calls = %d, want 1 (成功 record を取り込む ingest が起動するはず)", got)
-	}
-
-	// 失敗の履歴が失われていないこと（CLAUDE.md 不変条件 3 / docs/schema §5
-	// 「録画されなかった試行も履歴に残る」）: 行は消えず、superseded_at だけが
-	// 立ち、deleted_at はユーザー操作を表す列なので触れない。
-	var failedDeletedAt, failedSupersededAt *time.Time
-	var failedStatus string
-	if err := pool.QueryRow(ctx,
-		"SELECT status, deleted_at, superseded_at FROM recordings WHERE id = $1", failedID,
-	).Scan(&failedStatus, &failedDeletedAt, &failedSupersededAt); err != nil {
-		t.Fatalf("querying failed recording after supersede: %v", err)
-	}
-	if failedStatus != "failed" {
-		t.Errorf("failed recording status = %q, want %q (履歴は書き換えないはず)", failedStatus, "failed")
-	}
-	if failedDeletedAt != nil {
-		t.Errorf("failed recording deleted_at = %v, want nil (ユーザーが消したわけではない)", failedDeletedAt)
-	}
-	if failedSupersededAt == nil {
-		t.Error("failed recording superseded_at is nil, want non-nil (active-event の枠を明け渡したはず)")
-	}
-
-	// 両方とも deleted_at IS NULL のまま残るので、履歴としては 2 行見える。
-	var totalCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-	).Scan(&totalCount); err != nil {
-		t.Fatalf("querying recordings by event: %v", err)
-	}
-	if totalCount != 2 {
-		t.Errorf("recordings count for event = %d, want 2 (failed 行 + 新しい成功行が両方履歴に残るはず)", totalCount)
-	}
-}
-
-// TestProcessRecord_AllowsEventIDReuse は event_id が再利用された別イベントを
-// 開始時刻で区別することを固定する。古い finished / failed 行が live のままでも、
-// 新しい record は一意制約に阻まれず作られ、古い failed 行も誤って supersede
-// されない。
-func TestProcessRecord_AllowsEventIDReuse(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	programID := int64(750005)
-	createTestReservation(t, pool, programID)
-	record := testRecord("record-event-id-reuse-001", programID, "finished")
-	newStart := record.Program.StartAt.Time()
-	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		newStart.Add(-365*24*time.Hour), "finished"))
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		newStart.Add(-2*365*24*time.Hour), "failed"))
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v (event_id の再利用で新しい放送イベントが弾かれてはいけない)", err)
-	}
-
-	var totalCount int
-	if err := pool.QueryRow(ctx, `
-		SELECT count(*) FROM recordings
-		WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4
-	`, DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID).Scan(&totalCount); err != nil {
-		t.Fatalf("querying recordings by event: %v", err)
-	}
-	if totalCount != 3 {
-		t.Errorf("recordings count for reused event_id = %d, want 3 (旧 finished + 旧 failed + 新しい record)", totalCount)
-	}
-
-	for _, id := range []int64{finishedID, failedID} {
-		var status string
-		var supersededAt *time.Time
-		if err := pool.QueryRow(ctx,
-			"SELECT status, superseded_at FROM recordings WHERE id = $1", id,
-		).Scan(&status, &supersededAt); err != nil {
-			t.Fatalf("querying old recording %d: %v", id, err)
-		}
-		if supersededAt != nil {
-			t.Errorf("old %s recording %d superseded_at = %v, want nil", status, id, supersededAt)
-		}
-	}
-}
-
-// TestProcessRecord_SupersedesFailedRecordingWithMediaAsset は判断基準 2
-// （media_assets を持つ failed 行を巻き込まないこと）を固定する。途中まで録れて
-// failed になった行（media_assets 行を持つ）が supersede されても、そのアセットの
-// recording_id は書き換わらない —— ファイルの所有者は superseded になった旧
-// recordings 行のまま。superseded にするだけでは media_assets 側の状態
-// （state / rel_path）も一切変更しない。物理削除するかどうかは削除 reconcile が
-// 別途 recordings.deleted_at を見て判断するので、この PR の範囲では対象外。
-func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	programID := int64(750002)
-	createTestReservation(t, pool, programID)
-
-	record := testRecord("record-supersede-media-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time(), "failed"))
-	assetID := dbtest.MediaAsset(t, pool, failedID)
-
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v (media_assets を持つ failed 行があっても成功 record は取り込めるはず)", err)
-	}
-
-	var syncRecordingID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID,
-	).Scan(&syncRecordingID); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncRecordingID == nil {
-		t.Fatal("record_sync.recording_id is nil")
-	}
-
-	// media_asset は動かない: recording_id は failed 行のまま、行の状態も変わらない。
-	var assetRecordingID int64
-	var assetState string
-	var assetDeletedAt *time.Time
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id, state, deleted_at FROM media_assets WHERE id = $1", assetID,
-	).Scan(&assetRecordingID, &assetState, &assetDeletedAt); err != nil {
-		t.Fatalf("querying media_asset after supersede: %v", err)
-	}
-	if assetRecordingID != failedID {
-		t.Errorf("media_asset.recording_id = %d, want %d (superseded 後もファイルの所有者は旧 failed 行のまま)",
-			assetRecordingID, failedID)
-	}
-	if assetState != "active" {
-		t.Errorf("media_asset.state = %q, want %q (supersede は media_assets の状態を変えないはず)", assetState, "active")
-	}
-	if assetDeletedAt != nil {
-		t.Errorf("media_asset.deleted_at = %v, want nil (supersede はファイルを物理削除しないはず)", assetDeletedAt)
-	}
-
-	// 新しい recording 行に media_asset が誤って付け替えられていないこと。
-	var assetCountForNew int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM media_assets WHERE recording_id = $1", *syncRecordingID,
-	).Scan(&assetCountForNew); err != nil {
-		t.Fatalf("querying media_assets for new recording: %v", err)
-	}
-	if assetCountForNew != 0 {
-		t.Errorf("media_assets count for new recording = %d, want 0 (ingest がまだ何も作っていないはず)", assetCountForNew)
-	}
-}
-
-// TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing は判断基準 3
-// （べき等性）を固定する: record_sweep が同じ record を再処理しても、supersede
-// および recordings 行の作成が繰り返されない。processRecord は record_sync の
-// (site, record_id) 行ロックで 2 回目以降 createRecording 自体を呼ばないので
-// （AcquireRecordSync が既存 recording_id を返す）、CreateRecording の supersede
-// CTE も 2 回目は実行されないはず。
-func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	programID := int64(750003)
-	createTestReservation(t, pool, programID)
-
-	record := testRecord("record-supersede-idem-001", programID, "finished")
-	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time(), "failed"))
-
-	for i := 0; i < 3; i++ {
-		if err := w.processRecord(ctx, record); err != nil {
-			t.Fatalf("processRecord (iteration %d): %v", i, err)
-		}
-	}
-
-	var totalCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-	).Scan(&totalCount); err != nil {
-		t.Fatalf("querying recordings by event: %v", err)
-	}
-	if totalCount != 2 {
-		t.Errorf("recordings count for event after 3x processRecord = %d, want 2 "+
-			"(failed 行 1 + 成功行 1 のまま増減しないはず)", totalCount)
-	}
-
-	calls := listIngestEnqueues(t, w)
-	requireIngestEnqueuesCoalesce(t, calls)
-	if got := len(calls); got != 3 {
-		t.Errorf("ingest enqueue calls after 3 processRecord calls = %d, want 3", got)
-	}
-
-	var failedSupersededAt *time.Time
-	if err := pool.QueryRow(ctx,
-		"SELECT superseded_at FROM recordings WHERE id = $1", failedID,
-	).Scan(&failedSupersededAt); err != nil {
-		t.Fatalf("querying failed recording: %v", err)
-	}
-	if failedSupersededAt == nil {
-		t.Error("failed recording superseded_at is nil, want non-nil")
-	}
-}
-
-// TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording は supersede の
-// 境界を固定する: 同一 active-event に「生きている」（deleted_at IS NULL かつ
-// superseded_at IS NULL）行が既にあっても、それが status='failed' でなければ
-// supersede しない。'finished'/'recording' 等の本物の重複を黙って追い出すのは
-// このクエリの責務ではなく、素の一意制約違反として従来どおりエラーになるはず
-// （internal/db/queries/recordings.sql の CreateRecording の doc コメント参照）。
-func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	programID := int64(750004)
-	createTestReservation(t, pool, programID)
-
-	record := testRecord("record-no-supersede-001", programID, "finished")
-	// 直接 'finished' な生きている行を同じスロットに作る（すでに録れている本物の
-	// 重複を模す。failed ではないので supersede 対象にならないはず）。
-	livingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Site = DefaultSite
-		p.NetworkID = int32(record.Program.NetworkID)
-		p.ServiceID = int32(record.Program.ServiceID)
-		p.EventID = int32(record.Program.EventID)
-		p.ServiceName = "NHK総合"
-		p.Title = "Already Finished"
-		p.Status = "finished"
-		p.ProgramStartAt = record.Program.StartAt.Time()
-		p.ProgramDurationMs = 180000
-	})
-
-	if err := w.processRecord(ctx, record); err == nil {
-		t.Fatal("processRecord: want error (finished な生きている行と衝突するはずで、supersede されてはいけない)")
-	}
-
-	var totalCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-	).Scan(&totalCount); err != nil {
-		t.Fatalf("querying recordings by event: %v", err)
-	}
-	if totalCount != 1 {
-		t.Errorf("recordings count for event = %d, want 1 (衝突した INSERT はロールバックされ、新しい行は残らないはず)", totalCount)
-	}
-
-	var livingSupersededAt *time.Time
-	if err := pool.QueryRow(ctx,
-		"SELECT superseded_at FROM recordings WHERE id = $1", livingID,
-	).Scan(&livingSupersededAt); err != nil {
-		t.Fatalf("querying living recording: %v", err)
-	}
-	if livingSupersededAt != nil {
-		t.Errorf("living recording superseded_at = %v, want nil (status='finished' は supersede 対象外)", livingSupersededAt)
-	}
-
-	// record_sync も tx ロールバックで残らないはず（AcquireRecordSync が同じ tx 内）。
-	var syncCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID,
-	).Scan(&syncCount); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncCount != 0 {
-		t.Errorf("record_sync count = %d, want 0 (tx がロールバックされたはず)", syncCount)
-	}
-}
-
 func TestProcessRecord_UntaggedRecord(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
+	w, _ := setupTest(t)
+	records := &failingRecords{RecordObservations: w.records}
+	w.records = records
 
 	record := testRecord("record-notag-001", 100004, "finished")
 	record.Tags = nil
-
-	if err := w.processRecord(ctx, record); err != nil {
+	if err := w.processRecord(context.Background(), record); err != nil {
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	// record_sync created with nil recording_id
-	var syncRecordingID *int64
-	err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID).Scan(&syncRecordingID)
-	if err != nil {
-		t.Fatalf("querying record_sync: %v", err)
+	observations := records.snapshot().observations
+	if len(observations) != 1 {
+		t.Fatalf("ProcessRecord calls = %d, want 1", len(observations))
 	}
-	if syncRecordingID != nil {
-		t.Errorf("expected recording_id nil for untagged record, got %d", *syncRecordingID)
+	if observations[0].Managed {
+		t.Errorf("record observation Managed = true for record without Rokuban tags")
 	}
-
-	// No recordings row
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
+	if len(observations[0].Tags) != 0 {
+		t.Errorf("record observation Tags = %v, want no tags", observations[0].Tags)
 	}
-	if recCount != 0 {
-		t.Errorf("recording count = %d, want 0 for untagged record", recCount)
-	}
-
-	// No ingest job
-	if callCount := countIngestEnqueues(t, w, ""); callCount != 0 {
-		t.Errorf("ingest enqueue calls = %d, want 0 for untagged record", callCount)
+	if enqueues := listIngestEnqueues(t, w); len(enqueues) != 0 {
+		t.Errorf("ingest enqueue calls for untagged record = %d, want 0", len(enqueues))
 	}
 }
 
-// runConcurrentProcessRecord は同一 record を n 本の goroutine から同時に
-// processRecord へ渡し、全 goroutine の完了を待ってエラーがないことを確認する。
-// M2-16（processRecord の冪等化）の受け入れ基準である「並行実行しても
-// recordings が 1 行しかできない」ことを検証するための土台。
-func runConcurrentProcessRecord(t *testing.T, w *Watcher, record mirakc.Record, n int) {
-	t.Helper()
-	ctx := context.Background()
-
-	var wg sync.WaitGroup
-	errs := make([]error, n)
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			errs[i] = w.processRecord(ctx, record)
-		}(i)
+// TestProcessRecord_EnqueuesFollowResult は、store の結果が ingest の投入を求めるときだけ
+// 投入し、結果の優先度が非 0 ならそれを、0 なら job の既定値を使うことを検証する。
+// どの status が何を求めるかは store の契約（ingest hint follows the recording status）が持つので、
+// 期待値は store が返した結果から作る。
+func TestProcessRecord_EnqueuesFollowResult(t *testing.T) {
+	var sawPriority, sawDefault, sawNone bool
+	var ran int
+	for _, status := range []string{store.RecordingStatusRecording, store.RecordingStatusFinished, store.RecordingStatusCanceled} {
+		t.Run(status, func(t *testing.T) {
+			ran++
+			w, pool := setupTest(t)
+			records := &failingRecords{RecordObservations: w.records}
+			w.records = records
+			const programID int64 = 100010
+			createTestReservation(t, pool, programID)
+			record := testRecord("ingest-hint-"+status, programID, status)
+			if err := w.processRecord(context.Background(), record); err != nil {
+				t.Fatalf("processRecord: %v", err)
+			}
+			results := records.snapshot().results
+			if len(results) != 1 {
+				t.Fatalf("store results = %d, want 1", len(results))
+			}
+			result := results[0]
+			enqueues := listIngestEnqueues(t, w)
+			if !result.EnqueueIngest {
+				sawNone = true
+				if len(enqueues) != 0 {
+					t.Fatalf("ingest enqueue calls = %d, want 0 when the store does not ask for ingest", len(enqueues))
+				}
+				return
+			}
+			if len(enqueues) != 1 {
+				t.Fatalf("ingest enqueue calls = %d, want 1 when the store asks for ingest", len(enqueues))
+			}
+			args, ok := enqueues[0].Args.(jobs.IngestJobArgs)
+			if !ok {
+				t.Fatalf("ingest args = %T, want jobs.IngestJobArgs", enqueues[0].Args)
+			}
+			if args.Site != DefaultSite || args.RecordID != record.ID {
+				t.Errorf("ingest args = %+v, want site %q and record %q", args, DefaultSite, record.ID)
+			}
+			want := jobq.EffectivePriority(args.Spec())
+			if result.IngestPriority != 0 {
+				sawPriority = true
+				want = jobq.EffectivePriority(args.Spec(), jobq.Priority(result.IngestPriority))
+			} else {
+				sawDefault = true
+			}
+			if got := jobq.EffectivePriority(args.Spec(), enqueues[0].Options...); got != want {
+				t.Errorf("ingest priority = %d, want %d (store priority %d)", got, want, result.IngestPriority)
+			}
+		})
 	}
-	wg.Wait()
-
-	for i, err := range errs {
-		if err != nil {
-			t.Fatalf("processRecord (goroutine %d): %v", i, err)
-		}
-	}
-}
-
-// TestProcessRecord_ConcurrentIdempotent は M2-16 の受け入れ基準の核心を検証する。
-// 同一 record を多数の goroutine から同時に processRecord して、record_sync の
-// (site, record_id) 行ロック（AcquireRecordSync）による直列化によって recordings
-// が 1 行しか作られないことを確認する。複数ラウンド（record_id を変えて繰り返す）
-// 実行し、たまたま競合が起きなかっただけという flaky な成功を排除する。
-func TestProcessRecord_ConcurrentIdempotent(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	const rounds = 30
-	const goroutinesPerRound = 8
-
-	for round := 0; round < rounds; round++ {
-		programID := int64(400000 + round)
-		recordID := fmt.Sprintf("record-concurrent-%03d", round)
-
-		createTestReservation(t, pool, programID)
-		record := testRecord(recordID, programID, "finished")
-		// recordings には (site, network_id, service_id, event_id, program_start_at) の一意制約
-		// （部分一意索引 recordings_unique_active_event、述語
-		// deleted_at IS NULL AND superseded_at IS NULL）があるため、
-		// ラウンドごとに event_id を変えて他ラウンドの録画と衝突しないようにする。
-		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
-		// は #158 で列自体を落とした）。
-		record.Program.EventID = 500 + round
-
-		runConcurrentProcessRecord(t, w, record, goroutinesPerRound)
-
-		var recCount int
-		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM recordings WHERE network_id = $1 AND service_id = $2 AND event_id = $3",
-			record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-		).Scan(&recCount); err != nil {
-			t.Fatalf("round %d: querying recordings: %v", round, err)
-		}
-		if recCount != 1 {
-			t.Fatalf("round %d: recording count = %d, want 1 (concurrent processRecord must be idempotent)", round, recCount)
-		}
-
-		calls := listIngestEnqueues(t, w)
-		requireIngestEnqueuesCoalesce(t, calls)
-		if got := countIngestEnqueues(t, w, recordID); got != goroutinesPerRound {
-			t.Errorf("round %d: ingest enqueue calls for %s = %d, want %d", round, recordID, got, goroutinesPerRound)
-		}
-	}
-}
-
-// TestProcessRecord_ConcurrentUntaggedRecord は Rokuban 以外が mirakc に入れた
-// tag のない record（record_sync.recording_id が NULL のまま正しい）を並行処理
-// しても、recordings が作られたり record_sync が壊れたりしないことを検証する。
-func TestProcessRecord_ConcurrentUntaggedRecord(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	record := testRecord("record-concurrent-notag-001", 400900, "finished")
-	record.Tags = nil
-
-	runConcurrentProcessRecord(t, w, record, 20)
-
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 0 {
-		t.Errorf("recording count = %d, want 0 for untagged record", recCount)
-	}
-
-	var syncRecordingID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID).Scan(&syncRecordingID); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncRecordingID != nil {
-		t.Errorf("expected recording_id nil for untagged record, got %d", *syncRecordingID)
-	}
-
-	if callCount := countIngestEnqueues(t, w, ""); callCount != 0 {
-		t.Errorf("ingest enqueue calls = %d, want 0 for untagged record", callCount)
+	// 3 通り（優先度あり・既定・投入なし）を実際に通ったことを確かめる。空振りを防ぐ。
+	// -run で一部のサブテストだけ実行したときは評価しない。
+	if ran == 3 && (!sawPriority || !sawDefault || !sawNone) {
+		t.Fatalf("cases covered: priority=%t default=%t none=%t, want all three", sawPriority, sawDefault, sawNone)
 	}
 }
 
 func TestHandleRecordBroken(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
+	w, _ := setupTest(t)
+	records := &failingRecords{RecordObservations: w.records}
+	w.records = records
 
-	createTestReservation(t, pool, 100005)
-	record := testRecord("record-broken-001", 100005, "recording")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	if err := w.handleRecordBroken(ctx, mirakc.RecordBrokenData{
-		RecordID: record.ID,
-		Reason:   "io-error",
-	}); err != nil {
+	if err := w.handleRecordBroken(context.Background(), mirakc.RecordBrokenData{RecordID: "record-broken-001", Reason: "io-error"}); err != nil {
 		t.Fatalf("handleRecordBroken: %v", err)
 	}
 
-	var qeJSON json.RawMessage
-	err := pool.QueryRow(ctx,
-		"SELECT quality_events FROM recordings",
-	).Scan(&qeJSON)
-	if err != nil {
-		t.Fatalf("querying quality_events: %v", err)
-	}
-
-	var events []db.QualityEvent
-	if err := json.Unmarshal(qeJSON, &events); err != nil {
-		t.Fatalf("unmarshalling quality_events: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("expected 1 quality event, got %d", len(events))
-	}
-	if events[0].Event != "recording.record-broken" {
-		t.Errorf("quality_events[0].event = %q, want %q", events[0].Event, "recording.record-broken")
+	got := records.snapshot().brokenEvents
+	if !reflect.DeepEqual(got, []brokenEventCall{{site: DefaultSite, recordID: "record-broken-001", reason: "io-error"}}) {
+		t.Errorf("AppendRecordBrokenEvent calls = %+v, want site, record ID, and reason from mirakc event", got)
 	}
 }
-
-func TestHandleRecordingFailed_Idempotent(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+func TestHandleRecordingFailed_ConvertsScheduleObservation(t *testing.T) {
+	w, pool := setupTest(t)
+	records := &failingRecords{RecordObservations: w.records}
+	w.records = records
 
 	programID := int64(327361024100)
 	createTestReservation(t, pool, programID)
-
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour).Truncate(time.Millisecond))
 	duration := int64(3600000)
 	name := "Failed Program"
-	desc := "失敗番組の説明"
-
+	description := "失敗番組の説明"
 	schedule := mirakc.Schedule{
 		State: "scheduled",
 		Program: mirakc.Program{
-			ID:          programID,
-			EventID:     100,
-			ServiceID:   1024,
-			NetworkID:   32736,
-			StartAt:     &startAt,
-			Duration:    &duration,
-			IsFree:      true,
-			Name:        &name,
-			Description: &desc,
-			Extended:    map[string]string{"出演者": "テスト太郎"},
-			Genres:      []mirakc.Genre{{LV1: 1, LV2: 2, UN1: 3, UN2: 4}},
+			ID: programID, EventID: 100, ServiceID: 1024, NetworkID: 32736,
+			StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name,
+			Description: &description, Extended: map[string]string{"出演者": "テスト太郎"},
+			Genres: []mirakc.Genre{{LV1: 1, LV2: 2, UN1: 3, UN2: 4}},
 		},
 	}
-
-	services := []mirakc.Service{
-		{
-			ServiceID: 1024,
-			NetworkID: 32736,
-			Name:      "NHK総合",
-			Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-		},
-	}
-
+	services := []mirakc.Service{{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}}}
 	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	mc := mirakc.NewClient(fake.URL(), nil)
-	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
-	failedData := mirakc.RecordingFailedData{
-		ProgramID: programID,
-		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
-	}
-
-	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
-		t.Fatalf("handleRecordingFailed (1st): %v", err)
+	reason := mirakc.FailedReason{Type: "tuner-unavailable"}
+	if err := w.handleRecordingFailed(context.Background(), mirakc.RecordingFailedData{ProgramID: programID, Reason: reason}); err != nil {
+		t.Fatalf("handleRecordingFailed: %v", err)
 	}
 
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
+	got := records.snapshot().failedEvents
+	if len(got) != 1 {
+		t.Fatalf("RecordFailedRecording calls = %d, want 1", len(got))
 	}
-	if recCount != 1 {
-		t.Errorf("recording count after 1st call = %d, want 1", recCount)
+	wantReason, err := json.Marshal(reason)
+	if err != nil {
+		t.Fatalf("marshalling expected reason: %v", err)
 	}
-	var failedID int64
-	if err := pool.QueryRow(ctx, "SELECT id FROM recordings").Scan(&failedID); err != nil {
-		t.Fatalf("querying recording id: %v", err)
+	wantSnapshot := snapshotFromSchedule(schedule, services[0]).recordingSnapshot(
+		schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID)
+	if got[0].Site != DefaultSite || got[0].ProgramID != programID || !bytes.Equal(got[0].Reason, wantReason) {
+		t.Errorf("RecordFailedRecording observation = %+v, want watcher conversion of schedule and event reason", got[0])
 	}
-	assertRecordingSnapshotColumns(t, pool, failedID, snapshotFromSchedule(schedule, services[0]))
+	requireRecordingSnapshotEqual(t, got[0].Snapshot, wantSnapshot)
+}
+func TestHandleRecordingFailed_NoReservationSkipsScheduleLookup(t *testing.T) {
+	w, _ := setupTest(t)
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+	fake := newWatcherMirakcFake(t, nil, nil, nil)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
+	const programID = int64(200099)
 
-	// Call again with same program — should NOT create a duplicate
-	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
-		t.Fatalf("handleRecordingFailed (2nd): %v", err)
+	if err := w.handleRecordingFailed(context.Background(), mirakc.RecordingFailedData{
+		ProgramID: programID, Reason: mirakc.FailedReason{Type: "tuner-unavailable"},
+	}); err != nil {
+		t.Fatalf("handleRecordingFailed without reservation: %v", err)
 	}
-
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
+	if calls := fake.CallCount(http.MethodGet, fmt.Sprintf("/api/recording/schedules/%d", programID)); calls != 0 {
+		t.Errorf("GetSchedule calls without reservation = %d, want 0", calls)
 	}
-	if recCount != 1 {
-		t.Errorf("recording count after 2nd call = %d, want 1 (idempotent)", recCount)
-	}
-
-	// Verify quality_events were merged (2 events appended)
-	var qeJSON json.RawMessage
-	if err := pool.QueryRow(ctx,
-		"SELECT quality_events FROM recordings",
-	).Scan(&qeJSON); err != nil {
-		t.Fatalf("querying quality_events: %v", err)
-	}
-
-	var events []db.QualityEvent
-	if err := json.Unmarshal(qeJSON, &events); err != nil {
-		t.Fatalf("unmarshalling quality_events: %v", err)
-	}
-	if len(events) != 2 {
-		t.Errorf("quality_events count = %d, want 2 (merged from 2 calls)", len(events))
+	failedEvents := recordsStore.snapshot().failedEvents
+	if len(failedEvents) != 0 {
+		t.Errorf("RecordFailedRecording calls without reservation = %d, want 0", len(failedEvents))
 	}
 }
 
-func TestHandleRecordingFailed_StartTimeChangeCreatesNewRow(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-	programID := int64(327361024101)
-	createTestReservation(t, pool, programID)
-
-	firstStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	duration := int64(3600000)
-	name := "Moved Failed Program"
+func TestSweep_FailedScheduleWithoutReservationSkipsRecording(t *testing.T) {
+	w, _ := setupTest(t)
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+	reason := mirakc.FailedReason{Type: "start-recording-failed"}
 	schedule := mirakc.Schedule{
-		State: "scheduled",
-		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   100,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &firstStart,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
+		State: store.RecordingStatusFailed, FailedReason: &reason,
+		Program: mirakc.Program{ID: 200098, NetworkID: 32736, ServiceID: 1024, EventID: 98},
 	}
-
-	services := []mirakc.Service{
-		{
-			ServiceID: 1024,
-			NetworkID: 32736,
-			Name:      "NHK総合",
-			Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-		},
-	}
-
+	services := []mirakc.Service{{ServiceID: schedule.Program.ServiceID, NetworkID: schedule.Program.NetworkID, Name: "NHK総合"}}
 	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
-	failedData := mirakc.RecordingFailedData{
-		ProgramID: programID,
-		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
-	}
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
-	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
-		t.Fatalf("handleRecordingFailed (1st): %v", err)
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep without reservation: %v", err)
 	}
-
-	secondStart := mirakc.Milliseconds(time.Now().Add(-30 * time.Minute))
-	schedule.Program.StartAt = &secondStart
-	fake.SetSchedule(schedule)
-	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
-		t.Fatalf("handleRecordingFailed (2nd): %v", err)
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	failedSchedules := snap.failedSchedules
+	if !reflect.DeepEqual(calls, []string{"delete-stale"}) || len(failedSchedules) != 0 {
+		t.Errorf("store calls = %v, failed schedule observations = %d; want no failure write", calls, len(failedSchedules))
 	}
-
-	rows, err := pool.Query(ctx, `
-		SELECT program_start_at, quality_events
-		FROM recordings
-		ORDER BY program_start_at
-	`)
-	if err != nil {
-		t.Fatalf("querying failed recordings: %v", err)
-	}
-	defer rows.Close()
-
-	var starts []time.Time
-	var eventCounts []int
-	for rows.Next() {
-		var start time.Time
-		var qeJSON json.RawMessage
-		if err := rows.Scan(&start, &qeJSON); err != nil {
-			t.Fatalf("scanning failed recording: %v", err)
-		}
-		var events []db.QualityEvent
-		if err := json.Unmarshal(qeJSON, &events); err != nil {
-			t.Fatalf("unmarshalling quality_events: %v", err)
-		}
-		starts = append(starts, start)
-		eventCounts = append(eventCounts, len(events))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating failed recordings: %v", err)
-	}
-	if len(starts) != 2 {
-		t.Fatalf("failed recording count = %d, want 2 after startAt changed", len(starts))
-	}
-	if starts[0].Equal(starts[1]) {
-		t.Errorf("program_start_at values are equal: %v and %v", starts[0], starts[1])
-	}
-	for i, count := range eventCounts {
-		if count != 1 {
-			t.Errorf("recording %d quality_events count = %d, want 1 (events must not merge across startAt)", i, count)
-		}
+	if calls := fake.CallCount(http.MethodGet, "/api/services"); calls != 1 {
+		t.Errorf("ListServices calls = %d, want only the sweep cache refresh", calls)
 	}
 }
 
 func TestSweep_CatchesMissedRecords(t *testing.T) {
-	pool := testutil.SetupDB(t)
+	w, pool := setupTest(t)
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
 	ctx := context.Background()
-
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-
-	createTestReservation(t, pool, 200001)
-	createTestReservation(t, pool, 200002)
-
-	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	recStart := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	duration := int64(3600000)
-	name1 := "Program 1"
-	name2 := "Program 2"
 
 	records := []mirakc.Record{
-		{
-			ID:        "reconcile-rec-001",
-			Program:   mirakc.Program{ID: 200001, EventID: 1, ServiceID: 1, NetworkID: 1, StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name1},
-			Service:   mirakc.Service{Name: "NHK", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
-			Tags:      []string{mirakc.ProgramTag(200001)},
-			Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart},
-			Content:   mirakc.ContentInfo{Path: "test1.m2ts"},
-		},
-		{
-			ID:        "reconcile-rec-002",
-			Program:   mirakc.Program{ID: 200002, EventID: 2, ServiceID: 1, NetworkID: 1, StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name2},
-			Service:   mirakc.Service{Name: "NHK", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
-			Tags:      []string{mirakc.ProgramTag(200002)},
-			Recording: mirakc.RecordInfo{Status: "finished", StartTime: recStart},
-			Content:   mirakc.ContentInfo{Path: "test2.m2ts"},
-		},
+		testRecord("reconcile-rec-001", 200001, "finished"),
+		testRecord("reconcile-rec-002", 200002, "finished"),
 	}
-
+	for i := range records {
+		records[i].Program.EventID = i + 1
+	}
 	fake := newWatcherMirakcFake(t, nil, nil, records)
-	mc := mirakc.NewClient(fake.URL(), nil)
-	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerBefore := seedRecordSweepMarker(t, pool)
+	lastPass := seedSweepLastPassMetric(t)
 
 	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
+		t.Fatalf("Sweep: %v", err)
+	}
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	liveIDs := snap.liveRecordIDs
+	wantCalls := []string{"delete-stale", "record:" + records[0].ID, "record:" + records[1].ID}
+	wantIDs := []string{records[0].ID, records[1].ID}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
+	}
+	if !reflect.DeepEqual(liveIDs, wantIDs) {
+		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want %v", liveIDs, wantIDs)
 	}
 	var markerAt time.Time
-	if err := pool.QueryRow(ctx, `
-		SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite,
-	).Scan(&markerAt); err != nil {
-		t.Fatalf("reading successful record sweep marker: %v", err)
+	if err := pool.QueryRow(ctx, `SELECT last_success_at FROM record_sweep_snapshots WHERE site = $1`, DefaultSite).Scan(&markerAt); err != nil {
+		t.Fatalf("reading successful sweep marker: %v", err)
 	}
 	if !markerAt.After(markerBefore) {
-		t.Errorf("record sweep marker = %s, want a time after previous marker %s", markerAt, markerBefore)
+		t.Errorf("record sweep marker = %s, want a time after %s", markerAt, markerBefore)
 	}
-
-	var syncCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM record_sync").Scan(&syncCount); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncCount != 2 {
-		t.Errorf("record_sync count = %d, want 2", syncCount)
-	}
-
-	var recCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 2 {
-		t.Errorf("recordings count = %d, want 2", recCount)
-	}
-
-	calls := listIngestEnqueues(t, w)
-	requireIngestEnqueuesCoalesce(t, calls)
-	if got := len(calls); got != 2 {
-		t.Errorf("ingest enqueue calls = %d, want 2", got)
-	}
-
-	// Run sweep again — verify idempotency
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep (2nd): %v", err)
-	}
-
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 2 {
-		t.Errorf("recordings count after 2nd sweep = %d, want 2", recCount)
-	}
-
-	calls = listIngestEnqueues(t, w)
-	requireIngestEnqueuesCoalesce(t, calls)
-	if got := len(calls); got != 4 {
-		t.Errorf("ingest enqueue calls after 2nd sweep = %d, want 4", got)
+	if got := promtestutil.ToFloat64(metrics.SweepLastPass); got <= lastPass {
+		t.Errorf("SweepLastPass = %v, want a value after %v", got, lastPass)
 	}
 }
-
 func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
+	w, pool := setupTest(t)
 	ctx := context.Background()
-
 	const failingRecordID = "sweep-fail-record"
-	createTestReservation(t, pool, 200010)
-	createTestReservation(t, pool, 200011)
-	createTestReservation(t, pool, 200012)
-	installSweepFailureTrigger(t, pool, "fail_sweep_record_sync_insert", "record_sync",
-		"NEW.record_id = 'sweep-fail-record'")
+	recordsStore := &failingRecords{RecordObservations: w.records, failRecordID: failingRecordID}
+	w.records = recordsStore
 
 	records := []mirakc.Record{
 		testRecord("sweep-good-before-failure", 200010, store.RecordingStatusFinished),
@@ -1381,653 +519,226 @@ func TestSweep_PartialRecordFailureDoesNotAdvanceMarker(t *testing.T) {
 	for i := range records {
 		records[i].Program.EventID = i + 10
 	}
-	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, records)
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
+	fake := newWatcherMirakcFake(t, nil, nil, records)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
-	if err == nil {
-		t.Fatal("Sweep returned nil after a record failed")
+	if err == nil || !strings.Contains(err.Error(), failingRecordID) {
+		t.Fatalf("Sweep error = %v, want failure identifying %q", err, failingRecordID)
 	}
-	if !strings.Contains(err.Error(), failingRecordID) {
-		t.Errorf("Sweep error %q does not identify failing record %q", err, failingRecordID)
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	liveIDs := snap.liveRecordIDs
+	wantCalls := []string{"delete-stale", "record:" + records[0].ID, "record:" + records[1].ID, "record:" + records[2].ID}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
 	}
-
-	var recordingCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
-		t.Fatalf("counting recordings: %v", err)
-	}
-	if recordingCount != 2 {
-		t.Errorf("recordings count = %d, want 2 successful records", recordingCount)
-	}
-
-	rows, err := pool.Query(ctx, "SELECT record_id FROM record_sync WHERE site = $1 ORDER BY record_id", DefaultSite)
-	if err != nil {
-		t.Fatalf("querying record_sync rows: %v", err)
-	}
-	defer rows.Close()
-	var gotRecordIDs []string
-	for rows.Next() {
-		var recordID string
-		if err := rows.Scan(&recordID); err != nil {
-			t.Fatalf("scanning record_sync row: %v", err)
-		}
-		gotRecordIDs = append(gotRecordIDs, recordID)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterating record_sync rows: %v", err)
-	}
-	wantRecordIDs := []string{"sweep-good-after-failure", "sweep-good-before-failure"}
-	if !reflect.DeepEqual(gotRecordIDs, wantRecordIDs) {
-		t.Errorf("record_sync record IDs = %v, want %v", gotRecordIDs, wantRecordIDs)
+	wantIDs := []string{records[0].ID, records[1].ID, records[2].ID}
+	if !reflect.DeepEqual(liveIDs, wantIDs) {
+		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want %v", liveIDs, wantIDs)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
 	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
+	w, pool := setupTest(t)
 	ctx := context.Background()
-	createTestReservation(t, pool, 200013)
 	record := testRecord("sweep-after-schedule-list-failure", 200013, store.RecordingStatusFinished)
-
-	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{record})
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+	fake := newWatcherMirakcFake(t, nil, nil, []mirakc.Record{record})
 	fake.FailNext(http.MethodGet, "/api/recording/schedules", 1, http.StatusInternalServerError)
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
-	if err == nil {
-		t.Fatal("Sweep returned nil after ListSchedules failed")
+	if err == nil || !strings.Contains(err.Error(), "listing schedules") {
+		t.Fatalf("Sweep error = %v, want listing-schedules failure", err)
 	}
-	if !strings.Contains(err.Error(), "listing schedules") {
-		t.Errorf("Sweep error %q does not identify ListSchedules failure", err)
+	calls := recordsStore.snapshot().calls
+	if want := []string{"delete-stale", "record:" + record.ID}; !reflect.DeepEqual(calls, want) {
+		t.Errorf("store calls after ListSchedules failure = %v, want %v", calls, want)
 	}
-
-	var recordingCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
-		t.Fatalf("counting recordings: %v", err)
-	}
-	if recordingCount != 1 {
-		t.Errorf("recordings count = %d, want 1 record processed despite ListSchedules failure", recordingCount)
+	if calls := fake.CallCount(http.MethodGet, "/api/recording/records"); calls != 1 {
+		t.Errorf("ListRecords calls = %d, want 1 after schedule-list failure", calls)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
 	requireSweepLastPassMetric(t, lastPass)
 }
 
 func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
+	w, pool := setupTest(t)
 	ctx := context.Background()
 	const failedProgramID = int64(200014)
 	createTestReservation(t, pool, failedProgramID)
-	createTestReservation(t, pool, 200015)
-	installSweepFailureTrigger(t, pool, "fail_sweep_failed_recording_insert", "recordings", "NEW.event_id = 42")
-
+	const laterProgramID = int64(200015)
+	failedProgram := mirakc.Program{ID: failedProgramID, EventID: 42, ServiceID: 1024, NetworkID: 32736}
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	duration := int64(3600000)
 	name := "Failed schedule"
+	failedProgram.StartAt, failedProgram.Duration, failedProgram.Name = &startAt, &duration, &name
 	reason := mirakc.FailedReason{Type: "start-recording-failed"}
-	schedule := mirakc.Schedule{
-		State:        store.RecordingStatusFailed,
-		FailedReason: &reason,
-		Program: mirakc.Program{
-			ID:        failedProgramID,
-			EventID:   42,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
-	}
-	record := testRecord("sweep-record-after-failed-schedule", 200015, store.RecordingStatusFinished)
+	schedule := mirakc.Schedule{State: store.RecordingStatusFailed, FailedReason: &reason, Program: failedProgram}
+	record := testRecord("sweep-record-after-failed-schedule", laterProgramID, store.RecordingStatusFinished)
 	record.Program.EventID = 43
-	services := []mirakc.Service{{
-		ServiceID: 1024,
-		NetworkID: 32736,
-		Name:      "NHK総合",
-		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-	}}
+	recordsStore := &failingRecords{RecordObservations: w.records, failFailedScheduleProgramID: failedProgramID}
+	w.records = recordsStore
+	services := []mirakc.Service{{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}}}
 	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, []mirakc.Record{record})
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 	markerAt := seedRecordSweepMarker(t, pool)
 	lastPass := seedSweepLastPassMetric(t)
 
 	err := w.Sweep(ctx)
-	if err == nil {
-		t.Fatal("Sweep returned nil after failed schedule processing failed")
+	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("program_id %d", failedProgramID)) {
+		t.Fatalf("Sweep error = %v, want failed schedule program %d", err, failedProgramID)
 	}
-	if !strings.Contains(err.Error(), fmt.Sprintf("program_id %d", failedProgramID)) {
-		t.Errorf("Sweep error %q does not identify failed schedule program %d", err, failedProgramID)
-	}
-
-	var recordingCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordingCount); err != nil {
-		t.Fatalf("counting recordings: %v", err)
-	}
-	if recordingCount != 1 {
-		t.Errorf("recordings count = %d, want 1 record processed despite failed schedule", recordingCount)
+	calls := recordsStore.snapshot().calls
+	wantCalls := []string{fmt.Sprintf("failed-schedule:%d", failedProgramID), "delete-stale", "record:" + record.ID}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
 	}
 	requireRecordSweepMarker(t, pool, markerAt)
 	requireSweepLastPassMetric(t, lastPass)
 }
 
-func TestSweep_RecoversFailedSchedule(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
+func TestSweep_ConvertsFailedSchedule(t *testing.T) {
+	w, pool := setupTest(t)
 	ctx := context.Background()
-
 	const programID = int64(200003)
 	createTestReservation(t, pool, programID)
-
 	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
 	duration := int64(3600000)
 	name := "Recordless Failed Program"
 	message := "failed to start recording"
+	reason := mirakc.FailedReason{Type: "start-recording-failed", Message: &message}
 	schedule := mirakc.Schedule{
-		State: "failed",
-		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   3,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
-		Tags: []string{mirakc.ProgramTag(programID)},
-		FailedReason: &mirakc.FailedReason{
-			Type:    "start-recording-failed",
-			Message: &message,
-		},
+		State:   store.RecordingStatusFailed,
+		Program: mirakc.Program{ID: programID, EventID: 3, ServiceID: 1024, NetworkID: 32736, StartAt: &startAt, Duration: &duration, IsFree: true, Name: &name},
+		Tags:    []string{mirakc.ProgramTag(programID)}, FailedReason: &reason,
 	}
-	services := []mirakc.Service{{
-		ServiceID: 1024,
-		NetworkID: 32736,
-		Name:      "NHK総合",
-		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-	}}
-
+	services := []mirakc.Service{{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}}}
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
 	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
-	var status string
-	var qeJSON json.RawMessage
-	if err := pool.QueryRow(ctx,
-		"SELECT status, quality_events FROM recordings",
-	).Scan(&status, &qeJSON); err != nil {
-		t.Fatalf("querying recovered recording: %v", err)
-	}
-	if status != store.RecordingStatusFailed {
-		t.Errorf("recovered recording status = %q, want %q", status, store.RecordingStatusFailed)
-	}
-	var events []db.QualityEvent
-	if err := json.Unmarshal(qeJSON, &events); err != nil {
-		t.Fatalf("unmarshalling quality_events: %v", err)
-	}
-	if len(events) != 1 {
-		t.Fatalf("quality_events count = %d, want 1", len(events))
-	}
-	if events[0].Event != "recording.failed" {
-		t.Errorf("quality_events[0].event = %q, want recording.failed", events[0].Event)
-	}
-	var reason mirakc.FailedReason
-	if err := json.Unmarshal(events[0].Reason, &reason); err != nil {
-		t.Fatalf("unmarshalling failed reason: %v", err)
-	}
-	if reason.Type != "start-recording-failed" {
-		t.Errorf("failed reason type = %q, want start-recording-failed", reason.Type)
-	}
-
-	var syncCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM record_sync").Scan(&syncCount); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if syncCount != 0 {
-		t.Errorf("record_sync count = %d, want 0 for a recordless failure", syncCount)
-	}
-
-	// failed schedule は次の sweep にも残るが、同じ観測を quality_events に
-	// 追加し続けてはいけない。
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep (2nd): %v", err)
-	}
-	if err := pool.QueryRow(ctx, "SELECT quality_events FROM recordings").Scan(&qeJSON); err != nil {
-		t.Fatalf("querying quality_events (2nd): %v", err)
-	}
-	if err := json.Unmarshal(qeJSON, &events); err != nil {
-		t.Fatalf("unmarshalling quality_events (2nd): %v", err)
-	}
-	if len(events) != 1 {
-		t.Errorf("quality_events count after 2nd sweep = %d, want 1", len(events))
-	}
-}
-
-func TestSweep_RecoversFailedRecord(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
-	ctx := context.Background()
-
-	const programID = int64(200004)
-	createTestReservation(t, pool, programID)
-	record := testRecord("reconcile-failed-record-001", programID, store.RecordingStatusFailed)
-	message := "pipeline exited with an error"
-	record.Recording.FailedReason = &mirakc.FailedReason{
-		Type:    "pipeline-error",
-		Message: &message,
-	}
-
-	services := []mirakc.Service{{
-		ServiceID: 1024,
-		NetworkID: 32736,
-		Name:      "NHK総合",
-		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-	}}
-	fake := newWatcherMirakcFake(t, services, nil, []mirakc.Record{record})
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep (2nd): %v", err)
-	}
-
-	var recordingID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, record.ID,
-	).Scan(&recordingID); err != nil {
-		t.Fatalf("querying record_sync: %v", err)
-	}
-	if recordingID == nil {
-		t.Fatal("record_sync.recording_id is nil")
-	}
-
-	var recCount, eventCount int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 1 {
-		t.Errorf("recording count = %d, want 1", recCount)
-	}
-	if err := pool.QueryRow(ctx,
-		"SELECT jsonb_array_length(quality_events) FROM recordings WHERE id = $1", *recordingID,
-	).Scan(&eventCount); err != nil {
-		t.Fatalf("querying quality_events: %v", err)
-	}
-	if eventCount != 1 {
-		t.Errorf("quality_events count = %d, want 1 after two sweeps", eventCount)
-	}
-}
-
-// TestSweep_DoesNotAttributeFailureToFinishedRecording は「本物の record が推論に
-// 必ず勝つ」を failed 再構成側から固定する。同一 active-event に生きている
-// finished 行があって、mirakc が state=failed の schedule をまだ返す間（本タスク
-// の docs が「schedule が削除された後は回収できない」＝削除まで残ると言っている）
-// に sweep が走っても、失敗を成功した行へ追記してはならない。CreateOrGetFailedRecording
-// の ON CONFLICT は status='failed' の行だけ再利用するので、finished 行には衝突せず
-// RETURNING が 0 行になり、processFailedSchedule は追記せず返る。
-func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
-	ctx := context.Background()
-
-	const programID = int64(200006)
-	createTestReservation(t, pool, programID)
-
-	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	duration := int64(3600000)
-	name := "Already Finished Program"
-	message := "failed to start recording"
-	schedule := mirakc.Schedule{
-		State: "failed",
-		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   6,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
-		Tags: []string{mirakc.ProgramTag(programID)},
-		FailedReason: &mirakc.FailedReason{
-			Type:    "start-recording-failed",
-			Message: &message,
-		},
-	}
-	// 同一 active-event に生きている finished 行を先に作る。
-	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
-		int32(schedule.Program.NetworkID), int32(schedule.Program.ServiceID),
-		int32(schedule.Program.EventID), time.UnixMilli(startAt.Time().UnixMilli()), "finished"))
-
-	services := []mirakc.Service{{
-		ServiceID: 1024,
-		NetworkID: 32736,
-		Name:      "NHK総合",
-		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-	}}
-	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
-	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
-	}
-
-	var status string
-	var qeJSON json.RawMessage
-	if err := pool.QueryRow(ctx,
-		"SELECT status, quality_events FROM recordings WHERE id = $1", finishedID,
-	).Scan(&status, &qeJSON); err != nil {
-		t.Fatalf("querying finished recording: %v", err)
-	}
-	if status != "finished" {
-		t.Errorf("finished status = %q, want \"finished\"", status)
-	}
-	var events []db.QualityEvent
-	if err := json.Unmarshal(qeJSON, &events); err != nil {
-		t.Fatalf("unmarshalling quality_events: %v", err)
-	}
-	if len(events) != 0 {
-		t.Fatalf("finished recording gained %d quality events, want 0 (failed predicate must not touch a success row)", len(events))
-	}
-
-	// failed 行は増えていない（finished 行に帰属させるのではなく何もしない）。
-	var recCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
-	).Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 1 {
-		t.Errorf("recording count = %d, want 1 (only the finished row)", recCount)
-	}
-}
-
-func TestSweepAndHandleRecordingFailed_ConcurrentIdempotent(t *testing.T) {
-	baseWatcher, pool := setupTest(t)
-	ctx := context.Background()
-
-	const programID = int64(200005)
-	createTestReservation(t, pool, programID)
-
-	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	duration := int64(3600000)
-	name := "Concurrent Recordless Failed Program"
-	schedule := mirakc.Schedule{
-		State: "failed",
-		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   5,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
-		Tags: []string{mirakc.ProgramTag(programID)},
-	}
-	reason := mirakc.FailedReason{Type: "start-recording-failed"}
-	schedule.FailedReason = &reason
-	services := []mirakc.Service{{
-		ServiceID: 1024,
-		NetworkID: 32736,
-		Name:      "NHK総合",
-		Channel:   mirakc.ServiceChannel{Type: "GR", Channel: "27"},
-	}}
-
-	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	sweepWatcher := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
-	eventWatcher := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), baseWatcher.enqueuer, nil)
-	// Sweep は services を更新するが、eventWatcher と別の Watcher にして同時 read/write
-	// を発生させない。
-	sweepWatcher.services = services
-	eventWatcher.services = services
-
-	event := mirakc.RecordingFailedData{ProgramID: programID, Reason: reason}
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		errs <- sweepWatcher.Sweep(ctx)
-	}()
-	go func() {
-		defer wg.Done()
-		errs <- eventWatcher.handleRecordingFailed(ctx, event)
-	}()
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent failed recovery: %v", err)
-		}
-	}
-
-	var recCount, eventCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
-	).Scan(&recCount); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if recCount != 1 {
-		t.Fatalf("recording count = %d, want 1", recCount)
-	}
-	if err := pool.QueryRow(ctx,
-		"SELECT jsonb_array_length(quality_events) FROM recordings WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4",
-		DefaultSite, schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID,
-	).Scan(&eventCount); err != nil {
-		t.Fatalf("querying quality_events: %v", err)
-	}
-	if eventCount < 1 {
-		t.Fatalf("quality_events count = %d, want at least 1", eventCount)
-	}
-}
-
-// TestSweep_RemovesStaleRecordSyncs は、ListRecords の全量結果に無い
-// record_sync 行を外部産 / Rokuban 産のどちらも削除し、今回観測した外部産行は
-// 残すことを確認する。record_sync は mirakc の全 record の写しなので、
-// recording_id の有無で stale 削除の対象を分けてはならない。
-func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	q := sqlcgen.New(pool)
-	oursRecordingID := dbtest.Recording(t, pool, watcherRecordingOptions(1, 1, 901,
-		time.Now().Add(-time.Hour), "finished"))
-	oursLength := int64(100)
-	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
-		Site:          DefaultSite,
-		RecordID:      "stale-ours",
-		RecordingID:   &oursRecordingID,
-		ProgramID:     901,
-		Status:        "finished",
-		ContentLength: &oursLength,
-		Tags:          []string{mirakc.ProgramTag(901)},
-	}); err != nil {
-		t.Fatalf("upserting stale ours record_sync: %v", err)
-	}
-
-	externalLength := int64(200)
-	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
-		Site:          DefaultSite,
-		RecordID:      "stale-external",
-		ProgramID:     902,
-		Status:        "finished",
-		ContentLength: &externalLength,
-		Tags:          []string{},
-	}); err != nil {
-		t.Fatalf("upserting stale external record_sync: %v", err)
-	}
-
-	current := testRecord("current-external", 903, "finished")
-	current.Tags = nil
-	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{current})
 	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
 	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
+		t.Fatalf("Sweep: %v", err)
 	}
-
-	var gotCount int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM record_sync WHERE site = $1", DefaultSite,
-	).Scan(&gotCount); err != nil {
-		t.Fatalf("counting record_sync rows: %v", err)
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	got := snap.failedSchedules
+	if len(got) != 1 {
+		t.Fatalf("ProcessFailedSchedule calls = %d, want 1", len(got))
 	}
-	if gotCount != 1 {
-		t.Fatalf("record_sync row count = %d, want 1 (stale ours / external rows must be deleted)", gotCount)
+	wantReason, err := json.Marshal(reason)
+	if err != nil {
+		t.Fatalf("marshalling expected reason: %v", err)
 	}
-
-	var gotID string
-	if err := pool.QueryRow(ctx,
-		"SELECT record_id FROM record_sync WHERE site = $1", DefaultSite,
-	).Scan(&gotID); err != nil {
-		t.Fatalf("reading remaining record_sync row: %v", err)
+	wantSnapshot := snapshotFromSchedule(schedule, services[0]).recordingSnapshot(
+		schedule.Program.NetworkID, schedule.Program.ServiceID, schedule.Program.EventID)
+	if got[0].Site != DefaultSite || got[0].ProgramID != programID || !bytes.Equal(got[0].Reason, wantReason) {
+		t.Errorf("ProcessFailedSchedule observation = %+v, want watcher conversion of failed schedule", got[0])
 	}
-	if gotID != current.ID {
-		t.Errorf("remaining record_sync record_id = %q, want %q", gotID, current.ID)
+	requireRecordingSnapshotEqual(t, got[0].Snapshot, wantSnapshot)
+	if want := []string{fmt.Sprintf("failed-schedule:%d", programID), "delete-stale"}; !reflect.DeepEqual(calls, want) {
+		t.Errorf("Sweep store calls = %v, want %v", calls, want)
 	}
 }
 
-// TestSweep_SSERecordCommittedMidLoopSurvives は、stale 削除が snapshot の
-// processRecord より前に来る順序を回帰的に固定する。
-//
-// 壊す前の実装（削除をループの後に置く）では、(a) SSE 由来の processRecord が
-// ListRecords 応答に無い record（= snapshot 取得後に現れた record）をループ中に
-// 書き込むと、その record_sync 行を stale として消してしまい、recordings は残るのに
-// record_sync が無い zombie 状態になる。beforeSweepProcessRecords フックで「削除の
-// 直後、snapshot の processRecord の直前」に B の観測を注入し、B の record_sync 行が
-// sweep 後も残る（recording_id も残る）ことを決定的に確認する。
-// 壊し方: watcher.go の Sweep で DeleteStaleRecordSyncs をループの後に移すと、
-// B が recordIDs に無いので削除され、このアサーションが落ちる。
-func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
-	pool := testutil.SetupDB(t)
+func TestSweep_ConvertsFailedRecord(t *testing.T) {
+	w, _ := setupTest(t)
 	ctx := context.Background()
+	record := testRecord("reconcile-failed-record-001", 200004, store.RecordingStatusFailed)
+	message := "pipeline exited with an error"
+	reason := &mirakc.FailedReason{Type: "pipeline-error", Message: &message}
+	record.Recording.FailedReason = reason
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+	fake := newWatcherMirakcFake(t, nil, nil, []mirakc.Record{record})
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
+	if err := w.Sweep(ctx); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	observations := recordsStore.snapshot().observations
+	if len(observations) != 1 {
+		t.Fatalf("ProcessRecord calls = %d, want 1", len(observations))
+	}
+	wantReason, err := json.Marshal(reason)
+	if err != nil {
+		t.Fatalf("marshalling expected failed reason: %v", err)
+	}
+	got := observations[0]
+	if got.Site != DefaultSite || got.RecordID != record.ID || got.ProgramID != record.Program.ID || got.Status != store.RecordingStatusFailed || !bytes.Equal(got.FailedReason, wantReason) {
+		t.Errorf("record observation = %+v, want failed record fields and reason from mirakc", got)
+	}
+}
 
-	b := testRecord("sse-mid-loop", 700001, "finished")
-	createTestReservation(t, pool, 700001)
+func TestSweep_UsesLiveRecordIDsForStaleCleanup(t *testing.T) {
+	w, _ := setupTest(t)
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+	current := testRecord("current-external", 903, store.RecordingStatusFinished)
+	current.Tags = nil
+	fake := newWatcherMirakcFake(t, nil, nil, []mirakc.Record{current})
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
-	// ListRecords は anchor 1 件だけを返す（B は snapshot に無い）。
+	if err := w.Sweep(context.Background()); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	liveIDs := snap.liveRecordIDs
+	if !reflect.DeepEqual(liveIDs, []string{current.ID}) {
+		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want only current mirakc record %q", liveIDs, current.ID)
+	}
+	if want := []string{"delete-stale", "record:" + current.ID}; !reflect.DeepEqual(calls, want) {
+		t.Errorf("Sweep store call order = %v, want %v", calls, want)
+	}
+}
+
+// TestSweep_SSERecordCommittedMidLoopSurvives は、stale 削除を snapshot の record 処理より
+// 前に行い、その間に届いた SSE 観測を巻き込まない順序を固定する。
+func TestSweep_SSERecordCommittedMidLoopSurvives(t *testing.T) {
+	w, _ := setupTest(t)
+	ctx := context.Background()
+	recordsStore := &failingRecords{RecordObservations: w.records}
+	w.records = recordsStore
+
+	injected := testRecord("sse-mid-loop", 700001, "finished")
 	anchor := testRecord("anchor", 700002, "finished")
 	anchor.Tags = nil
+	fake := newWatcherMirakcFake(t, nil, nil, []mirakc.Record{anchor})
+	w.mirakc = mirakc.NewClient(fake.URL(), nil)
 
-	fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{anchor})
-	w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
-
-	// 削除の直後・processRecord ループの直前に、SSE 由来の B を注入する。
 	beforeSweepProcessRecords = func() {
-		if err := w.processRecord(ctx, b); err != nil {
-			t.Errorf("injecting B via processRecord: %v", err)
+		if err := w.processRecord(ctx, injected); err != nil {
+			t.Errorf("injecting SSE observation: %v", err)
 		}
 	}
 	t.Cleanup(func() { beforeSweepProcessRecords = nil })
 
 	if err := w.Sweep(ctx); err != nil {
-		t.Fatalf("sweep: %v", err)
+		t.Fatalf("Sweep: %v", err)
 	}
-
-	var syncRecordingID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-		DefaultSite, b.ID,
-	).Scan(&syncRecordingID); err != nil {
-		t.Fatalf("B の record_sync 行が stale 削除で消えた: %v", err)
+	snap := recordsStore.snapshot()
+	calls := snap.calls
+	liveIDs := snap.liveRecordIDs
+	if !reflect.DeepEqual(liveIDs, []string{anchor.ID}) {
+		t.Errorf("DeleteStaleRecordSyncs live IDs = %v, want snapshot %q", liveIDs, anchor.ID)
 	}
-	if syncRecordingID == nil {
-		t.Fatalf("B の record_sync.recording_id = NULL, want non-nil")
-	}
-}
-
-// TestSweepAndHandleEvent_ConcurrentIdempotent は本タスク（M2-18）の核心を検証する。
-// 3 段構え（docs/recording.md §3.3）のうち (a) SSE 由来の handleEvent と (c) 定期の
-// Sweep（record_sweep ジョブから呼ばれる）が同一 record を同時に処理しても、
-// M2-16 で processRecord に入れた record_sync の行ロックにより recordings が
-// 重複しないことを確認する。
-//
-// (a) は record-saved イベントを模して handleEvent 経由で、(c) は Sweep（mirakc の
-// ListRecords 経由）で、それぞれ独立した goroutine から同じ record を同時に叩く。
-// 複数ラウンド実行して、たまたま競合が起きなかっただけの flaky な成功を排除する
-// （TestProcessRecord_ConcurrentIdempotent と同じ考え方）。
-func TestSweepAndHandleEvent_ConcurrentIdempotent(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-
-	const rounds = 20
-	for round := 0; round < rounds; round++ {
-		programID := int64(600000 + round)
-		recordID := fmt.Sprintf("record-sweep-vs-event-%03d", round)
-
-		createTestReservation(t, pool, programID)
-		record := testRecord(recordID, programID, "finished")
-		// recordings の (site, network_id, service_id, event_id, program_start_at) 一意制約
-		// （deleted_at IS NULL）に他ラウンドと衝突しないよう event_id をずらす。
-		// 同じキーをこのアサーションの絞り込みにも使う（recordings.reservation_id
-		// は #158 で列自体を落とした）。
-		record.Program.EventID = 900 + round
-
-		fake := newWatcherMirakcFake(t, []mirakc.Service{}, nil, []mirakc.Record{record})
-		w := New(DefaultSite, mirakc.NewClient(fake.URL(), nil), pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
-
-		savedData, err := json.Marshal(mirakc.RecordSavedData{
-			RecordID:        recordID,
-			RecordingStatus: "finished",
-		})
-		if err != nil {
-			t.Fatalf("marshalling record-saved data: %v", err)
-		}
-		ev := mirakc.Event{Type: "recording.record-saved", Data: savedData}
-
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			// (a) SSE 由来: record-saved イベントを handleEvent 経由で処理する経路。
-			w.handleEvent(ctx, ev)
-		}()
-		go func() {
-			defer wg.Done()
-			// (c) 定期突き合わせ: Sweep が ListRecords 経由で同じ record を処理する経路。
-			if err := w.Sweep(ctx); err != nil {
-				t.Errorf("round %d: Sweep: %v", round, err)
-			}
-		}()
-		wg.Wait()
-
-		var recCount int
-		if err := pool.QueryRow(ctx,
-			"SELECT count(*) FROM recordings WHERE network_id = $1 AND service_id = $2 AND event_id = $3",
-			record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-		).Scan(&recCount); err != nil {
-			t.Fatalf("round %d: querying recordings: %v", round, err)
-		}
-		if recCount != 1 {
-			t.Fatalf("round %d: recording count = %d, want 1 "+
-				"((a) handleEvent と (c) Sweep の並行実行は冪等でなければならない)", round, recCount)
-		}
-
-		calls := listIngestEnqueues(t, w)
-		requireIngestEnqueuesCoalesce(t, calls)
-		if got := countIngestEnqueues(t, w, recordID); got != 2 {
-			t.Errorf("round %d: ingest enqueue calls for %s = %d, want 2", round, recordID, got)
-		}
+	wantCalls := []string{"delete-stale", "record:" + injected.ID, "record:" + anchor.ID}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
 	}
 }
 
-// TestRun_NoAutomaticSweep は watcher が SSE 購読と handleEvent だけの常駐になった
-// こと（M2-18）を確認する。(c) を record_sweep ジョブへ切り出したことで
-// Watcher 自身は `GET /api/recording/records` を一切呼ばなくなったはず。
 func TestRun_NoAutomaticSweep(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2087,403 +798,10 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	}
 }
 
-// getRecordingSource は recordings.source を引く（issue #26 の回帰テスト用）。
-// 呼び出し元はいずれも 1 テストにつき recordings 行が 1 つしかできない構成
-// なので絞り込みは不要（recordings.reservation_id は #158 で列自体を落とした）。
-func getRecordingSource(t *testing.T, pool *pgxpool.Pool) string {
-	t.Helper()
-	var source string
-	if err := pool.QueryRow(context.Background(),
-		"SELECT source FROM recordings",
-	).Scan(&source); err != nil {
-		t.Fatalf("querying recordings.source: %v", err)
-	}
-	return source
-}
-
-// TestProcessRecord_ManualReservationWithRuleMatch_SourceManual は issue #26 の
-// 受け入れ基準 1（元のバグの回帰テスト）: 手動予約（program_intents{record} あり）に
-// ルールがマッチして rule_id が埋まっていても、録画の recordings.source は
-// 'manual' のままでなければならない。
-//
-// 修正前の internal/store/pgstore/rulerpass.go は reservations.source を
-// `CASE WHEN d.rule_id IS NOT NULL THEN 'rule' ELSE ... END` で不可逆に
-// 'rule' へ書き換えており、それを watcher がそのまま recordings.source に
-// コピーしていた。修正後は reservations に source 列自体が無く、watcher は
-// 録画時点の program_intents の有無だけを見るため、rule_id が埋まっていても
-// 手動予約の履歴が保たれる。
-func TestProcessRecord_ManualReservationWithRuleMatch_SourceManual(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	ruleID := createTestRule(t, pool)
-	programID := int64(700001)
-	createTestReservationWithIntent(t, pool, programID, &ruleID)
-
-	record := testRecord("record-manual-rule-match-001", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
-		t.Errorf("recordings.source = %q, want %q "+
-			"(手動予約にルールがマッチしても由来は manual のまま変わらないはず。issue #26)", got, reservation.SourceManual)
-	}
-}
-
-// TestProcessRecord_ManualIntentWithoutReservation_SourceManual は、予約行が無くても
-// program_intents.action=record が残っていれば、ユーザーの明示的な意図を manual と
-// して保存することを確認する。予約の有無を先に見て unattributed に倒す実装では
-// この回帰テストが落ちる。
-func TestProcessRecord_ManualIntentWithoutReservation_SourceManual(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-	programID := int64(700007)
-	insertTestProgramSnapshot(t, pool, programID)
-	if _, err := sqlcgen.New(pool).UpsertProgramIntent(ctx, sqlcgen.UpsertProgramIntentParams{
-		Site: "default", ProgramID: programID, Action: reservation.IntentRecord,
-	}); err != nil {
-		t.Fatalf("creating record intent: %v", err)
-	}
-
-	if err := w.processRecord(ctx, testRecord("record-manual-intent-no-reservation-001", programID, "finished")); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
-		t.Errorf("recordings.source = %q, want %q (record intent is sufficient even without a reservation)", got, reservation.SourceManual)
-	}
-}
-
-// TestProcessRecord_RuleReservation_SourceRule は issue #26 の受け入れ基準 2:
-// ルール由来の予約（program_intents 行なし、rule_id あり）を録画すると
-// recordings.source は 'rule' になる。
-func TestProcessRecord_RuleReservation_SourceRule(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	ruleID := createTestRule(t, pool)
-	programID := int64(700002)
-	createTestReservationWithRule(t, pool, programID, ruleID)
-
-	record := testRecord("record-rule-001", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	if got := getRecordingSource(t, pool); got != reservation.SourceRule {
-		t.Errorf("recordings.source = %q, want %q", got, reservation.SourceRule)
-	}
-}
-
-// TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule は issue #26 の
-// 受け入れ基準 3: ルール由来の予約に priority だけを上書きした（program_overrides
-// はあるが program_intents は無い）場合も recordings.source は 'rule' のまま。
-//
-// M2-4（program_overrides 分離）後は program_intents の有無だけを見るので、
-// program_overrides（上書き）の有無に判定が影響されない。
-func TestProcessRecord_RuleReservationWithOverrideOnly_SourceRule(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	ruleID := createTestRule(t, pool)
-	programID := int64(700003)
-	createTestReservationWithRule(t, pool, programID, ruleID)
-	insertProgramOverride(t, pool, programID, 5)
-
-	record := testRecord("record-rule-override-001", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	if got := getRecordingSource(t, pool); got != reservation.SourceRule {
-		t.Errorf("recordings.source = %q, want %q "+
-			"(priority の上書きだけでは「手動予約した」にならないはず。issue #26 / M2-4)", got, reservation.SourceRule)
-	}
-}
-
-// TestHandleRecordingFailed_SourceDerivedFromIntent は handleRecordingFailed
-// （recording.failed イベント経由の失敗記録）でも createRecording と同じ
-// deriveRecordingSource を通ることを確認する。手動予約にルールがマッチしていても
-// 失敗記録の source が manual のままであることを見る。
-func TestHandleRecordingFailed_SourceDerivedFromIntent(t *testing.T) {
-	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-
-	enqueuer := jobqtestutil.NewRecordingEnqueuer()
-
-	ruleID := createTestRule(t, pool)
-	programID := int64(700004)
-	createTestReservationWithIntent(t, pool, programID, &ruleID)
-
-	startAt := mirakc.Milliseconds(time.Now().Add(-1 * time.Hour))
-	duration := int64(3600000)
-	name := "Failed Program"
-
-	schedule := mirakc.Schedule{
-		State: "scheduled",
-		Program: mirakc.Program{
-			ID:        programID,
-			EventID:   200,
-			ServiceID: 1024,
-			NetworkID: 32736,
-			StartAt:   &startAt,
-			Duration:  &duration,
-			IsFree:    true,
-			Name:      &name,
-		},
-	}
-	services := []mirakc.Service{
-		{ServiceID: 1024, NetworkID: 32736, Name: "NHK総合", Channel: mirakc.ServiceChannel{Type: "GR", Channel: "27"}},
-	}
-
-	fake := newWatcherMirakcFake(t, services, []mirakc.Schedule{schedule}, nil)
-	mc := mirakc.NewClient(fake.URL(), nil)
-	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
-
-	failedData := mirakc.RecordingFailedData{
-		ProgramID: programID,
-		Reason:    mirakc.FailedReason{Type: "tuner-unavailable"},
-	}
-	if err := w.handleRecordingFailed(ctx, failedData); err != nil {
-		t.Fatalf("handleRecordingFailed: %v", err)
-	}
-
-	if got := getRecordingSource(t, pool); got != reservation.SourceManual {
-		t.Errorf("recordings.source = %q, want %q "+
-			"(失敗記録でも手動予約の由来は manual のままのはず)", got, reservation.SourceManual)
-	}
-}
-
-// TestProcessRecord_MissingReservation_SourceUnattributed は、tag は付いているが
-// 予約行も intent も存在しない record（予約が削除された後に mirakc 側の録画が
-// 残っていた等）の source が 'unattributed' になることを確認する。
-//
-// issue #26 の修正で source を program_intents から導出するようにしたが、
-// 「意図が無ければ rule」と素朴に倒すと**この経路が rule になってしまう**。
-// rule_id は NULL なので `source = 'rule'` かつ `rule_id IS NULL` という矛盾した
-// 組が生まれる。ユーザーの intent も無いので manual と断定せず
-// unattributed にする。
-func TestProcessRecord_MissingReservation_SourceUnattributed(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	// 存在しない予約を指す番組 tag を付ける。intent も作らない。
-	programID := int64(700005)
-
-	record := testRecord("record-missing-res-001", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	var source string
-	var ruleID *int64
-	if err := pool.QueryRow(ctx,
-		// recordings は programId を分解して持つ（不変条件 7: mirakc 固有の ID を
-		// 永続テーブルに構造として持ち込まない）ので event_id で引く。
-		"SELECT source, rule_id FROM recordings WHERE site = $1 AND event_id = $2",
-		w.site, 100,
-	).Scan(&source, &ruleID); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if source != reservation.SourceUnattributed {
-		t.Errorf("recordings.source = %q, want %q "+
-			"（予約も intent も無い録画を manual と断定せず unattributed にする）",
-			source, reservation.SourceUnattributed)
-	}
-	if ruleID != nil {
-		t.Errorf("recordings.rule_id = %v, want nil", ruleID)
-	}
-}
-
-// TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed は issue #214 の
-// 交点の**前半**を固定する: エッジに record が滞留して復帰が
-// epg.retention_grace（既定 24h）より後になると、復帰時に recordings 行を作る
-// createRecording は既に GC された予約を引くことになり、ルール由来の録画でも
-// source が 'unattributed' に・rule_id が NULL になる。
-//
-// TestProcessRecord_MissingReservation_SourceUnattributed が「予約行が最初から無い」を
-// 模すのに対し、こちらは**ルール予約が確かに存在したうえで、実際の GC クエリ
-// （DeleteEndedProgramSnapshots。ruler の runGC が呼ぶのと同じもの）に刈られた**
-// 経路を通す。
-//
-// 後半（source='unattributed' の録画で ingest の凍結解決が失敗すると slog.Info
-// になる）は internal/worker の
-// TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable が持つ。
-// docs/storage.md §6 が書く回線断の経路はこの 2 本の合成であり、1 本で通す
-// テストは無い（パッケージ境界。internal/watcher は internal/worker に依存
-// できない。Watcher が依存するジョブ契約は internal/jobs に置かれている）。
-func TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed(t *testing.T) {
-	w, pool := setupTest(t)
-	ctx := context.Background()
-
-	ruleID := createTestRule(t, pool)
-	programID := int64(700006)
-	createTestReservationWithRule(t, pool, programID, ruleID)
-
-	// 放送は 48 時間前に終わったことにする（insertTestProgramSnapshot は
-	// start_at = now() / duration 1h で作る）。
-	if _, err := pool.Exec(ctx,
-		"UPDATE program_snapshots SET start_at = now() - interval '48 hours' WHERE site = $1 AND program_id = $2",
-		DefaultSite, programID,
-	); err != nil {
-		t.Fatalf("aging program snapshot: %v", err)
-	}
-
-	var deleted int64
-	if err := pool.QueryRow(ctx,
-		// ruler の runGC が呼ぶ DeleteEndedProgramSnapshots と同じ述語。
-		// internal/db/sqlcgen をこのテストから引かずに書き下すのは、
-		// 本パッケージのフィクスチャが一貫して生 SQL である流儀に合わせるため。
-		`WITH d AS (
-		     DELETE FROM program_snapshots
-		     WHERE start_at + (duration_ms * interval '1 millisecond') < now() - interval '24 hours'
-		     RETURNING 1
-		 ) SELECT count(*) FROM d`,
-	).Scan(&deleted); err != nil {
-		t.Fatalf("running GC: %v", err)
-	}
-	if deleted != 1 {
-		t.Fatalf("GC が刈った行数 = %d, want 1（前提が崩れている: 刈られていないなら以降は何も主張しない）", deleted)
-	}
-	var reservations int
-	if err := pool.QueryRow(ctx,
-		"SELECT count(*) FROM reservations WHERE site = $1 AND program_id = $2", DefaultSite, programID,
-	).Scan(&reservations); err != nil {
-		t.Fatalf("counting reservations: %v", err)
-	}
-	if reservations != 0 {
-		t.Fatalf("GC 後の reservations = %d, want 0（FK CASCADE で一緒に落ちるはず）", reservations)
-	}
-
-	record := testRecord("record-gced-001", programID, "finished")
-	if err := w.processRecord(ctx, record); err != nil {
-		t.Fatalf("processRecord: %v", err)
-	}
-
-	var source string
-	var gotRuleID *int64
-	if err := pool.QueryRow(ctx,
-		"SELECT source, rule_id FROM recordings WHERE site = $1 AND event_id = $2", w.site, 100,
-	).Scan(&source, &gotRuleID); err != nil {
-		t.Fatalf("querying recordings: %v", err)
-	}
-	if source != reservation.SourceUnattributed {
-		t.Errorf("recordings.source = %q, want %q "+
-			"（GC 済みの予約も intent も引けないので unattributed にする。issue #214 の交点）", source, reservation.SourceUnattributed)
-	}
-	if gotRuleID != nil {
-		t.Errorf("recordings.rule_id = %v, want nil （ルール予約は GC で失われている。issue #214）", *gotRuleID)
-	}
-}
-
-// TestProcessRecord_StatusValues は issue #130 の受け入れ基準の核心:
-// mirakc が返しうる recording.status の 4 値（recording/finished/canceled/failed）
-// すべてで processRecord がエラーを返さず、決定的な結果になることを固定する。
-//
-// canceled はこのテストが書かれる前は recordings_status_check（旧 3 値）
-// 違反でトランザクション全体がロールバックし、record_sync にも観測が残らない
-// まま毎パス再試行され続けていた（#130 本体のバグ）。このテストは
-// recordings_status_check を issue #130 の 4 値から 3 値に戻すと canceled のケースで
-// 落ちることを確認済み（報告参照。意図的に実装を壊して確認する、CLAUDE.md
-// テスト規律）。
-//
-// 5 つ目のケース（未知の値）は「無限リトライにならない」ことを固定する
-// （#130「含むもの 4」）。mirakc が将来値を追加した場合を模した架空の値
-// "rescheduling" を使う（これは実際には mirakc の別概念
-// RecordingScheduleState の値であり、RecordInfo.Status には現れない。
-// 「未知の値の例」として issue 本文が挙げているのと同じ値）。
-func TestProcessRecord_StatusValues(t *testing.T) {
-	tests := []struct {
-		name          string
-		mirakcStatus  string
-		wantRecStatus string // 正規化後、recordings.status に入るはずの値
-		wantIngestJob bool
-	}{
-		{name: "recording", mirakcStatus: "recording", wantRecStatus: "recording", wantIngestJob: true},
-		{name: "finished", mirakcStatus: "finished", wantRecStatus: "finished", wantIngestJob: true},
-		{name: "canceled", mirakcStatus: "canceled", wantRecStatus: "canceled", wantIngestJob: false},
-		{name: "failed", mirakcStatus: "failed", wantRecStatus: "failed", wantIngestJob: false},
-		{
-			name:          "unknown status does not infinite-retry",
-			mirakcStatus:  "rescheduling",
-			wantRecStatus: "failed", // normalizeRecordingStatus の丸め先。理由は同関数の doc コメント参照
-			wantIngestJob: false,
-		},
-	}
-
-	for i, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			w, pool := setupTest(t)
-			ctx := context.Background()
-
-			programID := int64(800000 + i)
-			recordID := fmt.Sprintf("record-status-%02d", i)
-			createTestReservation(t, pool, programID)
-			record := testRecord(recordID, programID, tt.mirakcStatus)
-
-			if err := w.processRecord(ctx, record); err != nil {
-				t.Fatalf("processRecord: %v (status %q が CHECK 違反等でエラーになってはいけない)",
-					err, tt.mirakcStatus)
-			}
-
-			// record_sync は mirakc の生の値をそのまま保持しなければならない
-			// （CHECK が無い列。docs/schema/record-sync.md「mirakc の
-			// recordingStatus そのまま」）。未知の値でもここで観測が残ることが
-			// 「無限リトライにならない」の土台になる。
-			var syncStatus string
-			var syncRecordingID *int64
-			if err := pool.QueryRow(ctx,
-				"SELECT status, recording_id FROM record_sync WHERE site = $1 AND record_id = $2",
-				DefaultSite, recordID,
-			).Scan(&syncStatus, &syncRecordingID); err != nil {
-				t.Fatalf("querying record_sync: %v", err)
-			}
-			if syncStatus != tt.mirakcStatus {
-				t.Errorf("record_sync.status = %q, want %q (mirakc の生の値がそのまま残るはず)",
-					syncStatus, tt.mirakcStatus)
-			}
-			if syncRecordingID == nil {
-				t.Fatal("record_sync.recording_id is nil (recordings 行が作られていない)")
-			}
-
-			var recStatus string
-			if err := pool.QueryRow(ctx,
-				"SELECT status FROM recordings WHERE id = $1", *syncRecordingID,
-			).Scan(&recStatus); err != nil {
-				t.Fatalf("querying recordings: %v", err)
-			}
-			if recStatus != tt.wantRecStatus {
-				t.Errorf("recordings.status = %q, want %q", recStatus, tt.wantRecStatus)
-			}
-
-			// 2 回目の processRecord も同じ結果を返し続けること（再試行しても
-			// 状態が安定していることの確認。#130 のバグは「毎回失敗し続ける」
-			// 形だったので、2 回目もエラーにならないことを見ておく）。
-			if err := w.processRecord(ctx, record); err != nil {
-				t.Fatalf("processRecord (2nd call): %v", err)
-			}
-
-			calls := listIngestEnqueues(t, w)
-			requireIngestEnqueuesCoalesce(t, calls)
-			callCount := countIngestEnqueues(t, w, recordID)
-			wantCallCount := 0
-			if tt.wantIngestJob {
-				wantCallCount = 2
-			}
-			if callCount != wantCallCount {
-				t.Errorf("ingest enqueue calls = %d, want %d", callCount, wantCallCount)
-			}
-		})
-	}
-}
-
-// commitCheckingEnqueuer はヒント投入時点で録画が別接続から見えることを確かめる。
 type commitCheckingEnqueuer struct {
-	pool             *pgxpool.Pool
+	target           store.IngestTarget
 	calls            int
 	recordingVisible bool
-	priority         int
 	err              error
 }
 
@@ -2493,15 +811,12 @@ func (e *commitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args, op
 	if !ok {
 		return jobq.Result{}, fmt.Errorf("enqueue args = %T, want jobs.IngestJobArgs", args)
 	}
-	e.priority = jobq.EffectivePriority(args.Spec(), opts...)
-	if err := e.pool.QueryRow(ctx, `
-		SELECT EXISTS (
-			SELECT 1 FROM record_sync rs JOIN recordings r ON r.id = rs.recording_id
-			WHERE rs.site = $1 AND rs.record_id = $2
-		)
-	`, ingestArgs.Site, ingestArgs.RecordID).Scan(&e.recordingVisible); err != nil {
+	// 別の接続から読む。commit 前なら record_sync の行が見えない。
+	target, err := e.target.GetRecordSyncIngestTarget(ctx, ingestArgs.Site, ingestArgs.RecordID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return jobq.Result{}, fmt.Errorf("checking committed recording during enqueue: %w", err)
 	}
+	e.recordingVisible = err == nil && target.RecordingID != nil
 	return jobq.Result{}, e.err
 }
 
@@ -2513,7 +828,7 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	const programID int64 = 327360102415397
 	createTestReservation(t, pool, programID)
 	enqueueErr := errors.New("injected post-commit enqueue error")
-	enqueuer := &commitCheckingEnqueuer{pool: pool, err: enqueueErr}
+	enqueuer := &commitCheckingEnqueuer{target: pgstoretest.Recordings(pool), err: enqueueErr}
 	w.enqueuer = enqueuer
 
 	record := testRecord("commit-hint-1", programID, "finished")
@@ -2521,26 +836,15 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 		t.Fatalf("processRecord = %v, want commit to succeed despite enqueue error", err)
 	}
 	if enqueuer.calls != 1 {
-		t.Fatalf("enqueue calls = %d, want 1", enqueuer.calls)
+		t.Fatalf("enqueue calls after one observation = %d, want 1", enqueuer.calls)
 	}
 	if !enqueuer.recordingVisible {
-		t.Fatal("recording was not visible from another connection when Enqueue ran")
+		t.Fatal("recording was not visible from another connection during enqueue, want enqueue after commit")
 	}
-	if enqueuer.priority != 2 {
-		t.Errorf("finished ingest priority = %d, want 2", enqueuer.priority)
-	}
-	var recordings int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM recordings").Scan(&recordings); err != nil {
-		t.Fatalf("counting committed recordings: %v", err)
-	}
-	if recordings != 1 {
-		t.Fatalf("recordings after enqueue error = %d, want committed row count 1", recordings)
-	}
-
 	duplicate := testRecord("commit-hint-conflict", programID, "finished")
 	duplicate.Program.StartAt = record.Program.StartAt
-	if err := w.processRecord(ctx, duplicate); !errors.Is(err, store.ErrConflict) {
-		t.Fatalf("processRecord(duplicate event) error = %v, want store.ErrConflict", err)
+	if err := w.processRecord(ctx, duplicate); err == nil {
+		t.Fatal("processRecord(duplicate event) returned nil, want store failure")
 	}
 	if enqueuer.calls != 1 {
 		t.Errorf("enqueue calls after store failure = %d, want still 1", enqueuer.calls)

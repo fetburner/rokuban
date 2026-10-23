@@ -486,7 +486,7 @@ func qualityEvents(event string, reason json.RawMessage) (json.RawMessage, error
 // recordingStatus そのまま」）に手を加えず残る。recordings.status 側は「正常に
 // 完了しなかった」という粗い事実だけを表現する。5 値目を CHECK / openapi.yaml の
 // enum に足さない選択（issue #130 の「決めること」）に伴う代償として、この粗さは
-// 許容する（TestProcessRecord_StatusValues）。
+// 許容する（TestRecordObservationsContract/record status values are normalized）。
 //
 // 未知の値を観測したら必ず slog.Error でログに残す。次に mirakc が値を足したら、
 // このログを見た人間が本関数と recordings_status_check / openapi.yaml の enum を
