@@ -30,7 +30,6 @@ func TestLabelRulesContract(t *testing.T) {
 				id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 					fixtureParams.EventID = labelRuleContractEventID.Add(1)
 					fixtureParams.Title = title
-					fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 				})
 
 				return id
@@ -98,8 +97,14 @@ func TestReevaluateLabelRulesTxNotifiesOnlyOnChange(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	recordingIDs := []int64{
-		createLabelRuleTestRecording(t, pool, 9876, "作品X 第1話"),
-		createLabelRuleTestRecording(t, pool, 9877, "作品X 第2話"),
+		dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+			p.EventID = 9876
+			p.Title = "作品X 第1話"
+		}),
+		dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+			p.EventID = 9877
+			p.Title = "作品X 第2話"
+		}),
 	}
 	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
 		Key: "series", Value: "作品X", Keyword: "作品X",
@@ -199,18 +204,6 @@ SELECT EXISTS (
 		t.Fatalf("ReevaluateAll unchanged = %d, %v, want 0, nil", changed, err)
 	}
 	assertNoNotification(t, listenConn)
-}
-
-func createLabelRuleTestRecording(t *testing.T, pool *pgxpool.Pool, eventID int32, title string) int64 {
-	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.EventID = eventID
-		fixtureParams.Title = title
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
-		fixtureParams.ProgramDurationMs = 60000
-	})
-
-	return id
 }
 
 func waitForLabelRuleHitInsert(t *testing.T, pool *pgxpool.Pool) int32 {

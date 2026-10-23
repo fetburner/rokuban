@@ -117,7 +117,7 @@ func TestRecordingQueryContract(t *testing.T) {
 				}
 			}
 			if o.Playable {
-				dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
+				dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 					p.RelPath = fmt.Sprintf("contract/%s/%d.ts", o.Site, id)
 					p.SizeBytes = 100
 				})

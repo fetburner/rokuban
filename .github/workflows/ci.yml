@@ -68,8 +68,7 @@ jobs:
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
-    # Chromium 導入に 14 分かかった run があり、35 分にする。E2E 用 ffmpeg は x264/VP9 を明示し apt recommendations を省く。
-    timeout-minutes: 35
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:17
@@ -103,7 +102,7 @@ jobs:
         working-directory: web
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: web
-      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libx264-164 libvpx9
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm build
         working-directory: web
       # Build after web/dist exists: this is the actual static bundle embedded in the Go binary.

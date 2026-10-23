@@ -27,7 +27,6 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		fixtureParams.EventID = 500
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "NHK高校講座　数学I　第1回"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
 	// 値に空白を含む（棚キーは最初の空白で切れる）ルールと、優先度が違うルール。
@@ -127,7 +126,6 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 		fixtureParams.EventID = 600
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "ロック位置"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 		fixtureParams.ProgramDurationMs = 60000
 	})
 	createRule := sqlcgen.CreateLabelRuleParams{Key: "series", Value: "ロック", Keyword: "ロック"}

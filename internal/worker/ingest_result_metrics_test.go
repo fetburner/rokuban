@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
@@ -66,17 +65,6 @@ func ingestDurationSamples(t *testing.T) uint64 {
 		t.Fatalf("reading IngestDuration: %v", err)
 	}
 	return m.GetHistogram().GetSampleCount()
-}
-
-// insertTestOriginalMediaAsset は録画に原本 media_asset を 1 行足す。Work の
-// 冪等性チェック（hasOriginalMediaAsset）を通して handleAlreadyCommittedIngest
-// へ入れるようにするためで、他の意味は無い。
-func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
-	t.Helper()
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
-		fixtureParams.RelPath = "sites/default/test/already-committed.m2ts"
-		fixtureParams.SizeBytes = 1
-	})
 }
 
 func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
@@ -274,7 +262,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		}
 		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, recordID)
-		insertTestOriginalMediaAsset(t, pool, recordingID)
+		dbtest.MediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
 		err := runWorkerViaJobQFake(ctx, w,

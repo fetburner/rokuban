@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -24,8 +25,18 @@ func TestWatchedGroupingSurvivesMarkedRowLeavingLiveSet(t *testing.T) {
 			ctx := context.Background()
 			q := sqlcgen.New(pool)
 			start := time.Date(2026, 8, 2, 1, 0, 0, 0, time.UTC)
-			marked := createPlaybackRecording(t, pool, start, 400, "印の行")
-			other := createPlaybackRecording(t, pool, start, 401, "もう片方")
+			marked := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+				p.EventID = 400
+				p.Title = "印の行"
+				p.ProgramStartAt = start
+				p.ProgramDurationMs = time.Hour.Milliseconds()
+			})
+			other := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+				p.EventID = 401
+				p.Title = "もう片方"
+				p.ProgramStartAt = start
+				p.ProgramDurationMs = time.Hour.Milliseconds()
+			})
 			if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: other, PositionMs: 9_000}); err != nil {
 				t.Fatalf("seed position: %v", err)
 			}

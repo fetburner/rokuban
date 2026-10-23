@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -25,7 +24,6 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 				fixtureParams.EventID = mediaDeleteContractEventID.Add(1)
 				fixtureParams.ServiceName = "store media delete contract fixture"
 				fixtureParams.Title = "store media delete contract fixture"
-				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 				fixtureParams.ProgramDurationMs = 60_000
 			})
 
@@ -33,11 +31,10 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		}
 		newAsset := func(t *testing.T, recordingID int64, kind string, profile *string) int64 {
 			t.Helper()
-			id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+			id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.Kind = kind
 				fixtureParams.Profile = profile
 				fixtureParams.RelPath = fmt.Sprintf("sites/%s/store-contract/%d/%s", store.DefaultSite, recordingID, kind)
-				fixtureParams.SizeBytes = 1
 			})
 
 			return id

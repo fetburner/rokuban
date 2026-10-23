@@ -3854,7 +3854,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 		fixtureParams.Site, fixtureParams.EventID = "default", 301
 	})
 	const conflictRelPath = "sites/default/shared/conflict.m2ts"
-	existingAssetID := dbtest.OriginalAsset(t, pool, existingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	existingAssetID := dbtest.MediaAsset(t, pool, existingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = conflictRelPath
 		fixtureParams.SizeBytes = 21
 	})
@@ -3973,7 +3973,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	})
 	const reusedRelPath = "sites/default/shared/reused.m2ts"
 	q := sqlcgen.New(pool)
-	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	deletedAssetID := dbtest.MediaAsset(t, pool, deletedRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = reusedRelPath
 		fixtureParams.SizeBytes = 9
 	})

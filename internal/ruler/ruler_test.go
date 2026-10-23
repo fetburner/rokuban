@@ -1149,7 +1149,17 @@ func TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted(t *testing.
 		t.Fatalf("initial RunPass: %v", err)
 	}
 	// finished 録画だけ作り、原本 media_asset は作らない。
-	insertRecordingForTitle(t, pool, ruleID, start)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = 0
+		p.Title = "録画済み番組"
+		p.ProgramStartAt = start
+		p.ProgramDurationMs = testDurationMs
+	})
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass with finished recording but no original: %v", err)
@@ -1253,12 +1263,11 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 		p.NetworkID = testNetworkID
 		p.ServiceID = testServiceID
 		p.EventID = 0
-		p.ServiceName = "テスト局"
 		p.Title = "録画済み番組"
 		p.ProgramStartAt = time.Now().Add(-time.Hour)
 		p.ProgramDurationMs = testDurationMs
 	})
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = fmt.Sprintf("fulfilled-%d.m2ts", programID)
 		p.SizeBytes = 1024
 	})
@@ -1267,24 +1276,6 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 			t.Fatalf("setting fulfilled media asset state: %v", err)
 		}
 	}
-}
-
-// insertRecordingForTitle は finished 録画だけを作り、原本 media_asset は作らない。
-// table-driven な fulfilled 判定の反対側（ingest 未コミット）を fixture する。
-func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ruleID int64, startAt time.Time) int64 {
-	t.Helper()
-	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.RuleID = &ruleID
-		p.Source = "rule"
-		p.Site = testSite
-		p.NetworkID = testNetworkID
-		p.ServiceID = testServiceID
-		p.EventID = 0
-		p.ServiceName = "テスト局"
-		p.Title = "録画済み番組"
-		p.ProgramStartAt = startAt
-		p.ProgramDurationMs = testDurationMs
-	})
 }
 
 // insertProgramSnapshotDirect は program_snapshots 行だけを直接作る。

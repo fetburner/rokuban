@@ -164,13 +164,11 @@ func TestSchemaV1_RecordingInsert(t *testing.T) {
 	now := time.Now().Truncate(time.Microsecond)
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Status = "finished"
 		p.Site = "home"
 		p.NetworkID = 32736
 		p.ServiceID = 1024
 		p.EventID = 15397
 		p.ServiceName = "NHK総合"
-		p.Title = "テスト番組"
 		p.ProgramStartAt = now
 		p.ProgramDurationMs = 1_800_000
 		p.StartedAt = &now
@@ -285,7 +283,7 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 	recID := dbtest.Recording(t, pool)
 
 	// original + profile=NULL: OK
-	dbtest.OriginalAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "test.m2ts"
 		p.SizeBytes = 1024
 	})
@@ -297,7 +295,7 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 
 	// encoded + profile='h265': OK
 	profile := "h265"
-	dbtest.OriginalAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test_h265.mp4"
@@ -317,7 +315,7 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 
 	recID := dbtest.Recording(t, pool)
 
-	dbtest.OriginalAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "same/path.m2ts"
 		p.SizeBytes = 1024
 	})
@@ -334,7 +332,7 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update to deleted: %v", err)
 	}
-	dbtest.OriginalAsset(t, pool, recID2, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recID2, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "same/path.m2ts"
 		p.SizeBytes = 2048
 	})
@@ -346,7 +344,7 @@ func TestSchemaV1_MediaAssetUniqueNullsNotDistinct(t *testing.T) {
 	recID := dbtest.Recording(t, pool)
 
 	// 1 つ目の original (profile=NULL): OK
-	dbtest.OriginalAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "a.m2ts"
 		p.SizeBytes = 1024
 	})
@@ -364,7 +362,7 @@ func TestSchemaV1_DropStats(t *testing.T) {
 
 	recID := dbtest.Recording(t, pool)
 
-	assetID := dbtest.OriginalAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "drop_test.m2ts"
 		p.SizeBytes = 4096
 	})

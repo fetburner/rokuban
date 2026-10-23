@@ -25,10 +25,9 @@ func TestCMStationContract(t *testing.T) {
 				fixtureParams.EventID = cmStationContractEventID.Add(1)
 				fixtureParams.ServiceName = "局単位 CM 契約 fixture"
 				fixtureParams.Title = "CM station store contract fixture"
-				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 			})
 
-			dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+			dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 				fixtureParams.SizeBytes = 1000
 			})

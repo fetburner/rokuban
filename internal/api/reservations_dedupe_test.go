@@ -97,22 +97,6 @@ INSERT INTO reservations (
 	}
 }
 
-// insertRecordingFixture は根拠として参照する録画履歴を 1 行作る。
-func insertRecordingFixture(t *testing.T, pool *pgxpool.Pool, ruleID int64) int64 {
-	t.Helper()
-	start := time.Now().Add(-7 * 24 * time.Hour)
-	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.RuleID = &ruleID
-		p.Source = "rule"
-		p.NetworkID = 11500
-		p.ServiceID = 1150
-		p.EventID = 4321
-		p.ServiceName = "テスト局"
-		p.Title = "テスト番組"
-		p.ProgramStartAt = start
-	})
-}
-
 // TestGetReservation_DedupeSkipExposed は重複としてスキップされた予約が
 // skip = true と根拠 2 列を返すことを確認する。一覧でも同じ値が出る
 // （表示経路が reservationFromRow の 1 箇所に集約されていることの確認）。
@@ -126,7 +110,14 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 
 	const programID int64 = 1150000115041234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	recordingID := insertRecordingFixture(t, pool, ruleID)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.EventID = 4321
+		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
+	})
 	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.875)
 
 	got := getReservationDedupeJSON(t, srv, programID)
@@ -168,7 +159,14 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 
 	const programID int64 = 1150000115051234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	recordingID := insertRecordingFixture(t, pool, ruleID)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.EventID = 4321
+		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
+	})
 	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.9)
 
 	// 意図が無い時点では skip = true（対照）。

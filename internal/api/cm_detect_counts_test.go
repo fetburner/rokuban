@@ -27,7 +27,7 @@ func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 		ids[i] = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 			p.Title, p.ProgramStartAt, p.Status, p.EventID = "件数", time.Now().Truncate(time.Second), "finished", int32(990+i)
 		})
-		dbtest.OriginalAsset(t, pool, ids[i], func(fixtureParams *dbtest.MediaAssetParams) {
+		dbtest.MediaAsset(t, pool, ids[i], func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", ids[i])
 			fixtureParams.SizeBytes = 1000
 		})

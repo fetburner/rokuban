@@ -43,7 +43,7 @@ func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 		t.Fatal(err)
 	}
 	id := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	f := &frameFixture{pool: pool}
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
@@ -83,7 +83,7 @@ func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) 
 	f, id := newFrameFixture(t, jpeg)
 	// encoded を持たせても、コマは原本から取る（縮小済みの座標は使えない）。
 	profile := "h264"
-	dbtest.OriginalAsset(t, f.pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, f.pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &profile
 		fixtureParams.RelPath = "gr/frame-h264.mp4"
@@ -150,7 +150,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	// 原本が無い（encoded だけ）。
 	encodedOnly := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 101 })
 	profile := "h264"
-	dbtest.OriginalAsset(t, pool, encodedOnly, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, encodedOnly, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &profile
 		fixtureParams.RelPath = "gr/only-encoded.mp4"
@@ -159,7 +159,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 
 	// ごみ箱の録画（原本の行はある）。
 	trashed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 102 })
-	dbtest.OriginalAsset(t, pool, trashed, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/trashed.ts", 1880 })
+	dbtest.MediaAsset(t, pool, trashed, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/trashed.ts", 1880 })
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
 		t.Fatal(err)
@@ -167,7 +167,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 
 	// 行はあるが実体が無い。
 	missing := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 103 })
-	dbtest.OriginalAsset(t, pool, missing, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/missing.ts", 1880 })
+	dbtest.MediaAsset(t, pool, missing, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/missing.ts", 1880 })
 
 	for name, id := range map[string]int64{"no original": encodedOnly, "trashed": trashed, "missing file": missing} {
 		res, _ := get(t, f.url(id, "?at=0"), nil)
@@ -211,7 +211,7 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -248,7 +248,7 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
@@ -316,7 +316,7 @@ func testFrameFollowsChange(t *testing.T, baseOffset string) {
 		t.Fatal(err)
 	}
 	id := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(joined)) })
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(joined)) })
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)

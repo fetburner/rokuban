@@ -267,7 +267,7 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	}
 
 	if ingested {
-		dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = "test/" + recordID + ".m2ts"
 			fixtureParams.SizeBytes = contentLength
 		})
@@ -815,9 +815,8 @@ func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	if recordingID == nil {
 		t.Fatalf("record_sync %q has no recording_id", recordID)
 	}
-	dbtest.OriginalAsset(t, pool, *recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, *recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/" + recordID + ".m2ts"
-		fixtureParams.SizeBytes = 1
 	})
 }
 

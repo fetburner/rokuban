@@ -121,7 +121,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.ProgramDurationMs = 0
 	})
 	profile := "rescue-mp4"
-	liveAssetID := dbtest.OriginalAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
+	liveAssetID := dbtest.MediaAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = relPath
@@ -138,7 +138,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.ProgramStartAt = at
 		p.ProgramDurationMs = 0
 	})
-	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(p *dbtest.MediaAssetParams) {
+	deletedAssetID := dbtest.MediaAsset(t, pool, deletedRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "reused/old-show.ts"
 		p.SizeBytes = 5
 	})

@@ -57,13 +57,10 @@ func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 	defaults := func(p *dbtest.RecordingParams) {
 		p.Title = title
 		p.ProgramStartAt = start
-		p.Status = "finished"
 		p.EventID = eventID
 	}
 	id := dbtest.Recording(t, pool, append([]func(*dbtest.RecordingParams){defaults}, opts...)...)
-	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
-		p.RelPath = fmt.Sprintf("test/orig-%d", id)
-	})
+	dbtest.MediaAsset(t, pool, id)
 	return id
 }
 
@@ -166,7 +163,7 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base, "finished", 2
 	})
 	profile := "h264"
-	dbtest.OriginalAsset(t, pool, encodedOnly, func(p *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, encodedOnly, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/encoded"
@@ -284,7 +281,7 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第7話", base.Add(4*time.Hour), "finished", 7
 		p.Site = "tokyo"
 	})
-	assetID := dbtest.OriginalAsset(t, pool, purgedWatched, func(p *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, purgedWatched, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "test/purged"
 	})
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, assetID); err != nil {

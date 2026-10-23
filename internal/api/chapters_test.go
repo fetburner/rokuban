@@ -232,7 +232,7 @@ func TestPutRecordingChapterEdits_WaitsAfterQuickCMDetectionReenable(t *testing.
 	})
 	enableCMDetect(t, pool, id)
 	q := sqlcgen.New(pool)
-	seedActiveOriginalForTest(t, pool, id)
+	dbtest.MediaAsset(t, pool, id)
 	attemptCount := startCMDetectionAttemptForTest(t, ctx, q, id)
 	message := "previous policy generation failed"
 	markCMDetectionFailureForTest(t, ctx, pool, q, id, attemptCount, nil, &message)

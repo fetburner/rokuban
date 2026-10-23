@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -31,7 +30,6 @@ func TestChapterEditsContract(t *testing.T) {
 			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.EventID = eventID
 				fixtureParams.Title = "store contract fixture"
-				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 			})
 
 			if options.CMDetectionEnabled {

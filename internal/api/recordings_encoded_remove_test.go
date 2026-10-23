@@ -60,7 +60,7 @@ func seedEncodedVersions(t *testing.T, pool *pgxpool.Pool, id int64, profiles ..
 	t.Helper()
 	for _, p := range profiles {
 		profile := p
-		dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+		dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.Kind = store.AssetKindEncoded
 			fixtureParams.Profile = &profile
 			fixtureParams.RelPath = fmt.Sprintf("encoded/%d_%s.mp4", id, p)

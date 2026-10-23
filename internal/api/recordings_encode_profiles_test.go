@@ -381,7 +381,7 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	noPolicyID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未凍結", time.Now().Add(time.Second).Truncate(time.Second), "finished", 603
 	})
-	dbtest.OriginalAsset(t, pool, noPolicyID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, noPolicyID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", noPolicyID)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -521,19 +521,19 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	originalPath := writePolicyTestFile(t, mediaDir, fmt.Sprintf("test/%d.m2ts", id))
 
 	profile := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &profile
 		fixtureParams.RelPath = fmt.Sprintf("encoded/%d.mp4", id)
 		fixtureParams.SizeBytes = 200
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = fmt.Sprintf("thumbnail/%d.jpg", id)
 		fixtureParams.SizeBytes = 50
 	})
 	// シークプレビュー用タイルも「再生に必要な派生物」なので、無い間は原本が残る。
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindSeekTiles
 		fixtureParams.RelPath = fmt.Sprintf("thumbnail/%d_tiles.jpg", id)
 		fixtureParams.SizeBytes = 60
@@ -773,7 +773,7 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	// 作ってしまう（実運用の ingest を模したフィクスチャなので）。ここでは
 	// inplace.Register が実際に作る形（原本 media_asset のみ、policy 行なし）を
 	// 直接再現する。
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -1159,7 +1159,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}
 	insertChapterSpan(t, pool, id, chapters.Span{StartMs: 600000, EndMs: 900000, Label: "CM", Cut: true})
 	cutProfile := "cut"
-	cutAssetID := dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	cutAssetID := dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &cutProfile
 		fixtureParams.RelPath = "test/stale-cut.mp4"

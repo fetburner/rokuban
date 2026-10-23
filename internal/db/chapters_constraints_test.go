@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
@@ -21,7 +20,6 @@ func TestRecordingChapterSpansConstraints(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 2111
 		fixtureParams.Title = "チャプター制約"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
 	if _, err := pool.Exec(ctx,
@@ -88,7 +86,6 @@ func TestRecordingChapterSpansRequireOwnership(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 2112
 		fixtureParams.Title = "所有の行が要る"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
 	if _, err := pool.Exec(ctx, `

@@ -20,31 +20,22 @@ import (
 // 判定条件はすべて「マッチする側」と「マッチしない側」の両方向で押さえる。片側だけ
 // 見ると条件を反転させても気付かない（CLAUDE.md「分岐は両方向で確認する」）。
 
-// dedupeEventCounter は recordings の event_id をテスト間で分ける。
-// recordings_unique_active_event（program_start_at を含む部分ユニークインデックス）
-// の衝突をテストデータ間で避けるため、event_id も一緒にずらしておく。
-var dedupeEventCounter int32 = 5000
-
 // insertRecording は重複排除の比較対象になる録画履歴を 1 行作る。
 //
-// event_id は自動で採番して衝突を避ける（テスト対象の番組とは必ず別イベントに
-// なるので、自己一致の除外に引っかからない）。番組と event_id を揃えたい
-// 自己一致のテストは insertRecordingForEvent を使う。
+// event_id は dbtest の既定値（呼び出しごとに別の値）なので、テスト対象の番組とは
+// 必ず別イベントになり、自己一致の除外に引っかからない。番組と event_id を揃えたい
+// 自己一致のテストは dbtest.Recording に event_id を渡す。
 func insertRecording(
 	t *testing.T, pool *pgxpool.Pool, ctx context.Context,
 	ruleID *int64, title, status string, startAt time.Time, deleted bool,
 ) (recordingID int64) {
 	t.Helper()
-	dedupeEventCounter++
-	eventID := dedupeEventCounter
 	recordingID = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = ruleID
 		p.Source = "rule"
 		p.Site = testSite
 		p.NetworkID = testNetworkID
 		p.ServiceID = testServiceID
-		p.EventID = eventID
-		p.ServiceName = "テスト局"
 		p.Title = title
 		p.ProgramStartAt = startAt
 		p.ProgramDurationMs = testDurationMs
@@ -56,27 +47,6 @@ func insertRecording(
 		}
 	}
 	return recordingID
-}
-
-// insertRecordingForEvent は event_id を明示して録画履歴を作る（自己一致のテスト用）。
-func insertRecordingForEvent(
-	t *testing.T, pool *pgxpool.Pool,
-	ruleID *int64, title string, startAt time.Time, eventID int32,
-) int64 {
-	t.Helper()
-	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.RuleID = ruleID
-		p.Source = "rule"
-		p.Site = testSite
-		p.NetworkID = testNetworkID
-		p.ServiceID = testServiceID
-		p.EventID = eventID
-		p.ServiceName = "テスト局"
-		p.Title = title
-		p.ProgramStartAt = startAt
-		p.ProgramDurationMs = testDurationMs
-		p.Status = "finished"
-	})
 }
 
 // enableDedupe はルールの重複排除を有効にする。windowSeconds が nil なら
@@ -634,7 +604,17 @@ func TestRunPass_DedupeIgnoresOwnRecording(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	// この番組自身の録画（同じ network_id / service_id / event_id）。
-	insertRecordingForEvent(t, pool, &ruleID, "再放送テスト 第1話", start, eventID)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = eventID
+		p.Title = "再放送テスト 第1話"
+		p.ProgramStartAt = start
+		p.ProgramDurationMs = testDurationMs
+	})
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -666,8 +646,17 @@ func TestRunPass_DedupeMatchesSameServiceDifferentEvent(t *testing.T) {
 	insertRuleKeyword(t, pool, ctx, ruleID, "再放送テスト")
 	enableDedupe(t, pool, ctx, ruleID, 0.5, nil)
 	// 同じ局（network_id / service_id）だが event_id が違う = 別放送の録画。
-	other := insertRecordingForEvent(t, pool, &ruleID, "再放送テスト 第1話",
-		time.Now().Add(-7*24*time.Hour), eventID+1)
+	other := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = eventID + 1
+		p.Title = "再放送テスト 第1話"
+		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
+		p.ProgramDurationMs = testDurationMs
+	})
 
 	if err := newRuler([]string{testSite}, pool, nil).RunPass(ctx); err != nil {
 		t.Fatalf("RunPass: %v", err)
@@ -866,7 +855,17 @@ VALUES ($1, $2, 'record')`,
 	const eventID3 int32 = 9001
 	p3Start := f.start.Add(7 * 24 * time.Hour)
 	insertProgramWithEvent(t, pool, ctx, programID3, "再放送テスト 第1話", p3Start, eventID3)
-	newRec := insertRecordingForEvent(t, pool, &f.ruleID, "再放送テスト 第1話", f.start, 0)
+	newRec := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &f.ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = 0
+		p.Title = "再放送テスト 第1話"
+		p.ProgramStartAt = f.start
+		p.ProgramDurationMs = testDurationMs
+	})
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("second pass: %v", err)

@@ -444,7 +444,7 @@ func prepareEncodeInput(t *testing.T, pool *pgxpool.Pool, recordingID int64, med
 	t.Helper()
 	seedEncodePolicy(t, pool, recordingID, profiles)
 	writeEncodeOriginal(t, mediaDir, relPath, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = relPath
 		params.SizeBytes = int64(len(content))
 	})
@@ -464,7 +464,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, "20240101/stale.m2ts", content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = "20240101/stale.m2ts"
 		params.SizeBytes = int64(len(content))
 	})
@@ -520,7 +520,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -629,7 +629,7 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	})
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -709,7 +709,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	content := []byte("data")
 	recordingID := dbtest.Recording(t, pool)
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -800,7 +800,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	content := []byte("data")
 	recordingID := dbtest.Recording(t, pool)
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})

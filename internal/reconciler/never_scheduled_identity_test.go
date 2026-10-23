@@ -91,7 +91,6 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
 	failedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000
 		p.EventID = int32(700002 % 100000)
@@ -175,7 +174,6 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	endedAt := endedStartAt.Add(30 * time.Minute)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000
 		p.EventID = int32(700003 % 100000)
@@ -237,7 +235,6 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	trashedStartAt := time.Now().Add(-2 * time.Hour)
 	trashedEndedAt := trashedStartAt.Add(30 * time.Minute)
 	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000
 		p.EventID = int32(700004 % 100000)

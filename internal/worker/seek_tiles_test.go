@@ -186,7 +186,7 @@ func seedOriginalForSeekTiles(t *testing.T, db sqlcgen.DBTX, mediaDir string, re
 	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, db, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, db, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = rel
 		fixtureParams.SizeBytes = int64(len(content))
 	})

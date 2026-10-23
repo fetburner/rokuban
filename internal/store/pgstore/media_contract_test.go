@@ -31,16 +31,21 @@ func TestMediaStoreContract(t *testing.T) {
 func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	pool := testutil.SetupDB(t)
 	fixture := contracttest.MediaFixture{
-		Serving:      NewMedia(pool),
-		Reconcile:    NewMedia(pool),
-		Precheck:     NewMedia(pool),
-		Storage:      NewMedia(pool),
-		Reader:       NewMedia(pool),
-		Publisher:    NewMedia(pool),
-		Progress:     NewMedia(pool),
-		Chapters:     NewAnalysis(pool),
-		Site:         store.DefaultSite,
-		NewRecording: func(t *testing.T) int64 { return newMediaContractRecording(t, pool) },
+		Serving:   NewMedia(pool),
+		Reconcile: NewMedia(pool),
+		Precheck:  NewMedia(pool),
+		Storage:   NewMedia(pool),
+		Reader:    NewMedia(pool),
+		Publisher: NewMedia(pool),
+		Progress:  NewMedia(pool),
+		Chapters:  NewAnalysis(pool),
+		Site:      store.DefaultSite,
+		NewRecording: func(t *testing.T) int64 {
+			return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+				p.Title = "store media contract fixture"
+				p.ProgramDurationMs = 60_000
+			})
+		},
 		SetRecordingEncodeTimes: func(t *testing.T, recordingID int64, startedAt, endedAt *time.Time) {
 			t.Helper()
 			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET started_at = $2, ended_at = $3 WHERE id = $1`, recordingID, startedAt, endedAt); err != nil {
@@ -64,27 +69,12 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	return fixture
 }
 
-func newMediaContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
-	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.Status = "finished"
-		fixtureParams.EventID = mediaContractEventID.Add(1)
-		fixtureParams.ServiceName = "store contract fixture"
-		fixtureParams.Title = "store media contract fixture"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
-		fixtureParams.ProgramDurationMs = 60_000
-	})
-
-	return id
-}
-
 func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 	t.Helper()
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = kind
 		fixtureParams.Profile = profile
 		fixtureParams.RelPath = relPath
-		fixtureParams.SizeBytes = 1
 	})
 
 	if state != "active" {

@@ -46,7 +46,7 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(content))
 	})

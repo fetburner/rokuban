@@ -90,9 +90,7 @@ func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, networkID, servic
 		p.NetworkID = networkID
 		p.ServiceID = serviceID
 		p.EventID = eventID
-		p.ServiceName = "テスト局"
 		p.Channel = "25"
-		p.Title = "テスト番組"
 		p.Status = "failed"
 	})
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, id, qe); err != nil {

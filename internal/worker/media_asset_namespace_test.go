@@ -100,11 +100,10 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 				fixtureParams.ProgramDurationMs = 60_000
 			})
 
-			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+			assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.Kind = tt.kind
 				fixtureParams.Profile = tt.profile
 				fixtureParams.RelPath = tt.relPath
-				fixtureParams.SizeBytes = 1
 			})
 
 			if tt.state != "active" {

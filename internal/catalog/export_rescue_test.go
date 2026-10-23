@@ -64,7 +64,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		fixtureParams.EndedAt = ptrTime(time.Date(2026, 7, 29, 12, 30, 0, 0, time.UTC))
 	})
 
-	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "sites/default/20260729/120000_ニュース_1024.m2ts"
 		fixtureParams.SizeBytes = 1_000_000
 	})
@@ -432,7 +432,7 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 	})
 
 	const relPath = "sites/default/legacy.m2ts"
-	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = 1234
 	})
@@ -536,7 +536,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			default:
 			}
-			recID, err := dbtest.RecordingWithError(pool, func(fixtureParams *dbtest.RecordingParams) {
+			recID, err := dbtest.RecordingWithError(ctx, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.NetworkID = 1
 				fixtureParams.ServiceID = 1
 				fixtureParams.EventID = int32(10_000 + i)
@@ -551,9 +551,8 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			}
 
-			if _, err := dbtest.OriginalAssetWithError(pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+			if _, err := dbtest.MediaAssetWithError(ctx, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("race/%d.m2ts", i)
-				fixtureParams.SizeBytes = 1
 			}); err != nil {
 				insertErr.CompareAndSwap(nil, &err)
 				return

@@ -32,7 +32,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", recordingID)
 		fixtureParams.SizeBytes = size
 	})
@@ -491,20 +491,20 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	h264 := "h264"
 	h265 := "h265"
 	legacy := "legacy"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "a_h264.mp4"
 		fixtureParams.SizeBytes = 100
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h265
 		fixtureParams.RelPath = "a_h265.mp4"
 		fixtureParams.SizeBytes = 80
 	})
 	// deleted は載せない
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &legacy
 		fixtureParams.RelPath = "a_legacy.mp4"
@@ -1251,7 +1251,7 @@ func TestGetRecording_Trash(t *testing.T) {
 	})
 	seedIngested(t, pool, id, 1000, nil)
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "trash_h264.mp4"
@@ -1330,7 +1330,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 		0x100: {900, 3, 2, 1},
 	})
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "match_h264.mp4"

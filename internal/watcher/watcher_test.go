@@ -278,7 +278,6 @@ func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.T
 		p.EventID = eventID
 		p.ServiceName = "NHK総合"
 		p.Title = "Failed Attempt"
-		p.IsFree = true
 		p.ProgramStartAt = startAt
 		p.ProgramDurationMs = 180000
 		p.Status = status
@@ -731,7 +730,7 @@ func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
 	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
 		record.Program.StartAt.Time(), "failed"))
-	assetID := dbtest.OriginalAsset(t, pool, failedID)
+	assetID := dbtest.MediaAsset(t, pool, failedID)
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v (media_assets を持つ failed 行があっても成功 record は取り込めるはず)", err)
@@ -856,7 +855,6 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 		p.EventID = int32(record.Program.EventID)
 		p.ServiceName = "NHK総合"
 		p.Title = "Already Finished"
-		p.IsFree = true
 		p.ProgramStartAt = record.Program.StartAt.Time()
 		p.ProgramDurationMs = 180000
 	})

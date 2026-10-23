@@ -43,21 +43,6 @@ func setEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64, prof
 	}
 }
 
-// seedEncodedAsset は active な encoded media_asset を 1 件作る（observed。
-// UpsertEncodedMediaAsset を直接呼ばず INSERT するのは、テストが recording_id
-// 側の状態だけを組み立てたいため）。
-func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, size int64) {
-	t.Helper()
-	relPath := fmt.Sprintf("test/%d_%s.mp4", recordingID, profile)
-	dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-		profileValue := profile
-		p.Kind = "encoded"
-		p.Profile = &profileValue
-		p.RelPath = relPath
-		p.SizeBytes = size
-	})
-}
-
 // TestListRecordingsEncodeStatus は完了していないエンコードプロファイルの
 // 試行状態が queued / running / failed のどれで出るかを固定する（issue #316）。
 //
@@ -79,7 +64,11 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	})
 	seedIngested(t, pool, mixed, 1000, nil)
 	setEncodeProfiles(t, pool, mixed, []string{"h264", "h265", "aac"})
-	seedEncodedAsset(t, pool, mixed, "h264", 500)
+	dbtest.MediaAsset(t, pool, mixed, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("h264")
+		p.SizeBytes = 500
+	})
 	seedEncodeAttempt(t, pool, mixed, "h265", "running", nil)
 
 	// vp9: 失敗（試行行 state=failed）
@@ -97,7 +86,11 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	})
 	seedIngested(t, pool, done, 3000, nil)
 	setEncodeProfiles(t, pool, done, []string{"h264"})
-	seedEncodedAsset(t, pool, done, "h264", 700)
+	dbtest.MediaAsset(t, pool, done, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("h264")
+		p.SizeBytes = 700
+	})
 
 	// プロファイル未設定: encodeStatus は省略
 	none := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -192,7 +185,11 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	// どちらも trash では availableEncodedAssets を Go 側で落とすので
 	// （recordings_query.go の recordingsAvailableEncodedAssetsSelect の
 	// コメント参照）、削除後もこの資産が出てこないことを併せて固定する。
-	seedEncodedAsset(t, pool, id, "h264", 500)
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("h264")
+		p.SizeBytes = 500
+	})
 
 	if resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, id)); resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", resp.StatusCode)

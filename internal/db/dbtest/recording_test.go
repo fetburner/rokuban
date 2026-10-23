@@ -20,6 +20,9 @@ func TestRecording_DefaultsAndUniqueEventID(t *testing.T) {
 		t.Fatalf("default event IDs = %d and %d, want unique IDs", first.eventID, second.eventID)
 	}
 	for _, got := range []recordingRow{first, second} {
+		if got.eventID < 0 || got.eventID > 65535 {
+			t.Errorf("default event ID = %d, want within 0..65535", got.eventID)
+		}
 		if got.title == "" || got.programStartAt.IsZero() || !got.programStartAt.Equal(got.programStartAt.Truncate(time.Second)) || got.durationMs <= 0 || got.status == "" {
 			t.Errorf("invalid recording defaults: %+v", got)
 		}
@@ -43,20 +46,20 @@ func TestRecording_OptionsOverrideDefaults(t *testing.T) {
 
 func TestFixtureWithError_ReturnsCreateErrors(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	if _, err := dbtest.RecordingWithError(pool, func(params *dbtest.RecordingParams) {
+	if _, err := dbtest.RecordingWithError(t.Context(), pool, func(params *dbtest.RecordingParams) {
 		params.Status = "invalid"
 	}); err == nil {
 		t.Fatal("RecordingWithError() error = nil, want status constraint error")
 	}
-	if _, err := dbtest.OriginalAssetWithError(pool, -1); err == nil {
-		t.Fatal("OriginalAssetWithError() error = nil, want foreign key error")
+	if _, err := dbtest.MediaAssetWithError(t.Context(), pool, -1); err == nil {
+		t.Fatal("MediaAssetWithError() error = nil, want foreign key error")
 	}
 }
 
-func TestOriginalAsset_DefaultsAndOptions(t *testing.T) {
+func TestMediaAsset_DefaultsAndOptions(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID)
+	assetID := dbtest.MediaAsset(t, pool, recordingID)
 	var got struct {
 		recordingID int64
 		kind        string
@@ -75,7 +78,7 @@ FROM media_assets WHERE id = $1`, assetID).Scan(&got.recordingID, &got.kind, &go
 	}
 
 	overriddenRecordingID := dbtest.Recording(t, pool)
-	overriddenID := dbtest.OriginalAsset(t, pool, overriddenRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	overriddenID := dbtest.MediaAsset(t, pool, overriddenRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/override.ts"
 		fixtureParams.SizeBytes = 42
 	})

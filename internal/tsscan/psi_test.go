@@ -90,7 +90,7 @@ func TestScanWorker_PersistsPIDTypesFromPSI(t *testing.T) {
 	if err := os.WriteFile(fullPath, data, 0o600); err != nil {
 		t.Fatalf("writing original: %v", err)
 	}
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(data))
 	})

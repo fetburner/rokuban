@@ -62,12 +62,12 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 		}
 		switch kind {
 		case "original":
-			return dbtest.OriginalAsset(t, pool, recordingID, assetOpts)
+			return dbtest.MediaAsset(t, pool, recordingID, assetOpts)
 		case "encoded":
 			if profile == nil {
 				t.Fatal("encoded migration fixture requires a profile")
 			}
-			return dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+			return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 				params.Kind = "encoded"
 				params.Profile = profile
 				assetOpts(params)
@@ -157,7 +157,7 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 	}
 	createOriginal := func(recordingID int64, size int64) int64 {
 		t.Helper()
-		return dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 			params.RelPath = fmt.Sprintf("retention-migration-test/%d", recordingID)
 			params.SizeBytes = size
 		})
@@ -182,7 +182,7 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 		t.Fatalf("creating existing scan marker: %v", err)
 	}
 	profile := "mobile"
-	encodedID := dbtest.OriginalAsset(t, pool, createRecording(23104), func(params *dbtest.MediaAssetParams) {
+	encodedID := dbtest.MediaAsset(t, pool, createRecording(23104), func(params *dbtest.MediaAssetParams) {
 		params.Kind = "encoded"
 		params.Profile = &profile
 		params.RelPath = "retention-migration-test/encoded"

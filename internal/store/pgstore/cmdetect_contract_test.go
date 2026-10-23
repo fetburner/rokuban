@@ -3,7 +3,6 @@ package pgstore
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,8 +14,6 @@ import (
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-var cmDetectionContractEventID atomic.Int32
 
 func TestCMDetectionContract(t *testing.T) {
 	contracttest.RunCMDetection(t, newCMDetectionContractFixture)
@@ -62,13 +59,10 @@ func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
 	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
-		fixtureParams.EventID = cmDetectionContractEventID.Add(1)
-		fixtureParams.ServiceName = "局単位 CM 検出契約 fixture"
 		fixtureParams.Title = "CM detection store contract fixture"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})

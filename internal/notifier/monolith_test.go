@@ -34,7 +34,7 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "モノリスの録画", time.Now().Truncate(time.Second), "finished", 1
 	})
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "r.m2ts"
 		fixtureParams.SizeBytes = int64(len(content))
 	})

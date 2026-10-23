@@ -49,14 +49,14 @@ func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 
 	// cut でない版（凍結区間なし）と cut 版（凍結区間あり）。
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "a_h264.mp4"
 		fixtureParams.SizeBytes = 50
 	})
 	cut := "cut"
-	assetID := dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &cut
 		fixtureParams.RelPath = "a_cut.g1.mp4"

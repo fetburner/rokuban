@@ -309,7 +309,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/asset.m2ts"
 		fixtureParams.SizeBytes = size
 	})

@@ -26,7 +26,6 @@ func TestExportRescue_RoundTripsUserChapters(t *testing.T) {
 		fixtureParams.EventID = 400
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "チャプター付き"
-		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
 	if _, err := pool.Exec(ctx, `

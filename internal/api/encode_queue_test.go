@@ -60,11 +60,15 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	seedEncodeAttempt(t, pool, a, "h264", "running", nil)
 
 	b := mk("完了済み", "h265")
-	seedEncodedAsset(t, pool, b, "h265", 1000)
+	dbtest.MediaAsset(t, pool, b, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("h265")
+		p.SizeBytes = 1000
+	})
 
 	c := mk("削除中の encoded", "h264")
 	profile := "h264"
-	cAsset := dbtest.OriginalAsset(t, pool, c, func(p *dbtest.MediaAssetParams) {
+	cAsset := dbtest.MediaAsset(t, pool, c, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/inactive_observed.mp4"
@@ -82,7 +86,11 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	setEncodeAttemptCount(t, pool, f, "h264", int(jobs.EncodeAttemptLimit))
 
 	g := mk("観測済みなのに running 行", "h264")
-	seedEncodedAsset(t, pool, g, "h264", 1000)
+	dbtest.MediaAsset(t, pool, g, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("h264")
+		p.SizeBytes = 1000
+	})
 	seedEncodeAttempt(t, pool, g, "h264", "running", nil)
 
 	h := mk("ごみ箱の running", "h264")
@@ -101,18 +109,30 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, co)
 	rebuild := mk("明示的な作り直し", "cut")
 	exec(`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, rebuild)
-	seedEncodedAsset(t, pool, rebuild, "cut", 1000)
+	dbtest.MediaAsset(t, pool, rebuild, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("cut")
+		p.SizeBytes = 1000
+	})
 	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, rebuild)
 
 	// 確認（所有）が無くても、押した時点の keep が確認なので作り直しは待機列に入る。
 	unowned := mk("未確認の作り直し", "cut")
-	seedEncodedAsset(t, pool, unowned, "cut", 1000)
+	dbtest.MediaAsset(t, pool, unowned, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("cut")
+		p.SizeBytes = 1000
+	})
 	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
 		 VALUES ($1, 'cut', '{[0,1000)}'::int8multirange)`, unowned)
 	// 凍結区間が requested_keep と等しい要求は満たされていて、待機列に入らない。
 	satisfied := mk("満たされた作り直し", "cut")
-	seedEncodedAsset(t, pool, satisfied, "cut", 1000)
+	dbtest.MediaAsset(t, pool, satisfied, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = new("cut")
+		p.SizeBytes = 1000
+	})
 	exec(`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
 		 SELECT id, '{[0,1000)}'::int8multirange FROM media_assets WHERE recording_id = $1 AND kind = 'encoded'`, satisfied)
 	exec(`INSERT INTO encoded_asset_rebuild_requests (recording_id, profile, requested_keep)
@@ -268,7 +288,11 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 		t.Helper()
 		id := seed(title, "cut")
 		adopt(id, "[600000,900000)")
-		seedEncodedAsset(t, pool, id, "cut", 1000)
+		dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
+			p.Kind = "encoded"
+			p.Profile = new("cut")
+			p.SizeBytes = 1000
+		})
 		exec(`INSERT INTO media_asset_cuts (media_asset_id, keep_ranges)
 			 SELECT id, '{[0,1800000)}'::int8multirange FROM media_assets
 			 WHERE recording_id = $1 AND kind = 'encoded' AND profile = 'cut'`, id)
@@ -291,7 +315,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	seed("不足", "h264")
 	deleting := seed("削除中の版", "h264")
 	profile := "h264"
-	deletingAsset := dbtest.OriginalAsset(t, pool, deleting, func(p *dbtest.MediaAssetParams) {
+	deletingAsset := dbtest.MediaAsset(t, pool, deleting, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/agree_deleting.mp4"

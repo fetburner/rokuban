@@ -464,11 +464,10 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// (b) desired が揃っている → 候補にしない。
 	complete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, complete, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, complete, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "q/complete_h264.mp4"
-		fixtureParams.SizeBytes = 1
 	})
 
 	// (c) desired が空 → 候補にしない。
@@ -498,11 +497,10 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// ListMissingEncodeProfiles が見るのは active な encoded だけ
 	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
 	encodedGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
-	dbtest.OriginalAsset(t, pool, encodedGone, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, encodedGone, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "q/encgone_h264.mp4"
-		fixtureParams.SizeBytes = 1
 	})
 	if _, err := pool.Exec(ctx,
 		`UPDATE media_assets SET state = 'deleted' WHERE recording_id = $1 AND kind = 'encoded'`,

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,28 +119,6 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 	return id
 }
 
-func insertPreviewRecording(t *testing.T, pool *pgxpool.Pool, ruleID *int64, program capacityPreviewProgram, title string, start time.Time, withOriginal bool) {
-	t.Helper()
-	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.RuleID = ruleID
-		p.Source = "rule"
-		p.Status = "finished"
-		p.NetworkID = 32736
-		p.ServiceID = program.ServiceID
-		p.EventID = program.EventID
-		p.ServiceName = "プレビュー局"
-		p.Channel = "25"
-		p.Title = title
-		p.ProgramStartAt = start
-	})
-	if withOriginal {
-		dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
-			p.RelPath = fmt.Sprintf("preview/%d.m2ts", recordingID)
-			p.SizeBytes = 1024
-		})
-	}
-}
-
 func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	tunerStore := pgstore.NewTuners(pool)
@@ -239,7 +216,17 @@ VALUES ('default', $1, 'skip')`, skipped.ID); err != nil {
 	}
 
 	fulfilled := insertPreviewProgram(t, pool, 50024, "録画済み", "23", start)
-	insertPreviewRecording(t, pool, nil, fulfilled, fulfilled.Title, start, true)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = nil
+		p.Source = "rule"
+		p.NetworkID = 32736
+		p.ServiceID = fulfilled.ServiceID
+		p.EventID = fulfilled.EventID
+		p.Channel = "25"
+		p.Title = fulfilled.Title
+		p.ProgramStartAt = start
+	})
+	dbtest.MediaAsset(t, pool, recordingID)
 
 	if got := postCapacityPreview(t, srv, map[string]any{"genres": []int{searchFixtureGenre}}); len(got) != 0 {
 		t.Fatalf("preview = %+v, want none after excluding reserved, skipped, and fulfilled candidates", got)
@@ -256,7 +243,16 @@ func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 	candidate := insertPreviewProgram(t, pool, 50032, "再放送スペシャル 第1話", "25", start)
 	priorRecording := candidate
 	priorRecording.EventID++
-	insertPreviewRecording(t, pool, &ruleID, priorRecording, candidate.Title, start.Add(-24*time.Hour), false)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 32736
+		p.ServiceID = priorRecording.ServiceID
+		p.EventID = priorRecording.EventID
+		p.Channel = "25"
+		p.Title = candidate.Title
+		p.ProgramStartAt = start.Add(-24 * time.Hour)
+	})
 
 	got := postCapacityPreview(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -284,7 +280,16 @@ VALUES ('default', $1, 'record')`, candidate.ID); err != nil {
 
 	priorRecording := candidate
 	priorRecording.EventID++
-	insertPreviewRecording(t, pool, &ruleID, priorRecording, candidate.Title, start.Add(-24*time.Hour), false)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 32736
+		p.ServiceID = priorRecording.ServiceID
+		p.EventID = priorRecording.EventID
+		p.Channel = "25"
+		p.Title = candidate.Title
+		p.ProgramStartAt = start.Add(-24 * time.Hour)
+	})
 
 	got := postCapacityPreview(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},

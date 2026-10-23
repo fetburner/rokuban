@@ -457,9 +457,8 @@ func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "trash/original.m2ts"
-		fixtureParams.SizeBytes = 1
 	})
 	if _, err := q.SoftDeleteRecording(ctx, recordingID); err != nil {
 		t.Fatalf("soft deleting recording: %v", err)

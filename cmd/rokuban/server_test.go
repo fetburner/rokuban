@@ -327,9 +327,8 @@ func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
 		fixtureParams.ProgramDurationMs = 60_000
 	})
 
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "archive/old.m2ts"
-		fixtureParams.SizeBytes = 1
 	})
 
 	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
@@ -360,14 +359,6 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site = "home"
-		fixtureParams.NetworkID = 1
-		fixtureParams.ServiceID = 1
-		fixtureParams.EventID = 1
-		fixtureParams.ServiceName = "test"
-		fixtureParams.Channel = "1"
-		fixtureParams.Title = "cut version"
-		fixtureParams.ProgramStartAt = time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
-		fixtureParams.ProgramDurationMs = 60_000
 	})
 
 	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1)

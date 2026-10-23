@@ -1090,7 +1090,7 @@ func TestChasePurgeEndUsesCommittedOriginal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = tt.eventID })
-			dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+			dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 				p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-purge-%d.ts", recordingID), tt.committed
 			})
 			ffmpeg, marker := installEndlistMarkerFFmpeg(t)
@@ -1379,7 +1379,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 				t.Fatalf("seeding record_sync: %v", err)
 			}
 			if tt.originalState != "" {
-				dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+				dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 					p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8
 				})
 				if tt.originalState == "deleted" {

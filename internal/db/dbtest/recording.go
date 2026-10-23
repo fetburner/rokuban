@@ -13,16 +13,22 @@ import (
 
 var recordingEventID atomic.Int32
 
+// 既定の event_id は ARIB の 16 bit に収め、明示値を使うテストが選ばない 60000 以上の帯から採る。
+const (
+	defaultEventIDBase = 60000
+	defaultEventIDSpan = 65536 - defaultEventIDBase
+)
+
 // RecordingParams は Recording の上書き対象で、sqlc の生成型の別名。
 type RecordingParams = sqlcgen.CreateRecordingParams
 
-// MediaAssetParams は OriginalAsset の上書き対象で、sqlc の生成型の別名。
+// MediaAssetParams は MediaAsset の上書き対象で、sqlc の生成型の別名。
 type MediaAssetParams = sqlcgen.CreateMediaAssetParams
 
 // Recording は既定値で録画を 1 件作り、その id を返す。opts で既定値を上書きする。
 func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*RecordingParams)) int64 {
 	t.Helper()
-	id, err := RecordingWithError(db, opts...)
+	id, err := RecordingWithError(t.Context(), db, opts...)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
@@ -30,13 +36,13 @@ func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*RecordingParams)) in
 }
 
 // RecordingWithError は Recording と同じ録画を作り、エラーを返す。
-func RecordingWithError(db sqlcgen.DBTX, opts ...func(*RecordingParams)) (int64, error) {
+func RecordingWithError(ctx context.Context, db sqlcgen.DBTX, opts ...func(*RecordingParams)) (int64, error) {
 	params := sqlcgen.CreateRecordingParams{
 		Source:            "manual",
 		Site:              "default",
 		NetworkID:         32678,
 		ServiceID:         5168,
-		EventID:           recordingEventID.Add(1) + 1_000_000,
+		EventID:           defaultEventIDBase + recordingEventID.Add(1)%defaultEventIDSpan,
 		ServiceName:       "テストチャンネル",
 		ChannelType:       "GR",
 		Channel:           "27",
@@ -50,7 +56,7 @@ func RecordingWithError(db sqlcgen.DBTX, opts ...func(*RecordingParams)) (int64,
 		opt(&params)
 	}
 
-	id, err := sqlcgen.New(db).CreateRecording(context.Background(), params)
+	id, err := sqlcgen.New(db).CreateRecording(ctx, params)
 	if err != nil {
 		return 0, fmt.Errorf("create test recording: %w", err)
 	}
@@ -59,18 +65,18 @@ func RecordingWithError(db sqlcgen.DBTX, opts ...func(*RecordingParams)) (int64,
 
 var assetPathID atomic.Int64
 
-// OriginalAsset は既定値で原本 media_asset を 1 件作り、その id を返す。opts で既定値を上書きする。
-func OriginalAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) int64 {
+// MediaAsset は既定値で原本（kind=original）の media_asset を 1 件作り、その id を返す。opts で既定値を上書きする。
+func MediaAsset(t testing.TB, db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) int64 {
 	t.Helper()
-	id, err := OriginalAssetWithError(db, recordingID, opts...)
+	id, err := MediaAssetWithError(t.Context(), db, recordingID, opts...)
 	if err != nil {
 		t.Fatalf("%v", err)
 	}
 	return id
 }
 
-// OriginalAssetWithError は OriginalAsset と同じ原本 media_asset を作り、エラーを返す。
-func OriginalAssetWithError(db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) (int64, error) {
+// MediaAssetWithError は MediaAsset と同じ media_asset を作り、エラーを返す。
+func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64, opts ...func(*MediaAssetParams)) (int64, error) {
 	params := sqlcgen.CreateMediaAssetParams{
 		RecordingID: recordingID,
 		Kind:        "original",
@@ -81,9 +87,9 @@ func OriginalAssetWithError(db sqlcgen.DBTX, recordingID int64, opts ...func(*Me
 		opt(&params)
 	}
 
-	id, err := sqlcgen.New(db).CreateMediaAsset(context.Background(), params)
+	id, err := sqlcgen.New(db).CreateMediaAsset(ctx, params)
 	if err != nil {
-		return 0, fmt.Errorf("create test original media asset: %w", err)
+		return 0, fmt.Errorf("create test media asset: %w", err)
 	}
 	return id, nil
 }

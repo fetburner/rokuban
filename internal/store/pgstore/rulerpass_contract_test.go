@@ -30,7 +30,15 @@ func TestRulerPassContract(t *testing.T) {
 				return seedRulerPassRule(t, pool, name, dedupeEnabled, threshold)
 			},
 			NewFinishedRecording: func(t *testing.T, ruleID int64, program contracttest.RulerProgram, title string) int64 {
-				return seedRulerPassRecording(t, pool, ruleID, program, title)
+				return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+					p.RuleID = &ruleID
+					p.Source = "rule"
+					p.Site = program.Site
+					p.NetworkID = 32736
+					p.EventID = program.EventID + 10000
+					p.Title = title
+					p.ProgramStartAt = program.StartAt.Add(-48 * time.Hour)
+				})
 			},
 			SetProgramStarts: func(t *testing.T, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {
 				setRulerPassProgramStarts(t, pool, program, snapshotStart, projectionStart)
@@ -112,24 +120,6 @@ RETURNING id`, name, dedupeEnabled, threshold).Scan(&id); err != nil {
 		t.Fatalf("seeding ruler pass rule: %v", err)
 	}
 	return id
-}
-
-func seedRulerPassRecording(t *testing.T, pool *pgxpool.Pool, ruleID int64, program contracttest.RulerProgram, title string) int64 {
-	t.Helper()
-	startAt := program.StartAt.Add(-48 * time.Hour)
-	eventID := program.EventID + 10000
-	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
-		p.RuleID = &ruleID
-		p.Source = "rule"
-		p.Status = "finished"
-		p.Site = program.Site
-		p.NetworkID = 32736
-		p.ServiceID = 5168
-		p.EventID = eventID
-		p.ServiceName = "ruler pass contract"
-		p.Title = title
-		p.ProgramStartAt = startAt
-	})
 }
 
 func setRulerPassProgramStarts(t *testing.T, pool *pgxpool.Pool, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {
