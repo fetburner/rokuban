@@ -109,6 +109,30 @@ linters:
           deny:
             - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
               desc: generated database queries are limited to pgstore and the database foundation
+        test-sqlcgen-boundary:
+          # テストは状態を契約のメソッドか internal/db/dbtest で作る。sqlcgen を直接使わない。
+          # 「移行中」の除外は、まだ sqlcgen を使っているテストのパッケージ。下の階層のパッケージは除外しない。移行が済んだら消す。
+          list-mode: lax
+          files:
+            - "$test"
+            - "!${config-path}/internal/store/pgstore/**"
+            - "!${config-path}/internal/db/**"
+            - "!${config-path}/internal/testutil/**"
+            # 移行中
+            - "!${config-path}/cmd/rokuban/*"
+            - "!${config-path}/internal/api/*"
+            - "!${config-path}/internal/capacity/*"
+            - "!${config-path}/internal/catalog/*"
+            - "!${config-path}/internal/metrics/*"
+            - "!${config-path}/internal/notifier/*"
+            - "!${config-path}/internal/reconciler/*"
+            - "!${config-path}/internal/ruler/*"
+            - "!${config-path}/internal/tsscan/*"
+            - "!${config-path}/internal/watcher/*"
+            - "!${config-path}/internal/worker/*"
+          deny:
+            - pkg: github.com/fetburner/rokuban/internal/db/sqlcgen
+              desc: tests build state through store contracts or internal/db/dbtest
         river-adapter-only:
           # River の型はテストも含め runtime adapter の境界に閉じ込める。
           # KEDA の SQL テストだけは YAML の状態名を River のスキーマと照合する。
