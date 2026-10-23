@@ -12,7 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -56,7 +56,7 @@ func TestGetProgramReservation_SurvivesRematerialization(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -125,7 +125,7 @@ func TestGetProgramReservation_NoReservation_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -148,7 +148,7 @@ func TestGetProgramReservation_UnknownSite_Returns404(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool)})
+	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 

@@ -13,7 +13,7 @@ import (
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // tunerFixture は mirakc の /api/tuners のレスポンスを差し替え可能に保持する。
@@ -40,7 +40,7 @@ func newTunerFake(t *testing.T, fx *tunerFixture) *mirakctest.Fake {
 func newTunerSyncWorker(t *testing.T, pool *pgxpool.Pool, fx *tunerFixture) *TunerSyncWorker {
 	t.Helper()
 	fake := newTunerFake(t, fx)
-	tunerStore := pgstore.NewTuners(pool)
+	tunerStore := pgstoretest.Tuners(pool)
 	return &TunerSyncWorker{
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,
@@ -274,7 +274,7 @@ func TestTunerSyncWorker_SiteMismatch(t *testing.T) {
 	fake := newTunerFake(t, fx)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
-	tunerStore := pgstore.NewTuners(pool)
+	tunerStore := pgstoretest.Tuners(pool)
 	w := &TunerSyncWorker{
 		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,
@@ -301,7 +301,7 @@ func TestTunerSyncWorker_SiteMatch(t *testing.T) {
 	}}
 	fake := newTunerFake(t, fx)
 
-	tunerStore := pgstore.NewTuners(pool)
+	tunerStore := pgstoretest.Tuners(pool)
 	w := &TunerSyncWorker{
 		MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		TunerStore:    tunerStore, CapacityStore: tunerStore,

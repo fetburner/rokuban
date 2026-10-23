@@ -17,7 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -46,7 +46,7 @@ func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	f := &frameFixture{pool: pool}
-	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		switch {
@@ -137,7 +137,7 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	mediaDir := t.TempDir()
 	f := &frameFixture{pool: pool}
-	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		f.calls = append(f.calls, append([]string{filepath.Base(name)}, args...))
 		return nil, fmt.Errorf("must not run %s", name)
@@ -213,7 +213,7 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
-	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
+	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("ffmpeg: exit status 1: Output file #0 does not contain any stream")
 	}
@@ -249,7 +249,7 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	}
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
-	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
+	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
 	srv := httptest.NewServer(r)
@@ -317,7 +317,7 @@ func testFrameFollowsChange(t *testing.T, baseOffset string) {
 	}
 	id := dbtest.Recording(t, pool)
 	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(joined)) })
-	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
+	s := New(pgstoretest.Media(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
 	srv := httptest.NewServer(r)

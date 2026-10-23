@@ -10,7 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 func meaningCfg(name string, cut bool, container string) config.EncodeConfig {
@@ -76,7 +76,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckEncodeProfileMeaning(ctx, pgstore.NewMedia(pool), tc.cfg)
+			err := CheckEncodeProfileMeaning(ctx, pgstoretest.Media(pool), tc.cfg)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)

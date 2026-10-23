@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // encodeConfigWith は名前だけが意味を持つ encode 設定を作る（このパスは
@@ -405,11 +406,11 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		StallTimeout:  5 * time.Second,
 		Precheck:      newTestMediaStore(pool),
 	}
-	iw.CMDetectionStore = pgstore.NewAnalysis(pool)
+	iw.CMDetectionStore = pgstoretest.Analysis(pool)
 	job := IngestJobArgs{Site: "default", RecordID: "rec-163-lost-hint"}
 
 	// Enqueuer を注入しない状態 = ヒントが飛ばない。
@@ -699,7 +700,7 @@ func TestUnknownDesiredProfile_PredicateAsymmetry(t *testing.T) {
 	// 方向 B: 削除エンジンを 1 パス回しても、この録画の原本は消えない
 	// （until_encoded_deletable_originals は known_profiles で絞らないので、
 	// 「desired が揃っている」という判定に永久に到達しない）。
-	dw := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	dw := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(context.Background(), dw, DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("DeleteReconcileWorker.Work: %v", err)
 	}

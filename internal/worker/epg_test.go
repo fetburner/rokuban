@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/programid"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 const testSite = "default"
@@ -133,7 +133,7 @@ func TestEpgSyncWorker_FullSync(t *testing.T) {
 	}
 	fake := newEpgFake(t, fx)
 
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 	runEpgSync(t, w)
 
 	q := sqlcgen.New(pool)
@@ -227,7 +227,7 @@ func TestEpgSyncWorker_DerivesGenreLv1FromGenres(t *testing.T) {
 		programs: []mirakc.Program{program},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 	runEpgSync(t, w)
 
 	programs := allPrograms(t, pool)
@@ -251,7 +251,7 @@ func TestEpgSyncWorker_IdempotentAndUpdates(t *testing.T) {
 		},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -299,7 +299,7 @@ func TestEpgSyncWorker_RemovesVanishedRows(t *testing.T) {
 		programs: []mirakc.Program{keep, vanish},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, pool)); got != 2 {
@@ -343,7 +343,7 @@ func TestEpgSyncWorker_EmptyResponseKeepsProjection(t *testing.T) {
 		},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, pool)); got != 2 {
@@ -397,7 +397,7 @@ func TestEpgSyncWorker_SweepIsPerChannel(t *testing.T) {
 		programs: []mirakc.Program{ohkKeep, ohkGone, rskA, rskB},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, pool)); got != 4 {
@@ -445,7 +445,7 @@ func TestEpgSyncWorker_SweepsSubServiceWhenChannelObserved(t *testing.T) {
 		programs: []mirakc.Program{main, multi},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 	if got := len(allPrograms(t, pool)); got != 2 {
@@ -473,7 +473,7 @@ func TestEpgSyncWorker_NoProjectableProgramsKeepsProjection(t *testing.T) {
 		programs: []mirakc.Program{testProgram(32736, 1024, 1, "番組A", now.Add(time.Hour), time.Hour)},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -504,7 +504,7 @@ func TestEpgSyncWorker_PrunesAiredPrograms(t *testing.T) {
 
 	w := &EpgSyncWorker{
 		MirakcClients:  singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Store:          pgstore.NewEPG(pool),
+		Store:          pgstoretest.EPG(pool),
 		RetentionGrace: 24 * time.Hour,
 	}
 	runEpgSync(t, w)
@@ -548,7 +548,7 @@ func TestEpgSyncWorker_SkipsUnprojectableRows(t *testing.T) {
 		programs: []mirakc.Program{noStart, noDuration, minimal},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -620,7 +620,7 @@ func TestEpgSyncWorker_SkipsShadowSubServicePrograms(t *testing.T) {
 		programs: []mirakc.Program{main, shadow1, shadow2, multi, emptyName},
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -668,7 +668,7 @@ func TestEpgSyncWorker_BatchesLargeSync(t *testing.T) {
 		programs: programs,
 	}
 	fake := newEpgFake(t, fx)
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool), RetentionGrace: 24 * time.Hour}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool), RetentionGrace: 24 * time.Hour}
 
 	runEpgSync(t, w)
 
@@ -702,7 +702,7 @@ func TestListEpgPrograms_WindowAndServiceFilter(t *testing.T) {
 	fake := newEpgFake(t, fx)
 	w := &EpgSyncWorker{
 		MirakcClients:  singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Store:          pgstore.NewEPG(pool),
+		Store:          pgstoretest.EPG(pool),
 		RetentionGrace: 365 * 24 * time.Hour,
 	}
 	runEpgSync(t, w)
@@ -778,7 +778,7 @@ func TestEpgSyncWorker_SiteMismatch(t *testing.T) {
 	fake := newEpgFake(t, fx)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool)}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool)}
 
 	job := EpgSyncArgs{Site: "site-b"}
 	err := runWorkerViaJobQFake(context.Background(), w, job)
@@ -801,7 +801,7 @@ func TestEpgSyncWorker_SiteMatch(t *testing.T) {
 	}
 	fake := newEpgFake(t, fx)
 
-	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)), Store: pgstore.NewEPG(pool)}
+	w := &EpgSyncWorker{MirakcClients: singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)), Store: pgstoretest.EPG(pool)}
 
 	job := EpgSyncArgs{Site: "site-a"}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err != nil {

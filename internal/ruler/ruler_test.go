@@ -21,7 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/ruler"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -42,8 +42,8 @@ func (s *gatedProgramSearch) MatchProgramIDsForRule(ctx context.Context, site st
 }
 
 func newRuler(sites []string, pool *pgxpool.Pool, cfg *ruler.Config) *ruler.Ruler {
-	reservations := pgstore.NewReservations(pool)
-	return ruler.New(sites, reservations, pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), reservations, cfg, pgstore.NewEPG(pool))
+	reservations := pgstoretest.Reservations(pool)
+	return ruler.New(sites, reservations, pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), reservations, cfg, pgstoretest.EPG(pool))
 }
 
 // テスト全体で使い回す単一のチャンネル。複数チャンネルを区別する必要のある
@@ -2701,10 +2701,10 @@ func TestRunPass_RetractGrace_UsesTimeAtApplyAfterSlowEvaluation(t *testing.T) {
 	ruleID := insertRule(t, pool, ctx, "grace-slow-evaluation", 10)
 	insertRuleKeyword(t, pool, ctx, ruleID, "遅延評価対象")
 
-	reservations := pgstore.NewReservations(pool)
-	search := &gatedProgramSearch{ProgramSearch: pgstore.NewEPG(pool)}
-	r := ruler.New([]string{testSite}, reservations, pgstore.NewBreakers(pool),
-		pgstore.NewNeverScheduledEvents(pool), reservations, &ruler.Config{RetractGrace: time.Second}, search)
+	reservations := pgstoretest.Reservations(pool)
+	search := &gatedProgramSearch{ProgramSearch: pgstoretest.EPG(pool)}
+	r := ruler.New([]string{testSite}, reservations, pgstoretest.Breakers(pool),
+		pgstoretest.NeverScheduledEvents(pool), reservations, &ruler.Config{RetractGrace: time.Second}, search)
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("initial RunPass: %v", err)
 	}

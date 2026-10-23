@@ -9,7 +9,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -17,7 +17,7 @@ func TestRunPass_RuleEditDuringPassReevaluates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, []string{store.DefaultSite})
+	rules := pgstoretest.Rules(pool, []string{store.DefaultSite}...)
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
@@ -46,7 +46,7 @@ func TestRunPass_RuleDeleteDuringPassReevaluates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, []string{store.DefaultSite})
+	rules := pgstoretest.Rules(pool, []string{store.DefaultSite}...)
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
@@ -78,7 +78,7 @@ func TestRunPass_StalePassCannotOverwriteNewerPass(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	rules := pgstore.NewRules(pool, []string{store.DefaultSite})
+	rules := pgstoretest.Rules(pool, []string{store.DefaultSite}...)
 	rule, err := rules.Create(ctx, revisionTestRuleInput("P"))
 	if err != nil {
 		t.Fatalf("creating rule: %v", err)
@@ -113,7 +113,7 @@ func TestRunPass_InputRevisionMismatchLimit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	insertRevisionTestPrograms(t, pool, ctx)
-	if _, err := pgstore.NewRules(pool, []string{store.DefaultSite}).Create(ctx, revisionTestRuleInput("P")); err != nil {
+	if _, err := pgstoretest.Rules(pool, []string{store.DefaultSite}...).Create(ctx, revisionTestRuleInput("P")); err != nil {
 		t.Fatalf("creating rule: %v", err)
 	}
 	r := newRevisionTestRuler(pool)
@@ -175,8 +175,8 @@ INSERT INTO epg_programs (
 }
 
 func newRevisionTestRuler(pool *pgxpool.Pool) *Ruler {
-	passes := pgstore.NewReservations(pool)
-	return New([]string{store.DefaultSite}, passes, pgstore.NewBreakers(pool), nil, nil, nil, pgstore.NewEPG(pool))
+	passes := pgstoretest.Reservations(pool)
+	return New([]string{store.DefaultSite}, passes, pgstoretest.Breakers(pool), nil, nil, nil, pgstoretest.EPG(pool))
 }
 
 func assertRevisionTestReservations(t *testing.T, pool *pgxpool.Pool, ctx context.Context, want int64) {

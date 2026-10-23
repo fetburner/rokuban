@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -45,7 +45,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("marking trashed: %v", err)
 	}
 
-	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
+	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pgstore.NewCatalog(pool, []string{"default"}), mediaDir, path); err != nil {
+	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, path); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 

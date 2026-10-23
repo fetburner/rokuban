@@ -22,7 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -203,7 +203,7 @@ func ffprobeSizeJSON(size string) string {
 
 func newCMDetectTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMDetectWorker {
 	return &CMDetectWorker{
-		DetectionStore: pgstore.NewAnalysis(pool),
+		DetectionStore: pgstoretest.Analysis(pool),
 		MediaDir:       mediaDir,
 		ScratchDir:     filepath.Join(mediaDir, "scratch"),
 		CMDetect:       config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir},
@@ -444,7 +444,7 @@ func TestCMLogoCandidateWorkerCreatesReadyCandidateFromEmptyLogoDir(t *testing.T
 		t.Fatal(err)
 	}
 	w := &CMLogoCandidateWorker{
-		Store: pgstore.NewAnalysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		Store: pgstoretest.Analysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
 	if err := runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt)); err != nil {
@@ -496,7 +496,7 @@ func TestCMLogoCandidateWorkerMarksResolutionMismatchFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := &CMLogoCandidateWorker{
-		Store: pgstore.NewAnalysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		Store: pgstoretest.Analysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
 	err = runWorkerViaJobQFake(ctx, w, cmLogoCandidateJob(id, area.UpdatedAt))

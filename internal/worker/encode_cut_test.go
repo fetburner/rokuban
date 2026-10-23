@@ -27,6 +27,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // cutFFmpegProfile は実 ffmpeg の統合テストが使う最小の cut プロファイル。
@@ -577,7 +578,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 	}
 
 	publishedCalls := 0
-	published, err := pgstore.NewMedia(pool).PublishEncoded(ctx, store.EncodedPublishInput{
+	published, err := pgstoretest.Media(pool).PublishEncoded(ctx, store.EncodedPublishInput{
 		RecordingID:     recordingID,
 		Profile:         "cut",
 		Attempt:         1,
@@ -929,13 +930,13 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		StallTimeout:  5 * time.Second,
 		// cut: true のプロファイル名（本番では config から注入される）。
 		CutProfiles: map[string]struct{}{"cut": {}},
 		Precheck:    newTestMediaStore(pool),
 	}
-	w.CMDetectionStore = pgstore.NewAnalysis(pool)
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only"}
 	w.Enqueuer = newRecordingEnqueuer()
@@ -997,13 +998,13 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),
 		MediaDir:      t.TempDir(),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		StallTimeout:  5 * time.Second,
 		CutProfiles:   map[string]struct{}{"cut": {}},
 		LiveEnabled:   true,
 		Precheck:      newTestMediaStore(pool),
 	}
-	w.CMDetectionStore = pgstore.NewAnalysis(pool)
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
 	job := IngestJobArgs{Site: "default", RecordID: "rec-policy-cut-only-live"}
 	w.Enqueuer = newRecordingEnqueuer()

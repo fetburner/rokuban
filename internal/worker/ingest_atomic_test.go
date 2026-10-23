@@ -22,7 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -55,7 +55,7 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wA := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvA.URL, nil)),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 		Precheck:      newTestMediaStore(pool),
@@ -63,13 +63,13 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	wB := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("default", mirakc.NewClient(srvB.URL, nil)),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
 		Precheck:      newTestMediaStore(pool),
 	}
-	wA.CMDetectionStore = pgstore.NewAnalysis(pool)
-	wB.CMDetectionStore = pgstore.NewAnalysis(pool)
+	wA.CMDetectionStore = pgstoretest.Analysis(pool)
+	wB.CMDetectionStore = pgstoretest.Analysis(pool)
 	jobA := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-a"}
 	jobB := IngestJobArgs{Site: "default", RecordID: "rec-concurrent-b"}
 
@@ -398,7 +398,7 @@ func runCanonicalOrphanSurvives(
 	t.Cleanup(release)
 	install(t, pool, func() { close(publicationStarted) }, releasePublication)
 
-	w := &IngestWorker{Publisher: pgstore.NewMedia(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
+	w := &IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
 	commitDone := make(chan error, 1)
 	go func() {
 		commitDone <- w.commit(ctx, recordingID, relPath, tempPath, fullPath,
@@ -427,7 +427,7 @@ func runCanonicalOrphanSurvives(
 	}
 
 	// The path lock prevents cleanup from deleting the file while the transaction is unresolved.
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	cleanup.deleteOrphanFile(relPath, 0)
 	var orphanCount int
 	if err := pool.QueryRow(ctx,
@@ -554,13 +554,13 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			fake := newFullTransferFake(t, recordID, tsData, contentPath)
 			w := &IngestWorker{
 				MirakcClients: singleSiteClients("default", mirakc.NewClient(fake.URL(), nil)),
-				Publisher:     pgstore.NewMedia(pool),
-				RecordTarget:  pgstore.NewRecordings(pool),
+				Publisher:     pgstoretest.Media(pool),
+				RecordTarget:  pgstoretest.Recordings(pool),
 				MediaDir:      mediaDir,
 				StallTimeout:  5 * time.Second,
 				Precheck:      newTestMediaStore(pool),
 			}
-			w.CMDetectionStore = pgstore.NewAnalysis(pool)
+			w.CMDetectionStore = pgstoretest.Analysis(pool)
 			job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 			originalRename := renameIngestFile

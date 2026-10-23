@@ -16,7 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -31,11 +31,11 @@ func TestCutProfileSelection_RejectedOnEveryAPIPath(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		RuleStore:          pgstore.NewRules(pool, []string{"default"}),
-		ProgramSearch:      pgstore.NewEPG(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		ReservationStore:   pgstore.NewReservations(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		RuleStore:          pgstoretest.Rules(pool, []string{"default"}...),
+		ProgramSearch:      pgstoretest.EPG(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		ReservationStore:   pgstoretest.Reservations(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        false,
@@ -135,11 +135,11 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		RuleStore:          pgstore.NewRules(pool, []string{"default"}),
-		ProgramSearch:      pgstore.NewEPG(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		ReservationStore:   pgstore.NewReservations(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		RuleStore:          pgstoretest.Rules(pool, []string{"default"}...),
+		ProgramSearch:      pgstoretest.EPG(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		ReservationStore:   pgstoretest.Reservations(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 		LiveEnabled:        true,
@@ -197,8 +197,8 @@ func TestAddEncodeProfiles_CutRuleAppliesToMergedSelection(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -259,8 +259,8 @@ func TestReencodeRecordingProfile_StatusCodes(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -304,8 +304,8 @@ func TestReencodeRecordingProfile_AllowsTrashedRecording(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -352,8 +352,8 @@ func TestReencodeRecordingProfile_RecordsRequestAndHintsReconcile(t *testing.T) 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -448,8 +448,8 @@ func TestReencodeRecordingProfile_NeedsKeepRanges(t *testing.T) {
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -509,8 +509,8 @@ func TestReencodeRecordingProfile_NotDesiredIs409(t *testing.T) {
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "cut"},
 		CutProfileNames:    []string{"cut"},
@@ -560,8 +560,8 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -631,8 +631,8 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	ctx := context.Background()
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready:              pool.Ping,
-		EncodePolicyStore:  pgstore.NewMedia(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"cut"},
 		CutProfileNames:    []string{"cut"},
 	}))

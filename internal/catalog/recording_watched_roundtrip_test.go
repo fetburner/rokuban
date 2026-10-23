@@ -9,7 +9,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -37,7 +37,7 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 		t.Fatalf("insert playback position: %v", err)
 	}
 
-	doc, err := pgstore.NewCatalog(pool, []string{"default"}).Export(ctx)
+	doc, err := pgstoretest.Catalog(pool, []string{"default"}...).Export(ctx)
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
@@ -67,7 +67,7 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	if _, err := pool.Exec(ctx, `DELETE FROM recording_playback_positions`); err != nil {
 		t.Fatalf("delete playback positions: %v", err)
 	}
-	result, err := RescueFile(ctx, pgstore.NewCatalog(pool, []string{"default"}), mediaDir, filepath.Join(genDir, DocumentFilename))
+	result, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, filepath.Join(genDir, DocumentFilename))
 	if err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}

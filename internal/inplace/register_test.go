@@ -9,7 +9,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -36,11 +36,11 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 		Assets: []Asset{{Kind: store.AssetKindEncoded, Profile: &profile, RelPath: "imported/show.mp4"}},
 	}
 
-	first, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, input)
+	first, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
-	second, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, input)
+	second, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("second Register: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestRegister_IdempotentExistingFile(t *testing.T) {
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, first.RecordingID); err != nil {
 		t.Fatal(err)
 	}
-	third, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, input)
+	third, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, input)
 	if err != nil {
 		t.Fatalf("Register after soft delete: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Register(ctx, pgstore.NewMedia(pool), mediaDir, Input{
+	got, err := Register(ctx, pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{
 			Source: "manual", Site: "default",
 			NetworkID: -20, ServiceID: -21, EventID: -22,
@@ -183,7 +183,7 @@ func TestRegister_RejectsSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, Input{
+	_, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{Site: "default"},
 		Assets:    []Asset{{Kind: store.AssetKindOriginal, RelPath: "linked.ts"}},
 	})
@@ -203,7 +203,7 @@ func TestRegister_RejectsIntermediateSymlinkEscape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, Input{
+	_, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{Site: "default"},
 		Assets:    []Asset{{Kind: store.AssetKindOriginal, RelPath: "linked-dir/outside.ts"}},
 	})
@@ -220,7 +220,7 @@ func TestRegister_RejectsPathOutsideMediaDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := Register(context.Background(), pgstore.NewMedia(pool), mediaDir, Input{
+	_, err := Register(context.Background(), pgstoretest.Media(pool), mediaDir, Input{
 		Recording: Recording{Site: "default"},
 		Assets:    []Asset{{Kind: store.AssetKindOriginal, RelPath: outside}},
 	})

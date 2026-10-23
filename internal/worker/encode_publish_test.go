@@ -22,7 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -33,7 +33,7 @@ func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int6
 	if hasRebuildRequest {
 		requestedKeep = rebuildKeep[0]
 	}
-	state, err := pgstore.NewMedia(pool).GetEncodedPublishState(ctx, recordingID, profile, cut != nil, cut != nil && !hasRebuildRequest)
+	state, err := pgstoretest.Media(pool).GetEncodedPublishState(ctx, recordingID, profile, cut != nil, cut != nil && !hasRebuildRequest)
 	if err != nil {
 		return encodePlan{}, err
 	}
@@ -52,7 +52,7 @@ func planEncodePublish(ctx context.Context, pool *pgxpool.Pool, recordingID int6
 
 // frozenKeepRanges は media_asset に凍結された keep 区間を store 契約から読む。
 func frozenKeepRanges(ctx context.Context, pool *pgxpool.Pool, recordingID int64, profile string) ([]chapters.Range, error) {
-	state, err := pgstore.NewMedia(pool).GetEncodedPublishState(ctx, recordingID, profile, true, false)
+	state, err := pgstoretest.Media(pool).GetEncodedPublishState(ctx, recordingID, profile, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -942,7 +942,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 		return nil
 	}
 
-	cleanup := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	cleanup := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	deleteDone := make(chan struct{})
 	go func() {
 		cleanup.deleteMediaAsset(ctx, store.MediaDeleteAsset{

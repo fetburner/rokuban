@@ -25,12 +25,12 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/reconciler"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func newReconciler(mc *mirakc.Client, pool *pgxpool.Pool, cfg *reconciler.Config) *reconciler.Reconciler {
-	return reconciler.New("default", mc, pgstore.NewScheduleSync(pool), pgstore.NewBreakers(pool), pgstore.NewNeverScheduledEvents(pool), cfg)
+	return reconciler.New("default", mc, pgstoretest.ScheduleSync(pool), pgstoretest.Breakers(pool), pgstoretest.NeverScheduledEvents(pool), cfg)
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)

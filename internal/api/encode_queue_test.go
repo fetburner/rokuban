@@ -19,6 +19,7 @@ import (
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -146,8 +147,8 @@ func newEncodeQueueServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: []string{"h264", "h265", "cut"},
 		CutProfileNames:    []string{"cut"},
 	}))
@@ -200,7 +201,7 @@ func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	seedIngested(t, pool, id, 1000, nil)
 	setEncodeProfiles(t, pool, id, []string{"h264"})
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
-		RecordingQuery: pgstore.NewRecordings(pool), MediaReader: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}}))
+		RecordingQuery: pgstoretest.Recordings(pool), MediaReader: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 
 	var got struct {
@@ -347,7 +348,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	}}
 
 	enqueuer := newRecordingEnqueuer()
-	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
+	if err := jobqtestutil.RunWorkerOnce(ctx, &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}, jobs.EncodeReconcileArgs{}); err != nil {
 		t.Fatalf("EncodeReconcileWorker.Work: %v", err)
 	}
 	reconciled := map[string]bool{}
@@ -369,8 +370,8 @@ func assertEncodeQueueMatchesReconcile(t *testing.T, pool *pgxpool.Pool, profile
 	t.Helper()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		MediaReader:        pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		MediaReader:        pgstoretest.Media(pool),
 		EncodeProfileNames: profiles.ProfileNames(),
 		CutProfileNames:    profiles.CutProfileNames(),
 	}))

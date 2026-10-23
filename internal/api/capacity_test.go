@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -84,7 +84,7 @@ func getOverages(t *testing.T, baseURL string, start, end time.Time) (int, []cap
 
 func newCapacityServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	tunerStore := pgstore.NewTuners(pool)
+	tunerStore := pgstoretest.Tuners(pool)
 	srv := httptest.NewServer(api.NewRouter(api.RouterConfig{
 		Ready: pool.Ping, TunerReader: tunerStore, CapacityStore: tunerStore,
 	}))

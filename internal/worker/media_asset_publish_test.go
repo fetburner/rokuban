@@ -21,7 +21,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 type cancelDuringCopyReader struct {
@@ -261,13 +261,13 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scratch string) (int64, bool, error) {
 	// 呼び出し時点の active original を入力として計画した初回生成を模す。
 	var inputID int64
-	if orig, err := pgstore.NewMedia(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
+	if orig, err := pgstoretest.Media(pool).GetActiveOriginalMediaAsset(context.Background(), id); err == nil {
 		inputID = orig.ID
 	}
 	relPath := thumbnailRelPath(id)
 	return publishGeneratedMediaAsset(context.Background(), mediaDir, relPath, scratch,
 		func(size int64, publish func() error) (bool, error) {
-			return pgstore.NewMedia(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
+			return pgstoretest.Media(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
 				RecordingID: id, RelPath: relPath, SizeBytes: size, InputAssetID: inputID,
 			}, publish)
 		})

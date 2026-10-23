@@ -9,7 +9,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -18,7 +18,7 @@ import (
 func TestCMLogoAPICountsDetectedAndRedetectable(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstore.NewAnalysis(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstoretest.Analysis(pool)}))
 	defer srv.Close()
 
 	q := sqlcgen.New(pool)

@@ -24,7 +24,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -1100,7 +1100,7 @@ func TestChasePurgeEndUsesCommittedOriginal(t *testing.T) {
 				rangeErrs: []error{errNotFoundForTest},
 			}
 			ls := newLiveStreamer(client, chaseTestConfig(t, ffmpeg))
-			ls.media = pgstore.NewMedia(pool)
+			ls.media = pgstoretest.Media(pool)
 			t.Cleanup(ls.shutdown)
 			startGatedHeadChase(t, ls, client, recordingID)
 			_, statErr := os.Stat(marker)
@@ -1349,7 +1349,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	client := &fakeChaseRecordClient{}
 	ls := newLiveStreamer(client, chaseTestConfig(t, installCompletedChaseFFmpeg(t)))
-	ls.media = pgstore.NewMedia(pool)
+	ls.media = pgstoretest.Media(pool)
 	t.Cleanup(ls.shutdown)
 
 	tests := []struct {

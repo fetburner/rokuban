@@ -6,6 +6,8 @@
 
 テストで録画や media_asset を作るときは、`internal/db/dbtest` の `Recording` と `MediaAsset` を使う。
 
+テストで pgstore の実装を組み立てるときは、`internal/store/pgstore/pgstoretest` を使う。
+
 `docker compose up -d postgres` で立てた postgres をテストに使える（`scripts/init-test-db.sh` が `rokuban_test` を作る）。
 
 ```sh

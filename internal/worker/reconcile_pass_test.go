@@ -9,7 +9,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -59,9 +59,9 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 
 	w := &ReconcilePassWorker{
 		MirakcClients:  singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		ScheduleSync:   pgstore.NewScheduleSync(pool),
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		ScheduleSync:   pgstoretest.ScheduleSync(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
 	if err := runWorkerViaJobQFake(ctx, w, ReconcilePassArgs{Site: testSite}); err != nil {
 		t.Fatalf("ReconcilePassWorker.Work: %v", err)
@@ -79,13 +79,13 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	enqueuer := newRecordingEnqueuer()
-	reservations := pgstore.NewReservations(pool)
+	reservations := pgstoretest.Reservations(pool)
 	w := &RulerPassWorker{
 		RulerPass:      reservations,
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstore.NewEPG(pool),
+		ProgramSearch:  pgstoretest.EPG(pool),
 		Enqueuer:       enqueuer,
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: testSite}); err != nil {
@@ -111,9 +111,9 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &ReconcilePassWorker{
 		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
-		ScheduleSync:   pgstore.NewScheduleSync(pool),
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		ScheduleSync:   pgstoretest.ScheduleSync(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
 
 	job := ReconcilePassArgs{Site: "site-b"}
@@ -136,9 +136,9 @@ func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 
 	w := &ReconcilePassWorker{
 		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
-		ScheduleSync:   pgstore.NewScheduleSync(pool),
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		ScheduleSync:   pgstoretest.ScheduleSync(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 	}
 
 	job := ReconcilePassArgs{Site: "site-a"}

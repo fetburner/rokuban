@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -54,7 +54,7 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	registry := NewWorkers(&Deps{
 		MirakcClients:      singleSiteClients(store.DefaultSite, mirakc.NewClient(fake.URL(), nil)),
 		MediaPublish:       media,
-		IngestTarget:       pgstore.NewRecordings(pool),
+		IngestTarget:       pgstoretest.Recordings(pool),
 		IngestPrecheck:     media,
 		Enqueuer:           newRecordingEnqueuer(),
 		IngestStallTimeout: time.Second,
@@ -206,8 +206,8 @@ func TestEpgSyncWorker_EnqueuesRulerPassHint(t *testing.T) {
 	w := &EpgSyncWorker{
 		Enqueuer:      enqueuer,
 		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		Store:         pgstore.NewEPG(pool),
-		RulerInput:    pgstore.NewReservations(pool),
+		Store:         pgstoretest.EPG(pool),
+		RulerInput:    pgstoretest.Reservations(pool),
 	}
 	if err := runWorkerViaJobQFake(context.Background(), w, EpgSyncArgs{Site: testSite}); err != nil {
 		t.Fatalf("EpgSyncWorker.Work: %v", err)
@@ -298,13 +298,13 @@ VALUES ($1, 0, 'name', 'keyword', 'テスト', true, false)`, ruleID); err != ni
 		t.Fatalf("inserting rule_text_matches fixture: %v", err)
 	}
 
-	reservations := pgstore.NewReservations(pool)
+	reservations := pgstoretest.Reservations(pool)
 	w := &RulerPassWorker{
 		RulerPass:      reservations,
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstore.NewEPG(pool),
+		ProgramSearch:  pgstoretest.EPG(pool),
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RulerPassArgs{Site: site}); err != nil {
 		t.Fatalf("RulerPassWorker.Work: %v", err)
@@ -337,13 +337,13 @@ func TestRulerPassWorker_DoesNotMarkFailedPass(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	reservations := pgstore.NewReservations(pool)
+	reservations := pgstoretest.Reservations(pool)
 	w := &RulerPassWorker{
 		RulerPass:      reservations,
-		Breakers:       pgstore.NewBreakers(pool),
-		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
+		Breakers:       pgstoretest.Breakers(pool),
+		NeverScheduled: pgstoretest.NeverScheduledEvents(pool),
 		LoopMarkers:    reservations,
-		ProgramSearch:  pgstore.NewEPG(pool),
+		ProgramSearch:  pgstoretest.EPG(pool),
 	}
 	job := RulerPassArgs{Site: "default"}
 	if err := runWorkerViaJobQFake(ctx, w, job); err == nil {

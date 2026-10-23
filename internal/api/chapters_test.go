@@ -16,7 +16,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -29,7 +29,7 @@ func strPtr(s string) *string { return &s }
 func chapterRouter(pool *pgxpool.Pool, cmDetectEnabled bool) http.Handler {
 	return NewRouter(RouterConfig{
 		Ready:           pool.Ping,
-		ChapterStore:    pgstore.NewAnalysis(pool),
+		ChapterStore:    pgstoretest.Analysis(pool),
 		CMDetectEnabled: cmDetectEnabled,
 	})
 }

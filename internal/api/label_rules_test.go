@@ -20,7 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -393,7 +393,7 @@ func TestCreateLabelRule_EnqueuesReconcileAfterCommit(t *testing.T) {
 	enqueuer := &labelRuleCommitCheckingEnqueuer{recordingEnqueuer: baseEnqueuer, pool: pool}
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:          pool.Ping,
-		RecordingQuery: pgstore.NewRecordings(pool), LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+		RecordingQuery: pgstoretest.Recordings(pool), LabelRules: pgstoretest.LabelRules(pool), Enqueuer: enqueuer,
 	}))
 	t.Cleanup(srv.Close)
 
@@ -670,7 +670,7 @@ func newAPIServerWithRecordingEnqueuer(t *testing.T, pool *pgxpool.Pool) (*httpt
 	enqueuer := newRecordingEnqueuer()
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:          pool.Ping,
-		RecordingQuery: pgstore.NewRecordings(pool), LabelRules: pgstore.NewLabelRules(pool), Enqueuer: enqueuer,
+		RecordingQuery: pgstoretest.Recordings(pool), LabelRules: pgstoretest.LabelRules(pool), Enqueuer: enqueuer,
 	}))
 	t.Cleanup(srv.Close)
 	return srv, enqueuer

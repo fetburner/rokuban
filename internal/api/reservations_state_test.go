@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/api"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -62,7 +62,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		ctx := context.Background()
 
-		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
+		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
 		srv := httptest.NewServer(router)
 		defer srv.Close()
 
@@ -100,7 +100,7 @@ func TestGetReservation_DetachedViaRuleEditOrRuleDelete(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		ctx := context.Background()
 
-		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ReservationStore: pgstore.NewReservations(pool)})
+		router := api.NewRouter(api.RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ReservationStore: pgstoretest.Reservations(pool)})
 		srv := httptest.NewServer(router)
 		defer srv.Close()
 

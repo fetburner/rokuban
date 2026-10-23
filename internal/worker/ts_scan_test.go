@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/tsscan"
 )
 
@@ -52,7 +52,7 @@ func pcrPacket(pid, cc int, base uint64) []byte {
 
 func runTSScan(t *testing.T, pool *pgxpool.Pool, mediaDir string, recordingID int64) {
 	t.Helper()
-	worker := &tsscan.ScanWorker{Media: pgstore.NewMedia(pool), MediaDir: mediaDir}
+	worker := &tsscan.ScanWorker{Media: pgstoretest.Media(pool), MediaDir: mediaDir}
 	job := tsscan.ScanArgs{RecordingID: recordingID}
 	if err := runWorkerViaJobQFake(context.Background(), worker, job); err != nil {
 		t.Fatalf("ScanWorker.Work: %v", err)
@@ -158,7 +158,7 @@ func TestIngestFollowupEnqueuesTSScanHint(t *testing.T) {
 	fake.SetRecords([]mirakc.Record{{ID: "edge-1290"}})
 
 	enqueuer := newRecordingEnqueuer()
-	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstore.NewAnalysis(pool), Precheck: newTestMediaStore(pool)}
+	w := &IngestWorker{Publisher: newTestMediaStore(pool), Enqueuer: enqueuer, MediaDir: mediaDir, CMDetectionStore: pgstoretest.Analysis(pool), Precheck: newTestMediaStore(pool)}
 	w.enqueueIngestFollowups(context.Background(), mirakc.NewClient(fake.URL(), nil), "edge-1290", recordingID,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	var deleteFound bool

@@ -25,7 +25,7 @@ import (
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -192,7 +192,7 @@ func TestAddRecordingEncodeProfiles_EnqueuesAfterCommit(t *testing.T) {
 			return nil
 		},
 	}
-	h := &Server{encodePolicy: pgstore.NewMedia(pool), enqueuer: enqueuer}
+	h := &Server{encodePolicy: pgstoretest.Media(pool), enqueuer: enqueuer}
 	response, err := h.AddRecordingEncodeProfiles(ctx, AddRecordingEncodeProfilesRequestObject{
 		Id: id, Body: &AddRecordingEncodeProfilesJSONRequestBody{Profiles: []string{"h264"}},
 	})
@@ -221,7 +221,7 @@ func TestAddRecordingEncodeProfiles_DoesNotEnqueueWhenStoreFails(t *testing.T) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "missing original", time.Now().UTC(), "finished", 775
 	})
 	enqueuer := newRecordingEnqueuer()
-	h := &Server{encodePolicy: pgstore.NewMedia(pool), enqueuer: enqueuer}
+	h := &Server{encodePolicy: pgstoretest.Media(pool), enqueuer: enqueuer}
 	response, err := h.AddRecordingEncodeProfiles(ctx, AddRecordingEncodeProfilesRequestObject{
 		Id: id, Body: &AddRecordingEncodeProfilesJSONRequestBody{Profiles: []string{"h264"}},
 	})
@@ -256,7 +256,7 @@ func TestAddRecordingEncodeProfiles_EnqueueFailureLeavesCommittedState(t *testin
 		},
 		err: enqueueErr,
 	}
-	h := &Server{encodePolicy: pgstore.NewMedia(pool), enqueuer: enqueuer}
+	h := &Server{encodePolicy: pgstoretest.Media(pool), enqueuer: enqueuer}
 	response, err := h.AddRecordingEncodeProfiles(ctx, AddRecordingEncodeProfilesRequestObject{
 		Id: id, Body: &AddRecordingEncodeProfilesJSONRequestBody{Profiles: []string{"h264"}},
 	})
@@ -296,8 +296,8 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
@@ -359,7 +359,7 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 // 変更しない。recording_encode_policy 行が無い場合も同じ扱いにする（issue #697）。
 func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -413,7 +413,7 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 // FreezeRecordingEncodePolicy が実際に成功することまで確認する。
 func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -453,7 +453,7 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 // このハンドラで埋める）。
 func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -477,7 +477,7 @@ func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testi
 
 func TestSetRecordingEncodePolicy_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	resp := patchRecordingEncodePolicy(t, encodePolicyURL(srv.URL, 999999), "always")
@@ -488,7 +488,7 @@ func TestSetRecordingEncodePolicy_NotFound(t *testing.T) {
 
 func TestSetRecordingEncodePolicy_InvalidValueReturns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 
 	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
@@ -509,7 +509,7 @@ func TestSetRecordingEncodePolicy_InvalidValueReturns400(t *testing.T) {
 // River にも触れず、既存のレベルトリガーだけが削除を行う。
 func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 	mediaDir := t.TempDir()
 
@@ -547,7 +547,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 		t.Fatalf("status = %d, want 204", resp.StatusCode)
 	}
 
-	w := &worker.DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: pgstore.NewMedia(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
@@ -568,7 +568,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 // 戻す（issue #105 / #697）。
 func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
+	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstoretest.Media(pool)}))
 	defer srv.Close()
 	mediaDir := t.TempDir()
 
@@ -597,7 +597,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 		t.Errorf("keep_original = %q, want always", got)
 	}
 
-	w := &worker.DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: pgstore.NewMedia(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
+	w := &worker.DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
 	if err := jobqtestutil.RunWorkerOnce(context.Background(), w, jobs.DeleteReconcileArgs{}); err != nil {
 		t.Fatalf("delete reconcile: %v", err)
 	}
@@ -622,8 +622,8 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265"},
 	})
@@ -678,8 +678,8 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -758,8 +758,8 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -810,8 +810,8 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264", "h265", "av1"},
 	})
@@ -894,8 +894,8 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -928,8 +928,8 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -973,8 +973,8 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -1010,7 +1010,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 // 存在しない録画 ID には 404。
 func TestAddRecordingEncodeProfiles_NotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstore.NewRecordings(pool), EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstoretest.Recordings(pool), EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -1023,7 +1023,7 @@ func TestAddRecordingEncodeProfiles_NotFound(t *testing.T) {
 // 空配列は 400（追加する意味が無い依頼を弾く）。
 func TestAddRecordingEncodeProfiles_Empty_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstore.NewRecordings(pool), EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstoretest.Recordings(pool), EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -1045,7 +1045,7 @@ func TestAddRecordingEncodeProfiles_Empty_Returns400(t *testing.T) {
 // ルール/overrides と共有していることの固定。issue #64 と同じ検査）。
 func TestAddRecordingEncodeProfiles_UnknownProfile_Returns400(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstore.NewRecordings(pool), EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264"}})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstoretest.Recordings(pool), EncodePolicyStore: pgstoretest.Media(pool), EncodeProfileNames: []string{"h264"}})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -1072,12 +1072,12 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	profiles := config.EncodeConfig{Profiles: []config.EncodeProfile{{
 		Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac",
 	}}}
-	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstore.NewMedia(pool), Profiles: profiles}
+	reconcileWorker := &worker.EncodeReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), Profiles: profiles}
 
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: []string{"h264"},
 	})
@@ -1140,8 +1140,8 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}}
 	router := NewRouter(RouterConfig{
 		Ready:              pool.Ping,
-		RecordingQuery:     pgstore.NewRecordings(pool),
-		EncodePolicyStore:  pgstore.NewMedia(pool),
+		RecordingQuery:     pgstoretest.Recordings(pool),
+		EncodePolicyStore:  pgstoretest.Media(pool),
 		Enqueuer:           enqueuer,
 		EncodeProfileNames: profiles.ProfileNames(),
 		CutProfileNames:    profiles.CutProfileNames(),
@@ -1190,7 +1190,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	encodeReconcileWorker := &worker.EncodeReconcileWorker{
 		Enqueuer: enqueuer,
 
-		Media:    pgstore.NewMedia(pool),
+		Media:    pgstoretest.Media(pool),
 		Profiles: profiles,
 	}
 	if err := jobqtestutil.RunWorkerOnce(ctx, encodeReconcileWorker, jobs.EncodeReconcileArgs{RecordingID: id}); err != nil {

@@ -10,7 +10,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -81,8 +81,8 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 	enqueuer := newRecordingEnqueuer()
 	w := &RecordSweepWorker{
 		MirakcClients:      singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
-		RecordObservations: pgstore.NewRecordings(pool),
-		LoopMarkers:        pgstore.NewReservations(pool),
+		RecordObservations: pgstoretest.Recordings(pool),
+		LoopMarkers:        pgstoretest.Reservations(pool),
 		Enqueuer:           enqueuer,
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: testSite}); err != nil {
@@ -125,8 +125,8 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 
 	w := &RecordSweepWorker{
 		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(fake.URL(), nil)),
-		RecordObservations: pgstore.NewRecordings(pool),
-		LoopMarkers:        pgstore.NewReservations(pool),
+		RecordObservations: pgstoretest.Recordings(pool),
+		LoopMarkers:        pgstoretest.Reservations(pool),
 	}
 	job := jobs.RecordSweepArgs{Site: testSite}
 	if err := runWorkerViaJobQFake(context.Background(), w, job); err == nil {
@@ -171,8 +171,8 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 
 	w := &RecordSweepWorker{
 		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
-		RecordObservations: pgstore.NewRecordings(pool),
-		LoopMarkers:        pgstore.NewReservations(pool),
+		RecordObservations: pgstoretest.Recordings(pool),
+		LoopMarkers:        pgstoretest.Reservations(pool),
 	}
 
 	job := RecordSweepArgs{Site: "site-b"}
@@ -195,8 +195,8 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 
 	w := &RecordSweepWorker{
 		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
-		RecordObservations: pgstore.NewRecordings(pool),
-		LoopMarkers:        pgstore.NewReservations(pool),
+		RecordObservations: pgstoretest.Recordings(pool),
+		LoopMarkers:        pgstoretest.Reservations(pool),
 		Enqueuer:           newRecordingEnqueuer(),
 	}
 	if err := runWorkerViaJobQFake(ctx, w, RecordSweepArgs{Site: "site-a"}); err != nil {

@@ -16,13 +16,13 @@ import (
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
 func newCandidateTestWorker(pool *pgxpool.Pool, mediaDir string, tools cmToolset) *CMLogoCandidateWorker {
 	return &CMLogoCandidateWorker{
-		Store: pgstore.NewAnalysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
+		Store: pgstoretest.Analysis(pool), MediaDir: mediaDir, ScratchDir: filepath.Join(mediaDir, "scratch"),
 		CMDetect: config.CMDetectConfig{Enabled: true, BinaryDir: tools.binDir}, FFprobe: tools.ffprobe,
 	}
 }
@@ -283,7 +283,7 @@ func TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate(t *testing.T) 
 	if err != nil || failed != 0 {
 		t.Fatalf("old failure update = %d, %v; want no row", failed, err)
 	}
-	if err := pgstore.NewAnalysis(pool).DiscardLogoCandidate(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, oldAttempt); err != nil {
+	if err := pgstoretest.Analysis(pool).DiscardLogoCandidate(ctx, store.CMStationRef{NetworkID: 32736, ServiceID: 1024}, areaAt, oldAttempt); err != nil {
 		t.Fatalf("old discard = %v; want no-op", err)
 	}
 	candidate, err := q.GetCMLogoCandidate(ctx, sqlcgen.GetCMLogoCandidateParams{NetworkID: 32736, ServiceID: 1024})
@@ -329,7 +329,7 @@ func TestFailOrphanCMLogoCandidatesWaitsForDeadlineAndGrace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := pgstore.NewAnalysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
+	if err := pgstoretest.Analysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
 		t.Fatal(err)
 	}
 	for serviceID, want := range map[int32][2]string{
@@ -366,7 +366,7 @@ func TestFailOrphanCMLogoCandidatesWithoutRecordingUsesMinimumDeadline(t *testin
 			t.Fatal(err)
 		}
 	}
-	if err := pgstore.NewAnalysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
+	if err := pgstoretest.Analysis(pool).FailOrphanLogoCandidates(ctx, grace, cmDetectionTimeout); err != nil {
 		t.Fatal(err)
 	}
 	for serviceID, want := range map[int32][2]string{1024: {"failed", "stopped"}, 1025: {"running", ""}} {
@@ -394,7 +394,7 @@ func TestCMDetectEnqueuePathsUseRecordingDuration(t *testing.T) {
 
 	hintRecording := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(951)))
 	setRecordingDuration(hintRecording)
-	analysis := pgstore.NewAnalysis(pool)
+	analysis := pgstoretest.Analysis(pool)
 	if err := EnqueueCMDetectionIfNeeded(ctx, analysis, enqueuer, hintRecording); err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestCMDetectReconcileClearsDisabledAndPreTransitionAttempts(t *testing.T) {
 		t.Fatalf("idempotent SetRecordingCMDetection(%d) = %d, %v; want 1 row", newAttemptAfterReenable, rows, err)
 	}
 
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool)}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstoretest.Analysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow(t *testing.T)
 	count := func() int {
 		return len(enqueuedArgs[jobs.CMLogoCandidateJobArgs](enqueuer, jobs.CMLogoCandidateJobArgs{}.Kind()))
 	}
-	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool)}
+	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstoretest.Analysis(pool)}
 	if err := runWorkerViaJobQFake(ctx, w, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatal(err)
 	}

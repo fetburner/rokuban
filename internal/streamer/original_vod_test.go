@@ -20,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -132,7 +132,7 @@ func originalVODConfig(t *testing.T, mediaDir, ffmpeg string) LiveConfig {
 
 func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) (*LiveStreamer, *httptest.Server) {
 	t.Helper()
-	ls := newLiveStreamerWithMedia(pgstore.NewMedia(pool), chaseTestLiveClient{}, testSite, cfg)
+	ls := newLiveStreamerWithMedia(pgstoretest.Media(pool), chaseTestLiveClient{}, testSite, cfg)
 	t.Cleanup(ls.shutdown)
 	router := chi.NewRouter()
 	ls.Mount(router)
@@ -764,7 +764,7 @@ func TestOriginalVODRetainedSessionSurvivesOriginalDeletion(t *testing.T) {
 		t.Fatalf("creating unreachable pool: %v", err)
 	}
 	t.Cleanup(broken.Close)
-	ls.media = pgstore.NewMedia(broken)
+	ls.media = pgstoretest.Media(broken)
 	resp, body = get(t, base+"/segments/hd.0_seg00001.ts", nil)
 	if resp.StatusCode != http.StatusOK || string(body) != "fake-ts-hd" {
 		t.Fatalf("segment during DB outage = %d %q, want 200", resp.StatusCode, body)

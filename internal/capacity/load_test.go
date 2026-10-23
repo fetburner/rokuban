@@ -10,7 +10,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -126,7 +126,7 @@ func TestLoad_MidRecordingFailureNotExcluded(t *testing.T) {
 
 func loadOverages(t *testing.T, pool *pgxpool.Pool) []Overage {
 	t.Helper()
-	overages, err := Load(context.Background(), pgstore.NewTuners(pool), testSite)
+	overages, err := Load(context.Background(), pgstoretest.Tuners(pool), testSite)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

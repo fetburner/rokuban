@@ -12,7 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -20,7 +20,7 @@ import (
 func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -92,7 +92,7 @@ func TestRuleCRUD_EnqueuesRulerPassHint(t *testing.T) {
 func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -118,7 +118,7 @@ func TestDeleteRule_NotFound_DoesNotEnqueueRulerPassHint(t *testing.T) {
 func TestRuleHintEnqueueFollowsStoreCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := &ruleCommitCheckingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -152,7 +152,7 @@ func TestRuleHintEnqueueFailureDoesNotUndoCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := &ruleCommitCheckingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
 	enqueuer.check = func(context.Context) error { return fmt.Errorf("forced enqueue failure") }
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -176,7 +176,7 @@ func TestRuleHintEnqueueFailureDoesNotUndoCommit(t *testing.T) {
 // Enqueuer が nil の部分構成でもルールを保存できる。
 func TestCreateRule_WithoutEnqueuer_StillSucceeds(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool)})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -214,7 +214,7 @@ func (e *ruleCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args
 func TestRuleWriteFailure_DoesNotEnqueueRulerPassHint(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := newRecordingEnqueuer()
-	router := NewRouter(RouterConfig{Ready: pool.Ping, Sites: []string{"dup"}, RuleStore: pgstore.NewRules(pool, []string{"default"}), ProgramSearch: pgstore.NewEPG(pool), Enqueuer: enqueuer})
+	router := NewRouter(RouterConfig{Ready: pool.Ping, Sites: []string{"dup"}, RuleStore: pgstoretest.Rules(pool, []string{"default"}...), ProgramSearch: pgstoretest.EPG(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -273,8 +273,8 @@ func TestRuleRegexValidation_ClassifiesErrors(t *testing.T) {
 		{"other failure", errors.New("connection reset"), http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstore.NewRules(pool, []string{"default"}),
-				ProgramSearch: failingRegexSearch{ProgramSearch: pgstore.NewEPG(pool), err: tc.err}})
+			router := NewRouter(RouterConfig{Ready: pool.Ping, RuleStore: pgstoretest.Rules(pool, []string{"default"}...),
+				ProgramSearch: failingRegexSearch{ProgramSearch: pgstoretest.EPG(pool), err: tc.err}})
 			srv := httptest.NewServer(router)
 			defer srv.Close()
 			resp, err := http.Post(srv.URL+"/api/rules", "application/json", bytes.NewReader([]byte(body)))

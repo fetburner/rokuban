@@ -18,7 +18,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // ingestProgressRow は recording_ingest_progress の 1 行（無ければ ok=false）。
@@ -185,10 +185,10 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 		// 観測期限より長くし、最初の burst が転送開始直後の間引き期間内に
 		// 必ず収まるようにする。短くすると次の Write の時刻次第で症状を隠す。
 		ProgressInterval: time.Hour,
-		RecordTarget:     pgstore.NewRecordings(pool),
+		RecordTarget:     pgstoretest.Recordings(pool),
 		Precheck:         newTestMediaStore(pool),
 	}
-	w.CMDetectionStore = pgstore.NewAnalysis(pool)
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
 
 	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-progress")
@@ -322,7 +322,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
-		RecordTarget:     pgstore.NewRecordings(pool),
+		RecordTarget:     pgstoretest.Recordings(pool),
 		Precheck:         newTestMediaStore(pool),
 	}
 
@@ -414,7 +414,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Millisecond,
-		RecordTarget:     pgstore.NewRecordings(pool),
+		RecordTarget:     pgstoretest.Recordings(pool),
 		Precheck:         newTestMediaStore(pool),
 	}
 
@@ -493,7 +493,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 		MediaDir:         t.TempDir(),
 		StallTimeout:     30 * time.Second,
 		ProgressInterval: time.Hour,
-		RecordTarget:     pgstore.NewRecordings(pool),
+		RecordTarget:     pgstoretest.Recordings(pool),
 		Precheck:         newTestMediaStore(pool),
 	}
 	recordingID := dbtest.Recording(t, pool)
