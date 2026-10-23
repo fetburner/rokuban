@@ -383,7 +383,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ヒントを落とす番組")
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"always","encodeProfiles":["h265"]}`)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-163-lost-hint", programID)
@@ -464,7 +464,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// (b) desired が揃っている → 候補にしない。
 	complete := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/complete.m2ts", []string{"h264"}, []byte("x"))
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, complete, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, complete, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "q/complete_h264.mp4"
@@ -498,7 +498,7 @@ func TestListMissingEncodeProfiles(t *testing.T) {
 	// ListMissingEncodeProfiles が見るのは active な encoded だけ
 	// （GetActiveEncodedMediaAssetID）なので、候補の定義もそこに揃える。
 	encodedGone := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "q/encgone.m2ts", []string{"h264"}, []byte("x"))
-	dbtest.OriginalAsset(t, pool, encodedGone, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, encodedGone, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "q/encgone_h264.mp4"

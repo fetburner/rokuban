@@ -46,7 +46,7 @@ func cmAttemptGenerationForTest(t *testing.T, ctx context.Context, pool *pgxpool
 // seedActiveOriginalForTest は active な原本を 1 つ作る（SetRecordingCMDetection の前提）。
 func seedActiveOriginalForTest(t *testing.T, db sqlcgen.DBTX, id int64) {
 	t.Helper()
-	dbtest.OriginalAsset(t, db, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, db, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -103,10 +103,10 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool), CMStationStore: pgstore.NewAnalysis(pool), CMDetectEnabled: true}))
 	defer srv.Close()
 
-	activeID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	activeID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "復旧原本", time.Now().Truncate(time.Second), "finished", 980
 	})
-	dbtest.OriginalAsset(t, pool, activeID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, activeID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", activeID)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -127,7 +127,7 @@ func TestSetRecordingEncodePolicy_CMDetectionFreezesOnlyWithActiveOriginal(t *te
 		t.Fatalf("frozen policy = (%q, %v, %v), want (always, [], true)", keepOriginal, profiles, cmDetect)
 	}
 
-	noOriginalID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	noOriginalID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本なし", time.Now().Add(time.Second).Truncate(time.Second), "finished", 981
 	})
 	resp = patchCMDetection(t, encodePolicyURL(srv.URL, noOriginalID), true)
@@ -171,10 +171,10 @@ func TestSetRecordingEncodePolicy_DisableLeavesCMDetectionAttemptForReconcile(t 
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 				p.Title, p.ProgramStartAt, p.Status, p.EventID = tc.name, time.Now().Add(time.Duration(i)*time.Second).Truncate(time.Second), "finished", int32(983+i)
 			})
-			dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 				fixtureParams.SizeBytes = 1000
 			})
@@ -231,7 +231,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: analysisStore, CMDetectionStore: analysisStore, CMDetectEnabled: true, Enqueuer: enqueuer}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再試行", time.Now().Truncate(time.Second), "finished", 982
 	})
 	if _, err := pool.Exec(context.Background(), `
@@ -239,7 +239,7 @@ func TestRetryRecordingCMDetectionClearsFailureAndEnqueues(t *testing.T) {
 		WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -296,7 +296,7 @@ func TestCMLogoAPIListsFailuresAndForgetsLogo(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, CMStationStore: pgstore.NewAnalysis(pool)}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ロゴ管理", time.Now().Truncate(time.Second), "finished", 983
 	})
 	if _, err := pool.Exec(context.Background(), `
@@ -376,7 +376,7 @@ func TestRecordingsHideCMFailuresFromPreviousPolicyGeneration(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "方針変更前の CM 失敗", time.Now().Truncate(time.Second), "finished", 984
 	})
 	if _, err := pool.Exec(ctx, `
@@ -448,10 +448,10 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "枠を教える", time.Now().Truncate(time.Second), "finished", 984
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -604,15 +604,15 @@ func fetchCMLogos(t *testing.T, baseURL string) []CMLogoState {
 func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id1 := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id1 := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "候補採用1", time.Now().Truncate(time.Second), "finished", 986
 	})
-	id2 := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id2 := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "候補採用2", time.Now().Add(time.Second).Truncate(time.Second), "finished", 987
 	})
 	q := sqlcgen.New(pool)
 	for _, id := range []int64{id1, id2} {
-		dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 			fixtureParams.SizeBytes = 1000
 		})
@@ -622,13 +622,13 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 	}
 	// 原本の無い録画・原本が missing の録画の検出は、再検出で消さない（消すと永遠に
 	// 「検出中」のまま回復できない）。失敗していた録画は採用で desired に入る。
-	noOriginal := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	noOriginal := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本なし", time.Now().Add(2*time.Second).Truncate(time.Second), "finished", 988
 	})
-	missingOriginal := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	missingOriginal := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本欠落", time.Now().Add(3*time.Second).Truncate(time.Second), "finished", 989
 	})
-	failedRecording := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	failedRecording := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗録画", time.Now().Add(4*time.Second).Truncate(time.Second), "finished", 990
 	})
 	for _, id := range []int64{noOriginal, missingOriginal} {
@@ -637,7 +637,7 @@ func TestCMLogoCandidateAPIAdoptsAndRedetectsOnlyWhenRequested(t *testing.T) {
 		}
 	}
 	for _, id := range []int64{missingOriginal, failedRecording} {
-		dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 			fixtureParams.SizeBytes = 1000
 		})
@@ -775,7 +775,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		}
 	}
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "候補解析", time.Now().Truncate(time.Second), "finished", 985
 	})
 	if _, err := pool.Exec(context.Background(), `
@@ -783,7 +783,7 @@ func TestCMLogoMutationsEnqueueReconcile(t *testing.T) {
 		WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -850,10 +850,10 @@ func TestCMDetectionRejectedWhenDeploymentDisablesIt(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool), CMStationStore: pgstore.NewAnalysis(pool), Enqueuer: enqueuer}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無効構成", time.Now().Truncate(time.Second), "finished", 984
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -907,7 +907,7 @@ func cmLogoRequest(t *testing.T, method, url, body string) *http.Response {
 func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "採用拒否", time.Now().Truncate(time.Second), "finished", 991
 	})
 	q := sqlcgen.New(pool)
@@ -964,7 +964,7 @@ func TestCMLogoCandidateAdoptRejectsUnadoptableCandidates(t *testing.T) {
 func TestCMLogoCandidateDiscardKeepsAreaAndLogo(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "候補破棄", time.Now().Truncate(time.Second), "finished", 992
 	})
 	q := sqlcgen.New(pool)
@@ -1012,17 +1012,17 @@ func TestCMLogoAreaDeleteClearsOnlyThisStationsAdoptAttempts(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	here := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	here := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "この局", time.Now().Truncate(time.Second), "finished", 993
 	})
-	other := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	other := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "別の局", time.Now().Truncate(time.Second), "finished", 994
 	})
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET network_id = 32679 WHERE id = $1`, other); err != nil {
 		t.Fatal(err)
 	}
 	adopt, logo := "adopt", "logo"
-	hereLogo := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	hereLogo := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "この局の別失敗", time.Now().Truncate(time.Second), "finished", 995
 	})
 	for id, stage := range map[int64]*string{here: &adopt, other: &adopt, hereLogo: &logo} {

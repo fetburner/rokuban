@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -81,7 +80,7 @@ func TestRecordingQueryContract(t *testing.T) {
 				}
 				genres = encoded
 			}
-			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.RuleID = o.RuleID
 				fixtureParams.Source = o.Source
 				fixtureParams.Site = o.Site
@@ -118,7 +117,7 @@ func TestRecordingQueryContract(t *testing.T) {
 				}
 			}
 			if o.Playable {
-				dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+				dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 					p.RelPath = fmt.Sprintf("contract/%s/%d.ts", o.Site, id)
 					p.SizeBytes = 100
 				})

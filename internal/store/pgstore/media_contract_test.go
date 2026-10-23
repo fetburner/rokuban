@@ -66,7 +66,7 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 
 func newMediaContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Status = "finished"
 		fixtureParams.EventID = mediaContractEventID.Add(1)
 		fixtureParams.ServiceName = "store contract fixture"
@@ -80,7 +80,7 @@ func newMediaContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 
 func newMediaContractAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 	t.Helper()
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = kind
 		fixtureParams.Profile = profile
 		fixtureParams.RelPath = relPath

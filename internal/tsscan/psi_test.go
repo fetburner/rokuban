@@ -9,7 +9,6 @@ import (
 	"github.com/Comcast/gots/v3"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/tsstat"
 )
@@ -79,7 +78,7 @@ func psiString(value string) *string { return &value }
 func TestScanWorker_PersistsPIDTypesFromPSI(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 12910 })
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 12910 })
 
 	data := makeTSDataWithPSI()
 	mediaDir := t.TempDir()
@@ -91,7 +90,7 @@ func TestScanWorker_PersistsPIDTypesFromPSI(t *testing.T) {
 	if err := os.WriteFile(fullPath, data, 0o600); err != nil {
 		t.Fatalf("writing original: %v", err)
 	}
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(data))
 	})

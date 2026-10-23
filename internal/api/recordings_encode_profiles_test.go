@@ -176,7 +176,7 @@ func (e *postCommitCheckingEnqueuer) Enqueue(ctx context.Context, args jobq.Args
 func TestAddRecordingEncodeProfiles_EnqueuesAfterCommit(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "enqueue after commit", time.Now().UTC(), "finished", 774
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -217,7 +217,7 @@ func TestAddRecordingEncodeProfiles_EnqueuesAfterCommit(t *testing.T) {
 func TestAddRecordingEncodeProfiles_DoesNotEnqueueWhenStoreFails(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "missing original", time.Now().UTC(), "finished", 775
 	})
 	enqueuer := newRecordingEnqueuer()
@@ -239,7 +239,7 @@ func TestAddRecordingEncodeProfiles_DoesNotEnqueueWhenStoreFails(t *testing.T) {
 func TestAddRecordingEncodeProfiles_EnqueueFailureLeavesCommittedState(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "enqueue failure after commit", time.Now().UTC(), "finished", 776
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -304,7 +304,7 @@ func TestSetRecordingEncodePolicy_SuccessPreservesProfilesAndIsIdempotent(t *tes
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "保持ポリシー", time.Now().Truncate(time.Second), "finished", 601
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -363,7 +363,7 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	emptyID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	emptyID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "プロファイルなし", time.Now().Truncate(time.Second), "finished", 602
 	})
 	seedIngested(t, pool, emptyID, 1000, nil)
@@ -378,10 +378,10 @@ func TestSetRecordingEncodePolicy_UntilEncodedWithoutProfiles_Returns409(t *test
 		t.Errorf("keep_original after 409 = %q, want unchanged always", got)
 	}
 
-	noPolicyID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	noPolicyID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未凍結", time.Now().Add(time.Second).Truncate(time.Second), "finished", 603
 	})
-	dbtest.OriginalAsset(t, pool, noPolicyID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, noPolicyID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", noPolicyID)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -416,7 +416,7 @@ func TestSetRecordingEncodePolicy_BeforeIngest_NoOpAndDoesNotBlockFreeze(t *test
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未 ingest への保持ポリシー変更", time.Now().Truncate(time.Second), "recording", 610
 	})
 
@@ -456,7 +456,7 @@ func TestSetRecordingEncodePolicy_Purged_ReturnsNotFoundAndDoesNotWrite(t *testi
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "purge 済み", time.Now().Truncate(time.Second), "finished", 611
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -491,7 +491,7 @@ func TestSetRecordingEncodePolicy_InvalidValueReturns400(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "不正なポリシー", time.Now().Truncate(time.Second), "finished", 604
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -513,7 +513,7 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	defer srv.Close()
 	mediaDir := t.TempDir()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "reconcile で原本削除", time.Now().Truncate(time.Second), "finished", 605
 	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
@@ -521,19 +521,19 @@ func TestSetRecordingEncodePolicy_UntilEncoded_DeletesOnReconcile(t *testing.T) 
 	originalPath := writePolicyTestFile(t, mediaDir, fmt.Sprintf("test/%d.m2ts", id))
 
 	profile := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &profile
 		fixtureParams.RelPath = fmt.Sprintf("encoded/%d.mp4", id)
 		fixtureParams.SizeBytes = 200
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = fmt.Sprintf("thumbnail/%d.jpg", id)
 		fixtureParams.SizeBytes = 50
 	})
 	// シークプレビュー用タイルも「再生に必要な派生物」なので、無い間は原本が残る。
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindSeekTiles
 		fixtureParams.RelPath = fmt.Sprintf("thumbnail/%d_tiles.jpg", id)
 		fixtureParams.SizeBytes = 60
@@ -572,7 +572,7 @@ func TestSetRecordingEncodePolicy_AlwaysWhileDeleting_RevertsOnReconcile(t *test
 	defer srv.Close()
 	mediaDir := t.TempDir()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "削除中に保持", time.Now().Truncate(time.Second), "finished", 606
 	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
@@ -630,7 +630,7 @@ func TestAddRecordingEncodeProfiles_NoReservation_Success(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "予約なし", time.Now().Truncate(time.Second), "finished", 201
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -694,7 +694,7 @@ func TestAddRecordingEncodeProfiles_WithReservation_Success(t *testing.T) {
 	// recordings.reservation_id は issue #158 で列自体を落としたので、
 	// 予約と録画を結ぶのは放送イベントキーだけである --- キーを一致させないと
 	// 「予約がある録画」を再現できず、NoReservation 版と実質同一のケースになる。
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source = "rule"
 		fixtureParams.NetworkID = 32736
 		fixtureParams.ServiceID = 1024
@@ -766,14 +766,14 @@ func TestAddRecordingEncodeProfiles_NoPolicyRowButOriginalActive_Returns204(t *t
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "災害復旧で復元", time.Now().Truncate(time.Second), "finished", 301
 	})
 	// seedIngested は使わない --- あれは recording_encode_policy 行も一緒に
 	// 作ってしまう（実運用の ingest を模したフィクスチャなので）。ここでは
 	// inplace.Register が実際に作る形（原本 media_asset のみ、policy 行なし）を
 	// 直接再現する。
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", id)
 		fixtureParams.SizeBytes = 1000
 	})
@@ -818,7 +818,7 @@ func TestAddRecordingEncodeProfiles_ResetsFailedAttemptsOnly(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "再要求", time.Now().Truncate(time.Second), "finished", 302
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -902,7 +902,7 @@ func TestAddRecordingEncodeProfiles_NoOriginal_Returns409(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未 ingest", time.Now().Truncate(time.Second), "recording", 202
 	})
 
@@ -936,7 +936,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleted_Returns409(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除済み", time.Now().Truncate(time.Second), "finished", 203
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -981,7 +981,7 @@ func TestAddRecordingEncodeProfiles_OriginalDeleting_Returns409(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 204
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -1027,7 +1027,7 @@ func TestAddRecordingEncodeProfiles_Empty_Returns400(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "空", time.Now().Truncate(time.Second), "finished", 204
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -1049,7 +1049,7 @@ func TestAddRecordingEncodeProfiles_UnknownProfile_Returns400(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未知プロファイル", time.Now().Truncate(time.Second), "finished", 205
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -1084,7 +1084,7 @@ func TestAddRecordingEncodeProfiles_EndToEnd_EnqueuesEncodeJob(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "予約なし・エンドツーエンド", time.Now().Truncate(time.Second), "finished", 206
 	})
 	seedIngested(t, pool, id, 1234, nil)
@@ -1149,7 +1149,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古い cut に別プロファイルを追加", time.Now().Truncate(time.Second), "finished", 307
 	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
@@ -1159,7 +1159,7 @@ func TestAddRecordingEncodeProfiles_DoesNotRebuildStaleCut(t *testing.T) {
 	}
 	insertChapterSpan(t, pool, id, chapters.Span{StartMs: 600000, EndMs: 900000, Label: "CM", Cut: true})
 	cutProfile := "cut"
-	cutAssetID := dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	cutAssetID := dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &cutProfile
 		fixtureParams.RelPath = "test/stale-cut.mp4"

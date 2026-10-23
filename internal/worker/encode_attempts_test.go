@@ -235,7 +235,7 @@ func TestEncodeWorker_AttemptRow_CtxCanceledRollsBack(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-cancel.m2ts", nil, []byte("data"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "x/attempt-cancel.m2ts", []string{"h264"}, []byte("data"))
 	// workReturnTimeout は WaitDelay より十分大きく、WaitDelay を外した場合の
 	// sleep 全長（slowFFmpegSleepSeconds）より短く保つ。WaitDelay が無いと
 	// cancel() から Work() が返るまで sleep の全長を待つため、このテストが

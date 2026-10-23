@@ -28,7 +28,7 @@ func TestChapterEditsContract(t *testing.T) {
 			t.Helper()
 			ctx := context.Background()
 			eventID := contractEventID.Add(1)
-			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.EventID = eventID
 				fixtureParams.Title = "store contract fixture"
 				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)

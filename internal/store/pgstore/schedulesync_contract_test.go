@@ -36,7 +36,7 @@ func TestScheduleSyncContract(t *testing.T) {
 			},
 			SeedStartedRecording: func(t *testing.T, site string, key store.BroadcastEventKey, startedAt time.Time) {
 				t.Helper()
-				dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 					fixtureParams.Site = site
 					fixtureParams.NetworkID = key.NetworkID
 					fixtureParams.ServiceID = key.ServiceID

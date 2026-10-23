@@ -2126,7 +2126,7 @@ func TestReconciler_SuccessfulRecordingPreventsNeverScheduled(t *testing.T) {
 	// active-event を占有させる。
 	eventID := res.ProgramID % 100000
 	endedAt := endedStartAt.Add(30 * time.Minute)
-	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = "default"
 		p.Status = "finished"
 		p.NetworkID = 10000
@@ -2537,7 +2537,7 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 // 選ぶことで対応関係を保つ）。
 func createStartedRecording(t *testing.T, db sqlcgen.DBTX, eventID int32, programStartAt, startedAt time.Time) {
 	t.Helper()
-	dbtest.Recording(t, db, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, db, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 10000
 		fixtureParams.ServiceID = 5000
 		fixtureParams.EventID = eventID

@@ -59,16 +59,16 @@ func TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAl
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	first := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	first := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 981
 	})
-	target := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	target := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 982
 	})
-	third := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	third := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 983
 	})
-	unrelatedMissing := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	unrelatedMissing := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 984
 	})
 	for i, id := range []int64{first, target, third, unrelatedMissing} {
@@ -213,10 +213,10 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	inCM := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	inCM := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 941
 	})
-	inKeep := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	inKeep := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 942
 	})
 	q := sqlcgen.New(pool)
@@ -266,7 +266,7 @@ func TestThumbnailReconcile_ReselectCursorIsIndependent(t *testing.T) {
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 5)
 	for eventID := int32(1); eventID <= 5; eventID++ {
-		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID }))
+		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
 	q := sqlcgen.New(pool)
 	for i, recordingID := range ids {
@@ -319,11 +319,11 @@ func TestThumbnailReconcile_DoesNotRepeatUnactionableReselections(t *testing.T) 
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
-	allCutID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 61 })
+	allCutID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 61 })
 	seedOriginalAsset(t, pool, mediaDir, allCutID, "reselect-noop/all-cut.ts", []byte("fake-ts"))
 	allCutThumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, allCutID,
 		store.AssetKindThumbnail, nil, thumbnailRelPath(allCutID), []byte("old-thumbnail"))
-	cutOnlyID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 62 })
+	cutOnlyID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 62 })
 	cutProfile := "cut-only"
 	cutAssetID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, cutOnlyID,
 		store.AssetKindEncoded, &cutProfile, "reselect-noop/cut-only.mp4", []byte("fake-mp4"))
@@ -457,7 +457,7 @@ func TestThumbnailReconcile_ExcludesTrash(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	recordingID := dbtest.Recording(t, pool)
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "trash/original.m2ts"
 		fixtureParams.SizeBytes = 1
 	})
@@ -481,10 +481,10 @@ func TestThumbnailReconcile_WindowRotatesPastStuckCandidates(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	firstID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	firstID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 801
 	})
-	secondID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	secondID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 802
 	})
 	seedOriginalAsset(t, pool, mediaDir, firstID, "window/first.m2ts", []byte("first"))
@@ -524,7 +524,7 @@ func TestThumbnailReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 6)
 	for eventID := int32(14101); eventID <= 14106; eventID++ {
-		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID }))
+		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
 	q := sqlcgen.New(pool)
 	for i, recordingID := range ids {
@@ -632,7 +632,7 @@ func TestThumbnailReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 5)
 	for eventID := int32(15121); eventID <= 15125; eventID++ {
-		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID }))
+		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
 	q := sqlcgen.New(pool)
 	for index, recordingID := range ids {
@@ -711,7 +711,7 @@ func TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues(t *te
 	mediaDir := t.TempDir()
 	ids := make([]int64, 0, 6)
 	for eventID := int32(15131); eventID <= 15136; eventID++ {
-		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID }))
+		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID }))
 	}
 	q := sqlcgen.New(pool)
 	for index, recordingID := range ids {
@@ -793,10 +793,10 @@ func TestThumbnailReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.
 	}
 
 	mediaDir := t.TempDir()
-	firstID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	firstID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 14107
 	})
-	secondID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	secondID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 14108
 	})
 	seedOriginalAsset(t, pool, mediaDir, firstID, "continuation-error/first.ts", []byte("first"))
@@ -902,7 +902,7 @@ func TestThumbnailReconcile_SeekTilesCursorIsIndependent(t *testing.T) {
 	// 録画 1..5（event_id を 1..5 にずらす。同一キーのアクティブ行は一意制約に当たる）。
 	ids := make([]int64, 0, 5)
 	for i := int32(1); i <= 5; i++ {
-		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = i }))
+		ids = append(ids, dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = i }))
 	}
 	for i, id := range ids {
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cursor/%d.m2ts", i+1), []byte("fake-ts"))
@@ -950,7 +950,7 @@ func TestThumbnailReconcile_RowlessThumbnailOnlyReselectsWithChapters(t *testing
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
 	seed := func(site int32) int64 {
-		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.Site, fixtureParams.EventID = "default", site
 		})
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("rowless/%d.ts", id), []byte("fake-ts"))
@@ -1006,7 +1006,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	q := sqlcgen.New(pool)
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 961
 	})
 	originalID := seedOriginalAsset(t, pool, mediaDir, id, "noinput/original.ts", []byte("fake-ts"))

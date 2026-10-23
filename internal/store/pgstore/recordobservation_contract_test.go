@@ -130,7 +130,7 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 		}
 		newOriginalAsset := func(t *testing.T, recordingID int64, state string) {
 			t.Helper()
-			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("sites/contract-site/%d/original.m2ts", recordingID)
 				fixtureParams.SizeBytes = 1
 			})

@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -74,7 +73,7 @@ func newContractRecording(t *testing.T, pool *pgxpool.Pool, options contracttest
 	if eventID == 0 {
 		eventID = eventIDs.Add(1)
 	}
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = eventID
 		fixtureParams.Title = "store contract fixture"
 		fixtureParams.ProgramStartAt = start

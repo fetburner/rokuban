@@ -15,7 +15,6 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -186,14 +185,14 @@ func TestCutProfileSelection_AllowedOnEveryAPIPathWithLive(t *testing.T) {
 // （事後追加 API は原本が active でないと 409 になる）。
 func insertIngestedRecordingFixture(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 21000
 		p.ServiceID = 2100
 		p.ServiceName = "テスト局"
 		p.Title = "カット検証"
 		p.ProgramStartAt = time.Now().Add(-24 * time.Hour)
 	})
-	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = fmt.Sprintf("cut-validation/original-%d.m2ts", id)
 		p.SizeBytes = 1024
 	})
@@ -549,7 +548,7 @@ func TestEncodeQueue_ExhaustedRebuildRequestIsNotCountedUntilReencodeResetsBudge
 	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
 	profile := "cut"
-	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "queue-exhausted/cut.mp4"
@@ -615,7 +614,7 @@ func TestEncodeQueue_RebuildRequestWithoutActiveOriginalIsNotCounted(t *testing.
 	id := insertIngestedRecordingFixture(t, pool)
 	seedDesiredEncodeProfiles(t, pool, ctx, id, `{cut}`)
 	profile := "cut"
-	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "queue-noorig/cut.mp4"

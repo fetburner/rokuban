@@ -17,14 +17,12 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -75,7 +73,7 @@ func ingestDurationSamples(t *testing.T) uint64 {
 // へ入れるようにするためで、他の意味は無い。
 func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
 	t.Helper()
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "sites/default/test/already-committed.m2ts"
 		fixtureParams.SizeBytes = 1
 	})

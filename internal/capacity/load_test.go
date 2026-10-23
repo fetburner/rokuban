@@ -85,7 +85,7 @@ func seedMidRecordingFailure(t *testing.T, pool *pgxpool.Pool, networkID, servic
 	t.Helper()
 	ctx := context.Background()
 	qe := `[{"event":"recording.failed","reason":"need-rescheduling"}]`
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = testSite
 		p.NetworkID = networkID
 		p.ServiceID = serviceID

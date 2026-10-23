@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -50,7 +49,7 @@ func setEncodeProfiles(t *testing.T, pool *pgxpool.Pool, recordingID int64, prof
 func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile string, size int64) {
 	t.Helper()
 	relPath := fmt.Sprintf("test/%d_%s.mp4", recordingID, profile)
-	dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		profileValue := profile
 		p.Kind = "encoded"
 		p.Profile = &profileValue
@@ -75,7 +74,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// h264: 完了済み（active な encoded） / h265: running / aac: 試行行なし（queued）
-	mixed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	mixed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "混在", base.Add(-time.Hour), "finished", 1
 	})
 	seedIngested(t, pool, mixed, 1000, nil)
@@ -85,7 +84,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 
 	// vp9: 失敗（試行行 state=failed）
 	failMsg := "unknown encode profile \"vp9\""
-	failing := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	failing := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗", base.Add(-2*time.Hour), "finished", 2
 	})
 	seedIngested(t, pool, failing, 2000, nil)
@@ -93,7 +92,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	seedEncodeAttempt(t, pool, failing, "vp9", "failed", &failMsg)
 
 	// 全プロファイル完了済み: encodeStatus は省略（空配列を返さない）
-	done := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	done := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "全完了", base.Add(-3*time.Hour), "finished", 3
 	})
 	seedIngested(t, pool, done, 3000, nil)
@@ -101,7 +100,7 @@ func TestListRecordingsEncodeStatus(t *testing.T) {
 	seedEncodedAsset(t, pool, done, "h264", 700)
 
 	// プロファイル未設定: encodeStatus は省略
-	none := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	none := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未設定", base.Add(-4*time.Hour), "finished", 4
 	})
 	seedIngested(t, pool, none, 4000, nil)
@@ -183,7 +182,7 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "捨てる録画", base, "finished", 1
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -241,7 +240,7 @@ func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testi
 	t.Cleanup(srv.Close)
 	base := time.Now().Truncate(time.Second)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "設定変更後", base, "finished", 1
 	})
 	seedIngested(t, pool, id, 1000, nil)

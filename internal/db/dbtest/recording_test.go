@@ -29,7 +29,7 @@ func TestRecording_DefaultsAndUniqueEventID(t *testing.T) {
 func TestRecording_OptionsOverrideDefaults(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	wantStart := time.Date(2026, 10, 23, 12, 34, 56, 0, time.UTC)
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 56
 		fixtureParams.Title = "explicit title"
 		fixtureParams.ProgramStartAt = wantStart
@@ -43,7 +43,7 @@ func TestRecording_OptionsOverrideDefaults(t *testing.T) {
 
 func TestFixtureWithError_ReturnsCreateErrors(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	if _, err := dbtest.RecordingWithError(pool, func(params *sqlcgen.CreateRecordingParams) {
+	if _, err := dbtest.RecordingWithError(pool, func(params *dbtest.RecordingParams) {
 		params.Status = "invalid"
 	}); err == nil {
 		t.Fatal("RecordingWithError() error = nil, want status constraint error")
@@ -75,7 +75,7 @@ FROM media_assets WHERE id = $1`, assetID).Scan(&got.recordingID, &got.kind, &go
 	}
 
 	overriddenRecordingID := dbtest.Recording(t, pool)
-	overriddenID := dbtest.OriginalAsset(t, pool, overriddenRecordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	overriddenID := dbtest.OriginalAsset(t, pool, overriddenRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/override.ts"
 		fixtureParams.SizeBytes = 42
 	})

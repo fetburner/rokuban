@@ -315,7 +315,7 @@ func TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot(t *testing.T) 
 // ファイル処理も新旧の rel_path 契約を混在させるため、最初の仕事より前に拒否する。
 func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site = "home"
 		fixtureParams.NetworkID = 1
 		fixtureParams.ServiceID = 1
@@ -327,7 +327,7 @@ func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
 		fixtureParams.ProgramDurationMs = 60_000
 	})
 
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "archive/old.m2ts"
 		fixtureParams.SizeBytes = 1
 	})
@@ -358,7 +358,7 @@ func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.
 func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site = "home"
 		fixtureParams.NetworkID = 1
 		fixtureParams.ServiceID = 1

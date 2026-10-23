@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -22,7 +21,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 	ctx := context.Background()
 
 	newRec := func(eventID int32) int64 {
-		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.EventID = eventID
 			fixtureParams.ServiceName = "NHK総合"
 			fixtureParams.Title = "完全削除済みの録画"

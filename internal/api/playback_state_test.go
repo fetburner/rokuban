@@ -45,7 +45,7 @@ func playbackRequest(t *testing.T, method, url string, body any) *http.Response 
 
 func createPlaybackRecording(t *testing.T, pool *pgxpool.Pool, start time.Time, eventID int32, title string) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = eventID
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = title

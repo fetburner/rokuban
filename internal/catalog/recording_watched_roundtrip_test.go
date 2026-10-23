@@ -17,7 +17,7 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 701
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "視聴状態の復元"

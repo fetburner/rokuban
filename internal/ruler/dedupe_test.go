@@ -10,7 +10,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -38,7 +37,7 @@ func insertRecording(
 	t.Helper()
 	dedupeEventCounter++
 	eventID := dedupeEventCounter
-	recordingID = dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	recordingID = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = ruleID
 		p.Source = "rule"
 		p.Site = testSite
@@ -65,7 +64,7 @@ func insertRecordingForEvent(
 	ruleID *int64, title string, startAt time.Time, eventID int32,
 ) int64 {
 	t.Helper()
-	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = ruleID
 		p.Source = "rule"
 		p.Site = testSite

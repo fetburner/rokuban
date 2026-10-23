@@ -249,7 +249,7 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = int32(len(recordID)*1000 + int(recordID[len(recordID)-1]))
 		fixtureParams.Title = "テスト番組 " + recordID
 	})
@@ -267,7 +267,7 @@ func seedFinishedRecord(t *testing.T, pool *pgxpool.Pool, recordID string, conte
 	}
 
 	if ingested {
-		dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = "test/" + recordID + ".m2ts"
 			fixtureParams.SizeBytes = contentLength
 		})
@@ -815,7 +815,7 @@ func seedIngestFor(t *testing.T, pool *pgxpool.Pool, recordID string) {
 	if recordingID == nil {
 		t.Fatalf("record_sync %q has no recording_id", recordID)
 	}
-	dbtest.OriginalAsset(t, pool, *recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, *recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/" + recordID + ".m2ts"
 		fixtureParams.SizeBytes = 1
 	})

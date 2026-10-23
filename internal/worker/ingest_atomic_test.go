@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -38,10 +37,10 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	const contentPath = "shared/concurrent.m2ts"
 	tsDataA := makeTSDataFill(0x21)
 	tsDataB := makeTSDataFill(0x22)
-	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 731101
 	})
-	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 731102
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingIDA, "rec-concurrent-a", 327361024000731101)
@@ -546,7 +545,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			mediaDir := t.TempDir()
 			contentPath := fmt.Sprintf("stop-points/%s.m2ts", strings.ReplaceAll(tt.name, " ", "-"))
 			tsData := makeTSDataFill(byte(0x30 + i))
-			recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.Site, fixtureParams.EventID = "default", int32(731200+i)
 			})
 			recordID := fmt.Sprintf("rec-stop-point-%d", i)

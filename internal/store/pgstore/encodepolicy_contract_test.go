@@ -54,7 +54,7 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 
 func (f *encodePolicyContractDB) newRecording(t *testing.T) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, f.pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, f.pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = encodePolicyContractEventID.Add(1)
 		fixtureParams.ServiceName = "store encode policy contract fixture"
 		fixtureParams.Title = "store encode policy contract fixture"
@@ -67,7 +67,7 @@ func (f *encodePolicyContractDB) newRecording(t *testing.T) int64 {
 
 func (f *encodePolicyContractDB) newAsset(t *testing.T, recordingID int64, kind string, profile *string) int64 {
 	t.Helper()
-	id := dbtest.OriginalAsset(t, f.pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	id := dbtest.OriginalAsset(t, f.pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = kind
 		fixtureParams.Profile = profile
 		fixtureParams.RelPath = fmt.Sprintf("sites/home/%d/%s-%v", recordingID, kind, profile)

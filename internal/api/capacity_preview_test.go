@@ -14,7 +14,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -123,7 +122,7 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 
 func insertPreviewRecording(t *testing.T, pool *pgxpool.Pool, ruleID *int64, program capacityPreviewProgram, title string, start time.Time, withOriginal bool) {
 	t.Helper()
-	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = ruleID
 		p.Source = "rule"
 		p.Status = "finished"
@@ -136,7 +135,7 @@ func insertPreviewRecording(t *testing.T, pool *pgxpool.Pool, ruleID *int64, pro
 		p.ProgramStartAt = start
 	})
 	if withOriginal {
-		dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+		dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 			p.RelPath = fmt.Sprintf("preview/%d.m2ts", recordingID)
 			p.SizeBytes = 1024
 		})

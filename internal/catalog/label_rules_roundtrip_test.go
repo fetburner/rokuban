@@ -23,7 +23,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 
-	recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 500
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "NHK高校講座　数学I　第1回"
@@ -123,7 +123,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 
 	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
 	// どこで取っても書き込み前に待つので、位置の検査にならない。
-	dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 600
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "ロック位置"

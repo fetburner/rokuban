@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // TestRecordingChapterSpansConstraints は「あってはいけない組み合わせ」を DB が
@@ -19,7 +18,7 @@ func TestRecordingChapterSpansConstraints(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 2111
 		fixtureParams.Title = "チャプター制約"
 		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
@@ -86,7 +85,7 @@ func TestRecordingChapterSpansRequireOwnership(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 2112
 		fixtureParams.Title = "所有の行が要る"
 		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)

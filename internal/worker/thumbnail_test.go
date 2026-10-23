@@ -208,7 +208,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	if err := os.WriteFile(origPath, []byte("fake-ts-content"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = int64(len("fake-ts-content"))
 	})
@@ -502,7 +502,7 @@ func TestThumbnailWorker_IdempotentRerun(t *testing.T) {
 	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
 	})
@@ -596,14 +596,14 @@ func TestThumbnailUpsertDoesNotDuplicateExistingActiveRow(t *testing.T) {
 	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
 	})
 
 	// 先に active な thumbnail 行を入れておく（別経路で先に着地したケースを模す）。
 	rel := thumbnailRelPath(recordingID)
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = rel
 		fixtureParams.SizeBytes = int64(len(tinyJPEG))
@@ -651,7 +651,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	if err := os.WriteFile(origPath, []byte("ts"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = origRel
 		fixtureParams.SizeBytes = 2
 	})
@@ -659,7 +659,7 @@ func TestThumbnailWorker_RevivesTombstone(t *testing.T) {
 	// tombstone を作る: いったん active な thumbnail 行を作り、削除プロトコル
 	// の最終状態（state='deleted', deleted_at 有り）に直接遷移させる。
 	rel := thumbnailRelPath(recordingID)
-	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindThumbnail
 		fixtureParams.RelPath = rel
 		fixtureParams.SizeBytes = 1

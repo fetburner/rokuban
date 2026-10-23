@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -111,7 +110,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
 	// 大きい id を持たせる: これで id DESC の一発検索では deleted 行が先に来てしまう
 	// ため、live 行を優先する state の並び替えが効いているかを検証できる。
-	liveRecordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	liveRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = -20
 		p.ServiceID = -21
 		p.EventID = -22
@@ -122,14 +121,14 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.ProgramDurationMs = 0
 	})
 	profile := "rescue-mp4"
-	liveAssetID := dbtest.OriginalAsset(t, pool, liveRecordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+	liveAssetID := dbtest.OriginalAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = relPath
 		p.SizeBytes = 5
 	})
 
-	deletedRecordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	deletedRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = -10
 		p.ServiceID = -11
 		p.EventID = -12
@@ -139,7 +138,7 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 		p.ProgramStartAt = at
 		p.ProgramDurationMs = 0
 	})
-	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "reused/old-show.ts"
 		p.SizeBytes = 5
 	})

@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -60,14 +59,14 @@ func TestListRecordings_KeywordSearch(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHKニュース", base, "finished", 1
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "無関係の番組", base.Add(time.Minute), "finished", 2
 		p.Description = strPtr("NHK特集について")
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "全く関係ない", base.Add(2*time.Minute), "finished", 3
 	})
 
@@ -97,10 +96,10 @@ func TestListRecordings_KeywordSearchTreatsLikeMetacharactersLiterally(t *testin
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース 100%", base, "finished", 1
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース 100x", base.Add(time.Minute), "finished", 2
 	})
 
@@ -116,15 +115,15 @@ func TestListRecordings_GenreFilter(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ニュース番組", base, "finished", 1
 		p.Genres = json.RawMessage(`[{"lv1":1,"lv2":0,"un1":0,"un2":0}]`)
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "スポーツ番組", base.Add(time.Minute), "finished", 2
 		p.Genres = json.RawMessage(`[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`)
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ジャンル無し番組", base.Add(2*time.Minute), "finished", 3
 	})
 
@@ -153,16 +152,16 @@ func TestListRecordings_ChannelTypeAndServiceID(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "GR番組", base, "finished", 1
 		p.ServiceID = 100
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS番組", base.Add(time.Minute), "finished", 2
 		p.ServiceID = 200
 		p.ChannelType = "BS"
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS番組", base.Add(2*time.Minute), "finished", 3
 		p.ServiceID = 300
 		p.ChannelType = "CS"
@@ -195,17 +194,17 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS 101", base, "finished", 1
 		p.NetworkID = 4
 		p.ServiceID = 101
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS 101", base.Add(time.Minute), "finished", 2
 		p.NetworkID = 6
 		p.ServiceID = 101
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "site2 BS 101", base.Add(2*time.Minute), "finished", 3
 		p.Site = "site2"
 		p.NetworkID = 4
@@ -234,12 +233,12 @@ func TestListRecordings_ServiceCrossNetwork(t *testing.T) {
 	// **組の集合であって直積ではない。** network と service を別々に ANY で
 	// 絞る実装だと (4,102) と (6,101) まで一致してしまう。片方だけが共通の
 	// fixture では両者が同じ集合になるので、ここは両方ずらして固定する。
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "BS 102", base.Add(3*time.Minute), "finished", 4
 		p.NetworkID = 4
 		p.ServiceID = 102
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "CS 102", base.Add(4*time.Minute), "finished", 5
 		p.NetworkID = 6
 		p.ServiceID = 102
@@ -277,11 +276,11 @@ func TestListRecordings_ServiceCrossSite(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// 2 サイトが同じ service_id=100 を受けている。
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "default の 100", base, "finished", 1
 		p.ServiceID = 100
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "site2 の 100", base.Add(time.Minute), "finished", 2
 		p.Site = "site2"
 		p.ServiceID = 100
@@ -322,21 +321,21 @@ func TestListRecordings_StatusSourceRuleID(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 	ruleID := seedRule(t, pool, "テストルール")
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画中", base, "recording", 1
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗", base.Add(time.Minute), "failed", 2
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "手動完了", base.Add(2*time.Minute), "finished", 3
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ルール完了", base.Add(3*time.Minute), "finished", 4
 		p.RuleID = &ruleID
 		p.Source = "rule"
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "帰属なし", base.Add(4*time.Minute), "finished", 5
 		p.Source = "unattributed"
 	})
@@ -368,16 +367,16 @@ func TestListRecordings_FromTo(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "1時間前", base.Add(-time.Hour), "finished", 1
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "30分前", base.Add(-30*time.Minute), "finished", 2
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "現在", base, "finished", 3
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "30分後", base.Add(30*time.Minute), "finished", 4
 	})
 
@@ -419,10 +418,10 @@ func TestListRecordings_TrashOrthogonal(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	live := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	live := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "生きているNHK番組", base, "finished", 1
 	})
-	trashed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	trashed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "捨てたNHK番組", base.Add(time.Minute), "finished", 2
 	})
 	_ = live
@@ -470,7 +469,7 @@ func TestListRecordings_KeysetPagination_DuplicateStartAt(t *testing.T) {
 	// wantAsc はここでの挿入順そのものになる。
 	var wantAsc []int64
 	seed := func(title string, start time.Time, eventID int32) {
-		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, start, "finished", eventID
 		})
 		wantAsc = append(wantAsc, id)

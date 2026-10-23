@@ -15,7 +15,7 @@ import (
 // 他は CreateRecording が要求する最小の値。
 func createSeriesRecording(t *testing.T, pool *pgxpool.Pool, title string, eventID int32, start time.Time) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 1
 		fixtureParams.ServiceID = 1
 		fixtureParams.EventID = eventID

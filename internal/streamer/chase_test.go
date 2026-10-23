@@ -23,7 +23,6 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -1090,8 +1089,8 @@ func TestChasePurgeEndUsesCommittedOriginal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) { p.EventID = tt.eventID })
-			dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+			recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = tt.eventID })
+			dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 				p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-purge-%d.ts", recordingID), tt.committed
 			})
 			ffmpeg, marker := installEndlistMarkerFFmpeg(t)
@@ -1369,7 +1368,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) { p.EventID = tt.eventID })
+			recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = tt.eventID })
 			if _, err := pool.Exec(context.Background(), "UPDATE recordings SET status = $2 WHERE id = $1", recordingID, tt.recordingStatus); err != nil {
 				t.Fatalf("setting recording status: %v", err)
 			}
@@ -1380,7 +1379,7 @@ func TestFinishedUncommittedChaseUsesOriginalRowExistence(t *testing.T) {
 				t.Fatalf("seeding record_sync: %v", err)
 			}
 			if tt.originalState != "" {
-				dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+				dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 					p.RelPath, p.SizeBytes = fmt.Sprintf("recordings/chase-eligibility-%d.ts", recordingID), 8
 				})
 				if tt.originalState == "deleted" {

@@ -90,7 +90,7 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 	res := createReservation(t, ctx, q, 700002, "放送中の番組", time.Now().Add(-10*time.Minute))
 
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
-	failedID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	failedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000
@@ -174,7 +174,7 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	// 本物の record が同じ放送イベントに着地する（watcher の CreateRecording 相当）。
 	endedStartAt := time.Now().Add(-2 * time.Hour)
 	endedAt := endedStartAt.Add(30 * time.Minute)
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000
@@ -236,7 +236,7 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	// 本物の record が着地。
 	trashedStartAt := time.Now().Add(-2 * time.Hour)
 	trashedEndedAt := trashedStartAt.Add(30 * time.Minute)
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = "default"
 		p.NetworkID = 10000
 		p.ServiceID = 5000

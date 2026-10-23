@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -23,7 +22,7 @@ func TestExportRescue_RoundTripsUserChapters(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 400
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "チャプター付き"

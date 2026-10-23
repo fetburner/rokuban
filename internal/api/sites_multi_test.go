@@ -17,7 +17,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -413,8 +412,8 @@ func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	}
 }
 
-func siteRecordingOptions(site string, eventID int32) func(*sqlcgen.CreateRecordingParams) {
-	return func(p *sqlcgen.CreateRecordingParams) {
+func siteRecordingOptions(site string, eventID int32) func(*dbtest.RecordingParams) {
+	return func(p *dbtest.RecordingParams) {
 		p.Site = site
 		p.NetworkID = 10000
 		p.ServiceID = 20000

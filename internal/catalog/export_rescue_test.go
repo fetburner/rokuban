@@ -53,7 +53,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Fatalf("InsertRuleChannelType: %v", err)
 	}
 
-	recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.RuleID = &rule.ID
 		fixtureParams.Source = "rule"
 		fixtureParams.EventID = 100
@@ -64,7 +64,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		fixtureParams.EndedAt = ptrTime(time.Date(2026, 7, 29, 12, 30, 0, 0, time.UTC))
 	})
 
-	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "sites/default/20260729/120000_ニュース_1024.m2ts"
 		fixtureParams.SizeBytes = 1_000_000
 	})
@@ -88,7 +88,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// 未凍結の録画（原本 media_asset を持たない）。行が無いことがそのまま
 	// 往復すること（不変条件 10「意味を持たない行を作らない」）を確認する対照群。
-	unfrozenRecID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	unfrozenRecID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 101
 		fixtureParams.ServiceName = "NHK総合"
 		fixtureParams.Title = "未凍結"
@@ -420,7 +420,7 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	recID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 1
 		fixtureParams.ServiceID = 1
 		fixtureParams.EventID = 1
@@ -432,7 +432,7 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 	})
 
 	const relPath = "sites/default/legacy.m2ts"
-	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = 1234
 	})
@@ -536,7 +536,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			default:
 			}
-			recID, err := dbtest.RecordingWithError(pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			recID, err := dbtest.RecordingWithError(pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.NetworkID = 1
 				fixtureParams.ServiceID = 1
 				fixtureParams.EventID = int32(10_000 + i)
@@ -551,7 +551,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			}
 
-			if _, err := dbtest.OriginalAssetWithError(pool, recID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			if _, err := dbtest.OriginalAssetWithError(pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("race/%d.m2ts", i)
 				fixtureParams.SizeBytes = 1
 			}); err != nil {

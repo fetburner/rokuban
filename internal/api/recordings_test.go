@@ -32,7 +32,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.m2ts", recordingID)
 		fixtureParams.SizeBytes = size
 	})
@@ -70,13 +70,13 @@ func TestListRecordings(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	older := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	older := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "古い録画", base.Add(-2*time.Hour), "finished", 1
 	})
-	newer := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	newer := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "新しい録画", base.Add(-time.Hour), "finished", 2
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未 ingest", base.Add(-3*time.Hour), "recording", 3
 	})
 
@@ -148,7 +148,7 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now().Truncate(time.Second)
 
-	unmeasured := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	unmeasured := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "計測記録なし", base, "finished", 90
 	})
 	unmeasuredAssetID := seedIngested(t, pool, unmeasured, 1000, map[int32][4]int64{
@@ -158,7 +158,7 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 		t.Fatalf("deleting TS scan marker: %v", err)
 	}
 
-	stale := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	stale := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本サイズ変更後", base.Add(time.Minute), "finished", 91
 	})
 	staleAssetID := seedIngested(t, pool, stale, 2000, map[int32][4]int64{
@@ -168,7 +168,7 @@ func TestRecordingDropSummary_RequiresCurrentTSScan(t *testing.T) {
 		t.Fatalf("changing original size: %v", err)
 	}
 
-	measuredZero := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	measuredZero := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "計測済みドロップ 0", base.Add(2*time.Minute), "finished", 92
 	})
 	seedIngested(t, pool, measuredZero, 3000, nil)
@@ -233,7 +233,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	// watcher の createRecording と同じ順序: 生きた failed 行を supersede してから
 	// 同一 active-event の成功行を作る。
 	const eventID = 700
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "擬似失敗（置換済み）", base.Add(-time.Hour), "failed", eventID
 	})
 	n, err := sqlcgen.New(pool).SupersedeFailedRecording(context.Background(), sqlcgen.SupersedeFailedRecordingParams{
@@ -246,7 +246,7 @@ func TestListRecordings_FailedFilterExcludesSuperseded(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("SupersedeFailedRecording: rows=%d err=%v", n, err)
 	}
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "本物の成功", base, "finished", eventID
 	})
 
@@ -283,7 +283,7 @@ func TestListRecordings_DeletingOriginal_StillShowsSizeBytes(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本 unlink 待ち", time.Now().Truncate(time.Second), "finished", 401
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -316,7 +316,7 @@ func TestRecordingDropHistorySurvivesOriginalDeletion(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除後も drop 履歴を表示", time.Now().Truncate(time.Second), "finished", 402
 	})
 	assetID := seedIngested(t, pool, id, 500, map[int32][4]int64{
@@ -433,7 +433,7 @@ func TestListTrashRecordings_DropSummarySurvivesOriginalDeletion(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除後も drop 履歴を表示", time.Now().Truncate(time.Second), "finished", 404
 	})
 	assetID := seedIngested(t, pool, id, 500, map[int32][4]int64{
@@ -483,7 +483,7 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "encoded あり", base, "finished", 10
 	})
 	seedIngested(t, pool, id, 500, nil)
@@ -491,20 +491,20 @@ func TestListRecordings_EncodedProfiles(t *testing.T) {
 	h264 := "h264"
 	h265 := "h265"
 	legacy := "legacy"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "a_h264.mp4"
 		fixtureParams.SizeBytes = 100
 	})
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h265
 		fixtureParams.RelPath = "a_h265.mp4"
 		fixtureParams.SizeBytes = 80
 	})
 	// deleted は載せない
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &legacy
 		fixtureParams.RelPath = "a_legacy.mp4"
@@ -550,7 +550,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "問題あり", time.Now().Truncate(time.Second), "failed", 1
 	})
 
@@ -581,7 +581,7 @@ func TestListRecordings_QualityEvents(t *testing.T) {
 	}
 
 	// イベントが無い録画では省略される
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "正常", time.Now().Add(time.Hour).Truncate(time.Second), "finished", 2
 	})
 	got = nil
@@ -597,7 +597,7 @@ func TestListRecordingDropStats(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画", time.Now().Truncate(time.Second), "finished", 1
 	})
 	seedIngested(t, pool, id, 1000, map[int32][4]int64{
@@ -630,7 +630,7 @@ func TestListRecordingDropStats(t *testing.T) {
 	}
 
 	// 未 ingest の録画は空配列（null ではない）
-	bare := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	bare := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "未 ingest", time.Now().Add(time.Hour).Truncate(time.Second), "recording", 2
 	})
 	var empty []DropStat
@@ -651,7 +651,7 @@ func TestListRecordingDropStats_PIDType(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "種別あり", time.Now().Truncate(time.Second), "finished", 1
 	})
 	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
@@ -731,7 +731,7 @@ func TestListRecordingDropStats_Positions(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "位置付き録画", time.Now().Truncate(time.Second), "finished", 1
 	})
 	assetID := seedIngested(t, pool, id, 1000, map[int32][4]int64{
@@ -818,7 +818,7 @@ func TestRecordingTrash_SoftDeleteRestoreRoundTrip(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "捨てる録画", base, "finished", 10
 	})
 
@@ -884,7 +884,7 @@ func TestDeleteRecording_IdempotentAndNotFound(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "冪等", time.Now().Truncate(time.Second), "finished", 11
 	})
 
@@ -908,7 +908,7 @@ func TestRestoreRecording_Success(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "復元", time.Now().Truncate(time.Second), "finished", 111
 	})
 	base := fmt.Sprintf("%s/api/recordings/%d", srv.URL, id)
@@ -947,7 +947,7 @@ func TestRestoreRecording_NotInTrash(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "生きている", time.Now().Truncate(time.Second), "finished", 12
 	})
 
@@ -969,7 +969,7 @@ func TestPurgeRecording_MarksPurgeRequested(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "即時削除", time.Now().Truncate(time.Second), "finished", 13
 	})
 
@@ -1069,7 +1069,7 @@ func TestRestoreRecording_NotInTrash_KeepsPurgeRequest(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "purge 済み", time.Now().Truncate(time.Second), "finished", 14
 	})
 
@@ -1108,7 +1108,7 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 	// 同じ (site, network, service, event, program_start_at) で 1 本 soft-delete、もう 1 本 active。
 	// seedRecording は eventID を変えるので、ここでは直接 INSERT する。
-	trashed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	trashed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "旧", base.Add(-time.Hour), "finished", 20
 	})
 	resp := doRecordingMethod(t, http.MethodDelete, fmt.Sprintf("%s/api/recordings/%d", srv.URL, trashed))
@@ -1116,7 +1116,7 @@ func TestRestoreRecording_ConflictWhenActiveExists(t *testing.T) {
 		t.Fatalf("delete status = %d", resp.StatusCode)
 	}
 	// 同じ放送イベントで生きている録画を作る。
-	_ = dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	_ = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "新", base.Add(-time.Hour), "finished", 20
 	})
 
@@ -1137,7 +1137,7 @@ func TestRestoreRecording_PurgedNotFound(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "完全削除済み", time.Now().Truncate(time.Second), "finished", 21
 	})
 
@@ -1190,7 +1190,7 @@ func TestGetRecording_Found(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "単体取得", base, "finished", 30
 	})
 	seedIngested(t, pool, id, 1234, map[int32][4]int64{
@@ -1246,12 +1246,12 @@ func TestGetRecording_Trash(t *testing.T) {
 	srv := newAPIServer(t, pool)
 
 	base := time.Now().Truncate(time.Second)
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ごみ箱の単体取得", base, "finished", 31
 	})
 	seedIngested(t, pool, id, 1000, nil)
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "trash_h264.mp4"
@@ -1284,7 +1284,7 @@ func TestGetRecording_Purged(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "完全削除済みの単体取得", time.Now().Truncate(time.Second), "finished", 32
 	})
 
@@ -1319,7 +1319,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 
 	base := time.Now().Truncate(time.Second)
 	desc := "一覧要素と単体取得が一致するかの確認用"
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = 40
 		fixtureParams.Title = "一覧と単体の一致確認"
 		fixtureParams.Description = &desc
@@ -1330,7 +1330,7 @@ func TestGetRecording_MatchesListElement(t *testing.T) {
 		0x100: {900, 3, 2, 1},
 	})
 	h264 := "h264"
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = store.AssetKindEncoded
 		fixtureParams.Profile = &h264
 		fixtureParams.RelPath = "match_h264.mp4"

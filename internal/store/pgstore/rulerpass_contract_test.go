@@ -10,7 +10,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -119,7 +118,7 @@ func seedRulerPassRecording(t *testing.T, pool *pgxpool.Pool, ruleID int64, prog
 	t.Helper()
 	startAt := program.StartAt.Add(-48 * time.Hour)
 	eventID := program.EventID + 10000
-	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = &ruleID
 		p.Source = "rule"
 		p.Status = "finished"

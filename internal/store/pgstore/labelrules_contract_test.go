@@ -27,7 +27,7 @@ func TestLabelRulesContract(t *testing.T) {
 			Reevaluation: labelRules,
 			NewRecording: func(t *testing.T, title string) int64 {
 				t.Helper()
-				id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 					fixtureParams.EventID = labelRuleContractEventID.Add(1)
 					fixtureParams.Title = title
 					fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
@@ -203,7 +203,7 @@ SELECT EXISTS (
 
 func createLabelRuleTestRecording(t *testing.T, pool *pgxpool.Pool, eventID int32, title string) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = eventID
 		fixtureParams.Title = title
 		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)

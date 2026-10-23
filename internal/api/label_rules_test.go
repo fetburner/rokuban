@@ -19,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -77,7 +76,7 @@ func seedPlayableRecording(t *testing.T, pool *pgxpool.Pool, title string, event
 
 func seedPlayableOpts(t *testing.T, pool *pgxpool.Pool, opts seedRecordingOpts) int64 {
 	t.Helper()
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title = opts.title
 		p.ProgramStartAt = opts.start
 		p.Status = opts.status
@@ -105,7 +104,7 @@ func seedPlayableOpts(t *testing.T, pool *pgxpool.Pool, opts seedRecordingOpts) 
 		}
 		p.RuleID = opts.ruleID
 	})
-	dbtest.OriginalAsset(t, pool, id, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = fmt.Sprintf("test/orig-%d", id)
 	})
 	return id
@@ -174,13 +173,13 @@ func TestListRecordingShelves_IncludesLivePopulation(t *testing.T) {
 		t.Fatalf("superseding: %v", err)
 	}
 	// 再生できる資産が無い録画も、録画中・取り込み待ち・失敗を含めて棚に残す。
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第4話", base.Add(3*time.Minute), "recording", 4
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第5話", base.Add(4*time.Minute), "finished", 5
 	})
-	failed := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	failed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第6話", base.Add(5*time.Minute), "failed", 6
 	})
 
@@ -206,11 +205,11 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 
 	// 同じ棚の 3 件。1 件は encoded の派生物だけを持つ。
 	seedPlayableRecording(t, pool, "アニメ　作品X　第1話", 1, base.Add(-2*time.Hour))
-	encodedOnly := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	encodedOnly := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第2話", base, "finished", 2
 	})
 	profile := "h264"
-	dbtest.OriginalAsset(t, pool, encodedOnly, func(p *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, encodedOnly, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/encoded"
@@ -226,7 +225,7 @@ func TestListRecordingShelves_PopulationAndRepresentative(t *testing.T) {
 	if _, err := pool.Exec(ctx, "UPDATE recordings SET superseded_at = now() WHERE id = $1", superseded); err != nil {
 		t.Fatalf("superseding: %v", err)
 	}
-	noAsset := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	noAsset := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第6話", base.Add(3*time.Hour), "finished", 6
 	})
 
@@ -320,15 +319,15 @@ func TestListRecordingShelves_CountsUnwatchedBroadcastEvents(t *testing.T) {
 	})
 
 	// 再生できない生きた録画（録画中）は未視聴に数えない。
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第6話", base.Add(3*time.Hour), "recording", 6
 	})
 	// 視聴済み印が purge 済み tombstone にだけ残る場合も、生きている別拠点の録画を除外する。
-	purgedWatched := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	purgedWatched := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "アニメ　作品X　第7話", base.Add(4*time.Hour), "finished", 7
 		p.Site = "tokyo"
 	})
-	assetID := dbtest.OriginalAsset(t, pool, purgedWatched, func(p *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, purgedWatched, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = "test/purged"
 	})
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted' WHERE id = $1`, assetID); err != nil {
@@ -619,10 +618,10 @@ func TestListRecordings_ExposesEffectiveSeries(t *testing.T) {
 	srv := newAPIServer(t, pool)
 	base := time.Now().Truncate(time.Second)
 
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "NHK高校講座　日本史　第1回", base, "finished", 1
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "【特集】", base.Add(time.Minute), "finished", 2
 	})
 
@@ -942,7 +941,7 @@ func TestListRecordingShelves_FiltersMatchListRecordings(t *testing.T) {
 		title: "アニメ　作品X　第2話", start: base.Add(24 * time.Hour), status: "finished", eventID: 2,
 		genres: `[{"lv1":7,"lv2":0,"un1":0,"un2":0}]`, channelType: "BS", networkID: 4, serviceID: 101, site: "osaka",
 	})
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ドラマ　作品Y　第1話", base.Add(48*time.Hour), "recording", 3
 		p.Description = strPtr("作品Xの裏番組")
 		p.Genres = json.RawMessage(`[{"lv1":3,"lv2":0,"un1":0,"un2":0}]`)

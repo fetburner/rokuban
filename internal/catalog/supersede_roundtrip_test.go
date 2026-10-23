@@ -25,7 +25,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 	start := time.Date(2026, 8, 1, 16, 0, 0, 0, time.UTC)
 
 	newRec := func(eventID int32, status string) int64 {
-		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.NetworkID = 32736
 			fixtureParams.ServiceID = 1024
 			fixtureParams.EventID = eventID

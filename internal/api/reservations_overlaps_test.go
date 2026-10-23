@@ -190,7 +190,7 @@ func TestGetProgramOverlaps_NeverScheduledExclusionWinsOverRecording(t *testing.
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 233)
 	seedNeverScheduledEvent(t, pool, ctx, "default", 32678, 5168, 2)
-	dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "never-scheduled 後に録画された番組", base.Add(30*time.Minute), "finished", 2
 	})
 
@@ -219,7 +219,7 @@ func TestGetProgramOverlaps_MidRecordingFailureNotExcluded(t *testing.T) {
 
 	reserveViaAPI(t, srv.URL, pool, ctx, 241)
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
-	failedID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	failedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.NetworkID = 32679
 		p.ServiceID = 5169
 		p.EventID = 4

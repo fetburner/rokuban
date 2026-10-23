@@ -917,7 +917,7 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only", programID)
@@ -986,7 +986,7 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only-live", programID)

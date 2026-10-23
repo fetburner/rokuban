@@ -202,7 +202,7 @@ func TestIngestWorker_SiteMismatch(t *testing.T) {
 
 	// site-b 側では実在する record_sync / recordings（site-b の watcher が
 	// 実際に作った行という想定）。
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "site-b", 20240101
 	})
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingID, "rec-mismatch", 327361024000099)
@@ -243,7 +243,7 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 	w.RecordTarget = pgstore.NewRecordings(pool)
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "site-a", 20240102
 	})
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingID, "rec-match", 327361024000098)
@@ -1735,7 +1735,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			if pool == nil {
 				return
 			}
-		recordingID := dbtest.Recording(t, pool)
+			recordingID := dbtest.Recording(t, pool)
 			insertTestRecordSync(t, pool, recordingID, recordID)
 
 			w := &IngestWorker{
@@ -2063,10 +2063,10 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			if pool == nil {
 				return
 			}
-		recordingID := dbtest.Recording(t, pool)
-		const recordID = "rec-durable-failure"
-		insertTestRecordSync(t, pool, recordingID, recordID)
-		fake := newFullTransferFake(t, recordID, tsData, "test/durable-failure.m2ts")
+			recordingID := dbtest.Recording(t, pool)
+			const recordID = "rec-durable-failure"
+			insertTestRecordSync(t, pool, recordingID, recordID)
+			fake := newFullTransferFake(t, recordID, tsData, "test/durable-failure.m2ts")
 
 			mediaDir := t.TempDir()
 			originalOpenFile := openIngestFile
@@ -2805,7 +2805,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromRuleBase(t *testing.T) {
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "ルール予約番組")
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-base", programID)
@@ -2886,7 +2886,7 @@ func TestIngestWorker_SnapshotsEncodePolicyFromOverride(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-override", programID)
@@ -2974,7 +2974,7 @@ func TestIngestWorker_ClampsUntilEncodedWithEmptyProfiles(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-drift", programID)
@@ -3104,7 +3104,7 @@ func TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults(t *testing.T) {
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "滞留番組")
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	// program_id を programID に一致させる（doc コメント参照）。status='finished' /
@@ -3209,7 +3209,7 @@ func TestIngestWorker_SnapshotsEncodePolicy_SurvivesReservationRematerialization
 	setReservationBase(t, pool, res.ProgramID, `{"keepOriginal":"until_encoded","encodeProfiles":["h265"]}`)
 
 	// watcher.createRecording が録画開始時に放送イベントキーを焼いた状態を模す。
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rematerialized", programID)
@@ -3284,7 +3284,7 @@ func TestIngestWorker_LogsWarnWhenRuleSourceReservationUnresolvable(t *testing.T
 
 	programID := int64(900000000000005)
 	res := insertProgramSnapshotAndReservation(t, pool, programID, "恒久削除予約番組")
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-rule-gone", programID)
@@ -3372,7 +3372,7 @@ func TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable(t *t
 		return
 	}
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source = "unattributed"
 	})
 	insertTestRecordSync(t, pool, recordingID, "rec-policy-manual-unresolved")
@@ -3447,7 +3447,7 @@ func TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable(t *testing
 	}); err != nil {
 		t.Fatalf("creating record intent: %v", err)
 	}
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
 	})
 	if _, err := pool.Exec(ctx, "UPDATE recordings SET source = $2 WHERE id = $1", recordingID, reservation.SourceManual); err != nil {
@@ -3540,7 +3540,7 @@ func TestIngestWorker_RelPathPrefixedWithSite(t *testing.T) {
 	w.RecordTarget = pgstore.NewRecordings(pool)
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "tokyo", 101
 	})
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000101)
@@ -3593,7 +3593,7 @@ func TestIngestWorker_RelPathPrefixedWithSite_FallbackContentPath(t *testing.T) 
 	w.RecordTarget = pgstore.NewRecordings(pool)
 	w.CMDetectionStore = pgstore.NewAnalysis(pool)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "tokyo", 102
 	})
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000102)
@@ -3646,7 +3646,7 @@ func TestIngestWorker_DegenerateContentPath_Rejected(t *testing.T) {
 	w.Publisher = newTestMediaStore(pool)
 	w.RecordTarget = pgstore.NewRecordings(pool)
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "tokyo", 103
 	})
 	insertTestRecordSyncForSite(t, pool, "tokyo", recordingID, recordID, 327361024000103)
@@ -3719,11 +3719,11 @@ func TestIngestWorker_TwoSitesSameContentPath_DoNotCollide(t *testing.T) {
 		return
 	}
 
-	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "site-a", 201
 	})
 	insertTestRecordSyncForSite(t, pool, "site-a", recordingIDA, "rec-collide-a", 327361024000201)
-	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "site-b", 202
 	})
 	insertTestRecordSyncForSite(t, pool, "site-b", recordingIDB, "rec-collide-b", 327361024000202)
@@ -3850,11 +3850,11 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 
 	// 先行: 既に existingState の media_asset として commit 済みの録画
 	// （別の recording_id）。実ファイルは既存の「正しい」中身を持つ。
-	existingRecordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	existingRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 301
 	})
 	const conflictRelPath = "sites/default/shared/conflict.m2ts"
-	existingAssetID := dbtest.OriginalAsset(t, pool, existingRecordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	existingAssetID := dbtest.OriginalAsset(t, pool, existingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = conflictRelPath
 		fixtureParams.SizeBytes = 21
 	})
@@ -3883,7 +3883,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 	}
 
 	// 新規: 同じ contentPath（→ 同じ site 前置後の rel_path）を持つ別の録画。
-	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 302
 	})
 	const recordID = "rec-conflict-new"
@@ -3968,12 +3968,12 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	// 先行: 同じ rel_path を使っていたが、既に削除済み（tombstone）の行。
-	deletedRecordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	deletedRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 311
 	})
 	const reusedRelPath = "sites/default/shared/reused.m2ts"
 	q := sqlcgen.New(pool)
-	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	deletedAssetID := dbtest.OriginalAsset(t, pool, deletedRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = reusedRelPath
 		fixtureParams.SizeBytes = 9
 	})
@@ -3985,7 +3985,7 @@ func TestIngestWorker_RelPathConflict_AllowsReuseAfterDeleted(t *testing.T) {
 	}
 
 	// 新規: 同じ rel_path になる録画。
-	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	newRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "default", 312
 	})
 	insertTestRecordSyncForSite(t, pool, "default", newRecordingID, "rec-reuse-new", 327361024000312)

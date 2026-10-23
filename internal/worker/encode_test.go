@@ -19,7 +19,6 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/webhook"
@@ -445,7 +444,7 @@ func prepareEncodeInput(t *testing.T, pool *pgxpool.Pool, recordingID int64, med
 	t.Helper()
 	seedEncodePolicy(t, pool, recordingID, profiles)
 	writeEncodeOriginal(t, mediaDir, relPath, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = relPath
 		params.SizeBytes = int64(len(content))
 	})
@@ -465,7 +464,7 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, "20240101/stale.m2ts", content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = "20240101/stale.m2ts"
 		params.SizeBytes = int64(len(content))
 	})
@@ -521,7 +520,7 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -625,12 +624,12 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	scratchDir := t.TempDir()
 	rel := "20240101/finished.m2ts"
 	content := []byte("payload-for-webhook-finished-test")
-	recordingID := dbtest.Recording(t, pool, func(params *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 		params.Title = "encode test"
 	})
 	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -710,7 +709,7 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 	content := []byte("data")
 	recordingID := dbtest.Recording(t, pool)
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})
@@ -801,7 +800,7 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 	content := []byte("data")
 	recordingID := dbtest.Recording(t, pool)
 	writeEncodeOriginal(t, mediaDir, rel, content)
-	dbtest.OriginalAsset(t, pool, recordingID, func(params *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
 		params.RelPath = rel
 		params.SizeBytes = int64(len(content))
 	})

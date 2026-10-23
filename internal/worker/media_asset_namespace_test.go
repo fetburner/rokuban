@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -89,7 +88,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
 			ctx := context.Background()
-			recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.Site = "home"
 				fixtureParams.NetworkID = 1
 				fixtureParams.ServiceID = 1
@@ -101,7 +100,7 @@ func TestValidateMediaAssetRelPathNamespace(t *testing.T) {
 				fixtureParams.ProgramDurationMs = 60_000
 			})
 
-			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.Kind = tt.kind
 				fixtureParams.Profile = tt.profile
 				fixtureParams.RelPath = tt.relPath

@@ -271,8 +271,8 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
-func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.Time, status string) func(*sqlcgen.CreateRecordingParams) {
-	return func(p *sqlcgen.CreateRecordingParams) {
+func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.Time, status string) func(*dbtest.RecordingParams) {
+	return func(p *dbtest.RecordingParams) {
 		p.NetworkID = networkID
 		p.ServiceID = serviceID
 		p.EventID = eventID
@@ -849,7 +849,7 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 	record := testRecord("record-no-supersede-001", programID, "finished")
 	// 直接 'finished' な生きている行を同じスロットに作る（すでに録れている本物の
 	// 重複を模す。failed ではないので supersede 対象にならないはず）。
-	livingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	livingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Site = DefaultSite
 		p.NetworkID = int32(record.Program.NetworkID)
 		p.ServiceID = int32(record.Program.ServiceID)

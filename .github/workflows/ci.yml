@@ -68,7 +68,7 @@ jobs:
   # 対象を増やすときはこのコメントの数と類型も同じ PR で直す。
   browser-e2e:
     runs-on: ubuntu-latest
-    # Chromium と依存パッケージの導入に 14 分を使った run があった。E2E と後処理の時間を残す。
+    # Chromium 導入に 14 分かかった run があり、35 分にする。E2E 用 ffmpeg は x264/VP9 を明示し apt recommendations を省く。
     timeout-minutes: 35
     services:
       postgres:
@@ -103,7 +103,6 @@ jobs:
         working-directory: web
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: web
-      # Browser fixtures encode with x264 and VP9; install those explicitly without apt recommendations.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libx264-164 libvpx9
       - run: pnpm build
         working-directory: web

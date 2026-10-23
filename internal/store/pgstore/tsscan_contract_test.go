@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -34,7 +33,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 			t.Helper()
 			ctx := context.Background()
 			recordingID := newTSScanContractRecording(t, pool, "TS scan store contract fixture")
-			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("sites/%s/ts-scan-contract/%d.ts", store.DefaultSite, recordingID)
 				fixtureParams.SizeBytes = sizeBytes
 			})
@@ -50,7 +49,7 @@ func newTSScanContractFixture(t *testing.T) contracttest.TSScanFixture {
 			t.Helper()
 			recordingID := newTSScanContractRecording(t, pool, "TS scan store contract encoded-only fixture")
 			profile := "h264"
-			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.Kind = store.AssetKindEncoded
 				fixtureParams.Profile = &profile
 				fixtureParams.RelPath = fmt.Sprintf("sites/%s/ts-scan-contract/%d.mp4", store.DefaultSite, recordingID)
@@ -165,7 +164,7 @@ FROM drop_positions WHERE media_asset_id = $1 ORDER BY byte_offset`, assetID)
 
 func newTSScanContractRecording(t *testing.T, pool *pgxpool.Pool, serviceName string) int64 {
 	t.Helper()
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = tsScanContractEventID.Add(1)
 		fixtureParams.ServiceName = serviceName
 		fixtureParams.Title = serviceName

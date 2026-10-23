@@ -21,14 +21,14 @@ func TestCMStationContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		newRecording := func(t *testing.T) int64 {
 			t.Helper()
-			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.EventID = cmStationContractEventID.Add(1)
 				fixtureParams.ServiceName = "局単位 CM 契約 fixture"
 				fixtureParams.Title = "CM station store contract fixture"
 				fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 			})
 
-			dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 				fixtureParams.SizeBytes = 1000
 			})

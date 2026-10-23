@@ -61,14 +61,14 @@ func newCMDetectionContractFixture(t *testing.T) contracttest.CMDetectionFixture
 func seedCMDetectionContractRecording(t *testing.T, pool *pgxpool.Pool) int64 {
 	t.Helper()
 	ctx := context.Background()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.EventID = cmDetectionContractEventID.Add(1)
 		fixtureParams.ServiceName = "局単位 CM 検出契約 fixture"
 		fixtureParams.Title = "CM detection store contract fixture"
 		fixtureParams.ProgramStartAt = time.Now().UTC().Truncate(time.Second)
 	})
 
-	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = fmt.Sprintf("test/%d.ts", id)
 		fixtureParams.SizeBytes = 1000
 	})

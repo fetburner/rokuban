@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
 // TestGenreLv1_EdgeCasesDoNotFailInsert は recordings.genre_lv1
@@ -55,7 +54,7 @@ func TestGenreLv1_EdgeCasesDoNotFailInsert(t *testing.T) {
 			if tc.genres != nil {
 				genres = json.RawMessage(tc.genres)
 			}
-			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.NetworkID = 1
 				fixtureParams.ServiceID = 1
 				fixtureParams.EventID = int32(1000 + i)

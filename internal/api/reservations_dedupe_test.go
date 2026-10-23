@@ -101,7 +101,7 @@ INSERT INTO reservations (
 func insertRecordingFixture(t *testing.T, pool *pgxpool.Pool, ruleID int64) int64 {
 	t.Helper()
 	start := time.Now().Add(-7 * 24 * time.Hour)
-	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = &ruleID
 		p.Source = "rule"
 		p.NetworkID = 11500

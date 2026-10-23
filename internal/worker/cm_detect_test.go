@@ -290,7 +290,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	mediaDir := t.TempDir()
 	ids := make([]int64, 7)
 	for i := range ids {
-		ids[i] = dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		ids[i] = dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.NetworkID = 32736
 			fixtureParams.ServiceID = 1024
 			fixtureParams.EventID = int32(800 + i)
@@ -386,7 +386,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 	seed := func(eventID int32) int64 {
-		id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 			fixtureParams.NetworkID = 32736
 			fixtureParams.ServiceID = 1024
 			fixtureParams.EventID = eventID
@@ -479,7 +479,7 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 32736
 		fixtureParams.ServiceID = 1024
 		fixtureParams.EventID = 901
@@ -570,7 +570,7 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.NetworkID = 32736
 		fixtureParams.ServiceID = 1024
 		fixtureParams.EventID = 902

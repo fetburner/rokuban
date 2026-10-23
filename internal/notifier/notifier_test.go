@@ -309,7 +309,7 @@ func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, sta
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "test/asset.m2ts"
 		fixtureParams.SizeBytes = size
 	})
@@ -383,7 +383,7 @@ func TestEvents_RecordingAndMediaAssetTopics(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画", time.Now().Truncate(time.Second), "recording", 1
 	})
 	if got := readSSEEvent(t, reader); got != "recordings" {

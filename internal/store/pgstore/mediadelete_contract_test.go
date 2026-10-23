@@ -21,7 +21,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		newRecording := func(t *testing.T) int64 {
 			t.Helper()
-			id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+			id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 				fixtureParams.EventID = mediaDeleteContractEventID.Add(1)
 				fixtureParams.ServiceName = "store media delete contract fixture"
 				fixtureParams.Title = "store media delete contract fixture"
@@ -33,7 +33,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 		}
 		newAsset := func(t *testing.T, recordingID int64, kind string, profile *string) int64 {
 			t.Helper()
-			id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+			id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 				fixtureParams.Kind = kind
 				fixtureParams.Profile = profile
 				fixtureParams.RelPath = fmt.Sprintf("sites/%s/store-contract/%d/%s", store.DefaultSite, recordingID, kind)

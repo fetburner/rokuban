@@ -42,7 +42,7 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 	n := int64(900)
 	mk := func(title string, profiles ...string) int64 {
 		n++
-		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n)
 		})
 		seedIngested(t, pool, id, 1000, nil)
@@ -64,7 +64,7 @@ func encodeQueueFixture(t *testing.T, pool *pgxpool.Pool) (queuedTitles, running
 
 	c := mk("削除中の encoded", "h264")
 	profile := "h264"
-	cAsset := dbtest.OriginalAsset(t, pool, c, func(p *sqlcgen.CreateMediaAssetParams) {
+	cAsset := dbtest.OriginalAsset(t, pool, c, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/inactive_observed.mp4"
@@ -174,7 +174,7 @@ func TestGetEncodeQueueSummaryFromDomainState(t *testing.T) {
 // cut プロファイルが 1 つも無い構成でも、cut 以外のプロファイルは待機列に数える。
 func TestGetEncodeQueueCountsWithoutCutProfiles(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 無し構成", time.Now().Truncate(time.Second), "finished", 951
 	})
 	seedIngested(t, pool, id, 1000, nil)
@@ -251,7 +251,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	seed := func(title, profile string) int64 {
 		t.Helper()
 		n++
-		id := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 			p.Title, p.ProgramStartAt, p.Status, p.EventID = title, base.Add(time.Duration(n)*time.Minute), "finished", int32(n)
 		})
 		seedIngested(t, pool, id, 1000, nil)
@@ -291,7 +291,7 @@ func TestEncodeReconcileAndQueueAgreeOnPendingSet(t *testing.T) {
 	seed("不足", "h264")
 	deleting := seed("削除中の版", "h264")
 	profile := "h264"
-	deletingAsset := dbtest.OriginalAsset(t, pool, deleting, func(p *sqlcgen.CreateMediaAssetParams) {
+	deletingAsset := dbtest.OriginalAsset(t, pool, deleting, func(p *dbtest.MediaAssetParams) {
 		p.Kind = "encoded"
 		p.Profile = &profile
 		p.RelPath = "test/agree_deleting.mp4"

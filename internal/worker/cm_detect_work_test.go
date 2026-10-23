@@ -221,8 +221,8 @@ func cmArgumentValue(argsText, name string) (string, bool) {
 	return "", false
 }
 
-func cmRecordingOptions(eventID int32) func(*sqlcgen.CreateRecordingParams) {
-	return func(params *sqlcgen.CreateRecordingParams) {
+func cmRecordingOptions(eventID int32) func(*dbtest.RecordingParams) {
+	return func(params *dbtest.RecordingParams) {
 		params.NetworkID = 32736
 		params.ServiceID = 1024
 		params.EventID = eventID
@@ -770,7 +770,7 @@ func TestUntilEncodedViewDoesNotWaitForCMDetectionWhenDisabledPerRecording(t *te
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	id := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 913 })
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 913 })
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	profile := "h264"
@@ -916,7 +916,7 @@ func TestCMDetectionGenerationAdvancesOnlyOnRealTransitions(t *testing.T) {
 	}
 
 	// 未凍結録画の初回凍結（cm_detect=true）も切り替えとして数える。
-	frozen := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 920 })
+	frozen := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 920 })
 	seedOriginalAsset(t, pool, t.TempDir(), frozen, "cm/920.ts", []byte("ts"))
 	if rows, err := q.SetRecordingCMDetection(ctx, frozen); err != nil || rows != 1 {
 		t.Fatalf("first-freeze SetRecordingCMDetection(%d) = %d, %v; want 1 row", frozen, rows, err)

@@ -26,13 +26,13 @@ func TestCatalogContract(t *testing.T) {
 			BumpRulerInputRevision: revisionStore.BumpRulerInputRevision,
 			GetRulerInputRevision:  revisionStore.GetRulerInputRevision,
 			InsertRecordingAndAsset: func(ctx context.Context, eventID int32) error {
-				recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+				recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 					fixtureParams.EventID = eventID
 					fixtureParams.Title = "catalog contract"
 					fixtureParams.ProgramStartAt = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 				})
 
-				dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+				dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 					fixtureParams.RelPath = "catalog-contract/" + time.Unix(int64(eventID), 0).UTC().Format("150405") + ".m2ts"
 					fixtureParams.SizeBytes = 100
 				})

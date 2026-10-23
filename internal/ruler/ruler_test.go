@@ -1247,7 +1247,7 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 // （active / deleted）で、tombstone 済み原本のケースを test から指定できる。
 func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, assetState string) {
 	t.Helper()
-	recordingID := dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.Source = "rule"
 		p.Site = testSite
 		p.NetworkID = testNetworkID
@@ -1258,7 +1258,7 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 		p.ProgramStartAt = time.Now().Add(-time.Hour)
 		p.ProgramDurationMs = testDurationMs
 	})
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = fmt.Sprintf("fulfilled-%d.m2ts", programID)
 		p.SizeBytes = 1024
 	})
@@ -1273,7 +1273,7 @@ func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Cont
 // table-driven な fulfilled 判定の反対側（ingest 未コミット）を fixture する。
 func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ruleID int64, startAt time.Time) int64 {
 	t.Helper()
-	return dbtest.Recording(t, pool, func(p *sqlcgen.CreateRecordingParams) {
+	return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
 		p.RuleID = &ruleID
 		p.Source = "rule"
 		p.Site = testSite

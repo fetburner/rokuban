@@ -43,7 +43,7 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(content))
 	})
@@ -61,7 +61,7 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	id := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.Kind = kind
 		fixtureParams.Profile = profile
 		fixtureParams.RelPath = relPath
@@ -564,7 +564,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := dbtest.Recording(t, pool, func(params *sqlcgen.CreateRecordingParams) {
+	recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
 		params.Title = "テスト番組"
 	})
 
@@ -1148,7 +1148,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 
 	seedComplete := func(eventID int32, name string) int64 {
 		t.Helper()
-		recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = eventID })
+		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID })
 		assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/"+name+".m2ts", []byte("original"))
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/"+name+".mp4", []byte("mp4"))
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/"+name+".jpg", []byte("jpg"))
@@ -1678,7 +1678,7 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	legacyAssetID := seedOriginalAsset(t, pool, mediaDir, legacyRecordingID,
 		"legacy/original.m2ts", []byte("legacy data"))
 
-	prefixedRecordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) {
+	prefixedRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
 		fixtureParams.Site, fixtureParams.EventID = "tokyo", 9001
 	})
 	prefixedAssetID := seedOriginalAsset(t, pool, mediaDir, prefixedRecordingID,
@@ -1941,7 +1941,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	seedOriginalAsset(t, pool, mediaDir, visibleRecordingID, "present/original.m2ts", []byte("present"))
 
 	missingRecordingID := dbtest.Recording(t, pool)
-	missingAssetID := dbtest.OriginalAsset(t, pool, missingRecordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	missingAssetID := dbtest.OriginalAsset(t, pool, missingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "missing/original.m2ts"
 		fixtureParams.SizeBytes = int64(len("missing"))
 	})
@@ -2705,7 +2705,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	dbtest.OriginalAsset(t, tx, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	dbtest.OriginalAsset(t, tx, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = int64(len(content))
 	})
@@ -2840,7 +2840,7 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(p *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
 		p.RelPath = relPath
 		p.SizeBytes = 4
 	})
@@ -2918,7 +2918,7 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/original.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -2964,8 +2964,8 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 4 })
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 4 })
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/aged.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3021,8 +3021,8 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 6 })
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 6 })
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/configured-age.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3074,9 +3074,9 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 5 })
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 5 })
 	relPath := "reappears/original.m2ts"
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = relPath
 		fixtureParams.SizeBytes = 4
 	})
@@ -3139,7 +3139,7 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	mediaDir := t.TempDir() // 空。MediaDir 配下に一切ファイルが無い状態を模す。
 
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "would-be/original.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3194,7 +3194,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	mediaDir := t.TempDir()
 
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/original.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3243,7 +3243,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	mediaDir := t.TempDir() // 空。active な資産が存在する疑わしいパスを作る。
 
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/frozen.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3298,8 +3298,8 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 
 	const overBudget = missingAssetLogBudget + 5
 	for i := 0; i < overBudget; i++ {
-		recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = int32(1000 + i) })
-		assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = int32(1000 + i) })
+		assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 			fixtureParams.RelPath = fmt.Sprintf("gone/budget-%d.m2ts", i)
 			fixtureParams.SizeBytes = 4
 		})
@@ -3358,7 +3358,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	// （全損シグネチャの early return は len(active) == 0 の方が先に効く）。
 
 	recordingID := dbtest.Recording(t, pool)
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/stale.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
@@ -3413,8 +3413,8 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := dbtest.Recording(t, pool, func(fixtureParams *sqlcgen.CreateRecordingParams) { fixtureParams.EventID = 7 })
-	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *sqlcgen.CreateMediaAssetParams) {
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 7 })
+	assetID := dbtest.OriginalAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
 		fixtureParams.RelPath = "gone/stale.m2ts"
 		fixtureParams.SizeBytes = 4
 	})
