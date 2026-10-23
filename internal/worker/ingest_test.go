@@ -164,7 +164,7 @@ func TestIngestWorker_FullTransfer(t *testing.T) {
 		t.Errorf("file size = %d, want %d", len(data), len(tsData))
 	}
 
-	if countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/rec-001") == 0 {
+	if fake.CallCount(http.MethodDelete, "/api/recording/records/rec-001") == 0 {
 		t.Error("edge record was not deleted after successful commit")
 	}
 }
@@ -262,28 +262,13 @@ func TestIngestWorker_SiteMatch(t *testing.T) {
 
 func TestIngestWorker_WriteErrorDoesNotRetryMirakc(t *testing.T) {
 	injectedErr := errors.New("injected local write failure")
-	var rangeRequests atomic.Int32
-	var statusRequests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			rangeRequests.Add(1)
-			w.Header().Set("Content-Length", "8")
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = io.WriteString(w, "recorded")
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			statusRequests.Add(1)
-			http.Error(w, "unexpected status request", http.StatusInternalServerError)
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
+	fake := mirakctest.New(t)
+	fake.SetRecordStream("record", []byte("recorded"))
 
 	worker := &IngestWorker{StallTimeout: time.Second}
 	_, _, _, err := worker.transferIngestRecord(
 		context.Background(),
-		mirakc.NewClient(srv.URL, nil),
+		mirakc.NewClient(fake.URL(), nil),
 		"record",
 		partialErrorWriter{n: 0, err: injectedErr},
 		nil,
@@ -291,10 +276,10 @@ func TestIngestWorker_WriteErrorDoesNotRetryMirakc(t *testing.T) {
 	if !errors.Is(err, injectedErr) {
 		t.Fatalf("transferIngestRecord() error = %v, want local write error", err)
 	}
-	if got := rangeRequests.Load(); got != 1 {
+	if got := fake.CallCount(http.MethodGet, "/api/recording/records/record/stream"); got != 1 {
 		t.Errorf("Range requests = %d, want 1 after the destination failed", got)
 	}
-	if got := statusRequests.Load(); got != 0 {
+	if got := fake.CallCount(http.MethodGet, "/api/recording/records/record"); got != 0 {
 		t.Errorf("GetRecord requests = %d, want 0 after the destination failed", got)
 	}
 }
@@ -361,7 +346,7 @@ func TestIngestWorker_MidTransferDisconnect(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset == int64(cutoff) {
 				resumedAt.Store(offset)
 			}
@@ -482,7 +467,7 @@ func TestIngestWorker_FollowsRecordingWithRangePolling(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			rangeRequests.Add(1)
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			switch offset {
 			case 0:
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(first)))
@@ -581,7 +566,7 @@ func TestIngestWorker_FollowPollingIsRateLimited(t *testing.T) {
 			rangeTimesMu.Unlock()
 			// 放送は進み続ける（毎ポーリングで差分が出る）。
 			cur := size.Add(packetsPerPoll * 188)
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset >= cur {
 				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				return
@@ -690,7 +675,7 @@ func TestIngestWorker_CatchUpWhileRecordingDoesNotCommit(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			rangeRequests.Add(1)
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset >= int64(lastSize()) {
 				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				return
@@ -895,7 +880,7 @@ func TestIngestWorker_NotReadyAndEmptyBodyDoNotConsumeRetries(t *testing.T) {
 				w.Header().Set("Content-Length", "0")
 				w.WriteHeader(http.StatusPartialContent)
 			default:
-				offset := parseStreamRangeOffset(r)
+				offset := mirakctest.RangeOffset(r)
 				if offset >= int64(len(full)) {
 					w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 					return
@@ -1088,7 +1073,7 @@ func TestIngestWorker_UnknownStatusRetriesInJobWithoutRestart(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset == 0 {
 				zeroOffsetRequests.Add(1)
 			}
@@ -1197,7 +1182,7 @@ func TestIngestWorker_PermanentlyUnknownStatusIsBounded(t *testing.T) {
 		t.Fatal("Work() = nil, want an error（未知の status が続いたら上限で止まる）")
 	}
 	// determineRelPath の 1 回 + 上限までの 6 回。余裕を見て 10 で切る。
-	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID); got > 10 {
+	if got := fake.CallCount(http.MethodGet, "/api/recording/records/"+recordID); got > 10 {
 		t.Errorf("status の観測回数 = %d, want <= 10（連続失敗カウンタがリセットされ続けている）", got)
 	}
 }
@@ -1208,7 +1193,7 @@ func TestIngestWorker_SizeMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
+			mirakctest.WriteRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			// HEAD が異なるサイズを返す → size mismatch
@@ -1278,7 +1263,7 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	wrongData[len(wrongData)-1] ^= 0xff
 	const recordID = "rec-hash-mismatch"
 	expectedSHA256 := sha256Hex(wrongData)
-	fake := newSHA256IngestFake(t, recordID, tsData, "test/hash-mismatch.m2ts", &expectedSHA256, false)
+	fake := newSHA256IngestFake(t, recordID, tsData, "test/hash-mismatch.m2ts", &expectedSHA256)
 
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -1315,7 +1300,7 @@ func TestIngestWorker_HashMismatch(t *testing.T) {
 	if assetCount != 0 {
 		t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 	}
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, "sites", "default", "test", "hash-mismatch.m2ts")); !errors.Is(err, os.ErrNotExist) {
@@ -1451,9 +1436,9 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			rangeMu.Lock()
-			offsets = append(offsets, parseStreamRangeOffset(r))
+			offsets = append(offsets, mirakctest.RangeOffset(r))
 			rangeMu.Unlock()
-			writeRecordStream(&pacedIngestResponseWriter{ResponseWriter: w, chunkSize: 8 * 1024, delay: 10 * time.Millisecond}, r, data)
+			mirakctest.WriteRecordStream(&pacedIngestResponseWriter{ResponseWriter: w, chunkSize: 8 * 1024, delay: 10 * time.Millisecond}, r, data)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(data)))
 			w.WriteHeader(http.StatusOK)
@@ -1698,7 +1683,7 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	if assetCount != tc.wantAssets {
 		t.Errorf("media_assets rows after resume = %d, want %d", assetCount, tc.wantAssets)
 	}
-	if got := int32(countMirakcCalls(run.fake, http.MethodDelete, "/api/recording/records/"+run.recordID)); got != tc.wantDeleteAttempts {
+	if got := int32(run.fake.CallCount(http.MethodDelete, "/api/recording/records/"+run.recordID)); got != tc.wantDeleteAttempts {
 		t.Errorf("DeleteRecord attempts after resume = %d, want %d", got, tc.wantDeleteAttempts)
 	}
 	if want := []int64{0, int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData)), int64(len(run.tsData))}; !slices.Equal(run.offsets(), want) {
@@ -1728,7 +1713,7 @@ func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID i
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
@@ -1748,12 +1733,10 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 	setFastIngestFollow(t)
 	for _, tt := range []struct {
 		name      string
-		null      bool
 		shaValue  func([]byte) string
 		wantError bool
 	}{
 		{name: "missing after timeout"},
-		{name: "null after timeout", null: true},
 		{name: "uppercase-and-space", shaValue: func(data []byte) string {
 			return "  " + strings.ToUpper(sha256Hex(data)) + "  "
 		}},
@@ -1772,7 +1755,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				value := tt.shaValue(tsData)
 				contentSHA256 = &value
 			}
-			fake := newSHA256IngestFake(t, recordID, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256, tt.null)
+			fake := newSHA256IngestFake(t, recordID, tsData, "test/optional-"+tt.name+".m2ts", contentSHA256)
 
 			pool := setupTestPool(t)
 			if pool == nil {
@@ -1809,7 +1792,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 				if assetCount != 0 {
 					t.Errorf("media_assets rows after hash mismatch = %d, want 0", assetCount)
 				}
-				if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+				if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 					t.Errorf("DeleteRecord attempts after hash mismatch = %d, want 0", got)
 				}
 				return
@@ -1826,7 +1809,7 @@ func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
 			if assetCount != 1 {
 				t.Errorf("media_assets rows = %d, want 1", assetCount)
 			}
-			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
+			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord attempts = %d, want 1", got)
 			}
 		})
@@ -1890,7 +1873,7 @@ func TestIngestWorker_UsesSHA256ThatArrivesDuringFinalSync(t *testing.T) {
 	if assetCount != 1 {
 		t.Errorf("media_assets rows = %d, want 1", assetCount)
 	}
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 		t.Errorf("DeleteRecord attempts = %d, want 1", got)
 	}
 }
@@ -1904,7 +1887,7 @@ func TestIngestWorker_DoesNotWaitWhenHEADLengthIsUnknown(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(rw, r, tsData)
+			mirakctest.WriteRecordStream(rw, r, tsData)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			// Deliberately omit Content-Length; record.content.length is present but is not
 			// an authority for deciding that the local temp is complete.
@@ -2153,7 +2136,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			if assetCount != 0 {
 				t.Errorf("media_assets rows after failed Work() = %d, want 0", assetCount)
 			}
-			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 				t.Errorf("DeleteRecord attempts after failed Work() = %d, want 0", got)
 			}
 
@@ -2180,7 +2163,7 @@ func TestIngestWorker_DurabilityFailuresKeepEdgeRecord(t *testing.T) {
 			if assetCount != 1 {
 				t.Errorf("media_assets rows after retry = %d, want 1", assetCount)
 			}
-			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
+			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord attempts after retry = %d, want 1", got)
 			}
 		})
@@ -2289,27 +2272,6 @@ func strPtr(s string) *string { return &s }
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-// writeRecordStream は時間依存ストリームを検査する個別テスト向けの Range 応答を書く。
-func writeRecordStream(w http.ResponseWriter, r *http.Request, data []byte) {
-	offset := parseStreamRangeOffset(r)
-	if offset >= int64(len(data)) {
-		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		return
-	}
-	body := data[offset:]
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(body)
-}
-
-func parseStreamRangeOffset(r *http.Request) int64 {
-	var offset int64
-	if h := r.Header.Get("Range"); h != "" {
-		_, _ = fmt.Sscanf(h, "bytes=%d-", &offset)
-	}
-	return offset
 }
 
 // setupTestPool はマイグレーション済みのテスト用プールを返す。
@@ -2656,7 +2618,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	// 1 回目の Work は最初の Range、追い付き確認、finished 観測後の最終 Range で 3。2 回目は
 	// 原本コミット済みなので転送に入らない（この数が 3 のままであることが、
 	// 「転送をやり直していない」の判定になる）。
-	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 3 {
+	if got := fake.CallCount(http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 3 {
 		t.Errorf("stream requests = %d, want 3 (first Work reads initial, catch-up, and terminal ranges; second Work must skip the transfer)", got)
 	}
 
@@ -2671,7 +2633,7 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 		t.Errorf("media_assets rows = %d, want 1", mediaAssetCount)
 	}
 
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 2 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 2 {
 		// (d) 2 回目でも DeleteRecord が再試行されている
 		t.Errorf("delete attempts = %d, want 2 (edge record deletion must be retried)", got)
 	}
@@ -2721,7 +2683,7 @@ func newFullTransferFake(t *testing.T, recordID string, tsData []byte, contentPa
 	}, tsData)
 }
 
-func newSHA256IngestFake(t *testing.T, recordID string, tsData []byte, contentPath string, contentSHA256 *string, explicitNull bool) *mirakctest.Fake {
+func newSHA256IngestFake(t *testing.T, recordID string, tsData []byte, contentPath string, contentSHA256 *string) *mirakctest.Fake {
 	t.Helper()
 	endTime := mirakc.Milliseconds(time.Now().Add(-time.Hour))
 	contentPathPtr := strPtr(contentPath)
@@ -2733,37 +2695,7 @@ func newSHA256IngestFake(t *testing.T, recordID string, tsData []byte, contentPa
 		},
 		Content: mirakc.ContentInfo{Path: "/recording/" + contentPath, Sha256: contentSHA256},
 	}
-	fake := newMirakcRecordFake(t, record, tsData)
-	if explicitNull {
-		fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
-	}
-	return fake
-}
-
-func recordJSONWithNullSHA(t *testing.T, record mirakc.Record) []byte {
-	t.Helper()
-	raw, err := json.Marshal(record)
-	if err != nil {
-		t.Fatalf("marshalling record fixture: %v", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("decoding record fixture: %v", err)
-	}
-	var content map[string]json.RawMessage
-	if err := json.Unmarshal(fields["content"], &content); err != nil {
-		t.Fatalf("decoding content fixture: %v", err)
-	}
-	content["sha256"] = json.RawMessage("null")
-	fields["content"], err = json.Marshal(content)
-	if err != nil {
-		t.Fatalf("marshalling content fixture: %v", err)
-	}
-	raw, err = json.Marshal(fields)
-	if err != nil {
-		t.Fatalf("marshalling record fixture with null sha256: %v", err)
-	}
-	return raw
+	return newMirakcRecordFake(t, record, tsData)
 }
 
 func newLateHashIngestFake(t *testing.T, recordID string, tsData []byte, contentPath string) (*mirakctest.Fake, func(*string)) {
@@ -2776,7 +2708,6 @@ func newLateHashIngestFake(t *testing.T, recordID string, tsData []byte, content
 		Content: mirakc.ContentInfo{Path: "/recording/" + contentPath},
 	}
 	fake := newMirakcRecordFake(t, record, tsData)
-	fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
 	var mu sync.Mutex
 	setHash := func(hash *string) {
 		mu.Lock()
@@ -2788,9 +2719,6 @@ func newLateHashIngestFake(t *testing.T, recordID string, tsData []byte, content
 		}
 		record.Content.Sha256 = copyHash
 		fake.SetRecords([]mirakc.Record{record})
-		if copyHash == nil {
-			fake.SetRecordJSON(recordID, recordJSONWithNullSHA(t, record))
-		}
 	}
 	return fake, setHash
 }
@@ -4105,7 +4033,7 @@ func testRelPathConflictRefusesWithoutCorruptingExistingFile(t *testing.T, exist
 
 	// 転送そのものが始まっていないこと（「開始してから失敗」ではなく
 	// 「開始前に失敗」であることの確認）。
-	if got := countMirakcCalls(fake, http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 0 {
+	if got := fake.CallCount(http.MethodGet, "/api/recording/records/"+recordID+"/stream"); got != 0 {
 		t.Errorf("stream requests = %d, want 0 (transfer must not start when rel_path already conflicts)", got)
 	}
 

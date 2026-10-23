@@ -470,7 +470,7 @@ func TestReconciler_ScheduleSnapshotBatchFailureRollsBack(t *testing.T) {
 		Options: mirakc.Options{Priority: 10},
 		Tags:    []string{mirakc.ProgramTag(programID)},
 	})
-	mock.AddSchedule(mirakc.Schedule{
+	mock.SetSchedule(mirakc.Schedule{
 		State:   mirakc.ScheduleStateScheduled,
 		Program: mirakc.Program{ID: rejectedProgramID},
 		Options: mirakc.Options{Priority: 20},

@@ -99,7 +99,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	if delay, ok := jobq.SnoozeDelay(firstResult); !ok || delay != 30*time.Second {
 		t.Fatalf("first ingest result = %T %v (snooze %v, %v); want 30s snooze while SHA-256 is null", firstResult, firstResult, delay, ok)
 	}
-	assertIngestLifecycleWaited(t, pool, int32(countLifecycleMirakcCalls(mcServer.fake, http.MethodDelete, "/api/recording/records/"+record.ID)), mediaDir, record.ID, int64(len(tsData)))
+	assertIngestLifecycleWaited(t, pool, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)), mediaDir, record.ID, int64(len(tsData)))
 
 	mcServer.setHash(lifecycleSHA256(tsData))
 	mcServer.recordSaved <- struct{}{}
@@ -116,7 +116,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
 	}
-	assertIngestLifecycleCommitted(t, pool, mediaDir, contentPath, tsData, int32(countLifecycleMirakcCalls(mcServer.fake, http.MethodDelete, "/api/recording/records/"+record.ID)))
+	assertIngestLifecycleCommitted(t, pool, mediaDir, contentPath, tsData, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)))
 }
 
 func seedIngestLifecycleReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
@@ -192,15 +192,11 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 	run.fake = mirakctest.New(t)
 	run.fake.SetRecords([]mirakc.Record{initial})
 	run.fake.SetRecordStream(initial.ID, tsData)
-	run.fake.SetRecordJSON(initial.ID, lifecycleRecordJSON(t, initial))
 	setCurrent := func() {
 		mu.RLock()
 		record := current
 		mu.RUnlock()
 		run.fake.SetRecords([]mirakc.Record{record})
-		if record.Content.Sha256 == nil {
-			run.fake.SetRecordJSON(initial.ID, lifecycleRecordJSON(t, record))
-		}
 	}
 	run.setHash = func(hash string) {
 		mu.Lock()
@@ -245,34 +241,6 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 	}))
 	t.Cleanup(run.server.Close)
 	return run
-}
-
-func lifecycleRecordJSON(t *testing.T, record mirakc.Record) []byte {
-	t.Helper()
-	raw, err := json.Marshal(record)
-	if err != nil {
-		t.Fatalf("marshalling lifecycle record: %v", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &fields); err != nil {
-		t.Fatalf("decoding lifecycle record: %v", err)
-	}
-	var content map[string]json.RawMessage
-	if err := json.Unmarshal(fields["content"], &content); err != nil {
-		t.Fatalf("decoding lifecycle content: %v", err)
-	}
-	if record.Content.Sha256 == nil {
-		content["sha256"] = json.RawMessage("null")
-	}
-	fields["content"], err = json.Marshal(content)
-	if err != nil {
-		t.Fatalf("marshalling lifecycle content: %v", err)
-	}
-	raw, err = json.Marshal(fields)
-	if err != nil {
-		t.Fatalf("marshalling lifecycle record with null hash: %v", err)
-	}
-	return raw
 }
 
 type ingestLifecycleWorker struct {
@@ -431,16 +399,6 @@ func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, 
 	if !bytes.Equal(data, tsData) {
 		t.Error("committed media file differs from the downloaded TS data")
 	}
-}
-
-func countLifecycleMirakcCalls(fake *mirakctest.Fake, method, path string) int {
-	count := 0
-	for _, call := range fake.Calls() {
-		if call.Method == method && call.Path == path {
-			count++
-		}
-	}
-	return count
 }
 
 func ingestLifecycleTSData(packets int) []byte {

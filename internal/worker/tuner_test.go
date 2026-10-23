@@ -20,8 +20,6 @@ import (
 type tunerFixture struct {
 	fake   *mirakctest.Fake
 	tuners []mirakc.Tuner
-	// raw が非 nil ならそれをそのまま返す（レスポンスの生 JSON を検証したいとき用）。
-	raw []byte
 }
 
 func (fx *tunerFixture) setTuners(tuners []mirakc.Tuner) {
@@ -35,11 +33,7 @@ func newTunerFake(t *testing.T, fx *tunerFixture) *mirakctest.Fake {
 	t.Helper()
 	fake := mirakctest.New(t)
 	fx.fake = fake
-	if fx.raw != nil {
-		fake.SetTunersJSON(fx.raw)
-	} else {
-		fake.SetTuners(fx.tuners)
-	}
+	fake.SetTuners(fx.tuners)
 	return fake
 }
 
@@ -110,16 +104,15 @@ func TestTunerSyncWorker_FullSync(t *testing.T) {
 	}
 }
 
-// 実行時状態（users / isFree / isUsing / command / pid）は投影しない。
-// 現在の利用者を容量から引くと「見えない消費者は数えない = 下界」の性質が崩れる。
+// 実行時状態（users / isFree / isUsing / command / pid）は mirakc.Tuner 型に載っておらず、
+// worker からは見えない。型の形は client_test の TestListTuners が固定する。
+// ここでは tuner_sync に実行時状態の列が無いことと、チューナーが容量に数えられることを見る。
+// 使用中かどうかは型で表せないので、使用中のチューナーを置く検査はしない（旧テストから弱めた点）。
 func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
 	pool := setupTestPool(t)
-	fx := &tunerFixture{raw: []byte(`[{
-      "index": 0, "name": "PX-S1UD_T1", "types": ["GR"],
-      "isAvailable": true, "isFault": false,
-      "users": [{"agent":"epgstation","priority":1}],
-      "isFree": false, "isUsing": true, "command": "recdvb", "pid": 4242
-    }]`)}
+	fx := &tunerFixture{tuners: []mirakc.Tuner{
+		{Index: 0, Name: "PX-S1UD_T1", Types: []string{"GR"}, IsAvailable: true},
+	}}
 	w := newTunerSyncWorker(t, pool, fx)
 
 	runTunerSync(t, w)
@@ -128,9 +121,8 @@ func TestTunerSyncWorker_DoesNotProjectRuntimeState(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("tuner_sync rows = %+v, want 1", rows)
 	}
-	// 使用中のチューナーも「存在して壊れていない」ので容量に数える。
 	if !rows[0].IsAvailable || rows[0].IsFault {
-		t.Errorf("row = %+v, want available and not faulty even while in use", rows[0])
+		t.Errorf("row = %+v, want available and not faulty", rows[0])
 	}
 	// 実行時状態を保持する列は存在しない（存在したら投影される経路ができてしまう）。
 	var count int

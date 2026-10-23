@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -426,7 +427,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset == int64(cutoff) {
 				resumedAt.Store(offset)
 			}

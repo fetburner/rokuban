@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -65,6 +67,60 @@ func TestFakeReturnsPlacedStateThroughClient(t *testing.T) {
 	}
 }
 
+func TestFakeListEndpointsReturnEmptyArray(t *testing.T) {
+	fake := New(t)
+	fake.SetServices(nil)
+	fake.SetPrograms(nil)
+	fake.SetTuners(nil)
+	fake.SetSchedules(nil)
+	fake.SetRecords(nil)
+	for _, path := range []string{servicesPath, programsPath, tunersPath, schedulesPath, recordsPath} {
+		response, err := http.Get(fake.URL() + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil || strings.TrimSpace(string(body)) != "[]" {
+			t.Errorf("GET %s body = %q, %v; want []", path, body, err)
+		}
+	}
+}
+
+func TestWriteRecordStreamServesFromRangeOffset(t *testing.T) {
+	data := []byte("0123456789")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		WriteRecordStream(w, r, data)
+	}))
+	t.Cleanup(server.Close)
+	for _, tc := range []struct {
+		name, header string
+		wantStatus   int
+		want         string
+	}{
+		{"offset", "bytes=4-", http.StatusPartialContent, "456789"},
+		{"no header", "", http.StatusPartialContent, "0123456789"},
+		{"unparseable starts at 0", "garbage", http.StatusPartialContent, "0123456789"},
+		{"out of range", "bytes=10-", http.StatusRequestedRangeNotSatisfiable, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+			if tc.header != "" {
+				req.Header.Set("Range", tc.header)
+			}
+			response, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, _ := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode != tc.wantStatus || string(body) != tc.want {
+				t.Errorf("status, body = %d, %q; want %d, %q", response.StatusCode, body, tc.wantStatus, tc.want)
+			}
+		})
+	}
+}
+
 func TestFakeScheduleAndRecordDeletesUpdateStateAndCalls(t *testing.T) {
 	fake := New(t)
 	ctx := context.Background()
@@ -100,12 +156,11 @@ func TestFakeScheduleAndRecordDeletesUpdateStateAndCalls(t *testing.T) {
 		t.Errorf("ListRecords after DELETE = %#v, %v; want empty", records, err)
 	}
 
-	calls := fake.Calls()
-	if !hasCall(calls, http.MethodPost, schedulesPath) || !hasCall(calls, http.MethodDelete, schedulesPath+"/"+formatInt(programID)) {
-		t.Errorf("calls = %#v, want schedule POST and DELETE", calls)
+	if fake.CallCount(http.MethodPost, schedulesPath) != 1 || fake.CallCount(http.MethodDelete, schedulesPath+"/"+formatInt(programID)) != 1 {
+		t.Errorf("calls = %#v, want one schedule POST and one DELETE", fake.Calls())
 	}
-	if !hasCall(calls, http.MethodDelete, recordsPath+"/record-delete") {
-		t.Errorf("calls = %#v, want record DELETE", calls)
+	if fake.CallCount(http.MethodDelete, recordsPath+"/record-delete") != 1 {
+		t.Errorf("calls = %#v, want one record DELETE", fake.Calls())
 	}
 }
 
@@ -163,15 +218,6 @@ func TestFakeRecordStreamUsesRangeOffsetAndRejectsOutOfRange(t *testing.T) {
 	if _, _, err := client.StreamRecord(context.Background(), "record-stream", int64(len(data))); !errors.Is(err, mirakc.ErrRangeNotSatisfiable) {
 		t.Errorf("StreamRecord(out of range) error = %v, want ErrRangeNotSatisfiable", err)
 	}
-}
-
-func hasCall(calls []Call, method, path string) bool {
-	for _, call := range calls {
-		if call.Method == method && call.Path == path {
-			return true
-		}
-	}
-	return false
 }
 
 func stringPtr(value string) *string { return &value }

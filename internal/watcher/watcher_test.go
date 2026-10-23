@@ -2131,12 +2131,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 		t.Fatalf("Watcher.Run() after cancellation = %v, want context.Canceled", err)
 	}
 
-	var recordsCalls int
-	for _, call := range fake.Calls() {
-		if call.Method == http.MethodGet && call.Path == "/api/recording/records" {
-			recordsCalls++
-		}
-	}
+	recordsCalls := fake.CallCount(http.MethodGet, "/api/recording/records")
 	if recordsCalls != 0 {
 		t.Errorf("GET /api/recording/records call count = %d, want 0 "+
 			"(Watcher.Run は SSE 購読だけの常駐になり、全量突き合わせは record_sweep ジョブの仕事のはず)", recordsCalls)

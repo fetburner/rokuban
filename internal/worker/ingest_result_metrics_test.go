@@ -185,7 +185,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
@@ -372,7 +372,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 			t.Errorf("logs do not contain %q: %s", want, logs.String())
 		}
 	}
-	if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 		t.Errorf("DeleteRecord calls = %d, want 1 after best-effort enqueue failures", got)
 	}
 }

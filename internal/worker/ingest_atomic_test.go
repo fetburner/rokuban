@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -171,7 +172,7 @@ func newConcurrentIngestServer(t *testing.T, tsData []byte, contentPath string, 
 				started <- struct{}{}
 				<-release
 			})
-			writeRecordStream(w, r, tsData)
+			mirakctest.WriteRecordStream(w, r, tsData)
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
 			w.WriteHeader(http.StatusOK)
@@ -570,7 +571,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				t.Fatal("first Work() returned nil despite the injected stop point")
 			}
 			assertIngestAssetCount(t, pool, recordingID, 0)
-			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 				t.Errorf("DeleteRecord calls after failed publication = %d, want 0", got)
 			}
 			fullPath := filepath.Join(mediaDir, "sites", "default", filepath.FromSlash(contentPath))
@@ -603,7 +604,7 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 				t.Fatalf("retry Work() error: %v", err)
 			}
 			assertIngestAssetCount(t, pool, recordingID, 1)
-			if got := countMirakcCalls(fake, http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
+			if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 				t.Errorf("DeleteRecord calls after retry = %d, want 1", got)
 			}
 			got, err := os.ReadFile(fullPath)

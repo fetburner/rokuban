@@ -22,16 +22,6 @@ func runWorkerViaJobQFake[T jobq.Args](ctx context.Context, worker jobq.Worker[T
 	return jobqfaketest.RunWorkerOnce(ctx, worker, args)
 }
 
-func countMirakcCalls(fake *mirakctest.Fake, method, path string) int {
-	count := 0
-	for _, call := range fake.Calls() {
-		if call.Method == method && call.Path == path {
-			count++
-		}
-	}
-	return count
-}
-
 type mirakcRoundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f mirakcRoundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }

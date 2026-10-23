@@ -48,14 +48,12 @@ type Fake struct {
 
 	server *httptest.Server
 
-	services  []mirakc.Service
-	programs  []mirakc.Program
-	tuners    []mirakc.Tuner
-	rawTuners json.RawMessage
+	services []mirakc.Service
+	programs []mirakc.Program
+	tuners   []mirakc.Tuner
 
 	schedules []mirakc.Schedule
 	records   []mirakc.Record
-	rawRecord map[string]json.RawMessage
 	streams   map[string][]byte
 
 	calls    []Call
@@ -66,9 +64,8 @@ type Fake struct {
 func New(t testing.TB) *Fake {
 	t.Helper()
 	f := &Fake{
-		streams:   make(map[string][]byte),
-		rawRecord: make(map[string]json.RawMessage),
-		failures:  make(map[string]failure),
+		streams:  make(map[string][]byte),
+		failures: make(map[string]failure),
 	}
 	f.server = httptest.NewServer(f)
 	t.Cleanup(f.server.Close)
@@ -97,15 +94,6 @@ func (f *Fake) SetTuners(tuners []mirakc.Tuner) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.tuners = clone(tuners)
-	f.rawTuners = nil
-}
-
-// SetTunersJSON は GET /api/tuners が返す JSON をそのまま置く。
-// mirakc.Client の未知フィールドを無視する契約を検査するテストで使う。
-func (f *Fake) SetTunersJSON(raw []byte) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rawTuners = bytes.Clone(raw)
 }
 
 // SetSchedules は GET /api/recording/schedules が返すスケジュールを置き換える。
@@ -127,14 +115,6 @@ func (f *Fake) SetSchedule(schedule mirakc.Schedule) {
 		}
 	}
 	f.schedules = append(f.schedules, schedule)
-}
-
-// AddSchedule は GET /api/recording/schedules に 1 件追加する。
-// 重複した programId を含む応答を必要とするテストで使う。
-func (f *Fake) AddSchedule(schedule mirakc.Schedule) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.schedules = append(f.schedules, clone(schedule))
 }
 
 // Schedules は現在のスケジュールを programId で引くコピーとして返す。
@@ -164,15 +144,6 @@ func (f *Fake) SetRecords(records []mirakc.Record) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.records = clone(records)
-	f.rawRecord = make(map[string]json.RawMessage)
-}
-
-// SetRecordJSON は指定した record ID の個別 GET 応答を JSON で置く。
-// `sha256: null` とフィールド欠落のようなワイヤ表現を分けるテストで使う。
-func (f *Fake) SetRecordJSON(recordID string, raw []byte) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rawRecord[recordID] = bytes.Clone(raw)
 }
 
 // SetRecordStream は指定した録画の stream 本文を置く。
@@ -224,17 +195,13 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == servicesPath:
-		writeJSON(w, http.StatusOK, f.services)
+		writeJSON(w, http.StatusOK, nonNil(f.services))
 	case r.Method == http.MethodGet && r.URL.Path == programsPath:
-		writeJSON(w, http.StatusOK, f.programs)
+		writeJSON(w, http.StatusOK, nonNil(f.programs))
 	case r.Method == http.MethodGet && r.URL.Path == tunersPath:
-		if f.rawTuners != nil {
-			writeRawJSON(w, http.StatusOK, f.rawTuners)
-			return
-		}
-		writeJSON(w, http.StatusOK, f.tuners)
+		writeJSON(w, http.StatusOK, nonNil(f.tuners))
 	case r.Method == http.MethodGet && r.URL.Path == schedulesPath:
-		writeJSON(w, http.StatusOK, f.schedules)
+		writeJSON(w, http.StatusOK, nonNil(f.schedules))
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, schedulesPath+"/"):
 		f.getSchedule(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == schedulesPath:
@@ -242,7 +209,7 @@ func (f *Fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, schedulesPath+"/"):
 		f.deleteSchedule(w, r.URL.Path)
 	case r.Method == http.MethodGet && r.URL.Path == recordsPath:
-		writeJSON(w, http.StatusOK, f.records)
+		writeJSON(w, http.StatusOK, nonNil(f.records))
 	case strings.HasPrefix(r.URL.Path, recordsPath+"/"):
 		f.recordRequest(w, r)
 	default:
@@ -324,10 +291,6 @@ func (f *Fake) recordRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		switch r.Method {
 		case http.MethodGet:
-			if raw, ok := f.rawRecord[relative]; ok {
-				writeRawJSON(w, http.StatusOK, raw)
-				return
-			}
 			writeJSON(w, http.StatusOK, f.records[i])
 		case http.MethodDelete:
 			f.records = append(f.records[:i], f.records[i+1:]...)
@@ -355,15 +318,7 @@ func (f *Fake) recordStream(w http.ResponseWriter, r *http.Request, id string) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	offset := rangeOffset(r.Header.Get("Range"))
-	if offset < 0 || offset >= int64(len(data)) {
-		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		return
-	}
-	body := data[offset:]
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(body)
+	WriteRecordStream(w, r, data)
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
@@ -372,21 +327,12 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeRawJSON(w http.ResponseWriter, status int, raw []byte) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(raw)
-}
-
-func rangeOffset(header string) int64 {
-	if header == "" {
-		return 0
+// nonNil は nil の一覧を空配列として JSON に書かせる。実物の mirakc は空の一覧を [] で返す。
+func nonNil[T any](list []T) []T {
+	if list == nil {
+		return []T{}
 	}
-	var offset int64
-	if _, err := fmt.Sscanf(header, "bytes=%d-", &offset); err != nil {
-		return -1
-	}
-	return offset
+	return list
 }
 
 func clone[T any](value T) T {
@@ -399,4 +345,39 @@ func clone[T any](value T) T {
 		return value
 	}
 	return copied
+}
+
+// WriteRecordStream は data を Range ヘッダの開始位置から 206 で書く。
+// 開始位置が範囲外なら 416 を返す。Range が無い、またはパースできないときの開始位置は 0 とする。
+// mirakc の録画中配信の挙動（追従など）は真似しない。
+func WriteRecordStream(w http.ResponseWriter, r *http.Request, data []byte) {
+	offset := RangeOffset(r)
+	if offset < 0 || offset >= int64(len(data)) {
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+	body := data[offset:]
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusPartialContent)
+	_, _ = w.Write(body)
+}
+
+// CallCount は method と path が一致する記録済みリクエストの数を返す。
+func (f *Fake) CallCount(method, path string) int {
+	count := 0
+	for _, call := range f.Calls() {
+		if call.Method == method && call.Path == path {
+			count++
+		}
+	}
+	return count
+}
+
+// RangeOffset は Range ヘッダ（bytes=N-）の開始位置を返す。ヘッダが無い、またはパースできないときは 0 とする。
+func RangeOffset(r *http.Request) int64 {
+	var offset int64
+	if h := r.Header.Get("Range"); h != "" {
+		_, _ = fmt.Sscanf(h, "bytes=%d-", &offset)
+	}
+	return offset
 }

@@ -419,13 +419,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		t.Fatalf("encode_profiles = %v, want [h265]", profiles)
 	}
 	// 前提 2: エッジ record は消えた（ヒントを再送する経路が閉じた）。
-	var deleteRequested bool
-	for _, call := range fake.Calls() {
-		if call.Method == "DELETE" && call.Path == "/api/recording/records/rec-163-lost-hint" {
-			deleteRequested = true
-		}
-	}
-	if !deleteRequested {
+	if fake.CallCount("DELETE", "/api/recording/records/rec-163-lost-hint") == 0 {
 		t.Fatal("edge record was not deleted; the lost-hint scenario needs the re-hint path closed")
 	}
 	// 定期パスが差分を埋める。
