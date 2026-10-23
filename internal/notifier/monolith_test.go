@@ -14,7 +14,7 @@ import (
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/streamer"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -44,9 +44,9 @@ func TestMonolith_RESTAndSSEAndMediaCoexist(t *testing.T) {
 
 	router := api.NewRouter(api.RouterConfig{
 		Ready:          pool.Ping,
-		RecordingQuery: pgstore.NewRecordings(pool),
+		RecordingQuery: pgstoretest.Recordings(pool),
 		Mounter: api.Mounters{
-			streamer.New(pgstore.NewMedia(pool), streamer.Config{MediaDir: mediaDir}),
+			streamer.New(pgstoretest.Media(pool), streamer.Config{MediaDir: mediaDir}),
 			hub,
 		},
 	})

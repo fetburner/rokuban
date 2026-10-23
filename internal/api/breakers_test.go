@@ -12,7 +12,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/breaker"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -21,7 +21,7 @@ func newBreakerRouter(pool *pgxpool.Pool) http.Handler {
 }
 
 func newBreakerRouterWithSites(pool *pgxpool.Pool, sites []string) http.Handler {
-	return api.NewRouter(api.RouterConfig{Ready: pool.Ping, BreakerAdmin: pgstore.NewBreakers(pool), Sites: sites})
+	return api.NewRouter(api.RouterConfig{Ready: pool.Ping, BreakerAdmin: pgstoretest.Breakers(pool), Sites: sites})
 }
 
 // insertCircuitBreakerFixture は circuit_breakers 行を直接 INSERT する（ruler /

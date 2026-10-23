@@ -25,7 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -44,7 +44,7 @@ func setupTest(t *testing.T) (*Watcher, *pgxpool.Pool) {
 
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	mc := mirakc.NewClient("http://unused:40772", nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
 	return w, pool
 }
 
@@ -769,7 +769,7 @@ func TestRun_NoAutomaticSweep(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	mc := mirakc.NewClient(server.URL, nil)
-	w := New(DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), enqueuer, nil)
+	w := New(DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), enqueuer, nil)
 
 	runCtx, runCancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
@@ -828,7 +828,7 @@ func TestProcessRecord_EnqueueFollowsCommit(t *testing.T) {
 	const programID int64 = 327360102415397
 	createTestReservation(t, pool, programID)
 	enqueueErr := errors.New("injected post-commit enqueue error")
-	enqueuer := &commitCheckingEnqueuer{target: pgstore.NewRecordings(pool), err: enqueueErr}
+	enqueuer := &commitCheckingEnqueuer{target: pgstoretest.Recordings(pool), err: enqueueErr}
 	w.enqueuer = enqueuer
 
 	record := testRecord("commit-hint-1", programID, "finished")

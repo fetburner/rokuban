@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -23,22 +23,22 @@ const rfc3339 = time.RFC3339
 
 func newAPIServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	tunerStore := pgstore.NewTuners(pool)
-	media := pgstore.NewMedia(pool)
-	recordingStore := pgstore.NewRecordings(pool)
+	tunerStore := pgstoretest.Tuners(pool)
+	media := pgstoretest.Media(pool)
+	recordingStore := pgstoretest.Recordings(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
 		Ready:               pool.Ping,
-		EPGReader:           pgstore.NewEPG(pool),
-		ProgramSearch:       pgstore.NewEPG(pool),
+		EPGReader:           pgstoretest.EPG(pool),
+		ProgramSearch:       pgstoretest.EPG(pool),
 		MediaReader:         media,
 		StorageObservation:  media,
 		TunerReader:         tunerStore,
 		CapacityStore:       tunerStore,
-		PlaybackStateStore:  pgstore.NewPlayback(pool),
+		PlaybackStateStore:  pgstoretest.Playback(pool),
 		RecordingTrashStore: recordingStore,
 		RecordingQuery:      recordingStore,
-		ReservationStore:    pgstore.NewReservations(pool),
-		LabelRules:          pgstore.NewLabelRules(pool),
+		ReservationStore:    pgstoretest.Reservations(pool),
+		LabelRules:          pgstoretest.LabelRules(pool),
 	}))
 	t.Cleanup(srv.Close)
 	return srv

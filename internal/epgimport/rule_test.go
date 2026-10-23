@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/epgstation"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -27,7 +27,7 @@ func basicRule(id int64, keyword string) epgstation.Rule {
 }
 
 func importRulesForTest(ctx context.Context, pool *pgxpool.Pool, rules []epgstation.Rule) (RuleImportResult, error) {
-	return ImportRules(ctx, pgstore.NewRules(pool, []string{"default"}), pgstore.NewEPG(pool), "default", rules)
+	return ImportRules(ctx, pgstoretest.Rules(pool, []string{"default"}...), pgstoretest.EPG(pool), "default", rules)
 }
 
 // TestImportRules_IdempotentRerun is the acceptance criterion: re-running the

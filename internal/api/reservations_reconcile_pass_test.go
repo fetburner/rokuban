@@ -15,7 +15,7 @@ import (
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -26,7 +26,7 @@ func TestPutProgramIntent_EnqueuesRulerPassHint(t *testing.T) {
 	ctx := context.Background()
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
-		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer})
+		ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -67,7 +67,7 @@ func TestPutProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_intents", site: "default", programID: programID, wantPresent: true,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -92,7 +92,7 @@ func TestPatchProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 		pool: pool, table: "program_overrides", site: "default", programID: programID, wantPresent: true,
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -112,7 +112,7 @@ func TestPatchProgramOverrides_StoreFailureDoesNotEnqueue(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
@@ -134,7 +134,7 @@ func TestPutProgramIntent_ProgramNotInProjection_DoesNotEnqueueRulerPassHint(t *
 	pool := testutil.SetupDB(t)
 	enqueuer := jobqtestutil.NewRecordingEnqueuer()
 	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
-		ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer})
+		ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
@@ -154,7 +154,7 @@ func TestDeleteProgramIntent_EnqueuesAfterCommit(t *testing.T) {
 	ctx := context.Background()
 	const programID int64 = 500000700031237
 	insertProgramFixture(t, pool, ctx, programID, 50000, 7000)
-	reservations := pgstore.NewReservations(pool)
+	reservations := pgstoretest.Reservations(pool)
 	if err := reservations.PutIntent(ctx, "default", programID, "record"); err != nil {
 		t.Fatalf("seeding program intent: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestDeleteProgramOverrides_EnqueuesAfterCommit(t *testing.T) {
 	ctx := context.Background()
 	const programID int64 = 500000700031238
 	insertProgramFixture(t, pool, ctx, programID, 50000, 7000)
-	reservations := pgstore.NewReservations(pool)
+	reservations := pgstoretest.Reservations(pool)
 	priority := 3
 	if err := reservations.PatchOverrides(ctx, "default", programID, reservation.OverridesPatch{Priority: &priority}); err != nil {
 		t.Fatalf("seeding program overrides: %v", err)
@@ -219,7 +219,7 @@ func TestPutProgramIntent_EnqueueFailureDoesNotFailCommittedWrite(t *testing.T) 
 		wantPresent: true, enqueueErr: errors.New("queue unavailable"),
 	}
 	router := api.NewRouter(api.RouterConfig{
-		Ready: pool.Ping, ReservationStore: pgstore.NewReservations(pool), Enqueuer: enqueuer,
+		Ready: pool.Ping, ReservationStore: pgstoretest.Reservations(pool), Enqueuer: enqueuer,
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

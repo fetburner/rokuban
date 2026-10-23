@@ -17,6 +17,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg は、公開 tx だけが弾いていた古いジョブを、
@@ -100,9 +101,9 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			job := tt.seed(t, pool, recordingID)
 
 			w := &EncodeWorker{
-				Publisher:  newTestMediaStore(pool),
-				Progress:   newTestMediaStore(pool),
-				Attempts:   newTestMediaStore(pool),
+				Publisher:  pgstoretest.Media(pool),
+				Progress:   pgstoretest.Media(pool),
+				Attempts:   pgstoretest.Media(pool),
 				MediaDir:   mediaDir,
 				ScratchDir: scratchDir,
 				FFmpeg:     filepath.Join(t.TempDir(), "must-not-run-ffmpeg"),
@@ -111,7 +112,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 					{Name: "h264", Container: "mp4", VideoCodec: "libx264", AudioCodec: "aac"},
 				}},
 			}
-			w.Media = newTestMediaStore(pool)
+			w.Media = pgstoretest.Media(pool)
 			assetsBefore := countEncodedAssets(t, pool, recordingID)
 
 			var logBuf bytes.Buffer
@@ -147,7 +148,7 @@ func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
 	mediaDir := t.TempDir()
 	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "preflight/unowned.m2ts", []string{"cut"}, []byte("original"))
 	w := &EncodeWorker{
-		Media:    newTestMediaStore(pool),
+		Media:    pgstoretest.Media(pool),
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}},
 	}
 	_, _, _, skip, err := w.observeEncodePlan(context.Background(), newCutEncodeJob(recordingID), slog.Default())

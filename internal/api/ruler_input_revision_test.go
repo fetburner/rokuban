@@ -11,7 +11,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/api"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -21,9 +21,9 @@ func TestAPIInputWritesBumpRulerInputRevisionWithoutEnqueuer(t *testing.T) {
 	router := api.NewRouter(api.RouterConfig{
 		Ready:            pool.Ping,
 		Sites:            []string{store.DefaultSite},
-		RuleStore:        pgstore.NewRules(pool, []string{store.DefaultSite}),
-		ReservationStore: pgstore.NewReservations(pool),
-		ProgramSearch:    pgstore.NewEPG(pool),
+		RuleStore:        pgstoretest.Rules(pool, []string{store.DefaultSite}...),
+		ReservationStore: pgstoretest.Reservations(pool),
+		ProgramSearch:    pgstoretest.EPG(pool),
 	})
 	srv := httptest.NewServer(router)
 	defer srv.Close()

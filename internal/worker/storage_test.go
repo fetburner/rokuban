@@ -11,17 +11,13 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 	t.Helper()
 	job := StorageSyncArgs{}
 	return runWorkerViaJobQFake(context.Background(), w, job)
-}
-
-func newTestMediaStore(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstore.NewMedia(pool)
 }
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
@@ -55,7 +51,7 @@ func TestStorageSyncWorker_FullSync(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	w := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
+	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -87,7 +83,7 @@ func TestStorageSyncWorker_FullSync(t *testing.T) {
 func TestStorageSyncWorker_ScratchOptional(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	w := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: ""}
+	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: ""}
 
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("Work() error: %v", err)
@@ -106,7 +102,7 @@ func TestStorageSyncWorker_ScratchOptional(t *testing.T) {
 // を信頼しきらない安全弁。storage_sync に行が増えていないことも確認する）。
 func TestStorageSyncWorker_EmptyMediaDirFails(t *testing.T) {
 	pool := setupTestPool(t)
-	w := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: ""}
+	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: ""}
 
 	if err := runStorageSync(t, w); err == nil {
 		t.Fatal("Work() with empty MediaDir succeeded, want error")
@@ -126,7 +122,7 @@ func TestStorageSyncWorker_RestartConverges(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	// 1 回目のパス（1 プロセスの寿命を模す）。
-	w1 := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
+	w1 := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 	if err := runStorageSync(t, w1); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
@@ -135,7 +131,7 @@ func TestStorageSyncWorker_RestartConverges(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 
 	// 「プロセスが落ちて再起動した」を新しい *StorageSyncWorker インスタンスで模す。
-	w2 := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
+	w2 := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 	if err := runStorageSync(t, w2); err != nil {
 		t.Fatalf("second Work() error: %v", err)
 	}
@@ -159,7 +155,7 @@ func TestStorageSyncWorker_ConfigChangeSweepsRemovedRoot(t *testing.T) {
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
 
-	w := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
+	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
@@ -191,7 +187,7 @@ func TestStorageSyncWorker_PartialStatFailureKeepsStaleRow(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	// 1 回目: 両方成功させて scratch 行を作る。
-	w := &StorageSyncWorker{Storage: pgstore.NewMedia(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
+	w := &StorageSyncWorker{Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir}
 	if err := runStorageSync(t, w); err != nil {
 		t.Fatalf("first Work() error: %v", err)
 	}
@@ -235,7 +231,7 @@ func TestStorageSyncWorker_AllRootsFailReturnsError(t *testing.T) {
 	mediaDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage:  newTestMediaStore(pool),
+		Storage:  pgstoretest.Media(pool),
 		MediaDir: mediaDir,
 		Stat: func(string) (diskUsage, error) {
 			return diskUsage{}, fmt.Errorf("simulated statfs failure")
@@ -280,7 +276,7 @@ func TestStorageSyncWorker_JobLevelLastSuccessOnlyOnFullSuccess(t *testing.T) {
 
 	// 部分成功（scratch だけ失敗）では進まない。
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(
 			map[string]diskUsage{mediaDir: {totalBytes: 100, usedBytes: 10, availableBytes: 90}},
 			map[string]bool{scratchDir: true},
@@ -317,7 +313,7 @@ func TestStorageSyncWorker_PerRootMetricsFreezeOnFailure(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
@@ -371,7 +367,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRootRemoved(t *testing.T) {
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 500, usedBytes: 50, availableBytes: 450},
@@ -418,7 +414,7 @@ func TestStorageSyncWorker_MetricsClearedWhenRowRemovedByAnotherReplica(t *testi
 	scratchDir := t.TempDir()
 
 	w := &StorageSyncWorker{
-		Storage: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Storage: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		Stat: fakeStat(map[string]diskUsage{
 			mediaDir:   {totalBytes: 100, usedBytes: 10, availableBytes: 90},
 			scratchDir: {totalBytes: 777, usedBytes: 77, availableBytes: 700},

@@ -15,7 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 const shelfBenchmarkDatabaseURL = "ROKUBAN_BENCH_DATABASE_URL"
@@ -886,7 +886,7 @@ const (
 
 // queryProductionShelves は本番の棚クエリを、ハンドラと同じ組み立てと実行モードで実行する。
 func queryProductionShelves(ctx context.Context, pool *pgxpool.Pool, f store.RecordingFilter) (map[string]shelfResult, error) {
-	rows, err := pgstore.NewRecordings(pool).Shelves(ctx, f)
+	rows, err := pgstoretest.Recordings(pool).Shelves(ctx, f)
 	if err != nil {
 		return nil, err
 	}

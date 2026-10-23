@@ -22,7 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // cancelAfterBytesTransport は response body の読み出し側で cutoff バイトを
@@ -490,14 +490,14 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	}
 
 	w := &IngestWorker{
-		Publisher:     newTestMediaStore(pool),
+		Publisher:     pgstoretest.Media(pool),
 		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, streamClient)),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
-		Precheck:      newTestMediaStore(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
-	w.CMDetectionStore = pgstore.NewAnalysis(pool)
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
 	args := IngestJobArgs{Site: "default", RecordID: "rec-resume"}
 	if err := runWorkerViaJobQFake(ctx, w, args); err == nil {
 		t.Fatal("first Work() error = nil, want cancellation after partial transfer")

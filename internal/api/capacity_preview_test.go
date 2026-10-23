@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -121,9 +121,9 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 
 func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
-	tunerStore := pgstore.NewTuners(pool)
+	tunerStore := pgstoretest.Tuners(pool)
 	srv := httptest.NewServer(NewRouter(RouterConfig{
-		Ready: pool.Ping, ProgramSearch: pgstore.NewEPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, Dedupe: pgstore.NewReservations(pool), Sites: []string{"default"},
+		Ready: pool.Ping, ProgramSearch: pgstoretest.EPG(pool), TunerReader: tunerStore, CapacityStore: tunerStore, Dedupe: pgstoretest.Reservations(pool), Sites: []string{"default"},
 	}))
 	t.Cleanup(srv.Close)
 	return srv

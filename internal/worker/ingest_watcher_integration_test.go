@@ -25,7 +25,7 @@ import (
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/watcher"
 	"github.com/fetburner/rokuban/internal/worker"
@@ -47,13 +47,13 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	mediaDir := t.TempDir()
 	ingestWorker := &worker.IngestWorker{
 		MirakcClients: map[string]*mirakc.Client{watcher.DefaultSite: mc},
-		Publisher:     pgstore.NewMedia(pool),
-		RecordTarget:  pgstore.NewRecordings(pool),
+		Publisher:     pgstoretest.Media(pool),
+		RecordTarget:  pgstoretest.Recordings(pool),
 		MediaDir:      mediaDir,
 		StallTimeout:  5 * time.Second,
-		Precheck:      pgstore.NewMedia(pool),
+		Precheck:      pgstoretest.Media(pool),
 	}
-	ingestWorker.CMDetectionStore = pgstore.NewAnalysis(pool)
+	ingestWorker.CMDetectionStore = pgstoretest.Analysis(pool)
 	workResults := make(chan error, 2)
 	queue := newIngestLifecycleQueue(t, ingestWorker, workResults)
 	watcherEnqueuer := &ingestLifecycleEnqueuer{}
@@ -61,7 +61,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	runCtx, cancel := context.WithCancel(context.Background())
 	watcherDone := make(chan error, 1)
 	go func() {
-		watcherDone <- watcher.New(watcher.DefaultSite, mc, pgstore.NewRecordings(pool), pgstore.NewReservations(pool), watcherEnqueuer, nil).Run(runCtx)
+		watcherDone <- watcher.New(watcher.DefaultSite, mc, pgstoretest.Recordings(pool), pgstoretest.Reservations(pool), watcherEnqueuer, nil).Run(runCtx)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/fetburner/rokuban/internal/catalog"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -17,7 +17,7 @@ func TestCatalogExportWorker_WritesFile(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 
-	worker := &CatalogExportWorker{Store: pgstore.NewCatalog(pool, []string{"default"}), MediaDir: mediaDir}
+	worker := &CatalogExportWorker{Store: pgstoretest.Catalog(pool, []string{"default"}...), MediaDir: mediaDir}
 	if err := runWorkerViaJobQFake(ctx, worker, CatalogExportArgs{}); err != nil {
 		t.Fatalf("CatalogExportWorker.Work: %v", err)
 	}

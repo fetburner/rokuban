@@ -15,7 +15,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	rokutest "github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -24,7 +24,7 @@ const testSite = "default"
 // M1-9 が最低限として挙げているメトリクスが registry に載っていること。
 // 名前は運用側（scrape 設定・アラートルール）が依存するので固定する。
 func newPresyncCollector(pool *pgxpool.Pool) *PresyncCollector {
-	return NewPresyncCollector(pgstore.NewScheduleSync(pool), testSite)
+	return NewPresyncCollector(pgstoretest.ScheduleSync(pool), testSite)
 }
 
 func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
@@ -213,7 +213,7 @@ func TestNewRegistry_Twice(t *testing.T) {
 func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 	pool := rokutest.SetupDB(t)
 	ctx := context.Background()
-	markers := pgstore.NewReservations(pool)
+	markers := pgstoretest.Reservations(pool)
 	if err := markers.MarkRulerPasses(ctx, []string{testSite}); err != nil {
 		t.Fatalf("upserting ruler marker: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestLoopPassCollector_ReadsDBBackedMarkers(t *testing.T) {
 // 初回実行前と collector の登録漏れを区別できない。
 func TestLoopPassCollector_ReportsZeroBeforeFirstPass(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewLoopPassCollector(pgstore.NewReservations(pool), testSite)
+	c := NewLoopPassCollector(pgstoretest.Reservations(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_ruler_last_success_timestamp_seconds"); got != 0 {
 		t.Errorf("ruler last success before first pass = %v, want 0", got)
@@ -283,7 +283,7 @@ func TestBacklogCollector(t *testing.T) {
 	seedFinishedRecord(t, pool, "rec-b", 200, false)
 	seedFinishedRecord(t, pool, "rec-c", 999, true)
 
-	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
+	c := NewBacklogCollector(pgstoretest.Recordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 2 {
 		t.Errorf("rokuban_uningested_records = %v, want 2", got)
@@ -319,7 +319,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 		t.Fatalf("upserting external record_sync: %v", err)
 	}
 
-	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
+	c := NewBacklogCollector(pgstoretest.Recordings(pool), testSite)
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
 	}
@@ -331,7 +331,7 @@ func TestBacklogCollector_ExcludesExternalRecords(t *testing.T) {
 // 滞留 0 のときも 0 として報告されること（メトリクスが消えない）。
 func TestBacklogCollector_Empty(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
+	c := NewBacklogCollector(pgstoretest.Recordings(pool), testSite)
 
 	if got := gaugeValue(t, c, "rokuban_uningested_records"); got != 0 {
 		t.Errorf("rokuban_uningested_records = %v, want 0", got)
@@ -342,7 +342,7 @@ func TestBacklogCollector_Empty(t *testing.T) {
 // 0 を報告すると「滞留なし」と区別できず、滞留アラートを黙って無効化してしまう。
 func TestBacklogCollector_QueryFailure(t *testing.T) {
 	pool := rokutest.SetupDB(t)
-	c := NewBacklogCollector(pgstore.NewRecordings(pool), testSite)
+	c := NewBacklogCollector(pgstoretest.Recordings(pool), testSite)
 	pool.Close() // クエリを失敗させる
 
 	text := gatherText(t, c)

@@ -16,6 +16,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 type encodeProgressReporterFunc func(context.Context, store.EncodeProgress) error
@@ -180,11 +181,11 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Publisher: newTestMediaStore(pool),
-		Progress:  newTestMediaStore(pool),
-		Attempts:  newTestMediaStore(pool),
+		Publisher: pgstoretest.Media(pool),
+		Progress:  pgstoretest.Media(pool),
+		Attempts:  pgstoretest.Media(pool),
 
-		Media:      newTestMediaStore(pool),
+		Media:      pgstoretest.Media(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		FFmpeg:     ffmpegPath,
@@ -241,10 +242,10 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 	}
 
 	w := &EncodeWorker{
-		Publisher:  newTestMediaStore(pool),
-		Progress:   newTestMediaStore(pool),
-		Attempts:   newTestMediaStore(pool),
-		Media:      newTestMediaStore(pool),
+		Publisher:  pgstoretest.Media(pool),
+		Progress:   pgstoretest.Media(pool),
+		Attempts:   pgstoretest.Media(pool),
+		Media:      pgstoretest.Media(pool),
 		MediaDir:   mediaDir,
 		ScratchDir: t.TempDir(),
 		FFmpeg:     ffmpegPath,

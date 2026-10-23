@@ -7,7 +7,7 @@ import (
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // TestCMDetectReconcile_ContinuationSurvivesFreshWorker mirrors --once: both
@@ -28,7 +28,7 @@ func TestCMDetectReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 	seedTaughtAreaForService(t, pool, 1025, 1170)
 
 	enqueuer := newRecordingEnqueuer()
-	store := pgstore.NewAnalysis(pool)
+	store := pgstoretest.Analysis(pool)
 	firstWorker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: store, RowLimit: 1}
 	if err := runWorkerViaJobQFake(context.Background(), firstWorker, jobs.CMDetectReconcileArgs{}); err != nil {
 		t.Fatalf("first reconcile page: %v", err)
@@ -85,7 +85,7 @@ func TestCMDetectReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	secondID := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(15112)))
 	seedTaughtAreaForService(t, pool, 1024, 1180)
 	enqueuer := newRecordingEnqueuer()
-	detectionStore := pgstore.NewAnalysis(pool)
+	detectionStore := pgstoretest.Analysis(pool)
 
 	runContinuationChain(t, enqueuer, jobs.CMDetectReconcileArgs{}, 10, func(args jobs.CMDetectReconcileArgs) error {
 		worker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
@@ -139,7 +139,7 @@ func TestCMDetectReconcile_DetectionWindowStaysDoneWhileCandidatesContinue(t *te
 	}
 
 	enqueuer := newRecordingEnqueuer()
-	detectionStore := pgstore.NewAnalysis(pool)
+	detectionStore := pgstoretest.Analysis(pool)
 	runContinuationChain(t, enqueuer, jobs.CMDetectReconcileArgs{}, 10, func(args jobs.CMDetectReconcileArgs) error {
 		worker := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: detectionStore, RowLimit: 1}
 		return runWorkerViaJobQFake(context.Background(), worker, args)

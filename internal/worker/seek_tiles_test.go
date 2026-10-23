@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
 // TestSeekTileCount は枚数の決定を実装の定数ではなくリテラルで固定する。
@@ -211,7 +212,7 @@ func TestSeekTilesWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	release := make(chan struct{})
 	results := make(chan error, 2)
 	w := &SeekTilesWorker{
-		Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
+		Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir,
 		runCmd: func(ctx context.Context, name string, args ...string) ([]byte, error) {
 			if strings.Contains(name, "ffprobe") || containsArg(args, "stream=duration") {
 				return []byte("11\n"), nil
@@ -284,7 +285,7 @@ func TestSeekTilesWorker_CreatesAsset(t *testing.T) {
 
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{
-		Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir,
+		Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir,
 		ScratchDir: t.TempDir(),
 		runCmd:     cmd.run,
 	}
@@ -328,7 +329,7 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/idem.m2ts")
 
 	cmd := &countingRunCmd{duration: "30"}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
@@ -356,7 +357,7 @@ func TestSeekTilesWorker_NoOriginal_Skips(t *testing.T) {
 	recordingID := dbtest.Recording(t, pool)
 
 	cmd := &countingRunCmd{duration: "30"}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: t.TempDir(), ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: t.TempDir(), ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("SeekTilesWorker.Work: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestSeekTilesWorker_PartialFailureCommitsNothing(t *testing.T) {
 		duration: "30",
 		failOn:   "000001.jpg",
 	}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error from the injected extraction failure")
 	}
@@ -410,7 +411,7 @@ func TestSeekTilesWorker_ProbeFailureCommitsNothing(t *testing.T) {
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/noprobe.m2ts")
 
 	cmd := &countingRunCmd{probeErr: true}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when ffprobe fails")
 	}
@@ -435,7 +436,7 @@ func TestSeekTilesWorker_MissingTileCommitsNothing(t *testing.T) {
 		duration: "30",
 		silentOn: "000001.jpg",
 	}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when a tile was not written")
 	}
@@ -473,7 +474,7 @@ func TestSeekTilesWorker_LastTileStaysBeforeVideoEnd(t *testing.T) {
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tail.m2ts")
 
 	cmd := &countingRunCmd{duration: "30.02", videoEnd: 30.0}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("Work() = %v, want success", err)
 	}
@@ -493,7 +494,7 @@ func TestSeekTilesWorker_ZeroDurationCommitsNothing(t *testing.T) {
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/zero.m2ts")
 
 	cmd := &countingRunCmd{duration: "0.000000"}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error for a zero duration")
 	}
@@ -513,7 +514,7 @@ func TestSeekTilesWorker_LastTileFallsBackToPrevious(t *testing.T) {
 
 	// 40.007 秒 → 5 枚、最後は 39.007 秒。最後のキーフレームは 35 秒。
 	cmd := &countingRunCmd{duration: "40.007", lastKeyframe: 35}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("Work() = %v, want success", err)
 	}
@@ -537,7 +538,7 @@ func TestSeekTilesWorker_SingleTileFailureCommitsNothing(t *testing.T) {
 		duration: "5",
 		failOn:   "000000.jpg",
 	}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: scratchDir, runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err == nil {
 		t.Fatal("Work() succeeded, want an error when the only tile fails")
 	}
@@ -556,7 +557,7 @@ func TestSeekTilesWorker_UsesVideoStreamDuration(t *testing.T) {
 	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/shortvideo.m2ts")
 
 	cmd := &countingRunCmd{duration: "19.5", formatDuration: "22"}
-	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
+	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	if err := runSeekTilesJob(t, w, recordingID); err != nil {
 		t.Fatalf("Work() = %v, want success", err)
 	}

@@ -14,7 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -233,7 +233,7 @@ func TestListRecordingsEncodeStatus_TrashOmitsEncodeStatus(t *testing.T) {
 func TestListRecordingsEncodeStatus_UnknownProfileOmittedWhenConfigured(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping,
-		RecordingQuery: pgstore.NewRecordings(pool), EncodeProfileNames: []string{"h264"}}))
+		RecordingQuery: pgstoretest.Recordings(pool), EncodeProfileNames: []string{"h264"}}))
 	t.Cleanup(srv.Close)
 	base := time.Now().Truncate(time.Second)
 

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/reservation"
-	"github.com/fetburner/rokuban/internal/store/pgstore"
+	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -40,7 +40,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 	// catalog/ は拡張子が動画でも必ず除外する。
 	write("catalog/old-backup.mp4", "not a media asset")
 
-	result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest without catalog: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestRescueLatest_NoCatalogScansSitePrefixedAssetsIdempotently(t *testing.T)
 	}
 
 	// 再実行で同じ合成 identity / asset tuple を upsert し、増殖しない。
-	if _, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 	var recordingCount, assetCount int
@@ -139,7 +139,7 @@ func TestRescueLatest_NoCatalogSkipsBareAssets(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(previousLogger) })
 
-	result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -185,7 +185,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("first RescueLatest: %v", err)
 	}
 	var recordingID, assetID int64
@@ -208,7 +208,7 @@ func TestRescueLatest_ReusesRecordingWhenDeletedAssetMtimeChanges(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	if _, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
 		t.Fatalf("second RescueLatest: %v", err)
 	}
 
@@ -277,7 +277,7 @@ func TestRescueLatest_ScansMediaDirSymlinkAndSkipsCatalog(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"default"}), pgstore.NewMedia(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest through media_dir symlink: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestRescueLatest_ScansSitePrefixedAssetsUsingThePrefixSite(t *testing.T) {
 
 	// takamatsu / junkdir 前置のファイルもそれぞれの site として復元されなければ
 	// ならない。registrySites には junkdir を含めない（レジストリに無い typo の形）。
-	result, err := RescueLatest(context.Background(), pgstore.NewCatalog(pool, []string{"tokyo", "takamatsu"}), pgstore.NewMedia(pool), mediaDir, []string{"tokyo", "takamatsu"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"tokyo", "takamatsu"}...), pgstoretest.Media(pool), mediaDir, []string{"tokyo", "takamatsu"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
