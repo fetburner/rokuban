@@ -140,7 +140,7 @@ encode policy は既定値 `keep_original='always'` / `encode_profiles=[]` で�
 
 - GC 済み snapshot の既定値: `TestIngestWorker_SnapshotGCedBeyondGrace_FreezesDefaults`
 - 予約なしの既定値: `TestIngestWorker_NoReservation_LeavesEncodePolicyDefault`
-- GC 済み予約で録画 source が unattributed になること: `TestProcessRecord_ReservationGCedBeyondGrace_SourceUnattributed`
+- GC 済み予約で録画 source が unattributed になること: `TestRecordObservationsContract/record source/GC removes source reservation`
 - unattributed source の JOIN 失敗を Info にすること: `TestIngestWorker_LogsInfoWhenUnattributedSourceReservationUnresolvable`
 - manual source の JOIN 失敗を Warn にすること: `TestIngestWorker_LogsWarnWhenManualSourceReservationUnresolvable`
 

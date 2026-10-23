@@ -799,7 +799,7 @@ type SupersedeFailedRecordingParams struct {
 // documentation, `WITH` Queries (Common Table Expressions)）で、この CTE を
 // 主 INSERT が参照していない（RETURNING id を読み捨てるだけ）ため、実際に
 // INSERT が一意制約違反で失敗するケースを手元のテストで確認した
-// （TestProcessRecord_SupersedesFailedRecording が最初に落ちた形。「実装を
+// （TestRecordObservationsContract/success supersedes failed recording が最初に落ちた形。「実装を
 // 壊すと落ちることを確認する」の逆側の学びとして残す）。2 つの独立した
 // 文（この UPDATE を先に確定させてから次の INSERT を発行）に分けることで、
 // 同一トランザクション内でコマンドカウンタが進み、後続の INSERT が
@@ -829,7 +829,7 @@ type SupersedeFailedRecordingParams struct {
 // 所有者は superseded になった旧 recordings 行のままで、物理削除は媒体削除
 // reconcile が recordings.deleted_at を見て判断するので、superseded だけでは
 // 何も物理的に消えない（internal/watcher の
-// TestProcessRecord_SupersedesFailedRecordingWithMediaAsset で固定）。
+// TestRecordObservationsContract/success supersedes failed recording で固定）。
 //
 // 対象の failed 行が無ければ 0 行のまま何もしない。record_sweep 等が同一 record を
 // 再処理しても、processRecord は record_sync の行ロックで 2 回目以降

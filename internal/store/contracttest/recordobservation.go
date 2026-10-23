@@ -2,13 +2,17 @@ package contracttest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -16,10 +20,21 @@ import (
 type ObservedRecording struct {
 	ID                int64
 	Status            string
+	Source            string
 	Superseded        bool
+	Deleted           bool
+	Snapshot          store.RecordingSnapshot
 	QualityEventCount int
+	QualityEventNames []string
 	// QualityEventTimes は品質イベントの `at` を、保存された JSON から読み戻した値である。
 	QualityEventTimes []time.Time
+}
+
+// ObservedMediaAsset は契約テストが検査する media asset の所有者と状態を表す。
+type ObservedMediaAsset struct {
+	RecordingID int64
+	State       string
+	Deleted     bool
 }
 
 // RecordSyncState は契約テストが検査する record 同期行の状態を表す。
@@ -31,15 +46,20 @@ type RecordSyncState struct {
 
 // RecordObservationFixture は record 観測契約の実装と DB 状態の操作をまとめる。
 type RecordObservationFixture struct {
-	Store             store.RecordObservations
-	IngestTarget      store.IngestTarget
-	Backlog           store.RecordBacklog
-	NewObservation    func(recordID, status string) store.RecordObservation
-	SeedRecordSync    func(t *testing.T, observation store.RecordObservation)
-	SeedReservation   func(t *testing.T, observation store.RecordObservation)
-	NewOriginalAsset  func(t *testing.T, recordingID int64, state string)
-	InspectRecordSync func(t *testing.T, site, recordID string) RecordSyncState
-	InspectRecordings func(t *testing.T, observation store.RecordObservation) []ObservedRecording
+	Store               store.RecordObservations
+	Reservations        store.Reservations
+	RulerPass           store.RulerPass
+	Rules               store.Rules
+	IngestTarget        store.IngestTarget
+	Backlog             store.RecordBacklog
+	NewObservation      func(recordID, status string) store.RecordObservation
+	SeedProgramSnapshot func(t *testing.T, observation store.RecordObservation)
+	SeedRecordSync      func(t *testing.T, observation store.RecordObservation)
+	SeedReservation     func(t *testing.T, observation store.RecordObservation)
+	NewOriginalAsset    func(t *testing.T, recordingID int64, state string)
+	InspectRecordSync   func(t *testing.T, site, recordID string) RecordSyncState
+	InspectRecordings   func(t *testing.T, observation store.RecordObservation) []ObservedRecording
+	InspectMediaAssets  func(t *testing.T, recordingID int64) []ObservedMediaAsset
 	// SetRecordSyncObservedAt は record 同期行の観測時刻を書き換える。
 	SetRecordSyncObservedAt func(t *testing.T, site, recordID string, observedAt time.Time)
 	// SetAfterRecordAcquired は、実装が同じ record の観測の排他を確保した直後、
@@ -73,6 +93,403 @@ func RunRecordObservations(t *testing.T, newStore NewRecordObservationStore) {
 	t.Run("ingest backlog filters records and bytes", func(t *testing.T) { runRecordBacklog(t, checkedStore) })
 	t.Run("failed record skipped by a live success keeps no recording", func(t *testing.T) { runFailedRecordSkipped(t, checkedStore) })
 	t.Run("quality events carry a readable time", func(t *testing.T) { runQualityEventTime(t, checkedStore) })
+	t.Run("record broken event appends to its linked recording", func(t *testing.T) { runRecordBrokenEvent(t, checkedStore) })
+	t.Run("unmanaged record is synchronized without recording", func(t *testing.T) { runUnmanagedRecord(t, checkedStore) })
+	t.Run("record snapshot is persisted", func(t *testing.T) { runRecordSnapshot(t, checkedStore) })
+	t.Run("record status progresses", func(t *testing.T) { runRecordStatusProgression(t, checkedStore) })
+	t.Run("record status does not downgrade", func(t *testing.T) { runRecordStatusNoDowngrade(t, checkedStore) })
+	t.Run("record status values are normalized", func(t *testing.T) { runRecordStatusValues(t, checkedStore) })
+	t.Run("event ID reuse with a new start time creates a new recording", func(t *testing.T) { runEventIDReuse(t, checkedStore) })
+	t.Run("record source", func(t *testing.T) { runRecordSource(t, checkedStore) })
+	t.Run("failed event source follows intent", func(t *testing.T) { runFailedEventSource(t, checkedStore) })
+	t.Run("failed schedule source follows intent", func(t *testing.T) { runFailedScheduleSource(t, checkedStore) })
+}
+
+func runRecordStatusProgression(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("status-progression", "recording")
+	if _, err := f.Store.ProcessRecord(ctx, observation); err != nil {
+		t.Fatalf("ProcessRecord(recording): %v", err)
+	}
+	observation.Status = "finished"
+	if _, err := f.Store.ProcessRecord(ctx, observation); err != nil {
+		t.Fatalf("ProcessRecord(finished): %v", err)
+	}
+	if _, err := f.Store.ProcessRecord(ctx, observation); err != nil {
+		t.Fatalf("ProcessRecord(finished again): %v", err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].Status != "finished" {
+		t.Fatalf("recordings after status progression = %+v, want one finished recording", got)
+	}
+}
+
+func runRecordBrokenEvent(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("record-broken", "recording")
+	result, err := f.Store.ProcessRecord(ctx, observation)
+	if err != nil {
+		t.Fatalf("ProcessRecord: %v", err)
+	}
+	if result.RecordingID == nil {
+		t.Fatal("ProcessRecord returned no recording ID")
+	}
+
+	appended, err := f.Store.AppendRecordBrokenEvent(ctx, observation.Site, observation.RecordID, "io-error")
+	if err != nil || !appended {
+		t.Fatalf("AppendRecordBrokenEvent(linked record) = (%t, %v), want appended", appended, err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].ID != *result.RecordingID || got[0].QualityEventCount != 1 || !reflect.DeepEqual(got[0].QualityEventNames, []string{"recording.record-broken"}) {
+		t.Fatalf("record after broken event = %+v, want one linked recording with a record-broken event", got)
+	}
+
+	appended, err = f.Store.AppendRecordBrokenEvent(ctx, observation.Site, "missing-record", "io-error")
+	if err != nil || appended {
+		t.Fatalf("AppendRecordBrokenEvent(unlinked record) = (%t, %v), want no event and no error", appended, err)
+	}
+	got = f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].QualityEventCount != 1 {
+		t.Fatalf("record after broken event for missing record = %+v, want no additional event", got)
+	}
+}
+
+func runUnmanagedRecord(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("unmanaged-record", "finished")
+	observation.Managed = false
+	observation.Tags = nil
+
+	const contenders = 20
+	start := make(chan struct{})
+	errs := make(chan error, contenders)
+	var wg sync.WaitGroup
+	for range contenders {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			result, err := f.Store.ProcessRecord(ctx, observation)
+			if err == nil && result.RecordingID != nil {
+				err = errors.New("unmanaged record acquired a recording ID")
+			}
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("ProcessRecord(unmanaged) = %v, want a synchronized observation without a recording", err)
+		}
+	}
+	if got := f.InspectRecordSync(t, observation.Site, observation.RecordID); !got.Found || got.RecordingID != nil {
+		t.Fatalf("record_sync for unmanaged record = %+v, want a row without recording ID", got)
+	}
+	if got := f.InspectRecordings(t, observation); len(got) != 0 {
+		t.Fatalf("recordings for unmanaged record = %+v, want none", got)
+	}
+}
+
+func runRecordSnapshot(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	observation := f.NewObservation("record-snapshot", "finished")
+	description := "番組説明"
+	observation.Snapshot = store.RecordingSnapshot{
+		NetworkID: 32736, ServiceID: 1024, EventID: 111,
+		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "録画スナップショット",
+		Description: &description, Extended: []byte(`{"出演者":"テスト太郎"}`),
+		Genres: []byte(`[{"level1":1,"level2":2,"un1":3,"un2":4}]`), IsFree: true,
+		ProgramStartAt:    time.Date(2026, time.July, 7, 12, 34, 56, 789000000, time.UTC),
+		ProgramDurationMs: 3_600_000,
+	}
+	result, err := f.Store.ProcessRecord(context.Background(), observation)
+	if err != nil {
+		t.Fatalf("ProcessRecord: %v", err)
+	}
+	if result.RecordingID == nil {
+		t.Fatal("ProcessRecord returned no recording ID")
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].ID != *result.RecordingID {
+		t.Fatalf("recordings = %+v, want one recording with ID %d", got, *result.RecordingID)
+	}
+	requireRecordingSnapshot(t, got[0].Snapshot, observation.Snapshot)
+}
+
+func requireRecordingSnapshot(t *testing.T, got, want store.RecordingSnapshot) {
+	t.Helper()
+	if got.NetworkID != want.NetworkID || got.ServiceID != want.ServiceID || got.EventID != want.EventID ||
+		got.ServiceName != want.ServiceName || got.ChannelType != want.ChannelType || got.Channel != want.Channel ||
+		got.Title != want.Title || !reflect.DeepEqual(got.Description, want.Description) || got.IsFree != want.IsFree ||
+		!got.ProgramStartAt.Equal(want.ProgramStartAt) || got.ProgramDurationMs != want.ProgramDurationMs {
+		t.Errorf("recording snapshot = %+v, want %+v", got, want)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want []byte
+	}{{"extended", got.Extended, want.Extended}, {"genres", got.Genres, want.Genres}} {
+		var gotJSON, wantJSON any
+		if err := json.Unmarshal(field.got, &gotJSON); err != nil {
+			t.Fatalf("unmarshalling stored snapshot %s %q: %v", field.name, field.got, err)
+		}
+		if err := json.Unmarshal(field.want, &wantJSON); err != nil {
+			t.Fatalf("unmarshalling expected snapshot %s %q: %v", field.name, field.want, err)
+		}
+		if !reflect.DeepEqual(gotJSON, wantJSON) {
+			t.Errorf("recording snapshot %s = %s, want %s", field.name, field.got, field.want)
+		}
+	}
+}
+
+func runRecordStatusNoDowngrade(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	observation := f.NewObservation("status-no-downgrade", "finished")
+	if _, err := f.Store.ProcessRecord(ctx, observation); err != nil {
+		t.Fatalf("ProcessRecord(finished): %v", err)
+	}
+	observation.Status = "recording"
+	if _, err := f.Store.ProcessRecord(ctx, observation); err != nil {
+		t.Fatalf("ProcessRecord(recording): %v", err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].Status != "finished" {
+		t.Fatalf("recordings after older status = %+v, want one finished recording", got)
+	}
+}
+
+func runRecordStatusValues(t *testing.T, newStore NewRecordObservationStore) {
+	for i, tc := range []struct {
+		status string
+		want   string
+	}{
+		{status: "recording", want: "recording"},
+		{status: "finished", want: "finished"},
+		{status: "canceled", want: "canceled"},
+		{status: "failed", want: "failed"},
+		{status: "rescheduling", want: "failed"},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			f := newStore(t)
+			observation := f.NewObservation("status-value-"+strconv.Itoa(i), tc.status)
+			result, err := f.Store.ProcessRecord(context.Background(), observation)
+			if err != nil {
+				t.Fatalf("ProcessRecord(%q): %v", tc.status, err)
+			}
+			if result.RecordingID == nil {
+				t.Fatal("ProcessRecord returned no recording ID")
+			}
+			if got := f.InspectRecordSync(t, observation.Site, observation.RecordID); !got.Found || got.Status != tc.status || got.RecordingID == nil {
+				t.Fatalf("record_sync = %+v, want raw status %q and a recording ID", got, tc.status)
+			}
+			got := f.InspectRecordings(t, observation)
+			if len(got) != 1 || got[0].Status != tc.want {
+				t.Fatalf("recordings = %+v, want one recording with normalized status %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func runEventIDReuse(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	first := f.NewObservation("event-first", "failed")
+	firstResult, err := f.Store.ProcessRecord(ctx, first)
+	if err != nil {
+		t.Fatalf("ProcessRecord(first): %v", err)
+	}
+	second := first
+	second.RecordID = "event-second"
+	second.ProgramID++
+	second.Status = "finished"
+	second.Snapshot.ProgramStartAt = second.Snapshot.ProgramStartAt.Add(24 * time.Hour)
+	secondResult, err := f.Store.ProcessRecord(ctx, second)
+	if err != nil {
+		t.Fatalf("ProcessRecord(second start time): %v", err)
+	}
+	if firstResult.RecordingID == nil || secondResult.RecordingID == nil || *firstResult.RecordingID == *secondResult.RecordingID {
+		t.Fatalf("recording IDs for reused event = (%s, %s), want distinct recordings", int64Text(firstResult.RecordingID), int64Text(secondResult.RecordingID))
+	}
+	if got := f.InspectRecordings(t, first); len(got) != 1 || got[0].ID != *firstResult.RecordingID || got[0].Status != "failed" || got[0].Superseded {
+		t.Fatalf("old event recording = %+v, want live failed ID %d", got, *firstResult.RecordingID)
+	}
+	if got := f.InspectRecordings(t, second); len(got) != 1 || got[0].ID != *secondResult.RecordingID {
+		t.Fatalf("reused event recording = %+v, want ID %d", got, *secondResult.RecordingID)
+	}
+
+	failedFirst := f.NewObservation("failed-event-first", "failed")
+	failedFirst.ProgramID += 100
+	failedFirst.Snapshot.EventID++
+	f.SeedReservation(t, failedFirst)
+	failedFirstID, recorded, err := f.Store.RecordFailedRecording(ctx, store.FailedRecordingObservation{
+		Site: failedFirst.Site, ProgramID: failedFirst.ProgramID, Snapshot: failedFirst.Snapshot,
+		Reason: []byte(`{"type":"recording-failed"}`),
+	})
+	if err != nil || !recorded {
+		t.Fatalf("RecordFailedRecording(first): (%d, %t, %v), want recorded", failedFirstID, recorded, err)
+	}
+	failedSecond := failedFirst
+	failedSecond.RecordID = "failed-event-second"
+	failedSecond.Snapshot.ProgramStartAt = failedSecond.Snapshot.ProgramStartAt.Add(24 * time.Hour)
+	f.SeedReservation(t, failedSecond)
+	failedSecondID, recorded, err := f.Store.RecordFailedRecording(ctx, store.FailedRecordingObservation{
+		Site: failedSecond.Site, ProgramID: failedSecond.ProgramID, Snapshot: failedSecond.Snapshot,
+		Reason: []byte(`{"type":"recording-failed"}`),
+	})
+	if err != nil || !recorded || failedFirstID == failedSecondID {
+		t.Fatalf("RecordFailedRecording(reused event) = (%d, %t, %v), want a distinct recording from %d", failedSecondID, recorded, err, failedFirstID)
+	}
+	if got := f.InspectRecordings(t, failedFirst); len(got) != 1 || got[0].ID != failedFirstID {
+		t.Fatalf("first failed event recording = %+v, want ID %d", got, failedFirstID)
+	}
+	if got := f.InspectRecordings(t, failedSecond); len(got) != 1 || got[0].ID != failedSecondID {
+		t.Fatalf("reused failed event recording = %+v, want ID %d", got, failedSecondID)
+	}
+}
+
+func runRecordSource(t *testing.T, newStore NewRecordObservationStore) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation)
+		want  string
+	}{
+		{
+			name: "manual reservation with matching rule",
+			setup: func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+				seedRuleReservation(t, f, observation)
+				if err := f.Reservations.PutIntent(context.Background(), observation.Site, observation.ProgramID, reservation.IntentRecord); err != nil {
+					t.Fatalf("PutIntent: %v", err)
+				}
+			},
+			want: reservation.SourceManual,
+		},
+		{
+			name: "manual intent without reservation",
+			setup: func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+				f.SeedProgramSnapshot(t, observation)
+				if err := f.Reservations.PutIntent(context.Background(), observation.Site, observation.ProgramID, reservation.IntentRecord); err != nil {
+					t.Fatalf("PutIntent: %v", err)
+				}
+			},
+			want: reservation.SourceManual,
+		},
+		{
+			name: "rule reservation",
+			setup: func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+				seedRuleReservation(t, f, observation)
+			},
+			want: reservation.SourceRule,
+		},
+		{
+			name: "rule reservation with override",
+			setup: func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+				seedRuleReservation(t, f, observation)
+				priority := 5
+				if err := f.Reservations.PatchOverrides(context.Background(), observation.Site, observation.ProgramID, reservation.OverridesPatch{Priority: &priority}); err != nil {
+					t.Fatalf("PatchOverrides: %v", err)
+				}
+			},
+			want: reservation.SourceRule,
+		},
+		{
+			name: "missing reservation",
+			want: reservation.SourceUnattributed,
+		},
+		{
+			name: "GC removes source reservation",
+			setup: func(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+				observation.Snapshot.ProgramStartAt = time.Now().UTC().Add(-48 * time.Hour)
+				seedRuleReservation(t, f, observation)
+				deleted, err := f.RulerPass.PruneEndedSnapshots(context.Background(), time.Now().UTC().Add(-24*time.Hour))
+				if err != nil || deleted != 1 {
+					t.Fatalf("PruneEndedSnapshots() = (%d, %v), want one deleted snapshot", deleted, err)
+				}
+			},
+			want: reservation.SourceUnattributed,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStore(t)
+			observation := f.NewObservation("source-"+strings.ReplaceAll(tc.name, " ", "-"), "finished")
+			if tc.setup != nil {
+				tc.setup(t, f, observation)
+			}
+			result, err := f.Store.ProcessRecord(context.Background(), observation)
+			if err != nil {
+				t.Fatalf("ProcessRecord: %v", err)
+			}
+			got := f.InspectRecordings(t, observation)
+			if result.RecordingID == nil || len(got) != 1 || got[0].Source != tc.want {
+				t.Fatalf("recording source = %+v, result = %+v; want %q", got, result, tc.want)
+			}
+		})
+	}
+}
+
+func runFailedEventSource(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	observation := f.NewObservation("failed-event-manual-source", "failed")
+	seedRuleReservation(t, f, observation)
+	if err := f.Reservations.PutIntent(context.Background(), observation.Site, observation.ProgramID, reservation.IntentRecord); err != nil {
+		t.Fatalf("PutIntent: %v", err)
+	}
+	id, recorded, err := f.Store.RecordFailedRecording(context.Background(), store.FailedRecordingObservation{
+		Site: observation.Site, ProgramID: observation.ProgramID, Snapshot: observation.Snapshot,
+		Reason: []byte(`{"type":"tuner-unavailable"}`),
+	})
+	if err != nil || !recorded || id == 0 {
+		t.Fatalf("RecordFailedRecording() = (%d, %t, %v), want recorded with an ID", id, recorded, err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].ID != id || got[0].Source != reservation.SourceManual {
+		t.Fatalf("failed event recording = %+v, want source %q", got, reservation.SourceManual)
+	}
+}
+
+func runFailedScheduleSource(t *testing.T, newStore NewRecordObservationStore) {
+	f := newStore(t)
+	observation := f.NewObservation("failed-schedule-manual-source", "failed")
+	seedRuleReservation(t, f, observation)
+	if err := f.Reservations.PutIntent(context.Background(), observation.Site, observation.ProgramID, reservation.IntentRecord); err != nil {
+		t.Fatalf("PutIntent: %v", err)
+	}
+	result, err := f.Store.ProcessFailedSchedule(context.Background(), store.FailedScheduleObservation{
+		Site: observation.Site, ProgramID: observation.ProgramID, Snapshot: observation.Snapshot,
+		Reason: []byte(`{"type":"start-recording-failed"}`),
+	})
+	if err != nil || result.RecordingID == nil {
+		t.Fatalf("ProcessFailedSchedule() = (%+v, %v), want a recording", result, err)
+	}
+	got := f.InspectRecordings(t, observation)
+	if len(got) != 1 || got[0].ID != *result.RecordingID || got[0].Source != reservation.SourceManual {
+		t.Fatalf("failed schedule recording = %+v, want source %q", got, reservation.SourceManual)
+	}
+}
+
+func seedRuleReservation(t *testing.T, f RecordObservationFixture, observation store.RecordObservation) {
+	t.Helper()
+	f.SeedProgramSnapshot(t, observation)
+	ctx := context.Background()
+	rule, err := f.Rules.Create(ctx, store.RuleInput{Name: "record observation source", Sites: []string{observation.Site}})
+	if err != nil {
+		t.Fatalf("Rules.Create: %v", err)
+	}
+	revision, err := f.RulerPass.GetRulerInputRevision(ctx, observation.Site)
+	if err != nil {
+		t.Fatalf("GetRulerInputRevision: %v", err)
+	}
+	result, err := f.RulerPass.ApplyPass(ctx, observation.Site, store.RulerPassPlan{
+		InputRevision: revision,
+		Reservations:  []store.RulerReservationInput{{ProgramID: observation.ProgramID, RuleID: &rule.ID, Base: []byte(`{}`)}},
+	})
+	if err != nil || result.Created != 1 {
+		t.Fatalf("ApplyPass(rule reservation) = (%+v, %v), want one created reservation", result, err)
+	}
 }
 
 // int64Text は失敗メッセージ用に *int64 を数値で、nil を "nil" で表す。
@@ -295,15 +712,28 @@ func runSuccessSupersedesFailure(t *testing.T, newStore NewRecordObservationStor
 	ctx := context.Background()
 	failed := f.NewObservation("failed-try", "failed")
 	failed.FailedReason = []byte(`{"type":"signal-loss"}`)
-	if _, err := f.Store.ProcessRecord(ctx, failed); err != nil {
+	failedResult, err := f.Store.ProcessRecord(ctx, failed)
+	if err != nil {
 		t.Fatalf("ProcessRecord(failed) = %v", err)
 	}
+	if failedResult.RecordingID == nil {
+		t.Fatal("ProcessRecord(failed) returned no recording ID")
+	}
+	f.NewOriginalAsset(t, *failedResult.RecordingID, "active")
 	success := failed
 	success.RecordID = "successful-retry"
 	success.Status = "finished"
 	success.FailedReason = nil
-	if _, err := f.Store.ProcessRecord(ctx, success); err != nil {
-		t.Fatalf("ProcessRecord(success) = %v", err)
+	var successID int64
+	for i := range 3 {
+		result, err := f.Store.ProcessRecord(ctx, success)
+		if err != nil {
+			t.Fatalf("ProcessRecord(success, pass %d) = %v", i, err)
+		}
+		if result.RecordingID == nil || (successID != 0 && successID != *result.RecordingID) {
+			t.Fatalf("ProcessRecord(success, pass %d) recording ID = %s, want stable non-zero ID %d", i, int64Text(result.RecordingID), successID)
+		}
+		successID = *result.RecordingID
 	}
 	got := f.InspectRecordings(t, failed)
 	if len(got) != 2 {
@@ -312,6 +742,9 @@ func runSuccessSupersedesFailure(t *testing.T, newStore NewRecordObservationStor
 	var supersededFailed, liveFinished int
 	for _, row := range got {
 		if row.Status == "failed" && row.Superseded {
+			if row.Deleted {
+				t.Errorf("superseded failed recording %d is deleted, want the failed attempt retained", row.ID)
+			}
 			supersededFailed++
 		}
 		if row.Status == "finished" && !row.Superseded {
@@ -320,6 +753,13 @@ func runSuccessSupersedesFailure(t *testing.T, newStore NewRecordObservationStor
 	}
 	if supersededFailed != 1 || liveFinished != 1 {
 		t.Fatalf("recordings after retry = %+v, want one superseded failed row and one live finished row", got)
+	}
+	failedAssets := f.InspectMediaAssets(t, *failedResult.RecordingID)
+	if len(failedAssets) != 1 || failedAssets[0].RecordingID != *failedResult.RecordingID || failedAssets[0].State != "active" || failedAssets[0].Deleted {
+		t.Fatalf("media assets for superseded failed recording = %+v, want one active, undeleted asset still owned by the failed row", failedAssets)
+	}
+	if assets := f.InspectMediaAssets(t, successID); len(assets) != 0 {
+		t.Fatalf("media assets for successful retry = %+v, want none", assets)
 	}
 }
 
@@ -621,7 +1061,7 @@ func requireRecentTimes(t *testing.T, times []time.Time) {
 
 func requireStore(t *testing.T, f RecordObservationFixture) {
 	t.Helper()
-	if f.Store == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
+	if f.Store == nil || f.Reservations == nil || f.RulerPass == nil || f.Rules == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedProgramSnapshot == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.InspectRecordSync == nil || f.InspectRecordings == nil || f.InspectMediaAssets == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
 		t.Fatalf("incomplete record observation fixture: %+v", f)
 	}
 }
