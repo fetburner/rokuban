@@ -179,6 +179,29 @@ func TestGetRecord(t *testing.T) {
 	}
 }
 
+// Content.Sha256 は *string + omitempty なので、`"sha256": null` と欠落はどちらも nil で読める。
+func TestGetRecord_NullAndMissingSHA256AreNil(t *testing.T) {
+	for name, content := range map[string]string{
+		"null":    `{"path":"a.m2ts","sha256":null}`,
+		"missing": `{"path":"a.m2ts"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"id":"rec1","program":{"id":1,"eventId":1,"serviceId":1,"networkId":1},"recording":{"options":{},"status":"finished","startTime":1},"content":%s}`, content)
+			}))
+			defer srv.Close()
+			r, err := NewClient(srv.URL, nil).GetRecord(context.Background(), "rec1")
+			if err != nil {
+				t.Fatalf("GetRecord: %v", err)
+			}
+			if r.Content.Sha256 != nil {
+				t.Errorf("content.sha256 = %q, want nil", *r.Content.Sha256)
+			}
+		})
+	}
+}
+
 func TestDeleteRecord(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {

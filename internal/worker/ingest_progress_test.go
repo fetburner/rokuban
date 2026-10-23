@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -128,7 +129,7 @@ func TestIngestWorker_ProgressVisibleDuringTransfer(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset >= int64(len(tsData)) {
 				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 				return
@@ -270,7 +271,7 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
 			// StreamRecord は offset 0 でも Range を送るので、初回の判定は
 			// ヘッダの有無ではなくオフセットで行う。
-			if parseStreamRangeOffset(r) == 0 {
+			if mirakctest.RangeOffset(r) == 0 {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
 				w.WriteHeader(http.StatusPartialContent)
 				_, _ = w.Write(tsData[:burst])
@@ -376,7 +377,7 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
+			mirakctest.WriteRecordStream(w, r, tsData)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			// 転送量と食い違う長さ → size mismatch でジョブが失敗する。
@@ -458,7 +459,7 @@ func TestIngestWorker_CleanRangeEndsDoNotFlushProgress(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := int(parseStreamRangeOffset(r))
+			offset := int(mirakctest.RangeOffset(r))
 			if offset >= chunks*chunk {
 				// 追い付いた。ここで止めて、その時点の進捗行を読ませる。
 				tailOnce.Do(func() { close(reachedTail) })

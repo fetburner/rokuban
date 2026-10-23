@@ -2,16 +2,14 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
-	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -78,12 +76,11 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 		Content:   mirakc.ContentInfo{Path: "test.m2ts"},
 	}
 
-	srv := newRecordSweepStub(t, []mirakc.Record{record})
-	defer srv.Close()
+	fake := newRecordSweepFake(t, []mirakc.Record{record})
 
 	enqueuer := newRecordingEnqueuer()
 	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients:      singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordObservations: pgstore.NewRecordings(pool),
 		LoopMarkers:        pgstore.NewReservations(pool),
 		Enqueuer:           enqueuer,
@@ -123,23 +120,11 @@ func TestRecordSweepWorker_ProcessesUnsweptRecord(t *testing.T) {
 func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		http.Error(rw, "forced record list failure", http.StatusServiceUnavailable)
-	})
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
+	fake := newRecordSweepFake(t, nil)
+	fake.FailNext(http.MethodGet, "/api/recording/records", 1, http.StatusServiceUnavailable)
 
 	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(srv.URL, nil)),
+		MirakcClients:      singleSiteClients(testSite, mirakc.NewClient(fake.URL(), nil)),
 		RecordObservations: pgstore.NewRecordings(pool),
 		LoopMarkers:        pgstore.NewReservations(pool),
 	}
@@ -159,27 +144,17 @@ func TestRecordSweepWorker_DoesNotMarkFailedSweep(t *testing.T) {
 	}
 }
 
-// newRecordSweepStub は Watcher.Sweep が呼ぶ /api/recording/schedules、
-// /api/recording/records、/api/services への最小スタブを返す。records が nil なら空リストを返す。
-func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server {
+// newRecordSweepFake は record_sweep が読む mirakc API に空の状態と records を置く。
+func newRecordSweepFake(t *testing.T, records []mirakc.Record) *mirakctest.Fake {
 	t.Helper()
+	fake := mirakctest.New(t)
+	fake.SetServices([]mirakc.Service{})
+	fake.SetSchedules([]mirakc.Schedule{})
 	if records == nil {
 		records = []mirakc.Record{}
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/recording/schedules", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Schedule{})
-	})
-	mux.HandleFunc("/api/recording/records", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(records)
-	})
-	mux.HandleFunc("/api/services", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode([]mirakc.Service{})
-	})
-	return httptest.NewServer(mux)
+	fake.SetRecords(records)
+	return fake
 }
 
 // TestRecordSweepWorker_VerifySiteDirect は verifySite（issue #139）を Work() へ
@@ -192,15 +167,10 @@ func newRecordSweepStub(t *testing.T, records []mirakc.Record) *httptest.Server 
 func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	var requests atomic.Int32
-	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer countingSrv.Close()
+	fake := newRecordSweepFake(t, nil)
 
 	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		RecordObservations: pgstore.NewRecordings(pool),
 		LoopMarkers:        pgstore.NewReservations(pool),
 	}
@@ -210,8 +180,8 @@ func TestRecordSweepWorker_VerifySiteDirect(t *testing.T) {
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", len(calls), err)
 	}
 }
 
@@ -221,11 +191,10 @@ func TestRecordSweepWorker_SiteMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	srv := newRecordSweepStub(t, nil)
-	defer srv.Close()
+	fake := newRecordSweepFake(t, nil)
 
 	w := &RecordSweepWorker{
-		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients:      singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		RecordObservations: pgstore.NewRecordings(pool),
 		LoopMarkers:        pgstore.NewReservations(pool),
 		Enqueuer:           newRecordingEnqueuer(),

@@ -25,6 +25,8 @@ psql -h localhost -d postgres -tAc \
 
 ホストで既に PostgreSQL が 5432 を使っている場合は `.env` の `POSTGRES_PORT` を変えて、URL 側も合わせる。
 
+mirakc を相手にするテストは `internal/mirakc/mirakctest` の fake を使う。fake はテストが置いた状態を返すだけで、録画の状態遷移などの mirakc の振る舞いは真似しない。実物の振る舞いは conformance テストだけが判定する。応答を止める・途中で切る・遅らせるテストと SSE のテストだけは、httptest のハンドラを手書きする。
+
 <details><summary>根拠</summary>
 
 - テスト用 DB の導出と TRUNCATE: `testutil.SetupDB`

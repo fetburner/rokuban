@@ -2,75 +2,16 @@ package worker
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
-
-// scheduleStub は reconcile_pass のワーカーテスト専用の最小 mirakc スタブ。
-// internal/reconciler のテストは同等のロジック（GET/POST/DELETE schedules）を
-// 別パッケージ（reconciler_test）に持っているため共有できず、ここでは
-// 「ジョブとして呼ばれると本当に mirakc へ届く」という配線だけを見るための
-// 最小構成にする。
-type scheduleStub struct {
-	mu        sync.Mutex
-	schedules map[int64]mirakc.Schedule
-}
-
-func newScheduleStub() *scheduleStub {
-	return &scheduleStub{schedules: make(map[int64]mirakc.Schedule)}
-}
-
-func (s *scheduleStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/recording/schedules":
-		list := make([]mirakc.Schedule, 0, len(s.schedules))
-		for _, sc := range s.schedules {
-			list = append(list, sc)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(list)
-
-	case r.Method == http.MethodPost && r.URL.Path == "/api/recording/schedules":
-		var input mirakc.ScheduleInput
-		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		sc := mirakc.Schedule{
-			State:   "scheduled",
-			Program: mirakc.Program{ID: input.ProgramID},
-			Options: input.Options,
-			Tags:    input.Tags,
-		}
-		s.schedules[input.ProgramID] = sc
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		_ = json.NewEncoder(w).Encode(sc)
-
-	default:
-		http.Error(w, "not found", http.StatusNotFound)
-	}
-}
-
-func (s *scheduleStub) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.schedules)
-}
 
 // reconciler は Args.Spec で既定より長い有限の締切を持つ。
 func TestReconcilePassWorker_HasGenerousTimeout(t *testing.T) {
@@ -88,9 +29,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	stub := newScheduleStub()
-	srv := httptest.NewServer(stub)
-	defer srv.Close()
+	fake := mirakctest.New(t)
 
 	networkID, serviceID := int32(40000), int32(6000)
 	channelType, channel := "GR", "27"
@@ -119,7 +58,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 	}
 
 	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients:  singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		ScheduleSync:   pgstore.NewScheduleSync(pool),
 		Breakers:       pgstore.NewBreakers(pool),
 		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
@@ -128,7 +67,7 @@ func TestReconcilePassWorker_CreatesSchedule(t *testing.T) {
 		t.Fatalf("ReconcilePassWorker.Work: %v", err)
 	}
 
-	if n := stub.count(); n != 1 {
+	if n := len(fake.Schedules()); n != 1 {
 		t.Fatalf("mirakc schedule count = %d, want 1 (reconcile_pass ジョブが突き合わせを実行して schedule を作ったはず)", n)
 	}
 }
@@ -167,17 +106,11 @@ func TestRulerPassWorker_EnqueuesReconcilePassHint(t *testing.T) {
 func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	var requests atomic.Int32
-	stub := newScheduleStub()
-	countingSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests.Add(1)
-		stub.ServeHTTP(w, r)
-	}))
-	defer countingSrv.Close()
+	fake := mirakctest.New(t)
 
 	// このワーカープロセスは site-a の mirakc を向いている。
 	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(countingSrv.URL, nil)),
+		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		ScheduleSync:   pgstore.NewScheduleSync(pool),
 		Breakers:       pgstore.NewBreakers(pool),
 		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),
@@ -188,8 +121,8 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("Work() error = nil, want error for site mismatch (site-a worker handling a site-b job)")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", got, err)
+	if calls := fake.Calls(); len(calls) != 0 {
+		t.Errorf("mirakc received %d requests, want 0 (guard must fail before touching mirakc): err=%v", len(calls), err)
 	}
 }
 
@@ -199,12 +132,10 @@ func TestReconcilePassWorker_SiteMismatch(t *testing.T) {
 func TestReconcilePassWorker_SiteMatch(t *testing.T) {
 	pool := testutil.SetupDB(t)
 
-	stub := newScheduleStub()
-	srv := httptest.NewServer(stub)
-	defer srv.Close()
+	fake := mirakctest.New(t)
 
 	w := &ReconcilePassWorker{
-		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients:  singleSiteClients("site-a", mirakc.NewClient(fake.URL(), nil)),
 		ScheduleSync:   pgstore.NewScheduleSync(pool),
 		Breakers:       pgstore.NewBreakers(pool),
 		NeverScheduled: pgstore.NewNeverScheduledEvents(pool),

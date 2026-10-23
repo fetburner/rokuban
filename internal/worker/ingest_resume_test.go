@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -426,13 +427,9 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			offset := parseStreamRangeOffset(r)
+			offset := mirakctest.RangeOffset(r)
 			if offset == int64(cutoff) {
 				resumedAt.Store(offset)
-			}
-			if offset >= int64(len(full)) {
-				w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-				return
 			}
 			if offset == 0 && firstStream.CompareAndSwap(false, true) {
 				w.Header().Set("Content-Length", fmt.Sprintf("%d", cutoff))
@@ -443,10 +440,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 				}
 				return
 			}
-			remaining := full[offset:]
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(remaining)))
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write(remaining)
+			mirakctest.WriteRecordStream(w, r, full)
 
 		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
 			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(full)))

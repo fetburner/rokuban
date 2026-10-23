@@ -919,8 +919,8 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only", programID)
 
-	srv := newFullTransferServer(t, makeTSData(20), "test/policy-cut-only.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-cut-only", makeTSData(20), "test/policy-cut-only.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
@@ -986,8 +986,8 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 	recordingID := insertTestRecordingForReservation(t, pool, programID)
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only-live", programID)
 
-	srv := newFullTransferServer(t, makeTSData(20), "test/policy-cut-only-live.m2ts")
-	mc := mirakc.NewClient(srv.URL, nil)
+	fake := newFullTransferFake(t, "rec-policy-cut-only-live", makeTSData(20), "test/policy-cut-only-live.m2ts")
+	mc := mirakc.NewClient(fake.URL(), nil)
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		MirakcClients: singleSiteClients("", mc),

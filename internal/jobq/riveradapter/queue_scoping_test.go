@@ -2,8 +2,6 @@ package riveradapter_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/worker"
 )
@@ -55,21 +54,12 @@ func TestMultiSiteWorker_OnlyDequeuesOwnSiteQueues(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/recording/records", "/api/services", "/api/programs", "/api/recording/schedules":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte("[]"))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	fake := mirakctest.New(t)
 
 	// このプロセスは tokyo に束縛されている。
 	workers := worker.NewWorkers(&worker.Deps{
 		MirakcClients: map[string]*mirakc.Client{
-			"tokyo": mirakc.NewClient(srv.URL, nil),
+			"tokyo": mirakc.NewClient(fake.URL(), nil),
 		},
 	})
 	// tokyo に束縛された仕様: site 単位の 4 キューを tokyo の物理名だけで購読する。

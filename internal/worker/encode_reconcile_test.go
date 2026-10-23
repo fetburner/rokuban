@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -25,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
@@ -387,44 +386,21 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-163-lost-hint", programID)
 
 	tsData := makeTSData(20)
-	var deleteRequested atomic.Bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/stream"):
-			writeRecordStream(w, r, tsData)
-
-		case r.Method == http.MethodHead && strings.HasSuffix(r.URL.Path, "/stream"):
-			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(tsData)))
-			w.WriteHeader(http.StatusOK)
-
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/records/"):
-			record := mirakc.Record{
-				Recording: mirakc.RecordInfo{
-					Status:  "finished",
-					Options: mirakc.Options{ContentPath: strPtr("test/lost-hint.m2ts")},
-				},
-				Content: mirakc.ContentInfo{Path: "/recording/test/lost-hint.m2ts", Sha256: strPtr(sha256Hex(tsData))},
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(record)
-
-		case r.Method == http.MethodDelete:
-			deleteRequested.Store(true)
-			result := mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(result)
-
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
+	fake := mirakctest.New(t)
+	record := mirakc.Record{
+		ID: "rec-163-lost-hint",
+		Recording: mirakc.RecordInfo{
+			Status:  "finished",
+			Options: mirakc.Options{ContentPath: strPtr("test/lost-hint.m2ts")},
+		},
+		Content: mirakc.ContentInfo{Path: "/recording/test/lost-hint.m2ts", Sha256: strPtr(sha256Hex(tsData))},
+	}
+	fake.SetRecords([]mirakc.Record{record})
+	fake.SetRecordStream(record.ID, tsData)
 
 	iw := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      t.TempDir(),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		StallTimeout:  5 * time.Second,
@@ -443,7 +419,7 @@ func TestEncodeReconcile_ReenqueuesAfterLostHintAndDeletedEdgeRecord(t *testing.
 		t.Fatalf("encode_profiles = %v, want [h265]", profiles)
 	}
 	// 前提 2: エッジ record は消えた（ヒントを再送する経路が閉じた）。
-	if !deleteRequested.Load() {
+	if fake.CallCount("DELETE", "/api/recording/records/rec-163-lost-hint") == 0 {
 		t.Fatal("edge record was not deleted; the lost-hint scenario needs the re-hint path closed")
 	}
 	// 定期パスが差分を埋める。

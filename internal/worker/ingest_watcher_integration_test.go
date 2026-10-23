@@ -12,10 +12,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -26,6 +24,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 	"github.com/fetburner/rokuban/internal/watcher"
@@ -100,7 +99,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	if delay, ok := jobq.SnoozeDelay(firstResult); !ok || delay != 30*time.Second {
 		t.Fatalf("first ingest result = %T %v (snooze %v, %v); want 30s snooze while SHA-256 is null", firstResult, firstResult, delay, ok)
 	}
-	assertIngestLifecycleWaited(t, pool, mcServer.deleteAttempts.Load(), mediaDir, record.ID, int64(len(tsData)))
+	assertIngestLifecycleWaited(t, pool, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)), mediaDir, record.ID, int64(len(tsData)))
 
 	mcServer.setHash(lifecycleSHA256(tsData))
 	mcServer.recordSaved <- struct{}{}
@@ -117,7 +116,7 @@ func TestRecordSavedKeepsSnoozedIngestAndCommitsLateSHA256(t *testing.T) {
 	if !strings.Contains(logOutput.String(), "sha256_verification=verified") {
 		t.Errorf("logs after the second job = %q, want verified SHA-256 commit", logOutput.String())
 	}
-	assertIngestLifecycleCommitted(t, pool, mediaDir, contentPath, tsData, mcServer.deleteAttempts.Load())
+	assertIngestLifecycleCommitted(t, pool, mediaDir, contentPath, tsData, int32(mcServer.fake.CallCount(http.MethodDelete, "/api/recording/records/"+record.ID)))
 }
 
 func seedIngestLifecycleReservation(t *testing.T, pool *pgxpool.Pool, programID int64) {
@@ -174,34 +173,44 @@ func ingestLifecycleRecord(programID int64) (mirakc.Record, string) {
 }
 
 type ingestLifecycleMirakc struct {
-	server         *httptest.Server
-	recordSaved    chan struct{}
-	eventsReady    chan struct{}
-	setHash        func(string)
-	setEndTime     func(time.Time)
-	deleteAttempts *atomic.Int32
+	server      *httptest.Server
+	fake        *mirakctest.Fake
+	recordSaved chan struct{}
+	eventsReady chan struct{}
+	setHash     func(string)
+	setEndTime  func(time.Time)
 }
 
 func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte) *ingestLifecycleMirakc {
 	t.Helper()
 	run := &ingestLifecycleMirakc{
-		recordSaved:    make(chan struct{}, 2),
-		eventsReady:    make(chan struct{}),
-		deleteAttempts: &atomic.Int32{},
+		recordSaved: make(chan struct{}, 2),
+		eventsReady: make(chan struct{}),
 	}
 	var mu sync.RWMutex
 	current := initial
+	run.fake = mirakctest.New(t)
+	run.fake.SetRecords([]mirakc.Record{initial})
+	run.fake.SetRecordStream(initial.ID, tsData)
+	setCurrent := func() {
+		mu.RLock()
+		record := current
+		mu.RUnlock()
+		run.fake.SetRecords([]mirakc.Record{record})
+	}
 	run.setHash = func(hash string) {
 		mu.Lock()
 		currentHash := hash
 		current.Content.Sha256 = &currentHash
 		mu.Unlock()
+		setCurrent()
 	}
 	run.setEndTime = func(endTime time.Time) {
 		mu.Lock()
 		end := mirakc.Milliseconds(endTime)
 		current.Recording.EndTime = &end
 		mu.Unlock()
+		setCurrent()
 	}
 	var connected sync.Once
 	run.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -226,27 +235,8 @@ func newIngestLifecycleMirakc(t *testing.T, initial mirakc.Record, tsData []byte
 					return
 				}
 			}
-		case r.URL.Path == "/api/recording/records/"+initial.ID && r.Method == http.MethodGet:
-			mu.RLock()
-			record := current
-			if current.Content.Sha256 != nil {
-				hash := *current.Content.Sha256
-				record.Content.Sha256 = &hash
-			}
-			mu.RUnlock()
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(record)
-		case r.URL.Path == "/api/recording/records/"+initial.ID+"/stream" && r.Method == http.MethodHead:
-			w.Header().Set("Content-Length", strconv.Itoa(len(tsData)))
-			w.WriteHeader(http.StatusOK)
-		case r.URL.Path == "/api/recording/records/"+initial.ID+"/stream" && r.Method == http.MethodGet:
-			writeIngestLifecycleRange(w, r, tsData)
-		case r.URL.Path == "/api/recording/records/"+initial.ID && r.Method == http.MethodDelete:
-			run.deleteAttempts.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(mirakc.RecordRemovalResult{RecordRemoved: true, ContentRemoved: true})
 		default:
-			http.NotFound(w, r)
+			run.fake.ServeHTTP(w, r)
 		}
 	}))
 	t.Cleanup(run.server.Close)
@@ -409,21 +399,6 @@ func assertIngestLifecycleCommitted(t *testing.T, pool *pgxpool.Pool, mediaDir, 
 	if !bytes.Equal(data, tsData) {
 		t.Error("committed media file differs from the downloaded TS data")
 	}
-}
-
-func writeIngestLifecycleRange(w http.ResponseWriter, r *http.Request, data []byte) {
-	var offset int64
-	if header := r.Header.Get("Range"); header != "" {
-		_, _ = fmt.Sscanf(strings.TrimPrefix(header, "bytes="), "%d-", &offset)
-	}
-	if offset >= int64(len(data)) {
-		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		return
-	}
-	body := data[offset:]
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(body)
 }
 
 func ingestLifecycleTSData(packets int) []byte {

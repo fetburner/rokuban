@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,6 +22,7 @@ import (
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
+	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
@@ -116,16 +116,13 @@ func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	tsData := makeTSData(20)
 	setIngestSHA256Rate(t, 47)
-	var deleteAttempts atomic.Int32
-	srv, _ := newLateHashIngestServer(t, tsData, "test/sha-wait.m2ts", nil, func() {
-		deleteAttempts.Add(1)
-	})
+	const recordID = "rec-sha256-river-complete"
+	fake, _ := newLateHashIngestFake(t, recordID, tsData, "test/sha-wait.m2ts")
 	pool := setupTestPool(t)
 	if pool == nil {
 		return
 	}
 	recordingID := insertTestRecording(t, pool)
-	recordID := "rec-sha256-river-complete"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	delay := time.Duration(0)
@@ -133,7 +130,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	registry := jobq.NewRegistry()
 	w := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		MediaDir:      mediaDir,
 		StallTimeout:  time.Second,
 		RecordTarget:  pgstore.NewRecordings(pool),
@@ -188,7 +185,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if assetCount != 0 {
 		t.Errorf("media_assets rows while waiting = %d, want 0", assetCount)
 	}
-	if got := deleteAttempts.Load(); got != 0 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
 	var progressRows int
@@ -227,14 +224,11 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		if pool == nil {
 			return
 		}
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
-		}))
-		t.Cleanup(srv.Close)
+		fake := mirakctest.New(t)
 
 		w := &IngestWorker{
 			Publisher:     newTestMediaStore(pool),
-			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstore.NewRecordings(pool),
@@ -265,31 +259,32 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// 原本が既にあるので Work は転送せず handleAlreadyCommittedIngest へ入る。
-			// その最初の HTTP 要求（DeleteRecord）で取り消すと、削除の失敗はログだけ
-			// なので Work は nil を返す。
+		const recordID = "rec-remote-cancel-nil"
+		fake := mirakctest.New(t)
+		fake.SetRecords([]mirakc.Record{{ID: recordID}})
+		client := &http.Client{Transport: mirakcRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			// 原本が既にあるので Work は DeleteRecord を呼ぶ。要求を出す直前に
+			// context を取り消し、HTTP 呼び出しの失敗を再現する。
 			cancel()
-			http.NotFound(w, r)
-		}))
-		t.Cleanup(srv.Close)
+			return http.DefaultTransport.RoundTrip(req)
+		})}
 
 		w := &IngestWorker{
 			Publisher:     newTestMediaStore(pool),
-			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), client)),
 			MediaDir:      t.TempDir(),
 			StallTimeout:  time.Second,
 			RecordTarget:  pgstore.NewRecordings(pool),
 			Precheck:      newTestMediaStore(pool),
 		}
 		recordingID := insertTestRecording(t, pool)
-		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-nil")
+		insertTestRecordSync(t, pool, recordingID, recordID)
 		insertTestOriginalMediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
 		err := runWorkerViaJobQFake(ctx, w,
 
-			IngestJobArgs{Site: "default", RecordID: "rec-remote-cancel-nil"},
+			IngestJobArgs{Site: "default", RecordID: recordID},
 		)
 		if err != nil {
 			t.Fatalf("Work() = %v, want nil", err)
@@ -346,11 +341,10 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		return
 	}
 	tsData := makeTSData(2)
-	var deletes atomic.Int32
-	srv := newInstrumentedIngestServer(t, tsData, "test/followup-enqueue-failure.m2ts", func() { deletes.Add(1) })
 	recordingID := insertTestRecording(t, pool)
 	const recordID = "rec-followup-enqueue-failure"
 	insertTestRecordSync(t, pool, recordingID, recordID)
+	fake := newFullTransferFake(t, recordID, tsData, "test/followup-enqueue-failure.m2ts")
 
 	var logs strings.Builder
 	previousLogger := slog.Default()
@@ -359,7 +353,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 	worker := &IngestWorker{
 		Publisher:     newTestMediaStore(pool),
 		Enqueuer:      &jobq.Deferred{},
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
 		RecordTarget:  pgstore.NewRecordings(pool),
 		MediaDir:      t.TempDir(),
 		Precheck:      newTestMediaStore(pool),
@@ -378,7 +372,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 			t.Errorf("logs do not contain %q: %s", want, logs.String())
 		}
 	}
-	if got := deletes.Load(); got != 1 {
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 1 {
 		t.Errorf("DeleteRecord calls = %d, want 1 after best-effort enqueue failures", got)
 	}
 }
