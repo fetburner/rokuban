@@ -103,6 +103,7 @@ jobs:
         working-directory: web
       - run: pnpm exec playwright install --with-deps chromium
         working-directory: web
+      # Browser fixtures encode with x264 and VP9; install those explicitly without apt recommendations.
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg libx264-164 libvpx9
       - run: pnpm build
         working-directory: web
