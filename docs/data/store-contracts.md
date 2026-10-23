@@ -127,17 +127,20 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 
 - 契約: `internal/store.RecordObservations` / `IngestTarget` / `RecordBacklog`
 - PostgreSQL 実装: `internal/store/pgstore.Recordings`
-- 同じ record の直列化: `TestRecordObservationsContract/same record observations serialize`
+- 同じ record の直列化（並行した観測が一意違反にならない）: `TestRecordObservationsContract/same record observations serialize`
 - 契約テストは既存の同期行を置いて競合させる。行が無いと INSERT の一意制約だけで直列化されてしまい、ロックの有無を検出できないからである。確保の直後に同期点を差し込み、後発が先発と同時に先へ進めるかを見る
+- 録画の由来（同じ tx の予約と意図から導出する）: `TestRecordObservationsContract/record source` の各ケース。ほかに `failed event source follows intent` と `failed schedule source follows intent`
 - 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
-- 失敗の観測の収束と成功による置き換え: `TestRecordObservationsContract` の failed 系のケース
-- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
-- ingest の投入の判定: `TestRecordObservationsContract/ingest hint follows the recording status`
+- 失敗の観測の収束（生きた録画は 1 つ）: `TestRecordObservationsContract/failed schedule and failed event converge on one live recording`
+- 成功による置き換え（失敗した録画は superseded で残り、asset はその録画のまま）: `TestRecordObservationsContract/success supersedes failed recording`
+- 品質イベントの時刻（DB の時計で付く）: `TestRecordObservationsContract/quality events carry a readable time`
+- ingest の投入の判定（観測を重ねても同じ）: `TestRecordObservationsContract/ingest hint follows the recording status`
 - 転送先の site の絞り込み・NULL の保持・行が無いときの `ErrNotFound`: `TestRecordObservationsContract/ingest target preserves nullable fields`
 - 滞留の件数とバイト数に入る record: `TestRecordObservationsContract/ingest backlog filters records and bytes`
-- 品質イベントの時刻: `TestRecordObservationsContract/quality events carry a readable time`
+- 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
 - title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
-- commit 後のヒント: `TestProcessRecord_EnqueueFollowsCommit`
+- commit 後のヒント（commit の後に投入し、投入の失敗で観測を失敗させない）: `TestProcessRecord_EnqueueFollowsCommit`
+- 上記以外の挙動: `TestRecordObservationsContract` の各ケース
 
 </details>
 

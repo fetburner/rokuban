@@ -789,7 +789,7 @@ type SupersedeFailedRecordingParams struct {
 // (site, network_id, service_id, event_id, program_start_at) に
 // status='failed' の行が「生きて」（deleted_at IS NULL AND superseded_at IS NULL、
 // recordings_unique_active_event の述語）残っていれば、
-// superseded_at を立てて枠を明け渡させる。呼び出し側（internal/watcher の
+// superseded_at を立てて枠を明け渡させる。呼び出し側（internal/store/pgstore の
 // createRecording）はこのクエリを CreateRecording の直前に同じトランザクション内で
 // 呼ぶ。
 //
@@ -798,12 +798,11 @@ type SupersedeFailedRecordingParams struct {
 // データ変更文は「主クエリと同時並行に実行され、順序は不定」（PostgreSQL
 // documentation, `WITH` Queries (Common Table Expressions)）で、この CTE を
 // 主 INSERT が参照していない（RETURNING id を読み捨てるだけ）ため、実際に
-// INSERT が一意制約違反で失敗するケースを手元のテストで確認した
-// （TestProcessRecord_SupersedesFailedRecording が最初に落ちた形。「実装を
-// 壊すと落ちることを確認する」の逆側の学びとして残す）。2 つの独立した
-// 文（この UPDATE を先に確定させてから次の INSERT を発行）に分けることで、
-// 同一トランザクション内でコマンドカウンタが進み、後続の INSERT が
-// 確実に更新後の索引状態を見る。
+// INSERT が一意制約違反で失敗する。この UPDATE を CreateRecording の WITH 句へ
+// 戻すと TestRecordObservationsContract/success supersedes failed recording が
+// 落ちる。2 つの独立した文（この UPDATE を先に確定させてから次の INSERT を
+// 発行）に分けることで、同一トランザクション内でコマンドカウンタが進み、
+// 後続の INSERT が確実に更新後の索引状態を見る。
 //
 // superseded_at は「この行が active-event の枠を明け渡した」という不可逆な事実
 // だけを持つ列で、ユーザーのごみ箱操作を表す deleted_at とは別物にした
@@ -828,14 +827,14 @@ type SupersedeFailedRecordingParams struct {
 // superseded にするだけで media_assets.recording_id は書き換えない。ファイルの
 // 所有者は superseded になった旧 recordings 行のままで、物理削除は媒体削除
 // reconcile が recordings.deleted_at を見て判断するので、superseded だけでは
-// 何も物理的に消えない（internal/watcher の
-// TestProcessRecord_SupersedesFailedRecordingWithMediaAsset で固定）。
+// 何も物理的に消えない（internal/store/contracttest の
+// TestRecordObservationsContract/success supersedes failed recording で固定）。
 //
 // 対象の failed 行が無ければ 0 行のまま何もしない。record_sweep 等が同一 record を
 // 再処理しても、processRecord は record_sync の行ロックで 2 回目以降
-// createRecording 自体を呼ばない（internal/watcher/watcher.go の AcquireRecordSync
-// 参照）ので、このクエリも 2 回目以降は呼ばれず、superseded_at が二重に進んだり
-// 行が重複したりしない。
+// createRecording 自体を呼ばない（internal/store/pgstore/recordobservation.go の
+// AcquireRecordSync 参照）ので、このクエリも 2 回目以降は呼ばれず、
+// superseded_at が二重に進んだり行が重複したりしない。
 func (q *Queries) SupersedeFailedRecording(ctx context.Context, arg SupersedeFailedRecordingParams) (int64, error) {
 	result, err := q.db.Exec(ctx, supersedeFailedRecording,
 		arg.Site,
