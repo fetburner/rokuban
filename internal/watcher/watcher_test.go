@@ -299,8 +299,10 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 // 期待値は store が返した結果から作る。
 func TestProcessRecord_EnqueuesFollowResult(t *testing.T) {
 	var sawPriority, sawDefault, sawNone bool
+	var ran int
 	for _, status := range []string{store.RecordingStatusRecording, store.RecordingStatusFinished, store.RecordingStatusCanceled} {
 		t.Run(status, func(t *testing.T) {
+			ran++
 			w, pool := setupTest(t)
 			records := &failingRecords{RecordObservations: w.records}
 			w.records = records
@@ -346,7 +348,8 @@ func TestProcessRecord_EnqueuesFollowResult(t *testing.T) {
 		})
 	}
 	// 3 通り（優先度あり・既定・投入なし）を実際に通ったことを確かめる。空振りを防ぐ。
-	if !sawPriority || !sawDefault || !sawNone {
+	// -run で一部のサブテストだけ実行したときは評価しない。
+	if ran == 3 && (!sawPriority || !sawDefault || !sawNone) {
 		t.Fatalf("cases covered: priority=%t default=%t none=%t, want all three", sawPriority, sawDefault, sawNone)
 	}
 }
