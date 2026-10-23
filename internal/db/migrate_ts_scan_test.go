@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pressly/goose/v3"
+
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 )
 
 // migrateDownTo は version まで戻す。最新から数えて Down を繰り返す形にしないのは、
@@ -43,33 +45,37 @@ func TestTSScanMigrationBackfillsOnlyOriginalsWithDropStats(t *testing.T) {
 
 	createRecording := func(eventID int32) int64 {
 		t.Helper()
-		var id int64
-		err := pool.QueryRow(ctx, `
-			INSERT INTO recordings (
-				source, site, network_id, service_id, event_id,
-				service_name, channel_type, channel, title,
-				program_start_at, program_duration_ms, status
-			) VALUES (
-				'manual', 'default', 32736, 1024, $1,
-				'migration test', 'GR', '27', 'migration test',
-				now(), 60000, 'finished'
-			) RETURNING id`, eventID).Scan(&id)
-		if err != nil {
-			t.Fatalf("creating recording: %v", err)
-		}
-		return id
+		return dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+			params.NetworkID = 32736
+			params.ServiceID = 1024
+			params.EventID = eventID
+			params.ServiceName = "migration test"
+			params.Title = "migration test"
+			params.ProgramDurationMs = 60_000
+		})
 	}
 	createAsset := func(recordingID int64, kind string, profile *string, size int64) int64 {
 		t.Helper()
-		var id int64
-		err := pool.QueryRow(ctx, `
-			INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-			VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-			recordingID, kind, profile, fmt.Sprintf("migration-test/%d", recordingID), size).Scan(&id)
-		if err != nil {
-			t.Fatalf("creating %s asset: %v", kind, err)
+		assetOpts := func(params *dbtest.MediaAssetParams) {
+			params.RelPath = fmt.Sprintf("migration-test/%d", recordingID)
+			params.SizeBytes = size
 		}
-		return id
+		switch kind {
+		case "original":
+			return dbtest.MediaAsset(t, pool, recordingID, assetOpts)
+		case "encoded":
+			if profile == nil {
+				t.Fatal("encoded migration fixture requires a profile")
+			}
+			return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+				params.Kind = "encoded"
+				params.Profile = profile
+				assetOpts(params)
+			})
+		default:
+			t.Fatalf("unsupported media asset kind %q", kind)
+			return 0
+		}
 	}
 	addDropStat := func(assetID int64) {
 		t.Helper()
@@ -140,33 +146,21 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 
 	createRecording := func(eventID int32) int64 {
 		t.Helper()
-		var id int64
-		err := pool.QueryRow(ctx, `
-			INSERT INTO recordings (
-				source, site, network_id, service_id, event_id,
-				service_name, channel_type, channel, title,
-				program_start_at, program_duration_ms, status
-			) VALUES (
-				'manual', 'default', 32736, 1024, $1,
-				'migration test', 'GR', '27', 'migration test',
-				now(), 60000, 'finished'
-			) RETURNING id`, eventID).Scan(&id)
-		if err != nil {
-			t.Fatalf("creating recording: %v", err)
-		}
-		return id
+		return dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+			params.NetworkID = 32736
+			params.ServiceID = 1024
+			params.EventID = eventID
+			params.ServiceName = "migration test"
+			params.Title = "migration test"
+			params.ProgramDurationMs = 60_000
+		})
 	}
 	createOriginal := func(recordingID int64, size int64) int64 {
 		t.Helper()
-		var id int64
-		err := pool.QueryRow(ctx, `
-			INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-			VALUES ($1, 'original', $2, $3) RETURNING id`,
-			recordingID, fmt.Sprintf("retention-migration-test/%d", recordingID), size).Scan(&id)
-		if err != nil {
-			t.Fatalf("creating original asset: %v", err)
-		}
-		return id
+		return dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+			params.RelPath = fmt.Sprintf("retention-migration-test/%d", recordingID)
+			params.SizeBytes = size
+		})
 	}
 	addDropStat := func(assetID int64) {
 		t.Helper()
@@ -188,13 +182,12 @@ func TestUntilEncodedMigrationBackfillsMissingOriginalScanMarkers(t *testing.T) 
 		t.Fatalf("creating existing scan marker: %v", err)
 	}
 	profile := "mobile"
-	var encodedID int64
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-		VALUES ($1, 'encoded', $2, 'retention-migration-test/encoded', 21) RETURNING id`,
-		createRecording(23104), &profile).Scan(&encodedID); err != nil {
-		t.Fatalf("creating encoded asset: %v", err)
-	}
+	encodedID := dbtest.MediaAsset(t, pool, createRecording(23104), func(params *dbtest.MediaAssetParams) {
+		params.Kind = "encoded"
+		params.Profile = &profile
+		params.RelPath = "retention-migration-test/encoded"
+		params.SizeBytes = 21
+	})
 	addDropStat(encodedID)
 
 	if err := MigrateUp(ctx, dbURL); err != nil {

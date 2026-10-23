@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -168,7 +169,7 @@ func TestCMWorkerTimeoutsUseDurationFromJobArgs(t *testing.T) {
 func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	id := seedCMRecording(t, pool, t.TempDir(), 1101)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1101)))
 	startedAt := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
 	endedAt := startedAt.Add(45 * time.Minute)
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET started_at = $2, ended_at = $3, program_duration_ms = 1 WHERE id = $1`, id, startedAt, endedAt); err != nil {
@@ -289,7 +290,11 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	mediaDir := t.TempDir()
 	ids := make([]int64, 7)
 	for i := range ids {
-		ids[i] = insertTestRecordingWithEventID(t, pool, int32(800+i))
+		ids[i] = dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+			fixtureParams.NetworkID = 32736
+			fixtureParams.ServiceID = 1024
+			fixtureParams.EventID = int32(800 + i)
+		})
 		seedOriginalAsset(t, pool, mediaDir, ids[i], fmt.Sprintf("cm/%d.ts", ids[i]), []byte("ts"))
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
@@ -381,7 +386,11 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 	seed := func(eventID int32) int64 {
-		id := insertTestRecordingWithEventID(t, pool, eventID)
+		id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+			fixtureParams.NetworkID = 32736
+			fixtureParams.ServiceID = 1024
+			fixtureParams.EventID = eventID
+		})
 		seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
@@ -470,7 +479,11 @@ func TestUntilEncodedViewWaitsForCMDetectionOrFinalFailure(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
-	id := insertTestRecordingWithEventID(t, pool, 901)
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.NetworkID = 32736
+		fixtureParams.ServiceID = 1024
+		fixtureParams.EventID = 901
+	})
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	profile := "h264"
@@ -557,7 +570,11 @@ func TestUntilEncodedViewKeepsOriginalWhileLogoAdoptionIsPending(t *testing.T) {
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
-	id := insertTestRecordingWithEventID(t, pool, 902)
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.NetworkID = 32736
+		fixtureParams.ServiceID = 1024
+		fixtureParams.EventID = 902
+	})
 	assetID := seedOriginalAsset(t, pool, mediaDir, id, fmt.Sprintf("cm/%d.ts", id), []byte("ts"))
 	markOriginalTSScanComplete(t, pool, assetID)
 	profile := "h264"

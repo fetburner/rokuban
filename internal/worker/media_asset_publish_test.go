@@ -18,6 +18,7 @@ import (
 	pgx5 "github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -162,7 +163,7 @@ func assertWorkerPublishesUnderRelPathLock(
 func TestThumbnailWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/thumb-lock.m2ts", nil, []byte("original"))
 	w := &ThumbnailWorker{
 		Publisher: newTestMediaStore(pool), Media: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(),
 		FFmpeg: "ffmpeg", FFprobe: "ffprobe", runCmd: fakeThumbnailTools(t, 100.0)}
@@ -177,7 +178,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/thumb-overlap.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/thumb-overlap.m2ts", nil, []byte("original"))
 
 	paths := make(chan string, 2)
 	release := make(chan struct{})
@@ -250,7 +251,7 @@ func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testin
 func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{Media: newTestMediaStore(pool), Publisher: newTestMediaStore(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
 	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id),
@@ -285,7 +286,7 @@ func writeScratchForTest(t *testing.T, b []byte) string {
 func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/skip-active.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-active.m2ts", nil, []byte("original"))
 	relPath := thumbnailRelPath(id)
 	canonicalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(canonicalPath), 0o755); err != nil {
@@ -323,7 +324,7 @@ func TestPublishGeneratedMediaAssetSkipsWhenDerivedAlreadyActive(t *testing.T) {
 func TestPublishGeneratedMediaAssetSkipsWhenOriginalNoLongerActive(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	id := seedRecordingWithOriginal(t, pool, mediaDir, "sites/default/skip-orig.m2ts", nil, []byte("original"))
+	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/skip-orig.m2ts", nil, []byte("original"))
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE media_assets SET state = 'deleting' WHERE recording_id = $1 AND kind = 'original'`, id); err != nil {
 		t.Fatal(err)

@@ -4,12 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 )
 
 // TestRecordingChapterSpansConstraints は「あってはいけない組み合わせ」を DB が
@@ -19,23 +17,11 @@ func TestRecordingChapterSpansConstraints(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           2111,
-		ServiceName:       "ＯＨＫ",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "チャプター制約",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = 2111
+		fixtureParams.Title = "チャプター制約"
 	})
-	if err != nil {
-		t.Fatalf("creating recording: %v", err)
-	}
+
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
@@ -97,23 +83,11 @@ func TestRecordingChapterSpansRequireOwnership(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           2112,
-		ServiceName:       "ＯＨＫ",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "所有の行が要る",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = 2112
+		fixtureParams.Title = "所有の行が要る"
 	})
-	if err != nil {
-		t.Fatalf("creating recording: %v", err)
-	}
+
 	if _, err := pool.Exec(ctx, `
 INSERT INTO recording_chapter_spans (recording_id, span, label, cut)
 VALUES ($1, int8range(0, 1000), 'CM', true)`, recordingID); !isConstraintViolation(err, "23503") {

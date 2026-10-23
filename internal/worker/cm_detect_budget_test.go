@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -15,7 +16,7 @@ func TestCMDetectionNewDesireAfterFailedStartsNewBudget(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	id := seedCMRecording(t, pool, t.TempDir(), 1301)
+	id := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(1301)))
 	for _, step := range []struct {
 		count int32
 		state string

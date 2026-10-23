@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -36,7 +36,9 @@ func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	base := time.Now().Truncate(time.Second)
-	id := seedRecording(t, pool, "カット版", base, "finished", 1)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "カット版", base, "finished", 1
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	// KeepRanges の終端は program_duration_ms（Derive の end）。
 	if _, err := pool.Exec(context.Background(),
@@ -45,21 +47,21 @@ func TestGetRecording_EncodedAssetCutAndStale(t *testing.T) {
 	}
 	setEncodeProfiles(t, pool, id, []string{"h264", "cut"})
 
-	q := sqlcgen.New(pool)
 	// cut でない版（凍結区間なし）と cut 版（凍結区間あり）。
 	h264 := "h264"
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &h264, RelPath: "a_h264.mp4", SizeBytes: 50,
-	}); err != nil {
-		t.Fatalf("seed h264: %v", err)
-	}
-	cut := "cut"
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &cut, RelPath: "a_cut.g1.mp4", SizeBytes: 40,
+	dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &h264
+		fixtureParams.RelPath = "a_h264.mp4"
+		fixtureParams.SizeBytes = 50
 	})
-	if err != nil {
-		t.Fatalf("seed cut: %v", err)
-	}
+	cut := "cut"
+	assetID := dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &cut
+		fixtureParams.RelPath = "a_cut.g1.mp4"
+		fixtureParams.SizeBytes = 40
+	})
 
 	// ユーザー層: 10-20 秒を CM として切る。
 	userSpans := []chapters.Span{{StartMs: 10000, EndMs: 20000, Label: "CM", Cut: true}}

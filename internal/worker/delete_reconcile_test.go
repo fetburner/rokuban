@@ -23,6 +23,7 @@ import (
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/inplace"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -42,15 +43,11 @@ func seedOriginalAsset(t *testing.T, pool *pgxpool.Pool, mediaDir string, record
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     relPath,
-		SizeBytes:   int64(len(content)),
+	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = int64(len(content))
 	})
-	if err != nil {
-		t.Fatalf("seeding original media_asset: %v", err)
-	}
+
 	return id
 }
 
@@ -64,16 +61,13 @@ func seedEncodedOrThumbnailAsset(t *testing.T, pool *pgxpool.Pool, mediaDir stri
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	id, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        kind,
-		Profile:     profile,
-		RelPath:     relPath,
-		SizeBytes:   int64(len(content)),
+	id := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.Kind = kind
+		fixtureParams.Profile = profile
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = int64(len(content))
 	})
-	if err != nil {
-		t.Fatalf("seeding %s media_asset: %v", kind, err)
-	}
+
 	return id
 }
 
@@ -226,7 +220,7 @@ SELECT EXISTS (
 func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "past/retention.m2ts", []byte("data"))
 	fullPath := filepath.Join(mediaDir, "past", "retention.m2ts")
@@ -288,7 +282,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_Deletes(t *testing.T) {
 func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDeletesEncoded(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "sidecarfail/retention.m2ts", []byte("data"))
 	profile := "h264"
@@ -335,7 +329,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_SidecarDeleteFailure_StillDele
 func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_StillDeletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "noext/retention.m2ts", []byte("data"))
 	profile := "h264"
@@ -374,7 +368,7 @@ func TestDeleteReconcileWorker_TrashPastRetention_ExtensionlessEncodedRelPath_St
 func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "within/retention.m2ts", []byte("data"))
 	fullPath := filepath.Join(mediaDir, "within", "retention.m2ts")
@@ -419,7 +413,7 @@ func TestDeleteReconcileWorker_TrashWithinRetention_NotDeleted(t *testing.T) {
 func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purge/now.m2ts", []byte("data"))
 
@@ -459,7 +453,7 @@ func TestDeleteReconcileWorker_PurgeRequestedImmediate_Deletes(t *testing.T) {
 func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	// media_assets は 1 行も作らない。
 
 	recent := time.Now()
@@ -526,7 +520,7 @@ func TestDeleteReconcileWorker_ZeroAssetRecording_PurgeMarksAndFiresWebhookOnce(
 func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	// unlink を失敗させる: rel_path を空でないディレクトリに置き換える。
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "purged/stuck.m2ts", []byte("data"))
@@ -570,7 +564,7 @@ func TestDeleteReconcileWorker_DeletingAssetStuck_StaysInTrash(t *testing.T) {
 func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Title = "テスト番組" })
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/original.m2ts", []byte("data"))
 	profile := "h264"
@@ -622,7 +616,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresRecordingDeletedWebhookOnce(t *te
 func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWebhook(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	// 原本は until_encoded で既に物理削除済み（行は deleted で残る）。
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/gone.m2ts", []byte("data"))
@@ -668,7 +662,7 @@ func TestDeleteReconcileWorker_TrashPurgeWithoutOriginal_FiresRecordingDeletedWe
 func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDeletedWebhook(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/until-encoded.m2ts", []byte("data"))
 	profile := "h264"
@@ -709,7 +703,7 @@ func TestDeleteReconcileWorker_UntilEncodedOriginalPurge_DoesNotFireRecordingDel
 func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	// 原本 1 件だけ。unlink を 1 パス目だけ失敗させる（中身のあるディレクトリ）。
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/restore/original.m2ts", []byte("data"))
@@ -773,7 +767,7 @@ func TestDeleteReconcileWorker_RestoredWhileDeleting_RevertsInsteadOfDeleting(t 
 func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/crash/original.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "webhook", "crash", "original.m2ts")
@@ -815,7 +809,7 @@ func TestDeleteReconcileWorker_UnlinkedButUncommittedThenRestored_FinalizesAsDel
 func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/last/original.m2ts", []byte("data"))
 
@@ -882,7 +876,7 @@ func TestDeleteReconcileWorker_TrashPurge_FiresOnlyAfterLastAsset(t *testing.T) 
 func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/hang.m2ts", []byte("data"))
 	markRecordingTrashed(t, pool, recordingID)
@@ -918,7 +912,7 @@ func TestDeleteReconcileWorker_HangingWebhook_StillDeletes(t *testing.T) {
 func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, recordingID, "webhook/budget.m2ts", []byte("data"))
 	markRecordingTrashed(t, pool, recordingID)
 	if _, err := pool.Exec(context.Background(),
@@ -955,7 +949,7 @@ func TestDeleteReconcileWorker_NotifyBudgetExhausted_DropsRemaining(t *testing.T
 func TestDeleteReconcileWorker_UntilEncoded_Complete_Deletes(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/complete.m2ts", []byte("data"))
 	profile := "h264"
@@ -982,7 +976,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 			pool := setupTestPool(t)
 			ctx := context.Background()
 			mediaDir := t.TempDir()
-			recordingID := insertTestRecording(t, pool)
+			recordingID := dbtest.Recording(t, pool)
 			originalRelPath := "orig/deleted-" + kind + ".m2ts"
 			assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("data"))
 			profile := "h264"
@@ -1019,7 +1013,7 @@ func TestDeleteReconcileWorker_UntilEncoded_DeletedDerivative_NotDeleted(t *test
 func TestUntilEncodedOriginalIsRetainedWhileCutRebuildIsPending(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	originalRelPath := "orig/pending-rebuild.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
@@ -1055,7 +1049,7 @@ func TestUntilEncodedOriginalIsDeletableOnceCutRebuildIsSatisfied(t *testing.T) 
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	originalRelPath := "orig/satisfied-rebuild.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
@@ -1095,7 +1089,7 @@ func TestUntilEncodedOriginalIsRetainedWhenRebuildRequestArrivesAfterCandidateCo
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 	ctx := context.Background()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	originalRelPath := "orig/candidate-race.m2ts"
 	originalID := seedOriginalAsset(t, pool, mediaDir, recordingID, originalRelPath, []byte("original"))
 	profile := "cut"
@@ -1152,7 +1146,7 @@ func TestDeleteReconcileWorker_UntilEncoded_RequiresCurrentTSScan(t *testing.T) 
 
 	seedComplete := func(eventID int32, name string) int64 {
 		t.Helper()
-		recordingID := insertTestRecordingWithEventID(t, pool, eventID)
+		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = eventID })
 		assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/"+name+".m2ts", []byte("original"))
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile, "enc/"+name+".mp4", []byte("mp4"))
 		seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/"+name+".jpg", []byte("jpg"))
@@ -1243,7 +1237,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/empty-profiles.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/empty-profiles.jpg", []byte("jpg"))
@@ -1275,7 +1269,7 @@ func TestDeleteReconcileWorker_UntilEncoded_EmptyProfiles_NotDeleted(t *testing.
 func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 	pool := setupTestPool(t)
 	ctx := context.Background()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	if _, err := pool.Exec(ctx,
 		"INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles) VALUES ($1, 'until_encoded', '{}')",
@@ -1294,7 +1288,7 @@ func TestRecordingEncodePolicy_UntilEncodedRequiresProfilesCheck(t *testing.T) {
 func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-profile.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindThumbnail, nil, "thumb/missing-profile.jpg", []byte("jpg"))
@@ -1316,7 +1310,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingProfile_NotDeleted(t *testing
 func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-thumb.m2ts", []byte("data"))
 	profile := "h264"
@@ -1339,7 +1333,7 @@ func TestDeleteReconcileWorker_UntilEncoded_MissingThumbnail_NotDeleted(t *testi
 func TestDeleteReconcileWorker_UntilEncoded_MissingSeekTiles_NotDeleted(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/missing-tiles.m2ts", []byte("data"))
 	profile := "h264"
@@ -1377,25 +1371,23 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 
 	// recordingA: h264 が未コミット + サムネイルのみコミット済み。
 	// 条件 2 を満たさないので原本は残る。
-	recordingA := insertTestRecording(t, pool)
+	recordingA := dbtest.Recording(t, pool)
 	assetA := seedOriginalAsset(t, pool, mediaDir, recordingA, "orig/partial-a.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingA, store.AssetKindThumbnail, nil, "thumb/partial-a.jpg", []byte("jpg"))
 	markRecordingUntilEncoded(t, pool, recordingA, []string{profile})
 
 	// recordingB / recordingC: どちらも h264 + サムネイルがコミット済みで
 	// 条件 2 を満たす（削除されるべき）候補が 2 件同時に存在する状態を作る。
-	// event_id を insertTestRecording の既定（1）とずらす --- recordings_unique_active_event
-	// は (site, network_id, service_id, event_id, program_start_at) のアクティブ行に対する一意
-	// 制約なので、同じ event_id で 2 つ目以降のアクティブな録画を
-	// insertTestRecording で作ろうとするとそのまま衝突する。
-	recordingB := insertTestRecordingWithEventID(t, pool, 2)
+	// dbtest.Recording の既定 event_id は呼び出しごとに異なるため、同じ開始時刻でも
+	// recordings_unique_active_event に衝突しない。
+	recordingB := dbtest.Recording(t, pool)
 	assetB := seedOriginalAsset(t, pool, mediaDir, recordingB, "orig/partial-b.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindEncoded, &profile, "enc/partial-b.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingB, store.AssetKindThumbnail, nil, "thumb/partial-b.jpg", []byte("jpg"))
 	seedSeekTilesAsset(t, pool, mediaDir, recordingB, "thumb/partial-b-tiles.jpg")
 	markRecordingUntilEncoded(t, pool, recordingB, []string{profile})
 
-	recordingC := insertTestRecordingWithEventID(t, pool, 3)
+	recordingC := dbtest.Recording(t, pool)
 	assetC := seedOriginalAsset(t, pool, mediaDir, recordingC, "orig/partial-c.m2ts", []byte("data"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindEncoded, &profile, "enc/partial-c.mp4", []byte("mp4"))
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingC, store.AssetKindThumbnail, nil, "thumb/partial-c.jpg", []byte("jpg"))
@@ -1435,7 +1427,7 @@ func TestDeleteReconcileWorker_UntilEncoded_PartialCandidates_OnlyDeletesComplet
 func TestDeleteReconcileWorker_UntilEncodedDeletingInterrupted_ResumesOnNextPass(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/interrupted.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "interrupted.m2ts")
@@ -1516,7 +1508,7 @@ func TestDeleteReconcileWorker_UntilEncodedUnqualifiedWhileDeleting_RevertsToAct
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
@@ -1564,7 +1556,7 @@ func TestDeleteReconcileWorker_UntilEncodedScanSizeChangedWhileDeleting_RevertsT
 	pool := setupTestPool(t)
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "orig/unqualify.m2ts", []byte("data"))
 	assetPath := filepath.Join(mediaDir, "orig", "unqualify.m2ts")
@@ -1656,41 +1648,6 @@ func TestDeleteReconcileQueries_ReferenceNamedPredicatesNotDuplicatedText(t *tes
 	}
 }
 
-// insertTestRecordingWithEventID は insertTestRecording と同じ内容の録画を、
-// event_id だけ差し替えて作る。recordings_unique_active_event は
-// (site, network_id, service_id, event_id, program_start_at) のアクティブ行（deleted_at IS NULL）に
-// 対する一意制約なので、同一テスト内で複数のアクティブな録画を用意するには
-// event_id を分ける必要がある。
-func insertTestRecordingWithEventID(t *testing.T, pool *pgxpool.Pool, eventID int32) int64 {
-	t.Helper()
-	q := sqlcgen.New(pool)
-	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           eventID,
-		ServiceName:       "テストチャンネル",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "テスト番組",
-		ProgramStartAt:    time.Now(),
-		ProgramDurationMs: 1800000,
-		Status:            "finished",
-	})
-	if err != nil {
-		t.Fatalf("inserting test recording: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(),
-			"DELETE FROM drop_stats WHERE media_asset_id IN (SELECT id FROM media_assets WHERE recording_id = $1)", id)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM media_assets WHERE recording_id = $1", id)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM record_sync WHERE recording_id = $1", id)
-		_, _ = pool.Exec(context.Background(), "DELETE FROM recordings WHERE id = $1", id)
-	})
-	return id
-}
-
 // TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans は、issue #186
 // (M4-14) の受け入れ「前置前に ingest 済みの既存行がそのまま削除 reconcile の
 // 対象であり続ける」を、コードを読んだ論証だけでなく実測で固定する。
@@ -1715,11 +1672,13 @@ func TestDeleteReconcileWorker_MixedSitePrefixTree_NoFalseOrphans(t *testing.T) 
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	legacyRecordingID := insertTestRecording(t, pool)
+	legacyRecordingID := dbtest.Recording(t, pool)
 	legacyAssetID := seedOriginalAsset(t, pool, mediaDir, legacyRecordingID,
 		"legacy/original.m2ts", []byte("legacy data"))
 
-	prefixedRecordingID := insertTestRecordingForSite(t, pool, "tokyo", 9001)
+	prefixedRecordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Site, fixtureParams.EventID = "tokyo", 9001
+	})
 	prefixedAssetID := seedOriginalAsset(t, pool, mediaDir, prefixedRecordingID,
 		"sites/tokyo/new/original.m2ts", []byte("prefixed data"))
 
@@ -1807,7 +1766,7 @@ func TestDeleteReconcileWorker_SymlinkMediaDir_ObservesFilesAndDoesNotReportMiss
 		t.Fatalf("creating media dir symlink: %v", err)
 	}
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, realMediaDir, recordingID,
 		"registered/original.m2ts", []byte("registered data"))
 
@@ -1976,19 +1935,14 @@ func TestDeleteReconcileWorker_NonDirectoryMediaDir_WorkFails(t *testing.T) {
 func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	visibleRecordingID := insertTestRecording(t, pool)
+	visibleRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, visibleRecordingID, "present/original.m2ts", []byte("present"))
 
-	missingRecordingID := insertTestRecordingWithEventID(t, pool, 2)
-	missingAssetID, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: missingRecordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "missing/original.m2ts",
-		SizeBytes:   int64(len("missing")),
+	missingRecordingID := dbtest.Recording(t, pool)
+	missingAssetID := dbtest.MediaAsset(t, pool, missingRecordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "missing/original.m2ts"
+		fixtureParams.SizeBytes = int64(len("missing"))
 	})
-	if err != nil {
-		t.Fatalf("seeding missing original media_asset: %v", err)
-	}
 
 	orphanRelPath := "orphan/original.m2ts"
 	orphanPath := filepath.Join(mediaDir, filepath.FromSlash(orphanRelPath))
@@ -2048,7 +2002,7 @@ func TestDeleteReconcileWorker_WalksMediaDirOncePerPass(t *testing.T) {
 func TestDeleteReconcileWorker_Orphan_EncodedSidecar_NotRegistered(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	profile := "h264"
 	seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID, store.AssetKindEncoded, &profile,
@@ -2331,7 +2285,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-while-work-paused")
 	content := []byte("published while delete reconcile paused")
 	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
@@ -2743,17 +2697,16 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err := sqlcgen.New(tx).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID, Kind: store.AssetKindOriginal, RelPath: relPath, SizeBytes: int64(len(content)),
-	}); err != nil {
-		t.Fatalf("inserting uncommitted media_asset: %v", err)
-	}
+	dbtest.MediaAsset(t, tx, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = int64(len(content))
+	})
 
 	w := &DeleteReconcileWorker{
 		MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool),
@@ -2819,7 +2772,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 
 	var assetIDs []int64
 	for i := range 3 {
-		recordingID := insertTestRecording(t, pool)
+		recordingID := dbtest.Recording(t, pool)
 		assetID := seedOriginalAsset(t, pool, mediaDir, recordingID,
 			filepath.Join("trip", string(rune('a'+i))+".m2ts"), []byte("data"))
 		assetIDs = append(assetIDs, assetID)
@@ -2873,7 +2826,7 @@ func TestDeleteReconcileWorker_CircuitBreaker_TripsOnExcess(t *testing.T) {
 func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	markRecordingTrashed(t, pool, recordingID)
 
 	relPath := "stuck/deleting.m2ts"
@@ -2885,12 +2838,12 @@ func TestDeleteReconcileWorker_ResumesStuckDeletingRow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var assetID int64
-	if err := pool.QueryRow(context.Background(), `
-		INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-		VALUES ($1, 'original', $2, 4, 'deleting')
-		RETURNING id`, recordingID, relPath).Scan(&assetID); err != nil {
-		t.Fatalf("seeding stuck deleting row: %v", err)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = relPath
+		p.SizeBytes = 4
+	})
+	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("marking stuck asset deleting: %v", err)
 	}
 
 	// ブレーカーを発動させておく（新規候補はゼロなので影響しないはず）。
@@ -2928,7 +2881,7 @@ func TestDeleteReconcileWorker_MissingAsset_FilePresent_NotRegistered(t *testing
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	assetID := seedOriginalAsset(t, pool, mediaDir, recordingID, "present/original.m2ts", []byte("data"))
 
 	w := &DeleteReconcileWorker{MediaDelete: pgstore.NewMedia(pool), Storage: newTestMediaStore(pool), RecordingPurge: pgstore.NewRecordings(pool), Breakers: pgstore.NewBreakers(pool), MediaDir: mediaDir}
@@ -2959,20 +2912,14 @@ func TestDeleteReconcileWorker_MissingAsset_WithinAge_RecordedButNotReported(t *
 
 	// 全損シグネチャ（ゼロ件観測）を踏まないよう、実体のある資産を 1 つ
 	// 別に置く。
-	otherRecordingID := insertTestRecording(t, pool)
+	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 3)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/original.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/original.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
 
 	// プロセス内のゲージに残るので、このテストの外へ漏らさない
 	// （他のテストと順序非依存にする）。
@@ -3012,20 +2959,15 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	otherRecordingID := insertTestRecording(t, pool)
+	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 4)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/aged.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 4 })
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/aged.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	// エイジング窓を過ぎた記録として直接投入する。
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
@@ -3074,20 +3016,15 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	otherRecordingID := insertTestRecording(t, pool)
+	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 6)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/configured-age.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 6 })
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/configured-age.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	// 既定 24h では未エイジングだが、設定する 1h ではエイジング済みになる
 	// 経過時間。
 	if _, err := pool.Exec(context.Background(),
@@ -3132,21 +3069,16 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	otherRecordingID := insertTestRecording(t, pool)
+	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 5)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 5 })
 	relPath := "reappears/original.m2ts"
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     relPath,
-		SizeBytes:   4,
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	// エイジング窓を過ぎた記録として投入し、1 パス目で報告対象にする。
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
@@ -3204,17 +3136,11 @@ func TestDeleteReconcileWorker_MissingAsset_EmptyMediaDir_SkipsSuspectedMountFai
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir() // 空。MediaDir 配下に一切ファイルが無い状態を模す。
 
-	recordingID := insertTestRecording(t, pool)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "would-be/original.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "would-be/original.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
 
 	before := promtestutil.ToFloat64(metrics.MissingAssetScanSuspectedStorageFailure)
 
@@ -3265,17 +3191,12 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	recordingID := insertTestRecording(t, pool)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/original.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/original.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, now())",
 		assetID); err != nil {
@@ -3319,17 +3240,12 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir() // 空。active な資産が存在する疑わしいパスを作る。
 
-	recordingID := insertTestRecording(t, pool)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/frozen.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/frozen.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
@@ -3375,22 +3291,17 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 	pool := setupTestPool(t)
 	mediaDir := t.TempDir()
 
-	presentRecordingID := insertTestRecording(t, pool)
+	presentRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, presentRecordingID, "present/original.m2ts", []byte("data"))
 
-	q := sqlcgen.New(pool)
 	const overBudget = missingAssetLogBudget + 5
 	for i := 0; i < overBudget; i++ {
-		recordingID := insertTestRecordingWithEventID(t, pool, int32(1000+i))
-		assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-			RecordingID: recordingID,
-			Kind:        store.AssetKindOriginal,
-			RelPath:     fmt.Sprintf("gone/budget-%d.m2ts", i),
-			SizeBytes:   4,
+		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = int32(1000 + i) })
+		assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+			fixtureParams.RelPath = fmt.Sprintf("gone/budget-%d.m2ts", i)
+			fixtureParams.SizeBytes = 4
 		})
-		if err != nil {
-			t.Fatalf("seeding asset without a file (%d): %v", i, err)
-		}
+
 		if _, err := pool.Exec(context.Background(),
 			"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
 			assetID, time.Now().Add(-48*time.Hour)); err != nil {
@@ -3444,17 +3355,12 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	mediaDir := t.TempDir() // 空。対象の active 行が 0 件になるのでこれでよい
 	// （全損シグネチャの early return は len(active) == 0 の方が先に効く）。
 
-	recordingID := insertTestRecording(t, pool)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/stale.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool)
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/stale.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
@@ -3502,20 +3408,15 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 
 	// 掃除ループに入るための条件を作る: active な資産が 1 件以上あり、かつ
 	// ディスク上でファイルが 1 件以上観測される（全損シグネチャを踏まない）。
-	otherRecordingID := insertTestRecording(t, pool)
+	otherRecordingID := dbtest.Recording(t, pool)
 	seedOriginalAsset(t, pool, mediaDir, otherRecordingID, "present/original.m2ts", []byte("data"))
 
-	recordingID := insertTestRecordingWithEventID(t, pool, 7)
-	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "gone/stale.m2ts",
-		SizeBytes:   4,
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) { fixtureParams.EventID = 7 })
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "gone/stale.m2ts"
+		fixtureParams.SizeBytes = 4
 	})
-	if err != nil {
-		t.Fatalf("seeding asset without a file: %v", err)
-	}
+
 	if _, err := pool.Exec(context.Background(),
 		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {

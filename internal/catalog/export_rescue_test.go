@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -52,37 +53,22 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 		t.Fatalf("InsertRuleChannelType: %v", err)
 	}
 
-	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		RuleID:            &rule.ID,
-		Source:            "rule",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           100,
-		ServiceName:       "NHK総合",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "ニュース",
-		IsFree:            true,
-		ProgramStartAt:    time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 1800000,
-		Status:            "finished",
-		StartedAt:         ptrTime(time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)),
-		EndedAt:           ptrTime(time.Date(2026, 7, 29, 12, 30, 0, 0, time.UTC)),
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.RuleID = &rule.ID
+		fixtureParams.Source = "rule"
+		fixtureParams.EventID = 100
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "ニュース"
+		fixtureParams.ProgramStartAt = time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+		fixtureParams.StartedAt = ptrTime(time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC))
+		fixtureParams.EndedAt = ptrTime(time.Date(2026, 7, 29, 12, 30, 0, 0, time.UTC))
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
 
-	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recID,
-		Kind:        "original",
-		RelPath:     "sites/default/20260729/120000_ニュース_1024.m2ts",
-		SizeBytes:   1_000_000,
+	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "sites/default/20260729/120000_ニュース_1024.m2ts"
+		fixtureParams.SizeBytes = 1_000_000
 	})
-	if err != nil {
-		t.Fatalf("CreateMediaAsset: %v", err)
-	}
+
 	// 計測サイズを原本サイズとずらす。同じ値だと drop_stats からの旧形式補完でも
 	// 一致してしまい、catalog の計測記録を使う経路を区別できない。
 	if err := q.UpsertMediaAssetTSScan(ctx, sqlcgen.UpsertMediaAssetTSScanParams{
@@ -102,17 +88,14 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// 未凍結の録画（原本 media_asset を持たない）。行が無いことがそのまま
 	// 往復すること（不変条件 10「意味を持たない行を作らない」）を確認する対照群。
-	unfrozenRecID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default",
-		NetworkID: 32736, ServiceID: 1024, EventID: 101,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27",
-		Title: "未凍結", IsFree: true,
-		ProgramStartAt:    time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 1800000, Status: "recording",
+	unfrozenRecID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = 101
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "未凍結"
+		fixtureParams.ProgramStartAt = time.Date(2026, 7, 29, 13, 0, 0, 0, time.UTC)
+		fixtureParams.Status = "recording"
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording (unfrozen): %v", err)
-	}
+
 	// M3-7 の tombstone / 即時 purge 意図も catalog で保護する。即時要求は
 	// recording_purge_requests 衛星表の行の存在で表す。
 	deletedAt := time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
@@ -436,26 +419,24 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
-	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default",
-		NetworkID: 1, ServiceID: 1, EventID: 1,
-		ServiceName: "s", ChannelType: "GR", Channel: "1",
-		Title: "legacy", IsFree: true,
-		ProgramStartAt:    time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 60_000, Status: "finished",
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.NetworkID = 1
+		fixtureParams.ServiceID = 1
+		fixtureParams.EventID = 1
+		fixtureParams.ServiceName = "s"
+		fixtureParams.Channel = "1"
+		fixtureParams.Title = "legacy"
+		fixtureParams.ProgramStartAt = time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+		fixtureParams.ProgramDurationMs = 60_000
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
+
 	const relPath = "sites/default/legacy.m2ts"
-	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recID, Kind: "original", RelPath: relPath, SizeBytes: 1234,
+	assetID := dbtest.MediaAsset(t, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = relPath
+		fixtureParams.SizeBytes = 1234
 	})
-	if err != nil {
-		t.Fatalf("CreateMediaAsset: %v", err)
-	}
+
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled, pid_type)
 		VALUES ($1, 256, 20, 2, 0, 0, 'video')
@@ -538,7 +519,6 @@ func ptrTime(t time.Time) *time.Time { return &t }
 func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
-	q := sqlcgen.New(pool)
 
 	stop := make(chan struct{})
 	var inserted atomic.Int64
@@ -556,24 +536,23 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 				return
 			default:
 			}
-			recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-				Source: "manual", Site: "default",
-				NetworkID: 1, ServiceID: 1, EventID: int32(10_000 + i),
-				ServiceName: "s", ChannelType: "GR", Channel: "1",
-				Title: fmt.Sprintf("race-%d", i), IsFree: true,
-				ProgramStartAt:    time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC),
-				ProgramDurationMs: 60000, Status: "finished",
+			recID, err := dbtest.RecordingWithError(ctx, pool, func(fixtureParams *dbtest.RecordingParams) {
+				fixtureParams.NetworkID = 1
+				fixtureParams.ServiceID = 1
+				fixtureParams.EventID = int32(10_000 + i)
+				fixtureParams.ServiceName = "s"
+				fixtureParams.Channel = "1"
+				fixtureParams.Title = fmt.Sprintf("race-%d", i)
+				fixtureParams.ProgramStartAt = time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+				fixtureParams.ProgramDurationMs = 60000
 			})
 			if err != nil {
-				// テスト終盤で pool が閉じられたときなど。理由は記録して終わる。
 				insertErr.CompareAndSwap(nil, &err)
 				return
 			}
-			if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-				RecordingID: recID,
-				Kind:        "original",
-				RelPath:     fmt.Sprintf("race/%d.m2ts", i),
-				SizeBytes:   1,
+
+			if _, err := dbtest.MediaAssetWithError(ctx, pool, recID, func(fixtureParams *dbtest.MediaAssetParams) {
+				fixtureParams.RelPath = fmt.Sprintf("race/%d.m2ts", i)
 			}); err != nil {
 				insertErr.CompareAndSwap(nil, &err)
 				return

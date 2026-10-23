@@ -9,6 +9,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -34,7 +35,7 @@ func TestCheckEncodeProfileMeaning(t *testing.T) {
 		return
 	}
 	ctx := context.Background()
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 	const orig = "sites/default/20240101/120000_title_1024.m2ts"
 
 	// "plain" は cut なしの mp4。

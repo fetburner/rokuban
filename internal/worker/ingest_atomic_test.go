@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -36,8 +37,12 @@ func TestIngestWorker_ConcurrentSameRelPathUsesTempFiles(t *testing.T) {
 	const contentPath = "shared/concurrent.m2ts"
 	tsDataA := makeTSDataFill(0x21)
 	tsDataB := makeTSDataFill(0x22)
-	recordingIDA := insertTestRecordingForSite(t, pool, "default", 731101)
-	recordingIDB := insertTestRecordingForSite(t, pool, "default", 731102)
+	recordingIDA := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Site, fixtureParams.EventID = "default", 731101
+	})
+	recordingIDB := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Site, fixtureParams.EventID = "default", 731102
+	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingIDA, "rec-concurrent-a", 327361024000731101)
 	insertTestRecordSyncForSite(t, pool, "default", recordingIDB, "rec-concurrent-b", 327361024000731102)
 
@@ -207,7 +212,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	relPath := "sites/default/lock/commit.m2ts"
 	fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-commit-lock")
@@ -287,7 +292,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 	w := &IngestWorker{Publisher: newTestMediaStore(pool), MediaDir: mediaDir, Precheck: newTestMediaStore(pool)}
 	const commits = 5
 	for i := 0; i < commits; i++ {
-		recordingID := insertTestRecording(t, pool)
+		recordingID := dbtest.Recording(t, pool)
 		relPath := fmt.Sprintf("sites/default/lock-lifecycle/commit-%d.m2ts", i)
 		fullPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 		tempPath := filepath.Join(filepath.Dir(fullPath), fmt.Sprintf(".rokuban-ingest-lock-lifecycle-%d", i))
@@ -384,7 +389,7 @@ func runCanonicalOrphanSurvives(
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), "DELETE FROM orphan_files WHERE rel_path = $1", relPath)
 	})
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 
 	publicationStarted := make(chan struct{})
 	releasePublication := make(chan struct{})
@@ -540,7 +545,9 @@ func TestIngestWorker_CommitStopPointsKeepMirakcRecord(t *testing.T) {
 			mediaDir := t.TempDir()
 			contentPath := fmt.Sprintf("stop-points/%s.m2ts", strings.ReplaceAll(tt.name, " ", "-"))
 			tsData := makeTSDataFill(byte(0x30 + i))
-			recordingID := insertTestRecordingForSite(t, pool, "default", int32(731200+i))
+			recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+				fixtureParams.Site, fixtureParams.EventID = "default", int32(731200+i)
+			})
 			recordID := fmt.Sprintf("rec-stop-point-%d", i)
 			insertTestRecordSyncForSite(t, pool, "default", recordingID, recordID, int64(327361024000731200+i))
 

@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -208,7 +209,9 @@ func TestGetRecording_MatchesListElement_AcrossSessionTimeZone(t *testing.T) {
 	srv := newAPIServer(t, tzPool)
 
 	base := time.Now().Truncate(time.Second)
-	id := seedRecording(t, tzPool, "一覧要素と単体取得のセッション TimeZone 不一致確認用", base, "finished", 41)
+	id := dbtest.Recording(t, tzPool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "一覧要素と単体取得のセッション TimeZone 不一致確認用", base, "finished", 41
+	})
 	seedIngested(t, tzPool, id, 4000, map[int32][4]int64{
 		0x100: {700, 1, 0, 0},
 	})

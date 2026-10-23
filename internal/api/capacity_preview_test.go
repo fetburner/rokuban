@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -119,32 +119,6 @@ RETURNING id`, dedupe).Scan(&id); err != nil {
 	return id
 }
 
-func insertPreviewRecording(t *testing.T, pool *pgxpool.Pool, ruleID *int64, program capacityPreviewProgram, title string, start time.Time, withOriginal bool) {
-	t.Helper()
-	var ruleArg any
-	if ruleID != nil {
-		ruleArg = *ruleID
-	}
-	var recordingID int64
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', 'default', 32736, $2, $3,
-          'プレビュー局', 'GR', '25', $4, $5, 1800000, 'finished')
-RETURNING id`, ruleArg, program.ServiceID, program.EventID, title, start).Scan(&recordingID); err != nil {
-		t.Fatalf("inserting preview recording: %v", err)
-	}
-	if withOriginal {
-		if _, err := pool.Exec(context.Background(), `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-VALUES ($1, 'original', $2, 1024, 'active')`, recordingID, fmt.Sprintf("preview/%d.m2ts", recordingID)); err != nil {
-			t.Fatalf("inserting fulfilled original: %v", err)
-		}
-	}
-}
-
 func newCapacityPreviewServer(t *testing.T, pool *pgxpool.Pool) *httptest.Server {
 	t.Helper()
 	tunerStore := pgstore.NewTuners(pool)
@@ -242,7 +216,18 @@ VALUES ('default', $1, 'skip')`, skipped.ID); err != nil {
 	}
 
 	fulfilled := insertPreviewProgram(t, pool, 50024, "録画済み", "23", start)
-	insertPreviewRecording(t, pool, nil, fulfilled, fulfilled.Title, start, true)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = nil
+		p.Source = "rule"
+		p.Status = "finished"
+		p.NetworkID = 32736
+		p.ServiceID = fulfilled.ServiceID
+		p.EventID = fulfilled.EventID
+		p.Channel = "25"
+		p.Title = fulfilled.Title
+		p.ProgramStartAt = start
+	})
+	dbtest.MediaAsset(t, pool, recordingID)
 
 	if got := postCapacityPreview(t, srv, map[string]any{"genres": []int{searchFixtureGenre}}); len(got) != 0 {
 		t.Fatalf("preview = %+v, want none after excluding reserved, skipped, and fulfilled candidates", got)
@@ -259,7 +244,17 @@ func TestPreviewCapacityOverages_UsesRulerDedupeForEditedRule(t *testing.T) {
 	candidate := insertPreviewProgram(t, pool, 50032, "再放送スペシャル 第1話", "25", start)
 	priorRecording := candidate
 	priorRecording.EventID++
-	insertPreviewRecording(t, pool, &ruleID, priorRecording, candidate.Title, start.Add(-24*time.Hour), false)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Status = "finished"
+		p.NetworkID = 32736
+		p.ServiceID = priorRecording.ServiceID
+		p.EventID = priorRecording.EventID
+		p.Channel = "25"
+		p.Title = candidate.Title
+		p.ProgramStartAt = start.Add(-24 * time.Hour)
+	})
 
 	got := postCapacityPreview(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},
@@ -287,7 +282,17 @@ VALUES ('default', $1, 'record')`, candidate.ID); err != nil {
 
 	priorRecording := candidate
 	priorRecording.EventID++
-	insertPreviewRecording(t, pool, &ruleID, priorRecording, candidate.Title, start.Add(-24*time.Hour), false)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Status = "finished"
+		p.NetworkID = 32736
+		p.ServiceID = priorRecording.ServiceID
+		p.EventID = priorRecording.EventID
+		p.Channel = "25"
+		p.Title = candidate.Title
+		p.ProgramStartAt = start.Add(-24 * time.Hour)
+	})
 
 	got := postCapacityPreview(t, srv, map[string]any{
 		"genres": []int{searchFixtureGenre},

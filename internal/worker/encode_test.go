@@ -18,10 +18,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/mediapath"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/webhook"
 )
 
@@ -415,62 +414,41 @@ cp "$input" "$output"
 	return path
 }
 
-func seedRecordingWithOriginal(t *testing.T, pool *pgxpool.Pool, mediaDir, relPath string, profiles []string, content []byte) int64 {
+func seedEncodePolicy(t *testing.T, pool *pgxpool.Pool, recordingID int64, profiles []string) {
 	t.Helper()
-	q := sqlcgen.New(pool)
-	id, err := q.CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           int32(time.Now().UnixNano() % 1_000_000_000), // 衝突回避
-		ServiceName:       "テスト",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "encode test",
-		ProgramStartAt:    time.Now(),
-		ProgramDurationMs: 1800000,
-		Status:            "finished",
-	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
+	if len(profiles) == 0 {
+		return
 	}
-	if len(profiles) > 0 {
-		// recording_encode_policy 衛星表（issue #159）。keep_original は
-		// 定期 reconcile 候補 query が active encoded を完了扱いにするので
-		// 'always' で十分 --- desired プロファイルの有無だけがテストの関心。
-		if _, err := pool.Exec(context.Background(),
-			`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
-			 VALUES ($1, 'always', $2)`, id, profiles); err != nil {
-			t.Fatalf("seeding recording_encode_policy: %v", err)
-		}
+	// recording_encode_policy 衛星表（issue #159）。keep_original は
+	// 定期 reconcile 候補 query が active encoded を完了扱いにするので
+	// 'always' で十分 --- desired プロファイルの有無だけがテストの関心。
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles)
+		 VALUES ($1, 'always', $2)`, recordingID, profiles); err != nil {
+		t.Fatalf("seeding recording_encode_policy: %v", err)
 	}
-	full, err := filepath.Abs(filepath.Join(mediaDir, filepath.FromSlash(relPath)))
-	if err != nil {
-		t.Fatal(err)
-	}
+}
+
+func writeEncodeOriginal(t *testing.T, mediaDir, relPath string, content []byte) {
+	t.Helper()
+	full := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(full, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	profileNil := (*string)(nil)
-	if _, err := q.CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id,
-		Kind:        store.AssetKindOriginal,
-		Profile:     profileNil,
-		RelPath:     relPath,
-		SizeBytes:   int64(len(content)),
-	}); err != nil {
-		t.Fatalf("CreateMediaAsset original: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx := context.Background()
-		_, _ = pool.Exec(ctx, `DELETE FROM media_assets WHERE recording_id = $1`, id)
-		_, _ = pool.Exec(ctx, `DELETE FROM recordings WHERE id = $1`, id)
+}
+
+func prepareEncodeInput(t *testing.T, pool *pgxpool.Pool, recordingID int64, mediaDir, relPath string, profiles []string, content []byte) int64 {
+	t.Helper()
+	seedEncodePolicy(t, pool, recordingID, profiles)
+	writeEncodeOriginal(t, mediaDir, relPath, content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = relPath
+		params.SizeBytes = int64(len(content))
 	})
-	return id
+	return recordingID
 }
 
 // 同じ recording/profile の stale scratch は消し、別 profile、別 recording、別 kind は残す。
@@ -482,7 +460,14 @@ func TestEncodeWorker_RemovesStaleScratchForRecordingProfile(t *testing.T) {
 	ffmpegPath := installFakeFFmpeg(t)
 	mediaDir := t.TempDir()
 	scratchDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/stale.m2ts", []string{"h264"}, []byte("payload-0123456789"))
+	content := []byte("payload-0123456789")
+	recordingID := dbtest.Recording(t, pool)
+	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
+	writeEncodeOriginal(t, mediaDir, "20240101/stale.m2ts", content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = "20240101/stale.m2ts"
+		params.SizeBytes = int64(len(content))
+	})
 	mk := func(rel string) string {
 		dir := filepath.Join(scratchDir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -532,7 +517,13 @@ func TestEncodeWorker_SuccessAndIdempotent(t *testing.T) {
 	scratchDir := t.TempDir()
 	rel := "20240101/show.m2ts"
 	content := []byte("fake-ts-payload-for-encode-test-0123456789")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+	recordingID := dbtest.Recording(t, pool)
+	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
+	writeEncodeOriginal(t, mediaDir, rel, content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = rel
+		params.SizeBytes = int64(len(content))
+	})
 
 	w := &EncodeWorker{
 		Publisher: newTestMediaStore(pool),
@@ -633,7 +624,15 @@ func TestEncodeWorker_FiresEncodeFinishedWebhook(t *testing.T) {
 	scratchDir := t.TempDir()
 	rel := "20240101/finished.m2ts"
 	content := []byte("payload-for-webhook-finished-test")
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"h264"}, content)
+	recordingID := dbtest.Recording(t, pool, func(params *dbtest.RecordingParams) {
+		params.Title = "encode test"
+	})
+	seedEncodePolicy(t, pool, recordingID, []string{"h264"})
+	writeEncodeOriginal(t, mediaDir, rel, content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = rel
+		params.SizeBytes = int64(len(content))
+	})
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
@@ -706,7 +705,14 @@ func TestEncodeWorker_FiresEncodeFailedWebhook(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/fail.m2ts", nil, []byte("data"))
+	rel := "x/fail.m2ts"
+	content := []byte("data")
+	recordingID := dbtest.Recording(t, pool)
+	writeEncodeOriginal(t, mediaDir, rel, content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = rel
+		params.SizeBytes = int64(len(content))
+	})
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{
@@ -790,7 +796,14 @@ func TestEncodeWorker_CtxCanceled_DoesNotFireWebhook(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "x/cancel.m2ts", nil, []byte("data"))
+	rel := "x/cancel.m2ts"
+	content := []byte("data")
+	recordingID := dbtest.Recording(t, pool)
+	writeEncodeOriginal(t, mediaDir, rel, content)
+	dbtest.MediaAsset(t, pool, recordingID, func(params *dbtest.MediaAssetParams) {
+		params.RelPath = rel
+		params.SizeBytes = int64(len(content))
+	})
 
 	rec, client := newWebhookRecorder(t)
 	w := &EncodeWorker{

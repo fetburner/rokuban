@@ -15,6 +15,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/reservation"
@@ -1148,7 +1149,17 @@ func TestRunPass_UnfulfilledReservationRemainsUntilOriginalCommitted(t *testing.
 		t.Fatalf("initial RunPass: %v", err)
 	}
 	// finished 録画だけ作り、原本 media_asset は作らない。
-	insertRecordingForTitle(t, pool, ctx, ruleID, start)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = 0
+		p.Title = "録画済み番組"
+		p.ProgramStartAt = start
+		p.ProgramDurationMs = testDurationMs
+	})
 
 	if err := r.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass with finished recording but no original: %v", err)
@@ -1246,40 +1257,25 @@ func TestRunPass_FulfilledDeletesDoNotCountTowardBreaker(t *testing.T) {
 // （active / deleted）で、tombstone 済み原本のケースを test から指定できる。
 func insertFulfilledRecording(t *testing.T, pool *pgxpool.Pool, ctx context.Context, programID int64, assetState string) {
 	t.Helper()
-	var recordingID int64
-	err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ('rule', $1, $2, $3, 0, 'テスト局', 'GR', '27', '録画済み番組', $4, $5, 'finished')
-RETURNING id`, testSite, testNetworkID, testServiceID, time.Now().Add(-time.Hour), testDurationMs).Scan(&recordingID)
-	if err != nil {
-		t.Fatalf("inserting fulfilled recording fixture: %v", err)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Source = "rule"
+		p.Site = testSite
+		p.NetworkID = testNetworkID
+		p.ServiceID = testServiceID
+		p.EventID = 0
+		p.Title = "録画済み番組"
+		p.ProgramStartAt = time.Now().Add(-time.Hour)
+		p.ProgramDurationMs = testDurationMs
+	})
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = fmt.Sprintf("fulfilled-%d.m2ts", programID)
+		p.SizeBytes = 1024
+	})
+	if assetState != "active" {
+		if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = $2 WHERE id = $1`, assetID, assetState); err != nil {
+			t.Fatalf("setting fulfilled media asset state: %v", err)
+		}
 	}
-	if _, err := pool.Exec(ctx, `
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, state)
-VALUES ($1, 'original', $2, 1024, $3)`, recordingID, fmt.Sprintf("fulfilled-%d.m2ts", programID), assetState); err != nil {
-		t.Fatalf("inserting fulfilled media asset fixture: %v", err)
-	}
-}
-
-// insertRecordingForTitle は finished 録画だけを作り、原本 media_asset は作らない。
-// table-driven な fulfilled 判定の反対側（ingest 未コミット）を fixture する。
-func insertRecordingForTitle(t *testing.T, pool *pgxpool.Pool, ctx context.Context, ruleID int64, startAt time.Time) int64 {
-	t.Helper()
-	var id int64
-	err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', $2, $3, $4, 0, 'テスト局', 'GR', '27', '録画済み番組', $5, $6, 'finished')
-RETURNING id`, ruleID, testSite, testNetworkID, testServiceID, startAt, testDurationMs).Scan(&id)
-	if err != nil {
-		t.Fatalf("inserting finished recording (no original) fixture: %v", err)
-	}
-	return id
 }
 
 // insertProgramSnapshotDirect は program_snapshots 行だけを直接作る。

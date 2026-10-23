@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -83,8 +84,8 @@ func TestOriginalVODOffsetRealFFmpegSeekAccuracyAndRange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recordingID := seedRecording(t, pool)
-	seedAsset(t, pool, recordingID, relPath, info.Size())
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
 
 	cfg := originalVODConfig(t, mediaDir, ffmpeg)
 	cfg.FFprobe = ffprobe

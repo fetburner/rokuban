@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -22,23 +23,11 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	q := sqlcgen.New(pool)
 	mediaDir := t.TempDir()
 
-	recID, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "default",
-		NetworkID:         32736,
-		ServiceID:         1024,
-		EventID:           500,
-		ServiceName:       "NHK総合",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "NHK高校講座　数学I　第1回",
-		ProgramStartAt:    time.Now().UTC().Truncate(time.Second),
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            "finished",
+	recID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = 500
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "NHK高校講座　数学I　第1回"
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
 
 	// 値に空白を含む（棚キーは最初の空白で切れる）ルールと、優先度が違うルール。
 	low, err := q.CreateLabelRule(ctx, sqlcgen.CreateLabelRuleParams{
@@ -133,13 +122,12 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 
 	// rescue が実際に書く行（分類ルールと録画）を用意する。空の文書だと、ロックを
 	// どこで取っても書き込み前に待つので、位置の検査にならない。
-	if _, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: 600,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: "ロック位置",
-		ProgramStartAt: time.Now().UTC().Truncate(time.Second), ProgramDurationMs: 60000, Status: "finished",
-	}); err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
+	dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = 600
+		fixtureParams.ServiceName = "NHK総合"
+		fixtureParams.Title = "ロック位置"
+		fixtureParams.ProgramDurationMs = 60000
+	})
 	createRule := sqlcgen.CreateLabelRuleParams{Key: "series", Value: "ロック", Keyword: "ロック"}
 	if _, err := sqlcgen.New(pool).CreateLabelRule(ctx, createRule); err != nil {
 		t.Fatalf("CreateLabelRule: %v", err)

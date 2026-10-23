@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/store"
@@ -382,14 +383,13 @@ func TestMultiSiteRegistry_HandlesAllRegisteredSites(t *testing.T) {
 // このテストが落ちる。
 func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
 	router := api.NewRouter(api.RouterConfig{Ready: pool.Ping,
 		RecordingQuery: pgstore.NewRecordings(pool), EPGReader: pgstore.NewEPG(pool), ProgramSearch: pgstore.NewEPG(pool), ReservationStore: pgstore.NewReservations(pool)})
 	srv := httptest.NewServer(router)
 	defer srv.Close()
 
-	insertRecordingFixtureForSite(t, pool, ctx, "tokyo", 1001)
-	insertRecordingFixtureForSite(t, pool, ctx, "osaka", 1002)
+	dbtest.Recording(t, pool, siteRecordingOptions("tokyo", 1001))
+	dbtest.Recording(t, pool, siteRecordingOptions("osaka", 1002))
 
 	resp, err := http.Get(srv.URL + "/api/recordings")
 	if err != nil {
@@ -412,17 +412,14 @@ func TestListRecordings_ReturnsRowsFromAllSites(t *testing.T) {
 	}
 }
 
-func insertRecordingFixtureForSite(t *testing.T, pool *pgxpool.Pool, ctx context.Context, site string, eventID int32) {
-	t.Helper()
-	start := time.Now().Add(-2 * time.Hour)
-	if _, err := pool.Exec(ctx, `
-INSERT INTO recordings (
-  site, source, service_name, channel_type, channel, network_id, service_id, event_id,
-  title, program_start_at, program_duration_ms, status, created_at
-) VALUES ($1, 'manual', 'テスト局', 'GR', '27', 10000, 20000, $2,
-  'テスト録画', $3, 1800000, 'finished', now())`,
-		site, eventID, start); err != nil {
-		t.Fatalf("inserting recordings fixture: %v", err)
+func siteRecordingOptions(site string, eventID int32) func(*dbtest.RecordingParams) {
+	return func(p *dbtest.RecordingParams) {
+		p.Site = site
+		p.NetworkID = 10000
+		p.ServiceID = 20000
+		p.EventID = eventID
+		p.ServiceName = "テスト局"
+		p.Title = "テスト録画"
 	}
 }
 

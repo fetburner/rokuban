@@ -18,6 +18,7 @@ import (
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/fetburner/rokuban/internal/db"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	jobqtestutil "github.com/fetburner/rokuban/internal/jobq/jobqfake/testutil"
@@ -270,59 +271,17 @@ func insertProgramOverride(t *testing.T, pool *pgxpool.Pool, programID int64, pr
 	}
 }
 
-// insertTestRecordingAt は指定した active-event スロットと開始時刻に
-// recordings 行を作る。event_id の再利用で同じ 4 列キーに複数の放送イベントが
-// 存在する状態を作るテストにも使う。
-func insertTestRecordingAt(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32, startAt time.Time, status string) int64 {
-	t.Helper()
-	var id int64
-	err := pool.QueryRow(context.Background(), `
-		INSERT INTO recordings (
-			source, site,
-			network_id, service_id, event_id, service_name,
-			channel_type, channel, title,
-			is_free, program_start_at, program_duration_ms,
-			status
-		) VALUES (
-			'manual', $1,
-			$2, $3, $4, 'NHK総合',
-			'GR', '27', 'Failed Attempt',
-			true, $5, 180000,
-			$6
-		) RETURNING id`,
-		site, networkID, serviceID, eventID, startAt, status,
-	).Scan(&id)
-	if err != nil {
-		t.Fatalf("creating %s recording fixture: %v", status, err)
+func watcherRecordingOptions(networkID, serviceID, eventID int32, startAt time.Time, status string) func(*dbtest.RecordingParams) {
+	return func(p *dbtest.RecordingParams) {
+		p.NetworkID = networkID
+		p.ServiceID = serviceID
+		p.EventID = eventID
+		p.ServiceName = "NHK総合"
+		p.Title = "Failed Attempt"
+		p.ProgramStartAt = startAt
+		p.ProgramDurationMs = 180000
+		p.Status = status
 	}
-	return id
-}
-
-// insertTestFailedRecording は指定した active-event スロット（site, network_id,
-// service_id, event_id）に直接 status='failed' の recordings 行を作る
-// （issue #129 症状 2: この行が recordings_unique_active_event の枠を占有した
-// まま残っている状態を再現するのが目的で、handleRecordingFailed 経由の作られ方
-// 自体は TestHandleRecordingFailed_Idempotent 等で別に検証済み）。
-func insertTestFailedRecording(t *testing.T, pool *pgxpool.Pool, site string, networkID, serviceID, eventID int32, startAt time.Time) int64 {
-	return insertTestRecordingAt(t, pool, site, networkID, serviceID, eventID,
-		startAt, "failed")
-}
-
-// insertTestMediaAsset は recordingID に紐づく original media_asset 行を 1 つ作る
-// （途中まで録れて failed になった行が実ファイルを持つケースを模す）。
-func insertTestMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) int64 {
-	t.Helper()
-	var id int64
-	err := pool.QueryRow(context.Background(), `
-		INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-		VALUES ($1, 'original', $2, 12345)
-		RETURNING id`,
-		recordingID, fmt.Sprintf("test/failed-%d.m2ts", recordingID),
-	).Scan(&id)
-	if err != nil {
-		t.Fatalf("creating media_asset fixture: %v", err)
-	}
-	return id
 }
 
 func testRecord(recordID string, programID int64, status string) mirakc.Record {
@@ -628,9 +587,9 @@ func TestProcessRecord_SupersedesFailedRecording(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time())
+		record.Program.StartAt.Time(), "failed"))
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v (成功 record が failed 行の一意制約に阻まれてはいけない。issue #129 症状 2)", err)
@@ -717,12 +676,12 @@ func TestProcessRecord_AllowsEventIDReuse(t *testing.T) {
 	createTestReservation(t, pool, programID)
 	record := testRecord("record-event-id-reuse-001", programID, "finished")
 	newStart := record.Program.StartAt.Time()
-	finishedID := insertTestRecordingAt(t, pool, DefaultSite,
+	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		newStart.Add(-365*24*time.Hour), "finished")
-	failedID := insertTestRecordingAt(t, pool, DefaultSite,
+		newStart.Add(-365*24*time.Hour), "finished"))
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		newStart.Add(-2*365*24*time.Hour), "failed")
+		newStart.Add(-2*365*24*time.Hour), "failed"))
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v (event_id の再利用で新しい放送イベントが弾かれてはいけない)", err)
@@ -768,10 +727,10 @@ func TestProcessRecord_SupersedesFailedRecordingWithMediaAsset(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-media-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time())
-	assetID := insertTestMediaAsset(t, pool, failedID)
+		record.Program.StartAt.Time(), "failed"))
+	assetID := dbtest.MediaAsset(t, pool, failedID)
 
 	if err := w.processRecord(ctx, record); err != nil {
 		t.Fatalf("processRecord: %v (media_assets を持つ failed 行があっても成功 record は取り込めるはず)", err)
@@ -834,9 +793,9 @@ func TestProcessRecord_SupersedeIsIdempotentAcrossReprocessing(t *testing.T) {
 	createTestReservation(t, pool, programID)
 
 	record := testRecord("record-supersede-idem-001", programID, "finished")
-	failedID := insertTestFailedRecording(t, pool, DefaultSite,
+	failedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(record.Program.NetworkID), int32(record.Program.ServiceID), int32(record.Program.EventID),
-		record.Program.StartAt.Time())
+		record.Program.StartAt.Time(), "failed"))
 
 	for i := 0; i < 3; i++ {
 		if err := w.processRecord(ctx, record); err != nil {
@@ -889,27 +848,17 @@ func TestProcessRecord_DoesNotSupersedeLivingNonFailedRecording(t *testing.T) {
 	record := testRecord("record-no-supersede-001", programID, "finished")
 	// 直接 'finished' な生きている行を同じスロットに作る（すでに録れている本物の
 	// 重複を模す。failed ではないので supersede 対象にならないはず）。
-	var livingID int64
-	err := pool.QueryRow(ctx, `
-		INSERT INTO recordings (
-			source, site,
-			network_id, service_id, event_id, service_name,
-			channel_type, channel, title,
-			is_free, program_start_at, program_duration_ms,
-			status
-		) VALUES (
-			'manual', $1,
-			$2, $3, $4, 'NHK総合',
-			'GR', '27', 'Already Finished',
-			true, $5, 180000,
-			'finished'
-		) RETURNING id`,
-		DefaultSite, record.Program.NetworkID, record.Program.ServiceID, record.Program.EventID,
-		record.Program.StartAt.Time(),
-	).Scan(&livingID)
-	if err != nil {
-		t.Fatalf("creating living finished recording fixture: %v", err)
-	}
+	livingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Site = DefaultSite
+		p.NetworkID = int32(record.Program.NetworkID)
+		p.ServiceID = int32(record.Program.ServiceID)
+		p.EventID = int32(record.Program.EventID)
+		p.ServiceName = "NHK総合"
+		p.Title = "Already Finished"
+		p.Status = "finished"
+		p.ProgramStartAt = record.Program.StartAt.Time()
+		p.ProgramDurationMs = 180000
+	})
 
 	if err := w.processRecord(ctx, record); err == nil {
 		t.Fatal("processRecord: want error (finished な生きている行と衝突するはずで、supersede されてはいけない)")
@@ -1753,9 +1702,9 @@ func TestSweep_DoesNotAttributeFailureToFinishedRecording(t *testing.T) {
 		},
 	}
 	// 同一 active-event に生きている finished 行を先に作る。
-	finishedID := insertTestRecordingAt(t, pool, DefaultSite,
+	finishedID := dbtest.Recording(t, pool, watcherRecordingOptions(
 		int32(schedule.Program.NetworkID), int32(schedule.Program.ServiceID),
-		int32(schedule.Program.EventID), time.UnixMilli(startAt.Time().UnixMilli()), "finished")
+		int32(schedule.Program.EventID), time.UnixMilli(startAt.Time().UnixMilli()), "finished"))
 
 	services := []mirakc.Service{{
 		ServiceID: 1024,
@@ -1891,8 +1840,8 @@ func TestSweep_RemovesStaleRecordSyncs(t *testing.T) {
 	ctx := context.Background()
 
 	q := sqlcgen.New(pool)
-	oursRecordingID := insertTestRecordingAt(t, pool, DefaultSite, 1, 1, 901,
-		time.Now().Add(-time.Hour), "finished")
+	oursRecordingID := dbtest.Recording(t, pool, watcherRecordingOptions(1, 1, 901,
+		time.Now().Add(-time.Hour), "finished"))
 	oursLength := int64(100)
 	if err := q.UpsertRecordSync(ctx, sqlcgen.UpsertRecordSyncParams{
 		Site:          DefaultSite,

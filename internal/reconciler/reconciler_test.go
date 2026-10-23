@@ -19,6 +19,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/breaker"
 	"github.com/fetburner/rokuban/internal/contentpath"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -2124,18 +2125,18 @@ func TestReconciler_SuccessfulRecordingPreventsNeverScheduled(t *testing.T) {
 	// （networkID=10000/serviceID=5000/event_id=programID%100000）と同じ
 	// active-event を占有させる。
 	eventID := res.ProgramID % 100000
-	var recordingID int64
-	if err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-    source, site, network_id, service_id, event_id, service_name,
-    channel_type, channel, title, program_start_at, program_duration_ms, status,
-    started_at, ended_at
-) VALUES ('manual', 'default', 10000, 5000, $1, 'テスト局', 'GR', '27', '成功済み録画の予約',
-    $2::timestamptz, 1800000, 'finished', $2::timestamptz, $2::timestamptz + interval '30 minutes')
-RETURNING id`,
-		eventID, endedStartAt).Scan(&recordingID); err != nil {
-		t.Fatalf("seeding successful recording: %v", err)
-	}
+	endedAt := endedStartAt.Add(30 * time.Minute)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(eventID)
+		p.ServiceName = "テスト局"
+		p.Title = "成功済み録画の予約"
+		p.Status = "finished"
+		p.ProgramStartAt = endedStartAt
+		p.StartedAt = &endedStartAt
+		p.EndedAt = &endedAt
+	})
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2526,34 +2527,6 @@ func TestReconciler_ResumeCircuitBreakerConverges(t *testing.T) {
 // slog.Error で検出する。DB に新しい状態は持たせず、毎パス再計算する導出値
 // （不変条件 5: レベルトリガー）。
 
-// createStartedRecording は指定の放送イベントキー (network_id=10000,
-// service_id=5000, eventID) に、録画開始が観測済み（started_at が埋まっている）
-// 状態の recordings 行を作る。watcher が mirakc の record から
-// recordings.started_at を書く経路を模している。recordings.reservation_id は
-// issue #158 で列自体を落としたので、この行と予約を結びつける材料は
-// event_id しかない（呼び出し側は createReservation と同じ規約で eventID を
-// 選ぶことで対応関係を保つ）。
-func createStartedRecording(t *testing.T, ctx context.Context, q *sqlcgen.Queries, eventID int32, programStartAt, startedAt time.Time) {
-	t.Helper()
-	if _, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "default",
-		NetworkID:         10000,
-		ServiceID:         5000,
-		EventID:           eventID,
-		ServiceName:       "テストチャンネル",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "テスト番組",
-		ProgramStartAt:    programStartAt,
-		ProgramDurationMs: 1800000,
-		Status:            "recording",
-		StartedAt:         &startedAt,
-	}); err != nil {
-		t.Fatalf("creating started recording: %v", err)
-	}
-}
-
 // startDelayGauge は metrics.ReconcileStartDelayed の "default" サイトの現在値を読む。
 func startDelayGauge(t *testing.T) float64 {
 	t.Helper()
@@ -2622,7 +2595,14 @@ func TestReconciler_NoStartDelayWhenStarted(t *testing.T) {
 
 	startAt := time.Now().Add(-10 * time.Minute)
 	createReservation(t, ctx, q, 100000500030002, "正常開始番組", startAt)
-	createStartedRecording(t, ctx, q, 30002, startAt, startAt.Add(1*time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = 30002
+		p.ProgramStartAt = startAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(1 * time.Minute))
+	})
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2651,7 +2631,14 @@ func TestReconciler_DetectsStartDelayWhenOnlyHistoricalRecordingHasStarted(t *te
 	res := createReservation(t, ctx, q, programID, "event_id再利用後の開始遅延", startAt)
 
 	oldStartAt := time.Now().Add(-365 * 24 * time.Hour)
-	createStartedRecording(t, ctx, q, int32(programID%100000), oldStartAt, oldStartAt.Add(time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(programID % 100000)
+		p.ProgramStartAt = oldStartAt
+		p.Status = "recording"
+		p.StartedAt = new(oldStartAt.Add(time.Minute))
+	})
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2676,7 +2663,14 @@ func TestReconciler_NoStartDelayWhenRecordingProgramStartDiffers(t *testing.T) {
 	startAt := time.Now().Add(-10 * time.Minute)
 	res := createReservation(t, ctx, q, 100000500030013, "繰り下げ中の開始済み番組", startAt)
 	recordingProgramStartAt := startAt.Add(5 * time.Minute)
-	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), recordingProgramStartAt, startAt.Add(6*time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(res.ProgramID % 100000)
+		p.ProgramStartAt = recordingProgramStartAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(6 * time.Minute))
+	})
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2711,7 +2705,14 @@ WHERE site = $2 AND program_id = $3
 	}
 	// mirakc がチューナーを開くのは予定の 15 秒前で、started_at はその時刻
 	// そのまま入る（実測 -00:00:14.99、docs/recording/delegation.md §2）。
-	createStartedRecording(t, ctx, q, int32(res.ProgramID%100000), startAt, startAt.Add(-15*time.Second))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(res.ProgramID % 100000)
+		p.ProgramStartAt = startAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(-15 * time.Second))
+	})
 
 	rec := newReconciler(mc, pool, nil)
 	if err := rec.RunPass(ctx); err != nil {
@@ -2850,7 +2851,14 @@ func TestReconciler_StartDelayGaugeConverges(t *testing.T) {
 	}
 
 	// watcher が録画開始を観測した想定で started_at を埋める。
-	createStartedRecording(t, ctx, q, 30007, startAt, startAt.Add(4*time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = 30007
+		p.ProgramStartAt = startAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(4 * time.Minute))
+	})
 
 	if err := rec.RunPass(ctx); err != nil {
 		t.Fatalf("RunPass (2nd): %v", err)
@@ -2928,7 +2936,14 @@ func TestReconciler_NoStartDelayFalsePositiveAfterReservationRematerialization(t
 
 	// watcher が録画開始を観測した想定（放送イベントキーで結びつく。
 	// recordings.reservation_id という結合キー自体を issue #158 で削除済み）。
-	createStartedRecording(t, ctx, q, eventID, startAt, startAt.Add(1*time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = eventID
+		p.ProgramStartAt = startAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(1 * time.Minute))
+	})
 
 	// ruler の導出削除 → 再実体化を模す（同じ番組・同じ複合キー）。
 	if _, err := pool.Exec(ctx, `DELETE FROM reservations WHERE site = $1 AND program_id = $2`, res.Site, res.ProgramID); err != nil {
@@ -3008,7 +3023,14 @@ func TestReconciler_StartDelaySuppressionMatchesBroadcastEventKeyPerReservation(
 	programIDStarted := int64(100000500030010)
 	eventIDStarted := int32(30010)
 	resStarted := createReservation(t, ctx, q, programIDStarted, "開始観測済み番組", startAt)
-	createStartedRecording(t, ctx, q, eventIDStarted, startAt, startAt.Add(1*time.Minute))
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = eventIDStarted
+		p.ProgramStartAt = startAt
+		p.Status = "recording"
+		p.StartedAt = new(startAt.Add(1 * time.Minute))
+	})
 
 	// 予約 B: 同一サイト・同一サービスの別イベントで、recordings 行なし。
 	// 検出されるべき。

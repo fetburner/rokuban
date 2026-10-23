@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/serverevent"
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -167,7 +168,7 @@ func TestEncodeWorker_PublishesObservedProgress(t *testing.T) {
 	installFakeFFprobe(t, "4.0", true)
 
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
 
 	listenConn, err := pool.Acquire(context.Background())
 	if err != nil {
@@ -229,7 +230,7 @@ func TestEncodeWorker_DoesNotInventProgressWithoutDuration(t *testing.T) {
 	installFakeFFprobe(t, "", false)
 
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "show.m2ts", []string{"mobile"}, []byte("fake input"))
 	listenConn, err := pool.Acquire(context.Background())
 	if err != nil {
 		t.Fatal(err)

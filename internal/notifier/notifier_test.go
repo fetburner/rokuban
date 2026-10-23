@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/notifier/pgsource"
 	"github.com/fetburner/rokuban/internal/serverevent"
@@ -303,43 +304,16 @@ func startNotifier(t *testing.T, pool *pgxpool.Pool) (*EventHub, *httptest.Serve
 	return hub, srv
 }
 
-// seedRecording は notifier のテストに必要な最小限の recordings 行を作る。
-func seedRecording(t *testing.T, pool *pgxpool.Pool, title string, start time.Time, status string, eventID int32) int64 {
-	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              defaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           eventID,
-		ServiceName:       "ＯＨＫ",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             title,
-		ProgramStartAt:    start,
-		ProgramDurationMs: (30 * time.Minute).Milliseconds(),
-		Status:            status,
-	})
-	if err != nil {
-		t.Fatalf("seeding recording: %v", err)
-	}
-	return id
-}
-
 // seedIngested は録画に原本 media_asset を付ける（recordings トピックの発火源）。
 func seedIngested(t *testing.T, pool *pgxpool.Pool, recordingID, size int64, stats map[int32][4]int64) {
 	t.Helper()
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
-	assetID, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "test/asset.m2ts",
-		SizeBytes:   size,
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "test/asset.m2ts"
+		fixtureParams.SizeBytes = size
 	})
-	if err != nil {
-		t.Fatalf("seeding media_asset: %v", err)
-	}
+
 	params := make([]sqlcgen.InsertDropStatParams, 0, len(stats))
 	for pid, s := range stats {
 		params = append(params, sqlcgen.InsertDropStatParams{
@@ -409,7 +383,9 @@ func TestEvents_RecordingAndMediaAssetTopics(t *testing.T) {
 	waitForClients(t, hub, 1)
 	waitListening(t, hub)
 
-	recordingID := seedRecording(t, pool, "録画", time.Now().Truncate(time.Second), "recording", 1)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画", time.Now().Truncate(time.Second), "recording", 1
+	})
 	if got := readSSEEvent(t, reader); got != "recordings" {
 		t.Fatalf("event = %q, want recordings", got)
 	}

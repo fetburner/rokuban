@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -42,28 +41,30 @@ func playbackRequest(t *testing.T, method, url string, body any) *http.Response 
 	return resp
 }
 
-func createPlaybackRecording(t *testing.T, pool *pgxpool.Pool, start time.Time, eventID int32, title string) int64 {
-	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source: "manual", Site: "default", NetworkID: 32736, ServiceID: 1024, EventID: eventID,
-		ServiceName: "NHK総合", ChannelType: "GR", Channel: "27", Title: title,
-		ProgramStartAt: start, ProgramDurationMs: time.Hour.Milliseconds(), Status: "finished",
-	})
-	if err != nil {
-		t.Fatalf("create playback recording: %v", err)
-	}
-	return id
-}
-
 func TestPlaybackPositionAndWatchedAPI(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 	ctx := context.Background()
 	q := sqlcgen.New(pool)
 	start := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
-	one := createPlaybackRecording(t, pool, start, 100, "放送イベント")
-	duplicate := createPlaybackRecording(t, pool, start, 101, "同じ開始時刻の別行")
-	unrelated := createPlaybackRecording(t, pool, start.Add(time.Hour), 102, "別イベント")
+	one := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 100
+		p.Title = "放送イベント"
+		p.ProgramStartAt = start
+		p.ProgramDurationMs = time.Hour.Milliseconds()
+	})
+	duplicate := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 101
+		p.Title = "同じ開始時刻の別行"
+		p.ProgramStartAt = start
+		p.ProgramDurationMs = time.Hour.Milliseconds()
+	})
+	unrelated := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 102
+		p.Title = "別イベント"
+		p.ProgramStartAt = start.Add(time.Hour)
+		p.ProgramDurationMs = time.Hour.Milliseconds()
+	})
 
 	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: one, PositionMs: 12_000}); err != nil {
 		t.Fatalf("seed playback position: %v", err)
@@ -158,7 +159,13 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 	start := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	ids := make([]int64, 8)
 	for i := range ids {
-		ids[i] = createPlaybackRecording(t, pool, start.Add(time.Duration(i)*time.Hour), int32(200+i), fmt.Sprintf("番組%d", i))
+		ids[i] = dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+			p.EventID = int32(200 + i)
+			p.Title = fmt.Sprintf("番組%d", i)
+			p.Status = "finished"
+			p.ProgramStartAt = start.Add(time.Duration(i) * time.Hour)
+			p.ProgramDurationMs = time.Hour.Milliseconds()
+		})
 		if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{
 			RecordingID: ids[i], PositionMs: int64(5_000 + i*1_000),
 		}); err != nil {
@@ -178,7 +185,12 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 		{title: "ごみ箱", status: "finished", deleted: true},
 		{title: "supersede", status: "finished", superseded: true},
 	} {
-		id := createPlaybackRecording(t, pool, start.Add(time.Duration(20+i)*time.Hour), int32(300+i), status.title)
+		id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+			p.EventID = int32(300 + i)
+			p.Title = status.title
+			p.ProgramStartAt = start.Add(time.Duration(20+i) * time.Hour)
+			p.ProgramDurationMs = time.Hour.Milliseconds()
+		})
 		if _, err := pool.Exec(ctx, `UPDATE recordings SET status = $2, deleted_at = CASE WHEN $3 THEN now() ELSE NULL END, superseded_at = CASE WHEN $4 THEN now() ELSE NULL END WHERE id = $1`, id, status.status, status.deleted, status.superseded); err != nil {
 			t.Fatalf("set excluded recording state %d: %v", id, err)
 		}
@@ -191,7 +203,12 @@ func TestListContinueWatchingOrderLimitAndWatchedGrouping(t *testing.T) {
 	}
 	// A sibling row with the same event key makes the event watched, suppressing
 	// the otherwise resumable row from the home collection.
-	sibling := createPlaybackRecording(t, pool, start.Add(7*time.Hour), 999, "視聴済みイベントの別行")
+	sibling := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 999
+		p.Title = "視聴済みイベントの別行"
+		p.ProgramStartAt = start.Add(7 * time.Hour)
+		p.ProgramDurationMs = time.Hour.Milliseconds()
+	})
 	if _, err := q.UpsertRecordingPlaybackPosition(ctx, sqlcgen.UpsertRecordingPlaybackPositionParams{RecordingID: sibling, PositionMs: 9_000}); err != nil {
 		t.Fatalf("seed sibling position: %v", err)
 	}

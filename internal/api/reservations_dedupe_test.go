@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/api"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -96,24 +97,6 @@ INSERT INTO reservations (
 	}
 }
 
-// insertRecordingFixture は根拠として参照する録画履歴を 1 行作る。
-func insertRecordingFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, ruleID int64) int64 {
-	t.Helper()
-	var id int64
-	err := pool.QueryRow(ctx, `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', 'default', 11500, 1150, 4321, 'テスト局', 'GR', '27',
-          'テスト番組', now() - interval '7 days', 1800000, 'finished')
-RETURNING id`, ruleID).Scan(&id)
-	if err != nil {
-		t.Fatalf("inserting recording fixture: %v", err)
-	}
-	return id
-}
-
 // TestGetReservation_DedupeSkipExposed は重複としてスキップされた予約が
 // skip = true と根拠 2 列を返すことを確認する。一覧でも同じ値が出る
 // （表示経路が reservationFromRow の 1 箇所に集約されていることの確認）。
@@ -127,7 +110,14 @@ func TestGetReservation_DedupeSkipExposed(t *testing.T) {
 
 	const programID int64 = 1150000115041234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	recordingID := insertRecordingFixture(t, pool, ctx, ruleID)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.EventID = 4321
+		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
+	})
 	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.875)
 
 	got := getReservationDedupeJSON(t, srv, programID)
@@ -169,7 +159,14 @@ func TestGetReservation_RecordIntentClearsDedupeSkip(t *testing.T) {
 
 	const programID int64 = 1150000115051234
 	ruleID := insertRuleFixture(t, pool, ctx)
-	recordingID := insertRecordingFixture(t, pool, ctx, ruleID)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.RuleID = &ruleID
+		p.Source = "rule"
+		p.NetworkID = 11500
+		p.ServiceID = 1150
+		p.EventID = 4321
+		p.ProgramStartAt = time.Now().Add(-7 * 24 * time.Hour)
+	})
 	insertDedupeSkippedReservation(t, pool, ctx, programID, ruleID, recordingID, 0.9)
 
 	// 意図が無い時点では skip = true（対照）。

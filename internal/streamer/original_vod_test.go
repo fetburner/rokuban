@@ -19,6 +19,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -161,8 +162,8 @@ func originalVODTargetFixture(t *testing.T, pool *pgxpool.Pool) (int64, string, 
 	if err := os.WriteFile(fullPath, contents, 0o644); err != nil {
 		t.Fatalf("writing original: %v", err)
 	}
-	recordingID := seedRecording(t, pool)
-	seedAsset(t, pool, recordingID, relPath, int64(len(contents)))
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.Status = "finished" })
+	dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(contents)) })
 	return recordingID, mediaDir, contents
 }
 

@@ -3,7 +3,6 @@ package db
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
@@ -163,23 +163,20 @@ func TestSchemaV1_RecordingInsert(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().Truncate(time.Microsecond)
 
-	var id int64
-	err := pool.QueryRow(ctx,
-		`INSERT INTO recordings (
-			site, source, network_id, service_id, event_id,
-			service_name, channel_type, channel, title,
-			program_start_at, program_duration_ms, status, started_at
-		 ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
-		"home", "manual", 32736, 1024, 15397,
-		"NHK総合", "GR", "27", "テスト番組",
-		now, int64(1800000), "finished", now,
-	).Scan(&id)
-	if err != nil {
-		t.Fatalf("insert recording: %v", err)
-	}
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Site = "home"
+		p.Status = "finished"
+		p.NetworkID = 32736
+		p.ServiceID = 1024
+		p.EventID = 15397
+		p.ServiceName = "NHK総合"
+		p.ProgramStartAt = now
+		p.ProgramDurationMs = 1_800_000
+		p.StartedAt = &now
+	})
 
 	var rec sqlcgen.Recording
-	err = pool.QueryRow(ctx,
+	err := pool.QueryRow(ctx,
 		`SELECT id, site, source, channel_type, status, title FROM recordings WHERE id = $1`, id,
 	).Scan(&rec.ID, &rec.Site, &rec.Source, &rec.ChannelType, &rec.Status, &rec.Title)
 	if err != nil {
@@ -284,27 +281,27 @@ func TestSchemaV1_MediaAssetProfileKindCheck(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 
 	// original + profile=NULL: OK
-	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'test.m2ts', 1024)`, recID)
-	if err != nil {
-		t.Fatalf("original with NULL profile should succeed: %v", err)
-	}
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "test.m2ts"
+		p.SizeBytes = 1024
+	})
 
 	// encoded + profile=NULL: NG
-	_, err = pool.Exec(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'encoded', 'test.mp4', 512)`, recID)
 	assertPgError(t, err, "23514")
 
 	// encoded + profile='h265': OK
-	_, err = pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-		 VALUES ($1, 'encoded', 'h265', 'test_h265.mp4', 512)`, recID)
-	if err != nil {
-		t.Fatalf("encoded with profile should succeed: %v", err)
-	}
+	profile := "h265"
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = "test_h265.mp4"
+		p.SizeBytes = 512
+	})
 
 	// original + profile='x': NG
 	_, err = pool.Exec(ctx,
@@ -317,17 +314,16 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 
-	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'same/path.m2ts', 1024)`, recID)
-	if err != nil {
-		t.Fatalf("first insert: %v", err)
-	}
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "same/path.m2ts"
+		p.SizeBytes = 1024
+	})
 
-	recID2 := insertTestRecording(t, pool)
+	recID2 := dbtest.Recording(t, pool)
 	// active なアセットとパスが重複: NG
-	_, err = pool.Exec(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'same/path.m2ts', 2048)`, recID2)
 	assertPgError(t, err, "23505")
 
@@ -337,28 +333,25 @@ func TestSchemaV1_MediaAssetUniqueRelPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update to deleted: %v", err)
 	}
-	_, err = pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes) VALUES ($1, 'original', 'same/path.m2ts', 2048)`, recID2)
-	if err != nil {
-		t.Fatalf("should allow path reuse after tombstone: %v", err)
-	}
+	dbtest.MediaAsset(t, pool, recID2, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "same/path.m2ts"
+		p.SizeBytes = 2048
+	})
 }
 
 func TestSchemaV1_MediaAssetUniqueNullsNotDistinct(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 
 	// 1 つ目の original (profile=NULL): OK
-	_, err := pool.Exec(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-		 VALUES ($1, 'original', 'a.m2ts', 1024)`, recID)
-	if err != nil {
-		t.Fatalf("first original: %v", err)
-	}
+	dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "a.m2ts"
+		p.SizeBytes = 1024
+	})
 
 	// 同一 recording に 2 つ目の original (profile=NULL) は UNIQUE NULLS NOT DISTINCT で拒否
-	_, err = pool.Exec(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
 		 VALUES ($1, 'original', 'b.m2ts', 2048)`, recID)
 	assertPgError(t, err, "23505")
@@ -368,18 +361,14 @@ func TestSchemaV1_DropStats(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 
-	var assetID int64
-	err := pool.QueryRow(ctx,
-		`INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-		 VALUES ($1, 'original', 'drop_test.m2ts', 4096) RETURNING id`, recID,
-	).Scan(&assetID)
-	if err != nil {
-		t.Fatalf("insert media_asset: %v", err)
-	}
+	assetID := dbtest.MediaAsset(t, pool, recID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "drop_test.m2ts"
+		p.SizeBytes = 4096
+	})
 
-	_, err = pool.Exec(ctx,
+	_, err := pool.Exec(ctx,
 		`INSERT INTO drop_stats (media_asset_id, pid, packets, drops, errors, scrambled)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
 		assetID, 256, int64(100000), int64(3), int64(0), int64(0))
@@ -404,7 +393,7 @@ func TestSchemaV1_RecordSyncFK(t *testing.T) {
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	recID := insertTestRecording(t, pool)
+	recID := dbtest.Recording(t, pool)
 
 	_, err := pool.Exec(ctx,
 		`INSERT INTO record_sync (site, record_id, recording_id, program_id, status)
@@ -633,25 +622,4 @@ func TestSchemaV1_DroppedColumnsAndIndexesStayDropped(t *testing.T) {
 	if relationKind != "r" {
 		t.Errorf("never_scheduled_events relkind = %q, want %q (ordinary table)", relationKind, "r")
 	}
-}
-
-// insertTestRecording は各テスト間で event_id を変えて一意な recording を作る。
-var testEventCounter atomic.Int32
-
-func insertTestRecording(t *testing.T, pool *pgxpool.Pool) int64 {
-	t.Helper()
-	eventID := testEventCounter.Add(1)
-	var id int64
-	err := pool.QueryRow(context.Background(),
-		`INSERT INTO recordings (
-			site, source, network_id, service_id, event_id,
-			service_name, channel_type, channel, title,
-			program_start_at, program_duration_ms, status
-		 ) VALUES ('home','manual',32736,1024,$1,'NHK総合','GR','27','test',now(),1800000,'finished') RETURNING id`,
-		eventID,
-	).Scan(&id)
-	if err != nil {
-		t.Fatalf("insertTestRecording: %v", err)
-	}
-	return id
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 )
 
@@ -23,7 +24,7 @@ func TestEncodeWorker_ProfileRemovedFromDesiredIsNotPublished(t *testing.T) {
 	ctx := context.Background()
 	ffmpegPath := installCountingFFmpeg(t)
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t5.m2ts", []string{"h264"}, []byte("original payload t5"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t5.m2ts", []string{"h264"}, []byte("original payload t5"))
 
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return true })
 	w := newH264Worker(pool, mediaDir, scratchDir, ffmpegPath)

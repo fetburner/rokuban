@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -104,39 +105,44 @@ func TestRegister_PrefersLiveAssetOverDeletedForSameRelPath(t *testing.T) {
 
 	ctx := context.Background()
 	at := time.Date(2026, 7, 30, 1, 2, 3, 0, time.UTC)
-	const insertRecording = `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id,
-			service_name, channel_type, channel, title, program_start_at, program_duration_ms, status
-		) VALUES ('manual', 'default', $1, $2, $3, $4, 'GR', 'unknown', $4, $5, 0, 'finished')
-		RETURNING id`
 
 	// rel_path が再利用された後を模して、同じ rel_path に live 行 (新しい recording) と
 	// deleted 行 (古い recording) を直接仕込む。deleted 行を live 行より後に挿入して
 	// 大きい id を持たせる: これで id DESC の一発検索では deleted 行が先に来てしまう
 	// ため、live 行を優先する state の並び替えが効いているかを検証できる。
-	var liveRecordingID int64
-	if err := pool.QueryRow(ctx, insertRecording, -20, -21, -22, "new", at).Scan(&liveRecordingID); err != nil {
-		t.Fatal(err)
-	}
+	liveRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = -20
+		p.ServiceID = -21
+		p.EventID = -22
+		p.ServiceName = "new"
+		p.Channel = "unknown"
+		p.Title = "new"
+		p.ProgramStartAt = at
+		p.ProgramDurationMs = 0
+	})
 	profile := "rescue-mp4"
-	var liveAssetID int64
-	if err := pool.QueryRow(ctx, `
-		INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state)
-		VALUES ($1, 'encoded', $2, $3, 5, 'active')
-		RETURNING id
-	`, liveRecordingID, profile, relPath).Scan(&liveAssetID); err != nil {
-		t.Fatal(err)
-	}
+	liveAssetID := dbtest.MediaAsset(t, pool, liveRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.Kind = "encoded"
+		p.Profile = &profile
+		p.RelPath = relPath
+		p.SizeBytes = 5
+	})
 
-	var deletedRecordingID int64
-	if err := pool.QueryRow(ctx, insertRecording, -10, -11, -12, "old", at).Scan(&deletedRecordingID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, state, deleted_at)
-		VALUES ($1, 'original', NULL, $2, 5, 'deleted', now())
-	`, deletedRecordingID, relPath); err != nil {
+	deletedRecordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = -10
+		p.ServiceID = -11
+		p.EventID = -12
+		p.ServiceName = "old"
+		p.Channel = "unknown"
+		p.Title = "old"
+		p.ProgramStartAt = at
+		p.ProgramDurationMs = 0
+	})
+	deletedAssetID := dbtest.MediaAsset(t, pool, deletedRecordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "reused/old-show.ts"
+		p.SizeBytes = 5
+	})
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = $2, state = 'deleted', deleted_at = now() WHERE id = $1`, deletedAssetID, relPath); err != nil {
 		t.Fatal(err)
 	}
 

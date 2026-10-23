@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/chapters"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
@@ -42,7 +43,9 @@ func (tracer *currentCutKeepBarrier) TraceQueryEnd(ctx context.Context, _ *pgx.C
 func TestGetCurrentCutKeepReadsOwnershipAndSpansFromOneSnapshot(t *testing.T) {
 	ctx := context.Background()
 	pool := testutil.SetupDB(t)
-	recordingID := newMediaContractRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.ProgramDurationMs = 60_000
+	})
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("seeding chapter ownership: %v", err)
 	}

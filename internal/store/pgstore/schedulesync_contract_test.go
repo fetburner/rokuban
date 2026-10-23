@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
@@ -35,15 +36,19 @@ func TestScheduleSyncContract(t *testing.T) {
 			},
 			SeedStartedRecording: func(t *testing.T, site string, key store.BroadcastEventKey, startedAt time.Time) {
 				t.Helper()
-				ctx := context.Background()
-				q := sqlcgen.New(pool)
-				if _, err := q.CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-					Source: "manual", Site: site, NetworkID: key.NetworkID, ServiceID: key.ServiceID, EventID: key.EventID,
-					ServiceName: "contract", ChannelType: "GR", Channel: "contract", Title: "contract",
-					IsFree: true, ProgramStartAt: startedAt, ProgramDurationMs: 30_000, Status: "recording", StartedAt: &startedAt,
-				}); err != nil {
-					t.Fatalf("creating started recording for site %q: %v", site, err)
-				}
+				dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+					fixtureParams.Site = site
+					fixtureParams.NetworkID = key.NetworkID
+					fixtureParams.ServiceID = key.ServiceID
+					fixtureParams.EventID = key.EventID
+					fixtureParams.ServiceName = "contract"
+					fixtureParams.Channel = "contract"
+					fixtureParams.Title = "contract"
+					fixtureParams.ProgramStartAt = startedAt
+					fixtureParams.ProgramDurationMs = 30_000
+					fixtureParams.Status = "recording"
+					fixtureParams.StartedAt = &startedAt
+				})
 			},
 			SetSnapshotAt: func(t *testing.T, site string, at time.Time) {
 				t.Helper()

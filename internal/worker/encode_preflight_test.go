@@ -14,6 +14,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobs"
 )
@@ -95,7 +96,7 @@ func TestEncodeWorker_PreflightSkipsWithoutRunningFFmpeg(t *testing.T) {
 			}
 			ctx := context.Background()
 			mediaDir, scratchDir := t.TempDir(), t.TempDir()
-			recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "preflight/rec.m2ts", tt.profiles, []byte("original"))
+			recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "preflight/rec.m2ts", tt.profiles, []byte("original"))
 			job := tt.seed(t, pool, recordingID)
 
 			w := &EncodeWorker{
@@ -144,7 +145,7 @@ func TestEncodeWorker_OrdinaryCutJobWithoutOwnershipFails(t *testing.T) {
 		return
 	}
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "preflight/unowned.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "preflight/unowned.m2ts", []string{"cut"}, []byte("original"))
 	w := &EncodeWorker{
 		Media:    newTestMediaStore(pool),
 		Profiles: config.EncodeConfig{Profiles: []config.EncodeProfile{cutFFmpegProfile()}},

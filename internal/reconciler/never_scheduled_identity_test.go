@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
@@ -89,17 +90,17 @@ func TestReservation_MidRecordingFailureIsNotOrphanedDisplay(t *testing.T) {
 	res := createReservation(t, ctx, q, 700002, "放送中の番組", time.Now().Add(-10*time.Minute))
 
 	// handleRecordingFailed が作る形の failed 行（never-scheduled マーカーは無い）。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id,
-			service_name, channel_type, channel, title, is_free,
-			program_start_at, program_duration_ms, status, quality_events
-		) VALUES ('manual', 'default', 10000, 5000, $1,
-			'テスト局', 'GR', '27', '放送中の番組', true,
-			now(), 1800000, 'failed',
-			'[{"event":"recording.failed","reason":"need-rescheduling"}]'::jsonb)
-	`, int32(700002%100000)); err != nil {
-		t.Fatalf("inserting mid-recording failure: %v", err)
+	failedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(700002 % 100000)
+		p.ServiceName = "テスト局"
+		p.Title = "放送中の番組"
+		p.Status = "failed"
+	})
+	if _, err := pool.Exec(ctx, `UPDATE recordings SET quality_events = $2::jsonb WHERE id = $1`, failedID,
+		`[{"event":"recording.failed","reason":"need-rescheduling"}]`); err != nil {
+		t.Fatalf("setting mid-recording failure quality events: %v", err)
 	}
 
 	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
@@ -170,18 +171,18 @@ func TestReservation_RealRecordClearsOrphanedButKeepsMissingEvent(t *testing.T) 
 	}
 
 	// 本物の record が同じ放送イベントに着地する（watcher の CreateRecording 相当）。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id,
-			service_name, channel_type, channel, title, is_free,
-			program_start_at, program_duration_ms, status, started_at, ended_at
-		) VALUES ('manual', 'default', 10000, 5000, $1,
-			'テスト局', 'GR', '27', '後から録れた番組', true,
-			now() - interval '2 hours', 1800000, 'finished',
-			now() - interval '2 hours', now() - interval '90 minutes')
-	`, int32(700003%100000)); err != nil {
-		t.Fatalf("inserting real record: %v", err)
-	}
+	endedStartAt := time.Now().Add(-2 * time.Hour)
+	endedAt := endedStartAt.Add(30 * time.Minute)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(700003 % 100000)
+		p.ServiceName = "テスト局"
+		p.Title = "後から録れた番組"
+		p.ProgramStartAt = endedStartAt
+		p.StartedAt = &endedStartAt
+		p.EndedAt = &endedAt
+	})
 
 	full, err = q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
 		Site: res.Site, ProgramID: res.ProgramID,
@@ -231,18 +232,18 @@ func TestReservation_TrashedRealRecordDoesNotReenterOrphaned(t *testing.T) {
 	}
 
 	// 本物の record が着地。
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO recordings (
-			source, site, network_id, service_id, event_id,
-			service_name, channel_type, channel, title, is_free,
-			program_start_at, program_duration_ms, status, started_at, ended_at
-		) VALUES ('manual', 'default', 10000, 5000, $1,
-			'テスト局', 'GR', '27', '録れた後ごみ箱に入れた番組', true,
-			now() - interval '2 hours', 1800000, 'finished',
-			now() - interval '2 hours', now() - interval '90 minutes')
-	`, int32(700004%100000)); err != nil {
-		t.Fatalf("inserting real record: %v", err)
-	}
+	trashedStartAt := time.Now().Add(-2 * time.Hour)
+	trashedEndedAt := trashedStartAt.Add(30 * time.Minute)
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.NetworkID = 10000
+		p.ServiceID = 5000
+		p.EventID = int32(700004 % 100000)
+		p.ServiceName = "テスト局"
+		p.Title = "録れた後ごみ箱に入れた番組"
+		p.ProgramStartAt = trashedStartAt
+		p.StartedAt = &trashedStartAt
+		p.EndedAt = &trashedEndedAt
+	})
 
 	full, err := q.GetReservationFullBySiteAndProgramID(ctx, sqlcgen.GetReservationFullBySiteAndProgramIDParams{
 		Site: res.Site, ProgramID: res.ProgramID,

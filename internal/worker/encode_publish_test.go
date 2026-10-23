@@ -17,6 +17,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mediapath"
@@ -210,7 +211,7 @@ func TestEncodeWorker_StagingDoesNotTouchCanonical(t *testing.T) {
 	}
 	ffmpegPath := installCountingFFmpeg(t)
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t1.m2ts", []string{"h264"}, []byte("original payload t1"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t1.m2ts", []string{"h264"}, []byte("original payload t1"))
 
 	finalPath := filepath.Join(mediaDir, "20240101", "t1_h264.mp4")
 	previous := bytes.Repeat([]byte("PREVIOUS-CONTENT"), 1024)
@@ -253,7 +254,7 @@ func TestEncodeWorker_CommittedByAnotherAttemptIsNotOverwritten(t *testing.T) {
 	ctx := context.Background()
 	ffmpegPath := installCountingFFmpeg(t)
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t2.m2ts", []string{"h264"}, []byte("original payload t2"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t2.m2ts", []string{"h264"}, []byte("original payload t2"))
 
 	// 削除済みの行（rel_path = target）から始める。行なしだと B は (a) で止まる。
 	encRel := "20240101/t2_h264.mp4"
@@ -321,8 +322,8 @@ func TestEncodeWorker_ConflictingActiveRelPathDoesNotOverwrite(t *testing.T) {
 	ctx := context.Background()
 	ffmpegPath := installCountingFFmpeg(t)
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	ownerID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r_a.m2ts", []string{"b"}, []byte("owner original"))
-	candidateID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r.m2ts", []string{"a_b"}, []byte("candidate original"))
+	ownerID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r_a.m2ts", []string{"b"}, []byte("owner original"))
+	candidateID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r.m2ts", []string{"a_b"}, []byte("candidate original"))
 	const sharedRelPath = "20240101/r_a_b.mp4"
 	if got, err := EncodedRelPath("20240101/r.m2ts", "a_b", "mp4", 0); err != nil || got != sharedRelPath {
 		t.Fatalf("candidate EncodedRelPath = %q, err %v; want %q", got, err, sharedRelPath)
@@ -401,7 +402,7 @@ func testStaleCutPlan(t *testing.T, rowState string) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t3.m2ts", []string{"cut"}, []byte("original payload t3"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t3.m2ts", []string{"cut"}, []byte("original payload t3"))
 	if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 2000 WHERE id = $1`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +513,7 @@ func newRebuildPublishScene(t *testing.T, pool *pgxpool.Pool, name string) rebui
 	t.Helper()
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/"+name+".m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/"+name+".m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -711,7 +712,7 @@ func TestEncodeWorker_LateAttemptCannotPublish(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/late-attempt.m2ts", []string{"h264"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/late-attempt.m2ts", []string{"h264"}, []byte("original"))
 	w := newH264Worker(pool, mediaDir, scratchDir, "")
 	oldAttempt, err := w.beginEncodeAttempt(ctx, recordingID, "h264")
 	if err != nil {
@@ -774,7 +775,7 @@ func TestEncodeWorker_ConcurrentScratchCleanupSkipsActiveAttempts(t *testing.T) 
 	ctx := context.Background()
 	ffmpegPath := installCountingFFmpeg(t)
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/t4.m2ts", []string{"h264"}, []byte("original payload t4"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/t4.m2ts", []string{"h264"}, []byte("original payload t4"))
 
 	var first atomic.Bool
 	reached, release := pauseBeforeEncodeLock(t, func(string) bool { return first.CompareAndSwap(false, true) })
@@ -814,7 +815,7 @@ func TestEncodeWorker_PublishHoldsRelPathFileLockThroughCommit(t *testing.T) {
 		return
 	}
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/lock.m2ts", []string{"h264"}, []byte("seed"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/lock.m2ts", []string{"h264"}, []byte("seed"))
 	encRel := "20240101/lock_h264.mp4"
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
@@ -855,7 +856,7 @@ func TestEncodeWorker_PublishCancelledWhileWaitingForLockRemovesTemp(t *testing.
 		return
 	}
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/cancel.m2ts", []string{"h264"}, []byte("seed"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/cancel.m2ts", []string{"h264"}, []byte("seed"))
 	encRel := "20240101/cancel_h264.mp4"
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(encRel))
 	scratchOut := filepath.Join(scratchDir, "out.mp4")
@@ -893,7 +894,7 @@ func TestEncodeWorker_PublishWaitsForNormalDelete(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r4.m2ts", []string{"h264"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r4.m2ts", []string{"h264"}, []byte("original"))
 	const relPath = "20240101/r4_h264.mp4"
 	const previous = "previous encoded bytes"
 	const next = "new encoded bytes"
@@ -1040,7 +1041,7 @@ func runAttemptCannotOverwriteLaterPublication(t *testing.T, sessionLost bool) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "20240101/r5.m2ts", []string{"h264"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "20240101/r5.m2ts", []string{"h264"}, []byte("original"))
 	const relPath = "20240101/r5_h264.mp4"
 	finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
 	scratchA := filepath.Join(scratchDir, "r5-a.mp4")
@@ -1174,7 +1175,7 @@ func TestEncodeWorker_PublishSkipLeavesSatisfiedRebuildRequest(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/txskip.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/txskip.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}

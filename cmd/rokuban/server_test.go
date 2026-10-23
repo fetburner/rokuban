@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	riveradaptertest "github.com/fetburner/rokuban/internal/jobq/riveradapter/testutil"
@@ -314,35 +315,24 @@ func TestServerCmd_IngestWorkerProbeSucceedsWithReadOnlyMediaRoot(t *testing.T) 
 // ファイル処理も新旧の rel_path 契約を混在させるため、最初の仕事より前に拒否する。
 func TestServerCmd_WorkerRejectsBareMediaAssetRelPath(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	ctx := context.Background()
-	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "home",
-		NetworkID:         1,
-		ServiceID:         1,
-		EventID:           1,
-		ServiceName:       "test",
-		ChannelType:       "GR",
-		Channel:           "1",
-		Title:             "old path",
-		ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 60_000,
-		Status:            "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Site = "home"
+		fixtureParams.NetworkID = 1
+		fixtureParams.ServiceID = 1
+		fixtureParams.EventID = 1
+		fixtureParams.ServiceName = "test"
+		fixtureParams.Channel = "1"
+		fixtureParams.Title = "old path"
+		fixtureParams.ProgramStartAt = time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC)
+		fixtureParams.ProgramDurationMs = 60_000
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
-	if _, err := sqlcgen.New(pool).CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        "original",
-		RelPath:     "archive/old.m2ts",
-		SizeBytes:   1,
-	}); err != nil {
-		t.Fatalf("CreateMediaAsset: %v", err)
-	}
+
+	dbtest.MediaAsset(t, pool, recordingID, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.RelPath = "archive/old.m2ts"
+	})
 
 	path := writeWorkerTestConfig(t, "http://127.0.0.1:1")
-	err = runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=cleanup")
+	err := runServerCmdForTest(t, path, "--roles", "worker", "--sites=", "--queues=cleanup")
 	if err == nil {
 		t.Fatal("worker with a bare original rel_path should fail before starting")
 	}
@@ -367,23 +357,10 @@ func TestServerCmd_WorkerStartsWhenMediaAssetRelPathsAreSitePrefixed(t *testing.
 func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	recordingID, err := sqlcgen.New(pool).CreateRecording(ctx, sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              "home",
-		NetworkID:         1,
-		ServiceID:         1,
-		EventID:           1,
-		ServiceName:       "test",
-		ChannelType:       "GR",
-		Channel:           "1",
-		Title:             "cut version",
-		ProgramStartAt:    time.Date(2026, 7, 30, 0, 0, 0, 0, time.UTC),
-		ProgramDurationMs: 60_000,
-		Status:            "finished",
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Site = "home"
 	})
-	if err != nil {
-		t.Fatalf("CreateRecording: %v", err)
-	}
+
 	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)

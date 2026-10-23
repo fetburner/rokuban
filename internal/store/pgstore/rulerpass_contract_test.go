@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -29,7 +30,16 @@ func TestRulerPassContract(t *testing.T) {
 				return seedRulerPassRule(t, pool, name, dedupeEnabled, threshold)
 			},
 			NewFinishedRecording: func(t *testing.T, ruleID int64, program contracttest.RulerProgram, title string) int64 {
-				return seedRulerPassRecording(t, pool, ruleID, program, title)
+				return dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+					p.RuleID = &ruleID
+					p.Source = "rule"
+					p.Status = "finished"
+					p.Site = program.Site
+					p.NetworkID = 32736
+					p.EventID = program.EventID + 10000
+					p.Title = title
+					p.ProgramStartAt = program.StartAt.Add(-48 * time.Hour)
+				})
 			},
 			SetProgramStarts: func(t *testing.T, program contracttest.RulerProgram, snapshotStart, projectionStart time.Time) {
 				setRulerPassProgramStarts(t, pool, program, snapshotStart, projectionStart)
@@ -109,24 +119,6 @@ INSERT INTO rules (name, dedupe_enabled, dedupe_threshold)
 VALUES ($1, $2, CASE WHEN $2 THEN $3::real ELSE NULL::real END)
 RETURNING id`, name, dedupeEnabled, threshold).Scan(&id); err != nil {
 		t.Fatalf("seeding ruler pass rule: %v", err)
-	}
-	return id
-}
-
-func seedRulerPassRecording(t *testing.T, pool *pgxpool.Pool, ruleID int64, program contracttest.RulerProgram, title string) int64 {
-	t.Helper()
-	var id int64
-	startAt := program.StartAt.Add(-48 * time.Hour)
-	eventID := program.EventID + 10000
-	if err := pool.QueryRow(context.Background(), `
-INSERT INTO recordings (
-  rule_id, source, site, network_id, service_id, event_id,
-  service_name, channel_type, channel, title,
-  program_start_at, program_duration_ms, status
-) VALUES ($1, 'rule', $2, 32736, 5168, $3,
-          'ruler pass contract', 'GR', '27', $4, $5, 1800000, 'finished')
-RETURNING id`, ruleID, program.Site, eventID, title, startAt).Scan(&id); err != nil {
-		t.Fatalf("seeding ruler pass recording: %v", err)
 	}
 	return id
 }

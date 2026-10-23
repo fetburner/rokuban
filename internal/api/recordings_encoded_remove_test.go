@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -59,16 +60,13 @@ func seedEncodedVersions(t *testing.T, pool *pgxpool.Pool, id int64, profiles ..
 	t.Helper()
 	for _, p := range profiles {
 		profile := p
-		_, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-			RecordingID: id,
-			Kind:        store.AssetKindEncoded,
-			Profile:     &profile,
-			RelPath:     fmt.Sprintf("encoded/%d_%s.mp4", id, p),
-			SizeBytes:   200,
+		dbtest.MediaAsset(t, pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+			fixtureParams.Kind = store.AssetKindEncoded
+			fixtureParams.Profile = &profile
+			fixtureParams.RelPath = fmt.Sprintf("encoded/%d_%s.mp4", id, p)
+			fixtureParams.SizeBytes = 200
 		})
-		if err != nil {
-			t.Fatalf("seeding encoded %s: %v", p, err)
-		}
+
 	}
 	setRecordingEncodeProfiles(t, pool, id, profiles)
 }
@@ -124,7 +122,9 @@ func TestRemoveRecordingEncodedAsset_WithOriginal_Returns204(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstore.NewRecordings(pool), EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264", "h265"}}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "版を外す", time.Now().Truncate(time.Second), "finished", 701)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "版を外す", time.Now().Truncate(time.Second), "finished", 701
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(), `
@@ -176,7 +176,9 @@ func TestRemoveRecordingEncodedAsset_AllowsTrashedRecording(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "ごみ箱から版を外す", time.Now().Truncate(time.Second), "finished", 703)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "ごみ箱から版を外す", time.Now().Truncate(time.Second), "finished", 703
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = now() WHERE id = $1`, id); err != nil {
@@ -200,7 +202,9 @@ func TestRemoveRecordingEncodedAsset_WithoutOriginal(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "原本なし", time.Now().Truncate(time.Second), "finished", 702)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本なし", time.Now().Truncate(time.Second), "finished", 702
+	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	markOriginalDeleted(t, pool, originalID)
@@ -238,7 +242,9 @@ func TestRemoveRecordingEncodedAsset_NotFound(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "版なし", time.Now().Truncate(time.Second), "finished", 703)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "版なし", time.Now().Truncate(time.Second), "finished", 703
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264")
 
@@ -260,7 +266,9 @@ func TestRemoveRecordingEncodedAsset_UntilEncodedClampsToAlways(t *testing.T) {
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool)}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "クランプ", time.Now().Truncate(time.Second), "finished", 704)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "クランプ", time.Now().Truncate(time.Second), "finished", 704
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(),
@@ -295,7 +303,9 @@ func TestRemoveRecordingEncodedAsset_ConcurrentRemovalsLeaveOneCopy(t *testing.T
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := seedRecording(t, pool, "並行", time.Now().Truncate(time.Second), "finished", 705)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "並行", time.Now().Truncate(time.Second), "finished", 705
+	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	markOriginalDeleted(t, pool, originalID)
@@ -357,7 +367,9 @@ func TestRemoveRecordingEncodedAssetLocksRecordingBeforePolicy(t *testing.T) {
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := seedRecording(t, pool, "削除ロック順", time.Now().Truncate(time.Second), "finished", 711)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "削除ロック順", time.Now().Truncate(time.Second), "finished", 711
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 
@@ -466,7 +478,9 @@ func TestAddRecordingEncodeProfiles_WaitsForConcurrentRemovalAndClearsRequest(t 
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := seedRecording(t, pool, "足し直し競合", time.Now().Truncate(time.Second), "finished", 706)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "足し直し競合", time.Now().Truncate(time.Second), "finished", 706
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 
@@ -532,7 +546,9 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowFreezesAndRemoves(t *testing.T) 
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, RecordingQuery: pgstore.NewRecordings(pool), EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264", "h265"}}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "policy 無し", time.Now().Truncate(time.Second), "finished", 707)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "policy 無し", time.Now().Truncate(time.Second), "finished", 707
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "h265")
 	if _, err := pool.Exec(context.Background(),
@@ -563,7 +579,9 @@ func TestRemoveRecordingEncodedAsset_NoPolicyRowLastCopyRollsBackFreeze(t *testi
 	srv := httptest.NewServer(NewRouter(RouterConfig{Ready: pool.Ping, EncodePolicyStore: pgstore.NewMedia(pool), EncodeProfileNames: []string{"h264", "h265"}}))
 	defer srv.Close()
 
-	id := seedRecording(t, pool, "policy 無し最後", time.Now().Truncate(time.Second), "finished", 708)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "policy 無し最後", time.Now().Truncate(time.Second), "finished", 708
+	})
 	originalID := seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264")
 	markOriginalDeleted(t, pool, originalID)
@@ -599,7 +617,9 @@ func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.
 	srvOn := httptest.NewServer(cutRouterForRemoval(pool, true))
 	defer srvOn.Close()
 
-	id := seedRecording(t, pool, "cut 規則", time.Now().Truncate(time.Second), "finished", 709)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 規則", time.Now().Truncate(time.Second), "finished", 709
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "cut")
 
@@ -616,7 +636,9 @@ func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.
 		t.Fatalf("live on, remove h264 status = %d, want 204", resp.StatusCode)
 	}
 
-	id2 := seedRecording(t, pool, "cut 規則 2", time.Now().Truncate(time.Second), "finished", 710)
+	id2 := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 規則 2", time.Now().Truncate(time.Second), "finished", 710
+	})
 	seedIngested(t, pool, id2, 1000, nil)
 	seedEncodedVersions(t, pool, id2, "h264", "cut")
 	if resp := deleteEncoded(t, srvOff.URL, id2, "cut"); resp.StatusCode != http.StatusNoContent {
@@ -625,7 +647,9 @@ func TestRemoveRecordingEncodedAsset_CutOnlyResultRejectedUnlessLive(t *testing.
 
 	// desired が前から [cut] だけ（live が有効だった頃の録画など）でも、desired に無い版を
 	// 外すのは desired を変えないので拒否しない。
-	id3 := seedRecording(t, pool, "cut 規則 3", time.Now().Truncate(time.Second), "finished", 712)
+	id3 := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "cut 規則 3", time.Now().Truncate(time.Second), "finished", 712
+	})
 	seedIngested(t, pool, id3, 1000, nil)
 	seedEncodedVersions(t, pool, id3, "h264", "cut")
 	setRecordingEncodeProfiles(t, pool, id3, []string{"cut"})
@@ -642,7 +666,9 @@ func TestAddRecordingEncodeProfiles_CutRuleUsesDesiredAfterConcurrentRemoval(t *
 	defer srv.Close()
 	ctx := context.Background()
 
-	id := seedRecording(t, pool, "足し直し cut 競合", time.Now().Truncate(time.Second), "finished", 711)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "足し直し cut 競合", time.Now().Truncate(time.Second), "finished", 711
+	})
 	seedIngested(t, pool, id, 1000, nil)
 	seedEncodedVersions(t, pool, id, "h264", "cut")
 

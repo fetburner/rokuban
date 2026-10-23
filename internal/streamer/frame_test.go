@@ -15,7 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -42,8 +42,8 @@ func newFrameFixture(t *testing.T, frame []byte) (*frameFixture, int64) {
 	if err := os.WriteFile(full, makeTSData(10), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	id := seedRecording(t, pool)
-	seedAsset(t, pool, id, relPath, int64(len(makeTSData(10))))
+	id := dbtest.Recording(t, pool)
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	f := &frameFixture{pool: pool}
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
@@ -83,12 +83,12 @@ func TestRecordingFrameExtractsFromTheOriginalWithTheRecordedSize(t *testing.T) 
 	f, id := newFrameFixture(t, jpeg)
 	// encoded を持たせても、コマは原本から取る（縮小済みの座標は使えない）。
 	profile := "h264"
-	if _, err := sqlcgen.New(f.pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: id, Kind: store.AssetKindEncoded, Profile: &profile,
-		RelPath: "gr/frame-h264.mp4", SizeBytes: 3,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.MediaAsset(t, f.pool, id, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &profile
+		fixtureParams.RelPath = "gr/frame-h264.mp4"
+		fixtureParams.SizeBytes = 3
+	})
 
 	res, body := get(t, f.url(id, "?at=12500"), nil)
 	if res.StatusCode != http.StatusOK {
@@ -148,26 +148,26 @@ func TestRecordingFrameNotFound(t *testing.T) {
 	t.Cleanup(f.srv.Close)
 
 	// 原本が無い（encoded だけ）。
-	encodedOnly := seedRecordingWithEvent(t, pool, 101)
+	encodedOnly := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 101 })
 	profile := "h264"
-	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: encodedOnly, Kind: store.AssetKindEncoded, Profile: &profile,
-		RelPath: "gr/only-encoded.mp4", SizeBytes: 3,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	dbtest.MediaAsset(t, pool, encodedOnly, func(fixtureParams *dbtest.MediaAssetParams) {
+		fixtureParams.Kind = store.AssetKindEncoded
+		fixtureParams.Profile = &profile
+		fixtureParams.RelPath = "gr/only-encoded.mp4"
+		fixtureParams.SizeBytes = 3
+	})
 
 	// ごみ箱の録画（原本の行はある）。
-	trashed := seedRecordingWithEvent(t, pool, 102)
-	seedAsset(t, pool, trashed, "gr/trashed.ts", 1880)
+	trashed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 102 })
+	dbtest.MediaAsset(t, pool, trashed, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/trashed.ts", 1880 })
 	if _, err := pool.Exec(context.Background(),
 		`UPDATE recordings SET deleted_at = now() WHERE id = $1`, trashed); err != nil {
 		t.Fatal(err)
 	}
 
 	// 行はあるが実体が無い。
-	missing := seedRecordingWithEvent(t, pool, 103)
-	seedAsset(t, pool, missing, "gr/missing.ts", 1880)
+	missing := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) { p.EventID = 103 })
+	dbtest.MediaAsset(t, pool, missing, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = "gr/missing.ts", 1880 })
 
 	for name, id := range map[string]int64{"no original": encodedOnly, "trashed": trashed, "missing file": missing} {
 		res, _ := get(t, f.url(id, "?at=0"), nil)
@@ -210,8 +210,8 @@ func TestRecordingFrameReportsExtractionFailure(t *testing.T) {
 	if err := os.WriteFile(full, makeTSData(10), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	id := seedRecording(t, pool)
-	seedAsset(t, pool, id, relPath, int64(len(makeTSData(10))))
+	id := dbtest.Recording(t, pool)
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(makeTSData(10))) })
 
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: "ffmpeg"})
 	s.runCmd = func(_ context.Context, name string, args ...string) ([]byte, error) {
@@ -247,8 +247,8 @@ func TestRecordingFrameWithRealFFmpegOnAnamorphicMPEG2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	id := seedRecording(t, pool)
-	seedAsset(t, pool, id, relPath, info.Size())
+	id := dbtest.Recording(t, pool)
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, info.Size() })
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)
@@ -315,8 +315,8 @@ func testFrameFollowsChange(t *testing.T, baseOffset string) {
 	if err := os.WriteFile(filepath.Join(mediaDir, relPath), joined, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	id := seedRecording(t, pool)
-	seedAsset(t, pool, id, relPath, int64(len(joined)))
+	id := dbtest.Recording(t, pool)
+	dbtest.MediaAsset(t, pool, id, func(p *dbtest.MediaAssetParams) { p.RelPath, p.SizeBytes = relPath, int64(len(joined)) })
 	s := New(pgstore.NewMedia(pool), Config{MediaDir: mediaDir, FFmpeg: ffmpeg})
 	r := chi.NewRouter()
 	s.Mount(r)

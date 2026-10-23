@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
@@ -478,7 +479,7 @@ func TestIngestWorker_ResumesExistingTempAfterWorkCancellation(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, "rec-resume")
 	streamClient := &http.Client{
 		Transport: &cancelAfterBytesTransport{

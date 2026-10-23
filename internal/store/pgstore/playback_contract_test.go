@@ -10,8 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -74,23 +73,12 @@ func newContractRecording(t *testing.T, pool *pgxpool.Pool, options contracttest
 	if eventID == 0 {
 		eventID = eventIDs.Add(1)
 	}
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         32678,
-		ServiceID:         5168,
-		EventID:           eventID,
-		ServiceName:       "ＯＨＫ",
-		ChannelType:       "GR",
-		Channel:           "27",
-		Title:             "store contract fixture",
-		ProgramStartAt:    start,
-		ProgramDurationMs: 30 * time.Minute.Milliseconds(),
-		Status:            "finished",
+	id := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.EventID = eventID
+		fixtureParams.Title = "store contract fixture"
+		fixtureParams.ProgramStartAt = start
 	})
-	if err != nil {
-		t.Fatalf("seeding recording: %v", err)
-	}
+
 	if options.CMDetectionEnabled {
 		if _, err := pool.Exec(context.Background(), `
 INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)

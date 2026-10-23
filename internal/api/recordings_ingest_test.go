@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -51,11 +52,15 @@ func TestListRecordingsIngestState(t *testing.T) {
 	base := time.Now().Truncate(time.Second)
 
 	// (1) 原本が active = 取り込み済みで原本もある
-	committed := seedRecording(t, pool, "取り込み済み", base.Add(-time.Hour), "finished", 1)
+	committed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "取り込み済み", base.Add(-time.Hour), "finished", 1
+	})
 	seedIngested(t, pool, committed, 4096, nil)
 
 	// (2) 原本行はあるが state='deleted' = 取り込み後に消した
-	deletedOriginal := seedRecording(t, pool, "原本削除済み", base.Add(-2*time.Hour), "finished", 2)
+	deletedOriginal := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "原本削除済み", base.Add(-2*time.Hour), "finished", 2
+	})
 	assetID := seedIngested(t, pool, deletedOriginal, 8192, nil)
 	if _, err := pool.Exec(ctx,
 		`UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
@@ -65,16 +70,22 @@ func TestListRecordingsIngestState(t *testing.T) {
 	// (3) 転送中（進捗行あり）
 	expected := int64(1000)
 	observed := base.Add(-30 * time.Second)
-	transferring := seedRecording(t, pool, "転送中", base.Add(-3*time.Hour), "finished", 3)
+	transferring := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "転送中", base.Add(-3*time.Hour), "finished", 3
+	})
 	seedRecordSync(t, pool, transferring, "rec-transferring", "finished", &expected)
 	seedIngestProgress(t, pool, transferring, 250, &expected, observed)
 
 	// (4) 取り込み待ち（record の観測だけがある）
-	pending := seedRecording(t, pool, "取り込み待ち", base.Add(-4*time.Hour), "finished", 4)
+	pending := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "取り込み待ち", base.Add(-4*time.Hour), "finished", 4
+	})
 	seedRecordSync(t, pool, pending, "rec-pending", "finished", &expected)
 
 	// (5) record の観測すら無い
-	unknown := seedRecording(t, pool, "観測なし", base.Add(-5*time.Hour), "finished", 5)
+	unknown := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "観測なし", base.Add(-5*time.Hour), "finished", 5
+	})
 
 	var got []Recording
 	resp := getJSON(t, srv.URL+"/api/recordings", &got)
@@ -170,26 +181,36 @@ func TestListRecordingsIngestNoJobComing(t *testing.T) {
 
 	// recordings.status と record_sync.status の対応は watcher の
 	// normalizeRecordingStatus のとおり（既知の値はそのまま）。
-	failed := seedRecording(t, pool, "失敗した録画", base.Add(-time.Hour), "failed", 1)
+	failed := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "失敗した録画", base.Add(-time.Hour), "failed", 1
+	})
 	seedRecordSync(t, pool, failed, "rec-failed", "failed", nil)
 
-	canceled := seedRecording(t, pool, "中止した録画", base.Add(-2*time.Hour), "canceled", 2)
+	canceled := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "中止した録画", base.Add(-2*time.Hour), "canceled", 2
+	})
 	seedRecordSync(t, pool, canceled, "rec-canceled", "canceled", nil)
 
-	recording := seedRecording(t, pool, "録画中", base.Add(-30*time.Minute), "recording", 3)
+	recording := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "録画中", base.Add(-30*time.Minute), "recording", 3
+	})
 	seedRecordSync(t, pool, recording, "rec-recording", "recording", nil)
 
 	// 取り消した録画に進捗行が残っているケース。worker は cancel / fail を
 	// 観測したとき進捗行を消してからジョブを終端するが、その DELETE は失敗しても
 	// ログだけで続行するので行が残りうる。残骸を transferring と読むと、二度と
 	// 取り込まれない録画が恒久的に「取り込み中（停滞）」を名乗る。
-	leftover := seedRecording(t, pool, "取り消し後に進捗行が残った録画", base.Add(-4*time.Hour), "canceled", 5)
+	leftover := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "取り消し後に進捗行が残った録画", base.Add(-4*time.Hour), "canceled", 5
+	})
 	seedRecordSync(t, pool, leftover, "rec-canceled-leftover", "canceled", nil)
 	seedIngestProgress(t, pool, leftover, 1024, nil, time.Now())
 
 	// 対照群: 同じ形（原本も進捗も無い）でも record が finished なら pending。
 	// これが無いと「常に unknown を返す」実装でもこのテストが通ってしまう。
-	waiting := seedRecording(t, pool, "取り込み待ち", base.Add(-3*time.Hour), "finished", 4)
+	waiting := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "取り込み待ち", base.Add(-3*time.Hour), "finished", 4
+	})
 	seedRecordSync(t, pool, waiting, "rec-waiting", "finished", nil)
 
 	var got []Recording
@@ -232,7 +253,9 @@ func TestListRecordingsIngestExpectedBytesOmitted(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	srv := newAPIServer(t, pool)
 
-	id := seedRecording(t, pool, "分母なし転送中", time.Now().Truncate(time.Second), "finished", 1)
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Title, p.ProgramStartAt, p.Status, p.EventID = "分母なし転送中", time.Now().Truncate(time.Second), "finished", 1
+	})
 	seedRecordSync(t, pool, id, "rec-1", "finished", nil)
 	seedIngestProgress(t, pool, id, 512, nil, time.Now())
 

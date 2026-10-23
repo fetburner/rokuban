@@ -12,18 +12,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	dto "github.com/prometheus/client_model/go"
 
-	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobq/jobqfake"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/mirakctest"
-	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
 
@@ -69,21 +67,6 @@ func ingestDurationSamples(t *testing.T) uint64 {
 	return m.GetHistogram().GetSampleCount()
 }
 
-// insertTestOriginalMediaAsset は録画に原本 media_asset を 1 行足す。Work の
-// 冪等性チェック（hasOriginalMediaAsset）を通して handleAlreadyCommittedIngest
-// へ入れるようにするためで、他の意味は無い。
-func insertTestOriginalMediaAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64) {
-	t.Helper()
-	if _, err := sqlcgen.New(pool).CreateMediaAsset(context.Background(), sqlcgen.CreateMediaAssetParams{
-		RecordingID: recordingID,
-		Kind:        store.AssetKindOriginal,
-		RelPath:     "sites/default/test/already-committed.m2ts",
-		SizeBytes:   1,
-	}); err != nil {
-		t.Fatalf("inserting original media_asset: %v", err)
-	}
-}
-
 func TestIngestWorker_DeadlineIsCountedAsFailure(t *testing.T) {
 	pool := setupTestPool(t)
 	if pool == nil {
@@ -122,7 +105,7 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if pool == nil {
 		return
 	}
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
 	delay := time.Duration(0)
@@ -234,7 +217,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			RecordTarget:  pgstore.NewRecordings(pool),
 			Precheck:      newTestMediaStore(pool),
 		}
-		recordingID := insertTestRecording(t, pool)
+		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-err")
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -277,9 +260,9 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			RecordTarget:  pgstore.NewRecordings(pool),
 			Precheck:      newTestMediaStore(pool),
 		}
-		recordingID := insertTestRecording(t, pool)
+		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, recordID)
-		insertTestOriginalMediaAsset(t, pool, recordingID)
+		dbtest.MediaAsset(t, pool, recordingID)
 
 		before := ingestJobResults()
 		err := runWorkerViaJobQFake(ctx, w,
@@ -318,7 +301,7 @@ func TestIngestWorker_ContextCancellationIsNotCounted(t *testing.T) {
 			RecordTarget:  pgstore.NewRecordings(pool),
 			Precheck:      newTestMediaStore(pool),
 		}
-		recordingID := insertTestRecording(t, pool)
+		recordingID := dbtest.Recording(t, pool)
 		insertTestRecordSync(t, pool, recordingID, "rec-remote-cancel-cause")
 
 		before := ingestJobResults()
@@ -341,7 +324,7 @@ func TestIngestWorker_FollowupEnqueueFailuresAreLoggedAndIgnored(t *testing.T) {
 		return
 	}
 	tsData := makeTSData(2)
-	recordingID := insertTestRecording(t, pool)
+	recordingID := dbtest.Recording(t, pool)
 	const recordID = "rec-followup-enqueue-failure"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	fake := newFullTransferFake(t, recordID, tsData, "test/followup-enqueue-failure.m2ts")

@@ -7,33 +7,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
-	"github.com/fetburner/rokuban/internal/store"
 )
-
-// createSeriesRecording は棚のテスト用に録画行を 1 件作る。title だけが主張で、
-// 他は CreateRecording が要求する最小の値。
-func createSeriesRecording(t *testing.T, pool *pgxpool.Pool, title string, eventID int32, start time.Time) int64 {
-	t.Helper()
-	id, err := sqlcgen.New(pool).CreateRecording(context.Background(), sqlcgen.CreateRecordingParams{
-		Source:            "manual",
-		Site:              store.DefaultSite,
-		NetworkID:         1,
-		ServiceID:         1,
-		EventID:           eventID,
-		ServiceName:       "test",
-		ChannelType:       "GR",
-		Channel:           "1",
-		Title:             title,
-		ProgramStartAt:    start,
-		ProgramDurationMs: 1000,
-		Status:            "finished",
-	})
-	if err != nil {
-		t.Fatalf("creating recording %q: %v", title, err)
-	}
-	return id
-}
 
 // seriesKey は実際の SQL 関数を呼ぶ。テストが期待値を Go 側に写すと、関数の
 // 本体を変えたときに写した側だけが古くなる（不変条件 8「実装の定数と比較する
@@ -107,7 +83,11 @@ func TestSeriesKey_GeneratedColumnNeedsRecreateAfterFunctionChange(t *testing.T)
 	pool := setupTestDB(t)
 	ctx := context.Background()
 
-	createSeriesRecording(t, pool, "アニメ　テスト作品　第1話", 1, time.Now())
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 1
+		p.Title = "アニメ　テスト作品　第1話"
+		p.ProgramStartAt = time.Now()
+	})
 
 	readKey := func() string {
 		var got *string
@@ -321,8 +301,16 @@ func TestRecordingSeries_ViewPrefersWinner(t *testing.T) {
 	ruleID := createLabelRule(t, pool, "NHK高校講座", "日本史", 0)
 	later := createLabelRule(t, pool, "古典", "日本史", 1)
 
-	matched := createSeriesRecording(t, pool, "NHK高校講座　日本史　第1回", 1, time.Now())
-	unmatched := createSeriesRecording(t, pool, "無関係な番組", 2, time.Now())
+	matched := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 1
+		p.Title = "NHK高校講座　日本史　第1回"
+		p.ProgramStartAt = time.Now()
+	})
+	unmatched := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 2
+		p.Title = "無関係な番組"
+		p.ProgramStartAt = time.Now()
+	})
 
 	if got := recordingSeriesValue(t, pool, matched); got != "古典" {
 		t.Errorf("matched recording series = %q, want the winner's value 古典", got)
@@ -369,7 +357,11 @@ func TestRecordingsLabelRuleTrigger_FollowsTitleUpdates(t *testing.T) {
 	ctx := context.Background()
 
 	createLabelRule(t, pool, "日本史", "日本史", 0)
-	id := createSeriesRecording(t, pool, "NHK高校講座　日本史　第1回", 1, time.Now())
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 1
+		p.Title = "NHK高校講座　日本史　第1回"
+		p.ProgramStartAt = time.Now()
+	})
 
 	if hits := labelRuleHits(t, pool, id); len(hits) != 1 {
 		t.Fatalf("hits after insert = %v, want 1 row", hits)
@@ -408,8 +400,16 @@ func TestApplyLabelRuleReevaluation_AppliesOnlyDifferences(t *testing.T) {
 	q := sqlcgen.New(pool)
 
 	createLabelRule(t, pool, "日本史", "日本史", 0)
-	matched := createSeriesRecording(t, pool, "NHK高校講座　日本史　第1回", 1, time.Now())
-	createSeriesRecording(t, pool, "無関係な番組", 2, time.Now())
+	matched := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 1
+		p.Title = "NHK高校講座　日本史　第1回"
+		p.ProgramStartAt = time.Now()
+	})
+	dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 2
+		p.Title = "無関係な番組"
+		p.ProgramStartAt = time.Now()
+	})
 
 	// トリガーが既に正しい状態を作っている。変化は無い。
 	changed, err := q.ApplyLabelRuleReevaluation(ctx)
@@ -499,7 +499,11 @@ func TestRecordingsLabelRuleTrigger_SkipsUpdatesThatKeepTheTitle(t *testing.T) {
 	ctx := context.Background()
 
 	createLabelRule(t, pool, "日本史", "日本史", 0)
-	id := createSeriesRecording(t, pool, "NHK高校講座　日本史　第1回", 1, time.Now())
+	id := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.EventID = 1
+		p.Title = "NHK高校講座　日本史　第1回"
+		p.ProgramStartAt = time.Now()
+	})
 
 	hitXmin := func() string {
 		t.Helper()

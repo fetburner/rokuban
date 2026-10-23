@@ -20,6 +20,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/chapters"
 	"github.com/fetburner/rokuban/internal/config"
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/ffargs"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -398,8 +399,8 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
 		"-t", "2", "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", srcAbs)
 
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, srcRel, []string{"cut"}, []byte("placeholder"))
-	// seedRecordingWithOriginal が置いた placeholder を、実 ffmpeg で作った本物の
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, srcRel, []string{"cut"}, []byte("placeholder"))
+	// prepareEncodeInput が置いた placeholder を、実 ffmpeg で作った本物の
 	// 素材で上書きする（seed の後に走らせないと seed が空ファイルで潰す）。
 	if out, err := gen.CombinedOutput(); err != nil {
 		t.Fatalf("generating source: %v (%s)", err, out)
@@ -544,7 +545,7 @@ func TestPrepareEncodePublishDoesNotReplaceActiveCutWithoutRequest(t *testing.T)
 		return
 	}
 	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/unrequested-replacement.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/unrequested-replacement.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
 	}
@@ -635,7 +636,7 @@ func TestEncodeWorker_SatisfiedRebuildRequestSkipsWithoutRunningFFmpegAndKeepsRo
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/noop.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/noop.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -695,7 +696,7 @@ func TestEncodeWorker_SkipsRequestBoundJobWhenRequestIsGone(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir, scratchDir := t.TempDir(), t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "rebuild/gone.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "rebuild/gone.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +745,7 @@ func TestEncodeWorker_RequestBoundJobDrawsRequestedKeepAfterChapterEdit(t *testi
 		return
 	}
 	ctx := context.Background()
-	recordingID := seedRecordingWithOriginal(t, pool, t.TempDir(), "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), t.TempDir(), "rebuild/edited.m2ts", []string{"cut"}, []byte("original"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatal(err)
 	}
@@ -794,7 +795,7 @@ func TestEncodeReconcile_CutProfilesWaitForReview(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "cut/review.m2ts",
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cut/review.m2ts",
 		[]string{"cut", "h264"}, []byte("payload"))
 
 	cfg := config.EncodeConfig{Profiles: []config.EncodeProfile{
@@ -829,7 +830,7 @@ func TestEncodeReconcile_DoesNotRebuildStaleCutWhenAddingProfile(t *testing.T) {
 	}
 	ctx := context.Background()
 	mediaDir := t.TempDir()
-	recordingID := seedRecordingWithOriginal(t, pool, mediaDir, "cut/add-profile-stale.m2ts",
+	recordingID := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "cut/add-profile-stale.m2ts",
 		[]string{"cut", "h264"}, []byte("payload"))
 	if _, err := pool.Exec(ctx, `INSERT INTO recording_chapter_ownership (recording_id) VALUES ($1)`, recordingID); err != nil {
 		t.Fatalf("adopting chapters: %v", err)
@@ -916,7 +917,9 @@ func TestIngestWorker_ClampsCutOnlyProfileSelection(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
+	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only", programID)
 
 	fake := newFullTransferFake(t, "rec-policy-cut-only", makeTSData(20), "test/policy-cut-only.m2ts")
@@ -983,7 +986,9 @@ func TestIngestWorker_PreservesCutOnlyProfileSelectionWithLive(t *testing.T) {
 			"DELETE FROM program_overrides WHERE site = $1 AND program_id = $2", "default", programID)
 	})
 
-	recordingID := insertTestRecordingForReservation(t, pool, programID)
+	recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+		fixtureParams.Source, fixtureParams.NetworkID, fixtureParams.ServiceID, fixtureParams.EventID = "rule", 32736, 1024, int32(programID%100000)
+	})
 	insertTestRecordSyncForSite(t, pool, "default", recordingID, "rec-policy-cut-only-live", programID)
 
 	fake := newFullTransferFake(t, "rec-policy-cut-only-live", makeTSData(20), "test/policy-cut-only-live.m2ts")
@@ -1024,7 +1029,7 @@ func TestEncodeReconcile_AllCutRecordingEnqueuesNothing(t *testing.T) {
 	ctx := context.Background()
 	mediaDir := t.TempDir()
 	seed := func(rel string, spans ...chapters.Span) int64 {
-		id := seedRecordingWithOriginal(t, pool, mediaDir, rel, []string{"cut"}, []byte("x"))
+		id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, rel, []string{"cut"}, []byte("x"))
 		if _, err := pool.Exec(ctx, `UPDATE recordings SET program_duration_ms = 1800000 WHERE id = $1`, id); err != nil {
 			t.Fatal(err)
 		}

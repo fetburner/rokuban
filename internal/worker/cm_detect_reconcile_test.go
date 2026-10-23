@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/jobs"
@@ -20,8 +21,8 @@ func TestCMDetectReconcile_ContinuationSurvivesFreshWorker(t *testing.T) {
 		return
 	}
 
-	firstID := seedCMRecording(t, pool, t.TempDir(), 15101)
-	secondID := seedCMRecording(t, pool, t.TempDir(), 15102)
+	firstID := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15101)))
+	secondID := seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15102)))
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET service_id = 1025 WHERE id = $1`, secondID); err != nil {
 		t.Fatalf("moving second recording to another service: %v", err)
 	}
@@ -82,8 +83,8 @@ func TestCMDetectReconcile_ExhaustedWindowNotRestarted(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	firstID := seedCMRecording(t, pool, mediaDir, 15111)
-	secondID := seedCMRecording(t, pool, mediaDir, 15112)
+	firstID := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(15111)))
+	secondID := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(15112)))
 	seedTaughtAreaForService(t, pool, 1024, 1180)
 	enqueuer := newRecordingEnqueuer()
 	detectionStore := pgstore.NewAnalysis(pool)
@@ -125,8 +126,8 @@ func TestCMDetectReconcile_DetectionWindowStaysDoneWhileCandidatesContinue(t *te
 	}
 
 	mediaDir := t.TempDir()
-	firstID := seedCMRecording(t, pool, mediaDir, 15141)
-	secondID := seedCMRecording(t, pool, mediaDir, 15142)
+	firstID := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(15141)))
+	secondID := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(15142)))
 	if _, err := pool.Exec(context.Background(), `UPDATE recordings SET service_id = 1025 WHERE id = $1`, secondID); err != nil {
 		t.Fatalf("moving second recording to another service: %v", err)
 	}
@@ -183,8 +184,8 @@ func TestCMDetectReconcile_ContinuationEnqueueFailureReturnsSuccess(t *testing.T
 		return
 	}
 
-	seedCMRecording(t, pool, t.TempDir(), 15103)
-	seedCMRecording(t, pool, t.TempDir(), 15104)
+	seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15103)))
+	seedCMDetectionState(t, pool, t.TempDir(), dbtest.Recording(t, pool, cmRecordingOptions(15104)))
 	enqueuer := &cmDetectContinuationFailingEnqueuer{recordingEnqueuer: newRecordingEnqueuer()}
 	w := &CMDetectReconcileWorker{Enqueuer: enqueuer, DetectionStore: pgstore.NewAnalysis(pool), RowLimit: 1}
 	if err := runWorkerViaJobQFake(context.Background(), w, jobs.CMDetectReconcileArgs{}); err != nil {
