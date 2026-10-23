@@ -132,15 +132,15 @@ ingest をヒントにできるのは、取りこぼしを sweep が拾い直す
 - 録画の由来（同じ tx の予約と意図から導出する）: `TestRecordObservationsContract/record source` の各ケース。ほかに `failed event source follows intent` と `failed schedule source follows intent`
 - 原子性（一意違反で同期行も残らない）: `TestRecordObservationsContract/record sync rolls back with recording conflict`
 - 失敗の観測の収束（生きた録画は 1 つ）: `TestRecordObservationsContract/failed schedule and failed event converge on one live recording`
-- 成功による置き換え（失敗行と media asset は旧録画に残る）: `TestRecordObservationsContract/success supersedes failed recording`
+- 成功による置き換え（失敗した録画は superseded で残り、asset はその録画のまま）: `TestRecordObservationsContract/success supersedes failed recording`
 - 品質イベントの時刻（DB の時計で付く）: `TestRecordObservationsContract/quality events carry a readable time`
 - ingest の投入の判定（観測を重ねても同じ）: `TestRecordObservationsContract/ingest hint follows the recording status`
 - 転送先の site の絞り込み・NULL の保持・行が無いときの `ErrNotFound`: `TestRecordObservationsContract/ingest target preserves nullable fields`
 - 滞留の件数とバイト数に入る record: `TestRecordObservationsContract/ingest backlog filters records and bytes`
 - 古い同期行の削除は ID の集合で判定する: `TestRecordObservationsContract/stale record syncs are decided by the live id set`
 - title の分類: `recordings_label_rule_sync_update` trigger / `TestRecordingsLabelRuleTrigger_FollowsTitleUpdates`
-- commit 後のヒント（投入の失敗で観測を失敗させない）: `TestProcessRecord_EnqueueFollowsCommit`
-- 上記以外の挙動（録画状態の前進と後戻り防止・未知の状態値の丸め・番組スナップショットの保存・開始時刻による録画の分割・破損イベントの追記・管理対象外 record）: `TestRecordObservationsContract` の各ケース
+- commit 後のヒント（commit の後に投入し、投入の失敗で観測を失敗させない）: `TestProcessRecord_EnqueueFollowsCommit`
+- 上記以外の挙動: `TestRecordObservationsContract` の各ケース
 
 </details>
 

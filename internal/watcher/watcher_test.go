@@ -57,6 +57,7 @@ type failingRecords struct {
 	calls                       []string
 	liveRecordIDs               []string
 	observations                []store.RecordObservation
+	results                     []store.ProcessResult
 	failedScheduleObservations  []store.FailedScheduleObservation
 	failedEventObservations     []store.FailedRecordingObservation
 	brokenEvents                []brokenEventCall
@@ -74,7 +75,11 @@ func (r *failingRecords) ProcessRecord(ctx context.Context, observation store.Re
 	if observation.RecordID == r.failRecordID {
 		return store.ProcessResult{}, errors.New("injected record failure")
 	}
-	return r.RecordObservations.ProcessRecord(ctx, observation)
+	result, err := r.RecordObservations.ProcessRecord(ctx, observation)
+	r.mu.Lock()
+	r.results = append(r.results, result)
+	r.mu.Unlock()
+	return result, err
 }
 
 func (r *failingRecords) ProcessFailedSchedule(ctx context.Context, observation store.FailedScheduleObservation) (store.ProcessResult, error) {
@@ -115,6 +120,7 @@ type recordsSnapshot struct {
 	calls           []string
 	liveRecordIDs   []string
 	observations    []store.RecordObservation
+	results         []store.ProcessResult
 	failedSchedules []store.FailedScheduleObservation
 	failedEvents    []store.FailedRecordingObservation
 	brokenEvents    []brokenEventCall
@@ -127,6 +133,7 @@ func (r *failingRecords) snapshot() recordsSnapshot {
 		calls:           append([]string(nil), r.calls...),
 		liveRecordIDs:   append([]string(nil), r.liveRecordIDs...),
 		observations:    append([]store.RecordObservation(nil), r.observations...),
+		results:         append([]store.ProcessResult(nil), r.results...),
 		failedSchedules: append([]store.FailedScheduleObservation(nil), r.failedScheduleObservations...),
 		failedEvents:    append([]store.FailedRecordingObservation(nil), r.failedEventObservations...),
 		brokenEvents:    append([]brokenEventCall(nil), r.brokenEvents...),
@@ -271,8 +278,7 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 		t.Fatalf("processRecord: %v", err)
 	}
 
-	snap := records.snapshot()
-	observations := snap.observations
+	observations := records.snapshot().observations
 	if len(observations) != 1 {
 		t.Fatalf("ProcessRecord calls = %d, want 1", len(observations))
 	}
@@ -288,35 +294,37 @@ func TestProcessRecord_UntaggedRecord(t *testing.T) {
 }
 
 // TestProcessRecord_EnqueuesFollowResult は、store の結果が ingest の投入を求めるときだけ
-// 投入し、結果の優先度があれば付けることを検証する。どの status が投入を求めるかは
-// store の契約（ingest hint follows the recording status）が持つ。
+// 投入し、結果の優先度が非 0 ならそれを、0 なら job の既定値を使うことを検証する。
+// どの status が何を求めるかは store の契約（ingest hint follows the recording status）が持つので、
+// 期待値は store が返した結果から作る。
 func TestProcessRecord_EnqueuesFollowResult(t *testing.T) {
-	for _, tc := range []struct {
-		status       string
-		wantEnqueue  bool
-		wantPriority int
-	}{
-		{status: store.RecordingStatusRecording, wantEnqueue: true, wantPriority: 1}, // 優先度を渡さない既定
-		{status: store.RecordingStatusFinished, wantEnqueue: true, wantPriority: 2},  // 結果の優先度を渡す
-		{status: store.RecordingStatusCanceled, wantEnqueue: false},                  // 結果が投入を求めない
-	} {
-		t.Run(tc.status, func(t *testing.T) {
+	var sawPriority, sawDefault, sawNone bool
+	for _, status := range []string{store.RecordingStatusRecording, store.RecordingStatusFinished, store.RecordingStatusCanceled} {
+		t.Run(status, func(t *testing.T) {
 			w, pool := setupTest(t)
+			records := &failingRecords{RecordObservations: w.records}
+			w.records = records
 			const programID int64 = 100010
 			createTestReservation(t, pool, programID)
-			record := testRecord("ingest-hint-"+tc.status, programID, tc.status)
+			record := testRecord("ingest-hint-"+status, programID, status)
 			if err := w.processRecord(context.Background(), record); err != nil {
 				t.Fatalf("processRecord: %v", err)
 			}
+			results := records.snapshot().results
+			if len(results) != 1 {
+				t.Fatalf("store results = %d, want 1", len(results))
+			}
+			result := results[0]
 			enqueues := listIngestEnqueues(t, w)
-			if !tc.wantEnqueue {
+			if !result.EnqueueIngest {
+				sawNone = true
 				if len(enqueues) != 0 {
-					t.Fatalf("ingest enqueue calls = %d, want 0", len(enqueues))
+					t.Fatalf("ingest enqueue calls = %d, want 0 when the store does not ask for ingest", len(enqueues))
 				}
 				return
 			}
 			if len(enqueues) != 1 {
-				t.Fatalf("ingest enqueue calls = %d, want 1", len(enqueues))
+				t.Fatalf("ingest enqueue calls = %d, want 1 when the store asks for ingest", len(enqueues))
 			}
 			args, ok := enqueues[0].Args.(jobs.IngestJobArgs)
 			if !ok {
@@ -325,10 +333,21 @@ func TestProcessRecord_EnqueuesFollowResult(t *testing.T) {
 			if args.Site != DefaultSite || args.RecordID != record.ID {
 				t.Errorf("ingest args = %+v, want site %q and record %q", args, DefaultSite, record.ID)
 			}
-			if priority := jobq.EffectivePriority(args.Spec(), enqueues[0].Options...); priority != tc.wantPriority {
-				t.Errorf("ingest priority = %d, want %d", priority, tc.wantPriority)
+			want := jobq.EffectivePriority(args.Spec())
+			if result.IngestPriority != 0 {
+				sawPriority = true
+				want = jobq.EffectivePriority(args.Spec(), jobq.Priority(result.IngestPriority))
+			} else {
+				sawDefault = true
+			}
+			if got := jobq.EffectivePriority(args.Spec(), enqueues[0].Options...); got != want {
+				t.Errorf("ingest priority = %d, want %d (store priority %d)", got, want, result.IngestPriority)
 			}
 		})
+	}
+	// 3 通り（優先度あり・既定・投入なし）を実際に通ったことを確かめる。空振りを防ぐ。
+	if !sawPriority || !sawDefault || !sawNone {
+		t.Fatalf("cases covered: priority=%t default=%t none=%t, want all three", sawPriority, sawDefault, sawNone)
 	}
 }
 
@@ -341,8 +360,7 @@ func TestHandleRecordBroken(t *testing.T) {
 		t.Fatalf("handleRecordBroken: %v", err)
 	}
 
-	snap := records.snapshot()
-	got := snap.brokenEvents
+	got := records.snapshot().brokenEvents
 	if !reflect.DeepEqual(got, []brokenEventCall{{site: DefaultSite, recordID: "record-broken-001", reason: "io-error"}}) {
 		t.Errorf("AppendRecordBrokenEvent calls = %+v, want site, record ID, and reason from mirakc event", got)
 	}
@@ -376,8 +394,7 @@ func TestHandleRecordingFailed_ConvertsScheduleObservation(t *testing.T) {
 		t.Fatalf("handleRecordingFailed: %v", err)
 	}
 
-	snap := records.snapshot()
-	got := snap.failedEvents
+	got := records.snapshot().failedEvents
 	if len(got) != 1 {
 		t.Fatalf("RecordFailedRecording calls = %d, want 1", len(got))
 	}
@@ -408,8 +425,7 @@ func TestHandleRecordingFailed_NoReservationSkipsScheduleLookup(t *testing.T) {
 	if calls := fake.CallCount(http.MethodGet, fmt.Sprintf("/api/recording/schedules/%d", programID)); calls != 0 {
 		t.Errorf("GetSchedule calls without reservation = %d, want 0", calls)
 	}
-	snap := recordsStore.snapshot()
-	failedEvents := snap.failedEvents
+	failedEvents := recordsStore.snapshot().failedEvents
 	if len(failedEvents) != 0 {
 		t.Errorf("RecordFailedRecording calls without reservation = %d, want 0", len(failedEvents))
 	}
@@ -540,8 +556,7 @@ func TestSweep_ListSchedulesFailureDoesNotAdvanceMarker(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "listing schedules") {
 		t.Fatalf("Sweep error = %v, want listing-schedules failure", err)
 	}
-	snap := recordsStore.snapshot()
-	calls := snap.calls
+	calls := recordsStore.snapshot().calls
 	if want := []string{"delete-stale", "record:" + record.ID}; !reflect.DeepEqual(calls, want) {
 		t.Errorf("store calls after ListSchedules failure = %v, want %v", calls, want)
 	}
@@ -579,8 +594,7 @@ func TestSweep_FailedScheduleProcessingDoesNotAdvanceMarker(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("program_id %d", failedProgramID)) {
 		t.Fatalf("Sweep error = %v, want failed schedule program %d", err, failedProgramID)
 	}
-	snap := recordsStore.snapshot()
-	calls := snap.calls
+	calls := recordsStore.snapshot().calls
 	wantCalls := []string{fmt.Sprintf("failed-schedule:%d", failedProgramID), "delete-stale", "record:" + record.ID}
 	if !reflect.DeepEqual(calls, wantCalls) {
 		t.Errorf("Sweep store call order = %v, want %v", calls, wantCalls)
@@ -649,8 +663,7 @@ func TestSweep_ConvertsFailedRecord(t *testing.T) {
 	if err := w.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	snap := recordsStore.snapshot()
-	observations := snap.observations
+	observations := recordsStore.snapshot().observations
 	if len(observations) != 1 {
 		t.Fatalf("ProcessRecord calls = %d, want 1", len(observations))
 	}

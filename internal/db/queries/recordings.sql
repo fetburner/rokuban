@@ -14,10 +14,9 @@
 -- 主 INSERT が参照していない（RETURNING id を読み捨てるだけ）ため、実際に
 -- INSERT が一意制約違反で失敗する。この UPDATE を CreateRecording の WITH 句へ
 -- 戻すと TestRecordObservationsContract/success supersedes failed recording が
--- 落ちる。2 つの独立した
--- 文（この UPDATE を先に確定させてから次の INSERT を発行）に分けることで、
--- 同一トランザクション内でコマンドカウンタが進み、後続の INSERT が
--- 確実に更新後の索引状態を見る。
+-- 落ちる。2 つの独立した文（この UPDATE を先に確定させてから次の INSERT を
+-- 発行）に分けることで、同一トランザクション内でコマンドカウンタが進み、
+-- 後続の INSERT が確実に更新後の索引状態を見る。
 --
 -- superseded_at は「この行が active-event の枠を明け渡した」という不可逆な事実
 -- だけを持つ列で、ユーザーのごみ箱操作を表す deleted_at とは別物にした
@@ -48,8 +47,8 @@
 -- 対象の failed 行が無ければ 0 行のまま何もしない。record_sweep 等が同一 record を
 -- 再処理しても、processRecord は record_sync の行ロックで 2 回目以降
 -- createRecording 自体を呼ばない（internal/store/pgstore/recordobservation.go の
--- AcquireRecordSync 参照）ので、このクエリも 2 回目以降は呼ばれず、superseded_at が二重に進んだり
--- 行が重複したりしない。
+-- AcquireRecordSync 参照）ので、このクエリも 2 回目以降は呼ばれず、
+-- superseded_at が二重に進んだり行が重複したりしない。
 -- name: SupersedeFailedRecording :execrows
 UPDATE recordings
 SET superseded_at = now(), updated_at = now()
