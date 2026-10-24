@@ -600,7 +600,7 @@ func (m *SegmentManager) watch(task *segmentTransformTask) {
 }
 
 func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bool) error {
-	entries := make(map[string]map[int64]bool, segmentTransformRenditionCount)
+	entries := make(map[string][]int64, segmentTransformRenditionCount)
 	endList := make(map[string]bool, segmentTransformRenditionCount)
 	for _, rendition := range segmentRenditions {
 		variant := segmentVariantForRendition[rendition]
@@ -621,7 +621,7 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	m.mu.Unlock()
 	for _, rendition := range segmentRenditions {
 		variant := segmentVariantForRendition[rendition]
-		for number := range entries[rendition] {
+		for _, number := range entries[rendition] {
 			if number < task.requestStart || number > maxCacheNumber {
 				continue
 			}
@@ -650,7 +650,7 @@ func (m *SegmentManager) scanTransform(task *segmentTransformTask, normalExit bo
 	return nil
 }
 
-func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string]map[int64]bool) {
+func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries map[string][]int64) {
 	highest := task.startNumber
 	for _, variant := range segmentVariantForRendition {
 		pattern := filepath.Join(task.workDir, "segments", task.profile.Name+"."+variant+"_seg*.ts*")
@@ -664,7 +664,7 @@ func (m *SegmentManager) updateCurrentNumber(task *segmentTransformTask, entries
 		}
 	}
 	for _, numbers := range entries {
-		for number := range numbers {
+		for _, number := range numbers {
 			if number+1 > highest {
 				highest = number + 1
 			}
@@ -1111,13 +1111,13 @@ func fileExists(path string) bool {
 	return err == nil
 }
 
-func readSegmentPlaylist(path, profile, variant string) (map[int64]bool, bool, error) {
+func readSegmentPlaylist(path, profile, variant string) ([]int64, bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, false, err
 	}
 	defer func() { _ = file.Close() }()
-	segments := make(map[int64]bool)
+	var segments []int64
 	scanner := bufio.NewScanner(file)
 	needURI := false
 	endList := false
@@ -1134,7 +1134,7 @@ func readSegmentPlaylist(path, profile, variant string) (map[int64]bool, bool, e
 			continue
 		}
 		if number, ok := parseOutputSegmentNumber(filepath.Base(line), profile, variant); ok {
-			segments[number] = true
+			segments = append(segments, number)
 		}
 		needURI = false
 	}

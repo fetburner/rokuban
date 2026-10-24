@@ -105,12 +105,12 @@ func TestNewSegmentManagerValidatesCacheWindowAndCleansOwnedScratch(t *testing.T
 func TestReadSegmentPlaylistParsesStableAndTemporaryNames(t *testing.T) {
 	dir := t.TempDir()
 	playlist := filepath.Join(dir, "profile.0.m3u8")
-	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/profile.0_seg00007.ts\n#EXT-X-ENDLIST\n"), 0o600); err != nil {
+	if err := os.WriteFile(playlist, []byte("#EXTM3U\n#EXTINF:2.0,\nsegments/profile.0_seg00007.ts\n#EXTINF:2.0,\nsegments/profile.0_seg00008.ts\n#EXT-X-ENDLIST\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	segments, endList, err := readSegmentPlaylist(playlist, "profile", "0")
-	if err != nil || !endList || !segments[7] {
-		t.Fatalf("read playlist = (%v, %v, %v), want segment 7 and ENDLIST", segments, endList, err)
+	if err != nil || !endList || len(segments) != 2 || segments[0] != 7 || segments[1] != 8 {
+		t.Fatalf("read playlist = (%v, %v, %v), want ordered segments 7 and 8 with ENDLIST", segments, endList, err)
 	}
 	for name, want := range map[string]int64{
 		"profile.0_seg00009.ts":     9,
@@ -120,6 +120,59 @@ func TestReadSegmentPlaylistParsesStableAndTemporaryNames(t *testing.T) {
 		if !ok || got != want {
 			t.Fatalf("parseOutputSegmentNumber(%q) = (%d, %v), want (%d, true)", name, got, ok, want)
 		}
+	}
+}
+
+func TestSegmentTransformCachesSegmentsInPlaylistOrder(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	segmentDir := filepath.Join(workDir, "segments")
+	if err := os.MkdirAll(segmentDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	playlist := filepath.Join(workDir, "test.0.m3u8")
+	contents := "#EXTM3U\n#EXTINF:2.0,\ntest.0_seg00001.ts\n#EXTINF:2.0,\ntest.0_seg00002.ts\n"
+	if err := os.WriteFile(playlist, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, segment := range []struct {
+		number  int
+		content string
+		suffix  string
+	}{
+		{number: 1, content: "one", suffix: ".ts"},
+		{number: 2, content: "two", suffix: ".ts"},
+		{number: 3, content: "partial", suffix: ".ts.tmp"},
+	} {
+		path := filepath.Join(segmentDir, fmt.Sprintf("test.0_seg%05d%s", segment.number, segment.suffix))
+		if err := os.WriteFile(path, []byte(segment.content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache, err := newSegmentCache(filepath.Join(root, "cache"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &SegmentManager{cache: cache, maxSegmentBytes: 1024, prefetchSegments: 5}
+	task := &segmentTransformTask{
+		group:         segmentTransformGroup{recordingID: "recording", generation: "generation", profile: "test"},
+		profile:       LiveProfile{Name: "test", SegmentSeconds: 2},
+		requestStart:  1,
+		startNumber:   1,
+		currentNumber: 1,
+		maxRequested:  2,
+		workDir:       workDir,
+	}
+	if err := manager.scanTransform(task, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, number := range []int64{1, 2} {
+		key := SegmentKey{"recording", "generation", "test", "video", number}
+		lease, ok, err := cache.acquire(key)
+		if err != nil || !ok {
+			t.Fatalf("segment %d after ordered scan = (ok %v, err %v), want cached", number, ok, err)
+		}
+		lease.release()
 	}
 }
 
