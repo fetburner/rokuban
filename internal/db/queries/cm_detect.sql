@@ -8,7 +8,6 @@ SELECT desired.recording_id,
                            ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_detection_desired desired
 JOIN recordings r ON r.id = desired.recording_id
-WHERE desired.recording_id > sqlc.arg('after_recording_id')::bigint
 ORDER BY desired.recording_id
 LIMIT sqlc.arg('row_limit');
 
@@ -314,10 +313,6 @@ SELECT desired.network_id, desired.service_id, COALESCE(desired.recording_id, 0)
                            ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_logo_candidate_desired desired
 JOIN recordings r ON r.id = desired.recording_id
-WHERE (desired.network_id, desired.service_id) > (
-    sqlc.arg('after_network_id')::int,
-    sqlc.arg('after_service_id')::int
-)
 ORDER BY desired.network_id, desired.service_id
 LIMIT sqlc.arg('row_limit');
 

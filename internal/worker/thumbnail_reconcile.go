@@ -44,6 +44,13 @@ const (
 // 引数の Done フラグは、チェーンの中で一度末尾まで読んだ窓を以後のページで照会しない
 // ための印である。無いと、短い窓は次のページで再開位置 0 に戻って先頭から読み直し、
 // 先頭の候補を投入し直す（他の窓が満杯で継続が続く間、毎ページ繰り返す）。
+//
+// 再選択の SQL 窓は、再選択不要な録画も含めて active thumbnail と CM 検出または所有済み
+// chapter のある録画を返す。実際に再選択するかは Go の共通判定が決めるため、SQL が返す
+// 行数を N とすると、`ceil(N/thumbnailReconcileRowLimit)` ページを 15 分ごとに処理し、
+// N が上限の倍数なら末尾確認の空ページも 1 ページ続く。`--once` では各ページが Pod 1 つに
+// なる。この費用は受け入れる（`TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing`）。
+// SQL に同じ判定を複製すると Go の判定とずれうるためである。
 type ThumbnailReconcileWorker struct {
 	Enqueuer jobq.Enqueuer
 	// Media はサムネイル・シークタイルの列挙の読み取り契約。nil は reconcile を呼ばない部分テストでのみ許容する。

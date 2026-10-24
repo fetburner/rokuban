@@ -108,6 +108,8 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 
 上限未満のページを返した窓は末尾に達している。継続ジョブの Done フラグがそれを引き継ぎ、ほかの窓が続く間もその窓を照会しない。Done フラグが無いと、短い窓が次のページで先頭から読み直され、先頭の候補を毎ページ投入し直す。すべての窓が短ければ継続ジョブを積まない。ちょうど上限の窓は、次の空ページで末尾と分かる。
 
+ただし、再選択窓は通常運転でも、対象が上限を超えれば短くならない。再選択窓の SQL は、再選択が要らない録画も含め、active なサムネイルと CM 検出または所有済みチャプターのある録画を返す。実際に再選択するかは Go の共通判定が決めるため、SQL が返す行数を N とすると、既定の上限 1000 で `ceil(N/1000)` ページを 15 分ごとに処理する。N が 1000 の倍数なら、末尾確認の空ページが 1 ページ加わる。参照構成の `--once` では各ページが 1 Pod になる。Go の共通判定を SQL に複製すると、変更時に片側だけ直され判定がずれるため、SQL で候補を絞らずこの費用を受け入れる。
+
 継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。`--once` では、先頭に満杯の恒久候補がある間、後ろの候補へ進む手段は継続ジョブだけである。失敗するとその周期の残りのページを失い、次の定期パスが先頭から連鎖を作り直す。定期パスの kind は MaxAttempts 1 で再試行しないので、エラーにしても得るものは無い。
 
 継続ジョブは引数が違うので、定期パス `{}` と並走しうる。thumbnail ジョブと seek_tiles ジョブは `recording_id` で合流し、二重に走っても、後から公開する側は既存を見て捨てる。ffmpeg の抽出は 2 回走る。
@@ -117,6 +119,7 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 - 3 つの独立カーソルが fresh worker をまたぐこと: `TestThumbnailReconcile_ContinuationSurvivesFreshWorker`
 - 短い窓が別窓の継続中に再走しないこと（再選択・seek tiles が最短の場合）: `TestThumbnailReconcile_ExhaustedWindowNotRestarted`
 - 短い窓が別窓の継続中に再走しないこと（missing が最短の場合）: `TestThumbnailReconcile_ShortWindowsStayDoneWhileLongerWindowContinues`
+- Go の判定で投入 0 件でも満杯の再選択窓が続くこと: `TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing`
 - 窓が満杯になる条件（RowLimit 1）でも対象パスが継続を積まないこと: `TestThumbnailReconcile_TargetedPassFiltersAllCandidatesAndLeavesFullStateAlone`
 - 短いページでは継続しないこと: `TestThumbnailReconcile_EnqueuesMissingSeekTiles`
 - 継続投入の失敗でパスを失敗させないこと: `jobs.EnqueueContinuation` がエラーを返さない
@@ -131,19 +134,16 @@ missing poster、再選択、seek tiles の窓は別々の recording ID カー�
 
 CM 検出と局ロゴ候補も定期パスで補完する。
 
-CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。両方のカーソルを 1 本の継続ジョブに載せる理由と、短い窓の Done フラグは thumbnail と同じである。worker が `--once` で作り直されても、各窓は引数の位置から続ける。満杯の窓がなければ継続ジョブは積まない。
+CM 検出の録画候補は recording ID 順、ロゴ候補は `(network_id, service_id)` 順の別窓で拾う。各窓は毎パス先頭から `RowLimit` 件を読んで投入し、カーソルや継続ジョブは持たない。検出 view は、検出済みの録画と、現在の試行が failed でその後に局ロゴを学習していない録画を外す。ロゴ候補 view は、`cm_logo_candidates` に行がある局を state によらず外す。そのため、試行を終えた先頭の候補は窓から抜け、窓は先へ進む。ロゴ候補 view は running の行ができた時点で局を外す。一方、cm_detect の録画は試行が running の間も検出 view に残る。
 
-継続ジョブは定期パス `{}` と並走しうる。cm_detect ジョブは `(recording_id, recording_duration_ms)`、cm_logo_candidate ジョブは局・録画・ロゴ領域の更新時刻・録画尺で合流する。二重に走っても、遅れて来た試行の結果は捨てられる。
+encode reconcile にカーソルが要るのは、SQL の後に Go 側で候補を落とすからである。落とした候補は view に残り、満杯の窓の先頭を占め続ける。cm_detect にはこの Go 側の絞り込みが無い。足すときは、カーソルが要るか見直す。
 
-継続ジョブの投入に失敗した場合は、ログに残してパスを成功で終える。次の定期パスが先頭から再確認する。
+cm_detect ジョブは `(recording_id, recording_duration_ms)`、cm_logo_candidate ジョブは局・録画・ロゴ領域の更新時刻・録画尺で合流する。`cm_detect_reconcile` はロックの解放を確かめてから代替ジョブを積むので、旧試行と二重に走りうる。遅れて来た試行の結果は捨てられる。
 
 <details><summary>根拠</summary>
 
-- 両窓が複合キーを含む引数で fresh worker をまたぐこと: `TestCMDetectReconcile_ContinuationSurvivesFreshWorker`
-- 短い窓が別窓の継続中に再走しないこと: `TestCMDetectReconcile_ExhaustedWindowNotRestarted`
-- 短いページで継続しないこと: `TestCMDetectReconcileEnqueuesCandidateOnlyWithoutCandidateRow`
-- 継続投入の失敗でパスを失敗させないこと: `jobs.EnqueueContinuation` がエラーを返さない
-- 投入の失敗で Error、成功で Warn を出すこと: `TestEnqueueContinuation_LogsFailureAndSuccess`
+- 失敗済み検出試行の後ろへ進むこと: `TestCMDetectReconcileFailedAttemptMovesPastFirstCandidate`
+- 既存の局ロゴ候補行の後ろへ進むこと: `TestCMDetectReconcileCandidateRowMovesPastFirstStation`
 - 遅れて来た cm_detect の試行結果が捨てられること（試行回数の不一致）: `TestCMDetectCountsDeadAttemptsAndFencesLateResults`
 - 遅れて来た cm_logo_candidate の試行結果が捨てられること（`attempted_at` の不一致）: `TestCMLogoCandidateLateAttemptCannotChangeRecreatedCandidate`
 

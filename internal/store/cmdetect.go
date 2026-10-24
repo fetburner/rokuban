@@ -82,10 +82,10 @@ type CMDetection interface {
 	RetryDetection(ctx context.Context, recordingID int64) (CMDetectionRetry, error)
 	// DeleteStaleAttempts は現在の方針世代でない試行を削除する。
 	DeleteStaleAttempts(ctx context.Context) error
-	// ListMissingDetections は afterRecordingID より後の desired な検出を limit 件返す。
-	ListMissingDetections(ctx context.Context, afterRecordingID int64, limit int32) ([]CMDetectionJob, error)
-	// ListMissingLogoCandidates は afterStation より後の desired な候補解析を limit 件返す。
-	ListMissingLogoCandidates(ctx context.Context, afterStation CMStationRef, limit int32) ([]CMLogoCandidateJob, error)
+	// ListMissingDetections は desired な検出を recording ID 順に先頭から limit 件返す。
+	ListMissingDetections(ctx context.Context, limit int32) ([]CMDetectionJob, error)
+	// ListMissingLogoCandidates は desired な候補解析を (network_id, service_id) 順に先頭から limit 件返す。
+	ListMissingLogoCandidates(ctx context.Context, limit int32) ([]CMLogoCandidateJob, error)
 	// FailOrphanLogoCandidates は worker の締切と recoveryGrace を過ぎた running 候補を失敗にする。
 	// timeoutFor は録画尺に対するジョブの締切を返す。判定には store が記録した DB 時刻を使う。
 	FailOrphanLogoCandidates(ctx context.Context, recoveryGrace time.Duration, timeoutFor func(recordingDurationMs int64) time.Duration) error

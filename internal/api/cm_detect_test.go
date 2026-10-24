@@ -520,7 +520,7 @@ func TestCMLogoAreaAPIForgetsLogoAndRequeuesFailures(t *testing.T) {
 	if desired {
 		t.Error("the failed recording should wait for candidate adoption while the old logo remains")
 	}
-	missing, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
+	missing, err := q.ListMissingCMDetections(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
