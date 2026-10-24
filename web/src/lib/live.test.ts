@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { Service } from '@/api/generated'
+import { playbackStrategy } from '@/lib/playback-mode'
 import {
   chaseLeaveURL,
   chasePlaylistURL,
@@ -487,31 +488,13 @@ describe('classifyLiveLoadError', () => {
     ).toEqual({ kind: 'capacity', message: 'too many concurrent live sessions on this process' })
   })
 
-  it('追っかけの502は入力失敗になり、503の容量不足と分ける', () => {
-    const response = {
-      kind: 'http' as const,
+  it('502 に Retry-After があっても共通分類では other になる', () => {
+    expect(classifyLiveLoadError({
+      kind: 'http',
       status: 502,
-      body: '追っかけ入力のエラーが続いています',
+      body: '<html>Bad Gateway</html>',
       retryAfter: '5',
-    }
-    expect(classifyLiveLoadError(response, 'chase')).toEqual({
-      kind: 'chase-input',
-      message: response.body,
-    })
-    expect(classifyLiveLoadError(response)).toEqual({
-      kind: 'other',
-      status: 502,
-      message: response.body,
-    })
-  })
-
-  it('Retry-After の無い追っかけの502（プロキシ由来）は other のまま', () => {
-    expect(
-      classifyLiveLoadError(
-        { kind: 'http', status: 502, body: '<html>Bad Gateway</html>', retryAfter: null },
-        'chase',
-      ),
-    ).toEqual({ kind: 'other', status: 502, message: '<html>Bad Gateway</html>' })
+    })).toEqual({ kind: 'other', status: 502, message: '<html>Bad Gateway</html>' })
   })
 
   it('503 以外は other になり、status と本文を運ぶ', () => {
@@ -522,6 +505,13 @@ describe('classifyLiveLoadError', () => {
 })
 
 describe('probeLivePlaylist', () => {
+  const chaseClassifier = playbackStrategy({
+    mode: 'chase',
+    site: 'default',
+    recordingId: 42,
+    chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 3600, recordedSeconds: 1800 },
+  }).classifyLoadError
+
   it('200 なら ok（本文が media playlist なら束ねていない）', async () => {
     vi.stubGlobal(
       'fetch',
@@ -567,7 +557,7 @@ describe('probeLivePlaylist', () => {
       'fetch',
       vi.fn(() => Promise.resolve(new Response('Bad Gateway', { status: 502 }))),
     )
-    expect(await probeLivePlaylist('/chase', undefined, 'chase')).toEqual({
+    expect(await probeLivePlaylist('/chase', undefined, chaseClassifier)).toEqual({
       ok: false,
       error: { kind: 'other', status: 502, message: 'Bad Gateway' },
     })
@@ -585,7 +575,7 @@ describe('probeLivePlaylist', () => {
         ),
       ),
     )
-    expect(await probeLivePlaylist('/chase', undefined, 'chase')).toEqual({
+    expect(await probeLivePlaylist('/chase', undefined, chaseClassifier)).toEqual({
       ok: false,
       error: { kind: 'chase-input', message: '追っかけ入力のエラーが続いています' },
     })

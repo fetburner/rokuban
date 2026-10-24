@@ -1089,7 +1089,7 @@ export function LivePlayer(props: LivePlayerProps) {
         if (typeof handedOff === 'boolean') showFailure(handedOff)
         else void handedOff.then(showFailure, () => showFailure(false))
       }
-      const onError = () => failed('ライブ映像を再生できませんでした（映像データを読み込めません）')
+      const onError = () => failed(strategy.errorMessages.mediaError)
       const onStall = () => {
         // **一時停止中の stall は失敗ではない。** WebKit は pause した瞬間に
         // `stalled` を出す（フェッチを止めるため）が、配信は正常なまま。しかも
@@ -1269,7 +1269,7 @@ export function LivePlayer(props: LivePlayerProps) {
     async function start() {
       let probe: Awaited<ReturnType<typeof probeLivePlaylist>>
       try {
-        probe = await probeLivePlaylist(url, controller.signal, isChase ? 'chase' : undefined)
+        probe = await probeLivePlaylist(url, controller.signal, strategy.classifyLoadError)
       } catch (err) {
         // 中断（チャンネル切り替え・破棄）は無視する。エラー表示にはしない ---
         // 単に「もう見たいものが変わった」だけで、失敗ではない
@@ -1532,11 +1532,7 @@ export function LivePlayer(props: LivePlayerProps) {
             setError({
               kind: 'other',
               status: 0,
-              message: isChase
-                ? '追っかけ再生中にエラーが発生しました'
-                : isOriginalVOD
-                  ? '原本 TS の再生中にエラーが発生しました'
-                  : 'ライブ再生中にエラーが発生しました',
+              message: strategy.errorMessages.fatalTitle,
             })
           }
           const handedOff = handOffError(video)
@@ -1613,6 +1609,9 @@ export function LivePlayer(props: LivePlayerProps) {
     startReassertPendingRef,
     restartAtOffset,
     setMediaPlaying,
+    strategy.classifyLoadError,
+    strategy.errorMessages.fatalTitle,
+    strategy.errorMessages.mediaError,
   ])
 
   const currentAxisSeconds = liveTimelineBar?.liveEdgeSeconds ??
@@ -1847,7 +1846,7 @@ export function LivePlayer(props: LivePlayerProps) {
             isOriginalVOD && 'z-20 bg-black',
           )}
         >
-          <LiveErrorMessage error={error} chase={isChase} originalVOD={isOriginalVOD} />
+          <LiveErrorMessage error={error} strategy={strategy} />
           <button
             type="button"
             onClick={retryOffsetSession}
@@ -2071,21 +2070,19 @@ export function LivePlayer(props: LivePlayerProps) {
 }
 
 /**
- * LiveErrorMessage はエラー種別ごとの文言。
+ * LiveErrorMessage は再生 strategy が選んだエラー分類と文言を表示する。
  *
- * `unreachable` は他 2 種と異なり赤（destructive）にしない --- ハイブリッド構成では
+ * `unreachable` は赤（destructive）にしない --- ハイブリッド構成では
  * 自宅（streamer）が落ちているだけの正常状態でありうる（docs/overview.md
- * §サーバーレスデプロイ）。`capacity` / `other` は本文をそのまま見せる
+ * §サーバーレスデプロイ）。`capacity` / `other` の本文はそのまま見せる
  * （docs/frontend.md「エラーの本文も UI まで運ぶ」。400 を黙って隠さない、と同じ規律）。
  */
 function LiveErrorMessage({
   error,
-  chase = false,
-  originalVOD = false,
+  strategy,
 }: {
   error: LiveLoadError
-  chase?: boolean
-  originalVOD?: boolean
+  strategy: ReturnType<typeof playbackStrategy>
 }) {
   if (error.kind === 'unreachable') {
     return (
@@ -2098,18 +2095,8 @@ function LiveErrorMessage({
   if (error.kind === 'capacity') {
     return (
       <div className="text-sm text-destructive">
-        <p>いま視聴できません（チューナー不足または同時視聴数の上限）。</p>
-        {/* 待てば直ることが読めないと「壊れている」と誤解される（レビュー #190 の
-            指摘）。直前まで別のチャンネルを見ていた場合は、そのセッションの
-            解放待ちである可能性が高い。切り替え時に離脱ヒントを送るので通常は
-            猶予（既定 8 秒 = 3 × segment_seconds + 2 秒）で解放されるが、
-            ヒントが届かなかった場合は従来どおり live.idle_timeout（既定 30 秒）
-            まで伸びる。ここでは長い方を案内する --- 短い方を書くと「待ったのに
-            直らない」になる */}
-        <p className="text-muted-foreground">
-          チャンネルを切り替えた直後は、前のチャンネルの解放待ちの可能性があります。
-          30 秒ほど待って再読み込みしてください。
-        </p>
+        <p>{strategy.errorMessages.capacity.title}</p>
+        <p className="text-muted-foreground">{strategy.errorMessages.capacity.guidance}</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )
@@ -2117,20 +2104,14 @@ function LiveErrorMessage({
   if (error.kind === 'chase-input') {
     return (
       <div className="text-sm text-destructive">
-        <p>追っかけ再生の入力に失敗したため、一時停止しています。</p>
+        <p>{strategy.errorMessages.chaseInputTitle ?? strategy.errorMessages.otherTitle}</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )
   }
   return (
     <div className="text-sm text-destructive">
-      <p>
-        {chase
-          ? '追っかけ再生でエラーが発生しました。'
-          : originalVOD
-            ? '原本 TS の再生でエラーが発生しました。'
-            : 'ライブ視聴でエラーが発生しました。'}
-      </p>
+      <p>{strategy.errorMessages.otherTitle}</p>
       {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
     </div>
   )

@@ -83,8 +83,17 @@ func installFailedOriginalVODFFmpeg(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg-original-vod-fail")
 	// Let playlistStartupTimeout win before the process exits. Without the delay,
-	// scheduler timing chooses between the intended 504 and an immediate 503.
+	// scheduler timing can choose between the intended 504 and an immediate 500.
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 1\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("writing fake ffmpeg: %v", err)
+	}
+	return path
+}
+
+func installImmediateFailedOriginalVODFFmpeg(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fake-ffmpeg-original-vod-immediate-fail")
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("writing fake ffmpeg: %v", err)
 	}
 	return path
@@ -777,12 +786,58 @@ func TestOriginalVODFailedFFmpegReleasesSessionAndScratch(t *testing.T) {
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
 	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installFailedOriginalVODFFmpeg(t)))
 
-	resp, _ := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
-	if resp.StatusCode != http.StatusGatewayTimeout {
-		t.Fatalf("failed ffmpeg playlist status = %d, want 504", resp.StatusCode)
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusGatewayTimeout || strings.TrimSpace(string(body)) != "original VOD stream did not start in time" {
+		t.Fatalf("failed ffmpeg playlist status/body = %d %q, want 504 startup timeout", resp.StatusCode, body)
 	}
 	waitForOriginalVODSessionCleanup(t, ls)
 	waitForOriginalVODScratchCleanup(t, originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID, 0))
+}
+
+func TestOriginalVODImmediateFFmpegFailureReturns500AndReleasesSessionAndScratch(t *testing.T) {
+	// The startup budget must dominate the immediate process exit so this exercises
+	// the ffmpeg failure response instead of racing the intended 504 timeout.
+	withPlaylistStartupTimeout(t, 3*time.Second)
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installImmediateFailedOriginalVODFFmpeg(t)))
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusInternalServerError || strings.TrimSpace(string(body)) != "original VOD stream failed to start" {
+		t.Fatalf("immediate ffmpeg failure status/body = %d %q, want 500 original VOD stream failed to start", resp.StatusCode, body)
+	}
+	waitForOriginalVODSessionCleanup(t, ls)
+	waitForOriginalVODScratchCleanup(t, originalVODSessionDir(ls.cfg.SegmentDir, testSite, recordingID, 0))
+}
+
+func TestOriginalVODSessionLimitReturns503(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	cfg := originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 30))
+	cfg.FFprobe = installFakeFFprobeDuration(t, "1000.000000", "1000.000000")
+	cfg.MaxSessions = 1
+	_, srv := newOriginalVODTestServer(t, pool, cfg)
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("first original VOD session status/body = %d %q, want 200", resp.StatusCode, body)
+	}
+	resp, body = get(t, originalVODOffsetPlaylistURL(srv.URL, recordingID, 10, "hd"), nil)
+	if resp.StatusCode != http.StatusServiceUnavailable || strings.TrimSpace(string(body)) != "too many concurrent live sessions on this process" {
+		t.Fatalf("session limit status/body = %d %q, want 503 session limit message", resp.StatusCode, body)
+	}
+}
+
+func TestOriginalVODShuttingDownReturns503(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)
+	ls, srv := newOriginalVODTestServer(t, pool, originalVODConfig(t, mediaDir, installOriginalVODFFmpeg(t, 30)))
+	ls.shutdown()
+
+	resp, body := get(t, originalVODPlaylistURL(srv.URL, recordingID, "hd"), nil)
+	if resp.StatusCode != http.StatusServiceUnavailable || strings.TrimSpace(string(body)) != "streamer is shutting down" {
+		t.Fatalf("shutdown status/body = %d %q, want 503 streamer is shutting down", resp.StatusCode, body)
+	}
 }
 
 func TestOriginalVODServesPlaylistWhileFFmpegIsStillConverting(t *testing.T) {

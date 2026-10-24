@@ -650,29 +650,24 @@ export type LiveLoadError =
   // 想定外のステータス
   | { kind: 'other'; status: number; message: string }
 
+/** LiveLoadErrorInput はプレイリスト取得に失敗したときの HTTP / network 情報。 */
+export type LiveLoadErrorInput =
+  | { kind: 'network' }
+  | { kind: 'http'; status: number; body: string; retryAfter?: string | null }
+
+/** LiveLoadErrorClassifier は再生方式に応じて取得失敗を分類する関数。 */
+export type LiveLoadErrorClassifier = (result: LiveLoadErrorInput) => LiveLoadError
+
 /**
  * classifyLiveLoadError はプレイリスト取得の結果をエラー種別に分類する。
  *
- * 503 はすべて `capacity` に落とす --- セッション上限 / チューナー枯渇 /
- * シャットダウン中を区別できるが、同じ UI 分岐で扱える。追っかけ再生中の 502 は
- * upstream 入力エラー後の cooldown として `chase-input` に分け、自動張り直しを止める。
- * Retry-After の無い 502 はプロキシ由来なので `other` のままにする。
+ * 503 はすべて `capacity` に落とす --- 原因の違いは再生方式ごとの strategy が伝える。
+ * 追っかけ入力失敗の cooldown は方式ごとの strategy が `chase-input` に分類する。
  * 本文は必ずそのまま運ぶ（docs/frontend.md「エラーの本文も UI まで運ぶ」）。
  */
-export function classifyLiveLoadError(
-  result:
-    | { kind: 'network' }
-    // retryAfter は応答の Retry-After ヘッダ（無ければ null）。
-    | { kind: 'http'; status: number; body: string; retryAfter?: string | null },
-  source?: 'chase',
-): LiveLoadError {
+export function classifyLiveLoadError(result: LiveLoadErrorInput): LiveLoadError {
   if (result.kind === 'network') return { kind: 'unreachable' }
   if (result.status === 503) return { kind: 'capacity', message: result.body.trim() }
-  // streamer の cooldown 応答だけが 502 に Retry-After を付ける。nginx や ingress が
-  // streamer の停止中に返す 502 には付かないので、ヘッダの有無でプロキシ由来と区別する。
-  if (source === 'chase' && result.status === 502 && result.retryAfter) {
-    return { kind: 'chase-input', message: result.body.trim() }
-  }
   return { kind: 'other', status: result.status, message: result.body.trim() }
 }
 
@@ -759,7 +754,7 @@ export type LivePlaylistProbeResult =
 export async function probeLivePlaylist(
   url: string,
   signal?: AbortSignal,
-  source?: 'chase',
+  classifyError: LiveLoadErrorClassifier = classifyLiveLoadError,
 ): Promise<LivePlaylistProbeResult> {
   let response: Response
   try {
@@ -771,7 +766,7 @@ export async function probeLivePlaylist(
     // ネットワーク障害と同じ形で返すのは紛らわしい。中断は呼び出し側の
     // AbortController が起点なので、その意図をそのまま伝える
     if (err instanceof DOMException && err.name === 'AbortError') throw err
-    return { ok: false, error: classifyLiveLoadError({ kind: 'network' }) }
+    return { ok: false, error: classifyError({ kind: 'network' }) }
   }
   if (response.ok) {
     // 本文が読めなくても成功として扱う（既定 = 束ねていない）。読めない理由が
@@ -784,9 +779,11 @@ export async function probeLivePlaylist(
   const body = await response.text().catch(() => '')
   return {
     ok: false,
-    error: classifyLiveLoadError(
-      { kind: 'http', status: response.status, body, retryAfter: response.headers.get('Retry-After') },
-      source,
-    ),
+    error: classifyError({
+      kind: 'http',
+      status: response.status,
+      body,
+      retryAfter: response.headers.get('Retry-After'),
+    }),
   }
 }

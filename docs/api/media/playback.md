@@ -237,6 +237,8 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg で HLS の一時セッションに変換して再生する。変換結果は派生物として保存しない。同じ録画・同じ offset の視聴者と profile 切替は 1 本のセッションを共有する。
 
+プレイリスト起動時は、原本が無ければ 404、範囲外 offset は 416 を返す。同時セッション上限と streamer のシャットダウン中は 503、起動待ちのタイムアウトは 504、それ以外の起動失敗は 500 を返す。504 の本文は `original VOD stream did not start in time`、500 は `original VOD stream failed to start` で、詳細はログに残す。
+
 ```
 GET  /api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8[?profile=<name>]
          → application/vnd.apple.mpegurl
@@ -255,7 +257,7 @@ POST /api/sites/{site}/recordings/{id}/original-vod/offset/{offset}/leave
 ```
 #### 資源の同定とセッションの共有
 
-セッションは録画と offset で同定し、profile は出力 playlist の選択にだけ使う。同じ録画・同じ offset の視聴者は 1 本のセッションを共有する。省略した offset と 0 は同じ先頭セッションで、ライブ・追っかけと同じ最大セッション数・idle GC・離脱ヒントに従う。
+セッションは録画と offset で同定し、profile は出力 playlist の選択にだけ使う。同じ録画・同じ offset の視聴者は 1 本のセッションを共有する。省略した offset と 0 は同じ先頭セッションで、ライブ・追っかけと同じ最大セッション数・idle GC・離脱ヒントに従う。最大セッション数を超えた場合は 503 で、原本 VOD では tuner 不足を意味しない。
 
 これらのバイナリ配信ルートは `openapi.yaml` に載せない。Prometheus は `rokuban_live_active_sessions{kind="original_vod"}` に内訳を出す。
 
