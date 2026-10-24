@@ -7,15 +7,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/jobq"
 	"github.com/fetburner/rokuban/internal/mirakc"
@@ -107,15 +111,20 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 			recordingID := dbtest.Recording(t, pool)
 			insertTestRecordSync(t, pool, recordingID, recordID)
 			media := &ingestTempGenerationCapture{MediaPublish: pgstoretest.Media(pool)}
-			worker := &IngestWorker{
-				Publisher:     media,
-				MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-				RecordTarget:  pgstoretest.Recordings(pool),
-				Precheck:      pgstoretest.Media(pool),
-				MediaDir:      t.TempDir(),
-				StallTimeout:  5 * time.Second,
+			mediaDir := t.TempDir()
+			newWorker := func() *IngestWorker {
+				worker := &IngestWorker{
+					Publisher:     media,
+					MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+					RecordTarget:  pgstoretest.Recordings(pool),
+					Precheck:      pgstoretest.Media(pool),
+					MediaDir:      mediaDir,
+					StallTimeout:  5 * time.Second,
+				}
+				worker.CMDetectionStore = pgstoretest.Analysis(pool)
+				return worker
 			}
-			worker.CMDetectionStore = pgstoretest.Analysis(pool)
+			worker := newWorker()
 
 			err := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID})
 			if err == nil {
@@ -138,6 +147,11 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 				}
 			}
 
+			if mode == "size mismatch" {
+				assertIngestTempCreateCrashWindow(t, worker, pool, recordingID, mediaDir, contentPath, recordID)
+				worker = newWorker()
+			}
+
 			badAttempt.Store(false)
 			if err := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
 				t.Fatalf("retry after %s: %v", mode, err)
@@ -155,6 +169,53 @@ func TestIngestWorker_InvalidatedTempGetsFreshGeneration(t *testing.T) {
 				t.Fatal("progress row remained after original commit")
 			}
 		})
+	}
+}
+
+func assertIngestTempCreateCrashWindow(t *testing.T, worker *IngestWorker, pool *pgxpool.Pool, recordingID int64, mediaDir, contentPath, recordID string) {
+	t.Helper()
+	created := make(chan struct{})
+	release := make(chan struct{})
+	previousHook := afterIngestTempCreateBeforeLock
+	afterIngestTempCreateBeforeLock = func() error {
+		close(created)
+		<-release
+		return errors.New("simulated process stop after temp creation")
+	}
+	defer func() { afterIngestTempCreateBeforeLock = previousHook }()
+
+	firstAttemptDone := make(chan error, 1)
+	go func() {
+		firstAttemptDone <- runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID})
+	}()
+	select {
+	case <-created:
+	case <-time.After(5 * time.Second):
+		close(release)
+		<-firstAttemptDone
+		t.Fatal("worker did not pause after creating the replacement temp")
+	}
+
+	concurrentErr := runWorkerViaJobQFake(context.Background(), worker, IngestJobArgs{Site: "default", RecordID: recordID})
+	if !errors.Is(concurrentErr, syscall.EWOULDBLOCK) {
+		close(release)
+		<-firstAttemptDone
+		t.Fatalf("concurrent worker error = %v, want stable temp lock busy", concurrentErr)
+	}
+	close(release)
+	if err := <-firstAttemptDone; err == nil || !strings.Contains(err.Error(), "simulated process stop") {
+		t.Fatalf("replacement temp creation error = %v, want simulated process stop", err)
+	}
+	if _, ok := readIngestProgress(t, pool, recordingID); ok {
+		t.Fatal("stale progress row remained after replacement temp creation")
+	}
+	relPath, err := catalog.SiteRelPath("default", contentPath)
+	if err != nil {
+		t.Fatalf("building ingest rel_path: %v", err)
+	}
+	tempPath := ingestTempFilePath(filepath.Join(mediaDir, filepath.Dir(relPath)), "default", recordID)
+	if info, err := os.Stat(tempPath); err != nil || info.Size() != 0 {
+		t.Fatalf("replacement temp after simulated process stop: info=%v err=%v, want empty file", info, err)
 	}
 }
 

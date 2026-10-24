@@ -85,6 +85,46 @@ func TestMediaRelPathFileLock_SerializesAndHonorsContext(t *testing.T) {
 	}
 }
 
+func TestMediaRelPathFileTryLockDoesNotWaitForBusyPath(t *testing.T) {
+	mediaDir := t.TempDir()
+	const relPath = "sites/default/.rokuban-ingest-default-record-1"
+
+	first, err := Lock(context.Background(), mediaDir, relPath)
+	if err != nil {
+		t.Fatalf("locking first rel_path file: %v", err)
+	}
+	defer func() {
+		if err := first.Close(); err != nil {
+			t.Errorf("closing first rel_path file lock: %v", err)
+		}
+	}()
+
+	second, acquired, err := TryLock(mediaDir, relPath)
+	if err != nil {
+		t.Fatalf("trying busy rel_path file lock: %v", err)
+	}
+	if acquired || second != nil {
+		if second != nil {
+			_ = second.Close()
+		}
+		t.Fatal("TryLock acquired a busy rel_path file lock")
+	}
+
+	if err := first.Close(); err != nil {
+		t.Fatalf("releasing first rel_path file lock: %v", err)
+	}
+	second, acquired, err = TryLock(mediaDir, relPath)
+	if err != nil {
+		t.Fatalf("trying released rel_path file lock: %v", err)
+	}
+	if !acquired || second == nil {
+		t.Fatal("TryLock did not acquire a released rel_path file lock")
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("closing second rel_path file lock: %v", err)
+	}
+}
+
 func TestMediaRelPathFileLock_RemovesSequentialAndParallelLockFiles(t *testing.T) {
 	mediaDir := t.TempDir()
 	for i := 0; i < 12; i++ {

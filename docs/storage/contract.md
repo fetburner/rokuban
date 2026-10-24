@@ -65,7 +65,7 @@ ingest のコピー完了には、fsync と Close のエラー確認まで含め
 
 区切りごとの fsync のコストは NFS / JuiceFS で未測定である。S3 系 FUSE は原本 ingest 先から外れているため、途中 fsync で fd に書けなくなる実装は対象外である。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 
-ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消える。そのため回収時に lock は取らず、unlink 直前に mtime を再確認する。
+ingest は temp の media-root-relative path に stable な rel_path lock を取り、その内側で temp inode の `flock` を取る。temp が無い場合は古い進捗行と checkpoint を消してから inode を作るため、作成直後に worker が落ちても古い世代を新しいバイト列へ引き継がない。temp と checkpoint の回収も同じ stable lock と inode の `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消える。そのため回収時に lock は取らず、unlink 直前に mtime を再確認する。
 
 canonical orphan は aging 後に報告するだけで unlink しない。通常の canonical 公開と削除は `rel_path` filesystem lock を DB commit まで保持し、通常削除との競合を防ぐ。
 
@@ -74,6 +74,8 @@ canonical orphan は aging 後に報告するだけで unlink しない。通常
 パスごとの lock file は、通常終了のときに削除してから解放するので、何度処理しても残らない。異常終了で残った lock file は、次の lock 取得時の掃除が回収する。
 
 rel_path lock は `.rokuban-locks/<prefix><sha256(rel_path)>.lock` に置く。canonical file と同じ directory entry ではないため、canonical の rename / unlink で lock 対象が置き換わらない。通常終了時は per-rel_path lock を保持したまま gate を排他し、lock file を unlink してから flock と fd を解放する。したがって複数回の ingest / encode / delete の後も per-rel_path file は残らない。`.gate.lock` は lock directory の調停に使う固定 file として残る。
+
+ingest temp もこの lock を使い、`recording_ingest_progress.temp_rel_path` と同じ media-root-relative path を key にする。inode の unlink と再作成を stable lock の内側に置き、temp 自体の `flock` は書き手と orphan 回収の相互排他に使う。
 
 取得側は gate を共有して lock file を開き、`LOCK_NB` で試す。busy ならその fd を閉じて gate を解放してから待ち、再度 path を開く。release と GC は gate を排他するため、unlink と同時に古い inode を待つ fd は作られない。これが「A が unlink、B が古い inode を取得、C が新 inode を取得」という二重 lock を防ぐ規則である。active lock は残して次回に回す。lock 取得や cleanup に失敗したときは、ファイル操作を進めずにエラーを返す。
 

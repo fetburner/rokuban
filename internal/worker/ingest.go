@@ -191,6 +191,10 @@ func lockIngestTempFileWithFlags(path string, createFlag int) (*os.File, bool, e
 			lock, err = os.OpenFile(path, flags|os.O_CREATE|os.O_EXCL, 0o666)
 			if err == nil {
 				created = true
+				if err := afterIngestTempCreateBeforeLock(); err != nil {
+					_ = lock.Close()
+					return nil, false, fmt.Errorf("after creating ingest temporary file %q: %w", path, err)
+				}
 			} else if errors.Is(err, os.ErrExist) {
 				lock, err = os.OpenFile(path, flags, 0o666)
 				if errors.Is(err, os.ErrNotExist) {
@@ -322,6 +326,9 @@ var syncIngestParentDir = syncIngestDirectory
 // テストから止めるためのフック。tx は store の内側に置き、フックへ渡さない。
 var beforeIngestFilePublication = func() error { return nil }
 var afterIngestFilePublication = func() error { return nil }
+
+// afterIngestTempCreateBeforeLock は O_EXCL 作成後、inode の flock 前の窓をテストで再現する。
+var afterIngestTempCreateBeforeLock = func() error { return nil }
 
 func syncIngestDirectory(path string) error {
 	dir, err := os.Open(filepath.Dir(path))
@@ -495,7 +502,36 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	if err != nil {
 		return err
 	}
-	tempLock, tempCreated, err := lockIngestTempFile(tempPath)
+	// temp inode だけの flock では、O_EXCL で作った後にロックするまでの間に
+	// 別 worker が同じ inode を先に掴める。先に安定した media root 相対パスを
+	// lock し、その内側で writer と孤児回収が共有する inode の flock を取る。
+	tempStateLock, acquired, err := tryLockMediaRelPathFile(w.MediaDir, tempRelPath)
+	if err != nil {
+		return fmt.Errorf("locking ingest temporary path %s: %w", tempPath, err)
+	}
+	if !acquired {
+		return fmt.Errorf("locking ingest temporary path %s: %w", tempPath, syscall.EWOULDBLOCK)
+	}
+	defer func() {
+		if err := tempStateLock.Close(); err != nil {
+			log.Warn("ingest: closing stable temp lock failed", "err", err)
+		}
+	}()
+
+	tempLock, err := lockExistingIngestTempFile(tempPath)
+	tempCreated := false
+	if errors.Is(err, os.ErrNotExist) {
+		// 古い進捗行を残したまま置き換え inode を作ると、O_EXCL の後で次の進捗を
+		// 書く前に停止した際、再試行が置き換え後のバイト列へ古い世代を引き継ぐ。
+		// stable path lock の内側で進捗を消してから作成する。
+		if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
+			return fmt.Errorf("clearing stale ingest progress before creating temp: %w", err)
+		}
+		if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("removing stale ingest checkpoint before creating temp: %w", err)
+		}
+		tempLock, tempCreated, err = lockIngestTempFile(tempPath)
+	}
 	if err != nil {
 		return fmt.Errorf("locking ingest temporary file %s: %w", tempPath, err)
 	}
