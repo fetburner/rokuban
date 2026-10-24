@@ -59,6 +59,12 @@ func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 				t.Fatalf("purging recording %d: %v", recordingID, err)
 			}
 		},
+		SetRecordingRemovalTimes: func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time) {
+			t.Helper()
+			if _, err := pool.Exec(context.Background(), `UPDATE recordings SET deleted_at = $2, purged_at = $3, superseded_at = $4 WHERE id = $1`, recordingID, deletedAt, purgedAt, supersededAt); err != nil {
+				t.Fatalf("setting removal times for recording %d: %v", recordingID, err)
+			}
+		},
 		NewAsset: func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64 {
 			return newMediaContractAsset(t, pool, recordingID, kind, profile, relPath, state)
 		},

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -41,7 +42,7 @@ type RecordingQueryRecording struct {
 	IngestExpectedBytes *int64
 }
 
-// RecordingQueryEncodeAttempt は単体取得契約用の保存済み試行状態を表す。
+// RecordingQueryEncodeAttempt は、Get の契約テストで仕込むエンコード試行の profile と state を表す。
 type RecordingQueryEncodeAttempt struct {
 	Profile string
 	State   string
@@ -92,10 +93,10 @@ func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQuery
 		t.Fatalf("Get(readback fields): %v", err)
 	}
 	if row.ResumePositionMs == nil || *row.ResumePositionMs != position || row.ResumePositionUpdatedAt == nil || !row.ResumePositionUpdatedAt.Equal(updatedAt) {
-		t.Errorf("Get readback fields ResumePositionMs/ResumePositionUpdatedAt = %v/%v, want %d/%v", row.ResumePositionMs, row.ResumePositionUpdatedAt, position, updatedAt)
+		t.Errorf("Get readback fields ResumePositionMs/ResumePositionUpdatedAt = %v/%v, want %d/%v", ptrText(row.ResumePositionMs), ptrText(row.ResumePositionUpdatedAt), position, updatedAt)
 	}
 	if row.WatchedAt == nil || !row.WatchedAt.Equal(watchedAt) {
-		t.Errorf("Get readback field WatchedAt = %v, want %v", row.WatchedAt, watchedAt)
+		t.Errorf("Get readback field WatchedAt = %s, want %v", ptrText(row.WatchedAt), watchedAt)
 	}
 	if row.KeepOriginal != "until_encoded" {
 		t.Errorf("Get readback field KeepOriginal = %q, want %q", row.KeepOriginal, "until_encoded")
@@ -108,13 +109,13 @@ func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQuery
 		t.Fatalf("decoding Get readback field EncodeAttempts: %v", err)
 	}
 	if !reflect.DeepEqual(attempts, []RecordingQueryEncodeAttempt{{Profile: "h264", State: "failed"}, {Profile: "h265", State: "running"}}) {
-		t.Errorf("Get readback field EncodeAttempts = %+v, want h264/failed and h265/running", attempts)
+		t.Errorf("Get readback field EncodeAttempts = %+v, want [{Profile:h264 State:failed} {Profile:h265 State:running}]", attempts)
 	}
 	if row.IngestWrittenBytes == nil || *row.IngestWrittenBytes != written {
-		t.Errorf("Get readback field IngestWrittenBytes = %v, want %d", row.IngestWrittenBytes, written)
+		t.Errorf("Get readback field IngestWrittenBytes = %s, want %d", ptrText(row.IngestWrittenBytes), written)
 	}
 	if row.IngestExpectedBytes == nil || *row.IngestExpectedBytes != expected {
-		t.Errorf("Get readback field IngestExpectedBytes = %v, want %d", row.IngestExpectedBytes, expected)
+		t.Errorf("Get readback field IngestExpectedBytes = %s, want %d", ptrText(row.IngestExpectedBytes), expected)
 	}
 }
 
@@ -412,4 +413,12 @@ func assertRecordingIDs(t *testing.T, rows []store.RecordingQueryRow, want []int
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recording IDs = %v, want %v", got, want)
 	}
+}
+
+// ptrText は失敗メッセージ用に、ポインタの指す値を表す。nil は "nil" になる。
+func ptrText[T any](p *T) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprint(*p)
 }

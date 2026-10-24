@@ -20,8 +20,7 @@ type MediaDeleteFixture struct {
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
 	NewDeletedAsset               func(t *testing.T) (recordingID, assetID int64)
 	NewRemovedEncoded             func(t *testing.T) (recordingID, assetID int64)
-	// RemovalRequestExists is retained because ListRemovedEncodedAssetsToDelete intentionally
-	// omits deleted assets, so it cannot reveal whether MarkDeleted cleared their request row.
+	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
 	RemovalRequestExists func(t *testing.T, recordingID int64, profile string) bool
 	WaitForLockWaiter    func(t *testing.T, operation string)
 }
@@ -51,7 +50,7 @@ func runMarkDeletedClearsRemovalRequest(t *testing.T, newStore NewMediaDeleteSto
 		t.Fatalf("ListRemovedEncodedAssetsToDelete(before delete): %v", err)
 	}
 	if !containsMediaDeleteAsset(removed, assetID) {
-		t.Fatalf("removed encoded assets = %+v, want asset %d", removed, assetID)
+		t.Fatalf("ListRemovedEncodedAssetsToDelete IDs = %v, want asset %d", mediaDeleteAssetIDs(removed), assetID)
 	}
 	if err := f.Store.MarkDeleting(context.Background(), assetID); err != nil {
 		t.Fatalf("MarkDeleting(%d): %v", assetID, err)
@@ -108,7 +107,7 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 	}
 	active, err := f.Serving.GetActiveOriginalMediaAsset(ctx, recordingID)
 	if err != nil || active.ID != assetID {
-		t.Fatalf("active original after eligibility changed = (%+v, %v), want asset %d", active, err, assetID)
+		t.Fatalf("GetActiveOriginalMediaAsset(%d) ID = %d, err = %v, want ID %d and nil error", recordingID, active.ID, err, assetID)
 	}
 }
 
@@ -138,9 +137,19 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 			break
 		}
 	}
-	if deletedAsset == nil || deletedAsset.RecordingID != recordingID || deletedAsset.State != "deleted" || deletedAsset.DeletedAt == nil {
-		t.Fatalf("Catalog.Export.MediaAssets RecordingID/State/DeletedAt for asset %d = %+v, want recording %d in deleted state with deleted_at", assetID, deletedAsset, recordingID)
+	if deletedAsset == nil {
+		t.Fatalf("Catalog.Export.MediaAssets has no asset %d, want RecordingID %d, State \"deleted\" and DeletedAt set", assetID, recordingID)
 	}
+	if deletedAsset.RecordingID != recordingID {
+		t.Fatalf("asset %d RecordingID = %d, want %d", assetID, deletedAsset.RecordingID, recordingID)
+	}
+	if deletedAsset.State != "deleted" {
+		t.Fatalf("asset %d State = %q, want %q", assetID, deletedAsset.State, "deleted")
+	}
+	if deletedAsset.DeletedAt == nil {
+		t.Fatalf("asset %d DeletedAt = nil, want set", assetID)
+	}
+
 	var servingErr error
 	if kind == store.AssetKindEncoded {
 		_, servingErr = f.Serving.GetEncodedMediaAssetForServing(context.Background(), recordingID, profile)
@@ -160,7 +169,7 @@ func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, as
 		t.Fatalf("ListUnqualifiedDeletingAssets when checking deleted asset %d: %v", assetID, err)
 	}
 	if containsMediaDeleteAsset(pending, assetID) || containsMediaDeleteCandidate(unqualified, assetID) {
-		t.Fatalf("deleted asset %d remains in a deleting queue: pending=%+v unqualified=%+v", assetID, pending, unqualified)
+		t.Fatalf("deleted asset %d remains in a deleting queue: ListPendingDeleteAssets IDs = %v, ListUnqualifiedDeletingAssets IDs = %v, want neither to contain it", assetID, mediaDeleteAssetIDs(pending), mediaDeleteCandidateIDs(unqualified))
 	}
 }
 
@@ -180,4 +189,22 @@ func containsMediaDeleteAsset(assets []store.MediaDeleteAsset, id int64) bool {
 		}
 	}
 	return false
+}
+
+// mediaDeleteAssetIDs は失敗メッセージ用に asset の ID を並べる。
+func mediaDeleteAssetIDs(assets []store.MediaDeleteAsset) []int64 {
+	ids := make([]int64, 0, len(assets))
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	return ids
+}
+
+// mediaDeleteCandidateIDs は失敗メッセージ用に、戻し候補の ID を並べる。
+func mediaDeleteCandidateIDs(assets []store.MediaDeleteRevertCandidate) []int64 {
+	ids := make([]int64, 0, len(assets))
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	return ids
 }

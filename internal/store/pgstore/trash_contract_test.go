@@ -21,7 +21,7 @@ func TestRecordingTrashContract(t *testing.T) {
 		pool := testutil.SetupDB(t)
 		return contracttest.TrashFixture{
 			Trash: NewRecordings(pool), Purge: NewRecordings(pool),
-			RemovalState: NewMedia(pool), Catalog: NewCatalog(pool, []string{store.DefaultSite}),
+			Serving: NewMedia(pool), Catalog: NewCatalog(pool, []string{store.DefaultSite}),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &trashContractEventID)
 			},

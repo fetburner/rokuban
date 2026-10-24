@@ -13,7 +13,7 @@ import (
 type TrashFixture struct {
 	Trash        store.RecordingTrash
 	Purge        store.RecordingPurge
-	RemovalState store.MediaServing
+	Serving      store.MediaServing
 	Catalog      store.Catalog
 	NewRecording NewRecording
 	SetDeletedAt func(t *testing.T, recordingID int64, deletedAt time.Time)
@@ -51,7 +51,7 @@ func runSoftDeleteContract(t *testing.T, newStore NewTrashStore) {
 		}
 	}
 	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
-		t.Fatalf("GetRecordingRemovalState after SoftDelete() = %+v, want deleted", state)
+		t.Fatalf("GetRecordingRemovalState after SoftDelete() = %s, want DeletedAt set", removalStateText(state))
 	}
 	if err := f.Trash.SoftDelete(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("SoftDelete(missing) error = %v, want ErrNotFound", err)
@@ -69,13 +69,13 @@ func runPurgeRequestContract(t *testing.T, newStore NewTrashStore) {
 		}
 	}
 	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
-		t.Fatalf("GetRecordingRemovalState after RequestPurge() = %+v, want deleted", state)
+		t.Fatalf("GetRecordingRemovalState after RequestPurge() = %s, want DeletedAt set", removalStateText(state))
 	}
 	if !recordingPurgeRequested(t, f, id) {
 		t.Fatalf("Catalog.Export after RequestPurge() is missing recording %d's purge request", id)
 	}
 	if purged, err := f.Purge.MarkPurged(ctx, time.Now().Add(time.Hour)); err != nil || len(purged) != 1 || purged[0].ID != id {
-		t.Fatalf("MarkPurged after RequestPurge() = (%+v, %v), want recording %d", purged, err, id)
+		t.Fatalf("MarkPurged after RequestPurge() = %d rows, err = %v, want exactly recording %d", len(purged), err, id)
 	}
 	if err := f.Trash.RequestPurge(ctx, -1); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("RequestPurge(missing) error = %v, want ErrNotFound", err)
@@ -93,7 +93,7 @@ func runRestoreContract(t *testing.T, newStore NewTrashStore) {
 		t.Fatalf("Restore() error = %v", err)
 	}
 	if state := recordingRemovalState(t, f, id); state.DeletedAt != nil {
-		t.Fatalf("GetRecordingRemovalState after Restore() = %+v, want active", state)
+		t.Fatalf("GetRecordingRemovalState after Restore() = %s, want DeletedAt nil", removalStateText(state))
 	}
 	if recordingPurgeRequested(t, f, id) {
 		t.Fatalf("Catalog.Export after Restore() still contains recording %d's purge request", id)
@@ -113,7 +113,7 @@ func runRestoreConflictContract(t *testing.T, newStore NewTrashStore) {
 		t.Fatalf("Restore(conflict) error = %v, want ErrConflict", err)
 	}
 	if state := recordingRemovalState(t, f, trashedID); state.DeletedAt == nil {
-		t.Fatalf("GetRecordingRemovalState after failed Restore() = %+v, want still deleted", state)
+		t.Fatalf("GetRecordingRemovalState after failed Restore() = %s, want DeletedAt set", removalStateText(state))
 	}
 	purgedID := f.NewRecording(t, RecordingOptions{Purged: true})
 	if err := f.Trash.Restore(context.Background(), purgedID); !errors.Is(err, store.ErrNotFound) {
@@ -138,7 +138,7 @@ func runRestoreConcurrentPurgeContract(t *testing.T, newStore NewTrashStore) {
 		t.Fatalf("Restore() error = %v", err)
 	}
 	if state := recordingRemovalState(t, f, id); state.DeletedAt != nil {
-		t.Fatalf("GetRecordingRemovalState after concurrent restore = %+v, want active", state)
+		t.Fatalf("GetRecordingRemovalState after concurrent restore = %s, want DeletedAt nil", removalStateText(state))
 	}
 	if recordingPurgeRequested(t, f, id) {
 		t.Fatalf("Catalog.Export after concurrent restore still contains recording %d's purge request", id)
@@ -164,7 +164,7 @@ func runPurgeAfterRestoreContract(t *testing.T, newStore NewTrashStore) {
 		t.Fatalf("RequestPurge() error = %v", err)
 	}
 	if state := recordingRemovalState(t, f, id); state.DeletedAt == nil {
-		t.Fatalf("GetRecordingRemovalState after serialized purge request = %+v, want deleted", state)
+		t.Fatalf("GetRecordingRemovalState after serialized purge request = %s, want DeletedAt set", removalStateText(state))
 	}
 	if !recordingPurgeRequested(t, f, id) {
 		t.Fatalf("Catalog.Export after serialized RequestPurge() is missing recording %d's purge request", id)
@@ -192,13 +192,13 @@ func runMarkPurgedContract(t *testing.T, newStore NewTrashStore) {
 		t.Fatalf("second MarkPurged() = %+v, want no newly purged rows", second)
 	}
 	if state := recordingRemovalState(t, f, id); state.PurgedAt == nil {
-		t.Fatalf("GetRecordingRemovalState after MarkPurged() = %+v, want purged", state)
+		t.Fatalf("GetRecordingRemovalState after MarkPurged() = %s, want PurgedAt set", removalStateText(state))
 	}
 }
 
 func recordingRemovalState(t *testing.T, f TrashFixture, recordingID int64) store.RecordingRemovalState {
 	t.Helper()
-	state, err := f.RemovalState.GetRecordingRemovalState(context.Background(), recordingID)
+	state, err := f.Serving.GetRecordingRemovalState(context.Background(), recordingID)
 	if err != nil {
 		t.Fatalf("GetRecordingRemovalState(%d): %v", recordingID, err)
 	}
@@ -228,4 +228,15 @@ func awaitTrashOperation(t *testing.T, done <-chan error, name string) error {
 		t.Fatalf("%s did not return within 10 seconds", name)
 		return nil
 	}
+}
+
+// removalStateText は失敗メッセージ用に、状態の 3 つの時刻をフィールド名つきで表す。
+func removalStateText(state store.RecordingRemovalState) string {
+	text := func(at *time.Time) string {
+		if at == nil {
+			return "nil"
+		}
+		return at.UTC().Format(time.RFC3339Nano)
+	}
+	return "{DeletedAt:" + text(state.DeletedAt) + " PurgedAt:" + text(state.PurgedAt) + " SupersededAt:" + text(state.SupersededAt) + "}"
 }

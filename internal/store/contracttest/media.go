@@ -54,6 +54,8 @@ type MediaFixture struct {
 	// LoseTransactionDuringPublish は publish 関数の中から呼ばれ、store が開いている tx の接続を落とす。
 	// 呼んだ後に publish が成功を返すと、publish の成功の後に commit だけが失敗する。
 	LoseTransactionDuringPublish func(t *testing.T)
+	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。nil は NULL にする。
+	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
@@ -88,6 +90,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
+	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
@@ -151,7 +154,7 @@ func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
 			policy.KeepOriginal, policy.EncodeProfiles, policy.CMDetect, ok)
 	}
 	if written, expected := mediaIngestProgress(t, f, id); written != nil || expected != nil {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after original commit: %v/%v", written, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after original commit: %s/%s", ptrText(written), ptrText(expected))
 	}
 }
 
@@ -181,7 +184,7 @@ func runOriginalPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatal("encode policy row survived callback rollback")
 	}
 	if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after callback rollback = (%v, %v), want 1000/%d", written, gotExpected, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after callback rollback = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 	}
 }
 
@@ -467,16 +470,16 @@ func runClearIngestProgress(t *testing.T, newFixture NewMediaFixture) {
 	f.SetIngestProgress(t, id, 100, nil)
 	f.SetIngestProgress(t, otherID, 200, nil)
 	if written, expected := mediaIngestProgress(t, f, id); written == nil || *written != 100 || expected != nil {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes before clear = (%v, %v), want 100/nil", written, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes before clear = (%s, %s), want 100/nil", ptrText(written), ptrText(expected))
 	}
 	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
 		t.Fatalf("ClearIngestProgress(%d): %v", id, err)
 	}
 	if written, expected := mediaIngestProgress(t, f, id); written != nil || expected != nil {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after clear: %v/%v", written, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after clear: %s/%s", ptrText(written), ptrText(expected))
 	}
 	if written, expected := mediaIngestProgress(t, f, otherID); written == nil || *written != 200 || expected != nil {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes for other recording after clear = (%v, %v), want 200/nil", written, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes for other recording after clear = (%s, %s), want 200/nil", ptrText(written), ptrText(expected))
 	}
 	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
 		t.Fatalf("ClearIngestProgress(%d) without row: %v", id, err)
@@ -630,6 +633,43 @@ func runMediaOriginalVODTarget(t *testing.T, newFixture NewMediaFixture) {
 	f.SetRecordingTrashed(t, id)
 	if _, err := f.Serving.GetOriginalVODTarget(ctx, id, f.Site); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetOriginalVODTarget(trashed) error = %v, want ErrNotFound", err)
+	}
+}
+
+func runMediaRecordingRemovalState(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	deleted := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	purged := deleted.Add(time.Hour)
+	superseded := deleted.Add(2 * time.Hour)
+	for _, tc := range []struct {
+		name                        string
+		deleted, purged, superseded *time.Time
+	}{
+		{"none", nil, nil, nil},
+		{"deleted", &deleted, nil, nil},
+		{"purged", &deleted, &purged, nil},
+		{"superseded", nil, nil, &superseded},
+	} {
+		id := f.NewRecording(t)
+		if tc.deleted != nil || tc.purged != nil || tc.superseded != nil {
+			f.SetRecordingRemovalTimes(t, id, tc.deleted, tc.purged, tc.superseded)
+		}
+		got, err := f.Serving.GetRecordingRemovalState(ctx, id)
+		if err != nil {
+			t.Fatalf("GetRecordingRemovalState(%s): %v", tc.name, err)
+		}
+		for _, field := range []struct {
+			name      string
+			got, want *time.Time
+		}{{"DeletedAt", got.DeletedAt, tc.deleted}, {"PurgedAt", got.PurgedAt, tc.purged}, {"SupersededAt", got.SupersededAt, tc.superseded}} {
+			if (field.got == nil) != (field.want == nil) || (field.got != nil && !field.got.Equal(*field.want)) {
+				t.Errorf("GetRecordingRemovalState(%s).%s = %s, want %s", tc.name, field.name, ptrText(field.got), ptrText(field.want))
+			}
+		}
+	}
+	if _, err := f.Serving.GetRecordingRemovalState(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingRemovalState(missing) error = %v, want ErrNotFound", err)
 	}
 }
 

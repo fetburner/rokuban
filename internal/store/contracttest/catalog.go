@@ -3,7 +3,9 @@ package contracttest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -363,9 +365,7 @@ func assertCatalogExportReadbacks(t *testing.T, got, want *catalogdoc.Document) 
 		{"DropPositions", got.DropPositions, want.DropPositions},
 		{"MediaAssetTSScans", got.MediaAssetTSScans, want.MediaAssetTSScans},
 	} {
-		if !reflect.DeepEqual(field.got, field.want) {
-			t.Errorf("Catalog.Export.%s = %#v, want %#v", field.name, field.got, field.want)
-		}
+		reportCatalogDiff(t, "Catalog.Export."+field.name, reflect.ValueOf(field.got), reflect.ValueOf(field.want))
 	}
 	if len(got.Recordings) != len(want.Recordings) {
 		t.Fatalf("Catalog.Export.Recordings count = %d, want %d", len(got.Recordings), len(want.Recordings))
@@ -386,10 +386,51 @@ func assertCatalogExportReadbacks(t *testing.T, got, want *catalogdoc.Document) 
 		expected.Extended = canonicalCatalogJSON(t, expected.Extended)
 		expected.Genres = canonicalCatalogJSON(t, expected.Genres)
 		expected.QualityEvents = canonicalCatalogJSON(t, expected.QualityEvents)
-		if !reflect.DeepEqual(actual, expected) {
-			t.Errorf("Catalog.Export.Recordings fields ID/Source/Status/Snapshot/QualityEvents/DeletedAt/SupersededAt/PurgedAt = %#v, want %#v", actual, expected)
+		reportCatalogDiff(t, "Catalog.Export.Recordings["+strconv.Itoa(i)+"]", reflect.ValueOf(actual), reflect.ValueOf(expected))
+	}
+}
+
+// reportCatalogDiff は got と want の最初の違いを、要素の添字とフィールド名つきで t.Errorf に出す。
+// 件数が違うときは件数だけを出す。
+func reportCatalogDiff(t *testing.T, name string, got, want reflect.Value) {
+	t.Helper()
+	switch got.Kind() {
+	case reflect.Slice:
+		if got.Len() != want.Len() {
+			t.Errorf("%s count = %d, want %d", name, got.Len(), want.Len())
+			return
+		}
+		for i := range got.Len() {
+			reportCatalogDiff(t, name+"["+strconv.Itoa(i)+"]", got.Index(i), want.Index(i))
+		}
+	case reflect.Struct:
+		for i := range got.NumField() {
+			if !reflect.DeepEqual(got.Field(i).Interface(), want.Field(i).Interface()) {
+				t.Errorf("%s.%s = %s, want %s", name, got.Type().Field(i).Name, catalogValueText(got.Field(i)), catalogValueText(want.Field(i)))
+			}
+		}
+	default:
+		if !reflect.DeepEqual(got.Interface(), want.Interface()) {
+			t.Errorf("%s = %s, want %s", name, catalogValueText(got), catalogValueText(want))
 		}
 	}
+}
+
+// catalogValueText は失敗メッセージ用に、ポインタを辿り、バイト列を文字列で表す。
+func catalogValueText(v reflect.Value) string {
+	for v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return "nil"
+		}
+		v = v.Elem()
+	}
+	if b, ok := v.Interface().([]byte); ok {
+		return string(b)
+	}
+	if b, ok := v.Interface().(json.RawMessage); ok {
+		return string(b)
+	}
+	return fmt.Sprintf("%v", v.Interface())
 }
 
 func catalogUTC(value *time.Time) *time.Time {

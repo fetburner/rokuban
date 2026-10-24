@@ -2,13 +2,11 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -23,22 +21,8 @@ func TestRulerPassContract(t *testing.T) {
 	contracttest.RunRulerPass(t, func(t *testing.T) contracttest.RulerPassFixture {
 		pool := testutil.SetupDB(t)
 		reservations := NewReservations(pool)
-		programSnapshotStart := func(t *testing.T, site string, programID int64) (time.Time, bool) {
-			t.Helper()
-			var start time.Time
-			err := pool.QueryRow(context.Background(), `
-SELECT start_at FROM program_snapshots WHERE site = $1 AND program_id = $2`, site, programID).Scan(&start)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return time.Time{}, false
-			}
-			if err != nil {
-				t.Fatalf("reading unreferenced program snapshot start: %v", err)
-			}
-			return start, true
-		}
 		return contracttest.RulerPassFixture{
 			Pass: reservations, Bumper: reservations, Reservations: reservations, Breakers: NewBreakers(pool),
-			ProgramSnapshotStart: programSnapshotStart,
 			NewProgram: func(t *testing.T, title string) contracttest.RulerProgram {
 				return seedRulerPassProgram(t, pool, title)
 			},

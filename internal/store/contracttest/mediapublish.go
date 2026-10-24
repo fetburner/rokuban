@@ -47,7 +47,7 @@ func runPublishCommitFailure(t *testing.T, newFixture NewMediaFixture) {
 			t.Fatal("encode policy row survived the commit failure")
 		}
 		if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
-			t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after commit failure = (%v, %v), want 1000/%d", written, gotExpected, expected)
+			t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after commit failure = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 		}
 	})
 	t.Run("encoded", func(t *testing.T) {
@@ -123,7 +123,7 @@ func runOriginalRelPathConflict(t *testing.T, newFixture NewMediaFixture) {
 		t.Fatal("encode policy row was frozen for a rejected original")
 	}
 	if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
-		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after rejected original = (%v, %v), want 1000/%d", written, gotExpected, expected)
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after rejected original = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 	}
 }
 

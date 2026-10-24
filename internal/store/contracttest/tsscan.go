@@ -137,7 +137,7 @@ func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanSto
 	}
 	got := readTSScanSnapshotForAsset(document, assetID)
 	if len(got.Stats) != 0 || len(got.Positions) != 0 || got.ScannedSizeBytes != -1 {
-		t.Fatalf("Catalog.Export state for encoded asset %d after rejected ReplaceScan = %+v, want no stats, positions, or scan marker", assetID, got)
+		t.Fatalf("Catalog.Export for encoded asset %d after rejected ReplaceScan: len(DropStats) = %d, len(DropPositions) = %d, ScannedSizeBytes = %d, want 0, 0, -1 (no scan marker)", assetID, len(got.Stats), len(got.Positions), got.ScannedSizeBytes)
 	}
 }
 
@@ -218,6 +218,7 @@ func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore)
 	case <-time.After(10 * time.Second):
 		t.Fatal("ReplaceScan did not finish after the asset state change committed")
 	}
+	// ブロッカーが asset を非 active にしたままなので、active へ戻して GetActiveOriginalForTSScan が古い印を観測できるようにする。
 	f.SetAssetState(t, assetID, "active")
 	requireTSScanSnapshot(t, f, recordingID, before)
 	assertStaleTSScanMarker(t, f, recordingID, assetID, 6, before.ScannedSizeBytes)
@@ -295,9 +296,11 @@ func readTSScanSnapshotForAsset(document *catalogdoc.Document, assetID int64) TS
 func requireTSScanSnapshot(t *testing.T, f TSScanFixture, recordingID int64, want TSScanSnapshot) {
 	t.Helper()
 	got := readTSScanSnapshot(t, f, recordingID)
-	if !reflect.DeepEqual(got.Stats, want.Stats) || !reflect.DeepEqual(got.Positions, want.Positions) {
-		t.Fatalf("Catalog.Export.DropStats/DropPositions for recording %d = (%+v, %+v), want (%+v, %+v)",
-			recordingID, got.Stats, got.Positions, want.Stats, want.Positions)
+	if !reflect.DeepEqual(got.Stats, want.Stats) {
+		t.Fatalf("Catalog.Export.DropStats for recording %d = %+v, want %+v", recordingID, got.Stats, want.Stats)
+	}
+	if !reflect.DeepEqual(got.Positions, want.Positions) {
+		t.Fatalf("Catalog.Export.DropPositions for recording %d = %+v, want %+v", recordingID, got.Positions, want.Positions)
 	}
 }
 
@@ -315,7 +318,7 @@ func assertStaleTSScanMarker(t *testing.T, f TSScanFixture, recordingID, assetID
 	t.Helper()
 	asset, err := f.Store.GetActiveOriginalForTSScan(context.Background(), recordingID)
 	if err != nil || asset.ID != assetID || asset.SizeBytes != sizeBytes {
-		t.Fatalf("GetActiveOriginalForTSScan(%d) with stale marker = (%+v, %v), want asset %d size %d", recordingID, asset, err, assetID, sizeBytes)
+		t.Fatalf("GetActiveOriginalForTSScan(%d) with stale marker: ID = %d, SizeBytes = %d, err = %v, want ID %d, SizeBytes %d, nil error", recordingID, asset.ID, asset.SizeBytes, err, assetID, sizeBytes)
 	}
 	if got := readTSScanSnapshot(t, f, recordingID).ScannedSizeBytes; got != scannedSizeBytes {
 		t.Fatalf("Catalog.Export.MediaAssetTSScans stale size for recording %d = %d, want %d", recordingID, got, scannedSizeBytes)

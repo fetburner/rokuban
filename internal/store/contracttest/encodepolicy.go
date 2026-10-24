@@ -26,8 +26,7 @@ type EncodePolicyFixture struct {
 	SetDesired          func(t *testing.T, recordingID int64, profiles []string)
 
 	SetRemovalRequest func(t *testing.T, recordingID int64, profile string)
-	// HasRemovalRequest is retained because ListRemovedEncodedAssetsToDelete filters out
-	// requests for profiles still in desired, so it cannot reveal a stale request after re-addition or rejection.
+	// HasRemovalRequest は削除要求の行があるかを返す。契約の読み取りは desired に残る profile の要求を除いて返すので、再追加や却下の後に行が残っていても見分けられない。
 	HasRemovalRequest  func(t *testing.T, recordingID int64, profile string) bool
 	SetAttempt         func(t *testing.T, recordingID int64, profile, state string, count int32)
 	SetChapterSpans    func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span)
@@ -454,8 +453,14 @@ func runSetPolicy(t *testing.T, newFixture NewEncodePolicyFixture) {
 	if err := f.Policy.SetPolicy(ctx, withoutOriginalID, store.EncodePolicyUpdate{KeepOriginal: &keep, CMDetect: &enabled}); !errors.Is(err, store.ErrOriginalUnavailable) {
 		t.Fatalf("SetPolicy(without original) error = %v, want ErrOriginalUnavailable", err)
 	}
-	if gotKeep := encodePolicyRow(t, f, withoutOriginalID).KeepOriginal; gotKeep != "always" {
-		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal after failed combined update = %q, want rollback to always", withoutOriginalID, gotKeep)
+	// Get は行が無いときも KeepOriginal を "always"、EncodeProfiles を空に補うので、
+	// 行が残っていることは SetDesired で入れた EncodeProfiles で確かめる。
+	rolledBack := encodePolicyRow(t, f, withoutOriginalID)
+	if rolledBack.KeepOriginal != "always" {
+		t.Fatalf("RecordingQuery.Get(%d).KeepOriginal after failed combined update = %q, want rollback to %q", withoutOriginalID, rolledBack.KeepOriginal, "always")
+	}
+	if !sameStrings(rolledBack.EncodeProfiles, []string{"h264"}) {
+		t.Fatalf("RecordingQuery.Get(%d).EncodeProfiles after failed combined update = %v, want %v kept", withoutOriginalID, rolledBack.EncodeProfiles, []string{"h264"})
 	}
 	unfrozenID := f.NewRecording(t)
 	if err := f.Policy.SetPolicy(ctx, unfrozenID, store.EncodePolicyUpdate{KeepOriginal: &keep}); !errors.Is(err, store.ErrEncodeProfilesRequired) {
