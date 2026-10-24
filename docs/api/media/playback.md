@@ -233,6 +233,73 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 最大セッション数 `live.max_sessions` はライブと共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"}` で見る。セグメントの保存先はどちらも `live.segment_dir` 配下である。追っかけは録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
 
+#### 録画中 temp の追従と offset の時刻基準
+
+録画中の追っかけは ingest の temp を追記入力にする。seek 位置は映像の先頭 PTS を原点にする。実際の共有 PVC 上で追記の可視性と FFmpeg の追従を測るまでは、この入力方式を運用結果で確認した扱いにしない。
+
+##### 実 PVC の追記可視性
+
+共有ストレージで追記の可視性を確認できていない。
+
+実 PVC の追記遅延は未測定である。既存 Pod からの `stat /mnt/media` は 5 秒以内に戻らず、別ノードへ作った read-only probe Pod も 30 秒以内に Ready にならなかった。これは NFS の可視遅延ではなく、stat 完了と Pod 起動のタイムアウトである。中央値・最大値と 4 分 slice 境界の見え方は得られていない。
+
+測定するときは、運用中の media PVC と同じ StorageClass に、追記 Pod と読み取り Pod を別ノードで置く。読み取り側は temp の `stat` と末尾の読み取りを短い間隔で記録し、書き手の時刻と比較する。4 分後に別 Pod が同じ temp を `O_APPEND` で開く境界まで続けて測る。PVC が読み取れない状態では遅延値を記録しない。
+
+##### 伸長中の FFmpeg 入力
+
+合成入力は追記完了後に終了したが、共有ストレージ上の挙動は未検証である。
+
+streamer イメージの FFmpeg 7.1.5 で、160×90 / 25 fps の合成 MPEG-TS を `/dev/shm` に 8 秒間書き、2 秒後に別プロセスから読んだ。reader は `-follow 1 -rw_timeout 2000000 -ss 1` で開始し、2 秒 segment の HLS を出した。書き手終了後 2,003 ms で終了し、終了コード 0、segment 4 本、`ENDLIST` ありだった。終了時に demux の I/O error がログへ出たが、playlist は閉じた。
+
+同じ入力で `rw_timeout=10000000` とし、書き手終了後に FFmpeg へ SIGINT を送ると、終了まで 9,502 ms かかり、終了コード 255、`ENDLIST` ありだった。SIGINT は file read の待ちを早めなかった。この測定では `rw_timeout` が終了待ちの上限になった。どちらも tmpfs の結果であり、NFS 上の file read は未検証である。
+
+##### 先頭 audio PTS が古い入力
+
+format の先頭時刻を使う直接 seek は、この入力で目標フレームを選ばなかった。
+
+FFmpeg 7.1.5 で 30 秒の合成 MPEG-TS を作った。video と主音声を 5,400 秒ずらし、別音声の最初の PES を 0 秒から置いた。`-mpegts_copyts 1` で保存した結果、format の start time は 0 秒、video の先頭 PTS は 5,400.010022 秒、別音声の先頭 PTS は 0 秒だった。要求 offset 10 秒の目標 PTS は 5,410.010022 秒である。
+
+直接の `-ss` はどちらも目標から外れた。フレーム誤差は 25 fps で数えた。`-copyts` の有無で同じ decoded frame が選ばれることは framehash で確認した。
+
+| 入力 seek | `-copyts` | 先頭 video PTS | 目標との差 |
+|---|---:|---:|---:|
+| `-ss 10` | なし / あり | 5,400.010022 秒 | −250 frame |
+| `-seek_timestamp 1 -ss 5410.010022` | なし / あり | 5,410.690022 秒 | +17 frame |
+| 2 秒 pre-roll + `trim` | あり | 5,410.010022 秒 | 0 frame |
+
+測定した合成 GOP では、目標より 2 秒前を入力 seek し、`trim=start=5410.010022` で目標 PTS より前を落とし、`setpts=PTS-STARTPTS` で HLS 時間を 0 に戻すと一致した。対応する引数は `-copyts -seek_timestamp 1 -ss 5408.010022` と `trim=start=5410.010022,setpts=PTS-STARTPTS` である。pre-roll の 2 秒はこの合成 GOP だけで確認した値で、放送 TS の GOP に対する上限ではない。
+
+`-ss 10` は 30 秒すべて（2 秒 segment 15 本）を出した。直接の絶対時刻 seek は 20 秒（10 本）を出した。`-copyts` を付けると前者の HLS 先頭 PTS は 5,401.400 秒、後者は 5,412.080 秒になった。`-copyts` を付けない出力はどちらも 1.440 秒から始まった。seek 位置の正しさと muxer の出力 PTS は別に確認する。
+
+##### 33 bit PTS wrap
+
+実録画は読めず、wrap を含む合成入力で seek を測った。
+
+実録画は PVC から読めなかったため、`-output_ts_offset 95430` を付けた 20 秒の合成 MPEG-TS を使った。PTS の wrap は `2^33 / 90000 = 95,443.717689` 秒である。`ffprobe -show_packets` は映像 500 packet の PTS を −13.717689 秒から 6.282311 秒まで出し、範囲 0 秒を通過した。これは raw PTS が wrap する位置を含む。
+
+wrap を含む入力の offset 10 秒では、映像原点は −13.717689 秒、目標は −3.717689 秒だった。直接 seek は `-copyts` なしで 92 frame、ありで 17 frame 遅れた。2 秒 pre-roll と目標 PTS の `trim` を使うと差は 0 frame だった。
+
+##### segment PTS 格子
+
+測定した HLS segment の先頭 PTS は、両入力で 2 秒間隔の格子に一致した。
+
+pre-roll と `trim` の後に `setpts=PTS-STARTPTS` を行った HLS 出力で、segment 時間 `D=2` 秒、25 fps の先頭映像 PTS を比べた。原点は segment 0 の先頭 PTS 1.440 秒である。PTS が wrap する入力も、測った segment の格子ずれは 0 frame だった。
+
+| segment n | 古い audio PTS | PTS wrap |
+|---:|---:|---:|
+| 0 | 1.440 秒 / 0 frame | 1.440 秒 / 0 frame |
+| 1 | 3.440 秒 / 0 frame | 3.440 秒 / 0 frame |
+| 2 | 5.440 秒 / 0 frame | 5.440 秒 / 0 frame |
+| 3 | 7.440 秒 / 0 frame | 7.440 秒 / 0 frame |
+| 4 | 9.440 秒 / 0 frame | 9.440 秒 / 0 frame |
+| 5 | 11.440 秒 / 0 frame | — |
+| 6 | 13.440 秒 / 0 frame | — |
+| 7 | 15.440 秒 / 0 frame | — |
+| 8 | 17.440 秒 / 0 frame | — |
+| 9 | 19.440 秒 / 0 frame | — |
+
+実録画での seek 精度、実 PVC 上の追記遅延、4 分境界、NFS 上での `-follow 1` 終了は未検証である。上の PTS 結果は FFmpeg 7.1.5 と合成入力に限る。
+
 ### 録画原本のブラウザ再生
 
 完了済みで active な原本 MPEG-2 TS を、site streamer が FFmpeg で HLS の一時セッションに変換して再生する。変換結果は派生物として保存しない。同じ録画・同じ offset の視聴者と profile 切替は 1 本のセッションを共有する。
