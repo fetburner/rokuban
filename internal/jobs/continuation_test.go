@@ -70,11 +70,11 @@ func TestEnqueueContinuation_AttrOrderWithManyAttrs(t *testing.T) {
 	var logs bytes.Buffer
 	captureContinuationLogs(t, &logs)
 
-	EnqueueContinuation(context.Background(), &continuationTestEnqueuer{}, CMDetectReconcileArgs{},
+	EnqueueContinuation(context.Background(), &continuationTestEnqueuer{}, ThumbnailReconcileArgs{},
 		"candidate windows are full; continuation enqueued",
-		[]any{"after_recording_id", int64(1), "after_network_id", int32(2), "after_service_id", int32(3)},
-		[]any{"row_limit", int32(9), "detection_window_full", true, "candidate_window_full", false})
-	want := `level=WARN msg="cm_detect_reconcile: candidate windows are full; continuation enqueued" row_limit=9 detection_window_full=true candidate_window_full=false after_recording_id=1 after_network_id=2 after_service_id=3` + "\n"
+		[]any{"after_recording_id", int64(1), "after_reselect_recording_id", int64(2), "after_seek_tiles_recording_id", int64(3)},
+		[]any{"row_limit", int32(9), "missing_window_full", true, "reselection_window_full", false, "seek_tiles_window_full", true})
+	want := `level=WARN msg="thumbnail_reconcile: candidate windows are full; continuation enqueued" row_limit=9 missing_window_full=true reselection_window_full=false seek_tiles_window_full=true after_recording_id=1 after_reselect_recording_id=2 after_seek_tiles_recording_id=3` + "\n"
 	if got := logs.String(); got != want {
 		t.Fatalf("logs = %q, want %q", got, want)
 	}

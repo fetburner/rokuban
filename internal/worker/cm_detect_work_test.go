@@ -1277,7 +1277,7 @@ func TestCMDetectWorkFailureAfterAdoptionStaysEligibleForRetry(t *testing.T) {
 	if stage != "chapter" {
 		t.Errorf("attempt stage = %q, want chapter", stage)
 	}
-	rows, err := sqlcgen.New(pool).ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	rows, err := sqlcgen.New(pool).ListMissingCMDetections(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}

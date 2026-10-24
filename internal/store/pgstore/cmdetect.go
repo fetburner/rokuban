@@ -300,13 +300,11 @@ func (s *Analysis) DeleteStaleAttempts(ctx context.Context) error {
 	return nil
 }
 
-// ListMissingDetections は afterRecordingID より後の desired な CM 検出を limit 件返す。
-func (s *Analysis) ListMissingDetections(ctx context.Context, afterRecordingID int64, limit int32) ([]store.CMDetectionJob, error) {
-	rows, err := sqlcgen.New(s.pool).ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{
-		AfterRecordingID: afterRecordingID, RowLimit: limit,
-	})
+// ListMissingDetections は desired な CM 検出を recording ID 順に先頭から limit 件返す。
+func (s *Analysis) ListMissingDetections(ctx context.Context, limit int32) ([]store.CMDetectionJob, error) {
+	rows, err := sqlcgen.New(s.pool).ListMissingCMDetections(ctx, limit)
 	if err != nil {
-		return nil, fmt.Errorf("listing missing CM detections after recording %d: %w", afterRecordingID, err)
+		return nil, fmt.Errorf("listing missing CM detections: %w", err)
 	}
 	jobs := make([]store.CMDetectionJob, 0, len(rows))
 	for _, row := range rows {
@@ -315,13 +313,11 @@ func (s *Analysis) ListMissingDetections(ctx context.Context, afterRecordingID i
 	return jobs, nil
 }
 
-// ListMissingLogoCandidates は afterStation より後の desired な候補解析を limit 件返す。
-func (s *Analysis) ListMissingLogoCandidates(ctx context.Context, afterStation store.CMStationRef, limit int32) ([]store.CMLogoCandidateJob, error) {
-	rows, err := sqlcgen.New(s.pool).ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{
-		AfterNetworkID: afterStation.NetworkID, AfterServiceID: afterStation.ServiceID, RowLimit: limit,
-	})
+// ListMissingLogoCandidates は desired な候補解析を (network_id, service_id) 順に先頭から limit 件返す。
+func (s *Analysis) ListMissingLogoCandidates(ctx context.Context, limit int32) ([]store.CMLogoCandidateJob, error) {
+	rows, err := sqlcgen.New(s.pool).ListMissingCMLogoCandidates(ctx, limit)
 	if err != nil {
-		return nil, fmt.Errorf("listing missing CM logo candidates after network %d service %d: %w", afterStation.NetworkID, afterStation.ServiceID, err)
+		return nil, fmt.Errorf("listing missing CM logo candidates: %w", err)
 	}
 	jobs := make([]store.CMLogoCandidateJob, 0, len(rows))
 	for _, row := range rows {

@@ -45,7 +45,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 	if limit <= 0 {
 		limit = cmDetectRowLimit
 	}
-	rows, err := w.DetectionStore.ListMissingDetections(ctx, 0, limit)
+	rows, err := w.DetectionStore.ListMissingDetections(ctx, limit)
 	if err != nil {
 		return fmt.Errorf("CM detection reconcile: listing desired recordings: %w", err)
 	}
@@ -62,7 +62,7 @@ func (w *CMDetectReconcileWorker) Work(ctx context.Context, _ jobs.CMDetectRecon
 		slog.Info("cm_detect_reconcile: pass complete", "candidates", len(rows), "enqueue_failures", failed,
 			"row_limit", limit)
 	}
-	candidateRows, err := w.DetectionStore.ListMissingLogoCandidates(ctx, store.CMStationRef{}, limit)
+	candidateRows, err := w.DetectionStore.ListMissingLogoCandidates(ctx, limit)
 	if err != nil {
 		return fmt.Errorf("CM detection reconcile: listing desired logo candidates: %w", err)
 	}

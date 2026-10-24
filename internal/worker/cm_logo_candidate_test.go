@@ -170,7 +170,7 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			if !ok || state != "failed" || stage != tc.stage {
 				t.Fatalf("candidate = %q/%q (exists %v), want failed/%s", state, stage, ok, tc.stage)
 			}
-			rows, err := sqlcgen.New(pool).ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
+			rows, err := sqlcgen.New(pool).ListMissingCMLogoCandidates(ctx, 100)
 			if err != nil {
 				t.Fatal(err)
 			}

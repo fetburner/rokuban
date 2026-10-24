@@ -902,15 +902,9 @@ SELECT desired.recording_id,
                            ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_detection_desired desired
 JOIN recordings r ON r.id = desired.recording_id
-WHERE desired.recording_id > $1::bigint
 ORDER BY desired.recording_id
-LIMIT $2
+LIMIT $1
 `
-
-type ListMissingCMDetectionsParams struct {
-	AfterRecordingID int64
-	RowLimit         int32
-}
 
 type ListMissingCMDetectionsRow struct {
 	RecordingID         int64
@@ -920,8 +914,8 @@ type ListMissingCMDetectionsRow struct {
 // CM detection jobs use the same desired predicate for the ingest hint and periodic pass.
 // The predicate lives in the cm_detection_desired view so a new caller cannot drift from
 // the reconcile definition.
-func (q *Queries) ListMissingCMDetections(ctx context.Context, arg ListMissingCMDetectionsParams) ([]ListMissingCMDetectionsRow, error) {
-	rows, err := q.db.Query(ctx, listMissingCMDetections, arg.AfterRecordingID, arg.RowLimit)
+func (q *Queries) ListMissingCMDetections(ctx context.Context, rowLimit int32) ([]ListMissingCMDetectionsRow, error) {
+	rows, err := q.db.Query(ctx, listMissingCMDetections, rowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -947,19 +941,9 @@ SELECT desired.network_id, desired.service_id, COALESCE(desired.recording_id, 0)
                            ELSE r.program_duration_ms::bigint END, 0), 0)::bigint AS recording_duration_ms
 FROM cm_logo_candidate_desired desired
 JOIN recordings r ON r.id = desired.recording_id
-WHERE (desired.network_id, desired.service_id) > (
-    $1::int,
-    $2::int
-)
 ORDER BY desired.network_id, desired.service_id
-LIMIT $3
+LIMIT $1
 `
-
-type ListMissingCMLogoCandidatesParams struct {
-	AfterNetworkID int32
-	AfterServiceID int32
-	RowLimit       int32
-}
 
 type ListMissingCMLogoCandidatesRow struct {
 	NetworkID           int32
@@ -969,8 +953,8 @@ type ListMissingCMLogoCandidatesRow struct {
 	RecordingDurationMs int64
 }
 
-func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, arg ListMissingCMLogoCandidatesParams) ([]ListMissingCMLogoCandidatesRow, error) {
-	rows, err := q.db.Query(ctx, listMissingCMLogoCandidates, arg.AfterNetworkID, arg.AfterServiceID, arg.RowLimit)
+func (q *Queries) ListMissingCMLogoCandidates(ctx context.Context, rowLimit int32) ([]ListMissingCMLogoCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listMissingCMLogoCandidates, rowLimit)
 	if err != nil {
 		return nil, err
 	}

@@ -180,7 +180,7 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 	if err != nil || duration != 45*60*1000 {
 		t.Fatalf("GetCMRecordingDuration = %d, %v; want 2700000", duration, err)
 	}
-	detections, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	detections, err := q.ListMissingCMDetections(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 		t.Errorf("ListMissingCMDetections = %#v, want recording %d at %dms", detections, id, duration)
 	}
 	seedTaughtArea(t, pool, 1180)
-	candidates, err := q.ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
+	candidates, err := q.ListMissingCMLogoCandidates(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,14 +201,14 @@ func TestCMRecordingDurationQueriesUseStartedAndEndedAt(t *testing.T) {
 	if duration, err := q.GetCMRecordingDuration(ctx, id); err != nil || duration != 2400000 {
 		t.Errorf("duration with unconfirmed recording times = %d, %v; want program_duration_ms 2400000", duration, err)
 	}
-	detections, err = q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{RowLimit: 100})
+	detections, err = q.ListMissingCMDetections(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(detections) != 1 || detections[0].RecordingID != id || detections[0].RecordingDurationMs != 2400000 {
 		t.Errorf("ListMissingCMDetections with unconfirmed times = %#v, want recording %d at 2400000ms (program_duration_ms fallback)", detections, id)
 	}
-	candidates, err = q.ListMissingCMLogoCandidates(ctx, sqlcgen.ListMissingCMLogoCandidatesParams{RowLimit: 100})
+	candidates, err = q.ListMissingCMLogoCandidates(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +363,7 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 	if err := q.DeleteCMDetectionAttempt(ctx, ids[5]); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
+	rows, err := q.ListMissingCMDetections(ctx, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +415,7 @@ func TestCMDetectionDesiredAfterTaughtLogoArea(t *testing.T) {
 		if desired != want {
 			t.Fatalf("IsCMDetectionDesired(%d) = %v, want %v", id, desired, want)
 		}
-		ids, err := q.ListMissingCMDetections(ctx, sqlcgen.ListMissingCMDetectionsParams{AfterRecordingID: 0, RowLimit: 100})
+		ids, err := q.ListMissingCMDetections(ctx, 100)
 		if err != nil {
 			t.Fatal(err)
 		}
