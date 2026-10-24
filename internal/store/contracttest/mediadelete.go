@@ -2,23 +2,28 @@ package contracttest
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
 // MediaDeleteFixture はメディア削除契約と、その状態を作るための実装別フックをまとめる。
 type MediaDeleteFixture struct {
 	Store                         store.MediaDelete
+	Serving                       store.MediaServing
+	Catalog                       store.Catalog
 	NewUntilEncodedOriginal       func(t *testing.T) (recordingID, assetID int64)
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
-	NewDeletedAsset               func(t *testing.T) int64
-	ReadAssetState                func(t *testing.T, assetID int64) string
-	NewDeletingRemovedEncoded     func(t *testing.T) int64
-	RemovalRequestExists          func(t *testing.T, assetID int64) bool
-	WaitForLockWaiter             func(t *testing.T, operation string)
+	NewDeletedAsset               func(t *testing.T) (recordingID, assetID int64)
+	NewRemovedEncoded             func(t *testing.T) (recordingID, assetID int64)
+	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は
+	// deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
+	RemovalRequestExists func(t *testing.T, recordingID int64, profile string) bool
+	WaitForLockWaiter    func(t *testing.T, operation string)
 }
 
 // NewMediaDeleteStore はメディア削除契約の実装とフィクスチャを作る。
@@ -40,18 +45,23 @@ func RunMediaDelete(t *testing.T, newStore NewMediaDeleteStore) {
 
 func runMarkDeletedClearsRemovalRequest(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
-	assetID := f.NewDeletingRemovedEncoded(t)
-	if !f.RemovalRequestExists(t, assetID) {
-		t.Fatal("removal request missing before MarkDeleted")
+	recordingID, assetID := f.NewRemovedEncoded(t)
+	removed, err := f.Store.ListRemovedEncodedAssetsToDelete(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListRemovedEncodedAssetsToDelete(before delete): %v", err)
+	}
+	if !containsMediaDeleteAsset(removed, assetID) {
+		t.Fatalf("ListRemovedEncodedAssetsToDelete IDs = %v, want asset %d", mediaDeleteAssetIDs(removed), assetID)
+	}
+	if err := f.Store.MarkDeleting(context.Background(), assetID); err != nil {
+		t.Fatalf("MarkDeleting(%d): %v", assetID, err)
 	}
 	if err := f.Store.MarkDeleted(context.Background(), assetID); err != nil {
 		t.Fatalf("MarkDeleted: %v", err)
 	}
-	if state := f.ReadAssetState(t, assetID); state != "deleted" {
-		t.Fatalf("asset state = %q, want deleted", state)
-	}
-	if f.RemovalRequestExists(t, assetID) {
-		t.Fatal("removal request still exists after MarkDeleted, want it cleared")
+	assertMediaAssetDeleted(t, f, recordingID, assetID, store.AssetKindEncoded, "h264")
+	if f.RemovalRequestExists(t, recordingID, "h264") {
+		t.Fatalf("removal request for deleted asset %d remains", assetID)
 	}
 }
 
@@ -96,14 +106,15 @@ func runUntilEncodedSerialization(t *testing.T, newStore NewMediaDeleteStore) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("MarkUntilEncodedDeleting did not finish after the recording lock was released")
 	}
-	if state := f.ReadAssetState(t, assetID); state != "active" {
-		t.Fatalf("asset state = %q, want active after eligibility changed", state)
+	active, err := f.Serving.GetActiveOriginalMediaAsset(ctx, recordingID)
+	if err != nil || active.ID != assetID {
+		t.Fatalf("GetActiveOriginalMediaAsset(%d) ID = %d, err = %v, want ID %d and nil error", recordingID, active.ID, err, assetID)
 	}
 }
 
 func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 	f := newStore(t)
-	assetID := f.NewDeletedAsset(t)
+	recordingID, assetID := f.NewDeletedAsset(t)
 	updated, err := f.Store.RevertToActive(context.Background(), assetID, time.Now())
 	if err != nil {
 		t.Fatalf("RevertToActive(deleted) error = %v", err)
@@ -111,9 +122,65 @@ func runDeletedAssetIsNotReverted(t *testing.T, newStore NewMediaDeleteStore) {
 	if updated {
 		t.Fatal("RevertToActive(deleted) updated the asset, want no change")
 	}
-	if state := f.ReadAssetState(t, assetID); state != "deleted" {
-		t.Fatalf("asset state = %q, want deleted", state)
+	assertMediaAssetDeleted(t, f, recordingID, assetID, store.AssetKindOriginal, "")
+}
+
+func assertMediaAssetDeleted(t *testing.T, f MediaDeleteFixture, recordingID, assetID int64, kind, profile string) {
+	t.Helper()
+	document, err := f.Catalog.Export(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog.Export while checking deleted asset %d: %v", assetID, err)
 	}
+	var deletedAsset *catalogdoc.MediaAsset
+	for i := range document.MediaAssets {
+		if document.MediaAssets[i].ID == assetID {
+			deletedAsset = &document.MediaAssets[i]
+			break
+		}
+	}
+	if deletedAsset == nil {
+		t.Fatalf("Catalog.Export.MediaAssets has no asset %d, want RecordingID %d, State \"deleted\" and DeletedAt set", assetID, recordingID)
+	}
+	if deletedAsset.RecordingID != recordingID {
+		t.Fatalf("asset %d RecordingID = %d, want %d", assetID, deletedAsset.RecordingID, recordingID)
+	}
+	if deletedAsset.State != "deleted" {
+		t.Fatalf("asset %d State = %q, want %q", assetID, deletedAsset.State, "deleted")
+	}
+	if deletedAsset.DeletedAt == nil {
+		t.Fatalf("asset %d DeletedAt = nil, want set", assetID)
+	}
+
+	var servingErr error
+	if kind == store.AssetKindEncoded {
+		_, servingErr = f.Serving.GetEncodedMediaAssetForServing(context.Background(), recordingID, profile)
+	} else {
+		_, servingErr = f.Serving.GetOriginalMediaAssetForServing(context.Background(), recordingID)
+	}
+	if !errors.Is(servingErr, store.ErrNotFound) {
+		t.Fatalf("serving lookup for deleted %s asset %d = %v, want ErrNotFound", kind, assetID, servingErr)
+	}
+	cutoff := time.Now().Add(time.Hour)
+	pending, err := f.Store.ListPendingDeleteAssets(context.Background(), cutoff, 100)
+	if err != nil {
+		t.Fatalf("ListPendingDeleteAssets when checking deleted asset %d: %v", assetID, err)
+	}
+	unqualified, err := f.Store.ListUnqualifiedDeletingAssets(context.Background(), cutoff, 100)
+	if err != nil {
+		t.Fatalf("ListUnqualifiedDeletingAssets when checking deleted asset %d: %v", assetID, err)
+	}
+	if containsMediaDeleteAsset(pending, assetID) || containsMediaDeleteCandidate(unqualified, assetID) {
+		t.Fatalf("deleted asset %d remains in a deleting queue: ListPendingDeleteAssets IDs = %v, ListUnqualifiedDeletingAssets IDs = %v, want neither to contain it", assetID, mediaDeleteAssetIDs(pending), mediaDeleteCandidateIDs(unqualified))
+	}
+}
+
+func containsMediaDeleteCandidate(assets []store.MediaDeleteRevertCandidate, id int64) bool {
+	for _, asset := range assets {
+		if asset.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func containsMediaDeleteAsset(assets []store.MediaDeleteAsset, id int64) bool {
@@ -123,4 +190,22 @@ func containsMediaDeleteAsset(assets []store.MediaDeleteAsset, id int64) bool {
 		}
 	}
 	return false
+}
+
+// mediaDeleteAssetIDs は失敗メッセージ用に asset の ID を並べる。
+func mediaDeleteAssetIDs(assets []store.MediaDeleteAsset) []int64 {
+	ids := make([]int64, 0, len(assets))
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	return ids
+}
+
+// mediaDeleteCandidateIDs は失敗メッセージ用に、戻し候補の ID を並べる。
+func mediaDeleteCandidateIDs(assets []store.MediaDeleteRevertCandidate) []int64 {
+	ids := make([]int64, 0, len(assets))
+	for _, asset := range assets {
+		ids = append(ids, asset.ID)
+	}
+	return ids
 }

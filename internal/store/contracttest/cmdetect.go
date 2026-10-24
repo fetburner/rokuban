@@ -208,10 +208,13 @@ func testCMDetectionGenerationFence(t *testing.T, newStore NewCMDetectionStore) 
 	if err != nil || !shouldRun {
 		t.Fatalf("old BeginAttempt() = %+v, %v, %v; want running", old, shouldRun, err)
 	}
+	if old.PolicyGeneration != 0 {
+		t.Fatalf("old BeginAttempt() PolicyGeneration = %d, want 0", old.PolicyGeneration)
+	}
 	f.AdvancePolicyGeneration(t, id)
 	current, shouldRun, err := f.Store.BeginAttempt(ctx, id, 3)
-	if err != nil || !shouldRun || current.PolicyGeneration == old.PolicyGeneration {
-		t.Fatalf("current BeginAttempt() = %+v, %v, %v; want a new running generation", current, shouldRun, err)
+	if err != nil || !shouldRun || current.PolicyGeneration != 1 {
+		t.Fatalf("current BeginAttempt() PolicyGeneration = %d, shouldRun = %t, err = %v; want generation 1 and run", current.PolicyGeneration, shouldRun, err)
 	}
 	if saved, err := f.Store.SaveDetection(ctx, old, []chapters.Range{{StartMs: 1000, EndMs: 2000}}); err != nil || saved {
 		t.Fatalf("SaveDetection(old generation) = %v, %v; want a discarded result", saved, err)

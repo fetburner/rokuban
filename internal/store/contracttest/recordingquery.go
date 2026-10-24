@@ -2,7 +2,9 @@ package contracttest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -28,10 +30,22 @@ type RecordingQueryRecording struct {
 	Purged      bool
 	Superseded  bool
 	Watched     bool
+	WatchedAt   *time.Time
 	Playable    bool
 
-	PlaybackPositionMs *int64
-	PlaybackUpdatedAt  *time.Time
+	PlaybackPositionMs  *int64
+	PlaybackUpdatedAt   *time.Time
+	KeepOriginal        string
+	EncodeProfiles      []string
+	EncodeAttempts      []RecordingQueryEncodeAttempt
+	IngestWrittenBytes  *int64
+	IngestExpectedBytes *int64
+}
+
+// RecordingQueryEncodeAttempt は、Get の契約テストで仕込むエンコード試行の profile と state を表す。
+type RecordingQueryEncodeAttempt struct {
+	Profile string
+	State   string
 }
 
 // NewQueryRecording は検索契約のケース用に永続化済み録画を作る。
@@ -52,6 +66,7 @@ type NewRecordingQueryStore func(t *testing.T) RecordingQueryFixture
 func RunRecordingQuery(t *testing.T, newStore NewRecordingQueryStore) {
 	t.Helper()
 	t.Run("get reports missing and preserves trash facts", func(t *testing.T) { runRecordingQueryGet(t, newStore) })
+	t.Run("get reports playback, policy, attempts, and ingest readback fields", func(t *testing.T) { runRecordingQueryGetReadbackFields(t, newStore) })
 	t.Run("list applies every filter axis", func(t *testing.T) { runRecordingQueryFilterAxes(t, newStore) })
 	t.Run("keyword target and LIKE characters", func(t *testing.T) { runRecordingQueryKeyword(t, newStore) })
 	t.Run("series and trash scope", func(t *testing.T) { runRecordingQuerySeriesAndTrash(t, newStore) })
@@ -59,6 +74,49 @@ func RunRecordingQuery(t *testing.T, newStore NewRecordingQueryStore) {
 	t.Run("keyset order and cursor", func(t *testing.T) { runRecordingQueryCursor(t, newStore) })
 	t.Run("continue watching uses playback and watched facts", func(t *testing.T) { runRecordingQueryContinueWatching(t, newStore) })
 	t.Run("shelves share filtered population with list", func(t *testing.T) { runRecordingQueryShelves(t, newStore) })
+}
+
+func runRecordingQueryGetReadbackFields(t *testing.T, newStore NewRecordingQueryStore) {
+	f := newStore(t)
+	ctx := context.Background()
+	position, written, expected := int64(7_500), int64(1_234), int64(5_678)
+	updatedAt := time.Date(2026, 10, 8, 9, 10, 11, 0, time.UTC)
+	watchedAt := updatedAt.Add(time.Minute)
+	id := f.NewRecording(t, queryRecording("readback fields", updatedAt, RecordingQueryRecording{
+		PlaybackPositionMs: &position, PlaybackUpdatedAt: &updatedAt, WatchedAt: &watchedAt,
+		KeepOriginal: "until_encoded", EncodeProfiles: []string{"h264", "h265"},
+		EncodeAttempts:     []RecordingQueryEncodeAttempt{{Profile: "h264", State: "failed"}, {Profile: "h265", State: "running"}},
+		IngestWrittenBytes: &written, IngestExpectedBytes: &expected,
+	}))
+	row, err := f.Store.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get(readback fields): %v", err)
+	}
+	if row.ResumePositionMs == nil || *row.ResumePositionMs != position || row.ResumePositionUpdatedAt == nil || !row.ResumePositionUpdatedAt.Equal(updatedAt) {
+		t.Errorf("Get readback fields ResumePositionMs/ResumePositionUpdatedAt = %v/%v, want %d/%v", ptrText(row.ResumePositionMs), ptrText(row.ResumePositionUpdatedAt), position, updatedAt)
+	}
+	if row.WatchedAt == nil || !row.WatchedAt.Equal(watchedAt) {
+		t.Errorf("Get readback field WatchedAt = %s, want %v", ptrText(row.WatchedAt), watchedAt)
+	}
+	if row.KeepOriginal != "until_encoded" {
+		t.Errorf("Get readback field KeepOriginal = %q, want %q", row.KeepOriginal, "until_encoded")
+	}
+	if !reflect.DeepEqual(row.EncodeProfiles, []string{"h264", "h265"}) {
+		t.Errorf("Get readback field EncodeProfiles = %v, want [h264 h265]", row.EncodeProfiles)
+	}
+	var attempts []RecordingQueryEncodeAttempt
+	if err := json.Unmarshal(row.EncodeAttempts, &attempts); err != nil {
+		t.Fatalf("decoding Get readback field EncodeAttempts: %v", err)
+	}
+	if !reflect.DeepEqual(attempts, []RecordingQueryEncodeAttempt{{Profile: "h264", State: "failed"}, {Profile: "h265", State: "running"}}) {
+		t.Errorf("Get readback field EncodeAttempts = %+v, want [{Profile:h264 State:failed} {Profile:h265 State:running}]", attempts)
+	}
+	if row.IngestWrittenBytes == nil || *row.IngestWrittenBytes != written {
+		t.Errorf("Get readback field IngestWrittenBytes = %s, want %d", ptrText(row.IngestWrittenBytes), written)
+	}
+	if row.IngestExpectedBytes == nil || *row.IngestExpectedBytes != expected {
+		t.Errorf("Get readback field IngestExpectedBytes = %s, want %d", ptrText(row.IngestExpectedBytes), expected)
+	}
 }
 
 func runRecordingQueryGet(t *testing.T, newStore NewRecordingQueryStore) {
@@ -355,4 +413,12 @@ func assertRecordingIDs(t *testing.T, rows []store.RecordingQueryRow, want []int
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("recording IDs = %v, want %v", got, want)
 	}
+}
+
+// ptrText は失敗メッセージ用に、ポインタの指す値を表す。nil は "nil" になる。
+func ptrText[T any](p *T) string {
+	if p == nil {
+		return "nil"
+	}
+	return fmt.Sprint(*p)
 }

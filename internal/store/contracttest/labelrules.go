@@ -19,8 +19,9 @@ type LabelRuleFixture struct {
 	BeginReevaluationLock func(t *testing.T) (commit func())
 	// WaitForReevaluationLock は再評価がロック待ちになったことを確認する。
 	WaitForReevaluationLock func(t *testing.T)
-	// LabelRuleHit は録画の当たりと行バージョンを返す。行バージョンは、同じ当たりを
-	// 再評価したときに永続行が書き直されないことを確かめるために使う。
+	// LabelRuleHit は録画の当たりと行バージョンを返す。同じ当たりを再評価しても永続行が
+	// 書き直されないことを、行バージョンで確かめる。行バージョンを返す読み取りが契約に無いので、
+	// フックのまま残す。
 	LabelRuleHit func(t *testing.T, recordingID int64) (ruleID int64, rowVersion string, exists bool)
 }
 

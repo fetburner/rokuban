@@ -2,12 +2,9 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
@@ -69,44 +66,14 @@ ON CONFLICT (site, program_id) DO NOTHING`, observation.Site, observation.Progra
 				t.Fatalf("seeding reservation: %v", err)
 			}
 		}
-		inspectRecordSync := func(t *testing.T, site, recordID string) contracttest.RecordSyncState {
+		recordSyncStatus := func(t *testing.T, site, recordID string) string {
 			t.Helper()
-			var got contracttest.RecordSyncState
-			err := pool.QueryRow(context.Background(), `
-SELECT recording_id, status FROM record_sync WHERE site = $1 AND record_id = $2`, site, recordID).Scan(&got.RecordingID, &got.Status)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return got
+			var status string
+			if err := pool.QueryRow(context.Background(), `
+SELECT status FROM record_sync WHERE site = $1 AND record_id = $2`, site, recordID).Scan(&status); err != nil {
+				t.Fatalf("reading record_sync status: %v", err)
 			}
-			if err != nil {
-				t.Fatalf("inspecting record_sync: %v", err)
-			}
-			got.Found = true
-			return got
-		}
-		inspectRecordings := func(t *testing.T, observation store.RecordObservation) []contracttest.ObservedRecording {
-			t.Helper()
-			rows, err := pool.Query(context.Background(), `
-SELECT id, superseded_at IS NOT NULL, extended, genres, is_free
-FROM recordings
-WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND program_start_at = $5`,
-				observation.Site, observation.Snapshot.NetworkID, observation.Snapshot.ServiceID,
-				observation.Snapshot.EventID, observation.Snapshot.ProgramStartAt)
-			if err != nil {
-				t.Fatalf("querying event recordings: %v", err)
-			}
-			defer rows.Close()
-			var got []contracttest.ObservedRecording
-			for rows.Next() {
-				var row contracttest.ObservedRecording
-				if err := rows.Scan(&row.ID, &row.Superseded, &row.Extended, &row.Genres, &row.IsFree); err != nil {
-					t.Fatalf("scanning event recording: %v", err)
-				}
-				got = append(got, row)
-			}
-			if err := rows.Err(); err != nil {
-				t.Fatalf("reading event recordings: %v", err)
-			}
-			return got
+			return status
 		}
 		setObservedAt := func(t *testing.T, site, recordID string, observedAt time.Time) {
 			t.Helper()
@@ -133,12 +100,11 @@ WHERE site = $1 AND network_id = $2 AND service_id = $3 AND event_id = $4 AND pr
 			}
 		}
 		return contracttest.RecordObservationFixture{
-			Store: NewRecordings(pool), Reservations: NewReservations(pool), RulerPass: NewReservations(pool), Rules: NewRules(pool, []string{"contract-site"}),
+			Store: NewRecordings(pool), Catalog: NewCatalog(pool, []string{"contract-site"}),
+			Reservations: NewReservations(pool), RulerPass: NewReservations(pool), Rules: NewRules(pool, []string{"contract-site"}),
 			IngestTarget: NewRecordings(pool), Backlog: NewRecordings(pool), NewObservation: newObservation,
 			SeedProgramSnapshot: seedProgramSnapshot, SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,
-			NewOriginalAsset:  newOriginalAsset,
-			InspectRecordSync: inspectRecordSync, InspectRecordings: inspectRecordings,
-			RecordingQuery: NewRecordings(pool), MediaServing: NewMedia(pool),
+			NewOriginalAsset: newOriginalAsset, RecordSyncStatus: recordSyncStatus,
 			SetRecordSyncObservedAt: setObservedAt, SetAfterRecordAcquired: setAfterAcquired,
 		}
 	})

@@ -5,10 +5,12 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -23,13 +25,13 @@ type TSScanSnapshot struct {
 // TSScanFixture は TS scan 契約と、その状態を作るための実装別フックをまとめる。
 type TSScanFixture struct {
 	Store                   store.TSScan
+	Catalog                 store.Catalog
 	NewOriginal             func(t *testing.T, sizeBytes int64, trashed bool) (recordingID, assetID int64)
 	NewEncodedOnlyRecording func(t *testing.T) (recordingID, assetID int64)
 	SetAssetSize            func(t *testing.T, assetID, sizeBytes int64)
 	SetAssetState           func(t *testing.T, assetID int64, state string)
 	SetScannedSize          func(t *testing.T, assetID, scannedSizeBytes int64)
 	SeedSnapshot            func(t *testing.T, assetID int64, snapshot TSScanSnapshot)
-	ReadSnapshot            func(t *testing.T, assetID int64) TSScanSnapshot
 	BeginAssetStateChange   func(t *testing.T, assetID int64, state string) func()
 	WaitForLockWaiter       func(t *testing.T, operation string)
 }
@@ -119,7 +121,6 @@ func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanSto
 	f := newStore(t)
 	ctx := context.Background()
 	_, assetID := f.NewEncodedOnlyRecording(t)
-	before := TSScanSnapshot{Stats: []store.RecordingDropStat{}, Positions: []store.RecordingDropPosition{}, ScannedSizeBytes: -1}
 
 	applied, err := f.Store.ReplaceScan(ctx, assetID, 1,
 		[]store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1}},
@@ -131,15 +132,20 @@ func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanSto
 	if applied {
 		t.Fatal("ReplaceScan for encoded asset = true, want no replacement")
 	}
-	if got := f.ReadSnapshot(t, assetID); !reflect.DeepEqual(got, before) {
-		t.Fatalf("snapshot after rejected encoded-asset ReplaceScan = %+v, want unchanged %+v", got, before)
+	document, err := f.Catalog.Export(ctx)
+	if err != nil {
+		t.Fatalf("Catalog.Export after rejected encoded-asset ReplaceScan: %v", err)
+	}
+	got := readTSScanSnapshotForAsset(document, assetID)
+	if len(got.Stats) != 0 || len(got.Positions) != 0 || got.ScannedSizeBytes != -1 {
+		t.Fatalf("Catalog.Export for encoded asset %d after rejected ReplaceScan: len(DropStats) = %d, len(DropPositions) = %d, ScannedSizeBytes = %d, want 0, 0, -1 (no scan marker)", assetID, len(got.Stats), len(got.Positions), got.ScannedSizeBytes)
 	}
 }
 
 func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	_, assetID := f.NewOriginal(t, 6, false)
+	recordingID, assetID := f.NewOriginal(t, 6, false)
 
 	oldStats := []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}}
 	oldPositions := []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}}
@@ -156,11 +162,8 @@ func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	if !applied {
 		t.Fatal("ReplaceScan() = false, want replacement")
 	}
-	got := f.ReadSnapshot(t, assetID)
-	want := TSScanSnapshot{Stats: wantStats, Positions: wantPositions, ScannedSizeBytes: 6}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("snapshot after ReplaceScan = %+v, want %+v", got, want)
-	}
+	requireTSScanSnapshot(t, f, recordingID, TSScanSnapshot{Stats: wantStats, Positions: wantPositions})
+	assertCurrentTSScanMarker(t, f, recordingID, 6)
 
 	f.SetAssetSize(t, assetID, 7)
 	updated, err := f.Store.ReplaceScan(ctx, assetID, 6, wantStats, wantPositions)
@@ -170,15 +173,14 @@ func runTSScanReplacement(t *testing.T, newStore NewTSScanStore) {
 	if updated {
 		t.Fatal("ReplaceScan after original size changed = true, want no replacement")
 	}
-	if got := f.ReadSnapshot(t, assetID); !reflect.DeepEqual(got, want) {
-		t.Fatalf("snapshot after rejected ReplaceScan = %+v, want prior rows and marker %+v", got, want)
-	}
+	requireTSScanSnapshot(t, f, recordingID, TSScanSnapshot{Stats: wantStats, Positions: wantPositions})
+	assertStaleTSScanMarker(t, f, recordingID, assetID, 7, 6)
 }
 
 func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	_, assetID := f.NewOriginal(t, 6, false)
+	recordingID, assetID := f.NewOriginal(t, 6, false)
 	before := TSScanSnapshot{
 		Stats:            []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}},
 		Positions:        []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}},
@@ -217,15 +219,17 @@ func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore)
 	case <-time.After(10 * time.Second):
 		t.Fatal("ReplaceScan did not finish after the asset state change committed")
 	}
-	if got := f.ReadSnapshot(t, assetID); !reflect.DeepEqual(got, before) {
-		t.Fatalf("snapshot after rejected ReplaceScan = %+v, want prior rows and marker %+v", got, before)
-	}
+	// ブロッカーが asset を非 active にしたままなので、active へ戻して
+	// GetActiveOriginalForTSScan が古い印を観測できるようにする。
+	f.SetAssetState(t, assetID, "active")
+	requireTSScanSnapshot(t, f, recordingID, before)
+	assertStaleTSScanMarker(t, f, recordingID, assetID, 6, before.ScannedSizeBytes)
 }
 
 func runTSScanReplacementRollback(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	_, assetID := f.NewOriginal(t, 6, false)
+	recordingID, assetID := f.NewOriginal(t, 6, false)
 
 	oldStats := []store.RecordingDropStat{{Pid: 700, Packets: 9, Drops: 2, Errors: 1, Scrambled: 3}}
 	oldPositions := []store.RecordingDropPosition{{Pid: 700, ByteOffset: 8}}
@@ -247,7 +251,77 @@ func runTSScanReplacementRollback(t *testing.T, newStore NewTSScanStore) {
 	if !errors.Is(err, store.ErrConflict) {
 		t.Fatalf("ReplaceScan() error = %v, want store.ErrConflict", err)
 	}
-	if got := f.ReadSnapshot(t, assetID); !reflect.DeepEqual(got, before) {
-		t.Fatalf("snapshot after failed ReplaceScan = %+v, want prior rows and marker %+v", got, before)
+	requireTSScanSnapshot(t, f, recordingID, before)
+	assertStaleTSScanMarker(t, f, recordingID, assetID, 6, before.ScannedSizeBytes)
+}
+
+func readTSScanSnapshot(t *testing.T, f TSScanFixture, recordingID int64) TSScanSnapshot {
+	t.Helper()
+	document, err := f.Catalog.Export(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog.Export while reading TS scan state: %v", err)
+	}
+	for _, asset := range document.MediaAssets {
+		if asset.RecordingID == recordingID && asset.Kind == store.AssetKindOriginal {
+			return readTSScanSnapshotForAsset(document, asset.ID)
+		}
+	}
+	return TSScanSnapshot{ScannedSizeBytes: -1}
+}
+
+func readTSScanSnapshotForAsset(document *catalogdoc.Document, assetID int64) TSScanSnapshot {
+	got := TSScanSnapshot{ScannedSizeBytes: -1}
+	for _, stat := range document.DropStats {
+		if stat.MediaAssetID == assetID {
+			got.Stats = append(got.Stats, store.RecordingDropStat{
+				Pid: stat.Pid, Packets: stat.Packets, Drops: stat.Drops, Errors: stat.Errors,
+				Scrambled: stat.Scrambled, PidType: stat.PidType,
+			})
+		}
+	}
+	for _, position := range document.DropPositions {
+		if position.MediaAssetID == assetID {
+			got.Positions = append(got.Positions, store.RecordingDropPosition{
+				Pid: position.Pid, ByteOffset: position.ByteOffset, ElapsedMs: position.ElapsedMs,
+			})
+		}
+	}
+	for _, scan := range document.MediaAssetTSScans {
+		if scan.MediaAssetID == assetID {
+			got.ScannedSizeBytes = scan.ScannedSizeBytes
+			break
+		}
+	}
+	return got
+}
+
+func requireTSScanSnapshot(t *testing.T, f TSScanFixture, recordingID int64, want TSScanSnapshot) {
+	t.Helper()
+	got := readTSScanSnapshot(t, f, recordingID)
+	reportCatalogDiff(t, "Catalog.Export.DropStats for recording "+strconv.FormatInt(recordingID, 10), reflect.ValueOf(got.Stats), reflect.ValueOf(want.Stats))
+	reportCatalogDiff(t, "Catalog.Export.DropPositions for recording "+strconv.FormatInt(recordingID, 10), reflect.ValueOf(got.Positions), reflect.ValueOf(want.Positions))
+	if t.Failed() {
+		t.FailNow()
+	}
+}
+
+func assertCurrentTSScanMarker(t *testing.T, f TSScanFixture, recordingID, scannedSizeBytes int64) {
+	t.Helper()
+	if _, err := f.Store.GetActiveOriginalForTSScan(context.Background(), recordingID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetActiveOriginalForTSScan(%d) after current-size scan = %v, want ErrNotFound", recordingID, err)
+	}
+	if got := readTSScanSnapshot(t, f, recordingID).ScannedSizeBytes; got != scannedSizeBytes {
+		t.Fatalf("Catalog.Export.MediaAssetTSScans scanned size for recording %d = %d, want %d", recordingID, got, scannedSizeBytes)
+	}
+}
+
+func assertStaleTSScanMarker(t *testing.T, f TSScanFixture, recordingID, assetID, sizeBytes, scannedSizeBytes int64) {
+	t.Helper()
+	asset, err := f.Store.GetActiveOriginalForTSScan(context.Background(), recordingID)
+	if err != nil || asset.ID != assetID || asset.SizeBytes != sizeBytes {
+		t.Fatalf("GetActiveOriginalForTSScan(%d) with stale marker: ID = %d, SizeBytes = %d, err = %v, want ID %d, SizeBytes %d, nil error", recordingID, asset.ID, asset.SizeBytes, err, assetID, sizeBytes)
+	}
+	if got := readTSScanSnapshot(t, f, recordingID).ScannedSizeBytes; got != scannedSizeBytes {
+		t.Fatalf("Catalog.Export.MediaAssetTSScans stale size for recording %d = %d, want %d", recordingID, got, scannedSizeBytes)
 	}
 }

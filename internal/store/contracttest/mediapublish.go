@@ -43,11 +43,11 @@ func runPublishCommitFailure(t *testing.T, newFixture NewMediaFixture) {
 		if _, err := f.Serving.GetOriginalMediaAssetForServing(ctx, id); !errors.Is(err, store.ErrNotFound) {
 			t.Fatalf("original after commit failure error = %v, want ErrNotFound", err)
 		}
-		if _, ok := f.HasEncodePolicy(t, id); ok {
+		if _, ok := mediaEncodePolicy(t, f, id); ok {
 			t.Fatal("encode policy row survived the commit failure")
 		}
-		if !f.HasIngestProgress(t, id) {
-			t.Fatal("ingest progress deletion survived the commit failure")
+		if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
+			t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after commit failure = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 		}
 	})
 	t.Run("encoded", func(t *testing.T) {
@@ -119,11 +119,11 @@ func runOriginalRelPathConflict(t *testing.T, newFixture NewMediaFixture) {
 	if !errors.Is(err, store.ErrConflict) || calls != 0 {
 		t.Fatalf("CommitOriginal on an occupied rel_path = %v with %d publish calls; want ErrConflict without publishing", err, calls)
 	}
-	if _, ok := f.HasEncodePolicy(t, id); ok {
+	if _, ok := mediaEncodePolicy(t, f, id); ok {
 		t.Fatal("encode policy row was frozen for a rejected original")
 	}
-	if !f.HasIngestProgress(t, id) {
-		t.Fatal("ingest progress was deleted for a rejected original")
+	if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after rejected original = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 	}
 }
 

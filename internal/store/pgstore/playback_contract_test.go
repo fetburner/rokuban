@@ -2,12 +2,10 @@ package pgstore
 
 import (
 	"context"
-	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
@@ -21,12 +19,10 @@ func TestPlaybackStateContract(t *testing.T) {
 	contracttest.RunPlayback(t, func(t *testing.T) contracttest.PlaybackFixture {
 		pool := testutil.SetupDB(t)
 		return contracttest.PlaybackFixture{
-			Store: NewPlayback(pool),
+			Store: NewPlayback(pool), Recordings: NewRecordings(pool),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &playbackContractEventID)
 			},
-			Position:           func(t *testing.T, recordingID int64) (int64, bool) { return readContractPosition(t, pool, recordingID) },
-			Watched:            func(t *testing.T, recordingID int64) bool { return readContractWatched(t, pool, recordingID) },
 			FailPositionDelete: failContractPositionDelete(pool),
 		}
 	})
@@ -97,26 +93,4 @@ VALUES ($1, 'always', '{}', true)`, id); err != nil {
 		}
 	}
 	return id
-}
-
-func readContractPosition(t *testing.T, pool *pgxpool.Pool, recordingID int64) (int64, bool) {
-	t.Helper()
-	var position int64
-	err := pool.QueryRow(context.Background(), `SELECT position_ms FROM recording_playback_positions WHERE recording_id = $1`, recordingID).Scan(&position)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, false
-	}
-	if err != nil {
-		t.Fatalf("reading playback position: %v", err)
-	}
-	return position, true
-}
-
-func readContractWatched(t *testing.T, pool *pgxpool.Pool, recordingID int64) bool {
-	t.Helper()
-	var watched bool
-	if err := pool.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM recording_watched WHERE recording_id = $1)`, recordingID).Scan(&watched); err != nil {
-		t.Fatalf("reading watched marker: %v", err)
-	}
-	return watched
 }

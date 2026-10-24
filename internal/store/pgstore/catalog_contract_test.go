@@ -22,9 +22,9 @@ func TestCatalogContract(t *testing.T) {
 		revisionStore := NewReservations(pool)
 		return contracttest.CatalogFixture{
 			Store:                  catalogStore,
+			Pass:                   revisionStore,
 			RulerInputSites:        []string{"default", "site-a", "site-b"},
 			BumpRulerInputRevision: revisionStore.BumpRulerInputRevision,
-			GetRulerInputRevision:  revisionStore.GetRulerInputRevision,
 			InsertRecordingAndAsset: func(ctx context.Context, eventID int32) error {
 				recordingID, err := dbtest.RecordingWithError(ctx, pool, func(fixtureParams *dbtest.RecordingParams) {
 					fixtureParams.EventID = eventID

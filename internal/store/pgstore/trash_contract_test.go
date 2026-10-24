@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/store"
 	"github.com/fetburner/rokuban/internal/store/contracttest"
 	"github.com/fetburner/rokuban/internal/testutil"
 )
@@ -19,13 +20,10 @@ func TestRecordingTrashContract(t *testing.T) {
 	contracttest.RunTrash(t, func(t *testing.T) contracttest.TrashFixture {
 		pool := testutil.SetupDB(t)
 		return contracttest.TrashFixture{
-			Trash: NewRecordings(pool),
-			Purge: NewRecordings(pool),
+			Trash: NewRecordings(pool), Purge: NewRecordings(pool),
+			Serving: NewMedia(pool), Catalog: NewCatalog(pool, []string{store.DefaultSite}),
 			NewRecording: func(t *testing.T, options contracttest.RecordingOptions) int64 {
 				return newContractRecording(t, pool, options, &trashContractEventID)
-			},
-			State: func(t *testing.T, recordingID int64) contracttest.RecordingState {
-				return readContractTrashState(t, pool, recordingID)
 			},
 			SetDeletedAt: func(t *testing.T, recordingID int64, deletedAt time.Time) {
 				t.Helper()
@@ -42,18 +40,6 @@ func TestRecordingTrashContract(t *testing.T) {
 			WaitForLockWaiter: func(t *testing.T, operation string) { waitForContractLockWaiter(t, pool, operation) },
 		}
 	})
-}
-
-func readContractTrashState(t *testing.T, pool *pgxpool.Pool, recordingID int64) contracttest.RecordingState {
-	t.Helper()
-	var state contracttest.RecordingState
-	if err := pool.QueryRow(context.Background(), `
-SELECT r.deleted_at IS NOT NULL, r.purged_at IS NOT NULL,
-       EXISTS (SELECT 1 FROM recording_purge_requests p WHERE p.recording_id = r.id)
-FROM recordings r WHERE r.id = $1`, recordingID).Scan(&state.Deleted, &state.Purged, &state.PurgeRequested); err != nil {
-		t.Fatalf("reading recording trash state: %v", err)
-	}
-	return state
 }
 
 func beginPurgeBlocker(t *testing.T, pool *pgxpool.Pool, recordingID int64) (func(), func()) {

@@ -40,7 +40,7 @@ func TestMediaDeleteStoreContract(t *testing.T) {
 			return id
 		}
 		return contracttest.MediaDeleteFixture{
-			Store: NewMedia(pool),
+			Store: NewMedia(pool), Serving: NewMedia(pool), Catalog: NewCatalog(pool, []string{store.DefaultSite}),
 			NewUntilEncodedOriginal: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)
@@ -83,46 +83,42 @@ VALUES ($1, 'h264', '{[0,1000)}'::int8multirange)`, recordingID); err != nil {
 					}
 				}
 			},
-			NewDeletedAsset: func(t *testing.T) int64 {
+			NewDeletedAsset: func(t *testing.T) (int64, int64) {
 				t.Helper()
-				assetID := newAsset(t, newRecording(t), store.AssetKindOriginal, nil)
+				recordingID := newRecording(t)
+				assetID := newAsset(t, recordingID, store.AssetKindOriginal, nil)
 				if _, err := pool.Exec(context.Background(), `
 UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
 					t.Fatalf("marking media asset deleted: %v", err)
 				}
-				return assetID
+				return recordingID, assetID
 			},
-			ReadAssetState: func(t *testing.T, assetID int64) string {
-				t.Helper()
-				var state string
-				if err := pool.QueryRow(context.Background(), `SELECT state FROM media_assets WHERE id = $1`, assetID).Scan(&state); err != nil {
-					t.Fatalf("reading media asset state: %v", err)
-				}
-				return state
-			},
-			NewDeletingRemovedEncoded: func(t *testing.T) int64 {
+			NewRemovedEncoded: func(t *testing.T) (int64, int64) {
 				t.Helper()
 				recordingID := newRecording(t)
+				newAsset(t, recordingID, store.AssetKindOriginal, nil)
+				if _, err := pool.Exec(context.Background(), `
+INSERT INTO recording_encode_policy (recording_id, keep_original, encode_profiles, cm_detect)
+VALUES ($1, 'always', '{}', false)`, recordingID); err != nil {
+					t.Fatalf("seeding policy without the removed profile: %v", err)
+				}
 				profile := "h264"
 				assetID := newAsset(t, recordingID, store.AssetKindEncoded, &profile)
-				if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET state = 'deleting' WHERE id = $1`, assetID); err != nil {
-					t.Fatalf("marking media asset deleting: %v", err)
-				}
 				if err := sqlcgen.New(pool).InsertEncodedAssetRemovalRequest(context.Background(), sqlcgen.InsertEncodedAssetRemovalRequestParams{
 					RecordingID: recordingID, Profile: profile,
 				}); err != nil {
 					t.Fatalf("inserting removal request: %v", err)
 				}
-				return assetID
+				return recordingID, assetID
 			},
-			RemovalRequestExists: func(t *testing.T, assetID int64) bool {
+			RemovalRequestExists: func(t *testing.T, recordingID int64, profile string) bool {
 				t.Helper()
 				var exists bool
 				if err := pool.QueryRow(context.Background(), `
-SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests r
-  JOIN media_assets a ON a.recording_id = r.recording_id AND a.profile = r.profile
-  WHERE a.id = $1)`, assetID).Scan(&exists); err != nil {
-					t.Fatalf("querying removal request: %v", err)
+SELECT EXISTS (
+    SELECT 1 FROM encoded_asset_removal_requests WHERE recording_id = $1 AND profile = $2
+)`, recordingID, profile).Scan(&exists); err != nil {
+					t.Fatalf("reading encoded asset removal request: %v", err)
 				}
 				return exists
 			},

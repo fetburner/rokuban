@@ -19,6 +19,8 @@ type MediaFixture struct {
 	Precheck  store.IngestPrecheck
 	Storage   store.StorageObservation
 	Reader    store.MediaReader
+	Query     store.RecordingQuery
+	Catalog   store.Catalog
 	Publisher store.MediaPublish
 	Progress  store.EncodeProgressReporter
 	// Chapters は、公開と直列化する書き手として使う。
@@ -37,9 +39,7 @@ type MediaFixture struct {
 	SetRecordingDropPositions func(t *testing.T, assetID int64, positions []store.RecordingDropPosition)
 	// StartEncodeProgressListener は LISTEN を確立し、通知を store.EncodeProgress として返す関数を返す。
 	StartEncodeProgressListener   func(t *testing.T) func() store.EncodeProgress
-	HasEncodePolicy               func(t *testing.T, recordingID int64) (store.EncodePolicySnapshot, bool)
 	SetIngestProgress             func(t *testing.T, recordingID int64, written int64, expected *int64)
-	HasIngestProgress             func(t *testing.T, recordingID int64) bool
 	NewInPlaceInput               func(t *testing.T, relPath string) store.InPlaceInput
 	NewAsset                      func(t *testing.T, recordingID int64, kind string, profile *string, relPath, state string) int64
 	SetAssetState                 func(t *testing.T, assetID int64, state string)
@@ -54,6 +54,9 @@ type MediaFixture struct {
 	// LoseTransactionDuringPublish は publish 関数の中から呼ばれ、store が開いている tx の接続を落とす。
 	// 呼んだ後に publish が成功を返すと、publish の成功の後に commit だけが失敗する。
 	LoseTransactionDuringPublish func(t *testing.T)
+	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
+	// nil は NULL にする。
+	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)
 	// NewRecordSync は録画に対応する mirakc record の同期行を作る。
@@ -88,6 +91,7 @@ func RunMedia(t *testing.T, newFixture NewMediaFixture) {
 	t.Run("serving returns only active assets", func(t *testing.T) { runMediaServingActiveOnly(t, newFixture) })
 	t.Run("serving covers thumbnails and seek tiles", func(t *testing.T) { runMediaServingDerived(t, newFixture) })
 	t.Run("original VOD target is scoped to the recording's site", func(t *testing.T) { runMediaOriginalVODTarget(t, newFixture) })
+	t.Run("recording removal state reports deleted, purged and superseded times", func(t *testing.T) { runMediaRecordingRemovalState(t, newFixture) })
 	t.Run("chase target requires a record and a recording outside the trash", func(t *testing.T) { runMediaChaseTarget(t, newFixture) })
 	t.Run("namespace guard accepts site paths and rejects malformed ones", func(t *testing.T) { runMediaNamespaceMalformed(t, newFixture) })
 	t.Run("namespace guard rejects unprefixed originals and encoded files", func(t *testing.T) { runMediaNamespaceUnprefixed(t, newFixture) })
@@ -124,7 +128,7 @@ func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
 	expected := int64(2000)
 	f.SetIngestProgress(t, id, 1000, &expected)
 	resolverCalls, publishCalls := 0, 0
-	if _, ok := f.HasEncodePolicy(t, id); ok {
+	if _, ok := mediaEncodePolicy(t, f, id); ok {
 		t.Fatal("encode policy exists before original commit")
 	}
 	err := f.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
@@ -145,12 +149,13 @@ func runOriginalPublication(t *testing.T, newFixture NewMediaFixture) {
 	if _, err := f.Serving.GetOriginalMediaAssetForServing(ctx, id); err != nil {
 		t.Fatalf("committed original is not visible: %v", err)
 	}
-	policy, ok := f.HasEncodePolicy(t, id)
+	policy, ok := mediaEncodePolicy(t, f, id)
 	if !ok || policy.KeepOriginal != "always" || len(policy.EncodeProfiles) != 1 || policy.EncodeProfiles[0] != "h264" || !policy.CMDetect {
-		t.Fatalf("frozen policy = %+v (found=%v), want always/[h264]/cmDetect", policy, ok)
+		t.Fatalf("Catalog.Export.RecordingEncodePolicies fields KeepOriginal/EncodeProfiles/CMDetect = (%q, %v, %t), found=%t; want always/[h264]/true",
+			policy.KeepOriginal, policy.EncodeProfiles, policy.CMDetect, ok)
 	}
-	if f.HasIngestProgress(t, id) {
-		t.Fatal("ingest progress remains after original commit")
+	if written, expected := mediaIngestProgress(t, f, id); written != nil || expected != nil {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after original commit: %s/%s", ptrText(written), ptrText(expected))
 	}
 }
 
@@ -176,11 +181,11 @@ func runOriginalPublicationRollback(t *testing.T, newFixture NewMediaFixture) {
 	if _, err := f.Serving.GetOriginalMediaAssetForServing(ctx, id); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("original after rollback error = %v, want ErrNotFound", err)
 	}
-	if _, ok := f.HasEncodePolicy(t, id); ok {
+	if _, ok := mediaEncodePolicy(t, f, id); ok {
 		t.Fatal("encode policy row survived callback rollback")
 	}
-	if !f.HasIngestProgress(t, id) {
-		t.Fatal("ingest progress deletion survived callback rollback")
+	if written, gotExpected := mediaIngestProgress(t, f, id); written == nil || *written != 1000 || gotExpected == nil || *gotExpected != expected {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes after callback rollback = (%s, %s), want 1000/%d", ptrText(written), ptrText(gotExpected), expected)
 	}
 }
 
@@ -465,17 +470,17 @@ func runClearIngestProgress(t *testing.T, newFixture NewMediaFixture) {
 	otherID := f.NewRecording(t)
 	f.SetIngestProgress(t, id, 100, nil)
 	f.SetIngestProgress(t, otherID, 200, nil)
-	if !f.HasIngestProgress(t, id) {
-		t.Fatal("ingest progress row was not seeded")
+	if written, expected := mediaIngestProgress(t, f, id); written == nil || *written != 100 || expected != nil {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes before clear = (%s, %s), want 100/nil", ptrText(written), ptrText(expected))
 	}
 	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
 		t.Fatalf("ClearIngestProgress(%d): %v", id, err)
 	}
-	if f.HasIngestProgress(t, id) {
-		t.Fatal("ingest progress row remains after clear")
+	if written, expected := mediaIngestProgress(t, f, id); written != nil || expected != nil {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes remain after clear: %s/%s", ptrText(written), ptrText(expected))
 	}
-	if !f.HasIngestProgress(t, otherID) {
-		t.Fatal("clearing one recording removed another recording's progress row")
+	if written, expected := mediaIngestProgress(t, f, otherID); written == nil || *written != 200 || expected != nil {
+		t.Fatalf("RecordingQuery.Get.IngestWrittenBytes/IngestExpectedBytes for other recording after clear = (%s, %s), want 200/nil", ptrText(written), ptrText(expected))
 	}
 	if err := f.Publisher.ClearIngestProgress(ctx, id); err != nil {
 		t.Fatalf("ClearIngestProgress(%d) without row: %v", id, err)
@@ -629,6 +634,43 @@ func runMediaOriginalVODTarget(t *testing.T, newFixture NewMediaFixture) {
 	f.SetRecordingTrashed(t, id)
 	if _, err := f.Serving.GetOriginalVODTarget(ctx, id, f.Site); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("GetOriginalVODTarget(trashed) error = %v, want ErrNotFound", err)
+	}
+}
+
+func runMediaRecordingRemovalState(t *testing.T, newFixture NewMediaFixture) {
+	f := newFixture(t)
+	ctx := context.Background()
+	deleted := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+	purged := deleted.Add(time.Hour)
+	superseded := deleted.Add(2 * time.Hour)
+	for _, tc := range []struct {
+		name                        string
+		deleted, purged, superseded *time.Time
+	}{
+		{"none", nil, nil, nil},
+		{"deleted", &deleted, nil, nil},
+		{"purged", &deleted, &purged, nil},
+		{"superseded", nil, nil, &superseded},
+	} {
+		id := f.NewRecording(t)
+		if tc.deleted != nil || tc.purged != nil || tc.superseded != nil {
+			f.SetRecordingRemovalTimes(t, id, tc.deleted, tc.purged, tc.superseded)
+		}
+		got, err := f.Serving.GetRecordingRemovalState(ctx, id)
+		if err != nil {
+			t.Fatalf("GetRecordingRemovalState(%s): %v", tc.name, err)
+		}
+		for _, field := range []struct {
+			name      string
+			got, want *time.Time
+		}{{"DeletedAt", got.DeletedAt, tc.deleted}, {"PurgedAt", got.PurgedAt, tc.purged}, {"SupersededAt", got.SupersededAt, tc.superseded}} {
+			if (field.got == nil) != (field.want == nil) || (field.got != nil && !field.got.Equal(*field.want)) {
+				t.Errorf("GetRecordingRemovalState(%s).%s = %s, want %s", tc.name, field.name, ptrText(field.got), ptrText(field.want))
+			}
+		}
+	}
+	if _, err := f.Serving.GetRecordingRemovalState(ctx, -1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingRemovalState(missing) error = %v, want ErrNotFound", err)
 	}
 }
 
@@ -893,4 +935,31 @@ func runMediaThumbnailCandidates(t *testing.T, newFixture NewMediaFixture) {
 	if gotPlain.MediaAssetID != plainID || gotPlain.Profile != plainProfile || gotPlain.RelPath != plainPath || gotPlain.Cut || len(gotPlain.KeepRanges) != 0 {
 		t.Fatalf("uncut input = %+v, want asset %d %q at %q without keep ranges", gotPlain, plainID, plainProfile, plainPath)
 	}
+}
+
+func mediaEncodePolicy(t *testing.T, f MediaFixture, recordingID int64) (store.EncodePolicySnapshot, bool) {
+	t.Helper()
+	document, err := f.Catalog.Export(context.Background())
+	if err != nil {
+		t.Fatalf("Catalog.Export for recording %d encode policy: %v", recordingID, err)
+	}
+	for _, policy := range document.RecordingEncodePolicies {
+		if policy.RecordingID == recordingID {
+			return store.EncodePolicySnapshot{
+				KeepOriginal:   policy.KeepOriginal,
+				EncodeProfiles: append([]string(nil), policy.EncodeProfiles...),
+				CMDetect:       policy.CMDetect,
+			}, true
+		}
+	}
+	return store.EncodePolicySnapshot{}, false
+}
+
+func mediaIngestProgress(t *testing.T, f MediaFixture, recordingID int64) (*int64, *int64) {
+	t.Helper()
+	row, err := f.Query.Get(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("RecordingQuery.Get(%d).IngestWrittenBytes/IngestExpectedBytes: %v", recordingID, err)
+	}
+	return row.IngestWrittenBytes, row.IngestExpectedBytes
 }
