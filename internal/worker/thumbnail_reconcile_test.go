@@ -254,6 +254,62 @@ func TestThumbnailReconcile_EnqueuesOnlyWhenRecordedThumbnailIsInCM(t *testing.T
 	}
 }
 
+func TestThumbnailReconcile_ReselectionWindowContinuesWithoutEnqueueing(t *testing.T) {
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	q := sqlcgen.New(pool)
+	ids := make([]int64, 0, 2)
+	for eventID := int32(15161); eventID <= 15162; eventID++ {
+		recordingID := dbtest.Recording(t, pool, func(fixtureParams *dbtest.RecordingParams) {
+			fixtureParams.EventID = eventID
+		})
+		ids = append(ids, recordingID)
+		seedOriginalAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("reselect-full-window/%d.ts", eventID), []byte("fake-ts"))
+		thumbnailID := seedEncodedOrThumbnailAsset(t, pool, mediaDir, recordingID,
+			store.AssetKindThumbnail, nil, thumbnailRelPath(recordingID), []byte("old-thumbnail"))
+		seedSeekTilesAsset(t, pool, mediaDir, recordingID,
+			fmt.Sprintf("reselect-full-window/%d-tiles.jpg", eventID))
+		if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{
+			RecordingID: recordingID,
+			CmRanges:    "{[60000,120000)}",
+		}); err != nil {
+			t.Fatalf("seeding CM ranges for %d: %v", recordingID, err)
+		}
+		if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
+			MediaAssetID: thumbnailID,
+			SeekMs:       30000,
+		}); err != nil {
+			t.Fatalf("seeding thumbnail seek for %d: %v", recordingID, err)
+		}
+	}
+
+	enqueuer := newRecordingEnqueuer()
+	worker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
+	runThumbnailReconcilePass(t, worker)
+
+	continuations := enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 1 || continuations[0].AfterReselectRecordingID != ids[0] {
+		t.Fatalf("reselection continuations = %+v, want one continuation after recording %d", continuations, ids[0])
+	}
+	secondWorker := &ThumbnailReconcileWorker{Enqueuer: enqueuer, Media: pgstoretest.Media(pool), RowLimit: 1}
+	runThumbnailReconcilePassArgs(t, secondWorker, continuations[0])
+	continuations = enqueuedArgs[ThumbnailReconcileArgs](enqueuer, ThumbnailReconcileArgs{}.Kind())
+	if len(continuations) != 2 || continuations[1].AfterReselectRecordingID != ids[1] {
+		t.Fatalf("second reselection continuation = %+v, want one continuation after recording %d", continuations, ids[1])
+	}
+	for _, recordingID := range ids {
+		if got := countThumbnailJobs(t, enqueuer, recordingID); got != 0 {
+			t.Errorf("thumbnail jobs for no-op reselection recording %d after both pages = %d, want 0", recordingID, got)
+		}
+	}
+}
+
 // 再選択候補の窓も missing thumbnail の窓と独立して進める。1・2 は
 // thumbnail 欠落、3・4・5 は既存 thumbnail と chapter 候補に分け、2 パスで
 // reselect 側の末尾 5 まで判定されることを確認する。

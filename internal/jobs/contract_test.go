@@ -35,10 +35,7 @@ func TestJobArgsSpecAndPhysicalQueue(t *testing.T) {
 			MissingDone: true, SeekTilesDone: true,
 		}, "thumbnail_reconcile", ThumbnailQueue, "thumbnail", 5 * time.Minute, 1, true, 1},
 		{"cm_detect", CMDetectJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_detect", CMDetectQueue, "cm_detect", 40 * time.Minute, 10, true, 1},
-		{"cm_detect_reconcile", CMDetectReconcileArgs{
-			AfterRecordingID: 101, CandidateAfterNetworkID: 32736, CandidateAfterServiceID: 1024,
-			CandidateDone: true,
-		}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 1, true, 1},
+		{"cm_detect_reconcile", CMDetectReconcileArgs{}, "cm_detect_reconcile", CMDetectQueue, "cm_detect", 5 * time.Minute, 1, true, 1},
 		{"cm_logo_candidate", CMLogoCandidateJobArgs{RecordingID: 1, RecordingDurationMs: 20 * 60 * 1000}, "cm_logo_candidate", CMDetectQueue, "cm_detect", 40 * time.Minute, 1, true, 1},
 		{"label_rule_reconcile", LabelRuleReconcileArgs{}, "label_rule_reconcile", CleanupQueue, "cleanup", time.Minute, 1, false, 1},
 		{"encode_reconcile", EncodeReconcileArgs{}, "encode_reconcile", EncodeQueue, "encode", 5 * time.Minute, 1, true, 1},

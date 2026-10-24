@@ -128,15 +128,7 @@ type CMDetectJobArgs struct {
 func (CMDetectJobArgs) Kind() string { return "cm_detect" }
 
 // CMDetectReconcileArgs requests one desired-minus-observed CM detection pass.
-// The recording and composite station windows advance independently. Done flags keep
-// exhausted windows out of the rest of the continuation chain.
-type CMDetectReconcileArgs struct {
-	AfterRecordingID        int64 `json:"after_recording_id,omitempty"`
-	CandidateAfterNetworkID int32 `json:"candidate_after_network_id,omitempty"`
-	CandidateAfterServiceID int32 `json:"candidate_after_service_id,omitempty"`
-	DetectionDone           bool  `json:"detection_done,omitempty"`
-	CandidateDone           bool  `json:"candidate_done,omitempty"`
-}
+type CMDetectReconcileArgs struct{}
 
 // Kind はジョブ種別名を返す。
 func (CMDetectReconcileArgs) Kind() string { return "cm_detect_reconcile" }
