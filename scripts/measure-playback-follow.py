@@ -17,7 +17,10 @@ DEFAULT_RW_TIMEOUT_US = 2_000_000
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--rw-timeout-us', type=int, default=DEFAULT_RW_TIMEOUT_US)
-    parser.add_argument('--sigint-after-writer', action='store_true')
+    sigint = parser.add_mutually_exclusive_group()
+    sigint.add_argument('--sigint-after-writer', action='store_true')
+    sigint.add_argument('--sigint-immediately-after-writer', action='store_true')
+    parser.add_argument('--sigint-idle-seconds', type=float, default=1.0)
     args = parser.parse_args()
 
     version = subprocess.run(
@@ -66,16 +69,31 @@ def main():
             events = []
             writer_ended = None
             signal_sent = None
+            last_fs_state = None
+            last_fs_change = started
             while reader.poll() is None:
+                now = time.monotonic()
                 if writer_ended is None and writer.poll() is not None:
-                    writer_ended = time.monotonic()
+                    writer_ended = now
+                fs_state = tuple(
+                    (path.name, path.stat().st_size, path.stat().st_mtime_ns)
+                    for path in sorted([source, *output.iterdir()])
+                    if path.exists()
+                )
+                if fs_state != last_fs_state:
+                    last_fs_state = fs_state
+                    last_fs_change = now
                 if (
-                    args.sigint_after_writer
+                    (args.sigint_after_writer or args.sigint_immediately_after_writer)
                     and writer_ended is not None
                     and signal_sent is None
+                    and (
+                        args.sigint_immediately_after_writer
+                        or now - last_fs_change >= args.sigint_idle_seconds
+                    )
                 ):
                     reader.send_signal(signal.SIGINT)
-                    signal_sent = time.monotonic()
+                    signal_sent = now
                 for segment in sorted(output.glob('seg*.ts')):
                     if segment.name not in seen:
                         seen.add(segment.name)
@@ -119,6 +137,8 @@ def main():
             print(
                 f'writer_duration_seconds={writer_ended - started:.3f} '
                 f'reader_exit_after_writer_ms={round((reader_ended - writer_ended) * 1000)} '
+                f'sigint_mode={"idle" if args.sigint_after_writer else "immediate" if args.sigint_immediately_after_writer else "none"} '
+                f'sigint_idle_seconds={args.sigint_idle_seconds if args.sigint_after_writer else "n/a"} '
                 f'sigint_sent={signal_sent is not None} '
                 f'sigint_to_exit_ms={round((reader_ended - signal_sent) * 1000) if signal_sent else "n/a"} '
                 f'reader_exit={reader.returncode} segments={len(seen)} endlist=true'

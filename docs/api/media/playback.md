@@ -253,7 +253,17 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 1 回の測定では segment 0〜4 が writer 終了前に公開された（reader 開始から 2.769〜8.914 秒後）。writer は 11.536 秒で終了し、最後の segment は 13.520 秒で公開された。reader は writer 終了から 1,984 ms 後に exit 0 で終了し、6 segment と `ENDLIST` を残した。この追従測定はホストの一時ディレクトリであり、PVC 上の挙動を示さない。
 
-SIGINT の経路は `python3 scripts/measure-playback-follow.py --rw-timeout-us 10000000 --sigint-after-writer` で測る。この実行では writer 終了時に SIGINT を送ったが、reader の終了まで 10,014 ms かかり、exit 255、`ENDLIST` ありだった。SIGINT は file read の待ちを短くしなかった。どちらも FFmpeg 9.0.2 とローカル一時ファイルの結果で、共有 PVC 上の終了挙動は未検証である。
+待機中の reader に SIGINT を送る条件を次のコマンドで測る。
+
+```sh
+python3 scripts/measure-playback-follow.py --rw-timeout-us 10000000 --sigint-after-writer --sigint-idle-seconds 1
+```
+
+writer 終了後に source と HLS 出力が 1 秒間変わらない状態を待って SIGINT を送る。
+
+4 回の測定で、SIGINT 後の終了時間は 8,934〜9,010 ms だった。writer 終了からは 9,976〜10,016 ms だった。reader は exit 255 で `ENDLIST` を残した。この待機条件では timeout 10 秒に近い時間を要した。
+
+writer 終了直後に SIGINT を送る別経路は `--sigint-immediately-after-writer` で測る。4 回の終了時間は 60 ms〜9,999 ms と揺れた。ここから一定の停止時間は決められない。FFmpeg 9.0.2 とホスト一時ファイルの結果であり、共有 PVC 上の終了挙動は未検証である。
 
 ##### 先頭 audio PTS が古い入力
 
