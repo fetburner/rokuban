@@ -95,9 +95,18 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
+              # 1Gi scratch + 4*173Mi measured FFmpeg + 128Mi app allowance ≈ 1.8Gi.
+              memory: 2Gi
             limits:
-              memory: 1Gi
+              # live.max_sessions is 4. Reserve 512Mi per FFmpeg slot (about 3x
+              # the measured 173Mi peak), plus 1Gi tmpfs: 1Gi + 4*512Mi = 3Gi.
+              # The remainder also covers Rokuban and codec variation. tmpfs
+              # pages count against this container limit.
+              # Measured in K3s v1.36.2+k3s1 on js50 with Debian FFmpeg 7.1.5:
+              # synthetic 1440x1080i MPEG-TS -> 720p libx264 veryfast, three AAC
+              # renditions, 2s HLS; sampled /proc/<pid>/status VmHWM every 100ms:
+              # 176596KiB (173MiB).
+              memory: 3Gi
       volumes:
         - name: config
           configMap:
@@ -108,6 +117,9 @@ spec:
         - name: live-segments
           emptyDir:
             medium: Memory
+            # Reference cluster nodes have about 4Gi RAM; cap scratch at 1Gi.
+            # A 16Mi overflow probe wrote 16Mi then got ENOSPC; the Pod stayed Running.
+            sizeLimit: 1Gi
 ---
 apiVersion: v1
 kind: Service

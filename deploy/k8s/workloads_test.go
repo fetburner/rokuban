@@ -1029,6 +1029,76 @@ func TestLongLivedPodsAreScrapable(t *testing.T) {
 
 // --- CRD の中の名前参照 ------------------------------------------------------
 
+// TestLiveStreamerScratchBudget は、site streamer の tmpfs 上限と、その上限に
+// 合わせたメモリ予算がマニフェストから消えないことを固定する。
+func TestLiveStreamerScratchBudget(t *testing.T) {
+	const deploymentID = "Deployment/rokuban-live-streamer"
+	rawConfig, err := os.ReadFile(filepath.Join(baseDir, configFileName))
+	if err != nil {
+		t.Fatalf("reading %s/%s: %v", baseDir, configFileName, err)
+	}
+	var cfg struct {
+		Live struct {
+			MaxSessions int `yaml:"max_sessions"`
+		} `yaml:"live"`
+	}
+	if err := yaml.Unmarshal(rawConfig, &cfg); err != nil {
+		t.Fatalf("decoding %s/%s: %v", baseDir, configFileName, err)
+	}
+	if got := cfg.Live.MaxSessions; got != 4 {
+		t.Fatalf("live.max_sessions = %d, want 4; recalculate the fixed memory budget when this changes", got)
+	}
+
+	var streamer *workload
+	for _, w := range loadWorkloads(t) {
+		if w.id() == deploymentID {
+			wCopy := w
+			streamer = &wCopy
+			break
+		}
+	}
+	if streamer == nil {
+		t.Fatalf("%s not found in %s/", deploymentID, siteDir)
+	}
+	if streamer.dir != siteDir {
+		t.Fatalf("%s is in %s/, want %s/", deploymentID, streamer.dir, siteDir)
+	}
+
+	container := soleContainer(t, *streamer)
+	if got := strAt(container, "name"); got != "live-streamer" {
+		t.Fatalf("%s container = %q, want %q", deploymentID, got, "live-streamer")
+	}
+	if got := fmt.Sprint(mapAt(container, "resources", "requests")["memory"]); got != "2Gi" {
+		t.Errorf("%s memory request = %q, want %q", deploymentID, got, "2Gi")
+	}
+	if got := fmt.Sprint(mapAt(container, "resources", "limits")["memory"]); got != "3Gi" {
+		t.Errorf("%s memory limit = %q, want %q", deploymentID, got, "3Gi")
+	}
+
+	spec := mapAt(podTemplate(streamer.object), "spec")
+	var scratch map[string]any
+	for _, raw := range sliceAt(spec, "volumes") {
+		volume, ok := raw.(map[string]any)
+		if !ok || strAt(volume, "name") != "live-segments" {
+			continue
+		}
+		if scratch != nil {
+			t.Fatalf("%s has multiple live-segments volumes", deploymentID)
+		}
+		scratch = volume
+	}
+	if scratch == nil {
+		t.Fatalf("%s has no live-segments volume", deploymentID)
+	}
+	emptyDir := mapAt(scratch, "emptyDir")
+	if got := strAt(emptyDir, "medium"); got != "Memory" {
+		t.Errorf("%s emptyDir.medium = %q, want %q", deploymentID, got, "Memory")
+	}
+	if got := fmt.Sprint(emptyDir["sizeLimit"]); got != "1Gi" {
+		t.Errorf("%s emptyDir.sizeLimit = %q, want %q", deploymentID, got, "1Gi")
+	}
+}
+
 // podTemplatePath は podTemplate() が掘る場所を kustomize の fieldSpec の
 // 書き方（`/` 区切り）で返す。**podTemplate() の switch と対で保つ。**
 func podTemplatePath(kind string) string {

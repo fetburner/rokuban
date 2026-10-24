@@ -229,9 +229,9 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 #### セッション数と容量
 
-ライブと追っかけのセッション数は合算する。セグメントは録画バッファとは別の tmpfs / scratch に置き、録画時間ぶんが idle GC まで残るので、容量は同時視聴数と録画時間から見積もる。
+ライブ・追っかけ・原本 VOD のセッション数は合算する。セグメントは録画バッファとは別の tmpfs / scratch に置く。ライブは playlist の窓だけを残し、追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。
 
-最大セッション数 `live.max_sessions` はライブと共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"}` で見る。セグメントの保存先はどちらも `live.segment_dir` 配下である。追っかけは録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
+最大セッション数 `live.max_sessions` は全経路で共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"|"original_vod"}` で見る。どの経路も `live.segment_dir` を使う。追っかけと原本 VOD の容量は、録画時間 × 全 live profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
 
 ### 録画原本のブラウザ再生
 

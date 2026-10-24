@@ -142,27 +142,15 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 ライブ HLS のセグメントは tmpfs に置き、録画バッファと同じディスクには書かない。同じディスクに書くと、視聴が録画を妨げる。
 
-k8s なら `emptyDir: {medium: Memory}` を使う。セグメントは数 MB × 数本なので tmpfs で足りる。エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのはレイテンシで、絶対帯域は問われない（[§4](storage.md)）。これは Postgres datadir と encode scratch を分ける指針（[§3](database.md)）と同じ規則である。
+k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブは `playlist_size` と `segment_seconds` の窓だけを保持するため、容量は profile の bitrate と同時セッション数から見積もる。追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。この容量は録画時間 × 全 profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で増える。
 
-原本だけの完了録画も `live.segment_dir` を使う。原本 MPEG-2 TS は site streamer が media PVC から read-only で開く。変換済み HLS は scratch に書き、録画バッファや archive PVC は使わない。site streamer の media mount は read-only のままでよい。録画パスのロックは取らず、開いてから DB で再確認するので、media root にロック用ディレクトリを作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。
+tmpfs の内容は container の memory limit にも算入される。limit は `sizeLimit` と ffmpeg の実測 peak × `live.max_sessions` にアプリの余裕を加えて決める。`sizeLimit` はノードのメモリ予算に収める。
 
-録画中の追っかけ再生も同じ `live.segment_dir` の scratch を使う。
+2026-10-25 の実測環境は K3s v1.36.2+k3s1、containerd 2.3.2 である。js50（amd64、Linux 6.12.94）で測った。クラスタの CSI driver は `nfs.csi.k8s.io` と `driver.longhorn.io` だが、memory `emptyDir` は CSI を通らずノード内 tmpfs を使う。
 
-- URL は固定深さで、開始位置を指定する場合は `/offset/{offset}` を含む。
-- site を前段のルーティングキーにして、録画を担当する site の streamer へ送る。標準の Ingress では各 site overlay が `/api/sites/<site>/recordings` をその Service へ追加する。
-- 録画 id は DB 内の mirakc record id を隠す公開キーで、同じ streamer 内のセッションを共有する。同じ録画の異なる開始位置は別セッションになる。
-- hash key は `(site, recordings.id)` とし、同じ録画の全オフセットを同じ Pod に固定する。
-- ライブ・追っかけ・原本 VOD は同じ process-local な `live.max_sessions` を共有する。メトリクスは `rokuban_live_active_sessions{kind="live"}` / `{kind="chase"}` / `{kind="original_vod"}` に分かれるが、scratch 容量は合算する。
+`sizeLimit: 16Mi`、container memory limit `256Mi` の Pod に 32Mi を書くと、`dd` は 16Mi 書いた後 ENOSPC で終了した。Pod は Running のままで eviction されなかった。この測定は小さい上限の超過で、ノード全体がメモリ圧迫した場合の eviction は測っていない。エッジの録画バッファ（mirakc `recording.basedir`）は I/O が飽和するとドロップへ直結し、要求されるのはレイテンシで、絶対帯域は問われない（[§4](storage.md)）。これは Postgres datadir と encode scratch を分ける指針（[§3](database.md)）と同じ規則である。
 
-追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存のセッションはこの保持ファイルを配信する。したがって「数本のライブセグメントぶんの tmpfs」で足りるとは限らない。同時に追っかけする録画の時間・本数・プロファイルのビットレートを掛け合わせて `live.segment_dir` の memory limit を決める。tmpfs の容量不足は録画バッファへ移さず、追っかけセッションの HLS 生成失敗として観測する。recording.basedir または archive PVC と同じ mount / volume に置かない。
-
-原本 VOD は chase と同じく録画全体の EVENT playlist と全 segment を idle GC まで保持する。見積もりには、同時に再生する原本録画の時間、全 live profile の出力 bitrate、同時セッション数を掛け合わせる。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。tmpfs の容量不足は原本 VOD の HLS 生成失敗になり、原本や録画バッファへは書き込まない。
-
-<details><summary>根拠</summary>
-
-- 原本 VOD は録画パスのロックを取らない: `rel_path` / `.rokuban-locks`
-
-</details>
+録画再生で使う scratch の保存契約と URL・ルーティングの詳細は [録画再生の scratch](k8s-playback-scratch.md) を参照する。
 
 ### マニフェストの配布形式: 素の kustomize
 
