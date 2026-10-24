@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/catalogdoc"
 	"github.com/fetburner/rokuban/internal/store"
 )
 
@@ -118,7 +119,7 @@ func runTSScanReads(t *testing.T, newStore NewTSScanStore) {
 func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanStore) {
 	f := newStore(t)
 	ctx := context.Background()
-	recordingID, assetID := f.NewEncodedOnlyRecording(t)
+	_, assetID := f.NewEncodedOnlyRecording(t)
 
 	applied, err := f.Store.ReplaceScan(ctx, assetID, 1,
 		[]store.RecordingDropStat{{Pid: 256, Packets: 3, Drops: 1}},
@@ -130,8 +131,13 @@ func runTSScanReplacementRejectsEncodedAsset(t *testing.T, newStore NewTSScanSto
 	if applied {
 		t.Fatal("ReplaceScan for encoded asset = true, want no replacement")
 	}
-	if got := readTSScanSnapshot(t, f, recordingID); len(got.Stats) != 0 || len(got.Positions) != 0 {
-		t.Fatalf("Catalog.Export.DropStats/DropPositions after rejected encoded-asset ReplaceScan = %+v/%+v, want none", got.Stats, got.Positions)
+	document, err := f.Catalog.Export(ctx)
+	if err != nil {
+		t.Fatalf("Catalog.Export after rejected encoded-asset ReplaceScan: %v", err)
+	}
+	got := readTSScanSnapshotForAsset(document, assetID)
+	if len(got.Stats) != 0 || len(got.Positions) != 0 || got.ScannedSizeBytes != -1 {
+		t.Fatalf("Catalog.Export state for encoded asset %d after rejected ReplaceScan = %+v, want no stats, positions, or scan marker", assetID, got)
 	}
 }
 
@@ -252,17 +258,16 @@ func readTSScanSnapshot(t *testing.T, f TSScanFixture, recordingID int64) TSScan
 	if err != nil {
 		t.Fatalf("Catalog.Export while reading TS scan state: %v", err)
 	}
-	got := TSScanSnapshot{ScannedSizeBytes: -1}
-	var assetID int64
 	for _, asset := range document.MediaAssets {
 		if asset.RecordingID == recordingID && asset.Kind == store.AssetKindOriginal {
-			assetID = asset.ID
-			break
+			return readTSScanSnapshotForAsset(document, asset.ID)
 		}
 	}
-	if assetID == 0 {
-		return got
-	}
+	return TSScanSnapshot{ScannedSizeBytes: -1}
+}
+
+func readTSScanSnapshotForAsset(document *catalogdoc.Document, assetID int64) TSScanSnapshot {
+	got := TSScanSnapshot{ScannedSizeBytes: -1}
 	for _, stat := range document.DropStats {
 		if stat.MediaAssetID == assetID {
 			got.Stats = append(got.Stats, store.RecordingDropStat{

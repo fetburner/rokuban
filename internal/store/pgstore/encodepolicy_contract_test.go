@@ -42,7 +42,8 @@ func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixtu
 			}
 		},
 		SetDesired: db.setDesired, SetRemovalRequest: db.setRemovalRequest,
-		SetAttempt: db.setAttempt, SetChapterSpans: db.setChapterSpans,
+		HasRemovalRequest: db.hasRemovalRequest,
+		SetAttempt:        db.setAttempt, SetChapterSpans: db.setChapterSpans,
 		BeginChapterEdit:  db.beginChapterEdit,
 		BeginPolicyUpdate: db.beginPolicyUpdate, BeginRemoval: db.beginRemoval,
 		BeginRecordingLock: db.beginRecordingLock, TryPolicyLock: db.tryPolicyLock,
@@ -92,6 +93,15 @@ func (f *encodePolicyContractDB) setRemovalRequest(t *testing.T, recordingID int
 	}); err != nil {
 		t.Fatalf("seeding removal request: %v", err)
 	}
+}
+
+func (f *encodePolicyContractDB) hasRemovalRequest(t *testing.T, recordingID int64, profile string) bool {
+	t.Helper()
+	var exists bool
+	if err := f.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM encoded_asset_removal_requests WHERE recording_id = $1 AND profile = $2)", recordingID, profile).Scan(&exists); err != nil {
+		t.Fatalf("reading encoded asset removal request: %v", err)
+	}
+	return exists
 }
 
 func (f *encodePolicyContractDB) setAttempt(t *testing.T, recordingID int64, profile, state string, count int32) {
