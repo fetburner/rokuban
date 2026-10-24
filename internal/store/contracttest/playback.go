@@ -9,7 +9,8 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-// PlaybackFixture は視聴状態契約の実装と、状態を確かめる RecordingQuery、位置削除を失敗させるフックをまとめる。
+// PlaybackFixture は視聴状態契約の実装と、状態を確かめる RecordingQuery、
+// 位置削除を失敗させるフックをまとめる。
 type PlaybackFixture struct {
 	Store              store.PlaybackState
 	Recordings         store.RecordingQuery

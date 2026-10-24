@@ -59,7 +59,8 @@ type RecordObservationFixture struct {
 	SeedRecordSync      func(t *testing.T, observation store.RecordObservation)
 	SeedReservation     func(t *testing.T, observation store.RecordObservation)
 	NewOriginalAsset    func(t *testing.T, recordingID int64, state string)
-	// RecordSyncStatus は record_sync 行の、正規化する前の status を返す。この値を返す契約の読み取りが無いので、フックのまま残す。
+	// RecordSyncStatus は record_sync 行の、正規化する前の status を返す。
+	// この値を返す契約の読み取りが無いので、フックのまま残す。
 	RecordSyncStatus func(t *testing.T, site, recordID string) string
 	// SetRecordSyncObservedAt は record 同期行の観測時刻を書き換える。
 	SetRecordSyncObservedAt func(t *testing.T, site, recordID string, observedAt time.Time)
@@ -144,7 +145,7 @@ func runRecordBrokenEvent(t *testing.T, newStore NewRecordObservationStore) {
 		t.Fatalf("AppendRecordBrokenEvent(linked record) = (%t, %v), want appended", appended, err)
 	}
 	got := observedRecordings(t, f, observation)
-	if len(got) != 1 || got[0].ID != *result.RecordingID || len(got[0].QualityEventNames) != 1 || !reflect.DeepEqual(got[0].QualityEventNames, []string{"recording.record-broken"}) {
+	if len(got) != 1 || got[0].ID != *result.RecordingID || !reflect.DeepEqual(got[0].QualityEventNames, []string{"recording.record-broken"}) {
 		t.Fatalf("recordings after broken event = %s, want one with ID %d and quality events [recording.record-broken]", describeRecordings(got), *result.RecordingID)
 	}
 
@@ -218,7 +219,7 @@ func requireRecordingSnapshot(t *testing.T, got, want store.RecordingSnapshot) {
 		}{
 			{"NetworkID", got.NetworkID, want.NetworkID}, {"ServiceID", got.ServiceID, want.ServiceID}, {"EventID", got.EventID, want.EventID},
 			{"ServiceName", got.ServiceName, want.ServiceName}, {"ChannelType", got.ChannelType, want.ChannelType}, {"Channel", got.Channel, want.Channel},
-			{"Title", got.Title, want.Title}, {"Description", derefString(got.Description), derefString(want.Description)}, {"IsFree", got.IsFree, want.IsFree},
+			{"Title", got.Title, want.Title}, {"Description", ptrText(got.Description), ptrText(want.Description)}, {"IsFree", got.IsFree, want.IsFree},
 			{"ProgramStartAt", got.ProgramStartAt.UTC(), want.ProgramStartAt.UTC()}, {"ProgramDurationMs", got.ProgramDurationMs, want.ProgramDurationMs},
 		} {
 			if !reflect.DeepEqual(c.got, c.want) {
@@ -1166,14 +1167,6 @@ func requireStore(t *testing.T, f RecordObservationFixture) {
 	if f.Store == nil || f.Catalog == nil || f.Reservations == nil || f.RulerPass == nil || f.Rules == nil || f.IngestTarget == nil || f.Backlog == nil || f.NewObservation == nil || f.SeedProgramSnapshot == nil || f.SeedRecordSync == nil || f.SeedReservation == nil || f.NewOriginalAsset == nil || f.RecordSyncStatus == nil || f.SetRecordSyncObservedAt == nil || f.SetAfterRecordAcquired == nil {
 		t.Fatal("incomplete record observation fixture")
 	}
-}
-
-// derefString は失敗メッセージ用に *string を値で、nil を "<nil>" で表す。
-func derefString(p *string) string {
-	if p == nil {
-		return "<nil>"
-	}
-	return *p
 }
 
 // describeRecordings は失敗メッセージ用に、検査する録画行の値をフィールド名つきで並べる。

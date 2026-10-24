@@ -26,7 +26,8 @@ type EncodePolicyFixture struct {
 	SetDesired          func(t *testing.T, recordingID int64, profiles []string)
 
 	SetRemovalRequest func(t *testing.T, recordingID int64, profile string)
-	// HasRemovalRequest は削除要求の行があるかを返す。契約の読み取りは desired に残る profile の要求を除いて返すので、再追加や却下の後に行が残っていても見分けられない。
+	// HasRemovalRequest は削除要求の行があるかを返す。契約の読み取りは desired に残る profile の
+	// 要求を除いて返すので、再追加や却下の後に行が残っていても見分けられない。
 	HasRemovalRequest  func(t *testing.T, recordingID int64, profile string) bool
 	SetAttempt         func(t *testing.T, recordingID int64, profile, state string, count int32)
 	SetChapterSpans    func(t *testing.T, recordingID int64, durationMs int64, spans []chapters.Span)
@@ -527,7 +528,8 @@ func runAttemptFencing(t *testing.T, newFixture NewEncodePolicyFixture) {
 	}
 	third, err := f.Attempts.Begin(ctx, id, "h264", 3)
 	if err != nil || third.Terminal || third.Count != 3 || third.DeadAttempt != 2 {
-		t.Fatalf("Begin after stale writes = %+v, %v; want count 3 after dead attempt 2", third, err)
+		t.Fatalf("Begin after stale writes: Terminal = %t, Count = %d, DeadAttempt = %d, err = %v; want Terminal = false, Count = 3, DeadAttempt = 2, err = nil",
+			third.Terminal, third.Count, third.DeadAttempt, err)
 	}
 }
 

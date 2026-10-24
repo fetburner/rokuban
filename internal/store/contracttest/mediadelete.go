@@ -20,7 +20,8 @@ type MediaDeleteFixture struct {
 	BeginUntilEncodedInvalidation func(t *testing.T, recordingID int64) (commit func())
 	NewDeletedAsset               func(t *testing.T) (recordingID, assetID int64)
 	NewRemovedEncoded             func(t *testing.T) (recordingID, assetID int64)
-	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
+	// RemovalRequestExists は削除要求の行があるかを返す。ListRemovedEncodedAssetsToDelete は
+	// deleted の asset を返さないので、MarkDeleted が要求の行を消したかを確かめられない。
 	RemovalRequestExists func(t *testing.T, recordingID int64, profile string) bool
 	WaitForLockWaiter    func(t *testing.T, operation string)
 }

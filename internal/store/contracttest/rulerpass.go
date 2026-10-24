@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -414,7 +415,12 @@ func runRulerRevisionMismatch(t *testing.T, newStore NewRulerPassStore) {
 		t.Fatalf("ListProgramIDReuses(after stale pass): %v", err)
 	}
 	if len(rows) != 1 || rows[0].ProgramID != created.ProgramID || !rows[0].SnapshotStartAt.Equal(snapshotStart) {
-		t.Fatalf("ListProgramIDReuses(after stale pass) = %d rows, rows[0].ProgramID/SnapshotStartAt want %d/%v (snapshot unchanged)", len(rows), created.ProgramID, snapshotStart)
+		got := make([]string, 0, len(rows))
+		for _, row := range rows {
+			got = append(got, fmt.Sprintf("{ProgramID:%d SnapshotStartAt:%s}", row.ProgramID, row.SnapshotStartAt.UTC().Format(time.RFC3339Nano)))
+		}
+		t.Fatalf("ListProgramIDReuses(after stale pass) = %d rows %v, want 1 row {ProgramID:%d SnapshotStartAt:%s} (snapshot unchanged)",
+			len(rows), got, created.ProgramID, snapshotStart.UTC().Format(time.RFC3339Nano))
 	}
 	if tripped, err := f.Breakers.IsTripped(ctx, existing.Site, breaker.RulerDeletes); err != nil || tripped {
 		t.Fatalf("IsTripped(after stale pass) = (%t, %v), want false", tripped, err)

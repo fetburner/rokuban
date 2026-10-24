@@ -54,7 +54,8 @@ type MediaFixture struct {
 	// LoseTransactionDuringPublish は publish 関数の中から呼ばれ、store が開いている tx の接続を落とす。
 	// 呼んだ後に publish が成功を返すと、publish の成功の後に commit だけが失敗する。
 	LoseTransactionDuringPublish func(t *testing.T)
-	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。nil は NULL にする。
+	// SetRecordingRemovalTimes は録画の deleted_at・purged_at・superseded_at を指定した値に書く。
+	// nil は NULL にする。
 	SetRecordingRemovalTimes func(t *testing.T, recordingID int64, deletedAt, purgedAt, supersededAt *time.Time)
 	// SetRecordingTrashed は録画をごみ箱に入れる（deleted_at を埋める）。
 	SetRecordingTrashed func(t *testing.T, recordingID int64)

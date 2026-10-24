@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -218,7 +219,8 @@ func runTSScanReplacementAfterStateChange(t *testing.T, newStore NewTSScanStore)
 	case <-time.After(10 * time.Second):
 		t.Fatal("ReplaceScan did not finish after the asset state change committed")
 	}
-	// ブロッカーが asset を非 active にしたままなので、active へ戻して GetActiveOriginalForTSScan が古い印を観測できるようにする。
+	// ブロッカーが asset を非 active にしたままなので、active へ戻して
+	// GetActiveOriginalForTSScan が古い印を観測できるようにする。
 	f.SetAssetState(t, assetID, "active")
 	requireTSScanSnapshot(t, f, recordingID, before)
 	assertStaleTSScanMarker(t, f, recordingID, assetID, 6, before.ScannedSizeBytes)
@@ -296,11 +298,10 @@ func readTSScanSnapshotForAsset(document *catalogdoc.Document, assetID int64) TS
 func requireTSScanSnapshot(t *testing.T, f TSScanFixture, recordingID int64, want TSScanSnapshot) {
 	t.Helper()
 	got := readTSScanSnapshot(t, f, recordingID)
-	if !reflect.DeepEqual(got.Stats, want.Stats) {
-		t.Fatalf("Catalog.Export.DropStats for recording %d = %+v, want %+v", recordingID, got.Stats, want.Stats)
-	}
-	if !reflect.DeepEqual(got.Positions, want.Positions) {
-		t.Fatalf("Catalog.Export.DropPositions for recording %d = %+v, want %+v", recordingID, got.Positions, want.Positions)
+	reportCatalogDiff(t, "Catalog.Export.DropStats for recording "+strconv.FormatInt(recordingID, 10), reflect.ValueOf(got.Stats), reflect.ValueOf(want.Stats))
+	reportCatalogDiff(t, "Catalog.Export.DropPositions for recording "+strconv.FormatInt(recordingID, 10), reflect.ValueOf(got.Positions), reflect.ValueOf(want.Positions))
+	if t.Failed() {
+		t.FailNow()
 	}
 }
 
