@@ -32,6 +32,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
         path: null,
         frames: [],
         audio: [],
+        audioLevels: [],
         waits: [],
         stalls: [],
         capture: false,
@@ -138,6 +139,16 @@ const HARNESS_HTML = String.raw`<!doctype html>
         if (state.audio.length > 1200) state.audio.shift()
       }
 
+      function readAudioLevels() {
+        if (!state.capture || !state.audioAnalysers || state.audioContext.state !== 'running') return
+        state.audioLevels.push({
+          currentTime: video.currentTime,
+          leftRMS: rms(state.audioAnalysers.levelLeft),
+          rightRMS: rms(state.audioAnalysers.levelRight),
+        })
+        if (state.audioLevels.length > 12000) state.audioLevels.shift()
+      }
+
       function audioTracks() {
         if (state.hls) {
           return state.hls.audioTracks.map((track, index) => ({
@@ -159,6 +170,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
         async load(masterURL) {
           state.frames = []
           state.audio = []
+          state.audioLevels = []
           state.waits = []
           state.stalls = []
           state.frameError = null
@@ -224,15 +236,22 @@ const HARNESS_HTML = String.raw`<!doctype html>
             const splitter = audioContext.createChannelSplitter(2)
             const left = audioContext.createAnalyser()
             const right = audioContext.createAnalyser()
+            const levelLeft = audioContext.createAnalyser()
+            const levelRight = audioContext.createAnalyser()
             left.fftSize = right.fftSize = 8192
             left.smoothingTimeConstant = right.smoothingTimeConstant = 0
+            levelLeft.fftSize = levelRight.fftSize = 256
+            levelLeft.smoothingTimeConstant = levelRight.smoothingTimeConstant = 0
             source.connect(splitter)
             splitter.connect(left, 0)
             splitter.connect(right, 1)
+            splitter.connect(levelLeft, 0)
+            splitter.connect(levelRight, 1)
             source.connect(audioContext.destination)
             state.audioContext = audioContext
-            state.audioAnalysers = { left, right }
+            state.audioAnalysers = { left, right, levelLeft, levelRight }
             setInterval(readAudio, 100)
+            setInterval(readAudioLevels, 10)
           }
           await state.audioContext.resume()
           await video.play()
@@ -275,6 +294,10 @@ const HARNESS_HTML = String.raw`<!doctype html>
             frameError: state.frameError,
             startError: state.startError,
           }
+        },
+
+        audioLevelsBetween(from, to) {
+          return state.audioLevels.filter((sample) => sample.currentTime >= from && sample.currentTime <= to)
         },
       }
 
@@ -487,7 +510,7 @@ async function waitForState(adapter, predicate, timeoutMs, description) {
   throw new Error(`${description} を ${timeoutMs}ms 以内に確認できない: ${JSON.stringify(state && { currentTime: state.currentTime, paused: state.paused, readyState: state.readyState, frameError: state.frameError, audio: state.audio.at(-1), tracks: state.tracks })}`)
 }
 
-async function checkCase(adapter, fixture, expectedFailure = null) {
+async function checkCase(adapter, fixture, expectedFailure = null, engine) {
   const failures = []
   const playlistKind = fixture.playlistKind ?? fixture.kind
   const masterURL = `${adapter.serverURL}/` + `${fixture.format}/${playlistKind}/master.m3u8`
@@ -510,15 +533,23 @@ async function checkCase(adapter, fixture, expectedFailure = null) {
   }
 
   const boundaryAudio = state.audio.filter((sample) => sample.currentTime >= SPLIT_SECONDS - 0.6 && sample.currentTime <= SPLIT_SECONDS + 0.6)
+  const boundaryLevels = await adapter.evaluate(
+    (range) => window.__e2e.audioLevelsBetween(range[0], range[1]),
+    [SPLIT_SECONDS - 0.6, SPLIT_SECONDS + 0.6],
+  )
   if (boundaryAudio.length < 3) failures.push(`境界音声の測定サンプルが少ない (${boundaryAudio.length})`)
-  const webAudioAvailable = boundaryAudio.some((sample) => sample.leftRMS >= 0.02 || sample.rightRMS >= 0.02)
+  const webAudioAvailable = boundaryLevels.some((sample) => sample.leftRMS >= 0.02 || sample.rightRMS >= 0.02)
   if (!webAudioAvailable && loaded.path !== 'native-hls') {
     failures.push('WebAudio に再生音声が届かず、境界の音声継続を測れない')
   }
+  if (!webAudioAvailable && engine === 'safari') {
+    failures.push('Safari native HLS の音声信号を WebAudio で測れず、音声継続を確認できない')
+  }
   if (webAudioAvailable) {
+    if (boundaryLevels.length < 20) failures.push(`境界音量の測定サンプルが少ない (${boundaryLevels.length})`)
     let longestQuietRun = 0
     let quietRun = 0
-    for (const sample of boundaryAudio) {
+    for (const sample of boundaryLevels) {
       if (sample.leftRMS < 0.02 || sample.rightRMS < 0.02) {
         quietRun += 1
         longestQuietRun = Math.max(longestQuietRun, quietRun)
@@ -581,7 +612,12 @@ async function checkCase(adapter, fixture, expectedFailure = null) {
     duration: loaded.duration,
     boundaryFrames: boundaryFrames.length,
     boundaryAudioSamples: boundaryAudio.length,
-    audioCheck: webAudioAvailable ? 'WebAudio frequency' : 'native audioTracks (WebAudio signal unavailable)',
+    boundaryAudioLevelSamples: boundaryLevels.length,
+    audioCheck: webAudioAvailable
+      ? 'WebAudio frequency + 256-sample RMS'
+      : engine === 'safari'
+        ? 'unavailable (Safari native HLS)'
+        : 'native audioTracks (WebAudio signal unavailable)',
     farSeekLanding,
     farSeekFrames: seekFrames.length,
     stallCount: state.stalls.length,
@@ -627,7 +663,7 @@ async function main() {
         : undefined)
       let summary
       try {
-        summary = await checkCase(adapter, fixture, expectedFailure)
+        summary = await checkCase(adapter, fixture, expectedFailure, engine)
       } catch (error) {
         log(`NG: ${fixture.format}/${fixture.kind}: ${error.message}`)
         failures.push(`${fixture.format}/${fixture.kind}: ${error.message}`)
@@ -643,7 +679,7 @@ async function main() {
             ? summary.stallCount > 0
           : summary.failures.length === 0
       const status = expectationMet ? 'OK' : 'NG'
-      log(`${status}: ${fixture.format}/${fixture.kind} via ${summary.browserPath} (canPlayType=${summary.nativeMIME}); stalls=${summary.stallCount}; boundary frames=${summary.boundaryFrames}; boundary audio=${summary.boundaryAudioSamples} (${summary.audioCheck}); far-seek frames=${summary.farSeekFrames}`)
+      log(`${status}: ${fixture.format}/${fixture.kind} via ${summary.browserPath} (canPlayType=${summary.nativeMIME}); stalls=${summary.stallCount}; boundary frames=${summary.boundaryFrames}; boundary audio=${summary.boundaryAudioSamples}; audio level samples=${summary.boundaryAudioLevelSamples} (${summary.audioCheck}); far-seek frames=${summary.farSeekFrames}`)
       if (summary.failures.length > 0) summary.failures.forEach((failure) => log(`  ${expectedFailure ? 'expected failure' : 'NG'}: ${failure}`))
       if (!expectationMet) failures.push(`${fixture.format}/${fixture.kind}: ${summary.failures.join('; ') || 'negative control did not fail'}`)
     }

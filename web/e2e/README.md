@@ -38,7 +38,7 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
-録画 HLS の固定長 segment と ffmpeg 再起動境界は、合成 TS と fMP4 を使って測る。fixture は実行ごとに `os.tmpdir()` へ生成し、映像へ埋め込んだフレーム番号・WebAudio の周波数・stall 数を検査する。
+録画 HLS の固定長 segment と ffmpeg 再起動境界は、合成 TS と fMP4 を使って測る。fixture は実行ごとに `os.tmpdir()` へ生成し、映像へ埋め込んだフレーム番号・WebAudio の周波数と短い音量低下・stall 数を検査する。
 
 ```sh
 cd web
@@ -49,11 +49,11 @@ E2E_BROWSER=safari corepack pnpm e2e:recording-segmented-vod
 
 Chrome は Google Chrome と hls.js、Safari は `safaridriver` を通した実 Safari と native HLS で判定する。各 run は実際に使った再生経路を出力する。Safari の初回だけ「リモートオートメーションを許可」を有効にする。
 
-`recording-segmented-vod.mjs` の Playwright WebKit 26.6 判定は native HLS を選ぶ。TS と fMP4 の正例は直近の run で通ったが、fMP4 再起動版の `currentTime` と `mediaTime` は別の run で 2 frame ずれた。
+`recording-segmented-vod.mjs` の Playwright WebKit 26.6 判定は native HLS を選ぶ。run ごとに映像計測が揺れ、TS の正例は通った一方、fMP4 連続版で境界とシーク位置の frame callback が取れない run があった。fMP4 再起動版も別の run で `currentTime` と `mediaTime` が 2 frame ずれた。
 
-同じ判定では native HLS の音声が WebAudio に届かず左右 RMS が 0 だった。音声切替は `audioTracks` の選択と再生継続まで確認できるが、音の周波数や短い途切れは測れない。4 秒遅らせた映像 segment も WebKit の no-progress 判定では stall にならなかった。
+同じ判定では native HLS の音声が WebAudio に届かず左右 RMS が 0 だった。音声切替は `audioTracks` の選択と再生継続まで確認できるが、音の周波数や短い途切れは測れない。WebKit は診断用のためこの制約を表示して続行する。実 Safari では WebAudio 信号を測れない場合、音声連続を確認できないとして失敗する。4 秒遅らせた映像 segment も WebKit の no-progress 判定では stall にならなかった。
 
-境目をずらした時刻の負例は Chrome と WebKit で実行する。標準音声を無音にする負例と、次の映像 segment を 4 秒遅らせる負例は Chrome + hls.js で実行する。`E2E_BROWSER=webkit` は原因調査用で、Safari の native HLS や音声の合否を代替しない。
+境目をずらした時刻の負例は Chrome と WebKit で実行する。再起動直後の標準音声を約 50 ms 無音にする負例と、次の映像 segment を 4 秒遅らせる負例は Chrome + hls.js で実行する。`E2E_BROWSER=webkit` は原因調査用で、Safari の native HLS や音声の合否を代替しない。
 
 チャンネル選択と「その他」のモバイルシート、録画・シリーズ絞り込み内のチャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
 

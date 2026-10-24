@@ -16,6 +16,7 @@ export const SEGMENT_SECONDS = 3
 export const SPLIT_SECONDS = 12
 export const RESTART_FROM_SECONDS = SPLIT_SECONDS - SEGMENT_SECONDS
 export const FRAME_RATE = 30
+const AUDIO_GAP_SECONDS = 0.05
 
 export const FIXTURE_ROOT = path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v1')
 const SOURCE_PATH = path.join(FIXTURE_ROOT, 'source.ts')
@@ -306,7 +307,7 @@ export function ensurePlaybackFixtures() {
         durationSeconds: FIXTURE_SECONDS - RESTART_FROM_SECONDS,
         outputOffset: RESTART_FROM_SECONDS,
         extension,
-        silenceStandardRange: [SEGMENT_SECONDS, SEGMENT_SECONDS * 2],
+        silenceStandardRange: [SEGMENT_SECONDS, SEGMENT_SECONDS + AUDIO_GAP_SECONDS],
       })
       fixtures.push(writeFixture({
         outputDirectory: path.join(FIXTURE_ROOT, format, 'audio-gap'),
