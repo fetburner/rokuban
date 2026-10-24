@@ -1441,15 +1441,19 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	const recordID = "rec-sliced-transfer"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
-	worker := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  time.Second,
-		Precheck:      pgstoretest.Media(pool),
+	newWorker := func() *IngestWorker {
+		w := &IngestWorker{
+			Publisher:     pgstoretest.Media(pool),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			RecordTarget:  pgstoretest.Recordings(pool),
+			MediaDir:      mediaDir,
+			StallTimeout:  time.Second,
+			Precheck:      pgstoretest.Media(pool),
+		}
+		w.CMDetectionStore = pgstoretest.Analysis(pool)
+		return w
 	}
-	worker.CMDetectionStore = pgstoretest.Analysis(pool)
+	worker := newWorker()
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	firstErr := runWorkerViaJobQFake(context.Background(), worker, job)
@@ -1467,6 +1471,19 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
 		t.Fatalf("checkpoint after first slice: %v", err)
 	}
+	firstTempRelPath, firstTempGeneration, ok := readIngestTempGeneration(t, pool, recordingID)
+	if !ok {
+		t.Fatal("ingest temp state was not recorded after the first transfer slice")
+	}
+	if firstTempRelPath != "sites/default/test/.rokuban-ingest-default-rec-sliced-transfer" {
+		t.Errorf("temp_rel_path after first slice = %q, want media-root-relative temp path", firstTempRelPath)
+	}
+	if firstTempGeneration <= 0 {
+		t.Fatalf("temp_generation after first slice = %d, want a positive sequence value", firstTempGeneration)
+	}
+	// Resume through a fresh worker to model a process restart. The only generation
+	// source for this attempt is the persisted progress row.
+	worker = newWorker()
 
 	completed := false
 	for slice := 1; slice <= 5; slice++ {
@@ -1481,6 +1498,15 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("same job did not complete within five resumed slices")
+	}
+	var committedGeneration int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
+		recordingID).Scan(&committedGeneration); err != nil {
+		t.Fatalf("reading committed original ingest generation: %v", err)
+	}
+	if committedGeneration != firstTempGeneration {
+		t.Fatalf("committed ingest_generation = %d, want replayed temp generation %d", committedGeneration, firstTempGeneration)
 	}
 	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
 	got, err := os.ReadFile(canonicalPath)
@@ -2490,8 +2516,10 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	// ここで作らないと handleAlreadyCommittedIngest の ClearIngestProgress を通らない。
 	media := pgstoretest.Media(pool)
 	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
-		RecordingID:  recordingID,
-		WrittenBytes: 10,
+		RecordingID:    recordingID,
+		WrittenBytes:   10,
+		TempRelPath:    "sites/default/.rokuban-ingest-stale",
+		TempGeneration: 1,
 	}); err != nil {
 		t.Fatalf("seeding stale ingest progress: %v", err)
 	}

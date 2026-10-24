@@ -222,6 +222,7 @@ func TestIngestWorker_CommitHoldsRelPathFileLockThroughRename(t *testing.T) {
 	if err := os.WriteFile(tempPath, []byte("committed bytes"), 0o644); err != nil {
 		t.Fatalf("writing commit temp: %v", err)
 	}
+	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 
 	renameStarted := make(chan struct{})
 	releaseRename := make(chan struct{})
@@ -303,6 +304,7 @@ func TestIngestWorker_CompletedCommitsLeaveNoPerRelPathLockFiles(t *testing.T) {
 		if err := os.WriteFile(tempPath, content, 0o644); err != nil {
 			t.Fatalf("writing commit temp: %v", err)
 		}
+		seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 		if err := w.commit(context.Background(), recordingID, relPath, tempPath, fullPath,
 			int64(len(content))); err != nil {
 			t.Fatalf("commit %d: %v", i, err)
@@ -390,6 +392,7 @@ func runCanonicalOrphanSurvives(
 		_, _ = pool.Exec(context.Background(), "DELETE FROM orphan_files WHERE rel_path = $1", relPath)
 	})
 	recordingID := dbtest.Recording(t, pool)
+	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 
 	publicationStarted := make(chan struct{})
 	releasePublication := make(chan struct{})

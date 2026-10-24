@@ -3,6 +3,15 @@ INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id;
 
+-- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
+-- 転送中の recording_ingest_progress からコピーする。
+-- name: CreateOriginalMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, ingest_generation)
+SELECT p.recording_id, 'original', sqlc.arg('rel_path'), sqlc.arg('size_bytes'), p.temp_generation
+FROM recording_ingest_progress p
+WHERE p.recording_id = sqlc.arg('recording_id')
+RETURNING id;
+
 -- ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
 -- 「この recording_id の original はもうコミット済みか」を確認する
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。

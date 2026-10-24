@@ -26,6 +26,62 @@ func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
 }
 
+func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	media := NewMedia(pool)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	tempRelPath := fmt.Sprintf("sites/%s/test/.rokuban-ingest-generation-test", store.DefaultSite)
+	generation, err := media.NextIngestTempGeneration(ctx)
+	if err != nil {
+		t.Fatalf("allocating temp generation: %v", err)
+	}
+	if generation <= 0 {
+		t.Fatalf("temp generation = %d, want a positive sequence value", generation)
+	}
+	if err := media.UpsertIngestProgress(ctx, store.IngestProgress{
+		RecordingID: recordingID, WrittenBytes: 17,
+		TempRelPath: tempRelPath, TempGeneration: generation,
+	}); err != nil {
+		t.Fatalf("writing ingest progress: %v", err)
+	}
+	state, err := media.GetIngestTempState(ctx, recordingID)
+	if err != nil || state == nil {
+		t.Fatalf("GetIngestTempState() = (%+v, %v), want a row", state, err)
+	}
+	if state.TempRelPath != tempRelPath || state.TempGeneration != generation {
+		t.Fatalf("ingest temp state = %+v, want path %q and generation %d", state, tempRelPath, generation)
+	}
+
+	if err := media.CommitOriginal(ctx, store.CommitOriginalInput{
+		RecordingID: recordingID, RelPath: "sites/default/generation-test.m2ts", SizeBytes: 17,
+	}, func(store.EncodePolicyInputs) (store.EncodePolicySnapshot, error) {
+		return store.EncodePolicySnapshot{KeepOriginal: "always", EncodeProfiles: []string{}}, nil
+	}, func() error { return nil }); err != nil {
+		t.Fatalf("committing original: %v", err)
+	}
+	var committedGeneration int64
+	if err := pool.QueryRow(ctx,
+		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
+		recordingID).Scan(&committedGeneration); err != nil {
+		t.Fatalf("reading original generation: %v", err)
+	}
+	if committedGeneration != generation {
+		t.Fatalf("original ingest_generation = %d, want progress generation %d", committedGeneration, generation)
+	}
+	state, err = media.GetIngestTempState(ctx, recordingID)
+	if err != nil || state != nil {
+		t.Fatalf("GetIngestTempState() after commit = (%+v, %v), want no progress row", state, err)
+	}
+	nextGeneration, err := media.NextIngestTempGeneration(ctx)
+	if err != nil {
+		t.Fatalf("allocating next temp generation: %v", err)
+	}
+	if nextGeneration <= generation {
+		t.Fatalf("next temp generation = %d, want greater than %d", nextGeneration, generation)
+	}
+}
+
 func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	pool := testutil.SetupDB(t)
 	fixture := contracttest.MediaFixture{
@@ -187,6 +243,7 @@ func configureMediaPublishFixture(t *testing.T, pool *pgxpool.Pool, fixture *con
 		t.Helper()
 		if err := sqlcgen.New(pool).UpsertRecordingIngestProgress(context.Background(), sqlcgen.UpsertRecordingIngestProgressParams{
 			RecordingID: recordingID, WrittenBytes: written, ExpectedBytes: expected,
+			TempRelPath: fmt.Sprintf("sites/%s/.rokuban-ingest-contract", store.DefaultSite), TempGeneration: 1,
 		}); err != nil {
 			t.Fatalf("seeding ingest progress for recording %d: %v", recordingID, err)
 		}

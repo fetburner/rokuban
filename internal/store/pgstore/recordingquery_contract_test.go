@@ -174,8 +174,8 @@ VALUES ($1, $2, $3, 1)`, id, attempt.Profile, attempt.State); err != nil {
 	}
 	if options.IngestWrittenBytes != nil {
 		if _, err := pool.Exec(ctx, `
-INSERT INTO recording_ingest_progress (recording_id, written_bytes, expected_bytes)
-VALUES ($1, $2, $3)`, id, *options.IngestWrittenBytes, options.IngestExpectedBytes); err != nil {
+		INSERT INTO recording_ingest_progress (recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation)
+VALUES ($1, $2, $3, 'sites/default/.rokuban-ingest-query-contract', 1)`, id, *options.IngestWrittenBytes, options.IngestExpectedBytes); err != nil {
 			t.Fatalf("creating fixture ingest progress: %v", err)
 		}
 	}

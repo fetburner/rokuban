@@ -10,6 +10,14 @@
 SELECT recording_id, content_length FROM record_sync
 WHERE site = $1 AND record_id = $2;
 
+-- name: GetRecordingIngestTempState :one
+SELECT temp_rel_path, temp_generation
+FROM recording_ingest_progress
+WHERE recording_id = $1;
+
+-- name: NextIngestTempGeneration :one
+SELECT nextval('ingest_temp_generation_seq')::bigint AS generation;
+
 -- name: UpsertRecordingIngestProgress :exec
 -- 転送中の進捗を上書きする。行の存在そのものが「転送中」の主張なので
 -- （不変条件 10）、written_bytes = 0 の初回書き込みにも意味がある
@@ -20,11 +28,13 @@ WHERE site = $1 AND record_id = $2;
 -- cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
 -- 保証しない。docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
 INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, observed_at
-) VALUES ($1, $2, $3, now())
+    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, observed_at
+) VALUES ($1, $2, $3, $4, $5, now())
 ON CONFLICT (recording_id) DO UPDATE SET
     written_bytes  = EXCLUDED.written_bytes,
     expected_bytes = EXCLUDED.expected_bytes,
+    temp_rel_path  = EXCLUDED.temp_rel_path,
+    temp_generation = EXCLUDED.temp_generation,
     observed_at    = now();
 
 -- name: DeleteRecordingIngestProgress :exec

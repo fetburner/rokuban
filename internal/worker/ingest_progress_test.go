@@ -67,10 +67,12 @@ func TestIngestProgressReporter_ThrottlesContinuedWrites(t *testing.T) {
 
 	recordingID := dbtest.Recording(t, pool)
 	reporter := &ingestProgressReporter{
-		publisher:   pgstoretest.Media(pool),
-		recordingID: recordingID,
-		interval:    time.Hour,
-		log:         slog.Default(),
+		publisher:      pgstoretest.Media(pool),
+		recordingID:    recordingID,
+		tempRelPath:    "sites/default/.rokuban-ingest-test",
+		tempGeneration: 1,
+		interval:       time.Hour,
+		log:            slog.Default(),
 	}
 
 	reporter.start(context.Background())

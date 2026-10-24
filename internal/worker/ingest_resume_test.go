@@ -116,9 +116,12 @@ func TestIngestTempFile_ResumeReplaysHash(t *testing.T) {
 	suffix[1*188+3] = 0x10 | 7
 	want := append(append([]byte(nil), prefix...), suffix...)
 
-	firstLock, err := lockIngestTempFile(tempPath)
+	firstLock, firstCreated, err := lockIngestTempFile(tempPath)
 	if err != nil {
 		t.Fatalf("locking first ingest temp: %v", err)
+	}
+	if !firstCreated {
+		t.Fatal("first temp lock reported an existing file, want newly created")
 	}
 	firstFile, err := openIngestFile(tempPath, firstLock)
 	if err != nil {
@@ -141,9 +144,12 @@ func TestIngestTempFile_ResumeReplaysHash(t *testing.T) {
 		t.Fatalf("releasing first ingest temp lock: %v", err)
 	}
 
-	secondLock, err := lockIngestTempFile(tempPath)
+	secondLock, secondCreated, err := lockIngestTempFile(tempPath)
 	if err != nil {
 		t.Fatalf("locking resumed ingest temp: %v", err)
+	}
+	if secondCreated {
+		t.Fatal("resumed temp lock reported a new file, want existing temp")
 	}
 	secondFile, err := openIngestFile(tempPath, secondLock)
 	if err != nil {
@@ -318,11 +324,11 @@ func TestIngestReplayReaderHonorsCancellationBetweenChunks(t *testing.T) {
 func TestIngestTempFile_LockIsNonBlockingAndReleasedOnClose(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
 
-	first, err := lockIngestTempFile(path)
+	first, _, err := lockIngestTempFile(path)
 	if err != nil {
 		t.Fatalf("first lock: %v", err)
 	}
-	second, err := lockIngestTempFile(path)
+	second, _, err := lockIngestTempFile(path)
 	if err == nil {
 		_ = second.Close()
 		_ = first.Close()
@@ -332,7 +338,7 @@ func TestIngestTempFile_LockIsNonBlockingAndReleasedOnClose(t *testing.T) {
 		t.Fatalf("closing first lock: %v", err)
 	}
 
-	third, err := lockIngestTempFile(path)
+	third, _, err := lockIngestTempFile(path)
 	if err != nil {
 		t.Fatalf("lock after release: %v", err)
 	}
@@ -344,7 +350,7 @@ func TestIngestTempFile_LockIsNonBlockingAndReleasedOnClose(t *testing.T) {
 func TestIngestTempFile_OrphanLockSkipsLiveIngestAndDoesNotCreate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
 
-	live, err := lockIngestTempFile(path)
+	live, _, err := lockIngestTempFile(path)
 	if err != nil {
 		t.Fatalf("live ingest lock: %v", err)
 	}
@@ -366,7 +372,7 @@ func TestIngestTempFile_OrphanLockSkipsLiveIngestAndDoesNotCreate(t *testing.T) 
 
 func TestIngestTempFile_WriterSharesLockedInode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".rokuban-ingest-site-a-record-1")
-	lock, err := lockIngestTempFile(path)
+	lock, _, err := lockIngestTempFile(path)
 	if err != nil {
 		t.Fatalf("locking ingest temp: %v", err)
 	}

@@ -197,9 +197,13 @@ CREATE TABLE recording_ingest_progress (
     recording_id   bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     written_bytes  bigint      NOT NULL CHECK (written_bytes >= 0),
     expected_bytes bigint      CHECK (expected_bytes IS NULL OR expected_bytes >= 0),
+    temp_rel_path  text        NOT NULL,
+    temp_generation bigint     NOT NULL CHECK (temp_generation > 0),
     observed_at    timestamptz NOT NULL DEFAULT now()
 );
 ```
+
+`temp_rel_path` は media root からの相対パスで、`temp_generation` は `ingest_temp_generation_seq` から採番する。既存 temp の replay は同じ世代を使い、temp を捨てて作り直したときは新しい世代になる。進捗行が無いまま temp が残っていた場合も、新しい世代を割り当てる。
 
 転送していないことを表す行は作らない。消えるのは 2 経路だけである。1 つは、原本のメディアアセットを INSERT するトランザクションである（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）。もう 1 つは、録画行の削除（CASCADE）である。
 
@@ -217,6 +221,8 @@ CREATE TABLE recording_ingest_progress (
 - 書き込みバイト数: `written_bytes`
 - 期待バイト数のコピー元: `expected_bytes`、`record_sync.content_length`
 - 観測時刻: `observed_at`
+- temp の相対パスと世代: `temp_rel_path` / `temp_generation`
+- 世代採番: `ingest_temp_generation_seq`
 - 露出させない内部表: `river_job`
 
 </details>
