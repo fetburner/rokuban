@@ -247,58 +247,57 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 ##### 伸長中の FFmpeg 入力
 
-合成入力は追記完了後に終了したが、共有ストレージ上の挙動は未検証である。
+合成ファイルが伸びている間に HLS segment が公開され、書き手終了後は timeout で reader が終了した。
 
-streamer イメージの FFmpeg 7.1.5 で、160×90 / 25 fps の合成 MPEG-TS を `/dev/shm` に 8 秒間書き、2 秒後に別プロセスから読んだ。reader は `-follow 1 -rw_timeout 2000000 -ss 1` で開始し、2 秒 segment の HLS を出した。書き手終了後 2,003 ms で終了し、終了コード 0、segment 4 本、`ENDLIST` ありだった。終了時に demux の I/O error がログへ出たが、playlist は閉じた。
+`python3 scripts/measure-playback-follow.py` は FFmpeg 9.0.2 で、160×90 / 25 fps / GOP 50 の合成 MPEG-TS を実時間で 12 秒間書く。reader は 2 秒後に `-follow 1 -rw_timeout 2000000 -ss 1` で開始し、`temp_file` 付きの 2 秒 HLS segment を作る。segment の rename 時刻と writer の生存状態を同じ時計で記録する。
 
-同じ入力で `rw_timeout=10000000` とし、書き手終了後に FFmpeg へ SIGINT を送ると、終了まで 9,502 ms かかり、終了コード 255、`ENDLIST` ありだった。SIGINT は file read の待ちを早めなかった。この測定では `rw_timeout` が終了待ちの上限になった。どちらも tmpfs の結果であり、NFS 上の file read は未検証である。
+1 回の測定では segment 0〜4 が writer 終了前に公開された（reader 開始から 2.769〜8.914 秒後）。writer は 11.536 秒で終了し、最後の segment は 13.520 秒で公開された。reader は writer 終了から 1,984 ms 後に exit 0 で終了し、6 segment と `ENDLIST` を残した。この追従測定はホストの一時ディレクトリであり、PVC 上の挙動を示さない。
+
+SIGINT の経路は `python3 scripts/measure-playback-follow.py --rw-timeout-us 10000000 --sigint-after-writer` で測る。この実行では writer 終了時に SIGINT を送ったが、reader の終了まで 10,014 ms かかり、exit 255、`ENDLIST` ありだった。SIGINT は file read の待ちを短くしなかった。どちらも FFmpeg 9.0.2 とローカル一時ファイルの結果で、共有 PVC 上の終了挙動は未検証である。
 
 ##### 先頭 audio PTS が古い入力
 
-format の先頭時刻を使う直接 seek は、この入力で目標フレームを選ばなかった。
+format の先頭時刻を使う直接 seek は、映像が始まる前の位置を選んだ。
 
-FFmpeg 7.1.5 で 30 秒の合成 MPEG-TS を作った。video と主音声を 5,400 秒ずらし、別音声の最初の PES を 0 秒から置いた。`-mpegts_copyts 1` で保存した結果、format の start time は 0 秒、video の先頭 PTS は 5,400.010022 秒、別音声の先頭 PTS は 0 秒だった。要求 offset 10 秒の目標 PTS は 5,410.010022 秒である。
+`python3 scripts/measure-playback-seek.py` は FFmpeg 9.0.2 で、30 秒の `testsrc2` 映像を MPEG-2 にする。解像度は 160×90、25 fps、GOP 50、B-frame なしである。主音声も 5,400 秒ずらす。別音声の先頭 PES だけ 0 秒に置いて MPEG-TS にする。`ffprobe` の format start time は 0 秒、video の先頭 PTS は 5,400.010022 秒、別音声の先頭 PTS は 0 秒だった。
 
-直接の `-ss` はどちらも目標から外れた。フレーム誤差は 25 fps で数えた。`-copyts` の有無で同じ decoded frame が選ばれることは framehash で確認した。
+比較 offset は 10.36 秒、目標 source PTS は 5,410.370022 秒である。HLS は 2 秒 segment、25 fps、lossless H.264、GOP 50、B-frame なしで出す。各出力 segment の先頭 framehash を入力全体の framehash と照合し、入力 video PTS に戻した。下表の誤差は `observed_source_pts - (5,410.370022 + n×2)` を 25 fps の frame 数で表す。`copyts なし / あり` の順で記し、出力 mux PTS は入力 PTS と別にスクリプトが表示する。
 
-| 入力 seek | `-copyts` | 先頭 video PTS | 目標との差 |
+| segment n | `-ss 10.36` | absolute seek | 2 秒 pre-roll + trim |
 |---|---:|---:|---:|
-| `-ss 10` | なし / あり | 5,400.010022 秒 | −250 frame |
-| `-seek_timestamp 1 -ss 5410.010022` | なし / あり | 5,410.690022 秒 | +17 frame |
-| 2 秒 pre-roll + `trim` | あり | 5,410.010022 秒 | 0 frame |
+| 0 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 1 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 2 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 3 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 4 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 5 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 6 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 7 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+| 8 | −259 / −259 frame | +41 / +41 frame | 0 frame |
 
-測定した合成 GOP では、目標より 2 秒前を入力 seek し、`trim=start=5410.010022` で目標 PTS より前を落とし、`setpts=PTS-STARTPTS` で HLS 時間を 0 に戻すと一致した。対応する引数は `-copyts -seek_timestamp 1 -ss 5408.010022` と `trim=start=5410.010022,setpts=PTS-STARTPTS` である。pre-roll の 2 秒はこの合成 GOP だけで確認した値で、放送 TS の GOP に対する上限ではない。
+この fixture では `-ss 10.36` が video の先頭 frame を選び、絶対 seek は次の GOP 境界を選んで 41 frame 遅れた。`-copyts` の有無で選択 frame は同じだった。2 秒前から読み、`trim=start=5410.370022,setpts=PTS-STARTPTS` を適用すると、測定した segment n=0〜9 が目標格子に一致した。入力引数は `-copyts -seek_timestamp 1 -ss 5408.370022` である。
 
-`-ss 10` は 30 秒すべて（2 秒 segment 15 本）を出した。直接の絶対時刻 seek は 20 秒（10 本）を出した。`-copyts` を付けると前者の HLS 先頭 PTS は 5,401.400 秒、後者は 5,412.080 秒になった。`-copyts` を付けない出力はどちらも 1.440 秒から始まった。seek 位置の正しさと muxer の出力 PTS は別に確認する。
+この方法は合成 GOP の結果であり、2 秒は放送 TS の GOP に対する上限ではない。HLS の mux PTS は seek 条件ごとに異なり、例えば相対 seek の segment 0 は `copyts` なしで 1.400 秒、ありで 5,401.400 秒から始まった。mux PTS の原点を使わず、source framehash で seek 誤差を比較する。
 
 ##### 33 bit PTS wrap
 
-実録画は読めず、wrap を含む合成入力で seek を測った。
+合成入力の映像 500 packet で、PTS が 0 秒をまたぐことを確認した。
 
-実録画は PVC から読めなかったため、`-output_ts_offset 95430` を付けた 20 秒の合成 MPEG-TS を使った。PTS の wrap は `2^33 / 90000 = 95,443.717689` 秒である。`ffprobe -show_packets` は映像 500 packet の PTS を −13.717689 秒から 6.282311 秒まで出し、範囲 0 秒を通過した。これは raw PTS が wrap する位置を含む。
+実録画を読めなかったため、20 秒 / 25 fps の MPEG-2 video（GOP 50、B-frame なし）に `-output_ts_offset 95430 -mpegts_copyts 1` を付けた。wrap は `2^33 / 90000 = 95,443.717689` 秒である。`ffprobe -show_packets` は 500 packet の PTS を −13.717689 秒から 6.242311 秒まで出し、0 秒を通過した。
 
-wrap を含む入力の offset 10 秒では、映像原点は −13.717689 秒、目標は −3.717689 秒だった。直接 seek は `-copyts` なしで 92 frame、ありで 17 frame 遅れた。2 秒 pre-roll と目標 PTS の `trim` を使うと差は 0 frame だった。
+video PTS の原点は −13.717689 秒、offset 10.36 秒の目標は −3.357689 秒である。framehash を使った source PTS の比較は次の通りである。`copyts なし / あり` の順で記す。
 
-##### segment PTS 格子
+| segment n | relative seek | absolute seek | 2 秒 pre-roll + trim |
+|---:|---:|---:|---:|
+| 0 | +41 / +41 frame | +41 / +41 frame | 0 frame |
+| 1 | +41 / +41 frame | +41 / +41 frame | 0 frame |
+| 2 | +41 / +41 frame | +41 / +41 frame | 0 frame |
+| 3 | +41 / +41 frame | +41 / +41 frame | 0 frame |
+| 4 | — | — | 0 frame |
 
-測定した HLS segment の先頭 PTS は、両入力で 2 秒間隔の格子に一致した。
+direct seek は 4 segment、pre-roll と trim は 5 segment を出した。wrap 入力でも `-copyts` の有無で direct seek の選択 frame は同じだった。修正後の mux PTS は 1.400、3.400、5.400、7.400、9.400 秒であるが、source PTS との比較には入力 framehash を使う。
 
-pre-roll と `trim` の後に `setpts=PTS-STARTPTS` を行った HLS 出力で、segment 時間 `D=2` 秒、25 fps の先頭映像 PTS を比べた。原点は segment 0 の先頭 PTS 1.440 秒である。PTS が wrap する入力も、測った segment の格子ずれは 0 frame だった。
-
-| segment n | 古い audio PTS | PTS wrap |
-|---:|---:|---:|
-| 0 | 1.440 秒 / 0 frame | 1.440 秒 / 0 frame |
-| 1 | 3.440 秒 / 0 frame | 3.440 秒 / 0 frame |
-| 2 | 5.440 秒 / 0 frame | 5.440 秒 / 0 frame |
-| 3 | 7.440 秒 / 0 frame | 7.440 秒 / 0 frame |
-| 4 | 9.440 秒 / 0 frame | 9.440 秒 / 0 frame |
-| 5 | 11.440 秒 / 0 frame | — |
-| 6 | 13.440 秒 / 0 frame | — |
-| 7 | 15.440 秒 / 0 frame | — |
-| 8 | 17.440 秒 / 0 frame | — |
-| 9 | 19.440 秒 / 0 frame | — |
-
-実録画での seek 精度、実 PVC 上の追記遅延、4 分境界、NFS 上での `-follow 1` 終了は未検証である。上の PTS 結果は FFmpeg 7.1.5 と合成入力に限る。
+再現スクリプトは各 segment の最初の decoded frame を入力 framehash に照合し、出力 mux PTS と source PTS を別々に出す。測定結果は FFmpeg 9.0.2 の合成入力に限る。実録画での seek 精度、実 PVC の追記可視性と 4 分境界、PVC 上での `-follow 1` 終了は未検証である。
 
 ### 録画原本のブラウザ再生
 
