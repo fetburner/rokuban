@@ -172,6 +172,7 @@ type MediaPublish interface {
 	// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
 	ClearIngestProgress(ctx context.Context, recordingID int64) error
 	// CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
+	// 進捗行が必要である（原本の世代を進捗行から写す）。行が無ければ原本を作らずエラーを返す。
 	// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
 	// resolvePolicy は同じ tx で読んだ予約・上書き・意図に対して 1 回だけ呼ぶ。
 	CommitOriginal(ctx context.Context, input CommitOriginalInput, resolvePolicy ResolveEncodePolicy, publish func() error) error

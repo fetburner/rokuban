@@ -257,9 +257,9 @@ func waitMediaRelPathLockRetry(ctx context.Context) error {
 	}
 }
 
-// Lock は DB セッションの寿命に依存しない media-root-relative path の排他を取得する。
-// busy 時は gate 共有中の non-blocking 試行で fd を閉じてから待つ。これにより
-// Close/GC が lock file を unlink するとき、古い inode 上の waiter が残らない。
+// Lock は DB セッションの寿命に依存しない canonical のファイル
+// 排他を取得する。busy 時は gate 共有中の non-blocking 試行で fd を閉じてから待つ。
+// これにより Close/GC が lock file を unlink するとき、古い inode 上の waiter が残らない。
 func Lock(ctx context.Context, mediaDir, relPath string) (*FileLock, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -268,47 +268,6 @@ func Lock(ctx context.Context, mediaDir, relPath string) (*FileLock, error) {
 		return nil, fmt.Errorf("collecting stale media rel_path locks: %w", err)
 	}
 	return lockNoGC(ctx, mediaDir, relPath)
-}
-
-// TryLock は media root からの相対パスの排他を 1 回だけ試す。gate または path lock が
-// 使用中なら acquired=false, err=nil を返す。lock file 全件の GC は行わず、既存の stale
-// lock file は同じ path を取得して Close したときに回収する。
-func TryLock(mediaDir, relPath string) (*FileLock, bool, error) {
-	for {
-		gate, err := acquireMediaRelPathLockGate(context.Background(), mediaDir, false, false)
-		if errors.Is(err, errMediaRelPathLockGateBusy) {
-			return nil, false, nil
-		}
-		if err != nil {
-			return nil, false, err
-		}
-
-		lock, err := openMediaRelPathLock(mediaDir, relPath)
-		if err != nil {
-			return nil, false, errors.Join(err, releaseMediaRelPathLockGate(gate))
-		}
-		lockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if lockErr != nil {
-			closeErr := lock.Close()
-			gateErr := releaseMediaRelPathLockGate(gate)
-			if errors.Is(lockErr, syscall.EINTR) {
-				continue
-			}
-			if mediaRelPathLockBusy(lockErr) {
-				if err := errors.Join(closeErr, gateErr); err != nil {
-					return nil, false, fmt.Errorf("closing busy media rel_path lock attempt: %w", err)
-				}
-				return nil, false, nil
-			}
-			return nil, false, errors.Join(fmt.Errorf("locking media rel_path file: %w", lockErr), closeErr, gateErr)
-		}
-		if err := releaseMediaRelPathLockGate(gate); err != nil {
-			unlockErr := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-			closeErr := lock.Close()
-			return nil, false, errors.Join(fmt.Errorf("releasing media rel_path lock gate: %w", err), unlockErr, closeErr)
-		}
-		return &FileLock{file: lock, mediaDir: mediaDir, path: Path(mediaDir, relPath)}, true, nil
-	}
 }
 
 // lockNoGC は Lock から GC を除いた本体。GC は全 lock file を open + flock するので、

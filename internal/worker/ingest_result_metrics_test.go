@@ -175,8 +175,8 @@ func TestIngestWorker_SHA256WaitSnoozesJobWithoutMetrics(t *testing.T) {
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID).Scan(&progressRows); err != nil {
 		t.Fatalf("counting progress rows while waiting: %v", err)
 	}
-	if progressRows != 0 {
-		t.Errorf("recording_ingest_progress rows while waiting = %d, want 0", progressRows)
+	if progressRows != 1 {
+		t.Errorf("recording_ingest_progress rows while waiting = %d, want 1 (kept until commit)", progressRows)
 	}
 	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != int64(len(tsData)) {

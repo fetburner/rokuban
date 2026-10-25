@@ -47,6 +47,9 @@ func (s *Media) CommitOriginal(
 		RelPath:     in.RelPath,
 		SizeBytes:   in.SizeBytes,
 	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("inserting original media asset: no ingest progress row for recording %d (the original copies its generation from it): %w", in.RecordingID, err)
+		}
 		return fmt.Errorf("inserting original media asset: %w", mapDatabaseError(err))
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {

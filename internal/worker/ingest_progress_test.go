@@ -368,13 +368,10 @@ func TestIngestWorker_ProgressFlushesInterruptedBurst(t *testing.T) {
 	}
 }
 
-// TestIngestWorker_ProgressRemainsAfterFailure は、転送は終わったがコミットに
-// 至らなかったジョブが進捗行を残すことを確認する（issue #212）。
-//
-// 行が残ることは意図した挙動で、UI が「どこまで進んで止まっているか」を読む
-// 唯一の材料になる（River の内部状態を API 契約に露出させない代わり）。
-// HEAD が転送量と食い違う長さを返すので、層 3 の照合で失敗する。
-func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
+// TestIngestWorker_ProgressClearedWhenTempDiscarded は、サイズ不一致で temp を捨てた
+// ジョブが進捗行も残さないことを確認する。進捗行は「commit していない temp を持っている」
+// ことを表すので、捨てた temp を指す行を残さない。
+func TestIngestWorker_ProgressClearedWhenTempDiscarded(t *testing.T) {
 	tsData := makeTSData(100)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -431,17 +428,8 @@ func TestIngestWorker_ProgressRemainsAfterFailure(t *testing.T) {
 		t.Fatal("Work() succeeded, want size mismatch error")
 	}
 
-	row, ok := readIngestProgress(t, pool, recordingID)
-	if !ok {
-		t.Fatal("progress row was removed after a failed ingest; the UI would lose the only signal of how far it got")
-	}
-	if row.written != int64(len(tsData)) {
-		t.Errorf("written_bytes after failure = %d, want %d", row.written, len(tsData))
-	}
-	// 分母は record_sync 由来。watcher が観測していなければ NULL のままにする
-	// （HEAD の Content-Length で埋めない）。
-	if row.expected != nil {
-		t.Errorf("expected_bytes = %v, want nil (record_sync.content_length was never observed)", row.expected)
+	if _, ok := readIngestProgress(t, pool, recordingID); ok {
+		t.Fatal("progress row remained after the temp was discarded for a size mismatch")
 	}
 }
 

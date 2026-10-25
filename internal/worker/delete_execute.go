@@ -11,7 +11,7 @@
 //
 // ファイル操作は次の表のとおり。字幕 sidecar は encoded 本体と同じ段階で消すので派生物、
 // staging（encode / 生成アセットの予約名の一時出力）は派生物の公開前ファイル、
-// checkpoint は base temp の stable lock と flock の下で消すので ingest temp に入れる。
+// checkpoint は base temp と同じ flock の下で消すので ingest temp に入れる。
 //
 //	操作      原本                         派生物                          ingest temp
 //	解決      mediapath.Resolve            同左（字幕・staging も）         同左（checkpoint も）
@@ -21,9 +21,6 @@
 //	                                                                        flock との inode 照合
 //	unlink    する                         する（encoded は字幕も）         する（checkpoint も同時）
 //
-// ingest temp の作成・削除・世代更新は media root の rel_path lock を temp 名で取り、
-// その内側で temp inode の flock も取る。checkpoint 回収も同じ stable lock と base temp の
-// flock を取るため、unlink と再作成の間に新しい inode を別 worker が掴む窓を作らない。
 // ストレージ port（#1283）の候補になるのは派生物の列だけで、原本と ingest temp の
 // flock・inode 照合は常にファイルシステムに残る。asset の flock は種類を問わず同じ
 // 関数（lockMediaRelPathFile）で取るので、派生物側の flock を port に出すかは #1283 で決める。
@@ -36,7 +33,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/fetburner/rokuban/internal/breaker"
@@ -262,7 +258,7 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 }
 
 // deleteOrphanFile は公開前と判定できる孤児だけを物理削除し orphan_files 行を消す。
-// canonical 名はここへ来ても削除しない。ingest temp/checkpoint は安定した名前 lock と flock を取り、
+// canonical 名はここへ来ても削除しない。ingest temp/checkpoint は同じ flock を取り、
 // staging は一意な予約名なので lock を取らず、mtime を再確認してから unlink する。
 func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time.Duration) {
 	log := slog.With("rel_path", relPath, "source", "orphan")
@@ -277,26 +273,6 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 	if err != nil {
 		log.Error("delete_reconcile: rejecting orphan rel_path outside the media directory", "err", err)
 		return
-	}
-	if kind == orphanCleanupIngestTemp || kind == orphanCleanupIngestCheckpoint {
-		tempRelPath := relPath
-		if kind == orphanCleanupIngestCheckpoint {
-			tempRelPath = strings.TrimSuffix(tempRelPath, ingestCheckpointSuffix)
-		}
-		stableLock, acquired, err := tryLockMediaRelPathFile(w.MediaDir, tempRelPath)
-		if err != nil {
-			log.Warn("delete_reconcile: locking stable ingest temp path", "err", err)
-			return
-		}
-		if !acquired {
-			log.Debug("delete_reconcile: ingest temp path is locked; deferring orphan removal")
-			return
-		}
-		defer func() {
-			if err := stableLock.Close(); err != nil {
-				log.Warn("delete_reconcile: closing stable ingest temp path lock", "err", err)
-			}
-		}()
 	}
 	if kind == orphanCleanupIngestCheckpoint {
 		w.deleteOrphanIngestCheckpoint(path, relPath, mtimeGrace, log)

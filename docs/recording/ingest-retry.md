@@ -99,7 +99,7 @@ pull 完了後に、書き込んだバイト数を HEAD の長さと照合する
 
 SHA-256 は、Range 再開を含む全バイトを 1 パスで計算する。stream レスポンスの Digest / ETag ヘッダーは使わない。
 
-mirakc が finished 後にハッシュを計算中のとき、`content.sha256` が `null` または欠落することがある。finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期して進捗行を消す。同じ Args を snooze して待つため、worker 枠を占有しない。次の Work は record 固有 temp を使い、毎回 temp を replay しない。jobqfake の連続した再配送で `attempt=1` が保たれる。hash 到着後は `verified` で commit する。
+mirakc が finished 後にハッシュを計算中のとき、`content.sha256` が `null` または欠落することがある。finished record と HEAD の長さが temp のサイズに一致し、期限前なら、temp を同期する。同じ Args を snooze して待つため、worker 枠を占有しない。進捗行は commit まで残し、原本 INSERT が世代をそこから写す（待ちの間に世代が変わると、録画中に配った再生 URL と commit 後の URL がずれる）。次の Work は record 固有 temp を使い、毎回 temp を replay しない。jobqfake の連続した再配送で `attempt=1` が保たれる。hash 到着後は `verified` で commit する。
 
 空文字・空白付きの値は正規化し、64 文字の hex でない値は警告を出してスキップする。Content-Length が不明（`-1`）なら、長さの照合だけをスキップする。長さまたは SHA-256 が不一致なら `hash mismatch` / `size mismatch` で失敗し、commit と edge record の削除へ進まない。不一致は通常の River 再試行に戻し、専用メトリクス `rokuban_ingest_hash_mismatches_total` で観測する。
 
