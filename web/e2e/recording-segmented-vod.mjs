@@ -281,11 +281,12 @@ const HARNESS_HTML = String.raw`<!doctype html>
             }
           }
           await state.audioContext.resume()
+          // play() が解決する前に描かれるフレームも記録する（seek 後の最初のフレームを取りこぼさない）。
+          state.capture = true
           await video.play()
           lastProgressTime = video.currentTime
           lastProgressAt = performance.now()
           stallRecorded = false
-          state.capture = true
           return { currentTime: video.currentTime, paused: video.paused }
         },
 
@@ -658,16 +659,14 @@ async function checkCase(adapter, server, { masterURL, hold }) {
       const first = frames.slice(start, start + 5)
       // seek 直後は currentTime が表示中のフレームより先に進んでいることがある。フレームの内容は自分の mediaTime と比べる。
       const bad = first.filter((sample) => Math.abs(sample.frame - Math.round(sample.mediaTime * FRAME_RATE)) > 1)
-      if (start > 2 || bad.length > 0 || Math.abs(first[0].frame - expected) > FRAME_RATE * 0.3) {
+      if (start > 2 || bad.length > 0 || Math.abs(first[0].frame - expected) > 1) {
         add('seek-frame', `seek の後の最初のフレームが目標 ${target}s (frame ${expected}) と合わない (シーク前のフレーム ${start} 枚の後): marker=${JSON.stringify(first.map((sample) => sample.frame))}, mediaTime=${JSON.stringify(first.map((sample) => Number(sample.mediaTime.toFixed(3))))}, currentTime=${JSON.stringify(first.map((sample) => Number(sample.currentTime.toFixed(3))))}`)
       }
     }
-    return true
   }
 
   try {
-    const resumed = await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, () => adapter.click('#start'))
-    if (!resumed) await adapter.click('#start')
+    await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, () => adapter.click('#start'))
     let state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
     if (hold) {
       // 保留した映像 segment は再生が境界に着くまで返さない。止まるまで待ってから返す。
@@ -698,11 +697,8 @@ async function checkCase(adapter, server, { masterURL, hold }) {
     summary.boundaryFrames = boundaryFrames.length
     if (boundaryFrames.length === 0) add('progress', `境界 ${BOUNDARY}s の映像フレームを取得できない`)
     else if (boundaryFrames.length < MIN_BOUNDARY_FRAMES) add('content-jump', `境界 ±0.5s のフレームが ${boundaryFrames.length} 枚しかない (${MIN_BOUNDARY_FRAMES} 枚以上が要る。currentTime ごと内容が飛ぶと減る)`)
-    // 内容（marker）と mediaTime の不一致は 1 枚でも落とす。mediaTime と currentTime の不一致は、
-    // ネイティブ HLS で currentTime が 2 frame ぶれる単発があるので、境界のフレームの 2 割を超えたときだけ落とす。
-    const timecodeFailed = timecodeErrors.some((sample) => Math.abs(sample.markerMediaDeltaFrames) > 1.05) ||
-      timecodeErrors.length > boundaryFrames.length * 0.2
-    if (timecodeFailed) {
+    // 不一致は 1 枚でも落とす。mediaTime と currentTime の許容だけ、ネイティブ HLS では 2 フレームにしてある。
+    if (timecodeErrors.length > 0) {
       const sample = timecodeErrors[0]
       add('timecode', `currentTime=${sample.currentTime.toFixed(3)}s, mediaTime=${sample.mediaTime.toFixed(3)}s, marker=${sample.frameTime.toFixed(3)}s (media/current=${sample.mediaCurrentDeltaFrames} frames, marker/media=${sample.markerMediaDeltaFrames} frames; ${timecodeErrors.length}/${boundaryFrames.length} frames)`)
     }
@@ -736,7 +732,7 @@ async function checkCase(adapter, server, { masterURL, hold }) {
     }
 
     const mark = server.mark()
-    const farResumed = await seekAndCheck(FAR_SEEK, () => adapter.evaluate(async () => window.__e2e.start()))
+    await seekAndCheck(FAR_SEEK, () => adapter.evaluate(async () => window.__e2e.start()))
     const target = server.segmentsAt(FAR_SEEK)
     const early = server.requestsBetween(0, mark).filter((requested) => target.includes(requested))
     summary.farSeekSegments = target.length
@@ -744,7 +740,6 @@ async function checkCase(adapter, server, { masterURL, hold }) {
     if (native) summary.skipped = 'シーク前の要求 (native-hls は先読みをブラウザが決める)'
     else if (target.length === 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s を含む segment を playlist から特定できない`)
     else if (early.length > 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s の segment をシーク前に要求していた (バッファ内でのシーク): ${early.join(', ')}`)
-    if (!farResumed) await adapter.evaluate(async () => window.__e2e.start())
     state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= FAR_SEEK + 1, 15_000, '遠距離シーク後の再生継続')
 
     summary.hlsErrors = state.hlsErrors
@@ -778,11 +773,10 @@ async function main() {
     const generated = ensurePlaybackFixtures(formats)
     for (const { format, kind } of generated.fixtures) {
       // ネイティブ HLS は no-offset を正しく再生する（境界と遠距離シークの後でフレーム番号が連続する）ので、
-      // その経路では正例として扱う。hls.js だけが、連続でない取得で PTS の跳びを再生に持ち込む。
-      const nativeFine = kind === 'no-offset' && engine !== 'chrome'
-      const negative = nativeFine ? undefined : { 'off-grid': ['timecode', 'content-jump', 'frame-freeze'], 'no-offset': ['seek-frame', 'content-jump', 'frame-freeze'], 'audio-gap': ['audio-gap'] }[kind]
+      // 実際の経路が native-hls のときは正例として扱う。経路はケースを回すまで分からない。
+      const negative = { 'off-grid': ['timecode', 'content-jump', 'frame-freeze'], 'no-offset': ['seek-frame', 'content-jump', 'frame-freeze'], 'audio-gap': ['audio-gap'] }[kind]
       if (negative && engine !== 'chrome' && kind === 'audio-gap') continue
-      cases.push({ name: `${format}/${kind}`, masterPath: `/${format}/${kind}/master.m3u8`, expect: negative, note: nativeFine ? '正しく再生される想定 (native-hls)' : undefined })
+      cases.push({ name: `${format}/${kind}`, masterPath: `/${format}/${kind}/master.m3u8`, expect: negative, passIfNative: kind === 'no-offset' })
     }
     if (engine === 'chrome' && formats.includes('ts')) {
       // 境界の映像 segment の応答を、再生が境界の手前に来るまで保留する。
@@ -800,7 +794,7 @@ async function main() {
     adapter.engine = engine
     adapter.serverURL = served.url
     log(`browser: ${engine} ${adapter.version}`)
-    for (const entry of selected) {
+    for (let entry of selected) {
       served.reset()
       const hold = entry.holdPath ? served.hold(entry.holdPath) : undefined
       let summary
@@ -811,6 +805,8 @@ async function main() {
         problems.push(`${entry.name}: ${error.message}`)
         continue
       }
+      const nativeFine = entry.passIfNative && summary.browserPath === 'native-hls'
+      if (nativeFine) entry = { ...entry, expect: undefined, note: 'native-hls では正しく再生される想定' }
       const met = entry.expect
         ? summary.failures.some((failure) => entry.expect.some((tag) => failure.startsWith(`[${tag}]`)))
         : summary.failures.length === 0
