@@ -113,7 +113,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 
 アプリは playlist を格子から先に合成するので、ffmpeg をどこで再起動したかを知らない。そのため再起動境界に `#EXT-X-DISCONTINUITY` を付けられない。内蔵フィクスチャも付けない。
 
-`recording-segmented-fixture.mjs` が `os.tmpdir()` にフィクスチャを作る。素材の `source.ts` は 60 秒の合成 TS である。映像にフレーム番号を 11 bit の箱で焼き、音声は左 440 Hz・右 880 Hz の AAC とする。セグメントは 2 秒で、標準・主・副の 3 rendition を持つ。`master.m3u8` の BANDWIDTH は 20 Mbps にしてある。hls.js の先読みが `max(30 秒, 60 MB / BANDWIDTH)` なので、低い値だと 60 秒が丸ごとバッファに入り、遠距離シークがバッファの外にならない。
+`recording-segmented-fixture.mjs` が `os.tmpdir()` にフィクスチャを作る。素材の `source.ts` は 60 秒の合成 TS である。映像にフレーム番号を 11 bit の箱で焼き、音声は左 440 Hz・右 880 Hz の AAC とする。セグメントは 2 秒で、標準・主・副の 3 rendition を持つ。`master.m3u8` の BANDWIDTH は 20 Mbps にしてある。先読みの範囲は hls.js の設定 `maxBufferLength`（秒）・`maxBufferSize`（バイト）と BANDWIDTH で決まる。BANDWIDTH が 1.8 Mbps のときは 60 秒がすべて先に要求され、遠距離シークがバッファの外にならなかった。
 
 - `direct` は ffmpeg 1 本で通して作る
 - `restarted` は 12 秒の格子点まで作り、10 秒から起動し直した出力を `-output_ts_offset` 付きでつなぐ。重複する最初のセグメントは捨てる
@@ -124,17 +124,25 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 
 #### 判定
 
-判定は 5 つある。
+判定は 6 つある。
 
 - 再生が止まらない。再生中に `currentTime` が 500 ms 以上進まない回数を数える
-- 境界の ±0.5 秒で、焼いたフレーム番号・`mediaTime`・`currentTime` が ±1 フレームで一致する
+- 境界の ±0.5 秒で、焼いたフレーム番号が `mediaTime` と ±1 フレームで一致する。`currentTime` との一致は、境界のフレームの 2 割までの単発を許す。ネイティブ HLS では `currentTime` が 2 フレーム先を指す単発があったので、許容を 2 フレームにする
+- 内容が壁時計に対して飛ばず、戻らず、止まらない。連続する frame callback の間で、フレーム番号の進みが表示時刻の差 × 30 + 3 を超えない。callback の間隔が 250 ms を超えない。境界の ±0.5 秒に 20 枚以上が描かれる。`currentTime` ごと内容が飛ぶブラウザでは、marker・`mediaTime`・`currentTime` が一致したままになるので、この判定でしか見えない
 - 境界の ±0.8 秒で、AudioWorklet が 128 サンプル（約 2.7 ms）ごとの左右 RMS を全サンプルについて求め、無音が 2 回続かない。標準音声の周波数が 440 Hz / 880 Hz のままである
 - 主・副・標準の切替で、WebAudio の左右周波数が変わる
-- 遠距離シークで、seeked 後に最初に描かれたフレームがシーク先 ±1 フレームである。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
+- 遠距離シークで、seeked の位置がシーク先 ±1 フレームである。再生を始めて、シーク先 ±0.5 秒のフレームが 3 枚目までに描かれ、先頭 5 枚のフレーム番号が自分の `mediaTime` と ±1 フレームで一致する。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
 
-負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[seek-frame]`・`[audio-gap]`・`[stall]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。`off-grid` は `[timecode]`、`no-offset` は `[seek-frame]`、`audio-gap` は `[audio-gap]`、`stall` は `[stall]` を期待する。
+hls.js が non-fatal で報告する次の 4 つは、内容の欠けか停止の現れとして失敗にする。`bufferSeekOverHole`・`bufferNudgeOnStall`・`bufferStalledError`・`bufferAppendNoProgress` である。
 
-`no-offset` は境界を通して再生するだけでは検出できない。hls.js の `mp4-remuxer` が、連続するセグメントの PTS の跳びを「overlapping between fragments」として補正するためである。補正が働かないのは、取得が連続でないときである。遠距離シークでシーク先がずれ、`bufferAppendNoProgress` で再生が進まなくなる。
+負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[content-jump]`・`[frame-freeze]`・`[seek-frame]`・`[seek-buffered]`・`[audio-gap]`・`[stall]`・`[hls-gap]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。期待する名前は次のとおりである。
+
+- `off-grid` は `[timecode]`・`[content-jump]`・`[frame-freeze]` のどれか
+- `no-offset` は `[seek-frame]`・`[content-jump]`・`[frame-freeze]` のどれか。ネイティブ HLS では正例として扱う（下の「ブラウザごとの違い」）
+- `audio-gap` は `[audio-gap]`
+- `stall` は `[stall]`
+
+`no-offset` は、Chrome の hls.js では境界を通して再生するだけでは検出できなかった。`debug: true` のログに「AVC: 10000 ms overlapping between fragments」が出ており、hls.js が PTS の跳びを補正しているとみられる（内部の挙動であり契約ではない）。遠距離シークの後は、着地が 50 秒になり `bufferAppendNoProgress` が出た。ほかの条件での挙動は未検証である。
 
 再生経路は、アプリと同じ問いで選ぶ。`web/src/lib/live.ts` の `supportsNativeHls` が真ならネイティブ HLS とする。この関数は、プレイリストの MIME と `video/mp2t` の `canPlayType` がどちらも空でないかを問う。偽で `Hls.isSupported()` が真なら hls.js とする。どちらを使ったかは実行ごとに出力する。hls.js の設定もアプリと同じである。
 
@@ -161,25 +169,25 @@ corepack pnpm e2e:recording-segmented-vod
 ```
 
 - `E2E_SEGMENT_SECONDS` はセグメント長で、既定は 2 である。判定を始める位置を決める
-- `E2E_BOUNDARY_SECONDS` は ffmpeg の再起動境界の秒で、既定は 12 である
-- `E2E_FAR_SEEK_SECONDS` はバッファの外へ飛ぶ秒で、既定は 52 である。録画の長さと先読みに合わせて決める
+- `E2E_BOUNDARY_SECONDS` は、古い実行のセグメントから新しい実行のセグメントへ切り替わる秒で、既定は 12 である。ffmpeg を起動し直した位置（内蔵では 10 秒）ではない
+- `E2E_FAR_SEEK_SECONDS` はバッファの外へ飛ぶ秒で、既定は 52 である。アプリの master の BANDWIDTH から、先読みの目安を `maxBufferSize × 8 / BANDWIDTH` 秒（`maxBufferLength` が大きければそちら）と見積もり、その外を選ぶ。外れていれば `[seek-buffered]` で分かる
 - ハーネスのページとメディアは同一オリジンでなければならない。オリジンが違うと、hls.js の XHR が CORS で止まり、`createMediaElementSource` が無音になる。そのためローカルのサーバーが、`E2E_MASTER_URL` のオリジンへ同じパスで中継する
 
-アプリの実装の受け入れでは、フィクスチャが作る `source.ts` を録画として登録し、その録画の master を `E2E_MASTER_URL` に渡す。`source.ts` は `<os.tmpdir()>/rokuban-e2e-recording-segmented-v2/source.ts` にある。境界の位置は、アプリが再起動した位置に合わせる。
+アプリの実装の受け入れでは、フィクスチャが作る `source.ts` を録画として登録し、その録画の master を `E2E_MASTER_URL` に渡す。`source.ts` は `<os.tmpdir()>/rokuban-e2e-recording-segmented-v2/source.ts` にある。境界の秒は、アプリが新しい ffmpeg の出力へ切り替わる位置に合わせる。
 
 #### ブラウザごとの違い
 
-Chrome は Google Chrome を hls.js で判定する。負例を検出できるかの基準もここである。
+Chrome は Google Chrome を hls.js で判定する。ここでは上の判定をすべて回す。
 
-WebKit は診断用である。Playwright の WebKit はネイティブ HLS を選ぶ。ネイティブ HLS では次の判定を省く。
+WebKit は診断用である。Playwright の WebKit はネイティブ HLS を選ぶ。ネイティブ HLS では次を省くか、扱いを変える。
 
-- 音声の周波数と無音。ネイティブ HLS の音声が WebAudio に届かない。主・副の切替は `audioTracks` の選択と再生継続だけを見る。`audio-gap` と `stall` の負例は回さない
-- seeked 直後のフレーム。一時停止中の seek で新しい frame callback が出ない。シーク先への着地位置は判定する
-- シーク前の要求。先読みを hls.js の設定ではなくブラウザが決める
+- 音声の周波数と無音は省く。ネイティブ HLS の音声が WebAudio に届かない。主・副の切替は `audioTracks` の選択と再生継続だけを見る。`audio-gap` と `stall` の負例は回さない
+- シーク前の要求は省く。先読みを hls.js の設定ではなくブラウザが決める。実行の出力の「省略:」に残す
+- `no-offset` は正例として扱う。ネイティブ HLS は、境界と遠距離シークの後でフレーム番号が連続して再生された。この経路では不具合ではない
 
-実 Safari も同じ判定を省く。さらに WebAudio に音声が届かなければ、音声の継続を確認できないとして失敗にする。
+`off-grid` は、ネイティブ HLS では内容が飛ぶのではなく、境界で約 1 秒フレームが描かれなくなる。`[frame-freeze]` と境界のフレーム数で検出する。
 
-実 Safari は `safaridriver` を通して判定する。Safari の「開発」メニューの「リモートオートメーションを許可」を有効にするか、`safaridriver --enable` を一度実行する。
+実 Safari は `safaridriver` を通して判定する。ネイティブ HLS として上の扱いになり、さらに WebAudio に音声が届かなければ `[audio-unavailable]` で落ちる。Safari の「開発」メニューの「リモートオートメーションを許可」を有効にするか、`safaridriver --enable` を一度実行する。
 
 ### シークバーのプレビュー（`seek-tiles.mjs`）
 
