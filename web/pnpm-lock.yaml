@@ -56,8 +56,8 @@ importers:
         specifier: ^1.4.0
         version: 1.4.0
       zod:
-        specifier: 4.6.5
-        version: 4.6.5
+        specifier: 4.6.6
+        version: 4.6.6
     devDependencies:
       '@tailwindcss/vite':
         specifier: ^4.3.3
@@ -91,7 +91,7 @@ importers:
         version: 30.1.1
       orval:
         specifier: ^8.38.0
-        version: 8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(@tanstack/react-query@5.104.0(react@19.3.0))(typedoc-plugin-markdown@4.13.0(typedoc@0.28.20(typescript@6.0.3)))(typedoc@0.28.20(typescript@6.0.3))(typescript@6.0.3)(zod@4.6.5)
+        version: 8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.6))(@tanstack/react-query@5.104.0(react@19.3.0))(typedoc-plugin-markdown@4.13.0(typedoc@0.28.20(typescript@6.0.3)))(typedoc@0.28.20(typescript@6.0.3))(typescript@6.0.3)(zod@4.6.6)
       oxlint:
         specifier: ^1.85.0
         version: 1.85.0
@@ -3004,8 +3004,8 @@ packages:
   zod@3.25.76:
     resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
-  zod@4.6.5:
-    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+  zod@4.6.6:
+    resolution: {integrity: sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==}
 
 snapshots:
 
@@ -3459,7 +3459,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@modelcontextprotocol/sdk@1.31.0(zod@4.6.5)':
+  '@modelcontextprotocol/sdk@1.31.0(zod@4.6.6)':
     dependencies:
       '@hono/node-server': 2.1.3(hono@4.13.12)
       ajv: 8.20.0
@@ -3476,8 +3476,8 @@ snapshots:
       json-schema-typed: 8.0.2
       pkce-challenge: 5.0.1
       raw-body: 3.0.2
-      zod: 4.6.5
-      zod-to-json-schema: 3.25.2(zod@4.6.5)
+      zod: 4.6.6
+      zod-to-json-schema: 3.25.2(zod@4.6.6)
     transitivePeerDependencies:
       - supports-color
     optional: true
@@ -3529,23 +3529,23 @@ snapshots:
     transitivePeerDependencies:
       - '@faker-js/faker'
 
-  '@orval/hono@8.38.0(typescript@6.0.3)(zod@4.6.5)':
+  '@orval/hono@8.38.0(typescript@6.0.3)(zod@4.6.6)':
     dependencies:
       '@orval/core': 8.38.0
-      '@orval/zod': 8.38.0(zod@4.6.5)
+      '@orval/zod': 8.38.0(zod@4.6.6)
     optionalDependencies:
       typescript: 6.0.3
     transitivePeerDependencies:
       - '@faker-js/faker'
       - zod
 
-  '@orval/mcp@8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.6.5)':
+  '@orval/mcp@8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.6))(zod@4.6.6)':
     dependencies:
       '@orval/core': 8.38.0
       '@orval/fetch': 8.38.0
-      '@orval/zod': 8.38.0(zod@4.6.5)
+      '@orval/zod': 8.38.0(zod@4.6.6)
     optionalDependencies:
-      '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.5)
+      '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.6)
     transitivePeerDependencies:
       - '@faker-js/faker'
       - zod
@@ -3584,12 +3584,12 @@ snapshots:
     transitivePeerDependencies:
       - '@faker-js/faker'
 
-  '@orval/zod@8.38.0(zod@4.6.5)':
+  '@orval/zod@8.38.0(zod@4.6.6)':
     dependencies:
       '@orval/core': 8.38.0
       jsesc: 3.1.0
     optionalDependencies:
-      zod: 4.6.5
+      zod: 4.6.6
     transitivePeerDependencies:
       - '@faker-js/faker'
 
@@ -3748,7 +3748,7 @@ snapshots:
       '@scalar/helpers': 0.16.0
       nanoid: 5.1.16
       type-fest: 5.10.0
-      zod: 4.6.5
+      zod: 4.6.6
 
   '@sec-ant/readable-stream@0.4.1': {}
 
@@ -5023,7 +5023,7 @@ snapshots:
       string-width: 7.2.0
       strip-ansi: 7.2.0
 
-  orval@8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(@tanstack/react-query@5.104.0(react@19.3.0))(typedoc-plugin-markdown@4.13.0(typedoc@0.28.20(typescript@6.0.3)))(typedoc@0.28.20(typescript@6.0.3))(typescript@6.0.3)(zod@4.6.5):
+  orval@8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.6))(@tanstack/react-query@5.104.0(react@19.3.0))(typedoc-plugin-markdown@4.13.0(typedoc@0.28.20(typescript@6.0.3)))(typedoc@0.28.20(typescript@6.0.3))(typescript@6.0.3)(zod@4.6.6):
     dependencies:
       '@commander-js/extra-typings': 15.0.0(commander@15.0.0)
       '@orval/angular': 8.38.0
@@ -5031,14 +5031,14 @@ snapshots:
       '@orval/core': 8.38.0
       '@orval/effect': 8.38.0
       '@orval/fetch': 8.38.0
-      '@orval/hono': 8.38.0(typescript@6.0.3)(zod@4.6.5)
-      '@orval/mcp': 8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.5))(zod@4.6.5)
+      '@orval/hono': 8.38.0(typescript@6.0.3)(zod@4.6.6)
+      '@orval/mcp': 8.38.0(@modelcontextprotocol/sdk@1.31.0(zod@4.6.6))(zod@4.6.6)
       '@orval/mock': 8.38.0
       '@orval/pinia-colada': 8.38.0
       '@orval/query': 8.38.0(@tanstack/react-query@5.104.0(react@19.3.0))
       '@orval/solid-start': 8.38.0
       '@orval/swr': 8.38.0
-      '@orval/zod': 8.38.0(zod@4.6.5)
+      '@orval/zod': 8.38.0(zod@4.6.6)
       '@scalar/json-magic': 0.15.3
       '@scalar/openapi-parser': 0.29.9
       '@scalar/openapi-types': 0.9.7
@@ -5695,11 +5695,11 @@ snapshots:
     dependencies:
       zod: 3.25.76
 
-  zod-to-json-schema@3.25.2(zod@4.6.5):
+  zod-to-json-schema@3.25.2(zod@4.6.6):
     dependencies:
-      zod: 4.6.5
+      zod: 4.6.6
     optional: true
 
   zod@3.25.76: {}
 
-  zod@4.6.5: {}
+  zod@4.6.6: {}
