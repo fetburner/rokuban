@@ -3,7 +3,6 @@ package streamer
 // original_vod.go は原本 VOD の解決・再生ハンドラ・セッション同定を持つ。
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -274,7 +273,7 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
 	}
-	content, err := ls.waitForOriginalVODPlaylist(
+	content, err := ls.waitForPlaylist(
 		r.Context(), s, filepath.Join(s.dir, playlistName), playlistStartupTimeout, "#EXT-X-STREAM-INF",
 	)
 	if err != nil {
@@ -340,7 +339,7 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 
 	path := sessionFilePath(s.dir, name)
 	if strings.HasSuffix(name, ".m3u8") {
-		content, err := ls.waitForOriginalVODPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
+		content, err := ls.waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return
@@ -439,54 +438,6 @@ func writeOriginalVODError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	slog.Error("streamer: starting original VOD session", "err", err)
 	http.Error(w, "original VOD stream failed to start", http.StatusInternalServerError)
-}
-
-func (ls *LiveStreamer) waitForOriginalVODPlaylist(
-	ctx context.Context,
-	s *liveSession,
-	path string,
-	timeout time.Duration,
-	readyMarker string,
-) ([]byte, error) {
-	deadline := time.Now().Add(timeout)
-	for {
-		data, err := os.ReadFile(path)
-		if err == nil && bytes.Contains(data, []byte(readyMarker)) {
-			return data, nil
-		}
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("reading original VOD playlist: %w", err)
-		}
-		if !time.Now().Before(deadline) {
-			return nil, errStartupTimeout
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-s.done:
-			// The process can finish between the file read above and this select.
-			// Read once more after done closes so an already-written playlist wins.
-			data, err := os.ReadFile(path)
-			if err == nil && bytes.Contains(data, []byte(readyMarker)) {
-				return data, nil
-			}
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return nil, fmt.Errorf("reading original VOD playlist: %w", err)
-			}
-			ls.mu.Lock()
-			shuttingDown := ls.closed
-			ls.mu.Unlock()
-			if shuttingDown {
-				return nil, errShuttingDown
-			}
-			if s.startErr != nil {
-				return nil, s.startErr
-			}
-			return nil, errors.New("original VOD ffmpeg exited before the playlist was ready")
-		case <-time.After(playlistPollInterval):
-			s.touch()
-		}
-	}
 }
 
 func originalVODSessionDir(segmentDir, site string, recordingID, offsetSeconds int64) string {

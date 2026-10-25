@@ -33,7 +33,7 @@ E2E_URL=http://localhost:4173 pnpm e2e:chase
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 ```
 
-### LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`）
+### LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`）
 
 ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、503 の文言・離脱ヒントの送信・追っかけの表示時刻を測る。mirakc と実録画は要らない。
 

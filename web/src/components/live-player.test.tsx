@@ -527,6 +527,35 @@ describe('LivePlayer の状態遷移', () => {
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
     })
 
+    it('原本 VOD の stalled は録画映像の文言を出し、ライブ映像とは出さない', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const { resolve } = deferredFetch()
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={42}
+          recordingDurationMs={60_000}
+        />,
+      )
+      const video = document.querySelector('video')!
+      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+      )
+      resolve(new Response('', { status: 200 }))
+      await waitFor(() => expect(video.src).toContain('original-vod/playlist.m3u8'))
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(liveStallTimeoutMs)
+      })
+
+      expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
+      expect(screen.queryByText(/ライブ映像/)).not.toBeInTheDocument()
+    })
+
     it('currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const video = await renderNativePath()

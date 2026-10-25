@@ -577,7 +577,11 @@ describe('probeLivePlaylist', () => {
     )
     expect(await probeLivePlaylist('/chase', undefined, chaseClassifier)).toEqual({
       ok: false,
-      error: { kind: 'chase-input', message: '追っかけ入力のエラーが続いています' },
+      error: {
+        kind: 'chase-input',
+        title: '追っかけ再生の入力に失敗したため、一時停止しています。',
+        message: '追っかけ入力のエラーが続いています',
+      },
     })
   })
 

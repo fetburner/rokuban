@@ -28,16 +28,19 @@ describe('playbackStrategy', () => {
       otherTitle: 'ライブ視聴でエラーが発生しました。',
       fatalTitle: 'ライブ再生中にエラーが発生しました',
       mediaError: 'ライブ映像を再生できませんでした（映像データを読み込めません）',
+      stalled: 'ライブ映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザはライブ視聴（HLS）に対応していません',
     },
     chase: {
       capacity: {
         title: 'いま追っかけ再生を始められません。',
         guidance: 'しばらく待ってから再読み込みしてください。',
       },
-      chaseInputTitle: '追っかけ再生の入力に失敗したため、一時停止しています。',
       otherTitle: '追っかけ再生でエラーが発生しました。',
       fatalTitle: '追っかけ再生中にエラーが発生しました',
       mediaError: '追っかけ映像を再生できませんでした（映像データを読み込めません）',
+      stalled: '追っかけ映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザは追っかけ再生（HLS）に対応していません',
     },
     'original-vod': {
       capacity: {
@@ -47,6 +50,8 @@ describe('playbackStrategy', () => {
       otherTitle: '原本 TS の再生でエラーが発生しました。',
       fatalTitle: '原本 TS の再生中にエラーが発生しました',
       mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
+      stalled: '録画映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザは原本 TS の再生（HLS）に対応していません',
     },
   }
 
@@ -66,7 +71,11 @@ describe('playbackStrategy', () => {
         retryAfter: '5',
       })
       if (mode === 'chase') {
-        expect(retryAfterError).toEqual({ kind: 'chase-input', message: 'cooldown' })
+        expect(retryAfterError).toEqual({
+          kind: 'chase-input',
+          title: '追っかけ再生の入力に失敗したため、一時停止しています。',
+          message: 'cooldown',
+        })
       } else {
         expect(retryAfterError).toEqual({ kind: 'other', status: 502, message: 'cooldown' })
       }

@@ -82,8 +82,10 @@ func installCompletedOriginalVODFFmpeg(t *testing.T) string {
 func installFailedOriginalVODFFmpeg(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "fake-ffmpeg-original-vod-fail")
-	// Let playlistStartupTimeout win before the process exits. Without the delay,
-	// scheduler timing can choose between the intended 504 and an immediate 500.
+	// Let playlistStartupTimeout win before the process exits. waitForPlaylist
+	// returns as soon as the process is gone, so an immediate exit is an
+	// immediate 500 (installImmediateFailedOriginalVODFFmpeg); without the delay
+	// scheduler timing chooses between the intended 504 and that 500.
 	if err := os.WriteFile(path, []byte("#!/bin/sh\nsleep 1\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("writing fake ffmpeg: %v", err)
 	}

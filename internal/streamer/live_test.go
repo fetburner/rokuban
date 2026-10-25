@@ -1538,6 +1538,40 @@ func assertBoundedByStartupTimeout(t *testing.T, elapsed time.Duration) {
 	}
 }
 
+// TestLiveStreamer_Playlist_ImmediateFFmpegExitStays504 は、プレイリストが書かれる前に
+// ffmpeg が終わっても、ライブの応答は従来どおり 504 であることを固定する。
+// waitForPlaylist は早期終了を検知して返すが、ライブの呼び出し側はそれを
+// 起動待ちの失敗として 504 に写す（原本 TS だけが 500 / 503 に分ける）。
+func TestLiveStreamer_Playlist_ImmediateFFmpegExitStays504(t *testing.T) {
+	// 早期終了の検知が外れても timeout まで待って 504 になってしまうので、
+	// 待ちが timeout より十分短いこと（検知が効いていること）も見る。
+	prev := playlistStartupTimeout
+	playlistStartupTimeout = 3 * time.Second
+	t.Cleanup(func() { playlistStartupTimeout = prev })
+
+	mirakcSrv, _ := newFakeMirakcLiveServer(t)
+	cfg := baseLiveConfig(t)
+	exitPath := filepath.Join(t.TempDir(), "fake-ffmpeg-exit")
+	if err := os.WriteFile(exitPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatalf("writing fake ffmpeg: %v", err)
+	}
+	cfg.FFmpeg = exitPath
+	_, srv := newTestLiveStreamer(t, mirakcSrv.URL, cfg)
+
+	start := time.Now()
+	resp, err := http.Get(playlistURL(srv.URL, 0, 1, ""))
+	if err != nil {
+		t.Fatalf("GET playlist: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusGatewayTimeout {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
+	}
+	if elapsed := time.Since(start); elapsed >= playlistStartupTimeout {
+		t.Errorf("elapsed = %v, want less than the startup timeout %v (early exit must not wait it out)", elapsed, playlistStartupTimeout)
+	}
+}
+
 // Segment はセッションの起動待ちで無期限に滞留しない（issue #189 の項目 1）。
 // Playlist 側の waitForPlaylist と同じ playlistStartupTimeout で打ち切ることを
 // 固定する --- ここを直す前は、起動処理（runSession）がまだ s.ready を閉じて
@@ -3176,9 +3210,9 @@ func TestWaitForPlaylist_MasterUsesStreamInfMarker(t *testing.T) {
 		t.Fatalf("writing master playlist: %v", err)
 	}
 	s := &liveSession{lastAccess: time.Now()}
-	got, ok := waitForPlaylist(context.Background(), s, path, time.Second, "#EXT-X-STREAM-INF")
-	if !ok || !bytes.Equal(got, content) {
-		t.Fatalf("waitForPlaylist = (%q, %v), want master playlist content", got, ok)
+	got, err := (&LiveStreamer{}).waitForPlaylist(context.Background(), s, path, time.Second, "#EXT-X-STREAM-INF")
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("waitForPlaylist = (%q, %v), want master playlist content", got, err)
 	}
 }
 

@@ -69,7 +69,7 @@ import { usePlaybackLeave } from '@/lib/use-playback-leave'
 import { cn } from '@/lib/utils'
 import type { RecordingTimeline } from '@/lib/recording-timeline'
 import { playbackStrategy, recordingDurationSeconds } from '@/lib/playback-mode'
-import type { PlaybackMode } from '@/lib/playback-mode'
+import type { PlaybackErrorMessages, PlaybackMode } from '@/lib/playback-mode'
 
 const hlsSubtitleTracks = (video: HTMLVideoElement) =>
   Array.from(video.textTracks).filter((track) => track.kind === 'subtitles')
@@ -1125,7 +1125,7 @@ export function LivePlayer(props: LivePlayerProps) {
           // 現行どおりのエラー文言に落とす（一覧が届いていれば後述の降格を試す）。
           // hls.js 経路は 1 秒ごとの刻みがあるので `'wait'` で待ち続けられる
           if (canDowngrade && onStalledRef.current?.() === true) return
-          failed('ライブ映像が届いていません（映像データが途絶えました）')
+          failed(strategy.errorMessages.stalled)
         }, liveStallTimeoutMs)
       }
       // `pause` も回復扱いにする（猶予の途中で一時停止された場合）。再開後に配信が
@@ -1425,7 +1425,7 @@ export function LivePlayer(props: LivePlayerProps) {
           setError({
             kind: 'other',
             status: 0,
-            message: 'このブラウザはライブ視聴（HLS）に対応していません',
+            message: strategy.errorMessages.unsupported,
           })
           setLoading(false)
           return
@@ -1612,6 +1612,8 @@ export function LivePlayer(props: LivePlayerProps) {
     strategy.classifyLoadError,
     strategy.errorMessages.fatalTitle,
     strategy.errorMessages.mediaError,
+    strategy.errorMessages.stalled,
+    strategy.errorMessages.unsupported,
   ])
 
   const currentAxisSeconds = liveTimelineBar?.liveEdgeSeconds ??
@@ -1846,7 +1848,7 @@ export function LivePlayer(props: LivePlayerProps) {
             isOriginalVOD && 'z-20 bg-black',
           )}
         >
-          <LiveErrorMessage error={error} strategy={strategy} />
+          <LiveErrorMessage error={error} errorMessages={strategy.errorMessages} />
           <button
             type="button"
             onClick={retryOffsetSession}
@@ -2079,10 +2081,10 @@ export function LivePlayer(props: LivePlayerProps) {
  */
 function LiveErrorMessage({
   error,
-  strategy,
+  errorMessages,
 }: {
   error: LiveLoadError
-  strategy: ReturnType<typeof playbackStrategy>
+  errorMessages: PlaybackErrorMessages
 }) {
   if (error.kind === 'unreachable') {
     return (
@@ -2095,8 +2097,8 @@ function LiveErrorMessage({
   if (error.kind === 'capacity') {
     return (
       <div className="text-sm text-destructive">
-        <p>{strategy.errorMessages.capacity.title}</p>
-        <p className="text-muted-foreground">{strategy.errorMessages.capacity.guidance}</p>
+        <p>{errorMessages.capacity.title}</p>
+        <p className="text-muted-foreground">{errorMessages.capacity.guidance}</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )
@@ -2104,14 +2106,14 @@ function LiveErrorMessage({
   if (error.kind === 'chase-input') {
     return (
       <div className="text-sm text-destructive">
-        <p>{strategy.errorMessages.chaseInputTitle ?? strategy.errorMessages.otherTitle}</p>
+        <p>{error.title}</p>
         {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
       </div>
     )
   }
   return (
     <div className="text-sm text-destructive">
-      <p>{strategy.errorMessages.otherTitle}</p>
+      <p>{errorMessages.otherTitle}</p>
       {error.message !== '' && <p className="text-muted-foreground">{error.message}</p>}
     </div>
   )

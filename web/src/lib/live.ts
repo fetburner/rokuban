@@ -646,7 +646,7 @@ export type LiveLoadError =
   // 本文（プレーンテキスト）はそのまま運ぶ
   | { kind: 'capacity'; message: string }
   // 追っかけ入力失敗後の再作成クールダウン。503 の容量不足とは区別する。
-  | { kind: 'chase-input'; message: string }
+  | { kind: 'chase-input'; title: string; message: string }
   // 想定外のステータス
   | { kind: 'other'; status: number; message: string }
 
