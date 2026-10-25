@@ -366,7 +366,7 @@ offset 付きでは、開いたままの原本の fd から映像の長さを調
 
 原本 MPEG-2 decoder を持たない FFmpeg build は `live.enabled` の streamer 起動前に拒否し、再生要求後に空の HLS player だけが出る状態を避ける。
 
-原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。正常終了後も idle GC まで録画全体の変換済み segment が残る。tmpfs 容量の見積もりは「セッション数と容量」の節から辿る。
+原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。正常終了後も idle GC まで録画全体の変換済み segment が残る。tmpfs 容量の見積もりは [k8s-streamer.md](../../operations/k8s-streamer.md) にある。
 
 #### offset seek の精度と開始時間の測定
 

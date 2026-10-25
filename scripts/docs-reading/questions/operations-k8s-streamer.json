@@ -2,6 +2,13 @@
   "file": "docs/operations/k8s-streamer.md",
   "questions": [
     {
+      "heading": "ライブのパッケージングを MediaMTX に委ねる形",
+      "question": "ライブのパッケージングを MediaMTX に委ねる形では、MediaMTX と publisher をどこに置くか。",
+      "points": [
+        "同じコンテナに置く"
+      ]
+    },
+    {
       "heading": "streamer のスケール",
       "question": "streamer は録画配信とライブ視聴でロールを分けるか。両者で違うのは何か。",
       "points": [

@@ -1,4 +1,4 @@
-> operations.md §5 の一部。索引から辿る
+> [operations.md](../operations.md) §5「streamer のスケール」。索引から辿る。
 
 ### streamer のスケール
 
@@ -88,13 +88,13 @@ Pod が落ちても、ハッシュの担当が移っても自己修復する。�
 
 容量はセッションの種類で決まり方が違う。ライブは窓の分だけ、追っかけと原本 VOD は録画全体の分が要る。
 
-k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size` × `segment_seconds` 秒の窓だけなので、容量は窓の秒数 × 全 profile の bitrate × 同時セッション数で決まる。追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。容量は録画時間 × 全 profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で見積もる（bitrate が bit/s なら結果はバイト）。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。この見積もり式はここだけに置き、[api/media/playback.md](../api/media/playback.md) はここを参照する。
+k8s では `emptyDir: {medium: Memory}` に `sizeLimit` を設定する。ライブが保持するのは `playlist_size` × `segment_seconds` 秒の窓だけなので、容量は窓の秒数 × 全 profile の bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。容量は録画時間 × 全 profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。どちらの式も、bitrate が bit/s なら結果はバイトである。字幕 rendition を有効にする構成では WebVTT の scratch も加算する。この見積もり式はここだけに置き、[api/media/playback.md](../api/media/playback.md) はここを参照する。
 
 同梱設定（`deploy/k8s/base/config.yml` の h264 profile）は CRF も bitrate も指定しない。したがって出力 bitrate は設定から決まらず、入力の絵柄で変わる。測れたのは 1 点だけである。
 
 測定の条件は次の通りである。入力は地上波の NHK 総合（1440x1080i の MPEG-2、音声 ES 1 本）で、自宅 mirakc から 150 秒取った。変換は追っかけと同じ ffmpeg 引数（720p の libx264 veryfast、音声 3 rendition、2 秒セグメント、`delete_segments` 無し）で、FFmpeg 9.0.2（macOS）を使った。出力 HLS ディレクトリは合計 41,776,725 バイトで、約 2.2 Mbit/s（2,225 kbit/s）である。
 
-この値だと `sizeLimit: 1Gi` は 1 セッションで約 64 分、`live.max_sessions` の 4 本が同時に追っかけると 1 本あたり約 16 分で満杯になる。測っていないのは、動きの多い番組・BS（測った site に BS が無い）・民放（測った時点でチューナー 1 基が録画中で、同じ mux の NHK 総合しか取れなかった）である。録画が長い構成では、`sizeLimit` を上げるかセッション数を絞る。
+この値だと `sizeLimit: 1Gi` は 1 セッションで約 64 分、`live.max_sessions` の 4 本が同時に追っかけると 1 本あたり約 16 分で満杯になる。測っていないのは、動きの多い番組・BS（測った site に BS が無い）・民放（測った時点でチューナー 1 基が録画中で、同じ mux の NHK 総合しか取れなかった）である。この値は約 2.2 Mbit/s の 1 点の実測から出した。同梱設定では 64 分を超える録画は、1 本だけでも追っかけと原本 VOD が途中で失敗する。原本 VOD は完了録画の既定の再生経路である（[api/media/playback.md](../api/media/playback.md) 「既定の再生経路と容量」）。対処は `sizeLimit` を上げるか `live.max_sessions` を絞ることで、天井はノードのメモリ（参照クラスタは約 4Gi）である。
 
 ##### sizeLimit は満杯で止まる値として置く
 
@@ -106,7 +106,7 @@ Kubernetes の [volumes 文書の emptyDir 節](https://kubernetes.io/docs/conce
 
 参照クラスタは K3s v1.36.2+k3s1、containerd 2.3.2（amd64、Linux 6.12.94）である。`sizeLimit: 16Mi`、container memory limit `256Mi` の Pod に `dd` で 32Mi を書くと、16Mi 書いた後に ENOSPC で終了した。Pod は Running のままで、eviction は観察されなかった。観察時間は記録していない。クラスタの CSI driver は `nfs.csi.k8s.io` と `driver.longhorn.io` だが、memory `emptyDir` は CSI を通らずノード内 tmpfs を使う。この測定で確かめたのは小さい上限を超えたときの挙動だけで、ノード全体のメモリ圧迫による eviction は測っていない。
 
-ENOSPC で止まるので、上限を見積もりより大きく取ってセッション数で先に止める必要は無い。ただし ENOSPC は Pod ごとには起きず、`live-segments` を共有する全セッションに及ぶ。追っかけや原本 VOD が `sizeLimit` を使い切ると、同じ Pod のライブもセグメントを書けない。そのとき書き込みに失敗したライブの ffmpeg が終了するか書き込みを再試行するかは、未検証である。
+ENOSPC で止まるので、上限を見積もりより大きく取ってセッション数で先に止める必要は無い。ただし ENOSPC はそのセッションに閉じず、`live-segments` を共有する同じ Pod の全セッションに及ぶ。追っかけや原本 VOD が `sizeLimit` を使い切ると、同じ Pod のライブもセグメントを書けない。そのとき書き込みに失敗したライブの ffmpeg が終了するか書き込みを再試行するかは、未検証である。
 
 memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍）× `live.max_sessions` で決める。tmpfs のページは container の limit に算入されるので、`sizeLimit` を limit の内側に含める。同梱の 4 セッションなら 1Gi + 4 × 512Mi = 3Gi である。memory request は、普段は空の tmpfs を予約しない。実測 peak × `live.max_sessions` にアプリの 128Mi を足した約 1Gi にする。
 
@@ -114,7 +114,7 @@ memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍�
 
 原本だけの完了録画は、原本 TS を読み取り専用で開き、変換した HLS だけを scratch に書く。
 
-原本 MPEG-2 TS は site streamer が media PVC から read-only で開く。media mount は read-only のままでよい。録画パスのロックは取らず、開いてから DB で再確認するので、media root にロック用ディレクトリを作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。原本 VOD は録画全体の EVENT playlist と全 segment を idle GC まで保持する。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。原本や録画バッファへは書き込まない。
+開くのは site streamer で、media PVC の mount は read-only のままでよい。録画パスのロックは取らず、開いてから DB で再確認するので、media root にロック用ディレクトリを作らない（根拠は [api.md](../api.md) 「録画原本のブラウザ再生」）。原本 VOD は録画全体の EVENT playlist と全 segment を idle GC まで保持する。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。原本や録画バッファへは書き込まない。
 
 <details><summary>根拠</summary>
 
@@ -131,5 +131,5 @@ memory limit は `sizeLimit` + 512Mi（ffmpeg の実測 peak 173Mi の約 3 倍�
 - 録画 id は DB 内の mirakc record id を隠す公開キーで、同じ streamer 内のセッションを共有する。同じ録画の異なる開始位置は別セッションになる。
 - hash key は `(site, recordings.id)` とし、同じ録画の全オフセットを同じ Pod に固定する。
 
-追っかけは録画中の先頭から EOF までの EVENT playlist を `delete_segments` 無しで保持し、ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存のセッションはこの保持ファイルを配信する。容量不足は録画バッファへ移さない。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。
+`delete_segments` は使わず、ffmpeg 終了後も idle GC まで全セグメントを残す。録画状態が終了へ変わった後も、既存のセッションはこの保持ファイルを配信する。容量不足は録画バッファへ移さない。`sizeLimit` を超えた書き込みの失敗は、この Pod の他セッションにも及ぶ（上記）。
 

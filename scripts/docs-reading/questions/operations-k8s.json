@@ -88,13 +88,6 @@
       ]
     },
     {
-      "heading": "ライブのパッケージングを MediaMTX に委ねる形",
-      "question": "ライブのパッケージングを MediaMTX に委ねる形では、MediaMTX と publisher をどこに置くか。",
-      "points": [
-        "同じコンテナに置く"
-      ]
-    },
-    {
       "heading": "ConfigMap と env",
       "question": "ConfigMap は何個作り、Pod ごとの違いはどこで持つか。",
       "points": [
