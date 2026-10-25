@@ -114,7 +114,7 @@ const recording = {
   durationMs: HOUR,
   status: 'recording',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: iso(nowMs - 30 * 60_000),
   startedAt: iso(nowMs - 30 * 60_000),
 }

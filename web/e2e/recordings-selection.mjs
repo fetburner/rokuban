@@ -35,7 +35,7 @@ const recordings = Array.from({ length: 20 }, (_, i) => {
     startAt: new Date(Date.parse('2026-01-01T12:00:00Z') + id * 60_000).toISOString(),
     durationMs: 1_800_000,
     status: 'finished',
-    keepOriginal: 'always', cmDetection: { state: 'disabled' },
+    keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' },
     createdAt: '2026-01-02T12:30:00Z',
   }
 })

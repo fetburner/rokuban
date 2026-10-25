@@ -62,7 +62,7 @@ const base = {
   durationMs: 120_000,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'detected', ranges: [] },
+  hlsPlayback: [], cmDetection: { state: 'detected', ranges: [] },
   sizeBytes: 3_200_000_000,
   encodedAssets: [{ profile: 'h264-720p', sizeBytes: 572_000_000 }],
   encodeProfiles: ['h264-720p'],
