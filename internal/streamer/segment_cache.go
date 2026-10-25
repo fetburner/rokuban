@@ -11,10 +11,12 @@ import (
 
 var (
 	errSegmentCacheFull = errors.New("segment cache has no evictable space")
+	// errSegmentTooLarge は、セグメントがキャッシュ全体より大きく、空きを待っても入らないことを表す。
+	errSegmentTooLarge  = errors.New("segment is larger than the whole cache")
 	errSegmentNotCached = errors.New("segment is not cached")
 )
 
-// SegmentKey identifies one immutable HLS segment produced from a recording generation.
+// SegmentKey は、録画の 1 世代から作る不変の HLS セグメント 1 本を識別する。
 type SegmentKey struct {
 	RecordingID string
 	Generation  string
@@ -38,8 +40,8 @@ type segmentCacheEntry struct {
 	lruElement *list.Element
 }
 
-// segmentCache is a byte-bounded, process-local LRU of files on one filesystem.
-// A lease protects an entry until a response has opened the file and begun delivery.
+// segmentCache は、1 つのファイルシステム上のファイルを持つ、バイト数上限のプロセス内 LRU。
+// lease は、待っている要求がファイルを開いて配信を始めるまで、そのエントリを退避から守る。
 type segmentCache struct {
 	mu       sync.Mutex
 	root     string
@@ -68,8 +70,8 @@ func newSegmentCache(root string, maxBytes int64) (*segmentCache, error) {
 	}, nil
 }
 
-// segmentLease holds the file descriptor returned to a caller. A publishing lease
-// additionally protects the cache entry until waiting callers have opened their files.
+// segmentLease は、呼び出し側へ返す記述子を持つ。登録した側の lease は、
+// 待っている呼び出し側が自分のファイルを開くまで、キャッシュのエントリも守る。
 type segmentLease struct {
 	file        *os.File
 	cache       *segmentCache
@@ -79,8 +81,8 @@ type segmentLease struct {
 	closeOnce   sync.Once
 }
 
-// releaseProtection allows the cache to unlink this path after its waiting callers
-// have opened file descriptors. Already-open descriptors remain readable after unlink.
+// releaseProtection は、待っている呼び出し側が記述子を開いた後に、キャッシュがこの path を
+// unlink してよい状態にする。開いた記述子は unlink 後も読める。
 func (l *segmentLease) releaseProtection() {
 	if l == nil || !l.protected {
 		return
@@ -90,7 +92,7 @@ func (l *segmentLease) releaseProtection() {
 	})
 }
 
-// release closes the file and drops any publishing protection still held.
+// release はファイルを閉じ、残っている登録側の保護を手放す。
 func (l *segmentLease) release() {
 	if l == nil {
 		return
@@ -122,9 +124,11 @@ func (c *segmentCache) acquire(key SegmentKey) (*segmentLease, bool, error) {
 	return &segmentLease{file: file}, true, nil
 }
 
-// publish hard-links a finished scratch file into the cache. If another writer won
-// the same key, the existing file is used. The returned lease keeps the winner safe
-// while waiting callers acquire their own leases.
+// publish は、完成した scratch のファイルをハードリンクでキャッシュに登録する。同じ key を
+// 別の書き手が先に登録していたら、既存のファイルを使い、こちらは捨てる。返す lease は、
+// 待っている呼び出し側が自分の lease を取るまで、勝った方を守る。
+// セグメントがキャッシュ全体より大きければ errSegmentTooLarge を返し、
+// 空きが無ければ errSegmentCacheFull を返す。
 func (c *segmentCache) publish(tempPath string, key SegmentKey) (*segmentLease, bool, error) {
 	if err := key.validate(); err != nil {
 		return nil, false, err
@@ -151,7 +155,7 @@ func (c *segmentCache) publish(tempPath string, key SegmentKey) (*segmentLease, 
 		return nil, false, fmt.Errorf("finished segment %q is empty", tempPath)
 	}
 	if info.Size() > c.maxBytes {
-		return nil, false, errSegmentCacheFull
+		return nil, false, errSegmentTooLarge
 	}
 
 	dest := c.pathFor(key)

@@ -180,3 +180,18 @@ func TestSegmentCacheCanUnlinkAnOpenDeliveryFile(t *testing.T) {
 		t.Fatalf("evicted path still indexed: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestSegmentCachePublishRejectsSegmentLargerThanWholeCacheWithoutWaiting(t *testing.T) {
+	cache, err := newSegmentCache(t.TempDir(), 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := SegmentKey{"recording", "generation", "profile", "video", 1}
+	path := writeSegmentFile(t, cache.root, "12345")
+	if _, _, err := cache.publish(path, key); !errors.Is(err, errSegmentTooLarge) || errors.Is(err, errSegmentCacheFull) {
+		t.Fatalf("publish larger than the whole cache = %v, want errSegmentTooLarge only", err)
+	}
+	if _, ok, err := cache.acquire(key); err != nil || ok {
+		t.Fatalf("oversized segment cached: ok=%v err=%v", ok, err)
+	}
+}
