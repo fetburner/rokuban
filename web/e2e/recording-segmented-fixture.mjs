@@ -11,15 +11,21 @@ import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-export const FIXTURE_SECONDS = 24
-export const SEGMENT_SECONDS = 3
+// フレーム番号の bit 数は FIXTURE_SECONDS * FRAME_RATE < 2 ** FRAME_BITS を満たす（60 * 30 = 1800 < 2048）。
+export const FIXTURE_SECONDS = 60
+export const SEGMENT_SECONDS = 2
 export const SPLIT_SECONDS = 12
 export const RESTART_FROM_SECONDS = SPLIT_SECONDS - SEGMENT_SECONDS
 export const FRAME_RATE = 30
-const AUDIO_GAP_SECONDS = 0.05
+export const FRAME_BITS = 11
+// AAC の priming 1 フレーム分（1024 samples @ 48 kHz ≈ 21 ms）。
+const AUDIO_GAP_SECONDS = 1024 / 48000
+// 負例 (a): 格子点ではない位置から再起動する。
+const OFF_GRID_RESTART_SECONDS = SPLIT_SECONDS - 1
 
-export const FIXTURE_ROOT = path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v1')
-const SOURCE_PATH = path.join(FIXTURE_ROOT, 'source.ts')
+export const FIXTURE_ROOT = path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v2')
+export const SOURCE_FILE = 'source.ts'
+const SOURCE_PATH = path.join(FIXTURE_ROOT, SOURCE_FILE)
 const VARIANTS = ['video', 'standard', 'main', 'sub']
 const PROGRAM_DATE_TIME = Date.parse('2025-01-01T00:00:00.000Z')
 
@@ -34,11 +40,11 @@ function run(name, args) {
 
 function markerFilter() {
   const filters = ['drawbox=x=16:y=8:w=496:h=64:color=black:t=fill']
-  for (let bit = 0; bit < 10; bit += 1) {
-    const x = 28 + bit * 44
+  for (let bit = 0; bit < FRAME_BITS; bit += 1) {
+    const x = 28 + bit * 40
     const divisor = 2 ** bit
     filters.push(
-      `drawbox=x=${x}:y=18:w=32:h=44:color=white:t=fill:enable='gt(mod(floor(n/${divisor}),2),0)'`,
+      `drawbox=x=${x}:y=18:w=28:h=44:color=white:t=fill:enable='gt(mod(floor(n/${divisor}),2),0)'`,
     )
   }
   return filters.join(',')
@@ -141,7 +147,9 @@ function copyMediaEntry(runDirectory, outputDirectory, variant, entry, prefix, i
   return { duration: entry.duration, segmentName, mapName }
 }
 
-function writeMediaPlaylist(outputDirectory, variant, entries, discontinuityIndex = -1) {
+// 境界に EXT-X-DISCONTINUITY は付けない。アプリは playlist を格子から先に合成するので、
+// ffmpeg をどこで再起動したかを知らず、付けられない。
+function writeMediaPlaylist(outputDirectory, variant, entries) {
   const isFMP4 = entries.some((entry) => entry.mapName)
   const lines = [
     '#EXTM3U',
@@ -151,15 +159,11 @@ function writeMediaPlaylist(outputDirectory, variant, entries, discontinuityInde
     '#EXT-X-MEDIA-SEQUENCE:0',
     '#EXT-X-PLAYLIST-TYPE:VOD',
   ]
-  if (isFMP4 && entries[0].mapName) {
-    lines.push(`#EXT-X-MAP:URI="segments/${entries[0].mapName}"`)
-  }
   let mediaTime = 0
-  entries.forEach((entry, index) => {
-    if (index === discontinuityIndex) {
-      lines.push('#EXT-X-DISCONTINUITY')
-      if (entry.mapName && isFMP4) lines.push(`#EXT-X-MAP:URI="segments/${entry.mapName}"`)
-    }
+  // fMP4 の init segment は最初の ffmpeg 実行のものだけを 1 つ宣言する。
+  // アプリは再起動の位置を知らないので、境界で MAP を宣言し直せない。
+  if (isFMP4) lines.push(`#EXT-X-MAP:URI="segments/${entries[0].mapName}"`)
+  entries.forEach((entry) => {
     const date = new Date(PROGRAM_DATE_TIME + mediaTime * 1000).toISOString()
     lines.push(`#EXT-X-PROGRAM-DATE-TIME:${date}`)
     lines.push(`#EXTINF:${entry.duration.toFixed(3)},`)
@@ -178,7 +182,8 @@ function writeMasterPlaylist(outputDirectory) {
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="標準",LANGUAGE="jpn",DEFAULT=YES,AUTOSELECT=YES,URI="standard.m3u8"',
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="主",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=NO,URI="main.m3u8"',
     '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="副",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=NO,URI="sub.m3u8"',
-    '#EXT-X-STREAM-INF:BANDWIDTH=1800000,AVERAGE-BANDWIDTH=1400000,RESOLUTION=640x360,CODECS="avc1.42c01e,mp4a.40.2",AUDIO="audio"',
+    // hls.js の先読みは max(30 秒, maxBufferSize(60 MB) / BANDWIDTH)。20 Mbps なら 30 秒になり、遠距離シークがバッファの外になる。
+    '#EXT-X-STREAM-INF:BANDWIDTH=20000000,AVERAGE-BANDWIDTH=20000000,RESOLUTION=640x360,CODECS="avc1.42c01e,mp4a.40.2",AUDIO="audio"',
     'video.m3u8',
   ]
   writeFileSync(path.join(outputDirectory, 'master.m3u8'), `${lines.join('\n')}\n`)
@@ -186,7 +191,6 @@ function writeMasterPlaylist(outputDirectory) {
 
 function writeFixture({ outputDirectory, firstRun, restartedRun, format, kind }) {
   mkdirSync(path.join(outputDirectory, 'segments'), { recursive: true })
-  const discontinuityIndex = restartedRun ? readSegments(firstRun, 'video').length : -1
   for (const variant of VARIANTS) {
     let entries
     if (restartedRun) {
@@ -206,7 +210,7 @@ function writeFixture({ outputDirectory, firstRun, restartedRun, format, kind })
         copyMediaEntry(firstRun, outputDirectory, variant, entry, 'continuous', index),
       )
     }
-    writeMediaPlaylist(outputDirectory, variant, entries, discontinuityIndex)
+    writeMediaPlaylist(outputDirectory, variant, entries)
   }
   writeMasterPlaylist(outputDirectory)
   return { format, kind, directory: outputDirectory }
@@ -233,11 +237,11 @@ function validateFixture(fixture, expectedSegments) {
         throw new Error(`${fixture.format}/${fixture.kind}/${variant}: init segment がない (${uri})`)
       }
     }
-    if (fixture.kind !== 'direct' && !playlist.includes('#EXT-X-DISCONTINUITY')) {
-      throw new Error(`${fixture.format}/${fixture.kind}/${variant}: restart 境界の discontinuity がない`)
+    if (playlist.includes('#EXT-X-DISCONTINUITY')) {
+      throw new Error(`${fixture.format}/${fixture.kind}/${variant}: 再起動境界に discontinuity を付けてはならない`)
     }
     const durationSeconds = segments.reduce((total, line) => total + Number(line.slice('#EXTINF:'.length).split(',')[0]), 0)
-    if (fixture.kind !== 'misaligned' && Math.abs(durationSeconds - FIXTURE_SECONDS) > 1 / FRAME_RATE) {
+    if (fixture.kind !== 'off-grid' && Math.abs(durationSeconds - FIXTURE_SECONDS) > 1 / FRAME_RATE) {
       throw new Error(`${fixture.format}/${fixture.kind}/${variant}: playlist の尺が ${durationSeconds.toFixed(3)} 秒で ${FIXTURE_SECONDS} 秒と合わない`)
     }
     for (const uri of playlist.split(/\r?\n/).filter((line) => line.startsWith('segments/'))) {
@@ -254,7 +258,11 @@ function validateFixture(fixture, expectedSegments) {
   }
 }
 
-export function ensurePlaybackFixtures() {
+/**
+ * ensurePlaybackFixtures は source.ts と HLS fixture を作る。formats は `ts` と `fmp4` のうち作る形式。
+ * 負例は TS だけ作る（fMP4 は比較用の正例だけ）。
+ */
+export function ensurePlaybackFixtures(formats = ['ts']) {
   run('ffmpeg', ['-version'])
   run('ffprobe', ['-version'])
   ensureSource()
@@ -268,81 +276,49 @@ export function ensurePlaybackFixtures() {
   }
 
   const fixtures = []
-  for (const format of ['ts', 'fmp4']) {
+  for (const format of formats) {
     const extension = format === 'ts' ? 'ts' : 'm4s'
     const workRoot = path.join(FIXTURE_ROOT, 'work', format)
-    const directRun = path.join(workRoot, 'direct')
     const firstRun = path.join(workRoot, 'first')
-    const restartedRun = path.join(workRoot, 'restart')
+    const directRun = path.join(workRoot, 'direct')
+    const add = (kind, restarted) => fixtures.push(writeFixture({
+      outputDirectory: path.join(FIXTURE_ROOT, format, kind),
+      firstRun: restarted ? firstRun : directRun,
+      restartedRun: restarted,
+      format,
+      kind,
+    }))
+    const restart = (name, options) => {
+      const directory = path.join(workRoot, name)
+      const seekSeconds = options.seekSeconds ?? RESTART_FROM_SECONDS
+      generateHLS({
+        directory, format, extension, seekSeconds,
+        durationSeconds: FIXTURE_SECONDS - seekSeconds,
+        outputOffset: options.outputOffset,
+        silenceStandardRange: options.silenceStandardRange,
+      })
+      return directory
+    }
     generateHLS({ directory: directRun, format, durationSeconds: FIXTURE_SECONDS, extension })
     generateHLS({ directory: firstRun, format, durationSeconds: SPLIT_SECONDS, extension })
-    generateHLS({
-      directory: restartedRun,
-      format,
-      seekSeconds: RESTART_FROM_SECONDS,
-      durationSeconds: FIXTURE_SECONDS - RESTART_FROM_SECONDS,
+    add('direct')
+    add('restarted', restart('restart', { outputOffset: RESTART_FROM_SECONDS }))
+    if (format !== 'ts') continue
+    // 再起動直後の標準音声へ 1 AAC フレーム分の無音を入れる。
+    add('audio-gap', restart('audio-gap', {
       outputOffset: RESTART_FROM_SECONDS,
-      extension,
-    })
-    fixtures.push(writeFixture({
-      outputDirectory: path.join(FIXTURE_ROOT, format, 'direct'),
-      firstRun: directRun,
-      format,
-      kind: 'direct',
+      silenceStandardRange: [SEGMENT_SECONDS, SEGMENT_SECONDS + AUDIO_GAP_SECONDS],
     }))
-    fixtures.push(writeFixture({
-      outputDirectory: path.join(FIXTURE_ROOT, format, 'restarted'),
-      firstRun,
-      restartedRun,
-      format,
-      kind: 'restarted',
+    // 負例 (a): 格子点ではない位置から再起動する（`-output_ts_offset` は位置に合わせる）。
+    add('off-grid', restart('off-grid', {
+      seekSeconds: OFF_GRID_RESTART_SECONDS,
+      outputOffset: OFF_GRID_RESTART_SECONDS,
     }))
-
-    if (format === 'ts') {
-      const audioGapRun = path.join(workRoot, 'audio-gap')
-      generateHLS({
-        directory: audioGapRun,
-        format,
-        seekSeconds: RESTART_FROM_SECONDS,
-        durationSeconds: FIXTURE_SECONDS - RESTART_FROM_SECONDS,
-        outputOffset: RESTART_FROM_SECONDS,
-        extension,
-        silenceStandardRange: [SEGMENT_SECONDS, SEGMENT_SECONDS + AUDIO_GAP_SECONDS],
-      })
-      fixtures.push(writeFixture({
-        outputDirectory: path.join(FIXTURE_ROOT, format, 'audio-gap'),
-        firstRun,
-        restartedRun: audioGapRun,
-        format,
-        kind: 'audio-gap',
-      }))
-
-      const misalignedRun = path.join(workRoot, 'misaligned')
-      const badRestartFrom = SPLIT_SECONDS - 1
-      generateHLS({
-        directory: misalignedRun,
-        format,
-        seekSeconds: badRestartFrom,
-        durationSeconds: FIXTURE_SECONDS - badRestartFrom,
-        extension,
-        // negative control: 11 秒から再起動し、`-output_ts_offset` も省く。
-      })
-      fixtures.push(writeFixture({
-        outputDirectory: path.join(FIXTURE_ROOT, format, 'misaligned'),
-        firstRun,
-        restartedRun: misalignedRun,
-        format,
-        kind: 'misaligned',
-      }))
-    }
+    // 負例 (b): 正しい格子点から再起動するが `-output_ts_offset` を付けない。
+    add('no-offset', restart('no-offset', {}))
   }
 
-  validateFixture(fixtures.find(({ format, kind }) => format === 'ts' && kind === 'direct'), FIXTURE_SECONDS / SEGMENT_SECONDS)
-  validateFixture(fixtures.find(({ format, kind }) => format === 'ts' && kind === 'restarted'), FIXTURE_SECONDS / SEGMENT_SECONDS)
-  validateFixture(fixtures.find(({ format, kind }) => format === 'ts' && kind === 'audio-gap'), FIXTURE_SECONDS / SEGMENT_SECONDS)
-  validateFixture(fixtures.find(({ format, kind }) => format === 'ts' && kind === 'misaligned'), FIXTURE_SECONDS / SEGMENT_SECONDS)
-  validateFixture(fixtures.find(({ format, kind }) => format === 'fmp4' && kind === 'direct'), FIXTURE_SECONDS / SEGMENT_SECONDS)
-  validateFixture(fixtures.find(({ format, kind }) => format === 'fmp4' && kind === 'restarted'), FIXTURE_SECONDS / SEGMENT_SECONDS)
+  for (const fixture of fixtures) validateFixture(fixture, FIXTURE_SECONDS / SEGMENT_SECONDS)
   return { root: FIXTURE_ROOT, source: SOURCE_PATH, fixtures }
 }
 
@@ -356,7 +332,7 @@ function runOutput(name, args) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  const result = ensurePlaybackFixtures()
+  const result = ensurePlaybackFixtures((process.env.E2E_FORMATS ?? 'ts').split(','))
   console.log(`fixture ready: ${result.root}`)
   console.log(`source: ${result.source}`)
   for (const fixture of result.fixtures) console.log(`${fixture.format}/${fixture.kind}: ${fixture.directory}`)

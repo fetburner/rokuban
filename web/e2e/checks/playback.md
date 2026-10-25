@@ -107,6 +107,80 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=chromium pnpm e2e:recording-original-v
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 ```
 
+### 録画 HLS の再起動境界（`recording-segmented-vod.mjs`）
+
+録画再生は、録画時刻上の固定長セグメントを合成 playlist で配り、位置が離れたら ffmpeg を 1 つ前の格子点から起動し直す方式である。この方式の合否は jsdom では測れない。止まらずに再生できるか、継ぎ目で音が切れないかを実ブラウザで判定する。アプリの実装より先に判定手段を置いている。
+
+アプリは playlist を格子から先に合成するので、ffmpeg をどこで再起動したかを知らない。そのため再起動境界に `#EXT-X-DISCONTINUITY` を付けられない。内蔵フィクスチャも付けない。
+
+`recording-segmented-fixture.mjs` が `os.tmpdir()` にフィクスチャを作る。素材の `source.ts` は 60 秒の合成 TS である。映像にフレーム番号を 11 bit の箱で焼き、音声は左 440 Hz・右 880 Hz の AAC とする。セグメントは 2 秒で、標準・主・副の 3 rendition を持つ。`master.m3u8` の BANDWIDTH は 20 Mbps にしてある。hls.js の先読みが `max(30 秒, 60 MB / BANDWIDTH)` なので、低い値だと 60 秒が丸ごとバッファに入り、遠距離シークがバッファの外にならない。
+
+- `direct` は ffmpeg 1 本で通して作る
+- `restarted` は 12 秒の格子点まで作り、10 秒から起動し直した出力を `-output_ts_offset` 付きでつなぐ。重複する最初のセグメントは捨てる
+- `off-grid`（負例）は、格子点ではない 11 秒から起動し直す
+- `no-offset`（負例）は、正しい 10 秒から起動し直すが `-output_ts_offset` を付けない
+- `audio-gap`（負例）は、再起動直後の標準音声へ AAC の 1 フレーム分（1024 samples、約 21 ms）の無音を入れる
+- 映像セグメントの遅延（負例）は、境界の映像セグメントの応答を、再生位置が境界の手前に来るまで保留して作る。`stall` と呼ぶ
+
+#### 判定
+
+判定は 5 つある。
+
+- 再生が止まらない。再生中に `currentTime` が 500 ms 以上進まない回数を数える
+- 境界の ±0.5 秒で、焼いたフレーム番号・`mediaTime`・`currentTime` が ±1 フレームで一致する
+- 境界の ±0.8 秒で、AudioWorklet が 128 サンプル（約 2.7 ms）ごとの左右 RMS を全サンプルについて求め、無音が 2 回続かない。標準音声の周波数が 440 Hz / 880 Hz のままである
+- 主・副・標準の切替で、WebAudio の左右周波数が変わる
+- 遠距離シークで、seeked 後に最初に描かれたフレームがシーク先 ±1 フレームである。シーク先のセグメントをシーク前に要求していない（サーバーの要求ログで見る）
+
+負例は、期待する名前の失敗で落ちたときだけ「期待どおり」とする。名前は `[timecode]`・`[seek-frame]`・`[audio-gap]`・`[stall]` のように、各失敗の先頭に付く。待ちが尽きて例外になったものは `[progress]` であり、検出とは数えない。`off-grid` は `[timecode]`、`no-offset` は `[seek-frame]`、`audio-gap` は `[audio-gap]`、`stall` は `[stall]` を期待する。
+
+`no-offset` は境界を通して再生するだけでは検出できない。hls.js の `mp4-remuxer` が、連続するセグメントの PTS の跳びを「overlapping between fragments」として補正するためである。補正が働かないのは、取得が連続でないときである。遠距離シークでシーク先がずれ、`bufferAppendNoProgress` で再生が進まなくなる。
+
+再生経路は、アプリと同じ問いで選ぶ。`web/src/lib/live.ts` の `supportsNativeHls` が真ならネイティブ HLS とする。この関数は、プレイリストの MIME と `video/mp2t` の `canPlayType` がどちらも空でないかを問う。偽で `Hls.isSupported()` が真なら hls.js とする。どちらを使ったかは実行ごとに出力する。hls.js の設定もアプリと同じである。
+
+```sh
+cd web
+corepack pnpm e2e:recording-segmented-fixture   # フィクスチャだけ作る
+corepack pnpm e2e:recording-segmented-vod       # E2E_BROWSER=chrome（既定）
+E2E_FORMATS=ts,fmp4 corepack pnpm e2e:recording-segmented-vod
+E2E_CASES=ts/no-offset corepack pnpm e2e:recording-segmented-vod
+```
+
+`E2E_FORMATS` の既定は `ts` である。`fmp4` を足すと、`direct` と `restarted` の 2 つを比較用に回す。判定基準は TS と同じで、緩めない。fMP4 も `#EXT-X-DISCONTINUITY` なしでつなぎ、`#EXT-X-MAP` は最初の ffmpeg 実行の init segment を 1 つだけ宣言する。
+
+#### アプリの URL に向ける
+
+録画の master を持つ URL に向けると、正例の判定だけをその URL に回す。負例は内蔵フィクスチャでしか作れない。
+
+URL は `E2E_MASTER_URL` で渡す。
+
+```sh
+E2E_MASTER_URL=http://localhost:40773/<録画の master.m3u8> \
+E2E_SEGMENT_SECONDS=2 E2E_BOUNDARY_SECONDS=12 E2E_FAR_SEEK_SECONDS=52 \
+corepack pnpm e2e:recording-segmented-vod
+```
+
+- `E2E_SEGMENT_SECONDS` はセグメント長で、既定は 2 である。判定を始める位置を決める
+- `E2E_BOUNDARY_SECONDS` は ffmpeg の再起動境界の秒で、既定は 12 である
+- `E2E_FAR_SEEK_SECONDS` はバッファの外へ飛ぶ秒で、既定は 52 である。録画の長さと先読みに合わせて決める
+- ハーネスのページとメディアは同一オリジンでなければならない。オリジンが違うと、hls.js の XHR が CORS で止まり、`createMediaElementSource` が無音になる。そのためローカルのサーバーが、`E2E_MASTER_URL` のオリジンへ同じパスで中継する
+
+アプリの実装の受け入れでは、フィクスチャが作る `source.ts` を録画として登録し、その録画の master を `E2E_MASTER_URL` に渡す。`source.ts` は `<os.tmpdir()>/rokuban-e2e-recording-segmented-v2/source.ts` にある。境界の位置は、アプリが再起動した位置に合わせる。
+
+#### ブラウザごとの違い
+
+Chrome は Google Chrome を hls.js で判定する。負例を検出できるかの基準もここである。
+
+WebKit は診断用である。Playwright の WebKit はネイティブ HLS を選ぶ。ネイティブ HLS では次の判定を省く。
+
+- 音声の周波数と無音。ネイティブ HLS の音声が WebAudio に届かない。主・副の切替は `audioTracks` の選択と再生継続だけを見る。`audio-gap` と `stall` の負例は回さない
+- seeked 直後のフレーム。一時停止中の seek で新しい frame callback が出ない。シーク先への着地位置は判定する
+- シーク前の要求。先読みを hls.js の設定ではなくブラウザが決める
+
+実 Safari も同じ判定を省く。さらに WebAudio に音声が届かなければ、音声の継続を確認できないとして失敗にする。
+
+実 Safari は `safaridriver` を通して判定する。Safari の「開発」メニューの「リモートオートメーションを許可」を有効にするか、`safaridriver --enable` を一度実行する。
+
 ### シークバーのプレビュー（`seek-tiles.mjs`）
 
 動画の下のスクラブ帯でポインタを動かしたとき、その位置に対応するタイル画像が出ることを実ブラウザで見る。位置は「ポインタの x → 帯の中の割合 → 再生位置 → タイルの格子位置」で決まるが、**jsdom の `getBoundingClientRect()` は常に 0 を返すので、この経路は単体テストでは 1 歩も進まない**。`recording-player.test.tsx` が見るのは「タイルの問い合わせが始まること」「タッチでは始めないこと」だけで、位置の正しさはここが唯一の判定手段になる。
