@@ -63,19 +63,22 @@ SSE と同じ理由で、バイナリ配信に生成クライアントを使う�
 
 </details>
 
-##### 世代付き録画 HLS の入口
+##### 録画 API が返す録画 HLS の URL
 
-録画 API は、再生可能なプロファイルとルート相対 URL を返す。配信自体は OpenAPI に載せず、入口の JSON だけを契約にする。配信先の導入前に壊れた URL を公開しないよう、公開は既定で無効にする。
+録画 API は、再生可能なプロファイルとルート相対 URL を返す。配信自体は OpenAPI に載せず、URL を返す応答の JSON だけを契約にする。録画 HLS を配る経路はまだ無いので、壊れた URL を公開しないよう、公開は既定で無効にする。
 
-原本と転送中の一時ファイルは DB の行で判定し、原本を優先する。バイト列の世代を URL に含めることで、再取り込み後の内容と以前のキャッシュを区別する。置き場は site と独立に指定し、将来 site 内で保存先が分かれても振り分けの単位を保つ。
+URL の世代には、完了した録画なら原本の行の世代を使い、録画中なら転送中の一時ファイルの世代を使う。どちらを使うかは DB の行だけで決める。api ロールはファイルに触れず、コミットは DB の行だからである。録画中の世代は commit で原本の行へ持ち越すので、録画が終わっても URL は変わらない。バイト列の世代を URL に含めることで、再取り込み後の内容と以前のキャッシュを区別する。
 
-プロファイル名は `live.enabled` が false でも、録画 HLS を有効にしたときは URL の path segment に使う既存の安全な文字集合で検証する。
+URL の置き場は site ではなく、置き場の名前で指定する。規則しだいで 1 つの site の原本が複数の置き場に分かれるからである。ingress は Prefix `/api/media/stores/<名前>/` で配信先を振り分ける。置き場が 1 つの今から最終形の URL で作るので、2 つ目の置き場を足すときも URL と ingress の形を変えずに済む。
+
+録画 HLS の profile は `live.profiles` をそのまま使う。`live.enabled` が false でも、録画 HLS を有効にしたときは `live.profiles` が必須で、名前は URL の path segment に使えるものだけを許す。
 
 <details><summary>根拠</summary>
 
 - 応答と空配列の条件: `openapi.yaml` の `Recording.hlsPlayback`
 - 公開設定と置き場名: `config.example.yml`
 - 一覧・詳細の世代選択と非公開条件: `TestRecordingsHLSPlayback`
+- profile 名の検証と空の `live.profiles` の拒否: `TestLoadRecordingHLS`
 
 </details>
 

@@ -60,7 +60,8 @@ storage:
                                  # 設定すると録画ファイルのバイト転送を nginx に委ねる。
                                  # 空なら Go が直接配る（性能上は十分）
 
-# 世代付き録画 HLS URL の公開。配信先の準備後に有効にする。
+# 世代付き録画 HLS URL の公開。録画 HLS を配る経路を用意してから有効にする。
+# enabled=true なら live.profiles が必須（live.enabled が false でも）。
 recording_hls:
   enabled: false
 

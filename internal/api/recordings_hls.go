@@ -2,7 +2,6 @@ package api
 
 import (
 	"fmt"
-	"net/url"
 
 	"github.com/fetburner/rokuban/internal/store"
 )
@@ -21,7 +20,7 @@ func (c recordingPlaybackConfig) urls(r store.RecordingQueryRow) []RecordingHLSP
 	for _, profile := range c.profiles {
 		result = append(result, RecordingHLSPlayback{
 			Profile:   profile.Name,
-			MasterUrl: fmt.Sprintf("/api/media/stores/%s/recordings/%d/hls/v%d/%s/master.m3u8", url.PathEscape(c.store), r.ID, *r.HLSGeneration, url.PathEscape(profile.Name)),
+			MasterUrl: fmt.Sprintf("/api/media/stores/%s/recordings/%d/hls/v%d/%s/master.m3u8", c.store, r.ID, *r.HLSGeneration, profile.Name),
 		})
 	}
 	return result
