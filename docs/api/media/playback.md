@@ -233,81 +233,140 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 最大セッション数 `live.max_sessions` はライブと共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"}` で見る。セグメントの保存先はどちらも `live.segment_dir` 配下である。追っかけは録画時間ぶんのセグメントを idle GC まで保持するため、同時視聴数と録画時間に応じた容量を見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
 
-#### 録画中 temp の追従と offset の時刻基準
+#### 録画中の temp を読む方式の測定
 
-録画中の追っかけは ingest の temp を追記入力にする。seek 位置は映像の先頭 PTS を原点にする。実際の共有 PVC 上で追記の可視性と FFmpeg の追従を測るまでは、この入力方式を運用結果で確認した扱いにしない。
+エピックの方式では、録画中の番組は ingest が追記している temp を FFmpeg の入力にし、セグメントを録画時刻上の固定格子にそろえる。この節は、そのための引数と止め方を、合成入力と手元の実録画 2 本で決めた結果である。現行の追っかけ再生は上の節のとおり mirakc を Range で読む方式のままで、この節の方式は録画中の配信をエピックの方式へ移すときに入る。
 
-##### 実 PVC の追記可視性
+測定の条件は共通で、FFmpeg は 9.0.2 を使った。合成入力は 160×90・25 fps・MPEG-2・GOP 2 秒（50 frame）・B-frame なしである。出力は libx264 の lossless にし、出力セグメントの先頭フレームを入力のフレームと framehash で照合した。入力の種類と回数は各表に書く。測定用の runner はリポジトリに置かない（不変条件 4）。
 
-共有ストレージで追記の可視性を確認できていない。
+##### 時間軸を録画時刻の格子にそろえる引数
 
-実 PVC の追記遅延は未測定である。既存 Pod からの `stat /mnt/media` は 5 秒以内に戻らず、別ノードへ作った read-only probe Pod も 30 秒以内に Ready にならなかった。これは NFS の可視遅延ではなく、stat 完了と Pod 起動のタイムアウトである。中央値・最大値と 4 分 slice 境界の見え方は得られていない。
+起動位置が違っても、セグメント n の出力 PTS が n·D+C（C は全起動で同じ定数）になる引数を決めた。入力は format の start_time を基準にした相対の seek に pre-roll を付けて読み、フレームの選別と PTS の付け替えをフィルタで行う。
 
-測定するときは、運用中の media PVC と同じ StorageClass に、追記 Pod と読み取り Pod を別ノードで置く。読み取り側は temp の `stat` と末尾の読み取りを短い間隔で記録し、書き手の時刻と比較する。4 分後に別 Pod が同じ temp を `O_APPEND` で開く境界まで続けて測る。PVC が読み取れない状態では遅延値を記録しない。
-
-##### 伸長中の FFmpeg 入力
-
-合成ファイルが伸びている間に HLS segment が公開され、書き手終了後は timeout で reader が終了した。
-
-`python3 scripts/measure-playback-follow.py` は FFmpeg 9.0.2 で、160×90 / 25 fps / GOP 50 の合成 MPEG-TS を実時間で 12 秒間書く。reader は 2 秒後に `-follow 1 -rw_timeout 2000000 -ss 1` で開始し、`temp_file` 付きの 2 秒 HLS segment を作る。segment の rename 時刻と writer の生存状態を同じ時計で記録する。
-
-1 回の測定では segment 0〜4 が writer 終了前に公開された（reader 開始から 2.769〜8.914 秒後）。writer は 11.536 秒で終了し、最後の segment は 13.520 秒で公開された。reader は writer 終了から 1,984 ms 後に exit 0 で終了し、6 segment と `ENDLIST` を残した。この追従測定はホストの一時ディレクトリであり、PVC 上の挙動を示さない。
-
-待機中の reader に SIGINT を送る条件を次のコマンドで測る。
+記号は次のとおりである。V は映像の最初の PTS、S は format の start_time で、どちらも `ffprobe` で読んで 90 kHz の整数にする。k は起動するセグメント番号、D はセグメントの秒、P は pre-roll の秒である。
 
 ```sh
-python3 scripts/measure-playback-follow.py --rw-timeout-us 10000000 --sigint-after-writer --sigint-idle-seconds 1
+# V90 = 映像の最初の PTS、S90 = format の start_time（ともに秒 × 90000 の整数）
+T90=$((V90 + k*D*90000)); K90=$((k*D*90000))
+SS=$(awk -v t=$((T90 - P*90000 - S90)) 'BEGIN{printf "%.6f", t/90000}')
+ffmpeg -copyts -ss "$SS" -i "$INPUT" -map 0:v:0 -an -fps_mode passthrough \
+  -vf "select=gte(pts\,$T90),setpts=PTS-$T90+$K90" \
+  -c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv420p \
+  -g 50 -keyint_min 50 -sc_threshold 0 -bf 0 \
+  -force_key_frames "expr:gte(t,$((k*D))+n_forced*$D)" \
+  -f hls -hls_time $D -hls_list_size 0 -start_number $k -hls_flags temp_file \
+  -hls_segment_filename 'seg%03d.ts' index.m3u8
 ```
 
-writer 終了後に source と HLS 出力が 1 秒間変わらない状態を待って SIGINT を送る。
+判定は 2 つである。出力セグメントの先頭フレームは `ffmpeg -i seg -map 0:v:0 -f framehash -hash md5 -` の最初の行を、入力全体の同じ出力の何行目かに照合する。出力 PTS は `ffprobe -select_streams v:0 -show_packets -show_entries packet=pts` の最初の値を使う。
 
-4 回の測定で、SIGINT 後の終了時間は 8,934〜9,010 ms だった。writer 終了からは 9,976〜10,016 ms だった。reader は exit 255 で `ENDLIST` を残した。この待機条件では timeout 10 秒に近い時間を要した。
+引数ごとの理由は次のとおりである。
 
-writer 終了直後に SIGINT を送る別経路は `--sigint-immediately-after-writer` で測る。4 回の終了時間は 60 ms〜9,999 ms と揺れた。ここから一定の停止時間は決められない。FFmpeg 9.0.2 とホスト一時ファイルの結果であり、共有 PVC 上の終了挙動は未検証である。
+- `-copyts` を付けて、フィルタの式を入力の PTS だけで決める。出力の PTS が入力の start_time の扱いに左右されなくなる
+- フレームの選別は `trim` ではなく `select` で行う。`trim` は T を含む 1 フレームを残すので、29.97 fps の実録画では T より 555 tick（約 6 ms）早いフレームが先頭に来た
+- `-seek_timestamp 1` は使わない。format の start_time が 0 でない入力では、次の「相対 seek と絶対 seek の比較」のとおり出力が空になった
 
-##### 先頭 audio PTS が古い入力
+合成入力 3 種で、k=3 と k=5 の 2 回ずつ変換した結果は次のとおりである。P は 2 秒、`-copyts` ありで、各行 1 回の測定である。
 
-format の先頭時刻を使う直接 seek は、映像が始まる前の位置を選んだ。
+| 入力 | format の start_time / V | 起動 k | 出力セグメント n | 先頭フレームの誤差 | 出力 PTS − n·D |
+|---|---|---:|---|---:|---:|
+| 旧 PES（映像を 5,400 秒進め、別音声を 0 秒に置く） | 0 / 5,400.010022 秒 | 3 | 3〜14（12 本） | 全て 0 frame | 全て 1.400 秒 |
+| 同上 | 同上 | 5 | 5〜14（10 本） | 全て 0 frame | 全て 1.400 秒 |
+| wrap（映像のみ、PTS が 2^33 をまたぐ） | −13.717689 / −13.717689 秒 | 3 | 3〜14（12 本） | 全て 0 frame | 全て 1.400 秒 |
+| 同上 | 同上 | 5 | 5〜14（10 本） | 全て 0 frame | 全て 1.400 秒 |
+| 50,000 秒（映像のみ、PTS が 2^32 tick を超える） | 50,000 / 50,000 秒 | 3 | 3〜14（12 本） | 全て 0 frame | 全て 1.400 秒 |
+| 同上 | 同上 | 5 | 5〜14（10 本） | 全て 0 frame | 全て 1.400 秒 |
 
-`python3 scripts/measure-playback-seek.py` は FFmpeg 9.0.2 で、30 秒の `testsrc2` 映像を MPEG-2 にする。解像度は 160×90、25 fps、GOP 50、B-frame なしである。主音声も 5,400 秒ずらす。別音声の先頭 PES だけ 0 秒に置いて MPEG-TS にする。`ffprobe` の format start time は 0 秒、video の先頭 PTS は 5,400.010022 秒、別音声の先頭 PTS は 0 秒だった。
+3 種とも、k=3 と k=5 の両方が出した n=5〜14 の出力 PTS は一致した。C は 1.400 秒だった。1.400 秒になる理由は調べていないが、入力と起動位置によらず同じだった。
 
-比較 offset は 10.36 秒、目標 source PTS は 5,410.370022 秒である。HLS は 2 秒 segment、25 fps、lossless H.264、GOP 50、B-frame なしで出す。各出力 segment の先頭 framehash を入力全体の framehash と照合し、入力 video PTS に戻した。下表の誤差は `observed_source_pts - (5,410.370022 + n×2)` を 25 fps の frame 数で表す。`copyts なし / あり` の順で記し、出力 mux PTS は入力 PTS と別にスクリプトが表示する。
+29.97 fps の実録画では、frame 周期が 2 秒の格子に割り切れないので、出力 PTS − n·D は frame 周期（約 33 ms）に収まる範囲で動く。手元の実録画 2 本（後述）の先頭 420 frame を、320×180 の通常画質で同じ引数に通した。k=3 と k=5 の重なる n=5〜9 の出力 PTS は一致し、n·D との差は 1.406〜1.422 秒で、n が 1 増えるごとに 2 ms 増えた。実録画では出力セグメントの内容の照合までは行っていない。
 
-| segment n | `-ss 10.36` | absolute seek | 2 秒 pre-roll + trim |
-|---|---:|---:|---:|
-| 0 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 1 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 2 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 3 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 4 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 5 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 6 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 7 | −259 / −259 frame | +41 / +41 frame | 0 frame |
-| 8 | −259 / −259 frame | +41 / +41 frame | 0 frame |
+##### pre-roll の長さ
 
-この fixture では `-ss 10.36` が video の先頭 frame を選び、絶対 seek は次の GOP 境界を選んで 41 frame 遅れた。`-copyts` の有無で選択 frame は同じだった。2 秒前から読み、`trim=start=5410.370022,setpts=PTS-STARTPTS` を適用すると、測定した segment n=0〜9 が目標格子に一致した。入力引数は `-copyts -seek_timestamp 1 -ss 5408.370022` である。
+pre-roll P は入力の GOP の長さ以上にする。seek は要求位置の後ろの keyframe に着くことがあり、その keyframe が T より後ろだと、先頭フレームが格子から外れる。
 
-この方法は合成 GOP の結果であり、2 秒は放送 TS の GOP に対する上限ではない。HLS の mux PTS は seek 条件ごとに異なり、例えば相対 seek の segment 0 は `copyts` なしで 1.400 秒、ありで 5,401.400 秒から始まった。mux PTS の原点を使わず、source framehash で seek 誤差を比較する。
+外れても FFmpeg はエラーにせず、別のフレームから出力する。GOP が 3 秒（75 frame）の合成入力で、旧 PES と wrap の 2 種を各 1 回変換した結果は次のとおりである。2 種の結果は同じだった。誤差は先頭セグメントの先頭フレームで、全セグメントが 0 frame になったものを 0 と書く。
 
-##### 33 bit PTS wrap
-
-合成入力の映像 500 packet で、PTS が 0 秒をまたぐことを確認した。
-
-実録画を読めなかったため、20 秒 / 25 fps の MPEG-2 video（GOP 50、B-frame なし）に `-output_ts_offset 95430 -mpegts_copyts 1` を付けた。wrap は `2^33 / 90000 = 95,443.717689` 秒である。`ffprobe -show_packets` は 500 packet の PTS を −13.717689 秒から 6.242311 秒まで出し、0 秒を通過した。
-
-video PTS の原点は −13.717689 秒、offset 10.36 秒の目標は −3.357689 秒である。framehash を使った source PTS の比較は次の通りである。`copyts なし / あり` の順で記す。
-
-| segment n | relative seek | absolute seek | 2 秒 pre-roll + trim |
+| P | k=1 | k=2 | k=4 |
 |---:|---:|---:|---:|
-| 0 | +41 / +41 frame | +41 / +41 frame | 0 frame |
-| 1 | +41 / +41 frame | +41 / +41 frame | 0 frame |
-| 2 | +41 / +41 frame | +41 / +41 frame | 0 frame |
-| 3 | +41 / +41 frame | +41 / +41 frame | 0 frame |
-| 4 | — | — | 0 frame |
+| 0 秒 | +25 frame | +50 frame | +25 frame |
+| 1 秒 | +25 frame | 0 | +25 frame |
+| 2 秒 | 0 | 0 | 0 |
+| 3 秒 | 0 | 0 | 0 |
 
-direct seek は 4 segment、pre-roll と trim は 5 segment を出した。wrap 入力でも `-copyts` の有無で direct seek の選択 frame は同じだった。修正後の mux PTS は 1.400、3.400、5.400、7.400、9.400 秒であるが、source PTS との比較には入力 framehash を使う。
+GOP 2 秒の合成入力では、格子の位置がすべて keyframe なので、P=0 でも 0 frame になった。P=0 が通るのは、この偶然によるものである。実録画 2 本では、k=3 と k=5 の先頭フレームを入力の先頭フレームと照合した。P=0 は 4 回とも外れ、P=0.5・1・2 秒は 12 回とも一致した。
 
-再現スクリプトは各 segment の最初の decoded frame を入力 framehash に照合し、出力 mux PTS と source PTS を別々に出す。測定結果は FFmpeg 9.0.2 の合成入力に限る。実録画での seek 精度、実 PVC の追記可視性と 4 分境界、PVC 上での `-follow 1` 終了は未検証である。
+##### 相対 seek と絶対 seek の比較
+
+相対の seek だけでは基準が合わない。旧 PES の入力では映像より前の位置になって先頭フレームに丸められ、絶対 seek は目標より後ろの keyframe に着く。pre-roll とフレーム選別のフィルタを使う前節の方法だけが 0 frame になった。
+
+旧 PES の合成入力で、offset 10.36 秒（格子上にない位置）を要求した結果は次のとおりである。誤差は、出力セグメント n の先頭フレームの、期待した入力フレームとの差で、全セグメントで同じ値だった。`-copyts` なし / ありの順に書く。各 1 回の測定で、旧 PES は format の start_time が 0 秒、V が 5,400.010022 秒である。
+
+| 入力 | `-ss 10.36`（相対） | `-seek_timestamp 1` の絶対 seek | pre-roll 2 秒 + `select` |
+|---|---:|---:|---:|
+| 旧 PES（出力 15 / 9 / 10 本） | −259 / −259 frame | +41 / +41 frame | 0 frame（`-copyts` あり） |
+| wrap（出力 4 / 4 / 5 本） | +41 / +41 frame | +41 / +41 frame | 0 frame（`-copyts` あり） |
+
+旧 PES の相対 seek は、`-ss 10.36` が入力の PTS 10.36 秒を指し、映像の開始（5,400 秒）より前なので、映像の先頭フレームに丸められた。第 2 音声の先頭 PES だけが古い実録画で、原本 VOD の `-ss` が全部先頭に丸められた事例と同じ形である。`-copyts` の有無では選ばれるフレームは変わらなかった。
+
+絶対 seek は、format の start_time が 0 でない入力で出力が空になった。FFmpeg 9.0.2 で `-copyts -seek_timestamp 1 -ss <絶対時刻>` を使うと、start_time が 50,000 秒の合成入力ではセグメントが映像を含まなかった。実録画 2 本（start_time は約 43,588 秒と約 5,793 秒）では 0 frame だった。同じ実録画に `-ss 6` を渡すと start_time + 6 秒から出た。`-ss` に start_time を足した時刻より前のフレームを捨てているように見える。FFmpeg の文書にない挙動なので理由は断定せず、`-seek_timestamp` に頼らない。
+
+##### 伸びている入力の追従
+
+伸びている入力は、前節の引数に追従と読み待ちの時間切れの指定を足せば、途中から読み続けられる。書き手が生きている間にセグメントが公開され、先頭フレームの誤差は 0、出力 PTS は格子どおりだった。
+
+24 秒の合成入力（旧 PES と wrap）を、同じバイト列のまま実時間で書き足して測った。書き手は 188 byte の倍数ずつ、バッファなしで一定の速さで追記する。読み手は書き手の開始 8 秒後に k=2・P=2 秒で起動し、`-follow 1 -rw_timeout 2000000` を付けた。ホストの一時ディレクトリでの測定で、PVC 上の挙動は示さない。
+
+入力ごとに 5 回、計 10 回の結果は同じ傾向だった。出力は n=2〜11 の 10 本で、そのうち 9 本は書き手が生きている間に公開された。最初のセグメントは読み手の起動の 0.08〜0.13 秒後に公開された。全セグメントの先頭フレームの誤差は 0 frame、出力 PTS − n·D は 1.400 秒で、全セグメントのフレーム数の合計は期待どおり 500 だった。読み手は書き手の終了の 1.99〜2.01 秒後に exit 0 で終わった。
+
+##### 録画が終わったときの止め方
+
+録画の終わりは、入力の読み待ちの時間切れで FFmpeg を終わらせる。プロセスへの SIGINT では終わらせない。
+
+FFmpeg の文書（ffmpeg-protocols）の file プロトコルの `follow` には、終わらせるには `rw_timeout` か割り込みコールバックが要ると書いてある。SIGINT が読み待ちを中断するとは書かれていないので、契約として頼れない。測定でも SIGINT は不利だった。
+
+| 終わらせ方 | 回数 | 終了コード | 書き手の終了から終了まで | 全フレーム数（期待 500） |
+|---|---:|---:|---:|---:|
+| 時間切れ（rw_timeout 2 秒） | 10 | 0 | 1,993〜2,005 ms | 500（末尾フレームも一致） |
+| SIGINT（書き手の終了直後に送る。rw_timeout 10 秒） | 10 | 255 | 9,986〜10,006 ms | 498（末尾 2 フレームが欠けた） |
+
+どちらも旧 PES と wrap を各 5 回、前節の引数で測った。SIGINT は待機中の読みを早く終わらせず、実質 `rw_timeout` の時間切れまで待った。しかも出力の末尾 2 フレームを失った。先行の測定（ホストの一時ファイル、4 回）では、書き手の終了直後に送った SIGINT が 60〜9,999 ms と揺れた。
+
+時間切れは、書き手の停止が `rw_timeout` より長いと、録画の途中でも exit 0 で終わる。書き手を実時間の 14〜19 秒の間（5 秒間）止めて `rw_timeout` を 2 秒にした 2 回では、どちらも exit 0 で、出力は 249 frame（期待は 500）で終わった。終了コード 0 は録画の終了を意味しない。
+
+したがって、時間切れを採るなら、`rw_timeout` は書き手が止まる最長の時間より長くし、録画が終わったかどうかは FFmpeg の終了の外で判定する必要がある。書き手が止まる最長の時間には、`--once` の Pod が入れ替わる 4 分 slice の境目が含まれる。値は下の PVC の測定で決まる。
+
+##### 実録画の読み取り
+
+手元から読めた実録画 2 本には、先頭 PES が古い PID も PTS の wrap も無かった。先頭 PES が古い既知の録画の実物は読めていない。
+
+自宅の mirakc の Records API を、読み取り専用の Range で読んだ（2026-10-25）。録画一覧は 8 件で、2026-10-07 の「ニュースウオッチ９」は無かった。試した 3 件のうち、内容が返った 2 件の先頭 80 MB と末尾 60 MB を読んだ。
+
+2 件とも 29.97 fps の MPEG-2 だった。映像の最初の PTS は format の start_time より 0.22 秒と 0.38 秒遅く、字幕の先頭 PTS は映像の 1.4〜1.9 秒後だった。別音声の先頭だけが数千秒古い PID は無かった。
+
+PTS は先頭より末尾が大きく（約 43,588 秒の録画で +1,772 秒、約 5,793 秒の録画で約 +870 秒）、減っていないので、wrap は読んだ範囲には無かった。読んでいない中間部は確かめていない。
+
+この 2 本で seek の着地を測った。k=3 と k=5 について、入力の PTS が T 以上の最初のフレームと、前節の引数の出力の先頭フレームを framehash で照合した。結果は前節の「pre-roll の長さ」に書いた。
+
+##### PVC の追記の遅れ
+
+別の Pod から見た追記の遅れは未測定で、運用中と同じ StorageClass の PVC での測定が残っている。
+
+先行の測定で、既存 Pod からの `stat /mnt/media` は 5 秒以内に戻らず、別ノードに作った読み取り専用の probe Pod も 30 秒以内に Ready にならなかった。これは追記の遅れの測定ではなく、stat の完了と Pod の起動がそれぞれ時間切れになった記録である。中央値・最大値と、4 分 slice の境目の見え方は得られていない。
+
+測るときは、運用中の media PVC と同じ StorageClass に、追記する Pod と読む Pod を別ノードで置く。読む側は temp の `stat` と末尾の読み取りを短い間隔で記録し、書き手の時刻と比べる。4 分後に別の Pod が同じ temp を `O_APPEND` で開く境目まで続ける。PVC が読めない状態では遅れの値を記録しない。
+
+##### 未解決の項目
+
+この節の方式を採るために、次が残っている。
+
+- 未解決: 別の Pod から見た追記の遅れと、4 分 slice の境目の見え方。PVC の測定が要る
+- 未解決: `rw_timeout` の値。書き手が止まる最長の時間より長くする必要があり、その値は PVC の測定で決まる
+- 未解決: 放送 TS の最大の GOP 長に対する P の十分性。実録画 2 本での確認は seek の着地のみで、出力セグメントの内容の照合は合成入力だけである
+- 未解決: 先頭 PES が古い実録画での比較。mirakc の録画一覧に無く、media PVC の原本は手元の kubectl（コンテキストは kind-rokuban-e2e）が API サーバーへの接続を拒否されて読めなかった。旧 PES の合成入力で代替した
+- 未解決: PTS が wrap をまたぐ実録画での比較。手元の 2 本には無く、合成入力だけで測った
+- 未解決: 音声。映像だけを変換して測ったので、音声の継ぎ目と第 2 音声は測っていない
+- 未解決: 29.97 fps の実録画での出力セグメントの内容の照合。実録画では出力 PTS の一致までを測った
 
 ### 録画原本のブラウザ再生
 
