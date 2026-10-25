@@ -69,6 +69,8 @@ SSE と同じ理由で、バイナリ配信に生成クライアントを使う�
 
 原本と転送中の一時ファイルは DB の行で判定し、原本を優先する。バイト列の世代を URL に含めることで、再取り込み後の内容と以前のキャッシュを区別する。置き場は site と独立に指定し、将来 site 内で保存先が分かれても振り分けの単位を保つ。
 
+プロファイル名は `live.enabled` が false でも、録画 HLS を有効にしたときは URL の path segment に使う既存の安全な文字集合で検証する。
+
 <details><summary>根拠</summary>
 
 - 応答と空配列の条件: `openapi.yaml` の `Recording.hlsPlayback`
