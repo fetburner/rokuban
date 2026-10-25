@@ -273,13 +273,18 @@ func (ls *LiveStreamer) OriginalVODPlaylist(w http.ResponseWriter, r *http.Reque
 	if ls.cfg.Captions {
 		playlistName = "playlist.m3u8"
 	}
-	content, ok := waitForPlaylist(
+	content, err := ls.waitForPlaylist(
 		r.Context(), s, filepath.Join(s.dir, playlistName), playlistStartupTimeout, "#EXT-X-STREAM-INF",
 	)
-	if !ok {
-		slog.Error("streamer: original VOD playlist did not appear in time",
-			"recording_id", recordingID, "profile", profile.Name, "dir", s.dir)
-		http.Error(w, "original VOD stream did not start in time", http.StatusGatewayTimeout)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errStartupTimeout) {
+			slog.Error("streamer: original VOD playlist did not appear in time",
+				"recording_id", recordingID, "profile", profile.Name, "dir", s.dir)
+		}
+		writeOriginalVODError(w, r, err)
 		return
 	}
 	writeHLSPlaylist(w, content)
@@ -334,9 +339,12 @@ func (ls *LiveStreamer) OriginalVODSegment(w http.ResponseWriter, r *http.Reques
 
 	path := sessionFilePath(s.dir, name)
 	if strings.HasSuffix(name, ".m3u8") {
-		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
-		if !ok {
-			http.Error(w, "original VOD stream did not start in time", http.StatusGatewayTimeout)
+		content, err := ls.waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return
+			}
+			writeOriginalVODError(w, r, err)
 			return
 		}
 		writeHLSPlaylist(w, content)
@@ -416,16 +424,20 @@ func writeOriginalVODError(w http.ResponseWriter, r *http.Request, err error) {
 		http.NotFound(w, r)
 		return
 	}
-	if errors.Is(err, errSessionLimit) {
-		writeSessionError(w, err)
-		return
-	}
 	if errors.Is(err, errOriginalVODOffsetUnavailable) {
 		http.Error(w, err.Error(), http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
+	if errors.Is(err, errSessionLimit) || errors.Is(err, errShuttingDown) {
+		writeSessionError(w, err)
+		return
+	}
+	if errors.Is(err, errStartupTimeout) {
+		http.Error(w, "original VOD stream did not start in time", http.StatusGatewayTimeout)
+		return
+	}
 	slog.Error("streamer: starting original VOD session", "err", err)
-	http.Error(w, "original VOD stream unavailable", http.StatusServiceUnavailable)
+	http.Error(w, "original VOD stream failed to start", http.StatusInternalServerError)
 }
 
 func originalVODSessionDir(segmentDir, site string, recordingID, offsetSeconds int64) string {

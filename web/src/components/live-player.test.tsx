@@ -309,6 +309,25 @@ describe('LivePlayer の状態遷移', () => {
     expect(screen.getByText(/チューナー不足または同時視聴数の上限/)).toBeInTheDocument()
   })
 
+  it.each(['chase', 'original-vod'] as const)('%s の503はチューナー不足の案内を出さない', async (mode) => {
+    const body = 'too many concurrent live sessions on this process'
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(body, { status: 503 }))))
+    if (mode === 'chase') {
+      render(<LivePlayer mode="chase" site="default" recordingId={42} />)
+    } else {
+      render(<LivePlayer mode="original-vod" site="default" recordingId={42} recordingDurationMs={60_000} />)
+    }
+
+    expect(await screen.findByText(body)).toBeInTheDocument()
+    expect(screen.queryByText(/チューナー/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/チャンネルを切り替えた/)).not.toBeInTheDocument()
+    expect(screen.getByText(mode === 'chase'
+      ? 'いま追っかけ再生を始められません。'
+      : 'いま再生を始められません（同時再生数の上限、または streamer の再起動中）。'))
+      .toBeInTheDocument()
+    expect(screen.getByText('しばらく待ってから再読み込みしてください。')).toBeInTheDocument()
+  })
+
   it('追っかけ入力の502は容量不足と表示せず、同じ失敗を自動再試行しない', async () => {
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -467,6 +486,29 @@ describe('LivePlayer の状態遷移', () => {
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
     })
 
+    it('原本 VOD の error は録画映像の文言を出す', async () => {
+      const { resolve } = deferredFetch()
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={42}
+          recordingDurationMs={60_000}
+        />,
+      )
+      const video = document.querySelector('video')!
+      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+      )
+      resolve(new Response('', { status: 200 }))
+      await waitFor(() => expect(video.src).toContain('original-vod/playlist.m3u8'))
+
+      await act(async () => video.dispatchEvent(new Event('error')))
+
+      expect(await screen.findByText('録画映像を再生できませんでした（映像データを読み込めません）')).toBeInTheDocument()
+      expect(screen.queryByText(/ライブ映像を再生できませんでした/)).not.toBeInTheDocument()
+    })
+
     it('stalled のまま猶予が過ぎるとエラー表示を出す（error が出ない壊れ方）', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const video = await renderNativePath()
@@ -483,6 +525,35 @@ describe('LivePlayer の状態遷移', () => {
 
       expect(screen.getByText(/映像データが途絶えました/)).toBeInTheDocument()
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
+    })
+
+    it('原本 VOD の stalled は録画映像の文言を出し、ライブ映像とは出さない', async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      const { resolve } = deferredFetch()
+      render(
+        <LivePlayer
+          mode="original-vod"
+          site="default"
+          recordingId={42}
+          recordingDurationMs={60_000}
+        />,
+      )
+      const video = document.querySelector('video')!
+      vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+        type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+      )
+      resolve(new Response('', { status: 200 }))
+      await waitFor(() => expect(video.src).toContain('original-vod/playlist.m3u8'))
+
+      await act(async () => {
+        video.dispatchEvent(new Event('stalled'))
+      })
+      await act(async () => {
+        vi.advanceTimersByTime(liveStallTimeoutMs)
+      })
+
+      expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
+      expect(screen.queryByText(/ライブ映像/)).not.toBeInTheDocument()
     })
 
     it('currentTime が止まった timeupdate は停滞の猶予を解除しない（WebKit の buffer 枯渇）', async () => {

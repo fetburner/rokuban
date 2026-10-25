@@ -33,9 +33,9 @@ E2E_URL=http://localhost:4173 pnpm e2e:chase
 E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 ```
 
-### LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`）
+### LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`）
 
-ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、離脱ヒントの送信と追っかけの表示時刻を測る。mirakc と実録画は要らない。
+ライブ・追っかけ・原本 VOD の 3 モードで、短い実メディアを実ブラウザに再生させ、503 の文言・離脱ヒントの送信・追っかけの表示時刻を測る。mirakc と実録画は要らない。
 
 `/api/**` と HLS は `page.route` で差し替える。fixture は ffmpeg が作った 20 秒の HLS で、Chromium の hls.js が再生する。jsdom には `navigator.sendBeacon` が無く fetch に落ちるため、離脱ヒントの実送信は実ブラウザでしか測れない。
 
@@ -43,6 +43,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:chase
 - `visibilityState` を `hidden` にした `visibilitychange` と `pagehide` は、そのモードの宛先へ POST を 1 件ずつ送る。宛先はライブが `/live/leave`、追っかけが `/chase/leave`、原本 VOD が続き位置の `/original-vod/offset/12/leave` である
 - 原本 VOD は続き位置 12 秒の offset playlist を要求する
 - 追っかけの表示時刻は、録画先頭（番組開始から録画開始までの秒）に実メディアの `currentTime` を足した値と 2 秒以内で一致する。`aria-valuenow` は映像が進む前は props から導いた値で、実装と同じ式を読むので使わない
+- playlist の 503 は、ライブがチューナー案内、追っかけと原本 VOD がそれぞれの見出しと再試行案内を表示し、録画系にライブの案内を出さない
 
 ```sh
 E2E_URL=http://localhost:4173 pnpm e2e:live-player-modes

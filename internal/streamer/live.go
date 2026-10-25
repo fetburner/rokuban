@@ -163,6 +163,9 @@ var (
 	// （sessionCtx 由来の runSession）やセッション自体の状態には影響しない**
 	// --- 諦めるのはこの呼び出しの待ちだけで、セッションはそのまま起動を続ける。
 	errStartupTimeout = errors.New("live session did not become ready in time")
+	// errPlaylistSessionEnded は waitForPlaylist が、プレイリストが書かれる前に
+	// セッションの ffmpeg が終わったことを示す（シャットダウン中は errShuttingDown）。
+	errPlaylistSessionEnded = errors.New("session ended before the playlist was ready")
 	// errChaseRecordNotReadyTimeout is deliberately not a liveUpstreamStartError:
 	// repeated 204 responses are a normal recording-start state, not a failed tuner
 	// connection. It becomes a 503 only after the shared startup budget expires.
@@ -553,10 +556,10 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 		playlistName = "playlist.m3u8"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
-	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
-	if !ok {
+	content, waitErr := ls.waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
+	if waitErr != nil {
 		slog.Error("streamer: live playlist did not appear in time",
-			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
+			"service_id", serviceID, "profile", profile.Name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
@@ -644,10 +647,10 @@ func (ls *LiveStreamer) serveVariantPlaylist(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.touch()
-	content, ok := waitForPlaylist(r.Context(), s, sessionFilePath(s.dir, name), playlistStartupTimeout, "#EXTINF")
-	if !ok {
+	content, waitErr := ls.waitForPlaylist(r.Context(), s, sessionFilePath(s.dir, name), playlistStartupTimeout, "#EXTINF")
+	if waitErr != nil {
 		slog.Error("streamer: live variant playlist did not appear in time",
-			"service_id", serviceID, "name", name, "dir", s.dir)
+			"service_id", serviceID, "name", name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
@@ -936,7 +939,13 @@ const (
 )
 
 // waitForPlaylist は path に有効な HLS プレイリストが書かれるまでポーリングし、
-// 読めたらその内容を返す。タイムアウトまたは ctx のキャンセルで ok=false を返す。
+// 読めたらその内容を返す。失敗は 3 種類に分かれる。
+//
+//   - timeout: errStartupTimeout
+//   - ctx のキャンセル: ctx.Err()
+//   - プレイリストが書かれる前にセッション（ffmpeg）が終わった（s.done が閉じた）:
+//     シャットダウン中なら errShuttingDown、そうでなければ errPlaylistSessionEnded。
+//     timeout まで待っても結果は変わらないので、待たずに返す
 //
 // **ポーリングのたびに s を touch する**（待っている客も客。waitReadyTouching の
 // doc コメントに理由と実測）。
@@ -946,19 +955,33 @@ const (
 // していて）ファイルへ直接書き込み中の途中の内容を配ってしまう窓がある
 // （レビューで発見。CI が確率的に flaky になった原因）。少なくとも 1 本の
 // セグメントを指す `#EXTINF` 行が現れるまで待つことで、書き込み途中の空/不完全な
-// 内容を配らない。
-func waitForPlaylist(ctx context.Context, s *liveSession, path string, timeout time.Duration, readyMarker string) ([]byte, bool) {
+// 内容を配らない。読み取りエラーは ENOENT に限らず「まだ無い」として
+// ポーリングを続ける。
+func (ls *LiveStreamer) waitForPlaylist(ctx context.Context, s *liveSession, path string, timeout time.Duration, readyMarker string) ([]byte, error) {
 	deadline := time.Now().Add(timeout)
 	for {
 		if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte(readyMarker)) {
-			return data, true
+			return data, nil
 		}
 		if time.Now().After(deadline) {
-			return nil, false
+			return nil, errStartupTimeout
 		}
 		select {
 		case <-ctx.Done():
-			return nil, false
+			return nil, ctx.Err()
+		case <-s.done:
+			// 上の読み取りと select の間にプロセスが終わりうる。done が閉じた後に
+			// もう一度読み、書き終わっていたプレイリストを優先する。
+			if data, err := os.ReadFile(path); err == nil && bytes.Contains(data, []byte(readyMarker)) {
+				return data, nil
+			}
+			ls.mu.Lock()
+			shuttingDown := ls.closed
+			ls.mu.Unlock()
+			if shuttingDown {
+				return nil, errShuttingDown
+			}
+			return nil, errPlaylistSessionEnded
 		case <-time.After(playlistPollInterval):
 			// **待っている客も客**（waitReadyTouching の doc コメント参照）。
 			// ここが無音のままだと、この区間に届いた離脱ヒントが idle 期限を

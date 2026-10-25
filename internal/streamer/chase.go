@@ -224,10 +224,10 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 		playlistName = "playlist.m3u8"
 	}
 	playlistPath := filepath.Join(s.dir, playlistName)
-	content, ok := waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
-	if !ok {
+	content, waitErr := ls.waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
+	if waitErr != nil {
 		slog.Error("streamer: chase playlist did not appear in time",
-			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir)
+			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
@@ -283,8 +283,8 @@ func (ls *LiveStreamer) ChaseSegment(w http.ResponseWriter, r *http.Request) {
 
 	path := sessionFilePath(s.dir, name)
 	if strings.HasSuffix(name, ".m3u8") {
-		content, ok := waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
-		if !ok {
+		content, waitErr := ls.waitForPlaylist(r.Context(), s, path, playlistStartupTimeout, "#EXTINF")
+		if waitErr != nil {
 			http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
 			return
 		}

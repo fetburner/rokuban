@@ -3,6 +3,87 @@ import { describe, expect, it } from 'vitest'
 import { playbackStrategy } from '@/lib/playback-mode'
 
 describe('playbackStrategy', () => {
+  const strategies = {
+    live: playbackStrategy({ mode: 'live', site: 'default', networkId: 0, serviceId: 1024 }),
+    chase: playbackStrategy({
+      mode: 'chase',
+      site: 'default',
+      recordingId: 42,
+      chaseTimeline: { chaseHeadOffsetSeconds: 0, plannedSeconds: 3600, recordedSeconds: 1800 },
+    }),
+    'original-vod': playbackStrategy({
+      mode: 'original-vod',
+      site: 'default',
+      recordingId: 42,
+      recordingDurationMs: 3_600_000,
+    }),
+  }
+
+  const expectedErrorMessages = {
+    live: {
+      capacity: {
+        title: 'いま視聴できません（チューナー不足または同時視聴数の上限）。',
+        guidance: 'チャンネルを切り替えた直後は、前のチャンネルの解放待ちの可能性があります。30 秒ほど待って再読み込みしてください。',
+      },
+      otherTitle: 'ライブ視聴でエラーが発生しました。',
+      fatalTitle: 'ライブ再生中にエラーが発生しました',
+      mediaError: 'ライブ映像を再生できませんでした（映像データを読み込めません）',
+      stalled: 'ライブ映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザはライブ視聴（HLS）に対応していません',
+    },
+    chase: {
+      capacity: {
+        title: 'いま追っかけ再生を始められません。',
+        guidance: 'しばらく待ってから再読み込みしてください。',
+      },
+      otherTitle: '追っかけ再生でエラーが発生しました。',
+      fatalTitle: '追っかけ再生中にエラーが発生しました',
+      mediaError: '追っかけ映像を再生できませんでした（映像データを読み込めません）',
+      stalled: '追っかけ映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザは追っかけ再生（HLS）に対応していません',
+    },
+    'original-vod': {
+      capacity: {
+        title: 'いま再生を始められません（同時再生数の上限、または streamer の再起動中）。',
+        guidance: 'しばらく待ってから再読み込みしてください。',
+      },
+      otherTitle: '原本 TS の再生でエラーが発生しました。',
+      fatalTitle: '原本 TS の再生中にエラーが発生しました',
+      mediaError: '録画映像を再生できませんでした（映像データを読み込めません）',
+      stalled: '録画映像が届いていません（映像データが途絶えました）',
+      unsupported: 'このブラウザは原本 TS の再生（HLS）に対応していません',
+    },
+  }
+
+  for (const mode of Object.keys(strategies) as Array<keyof typeof strategies>) {
+    it(`${mode} はプレイリストエラーと方式別の文言を持つ`, () => {
+      const strategy = strategies[mode]
+      expect(strategy.classifyLoadError({
+        kind: 'http',
+        status: 503,
+        body: 'too many concurrent live sessions on this process',
+      })).toEqual({ kind: 'capacity', message: 'too many concurrent live sessions on this process' })
+
+      const retryAfterError = strategy.classifyLoadError({
+        kind: 'http',
+        status: 502,
+        body: 'cooldown',
+        retryAfter: '5',
+      })
+      if (mode === 'chase') {
+        expect(retryAfterError).toEqual({
+          kind: 'chase-input',
+          title: '追っかけ再生の入力に失敗したため、一時停止しています。',
+          message: 'cooldown',
+        })
+      } else {
+        expect(retryAfterError).toEqual({ kind: 'other', status: 502, message: 'cooldown' })
+      }
+
+      expect(strategy.errorMessages).toEqual(expectedErrorMessages[mode])
+    })
+  }
+
   it('live は番組の時間軸・ライブ離脱先・同じ秒の起点を持ち、録画シークを持たない', () => {
     const strategy = playbackStrategy({
       mode: 'live',
