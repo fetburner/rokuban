@@ -190,18 +190,28 @@ CREATE TABLE cm_logo_areas (
 
 ### recording_ingest_progress — 転送の途中経過（衛星表）
 
-**行の存在が転送中を意味し、原本のメディアアセットを登録するトランザクションか録画行の削除で消える**（不変条件 10）。書き込みバイト数は単調に増えず、一時ファイルに書けている量の観測である。書き手は ingest worker だけで、原本の取り込みが「どこまで書けたか」を持つ。
+**行の存在が、ingest がまだ commit していない temp を持っていることを意味する**（不変条件 10）。転送中に加え、SHA-256 待ちで snooze している間も行は残る。書き込みバイト数は単調に増えず、一時ファイルに書けている量の観測である。書き手は ingest worker だけで、原本の取り込みが「どこまで書けたか」を持つ。
 
 ```sql
 CREATE TABLE recording_ingest_progress (
     recording_id   bigint      PRIMARY KEY REFERENCES recordings (id) ON DELETE CASCADE,
     written_bytes  bigint      NOT NULL CHECK (written_bytes >= 0),
     expected_bytes bigint      CHECK (expected_bytes IS NULL OR expected_bytes >= 0),
+    temp_rel_path  text        NOT NULL,
+    temp_generation bigint     NOT NULL CHECK (temp_generation > 0),
     observed_at    timestamptz NOT NULL DEFAULT now()
 );
 ```
 
-転送していないことを表す行は作らない。消えるのは 2 経路だけである。1 つは、原本のメディアアセットを INSERT するトランザクションである（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）。もう 1 つは、録画行の削除（CASCADE）である。
+`temp_rel_path` は media root からの相対パスで、`temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
+
+転送していない（temp を持っていない）ことを表す行は作らない。行が消えるのは次の場合だけである。
+
+- 原本のメディアアセットを INSERT するトランザクション（コミット = DB 行なので、原本行が生まれる瞬間に進捗行が消え、「原本があるのに取り込み中」が読者から見えない）
+- 録画行の削除（FK の CASCADE）
+- temp を捨てるとき（record の cancel / fail、サイズ・ハッシュ不一致など）
+- 別経路の登録などで原本が既にコミット済みと分かったとき（取り残された行の掃除）
+- temp が無い状態から作り直す前（古い世代を、作り直した temp へ引き継がないため）
 
 書き手は脊椎（watcher と reconciler）ではないので、本体の列にしない（不変条件 13。原本保持ポリシーと同じ判断）。同期表にも載せない。あちらは mirakc 側の観測で書き手は watcher、こちらは Rokuban 側のファイルに何バイト書けたかで、1 表 2 書き手になる（不変条件 12）。
 
@@ -217,6 +227,8 @@ CREATE TABLE recording_ingest_progress (
 - 書き込みバイト数: `written_bytes`
 - 期待バイト数のコピー元: `expected_bytes`、`record_sync.content_length`
 - 観測時刻: `observed_at`
+- temp の相対パスと世代: `temp_rel_path` / `temp_generation`
+- 世代採番: `ingest_temp_generation_seq`
 - 露出させない内部表: `river_job`
 
 </details>

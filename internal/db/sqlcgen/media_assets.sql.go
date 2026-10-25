@@ -40,6 +40,29 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 	return id, err
 }
 
+const createOriginalMediaAsset = `-- name: CreateOriginalMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, ingest_generation)
+SELECT p.recording_id, 'original', $1, $2, p.temp_generation
+FROM recording_ingest_progress p
+WHERE p.recording_id = $3
+RETURNING id
+`
+
+type CreateOriginalMediaAssetParams struct {
+	RelPath     string
+	SizeBytes   int64
+	RecordingID int64
+}
+
+// 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
+// 転送中の recording_ingest_progress からコピーする。
+func (q *Queries) CreateOriginalMediaAsset(ctx context.Context, arg CreateOriginalMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.RelPath, arg.SizeBytes, arg.RecordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const deleteMediaAssetCuts = `-- name: DeleteMediaAssetCuts :exec
 DELETE FROM media_asset_cuts WHERE media_asset_id = $1
 `

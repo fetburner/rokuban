@@ -1312,6 +1312,8 @@ type lateSHA256IngestRun struct {
 	logOutput    *bytes.Buffer
 	tempModTime  time.Time
 	firstOffsets []int64
+	// waitGeneration は最初の SHA-256 待ちで進捗行が持っていた世代。
+	waitGeneration int64
 }
 
 func TestIngestWorker_CompletesUntilLateContentSHA256(t *testing.T) {
@@ -1441,15 +1443,19 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	const recordID = "rec-sliced-transfer"
 	insertTestRecordSync(t, pool, recordingID, recordID)
 	mediaDir := t.TempDir()
-	worker := &IngestWorker{
-		Publisher:     pgstoretest.Media(pool),
-		MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
-		RecordTarget:  pgstoretest.Recordings(pool),
-		MediaDir:      mediaDir,
-		StallTimeout:  time.Second,
-		Precheck:      pgstoretest.Media(pool),
+	newWorker := func() *IngestWorker {
+		w := &IngestWorker{
+			Publisher:     pgstoretest.Media(pool),
+			MirakcClients: singleSiteClients("", mirakc.NewClient(srv.URL, nil)),
+			RecordTarget:  pgstoretest.Recordings(pool),
+			MediaDir:      mediaDir,
+			StallTimeout:  time.Second,
+			Precheck:      pgstoretest.Media(pool),
+		}
+		w.CMDetectionStore = pgstoretest.Analysis(pool)
+		return w
 	}
-	worker.CMDetectionStore = pgstoretest.Analysis(pool)
+	worker := newWorker()
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	firstErr := runWorkerViaJobQFake(context.Background(), worker, job)
@@ -1467,6 +1473,19 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	if _, err := os.Stat(ingestCheckpointPath(tempPath)); err != nil {
 		t.Fatalf("checkpoint after first slice: %v", err)
 	}
+	firstTempRelPath, firstTempGeneration, ok := readIngestTempGeneration(t, pool, recordingID)
+	if !ok {
+		t.Fatal("ingest temp state was not recorded after the first transfer slice")
+	}
+	if firstTempRelPath != "sites/default/test/.rokuban-ingest-default-rec-sliced-transfer" {
+		t.Errorf("temp_rel_path after first slice = %q, want media-root-relative temp path", firstTempRelPath)
+	}
+	if firstTempGeneration <= 0 {
+		t.Fatalf("temp_generation after first slice = %d, want a positive sequence value", firstTempGeneration)
+	}
+	// Resume through a fresh worker to model a process restart. The only generation
+	// source for this attempt is the persisted progress row.
+	worker = newWorker()
 
 	completed := false
 	for slice := 1; slice <= 5; slice++ {
@@ -1481,6 +1500,15 @@ func TestIngestWorker_SnoozesAndResumesSameJobFromCheckpoint(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("same job did not complete within five resumed slices")
+	}
+	var committedGeneration int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
+		recordingID).Scan(&committedGeneration); err != nil {
+		t.Fatalf("reading committed original ingest generation: %v", err)
+	}
+	if committedGeneration != firstTempGeneration {
+		t.Fatalf("committed ingest_generation = %d, want replayed temp generation %d", committedGeneration, firstTempGeneration)
 	}
 	canonicalPath := filepath.Join(mediaDir, "sites", "default", contentPath)
 	got, err := os.ReadFile(canonicalPath)
@@ -1595,7 +1623,13 @@ func (run *lateSHA256IngestRun) runPending(t *testing.T, first bool, beforeResul
 	if got := run.tempSyncs.Load(); got != wantSyncs {
 		t.Errorf("temp Sync calls while pending = %d, want %d", got, wantSyncs)
 	}
-	assertIngestSHA256WaitState(t, run.pool, run.recordingID, run.fake, run.mediaDir, run.recordID, int64(len(run.tsData)))
+	generation := assertIngestSHA256WaitState(t, run.pool, run.recordingID, run.fake, run.mediaDir, run.recordID, int64(len(run.tsData)))
+	if first {
+		run.waitGeneration = generation
+	} else if generation != run.waitGeneration {
+		// 2 回目は preflight 経路（転送せず temp の長さだけで待ちに入る）を通る。
+		t.Errorf("temp generation after a repeated SHA-256 snooze = %d, want unchanged %d", generation, run.waitGeneration)
+	}
 	tempPath := ingestTempFilePath(filepath.Join(run.mediaDir, "sites", "default", "test"), "default", run.recordID)
 	info, err := os.Stat(tempPath)
 	if err != nil {
@@ -1666,7 +1700,22 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	if tc.wantVerification != "" && !strings.Contains(run.logOutput.String(), tc.wantVerification) {
 		t.Errorf("logs = %q, want %q", run.logOutput.String(), tc.wantVerification)
 	}
+	if tc.wantError != "" {
+		if _, ok := readIngestProgress(t, run.pool, run.recordingID); ok {
+			t.Error("progress row remained after the temp was discarded for a late hash mismatch")
+		}
+	}
 	if tc.wantAssets == 1 {
+		// timeout_skipped で commit する経路も、待ちの間と同じ世代を原本へ写す。
+		var committedGeneration int64
+		if err := run.pool.QueryRow(context.Background(),
+			`SELECT COALESCE(ingest_generation, 0) FROM media_assets WHERE recording_id = $1 AND kind = 'original'`,
+			run.recordingID).Scan(&committedGeneration); err != nil {
+			t.Fatalf("reading committed ingest generation: %v", err)
+		}
+		if committedGeneration != run.waitGeneration {
+			t.Errorf("committed ingest_generation = %d, want the generation held during the SHA-256 wait (%d)", committedGeneration, run.waitGeneration)
+		}
 		canonicalPath := filepath.Join(run.mediaDir, "sites", "default", run.contentPath)
 		committed, err := os.ReadFile(canonicalPath)
 		if err != nil {
@@ -1678,7 +1727,9 @@ func (run *lateSHA256IngestRun) assertCompletion(t *testing.T, tc lateSHA256Inge
 	}
 }
 
-func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, fake *mirakctest.Fake, mediaDir, recordID string, wantTempSize int64) {
+// assertIngestSHA256WaitState は SHA-256 待ちの間の状態を確かめ、進捗行の世代を返す。
+// 待ちの間も進捗行を残す（世代を変えず、原本の行へ写すため）。
+func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID int64, fake *mirakctest.Fake, mediaDir, recordID string, wantTempSize int64) int64 {
 	t.Helper()
 	var assetCount int
 	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
@@ -1690,17 +1741,15 @@ func assertIngestSHA256WaitState(t *testing.T, pool *pgxpool.Pool, recordingID i
 	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
 		t.Errorf("DeleteRecord attempts while waiting = %d, want 0", got)
 	}
-	var progressRows int
-	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM recording_ingest_progress WHERE recording_id = $1", recordingID).Scan(&progressRows); err != nil {
-		t.Fatalf("counting progress rows while waiting: %v", err)
-	}
-	if progressRows != 0 {
-		t.Errorf("recording_ingest_progress rows while waiting = %d, want 0", progressRows)
+	_, generation, ok := readIngestTempGeneration(t, pool, recordingID)
+	if !ok || generation <= 0 {
+		t.Fatalf("progress row while waiting = (generation %d, present %t), want a row with a positive generation", generation, ok)
 	}
 	tempPath := ingestTempFilePath(filepath.Join(mediaDir, "sites", "default", "test"), "default", recordID)
 	if info, err := os.Stat(tempPath); err != nil || info.Size() != wantTempSize {
 		t.Errorf("ingest temp while waiting: stat=(%v, %v), want size %d", info, err, wantTempSize)
 	}
+	return generation
 }
 
 func TestIngestWorker_OptionalContentSHA256(t *testing.T) {
@@ -2490,8 +2539,10 @@ func TestIngestWorker_SkipsTransferWhenAlreadyCommitted(t *testing.T) {
 	// ここで作らないと handleAlreadyCommittedIngest の ClearIngestProgress を通らない。
 	media := pgstoretest.Media(pool)
 	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
-		RecordingID:  recordingID,
-		WrittenBytes: 10,
+		RecordingID:    recordingID,
+		WrittenBytes:   10,
+		TempRelPath:    "sites/default/.rokuban-ingest-stale",
+		TempGeneration: 1,
 	}); err != nil {
 		t.Fatalf("seeding stale ingest progress: %v", err)
 	}

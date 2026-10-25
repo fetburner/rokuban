@@ -89,6 +89,7 @@ func TestTSScan_StatisticsAreWrittenAfterIngestCommit(t *testing.T) {
 	if err := os.WriteFile(tempPath, data, 0o600); err != nil {
 		t.Fatalf("writing ingest temporary file: %v", err)
 	}
+	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 	if err := (&IngestWorker{Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, Precheck: pgstoretest.Media(pool)}).commit(
 		context.Background(), recordingID, relPath, tempPath, fullPath, int64(len(data)),
 	); err != nil {

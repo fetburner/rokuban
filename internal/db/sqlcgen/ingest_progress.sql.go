@@ -51,20 +51,53 @@ func (q *Queries) GetRecordSyncIngestTarget(ctx context.Context, arg GetRecordSy
 	return i, err
 }
 
+const getRecordingIngestTempState = `-- name: GetRecordingIngestTempState :one
+SELECT temp_rel_path, temp_generation
+FROM recording_ingest_progress
+WHERE recording_id = $1
+`
+
+type GetRecordingIngestTempStateRow struct {
+	TempRelPath    string
+	TempGeneration int64
+}
+
+func (q *Queries) GetRecordingIngestTempState(ctx context.Context, recordingID int64) (GetRecordingIngestTempStateRow, error) {
+	row := q.db.QueryRow(ctx, getRecordingIngestTempState, recordingID)
+	var i GetRecordingIngestTempStateRow
+	err := row.Scan(&i.TempRelPath, &i.TempGeneration)
+	return i, err
+}
+
+const nextIngestTempGeneration = `-- name: NextIngestTempGeneration :one
+SELECT nextval('ingest_temp_generation_seq')::bigint AS generation
+`
+
+func (q *Queries) NextIngestTempGeneration(ctx context.Context) (int64, error) {
+	row := q.db.QueryRow(ctx, nextIngestTempGeneration)
+	var generation int64
+	err := row.Scan(&generation)
+	return generation, err
+}
+
 const upsertRecordingIngestProgress = `-- name: UpsertRecordingIngestProgress :exec
 INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, observed_at
-) VALUES ($1, $2, $3, now())
+    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, observed_at
+) VALUES ($1, $2, $3, $4, $5, now())
 ON CONFLICT (recording_id) DO UPDATE SET
     written_bytes  = EXCLUDED.written_bytes,
     expected_bytes = EXCLUDED.expected_bytes,
+    temp_rel_path  = EXCLUDED.temp_rel_path,
+    temp_generation = EXCLUDED.temp_generation,
     observed_at    = now()
 `
 
 type UpsertRecordingIngestProgressParams struct {
-	RecordingID   int64
-	WrittenBytes  int64
-	ExpectedBytes *int64
+	RecordingID    int64
+	WrittenBytes   int64
+	ExpectedBytes  *int64
+	TempRelPath    string
+	TempGeneration int64
 }
 
 // 転送中の進捗を上書きする。行の存在そのものが「転送中」の主張なので
@@ -76,6 +109,12 @@ type UpsertRecordingIngestProgressParams struct {
 // cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
 // 保証しない。docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
 func (q *Queries) UpsertRecordingIngestProgress(ctx context.Context, arg UpsertRecordingIngestProgressParams) error {
-	_, err := q.db.Exec(ctx, upsertRecordingIngestProgress, arg.RecordingID, arg.WrittenBytes, arg.ExpectedBytes)
+	_, err := q.db.Exec(ctx, upsertRecordingIngestProgress,
+		arg.RecordingID,
+		arg.WrittenBytes,
+		arg.ExpectedBytes,
+		arg.TempRelPath,
+		arg.TempGeneration,
+	)
 	return err
 }

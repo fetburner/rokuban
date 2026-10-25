@@ -42,8 +42,10 @@ func TestNewWorkersInjectsIngestPrecheck(t *testing.T) {
 	media := pgstoretest.Media(pool)
 	seedOriginalAsset(t, pool, t.TempDir(), recordingID, "sites/default/new-workers-precheck.m2ts", []byte("x"))
 	if err := media.UpsertIngestProgress(context.Background(), store.IngestProgress{
-		RecordingID:  recordingID,
-		WrittenBytes: 32,
+		RecordingID:    recordingID,
+		WrittenBytes:   32,
+		TempRelPath:    "sites/default/.rokuban-ingest-precheck",
+		TempGeneration: 1,
 	}); err != nil {
 		t.Fatalf("seeding ingest progress: %v", err)
 	}

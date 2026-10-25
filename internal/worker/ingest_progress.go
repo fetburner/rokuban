@@ -42,9 +42,11 @@ type ingestProgressReporter struct {
 	// content.length で更新する（固定すると録画中に 100% で止まる。issue #425）。
 	// mirakc が length を返していなければ nil のままにする（でっち上げた分母を
 	// 置かない）。
-	expectedBytes *int64
-	interval      time.Duration
-	log           *slog.Logger
+	expectedBytes  *int64
+	tempRelPath    string
+	tempGeneration int64
+	interval       time.Duration
+	log            *slog.Logger
 
 	// lastAt は直近に進捗を DB へ書こうとした時刻。ゼロ値は「まだ進捗を
 	// 1 度も書いていない」。転送開始を表す start の書き込みは進捗ではないので
@@ -101,6 +103,7 @@ func (r *ingestProgressReporter) write(ctx context.Context, written int64) {
 	}
 	if err := r.publisher.UpsertIngestProgress(ctx, store.IngestProgress{
 		RecordingID: r.recordingID, WrittenBytes: written, ExpectedBytes: r.expectedBytes,
+		TempRelPath: r.tempRelPath, TempGeneration: r.tempGeneration,
 	}); err != nil {
 		// 進捗が書けないこと自体は転送の失敗ではない。ログだけ残して続ける。
 		r.log.Warn("ingest: failed to record transfer progress",

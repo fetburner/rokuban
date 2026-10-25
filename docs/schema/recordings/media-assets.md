@@ -13,6 +13,9 @@ CREATE TABLE media_assets (
     CHECK ((kind = 'encoded') = (profile IS NOT NULL)),
     rel_path     text   NOT NULL,     -- ストレージルートからの相対パス（不変条件: 絶対パス禁止）
     size_bytes   bigint NOT NULL,
+    ingest_generation bigint,         -- kind = 'original' のみ: 原本にした temp の世代
+    CHECK (ingest_generation IS NULL OR ingest_generation > 0),
+    CHECK (kind = 'original' OR ingest_generation IS NULL),
 
     -- 物理削除プロトコル: active → deleting → deleted（冪等。どこで落ちても reconcile が拾い直す）
     state        text NOT NULL DEFAULT 'active'
@@ -33,6 +36,8 @@ CREATE UNIQUE INDEX ON media_assets (rel_path) WHERE state <> 'deleted';
 ```
 
 行を INSERT するのは worker（ingest / encode / thumbnail ジョブ）だけで、衝突時は冪等に書く。削除済みへ遷移した後も行は消さない（tombstone）。ドロップ統計と元サイズは、原本削除後も UI で見られる。
+
+ingest が公開する原本には、同じトランザクションで進捗行の `temp_generation` を写す。移行前からある原本では NULL のままで、読み手は 0 として扱う。原本の行が世代を持つのは、再生の URL とキャッシュの鍵に使い、commit の後も録画中と同じ値を保つためである。他の種別には持たせない。
 
 物理削除に至る 4 ソースは、すべて 1 本の削除 reconcile ループに集約し、一括削除サーキットブレーカーをループ全体に 1 つかける。4 ソースは、ごみ箱の猶予超過、原本の保持を派生物の完備までとした録画の派生物完備、ユーザーが外したエンコード結果、孤児回収である。
 
