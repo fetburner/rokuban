@@ -77,7 +77,7 @@ storage:
 # ライブ視聴は site/ の streamer が担当する。config は全 Pod で共有するため
 # enabled はここで有効にする。base の中央 streamer は --sites= で起動するので
 # ライブのルートを登録せず、site/ の streamer だけが自分の mirakc へ接続する。
-# セグメントは録画バッファと分離した Pod 内 tmpfs に置く（docs/operations/k8s.md
+# セグメントは録画バッファと分離した Pod 内 tmpfs に置く（docs/operations/k8s-streamer.md
 # §5「ライブのセグメントを録画バッファと同じディスクに置かない」）。
 live:
   enabled: true

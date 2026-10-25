@@ -882,7 +882,7 @@ func (ls *LiveStreamer) resolveRequest(w http.ResponseWriter, r *http.Request) (
 //
 // **十進の正準形だけを受ける（先頭ゼロを弾く）。** ParseUint は `01024` を 1024 と
 // して受けるが、**前段の consistent hash の鍵は URL の文字列**である
-// （docs/operations/k8s.md §5 の `map $uri $live_key`）ため、`1024` と `01024` は
+// （docs/operations/k8s-streamer.md §5 の `map $uri $live_key`）ため、`1024` と `01024` は
 // 同じチャンネルを指しながら別 Pod に落ちる --- そこで ffmpeg とチューナーが
 // 2 本になり、「同じチャンネルの視聴者は同じ Pod に落ちるので 1 本で済む」という
 // 鍵の取り方の前提そのものが崩れる。streamer 内部の鍵（合成後の整数）は同一に

@@ -14,7 +14,7 @@ metadata:
     rokuban.fetburner.net/site-scoped: "true"
 spec:
   # 既定は 1。増やす場合は前段で (site, networkId, serviceId) の consistent
-  # hash を設定する（docs/operations/k8s.md §5）。cookie affinity は使わない。
+  # hash を設定する（docs/operations/k8s-streamer.md §5）。cookie affinity は使わない。
   replicas: 1
   selector:
     matchLabels:
@@ -95,9 +95,20 @@ spec:
           resources:
             requests:
               cpu: 100m
-              memory: 128Mi
-            limits:
+              # request には普段は空の tmpfs を含めない。4 セッション × 実測 FFmpeg peak
+              # 173Mi + アプリ 128Mi = 820Mi を 1Gi に丸める。
               memory: 1Gi
+            limits:
+              # live.max_sessions は 4。FFmpeg 1 本ぶんに 512Mi（実測 peak 173Mi の約 3 倍）を
+              # 取り、tmpfs の 1Gi を足す: 1Gi + 4*512Mi = 3Gi。余りは Rokuban 本体と
+              # コーデックによるぶれも吸収する。tmpfs のページはこの container の limit に算入される。
+              # FFmpeg の peak: 参照クラスタ（K3s v1.36.2+k3s1）、Debian FFmpeg 7.1.5。
+              # 合成 1440x1080i MPEG-TS を 720p libx264 veryfast、AAC 3 rendition、
+              # 2 秒 HLS に変換し、/proc/<pid>/status の VmHWM を 100ms 間隔で採取:
+              # 176596KiB（173MiB）。参考（数値には使っていない）: 実放送の地上波
+              # 1440x1080i TS 150 秒を macOS の FFmpeg 9.0.2 で変換した最大 RSS は
+              # 271MiB で、512Mi の枠に収まる。
+              memory: 3Gi
       volumes:
         - name: config
           configMap:
@@ -108,6 +119,16 @@ spec:
         - name: live-segments
           emptyDir:
             medium: Memory
+            # ノードの RAM は約 4Gi。scratch は 1Gi で頭打ちにする。満杯になると
+            # ENOSPC で書き込みが止まり（Pod は evict されない）、満杯で止まる値として
+            # 置いている。ライブ・追っかけ・原本 VOD で共有する。
+            # 16Mi の超過 probe は 16Mi 書いた後に ENOSPC になり、Pod は Running のまま
+            # だった（観察時間は記録していない）。
+            # 実測 2.2 Mbit/s（実放送 1440x1080i の NHK、同梱 h264 profile、CRF 未指定
+            # なので bitrate は絵柄で変わる）では、1Gi は 1 セッションで約 64 分、
+            # 4 セッションなら各約 16 分。
+            # 根拠: docs/operations/k8s-streamer.md。
+            sizeLimit: 1Gi
 ---
 apiVersion: v1
 kind: Service
