@@ -559,7 +559,7 @@ func (ls *LiveStreamer) Playlist(w http.ResponseWriter, r *http.Request) {
 	content, waitErr := ls.waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, "#EXT-X-STREAM-INF")
 	if waitErr != nil {
 		slog.Error("streamer: live playlist did not appear in time",
-			"service_id", serviceID, "profile", profile.Name, "dir", s.dir)
+			"service_id", serviceID, "profile", profile.Name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
@@ -650,7 +650,7 @@ func (ls *LiveStreamer) serveVariantPlaylist(w http.ResponseWriter, r *http.Requ
 	content, waitErr := ls.waitForPlaylist(r.Context(), s, sessionFilePath(s.dir, name), playlistStartupTimeout, "#EXTINF")
 	if waitErr != nil {
 		slog.Error("streamer: live variant playlist did not appear in time",
-			"service_id", serviceID, "name", name, "dir", s.dir)
+			"service_id", serviceID, "name", name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "live stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}

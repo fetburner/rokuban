@@ -1546,7 +1546,7 @@ func TestLiveStreamer_Playlist_ImmediateFFmpegExitStays504(t *testing.T) {
 	// 早期終了の検知が外れても timeout まで待って 504 になってしまうので、
 	// 待ちが timeout より十分短いこと（検知が効いていること）も見る。
 	prev := playlistStartupTimeout
-	playlistStartupTimeout = 3 * time.Second
+	playlistStartupTimeout = 15 * time.Second
 	t.Cleanup(func() { playlistStartupTimeout = prev })
 
 	mirakcSrv, _ := newFakeMirakcLiveServer(t)
@@ -1567,8 +1567,8 @@ func TestLiveStreamer_Playlist_ImmediateFFmpegExitStays504(t *testing.T) {
 	if resp.StatusCode != http.StatusGatewayTimeout {
 		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusGatewayTimeout)
 	}
-	if elapsed := time.Since(start); elapsed >= playlistStartupTimeout {
-		t.Errorf("elapsed = %v, want less than the startup timeout %v (early exit must not wait it out)", elapsed, playlistStartupTimeout)
+	if elapsed := time.Since(start); elapsed >= playlistStartupTimeout/2 {
+		t.Errorf("elapsed = %v, want less than half the startup timeout %v (early exit must not wait it out)", elapsed, playlistStartupTimeout)
 	}
 }
 

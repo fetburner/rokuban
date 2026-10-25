@@ -227,7 +227,7 @@ func (ls *LiveStreamer) ChasePlaylistForTarget(w http.ResponseWriter, r *http.Re
 	content, waitErr := ls.waitForPlaylist(r.Context(), s, playlistPath, playlistStartupTimeout, readyMarker)
 	if waitErr != nil {
 		slog.Error("streamer: chase playlist did not appear in time",
-			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir)
+			"recording_id", target.RecordingID, "profile", profile.Name, "dir", s.dir, "err", waitErr)
 		http.Error(w, "chase stream did not start in time", http.StatusGatewayTimeout)
 		return
 	}
