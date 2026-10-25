@@ -80,6 +80,7 @@ function sampleRecording(
     durationMs: 1_800_000,
     status,
     keepOriginal: 'always',
+    hlsPlayback: [],
     cmDetection: { state: 'disabled' },
     createdAt: '2026-09-01T00:00:00Z',
   }

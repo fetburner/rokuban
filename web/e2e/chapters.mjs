@@ -68,7 +68,7 @@ const recording = {
   durationMs: 120_000,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'detected' },
+  hlsPlayback: [], cmDetection: { state: 'detected' },
   sizeBytes: 500_000_000,
   // 画質の下の階層でサイズ付きの選択肢を見るため 2 つ置く（同じ動画を配る）。
   encodedAssets: [

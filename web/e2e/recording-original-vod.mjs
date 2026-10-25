@@ -67,7 +67,7 @@ const recording = {
   durationMs: 60_000,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt,
   endedAt,
   createdAt: '2026-01-01T12:00:00Z',

@@ -49,6 +49,9 @@ type MediaServing interface {
 	// GetActiveOriginalMediaAsset は追っかけ配信に使う active な原本を返す。
 	GetActiveOriginalMediaAsset(ctx context.Context, recordingID int64) (MediaAsset, error)
 	// GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。
+	// 録画完了済み・ごみ箱/ purge 前・active original のみを開始可能とし、site は URL の
+	// site-scoped streamer と照合する。既存セッションの再取得では使わず、セッション開始前と
+	// rel_path lock 取得後に呼ぶ。
 	GetOriginalVODTarget(ctx context.Context, recordingID int64, site string) (OriginalVODTarget, error)
 	// GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。
 	GetRecordingRemovalState(ctx context.Context, recordingID int64) (RecordingRemovalState, error)

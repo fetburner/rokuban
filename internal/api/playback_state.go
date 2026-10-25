@@ -23,7 +23,7 @@ func (h *Server) ListContinueWatching(ctx context.Context, _ ListContinueWatchin
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings to resume: %w", err)
 	}
-	recordings, err := recordingQueryRowsToAPI(rows, false, h.profileSets())
+	recordings, err := recordingQueryRowsToAPI(rows, false, h.profileSets(), h.recordingPlayback)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings to resume: %w", err)
 	}

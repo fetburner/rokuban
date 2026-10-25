@@ -138,6 +138,11 @@ type RouterConfig struct {
 	// 代入すると同じ config の別プロセスが違う答えを返す（cmd/rokuban/server.go）。
 	LiveEnabled bool
 
+	// RecordingHLSEnabled は世代付き録画 HLS URL の公開を有効にする。
+	RecordingHLSEnabled bool
+	// MediaStoreName は原本と temp の置き場に対応するルートの名前。
+	MediaStoreName string
+
 	// CMDetectEnabled は config.cm_detect.enabled。GET /api/capabilities の cmDetect に出し、
 	// false のとき encode-policy の cmDetect=true と検出の再試行を 409 にする。
 	// LiveEnabled と同じくロールに関係なく config の値を渡す。
@@ -200,6 +205,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		cfg.EncodePolicyStore, cfg.Dedupe, cfg.MediaReader, cfg.StorageObservation, cfg.Enqueuer, cfg.Sites, cfg.EncodeProfileNames,
 		cfg.CutProfileNames, cfg.LiveProfiles,
 		Capabilities{Live: cfg.LiveEnabled, CmDetect: cfg.CMDetectEnabled})
+	handler.recordingPlayback = recordingPlaybackConfig{enabled: cfg.RecordingHLSEnabled, store: cfg.MediaStoreName, profiles: cfg.LiveProfiles}
 	strict := NewStrictHandlerWithOptions(handler, nil, StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: writeRequestError,
 	})

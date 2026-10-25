@@ -220,7 +220,7 @@ const recordingBase = {
   source: 'rule',
   status: 'finished',
   keepOriginal: 'until_encoded',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   encodedAssets: [{ profile: 'h264-720p', sizeBytes: 812_000_000 }],
   sizeBytes: 3_420_000_000,
 }

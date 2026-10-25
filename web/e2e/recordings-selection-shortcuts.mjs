@@ -35,7 +35,7 @@ const recordings = Array.from({ length: 4 }, (_, i) => {
     durationMs: 1_800_000,
     status: 'finished',
     keepOriginal: 'always',
-    cmDetection: { state: 'disabled' },
+    hlsPlayback: [], cmDetection: { state: 'disabled' },
     createdAt: '2026-01-02T12:30:00Z',
   }
 })
