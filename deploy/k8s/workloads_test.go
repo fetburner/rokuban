@@ -1027,7 +1027,7 @@ func TestLongLivedPodsAreScrapable(t *testing.T) {
 	}
 }
 
-// --- CRD の中の名前参照 ------------------------------------------------------
+// --- site streamer の scratch 予算 -------------------------------------------
 
 // TestLiveStreamerScratchBudget は、site streamer の tmpfs 上限と、その上限に
 // 合わせたメモリ予算がマニフェストから消えないことを固定する。
@@ -1052,8 +1052,7 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 	var streamer *workload
 	for _, w := range loadWorkloads(t) {
 		if w.id() == deploymentID {
-			wCopy := w
-			streamer = &wCopy
+			streamer = &w
 			break
 		}
 	}
@@ -1068,8 +1067,8 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 	if got := strAt(container, "name"); got != "live-streamer" {
 		t.Fatalf("%s container = %q, want %q", deploymentID, got, "live-streamer")
 	}
-	if got := fmt.Sprint(mapAt(container, "resources", "requests")["memory"]); got != "2Gi" {
-		t.Errorf("%s memory request = %q, want %q", deploymentID, got, "2Gi")
+	if got := fmt.Sprint(mapAt(container, "resources", "requests")["memory"]); got != "1Gi" {
+		t.Errorf("%s memory request = %q, want %q", deploymentID, got, "1Gi")
 	}
 	if got := fmt.Sprint(mapAt(container, "resources", "limits")["memory"]); got != "3Gi" {
 		t.Errorf("%s memory limit = %q, want %q", deploymentID, got, "3Gi")
@@ -1098,6 +1097,8 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 		t.Errorf("%s emptyDir.sizeLimit = %q, want %q", deploymentID, got, "1Gi")
 	}
 }
+
+// --- CRD の中の名前参照 ------------------------------------------------------
 
 // podTemplatePath は podTemplate() が掘る場所を kustomize の fieldSpec の
 // 書き方（`/` 区切り）で返す。**podTemplate() の switch と対で保つ。**

@@ -14,7 +14,7 @@ metadata:
     rokuban.fetburner.net/site-scoped: "true"
 spec:
   # 既定は 1。増やす場合は前段で (site, networkId, serviceId) の consistent
-  # hash を設定する（docs/operations/k8s.md §5）。cookie affinity は使わない。
+  # hash を設定する（docs/operations/k8s-streamer.md §5）。cookie affinity は使わない。
   replicas: 1
   selector:
     matchLabels:
@@ -95,17 +95,20 @@ spec:
           resources:
             requests:
               cpu: 100m
-              # 1Gi scratch + 4*173Mi measured FFmpeg + 128Mi app allowance ≈ 1.8Gi.
-              memory: 2Gi
+              # Request excludes the usually empty tmpfs: 4 sessions * 173Mi
+              # measured FFmpeg peak + 128Mi app allowance = 820Mi, rounded to 1Gi.
+              memory: 1Gi
             limits:
               # live.max_sessions is 4. Reserve 512Mi per FFmpeg slot (about 3x
               # the measured 173Mi peak), plus 1Gi tmpfs: 1Gi + 4*512Mi = 3Gi.
               # The remainder also covers Rokuban and codec variation. tmpfs
               # pages count against this container limit.
-              # Measured in K3s v1.36.2+k3s1 on js50 with Debian FFmpeg 7.1.5:
-              # synthetic 1440x1080i MPEG-TS -> 720p libx264 veryfast, three AAC
-              # renditions, 2s HLS; sampled /proc/<pid>/status VmHWM every 100ms:
-              # 176596KiB (173MiB).
+              # FFmpeg peak: reference cluster (K3s v1.36.2+k3s1), Debian FFmpeg
+              # 7.1.5; synthetic 1440x1080i MPEG-TS -> 720p libx264 veryfast, three
+              # AAC renditions, 2s HLS; /proc/<pid>/status VmHWM sampled every
+              # 100ms: 176596KiB (173MiB). Cross-check, not used for the numbers:
+              # real 150s terrestrial 1440x1080i TS on macOS FFmpeg 9.0.2 peaked
+              # at 271MiB RSS, still under the 512Mi slot.
               memory: 3Gi
       volumes:
         - name: config
@@ -117,8 +120,15 @@ spec:
         - name: live-segments
           emptyDir:
             medium: Memory
-            # Reference cluster nodes have about 4Gi RAM; cap scratch at 1Gi.
-            # A 16Mi overflow probe wrote 16Mi then got ENOSPC; the Pod stayed Running.
+            # Nodes have about 4Gi RAM; scratch is capped at 1Gi. ENOSPC stops
+            # writes when full (the Pod is not evicted), so this is a
+            # stop-when-full value; it is shared by live, chase and original VOD.
+            # A 16Mi overflow probe wrote 16Mi then got ENOSPC; the Pod stayed
+            # Running (observation time not recorded).
+            # At the measured 2.2 Mbit/s (real 1440x1080i NHK, bundled h264
+            # profile, CRF unset so bitrate is content-dependent), 1Gi holds about
+            # 64 min for one session, about 16 min each for four.
+            # Basis: docs/operations/k8s-streamer.md.
             sizeLimit: 1Gi
 ---
 apiVersion: v1

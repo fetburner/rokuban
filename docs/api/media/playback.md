@@ -231,7 +231,7 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 ライブ・追っかけ・原本 VOD のセッション数は合算する。セグメントは録画バッファとは別の tmpfs / scratch に置く。ライブは playlist の窓だけを残し、追っかけと原本 VOD は録画全体の EVENT セグメントを idle GC まで保持する。
 
-最大セッション数 `live.max_sessions` は全経路で共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"|"original_vod"}` で見る。どの経路も `live.segment_dir` を使う。追っかけと原本 VOD の容量は、録画時間 × 全 live profile の出力 bitrate の合計 × 同時セッション数 ÷ 8 で見積もる。詳細は [operations.md](../../operations.md) §5 を参照する。
+最大セッション数 `live.max_sessions` は全経路で共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"|"original_vod"}` で見る。どの経路も `live.segment_dir` を使う。容量の見積もり式と `sizeLimit` の判断は [operations.md](../../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに置かない」（[k8s-streamer.md](../../operations/k8s-streamer.md)）にある。
 
 ### 録画原本のブラウザ再生
 
@@ -366,7 +366,7 @@ offset 付きでは、開いたままの原本の fd から映像の長さを調
 
 原本 MPEG-2 decoder を持たない FFmpeg build は `live.enabled` の streamer 起動前に拒否し、再生要求後に空の HLS player だけが出る状態を避ける。
 
-原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。正常終了後も idle GC まで録画全体の変換済み segment が残るため、録画時間、全 live profile の出力 bitrate、同時セッション数を掛けて tmpfs 容量を見積もる（[operations.md](../../operations.md) §5）。
+原本 VOD の HLS scratch も `live.segment_dir` に置き、録画バッファ / archive から分離する。正常終了後も idle GC まで録画全体の変換済み segment が残る。tmpfs 容量の見積もりは「セッション数と容量」の節から辿る。
 
 #### offset seek の精度と開始時間の測定
 
