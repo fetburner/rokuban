@@ -48,29 +48,19 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 	assertArgPair(t, args, "-muxdelay", "0")
 	assertArgPair(t, args, "-force_key_frames", "expr:gte(t,n_forced*2)")
 	assertArgPair(t, args, "-hls_flags", "temp_file")
-	// -ss は -copyts でも format.start_time からの相対で解釈される。絶対秒（-seek_timestamp 1）にすると、
-	// 全ストリームが 5400 秒付近から始まる TS では出力が空になる（実 ffmpeg で確認）。
-	if indexOf(args, "-seek_timestamp") >= 0 {
-		t.Fatalf("args contain absolute seeking: %v", args)
+	// 絶対秒の -ss と 3 つのフラグ。-noaccurate_seek が無いと、揃った TS で出力が空になった（実 ffmpeg）。
+	seek, ss := indexOf(args, "-seek_timestamp"), indexOf(args, "-ss")
+	if indexOf(args, "-copyts") < 0 || seek < 0 || args[seek+1] != "1" || indexOf(args, "-noaccurate_seek") < 0 || ss < 0 {
+		t.Fatalf("args = %v, want -copyts -seek_timestamp 1 -noaccurate_seek before -ss", args)
 	}
-}
-
-func TestBuildSegmentTransformArgsSeeksRelativeToFormatStart(t *testing.T) {
-	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
-	args, err := buildSegmentTransformArgs(
-		LiveConfig{FFmpeg: "ffmpeg", Profiles: []LiveProfile{profile}},
-		profile,
-		SegmentTransformInput{
-			Path: "/dev/fd/3", OriginPTS: 5400*mpegTSTimestampClock + 902,
-			FormatStartPTS: 5400 * mpegTSTimestampClock, AudioStreamCount: 1,
-		},
-		2,
-		t.TempDir(),
-	)
-	if err != nil {
-		t.Fatal(err)
+	for _, flag := range []string{"-copyts", "-seek_timestamp", "-noaccurate_seek"} {
+		if indexOf(args, flag) > ss {
+			t.Fatalf("%s must come before -ss: %v", flag, args)
+		}
 	}
-	assertArgPair(t, args, "-ss", "2.010022222")
+	if ss > indexOf(args, "-i") {
+		t.Fatalf("-ss must be an input-side option: %v", args)
+	}
 }
 
 func TestNewSegmentManagerValidatesCacheWindowAndCleansOwnedScratch(t *testing.T) {
@@ -203,9 +193,9 @@ func TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid(t *testing.T) {
 			if !tc.stale && (gap < -1 || gap > 1) {
 				t.Fatalf("format.start_time is %.3f s from the first video PTS, want an aligned input", gap)
 			}
-			for _, number := range []int64{0, 3} {
+			for number := int64(0); number <= 8; number++ {
 				manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
-				input := testSegmentInput(t, ffprobe, inputPath, originPTS, nil)
+				input := testSegmentInput(inputPath, originPTS)
 				key := SegmentKey{"recording", "generation-1", "test", "video", number}
 				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				file, err := manager.Get(ctx, key, input)
@@ -237,14 +227,14 @@ func TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid(t *testing.T) {
 }
 
 func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 30)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 3)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 	defer cancel()
 	firstKey := SegmentKey{"recording", "generation-1", "test", "video", 1}
@@ -292,6 +282,26 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 		t.Fatalf("segment %d beyond the prefetch window is cached", bound+1)
 	}
 
+	// 先読みの最後の 1 本（bound）を要求しても、新しい変換は起動せず、止まっていた同じ変換から届く。
+	boundKey := firstKey
+	boundKey.Number = bound
+	boundContext, boundCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer boundCancel()
+	boundFile, err := manager.Get(boundContext, boundKey, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = boundFile.Close()
+	if taskForRecording(t, manager, "recording") != task {
+		t.Fatal("request for the last prefetched segment replaced the paused transform")
+	}
+	manager.mu.Lock()
+	taskCount := len(manager.tasks[segmentTransformGroup{"recording", "generation-1", "test"}])
+	manager.mu.Unlock()
+	if taskCount != 1 {
+		t.Fatalf("transforms after requesting segment %d = %d, want 1", bound, taskCount)
+	}
+
 	nextKey := firstKey
 	nextKey.Number = current
 	nextContext, nextCancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -317,7 +327,7 @@ func TestSegmentTransformResumeAfterSIGSTOPUpdatesPlaylistPromptly(t *testing.T)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 3)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, nil)
+	input := testSegmentInput(inputPath, originPTS)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	key := SegmentKey{"recording", "generation-1", "test", "video", 1}
@@ -366,14 +376,14 @@ func TestSegmentTransformResumeAfterSIGSTOPUpdatesPlaylistPromptly(t *testing.T)
 }
 
 func TestSegmentTransformAtCapacityDoesNotKillTransformsWithWaiters(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 30)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 2<<20)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 
 	var tasks []*segmentTransformTask
 	var cancels []context.CancelFunc
@@ -413,14 +423,14 @@ func TestSegmentTransformAtCapacityDoesNotKillTransformsWithWaiters(t *testing.T
 }
 
 func TestSegmentTransformAtCapacityKillsOldestIdleTransform(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 30)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 2<<20)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
 
@@ -463,18 +473,18 @@ func TestSegmentTransformAtCapacityKillsOldestIdleTransform(t *testing.T) {
 }
 
 func TestSegmentTransformWaitWindowReusesAndRestartsWithRealFFmpeg(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 90)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 2<<20)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	group := segmentTransformGroup{recordingID: "recording", generation: "generation-1", profile: "test"}
 
 	firstKey := SegmentKey{"recording", "generation-1", "test", "video", 3}
-	firstCtx, firstCancel := context.WithTimeout(context.Background(), 8*time.Second)
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 20*time.Second)
 	firstFile, err := manager.Get(firstCtx, firstKey, input)
 	firstCancel()
 	if err != nil {
@@ -543,14 +553,14 @@ func TestSegmentTransformGracefulStopDoesNotCacheInterruptedTail(t *testing.T) {
 	// 次のセグメントが始まっていないその末尾を、キャッシュに入れてはならない。
 	for _, signal := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT} {
 		t.Run(signal.String(), func(t *testing.T) {
-			ffmpeg := lookPathFFmpeg(t)
+			ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 			ffprobe := lookPathFFprobe(t)
 			inputPath := filepath.Join(t.TempDir(), "long.ts")
 			writeAlignedTestTS(t, ffmpeg, inputPath, 20)
 			originPTS := firstPacketPTS(t, ffprobe, inputPath)
 			manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
 			defer closeSegmentManager(t, manager)
-			input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+			input := testSegmentInput(inputPath, originPTS)
 			key := SegmentKey{"recording", "generation-1", "test", "video", 3}
 			ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 			defer cancel()
@@ -646,13 +656,10 @@ func closeSegmentManager(t *testing.T, manager *SegmentManager) {
 	}
 }
 
-func testSegmentInput(t *testing.T, ffprobe, path string, originPTS int64, inputArgs []string) SegmentTransformInput {
-	t.Helper()
+func testSegmentInput(path string, originPTS int64) SegmentTransformInput {
 	return SegmentTransformInput{
 		OpenFile:         func(context.Context) (*os.File, error) { return os.Open(path) },
-		InputArgs:        inputArgs,
 		OriginPTS:        originPTS,
-		FormatStartPTS:   formatStartPTS(t, ffprobe, path),
 		AudioStreamCount: 2,
 	}
 }
@@ -661,8 +668,8 @@ func writeOldAudioPESTestTS(t *testing.T, ffmpeg, path string, seconds int) {
 	t.Helper()
 	// 映像と 1 本目の音声は 5400 秒付近から始まり、2 本目の音声は先頭に 0 秒付近の古い PES を
 	// 1 秒分だけ持つ。format.start_time がその古い PES の時刻（0 付近）になり、映像の原点より
-	// 5000 秒以上前になる。2 本目の音声をこの 0 秒以外の時刻（10 秒以上）にすると、実 ffmpeg 9.0.2 は
-	// 絶対秒でシークしても出力が空か短くなったので、実録画の形（約 5400 秒古い）に合わせて 0 秒にしている。
+	// 5000 秒以上前になる。実録画の形（約 5400 秒古い）に合わせた 0 秒で、-noaccurate_seek 付きの絶対秒
+	// シークでは、この時刻を 10 / 100 / 5400 秒にしても 9 セグメントが出ることを手元で確認した。
 	video := fmt.Sprintf("testsrc2=size=160x90:rate=25:duration=%d", seconds)
 	audio := fmt.Sprintf("sine=frequency=440:sample_rate=48000:duration=%d", seconds)
 	cmd := exec.Command(ffmpeg, "-v", "error", "-y",
@@ -680,9 +687,30 @@ func writeOldAudioPESTestTS(t *testing.T, ffmpeg, path string, seconds int) {
 	}
 }
 
+// paceFFmpeg は、変換の映像と音声の filter の前に realtime / arealtime を挟んで ffmpeg を実時間で進める
+// ラッパーを作り、そのパスを返す。ffmpeg 9.0.2 では、-ss と併用した -re が実時間で進まなかった
+// （20 秒の入力が約 1 秒で終わった）ので、先読み・上限・kill のようにペース配分が要るテストはこれを使う。
+func paceFFmpeg(t *testing.T, ffmpeg string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "ffmpeg-paced")
+	script := `#!/bin/bash
+args=()
+for a in "$@"; do
+  a="${a//atrim=start=/@@A@@}"
+  a="${a//trim=start=/realtime,trim=start=}"
+  a="${a//@@A@@/arealtime,atrim=start=}"
+  args+=("$a")
+done
+exec "` + ffmpeg + `" "${args[@]}"
+`
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 // writeAlignedTestTS は、全ストリームが 5400 秒付近から揃って始まる TS を書く。
-// 先頭 PES が古い TS（format.start_time が 0 付近）では、ffmpeg 9.0.2 の -re が実時間で進まなかった
-// （シークと併用した入力の 20 秒が 0.05 秒で終わった）。ペース配分に -re を使うテストはこちらを使う。
+// 全ストリームが揃った形の入力。ペース配分が要るテストが使う（paceFFmpeg と組み合わせる）。
 func writeAlignedTestTS(t *testing.T, ffmpeg, path string, seconds int) {
 	t.Helper()
 	video := fmt.Sprintf("testsrc2=size=160x90:rate=25:duration=%d", seconds)
@@ -842,6 +870,21 @@ func TestSegmentTransformDoesNotWaitForPreRollSegmentBeforeRequestStart(t *testi
 	}
 }
 
+func TestSegmentTransformFindsPrefetchPausedTransformForItsLastCompletedSegment(t *testing.T) {
+	group := segmentTransformGroup{recordingID: "recording", generation: "generation", profile: "test"}
+	// current=7 は 7 を書き始めた状態で、6 は完成済み（playlist への掲載が遅れているだけ）。
+	task := &segmentTransformTask{group: group, requestStart: 1, startNumber: 0, currentNumber: 7}
+	manager := &SegmentManager{
+		tasks: map[segmentTransformGroup]map[*segmentTransformTask]struct{}{group: {task: {}}},
+	}
+	if got := manager.findTaskLocked(group, 6, 2); got != task {
+		t.Fatalf("request for the last completed segment selected %p, want the paused transform", got)
+	}
+	if got := manager.findTaskLocked(group, 5, 2); got != nil {
+		t.Fatalf("request for segment 5 selected %p, want a new transform", got)
+	}
+}
+
 func TestSegmentTransformDoesNotCachePlaylistEntryUntilNextSegmentStarts(t *testing.T) {
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	manager, err := NewSegmentManager(SegmentTransformOptions{
@@ -892,7 +935,7 @@ func TestSegmentTransformDoesNotCachePlaylistEntryUntilNextSegmentStarts(t *test
 }
 
 func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 20)
@@ -911,7 +954,7 @@ func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	key := SegmentKey{"recording", "generation-1", "test", "video", 3}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -954,7 +997,7 @@ func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
 }
 
 func TestSegmentTransformStopsAfterIdleTimeout(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 10)
@@ -972,7 +1015,7 @@ func TestSegmentTransformStopsAfterIdleTimeout(t *testing.T) {
 
 	key := SegmentKey{"recording", "generation-1", "test", "video", 1}
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	file, err := manager.Get(ctx, key, testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"}))
+	file, err := manager.Get(ctx, key, testSegmentInput(inputPath, originPTS))
 	cancel()
 	if err != nil {
 		t.Fatal(err)
@@ -1014,7 +1057,7 @@ func TestSegmentTransformNormalEOFPublishesFinalShortSegment(t *testing.T) {
 	key := SegmentKey{"recording", "generation-1", "test", "video", 4}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, nil)
+	input := testSegmentInput(inputPath, originPTS)
 	input.VideoDurationPTS = videoDurationPTS(t, ffprobe, inputPath)
 	file, err := manager.Get(ctx, key, input)
 	if err != nil {
@@ -1030,7 +1073,7 @@ func TestSegmentTransformNormalEOFPublishesFinalShortSegment(t *testing.T) {
 }
 
 func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 20)
@@ -1040,7 +1083,7 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 	key := SegmentKey{"recording", "generation-1", "test", "video", 3}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
-	file, err := manager.Get(ctx, key, testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"}))
+	file, err := manager.Get(ctx, key, testSegmentInput(inputPath, originPTS))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1077,7 +1120,7 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 	nextKey.Number = current + 2
 	nextContext, nextCancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer nextCancel()
-	nextDone := startSegmentGet(manager, nextContext, nextKey, testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"}))
+	nextDone := startSegmentGet(manager, nextContext, nextKey, testSegmentInput(inputPath, originPTS))
 	waitForSegmentWaiter(t, manager, task, nextKey, 2*time.Second)
 	manager.mu.Lock()
 	if task.pauseReason == transformRunning {
@@ -1144,14 +1187,14 @@ func TestSegmentTransformStopsAtAnAlreadyCachedNextSegment(t *testing.T) {
 }
 
 func TestSegmentTransformRequestForSegmentBeforeRunningStartStartsNewTransformWithRealFFmpeg(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 30)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 2, 128<<20, 2<<20)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -1270,7 +1313,7 @@ func TestSegmentTransformEOFNotAtKnownLastSegmentIsNotCachedWithRealFFmpeg(t *te
 		t.Run(name, func(t *testing.T) {
 			manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20)
 			defer closeSegmentManager(t, manager)
-			input := testSegmentInput(t, ffprobe, inputPath, originPTS, nil)
+			input := testSegmentInput(inputPath, originPTS)
 			input.VideoDurationPTS = durationPTS
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -1393,14 +1436,14 @@ func TestSegmentTransformDeletesPreRollSegmentOnceNextSegmentStarts(t *testing.T
 }
 
 func TestSegmentTransformCachedRequestResumesPrefetchPausedTransformWithRealFFmpeg(t *testing.T) {
-	ffmpeg := lookPathFFmpeg(t)
+	ffmpeg := paceFFmpeg(t, lookPathFFmpeg(t))
 	ffprobe := lookPathFFprobe(t)
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 30)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
 	manager := newRealSegmentManagerPrefetch(t, ffmpeg, t.TempDir(), 1, 64<<20, 2<<20, 3)
 	defer closeSegmentManager(t, manager)
-	input := testSegmentInput(t, ffprobe, inputPath, originPTS, []string{"-re"})
+	input := testSegmentInput(inputPath, originPTS)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	key := SegmentKey{"recording", "generation-1", "test", "video", 1}

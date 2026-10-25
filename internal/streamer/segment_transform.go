@@ -32,10 +32,11 @@ const (
 	// TestSegmentTransformWaitWindowIs24Seconds が固定する。
 	defaultSegmentWaitWindow = 24 * time.Second
 	// defaultSegmentSeekPreRoll は、要求セグメントの何秒前から読み始めるか。
-	// 合成 GOP（25 fps、GOP 50 フレーム、B フレーム無し、D=2 秒）では、pre-roll 無しの直接シーク
-	// （-seek_timestamp 1）の先頭が +41 frame ずれ、2 秒の pre-roll と trim でずれが 0 frame になった。
+	// 2 秒は、合成 GOP（25 fps、GOP 50 フレーム、B フレーム無し、D=2 秒）で、pre-roll 無しの直接シーク
+	// （絶対秒）の先頭が +41 frame ずれ、2 秒の pre-roll と trim でずれが 0 frame になった測定による。
 	// 測ったのはこの合成 GOP だけで、実録画の GOP の上限ではない。
-	// TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid が同じ形を固定する。
+	// TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid（n=0..8、2 種類の TS）は pre-roll の有無を
+	// 弁別しない（pre-roll 0 秒・1 秒でも通ることを確認した）。値そのものを固定するのは引数のテストだけである。
 	defaultSegmentSeekPreRoll = 2 * time.Second
 	// defaultSegmentTransformIdleTimeout は、待たれていない変換を残す時間。live.idle_timeout の
 	// 既定 30 秒に合わせ、HLS の 1 回の要求の連なりが途切れたら入力 fd と書きかけの出力を手放す。
@@ -94,13 +95,6 @@ type SegmentTransformInput struct {
 	InputArgs []string
 	// OriginPTS は最初の映像 PTS（90 kHz の MPEG-TS tick）。
 	OriginPTS int64
-	// FormatStartPTS は入力の format.start_time（90 kHz の MPEG-TS tick）。
-	// 入力側の -ss は -copyts を付けても format.start_time からの相対秒として解釈される。
-	// 実 ffmpeg 9.0.2 で、全ストリームが 5400 秒付近から始まる TS に絶対秒（-copyts -seek_timestamp 1
-	// -ss 5402）を渡すと出力が空になった（TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid の aligned）。
-	// 先頭 PES だけ古い録画では start_time が 0 付近になるので、同じ式（シーク位置 - FormatStartPTS）で
-	// 絶対秒と同じ値になる。
-	FormatStartPTS int64
 	// VideoDurationPTS は原点から録画の末尾までの映像の長さ（90 kHz tick）。0 は未確定を表す。
 	// 確定しているときだけ、最後のセグメント番号 = ceil(長さ / D) - 1 と一致する番号を
 	// 「録画の最後」とみなして ENDLIST 付きの短い末尾をキャッシュに入れる。
@@ -406,8 +400,10 @@ func (m *SegmentManager) Close() error {
 }
 
 // findTaskLocked は、number を待てる変換を返す。
-// 変換が作るのは max(currentNumber, requestStart) 以降なので、それより前の番号
-// （pre-roll で作って捨てる n-1 を含む）は待たずに新しい変換へ回す。
+// 待てる下限は max(requestStart, currentNumber-1) である。currentNumber-1 は次のセグメントが
+// 始まった（完成済みで、この変換がもうすぐ公開する）番号で、先読みで止まった変換の最後の 1 本を
+// 含む。requestStart より前（pre-roll で作って捨てる n-1）は待たずに新しい変換へ回す。
+// 待つ幅は currentNumber からの距離で測る。
 func (m *SegmentManager) findTaskLocked(group segmentTransformGroup, number int64, segmentSeconds int) *segmentTransformTask {
 	tasks := m.tasks[group]
 	var best *segmentTransformTask
@@ -416,11 +412,10 @@ func (m *SegmentManager) findTaskLocked(group segmentTransformGroup, number int6
 		if task.finished || task.stopping {
 			continue
 		}
-		base := max(task.currentNumber, task.requestStart)
-		if number < base {
+		if number < max(task.requestStart, task.currentNumber-1) {
 			continue
 		}
-		distance := number - base
+		distance := max(number-task.currentNumber, 0)
 		if distance > int64(defaultSegmentWaitWindow/time.Second)/int64(segmentSeconds) {
 			continue
 		}
@@ -998,11 +993,7 @@ func buildSegmentTransformArgs(
 	if deltaPTS > preRollPTS {
 		seekPTS = trimPTS - preRollPTS
 	}
-	seekOffsetPTS, ok := subtractInt64(seekPTS, input.FormatStartPTS)
-	if !ok {
-		return nil, errors.New("segment transform seek offset overflows int64")
-	}
-	seekSeconds := strconv.FormatFloat(float64(seekOffsetPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
+	seekSeconds := strconv.FormatFloat(float64(seekPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
 	trimSeconds := strconv.FormatFloat(float64(trimPTS)/float64(mpegTSTimestampClock), 'f', 9, 64)
 
 	cfg.Profiles = []LiveProfile{profile}
@@ -1012,7 +1003,7 @@ func buildSegmentTransformArgs(
 		inputPath = originalVODFFmpegInputPath
 	}
 	// オフセット 1 は共有ビルダーに入力側の -ss を出させるための仮の値で、
-	// pre-roll を引いて format.start_time からの相対にした秒を下で差し込む。
+	// pre-roll を引いた絶対秒を下で差し込む。
 	args := buildHLSFFmpegArgsForPlaylistType(
 		cfg, workDir, false, hlsOriginalEventPlaylist, inputPath, 1, input.AudioStreamCount,
 	)
@@ -1022,7 +1013,11 @@ func buildSegmentTransformArgs(
 		return nil, errors.New("segment HLS args do not contain input-side -ss")
 	}
 	args[ssIndex+1] = seekSeconds
-	args = append(args[:ssIndex], append([]string{"-copyts"}, args[ssIndex:]...)...)
+	// 絶対秒でシークする。実 ffmpeg 9.0.2 の測定では、全ストリームが 5400 秒付近から始まる TS に
+	// -copyts -seek_timestamp 1 -ss 5402 だけを渡すと出力が空になり、-noaccurate_seek を足すと
+	// 先頭 PES が古い TS と揃った TS の両方で正しく出た（TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid）。
+	// 空になった原因は未調査。フレーム精度は下の trim が担うので、accurate_seek は使わない。
+	args = append(args[:ssIndex], append([]string{"-copyts", "-seek_timestamp", "1", "-noaccurate_seek"}, args[ssIndex:]...)...)
 	if len(input.InputArgs) > 0 {
 		inputIndex := indexOf(args, "-i")
 		if inputIndex < 0 {
@@ -1090,13 +1085,6 @@ func lastIndexOf(args []string, target string) int {
 		}
 	}
 	return -1
-}
-
-func subtractInt64(left, right int64) (int64, bool) {
-	if right > 0 && left < math.MinInt64+right || right < 0 && left > math.MaxInt64+right {
-		return 0, false
-	}
-	return left - right, true
 }
 
 func clearDirectoryContents(dir string) error {
