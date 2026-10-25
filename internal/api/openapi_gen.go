@@ -1976,10 +1976,18 @@ type Recording struct {
 	EncodedAssets *[]EncodedAsset `json:"encodedAssets,omitempty"`
 
 	// EndedAt 録画の実終了時刻。常に UTC（"Z" 終端の RFC3339）で返す。
-	EndedAt *time.Time      `json:"endedAt,omitempty"`
-	EventId int             `json:"eventId"`
-	Id      int64           `json:"id"`
-	Ingest  *IngestProgress `json:"ingest,omitempty"`
+	EndedAt *time.Time `json:"endedAt,omitempty"`
+	EventId int        `json:"eventId"`
+
+	// HlsPlayback 新しい録画 HLS で再生できる live.profiles の一覧（設定順）。
+	// masterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。
+	// store は storage.media_store_name。gen は active な原本の ingest_generation
+	// （NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。
+	// recording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が
+	// ともに無い、または live.profiles が空なら空配列。ファイルの存在は検査しない。
+	HlsPlayback []RecordingHLSPlayback `json:"hlsPlayback"`
+	Id          int64                  `json:"id"`
+	Ingest      *IngestProgress        `json:"ingest,omitempty"`
 
 	// KeepOriginal `recording_encode_policy.keep_original` に凍結された、この録画の原本保持
 	// ポリシー。通常は ingest 完了時に焼き込まれ、その後はこの録画専用の
@@ -2089,6 +2097,13 @@ type RecordingChapters struct {
 // RecordingChaptersSource この録画が使っている層。`user` はユーザーが確認済み（所有している）で、
 // 自動層は読まれない。`auto` は自動検出の結果。
 type RecordingChaptersSource string
+
+// RecordingHLSPlayback defines model for RecordingHLSPlayback.
+type RecordingHLSPlayback struct {
+	// MasterUrl 世代付き録画 HLS のルート相対 URL。
+	MasterUrl string `json:"masterUrl"`
+	Profile   string `json:"profile"`
+}
 
 // RecordingShelf defines model for RecordingShelf.
 type RecordingShelf struct {

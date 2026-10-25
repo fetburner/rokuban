@@ -97,6 +97,7 @@ type RecordingQueryRow struct {
 	QualityEvents            json.RawMessage
 	DeletedAt                *time.Time
 	CreatedAt                time.Time
+	HLSGeneration            *int64
 	OriginalSizeBytes        *int64
 	DropPackets              int64
 	DropDrops                int64

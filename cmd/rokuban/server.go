@@ -540,7 +540,9 @@ func buildHTTPServer(egCtx context.Context, cfg *config.Config, roles []string, 
 		//
 		// **`live.enabled` で絞らない。** 返すのは定義の写しそのもので、
 		// 無効でも profiles が書かれていれば返る（有効かどうかは capabilities）。
-		LiveProfiles: liveProfileSummaries(cfg.Live.Profiles),
+		LiveProfiles:        liveProfileSummaries(cfg.Live.Profiles),
+		RecordingHLSEnabled: cfg.RecordingHLS.Enabled,
+		MediaStoreName:      cfg.Storage.MediaStoreName,
 	}
 
 	if slices.Contains(roles, "api") {

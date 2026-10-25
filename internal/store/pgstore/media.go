@@ -227,17 +227,16 @@ func (s *Media) GetEncodedPublishState(
 
 // GetOriginalVODTarget はサイトに属する完了済み録画の配信可能な原本を返す。
 func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, site string) (store.OriginalVODTarget, error) {
-	row, err := sqlcgen.New(s.pool).GetOriginalVODTarget(ctx, sqlcgen.GetOriginalVODTargetParams{
-		RecordingID: recordingID,
-		Site:        site,
-	})
+	var target store.OriginalVODTarget
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.rel_path, a.size_bytes, r.site
+ FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+ WHERE a.recording_id = $1 AND r.site = $2 AND r.status = 'finished'
+ AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL,
+		recordingID, site).Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.Site)
 	if err != nil {
 		return store.OriginalVODTarget{}, mediaQueryError(err, fmt.Sprintf("loading original VOD target for recording %d site %q", recordingID, site))
 	}
-	return store.OriginalVODTarget{
-		MediaAsset: store.MediaAsset{ID: row.ID, RelPath: row.RelPath, SizeBytes: row.SizeBytes},
-		Site:       row.Site,
-	}, nil
+	return target, nil
 }
 
 // GetRecordingRemovalState は録画の削除・purge・supersede の状態を返す。

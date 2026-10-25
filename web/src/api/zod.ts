@@ -1222,6 +1222,10 @@ export const ListRecordingsQueryParams = zod.object({
 })
 
 export const ListRecordingsResponseItem = zod.object({
+  "hlsPlayback": zod.array(zod.object({
+  "profile": zod.string(),
+  "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
+})).describe('新しい録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無い、または live.profiles が空なら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),
@@ -1378,6 +1382,10 @@ export const ListRecordingShelvesResponse = zod.array(ListRecordingShelvesRespon
  * @summary List recordings to resume
  */
 export const ListContinueWatchingResponseItem = zod.object({
+  "hlsPlayback": zod.array(zod.object({
+  "profile": zod.string(),
+  "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
+})).describe('新しい録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無い、または live.profiles が空なら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),
@@ -1472,6 +1480,10 @@ export const GetRecordingParams = zod.object({
 })
 
 export const GetRecordingResponse = zod.object({
+  "hlsPlayback": zod.array(zod.object({
+  "profile": zod.string(),
+  "masterUrl": zod.string().describe('世代付き録画 HLS のルート相対 URL。')
+})).describe('新しい録画 HLS で再生できる live.profiles の一覧（設定順）。\nmasterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。\nstore は storage.media_store_name。gen は active な原本の ingest_generation\n（NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。\nrecording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が\nともに無い、または live.profiles が空なら空配列。ファイルの存在は検査しない。\n'),
   "id": zod.int(),
   "site": zod.string().describe('この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`\nそのまま。`GET /api/recordings` は全サイトの録画を返すため\n（issue #184 M4-12）、クライアントはこの値で区別する。\n'),
   "ruleId": zod.int().optional(),

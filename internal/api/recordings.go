@@ -14,10 +14,10 @@ import (
 	"github.com/fetburner/rokuban/internal/store"
 )
 
-func recordingQueryRowsToAPI(rows []store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) ([]Recording, error) {
+func recordingQueryRowsToAPI(rows []store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets, playback recordingPlaybackConfig) ([]Recording, error) {
 	result := make([]Recording, 0, len(rows))
 	for _, row := range rows {
-		recording, err := recordingFromListFields(row, includeDeletedAt, profiles)
+		recording, err := recordingFromListFields(row, includeDeletedAt, profiles, playback)
 		if err != nil {
 			return nil, err
 		}
@@ -264,8 +264,9 @@ func currentKeepRanges(r store.RecordingQueryRow) ([]chapters.Range, error) {
 // includeDeletedAt が true のときだけ deletedAt を載せる（ごみ箱一覧向け）。
 // knownProfiles は encodeJobStatusesFromFields に渡す（doc コメント参照。
 // nil なら「設定から消えたプロファイル」の判定をスキップする）。
-func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets) (Recording, error) {
+func recordingFromListFields(r store.RecordingQueryRow, includeDeletedAt bool, profiles profileSets, playback recordingPlaybackConfig) (Recording, error) {
 	rec := Recording{
+		HlsPlayback:  playback.urls(r),
 		Id:           r.ID,
 		Site:         r.Site,
 		RuleId:       r.RuleID,
@@ -469,7 +470,7 @@ func (h *Server) ListRecordings(ctx context.Context, req ListRecordingsRequestOb
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
-	result, err := recordingQueryRowsToAPI(rows, f.Trash, h.profileSets())
+	result, err := recordingQueryRowsToAPI(rows, f.Trash, h.profileSets(), h.recordingPlayback)
 	if err != nil {
 		return nil, fmt.Errorf("listing recordings: %w", err)
 	}
@@ -494,7 +495,7 @@ func (h *Server) GetRecording(ctx context.Context, req GetRecordingRequestObject
 		}
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}
-	rec, err := recordingFromListFields(fields, true, h.profileSets())
+	rec, err := recordingFromListFields(fields, true, h.profileSets(), h.recordingPlayback)
 	if err != nil {
 		return nil, fmt.Errorf("getting recording %d: %w", req.Id, err)
 	}

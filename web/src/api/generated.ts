@@ -531,6 +531,12 @@ export type Program = ProgramListItem & {
   audios?: AudioInfo[];
 };
 
+export interface RecordingHLSPlayback {
+  profile: string;
+  /** 世代付き録画 HLS のルート相対 URL。 */
+  masterUrl: string;
+}
+
 /**
  * 録画作成時に一度だけ焼かれる出自の snapshot。
  * `rule` は予約行があり、`program_intents.action=record` が無い録画、
@@ -860,6 +866,15 @@ export interface IngestProgress {
 }
 
 export interface Recording {
+  /**
+     * 新しい録画 HLS で再生できる live.profiles の一覧（設定順）。
+     * masterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。
+     * store は storage.media_store_name。gen は active な原本の ingest_generation
+     * （NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。
+     * recording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が
+     * ともに無い、または live.profiles が空なら空配列。ファイルの存在は検査しない。
+     */
+  hlsPlayback: RecordingHLSPlayback[];
   id: number;
   /**
      * この録画がどのサイト（mirakc インスタンス）のものか。`recordings.site`

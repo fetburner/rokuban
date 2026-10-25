@@ -69,7 +69,7 @@ func TestRecordingFromListFields_NormalizesTimestampsToUTC(t *testing.T) {
 		HasIngestableRecord: true,
 	}
 
-	rec, err := recordingFromListFields(fields, true, profileSets{})
+	rec, err := recordingFromListFields(fields, true, profileSets{}, recordingPlaybackConfig{})
 	if err != nil {
 		t.Fatalf("recordingFromListFields: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestRecordingFromListFields_PreservesCMDetectionAttemptDetails(t *testing.T
 		CMAttemptState: &state,
 		CMAttemptStage: &stage,
 		CMAttemptError: &errorMessage,
-	}, false, profileSets{})
+	}, false, profileSets{}, recordingPlaybackConfig{})
 	if err != nil {
 		t.Fatalf("recordingFromListFields: %v", err)
 	}
