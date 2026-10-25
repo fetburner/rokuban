@@ -361,14 +361,17 @@ func loadFromString(raw string) (*Config, error) {
 	if err := cfg.Live.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
-	// recorder HLS は live.enabled が false でも live.profiles を URL の path segment
-	// として公開するため、既存の安全な名前制約と重複検査を適用する。
-	if cfg.RecordingHLS.Enabled && len(cfg.Live.Profiles) == 0 {
-		return nil, fmt.Errorf("validating recording_hls profiles: live.profiles is required when recording_hls.enabled is true")
-	}
-	if cfg.RecordingHLS.Enabled && !cfg.Live.Enabled {
-		if err := cfg.Live.validateProfileNames(); err != nil {
-			return nil, fmt.Errorf("validating recording_hls profiles: %w", err)
+	// 録画 HLS は live.profiles を URL の path segment として公開するため、profiles を
+	// 必須にする。live.enabled が false のときは live.validate が名前を見ないので、
+	// 既存の安全な名前制約と重複検査をここで適用する。
+	if cfg.RecordingHLS.Enabled {
+		if len(cfg.Live.Profiles) == 0 {
+			return nil, fmt.Errorf("validating recording_hls profiles: live.profiles is required when recording_hls.enabled is true")
+		}
+		if !cfg.Live.Enabled {
+			if err := cfg.Live.validateProfileNames(); err != nil {
+				return nil, fmt.Errorf("validating recording_hls profiles: %w", err)
+			}
 		}
 	}
 

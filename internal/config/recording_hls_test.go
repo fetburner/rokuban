@@ -16,7 +16,6 @@ func TestLoadRecordingHLS(t *testing.T) {
 		{name: "enabled missing store", setting: "recording_hls:\n  enabled: true\n", wantError: "storage.media_store_name"},
 		{name: "enabled", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n", store: "disk-2", wantEnabled: true},
 		{name: "disabled live rejects no profiles", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n", store: "main", wantError: "live.profiles"},
-		{name: "disabled live accepts safe profile name", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n", store: "main", wantEnabled: true},
 		{name: "disabled live rejects dot segment", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n  profiles:\n    - name: ..\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects empty profile name", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n  profiles:\n    - name: ''\n", store: "main", wantError: "live.profiles"},
 		{name: "disabled live rejects duplicate names", setting: "recording_hls:\n  enabled: true\nlive:\n  enabled: false\n  profiles:\n    - name: hd\n    - name: hd\n", store: "main", wantError: "live.profiles"},
