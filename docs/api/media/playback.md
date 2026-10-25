@@ -243,12 +243,12 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 起動位置が違っても、セグメント n の出力 PTS が n·D+C（C は全起動で同じ定数）になる引数を決めた。入力は format の start_time を基準にした相対の seek に pre-roll を付けて読み、フレームの選別と PTS の付け替えをフィルタで行う。
 
-記号は次のとおりである。V は映像の最初の PTS、S は format の start_time で、どちらも `ffprobe` で読んで 90 kHz の整数にする。k は起動するセグメント番号、D はセグメントの秒、P は pre-roll の秒である。
+記号は次のとおりである。V は映像の最初の PTS、S は format の start_time で、どちらも `ffprobe` で読んで 90 kHz の整数にする。k は起動するセグメント番号、D はセグメントの秒、P は pre-roll の秒である。例の P90 は P を 90 kHz の整数にした値である。
 
 ```sh
-# V90 = 映像の最初の PTS、S90 = format の start_time（ともに秒 × 90000 の整数）
+# V90 = 映像の最初の PTS、S90 = format の start_time、P90 = pre-roll（0.5 秒なら 45000）。いずれも秒 × 90000 の整数
 T90=$((V90 + k*D*90000)); K90=$((k*D*90000))
-SS=$(awk -v t=$((T90 - P*90000 - S90)) 'BEGIN{printf "%.6f", t/90000}')
+SS=$(awk -v t=$((T90 - P90 - S90)) 'BEGIN{printf "%.6f", t/90000}')
 ffmpeg -copyts -ss "$SS" -i "$INPUT" -map 0:v:0 -an -fps_mode passthrough \
   -vf "select=gte(pts\,$T90),setpts=PTS-$T90+$K90" \
   -c:v libx264 -preset ultrafast -qp 0 -pix_fmt yuv420p \
@@ -298,7 +298,7 @@ GOP 2 秒の合成入力では、格子の位置がすべて keyframe なので�
 
 ##### 相対 seek と絶対 seek の比較
 
-相対の seek だけでは基準が合わない。旧 PES の入力では映像より前の位置になって先頭フレームに丸められ、絶対 seek は目標より後ろの keyframe に着く。pre-roll とフレーム選別のフィルタを使う前節の方法だけが 0 frame になった。
+録画の先頭からの秒をそのまま seek に渡すと、基準が format の start_time になり、映像の開始とずれる。絶対 seek は目標より後ろの keyframe に着く。seek 位置を映像の PTS から start_time を引いた値に換算し、pre-roll とフレーム選別のフィルタを使う前節の方法だけが 0 frame になった。
 
 旧 PES の合成入力で、offset 10.36 秒（格子上にない位置）を要求した結果は次のとおりである。誤差は、出力セグメント n の先頭フレームの、期待した入力フレームとの差で、全セグメントで同じ値だった。`-copyts` なし / ありの順に書く。各 1 回の測定で、旧 PES は format の start_time が 0 秒、V が 5,400.010022 秒である。
 
@@ -309,7 +309,9 @@ GOP 2 秒の合成入力では、格子の位置がすべて keyframe なので�
 
 旧 PES の相対 seek は、`-ss 10.36` が入力の PTS 10.36 秒を指し、映像の開始（5,400 秒）より前なので、映像の先頭フレームに丸められた。第 2 音声の先頭 PES だけが古い実録画で、原本 VOD の `-ss` が全部先頭に丸められた事例と同じ形である。`-copyts` の有無では選ばれるフレームは変わらなかった。
 
-絶対 seek は、format の start_time が 0 でない入力で出力が空になった。FFmpeg 9.0.2 で `-copyts -seek_timestamp 1 -ss <絶対時刻>` を使うと、start_time が 50,000 秒の合成入力ではセグメントが映像を含まなかった。実録画 2 本（start_time は約 43,588 秒と約 5,793 秒）では 0 frame だった。同じ実録画に `-ss 6` を渡すと start_time + 6 秒から出た。`-ss` に start_time を足した時刻より前のフレームを捨てているように見える。FFmpeg の文書にない挙動なので理由は断定せず、`-seek_timestamp` に頼らない。
+絶対 seek は、`-copyts` を付けると start_time が大きい入力で出力が空になった。映像のみ 30 秒（GOP 50、B-frame なし）の合成入力で、`-seek_timestamp 1 -ss <start_time + 10.36>` の出力フレーム数を数えた（FFmpeg 9.0.2、各 1 回）。start_time が 5,400 秒と 50,000 秒の入力は、`-copyts` なしで 450、ありで 0 だった。start_time が 0.04 秒の入力は、なし・ありとも 450 だった。wrap（start_time −13.717689 秒）は、なしで 450、ありで 408 だった。この wrap の 408 は相対の `-ss 10.36` でも同じで、理由は調べていない。
+
+実録画 2 本（start_time は約 43,588 秒と約 5,793 秒）でも、`-copyts` ありの絶対 seek は 0 frame だった。同じ実録画に `-ss 6` を渡すと start_time + 6 秒から出た。FFmpeg の文書にない挙動で理由は説明できていないので、`-seek_timestamp` に頼らない。
 
 ##### 伸びている入力の追従
 
