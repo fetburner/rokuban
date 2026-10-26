@@ -22,7 +22,7 @@ const HLS_BUNDLE = path.join(path.dirname(require.resolve('hls.js')), 'hls.min.j
 const envNumber = (name, fallback) => (process.env[name] === undefined ? fallback : Number(process.env[name]))
 // 判定の位置。E2E_* で上書きできる（アプリの URL に向けるとき、その録画の segment 長と再起動境界に合わせる）。
 const SEGMENT = envNumber('E2E_SEGMENT_SECONDS', SEGMENT_SECONDS)
-const BOUNDARY = envNumber('E2E_BOUNDARY_SECONDS', SPLIT_SECONDS)
+const DEFAULT_BOUNDARY = envNumber('E2E_BOUNDARY_SECONDS', SPLIT_SECONDS)
 // 内蔵フィクスチャ（60 秒）で、境界の手前から読み始めた hls.js の先読み（既定 30 秒）の外になる位置。
 const FAR_SEEK = envNumber('E2E_FAR_SEEK_SECONDS', 52)
 const MASTER_URL = process.env.E2E_MASTER_URL
@@ -628,7 +628,7 @@ async function waitForState(adapter, predicate, timeoutMs, description) {
  * 名前: progress（再生が進まない）/ timecode / seek-frame / seek-buffered / audio-gap / audio-frequency /
  * audio-unavailable / track / stall / content-jump / frame-freeze / hls-gap / hls-error。
  */
-async function checkCase(adapter, server, { masterURL, hold }) {
+async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY = DEFAULT_BOUNDARY, checkPrefetch = true }) {
   const failures = []
   const add = (tag, message) => failures.push(`[${tag}] ${message}`)
   await adapter.navigate(adapter.serverURL + HARNESS_PATH)
@@ -680,7 +680,7 @@ async function checkCase(adapter, server, { masterURL, hold }) {
     state = await waitForState(adapter, (s) => s.currentTime >= BOUNDARY + 2.5, 15_000, '再起動境界の後の再生継続')
 
     const played = await adapter.evaluate((range) => window.__e2e.framesBetween(range[0], range[1]), [BOUNDARY - 1.5 * SEGMENT + 0.5, BOUNDARY + 2.6])
-    if (process.env.E2E_DUMP_FRAMES) summary.dump = played.filter((sample) => sample.currentTime >= BOUNDARY - 0.3 && sample.currentTime <= BOUNDARY + 1.6).map((sample) => `cur=${sample.currentTime.toFixed(3)} media=${sample.mediaTime.toFixed(3)} marker=${sample.frame} at=${sample.at.toFixed(0)}`)
+    if (process.env.E2E_DUMP_FRAMES) summary.dump = played.filter((sample) => sample.currentTime >= BOUNDARY - 0.3 && sample.currentTime <= BOUNDARY + 1.6).map((sample) => `cur=${sample.currentTime.toFixed(4)} media=${sample.mediaTime.toFixed(4)} marker=${sample.frame} grid=${(sample.frame / FRAME_RATE).toFixed(4)} media-grid=${((sample.mediaTime - sample.frame / FRAME_RATE) * 1000).toFixed(1)}ms at=${sample.at.toFixed(0)}`)
     // 再生を始めた直後の 0.5 秒は、読み込みの待ちで callback が空くので含めない。
     const jumps = contentJumps(played)
     if (jumps.length > 0) {
@@ -738,6 +738,7 @@ async function checkCase(adapter, server, { masterURL, hold }) {
     summary.farSeekSegments = target.length
     // ネイティブ HLS の先読みは hls.js の設定で決まらず、60 秒すべてを先に要求するので、この判定は省く。
     if (native) summary.skipped = 'シーク前の要求 (native-hls は先読みをブラウザが決める)'
+    else if (!checkPrefetch) summary.skipped = 'シーク前の要求 (境界の手前から読み始めると、60 秒の録画では先読みの外になる位置が無い)'
     else if (target.length === 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s を含む segment を playlist から特定できない`)
     else if (early.length > 0) add('seek-buffered', `シーク先 ${FAR_SEEK}s の segment をシーク前に要求していた (バッファ内でのシーク): ${early.join(', ')}`)
     state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= FAR_SEEK + 1, 15_000, '遠距離シーク後の再生継続')
@@ -759,9 +760,6 @@ async function checkCase(adapter, server, { masterURL, hold }) {
 async function main() {
   const engine = process.env.E2E_BROWSER ?? 'chrome'
   if (!['chrome', 'webkit', 'safari'].includes(engine)) throw new Error(`E2E_BROWSER が不正: ${engine}`)
-  const formats = (process.env.E2E_FORMATS ?? 'ts').split(',')
-  if (formats.some((format) => !['ts', 'fmp4'].includes(format))) throw new Error(`E2E_FORMATS が不正: ${process.env.E2E_FORMATS}`)
-
   // 正例は内蔵フィクスチャか E2E_MASTER_URL。負例は内蔵フィクスチャでしか作れない。
   const cases = []
   let upstream
@@ -770,22 +768,22 @@ async function main() {
     upstream = master.origin
     cases.push({ name: 'external', masterPath: `${master.pathname}${master.search}` })
   } else {
-    const generated = ensurePlaybackFixtures(formats)
-    for (const { format, kind } of generated.fixtures) {
-      // ネイティブ HLS は no-offset を正しく再生する（境界と遠距離シークの後でフレーム番号が連続する）ので、
-      // 実際の経路が native-hls のときは正例として扱う。経路はケースを回すまで分からない。
+    const generated = ensurePlaybackFixtures()
+    for (const { format, kind, boundary } of generated.fixtures) {
       const negative = { 'off-grid': ['timecode', 'content-jump', 'frame-freeze'], 'no-offset': ['seek-frame', 'content-jump', 'frame-freeze'], 'audio-gap': ['audio-gap'] }[kind]
       if (negative && engine !== 'chrome' && kind === 'audio-gap') continue
-      cases.push({ name: `${format}/${kind}`, masterPath: `/${format}/${kind}/master.m3u8`, expect: negative, passIfNative: kind === 'no-offset' })
+      cases.push({ name: `${format}/${kind}`, masterPath: `/${format}/${kind}/master.m3u8`, expect: negative, boundary, checkPrefetch: kind !== 'restarted-k16', optIn: kind === 'restarted-k16' })
     }
-    if (engine === 'chrome' && formats.includes('ts')) {
+    if (engine === 'chrome') {
       // 境界の映像 segment の応答を、再生が境界の手前に来るまで保留する。
-      cases.push({ name: 'ts/stall', masterPath: '/ts/restarted/master.m3u8', expect: ['stall'], holdPath: '/ts/restarted/segments/restart-video-000.ts' })
+      cases.push({ name: 'ts/stall', masterPath: '/ts/restarted/master.m3u8', expect: ['stall'], holdPath: '/ts/restarted/segments/restart-video-000.ts', boundary: SPLIT_SECONDS })
     }
   }
 
-  const only = process.env.E2E_CASES?.split(',')
-  const selected = only ? cases.filter((entry) => only.includes(entry.name)) : cases
+  const only = process.env.E2E_CASES ? process.env.E2E_CASES.split(',') : undefined
+  // optIn のケースは、既定では回さない。E2E_CASES に名前を書くと回る。
+  const selected = only ? cases.filter((entry) => only.includes(entry.name)) : cases.filter((entry) => !entry.optIn)
+  if (selected.length === 0) throw new Error(`E2E_CASES=${process.env.E2E_CASES} に一致するケースがない (${cases.map((entry) => entry.name).join(', ')})`)
   const served = await startServer(upstream)
   let adapter
   const problems = []
@@ -794,19 +792,17 @@ async function main() {
     adapter.engine = engine
     adapter.serverURL = served.url
     log(`browser: ${engine} ${adapter.version}`)
-    for (let entry of selected) {
+    for (const entry of selected) {
       served.reset()
       const hold = entry.holdPath ? served.hold(entry.holdPath) : undefined
       let summary
       try {
-        summary = await checkCase(adapter, served, { masterURL: `${served.url}${entry.masterPath}`, hold })
+        summary = await checkCase(adapter, served, { masterURL: `${served.url}${entry.masterPath}`, hold, boundary: entry.boundary, checkPrefetch: entry.checkPrefetch })
       } catch (error) {
         log(`NG: ${entry.name}: ${error.message}`)
         problems.push(`${entry.name}: ${error.message}`)
         continue
       }
-      const nativeFine = entry.passIfNative && summary.browserPath === 'native-hls'
-      if (nativeFine) entry = { ...entry, expect: undefined, note: 'native-hls では正しく再生される想定' }
       const met = entry.expect
         ? summary.failures.some((failure) => entry.expect.some((tag) => failure.startsWith(`[${tag}]`)))
         : summary.failures.length === 0
@@ -825,7 +821,7 @@ async function main() {
   if (problems.length === 0) log('すべて期待どおり')
   else problems.forEach((problem) => log(`NG: ${problem}`))
   if (problems.length > 0) process.exitCode = 1
-  log(`\nsegment=${SEGMENT}s, boundary=${BOUNDARY}s (内蔵は ${RESTART_FROM_SECONDS}s から再起動), far seek=${FAR_SEEK}s, FPS=${FRAME_RATE}`)
+  log(`\nsegment=${SEGMENT}s, boundary=${DEFAULT_BOUNDARY}s (内蔵は ${RESTART_FROM_SECONDS}s から再起動), far seek=${FAR_SEEK}s, FPS=${FRAME_RATE}`)
 }
 
 main().catch((error) => {
