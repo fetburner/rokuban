@@ -27,7 +27,7 @@ CREATE TEMP TABLE media_assets (
     id bigint PRIMARY KEY,
     recording_id bigint NOT NULL,
     kind text NOT NULL,
-    profile text NOT NULL,
+    profile text,
     state text NOT NULL,
     rel_path text NOT NULL,
     size_bytes bigint NOT NULL
@@ -56,18 +56,18 @@ SELECT id, 'keep', ARRAY['h264']::text[], false
 FROM recordings;
 
 INSERT INTO media_assets (id, recording_id, kind, profile, state, rel_path, size_bytes)
-SELECT id, id, 'original', '', 'active', format('original/%s.ts', id), 100000000
+SELECT id, id, 'original', NULL::text, 'active', format('original/%s.ts', id), 100000000
 FROM recordings
 UNION ALL
 SELECT id + 20000, id, 'encoded', 'h264', 'active', format('encoded/%s.mkv', id), 50000000
 FROM recordings
 WHERE id <= 18000
 UNION ALL
-SELECT id + 40000, id, 'thumbnail', '', 'active', format('thumbnail/%s.jpg', id), 100000
+SELECT id + 40000, id, 'thumbnail', NULL::text, 'active', format('thumbnail/%s.jpg', id), 100000
 FROM recordings
 WHERE id <= 19400
 UNION ALL
-SELECT id + 60000, id, 'seek_tiles', '', 'active', format('seek-tiles/%s.jpg', id), 1000000
+SELECT id + 60000, id, 'seek_tiles', NULL::text, 'active', format('seek-tiles/%s.jpg', id), 1000000
 FROM recordings
 WHERE id <= 18800;
 
@@ -104,11 +104,14 @@ FROM media_assets e
 WHERE e.kind = 'encoded'
   AND e.recording_id % 2 = 0;
 
--- Match the media_assets indexes in the current migrations.
+-- Match the media_assets indexes in the current migrations, including the
+-- unique constraint-backed index used by encoded/profile lookups.
 CREATE INDEX media_assets_kind_state_idx
     ON media_assets (kind, state);
 CREATE INDEX media_assets_recording_id_idx
     ON media_assets (recording_id);
+CREATE UNIQUE INDEX media_assets_recording_id_kind_profile_key
+    ON media_assets (recording_id, kind, profile) NULLS NOT DISTINCT;
 CREATE UNIQUE INDEX media_assets_rel_path_idx
     ON media_assets (rel_path)
     WHERE state <> 'deleted';
