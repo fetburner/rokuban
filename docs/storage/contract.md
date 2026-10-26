@@ -8,7 +8,7 @@
 
 FUSE 越しの S3 は、原本にも派生物にも使わない。atomic rename、ランダムライト、fsync、ロックの意味論を信頼できず、ファイルを公開する根拠にできないためである。S3 は API で使えば、直接配信もできる。
 
-S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、次の 3 点を、原本 root（`storage.media_dir`）にも派生物の置き場にも契約として信頼できない。
+S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、次の 3 点は、原本 root（`storage.media_dir`）でも派生物の置き場でも、契約として信頼できない。
 
 - 同一 FS 内の atomic rename がない。コピー + 削除になり、数十 GB の録画で実コピーが走る。Mountpoint は rename 自体に非対応である
 - ランダムライトができないか遅い。特に ffmpeg は MP4 出力時にヘッダ（moov atom）を書き戻すためシークするので、S3 マウント上への直接エンコード出力は正しく書けないか激遅になる
@@ -63,7 +63,7 @@ mirakc record は削除しない。中身の不一致または record の cancel
 
 ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
 
-区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は置き場の対象外なので、途中 fsync で fd に書けなくなる実装は対象外である。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
+区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は置き場に使わないので、途中 fsync で fd に書けなくなる実装は考慮しない。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 
 ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消える。そのため回収時に lock は取らず、unlink 直前に mtime を再確認する。
 
@@ -263,7 +263,7 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ### 派生物の置き場
 
-論理資産と物理コピーは、派生物に限らず原本でも分ける。どちらも複数の置き場へのコピーと転送があり、コピー先を移しても論理資産の identity は変わらない。派生物の置き場は、全 site 共通で物理的に 1 か所にする。どの worker からも読めるようにするためである（S3 なら scratch へ取り寄せて読む）。
+論理資産と物理コピーは、派生物に限らず原本でも分ける。コピーを置き場の間で移しても、論理資産の identity は変わらない。派生物の置き場は、全 site 共通で物理的に 1 か所にする。どの worker からも読めるようにするためである（S3 なら scratch へ取り寄せて読む）。
 
 論理資産は `media_assets` の行で、派生物は録画・種別・profile・`derived_generation` で識別する。
 
