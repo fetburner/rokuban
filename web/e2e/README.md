@@ -38,6 +38,15 @@ pnpm e2e                              # 既定で http://localhost:40773
 E2E_URL=http://localhost:40775 pnpm e2e
 ```
 
+録画 HLS の再起動境界は、合成 TS から作った HLS を実ブラウザで再生して判定する。判定の中身と環境変数は [checks/playback.md](checks/playback.md) にある。
+
+```sh
+cd web
+corepack pnpm e2e:recording-segmented-vod                      # Chrome。ffmpeg が要る
+E2E_BROWSER=webkit corepack pnpm e2e:recording-segmented-vod   # 診断用
+E2E_BROWSER=safari corepack pnpm e2e:recording-segmented-vod   # 実 Safari。safaridriver を許可しておく
+```
+
 チャンネル選択と「その他」のモバイルシート、録画・シリーズ絞り込み内のチャンネル選択は次で判定する。デスクトップのチャンネル選択も合わせて確認する。
 
 ```sh
@@ -67,6 +76,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
+| 録画 HLS の再起動境界（`recording-segmented-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | 原本 HLS から encoded への切替（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |
 | デザイン（`design.mjs`） | [checks/design.md](checks/design.md) |
 | README のスクリーンショット（`readme-screenshots.mjs`） | [checks/design.md](checks/design.md) |

@@ -1,0 +1,218 @@
+// 録画の連続 HLS と ffmpeg 再起動をまたぐ HLS を実ブラウザで比べる fixture。
+// 原本 TS と各 run の変換は Go のテスト（internal/streamer の TestWriteSegmentedPlaybackFixture）が、
+// 製品の buildSegmentTransformArgs で行う。ここは run の出力を playlist でつなぐだけで、ffmpeg の
+// HLS の引数は組まない。
+import { execFileSync } from 'node:child_process'
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+// フレーム番号の bit 数は FIXTURE_SECONDS * FRAME_RATE < 2 ** FRAME_BITS を満たす（60 * 29.97 = 1798 < 2048）。
+// この 4 つと再起動の番号は Go のテストの定数と同じ値で、manifest と食い違えば作り直しを止める。
+export const FIXTURE_SECONDS = 60
+export const SEGMENT_SECONDS = 2
+export const FRAME_RATE = 30000 / 1001
+export const FRAME_BITS = 11
+// 再起動の run の startNumber。製品は要求の 1 つ前の番号から変換を始めるので、境界は次の格子点になる。
+// 29.97 fps では 2 秒の格子にフレームが割り切れず、再起動の位置によって先頭フレームの格子からのずれが
+// 0〜1 フレームの間で変わる。番号 5 は約 10 ms、番号 16 は約 32 ms 早い（checks/playback.md）。
+export const RESTART_NUMBER = 5
+export const WORST_RESTART_NUMBER = 16
+export const RESTART_FROM_SECONDS = RESTART_NUMBER * SEGMENT_SECONDS
+export const SPLIT_SECONDS = RESTART_FROM_SECONDS + SEGMENT_SECONDS
+
+export const FIXTURE_ROOT = path.join(os.tmpdir(), 'rokuban-e2e-recording-segmented-v3')
+const GENERATED = path.join(FIXTURE_ROOT, 'generated')
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
+// variant の添字は製品の -var_stream_map の並び（映像、標準、主、副）。
+const VARIANTS = ['video', 'standard', 'main', 'sub']
+const PROGRAM_DATE_TIME = Date.parse('2025-01-01T00:00:00.000Z')
+
+// kind → 再起動の run（null は連続 1 本）。run の名前は Go のテストが付ける。
+const KINDS = {
+  direct: { run: null },
+  restarted: { run: 'restart', number: RESTART_NUMBER },
+  'restarted-k16': { run: 'restart-k16', number: WORST_RESTART_NUMBER },
+  'audio-gap': { run: 'audio-gap', number: RESTART_NUMBER },
+  'off-grid': { run: 'off-grid', number: RESTART_NUMBER },
+  'no-offset': { run: 'no-offset', number: RESTART_NUMBER },
+}
+
+function runOutput(name, args, options = {}) {
+  try {
+    return execFileSync(name, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...options })
+  } catch (error) {
+    const detail = error.stderr?.toString().trim() || error.stdout?.toString().trim() || error.message
+    throw new Error(`${name} ${args.join(' ')} に失敗した: ${detail}`, { cause: error })
+  }
+}
+
+// 製品のビルダーで run を作る。出力は GENERATED の manifest.json から読む。
+function generateRuns() {
+  runOutput('ffmpeg', ['-version'])
+  runOutput('ffprobe', ['-version'])
+  rmSync(GENERATED, { recursive: true, force: true })
+  runOutput('go', ['test', './internal/streamer', '-run', '^TestWriteSegmentedPlaybackFixture$', '-count=1'], {
+    cwd: REPO_ROOT,
+    env: { ...process.env, ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR: GENERATED },
+  })
+  const manifest = JSON.parse(readFileSync(path.join(GENERATED, 'manifest.json'), 'utf8'))
+  const expected = { fixtureSeconds: FIXTURE_SECONDS, segmentSeconds: SEGMENT_SECONDS, frameBits: FRAME_BITS, frameRate: '30000/1001' }
+  for (const [key, value] of Object.entries(expected)) {
+    if (manifest[key] !== value) throw new Error(`manifest.${key} = ${manifest[key]} が fixture の ${value} と違う`)
+  }
+  for (const [kind, spec] of Object.entries(KINDS)) {
+    const run = spec.run ?? 'direct'
+    const startNumber = manifest.runs[run]?.startNumber
+    if (startNumber !== (spec.number ?? 0)) throw new Error(`${kind}: run ${run} の startNumber が ${startNumber} で ${spec.number ?? 0} と違う`)
+  }
+  return manifest
+}
+
+// run の variant playlist を読み、segment の番号・長さ・path を返す。
+function readSegments(manifest, run, variantIndex) {
+  const directory = path.join(GENERATED, manifest.runs[run].directory)
+  const lines = readFileSync(path.join(directory, `${manifest.profileName}.${variantIndex}.m3u8`), 'utf8')
+    .split(/\r?\n/)
+    .filter(Boolean)
+  const segments = []
+  let pendingDuration
+  for (const line of lines) {
+    if (line.startsWith('#EXTINF:')) {
+      pendingDuration = Number(line.slice('#EXTINF:'.length).split(',')[0])
+    } else if (pendingDuration !== undefined && !line.startsWith('#')) {
+      const number = Number(/_seg(\d+)\.ts$/.exec(line)?.[1])
+      segments.push({ number, duration: pendingDuration, file: path.resolve(directory, line) })
+      pendingDuration = undefined
+    }
+  }
+  // 音声 rendition の末尾には、映像より長い音声が作る約 21 ms の端数 segment が付く。
+  // 映像の格子にないこの端数は playlist に含めず、全 variant の長さを揃える。
+  while (segments.length > 0 && segments.at(-1).duration < 0.1) segments.pop()
+  if (segments.length === 0 || segments.some((segment) => segment.duration < 0.1)) {
+    throw new Error(`${run}/${variantIndex}: 端数でない短い segment がある、または segment がない`)
+  }
+  return segments
+}
+
+function copyEntry(outputDirectory, variant, segment, prefix, index) {
+  const name = `${prefix}-${variant}-${String(index).padStart(3, '0')}.ts`
+  copyFileSync(segment.file, path.join(outputDirectory, 'segments', name))
+  return name
+}
+
+// 境界に EXT-X-DISCONTINUITY は付けない。アプリは playlist を格子から先に合成するので、
+// ffmpeg をどこで再起動したかを知らず、付けられない。EXTINF も格子の長さ（最後だけ残り）で書く。
+function writeMediaPlaylist(outputDirectory, variant, names) {
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+    `#EXT-X-TARGETDURATION:${SEGMENT_SECONDS}`,
+    '#EXT-X-MEDIA-SEQUENCE:0',
+    '#EXT-X-PLAYLIST-TYPE:VOD',
+  ]
+  names.forEach((name, index) => {
+    const mediaTime = index * SEGMENT_SECONDS
+    const duration = index === names.length - 1 ? FIXTURE_SECONDS - mediaTime : SEGMENT_SECONDS
+    lines.push(`#EXT-X-PROGRAM-DATE-TIME:${new Date(PROGRAM_DATE_TIME + mediaTime * 1000).toISOString()}`)
+    lines.push(`#EXTINF:${duration.toFixed(3)},`)
+    lines.push(`segments/${name}`)
+  })
+  lines.push('#EXT-X-ENDLIST')
+  writeFileSync(path.join(outputDirectory, `${variant}.m3u8`), `${lines.join('\n')}\n`)
+}
+
+function writeMasterPlaylist(outputDirectory, codecs) {
+  const lines = [
+    '#EXTM3U',
+    '#EXT-X-VERSION:3',
+    '#EXT-X-INDEPENDENT-SEGMENTS',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="標準",LANGUAGE="jpn",DEFAULT=YES,AUTOSELECT=YES,URI="standard.m3u8"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="主",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=NO,URI="main.m3u8"',
+    '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="副",LANGUAGE="jpn",DEFAULT=NO,AUTOSELECT=NO,URI="sub.m3u8"',
+    // ffmpeg の master の BANDWIDTH は実測の約 1.9 Mbps で、hls.js の先読み max(30 秒, maxBufferSize(60 MB) / BANDWIDTH)
+    // が 250 秒になり、遠距離シークがバッファの中になる。20 Mbps なら 30 秒になるので、ここは固定値にする。
+    `#EXT-X-STREAM-INF:BANDWIDTH=20000000,AVERAGE-BANDWIDTH=20000000,RESOLUTION=640x360,CODECS="${codecs}",AUDIO="audio"`,
+    'video.m3u8',
+  ]
+  writeFileSync(path.join(outputDirectory, 'master.m3u8'), `${lines.join('\n')}\n`)
+}
+
+function writeFixture(manifest, kind) {
+  const spec = KINDS[kind]
+  const outputDirectory = path.join(FIXTURE_ROOT, 'ts', kind)
+  rmSync(outputDirectory, { recursive: true, force: true })
+  mkdirSync(path.join(outputDirectory, 'segments'), { recursive: true })
+  VARIANTS.forEach((variant, variantIndex) => {
+    let names
+    if (spec.run === null) {
+      names = readSegments(manifest, 'direct', variantIndex).map((segment, index) => copyEntry(outputDirectory, variant, segment, 'continuous', index))
+    } else {
+      // 再起動前は連続の run の先頭から、再起動の run が起動した番号まで（その番号の segment は再起動側が重複して作る）。
+      // 再起動後は、再起動の run の 2 本目から。
+      const first = readSegments(manifest, 'direct', variantIndex).filter((segment) => segment.number <= spec.number)
+      const restarted = readSegments(manifest, spec.run, variantIndex).filter((segment) => segment.number > spec.number)
+      names = [
+        ...first.map((segment, index) => copyEntry(outputDirectory, variant, segment, 'first', index)),
+        ...restarted.map((segment, index) => copyEntry(outputDirectory, variant, segment, 'restart', index)),
+      ]
+    }
+    if (names.length !== FIXTURE_SECONDS / SEGMENT_SECONDS) {
+      throw new Error(`ts/${kind}/${variant}: segment が ${names.length} 本で ${FIXTURE_SECONDS / SEGMENT_SECONDS} 本と合わない`)
+    }
+    writeMediaPlaylist(outputDirectory, variant, names)
+  })
+  writeMasterPlaylist(outputDirectory, manifest.codecs)
+  const boundary = spec.run === null ? undefined : (spec.number + 1) * SEGMENT_SECONDS
+  return { format: 'ts', kind, directory: outputDirectory, boundary }
+}
+
+function validateFixture(fixture) {
+  const label = `ts/${fixture.kind}`
+  const master = readFileSync(path.join(fixture.directory, 'master.m3u8'), 'utf8')
+  if ((master.match(/#EXT-X-MEDIA:TYPE=AUDIO/g) ?? []).length !== 3) throw new Error(`${label}: 音声 rendition が 3 本ではない`)
+  const expectedSegments = FIXTURE_SECONDS / SEGMENT_SECONDS
+  for (const variant of VARIANTS) {
+    const playlist = readFileSync(path.join(fixture.directory, `${variant}.m3u8`), 'utf8')
+    const lines = playlist.split(/\r?\n/)
+    const segments = lines.filter((line) => line.startsWith('#EXTINF:'))
+    const dates = lines.filter((line) => line.startsWith('#EXT-X-PROGRAM-DATE-TIME:'))
+    if (!playlist.includes('#EXT-X-ENDLIST') || segments.length !== expectedSegments || dates.length !== expectedSegments) {
+      throw new Error(`${label}/${variant}: playlist の segment/PDT 数が不正 (${segments.length}/${dates.length})`)
+    }
+    if (playlist.includes('#EXT-X-DISCONTINUITY')) throw new Error(`${label}/${variant}: 再起動境界に discontinuity を付けてはならない`)
+    const seconds = segments.reduce((total, line) => total + Number(line.slice('#EXTINF:'.length).split(',')[0]), 0)
+    if (Math.abs(seconds - FIXTURE_SECONDS) > 1 / FRAME_RATE) throw new Error(`${label}/${variant}: playlist の尺が ${seconds.toFixed(3)} 秒で ${FIXTURE_SECONDS} 秒と合わない`)
+    for (const uri of lines.filter((line) => line.startsWith('segments/'))) {
+      if (!existsSync(path.join(fixture.directory, uri))) throw new Error(`${label}/${variant}: segment がない (${uri})`)
+    }
+  }
+}
+
+/**
+ * ensurePlaybackFixtures は Go のテストで製品のビルダーから run を作り、HLS fixture を組む。
+ * 製品の出力は TS segment だけなので、fMP4 は作らない。負例は TS の run を 1 か所だけ変えたもの。
+ */
+export function ensurePlaybackFixtures() {
+  mkdirSync(FIXTURE_ROOT, { recursive: true })
+  const manifest = generateRuns()
+  const fixtures = Object.keys(KINDS).map((kind) => writeFixture(manifest, kind))
+  for (const fixture of fixtures) validateFixture(fixture)
+  return { root: FIXTURE_ROOT, source: path.join(GENERATED, manifest.source), fixtures }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const result = ensurePlaybackFixtures()
+  console.log(`fixture ready: ${result.root}`)
+  console.log(`source: ${result.source}`)
+  for (const fixture of result.fixtures) console.log(`${fixture.format}/${fixture.kind}: ${fixture.directory}`)
+}
