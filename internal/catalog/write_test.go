@@ -35,7 +35,7 @@ func TestWriteAndSelectLatest(t *testing.T) {
 	dir := t.TempDir()
 	doc := testDoc(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "test")
 
-	genDir, err := Write(dir, doc, 7)
+	genDir, err := Write(dir, doc, 7, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -78,91 +78,113 @@ func TestWriteAndSelectLatest(t *testing.T) {
 	}
 }
 
-func TestWriteWithCheckWithholdsManifestAndPruneAfterOwnershipChanges(t *testing.T) {
-	for _, failAt := range []struct {
-		name  string
-		check int
+// 照合の回数ではなくディスクの状態で発火させる。目印が消えるのは「本体が書けた後」
+// 「manifest が書けた後」のような途中の時点なので、その状態を見て失敗を返す。
+func TestWriteWithholdsManifestAndPruneWhenMarkerDisappearsMidway(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// brokenWhen は照合時点のディスク状態から、目印が壊れているかを返す。
+		brokenWhen   func(genDir string) bool
+		wantManifest bool
 	}{
-		{name: "manifest", check: 6},
-		{name: "prune", check: 9},
+		{name: "after document", brokenWhen: func(genDir string) bool { return fileExists(filepath.Join(genDir, DocumentFilename)) }, wantManifest: false},
+		{name: "after manifest", brokenWhen: func(genDir string) bool { return fileExists(filepath.Join(genDir, ManifestFilename)) }, wantManifest: true},
 	} {
-		t.Run(failAt.name, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			oldAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
-			oldDir, err := Write(dir, testDoc(oldAt, "old"), 3)
+			oldDir, err := Write(dir, testDoc(time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC), "old"), 3, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			wantErr := errors.New("store marker changed")
-			checks := 0
 			newAt := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
-			genDir, err := WriteWithCheck(dir, testDoc(newAt, "new"), 1, func() error {
-				checks++
-				if checks == failAt.check {
+			newGen := filepath.Join(Dir(dir), GenerationName(newAt))
+			genDir, err := Write(dir, testDoc(newAt, "new"), 1, func() error {
+				if tc.brokenWhen(newGen) {
 					return wantErr
 				}
 				return nil
 			})
 			if !errors.Is(err, wantErr) {
-				t.Fatalf("WriteWithCheck() error = %v, want %v", err, wantErr)
-			}
-			if checks != failAt.check {
-				t.Fatalf("ownership checks = %d, want failure at %d", checks, failAt.check)
+				t.Fatalf("Write() error = %v, want %v", err, wantErr)
 			}
 			if _, err := os.Stat(filepath.Join(oldDir, ManifestFilename)); err != nil {
 				t.Fatalf("old generation after rejected operation: %v", err)
 			}
-			manifestPath := filepath.Join(genDir, ManifestFilename)
-			if failAt.name == "manifest" {
-				if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
-					t.Fatalf("manifest after marker rejection = stat error %v, want absent", err)
-				}
-			} else if _, err := os.Stat(manifestPath); err != nil {
-				t.Fatalf("completed manifest before withheld prune: %v", err)
+			if got := fileExists(filepath.Join(genDir, ManifestFilename)); got != tc.wantManifest {
+				t.Fatalf("manifest exists = %v, want %v", got, tc.wantManifest)
 			}
 		})
 	}
 }
 
-func TestPruneWithCheckStopsBeforeEachDestructiveAction(t *testing.T) {
-	for _, action := range []string{"stale temp", "old generation"} {
-		t.Run(action, func(t *testing.T) {
+func TestWriteCreatesNothingWhenMarkerIsAlreadyBroken(t *testing.T) {
+	dir := t.TempDir()
+	wantErr := errors.New("store marker changed")
+	_, err := Write(dir, testDoc(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "new"), 1, func() error { return wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Write() error = %v, want %v", err, wantErr)
+	}
+	if fileExists(Dir(dir)) {
+		t.Fatal("catalog directory was created despite a broken marker")
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// Prune は走査の前と世代の削除の前で目印を照合する。stale temp の削除と世代の削除の間で
+// 目印が消えたときは、世代を残す。
+func TestPruneStopsWhenMarkerDisappearsBeforeDestructiveAction(t *testing.T) {
+	oldGen := "catalog-20260701T120000Z"
+	for _, tc := range []struct {
+		name string
+		// brokenWhen は照合時点のディスク状態から、目印が壊れているかを返す。
+		brokenWhen    func(catalogDir, stalePath string) bool
+		wantStaleKept bool
+	}{
+		{
+			name:          "before scan",
+			brokenWhen:    func(catalogDir, _ string) bool { return fileExists(filepath.Join(catalogDir, oldGen)) },
+			wantStaleKept: true,
+		},
+		{
+			name:          "after stale removal",
+			brokenWhen:    func(_, stalePath string) bool { return !fileExists(stalePath) },
+			wantStaleKept: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			for day := 1; day <= 2; day++ {
 				at := time.Date(2026, 7, day, 12, 0, 0, 0, time.UTC)
-				if _, err := Write(dir, testDoc(at, "generation"), 3); err != nil {
+				if _, err := Write(dir, testDoc(at, "generation"), 3, nil); err != nil {
 					t.Fatal(err)
 				}
 			}
 			catalogDir := Dir(dir)
 			stalePath := filepath.Join(catalogDir, "catalog-20260703T000000Z.tmp")
-			if action == "stale temp" {
-				if err := os.WriteFile(stalePath, []byte("partial"), 0o600); err != nil {
-					t.Fatal(err)
-				}
+			if err := os.WriteFile(stalePath, []byte("partial"), 0o600); err != nil {
+				t.Fatal(err)
 			}
 
 			wantErr := errors.New("store marker changed")
-			checks := 0
-			err := PruneWithCheck(catalogDir, 1, func() error {
-				checks++
-				if checks == 2 {
+			err := Prune(catalogDir, 1, func() error {
+				if tc.brokenWhen(catalogDir, stalePath) {
 					return wantErr
 				}
 				return nil
 			})
 			if !errors.Is(err, wantErr) {
-				t.Fatalf("PruneWithCheck() error = %v, want %v", err, wantErr)
+				t.Fatalf("Prune() error = %v, want %v", err, wantErr)
 			}
-			if checks != 2 {
-				t.Fatalf("ownership checks = %d, want failure before first removal", checks)
+			if got := fileExists(stalePath); got != tc.wantStaleKept {
+				t.Fatalf("stale temp exists = %v, want %v", got, tc.wantStaleKept)
 			}
-			if action == "stale temp" {
-				if _, err := os.Stat(stalePath); err != nil {
-					t.Fatalf("stale temp after marker rejection: %v", err)
-				}
-			} else if names := dirEntryNames(t, catalogDir); !names["catalog-20260701T120000Z"] || !names["catalog-20260702T120000Z"] {
+			if names := dirEntryNames(t, catalogDir); !names[oldGen] || !names["catalog-20260702T120000Z"] {
 				t.Fatalf("generations after marker rejection = %v, want both preserved", names)
 			}
 		})
@@ -177,7 +199,7 @@ func TestPruneWithCheckStopsBeforeEachDestructiveAction(t *testing.T) {
 // manifestVersion をリテラルで検証する。
 func TestWrite_ManifestOnDiskShape(t *testing.T) {
 	dir := t.TempDir()
-	genDir, err := Write(dir, testDoc(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "shape"), 7)
+	genDir, err := Write(dir, testDoc(time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC), "shape"), 7, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -214,11 +236,11 @@ func TestWrite_DoesNotReuseGenerationName(t *testing.T) {
 	dir := t.TempDir()
 	at := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 
-	first, err := Write(dir, testDoc(at, "first"), 7)
+	first, err := Write(dir, testDoc(at, "first"), 7, nil)
 	if err != nil {
 		t.Fatalf("first Write: %v", err)
 	}
-	second, err := Write(dir, testDoc(at, "second"), 7)
+	second, err := Write(dir, testDoc(at, "second"), 7, nil)
 	if err != nil {
 		t.Fatalf("second Write: %v", err)
 	}
@@ -262,7 +284,7 @@ func TestWrite_ConcurrentSameTimestampReservesDistinctGenerations(t *testing.T) 
 		go func(i int) {
 			defer wg.Done()
 			<-start
-			genDir, err := Write(dir, testDoc(at, fmt.Sprintf("writer-%02d", i)), writers+1)
+			genDir, err := Write(dir, testDoc(at, fmt.Sprintf("writer-%02d", i)), writers+1, nil)
 			results <- result{genDir: genDir, err: err}
 		}(i)
 	}
@@ -323,7 +345,7 @@ func TestPrune_KeepsNewestComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Prune(catalogDir, 2); err != nil {
+	if err := Prune(catalogDir, 2, nil); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 
@@ -357,7 +379,7 @@ func TestPrune_DefaultKeep(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		writeCompleteGeneration(t, dir, time.Date(2026, 7, i, 0, 0, 0, 0, time.UTC), "gen")
 	}
-	if err := Prune(Dir(dir), 0); err != nil {
+	if err := Prune(Dir(dir), 0, nil); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	entries, err := os.ReadDir(Dir(dir))
@@ -373,7 +395,7 @@ func TestPrune_DefaultKeep(t *testing.T) {
 func TestWrite_PrunesOldGenerations(t *testing.T) {
 	dir := t.TempDir()
 	for day := 1; day <= 5; day++ {
-		if _, err := Write(dir, testDoc(time.Date(2026, 7, day, 0, 0, 0, 0, time.UTC), "gen"), 3); err != nil {
+		if _, err := Write(dir, testDoc(time.Date(2026, 7, day, 0, 0, 0, 0, time.UTC), "gen"), 3, nil); err != nil {
 			t.Fatalf("Write day=%d: %v", day, err)
 		}
 	}
@@ -397,7 +419,7 @@ func TestWrite_PrunesOldGenerations(t *testing.T) {
 // Prune の判定そのものを測りたいので、書く側では刈らない（keep を十分大きく取る）。
 func writeCompleteGeneration(t *testing.T, mediaDir string, at time.Time, title string) string {
 	t.Helper()
-	genDir, err := Write(mediaDir, testDoc(at, title), 1000)
+	genDir, err := Write(mediaDir, testDoc(at, title), 1000, nil)
 	if err != nil {
 		t.Fatalf("Write(%s): %v", at, err)
 	}

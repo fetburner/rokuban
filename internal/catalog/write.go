@@ -56,13 +56,10 @@ func Dir(mediaDir string) string {
 // 途中で失敗しても書きかけの世代ディレクトリは消さない。プロセスが落ちる形の
 // 停止では後始末が走らない以上、後始末を正しさの前提にできないため（掃除は
 // Prune のルールに一本化する。docs/storage.md §8「不完全世代の保持と掃除」）。
-func Write(mediaDir string, doc *Document, keep int) (string, error) {
-	return WriteWithCheck(mediaDir, doc, keep, nil)
-}
-
-// WriteWithCheck は新しい catalog 世代を書き、ファイルシステム変更の前に check を実行する。
-// check が nil の場合、所有者の照合を行わない。
-func WriteWithCheck(mediaDir string, doc *Document, keep int, check func() error) (string, error) {
+//
+// check は置き場の目印の照合で、パスを解決するファイルシステム操作（mkdir・create・
+// 削除）の前に呼ぶ。nil なら照合しない。開いたファイルへの write / Sync の前には呼ばない。
+func Write(mediaDir string, doc *Document, keep int, check func() error) (string, error) {
 	if doc == nil {
 		return "", fmt.Errorf("document is nil")
 	}
@@ -74,6 +71,7 @@ func WriteWithCheck(mediaDir string, doc *Document, keep int, check func() error
 	}
 
 	dir := Dir(mediaDir)
+	// この 1 回の照合が、catalog/ と世代ディレクトリの mkdir を守る。
 	if err := checkCatalogStore(check); err != nil {
 		return "", err
 	}
@@ -81,7 +79,7 @@ func WriteWithCheck(mediaDir string, doc *Document, keep int, check func() error
 		return "", fmt.Errorf("creating catalog dir: %w", err)
 	}
 
-	name, genDir, err := createUniqueGenerationDir(dir, GenerationName(doc.ExportedAt), check)
+	name, genDir, err := createUniqueGenerationDir(dir, GenerationName(doc.ExportedAt))
 	if err != nil {
 		return "", err
 	}
@@ -104,7 +102,7 @@ func WriteWithCheck(mediaDir string, doc *Document, keep int, check func() error
 		return genDir, err
 	}
 
-	if err := PruneWithCheck(dir, keep, check); err != nil {
+	if err := Prune(dir, keep, check); err != nil {
 		return genDir, fmt.Errorf("pruning catalog: %w", err)
 	}
 	return genDir, nil
@@ -123,17 +121,9 @@ func writeGenerationFile(path, name string, v any, check func() error) (sizeByte
 	counter := &countingWriter{}
 	enc := json.NewEncoder(io.MultiWriter(f, h, counter))
 	enc.SetIndent("", "  ")
-	if err := checkCatalogStore(check); err != nil {
-		_ = f.Close()
-		return 0, "", err
-	}
 	if err := enc.Encode(v); err != nil {
 		_ = f.Close()
 		return 0, "", fmt.Errorf("encoding %s: %w", name, err)
-	}
-	if err := checkCatalogStore(check); err != nil {
-		_ = f.Close()
-		return 0, "", err
 	}
 	if err := f.Sync(); err != nil {
 		_ = f.Close()
@@ -159,16 +149,13 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 // 連番は**ゼロ詰め 2 桁**にする。辞書順が「新しい順」の唯一の根拠なので、
 // `-2` と `-10` を並べると 10 本目が 2 本目より古い側に落ちる（`-02` < `-10`）。
 // 99 本を超えたら名前を作らずエラーにする（黙って順序の壊れた名前を作らない）。
-func createUniqueGenerationDir(dir, base string, check func() error) (name, generationDir string, err error) {
+func createUniqueGenerationDir(dir, base string) (name, generationDir string, err error) {
 	for i := 1; i <= 99; i++ {
 		name = base
 		if i > 1 {
 			name = fmt.Sprintf("%s-%02d", base, i)
 		}
 		generationDir = filepath.Join(dir, name)
-		if err := checkCatalogStore(check); err != nil {
-			return "", "", err
-		}
 		err := os.Mkdir(generationDir, 0o755)
 		if err == nil {
 			return name, generationDir, nil
@@ -221,12 +208,9 @@ func scanSnapshots(catalogDir string) (names []string, stale []string, err error
 // 掃除も走らない）。docs/storage.md §8 に同じ但し書きがある。
 //
 // catalog/ 以外は触らない。catalog- で始まらないファイルにも触らない。
-func Prune(catalogDir string, keep int) error {
-	return PruneWithCheck(catalogDir, keep, nil)
-}
-
-// PruneWithCheck は stale なファイルと超過世代を、各削除前の check 後に取り除く。
-func PruneWithCheck(catalogDir string, keep int, check func() error) error {
+//
+// check は置き場の目印の照合で、走査の前と世代の削除の前に 1 回ずつ呼ぶ。nil なら照合しない。
+func Prune(catalogDir string, keep int, check func() error) error {
 	if keep <= 0 {
 		keep = DefaultKeep
 	}
@@ -239,9 +223,6 @@ func PruneWithCheck(catalogDir string, keep int, check func() error) error {
 		return err
 	}
 	for _, name := range stale {
-		if err := checkCatalogStore(check); err != nil {
-			return err
-		}
 		_ = os.Remove(filepath.Join(catalogDir, name))
 	}
 
@@ -272,10 +253,12 @@ func PruneWithCheck(catalogDir string, keep int, check func() error) error {
 		doomed = append(doomed, complete[keep:]...)
 	}
 
-	for _, name := range doomed {
+	if len(doomed) > 0 {
 		if err := checkCatalogStore(check); err != nil {
 			return err
 		}
+	}
+	for _, name := range doomed {
 		if err := os.RemoveAll(filepath.Join(catalogDir, name)); err != nil {
 			return fmt.Errorf("removing catalog %q: %w", name, err)
 		}

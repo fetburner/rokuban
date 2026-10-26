@@ -50,7 +50,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 	if len(doc.LabelRules) != 2 {
 		t.Fatalf("exported label rules = %d, want 2", len(doc.LabelRules))
 	}
-	if _, err := Write(mediaDir, doc, DefaultKeep); err != nil {
+	if _, err := Write(mediaDir, doc, DefaultKeep, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -136,7 +136,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Export: %v", err)
 	}
-	if _, err := Write(mediaDir, doc, DefaultKeep); err != nil {
+	if _, err := Write(mediaDir, doc, DefaultKeep, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
