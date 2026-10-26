@@ -95,18 +95,20 @@ func CheckStoreMarker(mediaDir, expected string) error {
 	return nil
 }
 
-// WriteStoreMarker は mediaDir の root に expected を書き、ファイルと root を同期する。
+// WriteStoreMarker は marker が無い mediaDir の root に expected を書き、ファイルと root を同期する。
+// 既存の同名 marker は成功とし、別名の marker は置き場の改名になるため上書きしない。
 func WriteStoreMarker(mediaDir, expected string) error {
 	if !ValidStoreName(expected) {
 		return fmt.Errorf("invalid media store name %q: use lowercase ASCII letters, digits, and hyphens", expected)
 	}
 	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)
-	if info, err := os.Lstat(markerPath); err == nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("store marker %q is not a regular file", markerPath)
-	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stating store marker %q: %w", markerPath, err)
+	file, err := os.OpenFile(markerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		if err := CheckStoreMarker(mediaDir, expected); err != nil {
+			return fmt.Errorf("refusing to replace existing store marker: %w", err)
+		}
+		return nil
 	}
-	file, err := os.OpenFile(markerPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fmt.Errorf("opening store marker %q: %w", markerPath, err)
 	}

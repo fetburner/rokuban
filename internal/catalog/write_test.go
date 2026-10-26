@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -74,6 +75,97 @@ func TestWriteAndSelectLatest(t *testing.T) {
 	}
 	if len(loaded.Recordings) != 1 || loaded.Recordings[0].Title != "test" {
 		t.Errorf("recordings = %+v", loaded.Recordings)
+	}
+}
+
+func TestWriteWithCheckWithholdsManifestAndPruneAfterOwnershipChanges(t *testing.T) {
+	for _, failAt := range []struct {
+		name  string
+		check int
+	}{
+		{name: "manifest", check: 6},
+		{name: "prune", check: 9},
+	} {
+		t.Run(failAt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			oldAt := time.Date(2026, 7, 29, 12, 0, 0, 0, time.UTC)
+			oldDir, err := Write(dir, testDoc(oldAt, "old"), 3)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			wantErr := errors.New("store marker changed")
+			checks := 0
+			newAt := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+			genDir, err := WriteWithCheck(dir, testDoc(newAt, "new"), 1, func() error {
+				checks++
+				if checks == failAt.check {
+					return wantErr
+				}
+				return nil
+			})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("WriteWithCheck() error = %v, want %v", err, wantErr)
+			}
+			if checks != failAt.check {
+				t.Fatalf("ownership checks = %d, want failure at %d", checks, failAt.check)
+			}
+			if _, err := os.Stat(filepath.Join(oldDir, ManifestFilename)); err != nil {
+				t.Fatalf("old generation after rejected operation: %v", err)
+			}
+			manifestPath := filepath.Join(genDir, ManifestFilename)
+			if failAt.name == "manifest" {
+				if _, err := os.Stat(manifestPath); !os.IsNotExist(err) {
+					t.Fatalf("manifest after marker rejection = stat error %v, want absent", err)
+				}
+			} else if _, err := os.Stat(manifestPath); err != nil {
+				t.Fatalf("completed manifest before withheld prune: %v", err)
+			}
+		})
+	}
+}
+
+func TestPruneWithCheckStopsBeforeEachDestructiveAction(t *testing.T) {
+	for _, action := range []string{"stale temp", "old generation"} {
+		t.Run(action, func(t *testing.T) {
+			dir := t.TempDir()
+			for day := 1; day <= 2; day++ {
+				at := time.Date(2026, 7, day, 12, 0, 0, 0, time.UTC)
+				if _, err := Write(dir, testDoc(at, "generation"), 3); err != nil {
+					t.Fatal(err)
+				}
+			}
+			catalogDir := Dir(dir)
+			stalePath := filepath.Join(catalogDir, "catalog-20260703T000000Z.tmp")
+			if action == "stale temp" {
+				if err := os.WriteFile(stalePath, []byte("partial"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			wantErr := errors.New("store marker changed")
+			checks := 0
+			err := PruneWithCheck(catalogDir, 1, func() error {
+				checks++
+				if checks == 2 {
+					return wantErr
+				}
+				return nil
+			})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("PruneWithCheck() error = %v, want %v", err, wantErr)
+			}
+			if checks != 2 {
+				t.Fatalf("ownership checks = %d, want failure before first removal", checks)
+			}
+			if action == "stale temp" {
+				if _, err := os.Stat(stalePath); err != nil {
+					t.Fatalf("stale temp after marker rejection: %v", err)
+				}
+			} else if names := dirEntryNames(t, catalogDir); !names["catalog-20260701T120000Z"] || !names["catalog-20260702T120000Z"] {
+				t.Fatalf("generations after marker rejection = %v, want both preserved", names)
+			}
+		})
 	}
 }
 

@@ -653,7 +653,12 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
 	hasher := sha256.New()
-	offset, replayComplete, err := replayIngestTempFileWithCheckpoint(sliceCtx, tempPath, f, hasher)
+	offset, replayComplete, err := replayIngestTempFileWithCheckpointAndCheck(
+		sliceCtx, tempPath, f, hasher,
+		func() error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving replay ingest checkpoint")
+		},
+	)
 	if err != nil {
 		if isIngestSliceDeadline(err, sliceCtx, ctx) {
 			progress.start(ctx, offset)
@@ -690,7 +695,10 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "persisting ingest checkpoint"); err != nil {
 				return err
 			}
-			if err := persistIngestCheckpoint(tempPath, f, offset, hasher); err != nil {
+			if err := persistIngestCheckpoint(tempPath, f, offset, hasher,
+				func() error {
+					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "persisting ingest checkpoint")
+				}); err != nil {
 				return err
 			}
 			progress.flush(ctx, offset)
@@ -730,7 +738,10 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint"); err != nil {
 				return err
 			}
-			if err := writeIngestCheckpoint(tempPath, offset, hasher); err != nil {
+			if err := writeIngestCheckpointWithCheck(tempPath, offset, hasher,
+				func() error {
+					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint")
+				}); err != nil {
 				return err
 			}
 			return errIngestSHA256Pending

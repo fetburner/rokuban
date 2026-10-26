@@ -73,3 +73,37 @@ mirakcs:
 		t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
 	}
 }
+
+func TestStorageAdoptDoesNotRenameExistingStoreMarker(t *testing.T) {
+	mediaDir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(mediaDir, "osaka"); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.yml")
+	config := `db:
+  host: localhost
+  user: postgres
+  password: postgres
+  database: postgres
+storage:
+  media_dir: ` + mediaDir + `
+  media_store_name: tokyo
+mirakcs:
+  - site: tokyo
+    url: http://mirakc
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "tokyo"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "media store marker mismatch") {
+		t.Fatalf("storage adopt existing different marker error = %v, want marker mismatch", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); err != nil {
+		t.Fatalf("reading existing marker: %v", err)
+	} else if string(got) != "osaka" {
+		t.Fatalf("existing marker after rejected adoption = %q, want %q", got, "osaka")
+	}
+}

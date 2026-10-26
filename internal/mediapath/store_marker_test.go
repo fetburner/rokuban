@@ -29,11 +29,21 @@ func TestStoreMarkerCheckAndWrite(t *testing.T) {
 	if string(contents) != "tokyo" {
 		t.Fatalf("marker contents = %q, want %q", contents, "tokyo")
 	}
-	if err := WriteStoreMarker(root, "osaka"); err != nil {
-		t.Fatalf("WriteStoreMarker() replace error = %v", err)
+	if err := WriteStoreMarker(root, "tokyo"); err != nil {
+		t.Fatalf("WriteStoreMarker() idempotent error = %v", err)
 	}
-	if err := CheckStoreMarker(root, "osaka"); err != nil {
-		t.Fatalf("CheckStoreMarker() after replacement = %v", err)
+	if err := WriteStoreMarker(root, "osaka"); !errors.Is(err, ErrStoreMarkerMismatch) {
+		t.Fatalf("WriteStoreMarker() rename error = %v, want ErrStoreMarkerMismatch", err)
+	}
+	if err := CheckStoreMarker(root, "tokyo"); err != nil {
+		t.Fatalf("CheckStoreMarker() after refused rename = %v", err)
+	}
+	contents, err = os.ReadFile(filepath.Join(root, StoreMarkerFileName))
+	if err != nil {
+		t.Fatalf("reading marker after refused rename: %v", err)
+	}
+	if string(contents) != "tokyo" {
+		t.Fatalf("marker contents after refused rename = %q, want %q", contents, "tokyo")
 	}
 }
 

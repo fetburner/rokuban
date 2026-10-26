@@ -41,7 +41,8 @@ func (w *CatalogExportWorker) Work(ctx context.Context, args jobs.CatalogExportA
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing catalog"); err != nil {
 		return err
 	}
-	genDir, err := catalog.Write(w.MediaDir, doc, args.Keep)
+	genDir, err := catalog.WriteWithCheck(w.MediaDir, doc, args.Keep,
+		func() error { return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing catalog") })
 	if err != nil {
 		return err
 	}

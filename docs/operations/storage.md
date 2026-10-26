@@ -30,12 +30,19 @@ worker は ingest キューを購読する起動時に、temp 作成、file `fsy
 
 不一致時は ingest probe、ファイル書き込み・削除、欠損記録を行わず、`rokuban_store_marker_mismatch_total{store}` を増やす。目印は `rokuban storage adopt <store-name>` で作成できる。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。
 
+同じ名前の目印への `adopt` は再実行できるが、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+
 <details><summary>根拠</summary>
 
 - ingest 抑止: `TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch`
 - unlink 抑止: `TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears`
-- 監査抑止: `TestMissingStoreMarkerWithholdsMissingAssetAndOrphanActions`
+- deleted 遷移抑止: `TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears`
+- 欠損・孤児操作抑止: `TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions`
+- replay checkpoint 抑止: `TestInterruptedIngestReplayRechecksMarkerBeforeCheckpoint`
+- catalog 書き込み・prune 抑止: `TestWriteWithCheckWithholdsManifestAndPruneAfterOwnershipChanges`
+- catalog 削除直前の再照合: `TestPruneWithCheckStopsBeforeEachDestructiveAction`
 - adopt: `TestStorageAdoptWritesStoreMarker`
+- 異なる名前への adopt 拒否: `TestStorageAdoptDoesNotRenameExistingStoreMarker`
 
 </details>
 
