@@ -106,13 +106,28 @@ ROKUBAN_SEEK_INPUT=/path/to/input.ts ROKUBAN_SEEK_AUDIO=1 \
   go test ./internal/streamer/ -run TestSegmentTransformSeekMeasure -v -count=1
 ```
 
-Pod の中で、原本を読み取り専用のまま測るときは、テストバイナリを linux/amd64 でビルドして Pod に置く。Pod には ffmpeg / ffprobe（libx264 付き）が必要で、書き込める場所（emptyDir の `/tmp` など）を `TMPDIR` にする。
+Pod の中で、原本を読み取り専用のまま測るときは、テストバイナリを linux/amd64 でビルドして Pod に置く。Pod には ffmpeg / ffprobe（libx264 付き）が必要で、書き込める場所（emptyDir の `/tmp` など）を `TMPDIR` にする。1080 の無損失出力はセグメントごとに数十 MB になり、起動位置 k ごとに 6 本ずつ scratch に残る。`TMPDIR` の空きを数 GB 確認してから回す。
 
 ```sh
 GOOS=linux GOARCH=amd64 go test -c -o /tmp/rp6seek.test ./internal/streamer/
 kubectl -n "$NAMESPACE" cp /tmp/rp6seek.test "$POD":/tmp/rp6seek.test
+```
+
+古い音声 PES の原本は、k=3 と 5 で測る。`ROKUBAN_SEEK_AUDIO` は原本の音声ストリーム数に合わせる。
+
+```sh
 kubectl -n "$NAMESPACE" exec "$POD" -- env TMPDIR=/tmp \
-  ROKUBAN_SEEK_INPUT="$ORIGINAL_PATH" ROKUBAN_SEEK_FRAMES=1200 ROKUBAN_SEEK_STARTS=3,5 \
+  ROKUBAN_SEEK_INPUT="$OLD_PES_ORIGINAL_PATH" ROKUBAN_SEEK_AUDIO=2 \
+  ROKUBAN_SEEK_STARTS=3,5 ROKUBAN_SEEK_FRAMES=900 \
+  /tmp/rp6seek.test -test.run TestSegmentTransformSeekMeasure -test.v
+```
+
+PTS wrap の原本は、境界をまたぐ変換を含めるため、k を境界の手前に置く。V から 2^33 tick までは約 105.94 秒なので、D=2 秒なら k=51〜53 になる。基準 frame はその先（k+6 本の位置、約 118 秒）まで届く値にする。
+
+```sh
+kubectl -n "$NAMESPACE" exec "$POD" -- env TMPDIR=/tmp \
+  ROKUBAN_SEEK_INPUT="$WRAP_ORIGINAL_PATH" ROKUBAN_SEEK_AUDIO=2 \
+  ROKUBAN_SEEK_STARTS=51,52,53 ROKUBAN_SEEK_FRAMES=3900 \
   /tmp/rp6seek.test -test.run TestSegmentTransformSeekMeasure -test.v
 ```
 

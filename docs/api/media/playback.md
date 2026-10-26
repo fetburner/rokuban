@@ -233,9 +233,23 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 最大セッション数 `live.max_sessions` は全経路で共有する。内訳は Prometheus の `rokuban_live_active_sessions{kind="live"|"chase"|"original_vod"}` で見る。どの経路も `live.segment_dir` を使う。容量の見積もり式と `sizeLimit` の判断は [operations.md](../../operations.md) §5「ライブのセグメントを録画バッファと同じディスクに置かない」（[k8s-streamer.md](../../operations/k8s-streamer.md)）にある。
 
-#### 録画中の temp を読む方式の測定
+#### 伸びる temp の終わらせ方
 
-録画中の番組を、ingest が追記している temp から変換する方式の測定と、終わらせ方の決定は [playback-temp-measurement.md](playback-temp-measurement.md) にある。
+録画中の temp は、読み待ちを 90 秒にして追従して読む。途中で終わったら 503 で再試行させ、完了は DB で判定する。測定の詳細は [playback-temp-measurement.md](playback-temp-measurement.md) にある。
+
+FFmpeg の引数は `-follow 1 -rw_timeout 90000000` である。90 秒は定数にし、設定のキーにはしない。
+
+- 変換が途中で終わったら、待っている要求には 503 + Retry-After を返し、次の要求でそのセグメントから起動し直す。要求されたセグメントを出す前に正常終了した変換は、いまも `errSegmentNotCached` になる
+- 録画の完了は、FFmpeg の終了ではなく、DB の record の状態と原本の行で判定する。`rw_timeout` による exit 0 は、録画の途中でも起きた
+- 入力の種類（temp / 原本）を変換の組に含める
+
+入力の種類を組に含めないと、原本が commit された後の要求が、temp を follow している古い変換に吸い込まれる。その変換は長さが未確定なので、最後の短いセグメントを公開しない。プレイヤーが再試行する間は waiter が付き続け、idle kill も働かない。録画の終わりを端で見ている人は、最後のセグメントが「追記が見えるまでの遅れ（最大 55 秒）+ 90 秒」の間 503 になる。組を分ければ、commit の後の要求は原本の新しい変換へ向かう。古い変換は waiter が無くなり、idle kill で消える。
+
+90 秒は正しさの境界ではなく、書き手が止まり続けたときに 503 と起動し直しを繰り返す周期である。300 秒にしても、同じことがその周期で起きるだけである。waiter が無い変換は idle の 30 秒で先に kill されるので、90 秒が効くのはクライアントが再試行し続けている間だけである。
+
+根拠は PVC での測定で、条件は NFS 4.1 の既定の mount、1 組のノード、書き手 500 kbit/s である。`-skip_estimate_duration_from_pts 1` と組み合わせて末尾まで完走した。読めるバイトが増えなかった最長区間は 51 秒、追記が見えるまでの遅れは最大 55 秒だった。10 秒はこの遅れの中央値（23 秒）より短く、書き込み中に 40 秒で空の出力のまま終了した。River 配送、再試行、ノード障害を含む停止時間の上限は測っていない。
+
+未検証の点が 2 つある。NFS の hard mount で read 自体が止まる場合は、`rw_timeout` が効かない可能性がある。SIGSTOP の間の時間が `rw_timeout` に数えられ、SIGCONT の直後に exit 0 になる可能性もある。
 
 ### 録画原本のブラウザ再生
 
