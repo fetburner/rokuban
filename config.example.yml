@@ -53,7 +53,8 @@ storage:
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /
                                   # Mountpoint など FUSE S3 は原本・派生物とも対象外
                                   # （docs/storage/contract.md）。
-  # media_store_name: main      # recording_hls.enabled=true なら必須。英小文字・数字・- のみ。
+  # media_store_name: main      # 置き場の目印 .rokuban-store に書く名前。英小文字・数字・- のみ。
+                                # 空なら目印の照合をしない。recording_hls.enabled=true なら必須。
                                 # ingress の Prefix /api/media/stores/<名前>/ と一致させる。
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
   # accel_location: /_media/     # X-Accel-Redirect の internal location。

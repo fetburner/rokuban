@@ -16,7 +16,7 @@ func writeVerifyTestGeneration(t *testing.T, mediaDir string, at time.Time) stri
 	genDir, err := catalog.Write(mediaDir, &catalog.Document{
 		Version:    catalog.Version,
 		ExportedAt: at,
-	}, 1000)
+	}, 1000, nil)
 	if err != nil {
 		t.Fatalf("catalog.Write(%s): %v", at, err)
 	}

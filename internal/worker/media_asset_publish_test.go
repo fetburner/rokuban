@@ -265,7 +265,7 @@ func publishThumbnailForTest(pool *pgxpool.Pool, mediaDir string, id int64, scra
 		inputID = orig.ID
 	}
 	relPath := thumbnailRelPath(id)
-	return publishGeneratedMediaAsset(context.Background(), mediaDir, relPath, scratch,
+	return publishGeneratedMediaAsset(context.Background(), mediaDir, "", relPath, scratch,
 		func(size int64, publish func() error) (bool, error) {
 			return pgstoretest.Media(pool).PublishThumbnail(context.Background(), store.ThumbnailPublishInput{
 				RecordingID: id, RelPath: relPath, SizeBytes: size, InputAssetID: inputID,

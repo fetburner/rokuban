@@ -61,7 +61,7 @@ func stopWritesAfter(n int64) (restore func()) {
 func generationByteSize(t *testing.T, doc *Document) int64 {
 	t.Helper()
 	dir := t.TempDir()
-	genDir, err := Write(dir, doc, DefaultKeep)
+	genDir, err := Write(dir, doc, DefaultKeep, nil)
 	if err != nil {
 		t.Fatalf("probe Write: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestSelectLatest_StopAtAnyOffsetNeverSelectsTornGeneration(t *testing.T) {
 
 	// 1 世代前（フォールバック先）。掃引の間ずっと据え置く。
 	dir := t.TempDir()
-	if _, err := Write(dir, testDoc(oldAt, "old"), DefaultKeep); err != nil {
+	if _, err := Write(dir, testDoc(oldAt, "old"), DefaultKeep, nil); err != nil {
 		t.Fatalf("writing previous generation: %v", err)
 	}
 	newGenDir := filepath.Join(Dir(dir), "catalog-20260702T000000Z")
@@ -104,7 +104,7 @@ func TestSelectLatest_StopAtAnyOffsetNeverSelectsTornGeneration(t *testing.T) {
 		}
 
 		restore := stopWritesAfter(stop)
-		_, writeErr := Write(dir, testDoc(newAt, "new"), DefaultKeep)
+		_, writeErr := Write(dir, testDoc(newAt, "new"), DefaultKeep, nil)
 		restore()
 
 		// 期待値（両方向）: manifest の中身まで書き切った停止点だけが新しい世代
@@ -180,7 +180,7 @@ func TestWrite_ManifestIsCreatedAfterTheDocumentIsComplete(t *testing.T) {
 	defer func() { openCatalogFile = orig }()
 
 	doc := testDoc(time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), "ordered")
-	genDir, err := Write(dir, doc, DefaultKeep)
+	genDir, err := Write(dir, doc, DefaultKeep, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestWrite_GenerationSuffixKeepsLexicalOrder(t *testing.T) {
 
 	var names []string
 	for i := 0; i < 11; i++ {
-		genDir, err := Write(dir, testDoc(at, fmt.Sprintf("gen-%d", i)), 1000)
+		genDir, err := Write(dir, testDoc(at, fmt.Sprintf("gen-%d", i)), 1000, nil)
 		if err != nil {
 			t.Fatalf("Write %d: %v", i, err)
 		}
@@ -484,7 +484,7 @@ func TestPrune_IncompleteGenerationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Prune(catalogDir, DefaultKeep); err != nil {
+	if err := Prune(catalogDir, DefaultKeep, nil); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	if _, err := os.Stat(inflight); err != nil {
@@ -497,7 +497,7 @@ func TestPrune_IncompleteGenerationLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeCompleteGeneration(t, dir, time.Date(2026, 7, 3, 0, 0, 0, 0, time.UTC), "new")
-	if err := Prune(catalogDir, DefaultKeep); err != nil {
+	if err := Prune(catalogDir, DefaultKeep, nil); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	if _, err := os.Stat(inflight); !os.IsNotExist(err) {
@@ -550,7 +550,7 @@ func TestPrune_IncompleteDoesNotConsumeKeepSlots(t *testing.T) {
 	}
 	writeCompleteGeneration(t, dir, time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), "c")
 
-	if err := Prune(catalogDir, 2); err != nil {
+	if err := Prune(catalogDir, 2, nil); err != nil {
 		t.Fatalf("Prune: %v", err)
 	}
 	got := dirEntryNames(t, catalogDir)

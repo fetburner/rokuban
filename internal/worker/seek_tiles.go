@@ -56,12 +56,13 @@ const (
 // 失敗したら scratch を捨ててやり直す。部分成果はコミットしない ---
 // 行の存在 = タイルが全部そろっている（不変条件 10）。
 type SeekTilesWorker struct {
-	Media      store.MediaReconcile
-	Publisher  store.MediaPublish
-	MediaDir   string
-	ScratchDir string
-	FFmpeg     string
-	FFprobe    string
+	Media          store.MediaReconcile
+	Publisher      store.MediaPublish
+	MediaDir       string
+	MediaStoreName string
+	ScratchDir     string
+	FFmpeg         string
+	FFprobe        string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// ThumbnailWorker と同じ契約（stdout を返すのは ffprobe 用）。
@@ -82,6 +83,9 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		metrics.SeekTilesDuration.Observe(time.Since(started).Seconds())
 		metrics.SeekTilesJobs.WithLabelValues(result).Inc()
 	}()
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting seek tile generation"); err != nil {
+		return err
+	}
 
 	hasTiles, err := w.Media.HasActiveSeekTilesMediaAsset(ctx, recordingID)
 	if err != nil {
@@ -170,7 +174,7 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	}
 
 	relPath := seekTilesRelPath(recordingID)
-	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, relPath, sheetPath,
+	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
 		func(size int64, publish func() error) (bool, error) {
 			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,

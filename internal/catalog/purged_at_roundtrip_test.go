@@ -54,7 +54,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	genDir, err := Write(mediaDir, doc, 7)
+	genDir, err := Write(mediaDir, doc, 7, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}

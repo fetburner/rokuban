@@ -2,15 +2,14 @@ package config
 
 import (
 	"fmt"
-	"regexp"
+
+	"github.com/fetburner/rokuban/internal/mediapath"
 )
 
 // RecordingHLSConfig は世代付き録画 HLS URL の公開設定。
 type RecordingHLSConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
-
-var mediaStoreNamePattern = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 func (c Config) validateRecordingHLS() error {
 	name := c.Storage.MediaStoreName
@@ -20,7 +19,7 @@ func (c Config) validateRecordingHLS() error {
 		}
 		return nil
 	}
-	if !mediaStoreNamePattern.MatchString(name) {
+	if !mediapath.ValidStoreName(name) {
 		return fmt.Errorf("storage.media_store_name must contain only lowercase ASCII letters, digits and hyphens")
 	}
 	return nil

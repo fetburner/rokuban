@@ -180,6 +180,8 @@ type stagedMediaFile struct {
 // ストリームコピー + fsync する。名前は予約接頭辞 prefix を付け、拡張子は付けない
 // （rescueAssetKind は媒体拡張子でしか ok を返さないので、孤児 rescue には拾われない）。
 // プロセス死で rel_path lock が残っても、次の lock 取得時の GC が回収する。
+//
+// 置き場の目印は呼び出し側が CreateTemp の前に 1 回照合する。
 func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedMediaFile, error) {
 	dir := filepath.Dir(finalPath)
 	// CreateTemp は 0600 で作る。公開後のファイルは canonical なので、コピー元の
@@ -190,13 +192,18 @@ func stageMediaFile(ctx context.Context, src, finalPath, prefix string) (stagedM
 	}
 	tempPath := temp.Name()
 	_ = temp.Close()
+	discardTemp := func() {
+		if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("media asset publisher: removing incomplete staged file", "path", tempPath, "err", err)
+		}
+	}
 	if err := os.Chmod(tempPath, 0o644); err != nil {
-		_ = os.Remove(tempPath)
+		discardTemp()
 		return stagedMediaFile{}, fmt.Errorf("chmod staged output: %w", err)
 	}
 	size, err := streamCopyFile(ctx, src, tempPath)
 	if err != nil {
-		_ = os.Remove(tempPath)
+		discardTemp()
 		return stagedMediaFile{}, fmt.Errorf("staging output in media dir: %w", err)
 	}
 	return stagedMediaFile{tempPath: tempPath, finalPath: finalPath, size: size}, nil
@@ -227,9 +234,12 @@ func (s stagedMediaFile) discard() {
 // ファイルロックは commit が返るまで保持する。公開しなかったとき size は 0 を返す。
 func publishGeneratedMediaAsset(
 	ctx context.Context,
-	mediaDir, relPath, scratchPath string,
+	mediaDir, mediaStoreName, relPath, scratchPath string,
 	commit func(size int64, publish func() error) (bool, error),
 ) (size int64, published bool, err error) {
+	if err := requireMediaStoreMarker(mediaDir, mediaStoreName, "publishing generated media asset"); err != nil {
+		return 0, false, err
+	}
 	finalPath, err := mediapath.Resolve(mediaDir, relPath)
 	if err != nil {
 		return 0, false, fmt.Errorf("resolving generated media asset: %w", err)
@@ -242,6 +252,9 @@ func publishGeneratedMediaAsset(
 		return 0, false, fmt.Errorf("staging generated media asset: %w", err)
 	}
 	defer staged.discard()
+	if err := requireMediaStoreMarker(mediaDir, mediaStoreName, "locking generated media asset"); err != nil {
+		return 0, false, err
+	}
 	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
 	if err != nil {
 		return 0, false, fmt.Errorf("locking generated media asset: %w", err)

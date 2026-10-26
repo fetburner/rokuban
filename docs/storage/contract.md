@@ -43,13 +43,14 @@ ingest は同じ root・同じディレクトリの record 固有 temp へ書く
 
 `.rokuban-ingest-` は ingest temp、`.rokuban-rel-path-lock-` は旧形式 lock file、`.rokuban-encode-` は encode staging file を表す。`.rokuban-media-asset-` は thumbnail / seek tiles staging file を表す。
 
-rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。
+rel_path lock は media root の `.rokuban-locks/` に置く。この directory 名も予約し、DB の `rel_path` として受け入れない。置き場の目印の root の `.rokuban-store` も同じく予約する。ネストした同名ファイルは予約しない。
 
 ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original 行を INSERT して rel_path を予約し、temp を canonical へ atomic rename して親ディレクトリを `fsync` する。
 
 <details><summary>根拠</summary>
 
 - `.rokuban-locks/` を `rel_path` として受け入れないこと: `mediapath.Resolve`
+- root の `.rokuban-store` だけを拒むこと: `TestResolve_ReservesRootStoreMarkerOnly`
 
 </details>
 

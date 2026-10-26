@@ -4,7 +4,7 @@ mirakc に繋いだ Rokuban の導入・切り替え、移行作業、障害対�
 
 | ファイル | 内容 |
 |---|---|
-| [runbook/setup.md](runbook/setup.md) | 前提・起動・設定の 2 段構え・録画の保存先・定期ジョブの周期とヒント |
+| [runbook/setup.md](runbook/setup.md) | 前提・起動・設定の 2 段構え・録画の保存先・置き場の目印・定期ジョブの周期とヒント |
 | [runbook/troubleshooting.md](runbook/troubleshooting.md) | 詰まったとき（症状別） |
 | [runbook/shadow.md](runbook/shadow.md) | EPGStation との並走。チューナー競合と二重録画の回避 |
 | [runbook/live.md](runbook/live.md) | ライブ視聴。idle GC・実再生の確認（実 mirakc 要）とブラウザ側配線の確認（`web/e2e/live.mjs`、mirakc 不要） |

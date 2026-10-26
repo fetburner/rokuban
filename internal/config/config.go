@@ -170,7 +170,7 @@ type CleanupConfig struct {
 	// ログ）されるまでのエイジング期間。孤児回収の OrphanAge と同じ理由 ---
 	// 単発の走査揺れ・DB リストア直後の一時的な不整合を確認済みの異常と
 	// 区別する。0 なら既定値（24 時間）。自動削除の閾値ではない
-	// （docs/storage/retention.md §7「孤児回収の逆」。この検出は削除を一切
+	// （docs/storage/missing-assets.md「孤児回収の逆」。この検出は削除を一切
 	// 行わない）。
 	MissingAssetAge time.Duration `yaml:"missing_asset_age"`
 }
