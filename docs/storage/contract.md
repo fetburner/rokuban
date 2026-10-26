@@ -18,9 +18,11 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 ## 3. ストレージ契約（4 つのルール）
 
+この節のファイル操作手順は、原本 root、ローカル scratch、派生物の FS 実装に適用する。S3 API 実装はファイルシステムの rename・fsync・flock に依存せず、オブジェクト API を使う。
+
 原本の保存先は、fsync と atomic rename を信頼できる通常の POSIX FS に限る。書き込みは常にシーケンシャルにし、作業はローカルで行って完成品を一度だけ置く。公開点は DB の commit で、DB には相対パスだけを保存する。
 
-`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。次のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する。
+`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本・派生物とも対象外である。次のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する。
 
 1. 書き込みは常にシーケンシャルにする。初回は一発書き、プロセス再起動後は同じ temp の EOF へ追記する。ランダムライトはしない
 2. 「作業はローカル、置くのは一回」とする。ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync する。MP4 のシーク問題と書きかけファイル問題が同時に消える
@@ -29,7 +31,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 ### scratch と temp の置き場所
 
-ffmpeg の出力はワーカーのローカルスクラッチへ書く。取り込みの一時ファイルと派生物の staging file は、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
+ffmpeg の出力はワーカーのローカルスクラッチへ書く。FS 実装では、取り込みの一時ファイルと派生物の staging file を、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
 
 scratch から rename すると `EXDEV` になり、コピーへの劣化を許すことになる。
 
