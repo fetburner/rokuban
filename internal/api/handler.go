@@ -16,6 +16,7 @@ var version = "dev"
 
 // Server は予約 API のハンドラ実装。oapi-codegen の StrictServerInterface を満たす。
 type Server struct {
+	recordingPlayback  recordingPlaybackConfig
 	ready              func(context.Context) error
 	chapterStore       store.ChapterEdits
 	cmStationStore     store.CMStation

@@ -2971,6 +2971,16 @@ components:
           items:
             type: string
 
+    RecordingHLSPlayback:
+      type: object
+      required: [profile, masterUrl]
+      properties:
+        profile:
+          type: string
+        masterUrl:
+          type: string
+          description: 世代付き録画 HLS のルート相対 URL。
+
     Recording:
       type: object
       required:
@@ -2989,8 +2999,21 @@ components:
         - status
         - keepOriginal
         - cmDetection
+        - hlsPlayback
         - createdAt
       properties:
+        hlsPlayback:
+          type: array
+          description: |
+            世代付き録画 HLS で再生できる live.profiles の一覧（設定順）。
+            masterUrl は /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8。
+            store は storage.media_store_name。gen は active な原本の ingest_generation
+            （NULL なら 0）を優先し、active な原本が無ければ進捗行の temp_generation を使う。
+            recording_hls.enabled が false、ごみ箱・完全削除・置き換え済み、原本と進捗が
+            ともに無いなら空配列。ファイルの存在は検査しない。
+          items:
+            $ref: '#/components/schemas/RecordingHLSPlayback'
+
         id:
           type: integer
           format: int64

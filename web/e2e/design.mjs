@@ -331,15 +331,15 @@ const seriesLabelRules = [
 ]
 
 const recordings = [
-  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
+  { id: 11, site: SITE, source: 'rule', serviceName: 'NHK総合', channelType: 'GR', channel: '27', networkId: 32736, serviceId: 1024, eventId: 11, title: 'ニュース７', startAt: iso(nowMs - 600_000), durationMs: 1_800_000, status: 'recording', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 600_000), startedAt: iso(nowMs - 600_000) },
   // encodedAssets を持たせて詳細ページ（/recordings/$id）で <video> が実ブラウザで
   // 出ることを撮る（キーボード到達性の判定 ⑤）。`encodedProfiles`（非推奨の後方
   // 互換フィールド）だけでは `RecordingPlayer` が <video> を出さない
   // （`encodedAssets` を見るため）ので両方持たせる。
-  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
-  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
+  { id: 12, site: SITE, source: 'manual', serviceName: 'ＮＨＫＢＳ', channelType: 'BS', channel: 'BS15_0', networkId: 4, serviceId: 101, eventId: 12, title: 'クラシック音楽館', description: '番組の内容を補う説明です。画面幅が 360px のときも本文を読みやすい文字サイズで折り返し、詳細欄が横にはみ出さないことを確認するための文章です。', series: '音楽館', seriesKey: 'クラシック音楽館', startAt: iso(nowMs - 26 * HOUR), durationMs: 5_400_000, status: 'finished', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: 8_123_456_789, createdAt: iso(nowMs - 26 * HOUR), dropSummary: { packets: 1_500_000, drops: 12, errors: 0, scrambled: 3 }, encodedAssets: [{ profile: 'hevc-1080p', sizeBytes: 2_345_678_901 }] },
+  { id: 13, site: SITE, source: 'rule', serviceName: 'テレビ大阪', channelType: 'GR', channel: '18', networkId: 32738, serviceId: 1040, eventId: 13, title: 'アニメ劇場', startAt: iso(nowMs - 50 * HOUR), durationMs: 1_800_000, status: 'failed', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, createdAt: iso(nowMs - 50 * HOUR) },
   // 原本・エンコード資産のない録画。結論の「準備中」バッジのコントラスト測定に使う。
-  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
+  { id: 14, site: SITE, source: 'rule', serviceName: 'NHKEテレ', channelType: 'GR', channel: '26', networkId: 32737, serviceId: 1032, eventId: 14, title: '連続テレビ小説', startAt: iso(nowMs - 74 * HOUR), durationMs: 900_000, status: 'finished', keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' }, sizeBytes: undefined, ingest: { state: 'pending' }, createdAt: iso(nowMs - 74 * HOUR) },
 ]
 
 // `homeModeFixture` の警告一覧は、失敗録画・orphaned 予約・容量超過・ドロップの順。
@@ -394,14 +394,14 @@ const recordingDetailScenarios = {
     ...recordings[1],
     startedAt: iso(nowMs - 26 * HOUR),
     endedAt: iso(nowMs - 24.5 * HOUR),
-    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+    hlsPlayback: [], cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
   },
   'short-series': {
     ...recordings[1],
     series: '天気',
     startedAt: iso(nowMs - 26 * HOUR),
     endedAt: iso(nowMs - 24.5 * HOUR),
-    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+    hlsPlayback: [], cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
   },
   recording: {
     ...recordings[1],
@@ -415,7 +415,7 @@ const recordingDetailScenarios = {
     startedAt: iso(nowMs - 45 * 60_000),
     endedAt: undefined,
     ingest: { state: 'transferring', writtenBytes: 900_000_000, expectedBytes: 1_200_000_000, observedAt: iso(nowMs - 2_000) },
-    cmDetection: { state: 'detecting' },
+    hlsPlayback: [], cmDetection: { state: 'detecting' },
   },
   'encode-waiting': {
     ...recordings[1],
@@ -423,13 +423,13 @@ const recordingDetailScenarios = {
     encodedAssets: [],
     encodeProfiles: ['hevc-1080p'],
     encodeStatus: [{ profile: 'hevc-1080p', state: 'running' }],
-    cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
+    hlsPlayback: [], cmDetection: { state: 'detected', ranges: [{ startMs: 60_000, endMs: 90_000 }] },
   },
   trash: {
     ...recordings[1],
     deletedAt: iso(nowMs - 30 * 60_000),
     encodedAssets: [],
-    cmDetection: { state: 'disabled' },
+    hlsPlayback: [], cmDetection: { state: 'disabled' },
   },
 }
 
@@ -501,7 +501,7 @@ const transferringRecording = {
   startAt: iso(nowMs - 10 * HOUR),
   durationMs: 1_800_000,
   status: 'finished',
-  keepOriginal: 'always', cmDetection: { state: 'disabled' },
+  keepOriginal: 'always', hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: iso(nowMs - 10 * HOUR),
   ingest: {
     state: 'transferring',

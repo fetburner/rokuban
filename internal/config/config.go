@@ -15,21 +15,22 @@ import (
 
 // Config はアプリケーション全体の設定。
 type Config struct {
-	Server     ServerConfig     `yaml:"server"`
-	DB         DBConfig         `yaml:"db"`
-	Mirakcs    []MirakcSite     `yaml:"mirakcs"`
-	Storage    StorageConfig    `yaml:"storage"`
-	Ingest     IngestConfig     `yaml:"ingest"`
-	Epg        EpgConfig        `yaml:"epg"`
-	Ruler      RulerConfig      `yaml:"ruler"`
-	Reconciler ReconcilerConfig `yaml:"reconciler"`
-	Worker     WorkerConfig     `yaml:"worker"`
-	Encode     EncodeConfig     `yaml:"encode"`
-	CMDetect   CMDetectConfig   `yaml:"cm_detect"`
-	Live       LiveConfig       `yaml:"live"`
-	Webhook    WebhookConfig    `yaml:"webhook"`
-	Cleanup    CleanupConfig    `yaml:"cleanup"`
-	Log        LogConfig        `yaml:"log"`
+	Server       ServerConfig       `yaml:"server"`
+	DB           DBConfig           `yaml:"db"`
+	Mirakcs      []MirakcSite       `yaml:"mirakcs"`
+	Storage      StorageConfig      `yaml:"storage"`
+	Ingest       IngestConfig       `yaml:"ingest"`
+	Epg          EpgConfig          `yaml:"epg"`
+	Ruler        RulerConfig        `yaml:"ruler"`
+	Reconciler   ReconcilerConfig   `yaml:"reconciler"`
+	Worker       WorkerConfig       `yaml:"worker"`
+	Encode       EncodeConfig       `yaml:"encode"`
+	CMDetect     CMDetectConfig     `yaml:"cm_detect"`
+	RecordingHLS RecordingHLSConfig `yaml:"recording_hls"`
+	Live         LiveConfig         `yaml:"live"`
+	Webhook      WebhookConfig      `yaml:"webhook"`
+	Cleanup      CleanupConfig      `yaml:"cleanup"`
+	Log          LogConfig          `yaml:"log"`
 }
 
 // ServerConfig は HTTP サーバーの設定。
@@ -110,8 +111,9 @@ func quoteDSNValue(v string) string {
 // パス文字列から FS の種類を推測しない。geesefs / s3fs / Mountpoint のような
 // FUSE S3 を原本 ingest 先には使わず、派生物専用の領域でのみ使う。
 type StorageConfig struct {
-	MediaDir   string `yaml:"media_dir"`
-	ScratchDir string `yaml:"scratch_dir"`
+	MediaStoreName string `yaml:"media_store_name"`
+	MediaDir       string `yaml:"media_dir"`
+	ScratchDir     string `yaml:"scratch_dir"`
 
 	// AccelLocation を設定すると録画ファイルの配信を X-Accel-Redirect で
 	// リバースプロキシに委ねる（認可判定はアプリ、バイト転送は nginx）。
@@ -319,6 +321,9 @@ func loadFromString(raw string) (*Config, error) {
 		return nil, &ValidationError{missing: missing}
 	}
 
+	if err := cfg.validateRecordingHLS(); err != nil {
+		return nil, fmt.Errorf("validating config: %w", err)
+	}
 	if err := cfg.DB.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
 	}
@@ -355,6 +360,19 @@ func loadFromString(raw string) (*Config, error) {
 	cfg.Live.applyDefaults()
 	if err := cfg.Live.validate(); err != nil {
 		return nil, fmt.Errorf("validating config: %w", err)
+	}
+	// 録画 HLS は live.profiles を URL の path segment として公開するため、profiles を
+	// 必須にする。live.enabled が false のときは live.validate が名前を見ないので、
+	// 既存の安全な名前制約と重複検査をここで適用する。
+	if cfg.RecordingHLS.Enabled {
+		if len(cfg.Live.Profiles) == 0 {
+			return nil, fmt.Errorf("validating recording_hls profiles: live.profiles is required when recording_hls.enabled is true")
+		}
+		if !cfg.Live.Enabled {
+			if err := cfg.Live.validateProfileNames(); err != nil {
+				return nil, fmt.Errorf("validating recording_hls profiles: %w", err)
+			}
+		}
 	}
 
 	return &cfg, nil

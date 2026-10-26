@@ -195,6 +195,24 @@ func (c *LiveConfig) applyDefaults() {
 // （セグメントファイル名の接頭辞に使うため。英数字・ハイフン・アンダースコアのみ）。
 var liveProfileNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
+// validateProfileNames は live HLS の URL セグメントと出力名に使う名前を検査する。
+func (c LiveConfig) validateProfileNames() error {
+	seen := make(map[string]struct{}, len(c.Profiles))
+	for i, p := range c.Profiles {
+		if p.Name == "" {
+			return fmt.Errorf("live.profiles[%d].name is required", i)
+		}
+		if !liveProfileNamePattern.MatchString(p.Name) {
+			return fmt.Errorf("live.profiles[%d].name %q must match %s", i, p.Name, liveProfileNamePattern.String())
+		}
+		if _, dup := seen[p.Name]; dup {
+			return fmt.Errorf("live.profiles: duplicate name %q", p.Name)
+		}
+		seen[p.Name] = struct{}{}
+	}
+	return nil
+}
+
 // validate は live 設定の妥当性を検査する（Load 時、applyDefaults の後）。
 func (c LiveConfig) validate() error {
 	// **値域は enabled に関わらず見る。** `enabled: false` のまま値だけ先に
@@ -230,21 +248,11 @@ func (c LiveConfig) validate() error {
 	if err := rejectLiveStreamSelection("live.input_extra_args", c.InputExtraArgs); err != nil {
 		return err
 	}
+	if err := c.validateProfileNames(); err != nil {
+		return err
+	}
 
-	seen := make(map[string]struct{}, len(c.Profiles))
 	for i, p := range c.Profiles {
-		if p.Name == "" {
-			return fmt.Errorf("live.profiles[%d].name is required", i)
-		}
-		if !liveProfileNamePattern.MatchString(p.Name) {
-			return fmt.Errorf("live.profiles[%d].name %q must match %s",
-				i, p.Name, liveProfileNamePattern.String())
-		}
-		if _, dup := seen[p.Name]; dup {
-			return fmt.Errorf("live.profiles: duplicate name %q", p.Name)
-		}
-		seen[p.Name] = struct{}{}
-
 		if p.VideoCodec == "" {
 			return fmt.Errorf("live.profiles[%d] (%s): video_codec is required", i, p.Name)
 		}

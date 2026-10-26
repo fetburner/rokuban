@@ -32,6 +32,13 @@ const (
     r.program_start_at, r.program_duration_ms, r.status,
     r.started_at, r.ended_at, r.quality_events, r.deleted_at, r.created_at,
     a.size_bytes                        AS original_size_bytes,
+    -- 副問い合わせの a は外側の LEFT JOIN a を隠す。外側は state <> 'deleted' で deleting も
+    -- 含むので、active だけを見る共有述語 activePlaybackOriginalSQL（別名 a 前提）には使えない。
+    CASE WHEN ` + recordingPlaybackVisibleSQL + ` THEN COALESCE(
+        (SELECT COALESCE(a.ingest_generation, 0)::bigint FROM media_assets a
+         WHERE a.recording_id = r.id AND ` + activePlaybackOriginalSQL + `),
+        ip.temp_generation
+    ) END AS hls_generation,
     -- 計測済みでも drop_stats 行が無ければ 0 を返す。未計測を 0 と混同しない判定は
     -- has_measured_drop_summary で行い、集計値の COALESCE を存在判定に使わない。
     COALESCE(d.packets, 0)::bigint      AS drop_packets,
@@ -659,7 +666,7 @@ func scanRecordingQueryRow(row recordingRowScanner) (store.RecordingQueryRow, er
 		&fields.NetworkID, &fields.ServiceID, &fields.EventID, &fields.Title, &fields.Description,
 		&fields.ProgramStartAt, &fields.ProgramDurationMs, &fields.Status,
 		&fields.StartedAt, &fields.EndedAt, &fields.QualityEvents, &fields.DeletedAt, &fields.CreatedAt,
-		&fields.OriginalSizeBytes,
+		&fields.OriginalSizeBytes, &fields.HLSGeneration,
 		&fields.DropPackets, &fields.DropDrops, &fields.DropErrors, &fields.DropScrambled,
 		&fields.KeepOriginal,
 		&fields.EncodeProfiles,

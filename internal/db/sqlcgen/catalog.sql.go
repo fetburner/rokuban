@@ -326,7 +326,7 @@ func (q *Queries) CatalogListMediaAssetTSScans(ctx context.Context) ([]MediaAsse
 }
 
 const catalogListMediaAssets = `-- name: CatalogListMediaAssets :many
-SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at FROM media_assets ORDER BY id
+SELECT id, recording_id, kind, profile, rel_path, size_bytes, state, deleted_at, created_at, updated_at, ingest_generation FROM media_assets ORDER BY id
 `
 
 func (q *Queries) CatalogListMediaAssets(ctx context.Context) ([]MediaAsset, error) {
@@ -349,6 +349,7 @@ func (q *Queries) CatalogListMediaAssets(ctx context.Context) ([]MediaAsset, err
 			&i.DeletedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.IngestGeneration,
 		); err != nil {
 			return nil, err
 		}

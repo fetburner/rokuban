@@ -23,6 +23,7 @@ function recording(
     durationMs: 60_000,
     status: 'finished',
     keepOriginal: 'always',
+    hlsPlayback: [],
     cmDetection: { state: 'disabled' },
     createdAt: startAt,
     sizeBytes: 100,

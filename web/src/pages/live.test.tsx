@@ -59,6 +59,7 @@ function recording(overrides: Partial<Recording> = {}): Recording {
     durationMs: 60 * 60_000,
     status: 'recording',
     keepOriginal: 'always',
+    hlsPlayback: [],
     cmDetection: { state: 'disabled' },
     createdAt: '2026-10-02T10:00:00.000Z',
     ...overrides,

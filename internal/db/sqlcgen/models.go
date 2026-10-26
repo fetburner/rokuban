@@ -193,6 +193,8 @@ type MediaAsset struct {
 	DeletedAt   *time.Time
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+	// Generation of the ingest temp whose bytes were committed as this original
+	IngestGeneration *int64
 }
 
 type MediaAssetCut struct {
@@ -365,6 +367,10 @@ type RecordingIngestProgress struct {
 	WrittenBytes  int64
 	ExpectedBytes *int64
 	ObservedAt    time.Time
+	// Media-root-relative path of the ingest temp associated with this transfer
+	TempRelPath string
+	// Generation of the current ingest temp file
+	TempGeneration int64
 }
 
 type RecordingPlaybackPosition struct {

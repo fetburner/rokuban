@@ -1,7 +1,7 @@
 # 録画配信（VOD・サムネイル）の中央 streamer。
 #
 # **ライブ視聴の streamer は site/ にある。** 同じロール・同じバイナリで
-# デプロイのパラメータだけが違う（docs/operations/k8s.md §5「streamer のスケール」）。
+# デプロイのパラメータだけが違う（docs/operations/k8s-streamer.md §5「streamer のスケール」）。
 # config は全 Pod で共有するため `live.enabled: true` だが、中央 Deployment は
 # `--sites=` なので liveSites が空でライブのルートを登録しない。ffmpeg の起動検査
 # を通すため、中央 streamer も full image を使う（Service の selector は site 側と

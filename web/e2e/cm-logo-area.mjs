@@ -80,7 +80,7 @@ const recording7 = {
   keepOriginal: 'always',
   sizeBytes: 123456789,
   // L-4 後は生ログが録画の cmDetection.error に載る。現行の zod では未知フィールドとして無視される。
-  cmDetection: { state: 'failed', error: longError },
+  hlsPlayback: [], cmDetection: { state: 'failed', error: longError },
   createdAt: '2026-01-01T00:00:00Z',
 }
 

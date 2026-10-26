@@ -42,12 +42,14 @@ func (s *Media) CommitOriginal(
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 
-	if _, err := q.CreateMediaAsset(ctx, sqlcgen.CreateMediaAssetParams{
+	if _, err := q.CreateOriginalMediaAsset(ctx, sqlcgen.CreateOriginalMediaAssetParams{
 		RecordingID: in.RecordingID,
-		Kind:        store.AssetKindOriginal,
 		RelPath:     in.RelPath,
 		SizeBytes:   in.SizeBytes,
 	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("inserting original media asset: no ingest progress row for recording %d (the original copies its generation from it): %w", in.RecordingID, err)
+		}
 		return fmt.Errorf("inserting original media asset: %w", mapDatabaseError(err))
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {
@@ -109,6 +111,27 @@ func (s *Media) ClearIngestProgress(ctx context.Context, recordingID int64) erro
 		return fmt.Errorf("clearing ingest progress for recording %d: %w", recordingID, err)
 	}
 	return nil
+}
+
+// GetIngestTempState は進捗行の temp パスと世代を返す。行が無ければ nil, nil を返す。
+func (s *Media) GetIngestTempState(ctx context.Context, recordingID int64) (*store.IngestTempState, error) {
+	row, err := sqlcgen.New(s.pool).GetRecordingIngestTempState(ctx, recordingID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("getting ingest temp state for recording %d: %w", recordingID, err)
+	}
+	return &store.IngestTempState{TempRelPath: row.TempRelPath, TempGeneration: row.TempGeneration}, nil
+}
+
+// NextIngestTempGeneration は新しい temp ファイルに割り当てる世代を採番する。
+func (s *Media) NextIngestTempGeneration(ctx context.Context) (int64, error) {
+	generation, err := sqlcgen.New(s.pool).NextIngestTempGeneration(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("allocating ingest temp generation: %w", err)
+	}
+	return generation, nil
 }
 
 // PublishEncoded は試行・desired・作り直し要求・cut 区間を再確認して encoded を公開する。
@@ -523,6 +546,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 func (s *Media) UpsertIngestProgress(ctx context.Context, progress store.IngestProgress) error {
 	if err := sqlcgen.New(s.pool).UpsertRecordingIngestProgress(ctx, sqlcgen.UpsertRecordingIngestProgressParams{
 		RecordingID: progress.RecordingID, WrittenBytes: progress.WrittenBytes, ExpectedBytes: progress.ExpectedBytes,
+		TempRelPath: progress.TempRelPath, TempGeneration: progress.TempGeneration,
 	}); err != nil {
 		return fmt.Errorf("upserting ingest progress for recording %d: %w", progress.RecordingID, err)
 	}

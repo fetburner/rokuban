@@ -72,7 +72,7 @@ cd web && E2E_URL=http://localhost:40773 node e2e/issue-1224-sheet.mjs
 | シリーズ一覧の分割（`shelves-split.mjs`） | [checks/programs.md](checks/programs.md) |
 | ライブ視聴（`live.mjs`） | [checks/live.md](checks/live.md) |
 | 録画中の追っかけ再生（`chase.mjs` / `chase-audio.mjs`） | [checks/playback.md](checks/playback.md) |
-| LivePlayer の離脱ヒントと追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
+| LivePlayer の 503 文言・離脱ヒント・追っかけの表示時刻（`live-player-modes.mjs`） | [checks/playback.md](checks/playback.md) |
 | 録画原本 HLS と encoded の再生時刻（`recording-playback-timeline.mjs`） | [checks/playback.md](checks/playback.md) |
 | ホームの保存位置フレーム（`home-resume-frame.mjs`） | [checks/layout.md](checks/layout.md) |
 | 原本 HLS VOD の再生開始（`recording-original-vod.mjs`） | [checks/playback.md](checks/playback.md) |

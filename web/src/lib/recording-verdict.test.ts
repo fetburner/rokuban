@@ -19,6 +19,7 @@ const base: Recording = {
   durationMs: 1_800_000,
   status: 'finished',
   keepOriginal: 'always',
+  hlsPlayback: [],
   cmDetection: { state: 'disabled' },
   createdAt: '2026-01-01T12:30:00Z',
 }

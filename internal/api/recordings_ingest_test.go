@@ -30,8 +30,8 @@ func seedRecordSync(t *testing.T, pool *pgxpool.Pool, recordingID int64, recordI
 func seedIngestProgress(t *testing.T, pool *pgxpool.Pool, recordingID, written int64, expected *int64, observedAt time.Time) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO recording_ingest_progress (recording_id, written_bytes, expected_bytes, observed_at)
-		 VALUES ($1, $2, $3, $4)`,
+		`INSERT INTO recording_ingest_progress (recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, observed_at)
+		 VALUES ($1, $2, $3, 'sites/default/.rokuban-ingest-api-fixture', 1, $4)`,
 		recordingID, written, expected, observedAt); err != nil {
 		t.Fatalf("seeding recording_ingest_progress: %v", err)
 	}

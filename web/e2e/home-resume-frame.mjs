@@ -63,7 +63,7 @@ const baseRecording = {
   durationMs: 22_000,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt,
   endedAt: new Date(now - 8_000).toISOString(),
   createdAt: new Date(now - 60_000).toISOString(),

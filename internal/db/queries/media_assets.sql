@@ -3,6 +3,15 @@ INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id;
 
+-- 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
+-- 転送中の recording_ingest_progress からコピーする。
+-- name: CreateOriginalMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, ingest_generation)
+SELECT p.recording_id, 'original', sqlc.arg('rel_path'), sqlc.arg('size_bytes'), p.temp_generation
+FROM recording_ingest_progress p
+WHERE p.recording_id = sqlc.arg('recording_id')
+RETURNING id;
+
 -- ingest の冪等性チェック用。worker/ingest.go の Work は転送を始める前にこれで
 -- 「この recording_id の original はもうコミット済みか」を確認する
 -- （不変条件 3「コミット = DB 行」。行が無ければまだコミットされていない）。
@@ -229,22 +238,6 @@ WHERE a.recording_id = $1
   AND a.kind = 'original'
   AND a.state = 'active'
   AND r.deleted_at IS NULL;
-
--- 原本 MPEG-2 を HLS に変換する対象を引く。録画完了済み・ごみ箱/ purge 前・
--- active original のみを開始可能とし、site は URL の site-scoped streamer と照合する。
--- 既存セッションの再取得では使わず、セッション開始前と rel_path lock 取得後に呼ぶ。
--- name: GetOriginalVODTarget :one
-SELECT a.id, a.rel_path, a.size_bytes, r.site
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id = $1
-  AND a.kind = 'original'
-  AND a.state = 'active'
-  AND r.site = $2
-  AND r.status = 'finished'
-  AND r.deleted_at IS NULL
-  AND r.superseded_at IS NULL
-  AND r.purged_at IS NULL;
 
 -- 配信対象のサムネイルを引く。ごみ箱・削除済みは配らない（原本と同じ契約）。
 -- name: GetThumbnailMediaAssetForServing :one

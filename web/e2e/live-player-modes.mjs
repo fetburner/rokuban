@@ -1,5 +1,5 @@
-// LivePlayer の live / chase / original-vod 各モードで、離脱時のヒントが
-// 実ブラウザから送られることと、追っかけの表示時刻が録画先頭 + media time に
+// LivePlayer の live / chase / original-vod 各モードで、離脱時のヒントと
+// 503 の表示が実ブラウザで方式に合うこと、追っかけの表示時刻が録画先頭 + media time に
 // 対応することを測る。各判定は browser-e2e で実行する。
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs'
@@ -37,7 +37,7 @@ const chaseRecording = {
   durationMs: 60 * 60_000,
   status: 'recording',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt: recordingStartedAt,
   createdAt: '2026-01-01T12:00:00Z',
   encodeProfiles: ['vod-h264'],
@@ -137,7 +137,7 @@ await context.addInitScript(() => {
   window.EventSource = E2EEventSource
 })
 
-async function installRoutes(page) {
+async function installRoutes(page, playlistErrorMode) {
   const leaveRequests = []
   const mediaRequests = []
   page.on('request', (request) => {
@@ -190,6 +190,16 @@ async function installRoutes(page) {
     if (requestPath.endsWith('/leave') && method === 'POST') return route.fulfill({ status: 204 })
     if (/\/live\/playlist\.m3u8$/.test(requestPath) ||
       /\/(?:chase|original-vod)(?:\/offset\/\d+)?\/playlist\.m3u8$/.test(requestPath)) {
+      let requestMode = 'live'
+      if (requestPath.includes('/original-vod/')) requestMode = 'original-vod'
+      else if (requestPath.includes('/chase/')) requestMode = 'chase'
+      if (requestMode === playlistErrorMode) {
+        return route.fulfill({
+          status: 503,
+          contentType: 'text/plain',
+          body: 'too many concurrent live sessions on this process',
+        })
+      }
       return route.fulfill({ status: 200, contentType: 'application/vnd.apple.mpegurl', body: master })
     }
     if (/\/(?:live|chase|original-vod)(?:\/offset\/\d+)?\/variant\.m3u8$/.test(requestPath)) {
@@ -258,6 +268,52 @@ async function openMode(mode) {
   await waitForRealPlayback(page, mode)
   await page.waitForTimeout(250)
   return { page, leaveRequests, mediaRequests }
+}
+
+async function check503Mode(mode) {
+  const page = await context.newPage()
+  await installRoutes(page, mode)
+  if (mode === 'live') {
+    await page.goto(`${BASE_URL}/live?site=${SITE}&service=109001`, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('button', { name: /再生/ }).click()
+  } else if (mode === 'chase') {
+    await page.goto(`${BASE_URL}/recordings/${CHASE_ID}#chase`, { waitUntil: 'domcontentloaded' })
+  } else {
+    await page.goto(`${BASE_URL}/recordings/${ORIGINAL_ID}`, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('recording-playback-start').click()
+  }
+
+  const expectedByMode = {
+    live: {
+      title: 'いま視聴できません（チューナー不足または同時視聴数の上限）。',
+      guidance: /チャンネルを切り替えた直後は/,
+    },
+    chase: {
+      title: 'いま追っかけ再生を始められません。',
+      guidance: 'しばらく待ってから再読み込みしてください。',
+    },
+    'original-vod': {
+      title: 'いま再生を始められません（同時再生数の上限、または streamer の再起動中）。',
+      guidance: 'しばらく待ってから再読み込みしてください。',
+    },
+  }
+  const expected = expectedByMode[mode]
+  const titleShown = await page.getByText(expected.title, { exact: true })
+    .waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  const bodyShown = await page.getByText('too many concurrent live sessions on this process', { exact: true })
+    .waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  const guidanceShown = await page.getByText(expected.guidance)
+    .waitFor({ timeout: 5000 }).then(() => true).catch(() => false)
+  if (!titleShown || !bodyShown || !guidanceShown) {
+    ng.push(`${mode}: 503 の見出し・本文・案内を表示しない`)
+  }
+  if (mode !== 'live') {
+    const text = await page.locator('body').innerText()
+    if (/チューナー|チャンネルを切り替えた/.test(text)) {
+      ng.push(`${mode}: 503 にライブのチューナー案内が表示された`)
+    }
+  }
+  await page.close()
 }
 
 // visible への切替は離脱ではない。hidden の判定が無い実装（visible でも送る）を落とす。
@@ -345,6 +401,11 @@ for (const scenario of [
   await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'visibilitychange', scenario.mode)
   await triggerAndCheck(page, leaveRequests, scenario.expectedPath, 'pagehide', scenario.mode)
   await page.close()
+}
+
+for (const mode of ['live', 'chase', 'original-vod']) {
+  log(`\n=== ${mode}: 503 error copy ===`)
+  await check503Mode(mode)
 }
 
 await context.close()

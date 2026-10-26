@@ -59,7 +59,7 @@ const detailRecording = {
   durationMs: HOUR,
   status: 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt: iso(baseMs),
   endedAt: iso(baseMs + HOUR),
   createdAt: iso(baseMs + HOUR),
@@ -82,7 +82,7 @@ const recordings = Array.from({ length: 24 }, (_, i) => ({
   durationMs: HOUR,
   status: i === 0 ? 'recording' : 'finished',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   createdAt: iso(baseMs + HOUR),
 }))
 

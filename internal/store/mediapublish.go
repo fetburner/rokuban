@@ -13,9 +13,17 @@ var ErrStalePublishPlan = errors.New("encoded publish plan is stale")
 
 // IngestProgress は原本の転送中に観測した進捗を表す。
 type IngestProgress struct {
-	RecordingID   int64
-	WrittenBytes  int64
-	ExpectedBytes *int64
+	RecordingID    int64
+	WrittenBytes   int64
+	ExpectedBytes  *int64
+	TempRelPath    string
+	TempGeneration int64
+}
+
+// IngestTempState は進捗行が指す temp ファイルと世代を表す。
+type IngestTempState struct {
+	TempRelPath    string
+	TempGeneration int64
 }
 
 // EncodeProgress は通知するエンコード進捗を表す。
@@ -157,9 +165,14 @@ type InPlaceResult struct {
 // publish が成功した後に commit が失敗したら、store はエラーを返し、ファイルは行を持たない孤児として残る。
 // 呼び出し側はそのファイルを消さず、孤児の監査に任せる。
 type MediaPublish interface {
+	// GetIngestTempState は進捗行の temp パスと世代を返す。行が無ければ nil, nil を返す。
+	GetIngestTempState(ctx context.Context, recordingID int64) (*IngestTempState, error)
+	// NextIngestTempGeneration は新しい temp ファイルに割り当てる世代を採番する。
+	NextIngestTempGeneration(ctx context.Context) (int64, error)
 	// ClearIngestProgress は録画の ingest 進捗行を削除する。行が無くても成功する。
 	ClearIngestProgress(ctx context.Context, recordingID int64) error
 	// CommitOriginal は原本・進捗の削除・凍結方針を一つの tx で確定する。
+	// 進捗行が必要である（原本の世代を進捗行から写す）。行が無ければ原本を作らずエラーを返す。
 	// 同じ rel_path の原本が既にあれば ErrConflict を返し、publish は呼ばない。
 	// resolvePolicy は同じ tx で読んだ予約・上書き・意図に対して 1 回だけ呼ぶ。
 	CommitOriginal(ctx context.Context, input CommitOriginalInput, resolvePolicy ResolveEncodePolicy, publish func() error) error

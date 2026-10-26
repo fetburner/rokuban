@@ -54,7 +54,7 @@ const recording = {
   durationMs: 60 * 60_000,
   status: 'recording',
   keepOriginal: 'always',
-  cmDetection: { state: 'disabled' },
+  hlsPlayback: [], cmDetection: { state: 'disabled' },
   startedAt: startAt,
   createdAt: '2026-01-01T12:00:00Z',
   encodeProfiles: ['vod-h264'],

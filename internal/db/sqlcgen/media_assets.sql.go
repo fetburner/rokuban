@@ -40,6 +40,29 @@ func (q *Queries) CreateMediaAsset(ctx context.Context, arg CreateMediaAssetPara
 	return id, err
 }
 
+const createOriginalMediaAsset = `-- name: CreateOriginalMediaAsset :one
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, ingest_generation)
+SELECT p.recording_id, 'original', $1, $2, p.temp_generation
+FROM recording_ingest_progress p
+WHERE p.recording_id = $3
+RETURNING id
+`
+
+type CreateOriginalMediaAssetParams struct {
+	RelPath     string
+	SizeBytes   int64
+	RecordingID int64
+}
+
+// 原本の世代は、原本の INSERT と進捗行の削除を同じ tx に置くため、
+// 転送中の recording_ingest_progress からコピーする。
+func (q *Queries) CreateOriginalMediaAsset(ctx context.Context, arg CreateOriginalMediaAssetParams) (int64, error) {
+	row := q.db.QueryRow(ctx, createOriginalMediaAsset, arg.RelPath, arg.SizeBytes, arg.RecordingID)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
+}
+
 const deleteMediaAssetCuts = `-- name: DeleteMediaAssetCuts :exec
 DELETE FROM media_asset_cuts WHERE media_asset_id = $1
 `
@@ -293,47 +316,6 @@ func (q *Queries) GetOriginalMediaAssetID(ctx context.Context, recordingID int64
 	var id int64
 	err := row.Scan(&id)
 	return id, err
-}
-
-const getOriginalVODTarget = `-- name: GetOriginalVODTarget :one
-SELECT a.id, a.rel_path, a.size_bytes, r.site
-FROM media_assets a
-JOIN recordings r ON r.id = a.recording_id
-WHERE a.recording_id = $1
-  AND a.kind = 'original'
-  AND a.state = 'active'
-  AND r.site = $2
-  AND r.status = 'finished'
-  AND r.deleted_at IS NULL
-  AND r.superseded_at IS NULL
-  AND r.purged_at IS NULL
-`
-
-type GetOriginalVODTargetParams struct {
-	RecordingID int64
-	Site        string
-}
-
-type GetOriginalVODTargetRow struct {
-	ID        int64
-	RelPath   string
-	SizeBytes int64
-	Site      string
-}
-
-// 原本 MPEG-2 を HLS に変換する対象を引く。録画完了済み・ごみ箱/ purge 前・
-// active original のみを開始可能とし、site は URL の site-scoped streamer と照合する。
-// 既存セッションの再取得では使わず、セッション開始前と rel_path lock 取得後に呼ぶ。
-func (q *Queries) GetOriginalVODTarget(ctx context.Context, arg GetOriginalVODTargetParams) (GetOriginalVODTargetRow, error) {
-	row := q.db.QueryRow(ctx, getOriginalVODTarget, arg.RecordingID, arg.Site)
-	var i GetOriginalVODTargetRow
-	err := row.Scan(
-		&i.ID,
-		&i.RelPath,
-		&i.SizeBytes,
-		&i.Site,
-	)
-	return i, err
 }
 
 const getRecordingByID = `-- name: GetRecordingByID :one

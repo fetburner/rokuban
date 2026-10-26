@@ -2294,6 +2294,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	if err := os.Chtimes(tempPath, old, old); err != nil {
 		t.Fatal(err)
 	}
+	seedIngestTempForCommit(t, pool, recordingID, mediaDir, tempPath)
 
 	workPaused := make(chan struct{})
 	releaseWork := make(chan struct{})

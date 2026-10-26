@@ -5764,11 +5764,11 @@ SOFTWARE.
 
 
 Component: zod
-Version: 4.6.5
+Version: 4.6.6
 Included in: Production Web dependency bundled in web/dist
 Copyright: Copyright (c) 2025 Colin McDonnell
 License: MIT
-Source: https://registry.npmjs.org/zod/-/zod-4.6.5.tgz
+Source: https://registry.npmjs.org/zod/-/zod-4.6.6.tgz
 Upstream: https://github.com/colinhacks/zod
 
 ----- LICENSE (license text) -----
