@@ -32,7 +32,7 @@ func TestRescueLegacyQualityEvents(t *testing.T) {
 			QualityEvents: legacyEvents, CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
 		}},
 	}
-	genDir, err := Write(mediaDir, doc, 1)
+	genDir, err := Write(mediaDir, doc, 1, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestRescueNullQualityEvents(t *testing.T) {
 			QualityEvents: json.RawMessage(`null`), CreatedAt: fixedTime(), UpdatedAt: fixedTime(),
 		}},
 	}
-	genDir, err := Write(mediaDir, doc, 1)
+	genDir, err := Write(mediaDir, doc, 1, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}

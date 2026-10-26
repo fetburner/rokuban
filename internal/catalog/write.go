@@ -26,7 +26,8 @@ type catalogFile interface {
 }
 
 // openCatalogFile は世代を構成するファイルを最終名で開く。**一時名 → rename は
-// 使わない**（docs/storage.md §2: S3/FUSE にアトミック rename は無い）。公開点は
+// 使わない**（docs/storage/rescue.md「公開点は manifest の書き終わり」: rename に頼らないので
+// NFS の rename の意味論に依存せず、S3 へそのまま複製しても完成の判定が成り立つ）。公開点は
 // manifest を最後に書き終えることであって、名前の差し替えではない。
 var openCatalogFile = func(path string) (catalogFile, error) {
 	return os.Create(path)
@@ -56,7 +57,10 @@ func Dir(mediaDir string) string {
 // 途中で失敗しても書きかけの世代ディレクトリは消さない。プロセスが落ちる形の
 // 停止では後始末が走らない以上、後始末を正しさの前提にできないため（掃除は
 // Prune のルールに一本化する。docs/storage.md §8「不完全世代の保持と掃除」）。
-func Write(mediaDir string, doc *Document, keep int) (string, error) {
+//
+// check は置き場の目印の照合で、パスを解決するファイルシステム操作（mkdir・create・
+// 削除）の前に呼ぶ。nil なら照合しない。開いたファイルへの write / Sync の前には呼ばない。
+func Write(mediaDir string, doc *Document, keep int, check func() error) (string, error) {
 	if doc == nil {
 		return "", fmt.Errorf("document is nil")
 	}
@@ -68,6 +72,10 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 	}
 
 	dir := Dir(mediaDir)
+	// この 1 回の照合が、catalog/ と世代ディレクトリの mkdir を守る。
+	if err := checkCatalogStore(check); err != nil {
+		return "", err
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("creating catalog dir: %w", err)
 	}
@@ -77,7 +85,7 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 		return "", err
 	}
 
-	docSize, docSHA256, err := writeGenerationFile(filepath.Join(genDir, DocumentFilename), DocumentFilename, doc)
+	docSize, docSHA256, err := writeGenerationFile(filepath.Join(genDir, DocumentFilename), DocumentFilename, doc, check)
 	if err != nil {
 		return genDir, err
 	}
@@ -91,18 +99,21 @@ func Write(mediaDir string, doc *Document, keep int) (string, error) {
 		SizeBytes:       docSize,
 		SHA256:          docSHA256,
 	}
-	if _, _, err := writeGenerationFile(filepath.Join(genDir, ManifestFilename), ManifestFilename, manifest); err != nil {
+	if _, _, err := writeGenerationFile(filepath.Join(genDir, ManifestFilename), ManifestFilename, manifest, check); err != nil {
 		return genDir, err
 	}
 
-	if err := Prune(dir, keep); err != nil {
+	if err := Prune(dir, keep, check); err != nil {
 		return genDir, fmt.Errorf("pruning catalog: %w", err)
 	}
 	return genDir, nil
 }
 
 // writeGenerationFile は v を JSON で path へ一発書きし、サイズと sha256 を返す。
-func writeGenerationFile(path, name string, v any) (sizeBytes int64, sha256Hex string, err error) {
+func writeGenerationFile(path, name string, v any, check func() error) (sizeBytes int64, sha256Hex string, err error) {
+	if err := checkCatalogStore(check); err != nil {
+		return 0, "", err
+	}
 	f, err := openCatalogFile(path)
 	if err != nil {
 		return 0, "", fmt.Errorf("creating %s: %w", name, err)
@@ -198,9 +209,14 @@ func scanSnapshots(catalogDir string) (names []string, stale []string, err error
 // 掃除も走らない）。docs/storage.md §8 に同じ但し書きがある。
 //
 // catalog/ 以外は触らない。catalog- で始まらないファイルにも触らない。
-func Prune(catalogDir string, keep int) error {
+//
+// check は置き場の目印の照合で、走査の前と世代の削除の前に 1 回ずつ呼ぶ。nil なら照合しない。
+func Prune(catalogDir string, keep int, check func() error) error {
 	if keep <= 0 {
 		keep = DefaultKeep
+	}
+	if err := checkCatalogStore(check); err != nil {
+		return err
 	}
 
 	names, stale, err := scanSnapshots(catalogDir)
@@ -238,12 +254,24 @@ func Prune(catalogDir string, keep int) error {
 		doomed = append(doomed, complete[keep:]...)
 	}
 
+	if len(doomed) > 0 {
+		if err := checkCatalogStore(check); err != nil {
+			return err
+		}
+	}
 	for _, name := range doomed {
 		if err := os.RemoveAll(filepath.Join(catalogDir, name)); err != nil {
 			return fmt.Errorf("removing catalog %q: %w", name, err)
 		}
 	}
 	return nil
+}
+
+func checkCatalogStore(check func() error) error {
+	if check == nil {
+		return nil
+	}
+	return check()
 }
 
 // Selection は rescue が選んだ catalog スナップショット。

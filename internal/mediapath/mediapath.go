@@ -9,6 +9,7 @@ package mediapath
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -18,6 +19,12 @@ var ErrEscapesMediaDir = errors.New("path escapes the media directory")
 
 // ErrReservedMediaPath は rel_path がアプリ内部の予約領域を指す場合のエラー。
 var ErrReservedMediaPath = errors.New("path uses a reserved media namespace")
+
+// ErrStoreMarkerMismatch はメディア置き場の目印が期待した名前と一致しない場合のエラー。
+var ErrStoreMarkerMismatch = errors.New("media store marker mismatch")
+
+// StoreMarkerFileName はメディア置き場の root に置く固定の目印ファイル名。
+const StoreMarkerFileName = ".rokuban-store"
 
 // IngestTempFilePrefix は ingest が canonical file と同じディレクトリに作る、record
 // 固有一時ファイルの予約接頭辞。孤児回収はこのファイルを通常ファイルとして拾い、
@@ -47,6 +54,92 @@ const MediaRelPathLockFilePrefix = ".rokuban-rel-path-lock-"
 // （7 日）の後に deleteOrphanFile が canonical と同じ手順で消す。
 const EncodeTempFilePrefix = ".rokuban-encode-"
 
+// ValidStoreName は置き場名が小文字 ASCII・数字・ハイフンだけで構成されるかを返す。
+func ValidStoreName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// CheckStoreMarker は mediaDir の目印が expected と一致することを確認する。
+// expected が空なら、従来構成との互換性のため検査しない。
+func CheckStoreMarker(mediaDir, expected string) error {
+	if expected == "" {
+		return nil
+	}
+	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)
+	info, err := os.Lstat(markerPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %s is missing", ErrStoreMarkerMismatch, markerPath)
+		}
+		return fmt.Errorf("stating store marker %q: %w", markerPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: %s is not a regular file", ErrStoreMarkerMismatch, markerPath)
+	}
+	contents, err := os.ReadFile(markerPath)
+	if err != nil {
+		return fmt.Errorf("reading store marker %q: %w", markerPath, err)
+	}
+	if string(contents) != expected {
+		return fmt.Errorf("%w: expected %q, found %q", ErrStoreMarkerMismatch, expected, contents)
+	}
+	return nil
+}
+
+// WriteStoreMarker は marker が無い mediaDir の root に expected を書き、ファイルと root を同期する。
+// 既存の同名 marker は成功とし、別名の marker は置き場の改名になるため上書きしない。
+func WriteStoreMarker(mediaDir, expected string) error {
+	if !ValidStoreName(expected) {
+		return fmt.Errorf("invalid media store name %q: use lowercase ASCII letters, digits, and hyphens", expected)
+	}
+	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)
+	file, err := os.OpenFile(markerPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		if err := CheckStoreMarker(mediaDir, expected); err != nil {
+			return fmt.Errorf("refusing to replace existing store marker: %w", err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("opening store marker %q: %w", markerPath, err)
+	}
+	if n, writeErr := file.Write([]byte(expected)); writeErr != nil {
+		_ = file.Close()
+		return fmt.Errorf("writing store marker %q: %w", markerPath, writeErr)
+	} else if n != len(expected) {
+		_ = file.Close()
+		return fmt.Errorf("writing store marker %q: short write (%d of %d bytes)", markerPath, n, len(expected))
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("syncing store marker %q: %w", markerPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("closing store marker %q: %w", markerPath, err)
+	}
+	dir, err := os.Open(mediaDir)
+	if err != nil {
+		return fmt.Errorf("opening media directory %q: %w", mediaDir, err)
+	}
+	if err := dir.Sync(); err != nil {
+		_ = dir.Close()
+		return fmt.Errorf("syncing media directory %q: %w", mediaDir, err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("closing media directory %q: %w", mediaDir, err)
+	}
+	return nil
+}
+
 // IsIngestTempFile はファイル名が ingest の record 固有一時ファイルかを返す。
 // パス全体ではなく basename だけを見るため、走査側と ingest 側で同じ判定を使える。
 func IsIngestTempFile(name string) bool {
@@ -70,6 +163,7 @@ func IsMediaRelPathLockFile(name string) bool {
 
 // Resolve は mediaDir と relPath を結合した絶対パスを返す。
 // relPath が mediaDir の外を指す場合は ErrEscapesMediaDir を返す。
+// ロックディレクトリ配下と、root の置き場の目印 StoreMarkerFileName は ErrReservedMediaPath を返す。
 func Resolve(mediaDir, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("%w: empty path", ErrEscapesMediaDir)
@@ -78,6 +172,10 @@ func Resolve(mediaDir, relPath string) (string, error) {
 	base := filepath.Clean(mediaDir)
 	cleanRelPath := filepath.Clean(relPath)
 	if cleanRelPath == MediaRelPathLockDirName || strings.HasPrefix(cleanRelPath, MediaRelPathLockDirName+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrReservedMediaPath, relPath)
+	}
+	// root の置き場の目印は、media path として unlink・上書きさせない。ネストした同名ファイルは通常のパス。
+	if cleanRelPath == StoreMarkerFileName {
 		return "", fmt.Errorf("%w: %q", ErrReservedMediaPath, relPath)
 	}
 	target := filepath.Clean(filepath.Join(base, cleanRelPath))

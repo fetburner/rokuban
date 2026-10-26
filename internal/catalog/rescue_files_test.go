@@ -35,7 +35,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(mediaDir, "present.mp4"), []byte("media"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Write(mediaDir, doc, 7); err != nil {
+	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
 		t.Fatal(err)
 	}
 	for range 2 {

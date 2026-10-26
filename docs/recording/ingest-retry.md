@@ -240,7 +240,7 @@ rename 後に残った canonical orphan は aging 後に報告し、自動削除
 
 **弱い FS へ原本を直接書く設計は、将来課題へ戻した。** FUSE の rename 非対応や fsync / Close の不確かな意味論に合わせる必要があるためである。
 
-本 issue では `storage.media_dir` を強い FS に限定し、FUSE S3 は派生物専用の領域に限る。
+`storage.media_dir` は強い FS に限定し、FUSE S3 は原本・派生物のどちらにも使わない。
 
 <details><summary>根拠</summary>
 

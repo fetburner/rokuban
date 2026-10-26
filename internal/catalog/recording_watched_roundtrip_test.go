@@ -57,7 +57,7 @@ func TestExportRescue_PreservesWatchedButOmitsPlaybackPosition(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	genDir, err := Write(mediaDir, doc, DefaultKeep)
+	genDir, err := Write(mediaDir, doc, DefaultKeep, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
 	}

@@ -220,7 +220,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	mediaDir := t.TempDir()
-	if _, err := Write(mediaDir, doc, 7); err != nil {
+	if _, err := Write(mediaDir, doc, 7, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 
@@ -617,7 +617,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 
 	// フルパイプライン: 最後に取れた Document を rescue しても FK 違反が出ないこと。
 	mediaDir := t.TempDir()
-	if _, err := Write(mediaDir, lastDoc, 7); err != nil {
+	if _, err := Write(mediaDir, lastDoc, 7, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
 	if _, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {

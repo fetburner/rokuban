@@ -61,7 +61,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := catalog.Write(mediaDir, doc, 7); err != nil {
+				if _, err := catalog.Write(mediaDir, doc, 7, nil); err != nil {
 					t.Fatal(err)
 				}
 			}

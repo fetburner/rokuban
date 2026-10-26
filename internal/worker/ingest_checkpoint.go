@@ -41,7 +41,8 @@ func ingestTempPathForCheckpoint(path string) string {
 
 // writeIngestCheckpoint は SHA-256 の状態を atomic に置き換える。
 // 呼び出し元は temp の flock を保持し、先に temp を Sync 済みにする。
-func writeIngestCheckpoint(tempPath string, offset int64, hasher hash.Hash) error {
+// check は CreateTemp の前に 1 回だけ呼ぶ（nil なら呼ばない）。
+func writeIngestCheckpoint(tempPath string, offset int64, hasher hash.Hash, check func() error) error {
 	if offset < 0 {
 		return fmt.Errorf("ingest checkpoint offset must be non-negative, got %d", offset)
 	}
@@ -67,6 +68,11 @@ func writeIngestCheckpoint(tempPath string, offset int64, hasher hash.Hash) erro
 	copy(payload[ingestCheckpointHeader+len(state):], checksum[:])
 
 	checkpointPath := ingestCheckpointPath(tempPath)
+	if check != nil {
+		if err := check(); err != nil {
+			return err
+		}
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(checkpointPath), filepath.Base(checkpointPath)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("creating ingest checkpoint: %w", err)
@@ -153,7 +159,8 @@ func equalBytes(a, b []byte) bool {
 
 // replayIngestTempFileWithCheckpoint restores the hash state and reads only bytes past its offset.
 // If the slice context ends, it syncs the temp and saves the partial replay position before returning.
-func replayIngestTempFileWithCheckpoint(ctx context.Context, tempPath string, temp ingestFile, hasher hash.Hash) (int64, bool, error) {
+// check is passed to writeIngestCheckpoint.
+func replayIngestTempFileWithCheckpoint(ctx context.Context, tempPath string, temp ingestFile, hasher hash.Hash, check func() error) (int64, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, false, err
 	}
@@ -188,7 +195,7 @@ func replayIngestTempFileWithCheckpoint(ctx context.Context, tempPath string, te
 		if err := temp.Sync(); err != nil {
 			return total, false, fmt.Errorf("syncing ingest temp after interrupted replay: %w", err)
 		}
-		if err := writeIngestCheckpoint(tempPath, total, hasher); err != nil {
+		if err := writeIngestCheckpoint(tempPath, total, hasher, check); err != nil {
 			return total, false, fmt.Errorf("saving ingest checkpoint after interrupted replay: %w", err)
 		}
 		return total, false, ctx.Err()
@@ -205,11 +212,11 @@ func replayIngestTempFileWithCheckpoint(ctx context.Context, tempPath string, te
 	return total, true, nil
 }
 
-func persistIngestCheckpoint(tempPath string, temp ingestFile, offset int64, hasher hash.Hash) error {
+func persistIngestCheckpoint(tempPath string, temp ingestFile, offset int64, hasher hash.Hash, check func() error) error {
 	if err := temp.Sync(); err != nil {
 		return fmt.Errorf("syncing ingest temp before checkpoint: %w", err)
 	}
-	if err := writeIngestCheckpoint(tempPath, offset, hasher); err != nil {
+	if err := writeIngestCheckpoint(tempPath, offset, hasher, check); err != nil {
 		return fmt.Errorf("saving ingest checkpoint: %w", err)
 	}
 	return nil

@@ -25,7 +25,7 @@ func TestRescueFile_DoesNotLockDeletedAssets(t *testing.T) {
 		MediaAssets: []MediaAsset{{ID: 1, RecordingID: 1, Kind: "encoded", Profile: &profile, RelPath: "gone.mp4",
 			State: "deleted", DeletedAt: &at, CreatedAt: fixedTime(), UpdatedAt: fixedTime()}},
 	}
-	genDir, err := Write(mediaDir, doc, 7)
+	genDir, err := Write(mediaDir, doc, 7, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

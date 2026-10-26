@@ -47,7 +47,7 @@
 | `cm_detect.enabled` | `false` | CM 検出を有効にするか |
 | `cm_detect.binary_dir` | `/usr/local/bin` | JLSE のコマンドの配置先 |
 
-`mirakcs` は `site` も既定なしで各要素に必須である。`storage.media_dir` は、fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS を指す。FUSE S3 は原本 ingest 先にしない。`storage.scratch_dir` は worker ロールでは空にできず、起動時に拒否する。
+`mirakcs` は `site` も既定なしで各要素に必須である。`storage.media_dir` は、fsync・close・同一 FS rename・親ディレクトリ fsync を保証するローカル FS / JuiceFS / NFS を指す。FUSE S3 は原本にも派生物にも使わない。`storage.scratch_dir` は worker ロールでは空にできず、起動時に拒否する。
 
 `ingest.concurrency` は `チューナー数 + 全速 pull の許容本数（1〜2）` で決める。既定 3 は 2 チューナー機の下端で（[録画](../recording.md) §5.4）、4 チューナー機では 5〜6 になる。接続プールの予算はこの値に追随する（[DB 運用](../operations/database.md)）。
 

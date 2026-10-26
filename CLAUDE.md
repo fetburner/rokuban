@@ -114,7 +114,7 @@ open のエピックは `gh issue list --label epic --state open` で引く。�
 すべての実装タスクで遵守する。
 
 1. **api ロールは mirakc に問い合わせない**。ファイルシステムにも依存しない（go:embed は可）。import 境界は `.golangci.yml` の `depguard` が判定する
-2. **mirakc とのやりとりは常に API**、自身のストレージとは常にファイル I/O（S3 SDK 禁止）
+2. **mirakc とのやりとりは常に API**、自身のストレージでは、原本は常にファイル I/O、派生物は置き場のインターフェース越し（FS 実装か S3 API 実装）で扱う
 3. **コミット = DB 行**。ファイルの存在はコミットではない
 4. **ffmpeg/ffprobe の exec は worker / streamer パッケージのみ**。import 境界は `.golangci.yml` の `depguard` が判定する
 5. **レベルトリガー**: イベント（SSE/NOTIFY）はヒント。正しい状態は定期 reconcile が再取得する
