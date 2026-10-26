@@ -22,18 +22,18 @@ PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、enco
 
 置き場名を引数に取る関数でも、汎用プランへ切り替わった後の性能を測った。
 
-[測定用 SQL](../../scripts/measure-until-encoded-store-predicate.sql) は、原本 2 万、TS 計測 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万の合成データを作る。encoded のコピーは 2 置き場に 2.7 万行あり、1 資産あたり 1〜2 個、`tokyo` にあるものは 1.35 万件である。CM 検出は無効、作り直し要求は空にした。
+[測定用 SQL](../../../scripts/measure-until-encoded-store-predicate.sql) は、原本 2 万、TS 計測 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万の合成データを作る。encoded のコピーは 2 置き場に 2.7 万行あり、1 資産あたり 1〜2 個、`tokyo` にあるものは 1.35 万件である。CM 検出は無効、作り直し要求は空にした。media_assets は現行 migration の索引を再現し、候補索引はコピー表だけに追加した。
 
 PostgreSQL 17.11 で、各 `until_encoded` 比率の statement を 5 回実行してから、6〜8 回目を `EXPLAIN ANALYZE` で測った。`pg_prepared_statements` は各測定で `custom_plans = 5`、`generic_plans = 3` を示した。表の時間は 3 回の中央値である。直前の PostgreSQL 16 の表は削除 reconcile の consumer query を測っているため、時間は直接比較しない。
 
 | 述語 | until_encoded | 適格行数 | 計画の要点 | 中央値 (ms) |
 |---|---:|---:|---|---:|
-| 現 view | 100% | 18,000 | Nested Loop Semi Join | 29.64 |
-| 現 view | 50% | 8,978 | Nested Loop Semi Join | 29.40 |
-| 現 view | 20% | 3,598 | Nested Loop Semi Join | 26.48 |
-| 置き場関数・追加索引なし | 50% | 6,703 | コピー表を Seq Scan、8,978 loops | 8,354.84 |
-| 置き場関数・部分索引あり | 100% | 13,500 | コピー表を Index Only Scan | 84.66 |
-| 置き場関数・部分索引あり | 50% | 6,703 | コピー表を Index Only Scan | 36.75 |
-| 置き場関数・部分索引あり | 20% | 2,682 | コピー表を Index Only Scan | 25.91 |
+| 現 view | 100% | 18,000 | Nested Loop Semi Join | 25.60 |
+| 現 view | 50% | 8,978 | Nested Loop Semi Join | 27.05 |
+| 現 view | 20% | 3,598 | Nested Loop Semi Join | 23.72 |
+| 置き場関数・追加索引なし | 50% | 6,703 | コピー表を Seq Scan、6,710 loops | 5,359.45 |
+| 置き場関数・部分索引あり | 100% | 13,500 | コピー表を Index Only Scan | 31.17 |
+| 置き場関数・部分索引あり | 50% | 6,703 | コピー表を Index Only Scan | 31.23 |
+| 置き場関数・部分索引あり | 20% | 2,682 | コピー表を Index Only Scan | 20.83 |
 
-関数は各 desired profile に active な encoded asset と指定置き場の active copy がそろうことを確認する。追加索引が無いとコピー表を候補ごとに全走査し、50% で約 8.4 秒かかった。`media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を使うと同じ条件は 36.75 ms になった。次の実装ではこの関数形と部分索引を使う。
+関数は各 desired profile に active な encoded asset と指定置き場の active copy がそろうことを確認する。追加索引が無いとコピー表を候補ごとに全走査し、50% で約 5.36 秒かかった。`media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を使うと同じ条件は 31.23 ms になった。次の実装ではこの関数形と部分索引を使う。

@@ -104,15 +104,14 @@ FROM media_assets e
 WHERE e.kind = 'encoded'
   AND e.recording_id % 2 = 0;
 
-CREATE INDEX media_assets_active_recording_kind_profile_idx
-    ON media_assets (recording_id, kind, profile)
-    WHERE state = 'active';
-CREATE INDEX media_assets_original_active_idx
-    ON media_assets (recording_id)
-    WHERE kind = 'original' AND state = 'active';
-CREATE INDEX media_assets_active_kind_recording_idx
-    ON media_assets (kind, recording_id)
-    WHERE state = 'active';
+-- Match the media_assets indexes in the current migrations.
+CREATE INDEX media_assets_kind_state_idx
+    ON media_assets (kind, state);
+CREATE INDEX media_assets_recording_id_idx
+    ON media_assets (recording_id);
+CREATE UNIQUE INDEX media_assets_rel_path_idx
+    ON media_assets (rel_path)
+    WHERE state <> 'deleted';
 CREATE UNIQUE INDEX media_asset_copies_live_store_path_idx
     ON media_asset_copies (store, rel_path)
     WHERE state <> 'deleted';
