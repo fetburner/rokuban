@@ -6,6 +6,8 @@ until_encoded の削除可否について、置き場の条件の無い view と
 
 ### 置き場の条件の無い view の計画と時間
 
+TS の計測済み判定を JOIN から副問い合わせに変えると、50% の合成データで 2,939 ms が 44 ms になった。
+
 PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万の合成データを測った。`until_encoded` の割合ごとに、prepared statement の 6 回目（generic plan）を `LIMIT 5000` で実行した。
 
 | クエリ（JOIN → 副問い合わせ、ms） | 100% | 50% | 20% |
@@ -17,7 +19,11 @@ PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、enco
 
 ### 置き場の条件を足した関数の計画と時間
 
+置き場の条件を足した関数は、部分索引があれば、置き場の条件の無い view と同じ桁の時間で動いた。
+
 #### 測定条件
+
+本番と同じスキーマの専用 DB に、置き場のコピー表だけを足して測った。
 
 [測定用 SQL](../../../scripts/measure-until-encoded-store-predicate.sql) は、本番の migration を当てた専用 DB の上で動く。view、表、索引、`trash_deletable_recordings`、`removed_encoded_assets` は本物で、足すのは `media_asset_copies`、置き場を引数に取る関数、コピー表の候補索引だけである。表はすべて本表で、データを入れた後に `VACUUM (ANALYZE)` した。
 
@@ -37,9 +43,16 @@ PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、enco
 - view 参照形: view と同じ `unencoded_desired_profiles` の参照を残し、desired の置き場にコピーがあることの確認を `NOT EXISTS` で足す
 - count 形: desired の profile の数と、desired の置き場に active なコピーがある encoded の profile の数を、候補ごとの相関スカラー副問い合わせで比べる
 
-コピー表の索引は 4 通り測った。索引なし（`(store, rel_path)` の一意索引と主キーだけ）、`(media_asset_id, store) WHERE state = 'active'`（部分）、`(media_asset_id, store, state)`（全体）、`(store, media_asset_id) WHERE state = 'active'`（store 先頭の部分）である。
+コピー表の索引は 4 通り測った。
+
+- 索引なし: `(store, rel_path)` の一意索引と主キーだけ
+- 部分: `(media_asset_id, store) WHERE state = 'active'`
+- 全体: `(media_asset_id, store, state)`
+- store 先頭の部分: `(store, media_asset_id) WHERE state = 'active'`
 
 #### producer の結果
+
+置き場の条件を足すと、100% と 50% で 1 パスが 15〜31 ms 長くなり、20% では 4 ms 短くなった。
 
 producer は `SELECT * FROM <述語> LIMIT 5000` である。20% の行数は、view が 3,433、関数が 2,580 だった。それ以外は `LIMIT` の 5,000 行に達した。
 
@@ -61,6 +74,8 @@ producer は `SELECT * FROM <述語> LIMIT 5000` である。20% の行数は、
 
 #### 消費クエリの結果
 
+join 形の増分は、100% の入口クエリで 39.6 ms、50% で 5.0 ms で、20% では短くなった。
+
 `delete_reconcile.sql` の 3 クエリを、述語だけ差し替えて測った。`ListMediaAssetsPendingDelete` のごみ箱腕と外した版の腕は、本物の関数と view である。`deleting` の原本は 1,000 件で、250 件が encoded を持つ生きた録画、250 件が encoded を持たない生きた録画、500 件がごみ箱の録画である。外した版の要求は空である。
 
 | クエリ | 述語 | 100% | 50% | 20% |
@@ -81,6 +96,8 @@ producer は `SELECT * FROM <述語> LIMIT 5000` である。20% の行数は、
 `ListUnqualifiedDeletingAssets` は、述語を置き場の条件の無い view にしたままでも 50% で 240.0 ms、20% で 106.2 ms かかる。これは置き場の条件を足す前からある。join 形はこの 2 点で view より短く、100% では 10.2 ms で view と同程度だった。view 参照形と count 形は、100% で 397.7 ms と 416.3 ms だった。この 2 形で 100% が長い原因は未調査である。
 
 #### 読み取れること
+
+索引が無いと全走査になり、関数の形の差は否定形の消費クエリで大きく出た。
 
 - 索引が無いと、候補ごとにコピー表を全走査する。50% の producer は 20,226.0 ms で、部分索引ありの 52.3 ms の約 390 倍だった。
 - 3 通りの索引は、producer の時間が 100% で 73.6〜79.0 ms、50% で 52.3〜54.6 ms、20% で 29.1〜29.7 ms に収まった。索引の形による差は最大 5.4 ms で、実行間のずれより小さい。

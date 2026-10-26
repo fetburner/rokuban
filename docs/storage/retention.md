@@ -310,7 +310,7 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 - until_encoded 腕: set-returning SQL 関数 `until_encoded_deletable_originals(desired_store text)` にする。派生物の desired の置き場の規則は config にあり、SQL からは引けない。そのため、ごみ箱腕の `trash_deletable_recordings(grace_cutoff)` と同じく、判断のたびに引数で渡す。
   - 返す列は `asset_id`・`recording_id`・`rel_path`・`size_bytes`・`state` である。
-  - コピー表には `media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を張る。索引が無いと、候補ごとにコピー表を全走査する。50% の合成データ（コピー 9.7 万行）では、`LIMIT 5000` の 6 回目以降が 20,226.0 ms で、部分索引があると 52.3 ms だった。
+  - コピー表には `media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を張る。索引が無いと、候補ごとにコピー表を全走査する。50% の合成データ（コピー 9.7 万行）では、6 回目以降が 20,226.0 ms で、索引があると 52.3 ms だった。
   - 本体は、profile ごとの `NOT EXISTS` の中で encoded とコピーを JOIN する形にする。`unencoded_desired_profiles` を参照する形と、profile 数を数えて比べる形は、`ListUnqualifiedDeletingAssets` の 100% が約 40 倍長かった。
   - 条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて対処してある。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
 - TS の計測済み判定: view `current_ts_scanned_originals` にする。計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
