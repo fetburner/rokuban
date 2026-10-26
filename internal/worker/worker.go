@@ -140,7 +140,10 @@ type Deps struct {
 	StorageObservation    store.StorageObservation
 	MediaDir              string
 	MediaStoreName        string
-	ScratchDir            string
+	// IngestStorageProbed は起動時に ProbeIngestStorage が成功したかを示す。
+	// false なら IngestWorker が最初の ingest で、目印を照合した後に probe する。
+	IngestStorageProbed bool
+	ScratchDir          string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
 	// worker ロール起動時に ValidateTools 済み（不変条件 4）。
@@ -202,6 +205,7 @@ type Deps struct {
 func NewWorkers(deps *Deps) *jobq.Registry {
 	workers := jobq.NewRegistry()
 	riveradapter.Register(workers, &IngestWorker{
+		storageProbed:    deps.IngestStorageProbed,
 		Enqueuer:         deps.Enqueuer,
 		MirakcClients:    deps.MirakcClients,
 		Publisher:        deps.MediaPublish,

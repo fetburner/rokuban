@@ -311,6 +311,9 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
+	// 目印を確認できず probe を保留したときは false のまま渡し、IngestWorker が最初の
+	// ingest で目印を照合した後に probe する。
+	ingestStorageProbed := false
 	if storeMarkerVerified && slices.Contains(roles, "worker") &&
 		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
 		// ingest は media_dir の強い FS 契約（file fsync / Close / 同一 FS の
@@ -320,9 +323,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		if err := worker.ProbeIngestStorage(cfg.Storage.MediaDir); err != nil {
 			return fmt.Errorf("validating ingest storage: %w", err)
 		}
+		ingestStorageProbed = true
 	} else if !storeMarkerVerified && slices.Contains(roles, "worker") &&
 		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
-		slog.Warn("skipping ingest storage probe because the media store marker could not be verified",
+		slog.Warn("deferring ingest storage probe until the media store marker can be verified",
 			"store", cfg.Storage.MediaStoreName)
 	}
 
@@ -387,7 +391,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 
 	var workerAdapter *riveradapter.Adapter
 	if slices.Contains(roles, "worker") {
-		workerAdapter, err = buildWorkerAdapter(cfg, bound, workerCfg, pool, webhookClient)
+		workerAdapter, err = buildWorkerAdapter(cfg, bound, workerCfg, pool, webhookClient, ingestStorageProbed)
 		if err != nil {
 			return err
 		}
@@ -643,7 +647,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // buildWorkerAdapter は worker ロール用のワーカー群と jobq adapter を構築する。
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
-func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client) (*riveradapter.Adapter, error) {
+func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
 	mediaStore := pgstore.NewMedia(pool)
 	recordingStore := pgstore.NewRecordings(pool)
 	reservationStore := pgstore.NewReservations(pool)
@@ -709,6 +713,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
 		MediaStoreName:           cfg.Storage.MediaStoreName,
+		IngestStorageProbed:      ingestStorageProbed,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,

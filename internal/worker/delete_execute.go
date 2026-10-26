@@ -150,10 +150,6 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 	if fileLock != nil {
 		defer func() { _ = fileLock.Close() }()
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking media asset deleting"); err != nil {
-		log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", err)
-		return
-	}
 
 	// 新規 until_encoded 候補は列挙後に作り直し要求が追加される可能性がある。
 	// API と同じ recordings 行ロックを取り、要求が commit されていないことを
@@ -181,17 +177,11 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		return
 	}
 
-	removeErr := os.Remove(path)
-	if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+	// ErrNotExist は「既に消えた」として扱い、下の MarkDeleted の直前の照合で事実として確定する。
+	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 		// unlink 失敗。行は deleting のまま残し、次パスで再試行する。
 		log.Error("delete_reconcile: removing file", "err", removeErr)
 		return
-	}
-	if errors.Is(removeErr, os.ErrNotExist) {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming media asset is absent"); err != nil {
-			log.Warn("delete_reconcile: withholding missing-file decision because media store marker did not match", "err", err)
-			return
-		}
 	}
 
 	// VOD の字幕は encoded アセットに隣接する sidecar で、独立した
@@ -211,18 +201,12 @@ func (w *DeleteReconcileWorker) deleteMediaAsset(ctx context.Context, t store.Me
 		} else if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking subtitle sidecar"); markerErr != nil {
 			log.Warn("delete_reconcile: withholding asset deletion because media store marker did not match", "err", markerErr)
 			return
-		} else if removeErr := os.Remove(subtitlePath); removeErr != nil {
-			if errors.Is(removeErr, os.ErrNotExist) {
-				if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming subtitle sidecar is absent"); markerErr != nil {
-					log.Warn("delete_reconcile: withholding missing-sidecar decision because media store marker did not match", "err", markerErr)
-					return
-				}
-			} else {
-				log.Warn("delete_reconcile: removing subtitle sidecar; continuing", "err", removeErr)
-			}
+		} else if removeErr := os.Remove(subtitlePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			log.Warn("delete_reconcile: removing subtitle sidecar; continuing", "err", removeErr)
 		}
 	}
 
+	// 本体と sidecar の ErrNotExist も、unlink の成功と同じくこの 1 回の照合で deleted にしてよいと確かめる。
 	beforeMediaAssetMarkDeleted(t.ID)
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "marking media asset deleted"); err != nil {
 		log.Warn("delete_reconcile: withholding deleted state because media store marker did not match", "err", err)
@@ -249,6 +233,14 @@ var beforeMediaAssetMarkDeleted = func(int64) {}
 // beforeOrphanFileUnlink は孤児ファイルの再確認後・unlink 前のテスト用同期点。
 // 本番では何もしない。
 var beforeOrphanFileUnlink = func(string) {}
+
+// afterOrphanFileUnlink は孤児ファイルの unlink 後・「既に無かった」を DB へ記録する前の
+// テスト用同期点。本番では何もしない。
+var afterOrphanFileUnlink = func(string) {}
+
+// afterDeletingAssetStat は deleting 行の Stat 後・MarkDeleted / RevertToActive の前のテスト用同期点。
+// 本番では何もしない。
+var afterDeletingAssetStat = func(string) {}
 
 // resolveUnqualifiedDeletingAsset は MediaDelete.ListUnqualifiedDeletingAssets が挙げた
 // 1 行（trash / until_encoded のどちらの判定にも該当しなくなった deleting
@@ -278,7 +270,9 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 		return
 	}
 
-	if _, statErr := os.Stat(path); statErr != nil {
+	_, statErr := os.Stat(path)
+	afterDeletingAssetStat(a.RelPath)
+	if statErr != nil {
 		if errors.Is(statErr, os.ErrNotExist) {
 			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming deleting media asset is absent"); err != nil {
 				log.Warn("delete_reconcile: withholding missing-file decision because media store marker did not match", "err", err)
@@ -363,14 +357,9 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		if !missing {
 			return
 		}
-		if isTemp {
-			// ロック取得後にパスが消えた場合も、ここから os.Remove へ進むと
-			// 同名で再作成された新しい temp をロックなしで消しうる。
-			w.clearOrphanFileRecord(relPath, 0, false, log)
-			return
-		}
-		// ingest temp / staging が消えていれば候補記録だけを整理する。
-		w.clearOrphanFileRecord(relPath, 0, false, log)
+		// ロック取得後にパスが消えた temp から os.Remove へ進むと、同名で再作成された
+		// 新しい temp をロックなしで消しうる。temp も staging も、候補記録だけを整理する。
+		w.clearAbsentOrphanRecord(relPath, log)
 		return
 	}
 
@@ -383,6 +372,7 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 	if !ok {
 		return
 	}
+	afterOrphanFileUnlink(relPath)
 	if !physicallyDeleted {
 		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
 			log.Warn("delete_reconcile: withholding missing-orphan decision because media store marker did not match", "err", err)
@@ -394,18 +384,11 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 		// checkpoint は base temp と同じ寿命である。base の flock を保持したまま
 		// 消し、古い hash 状態を次の同名 temp が誤って読む経路を閉じる。
 		checkpointRelPath := relPath + ingestCheckpointSuffix
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking ingest checkpoint with orphan temp"); err != nil {
-			log.Warn("delete_reconcile: withholding checkpoint cleanup because media store marker did not match", "err", err)
-			return
-		}
+		// 直前の temp の unlink と同じ照合で守られている。
 		removeCheckpointErr := os.Remove(ingestCheckpointPath(path))
 		if removeCheckpointErr != nil && !errors.Is(removeCheckpointErr, os.ErrNotExist) {
 			log.Warn("delete_reconcile: removing ingest checkpoint with aged temp failed", "err", removeCheckpointErr)
 		} else {
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing ingest checkpoint orphan record"); err != nil {
-				log.Warn("delete_reconcile: withholding checkpoint record cleanup because media store marker did not match", "err", err)
-				return
-			}
 			if err := w.Storage.DeleteOrphanFile(context.Background(), checkpointRelPath); err != nil {
 				log.Warn("delete_reconcile: clearing ingest checkpoint orphan row", "err", err)
 			}
@@ -438,7 +421,7 @@ func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(path, relPath strin
 
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		w.clearOrphanFileRecord(relPath, 0, false, log)
+		w.clearAbsentOrphanRecord(relPath, log)
 		return
 	}
 	if err != nil {
@@ -469,7 +452,7 @@ func (w *DeleteReconcileWorker) lockOrphanIngestTemp(path, relPath string, log *
 		return tempLock, true
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		w.clearOrphanFileRecord(relPath, 0, false, log)
+		w.clearAbsentOrphanRecord(relPath, log)
 		return nil, false
 	}
 	if ingestTempLockBusy(err) {
@@ -531,11 +514,10 @@ func removeOrphanFile(path string, log *slog.Logger) (physicallyDeleted, ok bool
 // clearOrphanFileRecord は orphan_files の物理削除後（または対象が既に消えて
 // いた場合）に DB の記録を整理する。ctx 取消後も削除の事実を記録するため
 // Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
+//
+// 置き場の目印は呼び出し側が照合する。unlink の直前と、「無い」を観測した直後の
+// clearAbsentOrphanRecord が守る。
 func (w *DeleteReconcileWorker) clearOrphanFileRecord(relPath string, size int64, physicallyDeleted bool, log *slog.Logger) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing orphan record"); err != nil {
-		log.Warn("delete_reconcile: withholding orphan record cleanup because media store marker did not match", "err", err)
-		return
-	}
 	// ctx 取消後も削除の事実を記録するため Background 由来にするが、DB 詰まりで worker の終了を無期限に待たない。
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), deleteOrphanCleanupTimeout)
 	defer cancel()
@@ -544,6 +526,16 @@ func (w *DeleteReconcileWorker) clearOrphanFileRecord(relPath string, size int64
 		return
 	}
 	recordOrphanCleanup(log, size, physicallyDeleted)
+}
+
+// clearAbsentOrphanRecord は Stat / open が ErrNotExist だった孤児の記録を、目印を照合してから消す。
+// 目印が合わない置き場では「無い」が別の置き場の観測かもしれないので、記録を消さない。
+func (w *DeleteReconcileWorker) clearAbsentOrphanRecord(relPath string, log *slog.Logger) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "confirming orphan file is absent"); err != nil {
+		log.Warn("delete_reconcile: withholding missing-orphan decision because media store marker did not match", "err", err)
+		return
+	}
+	w.clearOrphanFileRecord(relPath, 0, false, log)
 }
 
 func recordOrphanCleanup(log *slog.Logger, size int64, physicallyDeleted bool) {

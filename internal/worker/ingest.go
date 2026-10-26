@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -261,11 +262,11 @@ func ingestTempRelPath(mediaDir, tempPath string) (string, error) {
 }
 
 func (w *IngestWorker) removeUnstartedIngestTemp(tempPath string, log *slog.Logger) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing unstarted ingest temp"); err != nil {
+		log.Warn("ingest: skipping cleanup because media store marker did not match", "err", err)
+		return
+	}
 	for _, path := range []string{tempPath, ingestCheckpointPath(tempPath)} {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing unstarted ingest temp"); err != nil {
-			log.Warn("ingest: skipping cleanup because media store marker did not match", "err", err)
-			return
-		}
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			log.Warn("ingest: removing unstarted temp failed", "path", path, "err", err)
 		}
@@ -369,6 +370,13 @@ type IngestWorker struct {
 	MediaStoreName   string
 	CMDetect         config.CMDetectConfig
 
+	// probeMu は storageProbed を守り、ProbeIngestStorage の同時実行を 1 本にする。
+	// storageProbed は ProbeIngestStorage が成功済みかを示す。起動時に目印を確認できず
+	// probe を保留したときだけ false で始まる（NewWorkers が Deps から渡す）。
+	// sync.Once は最初の失敗を固定してしまうので使わない。
+	probeMu       sync.Mutex
+	storageProbed bool
+
 	// CutProfiles は cut: true のプロファイル名（config から注入）。凍結時の
 	// クランプ（resolveAndSnapshotEncodePolicy）に使う。
 	CutProfiles map[string]struct{}
@@ -386,6 +394,26 @@ type IngestWorker struct {
 	// （resolveProgressInterval）。テストが転送の途中経過を観測するために
 	// 短くできるようにしてあるだけで、運用上は既定のままでよい。
 	ProgressInterval time.Duration
+}
+
+// ensureStorageProbed は起動時に保留した ProbeIngestStorage を、目印の照合が通った後に 1 回だけ走らせる。
+// probe は media_dir/sites を作る書き込みなので、照合より前に呼んではならない。
+// 失敗は error で返して次の ingest ジョブに再試行させる。
+// 置き場の名前が空の構成は照合しないので、従来どおり起動時の probe だけに任せる。
+func (w *IngestWorker) ensureStorageProbed() error {
+	if w.MediaStoreName == "" {
+		return nil
+	}
+	w.probeMu.Lock()
+	defer w.probeMu.Unlock()
+	if w.storageProbed {
+		return nil
+	}
+	if err := ProbeIngestStorage(w.MediaDir); err != nil {
+		return fmt.Errorf("validating ingest storage: %w", err)
+	}
+	w.storageProbed = true
+	return nil
 }
 
 // resolveProgressInterval は設定された ProgressInterval があればそれを、
@@ -444,6 +472,9 @@ func (w *IngestWorker) Work(ctx context.Context, args jobs.IngestJobArgs) (err e
 		return err
 	}
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting ingest"); err != nil {
+		return err
+	}
+	if err := w.ensureStorageProbed(); err != nil {
 		return err
 	}
 
@@ -530,9 +561,6 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("removing stale ingest checkpoint before creating temp: %w", err)
 		}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "creating ingest temp"); err != nil {
-			return err
-		}
 		tempLock, tempCreated, err = lockIngestTempFile(tempPath)
 	}
 	if err != nil {
@@ -575,8 +603,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	removeTemp := false
 	defer func() {
 		if removeTemp {
-			markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest temp")
-			if markerErr != nil {
+			// temp・checkpoint の unlink は 1 回の照合でまとめて守る。
+			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest temp"); markerErr != nil {
 				log.Warn("ingest: skipping temp cleanup because media store marker did not match", "err", markerErr)
 			} else {
 				if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -585,19 +613,13 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 				// tempLock は f の dup 元 fd で、commit 終了まで flock を保持する。
 				// 別の試行が同名パスを作ってから古い cleanup がそれを消すことが
 				// ないよう、ロックを保持したまま unlink してから lock fd を閉じる。
-				if markerErr = requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "discarding ingest checkpoint"); markerErr != nil {
-					log.Warn("ingest: skipping checkpoint cleanup because media store marker did not match", "err", markerErr)
-				} else {
-					if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-						log.Warn("ingest: removing discarded checkpoint failed", "err", err)
-					}
-					if markerErr = requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing ingest progress after discard"); markerErr != nil {
-						log.Warn("ingest: skipping progress cleanup because media store marker did not match", "err", markerErr)
-					} else if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
-						// 捨てた temp を指す進捗行を残さない。消せなくても次の試行が temp 無しを
-						// 見て消すので、転送の失敗にはしない。
-						log.Warn("ingest: clearing progress after discarding temp failed", "recording_id", recordingID, "err", err)
-					}
+				if err := os.Remove(ingestCheckpointPath(tempPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+					log.Warn("ingest: removing discarded checkpoint failed", "err", err)
+				}
+				if err := w.Publisher.ClearIngestProgress(ctx, recordingID); err != nil {
+					// 捨てた temp を指す進捗行を残さない。消せなくても次の試行が temp 無しを
+					// 見て消すので、転送の失敗にはしない。
+					log.Warn("ingest: clearing progress after discarding temp failed", "recording_id", recordingID, "err", err)
 				}
 			}
 		} else if _, statErr := os.Stat(tempPath); errors.Is(statErr, os.ErrNotExist) {
@@ -653,7 +675,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	sliceCtx, cancelSlice := context.WithTimeout(ctx, ingestTransferSlice)
 	defer cancelSlice()
 	hasher := sha256.New()
-	offset, replayComplete, err := replayIngestTempFileWithCheckpointAndCheck(
+	offset, replayComplete, err := replayIngestTempFileWithCheckpoint(
 		sliceCtx, tempPath, f, hasher,
 		func() error {
 			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving replay ingest checkpoint")
@@ -684,17 +706,11 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		onWrite: func(written int64) { progress.report(ctx, written) },
 	}
 
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest temp"); err != nil {
-		return err
-	}
 	var expectedSHA256 *string
 	var observedEndTime *mirakc.Milliseconds
 	offset, expectedSHA256, observedEndTime, err = w.transferIngestRecord(sliceCtx, client, args.RecordID, dst, progress, offset)
 	if err != nil {
 		if isIngestSliceDeadline(err, sliceCtx, ctx) {
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "persisting ingest checkpoint"); err != nil {
-				return err
-			}
 			if err := persistIngestCheckpoint(tempPath, f, offset, hasher,
 				func() error {
 					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "persisting ingest checkpoint")
@@ -735,10 +751,7 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		}
 		if waiting {
 			// maybeWaitForSHA256 が temp を Sync した後なので、hash 状態をその末尾へ合わせて保存する。
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint"); err != nil {
-				return err
-			}
-			if err := writeIngestCheckpointWithCheck(tempPath, offset, hasher,
+			if err := writeIngestCheckpoint(tempPath, offset, hasher,
 				func() error {
 					return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "writing ingest checkpoint")
 				}); err != nil {
@@ -773,9 +786,6 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	// 失敗したら DB へ登録せず、mirakc の record を保持して再試行させる。途中の fsync は
 	// 区切りでだけ行い、各バッファごとの実体化は増やさない。
 	syncStarted := time.Now()
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "syncing ingest temp"); err != nil {
-		return err
-	}
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing file: %w", err)
 	}
@@ -1135,9 +1145,6 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
 		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
 	}, w.resolveEncodePolicy, func() error {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing ingested original"); err != nil {
-			return err
-		}
 		if err := beforeIngestFilePublication(); err != nil {
 			return fmt.Errorf("preparing canonical file publication: %w", err)
 		}
@@ -1149,9 +1156,6 @@ func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, t
 		}
 		if err := afterIngestFilePublication(); err != nil {
 			return fmt.Errorf("finishing canonical file publication: %w", err)
-		}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "committing ingested original"); err != nil {
-			return err
 		}
 		return nil
 	})

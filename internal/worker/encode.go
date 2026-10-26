@@ -744,7 +744,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
 
-	staged, err := stageMediaFile(ctx, w.MediaDir, w.MediaStoreName, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
+	staged, err := stageMediaFile(ctx, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
@@ -759,7 +759,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		if err != nil {
 			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		stagedSubtitle, err = stageMediaFile(ctx, w.MediaDir, w.MediaStoreName, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
+		stagedSubtitle, err = stageMediaFile(ctx, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
 		if err != nil {
 			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
@@ -795,24 +795,15 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 			return fmt.Errorf("preparing encoded file publication: %w", err)
 		}
 		if in.withSubtitles {
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded subtitle"); err != nil {
-				return err
-			}
 			if err := stagedSubtitle.publish(); err != nil {
 				return err
 			}
-		}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded output"); err != nil {
-			return err
 		}
 		if err := staged.publish(); err != nil {
 			return err
 		}
 		if err := beforeEncodeCommit(in.scratchOut); err != nil {
 			return fmt.Errorf("committing encoded asset: %w", err)
-		}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "committing encoded output"); err != nil {
-			return err
 		}
 		return nil
 	}
@@ -948,6 +939,7 @@ func nextCutGeneration(prevRelPath, profileName string) int {
 // して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
 // 再試行が新しい世代をさらに作る。
 func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
+	// 旧本体と旧サイドカーの unlink はまとめて 1 回照合する。
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced encoded output"); err != nil {
 		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
 		return
@@ -957,24 +949,14 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 		log.Warn("encode: could not resolve replaced path", "rel_path", relPath, "err", err)
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced encoded output"); err != nil {
-		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
-		return
-	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Warn("encode: removing replaced encoded file failed; orphan reporting will expose it",
 			"rel_path", relPath, "err", err)
 	}
 	// サイドカーも同じ世代で置き換わる。
 	if sidecarRel, err := mediapath.SubtitleSibling(relPath); err == nil {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced subtitle"); err != nil {
-			log.Warn("encode: skipping replaced subtitle removal because media store marker did not match", "rel_path", sidecarRel, "err", err)
-			return
-		}
 		if sidecar, err := mediapath.Resolve(w.MediaDir, sidecarRel); err == nil {
-			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced subtitle"); markerErr != nil {
-				log.Warn("encode: skipping replaced subtitle removal because media store marker did not match", "rel_path", sidecarRel, "err", markerErr)
-			} else if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 				log.Warn("encode: removing replaced subtitle failed; orphan reporting will expose it",
 					"rel_path", sidecarRel, "err", removeErr)
 			}

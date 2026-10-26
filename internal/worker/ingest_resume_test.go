@@ -208,7 +208,7 @@ func TestIngestCheckpoint_ResumeFromTailMatchesSingleTransferHash(t *testing.T) 
 	if err := file.Sync(); err != nil {
 		t.Fatalf("syncing ingest prefix: %v", err)
 	}
-	if err := writeIngestCheckpoint(tempPath, int64(len(prefix)), prefixHash); err != nil {
+	if err := writeIngestCheckpoint(tempPath, int64(len(prefix)), prefixHash, nil); err != nil {
 		t.Fatalf("writing ingest checkpoint: %v", err)
 	}
 	if _, err := file.Write(suffix); err != nil {
@@ -220,7 +220,7 @@ func TestIngestCheckpoint_ResumeFromTailMatchesSingleTransferHash(t *testing.T) 
 	}
 
 	hasher := sha256.New()
-	offset, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher)
+	offset, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil)
 	if err != nil {
 		t.Fatalf("replaying from checkpoint: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestIngestCheckpoint_WriteDoesNotRefreshTempActivityTime(t *testing.T) {
 
 	hasher := sha256.New()
 	_, _ = hasher.Write([]byte("committed prefix"))
-	if err := writeIngestCheckpoint(tempPath, int64(len("committed prefix")), hasher); err != nil {
+	if err := writeIngestCheckpoint(tempPath, int64(len("committed prefix")), hasher, nil); err != nil {
 		t.Fatalf("writing ingest checkpoint: %v", err)
 	}
 
@@ -276,7 +276,7 @@ func TestIngestCheckpoint_InvalidCheckpointFallsBackToFullReplay(t *testing.T) {
 			case "ahead of temp":
 				hasher := sha256.New()
 				_, _ = hasher.Write(data)
-				if err := writeIngestCheckpoint(tempPath, int64(len(data)+1), hasher); err != nil {
+				if err := writeIngestCheckpoint(tempPath, int64(len(data)+1), hasher, nil); err != nil {
 					t.Fatalf("writing ahead checkpoint: %v", err)
 				}
 			}
@@ -292,7 +292,7 @@ func TestIngestCheckpoint_InvalidCheckpointFallsBackToFullReplay(t *testing.T) {
 			}()
 			hasher := sha256.New()
 			_, _ = hasher.Write([]byte("stale state"))
-			offset, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher)
+			offset, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil)
 			if err != nil {
 				t.Fatalf("replaying with %s checkpoint: %v", checkpoint, err)
 			}
@@ -561,12 +561,12 @@ func TestIngestCheckpoint_ReplaySkipsBytesBeforeCheckpointOffset(t *testing.T) {
 	}
 	claimedHash := sha256.New()
 	_, _ = claimedHash.Write(claimed)
-	if err := writeIngestCheckpoint(tempPath, int64(len(onDisk)), claimedHash); err != nil {
+	if err := writeIngestCheckpoint(tempPath, int64(len(onDisk)), claimedHash, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	hasher := sha256.New()
-	if _, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher); err != nil || !complete {
+	if _, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, hasher, nil); err != nil || !complete {
 		t.Fatalf("replay = (complete=%v, err=%v), want complete", complete, err)
 	}
 	if got, want := hex.EncodeToString(hasher.Sum(nil)), sha256Hex([]byte("BBBBBBBBBB-tail")); got != want {
@@ -616,7 +616,7 @@ func TestIngestCheckpoint_InterruptedReplaySavesPartialCheckpoint(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hasher := &cancelAfterFirstWriteHash{Hash: sha256.New(), cancel: cancel}
-	offset, complete, err := replayIngestTempFileWithCheckpoint(ctx, tempPath, file, hasher)
+	offset, complete, err := replayIngestTempFileWithCheckpoint(ctx, tempPath, file, hasher, nil)
 	if complete || !errors.Is(err, context.Canceled) {
 		t.Fatalf("replay = (complete=%v, err=%v), want incomplete context.Canceled", complete, err)
 	}
@@ -629,7 +629,7 @@ func TestIngestCheckpoint_InterruptedReplaySavesPartialCheckpoint(t *testing.T) 
 	if !restored || saved != hasher.written {
 		t.Fatalf("saved checkpoint = (%d, %v), want (%d, true)", saved, restored, hasher.written)
 	}
-	if _, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, resumed); err != nil || !complete {
+	if _, complete, err := replayIngestTempFileWithCheckpoint(context.Background(), tempPath, file, resumed, nil); err != nil || !complete {
 		t.Fatalf("resumed replay = (complete=%v, err=%v)", complete, err)
 	}
 	if got, want := hex.EncodeToString(resumed.Sum(nil)), sha256Hex(data); got != want {

@@ -315,10 +315,6 @@ func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logg
 		log.Warn("thumbnail: could not resolve replaced path", "rel_path", relPath, "err", err)
 		return
 	}
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced thumbnail"); err != nil {
-		log.Warn("thumbnail: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
-		return
-	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		log.Warn("thumbnail: removing replaced file failed; orphan reporting will expose it",
 			"rel_path", relPath, "err", err)

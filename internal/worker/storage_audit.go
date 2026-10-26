@@ -47,9 +47,6 @@ import (
 // 約束する「凍結する」が実装のどこにも実在しない記述になる
 // （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
 func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context, orphanMTimeGrace, orphanAge, missingAssetAge time.Duration) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "auditing media store"); err != nil {
-		return err
-	}
 	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
@@ -125,10 +122,11 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 		return nil, fmt.Errorf("walking media dir: %w", err)
 	}
 
+	// 走査の結果（候補の記録と、見えなくなった行の掃除）を DB へ書く前に 1 回照合する。
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording orphan candidates"); err != nil {
+		return nil, err
+	}
 	for relPath := range candidates {
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording orphan candidate"); err != nil {
-			return nil, err
-		}
 		if err := w.Storage.UpsertOrphanFile(ctx, relPath); err != nil {
 			return nil, fmt.Errorf("recording orphan candidate %q: %w", relPath, err)
 		}
@@ -144,9 +142,6 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 		}
 		// もう孤児候補でない（media_assets に登録された、mtime が新しくなった
 		// はずはないが再走査で見えなくなった＝ファイルが消えた等）。掃除する。
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing stale orphan candidate"); err != nil {
-			return nil, err
-		}
 		if err := w.Storage.DeleteOrphanFile(ctx, o.RelPath); err != nil {
 			return nil, fmt.Errorf("clearing stale orphan record %q: %w", o.RelPath, err)
 		}
@@ -206,9 +201,6 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 // 15 分ごとに同じ件数の UPSERT が削除本体と同じジョブの中で走る。それが
 // 問題になるなら直し方は入力を切ることではなく UPSERT を 1 文にまとめること。
 func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seenOnDisk map[string]struct{}) (bool, error) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "checking missing media assets"); err != nil {
-		return false, err
-	}
 	active, err := w.Storage.ListActiveMediaAssets(ctx)
 	if err != nil {
 		return false, fmt.Errorf("listing active media assets: %w", err)
@@ -227,15 +219,17 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		return true, nil
 	}
 
+	// seenOnDisk に無い行を「実体無し」として DB へ書く前に、ループの前で 1 回照合する。
+	// 目印が合わない置き場の走査結果は、active 行の欠落ではなく別の置き場の観測かもしれない。
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
+		return false, err
+	}
 	candidates := make(map[int64]struct{})
 	for _, a := range active {
 		if _, ok := seenOnDisk[a.RelPath]; ok {
 			continue
 		}
 		candidates[a.ID] = struct{}{}
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
-			return false, err
-		}
 		if err := w.Storage.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
 			return false, fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
 		}
@@ -251,9 +245,6 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		}
 		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
 		// もう active でなくなった等）。掃除する。
-		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing stale missing-asset record"); err != nil {
-			return false, err
-		}
 		if err := w.Storage.DeleteMissingMediaAsset(ctx, id); err != nil {
 			return false, fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
 		}
@@ -274,9 +265,6 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 // （件数自体は Reset 後の MediaAssetsMissing ゲージが持つので、ログは同定
 // だけを担えばよい）。
 func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, age time.Duration) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reporting missing media assets"); err != nil {
-		return err
-	}
 	aged, err := w.Storage.ListAgedMissingMediaAssets(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged missing-asset candidates: %w", err)
@@ -334,9 +322,6 @@ func classifyOrphanCleanup(relPath string) orphanCleanupKind {
 // agedUnpublishedOrphans はエイジング済み孤児のうち、名前が公開前を示すものだけを
 // 自動削除候補として返す。canonical 名は報告側に残す。
 func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age, mtimeGrace time.Duration) ([]string, error) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "selecting orphan files for cleanup"); err != nil {
-		return nil, err
-	}
 	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return nil, fmt.Errorf("listing aged orphan files: %w", err)
@@ -363,9 +348,6 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		}
 		if _, ok := knownSet[relPath]; ok {
 			// 登録され直っていた。孤児ではなくなったので記録から外す。
-			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing orphan record"); err != nil {
-				return nil, err
-			}
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing reclaimed orphan record %q: %w", relPath, err)
 			}
@@ -373,9 +355,6 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)
 		if err != nil {
-			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing invalid orphan record"); markerErr != nil {
-				return nil, markerErr
-			}
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing invalid orphan record %q: %w", relPath, err)
 			}
@@ -408,9 +387,6 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 // 報告から除き、canonical 名は人が調査・削除するまで記録を保持する。
 // 登録済み rel_path の行は、同じ reconcile パスで先に走る reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
 func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, age time.Duration) error {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reporting orphan files"); err != nil {
-		return err
-	}
 	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged orphan files: %w", err)
