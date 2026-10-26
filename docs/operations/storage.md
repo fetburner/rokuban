@@ -157,6 +157,30 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 唯一レイテンシが人間に見えるのは、再生時のシークである（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
 
+### S3 互換ストアの適合要件
+
+S3 互換ストアは、実際に使う API の振る舞いを確かめてから運用に加える。条件付き書き込みが使えなくても、一意なキーを使う限り転送は成立する。ほかの必須機能が未対応または一部対応なら、そのストアは使わない。
+
+適合テストは条件付き書き込み、multipart の完了と abort、HEAD からの SHA-256 取得、署名付き GET の Range 応答を判定する。multipart の非最終部品は 5 MiB〜5 GiB、部品数は最大 10,000 個である。最後の部品には最小サイズ制限がない。
+
+テストは専用バケットに対して実行する。ランダムなキーにオブジェクトを作って後で削除するため、権限と隔離を用意する。abort に未対応のサーバーでは、完了しなかった部品が残るので、バケットに `AbortIncompleteMultipartUpload` のライフサイクル規則を設定する。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後になるよう決める。
+
+multipart の SHA-256 は部品から作る複合 checksum になり、オブジェクト全体の SHA-256 とは限らない。HEAD で得た multipart checksum を、全体の SHA-256 と直接比較してはならない。
+
+接続先の適合テストはリポジトリのルートで実行し、接続 URL・region・bucket・access key・secret key を環境変数で渡す。必要ならテストが専用 bucket を作る指定もできる。CI は固定した MinIO リリースで同じテストを実行する。
+
+<details><summary>根拠</summary>
+
+- 適合テスト: `internal/objstore/conformance/conformance_test.go`
+- 環境変数: `ROKUBAN_S3_CONFORMANCE_*`。bucket 作成は `ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET=true`
+- 実行コマンド: `go test -tags s3conformance ./internal/objstore/conformance -count=1 -timeout 5m -v`
+- CI の MinIO サービス: `.github/workflows/ci.yml` `s3-conformance`
+- multipart の上限: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
+- checksum の扱い: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
+- 不完全な upload の回収: [Abort multipart upload](https://docs.aws.amazon.com/AmazonS3/latest/userguide/abort-mpu.html)
+
+</details>
+
 ### disaster recovery（catalog + rescue）
 
 rescue は、DB を失った後にだけ使う。live DB を catalog の内容で上書きするので、健全性の確認には使わない。
