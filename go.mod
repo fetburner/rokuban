@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/Comcast/gots/v3 v3.0.1
 	github.com/drone/envsubst v1.0.3
-	github.com/go-chi/chi/v5 v5.3.2
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
