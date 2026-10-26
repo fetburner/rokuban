@@ -163,13 +163,13 @@ S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 �
 
 適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
 
-置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えないためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残る。
+置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
 
-multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。全体の照合は、アプリが流しながら計算する。
+multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。アプリは、データを流しながら全体の SHA-256 を自分で計算し、照合にはその値を使う。
 
 #### 適合テストの回し方
 
-テスト用の bucket を 1 つ用意して、リポジトリのルートでテストを実行する。結果は機能ごとの記録として出力され、期待値を渡せば退行の検知にも使える。
+テスト用の bucket を 1 つ用意して、リポジトリのルートでテストを実行する。
 
 接続先は環境変数で渡す。`ROKUBAN_S3_CONFORMANCE_ENDPOINT`、`_REGION`、`_BUCKET`、`_ACCESS_KEY_ID`、`_SECRET_ACCESS_KEY` である。bucket をテストに作らせるときは `ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET=true` を足す。
 
@@ -187,7 +187,7 @@ go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
 
 結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
 
-`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `conditional-writes`、`multipart-upload-and-abort`、`head-checksum-sha256`、`presigned-get-range` である。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
 
 <details><summary>根拠</summary>
 
