@@ -131,7 +131,7 @@ kubectl -n "$NAMESPACE" exec "$POD" -- env TMPDIR=/tmp \
   /tmp/rp6seek.test -test.run TestSegmentTransformSeekMeasure -test.v
 ```
 
-`ROKUBAN_SEEK_FRAMES` は入力の frame 数を超えない値にする。結果は標準出力の `k=… n=… error_frames=…` の行である。この手順の Pod 上での実行は未実施で、linux/amd64 のクロスビルドが通ることだけを確認した。
+`ROKUBAN_SEEK_FRAMES` は入力の frame 数を超えない値にする。結果は標準出力の `k=… n=… error_frames=…` の行である。3,900 frame の基準を作る間は出力が無く、`kubectl exec` の接続が切れることがある。長い入力は Pod の中で `nohup` を付けて走らせ、ログをファイルに書く。原本 2 本での実行結果は、測定の docs の「製品の seek 引数の測定」にある。
 
 ## Pod を使わない seek.py
 

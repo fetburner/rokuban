@@ -2,7 +2,7 @@
 
 ### 録画中の temp を読む方式の測定
 
-録画中のファイルへの追記は、別ノードから見えるまで最大で約 55 秒かかった。start_time を引いて換算した相対 seek（以下、補正相対 seek）は、実録画の原本で ±1 frame に収まった。製品の seek 引数は、合成入力と放送 TS で ±1 frame に収まった。
+録画中のファイルへの追記は、別ノードから見えるまで最大で約 55 秒かかった。start_time を引いて換算した相対 seek（以下、補正相対 seek）は、実録画の原本で ±1 frame に収まった。製品の seek 引数は、クラスタの原本を含むすべての入力と起動位置で 0 frame だった。
 
 古い音声 PES は、先頭の音声 PES だけが映像より古い PTS を持つ原本である。PTS wrap は、PTS が 33 bit で折り返す原本である。
 
@@ -14,7 +14,7 @@
 
 起動位置が違っても、セグメント n の出力 PTS が n·D+C（C は全起動で同じ定数）になる引数を決めた。入力は format の start_time を基準にした相対の seek に pre-roll を付けて読み、フレームの選別と PTS の付け替えをフィルタで行う。この seek を補正相対 seek と呼ぶ。
 
-製品の `SegmentManager` はこの式と別の引数を使っており、どちらを採るかは未解決である（「未解決の項目」を参照）。この節の式は、製品の動作ではない。
+製品の `SegmentManager` は、この式ではなく後述の「製品の seek 引数の測定」の引数を使う。この節の式は、時刻の基準を比べるための測定である。
 
 記号は次のとおりである。V は映像の最初の PTS、S は format の start_time で、どちらも `ffprobe` で読んで 90 kHz の整数にする。k は起動するセグメント番号、D はセグメントの秒、P は pre-roll の秒である。例の P90 は P を 90 kHz の整数にした値である。
 
@@ -99,9 +99,11 @@ GOP 2 秒の合成入力では、格子の位置がすべて keyframe なので�
 
 #### 製品の seek 引数の測定
 
-製品の seek 引数は、この表の合成入力と放送 TS で、先頭フレームの誤差が ±1 frame に収まった。位相 φ が 1500 tick の放送 TS で +1 が出た。補正相対 seek とは別の式なので、製品のビルダーを呼んで測った。
+製品の seek 引数を採る。クラスタの原本 2 本と放送 TS・合成入力のすべてで、起動位置によらず先頭フレームの誤差が 0 frame だった。
 
-製品の `SegmentManager` は、`-copyts -seek_timestamp 1 -noaccurate_seek` の絶対秒と、`trim=start=T,setpts=PTS-STARTPTS` を使う。
+製品の `SegmentManager` は、`-copyts -seek_timestamp 1 -noaccurate_seek` の絶対秒で読む。`trim=start=T` の後、最初のフレームだけを T に置き、残りは元の PTS から T を引く。エンコーダの time base は 90 kHz、`-fps_mode:v passthrough` である。
+
+以前の引数（`setpts=PTS-STARTPTS`、既定のエンコーダ time base）では、同じ番号のセグメントの先頭が起動位置で 1 frame 変わった。29.97 fps では最初のフレームが T の 0〜1 frame 後ろにあり、その差が起動位置で変わる。`-force_key_frames` の格子と、frame rate の time base への丸めが、その差に引きずられた。PTS wrap の原本では、k=51 が 0、k=52・53 が −1 で、同じ n が食い違った。下の表は以前の引数での測定である。
 
 測定のテストは、環境変数で入力を渡したときだけ走る opt-in である。`SegmentManager` で実 FFmpeg 9.0.2 を動かし、出力は QP=0 の無損失で縮小しない。各セグメントの先頭フレームの framehash を、入力の復号 frame 列に照合する。期待 frame は、入力の復号 frame の PTS が V + n·D 以上になる最初のものである。hash が入力内で一意でなければ失敗にする。
 
@@ -119,15 +121,26 @@ GOP 2 秒の合成入力では、格子の位置がすべて keyframe なので�
 | 放送 TS B（同じ形式、音声 1 本、約 98 MB）、φ=0 | 3 / 4 / 5 / 6 | 20 本とも 0 frame |
 | 同 B、φ=609 | 3 / 4 / 5 / 6 | 20 本とも 0 frame |
 | 同 B、φ=1500 | 3 / 4 / 5 / 6 | 17 本が 0 frame、k=5 の n=9 と k=6 の n=9,10 が +1 frame |
-| クラスタの原本 2 本（古い音声 PES、PTS wrap） | 未実施 | 未実施 |
 
 PTS wrap の合成入力では、k=3 の変換が境界をまたぎ、n=5 以降の先頭は境界の後にある。放送 TS の 2 本は、自宅の mirakc が配信中の放送を 50 秒だけ読んだ TS である。録画ではなく、先頭の音声 PES は古くない。mirakc の録画一覧には内容のある録画が無かった。放送 TS では、同じ n を複数の k で取った組（n=6 は k=3〜6 の 4 通りなど）の誤差が、全ての φ で一致した。n は 10 までしか取っておらず、それより大きい n で誤差が増えるかは測っていない。
+
+いまの引数では、許容 0 frame で次のとおりだった。クラスタの原本は、運用中の media PVC を読み取り専用でマウントした測定用の Pod で、FFmpeg 7.1.5 を使って測った。
+
+| 入力 | 起動 k | 先頭フレームの誤差 |
+|---|---|---|
+| 古い音声 PES の原本 | 3 / 4 / 5 | 18 本とも 0 frame（以前の引数では全て −1） |
+| PTS wrap の原本（境界をまたぐ） | 51 / 52 / 53 | 18 本とも 0 frame（以前の引数では k=51 が 0、k=52・53 が −1） |
+| 放送 TS A、φ=609 / 1500 | 3 / 5 / 6 | 12 本ずつ全て 0 frame |
+| 古い音声 PES の合成入力 | 3 / 5 / 6 | 12 本とも 0 frame |
+
+`trim` を `select` に替えても、原点だけを T に固定しても、相対 seek にしても、以前の食い違いは変わらなかった。食い違いを消したのは、最初のフレームを T に置くことと、90 kHz の time base の 2 つで、どちらか片方を外すと回帰テストが落ちる。
 
 評価したのは映像の先頭フレームだけで、音声は見ていない。
 
 <details><summary>根拠</summary>
 
 - 測定: `TestSegmentTransformSeekMeasure`（`internal/streamer`、opt-in）
+- 起動位置によらず同じフレームから始まること: `TestSegmentTransformRestartKeepsSegmentStartFrame`
 - 期待 frame の選択と hash の一意性: `TestSeekFrameErrorPicksFirstFrameAtOrAfterTargetAndRejectsAmbiguousHash`
 
 </details>
@@ -260,6 +273,3 @@ n=3 / 5 / 120 / 139 の segment の最初の映像 PTS は、それぞれ 666000
 - 未検証: SIGSTOP（先読みの停止、キャッシュ満杯での停止）の間の時間が `rw_timeout` に数えられ、SIGCONT の直後に exit 0 になる可能性がある。先読みで止まるのはデータがあるときなので、起きる頻度は低い見込みである
 - 未解決: 放送 TS 全般の最大 GOP 長に対する pre-roll の十分性。P=2 秒は比較した実録画の要求位置でのみ確認した
 - 未解決: 音声と字幕。映像だけを変換して測ったので、第 2 音声の継ぎ目も測っていない
-- 未解決: PTS wrap をまたぐ変換。境界をまたぐ変換は合成入力でのみ確認した。実録画の原本の比較は offset 108 秒・pre-roll 2 秒で、seek の開始が境界の 0.06 秒後になり、変換は境界をまたいでいない
-- 未解決: 製品の引数が φ=1500 で n=9,10 に +1 を出す理由と、n が 10 より大きいときの誤差。keyframe の式の時刻が丸まる仕組みも特定していない
-- 未解決: 補正相対 seek + `select` と、製品の引数（`-seek_timestamp 1 -noaccurate_seek` の絶対秒 + `trim`）のどちらを採るか。決める条件は、クラスタの原本（古い音声 PES、PTS wrap）で製品の引数が ±1 frame に収まり、同じ n を異なる k で取った誤差が一致することである。クラスタの原本での測定は未実施
