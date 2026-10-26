@@ -84,9 +84,6 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 // いる転送の足元からファイルが消える（unlink 済み inode への書き込みは成功
 // し続けるので、失敗は commit の rename で初めて現れる）。
 func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, mtimeGrace time.Duration) (map[string]struct{}, error) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "scanning media store"); err != nil {
-		return nil, err
-	}
 	known, err := w.Storage.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing known rel paths: %w", err)

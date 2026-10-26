@@ -717,3 +717,65 @@ func TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk(t *testing.T) {
 		})
 	}
 }
+
+type erroringEncodedPublisher struct {
+	store.MediaPublish
+	calls int
+}
+
+func (p *erroringEncodedPublisher) PublishEncoded(context.Context, store.EncodedPublishInput, func() error) (bool, error) {
+	p.calls++
+	return false, errors.New("publisher reached")
+}
+
+// 本体の stage の後に目印が消えたら、字幕の temp も rel_path の lock file も作らない。
+func TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyStage(t *testing.T) {
+	for _, state := range []string{"missing", "different store"} {
+		t.Run(state, func(t *testing.T) {
+			mediaDir := t.TempDir()
+			if err := mediapath.WriteStoreMarker(mediaDir, "tokyo"); err != nil {
+				t.Fatal(err)
+			}
+			scratch := t.TempDir()
+			body := filepath.Join(scratch, "out.mp4")
+			subtitle := filepath.Join(scratch, "out.vtt")
+			for _, p := range []string{body, subtitle} {
+				if err := os.WriteFile(p, []byte("data"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			relPath := "sites/tokyo/out.mp4"
+			finalPath := filepath.Join(mediaDir, filepath.FromSlash(relPath))
+			// 照合が効けば publisher に届く前に返る。
+			publisher := &erroringEncodedPublisher{}
+			w := &EncodeWorker{MediaDir: mediaDir, MediaStoreName: "tokyo", Publisher: publisher}
+			previous := afterEncodeBodyStaged
+			afterEncodeBodyStaged = func(string) { mismatchStoreMarker(t, mediaDir, state) }
+			t.Cleanup(func() { afterEncodeBodyStaged = previous })
+			metricBefore := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo"))
+
+			_, published, err := w.publishEncoded(context.Background(), encodePublishInput{
+				relPath: relPath, finalPath: finalPath, scratchOut: body, subtitleOut: subtitle, withSubtitles: true,
+			})
+			if !errors.Is(err, mediapath.ErrStoreMarkerMismatch) || published {
+				t.Fatalf("publishEncoded() = published:%t err:%v, want marker mismatch", published, err)
+			}
+			if got := testutil.ToFloat64(metrics.StoreMarkerMismatch.WithLabelValues("tokyo")); got != metricBefore+1 {
+				t.Errorf("store marker metric = %v, want %v", got, metricBefore+1)
+			}
+			// 本体の temp は discard で消える。残るのは字幕の temp と lock file のどちらも無い状態。
+			if entries, err := os.ReadDir(filepath.Dir(finalPath)); err != nil || len(entries) != 0 {
+				t.Errorf("entries beside the canonical path = %v (err %v), want none", entries, err)
+			}
+			rootEntries, err := os.ReadDir(mediaDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range rootEntries {
+				if strings.HasPrefix(e.Name(), mediapath.MediaRelPathLockFilePrefix) {
+					t.Errorf("lock file %q was created after the marker disappeared", e.Name())
+				}
+			}
+		})
+	}
+}

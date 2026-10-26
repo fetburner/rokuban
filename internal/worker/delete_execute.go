@@ -259,10 +259,6 @@ var afterDeletingAssetStat = func(string) {}
 // 無い行」を作ってしまう。
 func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Context, a store.MediaDeleteRevertCandidate, graceCutoff time.Time) {
 	log := slog.With("media_asset_id", a.ID, "recording_id", a.RecordingID, "rel_path", a.RelPath)
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "resolving deleting media asset"); err != nil {
-		log.Warn("delete_reconcile: withholding deleting-state resolution because media store marker did not match", "err", err)
-		return
-	}
 
 	path, err := mediapath.Resolve(w.MediaDir, a.RelPath)
 	if err != nil {
@@ -310,10 +306,6 @@ func (w *DeleteReconcileWorker) resolveUnqualifiedDeletingAsset(ctx context.Cont
 // staging は一意な予約名なので lock を取らず、mtime を再確認してから unlink する。
 func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time.Duration) {
 	log := slog.With("rel_path", relPath, "source", "orphan")
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming orphan file"); err != nil {
-		log.Warn("delete_reconcile: withholding orphan cleanup because media store marker did not match", "err", err)
-		return
-	}
 	kind := classifyOrphanCleanup(relPath)
 	if kind == orphanCleanupCanonical {
 		// Work はここへ来ない（agedUnpublishedOrphans が canonical 名を先に除く）。
@@ -402,10 +394,6 @@ func (w *DeleteReconcileWorker) deleteOrphanFile(relPath string, mtimeGrace time
 // deleteOrphanIngestCheckpoint は SHA-256 状態を base temp の flock の下で回収する。
 // checkpoint の削除だけでも次回 replay の量が増えるだけだが、temp と同じ寿命で扱う。
 func (w *DeleteReconcileWorker) deleteOrphanIngestCheckpoint(path, relPath string, mtimeGrace time.Duration, log *slog.Logger) {
-	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reclaiming ingest checkpoint"); err != nil {
-		log.Warn("delete_reconcile: withholding checkpoint cleanup because media store marker did not match", "err", err)
-		return
-	}
 	tempPath := ingestTempPathForCheckpoint(path)
 	tempLock, err := lockExistingIngestTempFile(tempPath)
 	if err == nil {

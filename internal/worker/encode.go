@@ -688,6 +688,8 @@ const encodeReplanDelay = 10 * time.Second
 // あるいは commit の失敗を注入するためのフックである（本番では何もしない）。
 // 引数は試行の scratch 出力パス（どの試行かをテストが見分けるため）。
 var (
+	// afterEncodeBodyStaged は本体の stage の後、字幕の stage と lock の前に呼ぶ。
+	afterEncodeBodyStaged = func(scratchOut string) {}
 	// beforeEncodeLock は stage（コピーと fsync）の後、rel_path lock を取る前に呼ぶ。
 	beforeEncodeLock = func(scratchOut string) {}
 	// beforeEncodeFilePublication は DB の fencing と計画判定の後、rename の前に呼ぶ。
@@ -749,6 +751,11 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		return 0, false, err
 	}
 	defer staged.discard()
+	afterEncodeBodyStaged(in.scratchOut)
+	// 本体の stage（数 GB のコピー）の後、字幕の CreateTemp と lock file の作成を 1 回で守る。
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded subtitle and locking"); err != nil {
+		return 0, false, err
+	}
 	var stagedSubtitle stagedMediaFile
 	if in.withSubtitles {
 		subtitleRelPath, err := mediapath.SubtitleSibling(in.relPath)
