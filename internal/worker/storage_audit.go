@@ -254,7 +254,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 // 異常として Warn ログとメトリクスに出す（issue #343）。media_assets /
 // missing_media_assets のどちらも書き換えない --- 自動削除は行わない
 // （「ファイルが無い」は削除の必要条件であって十分条件ではない。
-// docs/storage/retention.md §7「孤児回収の逆」）。
+// docs/storage/missing-assets.md「孤児回収の逆」）。
 //
 // 個別 Warn ログは missingAssetLogBudget 件で打ち切り、超過分は件数だけを
 // 載せた 1 行（属性 logged / and_more）にまとめる --- 対象が解消するまで

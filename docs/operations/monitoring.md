@@ -168,7 +168,7 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root ごとに最後に観測できた時刻 |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数 |
 
-`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
+`rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/missing-assets.md)）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
 `rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
 

@@ -26,7 +26,8 @@ type catalogFile interface {
 }
 
 // openCatalogFile は世代を構成するファイルを最終名で開く。**一時名 → rename は
-// 使わない**（docs/storage.md §2: S3/FUSE にアトミック rename は無い）。公開点は
+// 使わない**（docs/storage/rescue.md「公開点は manifest の書き終わり」: rename に頼らないので
+// NFS の rename の意味論に依存せず、S3 へそのまま複製しても完成の判定が成り立つ）。公開点は
 // manifest を最後に書き終えることであって、名前の差し替えではない。
 var openCatalogFile = func(path string) (catalogFile, error) {
 	return os.Create(path)

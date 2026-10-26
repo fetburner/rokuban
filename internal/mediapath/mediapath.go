@@ -163,6 +163,7 @@ func IsMediaRelPathLockFile(name string) bool {
 
 // Resolve は mediaDir と relPath を結合した絶対パスを返す。
 // relPath が mediaDir の外を指す場合は ErrEscapesMediaDir を返す。
+// ロックディレクトリ配下と、root の置き場の目印 StoreMarkerFileName は ErrReservedMediaPath を返す。
 func Resolve(mediaDir, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("%w: empty path", ErrEscapesMediaDir)
@@ -171,6 +172,10 @@ func Resolve(mediaDir, relPath string) (string, error) {
 	base := filepath.Clean(mediaDir)
 	cleanRelPath := filepath.Clean(relPath)
 	if cleanRelPath == MediaRelPathLockDirName || strings.HasPrefix(cleanRelPath, MediaRelPathLockDirName+string(filepath.Separator)) {
+		return "", fmt.Errorf("%w: %q", ErrReservedMediaPath, relPath)
+	}
+	// root の置き場の目印は、media path として unlink・上書きさせない。ネストした同名ファイルは通常のパス。
+	if cleanRelPath == StoreMarkerFileName {
 		return "", fmt.Errorf("%w: %q", ErrReservedMediaPath, relPath)
 	}
 	target := filepath.Clean(filepath.Join(base, cleanRelPath))
