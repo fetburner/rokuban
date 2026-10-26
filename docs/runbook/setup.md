@@ -122,11 +122,13 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 ## 置き場の目印
 
-置き場の目印は、media root が設定した置き場であることを worker が確かめるためのファイルである。導入時に 1 回だけ作り、以後は手で書かない。
+置き場の目印は、media root が設定した置き場であることを worker が確かめるためのファイルである。導入時に 1 回だけ作り、手では書かない。
+
+目印は `rokuban storage adopt <store-name>` で作る。照合は完全一致で、末尾の改行も違いとして扱うので、`echo main > .rokuban-store` は改行を足して不一致になる。
 
 `storage.media_store_name` を設定した構成では、worker が media root の `.rokuban-store` を設定と照合し、一致しなければ書き込みと削除を見送る。照合の判断は [operations/storage.md](../operations/storage.md) にある。
 
-目印は `rokuban storage adopt <store-name>` で作る。実際にマウントされた media root に対して実行する。マウントが外れた状態で実行すると、マウント先のローカルディスクに目印を書いてしまう。
+`adopt` は実際にマウントされた media root に対して実行する。マウントが外れた状態で実行すると、マウントポイントの下にあるローカルディスクに目印を書いてしまう。
 
 新しく導入するときの順序は次のとおりである。
 
@@ -135,9 +137,7 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 3. `storage.media_store_name` に同じ名前を設定する
 4. 再起動する
 
-`.rokuban-store` を手で書かない。照合は完全一致で、末尾の改行も違いとして扱う。`echo main > .rokuban-store` は改行を足すので不一致になる。
-
-`recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。デプロイ前、または直後に、設定済みの名前で `adopt` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
+`recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 

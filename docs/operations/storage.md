@@ -26,7 +26,7 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-`storage.media_store_name` を設定すると、worker は起動時と、パスを解決するファイルシステム操作の前に `.rokuban-store` を照合する。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
+`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [retention.md](../storage/retention.md) §7「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
 
 見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 
@@ -42,6 +42,7 @@ worker は ingest キューを購読する起動時に、temp 作成、file `fsy
 - probe の遅延と再試行: `TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure`
 - 起動時に済んだ probe を繰り返さない: `TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup`
 - 生成物の公開抑止: `TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing`
+- encode の字幕 stage と lock の抑止: `TestPublishEncodedCreatesNoSubtitleTempOrLockWhenMarkerDisappearsAfterBodyStage`
 - unlink 抑止: `TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears`
 - 削除済みの確定抑止（unlink 成功）: `TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears`
 - 削除済みの確定抑止（`ErrNotExist`）: `TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappears`
