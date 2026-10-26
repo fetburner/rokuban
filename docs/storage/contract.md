@@ -1,26 +1,26 @@
 > [storage.md](../storage.md) §1〜5 の一部。索引から辿る
 
-## 1. 方針: S3 SDK を持たない
+## 1. 原本と派生物の置き場
 
-アプリのコードに S3 SDK やオブジェクトストレージの抽象化を持ち込まない。ローカルディスクとクラウドストレージの差は、OS / CSI / FUSE のレイヤーで吸収する。将来ネイティブ S3 API が必要になっても、DB の相対パス = キーなので、その時点で薄い抽象を後付けする余地は残る。
+原本は、強い POSIX のファイルシステムに置く。派生物は置き場のインターフェースを通して読み書きする。その実装は、強い POSIX のファイルシステムか S3 API のどちらかである。S3 SDK を import するのは S3 API 実装だけにする。
 
 ## 2. FUSE 越し S3 の制約
 
-FUSE 越しの S3 は、原本の取り込み先には使わない。atomic rename、ランダムライト、fsync やロックの意味論のどれも、原本を公開する根拠として信頼できないからである。
+FUSE 越しの S3 は、原本にも派生物にも使わない。atomic rename、ランダムライト、fsync、ロックの意味論を信頼できず、ファイルを公開する根拠にできないためである。S3 は API で使えば、直接配信もできる。
 
-S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、次の 3 点を `storage.media_dir` の原本 root の契約として信頼できない。
+S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、次の 3 点は、原本 root（`storage.media_dir`）でも派生物の置き場でも、契約として信頼できない。
 
 - 同一 FS 内の atomic rename がない。コピー + 削除になり、数十 GB の録画で実コピーが走る。Mountpoint は rename 自体に非対応である
 - ランダムライトができないか遅い。特に ffmpeg は MP4 出力時にヘッダ（moov atom）を書き戻すためシークするので、S3 マウント上への直接エンコード出力は正しく書けないか激遅になる
-- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイルロックの意味論が、原本を公開する根拠として信頼できない
+- ファイル `fsync`、`Close` のエラー報告、親ディレクトリ `fsync`、ファイルロックの意味論が、ファイルを公開する根拠として信頼できない
 
-したがって FUSE S3 は原本の ingest 先には使わない。派生物を置く領域としての利用可能性と、原本 root の契約を混同しない（実機検証の対象範囲もこの区別に従う）。
+したがって FUSE S3 は置き場として使わない。派生物を S3 に置くときは S3 API 実装を使う。
 
 ## 3. ストレージ契約（4 つのルール）
 
 原本の保存先は、fsync と atomic rename を信頼できる通常の POSIX FS に限る。書き込みは常にシーケンシャルにし、作業はローカルで行って完成品を一度だけ置く。公開点は DB の commit で、DB には相対パスだけを保存する。
 
-`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本 ingest の対象外である。次のルールは、原本 root とローカル `scratch_dir` の組み合わせに適用する。
+`storage.media_dir` は、ファイル `fsync`、`Close`、同一 FS 内の atomic rename、rename 後の親ディレクトリ `fsync` を信頼できる通常の POSIX FS に限る。ローカル FS / JuiceFS / 条件を満たす NFS は対象内で、FUSE S3 は原本・派生物とも対象外である。次のルールのうちファイル操作の手順は、原本 root、ローカル `scratch_dir`、派生物の FS 実装に適用する。ルール 3 の「公開点は DB commit」は、S3 API 実装にも掛かる（不変条件 3）。S3 API 実装で外れるのは、ファイルシステムの rename・fsync・flock に依存する手順だけである。
 
 1. 書き込みは常にシーケンシャルにする。初回は一発書き、プロセス再起動後は同じ temp の EOF へ追記する。ランダムライトはしない
 2. 「作業はローカル、置くのは一回」とする。ffmpeg の出力は必ずワーカーのローカルスクラッチ（k8s では emptyDir）に書き、完成したファイルをストレージへストリームコピーして fsync する。MP4 のシーク問題と書きかけファイル問題が同時に消える
@@ -29,7 +29,7 @@ S3 マウント（k8s-csi-s3 の geesefs/s3fs、AWS Mountpoint 等）では、�
 
 ### scratch と temp の置き場所
 
-ffmpeg の出力はワーカーのローカルスクラッチへ書く。取り込みの一時ファイルと派生物の staging file は、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
+ffmpeg の出力はワーカーのローカルスクラッチへ書く。FS 実装では、取り込みの一時ファイルと派生物の staging file を、最終的に置くのと同じ root・同じディレクトリに作る。別の FS をまたぐ rename は失敗し、コピーへの劣化を許すことになるので、scratch からの rename は確定操作には使わない。
 
 scratch から rename すると `EXDEV` になり、コピーへの劣化を許すことになる。
 
@@ -63,7 +63,7 @@ mirakc record は削除しない。中身の不一致または record の cancel
 
 ingest のコピー完了には、fsync と Close のエラー確認まで含める。転送中の fsync は、4 分の区切りで checkpoint を保存する直前と転送完了後に限り、バッファごとには行わない。区切りで fsync してから checkpoint を書くのは、電源断でサイズだけ進んだ temp と checkpoint を突き合わせないためである。
 
-区切りごとの fsync のコストは NFS / JuiceFS で未測定である。S3 系 FUSE は原本 ingest 先から外れているため、途中 fsync で fd に書けなくなる実装は対象外である。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
+区切りごとの fsync のコストは NFS / JuiceFS で未測定である。FUSE S3 は置き場に使わないので、途中 fsync で fd に書けなくなる実装は考慮しない。Linux では遅延した書き込みエラー（ENOSPC / I/O エラー）は `Close` では報告されず `fsync` でしか上がらない。rename 後の親ディレクトリ `fsync` は新しい directory entry の永続化を確定する。いずれかが失敗したら DB 登録と record 削除をせず再試行する。
 
 ingest temp / checkpoint の回収は同じ `flock` に参加し、ロック取得後に inode と mtime を再確認する。staging は公開前を示す予約名で、一意な CreateTemp パスから canonical へ rename すると元のパスは消える。そのため回収時に lock は取らず、unlink 直前に mtime を再確認する。
 
@@ -221,20 +221,20 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 ## 4. クラウド側のマウント選択肢
 
-クラウドで原本を置く先は、ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象にする。S3 系の FUSE は原本の取り込み先に使わない。JuiceFS のメタデータストアに Postgres を使うなら、Rokuban とは別のインスタンスにする（推奨）。
+クラウドで原本を置く先は、ローカル FS が第一候補で、JuiceFS と条件を満たす NFS も対象にする。FUSE S3 は原本にも派生物にも使わない。JuiceFS のメタデータストアに Postgres を使うなら、Rokuban とは別のインスタンスにする（推奨）。
 
 | 選択肢 | 特徴 |
 |---|---|
 | ローカル FS | file fsync / Close / atomic rename / 親 directory fsync を通常の POSIX 意味論で満たす。第一候補 |
 | JuiceFS（対象内） | メタデータを DB に、データを S3 に置く FS。atomic rename を含む POSIX 意味論を信頼できる構成で使う。メタデータストアに PostgreSQL を使う場合は別インスタンスを推奨 |
 | NFS（対象内） | export は `sync`、client mount は `hard` を推奨。`.nfsXXXX` の silly rename が canonical orphan として報告される場合は、file を閉じた後に状態を確認する。自動削除はしない |
-| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本 ingest 先には使わない。実機検証の範囲は派生物専用の領域に限る |
+| k8s-csi-s3（geesefs / s3fs）・AWS Mountpoint | 原本・派生物の置き場には使わない。派生物の S3 利用は API から行う |
 
 **注意**: JuiceFS のメタデータストアに Rokuban と同じ Postgres インスタンスを使うと、DB 障害がストレージ障害に連鎖し「DB が詰まっても仕事は失われない」の前提を成り立たなくする。使うなら別インスタンスを明記すること。
 
 ## 5. 2 階層: 録画バッファとアーカイブ
 
-「mirakc が直接書くストレージは高速に、録画後の保存先はアーカイブ用途で低速に」という分離は、ingest の設計（[録画エンジン](../recording.md) 参照）が既に実現している。新機能は不要で、「録画後のファイル移動」= ingest そのもの。Rokuban の原本 ingest root は上の強い FS 契約を満たす必要があり、FUSE S3 は派生物専用の別領域でのみ検討する。
+「mirakc が直接書くストレージは高速に、録画後の保存先はアーカイブ用途で低速に」という分離は、ingest の設計（[録画エンジン](../recording.md) 参照）が既に実現している。新機能は不要で、「録画後のファイル移動」= ingest そのもの。原本 ingest root は上の強い FS 契約を満たす。
 
 ### 2 階層の対応関係
 
@@ -259,11 +259,13 @@ CM 検出の後にサムネイルを選び直す場合も、同じパスへ上�
 
 アーカイブに求める速度は、平均スループットが 1 日の録画総量を 24 時間で割った値以上であること。瞬間的な変動は録画バッファが吸収するので、リアルタイム性は一切要求されない。エンコードの読み出しもバッチなので遅くてよい。
 
-唯一レイテンシが人間に見えるのは**再生時のシーク**（S3 + FUSE の range read）である。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか S3 の奥」という運用が前提なら、実用上問題にならない見込みである。
+唯一レイテンシが人間に見えるのは**再生時のシーク**である。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用が前提なら、実用上問題にならない見込みである。
 
-### 保留: アセット種別ごとのストレージルート分離
+### 派生物の置き場
 
-派生物（視聴用）だけ速いストレージに置きたくなった場合、originals / derivatives で 2 つのストレージルートを持つ小さな拡張で対応できる。現時点では単一ルートで始め、シークの体感が問題になったら足す（YAGNI）。
+論理資産と物理コピーは、派生物に限らず原本でも分ける。コピーを置き場の間で移しても、論理資産の identity は変わらない。派生物の置き場は、全 site 共通で物理的に 1 か所にする。どの worker からも読めるようにするためである（S3 なら scratch へ取り寄せて読む）。
+
+論理資産は `media_assets` の行で、派生物は録画・種別・profile・`derived_generation` で識別する。
 
 ### 残量の観測
 

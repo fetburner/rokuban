@@ -16,9 +16,7 @@
 
 ローカル FS / JuiceFS / NFS は対象内である。ただし NFS export は `sync`、client mount は `hard` を推奨する。NFS の open 中 unlink による `.nfsXXXX`（silly rename）は、canonical orphan として報告されることがある。自動削除はせず、ファイルを閉じた後に状態を確認する。
 
-geesefs / s3fs / AWS Mountpoint など FUSE S3 は、原本 ingest 先に使わない。atomic rename、file / parent `fsync`、`Close` のエラー意味論を、原本の公開根拠として信頼できないためである。
-
-FUSE S3 の実機検証の範囲は、派生物専用の領域に限る。`storage.media_dir` を FUSE S3 にして probe が通ったとしても、設定契約違反を解消したことにはならない。
+geesefs / s3fs / AWS Mountpoint など FUSE S3 は、原本にも派生物にも使わない。atomic rename、file / parent `fsync`、`Close` のエラー、ロックの意味論を、ファイルの公開根拠として信頼できないためである。派生物を S3 に置く場合は API を使う。
 
 #### 起動時の probe
 
@@ -155,7 +153,7 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 #### 再生時のシーク
 
-唯一レイテンシが人間に見えるのは、再生時のシークである（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
+唯一レイテンシが人間に見えるのは、再生時のシークである。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
 
 ### S3 の置き場の運用要件
 

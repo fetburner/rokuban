@@ -51,8 +51,8 @@ storage:
   media_dir: /mnt/media          # 原本 ingest 先。file fsync / Close / 同一 FS の
                                   # atomic rename / 親 directory fsync を信頼できる
                                   # ローカル FS / JuiceFS / NFS に限定する。geesefs / s3fs /
-                                  # Mountpoint など FUSE S3 は原本 ingest 先に使わない
-                                  # （派生物専用の領域なら可。docs/storage/contract.md）。
+                                  # Mountpoint など FUSE S3 は原本・派生物とも対象外
+                                  # （docs/storage/contract.md）。
   # media_store_name: main      # recording_hls.enabled=true なら必須。英小文字・数字・- のみ。
                                 # ingress の Prefix /api/media/stores/<名前>/ と一致させる。
   scratch_dir: /var/tmp/rokuban  # ローカルスクラッチ
