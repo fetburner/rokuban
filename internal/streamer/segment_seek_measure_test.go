@@ -22,6 +22,7 @@ import (
 //	ROKUBAN_SEEK_COUNT       k から数えて取るセグメント数（既定 6）
 //	ROKUBAN_SEEK_FRAMES      基準にする入力の復号フレーム数（既定 900）
 //	ROKUBAN_SEEK_AUDIO       入力の音声ストリーム数（既定 2。合成入力は 2 本）
+//	ROKUBAN_SEEK_ORIGIN_SHIFT OriginPTS と期待 frame の V から引く tick 数（既定 0）。V の frame 格子に対する位相をずらす
 //	ROKUBAN_SEEK_TOLERANCE   許す誤差の絶対値 frame（既定 1）
 //
 // 期待フレームは、入力の復号フレームのうち PTS が V + n·D 以上になる最初のもの（V は映像の最初の
@@ -68,7 +69,7 @@ func TestSegmentTransformSeekMeasure(t *testing.T) {
 		starts = append(starts, k)
 	}
 
-	originPTS := firstPacketPTS(t, ffprobe, input)
+	originPTS := firstPacketPTS(t, ffprobe, input) - int64(envInt("ROKUBAN_SEEK_ORIGIN_SHIFT", 0))
 	reference := framehashes(t, ffmpeg, "-copyts", "-i", input, "-map", "0:v:0", "-an", "-frames:v", strconv.Itoa(frames), "-fps_mode", "passthrough")
 	t.Logf("input %s: origin PTS %d, format start_time %d, %d reference frames", filepath.Base(input), originPTS, formatStartPTS(t, ffprobe, input), len(reference))
 

@@ -1,6 +1,6 @@
 # 録画 temp と seek の測定
 
-測定結果の解釈は [再生設計](../../docs/api/media/playback.md) の「録画中の temp を読む方式の測定」にある。アプリ、mirakc、DB は起動しない。共有 PVC の専用ディレクトリで合成 TS を再生し、原本は読み取り専用で解析する。
+測定結果の解釈は [temp を読む方式の測定](../../docs/api/media/playback-temp-measurement.md)にある。アプリ、mirakc、DB は起動しない。共有 PVC の専用ディレクトリで合成 TS を再生し、原本は読み取り専用で解析する。
 
 集計値と追記ごとの観測は `results/` に置く。原本のタイトル、映像、内部 IP は含めない。
 
@@ -94,6 +94,7 @@ seek.py がローカルへ保存するのは数値、hash、標準エラー、�
 | `ROKUBAN_SEEK_COUNT` | k から数えて取るセグメント数 | `6` |
 | `ROKUBAN_SEEK_FRAMES` | 基準にする入力の復号 frame 数。k+COUNT の位置まで届く値にする | `900` |
 | `ROKUBAN_SEEK_AUDIO` | 入力の音声ストリーム数 | `2` |
+| `ROKUBAN_SEEK_ORIGIN_SHIFT` | OriginPTS と期待 frame の V から引く tick 数。V の frame 格子に対する最初の復号 frame の位相 φ をずらす | `0` |
 | `ROKUBAN_SEEK_TOLERANCE` | 許す誤差の絶対値 frame | `1` |
 
 出力は QP=0 の無損失で縮小しないので、入力が 1080 の場合はセグメントごとに数十 MB になる。各セグメントの先頭フレームの hash を、入力の復号 frame 列に照合する。期待 frame は `seek.py` と同じで、入力の復号 frame の PTS が V + n·D 以上になる最初のものである。hash が入力内で一意でなければ失敗にする。
@@ -117,6 +118,16 @@ kubectl -n "$NAMESPACE" exec "$POD" -- env TMPDIR=/tmp \
 
 `ROKUBAN_SEEK_FRAMES` は入力の frame 数を超えない値にする。結果は標準出力の `k=… n=… error_frames=…` の行である。この手順の Pod 上での実行は未実施で、linux/amd64 のクロスビルドが通ることだけを確認した。
 
+## Pod を使わない seek.py
+
+`--pod` を付けなければ、手元の ffmpeg / ffprobe で同じ比較を走らせる（GNU `timeout` が無い macOS でも動く）。`--scratch-root` は作業ディレクトリの置き場、`--video-origin-90k` に V から φ 分を引いた値を渡すと位相をずらせる。`corrected-trim`（`select` の代わりに `trim=start=T`）と `absolute-noaccurate`（`-noaccurate_seek` 付きの絶対 seek）の比較も出る。測定用の出力の `--gop`、`--force-key-frames`、`--hls-time`、`--enc-time-base` を変えると、誤差が出力側の keyframe の置き方で動くかを確かめられる。
+
+```sh
+python3 scripts/playback-measure/seek.py --input /path/to/input.ts \
+  --video-origin-90k "$((V - 609))" --format-start-90k "$S" \
+  --offset 10.36 --reference-frames 900 --scratch-root /tmp --output /tmp/rp3-local
+```
+
 ## 測定コードの検査
 
 Go 側の期待 frame の選択と hash の一意性は `go test ./internal/streamer/ -run TestSeekFrameError` で検査する。Python 側は次のとおり。
@@ -125,4 +136,4 @@ Go 側の期待 frame の選択と hash の一意性は `go test ./internal/stre
 python3 -m unittest discover -s scripts/playback-measure -p 'test_*.py'
 ```
 
-実クラスタの測定では、累積サイズの判定を壊す変異と、入力格子の target を 0 にする変異で、それぞれ assertion が失敗することを確認した。古い音声 PES と PTS wrap の原本では、未補正の引数が ±1 frame を超え、補正相対 seek だけが範囲内に収まった。ただしこの測定の基準 PTS は frame rate の time base に丸められていた。`seek.py` は `-enc_time_base:v 1/90000` を付けるよう直したが、クラスタでの再測定は未実施である。
+実クラスタの測定では、累積サイズの判定を壊す変異と、入力格子の target を 0 にする変異で、それぞれ assertion が失敗することを確認した。古い音声 PES と PTS wrap の原本では、未補正の引数が ±1 frame を超え、補正相対 seek だけが範囲内に収まった。ただしこの測定の基準 PTS は frame rate の time base に丸められていた。`seek.py` は `-enc_time_base:v 1/90000` を付けるよう直したが、クラスタでの再測定は未実施である。古い音声 PES の原本の n=5,6 の +1 は、この丸めではなく測定用の出力側の keyframe の置き方によるものだった（位相 609 tick の放送 TS で再現。結果は temp 方式の測定の docs にある）。
