@@ -139,6 +139,7 @@ type Deps struct {
 	EncodeAttempts        store.EncodeAttempts
 	StorageObservation    store.StorageObservation
 	MediaDir              string
+	MediaStoreName        string
 	ScratchDir            string
 
 	// Encode は構造化エンコードプロファイルと ffmpeg パス（issue #64 / #65）。
@@ -208,22 +209,24 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		RecordTarget:     deps.IngestTarget,
 		CMDetectionStore: deps.CMDetectionStore,
 		MediaDir:         deps.MediaDir,
+		MediaStoreName:   deps.MediaStoreName,
 		StallTimeout:     deps.IngestStallTimeout,
 		CMDetect:         deps.CMDetect,
 		CutProfiles:      deps.Encode.CutProfileSet(),
 		LiveEnabled:      deps.LiveEnabled,
 	})
 	riveradapter.Register(workers, &EncodeWorker{
-		Media:      deps.MediaReconcile,
-		Attempts:   deps.EncodeAttempts,
-		Publisher:  deps.MediaPublish,
-		Progress:   deps.EncodeProgress,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-		FFmpeg:     deps.Encode.FFmpeg,
-		FFprobe:    deps.Encode.FFprobe,
-		Profiles:   deps.Encode,
-		Webhook:    deps.Webhook,
+		Media:          deps.MediaReconcile,
+		Attempts:       deps.EncodeAttempts,
+		Publisher:      deps.MediaPublish,
+		Progress:       deps.EncodeProgress,
+		MediaDir:       deps.MediaDir,
+		MediaStoreName: deps.MediaStoreName,
+		ScratchDir:     deps.ScratchDir,
+		FFmpeg:         deps.Encode.FFmpeg,
+		FFprobe:        deps.Encode.FFprobe,
+		Profiles:       deps.Encode,
+		Webhook:        deps.Webhook,
 	})
 	riveradapter.Register(workers, &EncodeReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -271,24 +274,27 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Webhook:            deps.Webhook,
 	})
 	riveradapter.Register(workers, &CatalogExportWorker{
-		Store:    deps.Catalog,
-		MediaDir: deps.MediaDir,
+		Store:          deps.Catalog,
+		MediaDir:       deps.MediaDir,
+		MediaStoreName: deps.MediaStoreName,
 	})
 	riveradapter.Register(workers, &ThumbnailWorker{
-		Media:      deps.MediaReconcile,
-		Publisher:  deps.MediaPublish,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-		FFmpeg:     deps.Encode.FFmpeg,
-		FFprobe:    deps.Encode.FFprobe,
+		Media:          deps.MediaReconcile,
+		Publisher:      deps.MediaPublish,
+		MediaDir:       deps.MediaDir,
+		MediaStoreName: deps.MediaStoreName,
+		ScratchDir:     deps.ScratchDir,
+		FFmpeg:         deps.Encode.FFmpeg,
+		FFprobe:        deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &SeekTilesWorker{
-		Media:      deps.MediaReconcile,
-		Publisher:  deps.MediaPublish,
-		MediaDir:   deps.MediaDir,
-		ScratchDir: deps.ScratchDir,
-		FFmpeg:     deps.Encode.FFmpeg,
-		FFprobe:    deps.Encode.FFprobe,
+		Media:          deps.MediaReconcile,
+		Publisher:      deps.MediaPublish,
+		MediaDir:       deps.MediaDir,
+		MediaStoreName: deps.MediaStoreName,
+		ScratchDir:     deps.ScratchDir,
+		FFmpeg:         deps.Encode.FFmpeg,
+		FFprobe:        deps.Encode.FFprobe,
 	})
 	riveradapter.Register(workers, &ThumbnailReconcileWorker{
 		Enqueuer: deps.Enqueuer,
@@ -320,6 +326,7 @@ func NewWorkers(deps *Deps) *jobq.Registry {
 		Breakers:          deps.Breakers,
 		Storage:           deps.StorageObservation,
 		MediaDir:          deps.MediaDir,
+		MediaStoreName:    deps.MediaStoreName,
 		TrashRetention:    deps.Cleanup.TrashRetention,
 		OrphanMTimeGrace:  deps.Cleanup.OrphanMTimeGrace,
 		OrphanAge:         deps.Cleanup.OrphanAge,

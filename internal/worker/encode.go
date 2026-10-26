@@ -94,14 +94,15 @@ import (
 // 「別インスタンスの id を投げる」形の壊れ方が起きない。
 type EncodeWorker struct {
 	// Media はエンコード計画と原本の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media      store.MediaReconcile
-	Attempts   store.EncodeAttempts
-	Publisher  store.MediaPublish
-	Progress   store.EncodeProgressReporter
-	MediaDir   string
-	ScratchDir string
-	FFmpeg     string
-	FFprobe    string
+	Media          store.MediaReconcile
+	Attempts       store.EncodeAttempts
+	Publisher      store.MediaPublish
+	Progress       store.EncodeProgressReporter
+	MediaDir       string
+	MediaStoreName string
+	ScratchDir     string
+	FFmpeg         string
+	FFprobe        string
 	// Profiles は名前解決用。config.EncodeConfig.Profile を使う。
 	Profiles config.EncodeConfig
 
@@ -132,6 +133,9 @@ const encodeMinTimeout = time.Hour
 // jobq.ErrDiscard を返して、adapter に再配信不要と伝える。
 // POST /api/recordings/{id}/encode-profiles と cut 版の /reencode は failed 行を消して予算を戻す。
 func (w *EncodeWorker) Work(ctx context.Context, args jobs.EncodeJobArgs) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting encode"); err != nil {
+		return err
+	}
 	start, err := w.beginEncodeAttempt(ctx, args.RecordingID, args.Profile)
 	if err != nil {
 		return err
@@ -731,13 +735,16 @@ type encodePublishInput struct {
 // canonical は消さない（commit が実は成功していた場合に、生きている行が指す実体を
 // 失う）。孤児として報告するか、次の試行の rename に任せる。
 func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput) (size int64, published bool, err error) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "staging encoded output"); err != nil {
+		return 0, false, err
+	}
 	// 親ディレクトリが無いと temp も lock file も作れない。ingest はストレージ層が
 	// commit 前に作るが、encode はここが最初の書き込みなので stage の前に作る。
 	if err := os.MkdirAll(filepath.Dir(in.finalPath), 0o755); err != nil {
 		return 0, false, fmt.Errorf("mkdir %s: %w", filepath.Dir(in.finalPath), err)
 	}
 
-	staged, err := stageMediaFile(ctx, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
+	staged, err := stageMediaFile(ctx, w.MediaDir, w.MediaStoreName, in.scratchOut, in.finalPath, mediapath.EncodeTempFilePrefix)
 	if err != nil {
 		return 0, false, err
 	}
@@ -752,7 +759,7 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 		if err != nil {
 			return 0, false, fmt.Errorf("resolving subtitle path: %w", err)
 		}
-		stagedSubtitle, err = stageMediaFile(ctx, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
+		stagedSubtitle, err = stageMediaFile(ctx, w.MediaDir, w.MediaStoreName, in.subtitleOut, subtitleFinalPath, mediapath.EncodeTempFilePrefix)
 		if err != nil {
 			return 0, false, fmt.Errorf("staging subtitle sidecar: %w", err)
 		}
@@ -788,15 +795,24 @@ func (w *EncodeWorker) publishEncoded(ctx context.Context, in encodePublishInput
 			return fmt.Errorf("preparing encoded file publication: %w", err)
 		}
 		if in.withSubtitles {
+			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded subtitle"); err != nil {
+				return err
+			}
 			if err := stagedSubtitle.publish(); err != nil {
 				return err
 			}
+		}
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "publishing encoded output"); err != nil {
+			return err
 		}
 		if err := staged.publish(); err != nil {
 			return err
 		}
 		if err := beforeEncodeCommit(in.scratchOut); err != nil {
 			return fmt.Errorf("committing encoded asset: %w", err)
+		}
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "committing encoded output"); err != nil {
+			return err
 		}
 		return nil
 	}
@@ -932,9 +948,17 @@ func nextCutGeneration(prevRelPath, profileName string) int {
 // して記録・報告する。ここでエラーを返すと、置き換え自体は成功しているのにジョブが失敗し、
 // 再試行が新しい世代をさらに作る。
 func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced encoded output"); err != nil {
+		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
+		return
+	}
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		log.Warn("encode: could not resolve replaced path", "rel_path", relPath, "err", err)
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced encoded output"); err != nil {
+		log.Warn("encode: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -943,8 +967,17 @@ func (w *EncodeWorker) removeReplacedEncoded(relPath string, log *slog.Logger) {
 	}
 	// サイドカーも同じ世代で置き換わる。
 	if sidecarRel, err := mediapath.SubtitleSibling(relPath); err == nil {
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced subtitle"); err != nil {
+			log.Warn("encode: skipping replaced subtitle removal because media store marker did not match", "rel_path", sidecarRel, "err", err)
+			return
+		}
 		if sidecar, err := mediapath.Resolve(w.MediaDir, sidecarRel); err == nil {
-			_ = os.Remove(sidecar)
+			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced subtitle"); markerErr != nil {
+				log.Warn("encode: skipping replaced subtitle removal because media store marker did not match", "rel_path", sidecarRel, "err", markerErr)
+			} else if removeErr := os.Remove(sidecar); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				log.Warn("encode: removing replaced subtitle failed; orphan reporting will expose it",
+					"rel_path", sidecarRel, "err", removeErr)
+			}
 		}
 	}
 }

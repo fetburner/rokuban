@@ -26,6 +26,21 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
+`storage.media_store_name` を設定すると、worker は起動時と各ストレージ操作の直前に `.rokuban-store` を照合する。内容が一致しないか読み取りに失敗した操作は見送る。
+
+不一致時は ingest probe、ファイル書き込み・削除、欠損記録を行わず、`rokuban_store_marker_mismatch_total{store}` を増やす。目印は `rokuban storage adopt <store-name>` で作成できる。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。
+
+<details><summary>根拠</summary>
+
+- ingest 抑止: `TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch`
+- unlink 抑止: `TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears`
+- 監査抑止: `TestMissingStoreMarkerWithholdsMissingAssetAndOrphanActions`
+- adopt: `TestStorageAdoptWritesStoreMarker`
+
+</details>
+
+`storage.media_store_name` が空なら目印を照合しない。既存構成へ導入するときは、実際にマウントされた media root に対して `storage adopt` を実行し、設定へ同じ名前を入れる。
+
 #### ingest の一時ファイルと orphan
 
 ingest の一時ファイルは、canonical path と同じディレクトリに作られる。プロセス死で残った ingest temp は、mtime 猶予と aging（既定 7 日 + 14 日）の後に回収する。

@@ -123,6 +123,7 @@ type DeleteReconcileWorker struct {
 	RecordingPurge store.RecordingPurge
 	Breakers       store.Breakers
 	MediaDir       string
+	MediaStoreName string
 
 	TrashRetention    time.Duration
 	OrphanMTimeGrace  time.Duration
@@ -136,6 +137,9 @@ type DeleteReconcileWorker struct {
 
 // Work は 1 パス分の削除 reconcile を実行する。
 func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcileArgs) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting delete reconcile"); err != nil {
+		return err
+	}
 	// site は常に空文字列（DeleteReconcileWorker の doc コメント参照 ---
 	// このジョブはどの束縛サイトの worker が掴んでも同じ 1 つのブレーカーとして
 	// 扱う。breaker.IsSiteless(breaker.DeleteReconcile) が true）。

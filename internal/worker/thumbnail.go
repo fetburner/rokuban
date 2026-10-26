@@ -46,12 +46,13 @@ const (
 // の doc コメント参照。
 type ThumbnailWorker struct {
 	// Media はサムネイル入力の読み取り契約。nil は該当経路を呼ばない部分テストでのみ許容する。
-	Media      store.MediaReconcile
-	Publisher  store.MediaPublish
-	MediaDir   string
-	ScratchDir string
-	FFmpeg     string
-	FFprobe    string
+	Media          store.MediaReconcile
+	Publisher      store.MediaPublish
+	MediaDir       string
+	MediaStoreName string
+	ScratchDir     string
+	FFmpeg         string
+	FFprobe        string
 
 	// runCmd はテストで差し替える実行フック。nil なら exec.CommandContext。
 	// stdout を返す（ffprobe）。ffmpeg はファイル副作用だけを使う。
@@ -82,6 +83,9 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 		metrics.ThumbnailDuration.Observe(time.Since(started).Seconds())
 		metrics.ThumbnailJobs.WithLabelValues(result).Inc()
 	}()
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "starting thumbnail generation"); err != nil {
+		return err
+	}
 
 	plan, ready, err := w.buildThumbnailPlan(ctx, recordingID, log)
 	if err != nil {
@@ -115,7 +119,7 @@ func (w *ThumbnailWorker) Work(ctx context.Context, args jobs.ThumbnailJobArgs) 
 	if plan.expected != nil {
 		expected = &store.ThumbnailObservation{ID: plan.expected.ID, RelPath: plan.expected.RelPath, SeekMs: plan.expected.SeekMs}
 	}
-	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, plan.relPath, scratchPath,
+	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, plan.relPath, scratchPath,
 		func(size int64, publish func() error) (bool, error) {
 			return w.Publisher.PublishThumbnail(ctx, store.ThumbnailPublishInput{
 				RecordingID: recordingID, RelPath: plan.relPath, SizeBytes: size,
@@ -302,9 +306,17 @@ type thumbnailObserved struct {
 }
 
 func (w *ThumbnailWorker) removeReplacedThumbnail(relPath string, log *slog.Logger) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing replaced thumbnail"); err != nil {
+		log.Warn("thumbnail: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
+		return
+	}
 	path, err := mediapath.Resolve(w.MediaDir, relPath)
 	if err != nil {
 		log.Warn("thumbnail: could not resolve replaced path", "rel_path", relPath, "err", err)
+		return
+	}
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "unlinking replaced thumbnail"); err != nil {
+		log.Warn("thumbnail: skipping replaced file removal because media store marker did not match", "rel_path", relPath, "err", err)
 		return
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {

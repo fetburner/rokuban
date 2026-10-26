@@ -47,6 +47,9 @@ import (
 // 約束する「凍結する」が実装のどこにも実在しない記述になる
 // （疑わしい間はゲージを含む報告そのものを止める、という設計判断）。
 func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context, orphanMTimeGrace, orphanAge, missingAssetAge time.Duration) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "auditing media store"); err != nil {
+		return err
+	}
 	seenOnDisk, err := w.reconcileOrphanCandidates(ctx, orphanMTimeGrace)
 	if err != nil {
 		return fmt.Errorf("reconciling orphan candidates: %w", err)
@@ -84,6 +87,9 @@ func (w *DeleteReconcileWorker) reconcileDeleteObservations(ctx context.Context,
 // いる転送の足元からファイルが消える（unlink 済み inode への書き込みは成功
 // し続けるので、失敗は commit の rename で初めて現れる）。
 func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, mtimeGrace time.Duration) (map[string]struct{}, error) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "scanning media store"); err != nil {
+		return nil, err
+	}
 	known, err := w.Storage.ListAllMediaAssetRelPaths(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing known rel paths: %w", err)
@@ -120,6 +126,9 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 	}
 
 	for relPath := range candidates {
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording orphan candidate"); err != nil {
+			return nil, err
+		}
 		if err := w.Storage.UpsertOrphanFile(ctx, relPath); err != nil {
 			return nil, fmt.Errorf("recording orphan candidate %q: %w", relPath, err)
 		}
@@ -135,6 +144,9 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 		}
 		// もう孤児候補でない（media_assets に登録された、mtime が新しくなった
 		// はずはないが再走査で見えなくなった＝ファイルが消えた等）。掃除する。
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing stale orphan candidate"); err != nil {
+			return nil, err
+		}
 		if err := w.Storage.DeleteOrphanFile(ctx, o.RelPath); err != nil {
 			return nil, fmt.Errorf("clearing stale orphan record %q: %w", o.RelPath, err)
 		}
@@ -165,14 +177,11 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 // 埋める（次パスでファイルが観測されれば候補は掃除され、確認済みとして
 // 報告される前に消える）。
 //
-// マウントが落ちている・空マウントのときに全 active 行を「実体無し」と
-// 報告して騒がないよう、seenOnDisk が空（この走査で 1 件もファイルを
-// 観測できなかった）のに active な行が存在するケースを形で検知して丸ごと
-// 見送る（reconciler の全損シグネチャ breaker.ReconcileTotalLoss と同じ
-// 考え方 --- 件数の閾値ではなく形で見る。ただしここは削除を止める
-// ブレーカーではなく単なる観測の記録なので、ラッチは持たず今パスの記録を
-// 見送るだけでよい）。既存の missing_media_assets 行にも一切触れない ---
-// 前回までの確認済み状態をこの疑わしいパスの結果で上書きしないため。
+// storage.media_store_name が空の既存構成では、seenOnDisk が空なのに active 行が
+// 存在するケースを全損シグネチャとして見送る。置き場名が設定されている構成は
+// Work と各記録の直前で marker を照合するため、この走査件数の代替判定は使わない。
+// 既存の missing_media_assets 行には触れず、前回までの確認済み状態を空走査の結果で
+// 上書きしない。
 //
 // 戻り値の bool は今パスが疑わしいパス（全損シグネチャ発動）だったかを
 // 呼び出し元（Work）に伝える。呼び出し元はこれを見て reportAgedMissingAssets
@@ -197,6 +206,9 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 // 15 分ごとに同じ件数の UPSERT が削除本体と同じジョブの中で走る。それが
 // 問題になるなら直し方は入力を切ることではなく UPSERT を 1 文にまとめること。
 func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seenOnDisk map[string]struct{}) (bool, error) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "checking missing media assets"); err != nil {
+		return false, err
+	}
 	active, err := w.Storage.ListActiveMediaAssets(ctx)
 	if err != nil {
 		return false, fmt.Errorf("listing active media assets: %w", err)
@@ -208,7 +220,7 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		// active が 1 件でもあるパスで回収される（意図的）。
 		return false, nil
 	}
-	if len(seenOnDisk) == 0 {
+	if w.MediaStoreName == "" && len(seenOnDisk) == 0 {
 		slog.Warn("delete_reconcile: filesystem walk observed zero files while active media_assets rows exist; suspecting a storage mount failure, skipping missing-asset check for this pass",
 			"active_assets", len(active))
 		metrics.MissingAssetScanSuspectedStorageFailure.Inc()
@@ -221,6 +233,9 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 			continue
 		}
 		candidates[a.ID] = struct{}{}
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "recording missing media asset"); err != nil {
+			return false, err
+		}
 		if err := w.Storage.UpsertMissingMediaAsset(ctx, a.ID); err != nil {
 			return false, fmt.Errorf("recording missing-asset candidate %d: %w", a.ID, err)
 		}
@@ -236,6 +251,9 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 		}
 		// もう実体無し候補でない（ファイルが見つかった、またはこの資産自体が
 		// もう active でなくなった等）。掃除する。
+		if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing stale missing-asset record"); err != nil {
+			return false, err
+		}
 		if err := w.Storage.DeleteMissingMediaAsset(ctx, id); err != nil {
 			return false, fmt.Errorf("clearing stale missing-asset record %d: %w", id, err)
 		}
@@ -256,6 +274,9 @@ func (w *DeleteReconcileWorker) reconcileMissingAssets(ctx context.Context, seen
 // （件数自体は Reset 後の MediaAssetsMissing ゲージが持つので、ログは同定
 // だけを担えばよい）。
 func (w *DeleteReconcileWorker) reportAgedMissingAssets(ctx context.Context, age time.Duration) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reporting missing media assets"); err != nil {
+		return err
+	}
 	aged, err := w.Storage.ListAgedMissingMediaAssets(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged missing-asset candidates: %w", err)
@@ -313,6 +334,9 @@ func classifyOrphanCleanup(relPath string) orphanCleanupKind {
 // agedUnpublishedOrphans はエイジング済み孤児のうち、名前が公開前を示すものだけを
 // 自動削除候補として返す。canonical 名は報告側に残す。
 func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age, mtimeGrace time.Duration) ([]string, error) {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "selecting orphan files for cleanup"); err != nil {
+		return nil, err
+	}
 	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return nil, fmt.Errorf("listing aged orphan files: %w", err)
@@ -339,6 +363,9 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		}
 		if _, ok := knownSet[relPath]; ok {
 			// 登録され直っていた。孤児ではなくなったので記録から外す。
+			if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing orphan record"); err != nil {
+				return nil, err
+			}
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing reclaimed orphan record %q: %w", relPath, err)
 			}
@@ -346,6 +373,9 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		}
 		path, err := mediapath.Resolve(w.MediaDir, relPath)
 		if err != nil {
+			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing invalid orphan record"); markerErr != nil {
+				return nil, markerErr
+			}
 			if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 				return nil, fmt.Errorf("clearing invalid orphan record %q: %w", relPath, err)
 			}
@@ -354,6 +384,9 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 		info, statErr := os.Stat(path)
 		if statErr != nil {
 			if errors.Is(statErr, os.ErrNotExist) {
+				if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "clearing vanished orphan record"); markerErr != nil {
+					return nil, markerErr
+				}
 				if err := w.Storage.DeleteOrphanFile(ctx, relPath); err != nil {
 					return nil, fmt.Errorf("clearing vanished orphan record %q: %w", relPath, err)
 				}
@@ -375,6 +408,9 @@ func (w *DeleteReconcileWorker) agedUnpublishedOrphans(ctx context.Context, age,
 // 報告から除き、canonical 名は人が調査・削除するまで記録を保持する。
 // 登録済み rel_path の行は、同じ reconcile パスで先に走る reconcileOrphanCandidates が消している前提で、ここでは再確認しない。
 func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, age time.Duration) error {
+	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "reporting orphan files"); err != nil {
+		return err
+	}
 	agedPaths, err := w.Storage.ListAgedOrphanFiles(ctx, age)
 	if err != nil {
 		return fmt.Errorf("listing aged orphan files: %w", err)
@@ -407,14 +443,15 @@ func (w *DeleteReconcileWorker) reportAgedOrphanFiles(ctx context.Context, age t
 var beforeWalkMediaFiles = func() {}
 
 // walkMediaFiles は mediaDir 配下の通常ファイルを列挙する。catalog.Subdir
-// （災害復旧用メタデータ）と .rokuban-locks（調停用 metadata）は走査から除く。
+// （災害復旧用メタデータ）、.rokuban-locks（調停用 metadata）、.rokuban-store
+// （置き場の目印）は走査から除く。
 // mediaDir 自体が symlink の場合は、走査 root・catalogDir・rel_path の基準を
 // 同じ実体パスに揃えるため、走査前に解決する。
 //
 // mediaDir が存在しない場合は従来どおり 0 件・エラー無しで返す ---
-// reconcileMissingAssets の全損シグネチャ（seenOnDisk が空）がこれを拾って
-// 専用の見送り経路に入れるため、ここで error にすると全損検知の入口を
-// 迂回してしまう（#671 コメント参照）。権限エラーや symlink ループ等
+// 置き場名が空の既存構成は reconcileMissingAssets の全損シグネチャが拾う。
+// 置き場名が設定された構成では worker の marker 照合が先に失敗する。
+// ここで error にすると前者の見送り経路を迂回する。権限エラーや symlink ループ等
 // 不在以外の解決失敗、および解決後がディレクトリでない場合は error にする
 // --- 後者が閉じるのは "." という幻の rel_path が seenOnDisk / orphan_files
 // に混入する経路。
@@ -472,14 +509,18 @@ func walkMediaFiles(mediaDir string, fn func(relPath string, info fs.FileInfo)) 
 			}
 			return nil
 		}
+		relPath, err := filepath.Rel(resolvedMediaDir, path)
+		if err != nil {
+			return err
+		}
+		// 置き場の目印だけを walk から除く。ネストした同名ファイルは media path として扱う。
+		if relPath == mediapath.StoreMarkerFileName {
+			return nil
+		}
 		// 旧形式は rolling upgrade 中の旧 worker と共有する可能性があるため、
 		// orphan として unlink しない。新形式は root の lock directory ごと上で除外する。
 		if mediapath.IsMediaRelPathLockFile(info.Name()) {
 			return nil
-		}
-		relPath, err := filepath.Rel(resolvedMediaDir, path)
-		if err != nil {
-			return err
 		}
 		fn(filepath.ToSlash(relPath), info)
 		return nil

@@ -162,18 +162,21 @@ EPG とチューナーの射影は、投影件数で空になっていないこ�
 | `rokuban_delete_reconcile_last_pass_timestamp_seconds` | Gauge | 最後に成功した削除 reconcile パスの時刻 |
 | `rokuban_media_assets_missing{kind}` | Gauge | 実体ファイルが無いと確認できた media_asset 数 |
 | `rokuban_orphan_files_unresolved` | Gauge | 登録されないまま残っている canonical file の数 |
-| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 検出パスが記録を見送った回数 |
+| `rokuban_store_marker_mismatch_total{store}` | Counter | 置き場の目印を確認できず、操作を見送った回数 |
+| `rokuban_missing_asset_scan_suspected_storage_failure_total` | Counter | 置き場名が未設定の旧構成で、0 件走査を検出して記録を見送った回数 |
 | `rokuban_storage_sync_last_success_timestamp_seconds` | Gauge | 全 root を観測できたパスの時刻 |
 | `rokuban_storage_root_last_success_timestamp_seconds{root}` | Gauge | root ごとに最後に観測できた時刻 |
 | `rokuban_storage_total_bytes{root}` / `rokuban_storage_used_bytes{root}` / `rokuban_storage_available_bytes{root}` | Gauge | root ごとの直近観測バイト数 |
 
 `rokuban_media_assets_missing` が数えるのは、有効（active）なのに実体ファイルが無いと確認できた media_asset である（孤児回収の逆方向。[ストレージ](../storage/retention.md) §7「孤児回収の逆」）。単発の走査揺れでは増減しない（`missing_asset_age` 連続後に確定する）。ゼロは大丈夫の証明ではない（「警告が出ないことは保証ではない」）。
 
+`rokuban_store_marker_mismatch_total{store}` は、設定した置き場名と `.rokuban-store` が一致しない、または目印を読めないときに操作を見送った回数である。起動時と操作ごとに増えるため、同じ障害中は再試行のたびに増える。
+
 `rokuban_orphan_files_unresolved` は、`media_assets` に登録されない canonical file のうち、`orphan_age` を超えて残っている数である。
 
 非ゼロは調査が必要である。canonical file は自動削除しない。削除 reconcile は個別の Warn を上限 20 行まで出し、超過分を件数でまとめる。
 
-`rokuban_missing_asset_scan_suspected_storage_failure_total` は、上の検出パスがスキップされた回数である。スキップされるのは、1 件もファイルを観測しなかったのに active な行が存在する形のときである（「警告が出ないことは保証ではない」）。
+`rokuban_missing_asset_scan_suspected_storage_failure_total` は `storage.media_store_name` が空の構成で使う。走査でファイルを観測せず active 行がある場合に、欠損検出を見送った回数である（「警告が出ないことは保証ではない」）。
 
 `rokuban_storage_sync_last_success_timestamp_seconds` は、1 root でも失敗した部分成功では進まない。root ごとのゲージと対で見る。root（`media` / `scratch`）ごとの最終観測時刻は、片方だけ恒久的に動かなくなっているケースを特定するために使い、この鮮度でアラートを組んでよい（「警告が出ないことは保証ではない」）。容量の 3 本は、`GET /api/storage` を経由せず Prometheus 側で容量アラートを組むために出す。
 
@@ -620,7 +623,7 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 | 警告が出ない状態 | 何を意味しないか | 何を見るか |
 |---|---|---|
 | `GET /api/storage` に root が載っている | 最新の観測とは限らない | 各要素の `observedAt` の鮮度 / `rokuban_storage_root_last_success_timestamp_seconds{root}` |
-| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | `rokuban_missing_asset_scan_suspected_storage_failure_total` が増えていないこと、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` が進んでいること |
+| `rokuban_media_assets_missing` が 0（または全 kind の系列が消えている） | 「実体無しの資産が無い」を意味しない | 設定済み置き場では `rokuban_store_marker_mismatch_total{store}`、名前未設定の旧構成では `rokuban_missing_asset_scan_suspected_storage_failure_total`、かつ `rokuban_delete_reconcile_last_pass_timestamp_seconds` |
 
 1 root の statfs が失敗すると、前回の観測行をそのまま残す。そのため、行の存在だけでは観測が続いていることを保証しない。
 
@@ -628,7 +631,7 @@ mirakc 側の未知の不具合への保険であり、EPGStation#724（チュ�
 
 見る指標のうち、前者は疑い経路の凍結を、後者はエラー経路の凍結を捕まえる。
 
-`rokuban_missing_asset_scan_suspected_storage_failure_total` が進んだら、マウントの故障と全損そのものの両方を疑う。進んでいる間は、`rokuban_media_assets_missing` が更新されず、前回値のまま凍結する（マウント失敗・空マウントを疑う）。この形は「資産が本当に全部消えた」小規模系でも発動し、真の異常をゲージから隠す。例えば、active が数件しか無く、その全件が消えた場合である。スキップ自体は、安全側の判断として正しい。
+`rokuban_store_marker_mismatch_total{store}` が増えたら、その置き場の mount と `.rokuban-store` の内容を確認する。名前未設定の旧構成では `rokuban_missing_asset_scan_suspected_storage_failure_total` が 0 件走査時の見送りを示す。どちらの見送り中も `rokuban_media_assets_missing` は更新されず、前回値のままになる。
 
 #### worker の停止と drain で警告が出ない場合
 

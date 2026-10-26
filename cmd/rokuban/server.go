@@ -277,6 +277,14 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if slices.Contains(roles, "worker") && cfg.Storage.ScratchDir == "" {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
 	}
+	storeMarkerVerified := true
+	if slices.Contains(roles, "worker") {
+		if err := worker.VerifyMediaStoreMarker(cfg.Storage.MediaDir, cfg.Storage.MediaStoreName); err != nil {
+			storeMarkerVerified = false
+			slog.Warn("media store marker could not be verified at startup; filesystem-dependent worker operations will be withheld",
+				"store", cfg.Storage.MediaStoreName, "err", err)
+		}
+	}
 	warnIfAllowedHostsEmpty(slog.Default(), cfg.Server.AllowedHosts)
 
 	// 以降の判定（validateSiteBinding / RequiresEncodeTools / riveradapter.Config.Queues）は
@@ -303,7 +311,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err := validateSiteBinding(roles, bound, queues); err != nil {
 		return err
 	}
-	if slices.Contains(roles, "worker") &&
+	if storeMarkerVerified && slices.Contains(roles, "worker") &&
 		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
 		// ingest は media_dir の強い FS 契約（file fsync / Close / 同一 FS の
 		// atomic rename / 親 directory fsync）に依存する。起動時に実際の操作列を
@@ -312,6 +320,10 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		if err := worker.ProbeIngestStorage(cfg.Storage.MediaDir); err != nil {
 			return fmt.Errorf("validating ingest storage: %w", err)
 		}
+	} else if !storeMarkerVerified && slices.Contains(roles, "worker") &&
+		(len(queues) == 0 || slices.Contains(queues, jobs.IngestQueue)) {
+		slog.Warn("skipping ingest storage probe because the media store marker could not be verified",
+			"store", cfg.Storage.MediaStoreName)
 	}
 
 	workerCfg := newWorkerClientConfig(cfg, bound, queues, onceGate, softStopTimeout)
@@ -696,6 +708,7 @@ func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg
 		EncodeAttempts:           mediaStore,
 		StorageObservation:       mediaStore,
 		MediaDir:                 cfg.Storage.MediaDir,
+		MediaStoreName:           cfg.Storage.MediaStoreName,
 		ScratchDir:               cfg.Storage.ScratchDir,
 		Encode:                   cfg.Encode,
 		CMDetect:                 cfg.CMDetect,
