@@ -47,6 +47,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
         stalls: [],
         hlsErrors: [],
         capture: false,
+        startClicks: 0,
         hls: null,
         audioContext: null,
         audioAnalysers: null,
@@ -56,6 +57,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
       let lastProgressTime = 0
       let lastProgressAt = 0
       let stallRecorded = false
+      let progressStarted = false
 
       function decodeFrameMarker() {
         if (!canvas) {
@@ -102,6 +104,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
       video.addEventListener('playing', rearmFrameCallback)
 
       video.addEventListener('seeking', () => {
+        progressStarted = false
         lastProgressTime = video.currentTime
         lastProgressAt = performance.now()
         stallRecorded = false
@@ -110,10 +113,11 @@ const HARNESS_HTML = String.raw`<!doctype html>
         if (!state.capture || video.paused || video.seeking) return
         const now = performance.now()
         if (video.currentTime > lastProgressTime + 0.01) {
+          progressStarted = true
           lastProgressTime = video.currentTime
           lastProgressAt = now
           stallRecorded = false
-        } else if (!stallRecorded && now - lastProgressAt >= 500) {
+        } else if (progressStarted && !stallRecorded && now - lastProgressAt >= 500) {
           state.stalls.push({ currentTime: video.currentTime, durationMs: now - lastProgressAt })
           stallRecorded = true
         }
@@ -149,7 +153,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
         if (state.audio.length > 1200) state.audio.shift()
       }
 
-      // AudioWorklet が 128 サンプルごと（約 2.7 ms）の左右 RMS を、全サンプルについて求める。
+      // AudioWorklet が 128 サンプルごと（48 kHz なら約 2.7 ms）の左右 RMS を、全サンプルについて求める。
       const WORKLET = 'class Rms extends AudioWorkletProcessor {' +
         'constructor() { super(); this.batch = [] }' +
         'process(inputs) {' +
@@ -228,26 +232,7 @@ const HARNESS_HTML = String.raw`<!doctype html>
           } else {
             throw new Error('このブラウザに HLS / MediaSource の再生経路がない')
           }
-          return {
-            path: state.path,
-            nativeMIME: playlistMIME || '(empty)',
-            segmentMIME: segmentMIME || '(empty)',
-            duration: video.duration,
-          }
-        },
-
-        // 一時停止して seek し、seeked の位置を返す。フレームは再生を始めてから読む。
-        async seek(seconds) {
-          video.pause()
-          await new Promise((resolve, reject) => {
-            const timer = setTimeout(() => reject(new Error('seeked が 10 秒以内に来ない')), 10_000)
-            video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
-            video.currentTime = seconds
-          })
-          return { landing: video.currentTime }
-        },
-
-        async start() {
+          state.startStage = 'audio-setup'
           if (!state.audioContext) {
             const AudioContext = window.AudioContext || window.webkitAudioContext
             if (!AudioContext) throw new Error('WebAudio がないため音声を測れない')
@@ -280,10 +265,37 @@ const HARNESS_HTML = String.raw`<!doctype html>
               state.workletError = String(error)
             }
           }
-          await state.audioContext.resume()
+          return {
+            path: state.path,
+            nativeMIME: playlistMIME || '(empty)',
+            segmentMIME: segmentMIME || '(empty)',
+            duration: video.duration,
+          }
+        },
+
+        // 一時停止して seek し、seeked の位置を返す。フレームは再生を始めてから読む。
+        async seek(seconds) {
+          video.pause()
+          await new Promise((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('seeked が 10 秒以内に来ない')), 10_000)
+            video.addEventListener('seeked', () => { clearTimeout(timer); resolve() }, { once: true })
+            video.currentTime = seconds
+          })
+          return { landing: video.currentTime }
+        },
+
+        async start() {
+          // resume() と play() を、クリックの同じタスク内で await より先に要求する。
+          state.startStage = 'play'
+          const resumed = state.audioContext.resume()
           // play() が解決する前に描かれるフレームも記録する（seek 後の最初のフレームを取りこぼさない）。
           state.capture = true
-          await video.play()
+          progressStarted = false
+          lastProgressTime = video.currentTime
+          lastProgressAt = performance.now()
+          const played = video.play()
+          await Promise.all([resumed, played])
+          state.startStage = 'playing'
           lastProgressTime = video.currentTime
           lastProgressAt = performance.now()
           stallRecorded = false
@@ -325,6 +337,9 @@ const HARNESS_HTML = String.raw`<!doctype html>
             hlsErrors: state.hlsErrors.slice(),
             frameError: state.frameError,
             startError: state.startError,
+            startStage: state.startStage,
+            startClicks: state.startClicks,
+            audioContextState: state.audioContext?.state,
             workletError: state.workletError,
           }
         },
@@ -348,11 +363,12 @@ const HARNESS_HTML = String.raw`<!doctype html>
               loud += 1
             }
           }
-          return { quanta: window.length, loud, longest }
+          return { quanta: window.length, loud, longest, sampleRate: state.audioContext?.sampleRate }
         },
       }
 
       document.querySelector('#start').addEventListener('click', () => {
+        state.startClicks += 1
         window.__e2e.start().catch((error) => { state.startError = String(error) })
       })
     })()
@@ -536,10 +552,20 @@ async function createSafariAdapter() {
       capabilities: { alwaysMatch: { browserName: 'safari', acceptInsecureCerts: true } },
     })
     const sessionId = session.sessionId
+    let caseWindow
     await request('POST', `/session/${sessionId}/timeouts`, { script: 30_000, pageLoad: 30_000, implicit: 0 })
     return {
       version: `Safari ${session.capabilities?.browserVersion ?? '(version unavailable)'}`,
-      navigate: (url) => request('POST', `/session/${sessionId}/url`, { url }),
+      navigate: async (url) => {
+        const window = await request('POST', `/session/${sessionId}/window/new`, { type: 'window' })
+        if (caseWindow) {
+          await request('POST', `/session/${sessionId}/window`, { handle: caseWindow })
+          await request('DELETE', `/session/${sessionId}/window`)
+        }
+        await request('POST', `/session/${sessionId}/window`, { handle: window.handle })
+        caseWindow = window.handle
+        await request('POST', `/session/${sessionId}/url`, { url })
+      },
       click: async (selector) => {
         const element = await request('POST', `/session/${sessionId}/element`, { using: 'css selector', value: selector })
         const elementId = element['element-6066-11e4-a52e-4f735466cecf'] ?? element.ELEMENT
@@ -590,8 +616,6 @@ function contentJumps(frames) {
   return jumps
 }
 
-const QUIET_QUANTUM_MS = (128 / 48000) * 1000
-
 function channelMatches(sample, expected) {
   return sample && Math.abs(sample.leftHz - expected[0]) <= 18 && Math.abs(sample.rightHz - expected[1]) <= 18 &&
     sample.leftRMS >= 0.02 && sample.rightRMS >= 0.02
@@ -619,8 +643,8 @@ async function waitForState(adapter, predicate, timeoutMs, description) {
     if (predicate(state)) return state
     await delay(100)
   }
-  const { currentTime, paused, readyState, buffered, hlsErrors, frameError } = state
-  throw new Error(`${description} を ${timeoutMs}ms 以内に確認できない: ${JSON.stringify({ currentTime, paused, readyState, buffered, hlsErrors, frameError })}`)
+  const { currentTime, paused, readyState, buffered, hlsErrors, frameError, startStage, audioContextState } = state
+  throw new Error(`${description} を ${timeoutMs}ms 以内に確認できない: ${JSON.stringify({ currentTime, paused, readyState, buffered, hlsErrors, frameError, startStage, audioContextState })}`)
 }
 
 /**
@@ -666,7 +690,20 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
   }
 
   try {
-    await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, () => adapter.click('#start'))
+    await seekAndCheck(BOUNDARY - 1.5 * SEGMENT, async () => {
+      const before = await adapter.evaluate(() => window.__e2e.state().startClicks)
+      await adapter.click('#start')
+      if (adapter.engine === 'safari') {
+        // ボタンの処理が呼ばれていない場合だけ、もう一度実クリックする。
+        // play() の拒否や再生の停滞は再試行せず、通常の判定で失敗にする。
+        await delay(100)
+        const after = await adapter.evaluate(() => window.__e2e.state().startClicks)
+        if (after === before) {
+          log('  Safari: 開始ボタンの click が届かなかったため再クリック')
+          await adapter.click('#start')
+        }
+      }
+    })
     let state = await waitForState(adapter, (s) => !s.paused && s.currentTime >= BOUNDARY - 1.5 * SEGMENT + 0.5, 15_000, '再生開始')
     if (hold) {
       // 保留した映像 segment は再生が境界に着くまで返さない。止まるまで待ってから返す。
@@ -709,7 +746,7 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     if (!webAudioAvailable && loaded.path !== 'native-hls') add('audio-unavailable', 'WebAudio に再生音声が届かず、境界の音声継続を測れない')
     if (!webAudioAvailable && adapter.engine === 'safari') add('audio-unavailable', 'Safari のネイティブ HLS の音声が WebAudio に届かず、音声継続を確認できない')
     if (webAudioAvailable) {
-      if (quiet.longest >= 2) add('audio-gap', `境界 ±0.8s で 128 サンプルごとの RMS が ${quiet.longest} 回連続で無音 (約 ${(quiet.longest * QUIET_QUANTUM_MS).toFixed(1)} ms 以上)`)
+      if (quiet.longest >= 2) add('audio-gap', `境界 ±0.8s で 128 サンプルごとの RMS が ${quiet.longest} 回連続で無音 (約 ${(quiet.longest * 128 / quiet.sampleRate * 1000).toFixed(1)} ms 以上)`)
       const wrong = state.audio
         .filter((sample) => sample.currentTime >= BOUNDARY - 0.6 && sample.currentTime <= BOUNDARY + 0.6)
         .filter((sample) => !channelMatches(sample, [440, 880]))
