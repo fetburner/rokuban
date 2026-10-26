@@ -157,6 +157,49 @@ N 日にすると、`epg_programs` に全サービスの放送済み番組が N 
 
 唯一レイテンシが人間に見えるのは、再生時のシークである（派生物を置いた S3 + FUSE の range read など）。原本削除ポリシーと組み合わせた「視聴は H.265 派生物、原本は消すか別の低頻度領域」という運用を採る。
 
+### S3 の置き場の運用要件
+
+S3 の置き場は、AWS S3 と S3 互換サーバー（MinIO、Cloudflare R2 など）のどちらでも使う。サーバーごとに対応の違う機能があるので、使う前に適合テストで測る。
+
+適合テストが測るのは 4 つで、条件付き書き込み（`If-None-Match: *`）、multipart の完了と abort、HEAD での SHA-256 の取得、署名付き GET の Range である。結果は機能ごとに「対応 / 非対応 / 一部対応」で記録するだけで、非対応や一部対応を理由に失敗にしない。条件付き書き込みは、対応していなくても、書き込み先のキーが一意なので使える。
+
+置き場の bucket には、`AbortIncompleteMultipartUpload` のライフサイクル規則を必ず設定する。途中で終わった multipart のアップロードはオブジェクトとして見えず、孤児回収では拾えない。abort への対応の有無にかかわらず、worker が途中で落ちれば部品が残るためである。`DaysAfterInitiation` は、正常な転送にかかる最長時間より後にする。
+
+multipart の SHA-256 は、AWS では常に部品から作る composite checksum である。オブジェクト全体の SHA-256 にはならないので、HEAD で得た値を全体の SHA-256 と直接比較してはならない。アプリは、データを流しながら全体の SHA-256 を自分で計算し、照合にはその値を使う。
+
+#### 適合テストの回し方
+
+テスト用の bucket を 1 つ用意して、リポジトリのルートでテストを実行する。
+
+接続先は環境変数で渡す。`ROKUBAN_S3_CONFORMANCE_ENDPOINT`、`_REGION`、`_BUCKET`、`_ACCESS_KEY_ID`、`_SECRET_ACCESS_KEY` である。bucket をテストに作らせるときは `ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET=true` を足す。
+
+```bash
+go test -tags s3conformance ./internal/objstore/conformance -count=1 -v
+```
+
+テストが呼ぶ操作は次のとおりで、これが必要な権限になる。
+
+- bucket 内のオブジェクトへの `PutObject`、`GetObject`、`HeadObject`、`DeleteObject`
+- multipart の `CreateMultipartUpload`、`UploadPart`、`CompleteMultipartUpload`、`AbortMultipartUpload`、`ListParts`
+- `CREATE_BUCKET=true` のときだけ `CreateBucket`
+
+テストが作るオブジェクトは `rokuban-conformance/{UUID}/` の下に置き、終わると削除する。
+
+結果は `-v` の出力の `S3_CONFORMANCE` で始まる行に、機能ごとの JSON で出る。`status` が `supported`、`unsupported`、`partial` のいずれかで、`checks` に内訳が入る。想定外のエラーで判定できなかった機能は `unknown` で、`note` に原因が入る。
+
+`ROKUBAN_S3_CONFORMANCE_EXPECT` に `機能名=status` をカンマで並べると、記録がその期待と違う機能のテストだけが失敗する。機能名は `S3_CONFORMANCE` 行の `feature` で引く。未設定なら照合せず、運用者が任意のサーバーを測る用途になる。CI は固定した MinIO で 4 機能すべてに `supported` を期待し、退行を検知する。
+
+<details><summary>根拠</summary>
+
+- 適合テスト: `internal/objstore/conformance/conformance_test.go`
+- CI の MinIO: `.github/workflows/ci.yml` `s3-conformance`
+- multipart の上限（部品の大きさと個数）: [S3 multipart upload limits](https://docs.aws.amazon.com/AmazonS3/latest/userguide/qfacts.html)
+- checksum の種類（SHA-256 は multipart で composite だけ）: [S3 object integrity](https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity-upload.html)
+- abort の確認方法（`ListParts` の parts が空）: [AbortMultipartUpload](https://docs.aws.amazon.com/AmazonS3/latest/API/API_AbortMultipartUpload.html)
+- 不完全な upload のライフサイクル規則: [Abort multipart upload](https://docs.aws.amazon.com/AmazonS3/latest/userguide/abort-mpu.html)
+
+</details>
+
 ### disaster recovery（catalog + rescue）
 
 rescue は、DB を失った後にだけ使う。live DB を catalog の内容で上書きするので、健全性の確認には使わない。
