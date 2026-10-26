@@ -111,9 +111,9 @@ catalog/
 
 #### 公開点は manifest の書き終わり
 
-公開点は、manifest を書き終えたことである。公開判定を rename に頼らないので、NFS の rename の意味論に依存しない。本体と manifest を最終名で書き、完成宣言を最後に置く。
+公開点は、manifest を書き終えたことである。本体も manifest も、最初から最終名へ一発書きし（§3 ルール 1）、公開のプロトコルは、本体、fsync、manifest の順序だけである。
 
-この方式なら catalog を S3 にそのまま複製しても、manifest と本体の照合で完成世代を判定できる。
+rename に頼らないので、NFS の rename の意味論に依存しない。catalog を S3 にそのまま複製しても、manifest と本体の照合で完成の判定が成り立つ。
 
 manifest を先に書いても、完成宣言にならない。先に置いた manifest は「これから書く予定」しか主張できず、途中停止と区別が付かないからである。
 
