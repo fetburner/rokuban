@@ -429,6 +429,8 @@ jobs:
       ROKUBAN_S3_CONFORMANCE_ACCESS_KEY_ID: rokuban
       ROKUBAN_S3_CONFORMANCE_SECRET_ACCESS_KEY: rokuban-minio-conformance
       ROKUBAN_S3_CONFORMANCE_CREATE_BUCKET: "true"
+      # MinIO は 4 機能すべて対応する。記録がこれと違えば退行として落とす。
+      ROKUBAN_S3_CONFORMANCE_EXPECT: conditional-writes=supported,multipart-upload-and-abort=supported,head-checksum-sha256=supported,presigned-get-range=supported
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
