@@ -187,7 +187,9 @@ E2E_FMP4=1 E2E_CASES=fmp4/direct,fmp4/restarted corepack pnpm e2e:recording-segm
 
 `E2E_FIXTURE_DIR` で生成先を変えられる。同時に実行するときは、実行ごとに別のディレクトリを渡す。同じ場所では生成中のファイルを消し合う。
 
-Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 で、この比較コマンドの fMP4 連続版は通った。再起動版は境界のフレーム数が 15 枚で、128 サンプルごとの RMS が 12 回連続で無音になった。`bufferAppendNoProgress` なども出て失敗した。原因は未調査であり、fMP4 全般の可否を示す結果ではない。再起動版が通らないため、fMP4 の負例の検出だけで判定の有効性を主張しない。 Safari 27.0.1 の fMP4 再起動版も、映像と `mediaTime` が境界で 300 フレームずれて失敗した。連続版の映像は通ったが、音声はどちらも WebAudio で測れなかった。
+fMP4 の `tfdt` は、既定ではその run の先頭を 0 にし、`-output_ts_offset` を含まない。12 秒の境界に置く再起動の run の fragment が 2.01 秒の時刻を持ち、Chrome では境界のフレームが 15 枚になって音声も途切れた。比較用の fMP4 には `-hls_segment_options movflags=+frag_discont` を付け、元の時刻を `tfdt` に書かせる。付けると連続版と再起動版の `tfdt` が一致した（境界の fragment はどちらも 1209000）。
+
+Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 では、fMP4 の連続版・再起動版と負例 4 つが TS と同じく期待どおりになった。Safari 27.0.1 では、fMP4 の連続版・再起動版の映像の判定が通った。音声は WebAudio で測れなかった（下記）。
 
 #### アプリの URL に向ける
 
@@ -223,7 +225,7 @@ WebKit は診断用である。Playwright の WebKit はネイティブ HLS を�
 
 Safari のケースは別々の自動テスト用ウインドウで回し、次へ進む前に前の検証ウインドウを閉じる。Safari 27.0.1 で `E2E_CASES=ts/direct,ts/restarted` を同じウインドウで回すと、2 ケース目の開始操作が呼ばれなかった。別ウインドウでは両方が再生できた。AudioWorklet はクリックの前に読み込み、クリック内では `resume()` と `play()` を `await` より先に要求する。開始ボタンのイベント回数を数え、イベントが届かないときだけ 1 度再クリックする。再生の拒否や停滞は再試行しない。
 
-macOS 27.0.1 / Safari 27.0.1 の実行でも、ネイティブ HLS の音声信号を WebAudio で取得できなかった。映像と音声トラックの選択だけが通っても、Safari 全体を成功扱いにしない。
+macOS 27.0.1 / Safari 27.0.1 の実行でも、ネイティブ HLS の音声信号を WebAudio で取得できなかった。映像と音声トラックの選択だけが通っても、Safari 全体を成功扱いにしない。TS の `direct`・`restarted` は、`audio-unavailable` 以外の失敗が無かった。負例の `off-grid`・`no-offset` は期待どおりに検出した。
 
 セッション作成のタイムアウトでは、Safari を終了し、閉じたまま判定する。上記の環境では手動起動後にセッション作成で止まったが、ドライバー自身が Safari を起動すると実行できた。未解決: Safari の音声の継ぎ目を別の経路で測る方法。
 

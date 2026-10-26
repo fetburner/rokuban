@@ -95,6 +95,9 @@ func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 			args[index+1] = strings.TrimSuffix(args[index+1], ".ts") + ".m4s"
 			args = append(args[:len(args)-1], append([]string{
 				"-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init_%v.mp4",
+				// fMP4 の tfdt は既定でその run の先頭を 0 にし、-output_ts_offset を含まない。再起動の run が
+				// 起動位置からの時刻（12 秒の境界で 2.01 秒）になったので、frag_discont で元の時刻を書かせる。
+				"-hls_segment_options", "movflags=+frag_discont",
 			}, args[len(args)-1:]...)...)
 		}
 		if mutate != nil {
