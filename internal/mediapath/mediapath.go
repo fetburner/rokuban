@@ -60,9 +60,10 @@ func ValidStoreName(name string) bool {
 		return false
 	}
 	for _, r := range name {
-		if !('a' <= r && r <= 'z') && !('0' <= r && r <= '9') && r != '-' {
-			return false
+		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') || r == '-' {
+			continue
 		}
+		return false
 	}
 	return true
 }
