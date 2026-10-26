@@ -118,7 +118,7 @@ E2E_URL=http://localhost:4173 E2E_BROWSER=webkit pnpm e2e:recording-original-vod
 
 JS で ffmpeg の HLS の引数を組むのをやめたのは、製品の引数と時間軸の扱いが食い違ったまま判定が通るためである。実際に、製品には無い 2 つのずれが正例に入っていた。素材の最初のフレームが複製され、本物のフレームが 1 枠後ろに見えたこと。第 1 run だけ時間軸が 21.3 ms ずれて、境界に 12 ms の重なりができたことである。
 
-素材の `source.ts` は 60 秒の合成 TS で、映像は 29.97 fps（30000/1001）にしてある。実際の録画と同じく、2 秒の格子にフレームが割り切れない（59.94 フレーム）条件を入れるためである。映像にフレーム番号を 11 bit の箱で焼き、音声は左 440 Hz・右 880 Hz の 2ch AAC とする。セグメントは 2 秒で、標準・主・副の 3 rendition を持つ。製品の出力は TS セグメントだけなので、fMP4 は作らない。
+素材の `source.ts` は 60 秒の合成 TS で、映像は 29.97 fps（30000/1001）にしてある。実際の録画と同じく、2 秒の格子にフレームが割り切れない（59.94 フレーム）条件を入れるためである。映像にフレーム番号を 11 bit の箱で焼き、音声は左 440 Hz・右 880 Hz の 2ch AAC とする。セグメントは 2 秒で、標準・主・副の 3 rendition を持つ。製品の出力は TS セグメントである。`E2E_FMP4=1` のときだけ、比較用の fMP4 も作る。
 
 時間軸の起点は、素材の最初の映像 PTS（`OriginPTS`）である。Go のテストが `ffprobe` で読み、`SegmentTransformInput` に渡す。この素材は AAC の priming のため映像が音声より 21.3 ms 遅れて始まる（音声 1.400 秒、映像 1.4213 秒）。製品の引数は `trim` と `-output_ts_offset` で映像を起点に揃えるので、先頭フレームの複製が起きない。
 
@@ -189,6 +189,17 @@ E2E_CASES=ts/no-offset corepack pnpm e2e:recording-segmented-vod
 ```
 
 `E2E_CASES` はカンマ区切りのケース名で、一致するケースだけを回す。一致が 0 件なら失敗にする。診断用のケースは、名前を書いたときだけ回る。
+
+fMP4 の比較では、製品の変換引数からコンテナと出力ファイル名だけを替える。再起動境界に `DISCONTINUITY` は付けず、`EXT-X-MAP` も切り替えない。全区間に連続版の init を使い、TS と同じ判定を回す。
+
+```sh
+E2E_FMP4=1 corepack pnpm e2e:recording-segmented-vod  # TS と fMP4 の両方
+E2E_FMP4=1 E2E_CASES=fmp4/direct,fmp4/restarted corepack pnpm e2e:recording-segmented-vod
+```
+
+`E2E_FIXTURE_DIR` で生成先を変えられる。同時に実行するときは、実行ごとに別のディレクトリを渡す。同じ場所では生成中のファイルを消し合う。
+
+Chrome 155.0.8059.85 / hls.js 1.7.3 / ffmpeg 9.0.2 で、この比較コマンドの fMP4 連続版は通った。再起動版は境界のフレーム数が 15 枚で、128 サンプルごとの RMS が 12 回連続で無音になった。`bufferAppendNoProgress` なども出て失敗した。原因は未調査であり、fMP4 全般の可否を示す結果ではない。再起動版が通らないため、fMP4 の負例の検出だけで判定の有効性を主張しない。
 
 #### アプリの URL に向ける
 

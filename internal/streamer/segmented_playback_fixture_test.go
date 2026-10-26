@@ -44,7 +44,8 @@ type segmentedFixtureManifest struct {
 // いるとき、web/e2e/recording-segmented-vod.mjs 用の 29.97 fps の合成 TS と、製品の
 // buildSegmentTransformArgs で変換した run を書き出す。run は連続 1 本（startNumber 0）、再起動
 // （startNumber 5）と、その再起動の引数を 1 か所だけ変えた負例 3 つである。playlist の合成は JS 側が
-// 担う。JavaScript で ffmpeg の HLS 引数を組むと、製品の引数と時間軸の扱いが食い違ったまま
+// 担う。ROKUBAN_SEGMENTED_PLAYBACK_FMP4=1 のときは、コンテナだけを替えた比較用の run も作る。
+// JavaScript で ffmpeg の HLS 引数を組むと、製品の引数と時間軸の扱いが食い違ったまま
 // 判定だけ通りうる（先頭フレームの複製と第 1 run の時間軸のずれが、実際に正例へ入っていた）。
 func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 	fixtureDir := os.Getenv("ROKUBAN_SEGMENTED_PLAYBACK_FIXTURE_DIR")
@@ -69,7 +70,10 @@ func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 	input := SegmentTransformInput{OriginPTS: originPTS, AudioStreamCount: 1}
 
 	runs := map[string]segmentedFixtureRun{}
-	run := func(name string, startNumber int64, mutate func(args []string) []string) {
+	runFormat := func(name string, startNumber int64, mutate func(args []string) []string, fmp4 bool) {
+		if fmp4 {
+			name = "fmp4-" + name
+		}
 		t.Helper()
 		directory := filepath.Join(fixtureDir, "runs", name)
 		if err := os.RemoveAll(directory); err != nil {
@@ -81,6 +85,17 @@ func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 		args, err := buildSegmentTransformArgs(cfg, profile, input, startNumber, directory)
 		if err != nil {
 			t.Fatalf("%s: build args: %v", name, err)
+		}
+		if fmp4 {
+			// 比較用は製品の変換引数を保ち、HLS のコンテナとファイル名だけを替える。
+			index := indexOf(args, "-hls_segment_filename")
+			if index < 0 || index+1 >= len(args) {
+				t.Fatalf("%s: no segment filename", name)
+			}
+			args[index+1] = strings.TrimSuffix(args[index+1], ".ts") + ".m4s"
+			args = append(args[:len(args)-1], append([]string{
+				"-hls_segment_type", "fmp4", "-hls_fmp4_init_filename", "init_%v.mp4",
+			}, args[len(args)-1:]...)...)
 		}
 		if mutate != nil {
 			args = mutate(args)
@@ -97,6 +112,13 @@ func TestWriteSegmentedPlaybackFixture(t *testing.T) {
 			t.Fatalf("%s: ffmpeg %v: %v\n%s", name, args, err, output)
 		}
 		runs[name] = segmentedFixtureRun{Directory: filepath.Join("runs", name), StartNumber: startNumber}
+	}
+
+	run := func(name string, startNumber int64, mutate func(args []string) []string) {
+		runFormat(name, startNumber, mutate, false)
+		if os.Getenv("ROKUBAN_SEGMENTED_PLAYBACK_FMP4") == "1" {
+			runFormat(name, startNumber, mutate, true)
+		}
 	}
 
 	run("direct", 0, nil)

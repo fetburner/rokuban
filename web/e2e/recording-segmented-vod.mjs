@@ -776,7 +776,10 @@ async function main() {
     }
     if (engine === 'chrome') {
       // 境界の映像 segment の応答を、再生が境界の手前に来るまで保留する。
-      cases.push({ name: 'ts/stall', masterPath: '/ts/restarted/master.m3u8', expect: ['stall'], holdPath: '/ts/restarted/segments/restart-video-000.ts', boundary: SPLIT_SECONDS })
+      for (const format of new Set(generated.fixtures.map((fixture) => fixture.format))) {
+        const extension = format === 'ts' ? 'ts' : 'm4s'
+        cases.push({ name: `${format}/stall`, masterPath: `/${format}/restarted/master.m3u8`, expect: ['stall'], holdPath: `/${format}/restarted/segments/restart-video-000.${extension}`, boundary: SPLIT_SECONDS })
+      }
     }
   }
 
