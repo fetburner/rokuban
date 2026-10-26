@@ -1025,7 +1025,13 @@ func buildSegmentTransformArgs(
 		}
 		args = append(args[:inputIndex], append(append([]string(nil), input.InputArgs...), args[inputIndex:]...)...)
 	}
-	args, err = appendSegmentOutputFilter(args, "-vf", "trim=start="+trimSeconds+",setpts=PTS-STARTPTS")
+	// 最初のフレームは T の 0〜1 フレーム後ろにあり、その差は起動位置で変わる。STARTPTS で付け直すと
+	// -force_key_frames の格子がその差に引きずられ、同じ番号のセグメントの先頭が起動位置で 1 フレーム
+	// 変わった（実録画 2 本と TestSegmentTransformRestartKeepsSegmentStartFrame）。最初のフレームだけを
+	// T（0）に置き、残りは元の PTS から T を引く。expr の t が最初のフレームから数えられても（実測の挙動。
+	// FFmpeg の文書には無い）、出力の時刻から数えられても、格子は T に揃う。最初のセグメントは pre-roll で
+	// キャッシュに入らないので、先頭フレームを動かしても配信には出ない（番号 0 の起動を除く）。
+	args, err = appendSegmentOutputFilter(args, "-vf", "trim=start="+trimSeconds+",setpts=if(eq(N\\,0)\\,0\\,PTS-"+trimSeconds+"/TB)")
 	if err != nil {
 		return nil, err
 	}
@@ -1033,7 +1039,7 @@ func buildSegmentTransformArgs(
 		args, err = appendSegmentOutputFilter(
 			args,
 			"-filter:a:"+strconv.Itoa(audioIndex),
-			"atrim=start="+trimSeconds+",asetpts=PTS-STARTPTS",
+			"atrim=start="+trimSeconds+",asetpts=PTS-"+trimSeconds+"/TB",
 		)
 		if err != nil {
 			return nil, err
@@ -1048,7 +1054,11 @@ func buildSegmentTransformArgs(
 	if outputFormat < 0 {
 		return nil, errors.New("segment HLS args do not contain output -f")
 	}
+	// エンコーダの time base が既定（frame rate の逆数）だと、T からの時刻が 1 フレーム単位に丸められ、
+	// 丸めの向きが起動位置で変わる。90 kHz にすると丸めが無くなる。passthrough が無いと、ffmpeg は
+	// 90 kHz の固定フレームレートとしてフレームを複製した。
 	args = append(args[:outputFormat], append([]string{
+		"-enc_time_base:v", "1/90000", "-fps_mode:v", "passthrough",
 		"-muxpreload", "0", "-muxdelay", "0", "-output_ts_offset", trimSeconds,
 	}, args[outputFormat:]...)...)
 	return args, nil
