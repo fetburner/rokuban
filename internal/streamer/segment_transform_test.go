@@ -36,14 +36,16 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 		t.Fatalf("args do not contain -copyts: %v", args)
 	}
 	assertArgPair(t, args, "-ss", "5402.010022222")
-	assertArgPair(t, args, "-vf", "trim=start=5404.010022222,setpts=PTS-STARTPTS")
-	assertArgPair(t, args, "-filter:a:0", "atrim=start=5404.010022222,asetpts=PTS-STARTPTS")
+	assertArgPair(t, args, "-vf", `trim=start=5404.010022222,setpts=if(eq(N\,0)\,0\,PTS-5404.010022222/TB)`)
+	assertArgPair(t, args, "-filter:a:0", "atrim=start=5404.010022222,asetpts=PTS-5404.010022222/TB")
 	if index := indexOf(args, "-filter:a:1"); index < 0 || index+1 >= len(args) ||
-		!strings.Contains(args[index+1], "atrim=start=5404.010022222,asetpts=PTS-STARTPTS") {
+		!strings.Contains(args[index+1], "atrim=start=5404.010022222,asetpts=PTS-5404.010022222/TB") {
 		t.Fatalf("main audio filter = %v, want trim after the dual-mono pan", args)
 	}
 	assertArgPair(t, args, "-start_number", "2")
 	assertArgPair(t, args, "-output_ts_offset", "5404.010022222")
+	assertArgPair(t, args, "-enc_time_base:v", "1/90000")
+	assertArgPair(t, args, "-fps_mode:v", "passthrough")
 	assertArgPair(t, args, "-muxpreload", "0")
 	assertArgPair(t, args, "-muxdelay", "0")
 	assertArgPair(t, args, "-force_key_frames", "expr:gte(t,n_forced*2)")
@@ -223,6 +225,90 @@ func TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid(t *testing.T) {
 				closeSegmentManager(t, manager)
 			}
 		})
+	}
+}
+
+// TestSegmentTransformRestartKeepsSegmentStartFrame は、起動位置が違う 2 つの変換が、同じ番号の
+// セグメントを同じフレームから始めることを確かめる。29.97 fps では 2 秒の格子にフレームが割り切れず、
+// 起動位置の T と最初のフレームの差が起動ごとに変わる（startNumber 1 で 180 tick、16 で 2880 tick）。
+// キーフレームの格子をその差に引きずられると、キャッシュでつないだ境界でフレームが重複・欠落する。
+func TestSegmentTransformRestartKeepsSegmentStartFrame(t *testing.T) {
+	ffmpeg := lookPathFFmpeg(t)
+	ffprobe := lookPathFFprobe(t)
+	inputPath := filepath.Join(t.TempDir(), "ntsc.ts")
+	write2997TestTS(t, ffmpeg, inputPath, 44)
+	originPTS := firstPacketPTS(t, ffprobe, inputPath)
+	qp := 0
+	profile := LiveProfile{
+		Name: "test", VideoCodec: "libx264", AudioCodec: "aac",
+		Preset: "ultrafast", SegmentSeconds: 2, QP: &qp,
+	}
+	firstFrames := func(request int64, numbers []int64) map[int64]string {
+		manager, err := NewSegmentManager(SegmentTransformOptions{
+			Config:          LiveConfig{FFmpeg: ffmpeg, Profiles: []LiveProfile{profile}},
+			ScratchRoot:     t.TempDir(),
+			CacheBytes:      1 << 30,
+			MaxSegmentBytes: 16 << 20,
+			MaxConcurrent:   1,
+			IdleTimeout:     2 * time.Minute,
+			PollInterval:    2 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer closeSegmentManager(t, manager)
+		input := testSegmentInput(inputPath, originPTS)
+		hashes := map[int64]string{}
+		for number := request; number <= numbers[len(numbers)-1]; number++ {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			file, err := manager.Get(ctx, SegmentKey{"recording", "generation-1", "test", "video", number}, input)
+			cancel()
+			if err != nil {
+				t.Fatalf("request %d, segment %d: %v", request, number, err)
+			}
+			// 出力の PTS は元の PTS のままで、格子 V + n·D 以上の最初のフレーム（1 フレーム未満の後ろ）にある。
+			if delta := firstPacketPTS(t, ffprobe, file.Name()) - (originPTS + number*2*mpegTSTimestampClock); delta < 0 || delta >= 3003 {
+				t.Errorf("request %d, segment %d: first video PTS is %d ticks from the grid, want [0, 3003)", request, number, delta)
+			}
+			out, err := exec.Command(ffmpeg, "-v", "error", "-i", file.Name(), "-map", "0:v:0",
+				"-frames:v", "1", "-f", "framehash", "-hash", "md5", "-").Output()
+			_ = file.Close()
+			if err != nil {
+				t.Fatalf("hashing segment %d: %v", number, err)
+			}
+			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+			fields := strings.Split(lines[len(lines)-1], ",")
+			hashes[number] = strings.TrimSpace(fields[len(fields)-1])
+		}
+		return hashes
+	}
+	numbers := []int64{17, 18, 19, 20}
+	early := firstFrames(2, numbers)
+	late := firstFrames(17, numbers)
+	for _, number := range numbers {
+		if early[number] != late[number] {
+			t.Errorf("segment %d starts with different frames from runs started at 1 and 16 (%s vs %s)", number, early[number], late[number])
+		}
+	}
+}
+
+// write2997TestTS は、映像が 29.97 fps（30000/1001）で、映像の最初の PTS が 5400 秒付近にある TS を書く。
+// フレーム番号ごとに画素が変わるよう、testsrc2 を使う。
+func write2997TestTS(t *testing.T, ffmpeg, path string, seconds int) {
+	t.Helper()
+	video := fmt.Sprintf("testsrc2=size=160x90:rate=30000/1001:duration=%d", seconds)
+	audio := fmt.Sprintf("sine=frequency=440:sample_rate=48000:duration=%d", seconds)
+	cmd := exec.Command(ffmpeg, "-v", "error", "-y",
+		"-itsoffset", "5400", "-f", "lavfi", "-i", video,
+		"-itsoffset", "5400", "-f", "lavfi", "-i", audio,
+		"-itsoffset", "5400", "-f", "lavfi", "-i", audio,
+		"-map", "0:v:0", "-map", "1:a:0", "-map", "2:a:0",
+		"-c:v", "mpeg2video", "-q:v", "3", "-g", "15", "-bf", "0", "-sc_threshold", "0",
+		"-c:a", "mp2", "-b:a", "128k",
+		"-mpegts_copyts", "1", "-muxdelay", "0", "-muxpreload", "0", "-f", "mpegts",
+		path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generating 29.97 fps test TS: %v\n%s", err, out)
 	}
 }
 
