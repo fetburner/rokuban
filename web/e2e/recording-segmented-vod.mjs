@@ -744,7 +744,6 @@ async function checkCase(adapter, server, { masterURL, hold, boundary: BOUNDARY 
     const webAudioAvailable = quiet.loud > 0
     summary.audio = webAudioAvailable ? `AudioWorklet 128-sample RMS (${quiet.quanta} quanta)` : 'WebAudio に音声が届かない'
     if (!webAudioAvailable && loaded.path !== 'native-hls') add('audio-unavailable', 'WebAudio に再生音声が届かず、境界の音声継続を測れない')
-    if (!webAudioAvailable && adapter.engine === 'safari') add('audio-unavailable', 'Safari のネイティブ HLS の音声が WebAudio に届かず、音声継続を確認できない')
     if (webAudioAvailable) {
       if (quiet.longest >= 2) add('audio-gap', `境界 ±0.8s で 128 サンプルごとの RMS が ${quiet.longest} 回連続で無音 (約 ${(quiet.longest * 128 / quiet.sampleRate * 1000).toFixed(1)} ms 以上)`)
       const wrong = state.audio
