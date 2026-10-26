@@ -235,7 +235,7 @@ ffmpeg が入力 EOF の後に正常終了したら、idle GC まで playlist �
 
 #### 伸びる temp の終わらせ方
 
-録画中の temp は、読み待ちを 90 秒にして追従して読む。途中で終わったら 503 で再試行させ、完了は DB で判定する。測定の詳細は [playback-temp-measurement.md](playback-temp-measurement.md) にある。
+これは、録画中の配信をセグメントのキャッシュの方式へ移すときの決定である。現行の追っかけ再生は、上のとおり mirakc を Range で読む。録画中の temp は、読み待ちを 90 秒にして追従して読む。途中で終わったら 503 で再試行させ、完了は DB で判定する。測定の詳細は [playback-temp-measurement.md](playback-temp-measurement.md) にある。
 
 FFmpeg の引数は `-follow 1 -rw_timeout 90000000` である。90 秒は定数にし、設定のキーにはしない。
 
