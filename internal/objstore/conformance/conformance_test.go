@@ -231,7 +231,7 @@ func probeConditionalPut(ctx context.Context, client *s3.Client, bucket, key str
 }
 
 func probeConditionalMultipart(ctx context.Context, client *s3.Client, bucket, key string) (string, error) {
-	body := makeMultipartPart()
+	body := makeMultipartPart(1)
 	started, err := uploadMultipart(ctx, client, bucket, key, [][]byte{body}, true)
 	if err != nil {
 		if isUnsupportedFeature(err) {
@@ -268,7 +268,9 @@ func conditionalRetryStatus(err error) (string, error) {
 func probeMultipart(t *testing.T, ctx context.Context, client *s3.Client, bucket, prefix string) (featureResult, error) {
 	completeKey := prefix + "/multipart-complete"
 	registerObjectCleanup(t, client, bucket, completeKey)
-	body := append(makeMultipartPart(), makeMultipartPart()...)
+	firstPart := makeMultipartPart(1)
+	secondPart := makeMultipartPart(2)
+	body := append(firstPart, secondPart...)
 	started, err := uploadMultipart(ctx, client, bucket, completeKey, [][]byte{body[:partSize], body[partSize:]}, false)
 	if err != nil {
 		if !isUnsupportedFeature(err) {
@@ -318,7 +320,7 @@ func probeMultipartAbort(t *testing.T, ctx context.Context, client *s3.Client, b
 		return featureResult{}, errors.New("CreateMultipartUpload returned no upload ID")
 	}
 
-	part := makeMultipartPart()
+	part := makeMultipartPart(3)
 	_, uploadPartErr := client.UploadPart(ctx, &s3.UploadPartInput{
 		Bucket:     stringPointer(bucket),
 		Key:        stringPointer(key),
@@ -575,10 +577,10 @@ func abortMultipart(ctx context.Context, client *s3.Client, bucket, key, uploadI
 	})
 }
 
-func makeMultipartPart() []byte {
+func makeMultipartPart(seed byte) []byte {
 	body := make([]byte, partSize)
 	for index := range body {
-		body[index] = byte((index*31 + index/251) % 251)
+		body[index] = byte((index*31 + index/251) % 251) ^ seed
 	}
 	return body
 }
