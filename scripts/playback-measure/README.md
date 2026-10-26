@@ -25,9 +25,9 @@ python3 scripts/playback-measure/analyze.py /tmp/rp3-run \
 
 `k8s.py` は既存 Deployment の media PVC、securityContext、イメージ、imagePullSecrets の参照を使う。設定、DB の Secret、デバイスはマウントしない。測定 Pod 間の時計校正用 TCP 18080 だけを許可する NetworkPolicy を作る。API 接続とイメージ取得の権限は実行者が持っている必要がある。
 
-書き手は 31,208 byte を 500 ms ごとに追記する。実際の chunk サイズは合成入力のファイル長から決まり、open のログに残る。1 本目の Job が 240 秒で終わった後に、次の Job を作る。次の Job は同じ inode を O_APPEND で開き、残り 40 秒を書いて終わる。読者は開いた fd を保持し、path stat、fstat、ReadAt を 20 ms ごとに記録する。
+書き手は 31,208 byte を 500 ms ごとに追記する。実際の chunk サイズは合成入力のファイル長から決まり、open のログに残る。1 本目の Job が 240 秒で終わった後に、次の Job を作る。次の Job は同じ inode を O_APPEND で開き、残り 40 秒を書いて終わる。読み手は開いた fd を保持し、path stat、fstat、ReadAt を 20 ms ごとに記録する。
 
-両ノードのアーキテクチャに合う probe を使う。記録した追測は amd64 同士であり、arm64 や別 StorageClass の測定値にはしない。runner は末尾を TS packet 境界で切るため、入力全体ではなく実際に書いた prefix の SHA-256 を照合する。有限ファイルとの映像照合にも同じ prefix を使う。
+両ノードのアーキテクチャに合う probe を使う。記録した実クラスタの測定は amd64 同士であり、arm64 や別 StorageClass の測定値にはしない。runner は末尾を TS packet 境界で切るため、入力全体ではなく実際に書いた prefix の SHA-256 を照合する。有限ファイルとの映像照合にも同じ prefix を使う。
 
 出力には各 Write の前後時刻、初めて長さと内容を観測した時刻、時計校正、Job の manifest が残る。`analyze.py` は未観測の追記と不一致の SHA-256 をエラーにする。時計差の推定は最小 RTT の往復から取り、前後の平均で補正する。polling と I/O の時間も測定値に含む。時計が途中で step しなかったことは保証しない。
 
@@ -35,7 +35,7 @@ python3 scripts/playback-measure/analyze.py /tmp/rp3-run \
 
 ## 伸長ファイルの FFmpeg
 
-I/O runner とは別に、同じ PVC を read-only でマウントする Pod で次を実行する。`INPUT` は専用ディレクトリの growing.ts、`OUT` は Pod の emptyDir 上の新規ディレクトリとする。run の resources.json で Pod 名と mount を確認できる。I/O runner は終了時に Pod を削除するため、FFmpeg の終了とログ回収まで待つ測定用 Pod を別に用意する。
+追記の測定用 runner とは別に、同じ PVC を read-only でマウントする Pod で次を実行する。`INPUT` は専用ディレクトリの growing.ts、`OUT` は Pod の emptyDir 上の新規ディレクトリとする。run の resources.json で Pod 名と mount を確認できる。追記の測定用 runner は終了時に Pod を削除するため、FFmpeg の終了とログ回収まで待つ測定用 Pod を別に用意する。
 
 ```sh
 ffmpeg -hide_banner -loglevel warning -threads 1 -copyts \
@@ -51,11 +51,11 @@ ffmpeg -hide_banner -loglevel warning -threads 1 -copyts \
 
 合成入力の最初の映像 PTS は 129600 tick、目標はその 6 秒後の 669600 tick。実測前に ffprobe で確認する。10 秒の timeout の試行は、`-skip_estimate_duration_from_pts` を付けず、先頭から約 8 秒後に起動した。90 秒の試行は約 151 秒後に起動した。この 2 条件は単一変数の比較ではない。
 
-各 segment の mtime、playlist の ENDLIST、終了時刻・終了コードを保存する。入力 prefix と出力 playlist を `-f framehash -hash md5` に通し、入力の frame 150 から末尾までを全件比較する。出力 0 byte の TS と exit 0 を成功扱いしない。追測では 10 秒で途中終了し、90 秒では 6,841 frame が一致した。duration=0 の警告も記録している。
+各 segment の mtime、playlist の ENDLIST、終了時刻・終了コードを保存する。入力 prefix と出力 playlist を `-f framehash -hash md5` に通し、入力の frame 150 から末尾までを全件比較する。出力 0 byte の TS と exit 0 を成功扱いしない。実クラスタの測定では 10 秒で途中終了し、90 秒では 6,841 frame が一致した。duration=0 の警告も記録している。
 
 [FFmpeg の file protocol 契約](https://ffmpeg.org/ffmpeg-protocols.html#file)は follow の終了に rw_timeout または割り込み callback を要求する。書き手の終了時刻と reader の timeout の開始時刻は同じではない。有限回の測定から停止時間の上限を決めない。
 
-## 原本の古い PES と PTS wrap
+## 原本の古い音声 PES と PTS wrap
 
 原本の内容をローカルへ転送せず、Pod 内で縮小・lossless 変換と hash の照合を行う。`--input` は Pod 内の読み取り専用パスである。原本ごとの V と S を ffprobe で取り、90 kHz の整数を渡す。V は最初の video packet の PTS、S は format の start_time。復号できない先頭 packet は基準 framehash に現れないため、期待 frame は復号できた入力 frame の PTS から選ぶ。
 
@@ -82,10 +82,47 @@ ffprobe -v quiet -correct_ts_overflow 0 -select_streams v:0 \
 
 seek.py がローカルへ保存するのは数値、hash、標準エラー、集計だけである。原本タイトルや内部 IP を公開する成果物に入れない。Pod の `/tmp/rp3-seek-*` は emptyDir の破棄時に消える。
 
+## 製品の seek 引数
+
+`seek.py` の「補正相対 seek」は、ドキュメントの式であって製品の引数ではない。製品の `SegmentManager`（`buildSegmentTransformArgs`）の実引数は、`internal/streamer` の opt-in テスト `TestSegmentTransformSeekMeasure` で測る。引数を写さず製品のビルダーを呼ぶ。環境変数が無ければ Skip する。読み取り専用で、worker・DB・reconciler は起動しない。
+
+| 環境変数 | 意味 | 既定 |
+|---|---|---|
+| `ROKUBAN_SEEK_INPUT` | 入力の TS のパス | なし |
+| `ROKUBAN_SEEK_SYNTH` | `old-pes` か `wrap` で合成入力を作る（INPUT の代わり） | なし |
+| `ROKUBAN_SEEK_STARTS` | 起動するセグメント番号 k のカンマ区切り | `3,5` |
+| `ROKUBAN_SEEK_COUNT` | k から数えて取るセグメント数 | `6` |
+| `ROKUBAN_SEEK_FRAMES` | 基準にする入力の復号 frame 数。k+COUNT の位置まで届く値にする | `900` |
+| `ROKUBAN_SEEK_AUDIO` | 入力の音声ストリーム数 | `2` |
+| `ROKUBAN_SEEK_TOLERANCE` | 許す誤差の絶対値 frame | `1` |
+
+出力は QP=0 の無損失で縮小しないので、入力が 1080 の場合はセグメントごとに数十 MB になる。各セグメントの先頭フレームの hash を、入力の復号 frame 列に照合する。期待 frame は `seek.py` と同じで、入力の復号 frame の PTS が V + n·D 以上になる最初のものである。hash が入力内で一意でなければ失敗にする。
+
+```sh
+ROKUBAN_SEEK_SYNTH=old-pes ROKUBAN_SEEK_FRAMES=1000 \
+  go test ./internal/streamer/ -run TestSegmentTransformSeekMeasure -v -count=1
+ROKUBAN_SEEK_INPUT=/path/to/input.ts ROKUBAN_SEEK_AUDIO=1 \
+  go test ./internal/streamer/ -run TestSegmentTransformSeekMeasure -v -count=1
+```
+
+Pod の中で、原本を読み取り専用のまま測るときは、テストバイナリを linux/amd64 でビルドして Pod に置く。Pod には ffmpeg / ffprobe（libx264 付き）が必要で、書き込める場所（emptyDir の `/tmp` など）を `TMPDIR` にする。
+
+```sh
+GOOS=linux GOARCH=amd64 go test -c -o /tmp/rp6seek.test ./internal/streamer/
+kubectl -n "$NAMESPACE" cp /tmp/rp6seek.test "$POD":/tmp/rp6seek.test
+kubectl -n "$NAMESPACE" exec "$POD" -- env TMPDIR=/tmp \
+  ROKUBAN_SEEK_INPUT="$ORIGINAL_PATH" ROKUBAN_SEEK_FRAMES=1200 ROKUBAN_SEEK_STARTS=3,5 \
+  /tmp/rp6seek.test -test.run TestSegmentTransformSeekMeasure -test.v
+```
+
+`ROKUBAN_SEEK_FRAMES` は入力の frame 数を超えない値にする。結果は標準出力の `k=… n=… error_frames=…` の行である。この手順の Pod 上での実行は未実施で、linux/amd64 のクロスビルドが通ることだけを確認した。
+
 ## 測定コードの検査
+
+Go 側の期待 frame の選択と hash の一意性は `go test ./internal/streamer/ -run TestSeekFrameError` で検査する。Python 側は次のとおり。
 
 ```sh
 python3 -m unittest discover -s scripts/playback-measure -p 'test_*.py'
 ```
 
-2026-10-26 の追測では、累積サイズの判定を壊す変異と、入力格子の target を 0 にする変異で、それぞれ assertion が失敗することを確認した。古い PES と wrap の実録画では、未補正の引数が ±1 frame を超え、補正引数だけが範囲内に収まった。
+実クラスタの測定では、累積サイズの判定を壊す変異と、入力格子の target を 0 にする変異で、それぞれ assertion が失敗することを確認した。古い音声 PES と PTS wrap の原本では、未補正の引数が ±1 frame を超え、補正相対 seek だけが範囲内に収まった。ただしこの測定の基準 PTS は frame rate の time base に丸められていた。`seek.py` は `-enc_time_base:v 1/90000` を付けるよう直したが、クラスタでの再測定は未実施である。

@@ -73,7 +73,7 @@ def main():
     checked("timeout", "300", "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-threads", "1", "-copyts", "-i", args.input, "-map", "0:v:0", "-an",
             "-frames:v", str(args.reference_frames), "-vf", "scale=320:180,format=yuv420p",
-            "-fps_mode", "passthrough", "-f", "framehash", "-hash", "md5", reference_path, timeout=360)
+            "-fps_mode", "passthrough", "-enc_time_base:v", "1/90000", "-f", "framehash", "-hash", "md5", reference_path, timeout=360)
     reference_text = checked("cat", reference_path)
     (args.output / "reference.hash").write_text(reference_text)
     reference = frames(reference_text)
