@@ -26,27 +26,39 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-`storage.media_store_name` を設定すると、worker は起動時と各ストレージ操作の直前に `.rokuban-store` を照合する。内容が一致しないか読み取りに失敗した操作は見送る。
+`storage.media_store_name` を設定すると、worker は起動時と、パスを解決するファイルシステム操作の前に `.rokuban-store` を照合する。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
 
-不一致時は ingest probe、ファイル書き込み・削除、欠損記録を行わず、`rokuban_store_marker_mismatch_total{store}` を増やす。目印は `rokuban storage adopt <store-name>` で作成できる。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。
+見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 
-同じ名前の目印への `adopt` は再実行できるが、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+目印を確認できないまま起動した worker は、ingest probe を保留する。probe は `media_dir/sites` を作る書き込みなので、最初の ingest ジョブが目印の照合を通った後に 1 回だけ走る。失敗した probe は固定せず、次の ingest ジョブが再試行する。
+
+目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+
+導入と、`media_store_name` を設定済みの構成の移行手順は [runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
 <details><summary>根拠</summary>
 
 - ingest 抑止: `TestIngestWorkerWithholdsWhenStoreMarkerDoesNotMatch`
+- probe の遅延と再試行: `TestIngestWorkerProbesStorageAfterMarkerCheckAndRetriesFailure`
+- 起動時に済んだ probe を繰り返さない: `TestIngestWorkerSkipsStorageProbeAlreadyDoneAtStartup`
+- 生成物の公開抑止: `TestGeneratedMediaPublishDoesNotStageWhenStoreMarkerIsMissing`
 - unlink 抑止: `TestDeleteMediaAssetWithholdsUnlinkWhenMarkerDisappears`
-- deleted 遷移抑止: `TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears`
-- 欠損・孤児操作抑止: `TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions`
-- replay checkpoint 抑止: `TestInterruptedIngestReplayRechecksMarkerBeforeCheckpoint`
-- catalog 書き込み・prune 抑止: `TestWriteWithCheckWithholdsManifestAndPruneAfterOwnershipChanges`
-- catalog 削除直前の再照合: `TestPruneWithCheckStopsBeforeEachDestructiveAction`
+- 削除済みの確定抑止（unlink 成功）: `TestDeleteMediaAssetWithholdsMarkDeletedWhenMarkerDisappears`
+- 削除済みの確定抑止（`ErrNotExist`）: `TestDeleteMediaAssetWithholdsMarkDeletedAfterErrNotExistWhenMarkerDisappears`
+- deleting 行の決着抑止: `TestResolveDeletingAssetWithholdsDecisionWhenMarkerDisappearsAfterStat`
+- 孤児の unlink 抑止: `TestOrphanUnlinkRechecksStoreMarkerImmediatelyBeforeRemoval`
+- 孤児の「無い」の記録抑止: `TestOrphanAbsentAfterUnlinkWithholdsRecordWhenMarkerDisappears`
+- 欠損・孤児操作の抑止: `TestStoreMarkerMismatchWithholdsMissingAssetAndOrphanActions`
+- 実体無しの記録の再照合: `TestMissingAssetRecordRechecksStoreMarkerImmediatelyBeforeWrite`
+- 孤児候補の記録の再照合: `TestOrphanCandidateRecordRechecksStoreMarkerAfterWalk`
+- replay checkpoint 抑止: `TestInterruptedIngestReplayWithholdsCheckpointWhenMarkerDisappears`
+- catalog の途中中断: `TestWriteWithholdsManifestAndPruneWhenMarkerDisappearsMidway`
+- catalog の開始時の照合: `TestWriteCreatesNothingWhenMarkerIsAlreadyBroken`
+- catalog の prune 抑止: `TestPruneStopsWhenMarkerDisappearsBeforeDestructiveAction`
 - adopt: `TestStorageAdoptWritesStoreMarker`
 - 異なる名前への adopt 拒否: `TestStorageAdoptDoesNotRenameExistingStoreMarker`
 
 </details>
-
-`storage.media_store_name` が空なら目印を照合しない。既存構成へ導入するときは、実際にマウントされた media root に対して `storage adopt` を実行し、設定へ同じ名前を入れる。
 
 #### ingest の一時ファイルと orphan
 
