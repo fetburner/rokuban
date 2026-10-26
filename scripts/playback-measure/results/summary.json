@@ -1,0 +1,181 @@
+{
+  "measured_at": "2026-10-25T15:37:45Z",
+  "fixture_ffmpeg": "9.0.2 macOS arm64",
+  "reader_ffmpeg": "7.1.5-0+deb13u1 linux amd64",
+  "storage_class": "ds420plus-kagawa",
+  "filesystem": "NFS 4.1 RWX",
+  "same_node": false,
+  "uid": 65534,
+  "gid": 65534,
+  "repetitions": {
+    "ready-pods": {
+      "clock_best": [
+        {
+          "at": 1792942664215147646,
+          "kind": "clock",
+          "offset_ns": 611731,
+          "rtt_ns": 5260990
+        },
+        {
+          "at": 1792942947357252742,
+          "kind": "clock",
+          "offset_ns": -58468,
+          "rtt_ns": 5082516
+        }
+      ],
+      "visibility": {
+        "stat": {
+          "count": 560,
+          "median_ms": 22709.732224,
+          "max_ms": 54401.213952,
+          "min_ms": 167.591424
+        },
+        "fstat": {
+          "count": 560,
+          "median_ms": 23080.299392,
+          "max_ms": 54699.654656,
+          "min_ms": 508.759296
+        },
+        "read": {
+          "count": 560,
+          "median_ms": 23181.342080000002,
+          "max_ms": 54699.654656,
+          "min_ms": 709.955584
+        }
+      },
+      "handoff": {
+        "stat": {
+          "count": 1,
+          "median_ms": 10052.803584,
+          "max_ms": 10052.803584,
+          "min_ms": 10052.803584
+        },
+        "fstat": {
+          "count": 1,
+          "median_ms": 10229.652992,
+          "max_ms": 10229.652992,
+          "min_ms": 10229.652992
+        },
+        "read": {
+          "count": 1,
+          "median_ms": 10229.652992,
+          "max_ms": 10229.652992,
+          "min_ms": 10229.652992
+        }
+      },
+      "last_write_to_next_write_ms": 1630.392633,
+      "close_to_next_write_ms": 1116.967407,
+      "max_read_no_growth_ms": 51314.53245,
+      "digest": {
+        "kind": "digest",
+        "sha256": "68722cf08ec4f3e6479a9f876e1aaa2939afc3d803f0c4583261d1fa20bb8c7c",
+        "size": 17476480
+      }
+    },
+    "jobs": {
+      "clock_best": [
+        {
+          "at": 1792943150737178094,
+          "kind": "clock",
+          "offset_ns": -1163778,
+          "rtt_ns": 7693731
+        },
+        {
+          "at": 1792943443184797203,
+          "kind": "clock",
+          "offset_ns": -473051,
+          "rtt_ns": 5782636
+        }
+      ],
+      "visibility": {
+        "stat": {
+          "count": 560,
+          "median_ms": 23216.692992,
+          "max_ms": 54027.548928,
+          "min_ms": 934.75072
+        },
+        "fstat": {
+          "count": 560,
+          "median_ms": 23587.699968,
+          "max_ms": 54337.321472,
+          "min_ms": 1309.535232
+        },
+        "read": {
+          "count": 560,
+          "median_ms": 23644.409856,
+          "max_ms": 54337.321472,
+          "min_ms": 1587.67616
+        }
+      },
+      "handoff": {
+        "stat": {
+          "count": 1,
+          "median_ms": 31602.23872,
+          "max_ms": 31602.23872,
+          "min_ms": 31602.23872
+        },
+        "fstat": {
+          "count": 1,
+          "median_ms": 31910.459392,
+          "max_ms": 31910.459392,
+          "min_ms": 31910.459392
+        },
+        "read": {
+          "count": 1,
+          "median_ms": 31910.459392,
+          "max_ms": 31910.459392,
+          "min_ms": 31910.459392
+        }
+      },
+      "last_write_to_next_write_ms": 5957.09422,
+      "close_to_next_write_ms": 5437.761267,
+      "max_read_no_growth_ms": 51385.072152,
+      "digest": {
+        "kind": "digest",
+        "sha256": "68722cf08ec4f3e6479a9f876e1aaa2939afc3d803f0c4583261d1fa20bb8c7c",
+        "size": 17476480
+      }
+    }
+  },
+  "follow": {
+    "timeout_10s": {
+      "exit": 0,
+      "startup_to_exit_seconds": 40.736232857,
+      "valid_segments": 0,
+      "empty_segments": 1,
+      "endlist": true
+    },
+    "timeout_90s_skip_duration_estimate": {
+      "exit": 0,
+      "valid_segments": 137,
+      "output_frames": 6841,
+      "source_prefix_frames": 6991,
+      "source_frame_start": 150,
+      "all_frames_equal": true,
+      "writer_close_to_exit_seconds": 98.504566232,
+      "endlist": true,
+      "duration_zero_warnings": true,
+      "mux_pts_90k": {
+        "3": 666000,
+        "5": 1026000,
+        "120": 21726000,
+        "139": 25146000
+      }
+    }
+  },
+  "inventory": {
+    "ts_original_count": 51,
+    "metadata_success": 51,
+    "wrap_candidates": 4,
+    "wrap_packet_confirmed": 1,
+    "raw_wrap_adjacent_pts_90k": [
+      8589931670,
+      81
+    ],
+    "corrected_interval": {
+      "packets": 449,
+      "first_pts": 8589400139,
+      "last_pts": 8590745483
+    }
+  }
+}
