@@ -181,7 +181,7 @@ func TestRecordingHLSMasterAndVODPlaylist(t *testing.T) {
 		}
 	}
 	if !strings.Contains(master.Body.String(), "#EXT-X-STREAM-INF:BANDWIDTH=20000000") {
-		t.Errorf("master playlist BANDWIDTH = %q, want the fixed 20 Mbps upper bound that the real-browser E2E (seek-buffered check) depends on", master.Body.String())
+		t.Errorf("master playlist BANDWIDTH = %q, want the fixed 20 Mbps declaration that the seek-buffered check in web/e2e/recording-segmented-vod.mjs depends on", master.Body.String())
 	}
 
 	playlist := h.get(t, recordingHLSRequestPath("main", 42, 7, "video/index.m3u8"))

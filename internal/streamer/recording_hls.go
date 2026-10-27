@@ -534,12 +534,10 @@ func buildRecordingHLSMasterPlaylist(withSubtitles bool) []byte {
 	if withSubtitles {
 		b.WriteString("#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"字幕\",DEFAULT=YES,AUTOSELECT=YES,URI=\"subtitles/index.m3u8\"\n")
 	}
-	// LiveProfile にはビットレートが無い（CRF/QP で品質を決める）ので、実際の出力から
-	// BANDWIDTH は導けない。master は上限として固定値 20 Mbps を宣言する。
-	// 観測: ffmpeg が書く約 1.9 Mbps だと hls.js の先読みが 60 秒の録画を超え、遠距離
-	// シークがバッファの内側になった（web/e2e/recording-segmented-vod.mjs の
-	// `seek-buffered`）。これは hls.js の契約ではなく測った挙動で、この E2E の判定が
-	// この値に依存する。値を変えるときは E2E も回す。
+	// LiveProfile にはビットレートが無い（CRF/QP で品質を決める）ので、BANDWIDTH は出力から
+	// 導けず、固定値 20 Mbps を宣言する。実際の出力がこの値に収まるかは未検証。
+	// web/e2e/recording-segmented-vod.mjs の `seek-buffered` の判定がこの値に依存する。
+	// 値を変えるときはその E2E を回し直す。
 	if withSubtitles {
 		fmt.Fprintf(&b, "#EXT-X-STREAM-INF:BANDWIDTH=20000000,AUDIO=\"aud\",SUBTITLES=\"subs\"\nvideo/index.m3u8\n")
 	} else {
