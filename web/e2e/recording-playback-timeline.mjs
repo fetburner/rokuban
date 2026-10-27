@@ -95,7 +95,19 @@ const apiHlsRecording = {
   durationMs: 120_000,
   endedAt: undefined,
   status: 'recording',
-  hlsPlayback: [{ profile: 'hd', masterUrl: apiHlsPath(1) }],
+  hlsPlayback: [
+    { profile: 'hd', masterUrl: apiHlsPath(1, 'hd') },
+    { profile: 'sd', masterUrl: apiHlsPath(1, 'sd') },
+  ],
+}
+const apiHlsRecoveryRecording = { ...apiHlsRecording, resumePositionMs: 0 }
+const apiHlsRecordingV2 = {
+  ...apiHlsRecording,
+  resumePositionMs: 3_000,
+  hlsPlayback: [
+    { profile: 'hd', masterUrl: apiHlsPath(2, 'hd') },
+    { profile: 'sd', masterUrl: apiHlsPath(2, 'sd') },
+  ],
 }
 const encodedRecording = {
   ...recording,
@@ -200,6 +212,10 @@ const context = await browser.newContext({ viewport: { width: 1280, height: 900 
 const playlistRequests = []
 const mp4Requests = []
 const recordingHlsRequests = []
+const recordingHls410Requests = []
+let recordingHlsRecoveryPositionSeconds = null
+let recordingHlsNextApiRecording = null
+let expireRecordingHlsPlaylist = false
 
 function growingPlaylist(text) {
   const out = []
@@ -908,12 +924,26 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   if (requestPath === `/api/media/recordings/${RECORDING_ID}/seek-tiles`) return route.fulfill({ status: 404 })
   if (/^\/api\/media\/recordings\/\d+\/thumbnail$/.test(requestPath)) return route.fulfill({ status: 404 })
 
-  const apiHlsMatch = new RegExp(`^/api/media/stores/media/recordings/${RECORDING_ID}/hls/v\\d+/[^/]+/(.+)$`).exec(requestPath)
+  const apiHlsMatch = new RegExp(`^/api/media/stores/media/recordings/${RECORDING_ID}/hls/v(\\d+)/([^/]+)/(.+)$`).exec(requestPath)
   if (apiHlsMatch) {
-    const resource = apiHlsMatch[1]
+    const generation = Number(apiHlsMatch[1])
+    const profile = apiHlsMatch[2]
+    const resource = apiHlsMatch[3]
     const fixtureMaster = path.join(fixtureDir, manifest.hls.offset0)
     const outputDir = path.dirname(fixtureMaster)
-    recordingHlsRequests.push({ url: requestPath, resource })
+    recordingHlsRequests.push({ url: requestPath, resource, generation, profile })
+    if (generation === 1 && resource.endsWith('.m3u8') && resource !== 'master.m3u8' && expireRecordingHlsPlaylist) {
+      expireRecordingHlsPlaylist = false
+      const frame = route.request().frame()
+      const playbackPosition = await frame.evaluate(() => document.querySelector('video')?.currentTime ?? null).catch(() => null)
+      if (typeof playbackPosition === 'number' && Number.isFinite(playbackPosition)) {
+        recordingHlsRecoveryPositionSeconds = playbackPosition
+      }
+      recordingHls410Requests.push(requestPath)
+      activeRecording = recordingHlsNextApiRecording ?? apiHlsRecordingV2
+      recordingHlsNextApiRecording = null
+      return route.fulfill({ status: 410, body: 'expired recording HLS generation' })
+    }
     if (resource === 'master.m3u8') {
       return route.fulfill({
         status: 200,
@@ -1004,14 +1034,16 @@ async function timelineHandler({ path: requestPath, url, json, route }) {
   return json([])
 }
 
-async function runRecordingApiHlsCheck() {
-  activeRecording = apiHlsRecording
-  recordingHlsRequests.length = 0
-  playlistRequests.length = 0
-  const page = await context.newPage()
-  await installApiStubs(page, timelineHandler)
+async function stubRecordingEventSource(page) {
   await page.addInitScript(() => {
     const eventSources = []
+    const seekedPositions = []
+    const observedVideos = new WeakSet()
+    const observeVideo = (node) => {
+      if (!(node instanceof HTMLVideoElement) || observedVideos.has(node)) return
+      observedVideos.add(node)
+      node.addEventListener('seeked', () => seekedPositions.push(node.currentTime))
+    }
     class StubEventSource extends EventTarget {
       constructor(url) {
         super()
@@ -1022,10 +1054,25 @@ async function runRecordingApiHlsCheck() {
     }
     window.EventSource = StubEventSource
     window.__recordingEventSources = eventSources
+    window.__recordingHlsSeekedPositions = seekedPositions
     window.__sendRecordingEvent = (topic) => {
       for (const source of eventSources) source.dispatchEvent(new Event(topic))
     }
+    const observer = new MutationObserver(() => {
+      document.querySelectorAll('video').forEach(observeVideo)
+    })
+    observer.observe(document, { childList: true, subtree: true })
+    document.querySelectorAll('video').forEach(observeVideo)
   })
+}
+
+async function runRecordingApiHlsCheck() {
+  activeRecording = apiHlsRecording
+  recordingHlsRequests.length = 0
+  playlistRequests.length = 0
+  const page = await context.newPage()
+  await installApiStubs(page, timelineHandler)
+  await stubRecordingEventSource(page)
   await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
   await page.getByTestId('recording-playback-start').click()
   await page.locator('video').waitFor({ timeout: 15000 })
@@ -1084,6 +1131,7 @@ async function runRecordingApiHlsCheck() {
     ...apiHlsRecording,
     status: 'finished',
     endedAt: new Date().toISOString(),
+    resumePositionMs: 10_000,
     // ingest commit 後も API が返す master URL は維持される。
     hlsPlayback: apiHlsRecording.hlsPlayback,
   }
@@ -1107,8 +1155,120 @@ async function runRecordingApiHlsCheck() {
   await page.close()
 }
 
+async function runRecordingApiHlsRecoveryCheck() {
+  activeRecording = apiHlsRecoveryRecording
+  recordingHlsRequests.length = 0
+  recordingHls410Requests.length = 0
+  recordingHlsRecoveryPositionSeconds = null
+  recordingHlsNextApiRecording = apiHlsRecordingV2
+  expireRecordingHlsPlaylist = false
+  const page = await context.newPage()
+  const recoveryTrace = []
+  page.on('request', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname.startsWith(`/api/recordings/${RECORDING_ID}`) || url.pathname.includes(`/recordings/${RECORDING_ID}/hls/`)) {
+      recoveryTrace.push(`request ${request.method()} ${url.pathname}`)
+    }
+  })
+  page.on('response', (response) => {
+    const url = new URL(response.url())
+    if (url.pathname.startsWith(`/api/recordings/${RECORDING_ID}`) || url.pathname.includes(`/recordings/${RECORDING_ID}/hls/`)) {
+      recoveryTrace.push(`response ${response.status()} ${url.pathname}`)
+    }
+  })
+  page.on('requestfailed', (request) => {
+    const url = new URL(request.url())
+    if (url.pathname.includes(`/recordings/${RECORDING_ID}/hls/`)) {
+      recoveryTrace.push(`failed ${url.pathname}: ${request.failure()?.errorText ?? 'unknown'}`)
+    }
+  })
+  page.on('console', (message) => {
+    if (message.type() === 'error') recoveryTrace.push(`console error ${message.text()}`)
+  })
+  page.on('pageerror', (error) => recoveryTrace.push(`page error ${error.message}`))
+  await installApiStubs(page, timelineHandler)
+  await stubRecordingEventSource(page)
+  await page.goto(`${URL_BASE}/recordings/${RECORDING_ID}`, { waitUntil: 'domcontentloaded' })
+  log(`\n=== 録画 API HLS: 再生位置から 410 後の最新世代へ復旧 ===`)
+
+  await page.getByTestId('recording-playback-start').waitFor({ timeout: 15000 })
+  await page.getByTestId('recording-playback-start').click()
+  const started = await page.waitForFunction(() => {
+    const video = document.querySelector('video')
+    return video && video.currentTime >= 3 && video.seekable.length > 0 && !video.paused
+  }, undefined, { timeout: 15000 }).then(() => true).catch(() => false)
+  if (!started) {
+    ng.push('録画 API HLS の 410 復旧判定前に実ブラウザ再生が始まらない')
+    await page.close()
+    return
+  }
+  recordingHlsRecoveryPositionSeconds = await page.locator('video').evaluate((video) => video.currentTime)
+  const positionBefore410 = recordingHlsRecoveryPositionSeconds
+  const recordingRefresh = page.waitForResponse((response) => {
+    const responseURL = new URL(response.url())
+    return recordingHls410Requests.length > 0 && response.request().method() === 'GET' &&
+      responseURL.pathname === `/api/recordings/${RECORDING_ID}`
+  }, { timeout: 10000 }).then((response) => response).catch(() => null)
+  const nextMaster = page.waitForRequest((request) => new URL(request.url()).pathname === apiHlsPath(2, 'hd'), { timeout: 10000 })
+    .then(() => true).catch(() => false)
+  const seekedStart = await page.evaluate(() => window.__recordingHlsSeekedPositions.length)
+  expireRecordingHlsPlaylist = true
+  log(`  410 指示時=${positionBefore410.toFixed(2)}s / v1 child playlist の 410 時の位置を測定`)
+
+  const refreshedResponse = await recordingRefresh
+  if (recordingHls410Requests.length !== 1) {
+    ng.push(`再生中の v1 child playlist が 410 にならない (${JSON.stringify(recordingHls410Requests)})`)
+    await page.close()
+    return
+  }
+  log(`  v1 410 時の currentTime=${recordingHlsRecoveryPositionSeconds.toFixed(2)}s`)
+  if (!refreshedResponse?.ok()) {
+    ng.push(`HLS 410 後に録画詳細 API を再取得できない (${JSON.stringify(recoveryTrace)})`)
+    await page.close()
+    return
+  }
+  const refreshedRecording = await refreshedResponse.json()
+  const refreshedMaster = refreshedRecording.hlsPlayback?.find((item) => item.profile === 'hd')?.masterUrl
+  if (refreshedMaster !== apiHlsPath(2, 'hd')) {
+    ng.push(`410 後の API 応答が v2/hd master を返さない (${refreshedMaster})`)
+    await page.close()
+    return
+  }
+
+  const v2Loaded = await nextMaster
+  if (!v2Loaded) {
+    ng.push('録画詳細の再取得後に v2/hd master を要求しない')
+    await page.close()
+    return
+  }
+  const resumedAt = await page.waitForFunction(({ previousSeconds, seekedStart }) => {
+    const restoredSeek = window.__recordingHlsSeekedPositions
+      .slice(seekedStart)
+      .find((seconds) => Math.abs(seconds - previousSeconds) < 1)
+    return restoredSeek ?? false
+  }, { previousSeconds: recordingHlsRecoveryPositionSeconds, seekedStart }, { timeout: 10000 })
+    .then((handle) => handle.jsonValue())
+    .catch(() => null)
+  if (typeof resumedAt !== 'number') {
+    const current = await page.locator('video').evaluate((video) => ({ currentTime: video.currentTime, paused: video.paused }))
+    ng.push(`v2 で再開するとき、v1 の位置を seek しない (previous=${recordingHlsRecoveryPositionSeconds}, current=${JSON.stringify(current)})`)
+    await page.close()
+    return
+  }
+  const playingContinued = await page.waitForFunction((previousSeconds) => {
+    const video = document.querySelector('video')
+    return video && !video.paused && video.currentTime > previousSeconds + 0.5
+  }, recordingHlsRecoveryPositionSeconds, { timeout: 10000 }).then(() => true).catch(() => false)
+  if (!playingContinued) ng.push('410 後に v2 で再開位置から再生が続かない')
+  log(`  410 後の v2 seek=${Number(resumedAt).toFixed(2)}s / playing=${playingContinued}`)
+  if (playlistRequests.length > 0) ng.push(`410 後に従来の原本 VOD URL へ逸れる (${JSON.stringify(playlistRequests)})`)
+  await page.evaluate(() => localStorage.clear())
+  await page.close()
+}
+
 if (API_HLS_ONLY) {
   await runRecordingApiHlsCheck()
+  await runRecordingApiHlsRecoveryCheck()
   await finish(ng, browser)
 }
 

@@ -218,7 +218,14 @@ export function RecordingDetail({
       started: autoPlay || source === 'encoded',
       autoPlay,
       startFromBeginning: startAtBeginning,
-      positionSeconds: undefined,
+      // HLS の初期位置は再生セッションの入力として固定する。録画中の詳細 API は
+      // 保存位置と ingest 進捗の両方で更新されるため、保存位置を render ごとに読み直すと
+      // 継続中の HLS effect を張り直してしまう。
+      positionSeconds: source === 'recording-hls' && autoPlay && !startAtBeginning
+        ? recording.resumePositionMs !== undefined && recording.resumePositionMs >= PLAYBACK_POSITION_MINIMUM_MS
+          ? recording.resumePositionMs / 1000
+          : 0
+        : undefined,
       generation: 0,
     }
   }
@@ -277,8 +284,24 @@ export function RecordingDetail({
     playbackStateRef.current = next
     setPlaybackState(next)
   }
+  const savedRecordingHlsStartSeconds = (state: PlaybackState): number => {
+    if (state.positionSeconds !== undefined) return state.positionSeconds
+    if (state.startFromBeginning) return 0
+    const positionMs = recording.resumePositionMs
+    return positionMs !== undefined && positionMs >= PLAYBACK_POSITION_MINIMUM_MS
+      ? positionMs / 1000
+      : 0
+  }
   const startPlayback = () => {
-    updatePlaybackState({ ...playbackStateRef.current, started: true, autoPlay: true })
+    const current = playbackStateRef.current
+    updatePlaybackState({
+      ...current,
+      started: true,
+      autoPlay: true,
+      positionSeconds: current.source === 'recording-hls' && !current.startFromBeginning
+        ? savedRecordingHlsStartSeconds(current)
+        : current.positionSeconds,
+    })
   }
   const startPlaybackFromBeginning = () => {
     updatePlaybackState({
@@ -292,7 +315,11 @@ export function RecordingDetail({
   }
   const startPlaybackSource = (source: 'encoded' | 'original-vod' | 'recording-hls', profile?: string) => {
     const current = playbackStateRef.current
-    const position = recordingPositionSecondsRef.current ?? current.positionSeconds
+    const position = recordingPositionSecondsRef.current ?? current.positionSeconds ?? (
+      source === 'recording-hls' && !current.startFromBeginning
+        ? savedRecordingHlsStartSeconds(current)
+        : undefined
+    )
     if (source === 'encoded' && profile !== undefined) setSelectedPlaybackProfile(profile)
     updatePlaybackState({
       source,
