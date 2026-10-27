@@ -1086,7 +1086,7 @@ encode:
 	// （ValidateEncodeProfileName。往復は worker の TestCutGeneration_RoundTripsEncodedRelPath）。
 	// Load の配線を見るので、拒む側と通す側の両方を Load に通す。
 	t.Run("name must be a path component as is", func(t *testing.T) {
-		for _, name := range []string{`"x."`, `"a/b"`, `"a:b"`, `"a..b"`, `"x.g1"`, `"h264.g10"`, `"rescue-mp4"`} {
+		for _, name := range []string{`"x."`, `"a/b"`, `"a:b"`, `"a..b"`, `"x.g1"`, `"h264.g10"`, `"x.u1"`, `"h264.u10"`, `"rescue-mp4"`} {
 			path := writeConfig(t, base+`
     - name: `+name+`
       container: mp4
@@ -1097,7 +1097,7 @@ encode:
 				t.Errorf("name %s: error = %v, want the profile name rejected", name, err)
 			}
 		}
-		for _, name := range []string{"h264", "h264_vaapi", "e2e-slow", "x.g2.hd", "x.g0", "x.g01", "x.g", "_", "日本語 720p"} {
+		for _, name := range []string{"h264", "h264_vaapi", "e2e-slow", "x.g2.hd", "x.g0", "x.g01", "x.g", "x.u0", "x.u01", "_", "日本語 720p"} {
 			path := writeConfig(t, base+`
     - name: "`+name+`"
       container: mp4

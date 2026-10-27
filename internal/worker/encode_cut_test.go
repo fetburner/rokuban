@@ -202,29 +202,69 @@ func probeDurations(t *testing.T, ffprobe, path string) (video, audio, format fl
 	return video, audio, format
 }
 
-// TestNextCutGeneration は置き換えの世代番号の導出を固定する。**1 世代目から
-// `.g1` を付ける**ので、世代番号の無いパスからは 1 に戻る。
-func TestNextCutGeneration(t *testing.T) {
-	cases := []struct {
-		prev string
-		want int
+func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
+	keep := []chapters.Range{{StartMs: 0, EndMs: 60_000}}
+	tests := []struct {
+		name        string
+		input       store.EncodedPublishInput
+		state       store.EncodedPublishState
+		want        int64
+		wantRelPath string
 	}{
-		{"", 1},
-		{"20240101/a_h264.mp4", 1},     // 世代の無いパス（cut でない版の名残）
-		{"20240101/a_cut.g1.mp4", 2},   // 旧パスから +1
-		{"20240101/a_cut.g11.mp4", 12}, // 2 桁でも読む
-		{"20240101/a_cut.g0.mp4", 1},   // 0 は世代として無効 → 1
-		{"20240101/a_cut.gx.mp4", 1},   // 読めない → 1
-		{"20240101/a_cut.mp4", 1},      // 世代が付いていない cut 版
+		{
+			name:  "first uncut output",
+			input: store.EncodedPublishInput{Profile: "h264"},
+			state: store.EncodedPublishState{Desired: true},
+			want:  0, wantRelPath: "20240101/a_h264.mp4",
+		},
+		{
+			name:  "first cut output",
+			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep},
+			state: store.EncodedPublishState{Desired: true, ChapterOwned: true, CurrentCutKeep: keep},
+			want:  1, wantRelPath: "20240101/a_cut.g1.mp4",
+		},
+		{
+			name:  "active replacement",
+			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
+			state: store.EncodedPublishState{
+				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
+				EncodedAsset: &store.EncodedAssetObservation{State: "active", DerivedGeneration: 7, KeepRanges: []chapters.Range{{StartMs: 0, EndMs: 30_000}}},
+			},
+			want: 8, wantRelPath: "20240101/a_cut.g8.mp4",
+		},
+		{
+			name:  "deleted uncut tombstone",
+			input: store.EncodedPublishInput{Profile: "h264"},
+			state: store.EncodedPublishState{
+				Desired:      true,
+				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 4},
+			},
+			want: 5, wantRelPath: "20240101/a_h264.u5.mp4",
+		},
+		{
+			name:  "deleted cut tombstone",
+			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
+			state: store.EncodedPublishState{
+				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
+				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 12},
+			},
+			want: 13, wantRelPath: "20240101/a_cut.g13.mp4",
+		},
 	}
-	for _, tc := range cases {
-		if got := nextCutGeneration(tc.prev, "cut"); got != tc.want {
-			t.Errorf("nextCutGeneration(%q) = %d, want %d", tc.prev, got, tc.want)
-		}
-	}
-	// プロファイル名に `.g<数字>` が含まれても、末尾の `.g<数字>` だけを読む。
-	if got := nextCutGeneration("a_x.g9.hd.g3.mp4", "x.g9.hd"); got != 4 {
-		t.Errorf("nextCutGeneration with a dotted profile name = %d, want 4", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan := planEncodePublishFromState(tc.input, tc.state)
+			if plan.skip || plan.generation != tc.want {
+				t.Fatalf("plan = {skip:%v generation:%d}, want generation %d", plan.skip, plan.generation, tc.want)
+			}
+			got, err := EncodedRelPath("20240101/a.m2ts", tc.input.Profile, "mp4", int(plan.generation), tc.input.Cut)
+			if err != nil {
+				t.Fatalf("EncodedRelPath: %v", err)
+			}
+			if got != tc.wantRelPath {
+				t.Errorf("EncodedRelPath = %q, want %q", got, tc.wantRelPath)
+			}
+		})
 	}
 }
 
@@ -232,14 +272,14 @@ func TestNextCutGeneration(t *testing.T) {
 // **同じパスへ上書きすると、生きている行の rel_path 部分一意索引と衝突し、
 // ストレージ契約の「置くのは一回」も破る。**
 func TestEncodedRelPath_Generation(t *testing.T) {
-	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1)
+	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
 	if want := "20240101/a_cut.g1.mp4"; got != want {
 		t.Errorf("EncodedRelPath = %q, want %q", got, want)
 	}
-	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2)
+	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
@@ -247,7 +287,7 @@ func TestEncodedRelPath_Generation(t *testing.T) {
 		t.Errorf("generation 2 produced the same path as generation 1 (%q)", got2)
 	}
 	// generation 0 は従来のパス（cut でないプロファイル）。
-	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0)
+	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0, false)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
@@ -475,6 +515,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	if row.RelPath != "cut/replace_cut.g2.mp4" {
 		t.Errorf("rel_path = %q, want cut/replace_cut.g2.mp4 (the next generation)", row.RelPath)
 	}
+	assertMediaAssetCopy(t, pool, row.ID, row.RelPath)
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(row.RelPath))); err != nil {
 		t.Errorf("the new generation file is missing: %v", err)
 	}
@@ -506,20 +547,43 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 }
 
 // seedEncodedAsset は active な encoded media_assets 行を 1 つ作って id を返す。
-func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string) int64 {
+func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profile, relPath string, generations ...int64) int64 {
 	t.Helper()
 	ctx := context.Background()
 	profileName := profile
+	generation := testLegacyDerivedGeneration(relPath)
+	if len(generations) > 0 {
+		generation = &generations[0]
+	}
 	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
-		RecordingID: recordingID,
-		Profile:     &profileName,
-		RelPath:     relPath,
-		SizeBytes:   1,
+		RecordingID:       recordingID,
+		Profile:           &profileName,
+		RelPath:           relPath,
+		SizeBytes:         1,
+		DerivedGeneration: generation,
 	})
 	if err != nil {
 		t.Fatalf("seeding encoded media_asset: %v", err)
 	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath, State: "active",
+	}); err != nil {
+		t.Fatalf("seeding encoded media_asset copy: %v", err)
+	}
 	return assetID
+}
+
+func testLegacyDerivedGeneration(relPath string) *int64 {
+	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+	_, generation, ok := config.SplitCutGeneration(stem)
+	if !ok {
+		_, generation, ok = config.SplitUncutGeneration(stem)
+	}
+	if !ok {
+		return nil
+	}
+	value := int64(generation)
+	return &value
 }
 
 // setFrozenCuts は media_asset_cuts を直接書く（commitCutEncoded がやることの

@@ -2236,10 +2236,12 @@ func TestDeleteReconcileWorker_CanonicalOrphanIsNeverDeleted(t *testing.T) {
 	}
 
 	q := sqlcgen.New(pool)
-	if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
+	if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: "", RelPath: relPath}); err != nil {
 		t.Fatalf("seeding orphan record: %v", err)
 	}
-	t.Cleanup(func() { _ = q.DeleteOrphanFile(context.Background(), relPath) })
+	t.Cleanup(func() {
+		_ = q.DeleteOrphanFile(context.Background(), sqlcgen.DeleteOrphanFileParams{Store: "", RelPath: relPath})
+	})
 
 	fileLock, err := lockMediaRelPathFile(ctx, mediaDir, relPath)
 	if err != nil {
@@ -2297,7 +2299,7 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 		if err := os.Chtimes(path, old, old); err != nil {
 			t.Fatal(err)
 		}
-		if err := q.UpsertOrphanFile(ctx, relPath); err != nil {
+		if err := q.UpsertOrphanFile(ctx, sqlcgen.UpsertOrphanFileParams{Store: "", RelPath: relPath}); err != nil {
 			t.Fatalf("seeding %s orphan: %v", relPath, err)
 		}
 		w.deleteOrphanFile(relPath, time.Hour)
@@ -2334,7 +2336,7 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
 	recordingID := dbtest.Recording(t, pool)
@@ -2463,7 +2465,7 @@ func TestDeleteReconcileWorker_Orphan_AgedCanonical_IsReportedAndRetained(t *tes
 		}
 		// エイジング窓を過ぎた記録として直接投入する（14 日待たずに検証するため）。
 		if _, err := pool.Exec(context.Background(),
-			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)",
+			"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)",
 			relPath, time.Now().Add(-20*24*time.Hour)); err != nil {
 			t.Fatalf("seeding aged orphan record: %v", err)
 		}
@@ -2532,7 +2534,7 @@ func TestDeleteReconcileWorker_Orphan_ReportLogBudgetCapsWarnLines(t *testing.T)
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx,
-			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+			"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 			t.Fatalf("seeding aged canonical orphan %q: %v", relPath, err)
 		}
 	}
@@ -2584,7 +2586,7 @@ func TestDeleteReconcileWorker_StagingOrphansAreDeletedWithoutRelPathLock(t *tes
 			t.Fatalf("aging staging file %q: %v", relPath, err)
 		}
 		if _, err := pool.Exec(ctx,
-			"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+			"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 			t.Fatalf("seeding staging orphan %q: %v", relPath, err)
 		}
 	}
@@ -2646,7 +2648,7 @@ func TestDeleteReconcileWorker_StagingUnlinkRechecksMTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
 	w := &DeleteReconcileWorker{MediaDelete: pgstoretest.Media(pool), Storage: pgstoretest.Media(pool), RecordingPurge: pgstoretest.Recordings(pool), Breakers: pgstoretest.Breakers(pool), MediaDir: mediaDir}
@@ -2690,7 +2692,7 @@ func TestDeleteReconcileWorker_AgedCanonicalOrphanCanBeRescued(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
 	w := &DeleteReconcileWorker{
@@ -2745,7 +2747,7 @@ func TestDeleteReconcileWorker_UncommittedAssetInsertDoesNotLoseCanonicalFile(t 
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, $2)", relPath, old); err != nil {
+		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, $2)", relPath, old); err != nil {
 		t.Fatal(err)
 	}
 	recordingID := dbtest.Recording(t, pool)
@@ -3021,7 +3023,7 @@ func TestDeleteReconcileWorker_MissingAsset_AgedOut_ReportedWithoutDeleting(t *t
 
 	// エイジング窓を過ぎた記録として直接投入する。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3079,7 +3081,7 @@ func TestDeleteReconcileWorker_MissingAsset_ConfiguredAge_ShorterThanDefault_Rep
 	// 既定 24h では未エイジングだが、設定する 1h ではエイジング済みになる
 	// 経過時間。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-2*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3132,7 +3134,7 @@ func TestDeleteReconcileWorker_MissingAsset_FileReappears_ClearsCandidate(t *tes
 
 	// エイジング窓を過ぎた記録として投入し、1 パス目で報告対象にする。
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding missing-asset candidate: %v", err)
 	}
@@ -3249,7 +3251,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_DoesNotClearEx
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, now())",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', now())",
 		assetID); err != nil {
 		t.Fatalf("seeding missing-asset candidate: %v", err)
 	}
@@ -3298,7 +3300,7 @@ func TestDeleteReconcileWorker_MissingAsset_SuspectedMountFailure_FreezesGauge(t
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3354,7 +3356,7 @@ func TestDeleteReconcileWorker_MissingAsset_ReportLogBudget_CapsWarnLines(t *tes
 		})
 
 		if _, err := pool.Exec(context.Background(),
-			"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+			"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 			assetID, time.Now().Add(-48*time.Hour)); err != nil {
 			t.Fatalf("seeding aged missing-asset record (%d): %v", i, err)
 		}
@@ -3413,7 +3415,7 @@ func TestDeleteReconcileWorker_MissingAsset_AssetNoLongerActive_NotReported(t *t
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}
@@ -3469,7 +3471,7 @@ func TestDeleteReconcileWorker_MissingAsset_StaleCandidate_CollectedWhenActiveEx
 	})
 
 	if _, err := pool.Exec(context.Background(),
-		"INSERT INTO missing_media_assets (media_asset_id, first_seen) VALUES ($1, $2)",
+		"INSERT INTO missing_media_assets (media_asset_id, store, first_seen) VALUES ($1, 'test-store', $2)",
 		assetID, time.Now().Add(-48*time.Hour)); err != nil {
 		t.Fatalf("seeding aged missing-asset record: %v", err)
 	}

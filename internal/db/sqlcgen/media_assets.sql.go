@@ -14,8 +14,8 @@ import (
 )
 
 const createMediaAsset = `-- name: CreateMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, $2, $3, $4, $5, CASE WHEN $2 = 'original' THEN NULL ELSE 0 END)
 RETURNING id
 `
 
@@ -144,8 +144,30 @@ func (q *Queries) GetActiveThumbnailMediaAssetID(ctx context.Context, recordingI
 	return id, err
 }
 
+const getDerivedMediaAssetGeneration = `-- name: GetDerivedMediaAssetGeneration :one
+SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
+FROM media_assets
+WHERE recording_id = $1
+  AND kind = $2
+  AND profile IS NULL
+`
+
+type GetDerivedMediaAssetGenerationParams struct {
+	RecordingID int64
+	Kind        string
+}
+
+// GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+// Only kinds without a profile (thumbnail, seek_tiles) have a single row.
+func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDerivedMediaAssetGenerationParams) (int64, error) {
+	row := q.db.QueryRow(ctx, getDerivedMediaAssetGeneration, arg.RecordingID, arg.Kind)
+	var derived_generation int64
+	err := row.Scan(&derived_generation)
+	return derived_generation, err
+}
+
 const getEncodedMediaAssetForProfile = `-- name: GetEncodedMediaAssetForProfile :one
-SELECT id, rel_path, state
+SELECT id, rel_path, state, COALESCE(derived_generation, 0)::bigint AS derived_generation
 FROM media_assets
 WHERE recording_id = $1
   AND kind = 'encoded'
@@ -158,9 +180,10 @@ type GetEncodedMediaAssetForProfileParams struct {
 }
 
 type GetEncodedMediaAssetForProfileRow struct {
-	ID      int64
-	RelPath string
-	State   string
+	ID                int64
+	RelPath           string
+	State             string
+	DerivedGeneration int64
 }
 
 // 置き換え（cut プロファイルの作り直し）で、旧パスの unlink と世代番号の導出に
@@ -170,7 +193,12 @@ type GetEncodedMediaAssetForProfileRow struct {
 func (q *Queries) GetEncodedMediaAssetForProfile(ctx context.Context, arg GetEncodedMediaAssetForProfileParams) (GetEncodedMediaAssetForProfileRow, error) {
 	row := q.db.QueryRow(ctx, getEncodedMediaAssetForProfile, arg.RecordingID, arg.Profile)
 	var i GetEncodedMediaAssetForProfileRow
-	err := row.Scan(&i.ID, &i.RelPath, &i.State)
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.State,
+		&i.DerivedGeneration,
+	)
 	return i, err
 }
 
@@ -479,7 +507,7 @@ func (q *Queries) IsActiveThumbnailInput(ctx context.Context, mediaAssetID int64
 }
 
 const lockActiveThumbnailMediaAsset = `-- name: LockActiveThumbnailMediaAsset :one
-SELECT a.id, a.rel_path, s.seek_ms
+SELECT a.id, a.rel_path, s.seek_ms, COALESCE(a.derived_generation, 0)::bigint AS derived_generation
 FROM media_assets a
 LEFT JOIN media_asset_thumbnail_seeks s ON s.media_asset_id = a.id
 WHERE a.recording_id = $1
@@ -489,9 +517,10 @@ FOR UPDATE OF a
 `
 
 type LockActiveThumbnailMediaAssetRow struct {
-	ID      int64
-	RelPath string
-	SeekMs  *int64
+	ID                int64
+	RelPath           string
+	SeekMs            *int64
+	DerivedGeneration int64
 }
 
 // thumbnail 差し替えの commit tx 内で行を直列化し、世代付きパスへ UPDATE する。
@@ -499,7 +528,12 @@ type LockActiveThumbnailMediaAssetRow struct {
 func (q *Queries) LockActiveThumbnailMediaAsset(ctx context.Context, recordingID int64) (LockActiveThumbnailMediaAssetRow, error) {
 	row := q.db.QueryRow(ctx, lockActiveThumbnailMediaAsset, recordingID)
 	var i LockActiveThumbnailMediaAssetRow
-	err := row.Scan(&i.ID, &i.RelPath, &i.SeekMs)
+	err := row.Scan(
+		&i.ID,
+		&i.RelPath,
+		&i.SeekMs,
+		&i.DerivedGeneration,
+	)
 	return i, err
 }
 
@@ -507,21 +541,28 @@ const updateEncodedMediaAssetPath = `-- name: UpdateEncodedMediaAssetPath :exec
 UPDATE media_assets
 SET rel_path   = $1,
     size_bytes = $2,
+    derived_generation = $3,
     updated_at = now()
-WHERE id = $3
+WHERE id = $4
 `
 
 type UpdateEncodedMediaAssetPathParams struct {
-	RelPath   string
-	SizeBytes int64
-	ID        int64
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
+	ID                int64
 }
 
 // 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
 // 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを
 // 取れてしまう。世代番号で必ず新しいパスになるので、UPDATE で足りる。
 func (q *Queries) UpdateEncodedMediaAssetPath(ctx context.Context, arg UpdateEncodedMediaAssetPathParams) error {
-	_, err := q.db.Exec(ctx, updateEncodedMediaAssetPath, arg.RelPath, arg.SizeBytes, arg.ID)
+	_, err := q.db.Exec(ctx, updateEncodedMediaAssetPath,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+		arg.ID,
+	)
 	return err
 }
 
@@ -529,30 +570,40 @@ const updateThumbnailMediaAssetPath = `-- name: UpdateThumbnailMediaAssetPath :e
 UPDATE media_assets
 SET rel_path   = $1,
     size_bytes = $2,
+    derived_generation = $3,
+    sha256     = NULL,
     updated_at = now()
-WHERE id = $3
+WHERE id = $4
   AND kind = 'thumbnail'
   AND state = 'active'
 `
 
 type UpdateThumbnailMediaAssetPathParams struct {
-	RelPath   string
-	SizeBytes int64
-	ID        int64
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
+	ID                int64
 }
 
 // thumbnail 差し替え時に、同じ media_asset 行の相対パスとサイズだけを更新する。
 func (q *Queries) UpdateThumbnailMediaAssetPath(ctx context.Context, arg UpdateThumbnailMediaAssetPathParams) error {
-	_, err := q.db.Exec(ctx, updateThumbnailMediaAssetPath, arg.RelPath, arg.SizeBytes, arg.ID)
+	_, err := q.db.Exec(ctx, updateThumbnailMediaAssetPath,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+		arg.ID,
+	)
 	return err
 }
 
 const upsertEncodedMediaAsset = `-- name: UpsertEncodedMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes)
-VALUES ($1, 'encoded', $2, $3, $4)
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'encoded', $2, $3, $4, $5)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -560,10 +611,11 @@ RETURNING id
 `
 
 type UpsertEncodedMediaAssetParams struct {
-	RecordingID int64
-	Profile     *string
-	RelPath     string
-	SizeBytes   int64
+	RecordingID       int64
+	Profile           *string
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
 }
 
 // encode コミット。UNIQUE (recording_id, kind, profile) で冪等。
@@ -575,6 +627,7 @@ func (q *Queries) UpsertEncodedMediaAsset(ctx context.Context, arg UpsertEncoded
 		arg.Profile,
 		arg.RelPath,
 		arg.SizeBytes,
+		arg.DerivedGeneration,
 	)
 	var id int64
 	err := row.Scan(&id)
@@ -599,11 +652,13 @@ func (q *Queries) UpsertMediaAssetThumbnailSeek(ctx context.Context, arg UpsertM
 }
 
 const upsertSeekTilesMediaAsset = `-- name: UpsertSeekTilesMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'seek_tiles', $2, $3)
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'seek_tiles', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -611,24 +666,32 @@ RETURNING id
 `
 
 type UpsertSeekTilesMediaAssetParams struct {
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
+	RecordingID       int64
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
 }
 
 func (q *Queries) UpsertSeekTilesMediaAsset(ctx context.Context, arg UpsertSeekTilesMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, upsertSeekTilesMediaAsset, arg.RecordingID, arg.RelPath, arg.SizeBytes)
+	row := q.db.QueryRow(ctx, upsertSeekTilesMediaAsset,
+		arg.RecordingID,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+	)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
 }
 
 const upsertThumbnailMediaAsset = `-- name: UpsertThumbnailMediaAsset :one
-INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes)
-VALUES ($1, 'thumbnail', $2, $3)
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'thumbnail', $2, $3, $4)
 ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
+    derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -636,9 +699,10 @@ RETURNING id
 `
 
 type UpsertThumbnailMediaAssetParams struct {
-	RecordingID int64
-	RelPath     string
-	SizeBytes   int64
+	RecordingID       int64
+	RelPath           string
+	SizeBytes         int64
+	DerivedGeneration *int64
 }
 
 // thumbnail コミット。UNIQUE (recording_id, kind, profile) で冪等。
@@ -657,7 +721,12 @@ type UpsertThumbnailMediaAssetParams struct {
 // 既に active な行がある場合の上書きは worker 側の事前チェック
 // （GetActiveThumbnailMediaAssetID）で避ける。
 func (q *Queries) UpsertThumbnailMediaAsset(ctx context.Context, arg UpsertThumbnailMediaAssetParams) (int64, error) {
-	row := q.db.QueryRow(ctx, upsertThumbnailMediaAsset, arg.RecordingID, arg.RelPath, arg.SizeBytes)
+	row := q.db.QueryRow(ctx, upsertThumbnailMediaAsset,
+		arg.RecordingID,
+		arg.RelPath,
+		arg.SizeBytes,
+		arg.DerivedGeneration,
+	)
 	var id int64
 	err := row.Scan(&id)
 	return id, err

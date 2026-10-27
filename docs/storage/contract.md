@@ -221,16 +221,22 @@ catalog export は `catalog/` の新しい世代 directory を `Mkdir` で原子
 
 カット版（`encode.profiles[].cut`）は、チャプターを直した後に同じ出力を作り直す。同じパスへ上書きしない。ルール 2 の「置くのは一回」に反し、生きている行の `rel_path` 部分一意索引とも衝突するからである。
 
-- パスに世代番号を入れる（`…_{profile}.g{n}.{container}`。1 世代目から付ける）。n は旧 `rel_path` から +1 で導出する
+- 世代は `media_assets.derived_generation` から採る。cut は `…_{profile}.g{n}.{container}`、uncut の tombstone 再生成は `…_{profile}.u{n}.{container}` に置く。旧世代付きパスは移行時に読み、旧 worker 停止後の adopt でも再照合する
 - 新しいファイルを置く → 1 つの tx で `media_assets` の `rel_path` / `size_bytes` を UPDATE し、`media_asset_cuts` を差し替える → commit 後に旧パスを unlink する
 - **unlink を commit の前にしない**。commit が失敗すると、生きている行が指すファイルを失う（ルール 3 の「DB commit が公開点」と同じ向き）。旧ファイルの unlink に失敗した場合は canonical orphan として報告し、手動調査まで残す
 - 行は消さずに UPDATE する。消して作り直すと `rel_path` の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを取れる
 
 CM 検出の後にサムネイルを選び直す場合も、同じパスへ上書きしない。
 
-- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替えは `thumbnails/{recording_id}.g{n}.jpg`（最初の差し替えは `.g1`）へ置く
+- 初回の `thumbnails/{recording_id}.jpg` は世代なしのままにし、差し替え・tombstone 再生成は `thumbnails/{recording_id}.g{n}.jpg` へ置く。n は `derived_generation` から進める
 - 新しい JPEG を置く → 1 つの tx で同じ `media_assets` 行の `rel_path` / `size_bytes` を UPDATE し、`media_asset_thumbnail_seeks` を差し替える。commit 後に旧パスを unlink する
 - 行は消さずに UPDATE する。行 id と配信対象を保ったまま世代を進める。unlink は commit 前にしない。失敗した旧ファイルは canonical orphan として報告し、手動調査まで残す
+
+<details><summary>根拠</summary>
+
+- 旧世代パスの移行と adopt 時再同期: `TestMediaAssetCopiesMigrationBackfillsCopiesAndGenerations` / `TestAdoptUnassignedStoreRows`
+
+</details>
 
 ポイントはルール 3。DB commit を公開点にしつつ、公開前のファイル操作は強い FS 契約で確定させる。起動時 probe はこの操作列が実行できることだけを確認し、FS の種類や atomic rename の実装品質をパス文字列から推測しない。
 
@@ -366,7 +372,7 @@ hard link は regular file と区別できず、同じ実体に live な録画�
 - 時間軸: カット境界は入力の最早 `start_time` を 0 とする秒で適用する。thumbnail の `-ss` も `-i` より前の入力シークであり、同じ数値の位置を渡す。chapter ranges と `seek_ms` は `recording_chapter_spans` / `media_asset_cuts.keep_ranges` と同じ ms を使う。放送 TS は音声が映像より先に始まることがあり、章の原点（最初の映像フレーム）と入力の最早 `start_time` の差は未測定。そのため、この値が同じ画面を指すことと、原本 / encoded 版間で同じ `seek_ms` が揃うことは実録画で確認する
 - 画素縦横比: ffmpeg で入力の SAR を偶数幅の正方形ピクセルへ焼き込んでから JPEG 化する。JPEG の SAR を解釈しないブラウザでも anamorphic 映像を歪ませない
 - ストレージ契約: ffmpeg は `storage.scratch_dir` に JPEG を書き、完成後にメディアへストリームコピー + fsync する。初回は `media_assets` と `media_asset_thumbnail_seeks` を同じ tx で INSERT し、差し替えでは両方を同じ tx で UPDATE する（差し替え規約は §3）
-- 相対パス: 初回は `thumbnails/{recording_id}.jpg`。差し替えは `thumbnails/{recording_id}.g{n}.jpg`（n は現行パスの次の世代）。原本の contentPath に依存しないので、原本削除後もパスが安定する
+- 相対パス: 初回は `thumbnails/{recording_id}.jpg`。差し替えは `thumbnails/{recording_id}.g{n}.jpg`（n は `derived_generation` から進めた世代）。原本の contentPath に依存しないので、原本削除後もパスが安定する
 - 位置の事実: `media_asset_thumbnail_seeks` に、その JPEG を切り出した原本時間軸の `seek_ms` を 1 行記録する。旧サムネイルで行が無い場合は位置不明として扱う
 - 配信: streamer の `GET /api/media/recordings/{id}/thumbnail`（openapi 外。api はファイルを開かない）
 
@@ -411,7 +417,7 @@ CM 検出後は、CM 区間を除いた残り区間の合計尺に同じ 1 割�
 
 シークプレビュー用タイルは、録画 1 本につき 1 枚の JPEG で、形は固定値にしてあり設定キーは設けない。生成に失敗したらスクラッチを捨ててやり直し、部分的な成果はコミットしない。
 
-録画 1 本につき `kind = 'seek_tiles'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。中身は 1 枚の JPEG で、`thumbnails/{recording_id}_tiles.jpg` に置く。poster（§5.1）と同じ `thumbnails/` の名前空間なので、`rel_path` の名前空間の検査は増えない。
+録画 1 本につき `kind = 'seek_tiles'` の media_asset を 1 つ作る（`UNIQUE (recording_id, kind, profile)`）。初回は `thumbnails/{recording_id}_tiles.jpg`、再生成は `thumbnails/{recording_id}_tiles.g{n}.jpg` に置く。n は `derived_generation` から進め、tombstone と未 commit の出力パスを再利用しない。poster（§5.1）と同じ `thumbnails/` の名前空間なので、`rel_path` の名前空間の検査は増えない。
 
 形は固定値である（設定キーは設けない。poster と同じ流儀）。間隔 10 秒・1 枚 160x90・10 列・上限 1080 枚（3 時間）。3 時間を超える部分にはタイルが無く、クライアントはプレビューを出さない。尺に応じて間隔を変える方式は採らない。ffprobe の長さと `<video>` の長さのずれが、境界でタイル位置を狂わせるからである。
 

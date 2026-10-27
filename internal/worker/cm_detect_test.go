@@ -309,8 +309,8 @@ func TestCMDetectionDesiredPredicateAndFreshLogoReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO missing_media_assets (media_asset_id)
-		SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, ids[3]); err != nil {
+		INSERT INTO missing_media_assets (media_asset_id, store)
+		SELECT id, 'test-store' FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, ids[3]); err != nil {
 		t.Fatal(err)
 	}
 	if err := q.SaveCMDetection(ctx, sqlcgen.SaveCMDetectionParams{RecordingID: ids[4], CmRanges: "{}"}); err != nil {

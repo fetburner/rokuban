@@ -25,6 +25,9 @@ type RecordingParams = sqlcgen.CreateRecordingParams
 // MediaAssetParams は MediaAsset の上書き対象で、sqlc の生成型の別名。
 type MediaAssetParams = sqlcgen.CreateMediaAssetParams
 
+// StoreName はテストの media_asset_copies が使う置き場の名前。コピー行は実在の置き場名が要る。
+const StoreName = "test-store"
+
 // Recording は既定値で録画を 1 件作り、その id を返す。opts で既定値を上書きする。
 func Recording(t testing.TB, db sqlcgen.DBTX, opts ...func(*RecordingParams)) int64 {
 	t.Helper()
@@ -90,6 +93,11 @@ func MediaAssetWithError(ctx context.Context, db sqlcgen.DBTX, recordingID int64
 	id, err := sqlcgen.New(db).CreateMediaAsset(ctx, params)
 	if err != nil {
 		return 0, fmt.Errorf("create test media asset: %w", err)
+	}
+	if err := sqlcgen.New(db).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: id, Store: StoreName, RelPath: params.RelPath, State: "active",
+	}); err != nil {
+		return 0, fmt.Errorf("create test media asset copy: %w", err)
 	}
 	return id, nil
 }

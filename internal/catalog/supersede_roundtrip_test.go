@@ -57,7 +57,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 		t.Fatalf("exported recordings = %d, want 2", len(doc.Recordings))
 	}
 
-	mediaDir := t.TempDir()
+	mediaDir := newTestMediaDir(t)
 	genDir, err := Write(mediaDir, doc, 7, nil)
 	if err != nil {
 		t.Fatalf("Write: %v", err)
@@ -67,7 +67,7 @@ func TestExportRescue_PreservesSupersededAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, path); err != nil {
+	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, "test-store", path); err != nil {
 		t.Fatalf("RescueFile: %v （superseded_at が往復で失われると一意索引に衝突して復旧が落ちる）", err)
 	}
 

@@ -13,7 +13,7 @@ WHERE site = $1 AND record_id = $2;
 -- name: GetRecordingIngestTempState :one
 SELECT temp_rel_path, temp_generation
 FROM recording_ingest_progress
-WHERE recording_id = $1;
+WHERE recording_id = $1 AND temp_store = $2;
 
 -- name: NextIngestTempGeneration :one
 SELECT nextval('ingest_temp_generation_seq')::bigint AS generation;
@@ -28,13 +28,14 @@ SELECT nextval('ingest_temp_generation_seq')::bigint AS generation;
 -- cancel / fail で temp を捨てた次の試行は 0 から始まる（written_bytes は単調増加を
 -- 保証しない。docs/schema/recordings/satellites.md「recording_ingest_progress」参照）。
 INSERT INTO recording_ingest_progress (
-    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, observed_at
-) VALUES ($1, $2, $3, $4, $5, now())
+    recording_id, written_bytes, expected_bytes, temp_rel_path, temp_generation, temp_store, observed_at
+) VALUES ($1, $2, $3, $4, $5, $6, now())
 ON CONFLICT (recording_id) DO UPDATE SET
     written_bytes  = EXCLUDED.written_bytes,
     expected_bytes = EXCLUDED.expected_bytes,
     temp_rel_path  = EXCLUDED.temp_rel_path,
     temp_generation = EXCLUDED.temp_generation,
+    temp_store      = EXCLUDED.temp_store,
     observed_at    = now();
 
 -- name: DeleteRecordingIngestProgress :exec

@@ -29,7 +29,7 @@ type encodePolicyContractDB struct {
 func newEncodePolicyContractFixture(t *testing.T) contracttest.EncodePolicyFixture {
 	t.Helper()
 	db := &encodePolicyContractDB{pool: testutil.SetupDB(t)}
-	media := NewMedia(db.pool)
+	media := NewMedia(db.pool, "tokyo")
 	return contracttest.EncodePolicyFixture{
 		Policy: media, Attempts: media,
 		Recordings: NewRecordings(db.pool), Reconcile: media, Removals: media,

@@ -4,8 +4,12 @@ package pgstoretest
 import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/store/pgstore"
 )
+
+// TestStore はテストが使う置き場の名前。コピー行は実在の置き場名が要る。
+const TestStore = dbtest.StoreName
 
 // Analysis はテスト用の既定値で Analysis を作る。
 func Analysis(pool *pgxpool.Pool) *pgstore.Analysis {
@@ -22,7 +26,7 @@ func Catalog(pool *pgxpool.Pool, sites ...string) *pgstore.Catalog {
 	if len(sites) == 0 {
 		sites = []string{"default"}
 	}
-	return pgstore.NewCatalog(pool, sites)
+	return pgstore.NewCatalog(pool, sites, TestStore)
 }
 
 // EPG はテスト用の既定値で EPG を作る。
@@ -37,7 +41,7 @@ func LabelRules(pool *pgxpool.Pool) *pgstore.LabelRules {
 
 // Media はテスト用の既定値で Media を作る。
 func Media(pool *pgxpool.Pool) *pgstore.Media {
-	return pgstore.NewMedia(pool)
+	return pgstore.NewMedia(pool, TestStore)
 }
 
 // NeverScheduledEvents はテスト用の既定値で NeverScheduledEvents を作る。

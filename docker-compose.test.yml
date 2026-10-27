@@ -28,12 +28,22 @@ services:
       - ./config.ci.yml:/config.yml:ro
     command: ["migrate", "up", "--config", "/config.yml"]
 
+  adopt-media:
+    image: rokuban:test
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./config.ci.yml:/config.yml:ro
+      - media:/mnt/media
+    command: ["--config", "/config.yml", "storage", "adopt", "ci"]
+
   rokuban:
     # server --all は worker ロールを含み ffmpeg/ffprobe を要求するため、
     # ffmpeg 入りの Dockerfile.full イメージで起動する。
     image: rokuban:test-full
     depends_on:
-      migrate:
+      adopt-media:
         condition: service_completed_successfully
     ports:
       - "40773:40773"

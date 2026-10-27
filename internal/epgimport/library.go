@@ -8,6 +8,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/catalog"
 	"github.com/fetburner/rokuban/internal/inplace"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/programid"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store"
@@ -94,7 +95,13 @@ type LibraryImportResult struct {
 // 入っていることを worker 起動時に検査する（internal/worker/media_asset_namespace.go）
 // ので、import 経路もこれに合わせないと import 済みの録画で worker が
 // crash-loop する。
-func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, site string, items []LibraryItem) (LibraryImportResult, error) {
+//
+// storeName は publisher が書く置き場の名前で、mediaDir の目印と一致しなければ
+// 何も書かずに ErrStoreMarkerMismatch で止まる。
+func ImportLibrary(ctx context.Context, publisher store.MediaPublish, mediaDir, storeName, site string, items []LibraryItem) (LibraryImportResult, error) {
+	if err := mediapath.RequireStoreMarker(mediaDir, storeName); err != nil {
+		return LibraryImportResult{}, fmt.Errorf("checking media store marker before import: %w", err)
+	}
 	var res LibraryImportResult
 	for _, item := range items {
 		var assets []inplace.Asset

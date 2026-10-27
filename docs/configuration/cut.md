@@ -14,7 +14,7 @@
 
 - 確認済みを示す行: `recording_chapter_ownership`
 - 相対パスの列: `rel_path`
-- 世代番号を含むファイル名の形: `…_{profile}.g{n}.{container}`
+- 世代番号を含むファイル名の形: cut は `…_{profile}.g{n}.{container}`、uncut の再生成は `…_{profile}.u{n}.{container}`
 
 </details>
 
@@ -27,9 +27,9 @@
 変えてはならない属性は、次の 2 つを両方満たすものである。
 
 1. 成果物の意味に効く。`cut` はカット版かどうかを、`container` はファイルの形式を決める。
-2. 既存の資産か作り直し要求の行から、過去の値を読める。active な encoded の相対パスから、`cut` は世代番号 `_{profile}.g{n}` の有無を、`container` は拡張子を読む。作り直し要求の行は、押した時点でカット版だった証拠になる。この行からは `container` を読めないので比べない。
+2. 既存の資産か作り直し要求の行から、過去の値を読める。active な encoded の相対パスから、`cut` は profile 境界の `.g{n}` / `.u{n}` を、`container` は拡張子を読む。世代列は削除後も増えるので cut 判定には使わない。作り直し要求の行は、押した時点でカット版だった証拠になる。この行からは `container` を読めないので比べない。
 
-`media_asset_cuts` の行は証拠にしない。catalog の rescue は encoded を戻すが、この行は戻さない。
+`media_asset_cuts` の行は証拠にしない。catalog の rescue は encoded を戻すが、この行は戻さない。`.g{n}` / `.u{n}` は過去の profile がカット版だったかどうかを識別するために使い、keep 区間を復元するものではない。
 
 次の属性は 2 を満たさないので含めない。
 
@@ -40,7 +40,7 @@
 
 - 意味の検査: `worker.CheckEncodeProfileMeaning`（呼び出しは `runServer`）
 - 過去の意味を引くクエリ: `ListEncodedMeaningEvidence`
-- 世代番号の読み手: `worker.cutGeneration`（書き手 `EncodedRelPath` の逆）
+- cut の意味の読み手: profile 境界付きの `worker.cutGeneration`（`derived_generation` は次の世代の採番だけに使う）
 - 名前の検査: `config.ValidateEncodeProfileName`（書き手 `EncodedRelPath` も同じ関数で検査する）
 
 </details>
@@ -51,8 +51,10 @@
 
 - サニタイズで変わる名前（`/` や `:` を含む、前後に空白がある、`..` を含む）。別の名前と同じ相対パスになる。
 - `.` で終わる名前。続く `.` と合わさった `..` がサニタイズで潰され、カット版と読めなくなる。
-- `.g` と、先頭が 0 でない数字で終わる名前（`x.g1`、`foo.g12`）。カット版でない `x.g1` は、`x` のカット版の世代 1 と同じ相対パスになる。`x.g0` や `x.g01` は書き手が書かない世代なので、拒まない。
+- `.g` / `.u` と、先頭が 0 でない数字で終わる名前（`x.g1`、`foo.g12`、`x.u1`）。`x.g1` は `x` の cut 版世代 1 と、`x.u1` は `x` の uncut 再生成世代 1 と同じ相対パスになる。`x.g0` / `x.g01` / `x.u0` / `x.u01` は書き手が使わない世代なので、拒まない。
 - `rescue-` で始まる名前。catalog を使わない rescue が、拾った encoded に付ける名前である。そのパスは世代番号の形を持たない。
+
+cut の世代付きパスは `.g{n}`、uncut の削除後再生成パスは `.u{n}` を使う。どちらも番号は `media_assets.derived_generation` から採り、パスの印は rescue 後もカット版かどうかを残す。
 
 これらを拒むと、同じ原本から作る相対パスは、名前と世代ごとに異なる。別の原本どうしでは、同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。そのパスを削除済みでない別の行が持っているとき、後から公開する側のエンコード試行は失敗し、既存のファイルは変わらない（[storage/contract.md](../storage/contract.md) §派生物の公開（encode））。
 

@@ -93,10 +93,11 @@ type EncodedMeaningEvidence struct {
 // EncodedAssetObservation はエンコード計画が観測した encoded アセットを表す。
 // KeepRanges は cut プロファイルの要求で凍結された区間で、凍結されていなければ空である。
 type EncodedAssetObservation struct {
-	ID         int64
-	RelPath    string
-	State      string
-	KeepRanges []chapters.Range
+	ID                int64
+	RelPath           string
+	State             string
+	DerivedGeneration int64
+	KeepRanges        []chapters.Range
 }
 
 // EncodedPublishState はエンコード公開の判断に使う、同じ時点の DB 状態を表す。
@@ -143,6 +144,7 @@ type ThumbnailReselectCandidate struct {
 	EncodedAssets         []ThumbnailEncodedAsset
 	ThumbnailMediaAssetID *int64
 	ThumbnailRelPath      *string
+	ThumbnailGeneration   int64
 	SeekMs                *int64
 }
 
@@ -201,6 +203,9 @@ type MediaReconcile interface {
 	ListMissingThumbnailRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
 	// ListThumbnailReselectCandidates は既存サムネイルの再選択候補を返す。
 	ListThumbnailReselectCandidates(ctx context.Context, page MediaReconcilePage) ([]ThumbnailReselectCandidate, error)
+	// GetDerivedMediaAssetGeneration は派生アセットの現在世代を返す。
+	// その kind の行が無ければ found=false を返す。
+	GetDerivedMediaAssetGeneration(ctx context.Context, recordingID int64, kind string) (generation int64, found bool, err error)
 	// ListMissingSeekTilesRecordings はシークタイルが無い録画をページ単位で返す。
 	ListMissingSeekTilesRecordings(ctx context.Context, page MediaReconcilePage) ([]int64, error)
 	// FindInvalidMediaAssetRelPath は予約されたサイト名空間の外にある原本または encoded を返す。

@@ -20,8 +20,9 @@ import (
 // 設定から消すことは許す（満たせない desired は見え、原本は守られる）。
 // 証拠が 1 つも無い名前は過去の意味が無いので対象外。
 //
-// cut は rel_path の世代番号から読む（cutGeneration。media_asset_cuts は rescue で
-// 戻らない）。作り直し要求の行は cut の証拠で、container は比べない。
+// cut は rel_path の profile 境界にある `.g{n}` / `.u{n}` から読む。世代番号は
+// 削除後の再生成でも増えるため、cut の意味と混ぜない（media_asset_cuts は rescue で戻らない）。
+// 作り直し要求の行は cut の証拠で、container は比べない。
 //
 // 呼び出すのは、cut の設定を読むロール（api と worker）の起動時で、HTTP の待ち受けと
 // ジョブの購読より前である。api は自分の設定で cut かを判定して作り直し要求を書き、

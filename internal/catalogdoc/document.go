@@ -252,16 +252,19 @@ type RecordingChapterSpan struct {
 
 // MediaAsset は media_assets の 1 行。
 type MediaAsset struct {
-	ID          int64      `json:"id"`
-	RecordingID int64      `json:"recordingId"`
-	Kind        string     `json:"kind"`
-	Profile     *string    `json:"profile,omitempty"`
-	RelPath     string     `json:"relPath"`
-	SizeBytes   int64      `json:"sizeBytes"`
-	State       string     `json:"state"`
-	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	ID                int64      `json:"id"`
+	RecordingID       int64      `json:"recordingId"`
+	Kind              string     `json:"kind"`
+	Profile           *string    `json:"profile,omitempty"`
+	RelPath           string     `json:"relPath"`
+	SizeBytes         int64      `json:"sizeBytes"`
+	State             string     `json:"state"`
+	DeletedAt         *time.Time `json:"deletedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+	UpdatedAt         time.Time  `json:"updatedAt"`
+	DerivedGeneration *int64     `json:"derivedGeneration,omitempty"`
+	SHA256            *string    `json:"sha256,omitempty"`
+	Store             string     `json:"store,omitempty"`
 }
 
 // DropStat は drop_stats の 1 行。

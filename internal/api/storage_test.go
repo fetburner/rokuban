@@ -22,8 +22,8 @@ import (
 func insertStorageSyncFixture(t *testing.T, pool *pgxpool.Pool, ctx context.Context, root, path string, total, used, available int64) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-INSERT INTO storage_sync (root, path, total_bytes, used_bytes, available_bytes)
-VALUES ($1, $2, $3, $4, $5)`, root, path, total, used, available); err != nil {
+INSERT INTO storage_sync (store, root, path, total_bytes, used_bytes, available_bytes)
+VALUES ('test-store', $1, $2, $3, $4, $5)`, root, path, total, used, available); err != nil {
 		t.Fatalf("inserting storage_sync fixture %q: %v", root, err)
 	}
 }

@@ -3,8 +3,12 @@ package pgstore
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"path"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -35,7 +39,7 @@ func (s *Catalog) Restore(ctx context.Context, doc *catalogdoc.Document, options
 	}
 	defer rollback(tx)
 
-	result, err := applyDocument(ctx, tx, doc, options, s.siteNames)
+	result, err := applyDocument(ctx, tx, doc, options, s.siteNames, s.storeName)
 	if err != nil {
 		return nil, fmt.Errorf("restoring catalog: %w", mapDatabaseError(err))
 	}
@@ -74,7 +78,7 @@ func insertableSnapshot(s catalogdoc.ProgramSnapshot) bool {
 }
 
 // applyDocument は 1 つのトランザクション内で catalogdoc.Document の各表を FK 順に復元する。
-func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions, siteNames []string) (*store.RestoreResult, error) {
+func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, options store.RestoreOptions, siteNames []string, storeName string) (*store.RestoreResult, error) {
 	q := sqlcgen.New(tx)
 	res := &store.RestoreResult{}
 
@@ -132,7 +136,7 @@ func applyDocument(ctx context.Context, tx pgx.Tx, doc *catalogdoc.Document, opt
 		return nil, err
 	}
 
-	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetIDs); err != nil {
+	if err := applyMediaAssets(ctx, tx, q, doc.MediaAssets, res, options.MissingAssetIDs, storeName); err != nil {
 		return nil, err
 	}
 
@@ -407,7 +411,7 @@ func applyRecordingEncodePolicies(ctx context.Context, q *sqlcgen.Queries, polic
 }
 
 // applyMediaAssets は media_assets を復元し、件数を res.MediaAssets に書く。
-func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetIDs map[int64]struct{}) error {
+func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets []catalogdoc.MediaAsset, res *store.RestoreResult, missingAssetIDs map[int64]struct{}, storeName string) error {
 	var missingAt time.Time
 	for _, a := range assets {
 		if _, missing := missingAssetIDs[a.ID]; missing && a.State != "deleted" {
@@ -422,16 +426,71 @@ func applyMediaAssets(ctx context.Context, tx pgx.Tx, q *sqlcgen.Queries, assets
 			a.DeletedAt = &missingAt
 			res.MissingMediaFiles++
 		}
+		sha256Bytes, err := decodeMediaAssetSHA256(a.SHA256)
+		if err != nil {
+			return fmt.Errorf("decoding media_asset %d sha256: %w", a.ID, err)
+		}
+		derivedGeneration := catalogDerivedGeneration(a)
 		if err := q.CatalogUpsertMediaAsset(ctx, sqlcgen.CatalogUpsertMediaAssetParams{
 			ID: a.ID, RecordingID: a.RecordingID, Kind: a.Kind, Profile: a.Profile,
 			RelPath: a.RelPath, SizeBytes: a.SizeBytes, State: a.State, DeletedAt: a.DeletedAt,
 			CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt,
+			DerivedGeneration: derivedGeneration, Sha256: sha256Bytes,
 		}); err != nil {
 			return fmt.Errorf("upserting media_asset %d: %w", a.ID, err)
+		}
+		assetStore := a.Store
+		if assetStore == "" {
+			assetStore = storeName
+		}
+		if err := q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+			MediaAssetID: a.ID, Store: assetStore, RelPath: a.RelPath,
+			State: a.State, DeletedAt: a.DeletedAt,
+		}); err != nil {
+			return fmt.Errorf("upserting media_asset_copy for asset %d in store %q: %w", a.ID, assetStore, err)
 		}
 	}
 	res.MediaAssets = len(assets)
 	return nil
+}
+
+func decodeMediaAssetSHA256(value *string) ([]byte, error) {
+	if value == nil {
+		return nil, nil
+	}
+	decoded, err := hex.DecodeString(*value)
+	if err != nil {
+		return nil, err
+	}
+	if len(decoded) != 32 {
+		return nil, fmt.Errorf("got %d bytes, want 32", len(decoded))
+	}
+	return decoded, nil
+}
+
+func catalogDerivedGeneration(asset catalogdoc.MediaAsset) *int64 {
+	if asset.Kind == "original" {
+		return nil
+	}
+	if asset.DerivedGeneration != nil {
+		return asset.DerivedGeneration
+	}
+	generation := legacyDerivedGeneration(asset.RelPath)
+	return &generation
+}
+
+func legacyDerivedGeneration(relPath string) int64 {
+	name := strings.TrimSuffix(path.Base(relPath), path.Ext(relPath))
+	marker := strings.LastIndex(name, ".g")
+	if marker < 0 || marker+2 == len(name) {
+		return 0
+	}
+	suffix := name[marker+2:]
+	generation, err := strconv.ParseInt(suffix, 10, 64)
+	if err != nil || generation <= 0 || strconv.FormatInt(generation, 10) != suffix {
+		return 0
+	}
+	return generation
 }
 
 // applyRecordingChapterOwnerships は recording_chapter_ownership を復元し、件数を

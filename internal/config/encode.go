@@ -41,10 +41,27 @@ func SplitCutGeneration(s string) (head string, n int, ok bool) {
 	return s[:i], n, true
 }
 
+// SplitUncutGeneration は、s が uncut 版の世代接尾辞 `.u{n}`（n は 1 以上で、`%d` の
+// 正規表記）で終わるなら、接尾辞の前の部分と n を返す。cut の `.g{n}` と同じ
+// `derived_generation` を使いながら、rescue 後も cut の意味をパスから区別するための印。
+func SplitUncutGeneration(s string) (head string, n int, ok bool) {
+	i := strings.LastIndex(s, ".u")
+	if i < 0 {
+		return "", 0, false
+	}
+	digits := s[i+len(".u"):]
+	n, err := strconv.Atoi(digits)
+	if err != nil || n < 1 || digits != strconv.Itoa(n) {
+		return "", 0, false
+	}
+	return s[:i], n, true
+}
+
 // ValidateEncodeProfileName は、プロファイル名が派生物の rel_path に変形されずに入り、
 // rel_path から読み戻せるかを検査する。
 //
-// EncodedRelPath は名前を `…_{name}.{container}`（cut なら `…_{name}.g{n}.{container}`）
+// EncodedRelPath は名前を `…_{name}.{container}`（cut の世代付きなら
+// `…_{name}.g{n}.{container}`、uncut の再生成なら `…_{name}.u{n}.{container}`）
 // の 1 成分に入れて SanitizeContentPath を通す。`.` で終わる名前は、続く `.` と
 // 合わさった `..` が潰され、書いた rel_path から cut の世代も container も読めない。
 // 起動時の意味の検査（worker.CheckEncodeProfileMeaning）は rel_path を過去の意味の
@@ -53,8 +70,9 @@ func SplitCutGeneration(s string) (head string, n int, ok bool) {
 // 次の名前は、同じ原本から、別の名前と同じ rel_path を作る。
 //   - サニタイズで変わる名前（`/` や `:` を含む、前後に空白がある、`..` を含む）。
 //     `a:b` と `a_b` が同じになる。
-//   - 世代の接尾辞（SplitCutGeneration）で終わる名前。cut でない `x.g1` と、cut の
-//     `x` の世代 1 が同じになる。
+//   - 世代の接尾辞（SplitCutGeneration / SplitUncutGeneration）で終わる名前。
+//     例えば `x.g1` は cut の `x` の世代 1 と、`x.u1` は uncut の `x` の世代 1 と
+//     同じ相対パスになる。
 //
 // これらを拒むと、同じ原本から作る rel_path は、名前と世代ごとに異なる。別の原本
 // どうしでは同じになることがある（原本 `r_a` の `b` と、原本 `r` の `a_b`）。
@@ -71,6 +89,9 @@ func ValidateEncodeProfileName(name string) error {
 	}
 	if _, _, ok := SplitCutGeneration(name); ok {
 		return fmt.Errorf(`name %q must not end with a cut generation suffix such as ".g1" (it would share a path with another profile's cut version)`, name)
+	}
+	if _, _, ok := SplitUncutGeneration(name); ok {
+		return fmt.Errorf(`name %q must not end with an uncut generation suffix such as ".u1" (it would share a path with another profile's regenerated version)`, name)
 	}
 	if strings.HasPrefix(name, RescueEncodedProfilePrefix) {
 		return fmt.Errorf("name %q: the %q prefix is reserved for encoded files recovered by rescue", name, RescueEncodedProfilePrefix)
