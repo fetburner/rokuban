@@ -194,7 +194,7 @@ ruler ごと止まる障害（worker 全停止・DB 到達不能）では、断�
 
 条件 2 の「全プロファイル完備」は、`encode_profiles` が空でないことも要求する。API はエンコードプロファイル未指定のルールで `until_encoded` を選択不可にしている（下記「UI / 運用」）。だがそれを回避して、`until_encoded` かつ `encode_profiles = '{}'` の組が `recording_encode_policy` に焼かれることがある。この場合「全称量化された条件が空集合に対して自明に真になる」ため、対策なしでは即座に原本が消える。
 
-`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（view。§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この view を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に適用される。
+`cardinality(encode_profiles) > 0` を要求するガードがある（同じ条件を `recording_encode_policy` テーブル自身の CHECK にも持つ）。このガードは、削除 reconcile が until_encoded 腕を消費する箇所ごとに手で複製しない。代わりに名前付き述語 `until_encoded_deletable_originals`（§7 参照）の定義 1 箇所に置く。これにより、入力側の検証が抜けても、この述語を参照するすべての経路（入口・前パスの拾い直し・否定形の判定）に構造的に適用される。
 
 削除プロトコルも冪等である。アセット行を deleting にマーク → unlink → deleted にマークの順で、どこで落ちても reconcile が拾い直す。公開前を示す予約名の残骸は孤児回収が拾う。
 
@@ -308,23 +308,20 @@ thumbnail と seek tiles の公開前 staged file は `.rokuban-media-asset-` �
 
 「このアセットは消してよいか」を決める腕は、ごみ箱腕（猶予超過 or 今すぐ purge）・until_encoded 腕（派生物完備）・外した版の腕の 3 つである。これを消費するのは `internal/db/queries/delete_reconcile.sql` の入口（腕ごとに 1 つ）・前パスの拾い直し・否定形 2 つである。以前は 2 腕を 5 クエリに手で複製しており、`cardinality(encode_profiles) > 0` のガードが複製の 1 つ（入口）にしか入らずドリフトした。削除可否の腕はスキーマ側に名前を与え、消費するクエリはそこへの参照にする。共有する TS 計測済み条件も別の述語にまとめる。
 
-- until_encoded 腕: パラメータを取らないので view `until_encoded_deletable_originals` にする。条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて対処してある。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
+- until_encoded 腕: set-returning SQL 関数 `until_encoded_deletable_originals(desired_store text)` にする。派生物の desired の置き場は config の規則で決まり、SQL からは引けない。ごみ箱腕の `trash_deletable_recordings(grace_cutoff)` と同じく、判断のたびに引数で渡す。
+  - 本体は、view と同じ `unencoded_desired_profiles` を参照し、置き場の条件だけを足す。不足の判定はエンコード側と共有し、写さない。
+  - コピー表には `media_asset_copies (media_asset_id, store) WHERE state = 'active'` の部分索引を張る。索引が無いと候補ごとにコピー表を全走査し、20% の合成データで 26,292.7 ms、あれば 38.2 ms だった。
+  - 未解決: `deleting` が多いと、否定形（`ListUnqualifiedDeletingAssets`）は述語の全集合を Materialize して Join Filter で突き合わせる計画に落ちうる。合成データの 1,000 件では、置き場の条件の無い view も 50% で 234.9 ms だった。この計画に落ちるかは、述語の書き方ではなく `deleting` の件数が決める。
+  - 条件 2 の「派生物」にシークプレビュー用タイル（`kind = 'seek_tiles'`）を含める。**含めないとタイルを作る前に原本が消え、タイルを二度と作れない**（原本が唯一の入力である）。タイル生成が恒久的に失敗し続ける録画は原本が保持され続ける。poster は長さが取れなくても 1 枚で続行するが、タイルは続行しないので、恒久的な失敗は poster より起きやすい。代表的な形（最後のタイルが映像の終端を指す）は、抜き出し位置を終端の手前へ寄せ、それでも取れなければ直前のタイルで埋めて対処してある。未解決: 映像の無い入力（音声だけの録画やデータ放送）はタイルを作れず、原本が保持され続ける。データ放送に対応するときに扱う
 - TS の計測済み判定: view `current_ts_scanned_originals` にする。計測記録のサイズと原本の現在サイズが一致する条件も共通述語にする。候補選択・API 表示・削除可否が別々に条件を持つと、サイズ変更後に再計測と削除可否が食い違う。述語に `state` は含めず、ごみ箱の drop summary を保ち、active 限定が必要な呼び出し側でだけ絞る
 - ごみ箱腕: `grace_cutoff` がパラメータなので view には畳めず、set-returning SQL 関数 `trash_deletable_recordings(grace_cutoff)` にする
 - 外した版の腕: パラメータを取らないので view `removed_encoded_assets` にする。条件は要求行があり、profile が `encode_profiles` に無く、他の版が残ることである。他の版とは active な原本か、要求行の無い active な encoded を指す。足し直しで desired に戻った版は、要求行が残っていても消さない。他の版を条件に含めるのは、削除 reconcile が列挙した until_encoded 原本を、述語を再評価せずに unlink するからである。API が原本ありを見て通した直後に原本が消えても、最後の版は消えず `encodedAssets` に戻る。API の 0 コピー検査と `encodedAssets` の射影も同じ view を引く
 
 TS の計測済み判定は、主キー `media_asset_id` で引くスカラー副問い合わせで書く。JOIN して `s.scanned_size_bytes = a.size_bytes` と書くと、PostgreSQL は異なる表の列どうしの等号を独立と見なし、1 行に絞られると見積もる。計測済みの集合が入れ子ループの内側で Materialize され、候補 × 計測済みで二乗になる。副問い合わせなら候補ごとに索引を 1 回引くだけで済む。相関 `EXISTS` の中に等号を移しても直らない（`until_encoded` が 50% の合成データで約 2,900 ms）。集合は JOIN と同じで、計測記録の無い原本は NULL との比較で不一致になる。
 
-PostgreSQL 16 で、原本 2 万、現行サイズの計測済み 1.9 万、encoded 1.8 万、thumbnail 1.94 万、seek tiles 1.88 万の合成データを測った。`until_encoded` の割合ごとに、prepared statement の 6 回目（generic plan）を `LIMIT 5000` で実行した。
+各述語の測定条件、計画、結果は [削除述語の性能測定](retention/predicate-performance.md) にある。
 
-| クエリ（JOIN → 副問い合わせ、ms） | 100% | 50% | 20% |
-|---|---:|---:|---:|
-| `ListUntilEncodedOriginalsToDelete` | 83 → 64 | 2,939 → 44 | 24 → 22 |
-| `ListMediaAssetsPendingDelete` | 101 → 104 | 4,242 → 63 | 33 → 28 |
-
-50% の JOIN は `Rows Removed by Join Filter` が最大 1 億 469 万行に達した。副問い合わせの形で二乗を避けられるのは PostgreSQL 16 の planner での実測であり、契約ではない。本番データでの計画と時間は未測定である。
-
-原本を入力にする処理の終端は、独立した view にまとめず、`until_encoded_deletable_originals` に直接書く。まとめた view を読むのは削除の view だけなので、解析を足すときに変更する箇所は 1 か所のまま減らない。また、まとめた view は名前で「すべて終端に達した」と主張するが、CM 検出ではこの主張が事実より強くなる（次段落）。
+原本を入力にする処理の終端は別の述語に切り出さず、`until_encoded_deletable_originals` に直接書く。削除側が参照する述語はこの 1 つなので、解析を足すときの変更箇所も 1 か所である。また、終端を別の述語にまとめると名前が「すべて終端に達した」と主張するが、CM 検出ではその主張が事実より強くなる（次段落）。
 
 ここでの「終端」は、削除側が待つのをやめる条件である。処理が今後動かないという意味ではない。CM 検出は現在世代の最終失敗で待ちを終えるが、その後のロゴ学習で再び desired になることがある。`stage = 'adopt'` の扱いも含め、CM 検出の終端は [cut-cm.md](cut-cm.md) §7 にある。
 
