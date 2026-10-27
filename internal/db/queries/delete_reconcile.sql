@@ -49,7 +49,7 @@ WHERE (
       WHERE t.recording_id = a.recording_id
     )
     OR EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.narg('desired_store')::text) AS v(asset_id, recording_id)
       WHERE v.asset_id = a.id
     )
     OR EXISTS (
@@ -86,7 +86,7 @@ WHERE NOT EXISTS (
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.narg('desired_store')::text) AS v(asset_id, recording_id)
     WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
@@ -128,7 +128,7 @@ WHERE a.id = sqlc.arg('id')
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+    SELECT 1 FROM until_encoded_deletable_originals(sqlc.narg('desired_store')::text) AS v(asset_id, recording_id)
     WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
@@ -155,7 +155,7 @@ LIMIT sqlc.arg('row_limit');
 -- ListTrashMediaAssetsToDelete 側で扱う。
 -- name: ListUntilEncodedOriginalsToDelete :many
 SELECT v.asset_id::bigint AS id, v.recording_id::bigint, copy.rel_path, a.size_bytes, 'original'::text AS kind
-FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+FROM until_encoded_deletable_originals(sqlc.narg('desired_store')::text) AS v(asset_id, recording_id)
 JOIN media_assets a ON a.id = v.asset_id
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
@@ -237,7 +237,7 @@ WHERE a.id = sqlc.arg('asset_id')
   AND copy.store = sqlc.arg('store_name')
   AND copy.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals(sqlc.arg('desired_store')) AS v(asset_id, recording_id)
+      SELECT 1 FROM until_encoded_deletable_originals(sqlc.narg('desired_store')::text) AS v(asset_id, recording_id)
       WHERE v.asset_id = sqlc.arg('asset_id')
   );
 

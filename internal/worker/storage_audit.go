@@ -169,7 +169,7 @@ func (w *DeleteReconcileWorker) reconcileOrphanCandidates(ctx context.Context, m
 // 埋める（次パスでファイルが観測されれば候補は掃除され、確認済みとして
 // 報告される前に消える）。
 //
-// storage.media_store_name が空の既存構成では、seenOnDisk が空なのに active コピーが
+// storage.stores から単一の FS 置き場を決められない構成では、seenOnDisk が空なのに active コピーが
 // 存在するケースを全損シグネチャとして見送る。置き場名が設定されている構成は
 // Work と各記録の直前で marker を照合するため、この走査件数の代替判定は使わない。
 // 既存の missing_media_assets 行には触れず、前回までの確認済み状態を空走査の結果で

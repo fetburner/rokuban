@@ -35,12 +35,29 @@ import (
 func writeServerTestConfig(t *testing.T, content string) string {
 	t.Helper()
 	storeName := "test-store"
-	if strings.Contains(content, "storage:") && !strings.Contains(content, "media_store_name:") {
-		content = strings.Replace(content, "storage:\n", "storage:\n  media_store_name: "+storeName+"\n", 1)
-	} else if i := strings.Index(content, "media_store_name:"); i >= 0 {
-		lineEnd := strings.IndexByte(content[i:], '\n')
-		if lineEnd >= 0 {
-			storeName = strings.Trim(strings.TrimSpace(content[i+len("media_store_name:"):i+lineEnd]), "\"'")
+	if strings.Contains(content, "storage:") && !strings.Contains(content, "stores:") {
+		policy := "  stores:\n    test-store:\n      kind: fs\n  originals:\n    - store: test-store\n  derived: test-store\n"
+		content = strings.Replace(content, "storage:\n", "storage:\n"+policy, 1)
+	} else {
+		lines := strings.Split(content, "\n")
+		for i, line := range lines {
+			if strings.TrimSpace(line) != "stores:" {
+				continue
+			}
+			for _, candidate := range lines[i+1:] {
+				trimmed := strings.TrimSpace(candidate)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					continue
+				}
+				if strings.HasPrefix(trimmed, "-") {
+					break
+				}
+				if key, _, ok := strings.Cut(trimmed, ":"); ok {
+					storeName = strings.Trim(key, "\"'")
+				}
+				break
+			}
+			break
 		}
 	}
 	dir := t.TempDir()
@@ -286,27 +303,30 @@ func TestServerCmd_WorkerRequiresScratchDir(t *testing.T) {
 	}
 }
 
-func TestServerCmd_StreamerRequiresMediaStoreName(t *testing.T) {
-	emptyStore := strings.Replace(serverCmdTestConfig, "media_dir: /mnt/media", "media_dir: /mnt/media\n  media_store_name: \"\"", 1)
-	path := writeServerTestConfig(t, emptyStore)
+func TestServerCmd_StreamerRequiresSingleFSStore(t *testing.T) {
+	// writeServerTestConfig は stores を足すので、置き場の無い構成は直接書く。
+	path := filepath.Join(t.TempDir(), "config.yml")
+	if err := os.WriteFile(path, []byte(serverCmdTestConfig), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	err := runServerCmdForTest(t, path, "--roles", "streamer", "--sites", "tokyo")
-	if err == nil || !strings.Contains(err.Error(), "streamer role requires storage.media_store_name") {
-		t.Fatalf("streamer startup error = %v, want media_store_name validation error", err)
+	if err == nil || !strings.Contains(err.Error(), "streamer role requires exactly one fs store in storage.stores") {
+		t.Fatalf("streamer startup error = %v, want the single fs store validation error", err)
 	}
 	if strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("streamer reached the database before rejecting the empty store name: %v", err)
+		t.Errorf("streamer reached the database before rejecting a config without an fs store: %v", err)
 	}
 
 	err = runServerCmdForTest(t, path, "--roles", "api", "--sites", "tokyo")
 	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("api startup error = %v, want an empty store name to pass and reach the database", err)
+		t.Errorf("api startup error = %v, want a config without an fs store to pass and reach the database", err)
 	}
 
 	named := writeServerTestConfig(t, serverCmdTestConfig)
 	err = runServerCmdForTest(t, named, "--roles", "streamer", "--sites", "tokyo")
 	if err == nil || !strings.Contains(err.Error(), "connecting to database") {
-		t.Errorf("streamer startup error = %v, want a configured store name to reach the database", err)
+		t.Errorf("streamer startup error = %v, want a single fs store to reach the database", err)
 	}
 }
 

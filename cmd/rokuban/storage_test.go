@@ -12,6 +12,10 @@ import (
 	"github.com/fetburner/rokuban/internal/testutil"
 )
 
+func storagePolicyYAML(name string) string {
+	return fmt.Sprintf("  stores:\n    %s:\n      kind: fs\n  originals:\n    - store: %s\n  derived: %s\n", name, name, name)
+}
+
 func TestStorageAdoptWritesStoreMarker(t *testing.T) {
 	testutil.SetupDB(t)
 	dbCfg := testutil.DatabaseConfig(t)
@@ -34,8 +38,7 @@ func TestStorageAdoptWritesStoreMarker(t *testing.T) {
   sslmode: %q
 storage:
   media_dir: `+mediaDir+`
-  media_store_name: tokyo
-mirakcs:
+`+storagePolicyYAML("tokyo")+`mirakcs:
   - site: tokyo
     url: http://mirakc
 `, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode)
@@ -70,8 +73,7 @@ func TestStorageAdoptRejectsNameDifferentFromConfig(t *testing.T) {
   database: postgres
 storage:
   media_dir: ` + mediaDir + `
-  media_store_name: tokyo
-mirakcs:
+` + storagePolicyYAML("tokyo") + `mirakcs:
   - site: tokyo
     url: http://mirakc
 `
@@ -81,11 +83,60 @@ mirakcs:
 
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", "osaka"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match storage.media_store_name") {
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "does not match the fs store in storage.stores") {
 		t.Fatalf("storage adopt wrong name error = %v, want config mismatch", err)
 	}
 	if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
 		t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
+	}
+}
+
+func TestStorageAdoptRejectsUnknownAndNonFSStoreName(t *testing.T) {
+	mediaDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yml")
+	config := `db:
+  host: localhost
+  port: 1
+  user: postgres
+  password: postgres
+  database: postgres
+storage:
+  media_dir: ` + mediaDir + `
+  stores:
+    tokyo:
+      kind: fs
+    s3main:
+      kind: s3
+      bucket: rokuban-derived
+  originals:
+    - store: tokyo
+  derived: tokyo
+mirakcs:
+  - site: tokyo
+    url: http://mirakc
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		wantError string
+	}{
+		// FS 置き場が 1 つの間は、その名前との照合が先に落とす。
+		{name: "unknown", wantError: "does not match the fs store in storage.stores"},
+		{name: "s3main", wantError: "does not match the fs store in storage.stores"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", tc.name})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("storage adopt error = %v, want containing %q", err, tc.wantError)
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
+				t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
+			}
+		})
 	}
 }
 
@@ -102,8 +153,7 @@ func TestStorageAdoptDoesNotRenameExistingStoreMarker(t *testing.T) {
   database: postgres
 storage:
   media_dir: ` + mediaDir + `
-  media_store_name: tokyo
-mirakcs:
+` + storagePolicyYAML("tokyo") + `mirakcs:
   - site: tokyo
     url: http://mirakc
 `
@@ -149,8 +199,7 @@ func TestStorageAdoptRefusesNewMarkerWhenStoreHasCopies(t *testing.T) {
   sslmode: %q
 storage:
   media_dir: `+mediaDir+`
-  media_store_name: test-store
-mirakcs:
+`+storagePolicyYAML("test-store")+`mirakcs:
   - site: tokyo
     url: http://mirakc
 `, dbCfg.Host, dbCfg.Port, user, password, dbCfg.Database, dbCfg.SSLMode)

@@ -30,7 +30,7 @@ type storeScopeEnv struct {
 func newStoreScopeEnv(t *testing.T) storeScopeEnv {
 	t.Helper()
 	pool := testutil.SetupDB(t)
-	return storeScopeEnv{pool: pool, media: NewMedia(pool, dbtest.StoreName)}
+	return storeScopeEnv{pool: pool, media: NewMedia(pool, dbtest.StoreName).WithDerivedStore(dbtest.StoreName)}
 }
 
 func (e storeScopeEnv) recording(t *testing.T) int64 {
@@ -534,5 +534,45 @@ func TestUntilEncodedDeletableReturnsNothingForNullDesiredStore(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("until_encoded_deletable_originals(NULL) returned %d rows, want 0 (must not fall open to all stores)", n)
+	}
+}
+
+// until_encoded の原本は、派生物の desired 置き場（storage.derived）にエンコード済みのコピーがあるときだけ
+// 削除候補になる。コピーを読む worker の置き場（test-store）とは別の値で、worker の置き場を代わりにしない。
+func TestUntilEncodedUsesDerivedStoreNotWorkerStore(t *testing.T) {
+	const derivedStore = "derived-store"
+	ctx := context.Background()
+	cases := []struct {
+		name         string
+		derivedStore string
+		derivedCopy  string
+		want         bool
+	}{
+		{"derived copies in the derived store", derivedStore, derivedStore, true},
+		{"derived copies only in the worker store", derivedStore, dbtest.StoreName, false},
+		{"no derived store configured", "", dbtest.StoreName, false},
+		{"no derived store configured, copies in another store", "", derivedStore, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newStoreScopeEnv(t)
+			rec, original, derived := env.untilEncodedFixture(t)
+			for _, id := range derived {
+				env.moveCopy(t, id, tc.derivedCopy)
+			}
+			media := NewMedia(env.pool, dbtest.StoreName).WithDerivedStore(tc.derivedStore)
+			rows, err := media.ListUntilEncodedOriginalsToDelete(ctx, 10)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertListed(t, mediaDeleteIDs(rows), original, tc.want)
+			marked, err := media.MarkUntilEncodedDeleting(ctx, rec, original)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if marked != tc.want {
+				t.Fatalf("MarkUntilEncodedDeleting = %v, want %v", marked, tc.want)
+			}
+		})
 	}
 }

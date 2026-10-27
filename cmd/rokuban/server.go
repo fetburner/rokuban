@@ -453,11 +453,11 @@ func runServer(cmd *cobra.Command, _ []string) error {
 }
 
 // validateRoleStorageConfig は worker と streamer が起動前に要る storage 設定を検査する。
-// streamer は完了録画の原本と世代付き HLS を storage.media_store_name の置き場のコピーから引く。
+// streamer は完了録画の原本と世代付き HLS を、storage.stores の FS 置き場のコピーから引く。
 // api は空でも起動でき、その場合は読み取りが全置き場の active コピーを対象にする。
 func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
 	if slices.Contains(roles, "streamer") && cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: streamer role requires storage.media_store_name")
+		return fmt.Errorf("validating config: streamer role requires exactly one fs store in storage.stores")
 	}
 	if !slices.Contains(roles, "worker") {
 		return nil
@@ -466,7 +466,7 @@ func validateRoleStorageConfig(roles []string, cfg *config.Config) error {
 		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
 	}
 	if cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+		return fmt.Errorf("validating config: worker role requires exactly one fs store in storage.stores")
 	}
 	return nil
 }
@@ -711,7 +711,7 @@ func newInsertOnlyEnqueuer(pool *pgxpool.Pool) (*riveradapter.Adapter, error) {
 // サイトごとの mirakc クライアントをここで作り、キュー設定は runServer で解決済みの
 // ものを使う。
 func buildWorkerAdapter(cfg *config.Config, bound []config.MirakcSite, clientCfg riveradapter.Config, pool *pgxpool.Pool, webhookClient *webhook.Client, ingestStorageProbed bool) (*riveradapter.Adapter, error) {
-	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName)
+	mediaStore := pgstore.NewMedia(pool, cfg.Storage.MediaStoreName).WithDerivedStore(cfg.Storage.Derived)
 	recordingStore := pgstore.NewRecordings(pool, cfg.Storage.MediaStoreName)
 	reservationStore := pgstore.NewReservations(pool)
 	breakersStore := pgstore.NewBreakers(pool)

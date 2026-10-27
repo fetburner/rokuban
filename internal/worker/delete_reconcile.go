@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/fetburner/rokuban/internal/config"
 	"github.com/fetburner/rokuban/internal/jobs"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store"
@@ -24,13 +25,6 @@ const (
 
 	// defaultDeleteReconcileMaxPerPass は一括削除サーキットブレーカーの既定閾値。
 	defaultDeleteReconcileMaxPerPass = 100
-
-	// defaultMissingAssetAge は「active なのに実体が無い」候補が確認済みとして
-	// 報告されるまでの既定エイジング期間（issue #343）。孤児回収の
-	// defaultOrphanAge と同じ理由（単発の走査揺れ・DB リストア直後の一時的な
-	// 不整合を確認済みの異常と区別する）で持つが、削除を目的とした猶予では
-	// ないため長さを揃える必要はなく、通知の遅れを抑える短めの値にしている。
-	defaultMissingAssetAge = 24 * time.Hour
 
 	// missingAssetLogBudget は 1 パスで reportAgedMissingAssets が Warn ログを
 	// 個別に出す件数の上限。件数（rokuban_media_assets_missing）は既にメトリクス
@@ -162,7 +156,7 @@ func (w *DeleteReconcileWorker) Work(ctx context.Context, _ jobs.DeleteReconcile
 	}
 	missingAssetAge := w.MissingAssetAge
 	if missingAssetAge <= 0 {
-		missingAssetAge = defaultMissingAssetAge
+		missingAssetAge = config.DefaultMissingAssetAge
 	}
 	tripped, err := w.observeDeleteReconcile(ctx, w.Breakers, site)
 	if err != nil {

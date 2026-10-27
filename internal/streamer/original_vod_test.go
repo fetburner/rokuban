@@ -153,8 +153,8 @@ func newOriginalVODTestServer(t *testing.T, pool *pgxpool.Pool, cfg LiveConfig) 
 	return ls, srv
 }
 
-// streamer は storage.media_store_name の置き場のコピーだけを配る。コピーが別の置き場にしか無い録画は
-// ファイルが同じ MediaDir にあっても 404 にする（起動時に空の store 名は拒否するので、空は扱わない）。
+// streamer は storage.stores の FS 置き場のコピーだけを配る。コピーが別の置き場にしか無い録画は
+// ファイルが同じ MediaDir にあっても 404 にする（起動時に FS 置き場が 1 つでなければ拒否するので、空は扱わない）。
 func TestOriginalVODIgnoresCopiesInOtherStores(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	recordingID, mediaDir, _ := originalVODTargetFixture(t, pool)

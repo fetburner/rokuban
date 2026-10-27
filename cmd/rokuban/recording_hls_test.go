@@ -17,7 +17,12 @@ func TestServerRecordingHLSConfig(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled=%t", enabled), func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			base := startTestServer(t, "api", fmt.Sprintf(`  media_store_name: main-2
+			base := startTestServer(t, "api", fmt.Sprintf(`  stores:
+    main-2:
+      kind: fs
+  originals:
+    - store: main-2
+  derived: main-2
 recording_hls:
   enabled: %t
   segment_dir: /tmp/recording-hls
@@ -112,7 +117,12 @@ func TestServerStreamerMountsRecordingHLS(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			base := startTestServer(t, "streamer", fmt.Sprintf(`  media_store_name: main
+			base := startTestServer(t, "streamer", fmt.Sprintf(`  stores:
+    main:
+      kind: fs
+  originals:
+    - store: main
+  derived: main
 recording_hls:
   enabled: %t
   segment_dir: %s

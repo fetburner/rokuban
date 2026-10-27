@@ -13,7 +13,7 @@ import (
 // ListPendingDeleteAssets は削除条件を満たす deleting アセットを返す。
 func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListMediaAssetsPendingDelete(ctx, sqlcgen.ListMediaAssetsPendingDeleteParams{
-		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName, RowLimit: limit,
+		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore), RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing pending media asset deletes: %w", err)
@@ -30,7 +30,7 @@ func (s *Media) ListPendingDeleteAssets(ctx context.Context, graceCutoff time.Ti
 // ListUnqualifiedDeletingAssets は現在どの削除条件も満たさない deleting アセットを返す。
 func (s *Media) ListUnqualifiedDeletingAssets(ctx context.Context, graceCutoff time.Time, limit int32) ([]store.MediaDeleteRevertCandidate, error) {
 	rows, err := sqlcgen.New(s.pool).ListUnqualifiedDeletingAssets(ctx, sqlcgen.ListUnqualifiedDeletingAssetsParams{
-		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName, RowLimit: limit,
+		GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore), RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing unqualified deleting media assets: %w", err)
@@ -62,7 +62,7 @@ func (s *Media) ListTrashAssetsToDelete(ctx context.Context, graceCutoff time.Ti
 // ListUntilEncodedOriginalsToDelete は派生物が揃った until_encoded 原本を返す。
 func (s *Media) ListUntilEncodedOriginalsToDelete(ctx context.Context, limit int32) ([]store.MediaDeleteAsset, error) {
 	rows, err := sqlcgen.New(s.pool).ListUntilEncodedOriginalsToDelete(ctx, sqlcgen.ListUntilEncodedOriginalsToDeleteParams{
-		DesiredStore: s.storeName, StoreName: s.storeName, RowLimit: limit,
+		DesiredStore: mediaStoreNameArg(s.derivedStore), StoreName: s.storeName, RowLimit: limit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("listing until_encoded originals to delete: %w", err)
@@ -140,7 +140,7 @@ func (s *Media) MarkUntilEncodedDeleting(ctx context.Context, recordingID, asset
 		return false, err
 	}
 	marked, err := q.MarkUntilEncodedOriginalDeleting(ctx, sqlcgen.MarkUntilEncodedOriginalDeletingParams{
-		AssetID: assetID, StoreName: s.storeName, DesiredStore: s.storeName,
+		AssetID: assetID, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore),
 	})
 	if err != nil {
 		return false, fmt.Errorf("marking until_encoded original %d deleting: %w", assetID, mapDatabaseError(err))
@@ -197,7 +197,7 @@ func (s *Media) RevertToActive(ctx context.Context, assetID int64, graceCutoff t
 		return false, err
 	}
 	updated, err := q.RevertMediaAssetToActive(ctx, sqlcgen.RevertMediaAssetToActiveParams{
-		ID: assetID, GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: s.storeName,
+		ID: assetID, GraceCutoff: graceCutoff, StoreName: s.storeName, DesiredStore: mediaStoreNameArg(s.derivedStore),
 	})
 	if err != nil {
 		return false, fmt.Errorf("reverting media asset %d to active: %w", assetID, mapDatabaseError(err))

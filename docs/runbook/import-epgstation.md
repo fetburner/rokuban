@@ -205,7 +205,7 @@ site の前置を自動で付ける前のバージョンでライブラリを取
 
 検査の契約は docs/storage/contract.md §「rel_path の名前空間」にある。止めてから行うのは、動かしたまま `mv` すると、有効な行が一時的に実体無しと誤検出されるからである。
 
-1. 対象行を出す。`site` は import 時に指定した site 名である。SQL の `<store>` は、`storage.media_store_name` の値に置き換える。
+1. 対象行を出す。`site` は import 時に指定した site 名である。SQL の `<store>` は、`storage.stores` の FS 置き場の名前に置き換える。
 
    ```sql
    SELECT a.id, c.rel_path, r.site

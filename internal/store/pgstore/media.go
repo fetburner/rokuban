@@ -22,12 +22,23 @@ import (
 type Media struct {
 	pool      *pgxpool.Pool
 	storeName string
+	// derivedStore は until_encoded の原本を消してよいかを判定する、派生物の desired 置き場。
+	// 空なら規則が無く、原本は消さない。コピーを読み書きする置き場（storeName）とは別の値で、
+	// storeName を代わりに使ってはならない。
+	derivedStore string
 }
 
 // NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
 // 読み取り先の置き場を固定しないロールは "" を明示する。
 func NewMedia(pool *pgxpool.Pool, storeName string) *Media {
 	return &Media{pool: pool, storeName: storeName}
+}
+
+// WithDerivedStore は派生物の desired 置き場を持つ Media の写しを返す（storage.derived）。
+func (s *Media) WithDerivedStore(derivedStore string) *Media {
+	c := *s
+	c.derivedStore = derivedStore
+	return &c
 }
 
 func mediaStoreNameArg(storeName string) *string {

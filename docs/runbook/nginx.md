@@ -34,7 +34,11 @@ server:
 
 storage:
   media_dir: /mnt/media
-  media_store_name: main
+  stores:
+    main: { kind: fs }
+  originals:
+    - store: main
+  derived: main
   accel_location: /_media/
 ```
 
@@ -73,7 +77,7 @@ nginx -s reload
 
 Rokuban を 127.0.0.1:40773 で起動し、その前段に nginx を起動する。nginx はホストでも Docker でも動かせるが、実測があるのは Docker 経路だけで、ホストで起動する経路は未検証である。
 
-Rokuban は `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用の録画は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。`%` はパスのサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。`$MEDIA_STORE_NAME` は `storage.media_store_name` と同じ値にする。
+Rokuban は `127.0.0.1:40773` で起動する。DB と Rokuban の起動は [setup.md](setup.md) に従う。検証用の録画は、既存の録画から 1 件選ぶか、日本語・空白・括弧に加えて `%` を含む相対パスの fixture を DB と `MEDIA_DIR` に用意する。`%` はパスのサニタイザを通り抜ける数少ない文字で、エスケープの有無を分ける鍵になる。以下の確認では、実際に使う録画 ID と相対パスをそれぞれ `$ID` と `$REL_PATH` に入れる。`$MEDIA_STORE_NAME` は `storage.stores` の FS 置き場の名前と同じ値にする。
 
 nginx をホストで起動する場合、証明書・認証ファイル・media・certbot webroot を `nginx.conf` が読む実パスへ配置してから `nginx -t` を通す。**この経路は未検証。実測は次項の Docker 経路のみ。**
 

@@ -66,7 +66,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 1. 試験用のルールを 1 本作り、プロファイルを 1 つと `keepOriginal: until_encoded` を設定する。短い番組に当たる条件にする
 2. 録画が終わったら録画 ID を控え、アセットの状態を見る。エンコードが終わるまでは `original` が `active` で残る。これが項目 2 の前半である
 
-   `<store>` は `storage.media_store_name` の値に置き換える。
+   `<store>` は `storage.stores` の FS 置き場の名前に置き換える。
 
    ```sql
    SELECT a.kind, a.profile, c.state, c.rel_path
@@ -107,7 +107,7 @@ UI のルール編集でプロファイルを選んでから、必要なら `unt
 <details><summary>根拠</summary>
 
 - 復元で消す印: `recordings.deleted_at`
-- 状態を見る列: `storage.media_store_name` の置き場の `media_asset_copies.state`
+- 状態を見る列: `storage.stores` の FS 置き場（FS 置き場は今 1 つだけ。[置き場の規則](../configuration/keys.md#置き場の規則)）の `media_asset_copies.state`
 - 相対パスの列: `media_asset_copies.rel_path`
 
 </details>

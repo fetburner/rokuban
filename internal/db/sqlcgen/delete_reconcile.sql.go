@@ -274,7 +274,7 @@ WHERE (
       WHERE t.recording_id = a.recording_id
     )
     OR EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals($3) AS v(asset_id, recording_id)
+      SELECT 1 FROM until_encoded_deletable_originals($3::text) AS v(asset_id, recording_id)
       WHERE v.asset_id = a.id
     )
     OR EXISTS (
@@ -288,7 +288,7 @@ LIMIT $4
 type ListMediaAssetsPendingDeleteParams struct {
 	StoreName    string
 	GraceCutoff  time.Time
-	DesiredStore string
+	DesiredStore *string
 	RowLimit     int32
 }
 
@@ -490,7 +490,7 @@ WHERE NOT EXISTS (
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals($3) AS v(asset_id, recording_id)
+    SELECT 1 FROM until_encoded_deletable_originals($3::text) AS v(asset_id, recording_id)
     WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
@@ -503,7 +503,7 @@ LIMIT $4
 type ListUnqualifiedDeletingAssetsParams struct {
 	StoreName    string
 	GraceCutoff  time.Time
-	DesiredStore string
+	DesiredStore *string
 	RowLimit     int32
 }
 
@@ -555,7 +555,7 @@ func (q *Queries) ListUnqualifiedDeletingAssets(ctx context.Context, arg ListUnq
 
 const listUntilEncodedOriginalsToDelete = `-- name: ListUntilEncodedOriginalsToDelete :many
 SELECT v.asset_id::bigint AS id, v.recording_id::bigint, copy.rel_path, a.size_bytes, 'original'::text AS kind
-FROM until_encoded_deletable_originals($1) AS v(asset_id, recording_id)
+FROM until_encoded_deletable_originals($1::text) AS v(asset_id, recording_id)
 JOIN media_assets a ON a.id = v.asset_id
 JOIN media_asset_copies copy
   ON copy.media_asset_id = a.id
@@ -566,7 +566,7 @@ LIMIT $3
 `
 
 type ListUntilEncodedOriginalsToDeleteParams struct {
-	DesiredStore string
+	DesiredStore *string
 	StoreName    string
 	RowLimit     int32
 }
@@ -744,7 +744,7 @@ WHERE a.id = $1
   AND copy.store = $2
   AND copy.state = 'active'
   AND EXISTS (
-      SELECT 1 FROM until_encoded_deletable_originals($3) AS v(asset_id, recording_id)
+      SELECT 1 FROM until_encoded_deletable_originals($3::text) AS v(asset_id, recording_id)
       WHERE v.asset_id = $1
   )
 `
@@ -752,7 +752,7 @@ WHERE a.id = $1
 type MarkUntilEncodedOriginalDeletingParams struct {
 	AssetID      int64
 	StoreName    string
-	DesiredStore string
+	DesiredStore *string
 }
 
 // until_encoded の候補は列挙後に利用者の再作成要求が追加されうるため、録画行を
@@ -781,7 +781,7 @@ WHERE a.id = $1
     WHERE t.recording_id = a.recording_id
   )
   AND NOT EXISTS (
-    SELECT 1 FROM until_encoded_deletable_originals($4) AS v(asset_id, recording_id)
+    SELECT 1 FROM until_encoded_deletable_originals($4::text) AS v(asset_id, recording_id)
     WHERE v.asset_id = a.id
   )
   AND NOT EXISTS (
@@ -793,7 +793,7 @@ type RevertMediaAssetToActiveParams struct {
 	ID           int64
 	StoreName    string
 	GraceCutoff  time.Time
-	DesiredStore string
+	DesiredStore *string
 }
 
 // ListUnqualifiedDeletingAssets が挙げた 1 行を active に戻す。ファイルが
