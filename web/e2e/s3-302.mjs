@@ -4,6 +4,7 @@ import { createServer, request as httpRequest } from 'node:http'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
+import { Transform, pipeline } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 
 import { createPlaywrightAdapter, createSafariAdapter } from './lib.mjs'
@@ -25,6 +26,9 @@ const VIDEO_SECONDS = 90
 const FIXTURE_PORT = 4174
 const S3_PROXY_PORT = 4175
 const TARGET_SEEK_SECONDS = 32
+const EXPIRED_SEEK_SECONDS = 64
+// Safari は小さい fixture をまるごと先読みしてシークをキャッシュから返すので、fixture を大きくする（エンコードと転送で所要時間が伸びる）代わりに、動画の応答をビットレート（映像 1000k + 音声 96k）の 3 倍に絞る。
+const VIDEO_BYTES_PER_SECOND = (1000 + 96) * 1000 / 8 * 3
 const BROWSER = process.env.E2E_BROWSER ?? 'chrome'
 const requests = []
 const failures = []
@@ -152,6 +156,18 @@ function presignedGetUrl(bucket, key, expiresIn, publicOrigin) {
   return { url: url.toString(), issuedAt: now.getTime(), expiresAt: now.getTime() + expiresIn * 1000 }
 }
 
+/** throttle は通した累計バイト数が bytesPerSecond の速度を超えないように、各チャンクを遅らせて流す。 */
+function throttle(bytesPerSecond) {
+  const startedAt = Date.now()
+  let sent = 0
+  return new Transform({
+    transform(chunk, _encoding, done) {
+      sent += chunk.length
+      setTimeout(() => done(null, chunk), Math.max(0, startedAt + sent / bytesPerSecond * 1000 - Date.now()))
+    },
+  })
+}
+
 function logFailure(message) {
   failures.push(message)
   console.error('NG: ' + message)
@@ -238,6 +254,10 @@ function htmlForScenario(scenario) {
     '  video.addEventListener("timeupdate", function () { state.currentTime = video.currentTime; });',
     '  video.addEventListener("playing", function () { state.playing = true; });',
     '  video.addEventListener("pause", function () { state.paused = true; });',
+    '  state.mediaEvents = [];',
+    '  ["play", "playing", "pause", "waiting", "stalled", "suspend", "abort", "emptied", "seeking", "seeked", "ended", "error"].forEach(function (type) {',
+    '    video.addEventListener(type, function () { state.mediaEvents.push([type, Math.round(performance.now()), video.currentTime, video.readyState, video.networkState]); });',
+    '  });',
     '  video.addEventListener("seeked", function () { state.seekedCount += 1; state.lastSeekedTime = video.currentTime; });',
     '  video.addEventListener("error", function () { state.mediaError = { code: video.error && video.error.code, message: video.error && video.error.message }; });',
     '  function readTrack() {',
@@ -346,8 +366,15 @@ function startFixtureServers(videoKey, subtitleKey) {
       headers,
     }, (upstreamResponse) => {
       record.status = upstreamResponse.statusCode ?? 502
+      // 応答の頭が届く前にブラウザが切った接続には書けない（pipeline が同期に投げる）。
+      if (res.destroyed) {
+        upstreamResponse.destroy()
+        return
+      }
       res.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers)
-      upstreamResponse.pipe(res)
+      // ブラウザがシークで接続を切ったら上流も切る。pipeline の早期終了のエラーは記録に要らない。
+      const streams = isSubtitle ? [upstreamResponse, res] : [upstreamResponse, throttle(VIDEO_BYTES_PER_SECOND), res]
+      pipeline(...streams, () => {})
     })
     upstream.on('error', (error) => {
       record.status = 502
@@ -373,14 +400,37 @@ function startFixtureServers(videoKey, subtitleKey) {
   }
 }
 
-/** waitFor は browser.evaluate(fn, arg) が真を返すまで 100 ms 間隔で繰り返す。 */
+/** waitFor は browser.evaluate(fn, arg) が真を返すまで 100 ms 間隔で繰り返す。成立しなければページの状態を出して投げる。 */
 async function waitFor(browser, fn, arg, timeout = 15000) {
   const until = Date.now() + timeout
   while (Date.now() < until) {
     if (await browser.evaluate(fn, arg)) return
     await delay(100)
   }
+  console.error('Page state: ' + JSON.stringify(await browser.evaluate(() => {
+    const video = document.querySelector('#player')
+    const buffered = video ? Array.from({ length: video.buffered.length }, (_, index) => [video.buffered.start(index), video.buffered.end(index)]) : null
+    return { state: window.__state, paused: video && video.paused, readyState: video && video.readyState, networkState: video && video.networkState, buffered }
+  }).catch((error) => String(error))))
   throw new Error('待ち条件が ' + timeout + ' ms 以内に成立しない: ' + fn.toString())
+}
+
+/**
+ * seekTargetIsBuffered はシーク先がすでに video.buffered に入っているかを見る。入っていればブラウザは
+ * シークをキャッシュから返し、Range 要求の行き先も期限切れも観測できないので、その旨を失敗として残す。
+ */
+async function seekTargetIsBuffered(browser, seconds, label) {
+  const ranges = await browser.evaluate(() => {
+    const buffered = document.querySelector('#player').buffered
+    return Array.from({ length: buffered.length }, (_, index) => [buffered.start(index), buffered.end(index)])
+  })
+  console.log('Buffered before ' + label + ' seek to ' + seconds + 's: ' + JSON.stringify(ranges))
+  const covered = ranges.some(([start, end]) => start <= seconds && seconds < end)
+  if (covered) {
+    logFailure('measurement precondition broken: the ' + label + ' seek target ' + seconds + 's is already buffered '
+      + JSON.stringify(ranges) + ', so the browser serves the seek from its cache and issues no Range request to measure')
+  }
+  return covered
 }
 
 function expect(condition, message) {
@@ -432,12 +482,7 @@ async function main() {
     const normalRequestStart = requests.length
     await browser.navigate(origins.publicOrigin + '/probe?scenario=normal')
     await waitFor(browser, () => window.__state && window.__state.metadata)
-    try {
-      await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
-    } catch (error) {
-      console.error('Subtitle state: ' + JSON.stringify(await browser.evaluate(() => window.__state)))
-      throw error
-    }
+    await waitFor(browser, () => window.__state && window.__state.trackReadyState === 2 && window.__state.cueCount > 0, undefined, 20000)
     const normalReady = await browser.evaluate(() => window.__state)
     expect(normalReady.crossOrigin === 'anonymous', 'fixture <video> is missing crossorigin="anonymous"')
     expect(normalReady.trackMode === 'showing', 'cross-origin WebVTT track did not enter showing mode')
@@ -453,6 +498,7 @@ async function main() {
     await browser.click('#play')
     await waitFor(browser, () => window.__state && window.__state.playing && window.__state.currentTime >= 1)
     await delay(3000)
+    const normalSeekCached = await seekTargetIsBuffered(browser, TARGET_SEEK_SECONDS, 'normal')
     const beforeSeek = requests.length
     await browser.evaluate((seconds) => window.seekTo(seconds), TARGET_SEEK_SECONDS)
     await waitFor(browser, () => window.__state && (window.__state.seekedCount > 0 || window.__state.mediaError))
@@ -466,7 +512,7 @@ async function main() {
       originRangeRequests: after302Range.filter((request) => request.route === 'redirect').length,
       signedUrlRangeRequests: after302Range.filter((request) => request.route === 's3').length,
     }
-    expect(seekDestination.signedUrlRangeRequests > 0, 'seek produced no Range request at the signed S3 destination')
+    if (!normalSeekCached) expect(seekDestination.signedUrlRangeRequests > 0, 'seek produced no Range request at the signed S3 destination')
 
     await browser.evaluate(() => window.savePosition())
     const savedPosition = await browser.evaluate((key) => Number(localStorage.getItem(key)), RESUME_KEY)
@@ -503,8 +549,9 @@ async function main() {
     if (!expiringRedirect) throw new Error('expiry scenario issued no signed redirect')
     await delay(Math.max(0, expiringRedirect.expiresAt - Date.now() + 300))
     const expiredAt = expiringRedirect.expiresAt
+    const expirySeekCached = await seekTargetIsBuffered(browser, EXPIRED_SEEK_SECONDS, 'expired')
     const expirySeekStart = requests.length
-    await browser.evaluate(() => window.seekTo(64))
+    await browser.evaluate((seconds) => window.seekTo(seconds), EXPIRED_SEEK_SECONDS)
     const expiryDeadline = Date.now() + 15000
     let afterExpiry = []
     let expirySeek = null
@@ -515,12 +562,14 @@ async function main() {
       await delay(100)
     }
     if (!expirySeek) throw new Error('could not read media state after the expired seek')
-    expect(afterExpiry.length > 0, 'could not observe a ranged media request after the signed URL expired')
     const refreshedAtOrigin = afterExpiry.some((request) => request.route === 'redirect')
     const rejectedByMinIO = afterExpiry.some((request) => request.route === 's3' && request.status === 403)
     const settledRange = afterExpiry.some((request) => request.route === 's3' && request.status !== null)
-    expect(refreshedAtOrigin || rejectedByMinIO, 'the expired-range result was neither a fresh origin redirect nor MinIO 403')
-    expect(settledRange, 'the expired seek did not receive a final response from the signed S3 destination')
+    if (!expirySeekCached) {
+      expect(afterExpiry.length > 0, 'could not observe a ranged media request after the signed URL expired')
+      expect(refreshedAtOrigin || rejectedByMinIO, 'the expired-range result was neither a fresh origin redirect nor MinIO 403')
+      expect(settledRange, 'the expired seek did not receive a final response from the signed S3 destination')
+    }
     expect(Boolean(expirySeek.error) || expirySeek.seekedCount > 0, 'the expired seek produced neither a media error nor a completed seek')
     if (rejectedByMinIO && !refreshedAtOrigin) expect(Boolean(expirySeek.error), 'MinIO rejected the expired signed URL but the video reported no media error')
     if (refreshedAtOrigin) expect(!expirySeek.error && expirySeek.seekedCount > 0, 'the browser refreshed at the origin but the new signed URL did not complete the seek: ' + JSON.stringify(expirySeek))
