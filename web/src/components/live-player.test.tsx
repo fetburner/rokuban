@@ -552,6 +552,90 @@ describe('LivePlayer の状態遷移', () => {
       expect(screen.getByRole('button', { name: '再読み込み' })).toBeInTheDocument()
     })
 
+    /**
+     * 世代付き録画 HLS のネイティブ経路は、`stalled` / `waiting` が来なくても 1 秒の刻みで止まりを拾う。
+     * WebKit は再生中の 410 を `<video>` に伝えないので、これが無いと親の再取得に乗らない。
+     */
+    describe('世代付き録画 HLS のネイティブ経路の停止検知', () => {
+      async function renderNativeRecordingPath(
+        mode: 'recording-hls' | 'original-vod',
+        media: { paused: boolean; currentTime: number },
+      ) {
+        const { resolve } = deferredFetch()
+        const onRecordingPlaybackError = vi.fn(() => false)
+        render(mode === 'recording-hls'
+          ? <LivePlayer mode="recording-hls" recordingId={42} onRecordingPlaybackError={onRecordingPlaybackError} />
+          : <LivePlayer mode="original-vod" recordingId={42} recordingDurationMs={60_000} onRecordingPlaybackError={onRecordingPlaybackError} />)
+        const video = document.querySelector('video')!
+        vi.spyOn(video, 'canPlayType').mockImplementation((type) =>
+          type === 'application/vnd.apple.mpegurl' || type === 'video/mp2t' ? 'maybe' : '',
+        )
+        Object.defineProperty(video, 'paused', { get: () => media.paused, configurable: true })
+        Object.defineProperty(video, 'currentTime', {
+          get: () => media.currentTime,
+          set: (value: number) => { media.currentTime = value },
+          configurable: true,
+        })
+        resolve(new Response('', { status: 200 }))
+        await waitFor(() => expect(video.getAttribute('src')).not.toBeNull())
+        return { video, onRecordingPlaybackError }
+      }
+
+      it('再生中に currentTime が猶予のあいだ進まなければ、stalled が来なくても親へ渡してエラーにする', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 7 }
+        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('recording-hls', media)
+        await act(async () => {
+          video.dispatchEvent(new Event('playing'))
+          vi.advanceTimersByTime(liveStallTimeoutMs - 1000)
+        })
+        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
+
+        await act(async () => {
+          vi.advanceTimersByTime(2000)
+        })
+        expect(onRecordingPlaybackError).toHaveBeenCalledTimes(1)
+        expect(screen.getByText('録画映像が届いていません（映像データが途絶えました）')).toBeInTheDocument()
+      })
+
+      it('currentTime が進んでいる間・一時停止中・再生が始まる前は止まりと見なさない', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 7 }
+        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('recording-hls', media)
+        // 再生が始まる前（playing 前）は数えない。
+        await act(async () => {
+          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+        })
+        await act(async () => {
+          video.dispatchEvent(new Event('playing'))
+        })
+        for (let i = 0; i < 30; i += 1) {
+          await act(async () => {
+            media.currentTime += 1
+            vi.advanceTimersByTime(1000)
+          })
+        }
+        media.paused = true
+        await act(async () => {
+          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+        })
+        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
+        expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      })
+
+      it('世代付き録画 HLS 以外のネイティブ経路は、刻みでは止まりを判定しない', async () => {
+        vi.useFakeTimers({ shouldAdvanceTime: true })
+        const media = { paused: false, currentTime: 7 }
+        const { video, onRecordingPlaybackError } = await renderNativeRecordingPath('original-vod', media)
+        await act(async () => {
+          video.dispatchEvent(new Event('playing'))
+          vi.advanceTimersByTime(liveStallTimeoutMs * 2)
+        })
+        expect(onRecordingPlaybackError).not.toHaveBeenCalled()
+        expect(screen.queryByText(/映像データが途絶えました/)).not.toBeInTheDocument()
+      })
+    })
+
     it('原本 VOD の stalled は録画映像の文言を出し、ライブ映像とは出さない', async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true })
       const { resolve } = deferredFetch()

@@ -1211,8 +1211,10 @@ export function LivePlayer(props: LivePlayerProps) {
         lastProgressTime = currentTime
         clearStallTimer()
       }
+      let playedHere = false
       const onPlaying = () => {
         startedOnceRef.current = true
+        playedHere = true
         lastProgressTime = media.currentTime
         clearStallTimer()
       }
@@ -1234,6 +1236,17 @@ export function LivePlayer(props: LivePlayerProps) {
         media.removeEventListener('timeupdate', onTimeUpdate)
         media.removeEventListener('pause', onProgress)
       })
+      if (!isRecordingHLS) return undefined
+      // 世代付き録画 HLS は 1 秒の刻みでも止まりを見る。WebKit は再生中の 410 を `error` にせず、
+      // バッファの終わりで `waiting` の直後に進まない `playing` を出して上のタイマーを消し、その後は
+      // 何も出さない（Playwright WebKit の実測: stalled@3.21 → waiting@9.82 → playing@9.76 →
+      // suspend。`recording-playback-timeline.mjs` の世代の切り替え）。一時停止中と、この読み込みで
+      // 再生が始まる前は数えない。
+      const tracker = createStallTracker()
+      return () => {
+        if (!playedHere || !observeMediaStall(tracker, media, Date.now(), false)) return
+        failed(strategy.errorMessages.stalled)
+      }
     }
 
     /**
@@ -1268,7 +1281,8 @@ export function LivePlayer(props: LivePlayerProps) {
      * `onTick` は同じ 1 秒の刻みで呼ばれる（issue #871 の停滞の観測）。
      * **停滞の観測のために別のタイマーを作らない** --- 同じ「いまどうなっているか」
      * を 2 つの周期で見ても精度は上がらず、止め忘れの経路だけが増える。
-     * ネイティブ経路は `stalled` / `waiting` の側で見るので渡さない。
+     * ネイティブ経路は `stalled` / `waiting` の側で見る。世代付き録画 HLS だけは
+     * `watchNativeMedia` が返す刻みもここで呼ぶ。
      */
     function watchLiveDiagnostics(read: () => LiveDiagnostics, onTick?: () => void): () => void {
       const tick = () => {
@@ -1361,7 +1375,9 @@ export function LivePlayer(props: LivePlayerProps) {
         // 別の再生元へ移る。同じ追っかけの再試行は cooldown 中なので許可しない。
         const handedOff = await handOffError(video, probe.error.kind !== 'chase-input')
         if (cancelled || handedOff) return
-        resumePlaybackPendingRef.current = false
+        // 世代付き録画 HLS は、親が次の世代の URL を渡すとこの effect が読み直す。再生の意図を
+        // 残し、利用者の操作なしで再生を続ける（`recording-detail.test.tsx` の「エラー表示に落ちた後でも」）。
+        if (!isRecordingHLS) resumePlaybackPendingRef.current = false
         if (isRecordingPlayback) setMediaPlaying(false)
         setError(probe.error)
         setLoading(false)
@@ -1438,8 +1454,9 @@ export function LivePlayer(props: LivePlayerProps) {
       if (supportsNativeHls(canPlayType)) {
         // src を入れる前に張る（入れた後だと、失敗が速いときに取り逃がす）
         followNativePlaybackRate(video)
-        const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
-        watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
+        let nativeTick: (() => void) | undefined
+        const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video), () => nativeTick?.())
+        nativeTick = watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
         followNativeAudio(video)
         video.src = url
         // 字幕の表示状態を持ち越す（issue #869）。ネイティブ経路はトラックを
@@ -1479,8 +1496,9 @@ export function LivePlayer(props: LivePlayerProps) {
           // `web/e2e/live.mjs` ⑦）--- ここは 1 段目と同じ表面を持つ
           if (claimsHlsPlaylistSupport(canPlayType)) {
             followNativePlaybackRate(video)
-            const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video))
-            watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
+            let nativeTick: (() => void) | undefined
+            const stopDiagnostics = watchLiveDiagnostics(() => readNativeDiagnostics(video), () => nativeTick?.())
+            nativeTick = watchNativeMedia(video, stopDiagnostics, canDowngrade, () => resumePending)
             followNativeAudio(video)
             video.src = url
             setLoading(false)

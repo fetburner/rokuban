@@ -120,16 +120,23 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 
 録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-現在の世代の HLS 応答が 410 になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。未解決: Safari のネイティブ HLS での 410 復旧。
+hls.js の経路は、現在の世代の HLS 応答が 410 になったことを直接見て、詳細 API を取り直す。ネイティブ HLS の経路は、再生中に `currentTime` が `liveStallTimeoutMs` のあいだ進まなければ止まったとみなし、詳細 API を取り直す。WebKit は再生中の 410 を `<video>` の `error` にも `waiting` にも出さないので、イベントを待つだけでは止まりに気付かない。止まりは計器と同じ 1 秒の刻みで見て、別のタイマーは作らない。
+
+どちらの経路でも、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
+
+世代を替える間は `hlsPlayback` が空になり、SSE も来ない。temp を捨てて取り込みをやり直す間がこれに当たる。この間は最後に知っている URL を持ち続け、再生元も世代付き録画 HLS のままにする。空になった時点でプレイヤーを外すと、次の世代で作り直したときに位置がセッション開始へ戻る。選び直しで空の `hlsPlayback` をそのまま見ると、追っかけへ逸れる。失敗・キャンセル・ごみ箱になったら、従来どおりプレイヤーを出さない。
 
 <details><summary>根拠</summary>
 
 - 再生元の選択: `recording-playback-source.test.ts`
 - 410 後の位置保持: `recording-detail.test.tsx`
+- 世代を替える間の空の `hlsPlayback`（プレイヤーを外さない、追っかけへ逸れない、エラー表示の後も次の世代で続ける、失敗・キャンセル・ごみ箱では出さない）: `recording-detail.test.tsx` の「世代の切り替え中」
+- ネイティブ経路の 1 秒刻みの停止検知と、その範囲が世代付き録画 HLS だけであること: `live-player.test.tsx` の「世代付き録画 HLS のネイティブ経路の停止検知」
 - アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
-- 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸、410 後の復旧: `recording-playback-timeline.mjs`
-- 途中シークの判定は Chrome と WebKit（`E2E_BROWSER=webkit`）で通る。WebKit の判定は 410 復旧だけが落ちる
+- 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸: `recording-playback-timeline.mjs`
+- v1 → 空 → v2 の切り替えで、止まる直前の位置（±1 秒）から続けること: `recording-playback-timeline.mjs` の「世代の切り替え」
+- 上の 2 つの判定は Chrome と WebKit（`E2E_BROWSER=webkit`）で通る。WebKit では 410 の後もバッファの終わりまで再生し、そこから 1 秒刻みの検知が拾う
 
 </details>
 

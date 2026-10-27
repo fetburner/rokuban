@@ -275,6 +275,14 @@ export function RecordingDetail({
       })
     }
   }
+  const [lastRecordingHls, setLastRecordingHls] = useState({ recordingId: recording.id, entries: recording.hlsPlayback })
+  if (
+    recording.hlsPlayback.length > 0
+      ? lastRecordingHls.entries !== recording.hlsPlayback
+      : lastRecordingHls.recordingId !== recording.id
+  ) {
+    setLastRecordingHls({ recordingId: recording.id, entries: recording.hlsPlayback })
+  }
   const showChase = playbackState.source === 'chase'
   const showOriginalVOD = playbackState.source === 'original-vod'
   const showRecordingHLS = playbackState.source === 'recording-hls'
@@ -366,7 +374,11 @@ export function RecordingDetail({
     const current = playbackStateRef.current
     if (trigger === 'source-range-exit' && current.pinned) return false
     const position = positionSeconds ?? recordingPositionSecondsRef.current
-    const selected = selectRecordingPlaybackSource(selection)
+    // 世代を替える間の空の hlsPlayback では、追っかけ・原本 HLS・none へ逸れない（上の lastRecordingHls）。
+    const selected = selectRecordingPlaybackSource({
+      ...selection,
+      hasHlsPlayback: selection.hasHlsPlayback || current.source === 'recording-hls',
+    })
     if (selected !== current.source) {
       if (selected === 'none') return false
     } else if (trigger !== 'source-error' || !allowSameSourceRetry || current.source === 'encoded') {
@@ -487,11 +499,19 @@ export function RecordingDetail({
     () => validLiveProfile(liveProfiles, liveProfile),
     [liveProfiles, liveProfile],
   )
-  const recordingHlsProfileOptions = recording.hlsPlayback.map(({ profile }) => ({ name: profile }))
+  // 世代を替える間（temp を捨てて取り込みをやり直す間）は hlsPlayback が空になり、SSE も来ない。
+  // 空の間は最後の URL を持ち続ける。持たずに LivePlayer を外すと、次の世代で作り直したときに
+  // 位置がセッション開始へ戻る（recording-detail.test.tsx の「世代の切り替え中」）。
+  const recordingHlsPlayback = recording.hlsPlayback.length > 0 ||
+    (recording.status !== 'recording' && recording.status !== 'finished') ||
+    lastRecordingHls.recordingId !== recording.id
+    ? recording.hlsPlayback
+    : lastRecordingHls.entries
+  const recordingHlsProfileOptions = recordingHlsPlayback.map(({ profile }) => ({ name: profile }))
   const explicitRecordingHlsProfile = validLiveProfile(recordingHlsProfileOptions, liveProfile)
-  const selectedRecordingHls = recording.hlsPlayback.find(
+  const selectedRecordingHls = recordingHlsPlayback.find(
     ({ profile }) => profile === explicitRecordingHlsProfile,
-  ) ?? recording.hlsPlayback[0]
+  ) ?? recordingHlsPlayback[0]
   const recordingStartMs = timeline.recordingFileStartAtMs ?? Number.NaN
   const programStartMs = timeline.programmeStartMs
   const availableChaseSeconds = timeline.availableChaseSeconds
