@@ -86,9 +86,8 @@ type EncodeProfileCount struct {
 
 // EncodedMeaningEvidence は過去にプロファイル名が持った成果物の意味を表す。
 type EncodedMeaningEvidence struct {
-	Profile           string
-	RelPath           string
-	DerivedGeneration int64
+	Profile string
+	RelPath string
 }
 
 // EncodedAssetObservation はエンコード計画が観測した encoded アセットを表す。

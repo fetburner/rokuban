@@ -67,7 +67,11 @@ TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。�
 
 worker の定期ジョブが、このコアデータを JSON で各ファイルシステム置き場の catalog 配下に書き出す。各 catalog は全録画を含み、メディア資産には物理コピーの `store` と任意の SHA-256 を記録する。日次で書き、世代を保持する。メディアが生き残る障害では、その置き場の catalog も一緒に生き残る。
 
+catalog は `media_asset_cuts` の keep 区間を含めない。encoded のファイル名にある `.g{n}` / `.u{n}` は profile の cut 意味だけを rescue 後も判別できるようにする。
+
 古い catalog に `store` が無い場合、rescue は media root の `.rokuban-store` を割り当て先として使う。現在の置き場にある資産だけを実体確認し、別の置き場のファイルが無いことを欠損とは扱わない。既存 catalog の JSON キーを追加するだけなので、schemaVersion は据え置く。
+
+新しい worker の起動前に、旧 worker を止めてから `rokuban storage adopt <store-name>` を実行する。adopt は空のコピーを割り当て、旧 writer が作ったコピー欠落も `media_assets` から補い、指定置き場のパスと状態を同期する。旧 worker が動いたまま adopt すると、その後の旧書き込みがコピー表から外れる。
 
 書き出しに失敗したときは River の再試行を使わず、次の日次投入で書き直す。それまでは前の世代が最新の catalog として残る。
 

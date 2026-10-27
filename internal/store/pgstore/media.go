@@ -33,7 +33,8 @@ func NewMedia(pool *pgxpool.Pool, storeNames ...string) *Media {
 	return &Media{pool: pool, storeName: storeName}
 }
 
-// AdoptUnassignedStoreRows は空の store を持つコピー・観測行をこの置き場へ割り当てる。
+// AdoptUnassignedStoreRows は空の store を割り当て、旧 writer が作ったコピー欠落・
+// パス差分を media_assets から補う。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
 		return fmt.Errorf("invalid media store name %q", s.storeName)
@@ -45,7 +46,10 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	defer rollback(tx)
 	q := sqlcgen.New(tx)
 	if err := q.AdoptUnassignedMediaAssetCopies(ctx, s.storeName); err != nil {
-		return fmt.Errorf("assigning unowned media asset copies: %w", err)
+		return fmt.Errorf("adopting legacy media asset copies: %w", err)
+	}
+	if err := q.DeleteUnassignedMediaAssetCopies(ctx); err != nil {
+		return fmt.Errorf("removing unassigned media asset copies: %w", err)
 	}
 	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned ingest temps: %w", err)
@@ -65,14 +69,14 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	return nil
 }
 
-// RequireAdoptedStoreRows は割り当て前のコピー・観測行が残っていないことを確認する。
+// RequireAdoptedStoreRows は割り当て前の行やコピー欠落が残っていないことを確認する。
 func (s *Media) RequireAdoptedStoreRows(ctx context.Context) error {
 	count, err := sqlcgen.New(s.pool).CountUnassignedStorageRows(ctx)
 	if err != nil {
 		return fmt.Errorf("checking for unassigned media store rows: %w", err)
 	}
 	if count != 0 {
-		return fmt.Errorf("%d media store row(s) have no store; run `rokuban storage adopt <store-name>` before starting workers", count)
+		return fmt.Errorf("%d media store row(s) have no store or media asset copy; run `rokuban storage adopt <store-name>` before starting workers", count)
 	}
 	return nil
 }
@@ -396,7 +400,7 @@ func (s *Media) ListEncodedMeaningEvidence(ctx context.Context) ([]store.Encoded
 	out := make([]store.EncodedMeaningEvidence, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, store.EncodedMeaningEvidence{
-			Profile: row.Profile, RelPath: row.RelPath, DerivedGeneration: row.DerivedGeneration,
+			Profile: row.Profile, RelPath: row.RelPath,
 		})
 	}
 	return out, nil

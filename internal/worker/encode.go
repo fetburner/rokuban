@@ -220,7 +220,7 @@ func (w *EncodeWorker) runEncode(ctx context.Context, args jobs.EncodeJobArgs, a
 	// 置き換えでは新しい世代のパスに置いてから旧パスを消す（世代と旧パスは
 	// planEncodePublish が冒頭の観測から導く）。
 	prevRelPath, generation := observed.replaced, observed.generation
-	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, int(generation))
+	relPath, err := EncodedRelPath(originalRelPath, profile.Name, profile.Container, int(generation), cut != nil)
 	if err != nil {
 		return fmt.Errorf("building encoded rel_path: %w", err)
 	}
@@ -1098,8 +1098,10 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 //
 //	→ "20240101/120000_title_1024_h264.mp4"
 //
-// generation が正なら `_{profile}.g{n}.{container}` になる。cut の初回は世代 1、
-// 他の初回出力は 0 で、置き換えと tombstone からの再生成は DB の世代を進める。
+// generation が正なら cut は `_{profile}.g{n}.{container}`、uncut は
+// `_{profile}.u{n}.{container}` になる。異なる印は、rescue 後に media_asset_cuts が
+// 無くても cut の意味を保つ。世代の採番自体は DB の derived_generation から行い、
+// cut の初回は 1、uncut の初回は 0。置き換えと tombstone からの再生成は DB の世代を進める。
 // 置き換えは「新しいパスに置いてから旧パスを消す」
 // ので、同じパスへ上書きしてはならない（ストレージ契約の「置くのは一回」。
 // 生きている行の rel_path 部分一意索引とも衝突する）。
@@ -1108,7 +1110,7 @@ func BuildFFmpegArgs(profile config.EncodeProfile, input, output string, withSub
 // （config.ValidateEncodeProfileName）でエラーにする。サニタイズすると別の名前と同じ
 // パスになりうる。
 // 階層は原本の dir のみ。
-func EncodedRelPath(originalRel, profileName, container string, generation int) (string, error) {
+func EncodedRelPath(originalRel, profileName, container string, generation int, cut bool) (string, error) {
 	if originalRel == "" {
 		return "", fmt.Errorf("empty original rel_path")
 	}
@@ -1120,7 +1122,11 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 	}
 	suffix := ""
 	if generation > 0 {
-		suffix = fmt.Sprintf(".g%d", generation)
+		marker := "u"
+		if cut {
+			marker = "g"
+		}
+		suffix = fmt.Sprintf(".%s%d", marker, generation)
 	}
 
 	// パス区切りは DB 上で '/' 規約。filepath は OS 依存なので ToSlash で揃える。
@@ -1136,6 +1142,17 @@ func EncodedRelPath(originalRel, profileName, container string, generation int) 
 		return contentpath.SanitizeContentPath(name), nil
 	}
 	return contentpath.SanitizeContentPath(dir + "/" + name), nil
+}
+
+// cutGeneration は rel_path が指定 profile の cut 世代形式かを返す。
+// 数値を次の世代の採番には使わず、cut の過去の意味を rescue 後も読むためだけに使う。
+func cutGeneration(relPath, profileName string) (int, bool) {
+	base := pathBaseSlash(filepath.ToSlash(relPath))
+	head, n, ok := config.SplitCutGeneration(strings.TrimSuffix(base, filepath.Ext(base)))
+	if !ok || !strings.HasSuffix(head, "_"+profileName) {
+		return 0, false
+	}
+	return n, true
 }
 
 func pathDirSlash(p string) string {

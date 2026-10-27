@@ -3,7 +3,7 @@
 
 -- name: GetInPlaceAssetByRelPath :one
 SELECT id, recording_id, kind, profile,
-       (state <> 'deleted')::boolean AS published
+       state
 FROM media_assets
 WHERE rel_path = $1
 -- media_assets_rel_path_idx は state <> 'deleted' の部分索引なので、実ファイルが残る限り
@@ -64,6 +64,7 @@ ON CONFLICT (recording_id, kind, profile)
 DO UPDATE SET
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = COALESCE(media_assets.derived_generation, EXCLUDED.derived_generation),
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()

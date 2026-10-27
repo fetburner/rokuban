@@ -113,6 +113,17 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	if err != nil {
 		return fmt.Errorf("resolving original path: %w", err)
 	}
+	generation, found, err := w.Media.GetDerivedMediaAssetGeneration(ctx, recordingID, "seek_tiles")
+	if err != nil {
+		return fmt.Errorf("loading seek tile generation: %w", err)
+	}
+	if found {
+		generation++
+	}
+	relPath, generation, err := w.nextUnusedSeekTilesRelPath(recordingID, generation)
+	if err != nil {
+		return fmt.Errorf("choosing seek tile path: %w", err)
+	}
 
 	// poster と違い、長さが取れないまま続行しない（0 秒も含む）。1 枚だけの格子を
 	// コミットすると行の存在が「全部そろっている」を主張し、定期パスが二度と作り
@@ -173,11 +184,11 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 		return fmt.Errorf("scratch tile sheet is empty")
 	}
 
-	relPath := seekTilesRelPath(recordingID)
 	size, published, err := publishGeneratedMediaAsset(ctx, w.MediaDir, w.MediaStoreName, relPath, sheetPath,
 		func(size int64, publish func() error) (bool, error) {
 			return w.Publisher.PublishSeekTiles(ctx, store.SeekTilesPublishInput{
 				RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
+				DerivedGeneration: generation,
 			}, publish)
 		})
 	if err != nil {
@@ -195,12 +206,38 @@ func (w *SeekTilesWorker) Work(ctx context.Context, args jobs.SeekTilesJobArgs) 
 	return nil
 }
 
-// seekTilesRelPath はメディアストレージ上の相対パスを返す。poster と同じく
+// seekTilesRelPath はメディアストレージ上の相対パスを返す。初回は従来の名前を保ち、
+// 再生成は世代を付けて前のファイルを上書きしない。poster と同じく
 // recording_id から決定的に導出し、原本の contentPath に依存しない。
 // `thumbnails/` の中に置くので、rel_path の名前空間の検査は変わらない
 // （docs/storage/contract.md §5）。
-func seekTilesRelPath(recordingID int64) string {
-	return fmt.Sprintf("thumbnails/%d_tiles.jpg", recordingID)
+func seekTilesRelPath(recordingID, generation int64) string {
+	suffix := ""
+	if generation > 0 {
+		suffix = fmt.Sprintf(".g%d", generation)
+	}
+	return fmt.Sprintf("thumbnails/%d_tiles%s.jpg", recordingID, suffix)
+}
+
+func (w *SeekTilesWorker) nextUnusedSeekTilesRelPath(recordingID, generation int64) (string, int64, error) {
+	for {
+		relPath := seekTilesRelPath(recordingID, generation)
+		fullPath, err := mediapath.Resolve(w.MediaDir, relPath)
+		if err != nil {
+			return "", 0, err
+		}
+		_, err = os.Lstat(fullPath)
+		if errors.Is(err, os.ErrNotExist) {
+			return relPath, generation, nil
+		}
+		if err != nil {
+			return "", 0, err
+		}
+		if generation == int64(^uint64(0)>>1) {
+			return "", 0, fmt.Errorf("seek tile generation overflow")
+		}
+		generation++
+	}
 }
 
 // seekTileCount は生成するタイル枚数を返す。Work は 0 秒以下を渡さない

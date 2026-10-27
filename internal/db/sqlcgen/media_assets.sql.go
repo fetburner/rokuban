@@ -569,6 +569,7 @@ UPDATE media_assets
 SET rel_path   = $1,
     size_bytes = $2,
     derived_generation = $3,
+    sha256     = NULL,
     updated_at = now()
 WHERE id = $4
   AND kind = 'thumbnail'
@@ -600,6 +601,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -654,6 +656,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -686,6 +689,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()

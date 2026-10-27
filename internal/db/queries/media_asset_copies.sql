@@ -12,17 +12,43 @@ ON CONFLICT (media_asset_id, store) DO UPDATE SET
     state      = EXCLUDED.state,
     deleted_at = EXCLUDED.deleted_at;
 
+-- A pre-migration writer may have committed the legacy row without a copy row,
+-- or changed its path while an old pod was still running. The configured store is
+-- the legacy media_dir during this migration stage, so refresh that copy from the
+-- logical row as part of the lifecycle transition.
 -- name: SetMediaAssetCopyState :execrows
-UPDATE media_asset_copies
-SET state = sqlc.arg('state'),
-    deleted_at = CASE
-        WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(deleted_at, now())
-        ELSE NULL
-    END
-WHERE media_asset_id = sqlc.arg('media_asset_id') AND store = sqlc.arg('store');
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+SELECT a.id, sqlc.arg('store'), a.rel_path, sqlc.arg('state'), now(),
+       CASE WHEN sqlc.arg('state')::text = 'deleted' THEN COALESCE(a.deleted_at, now()) END
+FROM media_assets a
+WHERE a.id = sqlc.arg('media_asset_id')
+ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    rel_path = EXCLUDED.rel_path,
+    state = EXCLUDED.state,
+    deleted_at = EXCLUDED.deleted_at;
 
 -- name: AdoptUnassignedMediaAssetCopies :exec
-UPDATE media_asset_copies SET store = sqlc.arg('store') WHERE store = '';
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+SELECT a.id, sqlc.arg('store'), a.rel_path, a.state, a.created_at, a.deleted_at
+FROM media_assets a
+WHERE EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id AND c.store = ''
+      )
+   OR NOT EXISTS (
+          SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+      )
+   OR EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id AND c.store = sqlc.arg('store')
+      )
+ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    rel_path = EXCLUDED.rel_path,
+    state = EXCLUDED.state,
+    deleted_at = EXCLUDED.deleted_at;
+
+-- name: DeleteUnassignedMediaAssetCopies :exec
+DELETE FROM media_asset_copies WHERE store = '';
 
 -- name: AdoptUnassignedIngestTemps :exec
 UPDATE recording_ingest_progress SET temp_store = sqlc.arg('store') WHERE temp_store = '';
@@ -40,6 +66,9 @@ UPDATE storage_sync SET store = sqlc.arg('store') WHERE store = '';
 -- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_asset_copies WHERE store = '')
+  + (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
+        SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+    ))
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
   + (SELECT count(*) FROM orphan_files WHERE store = '')
   + (SELECT count(*) FROM missing_media_assets WHERE store = '')

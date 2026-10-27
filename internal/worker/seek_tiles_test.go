@@ -13,6 +13,7 @@ import (
 
 	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 )
 
@@ -47,8 +48,17 @@ func TestSeekTileCount(t *testing.T) {
 // TestSeekTilesRelPath は相対パスをリテラルで固定する。poster と同じ
 // thumbnails/ 配下に置く（rel_path の名前空間の検査を増やさない）。
 func TestSeekTilesRelPath(t *testing.T) {
-	if got, want := seekTilesRelPath(7), "thumbnails/7_tiles.jpg"; got != want {
-		t.Errorf("seekTilesRelPath(7) = %q, want %q", got, want)
+	for _, tc := range []struct {
+		generation int64
+		want       string
+	}{
+		{generation: 0, want: "thumbnails/7_tiles.jpg"},
+		{generation: 1, want: "thumbnails/7_tiles.g1.jpg"},
+		{generation: 12, want: "thumbnails/7_tiles.g12.jpg"},
+	} {
+		if got := seekTilesRelPath(7, tc.generation); got != tc.want {
+			t.Errorf("seekTilesRelPath(7, %d) = %q, want %q", tc.generation, got, tc.want)
+		}
 	}
 }
 
@@ -349,6 +359,81 @@ func TestSeekTilesWorker_IdempotentRerun(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("seek_tiles rows = %d, want 1", count)
+	}
+}
+
+// Deleted seek_tiles keep their generation. A leftover output path from an
+// uncommitted publish also advances the candidate instead of being overwritten.
+func TestSeekTilesWorker_RecreatesAtUnusedGeneration(t *testing.T) {
+	pool := setupTestPool(t)
+	ctx := context.Background()
+	mediaDir := t.TempDir()
+	recordingID := dbtest.Recording(t, pool)
+	seedOriginalForSeekTiles(t, pool, mediaDir, recordingID, "shows/tiles-recreate.m2ts")
+	w := &SeekTilesWorker{
+		Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir,
+		ScratchDir: t.TempDir(), runCmd: (&countingRunCmd{duration: "30"}).run,
+	}
+	if err := runSeekTilesJob(t, w, recordingID); err != nil {
+		t.Fatalf("initial Work: %v", err)
+	}
+
+	var assetID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'seek_tiles'`, recordingID).Scan(&assetID); err != nil {
+		t.Fatalf("loading initial seek_tiles asset: %v", err)
+	}
+	var oldRelPath string
+	if err := pool.QueryRow(ctx, `SELECT rel_path FROM media_assets WHERE id = $1`, assetID).Scan(&oldRelPath); err != nil {
+		t.Fatalf("loading initial seek_tiles path: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET state = 'deleted', deleted_at = now() WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("tombstoning seek_tiles asset: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("tombstoning seek_tiles copy: %v", err)
+	}
+	oldAbs, err := mediapath.Resolve(mediaDir, oldRelPath)
+	if err != nil {
+		t.Fatalf("resolving tombstoned seek_tiles path: %v", err)
+	}
+	if err := os.Remove(oldAbs); err != nil {
+		t.Fatalf("removing tombstoned seek_tiles file: %v", err)
+	}
+
+	// Simulate a file left by a publish whose DB commit did not complete. The tombstone
+	// says generation 1 is next, so the occupied path advances it to generation 2.
+	orphanPath := seekTilesRelPath(recordingID, 1)
+	orphanAbs, err := mediapath.Resolve(mediaDir, orphanPath)
+	if err != nil {
+		t.Fatalf("resolving orphan seek_tiles path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(orphanAbs), 0o755); err != nil {
+		t.Fatalf("creating orphan seek_tiles directory: %v", err)
+	}
+	const orphanBytes = "left by an uncommitted publish"
+	if err := os.WriteFile(orphanAbs, []byte(orphanBytes), 0o644); err != nil {
+		t.Fatalf("writing orphan seek_tiles output: %v", err)
+	}
+
+	if err := runSeekTilesJob(t, w, recordingID); err != nil {
+		t.Fatalf("recreating seek_tiles: %v", err)
+	}
+	row, err := sqlcgen.New(pool).GetSeekTilesMediaAssetForServing(ctx, recordingID)
+	if err != nil {
+		t.Fatalf("loading recreated seek_tiles: %v", err)
+	}
+	if want := seekTilesRelPath(recordingID, 2); row.RelPath != want {
+		t.Errorf("recreated rel_path = %q, want %q", row.RelPath, want)
+	}
+	var generation int64
+	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, assetID).Scan(&generation); err != nil {
+		t.Fatalf("reading recreated generation: %v", err)
+	}
+	if generation != 2 {
+		t.Errorf("recreated generation = %d, want 2", generation)
+	}
+	if got, err := os.ReadFile(orphanAbs); err != nil || string(got) != orphanBytes {
+		t.Errorf("occupied generation path changed: got %q, err %v", got, err)
 	}
 }
 

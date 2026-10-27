@@ -27,7 +27,7 @@ CREATE TABLE media_asset_copies (
     created_at     timestamptz NOT NULL DEFAULT now(),
     deleted_at     timestamptz,
     CONSTRAINT media_asset_copies_store_check
-        CHECK (store = '' OR store ~ '^[a-z0-9][a-z0-9-]*$'),
+        CHECK (store = '' OR store ~ '^[a-z0-9-]+$'),
     CONSTRAINT media_asset_copies_asset_store_key UNIQUE (media_asset_id, store)
 );
 
@@ -59,6 +59,13 @@ ALTER TABLE missing_media_assets ADD CONSTRAINT missing_media_assets_pkey PRIMAR
 ALTER TABLE storage_sync DROP CONSTRAINT storage_sync_pkey;
 ALTER TABLE storage_sync ADD CONSTRAINT storage_sync_pkey PRIMARY KEY (store, root);
 
+-- Old binaries still target these single-column keys in ON CONFLICT while this
+-- add-only migration rolls out. Keep them until a later migration retires the
+-- legacy writers; the new composite keys serve current workers.
+CREATE UNIQUE INDEX orphan_files_rel_path_legacy_key ON orphan_files (rel_path);
+CREATE UNIQUE INDEX missing_media_assets_asset_id_legacy_key ON missing_media_assets (media_asset_id);
+CREATE UNIQUE INDEX storage_sync_root_legacy_key ON storage_sync (root);
+
 COMMENT ON TABLE media_asset_copies IS
     'Physical copies of logical media assets; an empty store marks rows that storage adopt has not assigned';
 COMMENT ON COLUMN media_assets.derived_generation IS
@@ -77,14 +84,17 @@ COMMENT ON COLUMN storage_sync.store IS
 -- +goose Down
 
 ALTER TABLE storage_sync DROP CONSTRAINT storage_sync_pkey;
+DROP INDEX storage_sync_root_legacy_key;
 ALTER TABLE storage_sync DROP COLUMN store;
 ALTER TABLE storage_sync ADD CONSTRAINT storage_sync_pkey PRIMARY KEY (root);
 
 ALTER TABLE missing_media_assets DROP CONSTRAINT missing_media_assets_pkey;
+DROP INDEX missing_media_assets_asset_id_legacy_key;
 ALTER TABLE missing_media_assets DROP COLUMN store;
 ALTER TABLE missing_media_assets ADD CONSTRAINT missing_media_assets_pkey PRIMARY KEY (media_asset_id);
 
 ALTER TABLE orphan_files DROP CONSTRAINT orphan_files_pkey;
+DROP INDEX orphan_files_rel_path_legacy_key;
 ALTER TABLE orphan_files DROP COLUMN store;
 ALTER TABLE orphan_files ADD CONSTRAINT orphan_files_pkey PRIMARY KEY (rel_path);
 

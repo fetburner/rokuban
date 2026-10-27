@@ -233,7 +233,16 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 			want: 8, wantRelPath: "20240101/a_cut.g8.mp4",
 		},
 		{
-			name:  "deleted tombstone",
+			name:  "deleted uncut tombstone",
+			input: store.EncodedPublishInput{Profile: "h264"},
+			state: store.EncodedPublishState{
+				Desired:      true,
+				EncodedAsset: &store.EncodedAssetObservation{State: "deleted", DerivedGeneration: 4},
+			},
+			want: 5, wantRelPath: "20240101/a_h264.u5.mp4",
+		},
+		{
+			name:  "deleted cut tombstone",
 			input: store.EncodedPublishInput{Profile: "cut", Cut: true, KeepRanges: keep, HasRebuildRequest: true, RequestedKeep: keep},
 			state: store.EncodedPublishState{
 				Desired: true, HasRebuildRequest: true, RebuildRequestKeep: keep,
@@ -248,7 +257,7 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 			if plan.skip || plan.generation != tc.want {
 				t.Fatalf("plan = {skip:%v generation:%d}, want generation %d", plan.skip, plan.generation, tc.want)
 			}
-			got, err := EncodedRelPath("20240101/a.m2ts", tc.input.Profile, "mp4", int(plan.generation))
+			got, err := EncodedRelPath("20240101/a.m2ts", tc.input.Profile, "mp4", int(plan.generation), tc.input.Cut)
 			if err != nil {
 				t.Fatalf("EncodedRelPath: %v", err)
 			}
@@ -263,14 +272,14 @@ func TestPlanEncodePublishUsesPersistedGeneration(t *testing.T) {
 // **同じパスへ上書きすると、生きている行の rel_path 部分一意索引と衝突し、
 // ストレージ契約の「置くのは一回」も破る。**
 func TestEncodedRelPath_Generation(t *testing.T) {
-	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1)
+	got, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 1, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
 	if want := "20240101/a_cut.g1.mp4"; got != want {
 		t.Errorf("EncodedRelPath = %q, want %q", got, want)
 	}
-	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2)
+	got2, err := EncodedRelPath("20240101/a.m2ts", "cut", "mp4", 2, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
@@ -278,7 +287,7 @@ func TestEncodedRelPath_Generation(t *testing.T) {
 		t.Errorf("generation 2 produced the same path as generation 1 (%q)", got2)
 	}
 	// generation 0 は従来のパス（cut でないプロファイル）。
-	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0)
+	plain, err := EncodedRelPath("20240101/a.m2ts", "h264", "mp4", 0, false)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
@@ -566,15 +575,15 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 
 func testLegacyDerivedGeneration(relPath string) *int64 {
 	stem := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
-	marker := strings.LastIndex(stem, ".g")
-	if marker < 0 {
+	_, generation, ok := config.SplitCutGeneration(stem)
+	if !ok {
+		_, generation, ok = config.SplitUncutGeneration(stem)
+	}
+	if !ok {
 		return nil
 	}
-	generation, err := strconv.ParseInt(stem[marker+2:], 10, 64)
-	if err != nil || generation <= 0 || strconv.FormatInt(generation, 10) != stem[marker+2:] {
-		return nil
-	}
-	return &generation
+	value := int64(generation)
+	return &value
 }
 
 // setFrozenCuts は media_asset_cuts を直接書く（commitCutEncoded がやることの

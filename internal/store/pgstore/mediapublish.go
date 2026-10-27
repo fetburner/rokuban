@@ -525,7 +525,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			return store.InPlaceResult{}, fmt.Errorf("in-place assets belong to different recordings: %d and %d: %w", recordingID, row.RecordingID, store.ErrConflict)
 		}
 		recordingID = row.RecordingID
-		if !row.Published {
+		if row.State == "deleted" {
 			continue
 		}
 		if row.Kind != asset.Kind || !sameStringPointer(row.Profile, asset.Profile) {
@@ -552,7 +552,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	for i, asset := range in.Assets {
 		if assets[i] != nil {
 			result.AssetIDs[i] = assets[i].ID
-			if err := upsertMediaAssetCopy(ctx, q, assets[i].ID, s.storeName, asset.RelPath); err != nil {
+			if err := upsertMediaAssetCopyState(ctx, q, assets[i].ID, s.storeName, asset.RelPath, assets[i].State); err != nil {
 				return store.InPlaceResult{}, fmt.Errorf("recording existing in-place media asset copy %q: %w", asset.RelPath, err)
 			}
 			continue
@@ -595,11 +595,20 @@ func upsertMediaAssetCopy(
 	assetID int64,
 	storeName, relPath string,
 ) error {
+	return upsertMediaAssetCopyState(ctx, q, assetID, storeName, relPath, "active")
+}
+
+func upsertMediaAssetCopyState(
+	ctx context.Context,
+	q *sqlcgen.Queries,
+	assetID int64,
+	storeName, relPath, state string,
+) error {
 	return q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        storeName,
 		RelPath:      relPath,
-		State:        "active",
+		State:        state,
 	})
 }
 

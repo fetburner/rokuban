@@ -124,6 +124,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -151,6 +152,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -163,6 +165,7 @@ ON CONFLICT (recording_id, kind, profile) DO UPDATE SET
     rel_path   = EXCLUDED.rel_path,
     size_bytes = EXCLUDED.size_bytes,
     derived_generation = EXCLUDED.derived_generation,
+    sha256     = NULL,
     state      = 'active',
     deleted_at = NULL,
     updated_at = now()
@@ -192,6 +195,7 @@ UPDATE media_assets
 SET rel_path   = sqlc.arg('rel_path'),
     size_bytes = sqlc.arg('size_bytes'),
     derived_generation = sqlc.arg('derived_generation'),
+    sha256     = NULL,
     updated_at = now()
 WHERE id = sqlc.arg('id')
   AND kind = 'thumbnail'

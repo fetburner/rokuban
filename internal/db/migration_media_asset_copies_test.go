@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -86,6 +87,38 @@ RETURNING id`, recordingID, fixture.kind, fixture.profile, fixture.path, fixture
 	if err := MigrateUp(ctx, dbURL); err != nil {
 		t.Fatalf("applying media asset copies migration: %v", err)
 	}
+
+	// Old workers keep using the former single-column conflict targets during a
+	// rolling update. Each statement must remain valid after the composite keys
+	// are installed.
+	legacyOrphanPath := fmt.Sprintf("legacy-writer-%d.m2ts", assets[0].id)
+	for range 2 {
+		if _, err := pool.Exec(ctx, `INSERT INTO orphan_files (rel_path) VALUES ($1) ON CONFLICT (rel_path) DO NOTHING`, legacyOrphanPath); err != nil {
+			t.Fatalf("legacy orphan upsert with old conflict target: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id) VALUES ($1) ON CONFLICT (media_asset_id) DO NOTHING`, assets[0].id); err != nil {
+			t.Fatalf("legacy missing-asset upsert with old conflict target: %v", err)
+		}
+		if _, err := pool.Exec(ctx, `INSERT INTO storage_sync (root, path, total_bytes, used_bytes, available_bytes, observed_at)
+VALUES ('media', '/legacy', 100, 25, 75, now())
+ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
+			t.Fatalf("legacy storage sync upsert with old conflict target: %v", err)
+		}
+	}
+	var legacyOrphanCount, legacyMissingCount, legacyStorageCount int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM orphan_files WHERE rel_path = $1`, legacyOrphanPath).Scan(&legacyOrphanCount); err != nil {
+		t.Fatalf("counting old-key orphan row: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM missing_media_assets WHERE media_asset_id = $1`, assets[0].id).Scan(&legacyMissingCount); err != nil {
+		t.Fatalf("counting old-key missing row: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM storage_sync WHERE root = 'media'`).Scan(&legacyStorageCount); err != nil {
+		t.Fatalf("counting old-key storage row: %v", err)
+	}
+	if legacyOrphanCount != 1 || legacyMissingCount != 1 || legacyStorageCount != 1 {
+		t.Fatalf("legacy conflict target rows = orphan %d / missing %d / storage %d, want 1 / 1 / 1", legacyOrphanCount, legacyMissingCount, legacyStorageCount)
+	}
+
 	for _, asset := range assets {
 		var generation *int64
 		if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, asset.id).Scan(&generation); err != nil {

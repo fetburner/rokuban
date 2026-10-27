@@ -293,7 +293,7 @@ func TestSeekTilesWorkerPublishesUnderRelPathLock(t *testing.T) {
 	id := prepareEncodeInput(t, pool, dbtest.Recording(t, pool), mediaDir, "sites/default/tiles-lock.m2ts", nil, []byte("original"))
 	cmd := &countingRunCmd{duration: "100"}
 	w := &SeekTilesWorker{Media: pgstoretest.Media(pool), Publisher: pgstoretest.Media(pool), MediaDir: mediaDir, ScratchDir: t.TempDir(), runCmd: cmd.run}
-	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id), true,
+	assertWorkerPublishesUnderRelPathLock(t, pool, mediaDir, id, "seek_tiles", seekTilesRelPath(id, 0), false,
 		func() error { return runSeekTilesJob(t, w, id) }, tinyJPEG)
 }
 

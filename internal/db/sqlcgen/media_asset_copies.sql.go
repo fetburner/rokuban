@@ -20,7 +20,24 @@ func (q *Queries) AdoptUnassignedIngestTemps(ctx context.Context, store string) 
 }
 
 const adoptUnassignedMediaAssetCopies = `-- name: AdoptUnassignedMediaAssetCopies :exec
-UPDATE media_asset_copies SET store = $1 WHERE store = ''
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+SELECT a.id, $1, a.rel_path, a.state, a.created_at, a.deleted_at
+FROM media_assets a
+WHERE EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id AND c.store = ''
+      )
+   OR NOT EXISTS (
+          SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+      )
+   OR EXISTS (
+          SELECT 1 FROM media_asset_copies c
+          WHERE c.media_asset_id = a.id AND c.store = $1
+      )
+ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    rel_path = EXCLUDED.rel_path,
+    state = EXCLUDED.state,
+    deleted_at = EXCLUDED.deleted_at
 `
 
 func (q *Queries) AdoptUnassignedMediaAssetCopies(ctx context.Context, store string) error {
@@ -58,6 +75,9 @@ func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) 
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
 SELECT
     (SELECT count(*) FROM media_asset_copies WHERE store = '')
+  + (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
+        SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
+    ))
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
   + (SELECT count(*) FROM orphan_files WHERE store = '')
   + (SELECT count(*) FROM missing_media_assets WHERE store = '')
@@ -72,24 +92,39 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	return count, err
 }
 
+const deleteUnassignedMediaAssetCopies = `-- name: DeleteUnassignedMediaAssetCopies :exec
+DELETE FROM media_asset_copies WHERE store = ''
+`
+
+func (q *Queries) DeleteUnassignedMediaAssetCopies(ctx context.Context) error {
+	_, err := q.db.Exec(ctx, deleteUnassignedMediaAssetCopies)
+	return err
+}
+
 const setMediaAssetCopyState = `-- name: SetMediaAssetCopyState :execrows
-UPDATE media_asset_copies
-SET state = $1,
-    deleted_at = CASE
-        WHEN $1::text = 'deleted' THEN COALESCE(deleted_at, now())
-        ELSE NULL
-    END
-WHERE media_asset_id = $2 AND store = $3
+INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
+SELECT a.id, $1, a.rel_path, $2, now(),
+       CASE WHEN $2::text = 'deleted' THEN COALESCE(a.deleted_at, now()) END
+FROM media_assets a
+WHERE a.id = $3
+ON CONFLICT (media_asset_id, store) DO UPDATE SET
+    rel_path = EXCLUDED.rel_path,
+    state = EXCLUDED.state,
+    deleted_at = EXCLUDED.deleted_at
 `
 
 type SetMediaAssetCopyStateParams struct {
+	Store        string
 	State        string
 	MediaAssetID int64
-	Store        string
 }
 
+// A pre-migration writer may have committed the legacy row without a copy row,
+// or changed its path while an old pod was still running. The configured store is
+// the legacy media_dir during this migration stage, so refresh that copy from the
+// logical row as part of the lifecycle transition.
 func (q *Queries) SetMediaAssetCopyState(ctx context.Context, arg SetMediaAssetCopyStateParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.State, arg.MediaAssetID, arg.Store)
+	result, err := q.db.Exec(ctx, setMediaAssetCopyState, arg.Store, arg.State, arg.MediaAssetID)
 	if err != nil {
 		return 0, err
 	}

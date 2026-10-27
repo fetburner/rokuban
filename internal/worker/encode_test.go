@@ -319,7 +319,7 @@ func TestBuildFFmpegArgs_NoOptional(t *testing.T) {
 }
 
 func TestEncodedRelPath(t *testing.T) {
-	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4", 0)
+	got, err := EncodedRelPath("20240101/120000_title_1024.m2ts", "h264", "mp4", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestEncodedRelPath(t *testing.T) {
 	// sites/{site}/ を引き継ぐ」を固定する。EncodedRelPath 自身には変更を入れて
 	// いない（pathDirSlash/pathBaseSlash が最後の "/" だけで dir/base を切るので、
 	// dir が何階層でも同じロジックで前置が引き継がれる）。
-	got, err = EncodedRelPath("sites/tokyo/20240101/120000_title_1024.m2ts", "h264", "mp4", 0)
+	got, err = EncodedRelPath("sites/tokyo/20240101/120000_title_1024.m2ts", "h264", "mp4", 0, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestEncodedRelPath(t *testing.T) {
 
 	// プロファイル名の ".." や "/" はパスに持ち込まない。サニタイズせずにエラーにする
 	// （config.ValidateEncodeProfileName と同じ規則）。
-	if got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv", 0); err == nil {
+	if got, err = EncodedRelPath("a.m2ts", "foo/../bar", "mkv", 0, false); err == nil {
 		t.Errorf("EncodedRelPath with a profile name containing / and .. = %q, want an error", got)
 	}
 }

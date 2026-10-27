@@ -399,20 +399,26 @@ func seedCutEncodedAsset(t *testing.T, pool *pgxpool.Pool) {
 		fixtureParams.Site = "home"
 	})
 
-	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1)
+	relPath, err := worker.EncodedRelPath("sites/home/a.m2ts", "cutp", "mp4", 1, true)
 	if err != nil {
 		t.Fatalf("EncodedRelPath: %v", err)
 	}
 	profile := "cutp"
 	generation := int64(1)
-	if _, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
+	assetID, err := sqlcgen.New(pool).UpsertEncodedMediaAsset(ctx, sqlcgen.UpsertEncodedMediaAssetParams{
 		RecordingID:       recordingID,
 		Profile:           &profile,
 		RelPath:           relPath,
 		SizeBytes:         1,
 		DerivedGeneration: &generation,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("UpsertEncodedMediaAsset: %v", err)
+	}
+	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
+		MediaAssetID: assetID, Store: "test-store", RelPath: relPath, State: "active",
+	}); err != nil {
+		t.Fatalf("UpsertMediaAssetCopy: %v", err)
 	}
 }
 
