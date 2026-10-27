@@ -120,7 +120,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 
 録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-hls.js の経路は、現在の世代の HLS 応答が 410 になったことを直接見て、詳細 API を取り直す。ネイティブ HLS の経路は、再生中に `currentTime` が `liveStallTimeoutMs` のあいだ進まなければ止まったとみなし、詳細 API を取り直す。WebKit は再生中の 410 を `<video>` の `error` にも `waiting` にも出さないので、イベントを待つだけでは止まりに気付かない。止まりは計器と同じ 1 秒の刻みで見て、別のタイマーは作らない。
+hls.js の経路は、現在の世代の HLS 応答が 410 になったことを直接見て、詳細 API を取り直す。ネイティブ HLS の経路は、再生中に `currentTime` が `liveStallTimeoutMs` のあいだ進まなければ止まったとみなし、詳細 API を取り直す。Playwright WebKit は再生中の 410 を `error` にせず、バッファの終わりで `waiting` の直後に進まない `playing` を出して、その後は何も出さない。そのため `stalled` / `waiting` で張るタイマーだけでは止まりに気付かない。止まりは計器と同じ 1 秒の刻みで見て、別のタイマーは作らない。
 
 どちらの経路でも、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
 
@@ -136,7 +136,7 @@ hls.js の経路は、現在の世代の HLS 応答が 410 になったことを
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
 - 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸: `recording-playback-timeline.mjs`
 - v1 → 空 → v2 の切り替えで、止まる直前の位置（±1 秒）から続けること: `recording-playback-timeline.mjs` の「世代の切り替え」
-- 上の 2 つの判定は Chrome と WebKit（`E2E_BROWSER=webkit`）で通る。WebKit では 410 の後もバッファの終わりまで再生し、そこから 1 秒刻みの検知が拾う
+- 上の 2 つの判定は Chrome と Playwright WebKit（`E2E_BROWSER=webkit`）で通る。Safari 実機は未測定。WebKit では 410 の後もバッファの終わりまで再生し、そこから 1 秒刻みの検知が拾う
 
 </details>
 
