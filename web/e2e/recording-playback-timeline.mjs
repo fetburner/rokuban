@@ -1133,7 +1133,9 @@ async function runRecordingApiHlsCheck() {
       }
     }
   }
-  if (picks.length < 2) ng.push(`途中シークの判定に使える整数 px が見つからない (picks=${picks.length}, width=${box.width}, axisMax=${axisMax})`)
+  // 1 px が 1 フレームより長い（CI は起動が遅く時間軸が 50 秒近くなり、約 47 ms）と、窓に入る px が無い
+  // 目印がある。seekable 内の 4 つの目印のうち 1 つでも見つかれば判定できる。
+  if (picks.length < 1) ng.push(`途中シークの判定に使える整数 px が見つからない (picks=${picks.length}, width=${box.width}, axisMax=${axisMax})`)
   for (const { marker, x, seconds } of picks) {
     await page.mouse.click(x, box.y + box.height / 2)
     const landed = await page.waitForFunction(({ slot, from, to }) => {
