@@ -236,7 +236,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 
 	// --- rescue ---
 	// 実際の入口（RescueLatest）を通す: 世代の完成判定 → 選択 → 復元まで。
-	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestExportRescue_RoundTrip(t *testing.T) {
 	}
 
 	// --- idempotent second pass ---
-	result2, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result2, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest second: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestRescueLegacyDocumentSynthesizesTSScanFromDropStats(t *testing.T) {
 		t.Fatalf("write legacy catalog: %v", err)
 	}
 
-	result, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, legacyPath)
+	result, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, "test-store", legacyPath)
 	if err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
@@ -640,7 +640,7 @@ func TestExport_ConcurrentIngestStaysConsistent(t *testing.T) {
 	if _, err := Write(mediaDir, lastDoc, 7, nil); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if _, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}); err != nil {
+	if _, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}); err != nil {
 		t.Fatalf("RescueLatest after concurrent export: %v", err)
 	}
 }

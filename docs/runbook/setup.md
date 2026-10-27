@@ -139,6 +139,19 @@ chown できない共有ストレージ（一部の NAS 等）では、代わり
 
 `recording_hls.enabled` のために `storage.media_store_name` を設定済みの構成は、この照合を含む版をデプロイした直後から、`adopt` するまで ingest・encode・削除がすべて見送られる。`rokuban_store_marker_mismatch_total{store}` が増える。`storage adopt` は新しい版にしか無いので、デプロイ後に実行する。デプロイした版のイメージで、media root と設定ファイルを worker と同じ構成でマウントし、`rokuban storage adopt <設定済みの名前>` を実行する。`adopt` は設定済みの名前と異なる名前を受け付けず、既存の同名の目印は成功として扱う。
 
+コピー表を持たない版から録画を持つ構成を移すときの順序は次のとおりである。
+
+1. `rokuban migrate up` で DB を移行する
+2. 旧 worker を止める
+3. `rokuban storage adopt <store-name>` を実行する。media root と設定ファイルは worker と同じ構成にし、DB にも接続できるようにする
+4. 新しい worker を起動する
+
+新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
+
+worker ロールは `storage.media_store_name` を必須にした。この設定を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
+
+旧 worker が `adopt` の後も動いていると、次のことが起きる。新しい論理資産にはコピー行が作られず、次の起動時の検査が数える。既存の資産のコピーは旧 worker が進めたパスと状態に追いつかず、古いまま残る。encode の派生物の世代は、旧 worker がパスだけを進めて `derived_generation` を進めないので、新しい worker が同じ世代のパスを採りうる。旧 worker を止めてから `adopt` をもう一度実行すると、コピーのパス・状態と世代が追いつく。
+
 置き場の名前は変えられない。名前を変えるときは、新しい置き場として導入し直す。
 
 ## 定期ジョブの周期とヒント

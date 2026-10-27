@@ -86,7 +86,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 			defer resume()
 			done := make(chan error, 1)
 			go func() {
-				_, err := catalog.RescueLatest(ctx, pgstoretest.Catalog(rescuePool, []string{"default"}...), pgstoretest.Media(rescuePool), mediaDir, []string{"default"})
+				_, err := catalog.RescueLatest(ctx, pgstoretest.Catalog(rescuePool, []string{"default"}...), pgstoretest.Media(rescuePool), mediaDir, "test-store", []string{"default"})
 				done <- err
 			}()
 			select {
@@ -127,7 +127,7 @@ func TestRescueDeletionSerialization(t *testing.T) {
 				t.Fatalf("state after deletion = %q", state)
 			}
 			if mode == "catalog" {
-				result, err := catalog.RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+				result, err := catalog.RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 				if err != nil {
 					t.Fatal(err)
 				}

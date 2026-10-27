@@ -39,7 +39,7 @@ func TestRescueCatalogMissingFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, nil)
+		result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,7 +91,7 @@ func TestRescueScanCandidateRemoved(t *testing.T) {
 		}
 		return info, nil
 	}
-	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -40,13 +40,13 @@ END;
 CREATE TABLE media_asset_copies (
     id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     media_asset_id bigint      NOT NULL REFERENCES media_assets (id) ON DELETE CASCADE,
-    store          text        NOT NULL DEFAULT '',
+    store          text        NOT NULL,
     rel_path       text        NOT NULL,
     state          text        NOT NULL CHECK (state IN ('pending', 'active', 'deleting', 'deleted')),
     created_at     timestamptz NOT NULL DEFAULT now(),
     deleted_at     timestamptz,
     CONSTRAINT media_asset_copies_store_check
-        CHECK (store = '' OR store ~ '^[a-z0-9-]+$'),
+        CHECK (store ~ '^[a-z0-9-]+$'),
     CONSTRAINT media_asset_copies_asset_store_key UNIQUE (media_asset_id, store)
 );
 
@@ -54,11 +54,8 @@ CREATE INDEX media_asset_copies_media_asset_id_idx ON media_asset_copies (media_
 CREATE UNIQUE INDEX media_asset_copies_store_rel_path_idx
     ON media_asset_copies (store, rel_path) WHERE state <> 'deleted';
 
--- Empty store is an explicit, unadopted value. storage adopt assigns the existing
--- physical rows after writing the root marker.
-INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
-SELECT id, '', rel_path, state, created_at, deleted_at
-FROM media_assets;
+-- No copy row is created here: a logical asset without a copy is the unassigned
+-- state. storage adopt creates the copies after writing the root marker.
 
 ALTER TABLE recording_ingest_progress
     ADD COLUMN temp_store text NOT NULL DEFAULT '';
@@ -86,7 +83,7 @@ CREATE UNIQUE INDEX missing_media_assets_asset_id_legacy_key ON missing_media_as
 CREATE UNIQUE INDEX storage_sync_root_legacy_key ON storage_sync (root);
 
 COMMENT ON TABLE media_asset_copies IS
-    'Physical copies of logical media assets; an empty store marks rows that storage adopt has not assigned';
+    'Physical copies of logical media assets; an asset without a copy row has not been assigned by storage adopt';
 COMMENT ON COLUMN media_assets.derived_generation IS
     'Monotonic generation for derived output paths; NULL for original assets';
 COMMENT ON COLUMN media_assets.sha256 IS

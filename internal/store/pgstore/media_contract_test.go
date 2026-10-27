@@ -103,15 +103,15 @@ WHERE a.recording_id = $1 AND a.kind = 'original'`, recordingID,
 func newMediaStoreContractFixture(t *testing.T) contracttest.MediaFixture {
 	pool := testutil.SetupDB(t)
 	fixture := contracttest.MediaFixture{
-		Serving:   NewMedia(pool),
-		Reconcile: NewMedia(pool),
-		Precheck:  NewMedia(pool),
-		Storage:   NewMedia(pool),
-		Reader:    NewMedia(pool),
+		Serving:   NewMedia(pool, "tokyo"),
+		Reconcile: NewMedia(pool, "tokyo"),
+		Precheck:  NewMedia(pool, "tokyo"),
+		Storage:   NewMedia(pool, "tokyo"),
+		Reader:    NewMedia(pool, "tokyo"),
 		Query:     NewRecordings(pool),
-		Catalog:   NewCatalog(pool, []string{store.DefaultSite}),
-		Publisher: NewMedia(pool),
-		Progress:  NewMedia(pool),
+		Catalog:   NewCatalog(pool, []string{store.DefaultSite}, "tokyo"),
+		Publisher: NewMedia(pool, "tokyo"),
+		Progress:  NewMedia(pool, "tokyo"),
 		Chapters:  NewAnalysis(pool),
 		Site:      store.DefaultSite,
 		NewRecording: func(t *testing.T) int64 {

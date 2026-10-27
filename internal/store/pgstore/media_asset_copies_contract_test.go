@@ -22,8 +22,27 @@ func TestAdoptUnassignedStoreRows(t *testing.T) {
 	media := NewMedia(pool, "tokyo")
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
+	// マイグレーション直後の論理資産はコピー行を持たない（未割り当て）。
+	if _, err := pool.Exec(ctx, `DELETE FROM media_asset_copies WHERE media_asset_id = $1`, assetID); err != nil {
+		t.Fatalf("removing fixture copy to simulate an unassigned asset: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'sites/default/legacy-updated.m2ts', size_bytes = 20 WHERE id = $1`, assetID); err != nil {
 		t.Fatalf("simulating legacy path update before adoption: %v", err)
+	}
+	// 既に指定置き場のコピーがある資産は、旧 worker が進めた旧列のパスへ同期される。
+	syncedRecording := dbtest.Recording(t, pool)
+	syncedAssetID := dbtest.MediaAsset(t, pool, syncedRecording)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, syncedAssetID); err != nil {
+		t.Fatalf("assigning fixture copy to tokyo: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE media_assets SET rel_path = 'sites/default/synced-updated.m2ts' WHERE id = $1`, syncedAssetID); err != nil {
+		t.Fatalf("simulating legacy path update on an assigned asset: %v", err)
+	}
+	// 別の置き場だけにコピーがある資産には adopt は触れない。
+	otherRecording := dbtest.Recording(t, pool)
+	otherAssetID := dbtest.MediaAsset(t, pool, otherRecording)
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'osaka' WHERE media_asset_id = $1`, otherAssetID); err != nil {
+		t.Fatalf("assigning fixture copy to osaka: %v", err)
 	}
 	legacyWriterRecording := dbtest.Recording(t, pool)
 	var legacyWriterAssetID int64
@@ -45,7 +64,7 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 		t.Fatalf("simulating old writer advancing derived path: %v", err)
 	}
 
-	legacy := NewMedia(pool)
+	legacy := NewMedia(pool, "tokyo")
 	if err := legacy.UpsertIngestProgress(ctx, store.IngestProgress{
 		RecordingID: recordingID, WrittenBytes: 10, TempRelPath: "sites/default/.rokuban-ingest-test", TempGeneration: 1,
 	}); err != nil {
@@ -74,7 +93,6 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 	}
 
 	for _, tableAndColumn := range [][2]string{
-		{"media_asset_copies", "store"},
 		{"recording_ingest_progress", "temp_store"},
 		{"orphan_files", "store"},
 		{"missing_media_assets", "store"},
@@ -104,6 +122,7 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 	}
 	for assetID, wantRelPath := range map[int64]string{
 		assetID:             "sites/default/legacy-updated.m2ts",
+		syncedAssetID:       "sites/default/synced-updated.m2ts",
 		legacyWriterAssetID: "sites/default/legacy-inserted.m2ts",
 		derivedAssetID:      "sites/default/advanced_cut.g5.mp4",
 	} {
@@ -114,6 +133,14 @@ RETURNING id`, derivedRecordingID).Scan(&derivedAssetID); err != nil {
 		if gotRelPath != wantRelPath {
 			t.Errorf("adopted copy %d path = %q, want %q", assetID, gotRelPath, wantRelPath)
 		}
+	}
+	var otherCopies int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'osaka'`, otherAssetID).Scan(&otherCopies); err != nil || otherCopies != 1 {
+		t.Fatalf("osaka-only copy count = %d (err %v), want 1 untouched", otherCopies, err)
+	}
+	var tokyoOfOther int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1 AND store = 'tokyo'`, otherAssetID).Scan(&tokyoOfOther); err != nil || tokyoOfOther != 0 {
+		t.Fatalf("tokyo copies of an osaka-only asset = %d (err %v), want 0", tokyoOfOther, err)
 	}
 	var generation int64
 	if err := pool.QueryRow(ctx, `SELECT derived_generation FROM media_assets WHERE id = $1`, derivedAssetID).Scan(&generation); err != nil {
@@ -134,7 +161,7 @@ func TestListStorageSyncWithoutConfiguredStoreIncludesNamedObservations(t *testi
 		t.Fatalf("recording worker storage observation: %v", err)
 	}
 
-	apiMedia := NewMedia(pool)
+	apiMedia := NewMedia(pool, "tokyo")
 	rows, err := apiMedia.ListStorageSync(ctx)
 	if err != nil {
 		t.Fatalf("listing storage observations without configured store: %v", err)
@@ -149,7 +176,7 @@ func TestMediaAssetCopyTracksDeleteLifecycle(t *testing.T) {
 	ctx := context.Background()
 	recordingID := dbtest.Recording(t, pool)
 	assetID := dbtest.MediaAsset(t, pool, recordingID)
-	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1 AND store = ''`, assetID); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE media_asset_copies SET store = 'tokyo' WHERE media_asset_id = $1`, assetID); err != nil {
 		t.Fatalf("assigning fixture copy store: %v", err)
 	}
 	media := NewMedia(pool, "tokyo")
@@ -316,6 +343,7 @@ func TestDerivedMediaAssetReplacementsClearCatalogSHA256(t *testing.T) {
 	assertDigestCleared(seekTilesID)
 }
 
+// この段の読み手は旧列を読む: コピー表から取るのは store だけで、rel_path は media_assets のまま。
 func TestCatalogExportSelectsStoreCopyAndKeepsFullInventory(t *testing.T) {
 	pool := testutil.SetupDB(t)
 	ctx := context.Background()
@@ -370,11 +398,11 @@ func TestCatalogExportSelectsStoreCopyAndKeepsFullInventory(t *testing.T) {
 	gotOsaka := byRecording(mediaAssetCopyRows(osaka.MediaAssets))
 	for recordingID := range assets {
 		wantSHA := shaByRecording[recordingID]
-		if got := gotTokyo[recordingID]; got.store != "tokyo" || got.relPath != fmt.Sprintf("tokyo/%d.m2ts", recordingID) || got.sha256 != wantSHA {
-			t.Errorf("tokyo catalog asset for recording %d = %+v, want tokyo copy and SHA %s", recordingID, got, wantSHA)
+		if got := gotTokyo[recordingID]; got.store != "tokyo" || got.relPath != fmt.Sprintf("legacy/%d.m2ts", recordingID) || got.sha256 != wantSHA {
+			t.Errorf("tokyo catalog asset for recording %d = %+v, want tokyo store, legacy rel_path and SHA %s", recordingID, got, wantSHA)
 		}
-		if got := gotOsaka[recordingID]; got.store != "osaka" || got.relPath != fmt.Sprintf("osaka/%d.m2ts", recordingID) || got.sha256 != wantSHA {
-			t.Errorf("osaka catalog asset for recording %d = %+v, want osaka copy and SHA %s", recordingID, got, wantSHA)
+		if got := gotOsaka[recordingID]; got.store != "osaka" || got.relPath != fmt.Sprintf("legacy/%d.m2ts", recordingID) || got.sha256 != wantSHA {
+			t.Errorf("osaka catalog asset for recording %d = %+v, want osaka store, legacy rel_path and SHA %s", recordingID, got, wantSHA)
 		}
 	}
 }
@@ -409,5 +437,32 @@ func assertLogicalAndCopyState(t *testing.T, pool *pgxpool.Pool, assetID int64, 
 	}
 	if logicalState != wantLogical || copyState != wantCopy {
 		t.Fatalf("logical/copy state = %q/%q, want %q/%q", logicalState, copyState, wantLogical, wantCopy)
+	}
+}
+
+// profile を持つ kind（encoded は profile ごとに複数行）は単一の世代を持たない。
+// :one が任意の行を返さず「無い」を返すことを固定する。
+func TestGetDerivedMediaAssetGenerationIgnoresKindsWithProfiles(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	ctx := context.Background()
+	recordingID := dbtest.Recording(t, pool)
+	for profile, generation := range map[string]int64{"h264": 3, "h265": 7} {
+		if _, err := pool.Exec(ctx, `
+INSERT INTO media_assets (recording_id, kind, profile, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'encoded', $2, $3, 1, $4)`, recordingID, profile, "sites/default/"+profile+".mp4", generation); err != nil {
+			t.Fatalf("seeding encoded %s: %v", profile, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+INSERT INTO media_assets (recording_id, kind, rel_path, size_bytes, derived_generation)
+VALUES ($1, 'thumbnail', 'thumbnails/x.g4.jpg', 1, 4)`, recordingID); err != nil {
+		t.Fatalf("seeding thumbnail: %v", err)
+	}
+	media := NewMedia(pool, "tokyo")
+	if got, found, err := media.GetDerivedMediaAssetGeneration(ctx, recordingID, "encoded"); err != nil || found {
+		t.Fatalf("encoded generation = %d, found %v, err %v; want not found", got, found, err)
+	}
+	if got, found, err := media.GetDerivedMediaAssetGeneration(ctx, recordingID, "thumbnail"); err != nil || !found || got != 4 {
+		t.Fatalf("thumbnail generation = %d, found %v, err %v; want 4", got, found, err)
 	}
 }

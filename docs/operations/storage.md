@@ -24,13 +24,13 @@ ingest を引く worker は起動時に、実際の操作列が一度成功す�
 
 worker は ingest キューを購読する起動時に、temp 作成、file `fsync`、`Close`、同一ディレクトリ内 rename、親ディレクトリ `fsync` の順で probe を行う。この probe は、実際の操作列が一度成功することだけを確認する。パス文字列から FS の種類や意味論を推測する検査ではない。
 
-`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。`storage.media_store_name` が空の構成では照合しない。
+`storage.media_store_name` を設定すると、worker は起動時と、ファイルシステム操作や DB への記録の前に `.rokuban-store` を照合する。照合する場面は [missing-assets.md](../storage/missing-assets.md) の「検出の安全弁」にある。目印の内容が設定と一致しないか、目印を読み取れないときは、その操作を見送る。見送るたびに `rokuban_store_marker_mismatch_total{store}` が増える。worker ロールでは `storage.media_store_name` が必須で、worker 以外で空の構成では照合しない。
 
 見送る操作は、ingest・encode・サムネイル・シークタイル・catalog の書き込みと、ファイルの削除・欠損の記録・孤児の回収である。
 
 目印を確認できないまま起動した worker は、ingest probe を保留する。probe は `media_dir/sites` を作る書き込みなので、最初の ingest ジョブが目印の照合を通った後に 1 回だけ走る。失敗した probe は固定せず、次の ingest ジョブが再試行する。
 
-目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印だけを書き、既存ファイルの割り当てはしない。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
+目印は `rokuban storage adopt <store-name>` で作る。このコマンドは目印を書き、DB にも接続して、コピーの無い論理資産と `store` が空の観測行をその置き場に割り当てる。同じ名前の目印への再実行は成功し、異なる名前の目印は上書きしない。置き場の名前変更は未対応である。
 
 導入と、`media_store_name` を設定済みの構成の移行手順は [runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 

@@ -18,7 +18,7 @@ func TestCatalogContract(t *testing.T) {
 	contracttest.RunCatalog(t, func(t *testing.T) contracttest.CatalogFixture {
 		pool := testutil.SetupDB(t)
 		siteNames := []string{"site-b", "default", "site-a", "site-b"}
-		catalogStore := NewCatalog(pool, siteNames)
+		catalogStore := NewCatalog(pool, siteNames, "tokyo")
 		revisionStore := NewReservations(pool)
 		return contracttest.CatalogFixture{
 			Store:                  catalogStore,
@@ -170,5 +170,5 @@ func TestNewCatalogRequiresSiteNames(t *testing.T) {
 			t.Fatal("NewCatalog did not panic without site names")
 		}
 	}()
-	NewCatalog(nil, nil)
+	NewCatalog(nil, nil, "")
 }

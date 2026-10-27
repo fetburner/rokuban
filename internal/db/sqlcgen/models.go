@@ -201,7 +201,7 @@ type MediaAsset struct {
 	Sha256 []byte
 }
 
-// Physical copies of logical media assets; an empty store marks rows that storage adopt has not assigned
+// Physical copies of logical media assets; an asset without a copy row has not been assigned by storage adopt
 type MediaAssetCopy struct {
 	ID           int64
 	MediaAssetID int64

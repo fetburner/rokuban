@@ -204,7 +204,7 @@ CREATE TABLE recording_ingest_progress (
 );
 ```
 
-`temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。空の `temp_store` は移行前の未割り当てで、`storage adopt <store-name>` が埋める。worker は空の置き場が残っている間、処理を開始しない。
+`temp_rel_path` は media root からの相対パスで、`temp_store` は一時ファイルがある置き場を示す。`temp_store` が空の行は移行前の行で、`storage adopt <store-name>` が埋める。`temp_store` が空の行が残る間、worker は起動を拒む。
 
 `temp_generation` は `ingest_temp_generation_seq` から採番する。世代が要るのは、作り直した temp は前と違うバイト列でありうるので、前の temp から作ったセグメントを同じ再生 URL で配らないためである。世代が変わるのは「この試行で temp を作った」ときと「進捗行が無い」ときの 2 つだけで、replay や SHA-256 待ちをまたいでも同じ値を使う。原本の行は commit のときにこの世代を進捗行から写すので、進捗行が無いと commit できない。
 

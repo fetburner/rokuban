@@ -149,6 +149,7 @@ SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
 FROM media_assets
 WHERE recording_id = $1
   AND kind = $2
+  AND profile IS NULL
 `
 
 type GetDerivedMediaAssetGenerationParams struct {
@@ -157,6 +158,7 @@ type GetDerivedMediaAssetGenerationParams struct {
 }
 
 // GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+// Only kinds without a profile (thumbnail, seek_tiles) have a single row.
 func (q *Queries) GetDerivedMediaAssetGeneration(ctx context.Context, arg GetDerivedMediaAssetGenerationParams) (int64, error) {
 	row := q.db.QueryRow(ctx, getDerivedMediaAssetGeneration, arg.RecordingID, arg.Kind)
 	var derived_generation int64

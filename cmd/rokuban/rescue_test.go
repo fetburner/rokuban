@@ -38,7 +38,7 @@ func TestRunRescue_FallsBackAndReportsSkippedGeneration(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 		t.Fatalf("runRescue: %v", err)
 	}
 	got := out.String()
@@ -57,7 +57,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 
 	t.Run("no catalog at all", func(t *testing.T) {
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), newRescueTestMediaDir(t), []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), newRescueTestMediaDir(t), "test-store", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "catalog not found") {
@@ -73,7 +73,7 @@ func TestRunRescue_DistinguishesNoCatalogFromNoCompleteGeneration(t *testing.T) 
 		}
 
 		var out bytes.Buffer
-		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+		if err := runRescue(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 			t.Fatalf("runRescue: %v", err)
 		}
 		if !strings.Contains(out.String(), "no complete catalog generation") {
@@ -159,7 +159,7 @@ func TestRunRescue_ReportsMissingCatalogFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	if err := runRescue(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"}, &out); err != nil {
+	if err := runRescue(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"}, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "warning: 1 media file(s) missing; not restored as active") {

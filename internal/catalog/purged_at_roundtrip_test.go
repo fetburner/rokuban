@@ -63,7 +63,7 @@ func TestExportRescue_PreservesPurgedAt(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, path); err != nil {
+	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, "test-store", path); err != nil {
 		t.Fatalf("RescueFile: %v", err)
 	}
 

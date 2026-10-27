@@ -82,7 +82,7 @@ func TestRescueFile_MalformedSnapshotIsSkippedAndAssetsSurvive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := RescueFile(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), dir, path)
+	res, err := RescueFile(context.Background(), pgstoretest.Catalog(pool, []string{"default"}...), dir, "test-store", path)
 	if err != nil {
 		t.Fatalf("RescueFile: %v（壊れた 1 行で rescue 全体を止めてはならない）", err)
 	}

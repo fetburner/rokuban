@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/reservation"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
 	"github.com/fetburner/rokuban/internal/testutil"
@@ -17,7 +18,7 @@ import (
 // existing rel_path / event-identity idempotency).
 func TestImportLibrary_IdempotentRerun(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newMarkedMediaDir(t)
 	if err := os.MkdirAll(filepath.Join(mediaDir, "sites", "default", "imported"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +35,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
 	}}
 
-	first, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "default", items)
+	first, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "default", items)
 	if err != nil {
 		t.Fatalf("first ImportLibrary: %v", err)
 	}
@@ -42,7 +43,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 		t.Fatalf("first.Registered = %d, want 1", first.Registered)
 	}
 
-	second, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "default", items)
+	second, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "default", items)
 	if err != nil {
 		t.Fatalf("second ImportLibrary: %v", err)
 	}
@@ -78,7 +79,7 @@ func TestImportLibrary_IdempotentRerun(t *testing.T) {
 // `rokuban import epgstation` run crash-loops the worker on next restart.
 func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newMarkedMediaDir(t)
 	if err := os.MkdirAll(filepath.Join(mediaDir, "sites", "tokyo", "imported"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestImportLibrary_OriginalRelPathGetsSitePrefix(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
 	}}
 
-	if _, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "tokyo", items); err != nil {
+	if _, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "tokyo", items); err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}
 
@@ -119,7 +120,7 @@ func TestImportLibrary_RejectsReservedOriginalFilename(t *testing.T) {
 	} {
 		t.Run(reservedPath, func(t *testing.T) {
 			pool := testutil.SetupDB(t)
-			mediaDir := t.TempDir()
+			mediaDir := newMarkedMediaDir(t)
 			fullPath := filepath.Join(mediaDir, "sites", "tokyo", filepath.FromSlash(reservedPath))
 			if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 				t.Fatal(err)
@@ -136,7 +137,7 @@ func TestImportLibrary_RejectsReservedOriginalFilename(t *testing.T) {
 				VideoFiles:  []LibraryVideoFile{{Type: "ts", RelPath: reservedPath}},
 			}}
 
-			if _, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "tokyo", items); err == nil {
+			if _, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "tokyo", items); err == nil {
 				t.Fatal("ImportLibrary accepted a reserved original filename")
 			} else if !strings.Contains(err.Error(), "reserved storage filename") {
 				t.Fatalf("ImportLibrary error = %v, want reserved storage filename", err)
@@ -157,7 +158,7 @@ func TestImportLibrary_RejectsReservedOriginalFilename(t *testing.T) {
 // with a warning rather than registered under a fabricated profile name.
 func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newMarkedMediaDir(t)
 	if err := os.WriteFile(filepath.Join(mediaDir, "show.mp4"), []byte("bytes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +172,7 @@ func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 		VideoFiles:  []LibraryVideoFile{{Type: "encoded", RelPath: "show.mp4"}},
 	}}
 
-	result, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "default", items)
+	result, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "default", items)
 	if err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}
@@ -192,7 +193,7 @@ func TestImportLibrary_EncodedTypeSkippedWithWarning(t *testing.T) {
 // the whole item (and, with it, every later item in the batch).
 func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
 	pool := testutil.SetupDB(t)
-	mediaDir := t.TempDir()
+	mediaDir := newMarkedMediaDir(t)
 	if err := os.WriteFile(filepath.Join(mediaDir, "thumb1.jpg"), []byte("a"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +213,7 @@ func TestImportLibrary_MultipleThumbnails_ImportsFirstAndWarns(t *testing.T) {
 		},
 	}}
 
-	result, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "default", items)
+	result, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, "test-store", "default", items)
 	if err != nil {
 		t.Fatalf("ImportLibrary: %v", err)
 	}
@@ -261,5 +262,39 @@ func TestSyntheticEventID_DeterministicAndDistinct(t *testing.T) {
 	b := syntheticEventID("番組B", 1785001800000)
 	if a1 == b {
 		t.Errorf("different names produced the same synthetic event id: %d", a1)
+	}
+}
+
+func newMarkedMediaDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := mediapath.WriteStoreMarker(dir, "test-store"); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
+	return dir
+}
+
+// 目印と違う名前・空の名前では、書く前に止まり、行を作らない。
+func TestImportLibrary_RefusesStoreNameThatDoesNotMatchMarker(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	mediaDir := newMarkedMediaDir(t) // 目印は "test-store"
+	if err := os.MkdirAll(filepath.Join(mediaDir, "sites", "default", "imported"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mediaDir, "sites", "default", "imported", "show.ts"), []byte("bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	items := []LibraryItem{{
+		ChannelID: 3273601024, ChannelType: "GR", StartAt: 1785000000000, EndAt: 1785001800000, Name: "番組A",
+		VideoFiles: []LibraryVideoFile{{Type: "ts", RelPath: "imported/show.ts"}},
+	}}
+	for _, name := range []string{"other-store", ""} {
+		if _, err := ImportLibrary(context.Background(), pgstoretest.Media(pool), mediaDir, name, "default", items); err == nil {
+			t.Fatalf("ImportLibrary(store %q) succeeded, want refusal before writing", name)
+		}
+		var count int
+		if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM recordings`).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("recordings after refused import (store %q) = %d (err %v), want 0", name, count, err)
+		}
 	}
 }

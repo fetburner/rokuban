@@ -566,7 +566,7 @@ func seedEncodedAsset(t *testing.T, pool *pgxpool.Pool, recordingID int64, profi
 		t.Fatalf("seeding encoded media_asset: %v", err)
 	}
 	if err := sqlcgen.New(pool).UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
-		MediaAssetID: assetID, Store: "", RelPath: relPath, State: "active",
+		MediaAssetID: assetID, Store: dbtest.StoreName, RelPath: relPath, State: "active",
 	}); err != nil {
 		t.Fatalf("seeding encoded media_asset copy: %v", err)
 	}

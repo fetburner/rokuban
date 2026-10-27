@@ -35,12 +35,12 @@ func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantR
 	if err := pool.QueryRow(context.Background(), `
 SELECT store, rel_path, state
 FROM media_asset_copies
-	WHERE media_asset_id = $1 AND store = ''`, assetID,
+	WHERE media_asset_id = $1 AND store = $2`, assetID, dbtest.StoreName,
 	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
-		t.Fatalf("reading media asset copy %d in the unassigned store: %v", assetID, err)
+		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, dbtest.StoreName, err)
 	}
 	if gotRelPath != wantRelPath || gotState != "active" {
-		t.Fatalf("media asset copy = %q/%q/%q, want unassigned store/%q/active", gotStore, gotRelPath, gotState, wantRelPath)
+		t.Fatalf("media asset copy = %q/%q/%q, want %s/%q/active", gotStore, gotRelPath, gotState, dbtest.StoreName, wantRelPath)
 	}
 }
 

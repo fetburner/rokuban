@@ -63,7 +63,7 @@ func TestExportRescue_RoundTripsLabelRules(t *testing.T) {
 		t.Fatalf("hits after losing the rules = %d (err %v), want 0", hits, err)
 	}
 
-	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+	result, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 	if err != nil {
 		t.Fatalf("RescueLatest: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestRescue_WaitsForLabelRuleReevaluationLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, []string{"default"})
+		_, err := RescueLatest(ctx, pgstoretest.Catalog(pool, []string{"default"}...), pgstoretest.Media(pool), mediaDir, "test-store", []string{"default"})
 		done <- err
 	}()
 	select {

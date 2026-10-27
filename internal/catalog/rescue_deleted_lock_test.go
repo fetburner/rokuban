@@ -36,7 +36,7 @@ func TestRescueFile_DoesNotLockDeletedAssets(t *testing.T) {
 	defer func() { _ = held.Close() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, filepath.Join(genDir, DocumentFilename)); err != nil {
+	if _, err := RescueFile(ctx, pgstoretest.Catalog(pool, []string{"default"}...), mediaDir, "test-store", filepath.Join(genDir, DocumentFilename)); err != nil {
 		t.Fatalf("RescueFile blocked on a deleted asset's lock: %v", err)
 	}
 }

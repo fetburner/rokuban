@@ -100,7 +100,7 @@ SELECT status FROM record_sync WHERE site = $1 AND record_id = $2`, site, record
 			}
 		}
 		return contracttest.RecordObservationFixture{
-			Store: NewRecordings(pool), Catalog: NewCatalog(pool, []string{"contract-site"}),
+			Store: NewRecordings(pool), Catalog: NewCatalog(pool, []string{"contract-site"}, "tokyo"),
 			Reservations: NewReservations(pool), RulerPass: NewReservations(pool), Rules: NewRules(pool, []string{"contract-site"}),
 			IngestTarget: NewRecordings(pool), Backlog: NewRecordings(pool), NewObservation: newObservation,
 			SeedProgramSnapshot: seedProgramSnapshot, SeedRecordSync: seedRecordSync, SeedReservation: seedReservation,

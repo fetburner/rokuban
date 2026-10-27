@@ -385,7 +385,7 @@ func runCanonicalOrphanSurvives(
 		t.Fatalf("writing commit temp: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
-		"INSERT INTO orphan_files (rel_path, first_seen) VALUES ($1, now())", relPath); err != nil {
+		"INSERT INTO orphan_files (store, rel_path, first_seen) VALUES ('test-store', $1, now())", relPath); err != nil {
 		t.Fatalf("seeding orphan record: %v", err)
 	}
 	t.Cleanup(func() {

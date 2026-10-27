@@ -545,13 +545,13 @@ func roundTripCatalogDocument() *catalogdoc.Document {
 		}},
 		MediaAssets: []catalogdoc.MediaAsset{{
 			ID: 40, RecordingID: 30, Kind: "original", RelPath: "sites/default/round-trip.m2ts",
-			SizeBytes: 100, State: "active", CreatedAt: at, UpdatedAt: at,
+			SizeBytes: 100, State: "active", CreatedAt: at, UpdatedAt: at, Store: "test-store",
 		}, {
 			ID: 41, RecordingID: 30, Kind: "encoded", Profile: &profile, RelPath: "sites/default/round-trip.mp4",
-			SizeBytes: 80, State: "active", CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration,
+			SizeBytes: 80, State: "active", CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration, Store: "test-store",
 		}, {
 			ID: 42, RecordingID: 30, Kind: "encoded", Profile: &deletedProfile, RelPath: "sites/default/deleted.mp4",
-			SizeBytes: 70, State: "deleted", DeletedAt: &deletedAt, CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration,
+			SizeBytes: 70, State: "deleted", DeletedAt: &deletedAt, CreatedAt: at, UpdatedAt: at, DerivedGeneration: &zeroGeneration, Store: "test-store",
 		}},
 		DropStats:                  []catalogdoc.DropStat{{MediaAssetID: 40, Pid: 256, Packets: 100, Drops: 2, Errors: 1, Scrambled: 0, PidType: &pidType}},
 		DropPositions:              []catalogdoc.DropPosition{{MediaAssetID: 40, ByteOffset: 188, Pid: 256, ElapsedMs: &elapsed}},

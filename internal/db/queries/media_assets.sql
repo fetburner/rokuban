@@ -72,11 +72,13 @@ WHERE recording_id = $1
   AND profile = $2;
 
 -- GetDerivedMediaAssetGeneration returns the current counter, including tombstones.
+-- Only kinds without a profile (thumbnail, seek_tiles) have a single row.
 -- name: GetDerivedMediaAssetGeneration :one
 SELECT COALESCE(derived_generation, 0)::bigint AS derived_generation
 FROM media_assets
 WHERE recording_id = sqlc.arg('recording_id')
-  AND kind = sqlc.arg('kind');
+  AND kind = sqlc.arg('kind')
+  AND profile IS NULL;
 
 -- 置き換えの同一 tx 内でパスとサイズを差し替える。**行は消さない** --- 消して
 -- 作り直すと rel_path の部分一意索引から一瞬外れ、その隙間に別の行が同じパスを

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
+	"github.com/fetburner/rokuban/internal/db/dbtest"
 	"github.com/fetburner/rokuban/internal/db/sqlcgen"
 	"github.com/fetburner/rokuban/internal/metrics"
 	"github.com/fetburner/rokuban/internal/store/pgstore/pgstoretest"
@@ -22,7 +23,7 @@ func runStorageSync(t *testing.T, w *StorageSyncWorker) error {
 
 func allStorageSync(t *testing.T, pool *pgxpool.Pool) []sqlcgen.StorageSync {
 	t.Helper()
-	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background(), "")
+	rows, err := sqlcgen.New(pool).ListStorageSync(context.Background(), dbtest.StoreName)
 	if err != nil {
 		t.Fatalf("ListStorageSync: %v", err)
 	}

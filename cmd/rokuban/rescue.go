@@ -46,7 +46,8 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 			defer pool.Close()
 
 			siteNames := registryNames(cfg.Registry())
-			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, cfg.Storage.MediaStoreName), pgstore.NewMedia(pool, cfg.Storage.MediaStoreName), cfg.Storage.MediaDir, siteNames, cmd.OutOrStdout())
+			storeName := cfg.Storage.MediaStoreName
+			return runRescue(ctx, pgstore.NewCatalog(pool, siteNames, storeName), pgstore.NewMedia(pool, storeName), cfg.Storage.MediaDir, storeName, siteNames, cmd.OutOrStdout())
 		},
 	}
 	return cmd
@@ -55,11 +56,13 @@ MP4 / MKV / WebM を既存位置のまま素の asset として登録する。�
 // runRescue は catalog 復元の本体。cobra の RunE は配線に留め、DB / ファイル
 // 操作はここに閉じ込める（runEnqueue と同じ切り出し）。
 //
+// storeName は storage.media_store_name で、media_dir の目印と照合してから使う（RescueLatest）。
+//
 // registrySites は `mirakcs:` レジストリの site 名一覧
 // （catalog.RescueLatest 参照。ストレージ走査で見つけた sites/{site}/ 前置の
 // site がタイポかどうかの判定に使う）。
-func runRescue(ctx context.Context, catalogStore store.Catalog, mediaPublish store.MediaPublish, mediaDir string, registrySites []string, out io.Writer) error {
-	result, err := catalog.RescueLatest(ctx, catalogStore, mediaPublish, mediaDir, registrySites)
+func runRescue(ctx context.Context, catalogStore store.Catalog, mediaPublish store.MediaPublish, mediaDir, storeName string, registrySites []string, out io.Writer) error {
+	result, err := catalog.RescueLatest(ctx, catalogStore, mediaPublish, mediaDir, storeName, registrySites)
 	if err != nil {
 		return err
 	}

@@ -23,11 +23,7 @@ const adoptUnassignedMediaAssetCopies = `-- name: AdoptUnassignedMediaAssetCopie
 INSERT INTO media_asset_copies (media_asset_id, store, rel_path, state, created_at, deleted_at)
 SELECT a.id, $1, a.rel_path, a.state, a.created_at, a.deleted_at
 FROM media_assets a
-WHERE EXISTS (
-          SELECT 1 FROM media_asset_copies c
-          WHERE c.media_asset_id = a.id AND c.store = ''
-      )
-   OR NOT EXISTS (
+WHERE NOT EXISTS (
           SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
       )
    OR EXISTS (
@@ -74,8 +70,7 @@ func (q *Queries) AdoptUnassignedStorageSync(ctx context.Context, store string) 
 
 const countUnassignedStorageRows = `-- name: CountUnassignedStorageRows :one
 SELECT
-    (SELECT count(*) FROM media_asset_copies WHERE store = '')
-  + (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
+    (SELECT count(*) FROM media_assets a WHERE NOT EXISTS (
         SELECT 1 FROM media_asset_copies c WHERE c.media_asset_id = a.id
     ))
   + (SELECT count(*) FROM recording_ingest_progress WHERE temp_store = '')
@@ -90,15 +85,6 @@ func (q *Queries) CountUnassignedStorageRows(ctx context.Context) (int32, error)
 	var count int32
 	err := row.Scan(&count)
 	return count, err
-}
-
-const deleteUnassignedMediaAssetCopies = `-- name: DeleteUnassignedMediaAssetCopies :exec
-DELETE FROM media_asset_copies WHERE store = ''
-`
-
-func (q *Queries) DeleteUnassignedMediaAssetCopies(ctx context.Context) error {
-	_, err := q.db.Exec(ctx, deleteUnassignedMediaAssetCopies)
-	return err
 }
 
 const reconcileDerivedGenerationFromLegacyPaths = `-- name: ReconcileDerivedGenerationFromLegacyPaths :exec

@@ -48,7 +48,7 @@ rescue は、同じトランザクションの末尾で全件を再評価して�
 
 #### 復元の書き込み順
 
-書き込み順は、録画 → 論理メディア資産と物理コピー → チャプターの所有 2 表 → ドロップ統計 → ドロップ位置 → TS 計測記録である。区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。そのため rescue の 2 回目は衝突を無視して受ける。素の INSERT だと、同じ区間が自分自身と衝突して、1 世代まるごと復元できなくなる。
+書き込み順は、録画 → 論理資産と物理コピー → チャプターの所有 2 表 → ドロップ統計 → ドロップ位置 → TS 計測記録である。区間の表は主キーを持たず、重なりを EXCLUDE が禁じている。そのため rescue の 2 回目は衝突を無視して受ける。素の INSERT だと、同じ区間が自分自身と衝突して、1 世代まるごと復元できなくなる。
 
 TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。古い catalog にこの配列が無い場合、ドロップ統計がある原本は計測済みとして復元し、サイズには当時のメディア資産のサイズを使う。ドロップ統計のない原本は未計測のままにし、復旧後の TS 計測ジョブが読み直す。
 
@@ -63,15 +63,15 @@ TS 計測記録は、原本ごとに TS 計測時のサイズを記録する。�
 
 ### catalog エクスポート
 
-各ファイルシステム置き場は、全録画の復旧情報を自身のルートに保持する。
+どの置き場の catalog からでも、全録画のコアデータを復旧できる。
 
-worker の定期ジョブが、このコアデータを JSON で各ファイルシステム置き場の catalog 配下に書き出す。各 catalog は全録画を含み、メディア資産には物理コピーの `store` と任意の SHA-256 を記録する。日次で書き、世代を保持する。メディアが生き残る障害では、その置き場の catalog も一緒に生き残る。
+worker の定期ジョブが、このコアデータを JSON で各置き場の catalog 配下に書き出す。各 catalog は全録画を含み、メディア資産には物理コピーの `store` と任意の SHA-256 を記録する。日次で書き、世代を保持する。メディアが生き残る障害では、その置き場の catalog も一緒に生き残る。
 
-catalog は `media_asset_cuts` の keep 区間を含めない。encoded のファイル名にある `.g{n}` / `.u{n}` は profile の cut 意味だけを rescue 後も判別できるようにする。
+catalog は `media_asset_cuts` の keep 区間を含めない。
 
-古い catalog に `store` が無い場合、rescue は media root の `.rokuban-store` を割り当て先として使う。現在の置き場にある資産だけを実体確認し、別の置き場のファイルが無いことを欠損とは扱わない。既存 catalog の JSON キーを追加するだけなので、schemaVersion は据え置く。
+rescue が書く置き場の名前は `storage.media_store_name` の 1 つだけで、media root の目印と一致しなければ、何も書かずに止まる。古い catalog に `store` が無いときは、この名前を割り当てる。実体を確認するのは、この置き場にある資産だけである。別の置き場のファイルが無いことは欠損とは扱わない。既存の catalog に JSON キーを足すだけなので、schemaVersion は据え置く。
 
-新しい worker の起動前に、旧 worker を止めてから `rokuban storage adopt <store-name>` を実行する。adopt は空のコピーを割り当て、旧 writer が作ったコピー欠落を補い、指定置き場のパス・状態・派生世代を同期する。旧 worker が動いたまま adopt すると、その後の旧書き込みがコピー表から外れる。
+移行時に `rokuban storage adopt` を実行する順序は、[runbook/setup.md](../runbook/setup.md) の「置き場の目印」にある。
 
 書き出しに失敗したときは River の再試行を使わず、次の日次投入で書き直す。それまでは前の世代が最新の catalog として残る。
 
@@ -81,7 +81,7 @@ catalog は `media_asset_cuts` の keep 区間を含めない。encoded のフ�
 
 - 書き出し先: `catalog/`
 - 差し替えても公開点にならない名前: `latest`
-- adopt による旧 writer のパス・状態・派生世代の同期: `TestAdoptUnassignedStoreRows`
+- 目印と違う名前では書く前に止まる: `TestRescueLatest_RefusesStoreNameThatDoesNotMatchMarker`
 
 </details>
 

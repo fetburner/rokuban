@@ -43,6 +43,9 @@ type RescueResult struct {
 // ファイルを素の asset として in-place 登録する。前置の無いファイルは登録しない。
 // どの経路もファイル本体はコピー・変更しない。
 //
+// storeName は今回の rescue が書く置き場の名前で、mediaDir の目印と一致しなければ
+// 何も書かずに ErrStoreMarkerMismatch で止まる（同名を pgstore.NewMedia にも渡すこと）。
+//
 // registrySites は `mirakcs:` レジストリの site 名一覧。ストレージ走査で
 // `sites/{site}/` 前置から site を読んだとき、その site がレジストリに
 // 無ければ typo/ゴミディレクトリの疑いがあるとして Warn で目立たせる
@@ -51,9 +54,12 @@ func RescueLatest(
 	ctx context.Context,
 	catalogStore store.Catalog,
 	mediaPublish store.MediaPublish,
-	mediaDir string,
+	mediaDir, storeName string,
 	registrySites []string,
 ) (*RescueResult, error) {
+	if err := mediapath.RequireStoreMarker(mediaDir, storeName); err != nil {
+		return nil, fmt.Errorf("checking media store marker before rescue: %w", err)
+	}
 	sel, err := SelectLatest(mediaDir)
 	if sel != nil {
 		for _, rejected := range sel.Rejected {
@@ -76,7 +82,7 @@ func RescueLatest(
 		}
 		return nil, err
 	}
-	result, err := RescueFile(ctx, catalogStore, mediaDir, sel.DocumentPath)
+	result, err := RescueFile(ctx, catalogStore, mediaDir, storeName, sel.DocumentPath)
 	if err != nil {
 		return nil, err
 	}
@@ -89,15 +95,14 @@ func RescueLatest(
 // store に渡して冪等 upsert する。存在しないファイルの行は deleted として復元する。
 //
 // 書き込み順は store.Catalog.Restore の実装（pgstore.Catalog.Restore）にあり、
-// 全部 1 トランザクションで、途中失敗なら何も残さない。
-func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, path string) (*RescueResult, error) {
+// 全部 1 トランザクションで、途中失敗なら何も残さない。storeName は RescueLatest と同じ。
+func RescueFile(ctx context.Context, catalogStore store.Catalog, mediaDir, storeName, path string) (*RescueResult, error) {
+	if err := mediapath.RequireStoreMarker(mediaDir, storeName); err != nil {
+		return nil, fmt.Errorf("checking media store marker before rescue: %w", err)
+	}
 	doc, err := Load(path)
 	if err != nil {
 		return nil, err
-	}
-	storeName, err := mediapath.ReadStoreMarker(mediaDir)
-	if err != nil {
-		return nil, fmt.Errorf("reading media store marker: %w", err)
 	}
 	for i := range doc.MediaAssets {
 		asset := &doc.MediaAssets[i]

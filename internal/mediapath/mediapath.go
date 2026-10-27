@@ -95,6 +95,15 @@ func CheckStoreMarker(mediaDir, expected string) error {
 	return nil
 }
 
+// RequireStoreMarker は name が有効な置き場名で、mediaDir の目印と一致することを確認する。
+// CheckStoreMarker と違い、空の name は検査省略ではなくエラーにする（置き場を決めずに書かせない）。
+func RequireStoreMarker(mediaDir, name string) error {
+	if !ValidStoreName(name) {
+		return fmt.Errorf("invalid media store name %q: set storage.media_store_name", name)
+	}
+	return CheckStoreMarker(mediaDir, name)
+}
+
 // ReadStoreMarker は mediaDir の置き場名を返す。
 func ReadStoreMarker(mediaDir string) (string, error) {
 	markerPath := filepath.Join(mediaDir, StoreMarkerFileName)

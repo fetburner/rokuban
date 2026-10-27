@@ -24,16 +24,13 @@ type Media struct {
 	storeName string
 }
 
-// NewMedia は PostgreSQL を使う Media を作る。
-func NewMedia(pool *pgxpool.Pool, storeNames ...string) *Media {
-	var storeName string
-	if len(storeNames) > 0 {
-		storeName = storeNames[0]
-	}
+// NewMedia は PostgreSQL を使う Media を作る。storeName はこのプロセスが書く置き場の名前。
+// コピーを書かないロール（api のみ）は "" を明示する。
+func NewMedia(pool *pgxpool.Pool, storeName string) *Media {
 	return &Media{pool: pool, storeName: storeName}
 }
 
-// AdoptUnassignedStoreRows は空の store を割り当て、旧 writer が作ったコピー欠落を補い、
+// AdoptUnassignedStoreRows はコピーの無い論理資産にコピーを作り、指定置き場の既存コピーを同期し、
 // パス・状態・派生世代を media_assets から同期する（TestAdoptUnassignedStoreRows）。
 func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	if !mediapath.ValidStoreName(s.storeName) {
@@ -50,9 +47,6 @@ func (s *Media) AdoptUnassignedStoreRows(ctx context.Context) error {
 	}
 	if err := q.ReconcileDerivedGenerationFromLegacyPaths(ctx); err != nil {
 		return fmt.Errorf("reconciling legacy derived media generations: %w", err)
-	}
-	if err := q.DeleteUnassignedMediaAssetCopies(ctx); err != nil {
-		return fmt.Errorf("removing unassigned media asset copies: %w", err)
 	}
 	if err := q.AdoptUnassignedIngestTemps(ctx, s.storeName); err != nil {
 		return fmt.Errorf("assigning unowned ingest temps: %w", err)

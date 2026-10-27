@@ -1037,7 +1037,7 @@ func TestThumbnailWorker_NoUsableInputKeepsThumbnailWithoutError(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id) VALUES ($1)`, originalID); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO missing_media_assets (media_asset_id, store) VALUES ($1, 'test-store')`, originalID); err != nil {
 		t.Fatal(err)
 	}
 

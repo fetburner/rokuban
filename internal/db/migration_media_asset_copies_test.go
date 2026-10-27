@@ -134,28 +134,16 @@ ON CONFLICT (root) DO UPDATE SET path = EXCLUDED.path`); err != nil {
 	for _, asset := range assets {
 		assertMigratedAssetGeneration(t, pool, asset.id, asset.relPath, asset.wantGeneration, asset.generationNull)
 
-		var copyStore, copyRelPath, copyState string
-		var copyDeletedAt *time.Time
-		if err := pool.QueryRow(ctx, `
-SELECT store, rel_path, state, deleted_at FROM media_asset_copies WHERE media_asset_id = $1`, asset.id).
-			Scan(&copyStore, &copyRelPath, &copyState, &copyDeletedAt); err != nil {
-			t.Fatalf("reading backfilled copy for %s: %v", asset.kind, err)
+		// コピー行が無いことが未割り当てを表す。マイグレーションは行を作らない。
+		var copies int
+		if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies WHERE media_asset_id = $1`, asset.id).Scan(&copies); err != nil {
+			t.Fatalf("counting copies for %s: %v", asset.kind, err)
 		}
-		if copyStore != "" || copyRelPath != asset.relPath || copyState != asset.state {
-			t.Errorf("backfilled copy for %s = %q/%q/%q, want blank store and legacy path/state %q/%q", asset.kind, copyStore, copyRelPath, copyState, asset.relPath, asset.state)
-		}
-		if asset.state == "deleted" && copyDeletedAt == nil {
-			t.Errorf("backfilled deleted copy for %s has no deleted_at", asset.kind)
+		if copies != 0 {
+			t.Errorf("%s has %d copy row(s) after migration, want none until storage adopt", asset.kind, copies)
 		}
 	}
 
-	var copyCount int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM media_asset_copies`).Scan(&copyCount); err != nil {
-		t.Fatalf("counting backfilled copies: %v", err)
-	}
-	if copyCount != len(assets) {
-		t.Fatalf("backfilled copies = %d, want %d", copyCount, len(assets))
-	}
 }
 
 func assertMigratedAssetGeneration(t *testing.T, pool *pgxpool.Pool, assetID int64, relPath string, want int64, wantNull bool) {

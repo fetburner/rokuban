@@ -55,19 +55,17 @@ SELECT * FROM recording_purge_requests ORDER BY recording_id;
 -- name: CatalogListRecordingWatched :many
 SELECT * FROM recording_watched ORDER BY recording_id;
 
+-- この段の読み手は旧列から rel_path / state / deleted_at を読む。コピー表から取るのは store だけ。
 -- name: CatalogListMediaAssets :many
 SELECT a.id, a.recording_id, a.kind, a.profile,
-       COALESCE(c.rel_path, a.rel_path)::text AS rel_path,
-       a.size_bytes,
-       COALESCE(c.state, a.state)::text AS state,
-       COALESCE(c.deleted_at, a.deleted_at) AS deleted_at,
+       a.rel_path, a.size_bytes, a.state, a.deleted_at,
        a.created_at, a.updated_at,
        COALESCE(a.derived_generation, 0)::bigint AS derived_generation,
        a.sha256,
        COALESCE(c.store, sqlc.arg('store_name'))::text AS store
 FROM media_assets a
 LEFT JOIN LATERAL (
-    SELECT copy.store, copy.rel_path, copy.state, copy.deleted_at
+    SELECT copy.store
     FROM media_asset_copies copy
     WHERE copy.media_asset_id = a.id
     ORDER BY (copy.store = sqlc.arg('store_name')) DESC, copy.store

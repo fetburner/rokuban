@@ -147,8 +147,8 @@ func TestCMLogoCandidateWorkerFailuresBecomeFailedRowsAndAreNotRequeued(t *testi
 			seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(942))) // desired を真に保つ別の原本
 			gone := seedCMDetectionState(t, pool, mediaDir, dbtest.Recording(t, pool, cmRecordingOptions(943)))
 			if _, err := pool.Exec(context.Background(), `
-				INSERT INTO missing_media_assets (media_asset_id)
-				SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, gone); err != nil {
+				INSERT INTO missing_media_assets (media_asset_id, store)
+				SELECT id, 'test-store' FROM media_assets WHERE recording_id = $1 AND kind = 'original'`, gone); err != nil {
 				t.Fatal(err)
 			}
 			return tools, gone
