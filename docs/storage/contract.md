@@ -47,6 +47,8 @@ rel_path lock は media root の `.rokuban-locks/` に置く。この directory 
 
 ingest は canonical path を転送中に触らない。HEAD の長さと、存在する場合は `content.sha256` を照合してから、temp を `fsync` して `Close` する。次に DB transaction 内で original 行を INSERT して rel_path を予約し、上書きしない atomic rename で temp を canonical に置いて親ディレクトリを `fsync` する。宛先に同じ内容の canonical file がある場合は既存 file を再利用し、異なる内容なら置き換えずエラーにする。
 
+既存 file の照合は filesystem lock の下で DB transaction を始める前に行う。大きな canonical file の SHA-256 読み取りが 1 回の slice を超えた場合は、そのハッシュ状態から次の試行で再開する。これにより、照合の読み取り中に DB transaction を開いたままにしない。
+
 Linux では `renameat2(RENAME_NOREPLACE)` を使う。対象 FS がこの flag を実装している必要があり、NFS での対応は未検証である。
 
 <details><summary>根拠</summary>

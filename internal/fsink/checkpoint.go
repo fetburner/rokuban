@@ -16,7 +16,7 @@ import (
 const (
 	checkpointSuffix       = ".checkpoint"
 	checkpointHeader       = 17
-	checkpointMaxHashState = 256
+	checkpointMaxHashState = 8192
 )
 
 var checkpointMagic = [4]byte{'R', 'K', 'I', 'B'}
@@ -33,6 +33,10 @@ func CheckpointPath(tempPath string) string {
 // 呼び出し元は temp の flock を保持し、先に temp を Sync 済みにする。
 // check は一時ファイルの作成前に一度呼ぶ。nil なら呼ばない。
 func WriteCheckpoint(tempPath string, offset int64, hasher hash.Hash, check func() error) error {
+	return writeCheckpointPath(CheckpointPath(tempPath), offset, hasher, check)
+}
+
+func writeCheckpointPath(checkpointPath string, offset int64, hasher hash.Hash, check func() error) error {
 	if offset < 0 {
 		return fmt.Errorf("checkpoint offset must be non-negative, got %d", offset)
 	}
@@ -57,7 +61,6 @@ func WriteCheckpoint(tempPath string, offset int64, hasher hash.Hash, check func
 	checksum := sha256.Sum256(payload[:checkpointHeader+len(state)])
 	copy(payload[checkpointHeader+len(state):], checksum[:])
 
-	checkpointPath := CheckpointPath(tempPath)
 	if check != nil {
 		if err := check(); err != nil {
 			return err
@@ -104,7 +107,11 @@ func writeAll(w io.Writer, b []byte) error {
 // RestoreCheckpoint は有効な checkpoint を hasher に復元する。
 // 欠落・破損・temp より先を指す状態は無効扱いにし、全量 replay へ戻す。
 func RestoreCheckpoint(tempPath string, tempSize int64, hasher hash.Hash) (int64, bool) {
-	data, err := os.ReadFile(CheckpointPath(tempPath))
+	return restoreCheckpointPath(CheckpointPath(tempPath), tempSize, hasher)
+}
+
+func restoreCheckpointPath(checkpointPath string, tempSize int64, hasher hash.Hash) (int64, bool) {
+	data, err := os.ReadFile(checkpointPath)
 	if err != nil || len(data) < checkpointHeader+sha256.Size {
 		return 0, false
 	}
@@ -197,6 +204,80 @@ func ReplayTempFileWithCheckpoint(ctx context.Context, tempPath string, temp Fil
 	}
 	if total != want {
 		return total, false, fmt.Errorf("temp file changed during replay: read=%d size=%d", total, want)
+	}
+	return total, true, nil
+}
+
+// ReplayFileWithCheckpoint は読み取り専用ファイルをチェックポイントからハッシュする。
+// filesystem identity が前回から変わった場合は checkpoint を使わず先頭から読む。
+// context が完了した場合は途中位置を保存してから返す。
+func ReplayFileWithCheckpoint(ctx context.Context, path, checkpointBase string, hasher hash.Hash, check func() error) (int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return 0, false, fmt.Errorf("stating file for replay: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return 0, false, fmt.Errorf("file for replay must be regular, got %s", info.Mode())
+	}
+	want := info.Size()
+	if want < 0 {
+		return 0, false, fmt.Errorf("file for replay has negative size %d", want)
+	}
+	identity := fileIdentity(path, info)
+
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false, fmt.Errorf("opening file for replay: %w", err)
+	}
+	openedInfo, statErr := f.Stat()
+	if statErr != nil || !os.SameFile(info, openedInfo) {
+		_ = f.Close()
+		if statErr != nil {
+			return 0, false, fmt.Errorf("stating opened file for replay: %w", statErr)
+		}
+		return 0, false, fmt.Errorf("file changed before replay")
+	}
+	offset, complete, replayErr := replayReaderWithCheckpoint(ctx, f, want, CheckpointPath(checkpointBase), identity, hasher, check)
+	closeErr := f.Close()
+	if replayErr != nil {
+		return offset, false, errors.Join(replayErr, closeErr)
+	}
+	if closeErr != nil {
+		return offset, false, fmt.Errorf("closing file after replay: %w", closeErr)
+	}
+	return offset, complete, nil
+}
+
+func replayReaderWithCheckpoint(ctx context.Context, source io.ReadSeeker, size int64, checkpointPath, identity string, hasher hash.Hash, check func() error) (int64, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, false, err
+	}
+	identified := &identifiedHash{Hash: hasher, identity: identity}
+	offset, restored := restoreCheckpointPath(checkpointPath, size, identified)
+	if !restored {
+		hasher.Reset()
+		offset = 0
+	}
+	if _, err := source.Seek(offset, io.SeekStart); err != nil {
+		return offset, false, fmt.Errorf("seeking file for replay: %w", err)
+	}
+	reader := &replayReader{ctx: ctx, r: io.LimitReader(source, size-offset)}
+	n, copyErr := io.Copy(identified, reader)
+	total := offset + n
+	if ctx.Err() != nil && total < size {
+		if err := writeCheckpointPath(checkpointPath, total, identified, check); err != nil {
+			return total, false, fmt.Errorf("saving checkpoint after interrupted file replay: %w", err)
+		}
+		return total, false, ctx.Err()
+	}
+	if copyErr != nil {
+		return total, false, fmt.Errorf("replaying file: %w", copyErr)
+	}
+	if total != size {
+		return total, false, fmt.Errorf("file changed during replay: read=%d size=%d", total, size)
 	}
 	return total, true, nil
 }

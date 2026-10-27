@@ -168,7 +168,7 @@ func TestRenameNoReplaceMovesFileWhenCanonicalDoesNotExist(t *testing.T) {
 	}
 }
 
-func TestRenameNoReplaceReusesIdenticalExistingFileWithoutOverwriting(t *testing.T) {
+func TestRenameNoReplaceNeverTreatsExistingIdenticalFileAsRenamed(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "temp")
 	dst := filepath.Join(dir, "canonical")
@@ -180,15 +180,110 @@ func TestRenameNoReplaceReusesIdenticalExistingFileWithoutOverwriting(t *testing
 		t.Fatal(err)
 	}
 
-	if err := RenameNoReplace(src, dst); err != nil {
-		t.Fatalf("RenameNoReplace() with identical destination error = %v", err)
+	err := RenameNoReplace(src, dst)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("RenameNoReplace() with identical destination error = %v, want os.ErrExist", err)
 	}
-	if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("source stat error = %v, want os.ErrNotExist", err)
+	if _, err := os.Stat(src); err != nil {
+		t.Errorf("source temp stat error = %v, want it to remain", err)
 	}
 	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, content) {
 		t.Fatalf("canonical file = (%q, %v), want unchanged content", got, err)
 	}
+}
+
+func TestVerifyExistingFileMatchesCanonicalContent(t *testing.T) {
+	dir := t.TempDir()
+	temp := filepath.Join(dir, "temp")
+	dst := filepath.Join(dir, "canonical")
+	content := []byte("same completed content")
+	if err := os.WriteFile(temp, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(content)
+
+	reused, err := VerifyExistingFile(context.Background(), temp, dst, int64(len(content)), digest[:], nil)
+	if err != nil || !reused {
+		t.Fatalf("VerifyExistingFile() = (%v, %v), want (true, nil)", reused, err)
+	}
+	if _, err := os.Stat(temp); err != nil {
+		t.Errorf("source temp stat error = %v, want it to remain until DB commit", err)
+	}
+	if got, err := os.ReadFile(dst); err != nil || !bytes.Equal(got, content) {
+		t.Errorf("canonical file = (%q, %v), want unchanged content", got, err)
+	}
+}
+
+func TestReplayFileWithCheckpointResumesAfterContextCancellation(t *testing.T) {
+	data := bytes.Repeat([]byte("verify-this-content"), 4096)
+	checkpoint := filepath.Join(t.TempDir(), "canonical.checkpoint")
+	ctx, cancel := context.WithCancel(context.Background())
+	reader := &cancelAfterReadSeeker{
+		ReadSeeker: bytes.NewReader(data),
+		cancel:     cancel,
+		cancelAt:   32 << 10,
+	}
+
+	hasher := sha256.New()
+	offset, complete, err := replayReaderWithCheckpoint(ctx, reader, int64(len(data)), checkpoint, "canonical-v1", hasher, nil)
+	if !errors.Is(err, context.Canceled) || complete {
+		t.Fatalf("first replay = (%d, %v, %v), want incomplete cancellation", offset, complete, err)
+	}
+	if offset == 0 || offset >= int64(len(data)) {
+		t.Fatalf("checkpoint offset = %d, want partial progress", offset)
+	}
+
+	resumedReader := &countingReadSeeker{ReadSeeker: bytes.NewReader(data)}
+	resumedHasher := sha256.New()
+	got, complete, err := replayReaderWithCheckpoint(context.Background(), resumedReader, int64(len(data)), checkpoint, "canonical-v1", resumedHasher, nil)
+	if err != nil || !complete || got != int64(len(data)) {
+		t.Fatalf("resumed replay = (%d, %v, %v), want complete", got, complete, err)
+	}
+	if want := int64(len(data)) - offset; resumedReader.read != want {
+		t.Errorf("resumed bytes read = %d, want %d after checkpoint restore", resumedReader.read, want)
+	}
+	if got, want := hex.EncodeToString(resumedHasher.Sum(nil)), digest(data); got != want {
+		t.Errorf("resumed SHA-256 = %s, want %s", got, want)
+	}
+
+	changedIdentityReader := &countingReadSeeker{ReadSeeker: bytes.NewReader(data)}
+	changedIdentityHasher := sha256.New()
+	if _, complete, err := replayReaderWithCheckpoint(context.Background(), changedIdentityReader, int64(len(data)), checkpoint, "canonical-v2", changedIdentityHasher, nil); err != nil || !complete {
+		t.Fatalf("replay after identity change = (complete=%v, err=%v), want complete", complete, err)
+	}
+	if changedIdentityReader.read != int64(len(data)) {
+		t.Errorf("bytes read after identity change = %d, want full size %d", changedIdentityReader.read, len(data))
+	}
+}
+
+type cancelAfterReadSeeker struct {
+	io.ReadSeeker
+	cancel   context.CancelFunc
+	cancelAt int64
+	read     int64
+}
+
+func (r *cancelAfterReadSeeker) Read(p []byte) (int, error) {
+	n, err := r.ReadSeeker.Read(p)
+	r.read += int64(n)
+	if r.read >= r.cancelAt {
+		r.cancel()
+	}
+	return n, err
+}
+
+type countingReadSeeker struct {
+	io.ReadSeeker
+	read int64
+}
+
+func (r *countingReadSeeker) Read(p []byte) (int, error) {
+	n, err := r.ReadSeeker.Read(p)
+	r.read += int64(n)
+	return n, err
 }
 
 func TestRemoveTempRemovesTempAndCheckpoint(t *testing.T) {
@@ -199,10 +294,13 @@ func TestRemoveTempRemovesTempAndCheckpoint(t *testing.T) {
 	if err := os.WriteFile(CheckpointPath(path), []byte("checkpoint"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(CheckpointPath(VerificationCheckpointPath(path)), []byte("verification checkpoint"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := RemoveTemp(path); err != nil {
 		t.Fatalf("RemoveTemp() error = %v", err)
 	}
-	for _, candidate := range []string{path, CheckpointPath(path)} {
+	for _, candidate := range []string{path, CheckpointPath(path), CheckpointPath(VerificationCheckpointPath(path))} {
 		if _, err := os.Stat(candidate); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("stat(%q) error = %v, want os.ErrNotExist", candidate, err)
 		}

@@ -2494,6 +2494,61 @@ func TestIngestWorker_DoesNotOverwriteExistingCanonicalOrphan(t *testing.T) {
 	}
 }
 
+func TestIngestWorker_ReusesMatchingCanonicalOrphan(t *testing.T) {
+	tsData := makeTSData(50)
+	const recordID = "rec-reuse-orphan"
+	fake := newFullTransferFake(t, recordID, tsData, "test/reuse-orphan.m2ts")
+	mediaDir := t.TempDir()
+	pool := setupTestPool(t)
+	if pool == nil {
+		return
+	}
+	recordingID := dbtest.Recording(t, pool)
+	insertTestRecordSync(t, pool, recordingID, recordID)
+	fullPath := filepath.Join(mediaDir, "sites", "default", "test", "reuse-orphan.m2ts")
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(fullPath, tsData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	beforeInfo, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := &IngestWorker{
+		Publisher:     pgstoretest.Media(pool),
+		MirakcClients: singleSiteClients("", mirakc.NewClient(fake.URL(), nil)),
+		RecordTarget:  pgstoretest.Recordings(pool),
+		MediaDir:      mediaDir,
+		StallTimeout:  5 * time.Second,
+		Precheck:      pgstoretest.Media(pool),
+	}
+	w.CMDetectionStore = pgstoretest.Analysis(pool)
+	if err := runWorkerViaJobQFake(context.Background(), w, IngestJobArgs{Site: "default", RecordID: recordID}); err != nil {
+		t.Fatalf("Work() error = %v, want matching canonical orphan to be reused", err)
+	}
+	afterInfo, err := os.Stat(fullPath)
+	if err != nil {
+		t.Fatalf("stat canonical file after commit: %v", err)
+	}
+	if !os.SameFile(beforeInfo, afterInfo) {
+		t.Error("canonical file was replaced instead of reused")
+	}
+	tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
+	if _, err := os.Stat(tempPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ingest temp after successful reuse stat error = %v, want os.ErrNotExist", err)
+	}
+	var assetCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media assets: %v", err)
+	}
+	if assetCount != 1 {
+		t.Errorf("media_assets rows = %d, want 1 after reusing canonical orphan", assetCount)
+	}
+}
+
 // TestIngestWorker_SkipsTransferWhenAlreadyCommitted は、エッジ record の削除
 // （DeleteRecord）が失敗して mirakc 側に record が残り、同じジョブ引数で
 // Work が再実行された（record_sweep 経由の再投入を模している）場合の挙動を

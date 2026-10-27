@@ -2,7 +2,6 @@
 package fsink
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"hash"
@@ -140,6 +139,9 @@ func RemoveTemp(path string) error {
 	if err := RemoveCheckpoint(path); err != nil {
 		errs = append(errs, err)
 	}
+	if err := RemoveVerificationCheckpoint(path); err != nil {
+		errs = append(errs, err)
+	}
 	return errors.Join(errs...)
 }
 
@@ -154,91 +156,17 @@ func RemoveCheckpoint(tempPath string) error {
 
 // RenameNoReplace は dst を既存ファイルで上書きせずに公開する。
 // os.Rename は既存 dst を置き換えるため、予約済みの canonical file を失わせる可能性がある。
-// dst が存在し src と内容が一致する場合は、前回の rename 後に DB commit が失敗した再試行として src を削除し成功する。
 // Linux では renameat2(RENAME_NOREPLACE) を使い、対象 filesystem が flag を実装しない場合は失敗する。
 // NFS での flag 対応は未検証。非 Linux の開発環境では hard link と unlink を使う。
 func RenameNoReplace(src, dst string) error {
 	if filepath.Clean(src) == filepath.Clean(dst) {
 		return fmt.Errorf("source and destination paths are identical: %q", src)
 	}
-	if err := renameNoReplace(src, dst); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrExist) {
-		return err
-	}
-
-	same, compareErr := filesEqual(src, dst)
-	if compareErr != nil {
-		return errors.Join(errDestinationExists(src, dst), fmt.Errorf("comparing existing destination: %w", compareErr))
-	}
-	if !same {
-		return errDestinationExists(src, dst)
-	}
-	if err := os.Remove(src); err != nil {
-		return fmt.Errorf("removing duplicate temp after matching destination: %w", err)
-	}
-	return nil
+	return renameNoReplace(src, dst)
 }
 
 func errDestinationExists(src, dst string) error {
 	return fmt.Errorf("publishing %q: destination %q already exists: %w", src, dst, os.ErrExist)
-}
-
-func filesEqual(src, dst string) (bool, error) {
-	srcInfo, err := os.Lstat(src)
-	if err != nil {
-		return false, fmt.Errorf("stating source %q: %w", src, err)
-	}
-	dstInfo, err := os.Lstat(dst)
-	if err != nil {
-		return false, fmt.Errorf("stating destination %q: %w", dst, err)
-	}
-	if !srcInfo.Mode().IsRegular() || !dstInfo.Mode().IsRegular() {
-		return false, fmt.Errorf("source and destination must be regular files: source=%s destination=%s", srcInfo.Mode(), dstInfo.Mode())
-	}
-	if srcInfo.Size() != dstInfo.Size() {
-		return false, nil
-	}
-	if os.SameFile(srcInfo, dstInfo) {
-		return true, nil
-	}
-
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return false, fmt.Errorf("opening source %q for comparison: %w", src, err)
-	}
-	dstFile, err := os.Open(dst)
-	if err != nil {
-		return false, errors.Join(fmt.Errorf("opening destination %q for comparison: %w", dst, err), srcFile.Close())
-	}
-
-	const chunkSize = 64 * 1024
-	srcBuf := make([]byte, chunkSize)
-	dstBuf := make([]byte, chunkSize)
-	remaining := srcInfo.Size()
-	equal := true
-	var compareErr error
-	for remaining > 0 {
-		n := min(remaining, int64(chunkSize))
-		if _, err := io.ReadFull(srcFile, srcBuf[:n]); err != nil {
-			compareErr = fmt.Errorf("reading source %q for comparison: %w", src, err)
-			break
-		}
-		if _, err := io.ReadFull(dstFile, dstBuf[:n]); err != nil {
-			compareErr = fmt.Errorf("reading destination %q for comparison: %w", dst, err)
-			break
-		}
-		if !bytes.Equal(srcBuf[:n], dstBuf[:n]) {
-			equal = false
-			break
-		}
-		remaining -= n
-	}
-	closeErr := errors.Join(srcFile.Close(), dstFile.Close())
-	if err := errors.Join(compareErr, closeErr); err != nil {
-		return false, err
-	}
-	return equal, nil
 }
 
 // SyncParentDir は path の親 directory entry を fsync する。

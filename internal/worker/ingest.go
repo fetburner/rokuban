@@ -45,14 +45,14 @@ var errIngestRecordEndedAbnormally = errors.New("mirakc record ended abnormally"
 // errIngestSHA256Pending は、転送済みの temp を残して SHA-256 の再確認を snooze する内部制御エラー。
 var errIngestSHA256Pending = errors.New("ingest content SHA-256 is pending")
 
-// errIngestSliceElapsed は temp と SHA-256 の checkpoint を保存した試行の区切りを表す。
+// errIngestSliceElapsed は転送または canonical 照合の checkpoint を保存した試行の区切りを表す。
 var errIngestSliceElapsed = errors.New("ingest transfer slice elapsed")
 
 const (
 	ingestSHA256SnoozeInterval = 30 * time.Second
 )
 
-// ingestTransferSlice は 1 回の Work で replay と転送に使う時間の上限。
+// ingestTransferSlice は 1 回の Work で temp replay・転送・既存 canonical の照合に使う時間の上限。
 // 4 分の slice と 1 分の後処理予算で Work Timeout を 5 分にし、6 分の rescue 既定より
 // 短くする。--once では snooze ごとに Pod が入れ替わるため、運用クラスタで起動時間が
 // slice より十分短いことを確認する。
@@ -308,7 +308,7 @@ func (w *IngestWorker) resolveProgressInterval() time.Duration {
 }
 
 // Work は ingest ジョブを実行する。ストリーム取得・DB コミット・エッジ削除を行う。
-// jobs.IngestJobArgs.Spec().Timeout が 1 試行を 5 分に制限する。4 分の replay / 転送区切りで
+// jobs.IngestJobArgs.Spec().Timeout が 1 試行を 5 分に制限する。4 分の replay / 転送 / canonical 照合区切りで
 // temp と SHA-256 状態を保存して snooze するため、録画全体の長さでは締切が決まらない。
 //
 // 戻り値を名前付きにするのは、defer が「この試行の結末」を分類して
@@ -442,6 +442,9 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 		if err := fsink.RemoveCheckpoint(tempPath); err != nil {
 			return fmt.Errorf("removing stale ingest checkpoint before creating temp: %w", err)
 		}
+		if err := fsink.RemoveVerificationCheckpoint(tempPath); err != nil {
+			return fmt.Errorf("removing stale ingest verification checkpoint before creating temp: %w", err)
+		}
 		tempLock, tempCreated, err = lockIngestTempFile(tempPath)
 	}
 	if err != nil {
@@ -479,8 +482,9 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	}
 	// temp はプロセス死・ctx キャンセル・一時的な I/O / DB 失敗では残す。次の
 	// job delivery が同じファイルを replay して続けるためである。中身が悪いと確定
-	// した場合だけ下の removeTemp を立てる。rename 後は tempPath が存在しないので
-	// cleanup の Remove は no-op になり、canonical file は orphan として報告される。
+	// した場合だけ下の removeTemp を立てる。rename 後の DB commit 失敗では tempPath が
+	// 存在しないので canonical file は orphan として報告される。同一内容の canonical を
+	// 再利用する場合は DB commit が成功するまで temp を保持する。
 	removeTemp := false
 	defer func() {
 		if removeTemp {
@@ -504,8 +508,8 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 			// commit の rename 後に失敗した場合も checkpoint は temp と同じ寿命で終える。
 			if markerErr := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "removing published ingest checkpoint"); markerErr != nil {
 				log.Warn("ingest: skipping checkpoint cleanup because media store marker did not match", "err", markerErr)
-			} else if err := fsink.RemoveCheckpoint(tempPath); err != nil {
-				log.Warn("ingest: removing checkpoint after temp publication failed", "err", err)
+			} else if err := errors.Join(fsink.RemoveCheckpoint(tempPath), fsink.RemoveVerificationCheckpoint(tempPath)); err != nil {
+				log.Warn("ingest: removing checkpoints after temp publication failed", "err", err)
 			}
 		}
 		_ = f.Close()
@@ -667,6 +671,13 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("syncing file: %w", err)
 	}
+	// commit retry で completed temp を再ハッシュせずに済むよう、同期済みの末尾を保存する。
+	if err := writeIngestCheckpoint(tempPath, offset, hasher,
+		func() error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving completed ingest checkpoint")
+		}); err != nil {
+		return fmt.Errorf("saving completed ingest checkpoint: %w", err)
+	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("closing file: %w", err)
 	}
@@ -677,8 +688,16 @@ func (w *IngestWorker) ingestResolvedRecord(ctx context.Context, client *mirakc.
 
 	recordIngestMetrics(offset)
 
-	if err := w.commit(ctx, recordingID, relPath, tempPath, fullPath, offset); err != nil {
+	reused, err := w.commitWithVerification(ctx, sliceCtx, recordingID, relPath, tempPath, fullPath, offset, hasher.Sum(nil))
+	if err != nil {
+		if fsink.IsSliceDeadline(err, sliceCtx, ctx) {
+			progress.flush(ctx, offset)
+			return errIngestSliceElapsed
+		}
 		return fmt.Errorf("committing ingest: %w", err)
+	}
+	if reused {
+		removeTemp = true
 	}
 
 	// エッジ record の削除は失敗しても ingest は成功（コミット済み）。
@@ -998,45 +1017,79 @@ func (w *IngestWorker) determineRelPath(ctx context.Context, args jobs.IngestJob
 	return relPath, fullPath, record, nil
 }
 
-// commit は原本の公開プロトコルを 1 回実行する。
+// commit は完了済み temp を再ハッシュしてから原本を公開する。
+// Work は転送中に得た SHA-256 を使うため、commitWithVerification を直接呼ぶ。
+func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
+	hasher := sha256.New()
+	written, err := fsink.ReplayTempFile(ctx, tempPath, hasher)
+	if err != nil {
+		return fmt.Errorf("hashing ingest temp before commit: %w", err)
+	}
+	if written != size {
+		return fmt.Errorf("ingest temp size changed before commit: read=%d expected=%d", written, size)
+	}
+	_, err = w.commitWithVerification(ctx, ctx, recordingID, relPath, tempPath, fullPath, size, hasher.Sum(nil))
+	return err
+}
+
+// commitWithVerification は原本の公開プロトコルを 1 回実行する。
 //
-// rel_path 固有 filesystem lock を保持し、media_assets の行予約・rename・親ディレクトリ
-// fsync・commit を store の 1 transaction に渡す。store は DB transaction を先に開始し、
-// 行を作った後に callback を呼ぶ。DB 接続が失われても goroutine のファイル操作は続きうるため、
-// この関数が返るまで filesystem lock を保持する。
+// rel_path 固有 filesystem lock を保持する。既存 canonical file の検証は transaction 前に済ませ、
+// media_assets の行予約・必要な rename・親ディレクトリ fsync・commit を store の 1 transaction に渡す。
+// store は DB transaction を先に開始し、行を作った後に callback を呼ぶ。DB 接続が失われても
+// goroutine のファイル操作は続きうるため、この関数が返るまで filesystem lock を保持する。
 // 進捗行は原本の行と同じ tx で消す。コミット = DB 行なので、原本の行が生まれる瞬間に進捗行が消え、
 // 「原本があるのに取り込み中」という中間状態が読み手から見えない。
 //
-// rename 後の fsync / DB commit が失敗した場合は canonical file を消さない。tempPath
-// は既に消えているので呼び出し側の cleanup は no-op になり、ファイルは orphan として
-// aging 後に報告される。一方 rename 前の失敗では、呼び出し側が中身の不一致や record の
+// rename 後の fsync / DB commit が失敗した場合は canonical file を消さず、tempPath は既に
+// 無いので canonical は orphan として報告される。同一内容の canonical を再利用する経路では
+// DB commit が成功するまで tempPath を保持する。rename 前の失敗では、中身の不一致や record の
 // cancel / fail と確定した場合だけ tempPath を消し、それ以外は次の試行へ残す。
-func (w *IngestWorker) commit(ctx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64) error {
+func (w *IngestWorker) commitWithVerification(ctx, verificationCtx context.Context, recordingID int64, relPath, tempPath, fullPath string, size int64, sha256Sum []byte) (bool, error) {
 	if err := requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "locking original for publication"); err != nil {
-		return err
+		return false, err
 	}
 	fileLock, err := lockMediaRelPathFile(ctx, w.MediaDir, relPath)
 	if err != nil {
-		return fmt.Errorf("locking canonical file protocol: %w", err)
+		return false, fmt.Errorf("locking canonical file protocol: %w", err)
 	}
 	defer func() { _ = fileLock.Close() }()
-	return w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
+	// Verify an existing canonical file before opening the DB transaction. The
+	// rel_path lock keeps this result stable against other Rokuban writers while
+	// the transaction reserves the row and either renames or reuses the file.
+	reused, err := fsink.VerifyExistingFile(verificationCtx, tempPath, fullPath, size, sha256Sum,
+		func() error {
+			return requireMediaStoreMarker(w.MediaDir, w.MediaStoreName, "saving canonical verification checkpoint")
+		},
+	)
+	if err != nil {
+		return false, fmt.Errorf("verifying existing canonical file: %w", err)
+	}
+	if reused {
+		if err := syncIngestParentDir(fullPath); err != nil {
+			return false, fmt.Errorf("syncing reused canonical parent directory: %w", err)
+		}
+	}
+	err = w.Publisher.CommitOriginal(ctx, store.CommitOriginalInput{
 		RecordingID: recordingID, RelPath: relPath, SizeBytes: size,
 	}, w.resolveEncodePolicy, func() error {
 		if err := beforeIngestFilePublication(); err != nil {
 			return fmt.Errorf("preparing canonical file publication: %w", err)
 		}
-		if err := renameIngestFile(tempPath, fullPath); err != nil {
-			return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
-		}
-		if err := syncIngestParentDir(fullPath); err != nil {
-			return fmt.Errorf("syncing canonical parent directory: %w", err)
+		if !reused {
+			if err := renameIngestFile(tempPath, fullPath); err != nil {
+				return fmt.Errorf("renaming ingest temporary file into canonical path: %w", err)
+			}
+			if err := syncIngestParentDir(fullPath); err != nil {
+				return fmt.Errorf("syncing canonical parent directory: %w", err)
+			}
 		}
 		if err := afterIngestFilePublication(); err != nil {
 			return fmt.Errorf("finishing canonical file publication: %w", err)
 		}
 		return nil
 	})
+	return reused, err
 }
 
 // resolveEncodePolicy は store が読み取った予約・上書き・意図から、この録画の凍結方針を導出する純粋関数である。
