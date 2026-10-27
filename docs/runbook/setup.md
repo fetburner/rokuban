@@ -153,7 +153,7 @@ compose（`adopt-media` サービス）と k8s（`rokuban-migrate` Job の本体
 
 新しい worker は、コピーの無い論理資産が 1 件でもあるか、`store` が空の観測行・進捗行が 1 件でもあれば、起動を拒む。旧 worker を止めずにローリング更新すると、`adopt` するまで新しい worker は起動を拒み続ける。
 
-worker ロールは `storage.media_store_name` が必須である。この設定を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
+`storage.media_store_name` を持たない既存の構成は、更新すると worker が起動しなくなる。更新の前に、名前を設定に足す。
 
 compose と k8s の標準の構成には、この名前（`main`）と adopt の手順が入っている。移行の操作は次のとおりである。
 

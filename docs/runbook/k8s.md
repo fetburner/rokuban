@@ -56,7 +56,7 @@ kubectl get pods -l app.kubernetes.io/component=api \
   -o jsonpath='{.items[*].spec.containers[*].image}'   # rokuban:kind-test
 ```
 
-migration Job が失敗した場合は `kubectl logs job/rokuban-migrate` を見る（Job は完走・失敗のどちらでも 1 時間残る）。再実行は `kubectl delete job rokuban-migrate --ignore-not-found` してから手順 3 を打つ。Job の `spec` は immutable なので、残っていると apply が `field is immutable` で落ちる。
+migration Job が失敗した場合は、`kubectl logs job/rokuban-migrate -c migrate` でログを見る。`storage adopt` の失敗なら `-c adopt` にする。Job は完走・失敗のどちらでも 1 時間残る。`migrate up` は initContainer なので、失敗すると本体の `adopt` は起動せず、`-c` を付けないとそのログを読めない。再実行は `kubectl delete job rokuban-migrate --ignore-not-found` してから手順 3 を打つ。Job の `spec` は immutable なので、残っていると apply が `field is immutable` で落ちる。
 
 **api Pod の `RESTARTS` が 1〜2 になるのは想定どおり。** postgres の Pod は（readiness probe を持たないので）接続を受け付ける前に Ready になる。その窓で起動した api は DB 接続に失敗して fail-fast する（crash-only 方針。[operations.md](../operations.md) §5「DB 接続失敗」）。次の再起動で繋がる。
 
