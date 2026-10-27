@@ -130,6 +130,10 @@ func TestNewRegistry_ExposesRequiredMetrics(t *testing.T) {
 		"rokuban_live_session_evictions_total",
 		"rokuban_live_idle_gc_reclaimed_total",
 		"rokuban_live_idle_gc_last_pass_timestamp_seconds",
+		"rokuban_recording_hls_cache_bytes",
+		"rokuban_recording_hls_cache_requests_total",
+		"rokuban_recording_hls_active_transforms",
+		"rokuban_recording_hls_unavailable_total",
 		// issue #191: 離脱ヒント（idle GC 回収数と対で読む）
 		"rokuban_live_leave_hints_total",
 		// issue #163: encode の desired−observed 定期パス。バックストップ自身が

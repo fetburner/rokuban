@@ -57,7 +57,7 @@ patches:
       name: rokuban-ingress
     patch: |-
       - op: add
-        path: /spec/rules/0/http/paths/2
+        path: /spec/rules/0/http/paths/3
         value:
           path: /api/sites/default/recordings
           pathType: Prefix
@@ -67,7 +67,7 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/3
+        path: /spec/rules/0/http/paths/4
         value:
           path: /api/sites/default/networks
           pathType: Prefix

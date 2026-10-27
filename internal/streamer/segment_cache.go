@@ -269,3 +269,26 @@ func (c *segmentCache) usedBytes() int64 {
 	defer c.mu.Unlock()
 	return c.used
 }
+
+func (c *segmentCache) hasRecording(recordingID, generation string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key := range c.entries {
+		if key.RecordingID == recordingID && key.Generation == generation {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *segmentCache) removeRecording(recordingID, generation string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		if key.RecordingID != recordingID || key.Generation != generation {
+			continue
+		}
+		_ = os.Remove(entry.path)
+		c.removeEntryLocked(entry)
+	}
+}

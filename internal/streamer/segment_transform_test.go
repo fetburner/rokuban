@@ -65,12 +65,47 @@ func TestBuildSegmentTransformArgsUsesPTSPreRollTrimAndRestoresRecordingTime(t *
 	}
 }
 
+func TestBuildSegmentTransformArgsMapsOnlyPresentSubtitles(t *testing.T) {
+	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
+	input := SegmentTransformInput{Path: "/dev/fd/3", OriginPTS: 90000, AudioStreamCount: 1}
+	workDir := t.TempDir()
+	argsWithoutSubtitles, err := buildSegmentTransformArgs(
+		LiveConfig{FFmpeg: "ffmpeg", Captions: true, Profiles: []LiveProfile{profile}},
+		profile, input, 0, workDir,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if indexOf(argsWithoutSubtitles, "-hls_subtitle_path") >= 0 || indexOf(argsWithoutSubtitles, "-c:s") >= 0 {
+		t.Fatalf("args without source subtitles include a subtitle output: %v", argsWithoutSubtitles)
+	}
+
+	input.HasSubtitles = true
+	argsWithSubtitles, err := buildSegmentTransformArgs(
+		LiveConfig{FFmpeg: "ffmpeg", Captions: true, Profiles: []LiveProfile{profile}},
+		profile, input, 0, workDir,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertArgPair(t, argsWithSubtitles, "-c:s", "webvtt")
+	assertArgPair(t, argsWithSubtitles, "-hls_subtitle_path", filepath.Join(workDir, "subtitles_%v.m3u8"))
+	videoFilterIndex := indexOf(argsWithSubtitles, "-filter:v:0")
+	if videoFilterIndex < 0 || videoFilterIndex+1 >= len(argsWithSubtitles) || !strings.Contains(argsWithSubtitles[videoFilterIndex+1], "trim=start=1.000000000") {
+		t.Fatalf("subtitle transform video filter does not trim to the requested timestamp: %v", argsWithSubtitles)
+	}
+	mapIndex := indexOf(argsWithSubtitles, "-var_stream_map")
+	if mapIndex < 0 || mapIndex+1 >= len(argsWithSubtitles) || !strings.Contains(argsWithSubtitles[mapIndex+1], "s:0,sgroup:subs") {
+		t.Fatalf("subtitle variant is missing from var_stream_map: %v", argsWithSubtitles)
+	}
+}
+
 func TestNewSegmentManagerValidatesCacheWindowAndCleansOwnedScratch(t *testing.T) {
 	profile := LiveProfile{Name: "test", VideoCodec: "libx264", AudioCodec: "aac", SegmentSeconds: 2}
 	base := SegmentTransformOptions{
 		Config:           LiveConfig{Profiles: []LiveProfile{profile}},
 		ScratchRoot:      t.TempDir(),
-		CacheBytes:       48,
+		CacheBytes:       60,
 		MaxSegmentBytes:  1,
 		MaxConcurrent:    2,
 		PrefetchSegments: 5,
@@ -113,6 +148,30 @@ func TestReadSegmentPlaylistParsesStableAndTemporaryNames(t *testing.T) {
 		got, ok := parseOutputSegmentNumber(name, "profile", "0")
 		if !ok || got != want {
 			t.Fatalf("parseOutputSegmentNumber(%q) = (%d, %v), want (%d, true)", name, got, ok, want)
+		}
+	}
+}
+
+func TestReadSubtitleSegmentPlaylistCachesVTTByCanonicalNumber(t *testing.T) {
+	dir := t.TempDir()
+	playlist := filepath.Join(dir, "subtitles_0.m3u8")
+	contents := "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nsegments/seg0.vtt\n#EXTINF:2.0,\nsegments/seg1.vtt\n#EXT-X-ENDLIST\n"
+	if err := os.WriteFile(playlist, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	segments, endList, err := readSubtitleSegmentPlaylist(playlist)
+	if err != nil || !endList || len(segments) != 2 || segments[0] != 0 || segments[1] != 1 {
+		t.Fatalf("read subtitle playlist = (%v, %v, %v), want ordered segments 0 and 1 with ENDLIST", segments, endList, err)
+	}
+	for name, want := range map[string]int64{"seg0.vtt": 0, "seg12.vtt": 12} {
+		got, ok := parseSubtitleSegmentNumber(name)
+		if !ok || got != want {
+			t.Fatalf("parseSubtitleSegmentNumber(%q) = (%d, %v), want (%d, true)", name, got, ok, want)
+		}
+	}
+	for _, name := range []string{"seg00.vtt", "seg-1.vtt", "seg1.ts", "other0.vtt"} {
+		if _, ok := parseSubtitleSegmentNumber(name); ok {
+			t.Errorf("parseSubtitleSegmentNumber(%q) succeeded, want rejection", name)
 		}
 	}
 }
@@ -167,6 +226,55 @@ func TestSegmentTransformCachesSegmentsInPlaylistOrder(t *testing.T) {
 			t.Fatalf("segment %d after ordered scan = (ok %v, err %v), want cached", number, ok, err)
 		}
 		lease.release()
+	}
+}
+
+func TestSegmentTransformCachesWebVTTSegments(t *testing.T) {
+	root := t.TempDir()
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(workDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	playlist := filepath.Join(workDir, "subtitles_0.m3u8")
+	contents := "#EXTM3U\n#EXTINF:2.0,\nsegments/seg0.vtt\n#EXTINF:2.0,\nsegments/seg1.vtt\n#EXT-X-ENDLIST\n"
+	if err := os.WriteFile(playlist, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for number, content := range map[int]string{0: "WEBVTT\n\nfirst\n", 1: "WEBVTT\n\nsecond\n"} {
+		path := filepath.Join(workDir, fmt.Sprintf("seg%d.vtt", number))
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cache, err := newSegmentCache(filepath.Join(root, "cache"), 1<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &SegmentManager{cache: cache, maxSegmentBytes: 1024, prefetchSegments: 5}
+	task := &segmentTransformTask{
+		group:         segmentTransformGroup{recordingID: "7", generation: "3", profile: "test"},
+		profile:       LiveProfile{Name: "test", SegmentSeconds: 2},
+		input:         SegmentTransformInput{HasSubtitles: true, VideoDurationPTS: 4 * mpegTSTimestampClock},
+		requestStart:  0,
+		startNumber:   0,
+		currentNumber: 0,
+		maxRequested:  1,
+		workDir:       workDir,
+	}
+	if err := manager.scanTransform(task, true); err != nil {
+		t.Fatal(err)
+	}
+	for number, want := range map[int64]string{0: "WEBVTT\n\nfirst\n", 1: "WEBVTT\n\nsecond\n"} {
+		key := SegmentKey{"7", "3", "test", "subtitles", number}
+		lease, ok, err := cache.acquire(key)
+		if err != nil || !ok {
+			t.Fatalf("subtitle segment %d after scan = (ok %v, err %v), want cached", number, ok, err)
+		}
+		got, readErr := io.ReadAll(lease.file)
+		lease.release()
+		if readErr != nil || string(got) != want {
+			t.Fatalf("subtitle segment %d = (%q, %v), want %q", number, got, readErr, want)
+		}
 	}
 }
 
@@ -1026,7 +1134,7 @@ func TestSegmentTransformWaitsForCacheSpaceThenResumes(t *testing.T) {
 	inputPath := filepath.Join(t.TempDir(), "long.ts")
 	writeAlignedTestTS(t, ffmpeg, inputPath, 20)
 	originPTS := firstPacketPTS(t, ffprobe, inputPath)
-	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 25<<20, 1<<20)
+	manager := newRealSegmentManager(t, ffmpeg, t.TempDir(), 1, 31<<20, 1<<20)
 	defer closeSegmentManager(t, manager)
 
 	fillKey := SegmentKey{"occupied", "generation-1", "test", "video", 0}

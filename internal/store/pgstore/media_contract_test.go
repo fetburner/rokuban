@@ -3,6 +3,7 @@ package pgstore
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -24,6 +25,36 @@ var mediaContractEventID atomic.Int32
 func TestMediaStoreContract(t *testing.T) {
 	contracttest.RunMedia(t, newMediaStoreContractFixture)
 	contracttest.RunMediaPublish(t, newMediaStoreContractFixture)
+}
+
+func TestRecordingHLSOriginalTargetPreservesCommittedGeneration(t *testing.T) {
+	pool := testutil.SetupDB(t)
+	startedAt := time.Date(2026, 10, 25, 3, 4, 5, 0, time.UTC)
+	recordingID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.StartedAt = &startedAt
+	})
+	assetID := dbtest.MediaAsset(t, pool, recordingID, func(p *dbtest.MediaAssetParams) {
+		p.RelPath = "sites/default/recording-hls-generation.m2ts"
+	})
+	if _, err := pool.Exec(context.Background(), `UPDATE media_assets SET ingest_generation = 19 WHERE id = $1`, assetID); err != nil {
+		t.Fatalf("setting committed ingest generation: %v", err)
+	}
+
+	target, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), recordingID)
+	if err != nil {
+		t.Fatalf("GetRecordingHLSOriginalTarget(%d): %v", recordingID, err)
+	}
+	if target.ID != assetID || target.IngestGeneration != 19 || target.StartedAt == nil || !target.StartedAt.Equal(startedAt) {
+		t.Fatalf("target = %+v, want asset %d, generation 19 and start %s", target, assetID, startedAt)
+	}
+
+	unfinishedID := dbtest.Recording(t, pool, func(p *dbtest.RecordingParams) {
+		p.Status = "recording"
+	})
+	dbtest.MediaAsset(t, pool, unfinishedID)
+	if _, err := NewMedia(pool, "tokyo").GetRecordingHLSOriginalTarget(context.Background(), unfinishedID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("GetRecordingHLSOriginalTarget(unfinished) error = %v, want ErrNotFound", err)
+	}
 }
 
 func TestIngestTempGenerationIsStoredAndCommitted(t *testing.T) {

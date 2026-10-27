@@ -111,6 +111,15 @@ patches:
       - op: replace
         path: /spec/replicas
         value: 1
+  # 変換用の 1Gi request は出荷する HLS Pod の作業領域見積り。判定ハーネスは
+  # 再生を測らず 1 ノードに全ロールを載せるため、ここでは scheduler の予約だけ下げる。
+  - target:
+      kind: Deployment
+      name: rokuban-recording-hls
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests/memory
+        value: 128Mi
   # ---- 1 ノードの CPU に収めるための requests ---------------------------
   #
   # **これが無いと判定が「Insufficient cpu」で止まる。** ScaledJob は滞留 1 件
@@ -171,7 +180,7 @@ patches:
       name: rokuban-ingress
     patch: |-
       - op: add
-        path: /spec/rules/0/http/paths/2
+        path: /spec/rules/0/http/paths/3
         value:
           path: /api/sites/sitea/recordings
           pathType: Prefix
@@ -181,7 +190,7 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/3
+        path: /spec/rules/0/http/paths/4
         value:
           path: /api/sites/sitea/networks
           pathType: Prefix
@@ -191,7 +200,7 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/4
+        path: /spec/rules/0/http/paths/5
         value:
           path: /api/sites/siteb/recordings
           pathType: Prefix
@@ -201,7 +210,7 @@ patches:
               port:
                 name: http
       - op: add
-        path: /spec/rules/0/http/paths/5
+        path: /spec/rules/0/http/paths/6
         value:
           path: /api/sites/siteb/networks
           pathType: Prefix

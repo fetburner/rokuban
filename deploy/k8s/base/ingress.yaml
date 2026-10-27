@@ -33,6 +33,14 @@ spec:
                 name: rokuban-streamer
                 port:
                   name: http
+          # 世代付き録画 HLS は置き場名を固定深さに持ち、専用 Deployment へ送る。
+          - path: /api/media/stores/main
+            pathType: Prefix
+            backend:
+              service:
+                name: rokuban-recording-hls
+                port:
+                  name: http
           # api は JSON API と SPA の両方を同じ Service から配る。
           - path: /
             pathType: Prefix

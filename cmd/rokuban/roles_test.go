@@ -123,3 +123,31 @@ func TestResolveRoles_RejectsJobNameAsRole(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveRoles_NoRecordingHLSRequiresStreamer(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		role      string
+		wantError bool
+	}{
+		{name: "streamer", role: "streamer"},
+		{name: "api", role: "api", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newServerCmd()
+			if err := cmd.Flags().Set("roles", tc.role); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Flags().Set("no-recording-hls", "true"); err != nil {
+				t.Fatal(err)
+			}
+			roles, err := resolveRoles(cmd)
+			if (err != nil) != tc.wantError {
+				t.Fatalf("resolveRoles error = %v, wantError %t", err, tc.wantError)
+			}
+			if err == nil && (len(roles) != 1 || roles[0] != tc.role) {
+				t.Errorf("roles = %v, want [%s]", roles, tc.role)
+			}
+		})
+	}
+}

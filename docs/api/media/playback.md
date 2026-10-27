@@ -448,3 +448,62 @@ HLS の先頭セグメントの映像 PTS は、どの offset でも 1.48 秒だ
 - 測定 runner をリポジトリに置かない: 不変条件 4
 
 </details>
+
+### 世代付き録画 HLS
+
+完了した原本録画は、置き場と録画と世代で決まる URL から HLS 配信する。
+
+URL は置き場名・録画 id・ingest 世代で同定する。API は `hlsPlayback` に profile ごとの master URL を返す。この URL は `openapi.yaml` に載せない。
+
+```text
+GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/master.m3u8
+GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/index.m3u8
+GET /api/media/stores/{store}/recordings/{id}/hls/v{gen}/{profile}/{rendition}/{n}.ts
+```
+
+`{store}` は `storage.media_store_name` と一致する必要がある。振り分けの鍵を site ではなく置き場にするのは、規則によって 1 つの site の原本が複数の置き場に分かれうるからである。`{gen}` は原本アセットの `ingest_generation` で、NULL は 0 とする。今の世代と異なる URL は 410 にする。
+
+#### playlist と原本の判定
+
+playlist は録画全体を示し、セグメントは必要になった時点で変換する。
+
+playlist は ffmpeg の出力を待たず、映像の長さからアプリが全セグメント分を組み立てる。映像ストリームの終端から最初の映像パケットの PTS を引いて長さを測り、profile の `segment_seconds` で割って切り上げる。format 全体の duration は音声など最長のストリームに引かれるため使わない。各セグメントには `recordings.started_at + n × segment_seconds` の `#EXT-X-PROGRAM-DATE-TIME` を付ける。
+
+映像、標準・主・副の音声は MPEG-TS の rendition にする。`live.captions` が有効で原本に字幕ストリームがある場合は、WebVTT の字幕 rendition も master に載せる。映像・音声は `.ts`、字幕は `.vtt` のセグメントを返す。すべての rendition playlist は `VOD` と `ENDLIST` を持つ。
+
+要求ごとに DB で、録画が完了していること、ごみ箱・完全削除・置換のいずれでもないこと、有効な原本アセットがあることの 3 つを確かめる。この条件は原本 VOD の判定と同じ述語である。条件に合わないときの応答は原因ごとに違う。
+
+- 行が見つからない（ごみ箱・完全削除・置換・有効な原本なし）、原本ファイルが無い、開き直した原本が別のアセットだった場合は 404 にする。その世代の変換を止め、キャッシュを捨てる
+- URL の世代が今の世代と違う場合は 410 にする。URL が指す世代について、同じく変換を止めてキャッシュを捨てる
+- `{store}` が違う場合は 404 にするだけで、変換にもキャッシュにも触らない
+
+新しく変換を始めるときは、原本の fd を開いてから DB を引き直し、同じアセット id・相対パス・世代であることを確かめる。DB に問い合わせられないときは、すでに開いている変換とキャッシュを使い続ける。行が無いと分かったときは止める。DB が使えない間に新しい変換を始める要求は 503 にする。
+
+キャッシュにあるセグメントはそのまま返す。無いセグメントは、`SegmentManager` が必要な範囲を変換するのを待って返す。待たずに 404 を返さないのは、RFC 8216 §6.2.1 に従い、playlist に載せたセグメントを取得できないものとして扱わないためである。前段の CDN が 404 をキャッシュすると、変換が終わった後も 404 が返り続けうる。待つ時間は `recording_hls.wait_timeout` までで、超えた要求は 503 と `Retry-After` を返す。セグメントは `private, max-age=31536000, immutable`、playlist は `no-cache` にする。世代が URL に含まれるので、セグメントは長期にキャッシュできる。
+
+#### PTS と変換キャッシュ
+
+セグメント番号は、録画時刻の格子に固定する。
+
+変換は、セグメント `n` の映像・音声 PTS を、原本の先頭映像 PTS を原点とする `origin + n × D` の格子に揃える。ffmpeg を別の位置から起動し直すたびに起点が変わると、同じ番号でも境界がずれる。要求が今の変換から離れると、変換は要求の位置から起動し直される。そのため入力には `-copyts -seek_timestamp 1 -noaccurate_seek` と原点からの `-ss` を使い、2 秒の pre-roll の後で trim と PTS filter を適用する。
+
+2 秒の pre-roll は、合成 GOP での測定をもとにした既定値である。実録画の全 GOP 長での trim 精度は未検証である。
+
+同時に動かせる変換の数は `recording_hls.max_concurrent` までである。上限に達した状態で新しい変換が要るセグメントを要求すると、その要求が空きを待つ。待機中の要求を持たない変換のうち、最後に要求された時刻が最も古いものを止め、それが終わるまで待つ。待機中の要求を持つ変換しか残らなければ、どれかが終わるまで待つ。`recording_hls.wait_timeout` を超えた要求は 503 と `Retry-After` を返す。
+
+キャッシュの容量と tmpfs の大きさは、[k8s-streamer.md](../../operations/k8s-streamer.md) の「世代付き録画 HLS の scratch」で決める。変換とキャッシュは専用 Pod の tmpfs に置き、原本は読み取り専用で開く。
+
+キャッシュの使用バイト数、ヒットとミス、動いている変換の数、503 の件数は次のメトリクスで見る。
+
+- `rokuban_recording_hls_cache_bytes`
+- `rokuban_recording_hls_cache_requests_total`
+- `rokuban_recording_hls_active_transforms`
+- `rokuban_recording_hls_unavailable_total`
+
+上の旧 `/original-vod/` 経路にある「`-copyts` を使わず、offset ごとに HLS 時間軸を 0 から始める」という説明は、そのセッション方式だけに当てはまる。世代付き録画 HLS は `-copyts` を使い、録画全体で共通の PTS 格子にセグメントを置く。
+
+<details><summary>根拠</summary>
+
+- PTS 格子と pre-roll: `TestSegmentTransformRealFFmpegKeepsRequestedPTSGrid`
+
+</details>

@@ -6,3 +6,7 @@ const recordingPlaybackVisibleSQL = `r.deleted_at IS NULL AND r.purged_at IS NUL
 
 // activePlaybackOriginalSQL は両経路が共有する原本の述語。a は media_assets の別名。
 const activePlaybackOriginalSQL = `a.kind = 'original' AND a.state = 'active'`
+
+// recordingPlaybackFinishedSQL は原本 VOD と世代付き録画 HLS が共有する完了状態の述語。
+// 録画 API の一覧は録画中も返すため recordingPlaybackVisibleSQL には含めない。
+const recordingPlaybackFinishedSQL = `r.status = 'finished'`

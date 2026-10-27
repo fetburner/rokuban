@@ -811,6 +811,32 @@ func TestE2EOverlayShortensTheCronScheduleItMeasures(t *testing.T) {
 	}
 }
 
+// TestE2EOverlayFitsRecordingHLSOnTheHarnessNode は production の memory request を
+// 保ったまま、全ロールを載せる単一 kind node 上で HLS Pod を配置できるようにする。
+func TestE2EOverlayFitsRecordingHLSOnTheHarnessNode(t *testing.T) {
+	const target = "rokuban-recording-hls"
+
+	k := loadOverlayPatches(t, filepath.Join(overlaysDir, "e2e"))
+	found := false
+	for _, p := range k.Patches {
+		if p.Target.Kind != "Deployment" || p.Target.Name != target {
+			continue
+		}
+		for _, op := range parseJSONPatch(t, p.Patch) {
+			if op.Path != "/spec/template/spec/containers/0/resources/requests/memory" {
+				continue
+			}
+			found = true
+			if got := fmt.Sprint(op.Value); got != "128Mi" {
+				t.Errorf("overlays/e2e patches %s memory request to %q, want 128Mi", target, got)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("overlays/e2e does not lower %s's memory request; its production request prevents rolling update on the one-node harness", target)
+	}
+}
+
 // --- site overlay の patch --------------------------------------------------
 
 type patchTarget struct {
@@ -1098,6 +1124,90 @@ func TestLiveStreamerScratchBudget(t *testing.T) {
 	}
 }
 
+// TestRecordingHLSWorkloadKeepsStatePodLocal は URL の世代内キャッシュと変換状態を
+// 1 Pod に閉じる Deployment、専用 tmpfs、read-only 原本 mount を固定する。
+func TestRecordingHLSWorkloadKeepsStatePodLocal(t *testing.T) {
+	const deploymentID = "Deployment/rokuban-recording-hls"
+	var deployment *workload
+	for _, w := range loadWorkloads(t) {
+		if w.id() == deploymentID {
+			deployment = &w
+			break
+		}
+	}
+	if deployment == nil {
+		t.Fatalf("%s not found", deploymentID)
+	}
+	if got := fmt.Sprint(mapAt(deployment.doc, "spec")["replicas"]); got != "1" {
+		t.Errorf("%s replicas = %s, want 1 while transform state is process-local", deploymentID, got)
+	}
+	container := soleContainer(t, *deployment)
+	image := strAt(container, "image")
+	if name, _, _ := strings.Cut(image, ":"); name != fullImage {
+		t.Errorf("%s image = %q, want %q for ffmpeg/ffprobe", deploymentID, image, fullImage)
+	}
+	args := argsOf(container)
+	if slices.Contains(args, "--no-recording-hls") {
+		t.Errorf("%s args opt out of the recording HLS handler it exists to serve: %v", deploymentID, args)
+	}
+	if !slices.Contains(args, "--sites=") {
+		t.Errorf("%s args must be site independent: %v", deploymentID, args)
+	}
+
+	spec := mapAt(podTemplate(deployment.object), "spec")
+	volumes := sliceAt(spec, "volumes")
+	var scratch map[string]any
+	for _, raw := range volumes {
+		volume, ok := raw.(map[string]any)
+		if ok && strAt(volume, "name") == "recording-hls-scratch" {
+			scratch = volume
+			break
+		}
+	}
+	if scratch == nil {
+		t.Fatalf("%s has no recording HLS scratch volume", deploymentID)
+	}
+	if got := strAt(scratch, "emptyDir", "medium"); got != "Memory" {
+		t.Errorf("%s scratch medium = %q, want Memory", deploymentID, got)
+	}
+	if got := fmt.Sprint(mapAt(scratch, "emptyDir")["sizeLimit"]); got != "2Gi" {
+		t.Errorf("%s scratch sizeLimit = %q, want 2Gi", deploymentID, got)
+	}
+
+	var mediaMount map[string]any
+	for _, raw := range sliceAt(container, "volumeMounts") {
+		mount, ok := raw.(map[string]any)
+		if ok && strAt(mount, "name") == "media" {
+			mediaMount = mount
+			break
+		}
+	}
+	if mediaMount == nil {
+		t.Fatalf("%s does not mount the media PVC", deploymentID)
+	}
+	if got := fmt.Sprint(mediaMount["readOnly"]); got != "true" {
+		t.Errorf("%s media mount readOnly = %q, want true", deploymentID, got)
+	}
+
+	var service *object
+	for _, o := range loadBase(t) {
+		if o.id() == "Service/rokuban-recording-hls" {
+			service = &o
+			break
+		}
+	}
+	if service == nil {
+		t.Fatal("Service/rokuban-recording-hls not found")
+	}
+	if got := strAt(service.doc, "spec", "selector", "app.kubernetes.io/component"); got != "recording-hls" {
+		t.Errorf("recording HLS Service selector component = %q", got)
+	}
+	ports := sliceAt(mapAt(service.doc, "spec"), "ports")
+	if len(ports) != 1 || strAt(ports[0], "name") != "http" {
+		t.Errorf("recording HLS Service ports = %#v, want one named http port", ports)
+	}
+}
+
 // --- CRD の中の名前参照 ------------------------------------------------------
 
 // podTemplatePath は podTemplate() が掘る場所を kustomize の fieldSpec の
@@ -1287,5 +1397,26 @@ func TestBaseIsSiteIndependent(t *testing.T) {
 	if got := fmt.Sprint(doc.Mirakcs[0]["site"]); got != baseSiteName {
 		t.Errorf("%s/%s names site %q, want %q (deploy/k8s/site binds --sites %s)",
 			baseDir, configFileName, got, baseSiteName, baseSiteName)
+	}
+}
+
+// TestStreamersOptOutOfRecordingHLS は、config を全 Pod で共有するため
+// recording_hls.enabled が全 streamer に届く中で、世代付き録画 HLS を載せるのが
+// rokuban-recording-hls だけであることを argv で固定する。
+func TestStreamersOptOutOfRecordingHLS(t *testing.T) {
+	for _, id := range []string{"Deployment/rokuban-streamer", "Deployment/rokuban-live-streamer"} {
+		var found bool
+		for _, w := range loadWorkloads(t) {
+			if w.id() != id {
+				continue
+			}
+			found = true
+			if args := argsOf(soleContainer(t, w)); !slices.Contains(args, "--no-recording-hls") {
+				t.Errorf("%s args = %v, want --no-recording-hls", id, args)
+			}
+		}
+		if !found {
+			t.Errorf("%s not found", id)
+		}
 	}
 }

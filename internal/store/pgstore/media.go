@@ -293,11 +293,26 @@ func (s *Media) GetOriginalVODTarget(ctx context.Context, recordingID int64, sit
 	var target store.OriginalVODTarget
 	err := s.pool.QueryRow(ctx, `SELECT a.id, a.rel_path, a.size_bytes, r.site
  FROM media_assets a JOIN recordings r ON r.id = a.recording_id
- WHERE a.recording_id = $1 AND r.site = $2 AND r.status = 'finished'
- AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL,
+ WHERE a.recording_id = $1 AND r.site = $2
+ AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL,
 		recordingID, site).Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.Site)
 	if err != nil {
 		return store.OriginalVODTarget{}, mediaQueryError(err, fmt.Sprintf("loading original VOD target for recording %d site %q", recordingID, site))
+	}
+	return target, nil
+}
+
+// GetRecordingHLSOriginalTarget は完了録画の配信可能な原本と世代を返す。
+func (s *Media) GetRecordingHLSOriginalTarget(ctx context.Context, recordingID int64) (store.RecordingHLSOriginalTarget, error) {
+	var target store.RecordingHLSOriginalTarget
+	err := s.pool.QueryRow(ctx, `SELECT a.id, a.rel_path, a.size_bytes,
+ COALESCE(a.ingest_generation, 0)::bigint, r.started_at
+ FROM media_assets a JOIN recordings r ON r.id = a.recording_id
+ WHERE a.recording_id = $1
+ AND `+recordingPlaybackFinishedSQL+` AND `+activePlaybackOriginalSQL+` AND `+recordingPlaybackVisibleSQL, recordingID).
+		Scan(&target.ID, &target.RelPath, &target.SizeBytes, &target.IngestGeneration, &target.StartedAt)
+	if err != nil {
+		return store.RecordingHLSOriginalTarget{}, mediaQueryError(err, fmt.Sprintf("loading recording HLS original target for recording %d", recordingID))
 	}
 	return target, nil
 }
