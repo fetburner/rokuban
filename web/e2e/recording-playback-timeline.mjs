@@ -1068,7 +1068,12 @@ async function stubRecordingEventSource(page) {
 }
 
 async function runRecordingApiHlsCheck() {
-  activeRecording = apiHlsRecording
+  // 録画開始は実行時に決める。時間軸の右端は録画済み時間なので、CI の起動の遅れで長くなると
+  // 1 px が 1 フレームより長くなり、途中シークで窓に入る整数 px が無くなる。EVENT playlist の
+  // seekable（約 10 秒）より 2 秒以上長ければ足りる。
+  const apiHlsStartedAtNow = new Date(Date.now() - 13_000).toISOString()
+  const apiHlsLiveRecording = { ...apiHlsRecording, startAt: apiHlsStartedAtNow, startedAt: apiHlsStartedAtNow }
+  activeRecording = apiHlsLiveRecording
   recordingHlsRequests.length = 0
   playlistRequests.length = 0
   const page = await context.newPage()
@@ -1096,7 +1101,7 @@ async function runRecordingApiHlsCheck() {
     readyState: video.readyState,
     videoWidth: video.videoWidth,
   }))
-  const recordedProgressSeconds = (Date.now() - Date.parse(apiHlsStartedAt)) / 1000
+  const recordedProgressSeconds = (Date.now() - Date.parse(apiHlsStartedAtNow)) / 1000
   log(`\n=== 録画 API HLS: 録画中の時間軸 ===`)
   log(`  右端=${timelineSeconds.toFixed(2)}s / 壁時計の録画済み=${recordedProgressSeconds.toFixed(2)}s / HLS seekable=${mediaState.seekableEnd.toFixed(2)}s`)
   if (Math.abs(timelineSeconds - recordedProgressSeconds) > 2.5) {
@@ -1178,7 +1183,7 @@ async function runRecordingApiHlsCheck() {
 
   const masterRequestsBeforeCommit = recordingHlsRequests.filter(({ resource }) => resource === 'master.m3u8').length
   activeRecording = {
-    ...apiHlsRecording,
+    ...apiHlsLiveRecording,
     status: 'finished',
     endedAt: new Date().toISOString(),
     resumePositionMs: 10_000,
