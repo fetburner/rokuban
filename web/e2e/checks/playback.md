@@ -236,14 +236,14 @@ rokuban が S3 の署名付き URL へ 302 で飛ばした動画を、実 Chrome
 
 fixture が再現するのは配信の条件である。ローカルの MinIO に 90 秒の H.264 MP4 と WebVTT を置き、fixture のリダイレクターが署名付き URL へ 302 を返す。S3 宛ての要求は別 port のプロキシが MinIO へ転送し、要求先・Range・status を記録する。
 
-判定用ページは再開位置をブラウザ内に保存し、302 の後に読み込んだ動画で再生位置を復元する。これはブラウザの動作の測定で、製品 API の保存契約は対象外である。
+判定用ページは再開位置をブラウザ内に保存し、302 の後に読み込んだ動画で再生位置を復元する。製品のプレイヤーも `recording-player.tsx` の `onLoadedMetadata` で `currentTime` に代入して位置を戻すので、ブラウザから見た経路は同じである。プレイヤーの戻し方を変えたら、このページも見直す。これはブラウザの動作の測定で、製品 API の保存契約は対象外である。
 
 MinIO の CORS 許可は、サーバー全体の設定として `http://127.0.0.1:4174` に固定する。固定した版の MinIO は、バケットごとの CORS を設定できず、サーバー全体の設定しか持たない。字幕の負例では、プロキシが負例のバケット宛ての要求から Origin ヘッダーを外し、バケットに CORS が無い場合を再現する。
 
-必要なものは Node の固定版、Go、ffmpeg、MinIO である。MinIO は CI の `browser-s3-302` と同じ固定した版で起動する（版の権威は `.github/actions/build-minio/action.yml`）。
+必要なものは Node の固定版、Go、ffmpeg、MinIO である。MinIO は CI の `browser-s3-302` と同じ固定した版で起動する。版の権威は `.github/actions/build-minio/action.yml` の `ref` で、下の `go install` にはその commit を渡す。
 
 ```sh
-go install github.com/minio/minio@RELEASE.2025-09-07T16-13-09Z
+go install github.com/minio/minio@<action.yml の ref の commit>
 mkdir -p /tmp/rokuban-s3-302-minio
 MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_ALLOW_ORIGIN=http://127.0.0.1:4174 \
   "$(go env GOPATH)/bin/minio" server /tmp/rokuban-s3-302-minio --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
@@ -253,9 +253,9 @@ MINIO_ROOT_USER=rokuban MINIO_ROOT_PASSWORD=rokuban-test-secret MINIO_API_CORS_A
 
 ```sh
 corepack pnpm e2e:s3-302                                # 実 Chrome
-E2E_BROWSER=safari corepack pnpm e2e:s3-302             # 実 Safari。設定は上の「ブラウザごとの違い」
+E2E_BROWSER=safari corepack pnpm e2e:s3-302             # 実 Safari。設定は「録画 HLS の再起動境界」の「ブラウザごとの違い」
 E2E_S3_DISABLE_CORS=1 corepack pnpm e2e:s3-302          # 字幕の CORS を壊す負例
-E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名を 2 秒で切らす負例
+E2E_S3_VIDEO_TTL_SECONDS=2 corepack pnpm e2e:s3-302     # 動画の署名の期限を 2 秒にする負例
 ```
 
 負例の 2 つは、どちらも非 0 で終わる。落ちる判定は、前者が字幕の cue の読み込み、後者が通常の署名 URL でのシークの完了である。
