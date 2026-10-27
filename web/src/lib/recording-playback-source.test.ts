@@ -9,14 +9,44 @@ import {
 describe('selectRecordingPlaybackSource', () => {
   it.each([
     {
-      name: 'recording HLS is preferred when the API exposes a master URL',
+      name: 'recording with HLS playback selects recording HLS without live capability',
       input: { status: 'recording', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
       expected: 'recording-hls',
     },
     {
-      name: 'finished recording HLS is preferred over encoded and original VOD',
+      name: 'finished recording with encoded keeps encoded even when HLS playback exists',
       input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
+      expected: 'encoded',
+    },
+    {
+      name: 'finished cut-only recording with original and HLS playback selects recording HLS without live capability',
+      input: { status: 'finished', hasEncoded: true, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
       expected: 'recording-hls',
+    },
+    {
+      name: 'finished original-only recording with HLS playback selects recording HLS without live capability',
+      input: { status: 'finished', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: false },
+      expected: 'recording-hls',
+    },
+    {
+      name: 'finished recording with pending ingest and HLS playback selects recording HLS without live capability',
+      input: { status: 'finished', ingestState: 'pending', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: false, hasHlsPlayback: true, liveEnabled: false },
+      expected: 'recording-hls',
+    },
+    {
+      name: 'failed recording with HLS playback does not select a source',
+      input: { status: 'failed', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
+      expected: 'none',
+    },
+    {
+      name: 'canceled recording with HLS playback does not select a source',
+      input: { status: 'canceled', hasEncoded: true, hasNonCutEncoded: true, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true },
+      expected: 'none',
+    },
+    {
+      name: 'trashed recording with HLS playback does not select a source',
+      input: { status: 'recording', hasEncoded: false, hasNonCutEncoded: false, hasOriginal: true, hasHlsPlayback: true, liveEnabled: true, isTrashed: true },
+      expected: 'none',
     },
     {
       name: 'recording with live capability selects chase',

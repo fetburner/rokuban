@@ -22,15 +22,17 @@ export function selectRecordingPlaybackSource(
   input: RecordingPlaybackSourceInput,
 ): RecordingPlaybackSource {
   if (input.isTrashed) return 'none'
-  if (input.hasHlsPlayback) return 'recording-hls'
-  if (input.status === 'recording') return input.liveEnabled ? 'chase' : 'none'
+  const live = input.hasHlsPlayback ? 'recording-hls' : input.liveEnabled ? 'chase' : 'none'
+  if (input.status === 'recording') return live
   if (input.status !== 'finished') return 'none'
-  if (
-    input.liveEnabled &&
-    (input.ingestState === 'pending' || input.ingestState === 'transferring')
-  ) return 'chase'
+  if (input.ingestState === 'pending' || input.ingestState === 'transferring') {
+    if (live !== 'none') return live
+  }
   if (input.hasNonCutEncoded) return 'encoded'
-  if (input.hasOriginal && input.liveEnabled) return 'original-vod'
+  if (input.hasOriginal) {
+    if (input.hasHlsPlayback) return 'recording-hls'
+    if (input.liveEnabled) return 'original-vod'
+  }
   if (input.hasEncoded) return 'encoded'
   return 'none'
 }

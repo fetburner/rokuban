@@ -37,7 +37,7 @@ export function recordingVerdict({
     hasEncoded,
     hasNonCutEncoded,
     hasOriginal,
-    hasHlsPlayback: (recording.hlsPlayback?.length ?? 0) > 0,
+    hasHlsPlayback: recording.hlsPlayback.length > 0,
     liveEnabled: liveCapability === 'enabled',
   })
 

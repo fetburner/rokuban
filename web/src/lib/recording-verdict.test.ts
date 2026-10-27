@@ -133,6 +133,7 @@ describe('recordingVerdict', () => {
       recordingVerdict({
         recording: {
           ...base,
+          sizeBytes: 1_000_000,
           hlsPlayback: [{ profile: 'hd', masterUrl: '/api/media/stores/media/recordings/42/hls/v1/hd/master.m3u8' }],
         },
         liveCapability: 'disabled',

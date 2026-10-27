@@ -2,34 +2,41 @@
 
 ## 録画のブラウザ再生
 
-詳細画面の再生枠にはプレイヤーを 1 つだけ置き、API が示す再生元を先に使う。API に HLS URL が無い録画は状態と資産から従来の再生元を選ぶ。
+詳細画面の再生枠にはプレイヤーを 1 つだけ置く。ごみ箱・失敗・キャンセルの録画にはプレイヤーを出さない。録画中と、原本からの再生は、API が返す世代付き録画 HLS の URL があればそれを使い、無ければ従来の追っかけと原本 HLS を使う。完了後に cut でない encoded があれば、これまでどおり encoded MP4 を使う。
 
 ### 再生元の選び方
 
-再生元は、録画の状態・取り込みの進み具合・ライブ能力の有無・原本と encoded の有無から決める。決める場所を 1 か所にして、状態ごとに別々の再生面や開始操作を増やさない。
+再生元は、録画の状態・取り込みの進み具合・世代付き録画 HLS の有無・ライブ能力の有無・原本と encoded の有無から決める。決める場所を 1 か所にして、状態ごとに別々の再生面や開始操作を増やさない。
 
 ```mermaid
 flowchart TD
   A{ごみ箱?} -->|はい| N[プレイヤーなし]
-  A -->|いいえ| B{hlsPlayback がある?}
-  B -->|はい| C[録画 API HLS]
-  B -->|いいえ| D{失敗・キャンセル?}
+  A -->|いいえ| D{失敗・キャンセル?}
   D -->|はい| N
-  D -->|いいえ| E{録画中、または commit 前の取り込み中で<br>ライブ能力が有効?}
-  E -->|はい| F[追っかけ]
+  D -->|いいえ| E{録画中、または commit 前の取り込み中?}
+  E -->|はい| E2{hlsPlayback がある?}
+  E2 -->|はい| C[世代付き録画 HLS]
+  E2 -->|いいえ| E3{ライブ能力が有効?}
+  E3 -->|はい| F[追っかけ]
+  E3 -->|いいえ| G
   E -->|いいえ| G{cut でない active な encoded がある?}
   G -->|はい| H[encoded MP4]
-  G -->|いいえ| I{原本があり、ライブ能力が有効?}
-  I -->|はい| J[原本 HLS]
+  G -->|いいえ| I{原本がある?}
+  I -->|はい| I2{hlsPlayback がある?}
+  I2 -->|はい| C
+  I2 -->|いいえ| I3{ライブ能力が有効?}
+  I3 -->|はい| J[原本 HLS]
+  I3 -->|いいえ| K
   I -->|いいえ| K{active な encoded がある?}
   K -->|はい| L[cut 版の encoded MP4]
   K -->|いいえ| M[既存の空状態と原本リンク]
 ```
 
-原本と cut 版の両方がある録画では、「版」タブから各 encoded を再生できる。原本が残り、ライブ能力が有効なら、同じタブから原本 HLS へ戻れる。cut だけの録画は原本 HLS を既定にして編集できるようにし、比較・確認のため cut 版を選んだ間はチャプター編集を止める。
+原本と cut 版の両方がある録画では、「版」タブから各 encoded を再生できる。原本が残り、`hlsPlayback` があるか、ライブ能力が有効なら、同じタブから原本 HLS へ戻れる。cut だけの録画は原本 HLS を既定にして編集できるようにし、比較・確認のため cut 版を選んだ間はチャプター編集を止める。
 
 <details><summary>根拠</summary>
 
+- 世代付き録画 HLS の選択（完了後の encoded 優先、失敗・キャンセルとごみ箱は出さない、ライブ能力が不要）: `recording-playback-source.test.ts`
 - 取り込み中の追っかけ条件: `finished`、`ingest.state`、`pending`、`transferring`
 
 </details>
@@ -103,24 +110,26 @@ active な encoded がある完了録画は、MP4 の progressive 再生と Rang
 
 encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<name>` を、controls の無い `<video>` の src に渡す。映像の下端には自前の再生操作バーを重ねる。encoded MP4 の経路では HLS / hls.js を使わない。原本だけが残る完了録画は、streamer の一時 HLS 経路（`/api/sites/{site}/recordings/{id}/original-vod/playlist.m3u8`）で再生する。原本自体は MPEG-2 TS のまま読み、変換したファイルは保存しない。原本 HLS の詳細は [api/media.md](../../api/media.md)「録画原本のブラウザ再生」にある。
 
-`hlsPlayback` がある録画は、API が返す master URL をそのまま HLS の入力にする。録画中の追っかけと commit 後の原本 HLS をこの URL で続け、`hlsPlayback` が空の録画だけ上記の従来経路を使う。URL をフロントで組み立てると一時世代と commit 世代の切替に追いつけず、再生が途切れる。
+`hlsPlayback` がある録画の追っかけと原本 HLS は、API が返す master URL をそのまま HLS の入力にし、録画中から commit 後まで同じ URL で再生を続ける。`hlsPlayback` が空の録画だけ上記の従来経路を使う。URL の置き場の名前（store）と世代はサーバーしか知らないので、フロントは URL を組み立てない。
 
-### 録画 API HLS の時間軸と復旧
+### 世代付き録画 HLS の時間軸と復旧
 
-録画 API HLS は録画の秒をそのまま使い、読める範囲と実尺を分けて扱う。世代が変わったときは最新 URL へ位置を引き継ぐ。
+再生位置は録画開始からの秒をそのまま使い、シークはその秒を代入するだけにする。シークできる範囲の末尾を越える要求は、その末尾へ収める。時間軸の長さは録画済み時間で決め、シークできる範囲の末尾は上限にだけ使う。HLS 応答が 410 になったら、最新の URL で続きから再生する。
 
-この再生元の `currentTime` は録画先頭からの秒である。seek は同じ playlist の `currentTime` を更新し、現在の playlist が読める末尾を越える要求はその末尾へ丸める。
+`seekable` の末尾を越える要求は、アプリが末尾へ丸めてから `currentTime` に渡す。
 
-録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。commit 後は録画ファイルの実尺を使う。
+録画中は時間軸の右端を壁時計から計算した録画済み時間に置く。EVENT playlist の `seekable` 末尾はシークの上限には使うが、時間軸の長さには使わない。録画の終了後は、commit 前も含めて、`startedAt` から `endedAt` までの時間を使い、取れなければ予定尺を使う。
 
-現在の世代の HLS 応答が `410` になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。
+現在の世代の HLS 応答が 410 になったら詳細 API を取り直し、新しい URL で最後の再生位置から続ける。SSE は更新の合図として扱い、再生元の選び直しは REST の最新値で行う。同じ再生元の作り直しは続けて 2 回までで、再生位置が 5 秒進むと数え直す。
 
 <details><summary>根拠</summary>
 
-- API HLS の優先: `recording-playback-source.test.ts`
+- 再生元の選択: `recording-playback-source.test.ts`
 - 410 後の位置保持: `recording-detail.test.tsx`
-- playlist 末尾への丸め: `live-player.test.tsx`
-- 実メディアの時間軸: `recording-playback-timeline.mjs`
+- アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
+- 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
+- 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸、410 後の復旧: `recording-playback-timeline.mjs`
+- 上記の実ブラウザ判定は Chrome で通る。WebKit（`E2E_BROWSER=webkit`）では 1 回の測定で、410 後に詳細 API の再取得を観測できず、途中シークの `currentTime` も目標から 6〜26 ms ずれて 1 つの目印を外した。未解決: Safari のネイティブ HLS での 410 復旧
 
 </details>
 

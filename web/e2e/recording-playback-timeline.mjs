@@ -1108,6 +1108,35 @@ async function runRecordingApiHlsCheck() {
     ng.push(`Recording.hlsPlayback.masterUrl を直接要求しない (${JSON.stringify(recordingHlsRequests)})`)
   }
 
+  // 途中の位置へのシーク: 目印フレームの中央へ時間軸をクリックし、currentTime が録画開始からの秒に
+  // なり、表示中のフレームがその目印であることを測る。encoded の PTS が録画の秒の基準。
+  for (const frame of [106, 240]) {
+    const marker = markerTimes.find((item) => item.frame === frame)
+    const target = marker.expectedSeconds + 1 / (2 * SOURCE_FRAME_RATE)
+    await page.locator('video').evaluate((video) => video.pause())
+    const box = await slider.boundingBox()
+    const axisMax = Number(await slider.getAttribute('aria-valuemax'))
+    await page.mouse.click(box.x + box.width * (target / axisMax), box.y + box.height / 2)
+    const landed = await page.waitForFunction(({ slot, from, to }) => {
+      const video = document.querySelector('video')
+      return video && !video.seeking && video.currentTime >= from && video.currentTime < to &&
+        window.__displayedMarkerSlot() === slot
+    }, { slot: marker.markerSlot, from: marker.expectedSeconds, to: marker.expectedSeconds + 1 / SOURCE_FRAME_RATE }, { timeout: 5000 })
+      .then(() => true).catch(() => false)
+    const observed = await page.evaluate(() => ({
+      currentTime: document.querySelector('video').currentTime,
+      slot: window.__displayedMarkerSlot(),
+    }))
+    log(`  中間シーク frame ${frame}: 目標=${target.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
+    if (!landed) {
+      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${frame} ではない (${JSON.stringify(observed)}, want=${marker.expectedSeconds})`)
+    }
+  }
+
+  // 末尾へのシーク。これは「ブラウザ込みで、末尾への操作が playlist の末尾に収まる」ことだけを測る。
+  // 変異確認で seekTarget の playlistEndSeconds による丸めを外しても通った（HTML のシーク手順で
+  // ブラウザが seekable の最寄りへ丸める）ので、アプリの丸めはこの判定では守れていない。
+  // アプリの丸めは playback-mode.test.ts の clamp のテストが守る。
   await slider.focus()
   await page.keyboard.press('End')
   const clamped = await page.waitForFunction(() => {
@@ -1122,7 +1151,7 @@ async function runRecordingApiHlsCheck() {
       seeking: video.seeking,
       seekableEnd: video.seekable.length ? video.seekable.end(video.seekable.length - 1) : null,
     }))
-    ng.push(`時間軸の末尾への seek が現在の playlist 末尾に丸まらない (${JSON.stringify(afterSeek)})`)
+    ng.push(`時間軸の末尾への操作で currentTime が playlist 末尾に収まらない (${JSON.stringify(afterSeek)})`)
   }
   if (playlistRequests.length > 0) ng.push(`録画 API HLS が従来の原本 VOD URL へ逸れる (${JSON.stringify(playlistRequests)})`)
 
