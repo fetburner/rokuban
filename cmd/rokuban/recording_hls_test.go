@@ -124,7 +124,15 @@ live:
       audio_codec: aac
 `, tc.enabled, t.TempDir(), writeFakeFFTools(t)), tc.args...)
 			id := dbtest.Recording(t, pool)
-			dbtest.MediaAsset(t, pool, id)
+			assetID := dbtest.MediaAsset(t, pool, id)
+			if err := sqlcgen.New(pool).UpsertMediaAssetCopy(t.Context(), sqlcgen.UpsertMediaAssetCopyParams{
+				MediaAssetID: assetID,
+				Store:        "main",
+				RelPath:      "sites/default/server-recording-hls-test.m2ts",
+				State:        "active",
+			}); err != nil {
+				t.Fatalf("seeding main-store copy: %v", err)
+			}
 			resp, err := http.Get(fmt.Sprintf("%s/api/media/stores/main/recordings/%d/hls/v7/hd/master.m3u8", base, id))
 			if err != nil {
 				t.Fatal(err)
