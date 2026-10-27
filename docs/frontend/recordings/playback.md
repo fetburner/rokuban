@@ -129,7 +129,7 @@ encoded MP4 は、streamer の `GET /api/media/recordings/{id}/file?profile=<nam
 - アプリの `seekTarget` による playlist 末尾への丸め: `playback-mode.test.ts`
 - 実ブラウザは `seekable` へ自分で丸めるので、`recording-playback-timeline.mjs` はこの丸めを守らない
 - 途中へのシークで録画秒の目印フレームが出ること、録画中の時間軸、410 後の復旧: `recording-playback-timeline.mjs`
-- WebKit での判定は、410 復旧と途中シークで落ちる（`E2E_BROWSER=webkit`）
+- 途中シークの判定は Chrome と WebKit（`E2E_BROWSER=webkit`）で通る。WebKit の判定は 410 復旧だけが落ちる
 
 </details>
 

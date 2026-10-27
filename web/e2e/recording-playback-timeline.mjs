@@ -1109,29 +1109,46 @@ async function runRecordingApiHlsCheck() {
     ng.push(`Recording.hlsPlayback.masterUrl を直接要求しない (${JSON.stringify(recordingHlsRequests)})`)
   }
 
-  // 途中の位置へのシーク: 目印フレームの中央へ時間軸をクリックし、currentTime が録画開始からの秒に
-  // なり、表示中のフレームがその目印であることを測る。期待値は HLS fixture の原本 TS 自身の
-  // 目印 PTS - 最早 start_time（legacySeconds）で、encoded には依存しない。
-  for (const frame of [106, 240]) {
-    const marker = markerTimes.find((item) => item.frame === frame)
-    const target = marker.legacySeconds + 1 / (2 * SOURCE_FRAME_RATE)
-    await page.locator('video').evaluate((video) => video.pause())
-    const box = await slider.boundingBox()
-    const axisMax = Number(await slider.getAttribute('aria-valuemax'))
-    await page.mouse.click(box.x + box.width * (target / axisMax), box.y + box.height / 2)
+  // 途中の位置へのシーク: 時間軸を整数 px でクリックし、currentTime が録画開始からの秒になり、
+  // 表示中のフレームがその秒のフレーム（目印）であることを測る。WebKit は mouse.click の座標を
+  // 整数 px に切り捨て、1 px が 1 フレーム以上（35 ms 前後）なので、小数座標で 1 フレームを狙えない。
+  // そこで、整数 px のうち、アプリが代入する秒 (x - box.x) / width * axisMax が目印フレームの窓
+  // （HLS fixture の原本 TS 自身の目印 PTS - 最早 start_time から 1 フレーム）の中に入るものを選ぶ。
+  // 秒の計算は Chrome と WebKit で同じで、encoded には依存しない。
+  await page.locator('video').evaluate((video) => video.pause())
+  const box = await slider.boundingBox()
+  const axisMax = Number(await slider.getAttribute('aria-valuemax'))
+  const frameSeconds = 1 / SOURCE_FRAME_RATE
+  // 窓の端を避ける余白。クリックの遅れで axisMax が伸びる分（数 ms）を吸収する。
+  const margin = 0.006
+  const picks = []
+  for (const marker of markerTimes) {
+    if (picks.length === 2) break
+    if (!(marker.legacySeconds < mediaState.seekableEnd - 1)) continue
+    for (let x = Math.ceil(box.x); x < box.x + box.width; x += 1) {
+      const seconds = (x - box.x) / box.width * axisMax
+      if (seconds >= marker.legacySeconds + margin && seconds < marker.legacySeconds + frameSeconds - margin) {
+        picks.push({ marker, x, seconds })
+        break
+      }
+    }
+  }
+  if (picks.length < 2) ng.push(`途中シークの判定に使える整数 px が見つからない (picks=${picks.length}, width=${box.width}, axisMax=${axisMax})`)
+  for (const { marker, x, seconds } of picks) {
+    await page.mouse.click(x, box.y + box.height / 2)
     const landed = await page.waitForFunction(({ slot, from, to }) => {
       const video = document.querySelector('video')
       return video && !video.seeking && video.currentTime >= from && video.currentTime < to &&
         window.__displayedMarkerSlot() === slot
-    }, { slot: marker.markerSlot, from: marker.legacySeconds, to: marker.legacySeconds + 1 / SOURCE_FRAME_RATE }, { timeout: 5000 })
+    }, { slot: marker.markerSlot, from: marker.legacySeconds, to: marker.legacySeconds + frameSeconds }, { timeout: 5000 })
       .then(() => true).catch(() => false)
     const observed = await page.evaluate(() => ({
       currentTime: document.querySelector('video').currentTime,
       slot: window.__displayedMarkerSlot(),
     }))
-    log(`  中間シーク frame ${frame}: 目標=${target.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
+    log(`  中間シーク frame ${marker.frame}: x=${x} 目標=${seconds.toFixed(4)}s / currentTime=${observed.currentTime.toFixed(4)}s / 表示=${observed.slot} (期待 ${marker.markerSlot})`)
     if (!landed) {
-      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${frame} ではない (${JSON.stringify(observed)}, want=${marker.legacySeconds})`)
+      ng.push(`途中へのシークで currentTime が録画秒にならない、または表示が目印 ${marker.frame} ではない (${JSON.stringify(observed)}, want=${marker.legacySeconds})`)
     }
   }
 
