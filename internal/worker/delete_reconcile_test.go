@@ -2263,9 +2263,9 @@ func TestDeleteReconcileWorker_CanonicalAssetKindsAreReportOnly(t *testing.T) {
 	}
 }
 
-// canonicalPublishWhileWorkPaused は、古い orphan_files 行を持つ canonical 孤児に対して
+// canonicalPublishWhileWorkPaused は、ingest temp と同じ内容の古い canonical 孤児に対して
 // worker.Work を走らせ、候補収集後の同期点で止めている間に ingest commit で公開する。
-// commit は Work の完了を待たずに終わらねばならず、Work 再開後も公開内容が残らねばならない。
+// 既存内容を上書きせず再利用し、Work 再開後も canonical が残ることを確かめる。
 // beforeResume は Work が止まった直後・公開前に呼ばれる。
 func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *DeleteReconcileWorker, mediaDir, relPath string, beforeResume func()) {
 	t.Helper()
@@ -2274,7 +2274,8 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(fullPath, []byte("old orphan"), 0o644); err != nil {
+	content := []byte("published while delete reconcile paused")
+	if err := os.WriteFile(fullPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	old := time.Now().Add(-30 * 24 * time.Hour)
@@ -2287,7 +2288,6 @@ func canonicalPublishWhileWorkPaused(t *testing.T, pool *pgxpool.Pool, worker *D
 	}
 	recordingID := dbtest.Recording(t, pool)
 	tempPath := filepath.Join(filepath.Dir(fullPath), ".rokuban-ingest-while-work-paused")
-	content := []byte("published while delete reconcile paused")
 	if err := os.WriteFile(tempPath, content, 0o644); err != nil {
 		t.Fatal(err)
 	}

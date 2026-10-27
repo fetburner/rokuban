@@ -2428,7 +2428,7 @@ func insertTestRecordSyncForSite(t *testing.T, pool *pgxpool.Pool, site string, 
 	assertRecordSyncProgramMatchesRecording(t, pool, "insertTestRecordSyncForSite", site, recordingID, programID)
 }
 
-func TestIngestWorker_JobReexecution(t *testing.T) {
+func TestIngestWorker_DoesNotOverwriteExistingCanonicalOrphan(t *testing.T) {
 	tsData := makeTSData(50)
 	const recordID = "rec-reexec"
 	fake := newFullTransferFake(t, recordID, tsData, "test/reexec.m2ts")
@@ -2467,19 +2467,30 @@ func TestIngestWorker_JobReexecution(t *testing.T) {
 	job := IngestJobArgs{Site: "default", RecordID: recordID}
 
 	err := runWorkerViaJobQFake(context.Background(), w, job)
-	if err != nil {
-		t.Fatalf("Work() error: %v", err)
+	if !errors.Is(err, os.ErrExist) {
+		t.Fatalf("Work() error = %v, want canonical path conflict", err)
 	}
 
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		t.Fatalf("reading output file: %v", err)
+		t.Fatalf("reading preserved canonical orphan: %v", err)
 	}
-	if len(data) != len(tsData) {
-		t.Errorf("file size = %d, want %d (stale canonical data must not survive commit)", len(data), len(tsData))
+	if !bytes.Equal(data, garbage) {
+		t.Errorf("canonical orphan changed: got %d bytes, want preserved %d-byte content", len(data), len(garbage))
 	}
-	if string(data[:4]) != string(tsData[:4]) {
-		t.Error("file content does not match expected TS data (atomic rename may have failed)")
+	tempPath := ingestTempFilePath(filepath.Dir(fullPath), "default", recordID)
+	if temp, err := os.ReadFile(tempPath); err != nil || !bytes.Equal(temp, tsData) {
+		t.Errorf("completed ingest temp = (%d bytes, %v), want preserved transferred bytes", len(temp), err)
+	}
+	var assetCount int
+	if err := pool.QueryRow(context.Background(), "SELECT count(*) FROM media_assets WHERE recording_id = $1", recordingID).Scan(&assetCount); err != nil {
+		t.Fatalf("counting media assets: %v", err)
+	}
+	if assetCount != 0 {
+		t.Errorf("media_assets rows = %d, want 0 after rejecting the orphan collision", assetCount)
+	}
+	if got := fake.CallCount(http.MethodDelete, "/api/recording/records/"+recordID); got != 0 {
+		t.Errorf("mirakc DeleteRecord calls = %d, want 0 after publication conflict", got)
 	}
 }
 
