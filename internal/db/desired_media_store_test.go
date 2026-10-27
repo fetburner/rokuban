@@ -2,7 +2,9 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -39,11 +41,11 @@ func TestDesiredMediaStore(t *testing.T) {
 		age       string
 		wantStore string
 	}{
-		{name: "older than threshold uses first matching rule", kind: "original", site: "takamatsu", age: "30 days 1 second", wantStore: "tokyo"},
-		{name: "exact threshold uses next rule", kind: "original", site: "takamatsu", age: "30 days", wantStore: "takamatsu"},
-		{name: "younger program uses site rule", kind: "original", site: "takamatsu", age: "29 days", wantStore: "takamatsu"},
-		{name: "site mismatch uses unconditional fallback", kind: "original", site: "tokyo", age: "40 days", wantStore: "fallback"},
-		{name: "derived asset uses constant store", kind: "encoded", site: "takamatsu", age: "40 days", wantStore: "s3main"},
+		{name: "older than threshold uses first matching rule", kind: "original", site: "takamatsu", age: "720 hours 1 second", wantStore: "tokyo"},
+		{name: "exact threshold uses next rule", kind: "original", site: "takamatsu", age: "720 hours", wantStore: "takamatsu"},
+		{name: "younger program uses site rule", kind: "original", site: "takamatsu", age: "696 hours", wantStore: "takamatsu"},
+		{name: "site mismatch uses unconditional fallback", kind: "original", site: "tokyo", age: "960 hours", wantStore: "fallback"},
+		{name: "derived asset uses constant store", kind: "encoded", site: "takamatsu", age: "960 hours", wantStore: "s3main"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -57,4 +59,84 @@ func TestDesiredMediaStore(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("subsecond threshold compares exact boundary", func(t *testing.T) {
+		fractionalRules, err := (config.StorageConfig{Originals: []config.OriginalStoreRule{
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu", OlderThan: "720h500ms"}, Store: "tokyo"},
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu"}, Store: "takamatsu"},
+			{Store: "fallback"},
+		}}).OriginalRulesJSON()
+		if err != nil {
+			t.Fatalf("normalize fractional rules: %v", err)
+		}
+		var got string
+		if err := conn.QueryRow(ctx,
+			`SELECT desired_media_store('original', $1::jsonb, 's3main', 'takamatsu', now() - interval '720 hours 500 milliseconds')`,
+			string(fractionalRules),
+		).Scan(&got); err != nil {
+			t.Fatalf("desired_media_store at subsecond threshold: %v", err)
+		}
+		if got != "takamatsu" {
+			t.Fatalf("desired store at 720h500ms boundary = %q, want %q", got, "takamatsu")
+		}
+	})
+
+	t.Run("older_than is fixed elapsed time across daylight saving changes", func(t *testing.T) {
+		// Pick a timezone and day count for which subtracting calendar days differs
+		// from the same number of 24-hour periods. This stays deterministic across
+		// test dates while exercising the real desired_media_store function.
+		var zone string
+		var days int
+		var deltaSeconds float64
+		var programEndAt time.Time
+		err := conn.QueryRow(ctx, `
+			WITH candidates AS (
+				SELECT name, n AS days,
+				       (now() AT TIME ZONE name - make_interval(days => n)) AT TIME ZONE name AS cutoff
+				FROM pg_timezone_names
+				CROSS JOIN generate_series(1, 365) AS series(n)
+			), shifted AS (
+				SELECT name, days, cutoff,
+				       extract(epoch FROM now() - cutoff) - days * 86400::double precision AS delta_seconds
+				FROM candidates
+			)
+			SELECT name, days, delta_seconds,
+			       cutoff + CASE WHEN delta_seconds > 0 THEN interval '1 minute' ELSE interval '-1 minute' END
+			FROM shifted
+			WHERE abs(delta_seconds) > 120
+			ORDER BY abs(delta_seconds) DESC
+			LIMIT 1`).Scan(&zone, &days, &deltaSeconds, &programEndAt)
+		if err != nil {
+			t.Fatalf("find a timezone with a recent DST shift: %v", err)
+		}
+		if _, err := conn.Exec(ctx, `SELECT set_config('TimeZone', $1, false)`, zone); err != nil {
+			t.Fatalf("set session timezone to %s: %v", zone, err)
+		}
+		t.Cleanup(func() {
+			_, _ = conn.Exec(ctx, `SELECT set_config('TimeZone', 'UTC', false)`)
+		})
+
+		rules, err := (config.StorageConfig{Originals: []config.OriginalStoreRule{
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu", OlderThan: fmt.Sprintf("%dd", days)}, Store: "tokyo"},
+			{Match: &config.OriginalStoreMatch{Site: "takamatsu"}, Store: "takamatsu"},
+			{Store: "fallback"},
+		}}).OriginalRulesJSON()
+		if err != nil {
+			t.Fatalf("normalize DST test rules: %v", err)
+		}
+		var got string
+		if err := conn.QueryRow(ctx,
+			`SELECT desired_media_store('original', $1::jsonb, 's3main', 'takamatsu', $2::timestamptz)`,
+			string(rules), programEndAt,
+		).Scan(&got); err != nil {
+			t.Fatalf("desired_media_store across DST: %v", err)
+		}
+		want := "takamatsu"
+		if deltaSeconds > 0 {
+			want = "tokyo"
+		}
+		if got != want {
+			t.Fatalf("desired store across DST in %s for %dd (calendar shift %+0.fs) = %q, want %q", zone, days, deltaSeconds, got, want)
+		}
+	})
 }

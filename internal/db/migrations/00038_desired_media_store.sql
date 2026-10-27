@@ -26,16 +26,21 @@ RETURNS text
               AND (entry.rule->'match'->>'older_than_ns' IS NULL
                    OR (
                        program_end_at IS NOT NULL
-                       AND program_end_at < now() - make_interval(
-                           days => (
-                               (entry.rule->'match'->>'older_than_ns')::bigint
-                               / 86400000000000
-                           )::integer,
-                           secs => (
-                               ((entry.rule->'match'->>'older_than_ns')::bigint
-                                % 86400000000000)::double precision
-                               / 1000000000::double precision
-                           )::double precision
+                       -- Put the duration in interval's time component: its days component is calendar-based across DST.
+                       -- TestDesiredMediaStore/older_than_is_fixed_elapsed_time_across_daylight_saving_changes covers this.
+                       AND program_end_at < now() - (
+                           make_interval(
+                               secs => (
+                                   (entry.rule->'match'->>'older_than_ns')::bigint
+                                   / 1000000000
+                               )::double precision
+                           ) + make_interval(
+                               secs => (
+                                   ((entry.rule->'match'->>'older_than_ns')::bigint
+                                    % 1000000000)::double precision
+                                   / 1000000000::double precision
+                               )
+                           )
                        )
                    ))
             ORDER BY entry.ordinal
@@ -45,7 +50,7 @@ RETURNS text
 $$;
 
 COMMENT ON FUNCTION desired_media_store(text, jsonb, text, text, timestamptz) IS
-    'desired_media_store は original の規則を先勝ちで評価し、その他の資産には派生物の置き場を返す。older_than_ns は放送終了から now() までの経過時間と厳密に比較する。';
+    'desired_media_store は original の規則を先勝ちで評価し、その他の資産には派生物の置き場を返す。older_than_ns は固定の経過時間として放送終了と now() を厳密に比較する。';
 
 -- +goose Down
 

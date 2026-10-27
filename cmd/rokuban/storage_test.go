@@ -91,6 +91,58 @@ storage:
 	}
 }
 
+func TestStorageAdoptRejectsUnknownAndNonFSStoreInMultiStoreConfig(t *testing.T) {
+	mediaDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.yml")
+	config := `db:
+  host: localhost
+  port: 1
+  user: postgres
+  password: postgres
+  database: postgres
+storage:
+  media_dir: ` + mediaDir + `
+  stores:
+    tokyo:
+      kind: fs
+    osaka:
+      kind: fs
+    s3main:
+      kind: s3
+      bucket: rokuban-derived
+  originals:
+    - store: tokyo
+  derived: s3main
+  transfer:
+    overlap: 48h
+mirakcs:
+  - site: tokyo
+    url: http://mirakc
+`
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name      string
+		wantError string
+	}{
+		{name: "unknown", wantError: "not configured in storage.stores"},
+		{name: "s3main", wantError: "requires an fs store"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"--config", configPath, "storage", "adopt", tc.name})
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("storage adopt error = %v, want containing %q", err, tc.wantError)
+			}
+			if _, err := os.Stat(filepath.Join(mediaDir, mediapath.StoreMarkerFileName)); !os.IsNotExist(err) {
+				t.Fatalf("marker exists after rejected adoption: stat err = %v", err)
+			}
+		})
+	}
+}
+
 func TestStorageAdoptDoesNotRenameExistingStoreMarker(t *testing.T) {
 	mediaDir := t.TempDir()
 	if err := mediapath.WriteStoreMarker(mediaDir, "osaka"); err != nil {
