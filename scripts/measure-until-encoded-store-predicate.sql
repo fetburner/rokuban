@@ -161,11 +161,14 @@ GROUP BY 1, 2, 3 ORDER BY 1, 2, 3;
 -- 置き場を引数に取る関数。本物の view の本体のうち、encoded の判定だけを
 -- 「desired の置き場に active なコピーがある」に置き換える。それ以外の条件は view と同じ。
 --
--- 関数の形の候補は 3 つ。結果の集合は同じで（後で EXCEPT で確かめる）、計画が違う。
---   join 形（until_encoded_deletable_originals）: unencoded_desired_profiles を参照せず、
---       profile ごとの NOT EXISTS の中で encoded とコピーを JOIN する。
---   view 参照形: view と同じ unencoded_desired_profiles の参照を残し、desired の置き場に
---       コピーがあることの確認を NOT EXISTS で足す。
+-- 関数の形は 4 つ。結果の集合は同じで（後で EXCEPT で確かめる）、計画が違う。
+--   合成形（until_encoded_deletable_originals）: view と同じ unencoded_desired_profiles の
+--       参照を残し、「desired の active な encoded のうち、desired の置き場に active な
+--       コピーが無いものが無い」とだけ足す。不足の判定は共有 view に任せ、写さない。
+--   view 参照形: unencoded_desired_profiles を残し、コピーの確認を profile ごとの
+--       NOT EXISTS の中で encoded とコピーを JOIN して足す（不足の判定を二重に持つ）。
+--   join 形: unencoded_desired_profiles を参照せず、profile ごとの NOT EXISTS の中で
+--       encoded とコピーを JOIN する（不足の判定を写す）。
 --   count 形: desired の profile の数と、desired の置き場に active なコピーがある
 --       active な encoded の profile の数を、候補ごとの相関スカラー副問い合わせで比べる。
 -- ---------------------------------------------------------------------------
@@ -219,6 +222,61 @@ AS $fn$
 $fn$;
 
 CREATE FUNCTION until_encoded_deletable_originals(desired_store text)
+RETURNS TABLE (asset_id bigint, recording_id bigint, rel_path text, size_bytes bigint, state text)
+LANGUAGE sql STABLE
+AS $fn$
+    SELECT a.id AS asset_id, a.recording_id, a.rel_path, a.size_bytes, a.state
+    FROM media_assets a
+    JOIN recordings r ON r.id = a.recording_id
+    JOIN recording_encode_policy p ON p.recording_id = r.id
+    WHERE a.kind = 'original'
+      AND p.keep_original = 'until_encoded'
+      AND r.deleted_at IS NULL
+      AND cardinality(p.encode_profiles) > 0
+      AND NOT EXISTS (
+          SELECT 1 FROM unsatisfied_encode_rebuilds q WHERE q.recording_id = r.id
+      )
+      AND EXISTS (
+          SELECT 1 FROM current_ts_scanned_originals s WHERE s.media_asset_id = a.id
+      )
+      AND NOT EXISTS (
+          SELECT 1 FROM unencoded_desired_profiles u WHERE u.recording_id = r.id
+      )
+      AND NOT EXISTS (
+          SELECT 1
+          FROM media_assets e
+          WHERE e.recording_id = r.id
+            AND e.kind = 'encoded'
+            AND e.state = 'active'
+            AND e.profile = ANY (p.encode_profiles)
+            AND NOT EXISTS (
+                SELECT 1 FROM media_asset_copies c
+                WHERE c.media_asset_id = e.id
+                  AND c.store = desired_store
+                  AND c.state = 'active'
+            )
+      )
+      AND EXISTS (
+          SELECT 1 FROM media_assets t
+          WHERE t.recording_id = r.id AND t.kind = 'thumbnail' AND t.state = 'active'
+      )
+      AND EXISTS (
+          SELECT 1 FROM media_assets s
+          WHERE s.recording_id = r.id AND s.kind = 'seek_tiles' AND s.state = 'active'
+      )
+      AND (
+          NOT p.cm_detect
+          OR EXISTS (SELECT 1 FROM recording_cm_detections d WHERE d.recording_id = r.id)
+          OR EXISTS (
+              SELECT 1 FROM current_cm_attempts ca
+              WHERE ca.recording_id = r.id
+                AND ca.state = 'failed'
+                AND ca.stage IS DISTINCT FROM 'adopt'
+          )
+      )
+$fn$;
+
+CREATE FUNCTION pg_temp.until_encoded_join_form(desired_store text)
 RETURNS TABLE (asset_id bigint, recording_id bigint, rel_path text, size_bytes bigint, state text)
 LANGUAGE sql STABLE
 AS $fn$
@@ -336,6 +394,7 @@ CREATE TEMP TABLE results (
     custom_plans int, generic_plans int
 );
 CREATE TEMP TABLE plans (seq int, line_no serial, line text);
+CREATE TEMP TABLE idx_sizes (idx text PRIMARY KEY, bytes bigint);
 
 -- 6〜8 回目を EXPLAIN (ANALYZE, BUFFERS) で測る。引数は ($1 store text, $2 grace_cutoff
 -- timestamptz, $3 row_limit integer) に固定する（使わない引数があっても generic plan の
@@ -393,6 +452,14 @@ BEGIN
     PERFORM pg_temp.bench(p_pct, p_variant, 'ListUntilEncodedOriginalsToDelete',
         replace($q$SELECT v.asset_id AS id, v.recording_id, v.rel_path, v.size_bytes, 'original'::text AS kind
             FROM {src} WHERE v.state = 'active' ORDER BY v.asset_id LIMIT $3$q$, '{src}', src));
+    PERFORM pg_temp.bench_neg(p_pct, p_variant, src);
+END
+$b$;
+
+-- deleting の原本を引く否定形の 2 クエリ。
+CREATE FUNCTION pg_temp.bench_neg(p_pct int, p_variant text, src text) RETURNS void
+LANGUAGE plpgsql AS $b$
+BEGIN
     PERFORM pg_temp.bench(p_pct, p_variant, 'ListMediaAssetsPendingDelete',
         replace($q$SELECT a.id, a.recording_id, a.rel_path, a.size_bytes, a.kind
             FROM media_assets a
@@ -435,27 +502,30 @@ BEGIN
         CREATE INDEX cand_storefirst_idx ON media_asset_copies (store, media_asset_id) WHERE state = 'active';
     END IF;
     ANALYZE media_asset_copies;
+    INSERT INTO idx_sizes SELECT c.relname, pg_relation_size(c.oid) FROM pg_class c
+    WHERE c.relname IN ('cand_partial_idx', 'cand_full_idx', 'cand_storefirst_idx') ON CONFLICT DO NOTHING;
 END
 $b$;
 
 -- 関数が view と矛盾しないこと: desired の置き場に全 profile の active なコピーがあるという
 -- 条件を足しているので、関数の結果は view の結果の部分集合になる。
--- 書き方の候補は、join 形と同じ集合を返す。
+-- 比較用の 3 形は、合成形と同じ集合を返す。
 DO $$
 DECLARE extra int; diff int; f text;
 BEGIN
     PERFORM pg_temp.set_pct(100);
+    PERFORM pg_temp.set_idx('partial'); -- 索引なしだと全件の評価に数分かかる
     SELECT count(*) INTO extra FROM (
         SELECT asset_id FROM until_encoded_deletable_originals('tokyo')
         EXCEPT SELECT asset_id FROM until_encoded_deletable_originals) q;
     IF extra <> 0 THEN RAISE EXCEPTION 'function returns % rows outside the view', extra; END IF;
-    FOREACH f IN ARRAY ARRAY['pg_temp.until_encoded_view_ref_form', 'pg_temp.until_encoded_count_form'] LOOP
+    FOREACH f IN ARRAY ARRAY['pg_temp.until_encoded_join_form', 'pg_temp.until_encoded_view_ref_form', 'pg_temp.until_encoded_count_form'] LOOP
         EXECUTE format($q$SELECT count(*) FROM (
             (SELECT asset_id FROM until_encoded_deletable_originals('tokyo') EXCEPT SELECT asset_id FROM %1$s('tokyo'))
             UNION ALL
             (SELECT asset_id FROM %1$s('tokyo') EXCEPT SELECT asset_id FROM until_encoded_deletable_originals('tokyo'))) q$q$, f)
             INTO diff;
-        IF diff <> 0 THEN RAISE EXCEPTION '% differs from the join form in % rows', f, diff; END IF;
+        IF diff <> 0 THEN RAISE EXCEPTION '% differs from the composed form in % rows', f, diff; END IF;
     END LOOP;
 END $$;
 
@@ -466,7 +536,7 @@ SELECT (SELECT count(*) FROM until_encoded_deletable_originals WHERE state = 'ac
 
 -- ---------------------------------------------------------------------------
 -- 測定。until_encoded の割合ごとに、view と、関数（索引・書き方の候補）を測る。
--- 消費側（delete_reconcile.sql の 3 クエリ）は view と、関数の 3 形（部分索引つき）で測る。
+-- 消費側（delete_reconcile.sql の 3 クエリ）は view と、関数の 4 形（部分索引つき）で測る。
 -- ---------------------------------------------------------------------------
 VACUUM (ANALYZE) recording_encode_policy;
 DO $m$
@@ -475,14 +545,16 @@ BEGIN
     PERFORM pg_temp.set_pct(pct);
     PERFORM pg_temp.set_idx('none');
     PERFORM pg_temp.bench_set(pct, 'view', 'until_encoded_deletable_originals v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_no_index', 'until_encoded_deletable_originals($1) v', true);
     PERFORM pg_temp.set_idx('partial');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'pg_temp.until_encoded_join_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_view_ref_partial', 'pg_temp.until_encoded_view_ref_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_count_partial', 'pg_temp.until_encoded_count_form($1) v', true);
     PERFORM pg_temp.set_idx('full');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_full', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_full', 'until_encoded_deletable_originals($1) v', false);
     PERFORM pg_temp.set_idx('storefirst');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_storefirst', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_storefirst', 'until_encoded_deletable_originals($1) v', false);
 END $m$;
 
 VACUUM (ANALYZE) recording_encode_policy;
@@ -492,16 +564,18 @@ BEGIN
     PERFORM pg_temp.set_pct(pct);
     PERFORM pg_temp.set_idx('none');
     PERFORM pg_temp.bench_set(pct, 'view', 'until_encoded_deletable_originals v', true);
-    -- 索引なしは 1 回が数十秒かかるので、50% の producer だけ測る。
-    PERFORM pg_temp.bench_set(pct, 'fn_join_no_index', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_no_index', 'until_encoded_deletable_originals($1) v', true);
+    -- join 形の索引なしは 1 回が数十秒かかるので、50% の producer だけ測る。
+    PERFORM pg_temp.bench_set(pct, 'fn_join_no_index', 'pg_temp.until_encoded_join_form($1) v', false);
     PERFORM pg_temp.set_idx('partial');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'pg_temp.until_encoded_join_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_view_ref_partial', 'pg_temp.until_encoded_view_ref_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_count_partial', 'pg_temp.until_encoded_count_form($1) v', true);
     PERFORM pg_temp.set_idx('full');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_full', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_full', 'until_encoded_deletable_originals($1) v', false);
     PERFORM pg_temp.set_idx('storefirst');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_storefirst', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_storefirst', 'until_encoded_deletable_originals($1) v', false);
 END $m$;
 
 VACUUM (ANALYZE) recording_encode_policy;
@@ -511,14 +585,49 @@ BEGIN
     PERFORM pg_temp.set_pct(pct);
     PERFORM pg_temp.set_idx('none');
     PERFORM pg_temp.bench_set(pct, 'view', 'until_encoded_deletable_originals v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_no_index', 'until_encoded_deletable_originals($1) v', true);
     PERFORM pg_temp.set_idx('partial');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_partial', 'until_encoded_deletable_originals($1) v', true);
+    PERFORM pg_temp.bench_set(pct, 'fn_join_partial', 'pg_temp.until_encoded_join_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_view_ref_partial', 'pg_temp.until_encoded_view_ref_form($1) v', true);
     PERFORM pg_temp.bench_set(pct, 'fn_count_partial', 'pg_temp.until_encoded_count_form($1) v', true);
     PERFORM pg_temp.set_idx('full');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_full', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_full', 'until_encoded_deletable_originals($1) v', false);
     PERFORM pg_temp.set_idx('storefirst');
-    PERFORM pg_temp.bench_set(pct, 'fn_join_storefirst', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(pct, 'fn_compose_storefirst', 'until_encoded_deletable_originals($1) v', false);
+END $m$;
+
+-- 否定形の計画は deleting の件数で変わる。deleting の原本を 20 行（述語を満たす 10 行と
+-- 満たさない 10 行）に絞り、否定形の 2 クエリだけ測る。名前の末尾の _del20 がこの条件。
+UPDATE media_assets SET state = 'active'
+WHERE kind = 'original' AND state = 'deleting'
+  AND id NOT IN (SELECT id FROM media_assets WHERE kind = 'original' AND state = 'deleting' AND recording_id <= 17750 ORDER BY id LIMIT 10)
+  AND id NOT IN (SELECT id FROM media_assets WHERE kind = 'original' AND state = 'deleting' AND recording_id BETWEEN 19001 AND 19250 ORDER BY id LIMIT 10);
+VACUUM (ANALYZE) media_assets;
+VACUUM (ANALYZE) recording_encode_policy;
+DO $m$
+DECLARE pct int := 100;
+BEGIN
+    PERFORM pg_temp.set_pct(pct);
+    PERFORM pg_temp.set_idx('partial');
+    PERFORM pg_temp.bench_neg(pct, 'view_del20', 'until_encoded_deletable_originals v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_compose_del20', 'until_encoded_deletable_originals($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_join_del20', 'pg_temp.until_encoded_join_form($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_view_ref_del20', 'pg_temp.until_encoded_view_ref_form($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_count_del20', 'pg_temp.until_encoded_count_form($1) v');
+END $m$;
+
+VACUUM (ANALYZE) recording_encode_policy;
+DO $m$
+DECLARE pct int := 50;
+BEGIN
+    PERFORM pg_temp.set_pct(pct);
+    PERFORM pg_temp.set_idx('partial');
+    PERFORM pg_temp.bench_neg(pct, 'view_del20', 'until_encoded_deletable_originals v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_compose_del20', 'until_encoded_deletable_originals($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_join_del20', 'pg_temp.until_encoded_join_form($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_view_ref_del20', 'pg_temp.until_encoded_view_ref_form($1) v');
+    PERFORM pg_temp.bench_neg(pct, 'fn_count_del20', 'pg_temp.until_encoded_count_form($1) v');
 END $m$;
 
 -- encode_profiles が 2 要素（h264 と h265）。h265 の encoded は id <= 17000 にだけある。
@@ -538,7 +647,7 @@ DO $m$
 BEGIN
     PERFORM pg_temp.set_pct(50);
     PERFORM pg_temp.bench_set(50, 'view_2profiles', 'until_encoded_deletable_originals v', false);
-    PERFORM pg_temp.bench_set(50, 'fn_join_partial_2profiles', 'until_encoded_deletable_originals($1) v', false);
+    PERFORM pg_temp.bench_set(50, 'fn_compose_partial_2profiles', 'until_encoded_deletable_originals($1) v', false);
 END $m$;
 
 \echo '== 結果（6〜8 回目の Execution Time の中央値）'
@@ -552,8 +661,14 @@ SELECT r.pct, r.variant, r.query,
        (SELECT string_agg(regexp_replace(trim(p.line), '\s+\(cost=.*$', '') || ' ' || substring(p.line from 'loops=[0-9]+'), '; ' ORDER BY p.line_no)
         FROM plans p WHERE p.seq = r.seq AND p.line LIKE '%->%' AND p.line LIKE '%media_asset_copies%') AS copies_access,
        (SELECT count(*) FROM plans p WHERE p.seq = r.seq AND p.line LIKE '%encoded_asset_rebuild_requests%') AS rebuild_requests_lines,
-       (SELECT count(*) FROM plans p WHERE p.seq = r.seq AND p.line LIKE '%recording_cm_attempts%') AS cm_attempts_lines
+       (SELECT count(*) FROM plans p WHERE p.seq = r.seq AND p.line LIKE '%recording_cm_attempts%') AS cm_attempts_lines,
+       (SELECT max(substring(p.line from 'Rows Removed by Join Filter: ([0-9]+)')::bigint) FROM plans p
+        WHERE p.seq = r.seq AND p.line LIKE '%Rows Removed by Join Filter%') AS max_removed_by_join_filter,
+       (SELECT bool_or(p.line LIKE '%Materialize%') FROM plans p WHERE p.seq = r.seq) AS has_materialize
 FROM results r ORDER BY r.seq;
+
+\echo '== 候補索引の大きさ（bytes。コピー 9.7 万行の時点）'
+SELECT idx, bytes FROM idx_sizes ORDER BY idx;
 
 \echo '== 最後の回の計画（Limit の直下から）'
 SELECT r.pct, r.variant, r.query, p.line
