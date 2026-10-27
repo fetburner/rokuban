@@ -261,7 +261,7 @@ func TestThumbnailWorker_CreatesAsset(t *testing.T) {
 	if state.SeekMs == nil || *state.SeekMs != 10000 {
 		t.Errorf("initial thumbnail seek_ms = %v, want 10000", state.SeekMs)
 	}
-	assertMediaAssetCopy(t, pool, id, "", state.RelPath, "active")
+	assertMediaAssetCopy(t, pool, id, state.RelPath)
 
 	// メディア上に JPEG がある。
 	dest := filepath.Join(mediaDir, "thumbnails", fmt.Sprintf("%d.jpg", recordingID))

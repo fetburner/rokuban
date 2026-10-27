@@ -29,18 +29,18 @@ type cancelDuringCopyReader struct {
 	reads  int
 }
 
-func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantStore, wantRelPath, wantState string) {
+func assertMediaAssetCopy(t *testing.T, pool *pgxpool.Pool, assetID int64, wantRelPath string) {
 	t.Helper()
 	var gotStore, gotRelPath, gotState string
 	if err := pool.QueryRow(context.Background(), `
 SELECT store, rel_path, state
 FROM media_asset_copies
-WHERE media_asset_id = $1 AND store = $2`, assetID, wantStore,
+	WHERE media_asset_id = $1 AND store = ''`, assetID,
 	).Scan(&gotStore, &gotRelPath, &gotState); err != nil {
-		t.Fatalf("reading media asset copy %d in store %q: %v", assetID, wantStore, err)
+		t.Fatalf("reading media asset copy %d in the unassigned store: %v", assetID, err)
 	}
-	if gotStore != wantStore || gotRelPath != wantRelPath || gotState != wantState {
-		t.Fatalf("media asset copy = %q/%q/%q, want %q/%q/%q", gotStore, gotRelPath, gotState, wantStore, wantRelPath, wantState)
+	if gotRelPath != wantRelPath || gotState != "active" {
+		t.Fatalf("media asset copy = %q/%q/%q, want unassigned store/%q/active", gotStore, gotRelPath, gotState, wantRelPath)
 	}
 }
 
@@ -210,7 +210,7 @@ UPDATE media_asset_copies SET state = 'deleted', deleted_at = now() WHERE media_
 	if err := pool.QueryRow(context.Background(), `SELECT id FROM media_assets WHERE recording_id = $1 AND kind = 'thumbnail' AND state = 'active'`, id).Scan(&assetID); err != nil {
 		t.Fatalf("reading active thumbnail id: %v", err)
 	}
-	assertMediaAssetCopy(t, pool, assetID, "", relPath, "active")
+	assertMediaAssetCopy(t, pool, assetID, relPath)
 }
 
 func TestThumbnailWorkerUsesAttemptUniqueScratchForOverlappingAttempts(t *testing.T) {

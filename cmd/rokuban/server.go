@@ -274,11 +274,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if slices.Contains(roles, "worker") && cfg.Storage.ScratchDir == "" {
-		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
-	}
-	if slices.Contains(roles, "worker") && cfg.Storage.MediaStoreName == "" {
-		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+	if err := validateWorkerStorageConfig(roles, cfg); err != nil {
+		return err
 	}
 	storeMarkerVerified := true
 	if slices.Contains(roles, "worker") {
@@ -440,6 +437,19 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	err = eg.Wait()
 	slog.Info("shutting down")
 	return err
+}
+
+func validateWorkerStorageConfig(roles []string, cfg *config.Config) error {
+	if !slices.Contains(roles, "worker") {
+		return nil
+	}
+	if cfg.Storage.ScratchDir == "" {
+		return fmt.Errorf("validating config: worker role requires non-empty storage.scratch_dir")
+	}
+	if cfg.Storage.MediaStoreName == "" {
+		return fmt.Errorf("validating config: worker role requires storage.media_store_name")
+	}
+	return nil
 }
 
 // installSignalHandler は SIGINT / SIGTERM を受けるコンテキストを作る。

@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/fetburner/rokuban/internal/mediapath"
 	"github.com/fetburner/rokuban/internal/mirakc"
 	"github.com/fetburner/rokuban/internal/mirakc/conformance/fixture"
 	"github.com/fetburner/rokuban/internal/programid"
@@ -51,6 +52,9 @@ func TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording(t *testing.T)
 	if err := os.MkdirAll(mediaDir, 0o755); err != nil {
 		t.Fatalf("creating media dir: %v", err)
 	}
+	if err := mediapath.WriteStoreMarker(mediaDir, "conformance"); err != nil {
+		t.Fatalf("writing media store marker: %v", err)
+	}
 	if err := os.MkdirAll(scratchDir, 0o755); err != nil {
 		t.Fatalf("creating scratch dir: %v", err)
 	}
@@ -63,6 +67,7 @@ func TestIssue1317ActualBinaryResumesAcrossSlicesOnMirakcRecording(t *testing.T)
   database: %s
   sslmode: disable
 storage:
+  media_store_name: conformance
   media_dir: %s
   scratch_dir: %s
 mirakcs:

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -54,7 +53,7 @@ func (s *Media) CommitOriginal(
 		}
 		return fmt.Errorf("inserting original media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, "active", nil); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
 		return fmt.Errorf("recording original media asset copy: %w", err)
 	}
 	if err := q.DeleteRecordingIngestProgress(ctx, in.RecordingID); err != nil {
@@ -257,7 +256,7 @@ func (s *Media) PublishEncoded(ctx context.Context, in store.EncodedPublishInput
 	if err != nil {
 		return false, fmt.Errorf("upserting encoded media asset: %w", mapDatabaseError(err))
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, "active", nil); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
 		return false, fmt.Errorf("recording encoded media asset copy: %w", err)
 	}
 	if in.Cut {
@@ -419,7 +418,7 @@ func (s *Media) PublishThumbnail(ctx context.Context, in store.ThumbnailPublishI
 			return false, fmt.Errorf("updating thumbnail media path: %w", mapDatabaseError(err))
 		}
 	}
-	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath, "active", nil); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, in.RelPath); err != nil {
 		return false, fmt.Errorf("recording thumbnail media asset copy: %w", err)
 	}
 	if err := q.UpsertMediaAssetThumbnailSeek(ctx, sqlcgen.UpsertMediaAssetThumbnailSeekParams{
@@ -486,7 +485,7 @@ func (s *Media) PublishSeekTiles(ctx context.Context, in store.SeekTilesPublishI
 	if err != nil {
 		return false, fmt.Errorf("loading published seek tiles media asset: %w", err)
 	}
-	if err := upsertMediaAssetCopy(ctx, q, asset, s.storeName, in.RelPath, "active", nil); err != nil {
+	if err := upsertMediaAssetCopy(ctx, q, asset, s.storeName, in.RelPath); err != nil {
 		return false, fmt.Errorf("recording seek tiles media asset copy: %w", err)
 	}
 	if err := publish(); err != nil {
@@ -553,7 +552,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 	for i, asset := range in.Assets {
 		if assets[i] != nil {
 			result.AssetIDs[i] = assets[i].ID
-			if err := upsertMediaAssetCopy(ctx, q, assets[i].ID, s.storeName, asset.RelPath, "active", nil); err != nil {
+			if err := upsertMediaAssetCopy(ctx, q, assets[i].ID, s.storeName, asset.RelPath); err != nil {
 				return store.InPlaceResult{}, fmt.Errorf("recording existing in-place media asset copy %q: %w", asset.RelPath, err)
 			}
 			continue
@@ -568,7 +567,7 @@ func (s *Media) RegisterInPlace(ctx context.Context, in store.InPlaceInput) (sto
 			return store.InPlaceResult{}, fmt.Errorf("upserting in-place asset %q: %w", asset.RelPath, mapDatabaseError(err))
 		}
 		result.AssetIDs[i] = assetID
-		if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, asset.RelPath, "active", nil); err != nil {
+		if err := upsertMediaAssetCopy(ctx, q, assetID, s.storeName, asset.RelPath); err != nil {
 			return store.InPlaceResult{}, fmt.Errorf("recording in-place media asset copy %q: %w", asset.RelPath, err)
 		}
 	}
@@ -594,15 +593,13 @@ func upsertMediaAssetCopy(
 	ctx context.Context,
 	q *sqlcgen.Queries,
 	assetID int64,
-	storeName, relPath, state string,
-	deletedAt *time.Time,
+	storeName, relPath string,
 ) error {
 	return q.UpsertMediaAssetCopy(ctx, sqlcgen.UpsertMediaAssetCopyParams{
 		MediaAssetID: assetID,
 		Store:        storeName,
 		RelPath:      relPath,
-		State:        state,
-		DeletedAt:    deletedAt,
+		State:        "active",
 	})
 }
 

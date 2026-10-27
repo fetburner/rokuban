@@ -506,7 +506,7 @@ func TestEncodeWorker_ReplacesCutAssetAndRemovesOldPath(t *testing.T) {
 	if row.RelPath != "cut/replace_cut.g2.mp4" {
 		t.Errorf("rel_path = %q, want cut/replace_cut.g2.mp4 (the next generation)", row.RelPath)
 	}
-	assertMediaAssetCopy(t, pool, row.ID, "", row.RelPath, "active")
+	assertMediaAssetCopy(t, pool, row.ID, row.RelPath)
 	if _, err := os.Stat(filepath.Join(mediaDir, filepath.FromSlash(row.RelPath))); err != nil {
 		t.Errorf("the new generation file is missing: %v", err)
 	}
