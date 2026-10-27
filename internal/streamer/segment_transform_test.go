@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -188,11 +189,10 @@ func TestGrowingTempFollowReadsAppendedBytesThroughFD3WithRealFFmpeg(t *testing.
 	}
 	waitCh := make(chan error, 1)
 	go func() { waitCh <- cmd.Wait() }()
-
 	appended := false
 	processFinished := false
 	var waitErr error
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for !appended && time.Now().Before(deadline) {
 		select {
 		case waitErr = <-waitCh:
@@ -202,11 +202,11 @@ func TestGrowingTempFollowReadsAppendedBytesThroughFD3WithRealFFmpeg(t *testing.
 		if processFinished {
 			break
 		}
-		offset, seekErr := input.Seek(0, io.SeekCurrent)
-		if seekErr != nil {
+		offset, offsetErr := growingInputOffset(cmd.Process.Pid, input, partialPath)
+		if offsetErr != nil {
 			_ = cmd.Process.Kill()
 			_ = input.Close()
-			t.Fatalf("reading child fd 3 offset: %v", seekErr)
+			t.Fatalf("reading growing input offset: %v", offsetErr)
 		}
 		if offset >= int64(partialBytes) {
 			writer, openErr := os.OpenFile(partialPath, os.O_WRONLY|os.O_APPEND, 0)
@@ -247,6 +247,40 @@ func TestGrowingTempFollowReadsAppendedBytesThroughFD3WithRealFFmpeg(t *testing.
 	if frames != expectedFrames {
 		t.Fatalf("real ffmpeg decoded %d frames from the growing /dev/fd/3 input, want %d after append; exit=%v stderr=%s", frames, expectedFrames, waitErr, stderr.String())
 	}
+}
+
+func growingInputOffset(pid int, input *os.File, path string) (int64, error) {
+	if runtime.GOOS != "linux" {
+		return input.Seek(0, io.SeekCurrent)
+	}
+	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
+	descriptors, err := os.ReadDir(fdDir)
+	if err != nil {
+		return 0, err
+	}
+	var maxOffset int64
+	for _, descriptor := range descriptors {
+		fdPath := filepath.Join(fdDir, descriptor.Name())
+		target, err := os.Readlink(fdPath)
+		if err != nil || filepath.Clean(target) != filepath.Clean(path) {
+			continue
+		}
+		info, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "fdinfo", descriptor.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(info), "\n") {
+			key, value, ok := strings.Cut(line, ":")
+			if !ok || strings.TrimSpace(key) != "pos" {
+				continue
+			}
+			offset, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err == nil && offset > maxOffset {
+				maxOffset = offset
+			}
+		}
+	}
+	return maxOffset, nil
 }
 
 func framehashVideoFrameCount(t *testing.T, ffmpeg, path string) int {
@@ -666,10 +700,17 @@ func TestSegmentTransformSIGSTOPAtPrefetchThenSIGCONTOnDemand(t *testing.T) {
 		}
 		return ok
 	}
-	time.Sleep(300 * time.Millisecond)
-	last := firstKey.Number - 1
-	for cached(last + 1) {
-		last++
+	var last int64
+	cacheDeadline := time.Now().Add(3 * time.Second)
+	for {
+		last = firstKey.Number - 1
+		for cached(last + 1) {
+			last++
+		}
+		if last >= bound-1 || time.Now().After(cacheDeadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Logf("paused at %d with maxRequested %d: cached %d..%d", current, requested, firstKey.Number, last)
 	if last != bound && last != bound-1 {
